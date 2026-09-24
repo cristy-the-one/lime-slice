@@ -452,7 +452,6 @@ impl Writer {
             self.time_s += move_time(d, 0.0, 0.0, speed.max(10.0), accel);
             self.has_dir = false;
         }
-        self.unretract();
         let f = (speed.max(10.0) * 60.0).round() as i32;
         self.out.push_str(&format!("G1 X{x:.3} Y{y:.3} F{f}\n"));
         self.x = x;

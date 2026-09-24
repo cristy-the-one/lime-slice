@@ -72,6 +72,13 @@ pub struct PathFeatures {
     pub shell: ShellBand,
     /// Absolute layer Z. The 3D gyroid section is evaluated here.
     pub z: f64,
+    /// Nozzle diameter used to cap combined sparse beads.
+    pub nozzle_diameter: f64,
+    /// Interior layers from this one through the last before a shell, including this one.
+    /// `0` when this layer is not an interior sparse layer.
+    pub interior_remaining: u32,
+    /// Length of the interior run this layer belongs to.
+    pub interior_run: u32,
 }
 
 impl Default for PathFeatures {
@@ -83,6 +90,9 @@ impl Default for PathFeatures {
             layer_height: 0.2,
             shell: ShellBand::Interior,
             z: 0.0,
+            nozzle_diameter: 0.4,
+            interior_remaining: 1,
+            interior_run: 1,
         }
     }
 }
@@ -209,20 +219,30 @@ pub fn plan_region(
             seam_hint,
         );
     }
-    if strategy.infill_density > 0.01 && !infill_loops.is_empty() && infill_kept(strategy, features)
+    let bottom = features.shell == ShellBand::Bottom;
+    if strategy.infill_density > 0.01
+        && !infill_loops.is_empty()
+        && (bottom || infill_kept(strategy, features))
     {
-        let infill = build_infill(&infill_loops, strategy, line_width, features);
-        let every = infill_every(strategy, features);
-        if every > 1 && features.layer_index % every != 0 {
+        let infill = if bottom {
+            serpentine(scan_angle(
+                &infill_loops,
+                line_width,
+                std::f64::consts::FRAC_PI_4,
+            ))
+        } else {
+            build_infill(&infill_loops, strategy, line_width, features)
+        };
+        let Some(bead) = combine_bead(strategy, features) else {
             return paths;
-        }
+        };
         let kind = infill_kind(strategy, features.shell);
         for pts in infill {
             if pts.len() >= 2 {
                 *seam_hint = *pts.last().unwrap();
                 let mut path = extrusion(kind, strategy, pts, line_width);
-                if every > 1 {
-                    path.bead_height = features.layer_height * every as f64;
+                if (bead - features.layer_height).abs() > 1e-6 {
+                    path.bead_height = bead;
                 }
                 if strategy.gyroid_3d && strategy.pattern == crate::strategy::InfillPattern::Gyroid
                 {
@@ -235,11 +255,45 @@ pub fn plan_region(
     paths
 }
 
-fn infill_every(strategy: &ResolvedStrategy, features: &PathFeatures) -> usize {
+/// Combined sparse height, or `None` when this interior layer is covered by a later bead.
+///
+/// Groups are aligned to the next solid shell so the layer under that shell always prints.
+/// Bead height is `span × layer height`, capped near `0.75 ×` the nozzle diameter.
+fn combine_bead(strategy: &ResolvedStrategy, features: &PathFeatures) -> Option<f64> {
+    let h = features.layer_height.max(0.05);
     if features.shell != ShellBand::Interior {
-        return 1;
+        return Some(h);
     }
-    strategy.infill_combine.max(1) as usize
+    let cap = 0.75 * features.nozzle_diameter.max(0.2);
+    let max_n = ((cap / h).floor() as u32).max(1);
+    let every = strategy.infill_combine.max(1).min(max_n);
+    if every <= 1 {
+        return Some(h);
+    }
+    let rem = features.interior_remaining.max(1);
+    let run = features.interior_run.max(rem);
+    let from_end = rem - 1;
+    let last = {
+        let m = run % every;
+        if m == 0 {
+            every
+        } else {
+            m
+        }
+    };
+    let span = if from_end < last {
+        if from_end != 0 {
+            return None;
+        }
+        last
+    } else {
+        let pos = from_end - last;
+        if pos % every != 0 {
+            return None;
+        }
+        every
+    };
+    Some(h * span as f64)
 }
 
 fn infill_kind(strategy: &ResolvedStrategy, shell: ShellBand) -> PathKind {
@@ -264,6 +318,9 @@ fn wall_kind(outer: bool, strategy: &ResolvedStrategy) -> PathKind {
 }
 
 fn infill_kept(strategy: &ResolvedStrategy, features: &PathFeatures) -> bool {
+    if features.shell != ShellBand::Interior {
+        return true;
+    }
     strategy.lightning_range_mm <= 1e-6
         || features.roof_distance_mm <= strategy.lightning_range_mm + 1e-6
 }
@@ -1242,7 +1299,9 @@ pub fn optimize_travel(paths: &mut Vec<Extrusion>, solid: &[Loop], combing: bool
                             path.lead_in = via;
                             path.retract_mm = 0.0;
                         }
-                        Comb::Blocked => {}
+                        Comb::Blocked => {
+                            path.retract_min_travel = 0.0;
+                        }
                     }
                 }
             }
@@ -1314,9 +1373,6 @@ fn comb_between(
             }
         }
     }
-    if nodes.len() > 80 {
-        nodes.truncate(80);
-    }
     nodes.push(from);
     nodes.push(to);
     let n = nodes.len();
@@ -1382,6 +1438,7 @@ fn comb_between(
 /// Mark travels that should lift. `mode` is the resolved policy (`Off`, `Smart`, or `Always`).
 /// Smart never hops inside the infill inset, skips short moves and scarf ramps, and hops
 /// when combing is blocked across a printed wall or top, or when leaving a top skin.
+/// A hole crossing retracts in combing; smart hops that blocked travel, speed does not.
 pub fn apply_z_hop(
     paths: &mut [Extrusion],
     solid: &[Loop],
@@ -1409,7 +1466,8 @@ pub fn apply_z_hop(
             let travel = polyline_len(&chain);
             let spiral = !path.z_frac.is_empty();
             let inside_infill = !infill.is_empty()
-                && chain.windows(2).all(|w| segment_inside(infill, w[0], w[1]));
+                && chain.windows(2).all(|w| segment_inside(infill, w[0], w[1]))
+                && chain.windows(2).all(|w| segment_inside(solid, w[0], w[1]));
             let policy = match mode {
                 crate::strategy::ZHopMode::Blend => {
                     if path.strategy == crate::strategy::StrategyId::Toughness {
@@ -1450,31 +1508,57 @@ pub fn apply_z_hop(
 }
 
 fn chain_crosses(chain: &[[f64; 2]], solid: &[Loop], printed: &[([f64; 2], [f64; 2])]) -> bool {
-    let leaves = chain
-        .windows(2)
-        .any(|w| !segment_inside(solid, w[0], w[1]));
+    let leaves = chain.windows(2).any(|w| !segment_inside(solid, w[0], w[1]));
     if leaves {
         return true;
     }
     chain.windows(2).any(|w| {
-        printed.iter().any(|&(a, b)| {
-            point_seg_dist(w[0], a, b) < 0.5 || point_seg_dist(w[1], a, b) < 0.5
-        })
+        printed
+            .iter()
+            .any(|&(a, b)| point_seg_dist(w[0], a, b) < 0.5 || point_seg_dist(w[1], a, b) < 0.5)
     })
 }
 
+/// True when the whole segment stays in the solid, holes included.
+/// A boundary crossing rejects the segment; the midpoint must also land inside.
 fn segment_inside(solid: &[Loop], a: [f64; 2], b: [f64; 2]) -> bool {
     if solid.is_empty() {
         return false;
     }
-    for i in 0..=5 {
-        let t = i as f64 / 5.0;
-        let p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-        if !in_solid(solid, p[0], p[1]) {
-            return false;
+    if segment_crosses_boundary(solid, a, b) {
+        return false;
+    }
+    let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+    in_solid(solid, mid[0], mid[1])
+}
+
+fn segment_crosses_boundary(solid: &[Loop], a: [f64; 2], b: [f64; 2]) -> bool {
+    for loop_ in solid {
+        let n = loop_.len();
+        if n < 2 {
+            continue;
+        }
+        for i in 0..n {
+            let c = loop_[i];
+            let d = loop_[(i + 1) % n];
+            if segments_properly_cross(a, b, c, d) {
+                return true;
+            }
         }
     }
-    true
+    false
+}
+
+fn segments_properly_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
+    let o1 = orient(a, b, c);
+    let o2 = orient(a, b, d);
+    let o3 = orient(c, d, a);
+    let o4 = orient(c, d, b);
+    o1 * o2 < -1e-10 && o3 * o4 < -1e-10
+}
+
+fn orient(p: [f64; 2], q: [f64; 2], r: [f64; 2]) -> f64 {
+    (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
 }
 
 /// Slow unsupported spans, pin bridges, and raise the fan. The first layer is on the bed.
@@ -1639,7 +1723,8 @@ fn point_seg_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
 /// sharp convex corner, the corner hide wins and the path is left alone. On a
 /// smooth seam the start ramps from `start_height` up to the layer Z over
 /// `length`, the body stays at full height, and the end retraces that same
-/// length while ramping Z and flow back down. The first layer, open paths,
+/// length at full Z while flow ramps back down. The second pass never drops
+/// below plastic the start ramp already deposited. The first layer, open paths,
 /// bridges, overhang spans, and loops shorter than 8 mm are skipped. Tiny
 /// loops that clear 8 mm clamp the scarf to 45% of the perimeter so the two
 /// ramps cannot wrap around each other.
@@ -1731,7 +1816,7 @@ fn scarf_path(path: &mut Extrusion, length: f64, steps: u32, h0: f64, f0: f64) {
     for i in 1..=steps {
         let t = i as f64 / steps as f64;
         out.push(point_along(pts, scarf * t));
-        z.push((1.0 - (1.0 - h0) * t).clamp(0.0, 1.0));
+        z.push(1.0);
         flow.push((1.0 - (1.0 - f0) * t).clamp(0.05, 1.0));
     }
     path.points = out;
