@@ -1221,9 +1221,11 @@ fn assert_hop_returns(gcode: &str) {
 #[test]
 fn feature_times_match_total_and_baseline_skip_is_real() {
     let mesh = cube();
-    let mut settings = SliceSettings::default();
-    settings.baseline = false;
-    settings.compare = true;
+    let settings = SliceSettings {
+        baseline: false,
+        compare: true,
+        ..SliceSettings::default()
+    };
     let response = slice_configured(
         &mesh,
         &BlendMode::Single {

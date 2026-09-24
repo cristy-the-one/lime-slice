@@ -1296,13 +1296,12 @@ fn build_layer(
         };
     }
     let mut paths = Vec::new();
-    let note;
     let skirt_src = if index == 0 {
         boolean_union(contours, &boolean_union(support, interface))
     } else {
         Vec::new()
     };
-    match blend {
+    let note = match blend {
         BlendMode::ByRegion { axis, at_mm } => {
             let (low_rect, high_rect) = split_rects(*axis, *at_mm, min, max, contours);
             let tough = resolve(pure(StrategyId::Toughness), settings);
@@ -1335,9 +1334,9 @@ fn build_layer(
             paths.extend(plan_region(
                 &high, &speed, line_width, &mut hint, &high_feat,
             ));
-            note = format!(
+            format!(
                 "region low=toughness high=speed split {at_mm:.2} h={height:.3}"
-            );
+            )
         }
         other => {
             let resolved = resolve(
@@ -1373,7 +1372,7 @@ fn build_layer(
             paths.extend(plan_region(
                 contours, &resolved, line_width, &mut hint, &feat,
             ));
-            note = format!(
+            format!(
                 "{} walls={} infill={:.0}% {} {:.0}mm/s h={:.3}",
                 resolved.id.as_str(),
                 resolved.walls,
@@ -1381,9 +1380,9 @@ fn build_layer(
                 pattern_label(&resolved),
                 resolved.print_speed,
                 height
-            );
+            )
         }
-    }
+    };
     Job {
         index,
         z,

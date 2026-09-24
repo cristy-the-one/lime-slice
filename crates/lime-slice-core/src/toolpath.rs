@@ -213,7 +213,7 @@ pub fn plan_region(
     {
         let infill = build_infill(&infill_loops, strategy, line_width, features);
         let every = infill_every(strategy, features);
-        if every > 1 && features.layer_index % every != 0 {
+        if every > 1 && !features.layer_index.is_multiple_of(every) {
             return paths;
         }
         let kind = infill_kind(strategy, features.shell);
