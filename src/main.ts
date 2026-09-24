@@ -13,6 +13,7 @@ interface PreviewPath {
   kind: string;
   strategy: string;
   pts: [number, number][];
+  zs?: number[];
 }
 interface PreviewLayer {
   index: number;
@@ -42,7 +43,14 @@ interface SliceResponse {
     maxY: number;
     notes: string[];
   };
-  estimate?: { seconds: number; filamentMm: number; filamentG: number; arcMoves: number };
+  estimate?: {
+    seconds: number;
+    filamentMm: number;
+    filamentG: number;
+    arcMoves: number;
+    scarfedLoops?: number;
+    meanScarfMm?: number;
+  };
   score?: { speed: number; efficiency: number; toughness: number };
   gcode: string;
   layers: PreviewLayer[];
@@ -85,6 +93,9 @@ const state: {
   arcFit: boolean;
   travelOpt: boolean;
   overhangControl: boolean;
+  scarfSeam: "blend" | "off" | "outer" | "all";
+  scarfLength: number;
+  scarfSteps: number;
   viewMode: "flat" | "split" | "solid";
 } = {
   mesh: null,
@@ -117,6 +128,9 @@ const state: {
   arcFit: true,
   travelOpt: true,
   overhangControl: true,
+  scarfSeam: "blend",
+  scarfLength: 10,
+  scarfSteps: 8,
   viewMode: "split",
 };
 
@@ -221,6 +235,16 @@ function renderChrome() {
     <label class="check"><input id="arcs" type="checkbox" ${state.arcFit ? "checked" : ""}/> Arc fit (G2/G3)</label>
     <label class="check"><input id="travelopt" type="checkbox" ${state.travelOpt ? "checked" : ""}/> Travel and seam</label>
     <label class="check"><input id="overhang" type="checkbox" ${state.overhangControl ? "checked" : ""}/> Overhang and bridges</label>
+    <label class="field">Scarf seam
+      <select id="scarf">
+        ${opt("blend", "Blend default", state.scarfSeam)}
+        ${opt("off", "Off", state.scarfSeam)}
+        ${opt("outer", "Outer walls", state.scarfSeam)}
+        ${opt("all", "Outer and inner", state.scarfSeam)}
+      </select>
+    </label>
+    ${state.scarfSeam === "off" ? "" : `<label class="field">Scarf length mm<input id="scarflen" type="number" min="1" max="30" step="1" value="${state.scarfLength}" /></label>
+    <label class="field">Scarf steps<input id="scarfsteps" type="number" min="2" max="32" step="1" value="${state.scarfSteps}" /></label>`}
     <div class="meta" style="margin-top:8px">Triangles <b>${result ? result.mesh.triangles : "—"}</b><br>Bounds <b>${bounds}</b></div>
     ${state.error ? `<div class="banner" style="margin-top:10px">${escapeHtml(state.error)}</div>` : ""}
     ${result ? `<div class="banner ${result.sanity.ok ? "ok" : ""}" style="margin-top:10px">${result.sanity.ok ? "G-code checks passed" : "G-code checks failed"}<br>${escapeHtml(result.sanity.notes.join(" ") || `${result.sanity.layers} layers · E ${result.sanity.finalE.toFixed(1)} mm · path ${result.sanity.extrusionLengthMm.toFixed(0)} mm`)}</div>` : ""}
@@ -231,7 +255,7 @@ function renderChrome() {
     <div class="stack">
       <div class="strategy speed"><h3>Speed</h3><p>2 walls · lightning infill · 140 mm/s · volumetric cap · nearest seam</p></div>
       <div class="strategy mid"><h3>Efficiency</h3><p>Weight mix · lines then grid · filament score from the estimator</p></div>
-      <div class="strategy tough"><h3>Toughness</h3><p>5 walls · 48% gyroid · 45 mm/s · aligned seam · strength pattern</p></div>
+      <div class="strategy tough"><h3>Toughness</h3><p>5 walls · 48% gyroid · 45 mm/s · aligned seam · scarf on smooth walls</p></div>
     </div>
     <h2>Blend</h2>
     <div class="stack">
@@ -366,6 +390,16 @@ function bindChrome() {
   });
   document.querySelector("#overhang")?.addEventListener("change", (ev) => {
     state.overhangControl = (ev.target as HTMLInputElement).checked;
+  });
+  document.querySelector("#scarf")?.addEventListener("change", (ev) => {
+    state.scarfSeam = (ev.target as HTMLSelectElement).value as typeof state.scarfSeam;
+    renderChrome();
+  });
+  document.querySelector("#scarflen")?.addEventListener("change", (ev) => {
+    state.scarfLength = Number((ev.target as HTMLInputElement).value) || 10;
+  });
+  document.querySelector("#scarfsteps")?.addEventListener("change", (ev) => {
+    state.scarfSteps = Number((ev.target as HTMLInputElement).value) || 8;
   });
   document.querySelector("#blendKind")?.addEventListener("change", (ev) => {
     state.blendKind = (ev.target as HTMLSelectElement).value as Blend["mode"];
@@ -518,6 +552,11 @@ async function runSlice() {
       arcFit: state.arcFit,
       travelOpt: state.travelOpt,
       overhangControl: state.overhangControl,
+      scarfSeam: state.scarfSeam,
+      scarfLength: state.scarfLength,
+      scarfSteps: state.scarfSteps,
+      scarfStartHeight: 0.15,
+      scarfStartFlow: 0.55,
     };
     state.result = await slice(payload);
     if (state.result.error) throw new Error(state.result.error);

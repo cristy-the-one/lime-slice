@@ -98,6 +98,10 @@ pub fn emit_gcode(
                 profile.filament_diameter,
                 path.accel,
                 fit,
+                &path.z_frac,
+                &path.flow_frac,
+                layer.z,
+                layer.height,
             );
         }
     }
@@ -332,16 +336,24 @@ impl Writer {
         filament_d: f64,
         accel: f64,
         arc_fit: bool,
+        z_frac: &[f64],
+        flow_frac: &[f64],
+        layer_z: f64,
+        nominal_h: f64,
     ) {
         if points.len() < 2 {
             return;
         }
+        let scarfed = z_frac.len() == points.len() && flow_frac.len() == points.len();
+        if scarfed {
+            self.set_z(nozzle_z(layer_z, nominal_h, z_frac[0]));
+        }
         let mut i = 0usize;
         while i + 1 < points.len() {
             let mut end = i + 1;
-            if arc_fit && i + 3 < points.len() {
+            if arc_fit && i + 3 < points.len() && span_planar(z_frac, flow_frac, i, i + 4) {
                 let mut j = i + 3;
-                while j < points.len() && j - i <= 32 {
+                while j < points.len() && j - i <= 32 && span_planar(z_frac, flow_frac, i, j + 1) {
                     if fit_arc(&points[i..=j], 0.07).is_some() {
                         end = j;
                         j += 1;
@@ -350,17 +362,49 @@ impl Writer {
                     }
                 }
             }
-            if end >= i + 3 {
+            if end >= i + 3 && span_planar(z_frac, flow_frac, i, end + 1) {
                 if let Some(arc) = fit_arc(&points[i..=end], 0.07) {
-                    self.arc(arc, speed, width, layer_h, flow, filament_d, accel);
+                    let h = if scarfed {
+                        layer_h * z_frac[i].clamp(0.0, 1.0)
+                    } else {
+                        layer_h
+                    };
+                    self.arc(arc, speed, width, h, flow, filament_d, accel);
                     i = end;
                     continue;
                 }
             }
             let p = points[i + 1];
-            self.extrude(p[0], p[1], speed, width, layer_h, flow, filament_d, accel);
+            let (h, seg_flow, z) = if scarfed {
+                let z0 = z_frac[i].clamp(0.0, 1.0);
+                let z1 = z_frac[i + 1].clamp(0.0, 1.0);
+                let f0 = flow_frac[i].clamp(0.0, 2.0);
+                let f1 = flow_frac[i + 1].clamp(0.0, 2.0);
+                (
+                    nominal_h * 0.5 * (z0 + z1),
+                    flow * 0.5 * (f0 + f1),
+                    Some(nozzle_z(layer_z, nominal_h, z1)),
+                )
+            } else {
+                (layer_h, flow, None)
+            };
+            self.extrude(p[0], p[1], speed, width, h, seg_flow, filament_d, accel, z);
             i += 1;
         }
+        if scarfed {
+            self.set_z(layer_z);
+        }
+    }
+
+    fn set_z(&mut self, z: f64) {
+        if (z - self.z).abs() < 5e-4 {
+            return;
+        }
+        let dz = (z - self.z).abs();
+        let f = (120.0_f64 * 60.0) as i32;
+        self.out.push_str(&format!("G1 Z{z:.3} F{f}\n"));
+        self.time_s += dz / 120.0;
+        self.z = z;
     }
 
     fn arc(
@@ -399,18 +443,35 @@ impl Writer {
         flow: f64,
         filament_d: f64,
         accel: f64,
+        z: Option<f64>,
     ) {
         self.unretract();
         let d = hypot(x - self.x, y - self.y);
         if d < 1e-4 {
+            if let Some(z) = z {
+                self.set_z(z);
+            }
             return;
         }
-        let bead = width * layer_h * flow;
+        let bead = width * layer_h.max(0.0) * flow.max(0.0);
         let fil = std::f64::consts::PI * (filament_d * 0.5).powi(2);
         self.e += d * bead / fil;
         let f = (speed.max(5.0) * 60.0).round() as i32;
-        self.out
-            .push_str(&format!("G1 X{:.3} Y{:.3} E{:.5} F{f}\n", x, y, self.e));
+        if let Some(z) = z {
+            if (z - self.z).abs() > 5e-4 {
+                self.out.push_str(&format!(
+                    "G1 X{:.3} Y{:.3} Z{:.3} E{:.5} F{f}\n",
+                    x, y, z, self.e
+                ));
+                self.z = z;
+            } else {
+                self.out
+                    .push_str(&format!("G1 X{:.3} Y{:.3} E{:.5} F{f}\n", x, y, self.e));
+            }
+        } else {
+            self.out
+                .push_str(&format!("G1 X{:.3} Y{:.3} E{:.5} F{f}\n", x, y, self.e));
+        }
         self.note_motion([x, y], [x - self.x, y - self.y], speed, accel, d);
         self.extrusion_moves += 1;
         self.extrusion_length_mm += d;
@@ -501,6 +562,31 @@ impl Writer {
 
 fn hypot(x: f64, y: f64) -> f64 {
     x.hypot(y)
+}
+
+fn nozzle_z(layer_z: f64, layer_h: f64, frac: f64) -> f64 {
+    let frac = frac.clamp(0.0, 1.0);
+    let z = layer_z - layer_h * (1.0 - frac);
+    z.clamp(layer_z - layer_h, layer_z)
+}
+
+/// A span can be a planar arc only when Z and flow stay constant across it.
+fn span_planar(z_frac: &[f64], flow_frac: &[f64], start: usize, end_exclusive: usize) -> bool {
+    if z_frac.is_empty() && flow_frac.is_empty() {
+        return true;
+    }
+    if z_frac.is_empty() || flow_frac.is_empty() {
+        return false;
+    }
+    let z0 = z_frac[start];
+    let f0 = flow_frac[start];
+    (start..end_exclusive).all(|k| {
+        z_frac
+            .get(k)
+            .zip(flow_frac.get(k))
+            .map(|(z, f)| (z - z0).abs() < 1e-3 && (f - f0).abs() < 1e-3)
+            .unwrap_or(false)
+    })
 }
 
 fn limit_speed(speed: f64, width: f64, height: f64, flow: f64, max_vol: f64) -> f64 {

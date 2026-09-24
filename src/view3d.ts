@@ -5,6 +5,7 @@ export interface ViewPath {
   kind: string;
   strategy: string;
   pts: [number, number][];
+  zs?: number[];
 }
 
 export interface ViewLayer {
@@ -213,9 +214,13 @@ function collect(layer: ViewLayer, cx: number, cy: number, travelOnly: boolean) 
     if (isTravel !== travelOnly || path.pts.length < 2) continue;
     const rgb = hexRgb(colorFor(path));
     for (let i = 1; i < path.pts.length; i++) {
-      pushPt(pos, path.pts[i - 1], z, cx, cy);
-      pushPt(pos, path.pts[i], z, cx, cy);
-      color.push(rgb[0], rgb[1], rgb[2], rgb[0], rgb[1], rgb[2]);
+      const z0 = path.zs && path.zs.length === path.pts.length ? path.zs[i - 1] : z;
+      const z1 = path.zs && path.zs.length === path.pts.length ? path.zs[i] : z;
+      pushPt(pos, path.pts[i - 1], z0, cx, cy);
+      pushPt(pos, path.pts[i], z1, cx, cy);
+      const c0 = scarfTint(rgb, z0, z, layer.height);
+      const c1 = scarfTint(rgb, z1, z, layer.height);
+      color.push(c0[0], c0[1], c0[2], c1[0], c1[1], c1[2]);
     }
   }
   if (pos.length === 0) {
@@ -242,6 +247,21 @@ function colorFor(path: ViewPath): string {
   if (path.kind === "top") return tough ? "#8fd9c8" : "#e7b34a";
   if (path.kind === "solid") return tough ? "#1b7f76" : "#c9842a";
   return tough ? "#1b7f76" : "#a56d12";
+}
+
+function scarfTint(
+  rgb: [number, number, number],
+  z: number,
+  layerZ: number,
+  height: number,
+): [number, number, number] {
+  const drop = height > 1e-6 ? (layerZ - z) / height : 0;
+  const t = Math.max(0, Math.min(1, drop));
+  return [
+    rgb[0] + (1 - rgb[0]) * t,
+    rgb[1] + (1 - rgb[1]) * t,
+    rgb[2] + (1 - rgb[2]) * t,
+  ];
 }
 
 function hexRgb(hex: string): [number, number, number] {

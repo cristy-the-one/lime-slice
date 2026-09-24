@@ -92,6 +92,50 @@ pub enum SeamMode {
     Aligned,
 }
 
+/// Where a scarf joint replaces a butt seam.
+///
+/// `Blend` follows the resolved strategy: toughness (and a weight mix at or
+/// above 50%) scarfs outer walls, speed and light efficiency mixes do not.
+/// A sharp convex corner still keeps the corner seam; the scarf is only
+/// applied when that corner is absent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScarfSeam {
+    Blend,
+    Off,
+    Outer,
+    All,
+}
+
+impl Default for ScarfSeam {
+    fn default() -> Self {
+        ScarfSeam::Blend
+    }
+}
+
+impl ScarfSeam {
+    pub fn parse(name: &str) -> Result<Self, String> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "blend" | "auto" | "default" => Ok(ScarfSeam::Blend),
+            "off" | "none" | "false" => Ok(ScarfSeam::Off),
+            "outer" => Ok(ScarfSeam::Outer),
+            "all" | "walls" => Ok(ScarfSeam::All),
+            other => Err(format!(
+                "unknown scarf seam '{other}' (use blend, off, outer, or all)"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ScarfSeam::Blend => "blend",
+            ScarfSeam::Off => "off",
+            ScarfSeam::Outer => "outer",
+            ScarfSeam::All => "all",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ResolvedStrategy {
     pub id: StrategyId,
@@ -126,6 +170,8 @@ pub struct ResolvedStrategy {
     pub solid_accel: f64,
     pub top_accel: f64,
     pub travel_accel: f64,
+    /// Scarf used when the slice knob is `Blend`. Speed is off; toughness is outer.
+    pub scarf: ScarfSeam,
 }
 
 pub fn pure(id: StrategyId) -> ResolvedStrategy {
@@ -158,6 +204,7 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             solid_accel: 3500.0,
             top_accel: 3000.0,
             travel_accel: 5500.0,
+            scarf: ScarfSeam::Off,
         },
         StrategyId::Toughness => ResolvedStrategy {
             id,
@@ -187,6 +234,7 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             solid_accel: 750.0,
             top_accel: 550.0,
             travel_accel: 1200.0,
+            scarf: ScarfSeam::Outer,
         },
     }
 }
@@ -250,6 +298,11 @@ pub fn mix(toughness: f64) -> ResolvedStrategy {
         solid_accel: lerp(speed.solid_accel, tough.solid_accel),
         top_accel: lerp(speed.top_accel, tough.top_accel),
         travel_accel: lerp(speed.travel_accel, tough.travel_accel),
+        scarf: if t >= 0.5 {
+            ScarfSeam::Outer
+        } else {
+            ScarfSeam::Off
+        },
     }
 }
 
@@ -261,6 +314,7 @@ pub fn classicize(mut strategy: ResolvedStrategy) -> ResolvedStrategy {
     strategy.lightning_range_mm = 0.0;
     strategy.infill_combine = 1;
     strategy.feature_speeds = false;
+    strategy.scarf = ScarfSeam::Off;
     strategy
 }
 
