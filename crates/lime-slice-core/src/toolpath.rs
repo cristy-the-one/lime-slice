@@ -226,11 +226,7 @@ pub fn plan_region(
         && (bottom || infill_kept(strategy, features))
     {
         let infill = if bottom {
-            serpentine(scan_angle(
-                &infill_loops,
-                line_width,
-                std::f64::consts::FRAC_PI_4,
-            ))
+            solid_fill(&infill_loops, line_width, std::f64::consts::FRAC_PI_4)
         } else {
             build_infill(&infill_loops, strategy, line_width, features)
         };
@@ -869,7 +865,53 @@ fn lightning(loops: &[Loop], spacing: f64) -> Vec<Vec<[f64; 2]>> {
             }
         }
     }
-    serpentine(segs)
+    // Weld shared nodes and short in-part gaps so each capped layer is one
+    // polyline. The gap is inside the part, so it does not cross a hole.
+    chain_ends(segs, spacing * 1.25, Some(loops))
+}
+
+/// Solid rectilinear in scan order. Alternate rows flip so the next chord
+/// starts beside the previous end, and that short link is extruded when it
+/// stays inside the region.
+fn solid_fill(loops: &[Loop], spacing: f64, angle: f64) -> Vec<Vec<[f64; 2]>> {
+    let rotated = rotate_loops(loops, -angle);
+    let chords = horizontal_chords(&rotated, spacing);
+    let mut paths: Vec<Vec<[f64; 2]>> = Vec::new();
+    let mut flip = false;
+    for (y, spans) in &chords {
+        let mut row: Vec<Vec<[f64; 2]>> = spans
+            .iter()
+            .map(|(x0, x1)| vec![rot([*x0, *y], angle), rot([*x1, *y], angle)])
+            .collect();
+        if flip {
+            for seg in &mut row {
+                seg.reverse();
+            }
+            row.reverse();
+        }
+        for seg in row {
+            let link = paths.last().and_then(|path| {
+                let end = *path.last().unwrap();
+                let gap = dist2(end, seg[0]).sqrt();
+                if gap <= spacing * 1.75 && (gap < 1e-4 || link_stays(loops, end, seg[0])) {
+                    Some(gap)
+                } else {
+                    None
+                }
+            });
+            if link.is_some() {
+                let path = paths.last_mut().unwrap();
+                if link.unwrap() >= 1e-4 {
+                    path.push(seg[0]);
+                }
+                path.extend(seg.into_iter().skip(1));
+            } else {
+                paths.push(seg);
+            }
+        }
+        flip = !flip;
+    }
+    paths
 }
 
 fn scan_angle(loops: &[Loop], spacing: f64, angle: f64) -> Vec<Vec<[f64; 2]>> {
@@ -928,33 +970,74 @@ fn horizontal_chords(loops: &[Loop], spacing: f64) -> Vec<(f64, Vec<(f64, f64)>)
 }
 
 fn serpentine(segments: Vec<Vec<[f64; 2]>>) -> Vec<Vec<[f64; 2]>> {
-    if segments.is_empty() {
-        return Vec::new();
-    }
-    // Group by approximate row (shared Y of the unrotated data is lost).
-    // Connect consecutive segments when their ends are close.
-    let mut paths: Vec<Vec<[f64; 2]>> = Vec::new();
-    for seg in segments {
-        if seg.len() < 2 {
-            continue;
-        }
-        let join = paths.last().and_then(|p| {
-            let end = *p.last().unwrap();
-            let start = seg[0];
-            let d2 = dist2(end, start);
-            if d2 < 16.0 && d2 > 1e-6 {
-                Some(d2)
-            } else {
-                None
+    chain_ends(segments, 4.0, None)
+}
+
+/// Greedily weld open segments into polylines, reversing either end.
+/// Gaps up to `join` are bridged. When `solid` is set, a bridge that leaves
+/// the region (a hole, or outside the part) is not taken.
+fn chain_ends(
+    segments: Vec<Vec<[f64; 2]>>,
+    join: f64,
+    solid: Option<&[Loop]>,
+) -> Vec<Vec<[f64; 2]>> {
+    let mut unused: Vec<Vec<[f64; 2]>> = segments.into_iter().filter(|s| s.len() >= 2).collect();
+    let mut out = Vec::new();
+    let join2 = join * join;
+    while let Some(mut path) = unused.pop() {
+        loop {
+            let end = *path.last().unwrap();
+            let start = path[0];
+            let mut best: Option<(usize, bool, bool, f64)> = None;
+            for (i, seg) in unused.iter().enumerate() {
+                let s0 = seg[0];
+                let s1 = *seg.last().unwrap();
+                for (at_end, tip) in [(true, end), (false, start)] {
+                    for (rev, other) in [(false, s0), (true, s1)] {
+                        let d2 = dist2(tip, other);
+                        if d2 > join2 {
+                            continue;
+                        }
+                        if d2 > 1e-8 {
+                            if let Some(loops) = solid {
+                                if !link_stays(loops, tip, other) {
+                                    continue;
+                                }
+                            }
+                        }
+                        if best.as_ref().map(|b| d2 < b.3).unwrap_or(true) {
+                            best = Some((i, rev, at_end, d2));
+                        }
+                    }
+                }
             }
-        });
-        if join.is_some() {
-            paths.last_mut().unwrap().extend(seg);
-        } else {
-            paths.push(seg);
+            let Some((i, rev, at_end, _)) = best else {
+                break;
+            };
+            let mut seg = unused.swap_remove(i);
+            // `rev` means the matched vertex is currently the segment's last point.
+            // Appending needs it at the front; prepending needs it at the back.
+            if at_end == rev {
+                seg.reverse();
+            }
+            if at_end {
+                if dist2(*path.last().unwrap(), seg[0]) < 1e-8 {
+                    path.extend(seg.into_iter().skip(1));
+                } else {
+                    path.extend(seg);
+                }
+            } else if dist2(path[0], *seg.last().unwrap()) < 1e-8 {
+                seg.pop();
+                seg.append(&mut path);
+                path = seg;
+            } else {
+                seg.append(&mut path);
+                path = seg;
+            }
         }
+        out.push(path);
     }
-    paths
+    out
 }
 
 fn gyroid(loops: &[Loop], spacing: f64, phase_bias: f64) -> Vec<Vec<[f64; 2]>> {
@@ -1223,6 +1306,56 @@ fn octagon(c: [f64; 2], r: f64) -> Vec<[f64; 2]> {
         .collect();
     pts.push(pts[0]);
     pts
+}
+
+/// Carry the nozzle across layers: start this layer's closed seam nearest the
+/// previous layer's end, and retract that join only when it leaves the part.
+pub fn seat_layer_start(
+    paths: &mut [Extrusion],
+    solid: &[Loop],
+    combing: bool,
+    inset: f64,
+    from: Option<[f64; 2]>,
+) -> Option<[f64; 2]> {
+    let inset_loops = if combing && !solid.is_empty() {
+        offset_loops(solid, -inset.abs())
+    } else {
+        Vec::new()
+    };
+    let mut cursor = from;
+    for path in paths.iter_mut() {
+        if path.points.is_empty() {
+            continue;
+        }
+        if let Some(from) = cursor {
+            if path.kind.is_closed() {
+                rotate_closed_to(&mut path.points, from);
+            } else if path.points.len() >= 2 {
+                let end = *path.points.last().unwrap();
+                if dist2(from, end) + 1e-9 < dist2(from, path.points[0]) {
+                    path.points.reverse();
+                }
+            }
+            if let Some(start) = path.points.first().copied() {
+                match comb_between(solid, &inset_loops, from, start, combing) {
+                    Comb::Clear => path.retract_mm = 0.0,
+                    Comb::Routed(via) => {
+                        path.lead_in = via;
+                        path.retract_mm = 0.0;
+                    }
+                    Comb::Blocked => {
+                        if !segment_inside(solid, from, start) {
+                            path.retract_min_travel = 0.0;
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(end) = path.points.last().copied() {
+            cursor = Some(end);
+        }
+    }
+    cursor
 }
 
 /// Reorder each feature group and slide nearest seams toward the nozzle.
@@ -1518,6 +1651,27 @@ fn chain_crosses(chain: &[[f64; 2]], solid: &[Loop], printed: &[([f64; 2], [f64;
             .iter()
             .any(|&(a, b)| point_seg_dist(w[0], a, b) < 0.5 || point_seg_dist(w[1], a, b) < 0.5)
     })
+}
+
+/// Short infill link: reject a real boundary crossing, but allow a U-turn that
+/// rides the contour (the midpoint sits on the edge, just inside the part).
+fn link_stays(solid: &[Loop], a: [f64; 2], b: [f64; 2]) -> bool {
+    if segment_crosses_boundary(solid, a, b) {
+        return false;
+    }
+    let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+    if in_solid(solid, mid[0], mid[1]) {
+        return true;
+    }
+    let Some((mn, mx)) = loop_bounds(solid) else {
+        return false;
+    };
+    let c = [(mn[0] + mx[0]) * 0.5, (mn[1] + mx[1]) * 0.5];
+    let vx = c[0] - mid[0];
+    let vy = c[1] - mid[1];
+    let len = vx.hypot(vy).max(1e-9);
+    let p = [mid[0] + vx / len * 0.05, mid[1] + vy / len * 0.05];
+    in_solid(solid, p[0], p[1])
 }
 
 /// True when the whole segment stays in the solid, holes included.

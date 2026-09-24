@@ -1350,7 +1350,6 @@ fn hole_crossings(gcode: &str) -> Vec<HoleCross> {
     let hole = [8.4, 8.4, 21.6, 21.6];
     let mut out = Vec::new();
     let mut layer_z = 0.0;
-    let mut z = 0.0;
     let mut e = 0.0;
     let mut retracted = false;
     let mut pos: Option<[f64; 2]> = None;
@@ -1374,7 +1373,6 @@ fn hole_crossings(gcode: &str) -> Vec<HoleCross> {
             for tok in rest.split_whitespace() {
                 if let Some(v) = tok.strip_prefix("Z:") {
                     layer_z = v.parse().unwrap();
-                    z = layer_z;
                 }
             }
             continue;
@@ -1401,8 +1399,7 @@ fn hole_crossings(gcode: &str) -> Vec<HoleCross> {
                 e_new = Some(v.parse::<f64>().unwrap());
             }
         }
-        if let Some(zn) = z_new {
-            z = zn;
+        if let Some(z) = z_new {
             if z > layer_z + 0.05 {
                 lift = true;
             }

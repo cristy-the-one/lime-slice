@@ -17,8 +17,8 @@ use crate::strategy::{
 use crate::support::{build_supports, SupportOpts, SupportStyle};
 use crate::toolpath::{
     apply_overhang, apply_scarf, apply_z_hop, boolean_union, clip_to_rect, offset_loops,
-    optimize_travel, plan_region, plan_skirt, plan_support, plan_tree_support, Extrusion,
-    PathFeatures, PathKind, ScarfParams, ShellBand,
+    optimize_travel, plan_region, plan_skirt, plan_support, plan_tree_support, seat_layer_start,
+    Extrusion, PathFeatures, PathKind, ScarfParams, ShellBand,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -925,7 +925,17 @@ fn plan(
         .collect();
     let mut prev_top = false;
     let mut jobs = jobs;
+    let mut layer_end: Option<[f64; 2]> = None;
     for (i, job) in jobs.iter_mut().enumerate() {
+        if settings.travel_opt {
+            layer_end = seat_layer_start(
+                &mut job.paths,
+                &contours[i],
+                settings.combing,
+                settings.line_width * 0.8,
+                layer_end,
+            );
+        }
         let infill = offset_loops(&contours[i], -settings.line_width * 2.2);
         apply_z_hop(
             &mut job.paths,
@@ -1085,7 +1095,7 @@ fn interior_remainings(
     settings: &SliceSettings,
     bands: &[crate::adaptive::LayerBand],
     roofs: &[f64],
-) -> (Vec<(u32, u32)>, Vec<(u32, u32)>) {
+) -> (Vec<InteriorSpan>, Vec<InteriorSpan>) {
     let shells_for = |pick: &dyn Fn(f64) -> ResolvedStrategy| -> Vec<ShellBand> {
         bands
             .iter()
@@ -1118,7 +1128,9 @@ fn strategy_at(blend: &BlendMode, z: f64) -> ResolvedStrategy {
     }
 }
 
-fn remaining_interior(shells: &[ShellBand]) -> Vec<(u32, u32)> {
+type InteriorSpan = (u32, u32);
+
+fn remaining_interior(shells: &[ShellBand]) -> Vec<InteriorSpan> {
     let n = shells.len();
     let mut out = vec![(0u32, 0u32); n];
     let mut i = 0;
@@ -1132,8 +1144,8 @@ fn remaining_interior(shells: &[ShellBand]) -> Vec<(u32, u32)> {
             j += 1;
         }
         let run = (j - i) as u32;
-        for k in i..j {
-            out[k] = (run - (k - i) as u32, run);
+        for (k, slot) in out.iter_mut().enumerate().take(j).skip(i) {
+            *slot = (run - (k - i) as u32, run);
         }
         i = j;
     }
@@ -1142,7 +1154,7 @@ fn remaining_interior(shells: &[ShellBand]) -> Vec<(u32, u32)> {
 
 /// One outer bead on the region cut. The low side snaps onto the plane; the high side drops its copy.
 fn merge_split_outers(
-    low: &mut Vec<Extrusion>,
+    low: &mut [Extrusion],
     high: &mut Vec<Extrusion>,
     axis: Axis,
     at: f64,
@@ -1298,9 +1310,7 @@ fn build_layer(
             merge_split_outers(&mut low_paths, &mut high_paths, *axis, *at_mm, line_width);
             paths.extend(low_paths);
             paths.extend(high_paths);
-            note = format!(
-                "region low=toughness high=speed split {at_mm:.2} h={height:.3}"
-            );
+            note = format!("region low=toughness high=speed split {at_mm:.2} h={height:.3}");
         }
         other => {
             let resolved = resolve(
