@@ -913,3 +913,163 @@ fn pressure_advance_is_emitted_from_the_profile() {
     assert!(!old.gcode.contains("SET_PRESSURE_ADVANCE"));
     assert!(!old.gcode.contains("M900"));
 }
+
+fn tough_mode() -> BlendMode {
+    BlendMode::Single {
+        strategy: StrategyId::Toughness,
+    }
+}
+
+fn scarf_outer() -> SliceSettings {
+    SliceSettings {
+        scarf_seam: lime_slice_core::ScarfSeam::Outer,
+        ..SliceSettings::default()
+    }
+}
+
+#[test]
+fn scarf_ramps_a_smooth_wall_and_keeps_cube_corners() {
+    let post = cylinder(12.0, 6.0, 48);
+    let on = slice_configured(&post, &tough_mode(), &profile(), &scarf_outer()).unwrap();
+    assert!(on.sanity.ok, "{:?}", on.sanity.notes);
+    assert!(on.estimate.scarfed_loops > 0, "expected scarf overlaps");
+    assert!(
+        (on.estimate.mean_scarf_mm - 10.0).abs() < 0.2,
+        "mean overlap {}",
+        on.estimate.mean_scarf_mm
+    );
+    assert!(
+        on.estimate.max_seam_z_step_mm < 0.04,
+        "Z step {} should stay under one ramp increment",
+        on.estimate.max_seam_z_step_mm
+    );
+    assert!(
+        on.estimate.arc_moves > 0,
+        "body of the wall should still arc-fit"
+    );
+    assert_gcode_z_and_e(&on.gcode);
+    let first = on.gcode.split(";LAYER:1 ").next().unwrap_or("");
+    for line in first.lines() {
+        if !(line.starts_with("G0 ")
+            || line.starts_with("G1 ")
+            || line.starts_with("G2 ")
+            || line.starts_with("G3 "))
+        {
+            continue;
+        }
+        if let Some(z) = line.split_whitespace().find_map(|t| t.strip_prefix('Z')) {
+            let z: f64 = z.parse().unwrap();
+            assert!(z + 1e-3 >= 0.2, "first layer Z {z} ramped below the layer");
+        }
+    }
+
+    let cube_on = slice_configured(&cube(), &tough_mode(), &profile(), &scarf_outer()).unwrap();
+    assert_eq!(
+        cube_on.estimate.scarfed_loops, 0,
+        "a sharp corner keeps the corner seam"
+    );
+    assert_gcode_z_and_e(&cube_on.gcode);
+
+    let speed =
+        slice_configured(&post, &speed_mode(), &profile(), &SliceSettings::default()).unwrap();
+    assert_eq!(
+        speed.estimate.scarfed_loops, 0,
+        "speed blend leaves scarf off"
+    );
+
+    let classic_post = slice_configured(&post, &tough_mode(), &profile(), &classic()).unwrap();
+    assert_eq!(classic_post.estimate.scarfed_loops, 0);
+
+    let tiny = cylinder(1.0, 4.0, 24);
+    let tiny_on = slice_configured(&tiny, &tough_mode(), &profile(), &scarf_outer()).unwrap();
+    assert_eq!(
+        tiny_on.estimate.scarfed_loops, 0,
+        "loops under 8 mm stay butt seams"
+    );
+}
+
+#[test]
+fn scarf_all_includes_inner_walls_and_outer_does_not() {
+    let post = cylinder(12.0, 2.0, 32);
+    let outer = slice_configured(&post, &speed_mode(), &profile(), &scarf_outer()).unwrap();
+    let all = slice_configured(
+        &post,
+        &speed_mode(),
+        &profile(),
+        &SliceSettings {
+            scarf_seam: lime_slice_core::ScarfSeam::All,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    assert!(all.estimate.scarfed_loops > outer.estimate.scarfed_loops);
+    assert_gcode_z_and_e(&all.gcode);
+    assert_gcode_z_and_e(&outer.gcode);
+}
+
+/// Extrusion Z stays inside the current layer slab, and E only decreases on retracts.
+fn assert_gcode_z_and_e(gcode: &str) {
+    let mut layer_z = 0.0;
+    let mut layer_h = 0.2;
+    let mut in_layer = false;
+    let mut e = 0.0;
+    let mut saw = false;
+    for line in gcode.lines() {
+        if let Some(rest) = line.strip_prefix(";LAYER:") {
+            saw = true;
+            in_layer = true;
+            for tok in rest.split_whitespace() {
+                if let Some(v) = tok.strip_prefix("Z:") {
+                    layer_z = v.parse().expect("layer z");
+                }
+                if let Some(v) = tok.strip_prefix("H:") {
+                    layer_h = v.parse().expect("layer h");
+                }
+            }
+            continue;
+        }
+        if !(line.starts_with("G0 ")
+            || line.starts_with("G1 ")
+            || line.starts_with("G2 ")
+            || line.starts_with("G3 "))
+        {
+            continue;
+        }
+        let mut has_xy = false;
+        let mut z = None;
+        let mut e_new = None;
+        for tok in line.split_whitespace().skip(1) {
+            if let Some(v) = tok.strip_prefix('X') {
+                let _ = v;
+                has_xy = true;
+            } else if let Some(v) = tok.strip_prefix('Y') {
+                let _ = v;
+                has_xy = true;
+            } else if let Some(v) = tok.strip_prefix('Z') {
+                z = Some(v.parse::<f64>().expect("z"));
+            } else if let Some(v) = tok.strip_prefix('E') {
+                e_new = Some(v.parse::<f64>().expect("e"));
+            }
+        }
+        if in_layer {
+            if let Some(z) = z {
+                let lo = layer_z - layer_h - 1e-3;
+                if has_xy {
+                    assert!(
+                        (lo..=layer_z + 1e-3).contains(&z),
+                        "extrusion Z {z} outside [{lo}, {layer_z}] in {line}"
+                    );
+                } else {
+                    assert!(z + 1e-3 >= lo, "Z-only {z} below previous layer in {line}");
+                }
+            }
+        }
+        if let Some(en) = e_new {
+            if has_xy {
+                assert!(en + 1e-4 >= e, "E decreased on extrusion {line}");
+            }
+            e = en;
+        }
+    }
+    assert!(saw, "no layer markers");
+}

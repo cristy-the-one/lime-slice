@@ -1,7 +1,7 @@
 use clipper2::{EndType, FillRule, JoinType, Milli, Paths};
 
 use crate::contour::{in_solid, loop_bounds, orient_loops, signed_area, Loop};
-use crate::strategy::{InfillPattern, ResolvedStrategy, SeamMode, StrategyId};
+use crate::strategy::{InfillPattern, ResolvedStrategy, ScarfSeam, SeamMode, StrategyId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PathKind {
@@ -106,6 +106,15 @@ pub struct Extrusion {
     pub travel_accel: f64,
     /// Intermediate combing points visited before `points[0]`.
     pub lead_in: Vec<[f64; 2]>,
+    /// Nozzle height as a fraction of this layer's height, one entry per point.
+    /// Empty means the whole path sits on the layer Z. `0` is the previous layer top.
+    pub z_frac: Vec<f64>,
+    /// Flow multiplier per point. Empty means `flow` for every vertex.
+    pub flow_frac: Vec<f64>,
+    /// Length of the scarf overlap. `0` is a butt seam.
+    pub scarf_mm: f64,
+    /// Set when overhang splitting slowed this span. Scarf stays off those spans.
+    pub on_overhang: bool,
 }
 
 pub fn plan_region(
@@ -468,6 +477,10 @@ fn extrusion(
             strategy.accel
         },
         lead_in: Vec::new(),
+        z_frac: Vec::new(),
+        flow_frac: Vec::new(),
+        scarf_mm: 0.0,
+        on_overhang: false,
     };
     apply_feed(&mut path, strategy);
     path
@@ -1465,6 +1478,7 @@ fn paint(src: &Extrusion, points: Vec<[f64; 2]>, class: SpanClass) -> Extrusion 
             let scale = if angle >= 68.0 { 0.32 } else { 0.55 };
             path.speed = (path.speed * scale).max(16.0);
             path.fan = path.fan.max(if angle >= 68.0 { 255 } else { 220 });
+            path.on_overhang = true;
         }
     }
     path
@@ -1504,6 +1518,157 @@ fn point_seg_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     let t = ((p[0] - a[0]) * abx + (p[1] - a[1]) * aby) / len2;
     let t = t.clamp(0.0, 1.0);
     dist2(p, [a[0] + abx * t, a[1] + aby * t]).sqrt()
+}
+
+/// Spread a closed wall's seam into a scarf joint.
+///
+/// The loop still starts at the corner-or-nearest seam. When that vertex is a
+/// sharp convex corner, the corner hide wins and the path is left alone. On a
+/// smooth seam the start ramps from `start_height` up to the layer Z over
+/// `length`, the body stays at full height, and the end retraces that same
+/// length while ramping Z and flow back down. The first layer, open paths,
+/// bridges, overhang spans, and loops shorter than 8 mm are skipped. Tiny
+/// loops that clear 8 mm clamp the scarf to 45% of the perimeter so the two
+/// ramps cannot wrap around each other.
+pub fn apply_scarf(paths: &mut [Extrusion], params: &ScarfParams) {
+    if params.layer_index == 0 || params.length < 0.5 || params.steps < 2 {
+        return;
+    }
+    let h0 = params.start_height.clamp(0.0, 0.9);
+    let f0 = params.start_flow.clamp(0.05, 1.0);
+    for path in paths.iter_mut() {
+        if !scarf_kind(path, params.mode) || path.on_overhang || path.kind == PathKind::Bridge {
+            continue;
+        }
+        scarf_path(path, params.length, params.steps, h0, f0);
+    }
+}
+
+pub struct ScarfParams {
+    pub mode: ScarfSeam,
+    pub length: f64,
+    pub steps: u32,
+    pub start_height: f64,
+    pub start_flow: f64,
+    pub layer_index: usize,
+}
+
+fn scarf_kind(path: &Extrusion, requested: ScarfSeam) -> bool {
+    let mode = match requested {
+        ScarfSeam::Blend => path_blend_scarf(path.strategy),
+        other => other,
+    };
+    match mode {
+        ScarfSeam::Off | ScarfSeam::Blend => false,
+        ScarfSeam::Outer => matches!(path.kind, PathKind::Outer | PathKind::Wall),
+        ScarfSeam::All => matches!(
+            path.kind,
+            PathKind::Outer | PathKind::Inner | PathKind::Wall
+        ),
+    }
+}
+
+fn path_blend_scarf(strategy: StrategyId) -> ScarfSeam {
+    match strategy {
+        StrategyId::Toughness => ScarfSeam::Outer,
+        StrategyId::Speed => ScarfSeam::Off,
+    }
+}
+
+fn scarf_path(path: &mut Extrusion, length: f64, steps: u32, h0: f64, f0: f64) {
+    let pts = &path.points;
+    if pts.len() < 4 || dist2(pts[0], *pts.last().unwrap()) > 1e-8 {
+        return;
+    }
+    let ring_len = pts.len() - 1;
+    if seam_is_sharp(&pts[..ring_len]) {
+        return;
+    }
+    let perim = polyline_len(pts);
+    if perim < 8.0 {
+        return;
+    }
+    let scarf = length.min(perim * 0.45);
+    if scarf < 1.0 {
+        return;
+    }
+    let steps = (steps as usize).clamp(2, 64);
+    let mut out = Vec::new();
+    let mut z = Vec::new();
+    let mut flow = Vec::new();
+    for i in 0..=steps {
+        let t = i as f64 / steps as f64;
+        out.push(point_along(pts, scarf * t));
+        z.push(h0 + (1.0 - h0) * t);
+        flow.push(f0 + (1.0 - f0) * t);
+    }
+    let mut acc = 0.0;
+    for w in pts.windows(2) {
+        let seg = (dist2(w[0], w[1])).sqrt();
+        let next = acc + seg;
+        if acc >= scarf - 1e-4 && next < perim - 1e-4 {
+            push_unique(&mut out, &mut z, &mut flow, w[0], 1.0, 1.0);
+            push_unique(&mut out, &mut z, &mut flow, w[1], 1.0, 1.0);
+        } else if acc < scarf && next > scarf + 1e-4 && next < perim - 1e-4 {
+            push_unique(&mut out, &mut z, &mut flow, w[1], 1.0, 1.0);
+        }
+        acc = next;
+    }
+    push_unique(&mut out, &mut z, &mut flow, pts[0], 1.0, 1.0);
+    for i in 1..=steps {
+        let t = i as f64 / steps as f64;
+        out.push(point_along(pts, scarf * t));
+        z.push((1.0 - (1.0 - h0) * t).clamp(0.0, 1.0));
+        flow.push((1.0 - (1.0 - f0) * t).clamp(0.05, 1.0));
+    }
+    path.points = out;
+    path.z_frac = z;
+    path.flow_frac = flow;
+    path.scarf_mm = scarf;
+}
+
+fn seam_is_sharp(ring: &[[f64; 2]]) -> bool {
+    ring.len() >= 3 && turn_penalty(ring, 0) < 0.45
+}
+
+fn push_unique(
+    pts: &mut Vec<[f64; 2]>,
+    z: &mut Vec<f64>,
+    flow: &mut Vec<f64>,
+    p: [f64; 2],
+    zf: f64,
+    ff: f64,
+) {
+    if let Some(last) = pts.last() {
+        if dist2(*last, p) < 1e-10 {
+            return;
+        }
+    }
+    pts.push(p);
+    z.push(zf);
+    flow.push(ff);
+}
+
+fn point_along(pts: &[[f64; 2]], dist: f64) -> [f64; 2] {
+    if pts.len() < 2 || dist <= 0.0 {
+        return pts[0];
+    }
+    let mut left = dist;
+    for w in pts.windows(2) {
+        let seg = dist2(w[0], w[1]).sqrt();
+        if left <= seg || seg < 1e-12 {
+            if seg < 1e-12 {
+                continue;
+            }
+            let t = (left / seg).clamp(0.0, 1.0);
+            return [
+                w[0][0] + (w[1][0] - w[0][0]) * t,
+                w[0][1] + (w[1][1] - w[0][1]) * t,
+            ];
+        }
+        left -= seg;
+    }
+    *pts.last().unwrap()
 }
 
 fn polyline_len(pts: &[[f64; 2]]) -> f64 {

@@ -3,7 +3,9 @@ use std::path::PathBuf;
 
 use base64::Engine;
 use clap::{Parser, Subcommand};
-use lime_slice_core::{slice_request, Axis, BlendMode, SliceRequest, SliceSettings, StrategyId};
+use lime_slice_core::{
+    slice_request, Axis, BlendMode, ScarfSeam, SliceRequest, SliceSettings, StrategyId,
+};
 
 #[derive(Parser)]
 #[command(name = "lime-slice", about = "Lime Slice FDM slicer")]
@@ -75,6 +77,21 @@ enum Cmd {
         /// Per-feature speeds and accelerations.
         #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
         feature_speeds: bool,
+        /// Scarf joints: `blend` (strategy default), `off`, `outer`, or `all`.
+        #[arg(long, default_value = "blend")]
+        scarf_seam: String,
+        /// Scarf overlap length in millimetres.
+        #[arg(long, default_value_t = 10.0)]
+        scarf_length: f64,
+        /// Z and flow steps on each scarf ramp.
+        #[arg(long, default_value_t = 8)]
+        scarf_steps: u32,
+        /// Scarf start height as a fraction of the layer height.
+        #[arg(long, default_value_t = 0.15)]
+        scarf_start_height: f64,
+        /// Scarf start flow. Ramps to 1 at full layer height.
+        #[arg(long, default_value_t = 0.55)]
+        scarf_start_flow: f64,
         #[arg(short, long)]
         output: PathBuf,
     },
@@ -120,8 +137,14 @@ fn run() -> Result<(), String> {
             infill_combine,
             combing,
             feature_speeds,
+            scarf_seam,
+            scarf_length,
+            scarf_steps,
+            scarf_start_height,
+            scarf_start_flow,
             output,
         } => {
+            let scarf_seam = ScarfSeam::parse(&scarf_seam)?;
             let response = slice_file(
                 &input,
                 &blend_mode(
@@ -159,6 +182,11 @@ fn run() -> Result<(), String> {
                     infill_combine,
                     combing,
                     feature_speeds,
+                    scarf_seam,
+                    scarf_length,
+                    scarf_steps,
+                    scarf_start_height,
+                    scarf_start_flow,
                     ..SliceSettings::default()
                 },
             )?;
@@ -270,6 +298,12 @@ fn bench(input: &PathBuf) -> Result<(), String> {
             response.score.toughness,
             if response.sanity.ok { "ok" } else { "FAIL" }
         );
+        println!(
+            "  scarf loops {}  mean overlap {:.2} mm  max Z step {:.3} mm",
+            response.estimate.scarfed_loops,
+            response.estimate.mean_scarf_mm,
+            response.estimate.max_seam_z_step_mm
+        );
         if !response.sanity.ok {
             println!("  {}", response.sanity.notes.join("; "));
         }
@@ -341,6 +375,65 @@ fn bench(input: &PathBuf) -> Result<(), String> {
         straight.sanity.travel_length_mm,
         straight.sanity.retracts
     );
+    println!("scarf off vs outer (butt seam overlap is 0; max Z step is the ramp increment)");
+    println!(
+        "{:<14} {:>10} {:>10} {:>10} {:>10} {:>8} {:>8} {:>10} {:>10}",
+        "mode", "off s", "outer s", "off g", "outer g", "off arcs", "on arcs", "overlap", "z step"
+    );
+    for (name, mode) in [
+        (
+            "speed",
+            BlendMode::Single {
+                strategy: StrategyId::Speed,
+            },
+        ),
+        (
+            "toughness",
+            BlendMode::Single {
+                strategy: StrategyId::Toughness,
+            },
+        ),
+    ] {
+        let off = lime_slice_core::slice_configured(
+            &mesh,
+            &mode,
+            &Default::default(),
+            &SliceSettings {
+                scarf_seam: ScarfSeam::Off,
+                ..SliceSettings::default()
+            },
+        )?;
+        let on = lime_slice_core::slice_configured(
+            &mesh,
+            &mode,
+            &Default::default(),
+            &SliceSettings {
+                scarf_seam: ScarfSeam::Outer,
+                ..SliceSettings::default()
+            },
+        )?;
+        println!(
+            "{:<14} {:>10.1} {:>10.1} {:>10.2} {:>10.2} {:>8} {:>8} {:>10.2} {:>10.3}  {}",
+            name,
+            off.estimate.seconds,
+            on.estimate.seconds,
+            off.estimate.filament_g,
+            on.estimate.filament_g,
+            off.estimate.arc_moves,
+            on.estimate.arc_moves,
+            on.estimate.mean_scarf_mm,
+            on.estimate.max_seam_z_step_mm,
+            if off.sanity.ok && on.sanity.ok {
+                "ok"
+            } else {
+                "FAIL"
+            }
+        );
+        println!(
+            "  off slice {:.2} ms  outer slice {:.2} ms  scarfed loops {}",
+            off.core_ms, on.core_ms, on.estimate.scarfed_loops
+        );
+    }
     Ok(())
 }
 
@@ -432,6 +525,11 @@ fn slice_file(
         infill_combine: settings.infill_combine,
         combing: settings.combing,
         feature_speeds: settings.feature_speeds,
+        scarf_seam: settings.scarf_seam,
+        scarf_length: settings.scarf_length,
+        scarf_steps: settings.scarf_steps,
+        scarf_start_height: settings.scarf_start_height,
+        scarf_start_flow: settings.scarf_start_flow,
     })
 }
 

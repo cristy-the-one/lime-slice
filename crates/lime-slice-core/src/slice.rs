@@ -12,12 +12,13 @@ use crate::load::load_mesh;
 use crate::mesh::Mesh;
 use crate::strategy::{
     classicize, layer_weight, mix, pure, support_density, support_interface_density, Axis,
-    BlendMode, PrinterProfile, ResolvedStrategy, StrategyId,
+    BlendMode, PrinterProfile, ResolvedStrategy, ScarfSeam, StrategyId,
 };
 use crate::support::{build_supports, SupportOpts, SupportStyle};
 use crate::toolpath::{
-    apply_overhang, boolean_union, clip_to_rect, optimize_travel, plan_region, plan_skirt,
-    plan_support, plan_tree_support, Extrusion, PathFeatures, PathKind, ShellBand,
+    apply_overhang, apply_scarf, boolean_union, clip_to_rect, optimize_travel, plan_region,
+    plan_skirt, plan_support, plan_tree_support, Extrusion, PathFeatures, PathKind, ScarfParams,
+    ShellBand,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -78,6 +79,21 @@ pub struct SliceRequest {
     /// Per-feature speeds and accels. Default on.
     #[serde(default = "default_true")]
     pub feature_speeds: bool,
+    /// `blend` follows the strategy, or `off` / `outer` / `all`.
+    #[serde(default)]
+    pub scarf_seam: ScarfSeam,
+    /// Overlap length of a scarf joint, millimetres.
+    #[serde(default = "default_scarf_length")]
+    pub scarf_length: f64,
+    /// Discrete Z steps along each ramp.
+    #[serde(default = "default_scarf_steps")]
+    pub scarf_steps: u32,
+    /// Nozzle height at the scarf start, as a fraction of the layer height.
+    #[serde(default = "default_scarf_height")]
+    pub scarf_start_height: f64,
+    /// Flow multiplier at the scarf start. Ramps to 1 at full height.
+    #[serde(default = "default_scarf_flow")]
+    pub scarf_start_flow: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -100,6 +116,11 @@ pub struct SliceSettings {
     pub infill_combine: bool,
     pub combing: bool,
     pub feature_speeds: bool,
+    pub scarf_seam: ScarfSeam,
+    pub scarf_length: f64,
+    pub scarf_steps: u32,
+    pub scarf_start_height: f64,
+    pub scarf_start_flow: f64,
 }
 
 impl Default for SliceSettings {
@@ -123,6 +144,11 @@ impl Default for SliceSettings {
             infill_combine: true,
             combing: true,
             feature_speeds: true,
+            scarf_seam: ScarfSeam::Blend,
+            scarf_length: default_scarf_length(),
+            scarf_steps: default_scarf_steps(),
+            scarf_start_height: default_scarf_height(),
+            scarf_start_flow: default_scarf_flow(),
         }
     }
 }
@@ -173,6 +199,15 @@ impl SliceSettings {
             infill_combine: req.infill_combine && !req.classic,
             combing: req.combing && !req.classic,
             feature_speeds: req.feature_speeds && !req.classic,
+            scarf_seam: if req.classic {
+                ScarfSeam::Off
+            } else {
+                req.scarf_seam
+            },
+            scarf_length: req.scarf_length.clamp(0.5, 40.0),
+            scarf_steps: req.scarf_steps.clamp(2, 64),
+            scarf_start_height: req.scarf_start_height.clamp(0.0, 0.9),
+            scarf_start_flow: req.scarf_start_flow.clamp(0.05, 1.0),
         }
     }
 
@@ -205,7 +240,13 @@ impl SliceSettings {
         } else {
             "infill combine off"
         };
-        format!("{layers}; {supports}; {combine}")
+        let scarf = format!(
+            "scarf {} {:.1} mm / {} steps",
+            self.scarf_seam.as_str(),
+            self.scarf_length,
+            self.scarf_steps
+        );
+        format!("{layers}; {supports}; {combine}; {scarf}")
     }
 }
 
@@ -225,6 +266,22 @@ fn default_width() -> f64 {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_scarf_length() -> f64 {
+    10.0
+}
+
+fn default_scarf_steps() -> u32 {
+    8
+}
+
+fn default_scarf_height() -> f64 {
+    0.15
+}
+
+fn default_scarf_flow() -> f64 {
+    0.55
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -251,6 +308,12 @@ pub struct PrintEstimate {
     pub arc_moves: usize,
     pub travel_mm: f64,
     pub retracts: usize,
+    /// Closed walls that received a scarf. `0` means every seam is a butt joint.
+    pub scarfed_loops: usize,
+    /// Mean overlap length of those scarfs, millimetres.
+    pub mean_scarf_mm: f64,
+    /// Largest |ΔZ| between consecutive scarf vertices. `0` when no scarf was emitted.
+    pub max_seam_z_step_mm: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -311,6 +374,9 @@ pub struct PreviewPath {
     pub pts: Vec<[f64; 2]>,
     pub width: f64,
     pub speed: f64,
+    /// Absolute nozzle Z per preview point. Empty means the layer Z.
+    #[serde(default)]
+    pub zs: Vec<f64>,
 }
 
 /// Milliseconds to contour every layer with the Z index, then with a full triangle scan.
@@ -383,6 +449,7 @@ pub fn slice_configured(
         settings.infill_combine = false;
         settings.combing = false;
         settings.feature_speeds = false;
+        settings.scarf_seam = ScarfSeam::Off;
         settings.support_style = SupportStyle::Grid;
         settings.support_height_mult = 1.0;
     }
@@ -477,13 +544,19 @@ pub fn slice_configured(
         gcode: gcode.text,
         layers,
         blend: blend.describe(),
-        estimate: PrintEstimate {
-            seconds: gcode.print_time_s,
-            filament_mm: gcode.filament_mm,
-            filament_g: gcode.filament_g,
-            arc_moves: gcode.arc_moves,
-            travel_mm: gcode.travel_length_mm,
-            retracts: gcode.retracts,
+        estimate: {
+            let (scarfed_loops, mean_scarf_mm, max_seam_z_step_mm) = seam_metrics(&planned);
+            PrintEstimate {
+                seconds: gcode.print_time_s,
+                filament_mm: gcode.filament_mm,
+                filament_g: gcode.filament_g,
+                arc_moves: gcode.arc_moves,
+                travel_mm: gcode.travel_length_mm,
+                retracts: gcode.retracts,
+                scarfed_loops,
+                mean_scarf_mm,
+                max_seam_z_step_mm,
+            }
         },
         score: score_of(
             gcode.print_time_s,
@@ -523,7 +596,8 @@ fn structural_mm3(layers: &[LayerPaths]) -> f64 {
                     } else {
                         layer.height
                     };
-                    len * path.width * h * path.strength * path.flow
+                    let (z_scale, flow_scale) = scarf_scales(path);
+                    len * path.width * h * z_scale * path.strength * path.flow * flow_scale
                 })
                 .sum::<f64>()
         })
@@ -557,15 +631,18 @@ fn preview_of(layers: &[LayerPaths]) -> Vec<PreviewLayer> {
                             pts,
                             width: 0.0,
                             speed: path.travel_speed,
+                            zs: Vec::new(),
                         });
                     }
                 }
+                let (pts, zs) = decimate_path(&path.points, &path.z_frac, layer.z, layer.height);
                 paths.push(PreviewPath {
                     kind: path.kind.as_str().into(),
                     strategy: path.strategy.as_str().into(),
-                    pts: decimate(&path.points),
+                    pts,
                     width: path.width,
                     speed: path.speed,
+                    zs,
                 });
                 cursor = path.points.last().copied();
             }
@@ -587,22 +664,91 @@ fn preview_of(layers: &[LayerPaths]) -> Vec<PreviewLayer> {
         .collect()
 }
 
-fn decimate(pts: &[[f64; 2]]) -> Vec<[f64; 2]> {
+fn decimate_path(
+    pts: &[[f64; 2]],
+    z_frac: &[f64],
+    layer_z: f64,
+    layer_h: f64,
+) -> (Vec<[f64; 2]>, Vec<f64>) {
+    let z_at = |i: usize| {
+        z_frac
+            .get(i)
+            .map(|f| layer_z - layer_h * (1.0 - f.clamp(0.0, 1.0)))
+    };
     if pts.len() <= 2 {
-        return pts.to_vec();
+        let zs = (0..pts.len()).filter_map(z_at).collect::<Vec<_>>();
+        let zs = if zs.len() == pts.len() {
+            zs
+        } else {
+            Vec::new()
+        };
+        return (pts.to_vec(), zs);
     }
-    let mut out = vec![pts[0]];
-    for p in pts.iter().skip(1) {
-        let last = *out.last().unwrap();
-        if dist2(last, *p) >= 0.04 * 0.04 {
-            out.push(*p);
+    let mut keep = vec![0usize];
+    for i in 1..pts.len() {
+        let last = pts[*keep.last().unwrap()];
+        if dist2(last, pts[i]) >= 0.04 * 0.04 {
+            keep.push(i);
         }
     }
-    let end = *pts.last().unwrap();
-    if dist2(*out.last().unwrap(), end) > 1e-8 {
-        out.push(end);
+    if *keep.last().unwrap() != pts.len() - 1 {
+        keep.push(pts.len() - 1);
     }
-    out
+    let out: Vec<[f64; 2]> = keep.iter().map(|i| pts[*i]).collect();
+    let zs: Vec<f64> = keep.iter().filter_map(|i| z_at(*i)).collect();
+    let zs = if zs.len() == out.len() {
+        zs
+    } else {
+        Vec::new()
+    };
+    (out, zs)
+}
+
+fn seam_metrics(layers: &[LayerPaths]) -> (usize, f64, f64) {
+    let mut n = 0usize;
+    let mut sum = 0.0;
+    let mut max_step = 0.0f64;
+    for layer in layers {
+        for path in &layer.paths {
+            if path.scarf_mm <= 0.0 {
+                continue;
+            }
+            n += 1;
+            sum += path.scarf_mm;
+            for w in path.z_frac.windows(2) {
+                max_step = max_step.max((w[1] - w[0]).abs() * layer.height);
+            }
+        }
+    }
+    let mean = if n == 0 { 0.0 } else { sum / n as f64 };
+    (n, mean, max_step)
+}
+
+fn scarf_scales(path: &Extrusion) -> (f64, f64) {
+    if path.z_frac.len() != path.points.len() || path.points.len() < 2 {
+        return (1.0, 1.0);
+    }
+    let mut len = 0.0;
+    let mut z_acc = 0.0;
+    let mut f_acc = 0.0;
+    for i in 0..path.points.len() - 1 {
+        let dx = path.points[i + 1][0] - path.points[i][0];
+        let dy = path.points[i + 1][1] - path.points[i][1];
+        let seg = dx.hypot(dy);
+        let z = 0.5 * (path.z_frac[i] + path.z_frac[i + 1]).clamp(0.0, 1.0);
+        let f = if path.flow_frac.len() == path.points.len() {
+            0.5 * (path.flow_frac[i] + path.flow_frac[i + 1]).clamp(0.0, 2.0)
+        } else {
+            1.0
+        };
+        len += seg;
+        z_acc += seg * z;
+        f_acc += seg * f;
+    }
+    if len < 1e-6 {
+        return (1.0, 1.0);
+    }
+    (z_acc / len, f_acc / len)
 }
 
 fn dist2(a: [f64; 2], b: [f64; 2]) -> f64 {
@@ -701,6 +847,19 @@ fn plan(
                     &contours[i],
                     settings.combing,
                     settings.line_width * 0.8,
+                );
+            }
+            if settings.scarf_seam != ScarfSeam::Off {
+                apply_scarf(
+                    &mut job.paths,
+                    &ScarfParams {
+                        mode: settings.scarf_seam,
+                        length: settings.scarf_length,
+                        steps: settings.scarf_steps,
+                        start_height: settings.scarf_start_height,
+                        start_flow: settings.scarf_start_flow,
+                        layer_index: band.index,
+                    },
                 );
             }
             job
