@@ -115,6 +115,41 @@ enum Cmd {
         #[arg(long, default_value_t = 43118)]
         port: u16,
     },
+    /// Calibration prints.
+    Calibrate {
+        #[command(subcommand)]
+        kind: CalibrateCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum CalibrateCmd {
+    /// Pressure-advance tower with a slow-fast-slow line in each band.
+    Pa {
+        /// `klipper` emits SET_PRESSURE_ADVANCE. `marlin` emits M900 K.
+        #[arg(long, default_value = "klipper")]
+        firmware: String,
+        #[arg(long, default_value_t = 0.0)]
+        start: f64,
+        #[arg(long, default_value_t = 0.08)]
+        end: f64,
+        #[arg(long, default_value_t = 0.01)]
+        step: f64,
+        #[arg(long, default_value_t = 0.2)]
+        layer_height: f64,
+        #[arg(long, default_value_t = 2.0)]
+        band_height: f64,
+        /// Slow feed. The default sits well under the volumetric cap.
+        #[arg(long, default_value_t = 40.0)]
+        slow: f64,
+        /// Fast feed. Capped by the printer volumetric limit so it still differs from slow.
+        #[arg(long, default_value_t = 200.0)]
+        fast: f64,
+        #[arg(long, default_value_t = 3000.0)]
+        accel: f64,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
 }
 
 fn main() {
@@ -226,6 +261,60 @@ fn run() -> Result<(), String> {
         }
         Cmd::Bench { input } => bench(&input),
         Cmd::Serve { port } => serve(port),
+        Cmd::Calibrate { kind } => calibrate(kind),
+    }
+}
+
+fn calibrate(kind: CalibrateCmd) -> Result<(), String> {
+    match kind {
+        CalibrateCmd::Pa {
+            firmware,
+            start,
+            end,
+            step,
+            layer_height,
+            band_height,
+            slow,
+            fast,
+            accel,
+            output,
+        } => {
+            let tower = lime_slice_core::pressure_advance_tower(&lime_slice_core::PaCalib {
+                firmware: lime_slice_core::PaFirmware::parse(&firmware)?,
+                start,
+                end,
+                step,
+                layer_height,
+                band_height,
+                slow_mm_s: slow,
+                fast_mm_s: fast,
+                accel,
+                ..lime_slice_core::PaCalib::default()
+            })?;
+            if let Some(parent) = output.parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            fs::write(&output, &tower.gcode).map_err(|e| e.to_string())?;
+            println!(
+                "PA {}  bands {}  K {:.4}..{:.4} step {:.4}  slow {:.1} fast {:.1} mm/s  E {:.1} mm",
+                firmware,
+                tower.bands.len(),
+                tower.bands.first().map(|b| b.k).unwrap_or(0.0),
+                tower.bands.last().map(|b| b.k).unwrap_or(0.0),
+                step,
+                tower.slow_mm_s,
+                tower.fast_mm_s,
+                tower.final_e
+            );
+            for band in &tower.bands {
+                println!(
+                    "  band {}  K {:.4}  Z {:.3}..{:.3}",
+                    band.index, band.k, band.z0, band.z1
+                );
+            }
+            println!("wrote {}", output.display());
+            Ok(())
+        }
     }
 }
 
@@ -476,6 +565,17 @@ fn serve(port: u16) -> Result<(), String> {
             (204, String::new())
         } else if method == "GET" && url.starts_with("/api/health") {
             (200, r#"{"ok":true}"#.into())
+        } else if method == "POST" && url.starts_with("/api/calibrate/pa") {
+            match serde_json::from_str::<lime_slice_core::PaCalibRequest>(&body) {
+                Ok(req) => match lime_slice_core::pressure_advance_from_request(&req) {
+                    Ok(res) => (
+                        200,
+                        serde_json::to_string(&res).unwrap_or_else(|e| err_json(&e.to_string())),
+                    ),
+                    Err(err) => (400, err_json(&err)),
+                },
+                Err(err) => (400, err_json(&err.to_string())),
+            }
         } else if method == "POST" && url.starts_with("/api/slice") {
             match serde_json::from_str::<SliceRequest>(&body) {
                 Ok(req) => match slice_request(&req) {
