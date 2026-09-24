@@ -497,8 +497,10 @@ fn apply_feed(path: &mut Extrusion, strategy: &ResolvedStrategy) {
 fn kind_strength(kind: PathKind, strategy: &ResolvedStrategy) -> f64 {
     match kind {
         PathKind::Wall | PathKind::Outer | PathKind::Inner | PathKind::ThinWall => 1.25,
-        PathKind::GapFill | PathKind::Solid | PathKind::Top => 1.05,
-        PathKind::Infill | PathKind::Sparse => strategy.pattern.strength(),
+        PathKind::GapFill => 1.05,
+        PathKind::Infill | PathKind::Sparse | PathKind::Solid | PathKind::Top => {
+            strategy.pattern.strength()
+        }
         PathKind::Bridge => 0.7,
         PathKind::Skirt | PathKind::Support | PathKind::SupportInterface => 0.0,
     }

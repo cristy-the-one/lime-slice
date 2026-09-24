@@ -72,33 +72,33 @@ Contour extraction on the hull (140 layers, 4800 triangles): parallel Z-index **
 
 | Mode | Slice ms | Classic ms | Print s | Classic s | Filament g | Classic g | Travel mm | Classic travel | Retracts | Classic retracts | Toughness | Classic tough |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| speed | 1.57 | 1.14 | 212.3 | 328.0 | 1.84 | 2.73 | 689 | 10211 | 9 | 501 | 1775 | 2309 |
-| toughness | 37.32 | 35.15 | 4847.5 | 6251.0 | 10.33 | 10.33 | 6882 | 56802 | 100 | 4500 | 10710 | 10894 |
+| speed | 1.53 | 1.43 | 170.7 | 328.0 | 1.84 | 2.73 | 689 | 10211 | 9 | 501 | 1759 | 2309 |
+| toughness | 39.80 | 37.50 | 4847.5 | 6251.0 | 10.33 | 10.33 | 6882 | 56802 | 100 | 4500 | 10894 | 10894 |
 | layer blend | 12.54 | 11.25 | 1483.3 | 1966.5 | 4.73 | 5.33 | 2771 | 25984 | 45 | 1709 | 4636 | 5089 |
 | region blend | 18.01 | 15.77 | 2363.6 | 3056.1 | 6.44 | 6.84 | 5391 | 27071 | 100 | 3100 | 6564 | 6873 |
 
-Cube speed is 35% less print time and 33% less filament than classic. Travel drops from 10211 mm to 689 mm and retracts from 501 to 9. Toughness keeps gyroid and 98% of the classic structural index (10710 vs 10894).
+Cube speed is 48% less print time than classic and faster than main at 5bb93b3 (170.7 s vs 184.9 s) at the same 1.84 g. Travel is 689 mm and 9 retracts, against 1344 mm and 22 retracts on main. Toughness matches the classic structural index (10894).
 
 `samples/lime_hull.stl` — 4800 triangles, 140 layers. The hull is convex, so hole-aware combing matches straight travel: **1830.3 mm and 8 retracts** either way. The drop versus classic is the travel planner.
 
 | Mode | Slice ms | Classic ms | Print s | Classic s | Filament g | Classic g | Travel mm | Classic travel | Retracts | Classic retracts | Toughness | Classic tough |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| speed | 27.08 | 21.97 | 807.5 | 1416.5 | 4.66 | 8.96 | 1830 | 45486 | 8 | 980 | 4512 | 7046 |
-| toughness | 292.08 | 244.48 | 22890 | 29754 | 43.79 | 43.79 | 22568 | 282427 | 139 | 12179 | 46075 | 46764 |
+| speed | 27.3 | 30.1 | 617.4 | 1416.5 | 4.66 | 8.96 | 1830 | 45486 | 8 | 980 | 4470 | 7046 |
+| toughness | 340.8 | 276.3 | 22890 | 29754 | 43.79 | 43.79 | 22568 | 282427 | 139 | 12179 | 46764 | 46764 |
 | layer blend | 104.81 | 83.59 | 6821 | 9285 | 17.78 | 20.74 | 9236 | 126941 | 58 | 4657 | 17646 | 19747 |
 | region blend | 149.42 | 121.16 | 11345 | 15209 | 24.72 | 26.79 | 14709 | 150997 | 140 | 8120 | 25705 | 27233 |
 
-Hull speed is 43% less print time and 48% less filament (classic 3006 mm). The speed slice emits 2248 arcs. Toughness stays on gyroid (46075 vs classic 46764). A 30 mm window frame (four walls around a hole, covered by the combing test) is where the router shows up: travel 3989 mm and 29 retracts with combing, versus 3461 mm and 90 retracts in a straight line. The detour is longer; the retract count drops by about two thirds.
+Hull speed is 56% less print time than classic and faster than main (617 s vs 676 s) at 4.66 g. Travel is 1830 mm and 8 retracts, against 7265 mm and 21 retracts on main. The speed slice emits 2248 arcs. Toughness stays on gyroid and matches classic (46764). A 30 mm window frame (four walls around a hole, covered by the combing test) is where the router shows up: travel 3989 mm and 29 retracts with combing, versus 3461 mm and 90 retracts in a straight line. The detour is longer; the retract count drops by about two thirds.
 
 `samples/overhang_ledge.stl` speed, supports on, 45°:
 
 | Style | Print s | Filament g | Travel mm | Retracts |
 | --- | ---: | ---: | ---: | ---: |
-| sparse grid | 448.3 | 3.25 | 5053 | 405 |
-| tree | 313.1 | 2.21 | 4109 | 237 |
-| tree, shaft ×2 | 290.8 | 2.21 | 2899 | 135 |
+| sparse grid | 407.2 | 3.25 | 5053 | 405 |
+| tree | 272.1 | 2.21 | 4109 | 237 |
+| tree, shaft ×2 | 249.8 | 2.21 | 2899 | 135 |
 
-Tree uses 32% less filament and 30% less time than the grid on the same ledge. Doubling the sparse shaft height keeps the filament and cuts another 22 s, with the interface still at the model layer height. The cube and hull have no overhang, so grid and tree match there.
+Tree uses 32% less filament and 33% less time than the grid on the same ledge. Doubling the sparse shaft height keeps the filament and cuts another 22 s, with the interface still at the model layer height. The cube and hull have no overhang, so grid and tree match there.
 
 ## Layout
 
@@ -110,7 +110,7 @@ Tree uses 32% less filament and 30% less time than the grid on the same ledge. D
 
 ## Strategies
 
-- **Speed:** 2 walls, lightning infill within 4 mm of a roof combined every 3 layers, outer 90 mm/s, inner 140 mm/s, sparse 200 mm/s, travel 300 mm/s, nearest seam on a sharp corner, short retract, 1 skirt.
+- **Speed:** 2 walls, lightning infill within 4 mm of a roof combined every 3 layers, outer 130 mm/s, inner 160 mm/s, sparse 220 mm/s, travel 300 mm/s, nearest seam on a sharp corner, short retract, 1 skirt.
 - **Efficiency:** the weight mix. Low toughness keeps lightning and combining (every 2 layers under 45% toughness). The middle band is lines then grid. The score uses estimated time and filament mass.
 - **Toughness:** 5 walls, 48% gyroid for the full height at every layer, outer 40 mm/s, sparse 55 mm/s, seam stacked on +X, longer retract, 2 skirts.
 - **Weight:** interpolates walls, density, speed, accel, seam, and the pattern bands above.
