@@ -1,0 +1,20 @@
+[package]
+name = "lime-slice-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "FDM mesh slicing core for Lime Slice"
+
+[dependencies]
+base64 = "0.22"
+clipper2 = "0.6"
+quick-xml = "0.37"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+serde_json = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }

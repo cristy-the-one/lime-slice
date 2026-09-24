@@ -1,0 +1,137 @@
+:root {
+  color-scheme: dark;
+  --bg: #101114;
+  --panel: #181b21;
+  --panel-2: #20242c;
+  --line: #313744;
+  --text: #e7e2d6;
+  --muted: #9a9386;
+  --amber: #f0a202;
+  --amber-dim: #a56d12;
+  --teal: #2ec4b6;
+  --teal-dim: #1b7f76;
+  --travel: #4d5668;
+  --danger: #e85d4c;
+  --ok: #8fce6a;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 14px;
+}
+
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--text); }
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+
+.app {
+  height: 100%;
+  display: grid;
+  grid-template-rows: 48px minmax(0, 1fr) 28px;
+}
+
+.top, .status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  background: #14171c;
+}
+.status { border-bottom: 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.brand { font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.brand span { color: var(--amber); }
+.spacer { flex: 1; }
+.timing { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; color: var(--text); }
+
+.workspace {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr) 320px;
+}
+
+.panel {
+  min-height: 0;
+  overflow: auto;
+  background: var(--panel);
+  padding: 12px;
+  border-right: 1px solid var(--line);
+}
+.panel.right { border-right: 0; border-left: 1px solid var(--line); }
+.stage {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  background:
+    linear-gradient(180deg, rgba(240, 162, 2, 0.04), transparent 120px),
+    #0c0e12;
+}
+
+h2 {
+  margin: 14px 0 8px;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+}
+h2:first-child { margin-top: 0; }
+
+.row { display: flex; gap: 8px; align-items: center; }
+.stack { display: flex; flex-direction: column; gap: 8px; }
+label.field { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+input[type="number"], input[type="text"], select, input[type="range"] {
+  width: 100%;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+input[type="range"] { padding: 0; accent-color: var(--amber); }
+
+.btn, .btn-ghost {
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  padding: 7px 10px;
+}
+.btn.primary { background: var(--amber); color: #1a1406; border-color: #c8880a; font-weight: 600; }
+.btn:disabled { opacity: 0.45; cursor: progress; }
+.file input { display: none; }
+
+.meta { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.meta b { color: var(--text); font-weight: 500; }
+.banner { padding: 8px; border-radius: 4px; background: #3a201e; color: #ffc7c0; font-size: 12px; }
+.banner.ok { background: #1c2a1a; color: var(--ok); }
+
+.strategy {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--panel-2);
+}
+.strategy h3 { margin: 0 0 4px; font-size: 13px; }
+.strategy.speed h3 { color: var(--amber); }
+.strategy.tough h3 { color: var(--teal); }
+.strategy p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+
+canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
+.scrub { padding: 8px 12px 10px; display: grid; gap: 6px; }
+.legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: var(--muted); }
+.swatch { width: 10px; height: 10px; display: inline-block; margin-right: 4px; vertical-align: -1px; }
+.drop-hint {
+  position: absolute;
+  inset: 48px 320px 28px 280px;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  color: var(--muted);
+  text-align: center;
+  padding: 24px;
+}
+
+@media (max-width: 980px) {
+  .workspace { grid-template-columns: 1fr; grid-template-rows: auto minmax(280px, 50vh) auto; }
+  .panel.right { border-left: 0; border-top: 1px solid var(--line); }
+  .drop-hint { inset: auto; position: static; padding: 24px; }
+}

@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Lime Slice main window",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

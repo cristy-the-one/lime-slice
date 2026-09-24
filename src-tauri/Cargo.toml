@@ -1,0 +1,20 @@
+[package]
+name = "lime-slice-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Lime Slice desktop shell"
+
+[lib]
+name = "lime_slice_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+lime-slice-core = { path = "../crates/lime-slice-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }

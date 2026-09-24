@@ -1,0 +1,18 @@
+[package]
+name = "lime-slice"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Lime Slice CLI, bench, and local API"
+
+[[bin]]
+name = "lime-slice"
+path = "src/main.rs"
+
+[dependencies]
+base64 = "0.22"
+lime-slice-core = { path = "../lime-slice-core" }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+tiny_http = "0.12"
