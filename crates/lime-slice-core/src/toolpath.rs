@@ -7,9 +7,14 @@ use crate::strategy::{InfillPattern, ResolvedStrategy, SeamMode, StrategyId};
 pub enum PathKind {
     Skirt,
     Wall,
+    Outer,
+    Inner,
     ThinWall,
     GapFill,
     Infill,
+    Sparse,
+    Solid,
+    Top,
     Bridge,
     Support,
     SupportInterface,
@@ -20,21 +25,51 @@ impl PathKind {
         match self {
             PathKind::Skirt => "skirt",
             PathKind::Wall => "wall",
+            PathKind::Outer => "outer",
+            PathKind::Inner => "inner",
             PathKind::ThinWall => "thin-wall",
             PathKind::GapFill => "gap-fill",
             PathKind::Infill => "infill",
+            PathKind::Sparse => "sparse",
+            PathKind::Solid => "solid",
+            PathKind::Top => "top",
             PathKind::Bridge => "bridge",
             PathKind::Support => "support",
             PathKind::SupportInterface => "support-interface",
         }
     }
+
+    pub fn is_wall(self) -> bool {
+        matches!(self, PathKind::Wall | PathKind::Outer | PathKind::Inner)
+    }
+
+    pub fn is_closed(self) -> bool {
+        matches!(
+            self,
+            PathKind::Wall
+                | PathKind::Outer
+                | PathKind::Inner
+                | PathKind::ThinWall
+                | PathKind::Skirt
+        )
+    }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellBand {
+    Interior,
+    Bottom,
+    Top,
+}
+
+#[derive(Clone, Debug)]
 pub struct PathFeatures {
     pub variable_width: bool,
     /// Distance downward from the nearest roof. Lightning fades out past the strategy range.
     pub roof_distance_mm: f64,
+    pub layer_index: usize,
+    pub layer_height: f64,
+    pub shell: ShellBand,
 }
 
 impl Default for PathFeatures {
@@ -42,6 +77,9 @@ impl Default for PathFeatures {
         Self {
             variable_width: true,
             roof_distance_mm: 0.0,
+            layer_index: 0,
+            layer_height: 0.2,
+            shell: ShellBand::Interior,
         }
     }
 }
@@ -62,6 +100,12 @@ pub struct Extrusion {
     pub flow: f64,
     /// Structural weight used by the toughness score. Not a G-code field.
     pub strength: f64,
+    /// `0` uses the layer height. Combined infill and thick support shafts set this.
+    pub bead_height: f64,
+    /// Accel used for the travel into this path.
+    pub travel_accel: f64,
+    /// Intermediate combing points visited before `points[0]`.
+    pub lead_in: Vec<[f64; 2]>,
 }
 
 pub fn plan_region(
@@ -111,7 +155,7 @@ pub fn plan_region(
                 emit_loops(
                     &mut paths,
                     &loops,
-                    PathKind::Wall,
+                    wall_kind(true, strategy),
                     strategy,
                     line_width,
                     seam_hint,
@@ -126,7 +170,7 @@ pub fn plan_region(
         emit_loops(
             &mut paths,
             &loops,
-            PathKind::Wall,
+            wall_kind(i == 0, strategy),
             strategy,
             line_width,
             seam_hint,
@@ -152,14 +196,51 @@ pub fn plan_region(
     if strategy.infill_density > 0.01 && !infill_loops.is_empty() && infill_kept(strategy, features)
     {
         let infill = build_infill(&infill_loops, strategy, line_width, features);
+        let every = infill_every(strategy, features);
+        if every > 1 && features.layer_index % every != 0 {
+            return paths;
+        }
+        let kind = infill_kind(strategy, features.shell);
         for pts in infill {
             if pts.len() >= 2 {
                 *seam_hint = *pts.last().unwrap();
-                paths.push(extrusion(PathKind::Infill, strategy, pts, line_width));
+                let mut path = extrusion(kind, strategy, pts, line_width);
+                if every > 1 {
+                    path.bead_height = features.layer_height * every as f64;
+                }
+                paths.push(path);
             }
         }
     }
     paths
+}
+
+fn infill_every(strategy: &ResolvedStrategy, features: &PathFeatures) -> usize {
+    if features.shell != ShellBand::Interior {
+        return 1;
+    }
+    strategy.infill_combine.max(1) as usize
+}
+
+fn infill_kind(strategy: &ResolvedStrategy, shell: ShellBand) -> PathKind {
+    if !strategy.feature_speeds {
+        return PathKind::Infill;
+    }
+    match shell {
+        ShellBand::Top => PathKind::Top,
+        ShellBand::Bottom => PathKind::Solid,
+        ShellBand::Interior => PathKind::Sparse,
+    }
+}
+
+fn wall_kind(outer: bool, strategy: &ResolvedStrategy) -> PathKind {
+    if !strategy.feature_speeds {
+        PathKind::Wall
+    } else if outer {
+        PathKind::Outer
+    } else {
+        PathKind::Inner
+    }
 }
 
 fn infill_kept(strategy: &ResolvedStrategy, features: &PathFeatures) -> bool {
@@ -227,11 +308,6 @@ fn emit_variable_feature(
         .filter(|l| signed_area(l) > 0.0)
         .cloned()
         .collect();
-    let kind = if n == 1 {
-        PathKind::ThinWall
-    } else {
-        PathKind::Wall
-    };
     for i in 0..n {
         let inset = bead * 0.5 + bead * i as f64;
         let loops = loops_from_paths(offset_paths(&paths_from_loops(&outers), -inset));
@@ -248,6 +324,11 @@ fn emit_variable_feature(
             }
             break;
         }
+        let kind = if n == 1 {
+            PathKind::ThinWall
+        } else {
+            wall_kind(i == 0, strategy)
+        };
         emit_loops(paths, &loops, kind, strategy, bead, seam_hint);
     }
 }
@@ -367,7 +448,7 @@ fn extrusion(
     points: Vec<[f64; 2]>,
     width: f64,
 ) -> Extrusion {
-    Extrusion {
+    let mut path = Extrusion {
         kind,
         strategy: strategy.id,
         points,
@@ -380,14 +461,46 @@ fn extrusion(
         fan: strategy.fan,
         flow: 1.0,
         strength: kind_strength(kind, strategy),
+        bead_height: 0.0,
+        travel_accel: if strategy.feature_speeds {
+            strategy.travel_accel
+        } else {
+            strategy.accel
+        },
+        lead_in: Vec::new(),
+    };
+    apply_feed(&mut path, strategy);
+    path
+}
+
+fn apply_feed(path: &mut Extrusion, strategy: &ResolvedStrategy) {
+    if !strategy.feature_speeds {
+        return;
     }
+    let (speed, accel) = match path.kind {
+        PathKind::Outer | PathKind::Skirt | PathKind::Wall => {
+            (strategy.outer_speed, strategy.outer_accel)
+        }
+        PathKind::Inner | PathKind::ThinWall => (strategy.inner_speed, strategy.inner_accel),
+        PathKind::Sparse | PathKind::Infill => (strategy.sparse_speed, strategy.sparse_accel),
+        PathKind::Solid | PathKind::GapFill => (strategy.solid_speed, strategy.solid_accel),
+        PathKind::Top => (strategy.top_speed, strategy.top_accel),
+        PathKind::Bridge => (strategy.top_speed.min(36.0), strategy.top_accel),
+        PathKind::Support | PathKind::SupportInterface => (strategy.print_speed, strategy.accel),
+    };
+    path.speed = speed;
+    path.accel = accel;
+    path.travel_speed = strategy.travel_speed;
+    path.travel_accel = strategy.travel_accel;
 }
 
 fn kind_strength(kind: PathKind, strategy: &ResolvedStrategy) -> f64 {
     match kind {
-        PathKind::Wall | PathKind::ThinWall => 1.25,
+        PathKind::Wall | PathKind::Outer | PathKind::Inner | PathKind::ThinWall => 1.25,
         PathKind::GapFill => 1.05,
-        PathKind::Infill => strategy.pattern.strength(),
+        PathKind::Infill | PathKind::Sparse | PathKind::Solid | PathKind::Top => {
+            strategy.pattern.strength()
+        }
         PathKind::Bridge => 0.7,
         PathKind::Skirt | PathKind::Support | PathKind::SupportInterface => 0.0,
     }
@@ -966,9 +1079,55 @@ pub fn plan_support(
         .collect()
 }
 
+/// Organic shafts: one loop per branch. Spacing follows toughness (denser when tougher).
+pub fn plan_tree_support(
+    centers: &[[f64; 2]],
+    strategy: &ResolvedStrategy,
+    line_width: f64,
+) -> Vec<Extrusion> {
+    if centers.is_empty() {
+        return Vec::new();
+    }
+    let spacing = (7.2 - 4.0 * strategy.toughness).clamp(3.2, 7.2);
+    let kept = thin_centers(centers, spacing);
+    let radius = (line_width * (0.85 + strategy.toughness)).clamp(0.45, 1.35);
+    let speed = crate::strategy::support_speed(strategy, false);
+    kept.into_iter()
+        .map(|c| {
+            let mut path = extrusion(PathKind::Support, strategy, octagon(c, radius), line_width);
+            path.speed = speed;
+            path
+        })
+        .collect()
+}
+
+fn thin_centers(centers: &[[f64; 2]], spacing: f64) -> Vec<[f64; 2]> {
+    let mut ordered = centers.to_vec();
+    ordered.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    let mut kept = Vec::new();
+    let limit = spacing * spacing;
+    for p in ordered {
+        if kept.iter().all(|q: &[f64; 2]| dist2(*q, p) >= limit) {
+            kept.push(p);
+        }
+    }
+    kept
+}
+
+fn octagon(c: [f64; 2], r: f64) -> Vec<[f64; 2]> {
+    let mut pts: Vec<[f64; 2]> = (0..8)
+        .map(|i| {
+            let a = i as f64 * std::f64::consts::TAU / 8.0;
+            [c[0] + r * a.cos(), c[1] + r * a.sin()]
+        })
+        .collect();
+    pts.push(pts[0]);
+    pts
+}
+
 /// Reorder each feature group and slide nearest seams toward the nozzle.
-/// Travels that stay inside the part skip retraction.
-pub fn optimize_travel(paths: &mut Vec<Extrusion>, solid: &[Loop]) {
+/// `combing` routes travels through an inset of the solid and retracts only when that route is blocked.
+pub fn optimize_travel(paths: &mut Vec<Extrusion>, solid: &[Loop], combing: bool, inset: f64) {
     if paths.len() < 2 {
         return;
     }
@@ -985,14 +1144,16 @@ pub fn optimize_travel(paths: &mut Vec<Extrusion>, solid: &[Loop]) {
             grouped.push(vec![path]);
         }
     }
+    let inset_loops = if combing && !solid.is_empty() {
+        offset_loops(solid, -inset.abs())
+    } else {
+        Vec::new()
+    };
     let mut cursor = [0.0, 0.0];
     let mut has_cursor = false;
     let mut out = Vec::with_capacity(grouped.iter().map(|g| g.len()).sum());
     for group in grouped {
-        let open = !matches!(
-            group.first().map(|p| p.kind),
-            Some(PathKind::Wall | PathKind::ThinWall | PathKind::Skirt)
-        );
+        let open = !group.first().map(|p| p.kind.is_closed()).unwrap_or(false);
         let mut pending = group;
         let mut ordered = Vec::with_capacity(pending.len());
         while !pending.is_empty() {
@@ -1028,20 +1189,18 @@ pub fn optimize_travel(paths: &mut Vec<Extrusion>, solid: &[Loop]) {
             if best_rev {
                 path.points.reverse();
             }
-            if has_cursor
-                && matches!(
-                    path.kind,
-                    PathKind::Wall | PathKind::ThinWall | PathKind::Skirt
-                )
-            {
-                if path.retract_min_travel > 2.0 {
-                    rotate_closed_to(&mut path.points, cursor);
-                }
+            if has_cursor && path.kind.is_closed() && path.retract_min_travel > 2.0 {
+                rotate_closed_to(&mut path.points, cursor);
             }
             if has_cursor {
                 if let Some(start) = path.points.first().copied() {
-                    if segment_inside(solid, cursor, start) {
-                        path.retract_mm = 0.0;
+                    match comb_between(solid, &inset_loops, cursor, start, combing) {
+                        Comb::Clear => path.retract_mm = 0.0,
+                        Comb::Routed(via) => {
+                            path.lead_in = via;
+                            path.retract_mm = 0.0;
+                        }
+                        Comb::Blocked => {}
                     }
                 }
             }
@@ -1077,6 +1236,105 @@ fn rotate_closed_to(pts: &mut Vec<[f64; 2]>, hint: [f64; 2]) {
     pts.rotate_left(best);
     let first = pts[0];
     pts.push(first);
+}
+
+enum Comb {
+    Clear,
+    Routed(Vec<[f64; 2]>),
+    Blocked,
+}
+
+fn comb_between(
+    solid: &[Loop],
+    inset: &[Loop],
+    from: [f64; 2],
+    to: [f64; 2],
+    combing: bool,
+) -> Comb {
+    if dist2(from, to) < 0.04 * 0.04 {
+        return Comb::Clear;
+    }
+    if segment_inside(solid, from, to) {
+        return Comb::Clear;
+    }
+    if !combing || inset.is_empty() {
+        return Comb::Blocked;
+    }
+    if !in_solid(solid, from[0], from[1]) || !in_solid(solid, to[0], to[1]) {
+        return Comb::Blocked;
+    }
+    let mut nodes = Vec::new();
+    for loop_ in inset {
+        let step = (loop_.len() / 64).max(1);
+        for (i, p) in loop_.iter().enumerate() {
+            if i % step == 0 {
+                nodes.push(*p);
+            }
+        }
+    }
+    if nodes.len() > 80 {
+        nodes.truncate(80);
+    }
+    nodes.push(from);
+    nodes.push(to);
+    let n = nodes.len();
+    let start = n - 2;
+    let goal = n - 1;
+    let mut edges: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
+    for i in 0..n {
+        for j in (i + 1)..n {
+            if segment_inside(inset, nodes[i], nodes[j])
+                || (i == start || j == start || i == goal || j == goal)
+                    && segment_inside(solid, nodes[i], nodes[j])
+            {
+                let d = dist2(nodes[i], nodes[j]).sqrt();
+                edges[i].push((j, d));
+                edges[j].push((i, d));
+            }
+        }
+    }
+    let mut dist = vec![f64::INFINITY; n];
+    let mut prev = vec![usize::MAX; n];
+    dist[start] = 0.0;
+    let mut used = vec![false; n];
+    for _ in 0..n {
+        let mut u = usize::MAX;
+        let mut best = f64::INFINITY;
+        for (i, d) in dist.iter().enumerate() {
+            if !used[i] && *d < best {
+                best = *d;
+                u = i;
+            }
+        }
+        if u == usize::MAX || u == goal {
+            break;
+        }
+        used[u] = true;
+        for &(v, w) in &edges[u] {
+            let nd = dist[u] + w;
+            if nd + 1e-9 < dist[v] {
+                dist[v] = nd;
+                prev[v] = u;
+            }
+        }
+    }
+    if !dist[goal].is_finite() {
+        return Comb::Blocked;
+    }
+    let mut via = Vec::new();
+    let mut cur = goal;
+    while cur != start && cur != usize::MAX {
+        if cur != goal {
+            via.push(nodes[cur]);
+        }
+        cur = prev[cur];
+    }
+    via.reverse();
+    if via.is_empty() {
+        Comb::Clear
+    } else {
+        Comb::Routed(via)
+    }
 }
 
 fn segment_inside(solid: &[Loop], a: [f64; 2], b: [f64; 2]) -> bool {

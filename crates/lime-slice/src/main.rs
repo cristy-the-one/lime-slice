@@ -60,6 +60,21 @@ enum Cmd {
         /// Previous planner: line infill, no arcs, no spatial index.
         #[arg(long, default_value_t = false)]
         classic: bool,
+        /// `grid` or `tree`.
+        #[arg(long, default_value = "grid")]
+        support_style: String,
+        /// Sparse support shaft height multiplier. `1` keeps the model layer height.
+        #[arg(long, default_value_t = 1.0)]
+        support_height_mult: f64,
+        /// Combine sparse infill every few layers on speed and light efficiency blends.
+        #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+        infill_combine: bool,
+        /// Hole-aware combing. Retract only when the inset route is blocked.
+        #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+        combing: bool,
+        /// Per-feature speeds and accelerations.
+        #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+        feature_speeds: bool,
         #[arg(short, long)]
         output: PathBuf,
     },
@@ -100,6 +115,11 @@ fn run() -> Result<(), String> {
             travel_opt,
             overhang_control,
             classic,
+            support_style,
+            support_height_mult,
+            infill_combine,
+            combing,
+            feature_speeds,
             output,
         } => {
             let response = slice_file(
@@ -130,6 +150,15 @@ fn run() -> Result<(), String> {
                     travel_opt,
                     overhang_control,
                     classic,
+                    support_style: if support_style == "tree" {
+                        lime_slice_core::SupportStyle::Tree
+                    } else {
+                        lime_slice_core::SupportStyle::Grid
+                    },
+                    support_height_mult,
+                    infill_combine,
+                    combing,
+                    feature_speeds,
                     ..SliceSettings::default()
                 },
             )?;
@@ -204,8 +233,18 @@ fn bench(input: &PathBuf) -> Result<(), String> {
     }
     println!("new path vs classic planner (lines, no arcs, full triangle scan)");
     println!(
-        "{:<14} {:>10} {:>10} {:>10} {:>10} {:>8} {:>8} {:>8} {:>8}",
-        "mode", "slice ms", "classic ms", "time s", "filament g", "arcs", "speed", "eff", "tough"
+        "{:<14} {:>10} {:>10} {:>10} {:>10} {:>8} {:>10} {:>8} {:>8} {:>8} {:>8}",
+        "mode",
+        "slice ms",
+        "classic ms",
+        "time s",
+        "filament g",
+        "arcs",
+        "travel mm",
+        "retract",
+        "speed",
+        "eff",
+        "tough"
     );
     let fresh = SliceSettings::default();
     let classic = SliceSettings {
@@ -217,13 +256,15 @@ fn bench(input: &PathBuf) -> Result<(), String> {
             lime_slice_core::slice_configured(&mesh, &mode, &Default::default(), &fresh)?;
         let old = lime_slice_core::slice_configured(&mesh, &mode, &Default::default(), &classic)?;
         println!(
-            "{:<14} {:>10.2} {:>10.2} {:>10.1} {:>10.2} {:>8} {:>8.1} {:>8.1} {:>8.1}  {}",
+            "{:<14} {:>10.2} {:>10.2} {:>10.1} {:>10.2} {:>8} {:>10.1} {:>8} {:>8.1} {:>8.1} {:>8.1}  {}",
             name,
             response.core_ms,
             old.core_ms,
             response.estimate.seconds,
             response.estimate.filament_g,
             response.estimate.arc_moves,
+            response.sanity.travel_length_mm,
+            response.sanity.retracts,
             response.score.speed,
             response.score.efficiency,
             response.score.toughness,
@@ -233,15 +274,73 @@ fn bench(input: &PathBuf) -> Result<(), String> {
             println!("  {}", response.sanity.notes.join("; "));
         }
         println!(
-            "  classic time {:.1} s  filament {:.2} g ({:.0} mm)  score speed {:.1} eff {:.1} tough {:.1}",
+            "  classic time {:.1} s  filament {:.2} g ({:.0} mm)  travel {:.1} mm  retracts {}  score speed {:.1} eff {:.1} tough {:.1}",
             old.estimate.seconds,
             old.estimate.filament_g,
             old.estimate.filament_mm,
+            old.sanity.travel_length_mm,
+            old.sanity.retracts,
             old.score.speed,
             old.score.efficiency,
             old.score.toughness
         );
     }
+    let speed = BlendMode::Single {
+        strategy: StrategyId::Speed,
+    };
+    println!("supports on speed blend, angle 45°, vs classic grid");
+    println!(
+        "{:<16} {:>10} {:>10} {:>10} {:>8}",
+        "style", "time s", "filament g", "travel mm", "retract"
+    );
+    for (label, style, mult) in [
+        ("grid", lime_slice_core::SupportStyle::Grid, 1.0),
+        ("tree", lime_slice_core::SupportStyle::Tree, 1.0),
+        ("tree x2 shaft", lime_slice_core::SupportStyle::Tree, 2.0),
+    ] {
+        let response = lime_slice_core::slice_configured(
+            &mesh,
+            &speed,
+            &Default::default(),
+            &SliceSettings {
+                supports: true,
+                support_style: style,
+                support_height_mult: mult,
+                ..SliceSettings::default()
+            },
+        )?;
+        println!(
+            "{:<16} {:>10.1} {:>10.2} {:>10.1} {:>8}  {}",
+            label,
+            response.estimate.seconds,
+            response.estimate.filament_g,
+            response.sanity.travel_length_mm,
+            response.sanity.retracts,
+            if response.sanity.ok { "ok" } else { "FAIL" }
+        );
+    }
+    let routed = lime_slice_core::slice_configured(
+        &mesh,
+        &speed,
+        &Default::default(),
+        &SliceSettings::default(),
+    )?;
+    let straight = lime_slice_core::slice_configured(
+        &mesh,
+        &speed,
+        &Default::default(),
+        &SliceSettings {
+            combing: false,
+            ..SliceSettings::default()
+        },
+    )?;
+    println!(
+        "combing speed  travel {:.1} mm  retracts {}   |  straight travel {:.1} mm  retracts {}",
+        routed.sanity.travel_length_mm,
+        routed.sanity.retracts,
+        straight.sanity.travel_length_mm,
+        straight.sanity.retracts
+    );
     Ok(())
 }
 
@@ -325,6 +424,14 @@ fn slice_file(
         travel_opt: settings.travel_opt,
         overhang_control: settings.overhang_control,
         classic: settings.classic,
+        support_style: match settings.support_style {
+            lime_slice_core::SupportStyle::Tree => "tree".into(),
+            lime_slice_core::SupportStyle::Grid => "grid".into(),
+        },
+        support_height_mult: settings.support_height_mult,
+        infill_combine: settings.infill_combine,
+        combing: settings.combing,
+        feature_speeds: settings.feature_speeds,
     })
 }
 

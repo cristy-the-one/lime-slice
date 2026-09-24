@@ -111,6 +111,21 @@ pub struct ResolvedStrategy {
     /// Millimetres below a roof that lightning (or a pruned pattern) still prints.
     /// `0` keeps the pattern for the full height.
     pub lightning_range_mm: f64,
+    /// Emit sparse infill every N layers at N times the layer height. `1` is off.
+    pub infill_combine: u32,
+    /// Distinct feed and accel for outer, inner, sparse, solid, top, and travel.
+    pub feature_speeds: bool,
+    pub outer_speed: f64,
+    pub inner_speed: f64,
+    pub sparse_speed: f64,
+    pub solid_speed: f64,
+    pub top_speed: f64,
+    pub outer_accel: f64,
+    pub inner_accel: f64,
+    pub sparse_accel: f64,
+    pub solid_accel: f64,
+    pub top_accel: f64,
+    pub travel_accel: f64,
 }
 
 pub fn pure(id: StrategyId) -> ResolvedStrategy {
@@ -121,7 +136,7 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             infill_density: 0.12,
             pattern: InfillPattern::Lightning,
             print_speed: 140.0,
-            travel_speed: 250.0,
+            travel_speed: 300.0,
             accel: 3500.0,
             seam: SeamMode::Nearest,
             retract_mm: 0.35,
@@ -130,6 +145,19 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             skirt_loops: 1,
             toughness: 0.0,
             lightning_range_mm: 4.0,
+            infill_combine: 3,
+            feature_speeds: true,
+            outer_speed: 130.0,
+            inner_speed: 160.0,
+            sparse_speed: 220.0,
+            solid_speed: 150.0,
+            top_speed: 120.0,
+            outer_accel: 3500.0,
+            inner_accel: 4000.0,
+            sparse_accel: 5000.0,
+            solid_accel: 3500.0,
+            top_accel: 3000.0,
+            travel_accel: 5500.0,
         },
         StrategyId::Toughness => ResolvedStrategy {
             id,
@@ -137,7 +165,7 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             infill_density: 0.48,
             pattern: InfillPattern::Gyroid,
             print_speed: 45.0,
-            travel_speed: 120.0,
+            travel_speed: 140.0,
             accel: 800.0,
             seam: SeamMode::Aligned,
             retract_mm: 0.9,
@@ -146,6 +174,19 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             skirt_loops: 2,
             toughness: 1.0,
             lightning_range_mm: 0.0,
+            infill_combine: 1,
+            feature_speeds: true,
+            outer_speed: 40.0,
+            inner_speed: 48.0,
+            sparse_speed: 55.0,
+            solid_speed: 42.0,
+            top_speed: 36.0,
+            outer_accel: 650.0,
+            inner_accel: 850.0,
+            sparse_accel: 1000.0,
+            solid_accel: 750.0,
+            top_accel: 550.0,
+            travel_accel: 1200.0,
         },
     }
 }
@@ -190,6 +231,25 @@ pub fn mix(toughness: f64) -> ResolvedStrategy {
         skirt_loops: if t >= 0.5 { 2 } else { 1 },
         toughness: t,
         lightning_range_mm: range,
+        infill_combine: if t < 0.20 {
+            3
+        } else if t < 0.45 {
+            2
+        } else {
+            1
+        },
+        feature_speeds: true,
+        outer_speed: lerp(speed.outer_speed, tough.outer_speed),
+        inner_speed: lerp(speed.inner_speed, tough.inner_speed),
+        sparse_speed: lerp(speed.sparse_speed, tough.sparse_speed),
+        solid_speed: lerp(speed.solid_speed, tough.solid_speed),
+        top_speed: lerp(speed.top_speed, tough.top_speed),
+        outer_accel: lerp(speed.outer_accel, tough.outer_accel),
+        inner_accel: lerp(speed.inner_accel, tough.inner_accel),
+        sparse_accel: lerp(speed.sparse_accel, tough.sparse_accel),
+        solid_accel: lerp(speed.solid_accel, tough.solid_accel),
+        top_accel: lerp(speed.top_accel, tough.top_accel),
+        travel_accel: lerp(speed.travel_accel, tough.travel_accel),
     }
 }
 
@@ -199,6 +259,8 @@ pub fn classicize(mut strategy: ResolvedStrategy) -> ResolvedStrategy {
         strategy.pattern = InfillPattern::Lines;
     }
     strategy.lightning_range_mm = 0.0;
+    strategy.infill_combine = 1;
+    strategy.feature_speeds = false;
     strategy
 }
 
@@ -244,6 +306,12 @@ pub struct PrinterProfile {
     /// Used by the filament-mass estimator. PLA is 1.24 g/cm³.
     #[serde(default = "default_density")]
     pub filament_density_g_cm3: f64,
+    /// Klipper pressure advance (mm/(mm/s)). `0` emits nothing.
+    #[serde(default)]
+    pub pressure_advance: f64,
+    /// Marlin linear advance K. `0` emits nothing.
+    #[serde(default)]
+    pub linear_advance: f64,
 }
 
 fn default_flow() -> f64 {
@@ -266,7 +334,21 @@ impl Default for PrinterProfile {
             bed_y: 220.0,
             max_volumetric_mm3_s: default_flow(),
             filament_density_g_cm3: default_density(),
+            pressure_advance: 0.0,
+            linear_advance: 0.0,
         }
+    }
+}
+
+/// Relative pressure/linear advance by feature. Outer and top keep the full factor.
+pub fn advance_scale(kind: &str) -> f64 {
+    match kind {
+        "outer" | "top" | "wall" | "skirt" => 1.0,
+        "inner" | "thin-wall" => 0.85,
+        "sparse" | "infill" | "solid" | "gap-fill" => 0.65,
+        "bridge" => 0.5,
+        "support" | "support-interface" => 0.4,
+        _ => 1.0,
     }
 }
 

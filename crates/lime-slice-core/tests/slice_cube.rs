@@ -144,8 +144,8 @@ fn speed_and_toughness_differ_and_gcode_is_printable() {
         mid_t.toughness_walls,
         mid.speed_walls
     );
-    let speed_infill = mid.paths.iter().filter(|p| p.kind == "infill").count();
-    let tough_infill = mid_t.paths.iter().filter(|p| p.kind == "infill").count();
+    let speed_infill = mid.paths.iter().filter(|p| is_infill(&p.kind)).count();
+    let tough_infill = mid_t.paths.iter().filter(|p| is_infill(&p.kind)).count();
     assert!(
         tough_infill > speed_infill,
         "tough infill paths {tough_infill} vs speed {speed_infill}"
@@ -320,6 +320,14 @@ fn ramp() -> Mesh {
     }
 }
 
+fn is_wall(kind: &str) -> bool {
+    matches!(kind, "wall" | "outer" | "inner")
+}
+
+fn is_infill(kind: &str) -> bool {
+    matches!(kind, "infill" | "sparse" | "solid" | "top")
+}
+
 fn has_type(gcode: &str, kind: &str) -> bool {
     let marker = format!("TYPE:{kind}");
     gcode
@@ -434,8 +442,13 @@ fn supports_fill_the_ledge_and_stay_off_when_disabled() {
     assert!(under, "support toolpaths should sit under the overhang");
     assert!(has_type(&held.gcode, "SUPPORT"));
     assert!(has_type(&held.gcode, "SUPPORT-INTERFACE"));
-    assert!(has_type(&held.gcode, "WALL"));
-    assert!(has_type(&held.gcode, "INFILL"));
+    assert!(has_type(&held.gcode, "WALL") || has_type(&held.gcode, "OUTER"));
+    assert!(
+        has_type(&held.gcode, "INFILL")
+            || has_type(&held.gcode, "SPARSE")
+            || has_type(&held.gcode, "SOLID")
+            || has_type(&held.gcode, "TOP")
+    );
     assert!(!has_type(&bare.gcode, "SUPPORT"));
     let shelf = held
         .layers
@@ -443,7 +456,7 @@ fn supports_fill_the_ledge_and_stay_off_when_disabled() {
         .find(|l| (l.z - 14.0).abs() < 0.05)
         .unwrap();
     assert!(shelf.support_paths == 0);
-    assert!(shelf.paths.iter().any(|p| p.kind == "wall"));
+    assert!(shelf.paths.iter().any(|p| is_wall(&p.kind)));
 }
 
 fn classic() -> SliceSettings {
@@ -566,12 +579,16 @@ fn thin_wall_uses_a_variable_bead() {
         .iter()
         .flat_map(|l| l.paths.iter())
         .any(|p| {
-            (p.kind == "thin-wall" || p.kind == "wall" || p.kind == "gap-fill")
+            (p.kind == "thin-wall" || is_wall(&p.kind) || p.kind == "gap-fill")
                 && p.width > 0.2
                 && (p.width - 0.45).abs() > 0.04
         });
     assert!(bead, "expected a variable-width bead on the 0.7 mm fin");
-    assert!(has_type(&response.gcode, "THIN-WALL") || has_type(&response.gcode, "WALL"));
+    assert!(
+        has_type(&response.gcode, "THIN-WALL")
+            || has_type(&response.gcode, "WALL")
+            || has_type(&response.gcode, "OUTER")
+    );
 }
 
 #[test]
@@ -711,4 +728,188 @@ fn indexed_slice_matches_classic_contours() {
     let rel = (indexed.estimate.filament_mm - scanned.estimate.filament_mm).abs()
         / scanned.estimate.filament_mm;
     assert!(rel < 0.08, "filament drifted {rel}");
+}
+
+fn speed_mode() -> BlendMode {
+    BlendMode::Single {
+        strategy: StrategyId::Speed,
+    }
+}
+
+#[test]
+fn feature_speeds_keep_outer_slower_than_sparse() {
+    let mesh = cube();
+    let response =
+        slice_configured(&mesh, &speed_mode(), &profile(), &SliceSettings::default()).unwrap();
+    assert!(response.sanity.ok, "{:?}", response.sanity.notes);
+    let outer = feed_after(&response.gcode, "OUTER");
+    let sparse = feed_after(&response.gcode, "SPARSE");
+    assert!(outer > 0.0 && sparse > 0.0, "outer {outer} sparse {sparse}");
+    assert!(
+        outer < sparse,
+        "outer feed {outer} should be below sparse {sparse}"
+    );
+    let off = slice_configured(
+        &mesh,
+        &speed_mode(),
+        &profile(),
+        &SliceSettings {
+            feature_speeds: false,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    assert!(has_type(&off.gcode, "WALL"));
+    assert!(!has_type(&off.gcode, "OUTER"));
+}
+
+fn feed_after(gcode: &str, kind: &str) -> f64 {
+    let marker = format!("TYPE:{kind}");
+    let mut armed = false;
+    for line in gcode.lines() {
+        if line.contains(&marker) {
+            armed = true;
+            continue;
+        }
+        if armed && line.starts_with("G1 ") && line.contains(" E") {
+            if let Some(f) = line.split_whitespace().find_map(|t| t.strip_prefix('F')) {
+                return f.parse().unwrap_or(0.0);
+            }
+        }
+    }
+    0.0
+}
+
+#[test]
+fn infill_combine_thins_sparse_layers_and_classic_disables_it() {
+    let mesh = cube();
+    let on = slice_configured(&mesh, &speed_mode(), &profile(), &SliceSettings::default()).unwrap();
+    let off = slice_configured(
+        &mesh,
+        &speed_mode(),
+        &profile(),
+        &SliceSettings {
+            infill_combine: false,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    let old = slice_configured(&mesh, &speed_mode(), &profile(), &classic()).unwrap();
+    assert!(on.sanity.ok && off.sanity.ok, "{:?}", on.sanity.notes);
+    let on_n = on.gcode.matches("TYPE:SPARSE").count() + on.gcode.matches("TYPE:TOP").count();
+    let off_n = off.gcode.matches("TYPE:SPARSE").count() + off.gcode.matches("TYPE:TOP").count();
+    assert!(on_n < off_n, "combined infill lines {on_n} vs {off_n}");
+    let rel = (on.estimate.filament_g - off.estimate.filament_g).abs() / off.estimate.filament_g;
+    assert!(rel < 0.2, "filament drifted {rel}");
+    assert!(on.estimate.seconds < off.estimate.seconds * 1.05);
+    assert!(!old.gcode.contains("TYPE:SPARSE"));
+    assert!(old.gcode.contains("TYPE:INFILL"));
+}
+
+#[test]
+fn tree_supports_use_less_filament_than_grid_and_keep_an_interface() {
+    let mesh = ledge();
+    let grid = slice_configured(
+        &mesh,
+        &speed_mode(),
+        &profile(),
+        &SliceSettings {
+            supports: true,
+            support_style: lime_slice_core::SupportStyle::Grid,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    let tree = slice_configured(
+        &mesh,
+        &speed_mode(),
+        &profile(),
+        &SliceSettings {
+            supports: true,
+            support_style: lime_slice_core::SupportStyle::Tree,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    assert!(grid.sanity.ok, "{:?}", grid.sanity.notes);
+    assert!(tree.sanity.ok, "{:?}", tree.sanity.notes);
+    assert!(has_type(&tree.gcode, "SUPPORT"));
+    assert!(has_type(&tree.gcode, "SUPPORT-INTERFACE"));
+    assert!(
+        tree.estimate.filament_g < grid.estimate.filament_g * 0.85,
+        "tree {:.3} g vs grid {:.3} g",
+        tree.estimate.filament_g,
+        grid.estimate.filament_g
+    );
+    let thick = slice_configured(
+        &mesh,
+        &speed_mode(),
+        &profile(),
+        &SliceSettings {
+            supports: true,
+            support_style: lime_slice_core::SupportStyle::Tree,
+            support_height_mult: 2.0,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    assert!(thick.sanity.ok, "{:?}", thick.sanity.notes);
+    assert!(thick.estimate.seconds <= tree.estimate.seconds * 1.02);
+}
+
+#[test]
+fn combing_routes_around_a_hole_and_retracts_less() {
+    let mesh = window_frame();
+    let routed =
+        slice_configured(&mesh, &speed_mode(), &profile(), &SliceSettings::default()).unwrap();
+    let straight = slice_configured(
+        &mesh,
+        &speed_mode(),
+        &profile(),
+        &SliceSettings {
+            combing: false,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    assert!(routed.sanity.ok, "{:?}", routed.sanity.notes);
+    assert!(straight.sanity.ok, "{:?}", straight.sanity.notes);
+    assert!(
+        routed.sanity.retracts < straight.sanity.retracts,
+        "combing retracts {} vs straight {}",
+        routed.sanity.retracts,
+        straight.sanity.retracts
+    );
+}
+
+fn window_frame() -> Mesh {
+    let mut tris = Vec::new();
+    add_box(&mut tris, 0.0, 0.0, 0.0, 30.0, 8.0, 6.0);
+    add_box(&mut tris, 0.0, 22.0, 0.0, 30.0, 30.0, 6.0);
+    add_box(&mut tris, 0.0, 8.0, 0.0, 8.0, 22.0, 6.0);
+    add_box(&mut tris, 22.0, 8.0, 0.0, 30.0, 22.0, 6.0);
+    Mesh { triangles: tris }
+}
+
+#[test]
+fn pressure_advance_is_emitted_from_the_profile() {
+    let mesh = cube();
+    let mut printer = profile();
+    printer.pressure_advance = 0.05;
+    printer.linear_advance = 0.08;
+    let response =
+        slice_configured(&mesh, &speed_mode(), &printer, &SliceSettings::default()).unwrap();
+    assert!(response
+        .gcode
+        .contains("SET_PRESSURE_ADVANCE ADVANCE=0.0500"));
+    assert!(response.gcode.contains("M900 K0.080"));
+    assert!(
+        response
+            .gcode
+            .contains("SET_PRESSURE_ADVANCE ADVANCE=0.0325")
+            || response.gcode.contains("M900 K0.052")
+    );
+    let old = slice_configured(&mesh, &speed_mode(), &printer, &classic()).unwrap();
+    assert!(!old.gcode.contains("SET_PRESSURE_ADVANCE"));
+    assert!(!old.gcode.contains("M900"));
 }
