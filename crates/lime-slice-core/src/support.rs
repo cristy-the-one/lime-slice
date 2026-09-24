@@ -2,16 +2,11 @@ use crate::adaptive::LayerBand;
 use crate::contour::{in_solid, loop_bounds, Loop};
 use crate::toolpath::{boolean_diff, boolean_union, drop_slivers, offset_loops};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SupportStyle {
+    #[default]
     Grid,
     Tree,
-}
-
-impl Default for SupportStyle {
-    fn default() -> Self {
-        SupportStyle::Grid
-    }
 }
 
 #[derive(Clone, Debug)]

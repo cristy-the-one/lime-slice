@@ -1583,7 +1583,7 @@ fn paint(src: &Extrusion, points: Vec<[f64; 2]>, class: SpanClass) -> Extrusion 
         SpanClass::Supported => {}
         SpanClass::Bridge => {
             path.kind = PathKind::Bridge;
-            path.speed = path.speed.min(36.0).max(18.0);
+            path.speed = path.speed.clamp(18.0, 36.0);
             path.fan = 255;
             path.strength = path.strength.min(0.7);
         }

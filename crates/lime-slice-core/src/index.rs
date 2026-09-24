@@ -57,8 +57,8 @@ impl ZIndex {
         for (i, edge) in edges.iter().enumerate() {
             let i0 = bucket_of(edge.z_lo, z_min, bucket_h, n);
             let i1 = bucket_of(edge.z_hi, z_min, bucket_h, n);
-            for b in i0..=i1 {
-                buckets[b].push(i as u32);
+            for bucket in buckets.iter_mut().take(i1 + 1).skip(i0) {
+                bucket.push(i as u32);
             }
         }
         Self {

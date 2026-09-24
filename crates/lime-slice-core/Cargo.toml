@@ -3,6 +3,7 @@ name = "lime-slice-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 publish.workspace = true
 description = "FDM mesh slicing core for Lime Slice"
 

@@ -262,7 +262,7 @@ impl Writer {
             return;
         }
         self.accel = accel;
-        self.out.push_str(&format!("M204 S{:.0}\n", accel));
+        self.out.push_str(&format!("M204 S{accel:.0}\n"));
     }
 
     fn set_fan(&mut self, pwm: u8) {
@@ -284,6 +284,7 @@ impl Writer {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn travel_chain(
         &mut self,
         pts: &[[f64; 2]],
@@ -315,6 +316,7 @@ impl Writer {
 
     /// Retract, slope up to `layer_z + z_hop` along the travel, then slope back
     /// to the layer before the next extrusion. A short hop lifts vertically.
+    #[allow(clippy::too_many_arguments)]
     fn hop_travel(
         &mut self,
         pts: &[[f64; 2]],
@@ -346,6 +348,7 @@ impl Writer {
         self.unretract();
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn slope_along(
         &mut self,
         pts: &[[f64; 2]],
@@ -412,10 +415,10 @@ impl Writer {
         let f = (speed.max(10.0) * 60.0).round() as i32;
         if dz > 5e-4 {
             self.out
-                .push_str(&format!("G1 X{:.3} Y{:.3} Z{:.3} F{f}\n", x, y, z));
+                .push_str(&format!("G1 X{x:.3} Y{y:.3} Z{z:.3} F{f}\n"));
             self.z = z;
         } else {
-            self.out.push_str(&format!("G1 X{:.3} Y{:.3} F{f}\n", x, y));
+            self.out.push_str(&format!("G1 X{x:.3} Y{y:.3} F{f}\n"));
         }
         self.x = x;
         self.y = y;
@@ -451,13 +454,14 @@ impl Writer {
         }
         self.unretract();
         let f = (speed.max(10.0) * 60.0).round() as i32;
-        self.out.push_str(&format!("G1 X{:.3} Y{:.3} F{f}\n", x, y));
+        self.out.push_str(&format!("G1 X{x:.3} Y{y:.3} F{f}\n"));
         self.x = x;
         self.y = y;
         self.has_pos = true;
         self.travel_moves += 1;
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn emit_chain(
         &mut self,
         points: &[[f64; 2]],
@@ -539,6 +543,7 @@ impl Writer {
         self.z = z;
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn arc(
         &mut self,
         arc: ArcFit,
@@ -565,6 +570,7 @@ impl Writer {
         self.extrusion_length_mm += arc.length;
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn extrude(
         &mut self,
         x: f64,
@@ -650,9 +656,9 @@ impl Writer {
             self.out.push_str(&format!("G1 E{:.5} F1800\n", self.e));
         }
         let z = self.z + 10.0;
-        self.out.push_str(&format!("G1 Z{:.3} F600\n", z));
+        self.out.push_str(&format!("G1 Z{z:.3} F600\n"));
         self.out.push_str("M106 S0\n");
-        self.out.push_str(&format!("M104 S0\nM140 S0\n"));
+        self.out.push_str("M104 S0\nM140 S0\n");
         self.out.push_str(&format!(
             "; bed {}x{} mm nozzle {:.2} mm\n",
             profile.bed_x, profile.bed_y, profile.nozzle_diameter

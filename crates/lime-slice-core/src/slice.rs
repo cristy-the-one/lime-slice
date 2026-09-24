@@ -1058,20 +1058,21 @@ fn shaft_scales(supports: &[crate::support::SupportLayer], mult: f64) -> Vec<f64
     };
     let mut scale = vec![0.0; supports.len()];
     let mut since = 0u32;
-    for i in 0..supports.len() {
+    for (i, slot) in scale.iter_mut().enumerate() {
         if !has(i) {
             since = 0;
             continue;
         }
         since += 1;
         if since >= m || !has(i + 1) {
-            scale[i] = since as f64;
+            *slot = since as f64;
             since = 0;
         }
     }
     scale
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_layer(
     index: usize,
     z: f64,
@@ -1146,8 +1147,7 @@ fn build_layer(
                 &high, &speed, line_width, &mut hint, &high_feat,
             ));
             note = format!(
-                "region low=toughness high=speed split {:.2} h={:.3}",
-                at_mm, height
+                "region low=toughness high=speed split {at_mm:.2} h={height:.3}"
             );
         }
         other => {
@@ -1204,6 +1204,10 @@ fn build_layer(
     }
 }
 
+type XyRect = ([f64; 2], [f64; 2]);
+type RegionSplit = (XyRect, XyRect);
+
+#[allow(clippy::too_many_arguments)]
 fn emit_supports(
     paths: &mut Vec<Extrusion>,
     support: &[Loop],
@@ -1213,7 +1217,7 @@ fn emit_supports(
     layer_height: f64,
     low: &ResolvedStrategy,
     high: &ResolvedStrategy,
-    split: Option<(([f64; 2], [f64; 2]), ([f64; 2], [f64; 2]))>,
+    split: Option<RegionSplit>,
     line_width: f64,
 ) {
     if support.is_empty() && interface.is_empty() && branches.is_empty() {
@@ -1287,7 +1291,7 @@ fn split_rects(
     min: [f64; 3],
     max: [f64; 3],
     contours: &[Loop],
-) -> (([f64; 2], [f64; 2]), ([f64; 2], [f64; 2])) {
+) -> RegionSplit {
     let (bmin, bmax) = loop_bounds(contours).unwrap_or(([min[0], min[1]], [max[0], max[1]]));
     let pad = 2.0;
     match axis {

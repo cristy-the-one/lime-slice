@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use base64::Engine;
 use clap::{Parser, Subcommand};
@@ -15,6 +15,7 @@ struct Cli {
     cmd: Cmd,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Cmd {
     /// Slice a mesh to G-code.
@@ -321,7 +322,7 @@ fn calibrate(kind: CalibrateCmd) -> Result<(), String> {
 fn bench(input: &PathBuf) -> Result<(), String> {
     let bytes = fs::read(input).map_err(|e| e.to_string())?;
     let mesh = lime_slice_core::load_mesh(
-        &input
+        input
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("mesh.stl"),
@@ -367,8 +368,7 @@ fn bench(input: &PathBuf) -> Result<(), String> {
     );
     if let Ok((indexed, scanned)) = lime_slice_core::contour_times(&mesh, 0.2) {
         println!(
-            "contours  parallel Z-index {:.2} ms  single-thread scan {:.2} ms",
-            indexed, scanned
+            "contours  parallel Z-index {indexed:.2} ms  single-thread scan {scanned:.2} ms"
         );
     }
     println!("new path vs classic planner (lines, no arcs, full triangle scan)");
@@ -759,7 +759,7 @@ fn slice_file(
     })
 }
 
-fn print_summary(input: &PathBuf, response: &lime_slice_core::SliceResponse) {
+fn print_summary(input: &Path, response: &lime_slice_core::SliceResponse) {
     println!(
         "{}  tris {}  core {:.2} ms  baseline {:.2} ms ({})",
         input.display(),

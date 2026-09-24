@@ -98,19 +98,14 @@ pub enum SeamMode {
 /// above 50%) scarfs outer walls, speed and light efficiency mixes do not.
 /// A sharp convex corner still keeps the corner seam; the scarf is only
 /// applied when that corner is absent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ScarfSeam {
+    #[default]
     Blend,
     Off,
     Outer,
     All,
-}
-
-impl Default for ScarfSeam {
-    fn default() -> Self {
-        ScarfSeam::Blend
-    }
 }
 
 /// When the toughness gyroid is the real TPMS section instead of the 2D sine.
@@ -118,9 +113,10 @@ impl Default for ScarfSeam {
 /// `Blend` uses the 3D section wherever the resolved pattern is gyroid
 /// (toughness, and a weight mix at or above 75%). Speed stays on lightning.
 /// `Off` keeps the 2D bands. `On` forces the 3D gyroid for every strategy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Gyroid3d {
+    #[default]
     Blend,
     Off,
     On,
@@ -133,19 +129,14 @@ pub enum Gyroid3d {
 /// perimeter that combing could not route around, or when leaving a top skin.
 /// `Always` hops every travel longer than the threshold. `Off` never hops.
 /// `--classic` forces off.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ZHopMode {
     Off,
+    #[default]
     Blend,
     Always,
     Smart,
-}
-
-impl Default for ZHopMode {
-    fn default() -> Self {
-        ZHopMode::Blend
-    }
 }
 
 impl ZHopMode {
@@ -168,12 +159,6 @@ impl ZHopMode {
             ZHopMode::Always => "always",
             ZHopMode::Smart => "smart",
         }
-    }
-}
-
-impl Default for Gyroid3d {
-    fn default() -> Self {
-        Gyroid3d::Blend
     }
 }
 
