@@ -59,6 +59,8 @@ pub enum InfillPattern {
     Lines,
     Grid,
     Gyroid,
+    /// Sparse tree that only props up nearby roofs. Speed blend.
+    Lightning,
 }
 
 impl InfillPattern {
@@ -67,6 +69,17 @@ impl InfillPattern {
             InfillPattern::Lines => "lines",
             InfillPattern::Grid => "grid",
             InfillPattern::Gyroid => "gyroid",
+            InfillPattern::Lightning => "lightning",
+        }
+    }
+
+    /// Relative strength of one millimetre of this pattern. Gyroid stays above the sparse patterns.
+    pub fn strength(self) -> f64 {
+        match self {
+            InfillPattern::Lightning => 0.40,
+            InfillPattern::Lines => 0.72,
+            InfillPattern::Grid => 1.0,
+            InfillPattern::Gyroid => 1.35,
         }
     }
 }
@@ -95,6 +108,9 @@ pub struct ResolvedStrategy {
     pub skirt_loops: u32,
     /// 0 = speed, 1 = toughness. Used when a single toolpath is a mix.
     pub toughness: f64,
+    /// Millimetres below a roof that lightning (or a pruned pattern) still prints.
+    /// `0` keeps the pattern for the full height.
+    pub lightning_range_mm: f64,
 }
 
 pub fn pure(id: StrategyId) -> ResolvedStrategy {
@@ -103,7 +119,7 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             id,
             walls: 2,
             infill_density: 0.12,
-            pattern: InfillPattern::Lines,
+            pattern: InfillPattern::Lightning,
             print_speed: 140.0,
             travel_speed: 250.0,
             accel: 3500.0,
@@ -113,6 +129,7 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             fan: 255,
             skirt_loops: 1,
             toughness: 0.0,
+            lightning_range_mm: 4.0,
         },
         StrategyId::Toughness => ResolvedStrategy {
             id,
@@ -128,6 +145,7 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             fan: 150,
             skirt_loops: 2,
             toughness: 1.0,
+            lightning_range_mm: 0.0,
         },
     }
 }
@@ -137,12 +155,15 @@ pub fn mix(toughness: f64) -> ResolvedStrategy {
     let speed = pure(StrategyId::Speed);
     let tough = pure(StrategyId::Toughness);
     let lerp = |a: f64, b: f64| a + (b - a) * t;
-    let pattern = if t < 0.34 {
-        InfillPattern::Lines
-    } else if t < 0.67 {
-        InfillPattern::Grid
+    // Speed → lightning, efficiency (mid weight) → lines then grid, toughness → gyroid.
+    let (pattern, range) = if t < 0.20 {
+        (InfillPattern::Lightning, lerp(4.0, 3.2))
+    } else if t < 0.45 {
+        (InfillPattern::Lines, lerp(2.4, 0.0))
+    } else if t < 0.75 {
+        (InfillPattern::Grid, 0.0)
     } else {
-        InfillPattern::Gyroid
+        (InfillPattern::Gyroid, 0.0)
     };
     ResolvedStrategy {
         id: if t >= 0.5 {
@@ -168,7 +189,17 @@ pub fn mix(toughness: f64) -> ResolvedStrategy {
         fan: lerp(speed.fan as f64, tough.fan as f64).round() as u8,
         skirt_loops: if t >= 0.5 { 2 } else { 1 },
         toughness: t,
+        lightning_range_mm: range,
     }
+}
+
+/// Classic planner: line infill for the full height, no lightning pruning.
+pub fn classicize(mut strategy: ResolvedStrategy) -> ResolvedStrategy {
+    if strategy.pattern == InfillPattern::Lightning {
+        strategy.pattern = InfillPattern::Lines;
+    }
+    strategy.lightning_range_mm = 0.0;
+    strategy
 }
 
 /// Support infill fraction. Toughness prints denser supports than speed.
@@ -207,6 +238,20 @@ pub struct PrinterProfile {
     pub bed_temp: f64,
     pub bed_x: f64,
     pub bed_y: f64,
+    /// Volumetric flow cap. Speeds that would exceed this are slowed.
+    #[serde(default = "default_flow")]
+    pub max_volumetric_mm3_s: f64,
+    /// Used by the filament-mass estimator. PLA is 1.24 g/cm³.
+    #[serde(default = "default_density")]
+    pub filament_density_g_cm3: f64,
+}
+
+fn default_flow() -> f64 {
+    12.0
+}
+
+fn default_density() -> f64 {
+    1.24
 }
 
 impl Default for PrinterProfile {
@@ -219,6 +264,8 @@ impl Default for PrinterProfile {
             bed_temp: 60.0,
             bed_x: 220.0,
             bed_y: 220.0,
+            max_volumetric_mm3_s: default_flow(),
+            filament_density_g_cm3: default_density(),
         }
     }
 }

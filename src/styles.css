@@ -133,6 +133,7 @@ input[type="range"] { padding: 0; accent-color: var(--amber); }
 }
 .strategy h3 { margin: 0 0 4px; font-size: 13px; }
 .strategy.speed h3 { color: var(--amber); }
+.strategy.mid h3 { color: #e6d3a3; }
 .strategy.tough h3 { color: var(--teal); }
 .strategy p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
 

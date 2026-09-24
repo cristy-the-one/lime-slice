@@ -329,13 +329,9 @@ fn has_type(gcode: &str, kind: &str) -> bool {
 
 fn settings(adaptive: bool, supports: bool) -> SliceSettings {
     SliceSettings {
-        layer_height: 0.2,
-        line_width: 0.45,
         adaptive,
-        adaptive_min: 0.08,
-        adaptive_max: 0.2,
         supports,
-        support_angle: 45.0,
+        ..SliceSettings::default()
     }
 }
 
@@ -448,4 +444,271 @@ fn supports_fill_the_ledge_and_stay_off_when_disabled() {
         .unwrap();
     assert!(shelf.support_paths == 0);
     assert!(shelf.paths.iter().any(|p| p.kind == "wall"));
+}
+
+fn classic() -> SliceSettings {
+    SliceSettings {
+        classic: true,
+        ..SliceSettings::default()
+    }
+}
+
+fn thin_fin() -> Mesh {
+    let mut tris = Vec::new();
+    add_box(&mut tris, 0.0, 0.0, 0.0, 18.0, 18.0, 3.0);
+    add_box(&mut tris, 8.0, 2.0, 3.0, 8.7, 16.0, 12.0);
+    Mesh { triangles: tris }
+}
+
+fn bridge_span() -> Mesh {
+    let mut tris = Vec::new();
+    add_box(&mut tris, 0.0, 0.0, 0.0, 8.0, 16.0, 8.0);
+    add_box(&mut tris, 22.0, 0.0, 0.0, 30.0, 16.0, 8.0);
+    add_box(&mut tris, 0.0, 4.0, 8.0, 30.0, 12.0, 10.0);
+    Mesh { triangles: tris }
+}
+
+fn cylinder(radius: f64, height: f64, n: usize) -> Mesh {
+    let mut tris = Vec::new();
+    let mut ring = Vec::with_capacity(n);
+    for i in 0..n {
+        let t = std::f64::consts::TAU * i as f64 / n as f64;
+        ring.push([radius * t.cos(), radius * t.sin(), 0.0]);
+    }
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let a = ring[i];
+        let b = ring[j];
+        let c = [b[0], b[1], height];
+        let d = [a[0], a[1], height];
+        tris.push([a, b, c]);
+        tris.push([a, c, d]);
+        tris.push([[0.0, 0.0, 0.0], b, a]);
+        tris.push([[0.0, 0.0, height], d, c]);
+    }
+    Mesh { triangles: tris }
+}
+
+#[test]
+fn lightning_saves_filament_without_dropping_toughness() {
+    let mesh = cube();
+    let speed = slice_configured(
+        &mesh,
+        &BlendMode::Single {
+            strategy: StrategyId::Speed,
+        },
+        &profile(),
+        &SliceSettings::default(),
+    )
+    .unwrap();
+    let speed_old = slice_configured(
+        &mesh,
+        &BlendMode::Single {
+            strategy: StrategyId::Speed,
+        },
+        &profile(),
+        &classic(),
+    )
+    .unwrap();
+    let tough = slice_configured(
+        &mesh,
+        &BlendMode::Single {
+            strategy: StrategyId::Toughness,
+        },
+        &profile(),
+        &SliceSettings::default(),
+    )
+    .unwrap();
+    let tough_old = slice_configured(
+        &mesh,
+        &BlendMode::Single {
+            strategy: StrategyId::Toughness,
+        },
+        &profile(),
+        &classic(),
+    )
+    .unwrap();
+    assert!(speed.sanity.ok && tough.sanity.ok);
+    assert!(
+        speed.estimate.filament_mm < speed_old.estimate.filament_mm * 0.75,
+        "lightning filament {} vs classic {}",
+        speed.estimate.filament_mm,
+        speed_old.estimate.filament_mm
+    );
+    assert!(speed.gcode.contains("lightning"));
+    assert!(tough.gcode.contains("gyroid"));
+    assert!(
+        tough.score.toughness >= tough_old.score.toughness * 0.90,
+        "toughness {} vs classic {}",
+        tough.score.toughness,
+        tough_old.score.toughness
+    );
+    assert!(tough.score.toughness > speed.score.toughness * 2.0);
+    assert!(speed.estimate.seconds > 1.0 && speed.estimate.filament_g > 0.1);
+    assert!(speed.score.efficiency > speed_old.score.efficiency);
+}
+
+#[test]
+fn thin_wall_uses_a_variable_bead() {
+    let mesh = thin_fin();
+    let response = slice_configured(
+        &mesh,
+        &BlendMode::Single {
+            strategy: StrategyId::Speed,
+        },
+        &profile(),
+        &SliceSettings::default(),
+    )
+    .unwrap();
+    assert!(response.sanity.ok, "{:?}", response.sanity.notes);
+    let bead = response
+        .layers
+        .iter()
+        .flat_map(|l| l.paths.iter())
+        .any(|p| {
+            (p.kind == "thin-wall" || p.kind == "wall" || p.kind == "gap-fill")
+                && p.width > 0.2
+                && (p.width - 0.45).abs() > 0.04
+        });
+    assert!(bead, "expected a variable-width bead on the 0.7 mm fin");
+    assert!(has_type(&response.gcode, "THIN-WALL") || has_type(&response.gcode, "WALL"));
+}
+
+#[test]
+fn bridge_and_overhang_slow_the_span() {
+    let mesh = bridge_span();
+    let response = slice_configured(
+        &mesh,
+        &BlendMode::Single {
+            strategy: StrategyId::Speed,
+        },
+        &profile(),
+        &SliceSettings::default(),
+    )
+    .unwrap();
+    assert!(response.sanity.ok, "{:?}", response.sanity.notes);
+    let bridges: Vec<_> = response
+        .layers
+        .iter()
+        .flat_map(|l| l.paths.iter())
+        .filter(|p| p.kind == "bridge")
+        .collect();
+    assert!(!bridges.is_empty(), "expected a bridge across the span");
+    assert!(bridges.iter().all(|p| p.speed <= 40.0));
+    assert!(has_type(&response.gcode, "BRIDGE"));
+    let off = slice_configured(
+        &mesh,
+        &BlendMode::Single {
+            strategy: StrategyId::Speed,
+        },
+        &profile(),
+        &SliceSettings {
+            overhang_control: false,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    assert!(!has_type(&off.gcode, "BRIDGE"));
+}
+
+#[test]
+fn arcs_fit_a_cylinder_and_classic_stays_linear() {
+    let mesh = cylinder(12.0, 4.0, 48);
+    let fitted = slice_configured(
+        &mesh,
+        &BlendMode::Single {
+            strategy: StrategyId::Speed,
+        },
+        &profile(),
+        &SliceSettings::default(),
+    )
+    .unwrap();
+    let linear = slice_configured(
+        &mesh,
+        &BlendMode::Single {
+            strategy: StrategyId::Speed,
+        },
+        &profile(),
+        &classic(),
+    )
+    .unwrap();
+    assert!(fitted.sanity.ok, "{:?}", fitted.sanity.notes);
+    assert!(linear.sanity.ok, "{:?}", linear.sanity.notes);
+    assert!(fitted.estimate.arc_moves > 0, "expected G2/G3");
+    assert!(fitted.gcode.contains("G2 ") || fitted.gcode.contains("G3 "));
+    assert_eq!(linear.estimate.arc_moves, 0);
+    assert!(fitted.gcode.contains("G1 "));
+    assert!(fitted.estimate.filament_g > 0.0);
+}
+
+#[test]
+fn volumetric_flow_caps_extrusion_feed() {
+    let mesh = cube();
+    let mut printer = profile();
+    printer.max_volumetric_mm3_s = 1.5;
+    let response = slice_configured(
+        &mesh,
+        &BlendMode::Single {
+            strategy: StrategyId::Speed,
+        },
+        &printer,
+        &SliceSettings::default(),
+    )
+    .unwrap();
+    assert!(response.sanity.ok, "{:?}", response.sanity.notes);
+    let mut over = 0u32;
+    for line in response.gcode.lines() {
+        if !line.starts_with("G1 ") || !line.contains(" E") {
+            continue;
+        }
+        let Some(f) = line
+            .split_whitespace()
+            .find_map(|tok| tok.strip_prefix('F'))
+        else {
+            continue;
+        };
+        let f: f64 = f.parse().unwrap();
+        // Narrow variable beads may run faster than a 0.45 mm bead. 140 mm/s is F8400.
+        if f > 2800.0 {
+            over += 1;
+        }
+    }
+    assert_eq!(over, 0, "extrusion feed exceeded the volumetric cap");
+}
+
+#[test]
+fn indexed_slice_matches_classic_contours() {
+    let mesh = cube();
+    let indexed = slice_configured(
+        &mesh,
+        &BlendMode::Single {
+            strategy: StrategyId::Toughness,
+        },
+        &profile(),
+        &SliceSettings {
+            classic: false,
+            variable_width: false,
+            arc_fit: false,
+            travel_opt: false,
+            overhang_control: false,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    let scanned = slice_configured(
+        &mesh,
+        &BlendMode::Single {
+            strategy: StrategyId::Toughness,
+        },
+        &profile(),
+        &classic(),
+    )
+    .unwrap();
+    assert_eq!(indexed.sanity.layers, scanned.sanity.layers);
+    let mid_i = indexed.layers.iter().find(|l| l.index == 40).unwrap();
+    let mid_s = scanned.layers.iter().find(|l| l.index == 40).unwrap();
+    assert_eq!(mid_i.toughness_walls, mid_s.toughness_walls);
+    let rel = (indexed.estimate.filament_mm - scanned.estimate.filament_mm).abs()
+        / scanned.estimate.filament_mm;
+    assert!(rel < 0.08, "filament drifted {rel}");
 }

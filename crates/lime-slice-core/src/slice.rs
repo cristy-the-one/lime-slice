@@ -7,15 +7,17 @@ use serde::{Deserialize, Serialize};
 use crate::adaptive::{plan_bands, HeightOpts};
 use crate::contour::{loop_bounds, slice_contours, Loop};
 use crate::gcode::{emit_gcode, LayerPaths};
+use crate::index::ZIndex;
 use crate::load::load_mesh;
 use crate::mesh::Mesh;
 use crate::strategy::{
-    layer_weight, mix, pure, support_density, support_interface_density, Axis, BlendMode,
-    PrinterProfile, ResolvedStrategy, StrategyId,
+    classicize, layer_weight, mix, pure, support_density, support_interface_density, Axis,
+    BlendMode, PrinterProfile, ResolvedStrategy, StrategyId,
 };
 use crate::support::{build_supports, SupportOpts};
 use crate::toolpath::{
-    boolean_union, clip_to_rect, plan_region, plan_skirt, plan_support, Extrusion, PathKind,
+    apply_overhang, boolean_union, clip_to_rect, optimize_travel, plan_region, plan_skirt,
+    plan_support, Extrusion, PathFeatures, PathKind,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -46,6 +48,21 @@ pub struct SliceRequest {
     /// Overhang angle from horizontal, degrees. `0` means 45°.
     #[serde(default)]
     pub support_angle: f64,
+    /// Arachne-style variable walls, thin walls, and gap fill. Default on.
+    #[serde(default = "default_true")]
+    pub variable_width: bool,
+    /// G2/G3 arc fitting. Default on.
+    #[serde(default = "default_true")]
+    pub arc_fit: bool,
+    /// Seam hiding and travel reorder. Default on.
+    #[serde(default = "default_true")]
+    pub travel_opt: bool,
+    /// Overhang slowdown, extra fan, and bridge detection. Default on.
+    #[serde(default = "default_true")]
+    pub overhang_control: bool,
+    /// Replay the pre-feature planner (lines, no arcs, no index) for benches.
+    #[serde(default)]
+    pub classic: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -57,6 +74,12 @@ pub struct SliceSettings {
     pub adaptive_max: f64,
     pub supports: bool,
     pub support_angle: f64,
+    pub variable_width: bool,
+    pub arc_fit: bool,
+    pub travel_opt: bool,
+    pub overhang_control: bool,
+    pub classic: bool,
+    pub spatial_index: bool,
 }
 
 impl Default for SliceSettings {
@@ -69,6 +92,12 @@ impl Default for SliceSettings {
             adaptive_max: 0.2,
             supports: false,
             support_angle: 45.0,
+            variable_width: true,
+            arc_fit: true,
+            travel_opt: true,
+            overhang_control: true,
+            classic: false,
+            spatial_index: true,
         }
     }
 }
@@ -100,6 +129,12 @@ impl SliceSettings {
             adaptive_max: adaptive_max.clamp(0.05, 0.6),
             supports: req.supports,
             support_angle: support_angle.clamp(15.0, 75.0),
+            variable_width: req.variable_width && !req.classic,
+            arc_fit: req.arc_fit && !req.classic,
+            travel_opt: req.travel_opt && !req.classic,
+            overhang_control: req.overhang_control && !req.classic,
+            classic: req.classic,
+            spatial_index: !req.classic,
         }
     }
 
@@ -130,6 +165,10 @@ fn default_width() -> f64 {
     0.45
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SliceResponse {
@@ -141,6 +180,28 @@ pub struct SliceResponse {
     pub gcode: String,
     pub layers: Vec<PreviewLayer>,
     pub blend: String,
+    pub estimate: PrintEstimate,
+    pub score: BlendScore,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrintEstimate {
+    pub seconds: f64,
+    pub filament_mm: f64,
+    pub filament_g: f64,
+    pub arc_moves: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlendScore {
+    /// Higher is a shorter print. Fed by the time estimator.
+    pub speed: f64,
+    /// Higher uses less filament. Fed by the mass estimator.
+    pub efficiency: f64,
+    /// Structural proxy (walls and pattern). Lightning scores below gyroid.
+    pub toughness: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -187,6 +248,28 @@ pub struct PreviewPath {
     pub kind: String,
     pub strategy: String,
     pub pts: Vec<[f64; 2]>,
+    pub width: f64,
+    pub speed: f64,
+}
+
+/// Milliseconds to contour every layer with the Z index, then with a full triangle scan.
+pub fn contour_times(mesh: &Mesh, layer_height: f64) -> Result<(f64, f64), String> {
+    let (_, max) = mesh.bounds().ok_or("empty mesh")?;
+    let mut zs = Vec::new();
+    let mut z = layer_height;
+    while z < max[2] + 1e-6 {
+        zs.push(z);
+        z += layer_height;
+    }
+    let index = ZIndex::build(mesh);
+    let started = Instant::now();
+    let indexed: Vec<_> = zs.par_iter().map(|z| index.slice(*z)).collect();
+    let indexed_ms = elapsed_ms(started);
+    let started = Instant::now();
+    let scanned: Vec<_> = zs.iter().map(|z| slice_contours(mesh, *z)).collect();
+    let scanned_ms = elapsed_ms(started);
+    debug_assert_eq!(indexed.len(), scanned.len());
+    Ok((indexed_ms, scanned_ms))
 }
 
 pub fn slice_request(req: &SliceRequest) -> Result<SliceResponse, String> {
@@ -225,21 +308,33 @@ pub fn slice_configured(
     let (min, max) = mesh.bounds().ok_or("empty mesh")?;
     let layer_height = settings.layer_height.clamp(0.05, 0.6);
     let line_width = settings.line_width.clamp(0.15, 1.2);
-    let settings = SliceSettings {
+    let mut settings = SliceSettings {
         layer_height,
         line_width,
         ..settings.clone()
     };
+    if settings.classic {
+        settings.variable_width = false;
+        settings.arc_fit = false;
+        settings.travel_opt = false;
+        settings.overhang_control = false;
+        settings.spatial_index = false;
+    }
     let features = settings.feature_note();
+    let mut profile = profile.clone();
+    if settings.classic {
+        profile.max_volumetric_mm3_s = f64::INFINITY;
+    }
     let started = Instant::now();
     let planned = plan(mesh, blend, &settings)?;
     let gcode = emit_gcode(
         &planned,
-        profile,
+        &profile,
         blend,
         layer_height,
         line_width,
         &features,
+        settings.arc_fit,
     );
     let core_ms = elapsed_ms(started);
 
@@ -250,11 +345,12 @@ pub fn slice_configured(
     let baseline_planned = plan(mesh, &baseline_mode, &settings)?;
     let _baseline_gcode = emit_gcode(
         &baseline_planned,
-        profile,
+        &profile,
         &baseline_mode,
         layer_height,
         line_width,
         &features,
+        settings.arc_fit,
     );
     let baseline_ms = elapsed_ms(baseline_started);
 
@@ -312,7 +408,50 @@ pub fn slice_configured(
         gcode: gcode.text,
         layers,
         blend: blend.describe(),
+        estimate: PrintEstimate {
+            seconds: gcode.print_time_s,
+            filament_mm: gcode.filament_mm,
+            filament_g: gcode.filament_g,
+            arc_moves: gcode.arc_moves,
+        },
+        score: score_of(
+            gcode.print_time_s,
+            gcode.filament_g,
+            structural_mm3(&planned),
+        ),
     })
+}
+
+fn score_of(seconds: f64, grams: f64, toughness: f64) -> BlendScore {
+    BlendScore {
+        speed: 60.0 / (seconds / 60.0).max(0.05),
+        efficiency: 8.0 / grams.max(0.02),
+        toughness,
+    }
+}
+
+fn structural_mm3(layers: &[LayerPaths]) -> f64 {
+    layers
+        .iter()
+        .map(|layer| {
+            layer
+                .paths
+                .iter()
+                .map(|path| {
+                    let len = path
+                        .points
+                        .windows(2)
+                        .map(|w| {
+                            let dx = w[1][0] - w[0][0];
+                            let dy = w[1][1] - w[0][1];
+                            dx.hypot(dy)
+                        })
+                        .sum::<f64>();
+                    len * path.width * layer.height * path.strength * path.flow
+                })
+                .sum::<f64>()
+        })
+        .sum()
 }
 
 fn preview_of(layers: &[LayerPaths]) -> Vec<PreviewLayer> {
@@ -337,6 +476,8 @@ fn preview_of(layers: &[LayerPaths]) -> Vec<PreviewLayer> {
                             kind: "travel".into(),
                             strategy: path.strategy.as_str().into(),
                             pts: vec![c, *start],
+                            width: 0.0,
+                            speed: path.travel_speed,
                         });
                     }
                 }
@@ -344,6 +485,8 @@ fn preview_of(layers: &[LayerPaths]) -> Vec<PreviewLayer> {
                     kind: path.kind.as_str().into(),
                     strategy: path.strategy.as_str().into(),
                     pts: decimate(&path.points),
+                    width: path.width,
+                    speed: path.speed,
                 });
                 cursor = path.points.last().copied();
             }
@@ -417,10 +560,19 @@ fn plan(
             max_h,
         },
     )?;
+    let index = if settings.spatial_index {
+        Some(ZIndex::build(mesh))
+    } else {
+        None
+    };
     let contours: Vec<Vec<Loop>> = bands
         .par_iter()
-        .map(|band| slice_contours(mesh, band.z))
+        .map(|band| match &index {
+            Some(index) => index.slice(band.z),
+            None => slice_contours(mesh, band.z),
+        })
         .collect();
+    let roofs = roof_distances(&bands, &contours);
     let supports = if settings.supports {
         build_supports(
             &bands,
@@ -439,7 +591,7 @@ fn plan(
         .enumerate()
         .map(|(i, band)| {
             let support = supports.get(i);
-            build_layer(
+            let mut job = build_layer(
                 band.index,
                 band.z,
                 band.height,
@@ -447,10 +599,23 @@ fn plan(
                 support.map(|s| s.sparse.as_slice()).unwrap_or(&[]),
                 support.map(|s| s.interface.as_slice()).unwrap_or(&[]),
                 blend,
-                settings.line_width,
+                settings,
+                roofs[i],
                 min,
                 max,
-            )
+            );
+            if settings.overhang_control && i > 0 {
+                apply_overhang(
+                    &mut job.paths,
+                    &contours[i - 1],
+                    band.height,
+                    settings.line_width,
+                );
+            }
+            if settings.travel_opt {
+                optimize_travel(&mut job.paths, &contours[i]);
+            }
+            job
         })
         .collect();
     Ok(jobs
@@ -465,6 +630,62 @@ fn plan(
         .collect())
 }
 
+fn roof_distances(bands: &[crate::adaptive::LayerBand], contours: &[Vec<Loop>]) -> Vec<f64> {
+    let n = bands.len();
+    let mut dist = vec![0.0; n];
+    let mut since = 0.0;
+    for i in (0..n).rev() {
+        let roof = i + 1 >= n
+            || layer_is_roof(
+                &contours[i],
+                contours.get(i + 1).map(Vec::as_slice).unwrap_or(&[]),
+            );
+        if roof {
+            since = 0.0;
+        }
+        dist[i] = since;
+        since += bands[i].height;
+    }
+    dist
+}
+
+fn layer_is_roof(current: &[Loop], above: &[Loop]) -> bool {
+    if current.is_empty() {
+        return false;
+    }
+    if above.is_empty() {
+        return true;
+    }
+    let Some((min, max)) = loop_bounds(current) else {
+        return false;
+    };
+    let step = ((max[0] - min[0]).max(max[1] - min[1]) / 8.0).clamp(1.0, 4.0);
+    let mut exposed = 0;
+    let mut y = min[1] + step * 0.5;
+    while y < max[1] {
+        let mut x = min[0] + step * 0.5;
+        while x < max[0] {
+            if crate::contour::in_solid(current, x, y) && !crate::contour::in_solid(above, x, y) {
+                exposed += 1;
+                if exposed >= 2 {
+                    return true;
+                }
+            }
+            x += step;
+        }
+        y += step;
+    }
+    false
+}
+
+fn resolve(strategy: ResolvedStrategy, settings: &SliceSettings) -> ResolvedStrategy {
+    if settings.classic {
+        classicize(strategy)
+    } else {
+        strategy
+    }
+}
+
 fn build_layer(
     index: usize,
     z: f64,
@@ -473,10 +694,16 @@ fn build_layer(
     support: &[Loop],
     interface: &[Loop],
     blend: &BlendMode,
-    line_width: f64,
+    settings: &SliceSettings,
+    roof_distance: f64,
     min: [f64; 3],
     max: [f64; 3],
 ) -> Job {
+    let line_width = settings.line_width;
+    let features = PathFeatures {
+        variable_width: settings.variable_width,
+        roof_distance_mm: roof_distance,
+    };
     if contours.is_empty() && support.is_empty() && interface.is_empty() {
         return Job {
             index,
@@ -496,8 +723,8 @@ fn build_layer(
     match blend {
         BlendMode::ByRegion { axis, at_mm } => {
             let (low_rect, high_rect) = split_rects(*axis, *at_mm, min, max, contours);
-            let tough = pure(StrategyId::Toughness);
-            let speed = pure(StrategyId::Speed);
+            let tough = resolve(pure(StrategyId::Toughness), settings);
+            let speed = resolve(pure(StrategyId::Speed), settings);
             let low = clip_to_rect(contours, low_rect.0, low_rect.1);
             let high = clip_to_rect(contours, high_rect.0, high_rect.1);
             if index == 0 && !skirt_src.is_empty() {
@@ -515,23 +742,26 @@ fn build_layer(
                 line_width,
             );
             let mut hint = [min[0], min[1]];
-            paths.extend(plan_region(&low, &tough, line_width, &mut hint));
-            paths.extend(plan_region(&high, &speed, line_width, &mut hint));
+            paths.extend(plan_region(&low, &tough, line_width, &mut hint, &features));
+            paths.extend(plan_region(&high, &speed, line_width, &mut hint, &features));
             note = format!(
                 "region low=toughness high=speed split {:.2} h={:.3}",
                 at_mm, height
             );
         }
         other => {
-            let resolved = match other {
-                BlendMode::Single { strategy } => pure(*strategy),
-                BlendMode::Weight { toughness } => mix(*toughness),
-                BlendMode::ByLayer {
-                    bottom_mm,
-                    transition_mm,
-                } => mix(layer_weight(z, *bottom_mm, *transition_mm)),
-                BlendMode::ByRegion { .. } => unreachable!(),
-            };
+            let resolved = resolve(
+                match other {
+                    BlendMode::Single { strategy } => pure(*strategy),
+                    BlendMode::Weight { toughness } => mix(*toughness),
+                    BlendMode::ByLayer {
+                        bottom_mm,
+                        transition_mm,
+                    } => mix(layer_weight(z, *bottom_mm, *transition_mm)),
+                    BlendMode::ByRegion { .. } => unreachable!(),
+                },
+                settings,
+            );
             if index == 0 && !skirt_src.is_empty() {
                 paths.extend(plan_skirt(&skirt_src, &resolved, line_width));
             }
@@ -539,7 +769,9 @@ fn build_layer(
                 &mut paths, support, interface, &resolved, &resolved, None, line_width,
             );
             let mut hint = [max[0], (min[1] + max[1]) * 0.5];
-            paths.extend(plan_region(contours, &resolved, line_width, &mut hint));
+            paths.extend(plan_region(
+                contours, &resolved, line_width, &mut hint, &features,
+            ));
             note = format!(
                 "{} walls={} infill={:.0}% {} {:.0}mm/s h={:.3}",
                 resolved.id.as_str(),

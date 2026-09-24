@@ -20,6 +20,10 @@ pub fn slice_contours(mesh: &Mesh, z: f64) -> Vec<Loop> {
             segs.push((hits[0], hits[1]));
         }
     }
+    contours_from_segments(segs)
+}
+
+pub fn contours_from_segments(segs: Vec<([f64; 2], [f64; 2])>) -> Vec<Loop> {
     orient_loops(stitch(segs))
 }
 
