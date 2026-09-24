@@ -74,6 +74,13 @@ const state: {
   adaptiveMax: number;
   supports: boolean;
   supportAngle: number;
+  supportStyle: "grid" | "tree";
+  supportHeightMult: number;
+  infillCombine: boolean;
+  combing: boolean;
+  featureSpeeds: boolean;
+  pressureAdvance: number;
+  linearAdvance: number;
   variableWidth: boolean;
   arcFit: boolean;
   travelOpt: boolean;
@@ -99,6 +106,13 @@ const state: {
   adaptiveMax: 0.2,
   supports: false,
   supportAngle: 45,
+  supportStyle: "grid",
+  supportHeightMult: 1,
+  infillCombine: true,
+  combing: true,
+  featureSpeeds: true,
+  pressureAdvance: 0,
+  linearAdvance: 0,
   variableWidth: true,
   arcFit: true,
   travelOpt: true,
@@ -189,13 +203,20 @@ function renderChrome() {
     <div class="meta">${meshLine}</div>
     <h2>Printer stub</h2>
     <div class="meta">Generic Marlin 0.4 mm PLA<br>Nozzle 200 °C · bed 60 °C<br>Filament 1.75 mm · bed 220 mm</div>
+    <label class="field">Pressure advance<input id="pa" type="number" min="0" max="0.2" step="0.005" value="${state.pressureAdvance}" /></label>
+    <label class="field">Linear advance K<input id="la" type="number" min="0" max="2" step="0.01" value="${state.linearAdvance}" /></label>
     <h2>Slice</h2>
     <label class="field">Layer height mm<input id="lh" type="number" min="0.08" max="0.4" step="0.02" value="${state.layerHeight}" /></label>
     <label class="check"><input id="adaptive" type="checkbox" ${state.adaptive ? "checked" : ""}/> Adaptive layers</label>
     ${state.adaptive ? `<label class="field">Min mm<input id="amin" type="number" min="0.04" max="0.28" step="0.02" value="${state.adaptiveMin}" /></label>
     <label class="field">Max mm<input id="amax" type="number" min="0.08" max="0.4" step="0.02" value="${state.adaptiveMax}" /></label>` : ""}
     <label class="check"><input id="supports" type="checkbox" ${state.supports ? "checked" : ""}/> Smart supports</label>
-    ${state.supports ? `<label class="field">Overhang angle °<input id="sangle" type="number" min="20" max="70" step="5" value="${state.supportAngle}" /></label>` : ""}
+    ${state.supports ? `<label class="field">Style<select id="sstyle"><option value="grid" ${state.supportStyle === "grid" ? "selected" : ""}>Sparse grid</option><option value="tree" ${state.supportStyle === "tree" ? "selected" : ""}>Tree</option></select></label>
+    <label class="field">Overhang angle °<input id="sangle" type="number" min="20" max="70" step="5" value="${state.supportAngle}" /></label>
+    <label class="field">Shaft height ×<input id="shmult" type="number" min="1" max="4" step="1" value="${state.supportHeightMult}" /></label>` : ""}
+    <label class="check"><input id="combine" type="checkbox" ${state.infillCombine ? "checked" : ""}/> Combine sparse infill</label>
+    <label class="check"><input id="combing" type="checkbox" ${state.combing ? "checked" : ""}/> Hole-aware combing</label>
+    <label class="check"><input id="feeds" type="checkbox" ${state.featureSpeeds ? "checked" : ""}/> Per-feature speeds</label>
     <label class="check"><input id="vwidth" type="checkbox" ${state.variableWidth ? "checked" : ""}/> Variable walls</label>
     <label class="check"><input id="arcs" type="checkbox" ${state.arcFit ? "checked" : ""}/> Arc fit (G2/G3)</label>
     <label class="check"><input id="travelopt" type="checkbox" ${state.travelOpt ? "checked" : ""}/> Travel and seam</label>
@@ -244,7 +265,8 @@ function renderChrome() {
   document.querySelector("#legend")!.innerHTML = `
     <span><i class="swatch" style="background:#f0a202"></i>speed wall</span>
     <span><i class="swatch" style="background:#2ec4b6"></i>toughness wall</span>
-    <span><i class="swatch" style="background:#a56d12"></i>speed infill</span>
+    <span><i class="swatch" style="background:#f6d48a"></i>outer</span>
+    <span><i class="swatch" style="background:#a56d12"></i>sparse infill</span>
     <span><i class="swatch" style="background:#1b7f76"></i>toughness infill</span>
     <span><i class="swatch" style="background:#d7d2c6"></i>skirt</span>
     <span><i class="swatch" style="background:#e85d4c"></i>thin / gap</span>
@@ -311,6 +333,27 @@ function bindChrome() {
   });
   document.querySelector("#sangle")?.addEventListener("change", (ev) => {
     state.supportAngle = Number((ev.target as HTMLInputElement).value) || 45;
+  });
+  document.querySelector("#sstyle")?.addEventListener("change", (ev) => {
+    state.supportStyle = (ev.target as HTMLSelectElement).value as "grid" | "tree";
+  });
+  document.querySelector("#shmult")?.addEventListener("change", (ev) => {
+    state.supportHeightMult = Number((ev.target as HTMLInputElement).value) || 1;
+  });
+  document.querySelector("#combine")?.addEventListener("change", (ev) => {
+    state.infillCombine = (ev.target as HTMLInputElement).checked;
+  });
+  document.querySelector("#combing")?.addEventListener("change", (ev) => {
+    state.combing = (ev.target as HTMLInputElement).checked;
+  });
+  document.querySelector("#feeds")?.addEventListener("change", (ev) => {
+    state.featureSpeeds = (ev.target as HTMLInputElement).checked;
+  });
+  document.querySelector("#pa")?.addEventListener("change", (ev) => {
+    state.pressureAdvance = Number((ev.target as HTMLInputElement).value) || 0;
+  });
+  document.querySelector("#la")?.addEventListener("change", (ev) => {
+    state.linearAdvance = Number((ev.target as HTMLInputElement).value) || 0;
   });
   document.querySelector("#vwidth")?.addEventListener("change", (ev) => {
     state.variableWidth = (ev.target as HTMLInputElement).checked;
@@ -453,6 +496,24 @@ async function runSlice() {
       adaptiveMax: state.adaptiveMax,
       supports: state.supports,
       supportAngle: state.supportAngle,
+      supportStyle: state.supportStyle,
+      supportHeightMult: state.supportHeightMult,
+      infillCombine: state.infillCombine,
+      combing: state.combing,
+      featureSpeeds: state.featureSpeeds,
+      printer: {
+        name: "Generic Marlin 0.4 mm PLA",
+        nozzleDiameter: 0.4,
+        filamentDiameter: 1.75,
+        nozzleTemp: 200,
+        bedTemp: 60,
+        bedX: 220,
+        bedY: 220,
+        maxVolumetricMm3S: 12,
+        filamentDensityGCm3: 1.24,
+        pressureAdvance: state.pressureAdvance,
+        linearAdvance: state.linearAdvance,
+      },
       variableWidth: state.variableWidth,
       arcFit: state.arcFit,
       travelOpt: state.travelOpt,
@@ -548,7 +609,7 @@ function draw() {
   ctx.lineWidth = 1;
   ctx.strokeRect(map(minX, minY)[0], map(maxX, maxY)[1], spanX * scale, spanY * scale);
 
-  const order = ["travel", "support", "support-interface", "infill", "gap-fill", "bridge", "thin-wall", "skirt", "wall"];
+  const order = ["travel", "support", "support-interface", "infill", "sparse", "solid", "top", "gap-fill", "bridge", "thin-wall", "skirt", "inner", "outer", "wall"];
   const paths = [...layer.paths].sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
   for (const path of paths) {
     if (path.kind === "travel" && !state.showTravel) continue;
@@ -560,7 +621,8 @@ function draw() {
     });
     ctx.strokeStyle = colorFor(path);
     const support = path.kind === "support" || path.kind === "support-interface";
-    ctx.lineWidth = path.kind === "wall" ? Math.max(1.4, scale * 0.12) : path.kind === "travel" ? 1 : support ? Math.max(1.2, scale * 0.1) : Math.max(1, scale * 0.08);
+    const wall = path.kind === "wall" || path.kind === "outer" || path.kind === "inner";
+    ctx.lineWidth = wall ? Math.max(1.4, scale * 0.12) : path.kind === "travel" ? 1 : support ? Math.max(1.2, scale * 0.1) : Math.max(1, scale * 0.08);
     ctx.setLineDash(path.kind === "travel" ? [4, 4] : []);
     ctx.stroke();
   }
@@ -586,7 +648,10 @@ function colorFor(path: PreviewPath) {
   if (path.kind === "thin-wall" || path.kind === "gap-fill") return "#e85d4c";
   if (path.kind === "bridge") return "#f2cc60";
   const tough = path.strategy === "toughness";
-  if (path.kind === "wall") return tough ? "#2ec4b6" : "#f0a202";
+  if (path.kind === "outer") return tough ? "#7ee0d6" : "#f6d48a";
+  if (path.kind === "inner" || path.kind === "wall") return tough ? "#2ec4b6" : "#f0a202";
+  if (path.kind === "top") return tough ? "#8fd9c8" : "#e7b34a";
+  if (path.kind === "solid") return tough ? "#1b7f76" : "#c9842a";
   return tough ? "#1b7f76" : "#a56d12";
 }
 

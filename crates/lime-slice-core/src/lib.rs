@@ -18,3 +18,4 @@ pub use slice::{
     SliceRequest, SliceResponse, SliceSettings,
 };
 pub use strategy::{Axis, BlendMode, PrinterProfile, StrategyId};
+pub use support::SupportStyle;

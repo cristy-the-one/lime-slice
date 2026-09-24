@@ -18,6 +18,7 @@ pub struct GcodeStats {
     pub filament_mm: f64,
     pub filament_g: f64,
     pub arc_moves: usize,
+    pub retracts: usize,
 }
 
 pub fn emit_gcode(
@@ -38,7 +39,7 @@ pub fn emit_gcode(
         w.layer_header(layer);
         emitted_layers += 1;
         for path in &layer.paths {
-            w.set_accel(path.accel);
+            w.set_advance(path.kind.as_str());
             if layer.index >= 2 {
                 w.set_fan(path.fan);
             } else if layer.index == 1 {
@@ -56,18 +57,26 @@ pub fn emit_gcode(
             if path.points.is_empty() {
                 continue;
             }
-            w.travel(
-                path.points[0][0],
-                path.points[0][1],
+            let bead_h = if path.bead_height > 1e-6 {
+                path.bead_height
+            } else {
+                layer.height
+            };
+            w.set_accel(path.travel_accel);
+            let mut hop = path.lead_in.clone();
+            hop.push(path.points[0]);
+            w.travel_chain(
+                &hop,
                 path.travel_speed,
                 path.retract_mm,
                 path.retract_min_travel,
-                path.accel,
+                path.travel_accel,
             );
+            w.set_accel(path.accel);
             let limited = limit_speed(
                 speed,
                 path.width,
-                layer.height,
+                bead_h,
                 flow * path.flow,
                 profile.max_volumetric_mm3_s,
             );
@@ -75,6 +84,8 @@ pub fn emit_gcode(
                 && matches!(
                     path.kind,
                     crate::toolpath::PathKind::Wall
+                        | crate::toolpath::PathKind::Outer
+                        | crate::toolpath::PathKind::Inner
                         | crate::toolpath::PathKind::ThinWall
                         | crate::toolpath::PathKind::Skirt
                 );
@@ -82,7 +93,7 @@ pub fn emit_gcode(
                 &path.points,
                 limited,
                 path.width,
-                layer.height,
+                bead_h,
                 flow * path.flow,
                 profile.filament_diameter,
                 path.accel,
@@ -123,8 +134,14 @@ struct Writer {
     bounds_init: bool,
     time_s: f64,
     arc_moves: usize,
+    retracts: usize,
     dir: [f64; 2],
     has_dir: bool,
+    pa_base: f64,
+    la_base: f64,
+    pa_cur: f64,
+    la_cur: f64,
+    emit_pa: bool,
 }
 
 impl Writer {
@@ -149,6 +166,15 @@ impl Writer {
         out.push_str(&format!("M190 S{:.0}\n", profile.bed_temp));
         out.push_str(&format!("M109 S{:.0}\n", profile.nozzle_temp));
         out.push_str("G21\nG90\nM82\nG28\nG92 E0\nM106 S0\nM204 S1500\n");
+        if profile.pressure_advance > 0.0 {
+            out.push_str(&format!(
+                "SET_PRESSURE_ADVANCE ADVANCE={:.4}\n",
+                profile.pressure_advance
+            ));
+        }
+        if profile.linear_advance > 0.0 {
+            out.push_str(&format!("M900 K{:.3}\n", profile.linear_advance));
+        }
         Self {
             out,
             e: 0.0,
@@ -170,8 +196,32 @@ impl Writer {
             bounds_init: false,
             time_s: 0.0,
             arc_moves: 0,
+            retracts: 0,
             dir: [1.0, 0.0],
             has_dir: false,
+            pa_base: profile.pressure_advance.max(0.0),
+            la_base: profile.linear_advance.max(0.0),
+            pa_cur: profile.pressure_advance.max(0.0),
+            la_cur: profile.linear_advance.max(0.0),
+            emit_pa: profile.pressure_advance > 0.0 || profile.linear_advance > 0.0,
+        }
+    }
+
+    fn set_advance(&mut self, kind: &str) {
+        if !self.emit_pa {
+            return;
+        }
+        let scale = crate::strategy::advance_scale(kind);
+        let pa = self.pa_base * scale;
+        let la = self.la_base * scale;
+        if self.pa_base > 0.0 && (pa - self.pa_cur).abs() > 1e-4 {
+            self.out
+                .push_str(&format!("SET_PRESSURE_ADVANCE ADVANCE={pa:.4}\n"));
+            self.pa_cur = pa;
+        }
+        if self.la_base > 0.0 && (la - self.la_cur).abs() > 1e-4 {
+            self.out.push_str(&format!("M900 K{la:.3}\n"));
+            self.la_cur = la;
         }
     }
 
@@ -224,7 +274,29 @@ impl Writer {
         }
     }
 
-    fn travel(&mut self, x: f64, y: f64, speed: f64, retract_mm: f64, min_travel: f64, accel: f64) {
+    fn travel_chain(
+        &mut self,
+        pts: &[[f64; 2]],
+        speed: f64,
+        retract_mm: f64,
+        min_travel: f64,
+        accel: f64,
+    ) {
+        for (i, p) in pts.iter().enumerate() {
+            let retract = if i == 0 { retract_mm } else { 0.0 };
+            self.travel_one(p[0], p[1], speed, retract, min_travel, accel);
+        }
+    }
+
+    fn travel_one(
+        &mut self,
+        x: f64,
+        y: f64,
+        speed: f64,
+        retract_mm: f64,
+        min_travel: f64,
+        accel: f64,
+    ) {
         if self.has_pos {
             let d = hypot(x - self.x, y - self.y);
             if d < 0.02 {
@@ -233,6 +305,7 @@ impl Writer {
             if d >= min_travel && retract_mm > 0.0 && self.retracted == 0.0 {
                 self.e -= retract_mm;
                 self.retracted = retract_mm;
+                self.retracts += 1;
                 self.out.push_str(&format!("G1 E{:.5} F1800\n", self.e));
                 self.time_s += retract_mm / 30.0;
             }
@@ -411,6 +484,7 @@ impl Writer {
             filament_mm,
             filament_g,
             arc_moves: self.arc_moves,
+            retracts: self.retracts,
             text: self.out,
             extrusion_moves: self.extrusion_moves,
             travel_moves: self.travel_moves,

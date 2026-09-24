@@ -237,7 +237,10 @@ function colorFor(path: ViewPath): string {
   if (path.kind === "thin-wall" || path.kind === "gap-fill") return "#e85d4c";
   if (path.kind === "bridge") return "#f2cc60";
   const tough = path.strategy === "toughness";
-  if (path.kind === "wall") return tough ? "#2ec4b6" : "#f0a202";
+  if (path.kind === "outer") return tough ? "#7ee0d6" : "#f6d48a";
+  if (path.kind === "inner" || path.kind === "wall") return tough ? "#2ec4b6" : "#f0a202";
+  if (path.kind === "top") return tough ? "#8fd9c8" : "#e7b34a";
+  if (path.kind === "solid") return tough ? "#1b7f76" : "#c9842a";
   return tough ? "#1b7f76" : "#a56d12";
 }
 

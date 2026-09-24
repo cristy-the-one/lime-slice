@@ -37,9 +37,15 @@ cargo run -p lime-slice --release -- slice samples/overhang_ledge.stl --blend sp
 
 Blend names: `speed`, `toughness`, `weight` (alias `efficiency`), `layer`, `region`.
 
-Feature knobs default on. Turn one off with `--variable-width false`, `--arc-fit false`, `--travel-opt false`, or `--overhang-control false`. `--classic` is the previous planner: line infill for the full height, no variable walls, no arcs, no overhang slowdown, and a full triangle scan.
+Feature knobs default on. Turn one off with `--variable-width false`, `--arc-fit false`, `--travel-opt false`, `--overhang-control false`, `--infill-combine false`, `--combing false`, or `--feature-speeds false`. `--classic` is the baseline planner: line infill for the full height, one feed for every feature, no variable walls, no arcs, no overhang slowdown, no infill combining, no combing, grid supports only, and a full triangle scan.
 
-Adaptive layers and supports are off unless you ask for them, so a bench stays comparable to a fixed 0.2 mm slice. `--adaptive` varies each layer inside `--adaptive-min` (default 0.08 mm) and `--adaptive-max` (default: the nominal layer height). Vertical walls take the thick end of that band; slopes that turn toward horizontal take the thin end. `--supports` builds a sparse grid under overhangs steeper than `--support-angle` (default 45° from horizontal), with three denser interface layers and a one-layer air gap. Support spacing and speed follow the resolved strategy: toughness is denser and slower than speed. Both apply on top of whichever blend is selected.
+Adaptive layers and supports are off unless you ask for them, so a bench stays comparable to a fixed 0.2 mm slice. `--adaptive` varies each layer inside `--adaptive-min` (default 0.08 mm) and `--adaptive-max` (default: the nominal layer height). Vertical walls take the thick end of that band; slopes that turn toward horizontal take the thin end. `--supports` builds support under overhangs steeper than `--support-angle` (default 45° from horizontal), with three denser interface layers, a 0.55 mm XY gap, and a one-layer air gap. `--support-style grid` is the sparse column. `--support-style tree` grows organic shafts that lean together as they drop, and keeps the same interface tip. `--support-height-mult` (default 1) prints sparse shafts at a thicker layer height; the interface stays at the model layer height. Support spacing and speed still follow the resolved strategy: toughness is denser and slower than speed.
+
+`--infill-combine` (default on) emits sparse and lightning infill every 3 layers on the speed blend and every 2 layers on a low-weight efficiency blend, at that multiple of the layer height. Walls, top skins, and bottom skins stay at the nominal height. Toughness and `--classic` leave combining off.
+
+Per-feature feeds are on unless `--feature-speeds false` or `--classic`. The speed blend runs sparse infill and travel fast and keeps the outer wall slower. The estimator uses those feeds and accels.
+
+Combing (default on) routes travels through an inset of the filled contours and retracts only when that route is blocked. `--combing false` keeps the straight hop.
 
 ## Samples
 
@@ -58,33 +64,41 @@ Regenerate with `python3 tools/gen_samples.py`.
 
 ## Measured timings
 
-Release build (`lto = "thin"`, codegen-units 1, `cargo +stable`), one machine, layer height 0.2 mm, line width 0.45 mm, adaptive layers off, supports off. **Slice** is plan + G-code for the new path. **Classic** is the same blend on the previous planner (full-height line infill for speed, no variable walls, no arcs, no overhang control, full triangle scan). Print time and filament mass come from the motion estimator (trapezoid with junction deviation, volumetric cap 12 mm³/s on the new path). Scores are `speed = 60 / minutes`, `efficiency = 8 / grams`, `toughness` = structural mm³ weighted by pattern (gyroid above lightning).
+Release build (`lto = "thin"`, codegen-units 1, `cargo +stable`), one machine, layer height 0.2 mm, line width 0.45 mm, adaptive layers off. The first table is supports off. **Slice** is plan + G-code for the new path. **Classic** is the same blend on the baseline planner (full-height line infill, one feed, no variable walls, no arcs, no overhang control, no infill combine, no combing, full triangle scan). Print time and filament mass come from the motion estimator (trapezoid with junction deviation, volumetric cap 12 mm³/s on the new path). Scores are `speed = 60 / minutes`, `efficiency = 8 / grams`, `toughness` = structural mm³ weighted by pattern (gyroid above lightning).
 
-Contour extraction on the hull (140 layers, 4800 triangles): parallel Z-index **1.60 ms**, single-thread full scan **10.53 ms**. The cube has 12 triangles, so the index does not pay (0.36 ms vs 0.18 ms).
+Contour extraction on the hull (140 layers, 4800 triangles): parallel Z-index **1.55 ms**, single-thread full scan **10.75 ms**. The cube has 12 triangles, so the index does not pay (0.52 ms vs 0.19 ms).
 
 `samples/calibration_cube_20mm.stl` — 12 triangles, 100 layers:
 
-| Mode | Slice ms | Classic ms | Print s | Classic s | Filament g | Classic g | Toughness | Classic tough |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| speed | 1.40 | 1.25 | 184.9 | 328.2 | 1.83 | 2.73 | 1757 | 2309 |
-| toughness | 35.56 | 35.11 | 5230.1 | 6251.1 | 10.33 | 10.33 | 10894 | 10894 |
-| layer blend | 11.99 | 10.49 | 1573.4 | 1966.7 | 4.73 | 5.33 | 4710 | 5089 |
-| region blend | 15.28 | 15.59 | 2497.8 | 3056.2 | 6.44 | 6.84 | 6623 | 6873 |
+| Mode | Slice ms | Classic ms | Print s | Classic s | Filament g | Classic g | Travel mm | Classic travel | Retracts | Classic retracts | Toughness | Classic tough |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| speed | 1.57 | 1.14 | 212.3 | 328.0 | 1.84 | 2.73 | 689 | 10211 | 9 | 501 | 1775 | 2309 |
+| toughness | 37.32 | 35.15 | 4847.5 | 6251.0 | 10.33 | 10.33 | 6882 | 56802 | 100 | 4500 | 10710 | 10894 |
+| layer blend | 12.54 | 11.25 | 1483.3 | 1966.5 | 4.73 | 5.33 | 2771 | 25984 | 45 | 1709 | 4636 | 5089 |
+| region blend | 18.01 | 15.77 | 2363.6 | 3056.1 | 6.44 | 6.84 | 5391 | 27071 | 100 | 3100 | 6564 | 6873 |
 
-Speed on the cube is 44% less print time and 33% less filament. The toughness index is unchanged. Classic speed filament is 916 mm; the lightning slice is about 615 mm.
+Cube speed is 35% less print time and 33% less filament than classic. Travel drops from 10211 mm to 689 mm and retracts from 501 to 9. Toughness keeps gyroid and 98% of the classic structural index (10710 vs 10894).
 
-`samples/lime_hull.stl` — 4800 triangles, 140 layers:
+`samples/lime_hull.stl` — 4800 triangles, 140 layers. The hull is convex, so hole-aware combing matches straight travel: **1830.3 mm and 8 retracts** either way. The drop versus classic is the travel planner.
 
-| Mode | Slice ms | Classic ms | Print s | Classic s | Filament g | Classic g | Toughness | Classic tough |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| speed | 25.66 | 21.89 | 676.3 | 1433.2 | 4.67 | 8.96 | 4471 | 7046 |
-| toughness | 289.55 | 249.78 | 24846 | 29851 | 43.79 | 43.79 | 46764 | 46764 |
-| layer blend | 101.91 | 84.96 | 7291 | 9329 | 17.78 | 20.74 | 17950 | 19747 |
-| region blend | 138.94 | 117.64 | 12180 | 15219 | 24.72 | 26.79 | 25993 | 27233 |
+| Mode | Slice ms | Classic ms | Print s | Classic s | Filament g | Classic g | Travel mm | Classic travel | Retracts | Classic retracts | Toughness | Classic tough |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| speed | 27.08 | 21.97 | 807.5 | 1416.5 | 4.66 | 8.96 | 1830 | 45486 | 8 | 980 | 4512 | 7046 |
+| toughness | 292.08 | 244.48 | 22890 | 29754 | 43.79 | 43.79 | 22568 | 282427 | 139 | 12179 | 46075 | 46764 |
+| layer blend | 104.81 | 83.59 | 6821 | 9285 | 17.78 | 20.74 | 9236 | 126941 | 58 | 4657 | 17646 | 19747 |
+| region blend | 149.42 | 121.16 | 11345 | 15209 | 24.72 | 26.79 | 14709 | 150997 | 140 | 8120 | 25705 | 27233 |
 
-Hull speed is 53% less print time and 48% less filament (classic 3006 mm). Wall arcs add a few milliseconds of slice time; the contour index is the part that drops, from 10.53 ms single-thread to 1.60 ms. Toughness stays on gyroid and its structural score does not drop. The hull speed slice emits 2248 `G2`/`G3` moves.
+Hull speed is 43% less print time and 48% less filament (classic 3006 mm). The speed slice emits 2248 arcs. Toughness stays on gyroid (46075 vs classic 46764). A 30 mm window frame (four walls around a hole, covered by the combing test) is where the router shows up: travel 3989 mm and 29 retracts with combing, versus 3461 mm and 90 retracts in a straight line. The detour is longer; the retract count drops by about two thirds.
 
-`samples/arc_post.stl` speed: 118 arcs, print 80 s vs classic 176 s, filament 0.58 g vs 0.82 g. `samples/bridge_span.stl` speed tags `BRIDGE` spans at ≤ 36 mm/s. `samples/thin_fin.stl` puts a bead that is not 0.45 mm on the 0.7 mm fin.
+`samples/overhang_ledge.stl` speed, supports on, 45°:
+
+| Style | Print s | Filament g | Travel mm | Retracts |
+| --- | ---: | ---: | ---: | ---: |
+| sparse grid | 448.3 | 3.25 | 5053 | 405 |
+| tree | 313.1 | 2.21 | 4109 | 237 |
+| tree, shaft ×2 | 290.8 | 2.21 | 2899 | 135 |
+
+Tree uses 32% less filament and 30% less time than the grid on the same ledge. Doubling the sparse shaft height keeps the filament and cuts another 22 s, with the interface still at the model layer height. The cube and hull have no overhang, so grid and tree match there.
 
 ## Layout
 
@@ -96,16 +110,18 @@ Hull speed is 53% less print time and 48% less filament (classic 3006 mm). Wall 
 
 ## Strategies
 
-- **Speed:** 2 walls, lightning infill within 4 mm of a roof, 140 mm/s, 3500 mm/s², nearest seam on a sharp corner, short retract, 1 skirt.
-- **Efficiency:** the weight mix. Low toughness keeps lightning, the middle band is lines then grid, and the score uses estimated time and filament mass.
-- **Toughness:** 5 walls, 48% gyroid for the full height, 45 mm/s, 800 mm/s², seam stacked on +X, longer retract, 2 skirts.
+- **Speed:** 2 walls, lightning infill within 4 mm of a roof combined every 3 layers, outer 90 mm/s, inner 140 mm/s, sparse 200 mm/s, travel 300 mm/s, nearest seam on a sharp corner, short retract, 1 skirt.
+- **Efficiency:** the weight mix. Low toughness keeps lightning and combining (every 2 layers under 45% toughness). The middle band is lines then grid. The score uses estimated time and filament mass.
+- **Toughness:** 5 walls, 48% gyroid for the full height at every layer, outer 40 mm/s, sparse 55 mm/s, seam stacked on +X, longer retract, 2 skirts.
 - **Weight:** interpolates walls, density, speed, accel, seam, and the pattern bands above.
 - **By layer:** bottom band is toughness, then a linear transition into speed.
 - **By region:** each layer is clipped on X or Y. The low side is toughness toolpaths; the high side is speed toolpaths.
 - **Adaptive layers:** layer height follows local slope inside a min/max band. The first layer stays at the nominal height. Each `;LAYER:` line records `Z` and `H` (that layer's thickness), and extrusion volume uses `H`.
-- **Smart supports:** overhangs past the support angle are projected down to the bed as a sparse grid, stopped against the model with a 0.55 mm XY gap and a nominal-layer Z gap. The top three support layers are a denser interface. Preview kinds are `support` and `support-interface`, drawn separately from walls and infill.
+- **Smart supports:** overhangs past the support angle are projected down to the bed, stopped against the model with a 0.55 mm XY gap and a nominal-layer Z gap. Grid fills that column. Tree keeps an interface tip and replaces the column with leaning shafts. Preview kinds are `support` and `support-interface`.
+- **Per-feature speeds:** outer, inner, sparse, solid, top, and travel each have a feed and an accel. The print-time estimator consumes them. Preview kinds are `outer`, `inner`, `sparse`, `solid`, and `top`.
+- **Combing:** travels that can stay inside an inset of the layer do, and those hops do not retract.
 
-Printer profile: generic Marlin, 0.4 mm nozzle, 1.75 mm PLA at 1.24 g/cm³, 200 °C / 60 °C, volumetric cap 12 mm³/s. UI checkboxes mirror the CLI knobs (variable walls, arc fit, travel and seam, overhang and bridges). The timing bar shows core milliseconds, estimated minutes, and filament grams.
+Printer profile: generic Marlin, 0.4 mm nozzle, 1.75 mm PLA at 1.24 g/cm³, 200 °C / 60 °C, volumetric cap 12 mm³/s. Optional `pressureAdvance` emits Klipper `SET_PRESSURE_ADVANCE` and optional `linearAdvance` emits Marlin `M900`, at the start and again when the feature scale changes (outer and top use the full factor, sparse uses 0.65). Both default to 0, which emits nothing. There is no calibration wizard. UI checkboxes mirror the CLI knobs. The timing bar shows core milliseconds, estimated minutes, and filament grams.
 
 ## Tests
 
@@ -117,4 +133,4 @@ npx tsc --noEmit
 
 ## Not in this slice
 
-Multi-extruder and tree supports stay out. Region splits leave a bead boundary on the cut. Gyroid is a 2D sine approximation, not a volumetric gyroid. Supports are a sparse grid with interface layers, not trees. The first layer is slowed to 30 mm/s; there is no Z-hop. Combing skips retraction when the travel stays inside the layer; it does not route around holes.
+Multi-extruder, scarf seams, a true 3D gyroid, and Z-hop stay out. Region splits leave a bead boundary on the cut. Gyroid is a 2D sine approximation. Tree supports are stacked shafts with an interface tip, not a volumetric organic mesh. Pressure advance is a profile value, not a calibration print. The first layer is slowed to 30 mm/s.
