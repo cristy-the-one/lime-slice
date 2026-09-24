@@ -1,3 +1,5 @@
+import { createSliceView, type SliceView3d } from "./view3d";
+
 const API = "http://127.0.0.1:43118";
 
 type StrategyId = "speed" | "toughness";
@@ -70,6 +72,7 @@ const state: {
   adaptiveMax: number;
   supports: boolean;
   supportAngle: number;
+  viewMode: "flat" | "split" | "solid";
 } = {
   mesh: null,
   result: null,
@@ -90,6 +93,7 @@ const state: {
   adaptiveMax: 0.2,
   supports: false,
   supportAngle: 45,
+  viewMode: "split",
 };
 
 const app = document.querySelector("#app")!;
@@ -110,8 +114,19 @@ app.innerHTML = `
     </header>
     <div class="workspace">
       <aside class="panel" id="left"></aside>
-      <section class="stage">
-        <canvas id="view"></canvas>
+      <section class="stage mode-split" id="stage">
+        <div class="viewbar">
+          <div class="modes">
+            <button class="btn mode" type="button" data-mode="flat">2D</button>
+            <button class="btn mode on" type="button" data-mode="split">Split</button>
+            <button class="btn mode" type="button" data-mode="solid">3D</button>
+          </div>
+          <span class="viewhint">3D: drag orbit · right-drag pan · wheel zoom</span>
+        </div>
+        <div class="previews">
+          <div class="pane" id="pane2d"><canvas id="view"></canvas></div>
+          <div class="pane" id="pane3d"><canvas id="view3d"></canvas></div>
+        </div>
         <div class="scrub">
           <input id="slider" type="range" min="0" max="0" value="0" />
           <div class="legend" id="legend"></div>
@@ -125,6 +140,19 @@ app.innerHTML = `
 
 const canvas = document.querySelector<HTMLCanvasElement>("#view")!;
 const ctx = canvas.getContext("2d")!;
+const view3d: SliceView3d = createSliceView(document.querySelector<HTMLCanvasElement>("#view3d")!);
+let shownSlice: SliceResponse | null = null;
+
+document.querySelectorAll<HTMLButtonElement>(".mode").forEach((button) => {
+  button.addEventListener("click", () => {
+    state.viewMode = button.dataset.mode as typeof state.viewMode;
+    const stage = document.querySelector("#stage")!;
+    stage.classList.remove("mode-flat", "mode-split", "mode-solid");
+    stage.classList.add(`mode-${state.viewMode}`);
+    document.querySelectorAll(".mode").forEach((el) => el.classList.toggle("on", el === button));
+    resize();
+  });
+});
 
 function blend(): Blend {
   if (state.blendKind === "single") return { mode: "single", strategy: state.strategy };
@@ -445,6 +473,7 @@ function resize() {
   const dpr = window.devicePixelRatio || 1;
   canvas.width = Math.max(1, Math.floor(rect.width * dpr));
   canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+  view3d.resize();
   draw();
 }
 
@@ -461,6 +490,7 @@ function draw() {
     ctx.font = `${14 * (window.devicePixelRatio || 1)}px IBM Plex Sans, sans-serif`;
     ctx.fillText("Toolpath preview", 24, 36);
     ctx.fillText("Open the cube or hull, then slice.", 24, 60);
+    sync3d();
     return;
   }
   let minX = mesh.min[0];
@@ -496,6 +526,17 @@ function draw() {
     ctx.stroke();
   }
   ctx.setLineDash([]);
+  sync3d();
+}
+
+function sync3d() {
+  if (state.result !== shownSlice) {
+    shownSlice = state.result;
+    view3d.setSlice(state.result);
+  }
+  view3d.setShowTravel(state.showTravel);
+  view3d.setLayer(state.layer);
+  view3d.resize();
 }
 
 function colorFor(path: PreviewPath) {

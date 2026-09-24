@@ -14,6 +14,8 @@ npm run dev
 
 Open [http://127.0.0.1:43117](http://127.0.0.1:43117). Load a sample, pick a blend, slice, scrub layers, export G-code.
 
+The stage defaults to **Split**: the existing 2D toolpath preview on the left, and a 3D view of the same slice on the right. **2D** and **3D** hide the other pane. The layer slider (and the wheel over the 2D canvas) moves the active layer in both views. In 3D the active layer is drawn solid, with an amber band of that layer's thickness, and every other layer is ghosted. Drag to orbit, right-drag to pan, wheel to zoom. Support and interface paths use the same colors as the 2D legend. Adaptive layers keep their real Z spacing.
+
 Desktop shell (needs WebKitGTK 4.1 on Linux):
 
 ```bash
@@ -89,7 +91,7 @@ The 3MF cube matches the STL cube (same triangle count, same region-blend E, 100
 - `crates/lime-slice-core` — mesh load, contour slice, strategy blend, toolpaths, G-code
 - `crates/lime-slice` — `slice`, `bench`, `serve`
 - `src-tauri` — Tauri 2 shell over the same core
-- `src` — TypeScript preview UI
+- `src` — TypeScript preview UI (2D layer canvas plus a Three.js 3D slice view)
 - `samples` — checked-in meshes
 
 ## Strategies
