@@ -133,7 +133,7 @@ Speed forced to outer is 12.6 s slower on the post (62.0 → 74.6) and 49 s slow
 
 - **Speed:** 2 walls, lightning infill within 4 mm of a roof combined every 3 layers, outer 130 mm/s, inner 160 mm/s, sparse 220 mm/s, travel 300 mm/s, nearest seam on a sharp corner, scarf off, short retract, 1 skirt.
 - **Efficiency:** the weight mix. Low toughness keeps lightning and combining (every 2 layers under 45% toughness). The middle band is lines then grid. The score uses estimated time and filament mass.
-- **Toughness:** 5 walls, 48% gyroid for the full height at every layer, outer 40 mm/s, sparse 55 mm/s, seam stacked on +X, scarf on smooth outer walls, longer retract, 2 skirts.
+- **Toughness:** 5 walls, 48% true 3D gyroid for the full height at every layer, outer 40 mm/s, sparse 55 mm/s, seam stacked on +X, scarf on smooth outer walls, longer retract, 2 skirts. `--gyroid-3d blend` (the default) uses the TPMS section `sin(x)cos(y)+sin(y)cos(z)+sin(z)cos(x)=0` wherever the pattern is gyroid, including a weight mix at or above 75% toughness. Speed stays on lightning. `--gyroid-3d off` keeps the old 2D sine. `--gyroid-3d on` forces the 3D section. `--classic` is off.
 - **Weight:** interpolates walls, density, speed, accel, seam, and the pattern bands above.
 - **By layer:** bottom band is toughness, then a linear transition into speed.
 - **By region:** each layer is clipped on X or Y. The low side is toughness toolpaths; the high side is speed toolpaths.
@@ -154,4 +154,4 @@ npx tsc --noEmit
 
 ## Not in this slice
 
-Multi-extruder, a true 3D gyroid, and Z-hop stay out. Region splits leave a bead boundary on the cut. Gyroid is a 2D sine approximation. Tree supports are stacked shafts with an interface tip, not a volumetric organic mesh. Pressure advance is a profile value, not a calibration print. The first layer is slowed to 30 mm/s. A scarf spreads a smooth seam; it does not move a seam that already sits on a sharp corner.
+Multi-extruder and Z-hop stay out. Region splits leave a bead boundary on the cut. Tree supports are stacked shafts with an interface tip, not a volumetric organic mesh. Pressure advance is a profile value, not a calibration print. The first layer is slowed to 30 mm/s. A scarf spreads a smooth seam; it does not move a seam that already sits on a sharp corner. `--gyroid-3d off` is the previous 2D sine gyroid.

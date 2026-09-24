@@ -12,11 +12,12 @@ use crate::load::load_mesh;
 use crate::mesh::Mesh;
 use crate::strategy::{
     classicize, layer_weight, mix, pure, support_density, support_interface_density, Axis,
-    BlendMode, Gyroid3d, PrinterProfile, ResolvedStrategy, ScarfSeam, StrategyId,
+    BlendMode, Gyroid3d, PrinterProfile, ResolvedStrategy, ScarfSeam, StrategyId, ZHopMode,
 };
 use crate::support::{build_supports, SupportOpts, SupportStyle};
 use crate::toolpath::{
-    apply_overhang, apply_scarf, boolean_union, clip_to_rect, optimize_travel, plan_region,
+    apply_overhang, apply_scarf, apply_z_hop, boolean_union, clip_to_rect, offset_loops,
+    optimize_travel, plan_region,
     plan_skirt, plan_support, plan_tree_support, Extrusion, PathFeatures, PathKind, ScarfParams,
     ShellBand,
 };
@@ -97,6 +98,15 @@ pub struct SliceRequest {
     /// `blend` follows the strategy, `off` keeps the 2D gyroid, `on` forces 3D.
     #[serde(default)]
     pub gyroid_3d: Gyroid3d,
+    /// `off`, `blend`, `always`, or `smart`.
+    #[serde(default)]
+    pub z_hop: ZHopMode,
+    /// Hop height in millimetres. `0` means 0.4.
+    #[serde(default)]
+    pub z_hop_height: f64,
+    /// Travels shorter than this stay on the layer. `0` means 2 mm.
+    #[serde(default)]
+    pub z_hop_min_travel: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -125,6 +135,9 @@ pub struct SliceSettings {
     pub scarf_start_height: f64,
     pub scarf_start_flow: f64,
     pub gyroid_3d: Gyroid3d,
+    pub z_hop: ZHopMode,
+    pub z_hop_height: f64,
+    pub z_hop_min_travel: f64,
 }
 
 impl Default for SliceSettings {
@@ -154,6 +167,9 @@ impl Default for SliceSettings {
             scarf_start_height: default_scarf_height(),
             scarf_start_flow: default_scarf_flow(),
             gyroid_3d: Gyroid3d::Blend,
+            z_hop: ZHopMode::Blend,
+            z_hop_height: 0.4,
+            z_hop_min_travel: 2.0,
         }
     }
 }
@@ -218,6 +234,17 @@ impl SliceSettings {
             } else {
                 req.gyroid_3d
             },
+            z_hop: if req.classic { ZHopMode::Off } else { req.z_hop },
+            z_hop_height: if req.z_hop_height > 0.0 {
+                req.z_hop_height
+            } else {
+                0.4
+            },
+            z_hop_min_travel: if req.z_hop_min_travel > 0.0 {
+                req.z_hop_min_travel
+            } else {
+                2.0
+            },
         }
     }
 
@@ -257,7 +284,13 @@ impl SliceSettings {
             self.scarf_steps
         );
         let gyroid = format!("gyroid mode {}", self.gyroid_3d.as_str());
-        format!("{layers}; {supports}; {combine}; {scarf}; {gyroid}")
+        let hop = format!(
+            "z-hop {} {:.2} mm / {:.1} mm",
+            self.z_hop.as_str(),
+            self.z_hop_height,
+            self.z_hop_min_travel
+        );
+        format!("{layers}; {supports}; {combine}; {scarf}; {gyroid}; {hop}")
     }
 }
 
@@ -319,6 +352,7 @@ pub struct PrintEstimate {
     pub arc_moves: usize,
     pub travel_mm: f64,
     pub retracts: usize,
+    pub z_hops: usize,
     /// Closed walls that received a scarf. `0` means every seam is a butt joint.
     pub scarfed_loops: usize,
     /// Mean overlap length of those scarfs, millimetres.
@@ -362,6 +396,7 @@ pub struct Sanity {
     pub max_y: f64,
     pub notes: Vec<String>,
     pub retracts: usize,
+    pub z_hops: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -462,6 +497,7 @@ pub fn slice_configured(
         settings.feature_speeds = false;
         settings.scarf_seam = ScarfSeam::Off;
         settings.gyroid_3d = Gyroid3d::Off;
+        settings.z_hop = ZHopMode::Off;
         settings.support_style = SupportStyle::Grid;
         settings.support_height_mult = 1.0;
     }
@@ -552,6 +588,7 @@ pub fn slice_configured(
             max_y: gcode.max_y,
             notes,
             retracts: gcode.retracts,
+            z_hops: gcode.z_hops,
         },
         gcode: gcode.text,
         layers,
@@ -565,6 +602,7 @@ pub fn slice_configured(
                 arc_moves: gcode.arc_moves,
                 travel_mm: gcode.travel_length_mm,
                 retracts: gcode.retracts,
+                z_hops: gcode.z_hops,
                 scarfed_loops,
                 mean_scarf_mm,
                 max_seam_z_step_mm,
@@ -877,6 +915,21 @@ fn plan(
             job
         })
         .collect();
+    let mut prev_top = false;
+    let mut jobs = jobs;
+    for (i, job) in jobs.iter_mut().enumerate() {
+        let infill = offset_loops(&contours[i], -settings.line_width * 2.2);
+        apply_z_hop(
+            &mut job.paths,
+            &contours[i],
+            &infill,
+            settings.z_hop,
+            settings.z_hop_height,
+            settings.z_hop_min_travel,
+            prev_top,
+        );
+        prev_top = job.paths.iter().any(|p| p.kind == PathKind::Top);
+    }
     Ok(jobs
         .into_iter()
         .map(|job| LayerPaths {
@@ -965,6 +1018,15 @@ fn resolve(mut strategy: ResolvedStrategy, settings: &SliceSettings) -> Resolved
                 strategy.lightning_range_mm = 0.0;
                 strategy.infill_combine = 1;
             }
+        }
+        strategy.z_hop = match settings.z_hop {
+            ZHopMode::Off => ZHopMode::Off,
+            ZHopMode::Always => ZHopMode::Always,
+            ZHopMode::Smart => ZHopMode::Smart,
+            ZHopMode::Blend => strategy.z_hop,
+        };
+        if settings.classic {
+            strategy.z_hop = ZHopMode::Off;
         }
     }
     strategy

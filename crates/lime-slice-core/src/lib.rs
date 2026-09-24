@@ -18,5 +18,5 @@ pub use slice::{
     contour_times, slice_configured, slice_request, slice_with_baseline, BlendScore, PrintEstimate,
     SliceRequest, SliceResponse, SliceSettings,
 };
-pub use strategy::{Axis, BlendMode, Gyroid3d, PrinterProfile, ScarfSeam, StrategyId};
+pub use strategy::{Axis, BlendMode, Gyroid3d, PrinterProfile, ScarfSeam, StrategyId, ZHopMode};
 pub use support::SupportStyle;

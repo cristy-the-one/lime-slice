@@ -97,6 +97,9 @@ const state: {
   scarfLength: number;
   scarfSteps: number;
   gyroid3d: "blend" | "off" | "on";
+  zHop: "off" | "blend" | "always" | "smart";
+  zHopHeight: number;
+  zHopMinTravel: number;
   viewMode: "flat" | "split" | "solid";
 } = {
   mesh: null,
@@ -133,6 +136,9 @@ const state: {
   scarfLength: 10,
   scarfSteps: 8,
   gyroid3d: "blend",
+  zHop: "blend",
+  zHopHeight: 0.4,
+  zHopMinTravel: 2,
   viewMode: "split",
 };
 
@@ -254,6 +260,16 @@ function renderChrome() {
         ${opt("on", "Force 3D", state.gyroid3d)}
       </select>
     </label>
+    <label class="field">Z-hop
+      <select id="zhop">
+        ${opt("blend", "Blend default", state.zHop)}
+        ${opt("off", "Off", state.zHop)}
+        ${opt("smart", "Smart", state.zHop)}
+        ${opt("always", "Always", state.zHop)}
+      </select>
+    </label>
+    ${state.zHop === "off" ? "" : `<label class="field">Hop height mm<input id="zhopht" type="number" min="0.1" max="2" step="0.1" value="${state.zHopHeight}" /></label>
+    <label class="field">Hop above travel mm<input id="zhopmin" type="number" min="0.5" max="20" step="0.5" value="${state.zHopMinTravel}" /></label>`}
     <div class="meta" style="margin-top:8px">Triangles <b>${result ? result.mesh.triangles : "—"}</b><br>Bounds <b>${bounds}</b></div>
     ${state.error ? `<div class="banner" style="margin-top:10px">${escapeHtml(state.error)}</div>` : ""}
     ${result ? `<div class="banner ${result.sanity.ok ? "ok" : ""}" style="margin-top:10px">${result.sanity.ok ? "G-code checks passed" : "G-code checks failed"}<br>${escapeHtml(result.sanity.notes.join(" ") || `${result.sanity.layers} layers · E ${result.sanity.finalE.toFixed(1)} mm · path ${result.sanity.extrusionLengthMm.toFixed(0)} mm`)}</div>` : ""}
@@ -413,6 +429,16 @@ function bindChrome() {
   document.querySelector("#gyroid3d")?.addEventListener("change", (ev) => {
     state.gyroid3d = (ev.target as HTMLSelectElement).value as typeof state.gyroid3d;
   });
+  document.querySelector("#zhop")?.addEventListener("change", (ev) => {
+    state.zHop = (ev.target as HTMLSelectElement).value as typeof state.zHop;
+    renderChrome();
+  });
+  document.querySelector("#zhopht")?.addEventListener("change", (ev) => {
+    state.zHopHeight = Number((ev.target as HTMLInputElement).value) || 0.4;
+  });
+  document.querySelector("#zhopmin")?.addEventListener("change", (ev) => {
+    state.zHopMinTravel = Number((ev.target as HTMLInputElement).value) || 2;
+  });
   document.querySelector("#blendKind")?.addEventListener("change", (ev) => {
     state.blendKind = (ev.target as HTMLSelectElement).value as Blend["mode"];
     renderChrome();
@@ -570,6 +596,9 @@ async function runSlice() {
       scarfStartHeight: 0.15,
       scarfStartFlow: 0.55,
       gyroid3d: state.gyroid3d,
+      zHop: state.zHop,
+      zHopHeight: state.zHopHeight,
+      zHopMinTravel: state.zHopMinTravel,
     };
     state.result = await slice(payload);
     if (state.result.error) throw new Error(state.result.error);
