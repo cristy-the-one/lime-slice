@@ -15,9 +15,11 @@ interface PreviewPath {
 interface PreviewLayer {
   index: number;
   z: number;
+  height: number;
   note: string;
   speedWalls: number;
   toughnessWalls: number;
+  supportPaths: number;
   paths: PreviewPath[];
 }
 interface SliceResponse {
@@ -63,6 +65,11 @@ const state: {
   axis: "x" | "y";
   atMm: number;
   layerHeight: number;
+  adaptive: boolean;
+  adaptiveMin: number;
+  adaptiveMax: number;
+  supports: boolean;
+  supportAngle: number;
 } = {
   mesh: null,
   result: null,
@@ -78,6 +85,11 @@ const state: {
   axis: "x",
   atMm: 10,
   layerHeight: 0.2,
+  adaptive: false,
+  adaptiveMin: 0.08,
+  adaptiveMax: 0.2,
+  supports: false,
+  supportAngle: 45,
 };
 
 const app = document.querySelector("#app")!;
@@ -89,6 +101,8 @@ app.innerHTML = `
       <button class="btn" id="cube" type="button">20 mm cube</button>
       <button class="btn" id="hull" type="button">60 mm hull</button>
       <button class="btn" id="cube3mf" type="button">Cube 3MF</button>
+      <button class="btn" id="ledge" type="button">Overhang</button>
+      <button class="btn" id="ramp" type="button">Slope</button>
       <div class="spacer"></div>
       <div class="timing" id="timing">No slice yet</div>
       <button class="btn primary" id="slice" type="button">Slice</button>
@@ -137,6 +151,11 @@ function renderChrome() {
     <div class="meta">Generic Marlin 0.4 mm PLA<br>Nozzle 200 °C · bed 60 °C<br>Filament 1.75 mm · bed 220 mm</div>
     <h2>Slice</h2>
     <label class="field">Layer height mm<input id="lh" type="number" min="0.08" max="0.4" step="0.02" value="${state.layerHeight}" /></label>
+    <label class="check"><input id="adaptive" type="checkbox" ${state.adaptive ? "checked" : ""}/> Adaptive layers</label>
+    ${state.adaptive ? `<label class="field">Min mm<input id="amin" type="number" min="0.04" max="0.28" step="0.02" value="${state.adaptiveMin}" /></label>
+    <label class="field">Max mm<input id="amax" type="number" min="0.08" max="0.4" step="0.02" value="${state.adaptiveMax}" /></label>` : ""}
+    <label class="check"><input id="supports" type="checkbox" ${state.supports ? "checked" : ""}/> Smart supports</label>
+    ${state.supports ? `<label class="field">Overhang angle °<input id="sangle" type="number" min="20" max="70" step="5" value="${state.supportAngle}" /></label>` : ""}
     <div class="meta" style="margin-top:8px">Triangles <b>${result ? result.mesh.triangles : "—"}</b><br>Bounds <b>${bounds}</b></div>
     ${state.error ? `<div class="banner" style="margin-top:10px">${escapeHtml(state.error)}</div>` : ""}
     ${result ? `<div class="banner ${result.sanity.ok ? "ok" : ""}" style="margin-top:10px">${result.sanity.ok ? "G-code checks passed" : "G-code checks failed"}<br>${escapeHtml(result.sanity.notes.join(" ") || `${result.sanity.layers} layers · E ${result.sanity.finalE.toFixed(1)} mm · path ${result.sanity.extrusionLengthMm.toFixed(0)} mm`)}</div>` : ""}
@@ -181,6 +200,8 @@ function renderChrome() {
     <span><i class="swatch" style="background:#a56d12"></i>speed infill</span>
     <span><i class="swatch" style="background:#1b7f76"></i>toughness infill</span>
     <span><i class="swatch" style="background:#d7d2c6"></i>skirt</span>
+    <span><i class="swatch" style="background:#7aa2f7"></i>support</span>
+    <span><i class="swatch" style="background:#c6a0f6"></i>interface</span>
     <label><input id="travel" type="checkbox" ${state.showTravel ? "checked" : ""}/> travel</label>
   `;
   const status = document.querySelector("#status")!;
@@ -213,7 +234,7 @@ function blendFields() {
 function layerReadout() {
   const layer = state.result?.layers[state.layer];
   if (!layer) return "Slice to compare wall counts.";
-  return `Z <b>${layer.z.toFixed(2)}</b><br>speed walls <b>${layer.speedWalls}</b><br>toughness walls <b>${layer.toughnessWalls}</b>`;
+  return `Z <b>${layer.z.toFixed(2)}</b> · h <b>${(layer.height ?? 0).toFixed(3)}</b><br>speed walls <b>${layer.speedWalls}</b><br>toughness walls <b>${layer.toughnessWalls}</b><br>support paths <b>${layer.supportPaths ?? 0}</b>`;
 }
 
 function opt(value: string, label: string, current: string) {
@@ -223,6 +244,24 @@ function opt(value: string, label: string, current: string) {
 function bindChrome() {
   document.querySelector("#lh")?.addEventListener("change", (ev) => {
     state.layerHeight = Number((ev.target as HTMLInputElement).value) || 0.2;
+  });
+  document.querySelector("#adaptive")?.addEventListener("change", (ev) => {
+    state.adaptive = (ev.target as HTMLInputElement).checked;
+    if (state.adaptive && state.adaptiveMax < state.layerHeight) state.adaptiveMax = state.layerHeight;
+    renderChrome();
+  });
+  document.querySelector("#amin")?.addEventListener("change", (ev) => {
+    state.adaptiveMin = Number((ev.target as HTMLInputElement).value) || 0.08;
+  });
+  document.querySelector("#amax")?.addEventListener("change", (ev) => {
+    state.adaptiveMax = Number((ev.target as HTMLInputElement).value) || state.layerHeight;
+  });
+  document.querySelector("#supports")?.addEventListener("change", (ev) => {
+    state.supports = (ev.target as HTMLInputElement).checked;
+    renderChrome();
+  });
+  document.querySelector("#sangle")?.addEventListener("change", (ev) => {
+    state.supportAngle = Number((ev.target as HTMLInputElement).value) || 45;
   });
   document.querySelector("#blendKind")?.addEventListener("change", (ev) => {
     state.blendKind = (ev.target as HTMLSelectElement).value as Blend["mode"];
@@ -274,6 +313,8 @@ async function loadNamed(name: string) {
 document.querySelector("#cube")!.addEventListener("click", () => loadNamed("calibration_cube_20mm.stl").catch(fail));
 document.querySelector("#hull")!.addEventListener("click", () => loadNamed("lime_hull.stl").catch(fail));
 document.querySelector("#cube3mf")!.addEventListener("click", () => loadNamed("calibration_cube_20mm.3mf").catch(fail));
+document.querySelector("#ledge")!.addEventListener("click", () => loadNamed("overhang_ledge.stl").catch(fail));
+document.querySelector("#ramp")!.addEventListener("click", () => loadNamed("slope_ramp.stl").catch(fail));
 document.querySelector("#file")!.addEventListener("change", (ev) => {
   const file = (ev.target as HTMLInputElement).files?.[0];
   if (!file) return;
@@ -344,6 +385,11 @@ async function runSlice() {
       layerHeight: state.layerHeight,
       lineWidth: 0.45,
       blend: blend(),
+      adaptive: state.adaptive,
+      adaptiveMin: state.adaptiveMin,
+      adaptiveMax: state.adaptiveMax,
+      supports: state.supports,
+      supportAngle: state.supportAngle,
     };
     state.result = await slice(payload);
     if (state.result.error) throw new Error(state.result.error);
@@ -433,7 +479,7 @@ function draw() {
   ctx.lineWidth = 1;
   ctx.strokeRect(map(minX, minY)[0], map(maxX, maxY)[1], spanX * scale, spanY * scale);
 
-  const order = ["travel", "infill", "skirt", "wall"];
+  const order = ["travel", "support", "support-interface", "infill", "skirt", "wall"];
   const paths = [...layer.paths].sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
   for (const path of paths) {
     if (path.kind === "travel" && !state.showTravel) continue;
@@ -444,7 +490,8 @@ function draw() {
       else ctx.lineTo(x, y);
     });
     ctx.strokeStyle = colorFor(path);
-    ctx.lineWidth = path.kind === "wall" ? Math.max(1.4, scale * 0.12) : path.kind === "travel" ? 1 : Math.max(1, scale * 0.08);
+    const support = path.kind === "support" || path.kind === "support-interface";
+    ctx.lineWidth = path.kind === "wall" ? Math.max(1.4, scale * 0.12) : path.kind === "travel" ? 1 : support ? Math.max(1.2, scale * 0.1) : Math.max(1, scale * 0.08);
     ctx.setLineDash(path.kind === "travel" ? [4, 4] : []);
     ctx.stroke();
   }
@@ -454,6 +501,8 @@ function draw() {
 function colorFor(path: PreviewPath) {
   if (path.kind === "travel") return "#4d5668";
   if (path.kind === "skirt") return "#d7d2c6";
+  if (path.kind === "support") return "#7aa2f7";
+  if (path.kind === "support-interface") return "#c6a0f6";
   const tough = path.strategy === "toughness";
   if (path.kind === "wall") return tough ? "#2ec4b6" : "#f0a202";
   return tough ? "#1b7f76" : "#a56d12";

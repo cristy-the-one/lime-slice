@@ -145,6 +145,42 @@ fn interior_point(loop_: &[[f64; 2]]) -> [f64; 2] {
     c
 }
 
+fn drop_collinear(pts: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    if pts.len() < 3 {
+        return pts.to_vec();
+    }
+    let mut pts = pts.to_vec();
+    let mut changed = true;
+    while changed && pts.len() >= 3 {
+        changed = false;
+        let n = pts.len();
+        let mut keep = Vec::with_capacity(n);
+        for i in 0..n {
+            let a = pts[(i + n - 1) % n];
+            let b = pts[i];
+            let c = pts[(i + 1) % n];
+            let abx = b[0] - a[0];
+            let aby = b[1] - a[1];
+            let bcx = c[0] - b[0];
+            let bcy = c[1] - b[1];
+            let abn = abx.hypot(aby);
+            let bcn = bcx.hypot(bcy);
+            let cross = abx * bcy - aby * bcx;
+            if abn < 1e-5 || bcn < 1e-5 || cross.abs() <= 1e-4 * abn * bcn {
+                changed = true;
+                continue;
+            }
+            keep.push(b);
+        }
+        if keep.len() >= 3 {
+            pts = keep;
+        } else {
+            break;
+        }
+    }
+    pts
+}
+
 fn polygon_centroid(loop_: &[[f64; 2]]) -> [f64; 2] {
     let mut a = 0.0;
     let mut cx = 0.0;
@@ -168,6 +204,9 @@ fn polygon_centroid(loop_: &[[f64; 2]]) -> [f64; 2] {
 
 /// Outers are CCW, holes are CW. Tiny loops are dropped.
 pub fn orient_loops(mut loops: Vec<Loop>) -> Vec<Loop> {
+    for loop_ in &mut loops {
+        *loop_ = drop_collinear(loop_);
+    }
     loops.retain(|l| l.len() >= 3 && signed_area(l).abs() > 0.02);
     let centers: Vec<[f64; 2]> = loops.iter().map(|l| interior_point(l)).collect();
     let areas: Vec<f64> = loops.iter().map(|l| signed_area(l)).collect();

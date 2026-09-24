@@ -80,6 +80,8 @@ h2:first-child { margin-top: 0; }
 .row { display: flex; gap: 8px; align-items: center; }
 .stack { display: flex; flex-direction: column; gap: 8px; }
 label.field { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+label.check { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--text); }
+label.check input { accent-color: var(--amber); }
 input[type="number"], input[type="text"], select, input[type="range"] {
   width: 100%;
   background: var(--panel-2);

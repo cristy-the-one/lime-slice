@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use base64::Engine;
-use lime_slice_core::{slice_request, Axis, BlendMode, SliceRequest, StrategyId};
 use clap::{Parser, Subcommand};
+use lime_slice_core::{slice_request, Axis, BlendMode, SliceRequest, SliceSettings, StrategyId};
 
 #[derive(Parser)]
 #[command(name = "lime-slice", about = "Lime Slice FDM slicer")]
@@ -32,6 +32,20 @@ enum Cmd {
         transition_mm: f64,
         #[arg(long, default_value_t = 0.5)]
         toughness: f64,
+        /// Vary layer height by local slope inside the min/max band.
+        #[arg(long, default_value_t = false)]
+        adaptive: bool,
+        #[arg(long, default_value_t = 0.08)]
+        adaptive_min: f64,
+        /// Thick-end of the adaptive band. 0 uses the nominal layer height.
+        #[arg(long, default_value_t = 0.0)]
+        adaptive_max: f64,
+        /// Sparse-grid supports with interface layers under overhangs.
+        #[arg(long, default_value_t = false)]
+        supports: bool,
+        /// Overhang angle from horizontal, degrees.
+        #[arg(long, default_value_t = 45.0)]
+        support_angle: f64,
         #[arg(short, long)]
         output: PathBuf,
     },
@@ -62,6 +76,11 @@ fn run() -> Result<(), String> {
             bottom_mm,
             transition_mm,
             toughness,
+            adaptive,
+            adaptive_min,
+            adaptive_max,
+            supports,
+            support_angle,
             output,
         } => {
             let response = slice_file(
@@ -75,7 +94,19 @@ fn run() -> Result<(), String> {
                     toughness,
                     &input,
                 )?,
-                layer_height,
+                &SliceSettings {
+                    layer_height,
+                    line_width: 0.45,
+                    adaptive,
+                    adaptive_min,
+                    adaptive_max: if adaptive_max > 0.0 {
+                        adaptive_max
+                    } else {
+                        layer_height
+                    },
+                    supports,
+                    support_angle,
+                },
             )?;
             if let Some(parent) = output.parent() {
                 fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -223,7 +254,7 @@ fn err_json(message: &str) -> String {
 fn slice_file(
     input: &PathBuf,
     blend: &BlendMode,
-    layer_height: f64,
+    settings: &SliceSettings,
 ) -> Result<lime_slice_core::SliceResponse, String> {
     let bytes = fs::read(input).map_err(|e| e.to_string())?;
     let name = input
@@ -233,10 +264,15 @@ fn slice_file(
     slice_request(&SliceRequest {
         filename: name.into(),
         data_b64: base64::engine::general_purpose::STANDARD.encode(bytes),
-        layer_height,
-        line_width: 0.45,
+        layer_height: settings.layer_height,
+        line_width: settings.line_width,
         blend: blend.clone(),
         printer: None,
+        adaptive: settings.adaptive,
+        adaptive_min: settings.adaptive_min,
+        adaptive_max: settings.adaptive_max,
+        supports: settings.supports,
+        support_angle: settings.support_angle,
     })
 }
 

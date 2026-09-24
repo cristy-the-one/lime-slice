@@ -171,6 +171,21 @@ pub fn mix(toughness: f64) -> ResolvedStrategy {
     }
 }
 
+/// Support infill fraction. Toughness prints denser supports than speed.
+pub fn support_density(strategy: &ResolvedStrategy) -> f64 {
+    (0.10 + 0.22 * strategy.toughness).clamp(0.08, 0.36)
+}
+
+/// Interface layers sit denser than the sparse support under them.
+pub fn support_interface_density(strategy: &ResolvedStrategy) -> f64 {
+    (support_density(strategy) * 3.2).clamp(0.5, 0.85)
+}
+
+pub fn support_speed(strategy: &ResolvedStrategy, interface: bool) -> f64 {
+    let scale = if interface { 0.45 } else { 0.62 };
+    (strategy.print_speed * scale).clamp(18.0, 80.0)
+}
+
 /// Toughness weight at a layer whose top is `z`.
 pub fn layer_weight(z: f64, bottom_mm: f64, transition_mm: f64) -> f64 {
     if z <= bottom_mm.max(0.0) {

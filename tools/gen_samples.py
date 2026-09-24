@@ -20,7 +20,7 @@ def tri_normal(a, b, c):
 def write_stl(path: Path, triangles):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("wb") as f:
-        header = b"Lime Slice sample" + b"\0" * (80 - len(b"Lime Slice sample"))
+        header = b"Blend sample mesh" + b"\0" * (80 - len(b"Blend sample mesh"))
         f.write(header[:80])
         f.write(struct.pack("<I", len(triangles)))
         for a, b, c in triangles:
@@ -91,6 +91,68 @@ def hull(length=60.0, beam=24.0, height=28.0, n=96, nz=24):
     return tris
 
 
+def box(x0, y0, z0, x1, y1, z1):
+    v = [
+        (x0, y0, z0),
+        (x1, y0, z0),
+        (x1, y1, z0),
+        (x0, y1, z0),
+        (x0, y0, z1),
+        (x1, y0, z1),
+        (x1, y1, z1),
+        (x0, y1, z1),
+    ]
+    faces = [
+        (0, 2, 1),
+        (0, 3, 2),
+        (4, 5, 6),
+        (4, 6, 7),
+        (0, 1, 5),
+        (0, 5, 4),
+        (3, 7, 6),
+        (3, 6, 2),
+        (0, 4, 7),
+        (0, 7, 3),
+        (1, 2, 6),
+        (1, 6, 5),
+    ]
+    return [(v[i], v[j], v[k]) for i, j, k in faces]
+
+
+def overhang_ledge():
+    """24 mm base with a 24 mm shelf that starts at Z = 12. The shelf is a 90° overhang."""
+    return box(0, 0, 0, 24, 24, 12) + box(24, 4, 12, 48, 20, 16)
+
+
+def slope_ramp():
+    """Watertight ramp: vertical walls up to a roof that rises from Z=8 at X=0 to Z=20 at X=40."""
+    v = [
+        (0.0, 0.0, 0.0),
+        (40.0, 0.0, 0.0),
+        (40.0, 16.0, 0.0),
+        (0.0, 16.0, 0.0),
+        (0.0, 0.0, 8.0),
+        (0.0, 16.0, 8.0),
+        (40.0, 0.0, 20.0),
+        (40.0, 16.0, 20.0),
+    ]
+    faces = [
+        (0, 2, 1),
+        (0, 3, 2),
+        (0, 1, 6),
+        (0, 6, 4),
+        (3, 5, 7),
+        (3, 7, 2),
+        (1, 2, 7),
+        (1, 7, 6),
+        (0, 4, 5),
+        (0, 5, 3),
+        (4, 6, 7),
+        (4, 7, 5),
+    ]
+    return [(v[i], v[j], v[k]) for i, j, k in faces]
+
+
 def write_3mf(path: Path, triangles):
     verts = []
     index = {}
@@ -119,14 +181,18 @@ def write_3mf(path: Path, triangles):
     body = "\n".join(xml).encode()
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        info = zipfile.ZipInfo("[Content_Types].xml", date_time=(2024, 1, 1, 0, 0, 0))
+        info.compress_type = zipfile.ZIP_DEFLATED
         zf.writestr(
-            "[Content_Types].xml",
+            info,
             """<?xml version="1.0" encoding="UTF-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
 <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
 </Types>""",
         )
-        zf.writestr("3D/3dmodel.model", body)
+        model = zipfile.ZipInfo("3D/3dmodel.model", date_time=(2024, 1, 1, 0, 0, 0))
+        model.compress_type = zipfile.ZIP_DEFLATED
+        zf.writestr(model, body)
 
 
 def main():
@@ -135,8 +201,14 @@ def main():
     write_3mf(ROOT / "calibration_cube_20mm.3mf", cube_tris)
     hull_tris = hull()
     write_stl(ROOT / "lime_hull.stl", hull_tris)
+    ledge = overhang_ledge()
+    write_stl(ROOT / "overhang_ledge.stl", ledge)
+    ramp = slope_ramp()
+    write_stl(ROOT / "slope_ramp.stl", ramp)
     print(f"cube triangles {len(cube_tris)}")
     print(f"hull triangles {len(hull_tris)}")
+    print(f"ledge triangles {len(ledge)}")
+    print(f"ramp triangles {len(ramp)}")
 
 
 if __name__ == "__main__":
