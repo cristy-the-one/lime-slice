@@ -549,7 +549,8 @@ fn lightning_saves_filament_without_dropping_toughness() {
         speed_old.estimate.filament_mm
     );
     assert!(speed.gcode.contains("lightning"));
-    assert!(tough.gcode.contains("gyroid"));
+    assert!(!speed.gcode.contains("gyroid3d"));
+    assert!(tough.gcode.contains("gyroid3d"));
     assert!(
         tough.score.toughness >= tough_old.score.toughness * 0.90,
         "toughness {} vs classic {}",
@@ -718,7 +719,15 @@ fn indexed_slice_matches_classic_contours() {
             strategy: StrategyId::Toughness,
         },
         &profile(),
-        &classic(),
+        &SliceSettings {
+            classic: false,
+            spatial_index: false,
+            variable_width: false,
+            arc_fit: false,
+            travel_opt: false,
+            overhang_control: false,
+            ..SliceSettings::default()
+        },
     )
     .unwrap();
     assert_eq!(indexed.sanity.layers, scanned.sanity.layers);
@@ -1072,4 +1081,44 @@ fn assert_gcode_z_and_e(gcode: &str) {
         }
     }
     assert!(saw, "no layer markers");
+}
+
+#[test]
+fn gyroid3d_changes_with_z_and_stays_off_for_speed_and_classic() {
+    let mesh = cube();
+    let on = slice_configured(&mesh, &tough_mode(), &profile(), &SliceSettings::default()).unwrap();
+    assert!(on.sanity.ok, "{:?}", on.sanity.notes);
+    assert!(on.gcode.contains("gyroid3d"));
+    let sparse_pts = |index: usize| {
+        on.layers
+            .iter()
+            .find(|l| l.index == index)
+            .unwrap()
+            .paths
+            .iter()
+            .filter(|p| p.kind == "sparse")
+            .flat_map(|p| p.pts.iter().copied())
+            .collect::<Vec<_>>()
+    };
+    let low = sparse_pts(20);
+    let high = sparse_pts(40);
+    assert!(low.len() > 20 && high.len() > 20, "low {} high {}", low.len(), high.len());
+    assert_ne!(low, high);
+    let off = slice_configured(
+        &mesh,
+        &tough_mode(),
+        &profile(),
+        &SliceSettings {
+            gyroid_3d: lime_slice_core::Gyroid3d::Off,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    assert!(off.gcode.contains("gyroid"));
+    assert!(!off.gcode.contains("gyroid3d"));
+    let classic_t = slice_configured(&mesh, &tough_mode(), &profile(), &classic()).unwrap();
+    assert!(!classic_t.gcode.contains("gyroid3d"));
+    let speed = slice_configured(&mesh, &speed_mode(), &profile(), &SliceSettings::default()).unwrap();
+    assert!(speed.gcode.contains("lightning"));
+    assert!(!speed.gcode.contains("gyroid3d"));
 }

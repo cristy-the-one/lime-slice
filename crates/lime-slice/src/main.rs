@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use base64::Engine;
 use clap::{Parser, Subcommand};
 use lime_slice_core::{
-    slice_request, Axis, BlendMode, ScarfSeam, SliceRequest, SliceSettings, StrategyId,
+    slice_request, Axis, BlendMode, Gyroid3d, ScarfSeam, SliceRequest, SliceSettings, StrategyId,
 };
 
 #[derive(Parser)]
@@ -92,6 +92,9 @@ enum Cmd {
         /// Scarf start flow. Ramps to 1 at full layer height.
         #[arg(long, default_value_t = 0.55)]
         scarf_start_flow: f64,
+        /// 3D gyroid: `blend` (toughness), `off` (2D sine), or `on` (force).
+        #[arg(long, default_value = "blend")]
+        gyroid_3d: String,
         #[arg(short, long)]
         output: PathBuf,
     },
@@ -142,9 +145,11 @@ fn run() -> Result<(), String> {
             scarf_steps,
             scarf_start_height,
             scarf_start_flow,
+            gyroid_3d,
             output,
         } => {
             let scarf_seam = ScarfSeam::parse(&scarf_seam)?;
+            let gyroid_3d = Gyroid3d::parse(&gyroid_3d)?;
             let response = slice_file(
                 &input,
                 &blend_mode(
@@ -187,6 +192,7 @@ fn run() -> Result<(), String> {
                     scarf_steps,
                     scarf_start_height,
                     scarf_start_flow,
+                    gyroid_3d,
                     ..SliceSettings::default()
                 },
             )?;
@@ -530,6 +536,7 @@ fn slice_file(
         scarf_steps: settings.scarf_steps,
         scarf_start_height: settings.scarf_start_height,
         scarf_start_flow: settings.scarf_start_flow,
+        gyroid_3d: settings.gyroid_3d,
     })
 }
 

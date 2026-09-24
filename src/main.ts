@@ -96,6 +96,7 @@ const state: {
   scarfSeam: "blend" | "off" | "outer" | "all";
   scarfLength: number;
   scarfSteps: number;
+  gyroid3d: "blend" | "off" | "on";
   viewMode: "flat" | "split" | "solid";
 } = {
   mesh: null,
@@ -131,6 +132,7 @@ const state: {
   scarfSeam: "blend",
   scarfLength: 10,
   scarfSteps: 8,
+  gyroid3d: "blend",
   viewMode: "split",
 };
 
@@ -245,6 +247,13 @@ function renderChrome() {
     </label>
     ${state.scarfSeam === "off" ? "" : `<label class="field">Scarf length mm<input id="scarflen" type="number" min="1" max="30" step="1" value="${state.scarfLength}" /></label>
     <label class="field">Scarf steps<input id="scarfsteps" type="number" min="2" max="32" step="1" value="${state.scarfSteps}" /></label>`}
+    <label class="field">3D gyroid
+      <select id="gyroid3d">
+        ${opt("blend", "Blend default", state.gyroid3d)}
+        ${opt("off", "2D sine", state.gyroid3d)}
+        ${opt("on", "Force 3D", state.gyroid3d)}
+      </select>
+    </label>
     <div class="meta" style="margin-top:8px">Triangles <b>${result ? result.mesh.triangles : "—"}</b><br>Bounds <b>${bounds}</b></div>
     ${state.error ? `<div class="banner" style="margin-top:10px">${escapeHtml(state.error)}</div>` : ""}
     ${result ? `<div class="banner ${result.sanity.ok ? "ok" : ""}" style="margin-top:10px">${result.sanity.ok ? "G-code checks passed" : "G-code checks failed"}<br>${escapeHtml(result.sanity.notes.join(" ") || `${result.sanity.layers} layers · E ${result.sanity.finalE.toFixed(1)} mm · path ${result.sanity.extrusionLengthMm.toFixed(0)} mm`)}</div>` : ""}
@@ -255,7 +264,7 @@ function renderChrome() {
     <div class="stack">
       <div class="strategy speed"><h3>Speed</h3><p>2 walls · lightning infill · 140 mm/s · volumetric cap · nearest seam</p></div>
       <div class="strategy mid"><h3>Efficiency</h3><p>Weight mix · lines then grid · filament score from the estimator</p></div>
-      <div class="strategy tough"><h3>Toughness</h3><p>5 walls · 48% gyroid · 45 mm/s · aligned seam · scarf on smooth walls</p></div>
+      <div class="strategy tough"><h3>Toughness</h3><p>5 walls · 48% 3D gyroid · 45 mm/s · aligned seam · scarf on smooth walls</p></div>
     </div>
     <h2>Blend</h2>
     <div class="stack">
@@ -400,6 +409,9 @@ function bindChrome() {
   });
   document.querySelector("#scarfsteps")?.addEventListener("change", (ev) => {
     state.scarfSteps = Number((ev.target as HTMLInputElement).value) || 8;
+  });
+  document.querySelector("#gyroid3d")?.addEventListener("change", (ev) => {
+    state.gyroid3d = (ev.target as HTMLSelectElement).value as typeof state.gyroid3d;
   });
   document.querySelector("#blendKind")?.addEventListener("change", (ev) => {
     state.blendKind = (ev.target as HTMLSelectElement).value as Blend["mode"];
@@ -557,6 +569,7 @@ async function runSlice() {
       scarfSteps: state.scarfSteps,
       scarfStartHeight: 0.15,
       scarfStartFlow: 0.55,
+      gyroid3d: state.gyroid3d,
     };
     state.result = await slice(payload);
     if (state.result.error) throw new Error(state.result.error);

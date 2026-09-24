@@ -3,6 +3,7 @@
 mod adaptive;
 mod contour;
 mod gcode;
+mod gyroid;
 mod index;
 mod load;
 mod mesh;
@@ -17,5 +18,5 @@ pub use slice::{
     contour_times, slice_configured, slice_request, slice_with_baseline, BlendScore, PrintEstimate,
     SliceRequest, SliceResponse, SliceSettings,
 };
-pub use strategy::{Axis, BlendMode, PrinterProfile, ScarfSeam, StrategyId};
+pub use strategy::{Axis, BlendMode, Gyroid3d, PrinterProfile, ScarfSeam, StrategyId};
 pub use support::SupportStyle;

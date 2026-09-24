@@ -81,14 +81,15 @@ pub fn emit_gcode(
                 profile.max_volumetric_mm3_s,
             );
             let fit = arc_fit
-                && matches!(
-                    path.kind,
-                    crate::toolpath::PathKind::Wall
-                        | crate::toolpath::PathKind::Outer
-                        | crate::toolpath::PathKind::Inner
-                        | crate::toolpath::PathKind::ThinWall
-                        | crate::toolpath::PathKind::Skirt
-                );
+                && (path.fit_arcs
+                    || matches!(
+                        path.kind,
+                        crate::toolpath::PathKind::Wall
+                            | crate::toolpath::PathKind::Outer
+                            | crate::toolpath::PathKind::Inner
+                            | crate::toolpath::PathKind::ThinWall
+                            | crate::toolpath::PathKind::Skirt
+                    ));
             w.emit_chain(
                 &path.points,
                 limited,

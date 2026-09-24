@@ -113,6 +113,46 @@ impl Default for ScarfSeam {
     }
 }
 
+/// When the toughness gyroid is the real TPMS section instead of the 2D sine.
+///
+/// `Blend` uses the 3D section wherever the resolved pattern is gyroid
+/// (toughness, and a weight mix at or above 75%). Speed stays on lightning.
+/// `Off` keeps the 2D bands. `On` forces the 3D gyroid for every strategy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Gyroid3d {
+    Blend,
+    Off,
+    On,
+}
+
+impl Default for Gyroid3d {
+    fn default() -> Self {
+        Gyroid3d::Blend
+    }
+}
+
+impl Gyroid3d {
+    pub fn parse(name: &str) -> Result<Self, String> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "blend" | "auto" | "default" => Ok(Gyroid3d::Blend),
+            "off" | "2d" | "false" => Ok(Gyroid3d::Off),
+            "on" | "3d" | "true" => Ok(Gyroid3d::On),
+            other => Err(format!(
+                "unknown gyroid mode '{other}' (use blend, off, or on)"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Gyroid3d::Blend => "blend",
+            Gyroid3d::Off => "off",
+            Gyroid3d::On => "on",
+        }
+    }
+}
+
 impl ScarfSeam {
     pub fn parse(name: &str) -> Result<Self, String> {
         match name.trim().to_ascii_lowercase().as_str() {
@@ -172,6 +212,8 @@ pub struct ResolvedStrategy {
     pub travel_accel: f64,
     /// Scarf used when the slice knob is `Blend`. Speed is off; toughness is outer.
     pub scarf: ScarfSeam,
+    /// True when this toolpath should cut the TPMS gyroid at the layer Z.
+    pub gyroid_3d: bool,
 }
 
 pub fn pure(id: StrategyId) -> ResolvedStrategy {
@@ -205,6 +247,7 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             top_accel: 3000.0,
             travel_accel: 5500.0,
             scarf: ScarfSeam::Off,
+            gyroid_3d: false,
         },
         StrategyId::Toughness => ResolvedStrategy {
             id,
@@ -235,6 +278,7 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             top_accel: 550.0,
             travel_accel: 1200.0,
             scarf: ScarfSeam::Outer,
+            gyroid_3d: true,
         },
     }
 }
@@ -303,6 +347,7 @@ pub fn mix(toughness: f64) -> ResolvedStrategy {
         } else {
             ScarfSeam::Off
         },
+        gyroid_3d: pattern == InfillPattern::Gyroid,
     }
 }
 
@@ -315,6 +360,7 @@ pub fn classicize(mut strategy: ResolvedStrategy) -> ResolvedStrategy {
     strategy.infill_combine = 1;
     strategy.feature_speeds = false;
     strategy.scarf = ScarfSeam::Off;
+    strategy.gyroid_3d = false;
     strategy
 }
 

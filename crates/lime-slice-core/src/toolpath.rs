@@ -70,6 +70,8 @@ pub struct PathFeatures {
     pub layer_index: usize,
     pub layer_height: f64,
     pub shell: ShellBand,
+    /// Absolute layer Z. The 3D gyroid section is evaluated here.
+    pub z: f64,
 }
 
 impl Default for PathFeatures {
@@ -80,6 +82,7 @@ impl Default for PathFeatures {
             layer_index: 0,
             layer_height: 0.2,
             shell: ShellBand::Interior,
+            z: 0.0,
         }
     }
 }
@@ -115,6 +118,8 @@ pub struct Extrusion {
     pub scarf_mm: f64,
     /// Set when overhang splitting slowed this span. Scarf stays off those spans.
     pub on_overhang: bool,
+    /// Run the existing G2/G3 fitter on this open path (3D gyroid).
+    pub fit_arcs: bool,
 }
 
 pub fn plan_region(
@@ -216,6 +221,10 @@ pub fn plan_region(
                 let mut path = extrusion(kind, strategy, pts, line_width);
                 if every > 1 {
                     path.bead_height = features.layer_height * every as f64;
+                }
+                if strategy.gyroid_3d && strategy.pattern == crate::strategy::InfillPattern::Gyroid
+                {
+                    path.fit_arcs = true;
                 }
                 paths.push(path);
             }
@@ -481,6 +490,7 @@ fn extrusion(
         flow_frac: Vec::new(),
         scarf_mm: 0.0,
         on_overhang: false,
+        fit_arcs: false,
     };
     apply_feed(&mut path, strategy);
     path
@@ -512,7 +522,12 @@ fn kind_strength(kind: PathKind, strategy: &ResolvedStrategy) -> f64 {
         PathKind::Wall | PathKind::Outer | PathKind::Inner | PathKind::ThinWall => 1.25,
         PathKind::GapFill => 1.05,
         PathKind::Infill | PathKind::Sparse | PathKind::Solid | PathKind::Top => {
-            strategy.pattern.strength()
+            let base = strategy.pattern.strength();
+            if strategy.gyroid_3d && strategy.pattern == InfillPattern::Gyroid {
+                base * 1.15
+            } else {
+                base
+            }
         }
         PathKind::Bridge => 0.7,
         PathKind::Skirt | PathKind::Support | PathKind::SupportInterface => 0.0,
@@ -660,7 +675,14 @@ fn build_infill(
             )));
             paths
         }
-        InfillPattern::Gyroid => gyroid(loops, spacing, strategy.toughness),
+        InfillPattern::Gyroid => {
+            if strategy.gyroid_3d {
+                let period = crate::gyroid::period_for_spacing(spacing);
+                crate::gyroid::section(loops, period, features.z, 0.05)
+            } else {
+                gyroid(loops, spacing, strategy.toughness)
+            }
+        }
         InfillPattern::Lightning => lightning(loops, spacing.max(line_width * 3.0)),
     }
 }
@@ -942,6 +964,10 @@ fn clip_polyline(loops: &[Loop], pts: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
         out.push(current);
     }
     out
+}
+
+pub fn clip_open_segment(loops: &[Loop], a: [f64; 2], b: [f64; 2]) -> Vec<[[f64; 2]; 2]> {
+    clip_segment(loops, a, b)
 }
 
 fn clip_segment(loops: &[Loop], a: [f64; 2], b: [f64; 2]) -> Vec<[[f64; 2]; 2]> {
