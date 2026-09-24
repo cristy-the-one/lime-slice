@@ -4,6 +4,8 @@
 
 use std::collections::HashMap;
 
+use rayon::prelude::*;
+
 use crate::contour::{in_solid, loop_bounds, Loop};
 use crate::toolpath::clip_open_segment;
 
@@ -20,7 +22,7 @@ pub fn section(loops: &[Loop], period: f64, z: f64, tol: f64) -> Vec<Vec<[f64; 2
         return Vec::new();
     };
     let period = period.max(0.4);
-    let step = (period / 14.0).clamp(0.10, 0.40);
+    let step = (period / 10.0).clamp(0.16, 0.45);
     let k = std::f64::consts::TAU / period;
     let kz = z * k;
     let cos_z = kz.cos();
@@ -36,21 +38,27 @@ pub fn section(loops: &[Loop], period: f64, z: f64, tol: f64) -> Vec<Vec<[f64; 2
     if nx < 2 || ny < 2 || nx > 800 || ny > 800 {
         return Vec::new();
     }
-    let mut samples = vec![0.0f64; (nx * ny) as usize];
-    let mut inside = vec![false; (nx * ny) as usize];
-    for iy in 0..ny {
-        let y = min[1] + iy as f64 * step;
-        for ix in 0..nx {
+    let nxy = (nx * ny) as usize;
+    let mut samples = vec![0.0f64; nxy];
+    let mut inside = vec![false; nxy];
+    samples
+        .par_iter_mut()
+        .zip(inside.par_iter_mut())
+        .enumerate()
+        .for_each(|(id, (sample, inn))| {
+            let ix = id as i32 % nx;
+            let iy = id as i32 / nx;
             let x = min[0] + ix as f64 * step;
-            let id = (iy * nx + ix) as usize;
-            samples[id] = field(x, y);
-            inside[id] = in_solid(loops, x, y);
-        }
-    }
+            let y = min[1] + iy as f64 * step;
+            *sample = field(x, y);
+            *inn = in_solid(loops, x, y);
+        });
 
-    let mut segs: Vec<[[f64; 2]; 2]> = Vec::new();
-    for iy in 0..ny - 1 {
-        for ix in 0..nx - 1 {
+    let segs: Vec<[[f64; 2]; 2]> = (0..ny - 1)
+        .into_par_iter()
+        .flat_map(|iy| {
+            let mut row = Vec::new();
+            for ix in 0..nx - 1 {
             let id = (iy * nx + ix) as usize;
             let corners = [id, id + 1, id + nx as usize + 1, id + nx as usize];
             let mut mask = 0u8;
@@ -118,16 +126,18 @@ pub fn section(loops: &[Loop], period: f64, z: f64, tol: f64) -> Vec<Vec<[f64; 2
                 let b = edge_pt(eb);
                 if fully_in {
                     if dist2(a, b) > 1e-8 {
-                        segs.push([a, b]);
+                        row.push([a, b]);
                     }
                 } else {
                     for piece in clip_open_segment(loops, a, b) {
-                        segs.push(piece);
+                        row.push(piece);
                     }
                 }
             }
-        }
-    }
+            }
+            row
+        })
+        .collect();
     let chained = chain(segs);
     chained
         .into_iter()

@@ -123,6 +123,53 @@ A scarf replaces a butt seam on a closed wall when the seam is not already on a 
 
 Speed forced to outer is 12.6 s slower on the post (62.0 → 74.6) and 49 s slower on the hull (617.4 → 666.5), at the same filament mass. That is why the speed blend leaves the scarf off. Toughness pays about 26 s on the post and 113 s on the hull, under 1.5% and 0.5% of those prints, and keeps the 10 mm overlap. Classic on the post is 176.4 s / 0.82 g (speed) and 2407.8 s / 3.42 g (toughness), with no scarf and no arcs. Hull toughness with the scarf off matches the previous default (22889.5 s, 43.79 g). The default toughness row above now includes the scarf, so that print is 23003 s and the structural score drops from 46764 to 45689 because the ramp is scored at its real height and flow instead of a full bead.
 
+## True 3D gyroid
+
+`--gyroid-3d blend` (the default) cuts `sin(x)cos(y)+sin(y)cos(z)+sin(z)cos(x)=0` at the layer Z wherever the pattern is already gyroid. Speed stays on lightning, so the speed rows above are unchanged (cube 170.7 s / 1.84 g / 1.46 ms, hull 617.4 s / 4.66 g / 35.4 ms). The 2D sine is `--gyroid-3d off`, which is what main printed. Classic is the line planner. The cell period is 1.15 times the infill spacing. Sampling runs per layer and per grid row.
+
+Release bench, same machine, layer height 0.2 mm. Tall column is a 20 × 20 × 60 mm box.
+
+| Mesh | Infill | Slice ms | Print s | Filament g | Travel mm | Retracts | Toughness |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| cube | 3D gyroid | 116.6 | 6119 | 10.04 | 6891 | 100 | 11568 |
+| cube | 2D gyroid (main) | 37.3 | 4848 | 10.33 | 6882 | 100 | 10894 |
+| cube | classic | 35.9 | 6251 | 10.33 | 56802 | 4500 | 10894 |
+| hull | 3D gyroid | 862.4 | 29780 | 42.16 | 31586 | 139 | 49090 |
+| hull | 2D gyroid (main) | 300.6 | 23003 | 43.78 | 23776 | 139 | 45689 |
+| hull | classic | 252.3 | 29754 | 43.79 | 282427 | 12179 | 46764 |
+| tall 60 mm | 3D gyroid | 336.9 | 17926 | 29.93 | 20124 | 299 | 34554 |
+| tall 60 mm | 2D gyroid (main) | 108.4 | 14262 | 30.82 | 20608 | 299 | 32573 |
+| tall 60 mm | classic | 104.3 | 18672 | 30.82 | 169870 | 13455 | 32573 |
+
+The 3D section scores higher and uses a little less filament. It also takes longer to print, because the sheet is a longer curve than the 2D sine, and longer to slice. That trade is what the toughness blend is for. Speed keeps lightning.
+
+## Z-hop
+
+`--z-hop blend` is smart on toughness and off on speed. Smart on the cube and the tall column hops 0 times, because combing already stays inside. On the hull it hops 5 times and the print time does not move (29779.6 s vs 29779.0 s). On the ledge with supports it hops 60 times and adds 6.2 s (8447.2 s vs 8441.0 s). Forcing smart on the speed blend adds time (cube 170.7 → 171.1 s, 12 hops; hull 617.4 → 619.3 s, 45 hops) without a toughness job to pay for, so speed stays off. Always is the expensive one: cube 6142 s and 287 hops, hull 29952 s and 2061 hops.
+
+| Mesh | Mode | Print s | Hops | Travel mm | Retracts |
+| --- | --- | ---: | ---: | ---: | ---: |
+| cube | speed blend (off) | 170.7 | 0 | 689 | 9 |
+| cube | speed smart | 171.1 | 12 | 689 | 9 |
+| cube | toughness smart | 6119 | 0 | 6891 | 100 |
+| cube | toughness always | 6142 | 287 | 6891 | 100 |
+| hull | speed blend (off) | 617.4 | 0 | 1830 | 8 |
+| hull | speed smart | 619.3 | 45 | 1830 | 9 |
+| hull | toughness smart | 29780 | 5 | 31586 | 139 |
+| hull | toughness always | 29952 | 2061 | 31586 | 139 |
+| ledge, supports | toughness off | 8441 | 0 | — | — |
+| ledge, supports | toughness smart | 8447 | 60 | 9697 | — |
+
+## Pressure-advance calibration
+
+`lime-slice calibrate pa` writes a tower. Each band is a slow 40 mm/s frame and a slow-fast-slow line. The fast feed is the volumetric cap (here 133.3 mm/s at 0.45 × 0.2 mm and 12 mm³/s). A sample `--start 0 --end 0.04 --step 0.02 --band-height 1` produced three Klipper bands and 88.7 mm of filament:
+
+| Band | K | Z |
+| --- | ---: | --- |
+| 0 | 0.0000 | 0.200–1.000 |
+| 1 | 0.0200 | 1.200–2.000 |
+| 2 | 0.0400 | 2.200–3.000 |
+
 ## Layout
 
 - `crates/lime-slice-core` — mesh load, contour slice, strategy blend, toolpaths, G-code

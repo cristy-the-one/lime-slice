@@ -546,7 +546,106 @@ fn bench(input: &PathBuf) -> Result<(), String> {
             off.core_ms, on.core_ms, on.estimate.scarfed_loops
         );
     }
+    let tough = BlendMode::Single {
+        strategy: StrategyId::Toughness,
+    };
+    println!("gyroid3d vs 2d (--gyroid-3d off, same as main) vs classic");
+    println!(
+        "{:<14} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}",
+        "infill", "slice ms", "time s", "filament g", "travel mm", "retract", "tough"
+    );
+    for (label, settings) in [
+        (
+            "gyroid3d",
+            SliceSettings::default(),
+        ),
+        (
+            "gyroid2d",
+            SliceSettings {
+                gyroid_3d: Gyroid3d::Off,
+                z_hop: ZHopMode::Off,
+                ..SliceSettings::default()
+            },
+        ),
+        ("classic", classic_settings()),
+    ] {
+        let response = lime_slice_core::slice_configured(&mesh, &tough, &Default::default(), &settings)?;
+        println!(
+            "{:<14} {:>10.2} {:>10.1} {:>10.2} {:>10.1} {:>10} {:>10.1}",
+            label,
+            response.core_ms,
+            response.estimate.seconds,
+            response.estimate.filament_g,
+            response.sanity.travel_length_mm,
+            response.sanity.retracts,
+            response.score.toughness
+        );
+    }
+    println!("z-hop on this mesh (toughness smart is the blend default; speed stays off)");
+    println!(
+        "{:<18} {:>10} {:>10} {:>10} {:>8}",
+        "mode", "time s", "travel mm", "retract", "hops"
+    );
+    for (label, mode, hop) in [
+        ("speed blend", &speed, ZHopMode::Blend),
+        ("speed smart", &speed, ZHopMode::Smart),
+        ("tough off", &tough, ZHopMode::Off),
+        ("tough smart", &tough, ZHopMode::Smart),
+        ("tough always", &tough, ZHopMode::Always),
+    ] {
+        let response = lime_slice_core::slice_configured(
+            &mesh,
+            mode,
+            &Default::default(),
+            &SliceSettings {
+                z_hop: hop,
+                ..SliceSettings::default()
+            },
+        )?;
+        println!(
+            "{:<18} {:>10.1} {:>10.1} {:>10} {:>8}",
+            label,
+            response.estimate.seconds,
+            response.sanity.travel_length_mm,
+            response.sanity.retracts,
+            response.estimate.z_hops
+        );
+    }
+    let supported = lime_slice_core::slice_configured(
+        &mesh,
+        &tough,
+        &Default::default(),
+        &SliceSettings {
+            supports: true,
+            z_hop: ZHopMode::Smart,
+            ..SliceSettings::default()
+        },
+    )?;
+    let supported_off = lime_slice_core::slice_configured(
+        &mesh,
+        &tough,
+        &Default::default(),
+        &SliceSettings {
+            supports: true,
+            z_hop: ZHopMode::Off,
+            ..SliceSettings::default()
+        },
+    )?;
+    println!(
+        "tough smart supports  time {:.1} s (off {:.1} s)  hops {}  travel {:.1} mm",
+        supported.estimate.seconds,
+        supported_off.estimate.seconds,
+        supported.estimate.z_hops,
+        supported.sanity.travel_length_mm
+    );
     Ok(())
+}
+
+fn classic_settings() -> SliceSettings {
+    SliceSettings {
+        classic: true,
+        ..SliceSettings::default()
+    }
 }
 
 fn serve(port: u16) -> Result<(), String> {
