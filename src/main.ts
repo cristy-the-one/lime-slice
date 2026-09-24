@@ -123,6 +123,8 @@ app.innerHTML = `
   <div class="app">
     <header class="top">
       <div class="brand">Lime <span>Slice</span></div>
+      <button class="btn panel-toggle" id="toggleLeft" type="button">Settings</button>
+      <button class="btn panel-toggle" id="toggleRight" type="button">Blend</button>
       <label class="btn file">Open mesh<input id="file" type="file" accept=".stl,.3mf,.STL,.3MF" /></label>
       <details class="menu" id="samples">
         <summary class="btn">Samples</summary>
@@ -444,7 +446,8 @@ function paintLegend() {
   const by = new Map((est?.byFeature ?? []).map((row) => [row.kind, row.seconds]));
   legend.innerHTML = [...kinds].sort().map((kind) => {
     const share = by.has(kind) ? ` · ${((by.get(kind)! / total) * 100).toFixed(0)}%` : "";
-    return `<label><input type="checkbox" data-kind="${kind}" ${state.hidden.has(kind) ? "" : "checked"}/><i class="swatch" style="background:${FEATURE_COLOR[kind] ?? "#ccc"}"></i>${FEATURE_LABEL[kind] ?? kind}${share}</label>`;
+    const shown = kind === "travel" ? state.showTravel : !state.hidden.has(kind);
+    return `<label><input type="checkbox" data-kind="${kind}" ${shown ? "checked" : ""}/><i class="swatch" style="background:${FEATURE_COLOR[kind] ?? "#ccc"}"></i>${FEATURE_LABEL[kind] ?? kind}${share}</label>`;
   }).join("") + ((est?.scarfedLoops ?? 0) > 0 ? `<span><i class="swatch" style="background:#fff"></i>Scarf ramp</span>` : "");
 }
 
@@ -671,6 +674,12 @@ document.querySelector("#rangeHigh")!.addEventListener("input", (ev) => {
 document.querySelector("#rangeLow")!.addEventListener("input", (ev) => {
   state.rangeLow = Math.min(state.layer, Number((ev.target as HTMLInputElement).value));
   scrub(state.layer);
+});
+document.querySelector("#toggleLeft")!.addEventListener("click", () => {
+  document.querySelector(".workspace")!.classList.toggle("show-left");
+});
+document.querySelector("#toggleRight")!.addEventListener("click", () => {
+  document.querySelector(".workspace")!.classList.toggle("show-right");
 });
 document.querySelector("#slice")!.addEventListener("click", () => void runSlice());
 document.querySelector("#cancel")!.addEventListener("click", () => cancelSlice());

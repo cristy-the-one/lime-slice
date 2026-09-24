@@ -79,13 +79,21 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   const planeMat = new THREE.MeshBasicMaterial({
     color: 0x2ec4b6,
     transparent: true,
-    opacity: 0.28,
+    opacity: 0.14,
     side: THREE.DoubleSide,
     depthWrite: false,
   });
   const plane = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), planeMat);
   plane.visible = false;
+  plane.renderOrder = 2;
   scene.add(plane);
+  const handle = new THREE.Mesh(
+    new THREE.SphereGeometry(0.9, 16, 12),
+    new THREE.MeshBasicMaterial({ color: 0xf0a202, depthTest: false }),
+  );
+  handle.visible = false;
+  handle.renderOrder = 3;
+  scene.add(handle);
 
   let layers: LayerLines[] = [];
   let slice: ViewSlice | null = null;
@@ -163,24 +171,29 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   function placePlane() {
     if (!planeSpec || !slice) {
       plane.visible = false;
+      handle.visible = false;
       return;
     }
     const min = slice.mesh.min;
     const max = slice.mesh.max;
     const cx = (min[0] + max[0]) / 2;
     const cy = (min[1] + max[1]) / 2;
-    const spanX = Math.max(1, max[0] - min[0]);
-    const spanY = Math.max(1, max[1] - min[1]);
-    const height = Math.max(1, max[2] - min[2]);
+    const margin = 1.2;
+    const spanX = Math.max(1, max[0] - min[0]) + margin * 2;
+    const spanY = Math.max(1, max[1] - min[1]) + margin * 2;
+    const height = Math.max(1, max[2] - min[2]) + margin;
     plane.visible = true;
+    handle.visible = true;
     if (planeSpec.axis === "x") {
       plane.rotation.set(0, Math.PI / 2, 0);
-      plane.scale.set(spanY + 4, height + 1, 1);
-      plane.position.set(planeSpec.at - cx, height / 2, 0);
+      plane.scale.set(spanY, height, 1);
+      plane.position.set(planeSpec.at - cx, (height - margin) / 2, 0);
+      handle.position.set(planeSpec.at - cx, height - margin + 0.6, 0);
     } else {
       plane.rotation.set(Math.PI / 2, 0, 0);
-      plane.scale.set(spanX + 4, height + 1, 1);
-      plane.position.set(0, height / 2, -(planeSpec.at - cy));
+      plane.scale.set(spanX, height, 1);
+      plane.position.set(0, (height - margin) / 2, -(planeSpec.at - cy));
+      handle.position.set(0, height - margin + 0.6, -(planeSpec.at - cy));
     }
   }
 
