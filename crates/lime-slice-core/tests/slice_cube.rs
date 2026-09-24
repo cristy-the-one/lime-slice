@@ -1217,3 +1217,40 @@ fn assert_hop_returns(gcode: &str) {
         }
     }
 }
+
+#[test]
+fn feature_times_match_total_and_baseline_skip_is_real() {
+    let mesh = cube();
+    let mut settings = SliceSettings::default();
+    settings.baseline = false;
+    settings.compare = true;
+    let response = slice_configured(
+        &mesh,
+        &BlendMode::Single {
+            strategy: StrategyId::Speed,
+        },
+        &profile(),
+        &settings,
+    )
+    .unwrap();
+    assert_eq!(response.baseline_ms, 0.0, "baseline pass must be skipped");
+    assert_eq!(response.baseline_label, "skipped");
+    let sum: f64 = response.estimate.by_feature.iter().map(|row| row.seconds).sum();
+    let total = response.estimate.seconds.max(1e-6);
+    assert!(
+        (sum - response.estimate.seconds).abs() / total < 0.005,
+        "feature seconds {sum} vs total {}",
+        response.estimate.seconds
+    );
+    let grams: f64 = response.estimate.by_feature.iter().map(|row| row.filament_g).sum();
+    assert!((grams - response.estimate.filament_g).abs() < 0.02);
+    let labels: Vec<_> = response.compare.iter().map(|row| row.label.as_str()).collect();
+    assert_eq!(labels, vec!["speed", "efficiency", "toughness", "classic"]);
+    let speed = response.compare.iter().find(|row| row.label == "speed").unwrap();
+    let tough = response.compare.iter().find(|row| row.label == "toughness").unwrap();
+    let classic = response.compare.iter().find(|row| row.label == "classic").unwrap();
+    assert!((speed.seconds - response.estimate.seconds).abs() < 0.05);
+    assert!(tough.seconds > speed.seconds);
+    assert!(classic.seconds > 0.0 && classic.filament_g > 0.0);
+    assert!(tough.by_feature.iter().map(|row| row.seconds).sum::<f64>() > 0.0);
+}
