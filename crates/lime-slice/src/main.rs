@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use base64::Engine;
 use clap::{Parser, Subcommand};
 use lime_slice_core::{
-    slice_request, Axis, BlendMode, ScarfSeam, SliceRequest, SliceSettings, StrategyId,
+    slice_request, Axis, BlendMode, Gyroid3d, ScarfSeam, SliceRequest, SliceSettings, StrategyId,
+    ZHopMode,
 };
 
 #[derive(Parser)]
@@ -92,6 +93,18 @@ enum Cmd {
         /// Scarf start flow. Ramps to 1 at full layer height.
         #[arg(long, default_value_t = 0.55)]
         scarf_start_flow: f64,
+        /// 3D gyroid: `blend` (toughness), `off` (2D sine), or `on` (force).
+        #[arg(long, default_value = "blend")]
+        gyroid_3d: String,
+        /// Z-hop: `off`, `blend`, `always`, or `smart`.
+        #[arg(long, default_value = "blend")]
+        z_hop: String,
+        /// Hop height in millimetres.
+        #[arg(long, default_value_t = 0.4)]
+        z_hop_height: f64,
+        /// Skip hops shorter than this travel, in millimetres.
+        #[arg(long, default_value_t = 2.0)]
+        z_hop_min_travel: f64,
         #[arg(short, long)]
         output: PathBuf,
     },
@@ -101,6 +114,41 @@ enum Cmd {
     Serve {
         #[arg(long, default_value_t = 43118)]
         port: u16,
+    },
+    /// Calibration prints.
+    Calibrate {
+        #[command(subcommand)]
+        kind: CalibrateCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum CalibrateCmd {
+    /// Pressure-advance tower with a slow-fast-slow line in each band.
+    Pa {
+        /// `klipper` emits SET_PRESSURE_ADVANCE. `marlin` emits M900 K.
+        #[arg(long, default_value = "klipper")]
+        firmware: String,
+        #[arg(long, default_value_t = 0.0)]
+        start: f64,
+        #[arg(long, default_value_t = 0.08)]
+        end: f64,
+        #[arg(long, default_value_t = 0.01)]
+        step: f64,
+        #[arg(long, default_value_t = 0.2)]
+        layer_height: f64,
+        #[arg(long, default_value_t = 2.0)]
+        band_height: f64,
+        /// Slow feed. The default sits well under the volumetric cap.
+        #[arg(long, default_value_t = 40.0)]
+        slow: f64,
+        /// Fast feed. Capped by the printer volumetric limit so it still differs from slow.
+        #[arg(long, default_value_t = 200.0)]
+        fast: f64,
+        #[arg(long, default_value_t = 3000.0)]
+        accel: f64,
+        #[arg(short, long)]
+        output: PathBuf,
     },
 }
 
@@ -142,9 +190,15 @@ fn run() -> Result<(), String> {
             scarf_steps,
             scarf_start_height,
             scarf_start_flow,
+            gyroid_3d,
+            z_hop,
+            z_hop_height,
+            z_hop_min_travel,
             output,
         } => {
             let scarf_seam = ScarfSeam::parse(&scarf_seam)?;
+            let gyroid_3d = Gyroid3d::parse(&gyroid_3d)?;
+            let z_hop = ZHopMode::parse(&z_hop)?;
             let response = slice_file(
                 &input,
                 &blend_mode(
@@ -187,6 +241,10 @@ fn run() -> Result<(), String> {
                     scarf_steps,
                     scarf_start_height,
                     scarf_start_flow,
+                    gyroid_3d,
+                    z_hop,
+                    z_hop_height,
+                    z_hop_min_travel,
                     ..SliceSettings::default()
                 },
             )?;
@@ -203,6 +261,60 @@ fn run() -> Result<(), String> {
         }
         Cmd::Bench { input } => bench(&input),
         Cmd::Serve { port } => serve(port),
+        Cmd::Calibrate { kind } => calibrate(kind),
+    }
+}
+
+fn calibrate(kind: CalibrateCmd) -> Result<(), String> {
+    match kind {
+        CalibrateCmd::Pa {
+            firmware,
+            start,
+            end,
+            step,
+            layer_height,
+            band_height,
+            slow,
+            fast,
+            accel,
+            output,
+        } => {
+            let tower = lime_slice_core::pressure_advance_tower(&lime_slice_core::PaCalib {
+                firmware: lime_slice_core::PaFirmware::parse(&firmware)?,
+                start,
+                end,
+                step,
+                layer_height,
+                band_height,
+                slow_mm_s: slow,
+                fast_mm_s: fast,
+                accel,
+                ..lime_slice_core::PaCalib::default()
+            })?;
+            if let Some(parent) = output.parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            fs::write(&output, &tower.gcode).map_err(|e| e.to_string())?;
+            println!(
+                "PA {}  bands {}  K {:.4}..{:.4} step {:.4}  slow {:.1} fast {:.1} mm/s  E {:.1} mm",
+                firmware,
+                tower.bands.len(),
+                tower.bands.first().map(|b| b.k).unwrap_or(0.0),
+                tower.bands.last().map(|b| b.k).unwrap_or(0.0),
+                step,
+                tower.slow_mm_s,
+                tower.fast_mm_s,
+                tower.final_e
+            );
+            for band in &tower.bands {
+                println!(
+                    "  band {}  K {:.4}  Z {:.3}..{:.3}",
+                    band.index, band.k, band.z0, band.z1
+                );
+            }
+            println!("wrote {}", output.display());
+            Ok(())
+        }
     }
 }
 
@@ -434,7 +546,106 @@ fn bench(input: &PathBuf) -> Result<(), String> {
             off.core_ms, on.core_ms, on.estimate.scarfed_loops
         );
     }
+    let tough = BlendMode::Single {
+        strategy: StrategyId::Toughness,
+    };
+    println!("gyroid3d vs 2d (--gyroid-3d off, same as main) vs classic");
+    println!(
+        "{:<14} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}",
+        "infill", "slice ms", "time s", "filament g", "travel mm", "retract", "tough"
+    );
+    for (label, settings) in [
+        (
+            "gyroid3d",
+            SliceSettings::default(),
+        ),
+        (
+            "gyroid2d",
+            SliceSettings {
+                gyroid_3d: Gyroid3d::Off,
+                z_hop: ZHopMode::Off,
+                ..SliceSettings::default()
+            },
+        ),
+        ("classic", classic_settings()),
+    ] {
+        let response = lime_slice_core::slice_configured(&mesh, &tough, &Default::default(), &settings)?;
+        println!(
+            "{:<14} {:>10.2} {:>10.1} {:>10.2} {:>10.1} {:>10} {:>10.1}",
+            label,
+            response.core_ms,
+            response.estimate.seconds,
+            response.estimate.filament_g,
+            response.sanity.travel_length_mm,
+            response.sanity.retracts,
+            response.score.toughness
+        );
+    }
+    println!("z-hop on this mesh (toughness smart is the blend default; speed stays off)");
+    println!(
+        "{:<18} {:>10} {:>10} {:>10} {:>8}",
+        "mode", "time s", "travel mm", "retract", "hops"
+    );
+    for (label, mode, hop) in [
+        ("speed blend", &speed, ZHopMode::Blend),
+        ("speed smart", &speed, ZHopMode::Smart),
+        ("tough off", &tough, ZHopMode::Off),
+        ("tough smart", &tough, ZHopMode::Smart),
+        ("tough always", &tough, ZHopMode::Always),
+    ] {
+        let response = lime_slice_core::slice_configured(
+            &mesh,
+            mode,
+            &Default::default(),
+            &SliceSettings {
+                z_hop: hop,
+                ..SliceSettings::default()
+            },
+        )?;
+        println!(
+            "{:<18} {:>10.1} {:>10.1} {:>10} {:>8}",
+            label,
+            response.estimate.seconds,
+            response.sanity.travel_length_mm,
+            response.sanity.retracts,
+            response.estimate.z_hops
+        );
+    }
+    let supported = lime_slice_core::slice_configured(
+        &mesh,
+        &tough,
+        &Default::default(),
+        &SliceSettings {
+            supports: true,
+            z_hop: ZHopMode::Smart,
+            ..SliceSettings::default()
+        },
+    )?;
+    let supported_off = lime_slice_core::slice_configured(
+        &mesh,
+        &tough,
+        &Default::default(),
+        &SliceSettings {
+            supports: true,
+            z_hop: ZHopMode::Off,
+            ..SliceSettings::default()
+        },
+    )?;
+    println!(
+        "tough smart supports  time {:.1} s (off {:.1} s)  hops {}  travel {:.1} mm",
+        supported.estimate.seconds,
+        supported_off.estimate.seconds,
+        supported.estimate.z_hops,
+        supported.sanity.travel_length_mm
+    );
     Ok(())
+}
+
+fn classic_settings() -> SliceSettings {
+    SliceSettings {
+        classic: true,
+        ..SliceSettings::default()
+    }
 }
 
 fn serve(port: u16) -> Result<(), String> {
@@ -453,6 +664,17 @@ fn serve(port: u16) -> Result<(), String> {
             (204, String::new())
         } else if method == "GET" && url.starts_with("/api/health") {
             (200, r#"{"ok":true}"#.into())
+        } else if method == "POST" && url.starts_with("/api/calibrate/pa") {
+            match serde_json::from_str::<lime_slice_core::PaCalibRequest>(&body) {
+                Ok(req) => match lime_slice_core::pressure_advance_from_request(&req) {
+                    Ok(res) => (
+                        200,
+                        serde_json::to_string(&res).unwrap_or_else(|e| err_json(&e.to_string())),
+                    ),
+                    Err(err) => (400, err_json(&err)),
+                },
+                Err(err) => (400, err_json(&err.to_string())),
+            }
         } else if method == "POST" && url.starts_with("/api/slice") {
             match serde_json::from_str::<SliceRequest>(&body) {
                 Ok(req) => match slice_request(&req) {
@@ -530,6 +752,10 @@ fn slice_file(
         scarf_steps: settings.scarf_steps,
         scarf_start_height: settings.scarf_start_height,
         scarf_start_flow: settings.scarf_start_flow,
+        gyroid_3d: settings.gyroid_3d,
+        z_hop: settings.z_hop,
+        z_hop_height: settings.z_hop_height,
+        z_hop_min_travel: settings.z_hop_min_travel,
     })
 }
 

@@ -113,6 +113,91 @@ impl Default for ScarfSeam {
     }
 }
 
+/// When the toughness gyroid is the real TPMS section instead of the 2D sine.
+///
+/// `Blend` uses the 3D section wherever the resolved pattern is gyroid
+/// (toughness, and a weight mix at or above 75%). Speed stays on lightning.
+/// `Off` keeps the 2D bands. `On` forces the 3D gyroid for every strategy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Gyroid3d {
+    Blend,
+    Off,
+    On,
+}
+
+/// When a travel lifts the nozzle.
+///
+/// `Blend` is smart on toughness (and a weight mix at or above 50%) and off
+/// on speed. `Smart` hops only when a long travel crosses printed top or
+/// perimeter that combing could not route around, or when leaving a top skin.
+/// `Always` hops every travel longer than the threshold. `Off` never hops.
+/// `--classic` forces off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ZHopMode {
+    Off,
+    Blend,
+    Always,
+    Smart,
+}
+
+impl Default for ZHopMode {
+    fn default() -> Self {
+        ZHopMode::Blend
+    }
+}
+
+impl ZHopMode {
+    pub fn parse(name: &str) -> Result<Self, String> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" | "false" => Ok(ZHopMode::Off),
+            "blend" | "auto" | "default" => Ok(ZHopMode::Blend),
+            "always" | "on" | "true" => Ok(ZHopMode::Always),
+            "smart" => Ok(ZHopMode::Smart),
+            other => Err(format!(
+                "unknown z-hop '{other}' (use off, blend, always, or smart)"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ZHopMode::Off => "off",
+            ZHopMode::Blend => "blend",
+            ZHopMode::Always => "always",
+            ZHopMode::Smart => "smart",
+        }
+    }
+}
+
+impl Default for Gyroid3d {
+    fn default() -> Self {
+        Gyroid3d::Blend
+    }
+}
+
+impl Gyroid3d {
+    pub fn parse(name: &str) -> Result<Self, String> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "blend" | "auto" | "default" => Ok(Gyroid3d::Blend),
+            "off" | "2d" | "false" => Ok(Gyroid3d::Off),
+            "on" | "3d" | "true" => Ok(Gyroid3d::On),
+            other => Err(format!(
+                "unknown gyroid mode '{other}' (use blend, off, or on)"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Gyroid3d::Blend => "blend",
+            Gyroid3d::Off => "off",
+            Gyroid3d::On => "on",
+        }
+    }
+}
+
 impl ScarfSeam {
     pub fn parse(name: &str) -> Result<Self, String> {
         match name.trim().to_ascii_lowercase().as_str() {
@@ -172,6 +257,10 @@ pub struct ResolvedStrategy {
     pub travel_accel: f64,
     /// Scarf used when the slice knob is `Blend`. Speed is off; toughness is outer.
     pub scarf: ScarfSeam,
+    /// True when this toolpath should cut the TPMS gyroid at the layer Z.
+    pub gyroid_3d: bool,
+    /// Resolved hop policy. `Blend` is not stored here.
+    pub z_hop: ZHopMode,
 }
 
 pub fn pure(id: StrategyId) -> ResolvedStrategy {
@@ -205,6 +294,8 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             top_accel: 3000.0,
             travel_accel: 5500.0,
             scarf: ScarfSeam::Off,
+            gyroid_3d: false,
+            z_hop: ZHopMode::Off,
         },
         StrategyId::Toughness => ResolvedStrategy {
             id,
@@ -235,6 +326,8 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             top_accel: 550.0,
             travel_accel: 1200.0,
             scarf: ScarfSeam::Outer,
+            gyroid_3d: true,
+            z_hop: ZHopMode::Smart,
         },
     }
 }
@@ -303,6 +396,12 @@ pub fn mix(toughness: f64) -> ResolvedStrategy {
         } else {
             ScarfSeam::Off
         },
+        gyroid_3d: pattern == InfillPattern::Gyroid,
+        z_hop: if t >= 0.5 {
+            ZHopMode::Smart
+        } else {
+            ZHopMode::Off
+        },
     }
 }
 
@@ -315,6 +414,8 @@ pub fn classicize(mut strategy: ResolvedStrategy) -> ResolvedStrategy {
     strategy.infill_combine = 1;
     strategy.feature_speeds = false;
     strategy.scarf = ScarfSeam::Off;
+    strategy.gyroid_3d = false;
+    strategy.z_hop = ZHopMode::Off;
     strategy
 }
 

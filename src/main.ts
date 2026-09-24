@@ -96,6 +96,16 @@ const state: {
   scarfSeam: "blend" | "off" | "outer" | "all";
   scarfLength: number;
   scarfSteps: number;
+  gyroid3d: "blend" | "off" | "on";
+  zHop: "off" | "blend" | "always" | "smart";
+  zHopHeight: number;
+  zHopMinTravel: number;
+  paFirmware: "klipper" | "marlin";
+  paStart: number;
+  paEnd: number;
+  paStep: number;
+  paBands: { index: number; k: number; z0: number; z1: number }[];
+  paGcode: string;
   viewMode: "flat" | "split" | "solid";
 } = {
   mesh: null,
@@ -131,6 +141,16 @@ const state: {
   scarfSeam: "blend",
   scarfLength: 10,
   scarfSteps: 8,
+  gyroid3d: "blend",
+  zHop: "blend",
+  zHopHeight: 0.4,
+  zHopMinTravel: 2,
+  paFirmware: "klipper",
+  paStart: 0,
+  paEnd: 0.08,
+  paStep: 0.01,
+  paBands: [],
+  paGcode: "",
   viewMode: "split",
 };
 
@@ -245,6 +265,23 @@ function renderChrome() {
     </label>
     ${state.scarfSeam === "off" ? "" : `<label class="field">Scarf length mm<input id="scarflen" type="number" min="1" max="30" step="1" value="${state.scarfLength}" /></label>
     <label class="field">Scarf steps<input id="scarfsteps" type="number" min="2" max="32" step="1" value="${state.scarfSteps}" /></label>`}
+    <label class="field">3D gyroid
+      <select id="gyroid3d">
+        ${opt("blend", "Blend default", state.gyroid3d)}
+        ${opt("off", "2D sine", state.gyroid3d)}
+        ${opt("on", "Force 3D", state.gyroid3d)}
+      </select>
+    </label>
+    <label class="field">Z-hop
+      <select id="zhop">
+        ${opt("blend", "Blend default", state.zHop)}
+        ${opt("off", "Off", state.zHop)}
+        ${opt("smart", "Smart", state.zHop)}
+        ${opt("always", "Always", state.zHop)}
+      </select>
+    </label>
+    ${state.zHop === "off" ? "" : `<label class="field">Hop height mm<input id="zhopht" type="number" min="0.1" max="2" step="0.1" value="${state.zHopHeight}" /></label>
+    <label class="field">Hop above travel mm<input id="zhopmin" type="number" min="0.5" max="20" step="0.5" value="${state.zHopMinTravel}" /></label>`}
     <div class="meta" style="margin-top:8px">Triangles <b>${result ? result.mesh.triangles : "—"}</b><br>Bounds <b>${bounds}</b></div>
     ${state.error ? `<div class="banner" style="margin-top:10px">${escapeHtml(state.error)}</div>` : ""}
     ${result ? `<div class="banner ${result.sanity.ok ? "ok" : ""}" style="margin-top:10px">${result.sanity.ok ? "G-code checks passed" : "G-code checks failed"}<br>${escapeHtml(result.sanity.notes.join(" ") || `${result.sanity.layers} layers · E ${result.sanity.finalE.toFixed(1)} mm · path ${result.sanity.extrusionLengthMm.toFixed(0)} mm`)}</div>` : ""}
@@ -255,7 +292,7 @@ function renderChrome() {
     <div class="stack">
       <div class="strategy speed"><h3>Speed</h3><p>2 walls · lightning infill · 140 mm/s · volumetric cap · nearest seam</p></div>
       <div class="strategy mid"><h3>Efficiency</h3><p>Weight mix · lines then grid · filament score from the estimator</p></div>
-      <div class="strategy tough"><h3>Toughness</h3><p>5 walls · 48% gyroid · 45 mm/s · aligned seam · scarf on smooth walls</p></div>
+      <div class="strategy tough"><h3>Toughness</h3><p>5 walls · 48% 3D gyroid · 45 mm/s · aligned seam · scarf on smooth walls</p></div>
     </div>
     <h2>Blend</h2>
     <div class="stack">
@@ -269,6 +306,21 @@ function renderChrome() {
       </label>
       ${blendFields()}
     </div>
+    <h2>PA calibration</h2>
+    <label class="field">Firmware
+      <select id="pafw">
+        ${opt("klipper", "Klipper", state.paFirmware)}
+        ${opt("marlin", "Marlin", state.paFirmware)}
+      </select>
+    </label>
+    <label class="field">K start<input id="pastart" type="number" min="0" max="1" step="0.005" value="${state.paStart}" /></label>
+    <label class="field">K end<input id="paend" type="number" min="0" max="1" step="0.005" value="${state.paEnd}" /></label>
+    <label class="field">K step<input id="pastep" type="number" min="0.001" max="0.2" step="0.005" value="${state.paStep}" /></label>
+    <button class="btn" id="pacal" type="button">Generate PA test</button>
+    ${state.paBands.length ? `<div class="meta">${state.paBands.map((b) => `band ${b.index}: K ${b.k.toFixed(4)} · Z ${b.z0.toFixed(2)}–${b.z1.toFixed(2)}`).join("<br>")}</div>
+    <label class="field">Chosen K<input id="pachosen" type="number" min="0" max="2" step="0.005" value="${state.paFirmware === "marlin" ? state.linearAdvance : state.pressureAdvance}" /></label>
+    <button class="btn" id="paapply" type="button">Save K to profile</button>
+    <button class="btn" id="paexport" type="button">Export PA G-code</button>` : ""}
     <h2>Active layer</h2>
     <div class="meta" id="layerReadout">${layerReadout()}</div>
   `;
@@ -401,6 +453,19 @@ function bindChrome() {
   document.querySelector("#scarfsteps")?.addEventListener("change", (ev) => {
     state.scarfSteps = Number((ev.target as HTMLInputElement).value) || 8;
   });
+  document.querySelector("#gyroid3d")?.addEventListener("change", (ev) => {
+    state.gyroid3d = (ev.target as HTMLSelectElement).value as typeof state.gyroid3d;
+  });
+  document.querySelector("#zhop")?.addEventListener("change", (ev) => {
+    state.zHop = (ev.target as HTMLSelectElement).value as typeof state.zHop;
+    renderChrome();
+  });
+  document.querySelector("#zhopht")?.addEventListener("change", (ev) => {
+    state.zHopHeight = Number((ev.target as HTMLInputElement).value) || 0.4;
+  });
+  document.querySelector("#zhopmin")?.addEventListener("change", (ev) => {
+    state.zHopMinTravel = Number((ev.target as HTMLInputElement).value) || 2;
+  });
   document.querySelector("#blendKind")?.addEventListener("change", (ev) => {
     state.blendKind = (ev.target as HTMLSelectElement).value as Blend["mode"];
     renderChrome();
@@ -430,6 +495,91 @@ function bindChrome() {
     state.showTravel = (ev.target as HTMLInputElement).checked;
     draw();
   });
+  document.querySelector("#pafw")?.addEventListener("change", (ev) => {
+    state.paFirmware = (ev.target as HTMLSelectElement).value as typeof state.paFirmware;
+  });
+  document.querySelector("#pastart")?.addEventListener("change", (ev) => {
+    state.paStart = Number((ev.target as HTMLInputElement).value) || 0;
+  });
+  document.querySelector("#paend")?.addEventListener("change", (ev) => {
+    state.paEnd = Number((ev.target as HTMLInputElement).value) || 0;
+  });
+  document.querySelector("#pastep")?.addEventListener("change", (ev) => {
+    state.paStep = Number((ev.target as HTMLInputElement).value) || 0.01;
+  });
+  document.querySelector("#pacal")?.addEventListener("click", () => void runPaCal());
+  document.querySelector("#paapply")?.addEventListener("click", () => {
+    const chosen = Number((document.querySelector("#pachosen") as HTMLInputElement).value);
+    if (state.paFirmware === "marlin") state.linearAdvance = chosen;
+    else state.pressureAdvance = chosen;
+    renderChrome();
+  });
+  document.querySelector("#paexport")?.addEventListener("click", () => {
+    if (!state.paGcode) return;
+    const blob = new Blob([state.paGcode], { type: "text/plain" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "pa-calibration.gcode";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+}
+
+async function runPaCal() {
+  state.busy = true;
+  state.error = "";
+  renderChrome();
+  try {
+    const payload = {
+      firmware: state.paFirmware,
+      start: state.paStart,
+      end: state.paEnd,
+      step: state.paStep,
+      layerHeight: state.layerHeight,
+      bandHeight: 2,
+      slowMmS: 40,
+      fastMmS: 200,
+      accel: 3000,
+      printer: {
+        name: "Generic Marlin 0.4 mm PLA",
+        nozzleDiameter: 0.4,
+        filamentDiameter: 1.75,
+        nozzleTemp: 200,
+        bedTemp: 60,
+        bedX: 220,
+        bedY: 220,
+        maxVolumetricMm3S: 12,
+        filamentDensityGCm3: 1.24,
+        pressureAdvance: state.pressureAdvance,
+        linearAdvance: state.linearAdvance,
+      },
+    };
+    const result = await calibratePa(payload);
+    state.paBands = result.bands;
+    state.paGcode = result.gcode;
+  } catch (err) {
+    fail(err);
+  } finally {
+    state.busy = false;
+    renderChrome();
+  }
+}
+
+async function calibratePa(payload: unknown): Promise<{ gcode: string; bands: { index: number; k: number; z0: number; z1: number }[] }> {
+  const tauri = window as unknown as { __TAURI_INTERNALS__?: unknown };
+  if (tauri.__TAURI_INTERNALS__) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const json = await invoke<string>("calibrate_pa", { payload: JSON.stringify(payload) });
+    return JSON.parse(json);
+  }
+  const res = await fetch(`${API}/api/calibrate/pa`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const body = (await res.json()) as { gcode: string; bands: { index: number; k: number; z0: number; z1: number }[]; error?: string };
+  if (!res.ok) throw new Error(body.error || `calibration failed (${res.status})`);
+  return body;
 }
 
 function escapeHtml(value: string) {
@@ -557,6 +707,10 @@ async function runSlice() {
       scarfSteps: state.scarfSteps,
       scarfStartHeight: 0.15,
       scarfStartFlow: 0.55,
+      gyroid3d: state.gyroid3d,
+      zHop: state.zHop,
+      zHopHeight: state.zHopHeight,
+      zHopMinTravel: state.zHopMinTravel,
     };
     state.result = await slice(payload);
     if (state.result.error) throw new Error(state.result.error);

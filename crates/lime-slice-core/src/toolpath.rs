@@ -70,6 +70,8 @@ pub struct PathFeatures {
     pub layer_index: usize,
     pub layer_height: f64,
     pub shell: ShellBand,
+    /// Absolute layer Z. The 3D gyroid section is evaluated here.
+    pub z: f64,
 }
 
 impl Default for PathFeatures {
@@ -80,6 +82,7 @@ impl Default for PathFeatures {
             layer_index: 0,
             layer_height: 0.2,
             shell: ShellBand::Interior,
+            z: 0.0,
         }
     }
 }
@@ -115,6 +118,10 @@ pub struct Extrusion {
     pub scarf_mm: f64,
     /// Set when overhang splitting slowed this span. Scarf stays off those spans.
     pub on_overhang: bool,
+    /// Run the existing G2/G3 fitter on this open path (3D gyroid).
+    pub fit_arcs: bool,
+    /// Lift height for the travel into this path. `0` stays on the layer.
+    pub z_hop: f64,
 }
 
 pub fn plan_region(
@@ -216,6 +223,10 @@ pub fn plan_region(
                 let mut path = extrusion(kind, strategy, pts, line_width);
                 if every > 1 {
                     path.bead_height = features.layer_height * every as f64;
+                }
+                if strategy.gyroid_3d && strategy.pattern == crate::strategy::InfillPattern::Gyroid
+                {
+                    path.fit_arcs = true;
                 }
                 paths.push(path);
             }
@@ -481,6 +492,8 @@ fn extrusion(
         flow_frac: Vec::new(),
         scarf_mm: 0.0,
         on_overhang: false,
+        fit_arcs: false,
+        z_hop: 0.0,
     };
     apply_feed(&mut path, strategy);
     path
@@ -512,7 +525,12 @@ fn kind_strength(kind: PathKind, strategy: &ResolvedStrategy) -> f64 {
         PathKind::Wall | PathKind::Outer | PathKind::Inner | PathKind::ThinWall => 1.25,
         PathKind::GapFill => 1.05,
         PathKind::Infill | PathKind::Sparse | PathKind::Solid | PathKind::Top => {
-            strategy.pattern.strength()
+            let base = strategy.pattern.strength();
+            if strategy.gyroid_3d && strategy.pattern == InfillPattern::Gyroid {
+                base * 1.15
+            } else {
+                base
+            }
         }
         PathKind::Bridge => 0.7,
         PathKind::Skirt | PathKind::Support | PathKind::SupportInterface => 0.0,
@@ -660,7 +678,14 @@ fn build_infill(
             )));
             paths
         }
-        InfillPattern::Gyroid => gyroid(loops, spacing, strategy.toughness),
+        InfillPattern::Gyroid => {
+            if strategy.gyroid_3d {
+                let period = crate::gyroid::period_for_spacing(spacing);
+                crate::gyroid::section(loops, period, features.z, 0.05)
+            } else {
+                gyroid(loops, spacing, strategy.toughness)
+            }
+        }
         InfillPattern::Lightning => lightning(loops, spacing.max(line_width * 3.0)),
     }
 }
@@ -942,6 +967,10 @@ fn clip_polyline(loops: &[Loop], pts: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
         out.push(current);
     }
     out
+}
+
+pub fn clip_open_segment(loops: &[Loop], a: [f64; 2], b: [f64; 2]) -> Vec<[[f64; 2]; 2]> {
+    clip_segment(loops, a, b)
 }
 
 fn clip_segment(loops: &[Loop], a: [f64; 2], b: [f64; 2]) -> Vec<[[f64; 2]; 2]> {
@@ -1348,6 +1377,90 @@ fn comb_between(
     } else {
         Comb::Routed(via)
     }
+}
+
+/// Mark travels that should lift. `mode` is the resolved policy (`Off`, `Smart`, or `Always`).
+/// Smart never hops inside the infill inset, skips short moves and scarf ramps, and hops
+/// when combing is blocked across a printed wall or top, or when leaving a top skin.
+pub fn apply_z_hop(
+    paths: &mut [Extrusion],
+    solid: &[Loop],
+    infill: &[Loop],
+    mode: crate::strategy::ZHopMode,
+    height: f64,
+    min_travel: f64,
+    after_top_layer: bool,
+) {
+    if height <= 1e-6 || mode == crate::strategy::ZHopMode::Off {
+        return;
+    }
+    let mut cursor: Option<[f64; 2]> = None;
+    let mut prev_top = false;
+    let mut printed: Vec<([f64; 2], [f64; 2])> = Vec::new();
+    for path in paths.iter_mut() {
+        let Some(start) = path.points.first().copied() else {
+            continue;
+        };
+        if let Some(from) = cursor {
+            let mut chain = Vec::with_capacity(path.lead_in.len() + 2);
+            chain.push(from);
+            chain.extend(path.lead_in.iter().copied());
+            chain.push(start);
+            let travel = polyline_len(&chain);
+            let spiral = !path.z_frac.is_empty();
+            let inside_infill = !infill.is_empty()
+                && chain.windows(2).all(|w| segment_inside(infill, w[0], w[1]));
+            let policy = match mode {
+                crate::strategy::ZHopMode::Blend => {
+                    if path.strategy == crate::strategy::StrategyId::Toughness {
+                        crate::strategy::ZHopMode::Smart
+                    } else {
+                        crate::strategy::ZHopMode::Off
+                    }
+                }
+                other => other,
+            };
+            let hop = if spiral || travel < min_travel || policy == crate::strategy::ZHopMode::Off {
+                false
+            } else if policy == crate::strategy::ZHopMode::Always {
+                true
+            } else if inside_infill {
+                false
+            } else if prev_top || after_top_layer {
+                true
+            } else {
+                let blocked = path.retract_mm > 0.0 && path.lead_in.is_empty();
+                blocked && chain_crosses(&chain, solid, &printed)
+            };
+            if hop {
+                path.z_hop = height;
+            }
+        }
+        if matches!(
+            path.kind,
+            PathKind::Outer | PathKind::Inner | PathKind::Wall | PathKind::Top
+        ) {
+            for w in path.points.windows(2) {
+                printed.push((w[0], w[1]));
+            }
+        }
+        prev_top = path.kind == PathKind::Top;
+        cursor = path.points.last().copied();
+    }
+}
+
+fn chain_crosses(chain: &[[f64; 2]], solid: &[Loop], printed: &[([f64; 2], [f64; 2])]) -> bool {
+    let leaves = chain
+        .windows(2)
+        .any(|w| !segment_inside(solid, w[0], w[1]));
+    if leaves {
+        return true;
+    }
+    chain.windows(2).any(|w| {
+        printed.iter().any(|&(a, b)| {
+            point_seg_dist(w[0], a, b) < 0.5 || point_seg_dist(w[1], a, b) < 0.5
+        })
+    })
 }
 
 fn segment_inside(solid: &[Loop], a: [f64; 2], b: [f64; 2]) -> bool {

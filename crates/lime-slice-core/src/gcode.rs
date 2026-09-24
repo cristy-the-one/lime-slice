@@ -19,6 +19,7 @@ pub struct GcodeStats {
     pub filament_g: f64,
     pub arc_moves: usize,
     pub retracts: usize,
+    pub z_hops: usize,
 }
 
 pub fn emit_gcode(
@@ -71,6 +72,8 @@ pub fn emit_gcode(
                 path.retract_mm,
                 path.retract_min_travel,
                 path.travel_accel,
+                path.z_hop,
+                layer.z,
             );
             w.set_accel(path.accel);
             let limited = limit_speed(
@@ -81,14 +84,15 @@ pub fn emit_gcode(
                 profile.max_volumetric_mm3_s,
             );
             let fit = arc_fit
-                && matches!(
-                    path.kind,
-                    crate::toolpath::PathKind::Wall
-                        | crate::toolpath::PathKind::Outer
-                        | crate::toolpath::PathKind::Inner
-                        | crate::toolpath::PathKind::ThinWall
-                        | crate::toolpath::PathKind::Skirt
-                );
+                && (path.fit_arcs
+                    || matches!(
+                        path.kind,
+                        crate::toolpath::PathKind::Wall
+                            | crate::toolpath::PathKind::Outer
+                            | crate::toolpath::PathKind::Inner
+                            | crate::toolpath::PathKind::ThinWall
+                            | crate::toolpath::PathKind::Skirt
+                    ));
             w.emit_chain(
                 &path.points,
                 limited,
@@ -139,6 +143,7 @@ struct Writer {
     time_s: f64,
     arc_moves: usize,
     retracts: usize,
+    z_hops: usize,
     dir: [f64; 2],
     has_dir: bool,
     pa_base: f64,
@@ -201,6 +206,7 @@ impl Writer {
             time_s: 0.0,
             arc_moves: 0,
             retracts: 0,
+            z_hops: 0,
             dir: [1.0, 0.0],
             has_dir: false,
             pa_base: profile.pressure_advance.max(0.0),
@@ -285,11 +291,137 @@ impl Writer {
         retract_mm: f64,
         min_travel: f64,
         accel: f64,
+        z_hop: f64,
+        layer_z: f64,
     ) {
+        if z_hop > 1e-6 && self.has_pos {
+            let mut full = Vec::with_capacity(pts.len() + 1);
+            full.push([self.x, self.y]);
+            full.extend(pts.iter().copied());
+            let total: f64 = full
+                .windows(2)
+                .map(|w| hypot(w[1][0] - w[0][0], w[1][1] - w[0][1]))
+                .sum();
+            if total >= 0.02 {
+                self.hop_travel(&full, speed, retract_mm, accel, z_hop, layer_z, total);
+                return;
+            }
+        }
         for (i, p) in pts.iter().enumerate() {
             let retract = if i == 0 { retract_mm } else { 0.0 };
             self.travel_one(p[0], p[1], speed, retract, min_travel, accel);
         }
+    }
+
+    /// Retract, slope up to `layer_z + z_hop` along the travel, then slope back
+    /// to the layer before the next extrusion. A short hop lifts vertically.
+    fn hop_travel(
+        &mut self,
+        pts: &[[f64; 2]],
+        speed: f64,
+        retract_mm: f64,
+        accel: f64,
+        z_hop: f64,
+        layer_z: f64,
+        total: f64,
+    ) {
+        if retract_mm > 0.0 && self.retracted == 0.0 {
+            self.e -= retract_mm;
+            self.retracted = retract_mm;
+            self.retracts += 1;
+            self.out.push_str(&format!("G1 E{:.5} F1800\n", self.e));
+            self.time_s += retract_mm / 30.0;
+        }
+        self.z_hops += 1;
+        let ramp = (z_hop * 4.0).clamp(0.6, 2.5).min(total * 0.45);
+        if total < ramp * 2.2 {
+            self.set_z(layer_z + z_hop);
+            for p in pts {
+                self.travel_dry(p[0], p[1], speed, accel);
+            }
+            self.set_z(layer_z);
+        } else {
+            self.slope_along(pts, speed, accel, layer_z, z_hop, ramp, total);
+        }
+        self.unretract();
+    }
+
+    fn slope_along(
+        &mut self,
+        pts: &[[f64; 2]],
+        speed: f64,
+        accel: f64,
+        layer_z: f64,
+        z_hop: f64,
+        ramp: f64,
+        total: f64,
+    ) {
+        let mut walked = 0.0;
+        for w in pts.windows(2) {
+            let seg = hypot(w[1][0] - w[0][0], w[1][1] - w[0][1]);
+            if seg < 1e-6 {
+                continue;
+            }
+            let mut left = seg;
+            let mut a = w[0];
+            while left > 1e-4 {
+                let dist = walked;
+                let z_here = hop_height(dist, total, ramp, layer_z, z_hop);
+                let next_mark = if dist < ramp {
+                    ramp
+                } else if dist < total - ramp {
+                    total - ramp
+                } else {
+                    total
+                };
+                let step = (next_mark - dist).max(0.05).min(left);
+                let _ = z_here;
+                let b = [
+                    a[0] + (w[1][0] - a[0]) * (step / left),
+                    a[1] + (w[1][1] - a[1]) * (step / left),
+                ];
+                let z_next = hop_height(dist + step, total, ramp, layer_z, z_hop);
+                self.travel_dry_z(b[0], b[1], z_next, speed, accel);
+                walked += step;
+                left -= step;
+                a = b;
+            }
+        }
+        self.set_z(layer_z);
+    }
+
+    fn travel_dry(&mut self, x: f64, y: f64, speed: f64, accel: f64) {
+        self.travel_dry_z(x, y, self.z, speed, accel);
+    }
+
+    fn travel_dry_z(&mut self, x: f64, y: f64, z: f64, speed: f64, accel: f64) {
+        if !self.has_pos {
+            self.x = x;
+            self.y = y;
+            self.z = z;
+            self.has_pos = true;
+            return;
+        }
+        let d = hypot(x - self.x, y - self.y);
+        let dz = (z - self.z).abs();
+        if d < 0.02 && dz < 5e-4 {
+            return;
+        }
+        self.travel_length_mm += d;
+        self.time_s += move_time((d * d + dz * dz).sqrt(), 0.0, 0.0, speed.max(10.0), accel);
+        let f = (speed.max(10.0) * 60.0).round() as i32;
+        if dz > 5e-4 {
+            self.out
+                .push_str(&format!("G1 X{:.3} Y{:.3} Z{:.3} F{f}\n", x, y, z));
+            self.z = z;
+        } else {
+            self.out.push_str(&format!("G1 X{:.3} Y{:.3} F{f}\n", x, y));
+        }
+        self.x = x;
+        self.y = y;
+        self.has_pos = true;
+        self.has_dir = false;
+        self.travel_moves += 1;
     }
 
     fn travel_one(
@@ -546,6 +678,7 @@ impl Writer {
             filament_g,
             arc_moves: self.arc_moves,
             retracts: self.retracts,
+            z_hops: self.z_hops,
             text: self.out,
             extrusion_moves: self.extrusion_moves,
             travel_moves: self.travel_moves,
@@ -558,6 +691,12 @@ impl Writer {
             layer_count,
         }
     }
+}
+
+fn hop_height(dist: f64, total: f64, ramp: f64, layer_z: f64, z_hop: f64) -> f64 {
+    let up = (dist / ramp.max(1e-6)).clamp(0.0, 1.0);
+    let down = ((total - dist) / ramp.max(1e-6)).clamp(0.0, 1.0);
+    layer_z + z_hop * up.min(down)
 }
 
 fn hypot(x: f64, y: f64) -> f64 {

@@ -47,6 +47,8 @@ Per-feature feeds are on unless `--feature-speeds false` or `--classic`. The spe
 
 Combing (default on) routes travels through an inset of the filled contours and retracts only when that route is blocked. `--combing false` keeps the straight hop.
 
+`--z-hop off|blend|always|smart` lifts the nozzle on a travel. The default `blend` is smart for toughness and for a weight mix at or above 50% toughness, and off for speed: a hop costs time and the speed blend's combing already stays inside the part. Smart hops only when a travel longer than `--z-hop-min-travel` (2 mm) crosses a printed top or perimeter that combing could not avoid, or when leaving a top skin. It does not hop inside infill, on scarf ramps, or on short moves. The lift happens with the retract. Travels long enough for a slope rise and fall along the move; shorter hops lift vertically. `--z-hop-height` defaults to 0.4 mm. `--classic` forces z-hop off.
+
 `--scarf-seam blend` (the default) follows the strategy. Toughness, and a weight mix at or above 50% toughness, scarf outer walls. Speed and lighter efficiency mixes leave the butt seam, because the extra overlap is not free and the speed blend is timed against the previous default. `--scarf-seam outer` forces the joint on every outer wall (and on `wall` paths when per-feature feeds are off). `--scarf-seam all` adds inner walls. `--classic` forces it off. A sharp convex corner still wins: the seam stays on that corner and the scarf is skipped. Smooth loops ramp the start from 15% of the layer height and 0.55 flow up to a full bead over the scarf length, then retrace that length while ramping back down. Loops under 8 mm, the first layer, bridges, and overhang spans stay butt seams. Ramp segments are linear G1 moves with Z; the constant-Z body can still become G2/G3. Nozzle Z on a layer stays inside `[layer Z − layer height, layer Z]`. Extrusion volume for a scarf segment is `width × height × flow`, with height the average nozzle fraction of the layer and flow the average of the segment's flow ramp.
 
 ## Samples
@@ -121,6 +123,53 @@ A scarf replaces a butt seam on a closed wall when the seam is not already on a 
 
 Speed forced to outer is 12.6 s slower on the post (62.0 → 74.6) and 49 s slower on the hull (617.4 → 666.5), at the same filament mass. That is why the speed blend leaves the scarf off. Toughness pays about 26 s on the post and 113 s on the hull, under 1.5% and 0.5% of those prints, and keeps the 10 mm overlap. Classic on the post is 176.4 s / 0.82 g (speed) and 2407.8 s / 3.42 g (toughness), with no scarf and no arcs. Hull toughness with the scarf off matches the previous default (22889.5 s, 43.79 g). The default toughness row above now includes the scarf, so that print is 23003 s and the structural score drops from 46764 to 45689 because the ramp is scored at its real height and flow instead of a full bead.
 
+## True 3D gyroid
+
+`--gyroid-3d blend` (the default) cuts `sin(x)cos(y)+sin(y)cos(z)+sin(z)cos(x)=0` at the layer Z wherever the pattern is already gyroid. Speed stays on lightning, so the speed rows above are unchanged (cube 170.7 s / 1.84 g / 1.46 ms, hull 617.4 s / 4.66 g / 35.4 ms). The 2D sine is `--gyroid-3d off`, which is what main printed. Classic is the line planner. The cell period is 1.15 times the infill spacing. Sampling runs per layer and per grid row.
+
+Release bench, same machine, layer height 0.2 mm. Tall column is a 20 × 20 × 60 mm box.
+
+| Mesh | Infill | Slice ms | Print s | Filament g | Travel mm | Retracts | Toughness |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| cube | 3D gyroid | 116.6 | 6119 | 10.04 | 6891 | 100 | 11568 |
+| cube | 2D gyroid (main) | 37.3 | 4848 | 10.33 | 6882 | 100 | 10894 |
+| cube | classic | 35.9 | 6251 | 10.33 | 56802 | 4500 | 10894 |
+| hull | 3D gyroid | 862.4 | 29780 | 42.16 | 31586 | 139 | 49090 |
+| hull | 2D gyroid (main) | 300.6 | 23003 | 43.78 | 23776 | 139 | 45689 |
+| hull | classic | 252.3 | 29754 | 43.79 | 282427 | 12179 | 46764 |
+| tall 60 mm | 3D gyroid | 336.9 | 17926 | 29.93 | 20124 | 299 | 34554 |
+| tall 60 mm | 2D gyroid (main) | 108.4 | 14262 | 30.82 | 20608 | 299 | 32573 |
+| tall 60 mm | classic | 104.3 | 18672 | 30.82 | 169870 | 13455 | 32573 |
+
+The 3D section scores higher and uses a little less filament. It also takes longer to print, because the sheet is a longer curve than the 2D sine, and longer to slice. That trade is what the toughness blend is for. Speed keeps lightning.
+
+## Z-hop
+
+`--z-hop blend` is smart on toughness and off on speed. Smart on the cube and the tall column hops 0 times, because combing already stays inside. On the hull it hops 5 times and the print time does not move (29779.6 s vs 29779.0 s). On the ledge with supports it hops 60 times and adds 6.2 s (8447.2 s vs 8441.0 s). Forcing smart on the speed blend adds time (cube 170.7 → 171.1 s, 12 hops; hull 617.4 → 619.3 s, 45 hops) without a toughness job to pay for, so speed stays off. Always is the expensive one: cube 6142 s and 287 hops, hull 29952 s and 2061 hops.
+
+| Mesh | Mode | Print s | Hops | Travel mm | Retracts |
+| --- | --- | ---: | ---: | ---: | ---: |
+| cube | speed blend (off) | 170.7 | 0 | 689 | 9 |
+| cube | speed smart | 171.1 | 12 | 689 | 9 |
+| cube | toughness smart | 6119 | 0 | 6891 | 100 |
+| cube | toughness always | 6142 | 287 | 6891 | 100 |
+| hull | speed blend (off) | 617.4 | 0 | 1830 | 8 |
+| hull | speed smart | 619.3 | 45 | 1830 | 9 |
+| hull | toughness smart | 29780 | 5 | 31586 | 139 |
+| hull | toughness always | 29952 | 2061 | 31586 | 139 |
+| ledge, supports | toughness off | 8441 | 0 | — | — |
+| ledge, supports | toughness smart | 8447 | 60 | 9697 | — |
+
+## Pressure-advance calibration
+
+`lime-slice calibrate pa` writes a tower. Each band is a slow 40 mm/s frame and a slow-fast-slow line. The fast feed is the volumetric cap (here 133.3 mm/s at 0.45 × 0.2 mm and 12 mm³/s). A sample `--start 0 --end 0.04 --step 0.02 --band-height 1` produced three Klipper bands and 88.7 mm of filament:
+
+| Band | K | Z |
+| --- | ---: | --- |
+| 0 | 0.0000 | 0.200–1.000 |
+| 1 | 0.0200 | 1.200–2.000 |
+| 2 | 0.0400 | 2.200–3.000 |
+
 ## Layout
 
 - `crates/lime-slice-core` — mesh load, contour slice, strategy blend, toolpaths, G-code
@@ -133,7 +182,7 @@ Speed forced to outer is 12.6 s slower on the post (62.0 → 74.6) and 49 s slow
 
 - **Speed:** 2 walls, lightning infill within 4 mm of a roof combined every 3 layers, outer 130 mm/s, inner 160 mm/s, sparse 220 mm/s, travel 300 mm/s, nearest seam on a sharp corner, scarf off, short retract, 1 skirt.
 - **Efficiency:** the weight mix. Low toughness keeps lightning and combining (every 2 layers under 45% toughness). The middle band is lines then grid. The score uses estimated time and filament mass.
-- **Toughness:** 5 walls, 48% gyroid for the full height at every layer, outer 40 mm/s, sparse 55 mm/s, seam stacked on +X, scarf on smooth outer walls, longer retract, 2 skirts.
+- **Toughness:** 5 walls, 48% true 3D gyroid for the full height at every layer, outer 40 mm/s, sparse 55 mm/s, seam stacked on +X, scarf on smooth outer walls, longer retract, 2 skirts. `--gyroid-3d blend` (the default) uses the TPMS section `sin(x)cos(y)+sin(y)cos(z)+sin(z)cos(x)=0` wherever the pattern is gyroid, including a weight mix at or above 75% toughness. Speed stays on lightning. `--gyroid-3d off` keeps the old 2D sine. `--gyroid-3d on` forces the 3D section. `--classic` is off.
 - **Weight:** interpolates walls, density, speed, accel, seam, and the pattern bands above.
 - **By layer:** bottom band is toughness, then a linear transition into speed.
 - **By region:** each layer is clipped on X or Y. The low side is toughness toolpaths; the high side is speed toolpaths.
@@ -142,7 +191,7 @@ Speed forced to outer is 12.6 s slower on the post (62.0 → 74.6) and 49 s slow
 - **Per-feature speeds:** outer, inner, sparse, solid, top, and travel each have a feed and an accel. The print-time estimator consumes them. Preview kinds are `outer`, `inner`, `sparse`, `solid`, and `top`.
 - **Combing:** travels that can stay inside an inset of the layer do, and those hops do not retract.
 
-Printer profile: generic Marlin, 0.4 mm nozzle, 1.75 mm PLA at 1.24 g/cm³, 200 °C / 60 °C, volumetric cap 12 mm³/s. Optional `pressureAdvance` emits Klipper `SET_PRESSURE_ADVANCE` and optional `linearAdvance` emits Marlin `M900`, at the start and again when the feature scale changes (outer and top use the full factor, sparse uses 0.65). Both default to 0, which emits nothing. There is no calibration wizard. UI checkboxes mirror the CLI knobs. The timing bar shows core milliseconds, estimated minutes, and filament grams.
+Printer profile: generic Marlin, 0.4 mm nozzle, 1.75 mm PLA at 1.24 g/cm³, 200 °C / 60 °C, volumetric cap 12 mm³/s. Optional `pressureAdvance` emits Klipper `SET_PRESSURE_ADVANCE` and optional `linearAdvance` emits Marlin `M900`, at the start and again when the feature scale changes (outer and top use the full factor, sparse uses 0.65). Both default to 0, which emits nothing. `lime-slice calibrate pa` prints a tower of slow-fast-slow lines, one K per band, for Klipper or Marlin. The UI lists the band-to-K map and writes the chosen K back into the profile so the next slice emits it. The fast feed is limited by the volumetric cap so it stays faster than the 40 mm/s anchor. UI checkboxes mirror the CLI knobs. The timing bar shows core milliseconds, estimated minutes, and filament grams.
 
 ## Tests
 
@@ -154,4 +203,4 @@ npx tsc --noEmit
 
 ## Not in this slice
 
-Multi-extruder, a true 3D gyroid, and Z-hop stay out. Region splits leave a bead boundary on the cut. Gyroid is a 2D sine approximation. Tree supports are stacked shafts with an interface tip, not a volumetric organic mesh. Pressure advance is a profile value, not a calibration print. The first layer is slowed to 30 mm/s. A scarf spreads a smooth seam; it does not move a seam that already sits on a sharp corner.
+Multi-extruder stays out. Region splits leave a bead boundary on the cut. Tree supports are stacked shafts with an interface tip, not a volumetric organic mesh. The first layer is slowed to 30 mm/s. A scarf spreads a smooth seam; it does not move a seam that already sits on a sharp corner. `--gyroid-3d off` is the previous 2D sine gyroid. Speed leaves z-hop off.

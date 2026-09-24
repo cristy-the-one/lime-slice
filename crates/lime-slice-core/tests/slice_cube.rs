@@ -549,7 +549,8 @@ fn lightning_saves_filament_without_dropping_toughness() {
         speed_old.estimate.filament_mm
     );
     assert!(speed.gcode.contains("lightning"));
-    assert!(tough.gcode.contains("gyroid"));
+    assert!(!speed.gcode.contains("gyroid3d"));
+    assert!(tough.gcode.contains("gyroid3d"));
     assert!(
         tough.score.toughness >= tough_old.score.toughness * 0.90,
         "toughness {} vs classic {}",
@@ -718,7 +719,15 @@ fn indexed_slice_matches_classic_contours() {
             strategy: StrategyId::Toughness,
         },
         &profile(),
-        &classic(),
+        &SliceSettings {
+            classic: false,
+            spatial_index: false,
+            variable_width: false,
+            arc_fit: false,
+            travel_opt: false,
+            overhang_control: false,
+            ..SliceSettings::default()
+        },
     )
     .unwrap();
     assert_eq!(indexed.sanity.layers, scanned.sanity.layers);
@@ -1054,12 +1063,13 @@ fn assert_gcode_z_and_e(gcode: &str) {
         if in_layer {
             if let Some(z) = z {
                 let lo = layer_z - layer_h - 1e-3;
-                if has_xy {
+                let extruding = e_new.map(|en| en > e + 1e-6).unwrap_or(false);
+                if extruding {
                     assert!(
                         (lo..=layer_z + 1e-3).contains(&z),
                         "extrusion Z {z} outside [{lo}, {layer_z}] in {line}"
                     );
-                } else {
+                } else if !has_xy {
                     assert!(z + 1e-3 >= lo, "Z-only {z} below previous layer in {line}");
                 }
             }
@@ -1072,4 +1082,138 @@ fn assert_gcode_z_and_e(gcode: &str) {
         }
     }
     assert!(saw, "no layer markers");
+}
+
+#[test]
+fn gyroid3d_changes_with_z_and_stays_off_for_speed_and_classic() {
+    let mesh = cube();
+    let on = slice_configured(&mesh, &tough_mode(), &profile(), &SliceSettings::default()).unwrap();
+    assert!(on.sanity.ok, "{:?}", on.sanity.notes);
+    assert!(on.gcode.contains("gyroid3d"));
+    let sparse_pts = |index: usize| {
+        on.layers
+            .iter()
+            .find(|l| l.index == index)
+            .unwrap()
+            .paths
+            .iter()
+            .filter(|p| p.kind == "sparse")
+            .flat_map(|p| p.pts.iter().copied())
+            .collect::<Vec<_>>()
+    };
+    let low = sparse_pts(20);
+    let high = sparse_pts(40);
+    assert!(low.len() > 20 && high.len() > 20, "low {} high {}", low.len(), high.len());
+    assert_ne!(low, high);
+    let off = slice_configured(
+        &mesh,
+        &tough_mode(),
+        &profile(),
+        &SliceSettings {
+            gyroid_3d: lime_slice_core::Gyroid3d::Off,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    assert!(off.gcode.contains("gyroid"));
+    assert!(!off.gcode.contains("gyroid3d"));
+    let classic_t = slice_configured(&mesh, &tough_mode(), &profile(), &classic()).unwrap();
+    assert!(!classic_t.gcode.contains("gyroid3d"));
+    let speed = slice_configured(&mesh, &speed_mode(), &profile(), &SliceSettings::default()).unwrap();
+    assert!(speed.gcode.contains("lightning"));
+    assert!(!speed.gcode.contains("gyroid3d"));
+}
+
+#[test]
+fn z_hop_returns_to_the_layer_and_skips_speed_by_default() {
+    let mesh = cube();
+    let always = slice_configured(
+        &mesh,
+        &tough_mode(),
+        &profile(),
+        &SliceSettings {
+            z_hop: lime_slice_core::ZHopMode::Always,
+            z_hop_height: 0.4,
+            z_hop_min_travel: 0.4,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    assert!(always.sanity.ok, "{:?}", always.sanity.notes);
+    assert!(always.estimate.z_hops > 0, "always mode should hop");
+    assert_hop_returns(&always.gcode);
+
+    let speed = slice_configured(&mesh, &speed_mode(), &profile(), &SliceSettings::default()).unwrap();
+    assert_eq!(speed.estimate.z_hops, 0, "speed blend leaves z-hop off");
+    let classic_t = slice_configured(&mesh, &tough_mode(), &profile(), &classic()).unwrap();
+    assert_eq!(classic_t.estimate.z_hops, 0, "classic leaves z-hop off");
+
+    let smart = slice_configured(
+        &mesh,
+        &tough_mode(),
+        &profile(),
+        &SliceSettings {
+            z_hop: lime_slice_core::ZHopMode::Smart,
+            z_hop_min_travel: 0.4,
+            combing: false,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    assert!(smart.estimate.z_hops > 0, "smart hops blocked travels");
+    assert!(
+        smart.estimate.z_hops < always.estimate.z_hops,
+        "smart {} should hop less than always {}",
+        smart.estimate.z_hops,
+        always.estimate.z_hops
+    );
+    assert_hop_returns(&smart.gcode);
+}
+
+fn assert_hop_returns(gcode: &str) {
+    let mut layer_z = 0.0;
+    let mut z = 0.0;
+    let mut e = 0.0;
+    let mut hopped = false;
+    for line in gcode.lines() {
+        if let Some(rest) = line.strip_prefix(";LAYER:") {
+            for tok in rest.split_whitespace() {
+                if let Some(v) = tok.strip_prefix("Z:") {
+                    layer_z = v.parse().unwrap();
+                    z = layer_z;
+                    hopped = false;
+                }
+            }
+            continue;
+        }
+        if !(line.starts_with("G0 ") || line.starts_with("G1 ") || line.starts_with("G2 ") || line.starts_with("G3 ")) {
+            continue;
+        }
+        let mut e_new = None;
+        let mut z_new = None;
+        for tok in line.split_whitespace().skip(1) {
+            if let Some(v) = tok.strip_prefix('Z') {
+                z_new = Some(v.parse::<f64>().unwrap());
+            } else if let Some(v) = tok.strip_prefix('E') {
+                e_new = Some(v.parse::<f64>().unwrap());
+            }
+        }
+        if let Some(zn) = z_new {
+            z = zn;
+            if z > layer_z + 0.05 {
+                hopped = true;
+            }
+        }
+        if let Some(en) = e_new {
+            if en > e + 1e-6 {
+                assert!(
+                    z <= layer_z + 0.02,
+                    "extrusion at Z {z} while layer is {layer_z}"
+                );
+                assert!(!hopped || (z - layer_z).abs() < 0.05, "still hopped at Z {z}");
+                hopped = false;
+            }
+            e = en;
+        }
+    }
 }
