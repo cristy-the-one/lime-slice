@@ -67,6 +67,7 @@ pub struct PathFeatures {
     pub variable_width: bool,
     /// Distance downward from the nearest roof. Lightning fades out past the strategy range.
     pub roof_distance_mm: f64,
+    #[allow(dead_code)]
     pub layer_index: usize,
     pub layer_height: f64,
     pub shell: ShellBand,
