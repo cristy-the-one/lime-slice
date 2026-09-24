@@ -234,6 +234,8 @@ function colorFor(path: ViewPath): string {
   if (path.kind === "skirt") return "#d7d2c6";
   if (path.kind === "support") return "#7aa2f7";
   if (path.kind === "support-interface") return "#c6a0f6";
+  if (path.kind === "thin-wall" || path.kind === "gap-fill") return "#e85d4c";
+  if (path.kind === "bridge") return "#f2cc60";
   const tough = path.strategy === "toughness";
   if (path.kind === "wall") return tough ? "#2ec4b6" : "#f0a202";
   return tough ? "#1b7f76" : "#a56d12";

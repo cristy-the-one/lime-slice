@@ -14,6 +14,10 @@ pub struct GcodeStats {
     pub extrusion_length_mm: f64,
     pub travel_length_mm: f64,
     pub layer_count: usize,
+    pub print_time_s: f64,
+    pub filament_mm: f64,
+    pub filament_g: f64,
+    pub arc_moves: usize,
 }
 
 pub fn emit_gcode(
@@ -23,6 +27,7 @@ pub fn emit_gcode(
     layer_height: f64,
     line_width: f64,
     features: &str,
+    arc_fit: bool,
 ) -> GcodeStats {
     let mut w = Writer::new(profile, blend, layer_height, line_width, features);
     let mut emitted_layers = 0usize;
@@ -57,22 +62,36 @@ pub fn emit_gcode(
                 path.travel_speed,
                 path.retract_mm,
                 path.retract_min_travel,
+                path.accel,
             );
-            for p in path.points.iter().skip(1) {
-                w.extrude(
-                    p[0],
-                    p[1],
-                    speed,
-                    path.width,
-                    layer.height,
-                    flow,
-                    profile.filament_diameter,
+            let limited = limit_speed(
+                speed,
+                path.width,
+                layer.height,
+                flow * path.flow,
+                profile.max_volumetric_mm3_s,
+            );
+            let fit = arc_fit
+                && matches!(
+                    path.kind,
+                    crate::toolpath::PathKind::Wall
+                        | crate::toolpath::PathKind::ThinWall
+                        | crate::toolpath::PathKind::Skirt
                 );
-            }
+            w.emit_chain(
+                &path.points,
+                limited,
+                path.width,
+                layer.height,
+                flow * path.flow,
+                profile.filament_diameter,
+                path.accel,
+                fit,
+            );
         }
     }
     w.finish(profile);
-    w.stats(emitted_layers)
+    w.stats(emitted_layers, profile)
 }
 
 pub struct LayerPaths {
@@ -102,6 +121,10 @@ struct Writer {
     extrusion_length_mm: f64,
     travel_length_mm: f64,
     bounds_init: bool,
+    time_s: f64,
+    arc_moves: usize,
+    dir: [f64; 2],
+    has_dir: bool,
 }
 
 impl Writer {
@@ -145,6 +168,10 @@ impl Writer {
             extrusion_length_mm: 0.0,
             travel_length_mm: 0.0,
             bounds_init: false,
+            time_s: 0.0,
+            arc_moves: 0,
+            dir: [1.0, 0.0],
+            has_dir: false,
         }
     }
 
@@ -159,9 +186,14 @@ impl Writer {
             ";LAYER:{} Z:{:.3} H:{:.3} {}\n",
             layer.index, layer.z, layer.height, layer.note
         ));
+        let dz = (layer.z - self.z).abs();
         let f = (120.0_f64 * 60.0) as i32;
         self.out.push_str(&format!("G1 Z{:.3} F{f}\n", layer.z));
+        if dz > 1e-6 {
+            self.time_s += dz / 120.0;
+        }
         self.z = layer.z;
+        self.has_dir = false;
     }
 
     fn set_accel(&mut self, accel: f64) {
@@ -185,12 +217,14 @@ impl Writer {
     fn unretract(&mut self) {
         if self.retracted > 0.0 {
             self.e += self.retracted;
+            let feed = self.retracted;
             self.retracted = 0.0;
             self.out.push_str(&format!("G1 E{:.5} F1800\n", self.e));
+            self.time_s += feed / 30.0;
         }
     }
 
-    fn travel(&mut self, x: f64, y: f64, speed: f64, retract_mm: f64, min_travel: f64) {
+    fn travel(&mut self, x: f64, y: f64, speed: f64, retract_mm: f64, min_travel: f64, accel: f64) {
         if self.has_pos {
             let d = hypot(x - self.x, y - self.y);
             if d < 0.02 {
@@ -200,8 +234,11 @@ impl Writer {
                 self.e -= retract_mm;
                 self.retracted = retract_mm;
                 self.out.push_str(&format!("G1 E{:.5} F1800\n", self.e));
+                self.time_s += retract_mm / 30.0;
             }
             self.travel_length_mm += d;
+            self.time_s += move_time(d, 0.0, 0.0, speed.max(10.0), accel);
+            self.has_dir = false;
         }
         self.unretract();
         let f = (speed.max(10.0) * 60.0).round() as i32;
@@ -210,6 +247,73 @@ impl Writer {
         self.y = y;
         self.has_pos = true;
         self.travel_moves += 1;
+    }
+
+    fn emit_chain(
+        &mut self,
+        points: &[[f64; 2]],
+        speed: f64,
+        width: f64,
+        layer_h: f64,
+        flow: f64,
+        filament_d: f64,
+        accel: f64,
+        arc_fit: bool,
+    ) {
+        if points.len() < 2 {
+            return;
+        }
+        let mut i = 0usize;
+        while i + 1 < points.len() {
+            let mut end = i + 1;
+            if arc_fit && i + 3 < points.len() {
+                let mut j = i + 3;
+                while j < points.len() && j - i <= 32 {
+                    if fit_arc(&points[i..=j], 0.07).is_some() {
+                        end = j;
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            if end >= i + 3 {
+                if let Some(arc) = fit_arc(&points[i..=end], 0.07) {
+                    self.arc(arc, speed, width, layer_h, flow, filament_d, accel);
+                    i = end;
+                    continue;
+                }
+            }
+            let p = points[i + 1];
+            self.extrude(p[0], p[1], speed, width, layer_h, flow, filament_d, accel);
+            i += 1;
+        }
+    }
+
+    fn arc(
+        &mut self,
+        arc: ArcFit,
+        speed: f64,
+        width: f64,
+        layer_h: f64,
+        flow: f64,
+        filament_d: f64,
+        accel: f64,
+    ) {
+        self.unretract();
+        let bead = width * layer_h * flow;
+        let fil = std::f64::consts::PI * (filament_d * 0.5).powi(2);
+        self.e += arc.length * bead / fil;
+        let f = (speed.max(5.0) * 60.0).round() as i32;
+        let cmd = if arc.cw { "G2" } else { "G3" };
+        self.out.push_str(&format!(
+            "{cmd} X{:.3} Y{:.3} I{:.4} J{:.4} E{:.5} F{f}\n",
+            arc.end[0], arc.end[1], arc.ij[0], arc.ij[1], self.e
+        ));
+        self.note_motion(arc.end, arc.dir, speed, accel, arc.length);
+        self.arc_moves += 1;
+        self.extrusion_moves += 1;
+        self.extrusion_length_mm += arc.length;
     }
 
     fn extrude(
@@ -221,6 +325,7 @@ impl Writer {
         layer_h: f64,
         flow: f64,
         filament_d: f64,
+        accel: f64,
     ) {
         self.unretract();
         let d = hypot(x - self.x, y - self.y);
@@ -233,12 +338,28 @@ impl Writer {
         let f = (speed.max(5.0) * 60.0).round() as i32;
         self.out
             .push_str(&format!("G1 X{:.3} Y{:.3} E{:.5} F{f}\n", x, y, self.e));
-        self.note_bounds(x, y);
-        self.x = x;
-        self.y = y;
-        self.has_pos = true;
+        self.note_motion([x, y], [x - self.x, y - self.y], speed, accel, d);
         self.extrusion_moves += 1;
         self.extrusion_length_mm += d;
+    }
+
+    fn note_motion(&mut self, end: [f64; 2], dir: [f64; 2], speed: f64, accel: f64, dist: f64) {
+        let v1 = speed.max(5.0);
+        let v0 = if self.has_dir {
+            let prev = self.dir[0] * dir[0] + self.dir[1] * dir[1];
+            let n0 = hypot(self.dir[0], self.dir[1]).max(1e-9);
+            let n1 = hypot(dir[0], dir[1]).max(1e-9);
+            junction_speed(v1, accel, prev / (n0 * n1))
+        } else {
+            0.0
+        };
+        self.time_s += move_time(dist, v0, 0.0, v1, accel);
+        self.note_bounds(end[0], end[1]);
+        self.x = end[0];
+        self.y = end[1];
+        self.dir = dir;
+        self.has_dir = true;
+        self.has_pos = true;
     }
 
     fn note_bounds(&mut self, x: f64, y: f64) {
@@ -270,12 +391,26 @@ impl Writer {
             "; bed {}x{} mm nozzle {:.2} mm\n",
             profile.bed_x, profile.bed_y, profile.nozzle_diameter
         ));
+        let filament_mm = self.e + self.retracted;
+        let area = std::f64::consts::PI * (profile.filament_diameter * 0.5).powi(2);
+        let filament_g = filament_mm * area * profile.filament_density_g_cm3 / 1000.0;
+        self.out.push_str(&format!(
+            "; TIME:{:.1}s FILAMENT_MM:{:.2} FILAMENT_G:{:.3} ARCS:{}\n",
+            self.time_s, filament_mm, filament_g, self.arc_moves
+        ));
         self.out.push_str("M84\n");
     }
 
-    fn stats(self, layer_count: usize) -> GcodeStats {
+    fn stats(self, layer_count: usize, profile: &PrinterProfile) -> GcodeStats {
+        let filament_mm = self.e + self.retracted;
+        let area = std::f64::consts::PI * (profile.filament_diameter * 0.5).powi(2);
+        let filament_g = filament_mm * area * profile.filament_density_g_cm3 / 1000.0;
         GcodeStats {
-            final_e: self.e + self.retracted,
+            final_e: filament_mm,
+            print_time_s: self.time_s,
+            filament_mm,
+            filament_g,
+            arc_moves: self.arc_moves,
             text: self.out,
             extrusion_moves: self.extrusion_moves,
             travel_moves: self.travel_moves,
@@ -292,4 +427,130 @@ impl Writer {
 
 fn hypot(x: f64, y: f64) -> f64 {
     x.hypot(y)
+}
+
+fn limit_speed(speed: f64, width: f64, height: f64, flow: f64, max_vol: f64) -> f64 {
+    if !max_vol.is_finite() || max_vol <= 0.0 {
+        return speed;
+    }
+    let area = (width * height * flow).max(1e-6);
+    speed.min(max_vol / area)
+}
+
+fn junction_speed(cruise: f64, accel: f64, cos_theta: f64) -> f64 {
+    let sin_half = ((1.0 - cos_theta.clamp(-1.0, 1.0)) * 0.5).max(0.0).sqrt();
+    if sin_half < 1e-3 {
+        return cruise;
+    }
+    (accel.max(50.0) * 0.02 / sin_half).sqrt().min(cruise)
+}
+
+fn move_time(dist: f64, v0: f64, v1: f64, cruise: f64, accel: f64) -> f64 {
+    let a = accel.max(50.0);
+    let cruise = cruise.max(v0).max(v1).max(1.0);
+    let d_acc = (cruise * cruise - v0 * v0).max(0.0) / (2.0 * a);
+    let d_dec = (cruise * cruise - v1 * v1).max(0.0) / (2.0 * a);
+    if d_acc + d_dec <= dist {
+        (cruise - v0).max(0.0) / a + (cruise - v1).max(0.0) / a + (dist - d_acc - d_dec) / cruise
+    } else {
+        let peak2 = a * dist + 0.5 * (v0 * v0 + v1 * v1);
+        let peak = peak2.max(0.0).sqrt();
+        (peak - v0).abs() / a + (peak - v1).abs() / a
+    }
+}
+
+struct ArcFit {
+    end: [f64; 2],
+    ij: [f64; 2],
+    cw: bool,
+    length: f64,
+    dir: [f64; 2],
+}
+
+fn fit_arc(pts: &[[f64; 2]], tol: f64) -> Option<ArcFit> {
+    if pts.len() < 4 {
+        return None;
+    }
+    let a = pts[0];
+    let mid = pts[pts.len() / 2];
+    let c = *pts.last().unwrap();
+    let center = circumcenter(a, mid, c)?;
+    let r = hypot(a[0] - center[0], a[1] - center[1]);
+    if !(0.8..=140.0).contains(&r) {
+        return None;
+    }
+    for p in pts {
+        let d = hypot(p[0] - center[0], p[1] - center[1]);
+        if (d - r).abs() > tol {
+            return None;
+        }
+    }
+    let a0 = (a[1] - center[1]).atan2(a[0] - center[0]);
+    let am = (mid[1] - center[1]).atan2(mid[0] - center[0]);
+    let a1 = (c[1] - center[1]).atan2(c[0] - center[0]);
+    let cw = sweep(a0, am) < 0.0;
+    let mut prev = a0;
+    for p in pts.iter().skip(1) {
+        let ang = (p[1] - center[1]).atan2(p[0] - center[0]);
+        let step = sweep(prev, ang);
+        if cw && step > 0.05 {
+            return None;
+        }
+        if !cw && step < -0.05 {
+            return None;
+        }
+        prev = ang;
+    }
+    let total = sweep(a0, a1);
+    if cw && total >= -0.15 {
+        return None;
+    }
+    if !cw && total <= 0.15 {
+        return None;
+    }
+    if (a1 - am).abs() < 1e-6 {
+        return None;
+    }
+    let length = r * total.abs();
+    let chord = hypot(c[0] - a[0], c[1] - a[1]);
+    if length < chord + 1e-4 {
+        return None;
+    }
+    let tangent = if cw {
+        [a[1] - center[1], center[0] - a[0]]
+    } else {
+        [center[1] - a[1], a[0] - center[0]]
+    };
+    Some(ArcFit {
+        end: c,
+        ij: [center[0] - a[0], center[1] - a[1]],
+        cw,
+        length,
+        dir: tangent,
+    })
+}
+
+fn sweep(from: f64, to: f64) -> f64 {
+    let mut d = to - from;
+    while d > std::f64::consts::PI {
+        d -= std::f64::consts::TAU;
+    }
+    while d < -std::f64::consts::PI {
+        d += std::f64::consts::TAU;
+    }
+    d
+}
+
+fn circumcenter(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> Option<[f64; 2]> {
+    let d = 2.0 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
+    if d.abs() < 1e-8 {
+        return None;
+    }
+    let a2 = a[0] * a[0] + a[1] * a[1];
+    let b2 = b[0] * b[0] + b[1] * b[1];
+    let c2 = c[0] * c[0] + c[1] * c[1];
+    Some([
+        (a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + c2 * (a[1] - b[1])) / d,
+        (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + c2 * (b[0] - a[0])) / d,
+    ])
 }

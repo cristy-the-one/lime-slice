@@ -42,6 +42,8 @@ interface SliceResponse {
     maxY: number;
     notes: string[];
   };
+  estimate?: { seconds: number; filamentMm: number; filamentG: number; arcMoves: number };
+  score?: { speed: number; efficiency: number; toughness: number };
   gcode: string;
   layers: PreviewLayer[];
   error?: string;
@@ -72,6 +74,10 @@ const state: {
   adaptiveMax: number;
   supports: boolean;
   supportAngle: number;
+  variableWidth: boolean;
+  arcFit: boolean;
+  travelOpt: boolean;
+  overhangControl: boolean;
   viewMode: "flat" | "split" | "solid";
 } = {
   mesh: null,
@@ -93,6 +99,10 @@ const state: {
   adaptiveMax: 0.2,
   supports: false,
   supportAngle: 45,
+  variableWidth: true,
+  arcFit: true,
+  travelOpt: true,
+  overhangControl: true,
   viewMode: "split",
 };
 
@@ -107,6 +117,8 @@ app.innerHTML = `
       <button class="btn" id="cube3mf" type="button">Cube 3MF</button>
       <button class="btn" id="ledge" type="button">Overhang</button>
       <button class="btn" id="ramp" type="button">Slope</button>
+      <button class="btn" id="fin" type="button">Thin wall</button>
+      <button class="btn" id="span" type="button">Bridge</button>
       <div class="spacer"></div>
       <div class="timing" id="timing">No slice yet</div>
       <button class="btn primary" id="slice" type="button">Slice</button>
@@ -184,6 +196,10 @@ function renderChrome() {
     <label class="field">Max mm<input id="amax" type="number" min="0.08" max="0.4" step="0.02" value="${state.adaptiveMax}" /></label>` : ""}
     <label class="check"><input id="supports" type="checkbox" ${state.supports ? "checked" : ""}/> Smart supports</label>
     ${state.supports ? `<label class="field">Overhang angle °<input id="sangle" type="number" min="20" max="70" step="5" value="${state.supportAngle}" /></label>` : ""}
+    <label class="check"><input id="vwidth" type="checkbox" ${state.variableWidth ? "checked" : ""}/> Variable walls</label>
+    <label class="check"><input id="arcs" type="checkbox" ${state.arcFit ? "checked" : ""}/> Arc fit (G2/G3)</label>
+    <label class="check"><input id="travelopt" type="checkbox" ${state.travelOpt ? "checked" : ""}/> Travel and seam</label>
+    <label class="check"><input id="overhang" type="checkbox" ${state.overhangControl ? "checked" : ""}/> Overhang and bridges</label>
     <div class="meta" style="margin-top:8px">Triangles <b>${result ? result.mesh.triangles : "—"}</b><br>Bounds <b>${bounds}</b></div>
     ${state.error ? `<div class="banner" style="margin-top:10px">${escapeHtml(state.error)}</div>` : ""}
     ${result ? `<div class="banner ${result.sanity.ok ? "ok" : ""}" style="margin-top:10px">${result.sanity.ok ? "G-code checks passed" : "G-code checks failed"}<br>${escapeHtml(result.sanity.notes.join(" ") || `${result.sanity.layers} layers · E ${result.sanity.finalE.toFixed(1)} mm · path ${result.sanity.extrusionLengthMm.toFixed(0)} mm`)}</div>` : ""}
@@ -192,15 +208,16 @@ function renderChrome() {
   document.querySelector("#right")!.innerHTML = `
     <h2>Strategies</h2>
     <div class="stack">
-      <div class="strategy speed"><h3>Speed</h3><p>2 walls · 12% lines · 140 mm/s · 3500 accel · nearest seam · light retract</p></div>
-      <div class="strategy tough"><h3>Toughness</h3><p>5 walls · 48% gyroid · 45 mm/s · 800 accel · aligned seam · longer retract</p></div>
+      <div class="strategy speed"><h3>Speed</h3><p>2 walls · lightning infill · 140 mm/s · volumetric cap · nearest seam</p></div>
+      <div class="strategy mid"><h3>Efficiency</h3><p>Weight mix · lines then grid · filament score from the estimator</p></div>
+      <div class="strategy tough"><h3>Toughness</h3><p>5 walls · 48% gyroid · 45 mm/s · aligned seam · strength pattern</p></div>
     </div>
     <h2>Blend</h2>
     <div class="stack">
       <label class="field">How to mix
         <select id="blendKind">
           ${opt("single", "Single strategy", state.blendKind)}
-          ${opt("weight", "Weight mix", state.blendKind)}
+          ${opt("weight", "Weight / efficiency", state.blendKind)}
           ${opt("byLayer", "By layer", state.blendKind)}
           ${opt("byRegion", "By region", state.blendKind)}
         </select>
@@ -212,8 +229,10 @@ function renderChrome() {
   `;
 
   const timing = document.querySelector("#timing")!;
+  const est = result?.estimate;
+  const score = result?.score;
   timing.textContent = result
-    ? `core ${result.coreMs.toFixed(1)} ms · baseline ${result.baselineMs.toFixed(1)} ms`
+    ? `core ${result.coreMs.toFixed(1)} ms · ${est ? `${(est.seconds / 60).toFixed(1)} min · ${est.filamentG.toFixed(2)} g` : `E ${result.sanity.finalE.toFixed(0)} mm`}${score ? ` · speed ${score.speed.toFixed(0)} eff ${score.efficiency.toFixed(0)}` : ""}`
     : state.busy
       ? "Slicing…"
       : "No slice yet";
@@ -228,6 +247,8 @@ function renderChrome() {
     <span><i class="swatch" style="background:#a56d12"></i>speed infill</span>
     <span><i class="swatch" style="background:#1b7f76"></i>toughness infill</span>
     <span><i class="swatch" style="background:#d7d2c6"></i>skirt</span>
+    <span><i class="swatch" style="background:#e85d4c"></i>thin / gap</span>
+    <span><i class="swatch" style="background:#f2cc60"></i>bridge</span>
     <span><i class="swatch" style="background:#7aa2f7"></i>support</span>
     <span><i class="swatch" style="background:#c6a0f6"></i>interface</span>
     <label><input id="travel" type="checkbox" ${state.showTravel ? "checked" : ""}/> travel</label>
@@ -291,6 +312,18 @@ function bindChrome() {
   document.querySelector("#sangle")?.addEventListener("change", (ev) => {
     state.supportAngle = Number((ev.target as HTMLInputElement).value) || 45;
   });
+  document.querySelector("#vwidth")?.addEventListener("change", (ev) => {
+    state.variableWidth = (ev.target as HTMLInputElement).checked;
+  });
+  document.querySelector("#arcs")?.addEventListener("change", (ev) => {
+    state.arcFit = (ev.target as HTMLInputElement).checked;
+  });
+  document.querySelector("#travelopt")?.addEventListener("change", (ev) => {
+    state.travelOpt = (ev.target as HTMLInputElement).checked;
+  });
+  document.querySelector("#overhang")?.addEventListener("change", (ev) => {
+    state.overhangControl = (ev.target as HTMLInputElement).checked;
+  });
   document.querySelector("#blendKind")?.addEventListener("change", (ev) => {
     state.blendKind = (ev.target as HTMLSelectElement).value as Blend["mode"];
     renderChrome();
@@ -343,6 +376,8 @@ document.querySelector("#hull")!.addEventListener("click", () => loadNamed("lime
 document.querySelector("#cube3mf")!.addEventListener("click", () => loadNamed("calibration_cube_20mm.3mf").catch(fail));
 document.querySelector("#ledge")!.addEventListener("click", () => loadNamed("overhang_ledge.stl").catch(fail));
 document.querySelector("#ramp")!.addEventListener("click", () => loadNamed("slope_ramp.stl").catch(fail));
+document.querySelector("#fin")!.addEventListener("click", () => loadNamed("thin_fin.stl").catch(fail));
+document.querySelector("#span")!.addEventListener("click", () => loadNamed("bridge_span.stl").catch(fail));
 document.querySelector("#file")!.addEventListener("change", (ev) => {
   const file = (ev.target as HTMLInputElement).files?.[0];
   if (!file) return;
@@ -418,6 +453,10 @@ async function runSlice() {
       adaptiveMax: state.adaptiveMax,
       supports: state.supports,
       supportAngle: state.supportAngle,
+      variableWidth: state.variableWidth,
+      arcFit: state.arcFit,
+      travelOpt: state.travelOpt,
+      overhangControl: state.overhangControl,
     };
     state.result = await slice(payload);
     if (state.result.error) throw new Error(state.result.error);
@@ -509,7 +548,7 @@ function draw() {
   ctx.lineWidth = 1;
   ctx.strokeRect(map(minX, minY)[0], map(maxX, maxY)[1], spanX * scale, spanY * scale);
 
-  const order = ["travel", "support", "support-interface", "infill", "skirt", "wall"];
+  const order = ["travel", "support", "support-interface", "infill", "gap-fill", "bridge", "thin-wall", "skirt", "wall"];
   const paths = [...layer.paths].sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
   for (const path of paths) {
     if (path.kind === "travel" && !state.showTravel) continue;
@@ -544,6 +583,8 @@ function colorFor(path: PreviewPath) {
   if (path.kind === "skirt") return "#d7d2c6";
   if (path.kind === "support") return "#7aa2f7";
   if (path.kind === "support-interface") return "#c6a0f6";
+  if (path.kind === "thin-wall" || path.kind === "gap-fill") return "#e85d4c";
+  if (path.kind === "bridge") return "#f2cc60";
   const tough = path.strategy === "toughness";
   if (path.kind === "wall") return tough ? "#2ec4b6" : "#f0a202";
   return tough ? "#1b7f76" : "#a56d12";

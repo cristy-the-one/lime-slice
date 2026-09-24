@@ -7,7 +7,10 @@ use crate::strategy::{InfillPattern, ResolvedStrategy, SeamMode, StrategyId};
 pub enum PathKind {
     Skirt,
     Wall,
+    ThinWall,
+    GapFill,
     Infill,
+    Bridge,
     Support,
     SupportInterface,
 }
@@ -17,9 +20,28 @@ impl PathKind {
         match self {
             PathKind::Skirt => "skirt",
             PathKind::Wall => "wall",
+            PathKind::ThinWall => "thin-wall",
+            PathKind::GapFill => "gap-fill",
             PathKind::Infill => "infill",
+            PathKind::Bridge => "bridge",
             PathKind::Support => "support",
             PathKind::SupportInterface => "support-interface",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PathFeatures {
+    pub variable_width: bool,
+    /// Distance downward from the nearest roof. Lightning fades out past the strategy range.
+    pub roof_distance_mm: f64,
+}
+
+impl Default for PathFeatures {
+    fn default() -> Self {
+        Self {
+            variable_width: true,
+            roof_distance_mm: 0.0,
         }
     }
 }
@@ -36,6 +58,10 @@ pub struct Extrusion {
     pub retract_mm: f64,
     pub retract_min_travel: f64,
     pub fan: u8,
+    /// Multiplier on the volumetric bead. Bridges stay at 1.
+    pub flow: f64,
+    /// Structural weight used by the toughness score. Not a G-code field.
+    pub strength: f64,
 }
 
 pub fn plan_region(
@@ -43,11 +69,25 @@ pub fn plan_region(
     strategy: &ResolvedStrategy,
     line_width: f64,
     seam_hint: &mut [f64; 2],
+    features: &PathFeatures,
 ) -> Vec<Extrusion> {
     if contours.is_empty() {
         return Vec::new();
     }
     let mut paths = Vec::new();
+    let min_w = (line_width * 0.45).max(0.2);
+    let max_w = line_width * 1.30;
+    if features.variable_width && might_be_thin(contours, line_width * strategy.walls.max(1) as f64)
+    {
+        if let Some(width) = feature_width(contours) {
+            if width < line_width * strategy.walls.max(1) as f64 * 0.98 && width >= min_w {
+                emit_variable_feature(
+                    &mut paths, contours, strategy, width, min_w, max_w, seam_hint,
+                );
+                return paths;
+            }
+        }
+    }
     let mut current = paths_from_loops(contours);
     let mut last_wall_loops: Vec<Loop> = Vec::new();
     for i in 0..strategy.walls {
@@ -56,11 +96,32 @@ pub fn plan_region(
         } else {
             -line_width
         };
-        current = offset_paths(&current, delta);
-        let loops = loops_from_paths(current.clone());
+        let next = offset_paths(&current, delta);
+        let loops = loops_from_paths(next.clone());
         if loops.is_empty() {
+            if features.variable_width {
+                fill_remaining(&mut paths, &current, strategy, min_w, max_w, seam_hint);
+            }
             break;
         }
+        if features.variable_width && i + 1 < strategy.walls {
+            let deeper = offset_paths(&next, -line_width);
+            if loops_from_paths(deeper).is_empty() {
+                last_wall_loops = loops.clone();
+                emit_loops(
+                    &mut paths,
+                    &loops,
+                    PathKind::Wall,
+                    strategy,
+                    line_width,
+                    seam_hint,
+                );
+                let core = paths_from_loops(&loops);
+                fill_remaining(&mut paths, &core, strategy, min_w, max_w, seam_hint);
+                break;
+            }
+        }
+        current = next;
         last_wall_loops = loops.clone();
         emit_loops(
             &mut paths,
@@ -76,9 +137,21 @@ pub fn plan_region(
     } else {
         offset_paths(&paths_from_loops(&last_wall_loops), -line_width * 0.5)
     };
-    let infill_loops = loops_from_paths(infill_src);
-    if strategy.infill_density > 0.01 && !infill_loops.is_empty() {
-        let infill = build_infill(&infill_loops, strategy, line_width);
+    let infill_loops = loops_from_paths(infill_src.clone());
+    if features.variable_width {
+        emit_gap_fill(
+            &mut paths,
+            &infill_loops,
+            strategy,
+            line_width,
+            min_w,
+            max_w,
+            seam_hint,
+        );
+    }
+    if strategy.infill_density > 0.01 && !infill_loops.is_empty() && infill_kept(strategy, features)
+    {
+        let infill = build_infill(&infill_loops, strategy, line_width, features);
         for pts in infill {
             if pts.len() >= 2 {
                 *seam_hint = *pts.last().unwrap();
@@ -87,6 +160,175 @@ pub fn plan_region(
         }
     }
     paths
+}
+
+fn infill_kept(strategy: &ResolvedStrategy, features: &PathFeatures) -> bool {
+    strategy.lightning_range_mm <= 1e-6
+        || features.roof_distance_mm <= strategy.lightning_range_mm + 1e-6
+}
+
+fn might_be_thin(contours: &[Loop], nominal_stack: f64) -> bool {
+    let Some((min, max)) = loop_bounds(contours) else {
+        return false;
+    };
+    let dx = max[0] - min[0];
+    let dy = max[1] - min[1];
+    dx.min(dy) < nominal_stack * 1.4
+}
+
+fn feature_width(contours: &[Loop]) -> Option<f64> {
+    let outers: Vec<Loop> = contours
+        .iter()
+        .filter(|l| signed_area(l) > 0.0)
+        .cloned()
+        .collect();
+    if outers.is_empty() {
+        return None;
+    }
+    let radius = inradius(&outers, 8.0);
+    if radius < 0.05 {
+        None
+    } else {
+        Some(radius * 2.0)
+    }
+}
+
+fn inradius(loops: &[Loop], cap: f64) -> f64 {
+    let mut lo = 0.0;
+    let mut hi = cap;
+    if loops_from_paths(offset_paths(&paths_from_loops(loops), -0.05)).is_empty() {
+        return 0.0;
+    }
+    for _ in 0..14 {
+        let mid = (lo + hi) * 0.5;
+        if loops_from_paths(offset_paths(&paths_from_loops(loops), -mid)).is_empty() {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    lo
+}
+
+fn emit_variable_feature(
+    paths: &mut Vec<Extrusion>,
+    contours: &[Loop],
+    strategy: &ResolvedStrategy,
+    width: f64,
+    min_w: f64,
+    max_w: f64,
+    seam_hint: &mut [f64; 2],
+) {
+    let nominal = max_w / 1.30;
+    let n = bead_count(width, nominal, strategy.walls.max(1), min_w, max_w);
+    let bead = (width / n as f64).clamp(min_w, max_w.max(min_w));
+    let outers: Vec<Loop> = contours
+        .iter()
+        .filter(|l| signed_area(l) > 0.0)
+        .cloned()
+        .collect();
+    let kind = if n == 1 {
+        PathKind::ThinWall
+    } else {
+        PathKind::Wall
+    };
+    for i in 0..n {
+        let inset = bead * 0.5 + bead * i as f64;
+        let loops = loops_from_paths(offset_paths(&paths_from_loops(&outers), -inset));
+        if loops.is_empty() {
+            if i == 0 {
+                emit_loops(
+                    paths,
+                    &outers,
+                    PathKind::ThinWall,
+                    strategy,
+                    bead,
+                    seam_hint,
+                );
+            }
+            break;
+        }
+        emit_loops(paths, &loops, kind, strategy, bead, seam_hint);
+    }
+}
+
+fn bead_count(width: f64, nominal: f64, max_walls: u32, min_w: f64, max_w: f64) -> u32 {
+    let min_n = (width / max_w).ceil().max(1.0) as u32;
+    let max_n = ((width / min_w).floor() as u32)
+        .max(1)
+        .min(max_walls.max(1));
+    let ideal = (width / nominal.max(0.05)).round().max(1.0) as u32;
+    ideal.clamp(min_n, max_n.max(min_n))
+}
+
+fn fill_remaining(
+    paths: &mut Vec<Extrusion>,
+    current: &Paths<Milli>,
+    strategy: &ResolvedStrategy,
+    min_w: f64,
+    max_w: f64,
+    seam_hint: &mut [f64; 2],
+) {
+    let loops = loops_from_paths(current.clone());
+    let Some(width) = feature_width(&loops) else {
+        return;
+    };
+    if width < min_w || width > max_w * 1.15 {
+        return;
+    }
+    let center = loops_from_paths(offset_paths(current, -width * 0.5));
+    if center.is_empty() {
+        emit_loops(paths, &loops, PathKind::GapFill, strategy, width, seam_hint);
+    } else {
+        emit_loops(
+            paths,
+            &center,
+            PathKind::GapFill,
+            strategy,
+            width,
+            seam_hint,
+        );
+    }
+}
+
+fn emit_gap_fill(
+    paths: &mut Vec<Extrusion>,
+    infill_loops: &[Loop],
+    strategy: &ResolvedStrategy,
+    line_width: f64,
+    min_w: f64,
+    max_w: f64,
+    seam_hint: &mut [f64; 2],
+) {
+    if infill_loops.is_empty() || !might_be_thin(infill_loops, line_width * 3.0) {
+        return;
+    }
+    let eroded = offset_paths(&paths_from_loops(infill_loops), -line_width * 0.55);
+    if loops_from_paths(eroded.clone()).is_empty() {
+        return;
+    }
+    let grown = offset_paths(&eroded, line_width * 0.55);
+    let gaps = boolean_diff(infill_loops, &loops_from_paths(grown));
+    for gap in gaps {
+        let region = [gap];
+        let Some(width) = feature_width(&region) else {
+            continue;
+        };
+        if !(min_w..=max_w).contains(&width) {
+            continue;
+        }
+        if signed_area(&region[0]).abs() < 0.4 || signed_area(&region[0]).abs() > 30.0 {
+            continue;
+        }
+        fill_remaining(
+            paths,
+            &paths_from_loops(&region),
+            strategy,
+            min_w,
+            max_w,
+            seam_hint,
+        );
+    }
 }
 
 pub fn plan_skirt(
@@ -136,6 +378,18 @@ fn extrusion(
         retract_mm: strategy.retract_mm,
         retract_min_travel: strategy.retract_min_travel,
         fan: strategy.fan,
+        flow: 1.0,
+        strength: kind_strength(kind, strategy),
+    }
+}
+
+fn kind_strength(kind: PathKind, strategy: &ResolvedStrategy) -> f64 {
+    match kind {
+        PathKind::Wall | PathKind::ThinWall => 1.25,
+        PathKind::GapFill => 1.05,
+        PathKind::Infill => strategy.pattern.strength(),
+        PathKind::Bridge => 0.7,
+        PathKind::Skirt | PathKind::Support | PathKind::SupportInterface => 0.0,
     }
 }
 
@@ -183,18 +437,14 @@ fn seam_rotate(loop_: &[[f64; 2]], mode: SeamMode, hint: [f64; 2]) -> Vec<[f64; 
         return Vec::new();
     }
     let idx = match mode {
-        SeamMode::Aligned => loop_
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])))
-            .map(|(i, _)| i)
-            .unwrap_or(0),
-        SeamMode::Nearest => loop_
-            .iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| dist2(**a, hint).total_cmp(&dist2(**b, hint)))
-            .map(|(i, _)| i)
-            .unwrap_or(0),
+        SeamMode::Aligned => sharpest_near(loop_, |p| -p[0], f64::MAX),
+        SeamMode::Nearest => {
+            let nearest = loop_
+                .iter()
+                .map(|p| dist2(*p, hint))
+                .fold(f64::MAX, f64::min);
+            sharpest_near(loop_, |p| dist2(p, hint), nearest + 1.6 * 1.6)
+        }
     };
     let mut pts: Vec<[f64; 2]> = loop_[idx..]
         .iter()
@@ -265,8 +515,14 @@ fn build_infill(
     loops: &[Loop],
     strategy: &ResolvedStrategy,
     line_width: f64,
+    features: &PathFeatures,
 ) -> Vec<Vec<[f64; 2]>> {
-    let spacing = (line_width / strategy.infill_density).clamp(line_width * 1.05, 12.0);
+    let mut density = strategy.infill_density;
+    if strategy.pattern == InfillPattern::Lightning && strategy.lightning_range_mm > 1e-6 {
+        let t = 1.0 - (features.roof_distance_mm / strategy.lightning_range_mm).clamp(0.0, 1.0);
+        density *= 0.30 + 0.70 * t;
+    }
+    let spacing = (line_width / density.max(0.02)).clamp(line_width * 1.05, 14.0);
     match strategy.pattern {
         InfillPattern::Lines => serpentine(scan_angle(loops, spacing, 0.0)),
         InfillPattern::Grid => {
@@ -279,7 +535,132 @@ fn build_infill(
             paths
         }
         InfillPattern::Gyroid => gyroid(loops, spacing, strategy.toughness),
+        InfillPattern::Lightning => lightning(loops, spacing.max(line_width * 3.0)),
     }
+}
+
+fn sharpest_near(loop_: &[[f64; 2]], cost: impl Fn([f64; 2]) -> f64, max_cost: f64) -> usize {
+    let n = loop_.len();
+    let mut best = 0usize;
+    let mut best_key = (f64::MAX, f64::MAX);
+    for i in 0..n {
+        let c = cost(loop_[i]);
+        if c > max_cost {
+            continue;
+        }
+        let turn = turn_penalty(loop_, i);
+        if turn < best_key.0 - 1e-9 || ((turn - best_key.0).abs() <= 1e-9 && c < best_key.1) {
+            best_key = (turn, c);
+            best = i;
+        }
+    }
+    if best_key.0.is_finite() {
+        best
+    } else {
+        loop_
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| cost(**a).total_cmp(&cost(**b)))
+            .map(|(i, _)| i)
+            .unwrap_or(0)
+    }
+}
+
+/// Smaller is a sharper convex corner. Straight vertices sort last.
+fn turn_penalty(loop_: &[[f64; 2]], i: usize) -> f64 {
+    let n = loop_.len();
+    let a = loop_[(i + n - 1) % n];
+    let b = loop_[i];
+    let c = loop_[(i + 1) % n];
+    let abx = b[0] - a[0];
+    let aby = b[1] - a[1];
+    let bcx = c[0] - b[0];
+    let bcy = c[1] - b[1];
+    let abn = abx.hypot(aby).max(1e-9);
+    let bcn = bcx.hypot(bcy).max(1e-9);
+    let cross = abx * bcy - aby * bcx;
+    let dot = (abx * bcx + aby * bcy) / (abn * bcn);
+    if cross <= 0.0 {
+        return 2.0 + dot;
+    }
+    1.0 - cross.abs() / (abn * bcn)
+}
+
+fn lightning(loops: &[Loop], spacing: f64) -> Vec<Vec<[f64; 2]>> {
+    let Some((min, max)) = loop_bounds(loops) else {
+        return Vec::new();
+    };
+    let mut boundary = Vec::new();
+    for loop_ in loops {
+        if signed_area(loop_) <= 0.0 {
+            continue;
+        }
+        let mut acc = 0.0;
+        let n = loop_.len();
+        for i in 0..n {
+            let a = loop_[i];
+            let b = loop_[(i + 1) % n];
+            let len = dist2(a, b).sqrt();
+            if i == 0 || acc >= 1.4 {
+                boundary.push(a);
+                acc = 0.0;
+            }
+            acc += len;
+        }
+    }
+    if boundary.is_empty() {
+        return Vec::new();
+    }
+    let mut interior = Vec::new();
+    let mut y = min[1] + spacing * 0.5;
+    while y < max[1] {
+        let mut x = min[0] + spacing * 0.5;
+        while x < max[0] {
+            if in_solid(loops, x, y) {
+                interior.push([x, y]);
+            }
+            x += spacing;
+        }
+        y += spacing;
+    }
+    if interior.is_empty() {
+        return Vec::new();
+    }
+    let dist_b = |p: [f64; 2]| {
+        boundary
+            .iter()
+            .map(|q| dist2(p, *q))
+            .fold(f64::MAX, f64::min)
+    };
+    let mut nodes = boundary.clone();
+    nodes.extend(interior.iter().copied());
+    let bcount = boundary.len();
+    let mut dist: Vec<f64> = nodes.iter().map(|p| dist_b(*p)).collect();
+    for d in dist.iter_mut().take(bcount) {
+        *d = 0.0;
+    }
+    let mut segs = Vec::new();
+    for i in bcount..nodes.len() {
+        let mut best = 0usize;
+        let mut best_d = f64::MAX;
+        for j in 0..nodes.len() {
+            if i == j || dist[j] >= dist[i] - 1e-6 {
+                continue;
+            }
+            let d = dist2(nodes[i], nodes[j]);
+            if d < best_d {
+                best_d = d;
+                best = j;
+            }
+        }
+        if best_d < (spacing * 2.4) * (spacing * 2.4) {
+            let piece = clip_segment(loops, nodes[i], nodes[best]);
+            for seg in piece {
+                segs.push(vec![seg[0], seg[1]]);
+            }
+        }
+    }
+    serpentine(segs)
 }
 
 fn scan_angle(loops: &[Loop], spacing: f64, angle: f64) -> Vec<Vec<[f64; 2]>> {
@@ -583,6 +964,288 @@ pub fn plan_support(
             path
         })
         .collect()
+}
+
+/// Reorder each feature group and slide nearest seams toward the nozzle.
+/// Travels that stay inside the part skip retraction.
+pub fn optimize_travel(paths: &mut Vec<Extrusion>, solid: &[Loop]) {
+    if paths.len() < 2 {
+        return;
+    }
+    let mut grouped: Vec<Vec<Extrusion>> = Vec::new();
+    for path in paths.drain(..) {
+        if grouped
+            .last()
+            .and_then(|g| g.last())
+            .map(|p| p.kind == path.kind)
+            .unwrap_or(false)
+        {
+            grouped.last_mut().unwrap().push(path);
+        } else {
+            grouped.push(vec![path]);
+        }
+    }
+    let mut cursor = [0.0, 0.0];
+    let mut has_cursor = false;
+    let mut out = Vec::with_capacity(grouped.iter().map(|g| g.len()).sum());
+    for group in grouped {
+        let open = !matches!(
+            group.first().map(|p| p.kind),
+            Some(PathKind::Wall | PathKind::ThinWall | PathKind::Skirt)
+        );
+        let mut pending = group;
+        let mut ordered = Vec::with_capacity(pending.len());
+        while !pending.is_empty() {
+            let mut best_i = 0usize;
+            let mut best_d = f64::MAX;
+            let mut best_rev = false;
+            for (i, path) in pending.iter().enumerate() {
+                if path.points.is_empty() {
+                    continue;
+                }
+                let start = path.points[0];
+                let end = *path.points.last().unwrap();
+                let ds = if has_cursor {
+                    dist2(cursor, start)
+                } else {
+                    0.0
+                };
+                if ds < best_d {
+                    best_d = ds;
+                    best_i = i;
+                    best_rev = false;
+                }
+                if open && path.points.len() >= 2 {
+                    let de = if has_cursor { dist2(cursor, end) } else { ds };
+                    if de + 1e-9 < best_d {
+                        best_d = de;
+                        best_i = i;
+                        best_rev = true;
+                    }
+                }
+            }
+            let mut path = pending.swap_remove(best_i);
+            if best_rev {
+                path.points.reverse();
+            }
+            if has_cursor
+                && matches!(
+                    path.kind,
+                    PathKind::Wall | PathKind::ThinWall | PathKind::Skirt
+                )
+            {
+                if path.retract_min_travel > 2.0 {
+                    rotate_closed_to(&mut path.points, cursor);
+                }
+            }
+            if has_cursor {
+                if let Some(start) = path.points.first().copied() {
+                    if segment_inside(solid, cursor, start) {
+                        path.retract_mm = 0.0;
+                    }
+                }
+            }
+            if let Some(end) = path.points.last().copied() {
+                cursor = end;
+                has_cursor = true;
+            }
+            ordered.push(path);
+        }
+        out.extend(ordered);
+    }
+    *paths = out;
+}
+
+fn rotate_closed_to(pts: &mut Vec<[f64; 2]>, hint: [f64; 2]) {
+    if pts.len() < 4 {
+        return;
+    }
+    let closed = dist2(pts[0], *pts.last().unwrap()) < 1e-8;
+    if !closed {
+        return;
+    }
+    pts.pop();
+    let mut best = 0usize;
+    let mut best_d = f64::MAX;
+    for (i, p) in pts.iter().enumerate() {
+        let d = dist2(*p, hint);
+        if d < best_d {
+            best_d = d;
+            best = i;
+        }
+    }
+    pts.rotate_left(best);
+    let first = pts[0];
+    pts.push(first);
+}
+
+fn segment_inside(solid: &[Loop], a: [f64; 2], b: [f64; 2]) -> bool {
+    if solid.is_empty() {
+        return false;
+    }
+    for i in 0..=5 {
+        let t = i as f64 / 5.0;
+        let p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        if !in_solid(solid, p[0], p[1]) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Slow unsupported spans, pin bridges, and raise the fan. The first layer is on the bed.
+pub fn apply_overhang(
+    paths: &mut Vec<Extrusion>,
+    lower: &[Loop],
+    layer_height: f64,
+    line_width: f64,
+) {
+    if lower.is_empty() || paths.is_empty() {
+        return;
+    }
+    let margin = line_width * 0.65;
+    let mut next = Vec::with_capacity(paths.len());
+    for path in paths.drain(..) {
+        if matches!(
+            path.kind,
+            PathKind::Skirt | PathKind::Support | PathKind::SupportInterface
+        ) || path.points.len() < 2
+        {
+            next.push(path);
+            continue;
+        }
+        next.extend(split_overhang(path, lower, layer_height, margin));
+    }
+    *paths = next;
+}
+
+fn split_overhang(
+    path: Extrusion,
+    lower: &[Loop],
+    layer_height: f64,
+    margin: f64,
+) -> Vec<Extrusion> {
+    let pts = &path.points;
+    let mut out = Vec::new();
+    let mut cur: Vec<[f64; 2]> = vec![pts[0]];
+    let mut cur_class = span_class(pts[0], pts[1], lower, layer_height, margin);
+    for w in pts.windows(2) {
+        let class = span_class(w[0], w[1], lower, layer_height, margin);
+        if class_tag(class) != class_tag(cur_class) && cur.len() >= 2 {
+            out.push(paint(&path, std::mem::take(&mut cur), cur_class));
+            cur.push(w[0]);
+        }
+        cur.push(w[1]);
+        cur_class = class;
+    }
+    if cur.len() >= 2 {
+        out.push(paint(&path, cur, cur_class));
+    }
+    if out.is_empty() {
+        vec![path]
+    } else {
+        out
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SpanClass {
+    Supported,
+    Overhang(f64),
+    Bridge,
+}
+
+fn class_tag(c: SpanClass) -> u8 {
+    match c {
+        SpanClass::Supported => 0,
+        SpanClass::Overhang(_) => 1,
+        SpanClass::Bridge => 2,
+    }
+}
+
+fn span_class(
+    a: [f64; 2],
+    b: [f64; 2],
+    lower: &[Loop],
+    layer_height: f64,
+    margin: f64,
+) -> SpanClass {
+    let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+    let sa = supported(a, lower, margin);
+    let sb = supported(b, lower, margin);
+    let sm = supported(mid, lower, margin);
+    if sa && sb && !sm {
+        let len = dist2(a, b).sqrt();
+        if len >= 1.2 {
+            return SpanClass::Bridge;
+        }
+    }
+    if sm {
+        return SpanClass::Supported;
+    }
+    let outside = outside_dist(mid, lower).max(outside_dist(a, lower));
+    let angle = (outside / layer_height.max(0.05)).atan().to_degrees();
+    if angle < 42.0 {
+        SpanClass::Supported
+    } else {
+        SpanClass::Overhang(angle)
+    }
+}
+
+fn paint(src: &Extrusion, points: Vec<[f64; 2]>, class: SpanClass) -> Extrusion {
+    let mut path = src.clone();
+    path.points = points;
+    match class {
+        SpanClass::Supported => {}
+        SpanClass::Bridge => {
+            path.kind = PathKind::Bridge;
+            path.speed = path.speed.min(36.0).max(18.0);
+            path.fan = 255;
+            path.strength = path.strength.min(0.7);
+        }
+        SpanClass::Overhang(angle) => {
+            let scale = if angle >= 68.0 { 0.32 } else { 0.55 };
+            path.speed = (path.speed * scale).max(16.0);
+            path.fan = path.fan.max(if angle >= 68.0 { 255 } else { 220 });
+        }
+    }
+    path
+}
+
+fn supported(p: [f64; 2], lower: &[Loop], margin: f64) -> bool {
+    if in_solid(lower, p[0], p[1]) {
+        return true;
+    }
+    outside_dist(p, lower) <= margin
+}
+
+fn outside_dist(p: [f64; 2], lower: &[Loop]) -> f64 {
+    if in_solid(lower, p[0], p[1]) {
+        return 0.0;
+    }
+    let mut best = f64::MAX;
+    for loop_ in lower {
+        let n = loop_.len();
+        for i in 0..n {
+            let d = point_seg_dist(p, loop_[i], loop_[(i + 1) % n]);
+            if d < best {
+                best = d;
+            }
+        }
+    }
+    best
+}
+
+fn point_seg_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let abx = b[0] - a[0];
+    let aby = b[1] - a[1];
+    let len2 = abx * abx + aby * aby;
+    if len2 < 1e-12 {
+        return dist2(p, a).sqrt();
+    }
+    let t = ((p[0] - a[0]) * abx + (p[1] - a[1]) * aby) / len2;
+    let t = t.clamp(0.0, 1.0);
+    dist2(p, [a[0] + abx * t, a[1] + aby * t]).sqrt()
 }
 
 fn polyline_len(pts: &[[f64; 2]]) -> f64 {

@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::PathBuf;
-use std::time::Instant;
 
 use base64::Engine;
 use clap::{Parser, Subcommand};
@@ -46,6 +45,21 @@ enum Cmd {
         /// Overhang angle from horizontal, degrees.
         #[arg(long, default_value_t = 45.0)]
         support_angle: f64,
+        /// Variable-width walls, thin walls, and gap fill.
+        #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+        variable_width: bool,
+        /// Fit G2/G3 arcs where the path is circular.
+        #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+        arc_fit: bool,
+        /// Reorder travels and hide seams on corners.
+        #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+        travel_opt: bool,
+        /// Slow overhangs, raise the fan, and tag bridges.
+        #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+        overhang_control: bool,
+        /// Previous planner: line infill, no arcs, no spatial index.
+        #[arg(long, default_value_t = false)]
+        classic: bool,
         #[arg(short, long)]
         output: PathBuf,
     },
@@ -81,6 +95,11 @@ fn run() -> Result<(), String> {
             adaptive_max,
             supports,
             support_angle,
+            variable_width,
+            arc_fit,
+            travel_opt,
+            overhang_control,
+            classic,
             output,
         } => {
             let response = slice_file(
@@ -106,6 +125,12 @@ fn run() -> Result<(), String> {
                     },
                     supports,
                     support_angle,
+                    variable_width,
+                    arc_fit,
+                    travel_opt,
+                    overhang_control,
+                    classic,
+                    ..SliceSettings::default()
                 },
             )?;
             if let Some(parent) = output.parent() {
@@ -171,29 +196,51 @@ fn bench(input: &PathBuf) -> Result<(), String> {
         max[1] - min[1],
         max[2] - min[2]
     );
-    println!("baseline is the single-strategy speed path");
-    println!(
-        "{:<14} {:>10} {:>10} {:>8} {:>10} {:>8}",
-        "mode", "core ms", "base ms", "layers", "E mm", "ok"
-    );
-    for (name, mode) in modes {
-        let started = Instant::now();
-        let response =
-            lime_slice_core::slice_with_baseline(&mesh, &mode, &Default::default(), 0.2, 0.45)?;
-        let wall = started.elapsed().as_secs_f64() * 1000.0;
+    if let Ok((indexed, scanned)) = lime_slice_core::contour_times(&mesh, 0.2) {
         println!(
-            "{:<14} {:>10.2} {:>10.2} {:>8} {:>10.1} {:>8}   (process {:.1} ms)",
+            "contours  parallel Z-index {:.2} ms  single-thread scan {:.2} ms",
+            indexed, scanned
+        );
+    }
+    println!("new path vs classic planner (lines, no arcs, full triangle scan)");
+    println!(
+        "{:<14} {:>10} {:>10} {:>10} {:>10} {:>8} {:>8} {:>8} {:>8}",
+        "mode", "slice ms", "classic ms", "time s", "filament g", "arcs", "speed", "eff", "tough"
+    );
+    let fresh = SliceSettings::default();
+    let classic = SliceSettings {
+        classic: true,
+        ..SliceSettings::default()
+    };
+    for (name, mode) in modes {
+        let response =
+            lime_slice_core::slice_configured(&mesh, &mode, &Default::default(), &fresh)?;
+        let old = lime_slice_core::slice_configured(&mesh, &mode, &Default::default(), &classic)?;
+        println!(
+            "{:<14} {:>10.2} {:>10.2} {:>10.1} {:>10.2} {:>8} {:>8.1} {:>8.1} {:>8.1}  {}",
             name,
             response.core_ms,
-            response.baseline_ms,
-            response.sanity.layers,
-            response.sanity.final_e,
-            if response.sanity.ok { "yes" } else { "NO" },
-            wall
+            old.core_ms,
+            response.estimate.seconds,
+            response.estimate.filament_g,
+            response.estimate.arc_moves,
+            response.score.speed,
+            response.score.efficiency,
+            response.score.toughness,
+            if response.sanity.ok { "ok" } else { "FAIL" }
         );
         if !response.sanity.ok {
             println!("  {}", response.sanity.notes.join("; "));
         }
+        println!(
+            "  classic time {:.1} s  filament {:.2} g ({:.0} mm)  score speed {:.1} eff {:.1} tough {:.1}",
+            old.estimate.seconds,
+            old.estimate.filament_g,
+            old.estimate.filament_mm,
+            old.score.speed,
+            old.score.efficiency,
+            old.score.toughness
+        );
     }
     Ok(())
 }
@@ -273,6 +320,11 @@ fn slice_file(
         adaptive_max: settings.adaptive_max,
         supports: settings.supports,
         support_angle: settings.support_angle,
+        variable_width: settings.variable_width,
+        arc_fit: settings.arc_fit,
+        travel_opt: settings.travel_opt,
+        overhang_control: settings.overhang_control,
+        classic: settings.classic,
     })
 }
 
@@ -319,7 +371,7 @@ fn blend_mode(
         "toughness" => BlendMode::Single {
             strategy: StrategyId::Toughness,
         },
-        "weight" => BlendMode::Weight { toughness },
+        "weight" | "efficiency" => BlendMode::Weight { toughness },
         "layer" => BlendMode::ByLayer {
             bottom_mm,
             transition_mm,

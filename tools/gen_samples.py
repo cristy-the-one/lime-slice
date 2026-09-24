@@ -153,6 +153,39 @@ def slope_ramp():
     return [(v[i], v[j], v[k]) for i, j, k in faces]
 
 
+def thin_fin():
+    """18 mm pad with a 0.7 mm fin. Narrower than two nominal 0.45 mm walls."""
+    return box(0, 0, 0, 18, 18, 3) + box(8, 2, 3, 8.7, 16, 12)
+
+
+def bridge_span():
+    """Two towers with a 14 mm deck between them. The deck underside is a bridge."""
+    return box(0, 0, 0, 8, 16, 8) + box(22, 0, 0, 30, 16, 8) + box(0, 4, 8, 30, 12, 10)
+
+
+def arc_post():
+    """64-gon cylinder. Vertices are concyclic, so walls should collapse to G2/G3."""
+    n = 64
+    radius = 12.0
+    height = 6.0
+    ring = []
+    for i in range(n):
+        t = 2 * math.pi * i / n
+        ring.append((radius * math.cos(t), radius * math.sin(t), 0.0))
+    tris = []
+    for i in range(n):
+        j = (i + 1) % n
+        a = ring[i]
+        b = ring[j]
+        c = (b[0], b[1], height)
+        d = (a[0], a[1], height)
+        tris.append((a, b, c))
+        tris.append((a, c, d))
+        tris.append(((0.0, 0.0, 0.0), b, a))
+        tris.append(((0.0, 0.0, height), d, c))
+    return tris
+
+
 def write_3mf(path: Path, triangles):
     verts = []
     index = {}
@@ -205,10 +238,19 @@ def main():
     write_stl(ROOT / "overhang_ledge.stl", ledge)
     ramp = slope_ramp()
     write_stl(ROOT / "slope_ramp.stl", ramp)
+    fin = thin_fin()
+    write_stl(ROOT / "thin_fin.stl", fin)
+    span = bridge_span()
+    write_stl(ROOT / "bridge_span.stl", span)
+    post = arc_post()
+    write_stl(ROOT / "arc_post.stl", post)
     print(f"cube triangles {len(cube_tris)}")
     print(f"hull triangles {len(hull_tris)}")
     print(f"ledge triangles {len(ledge)}")
     print(f"ramp triangles {len(ramp)}")
+    print(f"fin triangles {len(fin)}")
+    print(f"span triangles {len(span)}")
+    print(f"post triangles {len(post)}")
 
 
 if __name__ == "__main__":
