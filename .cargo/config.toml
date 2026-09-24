@@ -1,0 +1,9 @@
+# Clipper2's C++ binding is compiled with the system C++ compiler and linked
+# against libstdc++. Clang's default driver looks for GCC 14 headers on this
+# image while only GCC 13 is installed, and rust-lld does not search the
+# GCC library directory for -lstdc++.
+[env]
+CXX = "g++"
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-L", "native=/usr/lib/gcc/x86_64-linux-gnu/13"]

@@ -8,6 +8,8 @@ pub enum PathKind {
     Skirt,
     Wall,
     Infill,
+    Support,
+    SupportInterface,
 }
 
 impl PathKind {
@@ -16,6 +18,8 @@ impl PathKind {
             PathKind::Skirt => "skirt",
             PathKind::Wall => "wall",
             PathKind::Infill => "infill",
+            PathKind::Support => "support",
+            PathKind::SupportInterface => "support-interface",
         }
     }
 }
@@ -231,7 +235,7 @@ fn offset_paths(paths: &Paths<Milli>, delta: f64) -> Paths<Milli> {
         return Paths::default();
     }
     paths
-        .inflate(delta, JoinType::Miter, EndType::Polygon, 2.0)
+        .inflate(delta, JoinType::Square, EndType::Polygon, 2.0)
         .simplify(0.02, false)
 }
 
@@ -495,4 +499,98 @@ fn rotate_loops(loops: &[Loop], angle: f64) -> Vec<Loop> {
 fn rot(p: [f64; 2], angle: f64) -> [f64; 2] {
     let (s, c) = angle.sin_cos();
     [p[0] * c - p[1] * s, p[0] * s + p[1] * c]
+}
+
+pub fn offset_loops(loops: &[Loop], delta: f64) -> Vec<Loop> {
+    if loops.is_empty() || delta.abs() < 1e-9 {
+        return loops.to_vec();
+    }
+    loops_from_paths(offset_paths(&paths_from_loops(loops), delta))
+}
+
+pub fn boolean_union(a: &[Loop], b: &[Loop]) -> Vec<Loop> {
+    if a.is_empty() {
+        return b.to_vec();
+    }
+    if b.is_empty() {
+        return a.to_vec();
+    }
+    match paths_from_loops(a)
+        .to_clipper_subject()
+        .add_clip(paths_from_loops(b))
+        .union(FillRule::NonZero)
+    {
+        Ok(paths) => loops_from_paths(paths),
+        Err(_) => {
+            let mut both = a.to_vec();
+            both.extend(b.iter().cloned());
+            both
+        }
+    }
+}
+
+pub fn boolean_diff(subject: &[Loop], clip: &[Loop]) -> Vec<Loop> {
+    if subject.is_empty() || clip.is_empty() {
+        return subject.to_vec();
+    }
+    match paths_from_loops(subject)
+        .to_clipper_subject()
+        .add_clip(paths_from_loops(clip))
+        .difference(FillRule::NonZero)
+    {
+        Ok(paths) => loops_from_paths(paths),
+        Err(_) => Vec::new(),
+    }
+}
+
+pub fn drop_slivers(loops: Vec<Loop>, min_area: f64) -> Vec<Loop> {
+    loops
+        .into_iter()
+        .filter(|l| signed_area(l).abs() >= min_area)
+        .collect()
+}
+
+/// Sparse grid (or a denser interface grid) inside `region`.
+/// Density and speed come from the resolved strategy.
+pub fn plan_support(
+    region: &[Loop],
+    strategy: &ResolvedStrategy,
+    line_width: f64,
+    density: f64,
+    interface: bool,
+) -> Vec<Extrusion> {
+    if region.is_empty() || density <= 0.01 {
+        return Vec::new();
+    }
+    let spacing = (line_width / density).clamp(line_width * 1.05, 8.0);
+    let kind = if interface {
+        PathKind::SupportInterface
+    } else {
+        PathKind::Support
+    };
+    let mut segs = serpentine(scan_angle(region, spacing, 0.0));
+    segs.extend(serpentine(scan_angle(
+        region,
+        spacing,
+        std::f64::consts::FRAC_PI_2,
+    )));
+    let speed = crate::strategy::support_speed(strategy, interface);
+    segs.into_iter()
+        .filter(|pts| pts.len() >= 2 && polyline_len(pts) > 0.4)
+        .map(|pts| {
+            let mut path = extrusion(kind, strategy, pts, line_width);
+            path.speed = speed;
+            path
+        })
+        .collect()
+}
+
+fn polyline_len(pts: &[[f64; 2]]) -> f64 {
+    pts.windows(2)
+        .map(|w| {
+            let dx = w[1][0] - w[0][0];
+            let dy = w[1][1] - w[0][1];
+            dx.hypot(dy)
+        })
+        .sum()
 }
