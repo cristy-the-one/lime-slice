@@ -55,10 +55,10 @@ fn load_stl_binary(bytes: &[u8], count: usize) -> Result<Mesh, String> {
     for i in 0..count {
         let base = 84 + i * 50;
         let mut tri = [[0.0; 3]; 3];
-        for v in 0..3 {
-            for c in 0..3 {
+        for (v, vertex) in tri.iter_mut().enumerate() {
+            for (c, coord) in vertex.iter_mut().enumerate() {
                 let o = base + 12 + v * 12 + c * 4;
-                tri[v][c] = f32::from_le_bytes(bytes[o..o + 4].try_into().unwrap()) as f64;
+                *coord = f32::from_le_bytes(bytes[o..o + 4].try_into().unwrap()) as f64;
             }
         }
         if !degenerate(&tri) {

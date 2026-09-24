@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: test, clippy, and Tauri
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GTK and WebKitGTK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            pkg-config \
+            libssl-dev \
+            patchelf \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Build the Tauri crate
+        run: cargo build -p lime-slice-desktop --locked
+
+  ui:
+    name: typecheck and frontend build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Frontend build
+        run: npx vite build
+
+  bench:
+    name: release bench smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the C++ toolchain Clipper2 links against
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Release CLI
+        run: cargo build -p lime-slice --release --locked
+
+      - name: Slice bundled samples and the PA tower
+        run: |
+          set -euo pipefail
+          mkdir -p bench-out
+          bin="target/release/lime-slice"
+          {
+            echo "lime-slice $(git rev-parse --short HEAD)"
+            for sample in samples/*; do
+              echo
+              echo "===== bench ${sample} ====="
+              "${bin}" bench "${sample}"
+            done
+            echo
+            echo "===== calibrate pa ====="
+            "${bin}" calibrate pa -o bench-out/pa-klipper.gcode
+            "${bin}" calibrate pa --firmware marlin -o bench-out/pa-marlin.gcode
+          } | tee bench-out/bench.txt
+          test -s bench-out/bench.txt
+          test -s bench-out/pa-klipper.gcode
+          test -s bench-out/pa-marlin.gcode
+
+      - name: Upload bench output
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-smoke
+          path: bench-out/
+          if-no-files-found: error

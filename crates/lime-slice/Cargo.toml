@@ -3,6 +3,7 @@ name = "lime-slice"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 publish.workspace = true
 description = "Lime Slice CLI, bench, and local API"
 

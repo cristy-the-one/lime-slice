@@ -16,7 +16,7 @@ Open [http://127.0.0.1:43117](http://127.0.0.1:43117). Load a sample, pick a ble
 
 The stage defaults to **Split**: the existing 2D toolpath preview on the left, and a 3D view of the same slice on the right. **2D** and **3D** hide the other pane. The layer slider (and the wheel over the 2D canvas) moves the active layer in both views. In 3D the active layer is drawn solid, with an amber band of that layer's thickness, and every other layer is ghosted. Drag to orbit, right-drag to pan, wheel to zoom. Support and interface paths use the same colors as the 2D legend. Adaptive layers keep their real Z spacing.
 
-Desktop shell (needs WebKitGTK 4.1 on Linux):
+Desktop shell:
 
 ```bash
 npm run tauri dev
@@ -24,7 +24,34 @@ npm run tauri dev
 
 The API listens on `127.0.0.1:43118`. Inside Tauri the UI calls `slice_model` instead of HTTP.
 
-Linux builds of the Clipper2 binding need `g++` and libstdc++ on the linker path. This repo sets that in `.cargo/config.toml`.
+## Build
+
+`rust-toolchain.toml` pins stable Rust **1.88.0**, and the workspace `rust-version` matches. 1.83 cannot build this lockfile: `serde_spanned` 1.1 and `clap_lex` 1.1 need edition 2024 (Rust 1.85), and the resolved `time`, `icu_*`, `darling`, and `plist` crates require 1.88. `cargo +1.87.0 check` stops on those `rust-version` fields.
+
+Clipper2's C++ binding needs `g++` and libstdc++. `.cargo/config.toml` points the Linux linker at GCC 13 (`/usr/lib/gcc/x86_64-linux-gnu/13`), which is the default on Ubuntu 24.04.
+
+**Linux** (GTK 3 and WebKitGTK 4.1, the Tauri 2 webview):
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential \
+  pkg-config \
+  libssl-dev \
+  patchelf \
+  libgtk-3-dev \
+  libwebkit2gtk-4.1-dev \
+  libayatana-appindicator3-dev \
+  librsvg2-dev \
+  libsoup-3.0-dev
+cargo build -p lime-slice-desktop
+```
+
+`libwebkit2gtk-4.1-dev` pulls in JavaScriptCore and libsoup 3. `libgtk-3-dev` is the window toolkit. `libayatana-appindicator3-dev` is the tray icon, `librsvg2-dev` rasterizes the bundle icons, and `patchelf` is used when packaging a deb.
+
+**Windows:** Visual Studio Build Tools with the "Desktop development with C++" workload, and the WebView2 runtime (already present on current Windows 10 and 11). The NSIS installer target in `src-tauri/tauri.windows.conf.json` needs [NSIS](https://nsis.sourceforge.io/) on `PATH` when bundling. The Windows icon (`icons/icon.ico`) stays in `src-tauri/tauri.conf.json`.
+
+**macOS:** Xcode Command Line Tools (`xcode-select --install`). The shell uses the system WebKit; no extra GTK packages.
 
 ## Headless slice and bench
 
@@ -173,7 +200,7 @@ The 3D section scores higher and uses a little less filament. It also takes long
 ## Layout
 
 - `crates/lime-slice-core` — mesh load, contour slice, strategy blend, toolpaths, G-code
-- `crates/lime-slice` — `slice`, `bench`, `serve`
+- `crates/lime-slice` — `slice`, `bench`, `serve`, `calibrate pa`
 - `src-tauri` — Tauri 2 shell over the same core
 - `src` — TypeScript preview UI (2D layer canvas plus a Three.js 3D slice view)
 - `samples` — checked-in meshes
