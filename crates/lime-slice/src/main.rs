@@ -662,6 +662,28 @@ fn serve(port: u16) -> Result<(), String> {
         }
         let (status, payload) = if method == "OPTIONS" {
             (204, String::new())
+        } else if method == "GET" && url.starts_with("/api/strategies") {
+            let query = url.split_once('?').map(|(_, q)| q).unwrap_or("");
+            let mut toughness = 0.0;
+            let mut layer_h = 0.2;
+            let mut width = 0.45;
+            let mut flow = 12.0;
+            for pair in query.split('&') {
+                let Some((k, v)) = pair.split_once('=') else { continue };
+                let Ok(n) = v.parse::<f64>() else { continue };
+                match k {
+                    "toughness" => toughness = n,
+                    "layerHeight" => layer_h = n,
+                    "lineWidth" => width = n,
+                    "maxVol" => flow = n,
+                    _ => {}
+                }
+            }
+            let card = lime_slice_core::strategy_card(toughness, layer_h, width, flow);
+            (
+                200,
+                serde_json::to_string(&card).unwrap_or_else(|e| err_json(&e.to_string())),
+            )
         } else if method == "GET" && url.starts_with("/api/health") {
             (200, r#"{"ok":true}"#.into())
         } else if method == "POST" && url.starts_with("/api/calibrate/pa") {
@@ -756,6 +778,8 @@ fn slice_file(
         z_hop: settings.z_hop,
         z_hop_height: settings.z_hop_height,
         z_hop_min_travel: settings.z_hop_min_travel,
+        baseline: settings.baseline,
+        compare: false,
     })
 }
 

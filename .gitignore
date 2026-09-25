@@ -3,5 +3,8 @@
 /src-tauri/gen
 /node_modules
 /dist
+/artifacts
+/test-results
+/playwright-report
 .DS_Store
 *.gcode
