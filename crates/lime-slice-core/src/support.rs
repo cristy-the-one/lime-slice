@@ -13,8 +13,10 @@ pub enum SupportStyle {
 pub struct SupportLayer {
     pub sparse: Vec<Loop>,
     pub interface: Vec<Loop>,
-    /// Tree trunk centers. Empty for the grid style.
+    /// Organic branch centers. Empty for the grid style.
     pub branches: Vec<[f64; 2]>,
+    /// Radius of each branch, paired with `branches`. Empty for the grid style.
+    pub radii: Vec<f64>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -24,8 +26,16 @@ pub struct SupportOpts {
     pub z_gap: f64,
     pub interface_layers: u32,
     pub style: SupportStyle,
-    /// Nominal spacing used to seed tree branches. Density still thins them later.
+    /// Nominal spacing used to seed tree tips. Toughness density tightens it.
     pub branch_spacing: f64,
+    /// Max lean from vertical, degrees. Trunks may curve by this much per layer.
+    pub branch_angle_deg: f64,
+    /// Diameter of a branch where it meets the interface.
+    pub tip_diameter: f64,
+    /// Diameter of a trunk at the bed, and the cap after merges.
+    pub trunk_diameter: f64,
+    /// 0 is the speed blend (fewer tips). 1 is toughness (denser tips).
+    pub density: f64,
     /// Project steep overhangs. Off skips the angle test and still holds floating islands.
     pub overhangs: bool,
     /// Support a same-layer component that does not rest on material below.
@@ -41,6 +51,10 @@ impl Default for SupportOpts {
             interface_layers: 3,
             style: SupportStyle::Grid,
             branch_spacing: 3.6,
+            branch_angle_deg: 40.0,
+            tip_diameter: 0.8,
+            trunk_diameter: 4.2,
+            density: 0.2,
             overhangs: true,
             islands: true,
         }
@@ -59,6 +73,7 @@ pub fn build_supports(
             sparse: Vec::new(),
             interface: Vec::new(),
             branches: Vec::new(),
+            radii: Vec::new(),
         };
         n
     ];
@@ -89,10 +104,14 @@ pub fn build_supports(
     // Interface shells still ageing, youngest first. `left` is layers still printed dense.
     let mut gens: Vec<(Vec<Loop>, u32)> = Vec::new();
     let mut sparse: Vec<Loop> = Vec::new();
-    let mut branches: Vec<Branch> = Vec::new();
+    let mut nodes: Vec<Node> = Vec::new();
     let mut next_id = 1u32;
     let tree = opts.style == SupportStyle::Tree;
-    let seed_spacing = opts.branch_spacing.clamp(2.2, 8.0);
+    let density = opts.density.clamp(0.0, 1.0);
+    let seed_spacing = (opts.branch_spacing / (0.55 + 0.9 * density)).clamp(2.2, 9.0);
+    let tip_r = (opts.tip_diameter * 0.5).clamp(0.25, 1.6);
+    let trunk_r = (opts.trunk_diameter * 0.5).max(tip_r + 0.3).clamp(0.6, 8.0);
+    let lean = opts.branch_angle_deg.clamp(10.0, 65.0).to_radians().tan();
 
     for i in (0..n).rev() {
         let mut born: Vec<Loop> = Vec::new();
@@ -104,18 +123,30 @@ pub fn build_supports(
                 true
             }
         });
+        let part = contours.get(i).map(Vec::as_slice).unwrap_or(&[]);
         if !born.is_empty() {
             let born = drop_slivers(born, 0.05);
             if tree {
-                for p in sample_grid(&born, seed_spacing) {
-                    branches.push(Branch { id: next_id, xy: p });
+                let cleared = if part.is_empty() {
+                    born.clone()
+                } else {
+                    drop_slivers(boolean_diff(&born, &offset_loops(part, opts.xy_gap * 0.35)), 0.02)
+                };
+                let seeds = if cleared.is_empty() { &born } else { &cleared };
+                for p in sample_grid(seeds, seed_spacing) {
+                    nodes.push(Node {
+                        id: next_id,
+                        xy: p,
+                        radius: tip_r,
+                        dist: 0.0,
+                        freeze: iface_n,
+                    });
                     next_id += 1;
                 }
             }
             gens.insert(0, (born, iface_n));
         }
 
-        let part = contours.get(i).map(Vec::as_slice).unwrap_or(&[]);
         let gap = if part.is_empty() {
             Vec::new()
         } else {
@@ -125,22 +156,24 @@ pub fn build_supports(
         let iface_print = drop_slivers(boolean_diff(&iface_area, &gap), 0.05);
         let sparse_only = boolean_diff(&sparse, &iface_area);
         let sparse_print = drop_slivers(boolean_diff(&sparse_only, &gap), 0.05);
-        let (sparse_print, branch_pts) = if tree {
-            let alive = boolean_union(&sparse_print, &iface_print);
-            branches.retain(|b| in_solid(&alive, b.xy[0], b.xy[1]));
-            let pts: Vec<[f64; 2]> = branches
-                .iter()
-                .filter(|b| in_solid(&sparse_print, b.xy[0], b.xy[1]))
-                .map(|b| b.xy)
-                .collect();
-            (Vec::new(), pts)
+        let (sparse_print, branch_pts, branch_r) = if tree {
+            if i == 0 {
+                for n in &mut nodes {
+                    if n.freeze == 0 {
+                        n.radius = n.radius.max(trunk_r * 0.95);
+                    }
+                }
+            }
+            let (pts, rs) = organic_disks(&nodes, part, opts.xy_gap);
+            (Vec::new(), pts, rs)
         } else {
-            (sparse_print, Vec::new())
+            (sparse_print, Vec::new(), Vec::new())
         };
         out[i] = SupportLayer {
             sparse: sparse_print,
             interface: iface_print,
             branches: branch_pts,
+            radii: branch_r,
         };
 
         // A column that has landed on the model stops.
@@ -158,9 +191,26 @@ pub fn build_supports(
         }
         gens = next_gens;
         sparse = drop_slivers(boolean_diff(&sparse, part), 0.15);
-        if tree {
-            let step = bands[i].height * 0.85;
-            lean_and_merge(&mut branches, step);
+        if tree && i > 0 {
+            let below = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
+            let below2 = if i > 1 {
+                contours.get(i - 2).map(Vec::as_slice).unwrap_or(&[])
+            } else {
+                &[]
+            };
+            nodes = propagate_nodes(
+                nodes,
+                below,
+                below2,
+                &Grow {
+                    height: bands[i].height,
+                    lean,
+                    tip_r,
+                    trunk_r,
+                    xy_gap: opts.xy_gap,
+                    next_is_bed: i == 1,
+                },
+            );
         }
 
         if i == 0 {
@@ -199,9 +249,187 @@ pub fn build_supports(
     out
 }
 
-struct Branch {
+struct Node {
     id: u32,
     xy: [f64; 2],
+    radius: f64,
+    dist: f64,
+    freeze: u32,
+}
+
+fn organic_disks(nodes: &[Node], part: &[Loop], xy_gap: f64) -> (Vec<[f64; 2]>, Vec<f64>) {
+    let mut pts = Vec::new();
+    let mut radii = Vec::new();
+    for n in nodes {
+        if n.freeze > 0 {
+            continue;
+        }
+        let clear = offset_loops(part, xy_gap + n.radius * 0.35);
+        if in_solid(&clear, n.xy[0], n.xy[1]) {
+            continue;
+        }
+        pts.push(n.xy);
+        radii.push(n.radius);
+    }
+    (pts, radii)
+}
+
+struct Grow {
+    height: f64,
+    lean: f64,
+    tip_r: f64,
+    trunk_r: f64,
+    xy_gap: f64,
+    next_is_bed: bool,
+}
+
+/// Step every unfrozen node down one layer: lean toward siblings, thicken, merge, and
+/// stop on a supported mesh face. Frozen nodes are the vertical interface tips.
+fn propagate_nodes(nodes: Vec<Node>, below: &[Loop], below2: &[Loop], grow: &Grow) -> Vec<Node> {
+    let max_step = (grow.height * grow.lean).clamp(0.05, 4.0);
+    let cloud: Vec<[f64; 2]> = nodes
+        .iter()
+        .filter(|n| n.freeze == 0)
+        .map(|n| n.xy)
+        .collect();
+    let mut next = Vec::with_capacity(nodes.len());
+    for mut n in nodes {
+        if n.freeze > 0 {
+            n.freeze -= 1;
+            next.push(n);
+            continue;
+        }
+        if !below.is_empty() && in_solid(below, n.xy[0], n.xy[1]) {
+            let supported = below2.is_empty() || in_solid(below2, n.xy[0], n.xy[1]);
+            if supported {
+                continue;
+            }
+        }
+        n.xy = lean_toward(n.xy, &cloud, max_step);
+        n.dist += grow.height;
+        let grown = grow.tip_r + (grow.trunk_r - grow.tip_r) * (1.0 - (-n.dist / 7.5).exp());
+        n.radius = grown.max(n.radius).min(grow.trunk_r);
+        let collision = offset_loops(below, grow.xy_gap + n.radius);
+        n.xy = push_out(n.xy, &collision, max_step);
+        if in_solid(below, n.xy[0], n.xy[1]) {
+            continue;
+        }
+        if grow.next_is_bed {
+            n.radius = n.radius.max(grow.trunk_r * 0.95);
+        }
+        next.push(n);
+    }
+    merge_nodes(&mut next, grow.trunk_r);
+    next
+}
+
+fn lean_toward(xy: [f64; 2], cloud: &[[f64; 2]], max_step: f64) -> [f64; 2] {
+    let mut sx = 0.0;
+    let mut sy = 0.0;
+    let mut w = 0.0;
+    for p in cloud {
+        let dx = p[0] - xy[0];
+        let dy = p[1] - xy[1];
+        let d = dx.hypot(dy);
+        if !(0.2..=22.0).contains(&d) {
+            continue;
+        }
+        let weight = (22.0 - d) / d;
+        sx += p[0] * weight;
+        sy += p[1] * weight;
+        w += weight;
+    }
+    if w < 1e-6 {
+        return xy;
+    }
+    let cx = sx / w;
+    let cy = sy / w;
+    let dx = cx - xy[0];
+    let dy = cy - xy[1];
+    let dist = dx.hypot(dy);
+    if dist < 0.15 {
+        return xy;
+    }
+    let step = max_step.min(dist);
+    [xy[0] + dx / dist * step, xy[1] + dy / dist * step]
+}
+
+fn push_out(xy: [f64; 2], collision: &[Loop], max_step: f64) -> [f64; 2] {
+    if collision.is_empty() || !in_solid(collision, xy[0], xy[1]) {
+        return xy;
+    }
+    let mut best: Option<[f64; 2]> = None;
+    let mut best_d = f64::MAX;
+    for i in 0..20 {
+        let a = i as f64 * std::f64::consts::TAU / 20.0;
+        let (c, s) = (a.cos(), a.sin());
+        let mut d = 0.35;
+        while d <= 36.0 {
+            let p = [xy[0] + c * d, xy[1] + s * d];
+            if !in_solid(collision, p[0], p[1]) {
+                if d < best_d {
+                    best_d = d;
+                    best = Some(p);
+                }
+                break;
+            }
+            d += 0.55;
+        }
+    }
+    let Some(p) = best else {
+        return xy;
+    };
+    let dx = p[0] - xy[0];
+    let dy = p[1] - xy[1];
+    let dist = dx.hypot(dy);
+    if dist < 1e-6 {
+        return p;
+    }
+    let step = max_step.max(dist.min(max_step + 0.8));
+    let travel = step.min(dist);
+    let out = [xy[0] + dx / dist * travel, xy[1] + dy / dist * travel];
+    if in_solid(collision, out[0], out[1]) {
+        p
+    } else {
+        out
+    }
+}
+
+fn merge_nodes(nodes: &mut Vec<Node>, trunk_r: f64) {
+    if nodes.len() < 2 {
+        return;
+    }
+    nodes.sort_by_key(|n| n.id);
+    let mut kept: Vec<Node> = Vec::new();
+    for n in nodes.drain(..) {
+        if n.freeze > 0 {
+            kept.push(n);
+            continue;
+        }
+        if let Some(host) = kept.iter_mut().find(|k| {
+            if k.freeze > 0 {
+                return false;
+            }
+            let dx = k.xy[0] - n.xy[0];
+            let dy = k.xy[1] - n.xy[1];
+            let lim = (k.radius + n.radius) * 0.72 + 0.35;
+            dx * dx + dy * dy < lim * lim
+        }) {
+            let w = host.radius + n.radius;
+            host.xy = [
+                (host.xy[0] * host.radius + n.xy[0] * n.radius) / w,
+                (host.xy[1] * host.radius + n.xy[1] * n.radius) / w,
+            ];
+            host.radius = (host.radius.powi(2) + n.radius.powi(2)).sqrt().min(trunk_r);
+            host.dist = host.dist.max(n.dist);
+            if n.id < host.id {
+                host.id = n.id;
+            }
+        } else {
+            kept.push(n);
+        }
+    }
+    *nodes = kept;
 }
 
 fn sample_grid(region: &[Loop], spacing: f64) -> Vec<[f64; 2]> {
@@ -229,42 +457,6 @@ fn sample_grid(region: &[Loop], spacing: f64) -> Vec<[f64; 2]> {
         }
     }
     pts
-}
-
-fn lean_and_merge(branches: &mut Vec<Branch>, step: f64) {
-    if branches.is_empty() {
-        return;
-    }
-    let n = branches.len() as f64;
-    let cx = branches.iter().map(|b| b.xy[0]).sum::<f64>() / n;
-    let cy = branches.iter().map(|b| b.xy[1]).sum::<f64>() / n;
-    for b in branches.iter_mut() {
-        let dx = cx - b.xy[0];
-        let dy = cy - b.xy[1];
-        let dist = dx.hypot(dy);
-        if dist > 0.4 {
-            let move_d = step.min(dist * 0.35);
-            b.xy[0] += dx / dist * move_d;
-            b.xy[1] += dy / dist * move_d;
-        }
-    }
-    branches.sort_by_key(|b| b.id);
-    let mut kept: Vec<Branch> = Vec::new();
-    for b in branches.drain(..) {
-        if let Some(host) = kept.iter_mut().find(|k| {
-            let dx = k.xy[0] - b.xy[0];
-            let dy = k.xy[1] - b.xy[1];
-            dx * dx + dy * dy < 2.4 * 2.4
-        }) {
-            if b.id < host.id {
-                host.id = b.id;
-                host.xy = b.xy;
-            }
-        } else {
-            kept.push(b);
-        }
-    }
-    *branches = kept;
 }
 
 /// A deck this short, held on two opposite sides, can bridge. Longer spans

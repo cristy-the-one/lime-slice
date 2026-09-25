@@ -64,9 +64,18 @@ pub struct SliceRequest {
     /// Replay the pre-feature planner (lines, no arcs, no index) for benches.
     #[serde(default)]
     pub classic: bool,
-    /// `grid` (default) or `tree`.
+    /// `grid` (default) or `tree` / `organic`.
     #[serde(default)]
     pub support_style: String,
+    /// Max organic branch lean from vertical, degrees. `0` means 40°.
+    #[serde(default)]
+    pub branch_angle: f64,
+    /// Organic tip diameter, millimetres. `0` means 0.8.
+    #[serde(default)]
+    pub tip_diameter: f64,
+    /// Organic trunk diameter, millimetres. `0` means 4.2.
+    #[serde(default)]
+    pub trunk_diameter: f64,
     /// `0` keeps model layer height. Values above 1 thicken sparse support shafts.
     #[serde(default)]
     pub support_height_mult: f64,
@@ -142,6 +151,9 @@ pub struct SliceSettings {
     pub classic: bool,
     pub spatial_index: bool,
     pub support_style: SupportStyle,
+    pub branch_angle: f64,
+    pub tip_diameter: f64,
+    pub trunk_diameter: f64,
     pub support_height_mult: f64,
     pub infill_combine: bool,
     pub combing: bool,
@@ -184,6 +196,9 @@ impl Default for SliceSettings {
             classic: false,
             spatial_index: true,
             support_style: SupportStyle::Grid,
+            branch_angle: 40.0,
+            tip_diameter: 0.8,
+            trunk_diameter: 4.2,
             support_height_mult: 1.0,
             infill_combine: true,
             combing: true,
@@ -245,6 +260,21 @@ impl SliceSettings {
                 SupportStyle::Grid
             } else {
                 parse_support_style(&req.support_style)
+            },
+            branch_angle: if req.branch_angle > 0.0 {
+                req.branch_angle.clamp(10.0, 65.0)
+            } else {
+                40.0
+            },
+            tip_diameter: if req.tip_diameter > 0.0 {
+                req.tip_diameter.clamp(0.4, 3.0)
+            } else {
+                0.8
+            },
+            trunk_diameter: if req.trunk_diameter > 0.0 {
+                req.trunk_diameter.clamp(1.2, 16.0)
+            } else {
+                4.2
             },
             support_height_mult: if req.classic {
                 1.0
@@ -315,8 +345,15 @@ impl SliceSettings {
                 SupportStyle::Grid => "grid",
                 SupportStyle::Tree => "tree",
             };
+            let organic = match self.support_style {
+                SupportStyle::Tree => format!(
+                    ", branch {:.0}°, tip {:.1} mm, trunk {:.1} mm",
+                    self.branch_angle, self.tip_diameter, self.trunk_diameter
+                ),
+                SupportStyle::Grid => String::new(),
+            };
             format!(
-                "supports {style} (angle {:.0}°, shaft ×{:.1})",
+                "supports {style} (angle {:.0}°, shaft ×{:.1}{organic})",
                 self.support_angle,
                 self.support_height_mult.max(1.0)
             )
@@ -1153,6 +1190,10 @@ fn plan(
             angle_deg: settings.support_angle,
             z_gap: settings.layer_height.max(0.12),
             style: settings.support_style,
+            branch_angle_deg: settings.branch_angle,
+            tip_diameter: settings.tip_diameter,
+            trunk_diameter: settings.trunk_diameter.max(settings.tip_diameter + 0.6),
+            density: support_seed_weight(blend),
             overhangs: settings.supports,
             islands: settings.island_support,
             ..SupportOpts::default()
@@ -1173,6 +1214,7 @@ fn plan(
                 support.map(|s| s.sparse.as_slice()).unwrap_or(&[]),
                 support.map(|s| s.interface.as_slice()).unwrap_or(&[]),
                 support.map(|s| s.branches.as_slice()).unwrap_or(&[]),
+                support.map(|s| s.radii.as_slice()).unwrap_or(&[]),
                 shaft.get(i).copied().unwrap_or(0.0),
                 blend,
                 settings,
@@ -1532,6 +1574,7 @@ fn build_layer(
     support: &[Loop],
     interface: &[Loop],
     branches: &[[f64; 2]],
+    radii: &[f64],
     shaft_scale: f64,
     blend: &BlendMode,
     settings: &SliceSettings,
@@ -1586,6 +1629,7 @@ fn build_layer(
                 support,
                 interface,
                 branches,
+                radii,
                 shaft_scale,
                 height,
                 &tough,
@@ -1630,6 +1674,7 @@ fn build_layer(
                 support,
                 interface,
                 branches,
+                radii,
                 shaft_scale,
                 height,
                 &resolved,
@@ -1669,11 +1714,25 @@ type XyRect = ([f64; 2], [f64; 2]);
 type RegionSplit = (XyRect, XyRect);
 
 #[allow(clippy::too_many_arguments)]
+fn support_seed_weight(blend: &BlendMode) -> f64 {
+    match blend {
+        BlendMode::Single { strategy } => match strategy {
+            StrategyId::Toughness => 1.0,
+            StrategyId::Speed => 0.15,
+        },
+        BlendMode::Weight { toughness } => toughness.clamp(0.0, 1.0),
+        BlendMode::ByLayer { .. } => 0.45,
+        BlendMode::ByRegion { .. } => 0.55,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn emit_supports(
     paths: &mut Vec<Extrusion>,
     support: &[Loop],
     interface: &[Loop],
     branches: &[[f64; 2]],
+    radii: &[f64],
     shaft_scale: f64,
     layer_height: f64,
     low: &ResolvedStrategy,
@@ -1688,6 +1747,7 @@ fn emit_supports(
                  region_s: &[Loop],
                  region_i: &[Loop],
                  centers: &[[f64; 2]],
+                 radii: &[f64],
                  strategy: &ResolvedStrategy| {
         if shaft_scale > 0.0 {
             let mut sparse = if centers.is_empty() {
@@ -1699,7 +1759,7 @@ fn emit_supports(
                     false,
                 )
             } else {
-                plan_tree_support(centers, strategy, line_width)
+                plan_tree_support(centers, radii, strategy, line_width)
             };
             if shaft_scale > 1.01 {
                 for path in &mut sparse {
@@ -1717,13 +1777,14 @@ fn emit_supports(
         ));
     };
     if let Some((low_rect, high_rect)) = split {
-        let low_c: Vec<[f64; 2]> = centers_in(branches, low_rect.0, low_rect.1);
-        let high_c: Vec<[f64; 2]> = centers_in(branches, high_rect.0, high_rect.1);
+        let (low_c, low_r) = disks_in(branches, radii, low_rect.0, low_rect.1);
+        let (high_c, high_r) = disks_in(branches, radii, high_rect.0, high_rect.1);
         paint(
             paths,
             &clip_to_rect(support, low_rect.0, low_rect.1),
             &clip_to_rect(interface, low_rect.0, low_rect.1),
             &low_c,
+            &low_r,
             low,
         );
         paint(
@@ -1731,19 +1792,29 @@ fn emit_supports(
             &clip_to_rect(support, high_rect.0, high_rect.1),
             &clip_to_rect(interface, high_rect.0, high_rect.1),
             &high_c,
+            &high_r,
             high,
         );
     } else {
-        paint(paths, support, interface, branches, low);
+        paint(paths, support, interface, branches, radii, low);
     }
 }
 
-fn centers_in(centers: &[[f64; 2]], min: [f64; 2], max: [f64; 2]) -> Vec<[f64; 2]> {
-    centers
-        .iter()
-        .copied()
-        .filter(|p| p[0] >= min[0] && p[0] < max[0] && p[1] >= min[1] && p[1] < max[1])
-        .collect()
+fn disks_in(
+    centers: &[[f64; 2]],
+    radii: &[f64],
+    min: [f64; 2],
+    max: [f64; 2],
+) -> (Vec<[f64; 2]>, Vec<f64>) {
+    let mut pts = Vec::new();
+    let mut rs = Vec::new();
+    for (i, p) in centers.iter().copied().enumerate() {
+        if p[0] >= min[0] && p[0] < max[0] && p[1] >= min[1] && p[1] < max[1] {
+            pts.push(p);
+            rs.push(radii.get(i).copied().unwrap_or(0.6));
+        }
+    }
+    (pts, rs)
 }
 
 fn split_rects(

@@ -910,6 +910,171 @@ fn tree_supports_use_less_filament_than_grid_and_keep_an_interface() {
     .unwrap();
     assert!(thick.sanity.ok, "{:?}", thick.sanity.notes);
     assert!(thick.estimate.seconds <= tree.estimate.seconds * 1.02);
+    assert!(
+        organic_branch_spread(&tree) > 1.4,
+        "organic radii should taper, spread {}",
+        organic_branch_spread(&tree)
+    );
+    assert!(
+        support_count_near(&tree, 10.0) > support_count_near(&tree, 1.5),
+        "branches should merge toward the bed"
+    );
+}
+
+fn organic_branch_spread(response: &lime_slice_core::SliceResponse) -> f64 {
+    let mut min_r = f64::MAX;
+    let mut max_r = 0.0_f64;
+    for layer in &response.layers {
+        for path in &layer.paths {
+            if path.kind != "support" || path.pts.len() < 4 {
+                continue;
+            }
+            let r = loop_radius(&path.pts);
+            min_r = min_r.min(r);
+            max_r = max_r.max(r);
+        }
+    }
+    if min_r == f64::MAX {
+        0.0
+    } else {
+        max_r - min_r
+    }
+}
+
+fn loop_radius(pts: &[[f64; 2]]) -> f64 {
+    let n = pts.len() as f64;
+    let c = [
+        pts.iter().map(|p| p[0]).sum::<f64>() / n,
+        pts.iter().map(|p| p[1]).sum::<f64>() / n,
+    ];
+    pts.iter()
+        .map(|p| {
+            let dx = p[0] - c[0];
+            let dy = p[1] - c[1];
+            dx.hypot(dy)
+        })
+        .fold(0.0, f64::max)
+}
+
+fn support_count_near(response: &lime_slice_core::SliceResponse, z: f64) -> usize {
+    response
+        .layers
+        .iter()
+        .filter(|layer| (layer.z - z).abs() < 0.35)
+        .map(|layer| {
+            layer
+                .paths
+                .iter()
+                .filter(|p| p.kind == "support")
+                .count()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+#[test]
+fn vertical_walls_do_not_grow_supports() {
+    let mesh = cube();
+    let sliced = slice_configured(
+        &mesh,
+        &speed_mode(),
+        &profile(),
+        &SliceSettings {
+            supports: true,
+            support_style: lime_slice_core::SupportStyle::Tree,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    assert!(sliced.sanity.ok, "{:?}", sliced.sanity.notes);
+    assert!(!has_type(&sliced.gcode, "SUPPORT"));
+}
+
+#[test]
+fn organic_trees_branch_around_and_land_on_the_mesh() {
+    let mesh = ear_on_head();
+    let tree = slice_configured(
+        &mesh,
+        &speed_mode(),
+        &profile(),
+        &SliceSettings {
+            supports: true,
+            support_style: lime_slice_core::SupportStyle::Tree,
+            branch_angle: 45.0,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    let grid = slice_configured(
+        &mesh,
+        &speed_mode(),
+        &profile(),
+        &SliceSettings {
+            supports: true,
+            support_style: lime_slice_core::SupportStyle::Grid,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    assert!(tree.sanity.ok, "{:?}", tree.sanity.notes);
+    assert!(grid.sanity.ok, "{:?}", grid.sanity.notes);
+    assert!(has_type(&tree.gcode, "SUPPORT"));
+    assert!(has_type(&tree.gcode, "SUPPORT-INTERFACE"));
+    assert!(
+        tree.estimate.filament_g < grid.estimate.filament_g,
+        "tree {:.3} g vs grid {:.3} g",
+        tree.estimate.filament_g,
+        grid.estimate.filament_g
+    );
+    let mut tip = false;
+    let mut foot = false;
+    let mut bed = false;
+    let mut inside = 0;
+    for layer in &tree.layers {
+        for path in &layer.paths {
+            if path.kind != "support" && path.kind != "support-interface" {
+                continue;
+            }
+            let c = path_centroid(&path.pts);
+            if path.kind == "support" && layer.z > 26.0 && c[1] > 24.0 {
+                tip = true;
+            }
+            if path.kind == "support" && (14.5..20.0).contains(&layer.z) && (4.0..22.0).contains(&c[0])
+                && (2.0..20.0).contains(&c[1])
+            {
+                foot = true;
+            }
+            if path.kind == "support" && layer.z < 1.2 {
+                bed = true;
+            }
+            if layer.z < 15.5
+                && (0.6..27.4).contains(&c[0])
+                && (0.6..19.4).contains(&c[1])
+                && path.kind == "support"
+            {
+                inside += 1;
+            }
+        }
+    }
+    assert!(tip, "expected a tip under the ear overhang");
+    assert!(foot, "expected a branch foot on the head");
+    assert!(bed, "expected a trunk that reaches the bed");
+    assert!(inside < 4, "branches entered the body {inside} times");
+}
+
+fn path_centroid(pts: &[[f64; 2]]) -> [f64; 2] {
+    let n = pts.len().max(1) as f64;
+    [
+        pts.iter().map(|p| p[0]).sum::<f64>() / n,
+        pts.iter().map(|p| p[1]).sum::<f64>() / n,
+    ]
+}
+
+fn ear_on_head() -> Mesh {
+    let mut tris = Vec::new();
+    add_box(&mut tris, 0.0, 0.0, 0.0, 28.0, 20.0, 16.0);
+    add_box(&mut tris, 6.0, 6.0, 28.0, 16.0, 36.0, 34.0);
+    Mesh { triangles: tris }
 }
 
 #[test]
