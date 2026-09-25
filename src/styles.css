@@ -198,6 +198,7 @@ button { cursor: pointer; }
 .stage {
   min-width: 0;
   min-height: 0;
+  overflow: auto;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   background: var(--stage);
@@ -379,10 +380,20 @@ kbd { border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; backg
 }
 @media (max-width: 960px) {
   .panel-toggle { display: inline-flex; }
-  .workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(520px, 1fr); }
+  .workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+  .stage { grid-row: 1; }
   .panel { display: none; }
   .workspace.show-left #left,
-  .workspace.show-right #right { display: block; max-height: 180px; grid-column: 1; }
-  .stage, .stage-body, .previews, .pane { min-height: 460px; }
+  .workspace.show-right #right { display: block; max-height: none; min-height: 0; overflow: auto; }
+  .workspace.show-left { grid-template-rows: minmax(0, 180px) minmax(0, 1fr); }
+  .workspace.show-left #left { grid-row: 1; }
+  .workspace.show-left .stage { grid-row: 2; }
+  .workspace.show-right { grid-template-rows: minmax(0, 1fr) minmax(0, 180px); }
+  .workspace.show-right .stage { grid-row: 1; }
+  .workspace.show-right #right { grid-row: 2; }
+  .workspace.show-left.show-right { grid-template-rows: minmax(0, 160px) minmax(0, 1fr) minmax(0, 160px); }
+  .workspace.show-left.show-right #left { grid-row: 1; }
+  .workspace.show-left.show-right .stage { grid-row: 2; }
+  .workspace.show-left.show-right #right { grid-row: 3; }
   .top .timing { flex-basis: 100%; }
 }
