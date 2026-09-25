@@ -103,16 +103,15 @@ pub fn emit_gcode(
                 flow * path.flow,
                 profile.max_volumetric_mm3_s,
             );
-            let fit = arc_fit
-                && (path.fit_arcs
-                    || matches!(
-                        path.kind,
-                        crate::toolpath::PathKind::Wall
-                            | crate::toolpath::PathKind::Outer
-                            | crate::toolpath::PathKind::Inner
-                            | crate::toolpath::PathKind::ThinWall
-                            | crate::toolpath::PathKind::Skirt
-                    ));
+            let wall = matches!(
+                path.kind,
+                crate::toolpath::PathKind::Wall
+                    | crate::toolpath::PathKind::Outer
+                    | crate::toolpath::PathKind::Inner
+                    | crate::toolpath::PathKind::ThinWall
+                    | crate::toolpath::PathKind::Skirt
+            );
+            let fit = arc_fit && (path.fit_arcs || wall);
             w.emit_chain(
                 &path.points,
                 limited,
@@ -122,6 +121,7 @@ pub fn emit_gcode(
                 profile.filament_diameter,
                 path.accel,
                 fit,
+                path.fit_arcs,
                 &path.z_frac,
                 &path.flow_frac,
                 layer.z,
@@ -534,6 +534,7 @@ impl Writer {
         filament_d: f64,
         accel: f64,
         arc_fit: bool,
+        loose_arcs: bool,
         z_frac: &[f64],
         flow_frac: &[f64],
         layer_z: f64,
@@ -546,13 +547,17 @@ impl Writer {
         if scarfed {
             self.set_z(nozzle_z(layer_z, nominal_h, z_frac[0]));
         }
+        let arc_tol = if loose_arcs { 0.16 } else { 0.07 };
+        let min_r = if loose_arcs { 0.35 } else { 0.8 };
+        let max_span = if loose_arcs { 64 } else { 32 };
         let mut i = 0usize;
         while i + 1 < points.len() {
             let mut end = i + 1;
             if arc_fit && i + 3 < points.len() && span_planar(z_frac, flow_frac, i, i + 4) {
                 let mut j = i + 3;
-                while j < points.len() && j - i <= 32 && span_planar(z_frac, flow_frac, i, j + 1) {
-                    if fit_arc(&points[i..=j], 0.07).is_some() {
+                while j < points.len() && j - i <= max_span && span_planar(z_frac, flow_frac, i, j + 1)
+                {
+                    if fit_arc(&points[i..=j], arc_tol, min_r).is_some() {
                         end = j;
                         j += 1;
                     } else {
@@ -561,7 +566,7 @@ impl Writer {
                 }
             }
             if end >= i + 3 && span_planar(z_frac, flow_frac, i, end + 1) {
-                if let Some(arc) = fit_arc(&points[i..=end], 0.07) {
+                if let Some(arc) = fit_arc(&points[i..=end], arc_tol, min_r) {
                     let h = if scarfed {
                         layer_h * z_frac[i].clamp(0.0, 1.0)
                     } else {
@@ -861,7 +866,7 @@ struct ArcFit {
     dir: [f64; 2],
 }
 
-fn fit_arc(pts: &[[f64; 2]], tol: f64) -> Option<ArcFit> {
+fn fit_arc(pts: &[[f64; 2]], tol: f64, min_r: f64) -> Option<ArcFit> {
     if pts.len() < 4 {
         return None;
     }
@@ -870,7 +875,7 @@ fn fit_arc(pts: &[[f64; 2]], tol: f64) -> Option<ArcFit> {
     let c = *pts.last().unwrap();
     let center = circumcenter(a, mid, c)?;
     let r = hypot(a[0] - center[0], a[1] - center[1]);
-    if !(0.8..=140.0).contains(&r) {
+    if !(min_r..=140.0).contains(&r) {
         return None;
     }
     for p in pts {

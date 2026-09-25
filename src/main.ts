@@ -360,7 +360,10 @@ function blendFields() {
 }
 function paramLine(card: ResolvedCard) {
   const row = (name: string, feed: number, eff: number) => `${name} <b>${feed.toFixed(0)}</b> mm/s · effective <b>${eff.toFixed(0)}</b><br>`;
-  return `${card.name} · ${card.walls} walls · ${card.pattern} · ${(card.density * 100).toFixed(0)}%<br>${row("outer", card.outer, card.effectiveOuter)}${row("inner", card.inner, card.effectiveInner)}${row("sparse", card.sparse, card.effectiveSparse)}${row("top", card.top, card.effectiveTop)}`;
+  const gyroid = card.pattern === "gyroid" && state.gyroid3d !== "off"
+    ? row("3D gyroid", card.gyroidSpeed, card.effectiveGyroid)
+    : "";
+  return `${card.name} · ${card.walls} walls · ${card.pattern} · ${(card.density * 100).toFixed(0)}%<br>${row("outer", card.outer, card.effectiveOuter)}${row("inner", card.inner, card.effectiveInner)}${row("sparse", card.sparse, card.effectiveSparse)}${gyroid}${row("top", card.top, card.effectiveTop)}`;
 }
 function paramTable(card: ResolvedCard) {
   if (state.blendKind === "byRegion") {

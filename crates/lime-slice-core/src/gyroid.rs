@@ -138,12 +138,204 @@ pub fn section(loops: &[Loop], period: f64, z: f64, tol: f64) -> Vec<Vec<[f64; 2
             row
         })
         .collect();
-    let chained = chain(segs);
+    let chained = bridge_gaps(chain(segs), loops, 0.5);
+    let arc_tol = (tol.max(0.01) * 2.6).clamp(0.1, 0.16);
     chained
         .into_iter()
-        .map(|p| simplify(&p, tol.max(0.01)))
+        .map(|p| {
+            let simple = simplify(&p, tol.max(0.01));
+            arc_coarsen(&simple, arc_tol)
+        })
         .filter(|p| p.len() >= 2 && polyline_len(p) > 0.35)
         .collect()
+}
+
+/// Join open ends that clipping split, when the bridge stays inside and does not reverse.
+fn bridge_gaps(mut paths: Vec<Vec<[f64; 2]>>, loops: &[Loop], join: f64) -> Vec<Vec<[f64; 2]>> {
+    if paths.len() < 2 {
+        return paths;
+    }
+    let join2 = join * join;
+    let mut used = vec![false; paths.len()];
+    let mut out = Vec::new();
+    for i in 0..paths.len() {
+        if used[i] {
+            continue;
+        }
+        used[i] = true;
+        let mut path = paths[i].clone();
+        loop {
+            let end = *path.last().unwrap();
+            let prev = if path.len() >= 2 {
+                path[path.len() - 2]
+            } else {
+                end
+            };
+            let mut best: Option<(usize, bool, f64)> = None;
+            for (j, other) in paths.iter().enumerate() {
+                if used[j] || other.len() < 2 {
+                    continue;
+                }
+                for rev in [false, true] {
+                    let tip = if rev { *other.last().unwrap() } else { other[0] };
+                    let d2 = dist2(end, tip);
+                    if d2 < 1e-8 || d2 > join2 {
+                        continue;
+                    }
+                    let next = if rev {
+                        other[other.len() - 2]
+                    } else {
+                        other[1]
+                    };
+                    if turn_cost(prev, end, tip) > 0.55 || turn_cost(end, tip, next) > 0.55 {
+                        continue;
+                    }
+                    if !gap_inside(loops, end, tip) {
+                        continue;
+                    }
+                    if best.map(|(_, _, b)| d2 < b).unwrap_or(true) {
+                        best = Some((j, rev, d2));
+                    }
+                }
+            }
+            let Some((j, rev, _)) = best else {
+                break;
+            };
+            used[j] = true;
+            let mut seg = std::mem::take(&mut paths[j]);
+            if rev {
+                seg.reverse();
+            }
+            if dist2(*path.last().unwrap(), seg[0]) < 1e-8 {
+                path.extend(seg.into_iter().skip(1));
+            } else {
+                path.extend(seg);
+            }
+        }
+        out.push(path);
+    }
+    out
+}
+
+fn gap_inside(loops: &[Loop], a: [f64; 2], b: [f64; 2]) -> bool {
+    let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+    in_solid(loops, mid[0], mid[1])
+        && in_solid(loops, a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25)
+        && in_solid(loops, a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75)
+}
+
+/// Replace a locally circular run with four points on that circle so the
+/// G-code fitter can emit one G2/G3 instead of a spray of chords.
+fn arc_coarsen(pts: &[[f64; 2]], tol: f64) -> Vec<[f64; 2]> {
+    if pts.len() < 4 {
+        return pts.to_vec();
+    }
+    let mut out = vec![pts[0]];
+    let mut i = 0usize;
+    while i + 1 < pts.len() {
+        let mut best = i + 1;
+        let mut j = i + 3;
+        while j < pts.len() && j - i <= 48 {
+            if fit_circle(&pts[i..=j], tol).is_some() {
+                best = j;
+                j += 1;
+            } else if j > i + 3 {
+                break;
+            } else {
+                j += 1;
+            }
+        }
+        if best >= i + 3 {
+            if let Some((center, _)) = fit_circle(&pts[i..=best], tol) {
+                let a = pts[i];
+                let b = pts[best];
+                let a0 = (a[1] - center[1]).atan2(a[0] - center[0]);
+                let a1 = (b[1] - center[1]).atan2(b[0] - center[0]);
+                let mid = pts[(i + best) / 2];
+                let am = (mid[1] - center[1]).atan2(mid[0] - center[0]);
+                let sweep = if sweep_is_cw(a0, am) {
+                    cw_delta(a0, a1)
+                } else {
+                    ccw_delta(a0, a1)
+                };
+                for k in 1..=3 {
+                    let ang = a0 + sweep * (k as f64 / 3.0);
+                    let r = (a[0] - center[0]).hypot(a[1] - center[1]);
+                    out.push([center[0] + r * ang.cos(), center[1] + r * ang.sin()]);
+                }
+                i = best;
+                continue;
+            }
+        }
+        out.push(pts[i + 1]);
+        i += 1;
+    }
+    out
+}
+
+fn sweep_is_cw(a0: f64, am: f64) -> bool {
+    let mut d = am - a0;
+    while d > std::f64::consts::PI {
+        d -= std::f64::consts::TAU;
+    }
+    while d < -std::f64::consts::PI {
+        d += std::f64::consts::TAU;
+    }
+    d < 0.0
+}
+
+fn cw_delta(from: f64, to: f64) -> f64 {
+    let mut d = to - from;
+    while d > 0.0 {
+        d -= std::f64::consts::TAU;
+    }
+    while d < -std::f64::consts::TAU {
+        d += std::f64::consts::TAU;
+    }
+    d
+}
+
+fn ccw_delta(from: f64, to: f64) -> f64 {
+    let mut d = to - from;
+    while d < 0.0 {
+        d += std::f64::consts::TAU;
+    }
+    while d > std::f64::consts::TAU {
+        d -= std::f64::consts::TAU;
+    }
+    d
+}
+
+fn fit_circle(pts: &[[f64; 2]], tol: f64) -> Option<([f64; 2], f64)> {
+    if pts.len() < 4 {
+        return None;
+    }
+    let a = pts[0];
+    let mid = pts[pts.len() / 2];
+    let c = *pts.last().unwrap();
+    let center = circle_center(a, mid, c)?;
+    let r = (a[0] - center[0]).hypot(a[1] - center[1]);
+    if !(0.35..=80.0).contains(&r) {
+        return None;
+    }
+    if pts.iter().any(|p| ((p[0] - center[0]).hypot(p[1] - center[1]) - r).abs() > tol) {
+        return None;
+    }
+    Some((center, r))
+}
+
+fn circle_center(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> Option<[f64; 2]> {
+    let d = 2.0 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
+    if d.abs() < 1e-8 {
+        return None;
+    }
+    let a2 = a[0] * a[0] + a[1] * a[1];
+    let b2 = b[0] * b[0] + b[1] * b[1];
+    let c2 = c[0] * c[0] + c[1] * c[1];
+    Some([
+        (a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + c2 * (a[1] - b[1])) / d,
+        (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + c2 * (b[0] - a[0])) / d,
+    ])
 }
 
 fn chain(segs: Vec<[[f64; 2]; 2]>) -> Vec<Vec<[f64; 2]>> {

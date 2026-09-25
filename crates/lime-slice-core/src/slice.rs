@@ -1222,8 +1222,14 @@ fn resolve(mut strategy: ResolvedStrategy, settings: &SliceSettings) -> Resolved
                 strategy.pattern = crate::strategy::InfillPattern::Gyroid;
                 strategy.gyroid_3d = true;
                 strategy.lightning_range_mm = 0.0;
-                strategy.infill_combine = 1;
             }
+        }
+        if strategy.gyroid_3d
+            && strategy.pattern == crate::strategy::InfillPattern::Gyroid
+            && strategy.toughness >= 0.75
+            && settings.infill_combine
+        {
+            strategy.infill_combine = strategy.infill_combine.max(2);
         }
         strategy.z_hop = match settings.z_hop {
             ZHopMode::Off => ZHopMode::Off,
