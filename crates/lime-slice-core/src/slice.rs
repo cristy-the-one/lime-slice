@@ -112,6 +112,12 @@ pub struct SliceRequest {
     /// When true, also slice pure speed, efficiency, toughness, and classic.
     #[serde(default)]
     pub compare: bool,
+    /// When false, the HTTP and desktop shells omit G-code from the JSON and keep it for export.
+    #[serde(default = "default_true")]
+    pub include_gcode: bool,
+    /// When false, skip preview polylines. Estimates and G-code still run.
+    #[serde(default = "default_true")]
+    pub include_preview: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -145,6 +151,8 @@ pub struct SliceSettings {
     pub z_hop_min_travel: f64,
     pub baseline: bool,
     pub compare: bool,
+    pub include_gcode: bool,
+    pub include_preview: bool,
 }
 
 impl Default for SliceSettings {
@@ -179,6 +187,8 @@ impl Default for SliceSettings {
             z_hop_min_travel: 2.0,
             baseline: true,
             compare: false,
+            include_gcode: true,
+            include_preview: true,
         }
     }
 }
@@ -260,6 +270,10 @@ impl SliceSettings {
             },
             baseline: req.baseline,
             compare: req.compare,
+            // The request flag is for the HTTP/desktop shell, which parks G-code
+            // beside the JSON. Pareto clears this on its own settings copy.
+            include_gcode: true,
+            include_preview: req.include_preview,
         }
     }
 
@@ -630,7 +644,16 @@ pub fn slice_configured(
         notes.push("g-code is missing layer markers".into());
     }
 
-    let layers = preview_of(&planned, &profile, blend, &gcode.layer_seconds);
+    let layers = if settings.include_preview {
+        preview_of(&planned, &profile, blend, &gcode.layer_seconds)
+    } else {
+        Vec::new()
+    };
+    let gcode_text = if settings.include_gcode {
+        gcode.text.clone()
+    } else {
+        String::new()
+    };
     Ok(SliceResponse {
         core_ms,
         baseline_ms,
@@ -656,7 +679,7 @@ pub fn slice_configured(
             retracts: gcode.retracts,
             z_hops: gcode.z_hops,
         },
-        gcode: gcode.text,
+        gcode: gcode_text,
         layers,
         blend: blend.describe(),
         estimate: {
@@ -761,6 +784,63 @@ fn compare_estimates(
     }
     let _ = (layer_height, line_width);
     Ok(out)
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParetoPoint {
+    pub label: String,
+    pub toughness: f64,
+    pub seconds: f64,
+    pub filament_g: f64,
+    /// Structural toughness proxy from the same scorer as a normal slice.
+    pub score: f64,
+}
+
+/// Speed, three weight mixes, and toughness. No preview polylines and no G-code text.
+pub fn pareto_estimates(
+    mesh: &Mesh,
+    profile: &PrinterProfile,
+    settings: &SliceSettings,
+) -> Result<Vec<ParetoPoint>, String> {
+    let mut quiet = settings.clone();
+    quiet.baseline = false;
+    quiet.compare = false;
+    quiet.include_gcode = false;
+    quiet.include_preview = false;
+    let points = [
+        (0.0, "speed"),
+        (0.25, "weight 25%"),
+        (0.5, "weight 50%"),
+        (0.75, "weight 75%"),
+        (1.0, "toughness"),
+    ];
+    points
+        .par_iter()
+        .map(|(toughness, label)| {
+            let blend = if *toughness <= 1e-9 {
+                BlendMode::Single {
+                    strategy: StrategyId::Speed,
+                }
+            } else if *toughness >= 1.0 - 1e-9 {
+                BlendMode::Single {
+                    strategy: StrategyId::Toughness,
+                }
+            } else {
+                BlendMode::Weight {
+                    toughness: *toughness,
+                }
+            };
+            let response = slice_configured(mesh, &blend, profile, &quiet)?;
+            Ok(ParetoPoint {
+                label: (*label).into(),
+                toughness: *toughness,
+                seconds: response.estimate.seconds,
+                filament_g: response.estimate.filament_g,
+                score: response.score.toughness,
+            })
+        })
+        .collect()
 }
 
 fn score_of(seconds: f64, grams: f64, toughness: f64) -> BlendScore {

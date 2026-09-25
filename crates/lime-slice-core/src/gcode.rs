@@ -82,7 +82,9 @@ pub fn emit_gcode(
                 layer.height
             };
             w.kind = "travel".into();
-            w.set_accel(path.travel_accel);
+            let travel_accel = cap_accel(path.travel_accel, profile.max_accel);
+            let print_accel = cap_accel(path.accel, profile.max_accel);
+            w.set_accel(travel_accel);
             let mut hop = path.lead_in.clone();
             hop.push(path.points[0]);
             w.travel_chain(
@@ -90,12 +92,12 @@ pub fn emit_gcode(
                 path.travel_speed,
                 path.retract_mm,
                 path.retract_min_travel,
-                path.travel_accel,
+                travel_accel,
                 path.z_hop,
                 layer.z,
             );
             w.kind = path.kind.as_str().into();
-            w.set_accel(path.accel);
+            w.set_accel(print_accel);
             let limited = limit_speed(
                 speed,
                 path.width,
@@ -119,7 +121,7 @@ pub fn emit_gcode(
                 bead_h,
                 flow * path.flow,
                 profile.filament_diameter,
-                path.accel,
+                print_accel,
                 fit,
                 path.fit_arcs,
                 &path.z_frac,
@@ -201,7 +203,8 @@ impl Writer {
         out.push_str(&format!("M104 S{:.0}\n", profile.nozzle_temp));
         out.push_str(&format!("M190 S{:.0}\n", profile.bed_temp));
         out.push_str(&format!("M109 S{:.0}\n", profile.nozzle_temp));
-        out.push_str("G21\nG90\nM82\nG28\nG92 E0\nM106 S0\nM204 S1500\n");
+        let start_accel = cap_accel(1500.0, profile.max_accel);
+        out.push_str(&format!("G21\nG90\nM82\nG28\nG92 E0\nM106 S0\nM204 S{start_accel:.0}\n"));
         if profile.pressure_advance > 0.0 {
             out.push_str(&format!(
                 "SET_PRESSURE_ADVANCE ADVANCE={:.4}\n",
@@ -826,6 +829,13 @@ fn span_planar(z_frac: &[f64], flow_frac: &[f64], start: usize, end_exclusive: u
             .map(|(z, f)| (z - z0).abs() < 1e-3 && (f - f0).abs() < 1e-3)
             .unwrap_or(false)
     })
+}
+
+pub(crate) fn cap_accel(accel: f64, max_accel: f64) -> f64 {
+    if !max_accel.is_finite() || max_accel <= 0.0 {
+        return accel;
+    }
+    accel.min(max_accel)
 }
 
 pub(crate) fn limit_speed(speed: f64, width: f64, height: f64, flow: f64, max_vol: f64) -> f64 {

@@ -1914,3 +1914,83 @@ fn feature_times_match_total_and_baseline_skip_is_real() {
     assert!(classic.seconds > 0.0 && classic.filament_g > 0.0);
     assert!(tough.by_feature.iter().map(|row| row.seconds).sum::<f64>() > 0.0);
 }
+
+#[test]
+fn pareto_points_cover_the_blend_axis_without_gcode() {
+    let mesh = cube();
+    let settings = SliceSettings {
+        baseline: false,
+        ..SliceSettings::default()
+    };
+    let points = lime_slice_core::pareto_estimates(&mesh, &profile(), &settings).unwrap();
+    let labels: Vec<_> = points.iter().map(|p| p.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        vec![
+            "speed",
+            "weight 25%",
+            "weight 50%",
+            "weight 75%",
+            "toughness"
+        ]
+    );
+    assert!(points.iter().all(|p| p.seconds > 0.0 && p.filament_g > 0.0));
+    let speed = &points[0];
+    let tough = points.last().unwrap();
+    assert!(tough.seconds > speed.seconds);
+    assert!(tough.score + 1e-6 >= speed.score);
+    let quiet = SliceSettings {
+        baseline: false,
+        include_gcode: false,
+        include_preview: false,
+        ..SliceSettings::default()
+    };
+    let response = slice_configured(
+        &mesh,
+        &BlendMode::Single {
+            strategy: StrategyId::Speed,
+        },
+        &profile(),
+        &quiet,
+    )
+    .unwrap();
+    assert!(response.gcode.is_empty());
+    assert!(response.layers.is_empty());
+    assert!(response.estimate.seconds > 0.0);
+    assert!(response.sanity.ok);
+}
+
+#[test]
+fn printer_accel_cap_limits_m204() {
+    let mesh = cube();
+    let mut printer = profile();
+    printer.max_accel = 900.0;
+    let response = slice_configured(
+        &mesh,
+        &BlendMode::Single {
+            strategy: StrategyId::Speed,
+        },
+        &printer,
+        &SliceSettings {
+            baseline: false,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    assert!(response.gcode.contains("M204 S900"));
+    for line in response.gcode.lines() {
+        if let Some(rest) = line.strip_prefix("M204 S") {
+            let value: f64 = rest.trim().parse().unwrap();
+            assert!(value <= 900.0, "{line}");
+        }
+    }
+}
+
+#[test]
+fn printer_profile_keeps_cost_and_bed_when_fields_are_absent() {
+    let parsed: lime_slice_core::PrinterProfile =
+        serde_json::from_str(r#"{"name":"bench","nozzleDiameter":0.4,"filamentDiameter":1.75,"nozzleTemp":200,"bedTemp":60,"bedX":220,"bedY":220}"#).unwrap();
+    assert!((parsed.max_accel - 10_000.0).abs() < 1e-6);
+    assert!((parsed.filament_cost_per_kg - 20.0).abs() < 1e-6);
+    assert!((parsed.bed_z - 250.0).abs() < 1e-6);
+}
