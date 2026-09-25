@@ -90,7 +90,7 @@ export function createSliceView(canvas: HTMLCanvasElement): SliceView3d {
 
 function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  applyPixelRatio(renderer);
   let colors = themeColors();
   renderer.setClearColor(hexToThree(colors.stage), 1);
 
@@ -173,8 +173,10 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
 
   function resize() {
     const rect = canvas.getBoundingClientRect();
-    renderer.setSize(Math.max(1, rect.width), Math.max(1, rect.height), false);
-    camera.aspect = Math.max(1, rect.width) / Math.max(1, rect.height);
+    if (rect.width < 1 || rect.height < 1) return;
+    applyPixelRatio(renderer);
+    renderer.setSize(rect.width, rect.height, false);
+    camera.aspect = rect.width / rect.height;
     camera.updateProjectionMatrix();
   }
 
@@ -444,6 +446,11 @@ interface LayerLines {
   lines: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>;
   travel: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>;
   dispose(): void;
+}
+
+function applyPixelRatio(renderer: THREE.WebGLRenderer) {
+  const dpr = window.devicePixelRatio || 1;
+  if (renderer.getPixelRatio() !== dpr) renderer.setPixelRatio(dpr);
 }
 
 function buildLayer(layer: ViewLayer, cx: number, cy: number, hidden: Set<string>, mode: ColorMode): LayerLines {
