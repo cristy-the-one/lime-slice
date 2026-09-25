@@ -1157,6 +1157,16 @@ fn gyroid3d_changes_with_z_and_stays_off_for_speed_and_classic() {
         on.score.toughness,
         off.score.toughness
     );
+    assert!(
+        on.score.toughness > 11500.0,
+        "cube score {:.1} fell back under the unrecovered 3D gyroid",
+        on.score.toughness
+    );
+    assert!(
+        on.estimate.seconds < 2400.0,
+        "cube time {:.1}s gave back the print-time recovery",
+        on.estimate.seconds
+    );
     let classic_t = slice_configured(&mesh, &tough_mode(), &profile(), &classic()).unwrap();
     assert!(!classic_t.gcode.contains("gyroid3d"));
     let speed =

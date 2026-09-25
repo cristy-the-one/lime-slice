@@ -729,7 +729,9 @@ fn gyroid_3d_graded(
     features: &PathFeatures,
 ) -> Vec<Vec<[f64; 2]>> {
     let period = crate::gyroid::period_for_spacing(spacing);
-    let tol = 0.08;
+    // 0.04 mm keeps the TPMS long enough to score, and still circular enough
+    // to collapse into G2/G3. A looser 0.08 mm kinked the curve into short chords.
+    let tol = 0.04;
     let skin = strategy.gyroid_skin_mm.max(0.0);
     let ratio = strategy.gyroid_core_ratio.clamp(0.35, 1.0);
     let near_roof = features.shell != ShellBand::Interior

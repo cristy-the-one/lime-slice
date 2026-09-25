@@ -247,8 +247,9 @@ pub struct ResolvedStrategy {
     pub gyroid_speed: f64,
     pub gyroid_accel: f64,
     /// Full-density gyroid band inside the infill region, in millimetres.
+    /// `0` keeps one lattice. A positive band is only used when the core is sparser.
     pub gyroid_skin_mm: f64,
-    /// Core density as a fraction of `infill_density`. `1` is uniform.
+    /// Core density as a fraction of `infill_density`. `1` is one full-density lattice.
     pub gyroid_core_ratio: f64,
     /// Resolved hop policy. `Blend` is not stored here.
     pub z_hop: ZHopMode,
@@ -324,8 +325,8 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             gyroid_3d: true,
             gyroid_speed: 110.0,
             gyroid_accel: 4000.0,
-            gyroid_skin_mm: 2.4,
-            gyroid_core_ratio: 0.985,
+            gyroid_skin_mm: 0.0,
+            gyroid_core_ratio: 1.0,
             z_hop: ZHopMode::Smart,
         },
     }
