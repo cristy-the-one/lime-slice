@@ -793,6 +793,18 @@ fn print_summary(input: &Path, response: &lime_slice_core::SliceResponse) {
         response.baseline_label
     );
     println!(
+        "time {:.1} s  filament {:.2} g ({:.1} mm)  travel {:.1} mm  retracts {}  hops {}  arcs {}  toughness {:.1}  per hour {:.1}",
+        response.estimate.seconds,
+        response.estimate.filament_g,
+        response.estimate.filament_mm,
+        response.sanity.travel_length_mm,
+        response.sanity.retracts,
+        response.estimate.z_hops,
+        response.estimate.arc_moves,
+        response.score.toughness,
+        response.score.toughness / (response.estimate.seconds / 3600.0).max(1e-6)
+    );
+    println!(
         "layers {}  extrusion moves {}  filament E {:.2} mm  path {:.1} mm  bounds X {:.2}..{:.2} Y {:.2}..{:.2}  sanity {}",
         response.sanity.layers,
         response.sanity.extrusion_moves,

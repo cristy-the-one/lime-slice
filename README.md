@@ -68,7 +68,7 @@ Feature knobs default on. Turn one off with `--variable-width false`, `--arc-fit
 
 Adaptive layers and supports are off unless you ask for them, so a bench stays comparable to a fixed 0.2 mm slice. `--adaptive` varies each layer inside `--adaptive-min` (default 0.08 mm) and `--adaptive-max` (default: the nominal layer height). Vertical walls take the thick end of that band; slopes that turn toward horizontal take the thin end. `--supports` builds support under overhangs steeper than `--support-angle` (default 45° from horizontal), with three denser interface layers, a 0.55 mm XY gap, and a one-layer air gap. `--support-style grid` is the sparse column. `--support-style tree` grows organic shafts that lean together as they drop, and keeps the same interface tip. `--support-height-mult` (default 1) prints sparse shafts at a thicker layer height; the interface stays at the model layer height. Support spacing and speed still follow the resolved strategy: toughness is denser and slower than speed.
 
-`--infill-combine` (default on) emits sparse and lightning infill every 3 layers on the speed blend and every 2 layers on a low-weight efficiency blend, at that multiple of the layer height, capped near 0.75 × the nozzle diameter. The thick bead is parked on the top of each group, flush with the next solid shell, so the layers under a top skin are not left empty. Walls, top skins, and bottom skins stay at the nominal height. Toughness and `--classic` leave combining off. Bottom skins are solid rectilinear even when the strategy's interior pattern is lightning.
+`--infill-combine` (default on) emits sparse and lightning infill every 3 layers on the speed blend and every 2 layers on a low-weight efficiency blend, at that multiple of the layer height, capped near 0.75 × the nozzle diameter. The thick bead is parked on the top of each group, flush with the next solid shell, so the layers under a top skin are not left empty. Walls, top skins, and bottom skins stay at the nominal height. 2D toughness and `--classic` leave combining off. 3D gyroid on toughness combines every 2 layers when that bead is no thicker than the nozzle (0.4 mm at the default 0.2 mm layer). Bottom skins are solid rectilinear even when the strategy's interior pattern is lightning.
 
 Per-feature feeds are on unless `--feature-speeds false` or `--classic`. The speed blend runs sparse infill and travel fast and keeps the outer wall slower. The estimator uses those feeds and accels.
 
@@ -104,22 +104,22 @@ Contour extraction on the hull (140 layers, 4800 triangles): parallel Z-index **
 | Mode | Slice ms | Classic ms | Print s | Classic s | Filament g | Classic g | Travel mm | Classic travel | Retracts | Classic retracts | Toughness | Classic tough |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | speed | 2.55 | 1.80 | 221.2 | 331.6 | 2.14 | 3.13 | 677 | 3630 | 1 | 200 | 1855 | 2535 |
-| toughness | 131.70 | 36.00 | 5860.7 | 6039.1 | 10.05 | 10.32 | 6376 | 53558 | 2 | 4236 | 11572 | 10891 |
+| toughness | 83.7 | 36.00 | 2378.8 | 6039.1 | 9.89 | 10.32 | 4633 | 53558 | 2 | 4236 | 11354 | 10891 |
 | layer blend | 39.84 | 10.11 | 1518.7 | 1685.5 | 4.74 | 5.46 | 2107 | 14420 | 2 | 1005 | 4944 | 5173 |
 | region blend | 52.80 | 16.73 | 2681.7 | 2933.6 | 6.04 | 6.69 | 7195 | 22554 | 1 | 2653 | 6466 | 6604 |
 
-Cube speed is 33% less print time than classic (221.2 s vs 331.6 s) and 32% less filament (2.14 g vs 3.13 g). The speed floor is solid, so the cube uses more filament than the lightning-only bottom it printed before. Travel and retracts stay with the old lightning path (677 mm, 1 retract). Toughness is on 3D gyroid.
+Cube speed is 33% less print time than classic (221.2 s vs 331.6 s) and 32% less filament (2.14 g vs 3.13 g). The speed floor is solid, so the cube uses more filament than the lightning-only bottom it printed before. Travel and retracts stay with the old lightning path (677 mm, 1 retract). Toughness is on recovered 3D gyroid: arcs, a faster infill feed, a dense skin with a slightly sparser core, and a two-layer combine.
 
 `samples/lime_hull.stl` — 4800 triangles, 140 layers. The hull is convex, so hole-aware combing matches straight travel: **2001.9 mm and 1 retract** either way. The drop versus classic is the travel planner.
 
 | Mode | Slice ms | Classic ms | Print s | Classic s | Filament g | Classic g | Travel mm | Classic travel | Retracts | Classic retracts | Toughness | Classic tough |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | speed | 45.56 | 33.80 | 772.0 | 1464.8 | 5.72 | 9.76 | 2002 | 29339 | 1 | 828 | 4806 | 7497 |
-| toughness | 1032.52 | 279.18 | 28705.7 | 29010.5 | 42.18 | 43.73 | 29686 | 270759 | 2 | 11681 | 49067 | 46705 |
+| toughness | 836.1 | 279.18 | 9989.4 | 29010.5 | 41.34 | 43.73 | 20494 | 270759 | 2 | 11681 | 47924 | 46705 |
 | layer blend | 286.62 | 94.24 | 7374.0 | 8321.6 | 17.65 | 20.86 | 9210 | 84190 | 2 | 3309 | 18585 | 19818 |
 | region blend | 426.37 | 135.11 | 13892.3 | 14854.7 | 24.14 | 26.86 | 16684 | 137800 | 1 | 7540 | 27338 | 27066 |
 
-Hull speed is 47% less print time than classic (772.0 s vs 1464.8 s) and 41% less filament (5.72 g vs 9.76 g). The speed slice emits 2008 arcs. Toughness is 3D gyroid with the scarf on. A 30 mm window frame (four walls around a 14 mm hole, covered by the combing test) retracts on any travel that enters the hole. Smart z-hop lifts those crossings on toughness and stays down on speed.
+Hull speed is 47% less print time than classic (772.0 s vs 1464.8 s) and 41% less filament (5.72 g vs 9.76 g). The speed slice emits 2008 arcs. Toughness is recovered 3D gyroid with the scarf on. A 30 mm window frame (four walls around a 14 mm hole, covered by the combing test) retracts on any travel that enters the hole. Smart z-hop lifts those crossings on toughness and stays down on speed.
 
 `samples/overhang_ledge.stl` speed, supports on, 45°:
 
@@ -142,45 +142,52 @@ A scarf replaces a butt seam on a closed wall when the seam is not already on a 
 | Mesh | Mode | Off s | Outer s | Off g | Outer g | Off arcs | Outer arcs | Off slice ms | Outer slice ms | Overlap mm | Max Z step mm |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | cube | speed | 221.2 | 221.2 | 2.14 | 2.14 | 2 | 2 | 2.34 | 2.64 | 0 | 0 |
-| cube | toughness | 5860.7 | 5860.7 | 10.05 | 10.05 | 55 | 55 | 126.37 | 124.99 | 0 | 0 |
+| cube | toughness | 2378.8 | 2378.8 | 9.89 | 9.89 | 2390 | 2390 | 80.4 | 83.7 | 0 | 0 |
 | arc post | speed | 122.2 | 134.6 | 0.96 | 0.97 | 118 | 118 | 6.13 | 6.01 | 10.00 | 0.021 |
-| arc post | toughness | 1932.5 | 1960.1 | 3.34 | 3.35 | 354 | 352 | 52.17 | 54.34 | 10.00 | 0.021 |
+| arc post | toughness | 1032.8 | 1060.9 | 3.29 | 3.30 | 993 | 989 | 46.6 | 47.7 | 10.00 | 0.021 |
 | hull | speed | 772.0 | 813.5 | 5.72 | 5.76 | 2008 | 2109 | 44.02 | 45.58 | 10.00 | 0.021 |
-| hull | toughness | 28599.0 | 28705.7 | 42.14 | 42.18 | 5793 | 5692 | 988.66 | 1001.57 | 10.00 | 0.021 |
+| hull | toughness | 9869.7 | 9989.4 | 41.30 | 41.34 | 16601 | 16561 | 855.5 | 836.1 | 10.00 | 0.021 |
 
-Speed forced to outer is 12.4 s slower on the post (122.2 → 134.6) and 41 s slower on the hull (772.0 → 813.5). That is why the speed blend leaves the scarf off. Toughness pays about 28 s on the post and 107 s on the hull, and keeps the 10 mm overlap. Classic on the post is 210.5 s / 1.11 g (speed). The default hull toughness row above includes the scarf and 3D gyroid, so that print is 28706 s.
+Speed forced to outer is 12.4 s slower on the post (122.2 → 134.6) and 41 s slower on the hull (772.0 → 813.5). That is why the speed blend leaves the scarf off. Toughness pays about 28 s on the post (1032.8 → 1060.9) and 120 s on the hull (9869.7 → 9989.4), and keeps the 10 mm overlap. The cube's corners hide the seam, so scarf-on and scarf-off match. Classic on the post is 210.5 s / 1.11 g (speed). The default hull toughness row above includes the scarf and recovered 3D gyroid, so that print is 9989 s.
 
 ## True 3D gyroid
 
 `--gyroid-3d blend` (the default) cuts `sin(x)cos(y)+sin(y)cos(z)+sin(z)cos(x)=0` at the layer Z wherever the pattern is already gyroid. Speed stays on lightning, so the speed rows above are unchanged (cube 221.2 s / 2.14 g, hull 772.0 s / 5.72 g). The 2D sine is `--gyroid-3d off`. Classic is the line planner. The cell period is 1.15 times the infill spacing. Sampling runs per layer and per grid row.
 
-Release bench, same machine, layer height 0.2 mm. Tall column is a 20 × 20 × 60 mm box.
+Recovered 3D gyroid keeps that section, then spends less time on it. Open ends that clipping split are bridged when the gap stays inside the part. Locally circular runs become one G2/G3. Toughness infill uses its own feed and accel (110 mm/s, 4000 mm/s²), still under the 12 mm³/s cap, including when two layers are combined into a bead no thicker than the nozzle. The 2D sine keeps 55 mm/s and 1000 mm/s². A 2.4 mm band inside the infill region, and any layer close to a roof, stays at full density. The core prints at 0.985 of that density. Interior gyroid combines every two layers when the bead fits the nozzle. `--gyroid-3d off` does none of this.
 
-| Mesh | Infill | Slice ms | Print s | Filament g | Travel mm | Retracts | Toughness |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| cube | 3D gyroid | 131.5 | 5861 | 10.05 | 6376 | 2 | 11572 |
-| cube | 2D gyroid | 39.7 | 4696 | 10.33 | 6609 | 2 | 10891 |
-| cube | classic | 52.1 | 6039 | 10.32 | 53558 | 4236 | 10891 |
-| hull | 3D gyroid | 959.3 | 28706 | 42.18 | 29686 | 2 | 49067 |
-| hull | 2D gyroid | 336.7 | 22332 | 43.77 | 22939 | 2 | 45642 |
-| hull | classic | 259.8 | 29011 | 43.73 | 270759 | 11681 | 46705 |
+The estimator still stops at the end of every segment, which is harsher than Klipper or Marlin junction deviation (0.02 mm) with lookahead. On the unrecovered cube that model charged 4369 s to chords shorter than 0.6 mm; a Klipper lookahead replay of the same G-code was 3938 s against 5861 s reported. Travel was about 300 s. The recovery makes the chords into arcs so the existing estimator, not only a lookahead firmware, stops paying that tax.
 
-The 3D section scores higher and uses a little less filament. It also takes longer to print, because the sheet is a longer curve than the 2D sine, and longer to slice. That trade is what the toughness blend is for. Speed keeps lightning.
+Release bench, same machine, layer height 0.2 mm. Tall column is a 20 × 20 × 60 mm box. "Before" is this main, 3D gyroid with no recovery. "2D" is `--gyroid-3d off`.
+
+| Mesh | Infill | Slice ms | Print s | Filament g | Travel mm | Retracts | Toughness | Per hour |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| cube | 3D before | 128.4 | 5860.7 | 10.05 | 6376 | 2 | 11572 | 7106 |
+| cube | 3D recovered | 83.7 | 2378.8 | 9.89 | 4633 | 2 | 11354 | 17182 |
+| cube | 2D gyroid | 41.2 | 4696.0 | 10.33 | 6609 | 2 | 10891 | 8349 |
+| hull | 3D before | 915.8 | 28705.7 | 42.18 | 29686 | 2 | 49067 | 6154 |
+| hull | 3D recovered | 836.1 | 9989.4 | 41.34 | 20494 | 2 | 47924 | 17271 |
+| hull | 2D gyroid | 334.7 | 22332.3 | 43.77 | 22939 | 2 | 45642 | 7358 |
+| column | 3D before | 362.6 | 17666.9 | 29.94 | 19716 | 2 | — | — |
+| column | 3D recovered | 255.3 | 6497.4 | 29.43 | 14204 | 2 | 33863 | 18762 |
+| column | 2D gyroid | 122.2 | 14111.8 | 30.82 | 20553 | 2 | 32570 | 8309 |
+
+Cube keeps 463 of the 681 point gain over 2D (68%) and prints in 2379 s instead of 5861 s. Hull keeps 2282 of the 3425 point gain (67%) and prints in 9989 s instead of 28706 s. Both are under the 2D time. Toughness per hour is the default: about 17200 on the cube and the hull, against about 8300 and 7400 for the 2D sine. Speed keeps lightning.
 
 ## Z-hop
 
-`--z-hop blend` is smart on toughness and off on speed. Smart on the cube hops 0 times, because combing already stays inside. On the hull it hops 0 times and the print time does not move (28705.7 s either way). On the ledge with supports it hops 116 times and adds 12.1 s (7970.0 s vs 7957.9 s). Forcing smart on the speed blend adds a little time (cube 221.2 → 221.3 s, 3 hops; hull 772.0 → 772.7 s, 13 hops) without a toughness job to pay for, so speed stays off. Always is the expensive one: cube 5893 s and 345 hops, hull 28870 s and 1997 hops. A hole crossing retracts either way; smart lifts it only when the existing rules already would (not on speed, not on a scarf ramp, not under the hop minimum).
+`--z-hop blend` is smart on toughness and off on speed. Smart on the cube hops 0 times, because combing already stays inside. On the hull it hops 0 times. Forcing smart on the speed blend adds a little time (cube 221.2 → 221.3 s, 3 hops; hull 772.0 → 772.7 s, 13 hops) without a toughness job to pay for, so speed stays off. Always on recovered toughness adds 23 s on the cube (2402 s vs 2379 s) and 125 s on the hull (10115 s vs 9989 s). A hole crossing retracts either way; smart lifts it only when the existing rules already would (not on speed, not on a scarf ramp, not under the hop minimum).
 
 | Mesh | Mode | Print s | Hops | Travel mm | Retracts |
 | --- | --- | ---: | ---: | ---: | ---: |
 | cube | speed blend (off) | 221.2 | 0 | 677 | 1 |
 | cube | speed smart | 221.3 | 3 | 677 | 1 |
-| cube | toughness smart | 5861 | 0 | 6376 | 2 |
-| cube | toughness always | 5893 | 345 | 6376 | 2 |
+| cube | toughness smart | 2379 | 0 | 4633 | 2 |
+| cube | toughness always | 2402 | — | 4633 | 2 |
 | hull | speed blend (off) | 772.0 | 0 | 2002 | 1 |
 | hull | speed smart | 772.7 | 13 | 2002 | 1 |
-| hull | toughness smart | 28706 | 0 | 29686 | 2 |
-| hull | toughness always | 28870 | 1997 | 29686 | 2 |
+| hull | toughness smart | 9989 | 0 | 20494 | 2 |
+| hull | toughness always | 10115 | — | 20494 | 2 |
 | ledge, supports | toughness off | 7958 | 0 | — | — |
 | ledge, supports | toughness smart | 7970 | 116 | 7210 | — |
 
@@ -206,7 +213,7 @@ The 3D section scores higher and uses a little less filament. It also takes long
 
 - **Speed:** 2 walls, lightning infill within 4 mm of a roof combined every 3 layers and capped near 0.75 × the nozzle, outer 130 mm/s, inner 160 mm/s, sparse 220 mm/s, travel 300 mm/s, nearest seam on a sharp corner, scarf off, short retract, 1 skirt. The first layers are a solid floor.
 - **Efficiency:** the weight mix. Low toughness keeps lightning and combining (every 2 layers under 45% toughness). The middle band is lines then grid. The score uses estimated time and filament mass.
-- **Toughness:** 5 walls, 48% true 3D gyroid for the full height at every layer, outer 40 mm/s, sparse 55 mm/s, seam stacked on +X, scarf on smooth outer walls, longer retract, 2 skirts. `--gyroid-3d blend` (the default) uses the TPMS section `sin(x)cos(y)+sin(y)cos(z)+sin(z)cos(x)=0` wherever the pattern is gyroid, including a weight mix at or above 75% toughness. Speed stays on lightning. `--gyroid-3d off` keeps the old 2D sine. `--gyroid-3d on` forces the 3D section. `--classic` is off.
+- **Toughness:** 5 walls, 48% true 3D gyroid for the full height, outer 40 mm/s, generic sparse 55 mm/s, 3D gyroid infill 110 mm/s at 4000 mm/s² under the volumetric cap, seam stacked on +X, scarf on smooth outer walls, longer retract, 2 skirts. The gyroid keeps full density within 2.4 mm of the infill boundary and near roofs, and 0.985 density in the core. Interior gyroid combines two layers when the bead is no thicker than the nozzle. `--gyroid-3d blend` (the default) uses the TPMS section `sin(x)cos(y)+sin(y)cos(z)+sin(z)cos(x)=0` wherever the pattern is gyroid, including a weight mix at or above 75% toughness. Speed stays on lightning. `--gyroid-3d off` keeps the old 2D sine at 55 mm/s, one layer at a time, with no core grade. `--gyroid-3d on` forces the 3D section. `--classic` is off.
 - **Weight:** interpolates walls, density, speed, accel, seam, and the pattern bands above.
 - **By layer:** bottom band is toughness, then a linear transition into speed.
 - **By region:** each layer is clipped on X or Y. The low side is toughness toolpaths; the high side is speed toolpaths. The outer wall on the cut is a single bead.

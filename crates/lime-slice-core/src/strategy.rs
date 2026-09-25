@@ -243,6 +243,13 @@ pub struct ResolvedStrategy {
     pub scarf: ScarfSeam,
     /// True when this toolpath should cut the TPMS gyroid at the layer Z.
     pub gyroid_3d: bool,
+    /// Feed and accel for 3D gyroid infill only. The 2D sine keeps `sparse_speed`.
+    pub gyroid_speed: f64,
+    pub gyroid_accel: f64,
+    /// Full-density gyroid band inside the infill region, in millimetres.
+    pub gyroid_skin_mm: f64,
+    /// Core density as a fraction of `infill_density`. `1` is uniform.
+    pub gyroid_core_ratio: f64,
     /// Resolved hop policy. `Blend` is not stored here.
     pub z_hop: ZHopMode,
 }
@@ -279,6 +286,10 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             travel_accel: 5500.0,
             scarf: ScarfSeam::Off,
             gyroid_3d: false,
+            gyroid_speed: 220.0,
+            gyroid_accel: 5000.0,
+            gyroid_skin_mm: 0.0,
+            gyroid_core_ratio: 1.0,
             z_hop: ZHopMode::Off,
         },
         StrategyId::Toughness => ResolvedStrategy {
@@ -311,6 +322,10 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             travel_accel: 1200.0,
             scarf: ScarfSeam::Outer,
             gyroid_3d: true,
+            gyroid_speed: 110.0,
+            gyroid_accel: 4000.0,
+            gyroid_skin_mm: 2.4,
+            gyroid_core_ratio: 0.985,
             z_hop: ZHopMode::Smart,
         },
     }
@@ -381,6 +396,10 @@ pub fn mix(toughness: f64) -> ResolvedStrategy {
             ScarfSeam::Off
         },
         gyroid_3d: pattern == InfillPattern::Gyroid,
+        gyroid_speed: lerp(speed.gyroid_speed, tough.gyroid_speed),
+        gyroid_accel: lerp(speed.gyroid_accel, tough.gyroid_accel),
+        gyroid_skin_mm: lerp(speed.gyroid_skin_mm, tough.gyroid_skin_mm),
+        gyroid_core_ratio: lerp(speed.gyroid_core_ratio, tough.gyroid_core_ratio),
         z_hop: if t >= 0.5 {
             ZHopMode::Smart
         } else {
@@ -509,6 +528,9 @@ pub struct StrategyCard {
     pub effective_inner: f64,
     pub effective_sparse: f64,
     pub effective_top: f64,
+    /// 3D gyroid infill feed, before and after the volumetric cap. Unused by the 2D sine.
+    pub gyroid_speed: f64,
+    pub effective_gyroid: f64,
 }
 
 /// Resolved parameters for a toughness weight, with feeds after the volumetric cap.
@@ -554,6 +576,8 @@ pub fn strategy_card(toughness: f64, layer_h: f64, line_width: f64, max_vol: f64
         effective_inner: cap(resolved.inner_speed),
         effective_sparse: cap(resolved.sparse_speed),
         effective_top: cap(resolved.top_speed),
+        gyroid_speed: resolved.gyroid_speed,
+        effective_gyroid: cap(resolved.gyroid_speed),
     }
 }
 

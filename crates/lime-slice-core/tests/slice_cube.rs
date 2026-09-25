@@ -134,8 +134,13 @@ fn speed_and_toughness_differ_and_gcode_is_printable() {
     assert!(speed.sanity.final_e > 10.0);
     assert!(speed.sanity.extrusion_moves > 100);
 
-    let mid = speed.layers.iter().find(|l| l.index == 40).unwrap();
-    let mid_t = tough.layers.iter().find(|l| l.index == 40).unwrap();
+    let mid_t = tough
+        .layers
+        .iter()
+        .filter(|l| (15..80).contains(&l.index))
+        .max_by_key(|l| l.paths.iter().filter(|p| is_infill(&p.kind)).count())
+        .unwrap();
+    let mid = speed.layers.iter().find(|l| l.index == mid_t.index).unwrap();
     assert!(mid.speed_walls > 0);
     assert_eq!(mid.toughness_walls, 0);
     assert!(
@@ -1101,26 +1106,25 @@ fn gyroid3d_changes_with_z_and_stays_off_for_speed_and_classic() {
     let on = slice_configured(&mesh, &tough_mode(), &profile(), &SliceSettings::default()).unwrap();
     assert!(on.sanity.ok, "{:?}", on.sanity.notes);
     assert!(on.gcode.contains("gyroid3d"));
-    let sparse_pts = |index: usize| {
-        on.layers
-            .iter()
-            .find(|l| l.index == index)
-            .unwrap()
-            .paths
-            .iter()
-            .filter(|p| p.kind == "sparse")
-            .flat_map(|p| p.pts.iter().copied())
-            .collect::<Vec<_>>()
-    };
-    let low = sparse_pts(20);
-    let high = sparse_pts(40);
+    let sparse_layers: Vec<Vec<[f64; 2]>> = on
+        .layers
+        .iter()
+        .filter(|l| l.z > 2.0 && l.z < 16.0)
+        .map(|l| {
+            l.paths
+                .iter()
+                .filter(|p| p.kind == "sparse")
+                .flat_map(|p| p.pts.iter().copied())
+                .collect::<Vec<_>>()
+        })
+        .filter(|pts| pts.len() > 20)
+        .collect();
     assert!(
-        low.len() > 20 && high.len() > 20,
-        "low {} high {}",
-        low.len(),
-        high.len()
+        sparse_layers.len() >= 2,
+        "expected 3D gyroid sparse layers, found {}",
+        sparse_layers.len()
     );
-    assert_ne!(low, high);
+    assert_ne!(sparse_layers[0], sparse_layers[sparse_layers.len() / 2]);
     let off = slice_configured(
         &mesh,
         &tough_mode(),
@@ -1133,6 +1137,26 @@ fn gyroid3d_changes_with_z_and_stays_off_for_speed_and_classic() {
     .unwrap();
     assert!(off.gcode.contains("gyroid"));
     assert!(!off.gcode.contains("gyroid3d"));
+    assert!(
+        on.gcode.contains("M204 S4000"),
+        "3D gyroid should use its own infill accel"
+    );
+    assert!(
+        !off.gcode.contains("M204 S4000"),
+        "2D gyroid must keep the old sparse accel"
+    );
+    assert!(
+        on.estimate.seconds < off.estimate.seconds * 0.7,
+        "recovered {:.1}s vs 2D {:.1}s",
+        on.estimate.seconds,
+        off.estimate.seconds
+    );
+    assert!(
+        on.score.toughness > off.score.toughness,
+        "score {:.1} vs 2D {:.1}",
+        on.score.toughness,
+        off.score.toughness
+    );
     let classic_t = slice_configured(&mesh, &tough_mode(), &profile(), &classic()).unwrap();
     assert!(!classic_t.gcode.contains("gyroid3d"));
     let speed =

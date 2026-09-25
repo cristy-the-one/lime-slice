@@ -261,7 +261,14 @@ fn combine_bead(strategy: &ResolvedStrategy, features: &PathFeatures) -> Option<
     if features.shell != ShellBand::Interior {
         return Some(h);
     }
-    let cap = 0.75 * features.nozzle_diameter.max(0.2);
+    let nozzle = features.nozzle_diameter.max(0.2);
+    // 3D gyroid may stack two nominal layers when that bead stays within the nozzle.
+    // Other patterns keep the 0.75 × nozzle cap.
+    let cap = if strategy.gyroid_3d && strategy.pattern == InfillPattern::Gyroid {
+        nozzle
+    } else {
+        0.75 * nozzle
+    };
     let max_n = ((cap / h).floor() as u32).max(1);
     let every = strategy.infill_combine.max(1).min(max_n);
     if every <= 1 {
@@ -562,7 +569,13 @@ fn apply_feed(path: &mut Extrusion, strategy: &ResolvedStrategy) {
             (strategy.outer_speed, strategy.outer_accel)
         }
         PathKind::Inner | PathKind::ThinWall => (strategy.inner_speed, strategy.inner_accel),
-        PathKind::Sparse | PathKind::Infill => (strategy.sparse_speed, strategy.sparse_accel),
+        PathKind::Sparse | PathKind::Infill => {
+            if strategy.gyroid_3d && strategy.pattern == InfillPattern::Gyroid {
+                (strategy.gyroid_speed, strategy.gyroid_accel)
+            } else {
+                (strategy.sparse_speed, strategy.sparse_accel)
+            }
+        }
         PathKind::Solid | PathKind::GapFill => (strategy.solid_speed, strategy.solid_accel),
         PathKind::Top => (strategy.top_speed, strategy.top_accel),
         PathKind::Bridge => (strategy.top_speed.min(36.0), strategy.top_accel),
@@ -709,6 +722,45 @@ pub fn clip_to_rect(loops: &[Loop], min: [f64; 2], max: [f64; 2]) -> Vec<Loop> {
     }
 }
 
+fn gyroid_3d_graded(
+    loops: &[Loop],
+    strategy: &ResolvedStrategy,
+    spacing: f64,
+    features: &PathFeatures,
+) -> Vec<Vec<[f64; 2]>> {
+    let period = crate::gyroid::period_for_spacing(spacing);
+    let tol = 0.08;
+    let skin = strategy.gyroid_skin_mm.max(0.0);
+    let ratio = strategy.gyroid_core_ratio.clamp(0.35, 1.0);
+    let near_roof = features.shell != ShellBand::Interior
+        || features.roof_distance_mm <= skin.max(1.6) + features.layer_height;
+    if near_roof || skin < 0.4 || ratio >= 0.995 {
+        return crate::gyroid::section(loops, period, features.z, tol);
+    }
+    let core = inset_loops(loops, skin);
+    if core.is_empty() {
+        return crate::gyroid::section(loops, period, features.z, tol);
+    }
+    let band = drop_slivers(boolean_diff(loops, &core), 0.8);
+    let mut paths = if band.is_empty() {
+        Vec::new()
+    } else {
+        crate::gyroid::section(&band, period, features.z, tol)
+    };
+    let core_spacing = (spacing / ratio).clamp(spacing, 14.0);
+    let core_period = crate::gyroid::period_for_spacing(core_spacing);
+    paths.extend(crate::gyroid::section(&core, core_period, features.z, tol));
+    paths
+}
+
+fn inset_loops(loops: &[Loop], delta: f64) -> Vec<Loop> {
+    if delta <= 0.05 || loops.is_empty() {
+        return Vec::new();
+    }
+    let paths = paths_from_loops(loops);
+    drop_slivers(loops_from_paths(offset_paths(&paths, -delta)), 0.8)
+}
+
 fn build_infill(
     loops: &[Loop],
     strategy: &ResolvedStrategy,
@@ -734,8 +786,7 @@ fn build_infill(
         }
         InfillPattern::Gyroid => {
             if strategy.gyroid_3d {
-                let period = crate::gyroid::period_for_spacing(spacing);
-                crate::gyroid::section(loops, period, features.z, 0.05)
+                gyroid_3d_graded(loops, strategy, spacing, features)
             } else {
                 gyroid(loops, spacing, strategy.toughness)
             }

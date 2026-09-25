@@ -15,6 +15,8 @@ export interface ResolvedCard {
   effectiveInner: number;
   effectiveSparse: number;
   effectiveTop: number;
+  gyroidSpeed: number;
+  effectiveGyroid: number;
 }
 
 const SPEED = {
@@ -24,6 +26,7 @@ const SPEED = {
   outer: 130,
   inner: 160,
   sparse: 220,
+  gyroid: 220,
   solid: 150,
   top: 120,
   travel: 300,
@@ -36,6 +39,7 @@ const TOUGH = {
   outer: 40,
   inner: 48,
   sparse: 55,
+  gyroid: 110,
   solid: 42,
   top: 36,
   travel: 140,
@@ -61,6 +65,7 @@ export function resolved(toughness: number, layerH = 0.2, lineWidth = 0.45, maxV
   const outer = lerp(SPEED.outer, TOUGH.outer);
   const inner = lerp(SPEED.inner, TOUGH.inner);
   const sparse = lerp(SPEED.sparse, TOUGH.sparse);
+  const gyroid = lerp(SPEED.gyroid, TOUGH.gyroid);
   const top = lerp(SPEED.top, TOUGH.top);
   const name = t <= 1e-9 ? "speed" : t >= 1 - 1e-9 ? "toughness" : Math.abs(t - 0.5) < 0.02 ? "efficiency" : "weight";
   return {
@@ -78,5 +83,7 @@ export function resolved(toughness: number, layerH = 0.2, lineWidth = 0.45, maxV
     effectiveInner: cap(inner),
     effectiveSparse: cap(sparse),
     effectiveTop: cap(top),
+    gyroidSpeed: gyroid,
+    effectiveGyroid: cap(gyroid),
   };
 }
