@@ -545,6 +545,9 @@ pub struct PreviewPath {
     /// Absolute nozzle Z per preview point. Empty means the layer Z.
     #[serde(default)]
     pub zs: Vec<f64>,
+    /// Vertical bead size. `0` means the layer height.
+    #[serde(default)]
+    pub bead_height: f64,
 }
 
 /// Milliseconds to contour every layer with the Z index, then with a full triangle scan.
@@ -980,6 +983,7 @@ fn preview_of(
                             effective_speed: path.travel_speed,
                             toughness: path_weight(blend, layer.z, path.strategy),
                             zs: Vec::new(),
+                            bead_height: 0.0,
                         });
                     }
                 }
@@ -1008,6 +1012,11 @@ fn preview_of(
                     effective_speed: limited,
                     toughness: path_weight(blend, layer.z, path.strategy),
                     zs,
+                    bead_height: if path.bead_height > 1e-6 {
+                        path.bead_height
+                    } else {
+                        0.0
+                    },
                 });
                 cursor = path.points.last().copied();
             }
@@ -1701,6 +1710,10 @@ fn build_layer(
             )
         }
     };
+    let mut note = note;
+    if paths.iter().any(|p| p.kind == PathKind::GapFill) && !note.contains("gap-fill") {
+        note.push_str(" · gap-fill");
+    }
     Job {
         index,
         z,

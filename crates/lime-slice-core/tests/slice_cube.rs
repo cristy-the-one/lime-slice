@@ -890,8 +890,10 @@ fn tree_supports_use_less_filament_than_grid_and_keep_an_interface() {
     assert!(tree.sanity.ok, "{:?}", tree.sanity.notes);
     assert!(has_type(&tree.gcode, "SUPPORT"));
     assert!(has_type(&tree.gcode, "SUPPORT-INTERFACE"));
+    // Solid top skins add the same grams to both styles, so the ratio is
+    // closer than the raw tree-vs-grid gap. Trees still use less.
     assert!(
-        tree.estimate.filament_g < grid.estimate.filament_g * 0.85,
+        tree.estimate.filament_g < grid.estimate.filament_g * 0.90,
         "tree {:.3} g vs grid {:.3} g",
         tree.estimate.filament_g,
         grid.estimate.filament_g
@@ -961,13 +963,7 @@ fn support_count_near(response: &lime_slice_core::SliceResponse, z: f64) -> usiz
         .layers
         .iter()
         .filter(|layer| (layer.z - z).abs() < 0.35)
-        .map(|layer| {
-            layer
-                .paths
-                .iter()
-                .filter(|p| p.kind == "support")
-                .count()
-        })
+        .map(|layer| layer.paths.iter().filter(|p| p.kind == "support").count())
         .max()
         .unwrap_or(0)
 }
@@ -1039,7 +1035,9 @@ fn organic_trees_branch_around_and_land_on_the_mesh() {
             if path.kind == "support" && layer.z > 26.0 && c[1] > 24.0 {
                 tip = true;
             }
-            if path.kind == "support" && (14.5..20.0).contains(&layer.z) && (4.0..22.0).contains(&c[0])
+            if path.kind == "support"
+                && (14.5..20.0).contains(&layer.z)
+                && (4.0..22.0).contains(&c[0])
                 && (2.0..20.0).contains(&c[1])
             {
                 foot = true;
@@ -2597,6 +2595,144 @@ fn both_wings_get_columns_when_one_side_used_to_print_in_air() {
             })
     });
     assert!(!body, "support carpeted the grounded body");
+}
+
+fn wedge_wing() -> Mesh {
+    // Root 8 mm wide, tip 0.55 mm, 40 mm long, 4 mm tall. Flared membrane.
+    let mut tris = Vec::new();
+    let length = 40.0;
+    let root = 8.0;
+    let tip = 0.55;
+    let z1 = 12.0;
+    let y_tip0 = (root - tip) * 0.5;
+    let y_tip1 = y_tip0 + tip;
+    let bottom = [
+        [0.0, 0.0, 0.0],
+        [length, y_tip0, 0.0],
+        [length, y_tip1, 0.0],
+        [0.0, root, 0.0],
+    ];
+    let top = [
+        [0.0, 0.0, z1],
+        [length, y_tip0, z1],
+        [length, y_tip1, z1],
+        [0.0, root, z1],
+    ];
+    tris.push([bottom[0], bottom[1], bottom[2]]);
+    tris.push([bottom[0], bottom[2], bottom[3]]);
+    tris.push([top[0], top[2], top[1]]);
+    tris.push([top[0], top[3], top[2]]);
+    // sides
+    let side = |a, b, c, d| [[a, b, c], [a, c, d]];
+    for face in [
+        side(bottom[0], top[0], top[1], bottom[1]),
+        side(bottom[1], top[1], top[2], bottom[2]),
+        side(bottom[2], top[2], top[3], bottom[3]),
+        side(bottom[3], top[3], top[0], bottom[0]),
+    ] {
+        tris.extend(face);
+    }
+    Mesh { triangles: tris }
+}
+
+fn wing_local_half(x: f64) -> (f64, f64) {
+    let root = 8.0;
+    let tip = 0.55;
+    let t = (x / 40.0).clamp(0.0, 1.0);
+    let width = root + (tip - root) * t;
+    let y0 = (root - width) * 0.5;
+    (y0 + 0.15, y0 + width - 0.15)
+}
+
+fn covered(layer: &lime_slice_core::PreviewLayer, x: f64, y: f64) -> bool {
+    layer.paths.iter().any(|p| {
+        if p.kind == "travel" || p.kind == "skirt" {
+            return false;
+        }
+        let half = (p.width * 0.5).max(0.1);
+        p.pts.windows(2).any(|w| {
+            let dx = w[1][0] - w[0][0];
+            let dy = w[1][1] - w[0][1];
+            let len2 = dx * dx + dy * dy;
+            if len2 < 1e-12 {
+                return false;
+            }
+            let t = ((x - w[0][0]) * dx + (y - w[0][1]) * dy) / len2;
+            let t = t.clamp(0.0, 1.0);
+            let px = w[0][0] + t * dx;
+            let py = w[0][1] + t * dy;
+            (px - x).hypot(py - y) <= half + 0.05
+        })
+    })
+}
+
+#[test]
+fn flared_wing_taper_is_filled_on_speed_and_toughness() {
+    let mesh = wedge_wing();
+    for (name, strategy) in [
+        ("speed", StrategyId::Speed),
+        ("tough", StrategyId::Toughness),
+    ] {
+        let response = slice_configured(
+            &mesh,
+            &BlendMode::Single { strategy },
+            &profile(),
+            &SliceSettings {
+                include_gcode: false,
+                baseline: false,
+                ..SliceSettings::default()
+            },
+        )
+        .unwrap();
+        for want_z in [6.0, 11.8] {
+            let layer = response
+                .layers
+                .iter()
+                .find(|l| (l.z - want_z).abs() < 0.15)
+                .unwrap_or_else(|| panic!("{name} missing layer near {want_z}"));
+            let mut hits = 0u32;
+            let mut miss = 0u32;
+            let mut gap_mm = 0.0;
+            for p in &layer.paths {
+                if p.kind != "gap-fill" {
+                    continue;
+                }
+                gap_mm += p
+                    .pts
+                    .windows(2)
+                    .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+                    .sum::<f64>();
+            }
+            for i in 1..20 {
+                let x = i as f64 * 2.0;
+                let (y0, y1) = wing_local_half(x);
+                let y = (y0 + y1) * 0.5;
+                let width = y1 - y0 + 0.3;
+                if covered(layer, x, y) {
+                    hits += 1;
+                } else if want_z < 10.0 && width > 3.2 {
+                    // Sparse and gyroid may leave the fat root open. The taper may not.
+                    hits += 1;
+                } else {
+                    miss += 1;
+                    eprintln!("{name} z={want_z} miss x={x:.1} width={width:.2}");
+                }
+            }
+            eprintln!(
+            "{name} z={:.2} hits={hits} miss={miss} gap_mm={gap_mm:.1} paths={} core={:.1}ms note={}",
+            layer.z,
+            layer.paths.len(),
+            response.core_ms,
+            layer.note
+        );
+            assert_eq!(miss, 0, "{name} z={want_z} wing centerline still has holes");
+            assert!(
+                gap_mm > 1.0,
+                "{name} z={want_z} taper should gap-fill, got {gap_mm:.2} mm"
+            );
+            assert!(layer.note.contains("gap-fill"));
+        }
+    }
 }
 
 #[test]
