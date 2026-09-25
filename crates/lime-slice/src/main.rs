@@ -108,6 +108,12 @@ enum Cmd {
         /// Skip hops shorter than this travel, in millimetres.
         #[arg(long, default_value_t = 2.0)]
         z_hop_min_travel: f64,
+        /// Use the pre-lookahead estimator that stops at every segment end.
+        #[arg(long, default_value_t = false)]
+        classic_estimator: bool,
+        /// Klipper junction deviation in millimetres.
+        #[arg(long, default_value_t = 0.02)]
+        junction_deviation: f64,
         #[arg(short, long)]
         output: PathBuf,
     },
@@ -197,6 +203,8 @@ fn run() -> Result<(), String> {
             z_hop,
             z_hop_height,
             z_hop_min_travel,
+            classic_estimator,
+            junction_deviation,
             output,
         } => {
             let scarf_seam = ScarfSeam::parse(&scarf_seam)?;
@@ -248,6 +256,8 @@ fn run() -> Result<(), String> {
                     z_hop,
                     z_hop_height,
                     z_hop_min_travel,
+                    classic_estimator,
+                    junction_deviation_mm: junction_deviation,
                     ..SliceSettings::default()
                 },
             )?;
@@ -369,9 +379,7 @@ fn bench(input: &PathBuf) -> Result<(), String> {
         max[2] - min[2]
     );
     if let Ok((indexed, scanned)) = lime_slice_core::contour_times(&mesh, 0.2) {
-        println!(
-            "contours  parallel Z-index {indexed:.2} ms  single-thread scan {scanned:.2} ms"
-        );
+        println!("contours  parallel Z-index {indexed:.2} ms  single-thread scan {scanned:.2} ms");
     }
     println!("new path vs classic planner (lines, no arcs, full triangle scan)");
     println!(
@@ -557,10 +565,7 @@ fn bench(input: &PathBuf) -> Result<(), String> {
         "infill", "slice ms", "time s", "filament g", "travel mm", "retract", "tough"
     );
     for (label, settings) in [
-        (
-            "gyroid3d",
-            SliceSettings::default(),
-        ),
+        ("gyroid3d", SliceSettings::default()),
         (
             "gyroid2d",
             SliceSettings {
@@ -571,7 +576,8 @@ fn bench(input: &PathBuf) -> Result<(), String> {
         ),
         ("classic", classic_settings()),
     ] {
-        let response = lime_slice_core::slice_configured(&mesh, &tough, &Default::default(), &settings)?;
+        let response =
+            lime_slice_core::slice_configured(&mesh, &tough, &Default::default(), &settings)?;
         println!(
             "{:<14} {:>10.2} {:>10.1} {:>10.2} {:>10.1} {:>10} {:>10.1}",
             label,
@@ -689,7 +695,9 @@ fn serve(port: u16) -> Result<(), String> {
             let mut width = 0.45;
             let mut flow = 12.0;
             for pair in query.split('&') {
-                let Some((k, v)) = pair.split_once('=') else { continue };
+                let Some((k, v)) = pair.split_once('=') else {
+                    continue;
+                };
                 let Ok(n) = v.parse::<f64>() else { continue };
                 match k {
                     "toughness" => toughness = n,
@@ -870,6 +878,8 @@ fn slice_file(
         compare: false,
         include_gcode: true,
         include_preview: true,
+        classic_estimator: settings.classic_estimator,
+        junction_deviation_mm: settings.junction_deviation_mm,
     })
 }
 
