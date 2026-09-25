@@ -792,12 +792,23 @@ fn feed_after(gcode: &str, kind: &str) -> f64 {
 #[test]
 fn infill_combine_thins_sparse_layers_and_classic_disables_it() {
     let mesh = cube();
-    let on = slice_configured(&mesh, &speed_mode(), &profile(), &SliceSettings::default()).unwrap();
+    // 0.1 mm still fits three layers under the 0.75 × nozzle cap.
+    let on = slice_configured(
+        &mesh,
+        &speed_mode(),
+        &profile(),
+        &SliceSettings {
+            layer_height: 0.1,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
     let off = slice_configured(
         &mesh,
         &speed_mode(),
         &profile(),
         &SliceSettings {
+            layer_height: 0.1,
             infill_combine: false,
             ..SliceSettings::default()
         },
@@ -1103,7 +1114,12 @@ fn gyroid3d_changes_with_z_and_stays_off_for_speed_and_classic() {
     };
     let low = sparse_pts(20);
     let high = sparse_pts(40);
-    assert!(low.len() > 20 && high.len() > 20, "low {} high {}", low.len(), high.len());
+    assert!(
+        low.len() > 20 && high.len() > 20,
+        "low {} high {}",
+        low.len(),
+        high.len()
+    );
     assert_ne!(low, high);
     let off = slice_configured(
         &mesh,
@@ -1119,7 +1135,8 @@ fn gyroid3d_changes_with_z_and_stays_off_for_speed_and_classic() {
     assert!(!off.gcode.contains("gyroid3d"));
     let classic_t = slice_configured(&mesh, &tough_mode(), &profile(), &classic()).unwrap();
     assert!(!classic_t.gcode.contains("gyroid3d"));
-    let speed = slice_configured(&mesh, &speed_mode(), &profile(), &SliceSettings::default()).unwrap();
+    let speed =
+        slice_configured(&mesh, &speed_mode(), &profile(), &SliceSettings::default()).unwrap();
     assert!(speed.gcode.contains("lightning"));
     assert!(!speed.gcode.contains("gyroid3d"));
 }
@@ -1143,7 +1160,8 @@ fn z_hop_returns_to_the_layer_and_skips_speed_by_default() {
     assert!(always.estimate.z_hops > 0, "always mode should hop");
     assert_hop_returns(&always.gcode);
 
-    let speed = slice_configured(&mesh, &speed_mode(), &profile(), &SliceSettings::default()).unwrap();
+    let speed =
+        slice_configured(&mesh, &speed_mode(), &profile(), &SliceSettings::default()).unwrap();
     assert_eq!(speed.estimate.z_hops, 0, "speed blend leaves z-hop off");
     let classic_t = slice_configured(&mesh, &tough_mode(), &profile(), &classic()).unwrap();
     assert_eq!(classic_t.estimate.z_hops, 0, "classic leaves z-hop off");
@@ -1186,7 +1204,11 @@ fn assert_hop_returns(gcode: &str) {
             }
             continue;
         }
-        if !(line.starts_with("G0 ") || line.starts_with("G1 ") || line.starts_with("G2 ") || line.starts_with("G3 ")) {
+        if !(line.starts_with("G0 ")
+            || line.starts_with("G1 ")
+            || line.starts_with("G2 ")
+            || line.starts_with("G3 "))
+        {
             continue;
         }
         let mut e_new = None;
@@ -1210,11 +1232,587 @@ fn assert_hop_returns(gcode: &str) {
                     z <= layer_z + 0.02,
                     "extrusion at Z {z} while layer is {layer_z}"
                 );
-                assert!(!hopped || (z - layer_z).abs() < 0.05, "still hopped at Z {z}");
+                assert!(
+                    !hopped || (z - layer_z).abs() < 0.05,
+                    "still hopped at Z {z}"
+                );
                 hopped = false;
             }
             e = en;
         }
+    }
+}
+
+#[test]
+fn scarf_overlap_z_never_drops() {
+    let post = cylinder(12.0, 6.0, 64);
+    let on = slice_configured(&post, &tough_mode(), &profile(), &scarf_outer()).unwrap();
+    assert!(on.estimate.scarfed_loops > 0);
+    let layer = gcode_layer(&on.gcode, 1);
+    let mut seen: Vec<([i32; 2], f64)> = Vec::new();
+    let mut z = 0.0;
+    for line in layer.lines() {
+        if !(line.starts_with("G0 ")
+            || line.starts_with("G1 ")
+            || line.starts_with("G2 ")
+            || line.starts_with("G3 "))
+        {
+            continue;
+        }
+        let mut xy: Option<(f64, f64)> = None;
+        let mut e = false;
+        for tok in line.split_whitespace().skip(1) {
+            if let Some(v) = tok.strip_prefix('X') {
+                let x: f64 = v.parse().unwrap();
+                xy = Some((x, xy.map(|p| p.1).unwrap_or(0.0)));
+            } else if let Some(v) = tok.strip_prefix('Y') {
+                let y: f64 = v.parse().unwrap();
+                let x = xy.map(|p| p.0).unwrap_or(0.0);
+                xy = Some((x, y));
+            } else if let Some(v) = tok.strip_prefix('Z') {
+                z = v.parse().unwrap();
+            } else if tok.starts_with('E') {
+                e = true;
+            }
+        }
+        let Some((x, y)) = xy else { continue };
+        if !e {
+            continue;
+        }
+        let key = [(x * 100.0).round() as i32, (y * 100.0).round() as i32];
+        if let Some((_, prev)) = seen.iter().rev().find(|(k, _)| *k == key) {
+            assert!(
+                z + 1e-3 >= *prev,
+                "overlap {x:.3},{y:.3} dropped from Z {prev} to {z}"
+            );
+        }
+        seen.push((key, z));
+    }
+    assert!(seen.len() > 8, "expected a scarfed wall");
+}
+
+#[test]
+fn combing_does_not_cross_a_hole_without_retract() {
+    let mesh = window_frame();
+    let speed =
+        slice_configured(&mesh, &speed_mode(), &profile(), &SliceSettings::default()).unwrap();
+    assert!(speed.sanity.ok, "{:?}", speed.sanity.notes);
+    let crossings = hole_crossings(&speed.gcode);
+    assert!(
+        crossings.iter().all(|c| c.retracted),
+        "unretracted hole crossings: {} of {} {:?}",
+        crossings.iter().filter(|c| !c.retracted).count(),
+        crossings.len(),
+        crossings.iter().find(|c| !c.retracted).map(|c| (c.a, c.b))
+    );
+    assert_eq!(
+        speed.estimate.z_hops, 0,
+        "speed does not hop a hole crossing"
+    );
+    assert!(
+        crossings.iter().all(|c| !c.hopped),
+        "speed lifted on a hole crossing"
+    );
+
+    let tough =
+        slice_configured(&mesh, &tough_mode(), &profile(), &SliceSettings::default()).unwrap();
+    let tough_cross = hole_crossings(&tough.gcode);
+    assert!(
+        tough_cross.iter().all(|c| c.retracted),
+        "toughness crossed a hole without retract"
+    );
+    let long: Vec<_> = tough_cross
+        .iter()
+        .filter(|c| !c.scarf && (c.a[0] - c.b[0]).hypot(c.a[1] - c.b[1]) >= 2.0)
+        .collect();
+    assert!(
+        !long.is_empty(),
+        "expected a long hole crossing on the frame"
+    );
+    assert!(
+        long.iter().all(|c| c.hopped),
+        "smart z-hop should lift a long retracted hole crossing (long {}, hopped {}, z-hops {})",
+        long.len(),
+        long.iter().filter(|c| c.hopped).count(),
+        tough.estimate.z_hops
+    );
+}
+
+struct HoleCross {
+    retracted: bool,
+    hopped: bool,
+    scarf: bool,
+    a: [f64; 2],
+    b: [f64; 2],
+}
+
+fn hole_crossings(gcode: &str) -> Vec<HoleCross> {
+    let hole = [8.4, 8.4, 21.6, 21.6];
+    let mut out = Vec::new();
+    let mut layer_z = 0.0;
+    let mut e = 0.0;
+    let mut retracted = false;
+    let mut pos: Option<[f64; 2]> = None;
+    let mut pending: Vec<HoleCross> = Vec::new();
+    let mut lift = false;
+    let mut scarf_arm = false;
+    let flush =
+        |out: &mut Vec<HoleCross>, pending: &mut Vec<HoleCross>, lift: &mut bool, scarf: bool| {
+            for mut cross in pending.drain(..) {
+                cross.hopped = *lift;
+                cross.scarf = scarf;
+                out.push(cross);
+            }
+            *lift = false;
+        };
+    for line in gcode.lines() {
+        if let Some(rest) = line.strip_prefix(";LAYER:") {
+            flush(&mut out, &mut pending, &mut lift, false);
+            pos = None;
+            scarf_arm = false;
+            for tok in rest.split_whitespace() {
+                if let Some(v) = tok.strip_prefix("Z:") {
+                    layer_z = v.parse().unwrap();
+                }
+            }
+            continue;
+        }
+        if !(line.starts_with("G0 ")
+            || line.starts_with("G1 ")
+            || line.starts_with("G2 ")
+            || line.starts_with("G3 "))
+        {
+            continue;
+        }
+        let mut x = None;
+        let mut y = None;
+        let mut e_new = None;
+        let mut z_new = None;
+        for tok in line.split_whitespace().skip(1) {
+            if let Some(v) = tok.strip_prefix('X') {
+                x = Some(v.parse::<f64>().unwrap());
+            } else if let Some(v) = tok.strip_prefix('Y') {
+                y = Some(v.parse::<f64>().unwrap());
+            } else if let Some(v) = tok.strip_prefix('Z') {
+                z_new = Some(v.parse::<f64>().unwrap());
+            } else if let Some(v) = tok.strip_prefix('E') {
+                e_new = Some(v.parse::<f64>().unwrap());
+            }
+        }
+        if let Some(z) = z_new {
+            if z > layer_z + 0.05 {
+                lift = true;
+            }
+            if z + 0.02 < layer_z {
+                scarf_arm = true;
+            }
+        }
+        if x.is_none() && y.is_none() {
+            if let Some(en) = e_new {
+                retracted = en + 1e-6 < e;
+                e = en;
+            }
+            continue;
+        }
+        let next = [
+            x.unwrap_or(pos.map(|p| p[0]).unwrap_or(0.0)),
+            y.unwrap_or(pos.map(|p| p[1]).unwrap_or(0.0)),
+        ];
+        if e_new.is_none() {
+            if let Some(prev) = pos {
+                if segment_hits_rect(prev, next, hole) {
+                    pending.push(HoleCross {
+                        retracted,
+                        hopped: false,
+                        scarf: false,
+                        a: prev,
+                        b: next,
+                    });
+                }
+            }
+        } else {
+            let scarf = scarf_arm || z_new.map(|zn| zn + 0.02 < layer_z).unwrap_or(false);
+            scarf_arm = false;
+            flush(&mut out, &mut pending, &mut lift, scarf);
+            retracted = false;
+            e = e_new.unwrap();
+        }
+        pos = Some(next);
+    }
+    flush(&mut out, &mut pending, &mut lift, false);
+    out
+}
+
+fn segment_hits_rect(a: [f64; 2], b: [f64; 2], r: [f64; 4]) -> bool {
+    if point_in_rect(a, r) || point_in_rect(b, r) {
+        return true;
+    }
+    let corners = [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]];
+    corners.iter().enumerate().any(|(i, c)| {
+        let d = corners[(i + 1) % 4];
+        segs_cross(a, b, *c, d)
+    })
+}
+
+fn point_in_rect(p: [f64; 2], r: [f64; 4]) -> bool {
+    p[0] > r[0] && p[0] < r[2] && p[1] > r[1] && p[1] < r[3]
+}
+
+fn segs_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
+    let o = |p: [f64; 2], q: [f64; 2], r: [f64; 2]| {
+        (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+    };
+    o(a, b, c) * o(a, b, d) < -1e-9 && o(c, d, a) * o(c, d, b) < -1e-9
+}
+
+#[test]
+fn infill_combine_caps_height_and_fills_under_the_top() {
+    let mesh = cube();
+    let capped =
+        slice_configured(&mesh, &speed_mode(), &profile(), &SliceSettings::default()).unwrap();
+    let heights = sparse_bead_heights(&capped.gcode);
+    assert!(
+        !heights.is_empty(),
+        "speed cube should still print sparse infill, sparse blocks {}",
+        capped.gcode.matches("TYPE:SPARSE").count()
+    );
+    assert!(
+        heights.iter().all(|h| *h <= 0.32),
+        "combined bead exceeded 0.75 × 0.4 mm nozzle: {heights:?}"
+    );
+    assert_sparse_under_top(&capped.gcode);
+
+    let combined = slice_configured(
+        &mesh,
+        &speed_mode(),
+        &profile(),
+        &SliceSettings {
+            layer_height: 0.1,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    let beads = sparse_bead_heights(&combined.gcode);
+    assert!(
+        beads.iter().any(|h| (*h - 0.3).abs() < 0.04),
+        "expected E for a 0.3 mm combined bead, got {beads:?}"
+    );
+    assert!(
+        beads.iter().all(|h| *h <= 0.34),
+        "bead over the cap: {beads:?}"
+    );
+    assert_sparse_under_top(&combined.gcode);
+}
+
+fn sparse_bead_heights(gcode: &str) -> Vec<f64> {
+    let fil = std::f64::consts::PI * (1.75_f64 * 0.5).powi(2);
+    let width = 0.45;
+    let mut out = Vec::new();
+    let mut sparse = false;
+    let mut e = 0.0;
+    let mut pos: Option<[f64; 2]> = None;
+    for line in gcode.lines() {
+        if line.contains("TYPE:") {
+            sparse = line.contains("TYPE:SPARSE");
+            continue;
+        }
+        if line.starts_with(";LAYER:") {
+            sparse = false;
+            continue;
+        }
+        if !(line.starts_with("G1 ") || line.starts_with("G2 ") || line.starts_with("G3 ")) {
+            continue;
+        }
+        let mut x = None;
+        let mut y = None;
+        let mut e_new = None;
+        for tok in line.split_whitespace().skip(1) {
+            if let Some(v) = tok.strip_prefix('X') {
+                x = Some(v.parse::<f64>().unwrap());
+            } else if let Some(v) = tok.strip_prefix('Y') {
+                y = Some(v.parse::<f64>().unwrap());
+            } else if let Some(v) = tok.strip_prefix('E') {
+                e_new = Some(v.parse::<f64>().unwrap());
+            }
+        }
+        if let (Some(prev), Some(en)) = (pos, e_new) {
+            if sparse {
+                let next = [x.unwrap_or(prev[0]), y.unwrap_or(prev[1])];
+                let d = (next[0] - prev[0]).hypot(next[1] - prev[1]);
+                let de = en - e;
+                if d > 0.5 && de > 0.0 {
+                    out.push(de * fil / (d * width));
+                }
+            }
+        }
+        if let Some(en) = e_new {
+            e = en;
+        }
+        if x.is_some() || y.is_some() {
+            let prev = pos.unwrap_or([0.0, 0.0]);
+            pos = Some([x.unwrap_or(prev[0]), y.unwrap_or(prev[1])]);
+        }
+    }
+    out
+}
+
+fn assert_sparse_under_top(gcode: &str) {
+    let mut layers: Vec<(u32, bool, bool)> = Vec::new();
+    let mut sparse = false;
+    let mut top = false;
+    let mut started = false;
+    let mut index = 0u32;
+    for line in gcode.lines() {
+        if let Some(rest) = line.strip_prefix(";LAYER:") {
+            if started {
+                layers.push((index, sparse, top));
+            }
+            index = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or("0")
+                .parse()
+                .unwrap_or(0);
+            sparse = false;
+            top = false;
+            started = true;
+            continue;
+        }
+        if line.contains("TYPE:SPARSE") {
+            sparse = true;
+        }
+        if line.contains("TYPE:TOP") {
+            top = true;
+        }
+    }
+    if started {
+        layers.push((index, sparse, top));
+    }
+    let first_top = layers.iter().position(|(_, _, t)| *t).expect("top skin");
+    assert!(
+        layers[first_top - 1].1,
+        "the layer under the top skin has no sparse"
+    );
+    let beads = sparse_layer_beads(gcode);
+    let mut layer_h = 0.2;
+    for line in gcode.lines() {
+        if let Some(rest) = line.strip_prefix(";LAYER:") {
+            for tok in rest.split_whitespace() {
+                if let Some(v) = tok.strip_prefix("H:") {
+                    layer_h = v.parse().unwrap_or(layer_h);
+                }
+            }
+            break;
+        }
+    }
+    let mut gap = 0usize;
+    for (_, sparse, _) in layers.iter().take(first_top - 1).rev() {
+        if *sparse {
+            break;
+        }
+        gap += 1;
+    }
+    if gap <= 4 {
+        let index = layers[first_top - 1].0;
+        let bead = beads.get(&index).copied().unwrap_or(0.0);
+        let need = (gap as f64 + 1.0) * layer_h;
+        assert!(
+            bead + 0.04 >= need,
+            "layer {index} bead {bead:.3} does not cover {need:.3} under the top skin"
+        );
+    }
+}
+
+fn sparse_layer_beads(gcode: &str) -> std::collections::HashMap<u32, f64> {
+    let fil = std::f64::consts::PI * (1.75_f64 * 0.5).powi(2);
+    let mut out = std::collections::HashMap::new();
+    let mut index = 0u32;
+    let mut sparse = false;
+    let mut e = 0.0;
+    let mut pos: Option<[f64; 2]> = None;
+    for line in gcode.lines() {
+        if let Some(rest) = line.strip_prefix(";LAYER:") {
+            index = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or("0")
+                .parse()
+                .unwrap_or(0);
+            sparse = false;
+            continue;
+        }
+        if line.contains("TYPE:") {
+            sparse = line.contains("TYPE:SPARSE");
+            continue;
+        }
+        if !(line.starts_with("G1 ") || line.starts_with("G2 ") || line.starts_with("G3 ")) {
+            continue;
+        }
+        let mut x = None;
+        let mut y = None;
+        let mut e_new = None;
+        for tok in line.split_whitespace().skip(1) {
+            if let Some(v) = tok.strip_prefix('X') {
+                x = Some(v.parse::<f64>().unwrap());
+            } else if let Some(v) = tok.strip_prefix('Y') {
+                y = Some(v.parse::<f64>().unwrap());
+            } else if let Some(v) = tok.strip_prefix('E') {
+                e_new = Some(v.parse::<f64>().unwrap());
+            }
+        }
+        if let (Some(prev), Some(en)) = (pos, e_new) {
+            if sparse {
+                let next = [x.unwrap_or(prev[0]), y.unwrap_or(prev[1])];
+                let d = (next[0] - prev[0]).hypot(next[1] - prev[1]);
+                let de = en - e;
+                if d > 0.5 && de > 0.0 {
+                    let h = de * fil / (d * 0.45);
+                    let slot = out.entry(index).or_insert(0.0);
+                    if h > *slot {
+                        *slot = h;
+                    }
+                }
+            }
+        }
+        if let Some(en) = e_new {
+            e = en;
+        }
+        if x.is_some() || y.is_some() {
+            let prev = pos.unwrap_or([0.0, 0.0]);
+            pos = Some([x.unwrap_or(prev[0]), y.unwrap_or(prev[1])]);
+        }
+    }
+    out
+}
+
+#[test]
+fn region_split_keeps_one_outer_wall() {
+    let response = slice_configured(
+        &cube(),
+        &BlendMode::ByRegion {
+            axis: Axis::X,
+            at_mm: 10.0,
+        },
+        &profile(),
+        &SliceSettings::default(),
+    )
+    .unwrap();
+    assert!(response.sanity.ok, "{:?}", response.sanity.notes);
+    let layer = gcode_layer(&response.gcode, 40);
+    let mut xs = Vec::new();
+    let mut outer = false;
+    let mut prev: Option<[f64; 2]> = None;
+    for line in layer.lines() {
+        if line.contains("TYPE:") {
+            outer = line.contains("TYPE:OUTER");
+            prev = None;
+            continue;
+        }
+        if !outer || !line.starts_with("G1 ") {
+            continue;
+        }
+        let mut x = None;
+        let mut y = None;
+        let mut extruding = false;
+        for tok in line.split_whitespace().skip(1) {
+            if let Some(v) = tok.strip_prefix('X') {
+                x = Some(v.parse::<f64>().unwrap());
+            } else if let Some(v) = tok.strip_prefix('Y') {
+                y = Some(v.parse::<f64>().unwrap());
+            } else if tok.starts_with('E') {
+                extruding = true;
+            }
+        }
+        if let (Some(p), Some(x), Some(y)) = (prev, x, y) {
+            if extruding
+                && (x - p[0]).abs() < 0.08
+                && (y - p[1]).abs() > 2.0
+                && (8.0..12.0).contains(&x)
+            {
+                xs.push((x * 20.0).round() / 20.0);
+            }
+        }
+        if x.is_some() || y.is_some() {
+            prev = Some([
+                x.unwrap_or(prev.map(|p| p[0]).unwrap_or(0.0)),
+                y.unwrap_or(prev.map(|p| p[1]).unwrap_or(0.0)),
+            ]);
+        }
+    }
+    xs.sort_by(|a, b| a.total_cmp(b));
+    xs.dedup();
+    assert_eq!(
+        xs,
+        vec![10.0],
+        "outer walls on the cut: {xs:?}\n{}",
+        layer
+            .lines()
+            .filter(|l| l.contains("OUTER") || l.contains("G1 "))
+            .take(30)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+#[test]
+fn speed_half_layer_zero_has_bottom_fill() {
+    let response = slice_configured(
+        &cube(),
+        &BlendMode::ByRegion {
+            axis: Axis::X,
+            at_mm: 10.0,
+        },
+        &profile(),
+        &SliceSettings::default(),
+    )
+    .unwrap();
+    let layer = gcode_layer(&response.gcode, 0);
+    let mut solid_x = false;
+    let mut in_solid = false;
+    for line in layer.lines() {
+        if line.contains("TYPE:") {
+            in_solid = line.contains("TYPE:SOLID");
+            continue;
+        }
+        if !in_solid || !line.starts_with("G1 ") {
+            continue;
+        }
+        for tok in line.split_whitespace() {
+            if let Some(v) = tok.strip_prefix('X') {
+                let x: f64 = v.parse().unwrap();
+                if x > 12.0 {
+                    solid_x = true;
+                }
+            }
+        }
+    }
+    assert!(
+        solid_x,
+        "speed half of layer 0 has walls and no bottom solid\n{}",
+        layer
+            .lines()
+            .filter(|l| l.contains("TYPE:"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let layer0 = response.layers.iter().find(|l| l.index == 0).unwrap();
+    assert!(
+        layer0.paths.iter().any(|p| p.kind == "solid"
+            && p.strategy == "speed"
+            && p.pts.iter().any(|q| q[0] > 12.0)),
+        "2D preview is missing speed-half bottom fill"
+    );
+}
+
+fn gcode_layer(gcode: &str, index: usize) -> String {
+    let marker = format!(";LAYER:{index} ");
+    let Some(start) = gcode.find(&marker) else {
+        panic!("missing {marker}");
+    };
+    let rest = &gcode[start + marker.len()..];
+    match rest.find("\n;LAYER:") {
+        Some(end) => rest[..end].to_string(),
+        None => rest.to_string(),
     }
 }
 
@@ -1237,20 +1835,46 @@ fn feature_times_match_total_and_baseline_skip_is_real() {
     .unwrap();
     assert_eq!(response.baseline_ms, 0.0, "baseline pass must be skipped");
     assert_eq!(response.baseline_label, "skipped");
-    let sum: f64 = response.estimate.by_feature.iter().map(|row| row.seconds).sum();
+    let sum: f64 = response
+        .estimate
+        .by_feature
+        .iter()
+        .map(|row| row.seconds)
+        .sum();
     let total = response.estimate.seconds.max(1e-6);
     assert!(
         (sum - response.estimate.seconds).abs() / total < 0.005,
         "feature seconds {sum} vs total {}",
         response.estimate.seconds
     );
-    let grams: f64 = response.estimate.by_feature.iter().map(|row| row.filament_g).sum();
+    let grams: f64 = response
+        .estimate
+        .by_feature
+        .iter()
+        .map(|row| row.filament_g)
+        .sum();
     assert!((grams - response.estimate.filament_g).abs() < 0.02);
-    let labels: Vec<_> = response.compare.iter().map(|row| row.label.as_str()).collect();
+    let labels: Vec<_> = response
+        .compare
+        .iter()
+        .map(|row| row.label.as_str())
+        .collect();
     assert_eq!(labels, vec!["speed", "efficiency", "toughness", "classic"]);
-    let speed = response.compare.iter().find(|row| row.label == "speed").unwrap();
-    let tough = response.compare.iter().find(|row| row.label == "toughness").unwrap();
-    let classic = response.compare.iter().find(|row| row.label == "classic").unwrap();
+    let speed = response
+        .compare
+        .iter()
+        .find(|row| row.label == "speed")
+        .unwrap();
+    let tough = response
+        .compare
+        .iter()
+        .find(|row| row.label == "toughness")
+        .unwrap();
+    let classic = response
+        .compare
+        .iter()
+        .find(|row| row.label == "classic")
+        .unwrap();
     assert!((speed.seconds - response.estimate.seconds).abs() < 0.05);
     assert!(tough.seconds > speed.seconds);
     assert!(classic.seconds > 0.0 && classic.filament_g > 0.0);

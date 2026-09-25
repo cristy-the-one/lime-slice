@@ -17,9 +17,8 @@ use crate::strategy::{
 use crate::support::{build_supports, SupportOpts, SupportStyle};
 use crate::toolpath::{
     apply_overhang, apply_scarf, apply_z_hop, boolean_union, clip_to_rect, offset_loops,
-    optimize_travel, plan_region,
-    plan_skirt, plan_support, plan_tree_support, Extrusion, PathFeatures, PathKind, ScarfParams,
-    ShellBand,
+    optimize_travel, plan_region, plan_skirt, plan_support, plan_tree_support, seat_layer_start,
+    Extrusion, PathFeatures, PathKind, ScarfParams, ShellBand,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -244,7 +243,11 @@ impl SliceSettings {
             } else {
                 req.gyroid_3d
             },
-            z_hop: if req.classic { ZHopMode::Off } else { req.z_hop },
+            z_hop: if req.classic {
+                ZHopMode::Off
+            } else {
+                req.z_hop
+            },
             z_hop_height: if req.z_hop_height > 0.0 {
                 req.z_hop_height
             } else {
@@ -558,7 +561,7 @@ pub fn slice_configured(
         profile.linear_advance = 0.0;
     }
     let started = Instant::now();
-    let planned = plan(mesh, blend, &settings)?;
+    let planned = plan(mesh, blend, &settings, profile.nozzle_diameter)?;
     let gcode = emit_gcode(
         &planned,
         &profile,
@@ -578,7 +581,7 @@ pub fn slice_configured(
             strategy: StrategyId::Speed,
         };
         let baseline_started = Instant::now();
-        let baseline_planned = plan(mesh, &baseline_mode, &settings)?;
+        let baseline_planned = plan(mesh, &baseline_mode, &settings, profile.nozzle_diameter)?;
         let _baseline_gcode = emit_gcode(
             &baseline_planned,
             &profile,
@@ -600,7 +603,6 @@ pub fn slice_configured(
     } else {
         Vec::new()
     };
-
     let margin = 4.0;
     let mut notes = Vec::new();
     if gcode.layer_count == 0 {
@@ -1008,6 +1010,7 @@ fn plan(
     mesh: &Mesh,
     blend: &BlendMode,
     settings: &SliceSettings,
+    nozzle_diameter: f64,
 ) -> Result<Vec<LayerPaths>, String> {
     let (min, max) = mesh.bounds().ok_or("empty mesh")?;
     let max_h = if settings.adaptive {
@@ -1052,6 +1055,7 @@ fn plan(
         Vec::new()
     };
     let shaft = shaft_scales(&supports, settings.support_height_mult);
+    let (remain_low, remain_high) = interior_remainings(blend, settings, &bands, &roofs);
     let jobs: Vec<Job> = bands
         .par_iter()
         .enumerate()
@@ -1071,6 +1075,9 @@ fn plan(
                 roofs[i],
                 min,
                 max,
+                nozzle_diameter,
+                remain_low[i],
+                remain_high[i],
             );
             if settings.overhang_control && i > 0 {
                 apply_overhang(
@@ -1106,7 +1113,17 @@ fn plan(
         .collect();
     let mut prev_top = false;
     let mut jobs = jobs;
+    let mut layer_end: Option<[f64; 2]> = None;
     for (i, job) in jobs.iter_mut().enumerate() {
+        if settings.travel_opt {
+            layer_end = seat_layer_start(
+                &mut job.paths,
+                &contours[i],
+                settings.combing,
+                settings.line_width * 0.8,
+                layer_end,
+            );
+        }
         let infill = offset_loops(&contours[i], -settings.line_width * 2.2);
         apply_z_hop(
             &mut job.paths,
@@ -1261,6 +1278,141 @@ fn shaft_scales(supports: &[crate::support::SupportLayer], mult: f64) -> Vec<f64
     scale
 }
 
+fn interior_remainings(
+    blend: &BlendMode,
+    settings: &SliceSettings,
+    bands: &[crate::adaptive::LayerBand],
+    roofs: &[f64],
+) -> (Vec<InteriorSpan>, Vec<InteriorSpan>) {
+    let shells_for = |pick: &dyn Fn(f64) -> ResolvedStrategy| -> Vec<ShellBand> {
+        bands
+            .iter()
+            .zip(roofs.iter())
+            .map(|(b, r)| shell_of(b.z, *r, &pick(b.z)))
+            .collect()
+    };
+    match blend {
+        BlendMode::ByRegion { .. } => {
+            let low = shells_for(&|_| resolve(pure(StrategyId::Toughness), settings));
+            let high = shells_for(&|_| resolve(pure(StrategyId::Speed), settings));
+            (remaining_interior(&low), remaining_interior(&high))
+        }
+        other => {
+            let low = shells_for(&|z| resolve(strategy_at(other, z), settings));
+            (remaining_interior(&low), vec![(0, 0); bands.len()])
+        }
+    }
+}
+
+fn strategy_at(blend: &BlendMode, z: f64) -> ResolvedStrategy {
+    match blend {
+        BlendMode::Single { strategy } => pure(*strategy),
+        BlendMode::Weight { toughness } => mix(*toughness),
+        BlendMode::ByLayer {
+            bottom_mm,
+            transition_mm,
+        } => mix(layer_weight(z, *bottom_mm, *transition_mm)),
+        BlendMode::ByRegion { .. } => pure(StrategyId::Speed),
+    }
+}
+
+type InteriorSpan = (u32, u32);
+
+fn remaining_interior(shells: &[ShellBand]) -> Vec<InteriorSpan> {
+    let n = shells.len();
+    let mut out = vec![(0u32, 0u32); n];
+    let mut i = 0;
+    while i < n {
+        if shells[i] != ShellBand::Interior {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < n && shells[j] == ShellBand::Interior {
+            j += 1;
+        }
+        let run = (j - i) as u32;
+        for (k, slot) in out.iter_mut().enumerate().take(j).skip(i) {
+            *slot = (run - (k - i) as u32, run);
+        }
+        i = j;
+    }
+    out
+}
+
+/// One outer bead on the region cut. The low side snaps onto the plane; the high side drops its copy.
+fn merge_split_outers(
+    low: &mut [Extrusion],
+    high: &mut Vec<Extrusion>,
+    axis: Axis,
+    at: f64,
+    line_width: f64,
+) {
+    let tol = line_width * 0.8;
+    snap_cut(low, axis, at, tol, true);
+    snap_cut(high, axis, at, tol, false);
+    high.retain(|p| p.points.len() >= 2);
+}
+
+fn snap_cut(paths: &mut [Extrusion], axis: Axis, at: f64, tol: f64, keep: bool) {
+    for path in paths.iter_mut() {
+        if !matches!(path.kind, PathKind::Outer | PathKind::Wall) {
+            continue;
+        }
+        let closed = path.points.len() >= 2 && {
+            let a = path.points[0];
+            let b = *path.points.last().unwrap();
+            let dx = a[0] - b[0];
+            let dy = a[1] - b[1];
+            dx * dx + dy * dy < 1e-8
+        };
+        let body: Vec<[f64; 2]> = if closed {
+            path.points[..path.points.len() - 1].to_vec()
+        } else {
+            path.points.clone()
+        };
+        let flags: Vec<bool> = body
+            .iter()
+            .copied()
+            .map(|p| on_plane(p, axis, at, tol))
+            .collect();
+        if !flags.iter().any(|f| *f) {
+            continue;
+        }
+        if keep {
+            let mut snapped = body;
+            for (p, f) in snapped.iter_mut().zip(&flags) {
+                if *f {
+                    match axis {
+                        Axis::X => p[0] = at,
+                        Axis::Y => p[1] = at,
+                    }
+                }
+            }
+            if closed {
+                let first = snapped[0];
+                snapped.push(first);
+            }
+            path.points = snapped;
+        } else {
+            path.points = body
+                .into_iter()
+                .zip(flags)
+                .filter(|(_, on)| !on)
+                .map(|(p, _)| p)
+                .collect();
+        }
+    }
+}
+
+fn on_plane(p: [f64; 2], axis: Axis, at: f64, tol: f64) -> bool {
+    let d = match axis {
+        Axis::X => (p[0] - at).abs(),
+        Axis::Y => (p[1] - at).abs(),
+    };
+    d <= tol
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_layer(
     index: usize,
@@ -1276,6 +1428,9 @@ fn build_layer(
     roof_distance: f64,
     min: [f64; 3],
     max: [f64; 3],
+    nozzle_diameter: f64,
+    remain_low: (u32, u32),
+    remain_high: (u32, u32),
 ) -> Job {
     let line_width = settings.line_width;
     let features = PathFeatures {
@@ -1285,6 +1440,9 @@ fn build_layer(
         layer_height: height,
         shell: ShellBand::Interior,
         z,
+        nozzle_diameter,
+        interior_remaining: remain_low.0,
+        interior_run: remain_low.1,
     };
     if contours.is_empty() && support.is_empty() && interface.is_empty() && branches.is_empty() {
         return Job {
@@ -1328,15 +1486,18 @@ fn build_layer(
             let mut hint = [min[0], min[1]];
             let mut low_feat = features.clone();
             low_feat.shell = shell_of(z, roof_distance, &tough);
+            low_feat.interior_remaining = remain_low.0;
+            low_feat.interior_run = remain_low.1;
             let mut high_feat = features.clone();
             high_feat.shell = shell_of(z, roof_distance, &speed);
-            paths.extend(plan_region(&low, &tough, line_width, &mut hint, &low_feat));
-            paths.extend(plan_region(
-                &high, &speed, line_width, &mut hint, &high_feat,
-            ));
-            format!(
-                "region low=toughness high=speed split {at_mm:.2} h={height:.3}"
-            )
+            high_feat.interior_remaining = remain_high.0;
+            high_feat.interior_run = remain_high.1;
+            let mut low_paths = plan_region(&low, &tough, line_width, &mut hint, &low_feat);
+            let mut high_paths = plan_region(&high, &speed, line_width, &mut hint, &high_feat);
+            merge_split_outers(&mut low_paths, &mut high_paths, *axis, *at_mm, line_width);
+            paths.extend(low_paths);
+            paths.extend(high_paths);
+            format!("region low=toughness high=speed split {at_mm:.2} h={height:.3}")
         }
         other => {
             let resolved = resolve(
@@ -1369,6 +1530,8 @@ fn build_layer(
             let mut hint = [max[0], (min[1] + max[1]) * 0.5];
             let mut feat = features.clone();
             feat.shell = shell_of(z, roof_distance, &resolved);
+            feat.interior_remaining = remain_low.0;
+            feat.interior_run = remain_low.1;
             paths.extend(plan_region(
                 contours, &resolved, line_width, &mut hint, &feat,
             ));
