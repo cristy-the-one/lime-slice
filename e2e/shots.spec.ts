@@ -2,6 +2,27 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 
+function withLayerGcode(src: { gcode?: string; layers: { index: number; z: number; height: number; paths: { kind: string; pts: number[][]; speed?: number; effectiveSpeed?: number }[] }[] }) {
+  const body = structuredClone(src);
+  if (typeof body.gcode === "string" && body.gcode.includes(";LAYER:")) return body;
+  const lines = ["; preview sync"];
+  for (const layer of body.layers.slice(0, 4)) {
+    lines.push(`;LAYER:${layer.index} Z:${layer.z.toFixed(3)} H:${layer.height.toFixed(3)}`);
+    let e = 0;
+    for (const path of layer.paths) {
+      lines.push(`;TYPE:${path.kind.toUpperCase()}`);
+      const feed = Math.round((path.effectiveSpeed || path.speed || 40) * 60);
+      for (const pt of path.pts) {
+        if (path.kind !== "travel") e += 0.05;
+        const xy = `X${pt[0].toFixed(3)} Y${pt[1].toFixed(3)}`;
+        lines.push(path.kind === "travel" ? `G1 ${xy} F${feed}` : `G1 ${xy} E${e.toFixed(5)} F${feed}`);
+      }
+    }
+  }
+  body.gcode = lines.join("\n");
+  return body;
+}
+
 const out = path.resolve("artifacts/ui-v3");
 fs.mkdirSync(out, { recursive: true });
 
@@ -18,8 +39,8 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.route("**/api/slice", async (route) => {
     if (delay) await new Promise((r) => setTimeout(r, delay));
     const name = route.request().postDataJSON()?.filename as string;
-    const body = name?.includes("hull") ? hull : cube;
-    await route.fulfill({ json: body });
+    const src = name?.includes("hull") ? hull : cube;
+    await route.fulfill({ json: withLayerGcode(src) });
   });
 
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -42,6 +63,23 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.locator("#slice").click();
   await expect(page.locator("#estimate")).toContainText("1.84 g");
   await expect(page.locator(".chip").first()).toBeVisible();
+  await expect(page.locator("#spark")).toBeVisible();
+  await page.locator("#move").evaluate((el) => {
+    const input = el as HTMLInputElement;
+    input.value = "4";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await expect(page.locator("#playReadout")).toContainText("mm/s");
+  await page.locator(".stage-tools").screenshot({ path: path.join(out, "p2-spark-playback.png") });
+  await page.getByRole("button", { name: "G-code", exact: true }).click();
+  await expect(page.locator("#gcodePane .line.on")).toBeVisible();
+  await page.locator("#gcodePane").screenshot({ path: path.join(out, "p2-gcode-sync.png") });
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.locator("#theme").selectOption("light");
+  await page.waitForTimeout(150);
+  await shot(page, "p2-light-theme.png");
+  await page.locator("#theme").selectOption("dark");
+  await page.locator("#presetDiff").screenshot({ path: path.join(out, "p2-preset-diff.png") });
 
   await page.getByRole("button", { name: /^By layer/ }).click();
   await expect(page.locator("#layerBand")).toBeVisible();
