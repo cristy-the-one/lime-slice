@@ -140,7 +140,11 @@ fn speed_and_toughness_differ_and_gcode_is_printable() {
         .filter(|l| (15..80).contains(&l.index))
         .max_by_key(|l| l.paths.iter().filter(|p| is_infill(&p.kind)).count())
         .unwrap();
-    let mid = speed.layers.iter().find(|l| l.index == mid_t.index).unwrap();
+    let mid = speed
+        .layers
+        .iter()
+        .find(|l| l.index == mid_t.index)
+        .unwrap();
     assert!(mid.speed_walls > 0);
     assert_eq!(mid.toughness_walls, 0);
     assert!(
@@ -1913,6 +1917,145 @@ fn feature_times_match_total_and_baseline_skip_is_real() {
     assert!(tough.seconds > speed.seconds);
     assert!(classic.seconds > 0.0 && classic.filament_g > 0.0);
     assert!(tough.by_feature.iter().map(|row| row.seconds).sum::<f64>() > 0.0);
+}
+
+fn motion_body(gcode: &str) -> String {
+    gcode
+        .lines()
+        .filter(|line| !line.starts_with("; TIME:") && !line.starts_with("; estimator:"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn lookahead_matches_classic_paths_and_is_less_harsh() {
+    let mesh = cube();
+    let mode = BlendMode::Single {
+        strategy: StrategyId::Toughness,
+    };
+    let look = slice_configured(&mesh, &mode, &profile(), &SliceSettings::default()).unwrap();
+    let harsh = slice_configured(
+        &mesh,
+        &mode,
+        &profile(),
+        &SliceSettings {
+            classic_estimator: true,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(motion_body(&look.gcode), motion_body(&harsh.gcode));
+    assert!(look.gcode.contains("estimator: lookahead"));
+    assert!(harsh.gcode.contains("estimator: classic"));
+    assert!((look.estimate.filament_g - harsh.estimate.filament_g).abs() < 1e-6);
+    assert_eq!(look.estimate.arc_moves, harsh.estimate.arc_moves);
+    assert!(
+        look.estimate.seconds < harsh.estimate.seconds * 0.95,
+        "lookahead {} vs classic {}",
+        look.estimate.seconds,
+        harsh.estimate.seconds
+    );
+    let tight = slice_configured(
+        &mesh,
+        &mode,
+        &profile(),
+        &SliceSettings {
+            junction_deviation_mm: 0.001,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    assert!(tight.estimate.seconds > look.estimate.seconds);
+    assert_eq!(motion_body(&tight.gcode), motion_body(&look.gcode));
+}
+
+#[test]
+fn estimator_bench_same_gcode_keeps_blend_order() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples");
+    let hull = load_mesh(
+        "lime_hull.stl",
+        &std::fs::read(root.join("lime_hull.stl")).unwrap(),
+    )
+    .unwrap();
+    let mut tris = Vec::new();
+    add_box(&mut tris, 0.0, 0.0, 0.0, 20.0, 20.0, 60.0);
+    let column = Mesh { triangles: tris };
+    let cases = [("cube", cube()), ("hull", hull), ("column", column)];
+    let speed = BlendMode::Single {
+        strategy: StrategyId::Speed,
+    };
+    let tough = BlendMode::Single {
+        strategy: StrategyId::Toughness,
+    };
+    println!(
+        "{:<8} {:<12} {:>10} {:>10} {:>8} {:>8} {:>8}",
+        "mesh", "mode", "classic_s", "look_s", "ratio", "arcs", "grams"
+    );
+    for (name, mesh) in cases {
+        let mut rows = Vec::new();
+        for (mode_name, mode, settings) in [
+            ("speed", speed.clone(), SliceSettings::default()),
+            ("tough-3d", tough.clone(), SliceSettings::default()),
+            (
+                "tough-2d",
+                tough.clone(),
+                SliceSettings {
+                    gyroid_3d: lime_slice_core::Gyroid3d::Off,
+                    z_hop: lime_slice_core::ZHopMode::Off,
+                    ..SliceSettings::default()
+                },
+            ),
+        ] {
+            let look = slice_configured(&mesh, &mode, &profile(), &settings).unwrap();
+            let harsh = slice_configured(
+                &mesh,
+                &mode,
+                &profile(),
+                &SliceSettings {
+                    classic_estimator: true,
+                    ..settings.clone()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                motion_body(&look.gcode),
+                motion_body(&harsh.gcode),
+                "{name} {mode_name} path changed"
+            );
+            assert!(
+                look.estimate.seconds < harsh.estimate.seconds,
+                "{name} {mode_name}"
+            );
+            let ratio = look.estimate.seconds / harsh.estimate.seconds;
+            println!(
+                "{:<8} {:<12} {:>10.1} {:>10.1} {:>8.3} {:>8} {:>8.2}",
+                name,
+                mode_name,
+                harsh.estimate.seconds,
+                look.estimate.seconds,
+                ratio,
+                look.estimate.arc_moves,
+                look.estimate.filament_g
+            );
+            rows.push((
+                mode_name,
+                look.estimate.seconds,
+                look.score.speed,
+                harsh.score.speed,
+            ));
+        }
+        let speed_s = rows.iter().find(|r| r.0 == "speed").unwrap().1;
+        let t3 = rows.iter().find(|r| r.0 == "tough-3d").unwrap().1;
+        let t2 = rows.iter().find(|r| r.0 == "tough-2d").unwrap().1;
+        assert!(
+            speed_s < t3,
+            "{name} speed should stay faster than 3D toughness"
+        );
+        assert!(
+            t3 < t2,
+            "{name} 3D gyroid should stay faster than 2D ({t3} vs {t2})"
+        );
+    }
 }
 
 #[test]

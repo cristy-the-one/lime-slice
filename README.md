@@ -66,7 +66,7 @@ Blend names: `speed`, `toughness`, `weight` (alias `efficiency`), `layer`, `regi
 
 The preview follows the system theme, or an explicit light or dark theme. IBM Plex is self-hosted under `public/fonts` (SIL Open Font License). A per-layer time sparkline marks layers slower than twice the median, and layers under 8 s, which a cooling min-layer-time would slow down. The planner does not apply that floor. The move scrubber plays the active layer and keeps the G-code tab on the matching command. Slice presets live in `localStorage` and diff against the factory defaults.
 
-Feature knobs default on. Turn one off with `--variable-width false`, `--arc-fit false`, `--travel-opt false`, `--overhang-control false`, `--infill-combine false`, `--combing false`, or `--feature-speeds false`. `--scarf-seam blend|off|outer|all` chooses the scarf joint (default `blend`). Length and step count are `--scarf-length` (10 mm) and `--scarf-steps` (8). `--classic` is the baseline planner: line infill for the full height, one feed for every feature, no variable walls, no arcs, no overhang slowdown, no infill combining, no combing, no scarf, grid supports only, and a full triangle scan.
+Feature knobs default on. Turn one off with `--variable-width false`, `--arc-fit false`, `--travel-opt false`, `--overhang-control false`, `--infill-combine false`, `--combing false`, or `--feature-speeds false`. `--classic-estimator` times the same G-code with the old stop-at-every-segment model. `--junction-deviation` (default 0.02 mm) is the Klipper cornering allowance for the default lookahead estimator. `--scarf-seam blend|off|outer|all` chooses the scarf joint (default `blend`). Length and step count are `--scarf-length` (10 mm) and `--scarf-steps` (8). `--classic` is the baseline planner: line infill for the full height, one feed for every feature, no variable walls, no arcs, no overhang slowdown, no infill combining, no combing, no scarf, grid supports only, and a full triangle scan.
 
 Adaptive layers and supports are off unless you ask for them, so a bench stays comparable to a fixed 0.2 mm slice. `--adaptive` varies each layer inside `--adaptive-min` (default 0.08 mm) and `--adaptive-max` (default: the nominal layer height). Vertical walls take the thick end of that band; slopes that turn toward horizontal take the thin end. `--supports` builds support under overhangs steeper than `--support-angle` (default 45° from horizontal), with three denser interface layers, a 0.55 mm XY gap, and a one-layer air gap. `--support-style grid` is the sparse column. `--support-style tree` grows organic shafts that lean together as they drop, and keeps the same interface tip. `--support-height-mult` (default 1) prints sparse shafts at a thicker layer height; the interface stays at the model layer height. Support spacing and speed still follow the resolved strategy: toughness is denser and slower than speed.
 
@@ -158,7 +158,21 @@ Speed forced to outer is 12.4 s slower on the post (122.2 → 134.6) and 41 s sl
 
 Recovered 3D gyroid keeps that section, then spends less time on it. Open ends that clipping split are bridged when the gap stays inside the part. Locally circular runs become one G2/G3. The section is simplified to 0.04 mm so the curve stays long enough to count as toughness and still round enough for those arcs. A looser 0.08 mm kinked it into short chords, which both the estimator and the score treated as less path. Toughness infill uses its own feed and accel (110 mm/s, 4000 mm/s²), still under the 12 mm³/s cap, including when two layers are combined into a bead no thicker than the nozzle. On a 0.45 × 0.40 mm combined bead the cap is about 67 mm/s. The 2D sine keeps 55 mm/s and 1000 mm/s². The lattice is one full-density gyroid. Splitting a 2.4 mm skin from a 0.985 core dropped extruded length and added travel at the boundary, so that grade is gone. Interior gyroid combines every two layers when the bead fits the nozzle. `--gyroid-3d off` does none of this.
 
-The estimator still stops at the end of every segment, which is harsher than Klipper or Marlin junction deviation (0.02 mm) with lookahead. On the unrecovered cube that model charged 4369 s to chords shorter than 0.6 mm; a Klipper lookahead replay of the same G-code was 3938 s against 5861 s reported. Travel was about 300 s. The recovery makes the chords into arcs so the existing estimator, not only a lookahead firmware, stops paying that tax.
+The print-time estimator now follows Klipper junction deviation (default 0.02 mm) and carries a feasible exit speed into the next move, still capped by the segment accel and the 12 mm³/s flow limit. A retract, a layer change, or a pure Z move breaks the chain, so those still start from rest. `--classic-estimator` keeps the old model, which stopped at the end of every segment. On the unrecovered cube that model reported 5861 s; a lookahead replay of the same G-code was about 3938 s. The tables above still quote classic-estimator times. On the recovered paths, lookahead vs that classic model (same G-code) is:
+
+| Mesh | Mode | Classic s | Lookahead s | Ratio |
+| --- | --- | ---: | ---: | ---: |
+| cube | speed | 221.2 | 212.7 | 0.96 |
+| cube | toughness 3D | 2134.4 | 1933.6 | 0.91 |
+| cube | toughness 2D | 4696.0 | 3440.6 | 0.73 |
+| hull | speed | 772.0 | 609.3 | 0.79 |
+| hull | toughness 3D | 8727.9 | 7262.3 | 0.83 |
+| hull | toughness 2D | 22332.3 | 15160.8 | 0.68 |
+| column | speed | 514.0 | 497.2 | 0.97 |
+| column | toughness 3D | 5744.3 | 5235.3 | 0.91 |
+| column | toughness 2D | 14111.8 | 10268.2 | 0.73 |
+
+Speed stays faster than toughness, and 3D gyroid stays faster than the 2D sine. The estimator does not change the toolpath.
 
 Release bench, same machine, layer height 0.2 mm. Tall column is a 20 × 20 × 60 mm box. "Before" is unrecovered 3D gyroid (short chords, no arcs, 55 mm/s). "Recovered" is this tree. "2D" is `--gyroid-3d off`. The previous recovery (a 2.4 mm skin, 0.985 core, 0.08 mm simplify) was cube 2378.8 s / 11354, hull 9989.4 s / 47924, column 6497.4 s / 33863.
 
@@ -174,7 +188,7 @@ Release bench, same machine, layer height 0.2 mm. Tall column is a 20 × 20 × 6
 | column | 3D recovered | 261.8 | 5744.3 | 29.75 | 10433 | 2 | 34594 | 21680 |
 | column | 2D gyroid | 122.6 | 14111.8 | 30.82 | 20553 | 2 | 32570 | 8309 |
 
-Cube score is back to the unrecovered 3D number (11577 vs 11572) and prints in 2134 s instead of 5861 s, under the 2D time of 4696 s. Hull is 49182 vs 49067 unrecovered and 8728 s vs 28706 s, under the 2D time of 22332 s. Toughness per hour is about 19500 on the cube and 20300 on the hull, against about 8300 and 7400 for the 2D sine and about 17200 for the previous recovery. Speed keeps lightning.
+Cube score is back to the unrecovered 3D number (11577 vs 11572) and prints in 2134 s instead of 5861 s, under the 2D time of 4696 s. Hull is 49182 vs 49067 unrecovered and 8728 s vs 28706 s, under the 2D time of 22332 s. Those print seconds are the classic estimator. Lookahead on the same recovered G-code is 1934 s on the cube and 7262 s on the hull, still under the 2D lookahead times (3441 s and 15161 s). Toughness per hour on the classic model is about 19500 on the cube and 20300 on the hull, against about 8300 and 7400 for the 2D sine and about 17200 for the previous recovery. Speed keeps lightning.
 
 ## Z-hop
 

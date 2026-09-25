@@ -118,6 +118,12 @@ pub struct SliceRequest {
     /// When false, skip preview polylines. Estimates and G-code still run.
     #[serde(default = "default_true")]
     pub include_preview: bool,
+    /// Stop to zero at every segment end. Default is junction lookahead.
+    #[serde(default)]
+    pub classic_estimator: bool,
+    /// Klipper junction deviation in millimetres. `0` means 0.02.
+    #[serde(default)]
+    pub junction_deviation_mm: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -153,6 +159,10 @@ pub struct SliceSettings {
     pub compare: bool,
     pub include_gcode: bool,
     pub include_preview: bool,
+    /// Stop to zero at every segment end. The default carries junction speed.
+    pub classic_estimator: bool,
+    /// Klipper junction deviation, millimetres. `0` uses 0.02.
+    pub junction_deviation_mm: f64,
 }
 
 impl Default for SliceSettings {
@@ -189,6 +199,8 @@ impl Default for SliceSettings {
             compare: false,
             include_gcode: true,
             include_preview: true,
+            classic_estimator: false,
+            junction_deviation_mm: 0.02,
         }
     }
 }
@@ -274,6 +286,12 @@ impl SliceSettings {
             // beside the JSON. Pareto clears this on its own settings copy.
             include_gcode: true,
             include_preview: req.include_preview,
+            classic_estimator: req.classic_estimator,
+            junction_deviation_mm: if req.junction_deviation_mm > 0.0 {
+                req.junction_deviation_mm
+            } else {
+                0.02
+            },
         }
     }
 
@@ -584,6 +602,8 @@ pub fn slice_configured(
         line_width,
         &features,
         settings.arc_fit,
+        settings.classic_estimator,
+        settings.junction_deviation_mm,
     );
     if gcode.cancelled || crate::cancel::poll() {
         return Err("cancelled".into());
@@ -604,6 +624,8 @@ pub fn slice_configured(
             line_width,
             &features,
             settings.arc_fit,
+            settings.classic_estimator,
+            settings.junction_deviation_mm,
         );
         (
             elapsed_ms(baseline_started),
