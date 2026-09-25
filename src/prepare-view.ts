@@ -9,7 +9,8 @@ export interface PrepareView {
 
 export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  const dpr = () => window.devicePixelRatio || 1;
+  renderer.setPixelRatio(dpr());
   renderer.setClearColor(0x0c0e12, 1);
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 8000);
@@ -65,8 +66,11 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   return {
     resize() {
       const rect = canvas.getBoundingClientRect();
-      renderer.setSize(Math.max(1, rect.width), Math.max(1, rect.height), false);
-      camera.aspect = Math.max(1, rect.width) / Math.max(1, rect.height);
+      if (rect.width < 1 || rect.height < 1) return;
+      const next = dpr();
+      if (renderer.getPixelRatio() !== next) renderer.setPixelRatio(next);
+      renderer.setSize(rect.width, rect.height, false);
+      camera.aspect = rect.width / rect.height;
       camera.updateProjectionMatrix();
     },
     setBed(x, y, z) {

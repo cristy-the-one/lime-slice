@@ -1597,9 +1597,12 @@ function escapeHtml(value: string) {
 function resize() {
   const rect = canvas.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.max(1, Math.floor(rect.width * dpr));
-  canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+  if (rect.width >= 1 && rect.height >= 1) {
+    canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+    canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+  }
   view3d.resize();
+  prepare.resize();
   if (window.innerWidth < 1200 && state.viewMode === "split") setView("solid");
   draw();
 }
@@ -1773,7 +1776,7 @@ async function probe() {
   paintBanner(stale());
 }
 
-new ResizeObserver(() => resize()).observe(canvas);
+new ResizeObserver(() => resize()).observe(document.querySelector("#stage")!);
 applyTheme(loadTheme());
 (document.querySelector("#theme") as HTMLSelectElement).value = loadTheme();
 onSchemeChange(() => {
