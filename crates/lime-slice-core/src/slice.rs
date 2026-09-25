@@ -163,6 +163,8 @@ pub struct SliceSettings {
     pub classic_estimator: bool,
     /// Klipper junction deviation, millimetres. `0` uses 0.02.
     pub junction_deviation_mm: f64,
+    /// Hold up same-layer islands that have nothing under them. Overhang supports stay on `supports`.
+    pub island_support: bool,
 }
 
 impl Default for SliceSettings {
@@ -201,6 +203,7 @@ impl Default for SliceSettings {
             include_preview: true,
             classic_estimator: false,
             junction_deviation_mm: 0.02,
+            island_support: true,
         }
     }
 }
@@ -292,6 +295,7 @@ impl SliceSettings {
             } else {
                 0.02
             },
+            island_support: true,
         }
     }
 
@@ -1142,20 +1146,18 @@ fn plan(
         })
         .collect();
     let roofs = roof_distances(&bands, &contours);
-    let supports = if settings.supports {
-        build_supports(
-            &bands,
-            &contours,
-            &SupportOpts {
-                angle_deg: settings.support_angle,
-                z_gap: settings.layer_height.max(0.12),
-                style: settings.support_style,
-                ..SupportOpts::default()
-            },
-        )
-    } else {
-        Vec::new()
-    };
+    let supports = build_supports(
+        &bands,
+        &contours,
+        &SupportOpts {
+            angle_deg: settings.support_angle,
+            z_gap: settings.layer_height.max(0.12),
+            style: settings.support_style,
+            overhangs: settings.supports,
+            islands: settings.island_support,
+            ..SupportOpts::default()
+        },
+    );
     let shaft = shaft_scales(&supports, settings.support_height_mult);
     let (remain_low, remain_high) = interior_remainings(blend, settings, &bands, &roofs);
     let jobs: Vec<Job> = bands

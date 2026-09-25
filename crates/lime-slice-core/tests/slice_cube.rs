@@ -2129,6 +2129,174 @@ fn printer_accel_cap_limits_m204() {
     }
 }
 
+fn tower_gap(pt: [f64; 2]) -> bool {
+    pt[0] > 8.15 && pt[0] < 21.85 && pt[1] > -1.0 && pt[1] < 17.0
+}
+
+#[test]
+fn bridge_span_infill_stays_inside_the_towers() {
+    let mesh = bridge_span();
+    let response = slice_configured(
+        &mesh,
+        &BlendMode::ByLayer {
+            bottom_mm: 4.0,
+            transition_mm: 6.0,
+        },
+        &profile(),
+        &SliceSettings {
+            baseline: false,
+            supports: false,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    assert!(response.sanity.ok, "{:?}", response.sanity.notes);
+    let mut leaks = 0u32;
+    for layer in response.layers.iter().filter(|l| l.z < 7.9) {
+        for path in &layer.paths {
+            if path.kind == "travel" || path.kind == "skirt" {
+                continue;
+            }
+            for w in path.pts.windows(2) {
+                let mid = [(w[0][0] + w[1][0]) * 0.5, (w[0][1] + w[1][1]) * 0.5];
+                if tower_gap(mid) || tower_gap(w[0]) || tower_gap(w[1]) {
+                    leaks += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(leaks, 0, "extrusion left the towers below the deck");
+    let layer = response
+        .layers
+        .iter()
+        .find(|l| (l.z - 4.4).abs() < 0.05)
+        .unwrap();
+    // Five 0.45 mm walls on an 8 mm tower leave the gyroid inside about [2.25, 5.75].
+    let span = |x0: f64, x1: f64| {
+        let mut minx = f64::MAX;
+        let mut maxx = f64::MIN;
+        for path in layer.paths.iter().filter(|p| p.kind == "sparse") {
+            for pt in &path.pts {
+                if pt[0] >= x0 && pt[0] < x1 {
+                    minx = minx.min(pt[0]);
+                    maxx = maxx.max(pt[0]);
+                }
+            }
+        }
+        (minx, maxx)
+    };
+    let (minx, maxx) = span(0.0, 15.0);
+    assert!(
+        minx > 2.0 && maxx < 6.0,
+        "sparse crossed the left wall stack at {minx:.3}..{maxx:.3}"
+    );
+    let (minx, maxx) = span(15.0, 40.0);
+    assert!(
+        minx > 24.0 && maxx < 28.0,
+        "sparse crossed the right wall stack at {minx:.3}..{maxx:.3}"
+    );
+    let support: u32 = response.layers.iter().map(|l| l.support_paths).sum();
+    assert_eq!(
+        support, 0,
+        "the deck is connected; it is not a floating island"
+    );
+}
+
+fn floating_island() -> Mesh {
+    let mut tris = Vec::new();
+    add_box(&mut tris, 0.0, 0.0, 0.0, 20.0, 20.0, 4.0);
+    add_box(&mut tris, 6.0, 6.0, 10.0, 14.0, 14.0, 14.0);
+    Mesh { triangles: tris }
+}
+
+#[test]
+fn floating_island_gets_support_without_the_overhang_toggle() {
+    let mesh = floating_island();
+    let bare_settings = SliceSettings {
+        supports: false,
+        island_support: false,
+        baseline: false,
+        ..SliceSettings::default()
+    };
+    let held_settings = SliceSettings {
+        supports: false,
+        island_support: true,
+        baseline: false,
+        ..SliceSettings::default()
+    };
+    let _ = slice_configured(&mesh, &speed_mode(), &profile(), &bare_settings).unwrap();
+    let off = slice_configured(&mesh, &speed_mode(), &profile(), &bare_settings).unwrap();
+    let _ = slice_configured(&mesh, &speed_mode(), &profile(), &held_settings).unwrap();
+    let on = slice_configured(&mesh, &speed_mode(), &profile(), &held_settings).unwrap();
+    assert!(
+        off.sanity.ok && on.sanity.ok,
+        "{:?} {:?}",
+        off.sanity.notes,
+        on.sanity.notes
+    );
+    let off_support: u32 = off.layers.iter().map(|l| l.support_paths).sum();
+    let on_support: u32 = on.layers.iter().map(|l| l.support_paths).sum();
+    assert_eq!(off_support, 0);
+    assert!(on_support > 0, "expected support under the floating box");
+    assert!(has_type(&on.gcode, "SUPPORT"));
+    let in_gap = on.layers.iter().any(|l| {
+        (4.3..10.0).contains(&l.z)
+            && l.paths.iter().any(|p| {
+                (p.kind == "support" || p.kind == "support-interface")
+                    && p.pts.windows(2).any(|w| {
+                        let mid = [(w[0][0] + w[1][0]) * 0.5, (w[0][1] + w[1][1]) * 0.5];
+                        mid[0] > 6.2 && mid[0] < 13.8 && mid[1] > 6.2 && mid[1] < 13.8
+                    })
+            })
+    });
+    assert!(in_gap, "support should fill the air under the island");
+    let island_layer = on
+        .layers
+        .iter()
+        .find(|l| (l.z - 10.2).abs() < 0.15)
+        .unwrap();
+    assert!(island_layer.paths.iter().any(|p| p.kind == "outer"));
+    assert!(
+        on.estimate.filament_g > off.estimate.filament_g,
+        "support filament {:.3} g vs bare {:.3} g",
+        on.estimate.filament_g,
+        off.estimate.filament_g
+    );
+    assert!(on.estimate.seconds > off.estimate.seconds);
+    eprintln!(
+        "island slice {:.2} ms (bare {:.2} ms)  time {:.1} s vs {:.1} s  filament {:.3} g vs {:.3} g",
+        on.core_ms, off.core_ms, on.estimate.seconds, off.estimate.seconds, on.estimate.filament_g, off.estimate.filament_g
+    );
+
+    let mut tris = Vec::new();
+    add_box(&mut tris, 0.0, 0.0, 0.0, 16.0, 16.0, 3.0);
+    add_box(&mut tris, 7.0, 7.0, 8.0, 8.4, 8.4, 11.0);
+    let chip = Mesh { triangles: tris };
+    let held = slice_configured(
+        &chip,
+        &speed_mode(),
+        &profile(),
+        &SliceSettings {
+            supports: false,
+            baseline: false,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    let chip_support = held.layers.iter().any(|l| {
+        l.z > 3.2
+            && l.z < 8.0
+            && l.paths.iter().any(|p| {
+                (p.kind == "support" || p.kind == "support-interface")
+                    && p.pts.windows(2).any(|w| {
+                        let mid = [(w[0][0] + w[1][0]) * 0.5, (w[0][1] + w[1][1]) * 0.5];
+                        mid[0] > 6.8 && mid[0] < 8.6 && mid[1] > 6.8 && mid[1] < 8.6
+                    })
+            })
+    });
+    assert!(chip_support, "a 1.4 mm island still needs a support spine");
+}
+
 #[test]
 fn printer_profile_keeps_cost_and_bed_when_fields_are_absent() {
     let parsed: lime_slice_core::PrinterProfile =
