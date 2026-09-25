@@ -101,6 +101,9 @@ const state = {
   supports: false,
   supportAngle: 45,
   supportStyle: "grid" as "grid" | "tree",
+  branchAngle: 40,
+  tipDiameter: 0.8,
+  trunkDiameter: 4.2,
   supportHeightMult: 1,
   infillCombine: true,
   combing: true,
@@ -330,8 +333,11 @@ function renderChrome() {
     `)}
     ${group("Supports", `
       ${check("supports", "Smart supports", state.supports)}
-      ${state.supports ? `${select("sstyle", "Style", state.supportStyle, [["grid", "Sparse grid"], ["tree", "Tree"]])}
+      ${state.supports ? `${select("sstyle", "Style", state.supportStyle, [["grid", "Sparse grid"], ["tree", "Organic tree"]])}
         ${num("sangle", "Overhang angle °", state.supportAngle, 20, 70, 5)}
+        ${state.supportStyle === "tree" ? `${num("bangle", "Branch angle °", state.branchAngle, 15, 60, 5)}
+        ${num("tipd", "Tip diameter mm", state.tipDiameter, 0.4, 2, 0.1)}
+        ${num("trunkd", "Trunk diameter mm", state.trunkDiameter, 1.5, 12, 0.2)}` : ""}
         ${num("shmult", "Shaft height ×", state.supportHeightMult, 1, 4, 1)}` : ""}
     `)}
     ${group("PA calibration", `
@@ -945,7 +951,7 @@ function onSettings(ev: Event) {
     applyFilter();
     return;
   }
-  const numIds = ["lh", "amin", "amax", "pa", "la", "zhopht", "zhopmin", "scarflen", "scarfsteps", "sangle", "shmult", "pastart", "paend", "pastep", "nozzle", "bedx", "bedy", "bedz", "vol", "accel", "density", "cost", "partScale"] as const;
+  const numIds = ["lh", "amin", "amax", "pa", "la", "zhopht", "zhopmin", "scarflen", "scarfsteps", "sangle", "bangle", "tipd", "trunkd", "shmult", "pastart", "paend", "pastep", "nozzle", "bedx", "bedy", "bedz", "vol", "accel", "density", "cost", "partScale"] as const;
   const map: Record<string, (v: number) => void> = {
     lh: (v) => { state.layerHeight = v || 0.2; },
     amin: (v) => { state.adaptiveMin = v || 0.08; },
@@ -957,6 +963,9 @@ function onSettings(ev: Event) {
     scarflen: (v) => { state.scarfLength = v || 10; },
     scarfsteps: (v) => { state.scarfSteps = v || 8; },
     sangle: (v) => { state.supportAngle = v || 45; },
+    bangle: (v) => { state.branchAngle = v || 40; },
+    tipd: (v) => { state.tipDiameter = v || 0.8; },
+    trunkd: (v) => { state.trunkDiameter = v || 4.2; },
     shmult: (v) => { state.supportHeightMult = v || 1; },
     pastart: (v) => { state.paStart = v || 0; },
     paend: (v) => { state.paEnd = v || 0; },
@@ -1292,6 +1301,9 @@ function payload() {
     supports: state.supports,
     supportAngle: state.supportAngle,
     supportStyle: state.supportStyle,
+    branchAngle: state.branchAngle,
+    tipDiameter: state.tipDiameter,
+    trunkDiameter: state.trunkDiameter,
     supportHeightMult: state.supportHeightMult,
     infillCombine: state.infillCombine,
     combing: state.combing,

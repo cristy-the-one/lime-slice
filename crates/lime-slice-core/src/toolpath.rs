@@ -1352,45 +1352,79 @@ pub fn plan_support(
         .collect()
 }
 
-/// Organic shafts: one loop per branch. Spacing follows toughness (denser when tougher).
+/// Organic branches: thin tips are one loop, thicker trunks are perimeters of the
+/// union of their cross-sections so nearby branches melt into one shape.
 pub fn plan_tree_support(
     centers: &[[f64; 2]],
+    radii: &[f64],
     strategy: &ResolvedStrategy,
     line_width: f64,
 ) -> Vec<Extrusion> {
     if centers.is_empty() {
         return Vec::new();
     }
-    let spacing = (7.2 - 4.0 * strategy.toughness).clamp(3.2, 7.2);
-    let kept = thin_centers(centers, spacing);
-    let radius = (line_width * (0.85 + strategy.toughness)).clamp(0.45, 1.35);
     let speed = crate::strategy::support_speed(strategy, false);
-    kept.into_iter()
-        .map(|c| {
-            let mut path = extrusion(PathKind::Support, strategy, octagon(c, radius), line_width);
+    let mut paths = Vec::new();
+    let mut thick: Vec<Loop> = Vec::new();
+    for (i, c) in centers.iter().copied().enumerate() {
+        let r = radii.get(i).copied().unwrap_or(line_width).max(0.32);
+        if r <= line_width * 0.95 {
+            let mut path = extrusion(PathKind::Support, strategy, circle_pts(c, r), line_width);
             path.speed = speed;
-            path
-        })
-        .collect()
-}
-
-fn thin_centers(centers: &[[f64; 2]], spacing: f64) -> Vec<[f64; 2]> {
-    let mut ordered = centers.to_vec();
-    ordered.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
-    let mut kept = Vec::new();
-    let limit = spacing * spacing;
-    for p in ordered {
-        if kept.iter().all(|q: &[f64; 2]| dist2(*q, p) >= limit) {
-            kept.push(p);
+            paths.push(path);
+        } else {
+            thick.push(circle_pts(c, r));
         }
     }
-    kept
+    if thick.is_empty() {
+        return paths;
+    }
+    let mut solid: Vec<Loop> = Vec::new();
+    for loop_ in &thick {
+        solid = boolean_union(&solid, std::slice::from_ref(loop_));
+    }
+    let inset = offset_loops(&solid, -line_width * 0.5);
+    let walls = if inset.is_empty() { solid } else { inset };
+    emit_support_loops(&mut paths, &walls, strategy, line_width, speed);
+    let inner = offset_loops(&walls, -line_width * 0.95);
+    let inner: Vec<Loop> = inner
+        .into_iter()
+        .filter(|l| signed_area(l).abs() >= 0.35 && l.len() >= 3)
+        .collect();
+    emit_support_loops(&mut paths, &inner, strategy, line_width, speed);
+    paths
 }
 
-fn octagon(c: [f64; 2], r: f64) -> Vec<[f64; 2]> {
-    let mut pts: Vec<[f64; 2]> = (0..8)
+fn emit_support_loops(
+    out: &mut Vec<Extrusion>,
+    loops: &[Loop],
+    strategy: &ResolvedStrategy,
+    line_width: f64,
+    speed: f64,
+) {
+    for lp in loops {
+        if lp.len() < 3 {
+            continue;
+        }
+        let mut pts = lp.clone();
+        if dist2(pts[0], *pts.last().unwrap()) > 1e-8 {
+            let first = pts[0];
+            pts.push(first);
+        }
+        if polyline_len(&pts) < 0.4 {
+            continue;
+        }
+        let mut path = extrusion(PathKind::Support, strategy, pts, line_width);
+        path.speed = speed;
+        out.push(path);
+    }
+}
+
+fn circle_pts(c: [f64; 2], r: f64) -> Vec<[f64; 2]> {
+    let n = if r > 2.2 { 20 } else { 12 };
+    let mut pts: Vec<[f64; 2]> = (0..n)
         .map(|i| {
-            let a = i as f64 * std::f64::consts::TAU / 8.0;
+            let a = i as f64 * std::f64::consts::TAU / n as f64;
             [c[0] + r * a.cos(), c[1] + r * a.sin()]
         })
         .collect();

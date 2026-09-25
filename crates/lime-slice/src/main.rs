@@ -66,9 +66,18 @@ enum Cmd {
         /// Previous planner: line infill, no arcs, no spatial index.
         #[arg(long, default_value_t = false)]
         classic: bool,
-        /// `grid` or `tree`.
+        /// `grid` or `tree` (organic branching).
         #[arg(long, default_value = "grid")]
         support_style: String,
+        /// Organic branch lean from vertical, degrees.
+        #[arg(long, default_value_t = 40.0)]
+        branch_angle: f64,
+        /// Organic tip diameter, millimetres.
+        #[arg(long, default_value_t = 0.8)]
+        tip_diameter: f64,
+        /// Organic trunk diameter, millimetres.
+        #[arg(long, default_value_t = 4.2)]
+        trunk_diameter: f64,
         /// Sparse support shaft height multiplier. `1` keeps the model layer height.
         #[arg(long, default_value_t = 1.0)]
         support_height_mult: f64,
@@ -190,6 +199,9 @@ fn run() -> Result<(), String> {
             overhang_control,
             classic,
             support_style,
+            branch_angle,
+            tip_diameter,
+            trunk_diameter,
             support_height_mult,
             infill_combine,
             combing,
@@ -238,11 +250,14 @@ fn run() -> Result<(), String> {
                     travel_opt,
                     overhang_control,
                     classic,
-                    support_style: if support_style == "tree" {
+                    support_style: if matches!(support_style.as_str(), "tree" | "organic") {
                         lime_slice_core::SupportStyle::Tree
                     } else {
                         lime_slice_core::SupportStyle::Grid
                     },
+                    branch_angle,
+                    tip_diameter,
+                    trunk_diameter,
                     support_height_mult,
                     infill_combine,
                     combing,
@@ -861,6 +876,9 @@ fn slice_file(
             lime_slice_core::SupportStyle::Tree => "tree".into(),
             lime_slice_core::SupportStyle::Grid => "grid".into(),
         },
+        branch_angle: settings.branch_angle,
+        tip_diameter: settings.tip_diameter,
+        trunk_diameter: settings.trunk_diameter,
         support_height_mult: settings.support_height_mult,
         infill_combine: settings.infill_combine,
         combing: settings.combing,

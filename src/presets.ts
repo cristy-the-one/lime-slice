@@ -15,6 +15,9 @@ export interface PresetSettings {
   supports: boolean;
   supportAngle: number;
   supportStyle: string;
+  branchAngle: number;
+  tipDiameter: number;
+  trunkDiameter: number;
   supportHeightMult: number;
   infillCombine: boolean;
   combing: boolean;
@@ -51,6 +54,9 @@ export const DEFAULT_PRESET: PresetSettings = {
   supports: false,
   supportAngle: 45,
   supportStyle: "grid",
+  branchAngle: 40,
+  tipDiameter: 0.8,
+  trunkDiameter: 4.2,
   supportHeightMult: 1,
   infillCombine: true,
   combing: true,
@@ -88,6 +94,9 @@ const LABELS: Record<keyof PresetSettings, string> = {
   supports: "Supports",
   supportAngle: "Support angle",
   supportStyle: "Support style",
+  branchAngle: "Branch angle",
+  tipDiameter: "Tip diameter",
+  trunkDiameter: "Trunk diameter",
   supportHeightMult: "Shaft height ×",
   infillCombine: "Combine infill",
   combing: "Combing",
