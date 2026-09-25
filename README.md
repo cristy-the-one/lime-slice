@@ -62,7 +62,9 @@ cargo run -p lime-slice --release -- slice samples/slope_ramp.stl --blend speed 
 cargo run -p lime-slice --release -- slice samples/overhang_ledge.stl --blend speed --supports -o ledge.gcode
 ```
 
-Blend names: `speed`, `toughness`, `weight` (alias `efficiency`), `layer`, `region`.
+Blend names: `speed`, `toughness`, `weight` (alias `efficiency`), `layer`, `region`. Region blends are still an axis-aligned half-space (`ByRegion { axis, at_mm }`). Modifier boxes and painted regions stay deferred until the core grows real region masks.
+
+The preview follows the system theme, or an explicit light or dark theme. IBM Plex is self-hosted under `public/fonts` (SIL Open Font License). A per-layer time sparkline marks layers slower than twice the median, and layers under 8 s, which a cooling min-layer-time would slow down. The planner does not apply that floor. The move scrubber plays the active layer and keeps the G-code tab on the matching command. Slice presets live in `localStorage` and diff against the factory defaults.
 
 Feature knobs default on. Turn one off with `--variable-width false`, `--arc-fit false`, `--travel-opt false`, `--overhang-control false`, `--infill-combine false`, `--combing false`, or `--feature-speeds false`. `--scarf-seam blend|off|outer|all` chooses the scarf joint (default `blend`). Length and step count are `--scarf-length` (10 mm) and `--scarf-steps` (8). `--classic` is the baseline planner: line infill for the full height, one feed for every feature, no variable walls, no arcs, no overhang slowdown, no infill combining, no combing, no scarf, grid supports only, and a full triangle scan.
 

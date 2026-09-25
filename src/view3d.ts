@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { colorForPath, type ColorMode, hexRgb } from "./colors";
+import { hexToThree, themeColors } from "./theme";
 
 export interface ViewPath {
   kind: string;
@@ -34,6 +35,8 @@ export interface SliceView3d {
   setColorMode(mode: ColorMode): void;
   setPlane(plane: { axis: "x" | "y"; at: number } | null): void;
   onPlane(cb: ((at: number) => void) | null): void;
+  setTheme(): void;
+  setPlayhead(seg: { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number } | null): void;
   resize(): void;
 }
 
@@ -46,6 +49,8 @@ const noopView: SliceView3d = {
   setColorMode() {},
   setPlane() {},
   onPlane() {},
+  setTheme() {},
+  setPlayhead() {},
   resize() {},
 };
 
@@ -61,7 +66,8 @@ export function createSliceView(canvas: HTMLCanvasElement): SliceView3d {
 function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-  renderer.setClearColor(0x0c0e12, 1);
+  let colors = themeColors();
+  renderer.setClearColor(hexToThree(colors.stage), 1);
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 5000);
@@ -73,11 +79,11 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
 
   const root = new THREE.Group();
   scene.add(root);
-  const bed = new THREE.GridHelper(10, 10, 0x313744, 0x222733);
+  let bed = new THREE.GridHelper(10, 10, hexToThree(colors.line), hexToThree(colors.bedMinor));
   scene.add(bed);
 
   const planeMat = new THREE.MeshBasicMaterial({
-    color: 0x2ec4b6,
+    color: hexToThree(colors.teal),
     transparent: true,
     opacity: 0.14,
     side: THREE.DoubleSide,
@@ -89,11 +95,22 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   scene.add(plane);
   const handle = new THREE.Mesh(
     new THREE.SphereGeometry(0.9, 16, 12),
-    new THREE.MeshBasicMaterial({ color: 0xf0a202, depthTest: false }),
+    new THREE.MeshBasicMaterial({ color: hexToThree(colors.amber), depthTest: false }),
   );
   handle.visible = false;
   handle.renderOrder = 3;
   scene.add(handle);
+  const cursorMat = new THREE.MeshBasicMaterial({ color: hexToThree(colors.amber), depthTest: false });
+  const cursor = new THREE.Mesh(new THREE.SphereGeometry(0.7, 12, 10), cursorMat);
+  cursor.visible = false;
+  cursor.renderOrder = 4;
+  scene.add(cursor);
+  const playGeo = new THREE.BufferGeometry();
+  playGeo.setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 3));
+  const playLine = new THREE.Line(playGeo, new THREE.LineBasicMaterial({ color: hexToThree(colors.amber), depthTest: false }));
+  playLine.visible = false;
+  playLine.renderOrder = 4;
+  scene.add(playLine);
 
   let layers: LayerLines[] = [];
   let slice: ViewSlice | null = null;
@@ -106,6 +123,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   let fitted = false;
   let planeSpec: { axis: "x" | "y"; at: number } | null = null;
   let planeCb: ((at: number) => void) | null = null;
+  let origin = { cx: 0, cy: 0 };
   let dragging = false;
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
@@ -144,6 +162,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     const max = slice.mesh.max;
     const cx = (min[0] + max[0]) / 2;
     const cy = (min[1] + max[1]) / 2;
+    origin = { cx, cy };
     const midZ = (min[2] + max[2]) / 2;
     const spanX = Math.max(1, max[0] - min[0]);
     const spanY = Math.max(1, max[1] - min[1]);
@@ -270,6 +289,37 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     },
     onPlane(cb) {
       planeCb = cb;
+    },
+    setTheme() {
+      colors = themeColors();
+      renderer.setClearColor(hexToThree(colors.stage), 1);
+      planeMat.color.setHex(hexToThree(colors.teal));
+      (handle.material as THREE.MeshBasicMaterial).color.setHex(hexToThree(colors.amber));
+      cursorMat.color.setHex(hexToThree(colors.amber));
+      (playLine.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.amber));
+      const next = new THREE.GridHelper(10, 10, hexToThree(colors.line), hexToThree(colors.bedMinor));
+      next.scale.copy(bed.scale);
+      next.position.copy(bed.position);
+      scene.remove(bed);
+      bed.geometry.dispose();
+      const mats = Array.isArray(bed.material) ? bed.material : [bed.material];
+      mats.forEach((mat) => mat.dispose());
+      bed = next;
+      scene.add(bed);
+    },
+    setPlayhead(seg) {
+      if (!seg || !slice) {
+        cursor.visible = false;
+        playLine.visible = false;
+        return;
+      }
+      cursor.visible = true;
+      playLine.visible = true;
+      cursor.position.set(seg.x1 - origin.cx, seg.z1, -(seg.y1 - origin.cy));
+      const pos = playGeo.getAttribute("position") as THREE.BufferAttribute;
+      pos.setXYZ(0, seg.x0 - origin.cx, seg.z0, -(seg.y0 - origin.cy));
+      pos.setXYZ(1, seg.x1 - origin.cx, seg.z1, -(seg.y1 - origin.cy));
+      pos.needsUpdate = true;
     },
     setSlice(next) {
       slice = next;

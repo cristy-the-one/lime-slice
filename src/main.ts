@@ -1,5 +1,8 @@
 import { colorForPath, FEATURE_COLOR, FEATURE_LABEL, type ColorMode } from "./colors";
+import { layerClass, layerMoves, matchGcodeLine, parseLayerGcode, type PlayPoint } from "./playback";
+import { DEFAULT_PRESET, diffPreset, presetKeys, readPresets, writePresets, type PresetSettings } from "./presets";
 import { layerWeight, resolved, type ResolvedCard } from "./strategy";
+import { applyTheme, loadTheme, onSchemeChange, themeColors, type ThemeChoice } from "./theme";
 import { createSliceView, type SliceView3d } from "./view3d";
 
 const API = "http://127.0.0.1:43118";
@@ -112,6 +115,9 @@ const state = {
   autoSlice: false,
   viewMode: "split" as "flat" | "split" | "solid",
   query: "",
+  move: 0,
+  stageTab: "preview" as "preview" | "gcode",
+  playing: false,
 };
 
 const worker = new Worker(new URL("./slice-worker.ts", import.meta.url), { type: "module" });
@@ -139,6 +145,13 @@ app.innerHTML = `
           <button type="button" data-sample="arc_post.stl">Arc post</button>
         </nav>
       </details>
+      <label class="theme-field">Theme
+        <select id="theme" aria-label="Theme">
+          <option value="system">System</option>
+          <option value="dark">Dark</option>
+          <option value="light">Light</option>
+        </select>
+      </label>
       <div class="spacer"></div>
       <div class="timing" id="timing">No slice yet</div>
       <button class="btn primary" id="slice" type="button">Slice</button>
@@ -154,6 +167,10 @@ app.innerHTML = `
             <button class="btn mode" type="button" data-mode="flat" aria-pressed="false">2D</button>
             <button class="btn mode" type="button" data-mode="split" aria-pressed="true">Split</button>
             <button class="btn mode" type="button" data-mode="solid" aria-pressed="false">3D</button>
+          </div>
+          <div class="modes">
+            <button class="btn mode tab" type="button" data-tab="preview" aria-pressed="true">Preview</button>
+            <button class="btn mode tab" type="button" data-tab="gcode" aria-pressed="false">G-code</button>
           </div>
           <label class="field">Color
             <select id="colorBy">
@@ -176,6 +193,18 @@ app.innerHTML = `
           <div class="previews">
             <div class="pane" id="pane2d"><canvas id="view" aria-label="2D toolpath"></canvas></div>
             <div class="pane" id="pane3d"><canvas id="view3d" aria-label="3D toolpath"></canvas></div>
+          </div>
+        </div>
+        <div class="gcode-pane" id="gcodePane" hidden></div>
+        <div class="stage-tools">
+          <div class="spark-wrap">
+            <div class="spark-label" id="sparkLabel">Layer time</div>
+            <canvas id="spark" aria-label="Per-layer time"></canvas>
+          </div>
+          <div class="playback">
+            <button class="btn" id="play" type="button" aria-label="Play toolpath">Play</button>
+            <input id="move" type="range" min="0" max="0" value="0" aria-label="Toolpath playback" />
+            <div class="play-readout" id="playReadout">Feature — · feed — · E —</div>
           </div>
         </div>
         <div class="legend" id="legend"></div>
@@ -204,7 +233,7 @@ function stale() {
 
 function settingsHash() {
   const mesh = state.mesh ? `${state.mesh.name}:${state.mesh.bytes.byteLength}` : "";
-  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, ...rest } = state;
+  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stageTab: _tab, playing: _play, ...rest } = state;
   return JSON.stringify({ mesh, rest });
 }
 
@@ -230,6 +259,7 @@ function renderChrome() {
     <input id="find" type="search" placeholder="Search settings" value="${escapeHtml(state.query)}" />
     <h2>Mesh</h2>
     <div class="meta">${mesh ? `<b>${escapeHtml(mesh.name)}</b>` : "Nothing loaded"}</div>
+    ${group("Presets", presetHtml())}
     ${group("Quality", `
       ${num("lh", "Layer height mm", state.layerHeight, 0.08, 0.4, 0.02)}
       ${check("adaptive", "Adaptive layers", state.adaptive)}
@@ -310,6 +340,9 @@ function renderChrome() {
   paintBanner(isStale);
   paintLegend();
   paintSlider();
+  paintSpark();
+  paintPlayback();
+  paintGcode();
   const status = document.querySelector("#status")!;
   if (!mesh) status.textContent = "Load an STL or 3MF from Samples or Open mesh. Arrow keys move the layer.";
   else if (state.busy) status.textContent = `Slicing ${mesh.name}…`;
@@ -354,7 +387,7 @@ function blendFields() {
     return `${num("bottom", "Toughness from the bed, mm", state.bottomMm, 0, 200, 0.2)}${num("trans", "Transition into speed, mm", state.transitionMm, 0, 200, 0.2)}`;
   }
   if (state.blendKind === "byRegion") {
-    return `${select("axis", "Split axis", state.axis, [["x", "X"], ["y", "Y"]])}${num("at", "Split at mm (low = toughness)", state.atMm, -500, 500, 0.5)}<div class="meta" id="planeWarn"></div>`;
+    return `${select("axis", "Split axis", state.axis, [["x", "X"], ["y", "Y"]])}${num("at", "Split at mm (low = toughness)", state.atMm, -500, 500, 0.5)}<p class="deferred">Half-space split only. Painted regions and modifier boxes stay deferred until the core has region masks.</p>`;
   }
   return "";
 }
@@ -484,6 +517,188 @@ function paintSlider() {
   }
 }
 
+function currentPreset(): PresetSettings {
+  const out = { ...DEFAULT_PRESET };
+  for (const key of presetKeys()) {
+    (out as unknown as Record<string, unknown>)[key] = (state as unknown as Record<string, unknown>)[key];
+  }
+  return out;
+}
+function presetHtml() {
+  const saved = readPresets();
+  const names = Object.keys(saved).sort();
+  const options = names.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("");
+  const diff = diffPreset(currentPreset());
+  const body = diff.length ? diff.map((line) => escapeHtml(line)).join("<br>") : "Matches the default preset.";
+  return `
+    <label class="field">Saved<select id="presetPick"><option value="">Choose…</option>${options}</select></label>
+    <div class="stack" style="flex-direction:row;flex-wrap:wrap">
+      <button class="btn" id="presetLoad" type="button">Load</button>
+      <button class="btn" id="presetDelete" type="button">Delete</button>
+    </div>
+    <label class="field">Name<input id="presetName" type="text" placeholder="bench speed" /></label>
+    <button class="btn" id="presetSave" type="button">Save preset</button>
+    <div class="meta diff" id="presetDiff"><b>Vs default</b><br>${body}</div>
+  `;
+}
+function applyPreset(next: PresetSettings) {
+  for (const key of presetKeys()) {
+    (state as unknown as Record<string, unknown>)[key] = next[key];
+  }
+  touch();
+}
+function paintPresetDiff() {
+  const node = document.querySelector("#presetDiff");
+  if (!node) return;
+  const diff = diffPreset(currentPreset());
+  node.innerHTML = `<b>Vs default</b><br>${diff.length ? diff.map((line) => escapeHtml(line)).join("<br>") : "Matches the default preset."}`;
+}
+
+function movesNow(): PlayPoint[] {
+  const layer = state.result?.layers[state.layer];
+  if (!layer) return [];
+  return layerMoves(layer.paths, layer.z, layer.height);
+}
+
+function paintPlayback() {
+  const moves = movesNow();
+  const max = Math.max(0, moves.length - 1);
+  state.move = Math.max(0, Math.min(max, state.move));
+  const slider = document.querySelector<HTMLInputElement>("#move");
+  const readout = document.querySelector("#playReadout");
+  const play = document.querySelector<HTMLButtonElement>("#play");
+  if (slider) {
+    slider.max = String(max);
+    slider.value = String(moves.length ? state.move : 0);
+    slider.disabled = moves.length === 0;
+  }
+  if (play) play.textContent = state.playing ? "Pause" : "Play";
+  const point = moves[state.move];
+  if (!readout) return;
+  if (!point) {
+    readout.textContent = "Feature — · feed — · E —";
+    return;
+  }
+  const gcode = parseLayerGcode(state.result?.gcode ?? "", state.result?.layers[state.layer]?.index ?? state.layer);
+  const hit = matchGcodeLine(gcode, point);
+  const line = hit >= 0 ? gcode[hit] : undefined;
+  const feed = line?.feed ?? point.feed;
+  const e = line?.e ?? point.e;
+  const label = FEATURE_LABEL[point.kind] ?? point.kind;
+  readout.textContent = `${label} · ${feed.toFixed(0)} mm/s · E ${e.toFixed(3)}`;
+}
+
+function paintGcode() {
+  const pane = document.querySelector("#gcodePane");
+  const stage = document.querySelector("#stage");
+  if (!pane || !stage) return;
+  const on = state.stageTab === "gcode";
+  pane.toggleAttribute("hidden", !on);
+  stage.classList.toggle("tab-gcode", on);
+  document.querySelectorAll<HTMLButtonElement>(".tab").forEach((el) => {
+    const pressed = el.dataset.tab === state.stageTab;
+    el.setAttribute("aria-pressed", pressed ? "true" : "false");
+  });
+  if (!on) return;
+  const layer = state.result?.layers[state.layer];
+  const lines = layer ? parseLayerGcode(state.result?.gcode ?? "", layer.index) : [];
+  if (!state.result) {
+    pane.innerHTML = `<div class="meta">Slice to read G-code for this layer.</div>`;
+    return;
+  }
+  if (lines.length === 0) {
+    pane.innerHTML = `<div class="meta">No ;LAYER block in this G-code. Playback still follows the preview.</div>`;
+    return;
+  }
+  const point = movesNow()[state.move];
+  const active = matchGcodeLine(lines, point);
+  pane.innerHTML = lines.map((line, i) => `<div class="line${i === active ? " on" : ""}" data-gline="${i}">${escapeHtml(line.text)}</div>`).join("");
+  pane.querySelector(".line.on")?.scrollIntoView({ block: "center" });
+}
+
+function syncGcodeHighlight() {
+  const pane = document.querySelector("#gcodePane");
+  if (!pane || state.stageTab !== "gcode") return;
+  const lines = [...pane.querySelectorAll<HTMLElement>(".line")];
+  if (lines.length === 0) return;
+  const layer = state.result?.layers[state.layer];
+  const parsed = layer ? parseLayerGcode(state.result?.gcode ?? "", layer.index) : [];
+  const active = matchGcodeLine(parsed, movesNow()[state.move]);
+  lines.forEach((el, i) => el.classList.toggle("on", i === active));
+  pane.querySelector(".line.on")?.scrollIntoView({ block: "nearest" });
+}
+
+function paintSpark() {
+  const canvasEl = document.querySelector<HTMLCanvasElement>("#spark");
+  const label = document.querySelector("#sparkLabel");
+  if (!canvasEl) return;
+  const layers = state.result?.layers ?? [];
+  const seconds = layers.map((layer) => layer.seconds ?? 0);
+  const here = layers[state.layer];
+  const klass = here ? layerClass(seconds, state.layer) : "ok";
+  if (label) {
+    const tag = klass === "slow" ? "slow" : klass === "fast" ? "too fast" : "typical";
+    label.innerHTML = here
+      ? `<i style="background:var(--slow)"></i>slow<br><i style="background:var(--fast)"></i>too fast<br>${(here.seconds ?? 0).toFixed(1)} s · ${tag}`
+      : "Layer time";
+  }
+  const rect = canvasEl.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvasEl.width = Math.max(1, Math.floor(rect.width * dpr));
+  canvasEl.height = Math.max(1, Math.floor(rect.height * dpr));
+  const g = canvasEl.getContext("2d");
+  if (!g) return;
+  const colors = themeColors();
+  g.clearRect(0, 0, canvasEl.width, canvasEl.height);
+  if (seconds.length === 0) return;
+  const max = Math.max(...seconds, 0.001);
+  const gap = seconds.length > 80 ? 0 : 1 * dpr;
+  const barW = canvasEl.width / seconds.length;
+  seconds.forEach((value, i) => {
+    const kind = layerClass(seconds, i);
+    g.fillStyle = kind === "slow" ? colors.slow : kind === "fast" ? colors.fast : colors.spark;
+    const h = Math.max(dpr, (value / max) * (canvasEl.height - 3 * dpr));
+    g.fillRect(i * barW, canvasEl.height - h, Math.max(dpr, barW - gap), h);
+    if (i === state.layer) {
+      g.strokeStyle = colors.teal;
+      g.lineWidth = Math.max(1, dpr);
+      g.strokeRect(i * barW + 0.5, canvasEl.height - h, Math.max(dpr, barW - gap) - 1, h - 1);
+    }
+  });
+}
+
+let playTimer = 0;
+function stopPlay() {
+  state.playing = false;
+  window.clearInterval(playTimer);
+  const play = document.querySelector<HTMLButtonElement>("#play");
+  if (play) play.textContent = "Play";
+}
+function togglePlay() {
+  if (state.playing) {
+    stopPlay();
+    return;
+  }
+  const moves = movesNow();
+  if (moves.length === 0) return;
+  if (state.move >= moves.length - 1) state.move = 0;
+  state.playing = true;
+  const play = document.querySelector<HTMLButtonElement>("#play");
+  if (play) play.textContent = "Pause";
+  playTimer = window.setInterval(() => {
+    const n = movesNow().length;
+    if (state.move >= n - 1) {
+      stopPlay();
+      paintPlayback();
+      return;
+    }
+    state.move += 1;
+    paintPlayback();
+    syncGcodeHighlight();
+    draw();
+  }, 40);
+}
+
 function applyFilter() {
   const q = state.query.trim().toLowerCase();
   document.querySelectorAll<HTMLElement>("#left .setting").forEach((el) => {
@@ -493,12 +708,20 @@ function applyFilter() {
 
 function scrub(next: number) {
   const max = Math.max(0, (state.result?.layers.length ?? 1) - 1);
+  const prev = state.layer;
   state.layer = Math.max(state.rangeLow, Math.min(max, next));
+  if (state.layer !== prev) {
+    state.move = 0;
+    stopPlay();
+  }
   const readout = document.querySelector("#layerReadout");
   if (readout) readout.innerHTML = layerReadout();
   const resolvedNode = document.querySelector("#resolved");
   if (resolvedNode && state.blendKind === "byLayer") resolvedNode.innerHTML = paramTable(resolved(currentWeight(), state.layerHeight));
   paintSlider();
+  paintSpark();
+  paintPlayback();
+  paintGcode();
   draw();
 }
 
@@ -514,6 +737,27 @@ document.querySelector("#left")!.addEventListener("click", (ev) => {
     touch();
   }
   if (t.id === "paexport" && state.paGcode) download(state.paGcode, "pa-calibration.gcode");
+  if (t.id === "presetSave") {
+    const name = (document.querySelector("#presetName") as HTMLInputElement).value.trim();
+    if (!name) return;
+    const all = readPresets();
+    all[name] = currentPreset();
+    writePresets(all);
+    renderChrome();
+  }
+  if (t.id === "presetLoad") {
+    const name = (document.querySelector("#presetPick") as HTMLSelectElement).value;
+    const preset = readPresets()[name];
+    if (preset) applyPreset({ ...DEFAULT_PRESET, ...preset });
+  }
+  if (t.id === "presetDelete") {
+    const name = (document.querySelector("#presetPick") as HTMLSelectElement).value;
+    if (!name) return;
+    const all = readPresets();
+    delete all[name];
+    writePresets(all);
+    renderChrome();
+  }
 });
 document.querySelector("#right")!.addEventListener("click", (ev) => {
   const cardEl = (ev.target as HTMLElement).closest<HTMLElement>("[data-card]");
@@ -621,6 +865,7 @@ function markStale() {
   if (exp) exp.disabled = !state.result || isStale || state.busy;
   document.querySelector("#stage")?.classList.toggle("stale", isStale);
   paintBanner(isStale);
+  paintPresetDiff();
   if (isStale) document.querySelector("#status")!.textContent = "This preview is stale. Re-slice before export.";
   scheduleAuto();
   draw();
@@ -652,6 +897,35 @@ document.querySelector("#file")!.addEventListener("change", (ev) => {
 });
 document.querySelectorAll<HTMLButtonElement>(".mode").forEach((button) => {
   button.addEventListener("click", () => setView(button.dataset.mode as typeof state.viewMode));
+});
+document.querySelector("#theme")!.addEventListener("change", (ev) => {
+  applyTheme((ev.target as HTMLSelectElement).value as ThemeChoice);
+  view3d.setTheme();
+  draw();
+});
+document.querySelectorAll<HTMLButtonElement>(".tab").forEach((button) => {
+  button.addEventListener("click", () => {
+    state.stageTab = button.dataset.tab === "gcode" ? "gcode" : "preview";
+    paintGcode();
+    resize();
+  });
+});
+document.querySelector("#play")!.addEventListener("click", () => togglePlay());
+document.querySelector("#move")!.addEventListener("input", (ev) => {
+  stopPlay();
+  state.move = Number((ev.target as HTMLInputElement).value);
+  paintPlayback();
+  syncGcodeHighlight();
+  draw();
+});
+document.querySelector("#spark")!.addEventListener("click", (ev) => {
+  const layers = state.result?.layers.length ?? 0;
+  if (layers === 0) return;
+  const rect = (ev.currentTarget as HTMLCanvasElement).getBoundingClientRect();
+  const t = ((ev as MouseEvent).clientX - rect.left) / Math.max(1, rect.width);
+  const index = Math.max(0, Math.min(layers - 1, Math.floor(t * layers)));
+  if (index < state.rangeLow) state.rangeLow = index;
+  scrub(index);
 });
 document.querySelector("#colorBy")!.addEventListener("change", (ev) => {
   state.colorMode = (ev.target as HTMLSelectElement).value as ColorMode;
@@ -940,12 +1214,13 @@ function draw() {
   const w = canvas.width;
   const h = canvas.height;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = "#0c0e12";
+  const colors = themeColors();
+  ctx.fillStyle = colors.stage;
   ctx.fillRect(0, 0, w, h);
   const layer = state.result?.layers[state.layer];
   const mesh = state.result?.mesh;
   if (!layer || !mesh) {
-    ctx.fillStyle = "#b3ab9e";
+    ctx.fillStyle = colors.muted;
     ctx.font = `${14 * (window.devicePixelRatio || 1)}px IBM Plex Sans, sans-serif`;
     ctx.fillText(state.mesh ? state.mesh.name : "Toolpath preview", 24, 36);
     ctx.fillText(state.mesh ? "Slice to preview the toolpath." : "Open a mesh, then slice.", 24, 60);
@@ -959,23 +1234,39 @@ function draw() {
   const ox = (w - spanX * scale) / 2;
   const oy = (h - spanY * scale) / 2;
   const map = (x: number, y: number): [number, number] => [ox + (x - mesh.min[0]) * scale, h - (oy + (y - mesh.min[1]) * scale)];
-  for (const path of layer.paths) {
-    if (state.hidden.has(path.kind)) continue;
-    if (path.kind === "travel" && !state.showTravel) continue;
+  const played = movesNow()[state.move];
+  layer.paths.forEach((path, pathIndex) => {
+    if (state.hidden.has(path.kind)) return;
+    if (path.kind === "travel" && !state.showTravel) return;
+    const cut = !played ? path.pts.length : pathIndex < played.path ? path.pts.length : pathIndex > played.path ? 1 : played.seg + 1;
+    strokePts(path, 0, cut, 1);
+    if (cut < path.pts.length) strokePts(path, Math.max(0, cut - 1), path.pts.length, 0.22);
+  });
+  ctx.setLineDash([]);
+  function strokePts(path: PreviewPath, from: number, to: number, alpha: number) {
+    if (to - from < 1) return;
     ctx.beginPath();
-    path.pts.forEach((p, i) => {
-      const [x, y] = map(p[0], p[1]);
-      if (i === 0) ctx.moveTo(x, y);
+    for (let i = from; i < to; i++) {
+      const [x, y] = map(path.pts[i][0], path.pts[i][1]);
+      if (i === from) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
-    });
+    }
+    ctx.globalAlpha = alpha;
     ctx.strokeStyle = colorForPath(path.kind, state.colorMode, path.toughness ?? 0, path.effectiveSpeed ?? path.speed ?? 0);
     ctx.lineWidth = path.kind === "travel" ? 1 : Math.max(1.2, scale * 0.1);
     ctx.setLineDash(path.kind === "travel" ? [4, 4] : []);
     ctx.stroke();
+    ctx.globalAlpha = 1;
   }
-  ctx.setLineDash([]);
+  if (played) {
+    const [x, y] = map(played.x, played.y);
+    ctx.fillStyle = colors.amber;
+    ctx.beginPath();
+    ctx.arc(x, y, 5 * (window.devicePixelRatio || 1), 0, Math.PI * 2);
+    ctx.fill();
+  }
   if (state.blendKind === "byRegion") {
-    ctx.strokeStyle = "#2ec4b6";
+    ctx.strokeStyle = colors.teal;
     ctx.lineWidth = 2;
     ctx.beginPath();
     if (state.axis === "x") {
@@ -994,6 +1285,11 @@ function draw() {
   sync3d();
 }
 
+function segmentStart(paths: PreviewPath[], point: PlayPoint): [number, number] {
+  const prev = paths[point.path]?.pts[point.seg - 1];
+  return prev ?? [point.x, point.y];
+}
+
 function sync3d() {
   if (state.result !== shown) {
     shown = state.result;
@@ -1003,6 +1299,10 @@ function sync3d() {
   }
   view3d.setShowTravel(state.showTravel && !state.hidden.has("travel"));
   view3d.setRange(state.rangeLow, state.layer);
+  const moves = movesNow();
+  const point = moves[state.move];
+  const prev = point ? segmentStart(state.result?.layers[state.layer]?.paths ?? [], point) : null;
+  view3d.setPlayhead(point && prev ? { x0: prev[0], y0: prev[1], z0: point.z, x1: point.x, y1: point.y, z1: point.z } : null);
   view3d.setPlane(state.blendKind === "byRegion" && state.result ? { axis: state.axis, at: state.atMm } : null);
   view3d.onPlane((at) => {
     state.atMm = Math.round(at * 10) / 10;
@@ -1035,7 +1335,14 @@ async function probe() {
 }
 
 new ResizeObserver(() => resize()).observe(canvas);
+applyTheme(loadTheme());
+(document.querySelector("#theme") as HTMLSelectElement).value = loadTheme();
+onSchemeChange(() => {
+  view3d.setTheme();
+  draw();
+});
 renderChrome();
 fitNarrow();
 resize();
+view3d.setTheme();
 void probe();
