@@ -2166,6 +2166,35 @@ fn bridge_span_infill_stays_inside_the_towers() {
         }
     }
     assert_eq!(leaks, 0, "extrusion left the towers below the deck");
+    let layer = response
+        .layers
+        .iter()
+        .find(|l| (l.z - 4.4).abs() < 0.05)
+        .unwrap();
+    // Five 0.45 mm walls on an 8 mm tower leave the gyroid inside about [2.25, 5.75].
+    let span = |x0: f64, x1: f64| {
+        let mut minx = f64::MAX;
+        let mut maxx = f64::MIN;
+        for path in layer.paths.iter().filter(|p| p.kind == "sparse") {
+            for pt in &path.pts {
+                if pt[0] >= x0 && pt[0] < x1 {
+                    minx = minx.min(pt[0]);
+                    maxx = maxx.max(pt[0]);
+                }
+            }
+        }
+        (minx, maxx)
+    };
+    let (minx, maxx) = span(0.0, 15.0);
+    assert!(
+        minx > 2.0 && maxx < 6.0,
+        "sparse crossed the left wall stack at {minx:.3}..{maxx:.3}"
+    );
+    let (minx, maxx) = span(15.0, 40.0);
+    assert!(
+        minx > 24.0 && maxx < 28.0,
+        "sparse crossed the right wall stack at {minx:.3}..{maxx:.3}"
+    );
     let support: u32 = response.layers.iter().map(|l| l.support_paths).sum();
     assert_eq!(
         support, 0,
