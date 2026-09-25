@@ -1706,6 +1706,8 @@ function rebuildGeom() {
       ranges: ev.data.ranges,
       ribbonPos: ev.data.ribbonPos,
       ribbonCol: ev.data.ribbonCol,
+      facePos: ev.data.facePos,
+      faceCol: ev.data.faceCol,
       travelPos: ev.data.travelPos,
       travelCol: ev.data.travelCol,
       span: Math.max(mesh.max[0] - mesh.min[0], mesh.max[1] - mesh.min[1], mesh.max[2] - mesh.min[2], 1),

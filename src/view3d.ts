@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { colorForPath, type ColorMode, hexRgb } from "./colors";
+import { meshCenter, scenePoint } from "./preview-geom";
 import { hexToThree, themeColors } from "./theme";
 
 export interface ViewPath {
@@ -29,6 +30,8 @@ export interface ViewSlice {
 export interface LayerRange {
   ribbonStart: number;
   ribbonCount: number;
+  faceStart: number;
+  faceCount: number;
   travelStart: number;
   travelCount: number;
 }
@@ -37,6 +40,8 @@ export interface RibbonBuffers {
   ranges: LayerRange[];
   ribbonPos: Float32Array;
   ribbonCol: Float32Array;
+  facePos: Float32Array;
+  faceCol: Float32Array;
   travelPos: Float32Array;
   travelCol: Float32Array;
   span: number;
@@ -147,6 +152,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
 
   let layers: LayerLines[] = [];
   let ribbon: THREE.Mesh | null = null;
+  let face: THREE.Mesh | null = null;
   let travelLines: THREE.LineSegments | null = null;
   let ranges: LayerRange[] = [];
   let slice: ViewSlice | null = null;
@@ -181,12 +187,13 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   }
 
   function applyFocus() {
-    if (ranges.length > 0 && ribbon && travelLines) {
+    if (ranges.length > 0 && ribbon && face && travelLines) {
       const lo = Math.max(0, Math.min(low, ranges.length - 1));
       const hi = Math.max(lo, Math.min(high, ranges.length - 1));
       const first = ranges[lo];
       const last = ranges[hi];
       ribbon.geometry.setDrawRange(first.ribbonStart, last.ribbonStart + last.ribbonCount - first.ribbonStart);
+      face.geometry.setDrawRange(first.faceStart, last.faceStart + last.faceCount - first.faceStart);
       travelLines.geometry.setDrawRange(first.travelStart, last.travelStart + last.travelCount - first.travelStart);
       travelLines.visible = showTravel;
       placePlane();
@@ -220,8 +227,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     if (!slice || slice.layers.length === 0) return;
     const min = slice.mesh.min;
     const max = slice.mesh.max;
-    const cx = (min[0] + max[0]) / 2;
-    const cy = (min[1] + max[1]) / 2;
+    const { cx, cy } = meshCenter(min, max);
     origin = { cx, cy };
     const midZ = (min[2] + max[2]) / 2;
     const spanX = Math.max(1, max[0] - min[0]);
@@ -325,6 +331,12 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       (ribbon.material as THREE.Material).dispose();
       ribbon = null;
     }
+    if (face) {
+      root.remove(face);
+      face.geometry.dispose();
+      (face.material as THREE.Material).dispose();
+      face = null;
+    }
     if (travelLines) {
       root.remove(travelLines);
       travelLines.geometry.dispose();
@@ -348,12 +360,26 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       root.clear();
       if (!buffers || buffers.ranges.length === 0) return;
       ranges = buffers.ranges;
+      origin = { cx: buffers.centerX, cy: buffers.centerY };
       const ribbonGeo = new THREE.BufferGeometry();
       ribbonGeo.setAttribute("position", new THREE.BufferAttribute(buffers.ribbonPos, 3));
       ribbonGeo.setAttribute("color", new THREE.BufferAttribute(buffers.ribbonCol, 3));
       ribbon = new THREE.Mesh(
         ribbonGeo,
         new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }),
+      );
+      const faceGeo = new THREE.BufferGeometry();
+      faceGeo.setAttribute("position", new THREE.BufferAttribute(buffers.facePos, 3));
+      faceGeo.setAttribute("color", new THREE.BufferAttribute(buffers.faceCol, 3));
+      face = new THREE.Mesh(
+        faceGeo,
+        new THREE.MeshBasicMaterial({
+          vertexColors: true,
+          side: THREE.DoubleSide,
+          polygonOffset: true,
+          polygonOffsetFactor: -2,
+          polygonOffsetUnits: -2,
+        }),
       );
       const travelGeo = new THREE.BufferGeometry();
       travelGeo.setAttribute("position", new THREE.BufferAttribute(buffers.travelPos, 3));
@@ -363,6 +389,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
         new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.7 }),
       );
       root.add(ribbon);
+      root.add(face);
       root.add(travelLines);
       placeBed(buffers.span, buffers.midZ, buffers.centerX, buffers.centerY);
       fitted = true;
@@ -422,14 +449,17 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       }
       cursor.visible = true;
       playLine.visible = true;
-      cursor.position.set(seg.x1 - origin.cx, seg.z1, -(seg.y1 - origin.cy));
+      const head = scenePoint(seg.x1, seg.y1, seg.z1, origin.cx, origin.cy);
+      const tail = scenePoint(seg.x0, seg.y0, seg.z0, origin.cx, origin.cy);
+      cursor.position.set(head[0], head[1], head[2]);
       const pos = playGeo.getAttribute("position") as THREE.BufferAttribute;
-      pos.setXYZ(0, seg.x0 - origin.cx, seg.z0, -(seg.y0 - origin.cy));
-      pos.setXYZ(1, seg.x1 - origin.cx, seg.z1, -(seg.y1 - origin.cy));
+      pos.setXYZ(0, tail[0], tail[1], tail[2]);
+      pos.setXYZ(1, head[0], head[1], head[2]);
       pos.needsUpdate = true;
     },
     setModel(min, max) {
       slice = { mesh: { min, max }, layers: [] };
+      origin = meshCenter(min, max);
       placePlane();
     },
     setSlice(next) {
@@ -491,8 +521,8 @@ function collect(layer: ViewLayer, cx: number, cy: number, travelOnly: boolean, 
     for (let i = 1; i < path.pts.length; i++) {
       const z0 = path.zs && path.zs.length === path.pts.length ? path.zs[i - 1] : layer.z;
       const z1 = path.zs && path.zs.length === path.pts.length ? path.zs[i] : layer.z;
-      pos.push(path.pts[i - 1][0] - cx, z0, -(path.pts[i - 1][1] - cy));
-      pos.push(path.pts[i][0] - cx, z1, -(path.pts[i][1] - cy));
+      pos.push(...scenePoint(path.pts[i - 1][0], path.pts[i - 1][1], z0, cx, cy));
+      pos.push(...scenePoint(path.pts[i][0], path.pts[i][1], z1, cx, cy));
       color.push(rgb[0], rgb[1], rgb[2], rgb[0], rgb[1], rgb[2]);
     }
   }
