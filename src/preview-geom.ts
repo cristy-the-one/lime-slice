@@ -5,6 +5,8 @@ export interface GeomPath {
   pts: [number, number][];
   zs?: number[];
   width?: number;
+  /** Vertical bead size. Falls back to the layer height. */
+  beadHeight?: number;
   speed?: number;
   effectiveSpeed?: number;
   toughness?: number;
@@ -12,6 +14,8 @@ export interface GeomPath {
 
 export interface GeomLayer {
   z: number;
+  /** Layer height in millimetres. Beads extrude down by this much. */
+  height?: number;
   paths: GeomPath[];
 }
 
@@ -108,7 +112,24 @@ export function buildPreviewGeometry(msg: Omit<GeomRequest, "id">): PreviewGeome
           const b = scenePoint(x1, y1, z1, cx, cy);
           pushLine(travel, travelColor, a, b, rgb);
         } else {
-          pushBead(ribbon, ribbonColor, face, faceColor, x0, y0, z0, x1, y1, z1, half, rgb, cx, cy);
+          const beadH = path.beadHeight && path.beadHeight > 1e-6 ? path.beadHeight : layer.height;
+          pushBead(
+            ribbon,
+            ribbonColor,
+            face,
+            faceColor,
+            x0,
+            y0,
+            z0,
+            x1,
+            y1,
+            z1,
+            half,
+            beadH && beadH > 1e-6 ? beadH : 0.2,
+            rgb,
+            cx,
+            cy,
+          );
         }
       }
     }
@@ -164,7 +185,11 @@ function pushQuad(
   for (let i = 0; i < 6; i++) color.push(...rgb);
 }
 
-/** Flat bead plus a darker full-width margin under a narrower bright face. */
+/**
+ * Bead with layer-height thickness. The dark margin is a short prism
+ * (top, bottom, and both long sides). The bright face stays on the top
+ * so same-color neighbors still separate in plan view.
+ */
 function pushBead(
   marginPos: number[],
   marginColor: number[],
@@ -177,6 +202,7 @@ function pushBead(
   y1: number,
   z1: number,
   half: number,
+  height: number,
   rgb: [number, number, number],
   cx: number,
   cy: number,
@@ -189,9 +215,15 @@ function pushBead(
   const inner = half * INNER_HALF_SCALE;
   const ix = (-dy / len) * inner;
   const iy = (dx / len) * inner;
-  const outer = quadCorners(x0, y0, z0, x1, y1, z1, px, py, cx, cy);
+  const h = Math.max(0.04, height);
+  const top = quadCorners(x0, y0, z0, x1, y1, z1, px, py, cx, cy);
+  const bot = quadCorners(x0, y0, z0 - h, x1, y1, z1 - h, px, py, cx, cy);
   const face = quadCorners(x0, y0, z0, x1, y1, z1, ix, iy, cx, cy);
-  pushQuad(marginPos, marginColor, outer[0], outer[1], outer[2], outer[3], shade(rgb, MARGIN_SHADE));
+  const margin = shade(rgb, MARGIN_SHADE);
+  pushQuad(marginPos, marginColor, top[0], top[1], top[2], top[3], margin);
+  pushQuad(marginPos, marginColor, bot[0], bot[3], bot[2], bot[1], margin);
+  pushQuad(marginPos, marginColor, top[0], bot[0], bot[3], top[3], margin);
+  pushQuad(marginPos, marginColor, top[1], top[2], bot[2], bot[1], margin);
   pushQuad(facePos, faceColor, face[0], face[1], face[2], face[3], rgb);
 }
 

@@ -155,6 +155,16 @@ pub fn plan_region(
                 emit_variable_feature(
                     &mut paths, contours, strategy, width, min_w, max_w, seam_hint,
                 );
+                emit_void_fill(
+                    &mut paths,
+                    contours,
+                    &[],
+                    false,
+                    strategy,
+                    line_width,
+                    f64::MAX,
+                    seam_hint,
+                );
                 return paths;
             }
         }
@@ -220,12 +230,12 @@ pub fn plan_region(
             seam_hint,
         );
     }
-    let bottom = features.shell == ShellBand::Bottom;
+    let solid_shell = matches!(features.shell, ShellBand::Bottom | ShellBand::Top);
     if strategy.infill_density > 0.01
         && !infill_loops.is_empty()
-        && (bottom || infill_kept(strategy, features))
+        && (solid_shell || infill_kept(strategy, features))
     {
-        let infill = if bottom {
+        let infill = if solid_shell {
             clip_infill(
                 solid_fill(&infill_loops, line_width, std::f64::consts::FRAC_PI_4),
                 &infill_loops,
@@ -234,6 +244,16 @@ pub fn plan_region(
             build_infill(&infill_loops, strategy, line_width, features)
         };
         let Some(bead) = combine_bead(strategy, features) else {
+            emit_void_fill(
+                &mut paths,
+                contours,
+                &infill_loops,
+                true,
+                strategy,
+                line_width,
+                f64::MAX,
+                seam_hint,
+            );
             return paths;
         };
         let kind = infill_kind(strategy, features.shell);
@@ -252,7 +272,152 @@ pub fn plan_region(
             }
         }
     }
+    let wide_limit = if solid_shell {
+        f64::MAX
+    } else {
+        // Narrower than a sparse cell: the pattern never placed a bead here.
+        line_width * 6.0
+    };
+    emit_void_fill(
+        &mut paths,
+        contours,
+        &infill_loops,
+        false,
+        strategy,
+        line_width,
+        wide_limit,
+        seam_hint,
+    );
     paths
+}
+
+/// Fill contour area the walls did not cover and infill was not asked to cover.
+/// A flared wing pinches between perimeters; that leftover used to stay empty.
+#[allow(clippy::too_many_arguments)]
+fn emit_void_fill(
+    paths: &mut Vec<Extrusion>,
+    contours: &[Loop],
+    claimed: &[Loop],
+    subtract_claimed: bool,
+    strategy: &ResolvedStrategy,
+    line_width: f64,
+    wide_limit: f64,
+    seam_hint: &mut [f64; 2],
+) {
+    let cover = bead_cover(paths);
+    let missed = if cover.is_empty() {
+        contours.to_vec()
+    } else {
+        boolean_diff(contours, &cover)
+    };
+    let voids = if subtract_claimed && !claimed.is_empty() {
+        boolean_diff(&missed, claimed)
+    } else {
+        missed
+    };
+    for void in voids {
+        if signed_area(&void).abs() < 0.25 {
+            continue;
+        }
+        let region = [void];
+        let owned = !claimed.is_empty()
+            && loop_bounds(&region).is_some_and(|(min, max)| {
+                in_solid(claimed, (min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5)
+            });
+        let limit = if owned { wide_limit } else { f64::MAX };
+        // A taper is one polygon: wide at the root, thin at the tip. Keep the
+        // thin peninsula and leave a genuinely wide sparse cell alone.
+        let pieces = narrow_parts(&region, limit);
+        for piece in pieces {
+            if signed_area(&piece).abs() < 0.25 {
+                continue;
+            }
+            let piece_region = [piece];
+            let Some(piece_width) = feature_width(&piece_region) else {
+                continue;
+            };
+            if piece_width < line_width * 0.65 {
+                continue;
+            }
+            fill_void_piece(paths, &piece_region, strategy, line_width, seam_hint);
+        }
+    }
+}
+
+fn fill_void_piece(
+    paths: &mut Vec<Extrusion>,
+    region: &[Loop],
+    strategy: &ResolvedStrategy,
+    line_width: f64,
+    seam_hint: &mut [f64; 2],
+) {
+    let hatched = clip_infill(
+        solid_fill(region, line_width, std::f64::consts::FRAC_PI_4),
+        region,
+    );
+    if hatched.is_empty() {
+        let width = feature_width(region).unwrap_or(line_width);
+        fill_remaining(
+            paths,
+            &paths_from_loops(region),
+            strategy,
+            line_width * 0.45,
+            width.max(line_width),
+            seam_hint,
+        );
+        return;
+    }
+    for pts in hatched {
+        if pts.len() >= 2 {
+            *seam_hint = *pts.last().unwrap();
+            paths.push(extrusion(PathKind::GapFill, strategy, pts, line_width));
+        }
+    }
+}
+
+/// Parts of `region` narrower than `limit`. A wide blob grows back from its
+/// core and is dropped; a thin peninsula attached to that blob does not.
+fn narrow_parts(region: &[Loop], limit: f64) -> Vec<Loop> {
+    if !limit.is_finite() {
+        return region.to_vec();
+    }
+    let eroded = offset_loops(region, -limit * 0.5);
+    if eroded.is_empty() {
+        return region.to_vec();
+    }
+    let grown = offset_loops(&eroded, limit * 0.5);
+    boolean_diff(region, &grown)
+}
+
+fn bead_cover(paths: &[Extrusion]) -> Vec<Loop> {
+    let mut acc = Vec::new();
+    for path in paths {
+        if path.points.len() < 2 || path.width <= 1e-6 {
+            continue;
+        }
+        // Square end-caps stroke the centerline. A polygon offset would fill
+        // the loop interior and hide the pinch between walls.
+        let raw: Vec<Vec<(f64, f64)>> = vec![path.points.iter().map(|p| (p[0], p[1])).collect()];
+        let stroked: Paths<Milli> = raw.into();
+        let grown = stroked.inflate(path.width * 0.5, JoinType::Round, EndType::Square, 2.0);
+        acc.extend(loops_from_paths(grown));
+    }
+    union_loops(&acc)
+}
+
+fn union_loops(loops: &[Loop]) -> Vec<Loop> {
+    if loops.is_empty() {
+        return Vec::new();
+    }
+    let empty: Paths<Milli> = Paths::default();
+    match paths_from_loops(loops)
+        .to_clipper_subject()
+        .add_clip(empty)
+        .union(FillRule::NonZero)
+    {
+        Ok(paths) => loops_from_paths(paths),
+        Err(_) => loops.to_vec(),
+    }
 }
 
 /// Combined sparse height, or `None` when this interior layer is covered by a later bead.
@@ -482,7 +647,8 @@ fn emit_gap_fill(
         if !(min_w..=max_w).contains(&width) {
             continue;
         }
-        if signed_area(&region[0]).abs() < 0.4 || signed_area(&region[0]).abs() > 30.0 {
+        // Long thin membrane gaps (a wing taper) can be tens of mm². Area is not a cap.
+        if signed_area(&region[0]).abs() < 0.4 {
             continue;
         }
         fill_remaining(

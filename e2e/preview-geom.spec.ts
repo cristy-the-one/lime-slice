@@ -26,8 +26,13 @@ test("bead margins stay darker than the face so same-color neighbors do not fuse
     showTravel: false,
     colorMode: "feature",
   });
-  expect(built.ribbon.length / 3).toBe(12);
+  // Top, bottom, and two sides — four quads per segment, two segments.
+  expect(built.ribbon.length / 3).toBe(48);
   expect(built.face.length / 3).toBe(12);
+  const ys = [];
+  for (let i = 1; i < built.ribbon.length; i += 3) ys.push(built.ribbon[i]);
+  expect(Math.min(...ys)).toBeCloseTo(0, 5);
+  expect(Math.max(...ys)).toBeCloseTo(0.2, 5);
   const margin = built.ribbonColor.slice(0, 3);
   const face = built.faceColor.slice(0, 3);
   expect(face[0]).toBeGreaterThan(margin[0] + 0.2);
@@ -38,7 +43,7 @@ test("bead margins stay darker than the face so same-color neighbors do not fuse
   expect(outerHalf).toBeCloseTo(half, 5);
   expect(innerHalf).toBeCloseTo(half * INNER_HALF_SCALE, 5);
   expect(innerHalf).toBeLessThan(outerHalf);
-  expect(built.ranges[0].ribbonCount).toBe(12);
+  expect(built.ranges[0].ribbonCount).toBe(48);
   expect(built.ranges[0].faceCount).toBe(12);
 });
 
