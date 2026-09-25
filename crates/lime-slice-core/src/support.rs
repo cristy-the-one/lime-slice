@@ -1,5 +1,5 @@
 use crate::adaptive::LayerBand;
-use crate::contour::{in_solid, loop_bounds, Loop};
+use crate::contour::{in_solid, loop_bounds, point_in_loop, signed_area, Loop};
 use crate::toolpath::{boolean_diff, boolean_union, drop_slivers, offset_loops};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -26,6 +26,10 @@ pub struct SupportOpts {
     pub style: SupportStyle,
     /// Nominal spacing used to seed tree branches. Density still thins them later.
     pub branch_spacing: f64,
+    /// Project steep overhangs. Off skips the angle test and still holds floating islands.
+    pub overhangs: bool,
+    /// Support a same-layer component that does not rest on material below.
+    pub islands: bool,
 }
 
 impl Default for SupportOpts {
@@ -37,6 +41,8 @@ impl Default for SupportOpts {
             interface_layers: 3,
             style: SupportStyle::Grid,
             branch_spacing: 3.6,
+            overhangs: true,
+            islands: true,
         }
     }
 }
@@ -61,6 +67,21 @@ pub fn build_supports(
     }
     let angle = opts.angle_deg.clamp(15.0, 75.0).to_radians().tan().max(0.2);
     let iface_n = opts.interface_layers.max(1);
+    let mut island_regions = vec![Vec::new(); n];
+    if opts.islands {
+        for i in 1..n {
+            let upper = contours.get(i).map(Vec::as_slice).unwrap_or(&[]);
+            let lower = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
+            if upper.is_empty() {
+                continue;
+            }
+            let dx = bands[i].height / angle;
+            island_regions[i] = unsupported_islands(upper, lower, dx);
+        }
+    }
+    if !opts.overhangs && island_regions.iter().all(|r| r.is_empty()) {
+        return out;
+    }
 
     // (contact_z, region) waiting until the air gap has been cleared.
     let mut pending: Vec<(f64, Vec<Loop>)> = Vec::new();
@@ -83,7 +104,7 @@ pub fn build_supports(
             }
         });
         if !born.is_empty() {
-            let born = drop_slivers(born, 0.2);
+            let born = drop_slivers(born, 0.05);
             if tree {
                 for p in sample_grid(&born, seed_spacing) {
                     branches.push(Branch { id: next_id, xy: p });
@@ -100,9 +121,9 @@ pub fn build_supports(
             offset_loops(part, opts.xy_gap)
         };
         let iface_area = union_all(gens.iter().map(|(r, _)| r.as_slice()));
-        let iface_print = drop_slivers(boolean_diff(&iface_area, &gap), 0.2);
+        let iface_print = drop_slivers(boolean_diff(&iface_area, &gap), 0.05);
         let sparse_only = boolean_diff(&sparse, &iface_area);
-        let sparse_print = drop_slivers(boolean_diff(&sparse_only, &gap), 0.2);
+        let sparse_print = drop_slivers(boolean_diff(&sparse_only, &gap), 0.05);
         let (sparse_print, branch_pts) = if tree {
             let alive = boolean_union(&sparse_print, &iface_print);
             branches.retain(|b| in_solid(&alive, b.xy[0], b.xy[1]));
@@ -150,8 +171,19 @@ pub fn build_supports(
             continue;
         }
         let dx = bands[i].height / angle;
-        let supported = offset_loops(lower, dx);
-        let overhang = drop_slivers(boolean_diff(upper, &supported), 0.35);
+        let angle_overhang = if opts.overhangs {
+            let supported = offset_loops(lower, dx);
+            drop_slivers(boolean_diff(upper, &supported), 0.35)
+        } else {
+            Vec::new()
+        };
+        let islands = island_regions.get(i).map(Vec::as_slice).unwrap_or(&[]);
+        let overhang = if islands.is_empty() {
+            angle_overhang
+        } else {
+            // Keep a small island the angle test would drop as a sliver.
+            drop_slivers(boolean_union(&angle_overhang, islands), 0.05)
+        };
         if overhang.is_empty() {
             continue;
         }
@@ -227,6 +259,123 @@ fn lean_and_merge(branches: &mut Vec<Branch>, step: f64) {
         }
     }
     *branches = kept;
+}
+
+/// A component with no material below it, and no same-layer link to a component
+/// that does, cannot be printed in the air. `margin` is the support threshold.
+fn unsupported_islands(upper: &[Loop], lower: &[Loop], margin: f64) -> Vec<Loop> {
+    let comps = components(upper);
+    if comps.is_empty() {
+        return Vec::new();
+    }
+    let mut grounded = vec![false; comps.len()];
+    for (i, comp) in comps.iter().enumerate() {
+        grounded[i] = rests_on(comp, lower, margin);
+    }
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for i in 0..comps.len() {
+            if grounded[i] {
+                continue;
+            }
+            for j in 0..comps.len() {
+                if i == j || !grounded[j] {
+                    continue;
+                }
+                if components_touch(&comps[i], &comps[j], 0.8) {
+                    grounded[i] = true;
+                    changed = true;
+                    break;
+                }
+            }
+        }
+    }
+    let mut islands = Vec::new();
+    for (i, comp) in comps.into_iter().enumerate() {
+        if !grounded[i] {
+            islands = boolean_union(&islands, &comp);
+        }
+    }
+    drop_slivers(islands, 0.05)
+}
+
+fn components(loops: &[Loop]) -> Vec<Vec<Loop>> {
+    let mut comps: Vec<Vec<Loop>> = Vec::new();
+    let mut outer_area = Vec::new();
+    for loop_ in loops {
+        let area = signed_area(loop_);
+        if area > 0.02 {
+            comps.push(vec![loop_.clone()]);
+            outer_area.push(area);
+        }
+    }
+    for loop_ in loops {
+        if signed_area(loop_) >= 0.0 {
+            continue;
+        }
+        let c = centroid(loop_);
+        let mut host: Option<usize> = None;
+        let mut host_area = f64::MAX;
+        for (i, outer) in comps.iter().enumerate() {
+            if point_in_loop(&outer[0], c[0], c[1]) && outer_area[i] < host_area {
+                host = Some(i);
+                host_area = outer_area[i];
+            }
+        }
+        if let Some(i) = host {
+            comps[i].push(loop_.clone());
+        }
+    }
+    comps
+}
+
+fn centroid(loop_: &[[f64; 2]]) -> [f64; 2] {
+    let mut a = 0.0;
+    let mut cx = 0.0;
+    let mut cy = 0.0;
+    for i in 0..loop_.len() {
+        let p = loop_[i];
+        let q = loop_[(i + 1) % loop_.len()];
+        let cross = p[0] * q[1] - q[0] * p[1];
+        a += cross;
+        cx += (p[0] + q[0]) * cross;
+        cy += (p[1] + q[1]) * cross;
+    }
+    if a.abs() < 1e-12 {
+        let n = loop_.len().max(1) as f64;
+        return [
+            loop_.iter().map(|p| p[0]).sum::<f64>() / n,
+            loop_.iter().map(|p| p[1]).sum::<f64>() / n,
+        ];
+    }
+    [cx / (3.0 * a), cy / (3.0 * a)]
+}
+
+fn solid_area(loops: &[Loop]) -> f64 {
+    let area = loops.iter().map(|l| signed_area(l)).sum::<f64>();
+    area.max(0.0)
+}
+
+fn rests_on(comp: &[Loop], lower: &[Loop], margin: f64) -> bool {
+    if lower.is_empty() || solid_area(comp) < 0.05 {
+        return false;
+    }
+    let bed = offset_loops(lower, margin.max(0.0));
+    overlaps(comp, &bed, 0.05)
+}
+
+fn components_touch(a: &[Loop], b: &[Loop], gap: f64) -> bool {
+    let grown = offset_loops(a, gap);
+    overlaps(&grown, b, 0.02)
+}
+
+fn overlaps(a: &[Loop], b: &[Loop], min_area: f64) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    let uncovered = boolean_diff(b, a);
+    solid_area(b) - solid_area(&uncovered) > min_area
 }
 
 fn union_all<'a>(regions: impl Iterator<Item = &'a [Loop]>) -> Vec<Loop> {

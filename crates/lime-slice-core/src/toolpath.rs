@@ -226,7 +226,10 @@ pub fn plan_region(
         && (bottom || infill_kept(strategy, features))
     {
         let infill = if bottom {
-            solid_fill(&infill_loops, line_width, std::f64::consts::FRAC_PI_4)
+            clip_infill(
+                solid_fill(&infill_loops, line_width, std::f64::consts::FRAC_PI_4),
+                &infill_loops,
+            )
         } else {
             build_infill(&infill_loops, strategy, line_width, features)
         };
@@ -776,25 +779,42 @@ fn build_infill(
     }
     let spacing = (line_width / density.max(0.02)).clamp(line_width * 1.05, 14.0);
     match strategy.pattern {
-        InfillPattern::Lines => serpentine(scan_angle(loops, spacing, 0.0)),
+        InfillPattern::Lines => {
+            clip_infill(serpentine(scan_angle(loops, spacing, 0.0), loops), loops)
+        }
         InfillPattern::Grid => {
-            let mut paths = serpentine(scan_angle(loops, spacing, 0.0));
-            paths.extend(serpentine(scan_angle(
+            let mut paths = serpentine(scan_angle(loops, spacing, 0.0), loops);
+            paths.extend(serpentine(
+                scan_angle(loops, spacing, std::f64::consts::FRAC_PI_2),
                 loops,
-                spacing,
-                std::f64::consts::FRAC_PI_2,
-            )));
-            paths
+            ));
+            clip_infill(paths, loops)
         }
         InfillPattern::Gyroid => {
-            if strategy.gyroid_3d {
+            let paths = if strategy.gyroid_3d {
                 gyroid_3d_graded(loops, strategy, spacing, features)
             } else {
                 gyroid(loops, spacing, strategy.toughness)
-            }
+            };
+            clip_infill(paths, loops)
         }
-        InfillPattern::Lightning => lightning(loops, spacing.max(line_width * 3.0)),
+        InfillPattern::Lightning => {
+            clip_infill(lightning(loops, spacing.max(line_width * 3.0)), loops)
+        }
     }
+}
+
+/// Drop any infill chord that leaves the region, including arc-fit bulges and
+/// links that were chained across a gap between separate contours.
+fn clip_infill(paths: Vec<Vec<[f64; 2]>>, loops: &[Loop]) -> Vec<Vec<[f64; 2]>> {
+    let mut out = Vec::new();
+    for path in paths {
+        if path.len() < 2 {
+            continue;
+        }
+        out.extend(clip_polyline(loops, &path));
+    }
+    out
 }
 
 fn sharpest_near(loop_: &[[f64; 2]], cost: impl Fn([f64; 2]) -> f64, max_cost: f64) -> usize {
@@ -1022,8 +1042,8 @@ fn horizontal_chords(loops: &[Loop], spacing: f64) -> Vec<(f64, Vec<(f64, f64)>)
     rows
 }
 
-fn serpentine(segments: Vec<Vec<[f64; 2]>>) -> Vec<Vec<[f64; 2]>> {
-    chain_ends(segments, 4.0, None)
+fn serpentine(segments: Vec<Vec<[f64; 2]>>, solid: &[Loop]) -> Vec<Vec<[f64; 2]>> {
+    chain_ends(segments, 4.0, Some(solid))
 }
 
 /// Greedily weld open segments into polylines, reversing either end.
@@ -1280,6 +1300,20 @@ pub fn drop_slivers(loops: Vec<Loop>, min_area: f64) -> Vec<Loop> {
         .collect()
 }
 
+/// One chord through a support patch the grid spacing skipped.
+fn support_spine(region: &[Loop]) -> Vec<Vec<[f64; 2]>> {
+    let Some((min, max)) = loop_bounds(region) else {
+        return Vec::new();
+    };
+    let c = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5];
+    let (a, b) = if max[0] - min[0] >= max[1] - min[1] {
+        ([min[0] - 0.5, c[1]], [max[0] + 0.5, c[1]])
+    } else {
+        ([c[0], min[1] - 0.5], [c[0], max[1] + 0.5])
+    };
+    clip_infill(vec![vec![a, b]], region)
+}
+
 /// Sparse grid (or a denser interface grid) inside `region`.
 /// Density and speed come from the resolved strategy.
 pub fn plan_support(
@@ -1298,12 +1332,15 @@ pub fn plan_support(
     } else {
         PathKind::Support
     };
-    let mut segs = serpentine(scan_angle(region, spacing, 0.0));
-    segs.extend(serpentine(scan_angle(
+    let mut segs = serpentine(scan_angle(region, spacing, 0.0), region);
+    segs.extend(serpentine(
+        scan_angle(region, spacing, std::f64::consts::FRAC_PI_2),
         region,
-        spacing,
-        std::f64::consts::FRAC_PI_2,
-    )));
+    ));
+    let mut segs = clip_infill(segs, region);
+    if segs.is_empty() {
+        segs = support_spine(region);
+    }
     let speed = crate::strategy::support_speed(strategy, interface);
     segs.into_iter()
         .filter(|pts| pts.len() >= 2 && polyline_len(pts) > 0.4)
