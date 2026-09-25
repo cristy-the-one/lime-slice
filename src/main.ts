@@ -1762,6 +1762,7 @@ function fitNarrow() {
 }
 
 async function probe() {
+  if (isTauri()) return;
   try {
     const res = await fetch(`${API}/api/health`);
     if (!res.ok) throw new Error(String(res.status));
