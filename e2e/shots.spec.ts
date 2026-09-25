@@ -36,6 +36,17 @@ async function shot(page: Page, name: string) {
 test("ui states from real slice fixtures", async ({ page }) => {
   let delay = 0;
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/pareto", (route) =>
+    route.fulfill({
+      json: [
+        { label: "speed", toughness: 0, seconds: 170.7, filamentG: 1.84, score: 0.42 },
+        { label: "weight 25%", toughness: 0.25, seconds: 420, filamentG: 2.6, score: 0.7 },
+        { label: "weight 50%", toughness: 0.5, seconds: 900, filamentG: 3.4, score: 1.0 },
+        { label: "weight 75%", toughness: 0.75, seconds: 1500, filamentG: 4.2, score: 1.2 },
+        { label: "toughness", toughness: 1, seconds: 2300, filamentG: 4.73, score: 1.35 },
+      ],
+    }),
+  );
   await page.route("**/api/slice", async (route) => {
     if (delay) await new Promise((r) => setTimeout(r, delay));
     const name = route.request().postDataJSON()?.filename as string;
@@ -50,7 +61,24 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#status")).toContainText("loaded");
-  await shot(page, "v3-02-loaded.png");
+  await expect(page.locator("#prepareBody")).toBeVisible();
+  await page.waitForTimeout(400);
+  await shot(page, "p1-prepare.png");
+  await page.locator("#left").screenshot({ path: path.join(out, "p1-profiles.png") });
+  await page.keyboard.press("?");
+  await expect(page.locator("#help")).toBeVisible();
+  await shot(page, "p1-shortcuts.png");
+  await page.keyboard.press("Escape");
+  const dropped = fs.readFileSync(path.resolve("samples/calibration_cube_20mm.stl")).toString("base64");
+  await page.evaluate(async (b64) => {
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const file = new File([bytes], "dropped-cube.stl");
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    document.querySelector(".app")!.dispatchEvent(new DragEvent("drop", { bubbles: true, dataTransfer: transfer }));
+  }, dropped);
+  await expect(page.locator("#objectList")).toContainText("dropped-cube.stl");
+  await shot(page, "p1-drop.png");
 
   await page.getByRole("button", { name: /^Speed/ }).click();
   await page.locator("#right").screenshot({ path: path.join(out, "v3-03-card-speed.png") });
@@ -63,6 +91,7 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.locator("#slice").click();
   await expect(page.locator("#estimate")).toContainText("1.84 g");
   await expect(page.locator(".chip").first()).toBeVisible();
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
   await expect(page.locator("#spark")).toBeVisible();
   await page.locator("#move").evaluate((el) => {
     const input = el as HTMLInputElement;
@@ -80,6 +109,11 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await shot(page, "p2-light-theme.png");
   await page.locator("#theme").selectOption("dark");
   await page.locator("#presetDiff").screenshot({ path: path.join(out, "p2-preset-diff.png") });
+  await page.getByRole("button", { name: "Compare speed, mixes, toughness" }).click();
+  await expect(page.locator(".pareto-dot")).toHaveCount(5);
+  await page.locator("#pareto").screenshot({ path: path.join(out, "p1-pareto.png") });
+  await expect(page.locator("#export")).toBeEnabled();
+  await page.locator(".top").screenshot({ path: path.join(out, "p1-export.png") });
 
   await page.getByRole("button", { name: /^By layer/ }).click();
   await expect(page.locator("#layerBand")).toBeVisible();
@@ -95,6 +129,7 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.getByRole("button", { name: /^Speed/ }).click();
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "60 mm hull" }).click();
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
   delay = 2500;
   await page.locator("#slice").click();
   await expect(page.locator("[data-state=slicing]")).toBeVisible();

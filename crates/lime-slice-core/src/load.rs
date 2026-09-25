@@ -4,7 +4,38 @@ use quick_xml::events::Event;
 use quick_xml::Reader;
 use zip::ZipArchive;
 
+use serde::Serialize;
+
 use crate::mesh::Mesh;
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeshPreview {
+    pub triangles: usize,
+    pub min: [f64; 3],
+    pub max: [f64; 3],
+    /// XYZ triples, millimetres, already seated on Z = 0.
+    pub positions: Vec<f32>,
+}
+
+pub fn mesh_preview(filename: &str, bytes: &[u8]) -> Result<MeshPreview, String> {
+    let mesh = load_mesh(filename, bytes)?;
+    let (min, max) = mesh.bounds().ok_or("empty mesh")?;
+    let mut positions = Vec::with_capacity(mesh.triangles.len() * 9);
+    for tri in &mesh.triangles {
+        for v in tri {
+            positions.push(v[0] as f32);
+            positions.push(v[1] as f32);
+            positions.push(v[2] as f32);
+        }
+    }
+    Ok(MeshPreview {
+        triangles: mesh.triangle_count(),
+        min,
+        max,
+        positions,
+    })
+}
 
 pub fn load_mesh(filename: &str, bytes: &[u8]) -> Result<Mesh, String> {
     let lower = filename.to_ascii_lowercase();

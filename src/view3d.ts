@@ -26,8 +26,30 @@ export interface ViewSlice {
   layers: ViewLayer[];
 }
 
+export interface LayerRange {
+  ribbonStart: number;
+  ribbonCount: number;
+  travelStart: number;
+  travelCount: number;
+}
+
+export interface RibbonBuffers {
+  ranges: LayerRange[];
+  ribbonPos: Float32Array;
+  ribbonCol: Float32Array;
+  travelPos: Float32Array;
+  travelCol: Float32Array;
+  span: number;
+  midZ: number;
+  centerX: number;
+  centerY: number;
+}
+
 export interface SliceView3d {
   setSlice(slice: ViewSlice | null): void;
+  setModel(min: number[], max: number[]): void;
+  setBuffers(buffers: RibbonBuffers | null): void;
+  setBed(x: number, y: number, z: number): void;
   setLayer(index: number): void;
   setRange(low: number, high: number): void;
   setShowTravel(show: boolean): void;
@@ -42,6 +64,9 @@ export interface SliceView3d {
 
 const noopView: SliceView3d = {
   setSlice() {},
+  setModel() {},
+  setBuffers() {},
+  setBed() {},
   setLayer() {},
   setRange() {},
   setShowTravel() {},
@@ -79,8 +104,16 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
 
   const root = new THREE.Group();
   scene.add(root);
-  let bed = new THREE.GridHelper(10, 10, hexToThree(colors.line), hexToThree(colors.bedMinor));
+  let bed = new THREE.GridHelper(1, 10, hexToThree(colors.line), hexToThree(colors.bedMinor));
   scene.add(bed);
+  const volume = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
+    new THREE.LineBasicMaterial({ color: 0x2ec4b6, transparent: true, opacity: 0.35 }),
+  );
+  scene.add(volume);
+  let bedX = 220;
+  let bedY = 220;
+  let bedZ = 250;
 
   const planeMat = new THREE.MeshBasicMaterial({
     color: hexToThree(colors.teal),
@@ -113,6 +146,9 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   scene.add(playLine);
 
   let layers: LayerLines[] = [];
+  let ribbon: THREE.Mesh | null = null;
+  let travelLines: THREE.LineSegments | null = null;
+  let ranges: LayerRange[] = [];
   let slice: ViewSlice | null = null;
   let active = 0;
   let low = 0;
@@ -143,6 +179,17 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   }
 
   function applyFocus() {
+    if (ranges.length > 0 && ribbon && travelLines) {
+      const lo = Math.max(0, Math.min(low, ranges.length - 1));
+      const hi = Math.max(lo, Math.min(high, ranges.length - 1));
+      const first = ranges[lo];
+      const last = ranges[hi];
+      ribbon.geometry.setDrawRange(first.ribbonStart, last.ribbonStart + last.ribbonCount - first.ribbonStart);
+      travelLines.geometry.setDrawRange(first.travelStart, last.travelStart + last.travelCount - first.travelStart);
+      travelLines.visible = showTravel;
+      placePlane();
+      return;
+    }
     layers.forEach((layer, i) => {
       const on = i >= low && i <= high;
       layer.lines.visible = on;
@@ -150,6 +197,17 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       layer.travel.visible = showTravel && on;
     });
     placePlane();
+  }
+
+  function placeBed(span: number, midZ: number, centerX = 0, centerY = 0) {
+    const size = Math.max(bedX, bedY, span);
+    bed.scale.set(bedX, 1, bedY);
+    bed.position.set(bedX / 2 - centerX, 0, -(bedY / 2 - centerY));
+    volume.scale.set(bedX, bedZ, bedY);
+    volume.position.set(bedX / 2 - centerX, bedZ / 2, -(bedY / 2 - centerY));
+    camera.position.set(size * 0.9, midZ + size * 0.45, size * 0.9);
+    controls.target.set(0, midZ, 0);
+    controls.update();
   }
 
   function rebuild() {
@@ -258,8 +316,56 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
 
+  function dropBuffers() {
+    if (ribbon) {
+      root.remove(ribbon);
+      ribbon.geometry.dispose();
+      (ribbon.material as THREE.Material).dispose();
+      ribbon = null;
+    }
+    if (travelLines) {
+      root.remove(travelLines);
+      travelLines.geometry.dispose();
+      (travelLines.material as THREE.Material).dispose();
+      travelLines = null;
+    }
+    ranges = [];
+  }
+
   return {
     resize,
+    setBed(x, y, z) {
+      bedX = x;
+      bedY = y;
+      bedZ = z;
+    },
+    setBuffers(buffers) {
+      dropBuffers();
+      for (const layer of layers) layer.dispose();
+      layers = [];
+      root.clear();
+      if (!buffers || buffers.ranges.length === 0) return;
+      ranges = buffers.ranges;
+      const ribbonGeo = new THREE.BufferGeometry();
+      ribbonGeo.setAttribute("position", new THREE.BufferAttribute(buffers.ribbonPos, 3));
+      ribbonGeo.setAttribute("color", new THREE.BufferAttribute(buffers.ribbonCol, 3));
+      ribbon = new THREE.Mesh(
+        ribbonGeo,
+        new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }),
+      );
+      const travelGeo = new THREE.BufferGeometry();
+      travelGeo.setAttribute("position", new THREE.BufferAttribute(buffers.travelPos, 3));
+      travelGeo.setAttribute("color", new THREE.BufferAttribute(buffers.travelCol, 3));
+      travelLines = new THREE.LineSegments(
+        travelGeo,
+        new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.7 }),
+      );
+      root.add(ribbon);
+      root.add(travelLines);
+      placeBed(buffers.span, buffers.midZ, buffers.centerX, buffers.centerY);
+      fitted = true;
+      applyFocus();
+    },
     setShowTravel(show) {
       showTravel = show;
       applyFocus();
@@ -277,11 +383,9 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     },
     setHidden(kinds) {
       hidden = new Set(kinds);
-      rebuild();
     },
     setColorMode(mode) {
       colorMode = mode;
-      rebuild();
     },
     setPlane(spec) {
       planeSpec = spec;
@@ -297,7 +401,8 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       (handle.material as THREE.MeshBasicMaterial).color.setHex(hexToThree(colors.amber));
       cursorMat.color.setHex(hexToThree(colors.amber));
       (playLine.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.amber));
-      const next = new THREE.GridHelper(10, 10, hexToThree(colors.line), hexToThree(colors.bedMinor));
+      (volume.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.teal));
+      const next = new THREE.GridHelper(1, 10, hexToThree(colors.line), hexToThree(colors.bedMinor));
       next.scale.copy(bed.scale);
       next.position.copy(bed.position);
       scene.remove(bed);
@@ -320,6 +425,10 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       pos.setXYZ(0, seg.x0 - origin.cx, seg.z0, -(seg.y0 - origin.cy));
       pos.setXYZ(1, seg.x1 - origin.cx, seg.z1, -(seg.y1 - origin.cy));
       pos.needsUpdate = true;
+    },
+    setModel(min, max) {
+      slice = { mesh: { min, max }, layers: [] };
+      placePlane();
     },
     setSlice(next) {
       slice = next;

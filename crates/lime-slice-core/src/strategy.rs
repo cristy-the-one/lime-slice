@@ -471,6 +471,15 @@ pub struct PrinterProfile {
     /// Marlin linear advance K. `0` emits nothing.
     #[serde(default)]
     pub linear_advance: f64,
+    /// Printer acceleration cap, mm/s². Feature accels are clamped to this.
+    #[serde(default = "default_accel")]
+    pub max_accel: f64,
+    /// Filament price used by the estimate card. Not emitted into G-code.
+    #[serde(default = "default_cost")]
+    pub filament_cost_per_kg: f64,
+    /// Build volume height, millimetres.
+    #[serde(default = "default_bed_z")]
+    pub bed_z: f64,
 }
 
 fn default_flow() -> f64 {
@@ -479,6 +488,18 @@ fn default_flow() -> f64 {
 
 fn default_density() -> f64 {
     1.24
+}
+
+fn default_accel() -> f64 {
+    10_000.0
+}
+
+fn default_cost() -> f64 {
+    20.0
+}
+
+fn default_bed_z() -> f64 {
+    250.0
 }
 
 impl Default for PrinterProfile {
@@ -495,6 +516,9 @@ impl Default for PrinterProfile {
             filament_density_g_cm3: default_density(),
             pressure_advance: 0.0,
             linear_advance: 0.0,
+            max_accel: default_accel(),
+            filament_cost_per_kg: default_cost(),
+            bed_z: default_bed_z(),
         }
     }
 }

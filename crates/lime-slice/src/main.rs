@@ -1,11 +1,13 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use base64::Engine;
 use clap::{Parser, Subcommand};
 use lime_slice_core::{
-    slice_request, Axis, BlendMode, Gyroid3d, ScarfSeam, SliceRequest, SliceSettings, StrategyId,
-    ZHopMode,
+    mesh_preview, pareto_estimates, slice_request, Axis, BlendMode, Gyroid3d, ScarfSeam,
+    SliceRequest, SliceSettings, StrategyId, ZHopMode,
 };
 
 #[derive(Parser)]
@@ -648,6 +650,24 @@ fn classic_settings() -> SliceSettings {
     }
 }
 
+fn gcode_store() -> &'static Mutex<HashMap<String, String>> {
+    static STORE: std::sync::LazyLock<Mutex<HashMap<String, String>>> =
+        std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+    &STORE
+}
+
+fn park_gcode(text: String) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let token = NEXT.fetch_add(1, Ordering::Relaxed).to_string();
+    let mut guard = gcode_store().lock().expect("gcode store");
+    if guard.len() > 6 {
+        guard.clear();
+    }
+    guard.insert(token.clone(), text);
+    token
+}
+
 fn serve(port: u16) -> Result<(), String> {
     let addr = format!("127.0.0.1:{port}");
     let server = tiny_http::Server::http(&addr).map_err(|e| e.to_string())?;
@@ -697,13 +717,74 @@ fn serve(port: u16) -> Result<(), String> {
                 },
                 Err(err) => (400, err_json(&err.to_string())),
             }
+        } else if method == "GET" && url.starts_with("/api/gcode/") {
+            let token = url.trim_start_matches("/api/gcode/").trim();
+            let text = gcode_store()
+                .lock()
+                .expect("gcode store")
+                .get(token)
+                .cloned();
+            match text {
+                Some(text) => (200, text),
+                None => (404, err_json("g-code expired")),
+            }
+        } else if method == "POST" && url.starts_with("/api/mesh") {
+            match serde_json::from_str::<SliceRequest>(&body) {
+                Ok(req) => match decode_mesh(&req) {
+                    Ok(bytes) => match mesh_preview(&req.filename, &bytes) {
+                        Ok(preview) => (
+                            200,
+                            serde_json::to_string(&preview)
+                                .unwrap_or_else(|e| err_json(&e.to_string())),
+                        ),
+                        Err(err) => (400, err_json(&err)),
+                    },
+                    Err(err) => (400, err_json(&err)),
+                },
+                Err(err) => (400, err_json(&err.to_string())),
+            }
+        } else if method == "POST" && url.starts_with("/api/pareto") {
+            match serde_json::from_str::<SliceRequest>(&body) {
+                Ok(req) => match decode_mesh(&req) {
+                    Ok(bytes) => match lime_slice_core::load_mesh(&req.filename, &bytes) {
+                        Ok(mesh) => {
+                            let profile = req.printer.clone().unwrap_or_default();
+                            let settings = SliceSettings::from_request(&req);
+                            match pareto_estimates(&mesh, &profile, &settings) {
+                                Ok(points) => (
+                                    200,
+                                    serde_json::to_string(&points)
+                                        .unwrap_or_else(|e| err_json(&e.to_string())),
+                                ),
+                                Err(err) => (400, err_json(&err)),
+                            }
+                        }
+                        Err(err) => (400, err_json(&err)),
+                    },
+                    Err(err) => (400, err_json(&err)),
+                },
+                Err(err) => (400, err_json(&err.to_string())),
+            }
         } else if method == "POST" && url.starts_with("/api/slice") {
             match serde_json::from_str::<SliceRequest>(&body) {
                 Ok(req) => match slice_request(&req) {
-                    Ok(res) => (
-                        200,
-                        serde_json::to_string(&res).unwrap_or_else(|e| err_json(&e.to_string())),
-                    ),
+                    Ok(mut res) => {
+                        if !req.include_gcode {
+                            let token = park_gcode(std::mem::take(&mut res.gcode));
+                            let mut value = serde_json::to_value(&res)
+                                .unwrap_or_else(|e| serde_json::json!({ "error": e.to_string() }));
+                            if let Some(obj) = value.as_object_mut() {
+                                obj.insert("gcodeToken".into(), serde_json::json!(token));
+                            }
+                            (200, value.to_string())
+                        } else {
+                            (
+                                200,
+                                serde_json::to_string(&res)
+                                    .unwrap_or_else(|e| err_json(&e.to_string())),
+                            )
+                        }
+                    }
                     Err(err) => (400, err_json(&err)),
                 },
                 Err(err) => (400, err_json(&err.to_string())),
@@ -728,6 +809,13 @@ fn text_response(status: u16, body: &str) -> tiny_http::Response<std::io::Cursor
         response.add_header(tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()).unwrap());
     }
     response
+}
+
+fn decode_mesh(req: &SliceRequest) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(req.data_b64.trim())
+        .map_err(|e| e.to_string())
 }
 
 fn err_json(message: &str) -> String {
@@ -780,6 +868,8 @@ fn slice_file(
         z_hop_min_travel: settings.z_hop_min_travel,
         baseline: settings.baseline,
         compare: false,
+        include_gcode: true,
+        include_preview: true,
     })
 }
 

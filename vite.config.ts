@@ -22,6 +22,10 @@ function serveSamples(): Plugin {
     configurePreviewServer(server) {
       server.middlewares.use("/samples", handler);
     },
+    writeBundle() {
+      const dest = path.resolve(__dirname, "dist/samples");
+      fs.cpSync(root, dest, { recursive: true });
+    },
   };
 }
 
