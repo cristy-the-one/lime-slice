@@ -432,7 +432,32 @@ fn supports_fill_the_ledge_and_stay_off_when_disabled() {
     assert!(bare.sanity.ok, "{:?}", bare.sanity.notes);
     assert!(held.sanity.ok, "{:?}", held.sanity.notes);
     let bare_support: usize = bare.layers.iter().map(|l| l.support_paths as usize).sum();
-    assert_eq!(bare_support, 0);
+    // The shelf is a one-sided overhang. Auto support holds it; only an
+    // explicit island opt-out leaves it in the air.
+    assert!(
+        bare_support > 0,
+        "a cantilever shelf prints in air and needs a column"
+    );
+    let opted_out = slice_configured(
+        &mesh,
+        &BlendMode::Single {
+            strategy: StrategyId::Speed,
+        },
+        &profile(),
+        &SliceSettings {
+            supports: false,
+            island_support: false,
+            baseline: false,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    let opted_out_support: usize = opted_out
+        .layers
+        .iter()
+        .map(|l| l.support_paths as usize)
+        .sum();
+    assert_eq!(opted_out_support, 0);
     let support_layers: Vec<_> = held.layers.iter().filter(|l| l.support_paths > 0).collect();
     assert!(
         !support_layers.is_empty(),
@@ -458,7 +483,8 @@ fn supports_fill_the_ledge_and_stay_off_when_disabled() {
             || has_type(&held.gcode, "SOLID")
             || has_type(&held.gcode, "TOP")
     );
-    assert!(!has_type(&bare.gcode, "SUPPORT"));
+    assert!(has_type(&bare.gcode, "SUPPORT"));
+    assert!(!has_type(&opted_out.gcode, "SUPPORT"));
     let shelf = held
         .layers
         .iter()
@@ -2295,6 +2321,117 @@ fn floating_island_gets_support_without_the_overhang_toggle() {
             })
     });
     assert!(chip_support, "a 1.4 mm island still needs a support spine");
+}
+
+fn wing_support_hits(response: &lime_slice_core::SliceResponse, x0: f64, x1: f64) -> (u32, u32) {
+    let mut layers = 0u32;
+    let mut segs = 0u32;
+    for layer in &response.layers {
+        if layer.z > 10.2 {
+            continue;
+        }
+        let hit = layer.paths.iter().any(|p| {
+            (p.kind == "support" || p.kind == "support-interface")
+                && p.pts.windows(2).any(|w| {
+                    let mid = [(w[0][0] + w[1][0]) * 0.5, (w[0][1] + w[1][1]) * 0.5];
+                    mid[0] > x0 && mid[0] < x1 && mid[1] > 2.0 && mid[1] < 18.0
+                })
+        });
+        if hit {
+            layers += 1;
+            segs += layer
+                .paths
+                .iter()
+                .filter(|p| p.kind == "support" || p.kind == "support-interface")
+                .map(|p| {
+                    p.pts
+                        .windows(2)
+                        .filter(|w| {
+                            let mid = [(w[0][0] + w[1][0]) * 0.5, (w[0][1] + w[1][1]) * 0.5];
+                            mid[0] > x0 && mid[0] < x1
+                        })
+                        .count() as u32
+                })
+                .sum::<u32>();
+        }
+    }
+    (layers, segs)
+}
+
+fn slice_wings(mesh: &Mesh, supports: bool) -> lime_slice_core::SliceResponse {
+    slice_configured(
+        mesh,
+        &speed_mode(),
+        &profile(),
+        &SliceSettings {
+            supports,
+            baseline: false,
+            include_gcode: false,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap()
+}
+
+/// Body on the bed, both wings cantilevered and fused to the body.
+fn fused_wings() -> Mesh {
+    let mut tris = Vec::new();
+    add_box(&mut tris, 20.0, 0.0, 0.0, 40.0, 20.0, 16.0);
+    add_box(&mut tris, 0.0, 4.0, 10.0, 20.4, 16.0, 14.0);
+    add_box(&mut tris, 39.6, 4.0, 10.0, 60.0, 16.0, 14.0);
+    Mesh { triangles: tris }
+}
+
+/// Left wing fused, right wing a true island 2 mm off the body.
+fn half_island_wings() -> Mesh {
+    let mut tris = Vec::new();
+    add_box(&mut tris, 20.0, 0.0, 0.0, 40.0, 20.0, 16.0);
+    add_box(&mut tris, 0.0, 4.0, 10.0, 20.4, 16.0, 14.0);
+    add_box(&mut tris, 42.0, 4.0, 10.0, 62.0, 16.0, 14.0);
+    Mesh { triangles: tris }
+}
+
+/// Right wing 0.5 mm off the body, inside the 0.8 mm neighbor rule.
+fn near_gap_wings() -> Mesh {
+    let mut tris = Vec::new();
+    add_box(&mut tris, 20.0, 0.0, 0.0, 40.0, 20.0, 16.0);
+    add_box(&mut tris, 0.0, 4.0, 10.0, 20.4, 16.0, 14.0);
+    add_box(&mut tris, 40.5, 4.0, 10.0, 60.5, 16.0, 14.0);
+    Mesh { triangles: tris }
+}
+
+#[test]
+fn both_wings_get_columns_when_one_side_used_to_print_in_air() {
+    // Auto path (smart supports off). A fused cantilever used to be skipped
+    // because the body grounded the whole contour; a 2 mm gap was an island
+    // and got columns; a 0.5 mm gap was swallowed by the 0.8 mm neighbor rule.
+    let fused = slice_wings(&fused_wings(), false);
+    let half = slice_wings(&half_island_wings(), false);
+    let near = slice_wings(&near_gap_wings(), false);
+    for (name, response) in [("fused", &fused), ("half", &half), ("near", &near)] {
+        let (ll, ls) = wing_support_hits(response, 0.5, 19.5);
+        let (rl, rs) = wing_support_hits(response, 40.5, 61.5);
+        eprintln!(
+            "{name} left_layers={ll} left_segs={ls} right_layers={rl} right_segs={rs} support_paths={} time={:.1}s filament={:.3}g core={:.1}ms",
+            response.layers.iter().map(|l| l.support_paths).sum::<u32>(),
+            response.estimate.seconds,
+            response.estimate.filament_g,
+            response.core_ms
+        );
+        assert!(ll > 10 && ls > 20, "{name} left wing still bare");
+        assert!(rl > 10 && rs > 20, "{name} right wing still bare");
+    }
+    let body = fused.layers.iter().any(|l| {
+        l.z < 9.5
+            && l.paths.iter().any(|p| {
+                (p.kind == "support" || p.kind == "support-interface")
+                    && p.pts.windows(2).any(|w| {
+                        let mid = [(w[0][0] + w[1][0]) * 0.5, (w[0][1] + w[1][1]) * 0.5];
+                        mid[0] > 22.0 && mid[0] < 38.0 && mid[1] > 1.0 && mid[1] < 3.5
+                    })
+            })
+    });
+    assert!(!body, "support carpeted the grounded body");
 }
 
 #[test]

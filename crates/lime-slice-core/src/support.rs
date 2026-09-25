@@ -79,7 +79,8 @@ pub fn build_supports(
             island_regions[i] = unsupported_islands(upper, lower, dx);
         }
     }
-    if !opts.overhangs && island_regions.iter().all(|r| r.is_empty()) {
+    // Cantilevers are not islands. Keep scanning when auto support is on.
+    if !opts.overhangs && !opts.islands {
         return out;
     }
 
@@ -171,19 +172,24 @@ pub fn build_supports(
             continue;
         }
         let dx = bands[i].height / angle;
-        let angle_overhang = if opts.overhangs {
+        // Islands and one-sided wings both print in air. The overhang toggle
+        // still adds short bridge decks, which can span two anchors.
+        let angle_overhang = if opts.overhangs || opts.islands {
             let supported = offset_loops(lower, dx);
             drop_slivers(boolean_diff(upper, &supported), 0.35)
         } else {
             Vec::new()
         };
         let islands = island_regions.get(i).map(Vec::as_slice).unwrap_or(&[]);
-        let overhang = if islands.is_empty() {
+        let mut overhang = if islands.is_empty() {
             angle_overhang
         } else {
             // Keep a small island the angle test would drop as a sliver.
             drop_slivers(boolean_union(&angle_overhang, islands), 0.05)
         };
+        if !opts.overhangs {
+            overhang = exclude_short_bridges(&overhang, lower, dx);
+        }
         if overhang.is_empty() {
             continue;
         }
@@ -259,6 +265,76 @@ fn lean_and_merge(branches: &mut Vec<Branch>, step: f64) {
         }
     }
     *branches = kept;
+}
+
+/// A deck this short, held on two opposite sides, can bridge. Longer spans
+/// and one-sided wings still get a column.
+const BRIDGE_SPAN_MM: f64 = 18.0;
+
+/// Drop air regions that sit between two anchors. A wing that only meets the
+/// part on one side stays. `margin` matches the overhang offset.
+fn exclude_short_bridges(air: &[Loop], lower: &[Loop], margin: f64) -> Vec<Loop> {
+    if air.is_empty() {
+        return Vec::new();
+    }
+    let bed = offset_loops(lower, margin.max(0.0));
+    if bed.is_empty() {
+        return air.to_vec();
+    }
+    let mut keep = Vec::new();
+    for comp in components(air) {
+        if short_bridge(&comp, &bed) {
+            continue;
+        }
+        keep = boolean_union(&keep, &comp);
+    }
+    drop_slivers(keep, 0.05)
+}
+
+fn short_bridge(comp: &[Loop], bed: &[Loop]) -> bool {
+    let Some((min, max)) = loop_bounds(comp) else {
+        return false;
+    };
+    let grown = offset_loops(comp, 0.45);
+    let contact = intersection(bed, &grown);
+    if contact.is_empty() {
+        return false;
+    }
+    let mut left = false;
+    let mut right = false;
+    let mut bottom = false;
+    let mut top = false;
+    for piece in components(&contact) {
+        let c = centroid(&piece[0]);
+        let dl = c[0] - min[0];
+        let dr = max[0] - c[0];
+        let db = c[1] - min[1];
+        let dt = max[1] - c[1];
+        let nearest = dl.min(dr).min(db).min(dt);
+        if nearest > 2.0 {
+            continue;
+        }
+        if dl <= nearest + 1e-9 {
+            left = true;
+        } else if dr <= nearest + 1e-9 {
+            right = true;
+        } else if db <= nearest + 1e-9 {
+            bottom = true;
+        } else {
+            top = true;
+        }
+    }
+    let span_x = max[0] - min[0];
+    let span_y = max[1] - min[1];
+    (left && right && span_x <= BRIDGE_SPAN_MM) || (bottom && top && span_y <= BRIDGE_SPAN_MM)
+}
+
+fn intersection(a: &[Loop], b: &[Loop]) -> Vec<Loop> {
+    if a.is_empty() || b.is_empty() {
+        return Vec::new();
+    }
+    let outside = boolean_diff(a, b);
+    drop_slivers(boolean_diff(a, &outside), 0.02)
 }
 
 /// A component with no material below it, and no same-layer link to a component
