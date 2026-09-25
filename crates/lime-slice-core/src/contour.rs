@@ -226,7 +226,7 @@ pub fn orient_loops(mut loops: Vec<Loop>) -> Vec<Loop> {
         }
     }
     for i in 0..loops.len() {
-        let want_ccw = depth[i] % 2 == 0;
+        let want_ccw = depth[i].is_multiple_of(2);
         let is_ccw = areas[i] > 0.0;
         if want_ccw != is_ccw {
             loops[i].reverse();

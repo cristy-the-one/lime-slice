@@ -106,6 +106,12 @@ pub struct SliceRequest {
     /// Travels shorter than this stay on the layer. `0` means 2 mm.
     #[serde(default)]
     pub z_hop_min_travel: f64,
+    /// When true, time a second speed plan. The UI leaves this off.
+    #[serde(default)]
+    pub baseline: bool,
+    /// When true, also slice pure speed, efficiency, toughness, and classic.
+    #[serde(default)]
+    pub compare: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -137,6 +143,8 @@ pub struct SliceSettings {
     pub z_hop: ZHopMode,
     pub z_hop_height: f64,
     pub z_hop_min_travel: f64,
+    pub baseline: bool,
+    pub compare: bool,
 }
 
 impl Default for SliceSettings {
@@ -169,6 +177,8 @@ impl Default for SliceSettings {
             z_hop: ZHopMode::Blend,
             z_hop_height: 0.4,
             z_hop_min_travel: 2.0,
+            baseline: true,
+            compare: false,
         }
     }
 }
@@ -248,6 +258,8 @@ impl SliceSettings {
             } else {
                 2.0
             },
+            baseline: req.baseline,
+            compare: req.compare,
         }
     }
 
@@ -344,6 +356,10 @@ pub struct SliceResponse {
     pub blend: String,
     pub estimate: PrintEstimate,
     pub score: BlendScore,
+    /// Real slices of the same mesh: speed, efficiency (weight 0.5), toughness, classic.
+    /// Empty unless the request set `compare`.
+    #[serde(default)]
+    pub compare: Vec<CompareEstimate>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -362,6 +378,27 @@ pub struct PrintEstimate {
     pub mean_scarf_mm: f64,
     /// Largest |ΔZ| between consecutive scarf vertices. `0` when no scarf was emitted.
     pub max_seam_z_step_mm: f64,
+    /// Time and filament per path kind, including travel.
+    #[serde(default)]
+    pub by_feature: Vec<FeatureEstimate>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeatureEstimate {
+    pub kind: String,
+    pub seconds: f64,
+    pub filament_mm: f64,
+    pub filament_g: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareEstimate {
+    pub label: String,
+    pub seconds: f64,
+    pub filament_g: f64,
+    pub by_feature: Vec<FeatureEstimate>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -412,6 +449,9 @@ pub struct PreviewLayer {
     pub speed_walls: u32,
     pub toughness_walls: u32,
     pub support_paths: u32,
+    /// Estimator seconds for this layer.
+    #[serde(default)]
+    pub seconds: f64,
     pub paths: Vec<PreviewPath>,
 }
 
@@ -423,6 +463,12 @@ pub struct PreviewPath {
     pub pts: Vec<[f64; 2]>,
     pub width: f64,
     pub speed: f64,
+    /// Feed after the volumetric cap, mm/s.
+    #[serde(default)]
+    pub effective_speed: f64,
+    /// Strategy toughness weight, 0 (speed) to 1 (toughness).
+    #[serde(default)]
+    pub toughness: f64,
     /// Absolute nozzle Z per preview point. Empty means the layer Z.
     #[serde(default)]
     pub zs: Vec<f64>,
@@ -449,6 +495,9 @@ pub fn contour_times(mesh: &Mesh, layer_height: f64) -> Result<(f64, f64), Strin
 }
 
 pub fn slice_request(req: &SliceRequest) -> Result<SliceResponse, String> {
+    if crate::cancel::poll() {
+        return Err("cancelled".into());
+    }
     let bytes = decode_b64(&req.data_b64)?;
     let mesh = load_mesh(&req.filename, &bytes)?;
     let profile = req.printer.clone().unwrap_or_default();
@@ -522,24 +571,38 @@ pub fn slice_configured(
         &features,
         settings.arc_fit,
     );
+    if gcode.cancelled || crate::cancel::poll() {
+        return Err("cancelled".into());
+    }
     let core_ms = elapsed_ms(started);
 
-    let baseline_mode = BlendMode::Single {
-        strategy: StrategyId::Speed,
+    let (baseline_ms, baseline_label) = if settings.baseline {
+        let baseline_mode = BlendMode::Single {
+            strategy: StrategyId::Speed,
+        };
+        let baseline_started = Instant::now();
+        let baseline_planned = plan(mesh, &baseline_mode, &settings, profile.nozzle_diameter)?;
+        let _baseline_gcode = emit_gcode(
+            &baseline_planned,
+            &profile,
+            &baseline_mode,
+            layer_height,
+            line_width,
+            &features,
+            settings.arc_fit,
+        );
+        (
+            elapsed_ms(baseline_started),
+            "single-strategy speed (same mesh, layer height, and line width)".into(),
+        )
+    } else {
+        (0.0, "skipped".into())
     };
-    let baseline_started = Instant::now();
-    let baseline_planned = plan(mesh, &baseline_mode, &settings, profile.nozzle_diameter)?;
-    let _baseline_gcode = emit_gcode(
-        &baseline_planned,
-        &profile,
-        &baseline_mode,
-        layer_height,
-        line_width,
-        &features,
-        settings.arc_fit,
-    );
-    let baseline_ms = elapsed_ms(baseline_started);
-
+    let compare = if settings.compare {
+        compare_estimates(mesh, &settings, &profile, layer_height, line_width)?
+    } else {
+        Vec::new()
+    };
     let margin = 4.0;
     let mut notes = Vec::new();
     if gcode.layer_count == 0 {
@@ -567,11 +630,11 @@ pub fn slice_configured(
         notes.push("g-code is missing layer markers".into());
     }
 
-    let layers = preview_of(&planned);
+    let layers = preview_of(&planned, &profile, blend, &gcode.layer_seconds);
     Ok(SliceResponse {
         core_ms,
         baseline_ms,
-        baseline_label: "single-strategy speed (same mesh, layer height, and line width)".into(),
+        baseline_label,
         mesh: MeshInfo {
             triangles: mesh.triangle_count(),
             min,
@@ -609,6 +672,7 @@ pub fn slice_configured(
                 scarfed_loops,
                 mean_scarf_mm,
                 max_seam_z_step_mm,
+                by_feature: feature_estimates(&gcode.by_feature, &profile),
             }
         },
         score: score_of(
@@ -616,7 +680,87 @@ pub fn slice_configured(
             gcode.filament_g,
             structural_mm3(&planned),
         ),
+        compare,
     })
+}
+
+fn feature_estimates(
+    rows: &[crate::gcode::FeatureStat],
+    profile: &PrinterProfile,
+) -> Vec<FeatureEstimate> {
+    let area = std::f64::consts::PI * (profile.filament_diameter * 0.5).powi(2);
+    let scale = area * profile.filament_density_g_cm3 / 1000.0;
+    rows.iter()
+        .map(|row| FeatureEstimate {
+            kind: row.kind.clone(),
+            seconds: row.seconds,
+            filament_mm: row.filament_mm,
+            filament_g: row.filament_mm * scale,
+        })
+        .collect()
+}
+
+fn compare_estimates(
+    mesh: &Mesh,
+    settings: &SliceSettings,
+    profile: &PrinterProfile,
+    layer_height: f64,
+    line_width: f64,
+) -> Result<Vec<CompareEstimate>, String> {
+    let mut quiet = settings.clone();
+    quiet.baseline = false;
+    quiet.compare = false;
+    let modes = [
+        (
+            "speed",
+            BlendMode::Single {
+                strategy: StrategyId::Speed,
+            },
+            false,
+        ),
+        ("efficiency", BlendMode::Weight { toughness: 0.5 }, false),
+        (
+            "toughness",
+            BlendMode::Single {
+                strategy: StrategyId::Toughness,
+            },
+            false,
+        ),
+        (
+            "classic",
+            BlendMode::Single {
+                strategy: StrategyId::Speed,
+            },
+            true,
+        ),
+    ];
+    let mut out = Vec::with_capacity(modes.len());
+    for (label, blend, classic) in modes {
+        let mut one = quiet.clone();
+        one.classic = classic;
+        if classic {
+            one.variable_width = false;
+            one.arc_fit = false;
+            one.travel_opt = false;
+            one.overhang_control = false;
+            one.spatial_index = false;
+            one.infill_combine = false;
+            one.combing = false;
+            one.feature_speeds = false;
+            one.scarf_seam = ScarfSeam::Off;
+            one.support_style = SupportStyle::Grid;
+            one.support_height_mult = 1.0;
+        }
+        let response = slice_configured(mesh, &blend, profile, &one)?;
+        out.push(CompareEstimate {
+            label: label.into(),
+            seconds: response.estimate.seconds,
+            filament_g: response.estimate.filament_g,
+            by_feature: response.estimate.by_feature,
+        });
+    }
+    let _ = (layer_height, line_width);
+    Ok(out)
 }
 
 fn score_of(seconds: f64, grams: f64, toughness: f64) -> BlendScore {
@@ -657,11 +801,17 @@ fn structural_mm3(layers: &[LayerPaths]) -> f64 {
         .sum()
 }
 
-fn preview_of(layers: &[LayerPaths]) -> Vec<PreviewLayer> {
+fn preview_of(
+    layers: &[LayerPaths],
+    profile: &PrinterProfile,
+    blend: &BlendMode,
+    layer_seconds: &[f64],
+) -> Vec<PreviewLayer> {
     layers
         .iter()
         .filter(|l| !l.paths.is_empty())
-        .map(|layer| {
+        .enumerate()
+        .map(|(emitted, layer)| {
             let mut paths = Vec::new();
             let mut cursor: Option<[f64; 2]> = None;
             let mut speed_walls = 0u32;
@@ -684,17 +834,36 @@ fn preview_of(layers: &[LayerPaths]) -> Vec<PreviewLayer> {
                             pts,
                             width: 0.0,
                             speed: path.travel_speed,
+                            effective_speed: path.travel_speed,
+                            toughness: path_weight(blend, layer.z, path.strategy),
                             zs: Vec::new(),
                         });
                     }
                 }
                 let (pts, zs) = decimate_path(&path.points, &path.z_frac, layer.z, layer.height);
+                let bead = if path.bead_height > 1e-6 {
+                    path.bead_height
+                } else {
+                    layer.height
+                };
+                let mut limited = crate::gcode::limit_speed(
+                    path.speed,
+                    path.width,
+                    bead,
+                    path.flow,
+                    profile.max_volumetric_mm3_s,
+                );
+                if layer.index == 0 {
+                    limited = limited.min(30.0);
+                }
                 paths.push(PreviewPath {
                     kind: path.kind.as_str().into(),
                     strategy: path.strategy.as_str().into(),
                     pts,
                     width: path.width,
                     speed: path.speed,
+                    effective_speed: limited,
+                    toughness: path_weight(blend, layer.z, path.strategy),
                     zs,
                 });
                 cursor = path.points.last().copied();
@@ -711,10 +880,29 @@ fn preview_of(layers: &[LayerPaths]) -> Vec<PreviewLayer> {
                     .iter()
                     .filter(|p| p.kind == PathKind::Support || p.kind == PathKind::SupportInterface)
                     .count() as u32,
+                seconds: layer_seconds.get(emitted).copied().unwrap_or(0.0),
                 paths,
             }
         })
         .collect()
+}
+
+fn path_weight(blend: &BlendMode, z: f64, strategy: StrategyId) -> f64 {
+    match blend {
+        BlendMode::Single { strategy } => match strategy {
+            StrategyId::Speed => 0.0,
+            StrategyId::Toughness => 1.0,
+        },
+        BlendMode::Weight { toughness } => toughness.clamp(0.0, 1.0),
+        BlendMode::ByLayer {
+            bottom_mm,
+            transition_mm,
+        } => layer_weight(z, *bottom_mm, *transition_mm),
+        BlendMode::ByRegion { .. } => match strategy {
+            StrategyId::Speed => 0.0,
+            StrategyId::Toughness => 1.0,
+        },
+    }
 }
 
 fn decimate_path(
@@ -1266,13 +1454,12 @@ fn build_layer(
         };
     }
     let mut paths = Vec::new();
-    let note;
     let skirt_src = if index == 0 {
         boolean_union(contours, &boolean_union(support, interface))
     } else {
         Vec::new()
     };
-    match blend {
+    let note = match blend {
         BlendMode::ByRegion { axis, at_mm } => {
             let (low_rect, high_rect) = split_rects(*axis, *at_mm, min, max, contours);
             let tough = resolve(pure(StrategyId::Toughness), settings);
@@ -1310,7 +1497,7 @@ fn build_layer(
             merge_split_outers(&mut low_paths, &mut high_paths, *axis, *at_mm, line_width);
             paths.extend(low_paths);
             paths.extend(high_paths);
-            note = format!("region low=toughness high=speed split {at_mm:.2} h={height:.3}");
+            format!("region low=toughness high=speed split {at_mm:.2} h={height:.3}")
         }
         other => {
             let resolved = resolve(
@@ -1348,7 +1535,7 @@ fn build_layer(
             paths.extend(plan_region(
                 contours, &resolved, line_width, &mut hint, &feat,
             ));
-            note = format!(
+            format!(
                 "{} walls={} infill={:.0}% {} {:.0}mm/s h={:.3}",
                 resolved.id.as_str(),
                 resolved.walls,
@@ -1356,9 +1543,9 @@ fn build_layer(
                 pattern_label(&resolved),
                 resolved.print_speed,
                 height
-            );
+            )
         }
-    }
+    };
     Job {
         index,
         z,

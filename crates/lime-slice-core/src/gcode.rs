@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::strategy::{BlendMode, PrinterProfile};
 use crate::toolpath::Extrusion;
 
@@ -20,6 +22,18 @@ pub struct GcodeStats {
     pub arc_moves: usize,
     pub retracts: usize,
     pub z_hops: usize,
+    /// Print time and filament grouped by path kind. Travel is its own row.
+    pub by_feature: Vec<FeatureStat>,
+    /// Estimator seconds for each emitted layer, in layer order.
+    pub layer_seconds: Vec<f64>,
+    pub cancelled: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct FeatureStat {
+    pub kind: String,
+    pub seconds: f64,
+    pub filament_mm: f64,
 }
 
 pub fn emit_gcode(
@@ -34,6 +48,10 @@ pub fn emit_gcode(
     let mut w = Writer::new(profile, blend, layer_height, line_width, features);
     let mut emitted_layers = 0usize;
     for layer in layers {
+        if crate::cancel::poll() {
+            w.cancelled = true;
+            break;
+        }
         if layer.paths.is_empty() {
             continue;
         }
@@ -63,6 +81,7 @@ pub fn emit_gcode(
             } else {
                 layer.height
             };
+            w.kind = "travel".into();
             w.set_accel(path.travel_accel);
             let mut hop = path.lead_in.clone();
             hop.push(path.points[0]);
@@ -75,6 +94,7 @@ pub fn emit_gcode(
                 path.z_hop,
                 layer.z,
             );
+            w.kind = path.kind.as_str().into();
             w.set_accel(path.accel);
             let limited = limit_speed(
                 speed,
@@ -151,6 +171,13 @@ struct Writer {
     pa_cur: f64,
     la_cur: f64,
     emit_pa: bool,
+    kind: String,
+    feature_s: BTreeMap<String, f64>,
+    feature_mm: BTreeMap<String, f64>,
+    layer_seconds: Vec<f64>,
+    layer_mark: f64,
+    layer_open: bool,
+    cancelled: bool,
 }
 
 impl Writer {
@@ -214,6 +241,35 @@ impl Writer {
             pa_cur: profile.pressure_advance.max(0.0),
             la_cur: profile.linear_advance.max(0.0),
             emit_pa: profile.pressure_advance > 0.0 || profile.linear_advance > 0.0,
+            kind: "travel".into(),
+            feature_s: BTreeMap::new(),
+            feature_mm: BTreeMap::new(),
+            layer_seconds: Vec::new(),
+            layer_mark: 0.0,
+            layer_open: false,
+            cancelled: false,
+        }
+    }
+
+    fn add_time(&mut self, dt: f64) {
+        if dt <= 0.0 {
+            return;
+        }
+        self.time_s += dt;
+        *self.feature_s.entry(self.kind.clone()).or_insert(0.0) += dt;
+    }
+
+    fn add_filament(&mut self, mm: f64) {
+        if mm <= 0.0 {
+            return;
+        }
+        *self.feature_mm.entry(self.kind.clone()).or_insert(0.0) += mm;
+    }
+
+    fn close_layer(&mut self) {
+        if self.layer_open {
+            self.layer_seconds.push((self.time_s - self.layer_mark).max(0.0));
+            self.layer_open = false;
         }
     }
 
@@ -249,9 +305,13 @@ impl Writer {
         let dz = (layer.z - self.z).abs();
         let f = (120.0_f64 * 60.0) as i32;
         self.out.push_str(&format!("G1 Z{:.3} F{f}\n", layer.z));
+        self.close_layer();
+        self.kind = "travel".into();
         if dz > 1e-6 {
-            self.time_s += dz / 120.0;
+            self.add_time(dz / 120.0);
         }
+        self.layer_mark = self.time_s;
+        self.layer_open = true;
         self.z = layer.z;
         self.has_dir = false;
     }
@@ -280,7 +340,10 @@ impl Writer {
             let feed = self.retracted;
             self.retracted = 0.0;
             self.out.push_str(&format!("G1 E{:.5} F1800\n", self.e));
-            self.time_s += feed / 30.0;
+            let prev = self.kind.clone();
+            self.kind = "travel".into();
+            self.add_time(feed / 30.0);
+            self.kind = prev;
         }
     }
 
@@ -332,7 +395,7 @@ impl Writer {
             self.retracted = retract_mm;
             self.retracts += 1;
             self.out.push_str(&format!("G1 E{:.5} F1800\n", self.e));
-            self.time_s += retract_mm / 30.0;
+            self.add_time(retract_mm / 30.0);
         }
         self.z_hops += 1;
         let ramp = (z_hop * 4.0).clamp(0.6, 2.5).min(total * 0.45);
@@ -411,7 +474,7 @@ impl Writer {
             return;
         }
         self.travel_length_mm += d;
-        self.time_s += move_time((d * d + dz * dz).sqrt(), 0.0, 0.0, speed.max(10.0), accel);
+        self.add_time(move_time((d * d + dz * dz).sqrt(), 0.0, 0.0, speed.max(10.0), accel));
         let f = (speed.max(10.0) * 60.0).round() as i32;
         if dz > 5e-4 {
             self.out
@@ -446,10 +509,10 @@ impl Writer {
                 self.retracted = retract_mm;
                 self.retracts += 1;
                 self.out.push_str(&format!("G1 E{:.5} F1800\n", self.e));
-                self.time_s += retract_mm / 30.0;
+                self.add_time(retract_mm / 30.0);
             }
             self.travel_length_mm += d;
-            self.time_s += move_time(d, 0.0, 0.0, speed.max(10.0), accel);
+            self.add_time(move_time(d, 0.0, 0.0, speed.max(10.0), accel));
             self.has_dir = false;
         }
         let f = (speed.max(10.0) * 60.0).round() as i32;
@@ -538,7 +601,7 @@ impl Writer {
         let dz = (z - self.z).abs();
         let f = (120.0_f64 * 60.0) as i32;
         self.out.push_str(&format!("G1 Z{z:.3} F{f}\n"));
-        self.time_s += dz / 120.0;
+        self.add_time(dz / 120.0);
         self.z = z;
     }
 
@@ -556,7 +619,9 @@ impl Writer {
         self.unretract();
         let bead = width * layer_h * flow;
         let fil = std::f64::consts::PI * (filament_d * 0.5).powi(2);
-        self.e += arc.length * bead / fil;
+        let de = arc.length * bead / fil;
+        self.e += de;
+        self.add_filament(de);
         let f = (speed.max(5.0) * 60.0).round() as i32;
         let cmd = if arc.cw { "G2" } else { "G3" };
         self.out.push_str(&format!(
@@ -592,7 +657,9 @@ impl Writer {
         }
         let bead = width * layer_h.max(0.0) * flow.max(0.0);
         let fil = std::f64::consts::PI * (filament_d * 0.5).powi(2);
-        self.e += d * bead / fil;
+        let de = d * bead / fil;
+        self.e += de;
+        self.add_filament(de);
         let f = (speed.max(5.0) * 60.0).round() as i32;
         if let Some(z) = z {
             if (z - self.z).abs() > 5e-4 {
@@ -624,7 +691,7 @@ impl Writer {
         } else {
             0.0
         };
-        self.time_s += move_time(dist, v0, 0.0, v1, accel);
+        self.add_time(move_time(dist, v0, 0.0, v1, accel));
         self.note_bounds(end[0], end[1]);
         self.x = end[0];
         self.y = end[1];
@@ -649,6 +716,7 @@ impl Writer {
     }
 
     fn finish(&mut self, profile: &PrinterProfile) {
+        self.close_layer();
         if self.has_pos && self.retracted == 0.0 {
             self.e -= 1.0;
             self.retracted = 1.0;
@@ -694,6 +762,9 @@ impl Writer {
             extrusion_length_mm: self.extrusion_length_mm,
             travel_length_mm: self.travel_length_mm,
             layer_count,
+            by_feature: feature_rows(&self.feature_s, &self.feature_mm),
+            layer_seconds: self.layer_seconds,
+            cancelled: self.cancelled,
         }
     }
 }
@@ -702,6 +773,25 @@ fn hop_height(dist: f64, total: f64, ramp: f64, layer_z: f64, z_hop: f64) -> f64
     let up = (dist / ramp.max(1e-6)).clamp(0.0, 1.0);
     let down = ((total - dist) / ramp.max(1e-6)).clamp(0.0, 1.0);
     layer_z + z_hop * up.min(down)
+}
+
+fn feature_rows(seconds: &BTreeMap<String, f64>, mm: &BTreeMap<String, f64>) -> Vec<FeatureStat> {
+    let mut kinds: Vec<String> = seconds.keys().cloned().collect();
+    for key in mm.keys() {
+        if !kinds.iter().any(|k| k == key) {
+            kinds.push(key.clone());
+        }
+    }
+    kinds.sort();
+    kinds
+        .into_iter()
+        .map(|kind| FeatureStat {
+            seconds: seconds.get(&kind).copied().unwrap_or(0.0),
+            filament_mm: mm.get(&kind).copied().unwrap_or(0.0),
+            kind,
+        })
+        .filter(|row| row.seconds > 1e-6 || row.filament_mm > 1e-6)
+        .collect()
 }
 
 fn hypot(x: f64, y: f64) -> f64 {
@@ -733,7 +823,7 @@ fn span_planar(z_frac: &[f64], flow_frac: &[f64], start: usize, end_exclusive: u
     })
 }
 
-fn limit_speed(speed: f64, width: f64, height: f64, flow: f64, max_vol: f64) -> f64 {
+pub(crate) fn limit_speed(speed: f64, width: f64, height: f64, flow: f64, max_vol: f64) -> f64 {
     if !max_vol.is_finite() || max_vol <= 0.0 {
         return speed;
     }

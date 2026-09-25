@@ -47,9 +47,8 @@ pub enum BlendMode {
 
 impl Default for BlendMode {
     fn default() -> Self {
-        BlendMode::ByRegion {
-            axis: Axis::X,
-            at_mm: 10.0,
+        BlendMode::Single {
+            strategy: StrategyId::Speed,
         }
     }
 }
@@ -489,6 +488,72 @@ pub fn advance_scale(kind: &str) -> f64 {
         "bridge" => 0.5,
         "support" | "support-interface" => 0.4,
         _ => 1.0,
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StrategyCard {
+    pub name: String,
+    pub toughness: f64,
+    pub walls: u32,
+    pub pattern: String,
+    pub density: f64,
+    pub outer: f64,
+    pub inner: f64,
+    pub sparse: f64,
+    pub solid: f64,
+    pub top: f64,
+    pub travel: f64,
+    pub effective_outer: f64,
+    pub effective_inner: f64,
+    pub effective_sparse: f64,
+    pub effective_top: f64,
+}
+
+/// Resolved parameters for a toughness weight, with feeds after the volumetric cap.
+pub fn strategy_card(toughness: f64, layer_h: f64, line_width: f64, max_vol: f64) -> StrategyCard {
+    let t = toughness.clamp(0.0, 1.0);
+    let resolved = if t <= 1e-9 {
+        pure(StrategyId::Speed)
+    } else if t >= 1.0 - 1e-9 {
+        pure(StrategyId::Toughness)
+    } else {
+        mix(t)
+    };
+    let cap = |speed: f64| {
+        if !max_vol.is_finite() || max_vol <= 0.0 {
+            speed
+        } else {
+            let area = (line_width * layer_h).max(1e-6);
+            speed.min(max_vol / area)
+        }
+    };
+    let name = if t <= 1e-9 {
+        "speed"
+    } else if t >= 1.0 - 1e-9 {
+        "toughness"
+    } else if (t - 0.5).abs() < 0.02 {
+        "efficiency"
+    } else {
+        "weight"
+    };
+    StrategyCard {
+        name: name.into(),
+        toughness: resolved.toughness,
+        walls: resolved.walls,
+        pattern: resolved.pattern.as_str().into(),
+        density: resolved.infill_density,
+        outer: resolved.outer_speed,
+        inner: resolved.inner_speed,
+        sparse: resolved.sparse_speed,
+        solid: resolved.solid_speed,
+        top: resolved.top_speed,
+        travel: resolved.travel_speed,
+        effective_outer: cap(resolved.outer_speed),
+        effective_inner: cap(resolved.inner_speed),
+        effective_sparse: cap(resolved.sparse_speed),
+        effective_top: cap(resolved.top_speed),
     }
 }
 
