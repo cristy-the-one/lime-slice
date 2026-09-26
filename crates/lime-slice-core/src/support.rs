@@ -238,6 +238,9 @@ pub fn build_supports(
         let underside = bands[i].z - bands[i].height;
         pending.push((underside - opts.z_gap, overhang.clone()));
     }
+    if tree {
+        settle_disks(&mut out, bands, contours, lean);
+    }
     out
 }
 
@@ -285,6 +288,37 @@ fn overhang_at(
 const BEAD_OVERHANG_MM: f64 = 0.22;
 /// Thinnest trunk disk drawn beside the part.
 const MIN_DISK_R: f64 = 0.3;
+
+/// Walk the trunks bottom-up and narrow any disk that is wider than what holds
+/// it: a disk on the layer below grown by one lean step and half a bead, or
+/// the part itself. The top-down walk shrinks disks beside the part, so the
+/// disk above a squeezed one would otherwise overhang it.
+fn settle_disks(
+    layers: &mut [SupportLayer],
+    bands: &[LayerBand],
+    contours: &[Vec<Loop>],
+    lean: f64,
+) {
+    for i in 1..layers.len() {
+        let reach = bands[i].height * lean + BEAD_OVERHANG_MM;
+        let (lower, upper) = layers.split_at_mut(i);
+        let below = &lower[i - 1];
+        let part = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
+        let layer = &mut upper[0];
+        for (c, r) in layer.branches.iter().zip(layer.radii.iter_mut()) {
+            let mut room = below
+                .branches
+                .iter()
+                .zip(&below.radii)
+                .map(|(b, rb)| rb + reach - (c[0] - b[0]).hypot(c[1] - b[1]))
+                .fold(f64::MIN, f64::max);
+            if !part.is_empty() && in_solid(part, c[0], c[1]) {
+                room = room.max(distance_to_outline(part, *c) + reach);
+            }
+            *r = r.min(room).max(MIN_DISK_R);
+        }
+    }
+}
 
 struct Node {
     id: u32,

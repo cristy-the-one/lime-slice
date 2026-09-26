@@ -2914,3 +2914,79 @@ fn every_sample_audits_clean() {
         }
     }
 }
+
+/// A body with a thin wing tilted up and away from it, like the dragon's.
+/// Trunks under the wing squeeze between the body and the wing's low edge.
+fn winged_body() -> Mesh {
+    let mut tris = Vec::new();
+    add_box(&mut tris, 0.0, 0.0, 0.0, 12.0, 12.0, 22.0);
+    let (x0, x1, y0, y1) = (12.0, 52.0, -4.0, 16.0);
+    let (z0, z1, t) = (6.0, 24.0, 1.2);
+    let v = [
+        [x0, y0, z0],
+        [x1, y0, z1],
+        [x1, y1, z1],
+        [x0, y1, z0],
+        [x0, y0, z0 + t],
+        [x1, y0, z1 + t],
+        [x1, y1, z1 + t],
+        [x0, y1, z0 + t],
+    ];
+    for (i, j, k) in [
+        (0, 2, 1),
+        (0, 3, 2),
+        (4, 5, 6),
+        (4, 6, 7),
+        (0, 1, 5),
+        (0, 5, 4),
+        (3, 7, 6),
+        (3, 6, 2),
+        (0, 4, 7),
+        (0, 7, 3),
+        (1, 2, 6),
+        (1, 6, 5),
+    ] {
+        tris.push([v[i], v[j], v[k]]);
+    }
+    Mesh { triangles: tris }
+}
+
+#[test]
+fn tree_trunks_beside_a_wing_stand_on_something() {
+    for strategy in [StrategyId::Speed, StrategyId::Toughness] {
+        let report = lime_slice_core::audit_slice(
+            &winged_body(),
+            &BlendMode::Single { strategy },
+            &SliceSettings {
+                supports: true,
+                include_gcode: false,
+                baseline: false,
+                ..SliceSettings::default()
+            },
+            0.4,
+        )
+        .unwrap();
+        assert!(report.support_mm3 > 100.0, "{strategy:?} grew no tree");
+        assert_eq!(
+            report.support_floating_mm3, 0.0,
+            "{strategy:?} trunk printed over air on {} layers, worst {:?}",
+            report.floating_layers, report.worst_floating
+        );
+        assert_eq!(report.support_inside_mm3, 0.0);
+    }
+}
+
+#[test]
+fn separate_shells_closer_than_the_gap_limit_stay_separate() {
+    let mut tris = Vec::new();
+    add_box(&mut tris, 0.0, 0.0, 0.0, 10.0, 10.0, 5.0);
+    add_box(&mut tris, 11.5, 0.0, 0.0, 21.5, 10.0, 5.0);
+    let report = audit(&Mesh { triangles: tris });
+    assert_eq!(report.repaired_layers, 0, "closed shells were bridged");
+    let want = 2.0 * 100.0 * 5.0;
+    assert!(
+        (report.sliced_volume_mm3 - want).abs() / want < 0.005,
+        "sliced {:.0} mm3, two boxes are {want:.0} mm3",
+        report.sliced_volume_mm3
+    );
+}
