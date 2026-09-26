@@ -232,7 +232,8 @@ app.innerHTML = `
             <canvas id="spark" aria-label="Per-layer time"></canvas>
           </div>
           <div class="playback">
-            <button class="btn" id="play" type="button" aria-label="Play toolpath">Play</button>
+            <button class="btn" id="play" type="button" disabled>Play</button>
+            <button class="btn" id="stop" type="button" disabled>Stop</button>
             <input id="move" type="range" min="0" max="0" value="0" aria-label="Toolpath playback" />
             <div class="play-readout" id="playReadout">Feature — · feed — · E —</div>
           </div>
@@ -429,14 +430,20 @@ function busyText() {
   return `${busyPhase || "Slicing…"} ${((performance.now() - busySince) / 1000).toFixed(1)} s`;
 }
 
+function bannerLine(text: string, cls = "", alert = false) {
+  const kind = cls ? ` ${cls}` : "";
+  const role = alert ? ` role="alert"` : "";
+  const safe = escapeHtml(text);
+  return `<div class="banner${kind}"${role} title="${safe}">${safe}</div>`;
+}
 function paintBanner(isStale: boolean) {
   const rail = document.querySelector("#banner")!;
   const bits: string[] = [];
-  if (state.engine) bits.push(`<div class="banner">${escapeHtml(state.engine)}</div>`);
-  if (state.error) bits.push(`<div class="banner" role="alert">${escapeHtml(state.error)}</div>`);
-  if (state.notice) bits.push(`<div class="banner warn">${escapeHtml(state.notice)}</div>`);
-  if (isStale) bits.push(`<div class="banner warn">Settings changed since this slice. Export stays off until you re-slice.</div>`);
-  if (state.result && !state.result.sanity.ok) bits.push(`<div class="banner">${escapeHtml(state.result.sanity.notes.join(" ") || "G-code checks failed")}</div>`);
+  if (state.engine) bits.push(bannerLine(state.engine));
+  if (state.error) bits.push(bannerLine(state.error, "", true));
+  if (state.notice) bits.push(bannerLine(state.notice, "warn"));
+  if (isStale) bits.push(bannerLine("Settings changed since this slice. Export stays off until you re-slice.", "warn"));
+  if (state.result && !state.result.sanity.ok) bits.push(bannerLine(state.result.sanity.notes.join(" ") || "G-code checks failed"));
   if (state.busy) {
     const indeterminate = !(state.progress > 0 && state.progress < 1);
     const pct = Math.max(8, state.progress * 100);
@@ -752,11 +759,18 @@ function paintPlayback() {
   const readout = document.querySelector("#playReadout");
   const play = document.querySelector<HTMLButtonElement>("#play");
   if (slider) {
-    slider.max = String(max);
-    slider.value = String(moves.length ? state.move : 0);
+    const maxStr = String(max);
+    const valueStr = String(moves.length ? state.move : 0);
+    if (slider.max !== maxStr) slider.max = maxStr;
+    if (slider.value !== valueStr) slider.value = valueStr;
     slider.disabled = moves.length === 0;
   }
-  if (play) play.textContent = state.playing ? "Pause" : "Play";
+  if (play) {
+    play.textContent = state.playing ? "Playing…" : "Play";
+    play.disabled = state.playing || moves.length === 0;
+  }
+  const stop = document.querySelector<HTMLButtonElement>("#stop");
+  if (stop) stop.disabled = !state.playing;
   const point = moves[state.move];
   if (!readout) return;
   if (!point) {
@@ -861,20 +875,21 @@ function stopPlay() {
   state.playing = false;
   window.clearInterval(playTimer);
   const play = document.querySelector<HTMLButtonElement>("#play");
-  if (play) play.textContent = "Play";
+  const stop = document.querySelector<HTMLButtonElement>("#stop");
+  if (play) {
+    play.textContent = "Play";
+    play.disabled = movesNow().length === 0;
+  }
+  if (stop) stop.disabled = true;
 }
 function togglePlay() {
-  if (state.playing) {
-    stopPlay();
-    return;
-  }
+  if (state.playing) return;
   const moves = movesNow();
   if (moves.length === 0) return;
   layerGcode(true);
   if (state.move >= moves.length - 1) state.move = 0;
   state.playing = true;
-  const play = document.querySelector<HTMLButtonElement>("#play");
-  if (play) play.textContent = "Pause";
+  paintPlayback();
   playTimer = window.setInterval(() => {
     const n = movesNow().length;
     if (state.move >= n - 1) {
@@ -1168,10 +1183,13 @@ document.querySelectorAll<HTMLButtonElement>(".tab").forEach((button) => {
   });
 });
 document.querySelector("#play")!.addEventListener("click", () => togglePlay());
+document.querySelector("#stop")!.addEventListener("click", () => stopPlay());
 document.querySelector("#move")!.addEventListener("input", (ev) => {
+  const next = Number((ev.target as HTMLInputElement).value);
+  if (next === state.move) return;
   stopPlay();
   layerGcode(true);
-  state.move = Number((ev.target as HTMLInputElement).value);
+  state.move = next;
   paintPlayback();
   syncGcodeHighlight();
   draw();
