@@ -34,6 +34,23 @@ test("a setting changed during a slice leaves the finished result stale", async 
   await expect(page.locator("#export")).toBeDisabled();
 });
 
+test("a running slice shows elapsed time and Cancel aborts the request", async ({ page }) => {
+  await mockEngine(page, () => 4000);
+  await openCube(page);
+  const failed: string[] = [];
+  page.on("requestfailed", (req) => failed.push(req.url()));
+  await page.locator("#slice").click();
+  await expect(page.locator("[data-state=slicing]")).toHaveClass(/indeterminate/);
+  await expect(page.locator("#timing")).toHaveText(/^Slicing… \d+\.\d s$/);
+  const first = await page.locator("#timing").textContent();
+  await page.waitForTimeout(600);
+  expect(await page.locator("#timing").textContent()).not.toBe(first);
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.locator("#banner")).toContainText("cancelled");
+  await expect(page.locator("#timing")).toHaveText("No slice yet");
+  await expect.poll(() => failed.filter((url) => url.includes("/api/slice")).length).toBe(1);
+});
+
 test("a collapsed settings group stays collapsed when the panel re-renders", async ({ page }) => {
   await mockEngine(page, () => 0);
   await openCube(page);

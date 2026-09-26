@@ -385,7 +385,7 @@ function renderChrome() {
   (document.querySelector("#cancel") as HTMLButtonElement).hidden = !state.busy;
   (document.querySelector("#export") as HTMLButtonElement).disabled = !result || isStale || state.busy;
   document.querySelector("#timing")!.textContent = state.busy
-    ? `Slicing… ${Math.round(state.progress * 100)}%`
+    ? busyText()
     : result
       ? `${(result.estimate?.seconds ?? 0) / 60 < 1 ? `${(result.estimate?.seconds ?? 0).toFixed(0)} s` : `${((result.estimate?.seconds ?? 0) / 60).toFixed(1)} min`} · ${(result.estimate?.filamentG ?? 0).toFixed(2)} g`
       : "No slice yet";
@@ -402,6 +402,26 @@ function renderChrome() {
   else if (isStale) status.textContent = "This preview is stale. Re-slice before export.";
   else if (result) status.textContent = result.blend;
   else status.textContent = `${mesh.name} loaded. Choose a strategy, then slice.`;
+}
+
+let busySince = 0;
+let busyPhase = "";
+function markBusy() {
+  state.busy = true;
+  state.progress = 0;
+  busySince = performance.now();
+  busyPhase = "";
+  const mine = busySince;
+  const tick = window.setInterval(() => {
+    if (!state.busy || busySince !== mine) {
+      window.clearInterval(tick);
+      return;
+    }
+    document.querySelector("#timing")!.textContent = busyText();
+  }, 100);
+}
+function busyText() {
+  return `${busyPhase || "Slicing…"} ${((performance.now() - busySince) / 1000).toFixed(1)} s`;
 }
 
 function paintBanner(isStale: boolean) {
@@ -1350,8 +1370,7 @@ async function runSlice() {
   const hash = settingsHash();
   const request = payload();
   const bytes = meshBytes();
-  state.busy = true;
-  state.progress = 0.08;
+  markBusy();
   state.error = "";
   state.notice = "";
   renderChrome();
@@ -1366,8 +1385,9 @@ async function runSlice() {
       unlisten = await listen<{ progress: number; message: string }>("slice-progress", (ev) => {
         if (id !== job) return;
         state.progress = ev.payload.progress;
+        busyPhase = ev.payload.message;
         paintBanner(false);
-        document.querySelector("#timing")!.textContent = ev.payload.message;
+        document.querySelector("#timing")!.textContent = busyText();
       });
       if (id !== job) return;
       const json = await invoke<string>("slice_model", { payload: JSON.stringify({ ...request, dataB64: toBase64(new Uint8Array(bytes)) }) });
@@ -1448,7 +1468,7 @@ function clampPlane() {
 }
 
 async function runPaCal() {
-  state.busy = true;
+  markBusy();
   state.error = "";
   renderChrome();
   try {
@@ -1581,8 +1601,7 @@ async function runPareto() {
     renderChrome();
     return;
   }
-  state.busy = true;
-  state.progress = 0.2;
+  markBusy();
   renderChrome();
   try {
     const body = { ...payload(), dataB64: toBase64(new Uint8Array(meshBytes())) };
