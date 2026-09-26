@@ -59,6 +59,46 @@ test("the parked G-code body is fetched once, when the G-code tab first needs it
   expect(fetches[0]).toMatch(/\/api\/gcode\/t1$/);
 });
 
+test("legend and Color by recolor the 3D preview without rebuilding it", async ({ page }) => {
+  await page.addInitScript(() => {
+    const w = window as unknown as { __layerPosts: number };
+    w.__layerPosts = 0;
+    const post = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function (this: Worker, ...args: Parameters<Worker["postMessage"]>) {
+      if ((args[0] as { layers?: unknown })?.layers) w.__layerPosts += 1;
+      return post.apply(this, args);
+    } as Worker["postMessage"];
+  });
+  await mockEngine(page, () => 0);
+  await openCube(page);
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("button", { name: "3D", exact: true }).click();
+  await page.locator("#slice").click();
+  await expect(page.locator("#estimate")).toContainText("g");
+  await page.locator("#rangeHigh").evaluate((el) => {
+    const input = el as HTMLInputElement;
+    input.value = input.max;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const canvas = page.locator("#view3d");
+  await page.waitForTimeout(800);
+  const feature = await canvas.screenshot();
+  await page.locator("#legend label", { hasText: "Outer wall" }).locator("input").uncheck();
+  await page.waitForTimeout(300);
+  const noOuter = await canvas.screenshot();
+  await page.locator("#colorBy").selectOption("speed");
+  await page.waitForTimeout(300);
+  const speed = await canvas.screenshot();
+  await page.locator("#legend label", { hasText: "Outer wall" }).locator("input").check();
+  await page.locator("#colorBy").selectOption("feature");
+  await page.waitForTimeout(300);
+  const back = await canvas.screenshot();
+  expect(noOuter.equals(feature)).toBe(false);
+  expect(speed.equals(noOuter)).toBe(false);
+  expect(back.equals(feature)).toBe(true);
+  expect(await page.evaluate(() => (window as unknown as { __layerPosts: number }).__layerPosts)).toBe(1);
+});
+
 test("a running slice shows elapsed time and Cancel aborts the request", async ({ page }) => {
   await mockEngine(page, () => 4000);
   await openCube(page);

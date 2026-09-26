@@ -1774,7 +1774,6 @@ function segmentStart(paths: PreviewPath[], point: PlayPoint): [number, number] 
 
 const geomWorker = new Worker(new URL("./geom-worker.ts", import.meta.url), { type: "module" });
 let geomJob = 0;
-let geomKey = "";
 
 function rebuildGeom() {
   const result = state.result;
@@ -1789,12 +1788,13 @@ function rebuildGeom() {
     const mesh = result.mesh;
     const buffers: RibbonBuffers = {
       ranges: ev.data.ranges,
+      kinds: ev.data.kinds,
       ribbonPos: ev.data.ribbonPos,
-      ribbonCol: ev.data.ribbonCol,
+      ribbonInfo: ev.data.ribbonInfo,
       facePos: ev.data.facePos,
-      faceCol: ev.data.faceCol,
+      faceInfo: ev.data.faceInfo,
       travelPos: ev.data.travelPos,
-      travelCol: ev.data.travelCol,
+      travelInfo: ev.data.travelInfo,
       span: Math.max(mesh.max[0] - mesh.min[0], mesh.max[1] - mesh.min[1], mesh.max[2] - mesh.min[2], 1),
       midZ: (mesh.min[2] + mesh.max[2]) / 2,
       centerX: (mesh.min[0] + mesh.max[0]) / 2,
@@ -1809,20 +1809,17 @@ function rebuildGeom() {
     layers: result.layers,
     min: result.mesh.min,
     max: result.mesh.max,
-    hidden: [...state.hidden],
-    showTravel: state.showTravel && !state.hidden.has("travel"),
-    colorMode: state.colorMode,
   });
 }
 
 function sync3d() {
-  const key = `${state.result?.coreMs ?? 0}:${state.colorMode}:${[...state.hidden].join()}:${state.showTravel}`;
-  if (state.result !== shown || key !== geomKey) {
+  if (state.result !== shown) {
     shown = state.result;
-    geomKey = key;
     if (state.result) view3d.setModel(state.result.mesh.min, state.result.mesh.max);
     rebuildGeom();
   }
+  view3d.setHidden(state.hidden);
+  view3d.setColorMode(state.colorMode);
   view3d.setShowTravel(state.showTravel && !state.hidden.has("travel"));
   view3d.setRange(state.rangeLow, state.layer);
   const moves = movesNow();

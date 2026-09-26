@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { test } from "@playwright/test";
-import { buildPreviewGeometry, type GeomLayer } from "../src/preview-geom";
+import { buildPreviewGeometry, FEATURE_RGB, MARGIN_SHADE, type GeomLayer, type PreviewGeometry } from "../src/preview-geom";
 
 function stack(height: number): GeomLayer[] {
   const layers: GeomLayer[] = [];
@@ -24,18 +24,17 @@ test("side view of extruded beads is a solid stack", async ({ page }) => {
     layers: stack(0.012),
     min: [0, -1, 0],
     max: [18, 2, 2],
-    hidden: [],
-    showTravel: false,
-    colorMode: "feature",
   });
   const thick = buildPreviewGeometry({
     layers: stack(0.2),
     min: [0, -1, 0],
     max: [18, 2, 2],
-    hidden: [],
-    showTravel: false,
-    colorMode: "feature",
   });
+  const marginColor = (built: PreviewGeometry) => {
+    const out: number[] = [];
+    for (let i = 0; i < built.ribbonInfo.length; i += 3) out.push(...FEATURE_RGB[built.kinds[built.ribbonInfo[i]]].map((v) => v * MARGIN_SHADE));
+    return out;
+  };
   await page.setViewportSize({ width: 1100, height: 520 });
   await page.setContent(`<!doctype html><body style="margin:0;background:#12141c">
     <canvas id="c" width="1100" height="520"></canvas></body>`);
@@ -73,9 +72,9 @@ test("side view of extruded beads is a solid stack", async ({ page }) => {
     },
     {
       flatPos: flat.ribbon,
-      flatCol: flat.ribbonColor,
+      flatCol: marginColor(flat),
       thickPos: thick.ribbon,
-      thickCol: thick.ribbonColor,
+      thickCol: marginColor(thick),
     },
   );
   fs.mkdirSync("/opt/cursor/artifacts", { recursive: true });

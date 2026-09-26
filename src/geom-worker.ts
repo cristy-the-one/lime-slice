@@ -8,18 +8,18 @@ self.onmessage = (event: MessageEvent<GeomRequest>) => {
   const msg = event.data;
   const built = buildPreviewGeometry(msg);
   const ribbonPos = new Float32Array(built.ribbon);
-  const ribbonCol = new Float32Array(built.ribbonColor);
+  const ribbonInfo = new Float32Array(built.ribbonInfo);
   const facePos = new Float32Array(built.face);
-  const faceCol = new Float32Array(built.faceColor);
+  const faceInfo = new Float32Array(built.faceInfo);
   const travelPos = new Float32Array(built.travel);
-  const travelCol = new Float32Array(built.travelColor);
-  const payload = { id: msg.id, ranges: built.ranges, ribbonPos, ribbonCol, facePos, faceCol, travelPos, travelCol };
+  const travelInfo = new Float32Array(built.travelInfo);
+  const payload = { id: msg.id, ranges: built.ranges, kinds: built.kinds, ribbonPos, ribbonInfo, facePos, faceInfo, travelPos, travelInfo };
   (self as unknown as Worker).postMessage(payload, [
     ribbonPos.buffer,
-    ribbonCol.buffer,
+    ribbonInfo.buffer,
     facePos.buffer,
-    faceCol.buffer,
+    faceInfo.buffer,
     travelPos.buffer,
-    travelCol.buffer,
+    travelInfo.buffer,
   ]);
 };

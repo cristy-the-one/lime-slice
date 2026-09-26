@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { meshCenter, scenePoint } from "./preview-geom";
+import type { ColorMode } from "./colors";
+import { FEATURE_RGB, MARGIN_SHADE, MAX_KINDS, OTHER_RGB, SPEED_RAMP, WEIGHT_RAMP, meshCenter, scenePoint } from "./preview-geom";
 import { hexToThree, themeColors } from "./theme";
 
 export interface LayerRange {
@@ -14,12 +15,13 @@ export interface LayerRange {
 
 export interface RibbonBuffers {
   ranges: LayerRange[];
+  kinds: string[];
   ribbonPos: Float32Array;
-  ribbonCol: Float32Array;
+  ribbonInfo: Float32Array;
   facePos: Float32Array;
-  faceCol: Float32Array;
+  faceInfo: Float32Array;
   travelPos: Float32Array;
-  travelCol: Float32Array;
+  travelInfo: Float32Array;
   span: number;
   midZ: number;
   centerX: number;
@@ -32,6 +34,8 @@ export interface SliceView3d {
   setBed(x: number, y: number, z: number): void;
   setRange(low: number, high: number): void;
   setShowTravel(show: boolean): void;
+  setHidden(kinds: ReadonlySet<string>): void;
+  setColorMode(mode: ColorMode): void;
   setPlane(plane: { axis: "x" | "y"; at: number } | null): void;
   onPlane(cb: ((at: number) => void) | null): void;
   setTheme(): void;
@@ -45,6 +49,8 @@ const noopView: SliceView3d = {
   setBed() {},
   setRange() {},
   setShowTravel() {},
+  setHidden() {},
+  setColorMode() {},
   setPlane() {},
   onPlane() {},
   setTheme() {},
@@ -126,6 +132,13 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   let low = 0;
   let high = 0;
   let showTravel = false;
+  let kinds: string[] = [];
+  let hidden: ReadonlySet<string> = new Set();
+  const pathUniforms = {
+    palette: { value: new Float32Array(MAX_KINDS * 3) },
+    hiddenKinds: { value: new Float32Array(MAX_KINDS) },
+    mode: { value: 0 },
+  };
   let planeSpec: { axis: "x" | "y"; at: number } | null = null;
   let planeCb: ((at: number) => void) | null = null;
   let origin = { cx: 0, cy: 0 };
@@ -243,6 +256,14 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
 
+  function applyHidden() {
+    const mask = pathUniforms.hiddenKinds.value;
+    mask.fill(0);
+    kinds.forEach((kind, i) => {
+      if (hidden.has(kind)) mask[i] = 1;
+    });
+  }
+
   function dropBuffers() {
     if (ribbon) {
       root.remove(ribbon);
@@ -277,32 +298,26 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       if (!buffers || buffers.ranges.length === 0) return;
       ranges = buffers.ranges;
       origin = { cx: buffers.centerX, cy: buffers.centerY };
-      const ribbonGeo = new THREE.BufferGeometry();
-      ribbonGeo.setAttribute("position", new THREE.BufferAttribute(buffers.ribbonPos, 3));
-      ribbonGeo.setAttribute("color", new THREE.BufferAttribute(buffers.ribbonCol, 3));
+      kinds = buffers.kinds;
+      const palette = pathUniforms.palette.value;
+      kinds.forEach((kind, i) => palette.set(FEATURE_RGB[kind] ?? OTHER_RGB, i * 3));
+      applyHidden();
       ribbon = new THREE.Mesh(
-        ribbonGeo,
-        new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }),
+        pathGeometry(buffers.ribbonPos, buffers.ribbonInfo),
+        pathMaterial(pathUniforms, MARGIN_SHADE, 1, { side: THREE.DoubleSide }),
       );
-      const faceGeo = new THREE.BufferGeometry();
-      faceGeo.setAttribute("position", new THREE.BufferAttribute(buffers.facePos, 3));
-      faceGeo.setAttribute("color", new THREE.BufferAttribute(buffers.faceCol, 3));
       face = new THREE.Mesh(
-        faceGeo,
-        new THREE.MeshBasicMaterial({
-          vertexColors: true,
+        pathGeometry(buffers.facePos, buffers.faceInfo),
+        pathMaterial(pathUniforms, 1, 1, {
           side: THREE.DoubleSide,
           polygonOffset: true,
           polygonOffsetFactor: -2,
           polygonOffsetUnits: -2,
         }),
       );
-      const travelGeo = new THREE.BufferGeometry();
-      travelGeo.setAttribute("position", new THREE.BufferAttribute(buffers.travelPos, 3));
-      travelGeo.setAttribute("color", new THREE.BufferAttribute(buffers.travelCol, 3));
       travelLines = new THREE.LineSegments(
-        travelGeo,
-        new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.7 }),
+        pathGeometry(buffers.travelPos, buffers.travelInfo),
+        pathMaterial(pathUniforms, 1, 0.7, { transparent: true }),
       );
       root.add(ribbon);
       root.add(face);
@@ -313,6 +328,13 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     setShowTravel(show) {
       showTravel = show;
       applyFocus();
+    },
+    setHidden(next) {
+      hidden = new Set(next);
+      applyHidden();
+    },
+    setColorMode(mode) {
+      pathUniforms.mode.value = mode === "weight" ? 1 : mode === "speed" ? 2 : 0;
     },
     setRange(nextLow, nextHigh) {
       low = nextLow;
@@ -366,6 +388,53 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       placePlane();
     },
   };
+}
+
+function pathGeometry(pos: Float32Array, info: Float32Array) {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geometry.setAttribute("info", new THREE.BufferAttribute(info, 3));
+  return geometry;
+}
+
+const rgb = (c: [number, number, number]) => `vec3(${c.map((v) => v.toFixed(3)).join(", ")})`;
+
+/** Colors each vertex from its (kind slot, blend weight, speed) triple; hidden kinds collapse off-screen. */
+const PATH_VERTEX = `
+attribute vec3 info;
+uniform vec3 palette[${MAX_KINDS}];
+uniform float hiddenKinds[${MAX_KINDS}];
+uniform int mode;
+uniform float shade;
+varying vec3 vColor;
+void main() {
+  int kind = int(info.x + 0.5);
+  if (hiddenKinds[kind] > 0.5) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    return;
+  }
+  vec3 color = palette[kind];
+  if (mode == 1) color = mix(${rgb(WEIGHT_RAMP[0])}, ${rgb(WEIGHT_RAMP[1])}, info.y);
+  if (mode == 2) color = mix(${rgb(SPEED_RAMP[0])}, ${rgb(SPEED_RAMP[1])}, clamp((info.z - 20.0) / 180.0, 0.0, 1.0));
+  vColor = color * shade;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`;
+
+const PATH_FRAGMENT = `
+uniform float alpha;
+varying vec3 vColor;
+void main() {
+  gl_FragColor = vec4(vColor, alpha);
+  #include <colorspace_fragment>
+}`;
+
+function pathMaterial(shared: Record<string, THREE.IUniform>, shade: number, alpha: number, params: THREE.ShaderMaterialParameters) {
+  return new THREE.ShaderMaterial({
+    ...params,
+    uniforms: { ...shared, shade: { value: shade }, alpha: { value: alpha } },
+    vertexShader: PATH_VERTEX,
+    fragmentShader: PATH_FRAGMENT,
+  });
 }
 
 function applyPixelRatio(renderer: THREE.WebGLRenderer) {
