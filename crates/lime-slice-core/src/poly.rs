@@ -131,6 +131,36 @@ fn polygon_centroid(loop_: &[[f64; 2]]) -> [f64; 2] {
     [cx / (3.0 * a), cy / (3.0 * a)]
 }
 
+/// Centroid and major-axis angle of the area. Both are area integrals, so they
+/// ignore the start vertex and move continuously when a vertex does.
+pub fn principal_axis(loop_: &[[f64; 2]]) -> Option<([f64; 2], f64)> {
+    let o = loop_
+        .iter()
+        .fold([f64::MAX; 2], |m, p| [m[0].min(p[0]), m[1].min(p[1])]);
+    let (mut a, mut sx, mut sy, mut sxx, mut syy, mut sxy) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    for i in 0..loop_.len() {
+        let (x0, y0) = (loop_[i][0] - o[0], loop_[i][1] - o[1]);
+        let q = loop_[(i + 1) % loop_.len()];
+        let (x1, y1) = (q[0] - o[0], q[1] - o[1]);
+        let cross = x0 * y1 - x1 * y0;
+        a += cross;
+        sx += (x0 + x1) * cross;
+        sy += (y0 + y1) * cross;
+        sxx += (x0 * x0 + x0 * x1 + x1 * x1) * cross;
+        syy += (y0 * y0 + y0 * y1 + y1 * y1) * cross;
+        sxy += (x0 * y1 + 2.0 * x0 * y0 + 2.0 * x1 * y1 + x1 * y0) * cross;
+    }
+    if a.abs() < 1e-12 {
+        return None;
+    }
+    let (cx, cy) = (sx / (3.0 * a), sy / (3.0 * a));
+    let vxx = sxx / (6.0 * a) - cx * cx;
+    let vyy = syy / (6.0 * a) - cy * cy;
+    let vxy = sxy / (12.0 * a) - cx * cy;
+    let angle = 0.5 * (2.0 * vxy).atan2(vxx - vyy);
+    Some(([cx + o[0], cy + o[1]], angle))
+}
+
 /// Outers are CCW, holes are CW. Tiny loops are dropped.
 pub fn orient_loops(mut loops: Vec<Loop>) -> Vec<Loop> {
     for loop_ in &mut loops {
