@@ -4,21 +4,24 @@ use base64::Engine;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::adaptive::{plan_bands, HeightOpts};
-use crate::contour::{loop_bounds, slice_contours, Loop};
+use crate::adaptive::{plan_bands, HeightOpts, LayerBand};
+use crate::cancel::Job;
 use crate::gcode::{emit_gcode, LayerPaths};
 use crate::index::ZIndex;
 use crate::load::load_mesh;
 use crate::mesh::Mesh;
+use crate::poly::{
+    boolean_diff, boolean_union, clip_to_rect, loop_bounds, offset_loops, signed_area, Loop,
+};
 use crate::strategy::{
     classicize, layer_weight, mix, pure, support_density, support_interface_density, Axis,
     BlendMode, Gyroid3d, PrinterProfile, ResolvedStrategy, ScarfSeam, StrategyId, ZHopMode,
 };
-use crate::support::{build_supports, SupportOpts, SupportStyle};
+use crate::support::{build_supports, SupportLayer, SupportOpts, SupportStyle};
 use crate::toolpath::{
-    apply_overhang, apply_scarf, apply_z_hop, boolean_union, clip_to_rect, offset_loops,
-    optimize_travel, plan_region, plan_skirt, plan_support, plan_tree_support, seat_layer_start,
-    Extrusion, PathFeatures, PathKind, ScarfParams, ShellBand,
+    apply_overhang, apply_scarf, apply_z_hop, optimize_travel, plan_region, plan_skirt,
+    plan_support, plan_tree_support, seat_layer_start, Extrusion, PathFeatures, PathKind,
+    ScarfParams, ShellBand,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -149,7 +152,6 @@ pub struct SliceSettings {
     pub travel_opt: bool,
     pub overhang_control: bool,
     pub classic: bool,
-    pub spatial_index: bool,
     pub support_style: SupportStyle,
     pub branch_angle: f64,
     pub tip_diameter: f64,
@@ -177,6 +179,8 @@ pub struct SliceSettings {
     pub junction_deviation_mm: f64,
     /// Hold up same-layer islands that have nothing under them. Overhang supports stay on `supports`.
     pub island_support: bool,
+    /// The shell job this slice belongs to. A stale job stops with "cancelled".
+    pub job: Job,
 }
 
 impl Default for SliceSettings {
@@ -194,8 +198,7 @@ impl Default for SliceSettings {
             travel_opt: true,
             overhang_control: true,
             classic: false,
-            spatial_index: true,
-            support_style: SupportStyle::Grid,
+            support_style: SupportStyle::Tree,
             branch_angle: 40.0,
             tip_diameter: 0.8,
             trunk_diameter: 4.2,
@@ -219,6 +222,7 @@ impl Default for SliceSettings {
             classic_estimator: false,
             junction_deviation_mm: 0.02,
             island_support: true,
+            job: Job::default(),
         }
     }
 }
@@ -255,7 +259,6 @@ impl SliceSettings {
             travel_opt: req.travel_opt && !req.classic,
             overhang_control: req.overhang_control && !req.classic,
             classic: req.classic,
-            spatial_index: !req.classic,
             support_style: if req.classic {
                 SupportStyle::Grid
             } else {
@@ -326,6 +329,7 @@ impl SliceSettings {
                 0.02
             },
             island_support: true,
+            job: Job::default(),
         }
     }
 
@@ -382,10 +386,12 @@ impl SliceSettings {
     }
 }
 
+/// Trees unless the request asks for the grid: they reach the part in far
+/// less material and time than a column filling the whole overhang.
 fn parse_support_style(name: &str) -> SupportStyle {
     match name.trim().to_ascii_lowercase().as_str() {
-        "tree" | "organic" => SupportStyle::Tree,
-        _ => SupportStyle::Grid,
+        "grid" => SupportStyle::Grid,
+        _ => SupportStyle::Tree,
     }
 }
 
@@ -525,6 +531,8 @@ pub struct PreviewLayer {
     /// Estimator seconds for this layer.
     #[serde(default)]
     pub seconds: f64,
+    /// Sent as columns (see `path_columns`), not one object per path.
+    #[serde(serialize_with = "path_columns")]
     pub paths: Vec<PreviewPath>,
 }
 
@@ -551,7 +559,8 @@ pub struct PreviewPath {
 }
 
 /// Milliseconds to contour every layer with the Z index, then with a full triangle scan.
-pub fn contour_times(mesh: &Mesh, layer_height: f64) -> Result<(f64, f64), String> {
+/// Wall-clock time to cut every 0.2 mm layer of `mesh` through the Z index.
+pub fn contour_times(mesh: &Mesh, layer_height: f64) -> Result<f64, String> {
     let (_, max) = mesh.bounds().ok_or("empty mesh")?;
     let mut zs = Vec::new();
     let mut z = layer_height;
@@ -561,23 +570,21 @@ pub fn contour_times(mesh: &Mesh, layer_height: f64) -> Result<(f64, f64), Strin
     }
     let index = ZIndex::build(mesh);
     let started = Instant::now();
-    let indexed: Vec<_> = zs.par_iter().map(|z| index.slice(*z)).collect();
-    let indexed_ms = elapsed_ms(started);
-    let started = Instant::now();
-    let scanned: Vec<_> = zs.iter().map(|z| slice_contours(mesh, *z)).collect();
-    let scanned_ms = elapsed_ms(started);
-    debug_assert_eq!(indexed.len(), scanned.len());
-    Ok((indexed_ms, scanned_ms))
+    let _: Vec<_> = zs.par_iter().map(|z| index.slice(*z)).collect();
+    Ok(elapsed_ms(started))
 }
 
-pub fn slice_request(req: &SliceRequest) -> Result<SliceResponse, String> {
-    if crate::cancel::poll() {
+pub fn slice_request(req: &SliceRequest, job: Job) -> Result<SliceResponse, String> {
+    if job.cancelled() {
         return Err("cancelled".into());
     }
     let bytes = decode_b64(&req.data_b64)?;
     let mesh = load_mesh(&req.filename, &bytes)?;
     let profile = req.printer.clone().unwrap_or_default();
-    let settings = SliceSettings::from_request(req);
+    let settings = SliceSettings {
+        job,
+        ..SliceSettings::from_request(req)
+    };
     slice_configured(&mesh, &req.blend, &profile, &settings)
 }
 
@@ -619,7 +626,6 @@ pub fn slice_configured(
         settings.arc_fit = false;
         settings.travel_opt = false;
         settings.overhang_control = false;
-        settings.spatial_index = false;
         settings.infill_combine = false;
         settings.combing = false;
         settings.feature_speeds = false;
@@ -637,7 +643,7 @@ pub fn slice_configured(
         profile.linear_advance = 0.0;
     }
     let started = Instant::now();
-    let planned = plan(mesh, blend, &settings, profile.nozzle_diameter)?;
+    let planned = plan(mesh, blend, &settings, profile.nozzle_diameter)?.layers;
     let gcode = emit_gcode(
         &planned,
         &profile,
@@ -648,8 +654,9 @@ pub fn slice_configured(
         settings.arc_fit,
         settings.classic_estimator,
         settings.junction_deviation_mm,
+        settings.job,
     );
-    if gcode.cancelled || crate::cancel::poll() {
+    if gcode.cancelled || settings.job.cancelled() {
         return Err("cancelled".into());
     }
     let core_ms = elapsed_ms(started);
@@ -659,7 +666,8 @@ pub fn slice_configured(
             strategy: StrategyId::Speed,
         };
         let baseline_started = Instant::now();
-        let baseline_planned = plan(mesh, &baseline_mode, &settings, profile.nozzle_diameter)?;
+        let baseline_planned =
+            plan(mesh, &baseline_mode, &settings, profile.nozzle_diameter)?.layers;
         let _baseline_gcode = emit_gcode(
             &baseline_planned,
             &profile,
@@ -670,6 +678,7 @@ pub fn slice_configured(
             settings.arc_fit,
             settings.classic_estimator,
             settings.junction_deviation_mm,
+            settings.job,
         );
         (
             elapsed_ms(baseline_started),
@@ -832,7 +841,6 @@ fn compare_estimates(
             one.arc_fit = false;
             one.travel_opt = false;
             one.overhang_control = false;
-            one.spatial_index = false;
             one.infill_combine = false;
             one.combing = false;
             one.feature_speeds = false;
@@ -945,6 +953,86 @@ fn structural_mm3(layers: &[LayerPaths]) -> f64 {
                 .sum::<f64>()
         })
         .sum()
+}
+
+/// Coordinates, speeds, and weights on the wire are rounded to 1 µm (or 0.001).
+struct Rounded(f64);
+
+impl Serialize for Rounded {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_f64((self.0 * 1000.0).round() / 1000.0)
+    }
+}
+
+/// A layer's paths as parallel arrays, so a large preview is a few long
+/// number arrays instead of one object per path. `start[i]..start[i + 1]`
+/// are path `i`'s points in `xy` (two numbers each) and `z` (one each). `z` is
+/// empty when every point sits on the layer, and `null` marks a point that does.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PathColumns<'a> {
+    kinds: Vec<&'a str>,
+    strategies: Vec<&'a str>,
+    kind: Vec<u8>,
+    strategy: Vec<u8>,
+    width: Vec<Rounded>,
+    speed: Vec<Rounded>,
+    effective_speed: Vec<Rounded>,
+    toughness: Vec<Rounded>,
+    bead_height: Vec<Rounded>,
+    start: Vec<u32>,
+    xy: Vec<Rounded>,
+    z: Vec<Rounded>,
+}
+
+fn path_columns<S: serde::Serializer>(paths: &[PreviewPath], s: S) -> Result<S::Ok, S::Error> {
+    fn slot<'a>(table: &mut Vec<&'a str>, name: &'a str) -> u8 {
+        match table.iter().position(|k| *k == name) {
+            Some(i) => i as u8,
+            None => {
+                table.push(name);
+                (table.len() - 1) as u8
+            }
+        }
+    }
+    let points: usize = paths.iter().map(|p| p.pts.len()).sum();
+    let has_z = paths.iter().any(|p| !p.zs.is_empty());
+    let mut c = PathColumns {
+        kinds: Vec::new(),
+        strategies: Vec::new(),
+        kind: Vec::with_capacity(paths.len()),
+        strategy: Vec::with_capacity(paths.len()),
+        width: Vec::with_capacity(paths.len()),
+        speed: Vec::with_capacity(paths.len()),
+        effective_speed: Vec::with_capacity(paths.len()),
+        toughness: Vec::with_capacity(paths.len()),
+        bead_height: Vec::with_capacity(paths.len()),
+        start: Vec::with_capacity(paths.len() + 1),
+        xy: Vec::with_capacity(points * 2),
+        z: Vec::with_capacity(if has_z { points } else { 0 }),
+    };
+    c.start.push(0);
+    for p in paths {
+        let k = slot(&mut c.kinds, &p.kind);
+        c.kind.push(k);
+        let st = slot(&mut c.strategies, &p.strategy);
+        c.strategy.push(st);
+        c.width.push(Rounded(p.width));
+        c.speed.push(Rounded(p.speed));
+        c.effective_speed.push(Rounded(p.effective_speed));
+        c.toughness.push(Rounded(p.toughness));
+        c.bead_height.push(Rounded(p.bead_height));
+        for (i, pt) in p.pts.iter().enumerate() {
+            c.xy.push(Rounded(pt[0]));
+            c.xy.push(Rounded(pt[1]));
+            if has_z {
+                // NaN serializes as JSON null: this point is at the layer Z.
+                c.z.push(Rounded(p.zs.get(i).copied().unwrap_or(f64::NAN)));
+            }
+        }
+        c.start.push((c.xy.len() / 2) as u32);
+    }
+    c.serialize(s)
 }
 
 fn preview_of(
@@ -1150,7 +1238,7 @@ fn dist2(a: [f64; 2], b: [f64; 2]) -> f64 {
     dx * dx + dy * dy
 }
 
-struct Job {
+struct LayerJob {
     index: usize,
     z: f64,
     height: f64,
@@ -1158,12 +1246,21 @@ struct Job {
     note: String,
 }
 
-fn plan(
+/// Everything `plan` derives from the mesh. `layers` is what the G-code writer
+/// consumes; the rest is kept for the audit.
+pub(crate) struct Plan {
+    pub layers: Vec<LayerPaths>,
+    pub bands: Vec<LayerBand>,
+    pub contours: Vec<Vec<Loop>>,
+    pub supports: Vec<SupportLayer>,
+}
+
+pub(crate) fn plan(
     mesh: &Mesh,
     blend: &BlendMode,
     settings: &SliceSettings,
     nozzle_diameter: f64,
-) -> Result<Vec<LayerPaths>, String> {
+) -> Result<Plan, String> {
     let (min, max) = mesh.bounds().ok_or("empty mesh")?;
     let max_h = if settings.adaptive {
         settings.adaptive_max.max(settings.adaptive_min)
@@ -1179,19 +1276,19 @@ fn plan(
             max_h,
         },
     )?;
-    let index = if settings.spatial_index {
-        Some(ZIndex::build(mesh))
-    } else {
-        None
-    };
+    let index = ZIndex::build(mesh);
     let contours: Vec<Vec<Loop>> = bands
         .par_iter()
-        .map(|band| match &index {
-            Some(index) => index.slice(band.z),
-            None => slice_contours(mesh, band.z),
-        })
+        .map(|band| index.slice(band.cut_z()))
         .collect();
-    let roofs = roof_distances(&bands, &contours);
+    let fewest_walls = pure(StrategyId::Speed)
+        .walls
+        .min(pure(StrategyId::Toughness).walls)
+        .max(1);
+    if settings.job.cancelled() {
+        return Err("cancelled".into());
+    }
+    let roofs = roof_distances(&bands, &contours, settings.line_width * fewest_walls as f64);
     let supports = build_supports(
         &bands,
         &contours,
@@ -1205,15 +1302,28 @@ fn plan(
             density: support_seed_weight(blend),
             overhangs: settings.supports,
             islands: settings.island_support,
+            job: settings.job,
             ..SupportOpts::default()
         },
     );
+    if settings.job.cancelled() {
+        return Err("cancelled".into());
+    }
     let shaft = shaft_scales(&supports, settings.support_height_mult);
     let (remain_low, remain_high) = interior_remainings(blend, settings, &bands, &roofs);
-    let jobs: Vec<Job> = bands
+    let jobs: Vec<LayerJob> = bands
         .par_iter()
         .enumerate()
         .map(|(i, band)| {
+            if settings.job.cancelled() {
+                return LayerJob {
+                    index: band.index,
+                    z: band.z,
+                    height: band.height,
+                    paths: Vec::new(),
+                    note: String::new(),
+                };
+            }
             let support = supports.get(i);
             let mut job = build_layer(
                 band.index,
@@ -1266,6 +1376,9 @@ fn plan(
             job
         })
         .collect();
+    if settings.job.cancelled() {
+        return Err("cancelled".into());
+    }
     let mut prev_top = false;
     let mut jobs = jobs;
     let mut layer_end: Option<[f64; 2]> = None;
@@ -1291,7 +1404,7 @@ fn plan(
         );
         prev_top = job.paths.iter().any(|p| p.kind == PathKind::Top);
     }
-    Ok(jobs
+    let layers = jobs
         .into_iter()
         .map(|job| LayerPaths {
             index: job.index,
@@ -1300,20 +1413,32 @@ fn plan(
             paths: job.paths,
             note: job.note,
         })
-        .collect())
+        .collect();
+    Ok(Plan {
+        layers,
+        bands,
+        contours,
+        supports,
+    })
 }
 
-fn roof_distances(bands: &[crate::adaptive::LayerBand], contours: &[Vec<Loop>]) -> Vec<f64> {
+fn roof_distances(bands: &[LayerBand], contours: &[Vec<Loop>], wall_stack: f64) -> Vec<f64> {
     let n = bands.len();
+    let roof: Vec<bool> = (0..n)
+        .into_par_iter()
+        .map(|i| {
+            i + 1 >= n
+                || layer_is_roof(
+                    &contours[i],
+                    contours.get(i + 1).map(Vec::as_slice).unwrap_or(&[]),
+                    wall_stack,
+                )
+        })
+        .collect();
     let mut dist = vec![0.0; n];
     let mut since = 0.0;
     for i in (0..n).rev() {
-        let roof = i + 1 >= n
-            || layer_is_roof(
-                &contours[i],
-                contours.get(i + 1).map(Vec::as_slice).unwrap_or(&[]),
-            );
-        if roof {
+        if roof[i] {
             since = 0.0;
         }
         dist[i] = since;
@@ -1322,33 +1447,21 @@ fn roof_distances(bands: &[crate::adaptive::LayerBand], contours: &[Vec<Loop>]) 
     dist
 }
 
-fn layer_is_roof(current: &[Loop], above: &[Loop]) -> bool {
+/// A roof exposes area the layer above does not cover, reaching deeper than the
+/// walls. A thinner strip along the outline, as on a slope, is closed by the walls.
+fn layer_is_roof(current: &[Loop], above: &[Loop], wall_stack: f64) -> bool {
     if current.is_empty() {
         return false;
     }
     if above.is_empty() {
         return true;
     }
-    let Some((min, max)) = loop_bounds(current) else {
+    let exposed = boolean_diff(current, above);
+    if exposed.is_empty() {
         return false;
-    };
-    let step = ((max[0] - min[0]).max(max[1] - min[1]) / 8.0).clamp(1.0, 4.0);
-    let mut exposed = 0;
-    let mut y = min[1] + step * 0.5;
-    while y < max[1] {
-        let mut x = min[0] + step * 0.5;
-        while x < max[0] {
-            if crate::contour::in_solid(current, x, y) && !crate::contour::in_solid(above, x, y) {
-                exposed += 1;
-                if exposed >= 2 {
-                    return true;
-                }
-            }
-            x += step;
-        }
-        y += step;
     }
-    false
+    let core = offset_loops(&exposed, -wall_stack * 0.5);
+    core.iter().map(|l| signed_area(l)).sum::<f64>() >= 1.0
 }
 
 fn pattern_label(strategy: &ResolvedStrategy) -> String {
@@ -1593,7 +1706,7 @@ fn build_layer(
     nozzle_diameter: f64,
     remain_low: (u32, u32),
     remain_high: (u32, u32),
-) -> Job {
+) -> LayerJob {
     let line_width = settings.line_width;
     let features = PathFeatures {
         variable_width: settings.variable_width,
@@ -1607,7 +1720,7 @@ fn build_layer(
         interior_run: remain_low.1,
     };
     if contours.is_empty() && support.is_empty() && interface.is_empty() && branches.is_empty() {
-        return Job {
+        return LayerJob {
             index,
             z,
             height,
@@ -1714,7 +1827,7 @@ fn build_layer(
     if paths.iter().any(|p| p.kind == PathKind::GapFill) && !note.contains("gap-fill") {
         note.push_str(" · gap-fill");
     }
-    Job {
+    LayerJob {
         index,
         z,
         height,

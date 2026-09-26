@@ -63,11 +63,11 @@ enum Cmd {
         /// Slow overhangs, raise the fan, and tag bridges.
         #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
         overhang_control: bool,
-        /// Previous planner: line infill, no arcs, no spatial index.
+        /// Previous planner: line infill, no arcs, one feed.
         #[arg(long, default_value_t = false)]
         classic: bool,
-        /// `grid` or `tree` (organic branching).
-        #[arg(long, default_value = "grid")]
+        /// `tree` (organic branching, default) or `grid`.
+        #[arg(long, default_value = "tree")]
         support_style: String,
         /// Organic branch lean from vertical, degrees.
         #[arg(long, default_value_t = 40.0)]
@@ -123,6 +123,9 @@ enum Cmd {
         /// Klipper junction deviation in millimetres.
         #[arg(long, default_value_t = 0.02)]
         junction_deviation: f64,
+        /// Also check contour coverage and support placement, and print the report.
+        #[arg(long, default_value_t = false)]
+        audit: bool,
         #[arg(short, long)]
         output: PathBuf,
     },
@@ -217,71 +220,85 @@ fn run() -> Result<(), String> {
             z_hop_min_travel,
             classic_estimator,
             junction_deviation,
+            audit,
             output,
         } => {
             let scarf_seam = ScarfSeam::parse(&scarf_seam)?;
             let gyroid_3d = Gyroid3d::parse(&gyroid_3d)?;
             let z_hop = ZHopMode::parse(&z_hop)?;
-            let response = slice_file(
+            let blend = blend_mode(
+                &blend,
+                &axis,
+                at,
+                bottom_mm,
+                transition_mm,
+                toughness,
                 &input,
-                &blend_mode(
-                    &blend,
-                    &axis,
-                    at,
-                    bottom_mm,
-                    transition_mm,
-                    toughness,
-                    &input,
-                )?,
-                &SliceSettings {
-                    layer_height,
-                    line_width: 0.45,
-                    adaptive,
-                    adaptive_min,
-                    adaptive_max: if adaptive_max > 0.0 {
-                        adaptive_max
-                    } else {
-                        layer_height
-                    },
-                    supports,
-                    support_angle,
-                    variable_width,
-                    arc_fit,
-                    travel_opt,
-                    overhang_control,
-                    classic,
-                    support_style: if matches!(support_style.as_str(), "tree" | "organic") {
-                        lime_slice_core::SupportStyle::Tree
-                    } else {
-                        lime_slice_core::SupportStyle::Grid
-                    },
-                    branch_angle,
-                    tip_diameter,
-                    trunk_diameter,
-                    support_height_mult,
-                    infill_combine,
-                    combing,
-                    feature_speeds,
-                    scarf_seam,
-                    scarf_length,
-                    scarf_steps,
-                    scarf_start_height,
-                    scarf_start_flow,
-                    gyroid_3d,
-                    z_hop,
-                    z_hop_height,
-                    z_hop_min_travel,
-                    classic_estimator,
-                    junction_deviation_mm: junction_deviation,
-                    ..SliceSettings::default()
-                },
             )?;
+            let settings = SliceSettings {
+                layer_height,
+                line_width: 0.45,
+                adaptive,
+                adaptive_min,
+                adaptive_max: if adaptive_max > 0.0 {
+                    adaptive_max
+                } else {
+                    layer_height
+                },
+                supports,
+                support_angle,
+                variable_width,
+                arc_fit,
+                travel_opt,
+                overhang_control,
+                classic,
+                support_style: if support_style == "grid" {
+                    lime_slice_core::SupportStyle::Grid
+                } else {
+                    lime_slice_core::SupportStyle::Tree
+                },
+                branch_angle,
+                tip_diameter,
+                trunk_diameter,
+                support_height_mult,
+                infill_combine,
+                combing,
+                feature_speeds,
+                scarf_seam,
+                scarf_length,
+                scarf_steps,
+                scarf_start_height,
+                scarf_start_flow,
+                gyroid_3d,
+                z_hop,
+                z_hop_height,
+                z_hop_min_travel,
+                classic_estimator,
+                junction_deviation_mm: junction_deviation,
+                ..SliceSettings::default()
+            };
+            let request = request_for(&input, &blend, &settings)?;
+            let response = slice_request(&request, lime_slice_core::Job::default())
+                .map_err(|e| e.to_string())?;
             if let Some(parent) = output.parent() {
                 fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
             fs::write(&output, &response.gcode).map_err(|e| e.to_string())?;
             print_summary(&input, &response);
             println!("wrote {}", output.display());
+            if audit {
+                let mesh = lime_slice_core::load_mesh(
+                    &request.filename,
+                    &fs::read(&input).map_err(|e| e.to_string())?,
+                )?;
+                let report = lime_slice_core::audit_slice(
+                    &mesh,
+                    &request.blend,
+                    &SliceSettings::from_request(&request),
+                    0.4,
+                )?;
+                print_audit(&report);
+            }
             if !response.sanity.ok {
                 return Err(response.sanity.notes.join("; "));
             }
@@ -393,10 +410,10 @@ fn bench(input: &PathBuf) -> Result<(), String> {
         max[1] - min[1],
         max[2] - min[2]
     );
-    if let Ok((indexed, scanned)) = lime_slice_core::contour_times(&mesh, 0.2) {
-        println!("contours  parallel Z-index {indexed:.2} ms  single-thread scan {scanned:.2} ms");
+    if let Ok(indexed) = lime_slice_core::contour_times(&mesh, 0.2) {
+        println!("contours  parallel Z-index {indexed:.2} ms");
     }
-    println!("new path vs classic planner (lines, no arcs, full triangle scan)");
+    println!("new path vs classic planner (lines, no arcs, one feed)");
     println!(
         "{:<14} {:>10} {:>10} {:>10} {:>10} {:>8} {:>10} {:>8} {:>8} {:>8} {:>8}",
         "mode",
@@ -693,13 +710,22 @@ fn serve(port: u16) -> Result<(), String> {
     let addr = format!("127.0.0.1:{port}");
     let server = tiny_http::Server::http(&addr).map_err(|e| e.to_string())?;
     eprintln!("lime-slice api http://{addr}");
-    for mut request in server.incoming_requests() {
+    // One thread per request, so a new slice or /api/cancel reaches the server
+    // while an older slice is still planning. Starting a slice supersedes it.
+    for request in server.incoming_requests() {
+        std::thread::spawn(move || handle(request));
+    }
+    Ok(())
+}
+
+fn handle(mut request: tiny_http::Request) {
+    {
         let method = request.method().as_str().to_string();
         let url = request.url().to_string();
         let mut body = String::new();
         if request.as_reader().read_to_string(&mut body).is_err() {
             let _ = request.respond(text_response(400, "bad body"));
-            continue;
+            return;
         }
         let (status, payload) = if method == "OPTIONS" {
             (204, String::new())
@@ -727,6 +753,9 @@ fn serve(port: u16) -> Result<(), String> {
                 200,
                 serde_json::to_string(&card).unwrap_or_else(|e| err_json(&e.to_string())),
             )
+        } else if method == "POST" && url.starts_with("/api/cancel") {
+            lime_slice_core::cancel_all();
+            (200, r#"{"ok":true}"#.into())
         } else if method == "GET" && url.starts_with("/api/health") {
             (200, r#"{"ok":true}"#.into())
         } else if method == "POST" && url.starts_with("/api/calibrate/pa") {
@@ -772,7 +801,10 @@ fn serve(port: u16) -> Result<(), String> {
                     Ok(bytes) => match lime_slice_core::load_mesh(&req.filename, &bytes) {
                         Ok(mesh) => {
                             let profile = req.printer.clone().unwrap_or_default();
-                            let settings = SliceSettings::from_request(&req);
+                            let settings = SliceSettings {
+                                job: lime_slice_core::Job::start(),
+                                ..SliceSettings::from_request(&req)
+                            };
                             match pareto_estimates(&mesh, &profile, &settings) {
                                 Ok(points) => (
                                     200,
@@ -790,7 +822,7 @@ fn serve(port: u16) -> Result<(), String> {
             }
         } else if method == "POST" && url.starts_with("/api/slice") {
             match serde_json::from_str::<SliceRequest>(&body) {
-                Ok(req) => match slice_request(&req) {
+                Ok(req) => match slice_request(&req, lime_slice_core::Job::start()) {
                     Ok(mut res) => {
                         if !req.include_gcode {
                             let token = park_gcode(std::mem::take(&mut res.gcode));
@@ -817,7 +849,6 @@ fn serve(port: u16) -> Result<(), String> {
         };
         let _ = request.respond(text_response(status, &payload));
     }
-    Ok(())
 }
 
 fn text_response(status: u16, body: &str) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
@@ -845,17 +876,42 @@ fn err_json(message: &str) -> String {
     serde_json::json!({ "error": message }).to_string()
 }
 
-fn slice_file(
-    input: &PathBuf,
+fn print_audit(a: &lime_slice_core::SliceAudit) {
+    let coverage = a.sliced_volume_mm3 / a.mesh_volume_mm3.max(1e-9) * 100.0;
+    println!(
+        "audit  plan {:.0} ms  layers {}  mesh {:.0} mm3  sliced {:.0} mm3 ({coverage:.1}%)  missing {:.1} mm3  repaired layers {}  dropped chains {}",
+        a.plan_ms, a.layers, a.mesh_volume_mm3, a.sliced_volume_mm3, a.missing_mm3, a.repaired_layers, a.dropped_chains
+    );
+    println!(
+        "audit  unskinned top {:.1} mm2  worst {}",
+        a.unskinned_top_mm2,
+        a.worst_unskinned
+            .map(|(z, area)| format!("{area:.2} mm2 at z {z:.2}"))
+            .unwrap_or_else(|| "none".into())
+    );
+    println!(
+        "audit  support {:.1} mm3  inside part {:.2} mm3  floating {:.2} mm3 on {} layers  worst {}",
+        a.support_mm3,
+        a.support_inside_mm3,
+        a.support_floating_mm3,
+        a.floating_layers,
+        a.worst_floating
+            .map(|(z, area)| format!("{area:.2} mm2 at z {z:.2}"))
+            .unwrap_or_else(|| "none".into())
+    );
+}
+
+fn request_for(
+    input: &Path,
     blend: &BlendMode,
     settings: &SliceSettings,
-) -> Result<lime_slice_core::SliceResponse, String> {
+) -> Result<SliceRequest, String> {
     let bytes = fs::read(input).map_err(|e| e.to_string())?;
     let name = input
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("mesh.stl");
-    slice_request(&SliceRequest {
+    Ok(SliceRequest {
         filename: name.into(),
         data_b64: base64::engine::general_purpose::STANDARD.encode(bytes),
         layer_height: settings.layer_height,

@@ -8,6 +8,14 @@ pub struct LayerBand {
     pub height: f64,
 }
 
+impl LayerBand {
+    /// Where the mesh is cut for this layer: its middle, so a slope is off by
+    /// half a layer either way instead of a whole layer in one direction.
+    pub fn cut_z(&self) -> f64 {
+        self.z - self.height * 0.5
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct HeightOpts {
     /// Fixed layer height, and the first-layer height when adaptive is on.

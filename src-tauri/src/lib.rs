@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use lime_slice_core::{
-    mesh_preview, pareto_estimates, pressure_advance_from_request, request_cancel, reset_cancel,
-    slice_request, strategy_card, PaCalibRequest, SliceRequest, SliceSettings,
+    cancel_all, mesh_preview, pareto_estimates, pressure_advance_from_request, slice_request,
+    strategy_card, Job, PaCalibRequest, SliceRequest, SliceSettings,
 };
 use tauri::AppHandle;
 use tauri::Emitter;
@@ -29,14 +29,14 @@ fn park_gcode(text: String) -> String {
 
 #[tauri::command]
 async fn slice_model(app: AppHandle, payload: String) -> Result<String, String> {
-    reset_cancel();
+    let job = Job::start();
     tauri::async_runtime::spawn_blocking(move || {
         let _ = app.emit(
             "slice-progress",
             serde_json::json!({ "progress": 0.08, "message": "Planning toolpaths" }),
         );
         let req: SliceRequest = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-        let mut response = slice_request(&req)?;
+        let mut response = slice_request(&req, job)?;
         let _ = app.emit(
             "slice-progress",
             serde_json::json!({ "progress": 1.0, "message": "Done" }),
@@ -57,7 +57,7 @@ async fn slice_model(app: AppHandle, payload: String) -> Result<String, String> 
 
 #[tauri::command]
 fn cancel_slice() {
-    request_cancel();
+    cancel_all();
 }
 
 #[tauri::command]
@@ -111,7 +111,10 @@ async fn pareto_model(payload: String) -> Result<String, String> {
         let bytes = base64_decode(&req.data_b64)?;
         let mesh = lime_slice_core::load_mesh(&req.filename, &bytes)?;
         let profile = req.printer.clone().unwrap_or_default();
-        let settings = SliceSettings::from_request(&req);
+        let settings = SliceSettings {
+            job: Job::start(),
+            ..SliceSettings::from_request(&req)
+        };
         let points = pareto_estimates(&mesh, &profile, &settings)?;
         serde_json::to_string(&points).map_err(|e| e.to_string())
     })

@@ -53,7 +53,7 @@ export const DEFAULT_PRESET: PresetSettings = {
   adaptiveMax: 0.2,
   supports: false,
   supportAngle: 45,
-  supportStyle: "grid",
+  supportStyle: "tree",
   branchAngle: 40,
   tipDiameter: 0.8,
   trunkDiameter: 4.2,

@@ -24,9 +24,6 @@ export interface GeomRequest {
   layers: GeomLayer[];
   min: number[];
   max: number[];
-  hidden: string[];
-  showTravel: boolean;
-  colorMode: "feature" | "weight" | "speed";
 }
 
 export interface LayerRange {
@@ -40,9 +37,12 @@ export interface LayerRange {
 
 /** Fraction of bead half-width kept as the bright face. The rest is the dark margin. */
 export const INNER_HALF_SCALE = 0.78;
-const MARGIN_SHADE = 0.38;
+export const MARGIN_SHADE = 0.38;
 
-const FEATURE: Record<string, [number, number, number]> = {
+/** Kind slots the preview shader can color and hide. Later kinds share the last slot. */
+export const MAX_KINDS = 32;
+
+export const FEATURE_RGB: Record<string, [number, number, number]> = {
   outer: [0.95, 0.64, 0.13],
   wall: [0.95, 0.64, 0.13],
   inner: [0.93, 0.45, 0.2],
@@ -58,6 +58,11 @@ const FEATURE: Record<string, [number, number, number]> = {
   travel: [0.55, 0.58, 0.66],
   "thin-wall": [0.9, 0.55, 0.4],
 };
+export const OTHER_RGB: [number, number, number] = [0.8, 0.8, 0.8];
+
+/** Blend weight 0 to 1 and speed 20 to 200 mm/s map linearly between these. */
+export const WEIGHT_RAMP: [number, number, number][] = [[0.94, 0.64, 0.13], [0.18, 0.77, 0.71]];
+export const SPEED_RAMP: [number, number, number][] = [[0.25, 0.65, 0.75], [0.95, 0.45, 0.35]];
 
 /** Machine XY + nozzle Z → scene, matching the centered ribbon mesh (Y up). */
 export function scenePoint(x: number, y: number, z: number, cx: number, cy: number): [number, number, number] {
@@ -68,37 +73,48 @@ export function meshCenter(min: number[], max: number[]): { cx: number; cy: numb
   return { cx: (min[0] + max[0]) / 2, cy: (min[1] + max[1]) / 2 };
 }
 
+/**
+ * Positions plus one (kind slot, blend weight, speed) triple per vertex.
+ * The shader turns the triple into a color, so color mode and hidden
+ * kinds change without rebuilding.
+ */
 export interface PreviewGeometry {
   ranges: LayerRange[];
+  /** Kind name per slot in the info triples. */
+  kinds: string[];
   /** Full-width dark margin under each bead. */
   ribbon: number[];
-  ribbonColor: number[];
+  ribbonInfo: number[];
   /** Narrower bright face. Drawn with a polygon offset so it stays on the margin. */
   face: number[];
-  faceColor: number[];
+  faceInfo: number[];
   travel: number[];
-  travelColor: number[];
+  travelInfo: number[];
 }
 
 export function buildPreviewGeometry(msg: Omit<GeomRequest, "id">): PreviewGeometry {
-  const hidden = new Set(msg.hidden);
   const { cx, cy } = meshCenter(msg.min, msg.max);
+  const kinds: string[] = [];
+  const slot = (kind: string) => {
+    let i = kinds.indexOf(kind);
+    if (i < 0 && kinds.length < MAX_KINDS) i = kinds.push(kind) - 1;
+    return i < 0 ? MAX_KINDS - 1 : i;
+  };
   const ribbon: number[] = [];
-  const ribbonColor: number[] = [];
+  const ribbonInfo: number[] = [];
   const face: number[] = [];
-  const faceColor: number[] = [];
+  const faceInfo: number[] = [];
   const travel: number[] = [];
-  const travelColor: number[] = [];
+  const travelInfo: number[] = [];
   const ranges: LayerRange[] = [];
   for (const layer of msg.layers) {
     const ribbonStart = ribbon.length / 3;
     const faceStart = face.length / 3;
     const travelStart = travel.length / 3;
     for (const path of layer.paths) {
-      if (path.pts.length < 2 || hidden.has(path.kind)) continue;
+      if (path.pts.length < 2) continue;
       const isTravel = path.kind === "travel";
-      if (isTravel && !msg.showTravel) continue;
-      const rgb = colorOf(path, msg.colorMode);
+      const info: [number, number, number] = [slot(path.kind), path.toughness ?? 0, path.effectiveSpeed ?? path.speed ?? 0];
       const half = Math.max(0.05, (path.width ?? 0.45) / 2);
       for (let i = 1; i < path.pts.length; i++) {
         const z0 = path.zs && path.zs.length === path.pts.length ? path.zs[i - 1] : layer.z;
@@ -110,14 +126,14 @@ export function buildPreviewGeometry(msg: Omit<GeomRequest, "id">): PreviewGeome
         if (isTravel) {
           const a = scenePoint(x0, y0, z0, cx, cy);
           const b = scenePoint(x1, y1, z1, cx, cy);
-          pushLine(travel, travelColor, a, b, rgb);
+          pushLine(travel, travelInfo, a, b, info);
         } else {
           const beadH = path.beadHeight && path.beadHeight > 1e-6 ? path.beadHeight : layer.height;
           pushBead(
             ribbon,
-            ribbonColor,
+            ribbonInfo,
             face,
-            faceColor,
+            faceInfo,
             x0,
             y0,
             z0,
@@ -126,7 +142,7 @@ export function buildPreviewGeometry(msg: Omit<GeomRequest, "id">): PreviewGeome
             z1,
             half,
             beadH && beadH > 1e-6 ? beadH : 0.2,
-            rgb,
+            info,
             cx,
             cy,
           );
@@ -142,47 +158,33 @@ export function buildPreviewGeometry(msg: Omit<GeomRequest, "id">): PreviewGeome
       travelCount: travel.length / 3 - travelStart,
     });
   }
-  return { ranges, ribbon, ribbonColor, face, faceColor, travel, travelColor };
+  return { ranges, kinds, ribbon, ribbonInfo, face, faceInfo, travel, travelInfo };
 }
 
-function colorOf(path: GeomPath, mode: GeomRequest["colorMode"]): [number, number, number] {
-  if (mode === "weight") {
-    const t = path.toughness ?? 0;
-    return [0.94 * (1 - t) + 0.18 * t, 0.64 * (1 - t) + 0.77 * t, 0.13 * (1 - t) + 0.71 * t];
-  }
-  if (mode === "speed") {
-    const s = Math.max(0, Math.min(1, ((path.effectiveSpeed ?? path.speed ?? 0) - 20) / 180));
-    return [0.25 + 0.7 * s, 0.45 + 0.2 * (1 - s), 0.75 - 0.4 * s];
-  }
-  return FEATURE[path.kind] ?? [0.8, 0.8, 0.8];
-}
-
-function shade(rgb: [number, number, number], k: number): [number, number, number] {
-  return [rgb[0] * k, rgb[1] * k, rgb[2] * k];
-}
+type Info = [number, number, number];
 
 function pushLine(
   pos: number[],
-  color: number[],
+  infos: number[],
   a: [number, number, number],
   b: [number, number, number],
-  rgb: [number, number, number],
+  info: Info,
 ) {
   pos.push(...a, ...b);
-  color.push(...rgb, ...rgb);
+  infos.push(...info, ...info);
 }
 
 function pushQuad(
   pos: number[],
-  color: number[],
+  infos: number[],
   a: [number, number, number],
   b: [number, number, number],
   c: [number, number, number],
   d: [number, number, number],
-  rgb: [number, number, number],
+  info: Info,
 ) {
   pos.push(...a, ...b, ...d, ...b, ...c, ...d);
-  for (let i = 0; i < 6; i++) color.push(...rgb);
+  for (let i = 0; i < 6; i++) infos.push(...info);
 }
 
 /**
@@ -192,9 +194,9 @@ function pushQuad(
  */
 function pushBead(
   marginPos: number[],
-  marginColor: number[],
+  marginInfo: number[],
   facePos: number[],
-  faceColor: number[],
+  faceInfo: number[],
   x0: number,
   y0: number,
   z0: number,
@@ -203,7 +205,7 @@ function pushBead(
   z1: number,
   half: number,
   height: number,
-  rgb: [number, number, number],
+  info: Info,
   cx: number,
   cy: number,
 ) {
@@ -219,12 +221,11 @@ function pushBead(
   const top = quadCorners(x0, y0, z0, x1, y1, z1, px, py, cx, cy);
   const bot = quadCorners(x0, y0, z0 - h, x1, y1, z1 - h, px, py, cx, cy);
   const face = quadCorners(x0, y0, z0, x1, y1, z1, ix, iy, cx, cy);
-  const margin = shade(rgb, MARGIN_SHADE);
-  pushQuad(marginPos, marginColor, top[0], top[1], top[2], top[3], margin);
-  pushQuad(marginPos, marginColor, bot[0], bot[3], bot[2], bot[1], margin);
-  pushQuad(marginPos, marginColor, top[0], bot[0], bot[3], top[3], margin);
-  pushQuad(marginPos, marginColor, top[1], top[2], bot[2], bot[1], margin);
-  pushQuad(facePos, faceColor, face[0], face[1], face[2], face[3], rgb);
+  pushQuad(marginPos, marginInfo, top[0], top[1], top[2], top[3], info);
+  pushQuad(marginPos, marginInfo, bot[0], bot[3], bot[2], bot[1], info);
+  pushQuad(marginPos, marginInfo, top[0], bot[0], bot[3], top[3], info);
+  pushQuad(marginPos, marginInfo, top[1], top[2], bot[2], bot[1], info);
+  pushQuad(facePos, faceInfo, face[0], face[1], face[2], face[3], info);
 }
 
 function quadCorners(

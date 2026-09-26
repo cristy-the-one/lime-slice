@@ -1,15 +1,16 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
+import { decodePaths, type PathColumns } from "../src/preview-wire";
 
-function withLayerGcode(src: { gcode?: string; layers: { index: number; z: number; height: number; paths: { kind: string; pts: number[][]; speed?: number; effectiveSpeed?: number }[] }[] }) {
+function withLayerGcode(src: { gcode?: string; layers: { index: number; z: number; height: number; paths: PathColumns }[] }) {
   const body = structuredClone(src);
   if (typeof body.gcode === "string" && body.gcode.includes(";LAYER:")) return body;
   const lines = ["; preview sync"];
   for (const layer of body.layers.slice(0, 4)) {
     lines.push(`;LAYER:${layer.index} Z:${layer.z.toFixed(3)} H:${layer.height.toFixed(3)}`);
     let e = 0;
-    for (const path of layer.paths) {
+    for (const path of decodePaths(layer.paths, layer.z)) {
       lines.push(`;TYPE:${path.kind.toUpperCase()}`);
       const feed = Math.round((path.effectiveSpeed || path.speed || 40) * 60);
       for (const pt of path.pts) {
@@ -89,7 +90,7 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.getByRole("button", { name: /^Speed/ }).click();
 
   await page.locator("#slice").click();
-  await expect(page.locator("#estimate")).toContainText("1.84 g");
+  await expect(page.locator("#estimate")).toContainText("2.59 g");
   await expect(page.locator(".chip").first()).toBeVisible();
   await page.getByRole("button", { name: "Preview", exact: true }).click();
   await expect(page.locator("#spark")).toBeVisible();
@@ -140,7 +141,7 @@ test("ui states from real slice fixtures", async ({ page }) => {
 
   delay = 0;
   await page.locator("#slice").click();
-  await expect(page.locator("#estimate")).toContainText("4.66 g");
+  await expect(page.locator("#estimate")).toContainText("6.59 g");
   const mid = Math.floor(hull.layers.length / 2);
   await page.locator("#rangeHigh").evaluate((el, value) => {
     const input = el as HTMLInputElement;

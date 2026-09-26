@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { buildPreviewGeometry, INNER_HALF_SCALE, scenePoint } from "../src/preview-geom";
+import { buildPreviewGeometry, INNER_HALF_SCALE, MARGIN_SHADE, scenePoint } from "../src/preview-geom";
 
 test("bead margins stay darker than the face so same-color neighbors do not fuse", () => {
   const built = buildPreviewGeometry({
@@ -22,9 +22,6 @@ test("bead margins stay darker than the face so same-color neighbors do not fuse
     ],
     min: [0, -5, 0],
     max: [10, 5, 1],
-    hidden: [],
-    showTravel: false,
-    colorMode: "feature",
   });
   // Top, bottom, and two sides — four quads per segment, two segments.
   expect(built.ribbon.length / 3).toBe(48);
@@ -33,10 +30,7 @@ test("bead margins stay darker than the face so same-color neighbors do not fuse
   for (let i = 1; i < built.ribbon.length; i += 3) ys.push(built.ribbon[i]);
   expect(Math.min(...ys)).toBeCloseTo(0, 5);
   expect(Math.max(...ys)).toBeCloseTo(0.2, 5);
-  const margin = built.ribbonColor.slice(0, 3);
-  const face = built.faceColor.slice(0, 3);
-  expect(face[0]).toBeGreaterThan(margin[0] + 0.2);
-  expect(face[1]).toBeGreaterThan(margin[1] + 0.2);
+  expect(MARGIN_SHADE).toBeLessThan(0.5);
   const half = 0.225;
   const outerHalf = Math.abs(built.ribbon[2 * 3 + 2]);
   const innerHalf = Math.abs(built.face[2 * 3 + 2]);
@@ -47,21 +41,28 @@ test("bead margins stay darker than the face so same-color neighbors do not fuse
   expect(built.ranges[0].faceCount).toBe(12);
 });
 
-test("speed and blend-weight beads keep the same margin inset", () => {
-  for (const colorMode of ["speed", "weight"] as const) {
-    const built = buildPreviewGeometry({
-      layers: [{ z: 1, paths: [{ kind: "sparse", pts: [[0, 0], [4, 0]], width: 0.4, speed: 80, effectiveSpeed: 80, toughness: 0.4 }] }],
-      min: [0, -1, 0],
-      max: [4, 1, 2],
-      hidden: [],
-      showTravel: false,
-      colorMode,
-    });
-    const margin = built.ribbonColor[0];
-    const face = built.faceColor[0];
-    expect(face).toBeGreaterThan(margin + 0.15);
-    expect(Math.abs(built.face[2])).toBeLessThan(Math.abs(built.ribbon[2]));
-  }
+test("every vertex carries its kind slot, blend weight, and speed for the shader", () => {
+  const built = buildPreviewGeometry({
+    layers: [
+      {
+        z: 1,
+        paths: [
+          { kind: "sparse", pts: [[0, 0], [4, 0]], width: 0.4, speed: 80, effectiveSpeed: 70, toughness: 0.4 },
+          { kind: "travel", pts: [[4, 0], [4, 3]], speed: 120 },
+          { kind: "sparse", pts: [[4, 3], [0, 3]], width: 0.4, speed: 60 },
+        ],
+      },
+    ],
+    min: [0, -3, 0],
+    max: [4, 3, 2],
+  });
+  expect(built.kinds).toEqual(["sparse", "travel"]);
+  expect(built.ribbonInfo.slice(0, 3)).toEqual([0, 0.4, 70]);
+  expect(built.ribbonInfo.slice(-3)).toEqual([0, 0, 60]);
+  expect(built.faceInfo.length).toBe(built.face.length);
+  expect(built.travelInfo).toEqual([1, 0, 120, 1, 0, 120]);
+  expect(built.travel.length).toBe(6);
+  expect(Math.abs(built.face[2])).toBeLessThan(Math.abs(built.ribbon[2]));
 });
 
 test("print-head scene position uses the mesh center, not machine origin", () => {

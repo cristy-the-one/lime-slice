@@ -1,11 +1,15 @@
+use rayon::prelude::*;
+
 use crate::adaptive::LayerBand;
-use crate::contour::{in_solid, loop_bounds, point_in_loop, signed_area, Loop};
-use crate::toolpath::{boolean_diff, boolean_union, drop_slivers, offset_loops};
+use crate::poly::{
+    boolean_diff, boolean_union, distance_to_outline, drop_slivers, in_solid, local_diff,
+    local_union, loop_bounds, offset_loops, point_in_loop, signed_area, Loop,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SupportStyle {
-    #[default]
     Grid,
+    #[default]
     Tree,
 }
 
@@ -40,6 +44,8 @@ pub struct SupportOpts {
     pub overhangs: bool,
     /// Support a same-layer component that does not rest on material below.
     pub islands: bool,
+    /// Stop the walk early when this slice has been superseded.
+    pub job: crate::cancel::Job,
 }
 
 impl Default for SupportOpts {
@@ -57,6 +63,7 @@ impl Default for SupportOpts {
             density: 0.2,
             overhangs: true,
             islands: true,
+            job: crate::cancel::Job::default(),
         }
     }
 }
@@ -80,24 +87,28 @@ pub fn build_supports(
     if n == 0 {
         return out;
     }
-    let angle = opts.angle_deg.clamp(15.0, 75.0).to_radians().tan().max(0.2);
-    let iface_n = opts.interface_layers.max(1);
-    let mut island_regions = vec![Vec::new(); n];
-    if opts.islands {
-        for i in 1..n {
-            let upper = contours.get(i).map(Vec::as_slice).unwrap_or(&[]);
-            let lower = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
-            if upper.is_empty() {
-                continue;
-            }
-            let dx = bands[i].height / angle;
-            island_regions[i] = unsupported_islands(upper, lower, dx);
-        }
-    }
     // Cantilevers are not islands. Keep scanning when auto support is on.
     if !opts.overhangs && !opts.islands {
         return out;
     }
+    let angle = opts.angle_deg.clamp(15.0, 75.0).to_radians().tan().max(0.2);
+    let iface_n = opts.interface_layers.max(1);
+    // Everything that depends only on the part is found per layer in parallel.
+    // The walk below carries the columns down from each overhang.
+    let overhangs: Vec<Vec<Loop>> = (0..n)
+        .into_par_iter()
+        .map(|i| overhang_at(bands, contours, i, angle, opts))
+        .collect();
+    let gaps: Vec<Vec<Loop>> = contours
+        .par_iter()
+        .map(|part| {
+            if part.is_empty() {
+                Vec::new()
+            } else {
+                offset_loops(part, opts.xy_gap)
+            }
+        })
+        .collect();
 
     // (contact_z, region) waiting until the air gap has been cleared.
     let mut pending: Vec<(f64, Vec<Loop>)> = Vec::new();
@@ -114,6 +125,9 @@ pub fn build_supports(
     let lean = opts.branch_angle_deg.clamp(10.0, 65.0).to_radians().tan();
 
     for i in (0..n).rev() {
+        if opts.job.cancelled() {
+            break;
+        }
         let mut born: Vec<Loop> = Vec::new();
         pending.retain(|(contact_z, region)| {
             if bands[i].z <= *contact_z + 1e-6 {
@@ -130,7 +144,10 @@ pub fn build_supports(
                 let cleared = if part.is_empty() {
                     born.clone()
                 } else {
-                    drop_slivers(boolean_diff(&born, &offset_loops(part, opts.xy_gap * 0.35)), 0.02)
+                    drop_slivers(
+                        boolean_diff(&born, &offset_loops(part, opts.xy_gap * 0.35)),
+                        0.02,
+                    )
                 };
                 let seeds = if cleared.is_empty() { &born } else { &cleared };
                 for p in sample_grid(seeds, seed_spacing) {
@@ -147,15 +164,9 @@ pub fn build_supports(
             gens.insert(0, (born, iface_n));
         }
 
-        let gap = if part.is_empty() {
-            Vec::new()
-        } else {
-            offset_loops(part, opts.xy_gap)
-        };
+        let gap = &gaps[i];
         let iface_area = union_all(gens.iter().map(|(r, _)| r.as_slice()));
-        let iface_print = drop_slivers(boolean_diff(&iface_area, &gap), 0.05);
-        let sparse_only = boolean_diff(&sparse, &iface_area);
-        let sparse_print = drop_slivers(boolean_diff(&sparse_only, &gap), 0.05);
+        let iface_print = drop_slivers(boolean_diff(&iface_area, gap), 0.05);
         let (sparse_print, branch_pts, branch_r) = if tree {
             if i == 0 {
                 for n in &mut nodes {
@@ -167,6 +178,8 @@ pub fn build_supports(
             let (pts, rs) = organic_disks(&nodes, part, opts.xy_gap);
             (Vec::new(), pts, rs)
         } else {
+            let sparse_only = local_diff(&sparse, &iface_area);
+            let sparse_print = drop_slivers(local_diff(&sparse_only, gap), 0.05);
             (sparse_print, Vec::new(), Vec::new())
         };
         out[i] = SupportLayer {
@@ -184,13 +197,18 @@ pub fn build_supports(
                 continue;
             }
             if left <= 1 {
-                sparse = boolean_union(&sparse, &trimmed);
+                // Trees print their own trunks; only the grid keeps a column region.
+                if !tree {
+                    sparse = local_union(&sparse, &trimmed);
+                }
             } else {
                 next_gens.push((trimmed, left - 1));
             }
         }
         gens = next_gens;
-        sparse = drop_slivers(boolean_diff(&sparse, part), 0.15);
+        if !tree {
+            sparse = drop_slivers(local_diff(&sparse, part), 0.15);
+        }
         if tree && i > 0 {
             let below = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
             let below2 = if i > 1 {
@@ -213,40 +231,93 @@ pub fn build_supports(
             );
         }
 
-        if i == 0 {
-            continue;
-        }
-        let upper = contours.get(i).map(Vec::as_slice).unwrap_or(&[]);
-        let lower = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
-        if upper.is_empty() {
-            continue;
-        }
-        let dx = bands[i].height / angle;
-        // Islands and one-sided wings both print in air. The overhang toggle
-        // still adds short bridge decks, which can span two anchors.
-        let angle_overhang = if opts.overhangs || opts.islands {
-            let supported = offset_loops(lower, dx);
-            drop_slivers(boolean_diff(upper, &supported), 0.35)
-        } else {
-            Vec::new()
-        };
-        let islands = island_regions.get(i).map(Vec::as_slice).unwrap_or(&[]);
-        let mut overhang = if islands.is_empty() {
-            angle_overhang
-        } else {
-            // Keep a small island the angle test would drop as a sliver.
-            drop_slivers(boolean_union(&angle_overhang, islands), 0.05)
-        };
-        if !opts.overhangs {
-            overhang = exclude_short_bridges(&overhang, lower, dx);
-        }
+        let overhang = &overhangs[i];
         if overhang.is_empty() {
             continue;
         }
         let underside = bands[i].z - bands[i].height;
-        pending.push((underside - opts.z_gap, overhang));
+        pending.push((underside - opts.z_gap, overhang.clone()));
+    }
+    if tree {
+        settle_disks(&mut out, bands, contours, lean);
     }
     out
+}
+
+/// Area of layer `i` that needs a column under it: past the overhang angle,
+/// a floating island, or (with overhangs off) a wing too long to bridge.
+fn overhang_at(
+    bands: &[LayerBand],
+    contours: &[Vec<Loop>],
+    i: usize,
+    angle: f64,
+    opts: &SupportOpts,
+) -> Vec<Loop> {
+    if i == 0 {
+        return Vec::new();
+    }
+    let upper = contours.get(i).map(Vec::as_slice).unwrap_or(&[]);
+    let lower = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
+    if upper.is_empty() {
+        return Vec::new();
+    }
+    let dx = bands[i].height / angle;
+    // Islands and one-sided wings both print in air. The overhang toggle
+    // still adds short bridge decks, which can span two anchors.
+    let supported = offset_loops(lower, dx);
+    let angle_overhang = drop_slivers(boolean_diff(upper, &supported), 0.35);
+    let islands = if opts.islands {
+        unsupported_islands(upper, lower, dx)
+    } else {
+        Vec::new()
+    };
+    let overhang = if islands.is_empty() {
+        angle_overhang
+    } else {
+        // Keep a small island the angle test would drop as a sliver.
+        drop_slivers(boolean_union(&angle_overhang, &islands), 0.05)
+    };
+    if opts.overhangs {
+        overhang
+    } else {
+        exclude_short_bridges(&overhang, lower, dx)
+    }
+}
+
+/// A disk may overhang the one below by about half a bead and still print.
+const BEAD_OVERHANG_MM: f64 = 0.22;
+/// Thinnest trunk disk drawn beside the part.
+const MIN_DISK_R: f64 = 0.3;
+
+/// Walk the trunks bottom-up and narrow any disk that is wider than what holds
+/// it: a disk on the layer below grown by one lean step and half a bead, or
+/// the part itself. The top-down walk shrinks disks beside the part, so the
+/// disk above a squeezed one would otherwise overhang it.
+fn settle_disks(
+    layers: &mut [SupportLayer],
+    bands: &[LayerBand],
+    contours: &[Vec<Loop>],
+    lean: f64,
+) {
+    for i in 1..layers.len() {
+        let reach = bands[i].height * lean + BEAD_OVERHANG_MM;
+        let (lower, upper) = layers.split_at_mut(i);
+        let below = &lower[i - 1];
+        let part = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
+        let layer = &mut upper[0];
+        for (c, r) in layer.branches.iter().zip(layer.radii.iter_mut()) {
+            let mut room = below
+                .branches
+                .iter()
+                .zip(&below.radii)
+                .map(|(b, rb)| rb + reach - (c[0] - b[0]).hypot(c[1] - b[1]))
+                .fold(f64::MIN, f64::max);
+            if !part.is_empty() && in_solid(part, c[0], c[1]) {
+                room = room.max(distance_to_outline(part, *c) + reach);
+            }
+            *r = r.min(room).max(MIN_DISK_R);
+        }
+    }
 }
 
 struct Node {
@@ -257,6 +328,8 @@ struct Node {
     freeze: u32,
 }
 
+/// Trunk disks to print on this layer. A disk that would reach into the XY gap
+/// is drawn smaller rather than dropped, so the trunk under it never breaks.
 fn organic_disks(nodes: &[Node], part: &[Loop], xy_gap: f64) -> (Vec<[f64; 2]>, Vec<f64>) {
     let mut pts = Vec::new();
     let mut radii = Vec::new();
@@ -264,12 +337,15 @@ fn organic_disks(nodes: &[Node], part: &[Loop], xy_gap: f64) -> (Vec<[f64; 2]>, 
         if n.freeze > 0 {
             continue;
         }
-        let clear = offset_loops(part, xy_gap + n.radius * 0.35);
-        if in_solid(&clear, n.xy[0], n.xy[1]) {
+        let room = if part.is_empty() {
+            f64::MAX
+        } else if in_solid(part, n.xy[0], n.xy[1]) {
             continue;
-        }
+        } else {
+            distance_to_outline(part, n.xy) - xy_gap
+        };
         pts.push(n.xy);
-        radii.push(n.radius);
+        radii.push(n.radius.min(room).max(MIN_DISK_R));
     }
     (pts, radii)
 }
@@ -309,8 +385,7 @@ fn propagate_nodes(nodes: Vec<Node>, below: &[Loop], below2: &[Loop], grow: &Gro
         n.dist += grow.height;
         let grown = grow.tip_r + (grow.trunk_r - grow.tip_r) * (1.0 - (-n.dist / 7.5).exp());
         n.radius = grown.max(n.radius).min(grow.trunk_r);
-        let collision = offset_loops(below, grow.xy_gap + n.radius);
-        n.xy = push_out(n.xy, &collision, max_step);
+        n.xy = push_out(n.xy, below, grow.xy_gap + n.radius, max_step);
         if in_solid(below, n.xy[0], n.xy[1]) {
             continue;
         }
@@ -319,7 +394,7 @@ fn propagate_nodes(nodes: Vec<Node>, below: &[Loop], below2: &[Loop], grow: &Gro
         }
         next.push(n);
     }
-    merge_nodes(&mut next, grow.trunk_r);
+    merge_nodes(&mut next, grow.trunk_r, max_step + BEAD_OVERHANG_MM);
     next
 }
 
@@ -354,8 +429,13 @@ fn lean_toward(xy: [f64; 2], cloud: &[[f64; 2]], max_step: f64) -> [f64; 2] {
     [xy[0] + dx / dist * step, xy[1] + dy / dist * step]
 }
 
-fn push_out(xy: [f64; 2], collision: &[Loop], max_step: f64) -> [f64; 2] {
-    if collision.is_empty() || !in_solid(collision, xy[0], xy[1]) {
+/// Step toward the nearest point at least `clearance` from `part`, at most
+/// `max_step`. A node that needs a longer move takes it over several layers,
+/// so every disk still sits on the one under it.
+fn push_out(xy: [f64; 2], part: &[Loop], clearance: f64, max_step: f64) -> [f64; 2] {
+    let blocked =
+        |p: [f64; 2]| in_solid(part, p[0], p[1]) || distance_to_outline(part, p) < clearance;
+    if part.is_empty() || !blocked(xy) {
         return xy;
     }
     let mut best: Option<[f64; 2]> = None;
@@ -366,7 +446,7 @@ fn push_out(xy: [f64; 2], collision: &[Loop], max_step: f64) -> [f64; 2] {
         let mut d = 0.35;
         while d <= 36.0 {
             let p = [xy[0] + c * d, xy[1] + s * d];
-            if !in_solid(collision, p[0], p[1]) {
+            if !blocked(p) {
                 if d < best_d {
                     best_d = d;
                     best = Some(p);
@@ -381,21 +461,14 @@ fn push_out(xy: [f64; 2], collision: &[Loop], max_step: f64) -> [f64; 2] {
     };
     let dx = p[0] - xy[0];
     let dy = p[1] - xy[1];
-    let dist = dx.hypot(dy);
-    if dist < 1e-6 {
-        return p;
-    }
-    let step = max_step.max(dist.min(max_step + 0.8));
-    let travel = step.min(dist);
-    let out = [xy[0] + dx / dist * travel, xy[1] + dy / dist * travel];
-    if in_solid(collision, out[0], out[1]) {
-        p
-    } else {
-        out
-    }
+    let dist = dx.hypot(dy).max(1e-9);
+    let travel = max_step.min(dist);
+    [xy[0] + dx / dist * travel, xy[1] + dy / dist * travel]
 }
 
-fn merge_nodes(nodes: &mut Vec<Node>, trunk_r: f64) {
+/// Merge a node into an earlier one when the merged trunk, centred between them
+/// by radius, still covers both disks to within `reach`.
+fn merge_nodes(nodes: &mut Vec<Node>, trunk_r: f64, reach: f64) {
     if nodes.len() < 2 {
         return;
     }
@@ -410,10 +483,13 @@ fn merge_nodes(nodes: &mut Vec<Node>, trunk_r: f64) {
             if k.freeze > 0 {
                 return false;
             }
-            let dx = k.xy[0] - n.xy[0];
-            let dy = k.xy[1] - n.xy[1];
-            let lim = (k.radius + n.radius) * 0.72 + 0.35;
-            dx * dx + dy * dy < lim * lim
+            let d = (k.xy[0] - n.xy[0]).hypot(k.xy[1] - n.xy[1]);
+            let merged = (k.radius.powi(2) + n.radius.powi(2)).sqrt().min(trunk_r);
+            let w = k.radius + n.radius;
+            // Each disk's centre moves toward the other by the other's share of the radius.
+            let shift_k = d * n.radius / w;
+            let shift_n = d * k.radius / w;
+            shift_k + k.radius <= merged + reach && shift_n + n.radius <= merged + reach
         }) {
             let w = host.radius + n.radius;
             host.xy = [

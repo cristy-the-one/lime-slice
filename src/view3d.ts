@@ -1,31 +1,8 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { colorForPath, type ColorMode, hexRgb } from "./colors";
-import { meshCenter, scenePoint } from "./preview-geom";
+import type { ColorMode } from "./colors";
+import { FEATURE_RGB, MARGIN_SHADE, MAX_KINDS, OTHER_RGB, SPEED_RAMP, WEIGHT_RAMP, meshCenter, scenePoint } from "./preview-geom";
 import { hexToThree, themeColors } from "./theme";
-
-export interface ViewPath {
-  kind: string;
-  strategy: string;
-  pts: [number, number][];
-  zs?: number[];
-  width?: number;
-  speed?: number;
-  effectiveSpeed?: number;
-  toughness?: number;
-}
-
-export interface ViewLayer {
-  z: number;
-  height: number;
-  seconds?: number;
-  paths: ViewPath[];
-}
-
-export interface ViewSlice {
-  mesh: { min: number[]; max: number[] };
-  layers: ViewLayer[];
-}
 
 export interface LayerRange {
   ribbonStart: number;
@@ -38,12 +15,13 @@ export interface LayerRange {
 
 export interface RibbonBuffers {
   ranges: LayerRange[];
+  kinds: string[];
   ribbonPos: Float32Array;
-  ribbonCol: Float32Array;
+  ribbonInfo: Float32Array;
   facePos: Float32Array;
-  faceCol: Float32Array;
+  faceInfo: Float32Array;
   travelPos: Float32Array;
-  travelCol: Float32Array;
+  travelInfo: Float32Array;
   span: number;
   midZ: number;
   centerX: number;
@@ -51,11 +29,9 @@ export interface RibbonBuffers {
 }
 
 export interface SliceView3d {
-  setSlice(slice: ViewSlice | null): void;
   setModel(min: number[], max: number[]): void;
   setBuffers(buffers: RibbonBuffers | null): void;
   setBed(x: number, y: number, z: number): void;
-  setLayer(index: number): void;
   setRange(low: number, high: number): void;
   setShowTravel(show: boolean): void;
   setHidden(kinds: ReadonlySet<string>): void;
@@ -68,11 +44,9 @@ export interface SliceView3d {
 }
 
 const noopView: SliceView3d = {
-  setSlice() {},
   setModel() {},
   setBuffers() {},
   setBed() {},
-  setLayer() {},
   setRange() {},
   setShowTravel() {},
   setHidden() {},
@@ -150,19 +124,21 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   playLine.renderOrder = 4;
   scene.add(playLine);
 
-  let layers: LayerLines[] = [];
   let ribbon: THREE.Mesh | null = null;
   let face: THREE.Mesh | null = null;
   let travelLines: THREE.LineSegments | null = null;
   let ranges: LayerRange[] = [];
-  let slice: ViewSlice | null = null;
-  let active = 0;
+  let model: { min: number[]; max: number[] } | null = null;
   let low = 0;
   let high = 0;
   let showTravel = false;
-  let hidden = new Set<string>();
-  let colorMode: ColorMode = "feature";
-  let fitted = false;
+  let kinds: string[] = [];
+  let hidden: ReadonlySet<string> = new Set();
+  const pathUniforms = {
+    palette: { value: new Float32Array(MAX_KINDS * 3) },
+    hiddenKinds: { value: new Float32Array(MAX_KINDS) },
+    mode: { value: 0 },
+  };
   let planeSpec: { axis: "x" | "y"; at: number } | null = null;
   let planeCb: ((at: number) => void) | null = null;
   let origin = { cx: 0, cy: 0 };
@@ -170,14 +146,24 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
 
-  function frame() {
-    controls.update();
-    renderer.render(scene, camera);
+  // Render only when something changed. Damping keeps emitting change
+  // from controls.update() until the camera settles.
+  let frameQueued = false;
+  function requestRender() {
+    if (frameQueued) return;
+    frameQueued = true;
     requestAnimationFrame(frame);
   }
-  requestAnimationFrame(frame);
+  function frame() {
+    frameQueued = false;
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  controls.addEventListener("change", requestRender);
+  requestRender();
 
   function resize() {
+    requestRender();
     const rect = canvas.getBoundingClientRect();
     if (rect.width < 1 || rect.height < 1) return;
     applyPixelRatio(renderer);
@@ -196,15 +182,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       face.geometry.setDrawRange(first.faceStart, last.faceStart + last.faceCount - first.faceStart);
       travelLines.geometry.setDrawRange(first.travelStart, last.travelStart + last.travelCount - first.travelStart);
       travelLines.visible = showTravel;
-      placePlane();
-      return;
     }
-    layers.forEach((layer, i) => {
-      const on = i >= low && i <= high;
-      layer.lines.visible = on;
-      layer.lines.material.opacity = 1;
-      layer.travel.visible = showTravel && on;
-    });
     placePlane();
   }
 
@@ -219,48 +197,14 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     controls.update();
   }
 
-  function rebuild() {
-    for (const layer of layers) layer.dispose();
-    layers = [];
-    root.clear();
-    fitted = false;
-    if (!slice || slice.layers.length === 0) return;
-    const min = slice.mesh.min;
-    const max = slice.mesh.max;
-    const { cx, cy } = meshCenter(min, max);
-    origin = { cx, cy };
-    const midZ = (min[2] + max[2]) / 2;
-    const spanX = Math.max(1, max[0] - min[0]);
-    const spanY = Math.max(1, max[1] - min[1]);
-    const span = Math.max(spanX, spanY, max[2] - min[2], 1);
-    bed.scale.set(span / 10, 1, span / 10);
-    slice.layers.forEach((layer) => {
-      const built = buildLayer(layer, cx, cy, hidden, colorMode);
-      layers.push(built);
-      root.add(built.lines);
-      root.add(built.travel);
-    });
-    active = Math.min(active, layers.length - 1);
-    high = Math.min(high, layers.length - 1);
-    applyFocus();
-    if (!fitted) {
-      camera.position.set(span * 0.95, midZ + span * 0.55, span * 0.95);
-      controls.target.set(0, midZ, 0);
-      camera.lookAt(0, midZ, 0);
-      controls.update();
-      fitted = true;
-    }
-    placePlane();
-  }
-
   function placePlane() {
-    if (!planeSpec || !slice) {
+    requestRender();
+    if (!planeSpec || !model) {
       plane.visible = false;
       handle.visible = false;
       return;
     }
-    const min = slice.mesh.min;
-    const max = slice.mesh.max;
+    const { min, max } = model;
     const cx = (min[0] + max[0]) / 2;
     const cy = (min[1] + max[1]) / 2;
     const margin = 1.2;
@@ -283,13 +227,12 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   }
 
   function meshAt(ev: PointerEvent): number | null {
-    if (!slice || !planeSpec) return null;
+    if (!model || !planeSpec) return null;
     const rect = canvas.getBoundingClientRect();
     pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
-    const min = slice.mesh.min;
-    const max = slice.mesh.max;
+    const { min, max } = model;
     const midZ = (min[2] + max[2]) / 2;
     const hit = new THREE.Vector3();
     if (!raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -midZ), hit)) return null;
@@ -324,6 +267,14 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
 
+  function applyHidden() {
+    const mask = pathUniforms.hiddenKinds.value;
+    mask.fill(0);
+    kinds.forEach((kind, i) => {
+      if (hidden.has(kind)) mask[i] = 1;
+    });
+  }
+
   function dropBuffers() {
     if (ribbon) {
       root.remove(ribbon);
@@ -354,67 +305,55 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       bedZ = z;
     },
     setBuffers(buffers) {
+      requestRender();
       dropBuffers();
-      for (const layer of layers) layer.dispose();
-      layers = [];
-      root.clear();
       if (!buffers || buffers.ranges.length === 0) return;
       ranges = buffers.ranges;
       origin = { cx: buffers.centerX, cy: buffers.centerY };
-      const ribbonGeo = new THREE.BufferGeometry();
-      ribbonGeo.setAttribute("position", new THREE.BufferAttribute(buffers.ribbonPos, 3));
-      ribbonGeo.setAttribute("color", new THREE.BufferAttribute(buffers.ribbonCol, 3));
+      kinds = buffers.kinds;
+      const palette = pathUniforms.palette.value;
+      kinds.forEach((kind, i) => palette.set(FEATURE_RGB[kind] ?? OTHER_RGB, i * 3));
+      applyHidden();
       ribbon = new THREE.Mesh(
-        ribbonGeo,
-        new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }),
+        pathGeometry(buffers.ribbonPos, buffers.ribbonInfo),
+        pathMaterial(pathUniforms, MARGIN_SHADE, 1, { side: THREE.DoubleSide }),
       );
-      const faceGeo = new THREE.BufferGeometry();
-      faceGeo.setAttribute("position", new THREE.BufferAttribute(buffers.facePos, 3));
-      faceGeo.setAttribute("color", new THREE.BufferAttribute(buffers.faceCol, 3));
       face = new THREE.Mesh(
-        faceGeo,
-        new THREE.MeshBasicMaterial({
-          vertexColors: true,
+        pathGeometry(buffers.facePos, buffers.faceInfo),
+        pathMaterial(pathUniforms, 1, 1, {
           side: THREE.DoubleSide,
           polygonOffset: true,
           polygonOffsetFactor: -2,
           polygonOffsetUnits: -2,
         }),
       );
-      const travelGeo = new THREE.BufferGeometry();
-      travelGeo.setAttribute("position", new THREE.BufferAttribute(buffers.travelPos, 3));
-      travelGeo.setAttribute("color", new THREE.BufferAttribute(buffers.travelCol, 3));
       travelLines = new THREE.LineSegments(
-        travelGeo,
-        new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.7 }),
+        pathGeometry(buffers.travelPos, buffers.travelInfo),
+        pathMaterial(pathUniforms, 1, 0.7, { transparent: true }),
       );
       root.add(ribbon);
       root.add(face);
       root.add(travelLines);
       placeBed(buffers.span, buffers.midZ, buffers.centerX, buffers.centerY);
-      fitted = true;
       applyFocus();
     },
     setShowTravel(show) {
       showTravel = show;
       applyFocus();
     },
-    setLayer(index) {
-      active = index;
-      high = index;
-      applyFocus();
+    setHidden(next) {
+      hidden = new Set(next);
+      applyHidden();
+      requestRender();
+    },
+    setColorMode(mode) {
+      pathUniforms.mode.value = mode === "weight" ? 1 : mode === "speed" ? 2 : 0;
+      requestRender();
     },
     setRange(nextLow, nextHigh) {
       low = nextLow;
       high = nextHigh;
-      active = nextHigh;
       applyFocus();
-    },
-    setHidden(kinds) {
-      hidden = new Set(kinds);
-    },
-    setColorMode(mode) {
-      colorMode = mode;
     },
     setPlane(spec) {
       planeSpec = spec;
@@ -424,6 +363,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       planeCb = cb;
     },
     setTheme() {
+      requestRender();
       colors = themeColors();
       renderer.setClearColor(hexToThree(colors.stage), 1);
       planeMat.color.setHex(hexToThree(colors.teal));
@@ -442,7 +382,8 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       scene.add(bed);
     },
     setPlayhead(seg) {
-      if (!seg || !slice) {
+      requestRender();
+      if (!seg || !model) {
         cursor.visible = false;
         playLine.visible = false;
         return;
@@ -458,77 +399,61 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       pos.needsUpdate = true;
     },
     setModel(min, max) {
-      slice = { mesh: { min, max }, layers: [] };
+      model = { min, max };
       origin = meshCenter(min, max);
       placePlane();
-    },
-    setSlice(next) {
-      slice = next;
-      low = 0;
-      high = Math.max(0, (next?.layers.length ?? 1) - 1);
-      active = high;
-      rebuild();
     },
   };
 }
 
-interface LayerLines {
-  lines: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>;
-  travel: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>;
-  dispose(): void;
+function pathGeometry(pos: Float32Array, info: Float32Array) {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geometry.setAttribute("info", new THREE.BufferAttribute(info, 3));
+  return geometry;
+}
+
+const rgb = (c: [number, number, number]) => `vec3(${c.map((v) => v.toFixed(3)).join(", ")})`;
+
+/** Colors each vertex from its (kind slot, blend weight, speed) triple; hidden kinds collapse off-screen. */
+const PATH_VERTEX = `
+attribute vec3 info;
+uniform vec3 palette[${MAX_KINDS}];
+uniform float hiddenKinds[${MAX_KINDS}];
+uniform int mode;
+uniform float shade;
+varying vec3 vColor;
+void main() {
+  int kind = int(info.x + 0.5);
+  if (hiddenKinds[kind] > 0.5) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    return;
+  }
+  vec3 color = palette[kind];
+  if (mode == 1) color = mix(${rgb(WEIGHT_RAMP[0])}, ${rgb(WEIGHT_RAMP[1])}, info.y);
+  if (mode == 2) color = mix(${rgb(SPEED_RAMP[0])}, ${rgb(SPEED_RAMP[1])}, clamp((info.z - 20.0) / 180.0, 0.0, 1.0));
+  vColor = color * shade;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`;
+
+const PATH_FRAGMENT = `
+uniform float alpha;
+varying vec3 vColor;
+void main() {
+  gl_FragColor = vec4(vColor, alpha);
+  #include <colorspace_fragment>
+}`;
+
+function pathMaterial(shared: Record<string, THREE.IUniform>, shade: number, alpha: number, params: THREE.ShaderMaterialParameters) {
+  return new THREE.ShaderMaterial({
+    ...params,
+    uniforms: { ...shared, shade: { value: shade }, alpha: { value: alpha } },
+    vertexShader: PATH_VERTEX,
+    fragmentShader: PATH_FRAGMENT,
+  });
 }
 
 function applyPixelRatio(renderer: THREE.WebGLRenderer) {
   const dpr = window.devicePixelRatio || 1;
   if (renderer.getPixelRatio() !== dpr) renderer.setPixelRatio(dpr);
-}
-
-function buildLayer(layer: ViewLayer, cx: number, cy: number, hidden: Set<string>, mode: ColorMode): LayerLines {
-  const body = collect(layer, cx, cy, false, hidden, mode);
-  const travelPts = collect(layer, cx, cy, true, hidden, mode);
-  const lines = lineSegments(body.pos, body.color, 1);
-  const travel = lineSegments(travelPts.pos, travelPts.color, 0.85);
-  travel.visible = false;
-  return {
-    lines,
-    travel,
-    dispose() {
-      lines.geometry.dispose();
-      lines.material.dispose();
-      travel.geometry.dispose();
-      travel.material.dispose();
-    },
-  };
-}
-
-function lineSegments(pos: number[], color: number[], opacity: number) {
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
-  geometry.setAttribute("color", new THREE.Float32BufferAttribute(color, 3));
-  return new THREE.LineSegments(
-    geometry,
-    new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity, depthWrite: false }),
-  );
-}
-
-function collect(layer: ViewLayer, cx: number, cy: number, travelOnly: boolean, hidden: Set<string>, mode: ColorMode) {
-  const pos: number[] = [];
-  const color: number[] = [];
-  for (const path of layer.paths) {
-    const isTravel = path.kind === "travel";
-    if (isTravel !== travelOnly || path.pts.length < 2 || hidden.has(path.kind)) continue;
-    const rgb = hexRgb(colorForPath(path.kind, mode, path.toughness ?? 0, path.effectiveSpeed ?? path.speed ?? 0)).map((v) => v / 255);
-    for (let i = 1; i < path.pts.length; i++) {
-      const z0 = path.zs && path.zs.length === path.pts.length ? path.zs[i - 1] : layer.z;
-      const z1 = path.zs && path.zs.length === path.pts.length ? path.zs[i] : layer.z;
-      pos.push(...scenePoint(path.pts[i - 1][0], path.pts[i - 1][1], z0, cx, cy));
-      pos.push(...scenePoint(path.pts[i][0], path.pts[i][1], z1, cx, cy));
-      color.push(rgb[0], rgb[1], rgb[2], rgb[0], rgb[1], rgb[2]);
-    }
-  }
-  if (pos.length === 0) {
-    pos.push(0, 0, 0, 0, 0, 0);
-    color.push(0, 0, 0, 0, 0, 0);
-  }
-  return { pos, color };
 }

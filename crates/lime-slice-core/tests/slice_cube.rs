@@ -729,51 +729,6 @@ fn volumetric_flow_caps_extrusion_feed() {
     assert_eq!(over, 0, "extrusion feed exceeded the volumetric cap");
 }
 
-#[test]
-fn indexed_slice_matches_classic_contours() {
-    let mesh = cube();
-    let indexed = slice_configured(
-        &mesh,
-        &BlendMode::Single {
-            strategy: StrategyId::Toughness,
-        },
-        &profile(),
-        &SliceSettings {
-            classic: false,
-            variable_width: false,
-            arc_fit: false,
-            travel_opt: false,
-            overhang_control: false,
-            ..SliceSettings::default()
-        },
-    )
-    .unwrap();
-    let scanned = slice_configured(
-        &mesh,
-        &BlendMode::Single {
-            strategy: StrategyId::Toughness,
-        },
-        &profile(),
-        &SliceSettings {
-            classic: false,
-            spatial_index: false,
-            variable_width: false,
-            arc_fit: false,
-            travel_opt: false,
-            overhang_control: false,
-            ..SliceSettings::default()
-        },
-    )
-    .unwrap();
-    assert_eq!(indexed.sanity.layers, scanned.sanity.layers);
-    let mid_i = indexed.layers.iter().find(|l| l.index == 40).unwrap();
-    let mid_s = scanned.layers.iter().find(|l| l.index == 40).unwrap();
-    assert_eq!(mid_i.toughness_walls, mid_s.toughness_walls);
-    let rel = (indexed.estimate.filament_mm - scanned.estimate.filament_mm).abs()
-        / scanned.estimate.filament_mm;
-    assert!(rel < 0.08, "filament drifted {rel}");
-}
-
 fn speed_mode() -> BlendMode {
     BlendMode::Single {
         strategy: StrategyId::Speed,
@@ -1547,6 +1502,34 @@ fn combing_does_not_cross_a_hole_without_retract() {
     assert!(
         tough_cross.iter().all(|c| c.retracted),
         "toughness crossed a hole without retract"
+    );
+    // The four bars cut as one frame, so combing can always go around the hole.
+    assert_eq!(
+        tough_cross.len(),
+        0,
+        "toughness should comb around a closed frame"
+    );
+
+    // Without combing the straight travels cross the hole, and each must lift.
+    let tough = slice_configured(
+        &mesh,
+        &tough_mode(),
+        &profile(),
+        &SliceSettings {
+            combing: false,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    let tough_cross = hole_crossings(&tough.gcode);
+    assert!(
+        tough_cross.iter().all(|c| c.retracted),
+        "toughness crossed the hole without retract: {:?}",
+        tough_cross
+            .iter()
+            .filter(|c| !c.retracted)
+            .map(|c| (c.a, c.b, c.scarf))
+            .collect::<Vec<_>>()
     );
     let long: Vec<_> = tough_cross
         .iter()
@@ -2742,4 +2725,268 @@ fn printer_profile_keeps_cost_and_bed_when_fields_are_absent() {
     assert!((parsed.max_accel - 10_000.0).abs() < 1e-6);
     assert!((parsed.filament_cost_per_kg - 20.0).abs() < 1e-6);
     assert!((parsed.bed_z - 250.0).abs() < 1e-6);
+}
+
+fn audit(mesh: &Mesh) -> lime_slice_core::SliceAudit {
+    lime_slice_core::audit_slice(
+        mesh,
+        &speed_mode(),
+        &SliceSettings {
+            include_gcode: false,
+            baseline: false,
+            ..SliceSettings::default()
+        },
+        0.4,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_hole_in_the_mesh_does_not_drop_the_layer() {
+    let mut mesh = cylinder(10.0, 10.0, 64);
+    // Remove one side quad: a 1 mm slot through every layer.
+    mesh.triangles.drain(0..2);
+    let report = audit(&mesh);
+    let want = std::f64::consts::PI * 100.0 * 10.0;
+    let got = report.sliced_volume_mm3;
+    assert!(
+        (got - want).abs() / want < 0.02,
+        "sliced {got:.0} mm3, a closed cylinder is {want:.0} mm3"
+    );
+    assert_eq!(report.dropped_chains, 0);
+    assert_eq!(report.repaired_layers, report.layers);
+}
+
+#[test]
+fn a_shell_inside_another_is_solid_not_a_hole() {
+    let mut tris = Vec::new();
+    add_box(&mut tris, 0.0, 0.0, 0.0, 20.0, 20.0, 10.0);
+    add_box(&mut tris, 5.0, 5.0, 0.0, 15.0, 15.0, 10.0);
+    add_box(&mut tris, 10.0, 10.0, 0.0, 30.0, 18.0, 10.0);
+    let report = audit(&Mesh { triangles: tris });
+    // 20×20 plus the 10×8 part of the third box outside the first.
+    let want = (400.0 + 80.0) * 10.0;
+    let got = report.sliced_volume_mm3;
+    assert!(
+        (got - want).abs() / want < 0.01,
+        "sliced {got:.0} mm3, the union is {want:.0} mm3"
+    );
+    assert_eq!(report.support_mm3, 0.0);
+}
+
+#[test]
+fn a_ramp_gets_no_top_skin_under_its_lowest_edge() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples/slope_ramp.stl");
+    let mesh = load_mesh("slope_ramp.stl", &std::fs::read(path).unwrap()).unwrap();
+    let response = slice_configured(
+        &mesh,
+        &speed_mode(),
+        &profile(),
+        &SliceSettings {
+            include_gcode: false,
+            baseline: false,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    // The roof starts at Z 8 along X = 0. The layers just under it are closed by
+    // their walls; a whole-layer top skin there means the Z 8 cut lost a corner.
+    let tops: Vec<f64> = response
+        .layers
+        .iter()
+        .filter(|l| l.z > 7.0 && l.z < 8.1 && l.paths.iter().any(|p| p.kind == "top"))
+        .map(|l| l.z)
+        .collect();
+    assert_eq!(tops, Vec::<f64>::new());
+}
+
+#[test]
+fn tree_trunks_always_stand_on_something() {
+    for strategy in [StrategyId::Speed, StrategyId::Toughness] {
+        let report = lime_slice_core::audit_slice(
+            &ledge(),
+            &BlendMode::Single { strategy },
+            &SliceSettings {
+                supports: true,
+                support_style: lime_slice_core::SupportStyle::Tree,
+                include_gcode: false,
+                baseline: false,
+                ..SliceSettings::default()
+            },
+            0.4,
+        )
+        .unwrap();
+        assert!(report.support_mm3 > 100.0, "{strategy:?} grew no tree");
+        assert_eq!(
+            report.support_floating_mm3, 0.0,
+            "{strategy:?} trunk printed over air on {} layers, worst {:?}",
+            report.floating_layers, report.worst_floating
+        );
+        assert_eq!(report.support_inside_mm3, 0.0);
+    }
+}
+
+#[test]
+fn a_newer_slice_stops_the_older_one_mid_plan() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples/lime_hull.stl");
+    let mesh = load_mesh("lime_hull.stl", &std::fs::read(path).unwrap()).unwrap();
+    let settings = |job| SliceSettings {
+        include_gcode: false,
+        baseline: false,
+        job,
+        ..SliceSettings::default()
+    };
+    let started = std::time::Instant::now();
+    let full = slice_configured(
+        &mesh,
+        &tough_mode(),
+        &profile(),
+        &settings(lime_slice_core::Job::default()),
+    );
+    assert!(full.is_ok());
+    let full_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+    let old = lime_slice_core::Job::start();
+    let worker = std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        let out = slice_configured(&mesh, &tough_mode(), &profile(), &settings(old));
+        (out.map(|_| ()), started.elapsed().as_secs_f64() * 1000.0)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let newer = lime_slice_core::Job::start();
+    let (out, ms) = worker.join().unwrap();
+    assert_eq!(out, Err("cancelled".to_string()));
+    assert!(
+        ms < full_ms * 0.8,
+        "stale slice ran {ms:.0} ms of {full_ms:.0} ms"
+    );
+    assert!(!newer.cancelled());
+}
+
+#[test]
+fn every_sample_audits_clean() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples");
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        if !name.ends_with(".stl") {
+            continue;
+        }
+        let mesh = load_mesh(&name, &std::fs::read(&path).unwrap()).unwrap();
+        for (label, style) in [
+            ("grid", lime_slice_core::SupportStyle::Grid),
+            ("tree", lime_slice_core::SupportStyle::Tree),
+        ] {
+            let report = lime_slice_core::audit_slice(
+                &mesh,
+                &tough_mode(),
+                &SliceSettings {
+                    supports: true,
+                    support_style: style,
+                    include_gcode: false,
+                    baseline: false,
+                    ..SliceSettings::default()
+                },
+                0.4,
+            )
+            .unwrap();
+            let coverage = report.sliced_volume_mm3 / report.mesh_volume_mm3;
+            assert!(
+                (coverage - 1.0).abs() < 0.005,
+                "{name} {label}: sliced {coverage:.4} of the mesh volume"
+            );
+            assert_eq!(report.missing_mm3, 0.0, "{name} {label} lost contour area");
+            assert_eq!(report.dropped_chains, 0, "{name} {label} dropped a chain");
+            assert_eq!(
+                report.support_inside_mm3, 0.0,
+                "{name} {label} put support inside the part"
+            );
+            assert_eq!(
+                report.support_floating_mm3, 0.0,
+                "{name} {label} printed support over air, worst {:?}",
+                report.worst_floating
+            );
+            assert!(
+                report.unskinned_top_mm2 < 0.5,
+                "{name} {label} left {:.2} mm2 of top without skin",
+                report.unskinned_top_mm2
+            );
+        }
+    }
+}
+
+/// A body with a thin wing tilted up and away from it, like the dragon's.
+/// Trunks under the wing squeeze between the body and the wing's low edge.
+fn winged_body() -> Mesh {
+    let mut tris = Vec::new();
+    add_box(&mut tris, 0.0, 0.0, 0.0, 12.0, 12.0, 22.0);
+    let (x0, x1, y0, y1) = (12.0, 52.0, -4.0, 16.0);
+    let (z0, z1, t) = (6.0, 24.0, 1.2);
+    let v = [
+        [x0, y0, z0],
+        [x1, y0, z1],
+        [x1, y1, z1],
+        [x0, y1, z0],
+        [x0, y0, z0 + t],
+        [x1, y0, z1 + t],
+        [x1, y1, z1 + t],
+        [x0, y1, z0 + t],
+    ];
+    for (i, j, k) in [
+        (0, 2, 1),
+        (0, 3, 2),
+        (4, 5, 6),
+        (4, 6, 7),
+        (0, 1, 5),
+        (0, 5, 4),
+        (3, 7, 6),
+        (3, 6, 2),
+        (0, 4, 7),
+        (0, 7, 3),
+        (1, 2, 6),
+        (1, 6, 5),
+    ] {
+        tris.push([v[i], v[j], v[k]]);
+    }
+    Mesh { triangles: tris }
+}
+
+#[test]
+fn tree_trunks_beside_a_wing_stand_on_something() {
+    for strategy in [StrategyId::Speed, StrategyId::Toughness] {
+        let report = lime_slice_core::audit_slice(
+            &winged_body(),
+            &BlendMode::Single { strategy },
+            &SliceSettings {
+                supports: true,
+                include_gcode: false,
+                baseline: false,
+                ..SliceSettings::default()
+            },
+            0.4,
+        )
+        .unwrap();
+        assert!(report.support_mm3 > 100.0, "{strategy:?} grew no tree");
+        assert_eq!(
+            report.support_floating_mm3, 0.0,
+            "{strategy:?} trunk printed over air on {} layers, worst {:?}",
+            report.floating_layers, report.worst_floating
+        );
+        assert_eq!(report.support_inside_mm3, 0.0);
+    }
+}
+
+#[test]
+fn separate_shells_closer_than_the_gap_limit_stay_separate() {
+    let mut tris = Vec::new();
+    add_box(&mut tris, 0.0, 0.0, 0.0, 10.0, 10.0, 5.0);
+    add_box(&mut tris, 11.5, 0.0, 0.0, 21.5, 10.0, 5.0);
+    let report = audit(&Mesh { triangles: tris });
+    assert_eq!(report.repaired_layers, 0, "closed shells were bridged");
+    let want = 2.0 * 100.0 * 5.0;
+    assert!(
+        (report.sliced_volume_mm3 - want).abs() / want < 0.005,
+        "sliced {:.0} mm3, two boxes are {want:.0} mm3",
+        report.sliced_volume_mm3
+    );
 }
