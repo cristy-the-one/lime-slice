@@ -159,13 +159,37 @@ button { cursor: pointer; }
   border-bottom: 1px solid var(--line);
   background: var(--bar);
 }
-.status { border-bottom: 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+.status {
+  border-bottom: 0;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .brand { font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
 .brand span { color: var(--amber); }
 .spacer { flex: 1; }
-.timing { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; }
+.timing {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+  min-width: 26ch;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.action-row { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.action-row .btn { flex: 0 0 auto; }
+/* Slice, Re-slice, and Slicing… share one slot so Cancel cannot slide under the pointer. */
+#slice { min-width: 8rem; text-align: center; }
+#cancel:not(:disabled) { color: var(--danger); border-color: var(--danger); }
 
-.banner-rail { display: flex; flex-direction: column; gap: 4px; }
+.banner-rail { position: relative; display: flex; flex-direction: column; gap: 4px; }
 .banner {
   padding: 8px 12px;
   background: var(--banner);
@@ -175,6 +199,11 @@ button { cursor: pointer; }
 .banner.warn { background: var(--banner-warn); color: var(--banner-warn-text); }
 .banner.ok { background: var(--banner-ok); color: var(--ok); }
 .progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  z-index: 2;
   height: 6px;
   background: var(--progress-track);
 }
@@ -408,5 +437,5 @@ kbd { border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; backg
   .workspace.show-left.show-right #left { grid-row: 1; }
   .workspace.show-left.show-right .stage { grid-row: 2; }
   .workspace.show-left.show-right #right { grid-row: 3; }
-  .top .timing { flex-basis: 100%; }
+  .top .timing { flex-basis: 100%; max-width: 100%; }
 }
