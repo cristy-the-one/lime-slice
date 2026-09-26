@@ -1025,7 +1025,7 @@ function onSettings(ev: Event) {
   }
   const structural = ["adaptive", "supports", "zhop", "scarf", "gyroid3d"].includes(t.id);
   if (structural) renderChrome();
-  else markStale();
+  markStale();
 }
 
 function touch() {
@@ -1350,6 +1350,7 @@ async function runSlice() {
   state.notice = "";
   renderChrome();
   let unlisten: (() => void) | undefined;
+  let landed = false;
   try {
     const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     let body: SliceResponse;
@@ -1378,6 +1379,7 @@ async function runSlice() {
     state.slicedHash = hash;
     state.layer = Math.min(state.layer, Math.max(0, body.layers.length - 1));
     clampPlane();
+    landed = true;
   } catch (err) {
     if (id !== job) return;
     const message = err instanceof Error ? err.message : String(err);
@@ -1390,6 +1392,7 @@ async function runSlice() {
       state.progress = 0;
       renderChrome();
       draw();
+      if (landed && stale()) scheduleAuto();
     }
   }
 }

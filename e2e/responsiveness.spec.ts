@@ -33,3 +33,29 @@ test("a setting changed during a slice leaves the finished result stale", async 
   await expect(page.locator("#slice")).toHaveText("Re-slice");
   await expect(page.locator("#export")).toBeDisabled();
 });
+
+test("auto-slice runs after a structural toggle", async ({ page }) => {
+  const slices = await mockEngine(page, () => 0);
+  await openCube(page);
+  await page.locator("#autoslice").check();
+  await page.locator("#slice").click();
+  await expect.poll(() => slices.length).toBe(1);
+  await expect(page.locator("#slice")).toBeEnabled();
+  await page.locator("#adaptive").check();
+  await expect.poll(() => slices.length, { timeout: 3000 }).toBe(2);
+  expect((slices[1] as { adaptive: boolean }).adaptive).toBe(true);
+});
+
+test("auto-slice picks up an edit made while a slice was running", async ({ page }) => {
+  let calls = 0;
+  const slices = await mockEngine(page, () => (calls++ === 0 ? 1200 : 0));
+  await openCube(page);
+  await page.locator("#autoslice").check();
+  await page.locator("#slice").click();
+  await expect.poll(() => slices.length).toBe(1);
+  await page.locator("#arcs").uncheck();
+  await expect.poll(() => slices.length, { timeout: 5000 }).toBe(2);
+  expect((slices[1] as { arcFit: boolean }).arcFit).toBe(false);
+  await expect(page.locator("#slice")).toHaveText("Slice");
+  await expect(page.locator("#export")).toBeEnabled();
+});
