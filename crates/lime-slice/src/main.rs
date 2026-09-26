@@ -868,6 +868,13 @@ fn print_audit(a: &lime_slice_core::SliceAudit) {
         a.plan_ms, a.layers, a.mesh_volume_mm3, a.sliced_volume_mm3, a.missing_mm3, a.repaired_layers, a.dropped_chains
     );
     println!(
+        "audit  unskinned top {:.1} mm2  worst {}",
+        a.unskinned_top_mm2,
+        a.worst_unskinned
+            .map(|(z, area)| format!("{area:.2} mm2 at z {z:.2}"))
+            .unwrap_or_else(|| "none".into())
+    );
+    println!(
         "audit  support {:.1} mm3  inside part {:.2} mm3  floating {:.2} mm3 on {} layers  worst {}",
         a.support_mm3,
         a.support_inside_mm3,

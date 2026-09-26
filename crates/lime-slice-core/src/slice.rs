@@ -9,7 +9,9 @@ use crate::gcode::{emit_gcode, LayerPaths};
 use crate::index::ZIndex;
 use crate::load::load_mesh;
 use crate::mesh::Mesh;
-use crate::poly::{boolean_union, clip_to_rect, loop_bounds, offset_loops, Loop};
+use crate::poly::{
+    boolean_diff, boolean_union, clip_to_rect, loop_bounds, offset_loops, signed_area, Loop,
+};
 use crate::strategy::{
     classicize, layer_weight, mix, pure, support_density, support_interface_density, Axis,
     BlendMode, Gyroid3d, PrinterProfile, ResolvedStrategy, ScarfSeam, StrategyId, ZHopMode,
@@ -1182,7 +1184,11 @@ pub(crate) fn plan(
     )?;
     let index = ZIndex::build(mesh);
     let contours: Vec<Vec<Loop>> = bands.par_iter().map(|band| index.slice(band.z)).collect();
-    let roofs = roof_distances(&bands, &contours);
+    let fewest_walls = pure(StrategyId::Speed)
+        .walls
+        .min(pure(StrategyId::Toughness).walls)
+        .max(1);
+    let roofs = roof_distances(&bands, &contours, settings.line_width * fewest_walls as f64);
     let supports = build_supports(
         &bands,
         &contours,
@@ -1300,17 +1306,23 @@ pub(crate) fn plan(
     })
 }
 
-fn roof_distances(bands: &[crate::adaptive::LayerBand], contours: &[Vec<Loop>]) -> Vec<f64> {
+fn roof_distances(bands: &[LayerBand], contours: &[Vec<Loop>], wall_stack: f64) -> Vec<f64> {
     let n = bands.len();
+    let roof: Vec<bool> = (0..n)
+        .into_par_iter()
+        .map(|i| {
+            i + 1 >= n
+                || layer_is_roof(
+                    &contours[i],
+                    contours.get(i + 1).map(Vec::as_slice).unwrap_or(&[]),
+                    wall_stack,
+                )
+        })
+        .collect();
     let mut dist = vec![0.0; n];
     let mut since = 0.0;
     for i in (0..n).rev() {
-        let roof = i + 1 >= n
-            || layer_is_roof(
-                &contours[i],
-                contours.get(i + 1).map(Vec::as_slice).unwrap_or(&[]),
-            );
-        if roof {
+        if roof[i] {
             since = 0.0;
         }
         dist[i] = since;
@@ -1319,33 +1331,21 @@ fn roof_distances(bands: &[crate::adaptive::LayerBand], contours: &[Vec<Loop>]) 
     dist
 }
 
-fn layer_is_roof(current: &[Loop], above: &[Loop]) -> bool {
+/// A roof exposes area the layer above does not cover, reaching deeper than the
+/// walls. A thinner strip along the outline, as on a slope, is closed by the walls.
+fn layer_is_roof(current: &[Loop], above: &[Loop], wall_stack: f64) -> bool {
     if current.is_empty() {
         return false;
     }
     if above.is_empty() {
         return true;
     }
-    let Some((min, max)) = loop_bounds(current) else {
+    let exposed = boolean_diff(current, above);
+    if exposed.is_empty() {
         return false;
-    };
-    let step = ((max[0] - min[0]).max(max[1] - min[1]) / 8.0).clamp(1.0, 4.0);
-    let mut exposed = 0;
-    let mut y = min[1] + step * 0.5;
-    while y < max[1] {
-        let mut x = min[0] + step * 0.5;
-        while x < max[0] {
-            if crate::poly::in_solid(current, x, y) && !crate::poly::in_solid(above, x, y) {
-                exposed += 1;
-                if exposed >= 2 {
-                    return true;
-                }
-            }
-            x += step;
-        }
-        y += step;
     }
-    false
+    let core = offset_loops(&exposed, -wall_stack * 0.5);
+    core.iter().map(|l| signed_area(l)).sum::<f64>() >= 1.0
 }
 
 fn pattern_label(strategy: &ResolvedStrategy) -> String {

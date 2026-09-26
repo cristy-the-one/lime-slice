@@ -58,11 +58,27 @@ fn interior_point(loop_: &[[f64; 2]]) -> [f64; 2] {
     c
 }
 
-fn drop_collinear(pts: &[[f64; 2]]) -> Vec<[f64; 2]> {
-    if pts.len() < 3 {
-        return pts.to_vec();
+fn drop_collinear(input: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    if input.len() < 3 {
+        return input.to_vec();
     }
-    let mut pts = pts.to_vec();
+    // Merge near-coincident neighbours first. Dropping every point next to a
+    // tiny edge would take both of its ends, and with them a real corner.
+    let mut pts: Vec<[f64; 2]> = Vec::with_capacity(input.len());
+    for &p in input {
+        if pts
+            .last()
+            .is_none_or(|q| (p[0] - q[0]).hypot(p[1] - q[1]) >= 1e-5)
+        {
+            pts.push(p);
+        }
+    }
+    while pts.len() > 3 && {
+        let (a, b) = (pts[0], pts[pts.len() - 1]);
+        (a[0] - b[0]).hypot(a[1] - b[1]) < 1e-5
+    } {
+        pts.pop();
+    }
     let mut changed = true;
     while changed && pts.len() >= 3 {
         changed = false;
@@ -284,4 +300,31 @@ pub fn drop_slivers(loops: Vec<Loop>, min_area: f64) -> Vec<Loop> {
         .into_iter()
         .filter(|l| signed_area(l).abs() >= min_area)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::orient_loops;
+
+    #[test]
+    fn a_doubled_corner_stays_a_corner() {
+        let square = vec![
+            [40.0, 0.0],
+            [40.0, 16.0],
+            [1e-14, 16.0],
+            [1e-14, 5e-15],
+            [1e-14, 0.0],
+            [16.0, 0.0],
+        ];
+        let loops = orient_loops(vec![square]);
+        assert_eq!(
+            loops,
+            vec![vec![
+                [40.0, 0.0],
+                [40.0, 16.0],
+                [1e-14, 16.0],
+                [1e-14, 5e-15]
+            ]]
+        );
+    }
 }

@@ -2773,3 +2773,29 @@ fn a_shell_inside_another_is_solid_not_a_hole() {
     );
     assert_eq!(report.support_mm3, 0.0);
 }
+
+#[test]
+fn a_ramp_gets_no_top_skin_under_its_lowest_edge() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples/slope_ramp.stl");
+    let mesh = load_mesh("slope_ramp.stl", &std::fs::read(path).unwrap()).unwrap();
+    let response = slice_configured(
+        &mesh,
+        &speed_mode(),
+        &profile(),
+        &SliceSettings {
+            include_gcode: false,
+            baseline: false,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    // The roof starts at Z 8 along X = 0. The layers just under it are closed by
+    // their walls; a whole-layer top skin there means the Z 8 cut lost a corner.
+    let tops: Vec<f64> = response
+        .layers
+        .iter()
+        .filter(|l| l.z > 7.0 && l.z < 8.1 && l.paths.iter().any(|p| p.kind == "top"))
+        .map(|l| l.z)
+        .collect();
+    assert_eq!(tops, Vec::<f64>::new());
+}

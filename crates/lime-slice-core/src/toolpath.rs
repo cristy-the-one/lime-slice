@@ -404,7 +404,7 @@ fn narrow_parts(region: &[Loop], limit: f64) -> Vec<Loop> {
     boolean_diff(region, &grown)
 }
 
-fn bead_cover(paths: &[Extrusion]) -> Vec<Loop> {
+pub(crate) fn bead_cover(paths: &[Extrusion]) -> Vec<Loop> {
     let mut acc = Vec::new();
     for path in paths {
         if path.points.len() < 2 || path.width <= 1e-6 {

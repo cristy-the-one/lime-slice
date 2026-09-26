@@ -14,6 +14,7 @@ use crate::poly::{
 use crate::slice::{plan, SliceSettings};
 use crate::strategy::BlendMode;
 use crate::support::SupportLayer;
+use crate::toolpath::{bead_cover, Extrusion, PathKind};
 
 /// Reach a support region may have past what is under it: a bead half-width plus
 /// one tree lean step. Anything farther out is printed in air.
@@ -42,6 +43,11 @@ pub struct SliceAudit {
     /// Support volume with neither support nor part under it.
     pub support_floating_mm3: f64,
     pub floating_layers: usize,
+    /// Top surface (area not covered by the next layer) that no solid bead covers.
+    /// Sparse infill showing through a roof reads as a hole in the preview.
+    pub unskinned_top_mm2: f64,
+    /// Z of the layer with the most unskinned top area, and that area in mm².
+    pub worst_unskinned: Option<(f64, f64)>,
     /// Z of the layer with the most floating support area, and that area in mm².
     pub worst_floating: Option<(f64, f64)>,
 }
@@ -75,8 +81,19 @@ pub fn audit_slice(
                     &offset_loops(&below, FLOAT_TOLERANCE_MM),
                 ))
             };
+            let exposed = match planned.contours.get(i + 1) {
+                Some(above) => boolean_diff(piece, above),
+                None => piece.clone(),
+            };
+            let unskinned = if exposed.is_empty() {
+                0.0
+            } else {
+                let skin = skin_cover(&planned.layers[i].paths);
+                area(&boolean_diff(&exposed, &skin))
+            };
             LayerRow {
                 z: band.z,
+                unskinned,
                 h: band.height,
                 sliced: area(piece),
                 missing: area(&boolean_diff(&fresh, piece)),
@@ -104,6 +121,10 @@ pub fn audit_slice(
         out.support_mm3 += row.support * row.h;
         out.support_inside_mm3 += row.inside * row.h;
         out.support_floating_mm3 += row.floating * row.h;
+        out.unskinned_top_mm2 += row.unskinned;
+        if row.unskinned > 0.0 && out.worst_unskinned.is_none_or(|(_, a)| row.unskinned > a) {
+            out.worst_unskinned = Some((row.z, row.unskinned));
+        }
         if row.floating > 0.0 {
             out.floating_layers += 1;
             if out.worst_floating.is_none_or(|(_, a)| row.floating > a) {
@@ -123,6 +144,29 @@ struct LayerRow {
     support: f64,
     inside: f64,
     floating: f64,
+    unskinned: f64,
+}
+
+/// Footprint of the beads that close a surface: walls, gap fill, and solid skins.
+fn skin_cover(paths: &[Extrusion]) -> Vec<Loop> {
+    let solid: Vec<Extrusion> = paths
+        .iter()
+        .filter(|p| {
+            matches!(
+                p.kind,
+                PathKind::Outer
+                    | PathKind::Inner
+                    | PathKind::Wall
+                    | PathKind::ThinWall
+                    | PathKind::GapFill
+                    | PathKind::Solid
+                    | PathKind::Top
+                    | PathKind::Bridge
+            )
+        })
+        .cloned()
+        .collect();
+    bead_cover(&solid)
 }
 
 /// Where this layer prints support: the sparse and interface regions, or the tree disks.
