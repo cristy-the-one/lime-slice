@@ -198,7 +198,7 @@ impl Default for SliceSettings {
             travel_opt: true,
             overhang_control: true,
             classic: false,
-            support_style: SupportStyle::Grid,
+            support_style: SupportStyle::Tree,
             branch_angle: 40.0,
             tip_diameter: 0.8,
             trunk_diameter: 4.2,
@@ -386,10 +386,12 @@ impl SliceSettings {
     }
 }
 
+/// Trees unless the request asks for the grid: they reach the part in far
+/// less material and time than a column filling the whole overhang.
 fn parse_support_style(name: &str) -> SupportStyle {
     match name.trim().to_ascii_lowercase().as_str() {
-        "tree" | "organic" => SupportStyle::Tree,
-        _ => SupportStyle::Grid,
+        "grid" => SupportStyle::Grid,
+        _ => SupportStyle::Tree,
     }
 }
 

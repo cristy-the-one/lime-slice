@@ -66,8 +66,8 @@ enum Cmd {
         /// Previous planner: line infill, no arcs, one feed.
         #[arg(long, default_value_t = false)]
         classic: bool,
-        /// `grid` or `tree` (organic branching).
-        #[arg(long, default_value = "grid")]
+        /// `tree` (organic branching, default) or `grid`.
+        #[arg(long, default_value = "tree")]
         support_style: String,
         /// Organic branch lean from vertical, degrees.
         #[arg(long, default_value_t = 40.0)]
@@ -252,10 +252,10 @@ fn run() -> Result<(), String> {
                 travel_opt,
                 overhang_control,
                 classic,
-                support_style: if matches!(support_style.as_str(), "tree" | "organic") {
-                    lime_slice_core::SupportStyle::Tree
-                } else {
+                support_style: if support_style == "grid" {
                     lime_slice_core::SupportStyle::Grid
+                } else {
+                    lime_slice_core::SupportStyle::Tree
                 },
                 branch_angle,
                 tip_diameter,

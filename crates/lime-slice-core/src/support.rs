@@ -8,8 +8,8 @@ use crate::poly::{
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SupportStyle {
-    #[default]
     Grid,
+    #[default]
     Tree,
 }
 
