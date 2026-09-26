@@ -2799,3 +2799,29 @@ fn a_ramp_gets_no_top_skin_under_its_lowest_edge() {
         .collect();
     assert_eq!(tops, Vec::<f64>::new());
 }
+
+#[test]
+fn tree_trunks_always_stand_on_something() {
+    for strategy in [StrategyId::Speed, StrategyId::Toughness] {
+        let report = lime_slice_core::audit_slice(
+            &ledge(),
+            &BlendMode::Single { strategy },
+            &SliceSettings {
+                supports: true,
+                support_style: lime_slice_core::SupportStyle::Tree,
+                include_gcode: false,
+                baseline: false,
+                ..SliceSettings::default()
+            },
+            0.4,
+        )
+        .unwrap();
+        assert!(report.support_mm3 > 100.0, "{strategy:?} grew no tree");
+        assert_eq!(
+            report.support_floating_mm3, 0.0,
+            "{strategy:?} trunk printed over air on {} layers, worst {:?}",
+            report.floating_layers, report.worst_floating
+        );
+        assert_eq!(report.support_inside_mm3, 0.0);
+    }
+}

@@ -2,8 +2,8 @@ use rayon::prelude::*;
 
 use crate::adaptive::LayerBand;
 use crate::poly::{
-    boolean_diff, boolean_union, drop_slivers, in_solid, local_diff, local_union, loop_bounds,
-    offset_loops, point_in_loop, signed_area, Loop,
+    boolean_diff, boolean_union, distance_to_outline, drop_slivers, in_solid, local_diff,
+    local_union, loop_bounds, offset_loops, point_in_loop, signed_area, Loop,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -275,6 +275,11 @@ fn overhang_at(
     }
 }
 
+/// A disk may overhang the one below by about half a bead and still print.
+const BEAD_OVERHANG_MM: f64 = 0.22;
+/// Thinnest trunk disk drawn beside the part.
+const MIN_DISK_R: f64 = 0.3;
+
 struct Node {
     id: u32,
     xy: [f64; 2],
@@ -283,6 +288,8 @@ struct Node {
     freeze: u32,
 }
 
+/// Trunk disks to print on this layer. A disk that would reach into the XY gap
+/// is drawn smaller rather than dropped, so the trunk under it never breaks.
 fn organic_disks(nodes: &[Node], part: &[Loop], xy_gap: f64) -> (Vec<[f64; 2]>, Vec<f64>) {
     let mut pts = Vec::new();
     let mut radii = Vec::new();
@@ -290,12 +297,15 @@ fn organic_disks(nodes: &[Node], part: &[Loop], xy_gap: f64) -> (Vec<[f64; 2]>, 
         if n.freeze > 0 {
             continue;
         }
-        let clear = offset_loops(part, xy_gap + n.radius * 0.35);
-        if in_solid(&clear, n.xy[0], n.xy[1]) {
+        let room = if part.is_empty() {
+            f64::MAX
+        } else if in_solid(part, n.xy[0], n.xy[1]) {
             continue;
-        }
+        } else {
+            distance_to_outline(part, n.xy) - xy_gap
+        };
         pts.push(n.xy);
-        radii.push(n.radius);
+        radii.push(n.radius.min(room).max(MIN_DISK_R));
     }
     (pts, radii)
 }
@@ -345,7 +355,7 @@ fn propagate_nodes(nodes: Vec<Node>, below: &[Loop], below2: &[Loop], grow: &Gro
         }
         next.push(n);
     }
-    merge_nodes(&mut next, grow.trunk_r);
+    merge_nodes(&mut next, grow.trunk_r, max_step + BEAD_OVERHANG_MM);
     next
 }
 
@@ -380,6 +390,9 @@ fn lean_toward(xy: [f64; 2], cloud: &[[f64; 2]], max_step: f64) -> [f64; 2] {
     [xy[0] + dx / dist * step, xy[1] + dy / dist * step]
 }
 
+/// Step toward the nearest point outside `collision`, at most `max_step`. A node
+/// that needs a longer move takes it over several layers, so every disk still
+/// sits on the one under it.
 fn push_out(xy: [f64; 2], collision: &[Loop], max_step: f64) -> [f64; 2] {
     if collision.is_empty() || !in_solid(collision, xy[0], xy[1]) {
         return xy;
@@ -407,21 +420,14 @@ fn push_out(xy: [f64; 2], collision: &[Loop], max_step: f64) -> [f64; 2] {
     };
     let dx = p[0] - xy[0];
     let dy = p[1] - xy[1];
-    let dist = dx.hypot(dy);
-    if dist < 1e-6 {
-        return p;
-    }
-    let step = max_step.max(dist.min(max_step + 0.8));
-    let travel = step.min(dist);
-    let out = [xy[0] + dx / dist * travel, xy[1] + dy / dist * travel];
-    if in_solid(collision, out[0], out[1]) {
-        p
-    } else {
-        out
-    }
+    let dist = dx.hypot(dy).max(1e-9);
+    let travel = max_step.min(dist);
+    [xy[0] + dx / dist * travel, xy[1] + dy / dist * travel]
 }
 
-fn merge_nodes(nodes: &mut Vec<Node>, trunk_r: f64) {
+/// Merge a node into an earlier one when the merged trunk, centred between them
+/// by radius, still covers both disks to within `reach`.
+fn merge_nodes(nodes: &mut Vec<Node>, trunk_r: f64, reach: f64) {
     if nodes.len() < 2 {
         return;
     }
@@ -436,10 +442,13 @@ fn merge_nodes(nodes: &mut Vec<Node>, trunk_r: f64) {
             if k.freeze > 0 {
                 return false;
             }
-            let dx = k.xy[0] - n.xy[0];
-            let dy = k.xy[1] - n.xy[1];
-            let lim = (k.radius + n.radius) * 0.72 + 0.35;
-            dx * dx + dy * dy < lim * lim
+            let d = (k.xy[0] - n.xy[0]).hypot(k.xy[1] - n.xy[1]);
+            let merged = (k.radius.powi(2) + n.radius.powi(2)).sqrt().min(trunk_r);
+            let w = k.radius + n.radius;
+            // Each disk's centre moves toward the other by the other's share of the radius.
+            let shift_k = d * n.radius / w;
+            let shift_n = d * k.radius / w;
+            shift_k + k.radius <= merged + reach && shift_n + n.radius <= merged + reach
         }) {
             let w = host.radius + n.radius;
             host.xy = [

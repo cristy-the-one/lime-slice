@@ -160,6 +160,26 @@ pub fn orient_loops(mut loops: Vec<Loop>) -> Vec<Loop> {
     loops
 }
 
+/// Distance from `p` to the nearest edge of any loop.
+pub fn distance_to_outline(loops: &[Loop], p: [f64; 2]) -> f64 {
+    let mut best = f64::MAX;
+    for l in loops {
+        let n = l.len();
+        for i in 0..n {
+            let (a, b) = (l[i], l[(i + 1) % n]);
+            let (abx, aby) = (b[0] - a[0], b[1] - a[1]);
+            let len2 = abx * abx + aby * aby;
+            let t = if len2 < 1e-12 {
+                0.0
+            } else {
+                (((p[0] - a[0]) * abx + (p[1] - a[1]) * aby) / len2).clamp(0.0, 1.0)
+            };
+            best = best.min((p[0] - a[0] - abx * t).hypot(p[1] - a[1] - aby * t));
+        }
+    }
+    best
+}
+
 pub fn loop_bounds(loops: &[Loop]) -> Option<([f64; 2], [f64; 2])> {
     let mut iter = loops.iter().flat_map(|l| l.iter());
     let first = *iter.next()?;

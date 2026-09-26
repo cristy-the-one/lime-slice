@@ -40,7 +40,8 @@ pub struct SliceAudit {
     pub support_mm3: f64,
     /// Support volume inside the mesh cross-section at mid-layer.
     pub support_inside_mm3: f64,
-    /// Support volume with neither support nor part under it.
+    /// Column or trunk volume with neither support nor part under it.
+    /// Interface decks spanning between tree tips are bridges and are not counted.
     pub support_floating_mm3: f64,
     pub floating_layers: usize,
     /// Top surface (area not covered by the next layer) that no solid bead covers.
@@ -64,6 +65,7 @@ pub fn audit_slice(
     let index = ZIndex::build(mesh);
     let bands = &planned.bands;
     let regions: Vec<Vec<Loop>> = planned.supports.par_iter().map(support_region).collect();
+    let columns: Vec<Vec<Loop>> = planned.supports.par_iter().map(column_region).collect();
     let rows: Vec<LayerRow> = (0..bands.len())
         .into_par_iter()
         .map(|i| {
@@ -72,12 +74,12 @@ pub fn audit_slice(
             let mid = index.slice(band.z - band.height * 0.5);
             let piece = &planned.contours[i];
             let region = &regions[i];
-            let floating = if i == 0 || region.is_empty() {
+            let floating = if i == 0 || columns[i].is_empty() {
                 0.0
             } else {
                 let below = boolean_union(&regions[i - 1], &planned.contours[i - 1]);
                 area(&boolean_diff(
-                    region,
+                    &columns[i],
                     &offset_loops(&below, FLOAT_TOLERANCE_MM),
                 ))
             };
@@ -171,7 +173,12 @@ fn skin_cover(paths: &[Extrusion]) -> Vec<Loop> {
 
 /// Where this layer prints support: the sparse and interface regions, or the tree disks.
 fn support_region(layer: &SupportLayer) -> Vec<Loop> {
-    let mut region = boolean_union(&layer.sparse, &layer.interface);
+    boolean_union(&column_region(layer), &layer.interface)
+}
+
+/// The load-bearing part of the support: grid columns or tree trunk disks.
+fn column_region(layer: &SupportLayer) -> Vec<Loop> {
+    let mut region = layer.sparse.clone();
     let disks: Vec<Loop> = layer
         .branches
         .iter()
