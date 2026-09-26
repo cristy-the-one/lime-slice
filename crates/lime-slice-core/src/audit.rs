@@ -21,6 +21,8 @@ use crate::toolpath::{bead_cover, Extrusion, PathKind};
 const FLOAT_TOLERANCE_MM: f64 = 0.5;
 /// Support this close inside the part outline is rounding, not a collision.
 const INSIDE_TOLERANCE_MM: f64 = 0.1;
+/// Uncovered skin pieces smaller than this are bead-corner rounding, not an opening.
+const OPEN_SKIN_SPECK_MM2: f64 = 0.05;
 
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,6 +53,11 @@ pub struct SliceAudit {
     pub worst_unskinned: Option<(f64, f64)>,
     /// Z of the layer with the most floating support area, and that area in mm².
     pub worst_floating: Option<(f64, f64)>,
+    /// Outline band half a bead deep that no part bead covers, summed over layers.
+    /// A wall this thin prints nothing there, so the surface has a hole you can see through.
+    pub open_skin_mm2: f64,
+    /// Z of the layer with the most open skin, and that area in mm².
+    pub worst_open_skin: Option<(f64, f64)>,
 }
 
 pub fn audit_slice(
@@ -93,9 +100,31 @@ pub fn audit_slice(
                 let skin = skin_cover(&planned.layers[i].paths);
                 area(&boolean_diff(&exposed, &skin))
             };
+            let skin_band = boolean_diff(piece, &offset_loops(piece, -settings.line_width * 0.5));
+            let open_skin = if skin_band.is_empty() {
+                0.0
+            } else {
+                let printed: Vec<Extrusion> = planned.layers[i]
+                    .paths
+                    .iter()
+                    .filter(|p| {
+                        !matches!(
+                            p.kind,
+                            PathKind::Support | PathKind::SupportInterface | PathKind::Skirt
+                        )
+                    })
+                    .cloned()
+                    .collect();
+                boolean_diff(&skin_band, &bead_cover(&printed))
+                    .iter()
+                    .map(|l| signed_area(l).abs())
+                    .filter(|a| *a >= OPEN_SKIN_SPECK_MM2)
+                    .sum()
+            };
             LayerRow {
                 z: band.z,
                 unskinned,
+                open_skin,
                 h: band.height,
                 sliced: area(piece),
                 missing: area(&boolean_diff(&fresh, piece)),
@@ -124,6 +153,10 @@ pub fn audit_slice(
         out.support_inside_mm3 += row.inside * row.h;
         out.support_floating_mm3 += row.floating * row.h;
         out.unskinned_top_mm2 += row.unskinned;
+        out.open_skin_mm2 += row.open_skin;
+        if row.open_skin > 0.0 && out.worst_open_skin.is_none_or(|(_, a)| row.open_skin > a) {
+            out.worst_open_skin = Some((row.z, row.open_skin));
+        }
         if row.unskinned > 0.0 && out.worst_unskinned.is_none_or(|(_, a)| row.unskinned > a) {
             out.worst_unskinned = Some((row.z, row.unskinned));
         }
@@ -147,6 +180,7 @@ struct LayerRow {
     inside: f64,
     floating: f64,
     unskinned: f64,
+    open_skin: f64,
 }
 
 /// Footprint of the beads that close a surface: walls, gap fill, and solid skins.

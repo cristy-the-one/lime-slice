@@ -31,6 +31,9 @@ enum Cmd {
         at: Option<f64>,
         #[arg(long, default_value_t = 0.2)]
         layer_height: f64,
+        /// Extrusion width, mm. The UI uses 1.125 × the nozzle diameter.
+        #[arg(long, default_value_t = 0.45)]
+        line_width: f64,
         #[arg(long, default_value_t = 4.0)]
         bottom_mm: f64,
         #[arg(long, default_value_t = 6.0)]
@@ -188,6 +191,7 @@ fn run() -> Result<(), String> {
             axis,
             at,
             layer_height,
+            line_width,
             bottom_mm,
             transition_mm,
             toughness,
@@ -237,7 +241,7 @@ fn run() -> Result<(), String> {
             )?;
             let settings = SliceSettings {
                 layer_height,
-                line_width: 0.45,
+                line_width,
                 adaptive,
                 adaptive_min,
                 adaptive_max: if adaptive_max > 0.0 {
@@ -886,6 +890,13 @@ fn print_audit(a: &lime_slice_core::SliceAudit) {
         "audit  unskinned top {:.1} mm2  worst {}",
         a.unskinned_top_mm2,
         a.worst_unskinned
+            .map(|(z, area)| format!("{area:.2} mm2 at z {z:.2}"))
+            .unwrap_or_else(|| "none".into())
+    );
+    println!(
+        "audit  open skin {:.1} mm2  worst {}",
+        a.open_skin_mm2,
+        a.worst_open_skin
             .map(|(z, area)| format!("{area:.2} mm2 at z {z:.2}"))
             .unwrap_or_else(|| "none".into())
     );

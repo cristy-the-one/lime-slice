@@ -2076,9 +2076,17 @@ mod tests {
 
     /// Two 4 mm squares joined by a neck narrower than one bead. The outer wall
     /// splits at the neck, and the bead that fills it is the part's skin there.
+    /// Necks under the narrowest bead (0.2 mm), and under the 0.1 mm the width
+    /// probe can read, are where a membrane's faces meet. They still print.
     #[test]
     fn a_pinch_too_narrow_for_walls_is_filled_as_thin_wall() {
-        let (lo, hi) = (1.825, 2.175);
+        for neck in [0.35, 0.12, 0.06] {
+            pinch_is_thin_wall(neck);
+        }
+    }
+
+    fn pinch_is_thin_wall(neck: f64) {
+        let (lo, hi) = (2.0 - neck * 0.5, 2.0 + neck * 0.5);
         let dumbbell: Loop = vec![
             [0.0, 0.0],
             [4.0, 0.0],
@@ -2122,11 +2130,11 @@ mod tests {
             for x in [4.5, 5.0, 5.5, 6.0, 6.5] {
                 assert!(
                     covered(x, PathKind::ThinWall),
-                    "{strategy:?}: neck at x={x} has no thin wall"
+                    "{strategy:?}: {neck} mm neck at x={x} has no thin wall"
                 );
                 assert!(
                     !covered(x, PathKind::GapFill),
-                    "{strategy:?}: neck at x={x} is labelled gap fill"
+                    "{strategy:?}: {neck} mm neck at x={x} is labelled gap fill"
                 );
             }
         }
