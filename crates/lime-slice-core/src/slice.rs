@@ -2074,6 +2074,64 @@ mod tests {
         (holes, gap_mm)
     }
 
+    /// Two 4 mm squares joined by a neck narrower than one bead. The outer wall
+    /// splits at the neck, and the bead that fills it is the part's skin there.
+    #[test]
+    fn a_pinch_too_narrow_for_walls_is_filled_as_thin_wall() {
+        let (lo, hi) = (1.825, 2.175);
+        let dumbbell: Loop = vec![
+            [0.0, 0.0],
+            [4.0, 0.0],
+            [4.0, lo],
+            [7.0, lo],
+            [7.0, 0.0],
+            [11.0, 0.0],
+            [11.0, 4.0],
+            [7.0, 4.0],
+            [7.0, hi],
+            [4.0, hi],
+            [4.0, 4.0],
+            [0.0, 4.0],
+        ];
+        let settings = SliceSettings::default();
+        for strategy in [StrategyId::Speed, StrategyId::Toughness] {
+            let resolved = resolve(pure(strategy), &settings);
+            let features = PathFeatures {
+                variable_width: true,
+                layer_height: 0.2,
+                z: 1.0,
+                nozzle_diameter: 0.4,
+                layer_index: 5,
+                ..PathFeatures::default()
+            };
+            let paths = plan_region(
+                &[dumbbell.clone()],
+                &resolved,
+                settings.line_width,
+                &mut [0.0, 0.0],
+                &features,
+            );
+            let covered = |x: f64, kind: PathKind| {
+                paths.iter().any(|p| {
+                    p.kind == kind
+                        && p.points
+                            .windows(2)
+                            .any(|s| seg_dist([x, 2.0], s[0], s[1]) <= p.width * 0.5 + 0.05)
+                })
+            };
+            for x in [4.5, 5.0, 5.5, 6.0, 6.5] {
+                assert!(
+                    covered(x, PathKind::ThinWall),
+                    "{strategy:?}: neck at x={x} has no thin wall"
+                );
+                assert!(
+                    !covered(x, PathKind::GapFill),
+                    "{strategy:?}: neck at x={x} is labelled gap fill"
+                );
+            }
+        }
+    }
+
     #[test]
     fn wing_taper_fill_survives_micron_moves_and_start_rotation() {
         let mesh = wedge_wing();

@@ -198,7 +198,15 @@ pub fn plan_region(
         let loops = loops_from_paths(next.clone());
         if loops.is_empty() {
             if features.variable_width {
-                fill_remaining(&mut paths, &current, strategy, min_w, max_w, seam_hint);
+                // Nothing fit one bead in from the outline, so this bead is the skin.
+                let kind = if i == 0 {
+                    PathKind::ThinWall
+                } else {
+                    PathKind::GapFill
+                };
+                fill_remaining(
+                    &mut paths, &current, kind, strategy, min_w, max_w, seam_hint,
+                );
             }
             break;
         }
@@ -215,7 +223,15 @@ pub fn plan_region(
                     seam_hint,
                 );
                 let core = paths_from_loops(&loops);
-                fill_remaining(&mut paths, &core, strategy, min_w, max_w, seam_hint);
+                fill_remaining(
+                    &mut paths,
+                    &core,
+                    PathKind::GapFill,
+                    strategy,
+                    min_w,
+                    max_w,
+                    seam_hint,
+                );
                 break;
             }
         }
@@ -333,6 +349,8 @@ fn emit_void_fill(
         missed
     };
     let min_w = min_bead(line_width);
+    // A void that reaches the outline is the part's skin there, so it is a wall.
+    let core = offset_loops(contours, -line_width * 0.25);
     for void in voids {
         if signed_area(&void).abs() < 0.25 {
             continue;
@@ -357,10 +375,21 @@ fn emit_void_fill(
             if piece_width < min_w {
                 continue;
             }
+            let skin = boolean_diff(&piece_region, &core)
+                .iter()
+                .map(|l| signed_area(l).abs())
+                .sum::<f64>()
+                > 0.01;
+            let kind = if skin {
+                PathKind::ThinWall
+            } else {
+                PathKind::GapFill
+            };
             fill_void_piece(
                 paths,
                 &piece_region,
                 piece_width,
+                kind,
                 strategy,
                 line_width,
                 seam_hint,
@@ -369,10 +398,12 @@ fn emit_void_fill(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fill_void_piece(
     paths: &mut Vec<Extrusion>,
     region: &[Loop],
     width: f64,
+    kind: PathKind,
     strategy: &ResolvedStrategy,
     line_width: f64,
     seam_hint: &mut [f64; 2],
@@ -399,6 +430,7 @@ fn fill_void_piece(
         fill_remaining(
             paths,
             &paths_from_loops(region),
+            kind,
             strategy,
             line_width * 0.45,
             width.max(line_width),
@@ -409,7 +441,7 @@ fn fill_void_piece(
     for pts in hatched {
         if pts.len() >= 2 {
             *seam_hint = *pts.last().unwrap();
-            paths.push(extrusion(PathKind::GapFill, strategy, pts, line_width));
+            paths.push(extrusion(kind, strategy, pts, line_width));
         }
     }
 }
@@ -638,6 +670,7 @@ fn bead_count(width: f64, nominal: f64, max_walls: u32, min_w: f64, max_w: f64) 
 fn fill_remaining(
     paths: &mut Vec<Extrusion>,
     current: &Paths<Milli>,
+    kind: PathKind,
     strategy: &ResolvedStrategy,
     min_w: f64,
     max_w: f64,
@@ -652,16 +685,9 @@ fn fill_remaining(
     }
     let center = loops_from_paths(offset_paths(current, -width * 0.5));
     if center.is_empty() {
-        emit_loops(paths, &loops, PathKind::GapFill, strategy, width, seam_hint);
+        emit_loops(paths, &loops, kind, strategy, width, seam_hint);
     } else {
-        emit_loops(
-            paths,
-            &center,
-            PathKind::GapFill,
-            strategy,
-            width,
-            seam_hint,
-        );
+        emit_loops(paths, &center, kind, strategy, width, seam_hint);
     }
 }
 
@@ -698,6 +724,7 @@ fn emit_gap_fill(
         fill_remaining(
             paths,
             &paths_from_loops(&region),
+            PathKind::GapFill,
             strategy,
             min_w,
             max_w,
@@ -1637,7 +1664,7 @@ pub fn seat_layer_start(
             continue;
         }
         if let Some(from) = cursor {
-            if path.kind.is_closed() {
+            if path.is_loop() {
                 rotate_closed_to(&mut path.points, from);
             } else if path.points.len() >= 2 {
                 let end = *path.points.last().unwrap();
@@ -1667,7 +1694,7 @@ pub fn optimize_travel(paths: &mut Vec<Extrusion>, solid: &[Loop], combing: bool
         if grouped
             .last()
             .and_then(|g| g.last())
-            .map(|p| p.kind == path.kind)
+            .map(|p| p.travel_group() == path.travel_group())
             .unwrap_or(false)
         {
             grouped.last_mut().unwrap().push(path);
@@ -1685,7 +1712,6 @@ pub fn optimize_travel(paths: &mut Vec<Extrusion>, solid: &[Loop], combing: bool
     let mut has_cursor = false;
     let mut out = Vec::with_capacity(grouped.iter().map(|g| g.len()).sum());
     for group in grouped {
-        let open = !group.first().map(|p| p.kind.is_closed()).unwrap_or(false);
         let mut pending = group;
         let mut ordered = Vec::with_capacity(pending.len());
         while !pending.is_empty() {
@@ -1708,7 +1734,7 @@ pub fn optimize_travel(paths: &mut Vec<Extrusion>, solid: &[Loop], combing: bool
                     best_i = i;
                     best_rev = false;
                 }
-                if open && path.points.len() >= 2 {
+                if !path.is_loop() && path.points.len() >= 2 {
                     let de = if has_cursor { dist2(cursor, end) } else { ds };
                     if de + 1e-9 < best_d {
                         best_d = de;
@@ -1721,7 +1747,7 @@ pub fn optimize_travel(paths: &mut Vec<Extrusion>, solid: &[Loop], combing: bool
             if best_rev {
                 path.points.reverse();
             }
-            if has_cursor && path.kind.is_closed() && path.retract_min_travel > 2.0 {
+            if has_cursor && path.is_loop() && path.retract_min_travel > 2.0 {
                 rotate_closed_to(&mut path.points, cursor);
             }
             if has_cursor {
@@ -1764,6 +1790,28 @@ fn rotate_closed_to(pts: &mut Vec<[f64; 2]>, hint: [f64; 2]) {
 }
 
 impl Extrusion {
+    /// A loop keeps its direction and only moves its seam. A thin wall can also
+    /// be an open stroke across a pinch, which may run either way.
+    fn is_loop(&self) -> bool {
+        match self.kind {
+            PathKind::ThinWall => {
+                self.points.len() > 2 && self.points.first() == self.points.last()
+            }
+            kind => kind.is_closed(),
+        }
+    }
+
+    /// Kind the travel optimizer orders this path with. A thin-wall stroke across
+    /// a pinch comes out of void fill, and ordering it apart from the gap fill
+    /// around it costs travel.
+    fn travel_group(&self) -> PathKind {
+        if self.kind == PathKind::ThinWall && !self.is_loop() {
+            PathKind::GapFill
+        } else {
+            self.kind
+        }
+    }
+
     /// Replace whatever an earlier pass decided about the travel into this path.
     fn take_comb(&mut self, comb: Comb) {
         self.lead_in.clear();
