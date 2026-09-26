@@ -42,28 +42,6 @@ export const MARGIN_SHADE = 0.38;
 /** Kind slots the preview shader can color and hide. Later kinds share the last slot. */
 export const MAX_KINDS = 32;
 
-export const FEATURE_RGB: Record<string, [number, number, number]> = {
-  outer: [0.95, 0.64, 0.13],
-  wall: [0.95, 0.64, 0.13],
-  inner: [0.93, 0.45, 0.2],
-  top: [0.96, 0.82, 0.35],
-  solid: [0.55, 0.62, 0.28],
-  sparse: [0.18, 0.62, 0.58],
-  infill: [0.18, 0.62, 0.58],
-  "gap-fill": [0.45, 0.55, 0.7],
-  bridge: [0.85, 0.35, 0.45],
-  support: [0.45, 0.48, 0.58],
-  "support-interface": [0.62, 0.55, 0.75],
-  skirt: [0.7, 0.7, 0.7],
-  travel: [0.55, 0.58, 0.66],
-  "thin-wall": [0.9, 0.55, 0.4],
-};
-export const OTHER_RGB: [number, number, number] = [0.8, 0.8, 0.8];
-
-/** Blend weight 0 to 1 and speed 20 to 200 mm/s map linearly between these. */
-export const WEIGHT_RAMP: [number, number, number][] = [[0.94, 0.64, 0.13], [0.18, 0.77, 0.71]];
-export const SPEED_RAMP: [number, number, number][] = [[0.25, 0.65, 0.75], [0.95, 0.45, 0.35]];
-
 /** Machine XY + nozzle Z → scene, matching the centered ribbon mesh (Y up). */
 export function scenePoint(x: number, y: number, z: number, cx: number, cy: number): [number, number, number] {
   return [x - cx, z, -(y - cy)];

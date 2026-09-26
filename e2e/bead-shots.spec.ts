@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { test } from "@playwright/test";
-import { buildPreviewGeometry, FEATURE_RGB, MARGIN_SHADE, type GeomLayer, type PreviewGeometry } from "../src/preview-geom";
+import { featureColor, hexRgb } from "../src/colors";
+import { buildPreviewGeometry, MARGIN_SHADE, type GeomLayer, type PreviewGeometry } from "../src/preview-geom";
 
 function stack(height: number): GeomLayer[] {
   const layers: GeomLayer[] = [];
@@ -32,7 +33,7 @@ test("side view of extruded beads is a solid stack", async ({ page }) => {
   });
   const marginColor = (built: PreviewGeometry) => {
     const out: number[] = [];
-    for (let i = 0; i < built.ribbonInfo.length; i += 3) out.push(...FEATURE_RGB[built.kinds[built.ribbonInfo[i]]].map((v) => v * MARGIN_SHADE));
+    for (let i = 0; i < built.ribbonInfo.length; i += 3) out.push(...hexRgb(featureColor(built.kinds[built.ribbonInfo[i]])).map((v) => (v / 255) * MARGIN_SHADE));
     return out;
   };
   await page.setViewportSize({ width: 1100, height: 520 });

@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import type { ColorMode } from "./colors";
-import { FEATURE_RGB, MARGIN_SHADE, MAX_KINDS, OTHER_RGB, SPEED_RAMP, WEIGHT_RAMP, meshCenter, scenePoint } from "./preview-geom";
+import { featureColor, SPEED_RAMP, SPEED_RANGE_MM_S, WEIGHT_RAMP, type ColorMode } from "./colors";
+import { MARGIN_SHADE, MAX_KINDS, meshCenter, scenePoint } from "./preview-geom";
 import { hexToThree, themeColors } from "./theme";
 
 export interface LayerRange {
@@ -312,7 +312,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       origin = { cx: buffers.centerX, cy: buffers.centerY };
       kinds = buffers.kinds;
       const palette = pathUniforms.palette.value;
-      kinds.forEach((kind, i) => palette.set(FEATURE_RGB[kind] ?? OTHER_RGB, i * 3));
+      kinds.forEach((kind, i) => palette.set(linearRgb(featureColor(kind)), i * 3));
       applyHidden();
       ribbon = new THREE.Mesh(
         pathGeometry(buffers.ribbonPos, buffers.ribbonInfo),
@@ -413,7 +413,10 @@ function pathGeometry(pos: Float32Array, info: Float32Array) {
   return geometry;
 }
 
-const rgb = (c: [number, number, number]) => `vec3(${c.map((v) => v.toFixed(3)).join(", ")})`;
+/** The legend's sRGB hex as the linear triple the shader works in, so both show the same color. */
+const linearRgb = (hex: string) => new THREE.Color(hex).toArray() as [number, number, number];
+const rgb = (hex: string) => `vec3(${linearRgb(hex).map((v) => v.toFixed(4)).join(", ")})`;
+const [SPEED_LO, SPEED_HI] = SPEED_RANGE_MM_S;
 
 /** Colors each vertex from its (kind slot, blend weight, speed) triple; hidden kinds collapse off-screen. */
 const PATH_VERTEX = `
@@ -431,7 +434,7 @@ void main() {
   }
   vec3 color = palette[kind];
   if (mode == 1) color = mix(${rgb(WEIGHT_RAMP[0])}, ${rgb(WEIGHT_RAMP[1])}, info.y);
-  if (mode == 2) color = mix(${rgb(SPEED_RAMP[0])}, ${rgb(SPEED_RAMP[1])}, clamp((info.z - 20.0) / 180.0, 0.0, 1.0));
+  if (mode == 2) color = mix(${rgb(SPEED_RAMP[0])}, ${rgb(SPEED_RAMP[1])}, clamp((info.z - ${SPEED_LO.toFixed(1)}) / ${(SPEED_HI - SPEED_LO).toFixed(1)}, 0.0, 1.0));
   vColor = color * shade;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }`;
