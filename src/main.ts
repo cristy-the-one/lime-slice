@@ -416,8 +416,9 @@ function paintBanner(isStale: boolean) {
   rail.innerHTML = bits.join("");
 }
 
+const closedGroups = new Set<string>();
 function group(title: string, body: string) {
-  return `<details open class="group"><summary>${title}</summary><div class="stack">${body}</div></details>`;
+  return `<details ${closedGroups.has(title) ? "" : "open"} class="group" data-group="${title}"><summary>${title}</summary><div class="stack">${body}</div></details>`;
 }
 function num(id: string, label: string, value: number, min: number, max: number, step: number) {
   return `<label class="field setting" data-label="${label.toLowerCase()}">${label}<input id="${id}" type="number" min="${min}" max="${max}" step="${step}" value="${value}" /></label>`;
@@ -852,6 +853,13 @@ function scrub(next: number) {
 
 document.querySelector("#left")!.addEventListener("input", onSettings);
 document.querySelector("#left")!.addEventListener("change", onSettings);
+document.querySelector("#left")!.addEventListener("toggle", (ev) => {
+  const details = ev.target as HTMLDetailsElement;
+  const title = details.dataset.group;
+  if (!title) return;
+  if (details.open) closedGroups.delete(title);
+  else closedGroups.add(title);
+}, true);
 document.querySelector("#left")!.addEventListener("click", (ev) => {
   const t = ev.target as HTMLElement;
   if (t.id === "pacal") void runPaCal();

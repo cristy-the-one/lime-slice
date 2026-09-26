@@ -34,6 +34,18 @@ test("a setting changed during a slice leaves the finished result stale", async 
   await expect(page.locator("#export")).toBeDisabled();
 });
 
+test("a collapsed settings group stays collapsed when the panel re-renders", async ({ page }) => {
+  await mockEngine(page, () => 0);
+  await openCube(page);
+  const walls = page.locator('details[data-group="Walls and seams"]');
+  await walls.locator("summary").click();
+  await expect(walls).not.toHaveAttribute("open");
+  await page.locator("#adaptive").check();
+  await expect(page.locator("#amin")).toBeVisible();
+  await expect(walls).not.toHaveAttribute("open");
+  await expect(page.locator('details[data-group="Quality"]')).toHaveAttribute("open");
+});
+
 test("auto-slice runs after a structural toggle", async ({ page }) => {
   const slices = await mockEngine(page, () => 0);
   await openCube(page);
