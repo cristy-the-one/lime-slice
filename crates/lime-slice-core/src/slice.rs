@@ -1319,6 +1319,8 @@ fn plan_contours(
             tip_diameter: settings.tip_diameter,
             trunk_diameter: settings.trunk_diameter.max(settings.tip_diameter + 0.6),
             density: support_seed_weight(blend),
+            load_factor: support_load_factor(blend),
+            max_tip_spacing: support_tip_spacing(blend),
             overhangs: settings.supports,
             islands: settings.island_support,
             job: settings.job,
@@ -1869,6 +1871,33 @@ fn support_seed_weight(blend: &BlendMode) -> f64 {
         BlendMode::ByLayer { .. } => 0.45,
         BlendMode::ByRegion { .. } => 0.55,
     }
+}
+
+/// 0 is speed, 1 is toughness. Mixed blends sit between them.
+fn support_toughness(blend: &BlendMode) -> f64 {
+    match blend {
+        BlendMode::Single { strategy } => match strategy {
+            StrategyId::Toughness => 1.0,
+            StrategyId::Speed => 0.0,
+        },
+        BlendMode::Weight { toughness } => toughness.clamp(0.0, 1.0),
+        BlendMode::ByLayer { .. } => 0.45,
+        BlendMode::ByRegion { .. } => 0.55,
+    }
+}
+
+/// Interface may bridge this far to the tip that carries it.
+/// Speed is 10.8 mm; toughness keeps a 3.5 mm contact grid.
+fn support_tip_spacing(blend: &BlendMode) -> f64 {
+    let t = support_toughness(blend);
+    (10.8 - 7.3 * t).clamp(3.2, 12.0)
+}
+
+/// Tip-units one tip-sized cross-section may carry.
+/// Speed is 5.2; toughness is 1.5, so trunks stay more numerous.
+fn support_load_factor(blend: &BlendMode) -> f64 {
+    let t = support_toughness(blend);
+    (5.2 - 3.7 * t).clamp(1.05, 8.0)
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -40,6 +40,13 @@ pub struct SupportOpts {
     pub trunk_diameter: f64,
     /// 0 is the speed blend (fewer tips). 1 is toughness (denser tips).
     pub density: f64,
+    /// How many fresh tips one tip-sized cross-section may carry.
+    /// `0` derives from `density`. Higher lets one trunk swallow more neighbours.
+    /// Capacity then grows with cross-section and falls as the branch gets long.
+    pub load_factor: f64,
+    /// Farthest a dropped tip may sit from the neighbour that carries its interface, mm.
+    /// `0` derives a pitch from `branch_spacing` and `density`. Wider means fewer tips.
+    pub max_tip_spacing: f64,
     /// Project steep overhangs. Off skips the angle test and still holds floating islands.
     pub overhangs: bool,
     /// Support a same-layer component that does not rest on material below.
@@ -61,6 +68,8 @@ impl Default for SupportOpts {
             tip_diameter: 0.8,
             trunk_diameter: 4.2,
             density: 0.2,
+            load_factor: 0.0,
+            max_tip_spacing: 0.0,
             overhangs: true,
             islands: true,
             job: crate::cancel::Job::default(),
@@ -119,10 +128,24 @@ pub fn build_supports(
     let mut next_id = 1u32;
     let tree = opts.style == SupportStyle::Tree;
     let density = opts.density.clamp(0.0, 1.0);
-    let seed_spacing = (opts.branch_spacing / (0.55 + 0.9 * density)).clamp(2.2, 9.0);
+    // Fine grid finds concave overhangs. `keep_spacing` is the pitch we actually
+    // leave standing: extra samples are packed onto a neighbour that can carry them.
+    let fine_spacing = (opts.branch_spacing / (0.55 + 0.9 * density)).clamp(2.2, 9.0);
+    let keep_spacing = tip_spacing(opts, fine_spacing);
+    // A tighter knob than the fine grid has to actually sample tighter.
+    let sample_spacing = fine_spacing.min(keep_spacing);
+    let load_factor = load_factor_of(opts);
     let tip_r = (opts.tip_diameter * 0.5).clamp(0.25, 1.6);
     let trunk_r = (opts.trunk_diameter * 0.5).max(tip_r + 0.3).clamp(0.6, 8.0);
     let lean = opts.branch_angle_deg.clamp(10.0, 65.0).to_radians().tan();
+    let tip_cap = tip_capacity(tip_r, 0.0, tip_r, load_factor);
+    let pitch = Pitch {
+        fine: sample_spacing,
+        keep: keep_spacing,
+        capacity: tip_cap,
+    };
+    let part_bb: Vec<Option<([f64; 2], [f64; 2])>> =
+        contours.iter().map(|c| loop_bounds(c)).collect();
 
     for i in (0..n).rev() {
         if opts.job.cancelled() {
@@ -150,13 +173,26 @@ pub fn build_supports(
                     )
                 };
                 let seeds = if cleared.is_empty() { &born } else { &cleared };
-                for p in sample_grid(seeds, seed_spacing) {
+                for (p, load, to_bed) in sample_tips(
+                    seeds,
+                    &pitch,
+                    &Land {
+                        layer: i,
+                        freeze: iface_n,
+                        lean,
+                        bands,
+                        contours,
+                        bounds: &part_bb,
+                    },
+                ) {
                     nodes.push(Node {
                         id: next_id,
                         xy: p,
                         radius: tip_r,
                         dist: 0.0,
                         freeze: iface_n,
+                        load,
+                        to_bed,
                     });
                     next_id += 1;
                 }
@@ -171,7 +207,21 @@ pub fn build_supports(
             // Tips frozen at birth stay put while the part silhouette moves.
             // A patch that slid off every tip needs its own trunk, starting
             // on the very next layer, or the interface prints over air.
-            seed_uncovered_interface(&iface_print, &mut nodes, &mut next_id, seed_spacing, tip_r);
+            seed_uncovered_interface(
+                &iface_print,
+                &mut nodes,
+                &mut next_id,
+                tip_r,
+                &pitch,
+                &Land {
+                    layer: i,
+                    freeze: 1,
+                    lean,
+                    bands,
+                    contours,
+                    bounds: &part_bb,
+                },
+            );
         }
         let (sparse_print, branch_pts, branch_r) = if tree {
             if i == 0 {
@@ -233,6 +283,7 @@ pub fn build_supports(
                     trunk_r,
                     xy_gap: opts.xy_gap,
                     next_is_bed: i == 1,
+                    load_factor,
                 },
             );
         }
@@ -346,8 +397,14 @@ struct Node {
     id: u32,
     xy: [f64; 2],
     radius: f64,
+    /// Millimetres this branch has already fallen. Longer branches hold less.
     dist: f64,
     freeze: u32,
+    /// Fine-grid tips whose interface this branch is carrying.
+    load: f64,
+    /// This tip cannot lean onto a roof, so it has to reach the bed.
+    /// It may merge with other bed tips, not with one that lands on the model.
+    to_bed: bool,
 }
 
 /// Trunk disks to print on this layer. A disk that would reach into the XY gap
@@ -385,17 +442,63 @@ struct Grow {
     trunk_r: f64,
     xy_gap: f64,
     next_is_bed: bool,
+    load_factor: f64,
 }
 
-/// Step every unfrozen node down one layer: lean toward siblings, thicken, merge, and
-/// stop on a supported mesh face. Frozen nodes are the vertical interface tips.
+/// Pitch actually left standing. An explicit `max_tip_spacing` wins; otherwise
+/// the fine seed grid is opened up, more at speed than at toughness.
+fn tip_spacing(opts: &SupportOpts, fine: f64) -> f64 {
+    if opts.max_tip_spacing > 0.0 {
+        return opts.max_tip_spacing.clamp(2.8, 14.0);
+    }
+    let density = opts.density.clamp(0.0, 1.0);
+    // Speed (density 0.15) opens a ~5 mm grid to ~11 mm. Toughness stays near 3.4 mm.
+    let widen = 2.15 - 0.78 * density;
+    (fine * widen).clamp(fine, 12.0)
+}
+
+/// Tip-units one tip-sized cross-section may carry. An explicit `load_factor` wins.
+fn load_factor_of(opts: &SupportOpts) -> f64 {
+    if opts.load_factor > 0.0 {
+        return opts.load_factor.clamp(0.75, 12.0);
+    }
+    let density = opts.density.clamp(0.0, 1.0);
+    (5.8 - 4.3 * density).clamp(1.05, 8.0)
+}
+
+/// How many tip-units a branch of this radius can carry after falling `length` mm.
+/// Section area scales with r². Past a short neck, length trims capacity so a
+/// long wand does not keep swallowing neighbours the way a short trunk can.
+fn tip_capacity(radius: f64, length: f64, tip_r: f64, load_factor: f64) -> f64 {
+    let section = (radius / tip_r.max(0.2)).powi(2);
+    let slender = 1.0 + (length / 28.0).max(0.0);
+    load_factor.max(0.5) * section / slender
+}
+
+/// Radius required to carry `load`, before the trunk cap and the stability floor.
+fn section_radius(load: f64, tip_r: f64, load_factor: f64) -> f64 {
+    let factor = load_factor.max(0.5);
+    tip_r * (load.max(1.0) / factor).sqrt()
+}
+
+/// Organic thickness: enough section for the load, and a stability floor that
+/// grows with fall distance so a lone trunk is not a hair all the way to the bed.
+fn branch_radius(load: f64, dist: f64, tip_r: f64, trunk_r: f64, load_factor: f64) -> f64 {
+    let loaded = section_radius(load, tip_r, load_factor);
+    // Same fall curve as a lone trunk used to grow, so a single branch is not
+    // left as a hair. Load stacks on top of that and is capped at the trunk.
+    // Speed (high load factor) keeps a lone shaft slimmer so neighbours can join
+    // and the path stays short. Toughness keeps the old 7.5 mm flare.
+    let tau = (6.2 + 1.5 * load_factor).clamp(7.5, 16.0);
+    let stable = tip_r + (trunk_r - tip_r) * (1.0 - (-dist / tau).exp());
+    loaded.max(stable).clamp(tip_r, trunk_r)
+}
+
+/// Step every unfrozen node down one layer: lean toward nearby trunks, thicken
+/// for the load they already carry, merge when one trunk can hold both, and
+/// stop on a supported mesh face. Frozen nodes are the interface tips and do not move.
 fn propagate_nodes(nodes: Vec<Node>, below: &[Loop], below2: &[Loop], grow: &Grow) -> Vec<Node> {
     let max_step = (grow.height * grow.lean).clamp(0.05, 4.0);
-    let cloud: Vec<[f64; 2]> = nodes
-        .iter()
-        .filter(|n| n.freeze == 0)
-        .map(|n| n.xy)
-        .collect();
     let mut next = Vec::with_capacity(nodes.len());
     for mut n in nodes {
         if n.freeze > 0 {
@@ -409,21 +512,42 @@ fn propagate_nodes(nodes: Vec<Node>, below: &[Loop], below2: &[Loop], grow: &Gro
                 continue;
             }
         }
-        n.xy = lean_toward(n.xy, &cloud, max_step);
+        next.push(n);
+    }
+    let cloud: Vec<[f64; 2]> = next
+        .iter()
+        .filter(|n| n.freeze == 0)
+        .map(|n| n.xy)
+        .collect();
+    for n in &mut next {
+        if n.freeze == 0 {
+            n.xy = lean_toward(n.xy, &cloud, max_step);
+        }
+    }
+    let mut kept = Vec::with_capacity(next.len());
+    for mut n in next {
+        if n.freeze > 0 {
+            kept.push(n);
+            continue;
+        }
         n.dist += grow.height;
-        let grown = grow.tip_r + (grow.trunk_r - grow.tip_r) * (1.0 - (-n.dist / 7.5).exp());
+        let grown = branch_radius(n.load, n.dist, grow.tip_r, grow.trunk_r, grow.load_factor);
         n.radius = grown.max(n.radius).min(grow.trunk_r);
         n.xy = push_out(n.xy, below, grow.xy_gap + n.radius, max_step);
         if in_solid(below, n.xy[0], n.xy[1]) {
             continue;
         }
-        if grow.next_is_bed {
-            n.radius = n.radius.max(grow.trunk_r * 0.95);
-        }
-        next.push(n);
+        kept.push(n);
     }
-    merge_nodes(&mut next, grow.trunk_r, max_step + BEAD_OVERHANG_MM);
-    next
+    merge_nodes(&mut kept, grow, max_step + BEAD_OVERHANG_MM);
+    if grow.next_is_bed {
+        for n in &mut kept {
+            if n.freeze == 0 {
+                n.radius = n.radius.max(grow.trunk_r * 0.95);
+            }
+        }
+    }
+    kept
 }
 
 fn lean_toward(xy: [f64; 2], cloud: &[[f64; 2]], max_step: f64) -> [f64; 2] {
@@ -447,14 +571,18 @@ fn lean_toward(xy: [f64; 2], cloud: &[[f64; 2]], max_step: f64) -> [f64; 2] {
     }
     let cx = sx / w;
     let cy = sy / w;
-    let dx = cx - xy[0];
-    let dy = cy - xy[1];
+    step_toward(xy, [cx, cy], max_step)
+}
+
+fn step_toward(xy: [f64; 2], target: [f64; 2], max_step: f64) -> [f64; 2] {
+    let dx = target[0] - xy[0];
+    let dy = target[1] - xy[1];
     let dist = dx.hypot(dy);
-    if dist < 0.15 {
-        return xy;
+    if dist < 1e-6 || dist <= max_step {
+        return target;
     }
-    let step = max_step.min(dist);
-    [xy[0] + dx / dist * step, xy[1] + dy / dist * step]
+    let scale = max_step / dist;
+    [xy[0] + dx * scale, xy[1] + dy * scale]
 }
 
 /// Step toward the nearest point at least `clearance` from `part`, at most
@@ -494,12 +622,14 @@ fn push_out(xy: [f64; 2], part: &[Loop], clearance: f64, max_step: f64) -> [f64;
     [xy[0] + dx / dist * travel, xy[1] + dy / dist * travel]
 }
 
-/// Merge a node into an earlier one when the merged trunk, centred between them
-/// by radius, still covers both disks to within `reach`.
-fn merge_nodes(nodes: &mut Vec<Node>, trunk_r: f64, reach: f64) {
+/// Merge a node into an earlier one when the host can carry the combined load
+/// and the merged trunk still holds both parent disks. The trunk is thickened
+/// to the radius that cone requires, up to the trunk cap.
+fn merge_nodes(nodes: &mut Vec<Node>, grow: &Grow, reach: f64) {
     if nodes.len() < 2 {
         return;
     }
+    let slack = reach.min(BEAD_OVERHANG_MM);
     nodes.sort_by_key(|n| n.id);
     let mut kept: Vec<Node> = Vec::new();
     for n in nodes.drain(..) {
@@ -511,21 +641,52 @@ fn merge_nodes(nodes: &mut Vec<Node>, trunk_r: f64, reach: f64) {
             if k.freeze > 0 {
                 return false;
             }
-            let d = (k.xy[0] - n.xy[0]).hypot(k.xy[1] - n.xy[1]);
-            let merged = (k.radius.powi(2) + n.radius.powi(2)).sqrt().min(trunk_r);
-            let w = k.radius + n.radius;
-            // Each disk's centre moves toward the other by the other's share of the radius.
-            let shift_k = d * n.radius / w;
-            let shift_n = d * k.radius / w;
-            shift_k + k.radius <= merged + reach && shift_n + n.radius <= merged + reach
+            // A bed tip and a model tip may join only after they have walked
+            // up to each other. A longer jump would drop the overhang that
+            // still cannot lean onto the part.
+            if k.to_bed != n.to_bed {
+                let d = (k.xy[0] - n.xy[0]).hypot(k.xy[1] - n.xy[1]);
+                if d > reach {
+                    return false;
+                }
+            }
+            (grow.load_factor >= 3.0 && merge_need(k, &n, grow, slack).is_some())
+                || legacy_merge(k, &n, grow.trunk_r, reach)
         }) {
-            let w = host.radius + n.radius;
+            let d = (host.xy[0] - n.xy[0]).hypot(host.xy[1] - n.xy[1]);
+            let w = (host.radius + n.radius).max(1e-6);
+            let shift_k = d * n.radius / w;
+            let shift_n = d * host.radius / w;
             host.xy = [
                 (host.xy[0] * host.radius + n.xy[0] * n.radius) / w,
                 (host.xy[1] * host.radius + n.xy[1] * n.radius) / w,
             ];
-            host.radius = (host.radius.powi(2) + n.radius.powi(2)).sqrt().min(trunk_r);
+            host.load += n.load;
             host.dist = host.dist.max(n.dist);
+            let need = (shift_k + host.radius - slack)
+                .max(shift_n + n.radius - slack)
+                .max(host.radius)
+                .max(n.radius)
+                .max(section_radius(host.load, grow.tip_r, grow.load_factor));
+            let area = (host.radius.powi(2) + n.radius.powi(2))
+                .sqrt()
+                .min(grow.trunk_r);
+            // Cone thickening is the speed path. Toughness keeps the area-sum
+            // radius so a dense grid does not swell into longer perimeters.
+            let covered = if grow.load_factor >= 3.0 && need <= grow.trunk_r + 1e-6 {
+                need
+            } else {
+                area
+            };
+            host.radius = branch_radius(
+                host.load,
+                host.dist,
+                grow.tip_r,
+                grow.trunk_r,
+                grow.load_factor,
+            )
+            .max(covered)
+            .min(grow.trunk_r);
             if n.id < host.id {
                 host.id = n.id;
             }
@@ -536,21 +697,184 @@ fn merge_nodes(nodes: &mut Vec<Node>, trunk_r: f64, reach: f64) {
     *nodes = kept;
 }
 
-/// One sample per island. A grid over the combined bbox, with the bbox centre
-/// as a fallback, misses a concave patch (the centre sits in the notch) and
-/// misses a second island when the first one already caught a sample.
-fn sample_grid(region: &[Loop], spacing: f64) -> Vec<[f64; 2]> {
+fn legacy_merge(host: &Node, guest: &Node, trunk_r: f64, reach: f64) -> bool {
+    let d = (host.xy[0] - guest.xy[0]).hypot(host.xy[1] - guest.xy[1]);
+    let merged = (host.radius.powi(2) + guest.radius.powi(2))
+        .sqrt()
+        .min(trunk_r);
+    let w = (host.radius + guest.radius).max(1e-6);
+    let shift_h = d * guest.radius / w;
+    let shift_g = d * host.radius / w;
+    shift_h + host.radius <= merged + reach && shift_g + guest.radius <= merged + reach
+}
+
+/// Radius the merged trunk needs so both parent disks stay inside the support
+/// cone. `None` when that radius would exceed the trunk cap or the load cap.
+fn merge_need(a: &Node, b: &Node, grow: &Grow, slack: f64) -> Option<f64> {
+    let load = a.load + b.load;
+    let length = a.dist.max(b.dist);
+    let cap = tip_capacity(grow.trunk_r, length, grow.tip_r, grow.load_factor);
+    if load > cap + 1e-6 {
+        return None;
+    }
+    let d = (a.xy[0] - b.xy[0]).hypot(a.xy[1] - b.xy[1]);
+    let w = (a.radius + b.radius).max(1e-6);
+    let shift_a = d * b.radius / w;
+    let shift_b = d * a.radius / w;
+    let need = (shift_a + a.radius - slack)
+        .max(shift_b + b.radius - slack)
+        .max(a.radius)
+        .max(b.radius)
+        .max(section_radius(load, grow.tip_r, grow.load_factor));
+    if need <= grow.trunk_r + 1e-6 {
+        Some(need)
+    } else {
+        None
+    }
+}
+
+/// Where a fresh tip is born, and the part it might still lean onto.
+struct Land<'a> {
+    layer: usize,
+    freeze: u32,
+    lean: f64,
+    bands: &'a [LayerBand],
+    contours: &'a [Vec<Loop>],
+    bounds: &'a [Option<([f64; 2], [f64; 2])>],
+}
+
+/// True when a tip at `xy` can walk onto a roof before the bed. Horizontal
+/// travel starts after the frozen interface layers, then grows by one lean
+/// step per layer. A vertical wall is not a landing: the trunk is pushed
+/// out of the mesh and keeps falling. Only a layer that sticks out past the
+/// one above (or is the top of a column) can catch it.
+fn reaches_model(xy: [f64; 2], land: &Land<'_>) -> bool {
+    let first = land.layer.saturating_sub(land.freeze as usize + 1);
+    let mut reach = 0.0;
+    for j in (0..=first).rev() {
+        let from = j + 1;
+        if from < land.bands.len() {
+            reach += land.bands[from].height * land.lean;
+        }
+        if !is_roof(j, land) {
+            continue;
+        }
+        let Some((min, max)) = land.bounds.get(j).copied().flatten() else {
+            continue;
+        };
+        if xy[0] < min[0] - reach
+            || xy[0] > max[0] + reach
+            || xy[1] < min[1] - reach
+            || xy[1] > max[1] + reach
+        {
+            continue;
+        }
+        let part = land.contours.get(j).map(Vec::as_slice).unwrap_or(&[]);
+        if in_solid(part, xy[0], xy[1]) || distance_to_outline(part, xy) <= reach {
+            return true;
+        }
+    }
+    false
+}
+
+/// A layer whose solid is not just the wall of the layer above.
+fn is_roof(layer: usize, land: &Land<'_>) -> bool {
+    let Some((min, max)) = land.bounds.get(layer).copied().flatten() else {
+        return false;
+    };
+    let Some((above_min, above_max)) = land.bounds.get(layer + 1).copied().flatten() else {
+        return true;
+    };
+    const EPS: f64 = 0.2;
+    min[0] < above_min[0] - EPS
+        || max[0] > above_max[0] + EPS
+        || min[1] < above_min[1] - EPS
+        || max[1] > above_max[1] + EPS
+}
+
+struct Pitch {
+    fine: f64,
+    keep: f64,
+    capacity: f64,
+}
+
+/// One packed tip per neighbourhood. A grid over the combined bbox, with the
+/// bbox centre as a fallback, misses a concave patch (the centre sits in the
+/// notch) and misses a second island when the first one already caught a sample.
+/// Samples closer than `keep` are dropped when a neighbour still has capacity,
+/// so the interface bridges to that neighbour instead of growing a parallel trunk.
+/// Tips that can lean onto the model and tips that have to reach the bed pack
+/// separately: swallowing the second into the first deletes the bed trunk.
+fn sample_tips(region: &[Loop], pitch: &Pitch, land: &Land<'_>) -> Vec<([f64; 2], f64, bool)> {
     let mut pts = Vec::new();
     for comp in components(region) {
-        let mut hit = sample_component(&comp, spacing);
+        let mut hit = sample_component(&comp, pitch.fine);
         if hit.is_empty() {
             if let Some(p) = point_inside(&comp) {
                 hit.push(p);
             }
         }
-        pts.extend(hit);
+        pts.extend(pack_by_landing(hit, pitch, land));
     }
     pts
+}
+
+fn pack_by_landing(
+    hit: Vec<[f64; 2]>,
+    pitch: &Pitch,
+    land: &Land<'_>,
+) -> Vec<([f64; 2], f64, bool)> {
+    if hit.len() <= 1 {
+        return pack_tips(hit, pitch.keep, pitch.capacity)
+            .into_iter()
+            .map(|(p, load)| (p, load, false))
+            .collect();
+    }
+    let (on_model, to_bed): (Vec<_>, Vec<_>) =
+        hit.into_iter().partition(|p| reaches_model(*p, land));
+    let mut packed: Vec<_> = pack_tips(on_model, pitch.keep, pitch.capacity)
+        .into_iter()
+        .map(|(p, load)| (p, load, false))
+        .collect();
+    packed.extend(
+        pack_tips(to_bed, pitch.keep, pitch.capacity)
+            .into_iter()
+            .map(|(p, load)| (p, load, true)),
+    );
+    packed
+}
+
+/// Greedy pack. Each keeper absorbs later samples inside `reach` until `capacity`
+/// tip-units are used. A sample the keepers cannot carry stays, so a patch is
+/// never left farther than `reach` from a trunk.
+fn pack_tips(mut pts: Vec<[f64; 2]>, reach: f64, capacity: f64) -> Vec<([f64; 2], f64)> {
+    if pts.len() <= 1 || reach <= 0.0 {
+        return pts.into_iter().map(|p| (p, 1.0)).collect();
+    }
+    let cap = capacity.max(1.0);
+    pts.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    let mut kept: Vec<([f64; 2], f64)> = Vec::new();
+    for p in pts {
+        let mut best: Option<(usize, f64)> = None;
+        for (i, (q, load)) in kept.iter().enumerate() {
+            if *load + 1.0 > cap + 1e-6 {
+                continue;
+            }
+            let dist = (q[0] - p[0]).hypot(q[1] - p[1]);
+            if dist > reach {
+                continue;
+            }
+            if best.map(|(_, bd)| dist < bd).unwrap_or(true) {
+                best = Some((i, dist));
+            }
+        }
+        if let Some((i, _)) = best {
+            kept[i].1 += 1.0;
+        } else {
+            kept.push((p, 1.0));
+        }
+    }
+    kept
 }
 
 fn sample_component(region: &[Loop], spacing: f64) -> Vec<[f64; 2]> {
@@ -620,8 +944,9 @@ fn seed_uncovered_interface(
     region: &[Loop],
     nodes: &mut Vec<Node>,
     next_id: &mut u32,
-    spacing: f64,
     tip_r: f64,
+    pitch: &Pitch,
+    land: &Land<'_>,
 ) {
     if region.is_empty() {
         return;
@@ -630,19 +955,21 @@ fn seed_uncovered_interface(
         if nodes.iter().any(|n| tip_covers(&comp, n.xy, tip_r)) {
             continue;
         }
-        let mut seeds = sample_component(&comp, spacing);
+        let mut seeds = sample_component(&comp, pitch.fine);
         if seeds.is_empty() {
             if let Some(p) = point_inside(&comp) {
                 seeds.push(p);
             }
         }
-        for xy in seeds {
+        for (xy, load, to_bed) in pack_by_landing(seeds, pitch, land) {
             nodes.push(Node {
                 id: *next_id,
                 xy,
                 radius: tip_r,
                 dist: 0.0,
                 freeze: 1,
+                load,
+                to_bed,
             });
             *next_id += 1;
         }
@@ -1079,5 +1406,181 @@ mod tests {
                 .any(|c| c[0] > 11.0 && (2.4..5.6).contains(&c[1]))
         });
         assert!(right, "the ear that slid off the frozen tip has no trunk");
+    }
+
+    #[test]
+    fn wide_overhang_packs_tips_and_collapses_toward_fewer_trunks() {
+        // 40 × 14 mm plate, 16 mm above the bed. The fine grid wants a row of
+        // tips; load capacity should leave fewer of them, and the fall should
+        // join those into still fewer bed trunks.
+        let bands = layers(80);
+        let mut contours = vec![Vec::new(); bands.len()];
+        let plate = rect(0.0, 0.0, 40.0, 14.0);
+        for contour in contours.iter_mut().skip(76) {
+            *contour = vec![plate.clone()];
+        }
+        let base = SupportOpts {
+            style: SupportStyle::Tree,
+            density: 0.15,
+            interface_layers: 2,
+            z_gap: 0.2,
+            overhangs: true,
+            islands: true,
+            ..SupportOpts::default()
+        };
+        let shared = build_supports(&bands, &contours, &base);
+        assert!(
+            unfooted_interface(&shared, &contours).is_empty(),
+            "packed tips left interface in the air"
+        );
+        let peak = shared.iter().map(|l| l.branches.len()).max().unwrap_or(0);
+        let bed = shared[0].branches.len();
+        assert!(peak >= 3, "expected several tips, peak {peak}");
+        assert!(bed >= 1, "the plate grew no trunk");
+        assert!(
+            bed < peak,
+            "branches should join on the way down, peak {peak} bed {bed}"
+        );
+        let sparse = build_supports(
+            &bands,
+            &contours,
+            &SupportOpts {
+                load_factor: 8.0,
+                max_tip_spacing: 10.0,
+                ..base
+            },
+        );
+        let dense = build_supports(
+            &bands,
+            &contours,
+            &SupportOpts {
+                load_factor: 0.8,
+                max_tip_spacing: 3.2,
+                ..base
+            },
+        );
+        assert!(unfooted_interface(&sparse, &contours).is_empty());
+        assert!(unfooted_interface(&dense, &contours).is_empty());
+        let sparse_peak = sparse.iter().map(|l| l.branches.len()).max().unwrap_or(0);
+        let dense_peak = dense.iter().map(|l| l.branches.len()).max().unwrap_or(0);
+        assert!(
+            sparse_peak < dense_peak,
+            "load factor and tip spacing should thin the peak, sparse {sparse_peak} dense {dense_peak}"
+        );
+        let sparse_load: f64 = sparse.iter().map(|l| l.branches.len() as f64).sum();
+        let dense_load: f64 = dense.iter().map(|l| l.branches.len() as f64).sum();
+        assert!(
+            sparse_load < dense_load * 0.75,
+            "sparse disks {sparse_load} should be well under dense {dense_load}"
+        );
+    }
+
+    #[test]
+    fn two_close_tips_become_one_trunk_before_the_bed() {
+        let bands = layers(40);
+        let mut contours = vec![Vec::new(); bands.len()];
+        // Two 4 mm pads, centres 8 mm apart. Each is its own component, so
+        // packing cannot delete one; the fall has to join them.
+        contours[39] = boolean_union(&[rect(0.0, 0.0, 4.0, 4.0)], &[rect(8.0, 0.0, 12.0, 4.0)]);
+        let built = build_supports(
+            &bands,
+            &contours,
+            &SupportOpts {
+                style: SupportStyle::Tree,
+                density: 0.0,
+                load_factor: 0.8,
+                max_tip_spacing: 3.0,
+                interface_layers: 2,
+                z_gap: 0.2,
+                overhangs: true,
+                islands: true,
+                ..SupportOpts::default()
+            },
+        );
+        assert!(unfooted_interface(&built, &contours).is_empty());
+        let peak = built.iter().map(|l| l.branches.len()).max().unwrap_or(0);
+        let bed = built[0].branches.len();
+        let trace: Vec<(usize, usize)> = built
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| !l.branches.is_empty())
+            .map(|(i, l)| (i, l.branches.len()))
+            .collect();
+        assert!(
+            peak >= 2,
+            "both pads should start a tip, peak {peak} bed {bed} trace {trace:?}"
+        );
+        assert_eq!(
+            bed, 1,
+            "close tips should share one trunk, bed {bed} peak {peak} trace {trace:?}"
+        );
+    }
+
+    #[test]
+    fn pack_tips_keeps_a_sample_its_neighbours_cannot_carry() {
+        let pts = vec![[0.0, 0.0], [6.0, 0.0], [12.0, 0.0], [3.0, 0.0]];
+        let packed = pack_tips(pts, 7.0, 2.0);
+        let loads: Vec<f64> = packed.iter().map(|(_, load)| *load).collect();
+        assert!(
+            packed.len() >= 2,
+            "capacity 2 cannot swallow four tips inside 7 mm, got {packed:?}"
+        );
+        assert!(
+            loads.iter().all(|load| *load <= 2.0 + 1e-6),
+            "a keeper exceeded capacity: {packed:?}"
+        );
+        assert!(
+            (loads.iter().sum::<f64>() - 4.0).abs() < 1e-6,
+            "dropped a tip instead of keeping it, loads {loads:?}"
+        );
+    }
+
+    #[test]
+    fn an_overhang_past_the_lean_cone_keeps_a_bed_trunk() {
+        // Head up to z=16, ear from z=28 sticking 16 mm past the head in Y.
+        // At 45° the lean cone cannot carry the outer ear back onto the head,
+        // so packing must not hand that tip to a neighbour that lands on the head.
+        let bands = layers(170);
+        let mut contours = vec![Vec::new(); bands.len()];
+        let head = rect(0.0, 0.0, 28.0, 20.0);
+        for contour in contours.iter_mut().take(80) {
+            *contour = vec![head.clone()];
+        }
+        let ear = rect(6.0, 6.0, 16.0, 36.0);
+        for contour in contours.iter_mut().skip(139) {
+            *contour = vec![ear.clone()];
+        }
+        let built = build_supports(
+            &bands,
+            &contours,
+            &SupportOpts {
+                style: SupportStyle::Tree,
+                density: 0.15,
+                load_factor: 8.0,
+                max_tip_spacing: 12.0,
+                branch_angle_deg: 45.0,
+                interface_layers: 3,
+                z_gap: 0.2,
+                overhangs: true,
+                islands: true,
+                ..SupportOpts::default()
+            },
+        );
+        assert!(
+            unfooted_interface(&built, &contours).is_empty(),
+            "outer ear interface was left in the air"
+        );
+        assert!(
+            !built[0].branches.is_empty(),
+            "the part of the ear past the lean cone lost its bed trunk"
+        );
+        let on_head = built.iter().enumerate().any(|(i, layer)| {
+            (70..100).contains(&i)
+                && layer
+                    .branches
+                    .iter()
+                    .any(|c| (2.0..26.0).contains(&c[0]) && (2.0..19.5).contains(&c[1]))
+        });
+        assert!(on_head, "the ear over the head lost its footing");
     }
 }

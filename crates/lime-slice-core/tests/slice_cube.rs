@@ -913,14 +913,41 @@ fn loop_radius(pts: &[[f64; 2]]) -> f64 {
         .fold(0.0, f64::max)
 }
 
+/// Trunks near `z`. Concentric walls of one trunk share a centre, so a thick
+/// trunk counts once. The merge check wants trunks, not perimeter loops.
 fn support_count_near(response: &lime_slice_core::SliceResponse, z: f64) -> usize {
     response
         .layers
         .iter()
         .filter(|layer| (layer.z - z).abs() < 0.35)
-        .map(|layer| layer.paths.iter().filter(|p| p.kind == "support").count())
+        .map(trunk_count)
         .max()
         .unwrap_or(0)
+}
+
+fn trunk_count(layer: &lime_slice_core::PreviewLayer) -> usize {
+    let cents: Vec<[f64; 2]> = layer
+        .paths
+        .iter()
+        .filter(|p| p.kind == "support")
+        .map(|p| path_centroid(&p.pts))
+        .collect();
+    let mut used = vec![false; cents.len()];
+    let mut n = 0;
+    for i in 0..cents.len() {
+        if used[i] {
+            continue;
+        }
+        n += 1;
+        used[i] = true;
+        for j in (i + 1)..cents.len() {
+            let d = (cents[i][0] - cents[j][0]).hypot(cents[i][1] - cents[j][1]);
+            if d < 1.8 {
+                used[j] = true;
+            }
+        }
+    }
+    n
 }
 
 #[test]
