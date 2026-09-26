@@ -140,6 +140,77 @@ test("the 3D view draws only while something changes", async ({ page }) => {
   await expect.poll(() => drawsIn(500), { timeout: 8000, message: "damping settles and drawing stops" }).toBe(0);
 });
 
+test("playback readout does not resize the print slider", async ({ page }) => {
+  await mockEngine(page, () => 0);
+  await openCube(page);
+  await page.locator("#slice").click();
+  await expect(page.locator("#estimate")).toContainText("g");
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  const move = page.locator("#move");
+  await expect(move).toBeVisible();
+  await expect(move).toBeEnabled();
+  const max = Number(await move.getAttribute("max"));
+  expect(max).toBeGreaterThan(4);
+  const box = async () => (await move.boundingBox())!;
+  const first = await box();
+  const texts = new Set<string>();
+  for (const t of [0, 0.15, 0.35, 0.55, 0.75, 1]) {
+    await move.evaluate((el, value) => {
+      const input = el as HTMLInputElement;
+      input.value = String(value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }, Math.round(max * t));
+    texts.add((await page.locator("#playReadout").textContent()) ?? "");
+    const now = await box();
+    expect(Math.abs(now.x - first.x)).toBeLessThan(1);
+    expect(Math.abs(now.width - first.width)).toBeLessThan(1);
+    expect(Math.abs(now.y - first.y)).toBeLessThan(1);
+  }
+  expect(texts.size).toBeGreaterThan(1);
+  const play = page.locator("#play");
+  const playBefore = (await play.boundingBox())!;
+  await play.click();
+  await expect(play).toHaveText("Pause");
+  const playing = await box();
+  const playAfter = (await play.boundingBox())!;
+  expect(Math.abs(playing.x - first.x)).toBeLessThan(1);
+  expect(Math.abs(playing.y - first.y)).toBeLessThan(1);
+  expect(Math.abs(playing.width - first.width)).toBeLessThan(1);
+  expect(Math.abs(playAfter.x - playBefore.x)).toBeLessThan(1);
+  expect(Math.abs(playAfter.width - playBefore.width)).toBeLessThan(1);
+  await page.waitForTimeout(240);
+  const later = await box();
+  expect(Math.abs(later.x - first.x)).toBeLessThan(1);
+  expect(Math.abs(later.width - first.width)).toBeLessThan(1);
+});
+
+test("layer scrub does not resize the spark or the layer track", async ({ page }) => {
+  await mockEngine(page, () => 0);
+  await openCube(page);
+  await page.locator("#slice").click();
+  await expect(page.locator("#estimate")).toContainText("g");
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  const spark = page.locator("#spark");
+  const track = page.locator("#vslider .track");
+  const spark0 = (await spark.boundingBox())!;
+  const track0 = (await track.boundingBox())!;
+  const label0 = await page.locator("#sparkLabel").innerText();
+  const z0 = await page.locator("#readHigh").innerText();
+  await page.locator("#rangeHigh").evaluate((el) => {
+    const input = el as HTMLInputElement;
+    input.value = input.max;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await expect(page.locator("#readHigh")).not.toHaveText(z0);
+  const spark1 = (await spark.boundingBox())!;
+  const track1 = (await track.boundingBox())!;
+  expect(await page.locator("#sparkLabel").innerText()).not.toBe(label0);
+  expect(Math.abs(spark1.x - spark0.x)).toBeLessThan(1);
+  expect(Math.abs(spark1.width - spark0.width)).toBeLessThan(1);
+  expect(Math.abs(track1.x - track0.x)).toBeLessThan(1);
+  expect(Math.abs(track1.width - track0.width)).toBeLessThan(1);
+});
+
 test("starting a slice keeps Cancel off the Slice hitbox and the action row still", async ({ page }) => {
   await mockEngine(page, () => 4000);
   await openCube(page);
