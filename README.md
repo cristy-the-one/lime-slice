@@ -108,7 +108,7 @@ Each layer is cut at its mid-height. Contours are cut from a welded mesh and sti
 cargo test -p lime-slice-core --release -- dragon_2_5_headlines --ignored --nocapture
 ```
 
-`GOLDEN_DRAGON=1 bash tools/golden.sh` runs that same test. It slices speed and toughness with supports on (tree style: `slice --blend speed --supports` and `slice --blend toughness --supports`) and prints core slice milliseconds, coverage percent, support inside the part, floating support, and unskinned top area. If the file is missing, the harness prints one skip line and exits 0.
+`GOLDEN_DRAGON=1 bash tools/golden.sh` runs that same test. It slices speed and toughness with supports on (tree style: `slice --blend speed --supports` and `slice --blend toughness --supports`) and prints core slice milliseconds, coverage percent, support inside the part, floating support, unskinned top area, and open skin. If the file is missing, the harness prints one skip line and exits 0.
 
 `samples/calibration_cube_20mm.stl` — 12 triangles, 100 layers:
 

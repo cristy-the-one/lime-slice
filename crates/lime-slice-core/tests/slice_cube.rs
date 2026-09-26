@@ -2950,7 +2950,7 @@ fn open_edge_count(mesh: &Mesh) -> usize {
 // Checked-in Dragon 2.5. Default `cargo test` ignores this.
 //   cargo test -p lime-slice-core --release -- dragon_2_5_headlines --ignored --nocapture
 // Same presets as `slice --blend speed|toughness --supports` (tree is the default style).
-// Prints core ms, coverage, inside, floating, and unskinned.
+// Prints core ms, coverage, inside, floating, unskinned, and open skin.
 #[test]
 #[ignore = "opt-in dragon_2_5: samples/dragon_2_5.stl stays out of the default suite"]
 fn dragon_2_5_headlines() {
@@ -2979,11 +2979,12 @@ fn dragon_2_5_headlines() {
         let report = lime_slice_core::audit_slice(&mesh, &blend, &settings, nozzle).unwrap();
         let coverage = report.sliced_volume_mm3 / report.mesh_volume_mm3.max(1e-9) * 100.0;
         println!(
-            "dragon_2_5 {label}  core {:.2} ms  coverage {coverage:.1}%  inside {:.2} mm3  floating {:.2} mm3  unskinned {:.1} mm2",
+            "dragon_2_5 {label}  core {:.2} ms  coverage {coverage:.1}%  inside {:.2} mm3  floating {:.2} mm3  unskinned {:.1} mm2  open skin {:.1} mm2",
             response.core_ms,
             report.support_inside_mm3,
             report.support_floating_mm3,
             report.unskinned_top_mm2,
+            report.open_skin_mm2,
         );
     }
 }
