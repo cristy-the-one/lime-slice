@@ -54,7 +54,13 @@ test("hiding thin wall does not hide gap fill in the preview slots", () => {
   });
   expect(built.kinds).toEqual(["thin-wall", "gap-fill"]);
   const thinSlot = built.ribbonInfo[0];
-  const gapSlot = built.ribbonInfo.find((_, i) => i % 3 === 0 && built.ribbonInfo[i] !== thinSlot);
+  let gapSlot = -1;
+  for (let i = 0; i < built.ribbonInfo.length; i += 3) {
+    if (built.ribbonInfo[i] !== thinSlot) {
+      gapSlot = built.ribbonInfo[i];
+      break;
+    }
+  }
   expect(thinSlot).toBe(0);
   expect(gapSlot).toBe(1);
 
