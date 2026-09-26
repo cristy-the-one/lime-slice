@@ -2869,7 +2869,8 @@ fn every_sample_audits_clean() {
     for entry in std::fs::read_dir(&dir).unwrap() {
         let path = entry.unwrap().path();
         let name = path.file_name().unwrap().to_string_lossy().to_string();
-        if !name.ends_with(".stl") {
+        // dragon_2_5.stl is optional and gitignored. dragon_2_5_headlines audits it.
+        if name == "dragon_2_5.stl" || !name.ends_with(".stl") {
             continue;
         }
         let mesh = load_mesh(&name, &std::fs::read(&path).unwrap()).unwrap();
@@ -2912,6 +2913,42 @@ fn every_sample_audits_clean() {
                 report.unskinned_top_mm2
             );
         }
+    }
+}
+
+// Dragon 2.5 is not in git. Drop the mesh at samples/dragon_2_5.stl, then:
+//   cargo test -p lime-slice-core --release -- dragon_2_5_headlines --ignored --nocapture
+// Same presets as `slice --blend speed|toughness --supports` (tree is the default style).
+// Prints core ms, coverage, inside, floating, and unskinned. Records no headline numbers.
+#[test]
+#[ignore = "skip dragon_2_5: mesh not in repo; drop it at samples/dragon_2_5.stl"]
+fn dragon_2_5_headlines() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples/dragon_2_5.stl");
+    if !path.is_file() {
+        eprintln!("skip dragon_2_5: mesh not in repo; drop it at samples/dragon_2_5.stl");
+        return;
+    }
+    let mesh = load_mesh("dragon_2_5.stl", &std::fs::read(&path).unwrap()).unwrap();
+    let nozzle = profile().nozzle_diameter;
+    for (label, blend) in [("speed", speed_mode()), ("toughness", tough_mode())] {
+        let settings = SliceSettings {
+            supports: true,
+            support_style: lime_slice_core::SupportStyle::Tree,
+            include_gcode: false,
+            include_preview: false,
+            baseline: false,
+            ..SliceSettings::default()
+        };
+        let response = slice_configured(&mesh, &blend, &profile(), &settings).unwrap();
+        let report = lime_slice_core::audit_slice(&mesh, &blend, &settings, nozzle).unwrap();
+        let coverage = report.sliced_volume_mm3 / report.mesh_volume_mm3.max(1e-9) * 100.0;
+        println!(
+            "dragon_2_5 {label}  core {:.2} ms  coverage {coverage:.1}%  inside {:.2} mm3  floating {:.2} mm3  unskinned {:.1} mm2",
+            response.core_ms,
+            report.support_inside_mm3,
+            report.support_floating_mm3,
+            report.unskinned_top_mm2,
+        );
     }
 }
 
