@@ -10,6 +10,7 @@ mod index;
 mod load;
 mod mesh;
 mod poly;
+mod simplify;
 mod slice;
 mod strategy;
 mod support;
@@ -23,6 +24,7 @@ pub use calibrate::{
 pub use cancel::{cancel_all, Job};
 pub use load::{load_mesh, mesh_preview, MeshPreview};
 pub use mesh::Mesh;
+pub use simplify::{nozzle_error_mm, simplify_for_nozzle, simplify_mesh, SimplifyStats};
 pub use slice::{
     contour_times, pareto_estimates, slice_configured, slice_request, slice_with_baseline,
     BlendScore, CompareEstimate, FeatureEstimate, ParetoPoint, PreviewLayer, PrintEstimate,

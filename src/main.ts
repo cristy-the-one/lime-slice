@@ -38,7 +38,14 @@ interface SliceResponse {
   coreMs: number;
   baselineMs: number;
   blend: string;
-  mesh: { triangles: number; min: number[]; max: number[] };
+  mesh: {
+    triangles: number;
+    sourceTriangles?: number;
+    simplifyMs?: number;
+    simplifyErrorMm?: number;
+    min: number[];
+    max: number[];
+  };
   sanity: { ok: boolean; notes: string[]; layers: number; finalE: number; extrusionLengthMm: number };
   estimate?: {
     seconds: number;
@@ -122,6 +129,8 @@ const state = {
   paGcode: "",
   pricePerKg: 20,
   autoSlice: false,
+  simplify: true,
+  simplifyError: 0,
   viewMode: "split" as "flat" | "split" | "solid",
   query: "",
   move: 0,
@@ -321,6 +330,8 @@ function renderChrome() {
       ${num("lh", "Layer height mm", state.layerHeight, 0.08, 0.4, 0.02)}
       ${check("adaptive", "Adaptive layers", state.adaptive)}
       ${state.adaptive ? `${num("amin", "Min mm", state.adaptiveMin, 0.04, 0.28, 0.02)}${num("amax", "Max mm", state.adaptiveMax, 0.08, 0.4, 0.02)}` : ""}
+      ${check("simplify", "Simplify to nozzle", state.simplify)}
+      ${state.simplify ? `${num("simperr", "Max error mm, 0 = auto", state.simplifyError, 0, 1, 0.01)}<div class="meta">Slice mesh stays within half the smaller of the nozzle and the layer height. The preview keeps every triangle.</div>` : ""}
     `)}
     ${group("Speed and motion", `
       ${check("feeds", "Per-feature speeds", state.featureSpeeds)}
@@ -361,7 +372,7 @@ function renderChrome() {
         <button class="btn" id="paexport" type="button">Export PA G-code</button>` : ""}
     `)}
     <label class="check"><input id="autoslice" type="checkbox" ${state.autoSlice ? "checked" : ""}/> Auto-slice under 50k triangles</label>
-    <div class="meta">Triangles <b>${result ? result.mesh.triangles : "—"}</b></div>
+    <div class="meta">${triangleMeta(result)}</div>
   `;
   applyFilter();
 
@@ -504,6 +515,26 @@ function layerReadout() {
   return `Layer <b>${layer.index + 1}</b> / ${state.result?.layers.length}<br>Z <b>${layer.z.toFixed(2)}</b> mm · h <b>${layer.height.toFixed(3)}</b><br>Layer time <b>${(layer.seconds ?? 0).toFixed(1)}</b> s · cumulative <b>${(below + (layer.seconds ?? 0)).toFixed(1)}</b> s<br>${escapeHtml(layer.note)}`;
 }
 
+function triangleLine(src: number) {
+  const used = state.result?.mesh.triangles;
+  const from = state.result?.mesh.sourceTriangles ?? used;
+  if (!stale() && used != null && from != null && used < from) {
+    const err = state.result?.mesh.simplifyErrorMm;
+    const budget = err && err > 0 ? ` · ${err.toFixed(2)} mm` : "";
+    return `${from} triangles · ${used} slice${budget}`;
+  }
+  return `${src} triangles`;
+}
+function triangleMeta(result: SliceResponse | null) {
+  if (!result) return "Triangles <b>—</b>";
+  const from = result.mesh.sourceTriangles ?? result.mesh.triangles;
+  const used = result.mesh.triangles;
+  if (from > used) {
+    const ms = result.mesh.simplifyMs ?? 0;
+    return `Triangles <b>${from}</b> → <b>${used}</b> in ${ms.toFixed(0)} ms`;
+  }
+  return `Triangles <b>${used}</b>`;
+}
 function estimateHtml() {
   const est = state.result?.estimate;
   if (!est) return `<div class="meta">Slice to compare minutes and grams.</div>`;
@@ -531,7 +562,7 @@ function objectList() {
   return `
     <div class="obj" role="listitem">
       <b>${escapeHtml(state.mesh?.name ?? "part")}</b>
-      <span>${state.placed.length / 9} triangles · ${size} mm</span>
+      <span>${triangleLine(state.placed.length / 9)} · ${size} mm</span>
     </div>
     <div class="row">
       <button class="btn" id="center" type="button">Center</button>
@@ -1056,7 +1087,7 @@ function onSettings(ev: Event) {
     applyFilter();
     return;
   }
-  const numIds = ["lh", "amin", "amax", "pa", "la", "zhopht", "zhopmin", "scarflen", "scarfsteps", "sangle", "bangle", "tipd", "trunkd", "shmult", "pastart", "paend", "pastep", "nozzle", "bedx", "bedy", "bedz", "vol", "accel", "density", "cost", "partScale"] as const;
+  const numIds = ["lh", "amin", "amax", "pa", "la", "zhopht", "zhopmin", "scarflen", "scarfsteps", "sangle", "bangle", "tipd", "trunkd", "shmult", "pastart", "paend", "pastep", "nozzle", "bedx", "bedy", "bedz", "vol", "accel", "density", "cost", "partScale", "simperr"] as const;
   const map: Record<string, (v: number) => void> = {
     lh: (v) => { state.layerHeight = v || 0.2; },
     amin: (v) => { state.adaptiveMin = v || 0.08; },
@@ -1084,6 +1115,7 @@ function onSettings(ev: Event) {
     density: (v) => { state.profile.filamentDensityGCm3 = v || 1.24; },
     cost: (v) => { state.profile.filamentCostPerKg = v || 0; },
     partScale: (v) => { state.partScale = (v || 100) / 100; },
+    simperr: (v) => { state.simplifyError = Math.max(0, v || 0); },
   };
   if (numIds.includes(t.id as typeof numIds[number])) map[t.id](Number(t.value));
   if (t.id === "adaptive") state.adaptive = t.checked;
@@ -1093,6 +1125,7 @@ function onSettings(ev: Event) {
   if (t.id === "combing") state.combing = t.checked;
   if (t.id === "overhang") state.overhangControl = t.checked;
   if (t.id === "vwidth") state.variableWidth = t.checked;
+  if (t.id === "simplify") state.simplify = t.checked;
   if (t.id === "travelopt") state.travelOpt = t.checked;
   if (t.id === "supports") state.supports = t.checked;
   if (t.id === "autoslice") { state.autoSlice = t.checked; return; }
@@ -1158,7 +1191,7 @@ function markStale() {
 function scheduleAuto() {
   window.clearTimeout(autoTimer);
   if (!state.autoSlice || !state.mesh || state.busy) return;
-  const tris = state.result?.mesh.triangles ?? Math.max(0, (state.mesh.bytes.byteLength - 84) / 50);
+  const tris = state.result?.mesh.sourceTriangles ?? state.result?.mesh.triangles ?? Math.max(0, (state.mesh.bytes.byteLength - 84) / 50);
   if (tris >= 50000) return;
   autoTimer = window.setTimeout(() => void runSlice(), 300);
 }
@@ -1434,6 +1467,8 @@ function payload() {
     compare: false,
     includeGcode: false,
     includePreview: true,
+    simplify: state.simplify,
+    simplifyErrorMm: state.simplifyError,
   };
 }
 function printer() {

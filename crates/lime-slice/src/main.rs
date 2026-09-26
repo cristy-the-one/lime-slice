@@ -126,6 +126,12 @@ enum Cmd {
         /// Klipper junction deviation in millimetres.
         #[arg(long, default_value_t = 0.02)]
         junction_deviation: f64,
+        /// Collapse triangles finer than the nozzle before contouring.
+        #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+        simplify: bool,
+        /// Max simplify error in millimetres. `0` uses half of min(nozzle, layer height).
+        #[arg(long, default_value_t = 0.0)]
+        simplify_error: f64,
         /// Also check contour coverage and support placement, and print the report.
         #[arg(long, default_value_t = false)]
         audit: bool,
@@ -224,6 +230,8 @@ fn run() -> Result<(), String> {
             z_hop_min_travel,
             classic_estimator,
             junction_deviation,
+            simplify,
+            simplify_error,
             audit,
             output,
         } => {
@@ -279,6 +287,8 @@ fn run() -> Result<(), String> {
                 z_hop_min_travel,
                 classic_estimator,
                 junction_deviation_mm: junction_deviation,
+                simplify,
+                simplify_error_mm: simplify_error,
                 ..SliceSettings::default()
             };
             let request = request_for(&input, &blend, &settings)?;
@@ -292,10 +302,24 @@ fn run() -> Result<(), String> {
             println!("wrote {}", output.display());
             if audit {
                 let mesh = load_input(&input)?;
-                let report = lime_slice_core::audit_slice(
+                let audit_settings = SliceSettings::from_request(&request);
+                let error_mm = if !audit_settings.simplify {
+                    0.0
+                } else if audit_settings.simplify_error_mm > 0.0 {
+                    audit_settings.simplify_error_mm
+                } else {
+                    lime_slice_core::nozzle_error_mm(0.4, audit_settings.layer_height)
+                };
+                let (prepared, _) = lime_slice_core::simplify_for_nozzle(
                     &mesh,
+                    audit_settings.simplify,
+                    error_mm,
+                    lime_slice_core::Job::default(),
+                )?;
+                let report = lime_slice_core::audit_slice(
+                    prepared.as_ref(),
                     &request.blend,
-                    &SliceSettings::from_request(&request),
+                    &audit_settings,
                     0.4,
                 )?;
                 print_audit(&report);
@@ -451,6 +475,16 @@ fn bench(input: &Path) -> Result<(), String> {
             response.estimate.scarfed_loops,
             response.estimate.mean_scarf_mm,
             response.estimate.max_seam_z_step_mm
+        );
+        println!(
+            "  simplify {} → {} tris in {:.1} ms (error {:.3} mm)  contours {:.1} ms  supports {:.1} ms  seat {:.1} ms",
+            response.mesh.source_triangles,
+            response.mesh.triangles,
+            response.mesh.simplify_ms,
+            response.mesh.simplify_error_mm,
+            response.stages.contour_ms,
+            response.stages.support_ms,
+            response.stages.seat_ms
         );
         if !response.sanity.ok {
             println!("  {}", response.sanity.notes.join("; "));
@@ -966,17 +1000,26 @@ fn request_for(
         include_preview: true,
         classic_estimator: settings.classic_estimator,
         junction_deviation_mm: settings.junction_deviation_mm,
+        simplify: settings.simplify,
+        simplify_error_mm: settings.simplify_error_mm,
     })
 }
 
 fn print_summary(input: &Path, response: &lime_slice_core::SliceResponse) {
     println!(
-        "{}  tris {}  core {:.2} ms  baseline {:.2} ms ({})",
+        "{}  tris {} → {}  simplify {:.2} ms (error {:.3} mm)  core {:.2} ms  baseline {:.2} ms ({})",
         input.display(),
+        response.mesh.source_triangles,
         response.mesh.triangles,
+        response.mesh.simplify_ms,
+        response.mesh.simplify_error_mm,
         response.core_ms,
         response.baseline_ms,
         response.baseline_label
+    );
+    println!(
+        "stages  contours {:.2} ms  supports {:.2} ms  seat {:.2} ms",
+        response.stages.contour_ms, response.stages.support_ms, response.stages.seat_ms
     );
     println!(
         "time {:.1} s  filament {:.2} g ({:.1} mm)  travel {:.1} mm  retracts {}  hops {}  arcs {}  toughness {:.1}  per hour {:.1}",

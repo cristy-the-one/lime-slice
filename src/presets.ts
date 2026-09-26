@@ -37,6 +37,8 @@ export interface PresetSettings {
   zHopMinTravel: number;
   pricePerKg: number;
   autoSlice: boolean;
+  simplify: boolean;
+  simplifyError: number;
 }
 
 export const DEFAULT_PRESET: PresetSettings = {
@@ -76,6 +78,8 @@ export const DEFAULT_PRESET: PresetSettings = {
   zHopMinTravel: 2,
   pricePerKg: 20,
   autoSlice: false,
+  simplify: true,
+  simplifyError: 0,
 };
 
 const KEY = "lime-slice-presets";
@@ -116,6 +120,8 @@ const LABELS: Record<keyof PresetSettings, string> = {
   zHopMinTravel: "Hop travel",
   pricePerKg: "Filament €/kg",
   autoSlice: "Auto-slice",
+  simplify: "Simplify to nozzle",
+  simplifyError: "Simplify error mm",
 };
 
 export function presetKeys(): (keyof PresetSettings)[] {
