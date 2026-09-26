@@ -13,6 +13,7 @@ use crate::mesh::Mesh;
 use crate::poly::{
     boolean_diff, boolean_union, clip_to_rect, loop_bounds, offset_loops, signed_area, Loop,
 };
+use crate::simplify::{nozzle_error_mm, simplify_for_nozzle};
 use crate::strategy::{
     classicize, layer_weight, mix, pure, support_density, support_interface_density, Axis,
     BlendMode, Gyroid3d, PrinterProfile, ResolvedStrategy, ScarfSeam, StrategyId, ZHopMode,
@@ -136,6 +137,12 @@ pub struct SliceRequest {
     /// Klipper junction deviation in millimetres. `0` means 0.02.
     #[serde(default)]
     pub junction_deviation_mm: f64,
+    /// Collapse triangles the nozzle cannot reproduce. Default on.
+    #[serde(default = "default_true")]
+    pub simplify: bool,
+    /// Max surface error in millimetres. `0` uses half of min(nozzle, layer height).
+    #[serde(default)]
+    pub simplify_error_mm: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -177,6 +184,11 @@ pub struct SliceSettings {
     pub classic_estimator: bool,
     /// Klipper junction deviation, millimetres. `0` uses 0.02.
     pub junction_deviation_mm: f64,
+    /// Collapse triangles the nozzle cannot reproduce. Meshes under a few thousand
+    /// triangles are left as they are.
+    pub simplify: bool,
+    /// `0` uses [`nozzle_error_mm`].
+    pub simplify_error_mm: f64,
     /// Hold up same-layer islands that have nothing under them. Overhang supports stay on `supports`.
     pub island_support: bool,
     /// The shell job this slice belongs to. A stale job stops with "cancelled".
@@ -221,6 +233,8 @@ impl Default for SliceSettings {
             include_preview: true,
             classic_estimator: false,
             junction_deviation_mm: 0.02,
+            simplify: true,
+            simplify_error_mm: 0.0,
             island_support: true,
             job: Job::default(),
         }
@@ -328,6 +342,12 @@ impl SliceSettings {
             } else {
                 0.02
             },
+            simplify: req.simplify,
+            simplify_error_mm: if req.simplify_error_mm > 0.0 {
+                req.simplify_error_mm.clamp(0.01, 1.0)
+            } else {
+                0.0
+            },
             island_support: true,
             job: Job::default(),
         }
@@ -429,6 +449,8 @@ pub struct SliceResponse {
     pub baseline_ms: f64,
     pub baseline_label: String,
     pub mesh: MeshInfo,
+    /// Contour, support, and seat time inside `core_ms`.
+    pub stages: StageTimes,
     pub sanity: Sanity,
     pub gcode: String,
     pub layers: Vec<PreviewLayer>,
@@ -494,9 +516,24 @@ pub struct BlendScore {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeshInfo {
+    /// Triangles the planner contoured.
     pub triangles: usize,
+    /// Triangles before nozzle simplification. Equal to `triangles` when the
+    /// mesh was already coarse enough to leave alone.
+    pub source_triangles: usize,
+    pub simplify_ms: f64,
+    /// Error bound used, in millimetres. `0` when simplification was off.
+    pub simplify_error_mm: f64,
     pub min: [f64; 3],
     pub max: [f64; 3],
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StageTimes {
+    pub contour_ms: f64,
+    pub support_ms: f64,
+    pub seat_ms: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -613,7 +650,6 @@ pub fn slice_configured(
     profile: &PrinterProfile,
     settings: &SliceSettings,
 ) -> Result<SliceResponse, String> {
-    let (min, max) = mesh.bounds().ok_or("empty mesh")?;
     let layer_height = settings.layer_height.clamp(0.05, 0.6);
     let line_width = settings.line_width.clamp(0.15, 1.2);
     let mut settings = SliceSettings {
@@ -642,8 +678,25 @@ pub fn slice_configured(
         profile.pressure_advance = 0.0;
         profile.linear_advance = 0.0;
     }
+    let error_mm = if !settings.simplify {
+        0.0
+    } else if settings.simplify_error_mm > 0.0 {
+        settings.simplify_error_mm
+    } else {
+        nozzle_error_mm(profile.nozzle_diameter, layer_height)
+    };
+    let (prepared, simplify_stats) =
+        simplify_for_nozzle(mesh, settings.simplify, error_mm, settings.job)?;
+    let mesh = prepared.as_ref();
+    let (min, max) = mesh.bounds().ok_or("empty mesh")?;
     let started = Instant::now();
-    let planned = plan(mesh, blend, &settings, profile.nozzle_diameter)?.layers;
+    let planned_full = plan(mesh, blend, &settings, profile.nozzle_diameter)?;
+    let stages = StageTimes {
+        contour_ms: planned_full.contour_ms,
+        support_ms: planned_full.support_ms,
+        seat_ms: planned_full.seat_ms,
+    };
+    let planned = planned_full.layers;
     let gcode = emit_gcode(
         &planned,
         &profile,
@@ -734,10 +787,14 @@ pub fn slice_configured(
         baseline_ms,
         baseline_label,
         mesh: MeshInfo {
-            triangles: mesh.triangle_count(),
+            triangles: simplify_stats.triangles,
+            source_triangles: simplify_stats.source_triangles,
+            simplify_ms: simplify_stats.milliseconds,
+            simplify_error_mm: simplify_stats.error_mm,
             min,
             max,
         },
+        stages,
         sanity: Sanity {
             ok: notes.is_empty(),
             layers: gcode.layer_count,
@@ -1253,6 +1310,9 @@ pub(crate) struct Plan {
     pub bands: Vec<LayerBand>,
     pub contours: Vec<Vec<Loop>>,
     pub supports: Vec<SupportLayer>,
+    pub contour_ms: f64,
+    pub support_ms: f64,
+    pub seat_ms: f64,
 }
 
 pub(crate) fn plan(
@@ -1276,19 +1336,23 @@ pub(crate) fn plan(
             max_h,
         },
     )?;
+    let contour_started = Instant::now();
     let index = ZIndex::build(mesh);
     let contours: Vec<Vec<Loop>> = bands
         .par_iter()
         .map(|band| index.slice(band.cut_z()))
         .collect();
-    plan_contours(
+    let contour_ms = elapsed_ms(contour_started);
+    let mut planned = plan_contours(
         bands,
         contours,
         (min, max),
         blend,
         settings,
         nozzle_diameter,
-    )
+    )?;
+    planned.contour_ms = contour_ms;
+    Ok(planned)
 }
 
 /// Everything `plan` does after the mesh is cut into per-band contours.
@@ -1308,6 +1372,7 @@ fn plan_contours(
         return Err("cancelled".into());
     }
     let roofs = roof_distances(&bands, &contours, settings.line_width * fewest_walls as f64);
+    let support_started = Instant::now();
     let supports = build_supports(
         &bands,
         &contours,
@@ -1327,6 +1392,7 @@ fn plan_contours(
             ..SupportOpts::default()
         },
     );
+    let support_ms = elapsed_ms(support_started);
     if settings.job.cancelled() {
         return Err("cancelled".into());
     }
@@ -1403,8 +1469,10 @@ fn plan_contours(
     let mut prev_top = false;
     let mut jobs = jobs;
     let mut layer_end: Option<[f64; 2]> = None;
+    let mut seat_ms = 0.0;
     for (i, job) in jobs.iter_mut().enumerate() {
         if settings.travel_opt {
+            let seat_started = Instant::now();
             layer_end = seat_layer_start(
                 &mut job.paths,
                 &contours[i],
@@ -1412,6 +1480,7 @@ fn plan_contours(
                 settings.line_width * 0.8,
                 layer_end,
             );
+            seat_ms += elapsed_ms(seat_started);
         }
         let infill = offset_loops(&contours[i], -settings.line_width * 2.2);
         apply_z_hop(
@@ -1440,6 +1509,9 @@ fn plan_contours(
         bands,
         contours,
         supports,
+        contour_ms: 0.0,
+        support_ms,
+        seat_ms,
     })
 }
 

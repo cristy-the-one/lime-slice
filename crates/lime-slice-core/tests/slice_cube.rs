@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use lime_slice_core::{
-    load_mesh, slice_configured, slice_with_baseline, Axis, BlendMode, Mesh, SliceSettings,
-    StrategyId,
+    load_mesh, simplify_for_nozzle, slice_configured, slice_with_baseline, Axis, BlendMode, Mesh,
+    SliceSettings, StrategyId,
 };
 
 fn cube() -> Mesh {
@@ -3246,4 +3246,254 @@ fn separate_shells_closer_than_the_gap_limit_stay_separate() {
         "sliced {:.0} mm3, two boxes are {want:.0} mm3",
         report.sliced_volume_mm3
     );
+}
+
+fn subdivide_mesh(mesh: &Mesh, times: usize) -> Mesh {
+    let mut mesh = mesh.clone();
+    for _ in 0..times {
+        let mut next = Vec::with_capacity(mesh.triangles.len() * 4);
+        for tri in &mesh.triangles {
+            let mid = |a: [f64; 3], b: [f64; 3]| {
+                [
+                    0.5 * (a[0] + b[0]),
+                    0.5 * (a[1] + b[1]),
+                    0.5 * (a[2] + b[2]),
+                ]
+            };
+            let m01 = mid(tri[0], tri[1]);
+            let m12 = mid(tri[1], tri[2]);
+            let m20 = mid(tri[2], tri[0]);
+            next.push([tri[0], m01, m20]);
+            next.push([m01, tri[1], m12]);
+            next.push([m20, m12, tri[2]]);
+            next.push([m01, m12, m20]);
+        }
+        mesh.triangles = next;
+    }
+    mesh
+}
+
+#[test]
+fn coarse_samples_skip_nozzle_simplify() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples");
+    for name in [
+        "calibration_cube_20mm.stl",
+        "lime_hull.stl",
+        "arc_post.stl",
+        "thin_fin.stl",
+        "overhang_ledge.stl",
+    ] {
+        let mesh = load_mesh(name, &std::fs::read(root.join(name)).unwrap()).unwrap();
+        let (cow, stats) =
+            simplify_for_nozzle(&mesh, true, 0.1, lime_slice_core::Job::default()).unwrap();
+        assert_eq!(stats.triangles, mesh.triangle_count(), "{name}");
+        assert_eq!(stats.source_triangles, mesh.triangle_count(), "{name}");
+        assert!(
+            matches!(cow, std::borrow::Cow::Borrowed(_)),
+            "{name} was rebuilt"
+        );
+    }
+}
+
+fn uv_sphere(stacks: usize, slices: usize, radius: f64) -> Mesh {
+    let mut verts = vec![[0.0, 0.0, radius * 2.0]];
+    for i in 1..stacks {
+        let phi = std::f64::consts::PI * i as f64 / stacks as f64;
+        let z = radius * phi.cos() + radius;
+        let rr = radius * phi.sin();
+        for j in 0..slices {
+            let th = std::f64::consts::TAU * j as f64 / slices as f64;
+            verts.push([rr * th.cos(), rr * th.sin(), z]);
+        }
+    }
+    let south = verts.len();
+    verts.push([0.0, 0.0, 0.0]);
+    let at = |i: usize, j: usize| 1 + (i - 1) * slices + (j % slices);
+    let mut triangles = Vec::new();
+    for j in 0..slices {
+        triangles.push([verts[0], verts[at(1, j)], verts[at(1, j + 1)]]);
+    }
+    for i in 1..stacks - 1 {
+        for j in 0..slices {
+            let a = at(i, j);
+            let b = at(i, j + 1);
+            let c = at(i + 1, j + 1);
+            let d = at(i + 1, j);
+            triangles.push([verts[a], verts[b], verts[c]]);
+            triangles.push([verts[a], verts[c], verts[d]]);
+        }
+    }
+    for j in 0..slices {
+        triangles.push([
+            verts[at(stacks - 1, j + 1)],
+            verts[at(stacks - 1, j)],
+            verts[south],
+        ]);
+    }
+    Mesh { triangles }
+}
+
+#[test]
+fn dense_sphere_slice_uses_the_simplified_mesh() {
+    let dense = uv_sphere(24, 180, 12.0);
+    assert!(dense.triangle_count() > 8_000, "{}", dense.triangle_count());
+    let response = slice_configured(
+        &dense,
+        &speed_mode(),
+        &profile(),
+        &SliceSettings {
+            include_gcode: false,
+            baseline: false,
+            include_preview: false,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    assert!(response.sanity.ok, "{:?}", response.sanity.notes);
+    assert_eq!(response.mesh.source_triangles, dense.triangle_count());
+    assert!(
+        response.mesh.triangles * 4 < dense.triangle_count(),
+        "{} → {}",
+        dense.triangle_count(),
+        response.mesh.triangles
+    );
+    assert!(
+        response.sanity.layers > 50,
+        "layers {}",
+        response.sanity.layers
+    );
+    assert!((response.mesh.simplify_error_mm - 0.1).abs() < 1e-9);
+    assert!(response.estimate.filament_g > 0.5);
+}
+
+#[test]
+fn dense_overhang_still_supports_after_simplify() {
+    let dense = subdivide_mesh(&ledge(), 4);
+    let simplified = lime_slice_core::simplify_mesh(&dense, 0.1).unwrap();
+    assert!(
+        simplified.triangle_count() * 4 < dense.triangle_count(),
+        "{} → {}",
+        dense.triangle_count(),
+        simplified.triangle_count()
+    );
+    let settings = SliceSettings {
+        supports: true,
+        support_style: lime_slice_core::SupportStyle::Tree,
+        include_gcode: false,
+        baseline: false,
+        ..SliceSettings::default()
+    };
+    let response = slice_configured(&simplified, &speed_mode(), &profile(), &settings).unwrap();
+    assert!(response.sanity.ok, "{:?}", response.sanity.notes);
+    let supported = response.layers.iter().any(|layer| {
+        layer
+            .paths
+            .iter()
+            .any(|path| path.kind == "support" || path.kind == "support-interface")
+    });
+    assert!(supported, "overhang lost its support after simplify");
+    let report = lime_slice_core::audit_slice(
+        &simplified,
+        &speed_mode(),
+        &settings,
+        profile().nozzle_diameter,
+    )
+    .unwrap();
+    assert!(
+        report.support_mm3 > 1.0,
+        "support volume {}",
+        report.support_mm3
+    );
+    assert_eq!(
+        report.support_floating_mm3, 0.0,
+        "{:?}",
+        report.worst_floating
+    );
+    assert_eq!(report.support_inside_mm3, 0.0);
+    let coverage = report.sliced_volume_mm3 / report.mesh_volume_mm3;
+    assert!(
+        (coverage - 1.0).abs() < 0.02,
+        "simplified ledge coverage {coverage:.4}"
+    );
+}
+
+/// Release timings for the PR. Not part of the default suite.
+///   cargo test -p lime-slice-core --release -- dense_nozzle_simplify_bench --ignored --nocapture
+#[test]
+#[ignore = "opt-in dense mesh bench"]
+fn dense_nozzle_simplify_bench() {
+    let quiet = SliceSettings {
+        include_gcode: false,
+        include_preview: false,
+        baseline: false,
+        supports: false,
+        ..SliceSettings::default()
+    };
+    let supported = SliceSettings {
+        supports: true,
+        ..quiet.clone()
+    };
+    let raw = SliceSettings {
+        simplify: false,
+        ..quiet.clone()
+    };
+    let raw_supported = SliceSettings {
+        simplify: false,
+        ..supported.clone()
+    };
+    eprintln!(
+        "{:<28} {:>10} {:>10} {:>8} {:>10} {:>10} {:>10} {:>10} {:>10} {:>8}",
+        "mesh", "src", "slice", "simp ms", "contour0", "contour1", "core0", "core1", "seat1", "g"
+    );
+    let report = |label: &str, mesh: &Mesh, with_supports: bool| {
+        eprintln!(".. {label}");
+        let before_c = lime_slice_core::contour_times(mesh, 0.2).unwrap_or(0.0);
+        let plain = if with_supports { &raw_supported } else { &raw };
+        let cooked = if with_supports { &supported } else { &quiet };
+        let before = slice_configured(mesh, &speed_mode(), &profile(), plain).unwrap();
+        let after = slice_configured(mesh, &speed_mode(), &profile(), cooked).unwrap();
+        eprintln!(
+            "{:<28} {:>10} {:>10} {:>8.1} {:>10.1} {:>10.1} {:>10.1} {:>10.1} {:>10.1} {:>8.2}",
+            label,
+            after.mesh.source_triangles,
+            after.mesh.triangles,
+            after.mesh.simplify_ms,
+            before_c,
+            after.stages.contour_ms,
+            before.core_ms,
+            after.core_ms,
+            after.stages.seat_ms,
+            after.estimate.filament_g
+        );
+        eprintln!(
+            "  supports {:.1} → {:.1} ms   seat {:.1} → {:.1} ms   print {:.1} s → {:.1} s   error {:.3} mm   sanity {} {}",
+            before.stages.support_ms,
+            after.stages.support_ms,
+            before.stages.seat_ms,
+            after.stages.seat_ms,
+            before.estimate.seconds,
+            after.estimate.seconds,
+            after.mesh.simplify_error_mm,
+            if before.sanity.ok { "ok" } else { "FAIL" },
+            if after.sanity.ok { "ok" } else { "FAIL" }
+        );
+    };
+    report("cube", &cube(), false);
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples");
+    let hull = load_mesh(
+        "lime_hull.stl",
+        &std::fs::read(root.join("lime_hull.stl")).unwrap(),
+    )
+    .unwrap();
+    report("hull", &hull, false);
+    report("sphere ~450k", &uv_sphere(450, 500, 30.0), false);
+    let dragon_path = root.join("dragon_2_5.stl");
+    if dragon_path.is_file() {
+        let dragon = load_mesh("dragon_2_5.stl", &std::fs::read(&dragon_path).unwrap()).unwrap();
+        report("dragon_2_5", &dragon, false);
+        report("dragon_2_5 supports", &dragon, true);
+        report("dragon_2_5 x4", &subdivide_mesh(&dragon, 1), false);
+    } else {
+        eprintln!("skip dragon: samples/dragon_2_5.stl missing");
+    }
 }
