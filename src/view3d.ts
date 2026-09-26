@@ -146,14 +146,24 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
 
-  function frame() {
-    controls.update();
-    renderer.render(scene, camera);
+  // Render only when something changed. Damping keeps emitting change
+  // from controls.update() until the camera settles.
+  let frameQueued = false;
+  function requestRender() {
+    if (frameQueued) return;
+    frameQueued = true;
     requestAnimationFrame(frame);
   }
-  requestAnimationFrame(frame);
+  function frame() {
+    frameQueued = false;
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  controls.addEventListener("change", requestRender);
+  requestRender();
 
   function resize() {
+    requestRender();
     const rect = canvas.getBoundingClientRect();
     if (rect.width < 1 || rect.height < 1) return;
     applyPixelRatio(renderer);
@@ -188,6 +198,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   }
 
   function placePlane() {
+    requestRender();
     if (!planeSpec || !model) {
       plane.visible = false;
       handle.visible = false;
@@ -294,6 +305,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       bedZ = z;
     },
     setBuffers(buffers) {
+      requestRender();
       dropBuffers();
       if (!buffers || buffers.ranges.length === 0) return;
       ranges = buffers.ranges;
@@ -332,9 +344,11 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     setHidden(next) {
       hidden = new Set(next);
       applyHidden();
+      requestRender();
     },
     setColorMode(mode) {
       pathUniforms.mode.value = mode === "weight" ? 1 : mode === "speed" ? 2 : 0;
+      requestRender();
     },
     setRange(nextLow, nextHigh) {
       low = nextLow;
@@ -349,6 +363,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       planeCb = cb;
     },
     setTheme() {
+      requestRender();
       colors = themeColors();
       renderer.setClearColor(hexToThree(colors.stage), 1);
       planeMat.color.setHex(hexToThree(colors.teal));
@@ -367,6 +382,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       scene.add(bed);
     },
     setPlayhead(seg) {
+      requestRender();
       if (!seg || !model) {
         cursor.visible = false;
         playLine.visible = false;

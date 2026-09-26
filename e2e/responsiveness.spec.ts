@@ -100,6 +100,45 @@ test("legend and Color by recolor the 3D preview without rebuilding it", async (
   expect(mainThreadLayerPosts).toBe(0);
 });
 
+test("the 3D view draws only while something changes", async ({ page }) => {
+  await page.addInitScript(() => {
+    const w = window as unknown as { __draws: number };
+    w.__draws = 0;
+    const draw = WebGL2RenderingContext.prototype.drawArrays;
+    WebGL2RenderingContext.prototype.drawArrays = function (this: WebGL2RenderingContext, ...args: Parameters<typeof draw>) {
+      w.__draws += 1;
+      return draw.apply(this, args);
+    };
+  });
+  const draws = () => page.evaluate(() => (window as unknown as { __draws: number }).__draws);
+  await mockEngine(page, () => 0);
+  await openCube(page);
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("button", { name: "3D", exact: true }).click();
+  await page.locator("#slice").click();
+  await expect(page.locator("#estimate")).toContainText("g");
+  await page.waitForTimeout(1500);
+  const idle = await draws();
+  await page.waitForTimeout(1000);
+  expect(await draws()).toBe(idle);
+
+  const canvas = page.locator("#view3d");
+  const before = await canvas.screenshot();
+  const box = (await canvas.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 120, box.y + box.height / 2 + 30, { steps: 8 });
+  await page.mouse.up();
+  expect(await draws()).toBeGreaterThan(idle);
+  expect((await canvas.screenshot()).equals(before)).toBe(false);
+  const drawsIn = async (ms: number) => {
+    const start = await draws();
+    await page.waitForTimeout(ms);
+    return (await draws()) - start;
+  };
+  await expect.poll(() => drawsIn(500), { timeout: 8000, message: "damping settles and drawing stops" }).toBe(0);
+});
+
 test("a running slice shows elapsed time and Cancel aborts the request", async ({ page }) => {
   await mockEngine(page, () => 4000);
   await openCube(page);
