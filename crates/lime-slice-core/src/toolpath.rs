@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::poly::{
     boolean_diff, boolean_union, drop_slivers, in_solid, loop_bounds, loops_from_paths,
     offset_loops, offset_paths, paths_from_loops, signed_area, Loop,
@@ -941,12 +943,13 @@ fn build_infill(
 /// Drop any infill chord that leaves the region, including arc-fit bulges and
 /// links that were chained across a gap between separate contours.
 fn clip_infill(paths: Vec<Vec<[f64; 2]>>, loops: &[Loop]) -> Vec<Vec<[f64; 2]>> {
+    let outline = Outline::new(loops);
     let mut out = Vec::new();
     for path in paths {
         if path.len() < 2 {
             continue;
         }
-        out.extend(clip_polyline(loops, &path));
+        out.extend(clip_polyline(&outline, &path));
     }
     out
 }
@@ -999,6 +1002,7 @@ fn turn_penalty(loop_: &[[f64; 2]], i: usize) -> f64 {
 }
 
 fn lightning(loops: &[Loop], spacing: f64) -> Vec<Vec<[f64; 2]>> {
+    let outline = Outline::new(loops);
     let Some((min, max)) = loop_bounds(loops) else {
         return Vec::new();
     };
@@ -1066,7 +1070,7 @@ fn lightning(loops: &[Loop], spacing: f64) -> Vec<Vec<[f64; 2]>> {
             }
         }
         if best_d < (spacing * 2.4) * (spacing * 2.4) {
-            let piece = clip_segment(loops, nodes[i], nodes[best]);
+            let piece = outline.clip_segment(nodes[i], nodes[best]);
             for seg in piece {
                 segs.push(vec![seg[0], seg[1]]);
             }
@@ -1081,6 +1085,7 @@ fn lightning(loops: &[Loop], spacing: f64) -> Vec<Vec<[f64; 2]>> {
 /// starts beside the previous end, and that short link is extruded when it
 /// stays inside the region.
 fn solid_fill(loops: &[Loop], spacing: f64, angle: f64) -> Vec<Vec<[f64; 2]>> {
+    let outline = Outline::new(loops);
     let rotated = rotate_loops(loops, -angle);
     let chords = horizontal_chords(&rotated, spacing);
     let mut paths: Vec<Vec<[f64; 2]>> = Vec::new();
@@ -1100,7 +1105,7 @@ fn solid_fill(loops: &[Loop], spacing: f64, angle: f64) -> Vec<Vec<[f64; 2]>> {
             let link = paths.last().and_then(|path| {
                 let end = *path.last().unwrap();
                 let gap = dist2(end, seg[0]).sqrt();
-                if gap <= spacing * 1.75 && (gap < 1e-4 || link_stays(loops, end, seg[0])) {
+                if gap <= spacing * 1.75 && (gap < 1e-4 || outline.link_stays(end, seg[0])) {
                     Some(gap)
                 } else {
                     None
@@ -1183,45 +1188,97 @@ fn serpentine(segments: Vec<Vec<[f64; 2]>>, solid: &[Loop]) -> Vec<Vec<[f64; 2]>
 /// Greedily weld open segments into polylines, reversing either end.
 /// Gaps up to `join` are bridged. When `solid` is set, a bridge that leaves
 /// the region (a hole, or outside the part) is not taken.
+///
+/// Endpoints live in a grid of `join`-sized cells, so each weld looks only at
+/// nearby segments. Ties go where the old linear scan sent them: shortest gap,
+/// then position in the unused list, then which end, then which direction.
 fn chain_ends(
     segments: Vec<Vec<[f64; 2]>>,
     join: f64,
     solid: Option<&[Loop]>,
 ) -> Vec<Vec<[f64; 2]>> {
-    let mut unused: Vec<Vec<[f64; 2]>> = segments.into_iter().filter(|s| s.len() >= 2).collect();
-    let mut out = Vec::new();
+    let outline = solid.map(Outline::new);
+    let mut segs: Vec<Option<Vec<[f64; 2]>>> = segments
+        .into_iter()
+        .filter(|s| s.len() >= 2)
+        .map(Some)
+        .collect();
+    let mut unused: Vec<usize> = (0..segs.len()).collect();
+    let mut pos: Vec<usize> = (0..segs.len()).collect();
+    let cell = join.max(1e-3);
+    let key = |p: [f64; 2]| ((p[0] / cell).floor() as i64, (p[1] / cell).floor() as i64);
+    let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (id, seg) in segs.iter().enumerate() {
+        let seg = seg.as_ref().unwrap();
+        grid.entry(key(seg[0])).or_default().push(id);
+        grid.entry(key(*seg.last().unwrap())).or_default().push(id);
+    }
+    let unlink = |grid: &mut HashMap<(i64, i64), Vec<usize>>, seg: &[[f64; 2]], id: usize| {
+        for p in [seg[0], *seg.last().unwrap()] {
+            if let Some(ids) = grid.get_mut(&key(p)) {
+                ids.retain(|x| *x != id);
+            }
+        }
+    };
     let join2 = join * join;
-    while let Some(mut path) = unused.pop() {
+    let mut out = Vec::new();
+    let mut near: Vec<usize> = Vec::new();
+    while let Some(id) = unused.pop() {
+        let mut path = segs[id].take().unwrap();
+        unlink(&mut grid, &path, id);
         loop {
             let end = *path.last().unwrap();
             let start = path[0];
-            let mut best: Option<(usize, bool, bool, f64)> = None;
-            for (i, seg) in unused.iter().enumerate() {
-                let s0 = seg[0];
-                let s1 = *seg.last().unwrap();
-                for (at_end, tip) in [(true, end), (false, start)] {
-                    for (rev, other) in [(false, s0), (true, s1)] {
-                        let d2 = dist2(tip, other);
-                        if d2 > join2 {
-                            continue;
-                        }
-                        if d2 > 1e-8 {
-                            if let Some(loops) = solid {
-                                if !link_stays(loops, tip, other) {
-                                    continue;
-                                }
-                            }
-                        }
-                        if best.as_ref().map(|b| d2 < b.3).unwrap_or(true) {
-                            best = Some((i, rev, at_end, d2));
+            near.clear();
+            for tip in [end, start] {
+                let (cx, cy) = key(tip);
+                for gx in cx - 1..=cx + 1 {
+                    for gy in cy - 1..=cy + 1 {
+                        if let Some(ids) = grid.get(&(gx, gy)) {
+                            near.extend_from_slice(ids);
                         }
                     }
                 }
             }
-            let Some((i, rev, at_end, _)) = best else {
+            near.sort_unstable();
+            near.dedup();
+            // (gap², position in `unused`, end order, direction order, segment)
+            let mut best: Option<(f64, usize, u8, u8, usize)> = None;
+            for &c in &near {
+                let seg = segs[c].as_ref().unwrap();
+                let s0 = seg[0];
+                let s1 = *seg.last().unwrap();
+                for (end_order, tip) in [(0u8, end), (1u8, start)] {
+                    for (rev_order, other) in [(0u8, s0), (1u8, s1)] {
+                        let d2 = dist2(tip, other);
+                        if d2 > join2 {
+                            continue;
+                        }
+                        let rank = (d2, pos[c], end_order, rev_order);
+                        if best.is_some_and(|b| (b.0, b.1, b.2, b.3) <= rank) {
+                            continue;
+                        }
+                        if d2 > 1e-8 {
+                            if let Some(outline) = &outline {
+                                if !outline.link_stays(tip, other) {
+                                    continue;
+                                }
+                            }
+                        }
+                        best = Some((rank.0, rank.1, rank.2, rank.3, c));
+                    }
+                }
+            }
+            let Some((_, p, end_order, rev_order, c)) = best else {
                 break;
             };
-            let mut seg = unused.swap_remove(i);
+            unused.swap_remove(p);
+            if p < unused.len() {
+                pos[unused[p]] = p;
+            }
+            let mut seg = segs[c].take().unwrap();
+            unlink(&mut grid, &seg, c);
+            let (at_end, rev) = (end_order == 0, rev_order == 1);
             // `rev` means the matched vertex is currently the segment's last point.
             // Appending needs it at the front; prepending needs it at the back.
             if at_end == rev {
@@ -1248,6 +1305,7 @@ fn chain_ends(
 }
 
 fn gyroid(loops: &[Loop], spacing: f64, phase_bias: f64) -> Vec<Vec<[f64; 2]>> {
+    let outline = Outline::new(loops);
     let Some((min, max)) = loop_bounds(loops) else {
         return Vec::new();
     };
@@ -1265,7 +1323,7 @@ fn gyroid(loops: &[Loop], spacing: f64, phase_bias: f64) -> Vec<Vec<[f64; 2]>> {
             pts.push([x, y + wave]);
             x += step;
         }
-        polylines.extend(clip_polyline(loops, &pts));
+        polylines.extend(clip_polyline(&outline, &pts));
         y += spacing;
         row += 1;
     }
@@ -1279,21 +1337,21 @@ fn gyroid(loops: &[Loop], spacing: f64, phase_bias: f64) -> Vec<Vec<[f64; 2]>> {
             pts.push([x + wave, y]);
             y += step;
         }
-        polylines.extend(clip_polyline(loops, &pts));
+        polylines.extend(clip_polyline(&outline, &pts));
         x += spacing;
         col += 1;
     }
     polylines
 }
 
-fn clip_polyline(loops: &[Loop], pts: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
+fn clip_polyline(outline: &Outline, pts: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
     if pts.len() < 2 {
         return Vec::new();
     }
     let mut out = Vec::new();
     let mut current: Vec<[f64; 2]> = Vec::new();
     for w in pts.windows(2) {
-        for piece in clip_segment(loops, w[0], w[1]) {
+        for piece in outline.clip_segment(w[0], w[1]) {
             if current
                 .last()
                 .map(|p| dist2(*p, piece[0]) < 1e-6)
@@ -1318,12 +1376,13 @@ fn clip_polyline(loops: &[Loop], pts: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
 }
 
 pub fn clip_open_segment(loops: &[Loop], a: [f64; 2], b: [f64; 2]) -> Vec<[[f64; 2]; 2]> {
-    clip_segment(loops, a, b)
+    Outline::new(loops).clip_segment(a, b)
 }
 
-fn clip_segment(loops: &[Loop], a: [f64; 2], b: [f64; 2]) -> Vec<[[f64; 2]; 2]> {
+/// The pieces of `a..b` inside the loops.
+fn clip_segment_in(outline: &Outline, a: [f64; 2], b: [f64; 2]) -> Vec<[[f64; 2]; 2]> {
     let mut ts = vec![0.0, 1.0];
-    for loop_ in loops {
+    for loop_ in outline.touching(a, b) {
         let n = loop_.len();
         for i in 0..n {
             let c = loop_[i];
@@ -1347,7 +1406,7 @@ fn clip_segment(loops: &[Loop], a: [f64; 2], b: [f64; 2]) -> Vec<[[f64; 2]; 2]> 
         let tm = (t0 + t1) * 0.5;
         let mx = a[0] + (b[0] - a[0]) * tm;
         let my = a[1] + (b[1] - a[1]) * tm;
-        if in_solid(loops, mx, my) {
+        if outline.contains([mx, my]) {
             let p0 = [a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0];
             let p1 = [a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1];
             pieces.push([p0, p1]);
@@ -1531,6 +1590,7 @@ pub fn seat_layer_start(
     } else {
         Vec::new()
     };
+    let (solid, inset_loops) = (Outline::new(solid), Outline::new(&inset_loops));
     let mut cursor = from;
     for path in paths.iter_mut() {
         if path.points.is_empty() {
@@ -1546,7 +1606,7 @@ pub fn seat_layer_start(
                 }
             }
             if let Some(start) = path.points.first().copied() {
-                path.take_comb(comb_between(solid, &inset_loops, from, start, combing));
+                path.take_comb(comb_between(&solid, &inset_loops, from, start, combing));
             }
         }
         if let Some(end) = path.points.last().copied() {
@@ -1580,6 +1640,7 @@ pub fn optimize_travel(paths: &mut Vec<Extrusion>, solid: &[Loop], combing: bool
     } else {
         Vec::new()
     };
+    let (solid, inset_loops) = (Outline::new(solid), Outline::new(&inset_loops));
     let mut cursor = [0.0, 0.0];
     let mut has_cursor = false;
     let mut out = Vec::with_capacity(grouped.iter().map(|g| g.len()).sum());
@@ -1625,7 +1686,7 @@ pub fn optimize_travel(paths: &mut Vec<Extrusion>, solid: &[Loop], combing: bool
             }
             if has_cursor {
                 if let Some(start) = path.points.first().copied() {
-                    path.take_comb(comb_between(solid, &inset_loops, cursor, start, combing));
+                    path.take_comb(comb_between(&solid, &inset_loops, cursor, start, combing));
                 }
             }
             if let Some(end) = path.points.last().copied() {
@@ -1693,8 +1754,8 @@ enum Comb {
 }
 
 fn comb_between(
-    solid: &[Loop],
-    inset: &[Loop],
+    solid: &Outline,
+    inset: &Outline,
     from: [f64; 2],
     to: [f64; 2],
     combing: bool,
@@ -1702,17 +1763,17 @@ fn comb_between(
     if dist2(from, to) < 0.04 * 0.04 {
         return Comb::Clear;
     }
-    if segment_inside(solid, from, to) {
+    if solid.segment_inside(from, to) {
         return Comb::Clear;
     }
-    if !combing || inset.is_empty() {
+    if !combing || inset.loops.is_empty() {
         return Comb::Blocked;
     }
-    if !in_solid(solid, from[0], from[1]) || !in_solid(solid, to[0], to[1]) {
+    if !solid.contains(from) || !solid.contains(to) {
         return Comb::Blocked;
     }
     let mut nodes = Vec::new();
-    for loop_ in inset {
+    for loop_ in inset.loops {
         let step = (loop_.len() / 64).max(1);
         for (i, p) in loop_.iter().enumerate() {
             if i % step == 0 {
@@ -1725,8 +1786,6 @@ fn comb_between(
     let n = nodes.len();
     let start = n - 2;
     let goal = n - 1;
-    let inset = Outline::new(inset);
-    let solid = Outline::new(solid);
     let visible = |i: usize, j: usize| {
         inset.segment_inside(nodes[i], nodes[j])
             || (i == start || j == start || i == goal || j == goal)
@@ -1797,6 +1856,7 @@ pub fn apply_z_hop(
     if height <= 1e-6 || mode == crate::strategy::ZHopMode::Off {
         return;
     }
+    let (solid, infill) = (Outline::new(solid), Outline::new(infill));
     let mut cursor: Option<[f64; 2]> = None;
     let mut prev_top = false;
     let mut printed: Vec<([f64; 2], [f64; 2])> = Vec::new();
@@ -1811,9 +1871,9 @@ pub fn apply_z_hop(
             chain.push(start);
             let travel = polyline_len(&chain);
             let spiral = !path.z_frac.is_empty();
-            let inside_infill = !infill.is_empty()
-                && chain.windows(2).all(|w| segment_inside(infill, w[0], w[1]))
-                && chain.windows(2).all(|w| segment_inside(solid, w[0], w[1]));
+            let inside_infill = !infill.loops.is_empty()
+                && chain.windows(2).all(|w| infill.segment_inside(w[0], w[1]))
+                && chain.windows(2).all(|w| solid.segment_inside(w[0], w[1]));
             let policy = match mode {
                 crate::strategy::ZHopMode::Blend => {
                     if path.strategy == crate::strategy::StrategyId::Toughness {
@@ -1834,7 +1894,7 @@ pub fn apply_z_hop(
                 true
             } else {
                 let blocked = path.travel_in != TravelIn::Inside && path.retract_mm > 0.0;
-                blocked && chain_crosses(&chain, solid, &printed)
+                blocked && chain_crosses(&chain, &solid, &printed)
             };
             if hop {
                 path.z_hop = height;
@@ -1853,8 +1913,8 @@ pub fn apply_z_hop(
     }
 }
 
-fn chain_crosses(chain: &[[f64; 2]], solid: &[Loop], printed: &[([f64; 2], [f64; 2])]) -> bool {
-    let leaves = chain.windows(2).any(|w| !segment_inside(solid, w[0], w[1]));
+fn chain_crosses(chain: &[[f64; 2]], solid: &Outline, printed: &[([f64; 2], [f64; 2])]) -> bool {
+    let leaves = chain.windows(2).any(|w| !solid.segment_inside(w[0], w[1]));
     if leaves {
         return true;
     }
@@ -1865,32 +1925,12 @@ fn chain_crosses(chain: &[[f64; 2]], solid: &[Loop], printed: &[([f64; 2], [f64;
     })
 }
 
-/// Short infill link: reject a real boundary crossing, but allow a U-turn that
-/// rides the contour (the midpoint sits on the edge, just inside the part).
-fn link_stays(solid: &[Loop], a: [f64; 2], b: [f64; 2]) -> bool {
-    if segment_crosses_boundary(solid, a, b) {
-        return false;
-    }
-    let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
-    if in_solid(solid, mid[0], mid[1]) {
-        return true;
-    }
-    let Some((mn, mx)) = loop_bounds(solid) else {
-        return false;
-    };
-    let c = [(mn[0] + mx[0]) * 0.5, (mn[1] + mx[1]) * 0.5];
-    let vx = c[0] - mid[0];
-    let vy = c[1] - mid[1];
-    let len = vx.hypot(vy).max(1e-9);
-    let p = [mid[0] + vx / len * 0.05, mid[1] + vy / len * 0.05];
-    in_solid(solid, p[0], p[1])
-}
-
 /// Loops with their bounding boxes, so segment and point tests skip loops that
 /// cannot touch them.
 struct Outline<'a> {
     loops: &'a [Loop],
     boxes: Vec<([f64; 2], [f64; 2])>,
+    bounds: Option<([f64; 2], [f64; 2])>,
 }
 
 impl<'a> Outline<'a> {
@@ -1899,69 +1939,74 @@ impl<'a> Outline<'a> {
             .iter()
             .map(|l| loop_bounds(std::slice::from_ref(l)).unwrap_or(([0.0; 2], [0.0; 2])))
             .collect();
-        Self { loops, boxes }
+        Self {
+            loops,
+            boxes,
+            bounds: loop_bounds(loops),
+        }
     }
 
-    /// Same answer as `segment_inside` on the raw loops.
-    fn segment_inside(&self, a: [f64; 2], b: [f64; 2]) -> bool {
-        if self.loops.is_empty() {
-            return false;
-        }
+    /// Loops whose box meets the box of `a..b`. The others cannot touch it.
+    fn touching(&self, a: [f64; 2], b: [f64; 2]) -> impl Iterator<Item = &'a Loop> + '_ {
         let lo = [a[0].min(b[0]), a[1].min(b[1])];
         let hi = [a[0].max(b[0]), a[1].max(b[1])];
-        for (loop_, (mn, mx)) in self.loops.iter().zip(&self.boxes) {
-            if hi[0] < mn[0] || lo[0] > mx[0] || hi[1] < mn[1] || lo[1] > mx[1] {
-                continue;
-            }
-            let n = loop_.len();
-            for i in 0..n {
-                if segments_properly_cross(a, b, loop_[i], loop_[(i + 1) % n]) {
-                    return false;
-                }
-            }
+        self.loops
+            .iter()
+            .zip(&self.boxes)
+            .filter(move |(_, (mn, mx))| {
+                !(hi[0] < mn[0] || lo[0] > mx[0] || hi[1] < mn[1] || lo[1] > mx[1])
+            })
+            .map(|(l, _)| l)
+    }
+
+    /// Same answer as `in_solid`: a point outside a loop's box is outside that loop.
+    fn contains(&self, p: [f64; 2]) -> bool {
+        self.touching(p, p)
+            .filter(|l| crate::poly::point_in_loop(l, p[0], p[1]))
+            .count()
+            % 2
+            == 1
+    }
+
+    fn crosses(&self, a: [f64; 2], b: [f64; 2]) -> bool {
+        self.touching(a, b).any(|l| {
+            let n = l.len();
+            n >= 2 && (0..n).any(|i| segments_properly_cross(a, b, l[i], l[(i + 1) % n]))
+        })
+    }
+
+    /// True when the whole segment stays in the solid, holes included.
+    /// A boundary crossing rejects the segment; the midpoint must also land inside.
+    fn segment_inside(&self, a: [f64; 2], b: [f64; 2]) -> bool {
+        if self.loops.is_empty() || self.crosses(a, b) {
+            return false;
+        }
+        self.contains([(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5])
+    }
+
+    /// A link that crosses no boundary and whose midpoint is inside, or just
+    /// inside when nudged toward the region's centre.
+    fn link_stays(&self, a: [f64; 2], b: [f64; 2]) -> bool {
+        if self.crosses(a, b) {
+            return false;
         }
         let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
-        let mut inside = false;
-        for (loop_, (mn, mx)) in self.loops.iter().zip(&self.boxes) {
-            if mid[0] < mn[0] || mid[0] > mx[0] || mid[1] < mn[1] || mid[1] > mx[1] {
-                continue;
-            }
-            if crate::poly::point_in_loop(loop_, mid[0], mid[1]) {
-                inside = !inside;
-            }
+        if self.contains(mid) {
+            return true;
         }
-        inside
+        let Some((mn, mx)) = self.bounds else {
+            return false;
+        };
+        let c = [(mn[0] + mx[0]) * 0.5, (mn[1] + mx[1]) * 0.5];
+        let vx = c[0] - mid[0];
+        let vy = c[1] - mid[1];
+        let len = vx.hypot(vy).max(1e-9);
+        self.contains([mid[0] + vx / len * 0.05, mid[1] + vy / len * 0.05])
     }
-}
 
-/// True when the whole segment stays in the solid, holes included.
-/// A boundary crossing rejects the segment; the midpoint must also land inside.
-fn segment_inside(solid: &[Loop], a: [f64; 2], b: [f64; 2]) -> bool {
-    if solid.is_empty() {
-        return false;
+    fn clip_segment(&self, a: [f64; 2], b: [f64; 2]) -> Vec<[[f64; 2]; 2]> {
+        clip_segment_in(self, a, b)
     }
-    if segment_crosses_boundary(solid, a, b) {
-        return false;
-    }
-    let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
-    in_solid(solid, mid[0], mid[1])
-}
-
-fn segment_crosses_boundary(solid: &[Loop], a: [f64; 2], b: [f64; 2]) -> bool {
-    for loop_ in solid {
-        let n = loop_.len();
-        if n < 2 {
-            continue;
-        }
-        for i in 0..n {
-            let c = loop_[i];
-            let d = loop_[(i + 1) % n];
-            if segments_properly_cross(a, b, c, d) {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 fn segments_properly_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
