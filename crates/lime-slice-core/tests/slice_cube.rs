@@ -2755,6 +2755,47 @@ fn a_hole_in_the_mesh_does_not_drop_the_layer() {
     );
     assert_eq!(report.dropped_chains, 0);
     assert_eq!(report.repaired_layers, report.layers);
+    // One chord of a 64-gon, r = 10: 2·10·sin(π/64) ≈ 0.981 mm, every layer.
+    let per_layer = report.bridged_mm / report.layers as f64;
+    assert!(
+        (per_layer - 0.981).abs() < 0.02,
+        "slot was bridged {per_layer:.3} mm per layer, bridged {:.2} mm over {} layers",
+        report.bridged_mm,
+        report.layers
+    );
+}
+
+/// Two open sheets 1.5 mm apart. That is an articulation gap, not a mesh hole:
+/// closing it would invent one wall across the opening.
+#[test]
+fn open_chains_1_5mm_apart_stay_open() {
+    let mut tris = Vec::new();
+    open_sheet(&mut tris, 0.0, 8.0, 0.0, 0.0, 4.0);
+    open_sheet(&mut tris, 0.0, 8.0, 1.5, 0.0, 4.0);
+    let report = audit(&Mesh { triangles: tris });
+    assert_eq!(
+        report.repaired_layers, 0,
+        "1.5 mm gap was fused into a wall"
+    );
+    assert_eq!(
+        report.bridged_mm, 0.0,
+        "bridged {:.3} mm across the gap",
+        report.bridged_mm
+    );
+    assert!(
+        report.sliced_volume_mm3 < 1.0,
+        "invented {:.1} mm3 of wall across a 1.5 mm opening",
+        report.sliced_volume_mm3
+    );
+    assert!(
+        report.dropped_chains > 0,
+        "the open chains were not left open"
+    );
+}
+
+fn open_sheet(tris: &mut Vec<[[f64; 3]; 3]>, x0: f64, x1: f64, y: f64, z0: f64, z1: f64) {
+    tris.push([[x0, y, z0], [x1, y, z0], [x1, y, z1]]);
+    tris.push([[x0, y, z0], [x1, y, z1], [x0, y, z1]]);
 }
 
 #[test]
@@ -2950,7 +2991,7 @@ fn open_edge_count(mesh: &Mesh) -> usize {
 // Checked-in Dragon 2.5. Default `cargo test` ignores this.
 //   cargo test -p lime-slice-core --release -- dragon_2_5_headlines --ignored --nocapture
 // Same presets as `slice --blend speed|toughness --supports` (tree is the default style).
-// Prints core ms, coverage, inside, floating, unskinned, and open skin.
+// Prints core ms, coverage, bridged mm, inside, floating, unskinned, and open skin.
 #[test]
 #[ignore = "opt-in dragon_2_5: samples/dragon_2_5.stl stays out of the default suite"]
 fn dragon_2_5_headlines() {
@@ -2979,8 +3020,9 @@ fn dragon_2_5_headlines() {
         let report = lime_slice_core::audit_slice(&mesh, &blend, &settings, nozzle).unwrap();
         let coverage = report.sliced_volume_mm3 / report.mesh_volume_mm3.max(1e-9) * 100.0;
         println!(
-            "dragon_2_5 {label}  core {:.2} ms  coverage {coverage:.1}%  inside {:.2} mm3  floating {:.2} mm3  unskinned {:.1} mm2  open skin {:.1} mm2",
+            "dragon_2_5 {label}  core {:.2} ms  coverage {coverage:.1}%  bridged {:.1} mm  inside {:.2} mm3  floating {:.2} mm3  unskinned {:.1} mm2  open skin {:.1} mm2",
             response.core_ms,
+            report.bridged_mm,
             report.support_inside_mm3,
             report.support_floating_mm3,
             report.unskinned_top_mm2,
