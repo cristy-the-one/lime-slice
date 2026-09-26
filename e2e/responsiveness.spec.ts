@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
+import { decodePaths } from "../src/preview-wire";
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 
@@ -36,7 +37,7 @@ test("a setting changed during a slice leaves the finished result stale", async 
 
 test("the parked G-code body is fetched once, when the G-code tab first needs it", async ({ page }) => {
   const layer = cube.layers[0];
-  const body = [`;LAYER:${layer.index} Z:${layer.z}`, ";TYPE:OUTER", ...layer.paths[0].pts.map((p: number[]) => `G1 X${p[0]} Y${p[1]} E0.1 F1800`)].join("\n");
+  const body = [`;LAYER:${layer.index} Z:${layer.z}`, ";TYPE:OUTER", ...decodePaths(layer.paths, layer.z)[0].pts.map((p) => `G1 X${p[0]} Y${p[1]} E0.1 F1800`)].join("\n");
   const fetches: string[] = [];
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/slice", (route) => route.fulfill({ json: { ...cube, gcode: "", gcodeToken: "t1" } }));

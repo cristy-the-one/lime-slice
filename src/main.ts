@@ -2,6 +2,7 @@ import { colorForPath, FEATURE_COLOR, FEATURE_LABEL, type ColorMode } from "./co
 import { encode3mf, encodeStl, ID_MATRIX, layFlatMatrix, matMul, offBed, parseStl, rotX, rotY, rotZ, transformPositions, boundsOf, type Mat3 } from "./mesh-place";
 import { indexLayerGcode, layerClass, layerMoves, matchGcodeLine, type LayerGcode, type PlayPoint } from "./playback";
 import { createPrepareView } from "./prepare-view";
+import { decodePaths, type PathColumns, type PreviewPath } from "./preview-wire";
 import { DEFAULT_PRESET, diffPreset, presetKeys, readPresets, writePresets, type PresetSettings } from "./presets";
 import { loadProfile, profileJson, saveProfile, type PrinterProfile } from "./profiles";
 import { layerWeight, resolved, type ResolvedCard } from "./strategy";
@@ -14,16 +15,6 @@ type StrategyId = "speed" | "toughness";
 type BlendMode = "single" | "weight" | "byLayer" | "byRegion";
 type CardId = "speed" | "efficiency" | "toughness" | "layer" | "region";
 
-interface PreviewPath {
-  kind: string;
-  strategy: string;
-  pts: [number, number][];
-  zs?: number[];
-  width?: number;
-  speed?: number;
-  effectiveSpeed?: number;
-  toughness?: number;
-}
 interface PreviewLayer {
   index: number;
   z: number;
@@ -33,7 +24,7 @@ interface PreviewLayer {
   speedWalls: number;
   toughnessWalls: number;
   supportPaths: number;
-  paths: PreviewPath[];
+  paths: PathColumns;
 }
 interface FeatureRow {
   kind: string;
@@ -622,7 +613,7 @@ function signed(n: number) {
 
 function paintLegend() {
   const kinds = new Set<string>();
-  for (const layer of state.result?.layers ?? []) for (const path of layer.paths) kinds.add(path.kind);
+  for (const layer of state.result?.layers ?? []) for (const kind of layer.paths.kinds) kinds.add(kind);
   const legend = document.querySelector("#legend")!;
   if (kinds.size === 0) {
     legend.innerHTML = `<span>Legend fills in after a slice.</span>`;
@@ -736,10 +727,22 @@ function layerGcode(load = false): LayerGcode | null {
   return gcodeIndex.get(result) ?? null;
 }
 
+const decoded = new WeakMap<PreviewLayer, PreviewPath[]>();
+
+/** One layer's paths as objects. Decoded on first use, only for layers that are drawn. */
+function pathsOf(layer: PreviewLayer): PreviewPath[] {
+  let paths = decoded.get(layer);
+  if (!paths) {
+    paths = decodePaths(layer.paths, layer.z);
+    decoded.set(layer, paths);
+  }
+  return paths;
+}
+
 function movesNow(): PlayPoint[] {
   const layer = state.result?.layers[state.layer];
   if (!layer) return [];
-  return layerMoves(layer.paths, layer.z, layer.height);
+  return layerMoves(pathsOf(layer), layer.z, layer.height);
 }
 
 function paintPlayback() {
@@ -1725,7 +1728,7 @@ function draw() {
   const oy = (h - spanY * scale) / 2;
   const map = (x: number, y: number): [number, number] => [ox + (x - mesh.min[0]) * scale, h - (oy + (y - mesh.min[1]) * scale)];
   const played = movesNow()[state.move];
-  layer.paths.forEach((path, pathIndex) => {
+  pathsOf(layer).forEach((path, pathIndex) => {
     if (state.hidden.has(path.kind)) return;
     if (path.kind === "travel" && !state.showTravel) return;
     const cut = !played ? path.pts.length : pathIndex < played.path ? path.pts.length : pathIndex > played.path ? 1 : played.seg + 1;
@@ -1819,7 +1822,8 @@ function sync3d() {
   view3d.setRange(state.rangeLow, state.layer);
   const moves = movesNow();
   const point = moves[state.move];
-  const prev = point ? segmentStart(state.result?.layers[state.layer]?.paths ?? [], point) : null;
+  const shownLayer = state.result?.layers[state.layer];
+  const prev = point && shownLayer ? segmentStart(pathsOf(shownLayer), point) : null;
   view3d.setPlayhead(point && prev ? { x0: prev[0], y0: prev[1], z0: point.z, x1: point.x, y1: point.y, z1: point.z } : null);
   view3d.setPlane(state.blendKind === "byRegion" && state.result ? { axis: state.axis, at: state.atMm } : null);
   view3d.onPlane((at) => {

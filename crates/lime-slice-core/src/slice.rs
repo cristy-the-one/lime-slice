@@ -531,6 +531,8 @@ pub struct PreviewLayer {
     /// Estimator seconds for this layer.
     #[serde(default)]
     pub seconds: f64,
+    /// Sent as columns (see `path_columns`), not one object per path.
+    #[serde(serialize_with = "path_columns")]
     pub paths: Vec<PreviewPath>,
 }
 
@@ -951,6 +953,86 @@ fn structural_mm3(layers: &[LayerPaths]) -> f64 {
                 .sum::<f64>()
         })
         .sum()
+}
+
+/// Coordinates, speeds, and weights on the wire are rounded to 1 µm (or 0.001).
+struct Rounded(f64);
+
+impl Serialize for Rounded {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_f64((self.0 * 1000.0).round() / 1000.0)
+    }
+}
+
+/// A layer's paths as parallel arrays, so a large preview is a few long
+/// number arrays instead of one object per path. `start[i]..start[i + 1]`
+/// are path `i`'s points in `xy` (two numbers each) and `z` (one each). `z` is
+/// empty when every point sits on the layer, and `null` marks a point that does.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PathColumns<'a> {
+    kinds: Vec<&'a str>,
+    strategies: Vec<&'a str>,
+    kind: Vec<u8>,
+    strategy: Vec<u8>,
+    width: Vec<Rounded>,
+    speed: Vec<Rounded>,
+    effective_speed: Vec<Rounded>,
+    toughness: Vec<Rounded>,
+    bead_height: Vec<Rounded>,
+    start: Vec<u32>,
+    xy: Vec<Rounded>,
+    z: Vec<Rounded>,
+}
+
+fn path_columns<S: serde::Serializer>(paths: &[PreviewPath], s: S) -> Result<S::Ok, S::Error> {
+    fn slot<'a>(table: &mut Vec<&'a str>, name: &'a str) -> u8 {
+        match table.iter().position(|k| *k == name) {
+            Some(i) => i as u8,
+            None => {
+                table.push(name);
+                (table.len() - 1) as u8
+            }
+        }
+    }
+    let points: usize = paths.iter().map(|p| p.pts.len()).sum();
+    let has_z = paths.iter().any(|p| !p.zs.is_empty());
+    let mut c = PathColumns {
+        kinds: Vec::new(),
+        strategies: Vec::new(),
+        kind: Vec::with_capacity(paths.len()),
+        strategy: Vec::with_capacity(paths.len()),
+        width: Vec::with_capacity(paths.len()),
+        speed: Vec::with_capacity(paths.len()),
+        effective_speed: Vec::with_capacity(paths.len()),
+        toughness: Vec::with_capacity(paths.len()),
+        bead_height: Vec::with_capacity(paths.len()),
+        start: Vec::with_capacity(paths.len() + 1),
+        xy: Vec::with_capacity(points * 2),
+        z: Vec::with_capacity(if has_z { points } else { 0 }),
+    };
+    c.start.push(0);
+    for p in paths {
+        let k = slot(&mut c.kinds, &p.kind);
+        c.kind.push(k);
+        let st = slot(&mut c.strategies, &p.strategy);
+        c.strategy.push(st);
+        c.width.push(Rounded(p.width));
+        c.speed.push(Rounded(p.speed));
+        c.effective_speed.push(Rounded(p.effective_speed));
+        c.toughness.push(Rounded(p.toughness));
+        c.bead_height.push(Rounded(p.bead_height));
+        for (i, pt) in p.pts.iter().enumerate() {
+            c.xy.push(Rounded(pt[0]));
+            c.xy.push(Rounded(pt[1]));
+            if has_z {
+                // NaN serializes as JSON null: this point is at the layer Z.
+                c.z.push(Rounded(p.zs.get(i).copied().unwrap_or(f64::NAN)));
+            }
+        }
+        c.start.push((c.xy.len() / 2) as u32);
+    }
+    c.serialize(s)
 }
 
 fn preview_of(

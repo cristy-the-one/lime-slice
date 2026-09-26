@@ -2,11 +2,21 @@
 /// Layers arrive from the slice worker over a port; buffers go to the main thread.
 
 import { buildPreviewGeometry, type GeomRequest } from "./preview-geom";
+import { decodePaths, type PathColumns } from "./preview-wire";
+
+/** Layers as the engine sends them: paths in columns. */
+interface WireRequest extends Omit<GeomRequest, "layers"> {
+  layers: { z: number; height?: number; paths: PathColumns }[];
+}
 
 export type { GeomPath, GeomLayer, GeomRequest } from "./preview-geom";
 
 self.onmessage = (event: MessageEvent<{ slicePort: MessagePort }>) => {
-  event.data.slicePort.onmessage = (ev: MessageEvent<GeomRequest>) => build(ev.data);
+  event.data.slicePort.onmessage = (ev: MessageEvent<WireRequest>) =>
+    build({
+      ...ev.data,
+      layers: ev.data.layers.map((l) => ({ z: l.z, height: l.height, paths: decodePaths(l.paths, l.z) })),
+    });
 };
 
 function build(msg: GeomRequest) {
