@@ -1349,20 +1349,21 @@ async function runSlice() {
   state.error = "";
   state.notice = "";
   renderChrome();
+  let unlisten: (() => void) | undefined;
   try {
     const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     let body: SliceResponse;
     if (tauri) {
       const { invoke } = await import("@tauri-apps/api/core");
       const { listen } = await import("@tauri-apps/api/event");
-      const unlisten = await listen<{ progress: number; message: string }>("slice-progress", (ev) => {
+      unlisten = await listen<{ progress: number; message: string }>("slice-progress", (ev) => {
         if (id !== job) return;
         state.progress = ev.payload.progress;
         paintBanner(false);
         document.querySelector("#timing")!.textContent = ev.payload.message;
       });
+      if (id !== job) return;
       const json = await invoke<string>("slice_model", { payload: JSON.stringify({ ...request, dataB64: toBase64(new Uint8Array(bytes)) }) });
-      unlisten();
       if (id !== job) return;
       body = await parseInWorker(id, json);
     } else {
@@ -1383,6 +1384,7 @@ async function runSlice() {
     if (message === "cancelled") state.notice = "Slice cancelled.";
     else state.error = message === "Failed to fetch" ? "Slicer engine not running. Start it with cargo run -p lime-slice --release -- serve" : message;
   } finally {
+    unlisten?.();
     if (id === job) {
       state.busy = false;
       state.progress = 0;
