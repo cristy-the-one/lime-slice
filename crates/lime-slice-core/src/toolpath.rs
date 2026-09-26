@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use crate::poly::{
-    boolean_diff, boolean_union, drop_slivers, in_solid, loop_bounds, loops_from_paths,
-    offset_loops, offset_paths, paths_from_loops, principal_axis, signed_area, Loop,
+    boolean_diff, boolean_intersect, boolean_union, drop_slivers, in_solid, loop_bounds,
+    loops_from_paths, offset_loops, offset_paths, paths_from_loops, principal_axis, signed_area,
+    Loop,
 };
 use crate::strategy::{InfillPattern, ResolvedStrategy, ScarfSeam, SeamMode, StrategyId};
 use clipper2::{EndType, FillRule, JoinType, Milli, Paths};
@@ -351,8 +352,12 @@ fn emit_void_fill(
     let min_w = min_bead(line_width);
     // A void that reaches the outline is the part's skin there, so it is a wall.
     let core = offset_loops(contours, -line_width * 0.25);
+    // Specks smaller than a square bead are clipping noise.
+    let speck = min_w * min_w;
+    let reach = line_width * 0.5;
+    let mut near_bead: Option<Vec<Loop>> = None;
     for void in voids {
-        if signed_area(&void).abs() < 0.25 {
+        if signed_area(&void).abs() < speck {
             continue;
         }
         let region = [void];
@@ -365,35 +370,55 @@ fn emit_void_fill(
         // thin peninsula and leave a genuinely wide sparse cell alone.
         let pieces = narrow_parts(&region, limit);
         for piece in pieces {
-            if signed_area(&piece).abs() < 0.25 {
+            let piece_area = signed_area(&piece).abs();
+            if piece_area < speck {
                 continue;
             }
             let piece_region = [piece];
-            let Some(piece_width) = feature_width(&piece_region) else {
-                continue;
-            };
-            if piece_width < min_w {
-                continue;
-            }
             let skin = boolean_diff(&piece_region, &core)
                 .iter()
                 .map(|l| signed_area(l).abs())
                 .sum::<f64>()
                 > 0.01;
+            if !skin && piece_area < 0.25 {
+                continue;
+            }
+            // Under 0.1 mm the width probe reads nothing. Skin that thin is
+            // where two faces cross, and still needs its bead.
+            let piece_width = match feature_width(&piece_region) {
+                Some(width) => width,
+                None if skin => 0.0,
+                None => continue,
+            };
             let kind = if skin {
                 PathKind::ThinWall
             } else {
                 PathKind::GapFill
             };
-            fill_void_piece(
-                paths,
-                &piece_region,
-                piece_width,
-                kind,
-                strategy,
-                line_width,
-                seam_hint,
-            );
+            if piece_width >= min_w {
+                fill_void_piece(
+                    paths,
+                    &piece_region,
+                    piece_width,
+                    kind,
+                    strategy,
+                    line_width,
+                    seam_hint,
+                );
+            } else if skin {
+                // Skin thinner than the narrowest bead: a membrane whose faces
+                // meet, or a spike tip past its wall. Where no bead is within
+                // reach, dropping it opens a hole through the part, so print one
+                // bead down its spine, a little proud of the model. The hairline
+                // a wall leaves against a curved outline is within reach and stays.
+                let near = near_bead.get_or_insert_with(|| offset_loops(&cover, reach));
+                for bare in bare_stretches(&piece_region, near, reach) {
+                    if let Some(spine) = sliver_spine(&bare, min_w) {
+                        *seam_hint = *spine.last().unwrap();
+                        paths.push(extrusion(kind, strategy, spine, line_width));
+                    }
+                }
+            }
         }
     }
 }
@@ -444,6 +469,66 @@ fn fill_void_piece(
             paths.push(extrusion(kind, strategy, pts, line_width));
         }
     }
+}
+
+/// Stretches of `sliver` farther than `reach` from every bead, grown back to
+/// full length within the sliver so their bead meets the walls at each end.
+fn bare_stretches(sliver: &[Loop], near_bead: &[Loop], reach: f64) -> Vec<Loop> {
+    let far = boolean_diff(sliver, near_bead);
+    if far.iter().all(|l| signed_area(l).abs() < 1e-4) {
+        return Vec::new();
+    }
+    boolean_intersect(&offset_loops(&far, reach), sliver)
+        .into_iter()
+        .filter(|l| signed_area(l) > 0.0)
+        .collect()
+}
+
+/// Center line of a sliver: split its outline at the two points farthest
+/// apart and average the two sides point by point. A straight row would cut
+/// the corner of a curved sliver and leave most of it bare.
+fn sliver_spine(ring: &[[f64; 2]], step: f64) -> Option<Vec<[f64; 2]>> {
+    let n = ring.len();
+    if n < 3 {
+        return None;
+    }
+    let farthest = |from: [f64; 2]| {
+        (0..n)
+            .max_by(|&a, &b| dist2(ring[a], from).total_cmp(&dist2(ring[b], from)))
+            .unwrap()
+    };
+    let i = farthest(ring[0]);
+    let j = farthest(ring[i]);
+    if i == j {
+        return None;
+    }
+    let walk = |from: usize, to: usize| {
+        let mut side = vec![ring[from]];
+        let mut k = from;
+        while k != to {
+            k = (k + 1) % n;
+            side.push(ring[k]);
+        }
+        side
+    };
+    let a = walk(i, j);
+    let mut b = walk(j, i);
+    b.reverse();
+    let length = polyline_len(&a).max(polyline_len(&b));
+    if length < step {
+        return None;
+    }
+    let samples = (length / step).ceil() as usize + 1;
+    let (la, lb) = (polyline_len(&a), polyline_len(&b));
+    Some(
+        (0..samples)
+            .map(|k| {
+                let t = k as f64 / (samples - 1) as f64;
+                let (p, q) = (point_along(&a, la * t), point_along(&b, lb * t));
+                [(p[0] + q[0]) * 0.5, (p[1] + q[1]) * 0.5]
+            })
+            .collect(),
+    )
 }
 
 /// Parts of `region` narrower than `limit`. A wide blob grows back from its
