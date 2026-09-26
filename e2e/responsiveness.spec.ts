@@ -168,20 +168,43 @@ test("playback readout does not resize the print slider", async ({ page }) => {
   }
   expect(texts.size).toBeGreaterThan(1);
   const play = page.locator("#play");
+  const stop = page.locator("#stop");
+  await expect(play).toHaveText("Play");
+  await expect(stop).toBeDisabled();
   const playBefore = (await play.boundingBox())!;
-  await play.click();
-  await expect(play).toHaveText("Pause");
+  const stopBefore = (await stop.boundingBox())!;
+  const hitX = playBefore.x + playBefore.width / 2;
+  const hitY = playBefore.y + playBefore.height / 2;
+  await page.mouse.click(hitX, hitY);
+  await expect(play).toHaveText("Playing…");
+  await expect(play).toBeDisabled();
+  await expect(stop).toBeEnabled();
   const playing = await box();
   const playAfter = (await play.boundingBox())!;
+  const stopAfter = (await stop.boundingBox())!;
   expect(Math.abs(playing.x - first.x)).toBeLessThan(1);
   expect(Math.abs(playing.y - first.y)).toBeLessThan(1);
   expect(Math.abs(playing.width - first.width)).toBeLessThan(1);
   expect(Math.abs(playAfter.x - playBefore.x)).toBeLessThan(1);
   expect(Math.abs(playAfter.width - playBefore.width)).toBeLessThan(1);
+  expect(Math.abs(stopAfter.x - stopBefore.x)).toBeLessThan(1);
+  expect(Math.abs(stopAfter.width - stopBefore.width)).toBeLessThan(1);
+  await page.mouse.click(hitX, hitY);
+  await expect(play).toHaveText("Playing…");
+  await expect(stop).toBeEnabled();
   await page.waitForTimeout(240);
+  await expect(play).toHaveText("Playing…");
+  await expect(stop).toBeEnabled();
   const later = await box();
   expect(Math.abs(later.x - first.x)).toBeLessThan(1);
   expect(Math.abs(later.width - first.width)).toBeLessThan(1);
+  await stop.click();
+  await expect(play).toHaveText("Play");
+  await expect(play).toBeEnabled();
+  await expect(stop).toBeDisabled();
+  const stopped = await box();
+  expect(Math.abs(stopped.x - first.x)).toBeLessThan(1);
+  expect(Math.abs(stopped.width - first.width)).toBeLessThan(1);
 });
 
 test("layer scrub does not resize the spark or the layer track", async ({ page }) => {
@@ -269,6 +292,8 @@ test("a running slice shows elapsed time and Cancel aborts the request", async (
   await openCube(page);
   const failed: string[] = [];
   page.on("requestfailed", (req) => failed.push(req.url()));
+  const railBefore = (await page.locator("#banner").boundingBox())!;
+  const stageBefore = (await page.locator(".workspace").boundingBox())!;
   await page.locator("#slice").click();
   await expect(page.locator("[data-state=slicing]")).toHaveClass(/indeterminate/);
   await expect(page.locator("#timing")).toHaveText(/^Slicing… \d+\.\d s$/);
@@ -278,6 +303,10 @@ test("a running slice shows elapsed time and Cancel aborts the request", async (
   await page.getByRole("button", { name: "Cancel" }).click();
   await expect(page.locator("#banner")).toContainText("cancelled");
   await expect(page.locator("#timing")).toHaveText("No slice yet");
+  const railAfter = (await page.locator("#banner").boundingBox())!;
+  const stageAfter = (await page.locator(".workspace").boundingBox())!;
+  expect(Math.abs(railAfter.height - railBefore.height)).toBeLessThan(1);
+  expect(Math.abs(stageAfter.y - stageBefore.y)).toBeLessThan(1);
   await expect.poll(() => failed.filter((url) => url.includes("/api/slice")).length).toBe(1);
 });
 
