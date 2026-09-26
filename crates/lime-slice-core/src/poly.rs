@@ -295,6 +295,41 @@ pub fn boolean_intersect(a: &[Loop], b: &[Loop]) -> Vec<Loop> {
     }
 }
 
+/// `subject − clip` that sends only the subject loops near `clip` through Clipper.
+/// A loop whose box misses the clip's box is unchanged, and a hole left out
+/// stays inside its outline, so the region is the same as `boolean_diff`.
+/// Worth it when a large, slowly changing region meets a small local one.
+pub fn local_diff(subject: &[Loop], clip: &[Loop]) -> Vec<Loop> {
+    let (mut near, far) = split_near(subject, clip);
+    if near.is_empty() {
+        return far;
+    }
+    near = boolean_diff(&near, clip);
+    near.extend(far);
+    near
+}
+
+/// `a ∪ b` that sends only the loops of `a` near `b` through Clipper.
+pub fn local_union(a: &[Loop], b: &[Loop]) -> Vec<Loop> {
+    let (near, far) = split_near(a, b);
+    let mut out = boolean_union(&near, b);
+    out.extend(far);
+    out
+}
+
+fn split_near(loops: &[Loop], other: &[Loop]) -> (Vec<Loop>, Vec<Loop>) {
+    let Some((lo, hi)) = loop_bounds(other) else {
+        return (Vec::new(), loops.to_vec());
+    };
+    loops
+        .iter()
+        .cloned()
+        .partition(|l| match loop_bounds(std::slice::from_ref(l)) {
+            Some((a, b)) => a[0] <= hi[0] && lo[0] <= b[0] && a[1] <= hi[1] && lo[1] <= b[1],
+            None => false,
+        })
+}
+
 pub fn drop_slivers(loops: Vec<Loop>, min_area: f64) -> Vec<Loop> {
     loops
         .into_iter()
@@ -305,6 +340,44 @@ pub fn drop_slivers(loops: Vec<Loop>, min_area: f64) -> Vec<Loop> {
 #[cfg(test)]
 mod tests {
     use super::orient_loops;
+
+    #[test]
+    fn local_booleans_match_the_full_ones() {
+        let sq =
+            |x0: f64, y0: f64, s: f64| vec![[x0, y0], [x0 + s, y0], [x0 + s, y0 + s], [x0, y0 + s]];
+        let hole = |x0: f64, y0: f64, s: f64| {
+            let mut l = sq(x0, y0, s);
+            l.reverse();
+            l
+        };
+        // A frame far from the clip, a frame next to it, and a lone column.
+        let region = vec![
+            sq(0.0, 0.0, 10.0),
+            hole(3.0, 3.0, 4.0),
+            sq(20.0, 0.0, 10.0),
+            hole(21.0, 1.0, 2.0),
+            sq(40.0, 40.0, 3.0),
+        ];
+        let clip = vec![sq(25.0, 5.0, 8.0)];
+        let area = |ls: &[super::Loop]| ls.iter().map(|l| super::signed_area(l)).sum::<f64>();
+        let full = super::boolean_diff(&region, &clip);
+        let local = super::local_diff(&region, &clip);
+        assert!(
+            (area(&full) - area(&local)).abs() < 1e-6,
+            "{} vs {}",
+            area(&full),
+            area(&local)
+        );
+        assert!((area(&local) - (84.0 + 96.0 - 25.0 + 9.0)).abs() < 1e-6);
+        let full = super::boolean_union(&region, &clip);
+        let local = super::local_union(&region, &clip);
+        assert!(
+            (area(&full) - area(&local)).abs() < 1e-6,
+            "{} vs {}",
+            area(&full),
+            area(&local)
+        );
+    }
 
     #[test]
     fn a_doubled_corner_stays_a_corner() {

@@ -1,7 +1,9 @@
+use rayon::prelude::*;
+
 use crate::adaptive::LayerBand;
 use crate::poly::{
-    boolean_diff, boolean_union, drop_slivers, in_solid, loop_bounds, offset_loops, point_in_loop,
-    signed_area, Loop,
+    boolean_diff, boolean_union, drop_slivers, in_solid, local_diff, local_union, loop_bounds,
+    offset_loops, point_in_loop, signed_area, Loop,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -82,24 +84,28 @@ pub fn build_supports(
     if n == 0 {
         return out;
     }
-    let angle = opts.angle_deg.clamp(15.0, 75.0).to_radians().tan().max(0.2);
-    let iface_n = opts.interface_layers.max(1);
-    let mut island_regions = vec![Vec::new(); n];
-    if opts.islands {
-        for i in 1..n {
-            let upper = contours.get(i).map(Vec::as_slice).unwrap_or(&[]);
-            let lower = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
-            if upper.is_empty() {
-                continue;
-            }
-            let dx = bands[i].height / angle;
-            island_regions[i] = unsupported_islands(upper, lower, dx);
-        }
-    }
     // Cantilevers are not islands. Keep scanning when auto support is on.
     if !opts.overhangs && !opts.islands {
         return out;
     }
+    let angle = opts.angle_deg.clamp(15.0, 75.0).to_radians().tan().max(0.2);
+    let iface_n = opts.interface_layers.max(1);
+    // Everything that depends only on the part is found per layer in parallel.
+    // The walk below carries the columns down from each overhang.
+    let overhangs: Vec<Vec<Loop>> = (0..n)
+        .into_par_iter()
+        .map(|i| overhang_at(bands, contours, i, angle, opts))
+        .collect();
+    let gaps: Vec<Vec<Loop>> = contours
+        .par_iter()
+        .map(|part| {
+            if part.is_empty() {
+                Vec::new()
+            } else {
+                offset_loops(part, opts.xy_gap)
+            }
+        })
+        .collect();
 
     // (contact_z, region) waiting until the air gap has been cleared.
     let mut pending: Vec<(f64, Vec<Loop>)> = Vec::new();
@@ -152,15 +158,9 @@ pub fn build_supports(
             gens.insert(0, (born, iface_n));
         }
 
-        let gap = if part.is_empty() {
-            Vec::new()
-        } else {
-            offset_loops(part, opts.xy_gap)
-        };
+        let gap = &gaps[i];
         let iface_area = union_all(gens.iter().map(|(r, _)| r.as_slice()));
-        let iface_print = drop_slivers(boolean_diff(&iface_area, &gap), 0.05);
-        let sparse_only = boolean_diff(&sparse, &iface_area);
-        let sparse_print = drop_slivers(boolean_diff(&sparse_only, &gap), 0.05);
+        let iface_print = drop_slivers(boolean_diff(&iface_area, gap), 0.05);
         let (sparse_print, branch_pts, branch_r) = if tree {
             if i == 0 {
                 for n in &mut nodes {
@@ -172,6 +172,8 @@ pub fn build_supports(
             let (pts, rs) = organic_disks(&nodes, part, opts.xy_gap);
             (Vec::new(), pts, rs)
         } else {
+            let sparse_only = local_diff(&sparse, &iface_area);
+            let sparse_print = drop_slivers(local_diff(&sparse_only, gap), 0.05);
             (sparse_print, Vec::new(), Vec::new())
         };
         out[i] = SupportLayer {
@@ -189,13 +191,18 @@ pub fn build_supports(
                 continue;
             }
             if left <= 1 {
-                sparse = boolean_union(&sparse, &trimmed);
+                // Trees print their own trunks; only the grid keeps a column region.
+                if !tree {
+                    sparse = local_union(&sparse, &trimmed);
+                }
             } else {
                 next_gens.push((trimmed, left - 1));
             }
         }
         gens = next_gens;
-        sparse = drop_slivers(boolean_diff(&sparse, part), 0.15);
+        if !tree {
+            sparse = drop_slivers(local_diff(&sparse, part), 0.15);
+        }
         if tree && i > 0 {
             let below = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
             let below2 = if i > 1 {
@@ -218,40 +225,54 @@ pub fn build_supports(
             );
         }
 
-        if i == 0 {
-            continue;
-        }
-        let upper = contours.get(i).map(Vec::as_slice).unwrap_or(&[]);
-        let lower = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
-        if upper.is_empty() {
-            continue;
-        }
-        let dx = bands[i].height / angle;
-        // Islands and one-sided wings both print in air. The overhang toggle
-        // still adds short bridge decks, which can span two anchors.
-        let angle_overhang = if opts.overhangs || opts.islands {
-            let supported = offset_loops(lower, dx);
-            drop_slivers(boolean_diff(upper, &supported), 0.35)
-        } else {
-            Vec::new()
-        };
-        let islands = island_regions.get(i).map(Vec::as_slice).unwrap_or(&[]);
-        let mut overhang = if islands.is_empty() {
-            angle_overhang
-        } else {
-            // Keep a small island the angle test would drop as a sliver.
-            drop_slivers(boolean_union(&angle_overhang, islands), 0.05)
-        };
-        if !opts.overhangs {
-            overhang = exclude_short_bridges(&overhang, lower, dx);
-        }
+        let overhang = &overhangs[i];
         if overhang.is_empty() {
             continue;
         }
         let underside = bands[i].z - bands[i].height;
-        pending.push((underside - opts.z_gap, overhang));
+        pending.push((underside - opts.z_gap, overhang.clone()));
     }
     out
+}
+
+/// Area of layer `i` that needs a column under it: past the overhang angle,
+/// a floating island, or (with overhangs off) a wing too long to bridge.
+fn overhang_at(
+    bands: &[LayerBand],
+    contours: &[Vec<Loop>],
+    i: usize,
+    angle: f64,
+    opts: &SupportOpts,
+) -> Vec<Loop> {
+    if i == 0 {
+        return Vec::new();
+    }
+    let upper = contours.get(i).map(Vec::as_slice).unwrap_or(&[]);
+    let lower = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
+    if upper.is_empty() {
+        return Vec::new();
+    }
+    let dx = bands[i].height / angle;
+    // Islands and one-sided wings both print in air. The overhang toggle
+    // still adds short bridge decks, which can span two anchors.
+    let supported = offset_loops(lower, dx);
+    let angle_overhang = drop_slivers(boolean_diff(upper, &supported), 0.35);
+    let islands = if opts.islands {
+        unsupported_islands(upper, lower, dx)
+    } else {
+        Vec::new()
+    };
+    let overhang = if islands.is_empty() {
+        angle_overhang
+    } else {
+        // Keep a small island the angle test would drop as a sliver.
+        drop_slivers(boolean_union(&angle_overhang, &islands), 0.05)
+    };
+    if opts.overhangs {
+        overhang
+    } else {
+        exclude_short_bridges(&overhang, lower, dx)
+    }
 }
 
 struct Node {
