@@ -2862,3 +2862,55 @@ fn a_newer_slice_stops_the_older_one_mid_plan() {
     );
     assert!(!newer.cancelled());
 }
+
+#[test]
+fn every_sample_audits_clean() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples");
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        if !name.ends_with(".stl") {
+            continue;
+        }
+        let mesh = load_mesh(&name, &std::fs::read(&path).unwrap()).unwrap();
+        for (label, style) in [
+            ("grid", lime_slice_core::SupportStyle::Grid),
+            ("tree", lime_slice_core::SupportStyle::Tree),
+        ] {
+            let report = lime_slice_core::audit_slice(
+                &mesh,
+                &tough_mode(),
+                &SliceSettings {
+                    supports: true,
+                    support_style: style,
+                    include_gcode: false,
+                    baseline: false,
+                    ..SliceSettings::default()
+                },
+                0.4,
+            )
+            .unwrap();
+            let coverage = report.sliced_volume_mm3 / report.mesh_volume_mm3;
+            assert!(
+                (coverage - 1.0).abs() < 0.005,
+                "{name} {label}: sliced {coverage:.4} of the mesh volume"
+            );
+            assert_eq!(report.missing_mm3, 0.0, "{name} {label} lost contour area");
+            assert_eq!(report.dropped_chains, 0, "{name} {label} dropped a chain");
+            assert_eq!(
+                report.support_inside_mm3, 0.0,
+                "{name} {label} put support inside the part"
+            );
+            assert_eq!(
+                report.support_floating_mm3, 0.0,
+                "{name} {label} printed support over air, worst {:?}",
+                report.worst_floating
+            );
+            assert!(
+                report.unskinned_top_mm2 < 0.5,
+                "{name} {label} left {:.2} mm2 of top without skin",
+                report.unskinned_top_mm2
+            );
+        }
+    }
+}
