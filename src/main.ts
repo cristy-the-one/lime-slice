@@ -1,6 +1,6 @@
 import { colorForPath, FEATURE_COLOR, FEATURE_LABEL, type ColorMode } from "./colors";
 import { groupFeatures } from "./estimate";
-import { encode3mf, encodeStl, ID_MATRIX, layFlatMatrix, matMul, offBed, parseStl, rotX, rotY, rotZ, transformPositions, boundsOf, type Mat3 } from "./mesh-place";
+import { encode3mf, encodeStl, ID_MATRIX, layFlatMatrix, matMul, offBed, parseStl, rotX, rotY, rotZ, transformPositions, centeringShift, boundsOf, type Mat3, type MeshShift } from "./mesh-place";
 import { clampSplit, nextSplitAt, roundSplit, splitOutside, type AxisBounds, type SplitSync } from "./split-at";
 import { indexLayerGcode, layerClass, layerMoves, matchGcodeLine, type LayerGcode, type PlayPoint } from "./playback";
 import { createPrepareView } from "./prepare-view";
@@ -133,10 +133,11 @@ const state = {
   orient: ID_MATRIX as Mat3,
   partScale: 1,
   centered: true,
+  offset: { x: 0, y: 0, z: 0 } as MeshShift,
   pareto: [] as ParetoPoint[],
   help: false,
   splitCustom: false,
-  rotateHud: "",
+  poseHud: "",
 };
 
 const worker = new Worker(new URL("./slice-worker.ts", import.meta.url), { type: "module" });
@@ -253,6 +254,7 @@ app.innerHTML = `
         <li><kbd>Ctrl</kbd>+<kbd>E</kbd> Export G-code</li>
         <li><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> 2D, split, 3D</li>
         <li>Drag a ring on Prepare to rotate. <kbd>Shift</kbd> snaps 15°</li>
+        <li>Drag an arrow to move the mesh. <kbd>Shift</kbd> snaps 1 mm</li>
         <li>Drag the split plane when By region is on</li>
         <li><kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> Layer</li>
         <li><kbd>?</kbd> This sheet</li>
@@ -284,8 +286,9 @@ function stale() {
 }
 
 function settingsHash() {
-  const mesh = state.mesh ? `${state.mesh.name}:${state.mesh.bytes.byteLength}:${state.partScale}:${state.centered}:${state.orient.join(",")}` : "";
-  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, rotateHud: _rh, ...rest } = state;
+  const shift = state.offset;
+  const mesh = state.mesh ? `${state.mesh.name}:${state.mesh.bytes.byteLength}:${state.partScale}:${state.centered}:${shift.x.toFixed(3)},${shift.y.toFixed(3)},${shift.z.toFixed(3)}:${state.orient.join(",")}` : "";
+  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, ...rest } = state;
   return JSON.stringify({ mesh, profile: state.profile, rest });
 }
 
@@ -521,6 +524,9 @@ function objectList() {
   if (!state.placed) return `<div class="meta">Drop an STL or 3MF, or open a sample.</div>`;
   const b = boundsOf(state.placed);
   const size = b.max.map((v, i) => (v - b.min[i]).toFixed(1)).join(" × ");
+  const cx = ((b.min[0] + b.max[0]) / 2).toFixed(1);
+  const cy = ((b.min[1] + b.max[1]) / 2).toFixed(1);
+  const z0 = b.min[2].toFixed(1);
   const notes = offBed(state.placed, state.profile.bedX, state.profile.bedY, state.profile.bedZ);
   return `
     <div class="obj" role="listitem">
@@ -537,7 +543,8 @@ function objectList() {
     </div>
     <label class="field">Scale %<input id="partScale" type="number" min="10" max="400" step="5" value="${Math.round(state.partScale * 100)}" /></label>
     ${notes.length ? `<div class="meta warn-text">${notes.join("; ")}</div>` : `<div class="meta">On the ${state.profile.bedX}×${state.profile.bedY}×${state.profile.bedZ} mm bed.</div>`}
-    <div class="meta">Drag a ring to rotate. Shift snaps 15°.</div>
+    <div class="meta" id="placeReadout">X ${cx} · Y ${cy} · bed Z ${z0} mm</div>
+    <div class="meta">Drag a ring to rotate. Drag an arrow to move. Shift snaps 15° or 1 mm.</div>
   `;
 }
 
@@ -969,7 +976,7 @@ document.querySelector("#left")!.addEventListener("click", (ev) => {
     writePresets(all);
     renderChrome();
   }
-  if (t.id === "center") { state.centered = true; place(); }
+  if (t.id === "center") { state.centered = true; state.offset = { x: 0, y: 0, z: 0 }; place(); }
   if (t.id === "layflat" && state.sourcePos) { state.orient = layFlatMatrix(state.sourcePos); place(); }
   if (t.id === "rotX") { state.orient = matMul(rotX(90), state.orient); place(); }
   if (t.id === "rotY") { state.orient = matMul(rotY(90), state.orient); place(); }
@@ -1321,6 +1328,7 @@ async function adoptBytes(name: string, bytes: ArrayBuffer) {
   state.orient = ID_MATRIX;
   state.partScale = 1;
   state.centered = true;
+  state.offset = { x: 0, y: 0, z: 0 };
   const parsed = name.toLowerCase().endsWith(".3mf") ? null : parseStl(bytes);
   state.sourcePos = parsed ?? (await previewRemote(name, bytes));
   place("load");
@@ -1358,7 +1366,7 @@ function applyPlace(rerender: boolean, sync: SplitSync = "transform") {
     if (rerender) renderChrome();
     return;
   }
-  state.placed = transformPositions(state.sourcePos, state.orient, state.partScale, state.profile.bedX, state.profile.bedY, state.centered);
+  state.placed = transformPositions(state.sourcePos, state.orient, state.partScale, state.profile.bedX, state.profile.bedY, state.centered, state.offset);
   realignSplit(sync);
   prepare.setMesh(state.placed, sync === "load");
   prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
@@ -1600,15 +1608,15 @@ function paintGizmoReadout() {
     return;
   }
   el.hidden = false;
-  if (state.rotateHud) {
-    el.textContent = state.rotateHud;
+  if (state.poseHud) {
+    el.textContent = state.poseHud;
     return;
   }
   if (state.blendKind === "byRegion") {
     el.textContent = `Split ${state.axis.toUpperCase()} ${state.atMm.toFixed(1)} mm · low toughness · high speed`;
     return;
   }
-  el.textContent = "Drag a ring to rotate · Shift snaps 15°";
+  el.textContent = "Drag a ring to rotate · an arrow to move · Shift snaps";
 }
 
 function syncPlanes() {
@@ -2039,11 +2047,31 @@ prepare.onSplit((at) => commitSplit(at));
 prepare.onRotate((axis, deltaDeg, totalDeg) => {
   const spin = axis === "x" ? rotX : axis === "y" ? rotY : rotZ;
   state.orient = matMul(spin(deltaDeg), state.orient);
-  state.rotateHud = `${axis.toUpperCase()} ${totalDeg >= 0 ? "+" : ""}${totalDeg.toFixed(0)}°`;
+  state.poseHud = `${axis.toUpperCase()} ${totalDeg >= 0 ? "+" : ""}${totalDeg.toFixed(0)}°`;
   applyPlace(false);
 });
 prepare.onRotateEnd(() => {
-  state.rotateHud = "";
+  state.poseHud = "";
+  paintGizmoReadout();
+  renderChrome();
+});
+prepare.onMove((axis, deltaMm, totalMm) => {
+  if (!state.sourcePos) return;
+  if (state.centered) {
+    state.offset = centeringShift(state.sourcePos, state.orient, state.partScale, state.profile.bedX, state.profile.bedY);
+    state.centered = false;
+  }
+  state.offset = {
+    x: state.offset.x + (axis === "x" ? deltaMm : 0),
+    y: state.offset.y + (axis === "y" ? deltaMm : 0),
+    z: state.offset.z + (axis === "z" ? deltaMm : 0),
+  };
+  state.poseHud = `${axis.toUpperCase()} ${totalMm >= 0 ? "+" : ""}${totalMm.toFixed(1)} mm`;
+  applyPlace(false);
+});
+prepare.onMoveEnd(() => {
+  state.poseHud = "";
+  paintGizmoReadout();
   renderChrome();
 });
 view3d.onPlane((at) => commitSplit(at));

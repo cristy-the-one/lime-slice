@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
+import { GIZMO_SCREEN_PX } from "../src/gizmo-math";
 import { boundsOf, ID_MATRIX, parseStl, transformPositions } from "../src/mesh-place";
 import { encodePaths } from "../src/preview-wire";
 import { nextSplitAt, roundSplit, splitMidpoint } from "../src/split-at";
@@ -96,17 +97,22 @@ test("bridge By region starts inside the mesh and the plane and gizmo move it", 
   await page.getByRole("button", { name: "Prepare", exact: true }).click();
   await page.waitForTimeout(200);
   const sizeBefore = await page.locator("#objectList .obj span").innerText();
-  await drag(page, cx, cy - box.height * 0.22, cx + 110, cy - box.height * 0.02);
-  const readout = await page.locator("#gizmoReadout").innerText();
-  const sizeAfter = await page.locator("#objectList .obj span").innerText();
-  const rotated = readout.includes("°") || sizeAfter !== sizeBefore;
-  if (!rotated) {
-    await drag(page, cx + box.width * 0.16, cy, cx + box.width * 0.16, cy - 80);
+  const ring = GIZMO_SCREEN_PX;
+  const ringDrags: Array<[number, number, number, number]> = [
+    [cx, cy - ring, cx + 78, cy - ring + 16],
+    [cx + ring, cy, cx + ring - 12, cy - 72],
+    [cx - ring, cy, cx - ring + 14, cy + 68],
+    [cx, cy + ring, cx - 64, cy + ring - 18],
+    [cx + ring * 0.7, cy - ring * 0.7, cx + 16, cy - 24],
+  ];
+  let sizeNow = sizeBefore;
+  for (const [x0, y0, x1, y1] of ringDrags) {
+    await drag(page, x0, y0, x1, y1);
+    sizeNow = await page.locator("#objectList .obj span").innerText();
+    if (sizeNow !== sizeBefore) break;
   }
   await page.locator("#prepare").screenshot({ path: path.join(out, "prepare-gizmo.png") });
-  const readout2 = await page.locator("#gizmoReadout").innerText();
-  const size2 = await page.locator("#objectList .obj span").innerText();
-  expect(readout2.includes("°") || size2 !== sizeBefore).toBe(true);
+  expect(sizeNow).not.toBe(sizeBefore);
   await expect(page.locator("#banner")).not.toContainText("outside the mesh");
 
   await page.locator("#rotX").click();

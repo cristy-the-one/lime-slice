@@ -159,7 +159,22 @@ export function layFlatMatrix(pos: Float32Array): Mat3 {
   return align(best.n, [0, 0, -1]);
 }
 
-export function transformPositions(source: Float32Array, matrix: Mat3, scale: number, bedX: number, bedY: number, centered: boolean) {
+/** Millimetres applied after the part is dropped onto Z = 0. Ignored while centered. */
+export interface MeshShift {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export function transformPositions(
+  source: Float32Array,
+  matrix: Mat3,
+  scale: number,
+  bedX: number,
+  bedY: number,
+  centered: boolean,
+  shift?: MeshShift,
+) {
   const out = new Float32Array(source.length);
   const b = boundsOf(source);
   const cx = (b.min[0] + b.max[0]) / 2;
@@ -174,16 +189,34 @@ export function transformPositions(source: Float32Array, matrix: Mat3, scale: nu
     out[i + 2] = matrix[6] * x + matrix[7] * y + matrix[8] * z + cz;
   }
   settle(out);
-  if (centered) {
-    const placed = boundsOf(out);
-    const dx = bedX / 2 - (placed.min[0] + placed.max[0]) / 2;
-    const dy = bedY / 2 - (placed.min[1] + placed.max[1]) / 2;
+  const move = centered ? bedCenterShift(out, bedX, bedY) : {
+    x: shift?.x ?? 0,
+    y: shift?.y ?? 0,
+    z: shift?.z ?? 0,
+  };
+  if (move.x || move.y || move.z) {
     for (let i = 0; i < out.length; i += 3) {
-      out[i] += dx;
-      out[i + 1] += dy;
+      out[i] += move.x;
+      out[i + 1] += move.y;
+      out[i + 2] += move.z;
     }
   }
   return out;
+}
+
+/** XY shift that places the settled part's bounds on the bed center. Z stays on the plate. */
+export function centeringShift(source: Float32Array, matrix: Mat3, scale: number, bedX: number, bedY: number): MeshShift {
+  const parked = transformPositions(source, matrix, scale, bedX, bedY, false);
+  return bedCenterShift(parked, bedX, bedY);
+}
+
+function bedCenterShift(pos: Float32Array, bedX: number, bedY: number): MeshShift {
+  const placed = boundsOf(pos);
+  return {
+    x: bedX / 2 - (placed.min[0] + placed.max[0]) / 2,
+    y: bedY / 2 - (placed.min[1] + placed.max[1]) / 2,
+    z: 0,
+  };
 }
 
 export function offBed(pos: Float32Array, bedX: number, bedY: number, bedZ: number) {
