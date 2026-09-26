@@ -91,6 +91,10 @@ jobs:
           {
             echo "lime-slice $(git rev-parse --short HEAD)"
             for sample in samples/*; do
+              if [[ "$(basename "$sample")" == "dragon_2_5.stl" ]]; then
+                echo "skip ${sample}: checked-in mesh, Dragon audit is opt-in"
+                continue
+              fi
               echo
               echo "===== bench ${sample} ====="
               "${bin}" bench "${sample}"

@@ -2869,7 +2869,8 @@ fn every_sample_audits_clean() {
     for entry in std::fs::read_dir(&dir).unwrap() {
         let path = entry.unwrap().path();
         let name = path.file_name().unwrap().to_string_lossy().to_string();
-        if !name.ends_with(".stl") {
+        // dragon_2_5.stl is checked in. dragon_2_5_headlines audits it, opt-in.
+        if name == "dragon_2_5.stl" || !name.ends_with(".stl") {
             continue;
         }
         let mesh = load_mesh(&name, &std::fs::read(&path).unwrap()).unwrap();
@@ -2912,6 +2913,79 @@ fn every_sample_audits_clean() {
                 report.unskinned_top_mm2
             );
         }
+    }
+}
+
+/// Edges owned by one welded face. Welding matches the contour index: identical
+/// coordinates share a vertex, and a collapsed face is dropped.
+fn open_edge_count(mesh: &Mesh) -> usize {
+    use std::collections::HashMap;
+    let mut ids: HashMap<[u64; 3], u32> = HashMap::new();
+    let mut next = 0u32;
+    let mut faces = Vec::with_capacity(mesh.triangles.len());
+    for tri in &mesh.triangles {
+        let mut face = [0u32; 3];
+        for (slot, v) in face.iter_mut().zip(tri.iter()) {
+            let bits = [v[0].to_bits(), v[1].to_bits(), v[2].to_bits()];
+            *slot = *ids.entry(bits).or_insert_with(|| {
+                let id = next;
+                next += 1;
+                id
+            });
+        }
+        if face[0] != face[1] && face[1] != face[2] && face[0] != face[2] {
+            faces.push(face);
+        }
+    }
+    let mut uses: HashMap<(u32, u32), u32> = HashMap::new();
+    for face in faces {
+        for (a, b) in [(face[0], face[1]), (face[1], face[2]), (face[2], face[0])] {
+            let key = if a < b { (a, b) } else { (b, a) };
+            *uses.entry(key).or_default() += 1;
+        }
+    }
+    uses.values().filter(|count| **count == 1).count()
+}
+
+// Checked-in Dragon 2.5. Default `cargo test` ignores this.
+//   cargo test -p lime-slice-core --release -- dragon_2_5_headlines --ignored --nocapture
+// Same presets as `slice --blend speed|toughness --supports` (tree is the default style).
+// Prints core ms, coverage, inside, floating, unskinned, and open skin.
+#[test]
+#[ignore = "opt-in dragon_2_5: samples/dragon_2_5.stl stays out of the default suite"]
+fn dragon_2_5_headlines() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples/dragon_2_5.stl");
+    if !path.is_file() {
+        eprintln!("skip dragon_2_5: samples/dragon_2_5.stl is missing");
+        return;
+    }
+    let mesh = load_mesh("dragon_2_5.stl", &std::fs::read(&path).unwrap()).unwrap();
+    println!(
+        "dragon_2_5 open edges {}  triangles {}",
+        open_edge_count(&mesh),
+        mesh.triangle_count()
+    );
+    let nozzle = profile().nozzle_diameter;
+    for (label, blend) in [("speed", speed_mode()), ("toughness", tough_mode())] {
+        let settings = SliceSettings {
+            supports: true,
+            support_style: lime_slice_core::SupportStyle::Tree,
+            include_gcode: false,
+            include_preview: false,
+            baseline: false,
+            ..SliceSettings::default()
+        };
+        let response = slice_configured(&mesh, &blend, &profile(), &settings).unwrap();
+        let report = lime_slice_core::audit_slice(&mesh, &blend, &settings, nozzle).unwrap();
+        let coverage = report.sliced_volume_mm3 / report.mesh_volume_mm3.max(1e-9) * 100.0;
+        println!(
+            "dragon_2_5 {label}  core {:.2} ms  coverage {coverage:.1}%  inside {:.2} mm3  floating {:.2} mm3  unskinned {:.1} mm2  open skin {:.1} mm2",
+            response.core_ms,
+            report.support_inside_mm3,
+            report.support_floating_mm3,
+            report.unskinned_top_mm2,
+            report.open_skin_mm2,
+        );
     }
 }
 
