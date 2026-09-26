@@ -98,11 +98,12 @@ pub fn emit_gcode(
             w.set_accel(travel_accel);
             let mut hop = path.lead_in.clone();
             hop.push(path.points[0]);
+            let (retract_mm, min_travel) = path.travel_retract();
             w.travel_chain(
                 &hop,
                 path.travel_speed,
-                path.retract_mm,
-                path.retract_min_travel,
+                retract_mm,
+                min_travel,
                 travel_accel,
                 path.z_hop,
                 layer.z,

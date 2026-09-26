@@ -1522,6 +1522,15 @@ fn combing_does_not_cross_a_hole_without_retract() {
     )
     .unwrap();
     let tough_cross = hole_crossings(&tough.gcode);
+    assert!(
+        tough_cross.iter().all(|c| c.retracted),
+        "toughness crossed the hole without retract: {:?}",
+        tough_cross
+            .iter()
+            .filter(|c| !c.retracted)
+            .map(|c| (c.a, c.b, c.scarf))
+            .collect::<Vec<_>>()
+    );
     let long: Vec<_> = tough_cross
         .iter()
         .filter(|c| !c.scarf && (c.a[0] - c.b[0]).hypot(c.a[1] - c.b[1]) >= 2.0)

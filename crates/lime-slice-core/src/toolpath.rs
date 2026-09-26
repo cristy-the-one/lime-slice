@@ -100,6 +100,17 @@ impl Default for PathFeatures {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TravelIn {
+    /// Not checked against the part. Retract past the strategy's minimum travel.
+    #[default]
+    Unchecked,
+    /// Stays inside the part, straight or through `lead_in`. No retract.
+    Inside,
+    /// Leaves the part or crosses a hole. Always retract.
+    Blocked,
+}
+
 #[derive(Clone, Debug)]
 pub struct Extrusion {
     pub kind: PathKind,
@@ -122,6 +133,8 @@ pub struct Extrusion {
     pub travel_accel: f64,
     /// Intermediate combing points visited before `points[0]`.
     pub lead_in: Vec<[f64; 2]>,
+    /// How the travel into this path relates to the part. Decides the retract.
+    pub travel_in: TravelIn,
     /// Nozzle height as a fraction of this layer's height, one entry per point.
     /// Empty means the whole path sits on the layer Z. `0` is the previous layer top.
     pub z_frac: Vec<f64>,
@@ -720,6 +733,7 @@ fn extrusion(
             strategy.accel
         },
         lead_in: Vec::new(),
+        travel_in: TravelIn::Unchecked,
         z_frac: Vec::new(),
         flow_frac: Vec::new(),
         scarf_mm: 0.0,
@@ -1532,18 +1546,7 @@ pub fn seat_layer_start(
                 }
             }
             if let Some(start) = path.points.first().copied() {
-                match comb_between(solid, &inset_loops, from, start, combing) {
-                    Comb::Clear => path.retract_mm = 0.0,
-                    Comb::Routed(via) => {
-                        path.lead_in = via;
-                        path.retract_mm = 0.0;
-                    }
-                    Comb::Blocked => {
-                        if !segment_inside(solid, from, start) {
-                            path.retract_min_travel = 0.0;
-                        }
-                    }
-                }
+                path.take_comb(comb_between(solid, &inset_loops, from, start, combing));
             }
         }
         if let Some(end) = path.points.last().copied() {
@@ -1622,16 +1625,7 @@ pub fn optimize_travel(paths: &mut Vec<Extrusion>, solid: &[Loop], combing: bool
             }
             if has_cursor {
                 if let Some(start) = path.points.first().copied() {
-                    match comb_between(solid, &inset_loops, cursor, start, combing) {
-                        Comb::Clear => path.retract_mm = 0.0,
-                        Comb::Routed(via) => {
-                            path.lead_in = via;
-                            path.retract_mm = 0.0;
-                        }
-                        Comb::Blocked => {
-                            path.retract_min_travel = 0.0;
-                        }
-                    }
+                    path.take_comb(comb_between(solid, &inset_loops, cursor, start, combing));
                 }
             }
             if let Some(end) = path.points.last().copied() {
@@ -1666,6 +1660,30 @@ fn rotate_closed_to(pts: &mut Vec<[f64; 2]>, hint: [f64; 2]) {
     pts.rotate_left(best);
     let first = pts[0];
     pts.push(first);
+}
+
+impl Extrusion {
+    /// Replace whatever an earlier pass decided about the travel into this path.
+    fn take_comb(&mut self, comb: Comb) {
+        self.lead_in.clear();
+        self.travel_in = match comb {
+            Comb::Clear => TravelIn::Inside,
+            Comb::Routed(via) => {
+                self.lead_in = via;
+                TravelIn::Inside
+            }
+            Comb::Blocked => TravelIn::Blocked,
+        };
+    }
+
+    /// Retract length and minimum travel for the move into this path.
+    pub fn travel_retract(&self) -> (f64, f64) {
+        match self.travel_in {
+            TravelIn::Unchecked => (self.retract_mm, self.retract_min_travel),
+            TravelIn::Inside => (0.0, self.retract_min_travel),
+            TravelIn::Blocked => (self.retract_mm, 0.0),
+        }
+    }
 }
 
 enum Comb {
@@ -1816,7 +1834,7 @@ pub fn apply_z_hop(
             } else if prev_top || after_top_layer {
                 true
             } else {
-                let blocked = path.retract_mm > 0.0 && path.lead_in.is_empty();
+                let blocked = path.travel_in != TravelIn::Inside && path.retract_mm > 0.0;
                 blocked && chain_crosses(&chain, solid, &printed)
             };
             if hop {
