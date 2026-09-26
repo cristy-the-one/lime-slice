@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use rayon::prelude::*;
 
-use crate::contour::{in_solid, loop_bounds, Loop};
+use crate::poly::{in_solid, loop_bounds, Loop};
 use crate::toolpath::clip_open_segment;
 
 /// Cell period for a target wall spacing. Adjacent gyroid sheets sit about

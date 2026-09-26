@@ -1,98 +1,7 @@
-use std::collections::HashMap;
-
-use crate::mesh::Mesh;
+use clipper2::{EndType, FillRule, JoinType, Milli, Paths};
 
 /// Closed loop in the XY plane, millimeters.
 pub type Loop = Vec<[f64; 2]>;
-
-pub fn slice_contours(mesh: &Mesh, z: f64) -> Vec<Loop> {
-    let mut segs: Vec<([f64; 2], [f64; 2])> = Vec::new();
-    for tri in &mesh.triangles {
-        let mut hits = Vec::with_capacity(2);
-        for e in 0..3 {
-            if let Some(p) = edge_cross(tri[e], tri[(e + 1) % 3], z) {
-                if hits.iter().all(|q: &[f64; 2]| dist2(*q, p) > 1e-12) {
-                    hits.push(p);
-                }
-            }
-        }
-        if hits.len() == 2 && dist2(hits[0], hits[1]) > 1e-12 {
-            segs.push((hits[0], hits[1]));
-        }
-    }
-    contours_from_segments(segs)
-}
-
-pub fn contours_from_segments(segs: Vec<([f64; 2], [f64; 2])>) -> Vec<Loop> {
-    orient_loops(stitch(segs))
-}
-
-fn edge_cross(a: [f64; 3], b: [f64; 3], z: f64) -> Option<[f64; 2]> {
-    let za = a[2];
-    let zb = b[2];
-    let crosses = (za < z && zb >= z) || (zb < z && za >= z);
-    if !crosses {
-        return None;
-    }
-    let denom = zb - za;
-    if denom.abs() < 1e-15 {
-        return None;
-    }
-    let t = (z - za) / denom;
-    Some([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t])
-}
-
-fn dist2(a: [f64; 2], b: [f64; 2]) -> f64 {
-    let dx = a[0] - b[0];
-    let dy = a[1] - b[1];
-    dx * dx + dy * dy
-}
-
-fn key(p: [f64; 2]) -> (i64, i64) {
-    (
-        (p[0] * 10_000.0).round() as i64,
-        (p[1] * 10_000.0).round() as i64,
-    )
-}
-
-fn stitch(segs: Vec<([f64; 2], [f64; 2])>) -> Vec<Loop> {
-    let mut map: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
-    for (i, (a, b)) in segs.iter().enumerate() {
-        map.entry(key(*a)).or_default().push(i);
-        map.entry(key(*b)).or_default().push(i);
-    }
-    let mut used = vec![false; segs.len()];
-    let mut loops = Vec::new();
-    for start in 0..segs.len() {
-        if used[start] {
-            continue;
-        }
-        used[start] = true;
-        let mut chain = vec![segs[start].0, segs[start].1];
-        let mut closed = false;
-        for _ in 0..segs.len() {
-            let end = *chain.last().unwrap();
-            let Some(cands) = map.get(&key(end)) else {
-                break;
-            };
-            let Some(ni) = cands.iter().copied().find(|i| !used[*i]) else {
-                break;
-            };
-            used[ni] = true;
-            let (a, b) = segs[ni];
-            let pt = if key(a) == key(end) { b } else { a };
-            if key(pt) == key(chain[0]) {
-                closed = true;
-                break;
-            }
-            chain.push(pt);
-        }
-        if closed && chain.len() >= 3 && signed_area(&chain).abs() > 0.02 {
-            loops.push(chain);
-        }
-    }
-    loops
-}
 
 pub fn signed_area(loop_: &[[f64; 2]]) -> f64 {
     let mut a = 0.0;
@@ -247,4 +156,101 @@ pub fn loop_bounds(loops: &[Loop]) -> Option<([f64; 2], [f64; 2])> {
         max[1] = max[1].max(p[1]);
     }
     Some((min, max))
+}
+
+pub(crate) fn paths_from_loops(loops: &[Loop]) -> Paths<Milli> {
+    let raw: Vec<Vec<(f64, f64)>> = loops
+        .iter()
+        .map(|l| l.iter().map(|p| (p[0], p[1])).collect())
+        .collect();
+    raw.into()
+}
+
+pub(crate) fn loops_from_paths(paths: Paths<Milli>) -> Vec<Loop> {
+    let raw: Vec<Vec<(f64, f64)>> = paths.into();
+    orient_loops(
+        raw.into_iter()
+            .map(|l| l.into_iter().map(|(x, y)| [x, y]).collect())
+            .collect(),
+    )
+}
+
+pub(crate) fn offset_paths(paths: &Paths<Milli>, delta: f64) -> Paths<Milli> {
+    if paths.is_empty() {
+        return Paths::default();
+    }
+    paths
+        .inflate(delta, JoinType::Square, EndType::Polygon, 2.0)
+        .simplify(0.02, false)
+}
+
+pub fn clip_to_rect(loops: &[Loop], min: [f64; 2], max: [f64; 2]) -> Vec<Loop> {
+    if loops.is_empty() {
+        return Vec::new();
+    }
+    let subject = paths_from_loops(loops);
+    let clip: Paths<Milli> = vec![vec![
+        (min[0], min[1]),
+        (max[0], min[1]),
+        (max[0], max[1]),
+        (min[0], max[1]),
+    ]]
+    .into();
+    match subject
+        .to_clipper_subject()
+        .add_clip(clip)
+        .intersect(FillRule::NonZero)
+    {
+        Ok(paths) => loops_from_paths(paths),
+        Err(_) => Vec::new(),
+    }
+}
+
+pub fn offset_loops(loops: &[Loop], delta: f64) -> Vec<Loop> {
+    if loops.is_empty() || delta.abs() < 1e-9 {
+        return loops.to_vec();
+    }
+    loops_from_paths(offset_paths(&paths_from_loops(loops), delta))
+}
+
+pub fn boolean_union(a: &[Loop], b: &[Loop]) -> Vec<Loop> {
+    if a.is_empty() {
+        return b.to_vec();
+    }
+    if b.is_empty() {
+        return a.to_vec();
+    }
+    match paths_from_loops(a)
+        .to_clipper_subject()
+        .add_clip(paths_from_loops(b))
+        .union(FillRule::NonZero)
+    {
+        Ok(paths) => loops_from_paths(paths),
+        Err(_) => {
+            let mut both = a.to_vec();
+            both.extend(b.iter().cloned());
+            both
+        }
+    }
+}
+
+pub fn boolean_diff(subject: &[Loop], clip: &[Loop]) -> Vec<Loop> {
+    if subject.is_empty() || clip.is_empty() {
+        return subject.to_vec();
+    }
+    match paths_from_loops(subject)
+        .to_clipper_subject()
+        .add_clip(paths_from_loops(clip))
+        .difference(FillRule::NonZero)
+    {
+        Ok(paths) => loops_from_paths(paths),
+        Err(_) => Vec::new(),
+    }
+}
+
+pub fn drop_slivers(loops: Vec<Loop>, min_area: f64) -> Vec<Loop> {
+    loops
+        .into_iter()
+        .filter(|l| signed_area(l).abs() >= min_area)
+        .collect()
 }

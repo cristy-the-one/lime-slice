@@ -1,24 +1,24 @@
 //! Lime Slice core: mesh in, strategy-blended FDM toolpaths and G-code out.
 
 mod adaptive;
-mod cancel;
 mod calibrate;
-mod contour;
+mod cancel;
 mod gcode;
 mod gyroid;
 mod index;
 mod load;
 mod mesh;
+mod poly;
 mod slice;
 mod strategy;
 mod support;
 mod toolpath;
 
-pub use cancel::{request as request_cancel, reset as reset_cancel};
 pub use calibrate::{
     pressure_advance_from_request, pressure_advance_tower, PaBand, PaCalib, PaCalibOutput,
     PaCalibRequest, PaFirmware,
 };
+pub use cancel::{request as request_cancel, reset as reset_cancel};
 pub use load::{load_mesh, mesh_preview, MeshPreview};
 pub use mesh::Mesh;
 pub use slice::{

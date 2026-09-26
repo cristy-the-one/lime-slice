@@ -1,6 +1,8 @@
 use crate::adaptive::LayerBand;
-use crate::contour::{in_solid, loop_bounds, point_in_loop, signed_area, Loop};
-use crate::toolpath::{boolean_diff, boolean_union, drop_slivers, offset_loops};
+use crate::poly::{
+    boolean_diff, boolean_union, drop_slivers, in_solid, loop_bounds, offset_loops, point_in_loop,
+    signed_area, Loop,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SupportStyle {
@@ -130,7 +132,10 @@ pub fn build_supports(
                 let cleared = if part.is_empty() {
                     born.clone()
                 } else {
-                    drop_slivers(boolean_diff(&born, &offset_loops(part, opts.xy_gap * 0.35)), 0.02)
+                    drop_slivers(
+                        boolean_diff(&born, &offset_loops(part, opts.xy_gap * 0.35)),
+                        0.02,
+                    )
                 };
                 let seeds = if cleared.is_empty() { &born } else { &cleared };
                 for p in sample_grid(seeds, seed_spacing) {

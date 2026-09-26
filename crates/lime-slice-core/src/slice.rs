@@ -5,20 +5,20 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::adaptive::{plan_bands, HeightOpts};
-use crate::contour::{loop_bounds, slice_contours, Loop};
 use crate::gcode::{emit_gcode, LayerPaths};
-use crate::index::ZIndex;
+use crate::index::{slice_contours, ZIndex};
 use crate::load::load_mesh;
 use crate::mesh::Mesh;
+use crate::poly::{boolean_union, clip_to_rect, loop_bounds, offset_loops, Loop};
 use crate::strategy::{
     classicize, layer_weight, mix, pure, support_density, support_interface_density, Axis,
     BlendMode, Gyroid3d, PrinterProfile, ResolvedStrategy, ScarfSeam, StrategyId, ZHopMode,
 };
 use crate::support::{build_supports, SupportOpts, SupportStyle};
 use crate::toolpath::{
-    apply_overhang, apply_scarf, apply_z_hop, boolean_union, clip_to_rect, offset_loops,
-    optimize_travel, plan_region, plan_skirt, plan_support, plan_tree_support, seat_layer_start,
-    Extrusion, PathFeatures, PathKind, ScarfParams, ShellBand,
+    apply_overhang, apply_scarf, apply_z_hop, optimize_travel, plan_region, plan_skirt,
+    plan_support, plan_tree_support, seat_layer_start, Extrusion, PathFeatures, PathKind,
+    ScarfParams, ShellBand,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1338,7 +1338,7 @@ fn layer_is_roof(current: &[Loop], above: &[Loop]) -> bool {
     while y < max[1] {
         let mut x = min[0] + step * 0.5;
         while x < max[0] {
-            if crate::contour::in_solid(current, x, y) && !crate::contour::in_solid(above, x, y) {
+            if crate::poly::in_solid(current, x, y) && !crate::poly::in_solid(above, x, y) {
                 exposed += 1;
                 if exposed >= 2 {
                     return true;

@@ -1,7 +1,9 @@
-use clipper2::{EndType, FillRule, JoinType, Milli, Paths};
-
-use crate::contour::{in_solid, loop_bounds, orient_loops, signed_area, Loop};
+use crate::poly::{
+    boolean_diff, boolean_union, drop_slivers, in_solid, loop_bounds, loops_from_paths,
+    offset_loops, offset_paths, paths_from_loops, signed_area, Loop,
+};
 use crate::strategy::{InfillPattern, ResolvedStrategy, ScarfSeam, SeamMode, StrategyId};
+use clipper2::{EndType, FillRule, JoinType, Milli, Paths};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PathKind {
@@ -843,54 +845,6 @@ fn dist2(a: [f64; 2], b: [f64; 2]) -> f64 {
     dx * dx + dy * dy
 }
 
-fn paths_from_loops(loops: &[Loop]) -> Paths<Milli> {
-    let raw: Vec<Vec<(f64, f64)>> = loops
-        .iter()
-        .map(|l| l.iter().map(|p| (p[0], p[1])).collect())
-        .collect();
-    raw.into()
-}
-
-fn loops_from_paths(paths: Paths<Milli>) -> Vec<Loop> {
-    let raw: Vec<Vec<(f64, f64)>> = paths.into();
-    orient_loops(
-        raw.into_iter()
-            .map(|l| l.into_iter().map(|(x, y)| [x, y]).collect())
-            .collect(),
-    )
-}
-
-fn offset_paths(paths: &Paths<Milli>, delta: f64) -> Paths<Milli> {
-    if paths.is_empty() {
-        return Paths::default();
-    }
-    paths
-        .inflate(delta, JoinType::Square, EndType::Polygon, 2.0)
-        .simplify(0.02, false)
-}
-
-pub fn clip_to_rect(loops: &[Loop], min: [f64; 2], max: [f64; 2]) -> Vec<Loop> {
-    if loops.is_empty() {
-        return Vec::new();
-    }
-    let subject = paths_from_loops(loops);
-    let clip: Paths<Milli> = vec![vec![
-        (min[0], min[1]),
-        (max[0], min[1]),
-        (max[0], max[1]),
-        (min[0], max[1]),
-    ]]
-    .into();
-    match subject
-        .to_clipper_subject()
-        .add_clip(clip)
-        .intersect(FillRule::NonZero)
-    {
-        Ok(paths) => loops_from_paths(paths),
-        Err(_) => Vec::new(),
-    }
-}
-
 fn gyroid_3d_graded(
     loops: &[Loop],
     strategy: &ResolvedStrategy,
@@ -1415,55 +1369,6 @@ fn rotate_loops(loops: &[Loop], angle: f64) -> Vec<Loop> {
 fn rot(p: [f64; 2], angle: f64) -> [f64; 2] {
     let (s, c) = angle.sin_cos();
     [p[0] * c - p[1] * s, p[0] * s + p[1] * c]
-}
-
-pub fn offset_loops(loops: &[Loop], delta: f64) -> Vec<Loop> {
-    if loops.is_empty() || delta.abs() < 1e-9 {
-        return loops.to_vec();
-    }
-    loops_from_paths(offset_paths(&paths_from_loops(loops), delta))
-}
-
-pub fn boolean_union(a: &[Loop], b: &[Loop]) -> Vec<Loop> {
-    if a.is_empty() {
-        return b.to_vec();
-    }
-    if b.is_empty() {
-        return a.to_vec();
-    }
-    match paths_from_loops(a)
-        .to_clipper_subject()
-        .add_clip(paths_from_loops(b))
-        .union(FillRule::NonZero)
-    {
-        Ok(paths) => loops_from_paths(paths),
-        Err(_) => {
-            let mut both = a.to_vec();
-            both.extend(b.iter().cloned());
-            both
-        }
-    }
-}
-
-pub fn boolean_diff(subject: &[Loop], clip: &[Loop]) -> Vec<Loop> {
-    if subject.is_empty() || clip.is_empty() {
-        return subject.to_vec();
-    }
-    match paths_from_loops(subject)
-        .to_clipper_subject()
-        .add_clip(paths_from_loops(clip))
-        .difference(FillRule::NonZero)
-    {
-        Ok(paths) => loops_from_paths(paths),
-        Err(_) => Vec::new(),
-    }
-}
-
-pub fn drop_slivers(loops: Vec<Loop>, min_area: f64) -> Vec<Loop> {
-    loops
-        .into_iter()
-        .filter(|l| signed_area(l).abs() >= min_area)
-        .collect()
 }
 
 /// One chord through a support patch the grid spacing skipped.
