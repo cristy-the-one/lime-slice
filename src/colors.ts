@@ -34,8 +34,21 @@ export const FEATURE_LABEL: Record<string, string> = {
   travel: "Travel",
 };
 
+export const OTHER_COLOR = "#C9C3B6";
+
+/** Blend weight 0 to 1 maps linearly between these. */
+export const WEIGHT_RAMP: [string, string] = ["#E69F00", "#009E73"];
+/** Effective speed across `SPEED_RANGE_MM_S` maps linearly between these. */
+export const SPEED_RAMP: [string, string] = ["#0072B2", "#F0E442"];
+export const SPEED_RANGE_MM_S: [number, number] = [20, 180];
+
 export function featureColor(kind: string): string {
-  return FEATURE_COLOR[kind] ?? "#C9C3B6";
+  return FEATURE_COLOR[kind] ?? OTHER_COLOR;
+}
+
+export function speedT(effectiveSpeed: number): number {
+  const [lo, hi] = SPEED_RANGE_MM_S;
+  return clamp01((effectiveSpeed - lo) / (hi - lo));
 }
 
 export function colorForPath(
@@ -45,8 +58,8 @@ export function colorForPath(
   effectiveSpeed = 0,
 ): string {
   if (kind === "travel") return FEATURE_COLOR.travel;
-  if (mode === "weight") return lerpHex("#E69F00", "#009E73", clamp01(toughness));
-  if (mode === "speed") return lerpHex("#0072B2", "#F0E442", clamp01((effectiveSpeed - 20) / 160));
+  if (mode === "weight") return lerpHex(WEIGHT_RAMP[0], WEIGHT_RAMP[1], clamp01(toughness));
+  if (mode === "speed") return lerpHex(SPEED_RAMP[0], SPEED_RAMP[1], speedT(effectiveSpeed));
   return featureColor(kind);
 }
 
