@@ -42,6 +42,15 @@ export const MARGIN_SHADE = 0.38;
 /** Kind slots the preview shader can color and hide. Later kinds share the last slot. */
 export const MAX_KINDS = 32;
 
+/** Marks kind slots the preview should hide. One slot per kind name, so hiding thin wall leaves gap fill drawn. */
+export function fillHiddenKindMask(mask: Float32Array, kinds: readonly string[], hidden: ReadonlySet<string>) {
+  mask.fill(0);
+  const n = Math.min(kinds.length, mask.length);
+  for (let i = 0; i < n; i++) {
+    if (hidden.has(kinds[i])) mask[i] = 1;
+  }
+}
+
 /** Machine XY + nozzle Z → scene, matching the centered ribbon mesh (Y up). */
 export function scenePoint(x: number, y: number, z: number, cx: number, cy: number): [number, number, number] {
   return [x - cx, z, -(y - cy)];

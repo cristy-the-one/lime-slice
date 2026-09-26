@@ -9,8 +9,10 @@ export const FEATURE_COLOR: Record<string, string> = {
   solid: "#CC79A7",
   top: "#F0E442",
   bridge: "#D55E00",
+  // A bead that reaches the outline stays coral. An enclosed gap is fuchsia so
+  // the legend swatch and the 3D preview (same palette) can tell them apart.
   "thin-wall": "#E85D4C",
-  "gap-fill": "#E85D4C",
+  "gap-fill": "#D946EF",
   skirt: "#D7D2C6",
   support: "#7AA2F7",
   "support-interface": "#C6A0F6",
