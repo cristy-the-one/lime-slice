@@ -1725,19 +1725,15 @@ fn comb_between(
     let n = nodes.len();
     let start = n - 2;
     let goal = n - 1;
-    let mut edges: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
-    for i in 0..n {
-        for j in (i + 1)..n {
-            if segment_inside(inset, nodes[i], nodes[j])
-                || (i == start || j == start || i == goal || j == goal)
-                    && segment_inside(solid, nodes[i], nodes[j])
-            {
-                let d = dist2(nodes[i], nodes[j]).sqrt();
-                edges[i].push((j, d));
-                edges[j].push((i, d));
-            }
-        }
-    }
+    let inset = Outline::new(inset);
+    let solid = Outline::new(solid);
+    let visible = |i: usize, j: usize| {
+        inset.segment_inside(nodes[i], nodes[j])
+            || (i == start || j == start || i == goal || j == goal)
+                && solid.segment_inside(nodes[i], nodes[j])
+    };
+    // Dijkstra over the visibility graph, testing a node's edges only once it is
+    // settled. Most travels reach the goal long before every pair is tested.
     let mut dist = vec![f64::INFINITY; n];
     let mut prev = vec![usize::MAX; n];
     dist[start] = 0.0;
@@ -1755,9 +1751,12 @@ fn comb_between(
             break;
         }
         used[u] = true;
-        for &(v, w) in &edges[u] {
-            let nd = dist[u] + w;
-            if nd + 1e-9 < dist[v] {
+        for v in 0..n {
+            if used[v] {
+                continue;
+            }
+            let nd = dist[u] + dist2(nodes[u], nodes[v]).sqrt();
+            if nd + 1e-9 < dist[v] && visible(u, v) {
                 dist[v] = nd;
                 prev[v] = u;
             }
@@ -1885,6 +1884,54 @@ fn link_stays(solid: &[Loop], a: [f64; 2], b: [f64; 2]) -> bool {
     let len = vx.hypot(vy).max(1e-9);
     let p = [mid[0] + vx / len * 0.05, mid[1] + vy / len * 0.05];
     in_solid(solid, p[0], p[1])
+}
+
+/// Loops with their bounding boxes, so segment and point tests skip loops that
+/// cannot touch them.
+struct Outline<'a> {
+    loops: &'a [Loop],
+    boxes: Vec<([f64; 2], [f64; 2])>,
+}
+
+impl<'a> Outline<'a> {
+    fn new(loops: &'a [Loop]) -> Self {
+        let boxes = loops
+            .iter()
+            .map(|l| loop_bounds(std::slice::from_ref(l)).unwrap_or(([0.0; 2], [0.0; 2])))
+            .collect();
+        Self { loops, boxes }
+    }
+
+    /// Same answer as `segment_inside` on the raw loops.
+    fn segment_inside(&self, a: [f64; 2], b: [f64; 2]) -> bool {
+        if self.loops.is_empty() {
+            return false;
+        }
+        let lo = [a[0].min(b[0]), a[1].min(b[1])];
+        let hi = [a[0].max(b[0]), a[1].max(b[1])];
+        for (loop_, (mn, mx)) in self.loops.iter().zip(&self.boxes) {
+            if hi[0] < mn[0] || lo[0] > mx[0] || hi[1] < mn[1] || lo[1] > mx[1] {
+                continue;
+            }
+            let n = loop_.len();
+            for i in 0..n {
+                if segments_properly_cross(a, b, loop_[i], loop_[(i + 1) % n]) {
+                    return false;
+                }
+            }
+        }
+        let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+        let mut inside = false;
+        for (loop_, (mn, mx)) in self.loops.iter().zip(&self.boxes) {
+            if mid[0] < mn[0] || mid[0] > mx[0] || mid[1] < mn[1] || mid[1] > mx[1] {
+                continue;
+            }
+            if crate::poly::point_in_loop(loop_, mid[0], mid[1]) {
+                inside = !inside;
+            }
+        }
+        inside
+    }
 }
 
 /// True when the whole segment stays in the solid, holes included.
