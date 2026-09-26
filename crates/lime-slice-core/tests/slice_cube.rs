@@ -3092,6 +3092,120 @@ fn tree_trunks_beside_a_wing_stand_on_something() {
     }
 }
 
+fn add_quad(tris: &mut Vec<[[f64; 3]; 3]>, a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) {
+    tris.push([a, b, c]);
+    tris.push([a, c, d]);
+}
+
+/// Watertight C, notch opening toward +X. 4 mm across, so a ~5 mm seed grid
+/// and the bbox centre both miss the solid.
+fn add_notch(tris: &mut Vec<[[f64; 3]; 3]>, ox: f64, oy: f64, z0: f64, z1: f64) {
+    let p = |x: f64, y: f64, z: f64| [ox + x, oy + y, z];
+    // Split where arms meet the bar so every shared edge is one segment.
+    let quads = [
+        ((0.0, 0.0), (1.2, 0.0), (1.2, 1.2), (0.0, 1.2)),
+        ((0.0, 1.2), (1.2, 1.2), (1.2, 2.8), (0.0, 2.8)),
+        ((0.0, 2.8), (1.2, 2.8), (1.2, 4.0), (0.0, 4.0)),
+        ((1.2, 0.0), (4.0, 0.0), (4.0, 1.2), (1.2, 1.2)),
+        ((1.2, 2.8), (4.0, 2.8), (4.0, 4.0), (1.2, 4.0)),
+    ];
+    for (a, b, c, d) in quads {
+        add_quad(
+            tris,
+            p(a.0, a.1, z1),
+            p(b.0, b.1, z1),
+            p(c.0, c.1, z1),
+            p(d.0, d.1, z1),
+        );
+        add_quad(
+            tris,
+            p(a.0, a.1, z0),
+            p(d.0, d.1, z0),
+            p(c.0, c.1, z0),
+            p(b.0, b.1, z0),
+        );
+    }
+    let rim = [
+        (0.0, 0.0),
+        (1.2, 0.0),
+        (4.0, 0.0),
+        (4.0, 1.2),
+        (1.2, 1.2),
+        (1.2, 2.8),
+        (4.0, 2.8),
+        (4.0, 4.0),
+        (1.2, 4.0),
+        (0.0, 4.0),
+        (0.0, 2.8),
+        (0.0, 1.2),
+    ];
+    for i in 0..rim.len() {
+        let a = rim[i];
+        let b = rim[(i + 1) % rim.len()];
+        add_quad(
+            tris,
+            p(a.0, a.1, z0),
+            p(b.0, b.1, z0),
+            p(b.0, b.1, z1),
+            p(a.0, a.1, z1),
+        );
+    }
+}
+
+fn notch_beside_a_post() -> Mesh {
+    let mut tris = Vec::new();
+    add_box(&mut tris, 30.0, 30.0, 0.0, 48.0, 48.0, 2.0);
+    add_notch(&mut tris, 0.0, 0.0, 10.0, 12.0);
+    Mesh { triangles: tris }
+}
+
+#[test]
+fn concave_island_interface_is_held_up() {
+    let mesh = notch_beside_a_post();
+    assert_eq!(open_edge_count(&mesh), 0, "notch prism is not watertight");
+    let settings = SliceSettings {
+        supports: true,
+        support_style: lime_slice_core::SupportStyle::Tree,
+        include_gcode: false,
+        baseline: false,
+        ..SliceSettings::default()
+    };
+    let response = slice_configured(&mesh, &speed_mode(), &profile(), &settings).unwrap();
+    assert!(response.sanity.ok, "{:?}", response.sanity.notes);
+    let report =
+        lime_slice_core::audit_slice(&mesh, &speed_mode(), &settings, profile().nozzle_diameter)
+            .unwrap();
+    let notch = |x: f64, y: f64| (0.05..3.95).contains(&x) && (0.05..3.95).contains(&y);
+    let iface = response.layers.iter().any(|layer| {
+        layer.paths.iter().any(|path| {
+            path.kind == "support-interface" && path.pts.iter().any(|p| notch(p[0], p[1]))
+        })
+    });
+    let trunk_layers = response
+        .layers
+        .iter()
+        .filter(|layer| {
+            (2.4..9.5).contains(&layer.z)
+                && layer.paths.iter().any(|path| {
+                    path.kind == "support" && path.pts.iter().any(|p| notch(p[0], p[1]))
+                })
+        })
+        .count();
+    assert!(iface, "interface under the notch was dropped");
+    assert!(
+        trunk_layers > 8,
+        "trunk under the notch on {trunk_layers} layers, floating {:.3} mm3 worst {:?}",
+        report.support_floating_mm3,
+        report.worst_floating
+    );
+    assert_eq!(
+        report.support_floating_mm3, 0.0,
+        "orphan interface or trunk, worst {:?}",
+        report.worst_floating
+    );
+    assert_eq!(report.support_inside_mm3, 0.0);
+}
+
 #[test]
 fn separate_shells_closer_than_the_gap_limit_stay_separate() {
     let mut tris = Vec::new();

@@ -49,8 +49,9 @@ pub struct SliceAudit {
     pub support_mm3: f64,
     /// Support volume inside the mesh cross-section at mid-layer.
     pub support_inside_mm3: f64,
-    /// Column or trunk volume with neither support nor part under it.
-    /// Interface decks spanning between tree tips are bridges and are not counted.
+    /// Column, trunk, or interface volume with neither support nor part under it.
+    /// An interface deck that reaches a tree tip, or the interface under it, is a
+    /// bridge and is not counted. A patch with nothing under it is.
     pub support_floating_mm3: f64,
     pub floating_layers: usize,
     /// Top surface (area not covered by the next layer) that no solid bead covers.
@@ -88,7 +89,7 @@ pub fn audit_slice(
             let mid = &fresh;
             let piece = &planned.contours[i];
             let region = &regions[i];
-            let floating = if i == 0 || columns[i].is_empty() {
+            let column_floating = if i == 0 || columns[i].is_empty() {
                 0.0
             } else {
                 let below = boolean_union(&regions[i - 1], &planned.contours[i - 1]);
@@ -97,6 +98,18 @@ pub fn audit_slice(
                     FLOAT_SPECK_MM2,
                 )
             };
+            // Interface used to be ignored here, so a lavender island with no
+            // trunk read as zero floating support.
+            let iface_floating = if i == 0 {
+                0.0
+            } else {
+                crate::support::orphan_interface_area(
+                    &planned.supports[i].interface,
+                    &planned.supports[i - 1],
+                    &planned.contours[i - 1],
+                )
+            };
+            let floating = column_floating + iface_floating;
             let exposed = match planned.contours.get(i + 1) {
                 Some(above) => boolean_diff(piece, above),
                 None => piece.clone(),
