@@ -852,7 +852,6 @@ function scrub(next: number) {
 }
 
 document.querySelector("#left")!.addEventListener("input", onSettings);
-document.querySelector("#left")!.addEventListener("change", onSettings);
 document.querySelector("#left")!.addEventListener("toggle", (ev) => {
   const details = ev.target as HTMLDetailsElement;
   const title = details.dataset.group;
@@ -920,7 +919,6 @@ document.querySelector("#right")!.addEventListener("click", (ev) => {
   touch();
 });
 document.querySelector("#right")!.addEventListener("input", onBlend);
-document.querySelector("#right")!.addEventListener("change", onBlend);
 
 function onBlend(ev: Event) {
   const t = ev.target as HTMLInputElement;
