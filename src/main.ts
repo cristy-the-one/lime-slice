@@ -1,6 +1,6 @@
 import { colorForPath, FEATURE_COLOR, FEATURE_LABEL, type ColorMode } from "./colors";
 import { encode3mf, encodeStl, ID_MATRIX, layFlatMatrix, matMul, offBed, parseStl, rotX, rotY, rotZ, transformPositions, boundsOf, type Mat3 } from "./mesh-place";
-import { layerClass, layerMoves, matchGcodeLine, parseLayerGcode, type PlayPoint } from "./playback";
+import { indexLayerGcode, layerClass, layerMoves, matchGcodeLine, type LayerGcode, type PlayPoint } from "./playback";
 import { createPrepareView } from "./prepare-view";
 import { DEFAULT_PRESET, diffPreset, presetKeys, readPresets, writePresets, type PresetSettings } from "./presets";
 import { loadProfile, profileJson, saveProfile, type PrinterProfile } from "./profiles";
@@ -141,11 +141,14 @@ const state = {
   partScale: 1,
   centered: true,
   pareto: [] as ParetoPoint[],
-  gcodeToken: "",
   help: false,
 };
 
 const worker = new Worker(new URL("./slice-worker.ts", import.meta.url), { type: "module" });
+const geomWorker = new Worker(new URL("./geom-worker.ts", import.meta.url), { type: "module" });
+const geomChannel = new MessageChannel();
+worker.postMessage({ geomPort: geomChannel.port1 }, [geomChannel.port1]);
+geomWorker.postMessage({ slicePort: geomChannel.port2 }, [geomChannel.port2]);
 let job = 0;
 let autoTimer = 0;
 
@@ -265,6 +268,8 @@ const prepare = createPrepareView(document.querySelector<HTMLCanvasElement>("#pr
 prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
 view3d.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
 let shown: SliceResponse | null = null;
+/** Slice job that produced state.result; geometry buffers carry the same id. */
+let resultJob = 0;
 
 function card(): CardId {
   if (state.blendKind === "byLayer") return "layer";
@@ -279,7 +284,7 @@ function stale() {
 
 function settingsHash() {
   const mesh = state.mesh ? `${state.mesh.name}:${state.mesh.bytes.byteLength}:${state.partScale}:${state.centered}:${state.orient.join(",")}` : "";
-  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, gcodeToken: _gt, help: _hp, ...rest } = state;
+  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, ...rest } = state;
   return JSON.stringify({ mesh, profile: state.profile, rest });
 }
 
@@ -385,7 +390,7 @@ function renderChrome() {
   (document.querySelector("#cancel") as HTMLButtonElement).hidden = !state.busy;
   (document.querySelector("#export") as HTMLButtonElement).disabled = !result || isStale || state.busy;
   document.querySelector("#timing")!.textContent = state.busy
-    ? `Slicing… ${Math.round(state.progress * 100)}%`
+    ? busyText()
     : result
       ? `${(result.estimate?.seconds ?? 0) / 60 < 1 ? `${(result.estimate?.seconds ?? 0).toFixed(0)} s` : `${((result.estimate?.seconds ?? 0) / 60).toFixed(1)} min`} · ${(result.estimate?.filamentG ?? 0).toFixed(2)} g`
       : "No slice yet";
@@ -404,6 +409,26 @@ function renderChrome() {
   else status.textContent = `${mesh.name} loaded. Choose a strategy, then slice.`;
 }
 
+let busySince = 0;
+let busyPhase = "";
+function markBusy() {
+  state.busy = true;
+  state.progress = 0;
+  busySince = performance.now();
+  busyPhase = "";
+  const mine = busySince;
+  const tick = window.setInterval(() => {
+    if (!state.busy || busySince !== mine) {
+      window.clearInterval(tick);
+      return;
+    }
+    document.querySelector("#timing")!.textContent = busyText();
+  }, 100);
+}
+function busyText() {
+  return `${busyPhase || "Slicing…"} ${((performance.now() - busySince) / 1000).toFixed(1)} s`;
+}
+
 function paintBanner(isStale: boolean) {
   const rail = document.querySelector("#banner")!;
   const bits: string[] = [];
@@ -416,8 +441,9 @@ function paintBanner(isStale: boolean) {
   rail.innerHTML = bits.join("");
 }
 
+const closedGroups = new Set<string>();
 function group(title: string, body: string) {
-  return `<details open class="group"><summary>${title}</summary><div class="stack">${body}</div></details>`;
+  return `<details ${closedGroups.has(title) ? "" : "open"} class="group" data-group="${title}"><summary>${title}</summary><div class="stack">${body}</div></details>`;
 }
 function num(id: string, label: string, value: number, min: number, max: number, step: number) {
   return `<label class="field setting" data-label="${label.toLowerCase()}">${label}<input id="${id}" type="number" min="${min}" max="${max}" step="${step}" value="${value}" /></label>`;
@@ -679,6 +705,37 @@ function paintPresetDiff() {
   node.innerHTML = `<b>Vs default</b><br>${diff.length ? diff.map((line) => escapeHtml(line)).join("<br>") : "Matches the default preset."}`;
 }
 
+const gcodeLoads = new WeakMap<SliceResponse, Promise<string>>();
+const gcodeIndex = new WeakMap<SliceResponse, LayerGcode>();
+
+/** The engine parks the G-code body; fetch it on first use, once per result. */
+function loadGcode(result: SliceResponse): Promise<string> {
+  let load = gcodeLoads.get(result);
+  if (!load) {
+    load = result.gcode || !result.gcodeToken ? Promise.resolve(result.gcode ?? "") : fetchStoredGcode(result.gcodeToken);
+    gcodeLoads.set(result, load);
+    load.then((text) => {
+      gcodeIndex.set(result, indexLayerGcode(text));
+      if (state.result !== result) return;
+      paintPlayback();
+      paintGcode();
+    }, (err) => {
+      if (state.result !== result) return;
+      state.error = err instanceof Error ? err.message : String(err);
+      renderChrome();
+    });
+  }
+  return load;
+}
+
+/** Per-layer G-code once loaded. With load, starts fetching it if needed. */
+function layerGcode(load = false): LayerGcode | null {
+  const result = state.result;
+  if (!result) return null;
+  if (load) void loadGcode(result);
+  return gcodeIndex.get(result) ?? null;
+}
+
 function movesNow(): PlayPoint[] {
   const layer = state.result?.layers[state.layer];
   if (!layer) return [];
@@ -704,7 +761,7 @@ function paintPlayback() {
     readout.textContent = "Feature — · feed — · E —";
     return;
   }
-  const gcode = parseLayerGcode(state.result?.gcode ?? "", state.result?.layers[state.layer]?.index ?? state.layer);
+  const gcode = layerGcode()?.layer(state.result?.layers[state.layer]?.index ?? state.layer) ?? [];
   const hit = matchGcodeLine(gcode, point);
   const line = hit >= 0 ? gcode[hit] : undefined;
   const feed = line?.feed ?? point.feed;
@@ -726,9 +783,14 @@ function paintGcode() {
   });
   if (!on) return;
   const layer = state.result?.layers[state.layer];
-  const lines = layer ? parseLayerGcode(state.result?.gcode ?? "", layer.index) : [];
+  const doc = layerGcode(true);
+  const lines = layer ? doc?.layer(layer.index) ?? [] : [];
   if (!state.result) {
     pane.innerHTML = `<div class="meta">Slice to read G-code for this layer.</div>`;
+    return;
+  }
+  if (!doc) {
+    pane.innerHTML = `<div class="meta">Loading G-code…</div>`;
     return;
   }
   if (lines.length === 0) {
@@ -747,7 +809,7 @@ function syncGcodeHighlight() {
   const lines = [...pane.querySelectorAll<HTMLElement>(".line")];
   if (lines.length === 0) return;
   const layer = state.result?.layers[state.layer];
-  const parsed = layer ? parseLayerGcode(state.result?.gcode ?? "", layer.index) : [];
+  const parsed = layer ? layerGcode()?.layer(layer.index) ?? [] : [];
   const active = matchGcodeLine(parsed, movesNow()[state.move]);
   lines.forEach((el, i) => el.classList.toggle("on", i === active));
   pane.querySelector(".line.on")?.scrollIntoView({ block: "nearest" });
@@ -806,6 +868,7 @@ function togglePlay() {
   }
   const moves = movesNow();
   if (moves.length === 0) return;
+  layerGcode(true);
   if (state.move >= moves.length - 1) state.move = 0;
   state.playing = true;
   const play = document.querySelector<HTMLButtonElement>("#play");
@@ -851,7 +914,13 @@ function scrub(next: number) {
 }
 
 document.querySelector("#left")!.addEventListener("input", onSettings);
-document.querySelector("#left")!.addEventListener("change", onSettings);
+document.querySelector("#left")!.addEventListener("toggle", (ev) => {
+  const details = ev.target as HTMLDetailsElement;
+  const title = details.dataset.group;
+  if (!title) return;
+  if (details.open) closedGroups.delete(title);
+  else closedGroups.add(title);
+}, true);
 document.querySelector("#left")!.addEventListener("click", (ev) => {
   const t = ev.target as HTMLElement;
   if (t.id === "pacal") void runPaCal();
@@ -912,7 +981,6 @@ document.querySelector("#right")!.addEventListener("click", (ev) => {
   touch();
 });
 document.querySelector("#right")!.addEventListener("input", onBlend);
-document.querySelector("#right")!.addEventListener("change", onBlend);
 
 function onBlend(ev: Event) {
   const t = ev.target as HTMLInputElement;
@@ -1025,7 +1093,7 @@ function onSettings(ev: Event) {
   }
   const structural = ["adaptive", "supports", "zhop", "scarf", "gyroid3d"].includes(t.id);
   if (structural) renderChrome();
-  else markStale();
+  markStale();
 }
 
 function touch() {
@@ -1086,6 +1154,7 @@ document.querySelectorAll<HTMLButtonElement>(".tab").forEach((button) => {
 document.querySelector("#play")!.addEventListener("click", () => togglePlay());
 document.querySelector("#move")!.addEventListener("input", (ev) => {
   stopPlay();
+  layerGcode(true);
   state.move = Number((ev.target as HTMLInputElement).value);
   paintPlayback();
   syncGcodeHighlight();
@@ -1102,7 +1171,6 @@ document.querySelector("#spark")!.addEventListener("click", (ev) => {
 });
 document.querySelector("#colorBy")!.addEventListener("change", (ev) => {
   state.colorMode = (ev.target as HTMLSelectElement).value as ColorMode;
-  view3d.setColorMode(state.colorMode);
   draw();
 });
 document.querySelector("#legend")!.addEventListener("change", (ev) => {
@@ -1112,7 +1180,6 @@ document.querySelector("#legend")!.addEventListener("change", (ev) => {
   if (input.checked) state.hidden.delete(kind);
   else state.hidden.add(kind);
   if (kind === "travel") state.showTravel = input.checked;
-  view3d.setHidden(state.hidden);
   view3d.setShowTravel(state.showTravel && !state.hidden.has("travel"));
   draw();
 });
@@ -1343,47 +1410,56 @@ async function runSlice() {
     return;
   }
   const id = ++job;
-  state.busy = true;
-  state.progress = 0.08;
+  const hash = settingsHash();
+  const request = payload();
+  const bytes = meshBytes();
+  markBusy();
   state.error = "";
   state.notice = "";
   renderChrome();
+  let unlisten: (() => void) | undefined;
+  let landed = false;
   try {
     const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     let body: SliceResponse;
     if (tauri) {
       const { invoke } = await import("@tauri-apps/api/core");
       const { listen } = await import("@tauri-apps/api/event");
-      const unlisten = await listen<{ progress: number; message: string }>("slice-progress", (ev) => {
+      unlisten = await listen<{ progress: number; message: string }>("slice-progress", (ev) => {
+        if (id !== job) return;
         state.progress = ev.payload.progress;
+        busyPhase = ev.payload.message;
         paintBanner(false);
-        document.querySelector("#timing")!.textContent = ev.payload.message;
+        document.querySelector("#timing")!.textContent = busyText();
       });
-      const json = await invoke<string>("slice_model", { payload: JSON.stringify({ ...payload(), dataB64: toBase64(new Uint8Array(meshBytes())) }) });
-      unlisten();
+      if (id !== job) return;
+      const json = await invoke<string>("slice_model", { payload: JSON.stringify({ ...request, dataB64: toBase64(new Uint8Array(bytes)) }) });
+      if (id !== job) return;
       body = await parseInWorker(id, json);
     } else {
-      body = await postSlice(id, meshBytes(), payload());
+      body = await postSlice(id, bytes, request);
     }
     if (id !== job) return;
     if (body.error) throw new Error(body.error);
-    if (!body.gcode && body.gcodeToken) body.gcode = await fetchStoredGcode(body.gcodeToken);
     state.result = body;
-    state.gcodeToken = body.gcodeToken ?? "";
-    state.slicedHash = settingsHash();
+    resultJob = id;
+    state.slicedHash = hash;
     state.layer = Math.min(state.layer, Math.max(0, body.layers.length - 1));
     clampPlane();
+    landed = true;
   } catch (err) {
     if (id !== job) return;
     const message = err instanceof Error ? err.message : String(err);
     if (message === "cancelled") state.notice = "Slice cancelled.";
     else state.error = message === "Failed to fetch" ? "Slicer engine not running. Start it with cargo run -p lime-slice --release -- serve" : message;
   } finally {
+    unlisten?.();
     if (id === job) {
       state.busy = false;
       state.progress = 0;
       renderChrome();
       draw();
+      if (landed && stale()) scheduleAuto();
     }
   }
 }
@@ -1433,7 +1509,7 @@ function clampPlane() {
 }
 
 async function runPaCal() {
-  state.busy = true;
+  markBusy();
   state.error = "";
   renderChrome();
   try {
@@ -1512,16 +1588,21 @@ async function fetchStoredGcode(token: string) {
 }
 
 async function exportGcode() {
-  if (!state.result || stale()) return;
-  let text = state.result.gcode;
-  if (!text && state.gcodeToken) text = await fetchStoredGcode(state.gcodeToken);
+  const result = state.result;
+  if (!result || stale()) return;
+  let text: string;
+  try {
+    text = await loadGcode(result);
+  } catch {
+    return;
+  }
   if (!text) {
     state.error = "No G-code for this slice.";
     renderChrome();
     return;
   }
-  const minutes = Math.max(1, Math.round((state.result.estimate?.seconds ?? 0) / 60));
-  const grams = (state.result.estimate?.filamentG ?? 0).toFixed(0);
+  const minutes = Math.max(1, Math.round((result.estimate?.seconds ?? 0) / 60));
+  const grams = (result.estimate?.filamentG ?? 0).toFixed(0);
   const base = (state.mesh?.name ?? "part").replace(/\.(stl|3mf)$/i, "");
   const blend = card();
   await saveText(text, `${base}_${blend}_${minutes}m_${grams}g.gcode`, "gcode");
@@ -1566,8 +1647,7 @@ async function runPareto() {
     renderChrome();
     return;
   }
-  state.busy = true;
-  state.progress = 0.2;
+  markBusy();
   renderChrome();
   try {
     const body = { ...payload(), dataB64: toBase64(new Uint8Array(meshBytes())) };
@@ -1699,59 +1779,41 @@ function segmentStart(paths: PreviewPath[], point: PlayPoint): [number, number] 
   return prev ?? [point.x, point.y];
 }
 
-const geomWorker = new Worker(new URL("./geom-worker.ts", import.meta.url), { type: "module" });
-let geomJob = 0;
-let geomKey = "";
+let geomReady: { id: number; data: Omit<RibbonBuffers, "span" | "midZ" | "centerX" | "centerY"> } | null = null;
 
-function rebuildGeom() {
+geomWorker.onmessage = (ev) => {
+  geomReady = { id: ev.data.id, data: ev.data };
+  if (shown === state.result) applyGeom();
+};
+
+/** Shows the worker's buffers once they and the result they belong to have both arrived. */
+function applyGeom() {
   const result = state.result;
   if (!result) {
     view3d.setBuffers(null);
     return;
   }
-  const id = ++geomJob;
-  const onMsg = (ev: MessageEvent) => {
-    if (ev.data.id !== id) return;
-    geomWorker.removeEventListener("message", onMsg);
-    const mesh = result.mesh;
-    const buffers: RibbonBuffers = {
-      ranges: ev.data.ranges,
-      ribbonPos: ev.data.ribbonPos,
-      ribbonCol: ev.data.ribbonCol,
-      facePos: ev.data.facePos,
-      faceCol: ev.data.faceCol,
-      travelPos: ev.data.travelPos,
-      travelCol: ev.data.travelCol,
-      span: Math.max(mesh.max[0] - mesh.min[0], mesh.max[1] - mesh.min[1], mesh.max[2] - mesh.min[2], 1),
-      midZ: (mesh.min[2] + mesh.max[2]) / 2,
-      centerX: (mesh.min[0] + mesh.max[0]) / 2,
-      centerY: (mesh.min[1] + mesh.max[1]) / 2,
-    };
-    view3d.setBuffers(buffers);
-    view3d.setRange(state.rangeLow, state.layer);
-  };
-  geomWorker.addEventListener("message", onMsg);
-  geomWorker.postMessage({
-    id,
-    layers: result.layers,
-    min: result.mesh.min,
-    max: result.mesh.max,
-    hidden: [...state.hidden],
-    showTravel: state.showTravel && !state.hidden.has("travel"),
-    colorMode: state.colorMode,
+  if (geomReady?.id !== resultJob) return;
+  const mesh = result.mesh;
+  view3d.setBuffers({
+    ...geomReady.data,
+    span: Math.max(mesh.max[0] - mesh.min[0], mesh.max[1] - mesh.min[1], mesh.max[2] - mesh.min[2], 1),
+    midZ: (mesh.min[2] + mesh.max[2]) / 2,
+    centerX: (mesh.min[0] + mesh.max[0]) / 2,
+    centerY: (mesh.min[1] + mesh.max[1]) / 2,
   });
+  geomReady = null;
+  view3d.setRange(state.rangeLow, state.layer);
 }
 
 function sync3d() {
-  const key = `${state.result?.coreMs ?? 0}:${state.colorMode}:${[...state.hidden].join()}:${state.showTravel}`;
-  if (state.result !== shown || key !== geomKey) {
+  if (state.result !== shown) {
     shown = state.result;
-    geomKey = key;
     if (state.result) view3d.setModel(state.result.mesh.min, state.result.mesh.max);
-    view3d.setColorMode(state.colorMode);
-    view3d.setHidden(state.hidden);
-    rebuildGeom();
+    applyGeom();
   }
+  view3d.setHidden(state.hidden);
+  view3d.setColorMode(state.colorMode);
   view3d.setShowTravel(state.showTravel && !state.hidden.has("travel"));
   view3d.setRange(state.rangeLow, state.layer);
   const moves = movesNow();

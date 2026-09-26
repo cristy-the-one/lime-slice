@@ -43,12 +43,18 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let bedY = 220;
   let bedZ = 250;
 
-  function frame() {
-    controls.update();
-    renderer.render(scene, camera);
+  let frameQueued = false;
+  function requestRender() {
+    if (frameQueued) return;
+    frameQueued = true;
     requestAnimationFrame(frame);
   }
-  requestAnimationFrame(frame);
+  function frame() {
+    frameQueued = false;
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  controls.addEventListener("change", requestRender);
 
   function placeVolume() {
     bed.scale.set(bedX, 1, bedY);
@@ -60,11 +66,13 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     camera.position.set(bedX * 0.85, bedZ * 0.72, bedY * 0.95);
     controls.target.set(bedX / 2, Math.min(40, bedZ * 0.15), -bedY / 2);
     controls.update();
+    requestRender();
   }
   placeVolume();
 
   return {
     resize() {
+      requestRender();
       const rect = canvas.getBoundingClientRect();
       if (rect.width < 1 || rect.height < 1) return;
       const next = dpr();
@@ -80,6 +88,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       placeVolume();
     },
     setMesh(positions) {
+      requestRender();
       if (mesh) {
         scene.remove(mesh);
         mesh.geometry.dispose();
