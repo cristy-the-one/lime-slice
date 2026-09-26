@@ -345,8 +345,7 @@ fn propagate_nodes(nodes: Vec<Node>, below: &[Loop], below2: &[Loop], grow: &Gro
         n.dist += grow.height;
         let grown = grow.tip_r + (grow.trunk_r - grow.tip_r) * (1.0 - (-n.dist / 7.5).exp());
         n.radius = grown.max(n.radius).min(grow.trunk_r);
-        let collision = offset_loops(below, grow.xy_gap + n.radius);
-        n.xy = push_out(n.xy, &collision, max_step);
+        n.xy = push_out(n.xy, below, grow.xy_gap + n.radius, max_step);
         if in_solid(below, n.xy[0], n.xy[1]) {
             continue;
         }
@@ -390,11 +389,13 @@ fn lean_toward(xy: [f64; 2], cloud: &[[f64; 2]], max_step: f64) -> [f64; 2] {
     [xy[0] + dx / dist * step, xy[1] + dy / dist * step]
 }
 
-/// Step toward the nearest point outside `collision`, at most `max_step`. A node
-/// that needs a longer move takes it over several layers, so every disk still
-/// sits on the one under it.
-fn push_out(xy: [f64; 2], collision: &[Loop], max_step: f64) -> [f64; 2] {
-    if collision.is_empty() || !in_solid(collision, xy[0], xy[1]) {
+/// Step toward the nearest point at least `clearance` from `part`, at most
+/// `max_step`. A node that needs a longer move takes it over several layers,
+/// so every disk still sits on the one under it.
+fn push_out(xy: [f64; 2], part: &[Loop], clearance: f64, max_step: f64) -> [f64; 2] {
+    let blocked =
+        |p: [f64; 2]| in_solid(part, p[0], p[1]) || distance_to_outline(part, p) < clearance;
+    if part.is_empty() || !blocked(xy) {
         return xy;
     }
     let mut best: Option<[f64; 2]> = None;
@@ -405,7 +406,7 @@ fn push_out(xy: [f64; 2], collision: &[Loop], max_step: f64) -> [f64; 2] {
         let mut d = 0.35;
         while d <= 36.0 {
             let p = [xy[0] + c * d, xy[1] + s * d];
-            if !in_solid(collision, p[0], p[1]) {
+            if !blocked(p) {
                 if d < best_d {
                     best_d = d;
                     best = Some(p);
