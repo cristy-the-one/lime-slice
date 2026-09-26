@@ -44,6 +44,8 @@ pub struct SupportOpts {
     pub overhangs: bool,
     /// Support a same-layer component that does not rest on material below.
     pub islands: bool,
+    /// Stop the walk early when this slice has been superseded.
+    pub job: crate::cancel::Job,
 }
 
 impl Default for SupportOpts {
@@ -61,6 +63,7 @@ impl Default for SupportOpts {
             density: 0.2,
             overhangs: true,
             islands: true,
+            job: crate::cancel::Job::default(),
         }
     }
 }
@@ -122,6 +125,9 @@ pub fn build_supports(
     let lean = opts.branch_angle_deg.clamp(10.0, 65.0).to_radians().tan();
 
     for i in (0..n).rev() {
+        if opts.job.cancelled() {
+            break;
+        }
         let mut born: Vec<Loop> = Vec::new();
         pending.retain(|(contact_z, region)| {
             if bands[i].z <= *contact_z + 1e-6 {

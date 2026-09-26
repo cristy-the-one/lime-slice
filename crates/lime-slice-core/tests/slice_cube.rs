@@ -2825,3 +2825,40 @@ fn tree_trunks_always_stand_on_something() {
         assert_eq!(report.support_inside_mm3, 0.0);
     }
 }
+
+#[test]
+fn a_newer_slice_stops_the_older_one_mid_plan() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples/lime_hull.stl");
+    let mesh = load_mesh("lime_hull.stl", &std::fs::read(path).unwrap()).unwrap();
+    let settings = |job| SliceSettings {
+        include_gcode: false,
+        baseline: false,
+        job,
+        ..SliceSettings::default()
+    };
+    let started = std::time::Instant::now();
+    let full = slice_configured(
+        &mesh,
+        &tough_mode(),
+        &profile(),
+        &settings(lime_slice_core::Job::default()),
+    );
+    assert!(full.is_ok());
+    let full_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+    let old = lime_slice_core::Job::start();
+    let worker = std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        let out = slice_configured(&mesh, &tough_mode(), &profile(), &settings(old));
+        (out.map(|_| ()), started.elapsed().as_secs_f64() * 1000.0)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let newer = lime_slice_core::Job::start();
+    let (out, ms) = worker.join().unwrap();
+    assert_eq!(out, Err("cancelled".to_string()));
+    assert!(
+        ms < full_ms * 0.8,
+        "stale slice ran {ms:.0} ms of {full_ms:.0} ms"
+    );
+    assert!(!newer.cancelled());
+}

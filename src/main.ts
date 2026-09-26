@@ -1496,6 +1496,7 @@ function cancelSlice() {
   state.notice = "Slice cancelled.";
   const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   if (tauri) void import("@tauri-apps/api/core").then(({ invoke }) => invoke("cancel_slice"));
+  else void fetch(`${API}/api/cancel`, { method: "POST" }).catch(() => undefined);
   renderChrome();
 }
 

@@ -5,6 +5,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::adaptive::{plan_bands, HeightOpts, LayerBand};
+use crate::cancel::Job;
 use crate::gcode::{emit_gcode, LayerPaths};
 use crate::index::ZIndex;
 use crate::load::load_mesh;
@@ -178,6 +179,8 @@ pub struct SliceSettings {
     pub junction_deviation_mm: f64,
     /// Hold up same-layer islands that have nothing under them. Overhang supports stay on `supports`.
     pub island_support: bool,
+    /// The shell job this slice belongs to. A stale job stops with "cancelled".
+    pub job: Job,
 }
 
 impl Default for SliceSettings {
@@ -219,6 +222,7 @@ impl Default for SliceSettings {
             classic_estimator: false,
             junction_deviation_mm: 0.02,
             island_support: true,
+            job: Job::default(),
         }
     }
 }
@@ -325,6 +329,7 @@ impl SliceSettings {
                 0.02
             },
             island_support: true,
+            job: Job::default(),
         }
     }
 
@@ -565,14 +570,17 @@ pub fn contour_times(mesh: &Mesh, layer_height: f64) -> Result<f64, String> {
     Ok(elapsed_ms(started))
 }
 
-pub fn slice_request(req: &SliceRequest) -> Result<SliceResponse, String> {
-    if crate::cancel::poll() {
+pub fn slice_request(req: &SliceRequest, job: Job) -> Result<SliceResponse, String> {
+    if job.cancelled() {
         return Err("cancelled".into());
     }
     let bytes = decode_b64(&req.data_b64)?;
     let mesh = load_mesh(&req.filename, &bytes)?;
     let profile = req.printer.clone().unwrap_or_default();
-    let settings = SliceSettings::from_request(req);
+    let settings = SliceSettings {
+        job,
+        ..SliceSettings::from_request(req)
+    };
     slice_configured(&mesh, &req.blend, &profile, &settings)
 }
 
@@ -642,8 +650,9 @@ pub fn slice_configured(
         settings.arc_fit,
         settings.classic_estimator,
         settings.junction_deviation_mm,
+        settings.job,
     );
-    if gcode.cancelled || crate::cancel::poll() {
+    if gcode.cancelled || settings.job.cancelled() {
         return Err("cancelled".into());
     }
     let core_ms = elapsed_ms(started);
@@ -665,6 +674,7 @@ pub fn slice_configured(
             settings.arc_fit,
             settings.classic_estimator,
             settings.junction_deviation_mm,
+            settings.job,
         );
         (
             elapsed_ms(baseline_started),
@@ -1144,7 +1154,7 @@ fn dist2(a: [f64; 2], b: [f64; 2]) -> f64 {
     dx * dx + dy * dy
 }
 
-struct Job {
+struct LayerJob {
     index: usize,
     z: f64,
     height: f64,
@@ -1188,6 +1198,9 @@ pub(crate) fn plan(
         .walls
         .min(pure(StrategyId::Toughness).walls)
         .max(1);
+    if settings.job.cancelled() {
+        return Err("cancelled".into());
+    }
     let roofs = roof_distances(&bands, &contours, settings.line_width * fewest_walls as f64);
     let supports = build_supports(
         &bands,
@@ -1202,15 +1215,28 @@ pub(crate) fn plan(
             density: support_seed_weight(blend),
             overhangs: settings.supports,
             islands: settings.island_support,
+            job: settings.job,
             ..SupportOpts::default()
         },
     );
+    if settings.job.cancelled() {
+        return Err("cancelled".into());
+    }
     let shaft = shaft_scales(&supports, settings.support_height_mult);
     let (remain_low, remain_high) = interior_remainings(blend, settings, &bands, &roofs);
-    let jobs: Vec<Job> = bands
+    let jobs: Vec<LayerJob> = bands
         .par_iter()
         .enumerate()
         .map(|(i, band)| {
+            if settings.job.cancelled() {
+                return LayerJob {
+                    index: band.index,
+                    z: band.z,
+                    height: band.height,
+                    paths: Vec::new(),
+                    note: String::new(),
+                };
+            }
             let support = supports.get(i);
             let mut job = build_layer(
                 band.index,
@@ -1263,6 +1289,9 @@ pub(crate) fn plan(
             job
         })
         .collect();
+    if settings.job.cancelled() {
+        return Err("cancelled".into());
+    }
     let mut prev_top = false;
     let mut jobs = jobs;
     let mut layer_end: Option<[f64; 2]> = None;
@@ -1590,7 +1619,7 @@ fn build_layer(
     nozzle_diameter: f64,
     remain_low: (u32, u32),
     remain_high: (u32, u32),
-) -> Job {
+) -> LayerJob {
     let line_width = settings.line_width;
     let features = PathFeatures {
         variable_width: settings.variable_width,
@@ -1604,7 +1633,7 @@ fn build_layer(
         interior_run: remain_low.1,
     };
     if contours.is_empty() && support.is_empty() && interface.is_empty() && branches.is_empty() {
-        return Job {
+        return LayerJob {
             index,
             z,
             height,
@@ -1711,7 +1740,7 @@ fn build_layer(
     if paths.iter().any(|p| p.kind == PathKind::GapFill) && !note.contains("gap-fill") {
         note.push_str(" · gap-fill");
     }
-    Job {
+    LayerJob {
         index,
         z,
         height,

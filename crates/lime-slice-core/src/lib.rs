@@ -20,7 +20,7 @@ pub use calibrate::{
     pressure_advance_from_request, pressure_advance_tower, PaBand, PaCalib, PaCalibOutput,
     PaCalibRequest, PaFirmware,
 };
-pub use cancel::{request as request_cancel, reset as reset_cancel};
+pub use cancel::{cancel_all, Job};
 pub use load::{load_mesh, mesh_preview, MeshPreview};
 pub use mesh::Mesh;
 pub use slice::{

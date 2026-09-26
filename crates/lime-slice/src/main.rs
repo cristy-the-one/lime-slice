@@ -278,7 +278,8 @@ fn run() -> Result<(), String> {
                 ..SliceSettings::default()
             };
             let request = request_for(&input, &blend, &settings)?;
-            let response = slice_request(&request).map_err(|e| e.to_string())?;
+            let response = slice_request(&request, lime_slice_core::Job::default())
+                .map_err(|e| e.to_string())?;
             if let Some(parent) = output.parent() {
                 fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
@@ -709,13 +710,22 @@ fn serve(port: u16) -> Result<(), String> {
     let addr = format!("127.0.0.1:{port}");
     let server = tiny_http::Server::http(&addr).map_err(|e| e.to_string())?;
     eprintln!("lime-slice api http://{addr}");
-    for mut request in server.incoming_requests() {
+    // One thread per request, so a new slice or /api/cancel reaches the server
+    // while an older slice is still planning. Starting a slice supersedes it.
+    for request in server.incoming_requests() {
+        std::thread::spawn(move || handle(request));
+    }
+    Ok(())
+}
+
+fn handle(mut request: tiny_http::Request) {
+    {
         let method = request.method().as_str().to_string();
         let url = request.url().to_string();
         let mut body = String::new();
         if request.as_reader().read_to_string(&mut body).is_err() {
             let _ = request.respond(text_response(400, "bad body"));
-            continue;
+            return;
         }
         let (status, payload) = if method == "OPTIONS" {
             (204, String::new())
@@ -743,6 +753,9 @@ fn serve(port: u16) -> Result<(), String> {
                 200,
                 serde_json::to_string(&card).unwrap_or_else(|e| err_json(&e.to_string())),
             )
+        } else if method == "POST" && url.starts_with("/api/cancel") {
+            lime_slice_core::cancel_all();
+            (200, r#"{"ok":true}"#.into())
         } else if method == "GET" && url.starts_with("/api/health") {
             (200, r#"{"ok":true}"#.into())
         } else if method == "POST" && url.starts_with("/api/calibrate/pa") {
@@ -788,7 +801,10 @@ fn serve(port: u16) -> Result<(), String> {
                     Ok(bytes) => match lime_slice_core::load_mesh(&req.filename, &bytes) {
                         Ok(mesh) => {
                             let profile = req.printer.clone().unwrap_or_default();
-                            let settings = SliceSettings::from_request(&req);
+                            let settings = SliceSettings {
+                                job: lime_slice_core::Job::start(),
+                                ..SliceSettings::from_request(&req)
+                            };
                             match pareto_estimates(&mesh, &profile, &settings) {
                                 Ok(points) => (
                                     200,
@@ -806,7 +822,7 @@ fn serve(port: u16) -> Result<(), String> {
             }
         } else if method == "POST" && url.starts_with("/api/slice") {
             match serde_json::from_str::<SliceRequest>(&body) {
-                Ok(req) => match slice_request(&req) {
+                Ok(req) => match slice_request(&req, lime_slice_core::Job::start()) {
                     Ok(mut res) => {
                         if !req.include_gcode {
                             let token = park_gcode(std::mem::take(&mut res.gcode));
@@ -833,7 +849,6 @@ fn serve(port: u16) -> Result<(), String> {
         };
         let _ = request.respond(text_response(status, &payload));
     }
-    Ok(())
 }
 
 fn text_response(status: u16, body: &str) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
