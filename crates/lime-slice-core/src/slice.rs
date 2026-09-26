@@ -1281,6 +1281,25 @@ pub(crate) fn plan(
         .par_iter()
         .map(|band| index.slice(band.cut_z()))
         .collect();
+    plan_contours(
+        bands,
+        contours,
+        (min, max),
+        blend,
+        settings,
+        nozzle_diameter,
+    )
+}
+
+/// Everything `plan` does after the mesh is cut into per-band contours.
+fn plan_contours(
+    bands: Vec<LayerBand>,
+    contours: Vec<Vec<Loop>>,
+    (min, max): ([f64; 3], [f64; 3]),
+    blend: &BlendMode,
+    settings: &SliceSettings,
+    nozzle_diameter: f64,
+) -> Result<Plan, String> {
     let fewest_walls = pure(StrategyId::Speed)
         .walls
         .min(pure(StrategyId::Toughness).walls)
@@ -1977,4 +1996,161 @@ fn decode_b64(data: &str) -> Result<Vec<u8>, String> {
     base64::engine::general_purpose::STANDARD
         .decode(payload.trim())
         .map_err(|e| format!("base64: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Root 8 mm wide, tip 0.55 mm, 40 mm long, 12 mm tall. Matches `wedge_wing`
+    /// in tests/slice_cube.rs.
+    fn wedge_wing() -> Mesh {
+        let (length, root, tip, z1) = (40.0, 8.0, 0.55, 12.0);
+        let y_tip0 = (root - tip) * 0.5;
+        let ring = |z: f64| {
+            [
+                [0.0, 0.0, z],
+                [length, y_tip0, z],
+                [length, y_tip0 + tip, z],
+                [0.0, root, z],
+            ]
+        };
+        let (b, t) = (ring(0.0), ring(z1));
+        let mut triangles = vec![
+            [b[0], b[1], b[2]],
+            [b[0], b[2], b[3]],
+            [t[0], t[2], t[1]],
+            [t[0], t[3], t[2]],
+        ];
+        for i in 0..4 {
+            let j = (i + 1) % 4;
+            triangles.push([b[i], t[i], t[j]]);
+            triangles.push([b[i], t[j], b[j]]);
+        }
+        Mesh { triangles }
+    }
+
+    fn seg_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 < 1e-12 {
+            0.0
+        } else {
+            (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0)
+        };
+        (a[0] + dx * t - p[0]).hypot(a[1] + dy * t - p[1])
+    }
+
+    /// Wing centerline stations `flared_wing_taper_is_filled_on_speed_and_toughness`
+    /// checks, left uncovered at `want_z`, and the gap-fill length on that layer.
+    fn wing_holes(plan: &Plan, want_z: f64) -> (Vec<f64>, f64) {
+        let layer = plan
+            .layers
+            .iter()
+            .find(|l| (l.z - want_z).abs() < 0.15)
+            .unwrap();
+        let gap_mm = layer
+            .paths
+            .iter()
+            .filter(|p| p.kind == PathKind::GapFill)
+            .flat_map(|p| p.points.windows(2))
+            .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+            .sum();
+        let holes = (1..20)
+            .map(|i| i as f64 * 2.0)
+            .filter(|&x| {
+                let width = 8.0 + (0.55 - 8.0) * (x / 40.0);
+                // Sparse and gyroid may leave the fat root open. The taper may not.
+                let open_ok = want_z < 10.0 && width > 3.2;
+                let hit = layer.paths.iter().any(|p| {
+                    p.kind != PathKind::Skirt
+                        && p.points.windows(2).any(|s| {
+                            seg_dist([x, 4.0], s[0], s[1]) <= (p.width * 0.5).max(0.1) + 0.05
+                        })
+                });
+                !hit && !open_ok
+            })
+            .collect();
+        (holes, gap_mm)
+    }
+
+    #[test]
+    fn wing_taper_fill_survives_micron_moves_and_start_rotation() {
+        let mesh = wedge_wing();
+        let settings = SliceSettings::default();
+        let bands = plan_bands(
+            &mesh,
+            &HeightOpts {
+                nominal: settings.layer_height,
+                adaptive: false,
+                min_h: settings.adaptive_min,
+                max_h: settings.layer_height,
+            },
+        )
+        .unwrap();
+        let index = ZIndex::build(&mesh);
+        let cut: Vec<Vec<Loop>> = bands.iter().map(|b| index.slice(b.cut_z())).collect();
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut step = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % 3) as f64 - 1.0
+        };
+        let mut failures = Vec::new();
+        for case in 0..16 {
+            // One Clipper grid step (1 µm) per coordinate, on the 1e-3 grid, from a rotated start.
+            let moves: Vec<[f64; 2]> = (0..4).map(|_| [step() * 1e-3, step() * 1e-3]).collect();
+            let contours: Vec<Vec<Loop>> = cut
+                .iter()
+                .map(|layer| {
+                    layer
+                        .iter()
+                        .map(|l| {
+                            let mut l: Loop = l
+                                .iter()
+                                .zip(moves.iter().cycle())
+                                .map(|(p, m)| {
+                                    [
+                                        ((p[0] + m[0]) * 1e3).round() / 1e3,
+                                        ((p[1] + m[1]) * 1e3).round() / 1e3,
+                                    ]
+                                })
+                                .collect();
+                            let start = case % l.len();
+                            l.rotate_left(start);
+                            l
+                        })
+                        .collect()
+                })
+                .collect();
+            for strategy in [StrategyId::Speed, StrategyId::Toughness] {
+                let plan = plan_contours(
+                    bands.clone(),
+                    contours.clone(),
+                    mesh.bounds().unwrap(),
+                    &BlendMode::Single { strategy },
+                    &settings,
+                    0.4,
+                )
+                .unwrap();
+                for want_z in [6.0, 11.8] {
+                    let (holes, gap_mm) = wing_holes(&plan, want_z);
+                    if !holes.is_empty() || gap_mm <= 1.0 {
+                        failures.push(format!(
+                            "case {case} {strategy:?} z={want_z} holes at x={holes:?} gap-fill {gap_mm:.2} mm"
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{}",
+            failures.join(
+                "
+"
+            )
+        );
+    }
 }
