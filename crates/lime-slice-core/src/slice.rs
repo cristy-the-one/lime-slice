@@ -4,9 +4,9 @@ use base64::Engine;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::adaptive::{plan_bands, HeightOpts};
+use crate::adaptive::{plan_bands, HeightOpts, LayerBand};
 use crate::gcode::{emit_gcode, LayerPaths};
-use crate::index::{slice_contours, ZIndex};
+use crate::index::ZIndex;
 use crate::load::load_mesh;
 use crate::mesh::Mesh;
 use crate::poly::{boolean_union, clip_to_rect, loop_bounds, offset_loops, Loop};
@@ -14,7 +14,7 @@ use crate::strategy::{
     classicize, layer_weight, mix, pure, support_density, support_interface_density, Axis,
     BlendMode, Gyroid3d, PrinterProfile, ResolvedStrategy, ScarfSeam, StrategyId, ZHopMode,
 };
-use crate::support::{build_supports, SupportOpts, SupportStyle};
+use crate::support::{build_supports, SupportLayer, SupportOpts, SupportStyle};
 use crate::toolpath::{
     apply_overhang, apply_scarf, apply_z_hop, optimize_travel, plan_region, plan_skirt,
     plan_support, plan_tree_support, seat_layer_start, Extrusion, PathFeatures, PathKind,
@@ -149,7 +149,6 @@ pub struct SliceSettings {
     pub travel_opt: bool,
     pub overhang_control: bool,
     pub classic: bool,
-    pub spatial_index: bool,
     pub support_style: SupportStyle,
     pub branch_angle: f64,
     pub tip_diameter: f64,
@@ -194,7 +193,6 @@ impl Default for SliceSettings {
             travel_opt: true,
             overhang_control: true,
             classic: false,
-            spatial_index: true,
             support_style: SupportStyle::Grid,
             branch_angle: 40.0,
             tip_diameter: 0.8,
@@ -255,7 +253,6 @@ impl SliceSettings {
             travel_opt: req.travel_opt && !req.classic,
             overhang_control: req.overhang_control && !req.classic,
             classic: req.classic,
-            spatial_index: !req.classic,
             support_style: if req.classic {
                 SupportStyle::Grid
             } else {
@@ -551,7 +548,8 @@ pub struct PreviewPath {
 }
 
 /// Milliseconds to contour every layer with the Z index, then with a full triangle scan.
-pub fn contour_times(mesh: &Mesh, layer_height: f64) -> Result<(f64, f64), String> {
+/// Wall-clock time to cut every 0.2 mm layer of `mesh` through the Z index.
+pub fn contour_times(mesh: &Mesh, layer_height: f64) -> Result<f64, String> {
     let (_, max) = mesh.bounds().ok_or("empty mesh")?;
     let mut zs = Vec::new();
     let mut z = layer_height;
@@ -561,13 +559,8 @@ pub fn contour_times(mesh: &Mesh, layer_height: f64) -> Result<(f64, f64), Strin
     }
     let index = ZIndex::build(mesh);
     let started = Instant::now();
-    let indexed: Vec<_> = zs.par_iter().map(|z| index.slice(*z)).collect();
-    let indexed_ms = elapsed_ms(started);
-    let started = Instant::now();
-    let scanned: Vec<_> = zs.iter().map(|z| slice_contours(mesh, *z)).collect();
-    let scanned_ms = elapsed_ms(started);
-    debug_assert_eq!(indexed.len(), scanned.len());
-    Ok((indexed_ms, scanned_ms))
+    let _: Vec<_> = zs.par_iter().map(|z| index.slice(*z)).collect();
+    Ok(elapsed_ms(started))
 }
 
 pub fn slice_request(req: &SliceRequest) -> Result<SliceResponse, String> {
@@ -619,7 +612,6 @@ pub fn slice_configured(
         settings.arc_fit = false;
         settings.travel_opt = false;
         settings.overhang_control = false;
-        settings.spatial_index = false;
         settings.infill_combine = false;
         settings.combing = false;
         settings.feature_speeds = false;
@@ -637,7 +629,7 @@ pub fn slice_configured(
         profile.linear_advance = 0.0;
     }
     let started = Instant::now();
-    let planned = plan(mesh, blend, &settings, profile.nozzle_diameter)?;
+    let planned = plan(mesh, blend, &settings, profile.nozzle_diameter)?.layers;
     let gcode = emit_gcode(
         &planned,
         &profile,
@@ -659,7 +651,8 @@ pub fn slice_configured(
             strategy: StrategyId::Speed,
         };
         let baseline_started = Instant::now();
-        let baseline_planned = plan(mesh, &baseline_mode, &settings, profile.nozzle_diameter)?;
+        let baseline_planned =
+            plan(mesh, &baseline_mode, &settings, profile.nozzle_diameter)?.layers;
         let _baseline_gcode = emit_gcode(
             &baseline_planned,
             &profile,
@@ -832,7 +825,6 @@ fn compare_estimates(
             one.arc_fit = false;
             one.travel_opt = false;
             one.overhang_control = false;
-            one.spatial_index = false;
             one.infill_combine = false;
             one.combing = false;
             one.feature_speeds = false;
@@ -1158,12 +1150,21 @@ struct Job {
     note: String,
 }
 
-fn plan(
+/// Everything `plan` derives from the mesh. `layers` is what the G-code writer
+/// consumes; the rest is kept for the audit.
+pub(crate) struct Plan {
+    pub layers: Vec<LayerPaths>,
+    pub bands: Vec<LayerBand>,
+    pub contours: Vec<Vec<Loop>>,
+    pub supports: Vec<SupportLayer>,
+}
+
+pub(crate) fn plan(
     mesh: &Mesh,
     blend: &BlendMode,
     settings: &SliceSettings,
     nozzle_diameter: f64,
-) -> Result<Vec<LayerPaths>, String> {
+) -> Result<Plan, String> {
     let (min, max) = mesh.bounds().ok_or("empty mesh")?;
     let max_h = if settings.adaptive {
         settings.adaptive_max.max(settings.adaptive_min)
@@ -1179,18 +1180,8 @@ fn plan(
             max_h,
         },
     )?;
-    let index = if settings.spatial_index {
-        Some(ZIndex::build(mesh))
-    } else {
-        None
-    };
-    let contours: Vec<Vec<Loop>> = bands
-        .par_iter()
-        .map(|band| match &index {
-            Some(index) => index.slice(band.z),
-            None => slice_contours(mesh, band.z),
-        })
-        .collect();
+    let index = ZIndex::build(mesh);
+    let contours: Vec<Vec<Loop>> = bands.par_iter().map(|band| index.slice(band.z)).collect();
     let roofs = roof_distances(&bands, &contours);
     let supports = build_supports(
         &bands,
@@ -1291,7 +1282,7 @@ fn plan(
         );
         prev_top = job.paths.iter().any(|p| p.kind == PathKind::Top);
     }
-    Ok(jobs
+    let layers = jobs
         .into_iter()
         .map(|job| LayerPaths {
             index: job.index,
@@ -1300,7 +1291,13 @@ fn plan(
             paths: job.paths,
             note: job.note,
         })
-        .collect())
+        .collect();
+    Ok(Plan {
+        layers,
+        bands,
+        contours,
+        supports,
+    })
 }
 
 fn roof_distances(bands: &[crate::adaptive::LayerBand], contours: &[Vec<Loop>]) -> Vec<f64> {

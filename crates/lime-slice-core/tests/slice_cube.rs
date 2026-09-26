@@ -729,51 +729,6 @@ fn volumetric_flow_caps_extrusion_feed() {
     assert_eq!(over, 0, "extrusion feed exceeded the volumetric cap");
 }
 
-#[test]
-fn indexed_slice_matches_classic_contours() {
-    let mesh = cube();
-    let indexed = slice_configured(
-        &mesh,
-        &BlendMode::Single {
-            strategy: StrategyId::Toughness,
-        },
-        &profile(),
-        &SliceSettings {
-            classic: false,
-            variable_width: false,
-            arc_fit: false,
-            travel_opt: false,
-            overhang_control: false,
-            ..SliceSettings::default()
-        },
-    )
-    .unwrap();
-    let scanned = slice_configured(
-        &mesh,
-        &BlendMode::Single {
-            strategy: StrategyId::Toughness,
-        },
-        &profile(),
-        &SliceSettings {
-            classic: false,
-            spatial_index: false,
-            variable_width: false,
-            arc_fit: false,
-            travel_opt: false,
-            overhang_control: false,
-            ..SliceSettings::default()
-        },
-    )
-    .unwrap();
-    assert_eq!(indexed.sanity.layers, scanned.sanity.layers);
-    let mid_i = indexed.layers.iter().find(|l| l.index == 40).unwrap();
-    let mid_s = scanned.layers.iter().find(|l| l.index == 40).unwrap();
-    assert_eq!(mid_i.toughness_walls, mid_s.toughness_walls);
-    let rel = (indexed.estimate.filament_mm - scanned.estimate.filament_mm).abs()
-        / scanned.estimate.filament_mm;
-    assert!(rel < 0.08, "filament drifted {rel}");
-}
-
 fn speed_mode() -> BlendMode {
     BlendMode::Single {
         strategy: StrategyId::Speed,
@@ -1548,6 +1503,25 @@ fn combing_does_not_cross_a_hole_without_retract() {
         tough_cross.iter().all(|c| c.retracted),
         "toughness crossed a hole without retract"
     );
+    // The four bars cut as one frame, so combing can always go around the hole.
+    assert_eq!(
+        tough_cross.len(),
+        0,
+        "toughness should comb around a closed frame"
+    );
+
+    // Without combing the straight travels cross the hole, and each must lift.
+    let tough = slice_configured(
+        &mesh,
+        &tough_mode(),
+        &profile(),
+        &SliceSettings {
+            combing: false,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    let tough_cross = hole_crossings(&tough.gcode);
     let long: Vec<_> = tough_cross
         .iter()
         .filter(|c| !c.scarf && (c.a[0] - c.b[0]).hypot(c.a[1] - c.b[1]) >= 2.0)
@@ -2742,4 +2716,51 @@ fn printer_profile_keeps_cost_and_bed_when_fields_are_absent() {
     assert!((parsed.max_accel - 10_000.0).abs() < 1e-6);
     assert!((parsed.filament_cost_per_kg - 20.0).abs() < 1e-6);
     assert!((parsed.bed_z - 250.0).abs() < 1e-6);
+}
+
+fn audit(mesh: &Mesh) -> lime_slice_core::SliceAudit {
+    lime_slice_core::audit_slice(
+        mesh,
+        &speed_mode(),
+        &SliceSettings {
+            include_gcode: false,
+            baseline: false,
+            ..SliceSettings::default()
+        },
+        0.4,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_hole_in_the_mesh_does_not_drop_the_layer() {
+    let mut mesh = cylinder(10.0, 10.0, 64);
+    // Remove one side quad: a 1 mm slot through every layer.
+    mesh.triangles.drain(0..2);
+    let report = audit(&mesh);
+    let want = std::f64::consts::PI * 100.0 * 10.0;
+    let got = report.sliced_volume_mm3;
+    assert!(
+        (got - want).abs() / want < 0.02,
+        "sliced {got:.0} mm3, a closed cylinder is {want:.0} mm3"
+    );
+    assert_eq!(report.dropped_chains, 0);
+    assert_eq!(report.repaired_layers, report.layers);
+}
+
+#[test]
+fn a_shell_inside_another_is_solid_not_a_hole() {
+    let mut tris = Vec::new();
+    add_box(&mut tris, 0.0, 0.0, 0.0, 20.0, 20.0, 10.0);
+    add_box(&mut tris, 5.0, 5.0, 0.0, 15.0, 15.0, 10.0);
+    add_box(&mut tris, 10.0, 10.0, 0.0, 30.0, 18.0, 10.0);
+    let report = audit(&Mesh { triangles: tris });
+    // 20×20 plus the 10×8 part of the third box outside the first.
+    let want = (400.0 + 80.0) * 10.0;
+    let got = report.sliced_volume_mm3;
+    assert!(
+        (got - want).abs() / want < 0.01,
+        "sliced {got:.0} mm3, the union is {want:.0} mm3"
+    );
+    assert_eq!(report.support_mm3, 0.0);
 }

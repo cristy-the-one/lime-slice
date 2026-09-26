@@ -248,6 +248,37 @@ pub fn boolean_diff(subject: &[Loop], clip: &[Loop]) -> Vec<Loop> {
     }
 }
 
+/// Union of loops that may overlap or self-intersect. Any region wound at
+/// least once is solid, so a clockwise hole only cancels the outline around it.
+pub fn resolve_nonzero(loops: Vec<Loop>) -> Vec<Loop> {
+    if loops.is_empty() {
+        return loops;
+    }
+    let empty: Paths<Milli> = Paths::default();
+    match paths_from_loops(&loops)
+        .to_clipper_subject()
+        .add_clip(empty)
+        .union(FillRule::NonZero)
+    {
+        Ok(paths) => loops_from_paths(paths),
+        Err(_) => orient_loops(loops),
+    }
+}
+
+pub fn boolean_intersect(a: &[Loop], b: &[Loop]) -> Vec<Loop> {
+    if a.is_empty() || b.is_empty() {
+        return Vec::new();
+    }
+    match paths_from_loops(a)
+        .to_clipper_subject()
+        .add_clip(paths_from_loops(b))
+        .intersect(FillRule::NonZero)
+    {
+        Ok(paths) => loops_from_paths(paths),
+        Err(_) => Vec::new(),
+    }
+}
+
 pub fn drop_slivers(loops: Vec<Loop>, min_area: f64) -> Vec<Loop> {
     loops
         .into_iter()

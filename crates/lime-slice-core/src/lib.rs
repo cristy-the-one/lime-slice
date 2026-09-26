@@ -1,6 +1,7 @@
 //! Lime Slice core: mesh in, strategy-blended FDM toolpaths and G-code out.
 
 mod adaptive;
+mod audit;
 mod calibrate;
 mod cancel;
 mod gcode;
@@ -14,6 +15,7 @@ mod strategy;
 mod support;
 mod toolpath;
 
+pub use audit::{audit_slice, SliceAudit};
 pub use calibrate::{
     pressure_advance_from_request, pressure_advance_tower, PaBand, PaCalib, PaCalibOutput,
     PaCalibRequest, PaFirmware,
