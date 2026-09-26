@@ -20,6 +20,11 @@ async function bufferMatchesCss(page: Page, id: string) {
 
 test.use({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
 
+/** Viewport metrics land before the ResizeObserver frame that resizes the canvases. */
+async function afterViewport(page: Page) {
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => resolve(undefined))));
+}
+
 test("preview canvases keep a device-pixel backing store across resize", async ({ page }) => {
   await page.goto("/");
   await page.waitForSelector("#view3d");
@@ -32,6 +37,7 @@ test("preview canvases keep a device-pixel backing store across resize", async (
 
   await page.getByRole("button", { name: "3D", exact: true }).click();
   await page.setViewportSize({ width: 1800, height: 1000 });
+  await afterViewport(page);
   const solid = await bufferMatchesCss(page, "view3d");
   console.log("solid resized", JSON.stringify(solid));
   expect(solid.match, JSON.stringify(solid)).toBe(true);
@@ -43,6 +49,7 @@ test("preview canvases keep a device-pixel backing store across resize", async (
   expect(prepare.match, JSON.stringify(prepare)).toBe(true);
 
   await page.setViewportSize({ width: 1600, height: 800 });
+  await afterViewport(page);
   const prepareResized = await bufferMatchesCss(page, "prepare");
   console.log("prepare resized", JSON.stringify(prepareResized));
   expect(prepareResized.match, JSON.stringify(prepareResized)).toBe(true);

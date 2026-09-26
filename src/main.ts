@@ -174,9 +174,11 @@ app.innerHTML = `
       </label>
       <div class="spacer"></div>
       <div class="timing" id="timing">No slice yet</div>
-      <button class="btn primary" id="slice" type="button">Slice</button>
-      <button class="btn" id="cancel" type="button" hidden>Cancel</button>
-      <button class="btn" id="export" type="button" disabled>Export G-code</button>
+      <div class="action-row">
+        <button class="btn primary" id="slice" type="button">Slice</button>
+        <button class="btn" id="cancel" type="button" disabled>Cancel</button>
+        <button class="btn" id="export" type="button" disabled>Export G-code</button>
+      </div>
     </header>
     <div class="banner-rail" id="banner"></div>
     <div class="workspace">
@@ -376,10 +378,10 @@ function renderChrome() {
 
   const isStale = stale();
   const sliceBtn = document.querySelector<HTMLButtonElement>("#slice")!;
-  sliceBtn.textContent = isStale ? "Re-slice" : "Slice";
-  sliceBtn.classList.toggle("reslice", isStale);
+  sliceBtn.textContent = state.busy ? "Slicing…" : isStale ? "Re-slice" : "Slice";
+  sliceBtn.classList.toggle("reslice", isStale && !state.busy);
   sliceBtn.disabled = state.busy || !state.mesh;
-  (document.querySelector("#cancel") as HTMLButtonElement).hidden = !state.busy;
+  (document.querySelector("#cancel") as HTMLButtonElement).disabled = !state.busy;
   (document.querySelector("#export") as HTMLButtonElement).disabled = !result || isStale || state.busy;
   document.querySelector("#timing")!.textContent = state.busy
     ? busyText()
@@ -429,7 +431,11 @@ function paintBanner(isStale: boolean) {
   if (state.notice) bits.push(`<div class="banner warn">${escapeHtml(state.notice)}</div>`);
   if (isStale) bits.push(`<div class="banner warn">Settings changed since this slice. Export stays off until you re-slice.</div>`);
   if (state.result && !state.result.sanity.ok) bits.push(`<div class="banner">${escapeHtml(state.result.sanity.notes.join(" ") || "G-code checks failed")}</div>`);
-  if (state.busy) bits.push(`<div class="progress ${state.progress > 0 && state.progress < 1 ? "" : "indeterminate"}" data-state="slicing"><span style="width:${Math.max(8, state.progress * 100)}%"></span></div>`);
+  if (state.busy) {
+    const indeterminate = !(state.progress > 0 && state.progress < 1);
+    const pct = Math.max(8, state.progress * 100);
+    bits.push(`<div class="progress${indeterminate ? " indeterminate" : ""}" data-state="slicing"><span style="width:${pct}%"></span></div>`);
+  }
   rail.innerHTML = bits.join("");
 }
 
@@ -1093,7 +1099,7 @@ function markStale() {
   const sliceBtn = document.querySelector<HTMLButtonElement>("#slice");
   const exp = document.querySelector<HTMLButtonElement>("#export");
   const isStale = stale();
-  if (sliceBtn) {
+  if (sliceBtn && !state.busy) {
     sliceBtn.textContent = isStale ? "Re-slice" : "Slice";
     sliceBtn.classList.toggle("reslice", isStale);
   }
