@@ -1102,7 +1102,6 @@ document.querySelector("#spark")!.addEventListener("click", (ev) => {
 });
 document.querySelector("#colorBy")!.addEventListener("change", (ev) => {
   state.colorMode = (ev.target as HTMLSelectElement).value as ColorMode;
-  view3d.setColorMode(state.colorMode);
   draw();
 });
 document.querySelector("#legend")!.addEventListener("change", (ev) => {
@@ -1112,7 +1111,6 @@ document.querySelector("#legend")!.addEventListener("change", (ev) => {
   if (input.checked) state.hidden.delete(kind);
   else state.hidden.add(kind);
   if (kind === "travel") state.showTravel = input.checked;
-  view3d.setHidden(state.hidden);
   view3d.setShowTravel(state.showTravel && !state.hidden.has("travel"));
   draw();
 });
@@ -1748,8 +1746,6 @@ function sync3d() {
     shown = state.result;
     geomKey = key;
     if (state.result) view3d.setModel(state.result.mesh.min, state.result.mesh.max);
-    view3d.setColorMode(state.colorMode);
-    view3d.setHidden(state.hidden);
     rebuildGeom();
   }
   view3d.setShowTravel(state.showTravel && !state.hidden.has("travel"));
