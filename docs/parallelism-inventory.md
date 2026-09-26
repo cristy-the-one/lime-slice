@@ -186,7 +186,7 @@ Dragon’s 28 loops are not 28 equal islands of work. The hull has one loop. Per
 | Z-hop inset | Layer | Dragon **78 ms** | Serial, and independent | None if gathered before the cursor walk | Skip the offset when no path can hop. A pool saves under 80 ms |
 | Estimator | Layer chain, flushed per layer | Inside G-code ms | Serial writer | Feature totals are a sum | Fold with the G-code reduce. No third pass |
 | G-code text | Layer fragment, then `E` prefix | Hull tough **225 ms**, dragon speed **201 ms**, cube tough **40 ms** | Serial | Fan, accel, PA, retract, start XY | **~100–150 ms** if the string scales. See P1 |
-| Mesh STL / index build | Triangle | Dragon load 0.7 ms, index 4 ms | Serial | Weld map | &lt;5 ms |
+| Mesh STL / index build | Triangle | Dragon load 0.7 ms, index 4 ms | Serial | Weld map | Under 5 ms |
 | `preview_of` + JSON | Layer | 10 ms + 26–33 ms | Serial | Kind dictionary while streaming | Tens of ms. Not the bead mesh |
 | Bead extrusion | Segment, per layer | Synthetic **2.3 s** at hull-toughness point count | One worker, off the main thread | Kind-slot ids | Up to ~1 s off the time-to-3D, if the real worker matches the synthetic loop |
 | Second baseline slice | Whole extra speed plan + G-code | Hull speed **+106 ms** wall, **0** in `core_ms` | Serial, UI off | None: it is thrown away | Delete or stop defaulting it on. Do not parallelize |
