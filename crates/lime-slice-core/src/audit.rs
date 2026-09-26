@@ -70,8 +70,8 @@ pub fn audit_slice(
         .into_par_iter()
         .map(|i| {
             let band = bands[i];
-            let (fresh, stats) = index.slice_with_stats(band.z);
-            let mid = index.slice(band.z - band.height * 0.5);
+            let (fresh, stats) = index.slice_with_stats(band.cut_z());
+            let mid = &fresh;
             let piece = &planned.contours[i];
             let region = &regions[i];
             let floating = if i == 0 || columns[i].is_empty() {
@@ -103,7 +103,7 @@ pub fn audit_slice(
                 support: area(region),
                 inside: area(&boolean_intersect(
                     region,
-                    &offset_loops(&mid, -INSIDE_TOLERANCE_MM),
+                    &offset_loops(mid, -INSIDE_TOLERANCE_MM),
                 )),
                 floating,
             }

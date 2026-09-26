@@ -1193,7 +1193,10 @@ pub(crate) fn plan(
         },
     )?;
     let index = ZIndex::build(mesh);
-    let contours: Vec<Vec<Loop>> = bands.par_iter().map(|band| index.slice(band.z)).collect();
+    let contours: Vec<Vec<Loop>> = bands
+        .par_iter()
+        .map(|band| index.slice(band.cut_z()))
+        .collect();
     let fewest_walls = pure(StrategyId::Speed)
         .walls
         .min(pure(StrategyId::Toughness).walls)
