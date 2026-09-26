@@ -145,6 +145,10 @@ const state = {
 };
 
 const worker = new Worker(new URL("./slice-worker.ts", import.meta.url), { type: "module" });
+const geomWorker = new Worker(new URL("./geom-worker.ts", import.meta.url), { type: "module" });
+const geomChannel = new MessageChannel();
+worker.postMessage({ geomPort: geomChannel.port1 }, [geomChannel.port1]);
+geomWorker.postMessage({ slicePort: geomChannel.port2 }, [geomChannel.port2]);
 let job = 0;
 let autoTimer = 0;
 
@@ -264,6 +268,8 @@ const prepare = createPrepareView(document.querySelector<HTMLCanvasElement>("#pr
 prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
 view3d.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
 let shown: SliceResponse | null = null;
+/** Slice job that produced state.result; geometry buffers carry the same id. */
+let resultJob = 0;
 
 function card(): CardId {
   if (state.blendKind === "byLayer") return "layer";
@@ -1436,6 +1442,7 @@ async function runSlice() {
     if (id !== job) return;
     if (body.error) throw new Error(body.error);
     state.result = body;
+    resultJob = id;
     state.slicedHash = hash;
     state.layer = Math.min(state.layer, Math.max(0, body.layers.length - 1));
     clampPlane();
@@ -1772,51 +1779,38 @@ function segmentStart(paths: PreviewPath[], point: PlayPoint): [number, number] 
   return prev ?? [point.x, point.y];
 }
 
-const geomWorker = new Worker(new URL("./geom-worker.ts", import.meta.url), { type: "module" });
-let geomJob = 0;
+let geomReady: { id: number; data: Omit<RibbonBuffers, "span" | "midZ" | "centerX" | "centerY"> } | null = null;
 
-function rebuildGeom() {
+geomWorker.onmessage = (ev) => {
+  geomReady = { id: ev.data.id, data: ev.data };
+  if (shown === state.result) applyGeom();
+};
+
+/** Shows the worker's buffers once they and the result they belong to have both arrived. */
+function applyGeom() {
   const result = state.result;
   if (!result) {
     view3d.setBuffers(null);
     return;
   }
-  const id = ++geomJob;
-  const onMsg = (ev: MessageEvent) => {
-    if (ev.data.id !== id) return;
-    geomWorker.removeEventListener("message", onMsg);
-    const mesh = result.mesh;
-    const buffers: RibbonBuffers = {
-      ranges: ev.data.ranges,
-      kinds: ev.data.kinds,
-      ribbonPos: ev.data.ribbonPos,
-      ribbonInfo: ev.data.ribbonInfo,
-      facePos: ev.data.facePos,
-      faceInfo: ev.data.faceInfo,
-      travelPos: ev.data.travelPos,
-      travelInfo: ev.data.travelInfo,
-      span: Math.max(mesh.max[0] - mesh.min[0], mesh.max[1] - mesh.min[1], mesh.max[2] - mesh.min[2], 1),
-      midZ: (mesh.min[2] + mesh.max[2]) / 2,
-      centerX: (mesh.min[0] + mesh.max[0]) / 2,
-      centerY: (mesh.min[1] + mesh.max[1]) / 2,
-    };
-    view3d.setBuffers(buffers);
-    view3d.setRange(state.rangeLow, state.layer);
-  };
-  geomWorker.addEventListener("message", onMsg);
-  geomWorker.postMessage({
-    id,
-    layers: result.layers,
-    min: result.mesh.min,
-    max: result.mesh.max,
+  if (geomReady?.id !== resultJob) return;
+  const mesh = result.mesh;
+  view3d.setBuffers({
+    ...geomReady.data,
+    span: Math.max(mesh.max[0] - mesh.min[0], mesh.max[1] - mesh.min[1], mesh.max[2] - mesh.min[2], 1),
+    midZ: (mesh.min[2] + mesh.max[2]) / 2,
+    centerX: (mesh.min[0] + mesh.max[0]) / 2,
+    centerY: (mesh.min[1] + mesh.max[1]) / 2,
   });
+  geomReady = null;
+  view3d.setRange(state.rangeLow, state.layer);
 }
 
 function sync3d() {
   if (state.result !== shown) {
     shown = state.result;
     if (state.result) view3d.setModel(state.result.mesh.min, state.result.mesh.max);
-    rebuildGeom();
+    applyGeom();
   }
   view3d.setHidden(state.hidden);
   view3d.setColorMode(state.colorMode);

@@ -8,12 +8,19 @@ export interface WorkerRequest {
   api?: string;
   parseOnly?: string;
   cancel?: boolean;
+  /** Port to the geometry worker, sent once at startup. */
+  geomPort?: MessagePort;
 }
 
 const jobs = new Map<number, AbortController>();
+let geomPort: MessagePort | null = null;
 
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const msg = event.data;
+  if (msg.geomPort) {
+    geomPort = msg.geomPort;
+    return;
+  }
   if (msg.cancel) {
     jobs.get(msg.id)?.abort();
     jobs.delete(msg.id);
@@ -21,8 +28,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   }
   if (msg.parseOnly != null) {
     try {
-      const body = JSON.parse(msg.parseOnly) as unknown;
-      self.postMessage({ id: msg.id, ok: true, body });
+      deliver(msg.id, JSON.parse(msg.parseOnly));
     } catch (err) {
       self.postMessage({ id: msg.id, ok: false, error: err instanceof Error ? err.message : String(err) });
     }
@@ -30,6 +36,15 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   }
   void run(msg);
 };
+
+/**
+ * The geometry worker gets its own copy of the layers straight from here,
+ * so the main thread never has to clone them a second time.
+ */
+function deliver(id: number, body: { layers?: unknown; mesh?: { min: number[]; max: number[] } }) {
+  if (body.layers && body.mesh) geomPort?.postMessage({ id, layers: body.layers, min: body.mesh.min, max: body.mesh.max });
+  self.postMessage({ id, ok: true, body });
+}
 
 async function run(msg: WorkerRequest) {
   const ctrl = new AbortController();
@@ -43,9 +58,9 @@ async function run(msg: WorkerRequest) {
       signal: ctrl.signal,
     });
     const text = await res.text();
-    const body = JSON.parse(text) as { error?: string };
+    const body = JSON.parse(text) as Parameters<typeof deliver>[1] & { error?: string };
     if (!res.ok) throw new Error(body.error || `slice failed (${res.status})`);
-    self.postMessage({ id: msg.id, ok: true, body });
+    deliver(msg.id, body);
   } catch (err) {
     const aborted = err instanceof DOMException && err.name === "AbortError";
     self.postMessage({

@@ -1,11 +1,15 @@
 /// Build one merged ribbon mesh plus travel lines off the main thread.
+/// Layers arrive from the slice worker over a port; buffers go to the main thread.
 
 import { buildPreviewGeometry, type GeomRequest } from "./preview-geom";
 
 export type { GeomPath, GeomLayer, GeomRequest } from "./preview-geom";
 
-self.onmessage = (event: MessageEvent<GeomRequest>) => {
-  const msg = event.data;
+self.onmessage = (event: MessageEvent<{ slicePort: MessagePort }>) => {
+  event.data.slicePort.onmessage = (ev: MessageEvent<GeomRequest>) => build(ev.data);
+};
+
+function build(msg: GeomRequest) {
   const built = buildPreviewGeometry(msg);
   const ribbonPos = new Float32Array(built.ribbon);
   const ribbonInfo = new Float32Array(built.ribbonInfo);
@@ -22,4 +26,4 @@ self.onmessage = (event: MessageEvent<GeomRequest>) => {
     travelPos.buffer,
     travelInfo.buffer,
   ]);
-};
+}

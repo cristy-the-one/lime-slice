@@ -96,7 +96,8 @@ test("legend and Color by recolor the 3D preview without rebuilding it", async (
   expect(noOuter.equals(feature)).toBe(false);
   expect(speed.equals(noOuter)).toBe(false);
   expect(back.equals(feature)).toBe(true);
-  expect(await page.evaluate(() => (window as unknown as { __layerPosts: number }).__layerPosts)).toBe(1);
+  const mainThreadLayerPosts = await page.evaluate(() => (window as unknown as { __layerPosts: number }).__layerPosts);
+  expect(mainThreadLayerPosts).toBe(0);
 });
 
 test("a running slice shows elapsed time and Cancel aborts the request", async ({ page }) => {
