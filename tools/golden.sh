@@ -23,6 +23,7 @@ for cfg in "${configs[@]}"; do
   IFS=: read -r -a extra <<< "${GOLDEN_EXTRA:-}"
   for mesh in "$root"/samples/*.stl "$root"/samples/*.3mf "${extra[@]}"; do
     out="$tmp/out.gcode"
+    rm -f "$out"
     # shellcheck disable=SC2086
     summary="$("$bin" slice "$mesh" $flags -o "$out" 2>&1 | sed -n 2p || true)"
     hash="$(sha256sum "$out" 2>/dev/null | cut -c1-16 || echo missing)"
