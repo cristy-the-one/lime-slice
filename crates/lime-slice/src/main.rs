@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use base64::Engine;
 use clap::{Parser, Subcommand};
 use lime_slice_core::{
-    mesh_preview, pareto_estimates, slice_request, Axis, BlendMode, Gyroid3d, ScarfSeam,
+    mesh_preview, pareto_estimates, slice_request, Axis, BlendMode, Gyroid3d, Mesh, ScarfSeam,
     SliceRequest, SliceSettings, StrategyId, ZHopMode,
 };
 
@@ -291,10 +291,7 @@ fn run() -> Result<(), String> {
             print_summary(&input, &response);
             println!("wrote {}", output.display());
             if audit {
-                let mesh = lime_slice_core::load_mesh(
-                    &request.filename,
-                    &fs::read(&input).map_err(|e| e.to_string())?,
-                )?;
+                let mesh = load_input(&input)?;
                 let report = lime_slice_core::audit_slice(
                     &mesh,
                     &request.blend,
@@ -368,14 +365,7 @@ fn calibrate(kind: CalibrateCmd) -> Result<(), String> {
 }
 
 fn bench(input: &PathBuf) -> Result<(), String> {
-    let bytes = fs::read(input).map_err(|e| e.to_string())?;
-    let mesh = lime_slice_core::load_mesh(
-        input
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("mesh.stl"),
-        &bytes,
-    )?;
+    let mesh = load_input(input)?;
     let (min, max) = mesh.bounds().ok_or("empty mesh")?;
     let mid_x = (min[0] + max[0]) * 0.5;
     let modes = [
@@ -912,18 +902,28 @@ fn print_audit(a: &lime_slice_core::SliceAudit) {
     );
 }
 
+/// The loader picks STL or 3MF from the file name, so every load of the
+/// input must pass its real name.
+fn input_name(input: &Path) -> &str {
+    input
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("mesh.stl")
+}
+
+fn load_input(input: &Path) -> Result<Mesh, String> {
+    let bytes = fs::read(input).map_err(|e| e.to_string())?;
+    lime_slice_core::load_mesh(input_name(input), &bytes)
+}
+
 fn request_for(
     input: &Path,
     blend: &BlendMode,
     settings: &SliceSettings,
 ) -> Result<SliceRequest, String> {
     let bytes = fs::read(input).map_err(|e| e.to_string())?;
-    let name = input
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("mesh.stl");
     Ok(SliceRequest {
-        filename: name.into(),
+        filename: input_name(input).into(),
         data_b64: base64::engine::general_purpose::STANDARD.encode(bytes),
         layer_height: settings.layer_height,
         line_width: settings.line_width,
@@ -1032,8 +1032,7 @@ fn blend_mode(
             let at_mm = if let Some(at) = at {
                 at
             } else {
-                let bytes = fs::read(input).map_err(|e| e.to_string())?;
-                let mesh = lime_slice_core::load_mesh("mesh.stl", &bytes)?;
+                let mesh = load_input(input)?;
                 let (min, max) = mesh.bounds().ok_or("empty")?;
                 match axis {
                     Axis::X => (min[0] + max[0]) * 0.5,
@@ -1044,4 +1043,37 @@ fn blend_mode(
         }
         other => return Err(format!("unknown blend '{other}'")),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn region_blend_slices_every_sample() {
+        let samples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples");
+        let mut inputs: Vec<PathBuf> = fs::read_dir(&samples)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            // The Dragon audit is opt-in, as in tools/golden.sh.
+            .filter(|path| path.file_name().unwrap() != "dragon_2_5.stl")
+            .filter(|path| {
+                matches!(
+                    path.extension().and_then(|e| e.to_str()),
+                    Some("stl" | "3mf")
+                )
+            })
+            .collect();
+        inputs.sort();
+        assert!(inputs.iter().any(|p| p.extension().unwrap() == "3mf"));
+        let settings = SliceSettings::default();
+        for input in &inputs {
+            let blend = blend_mode("region", "x", None, 2.0, 2.0, 0.5, input)
+                .unwrap_or_else(|e| panic!("{}: {e}", input.display()));
+            let request = request_for(input, &blend, &settings).unwrap();
+            let response = slice_request(&request, lime_slice_core::Job::default())
+                .unwrap_or_else(|e| panic!("{}: {e}", input.display()));
+            assert!(response.sanity.ok, "{}", input.display());
+        }
+    }
 }
