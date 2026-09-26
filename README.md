@@ -92,7 +92,7 @@ Combing (default on) routes travels through an inset of the filled contours and 
 | `samples/thin_fin.stl` | 18 mm pad with a 0.7 mm fin, 24 triangles |
 | `samples/bridge_span.stl` | Two towers and a 14 mm deck, 36 triangles |
 | `samples/arc_post.stl` | 64-gon cylinder, 12 mm radius, 256 triangles |
-| `samples/dragon_2_5.stl` | Optional Dragon 2.5 mesh. Gitignored. Not in this repo. |
+| `samples/dragon_2_5.stl` | Dragon 2.5. Checked in. The default sample sweep skips it. |
 
 Regenerate the checked-in meshes with `python3 tools/gen_samples.py`. Dragon 2.5 is not generated here.
 
@@ -102,13 +102,13 @@ Release build (`lto = "thin"`, codegen-units 1, `cargo +stable`), one machine, l
 
 Each layer is cut at its mid-height. Contours are cut from a welded mesh and stitched by shared edge, not by rounded coordinates. A chain broken by a hole in the mesh is closed across gaps up to 2 mm, and overlapping shells are merged with a nonzero union instead of cancelling into holes. `slice --audit` reports the sliced volume against the mesh volume, repaired and dropped chains, support volume that is inside the part or has trunk or column with nothing under it, top area no solid bead covers, and open skin: outline band that no bead covers, which shows as a hole through the part. A membrane thinner than the narrowest bead, where its two faces meet, still gets one bead down its spine wherever no wall is within half a bead. `--line-width` sets the extrusion width; the UI uses 1.125 × the nozzle. The test `every_sample_audits_clean` holds every sample to those checks. `tools/golden.sh` hashes the G-code for every sample under six configs, so a refactor can prove it left the output byte-identical. `GOLDEN_EXTRA=path/to/mesh.stl` adds meshes.
 
-`samples/dragon_2_5.stl` is gitignored and absent from this repo. The mesh named in the earlier Dragon notes had about 778 open edges. `every_sample_audits_clean`, `tools/golden.sh`, and the CI smoke bench skip that filename, so a local copy stays out of the default run. Supply the file at that path, then run:
+`samples/dragon_2_5.stl` is checked in. SHA-256 `20733ff536695ec13304c66f642dc1bbd3c2abf8e70ac3c57ae955ba96b3bd91`. `every_sample_audits_clean`, `tools/golden.sh`, and the CI smoke bench skip that filename, so the default run stays on the small samples. The opt-in audit is:
 
 ```bash
 cargo test -p lime-slice-core --release -- dragon_2_5_headlines --ignored --nocapture
 ```
 
-`GOLDEN_DRAGON=1 bash tools/golden.sh` is the same audit from the hash harness. With the file missing it prints `skip dragon_2_5: mesh not in repo; drop it at samples/dragon_2_5.stl` and exits 0. With the file present it runs the command above. The audit slices speed and toughness with supports on (tree style: `slice --blend speed --supports` and `slice --blend toughness --supports`) and prints core slice milliseconds, coverage percent, support inside the part, floating support, and unskinned top area. Those lines are whatever the mesh at that path measures. Adding the mesh is a follow-up.
+`GOLDEN_DRAGON=1 bash tools/golden.sh` runs that same test. It slices speed and toughness with supports on (tree style: `slice --blend speed --supports` and `slice --blend toughness --supports`) and prints core slice milliseconds, coverage percent, support inside the part, floating support, and unskinned top area. If the file is missing, the harness prints one skip line and exits 0.
 
 `samples/calibration_cube_20mm.stl` — 12 triangles, 100 layers:
 

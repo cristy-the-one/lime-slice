@@ -2869,7 +2869,7 @@ fn every_sample_audits_clean() {
     for entry in std::fs::read_dir(&dir).unwrap() {
         let path = entry.unwrap().path();
         let name = path.file_name().unwrap().to_string_lossy().to_string();
-        // dragon_2_5.stl is optional and gitignored. dragon_2_5_headlines audits it.
+        // dragon_2_5.stl is checked in. dragon_2_5_headlines audits it, opt-in.
         if name == "dragon_2_5.stl" || !name.ends_with(".stl") {
             continue;
         }
@@ -2916,19 +2916,55 @@ fn every_sample_audits_clean() {
     }
 }
 
-// Dragon 2.5 is not in git. Drop the mesh at samples/dragon_2_5.stl, then:
+/// Edges owned by one welded face. Welding matches the contour index: identical
+/// coordinates share a vertex, and a collapsed face is dropped.
+fn open_edge_count(mesh: &Mesh) -> usize {
+    use std::collections::HashMap;
+    let mut ids: HashMap<[u64; 3], u32> = HashMap::new();
+    let mut next = 0u32;
+    let mut faces = Vec::with_capacity(mesh.triangles.len());
+    for tri in &mesh.triangles {
+        let mut face = [0u32; 3];
+        for (slot, v) in face.iter_mut().zip(tri.iter()) {
+            let bits = [v[0].to_bits(), v[1].to_bits(), v[2].to_bits()];
+            *slot = *ids.entry(bits).or_insert_with(|| {
+                let id = next;
+                next += 1;
+                id
+            });
+        }
+        if face[0] != face[1] && face[1] != face[2] && face[0] != face[2] {
+            faces.push(face);
+        }
+    }
+    let mut uses: HashMap<(u32, u32), u32> = HashMap::new();
+    for face in faces {
+        for (a, b) in [(face[0], face[1]), (face[1], face[2]), (face[2], face[0])] {
+            let key = if a < b { (a, b) } else { (b, a) };
+            *uses.entry(key).or_default() += 1;
+        }
+    }
+    uses.values().filter(|count| **count == 1).count()
+}
+
+// Checked-in Dragon 2.5. Default `cargo test` ignores this.
 //   cargo test -p lime-slice-core --release -- dragon_2_5_headlines --ignored --nocapture
 // Same presets as `slice --blend speed|toughness --supports` (tree is the default style).
-// Prints core ms, coverage, inside, floating, and unskinned. Records no headline numbers.
+// Prints core ms, coverage, inside, floating, and unskinned.
 #[test]
-#[ignore = "skip dragon_2_5: mesh not in repo; drop it at samples/dragon_2_5.stl"]
+#[ignore = "opt-in dragon_2_5: samples/dragon_2_5.stl stays out of the default suite"]
 fn dragon_2_5_headlines() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples/dragon_2_5.stl");
     if !path.is_file() {
-        eprintln!("skip dragon_2_5: mesh not in repo; drop it at samples/dragon_2_5.stl");
+        eprintln!("skip dragon_2_5: samples/dragon_2_5.stl is missing");
         return;
     }
     let mesh = load_mesh("dragon_2_5.stl", &std::fs::read(&path).unwrap()).unwrap();
+    println!(
+        "dragon_2_5 open edges {}  triangles {}",
+        open_edge_count(&mesh),
+        mesh.triangle_count()
+    );
     let nozzle = profile().nozzle_diameter;
     for (label, blend) in [("speed", speed_mode()), ("toughness", tough_mode())] {
         let settings = SliceSettings {

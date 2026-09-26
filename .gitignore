@@ -8,5 +8,3 @@
 /playwright-report
 .DS_Store
 *.gcode
-# Optional Dragon 2.5 mesh. Not shipped; see README Samples.
-/samples/dragon_2_5.stl
