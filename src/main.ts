@@ -1,6 +1,7 @@
 import { colorForPath, FEATURE_COLOR, FEATURE_LABEL, type ColorMode } from "./colors";
 import { groupFeatures } from "./estimate";
 import { encode3mf, encodeStl, ID_MATRIX, layFlatMatrix, matMul, offBed, parseStl, rotX, rotY, rotZ, transformPositions, boundsOf, type Mat3 } from "./mesh-place";
+import { clampSplit, nextSplitAt, roundSplit, splitOutside, type AxisBounds, type SplitSync } from "./split-at";
 import { indexLayerGcode, layerClass, layerMoves, matchGcodeLine, type LayerGcode, type PlayPoint } from "./playback";
 import { createPrepareView } from "./prepare-view";
 import { decodePaths, type PathColumns, type PreviewPath } from "./preview-wire";
@@ -134,6 +135,8 @@ const state = {
   centered: true,
   pareto: [] as ParetoPoint[],
   help: false,
+  splitCustom: false,
+  rotateHud: "",
 };
 
 const worker = new Worker(new URL("./slice-worker.ts", import.meta.url), { type: "module" });
@@ -205,6 +208,7 @@ app.innerHTML = `
         </div>
         <div class="stage-body" id="prepareBody" hidden>
           <canvas id="prepare" aria-label="Model on the build plate"></canvas>
+          <div class="gizmo-readout" id="gizmoReadout" hidden></div>
         </div>
         <div class="stage-body" id="previewBody">
           <div class="vslider" id="vslider">
@@ -247,6 +251,8 @@ app.innerHTML = `
         <li><kbd>Ctrl</kbd>+<kbd>Enter</kbd> Slice</li>
         <li><kbd>Ctrl</kbd>+<kbd>E</kbd> Export G-code</li>
         <li><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> 2D, split, 3D</li>
+        <li>Drag a ring on Prepare to rotate. <kbd>Shift</kbd> snaps 15°</li>
+        <li>Drag the split plane when By region is on</li>
         <li><kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> Layer</li>
         <li><kbd>?</kbd> This sheet</li>
       </ul>
@@ -278,7 +284,7 @@ function stale() {
 
 function settingsHash() {
   const mesh = state.mesh ? `${state.mesh.name}:${state.mesh.bytes.byteLength}:${state.partScale}:${state.centered}:${state.orient.join(",")}` : "";
-  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, ...rest } = state;
+  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, rotateHud: _rh, ...rest } = state;
   return JSON.stringify({ mesh, profile: state.profile, rest });
 }
 
@@ -363,7 +369,7 @@ function renderChrome() {
       ${cardBtn("efficiency", "Efficiency", "Mid weight · lines then grid")}
       ${cardBtn("toughness", "Toughness", "5 walls · 48% 3D gyroid · scarf")}
       ${cardBtn("layer", "By layer", "Toughness at the bed, then speed")}
-      ${cardBtn("region", "By region", "Split plane, low side toughness")}
+      ${cardBtn("region", "By region", "Low side toughness, high side speed")}
     </div>
     <div class="stack" id="blendFields">${blendFields()}</div>
     <h2>Blend compare</h2>
@@ -464,7 +470,7 @@ function blendFields() {
     return `${num("bottom", "Toughness from the bed, mm", state.bottomMm, 0, 200, 0.2)}${num("trans", "Transition into speed, mm", state.transitionMm, 0, 200, 0.2)}`;
   }
   if (state.blendKind === "byRegion") {
-    return `${select("axis", "Split axis", state.axis, [["x", "X"], ["y", "Y"]])}${num("at", "Split at mm (low = toughness)", state.atMm, -500, 500, 0.5)}<p class="deferred">Half-space split only. Painted regions and modifier boxes stay deferred until the core has region masks.</p>`;
+    return `${select("axis", "Split axis", state.axis, [["x", "X"], ["y", "Y"]])}${num("at", "Split at mm", Number(state.atMm.toFixed(1)), -500, 500, 0.1)}<p class="deferred">Low side of the plane is toughness. High side is speed. Drag the cut in Prepare, Split, or 3D.</p>`;
   }
   return "";
 }
@@ -477,7 +483,7 @@ function paramLine(card: ResolvedCard) {
 }
 function paramTable(card: ResolvedCard) {
   if (state.blendKind === "byRegion") {
-    return `Split ${state.axis.toUpperCase()} = ${state.atMm.toFixed(2)} mm.<br>Low side ${paramLine(resolved(1, state.layerHeight))}<br>High side ${paramLine(resolved(0, state.layerHeight))}`;
+    return `Split ${state.axis.toUpperCase()} = ${state.atMm.toFixed(1)} mm · low toughness, high speed.<br>Low side ${paramLine(resolved(1, state.layerHeight))}<br>High side ${paramLine(resolved(0, state.layerHeight))}`;
   }
   return paramLine(card);
 }
@@ -524,6 +530,7 @@ function objectList() {
     </div>
     <label class="field">Scale %<input id="partScale" type="number" min="10" max="400" step="5" value="${Math.round(state.partScale * 100)}" /></label>
     ${notes.length ? `<div class="meta warn-text">${notes.join("; ")}</div>` : `<div class="meta">On the ${state.profile.bedX}×${state.profile.bedY}×${state.profile.bedZ} mm bed.</div>`}
+    <div class="meta">Drag a ring to rotate. Shift snaps 15°.</div>
   `;
 }
 
@@ -677,6 +684,8 @@ function applyPreset(next: PresetSettings) {
   for (const key of presetKeys()) {
     (state as unknown as Record<string, unknown>)[key] = next[key];
   }
+  state.splitCustom = true;
+  if (state.blendKind === "byRegion") realignSplit("open");
   touch();
 }
 function paintPresetDiff() {
@@ -970,7 +979,10 @@ document.querySelector("#right")!.addEventListener("click", (ev) => {
   else if (id === "toughness") { state.blendKind = "single"; state.strategy = "toughness"; }
   else if (id === "efficiency") { state.blendKind = "weight"; state.toughness = 0.5; }
   else if (id === "layer") state.blendKind = "byLayer";
-  else state.blendKind = "byRegion";
+  else {
+    state.blendKind = "byRegion";
+    realignSplit("open");
+  }
   touch();
 });
 document.querySelector("#right")!.addEventListener("input", onBlend);
@@ -988,8 +1000,18 @@ function onBlend(ev: Event) {
   }
   if (t.id === "bottom") state.bottomMm = Number(t.value) || 0;
   if (t.id === "trans") state.transitionMm = Number(t.value) || 0;
-  if (t.id === "axis") state.axis = t.value as "x" | "y";
-  if (t.id === "at") state.atMm = Number(t.value) || 0;
+  if (t.id === "axis") {
+    state.axis = t.value as "x" | "y";
+    state.splitCustom = false;
+    realignSplit("axis");
+    syncSplitField(true);
+  }
+  if (t.id === "at") {
+    const next = Number(t.value);
+    state.atMm = Number.isFinite(next) ? next : 0;
+    state.splitCustom = true;
+    refreshSplitNotice();
+  }
   if (t.id === "price") {
     state.pricePerKg = Number(t.value) || 0;
     const est = document.querySelector("#estimate");
@@ -1136,6 +1158,7 @@ document.querySelectorAll<HTMLButtonElement>(".mode:not(.tab)").forEach((button)
 document.querySelector("#theme")!.addEventListener("change", (ev) => {
   applyTheme((ev.target as HTMLSelectElement).value as ThemeChoice);
   view3d.setTheme();
+  prepare.setTheme();
   draw();
 });
 document.querySelectorAll<HTMLButtonElement>(".tab").forEach((button) => {
@@ -1271,8 +1294,6 @@ async function loadNamed(name: string) {
   state.error = "";
   const res = await fetch(`/samples/${name}`);
   if (!res.ok) throw new Error(`could not load ${name}`);
-  if (name.includes("hull")) state.atMm = 0;
-  if (name.includes("cube")) state.atMm = 10;
   await adoptBytes(name, await res.arrayBuffer());
 }
 
@@ -1284,7 +1305,7 @@ async function adoptBytes(name: string, bytes: ArrayBuffer) {
   state.centered = true;
   const parsed = name.toLowerCase().endsWith(".3mf") ? null : parseStl(bytes);
   state.sourcePos = parsed ?? (await previewRemote(name, bytes));
-  place();
+  place("load");
   setStage("prepare");
 }
 
@@ -1308,11 +1329,11 @@ async function previewRemote(name: string, bytes: ArrayBuffer): Promise<Float32A
   }
 }
 
-function place() {
-  applyPlace(true);
+function place(sync: SplitSync = "transform") {
+  applyPlace(true, sync);
 }
 
-function applyPlace(rerender: boolean) {
+function applyPlace(rerender: boolean, sync: SplitSync = "transform") {
   if (!state.sourcePos) {
     state.placed = null;
     prepare.setMesh(null);
@@ -1320,7 +1341,8 @@ function applyPlace(rerender: boolean) {
     return;
   }
   state.placed = transformPositions(state.sourcePos, state.orient, state.partScale, state.profile.bedX, state.profile.bedY, state.centered);
-  prepare.setMesh(state.placed);
+  realignSplit(sync);
+  prepare.setMesh(state.placed, sync === "load");
   prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
   markStale();
   if (rerender) renderChrome();
@@ -1493,14 +1515,207 @@ function cancelSlice() {
   renderChrome();
 }
 
-function clampPlane() {
-  const mesh = state.result?.mesh;
-  if (!mesh || state.blendKind !== "byRegion") return;
-  const i = state.axis === "x" ? 0 : 1;
-  if (state.atMm < mesh.min[i] || state.atMm > mesh.max[i]) {
-    state.notice = `Split at ${state.atMm.toFixed(1)} mm is outside the mesh (${mesh.min[i].toFixed(1)}–${mesh.max[i].toFixed(1)}).`;
-  }
+function placedAxisBounds(): AxisBounds | null {
+  if (!state.placed) return null;
+  return boundsOf(state.placed);
 }
+
+function realignSplit(reason: SplitSync) {
+  const bounds = placedAxisBounds();
+  const before = state.atMm;
+  const outside = !!bounds && splitOutside(before, bounds, state.axis);
+  state.atMm = nextSplitAt(reason, before, bounds, state.axis, state.splitCustom);
+  if (reason === "load" || reason === "axis" || outside) state.splitCustom = false;
+  refreshSplitNotice();
+}
+
+function noticeBounds(): AxisBounds | null {
+  if (state.result && !stale()) {
+    const mesh = state.result.mesh;
+    return {
+      min: [mesh.min[0], mesh.min[1], mesh.min[2]],
+      max: [mesh.max[0], mesh.max[1], mesh.max[2]],
+    };
+  }
+  return placedAxisBounds();
+}
+
+function refreshSplitNotice() {
+  const splitNote = state.notice.startsWith("Split at ");
+  if (state.blendKind !== "byRegion") {
+    if (splitNote) state.notice = "";
+    return;
+  }
+  const bounds = noticeBounds();
+  if (!bounds || !splitOutside(state.atMm, bounds, state.axis)) {
+    if (splitNote) state.notice = "";
+    return;
+  }
+  const i = state.axis === "x" ? 0 : 1;
+  state.notice = `Split at ${state.atMm.toFixed(1)} mm is outside the mesh (${bounds.min[i].toFixed(1)}–${bounds.max[i].toFixed(1)}).`;
+}
+
+function commitSplit(at: number) {
+  const bounds = placedAxisBounds();
+  state.atMm = bounds ? roundSplit(clampSplit(at, bounds, state.axis)) : roundSplit(at);
+  state.splitCustom = true;
+  refreshSplitNotice();
+  syncSplitField(true);
+  const node = document.querySelector("#resolved");
+  if (node && state.blendKind === "byRegion") node.innerHTML = paramTable(resolved(currentWeight(), state.layerHeight));
+  markStale();
+}
+
+function syncSplitField(force = false) {
+  const input = document.querySelector<HTMLInputElement>("#at");
+  if (!input) return;
+  if (!force && document.activeElement === input) return;
+  if (Math.abs(Number(input.value) - state.atMm) < 0.049) return;
+  input.value = state.atMm.toFixed(1);
+}
+
+function paintGizmoReadout() {
+  const el = document.querySelector<HTMLElement>("#gizmoReadout");
+  if (!el) return;
+  if (state.stage !== "prepare" || !state.placed) {
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+  if (state.rotateHud) {
+    el.textContent = state.rotateHud;
+    return;
+  }
+  if (state.blendKind === "byRegion") {
+    el.textContent = `Split ${state.axis.toUpperCase()} ${state.atMm.toFixed(1)} mm · low toughness · high speed`;
+    return;
+  }
+  el.textContent = "Drag a ring to rotate · Shift snaps 15°";
+}
+
+function syncPlanes() {
+  const show = state.blendKind === "byRegion";
+  const placed = placedAxisBounds();
+  prepare.setSplit(show && placed ? { axis: state.axis, at: state.atMm } : null);
+  const model = state.result
+    ? { min: state.result.mesh.min, max: state.result.mesh.max }
+    : placed
+      ? { min: [...placed.min], max: [...placed.max] }
+      : null;
+  if (model) view3d.setModel(model.min, model.max);
+  view3d.setGhost(state.result ? null : state.placed);
+  view3d.setPlane(show && model ? { axis: state.axis, at: state.atMm } : null);
+  syncSplitField();
+  paintGizmoReadout();
+}
+
+function clampPlane() {
+  refreshSplitNotice();
+}
+
+function paintRegionOverlay(
+  mesh: { min: number[]; max: number[] },
+  map: (x: number, y: number) => [number, number],
+  dpr: number,
+) {
+  const colors = themeColors();
+  const at = state.atMm;
+  const x0 = mesh.min[0];
+  const x1 = mesh.max[0];
+  const y0 = mesh.min[1];
+  const y1 = mesh.max[1];
+  const fill = (xa: number, ya: number, xb: number, yb: number, color: string) => {
+    const [px, py] = map(xa, ya);
+    const [qx, qy] = map(xb, yb);
+    ctx.save();
+    ctx.globalAlpha = 0.18;
+    ctx.fillStyle = color;
+    ctx.fillRect(Math.min(px, qx), Math.min(py, qy), Math.abs(qx - px), Math.abs(qy - py));
+    ctx.restore();
+  };
+  const text = (x: number, y: number, label: string, color: string) => {
+    const [px, py] = map(x, y);
+    ctx.fillStyle = color;
+    ctx.font = `600 ${Math.round(12 * dpr)}px IBM Plex Sans, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, px, py);
+  };
+  ctx.lineWidth = Math.max(2, 2 * dpr);
+  ctx.strokeStyle = colors.text;
+  ctx.beginPath();
+  if (state.axis === "x") {
+    if (at > x0 + 0.4) fill(x0, y0, Math.min(at, x1), y1, colors.amber);
+    if (at < x1 - 0.4) fill(Math.max(at, x0), y0, x1, y1, colors.teal);
+    const [lx, ly1] = map(at, y0);
+    const [, ly2] = map(at, y1);
+    ctx.moveTo(lx, ly1);
+    ctx.lineTo(lx, ly2);
+    ctx.stroke();
+    if (at > x0 + 1) text((x0 + Math.min(at, x1)) / 2, (y0 + y1) / 2, "toughness", colors.amber);
+    if (at < x1 - 1) text((Math.max(at, x0) + x1) / 2, (y0 + y1) / 2, "speed", colors.teal);
+    return;
+  }
+  if (at > y0 + 0.4) fill(x0, y0, x1, Math.min(at, y1), colors.amber);
+  if (at < y1 - 0.4) fill(x0, Math.max(at, y0), x1, y1, colors.teal);
+  const [lx, ly] = map(x0, at);
+  const [lx2] = map(x1, at);
+  ctx.moveTo(lx, ly);
+  ctx.lineTo(lx2, ly);
+  ctx.stroke();
+  if (at > y0 + 1) text((x0 + x1) / 2, (y0 + Math.min(at, y1)) / 2, "toughness", colors.amber);
+  if (at < y1 - 1) text((x0 + x1) / 2, (Math.max(at, y0) + y1) / 2, "speed", colors.teal);
+}
+
+function previewMap(mesh: { min: number[]; max: number[] }) {
+  const w = canvas.width;
+  const h = canvas.height;
+  const dpr = window.devicePixelRatio || 1;
+  const pad = 28 * dpr;
+  const spanX = Math.max(1e-6, mesh.max[0] - mesh.min[0]);
+  const spanY = Math.max(1e-6, mesh.max[1] - mesh.min[1]);
+  const scale = Math.min((w - pad * 2) / spanX, (h - pad * 2) / spanY);
+  const ox = (w - spanX * scale) / 2;
+  const oy = (h - spanY * scale) / 2;
+  const map = (x: number, y: number): [number, number] => [ox + (x - mesh.min[0]) * scale, h - (oy + (y - mesh.min[1]) * scale)];
+  const unmap = (px: number, py: number): [number, number] => [
+    mesh.min[0] + (px - ox) / scale,
+    mesh.min[1] + (h - py - oy) / scale,
+  ];
+  return { map, unmap, dpr };
+}
+
+function canvasPx(ev: PointerEvent) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (ev.clientX - rect.left) * (canvas.width / Math.max(1, rect.width)),
+    y: (ev.clientY - rect.top) * (canvas.height / Math.max(1, rect.height)),
+  };
+}
+
+let drag2d = false;
+canvas.addEventListener("pointerdown", (ev) => {
+  if (ev.button !== 0 || state.blendKind !== "byRegion" || !state.result) return;
+  const mesh = state.result.mesh;
+  const { map, dpr } = previewMap(mesh);
+  const px = canvasPx(ev);
+  const line = state.axis === "x" ? map(state.atMm, mesh.min[1])[0] : map(mesh.min[0], state.atMm)[1];
+  const dist = state.axis === "x" ? Math.abs(px.x - line) : Math.abs(px.y - line);
+  if (dist > 16 * dpr) return;
+  drag2d = true;
+  canvas.setPointerCapture(ev.pointerId);
+  ev.preventDefault();
+});
+canvas.addEventListener("pointermove", (ev) => {
+  if (!drag2d || !state.result) return;
+  const { unmap } = previewMap(state.result.mesh);
+  const px = canvasPx(ev);
+  const [x, y] = unmap(px.x, px.y);
+  commitSplit(state.axis === "x" ? x : y);
+});
+const endRegionDrag = () => { drag2d = false; };
+canvas.addEventListener("pointerup", endRegionDrag);
+canvas.addEventListener("pointercancel", endRegionDrag);
 
 async function runPaCal() {
   markBusy();
@@ -1748,23 +1963,7 @@ function draw() {
     ctx.arc(x, y, 5 * (window.devicePixelRatio || 1), 0, Math.PI * 2);
     ctx.fill();
   }
-  if (state.blendKind === "byRegion") {
-    ctx.strokeStyle = colors.teal;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    if (state.axis === "x") {
-      const [x1, y1] = map(state.atMm, mesh.min[1]);
-      const [, y2] = map(state.atMm, mesh.max[1]);
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x1, y2);
-    } else {
-      const [x1, y1] = map(mesh.min[0], state.atMm);
-      const [x2] = map(mesh.max[0], state.atMm);
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y1);
-    }
-    ctx.stroke();
-  }
+  if (state.blendKind === "byRegion") paintRegionOverlay(mesh, map, window.devicePixelRatio || 1);
   sync3d();
 }
 
@@ -1803,7 +2002,6 @@ function applyGeom() {
 function sync3d() {
   if (state.result !== shown) {
     shown = state.result;
-    if (state.result) view3d.setModel(state.result.mesh.min, state.result.mesh.max);
     applyGeom();
   }
   view3d.setHidden(state.hidden);
@@ -1815,21 +2013,22 @@ function sync3d() {
   const shownLayer = state.result?.layers[state.layer];
   const prev = point && shownLayer ? segmentStart(pathsOf(shownLayer), point) : null;
   view3d.setPlayhead(point && prev ? { x0: prev[0], y0: prev[1], z0: point.z, x1: point.x, y1: point.y, z1: point.z } : null);
-  view3d.setPlane(state.blendKind === "byRegion" && state.result ? { axis: state.axis, at: state.atMm } : null);
-  view3d.onPlane((at) => {
-    state.atMm = Math.round(at * 10) / 10;
-    const input = document.querySelector<HTMLInputElement>("#at");
-    if (input) input.value = String(state.atMm);
-    markStale();
-    draw();
-  });
+  syncPlanes();
   view3d.resize();
 }
 
-view3d.onPlane((at) => {
-  state.atMm = Math.round(at * 10) / 10;
-  markStale();
+prepare.onSplit((at) => commitSplit(at));
+prepare.onRotate((axis, deltaDeg, totalDeg) => {
+  const spin = axis === "x" ? rotX : axis === "y" ? rotY : rotZ;
+  state.orient = matMul(spin(deltaDeg), state.orient);
+  state.rotateHud = `${axis.toUpperCase()} ${totalDeg >= 0 ? "+" : ""}${totalDeg.toFixed(0)}°`;
+  applyPlace(false);
 });
+prepare.onRotateEnd(() => {
+  state.rotateHud = "";
+  renderChrome();
+});
+view3d.onPlane((at) => commitSplit(at));
 
 function fitNarrow() {
   if (window.innerWidth <= 1200) setView("solid");
@@ -1852,6 +2051,7 @@ applyTheme(loadTheme());
 (document.querySelector("#theme") as HTMLSelectElement).value = loadTheme();
 onSchemeChange(() => {
   view3d.setTheme();
+  prepare.setTheme();
   draw();
 });
 renderChrome();

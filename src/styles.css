@@ -383,8 +383,22 @@ canvas { width: 100%; height: 100%; display: block; }
 .sheet-card ul { margin: 0 0 12px; padding-left: 18px; }
 .sheet-card li { margin: 6px 0; }
 kbd { border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; background: var(--panel-2); font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; }
-#prepareBody { display: block; flex: 1 1 auto; min-height: 0; height: auto; }
+#prepareBody { display: block; flex: 1 1 auto; min-height: 0; height: auto; position: relative; }
 #prepare { width: 100%; height: 100%; }
+.gizmo-readout {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  max-width: calc(100% - 24px);
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 12px;
+  pointer-events: none;
+}
 
 .theme-field { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
 .theme-field select { width: auto; background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; }

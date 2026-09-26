@@ -1,6 +1,8 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { featureColor, SPEED_RAMP, SPEED_RANGE_MM_S, WEIGHT_RAMP, type ColorMode } from "./colors";
+import { buildCutPlane, disposeTree, previewFrame, splitDragAt } from "./cut-plane";
+import { clampSplit, roundSplit, type AxisBounds } from "./split-at";
 import { fillHiddenKindMask, MARGIN_SHADE, MAX_KINDS, meshCenter, scenePoint } from "./preview-geom";
 import { hexToThree, themeColors } from "./theme";
 
@@ -30,6 +32,7 @@ export interface RibbonBuffers {
 
 export interface SliceView3d {
   setModel(min: number[], max: number[]): void;
+  setGhost(positions: Float32Array | null): void;
   setBuffers(buffers: RibbonBuffers | null): void;
   setBed(x: number, y: number, z: number): void;
   setRange(low: number, high: number): void;
@@ -45,6 +48,7 @@ export interface SliceView3d {
 
 const noopView: SliceView3d = {
   setModel() {},
+  setGhost() {},
   setBuffers() {},
   setBed() {},
   setRange() {},
@@ -85,6 +89,17 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   scene.add(root);
   let bed = new THREE.GridHelper(1, 10, hexToThree(colors.line), hexToThree(colors.bedMinor));
   scene.add(bed);
+  const bedPlate = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({ color: 0x141820, side: THREE.DoubleSide }),
+  );
+  bedPlate.rotation.x = -Math.PI / 2;
+  scene.add(bedPlate);
+  const bedEdge = new THREE.LineLoop(
+    new THREE.BufferGeometry(),
+    new THREE.LineBasicMaterial({ color: hexToThree(colors.teal) }),
+  );
+  scene.add(bedEdge);
   const volume = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
     new THREE.LineBasicMaterial({ color: 0x2ec4b6, transparent: true, opacity: 0.35 }),
@@ -94,24 +109,9 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   let bedY = 220;
   let bedZ = 250;
 
-  const planeMat = new THREE.MeshBasicMaterial({
-    color: hexToThree(colors.teal),
-    transparent: true,
-    opacity: 0.14,
-    side: THREE.DoubleSide,
-    depthWrite: false,
-  });
-  const plane = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), planeMat);
-  plane.visible = false;
-  plane.renderOrder = 2;
-  scene.add(plane);
-  const handle = new THREE.Mesh(
-    new THREE.SphereGeometry(0.9, 16, 12),
-    new THREE.MeshBasicMaterial({ color: hexToThree(colors.amber), depthTest: false }),
-  );
-  handle.visible = false;
-  handle.renderOrder = 3;
-  scene.add(handle);
+  let cut: THREE.Group | null = null;
+  let cutPicks: THREE.Object3D[] = [];
+  let cutKey = "";
   const cursorMat = new THREE.MeshBasicMaterial({ color: hexToThree(colors.amber), depthTest: false });
   const cursor = new THREE.Mesh(new THREE.SphereGeometry(0.7, 12, 10), cursorMat);
   cursor.visible = false;
@@ -125,6 +125,9 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   scene.add(playLine);
 
   let ribbon: THREE.Mesh | null = null;
+  let ghost: THREE.Mesh | null = null;
+  let ghostSig = "";
+  const ghostMat = new THREE.MeshBasicMaterial({ color: 0xc6f26d });
   let face: THREE.Mesh | null = null;
   let travelLines: THREE.LineSegments | null = null;
   let ranges: LayerRange[] = [];
@@ -190,6 +193,15 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     const size = Math.max(bedX, bedY, span);
     bed.scale.set(bedX, 1, bedY);
     bed.position.set(bedX / 2 - centerX, 0, -(bedY / 2 - centerY));
+    bedPlate.scale.set(bedX, bedY, 1);
+    bedPlate.position.set(bedX / 2 - centerX, -0.05, -(bedY / 2 - centerY));
+    bedEdge.geometry.dispose();
+    bedEdge.geometry = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-centerX, 0.08, centerY),
+      new THREE.Vector3(bedX - centerX, 0.08, centerY),
+      new THREE.Vector3(bedX - centerX, 0.08, -(bedY - centerY)),
+      new THREE.Vector3(-centerX, 0.08, -(bedY - centerY)),
+    ]);
     volume.scale.set(bedX, bedZ, bedY);
     volume.position.set(bedX / 2 - centerX, bedZ / 2, -(bedY / 2 - centerY));
     camera.position.set(size * 0.9, midZ + size * 0.45, size * 0.9);
@@ -199,63 +211,62 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
 
   function placePlane() {
     requestRender();
-    if (!planeSpec || !model) {
-      plane.visible = false;
-      handle.visible = false;
-      return;
+    const bounds = model ? asBounds(model.min, model.max) : null;
+    const key = planeSpec && bounds
+      ? `${planeSpec.axis}:${planeSpec.at.toFixed(2)}:${bounds.min.map((v) => v.toFixed(2)).join()}:${bounds.max.map((v) => v.toFixed(2)).join()}:${origin.cx.toFixed(2)}:${origin.cy.toFixed(2)}:${bedX}:${bedY}`
+      : "";
+    if (key === cutKey) return;
+    cutKey = key;
+    if (cut) {
+      scene.remove(cut);
+      disposeTree(cut);
+      cut = null;
+      cutPicks = [];
     }
-    const { min, max } = model;
-    const cx = (min[0] + max[0]) / 2;
-    const cy = (min[1] + max[1]) / 2;
-    const margin = 1.2;
-    const spanX = Math.max(1, max[0] - min[0]) + margin * 2;
-    const spanY = Math.max(1, max[1] - min[1]) + margin * 2;
-    const height = Math.max(1, max[2] - min[2]) + margin;
-    plane.visible = true;
-    handle.visible = true;
-    if (planeSpec.axis === "x") {
-      plane.rotation.set(0, Math.PI / 2, 0);
-      plane.scale.set(spanY, height, 1);
-      plane.position.set(planeSpec.at - cx, (height - margin) / 2, 0);
-      handle.position.set(planeSpec.at - cx, height - margin + 0.6, 0);
-    } else {
-      plane.rotation.set(Math.PI / 2, 0, 0);
-      plane.scale.set(spanX, height, 1);
-      plane.position.set(0, (height - margin) / 2, -(planeSpec.at - cy));
-      handle.position.set(0, height - margin + 0.6, -(planeSpec.at - cy));
-    }
+    if (!planeSpec || !bounds) return;
+    const built = buildCutPlane(planeSpec.axis, planeSpec.at, bounds, previewFrame(origin.cx, origin.cy), bedX, bedY);
+    cut = built.group;
+    cutPicks = built.picks;
+    scene.add(cut);
   }
 
-  function meshAt(ev: PointerEvent): number | null {
-    if (!model || !planeSpec) return null;
+  function pointerNdc(ev: PointerEvent) {
     const rect = canvas.getBoundingClientRect();
     pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+    scene.updateMatrixWorld(true);
     raycaster.setFromCamera(pointer, camera);
-    const { min, max } = model;
-    const midZ = (min[2] + max[2]) / 2;
-    const hit = new THREE.Vector3();
-    if (!raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -midZ), hit)) return null;
-    const cx = (min[0] + max[0]) / 2;
-    const cy = (min[1] + max[1]) / 2;
-    const raw = planeSpec.axis === "x" ? hit.x + cx : -(hit.z) + cy;
-    const lo = planeSpec.axis === "x" ? min[0] : min[1];
-    const hi = planeSpec.axis === "x" ? max[0] : max[1];
-    return Math.max(lo, Math.min(hi, raw));
   }
 
   canvas.addEventListener("pointerdown", (ev) => {
-    if (!planeSpec || ev.button !== 0) return;
-    const at = meshAt(ev);
-    if (at == null || Math.abs(at - planeSpec.at) > 4) return;
+    if (!planeSpec || !model || ev.button !== 0) return;
+    pointerNdc(ev);
+    if (raycaster.intersectObjects(cutPicks, false).length === 0) return;
     dragging = true;
     controls.enabled = false;
     canvas.setPointerCapture(ev.pointerId);
-  });
+    ev.preventDefault();
+    ev.stopPropagation();
+  }, { capture: true });
   canvas.addEventListener("pointermove", (ev) => {
-    if (!dragging || !planeSpec) return;
-    const at = meshAt(ev);
-    if (at == null) return;
+    if (!planeSpec || !model) return;
+    if (!dragging) {
+      pointerNdc(ev);
+      canvas.style.cursor = raycaster.intersectObjects(cutPicks, false).length ? "grab" : "";
+      return;
+    }
+    canvas.style.cursor = "grabbing";
+    pointerNdc(ev);
+    const bounds = asBounds(model.min, model.max);
+    const pivot: [number, number, number] = [
+      planeSpec.axis === "x" ? planeSpec.at : (bounds.min[0] + bounds.max[0]) / 2,
+      planeSpec.axis === "y" ? planeSpec.at : (bounds.min[1] + bounds.max[1]) / 2,
+      (bounds.min[2] + bounds.max[2]) / 2,
+    ];
+    const raw = splitDragAt(raycaster.ray, planeSpec.axis, pivot, previewFrame(origin.cx, origin.cy), camera.position);
+    if (raw == null) return;
+    const at = roundSplit(clampSplit(raw, bounds, planeSpec.axis));
+    if (Math.abs(at - planeSpec.at) < 0.05) return;
     planeSpec = { ...planeSpec, at };
     placePlane();
     planeCb?.(at);
@@ -263,6 +274,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   const endDrag = () => {
     dragging = false;
     controls.enabled = true;
+    canvas.style.cursor = "";
   };
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
@@ -362,9 +374,10 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       requestRender();
       colors = themeColors();
       renderer.setClearColor(hexToThree(colors.stage), 1);
-      planeMat.color.setHex(hexToThree(colors.teal));
-      (handle.material as THREE.MeshBasicMaterial).color.setHex(hexToThree(colors.amber));
+      cutKey = "";
+      placePlane();
       cursorMat.color.setHex(hexToThree(colors.amber));
+      (bedEdge.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.teal));
       (playLine.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.amber));
       (volume.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.teal));
       const next = new THREE.GridHelper(1, 10, hexToThree(colors.line), hexToThree(colors.bedMinor));
@@ -394,11 +407,54 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       pos.setXYZ(1, head[0], head[1], head[2]);
       pos.needsUpdate = true;
     },
+    setGhost(positions) {
+      const sig = !positions || positions.length < 9
+        ? ""
+        : `${positions.length}:${positions[0]}:${positions[positions.length >> 1]}:${positions[positions.length - 1]}:${origin.cx.toFixed(3)}:${origin.cy.toFixed(3)}`;
+      if (sig === ghostSig) return;
+      ghostSig = sig;
+      requestRender();
+      if (ghost) {
+        scene.remove(ghost);
+        ghost.geometry.dispose();
+        ghost = null;
+      }
+      if (!positions || positions.length < 9) return;
+      const xyz = new Float32Array(positions.length);
+      for (let i = 0; i < positions.length; i += 3) {
+        xyz[i] = positions[i] - origin.cx;
+        xyz[i + 1] = positions[i + 2];
+        xyz[i + 2] = -(positions[i + 1] - origin.cy);
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(xyz, 3));
+      geometry.computeVertexNormals();
+      ghost = new THREE.Mesh(geometry, ghostMat);
+      scene.add(ghost);
+    },
     setModel(min, max) {
-      model = { min, max };
+      const next = { min: [...min], max: [...max] };
+      const same = !!model && model.min.every((v, i) => v === next.min[i]) && model.max.every((v, i) => v === next.max[i]);
+      model = next;
       origin = meshCenter(min, max);
+      if (!same && ranges.length === 0) {
+        const span = Math.max(next.max[0] - next.min[0], next.max[1] - next.min[1], next.max[2] - next.min[2], 1);
+        const midZ = (next.min[2] + next.max[2]) / 2;
+        placeBed(span, midZ, origin.cx, origin.cy);
+        const dist = Math.max(span, 28) * 2.3;
+        camera.position.set(dist * 0.85, midZ + dist * 0.55, dist * 0.95);
+        controls.target.set(0, Math.max(midZ, 6), 0);
+        controls.update();
+      }
       placePlane();
     },
+  };
+}
+
+function asBounds(min: number[], max: number[]): AxisBounds {
+  return {
+    min: [min[0], min[1], min[2]],
+    max: [max[0], max[1], max[2]],
   };
 }
 
