@@ -1,4 +1,5 @@
 import { colorForPath, FEATURE_COLOR, FEATURE_LABEL, type ColorMode } from "./colors";
+import { groupFeatures } from "./estimate";
 import { encode3mf, encodeStl, ID_MATRIX, layFlatMatrix, matMul, offBed, parseStl, rotX, rotY, rotZ, transformPositions, boundsOf, type Mat3 } from "./mesh-place";
 import { indexLayerGcode, layerClass, layerMoves, matchGcodeLine, type LayerGcode, type PlayPoint } from "./playback";
 import { createPrepareView } from "./prepare-view";
@@ -573,23 +574,6 @@ function formatTime(seconds: number) {
   const m = Math.floor(seconds / 60);
   const s = Math.round(seconds % 60);
   return m > 0 ? `${m} min ${s} s` : `${s} s`;
-}
-function groupFeatures(rows: FeatureRow[]) {
-  const bucket = (label: string, kinds: string[]) => {
-    const hit = rows.filter((row) => kinds.includes(row.kind));
-    return { label, seconds: hit.reduce((s, r) => s + r.seconds, 0), grams: hit.reduce((s, r) => s + r.filamentG, 0) };
-  };
-  const used = new Set(["outer", "inner", "wall", "sparse", "infill", "solid", "gap-fill", "top", "support", "support-interface", "travel"]);
-  const other = rows.filter((row) => !used.has(row.kind));
-  return [
-    bucket("Outer wall", ["outer"]),
-    bucket("Inner wall", ["inner", "wall"]),
-    bucket("Infill", ["sparse", "infill", "solid", "gap-fill"]),
-    bucket("Top / bottom", ["top"]),
-    bucket("Supports", ["support", "support-interface"]),
-    bucket("Travel", ["travel"]),
-    { label: "Other", seconds: other.reduce((s, r) => s + r.seconds, 0), grams: other.reduce((s, r) => s + r.filamentG, 0) },
-  ].filter((row) => row.seconds > 0.05 || row.grams > 0.001);
 }
 function chips() {
   const est = state.result?.estimate;

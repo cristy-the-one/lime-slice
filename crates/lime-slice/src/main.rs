@@ -364,7 +364,7 @@ fn calibrate(kind: CalibrateCmd) -> Result<(), String> {
     }
 }
 
-fn bench(input: &PathBuf) -> Result<(), String> {
+fn bench(input: &Path) -> Result<(), String> {
     let mesh = load_input(input)?;
     let (min, max) = mesh.bounds().ok_or("empty mesh")?;
     let mid_x = (min[0] + max[0]) * 0.5;
@@ -1010,7 +1010,7 @@ fn blend_mode(
     bottom_mm: f64,
     transition_mm: f64,
     toughness: f64,
-    input: &PathBuf,
+    input: &Path,
 ) -> Result<BlendMode, String> {
     let axis = match axis {
         "y" | "Y" => Axis::Y,

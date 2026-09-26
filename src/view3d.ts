@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { featureColor, SPEED_RAMP, SPEED_RANGE_MM_S, WEIGHT_RAMP, type ColorMode } from "./colors";
-import { MARGIN_SHADE, MAX_KINDS, meshCenter, scenePoint } from "./preview-geom";
+import { fillHiddenKindMask, MARGIN_SHADE, MAX_KINDS, meshCenter, scenePoint } from "./preview-geom";
 import { hexToThree, themeColors } from "./theme";
 
 export interface LayerRange {
@@ -268,11 +268,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   canvas.addEventListener("pointercancel", endDrag);
 
   function applyHidden() {
-    const mask = pathUniforms.hiddenKinds.value;
-    mask.fill(0);
-    kinds.forEach((kind, i) => {
-      if (hidden.has(kind)) mask[i] = 1;
-    });
+    fillHiddenKindMask(pathUniforms.hiddenKinds.value, kinds, hidden);
   }
 
   function dropBuffers() {
