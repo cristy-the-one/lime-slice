@@ -166,7 +166,6 @@ button { cursor: pointer; }
 .timing { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; }
 
 .banner-rail { display: flex; flex-direction: column; gap: 4px; }
-.banner-rail:empty { display: none; }
 .banner {
   padding: 8px 12px;
   background: var(--banner);

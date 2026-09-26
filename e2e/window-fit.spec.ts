@@ -29,9 +29,13 @@ async function outerOverflow(page: Page) {
   });
 }
 
-test("desktop shell fits the viewport without an outer scrollbar", async ({ page }) => {
+for (const engine of ["running", "down"] as const) test(`desktop shell fits the viewport without an outer scrollbar, engine ${engine}`, async ({ page }) => {
+  await page.route("**/api/health", (route) => (engine === "running" ? route.fulfill({ json: { ok: true } }) : route.abort()));
+  const health = page.waitForRequest("**/api/health");
   await page.goto("/");
   await expect(page.locator(".app")).toBeVisible();
+  await health;
+  await expect(page.locator("#banner .banner")).toHaveCount(engine === "running" ? 0 : 1);
 
   for (const viewport of viewports) {
     await page.setViewportSize(viewport);
