@@ -49,33 +49,70 @@ export function layerMoves(
   return out;
 }
 
-export function parseLayerGcode(gcode: string, layerIndex: number): GcodeLine[] {
-  if (!gcode.includes(";LAYER:")) return [];
-  const blocks = gcode.split(/(?=;LAYER:)/);
-  const block = blocks.find((part) => part.startsWith(`;LAYER:${layerIndex} `) || part.startsWith(`;LAYER:${layerIndex}\n`));
-  if (!block) return [];
+export interface LayerGcode {
+  /** Lines of the `;LAYER:<index>` block, or none when the G-code has no such block. */
+  layer(index: number): GcodeLine[];
+}
+
+const LAYER_MARK = ";LAYER:";
+
+/**
+ * Finds every layer block once so a lookup slices one block instead of
+ * splitting the whole file. Keeps the last parsed layer, since playback
+ * asks for the same layer on every tick.
+ */
+export function indexLayerGcode(gcode: string): LayerGcode {
+  const spans = new Map<number, [number, number]>();
+  let at = gcode.indexOf(LAYER_MARK);
+  while (at >= 0) {
+    const next = gcode.indexOf(LAYER_MARK, at + LAYER_MARK.length);
+    const index = layerNumber(gcode, at + LAYER_MARK.length);
+    if (index != null && !spans.has(index)) spans.set(index, [at, next < 0 ? gcode.length : next]);
+    at = next;
+  }
+  let cachedIndex = -1;
+  let cachedLines: GcodeLine[] = [];
+  return {
+    layer(index) {
+      if (index !== cachedIndex) {
+        const span = spans.get(index);
+        cachedLines = span ? parseBlock(gcode.slice(span[0], span[1])) : [];
+        cachedIndex = index;
+      }
+      return cachedLines;
+    },
+  };
+}
+
+/** The layer number after the marker, when a space or line break ends it. */
+function layerNumber(gcode: string, from: number): number | null {
+  let end = from;
+  while (end < gcode.length && gcode.charCodeAt(end) >= 48 && gcode.charCodeAt(end) <= 57) end++;
+  const after = gcode[end];
+  if (end === from || (after !== " " && after !== "\n")) return null;
+  return Number(gcode.slice(from, end));
+}
+
+const WORD_X = /\sX(-?[0-9.]+)/;
+const WORD_Y = /\sY(-?[0-9.]+)/;
+const WORD_E = /\sE(-?[0-9.]+)/;
+const WORD_F = /\sF(-?[0-9.]+)/;
+
+function parseBlock(block: string): GcodeLine[] {
   let kind = "travel";
   const lines: GcodeLine[] = [];
   for (const raw of block.split("\n")) {
     const text = raw.trimEnd();
     if (!text) continue;
-    if (text.startsWith(";LAYER:") && lines.length > 0) break;
     const type = text.match(/^;\s*TYPE:(.+)$/i);
     if (type) kind = type[1].trim().toLowerCase();
     const move = /^G[0-3]\s/i.test(text) && /\sX[-0-9.]/.test(` ${text}`);
-    const word = (name: string) => {
-      const hit = text.match(new RegExp(`\\s${name}(-?[0-9.]+)`));
+    const word = (re: RegExp) => {
+      const hit = text.match(re);
       return hit ? Number(hit[1]) : undefined;
     };
-    lines.push({
-      text,
-      kind: text.startsWith(";") ? kind : kind,
-      move,
-      x: word("X"),
-      y: word("Y"),
-      e: word("E"),
-      feed: word("F") != null ? (word("F") as number) / 60 : undefined,
-    });
+    const feed = word(WORD_F);
+    lines.push({ text, kind, move, x: word(WORD_X), y: word(WORD_Y), e: word(WORD_E), feed: feed != null ? feed / 60 : undefined });
   }
   return lines;
 }

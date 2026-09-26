@@ -1,6 +1,6 @@
 import { colorForPath, FEATURE_COLOR, FEATURE_LABEL, type ColorMode } from "./colors";
 import { encode3mf, encodeStl, ID_MATRIX, layFlatMatrix, matMul, offBed, parseStl, rotX, rotY, rotZ, transformPositions, boundsOf, type Mat3 } from "./mesh-place";
-import { layerClass, layerMoves, matchGcodeLine, parseLayerGcode, type PlayPoint } from "./playback";
+import { indexLayerGcode, layerClass, layerMoves, matchGcodeLine, type LayerGcode, type PlayPoint } from "./playback";
 import { createPrepareView } from "./prepare-view";
 import { DEFAULT_PRESET, diffPreset, presetKeys, readPresets, writePresets, type PresetSettings } from "./presets";
 import { loadProfile, profileJson, saveProfile, type PrinterProfile } from "./profiles";
@@ -700,6 +700,18 @@ function paintPresetDiff() {
   node.innerHTML = `<b>Vs default</b><br>${diff.length ? diff.map((line) => escapeHtml(line)).join("<br>") : "Matches the default preset."}`;
 }
 
+const gcodeIndex = new WeakMap<SliceResponse, LayerGcode>();
+function layerGcode(): LayerGcode | null {
+  const result = state.result;
+  if (!result) return null;
+  let doc = gcodeIndex.get(result);
+  if (!doc) {
+    doc = indexLayerGcode(result.gcode ?? "");
+    gcodeIndex.set(result, doc);
+  }
+  return doc;
+}
+
 function movesNow(): PlayPoint[] {
   const layer = state.result?.layers[state.layer];
   if (!layer) return [];
@@ -725,7 +737,7 @@ function paintPlayback() {
     readout.textContent = "Feature — · feed — · E —";
     return;
   }
-  const gcode = parseLayerGcode(state.result?.gcode ?? "", state.result?.layers[state.layer]?.index ?? state.layer);
+  const gcode = layerGcode()?.layer(state.result?.layers[state.layer]?.index ?? state.layer) ?? [];
   const hit = matchGcodeLine(gcode, point);
   const line = hit >= 0 ? gcode[hit] : undefined;
   const feed = line?.feed ?? point.feed;
@@ -747,7 +759,7 @@ function paintGcode() {
   });
   if (!on) return;
   const layer = state.result?.layers[state.layer];
-  const lines = layer ? parseLayerGcode(state.result?.gcode ?? "", layer.index) : [];
+  const lines = layer ? layerGcode()?.layer(layer.index) ?? [] : [];
   if (!state.result) {
     pane.innerHTML = `<div class="meta">Slice to read G-code for this layer.</div>`;
     return;
@@ -768,7 +780,7 @@ function syncGcodeHighlight() {
   const lines = [...pane.querySelectorAll<HTMLElement>(".line")];
   if (lines.length === 0) return;
   const layer = state.result?.layers[state.layer];
-  const parsed = layer ? parseLayerGcode(state.result?.gcode ?? "", layer.index) : [];
+  const parsed = layer ? layerGcode()?.layer(layer.index) ?? [] : [];
   const active = matchGcodeLine(parsed, movesNow()[state.move]);
   lines.forEach((el, i) => el.classList.toggle("on", i === active));
   pane.querySelector(".line.on")?.scrollIntoView({ block: "nearest" });
