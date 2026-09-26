@@ -3,8 +3,9 @@ use std::collections::HashMap;
 use crate::mesh::Mesh;
 use crate::poly::{loop_bounds, orient_loops, resolve_nonzero, signed_area, Loop};
 
-/// Widest mesh hole a contour is closed across. Wider gaps drop the open chain.
-const CLOSE_GAP_MM: f64 = 2.0;
+/// Widest mesh hole a contour is closed across. A ~1 mm slot still closes.
+/// A 1.5 mm opening is left alone, so an articulation gap does not become a wall.
+const CLOSE_GAP_MM: f64 = 1.25;
 
 /// A mesh edge `(lo, hi)` by welded vertex id. Two faces that share an edge cut
 /// the plane at the same key, so stitching follows topology, not rounded coordinates.
@@ -25,10 +26,13 @@ pub struct ZIndex {
 }
 
 /// How much repair one plane cut needed.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct CutStats {
     /// Gap links added across mesh holes to close a contour.
     pub bridged: usize,
+    /// Length of those links, in millimetres. A closed shell can be 100% of the
+    /// mesh volume and still have invented this much wall.
+    pub bridged_mm: f64,
     /// Open chains that could not be closed. Their outline is lost.
     pub dropped: usize,
 }
@@ -226,7 +230,7 @@ fn close_chains(open: Vec<Loop>, loops: &mut Vec<Loop>) -> CutStats {
         }
     };
     let n = open.len() * 2;
-    let mut links: Vec<(f64, usize, usize)> = Vec::new();
+    let mut links: Vec<(f64, f64, usize, usize)> = Vec::new();
     for p in 0..n {
         for q in (p + 1)..n {
             let (a, b) = (point(p), point(q));
@@ -235,15 +239,19 @@ fn close_chains(open: Vec<Loop>, loops: &mut Vec<Loop>) -> CutStats {
                 continue;
             }
             let head_to_tail = p % 2 != q % 2;
-            links.push((if head_to_tail { d } else { d * 2.0 + 1e-6 }, p, q));
+            let cost = if head_to_tail { d } else { d * 2.0 + 1e-6 };
+            links.push((cost, d, p, q));
         }
     }
     links.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut mate = vec![usize::MAX; n];
-    for (_, p, q) in links {
+    let mut span = vec![0.0; n];
+    for (_, d, p, q) in links {
         if mate[p] == usize::MAX && mate[q] == usize::MAX {
             mate[p] = q;
             mate[q] = p;
+            span[p] = d;
+            span[q] = d;
         }
     }
     // Each endpoint has at most one gap link and one chain, so every walk is a cycle or a path.
@@ -256,6 +264,7 @@ fn close_chains(open: Vec<Loop>, loops: &mut Vec<Loop>) -> CutStats {
         let (mut forward_len, mut reverse_len) = (0.0, 0.0);
         let mut enter = 2 * k;
         let mut links_used = 0;
+        let mut linked_mm = 0.0;
         let closed = loop {
             let c = enter / 2;
             seen[c] = true;
@@ -267,11 +276,13 @@ fn close_chains(open: Vec<Loop>, loops: &mut Vec<Loop>) -> CutStats {
                 ring.extend(open[c].iter().rev());
                 reverse_len += len;
             }
-            let next = mate[enter ^ 1];
+            let leave = enter ^ 1;
+            let next = mate[leave];
             if next == usize::MAX {
                 break false;
             }
             links_used += 1;
+            linked_mm += span[leave];
             if next / 2 == k {
                 break next == 2 * k;
             }
@@ -285,6 +296,7 @@ fn close_chains(open: Vec<Loop>, loops: &mut Vec<Loop>) -> CutStats {
                 ring.reverse();
             }
             stats.bridged += links_used;
+            stats.bridged_mm += linked_mm;
             loops.push(ring);
         } else {
             stats.dropped += 1;

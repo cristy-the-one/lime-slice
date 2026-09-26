@@ -872,8 +872,9 @@ fn err_json(message: &str) -> String {
 
 fn print_audit(a: &lime_slice_core::SliceAudit) {
     let coverage = a.sliced_volume_mm3 / a.mesh_volume_mm3.max(1e-9) * 100.0;
+    let bridged = a.bridged_mm;
     println!(
-        "audit  plan {:.0} ms  layers {}  mesh {:.0} mm3  sliced {:.0} mm3 ({coverage:.1}%)  missing {:.1} mm3  repaired layers {}  dropped chains {}",
+        "audit  plan {:.0} ms  layers {}  mesh {:.0} mm3  sliced {:.0} mm3 ({coverage:.1}%, bridged {bridged:.1} mm)  missing {:.1} mm3  repaired layers {}  dropped chains {}",
         a.plan_ms, a.layers, a.mesh_volume_mm3, a.sliced_volume_mm3, a.missing_mm3, a.repaired_layers, a.dropped_chains
     );
     println!(

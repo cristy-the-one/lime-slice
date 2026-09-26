@@ -19,6 +19,10 @@ use crate::toolpath::{bead_cover, Extrusion, PathKind};
 /// Reach a support region may have past what is under it: a bead half-width plus
 /// one tree lean step. Anything farther out is printed in air.
 const FLOAT_TOLERANCE_MM: f64 = 0.5;
+/// A trunk disk at the 0.3 mm floor covers about 0.28 mm². The 0.3 mm² noise
+/// filter used for other areas would hide that whole disk and report no
+/// floating support while it still prints.
+const FLOAT_SPECK_MM2: f64 = 0.05;
 /// Support this close inside the part outline is rounding, not a collision.
 const INSIDE_TOLERANCE_MM: f64 = 0.1;
 /// Uncovered skin pieces smaller than this are bead-corner rounding, not an opening.
@@ -37,6 +41,9 @@ pub struct SliceAudit {
     pub missing_mm3: f64,
     /// Layers where the cut had to close a chain across a mesh hole.
     pub repaired_layers: usize,
+    /// Gap length closed across mesh holes, summed over layers. Coverage can
+    /// read 100% while this many millimetres of wall were invented.
+    pub bridged_mm: f64,
     /// Open chains that could not be closed, across all layers.
     pub dropped_chains: usize,
     pub support_mm3: f64,
@@ -85,10 +92,10 @@ pub fn audit_slice(
                 0.0
             } else {
                 let below = boolean_union(&regions[i - 1], &planned.contours[i - 1]);
-                area(&boolean_diff(
-                    &columns[i],
-                    &offset_loops(&below, FLOAT_TOLERANCE_MM),
-                ))
+                area_min(
+                    &boolean_diff(&columns[i], &offset_loops(&below, FLOAT_TOLERANCE_MM)),
+                    FLOAT_SPECK_MM2,
+                )
             };
             let exposed = match planned.contours.get(i + 1) {
                 Some(above) => boolean_diff(piece, above),
@@ -148,6 +155,7 @@ pub fn audit_slice(
         out.sliced_volume_mm3 += row.sliced * row.h;
         out.missing_mm3 += row.missing * row.h;
         out.repaired_layers += usize::from(row.stats.bridged > 0);
+        out.bridged_mm += row.stats.bridged_mm;
         out.dropped_chains += row.stats.dropped;
         out.support_mm3 += row.support * row.h;
         out.support_inside_mm3 += row.inside * row.h;
@@ -234,10 +242,14 @@ fn column_region(layer: &SupportLayer) -> Vec<Loop> {
 
 /// Area kept by a small union: specks under 0.3 mm² are clipping noise.
 fn area(loops: &[Loop]) -> f64 {
+    area_min(loops, 0.3)
+}
+
+fn area_min(loops: &[Loop], min: f64) -> f64 {
     loops
         .iter()
         .map(|l| signed_area(l))
-        .filter(|a| a.abs() >= 0.3)
+        .filter(|a| a.abs() >= min)
         .sum::<f64>()
         .max(0.0)
 }

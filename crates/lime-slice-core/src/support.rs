@@ -292,7 +292,10 @@ const MIN_DISK_R: f64 = 0.3;
 /// Walk the trunks bottom-up and narrow any disk that is wider than what holds
 /// it: a disk on the layer below grown by one lean step and half a bead, or
 /// the part itself. The top-down walk shrinks disks beside the part, so the
-/// disk above a squeezed one would otherwise overhang it.
+/// disk above a squeezed one would otherwise overhang it. A disk whose room is
+/// below the minimum printable radius cannot stand; flooring it to that radius
+/// would print a speck in the air, so the disk is dropped and the trunk above
+/// it has to find its own footing.
 fn settle_disks(
     layers: &mut [SupportLayer],
     bands: &[LayerBand],
@@ -305,18 +308,26 @@ fn settle_disks(
         let below = &lower[i - 1];
         let part = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
         let layer = &mut upper[0];
-        for (c, r) in layer.branches.iter().zip(layer.radii.iter_mut()) {
+        let mut kept_c = Vec::with_capacity(layer.branches.len());
+        let mut kept_r = Vec::with_capacity(layer.radii.len());
+        for (c, r) in layer.branches.iter().zip(&layer.radii) {
             let mut room = below
                 .branches
                 .iter()
                 .zip(&below.radii)
                 .map(|(b, rb)| rb + reach - (c[0] - b[0]).hypot(c[1] - b[1]))
-                .fold(f64::MIN, f64::max);
+                .fold(f64::NEG_INFINITY, f64::max);
             if !part.is_empty() && in_solid(part, c[0], c[1]) {
                 room = room.max(distance_to_outline(part, *c) + reach);
             }
-            *r = r.min(room).max(MIN_DISK_R);
+            if room < MIN_DISK_R {
+                continue;
+            }
+            kept_c.push(*c);
+            kept_r.push((*r).min(room));
         }
+        layer.branches = kept_c;
+        layer.radii = kept_r;
     }
 }
 
@@ -728,4 +739,41 @@ fn union_all<'a>(regions: impl Iterator<Item = &'a [Loop]>) -> Vec<Loop> {
         acc = boolean_union(&acc, region);
     }
     acc
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adaptive::LayerBand;
+
+    fn band(index: usize, z: f64) -> LayerBand {
+        LayerBand {
+            index,
+            z,
+            height: 0.2,
+        }
+    }
+
+    #[test]
+    fn a_disk_nothing_can_hold_is_dropped() {
+        let bands = [band(0, 0.2), band(1, 0.4)];
+        let mut layers = vec![
+            SupportLayer {
+                sparse: Vec::new(),
+                interface: Vec::new(),
+                branches: vec![[0.0, 0.0]],
+                radii: vec![1.2],
+            },
+            SupportLayer {
+                sparse: Vec::new(),
+                interface: Vec::new(),
+                branches: vec![[0.0, 0.0], [8.0, 0.0]],
+                radii: vec![1.2, 1.2],
+            },
+        ];
+        settle_disks(&mut layers, &bands, &[Vec::new(), Vec::new()], 0.8);
+        assert_eq!(layers[0].branches.len(), 1);
+        assert_eq!(layers[1].branches, vec![[0.0, 0.0]]);
+        assert!((layers[1].radii[0] - 1.2).abs() < 1e-9);
+    }
 }
