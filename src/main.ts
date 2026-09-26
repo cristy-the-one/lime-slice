@@ -141,7 +141,6 @@ const state = {
   partScale: 1,
   centered: true,
   pareto: [] as ParetoPoint[],
-  gcodeToken: "",
   help: false,
 };
 
@@ -279,7 +278,7 @@ function stale() {
 
 function settingsHash() {
   const mesh = state.mesh ? `${state.mesh.name}:${state.mesh.bytes.byteLength}:${state.partScale}:${state.centered}:${state.orient.join(",")}` : "";
-  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, gcodeToken: _gt, help: _hp, ...rest } = state;
+  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, ...rest } = state;
   return JSON.stringify({ mesh, profile: state.profile, rest });
 }
 
@@ -700,16 +699,35 @@ function paintPresetDiff() {
   node.innerHTML = `<b>Vs default</b><br>${diff.length ? diff.map((line) => escapeHtml(line)).join("<br>") : "Matches the default preset."}`;
 }
 
+const gcodeLoads = new WeakMap<SliceResponse, Promise<string>>();
 const gcodeIndex = new WeakMap<SliceResponse, LayerGcode>();
-function layerGcode(): LayerGcode | null {
+
+/** The engine parks the G-code body; fetch it on first use, once per result. */
+function loadGcode(result: SliceResponse): Promise<string> {
+  let load = gcodeLoads.get(result);
+  if (!load) {
+    load = result.gcode || !result.gcodeToken ? Promise.resolve(result.gcode ?? "") : fetchStoredGcode(result.gcodeToken);
+    gcodeLoads.set(result, load);
+    load.then((text) => {
+      gcodeIndex.set(result, indexLayerGcode(text));
+      if (state.result !== result) return;
+      paintPlayback();
+      paintGcode();
+    }, (err) => {
+      if (state.result !== result) return;
+      state.error = err instanceof Error ? err.message : String(err);
+      renderChrome();
+    });
+  }
+  return load;
+}
+
+/** Per-layer G-code once loaded. With load, starts fetching it if needed. */
+function layerGcode(load = false): LayerGcode | null {
   const result = state.result;
   if (!result) return null;
-  let doc = gcodeIndex.get(result);
-  if (!doc) {
-    doc = indexLayerGcode(result.gcode ?? "");
-    gcodeIndex.set(result, doc);
-  }
-  return doc;
+  if (load) void loadGcode(result);
+  return gcodeIndex.get(result) ?? null;
 }
 
 function movesNow(): PlayPoint[] {
@@ -759,9 +777,14 @@ function paintGcode() {
   });
   if (!on) return;
   const layer = state.result?.layers[state.layer];
-  const lines = layer ? layerGcode()?.layer(layer.index) ?? [] : [];
+  const doc = layerGcode(true);
+  const lines = layer ? doc?.layer(layer.index) ?? [] : [];
   if (!state.result) {
     pane.innerHTML = `<div class="meta">Slice to read G-code for this layer.</div>`;
+    return;
+  }
+  if (!doc) {
+    pane.innerHTML = `<div class="meta">Loading G-code…</div>`;
     return;
   }
   if (lines.length === 0) {
@@ -839,6 +862,7 @@ function togglePlay() {
   }
   const moves = movesNow();
   if (moves.length === 0) return;
+  layerGcode(true);
   if (state.move >= moves.length - 1) state.move = 0;
   state.playing = true;
   const play = document.querySelector<HTMLButtonElement>("#play");
@@ -1124,6 +1148,7 @@ document.querySelectorAll<HTMLButtonElement>(".tab").forEach((button) => {
 document.querySelector("#play")!.addEventListener("click", () => togglePlay());
 document.querySelector("#move")!.addEventListener("input", (ev) => {
   stopPlay();
+  layerGcode(true);
   state.move = Number((ev.target as HTMLInputElement).value);
   paintPlayback();
   syncGcodeHighlight();
@@ -1410,10 +1435,7 @@ async function runSlice() {
     }
     if (id !== job) return;
     if (body.error) throw new Error(body.error);
-    if (!body.gcode && body.gcodeToken) body.gcode = await fetchStoredGcode(body.gcodeToken);
-    if (id !== job) return;
     state.result = body;
-    state.gcodeToken = body.gcodeToken ?? "";
     state.slicedHash = hash;
     state.layer = Math.min(state.layer, Math.max(0, body.layers.length - 1));
     clampPlane();
@@ -1559,16 +1581,21 @@ async function fetchStoredGcode(token: string) {
 }
 
 async function exportGcode() {
-  if (!state.result || stale()) return;
-  let text = state.result.gcode;
-  if (!text && state.gcodeToken) text = await fetchStoredGcode(state.gcodeToken);
+  const result = state.result;
+  if (!result || stale()) return;
+  let text: string;
+  try {
+    text = await loadGcode(result);
+  } catch {
+    return;
+  }
   if (!text) {
     state.error = "No G-code for this slice.";
     renderChrome();
     return;
   }
-  const minutes = Math.max(1, Math.round((state.result.estimate?.seconds ?? 0) / 60));
-  const grams = (state.result.estimate?.filamentG ?? 0).toFixed(0);
+  const minutes = Math.max(1, Math.round((result.estimate?.seconds ?? 0) / 60));
+  const grams = (result.estimate?.filamentG ?? 0).toFixed(0);
   const base = (state.mesh?.name ?? "part").replace(/\.(stl|3mf)$/i, "");
   const blend = card();
   await saveText(text, `${base}_${blend}_${minutes}m_${grams}g.gcode`, "gcode");
