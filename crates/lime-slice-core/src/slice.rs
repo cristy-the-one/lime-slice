@@ -2219,4 +2219,116 @@ mod tests {
             )
         );
     }
+
+    #[test]
+    fn parallel_gcode_matches_linear_on_the_cube() {
+        let bytes = std::fs::read(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../samples/calibration_cube_20mm.stl"),
+        )
+        .unwrap();
+        let mesh = crate::load::load_mesh("calibration_cube_20mm.stl", &bytes).unwrap();
+        let settings = SliceSettings {
+            baseline: false,
+            include_preview: false,
+            compare: false,
+            ..SliceSettings::default()
+        };
+        let profile = PrinterProfile {
+            pressure_advance: 0.05,
+            linear_advance: 0.08,
+            ..PrinterProfile::default()
+        };
+        for blend in [
+            BlendMode::Single {
+                strategy: StrategyId::Speed,
+            },
+            BlendMode::Single {
+                strategy: StrategyId::Toughness,
+            },
+        ] {
+            let planned = plan(&mesh, &blend, &settings, profile.nozzle_diameter)
+                .unwrap()
+                .layers;
+            let features = settings.feature_note();
+            let parallel = crate::gcode::emit_gcode(
+                &planned,
+                &profile,
+                &blend,
+                settings.layer_height,
+                settings.line_width,
+                &features,
+                settings.arc_fit,
+                settings.classic_estimator,
+                settings.junction_deviation_mm,
+                settings.job,
+            );
+            let linear = crate::gcode::emit_gcode_linear(
+                &planned,
+                &profile,
+                &blend,
+                settings.layer_height,
+                settings.line_width,
+                &features,
+                settings.arc_fit,
+                settings.classic_estimator,
+                settings.junction_deviation_mm,
+                settings.job,
+            );
+            assert_eq!(parallel.text, linear.text, "{blend:?} g-code bytes");
+            assert_eq!(parallel.print_time_s, linear.print_time_s);
+            assert_eq!(parallel.final_e, linear.final_e);
+            assert_eq!(parallel.layer_seconds, linear.layer_seconds);
+            assert_eq!(parallel.arc_moves, linear.arc_moves);
+            assert_eq!(parallel.retracts, linear.retracts);
+            assert_eq!(parallel.z_hops, linear.z_hops);
+            assert_eq!(parallel.extrusion_moves, linear.extrusion_moves);
+            assert_eq!(parallel.by_feature.len(), linear.by_feature.len());
+            for (a, b) in parallel.by_feature.iter().zip(&linear.by_feature) {
+                assert_eq!(a.kind, b.kind);
+                assert_eq!(a.seconds, b.seconds);
+                assert_eq!(a.filament_mm, b.filament_mm);
+            }
+        }
+        let settings = SliceSettings {
+            classic_estimator: true,
+            arc_fit: false,
+            ..settings
+        };
+        let profile = PrinterProfile::default();
+        let blend = BlendMode::Single {
+            strategy: StrategyId::Speed,
+        };
+        let planned = plan(&mesh, &blend, &settings, profile.nozzle_diameter)
+            .unwrap()
+            .layers;
+        let features = settings.feature_note();
+        let parallel = crate::gcode::emit_gcode(
+            &planned,
+            &profile,
+            &blend,
+            settings.layer_height,
+            settings.line_width,
+            &features,
+            settings.arc_fit,
+            settings.classic_estimator,
+            settings.junction_deviation_mm,
+            settings.job,
+        );
+        let linear = crate::gcode::emit_gcode_linear(
+            &planned,
+            &profile,
+            &blend,
+            settings.layer_height,
+            settings.line_width,
+            &features,
+            settings.arc_fit,
+            settings.classic_estimator,
+            settings.junction_deviation_mm,
+            settings.job,
+        );
+        assert_eq!(parallel.text, linear.text, "classic estimator g-code");
+        assert_eq!(parallel.print_time_s, linear.print_time_s);
+        assert_eq!(parallel.layer_seconds, linear.layer_seconds);
+    }
 }
