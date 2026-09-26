@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::poly::{
     boolean_diff, boolean_union, drop_slivers, in_solid, loop_bounds, loops_from_paths,
-    offset_loops, offset_paths, paths_from_loops, signed_area, Loop,
+    offset_loops, offset_paths, paths_from_loops, principal_axis, signed_area, Loop,
 };
 use crate::strategy::{InfillPattern, ResolvedStrategy, ScarfSeam, SeamMode, StrategyId};
 use clipper2::{EndType, FillRule, JoinType, Milli, Paths};
@@ -163,7 +163,7 @@ pub fn plan_region(
         return Vec::new();
     }
     let mut paths = Vec::new();
-    let min_w = (line_width * 0.45).max(0.2);
+    let min_w = min_bead(line_width);
     let max_w = line_width * 1.30;
     if features.variable_width && might_be_thin(contours, line_width * strategy.walls.max(1) as f64)
     {
@@ -254,7 +254,7 @@ pub fn plan_region(
     {
         let infill = if solid_shell {
             clip_infill(
-                solid_fill(&infill_loops, line_width, std::f64::consts::FRAC_PI_4),
+                solid_fill(&infill_loops, line_width, std::f64::consts::FRAC_PI_4, None),
                 &infill_loops,
             )
         } else {
@@ -332,6 +332,7 @@ fn emit_void_fill(
     } else {
         missed
     };
+    let min_w = min_bead(line_width);
     for void in voids {
         if signed_area(&void).abs() < 0.25 {
             continue;
@@ -353,10 +354,17 @@ fn emit_void_fill(
             let Some(piece_width) = feature_width(&piece_region) else {
                 continue;
             };
-            if piece_width < line_width * 0.65 {
+            if piece_width < min_w {
                 continue;
             }
-            fill_void_piece(paths, &piece_region, strategy, line_width, seam_hint);
+            fill_void_piece(
+                paths,
+                &piece_region,
+                piece_width,
+                strategy,
+                line_width,
+                seam_hint,
+            );
         }
     }
 }
@@ -364,16 +372,30 @@ fn emit_void_fill(
 fn fill_void_piece(
     paths: &mut Vec<Extrusion>,
     region: &[Loop],
+    width: f64,
     strategy: &ResolvedStrategy,
     line_width: f64,
     seam_hint: &mut [f64; 2],
 ) {
-    let hatched = clip_infill(
-        solid_fill(region, line_width, std::f64::consts::FRAC_PI_4),
-        region,
-    );
+    // Rows run along the piece, centered on its centroid, so a pinch one bead
+    // wide gets one continuous bead down the middle. Cross chords there are
+    // short, and where they land follows the void's bounding box, which a 1 µm
+    // move can reshape.
+    let Some((center, angle)) = principal_axis(&region[0]) else {
+        return;
+    };
+    let rows = (width / line_width).round().max(1.0);
+    let shift = if rows % 2.0 == 0.0 {
+        line_width * 0.5
+    } else {
+        0.0
+    };
+    let through = [
+        center[0] - angle.sin() * shift,
+        center[1] + angle.cos() * shift,
+    ];
+    let hatched = clip_infill(solid_fill(region, line_width, angle, Some(through)), region);
     if hatched.is_empty() {
-        let width = feature_width(region).unwrap_or(line_width);
         fill_remaining(
             paths,
             &paths_from_loops(region),
@@ -512,6 +534,11 @@ fn infill_kept(strategy: &ResolvedStrategy, features: &PathFeatures) -> bool {
     }
     strategy.lightning_range_mm <= 1e-6
         || features.roof_distance_mm <= strategy.lightning_range_mm + 1e-6
+}
+
+/// Narrowest bead the planner will lay down.
+fn min_bead(line_width: f64) -> f64 {
+    (line_width * 0.45).max(0.2)
 }
 
 fn might_be_thin(contours: &[Loop], nominal_stack: f64) -> bool {
@@ -1083,11 +1110,17 @@ fn lightning(loops: &[Loop], spacing: f64) -> Vec<Vec<[f64; 2]>> {
 
 /// Solid rectilinear in scan order. Alternate rows flip so the next chord
 /// starts beside the previous end, and that short link is extruded when it
-/// stays inside the region.
-fn solid_fill(loops: &[Loop], spacing: f64, angle: f64) -> Vec<Vec<[f64; 2]>> {
+/// stays inside the region. Rows run at `angle`; one passes through `through`
+/// when given, else the first sits half a spacing inside the bounds.
+fn solid_fill(
+    loops: &[Loop],
+    spacing: f64,
+    angle: f64,
+    through: Option<[f64; 2]>,
+) -> Vec<Vec<[f64; 2]>> {
     let outline = Outline::new(loops);
     let rotated = rotate_loops(loops, -angle);
-    let chords = horizontal_chords(&rotated, spacing);
+    let chords = horizontal_chords(&rotated, spacing, through.map(|p| rot(p, -angle)[1]));
     let mut paths: Vec<Vec<[f64; 2]>> = Vec::new();
     let mut flip = false;
     for (y, spans) in &chords {
@@ -1128,7 +1161,7 @@ fn solid_fill(loops: &[Loop], spacing: f64, angle: f64) -> Vec<Vec<[f64; 2]>> {
 
 fn scan_angle(loops: &[Loop], spacing: f64, angle: f64) -> Vec<Vec<[f64; 2]>> {
     let rotated = rotate_loops(loops, -angle);
-    let chords = horizontal_chords(&rotated, spacing);
+    let chords = horizontal_chords(&rotated, spacing, None);
     let mut out = Vec::new();
     for (y, spans) in chords {
         for (x0, x1) in spans {
@@ -1140,12 +1173,19 @@ fn scan_angle(loops: &[Loop], spacing: f64, angle: f64) -> Vec<Vec<[f64; 2]>> {
     out
 }
 
-fn horizontal_chords(loops: &[Loop], spacing: f64) -> Vec<(f64, Vec<(f64, f64)>)> {
+fn horizontal_chords(
+    loops: &[Loop],
+    spacing: f64,
+    through: Option<f64>,
+) -> Vec<(f64, Vec<(f64, f64)>)> {
     let Some((min, max)) = loop_bounds(loops) else {
         return Vec::new();
     };
     let mut rows = Vec::new();
-    let mut y = min[1] + spacing * 0.5;
+    let mut y = match through {
+        Some(t) => t - ((t - min[1]) / spacing).floor() * spacing,
+        None => min[1] + spacing * 0.5,
+    };
     while y < max[1] - 0.05 {
         let mut xs = Vec::new();
         for loop_ in loops {
