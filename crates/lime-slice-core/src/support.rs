@@ -167,6 +167,12 @@ pub fn build_supports(
         let gap = &gaps[i];
         let iface_area = union_all(gens.iter().map(|(r, _)| r.as_slice()));
         let iface_print = drop_slivers(boolean_diff(&iface_area, gap), 0.05);
+        if tree {
+            // Tips frozen at birth stay put while the part silhouette moves.
+            // A patch that slid off every tip needs its own trunk, starting
+            // on the very next layer, or the interface prints over air.
+            seed_uncovered_interface(&iface_print, &mut nodes, &mut next_id, seed_spacing, tip_r);
+        }
         let (sparse_print, branch_pts, branch_r) = if tree {
             if i == 0 {
                 for n in &mut nodes {
@@ -241,6 +247,9 @@ pub fn build_supports(
     if tree {
         settle_disks(&mut out, bands, contours, lean);
     }
+    // A trunk that cannot stand is dropped above. The interface that was
+    // waiting on it would otherwise stay as a raft in the air.
+    drop_unfooted_interface(&mut out, contours);
     out
 }
 
@@ -286,6 +295,8 @@ fn overhang_at(
 
 /// A disk may overhang the one below by about half a bead and still print.
 const BEAD_OVERHANG_MM: f64 = 0.22;
+/// Clipper slop when an interface patch is tested against the layer under it.
+const INTERFACE_FOOT_MM: f64 = 0.35;
 /// Thinnest trunk disk drawn beside the part.
 const MIN_DISK_R: f64 = 0.3;
 
@@ -341,6 +352,8 @@ struct Node {
 
 /// Trunk disks to print on this layer. A disk that would reach into the XY gap
 /// is drawn smaller rather than dropped, so the trunk under it never breaks.
+/// Flooring that disk through the wall would leave support inside the mesh, so
+/// a centre closer than the minimum radius is omitted and the trunk stops.
 fn organic_disks(nodes: &[Node], part: &[Loop], xy_gap: f64) -> (Vec<[f64; 2]>, Vec<f64>) {
     let mut pts = Vec::new();
     let mut radii = Vec::new();
@@ -348,13 +361,17 @@ fn organic_disks(nodes: &[Node], part: &[Loop], xy_gap: f64) -> (Vec<[f64; 2]>, 
         if n.freeze > 0 {
             continue;
         }
-        let room = if part.is_empty() {
+        let dist = if part.is_empty() {
             f64::MAX
         } else if in_solid(part, n.xy[0], n.xy[1]) {
             continue;
         } else {
-            distance_to_outline(part, n.xy) - xy_gap
+            distance_to_outline(part, n.xy)
         };
+        if dist < MIN_DISK_R {
+            continue;
+        }
+        let room = dist - xy_gap;
         pts.push(n.xy);
         radii.push(n.radius.min(room).max(MIN_DISK_R));
     }
@@ -519,7 +536,24 @@ fn merge_nodes(nodes: &mut Vec<Node>, trunk_r: f64, reach: f64) {
     *nodes = kept;
 }
 
+/// One sample per island. A grid over the combined bbox, with the bbox centre
+/// as a fallback, misses a concave patch (the centre sits in the notch) and
+/// misses a second island when the first one already caught a sample.
 fn sample_grid(region: &[Loop], spacing: f64) -> Vec<[f64; 2]> {
+    let mut pts = Vec::new();
+    for comp in components(region) {
+        let mut hit = sample_component(&comp, spacing);
+        if hit.is_empty() {
+            if let Some(p) = point_inside(&comp) {
+                hit.push(p);
+            }
+        }
+        pts.extend(hit);
+    }
+    pts
+}
+
+fn sample_component(region: &[Loop], spacing: f64) -> Vec<[f64; 2]> {
     let Some((min, max)) = loop_bounds(region) else {
         return Vec::new();
     };
@@ -535,15 +569,166 @@ fn sample_grid(region: &[Loop], spacing: f64) -> Vec<[f64; 2]> {
         }
         y += spacing;
     }
-    if pts.is_empty() {
-        if let Some((min, max)) = loop_bounds(region) {
-            let c = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5];
-            if in_solid(region, c[0], c[1]) {
-                pts.push(c);
+    pts
+}
+
+/// A point that is inside the solid, preferring the middle of the thickest spot
+/// so the tip is not parked on an edge the next boolean will shave off.
+fn point_inside(comp: &[Loop]) -> Option<[f64; 2]> {
+    let outer = comp.iter().max_by(|a, b| {
+        signed_area(a)
+            .abs()
+            .partial_cmp(&signed_area(b).abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })?;
+    let c = centroid(outer);
+    if in_solid(comp, c[0], c[1]) {
+        return Some(c);
+    }
+    let (min, max) = loop_bounds(comp)?;
+    let w = (max[0] - min[0]).max(1e-6);
+    let h = (max[1] - min[1]).max(1e-6);
+    let step = ((w * h) / 280.0).sqrt().clamp(0.12, 0.5);
+    let mut best: Option<[f64; 2]> = None;
+    let mut best_clear = -1.0;
+    let mut y = min[1] + step * 0.5;
+    while y < max[1] {
+        let mut x = min[0] + step * 0.5;
+        while x < max[0] {
+            if in_solid(comp, x, y) {
+                let clear = distance_to_outline(comp, [x, y]);
+                if clear > best_clear {
+                    best_clear = clear;
+                    best = Some([x, y]);
+                }
+            }
+            x += step;
+        }
+        y += step;
+    }
+    best
+}
+
+fn tip_covers(comp: &[Loop], xy: [f64; 2], reach: f64) -> bool {
+    in_solid(comp, xy[0], xy[1]) || distance_to_outline(comp, xy) <= reach
+}
+
+/// Give every interface component a tip. `freeze` is 1 so the disk prints on
+/// the next layer, directly under this patch, instead of after the whole
+/// interface stack.
+fn seed_uncovered_interface(
+    region: &[Loop],
+    nodes: &mut Vec<Node>,
+    next_id: &mut u32,
+    spacing: f64,
+    tip_r: f64,
+) {
+    if region.is_empty() {
+        return;
+    }
+    for comp in components(region) {
+        if nodes.iter().any(|n| tip_covers(&comp, n.xy, tip_r)) {
+            continue;
+        }
+        let mut seeds = sample_component(&comp, spacing);
+        if seeds.is_empty() {
+            if let Some(p) = point_inside(&comp) {
+                seeds.push(p);
             }
         }
+        for xy in seeds {
+            nodes.push(Node {
+                id: *next_id,
+                xy,
+                radius: tip_r,
+                dist: 0.0,
+                freeze: 1,
+            });
+            *next_id += 1;
+        }
     }
-    pts
+}
+
+fn area_footing(below: &SupportLayer, part: &[Loop]) -> Vec<Loop> {
+    let foot = boolean_union(&boolean_union(&below.interface, &below.sparse), part);
+    if foot.is_empty() {
+        Vec::new()
+    } else {
+        offset_loops(&foot, INTERFACE_FOOT_MM)
+    }
+}
+
+fn branch_foots(comp: &[Loop], branches: &[[f64; 2]], radii: &[f64]) -> bool {
+    branches.iter().zip(radii).any(|(c, r)| {
+        in_solid(comp, c[0], c[1]) || distance_to_outline(comp, *c) <= *r + INTERFACE_FOOT_MM
+    })
+}
+
+fn component_is_footed(comp: &[Loop], below: &SupportLayer, foot: &[Loop]) -> bool {
+    branch_foots(comp, &below.branches, &below.radii)
+        || (!foot.is_empty() && overlaps(comp, foot, 0.02))
+}
+
+fn interface_pieces(interface: &[Loop]) -> Vec<Vec<Loop>> {
+    components(interface)
+        .into_iter()
+        .filter(|comp| solid_area(comp) >= 0.05)
+        .collect()
+}
+
+/// Area of interface components with no trunk, lower interface, or model under them.
+pub(crate) fn orphan_interface_area(
+    interface: &[Loop],
+    below: &SupportLayer,
+    part: &[Loop],
+) -> f64 {
+    if interface.is_empty() {
+        return 0.0;
+    }
+    let mut foot = None;
+    let mut area = 0.0;
+    for comp in interface_pieces(interface) {
+        if branch_foots(&comp, &below.branches, &below.radii) {
+            continue;
+        }
+        let foot = foot.get_or_insert_with(|| area_footing(below, part));
+        if !foot.is_empty() && overlaps(&comp, foot, 0.02) {
+            continue;
+        }
+        area += solid_area(&comp);
+    }
+    area
+}
+
+fn drop_unfooted_interface(layers: &mut [SupportLayer], contours: &[Vec<Loop>]) {
+    for i in 1..layers.len() {
+        if layers[i].interface.is_empty() {
+            continue;
+        }
+        let (lower, upper) = layers.split_at_mut(i);
+        let below = &lower[i - 1];
+        let interface = upper[0].interface.clone();
+        let pieces = interface_pieces(&interface);
+        // Most patches sit on a trunk tip. Skip the part-offset unless one does not.
+        if pieces
+            .iter()
+            .all(|comp| branch_foots(comp, &below.branches, &below.radii))
+        {
+            continue;
+        }
+        let part = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
+        let foot = area_footing(below, part);
+        let mut gone: Vec<Loop> = Vec::new();
+        for comp in pieces {
+            if !component_is_footed(&comp, below, &foot) {
+                gone = boolean_union(&gone, &comp);
+            }
+        }
+        if !gone.is_empty() {
+            // Subtract from the original so a kept ring does not lose its hole.
+            upper[0].interface = drop_slivers(boolean_diff(&interface, &gone), 0.05);
+        }
+    }
 }
 
 /// A deck this short, held on two opposite sides, can bridge. Longer spans
@@ -746,6 +931,41 @@ mod tests {
     use super::*;
     use crate::adaptive::LayerBand;
 
+    fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Loop {
+        vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+    }
+
+    /// C opening toward +X. The bbox centre and the single coarse grid sample
+    /// both land in the notch, so a whole-region seed misses the solid.
+    fn notch() -> Loop {
+        vec![
+            [0.0, 0.0],
+            [4.0, 0.0],
+            [4.0, 1.2],
+            [1.2, 1.2],
+            [1.2, 2.8],
+            [4.0, 2.8],
+            [4.0, 4.0],
+            [0.0, 4.0],
+        ]
+    }
+
+    fn layers(n: usize) -> Vec<LayerBand> {
+        (0..n).map(|i| band(i, (i as f64 + 1.0) * 0.2)).collect()
+    }
+
+    fn unfooted_interface(layers: &[SupportLayer], contours: &[Vec<Loop>]) -> Vec<(usize, f64)> {
+        let mut bad = Vec::new();
+        for i in 1..layers.len() {
+            let part = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
+            let area = orphan_interface_area(&layers[i].interface, &layers[i - 1], part);
+            if area > 0.0 {
+                bad.push((i, area));
+            }
+        }
+        bad
+    }
+
     fn band(index: usize, z: f64) -> LayerBand {
         LayerBand {
             index,
@@ -775,5 +995,89 @@ mod tests {
         assert_eq!(layers[0].branches.len(), 1);
         assert_eq!(layers[1].branches, vec![[0.0, 0.0]]);
         assert!((layers[1].radii[0] - 1.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_concave_overhang_missed_by_the_seed_grid_still_grows_a_trunk() {
+        // Speed spacing is ~5.3 mm. This notch is 4 mm across, so the only grid
+        // sample and the bbox centre both fall in the opening.
+        let bands = layers(40);
+        let mut contours = vec![Vec::new(); bands.len()];
+        for contour in contours.iter_mut().take(40).skip(36) {
+            *contour = vec![notch()];
+        }
+        let opts = SupportOpts {
+            style: SupportStyle::Tree,
+            density: 0.15,
+            interface_layers: 3,
+            z_gap: 0.2,
+            overhangs: true,
+            islands: true,
+            ..SupportOpts::default()
+        };
+        let built = build_supports(&bands, &contours, &opts);
+        let bad = unfooted_interface(&built, &contours);
+        assert!(bad.is_empty(), "interface with nothing under it: {bad:?}");
+        let trunks = built
+            .iter()
+            .filter(|layer| {
+                layer
+                    .branches
+                    .iter()
+                    .any(|c| (0.0..1.3).contains(&c[0]) && (0.2..3.8).contains(&c[1]))
+            })
+            .count();
+        assert!(
+            trunks > 8,
+            "expected a trunk down the left bar of the notch, disks on {trunks} layers"
+        );
+        let iface = built
+            .iter()
+            .filter(|layer| !layer.interface.is_empty())
+            .count();
+        assert!(
+            iface >= 2,
+            "the notch should keep its interface, got {iface} layers"
+        );
+    }
+
+    #[test]
+    fn interface_split_off_its_frozen_tip_keeps_a_trunk_on_the_orphan_lobe() {
+        // Spacing is clamped at 9 mm, so the only sample lands in the big lobe.
+        // The part then cuts the bridge and the ear is no longer on that tip.
+        let bands = layers(30);
+        let mut contours = vec![Vec::new(); bands.len()];
+        // Big lobe, narrow bridge, small ear. The 9 mm grid hits only the lobe.
+        let shape = boolean_union(
+            &boolean_union(&[rect(0.0, 0.0, 8.0, 8.0)], &[rect(7.9, 3.0, 10.0, 5.0)]),
+            &[rect(9.9, 2.5, 13.0, 5.5)],
+        );
+        contours[29] = shape;
+        // Birth is an air gap below the island, so the first interface layer is
+        // still the whole shape. The blocker then cuts the bridge.
+        let blocker = rect(-1.0, -1.0, 10.4, 9.0);
+        for contour in contours.iter_mut().take(27) {
+            *contour = vec![blocker.clone()];
+        }
+        let opts = SupportOpts {
+            style: SupportStyle::Tree,
+            density: 0.0,
+            branch_spacing: 5.0,
+            interface_layers: 3,
+            z_gap: 0.2,
+            overhangs: true,
+            islands: true,
+            ..SupportOpts::default()
+        };
+        let built = build_supports(&bands, &contours, &opts);
+        let bad = unfooted_interface(&built, &contours);
+        assert!(bad.is_empty(), "interface with nothing under it: {bad:?}");
+        let right = built.iter().any(|layer| {
+            layer
+                .branches
+                .iter()
+                .any(|c| c[0] > 11.0 && (2.4..5.6).contains(&c[1]))
+        });
+        assert!(right, "the ear that slid off the frozen tip has no trunk");
     }
 }
