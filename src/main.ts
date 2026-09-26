@@ -1341,6 +1341,9 @@ async function runSlice() {
     return;
   }
   const id = ++job;
+  const hash = settingsHash();
+  const request = payload();
+  const bytes = meshBytes();
   state.busy = true;
   state.progress = 0.08;
   state.error = "";
@@ -1353,22 +1356,25 @@ async function runSlice() {
       const { invoke } = await import("@tauri-apps/api/core");
       const { listen } = await import("@tauri-apps/api/event");
       const unlisten = await listen<{ progress: number; message: string }>("slice-progress", (ev) => {
+        if (id !== job) return;
         state.progress = ev.payload.progress;
         paintBanner(false);
         document.querySelector("#timing")!.textContent = ev.payload.message;
       });
-      const json = await invoke<string>("slice_model", { payload: JSON.stringify({ ...payload(), dataB64: toBase64(new Uint8Array(meshBytes())) }) });
+      const json = await invoke<string>("slice_model", { payload: JSON.stringify({ ...request, dataB64: toBase64(new Uint8Array(bytes)) }) });
       unlisten();
+      if (id !== job) return;
       body = await parseInWorker(id, json);
     } else {
-      body = await postSlice(id, meshBytes(), payload());
+      body = await postSlice(id, bytes, request);
     }
     if (id !== job) return;
     if (body.error) throw new Error(body.error);
     if (!body.gcode && body.gcodeToken) body.gcode = await fetchStoredGcode(body.gcodeToken);
+    if (id !== job) return;
     state.result = body;
     state.gcodeToken = body.gcodeToken ?? "";
-    state.slicedHash = settingsHash();
+    state.slicedHash = hash;
     state.layer = Math.min(state.layer, Math.max(0, body.layers.length - 1));
     clampPlane();
   } catch (err) {
