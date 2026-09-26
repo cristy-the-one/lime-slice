@@ -2,21 +2,30 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { boundsOf } from "./mesh-place";
 import { buildCutPlane, disposeTree, prepareFrame, splitDragAt, type PrintFrame } from "./cut-plane";
+import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, snapStep } from "./gizmo-math";
 import { clampSplit, roundSplit, type SplitAxis } from "./split-at";
 import { hexToThree, themeColors } from "./theme";
+
+type Axis = "x" | "y" | "z";
+type HandleHit = { kind: "ring" | "move"; axis: Axis };
+type Drag = HandleHit | { kind: "cut" } | null;
 
 export interface PrepareView {
   setMesh(positions: Float32Array | null, frameCamera?: boolean): void;
   setBed(x: number, y: number, z: number): void;
   setSplit(split: { axis: SplitAxis; at: number } | null): void;
   onSplit(cb: ((at: number) => void) | null): void;
-  onRotate(cb: ((axis: "x" | "y" | "z", deltaDeg: number, totalDeg: number) => void) | null): void;
+  onRotate(cb: ((axis: Axis, deltaDeg: number, totalDeg: number) => void) | null): void;
   onRotateEnd(cb: (() => void) | null): void;
+  onMove(cb: ((axis: Axis, deltaMm: number, totalMm: number) => void) | null): void;
+  onMoveEnd(cb: (() => void) | null): void;
   setTheme(): void;
   resize(): void;
 }
 
-const RING: Record<"x" | "y" | "z", number> = { x: 0xe85d4c, y: 0x8fce6a, z: 0x6aa7ff };
+const RING: Record<Axis, number> = { x: 0xe85d4c, y: 0x8fce6a, z: 0x6aa7ff };
+const ROTATE_SNAP_DEG = 15;
+const MOVE_SNAP_MM = 1;
 
 export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -59,37 +68,73 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   scene.add(key);
 
   const gizmo = new THREE.Group();
-  gizmo.renderOrder = 6;
+  gizmo.visible = false;
   scene.add(gizmo);
-  const rings = new Map<"x" | "y" | "z", { show: THREE.Mesh; pick: THREE.Mesh }>();
+  const ringGeo = new THREE.TorusGeometry(1, 0.046, 12, 72);
+  const ringPickGeo = new THREE.TorusGeometry(1, 0.1, 8, 28);
+  const shaftGeo = new THREE.CylinderGeometry(0.042, 0.042, 0.3, 10);
+  const headGeo = new THREE.ConeGeometry(0.098, 0.3, 14);
+  const movePickGeo = new THREE.CylinderGeometry(0.12, 0.12, 0.68, 8);
+  const handles = new Map<Axis, { ringMat: THREE.MeshBasicMaterial; moveMats: THREE.MeshBasicMaterial[] }>();
+  const handlePicks: THREE.Object3D[] = [];
   for (const axis of ["x", "y", "z"] as const) {
-    const show = new THREE.Mesh(
-      new THREE.TorusGeometry(1, 0.045, 12, 64),
-      new THREE.MeshBasicMaterial({ color: RING[axis], depthTest: false, transparent: true, opacity: 0.95 }),
-    );
-    const pick = new THREE.Mesh(
-      new THREE.TorusGeometry(1, 0.14, 8, 24),
-      new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }),
-    );
+    const ringMat = new THREE.MeshBasicMaterial({ color: RING[axis], depthTest: false, transparent: true, opacity: 0.95, toneMapped: false });
+    const show = new THREE.Mesh(ringGeo, ringMat);
+    const pick = new THREE.Mesh(ringPickGeo, ghostMat());
     orientRing(show, axis);
     orientRing(pick, axis);
     show.renderOrder = 6;
-    show.userData.axis = axis;
-    pick.userData.axis = axis;
-    pick.userData.pick = "ring";
+    show.frustumCulled = false;
+    pick.frustumCulled = false;
+    tagHandle(pick, "ring", axis);
     gizmo.add(show, pick);
-    rings.set(axis, { show, pick });
+    handlePicks.push(pick);
+
+    const moveMat = new THREE.MeshBasicMaterial({ color: RING[axis], depthTest: false, toneMapped: false });
+    const shaft = new THREE.Mesh(shaftGeo, moveMat);
+    const head = new THREE.Mesh(headGeo, moveMat);
+    const movePick = new THREE.Mesh(movePickGeo, ghostMat());
+    along(shaft, axis, 0.35);
+    along(head, axis, 0.63);
+    along(movePick, axis, 0.5);
+    for (const part of [shaft, head, movePick]) {
+      part.renderOrder = 7;
+      part.frustumCulled = false;
+      gizmo.add(part);
+    }
+    tagHandle(movePick, "move", axis);
+    handlePicks.push(movePick);
+    handles.set(axis, { ringMat, moveMats: [moveMat] });
   }
-  const shaftGeo = new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(new Array(18).fill(0), 3));
-  const shafts = new THREE.LineSegments(shaftGeo, new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false }));
-  shafts.renderOrder = 6;
+  const axisLine = new Float32Array([
+    -1.12, 0, 0, 1.12, 0, 0,
+    0, 0, 1.12, 0, 0, -1.12,
+    0, -1.12, 0, 0, 1.12, 0,
+  ]);
+  const shafts = new THREE.LineSegments(
+    new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(axisLine, 3)),
+    new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true, opacity: 0.4, toneMapped: false }),
+  );
+  shafts.renderOrder = 5;
+  shafts.frustumCulled = false;
+  shafts.raycast = () => undefined;
   gizmo.add(shafts);
   const axisLabels = {
     x: axisSprite("X", "#e85d4c"),
     y: axisSprite("Y", "#8fce6a"),
     z: axisSprite("Z", "#6aa7ff"),
   };
-  gizmo.add(axisLabels.x, axisLabels.y, axisLabels.z);
+  const label = 1.32;
+  axisLabels.x.position.copy(sceneAxis("x")).multiplyScalar(label);
+  axisLabels.y.position.copy(sceneAxis("y")).multiplyScalar(label);
+  axisLabels.z.position.copy(sceneAxis("z")).multiplyScalar(label);
+  const labelPx = 0.28;
+  for (const sprite of Object.values(axisLabels)) {
+    sprite.scale.set(labelPx, labelPx, 1);
+    sprite.raycast = () => undefined;
+    sprite.frustumCulled = false;
+    gizmo.add(sprite);
+  }
 
   let cut: THREE.Group | null = null;
   let cutPicks: THREE.Object3D[] = [];
@@ -101,16 +146,21 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let bedY = 220;
   let bedZ = 250;
   let splitCb: ((at: number) => void) | null = null;
-  let rotateCb: ((axis: "x" | "y" | "z", deltaDeg: number, totalDeg: number) => void) | null = null;
+  let rotateCb: ((axis: Axis, deltaDeg: number, totalDeg: number) => void) | null = null;
   let rotateEndCb: (() => void) | null = null;
+  let moveCb: ((axis: Axis, deltaMm: number, totalMm: number) => void) | null = null;
+  let moveEndCb: (() => void) | null = null;
 
   const gizmoCenter = new THREE.Vector3();
-  let gizmoRadius = 24;
-  let drag: "cut" | "x" | "y" | "z" | null = null;
-  let hoverAxis: "x" | "y" | "z" | null = null;
+  let drag: Drag = null;
+  let hover: HandleHit | null = null;
   let lastAngle = 0;
   let totalDeg = 0;
   let appliedDeg = 0;
+  let lastCoord = 0;
+  let totalMm = 0;
+  let appliedMm = 0;
+  const dragHit = new THREE.Vector3();
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
 
@@ -123,6 +173,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   function paint() {
     frameQueued = false;
     controls.update();
+    fitGizmoScreen();
     renderer.render(scene, camera);
   }
   controls.addEventListener("change", requestRender);
@@ -158,35 +209,21 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     gizmo.visible = !!meshBounds;
     if (!meshBounds) return;
     const { min, max } = meshBounds;
-    const cx = (min[0] + max[0]) / 2;
-    const cy = (min[1] + max[1]) / 2;
-    const cz = (min[2] + max[2]) / 2;
-    gizmoCenter.copy(frame.toScene(cx, cy, cz));
+    gizmoCenter.copy(frame.toScene(
+      (min[0] + max[0]) / 2,
+      (min[1] + max[1]) / 2,
+      (min[2] + max[2]) / 2,
+    ));
     gizmo.position.copy(gizmoCenter);
-    const sx = max[0] - min[0];
-    const sy = max[1] - min[1];
-    const sz = max[2] - min[2];
-    gizmoRadius = 0.5 * Math.hypot(sx, sy, sz) + Math.max(6, 0.08 * Math.max(sx, sy, sz));
-    for (const { show, pick } of rings.values()) {
-      show.scale.setScalar(gizmoRadius);
-      pick.scale.setScalar(gizmoRadius);
-    }
-    const r = gizmoRadius * 1.15;
-    const pos = shafts.geometry.getAttribute("position") as THREE.BufferAttribute;
-    const verts = [
-      -r, 0, 0, r, 0, 0,
-      0, 0, -r, 0, 0, r,
-      0, -r, 0, 0, r, 0,
-    ];
-    pos.set(verts);
-    pos.needsUpdate = true;
-    shafts.geometry.computeBoundingSphere();
-    const label = gizmoRadius * 1.28;
-    axisLabels.x.position.set(label, 0, 0);
-    axisLabels.y.position.set(0, 0, -label);
-    axisLabels.z.position.set(0, label, 0);
-    const s = Math.max(6, gizmoRadius * 0.28);
-    for (const sprite of Object.values(axisLabels)) sprite.scale.set(s, s, 1);
+    fitGizmoScreen();
+  }
+
+  function fitGizmoScreen() {
+    if (!gizmo.visible) return;
+    const height = canvas.clientHeight || canvas.getBoundingClientRect().height;
+    if (height < 2) return;
+    const dist = camera.position.distanceTo(gizmo.position);
+    gizmo.scale.setScalar(gizmoRadiusForPixels(dist, camera.fov, height, GIZMO_SCREEN_PX, camera.zoom));
   }
 
   function rebuildCut() {
@@ -213,17 +250,20 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     const rect = canvas.getBoundingClientRect();
     pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+    fitGizmoScreen();
     scene.updateMatrixWorld(true);
     raycaster.setFromCamera(pointer, camera);
   }
 
-  function hitRing(ev: PointerEvent): "x" | "y" | "z" | null {
+  function hitHandle(ev: PointerEvent): HandleHit | null {
     if (!meshBounds) return null;
     ndc(ev);
-    const picks = [...rings.values()].map((r) => r.pick);
-    const hit = raycaster.intersectObjects(picks, false)[0];
-    const axis = hit?.object.userData.axis as "x" | "y" | "z" | undefined;
-    return axis ?? null;
+    const hit = raycaster.intersectObjects(handlePicks, false)[0];
+    const kind = hit?.object.userData.kind as HandleHit["kind"] | undefined;
+    const axis = hit?.object.userData.axis as Axis | undefined;
+    if (kind !== "ring" && kind !== "move") return null;
+    if (axis !== "x" && axis !== "y" && axis !== "z") return null;
+    return { kind, axis };
   }
 
   function hitCut(ev: PointerEvent): boolean {
@@ -232,7 +272,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     return raycaster.intersectObjects(cutPicks, false).length > 0;
   }
 
-  function printAngle(axis: "x" | "y" | "z"): number | null {
+  function printAngle(axis: Axis): number | null {
     const dir = sceneAxis(axis);
     const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(dir, gizmoCenter);
     const hit = new THREE.Vector3();
@@ -251,33 +291,61 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     return Math.atan2(v.dot(w), v.dot(u));
   }
 
-  function paintRings(active: "x" | "y" | "z" | null, hover: "x" | "y" | "z" | null) {
-    for (const [axis, { show }] of rings) {
-      const mat = show.material as THREE.MeshBasicMaterial;
-      mat.color.setHex(axis === active || axis === hover ? 0xffffff : RING[axis]);
-      mat.opacity = axis === active ? 1 : 0.92;
+  /** Scalar along the scene axis, in millimetres. The drag plane faces the camera. */
+  function axisCoord(axis: Axis): number | null {
+    const dir = sceneAxis(axis);
+    const camDir = camera.position.clone().sub(gizmoCenter);
+    if (camDir.lengthSq() < 1e-8) return null;
+    camDir.normalize();
+    const side = new THREE.Vector3().crossVectors(dir, camDir);
+    if (side.lengthSq() < 1e-6) {
+      side.crossVectors(dir, Math.abs(dir.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0));
+    }
+    side.normalize();
+    const normal = new THREE.Vector3().crossVectors(side, dir).normalize();
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, gizmoCenter);
+    if (!raycaster.ray.intersectPlane(plane, dragHit)) return null;
+    return dragHit.sub(gizmoCenter).dot(dir);
+  }
+
+  function sameHit(a: HandleHit | null, b: HandleHit | null) {
+    return a?.kind === b?.kind && a?.axis === b?.axis;
+  }
+
+  function paintHandles(active: HandleHit | null, over: HandleHit | null) {
+    for (const [axis, { ringMat, moveMats }] of handles) {
+      const ringHot = (active?.kind === "ring" && active.axis === axis) || (over?.kind === "ring" && over.axis === axis);
+      const moveHot = (active?.kind === "move" && active.axis === axis) || (over?.kind === "move" && over.axis === axis);
+      ringMat.color.setHex(ringHot ? 0xffffff : RING[axis]);
+      ringMat.opacity = active?.kind === "ring" && active.axis === axis ? 1 : 0.92;
+      for (const mat of moveMats) mat.color.setHex(moveHot ? 0xffffff : RING[axis]);
     }
     requestRender();
   }
 
   canvas.addEventListener("pointerdown", (ev) => {
     if (ev.button !== 0) return;
-    const ring = hitRing(ev);
-    if (ring) {
-      drag = ring;
-      const angle = printAngle(ring);
-      lastAngle = angle ?? 0;
-      totalDeg = 0;
-      appliedDeg = 0;
+    const handle = hitHandle(ev);
+    if (handle) {
+      drag = handle;
       controls.enabled = false;
       canvas.setPointerCapture(ev.pointerId);
-      paintRings(ring, null);
+      if (handle.kind === "ring") {
+        lastAngle = printAngle(handle.axis) ?? 0;
+        totalDeg = 0;
+        appliedDeg = 0;
+      } else {
+        lastCoord = axisCoord(handle.axis) ?? 0;
+        totalMm = 0;
+        appliedMm = 0;
+      }
+      paintHandles(handle, null);
       ev.preventDefault();
       ev.stopPropagation();
       return;
     }
     if (hitCut(ev) && split && meshBounds) {
-      drag = "cut";
+      drag = { kind: "cut" };
       controls.enabled = false;
       canvas.setPointerCapture(ev.pointerId);
       ev.preventDefault();
@@ -287,17 +355,17 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
 
   canvas.addEventListener("pointermove", (ev) => {
     if (!drag) {
-      const ring = hitRing(ev);
-      canvas.style.cursor = ring || hitCut(ev) ? "grab" : "";
-      if (ring !== hoverAxis) {
-        hoverAxis = ring;
-        paintRings(null, ring);
+      const handle = hitHandle(ev);
+      canvas.style.cursor = handle || hitCut(ev) ? "grab" : "";
+      if (!sameHit(handle, hover)) {
+        hover = handle;
+        paintHandles(null, handle);
       }
       return;
     }
     canvas.style.cursor = "grabbing";
     ndc(ev);
-    if (drag === "cut") {
+    if (drag.kind === "cut") {
       if (!split || !meshBounds) return;
       const { min, max } = meshBounds;
       const pivot: [number, number, number] = [
@@ -315,7 +383,23 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       splitCb?.(at);
       return;
     }
-    const axis = drag;
+    if (drag.kind === "move") {
+      const axis = drag.axis;
+      const coord = axisCoord(axis);
+      if (coord == null) return;
+      const step = coord - lastCoord;
+      lastCoord = coord;
+      totalMm += step;
+      const target = snapStep(totalMm, ev.shiftKey, MOVE_SNAP_MM);
+      const send = target - appliedMm;
+      if (Math.abs(send) < 0.02) return;
+      appliedMm = target;
+      moveCb?.(axis, send, target);
+      const rebased = axisCoord(axis);
+      if (rebased != null) lastCoord = rebased;
+      return;
+    }
+    const axis = drag.axis;
     const angle = printAngle(axis);
     if (angle == null) return;
     let step = angle - lastAngle;
@@ -323,7 +407,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     while (step < -Math.PI) step += Math.PI * 2;
     lastAngle = angle;
     totalDeg += step * (180 / Math.PI);
-    const target = ev.shiftKey ? Math.round(totalDeg / 15) * 15 : totalDeg;
+    const target = snapStep(totalDeg, ev.shiftKey, ROTATE_SNAP_DEG);
     const send = target - appliedDeg;
     if (Math.abs(send) < 0.04) return;
     appliedDeg = target;
@@ -333,13 +417,14 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   });
 
   const endDrag = () => {
-    const wasRotate = drag === "x" || drag === "y" || drag === "z";
+    const kind = drag?.kind;
     drag = null;
-    hoverAxis = null;
+    hover = null;
     controls.enabled = true;
     canvas.style.cursor = "";
-    paintRings(null, null);
-    if (wasRotate) rotateEndCb?.();
+    paintHandles(null, null);
+    if (kind === "ring") rotateEndCb?.();
+    if (kind === "move") moveEndCb?.();
   };
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
@@ -406,6 +491,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     onSplit(cb) { splitCb = cb; },
     onRotate(cb) { rotateCb = cb; },
     onRotateEnd(cb) { rotateEndCb = cb; },
+    onMove(cb) { moveCb = cb; },
+    onMoveEnd(cb) { moveEndCb = cb; },
     setTheme() {
       colors = themeColors();
       renderer.setClearColor(hexToThree(colors.stage), 1);
@@ -425,18 +512,33 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   };
 }
 
-function orientRing(mesh: THREE.Mesh, axis: "x" | "y" | "z") {
+function ghostMat() {
+  return new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
+}
+
+function tagHandle(mesh: THREE.Object3D, kind: HandleHit["kind"], axis: Axis) {
+  mesh.userData.kind = kind;
+  mesh.userData.axis = axis;
+}
+
+function along(mesh: THREE.Object3D, axis: Axis, distance: number) {
+  const dir = sceneAxis(axis);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+  mesh.position.copy(dir).multiplyScalar(distance);
+}
+
+function orientRing(mesh: THREE.Mesh, axis: Axis) {
   if (axis === "x") mesh.rotation.y = Math.PI / 2;
   else if (axis === "z") mesh.rotation.x = Math.PI / 2;
 }
 
-function sceneAxis(axis: "x" | "y" | "z") {
+function sceneAxis(axis: Axis) {
   if (axis === "x") return new THREE.Vector3(1, 0, 0);
   if (axis === "y") return new THREE.Vector3(0, 0, -1);
   return new THREE.Vector3(0, 1, 0);
 }
 
-function printAxis(axis: "x" | "y" | "z") {
+function printAxis(axis: Axis) {
   if (axis === "x") return new THREE.Vector3(1, 0, 0);
   if (axis === "y") return new THREE.Vector3(0, 1, 0);
   return new THREE.Vector3(0, 0, 1);
