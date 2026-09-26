@@ -1,4 +1,8 @@
 use std::collections::BTreeMap;
+use std::fmt::Write;
+use std::sync::Arc;
+
+use rayon::prelude::*;
 
 use crate::strategy::{BlendMode, PrinterProfile};
 use crate::toolpath::Extrusion;
@@ -49,17 +53,130 @@ pub fn emit_gcode(
     junction_deviation_mm: f64,
     job: crate::cancel::Job,
 ) -> GcodeStats {
-    let mut w = Writer::new(
+    emit_gcode_inner(
+        layers,
         profile,
         blend,
         layer_height,
         line_width,
         features,
+        arc_fit,
         classic_estimator,
         junction_deviation_mm,
-    );
+        job,
+        true,
+    )
+}
+
+/// Single-writer emit. Tests use it to prove the parallel reduce is the same G-code.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_gcode_linear(
+    layers: &[LayerPaths],
+    profile: &PrinterProfile,
+    blend: &BlendMode,
+    layer_height: f64,
+    line_width: f64,
+    features: &str,
+    arc_fit: bool,
+    classic_estimator: bool,
+    junction_deviation_mm: f64,
+    job: crate::cancel::Job,
+) -> GcodeStats {
+    emit_gcode_inner(
+        layers,
+        profile,
+        blend,
+        layer_height,
+        line_width,
+        features,
+        arc_fit,
+        classic_estimator,
+        junction_deviation_mm,
+        job,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_gcode_inner(
+    layers: &[LayerPaths],
+    profile: &PrinterProfile,
+    blend: &BlendMode,
+    layer_height: f64,
+    line_width: f64,
+    features: &str,
+    arc_fit: bool,
+    classic_estimator: bool,
+    junction_deviation_mm: f64,
+    job: crate::cancel::Job,
+    parallel: bool,
+) -> GcodeStats {
+    let junction_deviation = if junction_deviation_mm.is_finite() && junction_deviation_mm > 0.0 {
+        junction_deviation_mm
+    } else {
+        DEFAULT_JUNCTION_DEVIATION_MM
+    };
+    let cfg = EmitCfg {
+        classic_estimator,
+        junction_deviation,
+        arc_fit,
+        max_accel: profile.max_accel,
+        max_volumetric_mm3_s: profile.max_volumetric_mm3_s,
+        filament_diameter: profile.filament_diameter,
+        pa_base: profile.pressure_advance.max(0.0),
+        la_base: profile.linear_advance.max(0.0),
+        emit_pa: profile.pressure_advance > 0.0 || profile.linear_advance > 0.0,
+    };
+    if !parallel {
+        let mut w = Writer::blank(&cfg, Carry::initial(&cfg), false);
+        write_preamble(
+            &mut w.out,
+            profile,
+            blend,
+            layer_height,
+            line_width,
+            features,
+            classic_estimator,
+            junction_deviation,
+        );
+        let mut emitted_layers = 0usize;
+        for layer in layers {
+            if job.cancelled() {
+                w.cancelled = true;
+                break;
+            }
+            if layer.paths.is_empty() {
+                continue;
+            }
+            w.write_layer(layer);
+            emitted_layers += 1;
+        }
+        w.finish(profile);
+        return w.stats(emitted_layers, profile);
+    }
+
+    // Arc choices do not depend on machine state, so they are planned once per
+    // layer. A quiet scan then replays them to carry E, fan, accel, and
+    // pressure advance across layers. Formatting replays the same arcs into
+    // one string per layer and the strings are joined in layer index order.
+    // Lookahead stays on the quiet scan: it already stops at each layer, and
+    // that pass is what the print-time totals come from.
+    let scripts: Vec<Arc<Vec<Vec<Span>>>> = layers
+        .par_iter()
+        .map(|layer| {
+            Arc::new(if layer.paths.is_empty() {
+                Vec::new()
+            } else {
+                chain_scripts(layer, arc_fit)
+            })
+        })
+        .collect();
+    let mut w = Writer::blank(&cfg, Carry::initial(&cfg), false);
+    w.quiet = true;
+    let mut seeds = Vec::new();
     let mut emitted_layers = 0usize;
-    for layer in layers {
+    for (index, layer) in layers.iter().enumerate() {
         if job.cancelled() {
             w.cancelled = true;
             break;
@@ -67,85 +184,158 @@ pub fn emit_gcode(
         if layer.paths.is_empty() {
             continue;
         }
-        w.layer_header(layer);
+        seeds.push(Seed {
+            index,
+            carry: w.carry(),
+        });
+        w.replay = Some(Arc::clone(&scripts[index]));
+        w.replay_i = 0;
+        w.write_layer(layer);
         emitted_layers += 1;
-        for path in &layer.paths {
-            w.set_advance(path.kind.as_str());
-            if layer.index >= 2 {
-                w.set_fan(path.fan);
-            } else if layer.index == 1 {
-                w.set_fan(128);
-            } else {
-                w.set_fan(0);
-            }
-            let speed = if layer.index == 0 {
-                path.speed.min(30.0)
-            } else {
-                path.speed
-            };
-            let flow = if layer.index == 0 { 1.06 } else { 1.0 };
-            w.comment(&format!("TYPE:{}", path.kind.as_str().to_ascii_uppercase()));
-            if path.points.is_empty() {
-                continue;
-            }
-            let bead_h = if path.bead_height > 1e-6 {
-                path.bead_height
-            } else {
-                layer.height
-            };
-            w.kind = "travel".into();
-            let travel_accel = cap_accel(path.travel_accel, profile.max_accel);
-            let print_accel = cap_accel(path.accel, profile.max_accel);
-            w.set_accel(travel_accel);
-            let mut hop = path.lead_in.clone();
-            hop.push(path.points[0]);
-            let (retract_mm, min_travel) = path.travel_retract();
-            w.travel_chain(
-                &hop,
-                path.travel_speed,
-                retract_mm,
-                min_travel,
-                travel_accel,
-                path.z_hop,
-                layer.z,
-            );
-            w.kind = path.kind.as_str().into();
-            w.set_accel(print_accel);
-            let limited = limit_speed(
-                speed,
-                path.width,
-                bead_h,
-                flow * path.flow,
-                profile.max_volumetric_mm3_s,
-            );
-            let wall = matches!(
-                path.kind,
-                crate::toolpath::PathKind::Wall
-                    | crate::toolpath::PathKind::Outer
-                    | crate::toolpath::PathKind::Inner
-                    | crate::toolpath::PathKind::ThinWall
-                    | crate::toolpath::PathKind::Skirt
-            );
-            let fit = arc_fit && (path.fit_arcs || wall);
-            w.emit_chain(
-                &path.points,
-                limited,
-                path.width,
-                bead_h,
-                flow * path.flow,
-                profile.filament_diameter,
-                print_accel,
-                fit,
-                path.fit_arcs,
-                &path.z_frac,
-                &path.flow_frac,
-                layer.z,
-                layer.height,
-            );
+    }
+    w.quiet = false;
+    w.out.clear();
+    w.finish(profile);
+    let epilogue = std::mem::take(&mut w.out);
+    let mut stats = w.stats(emitted_layers, profile);
+
+    let mut text = String::new();
+    write_preamble(
+        &mut text,
+        profile,
+        blend,
+        layer_height,
+        line_width,
+        features,
+        classic_estimator,
+        junction_deviation,
+    );
+    let bodies: Vec<String> = seeds
+        .par_iter()
+        .map(|seed| {
+            let layer = &layers[seed.index];
+            let mut layer_w = Writer::blank(&cfg, seed.carry, true);
+            let points: usize = layer
+                .paths
+                .iter()
+                .map(|path| path.points.len() + path.lead_in.len())
+                .sum();
+            layer_w
+                .out
+                .reserve(points.saturating_mul(48).saturating_add(128));
+            layer_w.replay = Some(Arc::clone(&scripts[seed.index]));
+            layer_w.write_layer(layer);
+            layer_w.out
+        })
+        .collect();
+    let extra: usize = bodies.iter().map(String::len).sum::<usize>() + epilogue.len();
+    text.reserve(extra);
+    for body in &bodies {
+        text.push_str(body);
+    }
+    text.push_str(&epilogue);
+    stats.text = text;
+    stats
+}
+
+#[derive(Clone, Copy)]
+struct EmitCfg {
+    classic_estimator: bool,
+    junction_deviation: f64,
+    arc_fit: bool,
+    max_accel: f64,
+    max_volumetric_mm3_s: f64,
+    filament_diameter: f64,
+    pa_base: f64,
+    la_base: f64,
+    emit_pa: bool,
+}
+
+/// Machine state that changes G-code across a layer boundary.
+/// Lookahead and the nozzle direction do not: each layer header clears them.
+#[derive(Clone, Copy)]
+struct Carry {
+    e: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+    has_pos: bool,
+    retracted: f64,
+    accel: f64,
+    fan: i32,
+    pa_cur: f64,
+    la_cur: f64,
+}
+
+impl Carry {
+    fn initial(cfg: &EmitCfg) -> Self {
+        Self {
+            e: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            has_pos: false,
+            retracted: 0.0,
+            accel: 1500.0,
+            fan: 0,
+            pa_cur: cfg.pa_base,
+            la_cur: cfg.la_base,
         }
     }
-    w.finish(profile);
-    w.stats(emitted_layers, profile)
+}
+
+struct Seed {
+    index: usize,
+    carry: Carry,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_preamble(
+    out: &mut String,
+    profile: &PrinterProfile,
+    blend: &BlendMode,
+    layer_height: f64,
+    line_width: f64,
+    features: &str,
+    classic_estimator: bool,
+    junction_deviation: f64,
+) {
+    let filament = profile.filament_diameter;
+    let bed = profile.bed_temp;
+    let nozzle = profile.nozzle_temp;
+    out.push_str("; generated by Lime Slice — FDM strategy blender\n");
+    let _ = writeln!(out, "; printer: {}", profile.name);
+    let _ = writeln!(out, "; blend: {}", blend.describe());
+    let _ = writeln!(
+        out,
+        "; layer_height: {layer_height:.3} line_width: {line_width:.3} filament: {filament:.2}"
+    );
+    let _ = writeln!(out, "; features: {features}");
+    let _ = writeln!(out, "M140 S{bed:.0}");
+    let _ = writeln!(out, "M104 S{nozzle:.0}");
+    let _ = writeln!(out, "M190 S{bed:.0}");
+    let _ = writeln!(out, "M109 S{nozzle:.0}");
+    if classic_estimator {
+        out.push_str("; estimator: classic (stop at each segment end)\n");
+    } else {
+        let _ = writeln!(
+            out,
+            "; estimator: lookahead junction_deviation={junction_deviation:.4}"
+        );
+    }
+    let start_accel = cap_accel(1500.0, profile.max_accel);
+    let _ = writeln!(
+        out,
+        "G21\nG90\nM82\nG28\nG92 E0\nM106 S0\nM204 S{start_accel:.0}"
+    );
+    if profile.pressure_advance > 0.0 {
+        let advance = profile.pressure_advance;
+        let _ = writeln!(out, "SET_PRESSURE_ADVANCE ADVANCE={advance:.4}");
+    }
+    if profile.linear_advance > 0.0 {
+        let linear = profile.linear_advance;
+        let _ = writeln!(out, "M900 K{linear:.3}");
+    }
 }
 
 pub struct LayerPaths {
@@ -198,6 +388,18 @@ struct Writer {
     /// Klipper junction deviation, millimetres. Ignored by the classic estimator.
     junction_deviation: f64,
     pending: Vec<KinMove>,
+    /// Planned arcs for this layer, shared with the formatter. Empty means fit inline.
+    replay: Option<Arc<Vec<Vec<Span>>>>,
+    replay_i: usize,
+    /// Skip string writes. The carry scan uses this so formatting can run per layer.
+    quiet: bool,
+    /// Skip lookahead and feature totals. Layer tasks only need the G-code text;
+    /// the quiet scan already accumulated print time.
+    strings_only: bool,
+    arc_fit: bool,
+    max_accel: f64,
+    max_volumetric_mm3_s: f64,
+    filament_diameter: f64,
 }
 
 struct KinMove {
@@ -210,64 +412,17 @@ struct KinMove {
 }
 
 impl Writer {
-    fn new(
-        profile: &PrinterProfile,
-        blend: &BlendMode,
-        layer_height: f64,
-        line_width: f64,
-        features: &str,
-        classic_estimator: bool,
-        junction_deviation_mm: f64,
-    ) -> Self {
-        let mut out = String::new();
-        out.push_str("; generated by Lime Slice — FDM strategy blender\n");
-        out.push_str(&format!("; printer: {}\n", profile.name));
-        out.push_str(&format!("; blend: {}\n", blend.describe()));
-        out.push_str(&format!(
-            "; layer_height: {layer_height:.3} line_width: {line_width:.3} filament: {:.2}\n",
-            profile.filament_diameter
-        ));
-        out.push_str(&format!("; features: {features}\n"));
-        out.push_str(&format!("M140 S{:.0}\n", profile.bed_temp));
-        out.push_str(&format!("M104 S{:.0}\n", profile.nozzle_temp));
-        out.push_str(&format!("M190 S{:.0}\n", profile.bed_temp));
-        out.push_str(&format!("M109 S{:.0}\n", profile.nozzle_temp));
-        let junction_deviation = if junction_deviation_mm.is_finite() && junction_deviation_mm > 0.0
-        {
-            junction_deviation_mm
-        } else {
-            DEFAULT_JUNCTION_DEVIATION_MM
-        };
-        if classic_estimator {
-            out.push_str("; estimator: classic (stop at each segment end)\n");
-        } else {
-            out.push_str(&format!(
-                "; estimator: lookahead junction_deviation={junction_deviation:.4}\n"
-            ));
-        }
-        let start_accel = cap_accel(1500.0, profile.max_accel);
-        out.push_str(&format!(
-            "G21\nG90\nM82\nG28\nG92 E0\nM106 S0\nM204 S{start_accel:.0}\n"
-        ));
-        if profile.pressure_advance > 0.0 {
-            out.push_str(&format!(
-                "SET_PRESSURE_ADVANCE ADVANCE={:.4}\n",
-                profile.pressure_advance
-            ));
-        }
-        if profile.linear_advance > 0.0 {
-            out.push_str(&format!("M900 K{:.3}\n", profile.linear_advance));
-        }
+    fn blank(cfg: &EmitCfg, carry: Carry, strings_only: bool) -> Self {
         Self {
-            out,
-            e: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-            has_pos: false,
-            retracted: 0.0,
-            accel: 1500.0,
-            fan: 0,
+            out: String::new(),
+            e: carry.e,
+            x: carry.x,
+            y: carry.y,
+            z: carry.z,
+            has_pos: carry.has_pos,
+            retracted: carry.retracted,
+            accel: carry.accel,
+            fan: carry.fan,
             extrusion_moves: 0,
             travel_moves: 0,
             min_x: 0.0,
@@ -283,11 +438,11 @@ impl Writer {
             z_hops: 0,
             dir: [1.0, 0.0],
             has_dir: false,
-            pa_base: profile.pressure_advance.max(0.0),
-            la_base: profile.linear_advance.max(0.0),
-            pa_cur: profile.pressure_advance.max(0.0),
-            la_cur: profile.linear_advance.max(0.0),
-            emit_pa: profile.pressure_advance > 0.0 || profile.linear_advance > 0.0,
+            pa_base: cfg.pa_base,
+            la_base: cfg.la_base,
+            pa_cur: carry.pa_cur,
+            la_cur: carry.la_cur,
+            emit_pa: cfg.emit_pa,
             kind: "travel".into(),
             feature_s: BTreeMap::new(),
             feature_mm: BTreeMap::new(),
@@ -295,10 +450,122 @@ impl Writer {
             layer_mark: 0.0,
             layer_open: false,
             cancelled: false,
-            classic_estimator,
-            junction_deviation,
+            classic_estimator: cfg.classic_estimator,
+            junction_deviation: cfg.junction_deviation,
             pending: Vec::new(),
+            replay: None,
+            replay_i: 0,
+            quiet: false,
+            strings_only,
+            arc_fit: cfg.arc_fit,
+            max_accel: cfg.max_accel,
+            max_volumetric_mm3_s: cfg.max_volumetric_mm3_s,
+            filament_diameter: cfg.filament_diameter,
         }
+    }
+
+    fn carry(&self) -> Carry {
+        Carry {
+            e: self.e,
+            x: self.x,
+            y: self.y,
+            z: self.z,
+            has_pos: self.has_pos,
+            retracted: self.retracted,
+            accel: self.accel,
+            fan: self.fan,
+            pa_cur: self.pa_cur,
+            la_cur: self.la_cur,
+        }
+    }
+
+    fn put(&mut self, args: std::fmt::Arguments<'_>) {
+        if self.quiet {
+            return;
+        }
+        let _ = self.out.write_fmt(args);
+    }
+
+    fn put_str(&mut self, text: &str) {
+        if self.quiet {
+            return;
+        }
+        self.out.push_str(text);
+    }
+
+    /// Header, paths, then flush. The flush used to run at the next layer's
+    /// header, before that layer's Z time, which is the same moment.
+    fn write_layer(&mut self, layer: &LayerPaths) {
+        self.layer_header(layer);
+        for path in &layer.paths {
+            self.set_advance(path.kind.as_str());
+            if layer.index >= 2 {
+                self.set_fan(path.fan);
+            } else if layer.index == 1 {
+                self.set_fan(128);
+            } else {
+                self.set_fan(0);
+            }
+            let speed = if layer.index == 0 {
+                path.speed.min(30.0)
+            } else {
+                path.speed
+            };
+            let flow = if layer.index == 0 { 1.06 } else { 1.0 };
+            if !self.quiet {
+                self.comment(&format!("TYPE:{}", path.kind.as_str().to_ascii_uppercase()));
+            }
+            if path.points.is_empty() {
+                continue;
+            }
+            let bead_h = if path.bead_height > 1e-6 {
+                path.bead_height
+            } else {
+                layer.height
+            };
+            self.kind = "travel".into();
+            let travel_accel = cap_accel(path.travel_accel, self.max_accel);
+            let print_accel = cap_accel(path.accel, self.max_accel);
+            self.set_accel(travel_accel);
+            let mut hop = path.lead_in.clone();
+            hop.push(path.points[0]);
+            let (retract_mm, min_travel) = path.travel_retract();
+            self.travel_chain(
+                &hop,
+                path.travel_speed,
+                retract_mm,
+                min_travel,
+                travel_accel,
+                path.z_hop,
+                layer.z,
+            );
+            self.kind = path.kind.as_str().into();
+            self.set_accel(print_accel);
+            let limited = limit_speed(
+                speed,
+                path.width,
+                bead_h,
+                flow * path.flow,
+                self.max_volumetric_mm3_s,
+            );
+            let (fit, loose) = chain_fit(self.arc_fit, path);
+            self.emit_chain(
+                &path.points,
+                limited,
+                path.width,
+                bead_h,
+                flow * path.flow,
+                self.filament_diameter,
+                print_accel,
+                fit,
+                loose,
+                &path.z_frac,
+                &path.flow_frac,
+                layer.z,
+                layer.height,
+            );
+        }
+        self.close_layer();
     }
 
     fn flush_motion(&mut self) {
@@ -323,7 +590,7 @@ impl Writer {
         entry_dir: [f64; 2],
         exit_dir: [f64; 2],
     ) {
-        if dist < 1e-6 {
+        if self.strings_only || dist < 1e-6 {
             return;
         }
         self.pending.push(KinMove {
@@ -337,7 +604,7 @@ impl Writer {
     }
 
     fn add_time(&mut self, dt: f64) {
-        if dt <= 0.0 {
+        if self.strings_only || dt <= 0.0 {
             return;
         }
         self.time_s += dt;
@@ -345,7 +612,7 @@ impl Writer {
     }
 
     fn add_filament(&mut self, mm: f64) {
-        if mm <= 0.0 {
+        if self.strings_only || mm <= 0.0 {
             return;
         }
         *self.feature_mm.entry(self.kind.clone()).or_insert(0.0) += mm;
@@ -368,30 +635,30 @@ impl Writer {
         let pa = self.pa_base * scale;
         let la = self.la_base * scale;
         if self.pa_base > 0.0 && (pa - self.pa_cur).abs() > 1e-4 {
-            self.out
-                .push_str(&format!("SET_PRESSURE_ADVANCE ADVANCE={pa:.4}\n"));
+            self.put(format_args!("SET_PRESSURE_ADVANCE ADVANCE={pa:.4}\n"));
             self.pa_cur = pa;
         }
         if self.la_base > 0.0 && (la - self.la_cur).abs() > 1e-4 {
-            self.out.push_str(&format!("M900 K{la:.3}\n"));
+            self.put(format_args!("M900 K{la:.3}\n"));
             self.la_cur = la;
         }
     }
 
     fn comment(&mut self, text: &str) {
-        self.out.push_str("; ");
-        self.out.push_str(text);
-        self.out.push('\n');
+        self.put_str("; ");
+        self.put_str(text);
+        self.put_str("\n");
     }
 
     fn layer_header(&mut self, layer: &LayerPaths) {
-        self.out.push_str(&format!(
+        self.put(format_args!(
             ";LAYER:{} Z:{:.3} H:{:.3} {}\n",
             layer.index, layer.z, layer.height, layer.note
         ));
         let dz = (layer.z - self.z).abs();
         let f = (120.0_f64 * 60.0) as i32;
-        self.out.push_str(&format!("G1 Z{:.3} F{f}\n", layer.z));
+        let z = layer.z;
+        self.put(format_args!("G1 Z{z:.3} F{f}\n"));
         self.close_layer();
         self.kind = "travel".into();
         if dz > 1e-6 {
@@ -409,7 +676,7 @@ impl Writer {
             return;
         }
         self.accel = accel;
-        self.out.push_str(&format!("M204 S{accel:.0}\n"));
+        self.put(format_args!("M204 S{accel:.0}\n"));
     }
 
     fn set_fan(&mut self, pwm: u8) {
@@ -418,7 +685,7 @@ impl Writer {
             return;
         }
         self.fan = pwm;
-        self.out.push_str(&format!("M106 S{pwm}\n"));
+        self.put(format_args!("M106 S{pwm}\n"));
     }
 
     fn unretract(&mut self) {
@@ -427,7 +694,8 @@ impl Writer {
             self.e += self.retracted;
             let feed = self.retracted;
             self.retracted = 0.0;
-            self.out.push_str(&format!("G1 E{:.5} F1800\n", self.e));
+            let e_now = self.e;
+            self.put(format_args!("G1 E{e_now:.5} F1800\n"));
             let prev = self.kind.clone();
             self.kind = "travel".into();
             self.add_time(feed / 30.0);
@@ -483,7 +751,8 @@ impl Writer {
             self.e -= retract_mm;
             self.retracted = retract_mm;
             self.retracts += 1;
-            self.out.push_str(&format!("G1 E{:.5} F1800\n", self.e));
+            let e_now = self.e;
+            self.put(format_args!("G1 E{e_now:.5} F1800\n"));
             self.add_time(retract_mm / 30.0);
         }
         self.z_hops += 1;
@@ -582,11 +851,10 @@ impl Writer {
         }
         let f = (speed.max(10.0) * 60.0).round() as i32;
         if dz > 5e-4 {
-            self.out
-                .push_str(&format!("G1 X{x:.3} Y{y:.3} Z{z:.3} F{f}\n"));
+            self.put(format_args!("G1 X{x:.3} Y{y:.3} Z{z:.3} F{f}\n"));
             self.z = z;
         } else {
-            self.out.push_str(&format!("G1 X{x:.3} Y{y:.3} F{f}\n"));
+            self.put(format_args!("G1 X{x:.3} Y{y:.3} F{f}\n"));
         }
         self.x = x;
         self.y = y;
@@ -613,7 +881,8 @@ impl Writer {
                 self.e -= retract_mm;
                 self.retracted = retract_mm;
                 self.retracts += 1;
-                self.out.push_str(&format!("G1 E{:.5} F1800\n", self.e));
+                let e_now = self.e;
+                self.put(format_args!("G1 E{e_now:.5} F1800\n"));
                 self.add_time(retract_mm / 30.0);
             }
             self.travel_length_mm += d;
@@ -627,7 +896,7 @@ impl Writer {
             }
         }
         let f = (speed.max(10.0) * 60.0).round() as i32;
-        self.out.push_str(&format!("G1 X{x:.3} Y{y:.3} F{f}\n"));
+        self.put(format_args!("G1 X{x:.3} Y{y:.3} F{f}\n"));
         self.x = x;
         self.y = y;
         self.has_pos = true;
@@ -658,6 +927,19 @@ impl Writer {
         if scarfed {
             self.set_z(nozzle_z(layer_z, nominal_h, z_frac[0]));
         }
+        if self.replay.is_some() {
+            let replay = self.replay.clone().expect("replay");
+            let i = self.replay_i;
+            self.replay_i += 1;
+            self.play_spans(
+                points, &replay[i], speed, width, layer_h, flow, filament_d, accel, z_frac,
+                flow_frac, layer_z, nominal_h,
+            );
+            if scarfed {
+                self.set_z(layer_z);
+            }
+            return;
+        }
         let arc_tol = if loose_arcs { 0.16 } else { 0.07 };
         let min_r = if loose_arcs { 0.35 } else { 0.8 };
         let max_span = if loose_arcs { 64 } else { 32 };
@@ -685,7 +967,7 @@ impl Writer {
                     } else {
                         layer_h
                     };
-                    self.arc(arc, speed, width, h, flow, filament_d, accel);
+                    self.arc(&arc, speed, width, h, flow, filament_d, accel);
                     i = end;
                     continue;
                 }
@@ -712,13 +994,64 @@ impl Writer {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn play_spans(
+        &mut self,
+        points: &[[f64; 2]],
+        spans: &[Span],
+        speed: f64,
+        width: f64,
+        layer_h: f64,
+        flow: f64,
+        filament_d: f64,
+        accel: f64,
+        z_frac: &[f64],
+        flow_frac: &[f64],
+        layer_z: f64,
+        nominal_h: f64,
+    ) {
+        let scarfed = z_frac.len() == points.len() && flow_frac.len() == points.len();
+        let mut i = 0usize;
+        for span in spans {
+            match span {
+                Span::Line => {
+                    let p = points[i + 1];
+                    let (h, seg_flow, z) = if scarfed {
+                        let z0 = z_frac[i].clamp(0.0, 1.0);
+                        let z1 = z_frac[i + 1].clamp(0.0, 1.0);
+                        let f0 = flow_frac[i].clamp(0.0, 2.0);
+                        let f1 = flow_frac[i + 1].clamp(0.0, 2.0);
+                        (
+                            nominal_h * 0.5 * (z0 + z1),
+                            flow * 0.5 * (f0 + f1),
+                            Some(nozzle_z(layer_z, nominal_h, z1)),
+                        )
+                    } else {
+                        (layer_h, flow, None)
+                    };
+                    self.extrude(p[0], p[1], speed, width, h, seg_flow, filament_d, accel, z);
+                    i += 1;
+                }
+                Span::Arc { end_i, arc } => {
+                    let h = if scarfed {
+                        layer_h * z_frac[i].clamp(0.0, 1.0)
+                    } else {
+                        layer_h
+                    };
+                    self.arc(arc, speed, width, h, flow, filament_d, accel);
+                    i = *end_i as usize;
+                }
+            }
+        }
+    }
+
     fn set_z(&mut self, z: f64) {
         if (z - self.z).abs() < 5e-4 {
             return;
         }
         let dz = (z - self.z).abs();
         let f = (120.0_f64 * 60.0) as i32;
-        self.out.push_str(&format!("G1 Z{z:.3} F{f}\n"));
+        self.put(format_args!("G1 Z{z:.3} F{f}\n"));
         self.flush_motion();
         self.add_time(dz / 120.0);
         self.z = z;
@@ -727,7 +1060,7 @@ impl Writer {
     #[allow(clippy::too_many_arguments)]
     fn arc(
         &mut self,
-        arc: ArcFit,
+        arc: &ArcFit,
         speed: f64,
         width: f64,
         layer_h: f64,
@@ -743,9 +1076,13 @@ impl Writer {
         self.add_filament(de);
         let f = (speed.max(5.0) * 60.0).round() as i32;
         let cmd = if arc.cw { "G2" } else { "G3" };
-        self.out.push_str(&format!(
-            "{cmd} X{:.3} Y{:.3} I{:.4} J{:.4} E{:.5} F{f}\n",
-            arc.end[0], arc.end[1], arc.ij[0], arc.ij[1], self.e
+        let e_now = self.e;
+        let x = arc.end[0];
+        let y = arc.end[1];
+        let i = arc.ij[0];
+        let j = arc.ij[1];
+        self.put(format_args!(
+            "{cmd} X{x:.3} Y{y:.3} I{i:.4} J{j:.4} E{e_now:.5} F{f}\n"
         ));
         self.note_motion(arc.end, arc.dir, arc.exit_dir, speed, accel, arc.length);
         self.arc_moves += 1;
@@ -780,20 +1117,18 @@ impl Writer {
         self.e += de;
         self.add_filament(de);
         let f = (speed.max(5.0) * 60.0).round() as i32;
+        let e_now = self.e;
         if let Some(z) = z {
             if (z - self.z).abs() > 5e-4 {
-                self.out.push_str(&format!(
-                    "G1 X{:.3} Y{:.3} Z{:.3} E{:.5} F{f}\n",
-                    x, y, z, self.e
+                self.put(format_args!(
+                    "G1 X{x:.3} Y{y:.3} Z{z:.3} E{e_now:.5} F{f}\n"
                 ));
                 self.z = z;
             } else {
-                self.out
-                    .push_str(&format!("G1 X{:.3} Y{:.3} E{:.5} F{f}\n", x, y, self.e));
+                self.put(format_args!("G1 X{x:.3} Y{y:.3} E{e_now:.5} F{f}\n"));
             }
         } else {
-            self.out
-                .push_str(&format!("G1 X{:.3} Y{:.3} E{:.5} F{f}\n", x, y, self.e));
+            self.put(format_args!("G1 X{x:.3} Y{y:.3} E{e_now:.5} F{f}\n"));
         }
         let dir = [x - self.x, y - self.y];
         self.note_motion([x, y], dir, dir, speed, accel, d);
@@ -833,6 +1168,9 @@ impl Writer {
     }
 
     fn note_bounds(&mut self, x: f64, y: f64) {
+        if self.strings_only {
+            return;
+        }
         if !self.bounds_init {
             self.min_x = x;
             self.max_x = x;
@@ -852,24 +1190,28 @@ impl Writer {
         if self.has_pos && self.retracted == 0.0 {
             self.e -= 1.0;
             self.retracted = 1.0;
-            self.out.push_str(&format!("G1 E{:.5} F1800\n", self.e));
+            let e_now = self.e;
+            self.put(format_args!("G1 E{e_now:.5} F1800\n"));
         }
         let z = self.z + 10.0;
-        self.out.push_str(&format!("G1 Z{z:.3} F600\n"));
-        self.out.push_str("M106 S0\n");
-        self.out.push_str("M104 S0\nM140 S0\n");
-        self.out.push_str(&format!(
-            "; bed {}x{} mm nozzle {:.2} mm\n",
-            profile.bed_x, profile.bed_y, profile.nozzle_diameter
+        self.put(format_args!("G1 Z{z:.3} F600\n"));
+        self.put_str("M106 S0\n");
+        self.put_str("M104 S0\nM140 S0\n");
+        let bed_x = profile.bed_x;
+        let bed_y = profile.bed_y;
+        let nozzle = profile.nozzle_diameter;
+        self.put(format_args!(
+            "; bed {bed_x}x{bed_y} mm nozzle {nozzle:.2} mm\n"
         ));
         let filament_mm = self.e + self.retracted;
         let area = std::f64::consts::PI * (profile.filament_diameter * 0.5).powi(2);
         let filament_g = filament_mm * area * profile.filament_density_g_cm3 / 1000.0;
-        self.out.push_str(&format!(
-            "; TIME:{:.1}s FILAMENT_MM:{:.2} FILAMENT_G:{:.3} ARCS:{}\n",
-            self.time_s, filament_mm, filament_g, self.arc_moves
+        let time_s = self.time_s;
+        let arc_moves = self.arc_moves;
+        self.put(format_args!(
+            "; TIME:{time_s:.1}s FILAMENT_MM:{filament_mm:.2} FILAMENT_G:{filament_g:.3} ARCS:{arc_moves}\n"
         ));
-        self.out.push_str("M84\n");
+        self.put_str("M84\n");
     }
 
     fn stats(self, layer_count: usize, profile: &PrinterProfile) -> GcodeStats {
@@ -1062,6 +1404,7 @@ fn plan_lookahead(moves: &[KinMove], junction_deviation: f64) -> Vec<f64> {
     times
 }
 
+#[derive(Clone)]
 struct ArcFit {
     end: [f64; 2],
     ij: [f64; 2],
@@ -1071,6 +1414,84 @@ struct ArcFit {
     dir: [f64; 2],
     /// Tangent at the arc end. Lookahead uses it for the next junction.
     exit_dir: [f64; 2],
+}
+
+fn chain_fit(arc_fit: bool, path: &Extrusion) -> (bool, bool) {
+    let wall = matches!(
+        path.kind,
+        crate::toolpath::PathKind::Wall
+            | crate::toolpath::PathKind::Outer
+            | crate::toolpath::PathKind::Inner
+            | crate::toolpath::PathKind::ThinWall
+            | crate::toolpath::PathKind::Skirt
+    );
+    (arc_fit && (path.fit_arcs || wall), path.fit_arcs)
+}
+
+fn chain_scripts(layer: &LayerPaths, arc_fit: bool) -> Vec<Vec<Span>> {
+    let mut scripts = Vec::new();
+    for path in &layer.paths {
+        if path.points.len() < 2 {
+            continue;
+        }
+        let (fit, loose) = chain_fit(arc_fit, path);
+        scripts.push(plan_spans(
+            &path.points,
+            &path.z_frac,
+            &path.flow_frac,
+            fit,
+            loose,
+        ));
+    }
+    scripts
+}
+
+fn plan_spans(
+    points: &[[f64; 2]],
+    z_frac: &[f64],
+    flow_frac: &[f64],
+    arc_fit: bool,
+    loose_arcs: bool,
+) -> Vec<Span> {
+    let arc_tol = if loose_arcs { 0.16 } else { 0.07 };
+    let min_r = if loose_arcs { 0.35 } else { 0.8 };
+    let max_span = if loose_arcs { 64 } else { 32 };
+    let mut spans = Vec::new();
+    let mut i = 0usize;
+    while i + 1 < points.len() {
+        let mut end = i + 1;
+        if arc_fit && i + 3 < points.len() && span_planar(z_frac, flow_frac, i, i + 4) {
+            let mut j = i + 3;
+            while j < points.len() && j - i <= max_span && span_planar(z_frac, flow_frac, i, j + 1)
+            {
+                if fit_arc(&points[i..=j], arc_tol, min_r).is_some() {
+                    end = j;
+                    j += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+        if end >= i + 3 && span_planar(z_frac, flow_frac, i, end + 1) {
+            if let Some(arc) = fit_arc(&points[i..=end], arc_tol, min_r) {
+                spans.push(Span::Arc {
+                    end_i: end as u32,
+                    arc,
+                });
+                i = end;
+                continue;
+            }
+        }
+        spans.push(Span::Line);
+        i += 1;
+    }
+    spans
+}
+
+#[derive(Clone)]
+enum Span {
+    Line,
+    Arc { end_i: u32, arc: ArcFit },
 }
 
 fn fit_arc(pts: &[[f64; 2]], tol: f64, min_r: f64) -> Option<ArcFit> {
