@@ -15,8 +15,8 @@ use crate::poly::{
     simplify_loops, Loop,
 };
 use crate::strategy::{
-    classicize, layer_weight, mix, pure, support_density, support_interface_density, Axis,
-    BlendMode, Gyroid3d, PrinterProfile, ResolvedStrategy, ScarfSeam, StrategyId, ZHopMode,
+    classicize, layer_weight, mix, pure, support_density, support_interface_density, support_speed,
+    Axis, BlendMode, Gyroid3d, PrinterProfile, ResolvedStrategy, ScarfSeam, StrategyId, ZHopMode,
 };
 use crate::support::{build_supports, SupportLayer, SupportOpts, SupportStyle};
 use crate::toolpath::{
@@ -2099,44 +2099,272 @@ fn emit_supports(
         ));
     };
     if let Some((low_rect, high_rect)) = split {
-        let (low_c, low_r) = disks_in(branches, radii, low_rect.0, low_rect.1);
-        let (high_c, high_r) = disks_in(branches, radii, high_rect.0, high_rect.1);
-        paint(
-            paths,
-            &clip_to_rect(support, low_rect.0, low_rect.1),
-            &clip_to_rect(interface, low_rect.0, low_rect.1),
-            &low_c,
-            &low_r,
-            low,
-        );
-        paint(
-            paths,
-            &clip_to_rect(support, high_rect.0, high_rect.1),
-            &clip_to_rect(interface, high_rect.0, high_rect.1),
-            &high_c,
-            &high_r,
-            high,
-        );
+        // Part rects stop 2 mm outside this layer's outline. Trunks stand in
+        // the air beside that outline. Plan every branch once, then cut the
+        // beads on the plane, so a trunk that leans across the cut is not
+        // drawn twice and a trunk outside the outline is not dropped.
+        if !branches.is_empty() && shaft_scale > 0.0 {
+            let mut trunks = plan_tree_support(branches, radii, low, line_width);
+            if shaft_scale > 1.01 {
+                for path in &mut trunks {
+                    path.bead_height = layer_height * shaft_scale;
+                }
+            }
+            if let Some((axis, at)) = split_edge(low_rect, high_rect) {
+                let (low_paths, high_paths) = split_extrusions(trunks, axis, at);
+                retarget_supports(paths, low_paths, low);
+                retarget_supports(paths, high_paths, high);
+            } else {
+                paths.extend(trunks);
+            }
+        }
+        let (low_cover, high_cover) =
+            support_half_rects(support, interface, branches, radii, low_rect, high_rect);
+        for (rect, strategy) in [(low_cover, low), (high_cover, high)] {
+            let Some(rect) = rect else {
+                continue;
+            };
+            if branches.is_empty() {
+                paint(
+                    paths,
+                    &clip_to_rect(support, rect.0, rect.1),
+                    &clip_to_rect(interface, rect.0, rect.1),
+                    &[],
+                    &[],
+                    strategy,
+                );
+            } else {
+                paths.extend(plan_support(
+                    &clip_to_rect(interface, rect.0, rect.1),
+                    strategy,
+                    line_width,
+                    support_interface_density(strategy),
+                    true,
+                ));
+            }
+        }
     } else {
         paint(paths, support, interface, branches, radii, low);
     }
 }
 
-fn disks_in(
-    centers: &[[f64; 2]],
-    radii: &[f64],
-    min: [f64; 2],
-    max: [f64; 2],
-) -> (Vec<[f64; 2]>, Vec<f64>) {
-    let mut pts = Vec::new();
-    let mut rs = Vec::new();
-    for (i, p) in centers.iter().copied().enumerate() {
-        if p[0] >= min[0] && p[0] < max[0] && p[1] >= min[1] && p[1] < max[1] {
-            pts.push(p);
-            rs.push(radii.get(i).copied().unwrap_or(0.6));
+fn retarget_supports(
+    paths: &mut Vec<Extrusion>,
+    side: Vec<Extrusion>,
+    strategy: &ResolvedStrategy,
+) {
+    for mut path in side {
+        path.strategy = strategy.id;
+        path.speed = support_speed(strategy, false);
+        path.travel_speed = strategy.travel_speed;
+        path.accel = strategy.accel;
+        path.retract_mm = strategy.retract_mm;
+        path.retract_min_travel = strategy.retract_min_travel;
+        path.fan = strategy.fan;
+        path.travel_accel = if strategy.feature_speeds {
+            strategy.travel_accel
+        } else {
+            strategy.accel
+        };
+        paths.push(path);
+    }
+}
+
+/// Cut support beads on the region plane. A bead that stays on one side keeps
+/// its loop. A bead that crosses becomes the two pieces that meet on the plane.
+fn split_extrusions(
+    paths: Vec<Extrusion>,
+    axis: Axis,
+    at: f64,
+) -> (Vec<Extrusion>, Vec<Extrusion>) {
+    let mut low = Vec::new();
+    let mut high = Vec::new();
+    for path in paths {
+        let (low_pts, high_pts) = split_polyline(&path.points, axis, at);
+        for pts in low_pts {
+            if pts.len() >= 2 && poly_len(&pts) > 0.4 {
+                low.push(support_piece(&path, pts));
+            }
+        }
+        for pts in high_pts {
+            if pts.len() >= 2 && poly_len(&pts) > 0.4 {
+                high.push(support_piece(&path, pts));
+            }
         }
     }
-    (pts, rs)
+    (low, high)
+}
+
+fn support_piece(src: &Extrusion, pts: Vec<[f64; 2]>) -> Extrusion {
+    let mut path = src.clone();
+    path.points = pts;
+    path.z_frac.clear();
+    path.flow_frac.clear();
+    path.lead_in.clear();
+    path
+}
+
+fn poly_len(pts: &[[f64; 2]]) -> f64 {
+    pts.windows(2)
+        .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+        .sum()
+}
+
+type PointChains = Vec<Vec<[f64; 2]>>;
+
+fn split_polyline(pts: &[[f64; 2]], axis: Axis, at: f64) -> (PointChains, PointChains) {
+    let mut low_out = Vec::new();
+    let mut high_out = Vec::new();
+    if pts.len() < 2 {
+        return (low_out, high_out);
+    }
+    let mut low: Vec<[f64; 2]> = Vec::new();
+    let mut high: Vec<[f64; 2]> = Vec::new();
+    for w in pts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let a_low = axis_of(a, axis) < at;
+        let b_low = axis_of(b, axis) < at;
+        if a_low == b_low {
+            if a_low {
+                push_pt(&mut low, a, b);
+            } else {
+                push_pt(&mut high, a, b);
+            }
+            continue;
+        }
+        let hit = plane_hit(a, b, axis, at);
+        if a_low {
+            push_pt(&mut low, a, hit);
+            take_chain(&mut low, &mut low_out);
+            push_pt(&mut high, hit, b);
+        } else {
+            push_pt(&mut high, a, hit);
+            take_chain(&mut high, &mut high_out);
+            push_pt(&mut low, hit, b);
+        }
+    }
+    take_chain(&mut low, &mut low_out);
+    take_chain(&mut high, &mut high_out);
+    (low_out, high_out)
+}
+
+fn axis_of(p: [f64; 2], axis: Axis) -> f64 {
+    match axis {
+        Axis::X => p[0],
+        Axis::Y => p[1],
+    }
+}
+
+fn plane_hit(a: [f64; 2], b: [f64; 2], axis: Axis, at: f64) -> [f64; 2] {
+    let ca = axis_of(a, axis);
+    let cb = axis_of(b, axis);
+    let t = if (cb - ca).abs() < 1e-12 {
+        0.0
+    } else {
+        ((at - ca) / (cb - ca)).clamp(0.0, 1.0)
+    };
+    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+}
+
+fn push_pt(chain: &mut Vec<[f64; 2]>, a: [f64; 2], b: [f64; 2]) {
+    if chain.is_empty() {
+        chain.push(a);
+    }
+    let last = *chain.last().unwrap();
+    if (last[0] - b[0]).abs() > 1e-9 || (last[1] - b[1]).abs() > 1e-9 {
+        chain.push(b);
+    }
+}
+
+fn take_chain(chain: &mut Vec<[f64; 2]>, out: &mut PointChains) {
+    if chain.len() >= 2 {
+        out.push(std::mem::take(chain));
+    } else {
+        chain.clear();
+    }
+}
+
+/// Half-planes of the region cut, expanded to every support loop and branch.
+/// A side with no support returns `None` so an inverted outline rect cannot
+/// swallow the other side's trunks.
+fn support_half_rects(
+    support: &[Loop],
+    interface: &[Loop],
+    branches: &[[f64; 2]],
+    radii: &[f64],
+    low: XyRect,
+    high: XyRect,
+) -> (Option<XyRect>, Option<XyRect>) {
+    let Some((axis, at)) = split_edge(low, high) else {
+        return (Some(low), Some(high));
+    };
+    let mut min = [f64::INFINITY; 2];
+    let mut max = [f64::NEG_INFINITY; 2];
+    let mut touch = |p: [f64; 2]| {
+        min[0] = min[0].min(p[0]);
+        min[1] = min[1].min(p[1]);
+        max[0] = max[0].max(p[0]);
+        max[1] = max[1].max(p[1]);
+    };
+    for loops in [support, interface] {
+        for lp in loops {
+            for p in lp {
+                touch(*p);
+            }
+        }
+    }
+    for (i, p) in branches.iter().copied().enumerate() {
+        let r = radii.get(i).copied().unwrap_or(0.0).max(0.0);
+        touch([p[0] - r, p[1] - r]);
+        touch([p[0] + r, p[1] + r]);
+    }
+    if !min[0].is_finite() {
+        return (None, None);
+    }
+    // Stay past the last vertex so the clip rect includes it.
+    const PAD: f64 = 0.5;
+    min[0] -= PAD;
+    min[1] -= PAD;
+    max[0] += PAD;
+    max[1] += PAD;
+    let side = |low_side: bool| -> Option<XyRect> {
+        let mut a = min;
+        let mut b = max;
+        let axis_i = match axis {
+            Axis::X => 0,
+            Axis::Y => 1,
+        };
+        if low_side {
+            b[axis_i] = at;
+        } else {
+            a[axis_i] = at;
+        }
+        if b[axis_i] - a[axis_i] <= 1e-6 {
+            None
+        } else {
+            Some((a, b))
+        }
+    };
+    (side(true), side(false))
+}
+
+fn split_edge(low: XyRect, high: XyRect) -> Option<(Axis, f64)> {
+    let x = (low.1[0] - high.0[0]).abs() <= 1e-4;
+    let y = (low.1[1] - high.0[1]).abs() <= 1e-4;
+    match (x, y) {
+        (true, false) => Some((Axis::X, low.1[0])),
+        (false, true) => Some((Axis::Y, low.1[1])),
+        (true, true) => {
+            let x_span = (high.1[0] - low.0[0]).abs();
+            let y_span = (high.1[1] - low.0[1]).abs();
+            if y_span > x_span {
+                Some((Axis::Y, low.1[1]))
+            } else {
+                Some((Axis::X, low.1[0]))
+            }
+        }
+        (false, false) => None,
+    }
 }
 
 fn split_rects(
