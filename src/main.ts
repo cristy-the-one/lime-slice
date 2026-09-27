@@ -236,10 +236,10 @@ app.innerHTML = `
             Bed
             <input id="bedOpacity" type="range" min="0" max="100" value="40" aria-label="Bed opacity" />
           </label>
-          <label class="check" id="sectionField" title="Clip the preview on the arrow side of a free plane. The layer range still applies. Does not change the slice.">
+          <label class="check" id="sectionField" title="Clip the preview on the arrow side of a free plane. Cut slides the plane. Rings aim it. Does not change the slice.">
             <input id="sectionOn" type="checkbox" /> Section
           </label>
-          <label class="view-inline" id="sectionOffsetField" hidden title="Distance from the part center along the section normal. Shift snaps the sheet drag to 1 mm.">
+          <label class="view-inline" id="sectionOffsetField" hidden title="Distance from the part center along the section normal.">
             Cut
             <input id="sectionOffset" type="range" min="-100" max="100" step="0.1" value="0" aria-label="Section offset" />
           </label>
@@ -298,7 +298,7 @@ app.innerHTML = `
         <li>Drag an arrow to move the mesh. <kbd>Shift</kbd> snaps 1 mm</li>
         <li>Drag the split plane when By region is on</li>
         <li>Bed fades the build plate. 0 hides it</li>
-        <li>Section clips the preview. Rings aim the plane, the sheet or Cut slider moves it. Layers still apply. Neither changes the slice</li>
+        <li>Section clips the preview. Cut moves the plane. Rings, parked at the left, aim it. The sheet is only a guide. Layers still apply. Neither changes the slice</li>
         <li><kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> Layer</li>
         <li><kbd>?</kbd> This sheet</li>
       </ul>

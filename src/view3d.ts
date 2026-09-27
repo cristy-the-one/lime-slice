@@ -143,6 +143,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   const sectionPlane = { value: new THREE.Vector4(0, 1, 0, 1e6) };
   const sectionRig = buildSectionRig();
   scene.add(sectionRig.root);
+  scene.add(sectionRig.gizmo);
 
   let ribbon: THREE.Mesh | null = null;
   let ghost: THREE.Mesh | null = null;
@@ -293,19 +294,31 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     writeClip(placed.normal[0], placed.normal[1], placed.normal[2], placed.constant);
   }
 
+  const park = new THREE.Vector3();
+
   function fitSection() {
-    if (!sectionRig.root.visible) return;
+    if (!sectionRig.gizmo.visible) return;
     const rect = canvas.getBoundingClientRect();
-    const dist = camera.position.distanceTo(sectionRig.root.position);
-    const radius = gizmoRadiusForPixels(dist, camera.fov, rect.height, GIZMO_SCREEN_PX, camera.zoom);
+    camera.updateMatrixWorld();
+    const distance = Math.max(8, camera.position.distanceTo(controls.target));
+    const radius = gizmoRadiusForPixels(distance, camera.fov, rect.height, GIZMO_SCREEN_PX, camera.zoom);
     sectionRig.rings.scale.setScalar(radius);
     sectionRig.arrow.scale.setScalar(radius * 0.72);
+    const margin = GIZMO_SCREEN_PX + 18;
+    const ndcX = Math.max(-0.92, Math.min(-0.42, (margin / Math.max(rect.width, 1)) * 2 - 1));
+    const halfH = Math.tan((camera.fov * Math.PI) / 360) * distance / Math.max(camera.zoom, 1e-4);
+    const halfW = halfH * Math.max(camera.aspect, 1e-4);
+    park.set(ndcX * halfW, 0, -distance);
+    park.applyMatrix4(camera.matrixWorld);
+    sectionRig.gizmo.position.copy(park);
+    sectionRig.gizmo.updateMatrixWorld(true);
   }
 
   function placeSection() {
     const center = partCenter();
     const show = !!section && !!center;
     sectionRig.root.visible = show;
+    sectionRig.gizmo.visible = show;
     if (section && center) {
       const foot = anchor(center, section);
       sectionRig.root.position.set(foot[0] - origin.cx, foot[2], -(foot[1] - origin.cy));
@@ -313,11 +326,9 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       if (dir.lengthSq() < 1e-8) dir.set(0, 1, 0);
       dir.normalize();
       sectionRig.sheet.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
-      sectionRig.sheetPick.quaternion.copy(sectionRig.sheet.quaternion);
       sectionRig.arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
       const span = Math.max(24, reach() * 2);
       sectionRig.sheet.scale.set(span, span, 1);
-      sectionRig.sheetPick.scale.set(span, span, Math.max(6, span * 0.04));
       fitSection();
     }
     syncClip();
@@ -333,11 +344,10 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   }
 
   function sectionPick(): SectionHit | null {
-    if (!sectionRig.root.visible) return null;
+    if (!sectionRig.gizmo.visible) return null;
     const hits = raycaster.intersectObjects(sectionRig.picks, false);
     let ring: Axis | null = null;
     let ringDist = Infinity;
-    let sheetDist = Infinity;
     for (const hit of hits) {
       const kind = hit.object.userData.section as string | undefined;
       if (kind === "ring" && hit.distance < ringDist) {
@@ -346,36 +356,14 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
           ring = axis;
           ringDist = hit.distance;
         }
-      } else if (kind === "sheet" && hit.distance < sheetDist) {
-        sheetDist = hit.distance;
       }
     }
-    if (ring) return { kind: "ring", axis: ring, distance: ringDist };
-    if (sheetDist < Infinity) return { kind: "sheet", distance: sheetDist };
-    return null;
-  }
-
-  function scalarAlong(dir: THREE.Vector3, originV: THREE.Vector3): number | null {
-    const camDir = camera.position.clone().sub(originV);
-    if (camDir.lengthSq() < 1e-8) return null;
-    camDir.normalize();
-    const side = new THREE.Vector3().crossVectors(dir, camDir);
-    if (side.lengthSq() < 1e-6) {
-      side.crossVectors(dir, Math.abs(dir.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0));
-    }
-    side.normalize();
-    const planeN = new THREE.Vector3().crossVectors(side, dir).normalize();
-    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(planeN, originV);
-    const hit = new THREE.Vector3();
-    if (!raycaster.ray.intersectPlane(plane, hit)) return null;
-    return hit.sub(originV).dot(dir);
+    return ring ? { axis: ring, distance: ringDist } : null;
   }
 
   function angleOn(axis: Axis): number | null {
-    const center = partCenter();
-    if (!center || !section) return null;
-    const pivot = anchor(center, section);
-    const originV = new THREE.Vector3(pivot[0] - origin.cx, pivot[2], -(pivot[1] - origin.cy));
+    if (!sectionRig.gizmo.visible) return null;
+    const originV = sectionRig.gizmo.getWorldPosition(new THREE.Vector3());
     const dir = sceneAxis(axis);
     const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(dir, originV);
     const hit = new THREE.Vector3();
@@ -408,28 +396,16 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     pointerNdc(ev);
     const sectionHit = sectionPick();
     const regionHit = planeSpec ? raycaster.intersectObjects(cutPicks, false)[0] : undefined;
-    const takeSection = !!sectionHit && (!regionHit || sectionHit.kind === "ring" || sectionHit.distance <= regionHit.distance);
+    const takeSection = !!sectionHit && (!regionHit || sectionHit.distance <= regionHit.distance);
     if (takeSection && section && sectionHit) {
-      if (sectionHit.kind === "ring") {
-        sectionDrag = {
-          kind: "ring",
-          axis: sectionHit.axis,
-          last: angleOn(sectionHit.axis) ?? 0,
-          total: 0,
-          applied: 0,
-          base: { normal: [...section.normal], offset: section.offset },
-        };
-        paintRings(sectionHit.axis);
-      } else {
-        const dir = new THREE.Vector3(section.normal[0], section.normal[2], -section.normal[1]).normalize();
-        sectionDrag = {
-          kind: "sheet",
-          start: scalarAlong(dir, sectionRig.root.position.clone()) ?? 0,
-          base: section.offset,
-          dir,
-          origin: sectionRig.root.position.clone(),
-        };
-      }
+      sectionDrag = {
+        axis: sectionHit.axis,
+        last: angleOn(sectionHit.axis) ?? 0,
+        total: 0,
+        applied: 0,
+        base: { normal: [...section.normal], offset: section.offset },
+      };
+      paintRings(sectionHit.axis);
       controls.enabled = false;
       canvas.setPointerCapture(ev.pointerId);
       canvas.style.cursor = "grabbing";
@@ -452,23 +428,12 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       const sectionHit = sectionPick();
       const regionHot = !!planeSpec && raycaster.intersectObjects(cutPicks, false).length > 0;
       canvas.style.cursor = sectionHit || regionHot ? "grab" : "";
-      paintRings(sectionHit?.kind === "ring" ? sectionHit.axis : null);
+      paintRings(sectionHit ? sectionHit.axis : null);
       return;
     }
     canvas.style.cursor = "grabbing";
     pointerNdc(ev);
     if (sectionDrag && section) {
-      if (sectionDrag.kind === "sheet") {
-        const along = scalarAlong(sectionDrag.dir, sectionDrag.origin);
-        if (along == null) return;
-        const target = snapStep(sectionDrag.base + (along - sectionDrag.start), ev.shiftKey, 1);
-        const offset = clampOffset(target, reach());
-        if (Math.abs(offset - section.offset) < 0.01) return;
-        section = { normal: section.normal, offset };
-        placeSection();
-        emitSection("");
-        return;
-      }
       const angle = angleOn(sectionDrag.axis);
       if (angle == null) return;
       let step = angle - sectionDrag.last;
@@ -805,11 +770,8 @@ function pathMaterial(
 }
 
 type Axis = "x" | "y" | "z";
-type SectionHit = { kind: "sheet"; distance: number } | { kind: "ring"; axis: Axis; distance: number };
-type SectionDrag =
-  | { kind: "sheet"; start: number; base: number; dir: THREE.Vector3; origin: THREE.Vector3 }
-  | { kind: "ring"; axis: Axis; last: number; total: number; applied: number; base: SectionSpec }
-  | null;
+type SectionHit = { axis: Axis; distance: number };
+type SectionDrag = { axis: Axis; last: number; total: number; applied: number; base: SectionSpec } | null;
 
 const RING: Record<Axis, number> = { x: 0xe85d4c, y: 0x8fce6a, z: 0x6aa7ff };
 
@@ -869,11 +831,6 @@ function buildSectionRig() {
   border.renderOrder = 4;
   border.raycast = () => undefined;
   sheet.add(border);
-  const sheetPick = new THREE.Mesh(
-    new THREE.BoxGeometry(1, 1, 1),
-    new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }),
-  );
-  sheetPick.userData.section = "sheet";
   const arrowMat = new THREE.MeshBasicMaterial({ color: 0xf0a202, depthTest: false, toneMapped: false });
   const arrow = new THREE.Group();
   const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.55, 10), arrowMat);
@@ -887,9 +844,11 @@ function buildSectionRig() {
     arrow.add(part);
   }
   arrow.renderOrder = 6;
+  const gizmo = new THREE.Group();
+  gizmo.visible = false;
   const rings = new THREE.Group();
   const ringMats = new Map<Axis, THREE.MeshBasicMaterial>();
-  const picks: THREE.Object3D[] = [sheetPick];
+  const picks: THREE.Object3D[] = [];
   const ringGeo = new THREE.TorusGeometry(1, 0.046, 10, 64);
   const pickGeo = new THREE.TorusGeometry(1, 0.11, 8, 24);
   for (const axis of ["x", "y", "z"] as const) {
@@ -908,8 +867,9 @@ function buildSectionRig() {
     picks.push(pick);
     ringMats.set(axis, mat);
   }
-  root.add(sheet, sheetPick, arrow, rings);
-  return { root, sheet, sheetPick, arrow, arrowMat, rings, ringMats, picks };
+  root.add(sheet);
+  gizmo.add(arrow, rings);
+  return { root, gizmo, sheet, arrow, arrowMat, rings, ringMats, picks };
 }
 
 function applyPixelRatio(renderer: THREE.WebGLRenderer) {
