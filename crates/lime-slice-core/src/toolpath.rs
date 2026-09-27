@@ -3853,12 +3853,13 @@ fn scarf_path(path: &mut Extrusion, length: f64, steps: u32, h0: f64, f0: f64) {
         return;
     }
     let steps = (steps as usize).clamp(2, 64);
+    let ramp = ramp_points(pts, scarf, steps);
     let mut out = Vec::new();
     let mut z = Vec::new();
     let mut flow = Vec::new();
-    for i in 0..=steps {
-        let t = i as f64 / steps as f64;
-        out.push(point_along(pts, scarf * t));
+    for &(p, along) in &ramp {
+        let t = along / scarf;
+        out.push(p);
         z.push(h0 + (1.0 - h0) * t);
         flow.push(f0 + (1.0 - f0) * t);
     }
@@ -3875,16 +3876,56 @@ fn scarf_path(path: &mut Extrusion, length: f64, steps: u32, h0: f64, f0: f64) {
         acc = next;
     }
     push_unique(&mut out, &mut z, &mut flow, pts[0], 1.0, 1.0);
-    for i in 1..=steps {
-        let t = i as f64 / steps as f64;
-        out.push(point_along(pts, scarf * t));
+    for &(p, along) in &ramp[1..] {
+        out.push(p);
         z.push(1.0);
-        flow.push((1.0 - (1.0 - f0) * t).clamp(0.05, 1.0));
+        flow.push((1.0 - (1.0 - f0) * along / scarf).clamp(0.05, 1.0));
     }
     path.points = out;
     path.z_frac = z;
     path.flow_frac = flow;
     path.scarf_mm = scarf;
+}
+
+/// The loop from its start to `scarf` along it, with each point's distance
+/// from the start: every vertex in that stretch, plus `steps` evenly spaced
+/// marks so no Z step is larger than a mark apart. Keeping the vertices is
+/// what keeps the ramp on a curved wall; the marks alone are chords that cut
+/// inside it.
+fn ramp_points(pts: &[[f64; 2]], scarf: f64, steps: usize) -> Vec<([f64; 2], f64)> {
+    let mut out = vec![(pts[0], 0.0)];
+    let mut mark = 1;
+    let mut acc = 0.0;
+    for w in pts.windows(2) {
+        let seg = dist2(w[0], w[1]).sqrt();
+        if seg < 1e-12 {
+            continue;
+        }
+        let next = acc + seg;
+        while mark <= steps {
+            let at = scarf * mark as f64 / steps as f64;
+            if at > next + 1e-9 {
+                break;
+            }
+            let t = ((at - acc) / seg).clamp(0.0, 1.0);
+            out.push((
+                [
+                    w[0][0] + (w[1][0] - w[0][0]) * t,
+                    w[0][1] + (w[1][1] - w[0][1]) * t,
+                ],
+                at,
+            ));
+            mark += 1;
+        }
+        if mark > steps {
+            break;
+        }
+        if out.last().is_none_or(|(_, along)| next - along > 1e-9) {
+            out.push((w[1], next));
+        }
+        acc = next;
+    }
+    out
 }
 
 fn seam_is_sharp(ring: &[[f64; 2]]) -> bool {
@@ -4010,6 +4051,35 @@ mod travel_tests {
         let mut pts = square_at(x, y, size);
         pts.push(pts[0]);
         pts
+    }
+
+    #[test]
+    fn a_scarf_ramp_keeps_every_vertex_of_a_curved_wall() {
+        let ring: Vec<[f64; 2]> = (0..=64)
+            .map(|i| {
+                let a = std::f64::consts::TAU * (i % 64) as f64 / 64.0;
+                [10.0 * a.cos(), 10.0 * a.sin()]
+            })
+            .collect();
+        let mut wall = extrusion(
+            PathKind::Outer,
+            &pure(StrategyId::Toughness),
+            ring.clone(),
+            0.45,
+        );
+        scarf_path(&mut wall, 10.0, 8, 0.15, 0.55);
+        assert!(wall.scarf_mm > 9.9, "scarf {}", wall.scarf_mm);
+        let step = dist_mm(ring[0], ring[1]);
+        let on_ramp = ring
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i as f64 * step <= 10.0);
+        for (i, v) in on_ramp {
+            assert!(
+                wall.points.iter().any(|p| dist2(*p, *v) < 1e-12),
+                "ramp skipped vertex {i} at {v:?}"
+            );
+        }
     }
 
     #[test]
