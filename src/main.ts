@@ -41,9 +41,8 @@ interface SliceResponse {
   mesh: {
     triangles: number;
     sourceTriangles?: number;
-    simplifyMs?: number;
-    simplifyErrorMm?: number;
-    simplifyCached?: boolean;
+    /** Each layer's outline stays within this of the true cut. `0` when off. */
+    outlineToleranceMm?: number;
     min: number[];
     max: number[];
   };
@@ -341,8 +340,8 @@ function renderChrome() {
       ${num("lh", "Layer height mm", state.layerHeight, 0.08, 0.4, 0.02)}
       ${check("adaptive", "Adaptive layers", state.adaptive)}
       ${state.adaptive ? `${num("amin", "Min mm", state.adaptiveMin, 0.04, 0.28, 0.02)}${num("amax", "Max mm", state.adaptiveMax, 0.08, 0.4, 0.02)}` : ""}
-      ${check("simplify", "Simplify to nozzle", state.simplify)}
-      ${state.simplify ? `${num("simperr", "Max error mm, 0 = auto", state.simplifyError, 0, 1, 0.01)}<div class="meta">Slice mesh stays within half the smaller of the nozzle and the layer height, and is reused for rotation and other settings while that bound still fits. The preview keeps every triangle.</div>` : ""}
+      ${check("simplify", "Simplify outlines", state.simplify)}
+      ${state.simplify ? `${num("simperr", "Outline tolerance mm, 0 = auto", state.simplifyError, 0, 0.2, 0.005)}<div class="meta">Every triangle is cut. Each layer's outline then drops vertices closer than this to the line through their neighbors. Auto is a sixteenth of the nozzle, 0.025 mm for 0.4 mm, so a gap the nozzle can print never closes.</div>` : ""}
     `)}
     ${group("Speed and motion", `
       ${check("feeds", "Per-feature speeds", state.featureSpeeds)}
@@ -528,28 +527,13 @@ function layerReadout() {
 }
 
 function triangleLine(src: number) {
-  const used = state.result?.mesh.triangles;
-  const from = state.result?.mesh.sourceTriangles ?? used;
-  if (!stale() && used != null && from != null && used < from) {
-    const err = state.result?.mesh.simplifyErrorMm;
-    const budget = err && err > 0 ? ` · ${err.toFixed(2)} mm` : "";
-    const cached = state.result?.mesh.simplifyCached ? " · cached" : "";
-    return `${from} triangles · ${used} slice${budget}${cached}`;
-  }
   return `${src} triangles`;
 }
 function triangleMeta(result: SliceResponse | null) {
   if (!result) return "Triangles <b>—</b>";
-  const from = result.mesh.sourceTriangles ?? result.mesh.triangles;
-  const used = result.mesh.triangles;
-  if (from > used) {
-    const ms = result.mesh.simplifyMs ?? 0;
-    const err = result.mesh.simplifyErrorMm ?? 0;
-    const budget = err > 0 ? ` · ${err.toFixed(2)} mm` : "";
-    const how = result.mesh.simplifyCached ? `cached · ${ms.toFixed(0)} ms` : `${ms.toFixed(0)} ms`;
-    return `Triangles <b>${from}</b> → <b>${used}</b> · ${how}${budget}`;
-  }
-  return `Triangles <b>${used}</b>`;
+  const tol = result.mesh.outlineToleranceMm ?? 0;
+  const outline = tol > 0 ? ` · outline ${tol.toFixed(3)} mm` : "";
+  return `Triangles <b>${result.mesh.triangles}</b>${outline}`;
 }
 function formatMs(ms: number) {
   if (!Number.isFinite(ms)) return "—";
@@ -563,10 +547,7 @@ function stageHtml(result: SliceResponse | null) {
   if (!result || !stages) return "";
   const named = stages.contourMs + stages.supportMs + stages.toolpathMs + stages.orderMs + stages.combMs + stages.emitMs;
   const other = Math.max(0, result.coreMs - named);
-  const simplify = result.mesh.simplifyMs ?? 0;
-  const cached = result.mesh.simplifyCached ? " · cached" : "";
   const rows: [string, string, boolean][] = [
-    ["simplify", `${formatMs(simplify)}${cached}`, false],
     ["contours", formatMs(stages.contourMs), false],
     ["supports", formatMs(stages.supportMs), false],
     ["toolpaths", formatMs(stages.toolpathMs), false],
@@ -577,11 +558,11 @@ function stageHtml(result: SliceResponse | null) {
   if (other >= 1) rows.push(["other", formatMs(other), false]);
   rows.push(["core", formatMs(result.coreMs), true]);
   const title: Record<string, string> = {
-    simplify: "Before core. Cached is a lookup, not a rebuild",
+    contours: "Cut every layer and simplify its outline",
     order: "Serial travel order: island tour, seams, and scarf",
     combing: "Travel routing inside each island and z-hop, in parallel",
     other: "Untimed remainder of core: layer bands and roofs",
-    core: "Plan and G-code emit. Simplify runs before this",
+    core: "Plan and G-code emit"
   };
   const body = rows
     .map(([name, value, total]) => {

@@ -166,7 +166,7 @@ export interface MeshShift {
   z: number;
 }
 
-/** Rigid move applied after nozzle simplification. Scale is already in the vertices. */
+/** Rigid move the slicer applies after load. Scale is already in the vertices. */
 export interface RigidPose {
   rotation: Mat3;
   pivot: [number, number, number];

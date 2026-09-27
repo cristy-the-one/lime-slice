@@ -310,6 +310,17 @@ pub(crate) fn offset_paths(paths: &Paths<Milli>, delta: f64) -> Paths<Milli> {
         .simplify(0.02, false)
 }
 
+/// Drop outline vertices closer than `tolerance` to the line through their
+/// neighbors, then re-resolve so a removal cannot leave a crossing.
+pub fn simplify_loops(loops: Vec<Loop>, tolerance: f64) -> Vec<Loop> {
+    if loops.is_empty() || tolerance <= 0.0 {
+        return loops;
+    }
+    resolve_nonzero(loops_from_paths(
+        paths_from_loops(&loops).simplify(tolerance, false),
+    ))
+}
+
 pub fn clip_to_rect(loops: &[Loop], min: [f64; 2], max: [f64; 2]) -> Vec<Loop> {
     if loops.is_empty() {
         return Vec::new();

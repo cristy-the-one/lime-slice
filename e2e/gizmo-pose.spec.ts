@@ -136,7 +136,7 @@ test("zoom keeps the gizmo the same size and an arrow move is what gets sliced",
   await page.locator("#slice").click();
   await expect.poll(() => captured !== null).toBe(true);
   const sliced = captured!.pose ? posedBounds(captured!.buf, captured!.pose) : stlBounds(captured!.buf);
-  await expect(page.locator("#left")).toContainText("cached");
+  await expect(page.locator("#left")).toContainText("outline 0.025 mm");
   const midX = (sliced.min[0] + sliced.max[0]) / 2;
   const midY = (sliced.min[1] + sliced.max[1]) / 2;
   expect(Math.abs(midX - after.x)).toBeLessThan(0.15);
@@ -352,9 +352,7 @@ function fakeSlice(min: number[], max: number[]) {
     mesh: {
       triangles: 12,
       sourceTriangles: 12000,
-      simplifyMs: 0,
-      simplifyErrorMm: 0.1,
-      simplifyCached: true,
+      outlineToleranceMm: 0.025,
       min,
       max,
     },
