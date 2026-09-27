@@ -3,7 +3,8 @@ use rayon::prelude::*;
 use crate::adaptive::LayerBand;
 use crate::poly::{
     boolean_diff, boolean_union, distance_to_outline, drop_slivers, in_solid, local_diff,
-    local_union, loop_bounds, offset_loops, point_in_loop, signed_area, Loop,
+    local_union, loop_bounds, offset_loops, point_in_loop, resolve_nonzero, signed_area, Loop,
+    LoopIndex,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -499,6 +500,7 @@ fn branch_radius(load: f64, dist: f64, tip_r: f64, trunk_r: f64, load_factor: f6
 /// stop on a supported mesh face. Frozen nodes are the interface tips and do not move.
 fn propagate_nodes(nodes: Vec<Node>, below: &[Loop], below2: &[Loop], grow: &Grow) -> Vec<Node> {
     let max_step = (grow.height * grow.lean).clamp(0.05, 4.0);
+    let (below, below2) = (LoopIndex::new(below), LoopIndex::new(below2));
     let mut next = Vec::with_capacity(nodes.len());
     for mut n in nodes {
         if n.freeze > 0 {
@@ -506,8 +508,8 @@ fn propagate_nodes(nodes: Vec<Node>, below: &[Loop], below2: &[Loop], grow: &Gro
             next.push(n);
             continue;
         }
-        if !below.is_empty() && in_solid(below, n.xy[0], n.xy[1]) {
-            let supported = below2.is_empty() || in_solid(below2, n.xy[0], n.xy[1]);
+        if !below.is_empty() && below.contains(n.xy) {
+            let supported = below2.is_empty() || below2.contains(n.xy);
             if supported {
                 continue;
             }
@@ -533,8 +535,8 @@ fn propagate_nodes(nodes: Vec<Node>, below: &[Loop], below2: &[Loop], grow: &Gro
         n.dist += grow.height;
         let grown = branch_radius(n.load, n.dist, grow.tip_r, grow.trunk_r, grow.load_factor);
         n.radius = grown.max(n.radius).min(grow.trunk_r);
-        n.xy = push_out(n.xy, below, grow.xy_gap + n.radius, max_step);
-        if in_solid(below, n.xy[0], n.xy[1]) {
+        n.xy = push_out(n.xy, &below, grow.xy_gap + n.radius, max_step);
+        if below.contains(n.xy) {
             continue;
         }
         kept.push(n);
@@ -588,9 +590,8 @@ fn step_toward(xy: [f64; 2], target: [f64; 2], max_step: f64) -> [f64; 2] {
 /// Step toward the nearest point at least `clearance` from `part`, at most
 /// `max_step`. A node that needs a longer move takes it over several layers,
 /// so every disk still sits on the one under it.
-fn push_out(xy: [f64; 2], part: &[Loop], clearance: f64, max_step: f64) -> [f64; 2] {
-    let blocked =
-        |p: [f64; 2]| in_solid(part, p[0], p[1]) || distance_to_outline(part, p) < clearance;
+fn push_out(xy: [f64; 2], part: &LoopIndex, clearance: f64, max_step: f64) -> [f64; 2] {
+    let blocked = |p: [f64; 2]| part.contains(p) || part.distance(p) < clearance;
     if part.is_empty() || !blocked(xy) {
         return xy;
     }
@@ -991,11 +992,6 @@ fn branch_foots(comp: &[Loop], branches: &[[f64; 2]], radii: &[f64]) -> bool {
     })
 }
 
-fn component_is_footed(comp: &[Loop], below: &SupportLayer, foot: &[Loop]) -> bool {
-    branch_foots(comp, &below.branches, &below.radii)
-        || (!foot.is_empty() && overlaps(comp, foot, 0.02))
-}
-
 fn interface_pieces(interface: &[Loop]) -> Vec<Vec<Loop>> {
     components(interface)
         .into_iter()
@@ -1044,10 +1040,27 @@ fn drop_unfooted_interface(layers: &mut [SupportLayer], contours: &[Vec<Loop>]) 
             continue;
         }
         let part = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
-        let foot = area_footing(below, part);
+        let mut ground = below.interface.clone();
+        ground.extend(below.sparse.iter().cloned());
+        ground.extend(part.iter().cloned());
+        let ground = Nearby::new(ground);
         let mut gone: Vec<Loop> = Vec::new();
         for comp in pieces {
-            if !component_is_footed(&comp, below, &foot) {
+            if branch_foots(&comp, &below.branches, &below.radii) {
+                continue;
+            }
+            let Some(bounds) = loop_bounds(&comp) else {
+                continue;
+            };
+            // The footing is an offset of a union, so only loops within the
+            // offset of this piece's box can reach it.
+            let near = ground.near(bounds, INTERFACE_FOOT_MM + 0.05);
+            let foot = if near.is_empty() {
+                Vec::new()
+            } else {
+                offset_loops(&resolve_nonzero(near), INTERFACE_FOOT_MM)
+            };
+            if foot.is_empty() || !overlaps(&comp, &foot, 0.02) {
                 gone = boolean_union(&gone, &comp);
             }
         }
@@ -1135,10 +1148,21 @@ fn unsupported_islands(upper: &[Loop], lower: &[Loop], margin: f64) -> Vec<Loop>
     if comps.is_empty() {
         return Vec::new();
     }
-    let mut grounded = vec![false; comps.len()];
-    for (i, comp) in comps.iter().enumerate() {
-        grounded[i] = rests_on(comp, lower, margin);
-    }
+    let bed = Nearby::new(if lower.is_empty() {
+        Vec::new()
+    } else {
+        offset_loops(lower, margin.max(0.0))
+    });
+    let boxes: Vec<Option<Bounds>> = comps.iter().map(|c| loop_bounds(c)).collect();
+    let mut grounded: Vec<bool> = comps
+        .iter()
+        .zip(&boxes)
+        .map(|(comp, bounds)| {
+            solid_area(comp) >= 0.05
+                && bounds.is_some_and(|b| overlaps(comp, &bed.near(b, 0.0), 0.05))
+        })
+        .collect();
+    let mut grown: Vec<Option<Vec<Loop>>> = vec![None; comps.len()];
     let mut changed = true;
     while changed {
         changed = false;
@@ -1147,10 +1171,11 @@ fn unsupported_islands(upper: &[Loop], lower: &[Loop], margin: f64) -> Vec<Loop>
                 continue;
             }
             for j in 0..comps.len() {
-                if i == j || !grounded[j] {
+                if i == j || !grounded[j] || !boxes_within(boxes[i], boxes[j], 0.8) {
                     continue;
                 }
-                if components_touch(&comps[i], &comps[j], 0.8) {
+                let reach = grown[i].get_or_insert_with(|| offset_loops(&comps[i], 0.8));
+                if overlaps(reach, &comps[j], 0.02) {
                     grounded[i] = true;
                     changed = true;
                     break;
@@ -1224,17 +1249,45 @@ fn solid_area(loops: &[Loop]) -> f64 {
     area.max(0.0)
 }
 
-fn rests_on(comp: &[Loop], lower: &[Loop], margin: f64) -> bool {
-    if lower.is_empty() || solid_area(comp) < 0.05 {
-        return false;
+type Bounds = ([f64; 2], [f64; 2]);
+
+fn boxes_within(a: Option<Bounds>, b: Option<Bounds>, pad: f64) -> bool {
+    match (a, b) {
+        (Some((amn, amx)), Some((bmn, bmx))) => {
+            amn[0] - pad <= bmx[0]
+                && bmn[0] <= amx[0] + pad
+                && amn[1] - pad <= bmx[1]
+                && bmn[1] <= amx[1] + pad
+        }
+        _ => false,
     }
-    let bed = offset_loops(lower, margin.max(0.0));
-    overlaps(comp, &bed, 0.05)
 }
 
-fn components_touch(a: &[Loop], b: &[Loop], gap: f64) -> bool {
-    let grown = offset_loops(a, gap);
-    overlaps(&grown, b, 0.02)
+/// A layer-wide loop set that hands out only the loops near a box. Offsets
+/// and overlaps are local, so a test against one component gives the same
+/// answer on its neighbors as on the whole layer, at the cost of the neighbors.
+struct Nearby {
+    loops: Vec<Loop>,
+    boxes: Vec<Option<Bounds>>,
+}
+
+impl Nearby {
+    fn new(loops: Vec<Loop>) -> Self {
+        let boxes = loops
+            .iter()
+            .map(|l| loop_bounds(std::slice::from_ref(l)))
+            .collect();
+        Self { loops, boxes }
+    }
+
+    fn near(&self, bounds: Bounds, pad: f64) -> Vec<Loop> {
+        self.loops
+            .iter()
+            .zip(&self.boxes)
+            .filter(|(_, b)| boxes_within(Some(bounds), **b, pad))
+            .map(|(l, _)| l.clone())
+            .collect()
+    }
 }
 
 fn overlaps(a: &[Loop], b: &[Loop], min_area: f64) -> bool {
