@@ -51,11 +51,12 @@ interface SliceResponse {
   stages?: {
     contourMs: number;
     supportMs: number;
-    seatMs: number;
     toolpathMs: number;
+    /** Serial travel order: island tour, seams, and scarf. */
+    orderMs: number;
+    /** Parallel combing and z-hop after the order is set. */
+    combMs: number;
     emitMs: number;
-    /** CPU time inside toolpaths, summed across cores. Not wall clock. */
-    travelMs: number;
   };
   estimate?: {
     seconds: number;
@@ -560,7 +561,7 @@ function formatMs(ms: number) {
 function stageHtml(result: SliceResponse | null) {
   const stages = result?.stages;
   if (!result || !stages) return "";
-  const named = stages.contourMs + stages.supportMs + stages.toolpathMs + stages.seatMs + stages.emitMs;
+  const named = stages.contourMs + stages.supportMs + stages.toolpathMs + stages.orderMs + stages.combMs + stages.emitMs;
   const other = Math.max(0, result.coreMs - named);
   const simplify = result.mesh.simplifyMs ?? 0;
   const cached = result.mesh.simplifyCached ? " · cached" : "";
@@ -569,16 +570,17 @@ function stageHtml(result: SliceResponse | null) {
     ["contours", formatMs(stages.contourMs), false],
     ["supports", formatMs(stages.supportMs), false],
     ["toolpaths", formatMs(stages.toolpathMs), false],
-    ["travel", `${formatMs(stages.travelMs ?? 0)} · cpu`, false],
-    ["seat", formatMs(stages.seatMs), false],
+    ["order", formatMs(stages.orderMs), false],
+    ["combing", formatMs(stages.combMs), false],
     ["emit", formatMs(stages.emitMs), false],
   ];
   if (other >= 1) rows.push(["other", formatMs(other), false]);
   rows.push(["core", formatMs(result.coreMs), true]);
   const title: Record<string, string> = {
     simplify: "Before core. Cached is a lookup, not a rebuild",
-    travel: "CPU time inside toolpaths, summed across cores. Not wall clock, so it is not part of core",
-    other: "Untimed remainder of core: layer bands, roofs, z-hop",
+    order: "Serial travel order: island tour, seams, and scarf",
+    combing: "Travel routing inside each island and z-hop, in parallel",
+    other: "Untimed remainder of core: layer bands and roofs",
     core: "Plan and G-code emit. Simplify runs before this",
   };
   const body = rows

@@ -1,4 +1,3 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use base64::Engine;
@@ -21,9 +20,8 @@ use crate::strategy::{
 };
 use crate::support::{build_supports, SupportLayer, SupportOpts, SupportStyle};
 use crate::toolpath::{
-    apply_overhang, apply_scarf, apply_z_hop, optimize_travel, plan_region, plan_skirt,
-    plan_support, plan_tree_support, seat_layer_start, Extrusion, PathFeatures, PathKind,
-    ScarfParams, ShellBand,
+    apply_overhang, apply_scarf, apply_z_hop, comb_layer, order_layer, plan_region, plan_skirt,
+    plan_support, plan_tree_support, Extrusion, PathFeatures, PathKind, ScarfParams, ShellBand,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -478,8 +476,7 @@ pub struct SliceResponse {
     pub baseline_ms: f64,
     pub baseline_label: String,
     pub mesh: MeshInfo,
-    /// Named slices of `core_ms`: contours, supports, toolpaths, seat, and G-code emit.
-    /// `travel_ms` is CPU time inside toolpaths, not an extra slice of `core_ms`.
+    /// Named slices of `core_ms`: contours, supports, toolpaths, order, combing, and G-code emit.
     /// Simplify time stays on `mesh` because it runs before the core timer.
     pub stages: StageTimes,
     pub sanity: Sanity,
@@ -568,14 +565,14 @@ pub struct MeshInfo {
 pub struct StageTimes {
     pub contour_ms: f64,
     pub support_ms: f64,
-    pub seat_ms: f64,
-    /// Parallel per-layer walls, infill, travel, and scarf. Inside `core_ms`.
+    /// Parallel per-layer walls, infill, and overhang split. Inside `core_ms`.
     pub toolpath_ms: f64,
+    /// Serial travel order: island tour, seams, and scarf. Inside `core_ms`.
+    pub order_ms: f64,
+    /// Parallel combing and z-hop after the order is set. Inside `core_ms`.
+    pub comb_ms: f64,
     /// G-code writer. Inside `core_ms`.
     pub emit_ms: f64,
-    /// Sum of per-layer `optimize_travel` time, across cores. Not wall-clock,
-    /// and already inside `toolpath_ms`.
-    pub travel_ms: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -761,10 +758,10 @@ pub fn slice_configured(
     let stages = StageTimes {
         contour_ms: planned_full.contour_ms,
         support_ms: planned_full.support_ms,
-        seat_ms: planned_full.seat_ms,
+        order_ms: planned_full.order_ms,
         toolpath_ms: planned_full.toolpath_ms,
         emit_ms,
-        travel_ms: planned_full.travel_ms,
+        comb_ms: planned_full.comb_ms,
     };
 
     let (baseline_ms, baseline_label) = if settings.baseline {
@@ -1366,9 +1363,9 @@ pub(crate) struct Plan {
     pub supports: Vec<SupportLayer>,
     pub contour_ms: f64,
     pub support_ms: f64,
-    pub seat_ms: f64,
     pub toolpath_ms: f64,
-    pub travel_ms: f64,
+    pub order_ms: f64,
+    pub comb_ms: f64,
 }
 
 pub(crate) fn plan(
@@ -1455,7 +1452,6 @@ fn plan_contours(
     let shaft = shaft_scales(&supports, settings.support_height_mult);
     let (remain_low, remain_high) = interior_remainings(blend, settings, &bands, &roofs);
     let toolpath_started = Instant::now();
-    let travel_us = AtomicU64::new(0);
     let jobs: Vec<LayerJob> = bands
         .par_iter()
         .enumerate()
@@ -1497,32 +1493,6 @@ fn plan_contours(
                     settings.line_width,
                 );
             }
-            if settings.travel_opt {
-                let travel_started = Instant::now();
-                optimize_travel(
-                    &mut job.paths,
-                    &contours[i],
-                    settings.combing,
-                    settings.line_width * 0.8,
-                );
-                travel_us.fetch_add(
-                    travel_started.elapsed().as_micros() as u64,
-                    Ordering::Relaxed,
-                );
-            }
-            if settings.scarf_seam != ScarfSeam::Off {
-                apply_scarf(
-                    &mut job.paths,
-                    &ScarfParams {
-                        mode: settings.scarf_seam,
-                        length: settings.scarf_length,
-                        steps: settings.scarf_steps,
-                        start_height: settings.scarf_start_height,
-                        start_flow: settings.scarf_start_flow,
-                        layer_index: band.index,
-                    },
-                );
-            }
             job
         })
         .collect();
@@ -1530,21 +1500,60 @@ fn plan_contours(
     if settings.job.cancelled() {
         return Err("cancelled".into());
     }
-    let mut prev_top = false;
     let mut jobs = jobs;
-    let mut layer_end: Option<[f64; 2]> = None;
-    let mut seat_ms = 0.0;
-    for (i, job) in jobs.iter_mut().enumerate() {
+    // Ordering is serial: each layer starts where the one below ended. It does
+    // no combing, so it stays cheap; scarf, combing, and z-hop run after it.
+    let scarf = |layer_index: usize| {
+        (settings.scarf_seam != ScarfSeam::Off).then_some(ScarfParams {
+            mode: settings.scarf_seam,
+            length: settings.scarf_length,
+            steps: settings.scarf_steps,
+            start_height: settings.scarf_start_height,
+            start_flow: settings.scarf_start_flow,
+            layer_index,
+        })
+    };
+    let order_started = Instant::now();
+    if settings.travel_opt {
+        let mut layer_end: Option<[f64; 2]> = None;
+        for (i, job) in jobs.iter_mut().enumerate() {
+            let params = scarf(job.index);
+            layer_end = order_layer(&mut job.paths, &contours[i], layer_end, params.as_ref());
+        }
+    } else {
+        jobs.par_iter_mut().for_each(|job| {
+            if let Some(params) = scarf(job.index) {
+                apply_scarf(&mut job.paths, &params);
+            }
+        });
+    }
+    let order_ms = elapsed_ms(order_started);
+    let comb_started = Instant::now();
+    let entries: Vec<Option<[f64; 2]>> = {
+        let mut last = None;
+        jobs.iter()
+            .map(|job| {
+                let from = last;
+                if let Some(end) = job.paths.iter().rev().find_map(|p| p.points.last()) {
+                    last = Some(*end);
+                }
+                from
+            })
+            .collect()
+    };
+    let tops: Vec<bool> = jobs
+        .iter()
+        .map(|job| job.paths.iter().any(|p| p.kind == PathKind::Top))
+        .collect();
+    jobs.par_iter_mut().enumerate().for_each(|(i, job)| {
         if settings.travel_opt {
-            let seat_started = Instant::now();
-            layer_end = seat_layer_start(
+            comb_layer(
                 &mut job.paths,
                 &contours[i],
                 settings.combing,
                 settings.line_width * 0.8,
-                layer_end,
+                entries[i],
             );
-            seat_ms += elapsed_ms(seat_started);
         }
         let infill = offset_loops(&contours[i], -settings.line_width * 2.2);
         apply_z_hop(
@@ -1554,10 +1563,10 @@ fn plan_contours(
             settings.z_hop,
             settings.z_hop_height,
             settings.z_hop_min_travel,
-            prev_top,
+            i > 0 && tops[i - 1],
         );
-        prev_top = job.paths.iter().any(|p| p.kind == PathKind::Top);
-    }
+    });
+    let comb_ms = elapsed_ms(comb_started);
     let layers = jobs
         .into_iter()
         .map(|job| LayerPaths {
@@ -1575,9 +1584,9 @@ fn plan_contours(
         supports,
         contour_ms: 0.0,
         support_ms,
-        seat_ms,
         toolpath_ms,
-        travel_ms: travel_us.load(Ordering::Relaxed) as f64 / 1000.0,
+        order_ms,
+        comb_ms,
     })
 }
 
@@ -2649,7 +2658,7 @@ mod tests {
                 let dt = before.sanity.travel_length_mm - after.sanity.travel_length_mm;
                 let ds = before.estimate.seconds - after.estimate.seconds;
                 println!(
-                    "{:<16} {:<8} {:>10.1} {:>10.1} {:>8} {:>8} {:>10.1} {:>10.1} {:>8.1} {:>8.1}  dTravel {:+.1} mm  dTime {:+.1} s  filament {:.2}->{:.2} g  retract {}->{}  travel_opt {:.1}->{:.1} ms",
+                    "{:<16} {:<8} {:>10.1} {:>10.1} {:>8} {:>8} {:>10.1} {:>10.1} {:>8.1} {:>8.1}  dTravel {:+.1} mm  dTime {:+.1} s  filament {:.2}->{:.2} g  retract {}->{}  order {:.1}->{:.1} ms",
                     name,
                     label,
                     before.sanity.travel_length_mm,
@@ -2666,8 +2675,8 @@ mod tests {
                     after.estimate.filament_g,
                     before.sanity.retracts,
                     after.sanity.retracts,
-                    before.stages.travel_ms,
-                    after.stages.travel_ms
+                    before.stages.order_ms,
+                    after.stages.order_ms
                 );
             }
         }

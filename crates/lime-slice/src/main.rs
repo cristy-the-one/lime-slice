@@ -135,6 +135,9 @@ enum Cmd {
         /// Also check contour coverage and support placement, and print the report.
         #[arg(long, default_value_t = false)]
         audit: bool,
+        /// Also plan a single-strategy speed slice and report its time.
+        #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+        baseline: bool,
         #[arg(short, long)]
         output: PathBuf,
     },
@@ -233,6 +236,7 @@ fn run() -> Result<(), String> {
             simplify,
             simplify_error,
             audit,
+            baseline,
             output,
         } => {
             let scarf_seam = ScarfSeam::parse(&scarf_seam)?;
@@ -289,6 +293,7 @@ fn run() -> Result<(), String> {
                 junction_deviation_mm: junction_deviation,
                 simplify,
                 simplify_error_mm: simplify_error,
+                baseline,
                 ..SliceSettings::default()
             };
             let request = request_for(&input, &blend, &settings)?;
@@ -477,7 +482,7 @@ fn bench(input: &Path) -> Result<(), String> {
             response.estimate.max_seam_z_step_mm
         );
         println!(
-            "  simplify {} → {} tris in {:.1} ms{} (error {:.3} mm)  contours {:.1} ms  supports {:.1} ms  toolpaths {:.1} ms  seat {:.1} ms  emit {:.1} ms  travel {:.1} ms",
+            "  simplify {} → {} tris in {:.1} ms{} (error {:.3} mm)  contours {:.1} ms  supports {:.1} ms  toolpaths {:.1} ms  order {:.1} ms  combing {:.1} ms  emit {:.1} ms",
             response.mesh.source_triangles,
             response.mesh.triangles,
             response.mesh.simplify_ms,
@@ -490,9 +495,9 @@ fn bench(input: &Path) -> Result<(), String> {
             response.stages.contour_ms,
             response.stages.support_ms,
             response.stages.toolpath_ms,
-            response.stages.seat_ms,
-            response.stages.emit_ms,
-            response.stages.travel_ms
+            response.stages.order_ms,
+            response.stages.comb_ms,
+            response.stages.emit_ms
         );
         if !response.sanity.ok {
             println!("  {}", response.sanity.notes.join("; "));
@@ -1036,13 +1041,13 @@ fn print_summary(input: &Path, response: &lime_slice_core::SliceResponse) {
         response.baseline_label
     );
     println!(
-        "stages  contours {:.2} ms  supports {:.2} ms  toolpaths {:.2} ms  seat {:.2} ms  emit {:.2} ms  travel {:.2} ms",
+        "stages  contours {:.2} ms  supports {:.2} ms  toolpaths {:.2} ms  order {:.2} ms  combing {:.2} ms  emit {:.2} ms",
         response.stages.contour_ms,
         response.stages.support_ms,
         response.stages.toolpath_ms,
-        response.stages.seat_ms,
-        response.stages.emit_ms,
-        response.stages.travel_ms
+        response.stages.order_ms,
+        response.stages.comb_ms,
+        response.stages.emit_ms
     );
     println!(
         "time {:.1} s  filament {:.2} g ({:.1} mm)  travel {:.1} mm  retracts {}  hops {}  arcs {}  toughness {:.1}  per hour {:.1}",
