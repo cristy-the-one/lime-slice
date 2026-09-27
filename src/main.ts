@@ -294,7 +294,7 @@ app.innerHTML = `
         <li><kbd>Ctrl</kbd>+<kbd>Enter</kbd> Slice</li>
         <li><kbd>Ctrl</kbd>+<kbd>E</kbd> Export G-code</li>
         <li><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> 2D, split, 3D</li>
-        <li>Drag a ring on Prepare to rotate. <kbd>Shift</kbd> snaps 15°</li>
+        <li>Prepare gizmo sits at the left of the view. Drag a ring to rotate. <kbd>Shift</kbd> snaps 15°</li>
         <li>Drag an arrow to move the mesh. <kbd>Shift</kbd> snaps 1 mm</li>
         <li>Drag the split plane when By region is on</li>
         <li>Bed fades the build plate. 0 hides it</li>
@@ -646,7 +646,7 @@ function objectList() {
     <label class="field">Scale %<input id="partScale" type="number" min="10" max="400" step="5" value="${Math.round(state.partScale * 100)}" /></label>
     ${notes.length ? `<div class="meta warn-text">${notes.join("; ")}</div>` : `<div class="meta">On the ${state.profile.bedX}×${state.profile.bedY}×${state.profile.bedZ} mm bed.</div>`}
     <div class="meta" id="placeReadout">X ${cx} · Y ${cy} · bed Z ${z0} mm</div>
-    <div class="meta">Drag a ring to rotate. Drag an arrow to move. Shift snaps 15° or 1 mm.</div>
+    <div class="meta">Gizmo sits at the left. Drag a ring to rotate. Drag an arrow to move. Shift snaps 15° or 1 mm.</div>
   `;
 }
 
@@ -1751,7 +1751,7 @@ function paintGizmoReadout() {
     el.textContent = `Split ${state.axis.toUpperCase()} ${state.atMm.toFixed(1)} mm · low toughness · high speed`;
     return;
   }
-  el.textContent = "Drag a ring to rotate · an arrow to move · Shift snaps";
+  el.textContent = "Parked left · drag a ring to rotate · an arrow to move · Shift snaps";
 }
 
 function syncPlanes() {

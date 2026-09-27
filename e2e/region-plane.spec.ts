@@ -97,13 +97,18 @@ test("bridge By region starts inside the mesh and the plane and gizmo move it", 
   await page.getByRole("button", { name: "Prepare", exact: true }).click();
   await page.waitForTimeout(200);
   const sizeBefore = await page.locator("#objectList .obj span").innerText();
+  const gizmoAt = await prepareGizmoPoint(page);
+  expect(gizmoAt.fx, "prepare gizmo should sit on the left of the view").toBeLessThan(0.34);
+  expect(gizmoAt.fx).toBeGreaterThan(0.02);
   const ring = GIZMO_SCREEN_PX;
+  const gx = gizmoAt.x;
+  const gy = gizmoAt.y;
   const ringDrags: Array<[number, number, number, number]> = [
-    [cx, cy - ring, cx + 78, cy - ring + 16],
-    [cx + ring, cy, cx + ring - 12, cy - 72],
-    [cx - ring, cy, cx - ring + 14, cy + 68],
-    [cx, cy + ring, cx - 64, cy + ring - 18],
-    [cx + ring * 0.7, cy - ring * 0.7, cx + 16, cy - 24],
+    [gx, gy - ring, gx + 78, gy - ring + 16],
+    [gx + ring, gy, gx + ring - 12, gy - 72],
+    [gx - ring, gy, gx - ring + 14, gy + 68],
+    [gx, gy + ring, gx - 64, gy + ring - 18],
+    [gx + ring * 0.7, gy - ring * 0.7, gx + 16, gy - 24],
   ];
   let sizeNow = sizeBefore;
   for (const [x0, y0, x1, y1] of ringDrags) {
@@ -160,6 +165,63 @@ function fakeSlice() {
       paths,
     }],
   };
+}
+
+/** Page point of the prepare rotate gizmo, plus its horizontal fraction of the canvas. */
+async function prepareGizmoPoint(page: Page): Promise<{ x: number; y: number; fx: number }> {
+  const png = await page.locator("#prepare").screenshot();
+  const box = (await page.locator("#prepare").boundingBox())!;
+  const local = await page.evaluate(async ({ data, cssW }) => {
+    const img = new Image();
+    img.src = `data:image/png;base64,${data}`;
+    await img.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = img.width;
+    canvas.height = img.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return { fx: 1, fy: 0.5 };
+    ctx.drawImage(img, 0, 0);
+    const px = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    const pts: { x: number; y: number }[] = [];
+    const ringPixel = (r: number, g: number, b: number) =>
+      (r > 200 && g > 55 && g < 140 && b > 45 && b < 120 && r > g + 70)
+      || (r > 115 && r < 175 && g > 185 && g < 235 && b > 80 && b < 145 && g > r + 30)
+      || (b > 210 && r > 70 && r < 160 && g > 130 && g < 210 && b > g + 30);
+    for (let i = 0; i < px.length; i += 4) {
+      const r = px[i];
+      const g = px[i + 1];
+      const b = px[i + 2];
+      if (!ringPixel(r, g, b)) continue;
+      const p = i / 4;
+      pts.push({ x: p % canvas.width, y: Math.floor(p / canvas.width) });
+    }
+    if (pts.length < 30) return { fx: 1, fy: 0.5 };
+    let cx = 0;
+    let cy = 0;
+    for (const p of pts) {
+      cx += p.x;
+      cy += p.y;
+    }
+    cx /= pts.length;
+    cy /= pts.length;
+    const imageReach = 1.6 * 88 * (canvas.width / Math.max(cssW, 1));
+    let kept = pts;
+    for (let iter = 0; iter < 4; iter++) {
+      const next = kept.filter((p) => Math.hypot(p.x - cx, p.y - cy) <= imageReach);
+      if (next.length < 30) break;
+      let sx = 0;
+      let sy = 0;
+      for (const p of next) {
+        sx += p.x;
+        sy += p.y;
+      }
+      cx = sx / next.length;
+      cy = sy / next.length;
+      kept = next;
+    }
+    return { fx: cx / canvas.width, fy: cy / canvas.height };
+  }, { data: png.toString("base64"), cssW: box.width });
+  return { x: box.x + local.fx * box.width, y: box.y + local.fy * box.height, fx: local.fx };
 }
 
 async function drag(page: Page, x0: number, y0: number, x1: number, y1: number) {
