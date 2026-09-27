@@ -35,6 +35,66 @@ pub fn in_solid(loops: &[Loop], x: f64, y: f64) -> bool {
     loops.iter().filter(|l| point_in_loop(l, x, y)).count() % 2 == 1
 }
 
+/// Loops with their bounding boxes, for many point queries against one set.
+/// Answers match `in_solid` and `distance_to_outline`; loops a box rules out
+/// are skipped.
+pub struct LoopIndex<'a> {
+    loops: &'a [Loop],
+    boxes: Vec<([f64; 2], [f64; 2])>,
+}
+
+impl<'a> LoopIndex<'a> {
+    pub fn new(loops: &'a [Loop]) -> Self {
+        let boxes = loops
+            .iter()
+            .map(|l| loop_bounds(std::slice::from_ref(l)).unwrap_or(([0.0; 2], [0.0; 2])))
+            .collect();
+        Self { loops, boxes }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.loops.is_empty()
+    }
+
+    pub fn contains(&self, p: [f64; 2]) -> bool {
+        self.loops
+            .iter()
+            .zip(&self.boxes)
+            .filter(|(l, (mn, mx))| {
+                p[0] >= mn[0]
+                    && p[0] <= mx[0]
+                    && p[1] >= mn[1]
+                    && p[1] <= mx[1]
+                    && point_in_loop(l, p[0], p[1])
+            })
+            .count()
+            % 2
+            == 1
+    }
+
+    pub fn distance(&self, p: [f64; 2]) -> f64 {
+        let mut order: Vec<(f64, usize)> = self
+            .boxes
+            .iter()
+            .enumerate()
+            .map(|(i, (mn, mx))| {
+                let dx = (mn[0] - p[0]).max(p[0] - mx[0]).max(0.0);
+                let dy = (mn[1] - p[1]).max(p[1] - mx[1]).max(0.0);
+                (dx.hypot(dy), i)
+            })
+            .collect();
+        order.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut best = f64::MAX;
+        for (box_d, i) in order {
+            if box_d >= best {
+                break;
+            }
+            best = best.min(distance_to_outline(std::slice::from_ref(&self.loops[i]), p));
+        }
+        best
+    }
+}
+
 fn interior_point(loop_: &[[f64; 2]]) -> [f64; 2] {
     let c = polygon_centroid(loop_);
     if point_in_loop(loop_, c[0], c[1]) {
