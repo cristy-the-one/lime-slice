@@ -1346,6 +1346,47 @@ mod tests {
         bad
     }
 
+    /// Farthest interface point from what holds it on the layer below: a trunk
+    /// disk, lower interface, or the part. Probes on a 0.25 mm grid.
+    fn worst_interface_reach(layers: &[SupportLayer], contours: &[Vec<Loop>]) -> (f64, usize) {
+        let mut worst = 0.0f64;
+        let mut probes = 0;
+        for i in 1..layers.len() {
+            let Some((min, max)) = loop_bounds(&layers[i].interface) else {
+                continue;
+            };
+            let below = &layers[i - 1];
+            let held: Vec<&[Loop]> = [below.interface.as_slice(), contours[i - 1].as_slice()]
+                .into_iter()
+                .filter(|l| !l.is_empty())
+                .collect();
+            let mut y = min[1];
+            while y <= max[1] {
+                let mut x = min[0];
+                while x <= max[0] {
+                    if in_solid(&layers[i].interface, x, y) {
+                        probes += 1;
+                        let mut d = f64::MAX;
+                        for (c, r) in below.branches.iter().zip(&below.radii) {
+                            d = d.min(((x - c[0]).hypot(y - c[1]) - r).max(0.0));
+                        }
+                        for loops in &held {
+                            d = d.min(if in_solid(loops, x, y) {
+                                0.0
+                            } else {
+                                distance_to_outline(loops, [x, y])
+                            });
+                        }
+                        worst = worst.max(d);
+                    }
+                    x += 0.25;
+                }
+                y += 0.25;
+            }
+        }
+        (worst, probes)
+    }
+
     fn band(index: usize, z: f64) -> LayerBand {
         LayerBand {
             index,
@@ -1525,6 +1566,39 @@ mod tests {
         assert!(
             sparse_load < dense_load * 0.75,
             "sparse disks {sparse_load} should be well under dense {dense_load}"
+        );
+    }
+
+    #[test]
+    fn speed_ledge_interface_stays_within_half_a_pitch_cell_of_a_trunk() {
+        // samples/overhang_ledge.stl: a 24 mm block, and a 24 × 16 mm ledge
+        // off its side from z 12 to 16. Speed packs tips on a 10.8 mm pitch.
+        // Tips on that grid leave no point farther than half a cell diagonal,
+        // 7.6 mm, from one. Tips parked on the patch's low-x edge overhang the
+        // far edge by more than that.
+        let bands = layers(80);
+        let mut contours = vec![vec![rect(0.0, 0.0, 24.0, 24.0)]; 60];
+        contours.extend(vec![vec![rect(24.0, 4.0, 48.0, 20.0)]; 20]);
+        let built = build_supports(
+            &bands,
+            &contours,
+            &SupportOpts {
+                style: SupportStyle::Tree,
+                density: 0.15,
+                load_factor: 5.2,
+                max_tip_spacing: 10.8,
+                ..SupportOpts::default()
+            },
+        );
+        assert!(unfooted_interface(&built, &contours).is_empty());
+        let (worst, probes) = worst_interface_reach(&built, &contours);
+        assert!(
+            probes > 1000,
+            "the ledge printed no interface, {probes} probes"
+        );
+        assert!(
+            worst <= 7.6,
+            "interface overhangs its trunks by {worst:.2} mm"
         );
     }
 
