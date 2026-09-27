@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
-import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, snapStep } from "../src/gizmo-math";
+import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, parkLeftNdcX, snapStep } from "../src/gizmo-math";
 import { applyRigidPose, boundsOf, centeringShift, ID_MATRIX, placementPose, rotX, rotZ, scaledCanonical, transformPositions, type Mat3, type MeshShift, type RigidPose } from "../src/mesh-place";
 import { encodePaths } from "../src/preview-wire";
 
@@ -29,6 +29,21 @@ test("screen radius tracks camera distance and shift snaps the drag", () => {
   expect(snapStep(1.4, true, 1)).toBe(1);
   expect(snapStep(-1.6, true, 1)).toBe(-2);
   expect(snapStep(0.4, true, 1)).toBe(0);
+});
+
+test("left park stays in the left third, on the camera-depth plane", () => {
+  for (const width of [280, 640, 960, 1440, 2400]) {
+    const ndc = parkLeftNdcX(width);
+    expect(ndc).toBeGreaterThanOrEqual(-0.92);
+    expect(ndc).toBeLessThanOrEqual(-0.42);
+    expect((ndc + 1) / 2).toBeLessThan(0.34);
+  }
+  const [x, y, z] = parkLeftCameraSpace(960, 120, 40, 1.5, 1);
+  const halfH = Math.tan((40 * Math.PI) / 360) * 120;
+  expect(y).toBe(0);
+  expect(z).toBeCloseTo(-120, 6);
+  expect(x).toBeCloseTo(parkLeftNdcX(960) * halfH * 1.5, 5);
+  expect(x).toBeLessThan(0);
 });
 
 test("a manual shift matches Center, and an extra Z lift is what gets placed", () => {
@@ -110,19 +125,41 @@ test("zoom keeps the gizmo the same size and an arrow move is what gets sliced",
   const fit = await shotBox(page, "zoom-fit.png");
   expect(fit.gizmo, JSON.stringify(fit)).toBeGreaterThan(80);
   expect(fit.mesh).toBeGreaterThan(fit.gizmo);
+  expect(fit.midX, JSON.stringify(fit)).toBeLessThan(fit.cssW * 0.34);
+  expect(fit.midX).toBeGreaterThan(fit.cssW * 0.02);
+  expect(Math.abs(fit.midY - fit.cssH / 2)).toBeLessThan(fit.cssH * 0.14);
+  expect(fit.meshMidX).toBeGreaterThan(fit.cssW * 0.38);
+  expect(fit.meshMidX - fit.midX).toBeGreaterThan(fit.cssW * 0.12);
+  fs.copyFileSync(path.join(out, "zoom-fit.png"), "/opt/cursor/artifacts/prepare-gizmo-parked-left.png");
 
   await wheel(page, -120, 12);
   const zoomedIn = await shotBox(page, "zoom-in.png");
   expect(zoomedIn.mesh).toBeGreaterThan(fit.mesh * 1.6);
   expect(ratio(zoomedIn.span, fit.span)).toBeGreaterThan(0.88);
   expect(ratio(zoomedIn.span, fit.span)).toBeLessThan(1.12);
-  expect(Math.hypot(zoomedIn.midX - zoomedIn.cssW / 2, zoomedIn.midY - zoomedIn.cssH / 2)).toBeLessThan(28);
+  expect(Math.abs(zoomedIn.midX - fit.midX)).toBeLessThan(28);
+  expect(Math.abs(zoomedIn.midY - fit.midY)).toBeLessThan(28);
 
   await wheel(page, 120, 24);
   const zoomedOut = await shotBox(page, "zoom-out.png");
   expect(zoomedOut.mesh).toBeLessThan(fit.mesh * 0.7);
   expect(ratio(zoomedOut.span, fit.span)).toBeGreaterThan(0.88);
   expect(ratio(zoomedOut.span, fit.span)).toBeLessThan(1.12);
+  expect(Math.abs(zoomedOut.midX - fit.midX)).toBeLessThan(28);
+  expect(Math.abs(zoomedOut.midY - fit.midY)).toBeLessThan(28);
+
+  const poseBeforeOrbit = await page.locator("#placeReadout").innerText();
+  const box = (await prepare.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 140, box.y + box.height / 2 - 30, { steps: 12 });
+  await page.mouse.up();
+  await page.waitForTimeout(450);
+  const orbited = await shotBox(page, "orbit.png");
+  expect(await page.locator("#placeReadout").innerText()).toBe(poseBeforeOrbit);
+  expect(Math.abs(orbited.midX - zoomedOut.midX)).toBeLessThan(36);
+  expect(Math.abs(orbited.midY - zoomedOut.midY)).toBeLessThan(36);
+  expect(orbited.meshMidX - orbited.midX).toBeGreaterThan(orbited.cssW * 0.1);
 
   const before = parsePlace(await page.locator("#placeReadout").innerText());
   const arrow = await arrowHandle(page);
@@ -186,40 +223,29 @@ async function shotBox(page: Page, name: string) {
   const box = (await page.locator("#prepare").boundingBox())!;
   const img = decodePng(png);
   const scale = img.width / box.width;
-  const limit = 1.6 * GIZMO_SCREEN_PX * scale;
-  const cx = img.width / 2;
-  const cy = img.height / 2;
+  const sampled = samplePrepare(img);
+  const focus = gizmoFocus(sampled.gizmo, 1.6 * GIZMO_SCREEN_PX * scale);
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -1;
   let maxY = -1;
-  let gizmo = 0;
-  let mesh = 0;
-  for (let y = 0; y < img.height; y++) {
-    for (let x = 0; x < img.width; x++) {
-      const i = (y * img.width + x) * 4;
-      const r = img.data[i];
-      const g = img.data[i + 1];
-      const b = img.data[i + 2];
-      if (isMesh(r, g, b)) mesh += 1;
-      if (Math.hypot(x - cx, y - cy) > limit) continue;
-      if (!gizmoFamily(r, g, b)) continue;
-      gizmo += 1;
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (x > maxX) maxX = x;
-      if (y > maxY) maxY = y;
-    }
+  for (const p of focus.kept) {
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
   }
-  const span = Math.max(maxX - minX, maxY - minY) / scale;
+  const span = focus.kept.length ? Math.max(maxX - minX, maxY - minY) / scale : 0;
   return {
-    gizmo,
-    mesh,
+    gizmo: focus.kept.length,
+    mesh: sampled.mesh,
     span,
     cssW: box.width,
     cssH: box.height,
-    midX: gizmo ? (minX + maxX) / 2 / scale : 0,
-    midY: gizmo ? (minY + maxY) / 2 / scale : 0,
+    midX: focus.kept.length ? focus.cx / scale : 0,
+    midY: focus.kept.length ? focus.cy / scale : 0,
+    meshMidX: sampled.mesh ? sampled.meshX / sampled.mesh / scale : 0,
+    meshMidY: sampled.mesh ? sampled.meshY / sampled.mesh / scale : 0,
   };
 }
 
@@ -228,8 +254,10 @@ async function arrowHandle(page: Page): Promise<{ axis: "x" | "y" | "z"; x: numb
   const box = (await page.locator("#prepare").boundingBox())!;
   const img = decodePng(png);
   const scale = img.width / box.width;
-  const cx = img.width / 2;
-  const cy = img.height / 2;
+  const sampled = samplePrepare(img);
+  const focus = gizmoFocus(sampled.gizmo, 1.6 * GIZMO_SCREEN_PX * scale);
+  const cx = focus.cx;
+  const cy = focus.cy;
   // Shaft band, inside the rings. An edge-on ring still sprays pixels through
   // the middle; the real arrow is the color whose centroid sits away from center.
   const inner = 0.22 * GIZMO_SCREEN_PX * scale;
@@ -283,6 +311,56 @@ function parsePlace(text: string) {
   const match = text.match(/X ([-\d.]+) · Y ([-\d.]+) · bed Z ([-\d.]+)/);
   if (!match) throw new Error(`place readout: ${text}`);
   return { x: Number(match[1]), y: Number(match[2]), z: Number(match[3]) };
+}
+
+function samplePrepare(img: { width: number; height: number; data: Buffer }) {
+  const gizmo: { x: number; y: number }[] = [];
+  let mesh = 0;
+  let meshX = 0;
+  let meshY = 0;
+  for (let y = 0; y < img.height; y++) {
+    for (let x = 0; x < img.width; x++) {
+      const i = (y * img.width + x) * 4;
+      const r = img.data[i];
+      const g = img.data[i + 1];
+      const b = img.data[i + 2];
+      if (isMesh(r, g, b)) {
+        mesh += 1;
+        meshX += x;
+        meshY += y;
+      }
+      if (gizmoFamily(r, g, b)) gizmo.push({ x, y });
+    }
+  }
+  return { gizmo, mesh, meshX, meshY };
+}
+
+/** Pull onto the ring cluster so the bed-corner triad does not own the centroid. */
+function gizmoFocus(pts: { x: number; y: number }[], reach: number) {
+  if (pts.length === 0) return { cx: 0, cy: 0, kept: [] as { x: number; y: number }[] };
+  let cx = 0;
+  let cy = 0;
+  for (const p of pts) {
+    cx += p.x;
+    cy += p.y;
+  }
+  cx /= pts.length;
+  cy /= pts.length;
+  let kept = pts;
+  for (let iter = 0; iter < 4; iter++) {
+    const next = kept.filter((p) => Math.hypot(p.x - cx, p.y - cy) <= reach);
+    if (next.length < 30) break;
+    let sx = 0;
+    let sy = 0;
+    for (const p of next) {
+      sx += p.x;
+      sy += p.y;
+    }
+    cx = sx / next.length;
+    cy = sy / next.length;
+    kept = next;
+  }
+  return { cx, cy, kept };
 }
 
 function gizmoFamily(r: number, g: number, b: number): "x" | "y" | "z" | null {

@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { boundsOf } from "./mesh-place";
 import { buildCutPlane, disposeTree, prepareFrame, splitDragAt, type PrintFrame } from "./cut-plane";
-import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, snapStep } from "./gizmo-math";
+import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep } from "./gizmo-math";
 import { clampSplit, roundSplit, type SplitAxis } from "./split-at";
 import { hexToThree, themeColors } from "./theme";
 
@@ -158,7 +158,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let moveCb: ((axis: Axis, deltaMm: number, totalMm: number) => void) | null = null;
   let moveEndCb: (() => void) | null = null;
 
-  const gizmoCenter = new THREE.Vector3();
+  const park = new THREE.Vector3();
   let drag: Drag = null;
   let hover: HandleHit | null = null;
   let lastAngle = 0;
@@ -214,23 +214,22 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
 
   function placeGizmo() {
     gizmo.visible = !!meshBounds;
-    if (!meshBounds) return;
-    const { min, max } = meshBounds;
-    gizmoCenter.copy(frame.toScene(
-      (min[0] + max[0]) / 2,
-      (min[1] + max[1]) / 2,
-      (min[2] + max[2]) / 2,
-    ));
-    gizmo.position.copy(gizmoCenter);
     fitGizmoScreen();
   }
 
+  /** Screen-anchored, same left-edge park as the section aim rings. Pose deltas stay on the mesh. */
   function fitGizmoScreen() {
     if (!gizmo.visible) return;
-    const height = canvas.clientHeight || canvas.getBoundingClientRect().height;
-    if (height < 2) return;
-    const dist = camera.position.distanceTo(gizmo.position);
-    gizmo.scale.setScalar(gizmoRadiusForPixels(dist, camera.fov, height, GIZMO_SCREEN_PX, camera.zoom));
+    const rect = canvas.getBoundingClientRect();
+    if (rect.height < 2 || rect.width < 2) return;
+    camera.updateMatrixWorld();
+    const distance = Math.max(8, camera.position.distanceTo(controls.target));
+    gizmo.scale.setScalar(gizmoRadiusForPixels(distance, camera.fov, rect.height, GIZMO_SCREEN_PX, camera.zoom));
+    const [x, y, z] = parkLeftCameraSpace(rect.width, distance, camera.fov, camera.aspect, camera.zoom);
+    park.set(x, y, z);
+    park.applyMatrix4(camera.matrixWorld);
+    gizmo.position.copy(park);
+    gizmo.updateMatrixWorld(true);
   }
 
   function rebuildCut() {
@@ -280,12 +279,13 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   }
 
   function printAngle(axis: Axis): number | null {
+    const origin = gizmo.position;
     const dir = sceneAxis(axis);
-    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(dir, gizmoCenter);
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(dir, origin);
     const hit = new THREE.Vector3();
     if (!raycaster.ray.intersectPlane(plane, hit)) return null;
     const print = frame.fromScene(hit);
-    const c = frame.fromScene(gizmoCenter);
+    const c = frame.fromScene(origin);
     const v = new THREE.Vector3(print[0] - c[0], print[1] - c[1], print[2] - c[2]);
     const ax = printAxis(axis);
     v.addScaledVector(ax, -v.dot(ax));
@@ -298,10 +298,11 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     return Math.atan2(v.dot(w), v.dot(u));
   }
 
-  /** Scalar along the scene axis, in millimetres. The drag plane faces the camera. */
+  /** Scalar along the scene axis, in millimetres. The drag plane faces the camera through the parked widget. */
   function axisCoord(axis: Axis): number | null {
+    const origin = gizmo.position;
     const dir = sceneAxis(axis);
-    const camDir = camera.position.clone().sub(gizmoCenter);
+    const camDir = camera.position.clone().sub(origin);
     if (camDir.lengthSq() < 1e-8) return null;
     camDir.normalize();
     const side = new THREE.Vector3().crossVectors(dir, camDir);
@@ -310,9 +311,9 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     }
     side.normalize();
     const normal = new THREE.Vector3().crossVectors(side, dir).normalize();
-    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, gizmoCenter);
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, origin);
     if (!raycaster.ray.intersectPlane(plane, dragHit)) return null;
-    return dragHit.sub(gizmoCenter).dot(dir);
+    return dragHit.sub(origin).dot(dir);
   }
 
   function sameHit(a: HandleHit | null, b: HandleHit | null) {
