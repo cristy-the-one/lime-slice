@@ -3417,6 +3417,32 @@ fn dense_overhang_still_supports_after_simplify() {
     );
 }
 
+#[test]
+fn stage_times_cover_plan_and_emit() {
+    let settings = SliceSettings {
+        include_preview: false,
+        baseline: false,
+        ..SliceSettings::default()
+    };
+    let response = slice_configured(&cube(), &speed_mode(), &profile(), &settings).unwrap();
+    assert!(response.sanity.ok, "{:?}", response.sanity.notes);
+    let stages = response.stages;
+    assert!(stages.toolpath_ms > 0.0, "{stages:?}");
+    assert!(stages.emit_ms > 0.0, "{stages:?}");
+    assert!(stages.contour_ms >= 0.0 && stages.support_ms >= 0.0 && stages.seat_ms >= 0.0);
+    assert!(response.mesh.simplify_ms >= 0.0);
+    let named = stages.contour_ms
+        + stages.support_ms
+        + stages.toolpath_ms
+        + stages.seat_ms
+        + stages.emit_ms;
+    assert!(
+        named <= response.core_ms + 0.05,
+        "stages {named:.3} ms exceed core {:.3} ms ({stages:?})",
+        response.core_ms
+    );
+}
+
 /// Release timings for the PR. Not part of the default suite.
 ///   cargo test -p lime-slice-core --release -- dense_nozzle_simplify_bench --ignored --nocapture
 #[test]

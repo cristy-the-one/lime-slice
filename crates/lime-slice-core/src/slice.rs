@@ -477,7 +477,8 @@ pub struct SliceResponse {
     pub baseline_ms: f64,
     pub baseline_label: String,
     pub mesh: MeshInfo,
-    /// Contour, support, and seat time inside `core_ms`.
+    /// Named slices of `core_ms`: contours, supports, toolpaths, seat, and G-code emit.
+    /// Simplify time stays on `mesh` because it runs before the core timer.
     pub stages: StageTimes,
     pub sanity: Sanity,
     pub gcode: String,
@@ -566,6 +567,10 @@ pub struct StageTimes {
     pub contour_ms: f64,
     pub support_ms: f64,
     pub seat_ms: f64,
+    /// Parallel per-layer walls, infill, travel, and scarf. Inside `core_ms`.
+    pub toolpath_ms: f64,
+    /// G-code writer. Inside `core_ms`.
+    pub emit_ms: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -729,12 +734,8 @@ pub fn slice_configured(
     let (min, max) = mesh.bounds().ok_or("empty mesh")?;
     let started = Instant::now();
     let planned_full = plan(mesh, blend, &settings, profile.nozzle_diameter)?;
-    let stages = StageTimes {
-        contour_ms: planned_full.contour_ms,
-        support_ms: planned_full.support_ms,
-        seat_ms: planned_full.seat_ms,
-    };
     let planned = planned_full.layers;
+    let emit_started = Instant::now();
     let gcode = emit_gcode(
         &planned,
         &profile,
@@ -747,10 +748,18 @@ pub fn slice_configured(
         settings.junction_deviation_mm,
         settings.job,
     );
+    let emit_ms = elapsed_ms(emit_started);
     if gcode.cancelled || settings.job.cancelled() {
         return Err("cancelled".into());
     }
     let core_ms = elapsed_ms(started);
+    let stages = StageTimes {
+        contour_ms: planned_full.contour_ms,
+        support_ms: planned_full.support_ms,
+        seat_ms: planned_full.seat_ms,
+        toolpath_ms: planned_full.toolpath_ms,
+        emit_ms,
+    };
 
     let (baseline_ms, baseline_label) = if settings.baseline {
         let baseline_mode = BlendMode::Single {
@@ -1352,6 +1361,7 @@ pub(crate) struct Plan {
     pub contour_ms: f64,
     pub support_ms: f64,
     pub seat_ms: f64,
+    pub toolpath_ms: f64,
 }
 
 pub(crate) fn plan(
@@ -1437,6 +1447,7 @@ fn plan_contours(
     }
     let shaft = shaft_scales(&supports, settings.support_height_mult);
     let (remain_low, remain_high) = interior_remainings(blend, settings, &bands, &roofs);
+    let toolpath_started = Instant::now();
     let jobs: Vec<LayerJob> = bands
         .par_iter()
         .enumerate()
@@ -1502,6 +1513,7 @@ fn plan_contours(
             job
         })
         .collect();
+    let toolpath_ms = elapsed_ms(toolpath_started);
     if settings.job.cancelled() {
         return Err("cancelled".into());
     }
@@ -1551,6 +1563,7 @@ fn plan_contours(
         contour_ms: 0.0,
         support_ms,
         seat_ms,
+        toolpath_ms,
     })
 }
 
