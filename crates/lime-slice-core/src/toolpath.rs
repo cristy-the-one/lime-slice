@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1738,12 +1739,7 @@ pub fn seat_layer_start(
     inset: f64,
     from: Option<[f64; 2]>,
 ) -> Option<[f64; 2]> {
-    let inset_loops = if combing && !solid.is_empty() {
-        offset_loops(solid, -inset.abs())
-    } else {
-        Vec::new()
-    };
-    let (solid, inset_loops) = (Outline::new(solid), Outline::new(&inset_loops));
+    let comb = Combing::new(solid, combing, inset);
     let mut cursor = from;
     for path in paths.iter_mut() {
         if path.points.is_empty() {
@@ -1759,7 +1755,7 @@ pub fn seat_layer_start(
                 }
             }
             if let Some(start) = path.points.first().copied() {
-                path.take_comb(comb_between(&solid, &inset_loops, from, start, combing));
+                path.take_comb(comb_between(&comb, from, start));
             }
         }
         if let Some(end) = path.points.last().copied() {
@@ -1813,12 +1809,7 @@ pub fn optimize_travel(paths: &mut Vec<Extrusion>, solid: &[Loop], combing: bool
             grouped.push(vec![path]);
         }
     }
-    let inset_loops = if combing && !solid.is_empty() {
-        offset_loops(solid, -inset.abs())
-    } else {
-        Vec::new()
-    };
-    let (solid, inset_loops) = (Outline::new(solid), Outline::new(&inset_loops));
+    let comb = Combing::new(solid, combing, inset);
     let legacy_only = LEGACY_TRAVEL.load(Ordering::SeqCst);
     // `emit_*` follows the points written into this pass (what combing sees).
     // `seat_*` follows the seam `seat_layer_start` will actually use, which is
@@ -1840,7 +1831,7 @@ pub fn optimize_travel(paths: &mut Vec<Extrusion>, solid: &[Loop], combing: bool
         for mut path in ordered {
             if emit_has {
                 if let Some(start) = path.points.first().copied() {
-                    path.take_comb(comb_between(&solid, &inset_loops, emit_c, start, combing));
+                    path.take_comb(comb_between(&comb, emit_c, start));
                 }
             }
             seat_c = seat_after(&path, seat_c, seat_has);
@@ -2955,27 +2946,123 @@ enum Comb {
     Blocked,
 }
 
-fn comb_between(
-    solid: &Outline,
-    inset: &Outline,
-    from: [f64; 2],
-    to: [f64; 2],
-    combing: bool,
-) -> Comb {
+/// A layer's solid and its combing inset, split into islands. Islands never
+/// touch, so a travel between two of them always leaves the part, and a
+/// routed travel only searches the inset of the island it stays in.
+struct Combing<'a> {
+    solid: Outline<'a>,
+    enabled: bool,
+    islands: Vec<CombIsland>,
+}
+
+struct CombIsland {
+    solid: Outline<'static>,
+    inset: Outline<'static>,
+}
+
+impl<'a> Combing<'a> {
+    fn new(solid: &'a [Loop], combing: bool, inset: f64) -> Self {
+        let inset_loops = if combing && !solid.is_empty() {
+            offset_loops(solid, -inset.abs())
+        } else {
+            Vec::new()
+        };
+        let enabled = combing && !inset_loops.is_empty();
+        let mut islands: Vec<CombIsland> = Vec::new();
+        if enabled {
+            islands = island_loops(solid)
+                .into_iter()
+                .map(|loops| CombIsland {
+                    solid: Outline::owned(loops),
+                    inset: Outline::owned(Vec::new()),
+                })
+                .collect();
+            let mut insets: Vec<Vec<Loop>> = vec![Vec::new(); islands.len()];
+            for loop_ in inset_loops {
+                let Some(&p) = loop_.first() else {
+                    continue;
+                };
+                if let Some(i) = islands.iter().position(|isl| isl.solid.contains(p)) {
+                    insets[i].push(loop_);
+                }
+            }
+            for (island, inset) in islands.iter_mut().zip(insets) {
+                island.inset = Outline::owned(inset);
+            }
+        }
+        Self {
+            solid: Outline::new(solid),
+            enabled,
+            islands,
+        }
+    }
+
+    fn island_of(&self, p: [f64; 2]) -> Option<usize> {
+        self.islands
+            .iter()
+            .position(|isl| isl.solid.box_holds(p) && isl.solid.contains(p))
+    }
+}
+
+/// Each outer loop with the holes directly inside it. Nesting comes from
+/// containment, so loop orientation does not matter.
+fn island_loops(loops: &[Loop]) -> Vec<Vec<Loop>> {
+    let outlines: Vec<Outline> = loops
+        .iter()
+        .map(|l| Outline::new(std::slice::from_ref(l)))
+        .collect();
+    let parents: Vec<Vec<usize>> = (0..loops.len())
+        .map(|i| {
+            let Some(&p) = loops[i].first() else {
+                return Vec::new();
+            };
+            (0..loops.len())
+                .filter(|&j| j != i && outlines[j].box_holds(p) && outlines[j].contains(p))
+                .collect()
+        })
+        .collect();
+    let mut island_at: Vec<Option<usize>> = vec![None; loops.len()];
+    let mut out: Vec<Vec<Loop>> = Vec::new();
+    for (i, up) in parents.iter().enumerate() {
+        if up.len() % 2 == 0 {
+            island_at[i] = Some(out.len());
+            out.push(vec![loops[i].clone()]);
+        }
+    }
+    for (i, up) in parents.iter().enumerate() {
+        if up.len() % 2 == 1 {
+            let owner = up
+                .iter()
+                .filter(|&&j| parents[j].len() + 1 == up.len())
+                .find_map(|&j| island_at[j]);
+            if let Some(k) = owner {
+                out[k].push(loops[i].clone());
+            }
+        }
+    }
+    out
+}
+
+fn comb_between(comb: &Combing, from: [f64; 2], to: [f64; 2]) -> Comb {
     if dist2(from, to) < 0.04 * 0.04 {
         return Comb::Clear;
     }
-    if solid.segment_inside(from, to) {
+    if comb.solid.segment_inside(from, to) {
         return Comb::Clear;
     }
-    if !combing || inset.loops.is_empty() {
+    if !comb.enabled {
         return Comb::Blocked;
     }
-    if !solid.contains(from) || !solid.contains(to) {
+    if !comb.solid.contains(from) || !comb.solid.contains(to) {
         return Comb::Blocked;
     }
+    let island = match (comb.island_of(from), comb.island_of(to)) {
+        (Some(a), Some(b)) if a == b => &comb.islands[a],
+        _ => return Comb::Blocked,
+    };
+    let (solid, inset) = (&island.solid, &island.inset);
     let mut nodes = Vec::new();
-    for loop_ in inset.loops {
+    for loop_ in inset.loops.iter() {
         let step = (loop_.len() / 64).max(1);
         for (i, p) in loop_.iter().enumerate() {
             if i % step == 0 {
@@ -3130,26 +3217,40 @@ fn chain_crosses(chain: &[[f64; 2]], solid: &Outline, printed: &[([f64; 2], [f64
 /// Loops with their bounding boxes, so segment and point tests skip loops that
 /// cannot touch them.
 struct Outline<'a> {
-    loops: &'a [Loop],
+    loops: Cow<'a, [Loop]>,
     boxes: Vec<([f64; 2], [f64; 2])>,
     bounds: Option<([f64; 2], [f64; 2])>,
 }
 
 impl<'a> Outline<'a> {
     fn new(loops: &'a [Loop]) -> Self {
+        Self::from_cow(Cow::Borrowed(loops))
+    }
+
+    fn owned(loops: Vec<Loop>) -> Outline<'static> {
+        Outline::from_cow(Cow::Owned(loops))
+    }
+
+    fn from_cow(loops: Cow<'a, [Loop]>) -> Self {
         let boxes = loops
             .iter()
             .map(|l| loop_bounds(std::slice::from_ref(l)).unwrap_or(([0.0; 2], [0.0; 2])))
             .collect();
+        let bounds = loop_bounds(&loops);
         Self {
             loops,
             boxes,
-            bounds: loop_bounds(loops),
+            bounds,
         }
     }
 
+    fn box_holds(&self, p: [f64; 2]) -> bool {
+        self.bounds
+            .is_some_and(|(mn, mx)| p[0] >= mn[0] && p[0] <= mx[0] && p[1] >= mn[1] && p[1] <= mx[1])
+    }
+
     /// Loops whose box meets the box of `a..b`. The others cannot touch it.
-    fn touching(&self, a: [f64; 2], b: [f64; 2]) -> impl Iterator<Item = &'a Loop> + '_ {
+    fn touching(&self, a: [f64; 2], b: [f64; 2]) -> impl Iterator<Item = &Loop> + '_ {
         let lo = [a[0].min(b[0]), a[1].min(b[1])];
         let hi = [a[0].max(b[0]), a[1].max(b[1])];
         self.loops
