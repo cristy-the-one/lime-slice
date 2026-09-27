@@ -38,6 +38,15 @@ pub fn mesh_preview(filename: &str, bytes: &[u8]) -> Result<MeshPreview, String>
 }
 
 pub fn load_mesh(filename: &str, bytes: &[u8]) -> Result<Mesh, String> {
+    load_slice_mesh(filename, bytes, false)
+}
+
+/// Load a mesh for slicing.
+///
+/// When `pose_after` is set, the bytes are the scaled canonical frame and a
+/// rigid pose is applied after simplification. Seating them on the bed here
+/// would change that frame and force a different simplify.
+pub fn load_slice_mesh(filename: &str, bytes: &[u8], pose_after: bool) -> Result<Mesh, String> {
     let lower = filename.to_ascii_lowercase();
     let mut mesh = if lower.ends_with(".3mf") || looks_like_zip(bytes) && !lower.ends_with(".stl") {
         load_3mf(bytes)?
@@ -51,7 +60,9 @@ pub fn load_mesh(filename: &str, bytes: &[u8]) -> Result<Mesh, String> {
     if mesh.triangles.is_empty() {
         return Err("mesh contains no triangles".into());
     }
-    mesh.settle_on_bed();
+    if !pose_after {
+        mesh.settle_on_bed();
+    }
     Ok(mesh)
 }
 

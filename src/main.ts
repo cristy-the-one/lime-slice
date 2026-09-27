@@ -1,6 +1,6 @@
 import { colorForPath, FEATURE_COLOR, FEATURE_LABEL, type ColorMode } from "./colors";
 import { groupFeatures } from "./estimate";
-import { encode3mf, encodeStl, ID_MATRIX, layFlatMatrix, matMul, offBed, parseStl, rotX, rotY, rotZ, transformPositions, centeringShift, boundsOf, type Mat3, type MeshShift } from "./mesh-place";
+import { encode3mf, encodeStl, ID_MATRIX, layFlatMatrix, matMul, offBed, parseStl, rotX, rotY, rotZ, transformPositions, centeringShift, boundsOf, placementPose, scaledCanonical, type Mat3, type MeshShift } from "./mesh-place";
 import { clampSplit, nextSplitAt, roundSplit, splitOutside, type AxisBounds, type SplitSync } from "./split-at";
 import { indexLayerGcode, layerClass, layerMoves, matchGcodeLine, type LayerGcode, type PlayPoint } from "./playback";
 import { createPrepareView } from "./prepare-view";
@@ -43,6 +43,7 @@ interface SliceResponse {
     sourceTriangles?: number;
     simplifyMs?: number;
     simplifyErrorMm?: number;
+    simplifyCached?: boolean;
     min: number[];
     max: number[];
   };
@@ -331,7 +332,7 @@ function renderChrome() {
       ${check("adaptive", "Adaptive layers", state.adaptive)}
       ${state.adaptive ? `${num("amin", "Min mm", state.adaptiveMin, 0.04, 0.28, 0.02)}${num("amax", "Max mm", state.adaptiveMax, 0.08, 0.4, 0.02)}` : ""}
       ${check("simplify", "Simplify to nozzle", state.simplify)}
-      ${state.simplify ? `${num("simperr", "Max error mm, 0 = auto", state.simplifyError, 0, 1, 0.01)}<div class="meta">Slice mesh stays within half the smaller of the nozzle and the layer height. The preview keeps every triangle.</div>` : ""}
+      ${state.simplify ? `${num("simperr", "Max error mm, 0 = auto", state.simplifyError, 0, 1, 0.01)}<div class="meta">Slice mesh stays within half the smaller of the nozzle and the layer height, and is reused for rotation and other settings while that bound still fits. The preview keeps every triangle.</div>` : ""}
     `)}
     ${group("Speed and motion", `
       ${check("feeds", "Per-feature speeds", state.featureSpeeds)}
@@ -521,7 +522,8 @@ function triangleLine(src: number) {
   if (!stale() && used != null && from != null && used < from) {
     const err = state.result?.mesh.simplifyErrorMm;
     const budget = err && err > 0 ? ` · ${err.toFixed(2)} mm` : "";
-    return `${from} triangles · ${used} slice${budget}`;
+    const cached = state.result?.mesh.simplifyCached ? " · cached" : "";
+    return `${from} triangles · ${used} slice${budget}${cached}`;
   }
   return `${src} triangles`;
 }
@@ -531,7 +533,10 @@ function triangleMeta(result: SliceResponse | null) {
   const used = result.mesh.triangles;
   if (from > used) {
     const ms = result.mesh.simplifyMs ?? 0;
-    return `Triangles <b>${from}</b> → <b>${used}</b> in ${ms.toFixed(0)} ms`;
+    const err = result.mesh.simplifyErrorMm ?? 0;
+    const budget = err > 0 ? ` · ${err.toFixed(2)} mm` : "";
+    const how = result.mesh.simplifyCached ? `cached · ${ms.toFixed(0)} ms` : `${ms.toFixed(0)} ms`;
+    return `Triangles <b>${from}</b> → <b>${used}</b> · ${how}${budget}`;
   }
   return `Triangles <b>${used}</b>`;
 }
@@ -1426,8 +1431,8 @@ function setHelp(open: boolean) {
 }
 
 function meshBytes() {
-  if (state.placed) return encodeStl(state.placed, state.mesh?.name ?? "part");
-  return state.mesh?.bytes ?? new ArrayBuffer(0);
+  if (!state.sourcePos) return state.mesh?.bytes ?? new ArrayBuffer(0);
+  return encodeStl(scaledCanonical(state.sourcePos, state.partScale), state.mesh?.name ?? "part");
 }
 
 function payload() {
@@ -1469,6 +1474,9 @@ function payload() {
     includePreview: true,
     simplify: state.simplify,
     simplifyErrorMm: state.simplifyError,
+    pose: state.sourcePos
+      ? placementPose(state.sourcePos, state.orient, state.partScale, state.profile.bedX, state.profile.bedY, state.centered, state.offset)
+      : undefined,
   };
 }
 function printer() {

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
 import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, snapStep } from "../src/gizmo-math";
-import { boundsOf, centeringShift, ID_MATRIX, rotZ, transformPositions } from "../src/mesh-place";
+import { applyRigidPose, boundsOf, centeringShift, ID_MATRIX, placementPose, rotX, rotZ, scaledCanonical, transformPositions, type Mat3, type MeshShift, type RigidPose } from "../src/mesh-place";
 import { encodePaths } from "../src/preview-wire";
 
 const out = "/opt/cursor/artifacts/gizmo-pose";
@@ -61,13 +61,36 @@ test("a manual shift matches Center, and an extra Z lift is what gets placed", (
   expect(lifted.min[2]).toBeCloseTo(4, 5);
 });
 
+test("scaled canonical plus pose matches placement", () => {
+  const src = new Float32Array([
+    0, 0, 0, 10, 0, 0, 0, 4, 0,
+    0, 0, 0, 10, 0, 0, 0, 0, 6,
+  ]);
+  const cases: Array<[Mat3, number, boolean, MeshShift | undefined]> = [
+    [ID_MATRIX, 1, true, undefined],
+    [rotZ(90), 2, true, undefined],
+    [rotZ(90), 2, false, { x: 5, y: -3, z: 2.5 }],
+    [ID_MATRIX, 1, false, { x: 5, y: -3, z: 2.5 }],
+    [rotX(90), 0.5, true, undefined],
+    [ID_MATRIX, 1, false, { x: 0, y: 0, z: 4 }],
+  ];
+  for (const [matrix, scale, centered, shift] of cases) {
+    const placed = transformPositions(src, matrix, scale, 220, 200, centered, shift);
+    const pose = placementPose(src, matrix, scale, 220, 200, centered, shift);
+    const via = applyRigidPose(scaledCanonical(src, scale), pose);
+    expect(via.length).toBe(placed.length);
+    for (let i = 0; i < placed.length; i++) expect(via[i]).toBeCloseTo(placed[i], 4);
+  }
+});
+
 test("zoom keeps the gizmo the same size and an arrow move is what gets sliced", async ({ page }) => {
-  let captured: Buffer | null = null;
+  let captured: { buf: Buffer; pose?: RigidPose } | null = null;
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/slice", async (route) => {
-    const body = route.request().postDataJSON() as { dataB64: string };
-    captured = Buffer.from(body.dataB64, "base64");
-    const bounds = stlBounds(captured);
+    const body = route.request().postDataJSON() as { dataB64: string; pose?: RigidPose };
+    const buf = Buffer.from(body.dataB64, "base64");
+    captured = { buf, pose: body.pose };
+    const bounds = body.pose ? posedBounds(buf, body.pose) : stlBounds(buf);
     await route.fulfill({ json: fakeSlice(bounds.min, bounds.max) });
   });
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -112,7 +135,8 @@ test("zoom keeps the gizmo the same size and an arrow move is what gets sliced",
 
   await page.locator("#slice").click();
   await expect.poll(() => captured !== null).toBe(true);
-  const sliced = stlBounds(captured!);
+  const sliced = captured!.pose ? posedBounds(captured!.buf, captured!.pose) : stlBounds(captured!.buf);
+  await expect(page.locator("#left")).toContainText("cached");
   const midX = (sliced.min[0] + sliced.max[0]) / 2;
   const midY = (sliced.min[1] + sliced.max[1]) / 2;
   expect(Math.abs(midX - after.x)).toBeLessThan(0.15);
@@ -276,6 +300,17 @@ function near(value: number, target: number, tol: number) {
   return Math.abs(value - target) <= tol;
 }
 
+function posedBounds(buf: Buffer, pose: RigidPose) {
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const count = view.getUint32(80, true);
+  const pos = new Float32Array(count * 9);
+  for (let i = 0; i < count; i++) {
+    const base = 84 + i * 50 + 12;
+    for (let v = 0; v < 9; v++) pos[i * 9 + v] = view.getFloat32(base + v * 4, true);
+  }
+  return boundsOf(applyRigidPose(pos, pose));
+}
+
 function stlBounds(buf: Buffer) {
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const count = view.getUint32(80, true);
@@ -314,7 +349,15 @@ function fakeSlice(min: number[], max: number[]) {
     coreMs: 1,
     baselineMs: 0,
     blend: "speed",
-    mesh: { triangles: 12, min, max },
+    mesh: {
+      triangles: 12,
+      sourceTriangles: 12000,
+      simplifyMs: 0,
+      simplifyErrorMm: 0.1,
+      simplifyCached: true,
+      min,
+      max,
+    },
     sanity: { ok: true, notes: [], layers: 1, finalE: 1, extrusionLengthMm: 10 },
     estimate: { seconds: 8, filamentMm: 40, filamentG: 0.12, arcMoves: 0, byFeature: [] },
     gcode: "; preview\n",

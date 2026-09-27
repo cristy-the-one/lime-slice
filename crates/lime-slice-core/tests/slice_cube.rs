@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use lime_slice_core::{
     load_mesh, simplify_for_nozzle, slice_configured, slice_with_baseline, Axis, BlendMode, Mesh,
-    SliceSettings, StrategyId,
+    RigidPose, SliceSettings, StrategyId,
 };
 
 fn cube() -> Mesh {
@@ -3496,4 +3496,63 @@ fn dense_nozzle_simplify_bench() {
     } else {
         eprintln!("skip dragon: samples/dragon_2_5.stl missing");
     }
+}
+
+#[test]
+fn pose_and_unrelated_settings_reuse_the_simplified_mesh() {
+    let dense = subdivide_mesh(&cube(), 5);
+    assert!(
+        dense.triangle_count() >= 8_000,
+        "{}",
+        dense.triangle_count()
+    );
+    let quiet = SliceSettings {
+        include_gcode: false,
+        include_preview: false,
+        baseline: false,
+        supports: false,
+        ..SliceSettings::default()
+    };
+    let first = slice_configured(&dense, &speed_mode(), &profile(), &quiet).unwrap();
+    assert!(first.sanity.ok, "{:?}", first.sanity.notes);
+    assert!(first.mesh.triangles < dense.triangle_count());
+    let with_supports = SliceSettings {
+        supports: true,
+        ..quiet.clone()
+    };
+    let second = slice_configured(&dense, &speed_mode(), &profile(), &with_supports).unwrap();
+    assert!(
+        second.mesh.simplify_cached,
+        "supports forced a rebuild ({:.2} ms)",
+        second.mesh.simplify_ms
+    );
+    assert_eq!(second.mesh.triangles, first.mesh.triangles);
+    assert!(
+        second.mesh.simplify_ms < 50.0,
+        "cache hit took {:.2} ms",
+        second.mesh.simplify_ms
+    );
+    let c = std::f64::consts::FRAC_1_SQRT_2;
+    let posed = SliceSettings {
+        pose: Some(RigidPose {
+            rotation: [c, -c, 0.0, c, c, 0.0, 0.0, 0.0, 1.0],
+            pivot: [10.0, 10.0, 10.0],
+            translation: [10.0, 10.0, 10.0],
+        }),
+        ..quiet
+    };
+    let third = slice_configured(&dense, &speed_mode(), &profile(), &posed).unwrap();
+    assert!(
+        third.mesh.simplify_cached,
+        "rotation forced a rebuild ({:.2} ms)",
+        third.mesh.simplify_ms
+    );
+    assert_eq!(third.mesh.triangles, first.mesh.triangles);
+    assert!(third.sanity.ok, "{:?}", third.sanity.notes);
+    assert!(
+        (third.mesh.min[1] - first.mesh.min[1]).abs() > 1.0,
+        "45° pose left the bounds unchanged: {:?} vs {:?}",
+        third.mesh.min,
+        first.mesh.min
+    );
 }

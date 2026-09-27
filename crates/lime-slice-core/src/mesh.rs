@@ -37,4 +37,28 @@ impl Mesh {
             }
         }
     }
+
+    /// `placed = R * (v - pivot) + translation`. `rotation` is row-major.
+    ///
+    /// Scale stays in the vertex positions. This is only a rigid move, so a
+    /// nozzle error measured before the call is still the print-space error.
+    pub fn rigid_move(&self, rotation: &[f64; 9], pivot: [f64; 3], translation: [f64; 3]) -> Mesh {
+        let r = rotation;
+        let [px, py, pz] = pivot;
+        let [tx, ty, tz] = translation;
+        let mut triangles = Vec::with_capacity(self.triangles.len());
+        for tri in &self.triangles {
+            let mut out = [[0.0; 3]; 3];
+            for (slot, v) in out.iter_mut().zip(tri.iter()) {
+                let x = v[0] - px;
+                let y = v[1] - py;
+                let z = v[2] - pz;
+                slot[0] = r[0] * x + r[1] * y + r[2] * z + tx;
+                slot[1] = r[3] * x + r[4] * y + r[5] * z + ty;
+                slot[2] = r[6] * x + r[7] * y + r[8] * z + tz;
+            }
+            triangles.push(out);
+        }
+        Mesh { triangles }
+    }
 }

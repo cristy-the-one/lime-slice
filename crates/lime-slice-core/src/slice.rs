@@ -8,7 +8,7 @@ use crate::adaptive::{plan_bands, HeightOpts, LayerBand};
 use crate::cancel::Job;
 use crate::gcode::{emit_gcode, LayerPaths};
 use crate::index::ZIndex;
-use crate::load::load_mesh;
+use crate::load::load_slice_mesh;
 use crate::mesh::Mesh;
 use crate::poly::{
     boolean_diff, boolean_union, clip_to_rect, loop_bounds, offset_loops, signed_area, Loop,
@@ -143,6 +143,30 @@ pub struct SliceRequest {
     /// Max surface error in millimetres. `0` uses half of min(nozzle, layer height).
     #[serde(default)]
     pub simplify_error_mm: f64,
+    /// Applied after simplification. The mesh bytes are the scaled canonical
+    /// frame: rotation, bed settle, and translation are not in the vertices.
+    /// Absent means those bytes are already in print space.
+    #[serde(default)]
+    pub pose: Option<RigidPose>,
+}
+
+/// Rigid placement of a mesh that was simplified in its scaled frame.
+///
+/// `placed = rotation * (v - pivot) + translation`, with `rotation` row-major.
+/// Scale is not in this transform. It has to already be in the vertices so
+/// the nozzle bound stays in print millimetres.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RigidPose {
+    pub rotation: [f64; 9],
+    pub pivot: [f64; 3],
+    pub translation: [f64; 3],
+}
+
+impl RigidPose {
+    pub fn apply(&self, mesh: &Mesh) -> Mesh {
+        mesh.rigid_move(&self.rotation, self.pivot, self.translation)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -189,6 +213,8 @@ pub struct SliceSettings {
     pub simplify: bool,
     /// `0` uses [`nozzle_error_mm`].
     pub simplify_error_mm: f64,
+    /// Rigid placement applied after simplification. `None` slices the mesh as given.
+    pub pose: Option<RigidPose>,
     /// Hold up same-layer islands that have nothing under them. Overhang supports stay on `supports`.
     pub island_support: bool,
     /// The shell job this slice belongs to. A stale job stops with "cancelled".
@@ -235,6 +261,7 @@ impl Default for SliceSettings {
             junction_deviation_mm: 0.02,
             simplify: true,
             simplify_error_mm: 0.0,
+            pose: None,
             island_support: true,
             job: Job::default(),
         }
@@ -348,6 +375,7 @@ impl SliceSettings {
             } else {
                 0.0
             },
+            pose: req.pose,
             island_support: true,
             job: Job::default(),
         }
@@ -522,8 +550,12 @@ pub struct MeshInfo {
     /// mesh was already coarse enough to leave alone.
     pub source_triangles: usize,
     pub simplify_ms: f64,
-    /// Error bound used, in millimetres. `0` when simplification was off.
+    /// Error the slice mesh is guaranteed to stay inside, in millimetres.
+    /// On a cache hit this is the bound that mesh was collapsed to, which may
+    /// be tighter than the current nozzle budget. `0` when simplification was off.
     pub simplify_error_mm: f64,
+    /// The slice mesh was loaded from the simplify cache. `simplify_ms` is the lookup.
+    pub simplify_cached: bool,
     pub min: [f64; 3],
     pub max: [f64; 3],
 }
@@ -616,7 +648,7 @@ pub fn slice_request(req: &SliceRequest, job: Job) -> Result<SliceResponse, Stri
         return Err("cancelled".into());
     }
     let bytes = decode_b64(&req.data_b64)?;
-    let mesh = load_mesh(&req.filename, &bytes)?;
+    let mesh = load_slice_mesh(&req.filename, &bytes, req.pose.is_some())?;
     let profile = req.printer.clone().unwrap_or_default();
     let settings = SliceSettings {
         job,
@@ -687,7 +719,13 @@ pub fn slice_configured(
     };
     let (prepared, simplify_stats) =
         simplify_for_nozzle(mesh, settings.simplify, error_mm, settings.job)?;
-    let mesh = prepared.as_ref();
+    // Pose is rigid, so it does not change the print-space error. Collapsing
+    // first keeps one cached mesh for every orientation of this scale.
+    let posed = settings
+        .pose
+        .as_ref()
+        .map(|pose| pose.apply(prepared.as_ref()));
+    let mesh = posed.as_ref().unwrap_or_else(|| prepared.as_ref());
     let (min, max) = mesh.bounds().ok_or("empty mesh")?;
     let started = Instant::now();
     let planned_full = plan(mesh, blend, &settings, profile.nozzle_diameter)?;
@@ -791,6 +829,7 @@ pub fn slice_configured(
             source_triangles: simplify_stats.source_triangles,
             simplify_ms: simplify_stats.milliseconds,
             simplify_error_mm: simplify_stats.error_mm,
+            simplify_cached: simplify_stats.cached,
             min,
             max,
         },
@@ -2431,5 +2470,73 @@ mod tests {
         assert_eq!(parallel.text, linear.text, "classic estimator g-code");
         assert_eq!(parallel.print_time_s, linear.print_time_s);
         assert_eq!(parallel.layer_seconds, linear.layer_seconds);
+    }
+
+    #[test]
+    fn pose_is_applied_without_seating_the_canonical_mesh() {
+        let stl = raised_cube_stl(5.0);
+        let data_b64 = base64::engine::general_purpose::STANDARD.encode(stl.as_bytes());
+        let req: SliceRequest = serde_json::from_value(serde_json::json!({
+            "filename": "raised-cube.stl",
+            "dataB64": data_b64,
+            "baseline": false,
+            "includePreview": false,
+            "simplify": false,
+            "pose": {
+                "rotation": [1, 0, 0, 0, 1, 0, 0, 0, 1],
+                "pivot": [10.0, 10.0, 15.0],
+                "translation": [10.0, 10.0, 15.0]
+            }
+        }))
+        .unwrap();
+        let response = slice_request(&req, Job::default()).unwrap();
+        assert!(
+            response.mesh.min[2] > 4.0,
+            "canonical mesh was seated before the pose: {:?}",
+            response.mesh.min
+        );
+        assert!(
+            (response.mesh.max[0] - 20.0).abs() < 1e-6,
+            "identity pose moved X: {:?}",
+            response.mesh.max
+        );
+    }
+
+    fn raised_cube_stl(z0: f64) -> String {
+        let z1 = z0 + 20.0;
+        let v = [
+            [0.0, 0.0, z0],
+            [20.0, 0.0, z0],
+            [20.0, 20.0, z0],
+            [0.0, 20.0, z0],
+            [0.0, 0.0, z1],
+            [20.0, 0.0, z1],
+            [20.0, 20.0, z1],
+            [0.0, 20.0, z1],
+        ];
+        let faces = [
+            (0, 2, 1),
+            (0, 3, 2),
+            (4, 5, 6),
+            (4, 6, 7),
+            (0, 1, 5),
+            (0, 5, 4),
+            (3, 7, 6),
+            (3, 6, 2),
+            (0, 4, 7),
+            (0, 7, 3),
+            (1, 2, 6),
+            (1, 6, 5),
+        ];
+        let mut out = String::from("solid raised\n");
+        for (i, j, k) in faces {
+            out.push_str("facet normal 0 0 0\nouter loop\n");
+            for p in [v[i], v[j], v[k]] {
+                out.push_str(&format!("vertex {} {} {}\n", p[0], p[1], p[2]));
+            }
+            out.push_str("endloop\nendfacet\n");
+        }
+        out.push_str("endsolid raised\n");
+        out
     }
 }

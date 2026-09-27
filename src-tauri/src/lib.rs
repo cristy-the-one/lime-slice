@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use lime_slice_core::{
-    cancel_all, mesh_preview, pareto_estimates, pressure_advance_from_request, slice_request,
-    strategy_card, Job, PaCalibRequest, SliceRequest, SliceSettings,
+    cancel_all, load_slice_mesh, mesh_preview, pareto_estimates, pressure_advance_from_request,
+    slice_request, strategy_card, Job, PaCalibRequest, SliceRequest, SliceSettings,
 };
 use tauri::AppHandle;
 use tauri::Emitter;
@@ -109,7 +109,7 @@ async fn pareto_model(payload: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let req: SliceRequest = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
         let bytes = base64_decode(&req.data_b64)?;
-        let mesh = lime_slice_core::load_mesh(&req.filename, &bytes)?;
+        let mesh = load_slice_mesh(&req.filename, &bytes, req.pose.is_some())?;
         let profile = req.printer.clone().unwrap_or_default();
         let settings = SliceSettings {
             job: Job::start(),
