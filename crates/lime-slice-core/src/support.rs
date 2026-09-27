@@ -651,7 +651,12 @@ fn merge_nodes(nodes: &mut Vec<Node>, grow: &Grow, reach: f64) {
                     return false;
                 }
             }
-            (grow.load_factor >= 3.0 && merge_need(k, &n, grow, slack).is_some())
+            // Speed rates each trunk's load. Neither merge test may exceed it.
+            let speed = grow.load_factor >= 3.0;
+            if speed && !carries(k, &n, grow) {
+                return false;
+            }
+            (speed && merge_need(k, &n, grow, slack).is_some())
                 || legacy_merge(k, &n, grow.trunk_r, reach)
         }) {
             let d = (host.xy[0] - n.xy[0]).hypot(host.xy[1] - n.xy[1]);
@@ -709,15 +714,21 @@ fn legacy_merge(host: &Node, guest: &Node, trunk_r: f64, reach: f64) -> bool {
     shift_h + host.radius <= merged + reach && shift_g + guest.radius <= merged + reach
 }
 
+/// True when one trunk at the cap radius can carry both loads at the longer fall.
+fn carries(a: &Node, b: &Node, grow: &Grow) -> bool {
+    let cap = tip_capacity(
+        grow.trunk_r,
+        a.dist.max(b.dist),
+        grow.tip_r,
+        grow.load_factor,
+    );
+    a.load + b.load <= cap + 1e-6
+}
+
 /// Radius the merged trunk needs so both parent disks stay inside the support
-/// cone. `None` when that radius would exceed the trunk cap or the load cap.
+/// cone. `None` when that radius would exceed the trunk cap.
 fn merge_need(a: &Node, b: &Node, grow: &Grow, slack: f64) -> Option<f64> {
     let load = a.load + b.load;
-    let length = a.dist.max(b.dist);
-    let cap = tip_capacity(grow.trunk_r, length, grow.tip_r, grow.load_factor);
-    if load > cap + 1e-6 {
-        return None;
-    }
     let d = (a.xy[0] - b.xy[0]).hypot(a.xy[1] - b.xy[1]);
     let w = (a.radius + b.radius).max(1e-6);
     let shift_a = d * b.radius / w;
