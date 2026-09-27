@@ -45,8 +45,8 @@ pub struct SupportOpts {
     /// `0` derives from `density`. Higher lets one trunk swallow more neighbours.
     /// Capacity then grows with cross-section and falls as the branch gets long.
     pub load_factor: f64,
-    /// Farthest a dropped tip may sit from the neighbour that carries its interface, mm.
-    /// `0` derives a pitch from `branch_spacing` and `density`. Wider means fewer tips.
+    /// Pitch of the tips left standing, mm. A tip carries the seed samples within
+    /// half of it. `0` derives a pitch from `branch_spacing` and `density`. Wider means fewer tips.
     pub max_tip_spacing: f64,
     /// Project steep overhangs. Off skips the angle test and still holds floating islands.
     pub overhangs: bool,
@@ -802,7 +802,7 @@ struct Pitch {
 /// One packed tip per neighbourhood. A grid over the combined bbox, with the
 /// bbox centre as a fallback, misses a concave patch (the centre sits in the
 /// notch) and misses a second island when the first one already caught a sample.
-/// Samples closer than `keep` are dropped when a neighbour still has capacity,
+/// Samples within half of `keep` fold into a neighbour that still has capacity,
 /// so the interface bridges to that neighbour instead of growing a parallel trunk.
 /// Tips that can lean onto the model and tips that have to reach the bed pack
 /// separately: swallowing the second into the first deletes the bed trunk.
@@ -815,52 +815,62 @@ fn sample_tips(region: &[Loop], pitch: &Pitch, land: &Land<'_>) -> Vec<([f64; 2]
                 hit.push(p);
             }
         }
-        pts.extend(pack_by_landing(hit, pitch, land));
+        pts.extend(pack_by_landing(hit, &comp, pitch, land));
     }
     pts
 }
 
 fn pack_by_landing(
     hit: Vec<[f64; 2]>,
+    region: &[Loop],
     pitch: &Pitch,
     land: &Land<'_>,
 ) -> Vec<([f64; 2], f64, bool)> {
+    let reach = pitch.keep * 0.5;
     if hit.len() <= 1 {
-        return pack_tips(hit, pitch.keep, pitch.capacity)
+        return pack_tips(hit, region, reach, pitch.capacity)
             .into_iter()
             .map(|(p, load)| (p, load, false))
             .collect();
     }
     let (on_model, to_bed): (Vec<_>, Vec<_>) =
         hit.into_iter().partition(|p| reaches_model(*p, land));
-    let mut packed: Vec<_> = pack_tips(on_model, pitch.keep, pitch.capacity)
+    let mut packed: Vec<_> = pack_tips(on_model, region, reach, pitch.capacity)
         .into_iter()
         .map(|(p, load)| (p, load, false))
         .collect();
     packed.extend(
-        pack_tips(to_bed, pitch.keep, pitch.capacity)
+        pack_tips(to_bed, region, reach, pitch.capacity)
             .into_iter()
             .map(|(p, load)| (p, load, true)),
     );
     packed
 }
 
-/// Greedy pack. Each keeper absorbs later samples inside `reach` until `capacity`
-/// tip-units are used. A sample the keepers cannot carry stays, so a patch is
-/// never left farther than `reach` from a trunk.
-fn pack_tips(mut pts: Vec<[f64; 2]>, reach: f64, capacity: f64) -> Vec<([f64; 2], f64)> {
+/// Greedy pack. Each keeper absorbs later samples within `reach` of its own
+/// sample until `capacity` tip-units are used, and its tip stands at the centre
+/// of the samples it carries so the patch overhangs it evenly. A sample the
+/// keepers cannot carry stays as its own tip.
+fn pack_tips(
+    mut pts: Vec<[f64; 2]>,
+    region: &[Loop],
+    reach: f64,
+    capacity: f64,
+) -> Vec<([f64; 2], f64)> {
     if pts.len() <= 1 || reach <= 0.0 {
         return pts.into_iter().map(|p| (p, 1.0)).collect();
     }
     let cap = capacity.max(1.0);
     pts.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
-    let mut kept: Vec<([f64; 2], f64)> = Vec::new();
+    // The keeper's own sample is first.
+    let mut kept: Vec<Vec<[f64; 2]>> = Vec::new();
     for p in pts {
         let mut best: Option<(usize, f64)> = None;
-        for (i, (q, load)) in kept.iter().enumerate() {
-            if *load + 1.0 > cap + 1e-6 {
+        for (i, carried) in kept.iter().enumerate() {
+            if carried.len() as f64 + 1.0 > cap + 1e-6 {
                 continue;
             }
+            let q = carried[0];
             let dist = (q[0] - p[0]).hypot(q[1] - p[1]);
             if dist > reach {
                 continue;
@@ -869,13 +879,36 @@ fn pack_tips(mut pts: Vec<[f64; 2]>, reach: f64, capacity: f64) -> Vec<([f64; 2]
                 best = Some((i, dist));
             }
         }
-        if let Some((i, _)) = best {
-            kept[i].1 += 1.0;
-        } else {
-            kept.push((p, 1.0));
+        match best {
+            Some((i, _)) => kept[i].push(p),
+            None => kept.push(vec![p]),
         }
     }
-    kept
+    kept.into_iter()
+        .map(|carried| (tip_centre(&carried, region), carried.len() as f64))
+        .collect()
+}
+
+/// Centroid of the carried samples. On a ring around a post the centroid is
+/// over the post, so the tip takes the carried sample nearest it instead.
+fn tip_centre(carried: &[[f64; 2]], region: &[Loop]) -> [f64; 2] {
+    if let [only] = carried {
+        return *only;
+    }
+    let n = carried.len() as f64;
+    let c = [
+        carried.iter().map(|p| p[0]).sum::<f64>() / n,
+        carried.iter().map(|p| p[1]).sum::<f64>() / n,
+    ];
+    if in_solid(region, c[0], c[1]) {
+        return c;
+    }
+    let off = |p: &[f64; 2]| (p[0] - c[0]).hypot(p[1] - c[1]);
+    carried
+        .iter()
+        .min_by(|a, b| off(a).total_cmp(&off(b)))
+        .copied()
+        .unwrap_or(c)
 }
 
 fn sample_component(region: &[Loop], spacing: f64) -> Vec<[f64; 2]> {
@@ -962,7 +995,7 @@ fn seed_uncovered_interface(
                 seeds.push(p);
             }
         }
-        for (xy, load, to_bed) in pack_by_landing(seeds, pitch, land) {
+        for (xy, load, to_bed) in pack_by_landing(seeds, &comp, pitch, land) {
             nodes.push(Node {
                 id: *next_id,
                 xy,
@@ -1646,7 +1679,7 @@ mod tests {
     #[test]
     fn pack_tips_keeps_a_sample_its_neighbours_cannot_carry() {
         let pts = vec![[0.0, 0.0], [6.0, 0.0], [12.0, 0.0], [3.0, 0.0]];
-        let packed = pack_tips(pts, 7.0, 2.0);
+        let packed = pack_tips(pts, &[rect(-1.0, -1.0, 13.0, 1.0)], 7.0, 2.0);
         let loads: Vec<f64> = packed.iter().map(|(_, load)| *load).collect();
         assert!(
             packed.len() >= 2,
@@ -1660,6 +1693,30 @@ mod tests {
             (loads.iter().sum::<f64>() - 4.0).abs() < 1e-6,
             "dropped a tip instead of keeping it, loads {loads:?}"
         );
+    }
+
+    #[test]
+    fn a_packed_tip_stands_at_the_centre_of_the_samples_it_carries() {
+        // An L of samples, all within 5 mm of the first. The tip moves off
+        // the corner to their centroid.
+        let pts = vec![[-4.75, -4.75], [-4.75, 0.0], [0.0, -4.75]];
+        let square = [rect(-6.0, -6.0, 6.0, 6.0)];
+        let packed = pack_tips(pts.clone(), &square, 5.0, 5.2);
+        assert_eq!(
+            packed.len(),
+            1,
+            "one keeper should carry all three: {packed:?}"
+        );
+        let (tip, load) = packed[0];
+        assert!(
+            (tip[0] + 19.0 / 6.0).abs() < 1e-9 && (tip[1] + 19.0 / 6.0).abs() < 1e-9,
+            "tip {tip:?} is not at the centroid"
+        );
+        assert_eq!(load, 3.0);
+        // The same samples on a ring around a post. The centroid is over the
+        // post, so the tip stays on the ring at the sample nearest it.
+        let ring = [rect(-6.0, -6.0, 6.0, 6.0), rect(-3.5, -3.5, 3.5, 3.5)];
+        assert_eq!(pack_tips(pts, &ring, 5.0, 5.2), vec![([-4.75, -4.75], 3.0)]);
     }
 
     #[test]
