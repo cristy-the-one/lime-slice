@@ -54,6 +54,8 @@ interface SliceResponse {
     seatMs: number;
     toolpathMs: number;
     emitMs: number;
+    /** CPU time inside toolpaths, summed across cores. Not wall clock. */
+    travelMs: number;
   };
   estimate?: {
     seconds: number;
@@ -567,6 +569,7 @@ function stageHtml(result: SliceResponse | null) {
     ["contours", formatMs(stages.contourMs), false],
     ["supports", formatMs(stages.supportMs), false],
     ["toolpaths", formatMs(stages.toolpathMs), false],
+    ["travel", `${formatMs(stages.travelMs ?? 0)} · cpu`, false],
     ["seat", formatMs(stages.seatMs), false],
     ["emit", formatMs(stages.emitMs), false],
   ];
@@ -574,13 +577,15 @@ function stageHtml(result: SliceResponse | null) {
   rows.push(["core", formatMs(result.coreMs), true]);
   const title: Record<string, string> = {
     simplify: "Before core. Cached is a lookup, not a rebuild",
+    travel: "CPU time inside toolpaths, summed across cores. Not wall clock, so it is not part of core",
     other: "Untimed remainder of core: layer bands, roofs, z-hop",
     core: "Plan and G-code emit. Simplify runs before this",
   };
   const body = rows
     .map(([name, value, total]) => {
       const tip = title[name] ? ` title="${title[name]}"` : "";
-      return `<tr${total ? ` class="total"` : ""}><td${tip}>${name}</td><td>${value}</td></tr>`;
+      const cls = [total ? "total" : "", name === "travel" ? "sub" : ""].filter(Boolean).join(" ");
+      return `<tr${cls ? ` class="${cls}"` : ""}><td${tip}>${name}</td><td>${value}</td></tr>`;
     })
     .join("");
   return `<div class="stages"><div class="meta">Slice stages</div><table class="stages">${body}</table></div>`;

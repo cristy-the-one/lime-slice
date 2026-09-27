@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use base64::Engine;
@@ -478,6 +479,7 @@ pub struct SliceResponse {
     pub baseline_label: String,
     pub mesh: MeshInfo,
     /// Named slices of `core_ms`: contours, supports, toolpaths, seat, and G-code emit.
+    /// `travel_ms` is CPU time inside toolpaths, not an extra slice of `core_ms`.
     /// Simplify time stays on `mesh` because it runs before the core timer.
     pub stages: StageTimes,
     pub sanity: Sanity,
@@ -571,6 +573,9 @@ pub struct StageTimes {
     pub toolpath_ms: f64,
     /// G-code writer. Inside `core_ms`.
     pub emit_ms: f64,
+    /// Sum of per-layer `optimize_travel` time, across cores. Not wall-clock,
+    /// and already inside `toolpath_ms`.
+    pub travel_ms: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -759,6 +764,7 @@ pub fn slice_configured(
         seat_ms: planned_full.seat_ms,
         toolpath_ms: planned_full.toolpath_ms,
         emit_ms,
+        travel_ms: planned_full.travel_ms,
     };
 
     let (baseline_ms, baseline_label) = if settings.baseline {
@@ -1362,6 +1368,7 @@ pub(crate) struct Plan {
     pub support_ms: f64,
     pub seat_ms: f64,
     pub toolpath_ms: f64,
+    pub travel_ms: f64,
 }
 
 pub(crate) fn plan(
@@ -1448,6 +1455,7 @@ fn plan_contours(
     let shaft = shaft_scales(&supports, settings.support_height_mult);
     let (remain_low, remain_high) = interior_remainings(blend, settings, &bands, &roofs);
     let toolpath_started = Instant::now();
+    let travel_us = AtomicU64::new(0);
     let jobs: Vec<LayerJob> = bands
         .par_iter()
         .enumerate()
@@ -1490,11 +1498,16 @@ fn plan_contours(
                 );
             }
             if settings.travel_opt {
+                let travel_started = Instant::now();
                 optimize_travel(
                     &mut job.paths,
                     &contours[i],
                     settings.combing,
                     settings.line_width * 0.8,
+                );
+                travel_us.fetch_add(
+                    travel_started.elapsed().as_micros() as u64,
+                    Ordering::Relaxed,
                 );
             }
             if settings.scarf_seam != ScarfSeam::Off {
@@ -1564,6 +1577,7 @@ fn plan_contours(
         support_ms,
         seat_ms,
         toolpath_ms,
+        travel_ms: travel_us.load(Ordering::Relaxed) as f64 / 1000.0,
     })
 }
 
@@ -2551,5 +2565,111 @@ mod tests {
         }
         out.push_str("endsolid raised\n");
         out
+    }
+
+    /// Before/after travel for the reorder. Not part of the default suite.
+    ///   cargo test -p lime-slice-core --release -- travel_cluster_report --ignored --nocapture
+    #[test]
+    #[ignore = "opt-in travel reorder report"]
+    fn travel_cluster_report() {
+        use crate::toolpath::set_legacy_travel_for_test;
+        use std::path::PathBuf;
+
+        struct Guard;
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                set_legacy_travel_for_test(false);
+            }
+        }
+        let _guard = Guard;
+
+        let quiet = SliceSettings {
+            baseline: false,
+            compare: false,
+            include_gcode: false,
+            include_preview: false,
+            supports: false,
+            ..SliceSettings::default()
+        };
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut meshes: Vec<(&str, Mesh)> = Vec::new();
+        for name in [
+            "calibration_cube_20mm.stl",
+            "lime_hull.stl",
+            "dragon_2_5.stl",
+        ] {
+            let path = root.join("samples").join(name);
+            let bytes = match std::fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    eprintln!("skip {name}: missing");
+                    continue;
+                }
+            };
+            match crate::load::load_mesh(name, &bytes) {
+                Ok(mesh) => meshes.push((name.trim_end_matches(".stl"), mesh)),
+                Err(err) => eprintln!("skip {name}: {err}"),
+            }
+        }
+        let blends = [
+            (
+                "speed",
+                BlendMode::Single {
+                    strategy: StrategyId::Speed,
+                },
+            ),
+            (
+                "tough",
+                BlendMode::Single {
+                    strategy: StrategyId::Toughness,
+                },
+            ),
+        ];
+        println!(
+            "{:<16} {:<8} {:>10} {:>10} {:>8} {:>8} {:>10} {:>10} {:>8} {:>8}",
+            "mesh",
+            "blend",
+            "travel0",
+            "travel1",
+            "moves0",
+            "moves1",
+            "sec0",
+            "sec1",
+            "core0",
+            "core1"
+        );
+        for (name, mesh) in &meshes {
+            for (label, blend) in &blends {
+                set_legacy_travel_for_test(true);
+                let before = slice_configured(mesh, blend, &PrinterProfile::default(), &quiet)
+                    .expect("legacy slice");
+                set_legacy_travel_for_test(false);
+                let after = slice_configured(mesh, blend, &PrinterProfile::default(), &quiet)
+                    .expect("slice");
+                let dt = before.sanity.travel_length_mm - after.sanity.travel_length_mm;
+                let ds = before.estimate.seconds - after.estimate.seconds;
+                println!(
+                    "{:<16} {:<8} {:>10.1} {:>10.1} {:>8} {:>8} {:>10.1} {:>10.1} {:>8.1} {:>8.1}  dTravel {:+.1} mm  dTime {:+.1} s  filament {:.2}->{:.2} g  retract {}->{}  travel_opt {:.1}->{:.1} ms",
+                    name,
+                    label,
+                    before.sanity.travel_length_mm,
+                    after.sanity.travel_length_mm,
+                    before.sanity.travel_moves,
+                    after.sanity.travel_moves,
+                    before.estimate.seconds,
+                    after.estimate.seconds,
+                    before.core_ms,
+                    after.core_ms,
+                    dt,
+                    ds,
+                    before.estimate.filament_g,
+                    after.estimate.filament_g,
+                    before.sanity.retracts,
+                    after.sanity.retracts,
+                    before.stages.travel_ms,
+                    after.stages.travel_ms
+                );
+            }
+        }
     }
 }

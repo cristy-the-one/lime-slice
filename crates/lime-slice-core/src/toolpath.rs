@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::poly::{
     boolean_diff, boolean_intersect, boolean_union, drop_slivers, in_solid, loop_bounds,
@@ -1768,8 +1769,33 @@ pub fn seat_layer_start(
     cursor
 }
 
+/// Test hook. Off in every slice unless a report test turns it on. SeqCst so a
+/// rayon worker observes the store that happened before `optimize_travel`.
+static LEGACY_TRAVEL: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+#[doc(hidden)]
+pub(crate) fn set_legacy_travel_for_test(on: bool) {
+    LEGACY_TRAVEL.store(on, Ordering::SeqCst);
+}
+
+/// A new infill order has to beat nearest-neighbor by this much or the group
+/// stays on the old sequence. Stops float noise from rewriting G-code.
+const TRAVEL_WIN_MM: f64 = 0.05;
+
+/// Rep points within this distance belong to one island. The link is
+/// transitive, so a dense gyroid or a rectilinear field becomes one island
+/// and a real gap between parts does not.
+const ISLAND_GAP_MM: f64 = 2.2;
+
 /// Reorder each feature group and slide nearest seams toward the nozzle.
 /// `combing` routes travels through an inset of the solid and retracts only when that route is blocked.
+///
+/// Walls, skirt, and closed thin-walls keep the original nearest-neighbor
+/// order so scarf seams stay put. Infill, solid, gap fill, and support try
+/// island order, a Hilbert start, and a stripe snake, and keep one only when
+/// the seated travel is shorter. Closed infill loops may also move their seam
+/// to the nearest vertex; the extruded loop does not change.
 pub fn optimize_travel(paths: &mut Vec<Extrusion>, solid: &[Loop], combing: bool, inset: f64) {
     if paths.len() < 2 {
         return;
@@ -1793,62 +1819,1065 @@ pub fn optimize_travel(paths: &mut Vec<Extrusion>, solid: &[Loop], combing: bool
         Vec::new()
     };
     let (solid, inset_loops) = (Outline::new(solid), Outline::new(&inset_loops));
-    let mut cursor = [0.0, 0.0];
-    let mut has_cursor = false;
+    let legacy_only = LEGACY_TRAVEL.load(Ordering::SeqCst);
+    // `emit_*` follows the points written into this pass (what combing sees).
+    // `seat_*` follows the seam `seat_layer_start` will actually use, which is
+    // what the next feature's travel is measured from.
+    let mut emit_c = [0.0, 0.0];
+    let mut emit_has = false;
+    let mut seat_c = [0.0, 0.0];
+    let mut seat_has = false;
     let mut out = Vec::with_capacity(grouped.iter().map(|g| g.len()).sum());
     for group in grouped {
-        let mut pending = group;
-        let mut ordered = Vec::with_capacity(pending.len());
-        while !pending.is_empty() {
-            let mut best_i = 0usize;
-            let mut best_d = f64::MAX;
-            let mut best_rev = false;
-            for (i, path) in pending.iter().enumerate() {
-                if path.points.is_empty() {
-                    continue;
+        let infill = group
+            .first()
+            .is_some_and(|p| infill_travel_group(p.travel_group()));
+        let ordered = if !legacy_only && infill && group.len() >= 2 {
+            order_infill(group, emit_c, emit_has, seat_c, seat_has)
+        } else {
+            order_nearest(group, emit_c, emit_has)
+        };
+        for mut path in ordered {
+            if emit_has {
+                if let Some(start) = path.points.first().copied() {
+                    path.take_comb(comb_between(&solid, &inset_loops, emit_c, start, combing));
                 }
-                let start = path.points[0];
-                let end = *path.points.last().unwrap();
-                let ds = if has_cursor {
-                    dist2(cursor, start)
-                } else {
-                    0.0
-                };
-                if ds < best_d {
-                    best_d = ds;
-                    best_i = i;
-                    best_rev = false;
-                }
-                if !path.is_loop() && path.points.len() >= 2 {
-                    let de = if has_cursor { dist2(cursor, end) } else { ds };
-                    if de + 1e-9 < best_d {
-                        best_d = de;
-                        best_i = i;
-                        best_rev = true;
+            }
+            seat_c = seat_after(&path, seat_c, seat_has);
+            if !path.points.is_empty() {
+                seat_has = true;
+            }
+            if let Some(end) = path.points.last().copied() {
+                emit_c = end;
+                emit_has = true;
+            }
+            out.push(path);
+        }
+    }
+    *paths = out;
+}
+
+fn infill_travel_group(kind: PathKind) -> bool {
+    matches!(
+        kind,
+        PathKind::GapFill
+            | PathKind::Infill
+            | PathKind::Sparse
+            | PathKind::Solid
+            | PathKind::Top
+            | PathKind::Bridge
+            | PathKind::Support
+            | PathKind::SupportInterface
+    )
+}
+
+fn order_infill(
+    paths: Vec<Extrusion>,
+    emit_c: [f64; 2],
+    emit_has: bool,
+    seat_c: [f64; 2],
+    seat_has: bool,
+) -> Vec<Extrusion> {
+    let n = paths.len();
+    let closed = paths.iter().any(geom_closed);
+    let legacy = legacy_nn_indices(&paths, emit_c, emit_has);
+    let off = walk_cost(&paths, &legacy, seat_c, seat_has, false);
+    let on = if closed {
+        walk_cost(&paths, &legacy, seat_c, seat_has, true)
+    } else {
+        off
+    };
+    let mut best = if on + TRAVEL_WIN_MM < off {
+        Choice {
+            order: legacy.clone(),
+            cost: on,
+            rotate: true,
+        }
+    } else {
+        Choice {
+            order: legacy.clone(),
+            cost: off,
+            rotate: false,
+        }
+    };
+    // Open paths already score both ends in the legacy scan, so a second
+    // nearest-neighbor pass only pays off once closed seams move the target.
+    let mut candidates = vec![hilbert_order(&paths, seat_c, seat_has), (0..n).collect()];
+    if closed {
+        candidates.insert(0, nn_order(&paths, seat_c, seat_has));
+    }
+    let comps = islands(&paths);
+    if comps.len() > 1 {
+        candidates.push(island_order(&paths, &comps, seat_c, seat_has));
+    }
+    candidates.extend(stripe_orders(&paths));
+    for order in candidates {
+        consider(&paths, order, seat_c, seat_has, closed, &mut best);
+    }
+    let polished = polish_order(&paths, &best.order, seat_c, seat_has, best.rotate);
+    if polished != best.order {
+        for rotate in [best.rotate, !best.rotate] {
+            if rotate && !closed {
+                continue;
+            }
+            let cost = walk_cost(&paths, &polished, seat_c, seat_has, rotate);
+            if cost + 1e-6 < best.cost {
+                best.cost = cost;
+                best.order = polished.clone();
+                best.rotate = rotate;
+            }
+        }
+    }
+    if !best.rotate && best.order == legacy {
+        return order_nearest(paths, emit_c, emit_has);
+    }
+    apply_order(paths, &best.order, seat_c, seat_has, best.rotate)
+}
+
+struct Choice {
+    order: Vec<usize>,
+    cost: f64,
+    rotate: bool,
+}
+
+fn consider(
+    paths: &[Extrusion],
+    order: Vec<usize>,
+    cursor: [f64; 2],
+    has: bool,
+    closed: bool,
+    best: &mut Choice,
+) {
+    if !is_perm(&order, paths.len()) {
+        return;
+    }
+    for rotate in [false, true] {
+        if rotate && !closed {
+            continue;
+        }
+        let cost = walk_cost(paths, &order, cursor, has, rotate);
+        if cost + TRAVEL_WIN_MM < best.cost {
+            best.cost = cost;
+            best.order = order.clone();
+            best.rotate = rotate;
+        }
+    }
+}
+
+fn is_perm(order: &[usize], n: usize) -> bool {
+    if order.len() != n {
+        return false;
+    }
+    let mut seen = vec![false; n];
+    for &i in order {
+        if i >= n || seen[i] {
+            return false;
+        }
+        seen[i] = true;
+    }
+    true
+}
+
+/// Greedy nearest neighbor. Open paths may flip; closed paths score the nearest
+/// vertex, which is the seam a later rotate will use.
+fn nn_order(paths: &[Extrusion], cursor: [f64; 2], has: bool) -> Vec<usize> {
+    let pool: Vec<usize> = (0..paths.len()).collect();
+    nn_pool(paths, &pool, cursor, has)
+}
+
+fn nn_pool(paths: &[Extrusion], pool: &[usize], mut cursor: [f64; 2], mut has: bool) -> Vec<usize> {
+    let bounds: Vec<([f64; 2], [f64; 2])> = paths.iter().map(path_bounds).collect();
+    let mut pending = pool.to_vec();
+    let mut out = Vec::with_capacity(pending.len());
+    while !pending.is_empty() {
+        let mut best_at = 0usize;
+        let mut best_d = f64::MAX;
+        let mut best_idx = usize::MAX;
+        for (i, &idx) in pending.iter().enumerate() {
+            if has && box_dist2(bounds[idx].0, bounds[idx].1, cursor) >= best_d {
+                continue;
+            }
+            let d = approach_dist2(&paths[idx], cursor, has);
+            if d < best_d - 1e-12 || ((d - best_d).abs() <= 1e-12 && idx < best_idx) {
+                best_d = d;
+                best_at = i;
+                best_idx = idx;
+            }
+        }
+        let idx = pending.swap_remove(best_at);
+        if !paths[idx].points.is_empty() {
+            cursor = oriented_ends(&paths[idx], cursor, has, true).1;
+            has = true;
+        }
+        out.push(idx);
+    }
+    out
+}
+
+fn island_order(
+    paths: &[Extrusion],
+    comps: &[Vec<usize>],
+    mut cursor: [f64; 2],
+    mut has: bool,
+) -> Vec<usize> {
+    let mut remaining: Vec<Vec<usize>> = comps.to_vec();
+    let mut out = Vec::with_capacity(paths.len());
+    while !remaining.is_empty() {
+        let mut best = 0usize;
+        let mut best_d = f64::MAX;
+        let mut best_key = usize::MAX;
+        for (ci, comp) in remaining.iter().enumerate() {
+            let key = comp[0];
+            let d = comp
+                .iter()
+                .map(|&idx| approach_dist2(&paths[idx], cursor, has))
+                .fold(f64::MAX, f64::min);
+            if d < best_d - 1e-12 || ((d - best_d).abs() <= 1e-12 && key < best_key) {
+                best_d = d;
+                best = ci;
+                best_key = key;
+            }
+        }
+        let comp = remaining.swap_remove(best);
+        let sub = nn_pool(paths, &comp, cursor, has);
+        for &idx in &sub {
+            if !paths[idx].points.is_empty() {
+                cursor = oriented_ends(&paths[idx], cursor, has, true).1;
+                has = true;
+            }
+        }
+        out.extend(sub);
+    }
+    out
+}
+
+fn islands(paths: &[Extrusion]) -> Vec<Vec<usize>> {
+    let n = paths.len();
+    let reps: Vec<Vec<[f64; 2]>> = paths.iter().map(rep_points).collect();
+    let mut parent: Vec<usize> = (0..n).collect();
+    let gap2 = ISLAND_GAP_MM * ISLAND_GAP_MM;
+    let cell = ISLAND_GAP_MM;
+    let key = |p: [f64; 2]| ((p[0] / cell).floor() as i64, (p[1] / cell).floor() as i64);
+    let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (i, pts) in reps.iter().enumerate() {
+        for p in pts {
+            grid.entry(key(*p)).or_default().push(i);
+        }
+    }
+    for i in 0..n {
+        for p in &reps[i] {
+            let (cx, cy) = key(*p);
+            for gx in cx - 1..=cx + 1 {
+                for gy in cy - 1..=cy + 1 {
+                    let Some(ids) = grid.get(&(gx, gy)) else {
+                        continue;
+                    };
+                    for &j in ids {
+                        if j <= i {
+                            continue;
+                        }
+                        let ri = find(&mut parent, i);
+                        let rj = find(&mut parent, j);
+                        if ri == rj {
+                            continue;
+                        }
+                        if rep_dist2(&reps[i], &reps[j]) <= gap2 {
+                            unite(&mut parent, i, j);
+                        }
                     }
                 }
             }
-            let mut path = pending.swap_remove(best_i);
-            if best_rev {
-                path.points.reverse();
+        }
+    }
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for i in 0..n {
+        groups.entry(find(&mut parent, i)).or_default().push(i);
+    }
+    let mut comps: Vec<Vec<usize>> = groups.into_values().collect();
+    for comp in &mut comps {
+        comp.sort_unstable();
+    }
+    comps.sort_by_key(|comp| comp[0]);
+    comps
+}
+
+fn find(parent: &mut [usize], mut i: usize) -> usize {
+    while parent[i] != i {
+        parent[i] = parent[parent[i]];
+        i = parent[i];
+    }
+    i
+}
+
+fn unite(parent: &mut [usize], a: usize, b: usize) {
+    let mut a = find(parent, a);
+    let mut b = find(parent, b);
+    if a == b {
+        return;
+    }
+    if a > b {
+        std::mem::swap(&mut a, &mut b);
+    }
+    parent[b] = a;
+}
+
+fn hilbert_order(paths: &[Extrusion], cursor: [f64; 2], has: bool) -> Vec<usize> {
+    let n = paths.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let cents: Vec<[f64; 2]> = paths.iter().map(centroid).collect();
+    let mut min = [f64::INFINITY; 2];
+    let mut max = [f64::NEG_INFINITY; 2];
+    for c in &cents {
+        min[0] = min[0].min(c[0]);
+        min[1] = min[1].min(c[1]);
+        max[0] = max[0].max(c[0]);
+        max[1] = max[1].max(c[1]);
+    }
+    let span = (max[0] - min[0]).max(max[1] - min[1]).max(1e-9);
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| {
+        hilbert_key(cents[a], min, span)
+            .cmp(&hilbert_key(cents[b], min, span))
+            .then(a.cmp(&b))
+    });
+    if !has {
+        return order;
+    }
+    let start = order
+        .iter()
+        .enumerate()
+        .min_by(|(_, ia), (_, ib)| {
+            approach_dist2(&paths[**ia], cursor, true)
+                .total_cmp(&approach_dist2(&paths[**ib], cursor, true))
+                .then((**ia).cmp(*ib))
+        })
+        .map(|(pos, _)| pos)
+        .unwrap_or(0);
+    let mut fwd = Vec::with_capacity(n);
+    fwd.extend_from_slice(&order[start..]);
+    fwd.extend_from_slice(&order[..start]);
+    let mut rev = Vec::with_capacity(n);
+    for k in 0..n {
+        rev.push(order[(start + n - k) % n]);
+    }
+    let cf = walk_cost(paths, &fwd, cursor, has, true);
+    let cr = walk_cost(paths, &rev, cursor, has, true);
+    if cr + 1e-6 < cf {
+        rev
+    } else {
+        fwd
+    }
+}
+
+fn hilbert_key(p: [f64; 2], min: [f64; 2], span: f64) -> u64 {
+    let x = (((p[0] - min[0]) / span).clamp(0.0, 1.0) * 65535.0).round() as u32;
+    let y = (((p[1] - min[1]) / span).clamp(0.0, 1.0) * 65535.0).round() as u32;
+    hilbert_d(x.min(65535), y.min(65535))
+}
+
+fn hilbert_d(mut x: u32, mut y: u32) -> u64 {
+    let mut d = 0u64;
+    let mut s = 1u32 << 15;
+    while s > 0 {
+        let rx = u32::from((x & s) > 0);
+        let ry = u32::from((y & s) > 0);
+        d += u64::from(s) * u64::from(s) * u64::from((3 * rx) ^ ry);
+        if ry == 0 {
+            if rx == 1 {
+                x = 65535 - x;
+                y = 65535 - y;
             }
-            if has_cursor && path.is_loop() && path.retract_min_travel > 2.0 {
-                rotate_closed_to(&mut path.points, cursor);
+            std::mem::swap(&mut x, &mut y);
+        }
+        s >>= 1;
+    }
+    d
+}
+
+fn stripe_orders(paths: &[Extrusion]) -> Vec<Vec<usize>> {
+    let n = paths.len();
+    if n < 4 || paths.iter().any(geom_closed) {
+        return Vec::new();
+    }
+    let angs: Vec<Option<f64>> = paths.iter().map(line_angle).collect();
+    let known: Vec<f64> = angs.iter().copied().flatten().collect();
+    if known.len() * 4 < n * 3 {
+        return Vec::new();
+    }
+    let mut bins = [0u32; 18];
+    for a in &known {
+        let bin = ((a / std::f64::consts::PI) * 18.0).floor() as usize % 18;
+        bins[bin] += 1;
+    }
+    let dom = bins
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(&a.0)))
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let axis = (dom as f64 + 0.5) * std::f64::consts::PI / 18.0;
+    let axis_v = (axis + std::f64::consts::FRAC_PI_2).rem_euclid(std::f64::consts::PI);
+    let mut along = Vec::new();
+    let mut across = Vec::new();
+    let mut rest = Vec::new();
+    for (i, ang) in angs.iter().enumerate() {
+        match ang {
+            Some(a) if angle_near(*a, axis) => along.push(i),
+            Some(a) if angle_near(*a, axis_v) => across.push(i),
+            _ => rest.push(i),
+        }
+    }
+    if (along.len() + across.len()) * 4 < n * 3 {
+        return Vec::new();
+    }
+    let snake_a = snake(&along, paths, axis);
+    let snake_b = snake(&across, paths, axis_v);
+    let mut first = Vec::with_capacity(n);
+    first.extend_from_slice(&snake_a);
+    first.extend_from_slice(&snake_b);
+    first.extend_from_slice(&rest);
+    if across.is_empty() {
+        return vec![first];
+    }
+    let mut second = Vec::with_capacity(n);
+    second.extend_from_slice(&snake_b);
+    second.extend_from_slice(&snake_a);
+    second.extend_from_slice(&rest);
+    vec![first, second]
+}
+
+fn angle_near(a: f64, axis: f64) -> bool {
+    let d = (a - axis).abs().rem_euclid(std::f64::consts::PI);
+    let d = d.min(std::f64::consts::PI - d);
+    d <= 20.0_f64.to_radians()
+}
+
+fn line_angle(path: &Extrusion) -> Option<f64> {
+    if path.points.len() < 2 {
+        return None;
+    }
+    let a = path.points[0];
+    let b = *path.points.last().unwrap();
+    if dist2(a, b) < 0.2 * 0.2 {
+        return None;
+    }
+    Some(
+        (b[1] - a[1])
+            .atan2(b[0] - a[0])
+            .rem_euclid(std::f64::consts::PI),
+    )
+}
+
+fn snake(indices: &[usize], paths: &[Extrusion], axis: f64) -> Vec<usize> {
+    if indices.is_empty() {
+        return Vec::new();
+    }
+    let dir = [axis.cos(), axis.sin()];
+    let nrm = [-dir[1], dir[0]];
+    let mut items: Vec<(f64, f64, usize)> = indices
+        .iter()
+        .map(|&i| {
+            let pts = &paths[i].points;
+            let a = pts[0];
+            let b = *pts.last().unwrap();
+            let c = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+            (
+                c[0] * nrm[0] + c[1] * nrm[1],
+                c[0] * dir[0] + c[1] * dir[1],
+                i,
+            )
+        })
+        .collect();
+    items.sort_by(|a, b| {
+        a.0.total_cmp(&b.0)
+            .then(a.1.total_cmp(&b.1))
+            .then(a.2.cmp(&b.2))
+    });
+    let mut rows: Vec<Vec<(f64, usize)>> = Vec::new();
+    let mut row_n = 0.0;
+    for (n, t, i) in items {
+        if rows.is_empty() || (n - row_n).abs() > 0.22 {
+            rows.push(Vec::new());
+            row_n = n;
+        }
+        rows.last_mut().unwrap().push((t, i));
+    }
+    let mut flip = false;
+    let mut out = Vec::with_capacity(indices.len());
+    for mut row in rows {
+        row.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        if flip {
+            row.reverse();
+        }
+        flip = !flip;
+        out.extend(row.into_iter().map(|(_, i)| i));
+    }
+    out
+}
+
+/// Move paths that sit on a long travel next to a spatial neighbor when that
+/// shortens the seated tour. Caps the scan so a fat layer cannot nest an
+/// O(n²) search inside every candidate.
+fn polish_order(
+    paths: &[Extrusion],
+    order: &[usize],
+    cursor: [f64; 2],
+    has: bool,
+    rotate: bool,
+) -> Vec<usize> {
+    let n = order.len();
+    // Large groups already have a spatial candidate. The relocation search is
+    // for the myopic case (a long chord stealing a small neighborhood).
+    if !(3..=160).contains(&n) {
+        return order.to_vec();
+    }
+    let neighbors = k_nearest(paths, 8);
+    let mut order = order.to_vec();
+    let mut cost = walk_cost(paths, &order, cursor, has, rotate);
+    for _ in 0..24 {
+        let dirs = build_dirs(paths, &order, cursor, has, rotate);
+        let mut hot: Vec<(f64, usize)> = Vec::new();
+        if has && !dirs.is_empty() {
+            let d = dist_mm(cursor, dirs[0].start);
+            if d > 1.5 {
+                hot.push((d, 0));
             }
-            if has_cursor {
-                if let Some(start) = path.points.first().copied() {
-                    path.take_comb(comb_between(&solid, &inset_loops, cursor, start, combing));
+        }
+        for i in 0..n.saturating_sub(1) {
+            let d = dist_mm(dirs[i].end, dirs[i + 1].start);
+            if d > 1.5 {
+                hot.push((d, i));
+                hot.push((d, i + 1));
+            }
+        }
+        if hot.is_empty() {
+            break;
+        }
+        hot.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+        hot.dedup_by(|a, b| a.1 == b.1);
+        hot.truncate(24);
+        let mut pos = vec![0usize; paths.len()];
+        for (p, dir) in dirs.iter().enumerate() {
+            pos[dir.index] = p;
+        }
+        let mut improved = false;
+        for (_, t) in hot {
+            let idx = dirs[t].index;
+            for &nb in &neighbors[idx] {
+                let t2 = pos[nb];
+                for raw_at in [t2, t2 + 1] {
+                    let mut trial = order.clone();
+                    let item = trial.remove(t);
+                    let at = insert_at(raw_at, t, trial.len());
+                    if at == t {
+                        continue;
+                    }
+                    trial.insert(at, item);
+                    let next = walk_cost(paths, &trial, cursor, has, rotate);
+                    if next + TRAVEL_WIN_MM < cost {
+                        order = trial;
+                        cost = next;
+                        improved = true;
+                        break;
+                    }
+                }
+                if improved {
+                    break;
                 }
             }
-            if let Some(end) = path.points.last().copied() {
-                cursor = end;
-                has_cursor = true;
+            if improved {
+                break;
             }
-            ordered.push(path);
         }
-        out.extend(ordered);
+        if !improved {
+            break;
+        }
     }
-    *paths = out;
+    order
+}
+
+fn insert_at(raw_at: usize, removed: usize, len_after_remove: usize) -> usize {
+    let at = if raw_at > removed { raw_at - 1 } else { raw_at };
+    at.min(len_after_remove)
+}
+
+fn k_nearest(paths: &[Extrusion], k: usize) -> Vec<Vec<usize>> {
+    let n = paths.len();
+    let k = k.min(n.saturating_sub(1));
+    let reps: Vec<Vec<[f64; 2]>> = paths.iter().map(rep_points).collect();
+    if k == 0 {
+        return vec![Vec::new(); n];
+    }
+    if n <= 400 {
+        return brute_nearest(&reps, k);
+    }
+    grid_nearest(&reps, k)
+}
+
+fn brute_nearest(reps: &[Vec<[f64; 2]>], k: usize) -> Vec<Vec<usize>> {
+    let n = reps.len();
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut best: Vec<(f64, usize)> = Vec::new();
+        for j in 0..n {
+            if i == j {
+                continue;
+            }
+            best.push((rep_dist2(&reps[i], &reps[j]), j));
+        }
+        best.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        best.truncate(k);
+        out.push(best.into_iter().map(|(_, j)| j).collect());
+    }
+    out
+}
+
+fn grid_nearest(reps: &[Vec<[f64; 2]>], k: usize) -> Vec<Vec<usize>> {
+    let n = reps.len();
+    let cell = 4.0_f64;
+    let key = |p: [f64; 2]| ((p[0] / cell).floor() as i64, (p[1] / cell).floor() as i64);
+    let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (i, pts) in reps.iter().enumerate() {
+        for p in pts {
+            grid.entry(key(*p)).or_default().push(i);
+        }
+    }
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut best: Vec<(f64, usize)> = Vec::new();
+        let mut seen = vec![false; n];
+        seen[i] = true;
+        for ring in 0..=6 {
+            for p in &reps[i] {
+                let (cx, cy) = key(*p);
+                for gx in cx - ring..=cx + ring {
+                    for gy in cy - ring..=cy + ring {
+                        let Some(ids) = grid.get(&(gx, gy)) else {
+                            continue;
+                        };
+                        for &j in ids {
+                            if seen[j] {
+                                continue;
+                            }
+                            seen[j] = true;
+                            best.push((rep_dist2(&reps[i], &reps[j]), j));
+                        }
+                    }
+                }
+            }
+            if best.len() >= k {
+                break;
+            }
+        }
+        best.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        best.truncate(k);
+        out.push(best.into_iter().map(|(_, j)| j).collect());
+    }
+    out
+}
+
+fn rep_points(path: &Extrusion) -> Vec<[f64; 2]> {
+    let pts = &path.points;
+    if pts.len() < 2 {
+        return pts.clone();
+    }
+    if geom_closed(path) {
+        let ring = pts.len() - 1;
+        let step = (ring / 12).max(1);
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < ring {
+            out.push(pts[i]);
+            i += step;
+        }
+        out
+    } else {
+        vec![pts[0], pts[pts.len() / 2], *pts.last().unwrap()]
+    }
+}
+
+fn rep_dist2(a: &[[f64; 2]], b: &[[f64; 2]]) -> f64 {
+    let mut best = f64::MAX;
+    for p in a {
+        for q in b {
+            let d = dist2(*p, *q);
+            if d < best {
+                best = d;
+            }
+        }
+    }
+    best
+}
+
+fn centroid(path: &Extrusion) -> [f64; 2] {
+    if path.points.is_empty() {
+        return [0.0, 0.0];
+    }
+    let n = if geom_closed(path) {
+        path.points.len() - 1
+    } else {
+        path.points.len()
+    };
+    let n = n.max(1);
+    let mut x = 0.0;
+    let mut y = 0.0;
+    for p in path.points.iter().take(n) {
+        x += p[0];
+        y += p[1];
+    }
+    let n = n as f64;
+    [x / n, y / n]
+}
+
+struct TourStop {
+    index: usize,
+    start: [f64; 2],
+    end: [f64; 2],
+}
+
+fn walk_cost(
+    paths: &[Extrusion],
+    order: &[usize],
+    cursor: [f64; 2],
+    has: bool,
+    rotate: bool,
+) -> f64 {
+    tour_cost(&build_dirs(paths, order, cursor, has, rotate), cursor, has)
+}
+
+fn build_dirs(
+    paths: &[Extrusion],
+    order: &[usize],
+    mut cursor: [f64; 2],
+    mut has: bool,
+    rotate: bool,
+) -> Vec<TourStop> {
+    let mut dirs = Vec::with_capacity(order.len());
+    for &idx in order {
+        let (start, end) = oriented_ends(&paths[idx], cursor, has, rotate);
+        if !paths[idx].points.is_empty() {
+            cursor = end;
+            has = true;
+        }
+        dirs.push(TourStop {
+            index: idx,
+            start,
+            end,
+        });
+    }
+    dirs
+}
+
+fn tour_cost(dirs: &[TourStop], cursor: [f64; 2], has: bool) -> f64 {
+    if dirs.is_empty() {
+        return 0.0;
+    }
+    let mut cost = if has {
+        dist_mm(cursor, dirs[0].start)
+    } else {
+        0.0
+    };
+    for w in dirs.windows(2) {
+        cost += dist_mm(w[0].end, w[1].start);
+    }
+    cost
+}
+
+fn oriented_ends(
+    path: &Extrusion,
+    cursor: [f64; 2],
+    has: bool,
+    rotate_seams: bool,
+) -> ([f64; 2], [f64; 2]) {
+    let pts = &path.points;
+    if pts.is_empty() {
+        return (cursor, cursor);
+    }
+    if !has {
+        return (pts[0], *pts.last().unwrap());
+    }
+    if path.is_loop() || (rotate_seams && geom_closed(path)) {
+        let v = nearest_vertex(path, cursor);
+        return (v, v);
+    }
+    let a = pts[0];
+    let b = *pts.last().unwrap();
+    if dist2(cursor, b) + 1e-9 < dist2(cursor, a) {
+        (b, a)
+    } else {
+        (a, b)
+    }
+}
+
+fn path_bounds(path: &Extrusion) -> ([f64; 2], [f64; 2]) {
+    let mut min = [f64::INFINITY; 2];
+    let mut max = [f64::NEG_INFINITY; 2];
+    for p in &path.points {
+        min[0] = min[0].min(p[0]);
+        min[1] = min[1].min(p[1]);
+        max[0] = max[0].max(p[0]);
+        max[1] = max[1].max(p[1]);
+    }
+    if path.points.is_empty() {
+        ([0.0, 0.0], [0.0, 0.0])
+    } else {
+        (min, max)
+    }
+}
+
+fn box_dist2(min: [f64; 2], max: [f64; 2], p: [f64; 2]) -> f64 {
+    let dx = if p[0] < min[0] {
+        min[0] - p[0]
+    } else if p[0] > max[0] {
+        p[0] - max[0]
+    } else {
+        0.0
+    };
+    let dy = if p[1] < min[1] {
+        min[1] - p[1]
+    } else if p[1] > max[1] {
+        p[1] - max[1]
+    } else {
+        0.0
+    };
+    dx * dx + dy * dy
+}
+
+fn approach_dist2(path: &Extrusion, cursor: [f64; 2], has: bool) -> f64 {
+    if path.points.is_empty() {
+        return if has { f64::MAX } else { 0.0 };
+    }
+    if !has {
+        return 0.0;
+    }
+    if path.is_loop() || geom_closed(path) {
+        nearest_dist2(path, cursor)
+    } else {
+        dist2(cursor, path.points[0]).min(dist2(cursor, *path.points.last().unwrap()))
+    }
+}
+
+fn nearest_dist2(path: &Extrusion, hint: [f64; 2]) -> f64 {
+    let ring = ring_len(path);
+    path.points
+        .iter()
+        .take(ring)
+        .map(|p| dist2(*p, hint))
+        .fold(f64::MAX, f64::min)
+}
+
+fn nearest_vertex(path: &Extrusion, hint: [f64; 2]) -> [f64; 2] {
+    let ring = ring_len(path);
+    let mut best = path.points[0];
+    let mut best_d = f64::MAX;
+    for p in path.points.iter().take(ring) {
+        let d = dist2(*p, hint);
+        if d < best_d {
+            best_d = d;
+            best = *p;
+        }
+    }
+    best
+}
+
+fn ring_len(path: &Extrusion) -> usize {
+    if geom_closed(path) {
+        path.points.len() - 1
+    } else {
+        path.points.len().max(1)
+    }
+}
+
+fn geom_closed(path: &Extrusion) -> bool {
+    let n = path.points.len();
+    n >= 4 && dist2(path.points[0], path.points[n - 1]) < 1e-8
+}
+
+fn apply_order(
+    paths: Vec<Extrusion>,
+    order: &[usize],
+    mut cursor: [f64; 2],
+    mut has: bool,
+    rotate: bool,
+) -> Vec<Extrusion> {
+    let mut slots: Vec<Option<Extrusion>> = paths.into_iter().map(Some).collect();
+    let mut out = Vec::with_capacity(order.len());
+    for &idx in order {
+        let mut path = slots[idx].take().unwrap();
+        orient_path(&mut path, cursor, has, rotate);
+        if let Some(end) = path.points.last().copied() {
+            cursor = end;
+            has = true;
+        }
+        out.push(path);
+    }
+    out
+}
+
+fn orient_path(path: &mut Extrusion, cursor: [f64; 2], has: bool, rotate_seams: bool) {
+    if path.points.is_empty() || !has {
+        return;
+    }
+    if path.is_loop() || (rotate_seams && geom_closed(path)) {
+        rotate_closed_extrusion(path, cursor);
+        return;
+    }
+    let a = path.points[0];
+    let b = *path.points.last().unwrap();
+    if path.points.len() >= 2 && dist2(cursor, b) + 1e-9 < dist2(cursor, a) {
+        reverse_open(path);
+    }
+}
+
+fn rotate_closed_extrusion(path: &mut Extrusion, hint: [f64; 2]) {
+    let n = path.points.len();
+    if n < 4 || dist2(path.points[0], path.points[n - 1]) >= 1e-8 {
+        return;
+    }
+    let ring = n - 1;
+    let mut best = 0usize;
+    let mut best_d = f64::MAX;
+    for (i, p) in path.points.iter().take(ring).enumerate() {
+        let d = dist2(*p, hint);
+        if d < best_d {
+            best_d = d;
+            best = i;
+        }
+    }
+    if best == 0 {
+        return;
+    }
+    path.points.pop();
+    path.points.rotate_left(best);
+    let first = path.points[0];
+    path.points.push(first);
+    rotate_frac(&mut path.z_frac, best, n);
+    rotate_frac(&mut path.flow_frac, best, n);
+}
+
+fn rotate_frac(frac: &mut Vec<f64>, best: usize, n: usize) {
+    if frac.len() != n || best == 0 {
+        return;
+    }
+    frac.pop();
+    frac.rotate_left(best);
+    let first = frac[0];
+    frac.push(first);
+}
+
+fn reverse_open(path: &mut Extrusion) {
+    let n = path.points.len();
+    path.points.reverse();
+    if path.z_frac.len() == n {
+        path.z_frac.reverse();
+    }
+    if path.flow_frac.len() == n {
+        path.flow_frac.reverse();
+    }
+}
+
+fn seat_after(path: &Extrusion, cursor: [f64; 2], has: bool) -> [f64; 2] {
+    if path.points.is_empty() {
+        return cursor;
+    }
+    if !has {
+        return *path.points.last().unwrap();
+    }
+    if path.is_loop() {
+        return nearest_vertex(path, cursor);
+    }
+    let a = path.points[0];
+    let b = *path.points.last().unwrap();
+    if dist2(cursor, b) + 1e-9 < dist2(cursor, a) {
+        a
+    } else {
+        b
+    }
+}
+
+fn legacy_nn_indices(paths: &[Extrusion], mut cursor: [f64; 2], mut has: bool) -> Vec<usize> {
+    let mut pending: Vec<usize> = (0..paths.len()).collect();
+    let mut out = Vec::with_capacity(pending.len());
+    while !pending.is_empty() {
+        let mut best_i = 0usize;
+        let mut best_d = f64::MAX;
+        let mut best_rev = false;
+        for (i, &idx) in pending.iter().enumerate() {
+            let path = &paths[idx];
+            if path.points.is_empty() {
+                continue;
+            }
+            let start = path.points[0];
+            let end = *path.points.last().unwrap();
+            let ds = if has { dist2(cursor, start) } else { 0.0 };
+            if ds < best_d {
+                best_d = ds;
+                best_i = i;
+                best_rev = false;
+            }
+            if !path.is_loop() && path.points.len() >= 2 {
+                let de = if has { dist2(cursor, end) } else { ds };
+                if de + 1e-9 < best_d {
+                    best_d = de;
+                    best_i = i;
+                    best_rev = true;
+                }
+            }
+        }
+        let idx = pending.swap_remove(best_i);
+        let path = &paths[idx];
+        if path.points.is_empty() {
+            out.push(idx);
+            continue;
+        }
+        if best_rev {
+            cursor = path.points[0];
+            has = true;
+        } else if has && path.is_loop() && path.retract_min_travel > 2.0 {
+            cursor = nearest_vertex(path, cursor);
+            has = true;
+        } else if let Some(end) = path.points.last() {
+            cursor = *end;
+            has = true;
+        }
+        out.push(idx);
+    }
+    out
+}
+
+fn order_nearest(paths: Vec<Extrusion>, mut cursor: [f64; 2], mut has: bool) -> Vec<Extrusion> {
+    let order = legacy_nn_indices(&paths, cursor, has);
+    let mut slots: Vec<Option<Extrusion>> = paths.into_iter().map(Some).collect();
+    let mut out = Vec::with_capacity(order.len());
+    for idx in order {
+        let mut path = slots[idx].take().unwrap();
+        if !path.points.is_empty() {
+            let start = path.points[0];
+            let end = *path.points.last().unwrap();
+            let rev = has
+                && !path.is_loop()
+                && path.points.len() >= 2
+                && dist2(cursor, end) + 1e-9 < dist2(cursor, start);
+            if rev {
+                path.points.reverse();
+            }
+            if has && path.is_loop() && path.retract_min_travel > 2.0 {
+                rotate_closed_to(&mut path.points, cursor);
+            }
+            if let Some(end) = path.points.last() {
+                cursor = *end;
+                has = true;
+            }
+        }
+        out.push(path);
+    }
+    out
+}
+
+fn dist_mm(a: [f64; 2], b: [f64; 2]) -> f64 {
+    dist2(a, b).sqrt()
 }
 
 fn rotate_closed_to(pts: &mut Vec<[f64; 2]>, hint: [f64; 2]) {
@@ -2510,4 +3539,144 @@ fn polyline_len(pts: &[[f64; 2]]) -> f64 {
             dx.hypot(dy)
         })
         .sum()
+}
+
+#[cfg(test)]
+mod travel_tests {
+    use super::*;
+    use crate::strategy::{pure, StrategyId};
+
+    fn path(kind: PathKind, pts: Vec<[f64; 2]>) -> Extrusion {
+        extrusion(kind, &pure(StrategyId::Speed), pts, 0.45)
+    }
+
+    /// Euclidean travel after `seat_layer_start` would orient open paths and
+    /// wall seams. Closed infill keeps the seam `optimize_travel` wrote.
+    fn nozzle_travel(paths: &[Extrusion]) -> f64 {
+        let mut cursor = [0.0, 0.0];
+        let mut has = false;
+        let mut travel = 0.0;
+        for path in paths {
+            if path.points.is_empty() {
+                continue;
+            }
+            if !has {
+                cursor = *path.points.last().unwrap();
+                has = true;
+                continue;
+            }
+            if path.is_loop() {
+                let v = nearest_vertex(path, cursor);
+                travel += dist_mm(cursor, v);
+                cursor = v;
+            } else {
+                let a = path.points[0];
+                let b = *path.points.last().unwrap();
+                if dist2(cursor, b) + 1e-9 < dist2(cursor, a) {
+                    travel += dist_mm(cursor, b);
+                    cursor = a;
+                } else {
+                    travel += dist_mm(cursor, a);
+                    cursor = b;
+                }
+            }
+        }
+        travel
+    }
+
+    #[test]
+    fn long_chord_does_not_pull_the_nozzle_off_nearby_infill() {
+        let mut paths = vec![path(
+            PathKind::Outer,
+            vec![[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2], [0.0, 0.0]],
+        )];
+        paths.push(path(PathKind::Sparse, vec![[0.05, 0.0], [80.0, 0.0]]));
+        for i in 0..6 {
+            let y = 2.0 + i as f64;
+            paths.push(path(PathKind::Sparse, vec![[0.0, y], [3.0, y]]));
+        }
+        optimize_travel(&mut paths, &[], false, 0.4);
+        let travel = nozzle_travel(&paths);
+        assert!(
+            travel < 30.0,
+            "nearby infill should print before the 80 mm chord, travel {travel:.1} mm"
+        );
+    }
+
+    #[test]
+    fn closed_infill_starts_at_the_near_vertex() {
+        let mut paths = vec![
+            path(PathKind::Sparse, vec![[0.0, 0.0], [10.0, 10.0]]),
+            path(
+                PathKind::Sparse,
+                vec![
+                    [0.0, 0.0],
+                    [10.0, 0.0],
+                    [10.0, 10.0],
+                    [0.0, 10.0],
+                    [0.0, 0.0],
+                ],
+            ),
+        ];
+        optimize_travel(&mut paths, &[], false, 0.4);
+        let travel = nozzle_travel(&paths);
+        assert!(travel < 1.0, "seam or order left {travel:.2} mm");
+        if paths[0].points.len() == 2 {
+            let seam = paths[1].points[0];
+            assert!(
+                (seam[0] - 10.0).abs() < 1e-6 && (seam[1] - 10.0).abs() < 1e-6,
+                "seam {seam:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn walls_stay_ahead_of_infill() {
+        let mut paths = vec![
+            path(
+                PathKind::Outer,
+                vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0], [0.0, 0.0]],
+            ),
+            path(
+                PathKind::Outer,
+                vec![
+                    [20.0, 0.0],
+                    [24.0, 0.0],
+                    [24.0, 4.0],
+                    [20.0, 4.0],
+                    [20.0, 0.0],
+                ],
+            ),
+            path(PathKind::Sparse, vec![[1.0, 1.0], [3.0, 1.0]]),
+            path(PathKind::Sparse, vec![[1.0, 2.0], [3.0, 2.0]]),
+        ];
+        optimize_travel(&mut paths, &[], false, 0.4);
+        let kinds: Vec<_> = paths.iter().map(|p| p.kind).collect();
+        assert!(
+            kinds.starts_with(&[PathKind::Outer, PathKind::Outer]),
+            "{kinds:?}"
+        );
+        assert!(kinds[2..].iter().all(|k| *k == PathKind::Sparse));
+    }
+
+    #[test]
+    fn travel_order_is_deterministic() {
+        let mut once = vec![
+            path(PathKind::Sparse, vec![[0.0, 0.0], [8.0, 0.0]]),
+            path(PathKind::Sparse, vec![[30.0, 5.0], [34.0, 5.0]]),
+            path(PathKind::Sparse, vec![[0.0, 2.0], [8.0, 2.0]]),
+            path(PathKind::Sparse, vec![[30.0, 7.0], [34.0, 7.0]]),
+        ];
+        let mut twice = once.clone();
+        optimize_travel(&mut once, &[], false, 0.4);
+        optimize_travel(&mut twice, &[], false, 0.4);
+        let a: Vec<_> = once.iter().map(|p| p.points.clone()).collect();
+        let b: Vec<_> = twice.iter().map(|p| p.points.clone()).collect();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn hilbert_of_the_origin_is_zero() {
+        assert_eq!(hilbert_d(0, 0), 0);
+    }
 }
