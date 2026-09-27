@@ -1696,6 +1696,55 @@ mod tests {
     }
 
     #[test]
+    fn a_speed_merge_never_loads_a_trunk_past_its_capacity() {
+        // Two full trunks 0.5 mm apart, 20 mm down. The legacy cone test takes
+        // either one into the other. At speed one 4.2 mm trunk that long is
+        // rated for 5.2 * (2.1 / 0.4)^2 / (1 + 20 / 28) = 83.6 tip-units.
+        let grow = |load_factor| Grow {
+            height: 0.2,
+            lean: 0.84,
+            tip_r: 0.4,
+            trunk_r: 2.1,
+            xy_gap: 0.55,
+            next_is_bed: false,
+            load_factor,
+        };
+        let pair = |load| {
+            vec![[0.0, 0.0], [0.5, 0.0]]
+                .into_iter()
+                .zip(1..)
+                .map(|(xy, id)| Node {
+                    id,
+                    xy,
+                    radius: 2.1,
+                    dist: 20.0,
+                    freeze: 0,
+                    load,
+                    to_bed: true,
+                })
+                .collect::<Vec<_>>()
+        };
+        let loads = |nodes: &[Node]| nodes.iter().map(|n| n.load).collect::<Vec<_>>();
+
+        let mut over = pair(60.0);
+        merge_nodes(&mut over, &grow(5.2), 0.39);
+        assert_eq!(
+            loads(&over),
+            vec![60.0, 60.0],
+            "120 tip-units on a trunk rated 83.6"
+        );
+
+        let mut under = pair(30.0);
+        merge_nodes(&mut under, &grow(5.2), 0.39);
+        assert_eq!(loads(&under), vec![60.0]);
+
+        // Toughness has no load rating, so its legacy merge stands.
+        let mut tough = pair(60.0);
+        merge_nodes(&mut tough, &grow(1.5), 0.39);
+        assert_eq!(loads(&tough), vec![120.0]);
+    }
+
+    #[test]
     fn a_packed_tip_stands_at_the_centre_of_the_samples_it_carries() {
         // An L of samples, all within 5 mm of the first. The tip moves off
         // the corner to their centroid.
