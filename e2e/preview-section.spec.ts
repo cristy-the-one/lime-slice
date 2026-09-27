@@ -201,6 +201,40 @@ async function zoomPart(page: Page) {
   await page.waitForTimeout(400);
 }
 
+function sectionOffsetOf(text: string) {
+  return Number(text.match(/·\s*(-?\d+(?:\.\d+)?)\s*mm/)?.[1]);
+}
+
+/** Mean horizontal position of the aim rings, as a fraction of the 3D view width. */
+async function ringAnchor(page: Page): Promise<{ x: number; n: number }> {
+  const png = await page.locator("#view3d").screenshot();
+  return page.evaluate(async (data) => {
+    const img = new Image();
+    img.src = `data:image/png;base64,${data}`;
+    await img.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = img.width;
+    canvas.height = img.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return { x: 1, n: 0 };
+    ctx.drawImage(img, 0, 0);
+    const px = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    const rings: number[][] = [[0xe8, 0x5d, 0x4c], [0x8f, 0xce, 0x6a], [0x6a, 0xa7, 0xff]];
+    let n = 0;
+    let sum = 0;
+    for (let i = 0; i < px.length; i += 4) {
+      const r = px[i];
+      const g = px[i + 1];
+      const b = px[i + 2];
+      const hit = rings.some((c) => Math.abs(r - c[0]) + Math.abs(g - c[1]) + Math.abs(b - c[2]) < 70);
+      if (!hit) continue;
+      n += 1;
+      sum += (i / 4) % canvas.width;
+    }
+    return { x: n ? sum / n / canvas.width : 1, n };
+  }, png.toString("base64"));
+}
+
 async function setOffset(page: Page, value: string) {
   await page.locator("#sectionOffset").evaluate((el, next) => {
     const input = el as HTMLInputElement;
@@ -229,17 +263,17 @@ test("section plane clips 3D beads, travels, and the solid ghost", async ({ page
   await page.locator("#sectionOn").check();
   await setOffset(page, "0");
   const ghostHalf = await colorBuckets(page, "ghost-half");
+  const rings = await ringAnchor(page);
+  const beforeDrag = sectionOffsetOf(await page.locator("#sectionReadout").innerText());
   const box = (await page.locator("#view3d").boundingBox())!;
   const x = box.x + box.width / 2;
   const y = box.y + box.height / 2;
   await page.mouse.move(x, y);
   await page.mouse.down();
-  await page.mouse.move(x, y + 200, { steps: 16 });
+  await page.mouse.move(x, y + 48, { steps: 8 });
   await page.mouse.up();
-  await page.waitForTimeout(300);
-  const dragged = await page.locator("#sectionReadout").innerText();
-  const ghostDragged = await colorBuckets(page, "ghost-dragged");
-  const draggedOffset = Number(dragged.match(/·\s*(-?\d+(?:\.\d+)?)\s*mm/)?.[1]);
+  await page.waitForTimeout(200);
+  const afterDrag = sectionOffsetOf(await page.locator("#sectionReadout").innerText());
   await setOffset(page, "min");
   const ghostCut = await colorBuckets(page, "ghost-cut");
 
@@ -267,8 +301,9 @@ test("section plane clips 3D beads, travels, and the solid ghost", async ({ page
   expect(ghostFull.lime).toBeGreaterThan(10000);
   expect(ghostHalf.lime).toBeGreaterThan(ghostFull.lime * 0.15);
   expect(ghostHalf.lime).toBeLessThan(ghostFull.lime * 0.75);
-  expect(draggedOffset).toBeLessThan(-1);
-  expect(ghostDragged.lime).toBeLessThan(ghostHalf.lime * 0.75);
+  expect(rings.n).toBeGreaterThan(200);
+  expect(rings.x).toBeLessThan(0.34);
+  expect(Math.abs(afterDrag - beforeDrag)).toBeLessThan(0.2);
   expect(ghostCut.lime).toBeLessThan(ghostFull.lime * 0.05);
   expect(beadsFull.pigment).toBeGreaterThan(4000);
   expect(beadsHalf.pigment).toBeGreaterThan(beadsFull.pigment * 0.2);
