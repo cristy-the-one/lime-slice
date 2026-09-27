@@ -9,6 +9,7 @@ import { DEFAULT_PRESET, diffPreset, presetKeys, readPresets, writePresets, type
 import { loadProfile, profileJson, saveProfile, type PrinterProfile } from "./profiles";
 import { layerWeight, resolved, type ResolvedCard } from "./strategy";
 import { applyTheme, loadTheme, onSchemeChange, themeColors, type ThemeChoice } from "./theme";
+import { clampOffset, clipPolyline, flipSection, keepsPoint, layerCut, sectionReach, type SectionSpec, type Vec3 } from "./section-plane";
 import { createSliceView, type RibbonBuffers, type SliceView3d } from "./view3d";
 
 const API = "http://127.0.0.1:43118";
@@ -157,6 +158,12 @@ const state = {
   help: false,
   splitCustom: false,
   poseHud: "",
+  /** 0 hides the build plate, 1 is the solid plate. Preview only. */
+  bedOpacity: 0.4,
+  sectionOn: false,
+  sectionNormal: [0, 0, 1] as Vec3,
+  sectionOffset: 0,
+  sectionHud: "",
 };
 
 const worker = new Worker(new URL("./slice-worker.ts", import.meta.url), { type: "module" });
@@ -225,6 +232,18 @@ app.innerHTML = `
               <option value="speed">Speed</option>
             </select>
           </label>
+          <label class="view-inline" title="Build plate opacity. 0 hides the plate. Does not change the slice.">
+            Bed
+            <input id="bedOpacity" type="range" min="0" max="100" value="40" aria-label="Bed opacity" />
+          </label>
+          <label class="check" id="sectionField" title="Clip the preview on the arrow side of a free plane. The layer range still applies. Does not change the slice.">
+            <input id="sectionOn" type="checkbox" /> Section
+          </label>
+          <label class="view-inline" id="sectionOffsetField" hidden title="Distance from the part center along the section normal. Shift snaps the sheet drag to 1 mm.">
+            Cut
+            <input id="sectionOffset" type="range" min="-100" max="100" step="0.1" value="0" aria-label="Section offset" />
+          </label>
+          <button class="btn" id="sectionFlip" type="button" hidden title="Hide the other side of the section plane">Flip</button>
         </div>
         <div class="stage-body" id="prepareBody" hidden>
           <canvas id="prepare" aria-label="Model on the build plate"></canvas>
@@ -242,7 +261,10 @@ app.innerHTML = `
           </div>
           <div class="previews">
             <div class="pane" id="pane2d"><canvas id="view" aria-label="2D toolpath"></canvas></div>
-            <div class="pane" id="pane3d"><canvas id="view3d" aria-label="3D toolpath"></canvas></div>
+            <div class="pane" id="pane3d">
+              <canvas id="view3d" aria-label="3D toolpath"></canvas>
+              <div class="section-readout" id="sectionReadout" hidden></div>
+            </div>
           </div>
         </div>
         <div class="gcode-pane" id="gcodePane" hidden></div>
@@ -275,6 +297,8 @@ app.innerHTML = `
         <li>Drag a ring on Prepare to rotate. <kbd>Shift</kbd> snaps 15°</li>
         <li>Drag an arrow to move the mesh. <kbd>Shift</kbd> snaps 1 mm</li>
         <li>Drag the split plane when By region is on</li>
+        <li>Bed fades the build plate. 0 hides it</li>
+        <li>Section clips the preview. Rings aim the plane, the sheet or Cut slider moves it. Layers still apply. Neither changes the slice</li>
         <li><kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> Layer</li>
         <li><kbd>?</kbd> This sheet</li>
       </ul>
@@ -289,6 +313,15 @@ const view3d: SliceView3d = createSliceView(document.querySelector<HTMLCanvasEle
 const prepare = createPrepareView(document.querySelector<HTMLCanvasElement>("#prepare")!);
 prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
 view3d.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
+prepare.setBedOpacity(state.bedOpacity);
+view3d.setBedOpacity(state.bedOpacity);
+view3d.onSection((spec, hud) => {
+  state.sectionNormal = spec.normal;
+  state.sectionOffset = spec.offset;
+  state.sectionHud = hud;
+  paintSectionChrome();
+  draw();
+});
 let shown: SliceResponse | null = null;
 /** Slice job that produced state.result; geometry buffers carry the same id. */
 let resultJob = 0;
@@ -307,7 +340,7 @@ function stale() {
 function settingsHash() {
   const shift = state.offset;
   const mesh = state.mesh ? `${state.mesh.name}:${state.mesh.bytes.byteLength}:${state.partScale}:${state.centered}:${shift.x.toFixed(3)},${shift.y.toFixed(3)},${shift.z.toFixed(3)}:${state.orient.join(",")}` : "";
-  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, ...rest } = state;
+  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, ...rest } = state;
   return JSON.stringify({ mesh, profile: state.profile, rest });
 }
 
@@ -1285,6 +1318,31 @@ document.querySelector("#colorBy")!.addEventListener("change", (ev) => {
   state.colorMode = (ev.target as HTMLSelectElement).value as ColorMode;
   draw();
 });
+document.querySelector("#bedOpacity")!.addEventListener("input", (ev) => {
+  state.bedOpacity = Math.min(1, Math.max(0, Number((ev.target as HTMLInputElement).value) / 100));
+  prepare.setBedOpacity(state.bedOpacity);
+  view3d.setBedOpacity(state.bedOpacity);
+});
+document.querySelector("#sectionOn")!.addEventListener("change", (ev) => {
+  state.sectionOn = (ev.target as HTMLInputElement).checked;
+  state.sectionHud = "";
+  paintSectionChrome();
+  draw();
+});
+document.querySelector("#sectionOffset")!.addEventListener("input", (ev) => {
+  state.sectionOffset = clampOffset(Number((ev.target as HTMLInputElement).value), sectionLimit());
+  state.sectionHud = "";
+  paintSectionChrome();
+  draw();
+});
+document.querySelector("#sectionFlip")!.addEventListener("click", () => {
+  const next = flipSection({ normal: state.sectionNormal, offset: state.sectionOffset });
+  state.sectionNormal = next.normal;
+  state.sectionOffset = next.offset;
+  state.sectionHud = "";
+  paintSectionChrome();
+  draw();
+});
 document.querySelector("#legend")!.addEventListener("change", (ev) => {
   const input = ev.target as HTMLInputElement;
   const kind = input.dataset.kind;
@@ -1452,6 +1510,7 @@ function setStage(stage: "prepare" | "preview" | "gcode") {
   document.querySelector("#legend")?.toggleAttribute("hidden", stage !== "preview");
   document.querySelector("#viewModes")?.toggleAttribute("hidden", stage !== "preview");
   document.querySelector(".stage-tools")?.toggleAttribute("hidden", stage === "prepare");
+  paintSectionChrome();
   paintGcode();
   resize();
 }
@@ -2010,6 +2069,69 @@ function resize() {
   draw();
 }
 
+function previewCenter(): Vec3 | null {
+  const mesh = state.result?.mesh;
+  if (mesh) {
+    return [
+      (mesh.min[0] + mesh.max[0]) / 2,
+      (mesh.min[1] + mesh.max[1]) / 2,
+      (mesh.min[2] + mesh.max[2]) / 2,
+    ];
+  }
+  if (!state.placed) return null;
+  const bounds = boundsOf(state.placed);
+  return [
+    (bounds.min[0] + bounds.max[0]) / 2,
+    (bounds.min[1] + bounds.max[1]) / 2,
+    (bounds.min[2] + bounds.max[2]) / 2,
+  ];
+}
+
+function sectionLimit() {
+  const mesh = state.result?.mesh;
+  if (mesh) return sectionReach(mesh.min, mesh.max);
+  if (state.placed) {
+    const bounds = boundsOf(state.placed);
+    return sectionReach(bounds.min, bounds.max);
+  }
+  return 100;
+}
+
+function activeSection(): SectionSpec | null {
+  if (!state.sectionOn) return null;
+  return { normal: state.sectionNormal, offset: state.sectionOffset };
+}
+
+function sectionKeeps(x: number, y: number, z: number) {
+  const spec = activeSection();
+  const center = previewCenter();
+  if (!spec || !center) return true;
+  return keepsPoint([x, y, z], center, spec);
+}
+
+function paintSectionChrome() {
+  const preview = state.stage === "preview";
+  const on = state.sectionOn;
+  document.querySelector<HTMLElement>("#sectionField")!.hidden = !preview;
+  document.querySelector<HTMLElement>("#sectionOffsetField")!.hidden = !(preview && on);
+  document.querySelector<HTMLElement>("#sectionFlip")!.hidden = !(preview && on);
+  document.querySelector<HTMLInputElement>("#sectionOn")!.checked = on;
+  const slider = document.querySelector<HTMLInputElement>("#sectionOffset")!;
+  const reach = sectionLimit();
+  slider.min = (-reach).toFixed(2);
+  slider.max = reach.toFixed(2);
+  if (document.activeElement !== slider) slider.value = String(state.sectionOffset);
+  const readout = document.querySelector<HTMLElement>("#sectionReadout")!;
+  readout.hidden = !(preview && on);
+  if (preview && on) {
+    if (state.sectionHud) readout.textContent = state.sectionHud;
+    else {
+      const n = state.sectionNormal.map((v) => v.toFixed(2)).join(" ");
+      readout.textContent = `Section ${n} · ${state.sectionOffset.toFixed(1)} mm · hides arrow side · layers still apply`;
+    }
+  }
+}
+
 function draw() {
   const w = canvas.width;
   const h = canvas.height;
@@ -2035,6 +2157,9 @@ function draw() {
   const oy = (h - spanY * scale) / 2;
   const map = (x: number, y: number): [number, number] => [ox + (x - mesh.min[0]) * scale, h - (oy + (y - mesh.min[1]) * scale)];
   const played = movesNow()[state.move];
+  const section = activeSection();
+  const center = previewCenter();
+  const layerZ = layer.z;
   pathsOf(layer).forEach((path, pathIndex) => {
     if (state.hidden.has(path.kind)) return;
     if (path.kind === "travel" && !state.showTravel) return;
@@ -2045,20 +2170,55 @@ function draw() {
   ctx.setLineDash([]);
   function strokePts(path: PreviewPath, from: number, to: number, alpha: number) {
     if (to - from < 1) return;
-    ctx.beginPath();
-    for (let i = from; i < to; i++) {
-      const [x, y] = map(path.pts[i][0], path.pts[i][1]);
-      if (i === from) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
     ctx.globalAlpha = alpha;
     ctx.strokeStyle = colorForPath(path.kind, state.colorMode, path.toughness ?? 0, path.effectiveSpeed ?? path.speed ?? 0);
     ctx.lineWidth = path.kind === "travel" ? 1 : Math.max(1.2, scale * 0.1);
     ctx.setLineDash(path.kind === "travel" ? [4, 4] : []);
-    ctx.stroke();
+    const runs = section && center
+      ? clipPolyline(path.pts, path.zs, layerZ, from, to, center, section)
+      : null;
+    if (!runs) {
+      ctx.beginPath();
+      for (let i = from; i < to; i++) {
+        const [x, y] = map(path.pts[i][0], path.pts[i][1]);
+        if (i === from) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    } else {
+      for (const run of runs) {
+        ctx.beginPath();
+        run.forEach(([x, y], i) => {
+          const [px, py] = map(x, y);
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        });
+        ctx.stroke();
+      }
+    }
     ctx.globalAlpha = 1;
   }
-  if (played) {
+  if (section && center) {
+    const seam = layerCut(layer.z, {
+      minX: mesh.min[0],
+      minY: mesh.min[1],
+      maxX: mesh.max[0],
+      maxY: mesh.max[1],
+    }, center, section);
+    if (seam) {
+      const [ax, ay] = map(seam[0][0], seam[0][1]);
+      const [bx, by] = map(seam[1][0], seam[1][1]);
+      ctx.setLineDash([6 * (window.devicePixelRatio || 1), 4 * (window.devicePixelRatio || 1)]);
+      ctx.strokeStyle = colors.amber;
+      ctx.lineWidth = 1.5 * (window.devicePixelRatio || 1);
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+  if (played && sectionKeeps(played.x, played.y, played.z)) {
     const [x, y] = map(played.x, played.y);
     ctx.fillStyle = colors.amber;
     ctx.beginPath();
@@ -2110,12 +2270,15 @@ function sync3d() {
   view3d.setColorMode(state.colorMode);
   view3d.setShowTravel(state.showTravel && !state.hidden.has("travel"));
   view3d.setRange(state.rangeLow, state.layer);
+  view3d.setSection(state.sectionOn ? { normal: state.sectionNormal, offset: state.sectionOffset } : null);
   const moves = movesNow();
   const point = moves[state.move];
   const shownLayer = state.result?.layers[state.layer];
   const prev = point && shownLayer ? segmentStart(pathsOf(shownLayer), point) : null;
-  view3d.setPlayhead(point && prev ? { x0: prev[0], y0: prev[1], z0: point.z, x1: point.x, y1: point.y, z1: point.z } : null);
+  const headOn = point && prev && sectionKeeps(point.x, point.y, point.z);
+  view3d.setPlayhead(headOn ? { x0: prev[0], y0: prev[1], z0: point.z, x1: point.x, y1: point.y, z1: point.z } : null);
   syncPlanes();
+  paintSectionChrome();
   view3d.resize();
 }
 

@@ -258,6 +258,25 @@ button { cursor: pointer; }
 .stage.stale .previews { opacity: 0.45; }
 .viewbar, .stage-tools, .legend { flex-shrink: 0; }
 .viewbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px 0; flex-wrap: wrap; }
+.view-inline { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.view-inline input[type="range"] { width: 88px; }
+#sectionField[hidden], #sectionOffsetField[hidden], #sectionFlip[hidden] { display: none; }
+.section-readout {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  max-width: calc(100% - 20px);
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 12px;
+  pointer-events: none;
+  z-index: 2;
+}
+.section-readout[hidden] { display: none; }
 .modes { display: flex; gap: 4px; }
 .btn.mode[aria-pressed="true"], .btn.mode.on { background: var(--amber); color: var(--on-accent); border-color: var(--amber); }
 .stage-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(72px, 72px) minmax(0, 1fr); }

@@ -13,6 +13,7 @@ type Drag = HandleHit | { kind: "cut" } | null;
 export interface PrepareView {
   setMesh(positions: Float32Array | null, frameCamera?: boolean): void;
   setBed(x: number, y: number, z: number): void;
+  setBedOpacity(opacity: number): void;
   setSplit(split: { axis: SplitAxis; at: number } | null): void;
   onSplit(cb: ((at: number) => void) | null): void;
   onRotate(cb: ((axis: Axis, deltaDeg: number, totalDeg: number) => void) | null): void;
@@ -45,7 +46,13 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
 
   let bed = new THREE.GridHelper(1, 10, hexToThree(colors.line), hexToThree(colors.bedMinor));
   scene.add(bed);
-  const plateMat = new THREE.MeshBasicMaterial({ color: 0x161a22, side: THREE.DoubleSide });
+  const plateMat = new THREE.MeshBasicMaterial({
+    color: 0x161a22,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.4,
+    depthWrite: false,
+  });
   const plate = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), plateMat);
   plate.rotation.x = -Math.PI / 2;
   scene.add(plate);
@@ -458,6 +465,19 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       cutKey = "";
       layoutBed();
       rebuildCut();
+    },
+    setBedOpacity(opacity) {
+      const o = Math.min(1, Math.max(0, opacity));
+      const solid = o >= 0.999;
+      const transparent = !solid;
+      if (plateMat.transparent !== transparent || plateMat.depthWrite !== solid) {
+        plateMat.transparent = transparent;
+        plateMat.depthWrite = solid;
+        plateMat.needsUpdate = true;
+      }
+      plateMat.opacity = o;
+      plate.visible = o > 0.004;
+      requestRender();
     },
     setMesh(positions, frameCamera = false) {
       requestRender();
