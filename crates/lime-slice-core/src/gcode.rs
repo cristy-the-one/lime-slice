@@ -1339,7 +1339,7 @@ fn move_time(dist: f64, v0: f64, v1: f64, cruise: f64, accel: f64) -> f64 {
 
 /// Klipper junction speed between two moves.
 ///
-/// `v² = min(cruise², jd * accel * sin(θ/2) / (1 - sin(θ/2)), centripetal)`.
+/// `v² = min(cruise², jd * accel * sin(θ/2) / (1 - sin(θ/2)), 0.5 * d * accel * tan(θ/2))`.
 /// A straight line returns the slower cruise. A reversal returns 0.
 fn klipper_junction(a: &KinMove, b: &KinMove, junction_deviation: f64) -> f64 {
     let n0 = hypot(a.exit_dir[0], a.exit_dir[1]).max(1e-9);
@@ -1353,6 +1353,7 @@ fn klipper_junction(a: &KinMove, b: &KinMove, junction_deviation: f64) -> f64 {
     }
     let junction_cos = (-dot).clamp(-0.999999, 0.999999);
     let sin_theta_d2 = (0.5 * (1.0 - junction_cos)).sqrt();
+    let cos_theta_d2 = (0.5 * (1.0 + junction_cos)).sqrt().max(1e-9);
     let denom = (1.0 - sin_theta_d2).max(1e-6);
     let r_jd = sin_theta_d2 / denom;
     let jd = junction_deviation.max(0.0);
@@ -1360,8 +1361,11 @@ fn klipper_junction(a: &KinMove, b: &KinMove, junction_deviation: f64) -> f64 {
         .min(r_jd * jd * b.accel)
         .min(a.cruise * a.cruise)
         .min(b.cruise * b.cruise);
-    v2 = v2.min(0.5 * a.dist * a.accel * sin_theta_d2);
-    v2 = v2.min(0.5 * b.dist * b.accel * sin_theta_d2);
+    // Klipper's centripetal cap: the circle through the junction touches
+    // each move no further than its midpoint, `0.5 · d · accel · tan(θ/2)`.
+    let tan_theta_d2 = sin_theta_d2 / cos_theta_d2;
+    v2 = v2.min(0.5 * a.dist * a.accel * tan_theta_d2);
+    v2 = v2.min(0.5 * b.dist * b.accel * tan_theta_d2);
     v2.max(0.0).sqrt()
 }
 
@@ -1648,6 +1652,17 @@ mod tests {
         assert!((t_reverse - t_stop).abs() < 1e-6, "{t_reverse} vs {t_stop}");
         let v = klipper_junction(&corner[0], &corner[1], 0.02);
         assert!(v > 5.0 && v < 80.0, "junction {v}");
+    }
+
+    #[test]
+    fn a_gentle_bend_between_short_moves_keeps_cruise() {
+        let bend = 5f64.to_radians();
+        let moves = [
+            kin(0.3, 40.0, 650.0, [1.0, 0.0]),
+            kin(0.3, 40.0, 650.0, [bend.cos(), bend.sin()]),
+        ];
+        let v = klipper_junction(&moves[0], &moves[1], 0.02);
+        assert!((v - 40.0).abs() < 1e-9, "junction {v}");
     }
 
     #[test]
