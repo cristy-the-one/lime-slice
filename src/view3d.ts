@@ -139,6 +139,8 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
 
   const clipPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 1e6);
   const clipPlanes = [clipPlane];
+  // Scene-space plane. Negative distance is the arrow side and is discarded in the fragment shader.
+  const sectionPlane = { value: new THREE.Vector4(0, 1, 0, 1e6) };
   const sectionRig = buildSectionRig();
   scene.add(sectionRig.root);
 
@@ -146,6 +148,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   let ghost: THREE.Mesh | null = null;
   let ghostSig = "";
   const ghostMat = new THREE.MeshBasicMaterial({ color: 0xc6f26d, clippingPlanes: clipPlanes });
+  attachSectionClip(ghostMat, sectionPlane);
   let face: THREE.Mesh | null = null;
   let travelLines: THREE.LineSegments | null = null;
   let ranges: LayerRange[] = [];
@@ -159,6 +162,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     palette: { value: new Float32Array(MAX_KINDS * 3) },
     hiddenKinds: { value: new Float32Array(MAX_KINDS) },
     mode: { value: 0 },
+    sectionPlane,
   };
   let planeSpec: { axis: "x" | "y"; at: number } | null = null;
   let planeCb: ((at: number) => void) | null = null;
@@ -274,14 +278,19 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     return model ? sectionReach(model.min, model.max) : 100;
   }
 
+  function writeClip(x: number, y: number, z: number, constant: number) {
+    clipPlane.set(new THREE.Vector3(x, y, z), constant);
+    sectionPlane.value.set(x, y, z, constant);
+  }
+
   function syncClip() {
     const center = partCenter();
     if (!section || !center) {
-      clipPlane.set(new THREE.Vector3(0, 1, 0), 1e6);
+      writeClip(0, 1, 0, 1e6);
       return;
     }
     const placed = threeClip(center, section);
-    clipPlane.set(new THREE.Vector3(...placed.normal), placed.constant);
+    writeClip(placed.normal[0], placed.normal[1], placed.normal[2], placed.constant);
   }
 
   function fitSection() {
@@ -720,7 +729,8 @@ const [SPEED_LO, SPEED_HI] = SPEED_RANGE_MM_S;
 
 /**
  * Colors each vertex from its (kind slot, blend weight, speed) triple; hidden kinds collapse off-screen.
- * Clipping chunks are required: a ShaderMaterial does not discard on clippingPlanes unless the shader samples them.
+ * `sectionPlane` is scene space (xyz = normal, w = constant). Fragments on the negative side are dropped.
+ * The Three.js clipping chunks sample the same plane; a ShaderMaterial does not discard unless it does this itself.
  * `mvPosition` is the name those chunks expect.
  */
 const PATH_VERTEX = `
@@ -729,11 +739,15 @@ uniform vec3 palette[${MAX_KINDS}];
 uniform float hiddenKinds[${MAX_KINDS}];
 uniform int mode;
 uniform float shade;
+uniform vec4 sectionPlane;
 varying vec3 vColor;
+varying float vSectionDist;
 #include <clipping_planes_pars_vertex>
 void main() {
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
   #include <clipping_planes_vertex>
+  vec4 worldPos = modelMatrix * vec4(position, 1.0);
+  vSectionDist = dot(worldPos.xyz, sectionPlane.xyz) + sectionPlane.w;
   int kind = int(info.x + 0.5);
   if (hiddenKinds[kind] > 0.5) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
@@ -749,12 +763,29 @@ void main() {
 const PATH_FRAGMENT = `
 uniform float alpha;
 varying vec3 vColor;
+varying float vSectionDist;
 #include <clipping_planes_pars_fragment>
 void main() {
   #include <clipping_planes_fragment>
+  if (vSectionDist < -0.0001) discard;
   gl_FragColor = vec4(vColor, alpha);
   #include <colorspace_fragment>
 }`;
+
+/** Same discard for the solid ghost, which is a built-in material. */
+function attachSectionClip(material: THREE.Material, plane: { value: THREE.Vector4 }) {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.sectionPlane = plane;
+    shader.vertexShader = `uniform vec4 sectionPlane;\nvarying float vSectionDist;\n${shader.vertexShader.replace(
+      "#include <project_vertex>",
+      "#include <project_vertex>\n\tvSectionDist = dot((modelMatrix * vec4(position, 1.0)).xyz, sectionPlane.xyz) + sectionPlane.w;",
+    )}`;
+    shader.fragmentShader = `uniform vec4 sectionPlane;\nvarying float vSectionDist;\n${shader.fragmentShader.replace(
+      "#include <opaque_fragment>",
+      "if (vSectionDist < -0.0001) discard;\n\t#include <opaque_fragment>",
+    )}`;
+  };
+}
 
 function pathMaterial(
   shared: Record<string, THREE.IUniform>,

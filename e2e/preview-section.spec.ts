@@ -229,6 +229,17 @@ test("section plane clips 3D beads, travels, and the solid ghost", async ({ page
   await page.locator("#sectionOn").check();
   await setOffset(page, "0");
   const ghostHalf = await colorBuckets(page, "ghost-half");
+  const box = (await page.locator("#view3d").boundingBox())!;
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x, y + 200, { steps: 16 });
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  const dragged = await page.locator("#sectionReadout").innerText();
+  const ghostDragged = await colorBuckets(page, "ghost-dragged");
+  const draggedOffset = Number(dragged.match(/·\s*(-?\d+(?:\.\d+)?)\s*mm/)?.[1]);
   await setOffset(page, "min");
   const ghostCut = await colorBuckets(page, "ghost-cut");
 
@@ -256,6 +267,8 @@ test("section plane clips 3D beads, travels, and the solid ghost", async ({ page
   expect(ghostFull.lime).toBeGreaterThan(10000);
   expect(ghostHalf.lime).toBeGreaterThan(ghostFull.lime * 0.15);
   expect(ghostHalf.lime).toBeLessThan(ghostFull.lime * 0.75);
+  expect(draggedOffset).toBeLessThan(-1);
+  expect(ghostDragged.lime).toBeLessThan(ghostHalf.lime * 0.75);
   expect(ghostCut.lime).toBeLessThan(ghostFull.lime * 0.05);
   expect(beadsFull.pigment).toBeGreaterThan(4000);
   expect(beadsHalf.pigment).toBeGreaterThan(beadsFull.pigment * 0.2);
