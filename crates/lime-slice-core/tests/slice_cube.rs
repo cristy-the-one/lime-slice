@@ -1567,7 +1567,8 @@ fn combing_does_not_cross_a_hole_without_retract() {
         .collect();
     assert!(
         long.is_empty(),
-        "bar-by-bar infill order should not throw a straight travel across the hole"
+        "bar-by-bar infill order should not throw a straight travel across the hole: {:?}",
+        long.iter().map(|c| (c.a, c.b)).collect::<Vec<_>>()
     );
 }
 
@@ -3425,14 +3426,14 @@ fn stage_times_cover_plan_and_emit() {
     let stages = response.stages;
     assert!(stages.toolpath_ms > 0.0, "{stages:?}");
     assert!(stages.emit_ms > 0.0, "{stages:?}");
-    // CPU time inside toolpaths, summed across cores. Not part of the wall-clock sum.
-    assert!(stages.travel_ms > 0.0, "{stages:?}");
-    assert!(stages.contour_ms >= 0.0 && stages.support_ms >= 0.0 && stages.seat_ms >= 0.0);
+    assert!(stages.order_ms > 0.0 && stages.comb_ms > 0.0, "{stages:?}");
+    assert!(stages.contour_ms >= 0.0 && stages.support_ms >= 0.0);
     assert!(response.mesh.simplify_ms >= 0.0);
     let named = stages.contour_ms
         + stages.support_ms
         + stages.toolpath_ms
-        + stages.seat_ms
+        + stages.order_ms
+        + stages.comb_ms
         + stages.emit_ms;
     assert!(
         named <= response.core_ms + 0.05,
@@ -3467,7 +3468,7 @@ fn dense_nozzle_simplify_bench() {
     };
     eprintln!(
         "{:<28} {:>10} {:>10} {:>8} {:>10} {:>10} {:>10} {:>10} {:>10} {:>8}",
-        "mesh", "src", "slice", "simp ms", "contour0", "contour1", "core0", "core1", "seat1", "g"
+        "mesh", "src", "slice", "simp ms", "contour0", "contour1", "core0", "core1", "order1", "g"
     );
     let report = |label: &str, mesh: &Mesh, with_supports: bool| {
         eprintln!(".. {label}");
@@ -3486,15 +3487,15 @@ fn dense_nozzle_simplify_bench() {
             after.stages.contour_ms,
             before.core_ms,
             after.core_ms,
-            after.stages.seat_ms,
+            after.stages.order_ms,
             after.estimate.filament_g
         );
         eprintln!(
-            "  supports {:.1} → {:.1} ms   seat {:.1} → {:.1} ms   print {:.1} s → {:.1} s   error {:.3} mm   sanity {} {}",
+            "  supports {:.1} → {:.1} ms   order {:.1} → {:.1} ms   print {:.1} s → {:.1} s   error {:.3} mm   sanity {} {}",
             before.stages.support_ms,
             after.stages.support_ms,
-            before.stages.seat_ms,
-            after.stages.seat_ms,
+            before.stages.order_ms,
+            after.stages.order_ms,
             before.estimate.seconds,
             after.estimate.seconds,
             after.mesh.simplify_error_mm,
