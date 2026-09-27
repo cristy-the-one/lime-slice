@@ -1537,7 +1537,7 @@ fn combing_does_not_cross_a_hole_without_retract() {
         "toughness should comb around a closed frame"
     );
 
-    // Without combing the straight travels cross the hole, and each must lift.
+    // Without combing, a straight travel that still crosses the hole must lift.
     let tough = slice_configured(
         &mesh,
         &tough_mode(),
@@ -1558,20 +1558,16 @@ fn combing_does_not_cross_a_hole_without_retract() {
             .map(|c| (c.a, c.b, c.scarf))
             .collect::<Vec<_>>()
     );
+    // Island order finishes one bar before the next, so a straight infill
+    // travel no longer has to cross the opening. Scarf ramps into a wall are
+    // not that travel. Smart hop on a blocked move is covered on the cube.
     let long: Vec<_> = tough_cross
         .iter()
         .filter(|c| !c.scarf && (c.a[0] - c.b[0]).hypot(c.a[1] - c.b[1]) >= 2.0)
         .collect();
     assert!(
-        !long.is_empty(),
-        "expected a long hole crossing on the frame"
-    );
-    assert!(
-        long.iter().all(|c| c.hopped),
-        "smart z-hop should lift a long retracted hole crossing (long {}, hopped {}, z-hops {})",
-        long.len(),
-        long.iter().filter(|c| c.hopped).count(),
-        tough.estimate.z_hops
+        long.is_empty(),
+        "bar-by-bar infill order should not throw a straight travel across the hole"
     );
 }
 
