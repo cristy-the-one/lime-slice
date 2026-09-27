@@ -256,55 +256,77 @@ async function arrowHandle(page: Page): Promise<{ axis: "x" | "y" | "z"; x: numb
   const scale = img.width / box.width;
   const sampled = samplePrepare(img);
   const focus = gizmoFocus(sampled.gizmo, 1.6 * GIZMO_SCREEN_PX * scale);
-  const cx = focus.cx;
-  const cy = focus.cy;
-  // Shaft band, inside the rings. An edge-on ring still sprays pixels through
-  // the middle; the real arrow is the color whose centroid sits away from center.
-  const inner = 0.22 * GIZMO_SCREEN_PX * scale;
-  const outer = 0.55 * GIZMO_SCREEN_PX * scale;
-  const buckets: Record<"x" | "y" | "z", { x: number; y: number }[]> = { x: [], y: [], z: [] };
-  for (let y = 0; y < img.height; y++) {
-    for (let x = 0; x < img.width; x++) {
-      const dist = Math.hypot(x - cx, y - cy);
-      if (dist < inner || dist > outer) continue;
-      const i = (y * img.width + x) * 4;
-      const family = gizmoFamily(img.data[i], img.data[i + 1], img.data[i + 2]);
-      if (!family) continue;
-      buckets[family].push({ x, y });
-    }
-  }
-  let axis: "x" | "y" | "z" = "x";
-  let bestLen = 0;
-  let ox = 1;
-  let oy = 0;
-  for (const key of ["x", "y", "z"] as const) {
-    const pts = buckets[key];
-    if (pts.length < 20) continue;
-    let sx = 0;
-    let sy = 0;
-    for (const p of pts) {
-      sx += p.x;
-      sy += p.y;
-    }
-    const dx = sx / pts.length - cx;
-    const dy = sy / pts.length - cy;
-    const len = Math.hypot(dx, dy);
-    if (len > bestLen) {
-      bestLen = len;
-      axis = key;
-      ox = dx;
-      oy = dy;
-    }
-  }
-  expect(bestLen, "arrow centroid collapsed into the ring").toBeGreaterThan(12 * scale);
-  const len = Math.hypot(ox, oy) || 1;
+  const aimed = aimArrow(focus.kept, focus.cx, focus.cy);
+  expect(aimed.margin, "no translate arrow stood out from its ring").toBeGreaterThan(18);
+  const len = Math.hypot(aimed.ox, aimed.oy) || 1;
   return {
-    axis,
-    x: box.x + (cx + ox) / scale,
-    y: box.y + (cy + oy) / scale,
-    dx: (ox / len) * 100,
-    dy: (oy / len) * 100,
+    axis: aimed.axis,
+    x: box.x + aimed.hitX / scale,
+    y: box.y + aimed.hitY / scale,
+    dx: (aimed.ox / len) * 110,
+    dy: (aimed.oy / len) * 110,
   };
+}
+
+/**
+ * An edge-on ring is a diameter, so its centroid sits on the gizmo center.
+ * The arrow is only the positive ray: the angular bin that beats the opposite bin.
+ */
+function aimArrow(pts: { x: number; y: number; family: "x" | "y" | "z" }[], cx: number, cy: number) {
+  const bins = 36;
+  const hist = new Array(40).fill(0);
+  for (const p of pts) hist[Math.min(39, Math.floor(Math.hypot(p.x - cx, p.y - cy) / 4))]++;
+  let mode = 12;
+  let modeN = 0;
+  for (let i = 8; i < 28; i++) {
+    if (hist[i] > modeN) {
+      modeN = hist[i];
+      mode = i;
+    }
+  }
+  const radius = (mode + 0.5) * 4;
+  const inner = 0.28 * radius;
+  const outer = 0.85 * radius;
+  let axis: "x" | "y" | "z" = "x";
+  let margin = -1;
+  let bestBin = 0;
+  for (const key of ["x", "y", "z"] as const) {
+    const counts = new Array(bins).fill(0);
+    for (const p of pts) {
+      if (p.family !== key) continue;
+      const d = Math.hypot(p.x - cx, p.y - cy);
+      if (d < inner || d > outer) continue;
+      const ang = Math.atan2(p.y - cy, p.x - cx);
+      const bin = Math.floor(((ang + Math.PI) / (2 * Math.PI)) * bins) % bins;
+      counts[bin] += 1;
+    }
+    for (let bin = 0; bin < bins; bin++) {
+      const score = counts[bin] - counts[(bin + bins / 2) % bins];
+      if (score > margin) {
+        margin = score;
+        axis = key;
+        bestBin = bin;
+      }
+    }
+  }
+  let sx = 0;
+  let sy = 0;
+  let n = 0;
+  for (const p of pts) {
+    if (p.family !== axis) continue;
+    const d = Math.hypot(p.x - cx, p.y - cy);
+    if (d < inner || d > outer) continue;
+    const ang = Math.atan2(p.y - cy, p.x - cx);
+    const bin = Math.floor(((ang + Math.PI) / (2 * Math.PI)) * bins) % bins;
+    const delta = Math.min(Math.abs(bin - bestBin), bins - Math.abs(bin - bestBin));
+    if (delta > 1) continue;
+    sx += p.x;
+    sy += p.y;
+    n += 1;
+  }
+  const hitX = n ? sx / n : cx + Math.cos((bestBin + 0.5) / bins * Math.PI * 2 - Math.PI) * radius * 0.55;
+  const hitY = n ? sy / n : cy + Math.sin((bestBin + 0.5) / bins * Math.PI * 2 - Math.PI) * radius * 0.55;
+  return { axis, margin, ox: hitX - cx, oy: hitY - cy, hitX, hitY };
 }
 
 function parsePlace(text: string) {
@@ -314,7 +336,7 @@ function parsePlace(text: string) {
 }
 
 function samplePrepare(img: { width: number; height: number; data: Buffer }) {
-  const gizmo: { x: number; y: number }[] = [];
+  const gizmo: { x: number; y: number; family: "x" | "y" | "z" }[] = [];
   let mesh = 0;
   let meshX = 0;
   let meshY = 0;
@@ -329,15 +351,16 @@ function samplePrepare(img: { width: number; height: number; data: Buffer }) {
         meshX += x;
         meshY += y;
       }
-      if (gizmoFamily(r, g, b)) gizmo.push({ x, y });
+      const family = gizmoFamily(r, g, b);
+      if (family) gizmo.push({ x, y, family });
     }
   }
   return { gizmo, mesh, meshX, meshY };
 }
 
 /** Pull onto the ring cluster so the bed-corner triad does not own the centroid. */
-function gizmoFocus(pts: { x: number; y: number }[], reach: number) {
-  if (pts.length === 0) return { cx: 0, cy: 0, kept: [] as { x: number; y: number }[] };
+function gizmoFocus<T extends { x: number; y: number }>(pts: T[], reach: number): { cx: number; cy: number; kept: T[] } {
+  if (pts.length === 0) return { cx: 0, cy: 0, kept: [] as T[] };
   let cx = 0;
   let cy = 0;
   for (const p of pts) {

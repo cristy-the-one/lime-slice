@@ -182,14 +182,16 @@ async function prepareGizmoPoint(page: Page): Promise<{ x: number; y: number; fx
     if (!ctx) return { fx: 1, fy: 0.5 };
     ctx.drawImage(img, 0, 0);
     const px = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-    const rings: number[][] = [[0xe8, 0x5d, 0x4c], [0x8f, 0xce, 0x6a], [0x6a, 0xa7, 0xff]];
     const pts: { x: number; y: number }[] = [];
+    const ringPixel = (r: number, g: number, b: number) =>
+      (r > 200 && g > 55 && g < 140 && b > 45 && b < 120 && r > g + 70)
+      || (r > 115 && r < 175 && g > 185 && g < 235 && b > 80 && b < 145 && g > r + 30)
+      || (b > 210 && r > 70 && r < 160 && g > 130 && g < 210 && b > g + 30);
     for (let i = 0; i < px.length; i += 4) {
       const r = px[i];
       const g = px[i + 1];
       const b = px[i + 2];
-      const hit = rings.some((c) => Math.abs(r - c[0]) + Math.abs(g - c[1]) + Math.abs(b - c[2]) < 70);
-      if (!hit) continue;
+      if (!ringPixel(r, g, b)) continue;
       const p = i / 4;
       pts.push({ x: p % canvas.width, y: Math.floor(p / canvas.width) });
     }
