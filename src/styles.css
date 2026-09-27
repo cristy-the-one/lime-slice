@@ -350,6 +350,12 @@ input[type="number"], input[type="text"], input[type="search"], select {
 .menu nav button { text-align: left; background: transparent; border: 0; padding: 8px 10px; }
 .meta { font-family: "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; font-size: 12px; line-height: 1.5; color: var(--muted); }
 .meta b { color: var(--text); font-weight: 500; }
+.stages { margin-top: 8px; }
+table.stages { width: 100%; border-collapse: collapse; font-family: "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; font-size: 12px; color: var(--muted); }
+table.stages td { padding: 1px 0; white-space: nowrap; }
+table.stages td:last-child { text-align: right; color: var(--text); }
+table.stages tr.sub td:first-child { padding-left: 1.1rem; }
+table.stages tr.total td { border-top: 1px solid var(--line); padding-top: 3px; color: var(--text); }
 .cards { display: grid; gap: 6px; }
 .card {
   text-align: left;

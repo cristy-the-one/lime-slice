@@ -48,6 +48,15 @@ interface SliceResponse {
     max: number[];
   };
   sanity: { ok: boolean; notes: string[]; layers: number; finalE: number; extrusionLengthMm: number };
+  stages?: {
+    contourMs: number;
+    supportMs: number;
+    seatMs: number;
+    toolpathMs: number;
+    emitMs: number;
+    /** CPU time inside toolpaths, summed across cores. Not wall clock. */
+    travelMs: number;
+  };
   estimate?: {
     seconds: number;
     filamentMm: number;
@@ -374,6 +383,7 @@ function renderChrome() {
     `)}
     <label class="check"><input id="autoslice" type="checkbox" ${state.autoSlice ? "checked" : ""}/> Auto-slice under 50k triangles</label>
     <div class="meta">${triangleMeta(result)}</div>
+    ${stageHtml(result)}
   `;
   applyFilter();
 
@@ -539,6 +549,46 @@ function triangleMeta(result: SliceResponse | null) {
     return `Triangles <b>${from}</b> → <b>${used}</b> · ${how}${budget}`;
   }
   return `Triangles <b>${used}</b>`;
+}
+function formatMs(ms: number) {
+  if (!Number.isFinite(ms)) return "—";
+  const n = Math.max(0, ms);
+  const text = n >= 100 ? `${n.toFixed(0)} ms` : `${n.toFixed(1)} ms`;
+  if (n >= 1000) return `${text} · ${(n / 1000).toFixed(n >= 10000 ? 1 : 2)} s`;
+  return text;
+}
+function stageHtml(result: SliceResponse | null) {
+  const stages = result?.stages;
+  if (!result || !stages) return "";
+  const named = stages.contourMs + stages.supportMs + stages.toolpathMs + stages.seatMs + stages.emitMs;
+  const other = Math.max(0, result.coreMs - named);
+  const simplify = result.mesh.simplifyMs ?? 0;
+  const cached = result.mesh.simplifyCached ? " · cached" : "";
+  const rows: [string, string, boolean][] = [
+    ["simplify", `${formatMs(simplify)}${cached}`, false],
+    ["contours", formatMs(stages.contourMs), false],
+    ["supports", formatMs(stages.supportMs), false],
+    ["toolpaths", formatMs(stages.toolpathMs), false],
+    ["travel", `${formatMs(stages.travelMs ?? 0)} · cpu`, false],
+    ["seat", formatMs(stages.seatMs), false],
+    ["emit", formatMs(stages.emitMs), false],
+  ];
+  if (other >= 1) rows.push(["other", formatMs(other), false]);
+  rows.push(["core", formatMs(result.coreMs), true]);
+  const title: Record<string, string> = {
+    simplify: "Before core. Cached is a lookup, not a rebuild",
+    travel: "CPU time inside toolpaths, summed across cores. Not wall clock, so it is not part of core",
+    other: "Untimed remainder of core: layer bands, roofs, z-hop",
+    core: "Plan and G-code emit. Simplify runs before this",
+  };
+  const body = rows
+    .map(([name, value, total]) => {
+      const tip = title[name] ? ` title="${title[name]}"` : "";
+      const cls = [total ? "total" : "", name === "travel" ? "sub" : ""].filter(Boolean).join(" ");
+      return `<tr${cls ? ` class="${cls}"` : ""}><td${tip}>${name}</td><td>${value}</td></tr>`;
+    })
+    .join("");
+  return `<div class="stages"><div class="meta">Slice stages</div><table class="stages">${body}</table></div>`;
 }
 function estimateHtml() {
   const est = state.result?.estimate;

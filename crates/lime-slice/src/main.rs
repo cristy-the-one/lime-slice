@@ -477,7 +477,7 @@ fn bench(input: &Path) -> Result<(), String> {
             response.estimate.max_seam_z_step_mm
         );
         println!(
-            "  simplify {} → {} tris in {:.1} ms{} (error {:.3} mm)  contours {:.1} ms  supports {:.1} ms  seat {:.1} ms  travel {:.1} ms",
+            "  simplify {} → {} tris in {:.1} ms{} (error {:.3} mm)  contours {:.1} ms  supports {:.1} ms  toolpaths {:.1} ms  seat {:.1} ms  emit {:.1} ms  travel {:.1} ms",
             response.mesh.source_triangles,
             response.mesh.triangles,
             response.mesh.simplify_ms,
@@ -489,7 +489,9 @@ fn bench(input: &Path) -> Result<(), String> {
             response.mesh.simplify_error_mm,
             response.stages.contour_ms,
             response.stages.support_ms,
+            response.stages.toolpath_ms,
             response.stages.seat_ms,
+            response.stages.emit_ms,
             response.stages.travel_ms
         );
         if !response.sanity.ok {
@@ -1034,10 +1036,12 @@ fn print_summary(input: &Path, response: &lime_slice_core::SliceResponse) {
         response.baseline_label
     );
     println!(
-        "stages  contours {:.2} ms  supports {:.2} ms  seat {:.2} ms  travel {:.2} ms",
+        "stages  contours {:.2} ms  supports {:.2} ms  toolpaths {:.2} ms  seat {:.2} ms  emit {:.2} ms  travel {:.2} ms",
         response.stages.contour_ms,
         response.stages.support_ms,
+        response.stages.toolpath_ms,
         response.stages.seat_ms,
+        response.stages.emit_ms,
         response.stages.travel_ms
     );
     println!(
