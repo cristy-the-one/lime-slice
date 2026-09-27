@@ -3253,7 +3253,7 @@ impl<'a> Combing<'a> {
 
 /// Each outer loop with the holes directly inside it. Nesting comes from
 /// containment, so loop orientation does not matter.
-fn island_loops(loops: &[Loop]) -> Vec<Vec<Loop>> {
+pub(crate) fn island_loops(loops: &[Loop]) -> Vec<Vec<Loop>> {
     let outlines: Vec<Outline> = loops
         .iter()
         .map(|l| Outline::new(std::slice::from_ref(l)))

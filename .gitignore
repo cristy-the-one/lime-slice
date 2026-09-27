@@ -8,7 +8,3 @@
 /playwright-report
 .DS_Store
 *.gcode
-# Nozzle-simplify cache, if LIME_SLICE_SIMPLIFY_CACHE points inside the tree.
-# The default directory is $XDG_CACHE_HOME/lime-slice/simplify.
-.lime-slice-cache/
-*.lscache

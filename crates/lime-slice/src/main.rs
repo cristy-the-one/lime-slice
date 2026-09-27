@@ -126,10 +126,10 @@ enum Cmd {
         /// Klipper junction deviation in millimetres.
         #[arg(long, default_value_t = 0.02)]
         junction_deviation: f64,
-        /// Collapse triangles finer than the nozzle before contouring.
+        /// Drop outline vertices the nozzle cannot trace, on every layer's cut.
         #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
         simplify: bool,
-        /// Max simplify error in millimetres. `0` uses half of min(nozzle, layer height).
+        /// Outline tolerance in millimetres. `0` uses a sixteenth of the nozzle.
         #[arg(long, default_value_t = 0.0)]
         simplify_error: f64,
         /// Also check contour coverage and support placement, and print the report.
@@ -308,25 +308,8 @@ fn run() -> Result<(), String> {
             if audit {
                 let mesh = load_input(&input)?;
                 let audit_settings = SliceSettings::from_request(&request);
-                let error_mm = if !audit_settings.simplify {
-                    0.0
-                } else if audit_settings.simplify_error_mm > 0.0 {
-                    audit_settings.simplify_error_mm
-                } else {
-                    lime_slice_core::nozzle_error_mm(0.4, audit_settings.layer_height)
-                };
-                let (prepared, _) = lime_slice_core::simplify_for_nozzle(
-                    &mesh,
-                    audit_settings.simplify,
-                    error_mm,
-                    lime_slice_core::Job::default(),
-                )?;
-                let report = lime_slice_core::audit_slice(
-                    prepared.as_ref(),
-                    &request.blend,
-                    &audit_settings,
-                    0.4,
-                )?;
+                let report =
+                    lime_slice_core::audit_slice(&mesh, &request.blend, &audit_settings, 0.4)?;
                 print_audit(&report);
             }
             if !response.sanity.ok {
@@ -482,16 +465,9 @@ fn bench(input: &Path) -> Result<(), String> {
             response.estimate.max_seam_z_step_mm
         );
         println!(
-            "  simplify {} → {} tris in {:.1} ms{} (error {:.3} mm)  contours {:.1} ms  supports {:.1} ms  toolpaths {:.1} ms  order {:.1} ms  combing {:.1} ms  emit {:.1} ms",
-            response.mesh.source_triangles,
+            "  {} tris  outline tolerance {:.3} mm  contours {:.1} ms  supports {:.1} ms  toolpaths {:.1} ms  order {:.1} ms  combing {:.1} ms  emit {:.1} ms",
             response.mesh.triangles,
-            response.mesh.simplify_ms,
-            if response.mesh.simplify_cached {
-                " cached"
-            } else {
-                ""
-            },
-            response.mesh.simplify_error_mm,
+            response.mesh.outline_tolerance_mm,
             response.stages.contour_ms,
             response.stages.support_ms,
             response.stages.toolpath_ms,
@@ -1025,17 +1001,10 @@ fn request_for(
 
 fn print_summary(input: &Path, response: &lime_slice_core::SliceResponse) {
     println!(
-        "{}  tris {} → {}  simplify {:.2} ms{} (error {:.3} mm)  core {:.2} ms  baseline {:.2} ms ({})",
+        "{}  tris {}  outline tolerance {:.3} mm  core {:.2} ms  baseline {:.2} ms ({})",
         input.display(),
-        response.mesh.source_triangles,
         response.mesh.triangles,
-        response.mesh.simplify_ms,
-        if response.mesh.simplify_cached {
-            " cached"
-        } else {
-            ""
-        },
-        response.mesh.simplify_error_mm,
+        response.mesh.outline_tolerance_mm,
         response.core_ms,
         response.baseline_ms,
         response.baseline_label

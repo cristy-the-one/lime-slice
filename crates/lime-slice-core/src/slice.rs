@@ -11,9 +11,9 @@ use crate::index::ZIndex;
 use crate::load::load_slice_mesh;
 use crate::mesh::Mesh;
 use crate::poly::{
-    boolean_diff, boolean_union, clip_to_rect, loop_bounds, offset_loops, signed_area, Loop,
+    boolean_diff, boolean_union, clip_to_rect, loop_bounds, offset_loops, signed_area,
+    simplify_loops, Loop,
 };
-use crate::simplify::{nozzle_error_mm, simplify_for_nozzle};
 use crate::strategy::{
     classicize, layer_weight, mix, pure, support_density, support_interface_density, Axis,
     BlendMode, Gyroid3d, PrinterProfile, ResolvedStrategy, ScarfSeam, StrategyId, ZHopMode,
@@ -136,13 +136,13 @@ pub struct SliceRequest {
     /// Klipper junction deviation in millimetres. `0` means 0.02.
     #[serde(default)]
     pub junction_deviation_mm: f64,
-    /// Collapse triangles the nozzle cannot reproduce. Default on.
+    /// Drop outline vertices the nozzle cannot trace. Default on.
     #[serde(default = "default_true")]
     pub simplify: bool,
-    /// Max surface error in millimetres. `0` uses half of min(nozzle, layer height).
+    /// Outline tolerance in millimetres. `0` uses [`outline_tolerance_mm`].
     #[serde(default)]
     pub simplify_error_mm: f64,
-    /// Applied after simplification. The mesh bytes are the scaled canonical
+    /// Applied after load. The mesh bytes are the scaled canonical
     /// frame: rotation, bed settle, and translation are not in the vertices.
     /// Absent means those bytes are already in print space.
     #[serde(default)]
@@ -207,12 +207,12 @@ pub struct SliceSettings {
     pub classic_estimator: bool,
     /// Klipper junction deviation, millimetres. `0` uses 0.02.
     pub junction_deviation_mm: f64,
-    /// Collapse triangles the nozzle cannot reproduce. Meshes under a few thousand
-    /// triangles are left as they are.
+    /// Drop outline vertices closer than the tolerance to the line through
+    /// their neighbors, on every layer's cut.
     pub simplify: bool,
-    /// `0` uses [`nozzle_error_mm`].
+    /// Outline tolerance in millimetres. `0` uses [`outline_tolerance_mm`].
     pub simplify_error_mm: f64,
-    /// Rigid placement applied after simplification. `None` slices the mesh as given.
+    /// Rigid placement applied after load. `None` slices the mesh as given.
     pub pose: Option<RigidPose>,
     /// Hold up same-layer islands that have nothing under them. Overhang supports stay on `supports`.
     pub island_support: bool,
@@ -370,7 +370,7 @@ impl SliceSettings {
             },
             simplify: req.simplify,
             simplify_error_mm: if req.simplify_error_mm > 0.0 {
-                req.simplify_error_mm.clamp(0.01, 1.0)
+                req.simplify_error_mm.clamp(0.001, 0.2)
             } else {
                 0.0
             },
@@ -544,18 +544,11 @@ pub struct BlendScore {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeshInfo {
-    /// Triangles the planner contoured.
+    /// Triangles the planner contoured. Every triangle of the mesh is cut.
     pub triangles: usize,
-    /// Triangles before nozzle simplification. Equal to `triangles` when the
-    /// mesh was already coarse enough to leave alone.
-    pub source_triangles: usize,
-    pub simplify_ms: f64,
-    /// Error the slice mesh is guaranteed to stay inside, in millimetres.
-    /// On a cache hit this is the bound that mesh was collapsed to, which may
-    /// be tighter than the current nozzle budget. `0` when simplification was off.
-    pub simplify_error_mm: f64,
-    /// The slice mesh was loaded from the simplify cache. `simplify_ms` is the lookup.
-    pub simplify_cached: bool,
+    /// Each layer's outline stays within this distance of the true cut, in
+    /// millimetres. `0` when outline simplification is off.
+    pub outline_tolerance_mm: f64,
     pub min: [f64; 3],
     pub max: [f64; 3],
 }
@@ -717,22 +710,8 @@ pub fn slice_configured(
         profile.pressure_advance = 0.0;
         profile.linear_advance = 0.0;
     }
-    let error_mm = if !settings.simplify {
-        0.0
-    } else if settings.simplify_error_mm > 0.0 {
-        settings.simplify_error_mm
-    } else {
-        nozzle_error_mm(profile.nozzle_diameter, layer_height)
-    };
-    let (prepared, simplify_stats) =
-        simplify_for_nozzle(mesh, settings.simplify, error_mm, settings.job)?;
-    // Pose is rigid, so it does not change the print-space error. Collapsing
-    // first keeps one cached mesh for every orientation of this scale.
-    let posed = settings
-        .pose
-        .as_ref()
-        .map(|pose| pose.apply(prepared.as_ref()));
-    let mesh = posed.as_ref().unwrap_or_else(|| prepared.as_ref());
+    let posed = settings.pose.as_ref().map(|pose| pose.apply(mesh));
+    let mesh = posed.as_ref().unwrap_or(mesh);
     let (min, max) = mesh.bounds().ok_or("empty mesh")?;
     let started = Instant::now();
     let planned_full = plan(mesh, blend, &settings, profile.nozzle_diameter)?;
@@ -837,11 +816,8 @@ pub fn slice_configured(
         baseline_ms,
         baseline_label,
         mesh: MeshInfo {
-            triangles: simplify_stats.triangles,
-            source_triangles: simplify_stats.source_triangles,
-            simplify_ms: simplify_stats.milliseconds,
-            simplify_error_mm: simplify_stats.error_mm,
-            simplify_cached: simplify_stats.cached,
+            triangles: mesh.triangle_count(),
+            outline_tolerance_mm: outline_tolerance(&settings, profile.nozzle_diameter),
             min,
             max,
         },
@@ -1368,6 +1344,30 @@ pub(crate) struct Plan {
     pub comb_ms: f64,
 }
 
+/// A sixteenth of the nozzle: 0.025 mm for a 0.4 mm nozzle. Two outlines
+/// closer than twice this could touch after simplifying, and a gap that
+/// narrow is far below anything the nozzle prints. The raw cut of a dense
+/// mesh carries a vertex every few microns, and every boolean after it pays
+/// for them.
+pub fn outline_tolerance_mm(nozzle_diameter: f64) -> f64 {
+    let nozzle = if nozzle_diameter.is_finite() && nozzle_diameter > 0.0 {
+        nozzle_diameter
+    } else {
+        0.4
+    };
+    nozzle / 16.0
+}
+
+fn outline_tolerance(settings: &SliceSettings, nozzle_diameter: f64) -> f64 {
+    if !settings.simplify {
+        0.0
+    } else if settings.simplify_error_mm > 0.0 {
+        settings.simplify_error_mm
+    } else {
+        outline_tolerance_mm(nozzle_diameter)
+    }
+}
+
 pub(crate) fn plan(
     mesh: &Mesh,
     blend: &BlendMode,
@@ -1391,9 +1391,10 @@ pub(crate) fn plan(
     )?;
     let contour_started = Instant::now();
     let index = ZIndex::build(mesh);
+    let tolerance = outline_tolerance(settings, nozzle_diameter);
     let contours: Vec<Vec<Loop>> = bands
         .par_iter()
-        .map(|band| index.slice(band.cut_z()))
+        .map(|band| simplify_loops(index.slice(band.cut_z()), tolerance))
         .collect();
     let contour_ms = elapsed_ms(contour_started);
     let mut planned = plan_contours(
@@ -2574,6 +2575,65 @@ mod tests {
         }
         out.push_str("endsolid raised\n");
         out
+    }
+
+    /// Raw cut against simplified outline on every layer of an external mesh.
+    /// Not part of the default suite.
+    ///   LIME_FIDELITY_MESH=path.stl cargo test -p lime-slice-core --release -- outline_fidelity_report --ignored --nocapture
+    #[test]
+    #[ignore = "opt-in fidelity report on an external mesh"]
+    fn outline_fidelity_report() {
+        use crate::poly::{boolean_intersect, simplify_loops};
+        let Ok(path) = std::env::var("LIME_FIDELITY_MESH") else {
+            eprintln!("skip: LIME_FIDELITY_MESH unset");
+            return;
+        };
+        let bytes = std::fs::read(&path).expect("read mesh");
+        let mesh = crate::load::load_mesh(&path, &bytes).expect("load");
+        let tol = outline_tolerance_mm(0.4);
+        let index = ZIndex::build(&mesh);
+        let (_, max) = mesh.bounds().unwrap();
+        let area = |loops: &[Loop]| loops.iter().map(|l| signed_area(l)).sum::<f64>().abs();
+        let (mut verts, mut kept, mut beyond, mut fused) = (0usize, 0usize, 0.0, 0usize);
+        let mut widest = 0.0f64;
+        let mut z = 0.1;
+        while z < max[2] {
+            let raw = index.slice(z);
+            let cut = simplify_loops(raw.clone(), tol);
+            verts += raw.iter().map(Vec::len).sum::<usize>();
+            kept += cut.iter().map(Vec::len).sum::<usize>();
+            beyond += area(&boolean_diff(&cut, &offset_loops(&raw, tol)))
+                + area(&boolean_diff(&raw, &offset_loops(&cut, tol)));
+            let raw_islands = crate::toolpath::island_loops(&raw);
+            for piece in crate::toolpath::island_loops(&cut) {
+                let near: Vec<&Vec<Loop>> = raw_islands
+                    .iter()
+                    .filter(|r| area(&boolean_intersect(r, &piece)) > 1e-3)
+                    .collect();
+                if near.len() >= 2 {
+                    fused += 1;
+                    let mut gap = f64::MAX;
+                    for (i, a) in near.iter().enumerate() {
+                        for b in &near[i + 1..] {
+                            for v in a.iter().flatten() {
+                                gap = gap.min(crate::poly::distance_to_outline(b, *v));
+                            }
+                        }
+                    }
+                    widest = widest.max(gap);
+                    if gap > 0.05 {
+                        println!(
+                            "  z {z:.2}: {} islands merged, raw gap {gap:.3} mm",
+                            near.len()
+                        );
+                    }
+                }
+            }
+            z += 0.2;
+        }
+        println!(
+            "tolerance {tol} mm  outline vertices {verts} -> {kept}  area beyond tolerance {beyond:.4} mm2  fused islands {fused}, widest raw gap among them {widest:.4} mm"
+        );
     }
 
     /// Before/after travel for the reorder. Not part of the default suite.

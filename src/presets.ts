@@ -120,8 +120,8 @@ const LABELS: Record<keyof PresetSettings, string> = {
   zHopMinTravel: "Hop travel",
   pricePerKg: "Filament €/kg",
   autoSlice: "Auto-slice",
-  simplify: "Simplify to nozzle",
-  simplifyError: "Simplify error mm",
+  simplify: "Simplify outlines",
+  simplifyError: "Outline tolerance mm",
 };
 
 export function presetKeys(): (keyof PresetSettings)[] {
