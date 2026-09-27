@@ -1,7 +1,10 @@
 //! Quadric edge collapse limited by what the nozzle can reproduce.
 //!
 //! The bound is half the smaller of nozzle diameter and layer height, in
-//! print-space millimetres (after scale, pose, and bed settle). A 0.4 mm
+//! print-space millimetres. Scale has to be in the vertex positions before
+//! collapse, because the bound is an absolute distance. A rigid pose
+//! (rotation, bed settle, translation) does not change that distance, so it
+//! is applied after collapse and is not part of the cache key. A 0.4 mm
 //! nozzle and a 0.2 mm layer give 0.10 mm, which is 0.25 × the nozzle. That
 //! sits at the tight end of the usual 0.25–0.5 × nozzle band so a 0.7 mm fin
 //! and a sharp overhang edge are not eaten. Area-weighted plane quadrics
@@ -11,10 +14,30 @@
 //! faces are left alone, and the link condition keeps a manifold edge manifold.
 //! Candidates are rebuilt each pass and collapsed smallest-error first, so a
 //! rejected edge is not scored again until the surface around it changes.
+//!
+//! # Cache
+//!
+//! [`simplify_for_nozzle`] keeps the collapsed mesh for a fingerprint of the
+//! source triangles. A stored result is reused when
+//! [`cached_bound_covers`] says its guaranteed error still fits the new
+//! budget:
+//!
+//! `stored <= requested * (1 + SIMPLIFY_CACHE_REL_EPS) + SIMPLIFY_CACHE_ABS_EPS_MM`
+//!
+//! A looser nozzle (larger budget) always reuses a finer mesh. A slightly
+//! tighter budget reuses it too. A meaningfully tighter budget collapses
+//! again and replaces the entry. The entry is also written under
+//! `$LIME_SLICE_SIMPLIFY_CACHE`, or `$XDG_CACHE_HOME/lime-slice/simplify`
+//! (`~/.cache/lime-slice/simplify` when `XDG_CACHE_HOME` is unset), so a
+//! later process can load it. `LIME_SLICE_SIMPLIFY_CACHE=off` keeps the
+//! cache in memory only. Meshes under [`SIMPLIFY_MIN_TRIANGLES`] never
+//! enter the cache.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
-use std::time::Instant;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::cancel::Job;
 use crate::mesh::Mesh;
@@ -24,12 +47,43 @@ use crate::mesh::Mesh;
 /// move G-code on meshes the nozzle can already trace. Denser meshes are collapsed.
 pub const SIMPLIFY_MIN_TRIANGLES: usize = 8_000;
 
+/// Relative slack on a cached error bound. Five percent of the current budget.
+pub const SIMPLIFY_CACHE_REL_EPS: f64 = 0.05;
+
+/// Absolute slack on a cached error bound, in millimetres.
+///
+/// 0.01 mm is 1/40 of a 0.4 mm nozzle. A layer-height nudge from 0.20 mm to
+/// 0.18 mm (bound 0.10 → 0.09) stays inside this slack. 0.16 mm (bound 0.08)
+/// does not.
+pub const SIMPLIFY_CACHE_ABS_EPS_MM: f64 = 0.01;
+
+/// Bump when the collapse changes enough that an old file must not be reused.
+const SIMPLIFY_CACHE_VERSION: u32 = 1;
+
+const CACHE_MAGIC: &[u8; 8] = b"LMSCACH1";
+
 #[derive(Clone, Copy, Debug)]
 pub struct SimplifyStats {
     pub source_triangles: usize,
     pub triangles: usize,
     pub error_mm: f64,
+    /// `true` when the mesh was loaded from the in-memory or on-disk cache.
+    /// [`SimplifyStats::milliseconds`] is then the lookup time, not the collapse.
+    pub cached: bool,
     pub milliseconds: f64,
+}
+
+/// `stored_mm` is the error the cached mesh was collapsed under.
+/// `requested_mm` is the budget for this slice.
+pub fn cached_bound_covers(stored_mm: f64, requested_mm: f64) -> bool {
+    if !stored_mm.is_finite()
+        || !requested_mm.is_finite()
+        || requested_mm <= 0.0
+        || stored_mm <= 0.0
+    {
+        return false;
+    }
+    stored_mm <= requested_mm * (1.0 + SIMPLIFY_CACHE_REL_EPS) + SIMPLIFY_CACHE_ABS_EPS_MM
 }
 
 /// Half the smaller of nozzle diameter and layer height.
@@ -51,49 +105,18 @@ pub fn nozzle_error_mm(nozzle_diameter: f64, layer_height: f64) -> f64 {
 }
 
 /// Simplify when enabled and the mesh is dense enough to be worth rebuilding.
-/// The borrowed mesh is the input; nothing was collapsed.
+///
+/// A hit returns an owned copy of the cached mesh and sets
+/// [`SimplifyStats::cached`]. The borrowed mesh is the input when nothing
+/// was collapsed and the cache was not used (disabled, or under
+/// [`SIMPLIFY_MIN_TRIANGLES`]).
 pub fn simplify_for_nozzle<'a>(
     mesh: &'a Mesh,
     enabled: bool,
     error_mm: f64,
     job: Job,
 ) -> Result<(Cow<'a, Mesh>, SimplifyStats), String> {
-    let source = mesh.triangle_count();
-    let started = Instant::now();
-    let skip =
-        !enabled || !error_mm.is_finite() || error_mm <= 0.0 || source < SIMPLIFY_MIN_TRIANGLES;
-    if skip {
-        return Ok((
-            Cow::Borrowed(mesh),
-            SimplifyStats {
-                source_triangles: source,
-                triangles: source,
-                error_mm: if enabled { error_mm.max(0.0) } else { 0.0 },
-                milliseconds: millis(started),
-            },
-        ));
-    }
-    let Some(simplified) = simplify_inner(mesh, error_mm, job)? else {
-        return Ok((
-            Cow::Borrowed(mesh),
-            SimplifyStats {
-                source_triangles: source,
-                triangles: source,
-                error_mm,
-                milliseconds: millis(started),
-            },
-        ));
-    };
-    let triangles = simplified.triangle_count();
-    Ok((
-        Cow::Owned(simplified),
-        SimplifyStats {
-            source_triangles: source,
-            triangles,
-            error_mm,
-            milliseconds: millis(started),
-        },
-    ))
+    shared_cache().simplify(mesh, enabled, error_mm, job)
 }
 
 /// Collapse `mesh` until every remaining edge would move the surface by more
@@ -107,6 +130,352 @@ pub fn simplify_mesh(mesh: &Mesh, max_error_mm: f64) -> Result<Mesh, String> {
 
 fn millis(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
+}
+
+fn shared_cache() -> &'static SimplifyCache {
+    static CACHE: OnceLock<SimplifyCache> = OnceLock::new();
+    CACHE.get_or_init(SimplifyCache::from_env)
+}
+
+struct CacheEntry {
+    error_mm: f64,
+    source_triangles: usize,
+    mesh: Mesh,
+}
+
+struct CacheInner {
+    entries: HashMap<[u64; 2], Arc<CacheEntry>>,
+    inflight: HashSet<[u64; 2]>,
+}
+
+struct SimplifyCache {
+    dir: Option<PathBuf>,
+    inner: Mutex<CacheInner>,
+    ready: Condvar,
+}
+
+struct Inflight<'a> {
+    cache: &'a SimplifyCache,
+    key: [u64; 2],
+}
+
+impl Drop for Inflight<'_> {
+    fn drop(&mut self) {
+        let mut guard = self.cache.lock();
+        guard.inflight.remove(&self.key);
+        self.cache.ready.notify_all();
+    }
+}
+
+impl SimplifyCache {
+    fn from_env() -> Self {
+        let dir = match std::env::var("LIME_SLICE_SIMPLIFY_CACHE") {
+            Ok(value) if value.is_empty() || value == "off" || value == "0" => None,
+            Ok(value) => Some(PathBuf::from(value)),
+            Err(_) => default_cache_dir(),
+        };
+        Self::open(dir)
+    }
+
+    fn open(dir: Option<PathBuf>) -> Self {
+        Self {
+            dir,
+            inner: Mutex::new(CacheInner {
+                entries: HashMap::new(),
+                inflight: HashSet::new(),
+            }),
+            ready: Condvar::new(),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, CacheInner> {
+        self.inner.lock().unwrap_or_else(|err| err.into_inner())
+    }
+
+    fn simplify<'a>(
+        &self,
+        mesh: &'a Mesh,
+        enabled: bool,
+        error_mm: f64,
+        job: Job,
+    ) -> Result<(Cow<'a, Mesh>, SimplifyStats), String> {
+        let source = mesh.triangle_count();
+        let started = Instant::now();
+        let skip =
+            !enabled || !error_mm.is_finite() || error_mm <= 0.0 || source < SIMPLIFY_MIN_TRIANGLES;
+        if skip {
+            return Ok((
+                Cow::Borrowed(mesh),
+                SimplifyStats {
+                    source_triangles: source,
+                    triangles: source,
+                    error_mm: if enabled { error_mm.max(0.0) } else { 0.0 },
+                    cached: false,
+                    milliseconds: millis(started),
+                },
+            ));
+        }
+        let key = fingerprint(mesh);
+        loop {
+            if job.cancelled() {
+                return Err("cancelled".into());
+            }
+            if let Some(hit) = self.lookup(key, source, error_mm) {
+                return Ok(hit_stats(hit, source, started));
+            }
+            let Some(flight) = self.try_claim(key) else {
+                self.wait_while_inflight(key, job)?;
+                continue;
+            };
+            if let Some(hit) = self.lookup(key, source, error_mm) {
+                drop(flight);
+                return Ok(hit_stats(hit, source, started));
+            }
+            let simplified = match simplify_inner(mesh, error_mm, job) {
+                Ok(Some(collapsed)) => collapsed,
+                Ok(None) => mesh.clone(),
+                Err(err) => return Err(err),
+            };
+            let entry = Arc::new(CacheEntry {
+                error_mm,
+                source_triangles: source,
+                mesh: simplified.clone(),
+            });
+            self.remember(key, &entry);
+            let triangles = simplified.triangle_count();
+            drop(flight);
+            return Ok((
+                Cow::Owned(simplified),
+                SimplifyStats {
+                    source_triangles: source,
+                    triangles,
+                    error_mm,
+                    cached: false,
+                    milliseconds: millis(started),
+                },
+            ));
+        }
+    }
+
+    fn lookup(&self, key: [u64; 2], source: usize, requested: f64) -> Option<Arc<CacheEntry>> {
+        if let Some(hit) = self.memory(key) {
+            if hit.source_triangles == source && cached_bound_covers(hit.error_mm, requested) {
+                return Some(hit);
+            }
+        }
+        let disk = self.read_disk(key)?;
+        if disk.source_triangles != source || !cached_bound_covers(disk.error_mm, requested) {
+            return None;
+        }
+        let hit = Arc::new(disk);
+        self.remember(key, &hit);
+        Some(hit)
+    }
+
+    fn memory(&self, key: [u64; 2]) -> Option<Arc<CacheEntry>> {
+        self.lock().entries.get(&key).cloned()
+    }
+
+    /// Keep the finer guarantee when two budgets share one source mesh.
+    fn remember(&self, key: [u64; 2], entry: &Arc<CacheEntry>) {
+        let mut replace = true;
+        {
+            let mut guard = self.lock();
+            if let Some(old) = guard.entries.get(&key) {
+                if old.error_mm <= entry.error_mm + 1e-12 {
+                    replace = false;
+                }
+            }
+            if replace {
+                guard.entries.insert(key, Arc::clone(entry));
+            }
+        }
+        if replace {
+            self.write_disk(key, entry);
+        }
+    }
+
+    fn try_claim(&self, key: [u64; 2]) -> Option<Inflight<'_>> {
+        let mut guard = self.lock();
+        if guard.inflight.contains(&key) {
+            return None;
+        }
+        guard.inflight.insert(key);
+        drop(guard);
+        Some(Inflight { cache: self, key })
+    }
+
+    fn wait_while_inflight(&self, key: [u64; 2], job: Job) -> Result<(), String> {
+        let mut guard = self.lock();
+        while guard.inflight.contains(&key) {
+            if job.cancelled() {
+                return Err("cancelled".into());
+            }
+            let (next, _) = self
+                .ready
+                .wait_timeout(guard, Duration::from_millis(200))
+                .unwrap_or_else(|err| err.into_inner());
+            guard = next;
+        }
+        Ok(())
+    }
+
+    fn read_disk(&self, key: [u64; 2]) -> Option<CacheEntry> {
+        let path = self.path(key)?;
+        let bytes = std::fs::read(path).ok()?;
+        decode_cache(&bytes)
+    }
+
+    fn write_disk(&self, key: [u64; 2], entry: &CacheEntry) {
+        let Some(dir) = &self.dir else {
+            return;
+        };
+        if std::fs::create_dir_all(dir).is_err() {
+            return;
+        }
+        let path = dir.join(cache_name(key));
+        if let Some(existing) = std::fs::read(&path).ok().as_deref().and_then(decode_cache) {
+            if existing.error_mm <= entry.error_mm + 1e-12 {
+                return;
+            }
+        }
+        let tmp = dir.join(format!(".{}.tmp", cache_name(key)));
+        if std::fs::write(&tmp, encode_cache(entry)).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+            return;
+        }
+        if std::fs::rename(&tmp, &path).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
+
+    fn path(&self, key: [u64; 2]) -> Option<PathBuf> {
+        self.dir.as_ref().map(|dir| dir.join(cache_name(key)))
+    }
+}
+
+fn hit_stats<'a>(
+    hit: Arc<CacheEntry>,
+    source: usize,
+    started: Instant,
+) -> (Cow<'a, Mesh>, SimplifyStats) {
+    let triangles = hit.mesh.triangle_count();
+    let error_mm = hit.error_mm;
+    (
+        Cow::Owned(hit.mesh.clone()),
+        SimplifyStats {
+            source_triangles: source,
+            triangles,
+            error_mm,
+            cached: true,
+            milliseconds: millis(started),
+        },
+    )
+}
+
+fn default_cache_dir() -> Option<PathBuf> {
+    if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME").filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(xdg).join("lime-slice").join("simplify"));
+    }
+    if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
+        return Some(
+            PathBuf::from(home)
+                .join(".cache")
+                .join("lime-slice")
+                .join("simplify"),
+        );
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(local).join("lime-slice").join("simplify"));
+    }
+    None
+}
+
+fn cache_name(key: [u64; 2]) -> String {
+    format!("{:016x}{:016x}.lscache", key[0], key[1])
+}
+
+/// Two independent 64-bit fingerprints. The file name is this pair, so a
+/// different source mesh (or a different scale baked into the vertices)
+/// cannot read this entry.
+fn fingerprint(mesh: &Mesh) -> [u64; 2] {
+    let mut a: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut b: u64 = 0x8422_2325_cbf2_9ce4;
+    let count = mesh.triangles.len() as u64;
+    a = fnv(a, count);
+    b = fnv(b, count.rotate_left(17));
+    for tri in &mesh.triangles {
+        for vertex in tri {
+            for coord in vertex {
+                let bits = coord.to_bits();
+                a = fnv(a, bits);
+                b = fnv(b, bits.rotate_left(23) ^ 0x9e37_79b9_7f4a_7c15);
+            }
+        }
+    }
+    [a, b]
+}
+
+fn fnv(hash: u64, bits: u64) -> u64 {
+    hash.wrapping_mul(0x100_0000_01b3) ^ bits
+}
+
+fn encode_cache(entry: &CacheEntry) -> Vec<u8> {
+    let count = entry.mesh.triangles.len() as u64;
+    let mut bytes = Vec::with_capacity(40 + entry.mesh.triangles.len() * 9 * 8);
+    bytes.extend_from_slice(CACHE_MAGIC);
+    bytes.extend_from_slice(&SIMPLIFY_CACHE_VERSION.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&entry.error_mm.to_le_bytes());
+    bytes.extend_from_slice(&(entry.source_triangles as u64).to_le_bytes());
+    bytes.extend_from_slice(&count.to_le_bytes());
+    for tri in &entry.mesh.triangles {
+        for vertex in tri {
+            for coord in vertex {
+                bytes.extend_from_slice(&coord.to_le_bytes());
+            }
+        }
+    }
+    bytes
+}
+
+fn decode_cache(bytes: &[u8]) -> Option<CacheEntry> {
+    if bytes.len() < 40 || &bytes[0..8] != CACHE_MAGIC {
+        return None;
+    }
+    let version = u32::from_le_bytes(bytes[8..12].try_into().ok()?);
+    if version != SIMPLIFY_CACHE_VERSION {
+        return None;
+    }
+    let error_mm = f64::from_le_bytes(bytes[16..24].try_into().ok()?);
+    let source_triangles = u64::from_le_bytes(bytes[24..32].try_into().ok()?) as usize;
+    let count = u64::from_le_bytes(bytes[32..40].try_into().ok()?) as usize;
+    if count > 20_000_000 || !error_mm.is_finite() || error_mm <= 0.0 {
+        return None;
+    }
+    let body = bytes.get(40..)?;
+    if body.len() != count * 9 * 8 {
+        return None;
+    }
+    let mut triangles = Vec::with_capacity(count);
+    for chunk in body.chunks_exact(9 * 8) {
+        let mut face = [[0.0; 3]; 3];
+        for (vertex, raw) in face.iter_mut().zip(chunk.chunks_exact(3 * 8)) {
+            for (coord, bytes) in vertex.iter_mut().zip(raw.chunks_exact(8)) {
+                let value = f64::from_le_bytes(bytes.try_into().ok()?);
+                if !value.is_finite() {
+                    return None;
+                }
+                *coord = value;
+            }
+        }
+        triangles.push(face);
+    }
+    Some(CacheEntry {
+        error_mm,
+        source_triangles,
+        mesh: Mesh { triangles },
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -1095,6 +1464,194 @@ mod tests {
         );
         let (min, _) = out.bounds().unwrap();
         assert!(min[2] > -0.1 && min[2] < 0.15, "bed z {}", min[2]);
+    }
+
+    #[test]
+    fn cached_bound_slack_matches_the_documented_nozzle_steps() {
+        assert!(cached_bound_covers(0.10, 0.10));
+        assert!(
+            cached_bound_covers(0.10, 0.15),
+            "a looser nozzle must reuse"
+        );
+        assert!(
+            cached_bound_covers(0.10, 0.09),
+            "0.18 mm layer stays inside the slack"
+        );
+        assert!(
+            !cached_bound_covers(0.10, 0.08),
+            "0.16 mm layer is a real tightening"
+        );
+        assert!(!cached_bound_covers(0.10, 0.05));
+        assert!(!cached_bound_covers(0.10, 0.0));
+        assert!(!cached_bound_covers(0.0, 0.10));
+    }
+
+    #[test]
+    fn simplify_cache_reuses_pose_scale_and_close_nozzle_bounds() {
+        let dir = std::env::temp_dir().join(format!(
+            "lime-slice-simplify-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dense = subdivide(&cube(), 5);
+        assert!(dense.triangle_count() >= SIMPLIFY_MIN_TRIANGLES);
+
+        let cache = SimplifyCache::open(Some(dir.clone()));
+        let coarse = cube();
+        let (_, skipped) = cache.simplify(&coarse, true, 0.1, Job::default()).unwrap();
+        assert!(!skipped.cached);
+        assert_eq!(skipped.triangles, 12);
+        assert!(
+            std::fs::read_dir(&dir).unwrap().next().is_none(),
+            "a coarse mesh was written to the cache"
+        );
+
+        let (collapsed, first) = cache.simplify(&dense, true, 0.10, Job::default()).unwrap();
+        assert!(!first.cached, "fresh cache should miss");
+        assert!(first.triangles < dense.triangle_count());
+        assert!(first.milliseconds > 0.0, "miss took no time");
+
+        let spun = collapsed.rigid_move(
+            &[0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            [10.0, 10.0, 10.0],
+            [110.0, 10.0, 10.0],
+        );
+        let (_, rotated) = cache.simplify(&dense, true, 0.10, Job::default()).unwrap();
+        assert!(
+            rotated.cached,
+            "rotation of the same canonical mesh rebuilt it"
+        );
+        assert!(
+            rotated.milliseconds < first.milliseconds,
+            "miss {:.2} ms, rotate hit {:.2} ms",
+            first.milliseconds,
+            rotated.milliseconds
+        );
+        assert_eq!(rotated.triangles, first.triangles);
+        assert_eq!(spun.triangle_count(), collapsed.triangle_count());
+        let (min_src, _) = collapsed.bounds().unwrap();
+        let (min_spun, _) = spun.bounds().unwrap();
+        assert!(
+            (min_spun[0] - min_src[0]).abs() > 50.0,
+            "pose did not move the cached mesh"
+        );
+
+        let (_, looser) = cache.simplify(&dense, true, 0.12, Job::default()).unwrap();
+        assert!(looser.cached, "looser bound rebuilt");
+        assert!((looser.error_mm - 0.10).abs() < 1e-9);
+
+        let (_, close) = cache.simplify(&dense, true, 0.09, Job::default()).unwrap();
+        assert!(close.cached, "close tighter bound rebuilt");
+        assert!((close.error_mm - 0.10).abs() < 1e-9);
+        assert!(close.milliseconds < first.milliseconds);
+
+        let (tighter, strict) = cache.simplify(&dense, true, 0.05, Job::default()).unwrap();
+        assert!(
+            !strict.cached,
+            "meaningfully tighter bound reused a coarse mesh"
+        );
+        assert!((strict.error_mm - 0.05).abs() < 1e-9);
+        assert!(strict.milliseconds > close.milliseconds);
+
+        let (_, back) = cache.simplify(&dense, true, 0.10, Job::default()).unwrap();
+        assert!(back.cached);
+        assert!(
+            (back.error_mm - 0.05).abs() < 1e-9,
+            "finer cache was discarded, error {}",
+            back.error_mm
+        );
+
+        let mut scaled = dense.clone();
+        for tri in &mut scaled.triangles {
+            for vertex in &mut *tri {
+                for coord in vertex.iter_mut() {
+                    *coord *= 2.0;
+                }
+            }
+        }
+        assert_ne!(fingerprint(&dense), fingerprint(&scaled));
+
+        drop(cache);
+        let reloaded = SimplifyCache::open(Some(dir.clone()));
+        let (loaded, from_disk) = reloaded
+            .simplify(&dense, true, 0.10, Job::default())
+            .unwrap();
+        assert!(from_disk.cached, "reload missed a valid cache file");
+        assert!((from_disk.error_mm - 0.05).abs() < 1e-9);
+        eprintln!(
+            "simplify cache  miss {:.2} ms → {} tris  rotate hit {:.2} ms  close {:.2} ms  tight {:.2} ms → {} tris  disk {:.2} ms",
+            first.milliseconds,
+            first.triangles,
+            rotated.milliseconds,
+            close.milliseconds,
+            strict.milliseconds,
+            strict.triangles,
+            from_disk.milliseconds
+        );
+        assert_eq!(loaded.triangle_count(), tighter.triangle_count());
+        for (left, right) in loaded.triangles.iter().zip(tighter.triangles.iter()) {
+            for (a, b) in left.iter().zip(right.iter()) {
+                for axis in 0..3 {
+                    assert_eq!(a[axis].to_bits(), b[axis].to_bits());
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Release timing for a rotate/reload of Dragon 2.5. Not part of the default suite.
+    ///   cargo test -p lime-slice-core --release --lib dragon_simplify_cache -- --ignored --nocapture
+    #[test]
+    #[ignore = "release timing of dragon_2_5 simplify cache"]
+    fn dragon_simplify_cache_skips_the_second_collapse() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../samples/dragon_2_5.stl");
+        if !path.is_file() {
+            eprintln!("skip dragon: {} missing", path.display());
+            return;
+        }
+        let mesh =
+            crate::load::load_mesh("dragon_2_5.stl", &std::fs::read(&path).unwrap()).unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "lime-slice-dragon-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = SimplifyCache::open(Some(dir.clone()));
+        let (_, first) = cache.simplify(&mesh, true, 0.1, Job::default()).unwrap();
+        let (_, second) = cache.simplify(&mesh, true, 0.1, Job::default()).unwrap();
+        drop(cache);
+        let reloaded = SimplifyCache::open(Some(dir.clone()));
+        let (_, third) = reloaded.simplify(&mesh, true, 0.1, Job::default()).unwrap();
+        eprintln!(
+            "dragon_2_5  {} → {} tris  miss {:.1} ms  rotate/settings hit {:.2} ms  disk {:.2} ms",
+            first.source_triangles,
+            first.triangles,
+            first.milliseconds,
+            second.milliseconds,
+            third.milliseconds
+        );
+        assert!(!first.cached, "dragon miss was a hit");
+        assert!(second.cached, "second collapse was not cached");
+        assert!(third.cached, "reload missed");
+        assert_eq!(second.triangles, first.triangles);
+        assert!(
+            second.milliseconds < first.milliseconds,
+            "hit {:.2} ms was not cheaper than miss {:.1} ms",
+            second.milliseconds,
+            first.milliseconds
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

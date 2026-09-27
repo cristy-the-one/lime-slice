@@ -166,6 +166,77 @@ export interface MeshShift {
   z: number;
 }
 
+/** Rigid move applied after nozzle simplification. Scale is already in the vertices. */
+export interface RigidPose {
+  rotation: Mat3;
+  pivot: [number, number, number];
+  translation: [number, number, number];
+}
+
+/** Scale about the source bounds center. Rotation and bed placement stay out of these vertices. */
+export function scaledCanonical(source: Float32Array, scale: number) {
+  const b = boundsOf(source);
+  const cx = (b.min[0] + b.max[0]) / 2;
+  const cy = (b.min[1] + b.max[1]) / 2;
+  const cz = (b.min[2] + b.max[2]) / 2;
+  const out = new Float32Array(source.length);
+  for (let i = 0; i < source.length; i += 3) {
+    out[i] = (source[i] - cx) * scale + cx;
+    out[i + 1] = (source[i + 1] - cy) * scale + cy;
+    out[i + 2] = (source[i + 2] - cz) * scale + cz;
+  }
+  return out;
+}
+
+/**
+ * Pose that takes [`scaledCanonical`] onto [`transformPositions`].
+ * The translation is recovered from the placed mesh so settle and bed shift stay in one place.
+ */
+export function placementPose(
+  source: Float32Array,
+  matrix: Mat3,
+  scale: number,
+  bedX: number,
+  bedY: number,
+  centered: boolean,
+  shift?: MeshShift,
+): RigidPose {
+  const b = boundsOf(source);
+  const pivot: [number, number, number] = [
+    (b.min[0] + b.max[0]) / 2,
+    (b.min[1] + b.max[1]) / 2,
+    (b.min[2] + b.max[2]) / 2,
+  ];
+  const placed = transformPositions(source, matrix, scale, bedX, bedY, centered, shift);
+  const x = (source[0] - pivot[0]) * scale;
+  const y = (source[1] - pivot[1]) * scale;
+  const z = (source[2] - pivot[2]) * scale;
+  const rx = matrix[0] * x + matrix[1] * y + matrix[2] * z;
+  const ry = matrix[3] * x + matrix[4] * y + matrix[5] * z;
+  const rz = matrix[6] * x + matrix[7] * y + matrix[8] * z;
+  return {
+    rotation: matrix,
+    pivot,
+    translation: [placed[0] - rx, placed[1] - ry, placed[2] - rz],
+  };
+}
+
+export function applyRigidPose(pos: Float32Array, pose: RigidPose) {
+  const out = new Float32Array(pos.length);
+  const m = pose.rotation;
+  const [px, py, pz] = pose.pivot;
+  const [tx, ty, tz] = pose.translation;
+  for (let i = 0; i < pos.length; i += 3) {
+    const x = pos[i] - px;
+    const y = pos[i + 1] - py;
+    const z = pos[i + 2] - pz;
+    out[i] = m[0] * x + m[1] * y + m[2] * z + tx;
+    out[i + 1] = m[3] * x + m[4] * y + m[5] * z + ty;
+    out[i + 2] = m[6] * x + m[7] * y + m[8] * z + tz;
+  }
+  return out;
+}
+
 export function transformPositions(
   source: Float32Array,
   matrix: Mat3,

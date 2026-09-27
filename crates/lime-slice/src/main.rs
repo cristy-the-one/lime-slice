@@ -477,10 +477,15 @@ fn bench(input: &Path) -> Result<(), String> {
             response.estimate.max_seam_z_step_mm
         );
         println!(
-            "  simplify {} → {} tris in {:.1} ms (error {:.3} mm)  contours {:.1} ms  supports {:.1} ms  seat {:.1} ms",
+            "  simplify {} → {} tris in {:.1} ms{} (error {:.3} mm)  contours {:.1} ms  supports {:.1} ms  seat {:.1} ms",
             response.mesh.source_triangles,
             response.mesh.triangles,
             response.mesh.simplify_ms,
+            if response.mesh.simplify_cached {
+                " cached"
+            } else {
+                ""
+            },
             response.mesh.simplify_error_mm,
             response.stages.contour_ms,
             response.stages.support_ms,
@@ -826,7 +831,11 @@ fn handle(mut request: tiny_http::Request) {
         } else if method == "POST" && url.starts_with("/api/pareto") {
             match serde_json::from_str::<SliceRequest>(&body) {
                 Ok(req) => match decode_mesh(&req) {
-                    Ok(bytes) => match lime_slice_core::load_mesh(&req.filename, &bytes) {
+                    Ok(bytes) => match lime_slice_core::load_slice_mesh(
+                        &req.filename,
+                        &bytes,
+                        req.pose.is_some(),
+                    ) {
                         Ok(mesh) => {
                             let profile = req.printer.clone().unwrap_or_default();
                             let settings = SliceSettings {
@@ -1002,16 +1011,22 @@ fn request_for(
         junction_deviation_mm: settings.junction_deviation_mm,
         simplify: settings.simplify,
         simplify_error_mm: settings.simplify_error_mm,
+        pose: None,
     })
 }
 
 fn print_summary(input: &Path, response: &lime_slice_core::SliceResponse) {
     println!(
-        "{}  tris {} → {}  simplify {:.2} ms (error {:.3} mm)  core {:.2} ms  baseline {:.2} ms ({})",
+        "{}  tris {} → {}  simplify {:.2} ms{} (error {:.3} mm)  core {:.2} ms  baseline {:.2} ms ({})",
         input.display(),
         response.mesh.source_triangles,
         response.mesh.triangles,
         response.mesh.simplify_ms,
+        if response.mesh.simplify_cached {
+            " cached"
+        } else {
+            ""
+        },
         response.mesh.simplify_error_mm,
         response.core_ms,
         response.baseline_ms,
