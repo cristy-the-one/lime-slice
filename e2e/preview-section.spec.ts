@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -134,5 +134,136 @@ test("bed opacity and section controls are preview-only chrome", async ({ page }
   await page.getByRole("button", { name: "Prepare", exact: true }).click();
   await expect(page.locator("#sectionField")).toBeHidden();
   await expect(bed).toBeVisible();
+  expect(logs.filter((line) => line.startsWith("pageerror:") || line.startsWith("error:"))).toEqual([]);
+});
+
+const PIGMENT: [number, number, number][] = [
+  [0xe6, 0x9f, 0x00],
+  [0x00, 0x72, 0xb2],
+  [0x56, 0xb4, 0xe9],
+  [0x00, 0x9e, 0x73],
+  [0xcc, 0x79, 0xa7],
+  [0xf0, 0xe4, 0x42],
+  [0xd5, 0x5e, 0x00],
+  [0xd9, 0x46, 0xef],
+  [0x7a, 0xa2, 0xf7],
+];
+const RINGS: [number, number, number][] = [
+  [0xe8, 0x5d, 0x4c],
+  [0x8f, 0xce, 0x6a],
+  [0x6a, 0xa7, 0xff],
+];
+
+/** Lime is the solid ghost. Pigment is feature-colored bead faces, ignoring the section rings. */
+async function colorBuckets(page: Page, name = ""): Promise<{ lime: number; pigment: number; travel: number }> {
+  const png = name
+    ? await page.locator("#view3d").screenshot({ path: path.join("/opt/cursor/artifacts/preview-section", `${name}.png`) })
+    : await page.locator("#view3d").screenshot();
+  return page.evaluate(async ({ data, pigment, rings }) => {
+    const img = new Image();
+    img.src = `data:image/png;base64,${data}`;
+    await img.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = img.width;
+    canvas.height = img.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return { lime: 0, pigment: 0, travel: 0 };
+    ctx.drawImage(img, 0, 0);
+    const px = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    const near = (r: number, g: number, b: number, c: number[], tol: number) =>
+      Math.abs(r - c[0]) + Math.abs(g - c[1]) + Math.abs(b - c[2]) < tol;
+    let lime = 0;
+    let beads = 0;
+    let travel = 0;
+    for (let i = 0; i < px.length; i += 4) {
+      const r = px[i];
+      const g = px[i + 1];
+      const b = px[i + 2];
+      // Ring green sits just outside the ghost lime; a wide ring test would delete the ghost.
+      if (rings.some((c) => near(r, g, b, c, 60))) continue;
+      if (near(r, g, b, [0xc6, 0xf2, 0x6d], 90)) lime += 1;
+      if (pigment.some((c) => near(r, g, b, c, 48))) beads += 1;
+      if (near(r, g, b, [0x4d, 0x56, 0x68], 50)) travel += 1;
+    }
+    return { lime, pigment: beads, travel };
+  }, { data: png.toString("base64"), pigment: PIGMENT, rings: RINGS });
+}
+
+async function zoomPart(page: Page) {
+  await page.locator("#view3d").evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    for (let i = 0; i < 14; i++) {
+      el.dispatchEvent(new WheelEvent("wheel", { deltaY: -350, clientX: cx, clientY: cy, bubbles: true, cancelable: true }));
+    }
+  });
+  await page.waitForTimeout(400);
+}
+
+async function setOffset(page: Page, value: string) {
+  await page.locator("#sectionOffset").evaluate((el, next) => {
+    const input = el as HTMLInputElement;
+    input.value = next === "min" ? input.min : next === "max" ? input.max : next;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }, value);
+  await page.waitForTimeout(250);
+}
+
+test("section plane clips 3D beads, travels, and the solid ghost", async ({ page }) => {
+  const logs: string[] = [];
+  page.on("console", (msg) => logs.push(`${msg.type()}: ${msg.text()}`));
+  page.on("pageerror", (err) => logs.push(`pageerror: ${err.message}`));
+  fs.mkdirSync("/opt/cursor/artifacts/preview-section", { recursive: true });
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/slice", (route) => route.fulfill({ json: cube }));
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await page.getByText("Samples", { exact: true }).click();
+  await page.getByRole("button", { name: "20 mm cube" }).click();
+  await expect(page.locator("#status")).toContainText("loaded");
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("button", { name: "3D", exact: true }).click();
+  await page.waitForTimeout(400);
+  const ghostFull = await colorBuckets(page, "ghost-full");
+  await page.locator("#sectionOn").check();
+  await setOffset(page, "0");
+  const ghostHalf = await colorBuckets(page, "ghost-half");
+  await setOffset(page, "min");
+  const ghostCut = await colorBuckets(page, "ghost-cut");
+
+  await page.locator("#sectionOn").uncheck();
+  await page.locator("#slice").click();
+  await expect(page.locator("#estimate")).toContainText("g");
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("button", { name: "3D", exact: true }).click();
+  await zoomPart(page);
+  let beadsFull = await colorBuckets(page);
+  for (let i = 0; i < 20 && beadsFull.pigment < 4000; i++) {
+    await page.waitForTimeout(250);
+    beadsFull = await colorBuckets(page);
+  }
+  await colorBuckets(page, "beads-full");
+  await page.locator("#legend label", { hasText: "Travel" }).click();
+  await page.waitForTimeout(300);
+  const travelOn = await colorBuckets(page, "travels-on");
+  await page.locator("#sectionOn").check();
+  await setOffset(page, "0");
+  const beadsHalf = await colorBuckets(page, "beads-half");
+  await setOffset(page, "min");
+  const beadsCut = await colorBuckets(page, "beads-cut");
+
+  expect(ghostFull.lime).toBeGreaterThan(10000);
+  expect(ghostHalf.lime).toBeGreaterThan(ghostFull.lime * 0.15);
+  expect(ghostHalf.lime).toBeLessThan(ghostFull.lime * 0.75);
+  expect(ghostCut.lime).toBeLessThan(ghostFull.lime * 0.05);
+  expect(beadsFull.pigment).toBeGreaterThan(4000);
+  expect(beadsHalf.pigment).toBeGreaterThan(beadsFull.pigment * 0.2);
+  expect(beadsHalf.pigment).toBeLessThan(beadsFull.pigment * 0.85);
+  expect(beadsCut.pigment).toBeLessThan(beadsFull.pigment * 0.08);
+  // Travels are the same clipped shader as the faces. Turning them on must not throw,
+  // and hiding the whole part must not leave feature-colored faces behind.
+  expect(travelOn.pigment).toBeGreaterThan(4000);
+  expect(beadsCut.pigment).toBeLessThan(200);
   expect(logs.filter((line) => line.startsWith("pageerror:") || line.startsWith("error:"))).toEqual([]);
 });

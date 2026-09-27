@@ -718,7 +718,11 @@ const linearRgb = (hex: string) => new THREE.Color(hex).toArray() as [number, nu
 const rgb = (hex: string) => `vec3(${linearRgb(hex).map((v) => v.toFixed(4)).join(", ")})`;
 const [SPEED_LO, SPEED_HI] = SPEED_RANGE_MM_S;
 
-/** Colors each vertex from its (kind slot, blend weight, speed) triple; hidden kinds collapse off-screen. */
+/**
+ * Colors each vertex from its (kind slot, blend weight, speed) triple; hidden kinds collapse off-screen.
+ * Clipping chunks are required: a ShaderMaterial does not discard on clippingPlanes unless the shader samples them.
+ * `mvPosition` is the name those chunks expect.
+ */
 const PATH_VERTEX = `
 attribute vec3 info;
 uniform vec3 palette[${MAX_KINDS}];
@@ -726,7 +730,10 @@ uniform float hiddenKinds[${MAX_KINDS}];
 uniform int mode;
 uniform float shade;
 varying vec3 vColor;
+#include <clipping_planes_pars_vertex>
 void main() {
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  #include <clipping_planes_vertex>
   int kind = int(info.x + 0.5);
   if (hiddenKinds[kind] > 0.5) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
@@ -736,13 +743,15 @@ void main() {
   if (mode == 1) color = mix(${rgb(WEIGHT_RAMP[0])}, ${rgb(WEIGHT_RAMP[1])}, info.y);
   if (mode == 2) color = mix(${rgb(SPEED_RAMP[0])}, ${rgb(SPEED_RAMP[1])}, clamp((info.z - ${SPEED_LO.toFixed(1)}) / ${(SPEED_HI - SPEED_LO).toFixed(1)}, 0.0, 1.0));
   vColor = color * shade;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  gl_Position = projectionMatrix * mvPosition;
 }`;
 
 const PATH_FRAGMENT = `
 uniform float alpha;
 varying vec3 vColor;
+#include <clipping_planes_pars_fragment>
 void main() {
+  #include <clipping_planes_fragment>
   gl_FragColor = vec4(vColor, alpha);
   #include <colorspace_fragment>
 }`;
