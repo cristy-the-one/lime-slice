@@ -2891,6 +2891,178 @@ fn tree_trunks_always_stand_on_something() {
     }
 }
 
+fn feature_grams(response: &lime_slice_core::SliceResponse, kind: &str) -> f64 {
+    response
+        .estimate
+        .by_feature
+        .iter()
+        .find(|row| row.kind == kind)
+        .map(|row| row.filament_g)
+        .unwrap_or(0.0)
+}
+
+fn support_settings() -> SliceSettings {
+    SliceSettings {
+        supports: true,
+        support_style: lime_slice_core::SupportStyle::Tree,
+        support_angle: 45.0,
+        branch_angle: 40.0,
+        tip_diameter: 0.8,
+        trunk_diameter: 4.2,
+        baseline: false,
+        ..SliceSettings::default()
+    }
+}
+
+/// Rotate around Y, then drop the lowest vertex onto the bed.
+fn tilt_on_bed(mesh: &Mesh, deg: f64) -> Mesh {
+    let (min, max) = mesh.bounds().unwrap();
+    let pivot = [
+        (min[0] + max[0]) * 0.5,
+        (min[1] + max[1]) * 0.5,
+        (min[2] + max[2]) * 0.5,
+    ];
+    let a = deg.to_radians();
+    let (s, c) = (a.sin(), a.cos());
+    let mut posed = mesh.rigid_move(&[c, 0.0, s, 0.0, 1.0, 0.0, -s, 0.0, c], pivot, pivot);
+    posed.settle_on_bed();
+    posed
+}
+
+fn side_support_mm(response: &lime_slice_core::SliceResponse, axis: Axis, at: f64) -> (f64, f64) {
+    let mut low = 0.0;
+    let mut high = 0.0;
+    for layer in &response.layers {
+        for path in &layer.paths {
+            if path.kind != "support" {
+                continue;
+            }
+            for w in path.pts.windows(2) {
+                let mid = [(w[0][0] + w[1][0]) * 0.5, (w[0][1] + w[1][1]) * 0.5];
+                let coord = match axis {
+                    Axis::X => mid[0],
+                    Axis::Y => mid[1],
+                };
+                let len = (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]);
+                if coord < at {
+                    low += len;
+                } else {
+                    high += len;
+                }
+            }
+        }
+    }
+    (low, high)
+}
+
+/// Organic trunks stand in the air beside the layer outline. By-region used to
+/// clip them to that outline and leave the interface printing alone.
+#[test]
+fn region_blend_emits_organic_trunks_like_speed() {
+    let flat = ledge();
+    let steep = tilt_on_bed(&flat, 55.0);
+    let mut failures = Vec::new();
+    let cases = [
+        ("ledge", &flat, Axis::X, 36.0),
+        ("ledge-y", &flat, Axis::Y, 12.0),
+        ("steep", &steep, Axis::X, {
+            let (min, max) = steep.bounds().unwrap();
+            (min[0] + max[0]) * 0.5
+        }),
+    ];
+    for (name, mesh, axis, at) in cases {
+        let settings = support_settings();
+        let speed = slice_configured(mesh, &speed_mode(), &profile(), &settings).unwrap();
+        let tough = slice_configured(
+            mesh,
+            &BlendMode::Single {
+                strategy: StrategyId::Toughness,
+            },
+            &profile(),
+            &settings,
+        )
+        .unwrap();
+        let region = slice_configured(
+            mesh,
+            &BlendMode::ByRegion { axis, at_mm: at },
+            &profile(),
+            &settings,
+        )
+        .unwrap();
+        let sg = feature_grams(&speed, "support");
+        let rg = feature_grams(&region, "support");
+        let tg = feature_grams(&tough, "support");
+        let si = feature_grams(&speed, "support-interface");
+        let ri = feature_grams(&region, "support-interface");
+        let (low_mm, high_mm) = side_support_mm(&region, axis, at);
+        let (speed_low, speed_high) = side_support_mm(&speed, axis, at);
+        let (tough_low, tough_high) = side_support_mm(&tough, axis, at);
+        eprintln!(
+            "{name} at {at:.1} support g  speed {sg:.3}  region {rg:.3}  tough {tg:.3}   interface g  speed {si:.3}  region {ri:.3}  tough {:.3}   trunk mm speed {speed_low:.0}/{speed_high:.0}  region {low_mm:.0}/{high_mm:.0}  tough {tough_low:.0}/{tough_high:.0}",
+            feature_grams(&tough, "support-interface")
+        );
+        if name == "steep" {
+            if let Ok(dir) = std::env::var("LIME_SUPPORT_PLOT") {
+                let dir = PathBuf::from(dir);
+                let _ = std::fs::create_dir_all(&dir);
+                write_support_svg(&dir.join("steep-speed.svg"), &speed, "Speed");
+                write_support_svg(&dir.join("steep-region.svg"), &region, "By region");
+                write_support_svg(&dir.join("steep-tough.svg"), &tough, "Toughness");
+            }
+        }
+        if !speed.sanity.ok {
+            failures.push(format!("{name} speed {:?}", speed.sanity.notes));
+        }
+        if !region.sanity.ok {
+            failures.push(format!("{name} region {:?}", region.sanity.notes));
+        }
+        if rg <= sg * 0.5 {
+            failures.push(format!(
+                "{name}: by-region trunks {rg:.3} g, speed trunks {sg:.3} g"
+            ));
+        }
+        if ri <= si * 0.4 {
+            failures.push(format!(
+                "{name}: by-region interface {ri:.3} g, speed interface {si:.3} g"
+            ));
+        }
+        if speed_low > 80.0 && low_mm <= speed_low * 0.35 {
+            failures.push(format!(
+                "{name}: low-side trunks {low_mm:.0} mm vs speed {speed_low:.0} mm"
+            ));
+        }
+        if speed_high > 80.0 && high_mm <= speed_high * 0.35 {
+            failures.push(format!(
+                "{name}: high-side trunks {high_mm:.0} mm vs speed {speed_high:.0} mm"
+            ));
+        }
+    }
+    let grid = SliceSettings {
+        support_style: lime_slice_core::SupportStyle::Grid,
+        ..support_settings()
+    };
+    let grid_speed = slice_configured(&flat, &speed_mode(), &profile(), &grid).unwrap();
+    let grid_region = slice_configured(
+        &flat,
+        &BlendMode::ByRegion {
+            axis: Axis::Y,
+            at_mm: 12.0,
+        },
+        &profile(),
+        &grid,
+    )
+    .unwrap();
+    let grid_sg = feature_grams(&grid_speed, "support");
+    let grid_rg = feature_grams(&grid_region, "support");
+    eprintln!("ledge-y grid support g  speed {grid_sg:.3}  region {grid_rg:.3}");
+    if grid_rg <= grid_sg * 0.5 {
+        failures.push(format!(
+            "grid columns {grid_rg:.3} g vs speed {grid_sg:.3} g"
+        ));
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 #[test]
 fn a_newer_slice_stops_the_older_one_mid_plan() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples/lime_hull.stl");
@@ -3053,6 +3225,166 @@ fn dragon_2_5_headlines() {
             report.open_skin_mm2,
         );
     }
+}
+
+/// Steep pose of the checked-in dragon, split through the middle. Opt-in: the
+/// mesh is large. Prints support grams for speed, by-region, and toughness.
+///   cargo test -p lime-slice-core --release --test slice_cube dragon_region_organic_supports -- --ignored --nocapture
+#[test]
+#[ignore = "opt-in dragon_2_5 region supports"]
+fn dragon_region_organic_supports() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples/dragon_2_5.stl");
+    if !path.is_file() {
+        eprintln!("skip dragon_2_5: samples/dragon_2_5.stl is missing");
+        return;
+    }
+    let mesh = load_mesh("dragon_2_5.stl", &std::fs::read(&path).unwrap()).unwrap();
+    let steep = tilt_on_bed(&mesh, 55.0);
+    let (min, max) = steep.bounds().unwrap();
+    let at = (min[0] + max[0]) * 0.5;
+    eprintln!(
+        "dragon steep bounds x {:.1}..{:.1} y {:.1}..{:.1} z {:.1}..{:.1} split x {at:.1}",
+        min[0], max[0], min[1], max[1], min[2], max[2]
+    );
+    let settings = SliceSettings {
+        include_gcode: true,
+        include_preview: true,
+        ..support_settings()
+    };
+    let speed = slice_configured(&steep, &speed_mode(), &profile(), &settings).unwrap();
+    let region = slice_configured(
+        &steep,
+        &BlendMode::ByRegion {
+            axis: Axis::X,
+            at_mm: at,
+        },
+        &profile(),
+        &settings,
+    )
+    .unwrap();
+    let tough = slice_configured(
+        &steep,
+        &BlendMode::Single {
+            strategy: StrategyId::Toughness,
+        },
+        &profile(),
+        &settings,
+    )
+    .unwrap();
+    let sg = feature_grams(&speed, "support");
+    let rg = feature_grams(&region, "support");
+    let tg = feature_grams(&tough, "support");
+    let si = feature_grams(&speed, "support-interface");
+    let ri = feature_grams(&region, "support-interface");
+    let (speed_low, speed_high) = side_support_mm(&speed, Axis::X, at);
+    let (low_mm, high_mm) = side_support_mm(&region, Axis::X, at);
+    eprintln!(
+        "dragon steep support g  speed {sg:.3}  region {rg:.3}  tough {tg:.3}   interface g  speed {si:.3}  region {ri:.3}   trunk mm speed {speed_low:.0}/{speed_high:.0}  region {low_mm:.0}/{high_mm:.0}"
+    );
+    if let Ok(dir) = std::env::var("LIME_SUPPORT_PLOT") {
+        let dir = PathBuf::from(dir);
+        let _ = std::fs::create_dir_all(&dir);
+        write_support_svg(&dir.join("dragon-speed.svg"), &speed, "speed");
+        write_support_svg(&dir.join("dragon-region.svg"), &region, "by region");
+    }
+    assert!(
+        rg > sg * 0.5,
+        "dragon by-region trunks {rg:.3} g, speed {sg:.3} g"
+    );
+    assert!(
+        ri > si * 0.4,
+        "dragon by-region interface {ri:.3} g, speed {si:.3} g"
+    );
+    if speed_low > 200.0 {
+        assert!(
+            low_mm > speed_low * 0.35,
+            "dragon low trunks {low_mm:.0} vs speed {speed_low:.0}"
+        );
+    }
+    if speed_high > 200.0 {
+        assert!(
+            high_mm > speed_high * 0.35,
+            "dragon high trunks {high_mm:.0} vs speed {speed_high:.0}"
+        );
+    }
+}
+
+fn write_support_svg(
+    path: &std::path::Path,
+    response: &lime_slice_core::SliceResponse,
+    title: &str,
+) {
+    let mut min = [f64::INFINITY; 2];
+    let mut max = [f64::NEG_INFINITY; 2];
+    let mut grow = |x: f64, z: f64| {
+        min[0] = min[0].min(x);
+        min[1] = min[1].min(z);
+        max[0] = max[0].max(x);
+        max[1] = max[1].max(z);
+    };
+    for layer in &response.layers {
+        for p in &layer.paths {
+            if !matches!(p.kind.as_str(), "support" | "support-interface") {
+                continue;
+            }
+            for pt in &p.pts {
+                grow(pt[0], layer.z);
+            }
+        }
+    }
+    if !min[0].is_finite() {
+        return;
+    }
+    let pad = 4.0;
+    min[0] -= pad;
+    min[1] -= pad;
+    max[0] += pad;
+    max[1] += pad;
+    let width = 960.0;
+    let height = 640.0;
+    let span_x = (max[0] - min[0]).max(1.0);
+    let span_z = (max[1] - min[1]).max(1.0);
+    let scale = ((width - 40.0) / span_x).min((height - 50.0) / span_z);
+    let map = |x: f64, z: f64| {
+        (
+            20.0 + (x - min[0]) * scale,
+            height - 24.0 - (z - min[1]) * scale,
+        )
+    };
+    let mut body = String::new();
+    for kind in ["support-interface", "support"] {
+        for layer in &response.layers {
+            for p in &layer.paths {
+                if p.kind != kind {
+                    continue;
+                }
+                let color = match kind {
+                    "support" => "#3b6fd6",
+                    "support-interface" => "#b07ad6",
+                    _ => "#c8c8c8",
+                };
+                let width_px = if kind == "outer" { 0.4 } else { 1.1 };
+                let mut d = String::new();
+                for (i, pt) in p.pts.iter().enumerate() {
+                    let (sx, sy) = map(pt[0], layer.z);
+                    d.push_str(&format!(
+                        "{}{:.1} {:.1} ",
+                        if i == 0 { "M" } else { "L" },
+                        sx,
+                        sy
+                    ));
+                }
+                body.push_str(&format!(
+                "<path d=\"{d}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"{width_px}\" stroke-linejoin=\"round\"/>\n"
+            ));
+            }
+        }
+    }
+    let (x0, y0) = map(0.0, 0.0);
+    let svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" viewBox=\"0 0 {width} {height}\">\n<rect width=\"100%\" height=\"100%\" fill=\"#f7f4ef\"/>\n<text x=\"16\" y=\"22\" font-family=\"sans-serif\" font-size=\"16\">{title}</text>\n{body}<line x1=\"20\" y1=\"{y0:.1}\" x2=\"{width}\" y2=\"{y0:.1}\" stroke=\"#222\" stroke-width=\"1\"/>\n<line x1=\"{x0:.1}\" y1=\"0\" x2=\"{x0:.1}\" y2=\"{height}\" stroke=\"#bbb\" stroke-width=\"0.5\"/>\n</svg>\n"
+    );
+    let _ = std::fs::write(path, svg);
 }
 
 /// A body with a thin wing tilted up and away from it, like the dragon's.
