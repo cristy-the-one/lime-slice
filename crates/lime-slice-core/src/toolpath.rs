@@ -4006,6 +4006,55 @@ mod travel_tests {
         ));
     }
 
+    fn ring(x: f64, y: f64, size: f64) -> Vec<[f64; 2]> {
+        let mut pts = square_at(x, y, size);
+        pts.push(pts[0]);
+        pts
+    }
+
+    #[test]
+    fn a_layer_prints_island_by_island() {
+        let solid = vec![square_at(0.0, 0.0, 10.0), square_at(20.0, 0.0, 10.0)];
+        let mut paths = vec![
+            path(PathKind::Outer, ring(0.2, 0.2, 9.6)),
+            path(PathKind::Outer, ring(20.2, 0.2, 9.6)),
+            path(PathKind::Sparse, vec![[1.0, 5.0], [9.0, 5.0]]),
+            path(PathKind::Sparse, vec![[21.0, 5.0], [29.0, 5.0]]),
+        ];
+        order_layer(&mut paths, &solid, Some([0.0, 0.0]), None);
+        let order: Vec<(PathKind, bool)> = paths
+            .iter()
+            .map(|p| (p.kind, p.points[0][0] < 15.0))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                (PathKind::Outer, true),
+                (PathKind::Sparse, true),
+                (PathKind::Outer, false),
+                (PathKind::Sparse, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_aligned_seam_stays_and_an_inner_wall_starts_near_the_nozzle() {
+        let tough = pure(StrategyId::Toughness);
+        let outer = extrusion(PathKind::Outer, &tough, ring(0.0, 0.0, 10.0), 0.45);
+        let mut far = square_at(0.45, 0.45, 9.1);
+        far.rotate_left(2);
+        far.push(far[0]);
+        let inner = extrusion(PathKind::Inner, &tough, far, 0.45);
+        let mut paths = vec![outer, inner];
+        order_layer(&mut paths, &[], Some([10.0, 10.0]), None);
+        assert_eq!(paths[0].points[0], [0.0, 0.0], "aligned seam moved");
+        assert_eq!(
+            paths[1].points[0],
+            [0.45, 0.45],
+            "inner wall should start by the outer seam"
+        );
+    }
+
     #[test]
     fn a_route_through_an_outline_vertex_is_not_inside() {
         let loop_ = vec![[1.0, 1.0], [4.0, 1.5], [4.5, 4.5], [1.5, 4.0]];
