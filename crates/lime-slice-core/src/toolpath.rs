@@ -3047,7 +3047,7 @@ fn comb_between(comb: &Combing, from: [f64; 2], to: [f64; 2]) -> Comb {
     if dist2(from, to) < 0.04 * 0.04 {
         return Comb::Clear;
     }
-    if comb.solid.segment_inside(from, to) {
+    if comb.solid.route_inside(from, to) {
         return Comb::Clear;
     }
     if !comb.enabled {
@@ -3076,9 +3076,9 @@ fn comb_between(comb: &Combing, from: [f64; 2], to: [f64; 2]) -> Comb {
     let start = n - 2;
     let goal = n - 1;
     let visible = |i: usize, j: usize| {
-        inset.segment_inside(nodes[i], nodes[j])
+        inset.route_inside(nodes[i], nodes[j])
             || (i == start || j == start || i == goal || j == goal)
-                && solid.segment_inside(nodes[i], nodes[j])
+                && solid.route_inside(nodes[i], nodes[j])
     };
     // Dijkstra over the visibility graph, testing a node's edges only once it is
     // settled. Most travels reach the goal long before every pair is tested.
@@ -3287,6 +3287,21 @@ impl<'a> Outline<'a> {
         self.contains([(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5])
     }
 
+    /// Like `segment_inside`, but touching the boundary anywhere except at the
+    /// segment's own ends also counts as leaving. Clipper snaps to a 1 µm grid,
+    /// so a travel that passes exactly through an outline vertex is common, and
+    /// a proper-crossing test alone lets it slip out of the part there.
+    fn route_inside(&self, a: [f64; 2], b: [f64; 2]) -> bool {
+        if self.loops.is_empty() {
+            return false;
+        }
+        let meets = self.touching(a, b).any(|l| {
+            let n = l.len();
+            n >= 2 && (0..n).any(|i| segment_meets(a, b, l[i], l[(i + 1) % n]))
+        });
+        !meets && self.contains([(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5])
+    }
+
     /// A link that crosses no boundary and whose midpoint is inside, or just
     /// inside when nudged toward the region's centre.
     fn link_stays(&self, a: [f64; 2], b: [f64; 2]) -> bool {
@@ -3318,6 +3333,38 @@ fn segments_properly_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -
     let o3 = orient(c, d, a);
     let o4 = orient(c, d, b);
     o1 * o2 < -1e-10 && o3 * o4 < -1e-10
+}
+
+/// `a..b` and `c..d` share a point other than `a` or `b`: a proper crossing,
+/// or `c` or `d` lying on `a..b` strictly between its ends.
+fn segment_meets(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
+    const ON: f64 = 1e-9;
+    let side = |o: f64| {
+        if o > ON {
+            1
+        } else if o < -ON {
+            -1
+        } else {
+            0
+        }
+    };
+    let (o1, o2) = (orient(a, b, c), orient(a, b, d));
+    let (s1, s2) = (side(o1), side(o2));
+    let (s3, s4) = (side(orient(c, d, a)), side(orient(c, d, b)));
+    if s1 * s2 < 0 && s3 * s4 < 0 {
+        return true;
+    }
+    let within = |p: [f64; 2]| {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len2 = dx * dx + dy * dy;
+        if len2 <= 0.0 {
+            return false;
+        }
+        let t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2;
+        let len = len2.sqrt();
+        t * len > 1e-6 && (1.0 - t) * len > 1e-6
+    };
+    (s1 == 0 && within(c)) || (s2 == 0 && within(d))
 }
 
 fn orient(p: [f64; 2], q: [f64; 2], r: [f64; 2]) -> f64 {
@@ -3683,6 +3730,50 @@ mod travel_tests {
             }
         }
         travel
+    }
+
+    fn square_at(x: f64, y: f64, size: f64) -> Loop {
+        vec![[x, y], [x + size, y], [x + size, y + size], [x, y + size]]
+    }
+
+    #[test]
+    fn a_travel_between_islands_retracts() {
+        let solid = vec![square_at(0.0, 0.0, 10.0), square_at(11.4, 0.0, 10.0)];
+        let comb = Combing::new(&solid, true, 0.36);
+        assert!(matches!(
+            comb_between(&comb, [9.0, 5.0], [12.4, 5.0]),
+            Comb::Blocked
+        ));
+        assert!(matches!(
+            comb_between(&comb, [1.0, 1.0], [9.0, 9.0]),
+            Comb::Clear
+        ));
+    }
+
+    #[test]
+    fn a_travel_around_a_hole_stays_in_its_island() {
+        let ring = vec![
+            square_at(0.0, 0.0, 10.0),
+            square_at(3.0, 3.0, 4.0).into_iter().rev().collect(),
+            square_at(4.0, 4.0, 2.0),
+        ];
+        let comb = Combing::new(&ring, true, 0.36);
+        let Comb::Routed(via) = comb_between(&comb, [1.0, 5.0], [9.0, 5.0]) else {
+            panic!("a travel across the hole should comb around it");
+        };
+        assert!(via.iter().all(|p| p[1] < 3.0 || p[1] > 7.0), "{via:?}");
+        assert!(matches!(
+            comb_between(&comb, [1.0, 5.0], [5.0, 5.0]),
+            Comb::Blocked
+        ));
+    }
+
+    #[test]
+    fn a_route_through_an_outline_vertex_is_not_inside() {
+        let loop_ = vec![[1.0, 1.0], [4.0, 1.5], [4.5, 4.5], [1.5, 4.0]];
+        let outline = Outline::new(std::slice::from_ref(&loop_));
+        assert!(!outline.route_inside([0.0, 0.0], [4.0, 4.0]));
+        assert!(outline.route_inside([2.0, 2.0], [4.0, 4.0]));
     }
 
     #[test]
