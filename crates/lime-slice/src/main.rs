@@ -135,6 +135,9 @@ enum Cmd {
         /// Also check contour coverage and support placement, and print the report.
         #[arg(long, default_value_t = false)]
         audit: bool,
+        /// Also plan a single-strategy speed slice and report its time.
+        #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+        baseline: bool,
         #[arg(short, long)]
         output: PathBuf,
     },
@@ -233,6 +236,7 @@ fn run() -> Result<(), String> {
             simplify,
             simplify_error,
             audit,
+            baseline,
             output,
         } => {
             let scarf_seam = ScarfSeam::parse(&scarf_seam)?;
@@ -289,6 +293,7 @@ fn run() -> Result<(), String> {
                 junction_deviation_mm: junction_deviation,
                 simplify,
                 simplify_error_mm: simplify_error,
+                baseline,
                 ..SliceSettings::default()
             };
             let request = request_for(&input, &blend, &settings)?;
