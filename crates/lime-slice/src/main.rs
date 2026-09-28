@@ -31,9 +31,15 @@ enum Cmd {
         at: Option<f64>,
         #[arg(long, default_value_t = 0.2)]
         layer_height: f64,
-        /// Extrusion width, mm. The UI uses 1.125 × the nozzle diameter.
-        #[arg(long, default_value_t = 0.45)]
-        line_width: f64,
+        /// Extrusion width, mm. Defaults to 1.125 × the nozzle, held to 0.2..1.2 mm as in the UI.
+        #[arg(long)]
+        line_width: Option<f64>,
+        /// Nozzle diameter, mm, for the printer profile and the audit.
+        #[arg(long, default_value_t = 0.4)]
+        nozzle: f64,
+        /// Part scale in percent about its bounding-box centre, as the UI's Scale %. The part still sits on the bed.
+        #[arg(long, default_value_t = 100.0)]
+        scale: f64,
         #[arg(long, default_value_t = 4.0)]
         bottom_mm: f64,
         #[arg(long, default_value_t = 6.0)]
@@ -201,6 +207,8 @@ fn run() -> Result<(), String> {
             at,
             layer_height,
             line_width,
+            nozzle,
+            scale,
             bottom_mm,
             transition_mm,
             toughness,
@@ -253,7 +261,7 @@ fn run() -> Result<(), String> {
             )?;
             let settings = SliceSettings {
                 layer_height,
-                line_width,
+                line_width: line_width.unwrap_or((nozzle * 1.125).clamp(0.2, 1.2)),
                 adaptive,
                 adaptive_min,
                 adaptive_max: if adaptive_max > 0.0 {
@@ -296,7 +304,8 @@ fn run() -> Result<(), String> {
                 baseline,
                 ..SliceSettings::default()
             };
-            let request = request_for(&input, &blend, &settings)?;
+            let source = read_input(&input, scale / 100.0)?;
+            let request = request_for(&source, &blend, &settings, nozzle);
             let response = slice_request(&request, lime_slice_core::Job::default())
                 .map_err(|e| e.to_string())?;
             if let Some(parent) = output.parent() {
@@ -306,10 +315,10 @@ fn run() -> Result<(), String> {
             print_summary(&input, &response);
             println!("wrote {}", output.display());
             if audit {
-                let mesh = load_input(&input)?;
+                let mesh = lime_slice_core::load_mesh(&source.name, &source.bytes)?;
                 let audit_settings = SliceSettings::from_request(&request);
                 let report =
-                    lime_slice_core::audit_slice(&mesh, &request.blend, &audit_settings, 0.4)?;
+                    lime_slice_core::audit_slice(&mesh, &request.blend, &audit_settings, nozzle)?;
                 print_audit(&report);
             }
             if !response.sanity.ok {
@@ -958,19 +967,61 @@ fn load_input(input: &Path) -> Result<Mesh, String> {
     lime_slice_core::load_mesh(input_name(input), &bytes)
 }
 
+/// Mesh file as the slicer receives it.
+struct Input {
+    name: String,
+    bytes: Vec<u8>,
+}
+
+/// The file as-is at scale 1. Any other scale is applied about the bounding-box
+/// centre and sent as a binary STL in f32, which is what the UI uploads.
+fn read_input(input: &Path, scale: f64) -> Result<Input, String> {
+    let bytes = fs::read(input).map_err(|e| e.to_string())?;
+    let name = input_name(input).to_string();
+    if scale == 1.0 {
+        return Ok(Input { name, bytes });
+    }
+    if !(scale.is_finite() && scale > 0.0) {
+        return Err(format!("scale must be above 0 %, got {} %", scale * 100.0));
+    }
+    let mesh = lime_slice_core::load_mesh(&name, &bytes)?;
+    let (min, max) = mesh.bounds().ok_or("empty mesh")?;
+    let centre = [0, 1, 2].map(|i| (min[i] + max[i]) * 0.5);
+    let mut stl = vec![0u8; 80];
+    stl.extend_from_slice(&(mesh.triangles.len() as u32).to_le_bytes());
+    for tri in &mesh.triangles {
+        stl.extend_from_slice(&[0u8; 12]);
+        for v in tri {
+            for i in 0..3 {
+                let placed = (v[i] - centre[i]) * scale + centre[i];
+                stl.extend_from_slice(&(placed as f32).to_le_bytes());
+            }
+        }
+        stl.extend_from_slice(&[0u8; 2]);
+    }
+    let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("mesh");
+    Ok(Input {
+        name: format!("{stem}.stl"),
+        bytes: stl,
+    })
+}
+
 fn request_for(
-    input: &Path,
+    input: &Input,
     blend: &BlendMode,
     settings: &SliceSettings,
-) -> Result<SliceRequest, String> {
-    let bytes = fs::read(input).map_err(|e| e.to_string())?;
-    Ok(SliceRequest {
-        filename: input_name(input).into(),
-        data_b64: base64::engine::general_purpose::STANDARD.encode(bytes),
+    nozzle: f64,
+) -> SliceRequest {
+    SliceRequest {
+        filename: input.name.clone(),
+        data_b64: base64::engine::general_purpose::STANDARD.encode(&input.bytes),
         layer_height: settings.layer_height,
         line_width: settings.line_width,
         blend: blend.clone(),
-        printer: None,
+        printer: Some(lime_slice_core::PrinterProfile {
+            nozzle_diameter: nozzle,
+            ..lime_slice_core::PrinterProfile::default()
+        }),
         adaptive: settings.adaptive,
         adaptive_min: settings.adaptive_min,
         adaptive_max: settings.adaptive_max,
@@ -1010,7 +1061,7 @@ fn request_for(
         simplify: settings.simplify,
         simplify_error_mm: settings.simplify_error_mm,
         pose: None,
-    })
+    }
 }
 
 fn print_summary(input: &Path, response: &lime_slice_core::SliceResponse) {
@@ -1115,6 +1166,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn scale_grows_the_part_about_its_centre_on_the_bed_and_ships_an_stl() {
+        let samples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples");
+        let cube = samples.join("calibration_cube_20mm.3mf");
+        let as_is = read_input(&cube, 1.0).unwrap();
+        assert_eq!(as_is.name, "calibration_cube_20mm.3mf");
+        let doubled = read_input(&cube, 2.0).unwrap();
+        assert_eq!(doubled.name, "calibration_cube_20mm.stl");
+        let bounds = |input: &Input| {
+            lime_slice_core::load_mesh(&input.name, &input.bytes)
+                .unwrap()
+                .bounds()
+                .unwrap()
+        };
+        let (min0, max0) = bounds(&as_is);
+        let (min1, max1) = bounds(&doubled);
+        for i in 0..3 {
+            let size = max1[i] - min1[i];
+            assert!((size - 40.0).abs() < 1e-3, "axis {i} is {size} mm");
+        }
+        for i in 0..2 {
+            let (c0, c1) = ((min0[i] + max0[i]) * 0.5, (min1[i] + max1[i]) * 0.5);
+            assert!((c1 - c0).abs() < 1e-3, "axis {i} centre moved {c0} -> {c1}");
+        }
+        assert!(
+            min1[2].abs() < 1e-6,
+            "the scaled part floats at z {}",
+            min1[2]
+        );
+        assert!(read_input(&cube, 0.0).is_err());
+    }
+
+    #[test]
     fn region_blend_slices_every_sample() {
         let samples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples");
         let mut inputs: Vec<PathBuf> = fs::read_dir(&samples)
@@ -1135,7 +1218,7 @@ mod tests {
         for input in &inputs {
             let blend = blend_mode("region", "x", None, 2.0, 2.0, 0.5, input)
                 .unwrap_or_else(|e| panic!("{}: {e}", input.display()));
-            let request = request_for(input, &blend, &settings).unwrap();
+            let request = request_for(&read_input(input, 1.0).unwrap(), &blend, &settings, 0.4);
             let response = slice_request(&request, lime_slice_core::Job::default())
                 .unwrap_or_else(|e| panic!("{}: {e}", input.display()));
             assert!(response.sanity.ok, "{}", input.display());
