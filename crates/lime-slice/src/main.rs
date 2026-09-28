@@ -928,6 +928,20 @@ fn print_audit(a: &lime_slice_core::SliceAudit) {
             .map(|(z, area)| format!("{area:.2} mm2 at z {z:.2}"))
             .unwrap_or_else(|| "none".into())
     );
+    for d in &a.tree_depths {
+        if d.disks == 0 {
+            continue;
+        }
+        println!(
+            "audit  tree depth {:>4.0}-{:<4} mm  disks {:>6}  radius mean {:.2} p90 {:.2} mm  volume {:.0} mm3",
+            d.from_mm,
+            if d.to_mm.is_finite() { format!("{:.0}", d.to_mm) } else { "inf".into() },
+            d.disks,
+            d.mean_radius_mm,
+            d.p90_radius_mm,
+            d.volume_mm3
+        );
+    }
 }
 
 /// The loader picks STL or 3MF from the file name, so every load of the
@@ -1029,6 +1043,16 @@ fn print_summary(input: &Path, response: &lime_slice_core::SliceResponse) {
         response.estimate.arc_moves,
         response.score.toughness,
         response.score.toughness / (response.estimate.seconds / 3600.0).max(1e-6)
+    );
+    println!(
+        "features  {}",
+        response
+            .estimate
+            .by_feature
+            .iter()
+            .map(|f| format!("{} {:.0} s {:.2} g", f.kind, f.seconds, f.filament_g))
+            .collect::<Vec<_>>()
+            .join("  ")
     );
     println!(
         "layers {}  extrusion moves {}  filament E {:.2} mm  path {:.1} mm  bounds X {:.2}..{:.2} Y {:.2}..{:.2}  sanity {}",
