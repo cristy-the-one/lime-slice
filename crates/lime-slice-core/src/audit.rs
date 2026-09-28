@@ -66,7 +66,25 @@ pub struct SliceAudit {
     pub open_skin_mm2: f64,
     /// Z of the layer with the most open skin, and that area in mm².
     pub worst_open_skin: Option<(f64, f64)>,
+    /// Tree disks grouped by how far under an interface they stand.
+    pub tree_depths: Vec<TreeDepth>,
 }
+
+/// Tree trunk disks with interface `from_mm..to_mm` above their footprint.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TreeDepth {
+    pub from_mm: f64,
+    pub to_mm: f64,
+    /// Disk slices counted on every layer, so a 1 mm tall branch at 0.2 mm counts 5.
+    pub disks: usize,
+    pub mean_radius_mm: f64,
+    pub p90_radius_mm: f64,
+    /// Trunk disk volume in this band.
+    pub volume_mm3: f64,
+}
+
+const TREE_DEPTH_EDGES_MM: [f64; 6] = [0.0, 2.0, 5.0, 10.0, 20.0, f64::INFINITY];
 
 pub fn audit_slice(
     mesh: &Mesh,
@@ -188,7 +206,83 @@ pub fn audit_slice(
             }
         }
     }
+    out.tree_depths = tree_depths(&planned.supports, bands);
     Ok(out)
+}
+
+/// Vertical distance from each trunk disk up to the nearest interface over its
+/// footprint, then radius statistics per depth band. A tree that thickens only
+/// where it carries many tips keeps the shallow bands thin.
+fn tree_depths(supports: &[SupportLayer], bands: &[crate::adaptive::LayerBand]) -> Vec<TreeDepth> {
+    let bounds: Vec<Option<([f64; 2], [f64; 2])>> = supports
+        .iter()
+        .map(|s| crate::poly::loop_bounds(&s.interface))
+        .collect();
+    let samples: Vec<(f64, f64, f64)> = (0..supports.len())
+        .into_par_iter()
+        .flat_map_iter(|i| {
+            let layer = &supports[i];
+            let bounds = &bounds;
+            layer.branches.iter().zip(&layer.radii).map(move |(c, r)| {
+                let mut depth = f64::INFINITY;
+                for j in i + 1..supports.len() {
+                    let dz = bands[j].z - bands[i].z;
+                    if dz > 60.0 {
+                        break;
+                    }
+                    let Some((min, max)) = bounds[j] else {
+                        continue;
+                    };
+                    if c[0] < min[0] - r
+                        || c[0] > max[0] + r
+                        || c[1] < min[1] - r
+                        || c[1] > max[1] + r
+                    {
+                        continue;
+                    }
+                    let iface = &supports[j].interface;
+                    if crate::poly::in_solid(iface, c[0], c[1])
+                        || crate::poly::distance_to_outline(iface, *c) <= *r
+                    {
+                        depth = dz;
+                        break;
+                    }
+                }
+                (depth, *r, bands[i].height)
+            })
+        })
+        .collect();
+    TREE_DEPTH_EDGES_MM
+        .windows(2)
+        .map(|w| {
+            let mut radii: Vec<f64> = Vec::new();
+            let mut volume = 0.0;
+            for (d, r, h) in &samples {
+                if *d >= w[0] && *d < w[1] {
+                    radii.push(*r);
+                    volume += std::f64::consts::PI * r * r * h;
+                }
+            }
+            radii.sort_by(f64::total_cmp);
+            let n = radii.len();
+            TreeDepth {
+                from_mm: w[0],
+                to_mm: w[1],
+                disks: n,
+                mean_radius_mm: if n == 0 {
+                    0.0
+                } else {
+                    radii.iter().sum::<f64>() / n as f64
+                },
+                p90_radius_mm: if n == 0 {
+                    0.0
+                } else {
+                    radii[(n * 9 / 10).min(n - 1)]
+                },
+                volume_mm3: volume,
+            }
+        })
+        .collect()
 }
 
 struct LayerRow {

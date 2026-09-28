@@ -482,21 +482,19 @@ fn section_radius(load: f64, tip_r: f64, load_factor: f64) -> f64 {
     tip_r * (load.max(1.0) / factor).sqrt()
 }
 
-/// Organic thickness: enough section for the load, and a stability floor that
-/// grows with fall distance so a lone trunk is not a hair all the way to the bed.
-fn branch_radius(load: f64, dist: f64, tip_r: f64, trunk_r: f64, load_factor: f64) -> f64 {
-    let loaded = section_radius(load, tip_r, load_factor);
-    // Same fall curve as a lone trunk used to grow, so a single branch is not
-    // left as a hair. Load stacks on top of that and is capped at the trunk.
-    // Speed (high load factor) keeps a lone shaft slimmer so neighbours can join
-    // and the path stays short. Toughness keeps the old 7.5 mm flare.
-    let tau = (6.2 + 1.5 * load_factor).clamp(7.5, 16.0);
-    let stable = tip_r + (trunk_r - tip_r) * (1.0 - (-dist / tau).exp());
-    loaded.max(stable).clamp(tip_r, trunk_r)
+/// Radius a branch gains per millimetre it falls, so a lone branch still
+/// widens toward its foot. Thickness mostly comes from merges, which add
+/// section area, so a branch is thick where it carries many tips and thin
+/// under the interface. Speed stays slim; toughness flares about twice as fast.
+fn flare_per_mm(load_factor: f64) -> f64 {
+    (0.09 / load_factor.max(0.5).sqrt()).clamp(0.03, 0.08)
 }
 
-/// Step every unfrozen node down one layer: lean toward nearby trunks, thicken
-/// for the load they already carry, merge when one trunk can hold both, and
+/// Farthest two branches may lean toward each other to share a trunk.
+const PAIR_REACH_MM: f64 = 22.0;
+
+/// Step every unfrozen node down one layer: lean toward the branch it pairs
+/// with, thicken for the load it already carries, merge when one trunk can hold both, and
 /// stop on a supported mesh face. Frozen nodes are the interface tips and do not move.
 fn propagate_nodes(nodes: Vec<Node>, below: &[Loop], below2: &[Loop], grow: &Grow) -> Vec<Node> {
     let max_step = (grow.height * grow.lean).clamp(0.05, 4.0);
@@ -516,16 +514,11 @@ fn propagate_nodes(nodes: Vec<Node>, below: &[Loop], below2: &[Loop], grow: &Gro
         }
         next.push(n);
     }
-    let cloud: Vec<[f64; 2]> = next
-        .iter()
-        .filter(|n| n.freeze == 0)
-        .map(|n| n.xy)
-        .collect();
-    for n in &mut next {
-        if n.freeze == 0 {
-            n.xy = lean_toward(n.xy, &cloud, max_step);
-        }
+    let steps = pair_steps(&next, grow, max_step);
+    for (n, xy) in next.iter_mut().zip(steps) {
+        n.xy = xy;
     }
+    let flare = flare_per_mm(grow.load_factor) * grow.height;
     let mut kept = Vec::with_capacity(next.len());
     for mut n in next {
         if n.freeze > 0 {
@@ -533,8 +526,9 @@ fn propagate_nodes(nodes: Vec<Node>, below: &[Loop], below2: &[Loop], grow: &Gro
             continue;
         }
         n.dist += grow.height;
-        let grown = branch_radius(n.load, n.dist, grow.tip_r, grow.trunk_r, grow.load_factor);
-        n.radius = grown.max(n.radius).min(grow.trunk_r);
+        n.radius = (n.radius + flare)
+            .max(section_radius(n.load, grow.tip_r, grow.load_factor))
+            .min(grow.trunk_r);
         n.xy = push_out(n.xy, &below, grow.xy_gap + n.radius, max_step);
         if below.contains(n.xy) {
             continue;
@@ -552,28 +546,66 @@ fn propagate_nodes(nodes: Vec<Node>, below: &[Loop], below2: &[Loop], grow: &Gro
     kept
 }
 
-fn lean_toward(xy: [f64; 2], cloud: &[[f64; 2]], max_step: f64) -> [f64; 2] {
-    let mut sx = 0.0;
-    let mut sy = 0.0;
-    let mut w = 0.0;
-    for p in cloud {
-        let dx = p[0] - xy[0];
-        let dy = p[1] - xy[1];
-        let d = dx.hypot(dy);
-        if !(0.2..=22.0).contains(&d) {
-            continue;
+/// Where each node stands on the next layer. Pairs are matched greedily,
+/// closest first, and each pair walks toward its section-weighted meeting
+/// point: the thicker branch stays nearly upright and the thinner one leans in.
+/// A merged pair is matched again lower down, so neighbouring tips join into
+/// branches and branches into trunks. Leaning toward the centroid of every
+/// neighbour instead cancels out inside a row of tips, and the row falls as
+/// parallel columns. A node whose neighbours are all taken leans toward the
+/// nearest one and joins that branch after it merges.
+fn pair_steps(nodes: &[Node], grow: &Grow, max_step: f64) -> Vec<[f64; 2]> {
+    let mut live: Vec<usize> = (0..nodes.len()).filter(|&i| nodes[i].freeze == 0).collect();
+    live.sort_by(|&a, &b| nodes[a].xy[0].total_cmp(&nodes[b].xy[0]));
+    let meet = |a: &Node, b: &Node| -> Option<(f64, [f64; 2])> {
+        if a.to_bed != b.to_bed {
+            return None;
         }
-        let weight = (22.0 - d) / d;
-        sx += p[0] * weight;
-        sy += p[1] * weight;
-        w += weight;
+        let d = (a.xy[0] - b.xy[0]).hypot(a.xy[1] - b.xy[1]);
+        if d > PAIR_REACH_MM {
+            return None;
+        }
+        if grow.load_factor >= 3.0 && !carries(a, b, grow) {
+            return None;
+        }
+        let (wa, wb) = (a.radius.powi(2), b.radius.powi(2));
+        let at = [
+            (a.xy[0] * wa + b.xy[0] * wb) / (wa + wb),
+            (a.xy[1] * wa + b.xy[1] * wb) / (wa + wb),
+        ];
+        Some((d, at))
+    };
+    let mut pairs: Vec<(f64, usize, usize, [f64; 2])> = Vec::new();
+    for (k, &a) in live.iter().enumerate() {
+        for &b in &live[k + 1..] {
+            if nodes[b].xy[0] - nodes[a].xy[0] > PAIR_REACH_MM {
+                break;
+            }
+            if let Some((d, at)) = meet(&nodes[a], &nodes[b]) {
+                pairs.push((d, a, b, at));
+            }
+        }
     }
-    if w < 1e-6 {
-        return xy;
+    pairs.sort_by(|p, q| p.0.total_cmp(&q.0).then(p.1.cmp(&q.1)).then(p.2.cmp(&q.2)));
+    let mut target: Vec<Option<[f64; 2]>> = vec![None; nodes.len()];
+    let mut nearest: Vec<Option<[f64; 2]>> = vec![None; nodes.len()];
+    for &(_, a, b, at) in &pairs {
+        for i in [a, b] {
+            nearest[i] = nearest[i].or(Some(at));
+        }
+        if target[a].is_none() && target[b].is_none() {
+            target[a] = Some(at);
+            target[b] = Some(at);
+        }
     }
-    let cx = sx / w;
-    let cy = sy / w;
-    step_toward(xy, [cx, cy], max_step)
+    nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| match target[i].or(nearest[i]) {
+            Some(at) if n.freeze == 0 => step_toward(n.xy, at, max_step),
+            _ => n.xy,
+        })
+        .collect()
 }
 
 fn step_toward(xy: [f64; 2], target: [f64; 2], max_step: f64) -> [f64; 2] {
@@ -624,13 +656,12 @@ fn push_out(xy: [f64; 2], part: &LoopIndex, clearance: f64, max_step: f64) -> [f
 }
 
 /// Merge a node into an earlier one when the host can carry the combined load
-/// and the merged trunk still holds both parent disks. The trunk is thickened
-/// to the radius that cone requires, up to the trunk cap.
+/// and the merged trunk still holds both parent disks. The merged section is
+/// the sum of both, up to the trunk cap.
 fn merge_nodes(nodes: &mut Vec<Node>, grow: &Grow, reach: f64) {
     if nodes.len() < 2 {
         return;
     }
-    let slack = reach.min(BEAD_OVERHANG_MM);
     nodes.sort_by_key(|n| n.id);
     let mut kept: Vec<Node> = Vec::new();
     for n in nodes.drain(..) {
@@ -651,48 +682,25 @@ fn merge_nodes(nodes: &mut Vec<Node>, grow: &Grow, reach: f64) {
                     return false;
                 }
             }
-            // Speed rates each trunk's load. Neither merge test may exceed it.
+            // Speed rates each trunk's load. A merge may not exceed it.
             let speed = grow.load_factor >= 3.0;
             if speed && !carries(k, &n, grow) {
                 return false;
             }
-            (speed && merge_need(k, &n, grow, slack).is_some())
-                || legacy_merge(k, &n, grow.trunk_r, reach)
+            holds_both(k, &n, grow.trunk_r, reach)
         }) {
-            let d = (host.xy[0] - n.xy[0]).hypot(host.xy[1] - n.xy[1]);
             let w = (host.radius + n.radius).max(1e-6);
-            let shift_k = d * n.radius / w;
-            let shift_n = d * host.radius / w;
             host.xy = [
                 (host.xy[0] * host.radius + n.xy[0] * n.radius) / w,
                 (host.xy[1] * host.radius + n.xy[1] * n.radius) / w,
             ];
             host.load += n.load;
             host.dist = host.dist.max(n.dist);
-            let need = (shift_k + host.radius - slack)
-                .max(shift_n + n.radius - slack)
-                .max(host.radius)
-                .max(n.radius)
-                .max(section_radius(host.load, grow.tip_r, grow.load_factor));
-            let area = (host.radius.powi(2) + n.radius.powi(2))
+            // Section area adds up at a fork, so thickness follows the tips carried.
+            host.radius = (host.radius.powi(2) + n.radius.powi(2))
                 .sqrt()
+                .max(section_radius(host.load, grow.tip_r, grow.load_factor))
                 .min(grow.trunk_r);
-            // Cone thickening is the speed path. Toughness keeps the area-sum
-            // radius so a dense grid does not swell into longer perimeters.
-            let covered = if grow.load_factor >= 3.0 && need <= grow.trunk_r + 1e-6 {
-                need
-            } else {
-                area
-            };
-            host.radius = branch_radius(
-                host.load,
-                host.dist,
-                grow.tip_r,
-                grow.trunk_r,
-                grow.load_factor,
-            )
-            .max(covered)
-            .min(grow.trunk_r);
             if n.id < host.id {
                 host.id = n.id;
             }
@@ -703,7 +711,9 @@ fn merge_nodes(nodes: &mut Vec<Node>, grow: &Grow, reach: f64) {
     *nodes = kept;
 }
 
-fn legacy_merge(host: &Node, guest: &Node, trunk_r: f64, reach: f64) -> bool {
+/// True when the merged disk, at the section-weighted centre, still sits under
+/// both parent disks within one lean step.
+fn holds_both(host: &Node, guest: &Node, trunk_r: f64, reach: f64) -> bool {
     let d = (host.xy[0] - guest.xy[0]).hypot(host.xy[1] - guest.xy[1]);
     let merged = (host.radius.powi(2) + guest.radius.powi(2))
         .sqrt()
@@ -723,26 +733,6 @@ fn carries(a: &Node, b: &Node, grow: &Grow) -> bool {
         grow.load_factor,
     );
     a.load + b.load <= cap + 1e-6
-}
-
-/// Radius the merged trunk needs so both parent disks stay inside the support
-/// cone. `None` when that radius would exceed the trunk cap.
-fn merge_need(a: &Node, b: &Node, grow: &Grow, slack: f64) -> Option<f64> {
-    let load = a.load + b.load;
-    let d = (a.xy[0] - b.xy[0]).hypot(a.xy[1] - b.xy[1]);
-    let w = (a.radius + b.radius).max(1e-6);
-    let shift_a = d * b.radius / w;
-    let shift_b = d * a.radius / w;
-    let need = (shift_a + a.radius - slack)
-        .max(shift_b + b.radius - slack)
-        .max(a.radius)
-        .max(b.radius)
-        .max(section_radius(load, grow.tip_r, grow.load_factor));
-    if need <= grow.trunk_r + 1e-6 {
-        Some(need)
-    } else {
-        None
-    }
 }
 
 /// Where a fresh tip is born, and the part it might still lean onto.
@@ -1440,6 +1430,59 @@ mod tests {
     }
 
     #[test]
+    fn speed_branches_stay_thin_under_a_wide_overhang_and_thicken_toward_the_bed() {
+        // 60 × 20 mm plate 20 mm up on the speed knobs. Tips pair off, pairs
+        // join into branches, and only the trunks near the bed carry enough
+        // tips to reach the 2.1 mm cap.
+        let bands = layers(110);
+        let mut contours = vec![Vec::new(); bands.len()];
+        for contour in contours.iter_mut().skip(100) {
+            *contour = vec![rect(0.0, 0.0, 60.0, 20.0)];
+        }
+        let built = build_supports(
+            &bands,
+            &contours,
+            &SupportOpts {
+                style: SupportStyle::Tree,
+                density: 0.15,
+                load_factor: 5.2,
+                max_tip_spacing: 10.8,
+                ..SupportOpts::default()
+            },
+        );
+        assert!(unfooted_interface(&built, &contours).is_empty());
+        let top = built
+            .iter()
+            .rposition(|l| !l.branches.is_empty())
+            .expect("the plate grew no tree");
+        let band_radii = |from: usize, to: usize| -> (f64, f64) {
+            let radii: Vec<f64> = built[from..to]
+                .iter()
+                .flat_map(|l| l.radii.iter().copied())
+                .collect();
+            let max = radii.iter().copied().fold(0.0, f64::max);
+            (radii.iter().sum::<f64>() / radii.len().max(1) as f64, max)
+        };
+        // The 3 mm under the lowest interface layer, and the 3 mm above the bed.
+        let (under_mean, under_max) = band_radii(top - 14, top + 1);
+        let (foot_mean, _) = band_radii(1, 16);
+        assert!(
+            under_max <= 1.0,
+            "a branch within 3 mm of the interface is {under_max:.2} mm thick"
+        );
+        assert!(
+            foot_mean >= 1.5 * under_mean,
+            "trunks should thicken toward the bed, under {under_mean:.2} foot {foot_mean:.2}"
+        );
+        let tips = built[top].branches.len();
+        let feet = built[0].branches.len();
+        assert!(
+            feet * 2 <= tips,
+            "branches should join on the way down, {tips} tips {feet} feet"
+        );
+    }
+
+    #[test]
     fn a_disk_nothing_can_hold_is_dropped() {
         let bands = [band(0, 0.2), band(1, 0.4)];
         let mut layers = vec![
@@ -1605,11 +1648,19 @@ mod tests {
             sparse_peak < dense_peak,
             "load factor and tip spacing should thin the peak, sparse {sparse_peak} dense {dense_peak}"
         );
-        let sparse_load: f64 = sparse.iter().map(|l| l.branches.len() as f64).sum();
-        let dense_load: f64 = dense.iter().map(|l| l.branches.len() as f64).sum();
+        // A thin twig prints one small loop and a trunk two large ones, so the
+        // printed support scales with summed disk perimeter, not disk count.
+        let perimeter = |built: &[SupportLayer]| -> f64 {
+            built
+                .iter()
+                .flat_map(|l| &l.radii)
+                .map(|r| std::f64::consts::TAU * r)
+                .sum()
+        };
+        let (sparse_len, dense_len) = (perimeter(&sparse), perimeter(&dense));
         assert!(
-            sparse_load < dense_load * 0.75,
-            "sparse disks {sparse_load} should be well under dense {dense_load}"
+            sparse_len < dense_len * 0.75,
+            "sparse perimeter {sparse_len:.0} mm should be well under dense {dense_len:.0} mm"
         );
     }
 
@@ -1708,7 +1759,7 @@ mod tests {
 
     #[test]
     fn a_speed_merge_never_loads_a_trunk_past_its_capacity() {
-        // Two full trunks 0.5 mm apart, 20 mm down. The legacy cone test takes
+        // Two full trunks 0.5 mm apart, 20 mm down. The cone test takes
         // either one into the other. At speed one 4.2 mm trunk that long is
         // rated for 5.2 * (2.1 / 0.4)^2 / (1 + 20 / 28) = 83.6 tip-units.
         let grow = |load_factor| Grow {
@@ -1749,7 +1800,7 @@ mod tests {
         merge_nodes(&mut under, &grow(5.2), 0.39);
         assert_eq!(loads(&under), vec![60.0]);
 
-        // Toughness has no load rating, so its legacy merge stands.
+        // Toughness has no load rating, so its cone merge stands.
         let mut tough = pair(60.0);
         merge_nodes(&mut tough, &grow(1.5), 0.39);
         assert_eq!(loads(&tough), vec![120.0]);
