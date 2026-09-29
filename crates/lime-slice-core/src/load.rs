@@ -19,7 +19,15 @@ pub struct MeshPreview {
 }
 
 pub fn mesh_preview(filename: &str, bytes: &[u8]) -> Result<MeshPreview, String> {
-    let mesh = load_mesh(filename, bytes)?;
+    mesh_preview_tol(filename, bytes, 0.0)
+}
+
+pub fn mesh_preview_tol(
+    filename: &str,
+    bytes: &[u8],
+    step_tolerance_mm: f64,
+) -> Result<MeshPreview, String> {
+    let mesh = load_slice_mesh_tol(filename, bytes, false, step_tolerance_mm)?;
     let (min, max) = mesh.bounds().ok_or("empty mesh")?;
     let mut positions = Vec::with_capacity(mesh.triangles.len() * 9);
     for tri in &mesh.triangles {
@@ -45,16 +53,31 @@ pub fn load_mesh(filename: &str, bytes: &[u8]) -> Result<Mesh, String> {
 ///
 /// When `pose_after` is set, the bytes are the scaled canonical frame and a
 /// rigid pose places them afterwards, so they are not seated on the bed here.
+/// STEP files tessellate at [`crate::step::STEP_TOLERANCE_DEFAULT_MM`].
 pub fn load_slice_mesh(filename: &str, bytes: &[u8], pose_after: bool) -> Result<Mesh, String> {
+    load_slice_mesh_tol(filename, bytes, pose_after, 0.0)
+}
+
+/// Like [`load_slice_mesh`], with an explicit STEP chord tolerance in millimetres.
+///
+/// `step_tolerance_mm` of `0` uses the default. STL and 3MF ignore it.
+pub fn load_slice_mesh_tol(
+    filename: &str,
+    bytes: &[u8],
+    pose_after: bool,
+    step_tolerance_mm: f64,
+) -> Result<Mesh, String> {
     let lower = filename.to_ascii_lowercase();
-    let mut mesh = if lower.ends_with(".3mf") || looks_like_zip(bytes) && !lower.ends_with(".stl") {
+    let mut mesh = if lower.ends_with(".step") || lower.ends_with(".stp") {
+        crate::step::load_step(bytes, step_tolerance_mm)?
+    } else if lower.ends_with(".3mf") || looks_like_zip(bytes) && !lower.ends_with(".stl") {
         load_3mf(bytes)?
     } else if lower.ends_with(".stl") || looks_like_stl(bytes) {
         load_stl(bytes)?
     } else if looks_like_zip(bytes) {
         load_3mf(bytes)?
     } else {
-        return Err("unsupported mesh: use STL or 3MF".into());
+        return Err("unsupported mesh: use STL, 3MF, or STEP".into());
     };
     if mesh.triangles.is_empty() {
         return Err("mesh contains no triangles".into());

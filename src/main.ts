@@ -155,6 +155,7 @@ const state = {
   placed: null as Float32Array | null,
   orient: ID_MATRIX as Mat3,
   partScale: 1,
+  stepTolerance: 0.1,
   centered: true,
   offset: { x: 0, y: 0, z: 0 } as MeshShift,
   pareto: [] as ParetoPoint[],
@@ -176,6 +177,7 @@ worker.postMessage({ geomPort: geomChannel.port1 }, [geomChannel.port1]);
 geomWorker.postMessage({ slicePort: geomChannel.port2 }, [geomChannel.port2]);
 let job = 0;
 let autoTimer = 0;
+let stepTimer = 0;
 
 const app = document.querySelector("#app")!;
 app.innerHTML = `
@@ -184,13 +186,14 @@ app.innerHTML = `
       <div class="brand">Lime <span>Slice</span></div>
       <button class="btn panel-toggle" id="toggleLeft" type="button">Settings</button>
       <button class="btn panel-toggle" id="toggleRight" type="button">Blend</button>
-      <label class="btn file">Open mesh<input id="file" type="file" accept=".stl,.3mf,.STL,.3MF" /></label>
+      <label class="btn file">Open mesh<input id="file" type="file" accept=".stl,.3mf,.step,.stp,.STL,.3MF,.STEP,.STP" /></label>
       <details class="menu" id="samples">
         <summary class="btn">Samples</summary>
         <nav>
           <button type="button" data-sample="calibration_cube_20mm.stl">20 mm cube</button>
           <button type="button" data-sample="lime_hull.stl">60 mm hull</button>
           <button type="button" data-sample="calibration_cube_20mm.3mf">Cube 3MF</button>
+          <button type="button" data-sample="step_cube.step">STEP cube</button>
           <button type="button" data-sample="overhang_ledge.stl">Overhang</button>
           <button type="button" data-sample="slope_ramp.stl">Slope</button>
           <button type="button" data-sample="thin_fin.stl">Thin wall</button>
@@ -287,7 +290,7 @@ app.innerHTML = `
       </section>
       <aside class="panel right" id="right"></aside>
     </div>
-    <footer class="status" id="status">Load an STL or 3MF. Arrow keys move the layer. Press ? for shortcuts.</footer>
+    <footer class="status" id="status">Load an STL, 3MF, or STEP file. Arrow keys move the layer. Press ? for shortcuts.</footer>
   </div>
   <div id="help" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="helpTitle">
     <div class="sheet-card">
@@ -469,7 +472,7 @@ function renderChrome() {
   paintPlayback();
   paintGcode();
   const status = document.querySelector("#status")!;
-  if (!mesh) status.textContent = "Load an STL or 3MF from Samples or Open mesh. Arrow keys move the layer.";
+  if (!mesh) status.textContent = "Load an STL, 3MF, or STEP file from Samples or Open mesh. Arrow keys move the layer.";
   else if (state.busy) status.textContent = `Slicing ${mesh.name}…`;
   else if (isStale) status.textContent = "This preview is stale. Slice before export.";
   else if (result?.fromCache) status.textContent = `${result.blend} · Loaded from cache, sliced ${new Date(result.slicedAtMs ?? 0).toLocaleString()}. Re-slice to plan it again.`;
@@ -631,8 +634,14 @@ function estimateHtml() {
     <div class="meta">${est.arcMoves} arcs · ${est.retracts ?? 0} retracts · ${(est.travelMm ?? 0).toFixed(0)} mm travel · ${est.scarfedLoops ?? 0} scarfed loops</div>
   `;
 }
+function isStepName(name: string) {
+  return /\.(step|stp)$/i.test(name);
+}
+function needsEngine(name: string) {
+  return /\.(3mf|step|stp)$/i.test(name);
+}
 function objectList() {
-  if (!state.placed) return `<div class="meta">Drop an STL or 3MF, or open a sample.</div>`;
+  if (!state.placed) return `<div class="meta">Drop an STL, 3MF, or STEP file, or open a sample.</div>`;
   const b = boundsOf(state.placed);
   const size = b.max.map((v, i) => (v - b.min[i]).toFixed(1)).join(" × ");
   const cx = ((b.min[0] + b.max[0]) / 2).toFixed(1);
@@ -653,6 +662,7 @@ function objectList() {
       <button class="btn" id="export3mf" type="button">Export 3MF</button>
     </div>
     <label class="field">Scale %<input id="partScale" type="number" min="10" max="400" step="5" value="${Math.round(state.partScale * 100)}" /></label>
+    ${isStepName(state.mesh?.name ?? "") ? num("stepTol", "STEP chord mm", state.stepTolerance, 0.01, 2, 0.01) : ""}
     ${notes.length ? `<div class="meta warn-text">${notes.join("; ")}</div>` : `<div class="meta">On the ${state.profile.bedX}×${state.profile.bedY}×${state.profile.bedZ} mm bed.</div>`}
     <div class="meta" id="placeReadout">X ${cx} · Y ${cy} · bed Z ${z0} mm</div>
     <div class="meta">Gizmo sits at the left. Drag a ring to rotate. Drag an arrow to move. Shift snaps 15° or 1 mm.</div>
@@ -1243,6 +1253,13 @@ function onSettings(ev: Event) {
     applyPlace(false);
     return;
   }
+  if (t.id === "stepTol") {
+    const value = Number(t.value);
+    state.stepTolerance = Number.isFinite(value) ? value : 0.1;
+    window.clearTimeout(stepTimer);
+    stepTimer = window.setTimeout(() => { void refreshStepPreview(); }, 250);
+    return;
+  }
   const structural = ["adaptive", "supports", "zhop", "scarf", "gyroid3d"].includes(t.id);
   if (structural) renderChrome();
   markStale();
@@ -1476,32 +1493,49 @@ async function adoptBytes(name: string, bytes: ArrayBuffer) {
   state.error = "";
   state.orient = ID_MATRIX;
   state.partScale = 1;
+  state.stepTolerance = 0.1;
   state.centered = true;
   state.offset = { x: 0, y: 0, z: 0 };
-  const parsed = name.toLowerCase().endsWith(".3mf") ? null : parseStl(bytes);
+  const parsed = needsEngine(name) ? null : parseStl(bytes);
   state.sourcePos = parsed ?? (await previewRemote(name, bytes));
   place("load");
   setStage("prepare");
 }
 
 async function previewRemote(name: string, bytes: ArrayBuffer): Promise<Float32Array | null> {
-  const payload = { filename: name, dataB64: toBase64(new Uint8Array(bytes)) };
+  const payload = { filename: name, dataB64: toBase64(new Uint8Array(bytes)), stepToleranceMm: state.stepTolerance };
   const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   try {
-    let body: { positions: number[] };
+    let body: { positions?: number[]; error?: string };
     if (tauri) {
       const { invoke } = await import("@tauri-apps/api/core");
       body = JSON.parse(await invoke<string>("preview_mesh", { payload: JSON.stringify(payload) }));
     } else {
       const res = await fetch(`${API}/api/mesh`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       body = await res.json();
-      if (!res.ok) throw new Error("mesh preview failed");
+      if (!res.ok) throw new Error(body.error || "Could not preview this mesh.");
     }
+    if (!body.positions) throw new Error(body.error || "Could not preview this mesh.");
     return new Float32Array(body.positions);
-  } catch {
-    state.notice = "Could not preview this mesh. STL works offline; 3MF needs the slicer engine.";
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Could not preview this mesh.";
+    state.error = message === "Failed to fetch"
+      ? "STEP and 3MF need the slicer engine. Start it with cargo run -p lime-slice --release -- serve."
+      : message;
     return null;
   }
+}
+
+async function refreshStepPreview() {
+  if (!state.mesh || !isStepName(state.mesh.name)) return;
+  const positions = await previewRemote(state.mesh.name, state.mesh.bytes);
+  if (!positions) {
+    renderChrome();
+    return;
+  }
+  state.error = "";
+  state.sourcePos = positions;
+  place("transform");
 }
 
 function place(sync: SplitSync = "transform") {
@@ -1549,7 +1583,10 @@ function meshBytes() {
 
 function payload() {
   return {
-    filename: (state.mesh!.name || "part").replace(/\.3mf$/i, ".stl"),
+    filename: state.sourcePos
+      ? (state.mesh!.name || "part").replace(/\.(3mf|step|stp)$/i, ".stl")
+      : (state.mesh!.name || "part"),
+    stepToleranceMm: state.stepTolerance,
     layerHeight: state.layerHeight,
     lineWidth: Math.min(1.2, Math.max(0.2, state.profile.nozzleDiameter * 1.125)),
     blend: blend(),
@@ -2010,7 +2047,7 @@ async function exportGcode() {
   }
   const minutes = Math.max(1, Math.round((result.estimate?.seconds ?? 0) / 60));
   const grams = (result.estimate?.filamentG ?? 0).toFixed(0);
-  const base = (state.mesh?.name ?? "part").replace(/\.(stl|3mf)$/i, "");
+  const base = (state.mesh?.name ?? "part").replace(/\.(stl|3mf|step|stp)$/i, "");
   const blend = card();
   await saveText(text, `${base}_${blend}_${minutes}m_${grams}g.gcode`, "gcode");
 }
@@ -2018,7 +2055,7 @@ async function exportGcode() {
 async function export3mf() {
   if (!state.placed) return;
   const bytes = encode3mf(state.placed);
-  const name = `${(state.mesh?.name ?? "part").replace(/\.(stl|3mf)$/i, "")}.3mf`;
+  const name = `${(state.mesh?.name ?? "part").replace(/\.(stl|3mf|step|stp)$/i, "")}.3mf`;
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("save_text_file", { text: "", defaultName: name, extension: "3mf", bytesB64: toBase64(bytes) });

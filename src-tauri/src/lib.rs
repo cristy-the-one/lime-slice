@@ -3,8 +3,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use lime_slice_core::{
-    cancel_all, load_slice_mesh, mesh_preview, pareto_estimates, pressure_advance_from_request,
-    slice_payload, strategy_card, Job, PaCalibRequest, SliceCache, SliceRequest, SliceSettings,
+    cancel_all, load_slice_mesh_tol, mesh_preview_tol, pareto_estimates,
+    pressure_advance_from_request, slice_payload, strategy_card, Job, PaCalibRequest, SliceCache,
+    SliceRequest, SliceSettings,
 };
 use tauri::AppHandle;
 use tauri::Emitter;
@@ -109,7 +110,12 @@ async fn pareto_model(payload: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let req: SliceRequest = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
         let bytes = base64_decode(&req.data_b64)?;
-        let mesh = load_slice_mesh(&req.filename, &bytes, req.pose.is_some())?;
+        let mesh = load_slice_mesh_tol(
+            &req.filename,
+            &bytes,
+            req.pose.is_some(),
+            req.step_tolerance_mm,
+        )?;
         let profile = req.printer.clone().unwrap_or_default();
         let settings = SliceSettings {
             job: Job::start(),
@@ -126,7 +132,7 @@ async fn pareto_model(payload: String) -> Result<String, String> {
 fn preview_mesh(payload: String) -> Result<String, String> {
     let req: SliceRequest = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
     let bytes = base64_decode(&req.data_b64)?;
-    let preview = mesh_preview(&req.filename, &bytes)?;
+    let preview = mesh_preview_tol(&req.filename, &bytes, req.step_tolerance_mm)?;
     serde_json::to_string(&preview).map_err(|e| e.to_string())
 }
 

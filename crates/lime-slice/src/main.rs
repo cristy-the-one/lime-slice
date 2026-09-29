@@ -6,8 +6,8 @@ use std::sync::Mutex;
 use base64::Engine;
 use clap::{Parser, Subcommand};
 use lime_slice_core::{
-    mesh_preview, pareto_estimates, slice_request, Axis, BlendMode, Gyroid3d, Mesh, ScarfSeam,
-    SliceRequest, SliceSettings, StrategyId, ZHopMode,
+    pareto_estimates, slice_request, Axis, BlendMode, Gyroid3d, Mesh, ScarfSeam, SliceRequest,
+    SliceSettings, StrategyId, ZHopMode,
 };
 
 #[derive(Parser)]
@@ -138,6 +138,9 @@ enum Cmd {
         /// Outline tolerance in millimetres. `0` uses a sixteenth of the nozzle.
         #[arg(long, default_value_t = 0.0)]
         simplify_error: f64,
+        /// Chord tolerance in millimetres when the input is STEP. STL and 3MF ignore it.
+        #[arg(long, default_value_t = 0.1)]
+        step_tolerance: f64,
         /// Also check contour coverage and support placement, and print the report.
         #[arg(long, default_value_t = false)]
         audit: bool,
@@ -246,6 +249,7 @@ fn run() -> Result<(), String> {
             junction_deviation,
             simplify,
             simplify_error,
+            step_tolerance,
             audit,
             baseline,
             output,
@@ -307,8 +311,9 @@ fn run() -> Result<(), String> {
                 baseline,
                 ..SliceSettings::default()
             };
-            let source = read_input(&input, scale / 100.0)?;
-            let request = request_for(&source, &blend, &settings, nozzle);
+            let source = read_input(&input, scale / 100.0, step_tolerance)?;
+            let mut request = request_for(&source, &blend, &settings, nozzle);
+            request.step_tolerance_mm = step_tolerance;
             let response = slice_request(&request, lime_slice_core::Job::default())
                 .map_err(|e| e.to_string())?;
             if let Some(parent) = output.parent() {
@@ -318,7 +323,12 @@ fn run() -> Result<(), String> {
             print_summary(&input, &response);
             println!("wrote {}", output.display());
             if audit {
-                let mesh = lime_slice_core::load_mesh(&source.name, &source.bytes)?;
+                let mesh = lime_slice_core::load_slice_mesh_tol(
+                    &source.name,
+                    &source.bytes,
+                    request.pose.is_some(),
+                    request.step_tolerance_mm,
+                )?;
                 let audit_settings = SliceSettings::from_request(&request);
                 let report =
                     lime_slice_core::audit_slice(&mesh, &request.blend, &audit_settings, nozzle)?;
@@ -818,7 +828,11 @@ fn handle(mut request: tiny_http::Request) {
         } else if method == "POST" && url.starts_with("/api/mesh") {
             match serde_json::from_str::<SliceRequest>(&body) {
                 Ok(req) => match decode_mesh(&req) {
-                    Ok(bytes) => match mesh_preview(&req.filename, &bytes) {
+                    Ok(bytes) => match lime_slice_core::mesh_preview_tol(
+                        &req.filename,
+                        &bytes,
+                        req.step_tolerance_mm,
+                    ) {
                         Ok(preview) => (
                             200,
                             serde_json::to_string(&preview)
@@ -833,10 +847,11 @@ fn handle(mut request: tiny_http::Request) {
         } else if method == "POST" && url.starts_with("/api/pareto") {
             match serde_json::from_str::<SliceRequest>(&body) {
                 Ok(req) => match decode_mesh(&req) {
-                    Ok(bytes) => match lime_slice_core::load_slice_mesh(
+                    Ok(bytes) => match lime_slice_core::load_slice_mesh_tol(
                         &req.filename,
                         &bytes,
                         req.pose.is_some(),
+                        req.step_tolerance_mm,
                     ) {
                         Ok(mesh) => {
                             let profile = req.printer.clone().unwrap_or_default();
@@ -977,16 +992,27 @@ struct Input {
 
 /// The file as-is at scale 1. Any other scale is applied about the bounding-box
 /// centre and sent as a binary STL in f32, which is what the UI uploads.
-fn read_input(input: &Path, scale: f64) -> Result<Input, String> {
+fn read_input(input: &Path, scale: f64, step_tolerance_mm: f64) -> Result<Input, String> {
     let bytes = fs::read(input).map_err(|e| e.to_string())?;
     let name = input_name(input).to_string();
+    let step = matches!(
+        input
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .as_deref(),
+        Some("step" | "stp")
+    );
+    if step {
+        lime_slice_core::resolve_step_tolerance(step_tolerance_mm)?;
+    }
     if scale == 1.0 {
         return Ok(Input { name, bytes });
     }
     if !(scale.is_finite() && scale > 0.0) {
         return Err(format!("scale must be above 0 %, got {} %", scale * 100.0));
     }
-    let mesh = lime_slice_core::load_mesh(&name, &bytes)?;
+    let mesh = lime_slice_core::load_slice_mesh_tol(&name, &bytes, false, step_tolerance_mm)?;
     let (min, max) = mesh.bounds().ok_or("empty mesh")?;
     let centre = [0, 1, 2].map(|i| (min[i] + max[i]) * 0.5);
     let mut stl = vec![0u8; 80];
@@ -1063,6 +1089,7 @@ fn request_for(
         simplify: settings.simplify,
         simplify_error_mm: settings.simplify_error_mm,
         pose: None,
+        step_tolerance_mm: lime_slice_core::STEP_TOLERANCE_DEFAULT_MM,
     }
 }
 
@@ -1171,9 +1198,9 @@ mod tests {
     fn scale_grows_the_part_about_its_centre_on_the_bed_and_ships_an_stl() {
         let samples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples");
         let cube = samples.join("calibration_cube_20mm.3mf");
-        let as_is = read_input(&cube, 1.0).unwrap();
+        let as_is = read_input(&cube, 1.0, 0.1).unwrap();
         assert_eq!(as_is.name, "calibration_cube_20mm.3mf");
-        let doubled = read_input(&cube, 2.0).unwrap();
+        let doubled = read_input(&cube, 2.0, 0.1).unwrap();
         assert_eq!(doubled.name, "calibration_cube_20mm.stl");
         let bounds = |input: &Input| {
             lime_slice_core::load_mesh(&input.name, &input.bytes)
@@ -1196,7 +1223,7 @@ mod tests {
             "the scaled part floats at z {}",
             min1[2]
         );
-        assert!(read_input(&cube, 0.0).is_err());
+        assert!(read_input(&cube, 0.0, 0.1).is_err());
     }
 
     #[test]
@@ -1220,7 +1247,12 @@ mod tests {
         for input in &inputs {
             let blend = blend_mode("region", "x", None, 2.0, 2.0, 0.5, input)
                 .unwrap_or_else(|e| panic!("{}: {e}", input.display()));
-            let request = request_for(&read_input(input, 1.0).unwrap(), &blend, &settings, 0.4);
+            let request = request_for(
+                &read_input(input, 1.0, 0.1).unwrap(),
+                &blend,
+                &settings,
+                0.4,
+            );
             let response = slice_request(&request, lime_slice_core::Job::default())
                 .unwrap_or_else(|e| panic!("{}: {e}", input.display()));
             assert!(response.sanity.ok, "{}", input.display());
