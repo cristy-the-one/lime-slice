@@ -1,5 +1,6 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::cmp::{Ordering as CmpOrdering, Reverse};
+use std::collections::{BinaryHeap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::poly::{
@@ -3290,6 +3291,37 @@ pub(crate) fn island_loops(loops: &[Loop]) -> Vec<Vec<Loop>> {
     out
 }
 
+/// A way into `node` from `from` in the combing search, ranked by its estimate
+/// `f` of the whole route through it.
+struct CombStep {
+    f: f64,
+    node: usize,
+    from: usize,
+}
+
+impl Ord for CombStep {
+    fn cmp(&self, other: &Self) -> CmpOrdering {
+        self.f
+            .total_cmp(&other.f)
+            .then(self.node.cmp(&other.node))
+            .then(self.from.cmp(&other.from))
+    }
+}
+
+impl PartialOrd for CombStep {
+    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for CombStep {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == CmpOrdering::Equal
+    }
+}
+
+impl Eq for CombStep {}
+
 fn comb_between(comb: &Combing, from: [f64; 2], to: [f64; 2]) -> Comb {
     if dist2(from, to) < 0.04 * 0.04 {
         return Comb::Clear;
@@ -3327,33 +3359,41 @@ fn comb_between(comb: &Combing, from: [f64; 2], to: [f64; 2]) -> Comb {
             || (i == start || j == start || i == goal || j == goal)
                 && solid.route_inside(nodes[i], nodes[j])
     };
-    // Dijkstra over the visibility graph, testing a node's edges only once it is
-    // settled. Most travels reach the goal long before every pair is tested.
+    // A* over the visibility graph, testing an edge only when it is the cheapest
+    // way left to reach its node. A plate with a hundred holes has thousands of
+    // nodes, and the holes away from the travel are never tested.
+    let span = |i: usize, j: usize| dist2(nodes[i], nodes[j]).sqrt();
     let mut dist = vec![f64::INFINITY; n];
     let mut prev = vec![usize::MAX; n];
-    dist[start] = 0.0;
-    let mut used = vec![false; n];
-    for _ in 0..n {
-        let mut u = usize::MAX;
-        let mut best = f64::INFINITY;
-        for (i, d) in dist.iter().enumerate() {
-            if !used[i] && *d < best {
-                best = *d;
-                u = i;
-            }
+    let mut open = BinaryHeap::new();
+    open.push(Reverse(CombStep {
+        f: span(start, goal),
+        node: start,
+        from: usize::MAX,
+    }));
+    while let Some(Reverse(CombStep {
+        node: v, from: u, ..
+    })) = open.pop()
+    {
+        if dist[v].is_finite() || u != usize::MAX && !visible(u, v) {
+            continue;
         }
-        if u == usize::MAX || u == goal {
+        dist[v] = if u == usize::MAX {
+            0.0
+        } else {
+            dist[u] + span(u, v)
+        };
+        prev[v] = u;
+        if v == goal {
             break;
         }
-        used[u] = true;
-        for v in 0..n {
-            if used[v] {
-                continue;
-            }
-            let nd = dist[u] + dist2(nodes[u], nodes[v]).sqrt();
-            if nd + 1e-9 < dist[v] && visible(u, v) {
-                dist[v] = nd;
-                prev[v] = u;
+        for w in 0..n {
+            if !dist[w].is_finite() {
+                open.push(Reverse(CombStep {
+                    f: dist[v] + span(v, w) + span(w, goal),
+                    node: w,
+                    from: v,
+                }));
             }
         }
     }
