@@ -3860,3 +3860,86 @@ fn a_pose_moves_the_mesh_before_slicing() {
         first.mesh.min
     );
 }
+
+/// Length of printed part bead inside radius `r` of the origin, over every layer.
+fn bead_inside_radius(response: &lime_slice_core::SliceResponse, r: f64) -> f64 {
+    let mut inside = 0.0;
+    for layer in &response.layers {
+        for path in layer
+            .paths
+            .iter()
+            .filter(|p| !p.kind.starts_with("support") && p.kind != "skirt")
+        {
+            for w in path.pts.windows(2) {
+                let len = ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt();
+                let steps = (len / 0.1).ceil().max(1.0) as usize;
+                for k in 0..steps {
+                    let t = (k as f64 + 0.5) / steps as f64;
+                    let p = [
+                        w[0][0] + (w[1][0] - w[0][0]) * t,
+                        w[0][1] + (w[1][1] - w[0][1]) * t,
+                    ];
+                    if p[0].hypot(p[1]) < r {
+                        inside += len / steps as f64;
+                    }
+                }
+            }
+        }
+    }
+    inside
+}
+
+#[test]
+fn a_thin_tube_prints_nothing_across_its_bore() {
+    // Two speed walls from each face leave a ring-shaped void in the middle
+    // of the tube wall. Read loop by loop, that ring was two discs, and its
+    // fill ran straight across the bore.
+    for wall in [1.95, 2.05, 2.15, 2.25] {
+        let mesh = Mesh {
+            triangles: tube(20.0 - wall, 20.0, 0.0, 2.0, 96),
+        };
+        let response = slice_configured(
+            &mesh,
+            &speed_mode(),
+            &profile(),
+            &SliceSettings {
+                baseline: false,
+                include_gcode: false,
+                ..SliceSettings::default()
+            },
+        )
+        .unwrap();
+        assert!(response.sanity.ok, "{:?}", response.sanity.notes);
+        let inside = bead_inside_radius(&response, 20.0 - wall - 0.3);
+        assert!(
+            inside < 0.01,
+            "wall {wall} mm: {inside:.1} mm of bead inside the bore"
+        );
+    }
+}
+
+#[test]
+fn a_tube_thinner_than_a_bead_keeps_its_skin_without_crossing_the_bore() {
+    let mesh = Mesh {
+        triangles: tube(19.85, 20.0, 0.0, 2.0, 96),
+    };
+    let response = slice_configured(
+        &mesh,
+        &speed_mode(),
+        &profile(),
+        &SliceSettings {
+            baseline: false,
+            include_gcode: false,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    assert!(response.sanity.ok, "{:?}", response.sanity.notes);
+    let printed = bead_inside_radius(&response, 21.0);
+    assert!(
+        printed > 100.0,
+        "the skin needs its bead: {printed:.1} mm printed"
+    );
+    let inside = bead_inside_radius(&response, 19.5);
+    assert!(inside < 0.01, "{inside:.1} mm of bead inside the bore");
+}
