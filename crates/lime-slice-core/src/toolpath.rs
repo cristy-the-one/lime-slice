@@ -168,6 +168,9 @@ pub enum Seam {
     /// The vertex nearest the nozzle. Inner walls are hidden, and on a smooth
     /// curve the nearest vertex keeps the arc fitter's runs whole.
     Nearest,
+    /// A wall the region cut opened. It has no seam and prints from whichever
+    /// end is nearer, so the next ring starts where this one ended.
+    Cut,
 }
 
 pub fn plan_region(
@@ -501,24 +504,48 @@ fn bare_stretches(sliver: &[Loop], near_bead: &[Loop], reach: f64) -> Vec<Loop> 
         .collect()
 }
 
-/// Center line of a sliver: split its outline at the two points farthest
-/// apart and average the two sides point by point. A straight row would cut
-/// the corner of a curved sliver and leave most of it bare.
+/// Center line of a sliver: split its outline at its two tips and average the
+/// two sides point by point. A straight row would cut the corner of a curved
+/// sliver and leave most of it bare.
+///
+/// A tip is where the outline folds back on itself: a short step either way
+/// along it lands on the two faces, one sliver thickness apart. The two points
+/// farthest apart are not the tips of a bent sliver. On a V they are one tip
+/// and the heel, and averaging the short side with the long way round draws
+/// the spine across the gap between the arms.
 fn sliver_spine(ring: &[[f64; 2]], step: f64) -> Option<Vec<[f64; 2]>> {
     let n = ring.len();
     if n < 3 {
         return None;
     }
-    let farthest = |from: [f64; 2]| {
-        (0..n)
-            .max_by(|&a, &b| dist2(ring[a], from).total_cmp(&dist2(ring[b], from)))
-            .unwrap()
-    };
-    let i = farthest(ring[0]);
-    let j = farthest(ring[i]);
-    if i == j {
-        return None;
+    let mut closed = ring.to_vec();
+    closed.push(ring[0]);
+    let perimeter = polyline_len(&closed);
+    let mut at = Vec::with_capacity(n);
+    let mut run = 0.0;
+    for w in closed.windows(2) {
+        at.push(run);
+        run += dist2(w[0], w[1]).sqrt();
     }
+    let reach = (step * 4.0).min(perimeter / 8.0);
+    let on_ring = |s: f64| point_along(&closed, s.rem_euclid(perimeter));
+    let fold: Vec<f64> = at
+        .iter()
+        .map(|&s| dist2(on_ring(s - reach), on_ring(s + reach)))
+        .collect();
+    let tightest = |allowed: &dyn Fn(usize) -> bool| {
+        (0..n)
+            .filter(|&k| allowed(k))
+            .min_by(|&a, &b| fold[a].total_cmp(&fold[b]).then(a.cmp(&b)))
+    };
+    let i = tightest(&|_| true)?;
+    // The other tip is at least a quarter of the way round, past the tip's own
+    // corners.
+    let apart = |k: usize| {
+        let d = (at[k] - at[i]).abs();
+        d.min(perimeter - d) >= perimeter * 0.25
+    };
+    let j = tightest(&apart)?;
     let walk = |from: usize, to: usize| {
         let mut side = vec![ring[from]];
         let mut k = from;
@@ -2868,7 +2895,7 @@ fn oriented_ends(
     if path.is_loop() {
         if geom_closed(path) {
             let v = match path.seam {
-                Seam::Fixed => pts[0],
+                Seam::Fixed | Seam::Cut => pts[0],
                 Seam::Corner => pts[nearest_seam(&pts[..pts.len() - 1], cursor)],
                 Seam::Nearest => nearest_vertex(path, cursor),
             };
@@ -3002,7 +3029,7 @@ fn orient_path(path: &mut Extrusion, cursor: [f64; 2], has: bool, rotate_seams: 
     }
     if path.is_loop() {
         match path.seam {
-            Seam::Fixed => {}
+            Seam::Fixed | Seam::Cut => {}
             Seam::Corner if geom_closed(path) => {
                 let ring = path.points.len() - 1;
                 let at = nearest_seam(&path.points[..ring], cursor);
@@ -3144,12 +3171,14 @@ fn dist_mm(a: [f64; 2], b: [f64; 2]) -> f64 {
 
 impl Extrusion {
     /// A loop keeps its direction and only moves its seam. A thin wall can also
-    /// be an open stroke across a pinch, which may run either way.
+    /// be an open stroke across a pinch, and a wall the region cut opened is
+    /// one too: both may run either way.
     fn is_loop(&self) -> bool {
         match self.kind {
             PathKind::ThinWall => {
                 self.points.len() > 2 && self.points.first() == self.points.last()
             }
+            _ if self.seam == Seam::Cut => false,
             kind => kind.is_closed(),
         }
     }
@@ -3157,7 +3186,7 @@ impl Extrusion {
     /// Kind the travel optimizer orders this path with. A thin-wall stroke across
     /// a pinch comes out of void fill, and ordering it apart from the gap fill
     /// around it costs travel.
-    fn travel_group(&self) -> PathKind {
+    pub(crate) fn travel_group(&self) -> PathKind {
         if self.kind == PathKind::ThinWall && !self.is_loop() {
             PathKind::GapFill
         } else {
@@ -4267,5 +4296,36 @@ mod travel_tests {
     #[test]
     fn hilbert_of_the_origin_is_zero() {
         assert_eq!(hilbert_d(0, 0), 0);
+    }
+
+    /// A V-shaped membrane 0.15 mm thick. Tip to heel (3.2 mm) is farther than
+    /// tip to tip (2 mm), so splitting at the farthest pair ran the spine from
+    /// one tip across the gap between the arms and left the other arm bare.
+    #[test]
+    fn a_bent_sliver_spine_runs_tip_to_tip_inside_it() {
+        let ring = vec![
+            [-1.0, 0.0],
+            [-0.85, 0.0],
+            [0.0, -2.5],
+            [0.85, 0.0],
+            [1.0, 0.0],
+            [0.0, -3.0],
+        ];
+        let spine = sliver_spine(&ring, 0.2).unwrap();
+        let ends = [spine[0], *spine.last().unwrap()];
+        for tip in [[-0.925, 0.0], [0.925, 0.0]] {
+            assert!(
+                ends.iter().any(|e| dist_mm(*e, tip) < 0.2),
+                "no spine end near {tip:?}: {ends:?}"
+            );
+        }
+        let outline = [ring.clone()];
+        for p in &spine {
+            assert!(
+                crate::poly::point_in_loop(&ring, p[0], p[1])
+                    || crate::poly::distance_to_outline(&outline, *p) < 0.05,
+                "spine point {p:?} leaves the sliver"
+            );
+        }
     }
 }
