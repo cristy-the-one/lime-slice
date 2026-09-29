@@ -142,6 +142,8 @@ fn cache_key(engine: &str, request: &Value) -> String {
 }
 
 /// Object keys in sorted order, so the key does not depend on field order.
+/// `src/slice-action.ts` `feed` copies this layout so the slice button and
+/// this cache agree on which recipes are the same.
 fn feed(hash: &mut Sha256, value: &Value) {
     match value {
         Value::Object(map) => {

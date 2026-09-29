@@ -100,7 +100,7 @@ test("bed opacity and section controls are preview-only chrome", async ({ page }
   await expect(page.locator("#status")).toContainText("loaded");
   await page.locator("#slice").click();
   await expect(page.locator("#estimate")).toContainText("g");
-  await expect(page.locator("#slice")).toHaveText("Re-slice");
+  await expect(page.locator("#slice")).toHaveText("Show result");
   await page.getByRole("button", { name: "Preview", exact: true }).click();
   await page.getByRole("button", { name: "3D", exact: true }).click();
   await page.locator("#sectionOn").check();

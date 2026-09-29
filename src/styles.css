@@ -185,8 +185,28 @@ button { cursor: pointer; }
 }
 .action-row { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .action-row .btn { flex: 0 0 auto; }
-/* Slice, Re-slice, and Slicing… share one slot so Cancel cannot slide under the pointer. */
-#slice { min-width: 8rem; text-align: center; }
+/* Slice, Show result, Re-slice, Loading…, and Slicing… share one slot so Cancel cannot slide under the pointer. */
+#slice {
+  width: 9.25rem;
+  min-width: 9.25rem;
+  max-width: 9.25rem;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+}
+#force {
+  width: 10.75rem;
+  min-width: 10.75rem;
+  max-width: 10.75rem;
+  text-align: center;
+  white-space: nowrap;
+}
+#slice.show-result {
+  background: var(--panel-2);
+  color: var(--text);
+  border-color: var(--line);
+  font-weight: 600;
+}
 #cancel:not(:disabled) { color: var(--danger); border-color: var(--danger); }
 
 .banner-rail {
