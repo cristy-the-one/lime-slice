@@ -39,6 +39,9 @@ interface SliceResponse {
   coreMs: number;
   baselineMs: number;
   blend: string;
+  /** Set when the engine loaded this slice from its cache instead of planning it. */
+  fromCache?: boolean;
+  slicedAtMs?: number;
   mesh: {
     triangles: number;
     sourceTriangles?: number;
@@ -328,6 +331,12 @@ view3d.onSection((spec, hud) => {
 let shown: SliceResponse | null = null;
 /** Slice job that produced state.result; geometry buffers carry the same id. */
 let resultJob = 0;
+/** Counts loaded meshes. The preview camera reframes only for another mesh or scale. */
+let meshEpoch = 0;
+/** `meshEpoch` and scale that state.result was sliced from. */
+let resultFrame = "";
+/** Heights the layer sliders were last moved to, kept across results of one mesh. */
+let chosenZ: { high: number; low: number } | null = null;
 
 function card(): CardId {
   if (state.blendKind === "byLayer") return "layer";
@@ -446,8 +455,7 @@ function renderChrome() {
 
   const isStale = stale();
   const sliceBtn = document.querySelector<HTMLButtonElement>("#slice")!;
-  sliceBtn.textContent = state.busy ? "Slicing…" : isStale ? "Re-slice" : "Slice";
-  sliceBtn.classList.toggle("reslice", isStale && !state.busy);
+  paintSliceButton(sliceBtn, isStale);
   sliceBtn.disabled = state.busy || !state.mesh;
   (document.querySelector("#cancel") as HTMLButtonElement).disabled = !state.busy;
   (document.querySelector("#export") as HTMLButtonElement).disabled = !result || isStale || state.busy;
@@ -466,7 +474,8 @@ function renderChrome() {
   const status = document.querySelector("#status")!;
   if (!mesh) status.textContent = "Load an STL, 3MF, or STEP file from Samples or Open mesh. Arrow keys move the layer.";
   else if (state.busy) status.textContent = `Slicing ${mesh.name}…`;
-  else if (isStale) status.textContent = "This preview is stale. Re-slice before export.";
+  else if (isStale) status.textContent = "This preview is stale. Slice before export.";
+  else if (result?.fromCache) status.textContent = `${result.blend} · Loaded from cache, sliced ${new Date(result.slicedAtMs ?? 0).toLocaleString()}. Re-slice to plan it again.`;
   else if (result) status.textContent = result.blend;
   else status.textContent = `${mesh.name} loaded. Choose a strategy, then slice.`;
 }
@@ -1034,6 +1043,8 @@ function scrub(next: number) {
   const max = Math.max(0, (state.result?.layers.length ?? 1) - 1);
   const prev = state.layer;
   state.layer = Math.max(state.rangeLow, Math.min(max, next));
+  const layers = state.result?.layers;
+  if (layers?.length) chosenZ = { high: layers[state.layer].z, low: layers[state.rangeLow].z };
   if (state.layer !== prev) {
     state.move = 0;
     stopPlay();
@@ -1264,17 +1275,24 @@ function markStale() {
   const sliceBtn = document.querySelector<HTMLButtonElement>("#slice");
   const exp = document.querySelector<HTMLButtonElement>("#export");
   const isStale = stale();
-  if (sliceBtn && !state.busy) {
-    sliceBtn.textContent = isStale ? "Re-slice" : "Slice";
-    sliceBtn.classList.toggle("reslice", isStale);
-  }
+  if (sliceBtn) paintSliceButton(sliceBtn, isStale);
   if (exp) exp.disabled = !state.result || isStale || state.busy;
   document.querySelector("#stage")?.classList.toggle("stale", isStale);
   paintBanner(isStale);
   paintPresetDiff();
-  if (isStale) document.querySelector("#status")!.textContent = "This preview is stale. Re-slice before export.";
+  if (isStale) document.querySelector("#status")!.textContent = "This preview is stale. Slice before export.";
   scheduleAuto();
   draw();
+}
+/** True when the slice shown already matches the settings, so slicing again must skip the cache. */
+function resliceWanted() {
+  return !!state.result && !stale();
+}
+function paintSliceButton(button: HTMLButtonElement, isStale: boolean) {
+  const again = resliceWanted();
+  button.textContent = state.busy ? "Slicing…" : again ? "Re-slice" : "Slice";
+  button.title = again ? "Plan this slice again instead of loading the saved one" : "";
+  button.classList.toggle("reslice", isStale && !state.busy);
 }
 function scheduleAuto() {
   window.clearTimeout(autoTimer);
@@ -1385,7 +1403,7 @@ document.querySelector("#toggleLeft")!.addEventListener("click", () => {
 document.querySelector("#toggleRight")!.addEventListener("click", () => {
   document.querySelector(".workspace")!.classList.toggle("show-right");
 });
-document.querySelector("#slice")!.addEventListener("click", () => void runSlice());
+document.querySelector("#slice")!.addEventListener("click", () => void runSlice(resliceWanted()));
 document.querySelector("#cancel")!.addEventListener("click", () => cancelSlice());
 document.querySelector("#export")!.addEventListener("click", () => void exportGcode());
 document.querySelector("#helpClose")!.addEventListener("click", () => setHelp(false));
@@ -1424,7 +1442,7 @@ window.addEventListener("keydown", (ev) => {
   }
   if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") {
     ev.preventDefault();
-    void runSlice();
+    void runSlice(resliceWanted());
     return;
   }
   if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "e") {
@@ -1469,6 +1487,8 @@ async function loadNamed(name: string) {
 }
 
 async function adoptBytes(name: string, bytes: ArrayBuffer) {
+  meshEpoch += 1;
+  chosenZ = null;
   state.mesh = { name, bytes };
   state.error = "";
   state.orient = ID_MATRIX;
@@ -1616,7 +1636,8 @@ function printer() {
   };
 }
 
-async function runSlice() {
+/** `reslice` plans again even when the engine has this exact slice cached. */
+async function runSlice(reslice = false) {
   if (!state.mesh) {
     state.error = "Load a mesh first.";
     renderChrome();
@@ -1624,7 +1645,8 @@ async function runSlice() {
   }
   const id = ++job;
   const hash = settingsHash();
-  const request = payload();
+  const frame = `${meshEpoch}:${state.partScale}`;
+  const request = { ...payload(), reslice };
   const bytes = meshBytes();
   markBusy();
   state.error = "";
@@ -1656,8 +1678,10 @@ async function runSlice() {
     if (body.error) throw new Error(body.error);
     state.result = body;
     resultJob = id;
+    resultFrame = frame;
     state.slicedHash = hash;
-    state.layer = Math.min(state.layer, Math.max(0, body.layers.length - 1));
+    state.layer = layerNear(body, chosenZ?.high, state.layer);
+    state.rangeLow = layerNear(body, chosenZ?.low, state.rangeLow);
     clampPlane();
     landed = true;
   } catch (err) {
@@ -1675,6 +1699,19 @@ async function runSlice() {
       if (landed && stale()) scheduleAuto();
     }
   }
+}
+
+/**
+ * The layer of `result` nearest `z`, so the sliders cut where the user left them
+ * whatever layer height comes back. Without a height, `index` is only clamped.
+ */
+function layerNear(result: SliceResponse, z: number | undefined, index: number) {
+  if (z == null) return Math.min(index, Math.max(0, result.layers.length - 1));
+  let best = 0;
+  result.layers.forEach((layer, i) => {
+    if (Math.abs(layer.z - z) < Math.abs(result.layers[best].z - z)) best = i;
+  });
+  return best;
 }
 
 function postSlice(id: number, bytes: ArrayBuffer, body: unknown) {
@@ -2293,6 +2330,7 @@ function applyGeom() {
     midZ: (mesh.min[2] + mesh.max[2]) / 2,
     centerX: (mesh.min[0] + mesh.max[0]) / 2,
     centerY: (mesh.min[1] + mesh.max[1]) / 2,
+    frame: resultFrame,
   });
   geomReady = null;
   view3d.setRange(state.rangeLow, state.layer);

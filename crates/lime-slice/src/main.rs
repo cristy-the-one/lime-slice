@@ -156,6 +156,9 @@ enum Cmd {
     Serve {
         #[arg(long, default_value_t = 43118)]
         port: u16,
+        /// Keep finished slices here and load a repeated request instead of slicing it.
+        #[arg(long)]
+        cache_dir: Option<PathBuf>,
     },
     /// Calibration prints.
     Calibrate {
@@ -337,7 +340,7 @@ fn run() -> Result<(), String> {
             Ok(())
         }
         Cmd::Bench { input } => bench(&input),
-        Cmd::Serve { port } => serve(port),
+        Cmd::Serve { port, cache_dir } => serve(port, cache_dir),
         Cmd::Calibrate { kind } => calibrate(kind),
     }
 }
@@ -742,7 +745,13 @@ fn park_gcode(text: String) -> String {
     token
 }
 
-fn serve(port: u16) -> Result<(), String> {
+/// Slices kept on disk by `serve --cache-dir`.
+static SLICE_CACHE: std::sync::OnceLock<lime_slice_core::SliceCache> = std::sync::OnceLock::new();
+
+fn serve(port: u16, cache_dir: Option<PathBuf>) -> Result<(), String> {
+    if let Some(dir) = cache_dir {
+        let _ = SLICE_CACHE.set(lime_slice_core::SliceCache::new(dir, 2 << 30));
+    }
     let addr = format!("127.0.0.1:{port}");
     let server = tiny_http::Server::http(&addr).map_err(|e| e.to_string())?;
     eprintln!("lime-slice api http://{addr}");
@@ -866,28 +875,14 @@ fn handle(mut request: tiny_http::Request) {
                 Err(err) => (400, err_json(&err.to_string())),
             }
         } else if method == "POST" && url.starts_with("/api/slice") {
-            match serde_json::from_str::<SliceRequest>(&body) {
-                Ok(req) => match slice_request(&req, lime_slice_core::Job::start()) {
-                    Ok(mut res) => {
-                        if !req.include_gcode {
-                            let token = park_gcode(std::mem::take(&mut res.gcode));
-                            let mut value = serde_json::to_value(&res)
-                                .unwrap_or_else(|e| serde_json::json!({ "error": e.to_string() }));
-                            if let Some(obj) = value.as_object_mut() {
-                                obj.insert("gcodeToken".into(), serde_json::json!(token));
-                            }
-                            (200, value.to_string())
-                        } else {
-                            (
-                                200,
-                                serde_json::to_string(&res)
-                                    .unwrap_or_else(|e| err_json(&e.to_string())),
-                            )
-                        }
-                    }
-                    Err(err) => (400, err_json(&err)),
-                },
-                Err(err) => (400, err_json(&err.to_string())),
+            match lime_slice_core::slice_payload(
+                &body,
+                SLICE_CACHE.get(),
+                lime_slice_core::Job::start(),
+                park_gcode,
+            ) {
+                Ok(reply) => (200, reply),
+                Err(err) => (400, err_json(&err)),
             }
         } else {
             (404, err_json("not found"))
@@ -939,6 +934,13 @@ fn print_audit(a: &lime_slice_core::SliceAudit) {
         "audit  open skin {:.1} mm2  worst {}",
         a.open_skin_mm2,
         a.worst_open_skin
+            .map(|(z, area)| format!("{area:.2} mm2 at z {z:.2}"))
+            .unwrap_or_else(|| "none".into())
+    );
+    println!(
+        "audit  stray bead {:.1} mm2  worst {}",
+        a.stray_bead_mm2,
+        a.worst_stray
             .map(|(z, area)| format!("{area:.2} mm2 at z {z:.2}"))
             .unwrap_or_else(|| "none".into())
     );

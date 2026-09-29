@@ -66,6 +66,11 @@ pub struct SliceAudit {
     pub open_skin_mm2: f64,
     /// Z of the layer with the most open skin, and that area in mm².
     pub worst_open_skin: Option<(f64, f64)>,
+    /// Part bead footprint more than half a bead outside the layer's outline,
+    /// summed over layers. Material printed where the model has a hole.
+    pub stray_bead_mm2: f64,
+    /// Z of the layer with the most stray bead area, and that area in mm².
+    pub worst_stray: Option<(f64, f64)>,
     /// Tree disks grouped by how far under an interface they stand.
     pub tree_depths: Vec<TreeDepth>,
 }
@@ -138,31 +143,40 @@ pub fn audit_slice(
                 let skin = skin_cover(&planned.layers[i].paths);
                 area(&boolean_diff(&exposed, &skin))
             };
-            let skin_band = boolean_diff(piece, &offset_loops(piece, -settings.line_width * 0.5));
-            let open_skin = if skin_band.is_empty() {
-                0.0
-            } else {
-                let printed: Vec<Extrusion> = planned.layers[i]
-                    .paths
-                    .iter()
-                    .filter(|p| {
-                        !matches!(
-                            p.kind,
-                            PathKind::Support | PathKind::SupportInterface | PathKind::Skirt
-                        )
-                    })
-                    .cloned()
-                    .collect();
-                boolean_diff(&skin_band, &bead_cover(&printed))
+            let printed: Vec<Extrusion> = planned.layers[i]
+                .paths
+                .iter()
+                .filter(|p| {
+                    !matches!(
+                        p.kind,
+                        PathKind::Support | PathKind::SupportInterface | PathKind::Skirt
+                    )
+                })
+                .cloned()
+                .collect();
+            let cover = bead_cover(&printed);
+            let specks = |loops: Vec<Loop>| -> f64 {
+                loops
                     .iter()
                     .map(|l| signed_area(l).abs())
                     .filter(|a| *a >= OPEN_SKIN_SPECK_MM2)
                     .sum()
             };
+            let skin_band = boolean_diff(piece, &offset_loops(piece, -settings.line_width * 0.5));
+            let open_skin = if skin_band.is_empty() {
+                0.0
+            } else {
+                specks(boolean_diff(&skin_band, &cover))
+            };
+            let stray = specks(boolean_diff(
+                &cover,
+                &offset_loops(piece, settings.line_width * 0.5),
+            ));
             LayerRow {
                 z: band.z,
                 unskinned,
                 open_skin,
+                stray,
                 h: band.height,
                 sliced: area(piece),
                 missing: area(&boolean_diff(&fresh, piece)),
@@ -193,6 +207,10 @@ pub fn audit_slice(
         out.support_floating_mm3 += row.floating * row.h;
         out.unskinned_top_mm2 += row.unskinned;
         out.open_skin_mm2 += row.open_skin;
+        out.stray_bead_mm2 += row.stray;
+        if row.stray > 0.0 && out.worst_stray.is_none_or(|(_, a)| row.stray > a) {
+            out.worst_stray = Some((row.z, row.stray));
+        }
         if row.open_skin > 0.0 && out.worst_open_skin.is_none_or(|(_, a)| row.open_skin > a) {
             out.worst_open_skin = Some((row.z, row.open_skin));
         }
@@ -296,6 +314,7 @@ struct LayerRow {
     floating: f64,
     unskinned: f64,
     open_skin: f64,
+    stray: f64,
 }
 
 /// Footprint of the beads that close a surface: walls, gap fill, and solid skins.

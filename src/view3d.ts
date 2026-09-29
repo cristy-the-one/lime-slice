@@ -30,6 +30,8 @@ export interface RibbonBuffers {
   midZ: number;
   centerX: number;
   centerY: number;
+  /** The camera reframes when this changes, and otherwise stays where the user left it. */
+  frame: string;
 }
 
 export interface SliceView3d {
@@ -153,6 +155,8 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   let face: THREE.Mesh | null = null;
   let travelLines: THREE.LineSegments | null = null;
   let ranges: LayerRange[] = [];
+  /** Frame key of the paths the camera was last aimed at. */
+  let framed = "";
   let model: { min: number[]; max: number[] } | null = null;
   let low = 0;
   let high = 0;
@@ -216,7 +220,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     placePlane();
   }
 
-  function placeBed(span: number, midZ: number, centerX = 0, centerY = 0) {
+  function placeBed(span: number, centerX = 0, centerY = 0) {
     const size = Math.max(bedX, bedY, span);
     bed.scale.set(bedX, 1, bedY);
     bed.position.set(bedX / 2 - centerX, 0, -(bedY / 2 - centerY));
@@ -231,9 +235,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     ]);
     volume.scale.set(bedX, bedZ, bedY);
     volume.position.set(bedX / 2 - centerX, bedZ / 2, -(bedY / 2 - centerY));
-    camera.position.set(size * 0.9, midZ + size * 0.45, size * 0.9);
-    controls.target.set(0, midZ, 0);
-    controls.update();
+    return size;
   }
 
   function placePlane() {
@@ -544,7 +546,13 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       root.add(ribbon);
       root.add(face);
       root.add(travelLines);
-      placeBed(buffers.span, buffers.midZ, buffers.centerX, buffers.centerY);
+      const size = placeBed(buffers.span, buffers.centerX, buffers.centerY);
+      if (buffers.frame !== framed) {
+        framed = buffers.frame;
+        camera.position.set(size * 0.9, buffers.midZ + size * 0.45, size * 0.9);
+        controls.target.set(0, buffers.midZ, 0);
+        controls.update();
+      }
       applyFocus();
       placeSection();
     },
@@ -658,7 +666,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       if (!same && ranges.length === 0) {
         const span = Math.max(next.max[0] - next.min[0], next.max[1] - next.min[1], next.max[2] - next.min[2], 1);
         const midZ = (next.min[2] + next.max[2]) / 2;
-        placeBed(span, midZ, origin.cx, origin.cy);
+        placeBed(span, origin.cx, origin.cy);
         const dist = Math.max(span, 28) * 2.3;
         camera.position.set(dist * 0.85, midZ + dist * 0.55, dist * 0.95);
         controls.target.set(0, Math.max(midZ, 6), 0);

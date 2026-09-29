@@ -31,7 +31,7 @@ test("a setting changed during a slice leaves the finished result stale", async 
   await expect(page.locator("[data-state=slicing]")).toBeVisible();
   await page.locator("#lh").fill("0.28");
   await expect(page.locator("#estimate")).toContainText("g", { timeout: 10_000 });
-  await expect(page.locator("#slice")).toHaveText("Re-slice");
+  await expect(page.locator("#slice")).toHaveText("Slice");
   await expect(page.locator("#export")).toBeDisabled();
 });
 
@@ -344,6 +344,22 @@ test("auto-slice picks up an edit made while a slice was running", async ({ page
   await page.locator("#arcs").uncheck();
   await expect.poll(() => slices.length, { timeout: 5000 }).toBe(2);
   expect((slices[1] as { arcFit: boolean }).arcFit).toBe(false);
-  await expect(page.locator("#slice")).toHaveText("Slice");
+  await expect(page.locator("#slice")).toHaveText("Re-slice");
   await expect(page.locator("#export")).toBeEnabled();
+});
+
+test("slicing changed settings may load the saved slice, and Re-slice plans it again", async ({ page }) => {
+  const slices = (await mockEngine(page, () => 0)) as { reslice: boolean; layerHeight: number }[];
+  await openCube(page);
+  await expect(page.locator("#slice")).toHaveText("Slice");
+  await page.locator("#slice").click();
+  await expect.poll(() => slices.length).toBe(1);
+  await expect(page.locator("#slice")).toHaveText("Re-slice");
+  await page.locator("#slice").click();
+  await expect.poll(() => slices.length).toBe(2);
+  await page.locator("#lh").fill("0.28");
+  await expect(page.locator("#slice")).toHaveText("Slice");
+  await page.locator("#slice").click();
+  await expect.poll(() => slices.length).toBe(3);
+  expect(slices.map((s) => [s.layerHeight, s.reslice])).toEqual([[0.2, false], [0.2, true], [0.28, false]]);
 });

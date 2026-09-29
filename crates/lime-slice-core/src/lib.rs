@@ -11,6 +11,7 @@ mod load;
 mod mesh;
 mod poly;
 mod slice;
+mod slice_cache;
 mod step;
 mod strategy;
 mod support;
@@ -26,6 +27,7 @@ pub use load::{
     load_mesh, load_slice_mesh, load_slice_mesh_tol, mesh_preview, mesh_preview_tol, MeshPreview,
 };
 pub use mesh::Mesh;
+pub use slice_cache::{slice_payload, SliceCache};
 pub use slice::{
     contour_times, outline_tolerance_mm, pareto_estimates, slice_configured, slice_request,
     slice_with_baseline, BlendScore, CompareEstimate, FeatureEstimate, ParetoPoint, PreviewLayer,

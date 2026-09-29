@@ -21,7 +21,8 @@ use crate::strategy::{
 use crate::support::{build_supports, SupportLayer, SupportOpts, SupportStyle};
 use crate::toolpath::{
     apply_overhang, apply_scarf, apply_z_hop, comb_layer, order_layer, plan_region, plan_skirt,
-    plan_support, plan_tree_support, Extrusion, PathFeatures, PathKind, ScarfParams, ShellBand,
+    plan_support, plan_tree_support, Extrusion, PathFeatures, PathKind, ScarfParams, Seam,
+    ShellBand,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1796,77 +1797,87 @@ fn remaining_interior(shells: &[ShellBand]) -> Vec<InteriorSpan> {
     out
 }
 
-/// One outer bead on the region cut. The low side snaps onto the plane; the high side drops its copy.
-fn merge_split_outers(
-    low: &mut [Extrusion],
-    high: &mut Vec<Extrusion>,
-    axis: Axis,
-    at: f64,
-    line_width: f64,
-) {
-    let tol = line_width * 0.8;
-    snap_cut(low, axis, at, tol, true);
-    snap_cut(high, axis, at, tol, false);
-    high.retain(|p| p.points.len() >= 2);
+/// How far past the region cut each side plans its half. Every wall of the
+/// thicker shell, plus one bead, then lies past the plane: nothing the side
+/// keeps follows the clip edge, so the walls near the cut trace the real
+/// outline and a thin feature on the plane is planned whole by both sides.
+fn cut_margin(low: &ResolvedStrategy, high: &ResolvedStrategy, line_width: f64) -> f64 {
+    (low.walls.max(high.walls) + 2) as f64 * line_width
 }
 
-fn snap_cut(paths: &mut [Extrusion], axis: Axis, at: f64, tol: f64, keep: bool) {
-    for path in paths.iter_mut() {
-        if !matches!(path.kind, PathKind::Outer | PathKind::Wall) {
+fn widen_rect(rect: XyRect, axis: Axis, low_side: bool, margin: f64) -> XyRect {
+    let (mut min, mut max) = rect;
+    let k = match axis {
+        Axis::X => 0,
+        Axis::Y => 1,
+    };
+    if low_side {
+        max[k] += margin;
+    } else {
+        min[k] -= margin;
+    }
+    (min, max)
+}
+
+/// The beads of one side's plan that lie on that side of the cut. A closed
+/// loop cut open keeps the run through its start whole instead of splitting it
+/// at the seam.
+fn keep_side(paths: Vec<Extrusion>, axis: Axis, at: f64, low_side: bool) -> Vec<Extrusion> {
+    let mut out = Vec::with_capacity(paths.len());
+    for path in paths {
+        let (low, high) = split_polyline(&path.points, axis, at);
+        let (mut kept, dropped) = if low_side { (low, high) } else { (high, low) };
+        if dropped.is_empty() {
+            out.push(path);
             continue;
         }
-        let closed = path.points.len() >= 2 && {
-            let a = path.points[0];
-            let b = *path.points.last().unwrap();
-            let dx = a[0] - b[0];
-            let dy = a[1] - b[1];
-            dx * dx + dy * dy < 1e-8
-        };
-        let body: Vec<[f64; 2]> = if closed {
-            path.points[..path.points.len() - 1].to_vec()
-        } else {
-            path.points.clone()
-        };
-        let flags: Vec<bool> = body
-            .iter()
-            .copied()
-            .map(|p| on_plane(p, axis, at, tol))
-            .collect();
-        if !flags.iter().any(|f| *f) {
-            continue;
+        let closed = path.points.len() > 2 && path.points.first() == path.points.last();
+        if closed && kept.len() >= 2 && kept[0].first() == path.points.first() {
+            let head = kept.remove(0);
+            let tail = kept.last_mut().unwrap();
+            tail.extend_from_slice(&head[1..]);
         }
-        if keep {
-            let mut snapped = body;
-            for (p, f) in snapped.iter_mut().zip(&flags) {
-                if *f {
-                    match axis {
-                        Axis::X => p[0] = at,
-                        Axis::Y => p[1] = at,
+        out.extend(
+            kept.into_iter()
+                .filter(|pts| poly_len(pts) > 0.05)
+                .map(|pts| {
+                    let mut piece = cut_piece(&path, pts);
+                    if piece.kind.is_closed() {
+                        piece.seam = Seam::Cut;
                     }
-                }
+                    piece
+                }),
+        );
+    }
+    out
+}
+
+/// Both sides' beads with each high run of a travel group right after the low
+/// run of the same group. Ordering chains paths only within a run of one
+/// group, so a wall or infill line that ends on the cut continues on the
+/// other side instead of leaving a travel back from every cut end.
+fn pair_sides(low: Vec<Extrusion>, high: Vec<Extrusion>) -> Vec<Extrusion> {
+    let runs = |paths: Vec<Extrusion>| {
+        let mut out: Vec<Vec<Extrusion>> = Vec::new();
+        for path in paths {
+            match out.last_mut() {
+                Some(run) if run[0].travel_group() == path.travel_group() => run.push(path),
+                _ => out.push(vec![path]),
             }
-            if closed {
-                let first = snapped[0];
-                snapped.push(first);
-            }
-            path.points = snapped;
-        } else {
-            path.points = body
-                .into_iter()
-                .zip(flags)
-                .filter(|(_, on)| !on)
-                .map(|(p, _)| p)
-                .collect();
+        }
+        out
+    };
+    let mut high = runs(high).into_iter().peekable();
+    let mut out = Vec::new();
+    for run in runs(low) {
+        let group = run[0].travel_group();
+        out.extend(run);
+        if let Some(next) = high.next_if(|h| h[0].travel_group() == group) {
+            out.extend(next);
         }
     }
-}
-
-fn on_plane(p: [f64; 2], axis: Axis, at: f64, tol: f64) -> bool {
-    let d = match axis {
-        Axis::X => (p[0] - at).abs(),
-        Axis::Y => (p[1] - at).abs(),
-    };
-    d <= tol
+    out.extend(high.flatten());
+    out
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1921,8 +1932,11 @@ fn build_layer(
             let (low_rect, high_rect) = split_rects(*axis, *at_mm, min, max, contours);
             let tough = resolve(pure(StrategyId::Toughness), settings);
             let speed = resolve(pure(StrategyId::Speed), settings);
-            let low = clip_to_rect(contours, low_rect.0, low_rect.1);
-            let high = clip_to_rect(contours, high_rect.0, high_rect.1);
+            let margin = cut_margin(&tough, &speed, line_width);
+            let low_plan = widen_rect(low_rect, *axis, true, margin);
+            let high_plan = widen_rect(high_rect, *axis, false, margin);
+            let low = clip_to_rect(contours, low_plan.0, low_plan.1);
+            let high = clip_to_rect(contours, high_plan.0, high_plan.1);
             if index == 0 && !skirt_src.is_empty() {
                 let mut skirt_strategy = tough.clone();
                 skirt_strategy.skirt_loops = 1;
@@ -1950,11 +1964,12 @@ fn build_layer(
             high_feat.shell = shell_of(z, roof_distance, &speed);
             high_feat.interior_remaining = remain_high.0;
             high_feat.interior_run = remain_high.1;
-            let mut low_paths = plan_region(&low, &tough, line_width, &mut hint, &low_feat);
-            let mut high_paths = plan_region(&high, &speed, line_width, &mut hint, &high_feat);
-            merge_split_outers(&mut low_paths, &mut high_paths, *axis, *at_mm, line_width);
-            paths.extend(low_paths);
-            paths.extend(high_paths);
+            let low_paths = plan_region(&low, &tough, line_width, &mut hint, &low_feat);
+            let high_paths = plan_region(&high, &speed, line_width, &mut hint, &high_feat);
+            paths.extend(pair_sides(
+                keep_side(low_paths, *axis, *at_mm, true),
+                keep_side(high_paths, *axis, *at_mm, false),
+            ));
             format!("region low=toughness high=speed split {at_mm:.2} h={height:.3}")
         }
         other => {
@@ -2196,19 +2211,19 @@ fn split_extrusions(
         let (low_pts, high_pts) = split_polyline(&path.points, axis, at);
         for pts in low_pts {
             if pts.len() >= 2 && poly_len(&pts) > 0.4 {
-                low.push(support_piece(&path, pts));
+                low.push(cut_piece(&path, pts));
             }
         }
         for pts in high_pts {
             if pts.len() >= 2 && poly_len(&pts) > 0.4 {
-                high.push(support_piece(&path, pts));
+                high.push(cut_piece(&path, pts));
             }
         }
     }
     (low, high)
 }
 
-fn support_piece(src: &Extrusion, pts: Vec<[f64; 2]>) -> Extrusion {
+fn cut_piece(src: &Extrusion, pts: Vec<[f64; 2]>) -> Extrusion {
     let mut path = src.clone();
     path.points = pts;
     path.z_frac.clear();
