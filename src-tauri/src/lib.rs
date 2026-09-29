@@ -4,10 +4,11 @@ use std::sync::Mutex;
 
 use lime_slice_core::{
     cancel_all, load_slice_mesh, mesh_preview, pareto_estimates, pressure_advance_from_request,
-    slice_request, strategy_card, Job, PaCalibRequest, SliceRequest, SliceSettings,
+    slice_payload, strategy_card, Job, PaCalibRequest, SliceCache, SliceRequest, SliceSettings,
 };
 use tauri::AppHandle;
 use tauri::Emitter;
+use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
 fn gcode_store() -> &'static Mutex<HashMap<String, String>> {
@@ -27,29 +28,28 @@ fn park_gcode(text: String) -> String {
     token
 }
 
+/// Disk budget for kept slices. Past it, the least recently used go first.
+const SLICE_CACHE_BYTES: u64 = 2 << 30;
+
 #[tauri::command]
 async fn slice_model(app: AppHandle, payload: String) -> Result<String, String> {
     let job = Job::start();
+    let cache = app
+        .path()
+        .app_cache_dir()
+        .ok()
+        .map(|dir| SliceCache::new(dir.join("slices"), SLICE_CACHE_BYTES));
     tauri::async_runtime::spawn_blocking(move || {
         let _ = app.emit(
             "slice-progress",
             serde_json::json!({ "progress": 0.08, "message": "Planning toolpaths" }),
         );
-        let req: SliceRequest = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-        let mut response = slice_request(&req, job)?;
+        let reply = slice_payload(&payload, cache.as_ref(), job, park_gcode)?;
         let _ = app.emit(
             "slice-progress",
             serde_json::json!({ "progress": 1.0, "message": "Done" }),
         );
-        if !req.include_gcode {
-            let token = park_gcode(std::mem::take(&mut response.gcode));
-            let mut value = serde_json::to_value(&response).map_err(|e| e.to_string())?;
-            if let Some(obj) = value.as_object_mut() {
-                obj.insert("gcodeToken".into(), serde_json::json!(token));
-            }
-            return Ok(value.to_string());
-        }
-        serde_json::to_string(&response).map_err(|e| e.to_string())
+        Ok(reply)
     })
     .await
     .map_err(|e| e.to_string())?
