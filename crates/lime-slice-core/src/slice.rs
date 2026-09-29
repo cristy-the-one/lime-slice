@@ -8,7 +8,7 @@ use crate::adaptive::{plan_bands, HeightOpts, LayerBand};
 use crate::cancel::Job;
 use crate::gcode::{emit_gcode, LayerPaths};
 use crate::index::ZIndex;
-use crate::load::load_slice_mesh;
+use crate::load::load_slice_mesh_tol;
 use crate::mesh::Mesh;
 use crate::poly::{
     boolean_diff, boolean_union, clip_to_rect, loop_bounds, offset_loops, signed_area,
@@ -147,6 +147,10 @@ pub struct SliceRequest {
     /// Absent means those bytes are already in print space.
     #[serde(default)]
     pub pose: Option<RigidPose>,
+    /// Chord tolerance for STEP tessellation, millimetres. `0` uses 0.1 mm.
+    /// STL and 3MF ignore it.
+    #[serde(default = "default_step_tolerance")]
+    pub step_tolerance_mm: f64,
 }
 
 /// Rigid placement of a mesh that was simplified in its scaled frame.
@@ -445,6 +449,10 @@ fn parse_support_style(name: &str) -> SupportStyle {
 fn default_layer() -> f64 {
     0.2
 }
+
+fn default_step_tolerance() -> f64 {
+    crate::step::STEP_TOLERANCE_DEFAULT_MM
+}
 fn default_width() -> f64 {
     0.45
 }
@@ -648,7 +656,12 @@ pub fn slice_request(req: &SliceRequest, job: Job) -> Result<SliceResponse, Stri
         return Err("cancelled".into());
     }
     let bytes = decode_b64(&req.data_b64)?;
-    let mesh = load_slice_mesh(&req.filename, &bytes, req.pose.is_some())?;
+    let mesh = load_slice_mesh_tol(
+        &req.filename,
+        &bytes,
+        req.pose.is_some(),
+        req.step_tolerance_mm,
+    )?;
     let profile = req.printer.clone().unwrap_or_default();
     let settings = SliceSettings {
         job,

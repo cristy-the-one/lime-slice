@@ -11,6 +11,7 @@ mod load;
 mod mesh;
 mod poly;
 mod slice;
+mod step;
 mod strategy;
 mod support;
 mod toolpath;
@@ -21,12 +22,18 @@ pub use calibrate::{
     PaCalibRequest, PaFirmware,
 };
 pub use cancel::{cancel_all, Job};
-pub use load::{load_mesh, load_slice_mesh, mesh_preview, MeshPreview};
+pub use load::{
+    load_mesh, load_slice_mesh, load_slice_mesh_tol, mesh_preview, mesh_preview_tol, MeshPreview,
+};
 pub use mesh::Mesh;
 pub use slice::{
     contour_times, outline_tolerance_mm, pareto_estimates, slice_configured, slice_request,
     slice_with_baseline, BlendScore, CompareEstimate, FeatureEstimate, ParetoPoint, PreviewLayer,
     PrintEstimate, RigidPose, SliceRequest, SliceResponse, SliceSettings,
+};
+pub use step::{
+    load_step, resolve_step_tolerance, STEP_TOLERANCE_DEFAULT_MM, STEP_TOLERANCE_MAX_MM,
+    STEP_TOLERANCE_MIN_MM,
 };
 pub use strategy::{
     strategy_card, Axis, BlendMode, Gyroid3d, PrinterProfile, ScarfSeam, StrategyCard, StrategyId,

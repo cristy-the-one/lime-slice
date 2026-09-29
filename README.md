@@ -1,6 +1,6 @@
 # Lime Slice
 
-Filament FDM slicer. A Rust core turns an STL or 3MF mesh into toolpaths, and a Tauri 2 desktop UI previews them. Named strategies (`speed`, `toughness`) are real parameter sets — wall count, infill pattern and density, print speed, acceleration, seam, retraction — and blends mix those outputs by weight, by layer, or by region.
+Filament FDM slicer. A Rust core turns an STL, 3MF, or STEP mesh into toolpaths, and a Tauri 2 desktop UI previews them. STEP (`.step` / `.stp`) is tessellated in-process with the pure-Rust [truck](https://github.com/ricosjp/truck) kernel: planes, cylinders, cones, spheres, tori, and NURBS, with file units converted to millimetres. Assemblies and multi-body parts become one mesh; each instance keeps its placement. The chord tolerance defaults to 0.1 mm (0.01–2 mm) via the Prepare field or `slice --step-tolerance`. Faceted brep and AP242 tessellated solids are rejected with an error. Named strategies (`speed`, `toughness`) are real parameter sets — wall count, infill pattern and density, print speed, acceleration, seam, retraction — and blends mix those outputs by weight, by layer, or by region.
 
 ## Run the UI
 
@@ -90,6 +90,7 @@ Every triangle is cut. Each layer's outline then drops vertices closer than `--s
 | --- | --- |
 | `samples/calibration_cube_20mm.stl` | 20 mm cube, 12 triangles |
 | `samples/calibration_cube_20mm.3mf` | The same cube as 3MF |
+| `samples/step_cube.step` | 10 mm cube as STEP AP214, tessellated on load |
 | `samples/lime_hull.stl` | Original 60 × 24 × 28 mm superellipse prism, 4800 triangles |
 | `samples/overhang_ledge.stl` | 24 mm base plus a 24 mm shelf at Z = 12, 24 triangles |
 | `samples/slope_ramp.stl` | Vertical block with a roof rising from Z = 8 to Z = 20, 12 triangles |
