@@ -1919,8 +1919,42 @@ fn sparse_layer_beads(gcode: &str) -> std::collections::HashMap<u32, f64> {
     out
 }
 
+/// Each side used to wall its own half, then the speed side dropped every
+/// wall vertex near the cut. That took its front and back outer edges with it:
+/// 4.2 mm² of see-through skin on every layer of this cube.
 #[test]
-fn region_split_keeps_one_outer_wall() {
+fn region_split_keeps_the_outline_closed() {
+    let report = lime_slice_core::audit_slice(
+        &cube(),
+        &BlendMode::ByRegion {
+            axis: Axis::X,
+            at_mm: 10.0,
+        },
+        &SliceSettings {
+            include_gcode: false,
+            baseline: false,
+            ..SliceSettings::default()
+        },
+        0.4,
+    )
+    .unwrap();
+    assert!(
+        report.open_skin_mm2 < 0.5,
+        "open skin {:.1} mm2, worst {:?}",
+        report.open_skin_mm2,
+        report.worst_open_skin
+    );
+    assert!(
+        report.unskinned_top_mm2 < 0.5,
+        "unskinned top {:.1} mm2, worst {:?}",
+        report.unskinned_top_mm2,
+        report.worst_unskinned
+    );
+}
+
+/// The region cut is not a surface, so no wall runs along it.
+#[test]
+fn region_split_prints_no_wall_on_the_cut() {
     let response = slice_configured(
         &cube(),
         &BlendMode::ByRegion {
@@ -1934,15 +1968,15 @@ fn region_split_keeps_one_outer_wall() {
     assert!(response.sanity.ok, "{:?}", response.sanity.notes);
     let layer = gcode_layer(&response.gcode, 40);
     let mut xs = Vec::new();
-    let mut outer = false;
+    let mut wall = false;
     let mut prev: Option<[f64; 2]> = None;
     for line in layer.lines() {
         if line.contains("TYPE:") {
-            outer = line.contains("TYPE:OUTER");
+            wall = line.contains("TYPE:OUTER") || line.contains("TYPE:INNER");
             prev = None;
             continue;
         }
-        if !outer || !line.starts_with("G1 ") {
+        if !wall || !line.starts_with("G1 ") {
             continue;
         }
         let mut x = None;
@@ -1975,13 +2009,12 @@ fn region_split_keeps_one_outer_wall() {
     }
     xs.sort_by(|a, b| a.total_cmp(b));
     xs.dedup();
-    assert_eq!(
-        xs,
-        vec![10.0],
-        "outer walls on the cut: {xs:?}\n{}",
+    assert!(
+        xs.is_empty(),
+        "walls on the cut: {xs:?}\n{}",
         layer
             .lines()
-            .filter(|l| l.contains("OUTER") || l.contains("G1 "))
+            .filter(|l| l.contains("TYPE:") || l.contains("G1 "))
             .take(30)
             .collect::<Vec<_>>()
             .join("\n")
