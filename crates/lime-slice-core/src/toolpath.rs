@@ -376,11 +376,12 @@ fn emit_void_fill(
     let speck = min_w * min_w;
     let reach = line_width * 0.5;
     let mut near_bead: Option<Vec<Loop>> = None;
-    for void in voids {
-        if signed_area(&void).abs() < speck {
+    // A void is an outline with the holes inside it. A ring-shaped void read
+    // loop by loop is two discs, and its fill runs straight across the hole.
+    for region in island_loops(&voids) {
+        if net_area(&region) < speck {
             continue;
         }
-        let region = [void];
         let owned = !claimed.is_empty()
             && loop_bounds(&region).is_some_and(|(min, max)| {
                 in_solid(claimed, (min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5)
@@ -388,24 +389,18 @@ fn emit_void_fill(
         let limit = if owned { wide_limit } else { f64::MAX };
         // A taper is one polygon: wide at the root, thin at the tip. Keep the
         // thin peninsula and leave a genuinely wide sparse cell alone.
-        let pieces = narrow_parts(&region, limit);
-        for piece in pieces {
-            let piece_area = signed_area(&piece).abs();
+        for piece_region in island_loops(&narrow_parts(&region, limit)) {
+            let piece_area = net_area(&piece_region);
             if piece_area < speck {
                 continue;
             }
-            let piece_region = [piece];
-            let skin = boolean_diff(&piece_region, &core)
-                .iter()
-                .map(|l| signed_area(l).abs())
-                .sum::<f64>()
-                > 0.01;
+            let skin = net_area(&boolean_diff(&piece_region, &core)) > 0.01;
             if !skin && piece_area < 0.25 {
                 continue;
             }
             // Under 0.1 mm the width probe reads nothing. Skin that thin is
             // where two faces cross, and still needs its bead.
-            let piece_width = match feature_width(&piece_region) {
+            let piece_width = match region_width(&piece_region) {
                 Some(width) => width,
                 None if skin => 0.0,
                 None => continue,
@@ -433,7 +428,11 @@ fn emit_void_fill(
                 // a wall leaves against a curved outline is within reach and stays.
                 let near = near_bead.get_or_insert_with(|| offset_loops(&cover, reach));
                 for bare in bare_stretches(&piece_region, near, reach) {
-                    if let Some(spine) = sliver_spine(&bare, min_w) {
+                    let spine = match bare.as_slice() {
+                        [outline] => sliver_spine(outline, min_w),
+                        _ => ring_spine(&bare),
+                    };
+                    if let Some(spine) = spine {
                         *seam_hint = *spine.last().unwrap();
                         paths.push(extrusion(kind, strategy, spine, line_width));
                     }
@@ -493,15 +492,45 @@ fn fill_void_piece(
 
 /// Stretches of `sliver` farther than `reach` from every bead, grown back to
 /// full length within the sliver so their bead meets the walls at each end.
-fn bare_stretches(sliver: &[Loop], near_bead: &[Loop], reach: f64) -> Vec<Loop> {
+/// Each is an outline with its holes.
+fn bare_stretches(sliver: &[Loop], near_bead: &[Loop], reach: f64) -> Vec<Vec<Loop>> {
     let far = boolean_diff(sliver, near_bead);
     if far.iter().all(|l| signed_area(l).abs() < 1e-4) {
         return Vec::new();
     }
-    boolean_intersect(&offset_loops(&far, reach), sliver)
+    island_loops(&boolean_intersect(&offset_loops(&far, reach), sliver))
+}
+
+/// Closed center line of a sliver that rings a hole: its outline pulled in by
+/// half the sliver's mean width.
+fn ring_spine(ring: &[Loop]) -> Option<Vec<[f64; 2]>> {
+    let perimeter: f64 = ring.iter().map(closed_len).sum();
+    let half = net_area(ring) / perimeter.max(1e-9);
+    let outline = std::slice::from_ref(ring.first()?);
+    let mut spine = offset_loops(outline, -half)
         .into_iter()
-        .filter(|l| signed_area(l) > 0.0)
-        .collect()
+        .max_by(|a, b| closed_len(a).total_cmp(&closed_len(b)))
+        .unwrap_or_else(|| outline[0].clone());
+    spine.push(*spine.first()?);
+    Some(spine)
+}
+
+fn closed_len(l: &Loop) -> f64 {
+    polyline_len(l)
+        + l.first()
+            .zip(l.last())
+            .map_or(0.0, |(a, b)| dist2(*a, *b).sqrt())
+}
+
+/// Area inside an outline and outside its holes.
+fn net_area(region: &[Loop]) -> f64 {
+    region.iter().map(|l| signed_area(l)).sum::<f64>().abs()
+}
+
+/// Twice the inradius of a region, holes included. `None` under 0.1 mm.
+fn region_width(region: &[Loop]) -> Option<f64> {
+    let radius = inradius(region, 8.0);
+    (radius >= 0.05).then_some(radius * 2.0)
 }
 
 /// Center line of a sliver: split its outline at its two tips and average the
