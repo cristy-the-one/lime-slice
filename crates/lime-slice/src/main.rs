@@ -1103,14 +1103,21 @@ fn print_summary(input: &Path, response: &lime_slice_core::SliceResponse) {
         response.baseline_ms,
         response.baseline_label
     );
+    let stages = &response.stages;
     println!(
-        "stages  contours {:.2} ms  supports {:.2} ms  toolpaths {:.2} ms  order {:.2} ms  combing {:.2} ms  emit {:.2} ms",
-        response.stages.contour_ms,
-        response.stages.support_ms,
-        response.stages.toolpath_ms,
-        response.stages.order_ms,
-        response.stages.comb_ms,
-        response.stages.emit_ms
+        "stages  index {:.2} ms  contours {:.2} ms (cut cpu {:.2}, simplify cpu {:.2})  roofs {:.2} ms  supports {:.2} ms  toolpaths {:.2} ms (walls cpu {:.2}, infill cpu {:.2})  order {:.2} ms  combing {:.2} ms  emit {:.2} ms",
+        stages.index_ms,
+        stages.contour_ms,
+        stages.cut_cpu_ms,
+        stages.simplify_cpu_ms,
+        stages.roof_ms,
+        stages.support_ms,
+        stages.toolpath_ms,
+        stages.wall_cpu_ms,
+        stages.infill_cpu_ms,
+        stages.order_ms,
+        stages.comb_ms,
+        stages.emit_ms
     );
     println!(
         "time {:.1} s  filament {:.2} g ({:.1} mm)  travel {:.1} mm  retracts {}  hops {}  arcs {}  toughness {:.1}  per hour {:.1}",

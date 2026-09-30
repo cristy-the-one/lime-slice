@@ -7,6 +7,7 @@ mod cancel;
 mod gcode;
 mod gyroid;
 mod index;
+mod inner_prof;
 mod load;
 mod mesh;
 mod poly;
@@ -23,19 +24,22 @@ pub use calibrate::{
     PaCalibRequest, PaFirmware,
 };
 pub use cancel::{cancel_all, Job};
+pub use inner_prof::{
+    report as inner_profile, reset as reset_inner_profile, set_enabled as set_inner_profile,
+};
 pub use load::{
     load_mesh, load_slice_mesh, load_slice_mesh_tol, mesh_preview, mesh_preview_tol, MeshPreview,
 };
 pub use mesh::Mesh;
-pub use slice_cache::{slice_payload, SliceCache};
 pub use slice::{
     contour_times, outline_tolerance_mm, pareto_estimates, slice_configured, slice_request,
     slice_with_baseline, BlendScore, CompareEstimate, FeatureEstimate, ParetoPoint, PreviewLayer,
     PrintEstimate, RigidPose, SliceRequest, SliceResponse, SliceSettings,
 };
+pub use slice_cache::{slice_payload, SliceCache};
 pub use step::{
-    load_step, resolve_step_tolerance, STEP_TOLERANCE_DEFAULT_MM, STEP_TOLERANCE_MAX_MM,
-    STEP_TOLERANCE_MIN_MM,
+    load_step, load_step_timed, resolve_step_tolerance, StepTimings, STEP_TOLERANCE_DEFAULT_MM,
+    STEP_TOLERANCE_MAX_MM, STEP_TOLERANCE_MIN_MM,
 };
 pub use strategy::{
     strategy_card, Axis, BlendMode, Gyroid3d, PrinterProfile, ScarfSeam, StrategyCard, StrategyId,

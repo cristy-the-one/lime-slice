@@ -16,6 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::time::Instant;
 
 use truck_meshalgo::prelude::PolygonMesh;
 use truck_meshalgo::tessellation::RobustMeshableShape;
@@ -54,24 +55,65 @@ pub fn resolve_step_tolerance(requested_mm: f64) -> Result<f64, String> {
     Ok(tolerance)
 }
 
+/// Wall-clock milliseconds inside one [`load_step`] call. Sums of per-shell
+/// work can exceed the tessellation total when several shells are converted.
+#[derive(Clone, Debug, Default)]
+pub struct StepTimings {
+    pub read_ms: f64,
+    pub parse_ms: f64,
+    pub index_ms: f64,
+    pub table_ms: f64,
+    pub topology_ms: f64,
+    pub compress_ms: f64,
+    pub tessellate_ms: f64,
+    pub snap_ms: f64,
+    pub ear_ms: f64,
+    pub sliver_ms: f64,
+    pub assembly_ms: f64,
+    pub total_ms: f64,
+    pub shells: usize,
+    pub faces: usize,
+    pub ear_faces: usize,
+    pub triangles: usize,
+}
+
 pub fn load_step(bytes: &[u8], tolerance_mm: f64) -> Result<Mesh, String> {
+    Ok(load_step_timed(bytes, tolerance_mm)?.0)
+}
+
+/// [`load_step`] plus the stage clock. The mesh is the same either way.
+pub fn load_step_timed(bytes: &[u8], tolerance_mm: f64) -> Result<(Mesh, StepTimings), String> {
+    let total = Instant::now();
+    let mut timings = StepTimings::default();
     let tol_mm = resolve_step_tolerance(tolerance_mm)?;
+    let read = Instant::now();
     let text = step_text(bytes)?;
+    timings.read_ms = ms_since(read);
     if !text.to_ascii_uppercase().contains("ISO-10303-21") {
         return Err("STEP file is missing an ISO-10303-21 header".into());
     }
+    let parse = Instant::now();
     let exchange = parser::parse(&text)
         .map_err(|err| format!("STEP file could not be parsed: {}", brief(&err.to_string())))?;
+    timings.parse_ms = ms_since(parse);
     let section = exchange
         .data
         .first()
         .ok_or("STEP file has no DATA section")?;
+    let index = Instant::now();
     let entities = index_entities(section);
+    timings.index_ms = ms_since(index);
+    let table_at = Instant::now();
     let table = Table::from_data_section(section);
+    timings.table_ms = ms_since(table_at);
+    let topo = Instant::now();
     let emits = collect_emits(&entities)?;
+    timings.topology_ms = ms_since(topo);
+    timings.shells = emits.len();
     let mut triangles = Vec::new();
     for emit in &emits {
-        let raw = tessellate_shell(&table, emit.shell, tol_mm, emit.scale)?;
+        let raw = tessellate_shell(&table, emit.shell, tol_mm, emit.scale, &mut timings)?;
+        let assemble = Instant::now();
         let flip = emit.flip ^ (emit.xform.det() < 0.0);
         for tri in raw {
             let mut mapped = tri.map(|p| {
@@ -85,11 +127,18 @@ pub fn load_step(bytes: &[u8], tolerance_mm: f64) -> Result<Mesh, String> {
                 triangles.push(mapped);
             }
         }
+        timings.assembly_ms += ms_since(assemble);
     }
     if triangles.is_empty() {
         return Err("STEP file tessellated to an empty mesh".into());
     }
-    Ok(Mesh { triangles })
+    timings.triangles = triangles.len();
+    timings.total_ms = ms_since(total);
+    Ok((Mesh { triangles }, timings))
+}
+
+fn ms_since(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
 }
 
 fn step_text(bytes: &[u8]) -> Result<String, String> {
@@ -719,17 +768,20 @@ fn tessellate_shell(
     shell_id: u64,
     tol_mm: f64,
     scale: f64,
+    timings: &mut StepTimings,
 ) -> Result<Vec<[[f64; 3]; 3]>, String> {
     let shell = table.shell.get(&shell_id).ok_or_else(|| {
         format!("STEP solid references shell #{shell_id}, which is not a tessellatable shell")
     })?;
     let step_faces = shell.cfs_faces.len();
+    let compress = Instant::now();
     let compressed = table.to_compressed_shell(shell).map_err(|err| {
         format!(
             "STEP solid could not be converted: {}",
             brief(&err.to_string())
         )
     })?;
+    timings.compress_ms += ms_since(compress);
     let kept = compressed.faces.len();
     if step_faces > 0 && kept < step_faces {
         return Err(format!(
@@ -737,6 +789,7 @@ fn tessellate_shell(
         ));
     }
     let tol_file = (tol_mm / scale).max(1e-5);
+    let tess = Instant::now();
     let meshed = catch_unwind(AssertUnwindSafe(|| {
         compressed.robust_triangulation(tol_file)
     }))
@@ -744,6 +797,8 @@ fn tessellate_shell(
         "STEP tessellation failed on this solid. Try a larger chord tolerance, or export the part as STL."
             .to_string()
     })?;
+    timings.tessellate_ms += ms_since(tess);
+    timings.faces += meshed.faces.len();
     // Each wire is a closed loop in the surface's own orientation. Polyline
     // ends are pinned to the shared vertex: each curve evaluates its own end
     // a few nanometres off, and edges meeting at a corner would not join.
@@ -771,12 +826,23 @@ fn tessellate_shell(
             .map(|wire| closed_loop(wire.iter().map(|e| polyline(e.index, e.orientation))))
             .collect();
         let mut tris = match &face.surface {
-            Some(mesh) => snapped_triangles(mesh, &loops, tol_file),
+            Some(mesh) => {
+                let snap = Instant::now();
+                let tris = snapped_triangles(mesh, &loops, tol_file);
+                timings.snap_ms += ms_since(snap);
+                tris
+            }
             // Truck returns no mesh where a surface parameterization degenerates,
             // like the apex of a drill-point cone. The face is still bounded by
             // the same edge polylines its neighbours use, so it closes from them.
             None => match loops.as_slice() {
-                [outline] => ear_clip(outline),
+                [outline] => {
+                    timings.ear_faces += 1;
+                    let ear = Instant::now();
+                    let tris = ear_clip(outline);
+                    timings.ear_ms += ms_since(ear);
+                    tris
+                }
                 _ => Vec::new(),
             },
         };
@@ -787,7 +853,9 @@ fn tessellate_shell(
         }
         triangles.extend(tris.into_iter().filter(|t| !degenerate(t)));
     }
+    let sliver = Instant::now();
     turn_flipped_slivers(&mut triangles);
+    timings.sliver_ms += ms_since(sliver);
     if triangles.is_empty() && step_faces > 0 {
         return Err("STEP solid tessellated to an empty mesh at this chord tolerance".into());
     }

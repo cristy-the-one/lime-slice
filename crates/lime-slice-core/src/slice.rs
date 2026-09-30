@@ -20,9 +20,9 @@ use crate::strategy::{
 };
 use crate::support::{build_supports, SupportLayer, SupportOpts, SupportStyle};
 use crate::toolpath::{
-    apply_overhang, apply_scarf, apply_z_hop, comb_layer, order_layer, plan_region, plan_skirt,
-    plan_support, plan_tree_support, Extrusion, PathFeatures, PathKind, ScarfParams, Seam,
-    ShellBand,
+    apply_overhang, apply_scarf, apply_z_hop, comb_layer, order_layer, plan_region_split,
+    plan_skirt, plan_support, plan_tree_support, Extrusion, PathFeatures, PathKind, ScarfParams,
+    Seam, ShellBand,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -575,6 +575,24 @@ pub struct StageTimes {
     pub comb_ms: f64,
     /// G-code writer. Inside `core_ms`.
     pub emit_ms: f64,
+    /// Z-bucket build before the parallel cut. Inside `contour_ms`'s caller, not inside `contour_ms`.
+    #[serde(default)]
+    pub index_ms: f64,
+    /// Sum of per-layer cut time. Parallel, so this can exceed `contour_ms`.
+    #[serde(default)]
+    pub cut_cpu_ms: f64,
+    /// Sum of per-layer outline simplify time. Parallel, so this can exceed `contour_ms`.
+    #[serde(default)]
+    pub simplify_cpu_ms: f64,
+    /// Roof-distance booleans. Inside `core_ms`, outside the named stage sum.
+    #[serde(default)]
+    pub roof_ms: f64,
+    /// Sum of per-layer wall offset time inside `toolpath_ms`.
+    #[serde(default)]
+    pub wall_cpu_ms: f64,
+    /// Sum of per-layer infill and gap-fill time inside `toolpath_ms`.
+    #[serde(default)]
+    pub infill_cpu_ms: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -731,18 +749,33 @@ pub fn slice_configured(
     let planned_full = plan(mesh, blend, &settings, profile.nozzle_diameter)?;
     let planned = planned_full.layers;
     let emit_started = Instant::now();
-    let gcode = emit_gcode(
-        &planned,
-        &profile,
-        blend,
-        layer_height,
-        line_width,
-        &features,
-        settings.arc_fit,
-        settings.classic_estimator,
-        settings.junction_deviation_mm,
-        settings.job,
-    );
+    let gcode = if settings.include_gcode {
+        emit_gcode(
+            &planned,
+            &profile,
+            blend,
+            layer_height,
+            line_width,
+            &features,
+            settings.arc_fit,
+            settings.classic_estimator,
+            settings.junction_deviation_mm,
+            settings.job,
+        )
+    } else {
+        crate::gcode::emit_estimates(
+            &planned,
+            &profile,
+            blend,
+            layer_height,
+            line_width,
+            &features,
+            settings.arc_fit,
+            settings.classic_estimator,
+            settings.junction_deviation_mm,
+            settings.job,
+        )
+    };
     let emit_ms = elapsed_ms(emit_started);
     if gcode.cancelled || settings.job.cancelled() {
         return Err("cancelled".into());
@@ -755,6 +788,12 @@ pub fn slice_configured(
         toolpath_ms: planned_full.toolpath_ms,
         emit_ms,
         comb_ms: planned_full.comb_ms,
+        index_ms: planned_full.index_ms,
+        cut_cpu_ms: planned_full.cut_cpu_ms,
+        simplify_cpu_ms: planned_full.simplify_cpu_ms,
+        roof_ms: planned_full.roof_ms,
+        wall_cpu_ms: planned_full.wall_cpu_ms,
+        infill_cpu_ms: planned_full.infill_cpu_ms,
     };
 
     let (baseline_ms, baseline_label) = if settings.baseline {
@@ -764,18 +803,33 @@ pub fn slice_configured(
         let baseline_started = Instant::now();
         let baseline_planned =
             plan(mesh, &baseline_mode, &settings, profile.nozzle_diameter)?.layers;
-        let _baseline_gcode = emit_gcode(
-            &baseline_planned,
-            &profile,
-            &baseline_mode,
-            layer_height,
-            line_width,
-            &features,
-            settings.arc_fit,
-            settings.classic_estimator,
-            settings.junction_deviation_mm,
-            settings.job,
-        );
+        let _baseline_gcode = if settings.include_gcode {
+            emit_gcode(
+                &baseline_planned,
+                &profile,
+                &baseline_mode,
+                layer_height,
+                line_width,
+                &features,
+                settings.arc_fit,
+                settings.classic_estimator,
+                settings.junction_deviation_mm,
+                settings.job,
+            )
+        } else {
+            crate::gcode::emit_estimates(
+                &baseline_planned,
+                &profile,
+                &baseline_mode,
+                layer_height,
+                line_width,
+                &features,
+                settings.arc_fit,
+                settings.classic_estimator,
+                settings.junction_deviation_mm,
+                settings.job,
+            )
+        };
         (
             elapsed_ms(baseline_started),
             "single-strategy speed (same mesh, layer height, and line width)".into(),
@@ -811,7 +865,7 @@ pub fn slice_configured(
             gcode.min_y, gcode.max_y, min[1], max[1]
         ));
     }
-    if !gcode.text.contains(";LAYER:") {
+    if settings.include_gcode && !gcode.text.contains(";LAYER:") {
         notes.push("g-code is missing layer markers".into());
     }
 
@@ -987,8 +1041,12 @@ pub fn pareto_estimates(
         (0.75, "weight 75%"),
         (1.0, "toughness"),
     ];
+    // Each blend already fans its layers out across the pool. A second
+    // `par_iter` over the five blends oversubscribes that pool: on this part
+    // the grid blend then took ~20 s instead of ~7.5 s alone, and the five
+    // together were slower than one-after-another.
     points
-        .par_iter()
+        .iter()
         .map(|(toughness, label)| {
             let blend = if *toughness <= 1e-9 {
                 BlendMode::Single {
@@ -1342,6 +1400,8 @@ struct LayerJob {
     height: f64,
     paths: Vec<Extrusion>,
     note: String,
+    wall_ms: f64,
+    infill_ms: f64,
 }
 
 /// Everything `plan` derives from the mesh. `layers` is what the G-code writer
@@ -1356,6 +1416,12 @@ pub(crate) struct Plan {
     pub toolpath_ms: f64,
     pub order_ms: f64,
     pub comb_ms: f64,
+    pub index_ms: f64,
+    pub cut_cpu_ms: f64,
+    pub simplify_cpu_ms: f64,
+    pub roof_ms: f64,
+    pub wall_cpu_ms: f64,
+    pub infill_cpu_ms: f64,
 }
 
 /// A sixteenth of the nozzle: 0.025 mm for a 0.4 mm nozzle. Two outlines
@@ -1403,14 +1469,26 @@ pub(crate) fn plan(
             max_h,
         },
     )?;
-    let contour_started = Instant::now();
+    let index_started = Instant::now();
     let index = ZIndex::build(mesh);
+    let index_ms = elapsed_ms(index_started);
     let tolerance = outline_tolerance(settings, nozzle_diameter);
-    let contours: Vec<Vec<Loop>> = bands
+    let contour_started = Instant::now();
+    let cut: Vec<(Vec<Loop>, f64, f64)> = bands
         .par_iter()
-        .map(|band| simplify_loops(index.slice(band.cut_z()), tolerance))
+        .map(|band| {
+            let cut_started = Instant::now();
+            let raw = index.slice(band.cut_z());
+            let cut_ms = elapsed_ms(cut_started);
+            let simplify_started = Instant::now();
+            let loops = simplify_loops(raw, tolerance);
+            (loops, cut_ms, elapsed_ms(simplify_started))
+        })
         .collect();
     let contour_ms = elapsed_ms(contour_started);
+    let cut_cpu_ms = cut.iter().map(|row| row.1).sum();
+    let simplify_cpu_ms = cut.iter().map(|row| row.2).sum();
+    let contours = cut.into_iter().map(|row| row.0).collect();
     let mut planned = plan_contours(
         bands,
         contours,
@@ -1420,6 +1498,9 @@ pub(crate) fn plan(
         nozzle_diameter,
     )?;
     planned.contour_ms = contour_ms;
+    planned.index_ms = index_ms;
+    planned.cut_cpu_ms = cut_cpu_ms;
+    planned.simplify_cpu_ms = simplify_cpu_ms;
     Ok(planned)
 }
 
@@ -1439,7 +1520,9 @@ fn plan_contours(
     if settings.job.cancelled() {
         return Err("cancelled".into());
     }
+    let roof_started = Instant::now();
     let roofs = roof_distances(&bands, &contours, settings.line_width * fewest_walls as f64);
+    let roof_ms = elapsed_ms(roof_started);
     let support_started = Instant::now();
     let supports = build_supports(
         &bands,
@@ -1478,6 +1561,8 @@ fn plan_contours(
                     height: band.height,
                     paths: Vec::new(),
                     note: String::new(),
+                    wall_ms: 0.0,
+                    infill_ms: 0.0,
                 };
             }
             let support = supports.get(i);
@@ -1582,6 +1667,8 @@ fn plan_contours(
         );
     });
     let comb_ms = elapsed_ms(comb_started);
+    let wall_cpu_ms = jobs.iter().map(|job| job.wall_ms).sum();
+    let infill_cpu_ms = jobs.iter().map(|job| job.infill_ms).sum();
     let layers = jobs
         .into_iter()
         .map(|job| LayerPaths {
@@ -1602,6 +1689,12 @@ fn plan_contours(
         toolpath_ms,
         order_ms,
         comb_ms,
+        index_ms: 0.0,
+        cut_cpu_ms: 0.0,
+        simplify_cpu_ms: 0.0,
+        roof_ms,
+        wall_cpu_ms,
+        infill_cpu_ms,
     })
 }
 
@@ -1919,9 +2012,13 @@ fn build_layer(
             height,
             paths: Vec::new(),
             note: "empty".into(),
+            wall_ms: 0.0,
+            infill_ms: 0.0,
         };
     }
     let mut paths = Vec::new();
+    let mut wall_ms = 0.0;
+    let mut infill_ms = 0.0;
     let skirt_src = if index == 0 {
         boolean_union(contours, &boolean_union(support, interface))
     } else {
@@ -1964,8 +2061,12 @@ fn build_layer(
             high_feat.shell = shell_of(z, roof_distance, &speed);
             high_feat.interior_remaining = remain_high.0;
             high_feat.interior_run = remain_high.1;
-            let low_paths = plan_region(&low, &tough, line_width, &mut hint, &low_feat);
-            let high_paths = plan_region(&high, &speed, line_width, &mut hint, &high_feat);
+            let (low_paths, low_wall, low_infill) =
+                plan_region_split(&low, &tough, line_width, &mut hint, &low_feat);
+            let (high_paths, high_wall, high_infill) =
+                plan_region_split(&high, &speed, line_width, &mut hint, &high_feat);
+            wall_ms += low_wall + high_wall;
+            infill_ms += low_infill + high_infill;
             paths.extend(pair_sides(
                 keep_side(low_paths, *axis, *at_mm, true),
                 keep_side(high_paths, *axis, *at_mm, false),
@@ -2006,9 +2107,11 @@ fn build_layer(
             feat.shell = shell_of(z, roof_distance, &resolved);
             feat.interior_remaining = remain_low.0;
             feat.interior_run = remain_low.1;
-            paths.extend(plan_region(
-                contours, &resolved, line_width, &mut hint, &feat,
-            ));
+            let (region, region_wall, region_infill) =
+                plan_region_split(contours, &resolved, line_width, &mut hint, &feat);
+            wall_ms += region_wall;
+            infill_ms += region_infill;
+            paths.extend(region);
             format!(
                 "{} walls={} infill={:.0}% {} {:.0}mm/s h={:.3}",
                 resolved.id.as_str(),
@@ -2030,6 +2133,8 @@ fn build_layer(
         height,
         paths,
         note,
+        wall_ms,
+        infill_ms,
     }
 }
 
@@ -2545,7 +2650,7 @@ mod tests {
                 layer_index: 5,
                 ..PathFeatures::default()
             };
-            let paths = plan_region(
+            let paths = crate::toolpath::plan_region(
                 &[dumbbell.clone()],
                 &resolved,
                 settings.line_width,
@@ -2996,5 +3101,39 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn estimates_without_gcode_text_match_the_full_emit() {
+        let mesh = wedge_wing();
+        let blend = BlendMode::Single {
+            strategy: StrategyId::Speed,
+        };
+        let profile = PrinterProfile::default();
+        let with = SliceSettings {
+            include_gcode: true,
+            include_preview: false,
+            baseline: false,
+            ..SliceSettings::default()
+        };
+        let without = SliceSettings {
+            include_gcode: false,
+            ..with.clone()
+        };
+        let full = slice_configured(&mesh, &blend, &profile, &with).expect("gcode");
+        let quiet = slice_configured(&mesh, &blend, &profile, &without).expect("estimates");
+        assert!(
+            full.gcode.contains(";LAYER:"),
+            "full emit should keep layer markers"
+        );
+        assert!(
+            quiet.gcode.is_empty(),
+            "discarded g-code should not be built"
+        );
+        assert!(quiet.sanity.ok, "{:?}", quiet.sanity.notes);
+        assert_eq!(full.sanity.layers, quiet.sanity.layers);
+        assert_eq!(full.sanity.extrusion_moves, quiet.sanity.extrusion_moves);
+        assert!((full.estimate.seconds - quiet.estimate.seconds).abs() < 1e-6);
+        assert!((full.estimate.filament_g - quiet.estimate.filament_g).abs() < 1e-9);
     }
 }
