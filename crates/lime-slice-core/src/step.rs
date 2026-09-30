@@ -17,8 +17,8 @@
 use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use truck_meshalgo::filters::OptimizingFilter;
-use truck_meshalgo::tessellation::{MeshedShape, RobustMeshableShape};
+use truck_meshalgo::prelude::PolygonMesh;
+use truck_meshalgo::tessellation::RobustMeshableShape;
 use truck_stepio::r#in::ruststep::ast::{DataSection, EntityInstance, Name, Parameter, Record};
 use truck_stepio::r#in::ruststep::parser;
 use truck_stepio::r#in::Table;
@@ -744,35 +744,218 @@ fn tessellate_shell(
         "STEP tessellation failed on this solid. Try a larger chord tolerance, or export the part as STL."
             .to_string()
     })?;
-    let mut polygon = meshed.to_polygon();
-    let weld = (tol_file * 0.25).max(1e-6);
-    polygon
-        .put_together_same_attrs(weld)
-        .remove_degenerate_faces();
-    let positions = polygon.positions();
+    // Each wire is a closed loop in the surface's own orientation. Polyline
+    // ends are pinned to the shared vertex: each curve evaluates its own end
+    // a few nanometres off, and edges meeting at a corner would not join.
+    let corner = |v: usize| {
+        let p = meshed.vertices[v];
+        [p.x, p.y, p.z]
+    };
+    let polyline = |index: usize, forward: bool| {
+        let edge = &meshed.edges[index];
+        let mut points: Vec<[f64; 3]> = edge.curve.0.iter().map(|p| [p.x, p.y, p.z]).collect();
+        if let [first, .., last] = points.as_mut_slice() {
+            *first = corner(edge.vertices.0);
+            *last = corner(edge.vertices.1);
+        }
+        if !forward {
+            points.reverse();
+        }
+        points
+    };
     let mut triangles = Vec::new();
-    for face in polygon.face_iter() {
-        if face.len() < 3 {
-            continue;
+    for face in &meshed.faces {
+        let loops: Vec<Vec<[f64; 3]>> = face
+            .boundaries
+            .iter()
+            .map(|wire| closed_loop(wire.iter().map(|e| polyline(e.index, e.orientation))))
+            .collect();
+        let mut tris = match &face.surface {
+            Some(mesh) => snapped_triangles(mesh, &loops, tol_file),
+            // Truck returns no mesh where a surface parameterization degenerates,
+            // like the apex of a drill-point cone. The face is still bounded by
+            // the same edge polylines its neighbours use, so it closes from them.
+            None => match loops.as_slice() {
+                [outline] => ear_clip(outline),
+                _ => Vec::new(),
+            },
+        };
+        if !face.orientation {
+            for tri in &mut tris {
+                tri.swap(1, 2);
+            }
         }
-        let anchor = xyz(positions, face[0].pos);
-        for pair in face[1..].windows(2) {
-            triangles.push([
-                anchor,
-                xyz(positions, pair[0].pos),
-                xyz(positions, pair[1].pos),
-            ]);
-        }
+        triangles.extend(tris.into_iter().filter(|t| !degenerate(t)));
     }
+    turn_flipped_slivers(&mut triangles);
     if triangles.is_empty() && step_faces > 0 {
         return Err("STEP solid tessellated to an empty mesh at this chord tolerance".into());
     }
     Ok(triangles)
 }
 
-fn xyz(positions: &[impl std::ops::Index<usize, Output = f64>], index: usize) -> [f64; 3] {
-    let point = &positions[index];
-    [point[0], point[1], point[2]]
+/// Edge polylines joined end to end, without the repeated joints or the
+/// closing point.
+fn closed_loop(edges: impl Iterator<Item = Vec<[f64; 3]>>) -> Vec<[f64; 3]> {
+    let mut out: Vec<[f64; 3]> = Vec::new();
+    for points in edges {
+        for point in points {
+            if out.last() != Some(&point) {
+                out.push(point);
+            }
+        }
+    }
+    if out.len() > 1 && out.first() == out.last() {
+        out.pop();
+    }
+    out
+}
+
+/// A face mesh's triangles with its boundary vertices moved onto the edge
+/// polylines it was built from. Truck projects those polyline points onto each
+/// surface separately, so the two faces along an edge land up to 0.05 mm apart
+/// and the mesh leaks. A weld cannot close that safely: truck's own weld
+/// measures its tolerance against the bounding box, and 0.025 of a 300 mm part
+/// merged whole walls.
+fn snapped_triangles(
+    mesh: &PolygonMesh,
+    loops: &[Vec<[f64; 3]>],
+    reach: f64,
+) -> Vec<[[f64; 3]; 3]> {
+    let polys: Vec<Vec<usize>> = mesh
+        .face_iter()
+        .map(|face| face.iter().map(|v| v.pos).collect())
+        .collect();
+    let mut uses: HashMap<(usize, usize), u32> = HashMap::new();
+    for poly in &polys {
+        for k in 0..poly.len() {
+            let (a, b) = (poly[k], poly[(k + 1) % poly.len()]);
+            *uses.entry((a.min(b), a.max(b))).or_default() += 1;
+        }
+    }
+    let rim: HashSet<usize> = uses
+        .iter()
+        .filter(|(_, n)| **n == 1)
+        .flat_map(|(&(a, b), _)| [a, b])
+        .collect();
+    let anchors: Vec<[f64; 3]> = loops.iter().flatten().copied().collect();
+    let reach2 = reach * reach;
+    let positions: Vec<[f64; 3]> = mesh
+        .positions()
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let p = [p.x, p.y, p.z];
+            if !rim.contains(&i) {
+                return p;
+            }
+            anchors
+                .iter()
+                .map(|a| (dist2(*a, p), *a))
+                .filter(|(d, _)| *d <= reach2)
+                .min_by(|x, y| x.0.total_cmp(&y.0))
+                .map_or(p, |(_, a)| a)
+        })
+        .collect();
+    let mut out = Vec::new();
+    for poly in &polys {
+        for pair in poly.get(1..).unwrap_or(&[]).windows(2) {
+            out.push([positions[poly[0]], positions[pair[0]], positions[pair[1]]]);
+        }
+    }
+    out
+}
+
+/// Truck winds an occasional near-collinear sliver backwards. Such a triangle
+/// runs every one of its edges the same way as the neighbour across it, so a
+/// slice through it reverses a stretch of the outline. Turn it over.
+fn turn_flipped_slivers(triangles: &mut [[[f64; 3]; 3]]) {
+    let key = |p: [f64; 3]| p.map(f64::to_bits);
+    for _ in 0..4 {
+        let mut runs: HashMap<([u64; 3], [u64; 3]), u32> = HashMap::new();
+        for tri in triangles.iter() {
+            for k in 0..3 {
+                *runs
+                    .entry((key(tri[k]), key(tri[(k + 1) % 3])))
+                    .or_default() += 1;
+            }
+        }
+        let against = |tri: &[[f64; 3]; 3]| {
+            (0..3).all(|k| {
+                let (a, b) = (key(tri[k]), key(tri[(k + 1) % 3]));
+                runs.get(&(a, b)).copied().unwrap_or(0) > 1 && !runs.contains_key(&(b, a))
+            })
+        };
+        let flipped: Vec<usize> = (0..triangles.len())
+            .filter(|&i| against(&triangles[i]))
+            .collect();
+        if flipped.is_empty() {
+            return;
+        }
+        for i in flipped {
+            triangles[i].swap(1, 2);
+        }
+    }
+}
+
+/// Triangles covering one closed loop, by ear clipping in its best-fit plane.
+fn ear_clip(ring: &[[f64; 3]]) -> Vec<[[f64; 3]; 3]> {
+    if ring.len() < 3 {
+        return Vec::new();
+    }
+    let mut normal = [0.0; 3];
+    for (i, a) in ring.iter().enumerate() {
+        let b = ring[(i + 1) % ring.len()];
+        normal[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        normal[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        normal[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    let Some(n) = normalize(normal) else {
+        return Vec::new();
+    };
+    let helper = if n[0].abs() < 0.9 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let Some(u) = normalize(cross(helper, n)) else {
+        return Vec::new();
+    };
+    let v = cross(n, u);
+    let flat: Vec<[f64; 2]> = ring.iter().map(|p| [dot(*p, u), dot(*p, v)]).collect();
+    let turn = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| {
+        (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    };
+    let mut left: Vec<usize> = (0..ring.len()).collect();
+    let mut out = Vec::new();
+    while left.len() > 3 {
+        let m = left.len();
+        let ear = (0..m).find(|&k| {
+            let (a, b, c) = (left[(k + m - 1) % m], left[k], left[(k + 1) % m]);
+            turn(flat[a], flat[b], flat[c]) > 0.0
+                && left.iter().all(|&q| {
+                    q == a
+                        || q == b
+                        || q == c
+                        || turn(flat[a], flat[b], flat[q]) < 0.0
+                        || turn(flat[b], flat[c], flat[q]) < 0.0
+                        || turn(flat[c], flat[a], flat[q]) < 0.0
+                })
+        });
+        // A loop that folds over itself in its plane has no clean ear. Clip the
+        // next corner anyway so the face still closes.
+        let k = ear.unwrap_or(0);
+        let (a, b, c) = (left[(k + m - 1) % m], left[k], left[(k + 1) % m]);
+        out.push([ring[a], ring[b], ring[c]]);
+        left.remove(k);
+    }
+    out.push([ring[left[0]], ring[left[1]], ring[left[2]]]);
+    out
+}
+
+fn dist2(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let d = sub(a, b);
+    dot(d, d)
 }
 
 fn as_entity(param: &Parameter) -> Option<u64> {

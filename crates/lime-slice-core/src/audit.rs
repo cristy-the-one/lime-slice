@@ -155,13 +155,7 @@ pub fn audit_slice(
                 .cloned()
                 .collect();
             let cover = bead_cover(&printed);
-            let specks = |loops: Vec<Loop>| -> f64 {
-                loops
-                    .iter()
-                    .map(|l| signed_area(l).abs())
-                    .filter(|a| *a >= OPEN_SKIN_SPECK_MM2)
-                    .sum()
-            };
+            let specks = |loops: Vec<Loop>| uncovered_area(&loops);
             let skin_band = boolean_diff(piece, &offset_loops(piece, -settings.line_width * 0.5));
             let open_skin = if skin_band.is_empty() {
                 0.0
@@ -317,6 +311,18 @@ struct LayerRow {
     stray: f64,
 }
 
+/// Area of `loops` without the specks, counted per outline with its holes.
+/// A hairline ring between an outline and a bead that reaches it is an
+/// outline and a hole of almost the same size. Adding their areas unsigned
+/// counted twice the layer as open skin.
+fn uncovered_area(loops: &[Loop]) -> f64 {
+    crate::toolpath::island_loops(loops)
+        .iter()
+        .map(|island| island.iter().map(|l| signed_area(l)).sum::<f64>())
+        .filter(|a| *a >= OPEN_SKIN_SPECK_MM2)
+        .sum()
+}
+
 /// Footprint of the beads that close a surface: walls, gap fill, and solid skins.
 fn skin_cover(paths: &[Extrusion]) -> Vec<Loop> {
     let solid: Vec<Extrusion> = paths
@@ -390,4 +396,33 @@ fn mesh_volume(mesh: &Mesh) -> f64 {
         })
         .sum::<f64>()
         .abs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn square(x0: f64, y0: f64, side: f64) -> Loop {
+        vec![
+            [x0, y0],
+            [x0 + side, y0],
+            [x0 + side, y0 + side],
+            [x0, y0 + side],
+        ]
+    }
+
+    #[test]
+    fn a_hairline_ring_counts_as_its_own_area() {
+        let mut hole = square(0.05, 0.05, 9.9);
+        hole.reverse();
+        let ring = vec![square(0.0, 0.0, 10.0), hole];
+        let area = uncovered_area(&ring);
+        assert!((area - 1.99).abs() < 1e-6, "{area}");
+    }
+
+    #[test]
+    fn specks_under_the_floor_are_dropped() {
+        let loops = vec![square(0.0, 0.0, 0.2), square(5.0, 5.0, 1.0)];
+        assert!((uncovered_area(&loops) - 1.0).abs() < 1e-9);
+    }
 }
