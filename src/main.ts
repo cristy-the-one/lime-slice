@@ -71,6 +71,16 @@ interface SliceResponse {
     /** Parallel combing and z-hop after the order is set. */
     combMs: number;
     emitMs: number;
+    indexMs?: number;
+    /** Sum of per-layer cut time. Parallel, so it can exceed contourMs. */
+    cutCpuMs?: number;
+    /** Sum of per-layer outline simplify time. */
+    simplifyCpuMs?: number;
+    roofMs?: number;
+    /** Sum of per-layer wall time inside toolpathMs. */
+    wallCpuMs?: number;
+    /** Sum of per-layer infill time inside toolpathMs. */
+    infillCpuMs?: number;
   };
   estimate?: {
     seconds: number;
@@ -621,16 +631,25 @@ function formatMs(ms: number) {
 function stageHtml(result: SliceResponse | null) {
   const stages = result?.stages;
   if (!result || !stages) return "";
-  const named = stages.contourMs + stages.supportMs + stages.toolpathMs + stages.orderMs + stages.combMs + stages.emitMs;
+  const named = stages.contourMs + stages.supportMs + stages.toolpathMs + stages.orderMs + stages.combMs + stages.emitMs + (stages.roofMs ?? 0) + (stages.indexMs ?? 0);
   const other = Math.max(0, result.coreMs - named);
   const rows: [string, string, boolean][] = [
+    ["index", formatMs(stages.indexMs ?? 0), false],
     ["contours", formatMs(stages.contourMs), false],
+    ["roofs", formatMs(stages.roofMs ?? 0), false],
     ["supports", formatMs(stages.supportMs), false],
     ["toolpaths", formatMs(stages.toolpathMs), false],
     ["order", formatMs(stages.orderMs), false],
     ["combing", formatMs(stages.combMs), false],
     ["emit", formatMs(stages.emitMs), false],
   ];
+  if ((stages.cutCpuMs ?? 0) + (stages.simplifyCpuMs ?? 0) >= 1) {
+    rows.splice(2, 0, ["cut cpu", formatMs(stages.cutCpuMs ?? 0), false], ["simplify cpu", formatMs(stages.simplifyCpuMs ?? 0), false]);
+  }
+  if ((stages.wallCpuMs ?? 0) + (stages.infillCpuMs ?? 0) >= 1) {
+    const at = rows.findIndex((row) => row[0] === "order");
+    rows.splice(at, 0, ["walls cpu", formatMs(stages.wallCpuMs ?? 0), false], ["infill cpu", formatMs(stages.infillCpuMs ?? 0), false]);
+  }
   if (other >= 1) rows.push(["other", formatMs(other), false]);
   rows.push(["core", formatMs(result.coreMs), true]);
   const title: Record<string, string> = {

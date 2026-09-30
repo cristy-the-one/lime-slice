@@ -2,11 +2,12 @@ use std::borrow::Cow;
 use std::cmp::{Ordering as CmpOrdering, Reverse};
 use std::collections::{BinaryHeap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use crate::poly::{
     boolean_diff, boolean_intersect, boolean_union, drop_slivers, in_solid, loop_bounds,
-    loops_from_paths, offset_loops, offset_paths, paths_from_loops, principal_axis, signed_area,
-    Loop,
+    loops_from_paths, offset_loops, offset_paths, paths_from_loops, point_in_loop, principal_axis,
+    signed_area, Loop,
 };
 use crate::strategy::{InfillPattern, ResolvedStrategy, ScarfSeam, SeamMode, StrategyId};
 use clipper2::{EndType, FillRule, JoinType, Milli, Paths};
@@ -173,6 +174,7 @@ pub enum Seam {
     Cut,
 }
 
+#[allow(dead_code)]
 pub fn plan_region(
     contours: &[Loop],
     strategy: &ResolvedStrategy,
@@ -180,9 +182,21 @@ pub fn plan_region(
     seam_hint: &mut [f64; 2],
     features: &PathFeatures,
 ) -> Vec<Extrusion> {
+    plan_region_split(contours, strategy, line_width, seam_hint, features).0
+}
+
+/// Walls and infill of [`plan_region`], with CPU milliseconds for each half.
+pub(crate) fn plan_region_split(
+    contours: &[Loop],
+    strategy: &ResolvedStrategy,
+    line_width: f64,
+    seam_hint: &mut [f64; 2],
+    features: &PathFeatures,
+) -> (Vec<Extrusion>, f64, f64) {
     if contours.is_empty() {
-        return Vec::new();
+        return (Vec::new(), 0.0, 0.0);
     }
+    let wall_started = Instant::now();
     let mut paths = Vec::new();
     let min_w = min_bead(line_width);
     let max_w = line_width * 1.30;
@@ -203,7 +217,7 @@ pub fn plan_region(
                     f64::MAX,
                     seam_hint,
                 );
-                return paths;
+                return (paths, ms_since(wall_started), 0.0);
             }
         }
     }
@@ -267,6 +281,8 @@ pub fn plan_region(
             seam_hint,
         );
     }
+    let wall_ms = ms_since(wall_started);
+    let infill_started = Instant::now();
     let infill_src = if last_wall_loops.is_empty() {
         offset_paths(&paths_from_loops(contours), -line_width * 0.5)
     } else {
@@ -308,7 +324,7 @@ pub fn plan_region(
                 f64::MAX,
                 seam_hint,
             );
-            return paths;
+            return (paths, wall_ms, ms_since(infill_started));
         };
         let kind = infill_kind(strategy, features.shell);
         for pts in infill {
@@ -342,7 +358,11 @@ pub fn plan_region(
         wide_limit,
         seam_hint,
     );
-    paths
+    (paths, wall_ms, ms_since(infill_started))
+}
+
+fn ms_since(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
 }
 
 /// Fill contour area the walls did not cover and infill was not asked to cover.
@@ -358,7 +378,11 @@ fn emit_void_fill(
     wide_limit: f64,
     seam_hint: &mut [f64; 2],
 ) {
+    let sample = crate::inner_prof::Sample::start();
+    let cover_sample = crate::inner_prof::Sample::start();
     let cover = bead_cover(paths);
+    cover_sample.void_cover(paths.len() as u64);
+    let bool_sample = crate::inner_prof::Sample::start();
     let missed = if cover.is_empty() {
         contours.to_vec()
     } else {
@@ -369,16 +393,24 @@ fn emit_void_fill(
     } else {
         missed
     };
+    bool_sample.void_bool();
+    let island_sample = crate::inner_prof::Sample::start();
+    let regions = island_loops(&voids);
+    island_sample.void_island();
     let min_w = min_bead(line_width);
     // A void that reaches the outline is the part's skin there, so it is a wall.
     let core = offset_loops(contours, -line_width * 0.25);
+    // One index for every void on this layer. A piece only meets the core
+    // loops whose boxes overlap it, so the skin test does not rebuild the
+    // whole core for each pocket.
+    let mut core_near = OverlapIndex::build(&core);
     // Specks smaller than a square bead are clipping noise.
     let speck = min_w * min_w;
     let reach = line_width * 0.5;
     let mut near_bead: Option<Vec<Loop>> = None;
     // A void is an outline with the holes inside it. A ring-shaped void read
     // loop by loop is two discs, and its fill runs straight across the hole.
-    for region in island_loops(&voids) {
+    for region in regions {
         if net_area(&region) < speck {
             continue;
         }
@@ -389,12 +421,30 @@ fn emit_void_fill(
         let limit = if owned { wide_limit } else { f64::MAX };
         // A taper is one polygon: wide at the root, thin at the tip. Keep the
         // thin peninsula and leave a genuinely wide sparse cell alone.
-        for piece_region in island_loops(&narrow_parts(&region, limit)) {
+        // `region` is already one island. Re-running that split only pays when
+        // erosion actually cuts the island into pieces.
+        let narrow_sample = crate::inner_prof::Sample::start();
+        let narrowed = narrow_parts(&region, limit);
+        narrow_sample.void_narrow();
+        // Erosion that removes nothing leaves this island intact, so the
+        // containment split that built it would only rebuild the same group.
+        let pieces = match narrowed {
+            None => vec![region],
+            Some(narrowed) => {
+                let piece_sample = crate::inner_prof::Sample::start();
+                let pieces = island_loops(&narrowed);
+                piece_sample.void_island();
+                pieces
+            }
+        };
+        for piece_region in pieces {
             let piece_area = net_area(&piece_region);
             if piece_area < speck {
                 continue;
             }
-            let skin = net_area(&boolean_diff(&piece_region, &core)) > 0.01;
+            let skin_sample = crate::inner_prof::Sample::start();
+            let skin = outside_area(&piece_region, &core, &mut core_near) > 0.01;
+            skin_sample.void_skin();
             if !skin && piece_area < 0.25 {
                 continue;
             }
@@ -440,6 +490,7 @@ fn emit_void_fill(
             }
         }
     }
+    sample.void_fill();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -604,18 +655,222 @@ fn sliver_spine(ring: &[[f64; 2]], step: f64) -> Option<Vec<[f64; 2]>> {
     )
 }
 
-/// Parts of `region` narrower than `limit`. A wide blob grows back from its
-/// core and is dropped; a thin peninsula attached to that blob does not.
-fn narrow_parts(region: &[Loop], limit: f64) -> Vec<Loop> {
+/// Parts of `region` narrower than `limit`. `None` means the whole island is
+/// already narrower than `limit` (or there is no limit), so the caller keeps
+/// the island as one piece. A wide blob grows back from its core and is
+/// dropped; a thin peninsula attached to that blob does not.
+fn narrow_parts(region: &[Loop], limit: f64) -> Option<Vec<Loop>> {
     if !limit.is_finite() {
-        return region.to_vec();
+        return None;
     }
     let eroded = offset_loops(region, -limit * 0.5);
     if eroded.is_empty() {
-        return region.to_vec();
+        return None;
     }
     let grown = offset_loops(&eroded, limit * 0.5);
-    boolean_diff(region, &grown)
+    Some(boolean_diff(region, &grown))
+}
+
+/// Core loops whose boxes can meet a query box. A loop that misses every
+/// cell of the query misses the query, same as scanning every box.
+struct OverlapIndex {
+    cell: f64,
+    origin: [f64; 2],
+    nx: usize,
+    ny: usize,
+    /// `None` buckets means the bounds were too wide for a grid, so `hits`
+    /// scans `boxes` directly.
+    buckets: Option<Vec<Vec<usize>>>,
+    boxes: Vec<Option<([f64; 2], [f64; 2])>>,
+    seen: Vec<u32>,
+    stamp: u32,
+}
+
+impl OverlapIndex {
+    fn build(loops: &[Loop]) -> Self {
+        let cell = 8.0;
+        let mut boxes = Vec::with_capacity(loops.len());
+        let mut lo = [f64::INFINITY; 2];
+        let mut hi = [f64::NEG_INFINITY; 2];
+        for loop_ in loops {
+            let bounds = loop_bounds(std::slice::from_ref(loop_));
+            if let Some((a, b)) = bounds {
+                lo[0] = lo[0].min(a[0]);
+                lo[1] = lo[1].min(a[1]);
+                hi[0] = hi[0].max(b[0]);
+                hi[1] = hi[1].max(b[1]);
+            }
+            boxes.push(bounds);
+        }
+        let n = loops.len();
+        if !lo[0].is_finite() {
+            return Self {
+                cell,
+                origin: [0.0; 2],
+                nx: 0,
+                ny: 0,
+                buckets: Some(Vec::new()),
+                boxes,
+                seen: vec![0; n],
+                stamp: 0,
+            };
+        }
+        let nx = (((hi[0] - lo[0]) / cell).floor() as usize).saturating_add(1);
+        let ny = (((hi[1] - lo[1]) / cell).floor() as usize).saturating_add(1);
+        if nx > 512 || ny > 512 || nx.saturating_mul(ny) > 20_000 {
+            return Self {
+                cell,
+                origin: lo,
+                nx: 0,
+                ny: 0,
+                buckets: None,
+                boxes,
+                seen: vec![0; n],
+                stamp: 0,
+            };
+        }
+        let mut buckets = vec![Vec::new(); nx * ny];
+        for (i, bounds) in boxes.iter().enumerate() {
+            let Some((a, b)) = bounds else {
+                continue;
+            };
+            let x0 = ((a[0] - lo[0]) / cell).floor() as usize;
+            let x1 = ((b[0] - lo[0]) / cell).floor() as usize;
+            let y0 = ((a[1] - lo[1]) / cell).floor() as usize;
+            let y1 = ((b[1] - lo[1]) / cell).floor() as usize;
+            for y in y0..=y1.min(ny - 1) {
+                for x in x0..=x1.min(nx - 1) {
+                    buckets[y * nx + x].push(i);
+                }
+            }
+        }
+        Self {
+            cell,
+            origin: lo,
+            nx,
+            ny,
+            buckets: Some(buckets),
+            boxes,
+            seen: vec![0; n],
+            stamp: 0,
+        }
+    }
+
+    /// Clip loops whose box overlaps `min`/`max`, in ascending loop index.
+    fn hits(&mut self, min: [f64; 2], max: [f64; 2]) -> Vec<usize> {
+        self.stamp = self.stamp.wrapping_add(1);
+        if self.stamp == 0 {
+            self.seen.fill(0);
+            self.stamp = 1;
+        }
+        let stamp = self.stamp;
+        let candidates: Vec<usize> = if let Some(buckets) = &self.buckets {
+            if self.nx == 0 || buckets.is_empty() {
+                Vec::new()
+            } else {
+                let x0 = (((min[0] - self.origin[0]) / self.cell).floor() as isize)
+                    .clamp(0, self.nx as isize - 1) as usize;
+                let x1 = (((max[0] - self.origin[0]) / self.cell).floor() as isize)
+                    .clamp(0, self.nx as isize - 1) as usize;
+                let y0 = (((min[1] - self.origin[1]) / self.cell).floor() as isize)
+                    .clamp(0, self.ny as isize - 1) as usize;
+                let y1 = (((max[1] - self.origin[1]) / self.cell).floor() as isize)
+                    .clamp(0, self.ny as isize - 1) as usize;
+                let mut ids = Vec::new();
+                for y in y0..=y1 {
+                    for x in x0..=x1 {
+                        ids.extend_from_slice(&buckets[y * self.nx + x]);
+                    }
+                }
+                ids
+            }
+        } else {
+            (0..self.boxes.len()).collect()
+        };
+        let mut out = Vec::new();
+        for i in candidates {
+            let Some((a, b)) = self.boxes[i] else {
+                continue;
+            };
+            if self.seen[i] == stamp {
+                continue;
+            }
+            self.seen[i] = stamp;
+            if a[0] <= max[0] && min[0] <= b[0] && a[1] <= max[1] && min[1] <= b[1] {
+                out.push(i);
+            }
+        }
+        out.sort_unstable();
+        out
+    }
+}
+
+fn edge_box_meets(a: [f64; 2], b: [f64; 2], min: [f64; 2], max: [f64; 2]) -> bool {
+    let (ex0, ex1) = if a[0] <= b[0] {
+        (a[0], b[0])
+    } else {
+        (b[0], a[0])
+    };
+    let (ey0, ey1) = if a[1] <= b[1] {
+        (a[1], b[1])
+    } else {
+        (b[1], a[1])
+    };
+    ex0 <= max[0] && min[0] <= ex1 && ey0 <= max[1] && min[1] <= ey1
+}
+
+/// Area of `piece` outside `clip`. Matches `net_area(boolean_diff(piece, clip))`:
+/// a clip loop whose box misses the piece cannot remove any of it, and a piece
+/// that meets no clip edge is entirely inside or entirely outside.
+fn outside_area(piece: &[Loop], clip: &[Loop], index: &mut OverlapIndex) -> f64 {
+    let Some((min, max)) = loop_bounds(piece) else {
+        return 0.0;
+    };
+    let hits = index.hits(min, max);
+    if hits.is_empty() {
+        return net_area(piece);
+    }
+    let touches = hits.iter().any(|&i| {
+        let loop_ = &clip[i];
+        let n = loop_.len();
+        (0..n).any(|k| edge_box_meets(loop_[k], loop_[(k + 1) % n], min, max))
+    });
+    if !touches {
+        let Some(&p) = piece.iter().find_map(|l| l.first()) else {
+            return 0.0;
+        };
+        let inside = hits
+            .iter()
+            .filter(|&&i| point_in_loop(&clip[i], p[0], p[1]))
+            .count()
+            % 2
+            == 1;
+        return if inside { 0.0 } else { net_area(piece) };
+    }
+    net_area(&boolean_diff_indexed(piece, clip, &hits))
+}
+
+fn boolean_diff_indexed(subject: &[Loop], clip: &[Loop], which: &[usize]) -> Vec<Loop> {
+    if subject.is_empty() || which.is_empty() {
+        return subject.to_vec();
+    }
+    let raw: Vec<Vec<(f64, f64)>> = which
+        .iter()
+        .filter_map(|&i| clip.get(i))
+        .map(|l| l.iter().map(|p| (p[0], p[1])).collect())
+        .collect();
+    if raw.is_empty() {
+        return subject.to_vec();
+    }
+    let clip_paths: Paths<Milli> = raw.into();
+    match paths_from_loops(subject)
+        .to_clipper_subject()
+        .add_clip(clip_paths)
+        .difference(FillRule::NonZero)
+    {
+        Ok(paths) => loops_from_paths(paths),
+        Err(_) => Vec::new(),
+    }
 }
 
 pub(crate) fn bead_cover(paths: &[Extrusion]) -> Vec<Loop> {
@@ -758,14 +1013,21 @@ fn feature_width(contours: &[Loop]) -> Option<f64> {
 }
 
 fn inradius(loops: &[Loop], cap: f64) -> f64 {
+    let paths = paths_from_loops(loops);
     let mut lo = 0.0;
     let mut hi = cap;
-    if loops_from_paths(offset_paths(&paths_from_loops(loops), -0.05)).is_empty() {
+    if loops_from_paths(offset_paths(&paths, -0.05)).is_empty() {
         return 0.0;
     }
+    // No interior point is farther from the boundary than half the smaller
+    // side of the bounds, so a probe past that is empty and can be skipped.
+    // The kept probes are the same midpoints as the full search.
+    let limit = loop_bounds(loops)
+        .map(|(mn, mx)| (mx[0] - mn[0]).min(mx[1] - mn[1]) * 0.5)
+        .unwrap_or(cap);
     for _ in 0..14 {
         let mid = (lo + hi) * 0.5;
-        if loops_from_paths(offset_paths(&paths_from_loops(loops), -mid)).is_empty() {
+        if mid > limit || loops_from_paths(offset_paths(&paths, -mid)).is_empty() {
             hi = mid;
         } else {
             lo = mid;
@@ -1161,13 +1423,14 @@ fn build_infill(
     line_width: f64,
     features: &PathFeatures,
 ) -> Vec<Vec<[f64; 2]>> {
+    let sample = crate::inner_prof::Sample::start();
     let mut density = strategy.infill_density;
     if strategy.pattern == InfillPattern::Lightning && strategy.lightning_range_mm > 1e-6 {
         let t = 1.0 - (features.roof_distance_mm / strategy.lightning_range_mm).clamp(0.0, 1.0);
         density *= 0.30 + 0.70 * t;
     }
     let spacing = (line_width / density.max(0.02)).clamp(line_width * 1.05, 14.0);
-    match strategy.pattern {
+    let paths = match strategy.pattern {
         InfillPattern::Lines => {
             clip_infill(serpentine(scan_angle(loops, spacing, 0.0), loops), loops)
         }
@@ -1190,7 +1453,14 @@ fn build_infill(
         InfillPattern::Lightning => {
             clip_infill(lightning(loops, spacing.max(line_width * 3.0)), loops)
         }
+    };
+    match strategy.pattern {
+        InfillPattern::Lines => sample.lines(),
+        InfillPattern::Grid => sample.grid(),
+        InfillPattern::Gyroid => sample.gyroid(),
+        InfillPattern::Lightning => sample.lightning(),
     }
+    paths
 }
 
 /// Drop any infill chord that leaves the region, including arc-fit bulges and
@@ -1259,6 +1529,7 @@ fn lightning(loops: &[Loop], spacing: f64) -> Vec<Vec<[f64; 2]>> {
     let Some((min, max)) = loop_bounds(loops) else {
         return Vec::new();
     };
+    let seed = crate::inner_prof::Sample::start();
     let mut boundary = Vec::new();
     for loop_ in loops {
         if signed_area(loop_) <= 0.0 {
@@ -1308,7 +1579,10 @@ fn lightning(loops: &[Loop], spacing: f64) -> Vec<Vec<[f64; 2]>> {
     for d in dist.iter_mut().take(bcount) {
         *d = 0.0;
     }
-    let mut segs = Vec::new();
+    seed.lightning_seed(nodes.len() as u64);
+    let nn = crate::inner_prof::Sample::start();
+    let reach2 = (spacing * 2.4) * (spacing * 2.4);
+    let mut picks = Vec::new();
     for i in bcount..nodes.len() {
         let mut best = 0usize;
         let mut best_d = f64::MAX;
@@ -1322,16 +1596,24 @@ fn lightning(loops: &[Loop], spacing: f64) -> Vec<Vec<[f64; 2]>> {
                 best = j;
             }
         }
-        if best_d < (spacing * 2.4) * (spacing * 2.4) {
-            let piece = outline.clip_segment(nodes[i], nodes[best]);
-            for seg in piece {
-                segs.push(vec![seg[0], seg[1]]);
-            }
+        if best_d < reach2 {
+            picks.push((i, best));
+        }
+    }
+    nn.lightning_nn(nodes.len() as u64);
+    let link = crate::inner_prof::Sample::start();
+    let mut segs = Vec::new();
+    for (i, best) in picks {
+        let piece = outline.clip_segment(nodes[i], nodes[best]);
+        for seg in piece {
+            segs.push(vec![seg[0], seg[1]]);
         }
     }
     // Weld shared nodes and short in-part gaps so each capped layer is one
     // polyline. The gap is inside the part, so it does not cross a hole.
-    chain_ends(segs, spacing * 1.25, Some(loops))
+    let chained = chain_ends(segs, spacing * 1.25, Some(loops));
+    link.lightning_link();
+    chained
 }
 
 /// Solid rectilinear in scan order. Alternate rows flip so the next chord
@@ -1344,6 +1626,7 @@ fn solid_fill(
     angle: f64,
     through: Option<[f64; 2]>,
 ) -> Vec<Vec<[f64; 2]>> {
+    let sample = crate::inner_prof::Sample::start();
     let outline = Outline::new(loops);
     let rotated = rotate_loops(loops, -angle);
     let chords = horizontal_chords(&rotated, spacing, through.map(|p| rot(p, -angle)[1]));
@@ -1382,6 +1665,7 @@ fn solid_fill(
         }
         flip = !flip;
     }
+    sample.solid();
     paths
 }
 
@@ -1463,6 +1747,8 @@ fn chain_ends(
     join: f64,
     solid: Option<&[Loop]>,
 ) -> Vec<Vec<[f64; 2]>> {
+    let sample = crate::inner_prof::Sample::start();
+    let seg_count = segments.len() as u64;
     let outline = solid.map(Outline::new);
     let mut segs: Vec<Option<Vec<[f64; 2]>>> = segments
         .into_iter()
@@ -1567,6 +1853,7 @@ fn chain_ends(
         }
         out.push(path);
     }
+    sample.chain(seg_count);
     out
 }
 
@@ -2083,9 +2370,17 @@ fn order_group(
         .first()
         .is_some_and(|p| infill_travel_group(p.travel_group()));
     let ordered = if !LEGACY_TRAVEL.load(Ordering::SeqCst) && infill && group.len() >= 2 {
-        order_infill(group, at, has)
+        let sample = crate::inner_prof::Sample::start();
+        let n = group.len() as u64;
+        let ordered = order_infill(group, at, has);
+        sample.order_infill(n);
+        ordered
     } else {
-        order_nearest(group, at, has, scarf)
+        let sample = crate::inner_prof::Sample::start();
+        let n = group.len() as u64;
+        let ordered = order_nearest(group, at, has, scarf);
+        sample.order_nearest(n);
+        ordered
     };
     let mut end = cursor;
     for path in ordered {
@@ -2114,7 +2409,9 @@ fn infill_travel_group(kind: PathKind) -> bool {
 fn order_infill(paths: Vec<Extrusion>, cursor: [f64; 2], has: bool) -> Vec<Extrusion> {
     let n = paths.len();
     let closed = paths.iter().any(geom_closed);
+    let legacy_sample = crate::inner_prof::Sample::start();
     let legacy = legacy_nn_indices(&paths, cursor, has);
+    legacy_sample.order_legacy(n as u64);
     let off = walk_cost(&paths, &legacy, cursor, has, false);
     let on = if closed {
         walk_cost(&paths, &legacy, cursor, has, true)
@@ -2140,10 +2437,13 @@ fn order_infill(paths: Vec<Extrusion>, cursor: [f64; 2], has: bool) -> Vec<Extru
     if closed {
         candidates.insert(0, nn_order(&paths, cursor, has));
     }
+    let island_sample = crate::inner_prof::Sample::start();
     let comps = islands(&paths);
+    island_sample.order_islands(n as u64);
     if comps.len() > 1 {
         candidates.push(island_order(&paths, &comps, cursor, has));
     }
+    let rest_sample = crate::inner_prof::Sample::start();
     candidates.extend(stripe_orders(&paths));
     for order in candidates {
         consider(&paths, order, cursor, has, closed, &mut best);
@@ -2165,13 +2465,17 @@ fn order_infill(paths: Vec<Extrusion>, cursor: [f64; 2], has: bool) -> Vec<Extru
     if !closed {
         let (order, flips) = untangle(&paths, &best.order, cursor, has);
         if order != best.order || flips.iter().any(|f| *f) {
+            rest_sample.order_rest(n as u64);
             return apply_flips(paths, &order, &flips);
         }
     }
     if !best.rotate && best.order == legacy {
+        rest_sample.order_rest(n as u64);
         return order_nearest(paths, cursor, has, None);
     }
-    apply_order(paths, &best.order, cursor, has, best.rotate)
+    let ordered = apply_order(paths, &best.order, cursor, has, best.rotate);
+    rest_sample.order_rest(n as u64);
+    ordered
 }
 
 /// Positions a 2-opt move may reach past `i`. Crossings sit between nearby
@@ -3133,22 +3437,18 @@ fn reverse_open(path: &mut Extrusion) {
 }
 
 fn legacy_nn_indices(paths: &[Extrusion], mut cursor: [f64; 2], mut has: bool) -> Vec<usize> {
-    let mut pending: Vec<usize> = (0..paths.len()).collect();
-    let mut out = Vec::with_capacity(pending.len());
+    let n = paths.len();
+    let mut pending: Vec<usize> = (0..n).collect();
+    let mut pos: Vec<usize> = (0..n).collect();
+    let grid = (n > NN_LINEAR_LIMIT).then(|| ApproachGrid::build(paths));
+    let mut out = Vec::with_capacity(n);
     while !pending.is_empty() {
-        let mut best_i = 0usize;
-        let mut best_d = f64::MAX;
-        for (i, &idx) in pending.iter().enumerate() {
-            if paths[idx].points.is_empty() {
-                continue;
-            }
-            let d = approach_dist2(&paths[idx], cursor, has);
-            if d < best_d {
-                best_d = d;
-                best_i = i;
-            }
-        }
+        let best_i = pending_winner(paths, &pending, &pos, &grid, cursor, has);
         let idx = pending.swap_remove(best_i);
+        pos[idx] = usize::MAX;
+        if best_i < pending.len() {
+            pos[pending[best_i]] = best_i;
+        }
         if !paths[idx].points.is_empty() {
             cursor = oriented_ends(&paths[idx], cursor, has, false).1;
             has = true;
@@ -3158,29 +3458,240 @@ fn legacy_nn_indices(paths: &[Extrusion], mut cursor: [f64; 2], mut has: bool) -
     out
 }
 
+/// Groups smaller than this stay on the linear scan. The grid pays for itself
+/// once a layer's infill is hundreds of paths, which is where the scan was
+/// quadratic.
+const NN_LINEAR_LIMIT: usize = 48;
+
+const NN_CELL_MM: f64 = 2.0;
+
+type ApproachBuckets = HashMap<(i64, i64), Vec<(usize, [f64; 2])>>;
+
+/// Endpoints (or seam vertices) of the paths still waiting to print.
+///
+/// A query walks outward from the nozzle until the square already searched is
+/// closer than any cell outside it, so the winner is the same path the linear
+/// scan would pick: smallest approach distance, then the earliest slot in
+/// `pending`.
+struct ApproachGrid {
+    cell: f64,
+    buckets: ApproachBuckets,
+    min_c: [i64; 2],
+    max_c: [i64; 2],
+}
+
+impl ApproachGrid {
+    fn build(paths: &[Extrusion]) -> Self {
+        let cell = NN_CELL_MM;
+        let mut buckets = ApproachBuckets::new();
+        let mut min_c = [i64::MAX; 2];
+        let mut max_c = [i64::MIN; 2];
+        for (id, path) in paths.iter().enumerate() {
+            for_each_approach_site(path, |p| {
+                let key = cell_key(p, cell);
+                min_c[0] = min_c[0].min(key.0);
+                min_c[1] = min_c[1].min(key.1);
+                max_c[0] = max_c[0].max(key.0);
+                max_c[1] = max_c[1].max(key.1);
+                buckets.entry(key).or_default().push((id, p));
+            });
+        }
+        if min_c[0] == i64::MAX {
+            min_c = [0; 2];
+            max_c = [0; 2];
+        }
+        Self {
+            cell,
+            buckets,
+            min_c,
+            max_c,
+        }
+    }
+
+    /// Index into `pending` of the path the linear scan would print next.
+    /// `pos[id]` is that path's slot, or `usize::MAX` once it has been printed.
+    fn winner(&self, pos: &[usize], cursor: [f64; 2]) -> usize {
+        let (cx, cy) = cell_key(cursor, self.cell);
+        let mut best_d = f64::MAX;
+        let mut best_i = 0usize;
+        let mut ring = 0i64;
+        loop {
+            if ring > 0 {
+                let gap = searched_gap(cursor, cx, cy, ring - 1, self.cell);
+                if best_d < gap * gap || searched_covers(self, cx, cy, ring - 1) {
+                    break;
+                }
+            }
+            let r = ring;
+            for gx in cx - r..=cx + r {
+                for gy in cy - r..=cy + r {
+                    if r > 0 && (gx - cx).abs() != r && (gy - cy).abs() != r {
+                        continue;
+                    }
+                    let Some(hits) = self.buckets.get(&(gx, gy)) else {
+                        continue;
+                    };
+                    for &(id, p) in hits {
+                        let at = pos[id];
+                        if at == usize::MAX {
+                            continue;
+                        }
+                        let d = dist2(cursor, p);
+                        // Equal distances keep the earlier pending slot, which
+                        // is what `d < best_d` does on a front-to-back scan.
+                        if d < best_d || (d == best_d && at < best_i) {
+                            best_d = d;
+                            best_i = at;
+                        }
+                    }
+                }
+            }
+            if searched_covers(self, cx, cy, ring) {
+                break;
+            }
+            ring += 1;
+            if ring > 100_000 {
+                break;
+            }
+        }
+        if best_d.is_finite() {
+            best_i
+        } else {
+            0
+        }
+    }
+}
+
+fn cell_key(p: [f64; 2], cell: f64) -> (i64, i64) {
+    ((p[0] / cell).floor() as i64, (p[1] / cell).floor() as i64)
+}
+
+/// Distance from `cursor` to the outside of the square of cells within
+/// Chebyshev `ring` of `(cx, cy)`. Points outside that square are at least
+/// this far away.
+fn searched_gap(cursor: [f64; 2], cx: i64, cy: i64, ring: i64, cell: f64) -> f64 {
+    let minx = (cx - ring) as f64 * cell;
+    let maxx = (cx + ring + 1) as f64 * cell;
+    let miny = (cy - ring) as f64 * cell;
+    let maxy = (cy + ring + 1) as f64 * cell;
+    let dx = (cursor[0] - minx).min(maxx - cursor[0]);
+    let dy = (cursor[1] - miny).min(maxy - cursor[1]);
+    dx.min(dy).max(0.0)
+}
+
+fn searched_covers(grid: &ApproachGrid, cx: i64, cy: i64, ring: i64) -> bool {
+    cx - ring <= grid.min_c[0]
+        && cy - ring <= grid.min_c[1]
+        && cx + ring >= grid.max_c[0]
+        && cy + ring >= grid.max_c[1]
+}
+
+/// Sites `approach_dist2` measures. Empty paths contribute none.
+fn for_each_approach_site(path: &Extrusion, mut f: impl FnMut([f64; 2])) {
+    if path.points.is_empty() {
+        return;
+    }
+    if path.is_loop() && path.seam == Seam::Fixed {
+        f(path.points[0]);
+        return;
+    }
+    if path.is_loop() || geom_closed(path) {
+        let ring = ring_len(path);
+        for p in path.points.iter().take(ring) {
+            f(*p);
+        }
+        return;
+    }
+    f(path.points[0]);
+    let last = *path.points.last().unwrap();
+    if dist2(path.points[0], last) > 0.0 {
+        f(last);
+    }
+}
+
+fn pending_winner(
+    paths: &[Extrusion],
+    pending: &[usize],
+    pos: &[usize],
+    grid: &Option<ApproachGrid>,
+    cursor: [f64; 2],
+    has: bool,
+) -> usize {
+    if !has || grid.is_none() || pending.len() <= NN_LINEAR_LIMIT {
+        return pending_winner_linear(paths, pending, cursor, has);
+    }
+    grid.as_ref().unwrap().winner(pos, cursor)
+}
+
+fn pending_winner_linear(
+    paths: &[Extrusion],
+    pending: &[usize],
+    cursor: [f64; 2],
+    has: bool,
+) -> usize {
+    pending_winner_scored(pending, cursor, has, |idx| Some(&paths[idx]))
+}
+
+fn pending_winner_slots(
+    slots: &[Option<Extrusion>],
+    pending: &[usize],
+    pos: &[usize],
+    grid: &Option<ApproachGrid>,
+    cursor: [f64; 2],
+    has: bool,
+) -> usize {
+    if !has || grid.is_none() || pending.len() <= NN_LINEAR_LIMIT {
+        return pending_winner_scored(pending, cursor, has, |idx| slots[idx].as_ref());
+    }
+    grid.as_ref().unwrap().winner(pos, cursor)
+}
+
+fn pending_winner_scored<'a>(
+    pending: &[usize],
+    cursor: [f64; 2],
+    has: bool,
+    path_at: impl Fn(usize) -> Option<&'a Extrusion>,
+) -> usize {
+    let mut best_i = 0usize;
+    let mut best_d = f64::MAX;
+    for (i, &idx) in pending.iter().enumerate() {
+        let Some(path) = path_at(idx) else {
+            continue;
+        };
+        if path.points.is_empty() {
+            continue;
+        }
+        let d = approach_dist2(path, cursor, has);
+        if d < best_d {
+            best_d = d;
+            best_i = i;
+        }
+    }
+    best_i
+}
+
 /// Nearest neighbor that seats each path as it is chosen, so the next choice
 /// is measured from where that path really ends, scarf overlap included.
 fn order_nearest(
-    mut paths: Vec<Extrusion>,
+    paths: Vec<Extrusion>,
     mut cursor: [f64; 2],
     mut has: bool,
     scarf: Option<&ScarfParams>,
 ) -> Vec<Extrusion> {
-    let mut out = Vec::with_capacity(paths.len());
-    while !paths.is_empty() {
-        let mut best_i = 0usize;
-        let mut best_d = f64::MAX;
-        for (i, path) in paths.iter().enumerate() {
-            if path.points.is_empty() {
-                continue;
-            }
-            let d = approach_dist2(path, cursor, has);
-            if d < best_d {
-                best_d = d;
-                best_i = i;
-            }
+    let n = paths.len();
+    let grid = (n > NN_LINEAR_LIMIT).then(|| ApproachGrid::build(&paths));
+    let mut slots: Vec<Option<Extrusion>> = paths.into_iter().map(Some).collect();
+    let mut pending: Vec<usize> = (0..n).collect();
+    let mut pos: Vec<usize> = (0..n).collect();
+    let mut out = Vec::with_capacity(n);
+    while !pending.is_empty() {
+        let best_i = pending_winner_slots(&slots, &pending, &pos, &grid, cursor, has);
+        let id = pending.swap_remove(best_i);
+        pos[id] = usize::MAX;
+        if best_i < pending.len() {
+            pos[pending[best_i]] = best_i;
         }
-        let mut path = paths.swap_remove(best_i);
+        let mut path = slots[id].take().unwrap();
         orient_path(&mut path, cursor, has, false);
         if let Some(params) = scarf {
             scarf_one(&mut path, params);
@@ -3317,16 +3828,7 @@ pub(crate) fn island_loops(loops: &[Loop]) -> Vec<Vec<Loop>> {
         .iter()
         .map(|l| Outline::new(std::slice::from_ref(l)))
         .collect();
-    let parents: Vec<Vec<usize>> = (0..loops.len())
-        .map(|i| {
-            let Some(&p) = loops[i].first() else {
-                return Vec::new();
-            };
-            (0..loops.len())
-                .filter(|&j| j != i && outlines[j].box_holds(p) && outlines[j].contains(p))
-                .collect()
-        })
-        .collect();
+    let parents = containing_loops(loops, &outlines);
     let mut island_at: Vec<Option<usize>> = vec![None; loops.len()];
     let mut out: Vec<Vec<Loop>> = Vec::new();
     for (i, up) in parents.iter().enumerate() {
@@ -3347,6 +3849,66 @@ pub(crate) fn island_loops(loops: &[Loop]) -> Vec<Vec<Loop>> {
         }
     }
     out
+}
+
+/// Loops that contain each loop's first vertex, in ascending loop index.
+/// A grid is the linear scan's hits: a box that misses the vertex's cell
+/// cannot contain it, and equal distances are not involved.
+fn containing_loops(loops: &[Loop], outlines: &[Outline]) -> Vec<Vec<usize>> {
+    let n = loops.len();
+    if n <= 48 {
+        return (0..n)
+            .map(|i| contained_by_linear(loops, outlines, i, 0..n))
+            .collect();
+    }
+    let cell = 8.0_f64;
+    let mut buckets: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (j, outline) in outlines.iter().enumerate() {
+        let Some((mn, mx)) = outline.bounds else {
+            continue;
+        };
+        let x0 = (mn[0] / cell).floor() as i64;
+        let x1 = (mx[0] / cell).floor() as i64;
+        let y0 = (mn[1] / cell).floor() as i64;
+        let y1 = (mx[1] / cell).floor() as i64;
+        for x in x0..=x1 {
+            for y in y0..=y1 {
+                buckets.entry((x, y)).or_default().push(j);
+            }
+        }
+    }
+    (0..n)
+        .map(|i| {
+            let Some(&p) = loops[i].first() else {
+                return Vec::new();
+            };
+            let key = ((p[0] / cell).floor() as i64, (p[1] / cell).floor() as i64);
+            let Some(ids) = buckets.get(&key) else {
+                return Vec::new();
+            };
+            let mut hits: Vec<usize> = ids
+                .iter()
+                .copied()
+                .filter(|&j| j != i && outlines[j].box_holds(p) && outlines[j].contains(p))
+                .collect();
+            hits.sort_unstable();
+            hits.dedup();
+            hits
+        })
+        .collect()
+}
+
+fn contained_by_linear(
+    loops: &[Loop],
+    outlines: &[Outline],
+    i: usize,
+    js: impl Iterator<Item = usize>,
+) -> Vec<usize> {
+    let Some(&p) = loops[i].first() else {
+        return Vec::new();
+    };
+    js.filter(|&j| j != i && outlines[j].box_holds(p) && outlines[j].contains(p))
+        .collect()
 }
 
 /// A way into `node` from `from` in the combing search, ranked by its estimate
@@ -4355,6 +4917,146 @@ mod travel_tests {
                     || crate::poly::distance_to_outline(&outline, *p) < 0.05,
                 "spine point {p:?} leaves the sliver"
             );
+        }
+    }
+
+    /// The grid nearest-neighbor must print the same sequence as the linear
+    /// scan, including equal-distance ties and closed walls.
+    #[test]
+    fn grid_nearest_matches_the_linear_scan() {
+        let mut state = 0x1234_5678_9abc_u64;
+        let mut rnd = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (state >> 33) as f64 / f64::from(1u32 << 31)
+        };
+        let mut paths = Vec::new();
+        for i in 0..180 {
+            let x = rnd() * 300.0 - 20.0;
+            let y = rnd() * 200.0 - 10.0;
+            if i % 17 == 0 {
+                paths.push(path(PathKind::GapFill, vec![[x, y], [x, y]]));
+            } else if i % 11 == 0 {
+                paths.push(path(PathKind::Outer, ring(x, y, 1.2 + rnd())));
+            } else if i % 13 == 0 {
+                paths.push(path(PathKind::GapFill, Vec::new()));
+            } else {
+                paths.push(path(
+                    PathKind::Sparse,
+                    vec![[x, y], [x + rnd() * 4.0, y + rnd() * 3.0]],
+                ));
+            }
+        }
+        // Several segments share a point so equal distances have a winner.
+        for k in 0..8 {
+            paths.push(path(
+                PathKind::Solid,
+                vec![[40.0, 40.0], [40.0 + k as f64, 48.0]],
+            ));
+        }
+        let cursor = [12.5, -3.0];
+        let got = legacy_nn_indices(&paths, cursor, true);
+        let mut pending: Vec<usize> = (0..paths.len()).collect();
+        let mut expect = Vec::new();
+        let mut at = cursor;
+        let mut has = true;
+        while !pending.is_empty() {
+            let best_i = pending_winner_linear(&paths, &pending, at, has);
+            let idx = pending.swap_remove(best_i);
+            if !paths[idx].points.is_empty() {
+                at = oriented_ends(&paths[idx], at, has, false).1;
+                has = true;
+            }
+            expect.push(idx);
+        }
+        assert_eq!(got, expect);
+        let seated = order_nearest(paths.clone(), cursor, true, None);
+        let mut replay = Vec::new();
+        let mut at = cursor;
+        let mut has = true;
+        for idx in expect {
+            let mut path = paths[idx].clone();
+            orient_path(&mut path, at, has, false);
+            if let Some(end) = path.points.last() {
+                at = *end;
+                has = true;
+            }
+            replay.push(path.points);
+        }
+        let seated_pts: Vec<_> = seated.iter().map(|p| p.points.clone()).collect();
+        assert_eq!(seated_pts, replay);
+    }
+
+    #[test]
+    fn island_grid_matches_pairwise_containment() {
+        let mut loops = vec![square_at(0.0, 0.0, 80.0)];
+        for i in 0..70 {
+            let x = (i % 10) as f64 * 7.5 + 1.0;
+            let y = (i / 10) as f64 * 10.0 + 1.0;
+            loops.push(square_at(x, y, 3.0 + (i % 3) as f64));
+        }
+        loops.push(square_at(2.0, 2.0, 1.0));
+        let outlines: Vec<Outline> = loops
+            .iter()
+            .map(|l| Outline::new(std::slice::from_ref(l)))
+            .collect();
+        let got = containing_loops(&loops, &outlines);
+        let expect: Vec<Vec<usize>> = (0..loops.len())
+            .map(|i| contained_by_linear(&loops, &outlines, i, 0..loops.len()))
+            .collect();
+        assert_eq!(got, expect);
+    }
+
+    #[test]
+    fn void_skin_area_matches_the_full_difference() {
+        let mut clip = Vec::new();
+        for i in 0..30 {
+            for j in 0..12 {
+                clip.push(square_at(i as f64 * 6.0, j as f64 * 6.0, 4.0));
+            }
+        }
+        let mut hole = square_at(10.0, 10.0, 6.0);
+        if signed_area(&hole) > 0.0 {
+            hole.reverse();
+        }
+        let plate = vec![square_at(0.0, 0.0, 40.0), hole];
+        let probes = [
+            vec![square_at(0.4, 0.4, 1.2)],
+            vec![square_at(4.3, 0.4, 1.0)],
+            vec![square_at(3.2, 0.5, 1.6)],
+            vec![square_at(3.7, 3.7, 2.4)],
+            vec![square_at(-8.0, 2.0, 3.0)],
+            vec![square_at(1.0, 1.0, 2.0), square_at(1.4, 1.4, 0.8)],
+            vec![square_at(12.0, 12.0, 1.5)],
+            vec![square_at(8.5, 12.0, 4.0)],
+            vec![square_at(38.5, 20.0, 3.0)],
+        ];
+        for (label, solid) in [("tiles", &clip), ("plate", &plate)] {
+            let mut index = OverlapIndex::build(solid);
+            for piece in &probes {
+                let full = net_area(&boolean_diff(piece, solid));
+                let fast = outside_area(piece, solid, &mut index);
+                assert!(
+                    (full - fast).abs() < 1e-4,
+                    "{label} full {full} fast {fast}"
+                );
+                assert_eq!(full > 0.01, fast > 0.01, "{label}");
+            }
+            let linear: Vec<usize> = (0..solid.len()).collect();
+            for piece in &probes {
+                let Some((min, max)) = loop_bounds(piece) else {
+                    continue;
+                };
+                let expect: Vec<usize> = linear
+                    .iter()
+                    .copied()
+                    .filter(|&i| {
+                        loop_bounds(std::slice::from_ref(&solid[i])).is_some_and(|(a, b)| {
+                            a[0] <= max[0] && min[0] <= b[0] && a[1] <= max[1] && min[1] <= b[1]
+                        })
+                    })
+                    .collect();
+                assert_eq!(index.hits(min, max), expect, "{label}");
+            }
         }
     }
 }

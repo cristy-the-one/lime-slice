@@ -90,6 +90,50 @@ fn rectangular_hole_is_watertight_in_millimetres() {
     assert_eq!(boundary_edges(&mesh), 0);
 }
 
+/// Directed edges that do not meet their reverse exactly once. Zero means the
+/// mesh is closed and every triangle faces the same way as its neighbours.
+fn unpaired_edges(mesh: &lime_slice_core::Mesh) -> usize {
+    let key = |p: [f64; 3]| p.map(|c| (c * 1e6).round() as i64);
+    let mut runs: HashMap<([i64; 3], [i64; 3]), i32> = HashMap::new();
+    for tri in &mesh.triangles {
+        for k in 0..3 {
+            *runs
+                .entry((key(tri[k]), key(tri[(k + 1) % 3])))
+                .or_default() += 1;
+        }
+    }
+    runs.iter()
+        .filter(|((a, b), n)| **n != 1 || runs.get(&(*b, *a)) != Some(&1))
+        .count()
+}
+
+/// Truck's weld measures its tolerance against the bounding box: 0.025 of a
+/// 300 mm bar merged vertices 3.75 mm apart and closed this 1 mm hole.
+#[test]
+fn a_long_bar_keeps_its_one_millimetre_hole() {
+    let mesh = load("slot_bar.step");
+    expect_box(&mesh, [0.0, 0.0, 0.0], [300.0, 16.0, 10.0], 1e-6);
+    let vol = volume(&mesh);
+    assert!((vol - 47_940.0).abs() < 1e-3, "volume {vol}");
+    assert_eq!(unpaired_edges(&mesh), 0);
+}
+
+/// Two half-cone faces that meet at the apex, like a drill point. Truck
+/// returns no mesh for either half, and they used to be dropped.
+#[test]
+fn a_cone_that_meets_at_its_apex_is_closed() {
+    let mesh = load("apex_cone.step");
+    let height = 10.0 / 59.0_f64.to_radians().tan();
+    expect_box(&mesh, [-10.0, -10.0, 0.0], [10.0, 10.0, height], 0.1);
+    let vol = volume(&mesh);
+    let analytic = std::f64::consts::PI * 100.0 * height / 3.0;
+    assert!(
+        (vol - analytic).abs() / analytic < 0.03,
+        "volume {vol} analytic {analytic}"
+    );
+    assert_eq!(unpaired_edges(&mesh), 0);
+}
+
 #[test]
 fn cylinder_tessellates_inside_the_analytic_solid() {
     let mesh = load("cylinder.step");
