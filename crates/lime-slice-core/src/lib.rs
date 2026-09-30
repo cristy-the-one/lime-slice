@@ -38,8 +38,8 @@ pub use slice::{
 };
 pub use slice_cache::{slice_payload, SliceCache};
 pub use step::{
-    load_step, load_step_timed, resolve_step_tolerance, StepTimings, STEP_TOLERANCE_DEFAULT_MM,
-    STEP_TOLERANCE_MAX_MM, STEP_TOLERANCE_MIN_MM,
+    clear_step_cache, load_step, load_step_timed, resolve_step_tolerance, step_cache_stats,
+    StepTimings, STEP_TOLERANCE_DEFAULT_MM, STEP_TOLERANCE_MAX_MM, STEP_TOLERANCE_MIN_MM,
 };
 pub use strategy::{
     strategy_card, Axis, BlendMode, Gyroid3d, PrinterProfile, ScarfSeam, StrategyCard, StrategyId,

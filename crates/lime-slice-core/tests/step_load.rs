@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use lime_slice_core::{
-    load_mesh, load_slice_mesh_tol, resolve_step_tolerance, STEP_TOLERANCE_DEFAULT_MM,
-    STEP_TOLERANCE_MAX_MM, STEP_TOLERANCE_MIN_MM,
+    clear_step_cache, load_mesh, load_slice_mesh_tol, load_step, load_step_timed, mesh_preview_tol,
+    resolve_step_tolerance, step_cache_stats, STEP_TOLERANCE_DEFAULT_MM, STEP_TOLERANCE_MAX_MM,
+    STEP_TOLERANCE_MIN_MM,
 };
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -223,4 +224,71 @@ fn bad_files_and_tolerances_are_errors() {
     )
     .unwrap();
     assert!(load_slice_mesh_tol("cube.stl", &stl, false, 9.0).is_ok());
+}
+
+/// Same bytes and the same resolved tolerance reuse one tessellation.
+/// A different tolerance, or different bytes, must not return that mesh.
+#[test]
+fn step_mesh_cache_hits_same_bytes_and_misses_when_they_change() {
+    clear_step_cache();
+    let bytes = cache_probe_cylinder();
+    let (first, first_times) = load_step_timed(&bytes, 0.0).unwrap();
+    assert!(!first_times.cache_hit);
+    assert_eq!(step_cache_stats(), (0, 1));
+
+    let (again, again_times) = load_step_timed(&bytes, STEP_TOLERANCE_DEFAULT_MM).unwrap();
+    assert!(again_times.cache_hit);
+    assert_eq!(first.triangles, again.triangles);
+    assert_eq!(step_cache_stats(), (1, 1));
+
+    let preview = mesh_preview_tol("cylinder.step", &bytes, 0.0).unwrap();
+    assert_eq!(preview.triangles, first.triangle_count());
+    assert_eq!(step_cache_stats().0, 2);
+
+    let mut settled = load_step(&bytes, 0.0).unwrap();
+    assert_eq!(step_cache_stats().0, 3);
+    settled.triangles[0][0][0] += 50.0;
+    let fresh = load_step(&bytes, STEP_TOLERANCE_DEFAULT_MM).unwrap();
+    assert_ne!(fresh.triangles[0][0][0], settled.triangles[0][0][0]);
+
+    let (coarse, coarse_times) = load_step_timed(&bytes, 0.5).unwrap();
+    assert!(!coarse_times.cache_hit);
+    assert_ne!(
+        coarse.triangles, first.triangles,
+        "a coarser chord tolerance should tessellate the cylinder again"
+    );
+
+    let mut changed = bytes.clone();
+    let needle = b"(0.,0.,12.)";
+    let pos = changed
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .expect("cylinder height");
+    changed[pos + needle.len() - 4] = b'8';
+    match load_step_timed(&changed, 0.0) {
+        Ok((mesh, timings)) => {
+            assert!(!timings.cache_hit);
+            assert_ne!(mesh.triangles, first.triangles);
+        }
+        Err(_) => {}
+    }
+
+    let (_, misses_before) = step_cache_stats();
+    assert!(load_step(b"not a step", 0.0).is_err());
+    assert!(load_step(b"not a step", 0.0).is_err());
+    let (_, misses_after) = step_cache_stats();
+    assert_eq!(misses_after, misses_before + 2);
+}
+
+fn cache_probe_cylinder() -> Vec<u8> {
+    let raw = fixture("cylinder.step");
+    let split = raw
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .expect("step line");
+    let mut bytes = Vec::with_capacity(raw.len() + 32);
+    bytes.extend_from_slice(&raw[..=split]);
+    bytes.extend_from_slice(b"/*lime-slice-cache-probe*/\n");
+    bytes.extend_from_slice(&raw[split + 1..]);
+    bytes
 }

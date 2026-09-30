@@ -879,14 +879,18 @@ pub(crate) fn bead_cover(paths: &[Extrusion]) -> Vec<Loop> {
         if path.points.len() < 2 || path.width <= 1e-6 {
             continue;
         }
-        // Square end-caps stroke the centerline. A polygon offset would fill
-        // the loop interior and hide the pinch between walls.
-        let raw: Vec<Vec<(f64, f64)>> = vec![path.points.iter().map(|p| (p[0], p[1])).collect()];
-        let stroked: Paths<Milli> = raw.into();
-        let grown = stroked.inflate(path.width * 0.5, JoinType::Round, EndType::Square, 2.0);
-        acc.extend(loops_from_paths(grown));
+        acc.extend(stroke_bead(path));
     }
     union_loops(&acc)
+}
+
+fn stroke_bead(path: &Extrusion) -> Vec<Loop> {
+    // Square end-caps stroke the centerline. A polygon offset would fill
+    // the loop interior and hide the pinch between walls.
+    let raw: Vec<Vec<(f64, f64)>> = vec![path.points.iter().map(|p| (p[0], p[1])).collect()];
+    let stroked: Paths<Milli> = raw.into();
+    let grown = stroked.inflate(path.width * 0.5, JoinType::Round, EndType::Square, 2.0);
+    loops_from_paths(grown)
 }
 
 fn union_loops(loops: &[Loop]) -> Vec<Loop> {
@@ -2681,6 +2685,7 @@ fn island_order(
 fn islands(paths: &[Extrusion]) -> Vec<Vec<usize>> {
     let n = paths.len();
     let reps: Vec<Vec<[f64; 2]>> = paths.iter().map(rep_points).collect();
+    let bounds: Vec<([f64; 2], [f64; 2])> = reps.iter().map(|pts| rep_bounds(pts)).collect();
     let mut parent: Vec<usize> = (0..n).collect();
     let gap2 = ISLAND_GAP_MM * ISLAND_GAP_MM;
     let cell = ISLAND_GAP_MM;
@@ -2691,7 +2696,16 @@ fn islands(paths: &[Extrusion]) -> Vec<Vec<usize>> {
             grid.entry(key(*p)).or_default().push(i);
         }
     }
+    // A path's reps sit in several cells, so the same neighbour is listed many
+    // times. One distance check per pair is enough: the gap does not change.
+    let mut seen = vec![0u32; n];
+    let mut stamp = 0u32;
     for i in 0..n {
+        stamp = stamp.wrapping_add(1);
+        if stamp == 0 {
+            seen.fill(0);
+            stamp = 1;
+        }
         for p in &reps[i] {
             let (cx, cy) = key(*p);
             for gx in cx - 1..=cx + 1 {
@@ -2700,12 +2714,16 @@ fn islands(paths: &[Extrusion]) -> Vec<Vec<usize>> {
                         continue;
                     };
                     for &j in ids {
-                        if j <= i {
+                        if j <= i || seen[j] == stamp {
                             continue;
                         }
-                        let ri = find(&mut parent, i);
-                        let rj = find(&mut parent, j);
-                        if ri == rj {
+                        seen[j] = stamp;
+                        if find(&mut parent, i) == find(&mut parent, j) {
+                            continue;
+                        }
+                        // Representative points are a subset of the path, so a
+                        // box gap past the island limit means the reps are too.
+                        if boxes_farther_than(bounds[i], bounds[j], gap2) {
                             continue;
                         }
                         if rep_dist2(&reps[i], &reps[j]) <= gap2 {
@@ -3125,6 +3143,41 @@ fn rep_points(path: &Extrusion) -> Vec<[f64; 2]> {
     }
 }
 
+fn rep_bounds(pts: &[[f64; 2]]) -> ([f64; 2], [f64; 2]) {
+    let mut min = [f64::INFINITY; 2];
+    let mut max = [f64::NEG_INFINITY; 2];
+    for p in pts {
+        min[0] = min[0].min(p[0]);
+        min[1] = min[1].min(p[1]);
+        max[0] = max[0].max(p[0]);
+        max[1] = max[1].max(p[1]);
+    }
+    if pts.is_empty() {
+        ([0.0, 0.0], [0.0, 0.0])
+    } else {
+        (min, max)
+    }
+}
+
+/// Euclidean separation of two boxes, squared. Overlap is zero.
+fn boxes_farther_than(a: ([f64; 2], [f64; 2]), b: ([f64; 2], [f64; 2]), gap2: f64) -> bool {
+    let dx = if a.1[0] < b.0[0] {
+        b.0[0] - a.1[0]
+    } else if b.1[0] < a.0[0] {
+        a.0[0] - b.1[0]
+    } else {
+        0.0
+    };
+    let dy = if a.1[1] < b.0[1] {
+        b.0[1] - a.1[1]
+    } else if b.1[1] < a.0[1] {
+        a.0[1] - b.1[1]
+    } else {
+        0.0
+    };
+    dx * dx + dy * dy > gap2
+}
+
 fn rep_dist2(a: &[[f64; 2]], b: &[[f64; 2]]) -> f64 {
     let mut best = f64::MAX;
     for p in a {
@@ -3171,7 +3224,30 @@ fn walk_cost(
     has: bool,
     rotate: bool,
 ) -> f64 {
-    tour_cost(&build_dirs(paths, order, cursor, has, rotate), cursor, has)
+    // Same sum as building the tour and then walking it: the first hop leaves
+    // the nozzle that entered this group, and every later hop leaves the end
+    // of the path before it. The running cursor is what `oriented_ends` sees.
+    if order.is_empty() {
+        return 0.0;
+    }
+    let mut cost = 0.0;
+    let mut run_cursor = cursor;
+    let mut run_has = has;
+    let mut prev_end = None;
+    for &idx in order {
+        let (start, end) = oriented_ends(&paths[idx], run_cursor, run_has, rotate);
+        cost += match prev_end {
+            Some(prev) => dist_mm(prev, start),
+            None if has => dist_mm(cursor, start),
+            None => 0.0,
+        };
+        if !paths[idx].points.is_empty() {
+            run_cursor = end;
+            run_has = true;
+        }
+        prev_end = Some(end);
+    }
+    cost
 }
 
 fn build_dirs(
@@ -3195,21 +3271,6 @@ fn build_dirs(
         });
     }
     dirs
-}
-
-fn tour_cost(dirs: &[TourStop], cursor: [f64; 2], has: bool) -> f64 {
-    if dirs.is_empty() {
-        return 0.0;
-    }
-    let mut cost = if has {
-        dist_mm(cursor, dirs[0].start)
-    } else {
-        0.0
-    };
-    for w in dirs.windows(2) {
-        cost += dist_mm(w[0].end, w[1].start);
-    }
-    cost
 }
 
 fn oriented_ends(
@@ -5058,5 +5119,28 @@ mod travel_tests {
                 assert_eq!(index.hits(min, max), expect, "{label}");
             }
         }
+    }
+
+    #[test]
+    fn bead_cover_matches_one_union_on_overlapping_and_disjoint_strokes() {
+        let paths = vec![
+            path(PathKind::Infill, vec![[0.0, 0.0], [8.0, 0.0]]),
+            path(PathKind::Infill, vec![[0.0, 0.3], [8.0, 0.3]]),
+            path(PathKind::Infill, vec![[30.0, 30.0], [38.0, 30.0]]),
+            path(PathKind::Wall, vec![[30.0, 30.2], [38.0, 30.2]]),
+        ];
+        let got = bead_cover(&paths);
+        let mut strokes = Vec::new();
+        for path in &paths {
+            strokes.extend(stroke_bead(path));
+        }
+        let expect = union_loops(&strokes);
+        let plate = vec![square_at(-2.0, -2.0, 50.0)];
+        let got_void = net_area(&boolean_diff(&plate, &got));
+        let expect_void = net_area(&boolean_diff(&plate, &expect));
+        assert!(
+            (got_void - expect_void).abs() < 1e-3,
+            "{got_void} vs {expect_void}"
+        );
     }
 }

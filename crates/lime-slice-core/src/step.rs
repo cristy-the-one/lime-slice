@@ -14,8 +14,10 @@
 //! after the length-unit scale is known, and clamped so it stays above truck's
 //! internal 1e-6 floor.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use truck_meshalgo::prelude::PolygonMesh;
@@ -75,6 +77,8 @@ pub struct StepTimings {
     pub faces: usize,
     pub ear_faces: usize,
     pub triangles: usize,
+    /// The mesh was cloned from an earlier successful load of these bytes.
+    pub cache_hit: bool,
 }
 
 pub fn load_step(bytes: &[u8], tolerance_mm: f64) -> Result<Mesh, String> {
@@ -82,10 +86,31 @@ pub fn load_step(bytes: &[u8], tolerance_mm: f64) -> Result<Mesh, String> {
 }
 
 /// [`load_step`] plus the stage clock. The mesh is the same either way.
+///
+/// The same file bytes and the same resolved chord tolerance reuse the mesh
+/// from the first successful tessellation. `0` and [`STEP_TOLERANCE_DEFAULT_MM`]
+/// share that entry. A failed parse is not stored, and the returned mesh is a
+/// clone, so settling it does not change the cached one.
 pub fn load_step_timed(bytes: &[u8], tolerance_mm: f64) -> Result<(Mesh, StepTimings), String> {
+    let tol_mm = resolve_step_tolerance(tolerance_mm)?;
+    if let Some(mesh) = step_cache_get(bytes, tol_mm) {
+        CACHE_HITS.with(|hits| hits.set(hits.get() + 1));
+        let timings = StepTimings {
+            triangles: mesh.triangle_count(),
+            cache_hit: true,
+            ..StepTimings::default()
+        };
+        return Ok((mesh, timings));
+    }
+    CACHE_MISSES.with(|misses| misses.set(misses.get() + 1));
+    let (mesh, timings) = tessellate_step(bytes, tol_mm)?;
+    step_cache_put(bytes, tol_mm, &mesh);
+    Ok((mesh, timings))
+}
+
+fn tessellate_step(bytes: &[u8], tol_mm: f64) -> Result<(Mesh, StepTimings), String> {
     let total = Instant::now();
     let mut timings = StepTimings::default();
-    let tol_mm = resolve_step_tolerance(tolerance_mm)?;
     let read = Instant::now();
     let text = step_text(bytes)?;
     timings.read_ms = ms_since(read);
@@ -1225,4 +1250,113 @@ fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 
 fn mul_s(a: [f64; 3], scale: f64) -> [f64; 3] {
     [a[0] * scale, a[1] * scale, a[2] * scale]
+}
+
+const STEP_CACHE_CAP: usize = 8;
+
+struct CachedStep {
+    hash_a: u64,
+    hash_b: u64,
+    len: usize,
+    tol_bits: u64,
+    mesh: Mesh,
+}
+
+struct StepMeshCache {
+    entries: Vec<CachedStep>,
+}
+
+static STEP_MESH_CACHE: Mutex<StepMeshCache> = Mutex::new(StepMeshCache {
+    entries: Vec::new(),
+});
+
+thread_local! {
+    static CACHE_HITS: Cell<u64> = const { Cell::new(0) };
+    static CACHE_MISSES: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Hits and misses counted on this thread. Other threads keep their own totals.
+pub fn step_cache_stats() -> (u64, u64) {
+    CACHE_HITS.with(|hits| CACHE_MISSES.with(|misses| (hits.get(), misses.get())))
+}
+
+/// Drop every cached mesh and zero this thread's hit and miss counts.
+pub fn clear_step_cache() {
+    STEP_MESH_CACHE
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .entries
+        .clear();
+    CACHE_HITS.with(|hits| hits.set(0));
+    CACHE_MISSES.with(|misses| misses.set(0));
+}
+
+fn step_cache_get(bytes: &[u8], tol_mm: f64) -> Option<Mesh> {
+    let (hash_a, hash_b, len, tol_bits) = step_cache_key(bytes, tol_mm);
+    let mut cache = STEP_MESH_CACHE
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    let pos = cache.entries.iter().position(|entry| {
+        entry.hash_a == hash_a
+            && entry.hash_b == hash_b
+            && entry.len == len
+            && entry.tol_bits == tol_bits
+    })?;
+    let mesh = cache.entries[pos].mesh.clone();
+    if pos != 0 {
+        let entry = cache.entries.remove(pos);
+        cache.entries.insert(0, entry);
+    }
+    Some(mesh)
+}
+
+fn step_cache_put(bytes: &[u8], tol_mm: f64, mesh: &Mesh) {
+    let (hash_a, hash_b, len, tol_bits) = step_cache_key(bytes, tol_mm);
+    let mut cache = STEP_MESH_CACHE
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    if let Some(pos) = cache.entries.iter().position(|entry| {
+        entry.hash_a == hash_a
+            && entry.hash_b == hash_b
+            && entry.len == len
+            && entry.tol_bits == tol_bits
+    }) {
+        cache.entries[pos].mesh = mesh.clone();
+        if pos != 0 {
+            let entry = cache.entries.remove(pos);
+            cache.entries.insert(0, entry);
+        }
+        return;
+    }
+    cache.entries.insert(
+        0,
+        CachedStep {
+            hash_a,
+            hash_b,
+            len,
+            tol_bits,
+            mesh: mesh.clone(),
+        },
+    );
+    if cache.entries.len() > STEP_CACHE_CAP {
+        cache.entries.pop();
+    }
+}
+
+fn step_cache_key(bytes: &[u8], tol_mm: f64) -> (u64, u64, usize, u64) {
+    let (hash_a, hash_b) = fnv_pair(bytes);
+    (hash_a, hash_b, bytes.len(), tol_mm.to_bits())
+}
+
+fn fnv_pair(bytes: &[u8]) -> (u64, u64) {
+    let mut hash_a = 0xcbf29ce484222325u64;
+    let mut hash_b = 0x84222325cbf29ce4u64;
+    for &byte in bytes {
+        let value = u64::from(byte);
+        hash_a ^= value;
+        hash_a = hash_a.wrapping_mul(0x100000001b3);
+        hash_b ^= value;
+        hash_b = hash_b.wrapping_mul(0x100000001b3);
+    }
+    (hash_a, hash_b ^ (bytes.len() as u64))
 }

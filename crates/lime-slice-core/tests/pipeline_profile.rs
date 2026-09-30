@@ -734,7 +734,7 @@ fn pipeline_profile_rear_cover() {
         .unwrap_or_else(|err| panic!("preview: {err}"));
     let preview_ms = ms(preview);
     println!(
-        "preview (second tessellation + f32 pack)  {:.2} ms  positions {}",
+        "preview (cached tessellation + f32 pack)  {:.2} ms  positions {}",
         preview_ms,
         preview_mesh.positions.len()
     );
@@ -796,7 +796,7 @@ fn pipeline_profile_rear_cover() {
     let again = Instant::now();
     let second = load_step_timed(&bytes, STEP_TOLERANCE_DEFAULT_MM).expect("reload");
     println!(
-        "import again (no mesh cache)  {:.2} ms  hash match {}",
+        "import again (mesh cache)  {:.2} ms  hash match {}",
         ms(again),
         mesh_hash(&second.0) == mesh_hash(&mesh)
     );
@@ -873,10 +873,18 @@ fn pipeline_profile_blends() {
         };
         let mut quiet = settings.clone();
         quiet.include_preview = false;
-        quiet.include_gcode = false;
+        quiet.include_gcode = std::env::var_os("LIME_GCODE").is_some();
         reset_inner_profile();
         let started = Instant::now();
         let response = slice_configured(&mesh, &blend, &profile, &quiet).expect(label);
+        if quiet.include_gcode {
+            println!(
+                "  gcode bytes {}  seconds {:.1}  filament {:.2}",
+                response.gcode.len(),
+                response.estimate.seconds,
+                response.estimate.filament_g
+            );
+        }
         let stages = &response.stages;
         println!(
             "{label}  {:.2} ms  infill cpu {:.2}  order {:.2}  toolpaths {:.2}  walls cpu {:.2}  supports {:.2}  emit {:.2}  contours {:.2}",
