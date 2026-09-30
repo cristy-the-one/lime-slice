@@ -10,6 +10,17 @@ import { loadProfile, profileJson, saveProfile, type PrinterProfile } from "./pr
 import { layerWeight, resolved, type ResolvedCard } from "./strategy";
 import { applyTheme, loadTheme, onSchemeChange, themeColors, type ThemeChoice } from "./theme";
 import { clampOffset, clipPolyline, flipSection, keepsPoint, layerCut, sectionReach, type SectionSpec, type Vec3 } from "./section-plane";
+import {
+  cacheStatus,
+  fnv1aHex,
+  FORCE_LABEL,
+  recipeKey,
+  sliceAction,
+  sliceBusyLabel,
+  sliceBusyStatus,
+  staleSliceCopy,
+  type SliceAction,
+} from "./slice-action";
 import { createSliceView, type RibbonBuffers, type SliceView3d } from "./view3d";
 
 const API = "http://127.0.0.1:43118";
@@ -211,9 +222,10 @@ app.innerHTML = `
       <div class="spacer"></div>
       <div class="timing" id="timing">No slice yet</div>
       <div class="action-row">
-        <button class="btn primary" id="slice" type="button">Slice</button>
+        <button class="btn primary" id="slice" type="button" data-slice-action="none">Slice</button>
         <button class="btn" id="cancel" type="button" disabled>Cancel</button>
         <button class="btn" id="export" type="button" disabled>Export G-code</button>
+        <button class="btn" id="force" type="button" disabled title="Plan this recipe again. Available when a saved slice would be shown.">Force re-slice</button>
       </div>
     </header>
     <div class="banner-rail" id="banner"></div>
@@ -297,7 +309,8 @@ app.innerHTML = `
       <h2 id="helpTitle">Shortcuts</h2>
       <ul>
         <li><kbd>Ctrl</kbd>+<kbd>O</kbd> Open mesh</li>
-        <li><kbd>Ctrl</kbd>+<kbd>Enter</kbd> Slice</li>
+        <li><kbd>Ctrl</kbd>+<kbd>Enter</kbd> Slice, show result, or re-slice</li>
+        <li>Force re-slice plans a saved recipe again</li>
         <li><kbd>Ctrl</kbd>+<kbd>E</kbd> Export G-code</li>
         <li><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> 2D, split, 3D</li>
         <li>Prepare gizmo sits at the left of the view. Drag a ring to rotate. <kbd>Shift</kbd> snaps 15°</li>
@@ -337,6 +350,13 @@ let meshEpoch = 0;
 let resultFrame = "";
 /** Heights the layer sliders were last moved to, kept across results of one mesh. */
 let chosenZ: { high: number; low: number } | null = null;
+/** Recipes finished this session. A configured SliceCache stores each one. */
+const cachedRecipes = new Set<string>();
+/** Recipe key of `state.result`, once a slice has landed. */
+let shownRecipe: string | null = null;
+let fingerSource: ArrayBuffer | Float32Array | null = null;
+let fingerScale = Number.NaN;
+let finger = "";
 
 function card(): CardId {
   if (state.blendKind === "byLayer") return "layer";
@@ -455,7 +475,8 @@ function renderChrome() {
 
   const isStale = stale();
   const sliceBtn = document.querySelector<HTMLButtonElement>("#slice")!;
-  paintSliceButton(sliceBtn, isStale);
+  paintSliceButton(sliceBtn);
+  paintForceButton(document.querySelector<HTMLButtonElement>("#force")!);
   sliceBtn.disabled = state.busy || !state.mesh;
   (document.querySelector("#cancel") as HTMLButtonElement).disabled = !state.busy;
   (document.querySelector("#export") as HTMLButtonElement).disabled = !result || isStale || state.busy;
@@ -471,22 +492,32 @@ function renderChrome() {
   paintSpark();
   paintPlayback();
   paintGcode();
-  const status = document.querySelector("#status")!;
+  paintStatus(isStale);
+}
+
+function paintStatus(isStale: boolean) {
+  const mesh = state.mesh;
+  const result = state.result;
+  const status = document.querySelector("#status");
+  if (!status) return;
   if (!mesh) status.textContent = "Load an STL, 3MF, or STEP file from Samples or Open mesh. Arrow keys move the layer.";
-  else if (state.busy) status.textContent = `Slicing ${mesh.name}…`;
-  else if (isStale) status.textContent = "This preview is stale. Slice before export.";
-  else if (result?.fromCache) status.textContent = `${result.blend} · Loaded from cache, sliced ${new Date(result.slicedAtMs ?? 0).toLocaleString()}. Re-slice to plan it again.`;
+  else if (state.busy) status.textContent = sliceBusyStatus(mesh.name, busyRecompute);
+  else if (isStale) status.textContent = staleSliceCopy(currentSliceAction(false).state).status;
+  else if (result?.fromCache) status.textContent = cacheStatus(result.blend, new Date(result.slicedAtMs ?? 0).toLocaleString());
   else if (result) status.textContent = result.blend;
   else status.textContent = `${mesh.name} loaded. Choose a strategy, then slice.`;
 }
 
 let busySince = 0;
 let busyPhase = "";
-function markBusy() {
+/** True while the in-flight request will plan, false while it loads a saved slice. */
+let busyRecompute = true;
+function markBusy(recompute: boolean) {
   state.busy = true;
   state.progress = 0;
   busySince = performance.now();
-  busyPhase = "";
+  busyRecompute = recompute;
+  busyPhase = recompute ? "" : "Loading…";
   const mine = busySince;
   const tick = window.setInterval(() => {
     if (!state.busy || busySince !== mine) {
@@ -512,7 +543,7 @@ function paintBanner(isStale: boolean) {
   if (state.engine) bits.push(bannerLine(state.engine));
   if (state.error) bits.push(bannerLine(state.error, "", true));
   if (state.notice) bits.push(bannerLine(state.notice, "warn"));
-  if (isStale) bits.push(bannerLine("Settings changed since this slice. Export stays off until you re-slice.", "warn"));
+  if (isStale) bits.push(bannerLine(staleSliceCopy(currentSliceAction(false).state).banner, "warn"));
   if (state.result && !state.result.sanity.ok) bits.push(bannerLine(state.result.sanity.notes.join(" ") || "G-code checks failed"));
   if (state.busy) {
     const indeterminate = !(state.progress > 0 && state.progress < 1);
@@ -1273,26 +1304,58 @@ function touch() {
 }
 function markStale() {
   const sliceBtn = document.querySelector<HTMLButtonElement>("#slice");
+  const forceBtn = document.querySelector<HTMLButtonElement>("#force");
   const exp = document.querySelector<HTMLButtonElement>("#export");
   const isStale = stale();
-  if (sliceBtn) paintSliceButton(sliceBtn, isStale);
+  if (sliceBtn) paintSliceButton(sliceBtn);
+  if (forceBtn) paintForceButton(forceBtn);
   if (exp) exp.disabled = !state.result || isStale || state.busy;
   document.querySelector("#stage")?.classList.toggle("stale", isStale);
   paintBanner(isStale);
   paintPresetDiff();
-  if (isStale) document.querySelector("#status")!.textContent = "This preview is stale. Slice before export.";
+  paintStatus(isStale);
   scheduleAuto();
   draw();
 }
-/** True when the slice shown already matches the settings, so slicing again must skip the cache. */
-function resliceWanted() {
-  return !!state.result && !stale();
+function meshFingerprint(): string {
+  const source = state.sourcePos ?? state.mesh?.bytes ?? null;
+  if (source && source === fingerSource && state.partScale === fingerScale) return finger;
+  fingerSource = source;
+  fingerScale = state.partScale;
+  finger = source ? fnv1aHex(new Uint8Array(meshBytes())) : "";
+  return finger;
 }
-function paintSliceButton(button: HTMLButtonElement, isStale: boolean) {
-  const again = resliceWanted();
-  button.textContent = state.busy ? "Slicing…" : again ? "Re-slice" : "Slice";
-  button.title = again ? "Plan this slice again instead of loading the saved one" : "";
-  button.classList.toggle("reslice", isStale && !state.busy);
+function currentRecipeKey(): string | null {
+  if (!state.mesh) return null;
+  return recipeKey(payload(), meshFingerprint());
+}
+function currentSliceAction(force = false): SliceAction {
+  const recipe = currentRecipeKey();
+  return sliceAction({
+    cached: recipe !== null && cachedRecipes.has(recipe),
+    settingsChanged: shownRecipe !== null && recipe !== shownRecipe,
+    force,
+  });
+}
+function paintSliceButton(button: HTMLButtonElement) {
+  const action = currentSliceAction(false);
+  const label = state.busy ? sliceBusyLabel(busyRecompute) : action.label;
+  button.textContent = label;
+  button.title = state.busy ? "" : action.detail;
+  button.setAttribute("aria-label", label);
+  button.dataset.sliceAction = state.busy ? "busy" : action.state;
+  const showSaved = !state.busy && action.state === "cached";
+  button.classList.toggle("show-result", showSaved);
+  button.classList.toggle("primary", !showSaved);
+  button.classList.toggle("reslice", !state.busy && action.state === "changed");
+}
+function paintForceButton(button: HTMLButtonElement) {
+  const action = currentSliceAction(true);
+  const ready = !state.busy && !!state.mesh && action.state === "force";
+  button.textContent = FORCE_LABEL;
+  button.disabled = !ready;
+  button.title = ready ? action.detail : "Plan this recipe again. Available when a saved slice would be shown.";
+  button.setAttribute("aria-label", FORCE_LABEL);
 }
 function scheduleAuto() {
   window.clearTimeout(autoTimer);
@@ -1403,7 +1466,8 @@ document.querySelector("#toggleLeft")!.addEventListener("click", () => {
 document.querySelector("#toggleRight")!.addEventListener("click", () => {
   document.querySelector(".workspace")!.classList.toggle("show-right");
 });
-document.querySelector("#slice")!.addEventListener("click", () => void runSlice(resliceWanted()));
+document.querySelector("#slice")!.addEventListener("click", () => void runSlice(false));
+document.querySelector("#force")!.addEventListener("click", () => void runSlice(true));
 document.querySelector("#cancel")!.addEventListener("click", () => cancelSlice());
 document.querySelector("#export")!.addEventListener("click", () => void exportGcode());
 document.querySelector("#helpClose")!.addEventListener("click", () => setHelp(false));
@@ -1442,7 +1506,7 @@ window.addEventListener("keydown", (ev) => {
   }
   if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") {
     ev.preventDefault();
-    void runSlice(resliceWanted());
+    void runSlice(false);
     return;
   }
   if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "e") {
@@ -1636,8 +1700,8 @@ function printer() {
   };
 }
 
-/** `reslice` plans again even when the engine has this exact slice cached. */
-async function runSlice(reslice = false) {
+/** `force` plans again even when this recipe is already cached. */
+async function runSlice(force = false) {
   if (!state.mesh) {
     state.error = "Load a mesh first.";
     renderChrome();
@@ -1645,10 +1709,16 @@ async function runSlice(reslice = false) {
   }
   const id = ++job;
   const hash = settingsHash();
+  const recipe = currentRecipeKey();
+  const action = sliceAction({
+    cached: recipe !== null && cachedRecipes.has(recipe),
+    settingsChanged: shownRecipe !== null && recipe !== shownRecipe,
+    force,
+  });
   const frame = `${meshEpoch}:${state.partScale}`;
-  const request = { ...payload(), reslice };
+  const request = { ...payload(), reslice: action.reslice };
   const bytes = meshBytes();
-  markBusy();
+  markBusy(action.recompute);
   state.error = "";
   state.notice = "";
   renderChrome();
@@ -1680,6 +1750,10 @@ async function runSlice(reslice = false) {
     resultJob = id;
     resultFrame = frame;
     state.slicedHash = hash;
+    if (recipe) {
+      cachedRecipes.add(recipe);
+      shownRecipe = recipe;
+    }
     state.layer = layerNear(body, chosenZ?.high, state.layer);
     state.rangeLow = layerNear(body, chosenZ?.low, state.rangeLow);
     clampPlane();
@@ -1953,7 +2027,7 @@ canvas.addEventListener("pointerup", endRegionDrag);
 canvas.addEventListener("pointercancel", endRegionDrag);
 
 async function runPaCal() {
-  markBusy();
+  markBusy(true);
   state.error = "";
   renderChrome();
   try {
@@ -2091,7 +2165,7 @@ async function runPareto() {
     renderChrome();
     return;
   }
-  markBusy();
+  markBusy(true);
   renderChrome();
   try {
     const body = { ...payload(), dataB64: toBase64(new Uint8Array(meshBytes())) };

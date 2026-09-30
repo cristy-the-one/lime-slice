@@ -62,6 +62,9 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
+      - name: Slice action unit test
+        run: node --experimental-strip-types src/slice-action.test.ts
+
       - name: Frontend build
         run: npx vite build
 

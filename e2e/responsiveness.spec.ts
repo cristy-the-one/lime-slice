@@ -31,7 +31,8 @@ test("a setting changed during a slice leaves the finished result stale", async 
   await expect(page.locator("[data-state=slicing]")).toBeVisible();
   await page.locator("#lh").fill("0.28");
   await expect(page.locator("#estimate")).toContainText("g", { timeout: 10_000 });
-  await expect(page.locator("#slice")).toHaveText("Slice");
+  await expect(page.locator("#slice")).toHaveText("Re-slice");
+  await expect(page.locator("#slice")).toHaveAttribute("data-slice-action", "changed");
   await expect(page.locator("#export")).toBeDisabled();
 });
 
@@ -244,9 +245,13 @@ test("starting a slice keeps Cancel off the Slice hitbox and the action row stil
   await expect(slice).toBeEnabled();
   await expect(cancel).toBeVisible();
   await expect(cancel).toBeDisabled();
+  const force = page.locator("#force");
+  await expect(force).toHaveText("Force re-slice");
+  await expect(force).toBeDisabled();
   const before = (await slice.boundingBox())!;
   const cancelBefore = (await cancel.boundingBox())!;
   const exportBefore = (await exportBtn.boundingBox())!;
+  const forceBefore = (await force.boundingBox())!;
   const topBefore = (await page.locator(".top").boundingBox())!;
   const stageBefore = (await page.locator(".workspace").boundingBox())!;
   const x = before.x + before.width / 2;
@@ -259,6 +264,7 @@ test("starting a slice keeps Cancel off the Slice hitbox and the action row stil
   const after = (await slice.boundingBox())!;
   const cancelAfter = (await cancel.boundingBox())!;
   const exportAfter = (await exportBtn.boundingBox())!;
+  const forceAfter = (await force.boundingBox())!;
   const topAfter = (await page.locator(".top").boundingBox())!;
   const stageAfter = (await page.locator(".workspace").boundingBox())!;
   expect(Math.abs(after.x - before.x)).toBeLessThan(1);
@@ -267,6 +273,8 @@ test("starting a slice keeps Cancel off the Slice hitbox and the action row stil
   expect(Math.abs(cancelAfter.x - cancelBefore.x)).toBeLessThan(1);
   expect(Math.abs(cancelAfter.y - cancelBefore.y)).toBeLessThan(1);
   expect(Math.abs(exportAfter.x - exportBefore.x)).toBeLessThan(1);
+  expect(Math.abs(forceAfter.x - forceBefore.x)).toBeLessThan(1);
+  expect(Math.abs(forceAfter.width - forceBefore.width)).toBeLessThan(1);
   expect(Math.abs(topAfter.y - topBefore.y)).toBeLessThan(1);
   expect(Math.abs(topAfter.height - topBefore.height)).toBeLessThan(1);
   expect(Math.abs(stageAfter.y - stageBefore.y)).toBeLessThan(1);
@@ -344,22 +352,59 @@ test("auto-slice picks up an edit made while a slice was running", async ({ page
   await page.locator("#arcs").uncheck();
   await expect.poll(() => slices.length, { timeout: 5000 }).toBe(2);
   expect((slices[1] as { arcFit: boolean }).arcFit).toBe(false);
-  await expect(page.locator("#slice")).toHaveText("Re-slice");
+  await expect(page.locator("#slice")).toHaveText("Show result");
   await expect(page.locator("#export")).toBeEnabled();
 });
 
-test("slicing changed settings may load the saved slice, and Re-slice plans it again", async ({ page }) => {
+test("the slice button names a cache hit, a real recompute, and a forced recompute", async ({ page }) => {
   const slices = (await mockEngine(page, () => 0)) as { reslice: boolean; layerHeight: number }[];
   await openCube(page);
-  await expect(page.locator("#slice")).toHaveText("Slice");
-  await page.locator("#slice").click();
+  const slice = page.locator("#slice");
+  const force = page.locator("#force");
+  await expect(slice).toHaveText("Slice");
+  await expect(slice).toHaveAttribute("title", "Plan this slice.");
+  await expect(force).toBeDisabled();
+  const sliceBox = (await slice.boundingBox())!;
+  await slice.click();
   await expect.poll(() => slices.length).toBe(1);
-  await expect(page.locator("#slice")).toHaveText("Re-slice");
-  await page.locator("#slice").click();
+  await expect(slice).toHaveText("Show result");
+  await expect(slice).toHaveAttribute("data-slice-action", "cached");
+  await expect(slice).toHaveAttribute("title", "Show the saved slice for these settings. Nothing is recomputed.");
+  await expect(page.locator("#status")).toContainText("speed");
+  const shown = (await slice.boundingBox())!;
+  expect(Math.abs(shown.width - sliceBox.width)).toBeLessThan(1);
+  expect(Math.abs(shown.x - sliceBox.x)).toBeLessThan(1);
+  await expect(force).toBeEnabled();
+  await expect(force).toHaveAttribute("title", "Plan this slice again instead of showing the saved one.");
+  await slice.click();
   await expect.poll(() => slices.length).toBe(2);
-  await page.locator("#lh").fill("0.28");
-  await expect(page.locator("#slice")).toHaveText("Slice");
-  await page.locator("#slice").click();
+  expect(slices[1]!.reslice).toBe(false);
+  await force.click();
   await expect.poll(() => slices.length).toBe(3);
-  expect(slices.map((s) => [s.layerHeight, s.reslice])).toEqual([[0.2, false], [0.2, true], [0.28, false]]);
+  expect(slices[2]!.reslice).toBe(true);
+  await page.locator("#lh").fill("0.28");
+  await expect(slice).toHaveText("Re-slice");
+  await expect(slice).toHaveAttribute("data-slice-action", "changed");
+  await expect(slice).toHaveAttribute("title", "Settings changed. Plan this slice again.");
+  await expect(page.locator("#status")).toHaveText("This preview is stale. Re-slice before export.");
+  await expect(page.locator("#banner")).toContainText("Export stays off until you re-slice.");
+  await expect(force).toBeDisabled();
+  const resliceBox = (await slice.boundingBox())!;
+  expect(Math.abs(resliceBox.width - sliceBox.width)).toBeLessThan(1);
+  expect(Math.abs(resliceBox.x - sliceBox.x)).toBeLessThan(1);
+  await slice.click();
+  await expect.poll(() => slices.length).toBe(4);
+  await page.locator("#lh").fill("0.2");
+  await expect(slice).toHaveText("Show result");
+  await expect(page.locator("#status")).toHaveText("This preview is stale. Show the saved result before export.");
+  await expect(page.locator("#banner")).toContainText("until you show the saved result.");
+  await slice.click();
+  await expect.poll(() => slices.length).toBe(5);
+  expect(slices.map((s) => [s.layerHeight, s.reslice])).toEqual([
+    [0.2, false],
+    [0.2, false],
+    [0.2, true],
+    [0.28, false],
+    [0.2, false],
+  ]);
 });
