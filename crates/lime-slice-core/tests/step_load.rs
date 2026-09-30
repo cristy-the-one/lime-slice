@@ -265,12 +265,9 @@ fn step_mesh_cache_hits_same_bytes_and_misses_when_they_change() {
         .position(|window| window == needle)
         .expect("cylinder height");
     changed[pos + needle.len() - 4] = b'8';
-    match load_step_timed(&changed, 0.0) {
-        Ok((mesh, timings)) => {
-            assert!(!timings.cache_hit);
-            assert_ne!(mesh.triangles, first.triangles);
-        }
-        Err(_) => {}
+    if let Ok((mesh, timings)) = load_step_timed(&changed, 0.0) {
+        assert!(!timings.cache_hit);
+        assert_ne!(mesh.triangles, first.triangles);
     }
 
     let (_, misses_before) = step_cache_stats();
