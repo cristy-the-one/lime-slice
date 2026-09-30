@@ -65,6 +65,38 @@ pub fn emit_gcode(
         junction_deviation_mm,
         job,
         true,
+        true,
+    )
+}
+
+/// Print-time totals without the G-code text. The quiet scan is what the
+/// totals come from; formatting is only for the string the caller keeps.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_estimates(
+    layers: &[LayerPaths],
+    profile: &PrinterProfile,
+    blend: &BlendMode,
+    layer_height: f64,
+    line_width: f64,
+    features: &str,
+    arc_fit: bool,
+    classic_estimator: bool,
+    junction_deviation_mm: f64,
+    job: crate::cancel::Job,
+) -> GcodeStats {
+    emit_gcode_inner(
+        layers,
+        profile,
+        blend,
+        layer_height,
+        line_width,
+        features,
+        arc_fit,
+        classic_estimator,
+        junction_deviation_mm,
+        job,
+        true,
+        false,
     )
 }
 
@@ -95,6 +127,7 @@ pub(crate) fn emit_gcode_linear(
         junction_deviation_mm,
         job,
         false,
+        true,
     )
 }
 
@@ -111,6 +144,7 @@ fn emit_gcode_inner(
     junction_deviation_mm: f64,
     job: crate::cancel::Job,
     parallel: bool,
+    write_text: bool,
 ) -> GcodeStats {
     let junction_deviation = if junction_deviation_mm.is_finite() && junction_deviation_mm > 0.0 {
         junction_deviation_mm
@@ -192,6 +226,10 @@ fn emit_gcode_inner(
         w.replay_i = 0;
         w.write_layer(layer);
         emitted_layers += 1;
+    }
+    if !write_text {
+        w.finish(profile);
+        return w.stats(emitted_layers, profile);
     }
     w.quiet = false;
     w.out.clear();
