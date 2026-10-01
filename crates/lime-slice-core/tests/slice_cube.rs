@@ -4026,3 +4026,42 @@ fn the_response_warns_of_an_overhang_its_supports_leave_floating() {
     );
     assert_eq!(held.coverage, Vec::new());
 }
+
+#[test]
+fn a_toughness_ledge_prints_trunks_up_to_its_interface() {
+    let tough = BlendMode::Single {
+        strategy: StrategyId::Toughness,
+    };
+    let layers_with = |response: &lime_slice_core::SliceResponse, kind: &str| -> Vec<String> {
+        response
+            .layers
+            .iter()
+            .filter(|l| l.z > 9.9 && l.paths.iter().any(|p| p.kind == kind))
+            .map(|l| format!("{:.1}", l.z))
+            .collect()
+    };
+    for supports in [false, true] {
+        let held = slice_configured(
+            &ledge(),
+            &tough,
+            &profile(),
+            &SliceSettings {
+                supports,
+                baseline: false,
+                ..SliceSettings::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            layers_with(&held, "support"),
+            ["10.0", "10.2", "10.4", "10.6", "10.8", "11.0", "11.2"],
+            "supports {supports}: trunks should reach the interface"
+        );
+        assert_eq!(
+            layers_with(&held, "support-interface"),
+            ["11.4", "11.6", "11.8"],
+            "supports {supports}: the shelf should print its interface"
+        );
+        assert_eq!(held.coverage, Vec::new(), "supports {supports}");
+    }
+}
