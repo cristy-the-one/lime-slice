@@ -18,7 +18,7 @@ use crate::strategy::{
     classicize, layer_weight, mix, pure, support_density, support_interface_density, support_speed,
     Axis, BlendMode, Gyroid3d, PrinterProfile, ResolvedStrategy, ScarfSeam, StrategyId, ZHopMode,
 };
-use crate::support::{Disk, SupportLayer, SupportOpts, SupportStyle, Supports};
+use crate::support::{CoverageGap, Disk, SupportLayer, SupportOpts, SupportStyle, Supports};
 use crate::toolpath::{
     apply_overhang, apply_scarf, apply_z_hop, comb_layer, order_layer, plan_region_split,
     plan_skirt, plan_support, plan_tree_support, Extrusion, PathFeatures, PathKind, ScarfParams,
@@ -489,6 +489,9 @@ pub struct SliceResponse {
     /// Simplify time stays on `mesh` because it runs before the core timer.
     pub stages: StageTimes,
     pub sanity: Sanity,
+    /// Overhang the supports leave unheld, largest first. Empty when every
+    /// demanded interface prints.
+    pub coverage: Vec<CoverageGap>,
     pub gcode: String,
     pub layers: Vec<PreviewLayer>,
     pub blend: String,
@@ -748,6 +751,7 @@ pub fn slice_configured(
     let started = Instant::now();
     let planned_full = plan(mesh, blend, &settings, profile.nozzle_diameter)?;
     let planned = planned_full.layers;
+    let coverage = planned_full.coverage;
     let emit_started = Instant::now();
     let gcode = if settings.include_gcode {
         emit_gcode(
@@ -906,6 +910,7 @@ pub fn slice_configured(
             retracts: gcode.retracts,
             z_hops: gcode.z_hops,
         },
+        coverage,
         gcode: gcode_text,
         layers,
         blend: blend.describe(),
@@ -1411,6 +1416,7 @@ pub(crate) struct Plan {
     pub bands: Vec<LayerBand>,
     pub contours: Vec<Vec<Loop>>,
     pub supports: Supports,
+    pub coverage: Vec<CoverageGap>,
     pub contour_ms: f64,
     pub support_ms: f64,
     pub toolpath_ms: f64,
@@ -1541,6 +1547,7 @@ pub(crate) struct ObjectSlice {
 /// of every layer, and the paths printed from them.
 pub(crate) struct SupportPlan {
     supports: Supports,
+    coverage: Vec<CoverageGap>,
     paths: Vec<Vec<Extrusion>>,
     support_ms: f64,
     toolpath_ms: f64,
@@ -1642,10 +1649,11 @@ fn plan_supports(
             ..SupportOpts::default()
         },
     );
-    let support_ms = elapsed_ms(support_started);
     let Some(supports) = supports.filter(|_| !settings.job.cancelled()) else {
         return Err("cancelled".into());
     };
+    let coverage = supports.coverage(&object.bands, &object.contours);
+    let support_ms = elapsed_ms(support_started);
     let layers = &supports.layers;
     let shaft = shaft_scales(layers, settings.support_height_mult);
     let (min, max) = object.bounds;
@@ -1677,6 +1685,7 @@ fn plan_supports(
     }
     Ok(SupportPlan {
         supports,
+        coverage,
         paths,
         support_ms,
         toolpath_ms,
@@ -1702,6 +1711,7 @@ fn assemble(
     } = object;
     let SupportPlan {
         supports,
+        coverage,
         paths: support_layer_paths,
         support_ms,
         toolpath_ms: support_path_ms,
@@ -1827,6 +1837,7 @@ fn assemble(
         bands,
         contours,
         supports,
+        coverage,
         contour_ms: 0.0,
         support_ms,
         toolpath_ms: object_ms + support_path_ms,

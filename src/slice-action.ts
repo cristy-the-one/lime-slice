@@ -105,6 +105,14 @@ export function staleSliceCopy(state: SliceActionState): { banner: string; statu
   };
 }
 
+/** One banner line for the overhang patches the supports leave unheld, or `null` when there are none. */
+export function coverageWarning(gaps: readonly { areaMm2: number }[]): string | null {
+  if (!gaps.length) return null;
+  const total = gaps.reduce((sum, g) => sum + g.areaMm2, 0);
+  const patches = gaps.length === 1 ? "1 overhang patch" : `${gaps.length} overhang patches`;
+  return `Supports leave ${patches} unheld, ${total.toFixed(1)} mm² in all.`;
+}
+
 /** Fields the slicer strips or that the UI replaces before comparing recipes. */
 const SKIPPED = new Set(["reslice", "dataB64"]);
 

@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 
 use rayon::prelude::*;
+use serde::Serialize;
 
 use crate::adaptive::LayerBand;
 use crate::poly::{
     boolean_diff, boolean_union, distance_to_outline, drop_slivers, in_solid, local_diff,
-    local_union, loop_bounds, offset_loops, point_in_loop, resolve_nonzero, signed_area, Loop,
-    LoopIndex,
+    local_union, loop_bounds, offset_loops, point_in_loop, resolve_nonzero, signed_area,
+    simplify_loops, Loop, LoopIndex,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -95,6 +96,26 @@ impl Default for SupportOpts {
 pub(crate) struct Supports {
     pub forest: Forest,
     pub layers: Vec<SupportLayer>,
+    /// Each layer's interface as the part demands it, before any patch with
+    /// nothing under it is dropped. Coverage measures `layers` against it.
+    demanded: Vec<Vec<Loop>>,
+}
+
+/// Part of the demanded interface that the finished supports do not print,
+/// over adjacent layers: a floating overhang loses every interface layer
+/// down from its contact, and those layers are one patch.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverageGap {
+    /// `z` of the lowest and the highest layer it spans, as preview layers carry it.
+    pub z: [f64; 2],
+    /// Largest area left unheld on one of its layers, mm².
+    pub area_mm2: f32,
+    /// Corners of the box holding it on every layer, mm.
+    pub min: [f32; 2],
+    pub max: [f32; 2],
+    /// The unheld region on its highest layer, simplified, as closed loops.
+    pub outline: Vec<Vec<[f32; 2]>>,
 }
 
 /// What the part asks of supports on each layer. It reads the part and the
@@ -176,6 +197,7 @@ impl Supports {
         } else {
             (Forest::default(), vec![Vec::new(); bands.len()])
         };
+        let demanded = demand.interface.clone();
         let layers = demand
             .interface
             .into_iter()
@@ -187,7 +209,184 @@ impl Supports {
                 disks,
             })
             .collect();
-        Some(Self { forest, layers })
+        Some(Self {
+            forest,
+            layers,
+            demanded,
+        })
+    }
+
+    /// The demanded interface the finished layers do not print, less the
+    /// part, grouped into patches. Pieces on adjacent layers that overlap
+    /// join one patch. A patch whose largest layer is under
+    /// `COVERAGE_SPECK_MM2` is left out. Largest patch first.
+    pub(crate) fn coverage(&self, bands: &[LayerBand], contours: &[Vec<Loop>]) -> Vec<CoverageGap> {
+        let pieces: Vec<Unheld> = (0..self.layers.len())
+            .into_par_iter()
+            .flat_map_iter(|i| {
+                let part = contours.get(i).map(Vec::as_slice).unwrap_or(&[]);
+                unheld_on(i, &self.demanded[i], &self.layers[i].interface, part)
+            })
+            .collect();
+        if pieces.is_empty() {
+            return Vec::new();
+        }
+        // Pieces come in layer order. `below` holds the pieces of the layer
+        // under the current one, empty when that layer has none.
+        let mut root: Vec<usize> = (0..pieces.len()).collect();
+        let (mut below, mut start) = (0..0, 0);
+        for k in 0..pieces.len() {
+            if k > 0 && pieces[k].layer != pieces[k - 1].layer {
+                below = if pieces[k - 1].layer + 1 == pieces[k].layer {
+                    start..k
+                } else {
+                    k..k
+                };
+                start = k;
+            }
+            for j in below.clone() {
+                if boxes_within(Some(pieces[j].bounds), Some(pieces[k].bounds), 0.0)
+                    && overlaps(&pieces[j].loops, &pieces[k].loops, 0.01)
+                {
+                    let (a, b) = (find(&mut root, j), find(&mut root, k));
+                    root[a.max(b)] = a.min(b);
+                }
+            }
+        }
+        let mut slot = vec![usize::MAX; pieces.len()];
+        let mut patches: Vec<Patch> = Vec::new();
+        for (k, p) in pieces.iter().enumerate() {
+            let r = find(&mut root, k);
+            if slot[r] == usize::MAX {
+                slot[r] = patches.len();
+                patches.push(Patch::new(p));
+            } else {
+                patches[slot[r]].add(p);
+            }
+        }
+        let mut gaps: Vec<CoverageGap> = patches
+            .into_iter()
+            .filter(|patch| patch.area >= COVERAGE_SPECK_MM2)
+            .map(|patch| patch.report(bands))
+            .collect();
+        gaps.sort_by(|a, b| {
+            b.area_mm2
+                .total_cmp(&a.area_mm2)
+                .then(a.z[0].total_cmp(&b.z[0]))
+        });
+        gaps
+    }
+}
+
+/// Smallest unheld patch worth a warning, by its largest layer, mm². About
+/// two tip disks. Across the golden meshes most unheld patches are one tip's
+/// worth, 0.3 to 0.75 mm² in a box near 1.4 by 1.8 mm: a scale or a boss the
+/// part's own beads span.
+const COVERAGE_SPECK_MM2: f64 = 1.0;
+/// Pieces this small are boolean noise. `drop_unfooted_interface` never drops one.
+const UNHELD_PIECE_MM2: f64 = 0.05;
+/// Outline simplification for the reported region, mm.
+const COVERAGE_OUTLINE_MM: f64 = 0.05;
+
+/// One connected piece of demanded interface that layer `layer` does not print.
+struct Unheld {
+    layer: usize,
+    loops: Vec<Loop>,
+    area: f64,
+    bounds: Bounds,
+}
+
+fn unheld_on(layer: usize, demanded: &[Loop], printed: &[Loop], part: &[Loop]) -> Vec<Unheld> {
+    if demanded.is_empty() || demanded == printed {
+        return Vec::new();
+    }
+    let mut gone = boolean_diff(demanded, printed);
+    if !gone.is_empty() && !part.is_empty() {
+        gone = boolean_diff(&gone, part);
+    }
+    components(&gone)
+        .into_iter()
+        .filter_map(|loops| {
+            let area = solid_area(&loops);
+            let bounds = loop_bounds(&loops)?;
+            (area >= UNHELD_PIECE_MM2).then_some(Unheld {
+                layer,
+                loops,
+                area,
+                bounds,
+            })
+        })
+        .collect()
+}
+
+fn find(root: &mut [usize], k: usize) -> usize {
+    let mut r = k;
+    while root[r] != r {
+        r = root[r];
+    }
+    let mut k = k;
+    while root[k] != r {
+        let next = root[k];
+        root[k] = r;
+        k = next;
+    }
+    r
+}
+
+/// Unheld pieces joined across layers, as they accumulate.
+struct Patch {
+    lowest: usize,
+    highest: usize,
+    /// Area on `highest`, and the largest on any layer so far.
+    on_top: f64,
+    area: f64,
+    bounds: Bounds,
+    /// The pieces on `highest`.
+    top: Vec<Loop>,
+}
+
+impl Patch {
+    fn new(p: &Unheld) -> Self {
+        Self {
+            lowest: p.layer,
+            highest: p.layer,
+            on_top: p.area,
+            area: p.area,
+            bounds: p.bounds,
+            top: p.loops.clone(),
+        }
+    }
+
+    /// Pieces arrive in layer order, so a piece is on the highest layer so far.
+    fn add(&mut self, p: &Unheld) {
+        if p.layer == self.highest {
+            self.on_top += p.area;
+            self.top.extend(p.loops.iter().cloned());
+        } else {
+            self.highest = p.layer;
+            self.on_top = p.area;
+            self.top = p.loops.clone();
+        }
+        self.area = self.area.max(self.on_top);
+        let ((amn, amx), (bmn, bmx)) = (self.bounds, p.bounds);
+        self.bounds = (
+            [amn[0].min(bmn[0]), amn[1].min(bmn[1])],
+            [amx[0].max(bmx[0]), amx[1].max(bmx[1])],
+        );
+    }
+
+    fn report(self, bands: &[LayerBand]) -> CoverageGap {
+        let f32s = |p: [f64; 2]| [p[0] as f32, p[1] as f32];
+        CoverageGap {
+            z: [bands[self.lowest].z, bands[self.highest].z],
+            area_mm2: self.area as f32,
+            min: f32s(self.bounds.0),
+            max: f32s(self.bounds.1),
+            outline: simplify_loops(self.top, COVERAGE_OUTLINE_MM)
+                .into_iter()
+                .map(|l| l.into_iter().map(f32s).collect())
+                .collect(),
+        }
     }
 }
 
@@ -2316,12 +2515,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn project_matches_settling_every_layer_before_dropping_interface() {
-        // A 4 mm pad over the flank of a stepped pyramid. The flank widens
-        // 0.2 mm a layer, faster than the trunk can step away, so the trunk
-        // is cut off: settling drops its disks and the pad's interface loses
-        // its footing.
+    /// A 4 mm pad 30 mm up, over the flank of a stepped pyramid. The flank
+    /// widens 0.2 mm a layer, faster than the trunk can step away, so the
+    /// trunk is cut off: settling drops its disks and the pad's interface
+    /// loses its footing.
+    fn pad_over_flank() -> (Vec<LayerBand>, Vec<Vec<Loop>>) {
         let bands = layers(170);
         let mut contours = vec![Vec::new(); bands.len()];
         for (i, contour) in contours.iter_mut().enumerate() {
@@ -2332,6 +2530,40 @@ mod tests {
                 *contour = vec![rect(20.0 - w, 7.0 - w, 20.0 + w, 7.0 + w)];
             }
         }
+        (bands, contours)
+    }
+
+    #[test]
+    fn coverage_reports_the_cut_off_pad_and_nothing_under_a_held_plate() {
+        let (bands, contours) = pad_over_flank();
+        let supports = Supports::build(&bands, &contours, &plate_opts()).unwrap();
+        let gaps = supports.coverage(&bands, &contours);
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        let gap = &gaps[0];
+        // Both interface layers under the pad, from its contact down.
+        assert!(
+            (gap.z[0] - 29.6).abs() < 1e-6 && (gap.z[1] - 29.8).abs() < 1e-6,
+            "z {:?}",
+            gap.z
+        );
+        assert!((gap.area_mm2 - 16.0).abs() < 0.1, "area {}", gap.area_mm2);
+        assert_eq!((gap.min, gap.max), ([25.0, 5.0], [29.0, 9.0]));
+        assert_eq!(gap.outline.len(), 1, "{:?}", gap.outline);
+
+        let (bands, contours) = plate();
+        let supports = Supports::build(&bands, &contours, &plate_opts()).unwrap();
+        let printed = supports
+            .layers
+            .iter()
+            .filter(|l| !l.interface.is_empty())
+            .count();
+        assert_eq!(printed, 2, "the plate should print both interface layers");
+        assert_eq!(supports.coverage(&bands, &contours), Vec::new());
+    }
+
+    #[test]
+    fn project_matches_settling_every_layer_before_dropping_interface() {
+        let (bands, contours) = pad_over_flank();
         let opts = plate_opts();
         let raw = Supports::walk(&bands, &contours, &opts).unwrap().layers;
         let lean = lean_of(&opts);

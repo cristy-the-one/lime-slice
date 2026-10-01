@@ -3976,3 +3976,53 @@ fn a_tube_thinner_than_a_bead_keeps_its_skin_without_crossing_the_bore() {
     let inside = bead_inside_radius(&response, 19.5);
     assert!(inside < 0.01, "{inside:.1} mm of bead inside the bore");
 }
+
+/// A 4 mm pad 30 mm up, over the flank of a pyramid that steps out 0.2 mm a
+/// layer, faster than a trunk can lean away from it.
+fn pad_over_flank() -> Mesh {
+    let mut tris = Vec::new();
+    for i in 0..120 {
+        let w = 3.0 + (120 - i) as f64 * 0.2;
+        let z = i as f64 * 0.2;
+        add_box(&mut tris, 20.0 - w, 7.0 - w, z, 20.0 + w, 7.0 + w, z + 0.2);
+    }
+    add_box(&mut tris, 25.0, 5.0, 30.0, 29.0, 9.0, 34.0);
+    Mesh { triangles: tris }
+}
+
+#[test]
+fn the_response_warns_of_an_overhang_its_supports_leave_floating() {
+    let speed = BlendMode::Single {
+        strategy: StrategyId::Speed,
+    };
+    let cut_off = slice_configured(
+        &pad_over_flank(),
+        &speed,
+        &profile(),
+        &settings(false, true),
+    )
+    .unwrap();
+    let gaps: Vec<([f64; 2], f32)> = cut_off.coverage.iter().map(|g| (g.z, g.area_mm2)).collect();
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    let (z, area) = gaps[0];
+    // Three interface layers, from the pad's contact down.
+    assert!(
+        (z[0] - 29.4).abs() < 1e-6 && (z[1] - 29.8).abs() < 1e-6,
+        "z {z:?}"
+    );
+    assert!((area - 16.0).abs() < 0.1, "area {area}");
+
+    let held = slice_configured(&ledge(), &speed, &profile(), &settings(false, true)).unwrap();
+    let decks: Vec<String> = held
+        .layers
+        .iter()
+        .filter(|l| l.paths.iter().any(|p| p.kind == "support-interface"))
+        .map(|l| format!("{:.1}", l.z))
+        .collect();
+    assert_eq!(
+        decks,
+        ["11.4", "11.6", "11.8"],
+        "the shelf should print its interface"
+    );
+    assert_eq!(held.coverage, Vec::new());
+}

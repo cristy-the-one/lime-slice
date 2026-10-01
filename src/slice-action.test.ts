@@ -1,4 +1,4 @@
-import { cacheStatus, feed, fnv1aHex, recipeKey, sliceAction, sliceBusyLabel, staleSliceCopy } from "./slice-action.ts";
+import { cacheStatus, coverageWarning, feed, fnv1aHex, recipeKey, sliceAction, sliceBusyLabel, staleSliceCopy } from "./slice-action.ts";
 
 let failed = 0;
 
@@ -72,6 +72,14 @@ eq("feed sorts object keys and writes no commas", feed({ b: 1, a: true }), '{"a"
 eq("feed keeps array order and a trailing comma", feed([1, 2]), "[1,2,]");
 eq("same bytes, same fingerprint", fnv1aHex(new Uint8Array([1, 2, 3])), fnv1aHex(new Uint8Array([1, 2, 3])));
 check("different bytes, different fingerprint", fnv1aHex(new Uint8Array([1, 2, 3])) !== fnv1aHex(new Uint8Array([1, 2, 4])));
+
+eq("no coverage gaps, no warning", coverageWarning([]), null);
+eq("one coverage gap", coverageWarning([{ areaMm2: 16 }]), "Supports leave 1 overhang patch unheld, 16.0 mm² in all.");
+eq(
+  "coverage gaps add up",
+  coverageWarning([{ areaMm2: 375.24 }, { areaMm2: 2.5 }]),
+  "Supports leave 2 overhang patches unheld, 377.7 mm² in all.",
+);
 
 if (failed) throw new Error(`${failed} slice-action checks failed`);
 console.log("slice-action: none, cached, changed, force ok");
