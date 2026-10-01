@@ -4065,3 +4065,38 @@ fn a_toughness_ledge_prints_trunks_up_to_its_interface() {
         assert_eq!(held.coverage, Vec::new(), "supports {supports}");
     }
 }
+
+fn features_line(gcode: &str) -> &str {
+    gcode
+        .lines()
+        .find(|line| line.starts_with("; features:"))
+        .expect("g-code header carries a features line")
+}
+
+#[test]
+fn gcode_header_says_supports_are_on_when_island_support_runs() {
+    let mesh = cube();
+    let run = |supports: bool| {
+        let settings = SliceSettings {
+            supports,
+            baseline: false,
+            ..SliceSettings::default()
+        };
+        assert!(
+            settings.island_support,
+            "request default keeps island support on"
+        );
+        slice_configured(&mesh, &speed_mode(), &profile(), &settings).unwrap()
+    };
+    let islands_only = run(false);
+    let line = features_line(&islands_only.gcode);
+    assert!(
+        line.contains("for islands and unbridged overhangs only"),
+        "{line}"
+    );
+    assert!(!line.contains("supports off"), "{line}");
+    let smart = run(true);
+    let line = features_line(&smart.gcode);
+    assert!(line.contains("supports tree ("), "{line}");
+    assert!(!line.contains("for islands"), "{line}");
+}

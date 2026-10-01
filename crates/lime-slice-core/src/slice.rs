@@ -396,7 +396,8 @@ impl SliceSettings {
         } else {
             "fixed layer height".into()
         };
-        let supports = if self.supports {
+        // Island support grows columns even with the overhang toggle off, so it counts as "on".
+        let supports = if self.supports || self.island_support {
             let style = match self.support_style {
                 SupportStyle::Grid => "grid",
                 SupportStyle::Tree => "tree",
@@ -408,8 +409,13 @@ impl SliceSettings {
                 ),
                 SupportStyle::Grid => String::new(),
             };
+            let scope = if self.supports {
+                ""
+            } else {
+                " for islands and unbridged overhangs only"
+            };
             format!(
-                "supports {style} (angle {:.0}°, shaft ×{:.1}{organic})",
+                "supports {style}{scope} (angle {:.0}°, shaft ×{:.1}{organic})",
                 self.support_angle,
                 self.support_height_mult.max(1.0)
             )
