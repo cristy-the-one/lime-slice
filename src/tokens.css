@@ -19,7 +19,9 @@
   --border-strong: #3a4250;
   --text: #e8eaed;
   --text-dim: #a3abb8;
-  --text-faint: #6b7483;
+  --text-faint: #9aa3b2;
+  --on-stage: #e8eaed;
+  --on-stage-dim: #c5ced8;
   --accent: #a3e635;
   --accent-hover: #b6f04f;
   --accent-pressed: #8cc926;
@@ -85,7 +87,7 @@
   --border-strong: #b7c0cc;
   --text: #1a1d23;
   --text-dim: #4b5565;
-  --text-faint: #6b7483;
+  --text-faint: #5c6778;
   --accent: #84cc16;
   --accent-hover: #a3e635;
   --accent-pressed: #65a30d;

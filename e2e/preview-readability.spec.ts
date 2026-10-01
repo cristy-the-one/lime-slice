@@ -20,7 +20,7 @@ test("feature-colored 3D preview keeps bead margins and the print head on the pa
   await expect(page.locator("#status")).toContainText("loaded");
   await page.locator("#slice").click();
   await expect(page.locator("#estimate")).toContainText("g");
-  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.getByRole("button", { name: "3D", exact: true }).click();
   await page.waitForTimeout(1200);
   const zoom = async () => {

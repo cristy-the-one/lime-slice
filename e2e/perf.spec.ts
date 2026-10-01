@@ -74,7 +74,7 @@ test("preview responsiveness on a real slice", async ({ page }) => {
   await page.goto("/");
   await page.locator("#file").setInputFiles(mesh!);
   await expect(page.locator("#status")).toContainText("loaded", { timeout: 60_000 });
-  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.getByRole("button", { name: "3D", exact: true }).click();
 
   const out: Record<string, unknown> = {};
@@ -101,10 +101,10 @@ test("preview responsiveness on a real slice", async ({ page }) => {
   out.playbackStep = await stepInput(page, "#move", Array.from({ length: 20 }, (_, i) => Math.floor((moves * i) / 20)));
 
   out.gcodeFetchesBeforeGcodeTab = gcodeFetches;
-  await page.getByRole("button", { name: "G-code", exact: true }).click();
+  await page.getByRole("tab", { name: "G-code", exact: true }).click();
   await expect(page.locator("#gcodePane .line").first()).toBeVisible({ timeout: 60_000 });
   out.layerStepGcode = await stepInput(page, "#rangeHigh", steps.map((s) => s - 10));
-  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await settle(page);
 
   let t0 = await now(page);

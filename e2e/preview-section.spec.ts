@@ -101,7 +101,7 @@ test("bed opacity and section controls are preview-only chrome", async ({ page }
   await page.locator("#slice").click();
   await expect(page.locator("#estimate")).toContainText("g");
   await expect(page.locator("#slice")).toHaveText("Show result");
-  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.getByRole("button", { name: "3D", exact: true }).click();
   await page.locator("#sectionOn").check();
   await expect(page.locator("#sectionOffset")).toBeVisible();
@@ -131,7 +131,7 @@ test("bed opacity and section controls are preview-only chrome", async ({ page }
   });
   await page.waitForTimeout(200);
   await page.locator("#view3d").screenshot({ path: path.join(out, "bed-hidden.png") });
-  await page.getByRole("button", { name: "Prepare", exact: true }).click();
+  await page.getByRole("tab", { name: "Prepare", exact: true }).click();
   await expect(page.locator("#sectionField")).toBeHidden();
   await expect(bed).toBeVisible();
   expect(logs.filter((line) => line.startsWith("pageerror:") || line.startsWith("error:"))).toEqual([]);
@@ -256,7 +256,7 @@ test("section plane clips 3D beads, travels, and the solid ghost", async ({ page
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#status")).toContainText("loaded");
-  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.getByRole("button", { name: "3D", exact: true }).click();
   await page.waitForTimeout(400);
   const ghostFull = await colorBuckets(page, "ghost-full");
@@ -280,7 +280,7 @@ test("section plane clips 3D beads, travels, and the solid ghost", async ({ page
   await page.locator("#sectionOn").uncheck();
   await page.locator("#slice").click();
   await expect(page.locator("#estimate")).toContainText("g");
-  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.getByRole("button", { name: "3D", exact: true }).click();
   await zoomPart(page);
   let beadsFull = await colorBuckets(page);

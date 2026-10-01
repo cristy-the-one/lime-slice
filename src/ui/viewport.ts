@@ -51,6 +51,7 @@ function viewButton(
 }
 
 function onViewKey(ev: KeyboardEvent, hooks: { setViewPreset(preset: ViewPreset): void }) {
+  if (document.documentElement.dataset.overlay) return;
   if (ev.metaKey || ev.ctrlKey || ev.altKey || ev.repeat) return;
   const target = ev.target as HTMLElement | null;
   const tag = target?.tagName;

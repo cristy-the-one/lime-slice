@@ -92,7 +92,7 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.locator("#slice").click();
   await expect(page.locator("#estimate")).toContainText("2.59 g");
   await expect(page.locator(".chip").first()).toBeVisible();
-  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await expect(page.locator("#spark")).toBeVisible();
   await page.locator("#move").evaluate((el) => {
     const input = el as HTMLInputElement;
@@ -101,10 +101,10 @@ test("ui states from real slice fixtures", async ({ page }) => {
   });
   await expect(page.locator("#playReadout")).toContainText("mm/s");
   await page.locator(".stage-tools").screenshot({ path: path.join(out, "p2-spark-playback.png") });
-  await page.getByRole("button", { name: "G-code", exact: true }).click();
+  await page.getByRole("tab", { name: "G-code", exact: true }).click();
   await expect(page.locator("#gcodePane .line.on")).toBeVisible();
   await page.locator("#gcodePane").screenshot({ path: path.join(out, "p2-gcode-sync.png") });
-  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await page.locator("#theme").selectOption("light");
   await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
@@ -134,13 +134,13 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.getByRole("button", { name: /^Speed/ }).click();
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "60 mm hull" }).click();
-  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
   delay = 2500;
   await page.locator("#slice").click();
   await expect(page.locator("[data-state=slicing]")).toBeVisible();
   await shot(page, "v3-08-slicing-progress.png");
   await page.getByRole("button", { name: "Cancel" }).click();
-  await expect(page.locator("#banner")).toContainText("cancelled");
+  await expect(page.locator("#toasts")).toContainText("cancelled");
   await shot(page, "v3-09-cancelled.png");
 
   delay = 0;

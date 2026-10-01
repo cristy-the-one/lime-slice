@@ -180,6 +180,7 @@ function mountShortcuts(
   buttons: { move: HTMLButtonElement; rotate: HTMLButtonElement },
 ) {
   window.addEventListener("keydown", (ev) => {
+    if (document.documentElement.dataset.overlay) return;
     if (ev.metaKey || ev.ctrlKey || ev.altKey || ev.repeat) return;
     const target = ev.target as HTMLElement | null;
     const tag = target?.tagName;

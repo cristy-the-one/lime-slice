@@ -10,7 +10,12 @@ import { loadProfile, profileJson, saveProfile, type PrinterProfile } from "./pr
 import { layerWeight, resolved, type ResolvedCard } from "./strategy";
 import { applyTheme, loadTheme, onSchemeChange, themeColors, type ThemeChoice } from "./theme";
 import { mountChrome } from "./ui/chrome";
+import { legendMarkup, mountLegend } from "./ui/legend";
+import { mountLayerTip, syncLayerTip } from "./ui/layer-tip";
+import { fillHelpShortcuts, mountPalette, mountStageTabs } from "./ui/palette";
 import { applyStoredLevel, levelBarHtml, mountShell, paintSettingMarks, syncEmptyState, syncSliceDock } from "./ui/shell";
+import { applySliceProgress, currentSliceProgress } from "./ui/slice-progress";
+import { mountToasts, pushToast } from "./ui/toasts";
 import { clampOffset, clipPolyline, flipSection, keepsPoint, layerCut, sectionReach, type SectionSpec, type Vec3 } from "./section-plane";
 import {
   cacheStatus,
@@ -264,9 +269,9 @@ app.innerHTML = `
             <button class="btn mode" type="button" data-mode="solid" aria-pressed="false">3D</button>
           </div>
           <div class="modes" role="tablist" aria-label="Workspace">
-            <button class="btn mode tab" id="tabPrepare" type="button" data-tab="prepare" aria-pressed="false">Prepare</button>
-            <button class="btn mode tab on" id="tabPreview" type="button" data-tab="preview" aria-pressed="true">Preview</button>
-            <button class="btn mode tab" id="tabGcode" type="button" data-tab="gcode" aria-pressed="false">G-code</button>
+            <button class="btn mode tab" id="tabPrepare" type="button" role="tab" data-tab="prepare" aria-selected="false" aria-pressed="false" aria-controls="prepareBody">Prepare</button>
+            <button class="btn mode tab on" id="tabPreview" type="button" role="tab" data-tab="preview" aria-selected="true" aria-pressed="true" aria-controls="previewBody">Preview</button>
+            <button class="btn mode tab" id="tabGcode" type="button" role="tab" data-tab="gcode" aria-selected="false" aria-pressed="false" aria-controls="gcodePane">G-code</button>
           </div>
           <label class="field">Color
             <select id="colorBy">
@@ -288,11 +293,11 @@ app.innerHTML = `
           </label>
           <button class="btn" id="sectionFlip" type="button" hidden title="Hide the other side of the section plane">Flip</button>
         </div>
-        <div class="stage-body" id="prepareBody" hidden>
+        <div class="stage-body" id="prepareBody" role="tabpanel" aria-labelledby="tabPrepare" hidden>
           <canvas id="prepare" aria-label="Model on the build plate"></canvas>
           <div class="gizmo-readout" id="gizmoReadout" hidden></div>
         </div>
-        <div class="stage-body" id="previewBody">
+        <div class="stage-body" id="previewBody" role="tabpanel" aria-labelledby="tabPreview">
           <div class="vslider" id="vslider">
             <div class="readout" id="readHigh">—</div>
             <div class="track">
@@ -310,7 +315,7 @@ app.innerHTML = `
             </div>
           </div>
         </div>
-        <div class="gcode-pane" id="gcodePane" hidden></div>
+        <div class="gcode-pane" id="gcodePane" role="tabpanel" aria-labelledby="tabGcode" hidden></div>
         <div class="stage-tools">
           <div class="spark-wrap">
             <div class="spark-label" id="sparkLabel">Layer time</div>
@@ -327,26 +332,20 @@ app.innerHTML = `
       </section>
       <aside class="panel right" id="right"></aside>
     </div>
-    <footer class="status"><div class="timing" id="timing">No slice yet</div><div id="status">Load an STL, 3MF, or STEP file. Arrow keys move the layer. Press ? for shortcuts.</div></footer>
+    <footer class="status"><div class="timing" id="timing">No slice yet</div><div id="sliceMeter" class="slice-meter" hidden></div><div id="status">Load an STL, 3MF, or STEP file. Arrow keys move the layer. Press ? for shortcuts.</div></footer>
   </div>
   <div id="help" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="helpTitle">
     <div class="sheet-card">
       <h2 id="helpTitle">Shortcuts</h2>
+      <ul id="helpShortcuts"></ul>
       <ul>
-        <li><kbd>Ctrl</kbd>+<kbd>O</kbd> Open mesh</li>
-        <li><kbd>Ctrl</kbd>+<kbd>Enter</kbd> Slice, show result, or re-slice</li>
         <li>Force re-slice plans a saved recipe again</li>
-        <li><kbd>Ctrl</kbd>+<kbd>E</kbd> Export G-code</li>
-        <li><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> 2D, split, 3D</li>
         <li>Prepare gizmo sits at the left of the view. Drag a ring to rotate. <kbd>Shift</kbd> snaps 15°</li>
         <li>Drag an arrow to move the mesh. <kbd>Shift</kbd> snaps 1 mm</li>
         <li>Drag the split plane when By region is on</li>
         <li>Bed fades the build plate. 0 hides it</li>
         <li>Section clips the preview. Cut moves the plane. Rings, parked at the left, aim it. The sheet is only a guide. Layers still apply. Neither changes the slice</li>
-        <li><kbd>M</kbd> Move · <kbd>R</kbd> Rotate · <kbd>S</kbd> Scale field · <kbd>F</kbd> Lay flat · <kbd>C</kbd> Section</li>
-        <li><kbd>T</kbd> Top · <kbd>Y</kbd> Front · <kbd>I</kbd> Iso, on the Prepare camera</li>
-        <li><kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> Layer</li>
-        <li><kbd>?</kbd> This sheet</li>
+        <li><kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> Layer</li>
       </ul>
       <button class="btn" id="helpClose" type="button">Close</button>
     </div>
@@ -559,6 +558,7 @@ function markBusy(recompute: boolean) {
       return;
     }
     document.querySelector("#timing")!.textContent = busyText();
+    applySliceProgress(currentSliceProgress(state.progress, performance.now() - busySince));
   }, 100);
 }
 function busyText() {
@@ -571,7 +571,33 @@ function bannerLine(text: string, cls = "", alert = false) {
   const safe = escapeHtml(text);
   return `<div class="banner${kind}"${role} title="${safe}">${safe}</div>`;
 }
+const TRANSIENT_ERRORS = new Set([
+  "Load a mesh first.",
+  "No G-code for this slice.",
+  "Load a mesh before comparing blends.",
+]);
+let lastToastText = "";
+let lastToastAt = 0;
+function toastTransient(message: string, tone: "warn" | "error") {
+  const now = performance.now();
+  if (message === lastToastText && now - lastToastAt < 500) return;
+  lastToastText = message;
+  lastToastAt = now;
+  pushToast(message, tone);
+}
+/** Short-lived notices leave the banner. Blocking problems stay there. */
+function takeTransient() {
+  if (state.notice === "Slice cancelled.") {
+    toastTransient(state.notice, "warn");
+    state.notice = "";
+  }
+  if (state.error && TRANSIENT_ERRORS.has(state.error)) {
+    toastTransient(state.error, "error");
+    state.error = "";
+  }
+}
 function paintBanner(isStale: boolean) {
+  takeTransient();
   const rail = document.querySelector("#banner")!;
   const bits: string[] = [];
   if (state.engine) bits.push(bannerLine(state.engine));
@@ -582,11 +608,15 @@ function paintBanner(isStale: boolean) {
   const unheld = coverageWarning(state.result?.coverage ?? []);
   if (unheld) bits.push(bannerLine(unheld, "warn"));
   if (state.busy) {
-    const indeterminate = !(state.progress > 0 && state.progress < 1);
-    const pct = Math.max(8, state.progress * 100);
-    bits.push(`<div class="progress${indeterminate ? " indeterminate" : ""}" data-state="slicing"><span style="width:${pct}%"></span></div>`);
+    const sample = currentSliceProgress(state.progress, Math.max(0, performance.now() - busySince));
+    const indeterminate = !(sample.fraction > 0 && sample.fraction < 1);
+    const pct = indeterminate ? 30 : Math.max(4, sample.fraction * 100);
+    bits.push(`<div class="progress${indeterminate ? " indeterminate" : ""}" data-state="slicing" role="progressbar" aria-label="Slice progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(sample.fraction * 100)}"><span style="width:${pct}%"></span></div>`);
   }
   rail.innerHTML = bits.join("");
+  const meter = document.querySelector<HTMLElement>("#sliceMeter");
+  if (!state.busy) meter?.setAttribute("hidden", "");
+  else applySliceProgress(currentSliceProgress(state.progress, Math.max(0, performance.now() - busySince)));
 }
 
 const closedGroups = new Set<string>();
@@ -827,18 +857,21 @@ function paintLegend() {
   const kinds = new Set<string>();
   for (const layer of state.result?.layers ?? []) for (const kind of layer.paths.kinds) kinds.add(kind);
   const legend = document.querySelector("#legend")!;
-  if (kinds.size === 0) {
-    legend.innerHTML = `<span>Legend fills in after a slice.</span>`;
-    return;
-  }
   const est = state.result?.estimate;
   const total = Math.max(0.001, est?.seconds ?? 1);
   const by = new Map((est?.byFeature ?? []).map((row) => [row.kind, row.seconds]));
-  legend.innerHTML = [...kinds].sort().map((kind) => {
-    const share = by.has(kind) ? ` · ${((by.get(kind)! / total) * 100).toFixed(0)}%` : "";
-    const shown = kind === "travel" ? state.showTravel : !state.hidden.has(kind);
-    return `<label><input type="checkbox" data-kind="${kind}" ${shown ? "checked" : ""}/><i class="swatch" style="background:${FEATURE_COLOR[kind] ?? "#ccc"}"></i>${FEATURE_LABEL[kind] ?? kind}${share}</label>`;
-  }).join("") + ((est?.scarfedLoops ?? 0) > 0 ? `<span><i class="swatch" style="background:#fff"></i>Scarf ramp</span>` : "");
+  const rows = [...kinds].sort().map((kind) => {
+    const seconds = by.has(kind) ? by.get(kind)! : null;
+    return {
+      kind,
+      label: FEATURE_LABEL[kind] ?? kind,
+      color: FEATURE_COLOR[kind] ?? "#ccc",
+      seconds,
+      sharePct: seconds == null ? null : (seconds / total) * 100,
+      shown: kind === "travel" ? state.showTravel : !state.hidden.has(kind),
+    };
+  });
+  legend.innerHTML = legendMarkup(rows, (est?.scarfedLoops ?? 0) > 0);
 }
 
 function paintSlider() {
@@ -869,6 +902,7 @@ function paintSlider() {
     band.style.top = "35%";
     band.style.height = "25%";
   }
+  syncLayerTip();
 }
 
 function currentPreset(): PresetSettings {
@@ -1004,6 +1038,7 @@ function paintGcode() {
   document.querySelectorAll<HTMLButtonElement>(".tab").forEach((el) => {
     const pressed = el.dataset.tab === state.stage;
     el.setAttribute("aria-pressed", pressed ? "true" : "false");
+    el.setAttribute("aria-selected", pressed ? "true" : "false");
     el.classList.toggle("on", pressed);
   });
   if (!on) return;
@@ -1554,6 +1589,7 @@ function setView(mode: typeof state.viewMode) {
 }
 
 window.addEventListener("keydown", (ev) => {
+  if (document.documentElement.dataset.overlay) return;
   const target = ev.target as HTMLElement | null;
   const tag = target?.tagName;
   const typing = tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || !!target?.isContentEditable;
@@ -2578,6 +2614,13 @@ mountChrome({
   onToolReadout: () => paintGizmoReadout(),
 });
 mountShell({ setViewPreset: (preset) => prepare.setViewPreset(preset) });
+mountToasts();
+mountPalette();
+mountStageTabs();
+fillHelpShortcuts(document.querySelector("#helpShortcuts")!);
+mountLegend();
+mountLayerTip();
+document.addEventListener("lime-open-help", () => setHelp(true));
 syncEmptyState(!!state.mesh);
 resize();
 void probe();
