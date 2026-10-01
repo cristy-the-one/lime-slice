@@ -21,10 +21,11 @@ export interface PrepareView {
   onMove(cb: ((axis: Axis, deltaMm: number, totalMm: number) => void) | null): void;
   onMoveEnd(cb: (() => void) | null): void;
   setTheme(): void;
+  /** Show move arrows, rotate rings, or both. Does not add a new manipulator. */
+  setGizmoTool(tool: "all" | "move" | "rotate"): void;
   resize(): void;
 }
 
-const RING: Record<Axis, number> = { x: 0xe85d4c, y: 0x8fce6a, z: 0x6aa7ff };
 const ROTATE_SNAP_DEG = 15;
 const MOVE_SNAP_MM = 1;
 
@@ -47,7 +48,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let bed = new THREE.GridHelper(1, 10, hexToThree(colors.line), hexToThree(colors.bedMinor));
   scene.add(bed);
   const plateMat = new THREE.MeshBasicMaterial({
-    color: 0x161a22,
+    color: hexToThree(colors.bed),
     side: THREE.DoubleSide,
     transparent: true,
     opacity: 0.4,
@@ -64,10 +65,10 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   const volumeMat = new THREE.LineBasicMaterial({ color: hexToThree(colors.teal), transparent: true, opacity: 0.4 });
   const volume = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)), volumeMat);
   scene.add(volume);
-  const triad = buildTriad();
+  const triad = buildTriad(colors.axisX, colors.axisY, colors.axisZ);
   scene.add(triad);
 
-  const material = new THREE.MeshStandardMaterial({ color: 0xc6f26d, roughness: 0.55, metalness: 0.05, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+  const material = new THREE.MeshStandardMaterial({ color: hexToThree(colors.mesh), roughness: 0.55, metalness: 0.05, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
   let mesh: THREE.Mesh | null = null;
   scene.add(new THREE.AmbientLight(0xffffff, 0.7));
   const key = new THREE.DirectionalLight(0xffffff, 1.15);
@@ -84,8 +85,11 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   const movePickGeo = new THREE.CylinderGeometry(0.12, 0.12, 0.68, 8);
   const handles = new Map<Axis, { ringMat: THREE.MeshBasicMaterial; moveMats: THREE.MeshBasicMaterial[] }>();
   const handlePicks: THREE.Object3D[] = [];
+  const handleNodes: { kind: HandleHit["kind"]; nodes: THREE.Object3D[] }[] = [];
+  let gizmoTool: "all" | "move" | "rotate" = "all";
+  const axisHex = (axis: Axis) => hexToThree(axis === "x" ? colors.axisX : axis === "y" ? colors.axisY : colors.axisZ);
   for (const axis of ["x", "y", "z"] as const) {
-    const ringMat = new THREE.MeshBasicMaterial({ color: RING[axis], depthTest: false, transparent: true, opacity: 0.95, toneMapped: false });
+    const ringMat = new THREE.MeshBasicMaterial({ color: axisHex(axis), depthTest: false, transparent: true, opacity: 0.95, toneMapped: false });
     const show = new THREE.Mesh(ringGeo, ringMat);
     const pick = new THREE.Mesh(ringPickGeo, ghostMat());
     orientRing(show, axis);
@@ -96,8 +100,9 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     tagHandle(pick, "ring", axis);
     gizmo.add(show, pick);
     handlePicks.push(pick);
+    handleNodes.push({ kind: "ring", nodes: [show, pick] });
 
-    const moveMat = new THREE.MeshBasicMaterial({ color: RING[axis], depthTest: false, toneMapped: false });
+    const moveMat = new THREE.MeshBasicMaterial({ color: axisHex(axis), depthTest: false, toneMapped: false });
     const shaft = new THREE.Mesh(shaftGeo, moveMat);
     const head = new THREE.Mesh(headGeo, moveMat);
     const movePick = new THREE.Mesh(movePickGeo, ghostMat());
@@ -111,6 +116,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     }
     tagHandle(movePick, "move", axis);
     handlePicks.push(movePick);
+    handleNodes.push({ kind: "move", nodes: [shaft, head, movePick] });
     handles.set(axis, { ringMat, moveMats: [moveMat] });
   }
   const axisLine = new Float32Array([
@@ -120,16 +126,16 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   ]);
   const shafts = new THREE.LineSegments(
     new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(axisLine, 3)),
-    new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true, opacity: 0.4, toneMapped: false }),
+    new THREE.LineBasicMaterial({ color: hexToThree(colors.gizmoHot), depthTest: false, transparent: true, opacity: 0.4, toneMapped: false }),
   );
   shafts.renderOrder = 5;
   shafts.frustumCulled = false;
   shafts.raycast = () => undefined;
   gizmo.add(shafts);
   const axisLabels = {
-    x: axisSprite("X", "#e85d4c"),
-    y: axisSprite("Y", "#8fce6a"),
-    z: axisSprite("Z", "#6aa7ff"),
+    x: axisSprite("X", colors.axisX),
+    y: axisSprite("Y", colors.axisY),
+    z: axisSprite("Z", colors.axisZ),
   };
   const label = 1.32;
   axisLabels.x.position.copy(sceneAxis("x")).multiplyScalar(label);
@@ -269,6 +275,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     const axis = hit?.object.userData.axis as Axis | undefined;
     if (kind !== "ring" && kind !== "move") return null;
     if (axis !== "x" && axis !== "y" && axis !== "z") return null;
+    if (gizmoTool === "move" && kind !== "move") return null;
+    if (gizmoTool === "rotate" && kind !== "ring") return null;
     return { kind, axis };
   }
 
@@ -324,9 +332,10 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     for (const [axis, { ringMat, moveMats }] of handles) {
       const ringHot = (active?.kind === "ring" && active.axis === axis) || (over?.kind === "ring" && over.axis === axis);
       const moveHot = (active?.kind === "move" && active.axis === axis) || (over?.kind === "move" && over.axis === axis);
-      ringMat.color.setHex(ringHot ? 0xffffff : RING[axis]);
+      const hot = hexToThree(colors.gizmoHot);
+      ringMat.color.setHex(ringHot ? hot : axisHex(axis));
       ringMat.opacity = active?.kind === "ring" && active.axis === axis ? 1 : 0.92;
-      for (const mat of moveMats) mat.color.setHex(moveHot ? 0xffffff : RING[axis]);
+      for (const mat of moveMats) mat.color.setHex(moveHot ? hot : axisHex(axis));
     }
     requestRender();
   }
@@ -514,11 +523,25 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     onRotateEnd(cb) { rotateEndCb = cb; },
     onMove(cb) { moveCb = cb; },
     onMoveEnd(cb) { moveEndCb = cb; },
+    setGizmoTool(tool) {
+      gizmoTool = tool;
+      for (const entry of handleNodes) {
+        const show = tool === "all" || entry.kind === tool || (tool === "rotate" && entry.kind === "ring");
+        for (const node of entry.nodes) node.visible = show;
+      }
+      requestRender();
+    },
     setTheme() {
       colors = themeColors();
       renderer.setClearColor(hexToThree(colors.stage), 1);
+      plateMat.color.setHex(hexToThree(colors.bed));
+      material.color.setHex(hexToThree(colors.mesh));
       (bedEdge.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.teal));
       volumeMat.color.setHex(hexToThree(colors.teal));
+      for (const [axis, { ringMat, moveMats }] of handles) {
+        ringMat.color.setHex(axisHex(axis));
+        for (const mat of moveMats) mat.color.setHex(axisHex(axis));
+      }
       const next = new THREE.GridHelper(1, 10, hexToThree(colors.line), hexToThree(colors.bedMinor));
       next.scale.copy(bed.scale);
       next.position.copy(bed.position);
@@ -583,7 +606,7 @@ function axisSprite(text: string, color: string) {
   return sprite;
 }
 
-function buildTriad() {
+function buildTriad(x: string, y: string, z: string) {
   const g = new THREE.Group();
   const len = 18;
   const geo = new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute([
@@ -591,11 +614,11 @@ function buildTriad() {
     0, 0, 0, 0, 0, -len,
     0, 0, 0, 0, len, 0,
   ], 3));
-  const colors = new Float32Array([
-    0.91, 0.36, 0.30, 0.91, 0.36, 0.30,
-    0.56, 0.81, 0.42, 0.56, 0.81, 0.42,
-    0.42, 0.65, 1, 0.42, 0.65, 1,
-  ]);
+  const colors = new Float32Array([x, y, z].flatMap((hex) => {
+    const n = parseInt(hex.replace("#", ""), 16);
+    const rgb = [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+    return [...rgb, ...rgb];
+  }));
   geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   g.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true, depthTest: false })));
   return g;
