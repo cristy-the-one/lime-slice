@@ -1422,7 +1422,11 @@ fn components(loops: &[Loop]) -> Vec<Vec<Loop>> {
         if signed_area(loop_) >= 0.0 {
             continue;
         }
-        let c = centroid(loop_);
+        // A point on the hole itself lies in its own outline and in no island
+        // standing inside the hole. The hole's centroid can land on such an
+        // island: a tray's cavity centred on a plate went to the plate, and
+        // the tray outline became one solid overhang.
+        let c = loop_[0];
         let mut host: Option<usize> = None;
         let mut host_area = f64::MAX;
         for (i, outer) in comps.iter().enumerate() {
@@ -1525,6 +1529,26 @@ fn union_all<'a>(regions: impl Iterator<Item = &'a [Loop]>) -> Vec<Loop> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hole_around_an_island_stays_with_its_own_outline() {
+        let hole = |x0: f64, y0: f64, x1: f64, y1: f64| {
+            let mut l = rect(x0, y0, x1, y1);
+            l.reverse();
+            l
+        };
+        let tray = rect(0.0, 0.0, 100.0, 100.0);
+        let cavity = hole(5.0, 5.0, 95.0, 95.0);
+        let plate = rect(30.0, 30.0, 70.0, 70.0);
+        let plate_hole = hole(45.0, 45.0, 55.0, 55.0);
+        let comps = components(&[tray, cavity, plate, plate_hole]);
+        let mut nets: Vec<f64> = comps
+            .iter()
+            .map(|c| c.iter().map(|l| signed_area(l)).sum())
+            .collect();
+        nets.sort_by(f64::total_cmp);
+        assert_eq!(nets, vec![1500.0, 1900.0]);
+    }
     use crate::adaptive::LayerBand;
 
     /// The pairwise scan that `pair_steps` replaced.
