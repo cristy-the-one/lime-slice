@@ -20,11 +20,21 @@ pub enum SupportStyle {
 pub struct SupportLayer {
     pub sparse: Vec<Loop>,
     pub interface: Vec<Loop>,
-    /// Organic branch centers. Empty for the grid style.
-    pub branches: Vec<[f64; 2]>,
-    /// Radius of each branch, paired with `branches`. Empty for the grid style.
-    pub radii: Vec<f64>,
+    /// Organic branch cross-sections. Empty for the grid style.
+    pub disks: Vec<Disk>,
 }
+
+/// A tree-support cross-section on one layer. `node` is the walk node that printed it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Disk {
+    pub xy: [f64; 2],
+    pub r: f64,
+    pub node: NodeId,
+}
+
+/// Identity of a node in the tree-support walk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NodeId(pub u32);
 
 #[derive(Clone, Copy, Debug)]
 pub struct SupportOpts {
@@ -91,8 +101,7 @@ pub fn build_supports(
         SupportLayer {
             sparse: Vec::new(),
             interface: Vec::new(),
-            branches: Vec::new(),
-            radii: Vec::new(),
+            disks: Vec::new(),
         };
         n
     ];
@@ -226,7 +235,7 @@ pub fn build_supports(
                 },
             );
         }
-        let (sparse_print, branch_pts, branch_r) = if tree {
+        let (sparse_print, disks) = if tree {
             if i == 0 {
                 for n in &mut nodes {
                     if n.freeze == 0 {
@@ -234,18 +243,16 @@ pub fn build_supports(
                     }
                 }
             }
-            let (pts, rs) = organic_disks(&nodes, part, opts.xy_gap);
-            (Vec::new(), pts, rs)
+            (Vec::new(), organic_disks(&nodes, part, opts.xy_gap))
         } else {
             let sparse_only = local_diff(&sparse, &iface_area);
             let sparse_print = drop_slivers(local_diff(&sparse_only, gap), 0.05);
-            (sparse_print, Vec::new(), Vec::new())
+            (sparse_print, Vec::new())
         };
         out[i] = SupportLayer {
             sparse: sparse_print,
             interface: iface_print,
-            branches: branch_pts,
-            radii: branch_r,
+            disks,
         };
 
         // A column that has landed on the model stops.
@@ -376,33 +383,34 @@ fn settle_disks(
         let layer = &mut upper[0];
         // A disk farther than this leaves less than -1 mm of room, below
         // MIN_DISK_R, so it never changes which disks stay or how wide.
-        let span = below.radii.iter().copied().fold(0.0, f64::max) + reach + 1.0;
+        let span = below.disks.iter().map(|d| d.r).fold(0.0, f64::max) + reach + 1.0;
         let mut grid = CellGrid::new(span);
-        for (k, b) in below.branches.iter().enumerate() {
-            grid.insert(k, *b);
+        for (k, b) in below.disks.iter().enumerate() {
+            grid.insert(k, b.xy);
         }
-        let mut kept_c = Vec::with_capacity(layer.branches.len());
-        let mut kept_r = Vec::with_capacity(layer.radii.len());
-        for (c, r) in layer.branches.iter().zip(&layer.radii) {
-            grid.near(*c, span, &mut near);
+        let mut kept = Vec::with_capacity(layer.disks.len());
+        for d in &layer.disks {
+            let c = d.xy;
+            grid.near(c, span, &mut near);
             let mut room = near
                 .iter()
                 .map(|&k| {
-                    let b = below.branches[k];
-                    below.radii[k] + reach - (c[0] - b[0]).hypot(c[1] - b[1])
+                    let b = below.disks[k];
+                    b.r + reach - (c[0] - b.xy[0]).hypot(c[1] - b.xy[1])
                 })
                 .fold(f64::NEG_INFINITY, f64::max);
             if !part.is_empty() && in_solid(part, c[0], c[1]) {
-                room = room.max(distance_to_outline(part, *c) + reach);
+                room = room.max(distance_to_outline(part, c) + reach);
             }
             if room < MIN_DISK_R {
                 continue;
             }
-            kept_c.push(*c);
-            kept_r.push((*r).min(room));
+            kept.push(Disk {
+                r: d.r.min(room),
+                ..*d
+            });
         }
-        layer.branches = kept_c;
-        layer.radii = kept_r;
+        layer.disks = kept;
     }
 }
 
@@ -424,9 +432,8 @@ struct Node {
 /// is drawn smaller rather than dropped, so the trunk under it never breaks.
 /// Flooring that disk through the wall would leave support inside the mesh, so
 /// a centre closer than the minimum radius is omitted and the trunk stops.
-fn organic_disks(nodes: &[Node], part: &[Loop], xy_gap: f64) -> (Vec<[f64; 2]>, Vec<f64>) {
-    let mut pts = Vec::new();
-    let mut radii = Vec::new();
+fn organic_disks(nodes: &[Node], part: &[Loop], xy_gap: f64) -> Vec<Disk> {
+    let mut disks = Vec::new();
     for n in nodes {
         if n.freeze > 0 {
             continue;
@@ -442,10 +449,13 @@ fn organic_disks(nodes: &[Node], part: &[Loop], xy_gap: f64) -> (Vec<[f64; 2]>, 
             continue;
         }
         let room = dist - xy_gap;
-        pts.push(n.xy);
-        radii.push(n.radius.min(room).max(MIN_DISK_R));
+        disks.push(Disk {
+            xy: n.xy,
+            r: n.radius.min(room).max(MIN_DISK_R),
+            node: NodeId(n.id),
+        });
     }
-    (pts, radii)
+    disks
 }
 
 struct Grow {
@@ -1202,9 +1212,10 @@ fn area_footing(below: &SupportLayer, part: &[Loop]) -> Vec<Loop> {
     }
 }
 
-fn branch_foots(comp: &[Loop], branches: &[[f64; 2]], radii: &[f64]) -> bool {
-    branches.iter().zip(radii).any(|(c, r)| {
-        in_solid(comp, c[0], c[1]) || distance_to_outline(comp, *c) <= *r + INTERFACE_FOOT_MM
+fn branch_foots(comp: &[Loop], disks: &[Disk]) -> bool {
+    disks.iter().any(|d| {
+        in_solid(comp, d.xy[0], d.xy[1])
+            || distance_to_outline(comp, d.xy) <= d.r + INTERFACE_FOOT_MM
     })
 }
 
@@ -1227,7 +1238,7 @@ pub(crate) fn orphan_interface_area(
     let mut foot = None;
     let mut area = 0.0;
     for comp in interface_pieces(interface) {
-        if branch_foots(&comp, &below.branches, &below.radii) {
+        if branch_foots(&comp, &below.disks) {
             continue;
         }
         let foot = foot.get_or_insert_with(|| area_footing(below, part));
@@ -1249,10 +1260,7 @@ fn drop_unfooted_interface(layers: &mut [SupportLayer], contours: &[Vec<Loop>]) 
         let interface = upper[0].interface.clone();
         let pieces = interface_pieces(&interface);
         // Most patches sit on a trunk tip. Skip the part-offset unless one does not.
-        if pieces
-            .iter()
-            .all(|comp| branch_foots(comp, &below.branches, &below.radii))
-        {
+        if pieces.iter().all(|comp| branch_foots(comp, &below.disks)) {
             continue;
         }
         let part = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
@@ -1262,7 +1270,7 @@ fn drop_unfooted_interface(layers: &mut [SupportLayer], contours: &[Vec<Loop>]) 
         let ground = Nearby::new(ground);
         let mut gone: Vec<Loop> = Vec::new();
         for comp in pieces {
-            if branch_foots(&comp, &below.branches, &below.radii) {
+            if branch_foots(&comp, &below.disks) {
                 continue;
             }
             let Some(bounds) = loop_bounds(&comp) else {
@@ -1722,8 +1730,8 @@ mod tests {
                     if in_solid(&layers[i].interface, x, y) {
                         probes += 1;
                         let mut d = f64::MAX;
-                        for (c, r) in below.branches.iter().zip(&below.radii) {
-                            d = d.min(((x - c[0]).hypot(y - c[1]) - r).max(0.0));
+                        for disk in &below.disks {
+                            d = d.min(((x - disk.xy[0]).hypot(y - disk.xy[1]) - disk.r).max(0.0));
                         }
                         for loops in &held {
                             d = d.min(if in_solid(loops, x, y) {
@@ -1774,12 +1782,12 @@ mod tests {
         assert!(unfooted_interface(&built, &contours).is_empty());
         let top = built
             .iter()
-            .rposition(|l| !l.branches.is_empty())
+            .rposition(|l| !l.disks.is_empty())
             .expect("the plate grew no tree");
         let band_radii = |from: usize, to: usize| -> (f64, f64) {
             let radii: Vec<f64> = built[from..to]
                 .iter()
-                .flat_map(|l| l.radii.iter().copied())
+                .flat_map(|l| l.disks.iter().map(|d| d.r))
                 .collect();
             let max = radii.iter().copied().fold(0.0, f64::max);
             (radii.iter().sum::<f64>() / radii.len().max(1) as f64, max)
@@ -1795,8 +1803,8 @@ mod tests {
             foot_mean >= 1.5 * under_mean,
             "trunks should thicken toward the bed, under {under_mean:.2} foot {foot_mean:.2}"
         );
-        let tips = built[top].branches.len();
-        let feet = built[0].branches.len();
+        let tips = built[top].disks.len();
+        let feet = built[0].disks.len();
         assert!(
             feet * 2 <= tips,
             "branches should join on the way down, {tips} tips {feet} feet"
@@ -1810,20 +1818,35 @@ mod tests {
             SupportLayer {
                 sparse: Vec::new(),
                 interface: Vec::new(),
-                branches: vec![[0.0, 0.0]],
-                radii: vec![1.2],
+                disks: vec![Disk {
+                    xy: [0.0, 0.0],
+                    r: 1.2,
+                    node: NodeId(0),
+                }],
             },
             SupportLayer {
                 sparse: Vec::new(),
                 interface: Vec::new(),
-                branches: vec![[0.0, 0.0], [8.0, 0.0]],
-                radii: vec![1.2, 1.2],
+                disks: vec![
+                    Disk {
+                        xy: [0.0, 0.0],
+                        r: 1.2,
+                        node: NodeId(1),
+                    },
+                    Disk {
+                        xy: [8.0, 0.0],
+                        r: 1.2,
+                        node: NodeId(2),
+                    },
+                ],
             },
         ];
         settle_disks(&mut layers, &bands, &[Vec::new(), Vec::new()], 0.8);
-        assert_eq!(layers[0].branches.len(), 1);
-        assert_eq!(layers[1].branches, vec![[0.0, 0.0]]);
-        assert!((layers[1].radii[0] - 1.2).abs() < 1e-9);
+        assert_eq!(layers[0].disks.len(), 1);
+        let kept: Vec<([f64; 2], NodeId)> =
+            layers[1].disks.iter().map(|d| (d.xy, d.node)).collect();
+        assert_eq!(kept, vec![([0.0, 0.0], NodeId(1))]);
+        assert!((layers[1].disks[0].r - 1.2).abs() < 1e-9);
     }
 
     #[test]
@@ -1851,8 +1874,9 @@ mod tests {
             .iter()
             .filter(|layer| {
                 layer
-                    .branches
+                    .disks
                     .iter()
+                    .map(|d| d.xy)
                     .any(|c| (0.0..1.3).contains(&c[0]) && (0.2..3.8).contains(&c[1]))
             })
             .count();
@@ -1903,8 +1927,9 @@ mod tests {
         assert!(bad.is_empty(), "interface with nothing under it: {bad:?}");
         let right = built.iter().any(|layer| {
             layer
-                .branches
+                .disks
                 .iter()
+                .map(|d| d.xy)
                 .any(|c| c[0] > 11.0 && (2.4..5.6).contains(&c[1]))
         });
         assert!(right, "the ear that slid off the frozen tip has no trunk");
@@ -1935,8 +1960,8 @@ mod tests {
             unfooted_interface(&shared, &contours).is_empty(),
             "packed tips left interface in the air"
         );
-        let peak = shared.iter().map(|l| l.branches.len()).max().unwrap_or(0);
-        let bed = shared[0].branches.len();
+        let peak = shared.iter().map(|l| l.disks.len()).max().unwrap_or(0);
+        let bed = shared[0].disks.len();
         assert!(peak >= 3, "expected several tips, peak {peak}");
         assert!(bed >= 1, "the plate grew no trunk");
         assert!(
@@ -1963,8 +1988,8 @@ mod tests {
         );
         assert!(unfooted_interface(&sparse, &contours).is_empty());
         assert!(unfooted_interface(&dense, &contours).is_empty());
-        let sparse_peak = sparse.iter().map(|l| l.branches.len()).max().unwrap_or(0);
-        let dense_peak = dense.iter().map(|l| l.branches.len()).max().unwrap_or(0);
+        let sparse_peak = sparse.iter().map(|l| l.disks.len()).max().unwrap_or(0);
+        let dense_peak = dense.iter().map(|l| l.disks.len()).max().unwrap_or(0);
         assert!(
             sparse_peak < dense_peak,
             "load factor and tip spacing should thin the peak, sparse {sparse_peak} dense {dense_peak}"
@@ -1974,8 +1999,8 @@ mod tests {
         let perimeter = |built: &[SupportLayer]| -> f64 {
             built
                 .iter()
-                .flat_map(|l| &l.radii)
-                .map(|r| std::f64::consts::TAU * r)
+                .flat_map(|l| &l.disks)
+                .map(|d| std::f64::consts::TAU * d.r)
                 .sum()
         };
         let (sparse_len, dense_len) = (perimeter(&sparse), perimeter(&dense));
@@ -1983,6 +2008,38 @@ mod tests {
             sparse_len < dense_len * 0.75,
             "sparse perimeter {sparse_len:.0} mm should be well under dense {dense_len:.0} mm"
         );
+    }
+
+    #[test]
+    fn tree_disks_on_a_layer_carry_distinct_nodes_in_walk_order() {
+        let bands = layers(80);
+        let mut contours = vec![Vec::new(); bands.len()];
+        let plate = rect(0.0, 0.0, 40.0, 14.0);
+        for contour in contours.iter_mut().skip(76) {
+            *contour = vec![plate.clone()];
+        }
+        let built = build_supports(
+            &bands,
+            &contours,
+            &SupportOpts {
+                style: SupportStyle::Tree,
+                density: 0.15,
+                interface_layers: 2,
+                z_gap: 0.2,
+                overhangs: true,
+                islands: true,
+                ..SupportOpts::default()
+            },
+        );
+        let shared = built.iter().filter(|l| l.disks.len() >= 2).count();
+        assert!(shared > 0, "no layer printed two disks");
+        for (i, layer) in built.iter().enumerate() {
+            let nodes: Vec<NodeId> = layer.disks.iter().map(|d| d.node).collect();
+            assert!(
+                nodes.windows(2).all(|w| w[0] < w[1]),
+                "layer {i} disks are not in ascending node order: {nodes:?}"
+            );
+        }
     }
 
     #[test]
@@ -2041,13 +2098,13 @@ mod tests {
             },
         );
         assert!(unfooted_interface(&built, &contours).is_empty());
-        let peak = built.iter().map(|l| l.branches.len()).max().unwrap_or(0);
-        let bed = built[0].branches.len();
+        let peak = built.iter().map(|l| l.disks.len()).max().unwrap_or(0);
+        let bed = built[0].disks.len();
         let trace: Vec<(usize, usize)> = built
             .iter()
             .enumerate()
-            .filter(|(_, l)| !l.branches.is_empty())
-            .map(|(i, l)| (i, l.branches.len()))
+            .filter(|(_, l)| !l.disks.is_empty())
+            .map(|(i, l)| (i, l.disks.len()))
             .collect();
         assert!(
             peak >= 2,
@@ -2187,14 +2244,15 @@ mod tests {
             "outer ear interface was left in the air"
         );
         assert!(
-            !built[0].branches.is_empty(),
+            !built[0].disks.is_empty(),
             "the part of the ear past the lean cone lost its bed trunk"
         );
         let on_head = built.iter().enumerate().any(|(i, layer)| {
             (70..100).contains(&i)
                 && layer
-                    .branches
+                    .disks
                     .iter()
+                    .map(|d| d.xy)
                     .any(|c| (2.0..26.0).contains(&c[0]) && (2.0..19.5).contains(&c[1]))
         });
         assert!(on_head, "the ear over the head lost its footing");

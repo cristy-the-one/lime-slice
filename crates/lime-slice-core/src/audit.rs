@@ -13,7 +13,7 @@ use crate::poly::{
 };
 use crate::slice::{plan, SliceSettings};
 use crate::strategy::BlendMode;
-use crate::support::SupportLayer;
+use crate::support::{Disk, SupportLayer};
 use crate::toolpath::{bead_cover, Extrusion, PathKind};
 
 /// Reach a support region may have past what is under it: a bead half-width plus
@@ -235,7 +235,7 @@ fn tree_depths(supports: &[SupportLayer], bands: &[crate::adaptive::LayerBand]) 
         .flat_map_iter(|i| {
             let layer = &supports[i];
             let bounds = &bounds;
-            layer.branches.iter().zip(&layer.radii).map(move |(c, r)| {
+            layer.disks.iter().map(move |&Disk { xy: c, r, .. }| {
                 let mut depth = f64::INFINITY;
                 for j in i + 1..supports.len() {
                     let dz = bands[j].z - bands[i].z;
@@ -254,13 +254,13 @@ fn tree_depths(supports: &[SupportLayer], bands: &[crate::adaptive::LayerBand]) 
                     }
                     let iface = &supports[j].interface;
                     if crate::poly::in_solid(iface, c[0], c[1])
-                        || crate::poly::distance_to_outline(iface, *c) <= *r
+                        || crate::poly::distance_to_outline(iface, c) <= r
                     {
                         depth = dz;
                         break;
                     }
                 }
-                (depth, *r, bands[i].height)
+                (depth, r, bands[i].height)
             })
         })
         .collect();
@@ -354,10 +354,9 @@ fn support_region(layer: &SupportLayer) -> Vec<Loop> {
 fn column_region(layer: &SupportLayer) -> Vec<Loop> {
     let mut region = layer.sparse.clone();
     let disks: Vec<Loop> = layer
-        .branches
+        .disks
         .iter()
-        .zip(&layer.radii)
-        .map(|(c, r)| {
+        .map(|&Disk { xy: c, r, .. }| {
             (0..24)
                 .map(|k| {
                     let a = k as f64 * std::f64::consts::TAU / 24.0;
