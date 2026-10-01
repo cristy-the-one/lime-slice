@@ -569,45 +569,86 @@ fn propagate_nodes(nodes: Vec<Node>, below: &[Loop], below2: &[Loop], grow: &Gro
 fn pair_steps(nodes: &[Node], grow: &Grow, max_step: f64) -> Vec<[f64; 2]> {
     let mut live: Vec<usize> = (0..nodes.len()).filter(|&i| nodes[i].freeze == 0).collect();
     live.sort_by(|&a, &b| nodes[a].xy[0].total_cmp(&nodes[b].xy[0]));
-    let meet = |a: &Node, b: &Node| -> Option<(f64, [f64; 2])> {
-        if a.to_bed != b.to_bed {
+    let mut rank = vec![usize::MAX; nodes.len()];
+    for (r, &i) in live.iter().enumerate() {
+        rank[i] = r;
+    }
+    let mut grid = CellGrid::new(PAIR_CELL_MM);
+    for &i in &live {
+        grid.insert(i, nodes[i].xy);
+    }
+    let pair = |u: usize, v: usize| -> Option<Pair> {
+        let (a, b) = if rank[u] < rank[v] { (u, v) } else { (v, u) };
+        if nodes[b].xy[0] - nodes[a].xy[0] > PAIR_REACH_MM {
             return None;
         }
-        let d = (a.xy[0] - b.xy[0]).hypot(a.xy[1] - b.xy[1]);
-        if d > PAIR_REACH_MM {
-            return None;
-        }
-        if grow.load_factor >= 3.0 && !carries(a, b, grow) {
-            return None;
-        }
-        let (wa, wb) = (a.radius.powi(2), b.radius.powi(2));
-        let at = [
-            (a.xy[0] * wa + b.xy[0] * wb) / (wa + wb),
-            (a.xy[1] * wa + b.xy[1] * wb) / (wa + wb),
-        ];
-        Some((d, at))
+        meet(&nodes[a], &nodes[b], grow).map(|(d, at)| Pair { d, a, b, at })
     };
-    let mut pairs: Vec<(f64, usize, usize, [f64; 2])> = Vec::new();
-    for (k, &a) in live.iter().enumerate() {
-        for &b in &live[k + 1..] {
-            if nodes[b].xy[0] - nodes[a].xy[0] > PAIR_REACH_MM {
+    // The best pair for `u` among nodes not in `taken`. Ring `r` of cells is
+    // at least (r - 1) cells away, so the search stops once that passes the
+    // best distance found, after every tie at that distance has been seen.
+    let best_for = |u: usize, taken: &[bool]| -> Option<Pair> {
+        let (cx, cy) = grid.key(nodes[u].xy[0], nodes[u].xy[1]);
+        let mut best: Option<Pair> = None;
+        for r in 0i64.. {
+            let floor = (r - 1).max(0) as f64 * grid.cell - 1e-6;
+            if floor > PAIR_REACH_MM || best.as_ref().is_some_and(|b| floor > b.d) {
                 break;
             }
-            if let Some((d, at)) = meet(&nodes[a], &nodes[b]) {
-                pairs.push((d, a, b, at));
+            for (x, y) in ring_cells(cx, cy, r) {
+                for &v in grid.buckets.get(&(x, y)).map(Vec::as_slice).unwrap_or(&[]) {
+                    if v == u || taken[v] {
+                        continue;
+                    }
+                    if let Some(p) = pair(u, v) {
+                        if best.as_ref().is_none_or(|b| p.before(b)) {
+                            best = Some(p);
+                        }
+                    }
+                }
             }
         }
-    }
-    pairs.sort_by(|p, q| p.0.total_cmp(&q.0).then(p.1.cmp(&q.1)).then(p.2.cmp(&q.2)));
-    let mut target: Vec<Option<[f64; 2]>> = vec![None; nodes.len()];
-    let mut nearest: Vec<Option<[f64; 2]>> = vec![None; nodes.len()];
-    for &(_, a, b, at) in &pairs {
-        for i in [a, b] {
-            nearest[i] = nearest[i].or(Some(at));
+        best
+    };
+    // Greedy matching over pairs sorted by (distance, x order) is the same as
+    // matching mutual best pairs in any order: the smallest pair left is
+    // always mutual, and matching elsewhere never changes a mutual pair.
+    let none = vec![false; nodes.len()];
+    let mut best: Vec<Option<Pair>> = vec![None; nodes.len()];
+    let mut watchers: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+    for &u in &live {
+        best[u] = best_for(u, &none);
+        if let Some(p) = &best[u] {
+            watchers[p.other(u)].push(u);
         }
-        if target[a].is_none() && target[b].is_none() {
-            target[a] = Some(at);
-            target[b] = Some(at);
+    }
+    let nearest: Vec<Option<[f64; 2]>> = best.iter().map(|p| p.as_ref().map(|p| p.at)).collect();
+    let mut taken = vec![false; nodes.len()];
+    let mut target: Vec<Option<[f64; 2]>> = vec![None; nodes.len()];
+    let mut stack: Vec<usize> = live.iter().rev().copied().collect();
+    while let Some(u) = stack.pop() {
+        if taken[u] {
+            continue;
+        }
+        let Some(p) = best[u] else {
+            continue;
+        };
+        let v = p.other(u);
+        if taken[v] {
+            best[u] = best_for(u, &taken);
+            if let Some(q) = &best[u] {
+                watchers[q.other(u)].push(u);
+                stack.push(u);
+            }
+            continue;
+        }
+        if best[v].as_ref().is_some_and(|q| q.other(v) == u) {
+            taken[u] = true;
+            taken[v] = true;
+            target[u] = Some(p.at);
+            target[v] = Some(p.at);
+            stack.append(&mut std::mem::take(&mut watchers[u]));
+            stack.append(&mut std::mem::take(&mut watchers[v]));
         }
     }
     nodes
@@ -618,6 +659,70 @@ fn pair_steps(nodes: &[Node], grow: &Grow, max_step: f64) -> Vec<[f64; 2]> {
             _ => n.xy,
         })
         .collect()
+}
+
+const PAIR_CELL_MM: f64 = 3.0;
+
+/// Two nodes that may walk toward each other: their distance, the earlier and
+/// later node in x order, and where they meet.
+#[derive(Clone, Copy)]
+struct Pair {
+    d: f64,
+    a: usize,
+    b: usize,
+    at: [f64; 2],
+}
+
+impl Pair {
+    fn other(&self, u: usize) -> usize {
+        if self.a == u {
+            self.b
+        } else {
+            self.a
+        }
+    }
+
+    fn before(&self, other: &Pair) -> bool {
+        self.d
+            .total_cmp(&other.d)
+            .then(self.a.cmp(&other.a))
+            .then(self.b.cmp(&other.b))
+            .is_lt()
+    }
+}
+
+/// Distance and section-weighted meeting point, or `None` when the two may not pair.
+fn meet(a: &Node, b: &Node, grow: &Grow) -> Option<(f64, [f64; 2])> {
+    if a.to_bed != b.to_bed {
+        return None;
+    }
+    let d = (a.xy[0] - b.xy[0]).hypot(a.xy[1] - b.xy[1]);
+    if d > PAIR_REACH_MM {
+        return None;
+    }
+    if grow.load_factor >= 3.0 && !carries(a, b, grow) {
+        return None;
+    }
+    let (wa, wb) = (a.radius.powi(2), b.radius.powi(2));
+    let at = [
+        (a.xy[0] * wa + b.xy[0] * wb) / (wa + wb),
+        (a.xy[1] * wa + b.xy[1] * wb) / (wa + wb),
+    ];
+    Some((d, at))
+}
+
+/// Cells at Chebyshev distance exactly `r` from (cx, cy).
+fn ring_cells(cx: i64, cy: i64, r: i64) -> impl Iterator<Item = (i64, i64)> {
+    let side = (-r..=r).flat_map(move |t| {
+        let edges = [(cx + t, cy - r), (cx + t, cy + r)];
+        let sides = [(cx - r, cy + t), (cx + r, cy + t)];
+        let inner = t > -r && t < r;
+        edges
+            .into_iter()
+            .chain(sides.into_iter().filter(move |_| inner))
+    });
+    let centre = std::iter::once((cx, cy)).filter(move |_| r == 0);
+    centre.chain(side.filter(move |_| r > 0))
 }
 
 fn step_toward(xy: [f64; 2], target: [f64; 2], max_step: f64) -> [f64; 2] {
@@ -1421,6 +1526,121 @@ fn union_all<'a>(regions: impl Iterator<Item = &'a [Loop]>) -> Vec<Loop> {
 mod tests {
     use super::*;
     use crate::adaptive::LayerBand;
+
+    /// The pairwise scan that `pair_steps` replaced.
+    fn pair_steps_by_scan(nodes: &[Node], grow: &Grow, max_step: f64) -> Vec<[f64; 2]> {
+        let mut live: Vec<usize> = (0..nodes.len()).filter(|&i| nodes[i].freeze == 0).collect();
+        live.sort_by(|&a, &b| nodes[a].xy[0].total_cmp(&nodes[b].xy[0]));
+        let meet = |a: &Node, b: &Node| -> Option<(f64, [f64; 2])> {
+            if a.to_bed != b.to_bed {
+                return None;
+            }
+            let d = (a.xy[0] - b.xy[0]).hypot(a.xy[1] - b.xy[1]);
+            if d > PAIR_REACH_MM {
+                return None;
+            }
+            if grow.load_factor >= 3.0 && !carries(a, b, grow) {
+                return None;
+            }
+            let (wa, wb) = (a.radius.powi(2), b.radius.powi(2));
+            let at = [
+                (a.xy[0] * wa + b.xy[0] * wb) / (wa + wb),
+                (a.xy[1] * wa + b.xy[1] * wb) / (wa + wb),
+            ];
+            Some((d, at))
+        };
+        let mut pairs: Vec<(f64, usize, usize, [f64; 2])> = Vec::new();
+        for (k, &a) in live.iter().enumerate() {
+            for &b in &live[k + 1..] {
+                if nodes[b].xy[0] - nodes[a].xy[0] > PAIR_REACH_MM {
+                    break;
+                }
+                if let Some((d, at)) = meet(&nodes[a], &nodes[b]) {
+                    pairs.push((d, a, b, at));
+                }
+            }
+        }
+        pairs.sort_by(|p, q| p.0.total_cmp(&q.0).then(p.1.cmp(&q.1)).then(p.2.cmp(&q.2)));
+        let mut target: Vec<Option<[f64; 2]>> = vec![None; nodes.len()];
+        let mut nearest: Vec<Option<[f64; 2]>> = vec![None; nodes.len()];
+        for &(_, a, b, at) in &pairs {
+            for i in [a, b] {
+                nearest[i] = nearest[i].or(Some(at));
+            }
+            if target[a].is_none() && target[b].is_none() {
+                target[a] = Some(at);
+                target[b] = Some(at);
+            }
+        }
+        nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| match target[i].or(nearest[i]) {
+                Some(at) if n.freeze == 0 => step_toward(n.xy, at, max_step),
+                _ => n.xy,
+            })
+            .collect()
+    }
+
+    fn node_at(id: u32, xy: [f64; 2], radius: f64, load: f64, to_bed: bool, freeze: u32) -> Node {
+        Node {
+            id,
+            xy,
+            radius,
+            dist: (id % 7) as f64,
+            freeze,
+            load,
+            to_bed,
+        }
+    }
+
+    #[test]
+    fn pair_steps_match_the_pairwise_scan() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for case in 0..60 {
+            let lattice = case % 3 == 0;
+            let count = 2 + (next() * 400.0) as usize;
+            let extent = 10.0 + next() * 120.0;
+            let nodes: Vec<Node> = (0..count)
+                .map(|i| {
+                    let mut xy = [next() * extent, next() * extent];
+                    if lattice {
+                        xy = [(xy[0] / 3.5).round() * 3.5, (xy[1] / 3.5).round() * 3.5];
+                    }
+                    let radius = [0.4, 0.4, 0.8, 1.3, 2.1][(next() * 5.0) as usize];
+                    let load = 1.0 + (next() * 6.0).floor();
+                    node_at(
+                        i as u32 + 1,
+                        xy,
+                        radius,
+                        load,
+                        next() < 0.3,
+                        u32::from(next() < 0.1),
+                    )
+                })
+                .collect();
+            for load_factor in [1.5, 5.2] {
+                let grow = Grow {
+                    height: 0.2,
+                    lean: 0.84,
+                    tip_r: 0.4,
+                    trunk_r: 2.1,
+                    xy_gap: 0.55,
+                    next_is_bed: false,
+                    load_factor,
+                };
+                let got = pair_steps(&nodes, &grow, 0.17);
+                let want = pair_steps_by_scan(&nodes, &grow, 0.17);
+                assert_eq!(got, want, "case {case} load factor {load_factor}");
+            }
+        }
+    }
 
     fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Loop {
         vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
