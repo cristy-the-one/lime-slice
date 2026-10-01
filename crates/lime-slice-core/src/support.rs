@@ -16,7 +16,7 @@ pub enum SupportStyle {
     Tree,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SupportLayer {
     pub sparse: Vec<Loop>,
     pub interface: Vec<Loop>,
@@ -90,55 +90,220 @@ impl Default for SupportOpts {
     }
 }
 
-/// Project overhangs down to the bed as a sparse column plus a few dense interface layers.
-pub fn build_supports(
+/// Supports planned for one part: the trees grown to hold it, and every
+/// layer as it prints.
+pub(crate) struct Supports {
+    pub forest: Forest,
+    pub layers: Vec<SupportLayer>,
+}
+
+/// What the part asks of supports on each layer. It reads the part and the
+/// support settings and never a tree, so trees can be regrown on it as is.
+struct Demand {
+    /// Overhang that reaches its contact height on this layer. Tips are born here.
+    born: Vec<Vec<Loop>>,
+    /// Dense interface before any patch with nothing under it is dropped.
+    interface: Vec<Vec<Loop>>,
+    /// Grid style only: the column printed under the interface.
+    sparse: Vec<Vec<Loop>>,
+}
+
+/// The tree-support walk as it ran. `limbs[k]` is the lineage of `NodeId(k + 1)`.
+#[derive(Default)]
+pub(crate) struct Forest {
+    pub limbs: Vec<Limb>,
+}
+
+/// One lineage of the walk: born at a tip on layer `top` and carried down
+/// until it merges, lands, or reaches the bed. `knots[k]` is its node on layer
+/// `top - k` as `organic_disks` saw it; a frozen knot prints no disk. Its birth
+/// site is `knots[0].xy` at the top of layer `top`.
+pub(crate) struct Limb {
+    pub top: usize,
+    pub knots: Vec<Node>,
+    pub end: End,
+}
+
+/// How a limb stops, stepping down from its last knot.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum End {
+    /// Joined `into`, whose knot on the next layer down carries both.
+    Merged { into: NodeId },
+    /// Stood on the part.
+    Landed,
+    /// Pushed into the part with nothing under it.
+    Pinched,
+    /// Still standing when the walk finished layer 0.
+    Bed,
+}
+
+impl Forest {
+    /// Append each node's state on `layer`. A node with no limb yet was born
+    /// on it; its limb counts as reaching the bed until the walk ends it.
+    fn record(&mut self, layer: usize, nodes: &[Node]) {
+        for n in nodes {
+            let k = n.id as usize - 1;
+            if k == self.limbs.len() {
+                self.limbs.push(Limb {
+                    top: layer,
+                    knots: Vec::new(),
+                    end: End::Bed,
+                });
+            }
+            self.limbs[k].knots.push(*n);
+        }
+    }
+}
+
+impl Supports {
+    /// Project overhangs down to the bed as trunks or a sparse column plus a
+    /// few dense interface layers. `None` when the job was cancelled.
+    pub(crate) fn build(
+        bands: &[LayerBand],
+        contours: &[Vec<Loop>],
+        opts: &SupportOpts,
+    ) -> Option<Self> {
+        let mut supports = Self::walk(bands, contours, opts)?;
+        project(&mut supports.layers, 1, bands, contours, lean_of(opts));
+        Some(supports)
+    }
+
+    /// The forest, with every layer as the walk leaves it, before `project`.
+    fn walk(bands: &[LayerBand], contours: &[Vec<Loop>], opts: &SupportOpts) -> Option<Self> {
+        let demand = Demand::new(bands, contours, opts)?;
+        let (forest, disks) = if opts.style == SupportStyle::Tree {
+            grow(&demand, bands, contours, opts)?
+        } else {
+            (Forest::default(), vec![Vec::new(); bands.len()])
+        };
+        let layers = demand
+            .interface
+            .into_iter()
+            .zip(demand.sparse)
+            .zip(disks)
+            .map(|((interface, sparse), disks)| SupportLayer {
+                sparse,
+                interface,
+                disks,
+            })
+            .collect();
+        Some(Self { forest, layers })
+    }
+}
+
+impl Demand {
+    fn new(bands: &[LayerBand], contours: &[Vec<Loop>], opts: &SupportOpts) -> Option<Self> {
+        let n = bands.len();
+        let mut demand = Demand {
+            born: vec![Vec::new(); n],
+            interface: vec![Vec::new(); n],
+            sparse: vec![Vec::new(); n],
+        };
+        // Cantilevers are not islands. Keep scanning when auto support is on.
+        if n == 0 || (!opts.overhangs && !opts.islands) {
+            return Some(demand);
+        }
+        let angle = opts.angle_deg.clamp(15.0, 75.0).to_radians().tan().max(0.2);
+        let iface_n = opts.interface_layers.max(1);
+        let tree = opts.style == SupportStyle::Tree;
+        // Everything that depends only on one layer of the part is found in
+        // parallel. The pass below carries each overhang down to its contact.
+        let overhangs: Vec<Vec<Loop>> = (0..n)
+            .into_par_iter()
+            .map(|i| overhang_at(bands, contours, i, angle, opts))
+            .collect();
+        let gaps: Vec<Vec<Loop>> = contours
+            .par_iter()
+            .map(|part| {
+                if part.is_empty() {
+                    Vec::new()
+                } else {
+                    offset_loops(part, opts.xy_gap)
+                }
+            })
+            .collect();
+
+        // (contact_z, region) waiting until the air gap has been cleared.
+        let mut pending: Vec<(f64, Vec<Loop>)> = Vec::new();
+        // Interface shells still ageing, youngest first. `left` is layers still printed dense.
+        let mut gens: Vec<(Vec<Loop>, u32)> = Vec::new();
+        let mut sparse: Vec<Loop> = Vec::new();
+        for i in (0..n).rev() {
+            if opts.job.cancelled() {
+                return None;
+            }
+            let mut born: Vec<Loop> = Vec::new();
+            pending.retain(|(contact_z, region)| {
+                if bands[i].z <= *contact_z + 1e-6 {
+                    born = boolean_union(&born, region);
+                    false
+                } else {
+                    true
+                }
+            });
+            let part = contours.get(i).map(Vec::as_slice).unwrap_or(&[]);
+            if !born.is_empty() {
+                let born = drop_slivers(born, 0.05);
+                gens.insert(0, (born.clone(), iface_n));
+                demand.born[i] = born;
+            }
+
+            let gap = &gaps[i];
+            let iface_area = union_all(gens.iter().map(|(r, _)| r.as_slice()));
+            demand.interface[i] = drop_slivers(boolean_diff(&iface_area, gap), 0.05);
+            if !tree {
+                let sparse_only = local_diff(&sparse, &iface_area);
+                demand.sparse[i] = drop_slivers(local_diff(&sparse_only, gap), 0.05);
+            }
+
+            // A column that has landed on the model stops.
+            let mut next_gens = Vec::new();
+            for (region, left) in gens {
+                let trimmed = drop_slivers(boolean_diff(&region, part), 0.15);
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if left <= 1 {
+                    // Trees print their own trunks; only the grid keeps a column region.
+                    if !tree {
+                        sparse = local_union(&sparse, &trimmed);
+                    }
+                } else {
+                    next_gens.push((trimmed, left - 1));
+                }
+            }
+            gens = next_gens;
+            if !tree {
+                sparse = drop_slivers(local_diff(&sparse, part), 0.15);
+            }
+
+            let overhang = &overhangs[i];
+            if overhang.is_empty() {
+                continue;
+            }
+            let underside = bands[i].z - bands[i].height;
+            pending.push((underside - opts.z_gap, overhang.clone()));
+        }
+        Some(demand)
+    }
+}
+
+/// Max lean from vertical per millimetre of fall.
+fn lean_of(opts: &SupportOpts) -> f64 {
+    opts.branch_angle_deg.clamp(10.0, 65.0).to_radians().tan()
+}
+
+/// The top-down tree walk: tips are born where the demand says, then lean,
+/// thicken, and merge on the way down. Returns the forest it grew and each
+/// layer's disks before `project` settles them.
+fn grow(
+    demand: &Demand,
     bands: &[LayerBand],
     contours: &[Vec<Loop>],
     opts: &SupportOpts,
-) -> Vec<SupportLayer> {
+) -> Option<(Forest, Vec<Vec<Disk>>)> {
     let n = bands.len();
-    let mut out = vec![
-        SupportLayer {
-            sparse: Vec::new(),
-            interface: Vec::new(),
-            disks: Vec::new(),
-        };
-        n
-    ];
-    if n == 0 {
-        return out;
-    }
-    // Cantilevers are not islands. Keep scanning when auto support is on.
-    if !opts.overhangs && !opts.islands {
-        return out;
-    }
-    let angle = opts.angle_deg.clamp(15.0, 75.0).to_radians().tan().max(0.2);
     let iface_n = opts.interface_layers.max(1);
-    // Everything that depends only on the part is found per layer in parallel.
-    // The walk below carries the columns down from each overhang.
-    let overhangs: Vec<Vec<Loop>> = (0..n)
-        .into_par_iter()
-        .map(|i| overhang_at(bands, contours, i, angle, opts))
-        .collect();
-    let gaps: Vec<Vec<Loop>> = contours
-        .par_iter()
-        .map(|part| {
-            if part.is_empty() {
-                Vec::new()
-            } else {
-                offset_loops(part, opts.xy_gap)
-            }
-        })
-        .collect();
-
-    // (contact_z, region) waiting until the air gap has been cleared.
-    let mut pending: Vec<(f64, Vec<Loop>)> = Vec::new();
-    // Interface shells still ageing, youngest first. `left` is layers still printed dense.
-    let mut gens: Vec<(Vec<Loop>, u32)> = Vec::new();
-    let mut sparse: Vec<Loop> = Vec::new();
-    let mut nodes: Vec<Node> = Vec::new();
-    let mut next_id = 1u32;
-    let tree = opts.style == SupportStyle::Tree;
     let density = opts.density.clamp(0.0, 1.0);
     // Fine grid finds concave overhangs. `keep_spacing` is the pitch we actually
     // leave standing: extra samples are packed onto a neighbour that can carry them.
@@ -149,7 +314,7 @@ pub fn build_supports(
     let load_factor = load_factor_of(opts);
     let tip_r = (opts.tip_diameter * 0.5).clamp(0.25, 1.6);
     let trunk_r = (opts.trunk_diameter * 0.5).max(tip_r + 0.3).clamp(0.6, 8.0);
-    let lean = opts.branch_angle_deg.clamp(10.0, 65.0).to_radians().tan();
+    let lean = lean_of(opts);
     let tip_cap = tip_capacity(tip_r, 0.0, tip_r, load_factor);
     let pitch = Pitch {
         fine: sample_spacing,
@@ -159,123 +324,80 @@ pub fn build_supports(
     let part_bb: Vec<Option<([f64; 2], [f64; 2])>> =
         contours.iter().map(|c| loop_bounds(c)).collect();
 
+    let mut nodes: Vec<Node> = Vec::new();
+    let mut next_id = 1u32;
+    let mut forest = Forest::default();
+    let mut disks = vec![Vec::new(); n];
+    let mut ended = Vec::new();
     for i in (0..n).rev() {
         if opts.job.cancelled() {
-            break;
+            return None;
         }
-        let mut born: Vec<Loop> = Vec::new();
-        pending.retain(|(contact_z, region)| {
-            if bands[i].z <= *contact_z + 1e-6 {
-                born = boolean_union(&born, region);
-                false
-            } else {
-                true
-            }
-        });
         let part = contours.get(i).map(Vec::as_slice).unwrap_or(&[]);
+        let born = &demand.born[i];
         if !born.is_empty() {
-            let born = drop_slivers(born, 0.05);
-            if tree {
-                let cleared = if part.is_empty() {
-                    born.clone()
-                } else {
-                    drop_slivers(
-                        boolean_diff(&born, &offset_loops(part, opts.xy_gap * 0.35)),
-                        0.02,
-                    )
-                };
-                let seeds = if cleared.is_empty() { &born } else { &cleared };
-                for (p, load, to_bed) in sample_tips(
-                    seeds,
-                    &pitch,
-                    &Land {
-                        layer: i,
-                        freeze: iface_n,
-                        lean,
-                        bands,
-                        contours,
-                        bounds: &part_bb,
-                    },
-                ) {
-                    nodes.push(Node {
-                        id: next_id,
-                        xy: p,
-                        radius: tip_r,
-                        dist: 0.0,
-                        freeze: iface_n,
-                        load,
-                        to_bed,
-                    });
-                    next_id += 1;
-                }
-            }
-            gens.insert(0, (born, iface_n));
-        }
-
-        let gap = &gaps[i];
-        let iface_area = union_all(gens.iter().map(|(r, _)| r.as_slice()));
-        let iface_print = drop_slivers(boolean_diff(&iface_area, gap), 0.05);
-        if tree {
-            // Tips frozen at birth stay put while the part silhouette moves.
-            // A patch that slid off every tip needs its own trunk, starting
-            // on the very next layer, or the interface prints over air.
-            seed_uncovered_interface(
-                &iface_print,
-                &mut nodes,
-                &mut next_id,
-                tip_r,
+            let cleared = if part.is_empty() {
+                born.clone()
+            } else {
+                drop_slivers(
+                    boolean_diff(born, &offset_loops(part, opts.xy_gap * 0.35)),
+                    0.02,
+                )
+            };
+            let seeds = if cleared.is_empty() { born } else { &cleared };
+            for (p, load, to_bed) in sample_tips(
+                seeds,
                 &pitch,
                 &Land {
                     layer: i,
-                    freeze: 1,
+                    freeze: iface_n,
                     lean,
                     bands,
                     contours,
                     bounds: &part_bb,
                 },
-            );
+            ) {
+                nodes.push(Node {
+                    id: next_id,
+                    xy: p,
+                    radius: tip_r,
+                    dist: 0.0,
+                    freeze: iface_n,
+                    load,
+                    to_bed,
+                });
+                next_id += 1;
+            }
         }
-        let (sparse_print, disks) = if tree {
-            if i == 0 {
-                for n in &mut nodes {
-                    if n.freeze == 0 {
-                        n.radius = n.radius.max(trunk_r * 0.95);
-                    }
+        // Tips frozen at birth stay put while the part silhouette moves.
+        // A patch that slid off every tip needs its own trunk, starting
+        // on the very next layer, or the interface prints over air.
+        seed_uncovered_interface(
+            &demand.interface[i],
+            &mut nodes,
+            &mut next_id,
+            tip_r,
+            &pitch,
+            &Land {
+                layer: i,
+                freeze: 1,
+                lean,
+                bands,
+                contours,
+                bounds: &part_bb,
+            },
+        );
+        if i == 0 {
+            for n in &mut nodes {
+                if n.freeze == 0 {
+                    n.radius = n.radius.max(trunk_r * 0.95);
                 }
             }
-            (Vec::new(), organic_disks(&nodes, part, opts.xy_gap))
-        } else {
-            let sparse_only = local_diff(&sparse, &iface_area);
-            let sparse_print = drop_slivers(local_diff(&sparse_only, gap), 0.05);
-            (sparse_print, Vec::new())
-        };
-        out[i] = SupportLayer {
-            sparse: sparse_print,
-            interface: iface_print,
-            disks,
-        };
+        }
+        forest.record(i, &nodes);
+        disks[i] = organic_disks(&nodes, part, opts.xy_gap);
 
-        // A column that has landed on the model stops.
-        let mut next_gens = Vec::new();
-        for (region, left) in gens {
-            let trimmed = drop_slivers(boolean_diff(&region, part), 0.15);
-            if trimmed.is_empty() {
-                continue;
-            }
-            if left <= 1 {
-                // Trees print their own trunks; only the grid keeps a column region.
-                if !tree {
-                    sparse = local_union(&sparse, &trimmed);
-                }
-            } else {
-                next_gens.push((trimmed, left - 1));
-            }
-        }
-        gens = next_gens;
-        if !tree {
-            sparse = drop_slivers(local_diff(&sparse, part), 0.15);
-        }
-        if tree && i > 0 {
+        if i > 0 {
             let below = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
             let below2 = if i > 1 {
                 contours.get(i - 2).map(Vec::as_slice).unwrap_or(&[])
@@ -295,23 +417,14 @@ pub fn build_supports(
                     next_is_bed: i == 1,
                     load_factor,
                 },
+                &mut ended,
             );
+            for (id, end) in ended.drain(..) {
+                forest.limbs[id.0 as usize - 1].end = end;
+            }
         }
-
-        let overhang = &overhangs[i];
-        if overhang.is_empty() {
-            continue;
-        }
-        let underside = bands[i].z - bands[i].height;
-        pending.push((underside - opts.z_gap, overhang.clone()));
     }
-    if tree {
-        settle_disks(&mut out, bands, contours, lean);
-    }
-    // A trunk that cannot stand is dropped above. The interface that was
-    // waiting on it would otherwise stay as a raft in the air.
-    drop_unfooted_interface(&mut out, contours);
-    out
+    Some((forest, disks))
 }
 
 /// Area of layer `i` that needs a column under it: past the overhang angle,
@@ -361,60 +474,79 @@ const INTERFACE_FOOT_MM: f64 = 0.35;
 /// Thinnest trunk disk drawn beside the part.
 const MIN_DISK_R: f64 = 0.3;
 
-/// Walk the trunks bottom-up and narrow any disk that is wider than what holds
-/// it: a disk on the layer below grown by one lean step and half a bead, or
-/// the part itself. The top-down walk shrinks disks beside the part, so the
-/// disk above a squeezed one would otherwise overhang it. A disk whose room is
-/// below the minimum printable radius cannot stand; flooring it to that radius
-/// would print a speck in the air, so the disk is dropped and the trunk above
-/// it has to find its own footing.
-fn settle_disks(
+/// Stand every layer from `from` up on the finished layer below it: settle
+/// its disks, then drop the interface nothing holds. Each step on layer `i`
+/// reads layer `i - 1` and writes only its own part of layer `i`, disks or
+/// interface, so the two never see each other's change. Layers under `from`
+/// must already be final.
+fn project(
     layers: &mut [SupportLayer],
+    from: usize,
     bands: &[LayerBand],
     contours: &[Vec<Loop>],
     lean: f64,
 ) {
     let mut near = Vec::new();
-    for i in 1..layers.len() {
-        let reach = bands[i].height * lean + BEAD_OVERHANG_MM;
+    for i in from.max(1)..layers.len() {
         let (lower, upper) = layers.split_at_mut(i);
         let below = &lower[i - 1];
-        let part = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
         let layer = &mut upper[0];
-        // A disk farther than this leaves less than -1 mm of room, below
-        // MIN_DISK_R, so it never changes which disks stay or how wide.
-        let span = below.disks.iter().map(|d| d.r).fold(0.0, f64::max) + reach + 1.0;
-        let mut grid = CellGrid::new(span);
-        for (k, b) in below.disks.iter().enumerate() {
-            grid.insert(k, b.xy);
-        }
-        let mut kept = Vec::with_capacity(layer.disks.len());
-        for d in &layer.disks {
-            let c = d.xy;
-            grid.near(c, span, &mut near);
-            let mut room = near
-                .iter()
-                .map(|&k| {
-                    let b = below.disks[k];
-                    b.r + reach - (c[0] - b.xy[0]).hypot(c[1] - b.xy[1])
-                })
-                .fold(f64::NEG_INFINITY, f64::max);
-            if !part.is_empty() && in_solid(part, c[0], c[1]) {
-                room = room.max(distance_to_outline(part, c) + reach);
-            }
-            if room < MIN_DISK_R {
-                continue;
-            }
-            kept.push(Disk {
-                r: d.r.min(room),
-                ..*d
-            });
-        }
-        layer.disks = kept;
+        let part = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
+        let reach = bands[i].height * lean + BEAD_OVERHANG_MM;
+        settle_disks(&mut layer.disks, &below.disks, part, reach, &mut near);
+        // A trunk that cannot stand is dropped above. The interface that was
+        // waiting on it would otherwise stay as a raft in the air.
+        drop_unfooted_interface(&mut layer.interface, below, part);
     }
 }
 
-struct Node {
+/// Narrow any disk that is wider than what holds it: a disk on the layer
+/// below grown by one lean step and half a bead, or the part itself. The
+/// top-down walk shrinks disks beside the part, so the disk above a squeezed
+/// one would otherwise overhang it. A disk whose room is below the minimum
+/// printable radius cannot stand; flooring it to that radius would print a
+/// speck in the air, so the disk is dropped and the trunk above it has to
+/// find its own footing.
+fn settle_disks(
+    disks: &mut Vec<Disk>,
+    below: &[Disk],
+    part: &[Loop],
+    reach: f64,
+    near: &mut Vec<usize>,
+) {
+    if disks.is_empty() {
+        return;
+    }
+    // A disk farther than this leaves less than -1 mm of room, below
+    // MIN_DISK_R, so it never changes which disks stay or how wide.
+    let span = below.iter().map(|d| d.r).fold(0.0, f64::max) + reach + 1.0;
+    let mut grid = CellGrid::new(span);
+    for (k, b) in below.iter().enumerate() {
+        grid.insert(k, b.xy);
+    }
+    disks.retain_mut(|d| {
+        let c = d.xy;
+        grid.near(c, span, near);
+        let mut room = near
+            .iter()
+            .map(|&k| {
+                let b = below[k];
+                b.r + reach - (c[0] - b.xy[0]).hypot(c[1] - b.xy[1])
+            })
+            .fold(f64::NEG_INFINITY, f64::max);
+        if !part.is_empty() && in_solid(part, c[0], c[1]) {
+            room = room.max(distance_to_outline(part, c) + reach);
+        }
+        if room < MIN_DISK_R {
+            return false;
+        }
+        d.r = d.r.min(room);
+        true
+    });
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Node {
     id: u32,
     xy: [f64; 2],
     radius: f64,
@@ -518,7 +650,14 @@ const PAIR_REACH_MM: f64 = 22.0;
 /// Step every unfrozen node down one layer: lean toward the branch it pairs
 /// with, thicken for the load it already carries, merge when one trunk can hold both, and
 /// stop on a supported mesh face. Frozen nodes are the interface tips and do not move.
-fn propagate_nodes(nodes: Vec<Node>, below: &[Loop], below2: &[Loop], grow: &Grow) -> Vec<Node> {
+/// Every node that does not reach the next layer is pushed onto `ended`.
+fn propagate_nodes(
+    nodes: Vec<Node>,
+    below: &[Loop],
+    below2: &[Loop],
+    grow: &Grow,
+    ended: &mut Vec<(NodeId, End)>,
+) -> Vec<Node> {
     let max_step = (grow.height * grow.lean).clamp(0.05, 4.0);
     let (below, below2) = (LoopIndex::new(below), LoopIndex::new(below2));
     let mut next = Vec::with_capacity(nodes.len());
@@ -531,6 +670,7 @@ fn propagate_nodes(nodes: Vec<Node>, below: &[Loop], below2: &[Loop], grow: &Gro
         if !below.is_empty() && below.contains(n.xy) {
             let supported = below2.is_empty() || below2.contains(n.xy);
             if supported {
+                ended.push((NodeId(n.id), End::Landed));
                 continue;
             }
         }
@@ -553,11 +693,12 @@ fn propagate_nodes(nodes: Vec<Node>, below: &[Loop], below2: &[Loop], grow: &Gro
             .min(grow.trunk_r);
         n.xy = push_out(n.xy, &below, grow.xy_gap + n.radius, max_step);
         if below.contains(n.xy) {
+            ended.push((NodeId(n.id), End::Pinched));
             continue;
         }
         kept.push(n);
     }
-    merge_nodes(&mut kept, grow, max_step + BEAD_OVERHANG_MM);
+    merge_nodes(&mut kept, grow, max_step + BEAD_OVERHANG_MM, ended);
     if grow.next_is_bed {
         for n in &mut kept {
             if n.freeze == 0 {
@@ -784,8 +925,9 @@ fn push_out(xy: [f64; 2], part: &LoopIndex, clearance: f64, max_step: f64) -> [f
 
 /// Merge a node into an earlier one when the host can carry the combined load
 /// and the merged trunk still holds both parent disks. The merged section is
-/// the sum of both, up to the trunk cap.
-fn merge_nodes(nodes: &mut Vec<Node>, grow: &Grow, reach: f64) {
+/// the sum of both, up to the trunk cap. Nodes are scanned by id, so the host
+/// keeps the smaller id.
+fn merge_nodes(nodes: &mut Vec<Node>, grow: &Grow, reach: f64, ended: &mut Vec<(NodeId, End)>) {
     if nodes.len() < 2 {
         return;
     }
@@ -839,9 +981,12 @@ fn merge_nodes(nodes: &mut Vec<Node>, grow: &Grow, reach: f64) {
                 .sqrt()
                 .max(section_radius(host.load, grow.tip_r, grow.load_factor))
                 .min(grow.trunk_r);
-            if n.id < host.id {
-                host.id = n.id;
-            }
+            ended.push((
+                NodeId(n.id),
+                End::Merged {
+                    into: NodeId(host.id),
+                },
+            ));
             grid.relocate(at, was, host.xy);
         } else {
             grid.insert(kept.len(), n.xy);
@@ -1250,48 +1395,44 @@ pub(crate) fn orphan_interface_area(
     area
 }
 
-fn drop_unfooted_interface(layers: &mut [SupportLayer], contours: &[Vec<Loop>]) {
-    for i in 1..layers.len() {
-        if layers[i].interface.is_empty() {
+/// Drop each interface piece that has no trunk, lower interface, or part
+/// under it on the layer below.
+fn drop_unfooted_interface(interface: &mut Vec<Loop>, below: &SupportLayer, part: &[Loop]) {
+    if interface.is_empty() {
+        return;
+    }
+    let pieces = interface_pieces(interface);
+    // Most patches sit on a trunk tip. Skip the part-offset unless one does not.
+    if pieces.iter().all(|comp| branch_foots(comp, &below.disks)) {
+        return;
+    }
+    let mut ground = below.interface.clone();
+    ground.extend(below.sparse.iter().cloned());
+    ground.extend(part.iter().cloned());
+    let ground = Nearby::new(ground);
+    let mut gone: Vec<Loop> = Vec::new();
+    for comp in pieces {
+        if branch_foots(&comp, &below.disks) {
             continue;
         }
-        let (lower, upper) = layers.split_at_mut(i);
-        let below = &lower[i - 1];
-        let interface = upper[0].interface.clone();
-        let pieces = interface_pieces(&interface);
-        // Most patches sit on a trunk tip. Skip the part-offset unless one does not.
-        if pieces.iter().all(|comp| branch_foots(comp, &below.disks)) {
+        let Some(bounds) = loop_bounds(&comp) else {
             continue;
+        };
+        // The footing is an offset of a union, so only loops within the
+        // offset of this piece's box can reach it.
+        let near = ground.near(bounds, INTERFACE_FOOT_MM + 0.05);
+        let foot = if near.is_empty() {
+            Vec::new()
+        } else {
+            offset_loops(&resolve_nonzero(near), INTERFACE_FOOT_MM)
+        };
+        if foot.is_empty() || !overlaps(&comp, &foot, 0.02) {
+            gone = boolean_union(&gone, &comp);
         }
-        let part = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
-        let mut ground = below.interface.clone();
-        ground.extend(below.sparse.iter().cloned());
-        ground.extend(part.iter().cloned());
-        let ground = Nearby::new(ground);
-        let mut gone: Vec<Loop> = Vec::new();
-        for comp in pieces {
-            if branch_foots(&comp, &below.disks) {
-                continue;
-            }
-            let Some(bounds) = loop_bounds(&comp) else {
-                continue;
-            };
-            // The footing is an offset of a union, so only loops within the
-            // offset of this piece's box can reach it.
-            let near = ground.near(bounds, INTERFACE_FOOT_MM + 0.05);
-            let foot = if near.is_empty() {
-                Vec::new()
-            } else {
-                offset_loops(&resolve_nonzero(near), INTERFACE_FOOT_MM)
-            };
-            if foot.is_empty() || !overlaps(&comp, &foot, 0.02) {
-                gone = boolean_union(&gone, &comp);
-            }
-        }
-        if !gone.is_empty() {
-            // Subtract from the original so a kept ring does not lose its hole.
-            upper[0].interface = drop_slivers(boolean_diff(&interface, &gone), 0.05);
-        }
+    }
+    if !gone.is_empty() {
+        // Subtract from the original so a kept ring does not lose its hole.
+        *interface = drop_slivers(boolean_diff(interface, &gone), 0.05);
     }
 }
 
@@ -1768,7 +1909,7 @@ mod tests {
         for contour in contours.iter_mut().skip(100) {
             *contour = vec![rect(0.0, 0.0, 60.0, 20.0)];
         }
-        let built = build_supports(
+        let built = Supports::build(
             &bands,
             &contours,
             &SupportOpts {
@@ -1778,7 +1919,9 @@ mod tests {
                 max_tip_spacing: 10.8,
                 ..SupportOpts::default()
             },
-        );
+        )
+        .unwrap()
+        .layers;
         assert!(unfooted_interface(&built, &contours).is_empty());
         let top = built
             .iter()
@@ -1841,7 +1984,7 @@ mod tests {
                 ],
             },
         ];
-        settle_disks(&mut layers, &bands, &[Vec::new(), Vec::new()], 0.8);
+        project(&mut layers, 1, &bands, &[Vec::new(), Vec::new()], 0.8);
         assert_eq!(layers[0].disks.len(), 1);
         let kept: Vec<([f64; 2], NodeId)> =
             layers[1].disks.iter().map(|d| (d.xy, d.node)).collect();
@@ -1867,7 +2010,7 @@ mod tests {
             islands: true,
             ..SupportOpts::default()
         };
-        let built = build_supports(&bands, &contours, &opts);
+        let built = Supports::build(&bands, &contours, &opts).unwrap().layers;
         let bad = unfooted_interface(&built, &contours);
         assert!(bad.is_empty(), "interface with nothing under it: {bad:?}");
         let trunks = built
@@ -1922,7 +2065,7 @@ mod tests {
             islands: true,
             ..SupportOpts::default()
         };
-        let built = build_supports(&bands, &contours, &opts);
+        let built = Supports::build(&bands, &contours, &opts).unwrap().layers;
         let bad = unfooted_interface(&built, &contours);
         assert!(bad.is_empty(), "interface with nothing under it: {bad:?}");
         let right = built.iter().any(|layer| {
@@ -1955,7 +2098,7 @@ mod tests {
             islands: true,
             ..SupportOpts::default()
         };
-        let shared = build_supports(&bands, &contours, &base);
+        let shared = Supports::build(&bands, &contours, &base).unwrap().layers;
         assert!(
             unfooted_interface(&shared, &contours).is_empty(),
             "packed tips left interface in the air"
@@ -1968,7 +2111,7 @@ mod tests {
             bed < peak,
             "branches should join on the way down, peak {peak} bed {bed}"
         );
-        let sparse = build_supports(
+        let sparse = Supports::build(
             &bands,
             &contours,
             &SupportOpts {
@@ -1976,8 +2119,10 @@ mod tests {
                 max_tip_spacing: 10.0,
                 ..base
             },
-        );
-        let dense = build_supports(
+        )
+        .unwrap()
+        .layers;
+        let dense = Supports::build(
             &bands,
             &contours,
             &SupportOpts {
@@ -1985,7 +2130,9 @@ mod tests {
                 max_tip_spacing: 3.2,
                 ..base
             },
-        );
+        )
+        .unwrap()
+        .layers;
         assert!(unfooted_interface(&sparse, &contours).is_empty());
         assert!(unfooted_interface(&dense, &contours).is_empty());
         let sparse_peak = sparse.iter().map(|l| l.disks.len()).max().unwrap_or(0);
@@ -2010,6 +2157,222 @@ mod tests {
         );
     }
 
+    /// Bands and contours for a 40 x 14 mm plate 15.2 mm above the bed.
+    fn plate() -> (Vec<LayerBand>, Vec<Vec<Loop>>) {
+        let bands = layers(80);
+        let mut contours = vec![Vec::new(); bands.len()];
+        for contour in contours.iter_mut().skip(76) {
+            *contour = vec![rect(0.0, 0.0, 40.0, 14.0)];
+        }
+        (bands, contours)
+    }
+
+    fn plate_opts() -> SupportOpts {
+        SupportOpts {
+            style: SupportStyle::Tree,
+            density: 0.15,
+            interface_layers: 2,
+            z_gap: 0.2,
+            overhangs: true,
+            islands: true,
+            ..SupportOpts::default()
+        }
+    }
+
+    /// The lowest layer a limb has a knot on.
+    fn bottom(limb: &Limb) -> usize {
+        limb.top + 1 - limb.knots.len()
+    }
+
+    /// The forest holds the walk: each layer's raw disks come back from the
+    /// knots live on it, every printed disk sits on its own limb's knot, and
+    /// every end agrees with where the limb's knots stop.
+    fn assert_forest_matches(bands: &[LayerBand], contours: &[Vec<Loop>], opts: &SupportOpts) {
+        let walked = Supports::walk(bands, contours, opts).unwrap();
+        let built = Supports::build(bands, contours, opts).unwrap();
+        let forest = &built.forest;
+        let limb = |id: NodeId| &forest.limbs[id.0 as usize - 1];
+        for (k, l) in forest.limbs.iter().enumerate() {
+            assert!(
+                l.knots.iter().all(|n| n.id as usize == k + 1),
+                "limb {} holds another node's knot",
+                k + 1
+            );
+        }
+        for (i, part) in contours.iter().enumerate() {
+            let live: Vec<Node> = forest
+                .limbs
+                .iter()
+                .filter(|l| bottom(l) <= i && i <= l.top)
+                .map(|l| l.knots[l.top - i])
+                .collect();
+            assert_eq!(
+                organic_disks(&live, part, opts.xy_gap),
+                walked.layers[i].disks,
+                "layer {i}: the knots do not give back the walk's disks"
+            );
+            for d in &built.layers[i].disks {
+                let l = limb(d.node);
+                assert!(
+                    bottom(l) <= i && i <= l.top,
+                    "layer {i}: disk of {:?} has no knot here",
+                    d.node
+                );
+                let knot = l.knots[l.top - i];
+                assert_eq!(
+                    knot.freeze, 0,
+                    "layer {i}: {:?} printed a frozen knot",
+                    d.node
+                );
+                assert_eq!(knot.xy, d.xy, "layer {i}: {:?} moved off its knot", d.node);
+                assert!(
+                    d.r <= knot.radius,
+                    "layer {i}: {:?} is wider than its knot",
+                    d.node
+                );
+            }
+        }
+        for (k, l) in forest.limbs.iter().enumerate() {
+            let id = NodeId(k as u32 + 1);
+            let last = l.knots[l.knots.len() - 1];
+            match l.end {
+                End::Bed => assert_eq!(bottom(l), 0, "{id:?} stopped short of the bed"),
+                End::Merged { into } => {
+                    assert!(into < id, "{id:?} merged into younger {into:?}");
+                    let host = limb(into);
+                    let at = bottom(l) - 1;
+                    assert!(
+                        bottom(host) <= at && at <= host.top,
+                        "{into:?} has no knot to carry {id:?} on layer {at}"
+                    );
+                }
+                End::Landed => {
+                    let at = bottom(l) - 1;
+                    assert!(
+                        in_solid(&contours[at], last.xy[0], last.xy[1]),
+                        "{id:?} landed beside the part on layer {at}"
+                    );
+                }
+                End::Pinched => assert!(bottom(l) > 0, "{id:?} was pinched under the bed"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_forest_records_every_limb_of_a_plate_walk() {
+        let (bands, contours) = plate();
+        let opts = plate_opts();
+        assert_forest_matches(&bands, &contours, &opts);
+        let forest = Supports::build(&bands, &contours, &opts).unwrap().forest;
+        let ends: Vec<End> = forest.limbs.iter().map(|l| l.end).collect();
+        let merged = ends
+            .iter()
+            .filter(|e| matches!(e, End::Merged { .. }))
+            .count();
+        assert!(
+            merged >= 3,
+            "the plate merged only {merged} limbs: {ends:?}"
+        );
+        assert!(
+            ends.contains(&End::Bed),
+            "no limb reached the bed: {ends:?}"
+        );
+    }
+
+    #[test]
+    fn a_seeded_tip_is_a_limb_born_where_it_was_seeded() {
+        // The ear of the orphan-lobe case gets its trunk from
+        // `seed_uncovered_interface`, frozen for one layer instead of three.
+        let bands = layers(30);
+        let mut contours = vec![Vec::new(); bands.len()];
+        contours[29] = boolean_union(
+            &boolean_union(&[rect(0.0, 0.0, 8.0, 8.0)], &[rect(7.9, 3.0, 10.0, 5.0)]),
+            &[rect(9.9, 2.5, 13.0, 5.5)],
+        );
+        for contour in contours.iter_mut().take(27) {
+            *contour = vec![rect(-1.0, -1.0, 10.4, 9.0)];
+        }
+        let opts = SupportOpts {
+            style: SupportStyle::Tree,
+            density: 0.0,
+            branch_spacing: 5.0,
+            interface_layers: 3,
+            z_gap: 0.2,
+            overhangs: true,
+            islands: true,
+            ..SupportOpts::default()
+        };
+        assert_forest_matches(&bands, &contours, &opts);
+        let forest = Supports::build(&bands, &contours, &opts).unwrap().forest;
+        let seeded: Vec<(usize, [f64; 2])> = forest
+            .limbs
+            .iter()
+            .filter(|l| l.knots[0].freeze == 1)
+            .map(|l| (l.top, l.knots[0].xy))
+            .collect();
+        assert!(
+            seeded.iter().any(|&(_, xy)| xy[0] > 11.0),
+            "no seeded limb on the ear: {seeded:?}"
+        );
+    }
+
+    #[test]
+    fn project_matches_settling_every_layer_before_dropping_interface() {
+        // A 4 mm pad over the flank of a stepped pyramid. The flank widens
+        // 0.2 mm a layer, faster than the trunk can step away, so the trunk
+        // is cut off: settling drops its disks and the pad's interface loses
+        // its footing.
+        let bands = layers(170);
+        let mut contours = vec![Vec::new(); bands.len()];
+        for (i, contour) in contours.iter_mut().enumerate() {
+            if i >= 150 {
+                *contour = vec![rect(25.0, 5.0, 29.0, 9.0)];
+            } else if i < 120 {
+                let w = 3.0 + (120 - i) as f64 * 0.2;
+                *contour = vec![rect(20.0 - w, 7.0 - w, 20.0 + w, 7.0 + w)];
+            }
+        }
+        let opts = plate_opts();
+        let raw = Supports::walk(&bands, &contours, &opts).unwrap().layers;
+        let lean = lean_of(&opts);
+        let mut fused = raw.clone();
+        project(&mut fused, 1, &bands, &contours, lean);
+        let mut apart = raw.clone();
+        let mut near = Vec::new();
+        for i in 1..apart.len() {
+            let (lower, upper) = apart.split_at_mut(i);
+            let reach = bands[i].height * lean + BEAD_OVERHANG_MM;
+            let part = contours[i - 1].as_slice();
+            settle_disks(
+                &mut upper[0].disks,
+                &lower[i - 1].disks,
+                part,
+                reach,
+                &mut near,
+            );
+        }
+        for i in 1..apart.len() {
+            let (lower, upper) = apart.split_at_mut(i);
+            drop_unfooted_interface(&mut upper[0].interface, &lower[i - 1], &contours[i - 1]);
+        }
+        let count = |layers: &[SupportLayer], f: fn(&SupportLayer) -> bool| {
+            layers.iter().filter(|l| f(l)).count()
+        };
+        let disks = |l: &SupportLayer| !l.disks.is_empty();
+        let interface = |l: &SupportLayer| !l.interface.is_empty();
+        assert_eq!(
+            (count(&raw, disks), count(&raw, interface)),
+            (78, 2),
+            "the walk grew a different pad"
+        );
+        assert_eq!(
+            (count(&fused, disks), count(&fused, interface)),
+            (0, 0),
+            "the cut-off trunk and its interface should both drop"
+        );
+        assert_eq!(fused, apart);
+    }
+
     #[test]
     fn tree_disks_on_a_layer_carry_distinct_nodes_in_walk_order() {
         let bands = layers(80);
@@ -2018,7 +2381,7 @@ mod tests {
         for contour in contours.iter_mut().skip(76) {
             *contour = vec![plate.clone()];
         }
-        let built = build_supports(
+        let built = Supports::build(
             &bands,
             &contours,
             &SupportOpts {
@@ -2030,7 +2393,9 @@ mod tests {
                 islands: true,
                 ..SupportOpts::default()
             },
-        );
+        )
+        .unwrap()
+        .layers;
         let shared = built.iter().filter(|l| l.disks.len() >= 2).count();
         assert!(shared > 0, "no layer printed two disks");
         for (i, layer) in built.iter().enumerate() {
@@ -2052,7 +2417,7 @@ mod tests {
         let bands = layers(80);
         let mut contours = vec![vec![rect(0.0, 0.0, 24.0, 24.0)]; 60];
         contours.extend(vec![vec![rect(24.0, 4.0, 48.0, 20.0)]; 20]);
-        let built = build_supports(
+        let built = Supports::build(
             &bands,
             &contours,
             &SupportOpts {
@@ -2062,7 +2427,9 @@ mod tests {
                 max_tip_spacing: 10.8,
                 ..SupportOpts::default()
             },
-        );
+        )
+        .unwrap()
+        .layers;
         assert!(unfooted_interface(&built, &contours).is_empty());
         let (worst, probes) = worst_interface_reach(&built, &contours);
         assert!(
@@ -2082,7 +2449,7 @@ mod tests {
         // Two 4 mm pads, centres 8 mm apart. Each is its own component, so
         // packing cannot delete one; the fall has to join them.
         contours[39] = boolean_union(&[rect(0.0, 0.0, 4.0, 4.0)], &[rect(8.0, 0.0, 12.0, 4.0)]);
-        let built = build_supports(
+        let built = Supports::build(
             &bands,
             &contours,
             &SupportOpts {
@@ -2096,7 +2463,9 @@ mod tests {
                 islands: true,
                 ..SupportOpts::default()
             },
-        );
+        )
+        .unwrap()
+        .layers;
         assert!(unfooted_interface(&built, &contours).is_empty());
         let peak = built.iter().map(|l| l.disks.len()).max().unwrap_or(0);
         let bed = built[0].disks.len();
@@ -2166,22 +2535,28 @@ mod tests {
         };
         let loads = |nodes: &[Node]| nodes.iter().map(|n| n.load).collect::<Vec<_>>();
 
+        let mut ended = Vec::new();
         let mut over = pair(60.0);
-        merge_nodes(&mut over, &grow(5.2), 0.39);
+        merge_nodes(&mut over, &grow(5.2), 0.39, &mut ended);
         assert_eq!(
             loads(&over),
             vec![60.0, 60.0],
             "120 tip-units on a trunk rated 83.6"
         );
+        assert_eq!(ended, vec![]);
 
         let mut under = pair(30.0);
-        merge_nodes(&mut under, &grow(5.2), 0.39);
+        merge_nodes(&mut under, &grow(5.2), 0.39, &mut ended);
         assert_eq!(loads(&under), vec![60.0]);
+        let joined = (NodeId(2), End::Merged { into: NodeId(1) });
+        assert_eq!(ended, vec![joined]);
 
         // Toughness has no load rating, so its cone merge stands.
+        ended.clear();
         let mut tough = pair(60.0);
-        merge_nodes(&mut tough, &grow(1.5), 0.39);
+        merge_nodes(&mut tough, &grow(1.5), 0.39, &mut ended);
         assert_eq!(loads(&tough), vec![120.0]);
+        assert_eq!(ended, vec![joined]);
     }
 
     #[test]
@@ -2223,7 +2598,7 @@ mod tests {
         for contour in contours.iter_mut().skip(139) {
             *contour = vec![ear.clone()];
         }
-        let built = build_supports(
+        let built = Supports::build(
             &bands,
             &contours,
             &SupportOpts {
@@ -2238,7 +2613,9 @@ mod tests {
                 islands: true,
                 ..SupportOpts::default()
             },
-        );
+        )
+        .unwrap()
+        .layers;
         assert!(
             unfooted_interface(&built, &contours).is_empty(),
             "outer ear interface was left in the air"

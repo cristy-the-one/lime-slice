@@ -18,7 +18,7 @@ use crate::strategy::{
     classicize, layer_weight, mix, pure, support_density, support_interface_density, support_speed,
     Axis, BlendMode, Gyroid3d, PrinterProfile, ResolvedStrategy, ScarfSeam, StrategyId, ZHopMode,
 };
-use crate::support::{build_supports, Disk, SupportLayer, SupportOpts, SupportStyle};
+use crate::support::{Disk, SupportLayer, SupportOpts, SupportStyle, Supports};
 use crate::toolpath::{
     apply_overhang, apply_scarf, apply_z_hop, comb_layer, order_layer, plan_region_split,
     plan_skirt, plan_support, plan_tree_support, Extrusion, PathFeatures, PathKind, ScarfParams,
@@ -1410,7 +1410,7 @@ pub(crate) struct Plan {
     pub layers: Vec<LayerPaths>,
     pub bands: Vec<LayerBand>,
     pub contours: Vec<Vec<Loop>>,
-    pub supports: Vec<SupportLayer>,
+    pub supports: Supports,
     pub contour_ms: f64,
     pub support_ms: f64,
     pub toolpath_ms: f64,
@@ -1537,10 +1537,10 @@ pub(crate) struct ObjectSlice {
     toolpath_ms: f64,
 }
 
-/// Supports planned on an object slice: the regions and branches of every
-/// layer, and the paths printed from them.
+/// Supports planned on an object slice: the forest, the regions and branches
+/// of every layer, and the paths printed from them.
 pub(crate) struct SupportPlan {
-    layers: Vec<SupportLayer>,
+    supports: Supports,
     paths: Vec<Vec<Extrusion>>,
     support_ms: f64,
     toolpath_ms: f64,
@@ -1623,7 +1623,7 @@ fn plan_supports(
     settings: &SliceSettings,
 ) -> Result<SupportPlan, String> {
     let support_started = Instant::now();
-    let layers = build_supports(
+    let supports = Supports::build(
         &object.bands,
         &object.contours,
         &SupportOpts {
@@ -1643,10 +1643,11 @@ fn plan_supports(
         },
     );
     let support_ms = elapsed_ms(support_started);
-    if settings.job.cancelled() {
+    let Some(supports) = supports.filter(|_| !settings.job.cancelled()) else {
         return Err("cancelled".into());
-    }
-    let shaft = shaft_scales(&layers, settings.support_height_mult);
+    };
+    let layers = &supports.layers;
+    let shaft = shaft_scales(layers, settings.support_height_mult);
     let (min, max) = object.bounds;
     let toolpath_started = Instant::now();
     let paths: Vec<Vec<Extrusion>> = object
@@ -1675,7 +1676,7 @@ fn plan_supports(
         return Err("cancelled".into());
     }
     Ok(SupportPlan {
-        layers,
+        supports,
         paths,
         support_ms,
         toolpath_ms,
@@ -1700,7 +1701,7 @@ fn assemble(
         ..
     } = object;
     let SupportPlan {
-        layers: supports,
+        supports,
         paths: support_layer_paths,
         support_ms,
         toolpath_ms: support_path_ms,
@@ -1711,7 +1712,7 @@ fn assemble(
         .enumerate()
         .map(|(i, (part, under))| {
             let band = &bands[i];
-            let support = supports.get(i);
+            let support = supports.layers.get(i);
             let unsupported = support.is_none_or(|s| {
                 s.sparse.is_empty() && s.interface.is_empty() && s.disks.is_empty()
             });

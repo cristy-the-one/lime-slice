@@ -962,6 +962,13 @@ fn print_audit(a: &lime_slice_core::SliceAudit) {
             .map(|(z, area)| format!("{area:.2} mm2 at z {z:.2}"))
             .unwrap_or_else(|| "none".into())
     );
+    let t = &a.trees;
+    if t.tips > 0 {
+        println!(
+            "audit  trees {} from {} tips  largest {} tips  tallest {:.1} mm  ends part {} pinched {} bed {}",
+            t.trees, t.tips, t.largest_tips, t.tallest_mm, t.on_part, t.pinched, t.on_bed
+        );
+    }
     for d in &a.tree_depths {
         if d.disks == 0 {
             continue;

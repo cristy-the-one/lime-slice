@@ -13,7 +13,7 @@ use crate::poly::{
 };
 use crate::slice::{plan, SliceSettings};
 use crate::strategy::BlendMode;
-use crate::support::{Disk, SupportLayer};
+use crate::support::{Disk, End, Forest, SupportLayer};
 use crate::toolpath::{bead_cover, Extrusion, PathKind};
 
 /// Reach a support region may have past what is under it: a bead half-width plus
@@ -73,6 +73,25 @@ pub struct SliceAudit {
     pub worst_stray: Option<(f64, f64)>,
     /// Tree disks grouped by how far under an interface they stand.
     pub tree_depths: Vec<TreeDepth>,
+    /// Tree supports as the walk grew them, before disks settle on each other.
+    pub trees: TreeCensus,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TreeCensus {
+    /// Tips the walk started, packed and seeded alike. Each one is a limb.
+    pub tips: usize,
+    /// Limbs that never merged into another.
+    pub trees: usize,
+    /// Tips carried by the largest tree.
+    pub largest_tips: usize,
+    /// From the highest tip of a tree down to the foot of its trunk.
+    pub tallest_mm: f64,
+    /// Limbs that ended standing on the part, pushed into it, or on the bed.
+    pub on_part: usize,
+    pub pinched: usize,
+    pub on_bed: usize,
 }
 
 /// Tree trunk disks with interface `from_mm..to_mm` above their footprint.
@@ -102,8 +121,9 @@ pub fn audit_slice(
     let plan_ms = started.elapsed().as_secs_f64() * 1000.0;
     let index = ZIndex::build(mesh);
     let bands = &planned.bands;
-    let regions: Vec<Vec<Loop>> = planned.supports.par_iter().map(support_region).collect();
-    let columns: Vec<Vec<Loop>> = planned.supports.par_iter().map(column_region).collect();
+    let supports = &planned.supports.layers;
+    let regions: Vec<Vec<Loop>> = supports.par_iter().map(support_region).collect();
+    let columns: Vec<Vec<Loop>> = supports.par_iter().map(column_region).collect();
     let rows: Vec<LayerRow> = (0..bands.len())
         .into_par_iter()
         .map(|i| {
@@ -127,8 +147,8 @@ pub fn audit_slice(
                 0.0
             } else {
                 crate::support::orphan_interface_area(
-                    &planned.supports[i].interface,
-                    &planned.supports[i - 1],
+                    &supports[i].interface,
+                    &supports[i - 1],
                     &planned.contours[i - 1],
                 )
             };
@@ -218,8 +238,53 @@ pub fn audit_slice(
             }
         }
     }
-    out.tree_depths = tree_depths(&planned.supports, bands);
+    out.tree_depths = tree_depths(supports, bands);
+    out.trees = tree_census(&planned.supports.forest, bands);
     Ok(out)
+}
+
+/// Each limb joins the tree of the host it merged into. Hosts always have
+/// the smaller id, so one pass in id order finds every root.
+fn tree_census(forest: &Forest, bands: &[crate::adaptive::LayerBand]) -> TreeCensus {
+    let n = forest.limbs.len();
+    let mut census = TreeCensus {
+        tips: n,
+        ..TreeCensus::default()
+    };
+    let mut root = Vec::with_capacity(n);
+    let mut tips = vec![0usize; n];
+    let mut highest = vec![0usize; n];
+    for (k, limb) in forest.limbs.iter().enumerate() {
+        let r = match limb.end {
+            End::Merged { into } => root[into.0 as usize - 1],
+            End::Landed => {
+                census.on_part += 1;
+                k
+            }
+            End::Pinched => {
+                census.pinched += 1;
+                k
+            }
+            End::Bed => {
+                census.on_bed += 1;
+                k
+            }
+        };
+        root.push(r);
+        tips[r] += 1;
+        highest[r] = highest[r].max(limb.top);
+    }
+    for (k, limb) in forest.limbs.iter().enumerate() {
+        if root[k] != k {
+            continue;
+        }
+        census.trees += 1;
+        census.largest_tips = census.largest_tips.max(tips[k]);
+        let foot = &bands[limb.top + 1 - limb.knots.len()];
+        let tall = bands[highest[k]].z - (foot.z - foot.height);
+        census.tallest_mm = census.tallest_mm.max(tall);
+    }
+    census
 }
 
 /// Vertical distance from each trunk disk up to the nearest interface over its
