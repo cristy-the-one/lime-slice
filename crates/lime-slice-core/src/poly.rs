@@ -41,6 +41,7 @@ pub fn in_solid(loops: &[Loop], x: f64, y: f64) -> bool {
 pub struct LoopIndex<'a> {
     loops: &'a [Loop],
     boxes: Vec<([f64; 2], [f64; 2])>,
+    edges: std::sync::OnceLock<EdgeGrid>,
 }
 
 impl<'a> LoopIndex<'a> {
@@ -49,7 +50,11 @@ impl<'a> LoopIndex<'a> {
             .iter()
             .map(|l| loop_bounds(std::slice::from_ref(l)).unwrap_or(([0.0; 2], [0.0; 2])))
             .collect();
-        Self { loops, boxes }
+        Self {
+            loops,
+            boxes,
+            edges: std::sync::OnceLock::new(),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -72,26 +77,63 @@ impl<'a> LoopIndex<'a> {
             == 1
     }
 
-    pub fn distance(&self, p: [f64; 2]) -> f64 {
-        let mut order: Vec<(f64, usize)> = self
-            .boxes
-            .iter()
-            .enumerate()
-            .map(|(i, (mn, mx))| {
-                let dx = (mn[0] - p[0]).max(p[0] - mx[0]).max(0.0);
-                let dy = (mn[1] - p[1]).max(p[1] - mx[1]).max(0.0);
-                (dx.hypot(dy), i)
-            })
-            .collect();
-        order.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let mut best = f64::MAX;
-        for (box_d, i) in order {
-            if box_d >= best {
-                break;
+    /// `distance_to_outline(loops, p) < reach`, testing only the edges whose
+    /// cells meet the square around `p`. An edge closer than `reach` lies in
+    /// one of them.
+    pub fn within(&self, p: [f64; 2], reach: f64) -> bool {
+        let grid = self.edges.get_or_init(|| EdgeGrid::new(self.loops));
+        grid.any_within(self.loops, p, reach)
+    }
+}
+
+/// Loop edges bucketed by the cells their bounding boxes cover.
+struct EdgeGrid {
+    buckets: std::collections::HashMap<(i64, i64), Vec<(u32, u32)>>,
+}
+
+const EDGE_CELL_MM: f64 = 2.0;
+
+fn edge_cell(v: f64) -> i64 {
+    (v / EDGE_CELL_MM).floor() as i64
+}
+
+impl EdgeGrid {
+    fn new(loops: &[Loop]) -> Self {
+        let mut buckets: std::collections::HashMap<(i64, i64), Vec<(u32, u32)>> =
+            std::collections::HashMap::new();
+        for (li, l) in loops.iter().enumerate() {
+            let n = l.len();
+            for i in 0..n {
+                let (a, b) = (l[i], l[(i + 1) % n]);
+                for cx in edge_cell(a[0].min(b[0]))..=edge_cell(a[0].max(b[0])) {
+                    for cy in edge_cell(a[1].min(b[1]))..=edge_cell(a[1].max(b[1])) {
+                        buckets
+                            .entry((cx, cy))
+                            .or_default()
+                            .push((li as u32, i as u32));
+                    }
+                }
             }
-            best = best.min(distance_to_outline(std::slice::from_ref(&self.loops[i]), p));
         }
-        best
+        Self { buckets }
+    }
+
+    fn any_within(&self, loops: &[Loop], p: [f64; 2], reach: f64) -> bool {
+        for cx in edge_cell(p[0] - reach)..=edge_cell(p[0] + reach) {
+            for cy in edge_cell(p[1] - reach)..=edge_cell(p[1] + reach) {
+                let Some(edges) = self.buckets.get(&(cx, cy)) else {
+                    continue;
+                };
+                for &(li, i) in edges {
+                    let l = &loops[li as usize];
+                    let i = i as usize;
+                    if segment_distance(p, l[i], l[(i + 1) % l.len()]) < reach {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 }
 
@@ -256,18 +298,21 @@ pub fn distance_to_outline(loops: &[Loop], p: [f64; 2]) -> f64 {
     for l in loops {
         let n = l.len();
         for i in 0..n {
-            let (a, b) = (l[i], l[(i + 1) % n]);
-            let (abx, aby) = (b[0] - a[0], b[1] - a[1]);
-            let len2 = abx * abx + aby * aby;
-            let t = if len2 < 1e-12 {
-                0.0
-            } else {
-                (((p[0] - a[0]) * abx + (p[1] - a[1]) * aby) / len2).clamp(0.0, 1.0)
-            };
-            best = best.min((p[0] - a[0] - abx * t).hypot(p[1] - a[1] - aby * t));
+            best = best.min(segment_distance(p, l[i], l[(i + 1) % n]));
         }
     }
     best
+}
+
+fn segment_distance(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (abx, aby) = (b[0] - a[0], b[1] - a[1]);
+    let len2 = abx * abx + aby * aby;
+    let t = if len2 < 1e-12 {
+        0.0
+    } else {
+        (((p[0] - a[0]) * abx + (p[1] - a[1]) * aby) / len2).clamp(0.0, 1.0)
+    };
+    (p[0] - a[0] - abx * t).hypot(p[1] - a[1] - aby * t)
 }
 
 pub fn loop_bounds(loops: &[Loop]) -> Option<([f64; 2], [f64; 2])> {
