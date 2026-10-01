@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use rayon::prelude::*;
 
 use crate::adaptive::LayerBand;
@@ -365,20 +367,30 @@ fn settle_disks(
     contours: &[Vec<Loop>],
     lean: f64,
 ) {
+    let mut near = Vec::new();
     for i in 1..layers.len() {
         let reach = bands[i].height * lean + BEAD_OVERHANG_MM;
         let (lower, upper) = layers.split_at_mut(i);
         let below = &lower[i - 1];
         let part = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
         let layer = &mut upper[0];
+        // A disk farther than this leaves less than -1 mm of room, below
+        // MIN_DISK_R, so it never changes which disks stay or how wide.
+        let span = below.radii.iter().copied().fold(0.0, f64::max) + reach + 1.0;
+        let mut grid = CellGrid::new(span);
+        for (k, b) in below.branches.iter().enumerate() {
+            grid.insert(k, *b);
+        }
         let mut kept_c = Vec::with_capacity(layer.branches.len());
         let mut kept_r = Vec::with_capacity(layer.radii.len());
         for (c, r) in layer.branches.iter().zip(&layer.radii) {
-            let mut room = below
-                .branches
+            grid.near(*c, span, &mut near);
+            let mut room = near
                 .iter()
-                .zip(&below.radii)
-                .map(|(b, rb)| rb + reach - (c[0] - b[0]).hypot(c[1] - b[1]))
+                .map(|&k| {
+                    let b = below.branches[k];
+                    below.radii[k] + reach - (c[0] - b[0]).hypot(c[1] - b[1])
+                })
                 .fold(f64::NEG_INFINITY, f64::max);
             if !part.is_empty() && in_solid(part, c[0], c[1]) {
                 room = room.max(distance_to_outline(part, *c) + reach);
@@ -623,7 +635,7 @@ fn step_toward(xy: [f64; 2], target: [f64; 2], max_step: f64) -> [f64; 2] {
 /// `max_step`. A node that needs a longer move takes it over several layers,
 /// so every disk still sits on the one under it.
 fn push_out(xy: [f64; 2], part: &LoopIndex, clearance: f64, max_step: f64) -> [f64; 2] {
-    let blocked = |p: [f64; 2]| part.contains(p) || part.distance(p) < clearance;
+    let blocked = |p: [f64; 2]| part.contains(p) || part.within(p, clearance);
     if part.is_empty() || !blocked(xy) {
         return xy;
     }
@@ -663,13 +675,21 @@ fn merge_nodes(nodes: &mut Vec<Node>, grow: &Grow, reach: f64) {
         return;
     }
     nodes.sort_by_key(|n| n.id);
+    // `holds_both` needs d + r_host + r_guest <= 2 * (merged + reach), and the
+    // merged radius is capped at the trunk, so no host sits farther than this.
+    let span = 2.0 * (grow.trunk_r + reach) + 1e-3;
+    let mut grid = CellGrid::new(span);
+    let mut near = Vec::new();
     let mut kept: Vec<Node> = Vec::new();
     for n in nodes.drain(..) {
         if n.freeze > 0 {
             kept.push(n);
             continue;
         }
-        if let Some(host) = kept.iter_mut().find(|k| {
+        grid.near(n.xy, span, &mut near);
+        near.sort_unstable();
+        let found = near.iter().copied().find(|&k| {
+            let k = &kept[k];
             if k.freeze > 0 {
                 return false;
             }
@@ -688,7 +708,10 @@ fn merge_nodes(nodes: &mut Vec<Node>, grow: &Grow, reach: f64) {
                 return false;
             }
             holds_both(k, &n, grow.trunk_r, reach)
-        }) {
+        });
+        if let Some(at) = found {
+            let host = &mut kept[at];
+            let was = host.xy;
             let w = (host.radius + n.radius).max(1e-6);
             host.xy = [
                 (host.xy[0] * host.radius + n.xy[0] * n.radius) / w,
@@ -704,11 +727,65 @@ fn merge_nodes(nodes: &mut Vec<Node>, grow: &Grow, reach: f64) {
             if n.id < host.id {
                 host.id = n.id;
             }
+            grid.relocate(at, was, host.xy);
         } else {
+            grid.insert(kept.len(), n.xy);
             kept.push(n);
         }
     }
     *nodes = kept;
+}
+
+/// Point indices bucketed by square cells. `near` returns every index whose
+/// cell meets the square of half-width `r` around a point, so callers still
+/// apply their exact test.
+struct CellGrid {
+    cell: f64,
+    buckets: HashMap<(i64, i64), Vec<usize>>,
+}
+
+impl CellGrid {
+    fn new(cell: f64) -> Self {
+        Self {
+            cell: cell.max(1e-3),
+            buckets: HashMap::new(),
+        }
+    }
+
+    fn key(&self, x: f64, y: f64) -> (i64, i64) {
+        (
+            (x / self.cell).floor() as i64,
+            (y / self.cell).floor() as i64,
+        )
+    }
+
+    fn insert(&mut self, i: usize, p: [f64; 2]) {
+        let key = self.key(p[0], p[1]);
+        self.buckets.entry(key).or_default().push(i);
+    }
+
+    fn relocate(&mut self, i: usize, from: [f64; 2], to: [f64; 2]) {
+        let (old, new) = (self.key(from[0], from[1]), self.key(to[0], to[1]));
+        if old == new {
+            return;
+        }
+        if let Some(bucket) = self.buckets.get_mut(&old) {
+            bucket.retain(|&k| k != i);
+        }
+        self.buckets.entry(new).or_default().push(i);
+    }
+
+    fn near(&self, p: [f64; 2], r: f64, out: &mut Vec<usize>) {
+        out.clear();
+        let (lo, hi) = (self.key(p[0] - r, p[1] - r), self.key(p[0] + r, p[1] + r));
+        for cx in lo.0..=hi.0 {
+            for cy in lo.1..=hi.1 {
+                if let Some(bucket) = self.buckets.get(&(cx, cy)) {
+                    out.extend_from_slice(bucket);
+                }
+            }
+        }
+    }
 }
 
 /// True when the merged disk, at the section-weighted centre, still sits under
