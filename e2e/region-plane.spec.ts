@@ -47,11 +47,11 @@ test("bridge By region starts inside the mesh and the plane and gizmo move it", 
   await page.screenshot({ path: path.join(out, "prepare-region-plane.png") });
   await page.locator("#prepare").screenshot({ path: path.join(out, "prepare-canvas.png") });
 
-  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.getByRole("button", { name: "3D", exact: true }).click();
   await page.waitForTimeout(400);
   await page.locator("#view3d").screenshot({ path: path.join(out, "preview-3d-before-slice.png") });
-  await page.getByRole("button", { name: "Prepare", exact: true }).click();
+  await page.getByRole("tab", { name: "Prepare", exact: true }).click();
 
   const box = (await page.locator("#prepare").boundingBox())!;
   const cx = box.x + box.width / 2;
@@ -89,12 +89,12 @@ test("bridge By region starts inside the mesh and the plane and gizmo move it", 
 
   await page.locator("#slice").click();
   await expect(page.locator("#estimate")).toContainText("g");
-  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.getByRole("button", { name: "Split", exact: true }).click();
   await page.waitForTimeout(500);
   await page.locator(".previews").screenshot({ path: path.join(out, "split-view-plane.png") });
 
-  await page.getByRole("button", { name: "Prepare", exact: true }).click();
+  await page.getByRole("tab", { name: "Prepare", exact: true }).click();
   await page.waitForTimeout(200);
   const sizeBefore = await page.locator("#objectList .obj span").innerText();
   const gizmoAt = await prepareGizmoPoint(page);

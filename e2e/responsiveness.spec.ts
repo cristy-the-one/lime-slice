@@ -49,13 +49,13 @@ test("the parked G-code body is fetched once, when the G-code tab first needs it
   await openCube(page);
   await page.locator("#slice").click();
   await expect(page.locator("#estimate")).toContainText("g");
-  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.waitForTimeout(300);
   expect(fetches).toEqual([]);
-  await page.getByRole("button", { name: "G-code", exact: true }).click();
+  await page.getByRole("tab", { name: "G-code", exact: true }).click();
   await expect(page.locator("#gcodePane .line").first()).toHaveText(`;LAYER:${layer.index} Z:${layer.z}`);
-  await page.getByRole("button", { name: "Preview", exact: true }).click();
-  await page.getByRole("button", { name: "G-code", exact: true }).click();
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
+  await page.getByRole("tab", { name: "G-code", exact: true }).click();
   await expect(page.locator("#gcodePane .line").nth(1)).toHaveText(";TYPE:OUTER");
   expect(fetches).toHaveLength(1);
   expect(fetches[0]).toMatch(/\/api\/gcode\/t1$/);
@@ -73,7 +73,7 @@ test("legend and Color by recolor the 3D preview without rebuilding it", async (
   });
   await mockEngine(page, () => 0);
   await openCube(page);
-  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.getByRole("button", { name: "3D", exact: true }).click();
   await page.locator("#slice").click();
   await expect(page.locator("#estimate")).toContainText("g");
@@ -115,7 +115,7 @@ test("the 3D view draws only while something changes", async ({ page }) => {
   const draws = () => page.evaluate(() => (window as unknown as { __draws: number }).__draws);
   await mockEngine(page, () => 0);
   await openCube(page);
-  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.getByRole("button", { name: "3D", exact: true }).click();
   await page.locator("#slice").click();
   await expect(page.locator("#estimate")).toContainText("g");
@@ -146,7 +146,7 @@ test("playback readout does not resize the print slider", async ({ page }) => {
   await openCube(page);
   await page.locator("#slice").click();
   await expect(page.locator("#estimate")).toContainText("g");
-  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
   const move = page.locator("#move");
   await expect(move).toBeVisible();
   await expect(move).toBeEnabled();
@@ -213,7 +213,7 @@ test("layer scrub does not resize the spark or the layer track", async ({ page }
   await openCube(page);
   await page.locator("#slice").click();
   await expect(page.locator("#estimate")).toContainText("g");
-  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
   const spark = page.locator("#spark");
   const track = page.locator("#vslider .track");
   const spark0 = (await spark.boundingBox())!;
@@ -309,7 +309,7 @@ test("a running slice shows elapsed time and Cancel aborts the request", async (
   await page.waitForTimeout(600);
   expect(await page.locator("#timing").textContent()).not.toBe(first);
   await page.getByRole("button", { name: "Cancel" }).click();
-  await expect(page.locator("#banner")).toContainText("cancelled");
+  await expect(page.locator("#toasts")).toContainText("cancelled");
   await expect(page.locator("#timing")).toHaveText("No slice yet");
   const railAfter = (await page.locator("#banner").boundingBox())!;
   const stageAfter = (await page.locator(".workspace").boundingBox())!;

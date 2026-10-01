@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 43117",
     "build": "tsc --noEmit && vite build",
-    "test:unit": "node --experimental-strip-types src/slice-action.test.ts",
+    "test:unit": "node --experimental-strip-types src/slice-action.test.ts && node --experimental-strip-types src/ui/commands.test.ts && node --experimental-strip-types src/ui/slice-progress.test.ts",
     "preview": "vite preview --host 127.0.0.1 --port 43117",
     "shots": "playwright test",
     "tauri": "tauri"

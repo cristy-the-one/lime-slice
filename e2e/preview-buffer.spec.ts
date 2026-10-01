@@ -43,7 +43,7 @@ test("preview canvases keep a device-pixel backing store across resize", async (
   expect(solid.match, JSON.stringify(solid)).toBe(true);
   expect(solid.css[0]).toBeGreaterThan(split.css[0]);
 
-  await page.getByRole("button", { name: "Prepare" }).click();
+  await page.getByRole("tab", { name: "Prepare", exact: true }).click();
   const prepare = await bufferMatchesCss(page, "prepare");
   console.log("prepare", JSON.stringify(prepare));
   expect(prepare.match, JSON.stringify(prepare)).toBe(true);
