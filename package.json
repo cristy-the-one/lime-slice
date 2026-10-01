@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 43117",
+    "dev": "vite --port 43117",
     "build": "tsc --noEmit && vite build",
-    "test:unit": "node --experimental-strip-types src/slice-action.test.ts && node --experimental-strip-types src/ui/commands.test.ts && node --experimental-strip-types src/ui/slice-progress.test.ts",
-    "preview": "vite preview --host 127.0.0.1 --port 43117",
+    "test:unit": "node --experimental-strip-types src/slice-action.test.ts && node --experimental-strip-types src/ui/commands.test.ts && node --experimental-strip-types src/ui/slice-progress.test.ts && node --experimental-strip-types src/ui/api-base.test.ts",
+    "preview": "vite preview --port 43117",
     "shots": "playwright test",
     "tauri": "tauri"
   },

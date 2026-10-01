@@ -24,6 +24,21 @@ npm run tauri dev
 
 The API listens on `127.0.0.1:43118`. Inside Tauri the UI calls `slice_model` instead of HTTP. Each request runs on its own thread. A new slice supersedes the one in flight, and `POST /api/cancel` stops it at the planner's next check.
 
+## Run on another device (iPhone/iPad over LAN or Tailscale)
+
+The engine stays on loopback until you set `--host`. On the computer that will slice:
+
+```bash
+cargo run -p lime-slice --release -- serve --host 0.0.0.0 --token "$LIME_SLICE_TOKEN"
+LIME_DEV_HOST=0.0.0.0 npm run dev
+```
+
+`--host` defaults to `127.0.0.1`. `0.0.0.0` accepts connections from the LAN. On Tailscale, bind `0.0.0.0` or the machine's Tailscale address. `--token` is optional; the same secret can be supplied with `LIME_SLICE_TOKEN` when the flag is omitted. The flag wins when both are set.
+
+On the phone, open `http://<computer-ip>:43117` (the LAN address or the Tailscale IP, port 43117). A page that is not served from localhost calls `http://<that-host>:43118` on its own. To point at a different engine, open `http://<computer-ip>:43117/?api=http://<engine-host>:43118` or set the URL in the gear menu under Connection and press Test connection. A saved Connection URL wins over `?api=`, which wins over `VITE_LIME_API`. `LIME_DEV_HOST` only changes the Vite dev server (default `127.0.0.1`). Playwright still starts preview on `127.0.0.1`.
+
+Without a token, a non-loopback bind has no authentication: anyone who can reach the port can submit meshes and download G-code. The process prints that warning when it binds. Set a token on a shared network. The UI sends `Authorization: Bearer <token>`, and the engine also accepts `?token=` on a request. CORS stays `*` until a token is set; with a token the engine echoes the page's Origin and allows the Authorization header. Do not expose port 43118 to the public internet.
+
 ## Build
 
 `rust-toolchain.toml` pins stable Rust **1.88.0**, and the workspace `rust-version` matches. 1.83 cannot build this lockfile: `serde_spanned` 1.1 and `clap_lex` 1.1 need edition 2024 (Rust 1.85), and the resolved `time`, `icu_*`, `darling`, and `plist` crates require 1.88. `cargo +1.87.0 check` stops on those `rust-version` fields.

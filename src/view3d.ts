@@ -96,6 +96,8 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   controls.dampingFactor = 0.08;
   controls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
   controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
+  controls.touches.ONE = THREE.TOUCH.ROTATE;
+  controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
 
   const root = new THREE.Group();
   scene.add(root);

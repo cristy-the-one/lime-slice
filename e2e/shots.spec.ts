@@ -184,5 +184,28 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.route("**/api/health", (route) => route.abort());
   await page.goto("/");
   await expect(page.locator("#banner")).toContainText("Slicer engine not running");
+  await expect(page.locator("#banner")).toContainText("127.0.0.1:43118");
   await shot(page, "v3-11-error-banner.png");
+});
+
+test("connection settings and a 390x844 layout", async ({ page }) => {
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/");
+  await expect(page.locator("#engineLink")).toHaveAttribute("data-state", "ok");
+  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
+  await expect(page.locator("#connection")).toBeVisible();
+  await expect(page.locator("#apiUsing")).toContainText("http://127.0.0.1:43118");
+  await page.locator(".gear-panel").screenshot({ path: path.join(out, "connection-settings.png") });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await expect(page.locator(".app")).toBeVisible();
+  const overflow = await page.evaluate(() => {
+    const root = document.scrollingElement ?? document.documentElement;
+    return { w: root.scrollWidth - root.clientWidth, h: root.scrollHeight - root.clientHeight };
+  });
+  expect(overflow.w, "horizontal overflow at 390").toBe(0);
+  expect(overflow.h, "vertical overflow at 390").toBe(0);
+  await shot(page, "phone-390x844.png");
 });
