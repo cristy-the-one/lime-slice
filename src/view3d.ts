@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { syncBedGrid } from "./bed-grid";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { featureColor, SPEED_RAMP, SPEED_RANGE_MM_S, WEIGHT_RAMP, type ColorMode } from "./colors";
 import { buildCutPlane, disposeTree, previewFrame, splitDragAt } from "./cut-plane";
@@ -98,7 +99,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
 
   const root = new THREE.Group();
   scene.add(root);
-  let bed = new THREE.GridHelper(1, 10, hexToThree(colors.line), hexToThree(colors.bedMinor));
+  const bed = new THREE.Group();
   scene.add(bed);
   const bedPlateMat = new THREE.MeshBasicMaterial({
     color: hexToThree(colors.bed),
@@ -123,6 +124,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   let bedX = 220;
   let bedY = 220;
   let bedZ = 250;
+  syncBedGrid(bed, bedX, bedY, hexToThree(colors.line), hexToThree(colors.bedMinor));
 
   let cut: THREE.Group | null = null;
   let cutPicks: THREE.Object3D[] = [];
@@ -222,8 +224,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
 
   function placeBed(span: number, centerX = 0, centerY = 0) {
     const size = Math.max(bedX, bedY, span);
-    bed.scale.set(bedX, 1, bedY);
-    bed.position.set(bedX / 2 - centerX, 0, -(bedY / 2 - centerY));
+    syncBedGrid(bed, bedX, bedY, hexToThree(colors.line), hexToThree(colors.bedMinor), centerX, centerY);
     bedPlate.scale.set(bedX, bedY, 1);
     bedPlate.position.set(bedX / 2 - centerX, -0.05, -(bedY / 2 - centerY));
     bedEdge.geometry.dispose();
@@ -614,15 +615,8 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       (bedEdge.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.teal));
       (playLine.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.amber));
       (volume.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.teal));
-      const next = new THREE.GridHelper(1, 10, hexToThree(colors.line), hexToThree(colors.bedMinor));
-      next.scale.copy(bed.scale);
-      next.position.copy(bed.position);
-      scene.remove(bed);
-      bed.geometry.dispose();
-      const mats = Array.isArray(bed.material) ? bed.material : [bed.material];
-      mats.forEach((mat) => mat.dispose());
-      bed = next;
-      scene.add(bed);
+      bed.userData.gridKey = "";
+      syncBedGrid(bed, bedX, bedY, hexToThree(colors.line), hexToThree(colors.bedMinor), bed.userData.cx ?? 0, bed.userData.cy ?? 0);
     },
     setPlayhead(seg) {
       requestRender();

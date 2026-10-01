@@ -2,5 +2,15 @@
   "identifier": "default",
   "description": "Lime Slice main window",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-is-maximized",
+    "core:window:allow-start-dragging",
+    "core:window:allow-is-decorated",
+    "core:window:allow-set-decorations",
+    "window-state:default"
+  ]
 }

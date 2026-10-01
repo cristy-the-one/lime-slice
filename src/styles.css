@@ -149,7 +149,7 @@ input[type="checkbox"], input[type="range"] { accent-color: var(--accent); }
   overflow: hidden;
   position: relative;
   display: grid;
-  grid-template-columns: 240px 40px minmax(0, 1fr) 320px;
+  grid-template-columns: var(--panel-left, 240px) 40px minmax(0, 1fr) var(--panel-right, 320px);
   grid-template-rows: minmax(0, 1fr);
 }
 .panel {
@@ -381,7 +381,8 @@ canvas { width: 100%; height: 100%; display: block; }
 .sheet-card ul { margin: 0 0 12px; padding-left: 18px; }
 .sheet-card li { margin: 6px 0; }
 kbd { border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; background: var(--panel-2); font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; }
-#prepareBody { display: block; flex: 1 1 auto; min-height: 0; height: auto; position: relative; }
+#prepareBody, #previewBody { position: relative; }
+#prepareBody { display: block; flex: 1 1 auto; min-height: 0; height: auto; }
 #prepare { width: 100%; height: 100%; }
 .gizmo-readout {
   position: absolute;
@@ -454,7 +455,7 @@ kbd { border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; backg
 
 .panel-toggle { display: none; }
 @media (max-width: 1200px) {
-  .workspace { grid-template-columns: 200px 40px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 220px); }
+  .workspace { grid-template-columns: var(--panel-left, 200px) 40px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 220px); }
   #left { grid-column: 1; grid-row: 1; }
   #toolRail { grid-column: 2; grid-row: 1; }
   #stage { grid-column: 3; grid-row: 1; }
@@ -479,7 +480,6 @@ kbd { border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; backg
   .workspace.show-left.show-right .stage { grid-row: 2; }
   .workspace.show-left.show-right #right { grid-row: 3; }
   .top { flex-wrap: wrap; height: auto; max-height: none; overflow: visible; }
-  .top .timing { flex-basis: 100%; max-width: 100%; }
   #toolRail {
     position: absolute;
     z-index: 4;

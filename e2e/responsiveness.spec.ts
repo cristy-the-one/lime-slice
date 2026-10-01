@@ -321,7 +321,7 @@ test("a running slice shows elapsed time and Cancel aborts the request", async (
 test("a collapsed settings group stays collapsed when the panel re-renders", async ({ page }) => {
   await mockEngine(page, () => 0);
   await openCube(page);
-  const walls = page.locator('details[data-group="Walls and seams"]');
+  const walls = page.locator('details[data-group="Strength"]');
   await walls.locator("summary").click();
   await expect(walls).not.toHaveAttribute("open");
   await page.locator("#adaptive").check();
