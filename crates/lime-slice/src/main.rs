@@ -6,8 +6,8 @@ use std::sync::Mutex;
 use base64::Engine;
 use clap::{Parser, Subcommand};
 use lime_slice_core::{
-    pareto_estimates, slice_request, Axis, BlendMode, Gyroid3d, Mesh, ScarfSeam, SliceRequest,
-    SliceSettings, StrategyId, ZHopMode,
+    pareto_estimates, slice_request, Axis, BlendMode, Gyroid3d, Mesh, RigidPose, ScarfSeam,
+    SliceRequest, SliceSettings, StrategyId, ZHopMode,
 };
 
 #[derive(Parser)]
@@ -40,6 +40,10 @@ enum Cmd {
         /// Part scale in percent about its bounding-box centre, as the UI's Scale %. The part still sits on the bed.
         #[arg(long, default_value_t = 100.0)]
         scale: f64,
+        /// Turn the part about its bounding-box centre before slicing, such as `x90` or
+        /// `y-90,z45`. Turns apply in order about the bed axes, then the part sits on the bed.
+        #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
+        rotate: Vec<String>,
         #[arg(long, default_value_t = 4.0)]
         bottom_mm: f64,
         #[arg(long, default_value_t = 6.0)]
@@ -215,6 +219,7 @@ fn run() -> Result<(), String> {
             line_width,
             nozzle,
             scale,
+            rotate,
             bottom_mm,
             transition_mm,
             toughness,
@@ -314,6 +319,9 @@ fn run() -> Result<(), String> {
             let source = read_input(&input, scale / 100.0, step_tolerance)?;
             let mut request = request_for(&source, &blend, &settings, nozzle);
             request.step_tolerance_mm = step_tolerance;
+            if !rotate.is_empty() {
+                request.pose = Some(turned_pose(&source, &rotate, step_tolerance)?);
+            }
             let response = slice_request(&request, lime_slice_core::Job::default())
                 .map_err(|e| e.to_string())?;
             if let Some(parent) = output.parent() {
@@ -1197,9 +1205,88 @@ fn blend_mode(
     })
 }
 
+/// The pose that applies `turns` about the part's bounding-box centre and
+/// sets the turned part back on the bed, keeping its centre in X and Y.
+fn turned_pose(
+    source: &Input,
+    turns: &[String],
+    step_tolerance_mm: f64,
+) -> Result<RigidPose, String> {
+    let rotation = turns_rotation(turns)?;
+    let mesh =
+        lime_slice_core::load_slice_mesh_tol(&source.name, &source.bytes, true, step_tolerance_mm)?;
+    let (min, max) = mesh.bounds().ok_or("empty mesh")?;
+    let pivot = [
+        (min[0] + max[0]) * 0.5,
+        (min[1] + max[1]) * 0.5,
+        (min[2] + max[2]) * 0.5,
+    ];
+    let (turned_min, _) = mesh
+        .rigid_move(&rotation, pivot, pivot)
+        .bounds()
+        .ok_or("empty mesh")?;
+    Ok(RigidPose {
+        rotation,
+        pivot,
+        translation: [pivot[0], pivot[1], pivot[2] - turned_min[2]],
+    })
+}
+
+/// Row-major rotation for turns like `x90` or `z-45`, applied in order.
+fn turns_rotation(turns: &[String]) -> Result<[f64; 9], String> {
+    let mut rotation = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    for turn in turns {
+        let turn = turn.trim().to_ascii_lowercase();
+        let mut chars = turn.chars();
+        let axis = chars.next().ok_or("empty --rotate turn")?;
+        let degrees: f64 = chars
+            .as_str()
+            .trim_start_matches([':', '='])
+            .parse()
+            .map_err(|_| format!("--rotate {turn}: expected an axis and degrees, such as x90"))?;
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        // Quarter turns come out exact, so a flipped part stays square to the bed.
+        let snap = |v: f64| if v.abs() < 1e-12 { 0.0 } else { v };
+        let (s, c) = (snap(sin), snap(cos));
+        let step = match axis {
+            'x' => [1.0, 0.0, 0.0, 0.0, c, -s, 0.0, s, c],
+            'y' => [c, 0.0, s, 0.0, 1.0, 0.0, -s, 0.0, c],
+            'z' => [c, -s, 0.0, s, c, 0.0, 0.0, 0.0, 1.0],
+            _ => return Err(format!("--rotate {turn}: axis must be x, y, or z")),
+        };
+        let mut next = [0.0; 9];
+        for row in 0..3 {
+            for col in 0..3 {
+                next[row * 3 + col] = (0..3)
+                    .map(|k| step[row * 3 + k] * rotation[k * 3 + col])
+                    .sum();
+            }
+        }
+        rotation = next;
+    }
+    Ok(rotation)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turns_apply_in_order_about_the_bed_axes() {
+        let r = turns_rotation(&["x90".into(), "z90".into()]).unwrap();
+        let apply = |v: [f64; 3]| {
+            [
+                r[0] * v[0] + r[1] * v[1] + r[2] * v[2],
+                r[3] * v[0] + r[4] * v[1] + r[5] * v[2],
+                r[6] * v[0] + r[7] * v[1] + r[8] * v[2],
+            ]
+        };
+        assert_eq!(apply([1.0, 0.0, 0.0]), [0.0, 1.0, 0.0]);
+        assert_eq!(apply([0.0, 1.0, 0.0]), [0.0, 0.0, 1.0]);
+        assert_eq!(apply([0.0, 0.0, 1.0]), [1.0, 0.0, 0.0]);
+        assert!(turns_rotation(&["w90".into()]).is_err());
+        assert!(turns_rotation(&["x".into()]).is_err());
+    }
 
     #[test]
     fn scale_grows_the_part_about_its_centre_on_the_bed_and_ships_an_stl() {
