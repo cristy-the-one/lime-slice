@@ -9,6 +9,7 @@ import { DEFAULT_PRESET, diffPreset, presetKeys, readPresets, writePresets, type
 import { loadProfile, profileJson, saveProfile, type PrinterProfile } from "./profiles";
 import { layerWeight, resolved, type ResolvedCard } from "./strategy";
 import { applyTheme, loadTheme, onSchemeChange, themeColors, type ThemeChoice } from "./theme";
+import { mountChrome } from "./ui/chrome";
 import { clampOffset, clipPolyline, flipSection, keepsPoint, layerCut, sectionReach, type SectionSpec, type Vec3 } from "./section-plane";
 import {
   cacheStatus,
@@ -328,6 +329,7 @@ app.innerHTML = `
         <li>Drag the split plane when By region is on</li>
         <li>Bed fades the build plate. 0 hides it</li>
         <li>Section clips the preview. Cut moves the plane. Rings, parked at the left, aim it. The sheet is only a guide. Layers still apply. Neither changes the slice</li>
+        <li><kbd>M</kbd> Move · <kbd>R</kbd> Rotate · <kbd>S</kbd> Scale field · <kbd>F</kbd> Lay flat · <kbd>C</kbd> Section</li>
         <li><kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> Layer</li>
         <li><kbd>?</kbd> This sheet</li>
       </ul>
@@ -974,6 +976,7 @@ function paintGcode() {
   document.querySelectorAll<HTMLButtonElement>(".tab").forEach((el) => {
     const pressed = el.dataset.tab === state.stage;
     el.setAttribute("aria-pressed", pressed ? "true" : "false");
+    el.classList.toggle("on", pressed);
   });
   if (!on) return;
   const layer = state.result?.layers[state.layer];
@@ -1356,11 +1359,21 @@ function currentSliceAction(force = false): SliceAction {
     force,
   });
 }
+function setButtonLabel(button: HTMLButtonElement, label: string) {
+  let slot = button.querySelector<HTMLElement>(".btn-label");
+  if (!slot) {
+    slot = document.createElement("span");
+    slot.className = "btn-label";
+    button.replaceChildren(slot);
+  }
+  slot.textContent = label;
+}
 function paintSliceButton(button: HTMLButtonElement) {
   const action = currentSliceAction(false);
   const label = state.busy ? sliceBusyLabel(busyRecompute) : action.label;
-  button.textContent = label;
-  button.title = state.busy ? "" : action.detail;
+  setButtonLabel(button, label);
+  button.dataset.tip = state.busy ? "" : action.detail;
+  button.removeAttribute("title");
   button.setAttribute("aria-label", label);
   button.dataset.sliceAction = state.busy ? "busy" : action.state;
   const showSaved = !state.busy && action.state === "cached";
@@ -1371,9 +1384,10 @@ function paintSliceButton(button: HTMLButtonElement) {
 function paintForceButton(button: HTMLButtonElement) {
   const action = currentSliceAction(true);
   const ready = !state.busy && !!state.mesh && action.state === "force";
-  button.textContent = FORCE_LABEL;
+  setButtonLabel(button, FORCE_LABEL);
   button.disabled = !ready;
-  button.title = ready ? action.detail : "Plan this recipe again. Available when a saved slice would be shown.";
+  button.dataset.tip = ready ? action.detail : "Plan this recipe again. Available when a saved slice would be shown.";
+  button.removeAttribute("title");
   button.setAttribute("aria-label", FORCE_LABEL);
 }
 function scheduleAuto() {
@@ -1916,6 +1930,15 @@ function paintGizmoReadout() {
   }
   if (state.blendKind === "byRegion") {
     el.textContent = `Split ${state.axis.toUpperCase()} ${state.atMm.toFixed(1)} mm · low toughness · high speed`;
+    return;
+  }
+  const tool = document.querySelector<HTMLElement>("#toolRail")?.dataset.tool;
+  if (tool === "move") {
+    el.textContent = "Move · drag an arrow · Shift snaps 1 mm";
+    return;
+  }
+  if (tool === "rotate") {
+    el.textContent = "Rotate · drag a ring · Shift snaps 15°";
     return;
   }
   el.textContent = "Parked left · drag a ring to rotate · an arrow to move · Shift snaps";
@@ -2511,4 +2534,10 @@ renderChrome();
 fitNarrow();
 resize();
 view3d.setTheme();
+prepare.setTheme();
+mountChrome({
+  setGizmoTool: (tool) => prepare.setGizmoTool(tool),
+  onToolReadout: () => paintGizmoReadout(),
+});
+resize();
 void probe();

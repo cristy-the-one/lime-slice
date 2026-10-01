@@ -1,0 +1,117 @@
+/* Inter variable, SIL Open Font License. UI text only; numeric readouts stay IBM Plex Mono. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts/InterVariable.woff2") format("woff2");
+}
+
+/* Dark is the default. Light is one block, applied when theme.ts sets data-scheme. */
+:root,
+:root[data-scheme="dark"] {
+  color-scheme: dark;
+  --surface-0: #0f1115;
+  --surface-1: #15181e;
+  --surface-2: #1c2027;
+  --surface-3: #262b34;
+  --border: #2a303a;
+  --border-strong: #3a4250;
+  --text: #e8eaed;
+  --text-dim: #a3abb8;
+  --text-faint: #6b7483;
+  --accent: #a3e635;
+  --accent-hover: #b6f04f;
+  --accent-pressed: #8cc926;
+  --on-accent: #10150a;
+  --info: #38bdf8;
+  --warn: #f5a524;
+  --danger: #f0615a;
+  --ok: #4ade80;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --control-h: 28px;
+
+  --amber: #f5a524;
+  --teal: #2ec4b6;
+  --stage: #0b0d11;
+  --bed: #141820;
+  --bed-minor: #222733;
+  --mesh: #c6f26d;
+  --axis-x: #e85d4c;
+  --axis-y: #8fce6a;
+  --axis-z: #6aa7ff;
+  --sheet: #f4efe4;
+  --gizmo-hot: #ffffff;
+  --mid: #e6d3a3;
+  --slow: var(--amber);
+  --fast: #d55e00;
+  --spark: #3a4250;
+  --banner: #3a2422;
+  --banner-text: #ffc7c0;
+  --banner-warn: #3a3018;
+  --banner-warn-text: #ffd48a;
+  --banner-ok: #16301c;
+  --track: var(--surface-3);
+  --chip: #1a2e22;
+  --chip-bad: #3a2422;
+  --progress-track: #2a2418;
+
+  --bg: var(--surface-0);
+  --bar: var(--surface-1);
+  --panel: var(--surface-1);
+  --panel-2: var(--surface-2);
+  --line: var(--border);
+  --muted: var(--text-dim);
+
+  font-family: "Inter", "Segoe UI", sans-serif;
+  font-size: 13px;
+  /* Unitless, so a font swap cannot change line boxes or the canvas size. */
+  line-height: 1.35;
+}
+
+:root[data-scheme="light"] {
+  color-scheme: light;
+  --surface-0: #f3f5f8;
+  --surface-1: #ffffff;
+  --surface-2: #eef1f5;
+  --surface-3: #e2e7ee;
+  --border: #d5dbe3;
+  --border-strong: #b7c0cc;
+  --text: #1a1d23;
+  --text-dim: #4b5565;
+  --text-faint: #6b7483;
+  --accent: #84cc16;
+  --accent-hover: #a3e635;
+  --accent-pressed: #65a30d;
+  --on-accent: #10150a;
+  --info: #0284c7;
+  --warn: #b45309;
+  --danger: #dc2626;
+  --ok: #15803d;
+
+  --amber: #b57500;
+  --teal: #0f766e;
+  /* Dark viewport in both themes. A light clear color changes gizmo edge pixels. */
+  --stage: #0c0e12;
+  --bed: #161a22;
+  --bed-minor: #222733;
+  /* Same cut-plane tint as dark. A dark sheet shifts the ghost off the mesh green. */
+  --sheet: #f4efe4;
+  --mid: #8a5a12;
+  --fast: #c2410c;
+  --spark: #c5ced8;
+  --banner: #fde8e6;
+  --banner-text: #7f1d1d;
+  --banner-warn: #fbf0d4;
+  --banner-warn-text: #78350f;
+  --banner-ok: #dcfce7;
+  --chip: #dcfce7;
+  --chip-bad: #fee2e2;
+  --progress-track: #e7edc8;
+}

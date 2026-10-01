@@ -101,7 +101,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   let bed = new THREE.GridHelper(1, 10, hexToThree(colors.line), hexToThree(colors.bedMinor));
   scene.add(bed);
   const bedPlateMat = new THREE.MeshBasicMaterial({
-    color: 0x141820,
+    color: hexToThree(colors.bed),
     side: THREE.DoubleSide,
     transparent: true,
     opacity: 0.4,
@@ -117,7 +117,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   scene.add(bedEdge);
   const volume = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
-    new THREE.LineBasicMaterial({ color: 0x2ec4b6, transparent: true, opacity: 0.35 }),
+    new THREE.LineBasicMaterial({ color: hexToThree(colors.teal), transparent: true, opacity: 0.35 }),
   );
   scene.add(volume);
   let bedX = 220;
@@ -150,7 +150,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   let ribbon: THREE.Mesh | null = null;
   let ghost: THREE.Mesh | null = null;
   let ghostSig = "";
-  const ghostMat = new THREE.MeshBasicMaterial({ color: 0xc6f26d, clippingPlanes: clipPlanes });
+  const ghostMat = new THREE.MeshBasicMaterial({ color: hexToThree(colors.mesh), clippingPlanes: clipPlanes });
   attachSectionClip(ghostMat, sectionPlane);
   let face: THREE.Mesh | null = null;
   let travelLines: THREE.LineSegments | null = null;
@@ -385,7 +385,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     if (active === ringHover) return;
     ringHover = active;
     for (const [axis, mat] of sectionRig.ringMats) {
-      mat.color.setHex(active === axis ? 0xffffff : RING[axis]);
+      mat.color.setHex(active === axis ? hexToThree(colors.gizmoHot) : ringHex(axis));
     }
     requestRender();
   }
@@ -603,6 +603,14 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       placePlane();
       cursorMat.color.setHex(hexToThree(colors.amber));
       sectionRig.arrowMat.color.setHex(hexToThree(colors.amber));
+      bedPlateMat.color.setHex(hexToThree(colors.bed));
+      ghostMat.color.setHex(hexToThree(colors.mesh));
+      (sectionRig.sheet.material as THREE.MeshBasicMaterial).color.setHex(hexToThree(colors.sheet));
+      const sheetEdge = sectionRig.sheet.children[0] as THREE.LineLoop;
+      (sheetEdge.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.sheet));
+      for (const [axis, mat] of sectionRig.ringMats) {
+        mat.color.setHex(hexToThree(axis === "x" ? colors.axisX : axis === "y" ? colors.axisY : colors.axisZ));
+      }
       (bedEdge.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.teal));
       (playLine.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.amber));
       (volume.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.teal));
@@ -778,7 +786,11 @@ type Axis = "x" | "y" | "z";
 type SectionHit = { axis: Axis; distance: number };
 type SectionDrag = { axis: Axis; last: number; total: number; applied: number; base: SectionSpec } | null;
 
-const RING: Record<Axis, number> = { x: 0xe85d4c, y: 0x8fce6a, z: 0x6aa7ff };
+function ringHex(axis: Axis): number {
+  const colors = themeColors();
+  const hex = axis === "x" ? colors.axisX : axis === "y" ? colors.axisY : colors.axisZ;
+  return hexToThree(hex);
+}
 
 function sameSection(a: SectionSpec | null, b: SectionSpec | null) {
   if (!a || !b) return a === b;
@@ -823,7 +835,7 @@ function buildSectionRig() {
   root.visible = false;
   const sheet = new THREE.Mesh(
     new THREE.PlaneGeometry(1, 1),
-    new THREE.MeshBasicMaterial({ color: 0xf4efe4, transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide }),
+    new THREE.MeshBasicMaterial({ color: hexToThree(themeColors().sheet), transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide }),
   );
   sheet.renderOrder = 3;
   sheet.raycast = () => undefined;
@@ -831,12 +843,12 @@ function buildSectionRig() {
     new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute([
       -0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0,
     ], 3)),
-    new THREE.LineBasicMaterial({ color: 0xf4efe4, transparent: true, opacity: 0.95, depthTest: false }),
+    new THREE.LineBasicMaterial({ color: hexToThree(themeColors().sheet), transparent: true, opacity: 0.95, depthTest: false }),
   );
   border.renderOrder = 4;
   border.raycast = () => undefined;
   sheet.add(border);
-  const arrowMat = new THREE.MeshBasicMaterial({ color: 0xf0a202, depthTest: false, toneMapped: false });
+  const arrowMat = new THREE.MeshBasicMaterial({ color: hexToThree(themeColors().amber), depthTest: false, toneMapped: false });
   const arrow = new THREE.Group();
   const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.55, 10), arrowMat);
   shaft.position.y = 0.38;
@@ -857,7 +869,7 @@ function buildSectionRig() {
   const ringGeo = new THREE.TorusGeometry(1, 0.046, 10, 64);
   const pickGeo = new THREE.TorusGeometry(1, 0.11, 8, 24);
   for (const axis of ["x", "y", "z"] as const) {
-    const mat = new THREE.MeshBasicMaterial({ color: RING[axis], depthTest: false, transparent: true, opacity: 0.95, toneMapped: false });
+    const mat = new THREE.MeshBasicMaterial({ color: ringHex(axis), depthTest: false, transparent: true, opacity: 0.95, toneMapped: false });
     const show = new THREE.Mesh(ringGeo, mat);
     const pick = new THREE.Mesh(pickGeo, new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }));
     orientRing(show, axis);
