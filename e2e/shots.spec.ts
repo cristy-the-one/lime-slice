@@ -105,10 +105,14 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await expect(page.locator("#gcodePane .line.on")).toBeVisible();
   await page.locator("#gcodePane").screenshot({ path: path.join(out, "p2-gcode-sync.png") });
   await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await page.locator("#theme").selectOption("light");
+  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
   await page.waitForTimeout(150);
   await shot(page, "p2-light-theme.png");
+  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await page.locator("#theme").selectOption("dark");
+  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
   await page.locator("#presetDiff").screenshot({ path: path.join(out, "p2-preset-diff.png") });
   await page.getByRole("button", { name: "Compare speed, mixes, toughness" }).click();
   await expect(page.locator(".pareto-dot")).toHaveCount(5);

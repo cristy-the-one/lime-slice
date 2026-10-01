@@ -145,7 +145,9 @@ test("legend toggles and the estimate table keep thin wall and gap fill apart", 
   expect(await swatch("Thin wall")).toBe(cssRgb(THIN));
   expect(await swatch("Gap fill")).toBe(cssRgb(GAP));
 
+  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await page.locator("#theme").selectOption("dark");
+  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
   await page.locator("#rangeHigh").evaluate((el) => {
     const input = el as HTMLInputElement;
     input.value = input.max;

@@ -150,10 +150,46 @@ fn calibrate_pa(payload: String) -> Result<String, String> {
     serde_json::to_string(&response).map_err(|e| e.to_string())
 }
 
+/// Native frame unless the user (or `LIME_SLICE_CUSTOM_TITLEBAR`) asked for the custom titlebar.
+/// Linux keeps the system frame by default. `LIME_SLICE_NATIVE_DECORATIONS=1` forces it everywhere.
+fn native_window_decorations() -> bool {
+    if env_flag("LIME_SLICE_NATIVE_DECORATIONS") {
+        return true;
+    }
+    if env_flag("LIME_SLICE_CUSTOM_TITLEBAR") {
+        return false;
+    }
+    cfg!(target_os = "linux")
+}
+
+fn env_flag(name: &str) -> bool {
+    matches!(
+        std::env::var(name).ok().as_deref().map(str::trim),
+        Some("1") | Some("true") | Some("yes")
+    )
+}
+
+fn window_state() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    tauri_plugin_window_state::Builder::new()
+        .with_state_flags(
+            tauri_plugin_window_state::StateFlags::SIZE
+                | tauri_plugin_window_state::StateFlags::POSITION
+                | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+        )
+        .build()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(window_state())
+        .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_decorations(native_window_decorations());
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             slice_model,
             cancel_slice,

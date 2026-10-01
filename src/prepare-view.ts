@@ -1,5 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { ViewHelper } from "three/addons/helpers/ViewHelper.js";
+import { syncBedGrid } from "./bed-grid";
 import { boundsOf } from "./mesh-place";
 import { buildCutPlane, disposeTree, prepareFrame, splitDragAt, type PrintFrame } from "./cut-plane";
 import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep } from "./gizmo-math";
@@ -23,6 +25,8 @@ export interface PrepareView {
   setTheme(): void;
   /** Show move arrows, rotate rings, or both. Does not add a new manipulator. */
   setGizmoTool(tool: "all" | "move" | "rotate"): void;
+  /** Top, front, or the same iso pose as a freshly loaded part. Does not run on load. */
+  setViewPreset(preset: "top" | "front" | "iso"): void;
   resize(): void;
 }
 
@@ -45,7 +49,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let colors = themeColors();
   renderer.setClearColor(hexToThree(colors.stage), 1);
 
-  let bed = new THREE.GridHelper(1, 10, hexToThree(colors.line), hexToThree(colors.bedMinor));
+  const bed = new THREE.Group();
   scene.add(bed);
   const plateMat = new THREE.MeshBasicMaterial({
     color: hexToThree(colors.bed),
@@ -70,10 +74,19 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
 
   const material = new THREE.MeshStandardMaterial({ color: hexToThree(colors.mesh), roughness: 0.55, metalness: 0.05, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
   let mesh: THREE.Mesh | null = null;
-  scene.add(new THREE.AmbientLight(0xffffff, 0.7));
-  const key = new THREE.DirectionalLight(0xffffff, 1.15);
+  const outlineMat = new THREE.LineBasicMaterial({ color: 0xd5dbe3, transparent: true, opacity: 0.9 });
+  const hemi = new THREE.HemisphereLight(0xf4f6f8, 0x2a3140, 0.62);
+  scene.add(hemi);
+  const key = new THREE.DirectionalLight(0xffffff, 1.05);
   key.position.set(80, 160, 40);
   scene.add(key);
+  const fill = new THREE.DirectionalLight(0xd5dde8, 0.22);
+  fill.position.set(-70, 50, -40);
+  scene.add(fill);
+  const viewHelper = new ViewHelper(camera, canvas);
+  viewHelper.setLabels("X", "Y", "Z");
+  viewHelper.setLabelStyle("600 22px sans-serif", "#10140c", 13);
+  muteViewHelper(viewHelper);
 
   const gizmo = new THREE.Group();
   gizmo.visible = false;
@@ -178,6 +191,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   const pointer = new THREE.Vector2();
 
   let frameQueued = false;
+  let lastPaint = performance.now();
+  const drawSize = new THREE.Vector2();
   function requestRender() {
     if (frameQueued) return;
     frameQueued = true;
@@ -185,15 +200,34 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   }
   function paint() {
     frameQueued = false;
+    const now = performance.now();
+    const dt = Math.min(0.05, (now - lastPaint) / 1000);
+    lastPaint = now;
+    if (viewHelper.animating) {
+      controls.enabled = false;
+      viewHelper.update(dt);
+      if (!viewHelper.animating) controls.enabled = true;
+    }
     controls.update();
     fitGizmoScreen();
+    viewHelper.center.copy(controls.target);
+    renderer.getSize(drawSize);
+    renderer.setViewport(0, 0, drawSize.x, drawSize.y);
     renderer.render(scene, camera);
+    // ViewHelper.render clears color for its corner viewport. With scissor off,
+    // that clear wipes the whole canvas and the next frame stays in the corner.
+    if (canvas.clientWidth > 2 && canvas.clientHeight > 2) {
+      renderer.autoClear = false;
+      viewHelper.render(renderer);
+      renderer.autoClear = true;
+      renderer.setViewport(0, 0, drawSize.x, drawSize.y);
+    }
+    if (viewHelper.animating) requestRender();
   }
   controls.addEventListener("change", requestRender);
 
   function layoutBed() {
-    bed.scale.set(bedX, 1, bedY);
-    bed.position.set(bedX / 2, 0, -bedY / 2);
+    syncBedGrid(bed, bedX, bedY, hexToThree(colors.line), hexToThree(colors.bedMinor));
     plate.scale.set(bedX, bedY, 1);
     plate.position.set(bedX / 2, -0.04, -bedY / 2);
     volume.scale.set(bedX, bedZ, bedY);
@@ -342,6 +376,12 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
 
   canvas.addEventListener("pointerdown", (ev) => {
     if (ev.button !== 0) return;
+    if (hitViewHelper(ev)) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      requestRender();
+      return;
+    }
     const handle = hitHandle(ev);
     if (handle) {
       drag = handle;
@@ -446,6 +486,31 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
 
+  function hitViewHelper(ev: PointerEvent) {
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return false;
+    if (ev.clientX < rect.right - 128 || ev.clientY < rect.bottom - 128) return false;
+    return viewHelper.handleClick(ev);
+  }
+
+  function applyViewPreset(preset: "top" | "front" | "iso") {
+    const target = new THREE.Vector3();
+    let dist = Math.max(bedX, bedY) * 0.85;
+    if (meshBounds) {
+      const { min, max } = meshBounds;
+      target.copy(frame.toScene((min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2));
+      dist = Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2], 28) * 2.4;
+    } else {
+      target.set(bedX / 2, Math.min(30, bedZ * 0.12), -bedY / 2);
+    }
+    if (preset === "top") camera.position.set(target.x + dist * 0.02, target.y + dist, target.z + dist * 0.02);
+    else if (preset === "front") camera.position.set(target.x, target.y + dist * 0.04, target.z + dist);
+    else camera.position.set(target.x + dist * 0.85, target.y + dist * 0.62, target.z + dist * 0.9);
+    controls.target.copy(target);
+    controls.update();
+    requestRender();
+  }
+
   function framePart() {
     if (!meshBounds) return;
     const { min, max } = meshBounds;
@@ -493,6 +558,10 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       requestRender();
       if (mesh) {
         scene.remove(mesh);
+        mesh.traverse((node) => {
+          const child = node as THREE.Mesh;
+          if (child !== mesh) child.geometry?.dispose();
+        });
         mesh.geometry.dispose();
         mesh = null;
       }
@@ -511,6 +580,9 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       geometry.setAttribute("position", new THREE.BufferAttribute(xyz, 3));
       geometry.computeVertexNormals();
       mesh = new THREE.Mesh(geometry, material);
+      const outline = new THREE.LineSegments(new THREE.EdgesGeometry(geometry, 25), outlineMat);
+      outline.raycast = () => undefined;
+      mesh.add(outline);
       scene.add(mesh);
       if (frameCamera) framePart();
     },
@@ -523,6 +595,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     onRotateEnd(cb) { rotateEndCb = cb; },
     onMove(cb) { moveCb = cb; },
     onMoveEnd(cb) { moveEndCb = cb; },
+    setViewPreset(preset) { applyViewPreset(preset); },
     setGizmoTool(tool) {
       gizmoTool = tool;
       for (const entry of handleNodes) {
@@ -542,18 +615,26 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
         ringMat.color.setHex(axisHex(axis));
         for (const mat of moveMats) mat.color.setHex(axisHex(axis));
       }
-      const next = new THREE.GridHelper(1, 10, hexToThree(colors.line), hexToThree(colors.bedMinor));
-      next.scale.copy(bed.scale);
-      next.position.copy(bed.position);
-      scene.remove(bed);
-      bed.geometry.dispose();
-      const mats = Array.isArray(bed.material) ? bed.material : [bed.material];
-      mats.forEach((mat) => mat.dispose());
-      bed = next;
-      scene.add(bed);
+      bed.userData.gridKey = "";
+      syncBedGrid(bed, bedX, bedY, hexToThree(colors.line), hexToThree(colors.bedMinor));
       requestRender();
     },
   };
+}
+
+function muteViewHelper(helper: THREE.Object3D) {
+  const shaft = [0xb85a52, 0x6eae78, 0x6a92c4];
+  let meshN = 0;
+  helper.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (mesh.isMesh) {
+      const mat = mesh.material as THREE.MeshBasicMaterial;
+      mat.color?.setHex(shaft[meshN % shaft.length]!);
+      meshN += 1;
+    }
+    const sprite = obj as THREE.Sprite;
+    if (sprite.isSprite) sprite.material.color.setRGB(0.55, 0.55, 0.55);
+  });
 }
 
 function ghostMat() {
