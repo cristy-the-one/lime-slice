@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::poly::{
-    boolean_diff, boolean_intersect, boolean_union, drop_slivers, in_solid, loop_bounds,
-    loops_from_paths, offset_loops, offset_paths, paths_from_loops, point_in_loop, principal_axis,
+    boolean_diff, boolean_intersect, drop_slivers, in_solid, loop_bounds, loops_from_paths,
+    offset_loops, offset_paths, paths_from_loops, point_in_loop, principal_axis, resolve_nonzero,
     signed_area, Loop,
 };
 use crate::strategy::{InfillPattern, ResolvedStrategy, ScarfSeam, SeamMode, StrategyId};
@@ -2076,10 +2076,14 @@ pub fn plan_tree_support(
     if thick.is_empty() {
         return paths;
     }
-    let mut solid: Vec<Loop> = Vec::new();
-    for loop_ in &thick {
-        solid = boolean_union(&solid, std::slice::from_ref(loop_));
-    }
+    // One union of every cross-section. Folding them in one at a time sent the
+    // whole growing shape through Clipper per branch: 388 s on one layer with
+    // 4063 branches. A lone section skips Clipper, as the fold did.
+    let solid = if thick.len() == 1 {
+        thick
+    } else {
+        resolve_nonzero(thick)
+    };
     let inset = offset_loops(&solid, -line_width * 0.5);
     let walls = if inset.is_empty() { solid } else { inset };
     emit_support_loops(&mut paths, &walls, strategy, line_width, speed);
