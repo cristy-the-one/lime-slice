@@ -143,13 +143,14 @@ export function writePresets(all: Record<string, PresetSettings>) {
   localStorage.setItem(KEY, JSON.stringify(all));
 }
 
+export function changedPresetKeys(current: PresetSettings, base: PresetSettings = DEFAULT_PRESET): (keyof PresetSettings)[] {
+  return presetKeys().filter((key) => current[key] !== base[key]);
+}
+
 export function diffPreset(current: PresetSettings, base: PresetSettings = DEFAULT_PRESET): string[] {
-  const lines: string[] = [];
-  for (const key of presetKeys()) {
-    if (current[key] === base[key]) continue;
-    lines.push(`${LABELS[key]}: ${formatVal(current[key])} (default ${formatVal(base[key])})`);
-  }
-  return lines;
+  return changedPresetKeys(current, base).map(
+    (key) => `${LABELS[key]}: ${formatVal(current[key])} (default ${formatVal(base[key])})`,
+  );
 }
 
 function formatVal(value: string | number | boolean) {

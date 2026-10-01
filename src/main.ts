@@ -10,6 +10,7 @@ import { loadProfile, profileJson, saveProfile, type PrinterProfile } from "./pr
 import { layerWeight, resolved, type ResolvedCard } from "./strategy";
 import { applyTheme, loadTheme, onSchemeChange, themeColors, type ThemeChoice } from "./theme";
 import { mountChrome } from "./ui/chrome";
+import { applyStoredLevel, levelBarHtml, mountShell, paintSettingMarks, syncEmptyState, syncSliceDock } from "./ui/shell";
 import { clampOffset, clipPolyline, flipSection, keepsPoint, layerCut, sectionReach, type SectionSpec, type Vec3 } from "./section-plane";
 import {
   cacheStatus,
@@ -245,7 +246,6 @@ app.innerHTML = `
         </select>
       </label>
       <div class="spacer"></div>
-      <div class="timing" id="timing">No slice yet</div>
       <div class="action-row">
         <button class="btn primary" id="slice" type="button" data-slice-action="none">Slice</button>
         <button class="btn" id="cancel" type="button" disabled>Cancel</button>
@@ -255,7 +255,7 @@ app.innerHTML = `
     </header>
     <div class="banner-rail" id="banner"></div>
     <div class="workspace">
-      <aside class="panel" id="left"></aside>
+      <aside class="panel" id="left"><div id="leftBody"></div><div id="leftFoot"></div></aside>
       <section class="stage mode-split" id="stage">
         <div class="viewbar">
           <div class="modes" id="viewModes">
@@ -327,7 +327,7 @@ app.innerHTML = `
       </section>
       <aside class="panel right" id="right"></aside>
     </div>
-    <footer class="status" id="status">Load an STL, 3MF, or STEP file. Arrow keys move the layer. Press ? for shortcuts.</footer>
+    <footer class="status"><div class="timing" id="timing">No slice yet</div><div id="status">Load an STL, 3MF, or STEP file. Arrow keys move the layer. Press ? for shortcuts.</div></footer>
   </div>
   <div id="help" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="helpTitle">
     <div class="sheet-card">
@@ -344,6 +344,7 @@ app.innerHTML = `
         <li>Bed fades the build plate. 0 hides it</li>
         <li>Section clips the preview. Cut moves the plane. Rings, parked at the left, aim it. The sheet is only a guide. Layers still apply. Neither changes the slice</li>
         <li><kbd>M</kbd> Move · <kbd>R</kbd> Rotate · <kbd>S</kbd> Scale field · <kbd>F</kbd> Lay flat · <kbd>C</kbd> Section</li>
+        <li><kbd>T</kbd> Top · <kbd>Y</kbd> Front · <kbd>I</kbd> Iso, on the Prepare camera</li>
         <li><kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> Layer</li>
         <li><kbd>?</kbd> This sheet</li>
       </ul>
@@ -420,61 +421,66 @@ function currentWeight() {
 function renderChrome() {
   const mesh = state.mesh;
   const result = state.result;
-  document.querySelector("#left")!.innerHTML = `
+  document.querySelector("#leftBody")!.innerHTML = `
+    ${levelBarHtml()}
     <input id="find" type="search" placeholder="Search settings" value="${escapeHtml(state.query)}" />
     <h2>Mesh</h2>
     <div class="meta">${mesh ? `<b>${escapeHtml(mesh.name)}</b>` : "Nothing loaded"}</div>
     <div class="object-list" id="objectList">${objectList()}</div>
-    ${group("Printer and filament", profileFields())}
-    ${group("Presets", presetHtml())}
     ${group("Quality", `
-      ${num("lh", "Layer height mm", state.layerHeight, 0.08, 0.4, 0.02)}
-      ${check("adaptive", "Adaptive layers", state.adaptive)}
-      ${state.adaptive ? `${num("amin", "Min mm", state.adaptiveMin, 0.04, 0.28, 0.02)}${num("amax", "Max mm", state.adaptiveMax, 0.08, 0.4, 0.02)}` : ""}
-      ${check("simplify", "Simplify outlines", state.simplify)}
-      ${state.simplify ? `${num("simperr", "Outline tolerance mm, 0 = auto", state.simplifyError, 0, 0.2, 0.005)}<div class="meta">Every triangle is cut. Each layer's outline then drops vertices closer than this to the line through their neighbors. Auto is a sixteenth of the nozzle, 0.025 mm for 0.4 mm, so a gap the nozzle can print never closes.</div>` : ""}
+      ${num("lh", "Layer height mm", state.layerHeight, 0.08, 0.4, 0.02, "simple")}
+      ${check("adaptive", "Adaptive layers", state.adaptive, "advanced")}
+      ${state.adaptive ? `${num("amin", "Min mm", state.adaptiveMin, 0.04, 0.28, 0.02, "advanced")}${num("amax", "Max mm", state.adaptiveMax, 0.08, 0.4, 0.02, "advanced")}` : ""}
+      ${check("simplify", "Simplify outlines", state.simplify, "advanced")}
+      ${state.simplify ? `${num("simperr", "Outline tolerance mm, 0 = auto", state.simplifyError, 0, 0.2, 0.005, "expert")}<div class="meta">Every triangle is cut. Each layer's outline then drops vertices closer than this to the line through their neighbors. Auto is a sixteenth of the nozzle, 0.025 mm for 0.4 mm, so a gap the nozzle can print never closes.</div>` : ""}
     `)}
-    ${group("Speed and motion", `
-      ${check("feeds", "Per-feature speeds", state.featureSpeeds)}
-      ${check("arcs", "Arc fit (G2/G3)", state.arcFit)}
-      ${check("combine", "Combine sparse infill", state.infillCombine)}
-      ${check("combing", "Hole-aware combing", state.combing)}
-      ${check("overhang", "Overhang and bridges", state.overhangControl)}
-      ${num("pa", "Pressure advance", state.pressureAdvance, 0, 0.2, 0.005)}
-      ${num("la", "Linear advance K", state.linearAdvance, 0, 2, 0.01)}
-      ${select("gyroid3d", "3D gyroid", state.gyroid3d, [["blend", "Blend default"], ["off", "2D sine"], ["on", "Force 3D"]])}
-      ${select("zhop", "Z-hop", state.zHop, [["blend", "Blend default"], ["off", "Off"], ["smart", "Smart"], ["always", "Always"]])}
-      ${state.zHop === "off" ? "" : `${num("zhopht", "Hop height mm", state.zHopHeight, 0.1, 2, 0.1)}${num("zhopmin", "Hop above travel mm", state.zHopMinTravel, 0.5, 20, 0.5)}`}
+    ${group("Strength", `
+      ${check("vwidth", "Variable walls", state.variableWidth, "simple")}
+      ${check("travelopt", "Travel and seam", state.travelOpt, "advanced")}
+      ${select("scarf", "Scarf seam", state.scarfSeam, [["blend", "Blend default"], ["off", "Off"], ["outer", "Outer walls"], ["all", "Outer and inner"]], "advanced")}
+      ${state.scarfSeam === "off" ? "" : `${num("scarflen", "Scarf length mm", state.scarfLength, 1, 30, 1, "expert")}${num("scarfsteps", "Scarf steps", state.scarfSteps, 2, 32, 1, "expert")}`}
     `)}
-    ${group("Walls and seams", `
-      ${check("vwidth", "Variable walls", state.variableWidth)}
-      ${check("travelopt", "Travel and seam", state.travelOpt)}
-      ${select("scarf", "Scarf seam", state.scarfSeam, [["blend", "Blend default"], ["off", "Off"], ["outer", "Outer walls"], ["all", "Outer and inner"]])}
-      ${state.scarfSeam === "off" ? "" : `${num("scarflen", "Scarf length mm", state.scarfLength, 1, 30, 1)}${num("scarfsteps", "Scarf steps", state.scarfSteps, 2, 32, 1)}`}
+    ${group("Speed", `
+      ${check("feeds", "Per-feature speeds", state.featureSpeeds, "simple")}
+      ${check("arcs", "Arc fit (G2/G3)", state.arcFit, "advanced")}
+      ${check("combine", "Combine sparse infill", state.infillCombine, "advanced")}
+      ${check("combing", "Hole-aware combing", state.combing, "advanced")}
+      ${check("overhang", "Overhang and bridges", state.overhangControl, "simple")}
+      ${num("pa", "Pressure advance", state.pressureAdvance, 0, 0.2, 0.005, "expert")}
+      ${num("la", "Linear advance K", state.linearAdvance, 0, 2, 0.01, "expert")}
+      ${select("gyroid3d", "3D gyroid", state.gyroid3d, [["blend", "Blend default"], ["off", "2D sine"], ["on", "Force 3D"]], "expert")}
+      ${select("zhop", "Z-hop", state.zHop, [["blend", "Blend default"], ["off", "Off"], ["smart", "Smart"], ["always", "Always"]], "advanced")}
+      ${state.zHop === "off" ? "" : `${num("zhopht", "Hop height mm", state.zHopHeight, 0.1, 2, 0.1, "expert")}${num("zhopmin", "Hop above travel mm", state.zHopMinTravel, 0.5, 20, 0.5, "expert")}`}
     `)}
-    ${group("Supports", `
-      ${check("supports", "Smart supports", state.supports)}
-      ${state.supports ? `${select("sstyle", "Style", state.supportStyle, [["grid", "Sparse grid"], ["tree", "Organic tree"]])}
-        ${num("sangle", "Overhang angle °", state.supportAngle, 20, 70, 5)}
-        ${state.supportStyle === "tree" ? `${num("bangle", "Branch angle °", state.branchAngle, 15, 60, 5)}
-        ${num("tipd", "Tip diameter mm", state.tipDiameter, 0.4, 2, 0.1)}
-        ${num("trunkd", "Trunk diameter mm", state.trunkDiameter, 1.5, 12, 0.2)}` : ""}
-        ${num("shmult", "Shaft height ×", state.supportHeightMult, 1, 4, 1)}` : ""}
+    ${group("Support", `
+      ${check("supports", "Smart supports", state.supports, "simple")}
+      ${state.supports ? `${select("sstyle", "Style", state.supportStyle, [["grid", "Sparse grid"], ["tree", "Organic tree"]], "advanced")}
+        ${num("sangle", "Overhang angle °", state.supportAngle, 20, 70, 5, "advanced")}
+        ${state.supportStyle === "tree" ? `${num("bangle", "Branch angle °", state.branchAngle, 15, 60, 5, "expert")}
+        ${num("tipd", "Tip diameter mm", state.tipDiameter, 0.4, 2, 0.1, "expert")}
+        ${num("trunkd", "Trunk diameter mm", state.trunkDiameter, 1.5, 12, 0.2, "expert")}` : ""}
+        ${num("shmult", "Shaft height ×", state.supportHeightMult, 1, 4, 1, "advanced")}` : ""}
     `)}
-    ${group("PA calibration", `
-      ${select("pafw", "Firmware", state.paFirmware, [["klipper", "Klipper"], ["marlin", "Marlin"]])}
-      ${num("pastart", "K start", state.paStart, 0, 1, 0.005)}
-      ${num("paend", "K end", state.paEnd, 0, 1, 0.005)}
-      ${num("pastep", "K step", state.paStep, 0.001, 0.2, 0.005)}
-      <button class="btn" id="pacal" type="button">Generate PA test</button>
-      ${state.paBands.length ? `<div class="meta">${state.paBands.map((b) => `band ${b.index}: K ${b.k.toFixed(4)} · Z ${b.z0.toFixed(2)}–${b.z1.toFixed(2)}`).join("<br>")}</div>
-        ${num("pachosen", "Chosen K", state.paFirmware === "marlin" ? state.linearAdvance : state.pressureAdvance, 0, 2, 0.005)}
-        <button class="btn" id="paapply" type="button">Save K to profile</button>
-        <button class="btn" id="paexport" type="button">Export PA G-code</button>` : ""}
+    ${group("Other", `
+      <h2>Printer</h2>
+      ${profileFields()}
+      <h2>Presets</h2>
+      ${presetHtml()}
+      ${group("PA calibration", `
+        ${select("pafw", "Firmware", state.paFirmware, [["klipper", "Klipper"], ["marlin", "Marlin"]], "expert")}
+        ${num("pastart", "K start", state.paStart, 0, 1, 0.005, "expert")}
+        ${num("paend", "K end", state.paEnd, 0, 1, 0.005, "expert")}
+        ${num("pastep", "K step", state.paStep, 0.001, 0.2, 0.005, "expert")}
+        <button class="btn" id="pacal" type="button">Generate PA test</button>
+        ${state.paBands.length ? `<div class="meta">${state.paBands.map((b) => `band ${b.index}: K ${b.k.toFixed(4)} · Z ${b.z0.toFixed(2)}–${b.z1.toFixed(2)}`).join("<br>")}</div>
+          ${num("pachosen", "Chosen K", state.paFirmware === "marlin" ? state.linearAdvance : state.pressureAdvance, 0, 2, 0.005)}
+          <button class="btn" id="paapply" type="button">Save K to profile</button>
+          <button class="btn" id="paexport" type="button">Export PA G-code</button>` : ""}
+      `, "expert")}
+      <label class="check setting" data-level="advanced" data-label="auto-slice under 50k triangles"><input id="autoslice" type="checkbox" ${state.autoSlice ? "checked" : ""}/> Auto-slice under 50k triangles</label>
+      <div class="meta">${triangleMeta(result)}</div>
+      ${stageHtml(result)}
     `)}
-    <label class="check"><input id="autoslice" type="checkbox" ${state.autoSlice ? "checked" : ""}/> Auto-slice under 50k triangles</label>
-    <div class="meta">${triangleMeta(result)}</div>
-    ${stageHtml(result)}
   `;
   applyFilter();
 
@@ -519,6 +525,8 @@ function renderChrome() {
   paintPlayback();
   paintGcode();
   paintStatus(isStale);
+  paintSettingMarks(currentPreset());
+  syncEmptyState(!!state.mesh);
 }
 
 function paintStatus(isStale: boolean) {
@@ -582,17 +590,21 @@ function paintBanner(isStale: boolean) {
 }
 
 const closedGroups = new Set<string>();
-function group(title: string, body: string) {
-  return `<details ${closedGroups.has(title) ? "" : "open"} class="group" data-group="${title}"><summary>${title}</summary><div class="stack">${body}</div></details>`;
+function group(title: string, body: string, level?: "simple" | "advanced" | "expert") {
+  const attr = level ? ` data-level="${level}"` : "";
+  return `<details ${closedGroups.has(title) ? "" : "open"} class="group" data-group="${title}"${attr}><summary>${title}</summary><div class="stack">${body}</div></details>`;
 }
-function num(id: string, label: string, value: number, min: number, max: number, step: number) {
-  return `<label class="field setting" data-label="${label.toLowerCase()}">${label}<input id="${id}" type="number" min="${min}" max="${max}" step="${step}" value="${value}" /></label>`;
+function num(id: string, label: string, value: number, min: number, max: number, step: number, level?: "simple" | "advanced" | "expert") {
+  const attr = level ? ` data-level="${level}"` : "";
+  return `<label class="field setting"${attr} data-label="${label.toLowerCase()}">${label}<input id="${id}" type="number" min="${min}" max="${max}" step="${step}" value="${value}" /></label>`;
 }
-function check(id: string, label: string, on: boolean) {
-  return `<label class="check setting" data-label="${label.toLowerCase()}"><input id="${id}" type="checkbox" ${on ? "checked" : ""}/> ${label}</label>`;
+function check(id: string, label: string, on: boolean, level?: "simple" | "advanced" | "expert") {
+  const attr = level ? ` data-level="${level}"` : "";
+  return `<label class="check setting"${attr} data-label="${label.toLowerCase()}"><input id="${id}" type="checkbox" ${on ? "checked" : ""}/> ${label}</label>`;
 }
-function select(id: string, label: string, value: string, options: [string, string][]) {
-  return `<label class="field setting" data-label="${label.toLowerCase()}">${label}<select id="${id}">${options.map(([v, l]) => `<option value="${v}" ${v === value ? "selected" : ""}>${l}</option>`).join("")}</select></label>`;
+function select(id: string, label: string, value: string, options: [string, string][], level?: "simple" | "advanced" | "expert") {
+  const attr = level ? ` data-level="${level}"` : "";
+  return `<label class="field setting"${attr} data-label="${label.toLowerCase()}">${label}<select id="${id}">${options.map(([v, l]) => `<option value="${v}" ${v === value ? "selected" : ""}>${l}</option>`).join("")}</select></label>`;
 }
 function cardBtn(id: CardId, title: string, copy: string) {
   const cls = id === "toughness" || id === "layer" ? "tough" : id === "efficiency" ? "mid" : "speed";
@@ -740,14 +752,14 @@ function objectList() {
 function profileFields() {
   const p = state.profile;
   return `
-    ${num("nozzle", "Nozzle mm", p.nozzleDiameter, 0.15, 1.2, 0.05)}
-    ${num("bedx", "Bed X mm", p.bedX, 50, 1000, 1)}
-    ${num("bedy", "Bed Y mm", p.bedY, 50, 1000, 1)}
-    ${num("bedz", "Bed Z mm", p.bedZ, 20, 1000, 1)}
-    ${num("vol", "Max flow mm³/s", p.maxVolumetricMm3S, 1, 60, 0.5)}
-    ${num("accel", "Max accel mm/s²", p.maxAccel, 100, 20000, 100)}
-    ${num("density", "Density g/cm³", p.filamentDensityGCm3, 0.8, 2.5, 0.01)}
-    ${num("cost", "Filament €/kg", p.filamentCostPerKg, 0, 200, 1)}
+    ${num("nozzle", "Nozzle mm", p.nozzleDiameter, 0.15, 1.2, 0.05, "simple")}
+    ${num("bedx", "Bed X mm", p.bedX, 50, 1000, 1, "simple")}
+    ${num("bedy", "Bed Y mm", p.bedY, 50, 1000, 1, "simple")}
+    ${num("bedz", "Bed Z mm", p.bedZ, 20, 1000, 1, "simple")}
+    ${num("vol", "Max flow mm³/s", p.maxVolumetricMm3S, 1, 60, 0.5, "advanced")}
+    ${num("accel", "Max accel mm/s²", p.maxAccel, 100, 20000, 100, "advanced")}
+    ${num("density", "Density g/cm³", p.filamentDensityGCm3, 0.8, 2.5, 0.01, "advanced")}
+    ${num("cost", "Filament €/kg", p.filamentCostPerKg, 0, 200, 1, "advanced")}
     <div class="row">
       <button class="btn" id="profileExport" type="button">Export JSON</button>
       <label class="btn file">Import JSON<input id="profileImport" type="file" accept="application/json,.json" /></label>
@@ -1103,6 +1115,7 @@ function togglePlay() {
 
 function applyFilter() {
   const q = state.query.trim().toLowerCase();
+  document.querySelector("#left")?.classList.toggle("is-searching", !!q);
   document.querySelectorAll<HTMLElement>("#left .setting").forEach((el) => {
     el.classList.toggle("hidden", !!q && !(el.dataset.label ?? "").includes(q));
   });
@@ -1289,7 +1302,11 @@ function onSettings(ev: Event) {
   if (t.id === "simplify") state.simplify = t.checked;
   if (t.id === "travelopt") state.travelOpt = t.checked;
   if (t.id === "supports") state.supports = t.checked;
-  if (t.id === "autoslice") { state.autoSlice = t.checked; return; }
+  if (t.id === "autoslice") {
+    state.autoSlice = t.checked;
+    paintSettingMarks(currentPreset());
+    return;
+  }
   if (t.id === "gyroid3d") state.gyroid3d = t.value as typeof state.gyroid3d;
   if (t.id === "zhop") state.zHop = t.value as typeof state.zHop;
   if (t.id === "scarf") state.scarfSeam = t.value as typeof state.scarfSeam;
@@ -1351,6 +1368,7 @@ function markStale() {
   document.querySelector("#stage")?.classList.toggle("stale", isStale);
   paintBanner(isStale);
   paintPresetDiff();
+  paintSettingMarks(currentPreset());
   paintStatus(isStale);
   scheduleAuto();
   draw();
@@ -1396,6 +1414,7 @@ function paintSliceButton(button: HTMLButtonElement) {
   button.classList.toggle("show-result", showSaved);
   button.classList.toggle("primary", !showSaved);
   button.classList.toggle("reslice", !state.busy && action.state === "changed");
+  syncSliceDock(button);
 }
 function paintForceButton(button: HTMLButtonElement) {
   const action = currentSliceAction(true);
@@ -1677,6 +1696,8 @@ function setStage(stage: "prepare" | "preview" | "gcode") {
   document.querySelector("#legend")?.toggleAttribute("hidden", stage !== "preview");
   document.querySelector("#viewModes")?.toggleAttribute("hidden", stage !== "preview");
   document.querySelector(".stage-tools")?.toggleAttribute("hidden", stage === "prepare");
+  document.querySelector<HTMLElement>("#viewPresets")?.toggleAttribute("hidden", stage !== "prepare");
+  syncEmptyState(!!state.mesh);
   paintSectionChrome();
   paintGcode();
   resize();
@@ -2539,6 +2560,7 @@ async function probe() {
 }
 
 new ResizeObserver(() => resize()).observe(document.querySelector("#stage")!);
+applyStoredLevel();
 applyTheme(loadTheme());
 (document.querySelector("#theme") as HTMLSelectElement).value = loadTheme();
 onSchemeChange(() => {
@@ -2555,5 +2577,7 @@ mountChrome({
   setGizmoTool: (tool) => prepare.setGizmoTool(tool),
   onToolReadout: () => paintGizmoReadout(),
 });
+mountShell({ setViewPreset: (preset) => prepare.setViewPreset(preset) });
+syncEmptyState(!!state.mesh);
 resize();
 void probe();
