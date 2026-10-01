@@ -1,4 +1,5 @@
 import { COMMANDS, helpEntries, rankCommands, type CommandSpec } from "./commands";
+import { pushToast } from "./toasts";
 import "./phase2.css";
 
 const MAX_ROWS = 12;
@@ -245,9 +246,17 @@ export function runCommand(id: string) {
       if (menu) menu.open = true;
       return;
     }
-    case "slice":
-      click("#slice");
+    case "slice": {
+      const button = document.querySelector<HTMLButtonElement>("#slice");
+      if (!button) return;
+      if (button.disabled) {
+        const status = document.querySelector("#status")?.textContent ?? "";
+        if (status.startsWith("Load an")) pushToast("Load a mesh first.", "error");
+        return;
+      }
+      button.click();
       return;
+    }
     case "force-slice":
       click("#force");
       return;
