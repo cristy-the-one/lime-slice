@@ -45,4 +45,4 @@ pub use strategy::{
     strategy_card, Axis, BlendMode, Gyroid3d, PrinterProfile, ScarfSeam, StrategyCard, StrategyId,
     ZHopMode,
 };
-pub use support::SupportStyle;
+pub use support::{CoverageGap, SupportStyle};

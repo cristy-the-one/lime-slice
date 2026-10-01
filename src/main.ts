@@ -12,6 +12,7 @@ import { applyTheme, loadTheme, onSchemeChange, themeColors, type ThemeChoice } 
 import { clampOffset, clipPolyline, flipSection, keepsPoint, layerCut, sectionReach, type SectionSpec, type Vec3 } from "./section-plane";
 import {
   cacheStatus,
+  coverageWarning,
   fnv1aHex,
   FORCE_LABEL,
   recipeKey,
@@ -46,6 +47,17 @@ interface FeatureRow {
   filamentMm: number;
   filamentG: number;
 }
+/** Demanded support interface the finished supports do not print, over adjacent layers. */
+interface CoverageGap {
+  /** `z` of its lowest and highest layer. */
+  z: [number, number];
+  /** Largest unheld area on one of its layers. */
+  areaMm2: number;
+  min: [number, number];
+  max: [number, number];
+  /** The unheld region on its highest layer. */
+  outline: [number, number][][];
+}
 interface SliceResponse {
   coreMs: number;
   baselineMs: number;
@@ -62,6 +74,8 @@ interface SliceResponse {
     max: number[];
   };
   sanity: { ok: boolean; notes: string[]; layers: number; finalE: number; extrusionLengthMm: number };
+  /** Largest first. Missing from replies an older engine cached. */
+  coverage?: CoverageGap[];
   stages?: {
     contourMs: number;
     supportMs: number;
@@ -555,6 +569,8 @@ function paintBanner(isStale: boolean) {
   if (state.notice) bits.push(bannerLine(state.notice, "warn"));
   if (isStale) bits.push(bannerLine(staleSliceCopy(currentSliceAction(false).state).banner, "warn"));
   if (state.result && !state.result.sanity.ok) bits.push(bannerLine(state.result.sanity.notes.join(" ") || "G-code checks failed"));
+  const unheld = coverageWarning(state.result?.coverage ?? []);
+  if (unheld) bits.push(bannerLine(unheld, "warn"));
   if (state.busy) {
     const indeterminate = !(state.progress > 0 && state.progress < 1);
     const pct = Math.max(8, state.progress * 100);

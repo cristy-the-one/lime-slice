@@ -329,6 +329,9 @@ fn run() -> Result<(), String> {
             }
             fs::write(&output, &response.gcode).map_err(|e| e.to_string())?;
             print_summary(&input, &response);
+            if let Some(warning) = coverage_line(&response.coverage) {
+                eprintln!("lime-slice: warning: supports leave {warning}");
+            }
             println!("wrote {}", output.display());
             if audit {
                 let mesh = lime_slice_core::load_slice_mesh_tol(
@@ -962,6 +965,10 @@ fn print_audit(a: &lime_slice_core::SliceAudit) {
             .map(|(z, area)| format!("{area:.2} mm2 at z {z:.2}"))
             .unwrap_or_else(|| "none".into())
     );
+    println!(
+        "audit  coverage {}",
+        coverage_line(&a.coverage).unwrap_or_else(|| "every demanded interface prints".into())
+    );
     let t = &a.trees;
     if t.tips > 0 {
         println!(
@@ -983,6 +990,24 @@ fn print_audit(a: &lime_slice_core::SliceAudit) {
             d.volume_mm3
         );
     }
+}
+
+/// Unheld overhang patches in one line, largest first. `None` when there are none.
+fn coverage_line(gaps: &[lime_slice_core::CoverageGap]) -> Option<String> {
+    let largest = gaps.first()?;
+    let total: f32 = gaps.iter().map(|g| g.area_mm2).sum();
+    Some(format!(
+        "{} overhang patch{} unheld, {total:.1} mm2  largest {:.1} mm2 at z {:.2}-{:.2} x {:.1}..{:.1} y {:.1}..{:.1}",
+        gaps.len(),
+        if gaps.len() == 1 { "" } else { "es" },
+        largest.area_mm2,
+        largest.z[0],
+        largest.z[1],
+        largest.min[0],
+        largest.max[0],
+        largest.min[1],
+        largest.max[1]
+    ))
 }
 
 /// The loader picks STL or 3MF from the file name, so every load of the

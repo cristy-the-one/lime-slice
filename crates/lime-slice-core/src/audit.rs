@@ -13,7 +13,7 @@ use crate::poly::{
 };
 use crate::slice::{plan, SliceSettings};
 use crate::strategy::BlendMode;
-use crate::support::{Disk, End, Forest, SupportLayer};
+use crate::support::{CoverageGap, Disk, End, Forest, SupportLayer};
 use crate::toolpath::{bead_cover, Extrusion, PathKind};
 
 /// Reach a support region may have past what is under it: a bead half-width plus
@@ -75,6 +75,8 @@ pub struct SliceAudit {
     pub tree_depths: Vec<TreeDepth>,
     /// Tree supports as the walk grew them, before disks settle on each other.
     pub trees: TreeCensus,
+    /// Demanded interface the supports leave unheld, largest patch first.
+    pub coverage: Vec<CoverageGap>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -240,6 +242,7 @@ pub fn audit_slice(
     }
     out.tree_depths = tree_depths(supports, bands);
     out.trees = tree_census(&planned.supports.forest, bands);
+    out.coverage = planned.coverage;
     Ok(out)
 }
 
