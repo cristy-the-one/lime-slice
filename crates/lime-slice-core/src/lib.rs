@@ -32,7 +32,8 @@ pub use load::{
 };
 pub use mesh::Mesh;
 pub use slice::{
-    contour_times, outline_tolerance_mm, pareto_estimates, slice_configured, slice_request,
+    contour_times, keep_object_slices, outline_tolerance_mm, pareto_estimates, slice_configured,
+    slice_request,
     slice_with_baseline, BlendScore, CompareEstimate, FeatureEstimate, ParetoPoint, PreviewLayer,
     PrintEstimate, RigidPose, SliceRequest, SliceResponse, SliceSettings,
 };

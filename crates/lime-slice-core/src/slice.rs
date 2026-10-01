@@ -1,4 +1,8 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+use sha2::{Digest, Sha256};
 
 use base64::Engine;
 use rayon::prelude::*;
@@ -593,6 +597,9 @@ pub struct StageTimes {
     /// Sum of per-layer infill and gap-fill time inside `toolpath_ms`.
     #[serde(default)]
     pub infill_cpu_ms: f64,
+    /// The part's layers came from memory; only supports and assembly ran.
+    #[serde(default)]
+    pub object_reused: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -794,6 +801,7 @@ pub fn slice_configured(
         roof_ms: planned_full.roof_ms,
         wall_cpu_ms: planned_full.wall_cpu_ms,
         infill_cpu_ms: planned_full.infill_cpu_ms,
+        object_reused: planned_full.object_reused,
     };
 
     let (baseline_ms, baseline_label) = if settings.baseline {
@@ -1422,6 +1430,7 @@ pub(crate) struct Plan {
     pub roof_ms: f64,
     pub wall_cpu_ms: f64,
     pub infill_cpu_ms: f64,
+    pub object_reused: bool,
 }
 
 /// A sixteenth of the nozzle: 0.025 mm for a 0.4 mm nozzle. Two outlines
@@ -1454,6 +1463,20 @@ pub(crate) fn plan(
     settings: &SliceSettings,
     nozzle_diameter: f64,
 ) -> Result<Plan, String> {
+    let (object, reused) = object_for(mesh, blend, settings, nozzle_diameter)?;
+    let supports = plan_supports(&object, blend, settings)?;
+    let mut planned = assemble(object, supports, blend, settings)?;
+    planned.object_reused = reused;
+    Ok(planned)
+}
+
+/// Cuts the mesh into per-band contours and plans the part's own layers.
+fn slice_mesh_object(
+    mesh: &Mesh,
+    blend: &BlendMode,
+    settings: &SliceSettings,
+    nozzle_diameter: f64,
+) -> Result<ObjectSlice, String> {
     let (min, max) = mesh.bounds().ok_or("empty mesh")?;
     let max_h = if settings.adaptive {
         settings.adaptive_max.max(settings.adaptive_min)
@@ -1489,7 +1512,7 @@ pub(crate) fn plan(
     let cut_cpu_ms = cut.iter().map(|row| row.1).sum();
     let simplify_cpu_ms = cut.iter().map(|row| row.2).sum();
     let contours = cut.into_iter().map(|row| row.0).collect();
-    let mut planned = plan_contours(
+    let mut object = slice_object(
         bands,
         contours,
         (min, max),
@@ -1497,14 +1520,101 @@ pub(crate) fn plan(
         settings,
         nozzle_diameter,
     )?;
-    planned.contour_ms = contour_ms;
-    planned.index_ms = index_ms;
-    planned.cut_cpu_ms = cut_cpu_ms;
-    planned.simplify_cpu_ms = simplify_cpu_ms;
-    Ok(planned)
+    object.contour_ms = contour_ms;
+    object.index_ms = index_ms;
+    object.cut_cpu_ms = cut_cpu_ms;
+    object.simplify_cpu_ms = simplify_cpu_ms;
+    Ok(object)
+}
+
+static KEEP_OBJECTS: AtomicBool = AtomicBool::new(false);
+static KEPT: Mutex<Vec<([u8; 32], Arc<ObjectSlice>)>> = Mutex::new(Vec::new());
+const KEPT_OBJECTS: usize = 2;
+
+/// Keep the last interactive object slices in memory, so a slice that
+/// changes only support settings reuses the part instead of cutting and
+/// planning it again. For long-running shells; off by default.
+pub fn keep_object_slices(on: bool) {
+    KEEP_OBJECTS.store(on, Ordering::Relaxed);
+    if !on {
+        KEPT.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+}
+
+/// The part for this mesh, blend, and settings, and whether it came from
+/// memory. Only slices that draw a preview are kept, so a Pareto sweep does
+/// not push out the part the user is editing.
+fn object_for(
+    mesh: &Mesh,
+    blend: &BlendMode,
+    settings: &SliceSettings,
+    nozzle_diameter: f64,
+) -> Result<(ObjectSlice, bool), String> {
+    if !KEEP_OBJECTS.load(Ordering::Relaxed) || !settings.include_preview {
+        return Ok((
+            slice_mesh_object(mesh, blend, settings, nozzle_diameter)?,
+            false,
+        ));
+    }
+    let key = object_key(mesh, blend, settings, nozzle_diameter);
+    let hit = {
+        let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+        kept.iter().position(|(k, _)| *k == key).map(|at| {
+            let entry = kept.remove(at);
+            let object = Arc::clone(&entry.1);
+            kept.insert(0, entry);
+            object
+        })
+    };
+    if let Some(object) = hit {
+        return Ok((object.reused(), true));
+    }
+    let object = slice_mesh_object(mesh, blend, settings, nozzle_diameter)?;
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    kept.insert(0, (key, Arc::new(object.clone())));
+    kept.truncate(KEPT_OBJECTS);
+    Ok((object, false))
+}
+
+/// Hash of everything the object pass reads. Settings are hashed whole,
+/// minus the ones only supports read, so a setting added later misses the
+/// cache instead of reusing a stale part.
+fn object_key(
+    mesh: &Mesh,
+    blend: &BlendMode,
+    settings: &SliceSettings,
+    nozzle_diameter: f64,
+) -> [u8; 32] {
+    let blank = SliceSettings::default();
+    let part = SliceSettings {
+        supports: blank.supports,
+        support_angle: blank.support_angle,
+        support_style: blank.support_style,
+        branch_angle: blank.branch_angle,
+        tip_diameter: blank.tip_diameter,
+        trunk_diameter: blank.trunk_diameter,
+        support_height_mult: blank.support_height_mult,
+        island_support: blank.island_support,
+        job: blank.job,
+        ..settings.clone()
+    };
+    let mut hash = Sha256::new();
+    for tri in &mesh.triangles {
+        for v in tri {
+            for c in v {
+                hash.update(c.to_bits().to_le_bytes());
+            }
+        }
+    }
+    hash.update(format!(
+        "{blend:?}|{:x}|{part:?}",
+        nozzle_diameter.to_bits()
+    ));
+    hash.finalize().into()
 }
 
 /// Everything `plan` does after the mesh is cut into per-band contours.
+#[cfg(test)]
 fn plan_contours(
     bands: Vec<LayerBand>,
     contours: Vec<Vec<Loop>>,
@@ -1519,6 +1629,7 @@ fn plan_contours(
 }
 
 /// One layer of the part on its own. `note` names the strategy it used.
+#[derive(Clone)]
 struct ObjectLayer {
     paths: Vec<Extrusion>,
     note: String,
@@ -1528,13 +1639,36 @@ struct ObjectLayer {
 
 /// The part's own plan: contours, and every layer's walls, infill, and skin
 /// with overhangs split. Supports read it and never change it.
+#[derive(Clone)]
 pub(crate) struct ObjectSlice {
     bands: Vec<LayerBand>,
     contours: Vec<Vec<Loop>>,
     bounds: ([f64; 3], [f64; 3]),
     layers: Vec<ObjectLayer>,
+    contour_ms: f64,
+    index_ms: f64,
+    cut_cpu_ms: f64,
+    simplify_cpu_ms: f64,
     roof_ms: f64,
     toolpath_ms: f64,
+}
+
+impl ObjectSlice {
+    /// A copy whose stage clocks read zero, since none of that work ran again.
+    fn reused(&self) -> Self {
+        let mut copy = self.clone();
+        copy.contour_ms = 0.0;
+        copy.index_ms = 0.0;
+        copy.cut_cpu_ms = 0.0;
+        copy.simplify_cpu_ms = 0.0;
+        copy.roof_ms = 0.0;
+        copy.toolpath_ms = 0.0;
+        for layer in &mut copy.layers {
+            layer.wall_ms = 0.0;
+            layer.infill_ms = 0.0;
+        }
+        copy
+    }
 }
 
 /// Supports planned on an object slice: the regions and branches of every
@@ -1612,6 +1746,10 @@ fn slice_object(
         contours,
         bounds: (min, max),
         layers,
+        contour_ms: 0.0,
+        index_ms: 0.0,
+        cut_cpu_ms: 0.0,
+        simplify_cpu_ms: 0.0,
         roof_ms,
         toolpath_ms,
     })
@@ -1695,6 +1833,10 @@ fn assemble(
         bands,
         contours,
         layers: object_layers,
+        contour_ms,
+        index_ms,
+        cut_cpu_ms,
+        simplify_cpu_ms,
         roof_ms,
         toolpath_ms: object_ms,
         ..
@@ -1826,17 +1968,18 @@ fn assemble(
         bands,
         contours,
         supports,
-        contour_ms: 0.0,
+        contour_ms,
         support_ms,
         toolpath_ms: object_ms + support_path_ms,
         order_ms,
         comb_ms,
-        index_ms: 0.0,
-        cut_cpu_ms: 0.0,
-        simplify_cpu_ms: 0.0,
+        index_ms,
+        cut_cpu_ms,
+        simplify_cpu_ms,
         roof_ms,
         wall_cpu_ms,
         infill_cpu_ms,
+        object_reused: false,
     })
 }
 

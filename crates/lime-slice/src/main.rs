@@ -749,6 +749,7 @@ fn park_gcode(text: String) -> String {
 static SLICE_CACHE: std::sync::OnceLock<lime_slice_core::SliceCache> = std::sync::OnceLock::new();
 
 fn serve(port: u16, cache_dir: Option<PathBuf>) -> Result<(), String> {
+    lime_slice_core::keep_object_slices(true);
     if let Some(dir) = cache_dir {
         let _ = SLICE_CACHE.set(lime_slice_core::SliceCache::new(dir, 2 << 30));
     }
