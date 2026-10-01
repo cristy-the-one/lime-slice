@@ -559,6 +559,7 @@ fn grow(
                 nodes.push(Node {
                     id: next_id,
                     xy: p,
+                    above: p,
                     radius: tip_r,
                     dist: 0.0,
                     freeze: iface_n,
@@ -748,6 +749,8 @@ fn settle_disks(
 pub(crate) struct Node {
     id: u32,
     xy: [f64; 2],
+    /// Where its disk printed on the layer above, before this layer's step.
+    above: [f64; 2],
     radius: f64,
     /// Millimetres this branch has already fallen. Longer branches hold less.
     dist: f64,
@@ -877,6 +880,7 @@ fn propagate_nodes(
     }
     let steps = pair_steps(&next, grow, max_step);
     for (n, xy) in next.iter_mut().zip(steps) {
+        n.above = n.xy;
         n.xy = xy;
     }
     let flare = flare_per_mm(grow.load_factor) * grow.height;
@@ -1168,11 +1172,7 @@ fn merge_nodes(nodes: &mut Vec<Node>, grow: &Grow, reach: f64, ended: &mut Vec<(
         if let Some(at) = found {
             let host = &mut kept[at];
             let was = host.xy;
-            let w = (host.radius + n.radius).max(1e-6);
-            host.xy = [
-                (host.xy[0] * host.radius + n.xy[0] * n.radius) / w,
-                (host.xy[1] * host.radius + n.xy[1] * n.radius) / w,
-            ];
+            host.xy = merge_point(host, &n);
             host.load += n.load;
             host.dist = host.dist.max(n.dist);
             // Section area adds up at a fork, so thickness follows the tips carried.
@@ -1247,17 +1247,26 @@ impl CellGrid {
     }
 }
 
-/// True when the merged disk, at the section-weighted centre, still sits under
-/// both parent disks within one lean step.
+/// Where a merged trunk stands: between the two, nearer the thicker.
+fn merge_point(host: &Node, guest: &Node) -> [f64; 2] {
+    let w = (host.radius + guest.radius).max(1e-6);
+    [
+        (host.xy[0] * host.radius + guest.xy[0] * guest.radius) / w,
+        (host.xy[1] * host.radius + guest.xy[1] * guest.radius) / w,
+    ]
+}
+
+/// True when the merged disk still sits under both parent disks within one
+/// lean step, as `settle_disks` tests it: from where each parent printed on
+/// the layer above, not from where this layer's step moved it.
 fn holds_both(host: &Node, guest: &Node, trunk_r: f64, reach: f64) -> bool {
-    let d = (host.xy[0] - guest.xy[0]).hypot(host.xy[1] - guest.xy[1]);
     let merged = (host.radius.powi(2) + guest.radius.powi(2))
         .sqrt()
         .min(trunk_r);
-    let w = (host.radius + guest.radius).max(1e-6);
-    let shift_h = d * guest.radius / w;
-    let shift_g = d * host.radius / w;
-    shift_h + host.radius <= merged + reach && shift_g + guest.radius <= merged + reach
+    let at = merge_point(host, guest);
+    let holds =
+        |n: &Node| (n.above[0] - at[0]).hypot(n.above[1] - at[1]) + n.radius <= merged + reach;
+    holds(host) && holds(guest)
 }
 
 /// True when one trunk at the cap radius can carry both loads at the longer fall.
@@ -1536,6 +1545,7 @@ fn seed_uncovered_interface(
             nodes.push(Node {
                 id: *next_id,
                 xy,
+                above: xy,
                 radius: tip_r,
                 dist: 0.0,
                 freeze: 1,
@@ -1958,6 +1968,7 @@ mod tests {
         Node {
             id,
             xy,
+            above: xy,
             radius,
             dist: (id % 7) as f64,
             freeze,
@@ -2757,6 +2768,7 @@ mod tests {
                 .map(|(xy, id)| Node {
                     id,
                     xy,
+                    above: xy,
                     radius: 2.1,
                     dist: 20.0,
                     freeze: 0,
