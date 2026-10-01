@@ -1548,9 +1548,48 @@ pub(crate) struct ObjectSlice {
 pub(crate) struct SupportPlan {
     supports: Supports,
     coverage: Vec<CoverageGap>,
+    /// Layers each layer's support stands for, from `shaft_scales`.
+    shaft: Vec<f64>,
     paths: Vec<Vec<Extrusion>>,
     support_ms: f64,
     toolpath_ms: f64,
+}
+
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "edits reach the slice request in step 6")
+)]
+impl SupportPlan {
+    /// Bring paths, shaft scales, and coverage up to date after edits
+    /// changed the support on `changed` layers. A changed layer can move the
+    /// shaft scale of its run beyond itself, so layers whose scale moved are
+    /// repainted too. Returns the layers repainted, ascending.
+    fn refresh(
+        &mut self,
+        object: &ObjectSlice,
+        changed: &[usize],
+        blend: &BlendMode,
+        settings: &SliceSettings,
+    ) -> Vec<usize> {
+        if changed.is_empty() {
+            return Vec::new();
+        }
+        let layers = &self.supports.layers;
+        let shaft = shaft_scales(layers, settings.support_height_mult);
+        let mut repaint: Vec<usize> = (0..shaft.len())
+            .filter(|&i| shaft[i] != self.shaft[i])
+            .chain(changed.iter().copied())
+            .collect();
+        repaint.sort_unstable();
+        repaint.dedup();
+        let painted = paint(object, layers, &shaft, &repaint, blend, settings);
+        for (&i, paths) in repaint.iter().zip(painted) {
+            self.paths[i] = paths;
+        }
+        self.shaft = shaft;
+        self.coverage = self.supports.coverage(&object.bands, &object.contours);
+        repaint
+    }
 }
 
 fn slice_object(
@@ -1654,15 +1693,38 @@ fn plan_supports(
     };
     let coverage = supports.coverage(&object.bands, &object.contours);
     let support_ms = elapsed_ms(support_started);
-    let layers = &supports.layers;
-    let shaft = shaft_scales(layers, settings.support_height_mult);
-    let (min, max) = object.bounds;
+    let shaft = shaft_scales(&supports.layers, settings.support_height_mult);
     let toolpath_started = Instant::now();
-    let paths: Vec<Vec<Extrusion>> = object
-        .bands
+    let all: Vec<usize> = (0..object.bands.len()).collect();
+    let paths = paint(object, &supports.layers, &shaft, &all, blend, settings);
+    let toolpath_ms = elapsed_ms(toolpath_started);
+    if settings.job.cancelled() {
+        return Err("cancelled".into());
+    }
+    Ok(SupportPlan {
+        supports,
+        coverage,
+        shaft,
+        paths,
+        support_ms,
+        toolpath_ms,
+    })
+}
+
+/// Support paths for each layer `which` names, in its order.
+fn paint(
+    object: &ObjectSlice,
+    layers: &[SupportLayer],
+    shaft: &[f64],
+    which: &[usize],
+    blend: &BlendMode,
+    settings: &SliceSettings,
+) -> Vec<Vec<Extrusion>> {
+    let (min, max) = object.bounds;
+    which
         .par_iter()
-        .enumerate()
-        .map(|(i, band)| {
+        .map(|&i| {
+            let band = &object.bands[i];
             let Some(layer) = layers.get(i).filter(|_| !settings.job.cancelled()) else {
                 return Vec::new();
             };
@@ -1678,18 +1740,7 @@ fn plan_supports(
                 max,
             )
         })
-        .collect();
-    let toolpath_ms = elapsed_ms(toolpath_started);
-    if settings.job.cancelled() {
-        return Err("cancelled".into());
-    }
-    Ok(SupportPlan {
-        supports,
-        coverage,
-        paths,
-        support_ms,
-        toolpath_ms,
-    })
+        .collect()
 }
 
 /// Joins the part and its supports layer by layer: the skirt first, then
@@ -1712,6 +1763,7 @@ fn assemble(
     let SupportPlan {
         supports,
         coverage,
+        shaft: _,
         paths: support_layer_paths,
         support_ms,
         toolpath_ms: support_path_ms,
@@ -3310,5 +3362,152 @@ mod tests {
         assert_eq!(full.sanity.extrusion_moves, quiet.sanity.extrusion_moves);
         assert!((full.estimate.seconds - quiet.estimate.seconds).abs() < 1e-6);
         assert!((full.estimate.filament_g - quiet.estimate.filament_g).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod edit_cost {
+    use super::*;
+    use crate::support::edit::{SupportEdit, TipSite};
+    use crate::support::{End, NodeId};
+
+    /// What pruning costs against planning supports from scratch, on the mesh
+    /// at `LIME_EDIT_MESH` under toughness. Prints one line per case.
+    ///
+    /// LIME_EDIT_MESH=/path/part.stp cargo test -p lime-slice-core --release --lib edit_cost -- --ignored --nocapture
+    #[test]
+    #[ignore = "needs LIME_EDIT_MESH"]
+    fn edit_cost() {
+        let path = std::env::var("LIME_EDIT_MESH").expect("set LIME_EDIT_MESH to a mesh path");
+        let bytes = std::fs::read(&path).unwrap();
+        let mesh = load_slice_mesh_tol(&path, &bytes, false, 0.1).unwrap();
+        let blend = BlendMode::Single {
+            strategy: StrategyId::Toughness,
+        };
+        let settings = SliceSettings {
+            supports: true,
+            ..SliceSettings::default()
+        };
+        let bounds = mesh.bounds().unwrap();
+        let bands = plan_bands(
+            &mesh,
+            &HeightOpts {
+                nominal: settings.layer_height,
+                adaptive: false,
+                min_h: settings.adaptive_min,
+                max_h: settings.layer_height,
+            },
+        )
+        .unwrap();
+        let index = ZIndex::build(&mesh);
+        let tolerance = outline_tolerance(&settings, 0.4);
+        let contours: Vec<Vec<Loop>> = bands
+            .par_iter()
+            .map(|b| simplify_loops(index.slice(b.cut_z()), tolerance))
+            .collect();
+        let object = slice_object(bands, contours, bounds, &blend, &settings, 0.4).unwrap();
+        let plan = || plan_supports(&object, &blend, &settings).unwrap();
+
+        let started = Instant::now();
+        let base = plan();
+        let full_ms = elapsed_ms(started);
+        let limbs = &base.supports.forest.limbs;
+        let knots: usize = limbs.iter().map(|l| l.knots.len()).sum();
+        let disks: usize = base.supports.layers.iter().map(|l| l.disks.len()).sum();
+        println!(
+            "full plan_supports {full_ms:.0} ms (supports {:.0} ms, paths {:.0} ms); {} layers, {} limbs, {knots} knots of {} B, layer index {:.1} MB, knots {:.1} MB; storing raw disks instead would be up to one per knot at {} B, {:.1} MB; {disks} printed disks",
+            base.support_ms,
+            base.toolpath_ms,
+            object.bands.len(),
+            limbs.len(),
+            std::mem::size_of_val(&limbs[0].knots[0]),
+            knots as f64 * 4.0 / 1e6,
+            knots as f64 * std::mem::size_of_val(&limbs[0].knots[0]) as f64 / 1e6,
+            std::mem::size_of::<Disk>(),
+            knots as f64 * std::mem::size_of::<Disk>() as f64 / 1e6,
+        );
+        let started = Instant::now();
+        base.supports.coverage(&object.bands, &object.contours);
+        println!("one coverage pass {:.0} ms", elapsed_ms(started));
+
+        // Limbs in each branch, counted up from the youngest guest.
+        let mut branch = vec![1usize; limbs.len()];
+        for k in (0..limbs.len()).rev() {
+            if let End::Merged { into } = limbs[k].end {
+                branch[into.0 as usize - 1] += branch[k];
+            }
+        }
+        let median = |mut ks: Vec<usize>| {
+            ks.sort_by_key(|&k| (branch[k], k));
+            ks[ks.len() / 2]
+        };
+        let merged = |k: usize| matches!(limbs[k].end, End::Merged { .. });
+        let mut trees: Vec<usize> = (0..limbs.len()).filter(|&k| !merged(k)).collect();
+        trees.sort_by_key(|&k| (branch[k], k));
+        let tips = |at: f64| branch[trees[((trees.len() - 1) as f64 * at) as usize]];
+        println!(
+            "{} trees, tips per tree: median {}, p90 {}, p99 {}, max {}",
+            trees.len(),
+            tips(0.5),
+            tips(0.9),
+            tips(0.99),
+            tips(1.0)
+        );
+        let tree = median(
+            (0..limbs.len())
+                .filter(|&k| !merged(k) && branch[k] >= 10)
+                .collect(),
+        );
+        let largest = *trees.last().unwrap();
+        let guest = median(
+            (0..limbs.len())
+                .filter(|&k| merged(k) && branch[k] >= 2)
+                .collect(),
+        );
+        let bands = &object.bands;
+        let id = |k: usize| NodeId(k as u32 + 1);
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let subset: Vec<TipSite> = (0..limbs.len())
+            .filter(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed % 100 == 0
+            })
+            .map(|k| base.supports.limb_site(id(k), bands))
+            .collect();
+        let cases = [
+            ("mid-size tree", base.supports.tree_sites(id(tree), bands)),
+            ("largest tree", base.supports.tree_sites(id(largest), bands)),
+            ("one branch", base.supports.branch_sites(id(guest), bands)),
+            ("1% of tips", subset),
+        ];
+        drop(base);
+        for (name, sites) in cases {
+            let mut plan = plan();
+            let tips = sites.len();
+            let edit = [SupportEdit::Prune { sites }];
+            let started = Instant::now();
+            let out = plan.supports.apply(&edit, &object.bands, &object.contours);
+            let apply_ms = elapsed_ms(started);
+            let started = Instant::now();
+            let painted = plan.refresh(&object, &out[0].changed, &blend, &settings);
+            let refresh_ms = elapsed_ms(started);
+            let same =
+                plan.supports.layers == plan.supports.rebuilt(&object.bands, &object.contours);
+            println!(
+                "{name}: {tips} tips, {:?}, apply {apply_ms:.0} ms, {} layers changed in {:?}, stood {}, refresh {refresh_ms:.0} ms repainting {} layers, newly floating {:.1} mm2, incremental == full {same}",
+                out[0].status,
+                out[0].changed.len(),
+                out[0].changed.first().zip(out[0].changed.last()),
+                out[0].stood,
+                painted.len(),
+                out[0].newly_floating_mm2,
+            );
+            assert!(
+                same,
+                "{name}: the incremental rebuild differs from a full one"
+            );
+        }
     }
 }

@@ -10,6 +10,8 @@ use crate::poly::{
     simplify_loops, Loop, LoopIndex,
 };
 
+pub(crate) mod edit;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SupportStyle {
     Grid,
@@ -99,6 +101,8 @@ pub(crate) struct Supports {
     /// Each layer's interface as the part demands it, before any patch with
     /// nothing under it is dropped. Coverage measures `layers` against it.
     demanded: Vec<Vec<Loop>>,
+    /// The settings it grew with. Edits re-stand layers with the same lean and pitch.
+    opts: SupportOpts,
 }
 
 /// Part of the demanded interface that the finished supports do not print,
@@ -133,6 +137,8 @@ struct Demand {
 #[derive(Default)]
 pub(crate) struct Forest {
     pub limbs: Vec<Limb>,
+    /// `at[i]` lists, in ascending order, the index of every limb with a knot on layer `i`.
+    at: Vec<Vec<u32>>,
 }
 
 /// One lineage of the walk: born at a tip on layer `top` and carried down
@@ -143,6 +149,21 @@ pub(crate) struct Limb {
     pub top: usize,
     pub knots: Vec<Node>,
     pub end: End,
+    /// What edits left of it. Its knots never change.
+    pub life: Life,
+}
+
+/// A limb as edits leave it. Only a limb whose own tip was pruned is not `Live`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Life {
+    Live,
+    /// Its tip is pruned, but limbs merged into it survive. It prints its
+    /// knots up to layer `to`, where the highest of them joins it.
+    Trimmed {
+        to: usize,
+    },
+    /// Its tip is pruned and nothing merged into it survives.
+    Removed,
 }
 
 /// How a limb stops, stepping down from its last knot.
@@ -159,6 +180,13 @@ pub(crate) enum End {
 }
 
 impl Forest {
+    fn new(layers: usize) -> Self {
+        Self {
+            limbs: Vec::new(),
+            at: vec![Vec::new(); layers],
+        }
+    }
+
     /// Append each node's state on `layer`. A node with no limb yet was born
     /// on it; its limb counts as reaching the bed until the walk ends it.
     fn record(&mut self, layer: usize, nodes: &[Node]) {
@@ -169,9 +197,27 @@ impl Forest {
                     top: layer,
                     knots: Vec::new(),
                     end: End::Bed,
+                    life: Life::Live,
                 });
             }
             self.limbs[k].knots.push(*n);
+            self.at[layer].push(k as u32);
+        }
+    }
+}
+
+impl Limb {
+    /// The lowest layer it has a knot on.
+    fn bottom(&self) -> usize {
+        self.top + 1 - self.knots.len()
+    }
+
+    /// The highest layer it still prints a knot on, `None` once removed.
+    fn reach(&self) -> Option<usize> {
+        match self.life {
+            Life::Live => Some(self.top),
+            Life::Trimmed { to } => Some(to),
+            Life::Removed => None,
         }
     }
 }
@@ -213,6 +259,7 @@ impl Supports {
             forest,
             layers,
             demanded,
+            opts: *opts,
         })
     }
 
@@ -221,6 +268,16 @@ impl Supports {
     /// join one patch. A patch whose largest layer is under
     /// `COVERAGE_SPECK_MM2` is left out. Largest patch first.
     pub(crate) fn coverage(&self, bands: &[LayerBand], contours: &[Vec<Loop>]) -> Vec<CoverageGap> {
+        self.coverage_from(bands, contours, COVERAGE_SPECK_MM2)
+    }
+
+    /// Coverage keeping every patch whose largest layer reaches `min_mm2`.
+    pub(crate) fn coverage_from(
+        &self,
+        bands: &[LayerBand],
+        contours: &[Vec<Loop>],
+        min_mm2: f64,
+    ) -> Vec<CoverageGap> {
         let pieces: Vec<Unheld> = (0..self.layers.len())
             .into_par_iter()
             .flat_map_iter(|i| {
@@ -266,7 +323,7 @@ impl Supports {
         }
         let mut gaps: Vec<CoverageGap> = patches
             .into_iter()
-            .filter(|patch| patch.area >= COVERAGE_SPECK_MM2)
+            .filter(|patch| patch.area >= min_mm2)
             .map(|patch| patch.report(bands))
             .collect();
         gaps.sort_by(|a, b| {
@@ -503,29 +560,17 @@ fn grow(
 ) -> Option<(Forest, Vec<Vec<Disk>>)> {
     let n = bands.len();
     let iface_n = opts.interface_layers.max(1);
-    let density = opts.density.clamp(0.0, 1.0);
-    // Fine grid finds concave overhangs. `keep_spacing` is the pitch we actually
-    // leave standing: extra samples are packed onto a neighbour that can carry them.
-    let fine_spacing = (opts.branch_spacing / (0.55 + 0.9 * density)).clamp(2.2, 9.0);
-    let keep_spacing = tip_spacing(opts, fine_spacing);
-    // A tighter knob than the fine grid has to actually sample tighter.
-    let sample_spacing = fine_spacing.min(keep_spacing);
     let load_factor = load_factor_of(opts);
-    let tip_r = (opts.tip_diameter * 0.5).clamp(0.25, 1.6);
+    let tip_r = tip_radius(opts);
     let trunk_r = (opts.trunk_diameter * 0.5).max(tip_r + 0.3).clamp(0.6, 8.0);
     let lean = lean_of(opts);
-    let tip_cap = tip_capacity(tip_r, 0.0, tip_r, load_factor);
-    let pitch = Pitch {
-        fine: sample_spacing,
-        keep: keep_spacing,
-        capacity: tip_cap,
-    };
+    let pitch = Pitch::of(opts);
     let part_bb: Vec<Option<([f64; 2], [f64; 2])>> =
         contours.iter().map(|c| loop_bounds(c)).collect();
 
     let mut nodes: Vec<Node> = Vec::new();
     let mut next_id = 1u32;
-    let mut forest = Forest::default();
+    let mut forest = Forest::new(n);
     let mut disks = vec![Vec::new(); n];
     let mut ended = Vec::new();
     for i in (0..n).rev() {
@@ -689,15 +734,34 @@ fn project(
     let mut near = Vec::new();
     for i in from.max(1)..layers.len() {
         let (lower, upper) = layers.split_at_mut(i);
-        let below = &lower[i - 1];
-        let layer = &mut upper[0];
-        let part = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
-        let reach = bands[i].height * lean + BEAD_OVERHANG_MM;
-        settle_disks(&mut layer.disks, &below.disks, part, reach, &mut near);
-        // A trunk that cannot stand is dropped above. The interface that was
-        // waiting on it would otherwise stay as a raft in the air.
-        drop_unfooted_interface(&mut layer.interface, below, part);
+        stand(
+            &mut upper[0],
+            &lower[i - 1],
+            i,
+            bands,
+            contours,
+            lean,
+            &mut near,
+        );
     }
+}
+
+/// Stand layer `i` on the finished layer below it.
+fn stand(
+    layer: &mut SupportLayer,
+    below: &SupportLayer,
+    i: usize,
+    bands: &[LayerBand],
+    contours: &[Vec<Loop>],
+    lean: f64,
+    near: &mut Vec<usize>,
+) {
+    let part = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
+    let reach = bands[i].height * lean + BEAD_OVERHANG_MM;
+    settle_disks(&mut layer.disks, &below.disks, part, reach, near);
+    // A trunk that cannot stand is dropped above. The interface that was
+    // waiting on it would otherwise stay as a raft in the air.
+    drop_unfooted_interface(&mut layer.interface, below, part);
 }
 
 /// Narrow any disk that is wider than what holds it: a disk on the layer
@@ -1343,6 +1407,27 @@ struct Pitch {
     fine: f64,
     keep: f64,
     capacity: f64,
+}
+
+impl Pitch {
+    fn of(opts: &SupportOpts) -> Self {
+        let density = opts.density.clamp(0.0, 1.0);
+        // Fine grid finds concave overhangs. `keep` is the pitch we actually
+        // leave standing: extra samples are packed onto a neighbour that can carry them.
+        let fine = (opts.branch_spacing / (0.55 + 0.9 * density)).clamp(2.2, 9.0);
+        let keep = tip_spacing(opts, fine);
+        let tip_r = tip_radius(opts);
+        Self {
+            // A tighter knob than the fine grid has to actually sample tighter.
+            fine: fine.min(keep),
+            keep,
+            capacity: tip_capacity(tip_r, 0.0, tip_r, load_factor_of(opts)),
+        }
+    }
+}
+
+fn tip_radius(opts: &SupportOpts) -> f64 {
+    (opts.tip_diameter * 0.5).clamp(0.25, 1.6)
 }
 
 /// One packed tip per neighbourhood. A grid over the combined bbox, with the
@@ -2025,7 +2110,7 @@ mod tests {
         }
     }
 
-    fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Loop {
+    pub(super) fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Loop {
         vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
     }
 
@@ -2044,7 +2129,7 @@ mod tests {
         ]
     }
 
-    fn layers(n: usize) -> Vec<LayerBand> {
+    pub(super) fn layers(n: usize) -> Vec<LayerBand> {
         (0..n).map(|i| band(i, (i as f64 + 1.0) * 0.2)).collect()
     }
 
@@ -2101,7 +2186,7 @@ mod tests {
         (worst, probes)
     }
 
-    fn band(index: usize, z: f64) -> LayerBand {
+    pub(super) fn band(index: usize, z: f64) -> LayerBand {
         LayerBand {
             index,
             z,
@@ -2368,7 +2453,7 @@ mod tests {
     }
 
     /// Bands and contours for a 40 x 14 mm plate 15.2 mm above the bed.
-    fn plate() -> (Vec<LayerBand>, Vec<Vec<Loop>>) {
+    pub(super) fn plate() -> (Vec<LayerBand>, Vec<Vec<Loop>>) {
         let bands = layers(80);
         let mut contours = vec![Vec::new(); bands.len()];
         for contour in contours.iter_mut().skip(76) {
@@ -2377,7 +2462,7 @@ mod tests {
         (bands, contours)
     }
 
-    fn plate_opts() -> SupportOpts {
+    pub(super) fn plate_opts() -> SupportOpts {
         SupportOpts {
             style: SupportStyle::Tree,
             density: 0.15,
@@ -2387,11 +2472,6 @@ mod tests {
             islands: true,
             ..SupportOpts::default()
         }
-    }
-
-    /// The lowest layer a limb has a knot on.
-    fn bottom(limb: &Limb) -> usize {
-        limb.top + 1 - limb.knots.len()
     }
 
     /// The forest holds the walk: each layer's raw disks come back from the
@@ -2413,7 +2493,7 @@ mod tests {
             let live: Vec<Node> = forest
                 .limbs
                 .iter()
-                .filter(|l| bottom(l) <= i && i <= l.top)
+                .filter(|l| l.bottom() <= i && i <= l.top)
                 .map(|l| l.knots[l.top - i])
                 .collect();
             assert_eq!(
@@ -2424,7 +2504,7 @@ mod tests {
             for d in &built.layers[i].disks {
                 let l = limb(d.node);
                 assert!(
-                    bottom(l) <= i && i <= l.top,
+                    l.bottom() <= i && i <= l.top,
                     "layer {i}: disk of {:?} has no knot here",
                     d.node
                 );
@@ -2446,24 +2526,24 @@ mod tests {
             let id = NodeId(k as u32 + 1);
             let last = l.knots[l.knots.len() - 1];
             match l.end {
-                End::Bed => assert_eq!(bottom(l), 0, "{id:?} stopped short of the bed"),
+                End::Bed => assert_eq!(l.bottom(), 0, "{id:?} stopped short of the bed"),
                 End::Merged { into } => {
                     assert!(into < id, "{id:?} merged into younger {into:?}");
                     let host = limb(into);
-                    let at = bottom(l) - 1;
+                    let at = l.bottom() - 1;
                     assert!(
-                        bottom(host) <= at && at <= host.top,
+                        host.bottom() <= at && at <= host.top,
                         "{into:?} has no knot to carry {id:?} on layer {at}"
                     );
                 }
                 End::Landed => {
-                    let at = bottom(l) - 1;
+                    let at = l.bottom() - 1;
                     assert!(
                         in_solid(&contours[at], last.xy[0], last.xy[1]),
                         "{id:?} landed beside the part on layer {at}"
                     );
                 }
-                End::Pinched => assert!(bottom(l) > 0, "{id:?} was pinched under the bed"),
+                End::Pinched => assert!(l.bottom() > 0, "{id:?} was pinched under the bed"),
             }
         }
     }
@@ -2530,7 +2610,7 @@ mod tests {
     /// widens 0.2 mm a layer, faster than the trunk can step away, so the
     /// trunk is cut off: settling drops its disks and the pad's interface
     /// loses its footing.
-    fn pad_over_flank() -> (Vec<LayerBand>, Vec<Vec<Loop>>) {
+    pub(super) fn pad_over_flank() -> (Vec<LayerBand>, Vec<Vec<Loop>>) {
         let bands = layers(170);
         let mut contours = vec![Vec::new(); bands.len()];
         for (i, contour) in contours.iter_mut().enumerate() {
