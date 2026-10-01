@@ -18,7 +18,7 @@ use crate::strategy::{
     classicize, layer_weight, mix, pure, support_density, support_interface_density, support_speed,
     Axis, BlendMode, Gyroid3d, PrinterProfile, ResolvedStrategy, ScarfSeam, StrategyId, ZHopMode,
 };
-use crate::support::{build_supports, SupportLayer, SupportOpts, SupportStyle};
+use crate::support::{build_supports, Disk, SupportLayer, SupportOpts, SupportStyle};
 use crate::toolpath::{
     apply_overhang, apply_scarf, apply_z_hop, comb_layer, order_layer, plan_region_split,
     plan_skirt, plan_support, plan_tree_support, Extrusion, PathFeatures, PathKind, ScarfParams,
@@ -1713,7 +1713,7 @@ fn assemble(
             let band = &bands[i];
             let support = supports.get(i);
             let unsupported = support.is_none_or(|s| {
-                s.sparse.is_empty() && s.interface.is_empty() && s.branches.is_empty()
+                s.sparse.is_empty() && s.interface.is_empty() && s.disks.is_empty()
             });
             if contours[i].is_empty() && unsupported {
                 return LayerJob {
@@ -1951,7 +1951,7 @@ fn shaft_scales(supports: &[crate::support::SupportLayer], mult: f64) -> Vec<f64
     let has = |i: usize| {
         supports
             .get(i)
-            .map(|s| !s.sparse.is_empty() || !s.branches.is_empty())
+            .map(|s| !s.sparse.is_empty() || !s.disks.is_empty())
             .unwrap_or(false)
     };
     let mut scale = vec![0.0; supports.len()];
@@ -2251,8 +2251,7 @@ fn support_paths(
                 &mut paths,
                 &layer.sparse,
                 &layer.interface,
-                &layer.branches,
-                &layer.radii,
+                &layer.disks,
                 shaft_scale,
                 height,
                 &tough,
@@ -2267,8 +2266,7 @@ fn support_paths(
                 &mut paths,
                 &layer.sparse,
                 &layer.interface,
-                &layer.branches,
-                &layer.radii,
+                &layer.disks,
                 shaft_scale,
                 height,
                 &resolved,
@@ -2355,8 +2353,7 @@ fn emit_supports(
     paths: &mut Vec<Extrusion>,
     support: &[Loop],
     interface: &[Loop],
-    branches: &[[f64; 2]],
-    radii: &[f64],
+    disks: &[Disk],
     shaft_scale: f64,
     layer_height: f64,
     low: &ResolvedStrategy,
@@ -2364,17 +2361,16 @@ fn emit_supports(
     split: Option<RegionSplit>,
     line_width: f64,
 ) {
-    if support.is_empty() && interface.is_empty() && branches.is_empty() {
+    if support.is_empty() && interface.is_empty() && disks.is_empty() {
         return;
     }
     let paint = |paths: &mut Vec<Extrusion>,
                  region_s: &[Loop],
                  region_i: &[Loop],
-                 centers: &[[f64; 2]],
-                 radii: &[f64],
+                 disks: &[Disk],
                  strategy: &ResolvedStrategy| {
         if shaft_scale > 0.0 {
-            let mut sparse = if centers.is_empty() {
+            let mut sparse = if disks.is_empty() {
                 plan_support(
                     region_s,
                     strategy,
@@ -2383,7 +2379,7 @@ fn emit_supports(
                     false,
                 )
             } else {
-                plan_tree_support(centers, radii, strategy, line_width)
+                plan_tree_support(disks, strategy, line_width)
             };
             if shaft_scale > 1.01 {
                 for path in &mut sparse {
@@ -2405,8 +2401,8 @@ fn emit_supports(
         // the air beside that outline. Plan every branch once, then cut the
         // beads on the plane, so a trunk that leans across the cut is not
         // drawn twice and a trunk outside the outline is not dropped.
-        if !branches.is_empty() && shaft_scale > 0.0 {
-            let mut trunks = plan_tree_support(branches, radii, low, line_width);
+        if !disks.is_empty() && shaft_scale > 0.0 {
+            let mut trunks = plan_tree_support(disks, low, line_width);
             if shaft_scale > 1.01 {
                 for path in &mut trunks {
                     path.bead_height = layer_height * shaft_scale;
@@ -2421,17 +2417,16 @@ fn emit_supports(
             }
         }
         let (low_cover, high_cover) =
-            support_half_rects(support, interface, branches, radii, low_rect, high_rect);
+            support_half_rects(support, interface, disks, low_rect, high_rect);
         for (rect, strategy) in [(low_cover, low), (high_cover, high)] {
             let Some(rect) = rect else {
                 continue;
             };
-            if branches.is_empty() {
+            if disks.is_empty() {
                 paint(
                     paths,
                     &clip_to_rect(support, rect.0, rect.1),
                     &clip_to_rect(interface, rect.0, rect.1),
-                    &[],
                     &[],
                     strategy,
                 );
@@ -2446,7 +2441,7 @@ fn emit_supports(
             }
         }
     } else {
-        paint(paths, support, interface, branches, radii, low);
+        paint(paths, support, interface, disks, low);
     }
 }
 
@@ -2592,8 +2587,7 @@ fn take_chain(chain: &mut Vec<[f64; 2]>, out: &mut PointChains) {
 fn support_half_rects(
     support: &[Loop],
     interface: &[Loop],
-    branches: &[[f64; 2]],
-    radii: &[f64],
+    disks: &[Disk],
     low: XyRect,
     high: XyRect,
 ) -> (Option<XyRect>, Option<XyRect>) {
@@ -2615,8 +2609,8 @@ fn support_half_rects(
             }
         }
     }
-    for (i, p) in branches.iter().copied().enumerate() {
-        let r = radii.get(i).copied().unwrap_or(0.0).max(0.0);
+    for d in disks {
+        let (p, r) = (d.xy, d.r.max(0.0));
         touch([p[0] - r, p[1] - r]);
         touch([p[0] + r, p[1] + r]);
     }

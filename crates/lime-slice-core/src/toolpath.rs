@@ -10,6 +10,7 @@ use crate::poly::{
     signed_area, Loop,
 };
 use crate::strategy::{InfillPattern, ResolvedStrategy, ScarfSeam, SeamMode, StrategyId};
+use crate::support::Disk;
 use clipper2::{EndType, FillRule, JoinType, Milli, Paths};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2052,19 +2053,18 @@ pub fn plan_support(
 /// Organic branches: thin tips are one loop, thicker trunks are perimeters of the
 /// union of their cross-sections so nearby branches melt into one shape.
 pub fn plan_tree_support(
-    centers: &[[f64; 2]],
-    radii: &[f64],
+    disks: &[Disk],
     strategy: &ResolvedStrategy,
     line_width: f64,
 ) -> Vec<Extrusion> {
-    if centers.is_empty() {
+    if disks.is_empty() {
         return Vec::new();
     }
     let speed = crate::strategy::support_speed(strategy, false);
     let mut paths = Vec::new();
     let mut thick: Vec<Loop> = Vec::new();
-    for (i, c) in centers.iter().copied().enumerate() {
-        let r = radii.get(i).copied().unwrap_or(line_width).max(0.32);
+    for d in disks {
+        let (c, r) = (d.xy, d.r.max(0.32));
         if r <= line_width * 0.95 {
             let mut path = extrusion(PathKind::Support, strategy, circle_pts(c, r), line_width);
             path.speed = speed;
