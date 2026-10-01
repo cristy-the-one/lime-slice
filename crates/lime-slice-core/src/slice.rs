@@ -1508,11 +1508,52 @@ pub(crate) fn plan(
 fn plan_contours(
     bands: Vec<LayerBand>,
     contours: Vec<Vec<Loop>>,
-    (min, max): ([f64; 3], [f64; 3]),
+    bounds: ([f64; 3], [f64; 3]),
     blend: &BlendMode,
     settings: &SliceSettings,
     nozzle_diameter: f64,
 ) -> Result<Plan, String> {
+    let object = slice_object(bands, contours, bounds, blend, settings, nozzle_diameter)?;
+    let supports = plan_supports(&object, blend, settings)?;
+    assemble(object, supports, blend, settings)
+}
+
+/// One layer of the part on its own. `note` names the strategy it used.
+struct ObjectLayer {
+    paths: Vec<Extrusion>,
+    note: String,
+    wall_ms: f64,
+    infill_ms: f64,
+}
+
+/// The part's own plan: contours, and every layer's walls, infill, and skin
+/// with overhangs split. Supports read it and never change it.
+pub(crate) struct ObjectSlice {
+    bands: Vec<LayerBand>,
+    contours: Vec<Vec<Loop>>,
+    bounds: ([f64; 3], [f64; 3]),
+    layers: Vec<ObjectLayer>,
+    roof_ms: f64,
+    toolpath_ms: f64,
+}
+
+/// Supports planned on an object slice: the regions and branches of every
+/// layer, and the paths printed from them.
+pub(crate) struct SupportPlan {
+    layers: Vec<SupportLayer>,
+    paths: Vec<Vec<Extrusion>>,
+    support_ms: f64,
+    toolpath_ms: f64,
+}
+
+fn slice_object(
+    bands: Vec<LayerBand>,
+    contours: Vec<Vec<Loop>>,
+    (min, max): ([f64; 3], [f64; 3]),
+    blend: &BlendMode,
+    settings: &SliceSettings,
+    nozzle_diameter: f64,
+) -> Result<ObjectSlice, String> {
     let fewest_walls = pure(StrategyId::Speed)
         .walls
         .min(pure(StrategyId::Toughness).walls)
@@ -1523,10 +1564,68 @@ fn plan_contours(
     let roof_started = Instant::now();
     let roofs = roof_distances(&bands, &contours, settings.line_width * fewest_walls as f64);
     let roof_ms = elapsed_ms(roof_started);
+    let (remain_low, remain_high) = interior_remainings(blend, settings, &bands, &roofs);
+    let toolpath_started = Instant::now();
+    let layers: Vec<ObjectLayer> = bands
+        .par_iter()
+        .enumerate()
+        .map(|(i, band)| {
+            if settings.job.cancelled() {
+                return ObjectLayer {
+                    paths: Vec::new(),
+                    note: String::new(),
+                    wall_ms: 0.0,
+                    infill_ms: 0.0,
+                };
+            }
+            let mut layer = object_layer(
+                band.index,
+                band.z,
+                band.height,
+                &contours[i],
+                blend,
+                settings,
+                roofs[i],
+                min,
+                max,
+                nozzle_diameter,
+                remain_low[i],
+                remain_high[i],
+            );
+            if settings.overhang_control && i > 0 {
+                apply_overhang(
+                    &mut layer.paths,
+                    &contours[i - 1],
+                    band.height,
+                    settings.line_width,
+                );
+            }
+            layer
+        })
+        .collect();
+    let toolpath_ms = elapsed_ms(toolpath_started);
+    if settings.job.cancelled() {
+        return Err("cancelled".into());
+    }
+    Ok(ObjectSlice {
+        bands,
+        contours,
+        bounds: (min, max),
+        layers,
+        roof_ms,
+        toolpath_ms,
+    })
+}
+
+fn plan_supports(
+    object: &ObjectSlice,
+    blend: &BlendMode,
+    settings: &SliceSettings,
+) -> Result<SupportPlan, String> {
     let support_started = Instant::now();
-    let supports = build_supports(
-        &bands,
-        &contours,
+    let layers = build_supports(
+        &object.bands,
+        &object.contours,
         &SupportOpts {
             angle_deg: settings.support_angle,
             z_gap: settings.layer_height.max(0.12),
@@ -1547,60 +1646,103 @@ fn plan_contours(
     if settings.job.cancelled() {
         return Err("cancelled".into());
     }
-    let shaft = shaft_scales(&supports, settings.support_height_mult);
-    let (remain_low, remain_high) = interior_remainings(blend, settings, &bands, &roofs);
+    let shaft = shaft_scales(&layers, settings.support_height_mult);
+    let (min, max) = object.bounds;
     let toolpath_started = Instant::now();
-    let jobs: Vec<LayerJob> = bands
+    let paths: Vec<Vec<Extrusion>> = object
+        .bands
         .par_iter()
         .enumerate()
         .map(|(i, band)| {
-            if settings.job.cancelled() {
-                return LayerJob {
-                    index: band.index,
-                    z: band.z,
-                    height: band.height,
-                    paths: Vec::new(),
-                    note: String::new(),
-                    wall_ms: 0.0,
-                    infill_ms: 0.0,
-                };
-            }
-            let support = supports.get(i);
-            let mut job = build_layer(
-                band.index,
+            let Some(layer) = layers.get(i).filter(|_| !settings.job.cancelled()) else {
+                return Vec::new();
+            };
+            support_paths(
                 band.z,
                 band.height,
-                &contours[i],
-                support.map(|s| s.sparse.as_slice()).unwrap_or(&[]),
-                support.map(|s| s.interface.as_slice()).unwrap_or(&[]),
-                support.map(|s| s.branches.as_slice()).unwrap_or(&[]),
-                support.map(|s| s.radii.as_slice()).unwrap_or(&[]),
+                &object.contours[i],
+                layer,
                 shaft.get(i).copied().unwrap_or(0.0),
                 blend,
                 settings,
-                roofs[i],
                 min,
                 max,
-                nozzle_diameter,
-                remain_low[i],
-                remain_high[i],
-            );
-            if settings.overhang_control && i > 0 {
-                apply_overhang(
-                    &mut job.paths,
-                    &contours[i - 1],
-                    band.height,
-                    settings.line_width,
-                );
-            }
-            job
+            )
         })
         .collect();
     let toolpath_ms = elapsed_ms(toolpath_started);
     if settings.job.cancelled() {
         return Err("cancelled".into());
     }
-    let mut jobs = jobs;
+    Ok(SupportPlan {
+        layers,
+        paths,
+        support_ms,
+        toolpath_ms,
+    })
+}
+
+/// Joins the part and its supports layer by layer: the skirt first, then
+/// supports, then the part, as the printer lays them down. Travel order,
+/// combing, and z-hop see the whole layer.
+fn assemble(
+    object: ObjectSlice,
+    supports: SupportPlan,
+    blend: &BlendMode,
+    settings: &SliceSettings,
+) -> Result<Plan, String> {
+    let ObjectSlice {
+        bands,
+        contours,
+        layers: object_layers,
+        roof_ms,
+        toolpath_ms: object_ms,
+        ..
+    } = object;
+    let SupportPlan {
+        layers: supports,
+        paths: support_layer_paths,
+        support_ms,
+        toolpath_ms: support_path_ms,
+    } = supports;
+    let mut jobs: Vec<LayerJob> = object_layers
+        .into_iter()
+        .zip(support_layer_paths)
+        .enumerate()
+        .map(|(i, (part, under))| {
+            let band = &bands[i];
+            let support = supports.get(i);
+            let unsupported = support.is_none_or(|s| {
+                s.sparse.is_empty() && s.interface.is_empty() && s.branches.is_empty()
+            });
+            if contours[i].is_empty() && unsupported {
+                return LayerJob {
+                    index: band.index,
+                    z: band.z,
+                    height: band.height,
+                    paths: Vec::new(),
+                    note: "empty".into(),
+                    wall_ms: 0.0,
+                    infill_ms: 0.0,
+                };
+            }
+            let mut paths = Vec::new();
+            if band.index == 0 {
+                paths.extend(skirt_paths(&contours[i], support, band.z, blend, settings));
+            }
+            paths.extend(under);
+            paths.extend(part.paths);
+            LayerJob {
+                index: band.index,
+                z: band.z,
+                height: band.height,
+                paths,
+                note: part.note,
+                wall_ms: part.wall_ms,
+                infill_ms: part.infill_ms,
+            }
+        })
+        .collect();
     // Ordering is serial: each layer starts where the one below ended. It does
     // no combing, so it stays cheap; scarf, combing, and z-hop run after it.
     let scarf = |layer_index: usize| {
@@ -1686,7 +1828,7 @@ fn plan_contours(
         supports,
         contour_ms: 0.0,
         support_ms,
-        toolpath_ms,
+        toolpath_ms: object_ms + support_path_ms,
         order_ms,
         comb_ms,
         index_ms: 0.0,
@@ -1973,17 +2115,28 @@ fn pair_sides(low: Vec<Extrusion>, high: Vec<Extrusion>) -> Vec<Extrusion> {
     out
 }
 
+/// The strategy a non-region blend prints at height `z`.
+fn layer_strategy(blend: &BlendMode, z: f64, settings: &SliceSettings) -> ResolvedStrategy {
+    resolve(
+        match blend {
+            BlendMode::Single { strategy } => pure(*strategy),
+            BlendMode::Weight { toughness } => mix(*toughness),
+            BlendMode::ByLayer {
+                bottom_mm,
+                transition_mm,
+            } => mix(layer_weight(z, *bottom_mm, *transition_mm)),
+            BlendMode::ByRegion { .. } => unreachable!(),
+        },
+        settings,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
-fn build_layer(
+fn object_layer(
     index: usize,
     z: f64,
     height: f64,
     contours: &[Loop],
-    support: &[Loop],
-    interface: &[Loop],
-    branches: &[[f64; 2]],
-    radii: &[f64],
-    shaft_scale: f64,
     blend: &BlendMode,
     settings: &SliceSettings,
     roof_distance: f64,
@@ -1992,7 +2145,7 @@ fn build_layer(
     nozzle_diameter: f64,
     remain_low: (u32, u32),
     remain_high: (u32, u32),
-) -> LayerJob {
+) -> ObjectLayer {
     let line_width = settings.line_width;
     let features = PathFeatures {
         variable_width: settings.variable_width,
@@ -2005,25 +2158,9 @@ fn build_layer(
         interior_remaining: remain_low.0,
         interior_run: remain_low.1,
     };
-    if contours.is_empty() && support.is_empty() && interface.is_empty() && branches.is_empty() {
-        return LayerJob {
-            index,
-            z,
-            height,
-            paths: Vec::new(),
-            note: "empty".into(),
-            wall_ms: 0.0,
-            infill_ms: 0.0,
-        };
-    }
     let mut paths = Vec::new();
     let mut wall_ms = 0.0;
     let mut infill_ms = 0.0;
-    let skirt_src = if index == 0 {
-        boolean_union(contours, &boolean_union(support, interface))
-    } else {
-        Vec::new()
-    };
     let note = match blend {
         BlendMode::ByRegion { axis, at_mm } => {
             let (low_rect, high_rect) = split_rects(*axis, *at_mm, min, max, contours);
@@ -2034,24 +2171,6 @@ fn build_layer(
             let high_plan = widen_rect(high_rect, *axis, false, margin);
             let low = clip_to_rect(contours, low_plan.0, low_plan.1);
             let high = clip_to_rect(contours, high_plan.0, high_plan.1);
-            if index == 0 && !skirt_src.is_empty() {
-                let mut skirt_strategy = tough.clone();
-                skirt_strategy.skirt_loops = 1;
-                paths.extend(plan_skirt(&skirt_src, &skirt_strategy, line_width));
-            }
-            emit_supports(
-                &mut paths,
-                support,
-                interface,
-                branches,
-                radii,
-                shaft_scale,
-                height,
-                &tough,
-                &speed,
-                Some((low_rect, high_rect)),
-                line_width,
-            );
             let mut hint = [min[0], min[1]];
             let mut low_feat = features.clone();
             low_feat.shell = shell_of(z, roof_distance, &tough);
@@ -2074,34 +2193,7 @@ fn build_layer(
             format!("region low=toughness high=speed split {at_mm:.2} h={height:.3}")
         }
         other => {
-            let resolved = resolve(
-                match other {
-                    BlendMode::Single { strategy } => pure(*strategy),
-                    BlendMode::Weight { toughness } => mix(*toughness),
-                    BlendMode::ByLayer {
-                        bottom_mm,
-                        transition_mm,
-                    } => mix(layer_weight(z, *bottom_mm, *transition_mm)),
-                    BlendMode::ByRegion { .. } => unreachable!(),
-                },
-                settings,
-            );
-            if index == 0 && !skirt_src.is_empty() {
-                paths.extend(plan_skirt(&skirt_src, &resolved, line_width));
-            }
-            emit_supports(
-                &mut paths,
-                support,
-                interface,
-                branches,
-                radii,
-                shaft_scale,
-                height,
-                &resolved,
-                &resolved,
-                None,
-                line_width,
-            );
+            let resolved = layer_strategy(other, z, settings);
             let mut hint = [max[0], (min[1] + max[1]) * 0.5];
             let mut feat = features.clone();
             feat.shell = shell_of(z, roof_distance, &resolved);
@@ -2127,15 +2219,92 @@ fn build_layer(
     if paths.iter().any(|p| p.kind == PathKind::GapFill) && !note.contains("gap-fill") {
         note.push_str(" · gap-fill");
     }
-    LayerJob {
-        index,
-        z,
-        height,
+    ObjectLayer {
         paths,
         note,
         wall_ms,
         infill_ms,
     }
+}
+
+/// Paths printed from one layer's support regions and branches.
+#[allow(clippy::too_many_arguments)]
+fn support_paths(
+    z: f64,
+    height: f64,
+    contours: &[Loop],
+    layer: &SupportLayer,
+    shaft_scale: f64,
+    blend: &BlendMode,
+    settings: &SliceSettings,
+    min: [f64; 3],
+    max: [f64; 3],
+) -> Vec<Extrusion> {
+    let line_width = settings.line_width;
+    let mut paths = Vec::new();
+    match blend {
+        BlendMode::ByRegion { axis, at_mm } => {
+            let split = split_rects(*axis, *at_mm, min, max, contours);
+            let tough = resolve(pure(StrategyId::Toughness), settings);
+            let speed = resolve(pure(StrategyId::Speed), settings);
+            emit_supports(
+                &mut paths,
+                &layer.sparse,
+                &layer.interface,
+                &layer.branches,
+                &layer.radii,
+                shaft_scale,
+                height,
+                &tough,
+                &speed,
+                Some(split),
+                line_width,
+            );
+        }
+        other => {
+            let resolved = layer_strategy(other, z, settings);
+            emit_supports(
+                &mut paths,
+                &layer.sparse,
+                &layer.interface,
+                &layer.branches,
+                &layer.radii,
+                shaft_scale,
+                height,
+                &resolved,
+                &resolved,
+                None,
+                line_width,
+            );
+        }
+    }
+    paths
+}
+
+/// The first layer's skirt around the part and its support footprint.
+fn skirt_paths(
+    contours: &[Loop],
+    support: Option<&SupportLayer>,
+    z: f64,
+    blend: &BlendMode,
+    settings: &SliceSettings,
+) -> Vec<Extrusion> {
+    let (sparse, interface) = support
+        .map(|s| (s.sparse.as_slice(), s.interface.as_slice()))
+        .unwrap_or((&[], &[]));
+    let outline = boolean_union(contours, &boolean_union(sparse, interface));
+    if outline.is_empty() {
+        return Vec::new();
+    }
+    let strategy = match blend {
+        BlendMode::ByRegion { .. } => {
+            let mut tough = resolve(pure(StrategyId::Toughness), settings);
+            tough.skirt_loops = 1;
+            tough
+        }
+        other => layer_strategy(other, z, settings),
+    };
+    plan_skirt(&outline, &strategy, settings.line_width)
 }
 
 type XyRect = ([f64; 2], [f64; 2]);
