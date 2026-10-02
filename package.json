@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --port 43117",
     "build": "tsc --noEmit && vite build",
-    "test:unit": "node --experimental-strip-types src/slice-action.test.ts && node --experimental-strip-types src/ui/commands.test.ts && node --experimental-strip-types src/ui/slice-progress.test.ts && node --experimental-strip-types src/ui/api-base.test.ts && node --experimental-strip-types src/platform.test.ts && node --experimental-strip-types src/ui/compact/sheet.test.ts && node --experimental-strip-types src/support-pick.test.ts && node --experimental-strip-types src/support-edit-list.test.ts",
+    "test:unit": "node --experimental-strip-types src/slice-action.test.ts && node --experimental-strip-types src/ui/commands.test.ts && node --experimental-strip-types src/ui/slice-progress.test.ts && node --experimental-strip-types src/ui/api-base.test.ts && node --experimental-strip-types src/platform.test.ts && node --experimental-strip-types src/ui/compact/sheet.test.ts && node --experimental-strip-types src/support-pick.test.ts && node --experimental-strip-types src/support-edit-list.test.ts && node --experimental-strip-types src/preview-patch.test.ts",
     "preview": "vite preview --port 43117",
     "shots": "playwright test",
     "tauri": "tauri"

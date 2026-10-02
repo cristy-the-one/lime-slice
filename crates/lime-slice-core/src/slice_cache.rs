@@ -88,6 +88,10 @@ impl SliceCache {
 /// with `"reslice": true` always plans and replaces the cached entry. Without
 /// `includeGcode`, the G-code goes to `park` and the reply carries the token it
 /// returns as `gcodeToken`. Every reply has `slicedAtMs` and `fromCache`.
+///
+/// `previewBase` is left out of the cache key, and a reply with a
+/// `previewPatch` is never stored: a stored reply is always whole, which is
+/// right for any client.
 pub fn slice_payload(
     payload: &str,
     cache: Option<&SliceCache>,
@@ -100,7 +104,11 @@ pub fn slice_payload(
         .and_then(|o| o.remove("reslice"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let preview_base = value.as_object_mut().and_then(|o| o.remove("previewBase"));
     let key = ENGINE.as_deref().map(|engine| cache_key(engine, &value));
+    if let (Some(base), Some(o)) = (preview_base, value.as_object_mut()) {
+        o.insert("previewBase".into(), base);
+    }
     let cache = cache.zip(key.as_deref());
     let req: SliceRequest = serde_json::from_value(value).map_err(|e| e.to_string())?;
     let hit = cache
@@ -113,7 +121,7 @@ pub fn slice_payload(
             let response = slice_request(&req, job)?;
             let mut reply = serde_json::to_value(&response).map_err(|e| e.to_string())?;
             reply["slicedAtMs"] = json!(now_ms());
-            if let Some((cache, key)) = cache {
+            if let Some((cache, key)) = cache.filter(|_| response.preview_patch.is_none()) {
                 // A slice that cannot be kept is still a slice.
                 let _ = cache.store(key, &reply);
             }

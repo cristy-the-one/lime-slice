@@ -5,16 +5,20 @@ import { buildWirePreview, type WireLayer } from "./preview-geom";
 
 export type { GeomPath, GeomLayer, GeomRequest } from "./preview-geom";
 
-/** Layers as the engine sends them: paths in columns. */
+/** Layers as the engine sends them: paths in columns. `kinds` seeds the kind slots. */
 interface WireRequest {
   id: number;
   layers: WireLayer[];
   min: number[];
   max: number[];
+  kinds?: string[];
 }
 
-self.onmessage = (event: MessageEvent<{ slicePort: MessagePort }>) => {
-  event.data.slicePort.onmessage = (ev: MessageEvent<WireRequest>) => build(ev.data);
+/** The slice worker's port, once, then builds from the main thread for partial previews. */
+self.onmessage = (event: MessageEvent<{ slicePort: MessagePort } | WireRequest>) => {
+  const msg = event.data;
+  if ("slicePort" in msg) msg.slicePort.onmessage = (ev: MessageEvent<WireRequest>) => build(ev.data);
+  else build(msg);
 };
 
 function build(msg: WireRequest) {

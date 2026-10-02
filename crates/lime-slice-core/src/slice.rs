@@ -6,9 +6,11 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 mod kept;
+mod patch;
 mod wire;
 
 pub use kept::keep_support_bases;
+pub use patch::PreviewPatch;
 pub use wire::{EditOutcomeView, SiteSpec, SupportEditSpec};
 
 use crate::adaptive::{plan_bands, HeightOpts, LayerBand};
@@ -29,9 +31,9 @@ use crate::support::edit::{EditOutcome, SupportEdit};
 use crate::support::skeleton::{skeleton, SupportSkeleton};
 use crate::support::{CoverageGap, Disk, InAir, SupportLayer, SupportOpts, SupportStyle, Supports};
 use crate::toolpath::{
-    apply_overhang, apply_scarf, apply_z_hop, comb_layer, order_layer, plan_region_split,
-    plan_skirt, plan_support, plan_tree_support, Extrusion, PathFeatures, PathKind, ScarfParams,
-    Seam, ShellBand,
+    apply_overhang, apply_scarf, apply_z_hop, comb_layer, order_part, order_supports,
+    plan_region_split, plan_skirt, plan_support, plan_tree_support, Extrusion, PathFeatures,
+    PathKind, ScarfParams, Seam, ShellBand,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -168,6 +170,11 @@ pub struct SliceRequest {
     /// Also return the tree outline the UI picks limbs from.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub include_skeleton: bool,
+    /// The `previewToken` of the preview the client shows. When the engine
+    /// still holds that preview, the reply carries `previewPatch` instead
+    /// of `layers`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_base: Option<String>,
 }
 
 /// Rigid placement of a mesh that was simplified in its scaled frame.
@@ -239,6 +246,8 @@ pub struct SliceSettings {
     pub support_edits: Vec<SupportEdit>,
     /// Report the tree outline on the response.
     pub include_skeleton: bool,
+    /// The preview the client holds, from `SliceRequest::preview_base`.
+    pub preview_base: Option<String>,
     /// The shell job this slice belongs to. A stale job stops with "cancelled".
     pub job: Job,
 }
@@ -286,6 +295,7 @@ impl Default for SliceSettings {
             pose: None,
             support_edits: Vec::new(),
             include_skeleton: false,
+            preview_base: None,
             job: Job::default(),
         }
     }
@@ -401,6 +411,7 @@ impl SliceSettings {
             pose: req.pose,
             support_edits: Vec::new(),
             include_skeleton: req.include_skeleton,
+            preview_base: req.preview_base.clone(),
             job: Job::default(),
         }
     }
@@ -411,6 +422,7 @@ impl SliceSettings {
         Self {
             support_edits: Vec::new(),
             include_preview: false,
+            preview_base: None,
             ..self.clone()
         }
     }
@@ -540,6 +552,14 @@ pub struct SliceResponse {
     /// The grown trees after every edit. Only when the request asked for it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skeleton: Option<SupportSkeleton>,
+    /// Names the preview this reply leaves the client holding. Sent back as
+    /// `previewBase`. Only for kept interactive slices.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_token: Option<String>,
+    /// The changed layers against the request's `previewBase`. `layers` is
+    /// empty when this is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_patch: Option<PreviewPatch>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -650,6 +670,10 @@ pub struct StageTimes {
     /// Repainting the support layers those edits changed.
     #[serde(default)]
     pub edit_refresh_ms: f64,
+    /// Layers whose travel order, combing, and z-hop came from the kept
+    /// slice because their supports and the nozzle's way in were the same.
+    #[serde(default)]
+    pub layers_reused: u32,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -689,7 +713,7 @@ pub struct PreviewLayer {
     pub paths: Vec<PreviewPath>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewPath {
     pub kind: String,
@@ -806,6 +830,7 @@ pub fn slice_configured(
     let started = Instant::now();
     let planned_full = plan(mesh, blend, &settings, profile.nozzle_diameter)?;
     let planned = planned_full.layers;
+    let kept_plan = planned_full.kept.as_ref();
     let coverage = planned_full.coverage;
     let in_air = planned_full.in_air;
     let emit_started = Instant::now();
@@ -859,6 +884,7 @@ pub fn slice_configured(
         edits_reused: planned_full.reuse.edits,
         edit_apply_ms: planned_full.edit_apply_ms,
         edit_refresh_ms: planned_full.edit_refresh_ms,
+        layers_reused: planned_full.layers_reused,
     };
     let support_edits = planned_full
         .outcomes
@@ -947,10 +973,17 @@ pub fn slice_configured(
         notes.push("g-code is missing layer markers".into());
     }
 
-    let layers = if settings.include_preview {
-        preview_of(&planned, &profile, blend, &gcode.layer_seconds)
+    let (layers, preview_token, preview_patch) = if settings.include_preview {
+        preview(
+            &planned,
+            kept_plan,
+            &profile,
+            blend,
+            &settings,
+            &gcode.layer_seconds,
+        )
     } else {
-        Vec::new()
+        (Vec::new(), None, None)
     };
     let gcode_text = if settings.include_gcode {
         gcode.text.clone()
@@ -1013,7 +1046,81 @@ pub fn slice_configured(
         compare,
         support_edits,
         skeleton,
+        preview_token,
+        preview_patch,
     })
+}
+
+/// The reply's preview. A kept slice names it with a token, and when the
+/// request's `previewBase` is the preview the engine last drew from this
+/// slice, only the layers that differ go back, as a patch.
+fn preview(
+    planned: &[LayerPaths],
+    kept: Option<&KeptPlan>,
+    profile: &PrinterProfile,
+    blend: &BlendMode,
+    settings: &SliceSettings,
+    layer_seconds: &[f64],
+) -> (Vec<PreviewLayer>, Option<String>, Option<PreviewPatch>) {
+    let Some(kept) = kept else {
+        return (
+            preview_of(planned, profile, blend, layer_seconds),
+            None,
+            None,
+        );
+    };
+    let mut emitted = layer_seconds.iter();
+    let seconds: Vec<Option<f64>> = planned
+        .iter()
+        .map(|l| (!l.paths.is_empty()).then(|| emitted.next().copied().unwrap_or(0.0)))
+        .collect();
+    let digest = patch::profile_digest(profile);
+    let token = patch::token(&kept.key, profile, &settings.support_edits);
+    let base = kept.prior.as_ref().filter(|(_, shown)| {
+        settings.preview_base.as_deref() == Some(shown.token.as_str()) && shown.profile == digest
+    });
+    let (layers, patched) = match base {
+        Some((joined, shown)) => {
+            let bits = |s: Option<f64>| s.map(f64::to_bits);
+            let changed = planned
+                .par_iter()
+                .enumerate()
+                .filter_map(|(i, layer)| {
+                    let now = seconds[i]?;
+                    let same = !kept.fresh[i] && bits(shown.seconds[i]) == bits(Some(now));
+                    if same {
+                        return None;
+                    }
+                    let was = shown.seconds[i]
+                        .map(|_| preview_layer(&joined[i].layer, profile, blend, 0.0).paths)
+                        .unwrap_or_default();
+                    let layer = preview_layer(layer, profile, blend, now);
+                    Some(patch::diff_layer(&was, layer))
+                })
+                .collect();
+            let patch = PreviewPatch {
+                base: shown.token.clone(),
+                layers: planned
+                    .iter()
+                    .filter(|l| !l.paths.is_empty())
+                    .map(|l| l.index)
+                    .collect(),
+                changed,
+            };
+            (Vec::new(), Some(patch))
+        }
+        None => (preview_of(planned, profile, blend, layer_seconds), None),
+    };
+    kept::show(
+        &kept.key,
+        &kept.joined,
+        patch::Shown {
+            token: token.clone(),
+            profile: digest,
+            seconds,
+        },
+    );
+    (layers, Some(token), patched)
 }
 
 fn feature_estimates(
@@ -1283,85 +1390,97 @@ fn preview_of(
         .filter(|l| !l.paths.is_empty())
         .enumerate()
         .map(|(emitted, layer)| {
-            let mut paths = Vec::new();
-            let mut cursor: Option<[f64; 2]> = None;
-            let mut speed_walls = 0u32;
-            let mut toughness_walls = 0u32;
-            for path in &layer.paths {
-                if path.kind.is_wall() {
-                    match path.strategy {
-                        StrategyId::Speed => speed_walls += 1,
-                        StrategyId::Toughness => toughness_walls += 1,
-                    }
-                }
-                if let (Some(c), Some(start)) = (cursor, path.points.first()) {
-                    let mut pts = vec![c];
-                    pts.extend(path.lead_in.iter().copied());
-                    pts.push(*start);
-                    if pts.len() > 2 || dist2(c, *start) > 0.05 * 0.05 {
-                        paths.push(PreviewPath {
-                            kind: "travel".into(),
-                            strategy: path.strategy.as_str().into(),
-                            pts,
-                            width: 0.0,
-                            speed: path.travel_speed,
-                            effective_speed: path.travel_speed,
-                            toughness: path_weight(blend, layer.z, path.strategy),
-                            zs: Vec::new(),
-                            bead_height: 0.0,
-                        });
-                    }
-                }
-                let (pts, zs) = decimate_path(&path.points, &path.z_frac, layer.z, layer.height);
-                let bead = if path.bead_height > 1e-6 {
-                    path.bead_height
-                } else {
-                    layer.height
-                };
-                let mut limited = crate::gcode::limit_speed(
-                    path.speed,
-                    path.width,
-                    bead,
-                    path.flow,
-                    profile.max_volumetric_mm3_s,
-                );
-                if layer.index == 0 {
-                    limited = limited.min(30.0);
-                }
-                paths.push(PreviewPath {
-                    kind: path.kind.as_str().into(),
-                    strategy: path.strategy.as_str().into(),
-                    pts,
-                    width: path.width,
-                    speed: path.speed,
-                    effective_speed: limited,
-                    toughness: path_weight(blend, layer.z, path.strategy),
-                    zs,
-                    bead_height: if path.bead_height > 1e-6 {
-                        path.bead_height
-                    } else {
-                        0.0
-                    },
-                });
-                cursor = path.points.last().copied();
-            }
-            PreviewLayer {
-                index: layer.index,
-                z: layer.z,
-                height: layer.height,
-                note: layer.note.clone(),
-                speed_walls,
-                toughness_walls,
-                support_paths: layer
-                    .paths
-                    .iter()
-                    .filter(|p| p.kind == PathKind::Support || p.kind == PathKind::SupportInterface)
-                    .count() as u32,
-                seconds: layer_seconds.get(emitted).copied().unwrap_or(0.0),
-                paths,
-            }
+            let seconds = layer_seconds.get(emitted).copied().unwrap_or(0.0);
+            preview_layer(layer, profile, blend, seconds)
         })
         .collect()
+}
+
+/// One printed layer as the preview draws it: a travel before each path
+/// that moves the nozzle, then the path, decimated.
+fn preview_layer(
+    layer: &LayerPaths,
+    profile: &PrinterProfile,
+    blend: &BlendMode,
+    seconds: f64,
+) -> PreviewLayer {
+    let mut paths = Vec::new();
+    let mut cursor: Option<[f64; 2]> = None;
+    let mut speed_walls = 0u32;
+    let mut toughness_walls = 0u32;
+    for path in &layer.paths {
+        if path.kind.is_wall() {
+            match path.strategy {
+                StrategyId::Speed => speed_walls += 1,
+                StrategyId::Toughness => toughness_walls += 1,
+            }
+        }
+        if let (Some(c), Some(start)) = (cursor, path.points.first()) {
+            let mut pts = vec![c];
+            pts.extend(path.lead_in.iter().copied());
+            pts.push(*start);
+            if pts.len() > 2 || dist2(c, *start) > 0.05 * 0.05 {
+                paths.push(PreviewPath {
+                    kind: "travel".into(),
+                    strategy: path.strategy.as_str().into(),
+                    pts,
+                    width: 0.0,
+                    speed: path.travel_speed,
+                    effective_speed: path.travel_speed,
+                    toughness: path_weight(blend, layer.z, path.strategy),
+                    zs: Vec::new(),
+                    bead_height: 0.0,
+                });
+            }
+        }
+        let (pts, zs) = decimate_path(&path.points, &path.z_frac, layer.z, layer.height);
+        let bead = if path.bead_height > 1e-6 {
+            path.bead_height
+        } else {
+            layer.height
+        };
+        let mut limited = crate::gcode::limit_speed(
+            path.speed,
+            path.width,
+            bead,
+            path.flow,
+            profile.max_volumetric_mm3_s,
+        );
+        if layer.index == 0 {
+            limited = limited.min(30.0);
+        }
+        paths.push(PreviewPath {
+            kind: path.kind.as_str().into(),
+            strategy: path.strategy.as_str().into(),
+            pts,
+            width: path.width,
+            speed: path.speed,
+            effective_speed: limited,
+            toughness: path_weight(blend, layer.z, path.strategy),
+            zs,
+            bead_height: if path.bead_height > 1e-6 {
+                path.bead_height
+            } else {
+                0.0
+            },
+        });
+        cursor = path.points.last().copied();
+    }
+    PreviewLayer {
+        index: layer.index,
+        z: layer.z,
+        height: layer.height,
+        note: layer.note.clone(),
+        speed_walls,
+        toughness_walls,
+        support_paths: layer
+            .paths
+            .iter()
+            .filter(|p| p.kind == PathKind::Support || p.kind == PathKind::SupportInterface)
+            .count() as u32,
+        seconds,
+        paths,
+    }
 }
 
 fn path_weight(blend: &BlendMode, z: f64, strategy: StrategyId) -> f64 {
@@ -1475,16 +1594,6 @@ fn dist2(a: [f64; 2], b: [f64; 2]) -> f64 {
     dx * dx + dy * dy
 }
 
-struct LayerJob {
-    index: usize,
-    z: f64,
-    height: f64,
-    paths: Vec<Extrusion>,
-    note: String,
-    wall_ms: f64,
-    infill_ms: f64,
-}
-
 /// Everything `plan` derives from the mesh. `layers` is what the G-code writer
 /// consumes; the rest is kept for the audit and the response.
 pub(crate) struct Plan {
@@ -1510,6 +1619,21 @@ pub(crate) struct Plan {
     pub infill_cpu_ms: f64,
     pub edit_apply_ms: f64,
     pub edit_refresh_ms: f64,
+    pub layers_reused: u32,
+    /// Set when the plan came from a kept slice.
+    pub kept: Option<KeptPlan>,
+}
+
+/// What a plan from a kept slice needs for a partial preview.
+pub(crate) struct KeptPlan {
+    key: [u8; 32],
+    /// This plan's layers, as the kept entry holds them.
+    joined: Arc<Vec<JoinedLayer>>,
+    /// Layers joined again rather than taken from the last plan.
+    fresh: Vec<bool>,
+    /// The last plan's layers and the preview the client was given from
+    /// them.
+    prior: Option<(Arc<Vec<JoinedLayer>>, Arc<patch::Shown>)>,
 }
 
 /// What a plan took from the kept slices instead of planning again. The
@@ -1577,9 +1701,9 @@ fn plan_contours(
 }
 
 /// Supports, the settings' edits, and assembly on a planned part, with
-/// nothing reused and nothing copied.
+/// nothing reused.
 fn plan_object(
-    mut object: ObjectSlice,
+    object: ObjectSlice,
     blend: &BlendMode,
     settings: &SliceSettings,
 ) -> Result<Plan, String> {
@@ -1591,9 +1715,7 @@ fn plan_object(
         blend,
         settings,
     );
-    let object_layers = std::mem::take(&mut object.layers);
-    let under = std::mem::take(&mut supports.paths);
-    let assembled = assemble(&object, object_layers, &supports, under, blend, settings);
+    let assembled = assemble(&object, &supports, blend, settings, &[]);
     let ObjectSlice {
         bands,
         contours,
@@ -1622,11 +1744,13 @@ fn plan_kept(
     nozzle_diameter: f64,
 ) -> Result<Plan, String> {
     let (key, object_key) = kept::keys(mesh, blend, settings, nozzle_diameter);
-    let (object, base, edited, mut reuse) = match kept::find(&key, &object_key) {
+    let (object, base, edited, joined, shown, mut reuse) = match kept::find(&key, &object_key) {
         Some(kept::Hit::Base(entry)) => (
             entry.object,
             entry.base,
             entry.edited,
+            entry.joined,
+            entry.shown,
             Reuse {
                 object: true,
                 base: true,
@@ -1639,6 +1763,8 @@ fn plan_kept(
                 object,
                 base,
                 None,
+                None,
+                None,
                 Reuse {
                     object: true,
                     base: false,
@@ -1649,7 +1775,7 @@ fn plan_kept(
         None => {
             let object = Arc::new(slice_mesh_object(mesh, blend, settings, nozzle_diameter)?);
             let base = Arc::new(plan_supports(&object, blend, settings)?);
-            (object, base, None, Reuse::default())
+            (object, base, None, None, None, Reuse::default())
         }
     };
     let want = &settings.support_edits;
@@ -1677,23 +1803,31 @@ fn plan_kept(
             outcomes: edits.outcomes.clone(),
         })
     });
+    let supports = fresh.as_deref().map_or(&*base, |e| &e.plan);
+    let assembled = assemble(
+        &object,
+        supports,
+        blend,
+        settings,
+        joined.as_deref().map_or(&[], Vec::as_slice),
+    );
+    let kept_joined = Arc::new(assembled.joined.clone());
     kept::keep(kept::Entry {
         key,
         object_key,
         object: Arc::clone(&object),
         base: Arc::clone(&base),
         edited: fresh.clone().or(edited),
+        joined: Some(Arc::clone(&kept_joined)),
+        shown: None,
     });
-    let supports = fresh.as_deref().map_or(&*base, |e| &e.plan);
-    let assembled = assemble(
-        &object,
-        object.layers.clone(),
-        supports,
-        supports.paths.clone(),
-        blend,
-        settings,
-    );
-    Ok(finish(
+    let kept = KeptPlan {
+        key,
+        joined: kept_joined,
+        fresh: assembled.fresh.clone(),
+        prior: joined.zip(shown),
+    };
+    let mut plan = finish(
         object.bands.clone(),
         object.contours.clone(),
         object.clocks,
@@ -1701,7 +1835,9 @@ fn plan_kept(
         edits,
         assembled,
         reuse,
-    ))
+    );
+    plan.kept = Some(kept);
+    Ok(plan)
 }
 
 /// The plan, with the clocks of reused work read as zero.
@@ -1730,7 +1866,13 @@ fn finish(
         (supports.support_ms, supports.toolpath_ms)
     };
     Plan {
-        layers: assembled.layers,
+        layers: assembled
+            .joined
+            .into_iter()
+            .map(|j| Arc::unwrap_or_clone(j.layer))
+            .collect(),
+        layers_reused: assembled.reused,
+        kept: None,
         bands,
         contours,
         supports: Arc::clone(&supports.supports),
@@ -1741,8 +1883,8 @@ fn finish(
         contour_ms: object.contour_ms,
         support_ms,
         toolpath_ms: object.toolpath_ms + support_path_ms,
-        order_ms: assembled.order_ms,
-        comb_ms: assembled.comb_ms,
+        order_ms: object.order_ms + assembled.order_ms,
+        comb_ms: object.comb_ms + assembled.comb_ms,
         index_ms: object.index_ms,
         cut_cpu_ms: object.cut_cpu_ms,
         simplify_cpu_ms: object.simplify_cpu_ms,
@@ -1820,6 +1962,14 @@ struct ObjectLayer {
     infill_ms: f64,
 }
 
+impl ObjectLayer {
+    /// The nozzle moves on this layer's part, so the layer ends where the
+    /// part's tour does.
+    fn prints(&self) -> bool {
+        self.paths.iter().any(|p| !p.points.is_empty())
+    }
+}
+
 /// The part's own plan: contours, and every layer's walls, infill, and skin
 /// with overhangs split. Supports read it and never change it.
 #[derive(Clone)]
@@ -1827,7 +1977,10 @@ pub(crate) struct ObjectSlice {
     bands: Vec<LayerBand>,
     contours: Vec<Vec<Loop>>,
     bounds: ([f64; 3], [f64; 3]),
+    /// Each layer's paths in print order, as `tour_part` left them.
     layers: Vec<ObjectLayer>,
+    /// Where each layer's tour ends, carried up through layers with no part.
+    ends: Vec<Option<[f64; 2]>>,
     clocks: ObjectClocks,
 }
 
@@ -1840,6 +1993,8 @@ struct ObjectClocks {
     simplify_cpu_ms: f64,
     roof_ms: f64,
     toolpath_ms: f64,
+    order_ms: f64,
+    comb_ms: f64,
 }
 
 /// Supports planned on an object slice: the forest, the regions and branches
@@ -1853,7 +2008,9 @@ pub(crate) struct SupportPlan {
     in_air: Option<InAir>,
     /// Layers each layer's support stands for, from `shaft_scales`.
     shaft: Vec<f64>,
-    paths: Vec<Vec<Extrusion>>,
+    /// Each layer's support paths. An edit repaints some layers and shares
+    /// the rest with the plan it started from.
+    paths: Vec<Arc<Vec<Extrusion>>>,
     support_ms: f64,
     toolpath_ms: f64,
 }
@@ -1883,7 +2040,7 @@ impl SupportPlan {
         repaint.dedup();
         let painted = paint(object, layers, &shaft, &repaint, blend, settings);
         for (&i, paths) in repaint.iter().zip(painted) {
-            self.paths[i] = paths;
+            self.paths[i] = Arc::new(paths);
         }
         self.shaft = shaft;
         self.coverage = self.supports.coverage(&object.bands, &object.contours);
@@ -1948,7 +2105,7 @@ fn slice_object(
     let roof_ms = elapsed_ms(roof_started);
     let (remain_low, remain_high) = interior_remainings(blend, settings, &bands, &roofs);
     let toolpath_started = Instant::now();
-    let layers: Vec<ObjectLayer> = bands
+    let mut layers: Vec<ObjectLayer> = bands
         .par_iter()
         .enumerate()
         .map(|(i, band)| {
@@ -1989,16 +2146,113 @@ fn slice_object(
     if settings.job.cancelled() {
         return Err("cancelled".into());
     }
+    let (ends, order_ms, comb_ms) = tour_part(&mut layers, &bands, &contours, blend, settings);
     Ok(ObjectSlice {
         bands,
         contours,
         bounds: (min, max),
         layers,
+        ends,
         clocks: ObjectClocks {
             roof_ms,
             toolpath_ms,
+            order_ms,
+            comb_ms,
             ..ObjectClocks::default()
         },
+    })
+}
+
+/// Orders each layer of the part as one tour, starting where the part's
+/// tour on the layer below ended, then combs and hops the travels between
+/// its paths. The tour never sees the supports, so editing them leaves it
+/// alone. The travel into a layer's first path depends on what prints
+/// before it, so `assemble` decides that one. Returns where each layer's
+/// tour ends, carried up through layers with no part, and the order and
+/// combing clocks.
+///
+/// The first layer's tour starts where a skirt around the part alone would
+/// end. That is where the skirt really ends when no support stands on the
+/// first layer, so a print without supports orders as it always did.
+fn tour_part(
+    layers: &mut [ObjectLayer],
+    bands: &[LayerBand],
+    contours: &[Vec<Loop>],
+    blend: &BlendMode,
+    settings: &SliceSettings,
+) -> (Vec<Option<[f64; 2]>>, f64, f64) {
+    let order_started = Instant::now();
+    let mut ends = Vec::with_capacity(layers.len());
+    if settings.travel_opt {
+        let mut end = bands.first().filter(|b| b.index == 0).and_then(|b| {
+            let mut skirt = skirt_paths(&contours[0], None, b.z, blend, settings);
+            order_supports(&mut skirt, None, scarf_params(settings, 0).as_ref())
+        });
+        for (i, layer) in layers.iter_mut().enumerate() {
+            let scarf = scarf_params(settings, bands[i].index);
+            end = order_part(&mut layer.paths, &contours[i], end, scarf.as_ref());
+            ends.push(end);
+        }
+    } else {
+        ends.resize(layers.len(), None);
+        layers.par_iter_mut().enumerate().for_each(|(i, layer)| {
+            if let Some(params) = scarf_params(settings, bands[i].index) {
+                apply_scarf(&mut layer.paths, &params);
+            }
+        });
+    }
+    let order_ms = elapsed_ms(order_started);
+    let comb_started = Instant::now();
+    let tops: Vec<bool> = layers.iter().map(|l| has_top(&l.paths)).collect();
+    layers.par_iter_mut().enumerate().for_each(|(i, layer)| {
+        if settings.travel_opt {
+            comb_layer(
+                &mut layer.paths,
+                &contours[i],
+                settings.combing,
+                settings.line_width * 0.8,
+                None,
+            );
+        }
+        hop_travels(
+            &mut layer.paths,
+            &contours[i],
+            i > 0 && tops[i - 1],
+            settings,
+        );
+    });
+    (ends, order_ms, elapsed_ms(comb_started))
+}
+
+fn has_top(paths: &[Extrusion]) -> bool {
+    paths.iter().any(|p| p.kind == PathKind::Top)
+}
+
+/// Z-hop on the travels between `paths`, which start a layer.
+fn hop_travels(paths: &mut [Extrusion], solid: &[Loop], after_top: bool, settings: &SliceSettings) {
+    if settings.z_hop == ZHopMode::Off || settings.z_hop_height <= 1e-6 || paths.len() < 2 {
+        return;
+    }
+    let infill = offset_loops(solid, -settings.line_width * 2.2);
+    apply_z_hop(
+        paths,
+        solid,
+        &infill,
+        settings.z_hop,
+        settings.z_hop_height,
+        settings.z_hop_min_travel,
+        after_top,
+    );
+}
+
+fn scarf_params(settings: &SliceSettings, layer_index: usize) -> Option<ScarfParams> {
+    (settings.scarf_seam != ScarfSeam::Off).then_some(ScarfParams {
+        mode: settings.scarf_seam,
+        length: settings.scarf_length,
+        steps: settings.scarf_steps,
+        start_height: settings.scarf_start_height,
+        start_flow: settings.scarf_start_flow,
+        layer_index,
     })
 }
 
@@ -2031,7 +2285,7 @@ fn plan_supports(
             coverage: Vec::new(),
             in_air: Some(in_air),
             shaft: vec![0.0; object.bands.len()],
-            paths: vec![Vec::new(); object.bands.len()],
+            paths: (0..object.bands.len()).map(|_| Arc::new(Vec::new())).collect(),
             support_ms: elapsed_ms(support_started),
             toolpath_ms: 0.0,
         });
@@ -2045,7 +2299,10 @@ fn plan_supports(
     let shaft = shaft_scales(&supports.layers, settings.support_height_mult);
     let toolpath_started = Instant::now();
     let all: Vec<usize> = (0..object.bands.len()).collect();
-    let paths = paint(object, &supports.layers, &shaft, &all, blend, settings);
+    let paths = paint(object, &supports.layers, &shaft, &all, blend, settings)
+        .into_iter()
+        .map(Arc::new)
+        .collect();
     let toolpath_ms = elapsed_ms(toolpath_started);
     if settings.job.cancelled() {
         return Err("cancelled".into());
@@ -2093,151 +2350,216 @@ fn paint(
         .collect()
 }
 
+/// One layer as `assemble` joined it, with the inputs that decided it. The
+/// part is the same on every plan of a kept slice, so a layer whose skirt,
+/// support paths, and way in are the same joins to the same paths.
+#[derive(Clone)]
+pub(crate) struct JoinedLayer {
+    /// No contour and no support: the layer prints nothing.
+    empty: bool,
+    skirt: Vec<Extrusion>,
+    under: Arc<Vec<Extrusion>>,
+    /// Where the nozzle stood when the layer began.
+    from: Option<[f64; 2]>,
+    /// Where it stood when the layer ended.
+    end: Option<[f64; 2]>,
+    layer: Arc<LayerPaths>,
+}
+
+impl JoinedLayer {
+    fn joins_like(
+        &self,
+        empty: bool,
+        skirt: &[Extrusion],
+        under: &Arc<Vec<Extrusion>>,
+        from: Option<[f64; 2]>,
+    ) -> bool {
+        let bits = |p: Option<[f64; 2]>| p.map(|p| p.map(f64::to_bits));
+        self.empty == empty
+            && bits(self.from) == bits(from)
+            && self.skirt == skirt
+            && (Arc::ptr_eq(&self.under, under) || self.under == *under)
+    }
+}
+
+/// A layer during `assemble`: taken from the last join, or with its skirt
+/// and supports ordered and the join still to finish.
+enum Slot {
+    Kept(JoinedLayer),
+    Fresh(JoinedLayer, Vec<Extrusion>),
+}
+
 /// The print as the G-code writer takes it, and what joining it cost.
 struct Assembled {
-    layers: Vec<LayerPaths>,
+    joined: Vec<JoinedLayer>,
+    /// Layers joined again rather than taken from `kept`.
+    fresh: Vec<bool>,
+    /// Layers taken from `kept` instead of joined again.
+    reused: u32,
     order_ms: f64,
     comb_ms: f64,
     wall_cpu_ms: f64,
     infill_cpu_ms: f64,
 }
 
-/// Joins the part and its supports layer by layer: the skirt first, then
-/// supports, then the part, as the printer lays them down. Travel order,
-/// combing, and z-hop see the whole layer. `object_layers` and `under` are
-/// the part's and the supports' paths, consumed as they are joined.
+/// Joins the part and its supports layer by layer: the skirt and supports
+/// first as one tour from where the nozzle stands, then the part's own tour
+/// from `tour_part`. Only the travels the supports lead into are combed and
+/// hopped here. A layer of `kept`, the same print's last join, is reused
+/// when its inputs are the same.
 fn assemble(
     object: &ObjectSlice,
-    object_layers: Vec<ObjectLayer>,
     supports: &SupportPlan,
-    under: Vec<Vec<Extrusion>>,
     blend: &BlendMode,
     settings: &SliceSettings,
+    kept: &[JoinedLayer],
 ) -> Assembled {
     let (bands, contours) = (&object.bands, &object.contours);
-    let mut jobs: Vec<LayerJob> = object_layers
-        .into_iter()
-        .zip(under)
-        .enumerate()
-        .map(|(i, (part, under))| {
-            let band = &bands[i];
-            let support = supports.supports.layers.get(i);
-            let unsupported = support.is_none_or(|s| {
-                s.sparse.is_empty() && s.interface.is_empty() && s.disks.is_empty()
-            });
-            if contours[i].is_empty() && unsupported {
-                return LayerJob {
-                    index: band.index,
-                    z: band.z,
-                    height: band.height,
-                    paths: Vec::new(),
-                    note: "empty".into(),
-                    wall_ms: 0.0,
-                    infill_ms: 0.0,
-                };
-            }
-            let mut paths = Vec::new();
-            if band.index == 0 {
-                paths.extend(skirt_paths(&contours[i], support, band.z, blend, settings));
-            }
-            paths.extend(under);
-            paths.extend(part.paths);
-            LayerJob {
-                index: band.index,
-                z: band.z,
-                height: band.height,
-                paths,
-                note: part.note,
-                wall_ms: part.wall_ms,
-                infill_ms: part.infill_ms,
-            }
-        })
-        .collect();
-    // Ordering is serial: each layer starts where the one below ended. It does
-    // no combing, so it stays cheap; scarf, combing, and z-hop run after it.
-    let scarf = |layer_index: usize| {
-        (settings.scarf_seam != ScarfSeam::Off).then_some(ScarfParams {
-            mode: settings.scarf_seam,
-            length: settings.scarf_length,
-            steps: settings.scarf_steps,
-            start_height: settings.scarf_start_height,
-            start_flow: settings.scarf_start_flow,
-            layer_index,
-        })
+    // A layer that prints part ends where the part's tour ends, so the next
+    // layer's way in is known before any support is ordered. Only a run of
+    // layers without part chains one support tour to the next.
+    let runs: Vec<std::ops::Range<usize>> = {
+        let mut starts: Vec<usize> = (0..bands.len())
+            .filter(|&i| i == 0 || object.layers[i - 1].prints())
+            .collect();
+        starts.push(bands.len());
+        starts.windows(2).map(|w| w[0]..w[1]).collect()
     };
     let order_started = Instant::now();
-    if settings.travel_opt {
-        let mut layer_end: Option<[f64; 2]> = None;
-        for (i, job) in jobs.iter_mut().enumerate() {
-            let params = scarf(job.index);
-            layer_end = order_layer(&mut job.paths, &contours[i], layer_end, params.as_ref());
-        }
-    } else {
-        jobs.par_iter_mut().for_each(|job| {
-            if let Some(params) = scarf(job.index) {
-                apply_scarf(&mut job.paths, &params);
-            }
-        });
-    }
-    let order_ms = elapsed_ms(order_started);
-    let comb_started = Instant::now();
-    let entries: Vec<Option<[f64; 2]>> = {
-        let mut last = None;
-        jobs.iter()
-            .map(|job| {
-                let from = last;
-                if let Some(end) = job.paths.iter().rev().find_map(|p| p.points.last()) {
-                    last = Some(*end);
-                }
-                from
+    let slots: Vec<Slot> = runs
+        .into_par_iter()
+        .flat_map_iter(|run| {
+            let mut from = run.start.checked_sub(1).and_then(|i| object.ends[i]);
+            run.map(move |i| {
+                let slot = join_supports(object, supports, blend, settings, kept, i, from);
+                from = match &slot {
+                    Slot::Kept(k) => k.end,
+                    Slot::Fresh(j, _) => j.end,
+                };
+                slot
             })
-            .collect()
-    };
-    let tops: Vec<bool> = jobs
-        .iter()
-        .map(|job| job.paths.iter().any(|p| p.kind == PathKind::Top))
-        .collect();
-    jobs.par_iter_mut().enumerate().for_each(|(i, job)| {
-        if settings.travel_opt {
-            comb_layer(
-                &mut job.paths,
-                &contours[i],
-                settings.combing,
-                settings.line_width * 0.8,
-                entries[i],
-            );
-        }
-        let infill = offset_loops(&contours[i], -settings.line_width * 2.2);
-        apply_z_hop(
-            &mut job.paths,
-            &contours[i],
-            &infill,
-            settings.z_hop,
-            settings.z_hop_height,
-            settings.z_hop_min_travel,
-            i > 0 && tops[i - 1],
-        );
-    });
-    let comb_ms = elapsed_ms(comb_started);
-    let wall_cpu_ms = jobs.iter().map(|job| job.wall_ms).sum();
-    let infill_cpu_ms = jobs.iter().map(|job| job.infill_ms).sum();
-    let layers = jobs
-        .into_iter()
-        .map(|job| LayerPaths {
-            index: job.index,
-            z: job.z,
-            height: job.height,
-            paths: job.paths,
-            note: job.note,
         })
         .collect();
+    let order_ms = elapsed_ms(order_started);
+    let comb_started = Instant::now();
+    let fresh: Vec<bool> = slots
+        .iter()
+        .map(|slot| matches!(slot, Slot::Fresh(..)))
+        .collect();
+    let reused = fresh.iter().filter(|f| !**f).count() as u32;
+    let joined: Vec<JoinedLayer> = slots
+        .into_par_iter()
+        .enumerate()
+        .map(|(i, slot)| {
+            let (mut joined, mut paths) = match slot {
+                Slot::Kept(k) => return k,
+                Slot::Fresh(joined, head) => (joined, head),
+            };
+            // The skirt and supports, and the travel into the part's first path.
+            let lead = paths.len() + 1;
+            if !joined.empty {
+                paths.extend(object.layers[i].paths.iter().cloned());
+            }
+            let lead = lead.min(paths.len());
+            if settings.travel_opt {
+                comb_layer(
+                    &mut paths[..lead],
+                    &contours[i],
+                    settings.combing,
+                    settings.line_width * 0.8,
+                    joined.from,
+                );
+            }
+            let after_top = i > 0 && has_top(&object.layers[i - 1].paths);
+            hop_travels(&mut paths[..lead], &contours[i], after_top, settings);
+            Arc::make_mut(&mut joined.layer).paths = paths;
+            joined
+        })
+        .collect();
+    let comb_ms = elapsed_ms(comb_started);
+    let parts = || {
+        joined
+            .iter()
+            .zip(&object.layers)
+            .filter(|(j, _)| !j.empty)
+            .map(|(_, part)| part)
+    };
     Assembled {
-        layers,
+        fresh,
+        reused,
         order_ms,
         comb_ms,
-        wall_cpu_ms,
-        infill_cpu_ms,
+        wall_cpu_ms: parts().map(|part| part.wall_ms).sum(),
+        infill_cpu_ms: parts().map(|part| part.infill_ms).sum(),
+        joined,
     }
+}
+
+/// Layer `i`'s skirt and supports, ordered from `from`, or the kept layer
+/// when nothing it was joined from changed.
+fn join_supports(
+    object: &ObjectSlice,
+    supports: &SupportPlan,
+    blend: &BlendMode,
+    settings: &SliceSettings,
+    kept: &[JoinedLayer],
+    i: usize,
+    from: Option<[f64; 2]>,
+) -> Slot {
+    let band = &object.bands[i];
+    let contour = &object.contours[i];
+    let support = supports.supports.layers.get(i);
+    let unsupported =
+        support.is_none_or(|s| s.sparse.is_empty() && s.interface.is_empty() && s.disks.is_empty());
+    let empty = contour.is_empty() && unsupported;
+    let skirt = if band.index == 0 && !empty {
+        skirt_paths(contour, support, band.z, blend, settings)
+    } else {
+        Vec::new()
+    };
+    let under = &supports.paths[i];
+    if let Some(k) = kept
+        .get(i)
+        .filter(|k| k.joins_like(empty, &skirt, under, from))
+    {
+        return Slot::Kept(k.clone());
+    }
+    let mut head = Vec::new();
+    let mut end = from;
+    if !empty {
+        head.extend(skirt.iter().cloned());
+        head.extend(under.iter().cloned());
+        let scarf = scarf_params(settings, band.index);
+        if settings.travel_opt {
+            end = order_supports(&mut head, from, scarf.as_ref());
+        } else if let Some(params) = scarf {
+            apply_scarf(&mut head, &params);
+        }
+        if object.layers[i].prints() {
+            end = object.ends[i];
+        }
+    }
+    let note = if empty {
+        "empty".into()
+    } else {
+        object.layers[i].note.clone()
+    };
+    let layer = LayerPaths {
+        index: band.index,
+        z: band.z,
+        height: band.height,
+        paths: Vec::new(),
+        note,
+    };
+    let joined = JoinedLayer {
+        empty,
+        skirt,
+        under: Arc::clone(under),
+        from,
+        end,
+        layer: Arc::new(layer),
+    };
+    Slot::Fresh(joined, head)
 }
 
 fn roof_distances(bands: &[LayerBand], contours: &[Vec<Loop>], wall_stack: f64) -> Vec<f64> {
@@ -3376,6 +3698,15 @@ mod tests {
                 settings.junction_deviation_mm,
                 settings.job,
             );
+            assert!(
+                crate::gcode::scans_in_parallel(
+                    &planned,
+                    &profile,
+                    settings.arc_fit,
+                    settings.classic_estimator
+                ),
+                "{blend:?} scans its layers in parallel"
+            );
             assert_eq!(parallel.text, linear.text, "{blend:?} g-code bytes");
             assert_eq!(parallel.print_time_s, linear.print_time_s);
             assert_eq!(parallel.final_e, linear.final_e);
@@ -3427,6 +3758,10 @@ mod tests {
             settings.classic_estimator,
             settings.junction_deviation_mm,
             settings.job,
+        );
+        assert!(
+            crate::gcode::scans_in_parallel(&planned, &profile, false, true),
+            "the classic estimator scans its layers in parallel"
         );
         assert_eq!(parallel.text, linear.text, "classic estimator g-code");
         assert_eq!(parallel.print_time_s, linear.print_time_s);

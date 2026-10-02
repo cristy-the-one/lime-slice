@@ -120,9 +120,12 @@ export function buildPreviewGeometry(msg: Omit<GeomRequest, "id">): PreviewGeome
   });
 }
 
-/** Columnar layers, skipping the per-point objects `decodePaths` would allocate. */
-export function buildWirePreview(msg: { layers: WireLayer[]; min: number[]; max: number[] }): PreviewGeometry {
-  const { kinds, plans } = planWireLayers(msg.layers);
+/**
+ * Columnar layers, skipping the per-point objects `decodePaths` would allocate.
+ * `kinds` seeds the kind slots, so the buffers can be spliced into ones built with that table.
+ */
+export function buildWirePreview(msg: { layers: WireLayer[]; min: number[]; max: number[]; kinds?: readonly string[] }): PreviewGeometry {
+  const { kinds, plans } = planWireLayers(msg.layers, [...(msg.kinds ?? [])]);
   const center = meshCenter(msg.min, msg.max);
   return assemble(plans, kinds, (layerIndex, spans, cur) => {
     writeWireLayer(msg.layers[layerIndex], plans[layerIndex], spans, cur, center);
@@ -182,8 +185,7 @@ function planObjectLayers(layers: GeomLayer[]): { kinds: string[]; plans: LayerP
   return { kinds, plans };
 }
 
-function planWireLayers(layers: WireLayer[]): { kinds: string[]; plans: LayerPlan[] } {
-  const kinds: string[] = [];
+function planWireLayers(layers: WireLayer[], kinds: string[]): { kinds: string[]; plans: LayerPlan[] } {
   const plans = layers.map((layer) => {
     const cols = layer.paths;
     return planLayer(kinds, cols.kind.length, (i) => {

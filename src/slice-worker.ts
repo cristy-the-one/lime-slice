@@ -2,7 +2,9 @@
 
 export interface WorkerRequest {
   id: number;
+  /** Absent when the worker already holds the mesh named by `meshKey`. */
   bytes?: ArrayBuffer;
+  meshKey?: string;
   filename?: string;
   payload?: Record<string, unknown>;
   api?: string;
@@ -14,6 +16,8 @@ export interface WorkerRequest {
 }
 
 const jobs = new Map<number, AbortController>();
+/** The last mesh in Base64, so a slice of the same mesh skips encoding it again. */
+let mesh = { key: "", b64: "" };
 let geomPort: MessagePort | null = null;
 
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
@@ -40,10 +44,11 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
 
 /**
  * The geometry worker gets its own copy of the layers straight from here,
- * so the main thread never has to clone them a second time.
+ * so the main thread never has to clone them a second time. A partial
+ * preview goes to the main thread only, which holds the layers it patches.
  */
-function deliver(id: number, body: { layers?: unknown; mesh?: { min: number[]; max: number[] } }) {
-  if (body.layers && body.mesh) geomPort?.postMessage({ id, layers: body.layers, min: body.mesh.min, max: body.mesh.max });
+function deliver(id: number, body: { layers?: unknown; mesh?: { min: number[]; max: number[] }; previewPatch?: unknown }) {
+  if (body.layers && body.mesh && !body.previewPatch) geomPort?.postMessage({ id, layers: body.layers, min: body.mesh.min, max: body.mesh.max });
   self.postMessage({ id, ok: true, body });
 }
 
@@ -51,7 +56,8 @@ async function run(msg: WorkerRequest) {
   const ctrl = new AbortController();
   jobs.set(msg.id, ctrl);
   try {
-    const payload = { ...(msg.payload ?? {}), dataB64: toBase64(new Uint8Array(msg.bytes ?? new ArrayBuffer(0))) };
+    if (msg.bytes || msg.meshKey !== mesh.key) mesh = { key: msg.meshKey ?? "", b64: toBase64(new Uint8Array(msg.bytes ?? new ArrayBuffer(0))) };
+    const payload = { ...(msg.payload ?? {}), dataB64: mesh.b64 };
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (msg.token) headers.Authorization = `Bearer ${msg.token}`;
     const res = await fetch(`${msg.api}/api/slice`, {

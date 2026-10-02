@@ -123,7 +123,7 @@ export function inAirWarning(air: { islands: number; overhangs: number } | undef
 }
 
 /** Fields the slicer strips or that the UI replaces before comparing recipes. */
-const SKIPPED = new Set(["reslice", "dataB64"]);
+const SKIPPED = new Set(["reslice", "dataB64", "previewBase"]);
 
 /**
  * Identity of one slice request. `meshFingerprint` stands in for `dataB64`:

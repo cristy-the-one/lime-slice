@@ -119,7 +119,7 @@ pub enum TravelIn {
     Blocked,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Extrusion {
     pub kind: PathKind,
     pub strategy: StrategyId,
@@ -2134,7 +2134,7 @@ fn circle_pts(c: [f64; 2], r: f64) -> Vec<[f64; 2]> {
 }
 
 /// Test hook. Off in every slice unless a report test turns it on. SeqCst so a
-/// rayon worker observes the store that happened before `order_layer`.
+/// rayon worker observes the store that happened before the travel order.
 static LEGACY_TRAVEL: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
@@ -2152,21 +2152,20 @@ const TRAVEL_WIN_MM: f64 = 0.05;
 /// and a real gap between parts does not.
 const ISLAND_GAP_MM: f64 = 2.2;
 
-/// Print order for one layer, starting where the nozzle stands (`from`).
+/// Print order for the part's paths on one layer, starting at `from`.
 ///
-/// Skirt and support print first, in the order they were planned. The part
-/// then prints one island at a time, nearest unprinted island next, each
+/// The part prints one island at a time, nearest unprinted island next, each
 /// island's paths in plan order. Printing kind by kind across the layer
 /// crossed the bed once per kind; the Baby Dragon has up to 93 islands a
 /// layer, so that was 93 outer walls, then 93 inner walls, and so on.
 ///
-/// Inside an island each run of one kind is reordered: walls, skirt, and
-/// closed thin walls by nearest neighbor, infill, skin, gap fill, and support
-/// by the best of island, Hilbert, and stripe orders. A loop with a nearest
-/// seam starts at the corner nearest the nozzle; an aligned seam stays put.
-/// A wall is scarfed as soon as its seam is final, so the next path starts
-/// from where the scarf overlap really ends. Returns where the nozzle ends.
-pub fn order_layer(
+/// Inside an island each run of one kind is reordered: walls and closed thin
+/// walls by nearest neighbor, infill, skin, and gap fill by the best of
+/// island, Hilbert, and stripe orders. A loop with a nearest seam starts at
+/// the corner nearest the nozzle; an aligned seam stays put. A wall is
+/// scarfed as soon as its seam is final, so the next path starts from where
+/// the scarf overlap really ends. Returns where the tour ends.
+pub fn order_part(
     paths: &mut Vec<Extrusion>,
     solid: &[Loop],
     from: Option<[f64; 2]>,
@@ -2179,21 +2178,13 @@ pub fn order_layer(
         .into_iter()
         .map(Outline::owned)
         .collect();
-    let mut head = Vec::new();
     let mut parts: Vec<Vec<Extrusion>> = vec![Vec::new(); islands.len() + 1];
     for path in paths.drain(..) {
-        if matches!(
-            path.kind,
-            PathKind::Skirt | PathKind::Support | PathKind::SupportInterface
-        ) {
-            head.push(path);
-        } else {
-            let at = island_for(&islands, &path).unwrap_or(islands.len());
-            parts[at].push(path);
-        }
+        let at = island_for(&islands, &path).unwrap_or(islands.len());
+        parts[at].push(path);
     }
     let mut out = Vec::new();
-    let mut cursor = order_block(head, from, &mut out, scarf);
+    let mut cursor = from;
     let blocks: Vec<Vec<Extrusion>> = parts.into_iter().filter(|p| !p.is_empty()).collect();
     let tour = island_tour(&blocks, cursor);
     let mut slots: Vec<Option<Vec<Extrusion>>> = blocks.into_iter().map(Some).collect();
@@ -2204,6 +2195,20 @@ pub fn order_layer(
     }
     *paths = out;
     cursor
+}
+
+/// Print order for a layer's skirt and supports, starting where the nozzle
+/// stands (`from`). They keep the order they were planned in, and each run
+/// of one kind is reordered as in `order_part`. Returns where the nozzle ends.
+pub fn order_supports(
+    paths: &mut Vec<Extrusion>,
+    from: Option<[f64; 2]>,
+    scarf: Option<&ScarfParams>,
+) -> Option<[f64; 2]> {
+    let mut out = Vec::with_capacity(paths.len());
+    let end = order_block(std::mem::take(paths), from, &mut out, scarf);
+    *paths = out;
+    end
 }
 
 /// Visit order for the part's islands. Nearest-neighbor from the cursor, then
@@ -4755,7 +4760,7 @@ mod travel_tests {
             path(PathKind::Sparse, vec![[1.0, 5.0], [9.0, 5.0]]),
             path(PathKind::Sparse, vec![[21.0, 5.0], [29.0, 5.0]]),
         ];
-        order_layer(&mut paths, &solid, Some([0.0, 0.0]), None);
+        order_part(&mut paths, &solid, Some([0.0, 0.0]), None);
         let order: Vec<(PathKind, bool)> = paths
             .iter()
             .map(|p| (p.kind, p.points[0][0] < 15.0))
@@ -4780,7 +4785,7 @@ mod travel_tests {
         far.push(far[0]);
         let inner = extrusion(PathKind::Inner, &tough, far, 0.45);
         let mut paths = vec![outer, inner];
-        order_layer(&mut paths, &[], Some([10.0, 10.0]), None);
+        order_part(&mut paths, &[], Some([10.0, 10.0]), None);
         assert_eq!(paths[0].points[0], [0.0, 0.0], "aligned seam moved");
         assert_eq!(
             paths[1].points[0],
@@ -4808,7 +4813,7 @@ mod travel_tests {
             let y = 2.0 + i as f64;
             paths.push(path(PathKind::Sparse, vec![[0.0, y], [3.0, y]]));
         }
-        order_layer(&mut paths, &[], None, None);
+        order_part(&mut paths, &[], None, None);
         let travel = nozzle_travel(&paths);
         assert!(
             travel < 30.0,
@@ -4831,7 +4836,7 @@ mod travel_tests {
                 ],
             ),
         ];
-        order_layer(&mut paths, &[], None, None);
+        order_part(&mut paths, &[], None, None);
         let travel = nozzle_travel(&paths);
         assert!(travel < 1.0, "seam or order left {travel:.2} mm");
         if paths[0].points.len() == 2 {
@@ -4863,7 +4868,7 @@ mod travel_tests {
             path(PathKind::Sparse, vec![[1.0, 1.0], [3.0, 1.0]]),
             path(PathKind::Sparse, vec![[1.0, 2.0], [3.0, 2.0]]),
         ];
-        order_layer(&mut paths, &[], None, None);
+        order_part(&mut paths, &[], None, None);
         let kinds: Vec<_> = paths.iter().map(|p| p.kind).collect();
         assert!(
             kinds.starts_with(&[PathKind::Outer, PathKind::Outer]),
@@ -4881,8 +4886,8 @@ mod travel_tests {
             path(PathKind::Sparse, vec![[30.0, 7.0], [34.0, 7.0]]),
         ];
         let mut twice = once.clone();
-        order_layer(&mut once, &[], None, None);
-        order_layer(&mut twice, &[], None, None);
+        order_part(&mut once, &[], None, None);
+        order_part(&mut twice, &[], None, None);
         let a: Vec<_> = once.iter().map(|p| p.points.clone()).collect();
         let b: Vec<_> = twice.iter().map(|p| p.points.clone()).collect();
         assert_eq!(a, b);

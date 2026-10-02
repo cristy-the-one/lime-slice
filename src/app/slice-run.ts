@@ -1,7 +1,8 @@
 import { fx } from "./fx";
 import { state, session, worker, cachedRecipes, type ParetoPoint, type SliceResponse } from "./state";
 import { fnv1aHex, recipeKey, type SliceAction, sliceAction, sliceBusyLabel, FORCE_LABEL } from "../slice-action";
-import { meshBytes, toBase64, fail, isTauri } from "./files";
+import { meshBase64, meshBytes, fail, isTauri } from "./files";
+import { adoptPatch, previewBase } from "./viewer";
 import { syncSliceDock } from "../ui/shell";
 import { blend, renderChrome, settingsHash, markBusy, paintBanner, busyText, markEngineDown, apiBase, stale, apiToken, touch } from "./settings";
 import { placementPose } from "../mesh-place";
@@ -116,9 +117,7 @@ export function payload() {
     includePreview: true,
     simplify: state.simplify,
     simplifyErrorMm: state.simplifyError,
-    pose: state.sourcePos
-      ? placementPose(state.sourcePos, state.orient, state.partScale, state.profile.bedX, state.profile.bedY, state.centered, state.offset)
-      : undefined,
+    pose: state.sourcePos ? pose(state.sourcePos) : undefined,
     ...editRequestFields(state.supportEdits, treeSupports()),
   };
 }
@@ -151,7 +150,9 @@ export async function runSlice(force = false) {
     force,
   });
   const frame = `${session.meshEpoch}:${state.partScale}`;
-  const request = { ...payload(), reslice: action.reslice };
+  const request: Record<string, unknown> = { ...payload(), reslice: action.reslice };
+  const base = previewBase();
+  if (base) request.previewBase = base.token;
   const edits = request.supportEdits ? state.supportEdits : [];
   const bytes = meshBytes();
   markBusy(action.recompute);
@@ -162,7 +163,7 @@ export async function runSlice(force = false) {
   let landed = false;
   try {
     const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-    let body: SliceResponse;
+    let send: (req: Record<string, unknown>) => Promise<SliceResponse>;
     if (tauri) {
       const { invoke } = await import("@tauri-apps/api/core");
       const { listen } = await import("@tauri-apps/api/event");
@@ -173,15 +174,21 @@ export async function runSlice(force = false) {
         paintBanner(false);
         document.querySelector("#timing")!.textContent = busyText();
       });
-      if (id !== session.job) return;
-      const json = await invoke<string>("slice_model", { payload: JSON.stringify({ ...request, dataB64: toBase64(new Uint8Array(bytes)) }) });
-      if (id !== session.job) return;
-      body = await parseInWorker(id, json);
+      send = async (req) => parseInWorker(id, await invoke<string>("slice_model", { payload: JSON.stringify({ ...req, dataB64: meshBase64() }) }));
     } else {
-      body = await postSlice(id, bytes, request);
+      send = (req) => postSlice(id, bytes, req, meshFingerprint());
     }
     if (id !== session.job) return;
+    let body = await send(request);
+    if (id !== session.job) return;
     if (body.error) throw new Error(body.error);
+    if (body.previewPatch && !adoptPatch(id, body, base)) {
+      // The engine patched a preview this view no longer holds: ask for the whole one.
+      delete request.previewBase;
+      body = await send(request);
+      if (id !== session.job) return;
+      if (body.error) throw new Error(body.error);
+    }
     state.result = body;
     session.resultJob = id;
     session.resultFrame = frame;
@@ -227,7 +234,23 @@ export function layerNear(result: SliceResponse, z: number | undefined, index: n
   return best;
 }
 
-export function postSlice(id: number, bytes: ArrayBuffer, body: unknown) {
+/**
+ * `placementPose` for the current placement. It walks every vertex, and the
+ * request is built several times a click, so the last answer is kept.
+ */
+let posed: { source: Float32Array; key: string; pose: ReturnType<typeof placementPose> } | null = null;
+function pose(source: Float32Array) {
+  const key = JSON.stringify([state.orient, state.partScale, state.profile.bedX, state.profile.bedY, state.centered, state.offset]);
+  if (posed?.source !== source || posed.key !== key) {
+    posed = { source, key, pose: placementPose(source, state.orient, state.partScale, state.profile.bedX, state.profile.bedY, state.centered, state.offset) };
+  }
+  return posed.pose;
+}
+
+/** Mesh the slice worker holds in Base64, so it is sent and encoded once per mesh. */
+let workerMesh = "";
+
+export function postSlice(id: number, bytes: ArrayBuffer, body: unknown, meshKey: string) {
   return new Promise<SliceResponse>((resolve, reject) => {
     const onMsg = (ev: MessageEvent) => {
       if (ev.data.id !== id) return;
@@ -237,7 +260,9 @@ export function postSlice(id: number, bytes: ArrayBuffer, body: unknown) {
       else resolve(ev.data.body as SliceResponse);
     };
     worker.addEventListener("message", onMsg);
-    worker.postMessage({ id, bytes, payload: body, api: apiBase(), token: apiToken() }, [bytes.slice(0)]);
+    const send = meshKey !== workerMesh;
+    workerMesh = meshKey;
+    worker.postMessage({ id, bytes: send ? bytes : undefined, meshKey, payload: body, api: apiBase(), token: apiToken() });
   });
 }
 
@@ -328,7 +353,7 @@ export async function runPareto() {
   markBusy(true);
   renderChrome();
   try {
-    const body = { ...payload(), dataB64: toBase64(new Uint8Array(meshBytes())) };
+    const body = { ...payload(), dataB64: meshBase64() };
     let points: ParetoPoint[];
     if (isTauri()) {
       const { invoke } = await import("@tauri-apps/api/core");

@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256};
 
-use super::{ObjectSlice, SliceSettings, SupportPlan};
+use super::patch::Shown;
+use super::{JoinedLayer, ObjectSlice, SliceSettings, SupportPlan};
 use crate::mesh::Mesh;
 use crate::strategy::BlendMode;
 use crate::support::edit::{EditOutcome, SupportEdit};
@@ -26,6 +27,13 @@ pub(super) struct Entry {
     /// The last edited state on `base`. A request whose edits extend its
     /// edits applies only the new ones.
     pub edited: Option<Arc<Edited>>,
+    /// The last plan's layers as joined, so the next plan joins again only
+    /// the layers whose supports or way in changed. Only the most recent
+    /// entry keeps them.
+    pub joined: Option<Arc<Vec<JoinedLayer>>>,
+    /// The preview the last reply drew from `joined`. Set once that reply
+    /// is built, so a slice that stops between the two leaves it unset.
+    pub shown: Option<Arc<Shown>>,
 }
 
 pub(super) struct Edited {
@@ -76,12 +84,28 @@ pub(super) fn find(key: &[u8; 32], object_key: &[u8; 32]) -> Option<Hit> {
 }
 
 /// Make `entry` the most recent, replacing any entry with its key, and drop
-/// the oldest past the capacity.
+/// the oldest past the capacity. Older entries forget their joined layers.
 pub(super) fn keep(entry: Entry) {
     let mut kept = entries();
     kept.retain(|e| e.key != entry.key);
+    for e in kept.iter_mut() {
+        e.joined = None;
+        e.shown = None;
+    }
     kept.insert(0, entry);
     kept.truncate(CAPACITY);
+}
+
+/// Record that a reply drew `shown` from the entry's `joined` layers. A
+/// newer plan that replaced them since wins.
+pub(super) fn show(key: &[u8; 32], joined: &Arc<Vec<JoinedLayer>>, shown: Shown) {
+    let mut kept = entries();
+    if let Some(e) = kept
+        .iter_mut()
+        .find(|e| e.key == *key && e.joined.as_ref().is_some_and(|j| Arc::ptr_eq(j, joined)))
+    {
+        e.shown = Some(Arc::new(shown));
+    }
 }
 
 /// `(key, object_key)` of a slice. Settings are hashed whole, minus the
@@ -106,6 +130,7 @@ pub(super) fn keys(
     let whole = SliceSettings {
         support_edits: Vec::new(),
         include_skeleton: false,
+        preview_base: None,
         job: blank.job,
         ..settings.clone()
     };
