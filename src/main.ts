@@ -19,6 +19,8 @@ import { authHeaders, currentApiTarget, engineDownMessage } from "./ui/api-base"
 import { mountCompact } from "./ui/compact/mount";
 import { mountConnection } from "./ui/connection";
 import type { CoverageGap, EditOutcome, SupportSkeleton } from "./support-edits";
+import { clearEdits, editRequestFields, type EditEntry } from "./support-edit-list";
+import { mountSupportEdits } from "./ui/support-edit-ui";
 import { mountPlatform } from "./platform";
 import { mountToasts, pushToast } from "./ui/toasts";
 import { clampOffset, clipPolyline, flipSection, keepsPoint, layerCut, sectionReach, type SectionSpec, type Vec3 } from "./section-plane";
@@ -221,6 +223,8 @@ const state = {
   sectionNormal: [0, 0, 1] as Vec3,
   sectionOffset: 0,
   sectionHud: "",
+  /** Kept across setting and pose changes; the engine replays them and flags the ones that no longer match. */
+  supportEdits: [] as EditEntry[],
 };
 
 const worker = new Worker(new URL("./slice-worker.ts", import.meta.url), { type: "module" });
@@ -391,6 +395,9 @@ let chosenZ: { high: number; low: number } | null = null;
 const cachedRecipes = new Set<string>();
 /** Recipe key of `state.result`, once a slice has landed. */
 let shownRecipe: string | null = null;
+/** Support edits the request behind `state.result` carried. */
+let slicedEdits: readonly EditEntry[] = [];
+let supportUi: ReturnType<typeof mountSupportEdits> | null = null;
 let fingerSource: ArrayBuffer | Float32Array | null = null;
 let fingerScale = Number.NaN;
 let finger = "";
@@ -537,6 +544,7 @@ function renderChrome() {
   paintStatus(isStale);
   paintSettingMarks(currentPreset());
   syncEmptyState(!!state.mesh);
+  supportUi?.refresh();
 }
 
 let engineChecked = false;
@@ -1722,6 +1730,8 @@ async function adoptBytes(name: string, bytes: ArrayBuffer) {
   state.stepTolerance = 0.1;
   state.centered = true;
   state.offset = { x: 0, y: 0, z: 0 };
+  state.supportEdits = clearEdits();
+  supportUi?.reset();
   const parsed = needsEngine(name) ? null : parseStl(bytes);
   state.sourcePos = parsed ?? (await previewRemote(name, bytes));
   place("load");
@@ -1855,7 +1865,11 @@ function payload() {
     pose: state.sourcePos
       ? placementPose(state.sourcePos, state.orient, state.partScale, state.profile.bedX, state.profile.bedY, state.centered, state.offset)
       : undefined,
+    ...editRequestFields(state.supportEdits, treeSupports()),
   };
+}
+function treeSupports() {
+  return state.supports && state.supportStyle === "tree";
 }
 function printer() {
   return {
@@ -1882,6 +1896,7 @@ async function runSlice(force = false) {
   });
   const frame = `${meshEpoch}:${state.partScale}`;
   const request = { ...payload(), reslice: action.reslice };
+  const edits = request.supportEdits ? state.supportEdits : [];
   const bytes = meshBytes();
   markBusy(action.recompute);
   state.error = "";
@@ -1915,6 +1930,7 @@ async function runSlice(force = false) {
     resultJob = id;
     resultFrame = frame;
     state.slicedHash = hash;
+    slicedEdits = edits;
     if (recipe) {
       cachedRecipes.add(recipe);
       shownRecipe = recipe;
@@ -1936,6 +1952,7 @@ async function runSlice(force = false) {
       state.progress = 0;
       renderChrome();
       draw();
+      supportUi?.landed(landed);
       if (landed && stale()) scheduleAuto();
     }
   }
@@ -1988,6 +2005,7 @@ function cancelSlice() {
   if (tauri) void import("@tauri-apps/api/core").then(({ invoke }) => invoke("cancel_slice"));
   else void fetch(`${apiBase()}/api/cancel`, { method: "POST", headers: authHeaders(apiToken()) }).catch(() => undefined);
   renderChrome();
+  supportUi?.landed(false);
 }
 
 function placedAxisBounds(): AxisBounds | null {
@@ -2603,6 +2621,7 @@ function sync3d() {
   view3d.setPlayhead(headOn ? { x0: prev[0], y0: prev[1], z0: point.z, x1: point.x, y1: point.y, z1: point.z } : null);
   syncPlanes();
   paintSectionChrome();
+  supportUi?.refresh();
   view3d.resize();
 }
 
@@ -2679,6 +2698,36 @@ mountChrome({
   onToolReadout: () => paintGizmoReadout(),
 });
 mountShell({ setViewPreset: (preset) => prepare.setViewPreset(preset) });
+supportUi = mountSupportEdits(view3d, {
+  view() {
+    const layers = state.result?.layers ?? [];
+    const low = layers[state.rangeLow];
+    const high = layers[state.layer];
+    const spec = activeSection();
+    const center = previewCenter();
+    return {
+      result: state.result,
+      sent: slicedEdits,
+      edits: state.supportEdits,
+      busy: state.busy,
+      treeSupports: treeSupports(),
+      visible: {
+        zLow: low ? low.z - low.height : -1e6,
+        zHigh: high ? high.z : 1e6,
+        section: spec && center ? { center, spec } : null,
+      },
+      supportShown: !state.hidden.has("support"),
+    };
+  },
+  apply(next) {
+    state.supportEdits = next;
+    void runSlice(false);
+  },
+  reveal() {
+    if (state.stage !== "preview") setStage("preview");
+    if (state.viewMode !== "solid") setView("solid");
+  },
+});
 mountConnection(() => {
   void probe();
 });

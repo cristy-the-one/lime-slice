@@ -1,0 +1,237 @@
+/* Support edit mode: the edit bar at the top center of the 3D pane and the edits panel at its top right. */
+.support-editbar,
+.support-edits {
+  position: absolute;
+  z-index: 3;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: 0 6px 18px color-mix(in srgb, #000 32%, transparent);
+  color: var(--text);
+}
+.support-editbar[hidden],
+.support-edits[hidden] { display: none; }
+
+#pane3d { container: pane3d / inline-size; }
+.support-editbar {
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: max-content;
+  max-width: calc(100% - 20px);
+  padding: 6px;
+}
+.se-scope {
+  display: inline-flex;
+  flex: 0 0 auto;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+}
+.se-scope button {
+  height: calc(var(--control-h) - 6px);
+  padding: 0 10px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-weight: 500;
+}
+.se-scope button:hover { color: var(--text); }
+.se-scope button[aria-pressed="true"] {
+  background: var(--surface-3);
+  color: var(--text);
+  box-shadow: 0 1px 2px color-mix(in srgb, #000 30%, transparent);
+}
+.se-readout {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.support-editbar .btn { flex: 0 0 auto; }
+.support-editbar .btn[hidden] { display: none; }
+.support-editbar kbd {
+  margin-left: 2px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 14px;
+  color: inherit;
+  background: transparent;
+  border-color: currentColor;
+  opacity: 0.7;
+}
+.btn.se-danger {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+}
+.btn.se-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 22%, var(--surface-2));
+  border-color: var(--danger);
+}
+
+.support-edits {
+  top: 10px;
+  right: 10px;
+  width: min(300px, calc(100% - 20px));
+  max-height: calc(100% - 20px);
+  overflow: auto;
+  padding: var(--space-2);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+/* Clears the edit bar, which spans the pane's middle. */
+.support-edits.is-editing { top: 58px; max-height: calc(100% - 68px); }
+.support-edits:not(.is-editing) { width: auto; max-width: min(300px, calc(100% - 20px)); }
+.se-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.se-title {
+  margin: 0;
+  padding-left: 2px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
+}
+.se-tools { display: flex; gap: 4px; }
+.se-tools .btn { height: 24px; padding: 0 8px; font-size: 12px; }
+.se-chip {
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.se-chip:hover { background: var(--surface-3); }
+
+.se-rows,
+.se-gaps {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.se-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto 24px;
+  align-items: center;
+  column-gap: 6px;
+  padding: 6px 4px 6px 6px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-0) 55%, transparent);
+}
+.se-idx {
+  color: var(--text-dim);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.se-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.se-badge {
+  --tone: var(--text-dim);
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--tone) 55%, transparent);
+  background: color-mix(in srgb, var(--tone) 16%, transparent);
+  color: var(--tone);
+  font-size: 11px;
+  line-height: 15px;
+}
+.se-badge[data-badge="applied"] { --tone: var(--ok); }
+.se-badge[data-badge="rebound"] { --tone: var(--info); }
+.se-badge[data-badge="stale"] { --tone: var(--warn); }
+.se-remove {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+}
+.se-remove:hover:not(:disabled) { background: var(--surface-3); color: var(--text); }
+.se-remove:disabled { opacity: 0.45; cursor: not-allowed; }
+.se-text {
+  grid-column: 2 / -1;
+  margin: 2px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+.se-sub {
+  margin: var(--space-3) 0 0;
+  padding-left: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--danger);
+}
+.se-gap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 4px 4px 4px 6px;
+  border-radius: var(--radius-sm);
+  font-variant-numeric: tabular-nums;
+}
+.se-gap[data-hot="true"] { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+.se-gap .btn { height: 24px; padding: 0 8px; font-size: 12px; }
+.se-empty,
+.se-note {
+  margin: var(--space-2) 0 0;
+  padding-left: 2px;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.se-note { color: var(--warn); }
+
+@container pane3d (max-width: 620px) {
+  .support-editbar {
+    left: 10px;
+    right: 10px;
+    width: auto;
+    max-width: none;
+    transform: none;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .se-readout { order: 1; flex-basis: 100%; text-align: center; padding: 0 4px 2px; }
+  .support-edits.is-editing { top: 88px; max-height: calc(100% - 98px); }
+}
+
+html.layout-compact .support-editbar,
+html.layout-compact .support-edits,
+html.layout-compact #toolRail [data-tool="supports"] { display: none !important; }
