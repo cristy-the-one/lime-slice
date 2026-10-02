@@ -169,12 +169,14 @@ fn a_named_preview_gets_only_its_changed_layers() {
         (
             changed.len(),
             patch["layers"].as_array().unwrap().len(),
-            sent,
-            total
+            sent
         ),
-        (59, 80, 1073, 7564),
-        "changed layers, layers, paths sent, paths in the preview"
+        (59, 80, 1073),
+        "changed layers, layers, paths sent"
     );
+    // The part's own path count differs slightly between platforms (7564 on
+    // Windows, 7648 on Linux), so only its scale against the patch is pinned.
+    assert!(sent * 5 < total, "sent {sent} of {total} paths");
 
     let stale = slice(&request(json!({
         "supportEdits": [prune],
