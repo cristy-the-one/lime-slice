@@ -121,3 +121,26 @@ test("delete a tree, regrow its gap, undo, and clear", async ({ page }) => {
   await expect(page.locator("#supportEdits")).toContainText("No edits yet.");
   expect((await supportSeconds(page)).text).toBe(before.text);
 });
+
+test("trees grown with Smart supports off can be edited", async ({ page }) => {
+  await page.route("http://127.0.0.1:43118/**", async (route) => {
+    const url = route.request().url().replace("http://127.0.0.1:43118", api!);
+    const response = await route.fetch({ url, timeout: SLICE_MS });
+    await route.fulfill({ response });
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await page.locator("#samples summary").click();
+  await page.locator('[data-sample="overhang_ledge.stl"]').click();
+  await expect(page.locator("#status")).toContainText("loaded", { timeout: 30_000 });
+  await expect(page.locator("#supports")).not.toBeChecked();
+  await page.locator("#slice").click();
+  await sliced(page);
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
+  expect((await supportSeconds(page)).seconds).toBeGreaterThan(0);
+
+  const toggle = page.locator('#toolRail [data-tool="supports"]');
+  await expect(toggle).toHaveAttribute("aria-disabled", "false");
+  await page.keyboard.press("e");
+  await expect(page.locator("#supportReadout")).toHaveText("Click a support. Shift-click takes the whole tree.");
+});
