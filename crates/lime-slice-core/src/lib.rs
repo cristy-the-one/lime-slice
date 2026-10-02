@@ -48,4 +48,4 @@ pub use strategy::{
 };
 pub use support::edit::{EditStatus, SupportEdit, TipSite};
 pub use support::skeleton::SupportSkeleton;
-pub use support::{CoverageGap, SupportStyle};
+pub use support::{CoverageGap, InAir, SupportStyle};

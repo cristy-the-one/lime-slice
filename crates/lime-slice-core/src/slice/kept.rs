@@ -117,7 +117,6 @@ pub(super) fn keys(
         tip_diameter: blank.tip_diameter,
         trunk_diameter: blank.trunk_diameter,
         support_height_mult: blank.support_height_mult,
-        island_support: blank.island_support,
         ..whole.clone()
     };
     let mut object_hash = hash.clone();

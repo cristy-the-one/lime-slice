@@ -28,6 +28,7 @@ import {
   cacheStatus,
   coverageWarning,
   fnv1aHex,
+  inAirWarning,
   FORCE_LABEL,
   recipeKey,
   sliceAction,
@@ -84,6 +85,8 @@ interface SliceResponse {
   sanity: { ok: boolean; notes: string[]; layers: number; finalE: number; extrusionLengthMm: number };
   /** Largest first. Missing from replies an older engine cached. */
   coverage?: CoverageGap[];
+  /** With supports off, what prints over air. Missing with supports on. */
+  inAir?: { islands: number; overhangs: number };
   stages?: {
     contourMs: number;
     supportMs: number;
@@ -673,6 +676,8 @@ function paintBanner(isStale: boolean) {
   if (state.result && !state.result.sanity.ok) bits.push(bannerLine(state.result.sanity.notes.join(" ") || "G-code checks failed"));
   const unheld = coverageWarning(state.result?.coverage ?? []);
   if (unheld) bits.push(bannerLine(unheld, "warn"));
+  const floating = inAirWarning(state.result?.inAir);
+  if (floating) bits.push(bannerLine(floating, "warn"));
   if (state.busy) {
     const sample = currentSliceProgress(state.progress, Math.max(0, performance.now() - busySince));
     const indeterminate = !(sample.fraction > 0 && sample.fraction < 1);
@@ -1868,10 +1873,8 @@ function payload() {
     ...editRequestFields(state.supportEdits, treeSupports()),
   };
 }
-// The engine holds up islands and unbridged overhangs even with Smart
-// supports off, so the style alone decides whether trees can be edited.
 function treeSupports() {
-  return state.supportStyle === "tree";
+  return state.supports && state.supportStyle === "tree";
 }
 function printer() {
   return {

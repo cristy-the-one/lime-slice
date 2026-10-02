@@ -351,6 +351,9 @@ fn run() -> Result<(), String> {
             if let Some(warning) = coverage_line(&response.coverage) {
                 eprintln!("lime-slice: warning: supports leave {warning}");
             }
+            if let Some(warning) = response.in_air.and_then(in_air_line) {
+                eprintln!("lime-slice: warning: {warning}");
+            }
             println!("wrote {}", output.display());
             if audit {
                 let mesh = lime_slice_core::load_slice_mesh_tol(
@@ -1227,6 +1230,28 @@ fn coverage_line(gaps: &[lime_slice_core::CoverageGap]) -> Option<String> {
         largest.min[1],
         largest.max[1]
     ))
+}
+
+/// What prints over air with supports off, or `None` when nothing does.
+fn in_air_line(air: lime_slice_core::InAir) -> Option<String> {
+    let count = |n: u32, one: &str, many: &str| match n {
+        0 => None,
+        1 => Some(format!("1 {one}")),
+        n => Some(format!("{n} {many}")),
+    };
+    let parts: Vec<String> = [
+        count(air.islands, "island", "islands"),
+        count(air.overhangs, "overhang", "overhangs"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    (!parts.is_empty()).then(|| {
+        format!(
+            "supports are off; {} would print in the air (--supports holds them up)",
+            parts.join(" and ")
+        )
+    })
 }
 
 /// The loader picks STL or 3MF from the file name, so every load of the

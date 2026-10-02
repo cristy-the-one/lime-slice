@@ -27,7 +27,7 @@ use crate::strategy::{
 };
 use crate::support::edit::{EditOutcome, SupportEdit};
 use crate::support::skeleton::{skeleton, SupportSkeleton};
-use crate::support::{CoverageGap, Disk, SupportLayer, SupportOpts, SupportStyle, Supports};
+use crate::support::{CoverageGap, Disk, InAir, SupportLayer, SupportOpts, SupportStyle, Supports};
 use crate::toolpath::{
     apply_overhang, apply_scarf, apply_z_hop, comb_layer, order_layer, plan_region_split,
     plan_skirt, plan_support, plan_tree_support, Extrusion, PathFeatures, PathKind, ScarfParams,
@@ -235,8 +235,6 @@ pub struct SliceSettings {
     pub simplify_error_mm: f64,
     /// Rigid placement applied after load. `None` slices the mesh as given.
     pub pose: Option<RigidPose>,
-    /// Hold up same-layer islands that have nothing under them. Overhang supports stay on `supports`.
-    pub island_support: bool,
     /// Edits applied to the grown supports, in order.
     pub support_edits: Vec<SupportEdit>,
     /// Report the tree outline on the response.
@@ -286,7 +284,6 @@ impl Default for SliceSettings {
             simplify: true,
             simplify_error_mm: 0.0,
             pose: None,
-            island_support: true,
             support_edits: Vec::new(),
             include_skeleton: false,
             job: Job::default(),
@@ -402,7 +399,6 @@ impl SliceSettings {
                 0.0
             },
             pose: req.pose,
-            island_support: true,
             support_edits: Vec::new(),
             include_skeleton: req.include_skeleton,
             job: Job::default(),
@@ -430,8 +426,7 @@ impl SliceSettings {
         } else {
             "fixed layer height".into()
         };
-        // Island support grows columns even with the overhang toggle off, so it counts as "on".
-        let supports = if self.supports || self.island_support {
+        let supports = if self.supports {
             let style = match self.support_style {
                 SupportStyle::Grid => "grid",
                 SupportStyle::Tree => "tree",
@@ -443,13 +438,8 @@ impl SliceSettings {
                 ),
                 SupportStyle::Grid => String::new(),
             };
-            let scope = if self.supports {
-                ""
-            } else {
-                " for islands and unbridged overhangs only"
-            };
             format!(
-                "supports {style}{scope} (angle {:.0}°, shaft ×{:.1}{organic})",
+                "supports {style} (angle {:.0}°, shaft ×{:.1}{organic})",
                 self.support_angle,
                 self.support_height_mult.max(1.0)
             )
@@ -532,6 +522,9 @@ pub struct SliceResponse {
     /// Overhang the supports leave unheld, largest first. Empty when every
     /// demanded interface prints.
     pub coverage: Vec<CoverageGap>,
+    /// With supports off, the islands and overhangs that print over air.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub in_air: Option<InAir>,
     pub gcode: String,
     pub layers: Vec<PreviewLayer>,
     pub blend: String,
@@ -814,6 +807,7 @@ pub fn slice_configured(
     let planned_full = plan(mesh, blend, &settings, profile.nozzle_diameter)?;
     let planned = planned_full.layers;
     let coverage = planned_full.coverage;
+    let in_air = planned_full.in_air;
     let emit_started = Instant::now();
     let gcode = if settings.include_gcode {
         emit_gcode(
@@ -991,6 +985,7 @@ pub fn slice_configured(
             z_hops: gcode.z_hops,
         },
         coverage,
+        in_air,
         gcode: gcode_text,
         layers,
         blend: blend.describe(),
@@ -1498,6 +1493,7 @@ pub(crate) struct Plan {
     pub contours: Vec<Vec<Loop>>,
     pub supports: Arc<Supports>,
     pub coverage: Vec<CoverageGap>,
+    pub in_air: Option<InAir>,
     /// What each requested support edit did, in request order.
     pub outcomes: Vec<EditOutcome>,
     pub reuse: Reuse,
@@ -1739,6 +1735,7 @@ fn finish(
         contours,
         supports: Arc::clone(&supports.supports),
         coverage: supports.coverage.clone(),
+        in_air: supports.in_air,
         outcomes: edits.outcomes,
         reuse,
         contour_ms: object.contour_ms,
@@ -1852,6 +1849,8 @@ struct ObjectClocks {
 pub(crate) struct SupportPlan {
     supports: Arc<Supports>,
     coverage: Vec<CoverageGap>,
+    /// With supports off, what prints over air. `None` with supports on.
+    in_air: Option<InAir>,
     /// Layers each layer's support stands for, from `shaft_scales`.
     shaft: Vec<f64>,
     paths: Vec<Vec<Extrusion>>,
@@ -2009,25 +2008,35 @@ fn plan_supports(
     settings: &SliceSettings,
 ) -> Result<SupportPlan, String> {
     let support_started = Instant::now();
-    let supports = Supports::build(
-        &object.bands,
-        &object.contours,
-        &SupportOpts {
-            angle_deg: settings.support_angle,
-            z_gap: settings.layer_height.max(0.12),
-            style: settings.support_style,
-            branch_angle_deg: settings.branch_angle,
-            tip_diameter: settings.tip_diameter,
-            trunk_diameter: settings.trunk_diameter.max(settings.tip_diameter + 0.6),
-            density: support_seed_weight(blend),
-            load_factor: support_load_factor(blend),
-            max_tip_spacing: support_tip_spacing(blend),
-            overhangs: settings.supports,
-            islands: settings.island_support,
-            job: settings.job,
-            ..SupportOpts::default()
-        },
-    );
+    let opts = SupportOpts {
+        angle_deg: settings.support_angle,
+        z_gap: settings.layer_height.max(0.12),
+        style: settings.support_style,
+        branch_angle_deg: settings.branch_angle,
+        tip_diameter: settings.tip_diameter,
+        trunk_diameter: settings.trunk_diameter.max(settings.tip_diameter + 0.6),
+        density: support_seed_weight(blend),
+        load_factor: support_load_factor(blend),
+        max_tip_spacing: support_tip_spacing(blend),
+        job: settings.job,
+        ..SupportOpts::default()
+    };
+    if !settings.supports {
+        let in_air = crate::support::in_air(&object.bands, &object.contours, opts.angle_deg);
+        if settings.job.cancelled() {
+            return Err("cancelled".into());
+        }
+        return Ok(SupportPlan {
+            supports: Arc::new(Supports::none(object.bands.len(), &opts)),
+            coverage: Vec::new(),
+            in_air: Some(in_air),
+            shaft: vec![0.0; object.bands.len()],
+            paths: vec![Vec::new(); object.bands.len()],
+            support_ms: elapsed_ms(support_started),
+            toolpath_ms: 0.0,
+        });
+    }
+    let supports = Supports::build(&object.bands, &object.contours, &opts);
     let Some(supports) = supports.filter(|_| !settings.job.cancelled()) else {
         return Err("cancelled".into());
     };
@@ -2044,6 +2053,7 @@ fn plan_supports(
     Ok(SupportPlan {
         supports: Arc::new(supports),
         coverage,
+        in_air: None,
         shaft,
         paths,
         support_ms,

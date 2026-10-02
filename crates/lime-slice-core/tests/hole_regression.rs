@@ -1270,8 +1270,7 @@ fn assert_case(case: &Case, report: &SliceReport) {
         }
         // Through-holes and the top-opening blind hole are not overhangs, so
         // support must stay out. The bottom-opening hole's ceiling is an
-        // overhang: island support prints in that cavity even with the
-        // supports toggle off. That is recorded, not failed.
+        // overhang, held only with supports on. That is recorded, not failed.
         if matches!(name, "through-6mm" | "through-0.5mm" | "blind-top-4mm") {
             assert!(
                 tally.support_mm2 < 1e-6,

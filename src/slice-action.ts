@@ -113,6 +113,15 @@ export function coverageWarning(gaps: readonly { areaMm2: number }[]): string | 
   return `Supports leave ${patches} unheld, ${total.toFixed(1)} mm² in all.`;
 }
 
+/** One banner line for what prints over air with supports off, or `null` when nothing does. */
+export function inAirWarning(air: { islands: number; overhangs: number } | undefined): string | null {
+  if (!air) return null;
+  const count = (n: number, one: string) => (n === 0 ? [] : [n === 1 ? `1 ${one}` : `${n} ${one}s`]);
+  const parts = [...count(air.islands, "island"), ...count(air.overhangs, "overhang")];
+  if (!parts.length) return null;
+  return `Supports are off. ${parts.join(" and ")} would print in the air. Tick Smart supports to hold them up.`;
+}
+
 /** Fields the slicer strips or that the UI replaces before comparing recipes. */
 const SKIPPED = new Set(["reslice", "dataB64"]);
 

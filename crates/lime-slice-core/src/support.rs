@@ -20,7 +20,7 @@ pub enum SupportStyle {
     Tree,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SupportLayer {
     pub sparse: Vec<Loop>,
     pub interface: Vec<Loop>,
@@ -64,10 +64,6 @@ pub struct SupportOpts {
     /// Pitch of the tips left standing, mm. A tip carries the seed samples within
     /// half of it. `0` derives a pitch from `branch_spacing` and `density`. Wider means fewer tips.
     pub max_tip_spacing: f64,
-    /// Project steep overhangs. Off skips the angle test and still holds floating islands.
-    pub overhangs: bool,
-    /// Support a same-layer component that does not rest on material below.
-    pub islands: bool,
     /// Stop the walk early when this slice has been superseded.
     pub job: crate::cancel::Job,
 }
@@ -87,8 +83,6 @@ impl Default for SupportOpts {
             density: 0.2,
             load_factor: 0.0,
             max_tip_spacing: 0.0,
-            overhangs: true,
-            islands: true,
             job: crate::cancel::Job::default(),
         }
     }
@@ -262,6 +256,21 @@ impl Supports {
         Some(supports)
     }
 
+    /// No supports on any of `layers` layers.
+    pub(crate) fn none(layers: usize, opts: &SupportOpts) -> Self {
+        let empty = vec![Vec::new(); layers];
+        Self {
+            forest: Forest::default(),
+            layers: vec![SupportLayer::default(); layers],
+            demanded: empty.clone(),
+            born: empty,
+            restored: vec![Vec::new(); layers],
+            edits: 0,
+            regrown: Vec::new(),
+            opts: *opts,
+        }
+    }
+
     /// The forest, with every layer as the walk leaves it, before `project`.
     fn walk(bands: &[LayerBand], contours: &[Vec<Loop>], opts: &SupportOpts) -> Option<Self> {
         let demand = Demand::new(bands, contours, opts)?;
@@ -316,43 +325,11 @@ impl Supports {
                 unheld_on(i, &self.demanded[i], &self.layers[i].interface, part)
             })
             .collect();
-        if pieces.is_empty() {
-            return Vec::new();
-        }
-        // Pieces come in layer order. `below` holds the pieces of the layer
-        // under the current one, empty when that layer has none.
-        let mut root: Vec<usize> = (0..pieces.len()).collect();
-        let (mut below, mut start) = (0..0, 0);
-        for k in 0..pieces.len() {
-            if k > 0 && pieces[k].layer != pieces[k - 1].layer {
-                below = if pieces[k - 1].layer + 1 == pieces[k].layer {
-                    start..k
-                } else {
-                    k..k
-                };
-                start = k;
-            }
-            for j in below.clone() {
-                if boxes_within(Some(pieces[j].bounds), Some(pieces[k].bounds), 0.0)
-                    && overlaps(&pieces[j].loops, &pieces[k].loops, 0.01)
-                {
-                    let (a, b) = (find(&mut root, j), find(&mut root, k));
-                    root[a.max(b)] = a.min(b);
-                }
-            }
-        }
-        let mut slot = vec![usize::MAX; pieces.len()];
-        let mut patches: Vec<Patch> = Vec::new();
-        for (k, p) in pieces.iter().enumerate() {
-            let r = find(&mut root, k);
-            if slot[r] == usize::MAX {
-                slot[r] = patches.len();
-                patches.push(Patch::new(p));
-            } else {
-                patches[slot[r]].add(p);
-            }
-        }
-        let mut gaps: Vec<CoverageGap> = patches
+        let joined = |lower: &Unheld, upper: &Unheld| {
+            boxes_within(Some(lower.bounds), Some(upper.bounds), 0.0)
+                && overlaps(&lower.loops, &upper.loops, 0.01)
+        };
+        let mut gaps: Vec<CoverageGap> = patches(&pieces, joined)
             .into_iter()
             .filter(|patch| patch.area >= min_mm2)
             .map(|patch| patch.report(bands))
@@ -376,7 +353,8 @@ const UNHELD_PIECE_MM2: f64 = 0.05;
 /// Outline simplification for the reported region, mm.
 const COVERAGE_OUTLINE_MM: f64 = 0.05;
 
-/// One connected piece of demanded interface that layer `layer` does not print.
+/// One connected piece of a layer that nothing holds up: demanded interface
+/// the layer does not print, or part that prints over air.
 struct Unheld {
     layer: usize,
     loops: Vec<Loop>,
@@ -392,7 +370,11 @@ fn unheld_on(layer: usize, demanded: &[Loop], printed: &[Loop], part: &[Loop]) -
     if !gone.is_empty() && !part.is_empty() {
         gone = boolean_diff(&gone, part);
     }
-    components(&gone)
+    pieces_on(layer, &gone)
+}
+
+fn pieces_on(layer: usize, loops: &[Loop]) -> Vec<Unheld> {
+    components(loops)
         .into_iter()
         .filter_map(|loops| {
             let area = solid_area(&loops);
@@ -405,6 +387,43 @@ fn unheld_on(layer: usize, demanded: &[Loop], printed: &[Loop], part: &[Loop]) -
             })
         })
         .collect()
+}
+
+/// Pieces in layer order grouped into patches. A piece joins a piece on the
+/// layer under it when `joined(lower, upper)` holds.
+fn patches(pieces: &[Unheld], joined: impl Fn(&Unheld, &Unheld) -> bool) -> Vec<Patch> {
+    // `below` holds the pieces of the layer under the current one, empty
+    // when that layer has none.
+    let mut root: Vec<usize> = (0..pieces.len()).collect();
+    let (mut below, mut start) = (0..0, 0);
+    for k in 0..pieces.len() {
+        if k > 0 && pieces[k].layer != pieces[k - 1].layer {
+            below = if pieces[k - 1].layer + 1 == pieces[k].layer {
+                start..k
+            } else {
+                k..k
+            };
+            start = k;
+        }
+        for j in below.clone() {
+            if joined(&pieces[j], &pieces[k]) {
+                let (a, b) = (find(&mut root, j), find(&mut root, k));
+                root[a.max(b)] = a.min(b);
+            }
+        }
+    }
+    let mut slot = vec![usize::MAX; pieces.len()];
+    let mut patches: Vec<Patch> = Vec::new();
+    for (k, p) in pieces.iter().enumerate() {
+        let r = find(&mut root, k);
+        if slot[r] == usize::MAX {
+            slot[r] = patches.len();
+            patches.push(Patch::new(p));
+        } else {
+            patches[slot[r]].add(p);
+        }
+    }
+    patches
 }
 
 fn find(root: &mut [usize], k: usize) -> usize {
@@ -486,18 +505,17 @@ impl Demand {
             interface: vec![Vec::new(); n],
             sparse: vec![Vec::new(); n],
         };
-        // Cantilevers are not islands. Keep scanning when auto support is on.
-        if n == 0 || (!opts.overhangs && !opts.islands) {
+        if n == 0 {
             return Some(demand);
         }
-        let angle = opts.angle_deg.clamp(15.0, 75.0).to_radians().tan().max(0.2);
+        let angle = slope_of(opts.angle_deg);
         let iface_n = opts.interface_layers.max(1);
         let tree = opts.style == SupportStyle::Tree;
         // Everything that depends only on one layer of the part is found in
         // parallel. The pass below carries each overhang down to its contact.
         let overhangs: Vec<Vec<Loop>> = (0..n)
             .into_par_iter()
-            .map(|i| overhang_at(bands, contours, i, angle, opts))
+            .map(|i| overhang_at(bands, contours, i, angle))
             .collect();
         let gaps: Vec<Vec<Loop>> = contours
             .par_iter()
@@ -817,43 +835,96 @@ fn can_carry(host: &Node, guest: &Node, grow: &Grow) -> bool {
         && section_radius(host.load + guest.load, grow.tip_r, grow.load_factor) <= host.radius
 }
 
-/// Area of layer `i` that needs a column under it: past the overhang angle,
-/// a floating island, or (with overhangs off) a wing too long to bridge.
-fn overhang_at(
+/// Run over rise of the steepest overhang that prints without support.
+fn slope_of(angle_deg: f64) -> f64 {
+    angle_deg.clamp(15.0, 75.0).to_radians().tan().max(0.2)
+}
+
+/// Layer `i`, the one under it, and how far past the lower one it may reach
+/// unsupported. `None` on the first layer and on an empty one.
+fn layer_pair<'a>(
     bands: &[LayerBand],
-    contours: &[Vec<Loop>],
+    contours: &'a [Vec<Loop>],
     i: usize,
-    angle: f64,
-    opts: &SupportOpts,
-) -> Vec<Loop> {
-    if i == 0 {
-        return Vec::new();
-    }
+    slope: f64,
+) -> Option<(&'a [Loop], &'a [Loop], f64)> {
     let upper = contours.get(i).map(Vec::as_slice).unwrap_or(&[]);
-    let lower = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
-    if upper.is_empty() {
-        return Vec::new();
+    if i == 0 || upper.is_empty() {
+        return None;
     }
-    let dx = bands[i].height / angle;
-    // Islands and one-sided wings both print in air. The overhang toggle
-    // still adds short bridge decks, which can span two anchors.
-    let supported = offset_loops(lower, dx);
-    let angle_overhang = drop_slivers(boolean_diff(upper, &supported), 0.35);
-    let islands = if opts.islands {
-        unsupported_islands(upper, lower, dx)
-    } else {
-        Vec::new()
+    let lower = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
+    Some((upper, lower, bands[i].height / slope))
+}
+
+fn past_angle(upper: &[Loop], lower: &[Loop], dx: f64) -> Vec<Loop> {
+    drop_slivers(boolean_diff(upper, &offset_loops(lower, dx)), 0.35)
+}
+
+/// Area of layer `i` that needs a column under it: past the overhang angle,
+/// or a floating island.
+fn overhang_at(bands: &[LayerBand], contours: &[Vec<Loop>], i: usize, slope: f64) -> Vec<Loop> {
+    let Some((upper, lower, dx)) = layer_pair(bands, contours, i, slope) else {
+        return Vec::new();
     };
-    let overhang = if islands.is_empty() {
+    let angle_overhang = past_angle(upper, lower, dx);
+    let islands = unsupported_islands(upper, lower, dx);
+    if islands.is_empty() {
         angle_overhang
     } else {
         // Keep a small island the angle test would drop as a sliver.
         drop_slivers(boolean_union(&angle_overhang, &islands), 0.05)
+    }
+}
+
+/// What a part sliced without supports prints over air, each region counted
+/// once over the layers it joins. A region whose largest layer is under
+/// `COVERAGE_SPECK_MM2` is left out, as coverage leaves it out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct InAir {
+    /// Same-layer islands with nothing under them.
+    pub islands: u32,
+    /// Overhangs past the support angle that no short bridge spans.
+    pub overhangs: u32,
+}
+
+/// The islands and unbridged overhangs a part would print over air without
+/// supports, for a warning.
+pub(crate) fn in_air(bands: &[LayerBand], contours: &[Vec<Loop>], angle_deg: f64) -> InAir {
+    let slope = slope_of(angle_deg);
+    let (islands, overhangs): (Vec<Vec<Unheld>>, Vec<Vec<Unheld>>) = (0..bands.len())
+        .into_par_iter()
+        .map(|i| {
+            let Some((upper, lower, dx)) = layer_pair(bands, contours, i, slope) else {
+                return (Vec::new(), Vec::new());
+            };
+            let islands = unsupported_islands(upper, lower, dx);
+            let wings = past_angle(upper, lower, dx);
+            let wings = if islands.is_empty() {
+                wings
+            } else {
+                drop_slivers(boolean_diff(&wings, &islands), 0.05)
+            };
+            let wings = exclude_short_bridges(&wings, lower, dx);
+            (pieces_on(i, &islands), pieces_on(i, &wings))
+        })
+        .unzip();
+    let count = |pieces: Vec<Vec<Unheld>>| {
+        let pieces: Vec<Unheld> = pieces.into_iter().flatten().collect();
+        // An overhang that steps out every layer leaves a strip per layer,
+        // each one layer's reach past the one under it.
+        let joined = |lower: &Unheld, upper: &Unheld| {
+            let reach = bands[upper.layer].height / slope + 0.2;
+            boxes_within(Some(lower.bounds), Some(upper.bounds), reach)
+                && overlaps(&offset_loops(&lower.loops, reach), &upper.loops, 0.01)
+        };
+        patches(&pieces, joined)
+            .iter()
+            .filter(|patch| patch.area >= COVERAGE_SPECK_MM2)
+            .count() as u32
     };
-    if opts.overhangs {
-        overhang
-    } else {
-        exclude_short_bridges(&overhang, lower, dx)
+    InAir {
+        islands: count(islands),
+        overhangs: count(overhangs),
     }
 }
 
@@ -1952,7 +2023,7 @@ fn drop_unfooted_interface(interface: &mut Vec<Loop>, below: &SupportLayer, part
 }
 
 /// A deck this short, held on two opposite sides, can bridge. Longer spans
-/// and one-sided wings still get a column.
+/// and one-sided wings print in the air.
 const BRIDGE_SPAN_MM: f64 = 18.0;
 
 /// Drop air regions that sit between two anchors. A wing that only meets the
@@ -2525,8 +2596,6 @@ mod tests {
             density: 0.15,
             interface_layers: 3,
             z_gap: 0.2,
-            overhangs: true,
-            islands: true,
             ..SupportOpts::default()
         };
         let built = Supports::build(&bands, &contours, &opts).unwrap().layers;
@@ -2580,8 +2649,6 @@ mod tests {
             branch_spacing: 5.0,
             interface_layers: 3,
             z_gap: 0.2,
-            overhangs: true,
-            islands: true,
             ..SupportOpts::default()
         };
         let built = Supports::build(&bands, &contours, &opts).unwrap().layers;
@@ -2613,8 +2680,6 @@ mod tests {
             density: 0.15,
             interface_layers: 2,
             z_gap: 0.2,
-            overhangs: true,
-            islands: true,
             ..SupportOpts::default()
         };
         let shared = Supports::build(&bands, &contours, &base).unwrap().layers;
@@ -2692,8 +2757,6 @@ mod tests {
             density: 0.15,
             interface_layers: 2,
             z_gap: 0.2,
-            overhangs: true,
-            islands: true,
             ..SupportOpts::default()
         }
     }
@@ -2812,8 +2875,6 @@ mod tests {
             branch_spacing: 5.0,
             interface_layers: 3,
             z_gap: 0.2,
-            overhangs: true,
-            islands: true,
             ..SupportOpts::default()
         };
         assert_forest_matches(&bands, &contours, &opts);
@@ -2936,8 +2997,6 @@ mod tests {
                 density: 0.15,
                 interface_layers: 2,
                 z_gap: 0.2,
-                overhangs: true,
-                islands: true,
                 ..SupportOpts::default()
             },
         )
@@ -3006,8 +3065,6 @@ mod tests {
                 max_tip_spacing: 3.0,
                 interface_layers: 2,
                 z_gap: 0.2,
-                overhangs: true,
-                islands: true,
                 ..SupportOpts::default()
             },
         )
@@ -3157,8 +3214,6 @@ mod tests {
                 branch_angle_deg: 45.0,
                 interface_layers: 3,
                 z_gap: 0.2,
-                overhangs: true,
-                islands: true,
                 ..SupportOpts::default()
             },
         )
@@ -3204,7 +3259,6 @@ mod tests {
                 density: 0.15,
                 load_factor: 5.2,
                 max_tip_spacing: 10.8,
-                overhangs: false,
                 ..SupportOpts::default()
             },
         )
