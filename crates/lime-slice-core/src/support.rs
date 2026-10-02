@@ -965,7 +965,7 @@ fn propagate_nodes(
         }
         kept.push(n);
     }
-    merge_nodes(&mut kept, grow, max_step + BEAD_OVERHANG_MM, ended);
+    merge_nodes(&mut kept, grow, max_step, ended);
     if grow.next_is_bed {
         for n in &mut kept {
             if n.freeze == 0 {
@@ -1193,11 +1193,12 @@ fn push_out(xy: [f64; 2], part: &LoopIndex, clearance: f64, max_step: f64) -> [f
 /// Merge a node into an earlier one when the host can carry the combined load
 /// and the merged trunk still holds both parent disks. The merged section is
 /// the sum of both, up to the trunk cap. Nodes are scanned by id, so the host
-/// keeps the smaller id.
-fn merge_nodes(nodes: &mut Vec<Node>, grow: &Grow, reach: f64, ended: &mut Vec<(NodeId, End)>) {
+/// keeps the smaller id. `max_step` is one lean step.
+fn merge_nodes(nodes: &mut Vec<Node>, grow: &Grow, max_step: f64, ended: &mut Vec<(NodeId, End)>) {
     if nodes.len() < 2 {
         return;
     }
+    let reach = max_step + BEAD_OVERHANG_MM;
     nodes.sort_by_key(|n| n.id);
     // `holds_both` needs d + r_host + r_guest <= 2 * (merged + reach), and the
     // merged radius is capped at the trunk, so no host sits farther than this.
@@ -1231,12 +1232,12 @@ fn merge_nodes(nodes: &mut Vec<Node>, grow: &Grow, reach: f64, ended: &mut Vec<(
             if speed && !carries(k, &n, grow) {
                 return false;
             }
-            holds_both(k, &n, grow.trunk_r, reach)
+            holds_both(k, &n, grow.trunk_r, max_step)
         });
         if let Some(at) = found {
             let host = &mut kept[at];
             let was = host.xy;
-            host.xy = merge_point(host, &n);
+            host.xy = merge_point(host, &n, max_step);
             host.load += n.load;
             host.dist = host.dist.max(n.dist);
             // Section area adds up at a fork, so thickness follows the tips carried.
@@ -1311,23 +1312,28 @@ impl CellGrid {
     }
 }
 
-/// Where a merged trunk stands: between the two, nearer the thicker.
-fn merge_point(host: &Node, guest: &Node) -> [f64; 2] {
+/// Where a merged trunk stands: toward the point between the two, nearer the
+/// thicker, as far as what is left of the host's lean step allows. A trunk
+/// that takes in a fresh tip on every layer would otherwise walk with them.
+fn merge_point(host: &Node, guest: &Node, max_step: f64) -> [f64; 2] {
     let w = (host.radius + guest.radius).max(1e-6);
-    [
+    let between = [
         (host.xy[0] * host.radius + guest.xy[0] * guest.radius) / w,
         (host.xy[1] * host.radius + guest.xy[1] * guest.radius) / w,
-    ]
+    ];
+    let leaned = (host.xy[0] - host.above[0]).hypot(host.xy[1] - host.above[1]);
+    step_toward(host.xy, between, (max_step - leaned).max(0.0))
 }
 
 /// True when the merged disk still sits under both parent disks within one
 /// lean step, as `settle_disks` tests it: from where each parent printed on
 /// the layer above, not from where this layer's step moved it.
-fn holds_both(host: &Node, guest: &Node, trunk_r: f64, reach: f64) -> bool {
+fn holds_both(host: &Node, guest: &Node, trunk_r: f64, max_step: f64) -> bool {
     let merged = (host.radius.powi(2) + guest.radius.powi(2))
         .sqrt()
         .min(trunk_r);
-    let at = merge_point(host, guest);
+    let at = merge_point(host, guest, max_step);
+    let reach = max_step + BEAD_OVERHANG_MM;
     let holds =
         |n: &Node| (n.above[0] - at[0]).hypot(n.above[1] - at[1]) + n.radius <= merged + reach;
     holds(host) && holds(guest)
@@ -2861,7 +2867,7 @@ mod tests {
 
         let mut ended = Vec::new();
         let mut over = pair(60.0);
-        merge_nodes(&mut over, &grow(5.2), 0.39, &mut ended);
+        merge_nodes(&mut over, &grow(5.2), 0.17, &mut ended);
         assert_eq!(
             loads(&over),
             vec![60.0, 60.0],
@@ -2870,7 +2876,7 @@ mod tests {
         assert_eq!(ended, vec![]);
 
         let mut under = pair(30.0);
-        merge_nodes(&mut under, &grow(5.2), 0.39, &mut ended);
+        merge_nodes(&mut under, &grow(5.2), 0.17, &mut ended);
         assert_eq!(loads(&under), vec![60.0]);
         let joined = (NodeId(2), End::Merged { into: NodeId(1) });
         assert_eq!(ended, vec![joined]);
@@ -2878,7 +2884,7 @@ mod tests {
         // Toughness has no load rating, so its cone merge stands.
         ended.clear();
         let mut tough = pair(60.0);
-        merge_nodes(&mut tough, &grow(1.5), 0.39, &mut ended);
+        merge_nodes(&mut tough, &grow(1.5), 0.17, &mut ended);
         assert_eq!(loads(&tough), vec![120.0]);
         assert_eq!(ended, vec![joined]);
     }
@@ -2957,5 +2963,58 @@ mod tests {
                     .any(|c| (2.0..26.0).contains(&c[0]) && (2.0..19.5).contains(&c[1]))
         });
         assert!(on_head, "the ear over the head lost its footing");
+    }
+
+    #[test]
+    fn a_trunk_under_a_sloped_underside_stays_inside_the_lean() {
+        // A plate leaning 56° from vertical, 24 mm tall: each layer sticks out
+        // 0.3 mm past the one under it, so a fresh tip is born every layer
+        // along the underside. Branches may lean 40°, so no trunk can follow
+        // the underside and stay inside the lean.
+        let bands = layers(120);
+        let contours: Vec<Vec<Loop>> = (0..120)
+            .map(|i| {
+                let x = 0.3 * i as f64;
+                vec![rect(x, 0.0, x + 6.0, 10.0)]
+            })
+            .collect();
+        let supports = Supports::build(
+            &bands,
+            &contours,
+            &SupportOpts {
+                style: SupportStyle::Tree,
+                density: 0.15,
+                load_factor: 5.2,
+                max_tip_spacing: 10.8,
+                overhangs: false,
+                ..SupportOpts::default()
+            },
+        )
+        .unwrap();
+        assert!(unfooted_interface(&supports.layers, &contours).is_empty());
+        assert_eq!(supports.coverage(&bands, &contours), vec![]);
+        let lean = 40f64.to_radians().tan();
+        let mut worst = (0.0, 0.0, 0);
+        for (k, limb) in supports.forest.limbs.iter().enumerate() {
+            let live: Vec<[f64; 2]> = limb
+                .knots
+                .iter()
+                .filter(|n| n.freeze == 0)
+                .map(|n| n.xy)
+                .collect();
+            let travel: f64 = live
+                .windows(2)
+                .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+                .sum();
+            let fall = live.len().saturating_sub(1) as f64 * 0.2;
+            if travel - lean * fall > worst.0 - lean * worst.1 {
+                worst = (travel, fall, k + 1);
+            }
+        }
+        let (travel, fall, id) = worst;
+        assert!(
+            travel <= lean * fall + 1.0,
+            "limb {id} travelled {travel:.1} mm over a {fall:.1} mm fall"
+        );
     }
 }
