@@ -15,13 +15,6 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body, #app { height: 100%; margin: 0; }
-html {
-  padding:
-    env(safe-area-inset-top)
-    env(safe-area-inset-right)
-    env(safe-area-inset-bottom)
-    env(safe-area-inset-left);
-}
 body {
   display: flex;
   flex-direction: column;
