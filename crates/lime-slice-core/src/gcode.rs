@@ -415,9 +415,9 @@ struct Writer {
     pa_cur: f64,
     la_cur: f64,
     emit_pa: bool,
-    kind: String,
-    feature_s: BTreeMap<String, f64>,
-    feature_mm: BTreeMap<String, f64>,
+    kind: &'static str,
+    feature_s: BTreeMap<&'static str, f64>,
+    feature_mm: BTreeMap<&'static str, f64>,
     layer_seconds: Vec<f64>,
     layer_mark: f64,
     layer_open: bool,
@@ -447,7 +447,7 @@ struct KinMove {
     accel: f64,
     entry_dir: [f64; 2],
     exit_dir: [f64; 2],
-    kind: String,
+    kind: &'static str,
 }
 
 impl Writer {
@@ -482,7 +482,7 @@ impl Writer {
             pa_cur: carry.pa_cur,
             la_cur: carry.la_cur,
             emit_pa: cfg.emit_pa,
-            kind: "travel".into(),
+            kind: "travel",
             feature_s: BTreeMap::new(),
             feature_mm: BTreeMap::new(),
             layer_seconds: Vec::new(),
@@ -562,7 +562,7 @@ impl Writer {
             } else {
                 layer.height
             };
-            self.kind = "travel".into();
+            self.kind = "travel";
             let travel_accel = cap_accel(path.travel_accel, self.max_accel);
             let print_accel = cap_accel(path.accel, self.max_accel);
             self.set_accel(travel_accel);
@@ -578,7 +578,7 @@ impl Writer {
                 path.z_hop,
                 layer.z,
             );
-            self.kind = path.kind.as_str().into();
+            self.kind = path.kind.as_str();
             self.set_accel(print_accel);
             let limited = limit_speed(
                 speed,
@@ -613,9 +613,9 @@ impl Writer {
         }
         let pending = std::mem::take(&mut self.pending);
         let times = plan_lookahead(&pending, self.junction_deviation);
-        let saved = self.kind.clone();
+        let saved = self.kind;
         for (mv, dt) in pending.iter().zip(times) {
-            self.kind.clone_from(&mv.kind);
+            self.kind = mv.kind;
             self.add_time(dt);
         }
         self.kind = saved;
@@ -638,7 +638,7 @@ impl Writer {
             accel: accel.max(50.0),
             entry_dir,
             exit_dir,
-            kind: self.kind.clone(),
+            kind: self.kind,
         });
     }
 
@@ -647,14 +647,14 @@ impl Writer {
             return;
         }
         self.time_s += dt;
-        *self.feature_s.entry(self.kind.clone()).or_insert(0.0) += dt;
+        *self.feature_s.entry(self.kind).or_insert(0.0) += dt;
     }
 
     fn add_filament(&mut self, mm: f64) {
         if self.strings_only || mm <= 0.0 {
             return;
         }
-        *self.feature_mm.entry(self.kind.clone()).or_insert(0.0) += mm;
+        *self.feature_mm.entry(self.kind).or_insert(0.0) += mm;
     }
 
     fn close_layer(&mut self) {
@@ -699,7 +699,7 @@ impl Writer {
         let z = layer.z;
         self.put(format_args!("G1 Z{z:.3} F{f}\n"));
         self.close_layer();
-        self.kind = "travel".into();
+        self.kind = "travel";
         if dz > 1e-6 {
             self.add_time(dz / 120.0);
         }
@@ -735,8 +735,8 @@ impl Writer {
             self.retracted = 0.0;
             let e_now = self.e;
             self.put(format_args!("G1 E{e_now:.5} F1800\n"));
-            let prev = self.kind.clone();
-            self.kind = "travel".into();
+            let prev = self.kind;
+            self.kind = "travel";
             self.add_time(feed / 30.0);
             self.kind = prev;
         }
@@ -1288,20 +1288,23 @@ fn hop_height(dist: f64, total: f64, ramp: f64, layer_z: f64, z_hop: f64) -> f64
     layer_z + z_hop * up.min(down)
 }
 
-fn feature_rows(seconds: &BTreeMap<String, f64>, mm: &BTreeMap<String, f64>) -> Vec<FeatureStat> {
-    let mut kinds: Vec<String> = seconds.keys().cloned().collect();
+fn feature_rows(
+    seconds: &BTreeMap<&'static str, f64>,
+    mm: &BTreeMap<&'static str, f64>,
+) -> Vec<FeatureStat> {
+    let mut kinds: Vec<&'static str> = seconds.keys().copied().collect();
     for key in mm.keys() {
-        if !kinds.iter().any(|k| k == key) {
-            kinds.push(key.clone());
+        if !kinds.contains(key) {
+            kinds.push(key);
         }
     }
     kinds.sort();
     kinds
         .into_iter()
         .map(|kind| FeatureStat {
-            seconds: seconds.get(&kind).copied().unwrap_or(0.0),
-            filament_mm: mm.get(&kind).copied().unwrap_or(0.0),
-            kind,
+            seconds: seconds.get(kind).copied().unwrap_or(0.0),
+            filament_mm: mm.get(kind).copied().unwrap_or(0.0),
+            kind: kind.to_string(),
         })
         .filter(|row| row.seconds > 1e-6 || row.filament_mm > 1e-6)
         .collect()
@@ -1642,7 +1645,7 @@ mod tests {
             accel,
             entry_dir: dir,
             exit_dir: dir,
-            kind: "wall".into(),
+            kind: "wall",
         }
     }
 
