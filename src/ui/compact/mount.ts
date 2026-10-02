@@ -12,6 +12,7 @@ type CompactTab = "prepare" | "settings" | "preview" | "device";
 let active = false;
 let tab: CompactTab = "prepare";
 let detent: Detent = "peek";
+let supportEditing = false;
 let home: {
   left: HTMLElement;
   leftParent: HTMLElement;
@@ -50,8 +51,28 @@ export function mountCompact() {
     const target = ev.target as Element | null;
     if (target?.closest("#layflat")) pushToast("Lay flat applied", "success");
   });
+  window.addEventListener("lime-support-edit", (ev) => {
+    supportEditing = (ev as CustomEvent<boolean>).detail === true;
+    if (!active) return;
+    const sheetEl = document.querySelector<HTMLElement>("#compactSheet");
+    const supports = document.querySelector<HTMLElement>("#compactSupports");
+    const left = document.querySelector<HTMLElement>("#left");
+    if (supportEditing && tab === "preview") {
+      detent = "peek";
+      if (sheetEl) sheetEl.dataset.detent = "peek";
+      left?.setAttribute("hidden", "");
+      supports?.removeAttribute("hidden");
+    } else {
+      left?.removeAttribute("hidden");
+      supports?.setAttribute("hidden", "");
+      if (tab === "preview" && sheetEl) sheetEl.dataset.detent = "closed";
+    }
+    applyHeights(sheetHeight(detent, window.innerHeight), true);
+    window.dispatchEvent(new Event("resize"));
+  });
   window.addEventListener("lime-layout", sync);
   sync();
+  window.dispatchEvent(new CustomEvent("lime-compact-ready"));
 }
 
 function icon(node: IconNode) {
@@ -92,6 +113,10 @@ function topBar() {
     ["Open mesh", () => pickModelFile()],
     ["Export G-code", () => void saveGcode()],
     ["Force re-slice", () => document.querySelector<HTMLButtonElement>("#force")?.click()],
+    ["Edit supports", () => {
+      document.querySelector<HTMLButtonElement>('#compactTabs [data-tab="preview"]')?.click();
+      window.dispatchEvent(new CustomEvent("lime-support-edit-toggle"));
+    }],
     ["Shortcuts", () => document.dispatchEvent(new CustomEvent("lime-open-help"))],
   ] as const) {
     const button = document.createElement("button");
@@ -118,13 +143,24 @@ function sheet() {
   handle.setAttribute("aria-label", "Resize settings");
   const body = document.createElement("div");
   body.id = "compactSheetBody";
+  const supports = document.createElement("div");
+  supports.id = "compactSupports";
+  supports.hidden = true;
+  const peek = document.createElement("p");
+  peek.id = "compactSupportPeek";
+  supports.append(peek);
   handle.addEventListener("pointerdown", (ev) => beginDrag(ev, el, handle));
+  body.append(supports);
   el.append(handle, body);
   return el;
 }
 
+function editingPreview() {
+  return supportEditing && tab === "preview";
+}
+
 function beginDrag(ev: PointerEvent, sheetEl: HTMLElement, handle: HTMLButtonElement) {
-  if (!active || (tab !== "prepare" && tab !== "settings")) return;
+  if (!active || (tab !== "prepare" && tab !== "settings" && !editingPreview())) return;
   ev.preventDefault();
   handle.setPointerCapture(ev.pointerId);
   const originY = ev.clientY;
@@ -141,6 +177,7 @@ function beginDrag(ev: PointerEvent, sheetEl: HTMLElement, handle: HTMLButtonEle
     detent = snapDetent(height, window.innerHeight);
     sheetEl.dataset.detent = detent;
     applyHeights(sheetHeight(detent, window.innerHeight), true);
+    window.dispatchEvent(new Event("resize"));
     haptic("snap");
   };
   handle.addEventListener("pointermove", move);
@@ -284,6 +321,7 @@ function toggleChrome() {
 
 function selectTab(next: CompactTab) {
   tab = next;
+  if (next !== "preview") window.dispatchEvent(new CustomEvent("lime-support-edit-close"));
   document.documentElement.dataset.compactTab = next;
   document.querySelectorAll<HTMLButtonElement>("#compactTabs .compact-tab").forEach((button) => {
     button.setAttribute("aria-selected", button.dataset.tab === next ? "true" : "false");
@@ -299,7 +337,10 @@ function selectTab(next: CompactTab) {
     document.querySelector<HTMLButtonElement>('[data-mode="solid"]')?.click();
   }
   const sheetEl = document.querySelector<HTMLElement>("#compactSheet");
-  if (sheetEl) sheetEl.dataset.detent = next === "preview" || next === "device" ? "closed" : detent;
+  if (sheetEl) {
+    const keepSheet = next === "preview" && supportEditing;
+    sheetEl.dataset.detent = keepSheet ? detent : next === "preview" || next === "device" ? "closed" : detent;
+  }
   applyHeights(sheetHeight(detent, window.innerHeight), true);
   haptic("tap");
   window.dispatchEvent(new Event("resize"));
@@ -309,7 +350,8 @@ function applyHeights(sheetPx: number, animate: boolean) {
   const root = document.documentElement;
   const hidden = root.classList.contains("chrome-hidden");
   const short = window.innerHeight < 500;
-  const showSheet = !hidden && (tab === "prepare" || tab === "settings") && !(short && tab === "prepare" && detent === "peek");
+  const previewEdit = editingPreview();
+  const showSheet = !hidden && (tab === "prepare" || tab === "settings" || previewEdit) && !(short && tab === "prepare" && detent === "peek" && !previewEdit);
   root.style.transition = animate ? "" : "none";
   root.style.setProperty("--compact-sheet", hidden || !showSheet ? "0px" : `${Math.round(sheetPx)}px`);
 }

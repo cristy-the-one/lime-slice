@@ -47,6 +47,10 @@ function wire(
       if (!pressed || moved || !compact()) return;
       held = true;
       haptic("snap");
+      if (document.documentElement.dataset.supportEdit === "1") {
+        window.dispatchEvent(new CustomEvent("lime-support-hold"));
+        return;
+      }
       hooks.onLongPress(startX, startY);
     }, 500);
   });
@@ -61,6 +65,7 @@ function wire(
     if (!pressed) return;
     pressed = false;
     window.clearTimeout(hold);
+    if (document.documentElement.dataset.supportEdit === "1") return;
     if (!compact() || moved || held || consumed || ev.button !== 0) return;
     const now = performance.now();
     if (now - lastTap < 280) {

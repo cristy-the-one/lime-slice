@@ -233,5 +233,19 @@
 }
 
 html.layout-compact .support-editbar,
-html.layout-compact .support-edits,
 html.layout-compact #toolRail [data-tool="supports"] { display: none !important; }
+html.layout-compact #compactSupports .support-edits {
+  position: static;
+  top: auto;
+  right: auto;
+  width: auto;
+  max-width: none;
+  max-height: none;
+  box-shadow: none;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0 12px 12px;
+}
+html.layout-compact #compactSupports .support-edits[hidden] { display: none; }
+html.layout-compact #compactSheet[data-detent="peek"] #compactSupports .support-edits { display: none; }
