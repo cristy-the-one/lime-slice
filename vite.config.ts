@@ -29,16 +29,18 @@ function serveSamples(): Plugin {
   };
 }
 
+const devHost = process.env.LIME_DEV_HOST || "127.0.0.1";
+
 export default defineConfig({
   clearScreen: false,
   plugins: [serveSamples()],
   server: {
-    host: "127.0.0.1",
+    host: devHost,
     port: 43117,
     strictPort: true,
   },
   preview: {
-    host: "127.0.0.1",
+    host: devHost,
     port: 43117,
     strictPort: true,
   },

@@ -23,7 +23,7 @@
   z-index: 8;
   margin-top: 4px;
   padding: 8px;
-  min-width: 210px;
+  min-width: 260px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -49,6 +49,37 @@ html[data-chrome="custom"] .win-controls { display: flex; }
 }
 .win-controls .btn:hover { background: var(--surface-3); }
 .win-controls .win-close:hover { background: var(--danger); color: #fff; }
+
+.connection {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.gear-label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+}
+.connection-actions { display: flex; gap: 6px; }
+.connection-actions .btn { flex: 1 1 0; }
+.connection-result { margin: 0; min-height: 1.2em; font-size: 12px; color: var(--muted); word-break: break-all; }
+.connection-result[data-state="ok"] { color: var(--ok); }
+.connection-result[data-state="bad"] { color: var(--danger); }
+.engine-link {
+  flex: 0 1 auto;
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.engine-link[data-state="ok"] { color: var(--ok); }
+.engine-link[data-state="down"] { color: var(--danger); }
+.engine-link[data-state="pending"] { color: var(--muted); }
 
 .status { gap: 12px; }
 #status {

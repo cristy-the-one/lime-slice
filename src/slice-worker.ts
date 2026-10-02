@@ -6,6 +6,7 @@ export interface WorkerRequest {
   filename?: string;
   payload?: Record<string, unknown>;
   api?: string;
+  token?: string;
   parseOnly?: string;
   cancel?: boolean;
   /** Port to the geometry worker, sent once at startup. */
@@ -51,9 +52,11 @@ async function run(msg: WorkerRequest) {
   jobs.set(msg.id, ctrl);
   try {
     const payload = { ...(msg.payload ?? {}), dataB64: toBase64(new Uint8Array(msg.bytes ?? new ArrayBuffer(0))) };
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (msg.token) headers.Authorization = `Bearer ${msg.token}`;
     const res = await fetch(`${msg.api}/api/slice`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(payload),
       signal: ctrl.signal,
     });

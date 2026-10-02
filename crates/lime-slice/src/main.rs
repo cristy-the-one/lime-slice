@@ -160,6 +160,13 @@ enum Cmd {
     Serve {
         #[arg(long, default_value_t = 43118)]
         port: u16,
+        /// Address to bind. Stays on loopback unless you set this, for example `0.0.0.0`.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// Shared secret required on every request except CORS preflight.
+        /// Send `Authorization: Bearer <token>` or `?token=`. Overrides `LIME_SLICE_TOKEN`.
+        #[arg(long)]
+        token: Option<String>,
         /// Keep finished slices here and load a repeated request instead of slicing it.
         #[arg(long)]
         cache_dir: Option<PathBuf>,
@@ -351,7 +358,17 @@ fn run() -> Result<(), String> {
             Ok(())
         }
         Cmd::Bench { input } => bench(&input),
-        Cmd::Serve { port, cache_dir } => serve(port, cache_dir),
+        Cmd::Serve {
+            port,
+            host,
+            cache_dir,
+            token,
+        } => serve(
+            &host,
+            port,
+            cache_dir,
+            resolve_serve_token(token, token_from_env()),
+        ),
         Cmd::Calibrate { kind } => calibrate(kind),
     }
 }
@@ -759,34 +776,182 @@ fn park_gcode(text: String) -> String {
 /// Slices kept on disk by `serve --cache-dir`.
 static SLICE_CACHE: std::sync::OnceLock<lime_slice_core::SliceCache> = std::sync::OnceLock::new();
 
-fn serve(port: u16, cache_dir: Option<PathBuf>) -> Result<(), String> {
+fn serve(
+    host: &str,
+    port: u16,
+    cache_dir: Option<PathBuf>,
+    token: Option<String>,
+) -> Result<(), String> {
     if let Some(dir) = cache_dir {
         let _ = SLICE_CACHE.set(lime_slice_core::SliceCache::new(dir, 2 << 30));
     }
-    let addr = format!("127.0.0.1:{port}");
+    let token = token.filter(|value| !value.is_empty());
+    if open_bind_without_auth(host, token.as_deref()) {
+        eprintln!(
+            "warning: lime-slice is listening on {host} with no authentication. Anyone who can reach this port can submit meshes and download G-code. Pass --token or set LIME_SLICE_TOKEN."
+        );
+    }
+    let addr = listen_addr(host, port);
     let server = tiny_http::Server::http(&addr).map_err(|e| e.to_string())?;
     eprintln!("lime-slice api http://{addr}");
+    let shared = token.map(std::sync::Arc::<str>::from);
     // One thread per request, so a new slice or /api/cancel reaches the server
     // while an older slice is still planning. Starting a slice supersedes it.
     for request in server.incoming_requests() {
-        std::thread::spawn(move || handle(request));
+        let shared = shared.clone();
+        std::thread::spawn(move || handle(request, shared.as_deref()));
     }
     Ok(())
 }
 
-fn handle(mut request: tiny_http::Request) {
+/// `LIME_SLICE_TOKEN` when `--token` was omitted. An empty value means no token.
+fn token_from_env() -> Option<String> {
+    std::env::var("LIME_SLICE_TOKEN")
+        .ok()
+        .filter(|value| !value.is_empty())
+}
+
+fn resolve_serve_token(flag: Option<String>, env: Option<String>) -> Option<String> {
+    flag.filter(|value| !value.is_empty())
+        .or_else(|| env.filter(|value| !value.is_empty()))
+}
+
+fn listen_addr(host: &str, port: u16) -> String {
+    let host = host.trim();
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim().trim_matches(['[', ']']);
+    host.eq_ignore_ascii_case("localhost")
+        || host == "127.0.0.1"
+        || host == "::1"
+        || host == "0:0:0:0:0:0:0:1"
+}
+
+/// True when the bind is reachable from another machine and no shared token is set.
+fn open_bind_without_auth(host: &str, token: Option<&str>) -> bool {
+    !is_loopback_host(host) && token.unwrap_or("").is_empty()
+}
+
+fn split_target(url: &str) -> (&str, &str) {
+    url.split_once('?').unwrap_or((url, ""))
+}
+
+fn query_param(query: &str, key: &str) -> Option<String> {
+    query.split('&').find_map(|pair| {
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        (name == key).then(|| percent_decode(value))
+    })
+}
+
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) =
+                u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
+            {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn header_value<'a>(headers: &'a [tiny_http::Header], name: &'static str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|header| header.field.equiv(name))
+        .map(|header| header.value.as_str())
+}
+
+/// No token configured: every request is allowed. Otherwise the bearer header or `?token=` must match.
+fn request_authorized(expected: Option<&str>, authorization: Option<&str>, query: &str) -> bool {
+    let Some(expected) = expected.filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    if authorization.map(str::trim).is_some_and(|header| {
+        header == expected
+            || header
+                .strip_prefix("Bearer ")
+                .or_else(|| header.strip_prefix("bearer "))
+                .is_some_and(|bearer| bearer.trim() == expected)
+    }) {
+        return true;
+    }
+    query_param(query, "token").is_some_and(|value| value == expected)
+}
+
+fn is_http_origin(value: &str) -> bool {
+    let rest = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"));
+    match rest {
+        Some(rest) => {
+            !rest.is_empty()
+                && !value
+                    .bytes()
+                    .any(|byte| byte == b'\r' || byte == b'\n' || byte == b' ')
+        }
+        None => false,
+    }
+}
+
+/// Wildcard CORS stays when no token is set. A token echoes the request origin and allows `Authorization`.
+fn cors_origin(token_required: bool, origin: Option<&str>) -> String {
+    if !token_required {
+        return "*".to_string();
+    }
+    origin
+        .map(str::trim)
+        .filter(|value| is_http_origin(value))
+        .unwrap_or("*")
+        .to_string()
+}
+
+fn handle(mut request: tiny_http::Request, token: Option<&str>) {
     {
         let method = request.method().as_str().to_string();
         let url = request.url().to_string();
+        let (path, query) = split_target(&url);
+        let path = path.to_string();
+        let query = query.to_string();
+        let origin = header_value(request.headers(), "Origin").map(str::to_string);
+        let authorization = header_value(request.headers(), "Authorization").map(str::to_string);
+        let token_required = token.is_some_and(|value| !value.is_empty());
         let mut body = String::new();
         if request.as_reader().read_to_string(&mut body).is_err() {
-            let _ = request.respond(text_response(400, "bad body"));
+            let _ = request.respond(text_response(
+                400,
+                "bad body",
+                token_required,
+                origin.as_deref(),
+            ));
+            return;
+        }
+        if method != "OPTIONS" && !request_authorized(token, authorization.as_deref(), &query) {
+            let _ = request.respond(text_response(
+                401,
+                &err_json("unauthorized"),
+                token_required,
+                origin.as_deref(),
+            ));
             return;
         }
         let (status, payload) = if method == "OPTIONS" {
             (204, String::new())
-        } else if method == "GET" && url.starts_with("/api/strategies") {
-            let query = url.split_once('?').map(|(_, q)| q).unwrap_or("");
+        } else if method == "GET" && path.starts_with("/api/strategies") {
             let mut toughness = 0.0;
             let mut layer_h = 0.2;
             let mut width = 0.45;
@@ -809,12 +974,12 @@ fn handle(mut request: tiny_http::Request) {
                 200,
                 serde_json::to_string(&card).unwrap_or_else(|e| err_json(&e.to_string())),
             )
-        } else if method == "POST" && url.starts_with("/api/cancel") {
+        } else if method == "POST" && path.starts_with("/api/cancel") {
             lime_slice_core::cancel_all();
             (200, r#"{"ok":true}"#.into())
-        } else if method == "GET" && url.starts_with("/api/health") {
+        } else if method == "GET" && path.starts_with("/api/health") {
             (200, r#"{"ok":true}"#.into())
-        } else if method == "POST" && url.starts_with("/api/calibrate/pa") {
+        } else if method == "POST" && path.starts_with("/api/calibrate/pa") {
             match serde_json::from_str::<lime_slice_core::PaCalibRequest>(&body) {
                 Ok(req) => match lime_slice_core::pressure_advance_from_request(&req) {
                     Ok(res) => (
@@ -825,18 +990,18 @@ fn handle(mut request: tiny_http::Request) {
                 },
                 Err(err) => (400, err_json(&err.to_string())),
             }
-        } else if method == "GET" && url.starts_with("/api/gcode/") {
-            let token = url.trim_start_matches("/api/gcode/").trim();
+        } else if method == "GET" && path.starts_with("/api/gcode/") {
+            let gcode_id = path.trim_start_matches("/api/gcode/").trim();
             let text = gcode_store()
                 .lock()
                 .expect("gcode store")
-                .get(token)
+                .get(gcode_id)
                 .cloned();
             match text {
                 Some(text) => (200, text),
                 None => (404, err_json("g-code expired")),
             }
-        } else if method == "POST" && url.starts_with("/api/mesh") {
+        } else if method == "POST" && path.starts_with("/api/mesh") {
             match serde_json::from_str::<SliceRequest>(&body) {
                 Ok(req) => match decode_mesh(&req) {
                     Ok(bytes) => match lime_slice_core::mesh_preview_tol(
@@ -855,7 +1020,7 @@ fn handle(mut request: tiny_http::Request) {
                 },
                 Err(err) => (400, err_json(&err.to_string())),
             }
-        } else if method == "POST" && url.starts_with("/api/pareto") {
+        } else if method == "POST" && path.starts_with("/api/pareto") {
             match serde_json::from_str::<SliceRequest>(&body) {
                 Ok(req) => match decode_mesh(&req) {
                     Ok(bytes) => match lime_slice_core::load_slice_mesh_tol(
@@ -885,7 +1050,7 @@ fn handle(mut request: tiny_http::Request) {
                 },
                 Err(err) => (400, err_json(&err.to_string())),
             }
-        } else if method == "POST" && url.starts_with("/api/slice") {
+        } else if method == "POST" && path.starts_with("/api/slice") {
             match lime_slice_core::slice_payload(
                 &body,
                 SLICE_CACHE.get(),
@@ -898,20 +1063,40 @@ fn handle(mut request: tiny_http::Request) {
         } else {
             (404, err_json("not found"))
         };
-        let _ = request.respond(text_response(status, &payload));
+        let _ = request.respond(text_response(
+            status,
+            &payload,
+            token_required,
+            origin.as_deref(),
+        ));
     }
 }
 
-fn text_response(status: u16, body: &str) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+fn text_response(
+    status: u16,
+    body: &str,
+    token_required: bool,
+    origin: Option<&str>,
+) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    let allow_origin = cors_origin(token_required, origin);
+    let allow_headers = if token_required {
+        "Content-Type, Authorization"
+    } else {
+        "Content-Type"
+    };
     let mut response = tiny_http::Response::from_string(body.to_string()).with_status_code(status);
     let headers = [
         ("Content-Type", "application/json"),
-        ("Access-Control-Allow-Origin", "*"),
+        ("Access-Control-Allow-Origin", allow_origin.as_str()),
         ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
-        ("Access-Control-Allow-Headers", "Content-Type"),
+        ("Access-Control-Allow-Headers", allow_headers),
     ];
     for (k, v) in headers {
         response.add_header(tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()).unwrap());
+    }
+    if token_required && allow_origin != "*" {
+        response
+            .add_header(tiny_http::Header::from_bytes(b"Vary", b"Origin").expect("vary header"));
     }
     response
 }
@@ -1383,5 +1568,210 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{}: {e}", input.display()));
             assert!(response.sanity.ok, "{}", input.display());
         }
+    }
+
+    #[test]
+    fn serve_cli_stays_on_loopback_without_a_token() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["lime-slice", "serve"]).unwrap();
+        let Cmd::Serve {
+            host,
+            port,
+            token,
+            cache_dir,
+        } = cli.cmd
+        else {
+            panic!("serve");
+        };
+        assert_eq!(host, "127.0.0.1");
+        assert_eq!(port, 43118);
+        assert!(token.is_none());
+        assert!(cache_dir.is_none());
+        assert_eq!(listen_addr(&host, port), "127.0.0.1:43118");
+        assert!(!open_bind_without_auth(&host, None));
+    }
+
+    #[test]
+    fn serve_cli_accepts_host_and_token() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from([
+            "lime-slice",
+            "serve",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "9",
+            "--token",
+            "s3cret",
+        ])
+        .unwrap();
+        let Cmd::Serve {
+            host, port, token, ..
+        } = cli.cmd
+        else {
+            panic!("serve");
+        };
+        assert_eq!(host, "0.0.0.0");
+        assert_eq!(port, 9);
+        assert_eq!(token.as_deref(), Some("s3cret"));
+        assert_eq!(listen_addr(&host, port), "0.0.0.0:9");
+        assert!(open_bind_without_auth("0.0.0.0", None));
+        assert!(open_bind_without_auth("192.168.1.20", Some("")));
+        assert!(!open_bind_without_auth("0.0.0.0", Some("s3cret")));
+        assert!(!open_bind_without_auth("localhost", None));
+        assert!(!open_bind_without_auth("::1", None));
+        assert_eq!(listen_addr("::1", 43118), "[::1]:43118");
+        assert_eq!(
+            resolve_serve_token(Some("flag".into()), Some("env".into())).as_deref(),
+            Some("flag")
+        );
+        assert_eq!(
+            resolve_serve_token(None, Some("env".into())).as_deref(),
+            Some("env")
+        );
+        assert_eq!(
+            resolve_serve_token(Some(String::new()), Some("env".into())).as_deref(),
+            Some("env")
+        );
+        assert!(resolve_serve_token(None, None).is_none());
+    }
+
+    #[test]
+    fn token_accepts_bearer_or_query_and_rejects_the_rest() {
+        assert!(request_authorized(None, None, ""));
+        assert!(request_authorized(Some(""), None, ""));
+        assert!(request_authorized(
+            Some("s3cret"),
+            Some("Bearer s3cret"),
+            ""
+        ));
+        assert!(request_authorized(
+            Some("s3cret"),
+            Some("bearer s3cret"),
+            ""
+        ));
+        assert!(request_authorized(Some("s3cret"), Some("s3cret"), ""));
+        assert!(request_authorized(Some("s3cret"), None, "token=s3cret"));
+        assert!(request_authorized(
+            Some("a b"),
+            None,
+            "toughness=1&token=a%20b"
+        ));
+        assert!(!request_authorized(Some("s3cret"), Some("Bearer nope"), ""));
+        assert!(!request_authorized(Some("s3cret"), None, "token=nope"));
+        assert!(!request_authorized(Some("s3cret"), None, ""));
+        assert_eq!(cors_origin(false, Some("http://evil.test")), "*");
+        assert_eq!(
+            cors_origin(true, Some("http://phone.local:43117")),
+            "http://phone.local:43117"
+        );
+        assert_eq!(cors_origin(true, Some("not a origin")), "*");
+        assert_eq!(cors_origin(true, None), "*");
+    }
+
+    #[test]
+    fn host_binds_loopback_by_default_and_token_gates_health() {
+        let open = tiny_http::Server::http(listen_addr("127.0.0.1", 0)).unwrap();
+        let tiny_http::ListenAddr::IP(bound) = open.server_addr() else {
+            panic!("expected a tcp listener");
+        };
+        assert!(bound.ip().is_loopback());
+        assert_ne!(bound.port(), 0);
+        drop(open);
+
+        let wide = tiny_http::Server::http(listen_addr("0.0.0.0", 0)).unwrap();
+        let tiny_http::ListenAddr::IP(wide_addr) = wide.server_addr() else {
+            panic!("expected a tcp listener");
+        };
+        assert!(wide_addr.ip().is_unspecified());
+        drop(wide);
+
+        let server = tiny_http::Server::http(listen_addr("127.0.0.1", 0)).unwrap();
+        let tiny_http::ListenAddr::IP(addr) = server.server_addr() else {
+            panic!("expected a tcp listener");
+        };
+        let endpoint = addr.to_string();
+        std::thread::spawn(move || {
+            for request in server.incoming_requests() {
+                handle(request, Some("s3cret"));
+            }
+        });
+
+        let health = http_exchange(&endpoint, "GET /api/health HTTP/1.0\r\n\r\n");
+        assert!(
+            health.starts_with("HTTP/1.0 401") || health.starts_with("HTTP/1.1 401"),
+            "{health}"
+        );
+        assert!(health.contains("Access-Control-Allow-Origin: *"));
+        assert!(health.contains("Access-Control-Allow-Headers: Content-Type, Authorization"));
+
+        let ok = http_exchange(
+            &endpoint,
+            "GET /api/health HTTP/1.0\r\nAuthorization: Bearer s3cret\r\nOrigin: http://10.0.0.8:43117\r\n\r\n",
+        );
+        assert!(
+            ok.starts_with("HTTP/1.0 200") || ok.starts_with("HTTP/1.1 200"),
+            "{ok}"
+        );
+        assert!(ok.contains("Access-Control-Allow-Origin: http://10.0.0.8:43117"));
+        assert!(ok.contains("Vary: Origin"));
+
+        let query = http_exchange(&endpoint, "GET /api/health?token=s3cret HTTP/1.0\r\n\r\n");
+        assert!(
+            query.starts_with("HTTP/1.0 200") || query.starts_with("HTTP/1.1 200"),
+            "{query}"
+        );
+
+        let preflight = http_exchange(
+            &endpoint,
+            "OPTIONS /api/slice HTTP/1.0\r\nOrigin: http://10.0.0.8:43117\r\n\r\n",
+        );
+        assert!(
+            preflight.starts_with("HTTP/1.0 204") || preflight.starts_with("HTTP/1.1 204"),
+            "{preflight}"
+        );
+    }
+
+    fn http_exchange(addr: &str, head: &str) -> String {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::time::Duration;
+        let mut stream = {
+            let mut last = None;
+            let mut connected = None;
+            for _ in 0..50 {
+                match TcpStream::connect(addr) {
+                    Ok(stream) => {
+                        connected = Some(stream);
+                        break;
+                    }
+                    Err(err) => {
+                        last = Some(err);
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                }
+            }
+            connected.unwrap_or_else(|| panic!("connect {addr}: {last:?}"))
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("timeout");
+        stream.write_all(head.as_bytes()).expect("write");
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 1024];
+        loop {
+            match stream.read(&mut tmp) {
+                Ok(0) => break,
+                Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::WouldBlock
+                        || err.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    break;
+                }
+                Err(err) => panic!("{err}"),
+            }
+        }
+        String::from_utf8_lossy(&buf).into_owned()
     }
 }

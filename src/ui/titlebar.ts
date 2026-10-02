@@ -36,8 +36,8 @@ export function mountTitlebar() {
   gear.className = "menu gear-menu";
   const summary = document.createElement("summary");
   summary.className = "btn";
-  summary.setAttribute("aria-label", "Theme and window");
-  summary.dataset.tip = "Theme and window";
+  summary.setAttribute("aria-label", "Theme and connection");
+  summary.dataset.tip = "Theme and connection";
   summary.append(svgIcon(Settings));
   const panel = document.createElement("div");
   panel.className = "gear-panel";

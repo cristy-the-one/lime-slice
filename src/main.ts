@@ -15,6 +15,8 @@ import { mountLayerTip, syncLayerTip } from "./ui/layer-tip";
 import { fillHelpShortcuts, mountPalette, mountStageTabs } from "./ui/palette";
 import { applyStoredLevel, levelBarHtml, mountShell, paintSettingMarks, syncEmptyState, syncSliceDock } from "./ui/shell";
 import { applySliceProgress, currentSliceProgress } from "./ui/slice-progress";
+import { authHeaders, currentApiTarget, engineDownMessage } from "./ui/api-base";
+import { mountConnection } from "./ui/connection";
 import { mountToasts, pushToast } from "./ui/toasts";
 import { clampOffset, clipPolyline, flipSection, keepsPoint, layerCut, sectionReach, type SectionSpec, type Vec3 } from "./section-plane";
 import {
@@ -31,7 +33,12 @@ import {
 } from "./slice-action";
 import { createSliceView, type RibbonBuffers, type SliceView3d } from "./view3d";
 
-const API = "http://127.0.0.1:43118";
+function apiBase() {
+  return currentApiTarget().base;
+}
+function apiToken() {
+  return currentApiTarget().token;
+}
 
 type StrategyId = "speed" | "toughness";
 type BlendMode = "single" | "weight" | "byLayer" | "byRegion";
@@ -332,7 +339,7 @@ app.innerHTML = `
       </section>
       <aside class="panel right" id="right"></aside>
     </div>
-    <footer class="status"><div class="timing" id="timing">No slice yet</div><div id="sliceMeter" class="slice-meter" hidden></div><div id="status">Load an STL, 3MF, or STEP file. Arrow keys move the layer. Press ? for shortcuts.</div></footer>
+    <footer class="status"><div class="timing" id="timing">No slice yet</div><div id="sliceMeter" class="slice-meter" hidden></div><div id="engineLink" class="engine-link" data-state="pending">Engine …</div><div id="status">Load an STL, 3MF, or STEP file. Arrow keys move the layer. Press ? for shortcuts.</div></footer>
   </div>
   <div id="help" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="helpTitle">
     <div class="sheet-card">
@@ -528,6 +535,52 @@ function renderChrome() {
   syncEmptyState(!!state.mesh);
 }
 
+let engineChecked = false;
+let announcedDown = "";
+function markEngineDown(message: string) {
+  engineChecked = true;
+  state.engine = message;
+  if (announcedDown !== message) {
+    announcedDown = message;
+    pushToast(message, "error");
+  }
+  paintEngineLink();
+}
+function markEngineUp() {
+  engineChecked = true;
+  state.engine = "";
+  announcedDown = "";
+  paintEngineLink();
+}
+function paintEngineLink() {
+  const el = document.querySelector<HTMLElement>("#engineLink");
+  if (!el) return;
+  if (isTauri()) {
+    el.hidden = true;
+    return;
+  }
+  const base = apiBase();
+  el.hidden = false;
+  el.title = base;
+  if (!engineChecked) {
+    el.dataset.state = "pending";
+    el.textContent = "Engine …";
+    return;
+  }
+  if (state.engine.includes("refused the token")) {
+    el.dataset.state = "down";
+    el.textContent = "Engine unauthorized";
+    return;
+  }
+  if (state.engine) {
+    el.dataset.state = "down";
+    el.textContent = "Engine unreachable";
+    return;
+  }
+  el.dataset.state = "ok";
+  el.textContent = "Engine connected";
+}
+
 function paintStatus(isStale: boolean) {
   const mesh = state.mesh;
   const result = state.result;
@@ -539,6 +592,7 @@ function paintStatus(isStale: boolean) {
   else if (result?.fromCache) status.textContent = cacheStatus(result.blend, new Date(result.slicedAtMs ?? 0).toLocaleString());
   else if (result) status.textContent = result.blend;
   else status.textContent = `${mesh.name} loaded. Choose a strategy, then slice.`;
+  paintEngineLink();
 }
 
 let busySince = 0;
@@ -1679,7 +1733,7 @@ async function previewRemote(name: string, bytes: ArrayBuffer): Promise<Float32A
       const { invoke } = await import("@tauri-apps/api/core");
       body = JSON.parse(await invoke<string>("preview_mesh", { payload: JSON.stringify(payload) }));
     } else {
-      const res = await fetch(`${API}/api/mesh`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const res = await fetch(`${apiBase()}/api/mesh`, { method: "POST", headers: authHeaders(apiToken(), { "Content-Type": "application/json" }), body: JSON.stringify(payload) });
       body = await res.json();
       if (!res.ok) throw new Error(body.error || "Could not preview this mesh.");
     }
@@ -1688,8 +1742,9 @@ async function previewRemote(name: string, bytes: ArrayBuffer): Promise<Float32A
   } catch (err) {
     const message = err instanceof Error ? err.message : "Could not preview this mesh.";
     state.error = message === "Failed to fetch"
-      ? "STEP and 3MF need the slicer engine. Start it with cargo run -p lime-slice --release -- serve."
+      ? `STEP and 3MF need the slicer engine at ${apiBase()}. Start it with cargo run -p lime-slice --release -- serve.`
       : message;
+    if (message === "Failed to fetch") markEngineDown(engineDownMessage(apiBase()));
     return null;
   }
 }
@@ -1868,7 +1923,8 @@ async function runSlice(force = false) {
     if (id !== job) return;
     const message = err instanceof Error ? err.message : String(err);
     if (message === "cancelled") state.notice = "Slice cancelled.";
-    else state.error = message === "Failed to fetch" ? "Slicer engine not running. Start it with cargo run -p lime-slice --release -- serve" : message;
+    else if (message === "Failed to fetch") markEngineDown(engineDownMessage(apiBase()));
+    else state.error = message;
   } finally {
     unlisten?.();
     if (id === job) {
@@ -1904,7 +1960,7 @@ function postSlice(id: number, bytes: ArrayBuffer, body: unknown) {
       else resolve(ev.data.body as SliceResponse);
     };
     worker.addEventListener("message", onMsg);
-    worker.postMessage({ id, bytes, payload: body, api: API }, [bytes.slice(0)]);
+    worker.postMessage({ id, bytes, payload: body, api: apiBase(), token: apiToken() }, [bytes.slice(0)]);
   });
 }
 function parseInWorker(id: number, text: string) {
@@ -1926,7 +1982,7 @@ function cancelSlice() {
   state.notice = "Slice cancelled.";
   const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   if (tauri) void import("@tauri-apps/api/core").then(({ invoke }) => invoke("cancel_slice"));
-  else void fetch(`${API}/api/cancel`, { method: "POST" }).catch(() => undefined);
+  else void fetch(`${apiBase()}/api/cancel`, { method: "POST", headers: authHeaders(apiToken()) }).catch(() => undefined);
   renderChrome();
 }
 
@@ -2164,7 +2220,7 @@ async function runPaCal() {
       const { invoke } = await import("@tauri-apps/api/core");
       result = JSON.parse(await invoke<string>("calibrate_pa", { payload: JSON.stringify(body) }));
     } else {
-      const res = await fetch(`${API}/api/calibrate/pa`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const res = await fetch(`${apiBase()}/api/calibrate/pa`, { method: "POST", headers: authHeaders(apiToken(), { "Content-Type": "application/json" }), body: JSON.stringify(body) });
       result = await res.json();
       if (!res.ok) throw new Error(result.error || `calibration failed (${res.status})`);
     }
@@ -2215,7 +2271,7 @@ async function fetchStoredGcode(token: string) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<string>("gcode_text", { token });
   }
-  const res = await fetch(`${API}/api/gcode/${token}`);
+  const res = await fetch(`${apiBase()}/api/gcode/${token}`, { headers: authHeaders(apiToken()) });
   if (!res.ok) throw new Error("G-code is no longer available. Slice again.");
   return res.text();
 }
@@ -2289,7 +2345,7 @@ async function runPareto() {
       const { invoke } = await import("@tauri-apps/api/core");
       points = JSON.parse(await invoke<string>("pareto_model", { payload: JSON.stringify(body) }));
     } else {
-      const res = await fetch(`${API}/api/pareto`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const res = await fetch(`${apiBase()}/api/pareto`, { method: "POST", headers: authHeaders(apiToken(), { "Content-Type": "application/json" }), body: JSON.stringify(body) });
       points = await res.json();
       if (!res.ok) throw new Error((points as { error?: string }).error || "compare failed");
     }
@@ -2584,13 +2640,18 @@ function fitNarrow() {
 }
 
 async function probe() {
-  if (isTauri()) return;
+  if (isTauri()) {
+    paintEngineLink();
+    return;
+  }
+  const base = apiBase();
   try {
-    const res = await fetch(`${API}/api/health`);
-    if (!res.ok) throw new Error(String(res.status));
-    state.engine = "";
+    const res = await fetch(`${base}/api/health`, { headers: authHeaders(apiToken()) });
+    if (res.status === 401) markEngineDown(`Slicer engine at ${base} refused the token.`);
+    else if (!res.ok) markEngineDown(engineDownMessage(base));
+    else markEngineUp();
   } catch {
-    state.engine = "Slicer engine not running. Start it with cargo run -p lime-slice --release -- serve";
+    markEngineDown(engineDownMessage(base));
   }
   paintBanner(stale());
 }
@@ -2614,6 +2675,9 @@ mountChrome({
   onToolReadout: () => paintGizmoReadout(),
 });
 mountShell({ setViewPreset: (preset) => prepare.setViewPreset(preset) });
+mountConnection(() => {
+  void probe();
+});
 mountToasts();
 mountPalette();
 mountStageTabs();

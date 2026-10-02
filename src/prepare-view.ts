@@ -44,6 +44,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   controls.dampingFactor = 0.08;
   controls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
   controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
+  controls.touches.ONE = THREE.TOUCH.ROTATE;
+  controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
 
   const frame: PrintFrame = prepareFrame();
   let colors = themeColors();
