@@ -1873,8 +1873,10 @@ function payload() {
     ...editRequestFields(state.supportEdits, treeSupports()),
   };
 }
+// The engine holds up islands and unbridged overhangs even with Smart
+// supports off, so the style alone decides whether trees can be edited.
 function treeSupports() {
-  return state.supports && state.supportStyle === "tree";
+  return state.supportStyle === "tree";
 }
 function printer() {
   return {
