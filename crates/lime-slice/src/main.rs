@@ -1672,24 +1672,18 @@ mod tests {
     #[test]
     fn host_binds_loopback_by_default_and_token_gates_health() {
         let open = tiny_http::Server::http(listen_addr("127.0.0.1", 0)).unwrap();
-        let tiny_http::ListenAddr::IP(bound) = open.server_addr() else {
-            panic!("expected a tcp listener");
-        };
+        let bound = open.server_addr().to_ip().expect("expected a tcp listener");
         assert!(bound.ip().is_loopback());
         assert_ne!(bound.port(), 0);
         drop(open);
 
         let wide = tiny_http::Server::http(listen_addr("0.0.0.0", 0)).unwrap();
-        let tiny_http::ListenAddr::IP(wide_addr) = wide.server_addr() else {
-            panic!("expected a tcp listener");
-        };
+        let wide_addr = wide.server_addr().to_ip().expect("expected a tcp listener");
         assert!(wide_addr.ip().is_unspecified());
         drop(wide);
 
         let server = tiny_http::Server::http(listen_addr("127.0.0.1", 0)).unwrap();
-        let tiny_http::ListenAddr::IP(addr) = server.server_addr() else {
-            panic!("expected a tcp listener");
-        };
+        let addr = server.server_addr().to_ip().expect("expected a tcp listener");
         let endpoint = addr.to_string();
         std::thread::spawn(move || {
             for request in server.incoming_requests() {
