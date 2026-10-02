@@ -32,9 +32,10 @@ pub use load::{
 };
 pub use mesh::Mesh;
 pub use slice::{
-    contour_times, outline_tolerance_mm, pareto_estimates, slice_configured, slice_request,
-    slice_with_baseline, BlendScore, CompareEstimate, FeatureEstimate, ParetoPoint, PreviewLayer,
-    PrintEstimate, RigidPose, SliceRequest, SliceResponse, SliceSettings,
+    contour_times, keep_support_bases, outline_tolerance_mm, pareto_estimates, slice_configured,
+    slice_request, slice_with_baseline, BlendScore, CompareEstimate, EditOutcomeView,
+    FeatureEstimate, ParetoPoint, PreviewLayer, PrintEstimate, RigidPose, SiteSpec, SliceRequest,
+    SliceResponse, SliceSettings, SupportEditSpec,
 };
 pub use slice_cache::{slice_payload, SliceCache};
 pub use step::{
@@ -45,4 +46,6 @@ pub use strategy::{
     strategy_card, Axis, BlendMode, Gyroid3d, PrinterProfile, ScarfSeam, StrategyCard, StrategyId,
     ZHopMode,
 };
+pub use support::edit::{EditStatus, SupportEdit, TipSite};
+pub use support::skeleton::SupportSkeleton;
 pub use support::{CoverageGap, SupportStyle};

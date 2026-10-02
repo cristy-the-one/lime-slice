@@ -1,18 +1,16 @@
 //! Edits to grown trees. An edit tombstones limbs and never changes a kept
 //! knot, then stands again only the layers it changed.
 
-#![cfg_attr(
-    not(test),
-    allow(dead_code, reason = "edits reach the slice request in step 6")
-)]
-
 use std::collections::HashMap;
 
 use rayon::prelude::*;
+use serde::Serialize;
 
+#[cfg(test)]
+use super::NodeId;
 use super::{
     lean_of, load_factor_of, organic_disks, section_load, solid_area, stand, tip_radius, union_all,
-    CellGrid, CoverageGap, End, Fixed, Life, Limb, Node, NodeId, Pitch, SupportLayer, SupportStyle,
+    CellGrid, CoverageGap, End, Fixed, Life, Limb, Node, Pitch, SupportLayer, SupportStyle,
     Supports, Walk, COVERAGE_OUTLINE_MM, UNHELD_PIECE_MM2,
 };
 use crate::adaptive::LayerBand;
@@ -22,14 +20,14 @@ use crate::poly::{boolean_diff, boolean_intersect, drop_slivers, offset_loops, L
 /// layer. Walk ids renumber whenever the input changes and a birth site does
 /// not, so edits name limbs by it.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct TipSite {
+pub struct TipSite {
     pub xy: [f64; 2],
     pub z: f64,
 }
 
 /// A change to grown trees. A list of them replays in order on a fresh build.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum SupportEdit {
+pub enum SupportEdit {
     /// Remove the limbs born at `sites`, then trim what no longer carries a
     /// surviving tip. A branch and a whole tree differ only in their sites.
     Prune { sites: Vec<TipSite> },
@@ -40,6 +38,7 @@ pub(crate) enum SupportEdit {
     Regrow { region: Vec<Loop>, z: [f64; 2] },
 }
 
+#[cfg(test)]
 impl SupportEdit {
     /// One regrow over `gaps`, across every layer they span. A gap's outline
     /// is only its highest layer, and a layer under it can reach past that,
@@ -80,8 +79,13 @@ pub(crate) struct EditOutcome {
     pub floating: Vec<CoverageGap>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum EditStatus {
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum EditStatus {
     /// Every site matched a limb born where the site says.
     Applied,
     /// Every site matched, the farthest one `moved_mm` away: more than
@@ -148,40 +152,6 @@ impl Supports {
             before = after;
         }
         outcomes
-    }
-
-    /// Birth sites of the branch at `limb`: the limb and every limb merged
-    /// into it, all the way up. Ascending by limb.
-    pub(crate) fn branch_sites(&self, limb: NodeId, bands: &[LayerBand]) -> Vec<TipSite> {
-        let limbs = &self.forest.limbs;
-        let mut guests: Vec<Vec<usize>> = vec![Vec::new(); limbs.len()];
-        for (k, l) in limbs.iter().enumerate() {
-            if let End::Merged { into } = l.end {
-                guests[into.0 as usize - 1].push(k);
-            }
-        }
-        let mut branch = Vec::new();
-        let mut stack = vec![limb.0 as usize - 1];
-        while let Some(k) = stack.pop() {
-            branch.push(k);
-            stack.extend(&guests[k]);
-        }
-        branch.sort_unstable();
-        branch.iter().map(|&k| site(&limbs[k], bands)).collect()
-    }
-
-    /// Birth site of `limb` alone.
-    pub(crate) fn limb_site(&self, limb: NodeId, bands: &[LayerBand]) -> TipSite {
-        site(&self.forest.limbs[limb.0 as usize - 1], bands)
-    }
-
-    /// Birth sites of the whole tree `limb` belongs to.
-    pub(crate) fn tree_sites(&self, limb: NodeId, bands: &[LayerBand]) -> Vec<TipSite> {
-        let mut root = limb;
-        while let End::Merged { into } = self.forest.limbs[root.0 as usize - 1].end {
-            root = into;
-        }
-        self.branch_sites(root, bands)
     }
 
     /// Tombstone the limbs born at `sites` and trim what then carries
@@ -487,13 +457,6 @@ impl Supports {
     }
 }
 
-fn site(limb: &Limb, bands: &[LayerBand]) -> TipSite {
-    TipSite {
-        xy: limb.knots[0].xy,
-        z: bands[limb.top].z,
-    }
-}
-
 /// The limb born nearest `site`, with how far it is across and in z. It is
 /// born on the layer whose z is nearest the site's, or else one beside it,
 /// and within `tol` across. Pruned limbs count, so pruning the same sites
@@ -678,6 +641,40 @@ fn nearer_half(poly: &[[f64; 2]], t: [f64; 2], s: [f64; 2]) -> Loop {
 
 #[cfg(test)]
 impl Supports {
+    /// Birth sites of the branch at `limb`: the limb and every limb merged
+    /// into it, all the way up. Ascending by limb.
+    pub(crate) fn branch_sites(&self, limb: NodeId, bands: &[LayerBand]) -> Vec<TipSite> {
+        let limbs = &self.forest.limbs;
+        let mut guests: Vec<Vec<usize>> = vec![Vec::new(); limbs.len()];
+        for (k, l) in limbs.iter().enumerate() {
+            if let End::Merged { into } = l.end {
+                guests[into.0 as usize - 1].push(k);
+            }
+        }
+        let mut branch = Vec::new();
+        let mut stack = vec![limb.0 as usize - 1];
+        while let Some(k) = stack.pop() {
+            branch.push(k);
+            stack.extend(&guests[k]);
+        }
+        branch.sort_unstable();
+        branch.iter().map(|&k| site(&limbs[k], bands)).collect()
+    }
+
+    /// Birth site of `limb` alone.
+    pub(crate) fn limb_site(&self, limb: NodeId, bands: &[LayerBand]) -> TipSite {
+        site(&self.forest.limbs[limb.0 as usize - 1], bands)
+    }
+
+    /// Birth sites of the whole tree `limb` belongs to.
+    pub(crate) fn tree_sites(&self, limb: NodeId, bands: &[LayerBand]) -> Vec<TipSite> {
+        let mut root = limb;
+        while let End::Merged { into } = self.forest.limbs[root.0 as usize - 1].end {
+            root = into;
+        }
+        self.branch_sites(root, bands)
+    }
+
     /// Every layer stood from scratch on the forest as the edits left it.
     pub(crate) fn rebuilt(&self, bands: &[LayerBand], contours: &[Vec<Loop>]) -> Vec<SupportLayer> {
         let mut layers: Vec<SupportLayer> = (0..self.layers.len())
@@ -686,6 +683,14 @@ impl Supports {
             .collect();
         super::project(&mut layers, 1, bands, contours, lean_of(&self.opts));
         layers
+    }
+}
+
+#[cfg(test)]
+fn site(limb: &Limb, bands: &[LayerBand]) -> TipSite {
+    TipSite {
+        xy: limb.knots[0].xy,
+        z: bands[limb.top].z,
     }
 }
 

@@ -7,7 +7,9 @@ import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep } 
 import { clampSplit, roundSplit, type AxisBounds } from "./split-at";
 import { fillHiddenKindMask, MARGIN_SHADE, MAX_KINDS, meshCenter, scenePoint } from "./preview-geom";
 import { aimSection, anchor, clampOffset, normalize, sectionReach, threeClip, type SectionSpec, type Vec3 } from "./section-plane";
-import { hexToThree, themeColors } from "./theme";
+import { hexToThree, themeColors, type ThemeColors } from "./theme";
+import type { CoverageGap } from "./support-edits";
+import type { Ray } from "./support-pick";
 
 export interface LayerRange {
   ribbonStart: number;
@@ -35,6 +37,26 @@ export interface RibbonBuffers {
   frame: string;
 }
 
+export interface SupportOverlay {
+  /** Capsules from `capsulesOf`, print space. */
+  hover: Float32Array | null;
+  selected: Float32Array | null;
+  gaps: readonly CoverageGap[];
+  /** Hovered or selected gap, drawn brighter. */
+  hotGap: number | null;
+  /** Layer slab, print z. The overlay clips to it. */
+  zLow: number;
+  zHigh: number;
+}
+
+export interface PickEvent {
+  kind: "move" | "click" | "leave";
+  ray: Ray;
+  shiftKey: boolean;
+  /** Millimetres one screen pixel spans at the orbit target. */
+  pixelMm: number;
+}
+
 export interface SliceView3d {
   setModel(min: number[], max: number[]): void;
   setGhost(positions: Float32Array | null): void;
@@ -51,6 +73,11 @@ export interface SliceView3d {
   onSection(cb: ((section: SectionSpec, hud: string) => void) | null): void;
   setTheme(): void;
   setPlayhead(seg: { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number } | null): void;
+  setSupportOverlay(overlay: SupportOverlay | null): void;
+  /** Edit-mode pointer: `move` on hover, `click` on a press-release that moved under 5 px (a drag still orbits). Rays are print space. */
+  onPick(cb: ((ev: PickEvent) => void) | null): void;
+  /** Crosshair cursor, and only then `onPick` fires. */
+  setPicking(on: boolean): void;
   resize(): void;
 }
 
@@ -70,6 +97,9 @@ const noopView: SliceView3d = {
   onSection() {},
   setTheme() {},
   setPlayhead() {},
+  setSupportOverlay() {},
+  onPick() {},
+  setPicking() {},
   resize() {},
 };
 
@@ -182,6 +212,11 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   let sectionDrag: SectionDrag = null;
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
+  const support = buildSupportOverlay(clipPlane, colors);
+  scene.add(support.root);
+  let picking = false;
+  let pickCb: ((ev: PickEvent) => void) | null = null;
+  let press: { x: number; y: number } | null = null;
 
   // Render only when something changed. Damping keeps emitting change
   // from controls.update() until the camera settles.
@@ -429,7 +464,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       pointerNdc(ev);
       const sectionHit = sectionPick();
       const regionHot = !!planeSpec && raycaster.intersectObjects(cutPicks, false).length > 0;
-      canvas.style.cursor = sectionHit || regionHot ? "grab" : "";
+      canvas.style.cursor = sectionHit || regionHot ? "grab" : restCursor();
       paintRings(sectionHit ? sectionHit.axis : null);
       return;
     }
@@ -476,14 +511,45 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     regionDrag = false;
     sectionDrag = null;
     controls.enabled = true;
-    canvas.style.cursor = "";
+    canvas.style.cursor = restCursor();
     paintRings(null);
     if (spun) emitSection("");
   };
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
-  canvas.addEventListener("pointerleave", () => {
-    if (!regionDrag && !sectionDrag) canvas.style.cursor = "";
+  canvas.addEventListener("pointerleave", (ev) => {
+    if (!regionDrag && !sectionDrag) canvas.style.cursor = restCursor();
+    emitPick("leave", ev);
+  });
+
+  function restCursor() {
+    return picking ? "crosshair" : "";
+  }
+  function emitPick(kind: PickEvent["kind"], ev: PointerEvent) {
+    if (!picking || !pickCb || !model) return;
+    pointerNdc(ev);
+    const o = raycaster.ray.origin;
+    const d = raycaster.ray.direction;
+    const rect = canvas.getBoundingClientRect();
+    const viewMm = 2 * camera.position.distanceTo(controls.target) * Math.tan((camera.fov * Math.PI) / 360);
+    pickCb({
+      kind,
+      ray: { origin: [o.x + origin.cx, origin.cy - o.z, o.y], dir: [d.x, -d.z, d.y] },
+      shiftKey: ev.shiftKey,
+      pixelMm: viewMm / Math.max(1, rect.height) / camera.zoom,
+    });
+  }
+  // The section and region handlers run first, in the capture phase; a press they took never picks.
+  canvas.addEventListener("pointerdown", (ev) => {
+    press = ev.button === 0 && picking && !regionDrag && !sectionDrag ? { x: ev.clientX, y: ev.clientY } : null;
+  });
+  canvas.addEventListener("pointermove", (ev) => {
+    if (ev.buttons === 0 && !regionDrag && !sectionDrag) emitPick("move", ev);
+  });
+  canvas.addEventListener("pointerup", (ev) => {
+    const at = press;
+    press = null;
+    if (at && Math.hypot(ev.clientX - at.x, ev.clientY - at.y) < 5) emitPick("click", ev);
   });
 
   function applyHidden() {
@@ -617,6 +683,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       (bedEdge.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.teal));
       (playLine.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.amber));
       (volume.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.teal));
+      support.recolor(colors);
       bed.userData.gridKey = "";
       syncBedGrid(bed, bedX, bedY, hexToThree(colors.line), hexToThree(colors.bedMinor), bed.userData.cx ?? 0, bed.userData.cy ?? 0);
     },
@@ -636,6 +703,17 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       pos.setXYZ(0, tail[0], tail[1], tail[2]);
       pos.setXYZ(1, head[0], head[1], head[2]);
       pos.needsUpdate = true;
+    },
+    setSupportOverlay(next) {
+      if (support.set(next, origin)) requestRender();
+    },
+    onPick(cb) {
+      pickCb = cb;
+    },
+    setPicking(on) {
+      picking = on;
+      if (!on) press = null;
+      if (!regionDrag && !sectionDrag) canvas.style.cursor = restCursor();
     },
     setGhost(positions) {
       const sig = !positions || positions.length < 9
@@ -883,6 +961,145 @@ function buildSectionRig() {
   root.add(sheet);
   gizmo.add(arrow, rings);
   return { root, gizmo, sheet, arrow, arrowMat, rings, ringMats, picks };
+}
+
+/** How far the highlight sits outside a limb's mean radius, so it wraps the printed ribbon. */
+const WRAP_MM = 0.12;
+
+/**
+ * Support-edit highlights: hovered and selected limbs as capsules, each drawn twice
+ * (an x-ray pass that ignores depth, then a solid pass), and coverage gaps as outlines and fills.
+ * Every material clips to the section and to the visible layer slab.
+ */
+function buildSupportOverlay(sectionClip: THREE.Plane, initial: ThemeColors) {
+  const root = new THREE.Group();
+  const slabLow = new THREE.Plane(new THREE.Vector3(0, 1, 0), 1e6);
+  const slabHigh = new THREE.Plane(new THREE.Vector3(0, -1, 0), 1e6);
+  const clippingPlanes = [sectionClip, slabLow, slabHigh];
+  const stick = new THREE.CylinderGeometry(1, 1, 1, 14, 1, true);
+  const ball = new THREE.SphereGeometry(1, 14, 10);
+  const passes = (hex: string) => [
+    new THREE.MeshBasicMaterial({ color: hexToThree(hex), transparent: true, opacity: 0.28, depthTest: false, depthWrite: false, clippingPlanes }),
+    new THREE.MeshBasicMaterial({ color: hexToThree(hex), transparent: true, opacity: 0.9, clippingPlanes }),
+  ];
+  const hoverMats = passes(initial.gizmoHot);
+  const selectMats = passes(initial.amber);
+  const gapLine = new THREE.LineBasicMaterial({ color: hexToThree(initial.danger), transparent: true, opacity: 0.95, depthTest: false, clippingPlanes });
+  const gapFill = new THREE.MeshBasicMaterial({ color: hexToThree(initial.danger), transparent: true, opacity: 0.22, depthTest: false, depthWrite: false, side: THREE.DoubleSide, clippingPlanes });
+  const gapHot = gapFill.clone();
+  gapHot.opacity = 0.45;
+  const hoverGroup = new THREE.Group();
+  const selectGroup = new THREE.Group();
+  const gapGroup = new THREE.Group();
+  root.add(gapGroup, selectGroup, hoverGroup);
+  let built: { hover: Float32Array | null; selected: Float32Array | null; gaps: readonly CoverageGap[] | null; hot: number | null; at: string } = {
+    hover: null,
+    selected: null,
+    gaps: null,
+    hot: null,
+    at: "",
+  };
+
+  function clear(group: THREE.Group) {
+    for (const child of [...group.children]) {
+      group.remove(child);
+      if (child instanceof THREE.InstancedMesh) child.dispose();
+      else if (child instanceof THREE.Mesh || child instanceof THREE.LineLoop) child.geometry.dispose();
+    }
+  }
+
+  function fillCapsules(group: THREE.Group, caps: Float32Array | null, mats: THREE.Material[], cx: number, cy: number) {
+    clear(group);
+    if (!caps || caps.length === 0) return;
+    const n = caps.length / 8;
+    const sticks = mats.map((mat) => new THREE.InstancedMesh(stick, mat, n));
+    const balls = mats.map((mat) => new THREE.InstancedMesh(ball, mat, n * 2));
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const up = new THREE.Vector3(0, 1, 0);
+    const none = new THREE.Quaternion();
+    for (let i = 0; i < n; i++) {
+      const c = caps.subarray(i * 8, i * 8 + 8);
+      const a = new THREE.Vector3(...scenePoint(c[0], c[1], c[2], cx, cy));
+      const b = new THREE.Vector3(...scenePoint(c[4], c[5], c[6], cx, cy));
+      const along = b.clone().sub(a);
+      const len = along.length();
+      if (len > 1e-6) q.setFromUnitVectors(up, along.divideScalar(len));
+      else q.identity();
+      const r = (c[3] + c[7]) / 2 + WRAP_MM;
+      m.compose(a.clone().add(b).multiplyScalar(0.5), q, new THREE.Vector3(r, Math.max(len, 1e-4), r));
+      for (const mesh of sticks) mesh.setMatrixAt(i, m);
+      const ends: [number, THREE.Vector3, number][] = [[i * 2, a, c[3]], [i * 2 + 1, b, c[7]]];
+      for (const [k, at, rk] of ends) {
+        const rr = rk + WRAP_MM;
+        m.compose(at, none, new THREE.Vector3(rr, rr, rr));
+        for (const mesh of balls) mesh.setMatrixAt(k, m);
+      }
+    }
+    [...sticks, ...balls].forEach((mesh, i) => {
+      mesh.frustumCulled = false;
+      mesh.renderOrder = i % 2 === 0 ? 4 : 5;
+      group.add(mesh);
+    });
+  }
+
+  function fillGaps(gaps: readonly CoverageGap[], hot: number | null, cx: number, cy: number) {
+    clear(gapGroup);
+    gaps.forEach((gap, i) => {
+      const y = gap.z[1];
+      const box: [number, number][] = [[gap.min[0], gap.min[1]], [gap.max[0], gap.min[1]], [gap.max[0], gap.max[1]], [gap.min[0], gap.max[1]]];
+      const loops = gap.outline.filter((loop) => loop.length >= 3);
+      const shown = loops.length ? loops : [box];
+      for (const loop of shown) {
+        const line = new THREE.LineLoop(
+          new THREE.BufferGeometry().setFromPoints(loop.map(([x, py]) => new THREE.Vector3(...scenePoint(x, py, y, cx, cy)))),
+          gapLine,
+        );
+        line.renderOrder = 6;
+        gapGroup.add(line);
+      }
+      const flat = (loop: [number, number][]) => loop.map(([x, py]) => new THREE.Vector2(x - cx, -(py - cy)));
+      // A gap is one connected piece, so its largest loop is the outside and the rest are holes.
+      const byArea = [...shown].sort((p, r) => Math.abs(THREE.ShapeUtils.area(flat(r))) - Math.abs(THREE.ShapeUtils.area(flat(p))));
+      const shape = new THREE.Shape(flat(byArea[0]));
+      shape.holes = byArea.slice(1).map((loop) => new THREE.Path(flat(loop)));
+      const geometry = new THREE.ShapeGeometry(shape);
+      geometry.rotateX(Math.PI / 2);
+      geometry.translate(0, y, 0);
+      const fill = new THREE.Mesh(geometry, i === hot ? gapHot : gapFill);
+      fill.renderOrder = 5;
+      gapGroup.add(fill);
+    });
+  }
+
+  return {
+    root,
+    /** True when anything drawn changed. */
+    set(next: SupportOverlay | null, origin: { cx: number; cy: number }) {
+      const at = `${origin.cx},${origin.cy}`;
+      const moved = at !== built.at;
+      const hover = next?.hover ?? null;
+      const selected = next?.selected ?? null;
+      const gaps = next?.gaps ?? [];
+      const hot = next?.hotGap ?? null;
+      if (moved || hover !== built.hover) fillCapsules(hoverGroup, hover, hoverMats, origin.cx, origin.cy);
+      if (moved || selected !== built.selected) fillCapsules(selectGroup, selected, selectMats, origin.cx, origin.cy);
+      if (moved || gaps !== built.gaps || hot !== built.hot) fillGaps(gaps, hot, origin.cx, origin.cy);
+      const low = next ? -(next.zLow - 1e-3) : 1e6;
+      const high = next ? next.zHigh + 1e-3 : 1e6;
+      const changed = moved || hover !== built.hover || selected !== built.selected || gaps !== built.gaps || hot !== built.hot
+        || low !== slabLow.constant || high !== slabHigh.constant;
+      built = { hover, selected, gaps, hot, at };
+      slabLow.constant = low;
+      slabHigh.constant = high;
+      return changed;
+    },
+    recolor(colors: ThemeColors) {
+      for (const mat of hoverMats) mat.color.setHex(hexToThree(colors.gizmoHot));
+      for (const mat of selectMats) mat.color.setHex(hexToThree(colors.amber));
+      for (const mat of [gapLine, gapFill, gapHot]) mat.color.setHex(hexToThree(colors.danger));
+    },
+  };
 }
 
 function applyPixelRatio(renderer: THREE.WebGLRenderer) {

@@ -151,6 +151,9 @@ enum Cmd {
         /// Also plan a single-strategy speed slice and report its time.
         #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
         baseline: bool,
+        /// A JSON array of support edits to replay on the grown supports.
+        #[arg(long)]
+        support_edits: Option<PathBuf>,
         #[arg(short, long)]
         output: PathBuf,
     },
@@ -264,6 +267,7 @@ fn run() -> Result<(), String> {
             step_tolerance,
             audit,
             baseline,
+            support_edits,
             output,
         } => {
             let scarf_seam = ScarfSeam::parse(&scarf_seam)?;
@@ -329,6 +333,11 @@ fn run() -> Result<(), String> {
             if !rotate.is_empty() {
                 request.pose = Some(turned_pose(&source, &rotate, step_tolerance)?);
             }
+            if let Some(path) = support_edits {
+                let text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+                request.support_edits =
+                    serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+            }
             let response = slice_request(&request, lime_slice_core::Job::default())
                 .map_err(|e| e.to_string())?;
             if let Some(parent) = output.parent() {
@@ -336,6 +345,9 @@ fn run() -> Result<(), String> {
             }
             fs::write(&output, &response.gcode).map_err(|e| e.to_string())?;
             print_summary(&input, &response);
+            for (n, edit) in response.support_edits.iter().enumerate() {
+                println!("{}", edit_line(n, edit));
+            }
             if let Some(warning) = coverage_line(&response.coverage) {
                 eprintln!("lime-slice: warning: supports leave {warning}");
             }
@@ -782,6 +794,7 @@ fn serve(
     cache_dir: Option<PathBuf>,
     token: Option<String>,
 ) -> Result<(), String> {
+    lime_slice_core::keep_support_bases(true);
     if let Some(dir) = cache_dir {
         let _ = SLICE_CACHE.set(lime_slice_core::SliceCache::new(dir, 2 << 30));
     }
@@ -1177,6 +1190,27 @@ fn print_audit(a: &lime_slice_core::SliceAudit) {
     }
 }
 
+/// One support edit's outcome in one line.
+fn edit_line(n: usize, edit: &lime_slice_core::EditOutcomeView) -> String {
+    let status = match edit.status {
+        lime_slice_core::EditStatus::Applied => "applied".to_string(),
+        lime_slice_core::EditStatus::Rebound { moved_mm } => {
+            format!("rebound, a site moved {moved_mm:.2} mm")
+        }
+        lime_slice_core::EditStatus::Stale { missed } => format!("stale, {missed} targets missed"),
+    };
+    let span = match edit.changed_span {
+        Some([lo, hi]) => format!("{} layers changed in {lo}..={hi}", edit.changed_layers),
+        None => "no layer changed".to_string(),
+    };
+    format!(
+        "edit {n}  {status}  {span}  newly floating {:.1} mm2 in {} patch{}",
+        edit.newly_floating_mm2,
+        edit.floating.len(),
+        if edit.floating.len() == 1 { "" } else { "es" }
+    )
+}
+
 /// Unheld overhang patches in one line, largest first. `None` when there are none.
 fn coverage_line(gaps: &[lime_slice_core::CoverageGap]) -> Option<String> {
     let largest = gaps.first()?;
@@ -1315,6 +1349,8 @@ fn request_for(
         simplify_error_mm: settings.simplify_error_mm,
         pose: None,
         step_tolerance_mm: lime_slice_core::STEP_TOLERANCE_DEFAULT_MM,
+        support_edits: Vec::new(),
+        include_skeleton: false,
     }
 }
 
@@ -1683,7 +1719,10 @@ mod tests {
         drop(wide);
 
         let server = tiny_http::Server::http(listen_addr("127.0.0.1", 0)).unwrap();
-        let addr = server.server_addr().to_ip().expect("expected a tcp listener");
+        let addr = server
+            .server_addr()
+            .to_ip()
+            .expect("expected a tcp listener");
         let endpoint = addr.to_string();
         std::thread::spawn(move || {
             for request in server.incoming_requests() {
