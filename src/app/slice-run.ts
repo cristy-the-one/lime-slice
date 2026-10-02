@@ -2,6 +2,7 @@ import { fx } from "./fx";
 import { state, session, worker, cachedRecipes, type ParetoPoint, type SliceResponse } from "./state";
 import { fnv1aHex, recipeKey, type SliceAction, sliceAction, sliceBusyLabel, FORCE_LABEL } from "../slice-action";
 import { meshBytes, toBase64, fail, isTauri } from "./files";
+import { adoptPatch, previewBase } from "./viewer";
 import { syncSliceDock } from "../ui/shell";
 import { blend, renderChrome, settingsHash, markBusy, paintBanner, busyText, markEngineDown, apiBase, stale, apiToken, touch } from "./settings";
 import { placementPose } from "../mesh-place";
@@ -153,7 +154,9 @@ export async function runSlice(force = false) {
     force,
   });
   const frame = `${session.meshEpoch}:${state.partScale}`;
-  const request = { ...payload(), reslice: action.reslice };
+  const request: Record<string, unknown> = { ...payload(), reslice: action.reslice };
+  const base = previewBase();
+  if (base) request.previewBase = base.token;
   const edits = request.supportEdits ? state.supportEdits : [];
   const bytes = meshBytes();
   markBusy(action.recompute);
@@ -164,7 +167,7 @@ export async function runSlice(force = false) {
   let landed = false;
   try {
     const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-    let body: SliceResponse;
+    let send: (req: Record<string, unknown>) => Promise<SliceResponse>;
     if (tauri) {
       const { invoke } = await import("@tauri-apps/api/core");
       const { listen } = await import("@tauri-apps/api/event");
@@ -175,15 +178,21 @@ export async function runSlice(force = false) {
         paintBanner(false);
         document.querySelector("#timing")!.textContent = busyText();
       });
-      if (id !== session.job) return;
-      const json = await invoke<string>("slice_model", { payload: JSON.stringify({ ...request, dataB64: toBase64(new Uint8Array(bytes)) }) });
-      if (id !== session.job) return;
-      body = await parseInWorker(id, json);
+      send = async (req) => parseInWorker(id, await invoke<string>("slice_model", { payload: JSON.stringify({ ...req, dataB64: toBase64(new Uint8Array(bytes)) }) }));
     } else {
-      body = await postSlice(id, bytes, request);
+      send = (req) => postSlice(id, bytes, req);
     }
     if (id !== session.job) return;
+    let body = await send(request);
+    if (id !== session.job) return;
     if (body.error) throw new Error(body.error);
+    if (body.previewPatch && !adoptPatch(id, body, base)) {
+      // The engine patched a preview this view no longer holds: ask for the whole one.
+      delete request.previewBase;
+      body = await send(request);
+      if (id !== session.job) return;
+      if (body.error) throw new Error(body.error);
+    }
     state.result = body;
     session.resultJob = id;
     session.resultFrame = frame;

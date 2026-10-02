@@ -40,10 +40,11 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
 
 /**
  * The geometry worker gets its own copy of the layers straight from here,
- * so the main thread never has to clone them a second time.
+ * so the main thread never has to clone them a second time. A partial
+ * preview goes to the main thread only, which holds the layers it patches.
  */
-function deliver(id: number, body: { layers?: unknown; mesh?: { min: number[]; max: number[] } }) {
-  if (body.layers && body.mesh) geomPort?.postMessage({ id, layers: body.layers, min: body.mesh.min, max: body.mesh.max });
+function deliver(id: number, body: { layers?: unknown; mesh?: { min: number[]; max: number[] }; previewPatch?: unknown }) {
+  if (body.layers && body.mesh && !body.previewPatch) geomPort?.postMessage({ id, layers: body.layers, min: body.mesh.min, max: body.mesh.max });
   self.postMessage({ id, ok: true, body });
 }
 

@@ -2,6 +2,7 @@ import { ID_MATRIX, type Mat3, type MeshShift } from "../mesh-place";
 import { loadProfile } from "../profiles";
 import type { ColorMode } from "../colors";
 import type { PathColumns } from "../preview-wire";
+import type { PreviewPatch } from "../preview-patch";
 import type { Vec3 } from "../section-plane";
 import type { RibbonBuffers } from "../view3d";
 import type { CoverageGap, EditOutcome, SupportSkeleton } from "../support-edits";
@@ -95,6 +96,10 @@ export interface SliceResponse {
   supportEdits?: EditOutcome[];
   /** The grown trees after every edit. Only when the request set `includeSkeleton`. */
   skeleton?: SupportSkeleton;
+  /** Names this preview. Sent back as `previewBase` so the next reply can be a patch on it. */
+  previewToken?: string;
+  /** Set instead of `layers` when the request's `previewBase` was what the engine last drew. */
+  previewPatch?: PreviewPatch;
   error?: string;
 }
 

@@ -114,7 +114,7 @@ export function coverageWarning(gaps: readonly { areaMm2: number }[]): string | 
 }
 
 /** Fields the slicer strips or that the UI replaces before comparing recipes. */
-const SKIPPED = new Set(["reslice", "dataB64"]);
+const SKIPPED = new Set(["reslice", "dataB64", "previewBase"]);
 
 /**
  * Identity of one slice request. `meshFingerprint` stands in for `dataB64`:

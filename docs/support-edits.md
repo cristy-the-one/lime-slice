@@ -73,3 +73,5 @@ The engine refuses a request whose edits are malformed, naming the edit: `suppor
 - Each changed layer has the usual layer fields. Its `paths` holds only the paths the base layer lacks. Its `order` lists the whole layer in print order: `k >= 0` is the base layer's path `k`, and `-1 - j` is `paths` path `j`. A layer is changed when it was joined again or its layer time moved.
 - The engine records the preview it drew only after the reply is built. A slice that stops in between leaves nothing recorded, so the next request gets a whole preview.
 - The disk cache leaves `previewBase` out of its key and never stores a patch, so a stored reply is always whole.
+
+The UI sends `previewBase` only while the preview on screen is the one that token names, with its buffers drawn (`src/app/viewer.ts`). It rebuilds the layer list from the patch (`src/preview-patch.ts`), has the geometry worker build buffers for the sent paths only, and copies every other path's geometry from the buffers on screen. If the patch names a layer or path the screen does not hold, it asks again without `previewBase`.
