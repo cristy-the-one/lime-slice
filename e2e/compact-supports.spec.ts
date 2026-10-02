@@ -70,6 +70,21 @@ async function dismissToasts(page: Page) {
   await page.evaluate(() => document.querySelector("#toasts")?.replaceChildren());
 }
 
+/** The sheet height animates. Measures after it has settled. */
+async function settleSheet(page: Page) {
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    const root = document.documentElement;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    root.addEventListener("transitionend", finish, { once: true });
+    window.setTimeout(finish, 400);
+  }));
+}
+
 test.describe("compact support editing", () => {
   test.use({
     viewport: { width: 390, height: 844 },
@@ -118,8 +133,10 @@ test.describe("compact support editing", () => {
     await page.locator("#compactSupportEdit").click();
     await expect(page.locator("html")).toHaveAttribute("data-support-edit", "1");
     await expect(page.locator("#compactSheet")).toHaveAttribute("data-detent", "peek");
+    await settleSheet(page);
     const editing = await share(page, "#view3d");
     expect(editing, `edit peek share ${editing}`).toBeGreaterThanOrEqual(0.7);
+    expect(editing, `edit peek share ${editing}`).toBeLessThan(0.86);
     console.log(`viewport shares prepare=${prepare.toFixed(3)} preview=${preview.toFixed(3)} editPeek=${editing.toFixed(3)}`);
     await expect(page.locator("#compactSupportPeek")).toContainText("Tap a support");
 
@@ -151,12 +168,15 @@ test.describe("compact support editing", () => {
     await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y - 280, { steps: 8 });
     await page.mouse.up();
     await expect(page.locator("#compactSheet")).toHaveAttribute("data-detent", "half");
+    await settleSheet(page);
     await expect(page.locator("#supportEdits")).toContainText("Delete tree");
     await expect(page.locator(".se-gap")).toContainText("Regrow");
     const view = (await canvas.boundingBox())!;
     const sheet = (await page.locator("#compactSheet").boundingBox())!;
     const half = await share(page, "#view3d");
-    console.log(`viewport share half=${half.toFixed(3)}`);
+    console.log(`viewport share half=${half.toFixed(3)} canvasGap=${(view.y + view.height - sheet.y).toFixed(2)}`);
+    expect(half, `half share ${half}`).toBeGreaterThan(0.4);
+    expect(half, `half share ${half}`).toBeLessThan(0.55);
     expect(Math.abs(view.y + view.height - sheet.y), "canvas ends where the sheet starts").toBeLessThan(3);
     await page.screenshot({ path: path.join(out, "12-support-half.png") });
 
