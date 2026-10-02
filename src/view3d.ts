@@ -612,6 +612,11 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
         pathGeometry(buffers.travelPos, buffers.travelInfo),
         pathMaterial(pathUniforms, 1, 0.7, { transparent: true }, clipPlanes),
       );
+      // The renderer culls and depth-sorts by each geometry's bounding sphere
+      // and would compute it over every vertex, 1.8 s on the rear cover's
+      // preview. A sphere around the print's bounds holds every path.
+      const sphere = new THREE.Sphere(new THREE.Vector3(0, buffers.midZ, 0), buffers.span + 10);
+      for (const mesh of [ribbon, face, travelLines]) mesh.geometry.boundingSphere = sphere.clone();
       root.add(ribbon);
       root.add(face);
       root.add(travelLines);
