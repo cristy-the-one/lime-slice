@@ -48,6 +48,8 @@ export interface SliceResponse {
   sanity: { ok: boolean; notes: string[]; layers: number; finalE: number; extrusionLengthMm: number };
   /** Largest first. Missing from replies an older engine cached. */
   coverage?: CoverageGap[];
+  /** With supports off, what prints over air. Missing with supports on. */
+  inAir?: { islands: number; overhangs: number };
   stages?: {
     contourMs: number;
     supportMs: number;

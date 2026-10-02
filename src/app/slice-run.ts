@@ -123,10 +123,8 @@ export function payload() {
   };
 }
 
-// The engine holds up islands and unbridged overhangs even with Smart
-// supports off, so the style alone decides whether trees can be edited.
 export function treeSupports() {
-  return state.supportStyle === "tree";
+  return state.supports && state.supportStyle === "tree";
 }
 
 export function printer() {

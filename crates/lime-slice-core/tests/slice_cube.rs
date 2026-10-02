@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use lime_slice_core::{
-    load_mesh, slice_configured, slice_with_baseline, Axis, BlendMode, Mesh, RigidPose,
+    load_mesh, slice_configured, slice_with_baseline, Axis, BlendMode, InAir, Mesh, RigidPose,
     SliceSettings, StrategyId,
 };
 
@@ -432,32 +432,16 @@ fn supports_fill_the_ledge_and_stay_off_when_disabled() {
     assert!(bare.sanity.ok, "{:?}", bare.sanity.notes);
     assert!(held.sanity.ok, "{:?}", held.sanity.notes);
     let bare_support: usize = bare.layers.iter().map(|l| l.support_paths as usize).sum();
-    // The shelf is a one-sided overhang. Auto support holds it; only an
-    // explicit island opt-out leaves it in the air.
-    assert!(
-        bare_support > 0,
-        "a cantilever shelf prints in air and needs a column"
+    assert_eq!(bare_support, 0, "supports off prints no support");
+    assert_eq!(
+        bare.in_air,
+        Some(InAir {
+            islands: 0,
+            overhangs: 1
+        }),
+        "the shelf prints in the air"
     );
-    let opted_out = slice_configured(
-        &mesh,
-        &BlendMode::Single {
-            strategy: StrategyId::Speed,
-        },
-        &profile(),
-        &SliceSettings {
-            supports: false,
-            island_support: false,
-            baseline: false,
-            ..SliceSettings::default()
-        },
-    )
-    .unwrap();
-    let opted_out_support: usize = opted_out
-        .layers
-        .iter()
-        .map(|l| l.support_paths as usize)
-        .sum();
-    assert_eq!(opted_out_support, 0);
+    assert_eq!(held.in_air, None);
     let support_layers: Vec<_> = held.layers.iter().filter(|l| l.support_paths > 0).collect();
     assert!(
         !support_layers.is_empty(),
@@ -483,8 +467,7 @@ fn supports_fill_the_ledge_and_stay_off_when_disabled() {
             || has_type(&held.gcode, "SOLID")
             || has_type(&held.gcode, "TOP")
     );
-    assert!(has_type(&bare.gcode, "SUPPORT"));
-    assert!(!has_type(&opted_out.gcode, "SUPPORT"));
+    assert!(!has_type(&bare.gcode, "SUPPORT"));
     let shelf = held
         .layers
         .iter()
@@ -2439,17 +2422,15 @@ fn floating_island() -> Mesh {
 }
 
 #[test]
-fn floating_island_gets_support_without_the_overhang_toggle() {
+fn a_floating_island_is_held_only_with_supports_on() {
     let mesh = floating_island();
     let bare_settings = SliceSettings {
         supports: false,
-        island_support: false,
         baseline: false,
         ..SliceSettings::default()
     };
     let held_settings = SliceSettings {
-        supports: false,
-        island_support: true,
+        supports: true,
         baseline: false,
         ..SliceSettings::default()
     };
@@ -2466,6 +2447,13 @@ fn floating_island_gets_support_without_the_overhang_toggle() {
     let off_support: u32 = off.layers.iter().map(|l| l.support_paths).sum();
     let on_support: u32 = on.layers.iter().map(|l| l.support_paths).sum();
     assert_eq!(off_support, 0);
+    assert_eq!(
+        off.in_air,
+        Some(InAir {
+            islands: 1,
+            overhangs: 0
+        })
+    );
     assert!(on_support > 0, "expected support under the floating box");
     assert!(has_type(&on.gcode, "SUPPORT"));
     let in_gap = on.layers.iter().any(|l| {
@@ -2501,17 +2489,7 @@ fn floating_island_gets_support_without_the_overhang_toggle() {
     add_box(&mut tris, 0.0, 0.0, 0.0, 16.0, 16.0, 3.0);
     add_box(&mut tris, 7.0, 7.0, 8.0, 8.4, 8.4, 11.0);
     let chip = Mesh { triangles: tris };
-    let held = slice_configured(
-        &chip,
-        &speed_mode(),
-        &profile(),
-        &SliceSettings {
-            supports: false,
-            baseline: false,
-            ..SliceSettings::default()
-        },
-    )
-    .unwrap();
+    let held = slice_configured(&chip, &speed_mode(), &profile(), &held_settings).unwrap();
     let chip_support = held.layers.iter().any(|l| {
         l.z > 3.2
             && l.z < 8.0
@@ -2605,12 +2583,12 @@ fn near_gap_wings() -> Mesh {
 
 #[test]
 fn both_wings_get_columns_when_one_side_used_to_print_in_air() {
-    // Auto path (smart supports off). A fused cantilever used to be skipped
-    // because the body grounded the whole contour; a 2 mm gap was an island
-    // and got columns; a 0.5 mm gap was swallowed by the 0.8 mm neighbor rule.
-    let fused = slice_wings(&fused_wings(), false);
-    let half = slice_wings(&half_island_wings(), false);
-    let near = slice_wings(&near_gap_wings(), false);
+    // A fused cantilever used to be skipped because the body grounded the
+    // whole contour; a 2 mm gap was an island and got columns; a 0.5 mm gap
+    // was swallowed by the 0.8 mm neighbor rule.
+    let fused = slice_wings(&fused_wings(), true);
+    let half = slice_wings(&half_island_wings(), true);
+    let near = slice_wings(&near_gap_wings(), true);
     for (name, response) in [("fused", &fused), ("half", &half), ("near", &near)] {
         let (ll, ls) = wing_support_hits(response, 0.5, 19.5);
         let (rl, rs) = wing_support_hits(response, 40.5, 61.5);
@@ -2635,6 +2613,21 @@ fn both_wings_get_columns_when_one_side_used_to_print_in_air() {
             })
     });
     assert!(!body, "support carpeted the grounded body");
+}
+
+#[test]
+fn wings_sliced_without_supports_warn_once_each() {
+    let air = |mesh: &Mesh| {
+        let response = slice_wings(mesh, false);
+        let support: u32 = response.layers.iter().map(|l| l.support_paths).sum();
+        assert_eq!(support, 0, "supports off prints no support");
+        let air = response.in_air.expect("supports off reports what floats");
+        (air.islands, air.overhangs)
+    };
+    assert_eq!(air(&fused_wings()), (0, 2), "fused");
+    assert_eq!(air(&half_island_wings()), (1, 1), "half");
+    assert_eq!(air(&near_gap_wings()), (0, 2), "near");
+    assert_eq!(air(&bridge_span()), (0, 0), "a short bridge spans its gap");
 }
 
 fn wedge_wing() -> Mesh {
@@ -4040,30 +4033,28 @@ fn a_toughness_ledge_prints_trunks_up_to_its_interface() {
             .map(|l| format!("{:.1}", l.z))
             .collect()
     };
-    for supports in [false, true] {
-        let held = slice_configured(
-            &ledge(),
-            &tough,
-            &profile(),
-            &SliceSettings {
-                supports,
-                baseline: false,
-                ..SliceSettings::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            layers_with(&held, "support"),
-            ["10.0", "10.2", "10.4", "10.6", "10.8", "11.0", "11.2"],
-            "supports {supports}: trunks should reach the interface"
-        );
-        assert_eq!(
-            layers_with(&held, "support-interface"),
-            ["11.4", "11.6", "11.8"],
-            "supports {supports}: the shelf should print its interface"
-        );
-        assert_eq!(held.coverage, Vec::new(), "supports {supports}");
-    }
+    let held = slice_configured(
+        &ledge(),
+        &tough,
+        &profile(),
+        &SliceSettings {
+            supports: true,
+            baseline: false,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        layers_with(&held, "support"),
+        ["10.0", "10.2", "10.4", "10.6", "10.8", "11.0", "11.2"],
+        "trunks should reach the interface"
+    );
+    assert_eq!(
+        layers_with(&held, "support-interface"),
+        ["11.4", "11.6", "11.8"],
+        "the shelf should print its interface"
+    );
+    assert_eq!(held.coverage, Vec::new());
 }
 
 fn features_line(gcode: &str) -> &str {
@@ -4074,7 +4065,7 @@ fn features_line(gcode: &str) -> &str {
 }
 
 #[test]
-fn gcode_header_says_supports_are_on_when_island_support_runs() {
+fn gcode_header_says_supports_off_unless_smart_supports_is_on() {
     let mesh = cube();
     let run = |supports: bool| {
         let settings = SliceSettings {
@@ -4082,21 +4073,13 @@ fn gcode_header_says_supports_are_on_when_island_support_runs() {
             baseline: false,
             ..SliceSettings::default()
         };
-        assert!(
-            settings.island_support,
-            "request default keeps island support on"
-        );
         slice_configured(&mesh, &speed_mode(), &profile(), &settings).unwrap()
     };
-    let islands_only = run(false);
-    let line = features_line(&islands_only.gcode);
-    assert!(
-        line.contains("for islands and unbridged overhangs only"),
-        "{line}"
-    );
-    assert!(!line.contains("supports off"), "{line}");
+    let off = run(false);
+    let line = features_line(&off.gcode);
+    assert!(line.contains("; supports off;"), "{line}");
     let smart = run(true);
     let line = features_line(&smart.gcode);
     assert!(line.contains("supports tree ("), "{line}");
-    assert!(!line.contains("for islands"), "{line}");
+    assert!(!line.contains("supports off"), "{line}");
 }

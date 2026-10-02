@@ -4,7 +4,7 @@ import { currentApiTarget, authHeaders, engineDownMessage } from "../ui/api-base
 import { layerWeight, resolved, type ResolvedCard } from "../strategy";
 import { levelBarHtml, paintSettingMarks, syncEmptyState } from "../ui/shell";
 import { pushToast } from "../ui/toasts";
-import { sliceBusyStatus, staleSliceCopy, cacheStatus, coverageWarning } from "../slice-action";
+import { sliceBusyStatus, staleSliceCopy, cacheStatus, coverageWarning, inAirWarning } from "../slice-action";
 import { applySliceProgress, currentSliceProgress } from "../ui/slice-progress";
 import { groupFeatures } from "../estimate";
 import { boundsOf, offBed } from "../mesh-place";
@@ -289,6 +289,8 @@ export function paintBanner(isStale: boolean) {
   if (state.result && !state.result.sanity.ok) bits.push(bannerLine(state.result.sanity.notes.join(" ") || "G-code checks failed"));
   const unheld = coverageWarning(state.result?.coverage ?? []);
   if (unheld) bits.push(bannerLine(unheld, "warn"));
+  const floating = inAirWarning(state.result?.inAir);
+  if (floating) bits.push(bannerLine(floating, "warn"));
   if (state.busy) {
     const sample = currentSliceProgress(state.progress, Math.max(0, performance.now() - session.busySince));
     const indeterminate = !(sample.fraction > 0 && sample.fraction < 1);
