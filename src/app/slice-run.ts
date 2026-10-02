@@ -1,7 +1,7 @@
 import { fx } from "./fx";
 import { state, session, worker, cachedRecipes, type ParetoPoint, type SliceResponse } from "./state";
 import { fnv1aHex, recipeKey, type SliceAction, sliceAction, sliceBusyLabel, FORCE_LABEL } from "../slice-action";
-import { meshBytes, toBase64, fail, isTauri } from "./files";
+import { meshBase64, meshBytes, fail, isTauri } from "./files";
 import { adoptPatch, previewBase } from "./viewer";
 import { syncSliceDock } from "../ui/shell";
 import { blend, renderChrome, settingsHash, markBusy, paintBanner, busyText, markEngineDown, apiBase, stale, apiToken, touch } from "./settings";
@@ -178,9 +178,9 @@ export async function runSlice(force = false) {
         paintBanner(false);
         document.querySelector("#timing")!.textContent = busyText();
       });
-      send = async (req) => parseInWorker(id, await invoke<string>("slice_model", { payload: JSON.stringify({ ...req, dataB64: toBase64(new Uint8Array(bytes)) }) }));
+      send = async (req) => parseInWorker(id, await invoke<string>("slice_model", { payload: JSON.stringify({ ...req, dataB64: meshBase64() }) }));
     } else {
-      send = (req) => postSlice(id, bytes, req);
+      send = (req) => postSlice(id, bytes, req, meshFingerprint());
     }
     if (id !== session.job) return;
     let body = await send(request);
@@ -238,7 +238,10 @@ export function layerNear(result: SliceResponse, z: number | undefined, index: n
   return best;
 }
 
-export function postSlice(id: number, bytes: ArrayBuffer, body: unknown) {
+/** Mesh the slice worker holds in Base64, so it is sent and encoded once per mesh. */
+let workerMesh = "";
+
+export function postSlice(id: number, bytes: ArrayBuffer, body: unknown, meshKey: string) {
   return new Promise<SliceResponse>((resolve, reject) => {
     const onMsg = (ev: MessageEvent) => {
       if (ev.data.id !== id) return;
@@ -248,7 +251,9 @@ export function postSlice(id: number, bytes: ArrayBuffer, body: unknown) {
       else resolve(ev.data.body as SliceResponse);
     };
     worker.addEventListener("message", onMsg);
-    worker.postMessage({ id, bytes, payload: body, api: apiBase(), token: apiToken() }, [bytes.slice(0)]);
+    const send = meshKey !== workerMesh;
+    workerMesh = meshKey;
+    worker.postMessage({ id, bytes: send ? bytes : undefined, meshKey, payload: body, api: apiBase(), token: apiToken() });
   });
 }
 
@@ -339,7 +344,7 @@ export async function runPareto() {
   markBusy(true);
   renderChrome();
   try {
-    const body = { ...payload(), dataB64: toBase64(new Uint8Array(meshBytes())) };
+    const body = { ...payload(), dataB64: meshBase64() };
     let points: ParetoPoint[];
     if (isTauri()) {
       const { invoke } = await import("@tauri-apps/api/core");

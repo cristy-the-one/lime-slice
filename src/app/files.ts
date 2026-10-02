@@ -87,9 +87,24 @@ export function applyPlace(rerender: boolean, sync: SplitSync = "transform") {
   if (rerender) renderChrome();
 }
 
+/** The bytes `meshBytes` last built, and their Base64, for the mesh and scale they came from. */
+let encoded: { source: ArrayBuffer | Float32Array | null; scale: number; name: string; bytes: ArrayBuffer; b64?: string } | null = null;
+
+/** The mesh as the engine takes it. Encoded once per mesh and scale, not once per slice. */
 export function meshBytes() {
-  if (!state.sourcePos) return state.mesh?.bytes ?? new ArrayBuffer(0);
-  return encodeStl(scaledCanonical(state.sourcePos, state.partScale), state.mesh?.name ?? "part");
+  const source = state.sourcePos ?? state.mesh?.bytes ?? null;
+  const name = state.mesh?.name ?? "part";
+  if (encoded && encoded.source === source && encoded.scale === state.partScale && encoded.name === name) return encoded.bytes;
+  const bytes = !state.sourcePos ? (state.mesh?.bytes ?? new ArrayBuffer(0)) : encodeStl(scaledCanonical(state.sourcePos, state.partScale), name);
+  encoded = { source, scale: state.partScale, name, bytes };
+  return bytes;
+}
+
+/** `meshBytes` in Base64, kept with them. */
+export function meshBase64() {
+  const bytes = meshBytes();
+  encoded!.b64 ??= toBase64(new Uint8Array(bytes));
+  return encoded!.b64;
 }
 
 export function toBase64(bytes: Uint8Array) {
