@@ -3688,6 +3688,15 @@ mod tests {
                 settings.junction_deviation_mm,
                 settings.job,
             );
+            assert!(
+                crate::gcode::scans_in_parallel(
+                    &planned,
+                    &profile,
+                    settings.arc_fit,
+                    settings.classic_estimator
+                ),
+                "{blend:?} scans its layers in parallel"
+            );
             assert_eq!(parallel.text, linear.text, "{blend:?} g-code bytes");
             assert_eq!(parallel.print_time_s, linear.print_time_s);
             assert_eq!(parallel.final_e, linear.final_e);
@@ -3739,6 +3748,10 @@ mod tests {
             settings.classic_estimator,
             settings.junction_deviation_mm,
             settings.job,
+        );
+        assert!(
+            crate::gcode::scans_in_parallel(&planned, &profile, false, true),
+            "the classic estimator scans its layers in parallel"
         );
         assert_eq!(parallel.text, linear.text, "classic estimator g-code");
         assert_eq!(parallel.print_time_s, linear.print_time_s);

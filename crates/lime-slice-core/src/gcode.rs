@@ -146,22 +146,8 @@ fn emit_gcode_inner(
     parallel: bool,
     write_text: bool,
 ) -> GcodeStats {
-    let junction_deviation = if junction_deviation_mm.is_finite() && junction_deviation_mm > 0.0 {
-        junction_deviation_mm
-    } else {
-        DEFAULT_JUNCTION_DEVIATION_MM
-    };
-    let cfg = EmitCfg {
-        classic_estimator,
-        junction_deviation,
-        arc_fit,
-        max_accel: profile.max_accel,
-        max_volumetric_mm3_s: profile.max_volumetric_mm3_s,
-        filament_diameter: profile.filament_diameter,
-        pa_base: profile.pressure_advance.max(0.0),
-        la_base: profile.linear_advance.max(0.0),
-        emit_pa: profile.pressure_advance > 0.0 || profile.linear_advance > 0.0,
-    };
+    let cfg = EmitCfg::new(profile, arc_fit, classic_estimator, junction_deviation_mm);
+    let junction_deviation = cfg.junction_deviation;
     if !parallel {
         let mut w = Writer::blank(&cfg, Carry::initial(&cfg), false);
         write_preamble(
@@ -210,22 +196,42 @@ fn emit_gcode_inner(
     w.quiet = true;
     let mut seeds = Vec::new();
     let mut emitted_layers = 0usize;
-    for (index, layer) in layers.iter().enumerate() {
-        if job.cancelled() {
-            w.cancelled = true;
-            break;
+    match scan_layers(&cfg, layers, &scripts, job) {
+        Some(scans) => {
+            for scan in scans {
+                seeds.push(Seed {
+                    index: scan.index,
+                    carry: Carry {
+                        e: w.e,
+                        ..scan.entry
+                    },
+                });
+                w.take_scan(scan);
+                emitted_layers += 1;
+            }
         }
-        if layer.paths.is_empty() {
-            continue;
+        None => {
+            for (index, layer) in layers.iter().enumerate() {
+                if job.cancelled() {
+                    w.cancelled = true;
+                    break;
+                }
+                if layer.paths.is_empty() {
+                    continue;
+                }
+                seeds.push(Seed {
+                    index,
+                    carry: w.carry(),
+                });
+                w.replay = Some(Arc::clone(&scripts[index]));
+                w.replay_i = 0;
+                w.write_layer(layer);
+                emitted_layers += 1;
+            }
         }
-        seeds.push(Seed {
-            index,
-            carry: w.carry(),
-        });
-        w.replay = Some(Arc::clone(&scripts[index]));
-        w.replay_i = 0;
-        w.write_layer(layer);
-        emitted_layers += 1;
+    }
+    if job.cancelled() {
+        w.cancelled = true;
     }
     if !write_text {
         w.finish(profile);
@@ -289,6 +295,33 @@ struct EmitCfg {
     emit_pa: bool,
 }
 
+impl EmitCfg {
+    fn new(
+        profile: &PrinterProfile,
+        arc_fit: bool,
+        classic_estimator: bool,
+        junction_deviation_mm: f64,
+    ) -> Self {
+        let junction_deviation = if junction_deviation_mm.is_finite() && junction_deviation_mm > 0.0
+        {
+            junction_deviation_mm
+        } else {
+            DEFAULT_JUNCTION_DEVIATION_MM
+        };
+        Self {
+            classic_estimator,
+            junction_deviation,
+            arc_fit,
+            max_accel: profile.max_accel,
+            max_volumetric_mm3_s: profile.max_volumetric_mm3_s,
+            filament_diameter: profile.filament_diameter,
+            pa_base: profile.pressure_advance.max(0.0),
+            la_base: profile.linear_advance.max(0.0),
+            emit_pa: profile.pressure_advance > 0.0 || profile.linear_advance > 0.0,
+        }
+    }
+}
+
 /// Machine state that changes G-code across a layer boundary.
 /// Lookahead and the nozzle direction do not: each layer header clears them.
 #[derive(Clone, Copy)]
@@ -322,9 +355,161 @@ impl Carry {
     }
 }
 
+impl Carry {
+    /// Everything but E, bit for bit. A layer's scan depends on these and
+    /// only adds to E.
+    fn same_but_e(&self, other: &Carry) -> bool {
+        let bits = |c: &Carry| {
+            (
+                [c.x, c.y, c.z, c.retracted, c.accel, c.pa_cur, c.la_cur].map(f64::to_bits),
+                c.has_pos,
+                c.fan,
+            )
+        };
+        bits(self) == bits(other)
+    }
+}
+
 struct Seed {
     index: usize,
     carry: Carry,
+}
+
+/// Every float a layer's scan adds to a running total, in the order it adds
+/// them, so the totals can be summed in layer order afterwards with the
+/// same rounding as one serial scan.
+#[derive(Default)]
+struct ScanLog {
+    e: Vec<f64>,
+    time: Vec<f64>,
+    /// `(first index into time, kind)` for each run of one kind.
+    time_kinds: Vec<(usize, &'static str)>,
+    filament: Vec<f64>,
+    filament_kinds: Vec<(usize, &'static str)>,
+    extruded: Vec<f64>,
+    travelled: Vec<f64>,
+    /// Entries of `time` added before the layer's time starts counting.
+    mark: usize,
+}
+
+impl ScanLog {
+    fn time(&mut self, kind: &'static str, dt: f64) {
+        if self.time_kinds.last().is_none_or(|k| k.1 != kind) {
+            self.time_kinds.push((self.time.len(), kind));
+        }
+        self.time.push(dt);
+    }
+
+    fn filament(&mut self, kind: &'static str, mm: f64) {
+        if self.filament_kinds.last().is_none_or(|k| k.1 != kind) {
+            self.filament_kinds.push((self.filament.len(), kind));
+        }
+        self.filament.push(mm);
+    }
+}
+
+/// One emitted layer scanned on its own.
+struct LayerScan {
+    index: usize,
+    entry: Carry,
+    exit: Carry,
+    log: ScanLog,
+    extrusion_moves: usize,
+    travel_moves: usize,
+    arc_moves: usize,
+    retracts: usize,
+    z_hops: usize,
+    bounds: Option<[f64; 4]>,
+}
+
+fn scan_layer(
+    cfg: &EmitCfg,
+    entry: Carry,
+    layer: &LayerPaths,
+    script: &Arc<Vec<Vec<Span>>>,
+    log: bool,
+) -> Writer {
+    let mut w = Writer::blank(cfg, entry, false);
+    w.quiet = true;
+    w.log = log.then(Box::default);
+    w.replay = Some(Arc::clone(script));
+    w.write_layer(layer);
+    w
+}
+
+/// The quiet scan of every emitted layer, in parallel. A layer's scan needs
+/// the machine state the layer below left, and that state never depends on
+/// where the layer below began: each path sets accel, fan, and advance, and
+/// a layer ends on its last move. So every layer is scanned once from the
+/// initial state to learn where it leaves the machine, then again from
+/// where the layer below left it, logging its sums. The second scans are
+/// the real ones exactly when each ends where its first scan did; when one
+/// does not, this returns `None` and the caller scans serially.
+fn scan_layers(
+    cfg: &EmitCfg,
+    layers: &[LayerPaths],
+    scripts: &[Arc<Vec<Vec<Span>>>],
+    job: crate::cancel::Job,
+) -> Option<Vec<LayerScan>> {
+    let order: Vec<usize> = (0..layers.len())
+        .filter(|&i| !layers[i].paths.is_empty())
+        .collect();
+    let initial = Carry::initial(cfg);
+    let exits: Vec<Carry> = order
+        .par_iter()
+        .map(|&i| scan_layer(cfg, initial, &layers[i], &scripts[i], false).carry())
+        .collect();
+    if job.cancelled() {
+        return None;
+    }
+    let scans: Vec<LayerScan> = order
+        .par_iter()
+        .enumerate()
+        .map(|(k, &i)| {
+            let entry = if k == 0 {
+                initial
+            } else {
+                Carry {
+                    e: 0.0,
+                    ..exits[k - 1]
+                }
+            };
+            let mut w = scan_layer(cfg, entry, &layers[i], &scripts[i], true);
+            LayerScan {
+                index: i,
+                entry,
+                exit: w.carry(),
+                log: *w.log.take().expect("a logged scan"),
+                extrusion_moves: w.extrusion_moves,
+                travel_moves: w.travel_moves,
+                arc_moves: w.arc_moves,
+                retracts: w.retracts,
+                z_hops: w.z_hops,
+                bounds: w
+                    .bounds_init
+                    .then_some([w.min_x, w.max_x, w.min_y, w.max_y]),
+            }
+        })
+        .collect();
+    let settled = scans.iter().zip(&exits).all(|(s, x)| s.exit.same_but_e(x));
+    settled.then_some(scans)
+}
+
+/// Whether `emit_gcode` scans `layers` in parallel instead of falling back
+/// to one serial scan.
+#[cfg(test)]
+pub(crate) fn scans_in_parallel(
+    layers: &[LayerPaths],
+    profile: &PrinterProfile,
+    arc_fit: bool,
+    classic_estimator: bool,
+) -> bool {
+    let cfg = EmitCfg::new(profile, arc_fit, classic_estimator, 0.0);
+    let scripts: Vec<Arc<Vec<Vec<Span>>>> = layers
+        .iter()
+        .map(|layer| Arc::new(chain_scripts(layer, arc_fit)))
+        .collect();
+    scan_layers(&cfg, layers, &scripts, crate::cancel::Job::default()).is_some()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -432,6 +617,8 @@ struct Writer {
     replay_i: usize,
     /// Skip string writes. The carry scan uses this so formatting can run per layer.
     quiet: bool,
+    /// Set on a layer scanned on its own: every addition to a running total.
+    log: Option<Box<ScanLog>>,
     /// Skip lookahead and feature totals. Layer tasks only need the G-code text;
     /// the quiet scan already accumulated print time.
     strings_only: bool,
@@ -495,6 +682,7 @@ impl Writer {
             replay: None,
             replay_i: 0,
             quiet: false,
+            log: None,
             strings_only,
             arc_fit: cfg.arc_fit,
             max_accel: cfg.max_accel,
@@ -648,6 +836,9 @@ impl Writer {
         }
         self.time_s += dt;
         *self.feature_s.entry(self.kind).or_insert(0.0) += dt;
+        if let Some(log) = &mut self.log {
+            log.time(self.kind, dt);
+        }
     }
 
     fn add_filament(&mut self, mm: f64) {
@@ -655,6 +846,91 @@ impl Writer {
             return;
         }
         *self.feature_mm.entry(self.kind).or_insert(0.0) += mm;
+        if let Some(log) = &mut self.log {
+            log.filament(self.kind, mm);
+        }
+    }
+
+    fn add_e(&mut self, de: f64) {
+        self.e += de;
+        if let Some(log) = &mut self.log {
+            log.e.push(de);
+        }
+    }
+
+    fn add_extruded(&mut self, mm: f64) {
+        self.extrusion_length_mm += mm;
+        if let Some(log) = &mut self.log {
+            log.extruded.push(mm);
+        }
+    }
+
+    fn add_travelled(&mut self, mm: f64) {
+        self.travel_length_mm += mm;
+        if let Some(log) = &mut self.log {
+            log.travelled.push(mm);
+        }
+    }
+
+    /// Add one layer's scan to this writer's totals in the order its scan
+    /// added them, and take the machine state it left.
+    fn take_scan(&mut self, scan: LayerScan) {
+        let log = scan.log;
+        for &de in &log.e {
+            self.e += de;
+        }
+        let mut mark = self.time_s;
+        for (r, &(start, kind)) in log.time_kinds.iter().enumerate() {
+            let end = log.time_kinds.get(r + 1).map_or(log.time.len(), |k| k.0);
+            let slot = self.feature_s.entry(kind).or_insert(0.0);
+            for (j, &dt) in log.time[start..end].iter().enumerate() {
+                if start + j == log.mark {
+                    mark = self.time_s;
+                }
+                self.time_s += dt;
+                *slot += dt;
+            }
+        }
+        if log.mark >= log.time.len() {
+            mark = self.time_s;
+        }
+        self.layer_seconds.push((self.time_s - mark).max(0.0));
+        for (r, &(start, kind)) in log.filament_kinds.iter().enumerate() {
+            let end = log
+                .filament_kinds
+                .get(r + 1)
+                .map_or(log.filament.len(), |k| k.0);
+            let slot = self.feature_mm.entry(kind).or_insert(0.0);
+            for &mm in &log.filament[start..end] {
+                *slot += mm;
+            }
+        }
+        for &mm in &log.extruded {
+            self.extrusion_length_mm += mm;
+        }
+        for &mm in &log.travelled {
+            self.travel_length_mm += mm;
+        }
+        self.extrusion_moves += scan.extrusion_moves;
+        self.travel_moves += scan.travel_moves;
+        self.arc_moves += scan.arc_moves;
+        self.retracts += scan.retracts;
+        self.z_hops += scan.z_hops;
+        if let Some([min_x, max_x, min_y, max_y]) = scan.bounds {
+            if self.bounds_init {
+                self.min_x = self.min_x.min(min_x);
+                self.max_x = self.max_x.max(max_x);
+                self.min_y = self.min_y.min(min_y);
+                self.max_y = self.max_y.max(max_y);
+            } else {
+                (self.min_x, self.max_x, self.min_y, self.max_y) = (min_x, max_x, min_y, max_y);
+                self.bounds_init = true;
+            }
+        }
+        let c = scan.exit;
+        (self.x, self.y, self.z, self.has_pos) = (c.x, c.y, c.z, c.has_pos);
+        (self.retracted, self.accel, self.fan) = (c.retracted, c.accel, c.fan);
+        (self.pa_cur, self.la_cur) = (c.pa_cur, c.la_cur);
     }
 
     fn close_layer(&mut self) {
@@ -704,6 +980,9 @@ impl Writer {
             self.add_time(dz / 120.0);
         }
         self.layer_mark = self.time_s;
+        if let Some(log) = &mut self.log {
+            log.mark = log.time.len();
+        }
         self.layer_open = true;
         self.z = layer.z;
         self.has_dir = false;
@@ -730,7 +1009,7 @@ impl Writer {
     fn unretract(&mut self) {
         if self.retracted > 0.0 {
             self.flush_motion();
-            self.e += self.retracted;
+            self.add_e(self.retracted);
             let feed = self.retracted;
             self.retracted = 0.0;
             let e_now = self.e;
@@ -787,7 +1066,7 @@ impl Writer {
     ) {
         if retract_mm > 0.0 && self.retracted == 0.0 {
             self.flush_motion();
-            self.e -= retract_mm;
+            self.add_e(-retract_mm);
             self.retracted = retract_mm;
             self.retracts += 1;
             let e_now = self.e;
@@ -870,7 +1149,7 @@ impl Writer {
         if d < 0.02 && dz < 5e-4 {
             return;
         }
-        self.travel_length_mm += d;
+        self.add_travelled(d);
         let cruise = speed.max(10.0);
         let dist = (d * d + dz * dz).sqrt();
         if self.classic_estimator || d < 0.02 {
@@ -917,14 +1196,14 @@ impl Writer {
             }
             if d >= min_travel && retract_mm > 0.0 && self.retracted == 0.0 {
                 self.flush_motion();
-                self.e -= retract_mm;
+                self.add_e(-retract_mm);
                 self.retracted = retract_mm;
                 self.retracts += 1;
                 let e_now = self.e;
                 self.put(format_args!("G1 E{e_now:.5} F1800\n"));
                 self.add_time(retract_mm / 30.0);
             }
-            self.travel_length_mm += d;
+            self.add_travelled(d);
             let cruise = speed.max(10.0);
             if self.classic_estimator {
                 self.add_time(move_time(d, 0.0, 0.0, cruise, accel));
@@ -1111,7 +1390,7 @@ impl Writer {
         let bead = width * layer_h * flow;
         let fil = std::f64::consts::PI * (filament_d * 0.5).powi(2);
         let de = arc.length * bead / fil;
-        self.e += de;
+        self.add_e(de);
         self.add_filament(de);
         let f = (speed.max(5.0) * 60.0).round() as i32;
         let cmd = if arc.cw { "G2" } else { "G3" };
@@ -1126,7 +1405,7 @@ impl Writer {
         self.note_motion(arc.end, arc.dir, arc.exit_dir, speed, accel, arc.length);
         self.arc_moves += 1;
         self.extrusion_moves += 1;
-        self.extrusion_length_mm += arc.length;
+        self.add_extruded(arc.length);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1153,7 +1432,7 @@ impl Writer {
         let bead = width * layer_h.max(0.0) * flow.max(0.0);
         let fil = std::f64::consts::PI * (filament_d * 0.5).powi(2);
         let de = d * bead / fil;
-        self.e += de;
+        self.add_e(de);
         self.add_filament(de);
         let f = (speed.max(5.0) * 60.0).round() as i32;
         let e_now = self.e;
@@ -1172,7 +1451,7 @@ impl Writer {
         let dir = [x - self.x, y - self.y];
         self.note_motion([x, y], dir, dir, speed, accel, d);
         self.extrusion_moves += 1;
-        self.extrusion_length_mm += d;
+        self.add_extruded(d);
     }
 
     fn note_motion(
