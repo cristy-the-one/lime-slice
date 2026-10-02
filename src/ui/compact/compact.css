@@ -104,7 +104,9 @@ html:not(.layout-compact) #compactMenu,
 html:not(.layout-compact) #compactProgress,
 html:not(.layout-compact) #compactIso,
 html:not(.layout-compact) #compactLayerTip,
-html:not(.layout-compact) #compactPlaySpeed { display: none !important; }
+html:not(.layout-compact) #compactPlaySpeed,
+html:not(.layout-compact) #compactSupportEdit,
+html:not(.layout-compact) #compactSupportChip { display: none !important; }
 
 #compactTop {
   grid-row: 1;
@@ -531,10 +533,104 @@ html.layout-compact.chrome-hidden #slice,
 html.layout-compact.chrome-hidden #cancel,
 html.layout-compact.chrome-hidden .stage-tools,
 html.layout-compact.chrome-hidden #compactLayerTip,
-html.layout-compact.chrome-hidden #compactProgress {
+html.layout-compact.chrome-hidden #compactProgress,
+html.layout-compact.chrome-hidden #compactSupportEdit,
+html.layout-compact.chrome-hidden #compactSupportChip {
   visibility: hidden;
   pointer-events: none;
 }
+
+/* 44px hit, 36px painted face. Sits on the preview, clear of the scrubber. */
+html.layout-compact #compactSupportEdit[hidden] { display: none !important; }
+html.layout-compact #compactSupportEdit.compact-hit {
+  position: absolute;
+  z-index: 4;
+  left: 8px;
+  top: 8px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--text);
+  display: grid;
+  place-items: center;
+}
+html.layout-compact #compactSupportEdit.compact-hit::before {
+  content: "";
+  position: absolute;
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+}
+html.layout-compact #compactSupportEdit.compact-hit .ico { position: relative; width: 18px; height: 18px; }
+html.layout-compact #compactSupportEdit.compact-hit.is-on { color: var(--accent); }
+html.layout-compact #compactSupportEdit.compact-hit.is-on::before {
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
+}
+html.layout-compact[data-compact-tab="prepare"] #compactSupportEdit,
+html.layout-compact[data-compact-tab="settings"] #compactSupportEdit,
+html.layout-compact[data-compact-tab="device"] #compactSupportEdit { display: none !important; }
+
+#compactSupportChip {
+  position: absolute;
+  z-index: 5;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 24px);
+  height: 44px;
+  padding: 0 4px 0 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-2) 94%, transparent);
+  color: var(--text);
+  box-shadow: 0 4px 14px color-mix(in srgb, #000 28%, transparent);
+}
+#compactSupportChip[hidden] { display: none; }
+#compactSupportChipLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+#compactSupportChipAction {
+  flex: 0 0 auto;
+  height: 36px;
+  min-width: 72px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+}
+#compactSupportChip[data-action="prune"] #compactSupportChipAction {
+  background: var(--danger);
+  color: #fff;
+}
+#compactSupportChipAction:disabled { opacity: 0.45; }
+
+#compactSupportPeek {
+  margin: 0;
+  padding: 0 12px 8px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#compactSupportPeek[data-warn="1"] { color: var(--warn); }
+html.layout-compact #compactSheet:not([data-detent="peek"]) #compactSupportPeek { display: none; }
 
 html.layout-compact .toasts {
   bottom: calc(var(--compact-tab) + var(--compact-sheet) + 12px);

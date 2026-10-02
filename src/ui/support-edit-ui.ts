@@ -1,10 +1,12 @@
-import { createElement, X } from "lucide";
+import { createElement, TreeDeciduous, X } from "lucide";
 import type { CoverageGap, EditOutcome, SupportSkeleton } from "../support-edits";
 import { alignOutcomes, appendEdit, badgeOf, clearEdits, editTitle, gapsToShow, outcomeText, removeEdit, undoLast, type EditEntry } from "../support-edit-list";
 import { capsulesOf, indexSkeleton, pickGap, pickLimb, regrowFor, selectLimbs, sitesOf, type LimbIndex, type PickScope, type Visible } from "../support-pick";
 import type { PickEvent, SliceView3d } from "../view3d";
 import { isMobileLayout } from "../platform";
+import { haptic } from "./haptics";
 import { pushToast } from "./toasts";
+import { chipAction, peekLine, scopeForGesture, selectionLabel, type CompactSelection } from "./compact/support-gesture";
 import "./support-edit.css";
 
 /** What the edit UI reads from the app each time it paints or picks. */
@@ -68,8 +70,26 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
   panel.hidden = true;
   pane.append(bar, panel);
 
+  const compactBtn = document.createElement("button");
+  compactBtn.type = "button";
+  compactBtn.id = "compactSupportEdit";
+  compactBtn.className = "compact-hit";
+  compactBtn.setAttribute("aria-label", "Edit supports");
+  compactBtn.hidden = true;
+  compactBtn.append(createElement(TreeDeciduous, { width: 18, height: 18, "aria-hidden": "true", class: "ico" }));
+  const compactChip = document.createElement("div");
+  compactChip.id = "compactSupportChip";
+  compactChip.hidden = true;
+  compactChip.innerHTML = `<span id="compactSupportChipLabel"></span><button type="button" id="compactSupportChipAction"></button>`;
+  const chipLabel = compactChip.querySelector<HTMLElement>("#compactSupportChipLabel")!;
+  const chipButton = compactChip.querySelector<HTMLButtonElement>("#compactSupportChipAction")!;
+  document.querySelector("#stage")?.append(compactBtn, compactChip);
+
   let editing = false;
   let scope: PickScope = "branch";
+  /** Set by a long-press so the click that follows takes the whole tree. */
+  let nextScope: PickScope | null = null;
+  let compactAnnounced = false;
   let hover: Target = null;
   let selected: Target = null;
   let expanded = false;
@@ -123,7 +143,9 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
 
   function pickAt(ev: PickEvent): Target {
     const v = hooks.view();
-    const picked = ev.shiftKey ? OTHER[scope] : scope;
+    const held = ev.kind === "click" ? nextScope : null;
+    if (ev.kind === "click") nextScope = null;
+    const picked = held ?? (ev.shiftKey ? OTHER[scope] : scope);
     const limb = v.supportShown && index ? pickLimb(index, ev.ray, v.visible, SLOP_MM + SLOP_PX * ev.pixelMm) : null;
     const gap = pickGap(gaps, ev.ray, v.visible, SLOP_PX * ev.pixelMm);
     if (gap && (!limb || gap.distance < limb.distance)) return { kind: "gap", gap: gaps[gap.gap] };
@@ -213,11 +235,63 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
   }
 
   function paintToggle() {
-    if (!toggle) return;
     const ok = ready();
-    toggle.classList.toggle("is-disabled", !ok);
-    toggle.setAttribute("aria-disabled", ok ? "false" : "true");
-    toggle.setAttribute("aria-pressed", editing ? "true" : "false");
+    if (toggle) {
+      toggle.classList.toggle("is-disabled", !ok);
+      toggle.setAttribute("aria-disabled", ok ? "false" : "true");
+      toggle.setAttribute("aria-pressed", editing ? "true" : "false");
+    }
+    const showCompact = isMobileLayout() && (ok || editing);
+    compactBtn.hidden = !showCompact;
+    compactBtn.classList.toggle("is-on", editing);
+    compactBtn.setAttribute("aria-pressed", editing ? "true" : "false");
+    compactBtn.setAttribute("aria-disabled", ok ? "false" : "true");
+  }
+
+  function compactSelection(): CompactSelection | null {
+    if (!selected || !index) return null;
+    if (selected.kind === "gap") return { kind: "gap", areaMm2: selected.gap.areaMm2, z: selected.gap.z };
+    const sites = sitesOf(index, limbsOf(selected));
+    return { kind: "limb", scope: selected.scope, tips: sites.length, z: sites[0]?.z ?? null };
+  }
+
+  function placePanel() {
+    const host = document.querySelector("#compactSupports");
+    if (isMobileLayout() && host) {
+      if (panel.parentElement !== host) host.append(panel);
+      return;
+    }
+    if (panel.parentElement !== pane) pane.append(panel);
+  }
+
+  function paintCompact(v: SupportEditView) {
+    placePanel();
+    const on = isMobileLayout() && editing;
+    if (on !== compactAnnounced) {
+      compactAnnounced = on;
+      document.documentElement.dataset.supportEdit = on ? "1" : "";
+      if (!on) delete document.documentElement.dataset.supportEdit;
+      window.dispatchEvent(new CustomEvent("lime-support-edit", { detail: on }));
+    }
+    const selection = on ? compactSelection() : null;
+    const action = chipAction(selection);
+    compactChip.hidden = !action;
+    if (action && selection) {
+      compactChip.dataset.action = action;
+      chipLabel.textContent = selectionLabel(selection);
+      chipButton.textContent = action === "prune" ? "Prune" : "Regrow";
+      chipButton.disabled = v.busy || !v.treeSupports;
+    }
+    const peek = document.querySelector<HTMLElement>("#compactSupportPeek");
+    if (peek) {
+      const text = peekLine({
+        treeSupports: v.treeSupports,
+        gaps,
+        selected: selection ? selectionLabel(selection) : null,
+      });
+      peek.textContent = text;
+      peek.dataset.warn = !selection && gaps.length > 0 ? "1" : "0";
+    }
   }
 
   function refresh() {
@@ -227,18 +301,24 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
     paintToggle();
     paintBar(v);
     paintPanel(v);
+    paintCompact(v);
     paintOverlay(v);
   }
 
   function setEditing(on: boolean) {
-    if (on && isMobileLayout()) return;
     if (on && !ready()) {
       pushToast("Slice with Organic tree supports to edit them.", "info");
       return;
     }
     if (on === editing) return;
     switchMode(on);
-    if (on) hooks.reveal();
+    if (on) {
+      hooks.reveal();
+      if (isMobileLayout()) {
+        document.documentElement.classList.remove("chrome-hidden");
+        document.querySelector<HTMLButtonElement>('#compactTabs [data-tab="preview"]')?.click();
+      }
+    }
     refresh();
   }
 
@@ -313,6 +393,27 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
   });
 
   toggle?.addEventListener("click", () => setEditing(!editing));
+  compactBtn.addEventListener("click", () => {
+    haptic("tap");
+    setEditing(!editing);
+  });
+  chipButton.addEventListener("click", () => {
+    haptic("tap");
+    if (selected?.kind === "limb") deleteSelected();
+    else if (selected?.kind === "gap") regrow(selected.gap);
+  });
+  window.addEventListener("lime-support-edit-toggle", () => setEditing(!editing));
+  window.addEventListener("lime-support-edit-close", () => {
+    if (editing) setEditing(false);
+  });
+  window.addEventListener("lime-support-hold", () => {
+    if (!editing) return;
+    nextScope = scopeForGesture("longpress");
+  });
+  window.addEventListener("lime-compact-ready", () => {
+    placePanel();
+    refresh();
+  });
 
   bar.addEventListener("click", (ev) => {
     const button = (ev.target as Element).closest<HTMLButtonElement>("button");
@@ -389,8 +490,9 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
     hover = pickAt({ ...lastMove, shiftKey: false });
     refresh();
   });
-  window.addEventListener("lime-layout", (ev) => {
-    if ((ev as CustomEvent<string>).detail === "compact") setEditing(false);
+  window.addEventListener("lime-layout", () => {
+    placePanel();
+    refresh();
   });
 
   return {

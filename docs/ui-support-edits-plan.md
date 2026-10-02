@@ -1,52 +1,36 @@
 # UI plan for support tree edits
 
-Steps 6a and 6b of [support-edits.md](support-edits.md) have landed. The request takes `supportEdits` and `includeSkeleton`, the response returns edit outcomes and a skeleton, and the desktop preview edits trees through `src/ui/support-edit-ui.ts`. This branch only moves that wiring into the split app modules. The compact sheet described below is still not built. The rest of this note is the sketch written before that UI existed.
+Steps 6a and 6b of [support-edits.md](support-edits.md) are in the engine and in the desktop preview. Compact uses the same editor: the same edit list, the same pick, and the same slice request. This note matches what is built.
 
 The part stays primary. Prune and regrow rebuild support layers only. Grid supports keep the coverage warning and get no pick, prune, or regrow.
 
-## What the UI already has
+## What both layouts share
 
-A finished slice can already carry `coverage`: unheld interface, with a Z range, an area, and an outline. The banner shows that warning today. The 3D view is `#view3d` on the desktop shell and the same canvas on the compact phone layout. Both can take a pointer. Neither can name a limb, because the preview only has support toolpaths, not the forest.
+`mountSupportEdits` in `src/ui/support-edit-ui.ts` owns the session. A tap or click builds a ray in print space. `pickLimb` / `pickGap` choose a limb or a coverage gap. Branch and tree are the same prune; `sitesOf` turns the selection into birth sites. `regrowFor` turns a gap into `Regrow { region, z }` using that gap's bounds and its own z range, low then high. `editRequestFields` posts `supportEdits` and `includeSkeleton` only while the support style is tree. The response's `supportEdits` outcomes and `skeleton` drive the badges, the toast, and the amber highlight. `coverageWarning` is the banner line.
 
-## Pick
+Loading a new mesh clears the list. A later slice of the same part replays it. A site that no longer matches is flagged and stays until the user drops it.
 
-Picking uses the compact tree outline from step 6, not the extruded beads. A limb in one plan is a walk node. The edit that gets stored is the tip site: birth position plus contact height in millimetres, so it still matches after a re-slice renumbers the walk.
+## Desktop
 
-Desktop: a ray from the 3D camera through the pointer. The nearest limb under the cursor highlights. A click selects that limb's tip site. Clicking the trunk of a tree selects every tip that tree still carries. Clicking a branch selects that branch's tip. Branch and tree are the same prune; only the set of sites changes.
+Edit mode is the tree button, E, or the command palette. Hover highlights the limb under the cursor. Click selects it. Shift toggles branch and tree. The bar offers Delete and Regrow, and the panel lists edits with Undo, remove, and Clear. Gap outlines draw in the 3D view while editing.
 
-Compact: the same ray from a tap on the 3D canvas. The tap must miss the top bar and the sheet. The selected limb gets a short label (branch or tree, and the site) in the sheet, because a phone has no hover.
+## Compact
 
-## Prune
+The phone layout does not use the desktop bar. After a slice that returned a skeleton, a 36px tree button (44px hit) sits on the preview. The More menu's Edit supports item opens the same mode. The preview sheet opens to the 56px peek, and the 3D view keeps at least 70% of a 390×844 screen.
 
-Prune sends `Prune { sites }` for the selection. The UI does not ask the engine to delete "a branch" as a different operation.
+- Tap a support to select that branch. Long-press selects the whole tree. The tap does not hide the chrome.
+- The peek names the selection (branch or tree, and the tip's contact height, or the tip count). A coverage gap with nothing selected shows the real coverage warning.
+- A chip at the bottom of the 3D view says Prune or Regrow. Prune appends the selection's sites. Regrow appends `regrowFor` for the selected gap.
+- Drag the sheet to half. The edit list, Undo, Clear, and each gap's Regrow button are the desktop panel, reparented into the sheet. The canvas is the area above the sheet, so the model stays framed in what is still visible.
+- Grid style, or a slice with no skeleton, does not offer the button. The list explains that tree supports are off.
 
-If the edit leaves part of the object floating, the slice comes back with a coverage warning and the area that edit newly dropped. The UI shows the warning and draws the gap outline. It does not block the delete. Grid style never offers prune.
+A one-finger drag still orbits. Compact regrow uses the gap's own bounds and z range, not a rectangle drawn on the canvas.
 
-A later slice of the same part replays the edit list. A site that no longer matches a born tip is flagged in the sheet and left in the list until the user drops it.
+## What is not mocked
 
-## Regrow
+Picking, prune, regrow, undo, clear, the skeleton highlight, the coverage banner, and the slice request are the real API. Nothing in this editor invents a tip site or skips `supportEdits`.
 
-Regrow sends `Regrow { region, z }`. `z` is a range, low then high, not a single top height. The natural range is the coverage gap's own `z`. The region is the gap outline, or a rectangle the user drags.
+These mocks belong to the rest of the compact shell, not to support edits:
 
-Desktop: choose the gap in the banner, or drag a rectangle on the 3D view. The drag is the same pointer as the region-blend plane, but it edits supports only while the support tool is on, and it does not move the blend split.
-
-Compact: the sheet lists the coverage gaps. Tapping one arms regrow with that gap's range and outline. A drag on the canvas replaces the outline with the finger's rectangle. The sheet stays at the bottom so the drag stays on the part.
-
-Regrowing a region that holds nothing is `Stale` and must not look like a new slice. The button stays idle and the current preview stays.
-
-## What step 6 has to add
-
-On the request, `support_edits`: a list of prune and regrow values, in the order the user made them. Omit the field when the list is empty, so an untouched slice keeps today's cache key and today's G-code bytes.
-
-Each prune stores tip sites `{ x, y, z }` where `z` is the contact height. Each regrow stores a region in the bed plane and a Z range.
-
-On the response, a compact tree outline for picking: one entry per limb with its tip site, whether it is a branch or the tree root, and a short polyline (or the disk centers) the ray can hit. Support paths for the layers the edit changed come back as they do now. The UI does not need the full knot state.
-
-## What stayed mocked until step 6
-
-The desktop editor no longer uses these stand-ins. They were the plan until the request accepted `supportEdits` and the response included the outline:
-
-- The support tool can select a coverage gap that is already on the response, and it can draw that gap's outline. That data is real.
-- A pick on a tree is fake. The stand-in is the support-coloured preview paths, hit in screen space. It can show a highlight. It must not be sent as a tip site, because a toolpath point is not a birth site.
-- Prune and regrow append to a client-side list and show it in the sheet. The list is not posted, and it does not change the recipe key. The slice button still slices the unedited part.
-- A regrow preview is the gap outline plus a caption that the engine has not grown tips yet. No second mesh, no invented branches.
+- Playback speed (`MOCK_PLAYBACK_SPEED`) does not change the toolpath.
+- On-device slicing (`MOCK_ON_DEVICE_LABEL`) is not built. The browser still slices over HTTP.
