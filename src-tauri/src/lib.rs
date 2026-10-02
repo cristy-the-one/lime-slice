@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use lime_slice_core::{
-    cancel_all, load_slice_mesh_tol, mesh_preview_tol, pareto_estimates,
+    cancel_all, keep_support_bases, load_slice_mesh_tol, mesh_preview_tol, pareto_estimates,
     pressure_advance_from_request, slice_payload, strategy_card, Job, PaCalibRequest, SliceCache,
     SliceRequest, SliceSettings,
 };
@@ -181,6 +181,7 @@ fn window_state() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    keep_support_bases(true);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(window_state())

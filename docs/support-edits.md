@@ -46,6 +46,23 @@ This is the plan for making tree supports editable without re-slicing the part. 
 3. Report coverage warnings on the response, in the audit, and in the CLI. G-code unchanged.
 4. Prune and replay, the interface clip, and the incremental rebuild, with the incremental-equals-full test.
 5. Regrow with fixed limbs and masked tip seeding.
-6. Wire it up: `support_edits` on the request (omitted when empty, so cache keys do not change), a compact tree outline on the response for picking, and support paths rebuilt only for changed layers.
+6. Wire it up: `support_edits` on the request (omitted when empty, so cache keys do not change), a compact tree outline on the response for picking, and support paths rebuilt only for changed layers. The engine half is done; the UI half picks limbs from the skeleton and sends edits.
 
-After these: order supports and the part as separate travel tours, then keep the part's slice in memory.
+After these: order supports and the part as separate travel tours.
+
+## Wire
+
+**Request.** `supportEdits` is an array of edits, applied in order. It is omitted when empty, so a request without edits keeps the cache key it had before. `includeSkeleton: true` asks for the tree outline. Each edit is tagged by `kind`:
+
+- `{"kind": "prune", "sites": [{"xy": [x, y], "z": z}, ...]}`. A site is a limb's birth site from the skeleton, sent back exactly.
+- `{"kind": "regrow", "region": [[[x, y], ...], ...], "z": [low, high]}`. The region is a list of closed loops.
+
+The engine refuses a request whose edits are malformed, naming the edit: `supportEdits[1]: a prune needs at least one site`. Limits: 1000 edits, 200000 sites, 100000 region points, every number finite and within 100000 mm, every loop at least 3 points, `z` low at most high.
+
+**Outcomes.** The response carries `supportEdits`, one per edit in request order, omitted when there were none. Each has `status`: `"applied"`, `"rebound"` with `movedMm`, or `"stale"` with `missed`. `changedLayers` counts the layers whose printed support changed and `changedSpan` is `[lowest, highest]` of them by `PreviewLayer.index`, absent when none changed. `newlyFloatingMm2` is the coverage area the edit added, negative for a regrow that held something again. `floating` lists the coverage gaps the edit leaves, specks included. Grid supports have no limbs, so every edit on them is `stale`.
+
+**Skeleton.** `skeleton` is present only when asked for. It holds every limb that still prints as parallel columns in ascending limb id: `id`, `tree` (the root limb's id), `into` (the merge parent's id, 0 for a root), `live` (1 until the limb's own tip is pruned), `siteX` and `siteY` (1 µm), `siteZ` (the band z, exact), and `start` into the knot columns `xs`, `ys`, `zs`, `rs` (0.01 mm, top to bottom). Knots are thinned: an interior disk is dropped when the straight run between its kept neighbours stays within 0.05 mm of it in x, y, and radius. The UI builds a branch's sites from a limb plus every limb whose `into` chain reaches it, and a tree's sites from every limb with the same `tree`.
+
+**Stage clocks.** `stages` gains `objectReused`, `supportBaseReused`, `editsReused`, `editApplyMs`, and `editRefreshMs`. The clocks of reused work read zero.
+
+**Kept bases.** The desktop app and `serve` call `keep_support_bases(true)`. The engine then keeps the last 3 interactive slices (those with `includePreview`) in memory. Each entry holds the part's slice, its supports planned with no edits, and the last edited state on them. The entry key hashes the mesh, blend, nozzle, and every setting except the edits, the skeleton flag, and the job. A second key leaves out the support-only settings too, so a support setting change reuses the part and plans only supports. Entries for the same part share one copy of it. A request whose edits start with the kept edited state's edits applies only the new ones. Any other edit list, including a shorter one after an undo, replays from the base. Baseline, compare, and Pareto plans never read or evict the kept entries. The CLI `slice`, tests, and golden leave keeping off, and turning it off forgets every entry.

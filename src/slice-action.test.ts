@@ -67,6 +67,16 @@ const keyB = recipeKey({ blend: { strategy: "speed", mode: "single" }, layerHeig
 eq("recipe key ignores reslice, dataB64, and key order", keyA, keyB);
 check("layer height changes the recipe", recipeKey({ layerHeight: 0.28, blend: speed }, "mesh-a") !== keyA);
 check("mesh bytes change the recipe", recipeKey({ layerHeight: 0.2, blend: speed }, "mesh-b") !== keyA);
+eq(
+  "unset edit fields leave the recipe as it was before edits existed",
+  recipeKey({ layerHeight: 0.2, blend: speed, supportEdits: undefined, includeSkeleton: undefined }, "mesh-a"),
+  '{"blend":{"mode":"single""strategy":"speed"}"layerHeight":0.2}\nmesh-a',
+);
+eq(
+  "a prune edit is part of the recipe",
+  recipeKey({ layerHeight: 0.2, blend: speed, supportEdits: [{ kind: "prune", sites: [{ xy: [1, 2], z: 3 }] }] }, "mesh-a"),
+  '{"blend":{"mode":"single""strategy":"speed"}"layerHeight":0.2"supportEdits":[{"kind":"prune""sites":[{"xy":[1,2,]"z":3},]},]}\nmesh-a',
+);
 
 eq("feed sorts object keys and writes no commas", feed({ b: 1, a: true }), '{"a":true"b":1}');
 eq("feed keeps array order and a trailing comma", feed([1, 2]), "[1,2,]");
