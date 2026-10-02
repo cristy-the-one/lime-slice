@@ -2285,7 +2285,7 @@ fn plan_supports(
             coverage: Vec::new(),
             in_air: Some(in_air),
             shaft: vec![0.0; object.bands.len()],
-            paths: vec![Vec::new(); object.bands.len()],
+            paths: (0..object.bands.len()).map(|_| Arc::new(Vec::new())).collect(),
             support_ms: elapsed_ms(support_started),
             toolpath_ms: 0.0,
         });
