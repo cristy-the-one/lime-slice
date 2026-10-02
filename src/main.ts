@@ -1,10 +1,10 @@
 import { colorForPath, FEATURE_COLOR, FEATURE_LABEL, type ColorMode } from "./colors";
 import { groupFeatures } from "./estimate";
-import { encode3mf, encodeStl, ID_MATRIX, layFlatMatrix, matMul, offBed, parseStl, rotX, rotY, rotZ, transformPositions, centeringShift, boundsOf, placementPose, scaledCanonical, type Mat3, type MeshShift } from "./mesh-place";
+import { encode3mf, encodeStl, ID_MATRIX, layFlatMatrix, matMul, offBed, parseStl, rotX, rotY, rotZ, transformPositions, centeringShift, boundsOf, placementPose, scaledCanonical } from "./mesh-place";
 import { clampSplit, nextSplitAt, roundSplit, splitOutside, type AxisBounds, type SplitSync } from "./split-at";
 import { indexLayerGcode, layerClass, layerMoves, matchGcodeLine, type LayerGcode, type PlayPoint } from "./playback";
 import { createPrepareView } from "./prepare-view";
-import { decodePaths, type PathColumns, type PreviewPath } from "./preview-wire";
+import { decodePaths, type PreviewPath } from "./preview-wire";
 import { DEFAULT_PRESET, diffPreset, presetKeys, readPresets, writePresets, type PresetSettings } from "./presets";
 import { loadProfile, profileJson, saveProfile, type PrinterProfile } from "./profiles";
 import { layerWeight, resolved, type ResolvedCard } from "./strategy";
@@ -33,7 +33,8 @@ import {
   staleSliceCopy,
   type SliceAction,
 } from "./slice-action";
-import { createSliceView, type RibbonBuffers, type SliceView3d } from "./view3d";
+import { createSliceView, type SliceView3d } from "./view3d";
+import { cachedRecipes, geomWorker, session, state, worker, type CardId, type ParetoPoint, type PreviewLayer, type SliceResponse } from "./app/state";
 
 function apiBase() {
   return currentApiTarget().base;
@@ -42,193 +43,7 @@ function apiToken() {
   return currentApiTarget().token;
 }
 
-type StrategyId = "speed" | "toughness";
-type BlendMode = "single" | "weight" | "byLayer" | "byRegion";
-type CardId = "speed" | "efficiency" | "toughness" | "layer" | "region";
 
-interface PreviewLayer {
-  index: number;
-  z: number;
-  height: number;
-  note: string;
-  seconds?: number;
-  speedWalls: number;
-  toughnessWalls: number;
-  supportPaths: number;
-  paths: PathColumns;
-}
-interface FeatureRow {
-  kind: string;
-  seconds: number;
-  filamentMm: number;
-  filamentG: number;
-}
-/** Demanded support interface the finished supports do not print, over adjacent layers. */
-interface CoverageGap {
-  /** `z` of its lowest and highest layer. */
-  z: [number, number];
-  /** Largest unheld area on one of its layers. */
-  areaMm2: number;
-  min: [number, number];
-  max: [number, number];
-  /** The unheld region on its highest layer. */
-  outline: [number, number][][];
-}
-interface SliceResponse {
-  coreMs: number;
-  baselineMs: number;
-  blend: string;
-  /** Set when the engine loaded this slice from its cache instead of planning it. */
-  fromCache?: boolean;
-  slicedAtMs?: number;
-  mesh: {
-    triangles: number;
-    sourceTriangles?: number;
-    /** Each layer's outline stays within this of the true cut. `0` when off. */
-    outlineToleranceMm?: number;
-    min: number[];
-    max: number[];
-  };
-  sanity: { ok: boolean; notes: string[]; layers: number; finalE: number; extrusionLengthMm: number };
-  /** Largest first. Missing from replies an older engine cached. */
-  coverage?: CoverageGap[];
-  stages?: {
-    contourMs: number;
-    supportMs: number;
-    toolpathMs: number;
-    /** Serial travel order: island tour, seams, and scarf. */
-    orderMs: number;
-    /** Parallel combing and z-hop after the order is set. */
-    combMs: number;
-    emitMs: number;
-    indexMs?: number;
-    /** Sum of per-layer cut time. Parallel, so it can exceed contourMs. */
-    cutCpuMs?: number;
-    /** Sum of per-layer outline simplify time. */
-    simplifyCpuMs?: number;
-    roofMs?: number;
-    /** Sum of per-layer wall time inside toolpathMs. */
-    wallCpuMs?: number;
-    /** Sum of per-layer infill time inside toolpathMs. */
-    infillCpuMs?: number;
-  };
-  estimate?: {
-    seconds: number;
-    filamentMm: number;
-    filamentG: number;
-    arcMoves: number;
-    travelMm?: number;
-    retracts?: number;
-    scarfedLoops?: number;
-    byFeature?: FeatureRow[];
-  };
-  compare?: { label: string; seconds: number; filamentG: number }[];
-  gcode: string;
-  gcodeToken?: string;
-  layers: PreviewLayer[];
-  score?: { toughness: number };
-  error?: string;
-}
-
-interface ParetoPoint {
-  label: string;
-  toughness: number;
-  seconds: number;
-  filamentG: number;
-  score: number;
-}
-
-const state = {
-  mesh: null as { name: string; bytes: ArrayBuffer } | null,
-  result: null as SliceResponse | null,
-  slicedHash: "",
-  layer: 0,
-  rangeLow: 0,
-  showTravel: false,
-  hidden: new Set<string>(),
-  colorMode: "feature" as ColorMode,
-  busy: false,
-  progress: 0,
-  error: "",
-  notice: "",
-  engine: "",
-  blendKind: "single" as BlendMode,
-  strategy: "speed" as StrategyId,
-  toughness: 0.5,
-  bottomMm: 4,
-  transitionMm: 6,
-  axis: "x" as "x" | "y",
-  atMm: 10,
-  layerHeight: 0.2,
-  adaptive: false,
-  adaptiveMin: 0.08,
-  adaptiveMax: 0.2,
-  supports: false,
-  supportAngle: 45,
-  supportStyle: "tree" as "grid" | "tree",
-  branchAngle: 40,
-  tipDiameter: 0.8,
-  trunkDiameter: 4.2,
-  supportHeightMult: 1,
-  infillCombine: true,
-  combing: true,
-  featureSpeeds: true,
-  pressureAdvance: 0,
-  linearAdvance: 0,
-  variableWidth: true,
-  arcFit: true,
-  travelOpt: true,
-  overhangControl: true,
-  scarfSeam: "blend" as "blend" | "off" | "outer" | "all",
-  scarfLength: 10,
-  scarfSteps: 8,
-  gyroid3d: "blend" as "blend" | "off" | "on",
-  zHop: "blend" as "off" | "blend" | "always" | "smart",
-  zHopHeight: 0.4,
-  zHopMinTravel: 2,
-  paFirmware: "klipper" as "klipper" | "marlin",
-  paStart: 0,
-  paEnd: 0.08,
-  paStep: 0.005,
-  paBands: [] as { index: number; k: number; z0: number; z1: number }[],
-  paGcode: "",
-  pricePerKg: 20,
-  autoSlice: false,
-  simplify: true,
-  simplifyError: 0,
-  viewMode: "split" as "flat" | "split" | "solid",
-  query: "",
-  move: 0,
-  stage: "preview" as "prepare" | "preview" | "gcode",
-  playing: false,
-  profile: loadProfile(),
-  sourcePos: null as Float32Array | null,
-  placed: null as Float32Array | null,
-  orient: ID_MATRIX as Mat3,
-  partScale: 1,
-  stepTolerance: 0.1,
-  centered: true,
-  offset: { x: 0, y: 0, z: 0 } as MeshShift,
-  pareto: [] as ParetoPoint[],
-  help: false,
-  splitCustom: false,
-  poseHud: "",
-  /** 0 hides the build plate, 1 is the solid plate. Preview only. */
-  bedOpacity: 0.4,
-  sectionOn: false,
-  sectionNormal: [0, 0, 1] as Vec3,
-  sectionOffset: 0,
-  sectionHud: "",
-};
-
-const worker = new Worker(new URL("./slice-worker.ts", import.meta.url), { type: "module" });
-const geomWorker = new Worker(new URL("./geom-worker.ts", import.meta.url), { type: "module" });
-const geomChannel = new MessageChannel();
-worker.postMessage({ geomPort: geomChannel.port1 }, [geomChannel.port1]);
-geomWorker.postMessage({ slicePort: geomChannel.port2 }, [geomChannel.port2]);
-let job = 0;
-let autoTimer = 0;
-let stepTimer = 0;
 
 const app = document.querySelector("#app")!;
 app.innerHTML = `
@@ -376,22 +191,6 @@ view3d.onSection((spec, hud) => {
   paintSectionChrome();
   draw();
 });
-let shown: SliceResponse | null = null;
-/** Slice job that produced state.result; geometry buffers carry the same id. */
-let resultJob = 0;
-/** Counts loaded meshes. The preview camera reframes only for another mesh or scale. */
-let meshEpoch = 0;
-/** `meshEpoch` and scale that state.result was sliced from. */
-let resultFrame = "";
-/** Heights the layer sliders were last moved to, kept across results of one mesh. */
-let chosenZ: { high: number; low: number } | null = null;
-/** Recipes finished this session. A configured SliceCache stores each one. */
-const cachedRecipes = new Set<string>();
-/** Recipe key of `state.result`, once a slice has landed. */
-let shownRecipe: string | null = null;
-let fingerSource: ArrayBuffer | Float32Array | null = null;
-let fingerScale = Number.NaN;
-let finger = "";
 
 function card(): CardId {
   if (state.blendKind === "byLayer") return "layer";
@@ -537,21 +336,19 @@ function renderChrome() {
   syncEmptyState(!!state.mesh);
 }
 
-let engineChecked = false;
-let announcedDown = "";
 function markEngineDown(message: string) {
-  engineChecked = true;
+  session.engineChecked = true;
   state.engine = message;
-  if (announcedDown !== message) {
-    announcedDown = message;
+  if (session.announcedDown !== message) {
+    session.announcedDown = message;
     pushToast(message, "error");
   }
   paintEngineLink();
 }
 function markEngineUp() {
-  engineChecked = true;
+  session.engineChecked = true;
   state.engine = "";
-  announcedDown = "";
+  session.announcedDown = "";
   paintEngineLink();
 }
 function paintEngineLink() {
@@ -564,7 +361,7 @@ function paintEngineLink() {
   const base = apiBase();
   el.hidden = false;
   el.title = base;
-  if (!engineChecked) {
+  if (!session.engineChecked) {
     el.dataset.state = "pending";
     el.textContent = "Engine …";
     return;
@@ -589,7 +386,7 @@ function paintStatus(isStale: boolean) {
   const status = document.querySelector("#status");
   if (!status) return;
   if (!mesh) status.textContent = "Load an STL, 3MF, or STEP file from Samples or Open mesh. Arrow keys move the layer.";
-  else if (state.busy) status.textContent = sliceBusyStatus(mesh.name, busyRecompute);
+  else if (state.busy) status.textContent = sliceBusyStatus(mesh.name, session.busyRecompute);
   else if (isStale) status.textContent = staleSliceCopy(currentSliceAction(false).state).status;
   else if (result?.fromCache) status.textContent = cacheStatus(result.blend, new Date(result.slicedAtMs ?? 0).toLocaleString());
   else if (result) status.textContent = result.blend;
@@ -597,28 +394,24 @@ function paintStatus(isStale: boolean) {
   paintEngineLink();
 }
 
-let busySince = 0;
-let busyPhase = "";
-/** True while the in-flight request will plan, false while it loads a saved slice. */
-let busyRecompute = true;
 function markBusy(recompute: boolean) {
   state.busy = true;
   state.progress = 0;
-  busySince = performance.now();
-  busyRecompute = recompute;
-  busyPhase = recompute ? "" : "Loading…";
-  const mine = busySince;
+  session.busySince = performance.now();
+  session.busyRecompute = recompute;
+  session.busyPhase = recompute ? "" : "Loading…";
+  const mine = session.busySince;
   const tick = window.setInterval(() => {
-    if (!state.busy || busySince !== mine) {
+    if (!state.busy || session.busySince !== mine) {
       window.clearInterval(tick);
       return;
     }
     document.querySelector("#timing")!.textContent = busyText();
-    applySliceProgress(currentSliceProgress(state.progress, performance.now() - busySince));
+    applySliceProgress(currentSliceProgress(state.progress, performance.now() - session.busySince));
   }, 100);
 }
 function busyText() {
-  return `${busyPhase || "Slicing…"} ${((performance.now() - busySince) / 1000).toFixed(1)} s`;
+  return `${session.busyPhase || "Slicing…"} ${((performance.now() - session.busySince) / 1000).toFixed(1)} s`;
 }
 
 function bannerLine(text: string, cls = "", alert = false) {
@@ -632,13 +425,11 @@ const TRANSIENT_ERRORS = new Set([
   "No G-code for this slice.",
   "Load a mesh before comparing blends.",
 ]);
-let lastToastText = "";
-let lastToastAt = 0;
 function toastTransient(message: string, tone: "warn" | "error") {
   const now = performance.now();
-  if (message === lastToastText && now - lastToastAt < 500) return;
-  lastToastText = message;
-  lastToastAt = now;
+  if (message === session.lastToastText && now - session.lastToastAt < 500) return;
+  session.lastToastText = message;
+  session.lastToastAt = now;
   pushToast(message, tone);
 }
 /** Short-lived notices leave the banner. Blocking problems stay there. */
@@ -664,7 +455,7 @@ function paintBanner(isStale: boolean) {
   const unheld = coverageWarning(state.result?.coverage ?? []);
   if (unheld) bits.push(bannerLine(unheld, "warn"));
   if (state.busy) {
-    const sample = currentSliceProgress(state.progress, Math.max(0, performance.now() - busySince));
+    const sample = currentSliceProgress(state.progress, Math.max(0, performance.now() - session.busySince));
     const indeterminate = !(sample.fraction > 0 && sample.fraction < 1);
     const pct = indeterminate ? 30 : Math.max(4, sample.fraction * 100);
     bits.push(`<div class="progress${indeterminate ? " indeterminate" : ""}" data-state="slicing" role="progressbar" aria-label="Slice progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(sample.fraction * 100)}"><span style="width:${pct}%"></span></div>`);
@@ -672,7 +463,7 @@ function paintBanner(isStale: boolean) {
   rail.innerHTML = bits.join("");
   const meter = document.querySelector<HTMLElement>("#sliceMeter");
   if (!state.busy) meter?.setAttribute("hidden", "");
-  else applySliceProgress(currentSliceProgress(state.progress, Math.max(0, performance.now() - busySince)));
+  else applySliceProgress(currentSliceProgress(state.progress, Math.max(0, performance.now() - session.busySince)));
 }
 
 const closedGroups = new Set<string>();
@@ -1170,10 +961,9 @@ function paintSpark() {
   });
 }
 
-let playTimer = 0;
 function stopPlay() {
   state.playing = false;
-  window.clearInterval(playTimer);
+  window.clearInterval(session.playTimer);
   const play = document.querySelector<HTMLButtonElement>("#play");
   const stop = document.querySelector<HTMLButtonElement>("#stop");
   if (play) {
@@ -1190,7 +980,7 @@ function togglePlay() {
   if (state.move >= moves.length - 1) state.move = 0;
   state.playing = true;
   paintPlayback();
-  playTimer = window.setInterval(() => {
+  session.playTimer = window.setInterval(() => {
     const n = movesNow().length;
     if (state.move >= n - 1) {
       stopPlay();
@@ -1217,7 +1007,7 @@ function scrub(next: number) {
   const prev = state.layer;
   state.layer = Math.max(state.rangeLow, Math.min(max, next));
   const layers = state.result?.layers;
-  if (layers?.length) chosenZ = { high: layers[state.layer].z, low: layers[state.rangeLow].z };
+  if (layers?.length) session.chosenZ = { high: layers[state.layer].z, low: layers[state.rangeLow].z };
   if (state.layer !== prev) {
     state.move = 0;
     stopPlay();
@@ -1433,8 +1223,8 @@ function onSettings(ev: Event) {
   if (t.id === "stepTol") {
     const value = Number(t.value);
     state.stepTolerance = Number.isFinite(value) ? value : 0.1;
-    window.clearTimeout(stepTimer);
-    stepTimer = window.setTimeout(() => { void refreshStepPreview(); }, 250);
+    window.clearTimeout(session.stepTimer);
+    session.stepTimer = window.setTimeout(() => { void refreshStepPreview(); }, 250);
     return;
   }
   const structural = ["adaptive", "supports", "zhop", "scarf", "gyroid3d"].includes(t.id);
@@ -1466,11 +1256,11 @@ function markStale() {
 }
 function meshFingerprint(): string {
   const source = state.sourcePos ?? state.mesh?.bytes ?? null;
-  if (source && source === fingerSource && state.partScale === fingerScale) return finger;
-  fingerSource = source;
-  fingerScale = state.partScale;
-  finger = source ? fnv1aHex(new Uint8Array(meshBytes())) : "";
-  return finger;
+  if (source && source === session.fingerSource && state.partScale === session.fingerScale) return session.finger;
+  session.fingerSource = source;
+  session.fingerScale = state.partScale;
+  session.finger = source ? fnv1aHex(new Uint8Array(meshBytes())) : "";
+  return session.finger;
 }
 function currentRecipeKey(): string | null {
   if (!state.mesh) return null;
@@ -1480,7 +1270,7 @@ function currentSliceAction(force = false): SliceAction {
   const recipe = currentRecipeKey();
   return sliceAction({
     cached: recipe !== null && cachedRecipes.has(recipe),
-    settingsChanged: shownRecipe !== null && recipe !== shownRecipe,
+    settingsChanged: session.shownRecipe !== null && recipe !== session.shownRecipe,
     force,
   });
 }
@@ -1495,7 +1285,7 @@ function setButtonLabel(button: HTMLButtonElement, label: string) {
 }
 function paintSliceButton(button: HTMLButtonElement) {
   const action = currentSliceAction(false);
-  const label = state.busy ? sliceBusyLabel(busyRecompute) : action.label;
+  const label = state.busy ? sliceBusyLabel(session.busyRecompute) : action.label;
   setButtonLabel(button, label);
   button.dataset.tip = state.busy ? "" : action.detail;
   button.removeAttribute("title");
@@ -1517,11 +1307,11 @@ function paintForceButton(button: HTMLButtonElement) {
   button.setAttribute("aria-label", FORCE_LABEL);
 }
 function scheduleAuto() {
-  window.clearTimeout(autoTimer);
+  window.clearTimeout(session.autoTimer);
   if (!state.autoSlice || !state.mesh || state.busy) return;
   const tris = state.result?.mesh.sourceTriangles ?? state.result?.mesh.triangles ?? Math.max(0, (state.mesh.bytes.byteLength - 84) / 50);
   if (tris >= 50000) return;
-  autoTimer = window.setTimeout(() => void runSlice(), 300);
+  session.autoTimer = window.setTimeout(() => void runSlice(), 300);
 }
 
 document.querySelector("#samples")!.addEventListener("click", (ev) => {
@@ -1711,8 +1501,8 @@ async function loadNamed(name: string) {
 }
 
 async function adoptBytes(name: string, bytes: ArrayBuffer) {
-  meshEpoch += 1;
-  chosenZ = null;
+  session.meshEpoch += 1;
+  session.chosenZ = null;
   state.mesh = { name, bytes };
   state.error = "";
   state.orient = ID_MATRIX;
@@ -1870,15 +1660,15 @@ async function runSlice(force = false) {
     renderChrome();
     return;
   }
-  const id = ++job;
+  const id = ++session.job;
   const hash = settingsHash();
   const recipe = currentRecipeKey();
   const action = sliceAction({
     cached: recipe !== null && cachedRecipes.has(recipe),
-    settingsChanged: shownRecipe !== null && recipe !== shownRecipe,
+    settingsChanged: session.shownRecipe !== null && recipe !== session.shownRecipe,
     force,
   });
-  const frame = `${meshEpoch}:${state.partScale}`;
+  const frame = `${session.meshEpoch}:${state.partScale}`;
   const request = { ...payload(), reslice: action.reslice };
   const bytes = meshBytes();
   markBusy(action.recompute);
@@ -1894,42 +1684,42 @@ async function runSlice(force = false) {
       const { invoke } = await import("@tauri-apps/api/core");
       const { listen } = await import("@tauri-apps/api/event");
       unlisten = await listen<{ progress: number; message: string }>("slice-progress", (ev) => {
-        if (id !== job) return;
+        if (id !== session.job) return;
         state.progress = ev.payload.progress;
-        busyPhase = ev.payload.message;
+        session.busyPhase = ev.payload.message;
         paintBanner(false);
         document.querySelector("#timing")!.textContent = busyText();
       });
-      if (id !== job) return;
+      if (id !== session.job) return;
       const json = await invoke<string>("slice_model", { payload: JSON.stringify({ ...request, dataB64: toBase64(new Uint8Array(bytes)) }) });
-      if (id !== job) return;
+      if (id !== session.job) return;
       body = await parseInWorker(id, json);
     } else {
       body = await postSlice(id, bytes, request);
     }
-    if (id !== job) return;
+    if (id !== session.job) return;
     if (body.error) throw new Error(body.error);
     state.result = body;
-    resultJob = id;
-    resultFrame = frame;
+    session.resultJob = id;
+    session.resultFrame = frame;
     state.slicedHash = hash;
     if (recipe) {
       cachedRecipes.add(recipe);
-      shownRecipe = recipe;
+      session.shownRecipe = recipe;
     }
-    state.layer = layerNear(body, chosenZ?.high, state.layer);
-    state.rangeLow = layerNear(body, chosenZ?.low, state.rangeLow);
+    state.layer = layerNear(body, session.chosenZ?.high, state.layer);
+    state.rangeLow = layerNear(body, session.chosenZ?.low, state.rangeLow);
     clampPlane();
     landed = true;
   } catch (err) {
-    if (id !== job) return;
+    if (id !== session.job) return;
     const message = err instanceof Error ? err.message : String(err);
     if (message === "cancelled") state.notice = "Slice cancelled.";
     else if (message === "Failed to fetch") markEngineDown(engineDownMessage(apiBase()));
     else state.error = message;
   } finally {
     unlisten?.();
-    if (id === job) {
+    if (id === session.job) {
       state.busy = false;
       state.progress = 0;
       renderChrome();
@@ -1978,8 +1768,8 @@ function parseInWorker(id: number, text: string) {
   });
 }
 function cancelSlice() {
-  worker.postMessage({ id: job, cancel: true });
-  job += 1;
+  worker.postMessage({ id: session.job, cancel: true });
+  session.job += 1;
   state.busy = false;
   state.notice = "Slice cancelled.";
   const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
@@ -2175,7 +1965,6 @@ function canvasPx(ev: PointerEvent) {
   };
 }
 
-let drag2d = false;
 canvas.addEventListener("pointerdown", (ev) => {
   if (ev.button !== 0 || state.blendKind !== "byRegion" || !state.result) return;
   const mesh = state.result.mesh;
@@ -2184,18 +1973,18 @@ canvas.addEventListener("pointerdown", (ev) => {
   const line = state.axis === "x" ? map(state.atMm, mesh.min[1])[0] : map(mesh.min[0], state.atMm)[1];
   const dist = state.axis === "x" ? Math.abs(px.x - line) : Math.abs(px.y - line);
   if (dist > 16 * dpr) return;
-  drag2d = true;
+  session.drag2d = true;
   canvas.setPointerCapture(ev.pointerId);
   ev.preventDefault();
 });
 canvas.addEventListener("pointermove", (ev) => {
-  if (!drag2d || !state.result) return;
+  if (!session.drag2d || !state.result) return;
   const { unmap } = previewMap(state.result.mesh);
   const px = canvasPx(ev);
   const [x, y] = unmap(px.x, px.y);
   commitSplit(state.axis === "x" ? x : y);
 });
-const endRegionDrag = () => { drag2d = false; };
+const endRegionDrag = () => { session.drag2d = false; };
 canvas.addEventListener("pointerup", endRegionDrag);
 canvas.addEventListener("pointercancel", endRegionDrag);
 
@@ -2555,11 +2344,10 @@ function segmentStart(paths: PreviewPath[], point: PlayPoint): [number, number] 
   return prev ?? [point.x, point.y];
 }
 
-let geomReady: { id: number; data: Omit<RibbonBuffers, "span" | "midZ" | "centerX" | "centerY"> } | null = null;
 
 geomWorker.onmessage = (ev) => {
-  geomReady = { id: ev.data.id, data: ev.data };
-  if (shown === state.result) applyGeom();
+  session.geomReady = { id: ev.data.id, data: ev.data };
+  if (session.shown === state.result) applyGeom();
 };
 
 /** Shows the worker's buffers once they and the result they belong to have both arrived. */
@@ -2569,23 +2357,23 @@ function applyGeom() {
     view3d.setBuffers(null);
     return;
   }
-  if (geomReady?.id !== resultJob) return;
+  if (session.geomReady?.id !== session.resultJob) return;
   const mesh = result.mesh;
   view3d.setBuffers({
-    ...geomReady.data,
+    ...session.geomReady.data,
     span: Math.max(mesh.max[0] - mesh.min[0], mesh.max[1] - mesh.min[1], mesh.max[2] - mesh.min[2], 1),
     midZ: (mesh.min[2] + mesh.max[2]) / 2,
     centerX: (mesh.min[0] + mesh.max[0]) / 2,
     centerY: (mesh.min[1] + mesh.max[1]) / 2,
-    frame: resultFrame,
+    frame: session.resultFrame,
   });
-  geomReady = null;
+  session.geomReady = null;
   view3d.setRange(state.rangeLow, state.layer);
 }
 
 function sync3d() {
-  if (state.result !== shown) {
-    shown = state.result;
+  if (state.result !== session.shown) {
+    session.shown = state.result;
     applyGeom();
   }
   view3d.setHidden(state.hidden);
