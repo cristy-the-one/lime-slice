@@ -5,6 +5,7 @@ import type { PathColumns } from "../preview-wire";
 import type { Vec3 } from "../section-plane";
 import type { RibbonBuffers } from "../view3d";
 import type { CoverageGap, EditOutcome, SupportSkeleton } from "../support-edits";
+import type { EditEntry } from "../support-edit-list";
 
 export type { CoverageGap, EditOutcome, SupportSkeleton };
 
@@ -186,6 +187,8 @@ export const state = {
   sectionNormal: [0, 0, 1] as Vec3,
   sectionOffset: 0,
   sectionHud: "",
+  /** Kept across setting and pose changes; the engine replays them and flags the ones that no longer match. */
+  supportEdits: [] as EditEntry[],
 };
 
 export const session = {
@@ -204,6 +207,13 @@ export const session = {
   chosenZ: null as { high: number; low: number } | null,
   /** Recipe key of `state.result`, once a slice has landed. */
   shownRecipe: null as string | null,
+  /** Support edits the request behind `state.result` carried. */
+  slicedEdits: [] as readonly EditEntry[],
+  supportUi: null as {
+    refresh(): void;
+    landed(ok: boolean): void;
+    reset(): void;
+  } | null,
   fingerSource: null as ArrayBuffer | Float32Array | null,
   fingerScale: Number.NaN,
   finger: "",

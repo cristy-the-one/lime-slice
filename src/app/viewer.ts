@@ -734,6 +734,7 @@ export function sync3d() {
   fx.view3d.setPlayhead(headOn ? { x0: prev[0], y0: prev[1], z0: point.z, x1: point.x, y1: point.y, z1: point.z } : null);
   syncPlanes();
   paintSectionChrome();
+  session.supportUi?.refresh();
   fx.view3d.resize();
 }
 

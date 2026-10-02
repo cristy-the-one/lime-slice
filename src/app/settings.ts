@@ -161,6 +161,7 @@ export function renderChrome() {
   paintStatus(isStale);
   paintSettingMarks(currentPreset());
   syncEmptyState(!!state.mesh);
+  session.supportUi?.refresh();
 }
 
 export function markEngineDown(message: string) {

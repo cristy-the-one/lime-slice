@@ -5,6 +5,7 @@ import { meshBytes, toBase64, fail, isTauri } from "./files";
 import { syncSliceDock } from "../ui/shell";
 import { blend, renderChrome, settingsHash, markBusy, paintBanner, busyText, markEngineDown, apiBase, stale, apiToken, touch } from "./settings";
 import { placementPose } from "../mesh-place";
+import { editRequestFields } from "../support-edit-list";
 import { engineDownMessage, authHeaders } from "../ui/api-base";
 
 export function meshFingerprint(): string {
@@ -118,7 +119,12 @@ export function payload() {
     pose: state.sourcePos
       ? placementPose(state.sourcePos, state.orient, state.partScale, state.profile.bedX, state.profile.bedY, state.centered, state.offset)
       : undefined,
+    ...editRequestFields(state.supportEdits, treeSupports()),
   };
+}
+
+export function treeSupports() {
+  return state.supports && state.supportStyle === "tree";
 }
 
 export function printer() {
@@ -146,6 +152,7 @@ export async function runSlice(force = false) {
   });
   const frame = `${session.meshEpoch}:${state.partScale}`;
   const request = { ...payload(), reslice: action.reslice };
+  const edits = request.supportEdits ? state.supportEdits : [];
   const bytes = meshBytes();
   markBusy(action.recompute);
   state.error = "";
@@ -179,6 +186,7 @@ export async function runSlice(force = false) {
     session.resultJob = id;
     session.resultFrame = frame;
     state.slicedHash = hash;
+    session.slicedEdits = edits;
     if (recipe) {
       cachedRecipes.add(recipe);
       session.shownRecipe = recipe;
@@ -200,6 +208,7 @@ export async function runSlice(force = false) {
       state.progress = 0;
       renderChrome();
       fx.draw();
+      session.supportUi?.landed(landed);
       if (landed && stale()) scheduleAuto();
     }
   }
@@ -254,6 +263,7 @@ export function cancelSlice() {
   if (tauri) void import("@tauri-apps/api/core").then(({ invoke }) => invoke("cancel_slice"));
   else void fetch(`${apiBase()}/api/cancel`, { method: "POST", headers: authHeaders(apiToken()) }).catch(() => undefined);
   renderChrome();
+  session.supportUi?.landed(false);
 }
 
 export async function runPaCal() {

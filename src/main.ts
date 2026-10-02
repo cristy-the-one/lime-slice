@@ -8,9 +8,11 @@ import { mountCompact } from "./ui/compact/mount";
 import { mountConnection } from "./ui/connection";
 import { mountPlatform } from "./platform";
 import { mountToasts } from "./ui/toasts";
-import { state } from "./app/state";
-import { draw, fitNarrow, mountViews, paintGizmoReadout, prepare, resize, setHelp, view3d } from "./app/viewer";
+import { session, state } from "./app/state";
+import { activeSection, draw, fitNarrow, mountViews, paintGizmoReadout, prepare, previewCenter, resize, setHelp, setStage, setView, view3d } from "./app/viewer";
 import { probe, renderChrome } from "./app/settings";
+import { runSlice, treeSupports } from "./app/slice-run";
+import { mountSupportEdits } from "./ui/support-edit-ui";
 import { mountMarkup } from "./app/markup";
 import { wireApp } from "./app/wire";
 
@@ -37,6 +39,36 @@ mountChrome({
   onToolReadout: () => paintGizmoReadout(),
 });
 mountShell({ setViewPreset: (preset) => prepare.setViewPreset(preset) });
+session.supportUi = mountSupportEdits(view3d, {
+  view() {
+    const layers = state.result?.layers ?? [];
+    const low = layers[state.rangeLow];
+    const high = layers[state.layer];
+    const spec = activeSection();
+    const center = previewCenter();
+    return {
+      result: state.result,
+      sent: session.slicedEdits,
+      edits: state.supportEdits,
+      busy: state.busy,
+      treeSupports: treeSupports(),
+      visible: {
+        zLow: low ? low.z - low.height : -1e6,
+        zHigh: high ? high.z : 1e6,
+        section: spec && center ? { center, spec } : null,
+      },
+      supportShown: !state.hidden.has("support"),
+    };
+  },
+  apply(next) {
+    state.supportEdits = next;
+    void runSlice(false);
+  },
+  reveal() {
+    if (state.stage !== "preview") setStage("preview");
+    if (state.viewMode !== "solid") setView("solid");
+  },
+});
 mountConnection(() => {
   void probe();
 });

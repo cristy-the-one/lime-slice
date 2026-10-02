@@ -4,6 +4,7 @@ import { ID_MATRIX, parseStl, transformPositions, encodeStl, scaledCanonical, en
 import { needsEngine, apiBase, apiToken, markEngineDown, isStepName, renderChrome, markStale, stale, card } from "./settings";
 import { authHeaders, engineDownMessage } from "../ui/api-base";
 import { type SplitSync } from "../split-at";
+import { clearEdits } from "../support-edit-list";
 
 export async function loadNamed(name: string) {
   state.error = "";
@@ -22,6 +23,8 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
   state.stepTolerance = 0.1;
   state.centered = true;
   state.offset = { x: 0, y: 0, z: 0 };
+  state.supportEdits = clearEdits();
+  session.supportUi?.reset();
   const parsed = needsEngine(name) ? null : parseStl(bytes);
   state.sourcePos = parsed ?? (await previewRemote(name, bytes));
   place("load");
