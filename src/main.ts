@@ -16,7 +16,9 @@ import { fillHelpShortcuts, mountPalette, mountStageTabs } from "./ui/palette";
 import { applyStoredLevel, levelBarHtml, mountShell, paintSettingMarks, syncEmptyState, syncSliceDock } from "./ui/shell";
 import { applySliceProgress, currentSliceProgress } from "./ui/slice-progress";
 import { authHeaders, currentApiTarget, engineDownMessage } from "./ui/api-base";
+import { mountCompact } from "./ui/compact/mount";
 import { mountConnection } from "./ui/connection";
+import { mountPlatform } from "./platform";
 import { mountToasts, pushToast } from "./ui/toasts";
 import { clampOffset, clipPolyline, flipSection, keepsPoint, layerCut, sectionReach, type SectionSpec, type Vec3 } from "./section-plane";
 import {
@@ -2678,6 +2680,8 @@ mountShell({ setViewPreset: (preset) => prepare.setViewPreset(preset) });
 mountConnection(() => {
   void probe();
 });
+mountPlatform();
+mountCompact();
 mountToasts();
 mountPalette();
 mountStageTabs();
