@@ -1,6 +1,6 @@
 # UI plan for support tree edits
 
-Engine steps 1–5 in [support-edits.md](support-edits.md) are in the core. Step 6 is not: the slice request does not take `support_edits` yet, and the response has no tree outline to pick against. This note is only how the UI will call that step. No UI for it is built here.
+Steps 6a and 6b of [support-edits.md](support-edits.md) have landed. The request takes `supportEdits` and `includeSkeleton`, the response returns edit outcomes and a skeleton, and the desktop preview edits trees through `src/ui/support-edit-ui.ts`. This branch only moves that wiring into the split app modules. The compact sheet described below is still not built. The rest of this note is the sketch written before that UI existed.
 
 The part stays primary. Prune and regrow rebuild support layers only. Grid supports keep the coverage warning and get no pick, prune, or regrow.
 
@@ -42,9 +42,9 @@ Each prune stores tip sites `{ x, y, z }` where `z` is the contact height. Each 
 
 On the response, a compact tree outline for picking: one entry per limb with its tip site, whether it is a branch or the tree root, and a short polyline (or the disk centers) the ray can hit. Support paths for the layers the edit changed come back as they do now. The UI does not need the full knot state.
 
-## What stays mocked until step 6
+## What stayed mocked until step 6
 
-Until the request accepts `support_edits` and the response includes the outline:
+The desktop editor no longer uses these stand-ins. They were the plan until the request accepted `supportEdits` and the response included the outline:
 
 - The support tool can select a coverage gap that is already on the response, and it can draw that gap's outline. That data is real.
 - A pick on a tree is fake. The stand-in is the support-coloured preview paths, hit in screen space. It can show a highlight. It must not be sent as a tip site, because a toolpath point is not a birth site.
