@@ -308,6 +308,9 @@ export function runCommand(id: string) {
     case "tool-section":
       click('#toolRail [data-tool="section"]');
       return;
+    case "edit-supports":
+      click('#toolRail [data-tool="supports"]');
+      return;
     case "theme-system":
       setTheme("system");
       return;

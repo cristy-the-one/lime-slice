@@ -31,6 +31,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "tool-scale", label: "Scale", group: "Tools", shortcut: "S", keywords: "percent field" },
   { id: "tool-layflat", label: "Lay flat", group: "Tools", shortcut: "F", keywords: "bed face" },
   { id: "tool-section", label: "Section", group: "Tools", shortcut: "C", keywords: "clip cut" },
+  { id: "edit-supports", label: "Edit supports", group: "Tools", shortcut: "E", keywords: "tree branch delete prune regrow" },
   { id: "theme-system", label: "Theme: System", group: "Settings", keywords: "theme appearance" },
   { id: "theme-dark", label: "Theme: Dark", group: "Settings", keywords: "theme appearance" },
   { id: "theme-light", label: "Theme: Light", group: "Settings", keywords: "theme appearance" },

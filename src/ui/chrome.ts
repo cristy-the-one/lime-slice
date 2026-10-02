@@ -10,6 +10,7 @@ import {
   Rotate3d,
   Scaling,
   SquareSplitHorizontal,
+  TreeDeciduous,
   X,
   type IconNode,
 } from "lucide";
@@ -92,10 +93,14 @@ function mountToolRail(hooks: ChromeHooks) {
   lay.setAttribute("aria-disabled", "true");
   const section = toolButton("section", SquareSplitHorizontal, "Section", "C", "Clip the preview. Does not change the slice.");
   section.setAttribute("aria-pressed", "false");
+  const supports = toolButton("supports", TreeDeciduous, "Edit supports", "E", "Pick tree supports to delete or regrow. Does not move the part.");
+  supports.setAttribute("aria-pressed", "false");
+  supports.classList.add("is-disabled");
+  supports.setAttribute("aria-disabled", "true");
 
   const sep = document.createElement("div");
   sep.className = "rail-sep";
-  rail.append(move, rotate, scale, lay, sep, section);
+  rail.append(move, rotate, scale, lay, sep, section, supports);
   host?.before(rail);
 
   const buttons = { move, rotate, scale, lay, section };
