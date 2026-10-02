@@ -6,9 +6,11 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 mod kept;
+mod patch;
 mod wire;
 
 pub use kept::keep_support_bases;
+pub use patch::PreviewPatch;
 pub use wire::{EditOutcomeView, SiteSpec, SupportEditSpec};
 
 use crate::adaptive::{plan_bands, HeightOpts, LayerBand};
@@ -168,6 +170,11 @@ pub struct SliceRequest {
     /// Also return the tree outline the UI picks limbs from.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub include_skeleton: bool,
+    /// The `previewToken` of the preview the client shows. When the engine
+    /// still holds that preview, the reply carries `previewPatch` instead
+    /// of `layers`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_base: Option<String>,
 }
 
 /// Rigid placement of a mesh that was simplified in its scaled frame.
@@ -241,6 +248,8 @@ pub struct SliceSettings {
     pub support_edits: Vec<SupportEdit>,
     /// Report the tree outline on the response.
     pub include_skeleton: bool,
+    /// The preview the client holds, from `SliceRequest::preview_base`.
+    pub preview_base: Option<String>,
     /// The shell job this slice belongs to. A stale job stops with "cancelled".
     pub job: Job,
 }
@@ -289,6 +298,7 @@ impl Default for SliceSettings {
             island_support: true,
             support_edits: Vec::new(),
             include_skeleton: false,
+            preview_base: None,
             job: Job::default(),
         }
     }
@@ -405,6 +415,7 @@ impl SliceSettings {
             island_support: true,
             support_edits: Vec::new(),
             include_skeleton: req.include_skeleton,
+            preview_base: req.preview_base.clone(),
             job: Job::default(),
         }
     }
@@ -415,6 +426,7 @@ impl SliceSettings {
         Self {
             support_edits: Vec::new(),
             include_preview: false,
+            preview_base: None,
             ..self.clone()
         }
     }
@@ -547,6 +559,14 @@ pub struct SliceResponse {
     /// The grown trees after every edit. Only when the request asked for it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skeleton: Option<SupportSkeleton>,
+    /// Names the preview this reply leaves the client holding. Sent back as
+    /// `previewBase`. Only for kept interactive slices.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_token: Option<String>,
+    /// The changed layers against the request's `previewBase`. `layers` is
+    /// empty when this is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_patch: Option<PreviewPatch>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -700,7 +720,7 @@ pub struct PreviewLayer {
     pub paths: Vec<PreviewPath>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewPath {
     pub kind: String,
@@ -817,6 +837,7 @@ pub fn slice_configured(
     let started = Instant::now();
     let planned_full = plan(mesh, blend, &settings, profile.nozzle_diameter)?;
     let planned = planned_full.layers;
+    let kept_plan = planned_full.kept.as_ref();
     let coverage = planned_full.coverage;
     let emit_started = Instant::now();
     let gcode = if settings.include_gcode {
@@ -958,10 +979,17 @@ pub fn slice_configured(
         notes.push("g-code is missing layer markers".into());
     }
 
-    let layers = if settings.include_preview {
-        preview_of(&planned, &profile, blend, &gcode.layer_seconds)
+    let (layers, preview_token, preview_patch) = if settings.include_preview {
+        preview(
+            &planned,
+            kept_plan,
+            &profile,
+            blend,
+            &settings,
+            &gcode.layer_seconds,
+        )
     } else {
-        Vec::new()
+        (Vec::new(), None, None)
     };
     let gcode_text = if settings.include_gcode {
         gcode.text.clone()
@@ -1023,7 +1051,81 @@ pub fn slice_configured(
         compare,
         support_edits,
         skeleton,
+        preview_token,
+        preview_patch,
     })
+}
+
+/// The reply's preview. A kept slice names it with a token, and when the
+/// request's `previewBase` is the preview the engine last drew from this
+/// slice, only the layers that differ go back, as a patch.
+fn preview(
+    planned: &[LayerPaths],
+    kept: Option<&KeptPlan>,
+    profile: &PrinterProfile,
+    blend: &BlendMode,
+    settings: &SliceSettings,
+    layer_seconds: &[f64],
+) -> (Vec<PreviewLayer>, Option<String>, Option<PreviewPatch>) {
+    let Some(kept) = kept else {
+        return (
+            preview_of(planned, profile, blend, layer_seconds),
+            None,
+            None,
+        );
+    };
+    let mut emitted = layer_seconds.iter();
+    let seconds: Vec<Option<f64>> = planned
+        .iter()
+        .map(|l| (!l.paths.is_empty()).then(|| emitted.next().copied().unwrap_or(0.0)))
+        .collect();
+    let digest = patch::profile_digest(profile);
+    let token = patch::token(&kept.key, profile, &settings.support_edits);
+    let base = kept.prior.as_ref().filter(|(_, shown)| {
+        settings.preview_base.as_deref() == Some(shown.token.as_str()) && shown.profile == digest
+    });
+    let (layers, patched) = match base {
+        Some((joined, shown)) => {
+            let bits = |s: Option<f64>| s.map(f64::to_bits);
+            let changed = planned
+                .par_iter()
+                .enumerate()
+                .filter_map(|(i, layer)| {
+                    let now = seconds[i]?;
+                    let same = !kept.fresh[i] && bits(shown.seconds[i]) == bits(Some(now));
+                    if same {
+                        return None;
+                    }
+                    let was = shown.seconds[i]
+                        .map(|_| preview_layer(&joined[i].layer, profile, blend, 0.0).paths)
+                        .unwrap_or_default();
+                    let layer = preview_layer(layer, profile, blend, now);
+                    Some(patch::diff_layer(&was, layer))
+                })
+                .collect();
+            let patch = PreviewPatch {
+                base: shown.token.clone(),
+                layers: planned
+                    .iter()
+                    .filter(|l| !l.paths.is_empty())
+                    .map(|l| l.index)
+                    .collect(),
+                changed,
+            };
+            (Vec::new(), Some(patch))
+        }
+        None => (preview_of(planned, profile, blend, layer_seconds), None),
+    };
+    kept::show(
+        &kept.key,
+        &kept.joined,
+        patch::Shown {
+            token: token.clone(),
+            profile: digest,
+            seconds,
+        },
+    );
+    (layers, Some(token), patched)
 }
 
 fn feature_estimates(
@@ -1293,85 +1395,97 @@ fn preview_of(
         .filter(|l| !l.paths.is_empty())
         .enumerate()
         .map(|(emitted, layer)| {
-            let mut paths = Vec::new();
-            let mut cursor: Option<[f64; 2]> = None;
-            let mut speed_walls = 0u32;
-            let mut toughness_walls = 0u32;
-            for path in &layer.paths {
-                if path.kind.is_wall() {
-                    match path.strategy {
-                        StrategyId::Speed => speed_walls += 1,
-                        StrategyId::Toughness => toughness_walls += 1,
-                    }
-                }
-                if let (Some(c), Some(start)) = (cursor, path.points.first()) {
-                    let mut pts = vec![c];
-                    pts.extend(path.lead_in.iter().copied());
-                    pts.push(*start);
-                    if pts.len() > 2 || dist2(c, *start) > 0.05 * 0.05 {
-                        paths.push(PreviewPath {
-                            kind: "travel".into(),
-                            strategy: path.strategy.as_str().into(),
-                            pts,
-                            width: 0.0,
-                            speed: path.travel_speed,
-                            effective_speed: path.travel_speed,
-                            toughness: path_weight(blend, layer.z, path.strategy),
-                            zs: Vec::new(),
-                            bead_height: 0.0,
-                        });
-                    }
-                }
-                let (pts, zs) = decimate_path(&path.points, &path.z_frac, layer.z, layer.height);
-                let bead = if path.bead_height > 1e-6 {
-                    path.bead_height
-                } else {
-                    layer.height
-                };
-                let mut limited = crate::gcode::limit_speed(
-                    path.speed,
-                    path.width,
-                    bead,
-                    path.flow,
-                    profile.max_volumetric_mm3_s,
-                );
-                if layer.index == 0 {
-                    limited = limited.min(30.0);
-                }
-                paths.push(PreviewPath {
-                    kind: path.kind.as_str().into(),
-                    strategy: path.strategy.as_str().into(),
-                    pts,
-                    width: path.width,
-                    speed: path.speed,
-                    effective_speed: limited,
-                    toughness: path_weight(blend, layer.z, path.strategy),
-                    zs,
-                    bead_height: if path.bead_height > 1e-6 {
-                        path.bead_height
-                    } else {
-                        0.0
-                    },
-                });
-                cursor = path.points.last().copied();
-            }
-            PreviewLayer {
-                index: layer.index,
-                z: layer.z,
-                height: layer.height,
-                note: layer.note.clone(),
-                speed_walls,
-                toughness_walls,
-                support_paths: layer
-                    .paths
-                    .iter()
-                    .filter(|p| p.kind == PathKind::Support || p.kind == PathKind::SupportInterface)
-                    .count() as u32,
-                seconds: layer_seconds.get(emitted).copied().unwrap_or(0.0),
-                paths,
-            }
+            let seconds = layer_seconds.get(emitted).copied().unwrap_or(0.0);
+            preview_layer(layer, profile, blend, seconds)
         })
         .collect()
+}
+
+/// One printed layer as the preview draws it: a travel before each path
+/// that moves the nozzle, then the path, decimated.
+fn preview_layer(
+    layer: &LayerPaths,
+    profile: &PrinterProfile,
+    blend: &BlendMode,
+    seconds: f64,
+) -> PreviewLayer {
+    let mut paths = Vec::new();
+    let mut cursor: Option<[f64; 2]> = None;
+    let mut speed_walls = 0u32;
+    let mut toughness_walls = 0u32;
+    for path in &layer.paths {
+        if path.kind.is_wall() {
+            match path.strategy {
+                StrategyId::Speed => speed_walls += 1,
+                StrategyId::Toughness => toughness_walls += 1,
+            }
+        }
+        if let (Some(c), Some(start)) = (cursor, path.points.first()) {
+            let mut pts = vec![c];
+            pts.extend(path.lead_in.iter().copied());
+            pts.push(*start);
+            if pts.len() > 2 || dist2(c, *start) > 0.05 * 0.05 {
+                paths.push(PreviewPath {
+                    kind: "travel".into(),
+                    strategy: path.strategy.as_str().into(),
+                    pts,
+                    width: 0.0,
+                    speed: path.travel_speed,
+                    effective_speed: path.travel_speed,
+                    toughness: path_weight(blend, layer.z, path.strategy),
+                    zs: Vec::new(),
+                    bead_height: 0.0,
+                });
+            }
+        }
+        let (pts, zs) = decimate_path(&path.points, &path.z_frac, layer.z, layer.height);
+        let bead = if path.bead_height > 1e-6 {
+            path.bead_height
+        } else {
+            layer.height
+        };
+        let mut limited = crate::gcode::limit_speed(
+            path.speed,
+            path.width,
+            bead,
+            path.flow,
+            profile.max_volumetric_mm3_s,
+        );
+        if layer.index == 0 {
+            limited = limited.min(30.0);
+        }
+        paths.push(PreviewPath {
+            kind: path.kind.as_str().into(),
+            strategy: path.strategy.as_str().into(),
+            pts,
+            width: path.width,
+            speed: path.speed,
+            effective_speed: limited,
+            toughness: path_weight(blend, layer.z, path.strategy),
+            zs,
+            bead_height: if path.bead_height > 1e-6 {
+                path.bead_height
+            } else {
+                0.0
+            },
+        });
+        cursor = path.points.last().copied();
+    }
+    PreviewLayer {
+        index: layer.index,
+        z: layer.z,
+        height: layer.height,
+        note: layer.note.clone(),
+        speed_walls,
+        toughness_walls,
+        support_paths: layer
+            .paths
+            .iter()
+            .filter(|p| p.kind == PathKind::Support || p.kind == PathKind::SupportInterface)
+            .count() as u32,
+        seconds,
+        paths,
+    }
 }
 
 fn path_weight(blend: &BlendMode, z: f64, strategy: StrategyId) -> f64 {
@@ -1510,6 +1624,20 @@ pub(crate) struct Plan {
     pub edit_apply_ms: f64,
     pub edit_refresh_ms: f64,
     pub layers_reused: u32,
+    /// Set when the plan came from a kept slice.
+    pub kept: Option<KeptPlan>,
+}
+
+/// What a plan from a kept slice needs for a partial preview.
+pub(crate) struct KeptPlan {
+    key: [u8; 32],
+    /// This plan's layers, as the kept entry holds them.
+    joined: Arc<Vec<JoinedLayer>>,
+    /// Layers joined again rather than taken from the last plan.
+    fresh: Vec<bool>,
+    /// The last plan's layers and the preview the client was given from
+    /// them.
+    prior: Option<(Arc<Vec<JoinedLayer>>, Arc<patch::Shown>)>,
 }
 
 /// What a plan took from the kept slices instead of planning again. The
@@ -1620,12 +1748,13 @@ fn plan_kept(
     nozzle_diameter: f64,
 ) -> Result<Plan, String> {
     let (key, object_key) = kept::keys(mesh, blend, settings, nozzle_diameter);
-    let (object, base, edited, joined, mut reuse) = match kept::find(&key, &object_key) {
+    let (object, base, edited, joined, shown, mut reuse) = match kept::find(&key, &object_key) {
         Some(kept::Hit::Base(entry)) => (
             entry.object,
             entry.base,
             entry.edited,
             entry.joined,
+            entry.shown,
             Reuse {
                 object: true,
                 base: true,
@@ -1639,6 +1768,7 @@ fn plan_kept(
                 base,
                 None,
                 None,
+                None,
                 Reuse {
                     object: true,
                     base: false,
@@ -1649,7 +1779,7 @@ fn plan_kept(
         None => {
             let object = Arc::new(slice_mesh_object(mesh, blend, settings, nozzle_diameter)?);
             let base = Arc::new(plan_supports(&object, blend, settings)?);
-            (object, base, None, None, Reuse::default())
+            (object, base, None, None, None, Reuse::default())
         }
     };
     let want = &settings.support_edits;
@@ -1685,15 +1815,23 @@ fn plan_kept(
         settings,
         joined.as_deref().map_or(&[], Vec::as_slice),
     );
+    let kept_joined = Arc::new(assembled.joined.clone());
     kept::keep(kept::Entry {
         key,
         object_key,
         object: Arc::clone(&object),
         base: Arc::clone(&base),
         edited: fresh.clone().or(edited),
-        joined: Some(Arc::new(assembled.joined.clone())),
+        joined: Some(Arc::clone(&kept_joined)),
+        shown: None,
     });
-    Ok(finish(
+    let kept = KeptPlan {
+        key,
+        joined: kept_joined,
+        fresh: assembled.fresh.clone(),
+        prior: joined.zip(shown),
+    };
+    let mut plan = finish(
         object.bands.clone(),
         object.contours.clone(),
         object.clocks,
@@ -1701,7 +1839,9 @@ fn plan_kept(
         edits,
         assembled,
         reuse,
-    ))
+    );
+    plan.kept = Some(kept);
+    Ok(plan)
 }
 
 /// The plan, with the clocks of reused work read as zero.
@@ -1736,6 +1876,7 @@ fn finish(
             .map(|j| Arc::unwrap_or_clone(j.layer))
             .collect(),
         layers_reused: assembled.reused,
+        kept: None,
         bands,
         contours,
         supports: Arc::clone(&supports.supports),
@@ -2241,6 +2382,8 @@ enum Slot {
 /// The print as the G-code writer takes it, and what joining it cost.
 struct Assembled {
     joined: Vec<JoinedLayer>,
+    /// Layers joined again rather than taken from `kept`.
+    fresh: Vec<bool>,
     /// Layers taken from `kept` instead of joined again.
     reused: u32,
     order_ms: f64,
@@ -2289,10 +2432,11 @@ fn assemble(
         .collect();
     let order_ms = elapsed_ms(order_started);
     let comb_started = Instant::now();
-    let reused = slots
+    let fresh: Vec<bool> = slots
         .iter()
-        .filter(|slot| matches!(slot, Slot::Kept(_)))
-        .count() as u32;
+        .map(|slot| matches!(slot, Slot::Fresh(..)))
+        .collect();
+    let reused = fresh.iter().filter(|f| !**f).count() as u32;
     let joined: Vec<JoinedLayer> = slots
         .into_par_iter()
         .enumerate()
@@ -2331,6 +2475,7 @@ fn assemble(
             .map(|(_, part)| part)
     };
     Assembled {
+        fresh,
         reused,
         order_ms,
         comb_ms,
