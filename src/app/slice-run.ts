@@ -117,9 +117,7 @@ export function payload() {
     includePreview: true,
     simplify: state.simplify,
     simplifyErrorMm: state.simplifyError,
-    pose: state.sourcePos
-      ? placementPose(state.sourcePos, state.orient, state.partScale, state.profile.bedX, state.profile.bedY, state.centered, state.offset)
-      : undefined,
+    pose: state.sourcePos ? pose(state.sourcePos) : undefined,
     ...editRequestFields(state.supportEdits, treeSupports()),
   };
 }
@@ -236,6 +234,19 @@ export function layerNear(result: SliceResponse, z: number | undefined, index: n
     if (Math.abs(layer.z - z) < Math.abs(result.layers[best].z - z)) best = i;
   });
   return best;
+}
+
+/**
+ * `placementPose` for the current placement. It walks every vertex, and the
+ * request is built several times a click, so the last answer is kept.
+ */
+let posed: { source: Float32Array; key: string; pose: ReturnType<typeof placementPose> } | null = null;
+function pose(source: Float32Array) {
+  const key = JSON.stringify([state.orient, state.partScale, state.profile.bedX, state.profile.bedY, state.centered, state.offset]);
+  if (posed?.source !== source || posed.key !== key) {
+    posed = { source, key, pose: placementPose(source, state.orient, state.partScale, state.profile.bedX, state.profile.bedY, state.centered, state.offset) };
+  }
+  return posed.pose;
 }
 
 /** Mesh the slice worker holds in Base64, so it is sent and encoded once per mesh. */
