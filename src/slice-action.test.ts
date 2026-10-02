@@ -1,4 +1,4 @@
-import { cacheStatus, coverageWarning, feed, fnv1aHex, recipeKey, sliceAction, sliceBusyLabel, staleSliceCopy } from "./slice-action.ts";
+import { cacheStatus, coverageWarning, feed, fnv1aHex, inAirWarning, recipeKey, sliceAction, sliceBusyLabel, staleSliceCopy } from "./slice-action.ts";
 
 let failed = 0;
 
@@ -90,6 +90,14 @@ eq(
   coverageWarning([{ areaMm2: 375.24 }, { areaMm2: 2.5 }]),
   "Supports leave 2 overhang patches unheld, 377.7 mm² in all.",
 );
+eq("supports on, no air report", inAirWarning(undefined), null);
+eq("supports off, nothing floats", inAirWarning({ islands: 0, overhangs: 0 }), null);
+eq(
+  "supports off, an island and two overhangs",
+  inAirWarning({ islands: 1, overhangs: 2 }),
+  "Supports are off. 1 island and 2 overhangs would print in the air. Tick Smart supports to hold them up.",
+);
+eq("supports off, overhangs only", inAirWarning({ islands: 0, overhangs: 1 }), "Supports are off. 1 overhang would print in the air. Tick Smart supports to hold them up.");
 
 if (failed) throw new Error(`${failed} slice-action checks failed`);
 console.log("slice-action: none, cached, changed, force ok");

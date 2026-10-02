@@ -122,7 +122,10 @@ test("delete a tree, regrow its gap, undo, and clear", async ({ page }) => {
   expect((await supportSeconds(page)).text).toBe(before.text);
 });
 
-test("trees grown with Smart supports off can be edited", async ({ page }) => {
+test("Smart supports off prints no support, and on lets trees be edited", async ({ page }) => {
+  await page.addInitScript(() => {
+    delete (window as unknown as { showSaveFilePicker?: unknown }).showSaveFilePicker;
+  });
   await page.route("http://127.0.0.1:43118/**", async (route) => {
     const url = route.request().url().replace("http://127.0.0.1:43118", api!);
     const response = await route.fetch({ url, timeout: SLICE_MS });
@@ -137,9 +140,18 @@ test("trees grown with Smart supports off can be edited", async ({ page }) => {
   await page.locator("#slice").click();
   await sliced(page);
   await page.getByRole("tab", { name: "Preview", exact: true }).click();
-  expect((await supportSeconds(page)).seconds).toBeGreaterThan(0);
-
+  expect(await exportedSupportMoves(page)).toBe(0);
+  await expect(page.locator("#banner")).toContainText("Supports are off. 1 overhang would print in the air.");
   const toggle = page.locator('#toolRail [data-tool="supports"]');
+  await expect(toggle).toHaveAttribute("aria-disabled", "true");
+
+  await page.locator('[data-level-choice="advanced"]').first().click();
+  await page.locator("#supports").check();
+  await page.locator("#sstyle").selectOption("tree");
+  await page.locator("#slice").click();
+  await sliced(page);
+  expect(await exportedSupportMoves(page)).toBeGreaterThan(0);
+  await expect(page.locator("#banner")).not.toContainText("Supports are off");
   await expect(toggle).toHaveAttribute("aria-disabled", "false");
   await page.keyboard.press("e");
   await expect(page.locator("#supportReadout")).toHaveText("Click a support. Shift-click takes the whole tree.");

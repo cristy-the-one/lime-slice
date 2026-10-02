@@ -81,7 +81,7 @@ The z-hop inset (`offset_loops` of every contour, **78 ms** on dragon, **7 ms** 
 
 `build_supports` already parallelizes `overhang_at` and the XY-gap offset. The downward walk is one layer at a time because trunks, interface generations, and merges depend on the layer above.
 
-Dragon speed, supports checkbox **off** (island support is hardcoded on in `SliceSettings::from_request`):
+Dragon speed, supports checkbox **off** (island support was hard-coded on in `SliceSettings::from_request` when this was measured; supports off now grows nothing):
 
 | Piece | ms | Threads |
 | --- | ---: | --- |
