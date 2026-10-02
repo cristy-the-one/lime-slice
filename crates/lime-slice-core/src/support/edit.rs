@@ -6,14 +6,17 @@
     allow(dead_code, reason = "edits reach the slice request in step 6")
 )]
 
+use std::collections::HashMap;
+
 use rayon::prelude::*;
 
 use super::{
-    lean_of, organic_disks, stand, CellGrid, CoverageGap, End, Life, Limb, Node, NodeId, Pitch,
-    SupportLayer, Supports,
+    lean_of, load_factor_of, organic_disks, section_load, solid_area, stand, tip_radius, union_all,
+    CellGrid, CoverageGap, End, Fixed, Life, Limb, Node, NodeId, Pitch, SupportLayer, SupportStyle,
+    Supports, Walk, COVERAGE_OUTLINE_MM, UNHELD_PIECE_MM2,
 };
 use crate::adaptive::LayerBand;
-use crate::poly::{boolean_diff, drop_slivers, Loop};
+use crate::poly::{boolean_diff, boolean_intersect, drop_slivers, offset_loops, Loop};
 
 /// Where a limb is born: the xy of its first knot, at the `z` of its top
 /// layer. Walk ids renumber whenever the input changes and a birth site does
@@ -30,6 +33,35 @@ pub(crate) enum SupportEdit {
     /// Remove the limbs born at `sites`, then trim what no longer carries a
     /// surviving tip. A branch and a whole tree differ only in their sites.
     Prune { sites: Vec<TipSite> },
+    /// Grow fresh limbs for the demand inside `region` that nothing prints,
+    /// on the layers whose `z` lies within `z`, low then high. Kept limbs
+    /// never change: the new ones lean toward them, join one only where it
+    /// is already thick enough, and otherwise keep clear of them.
+    Regrow { region: Vec<Loop>, z: [f64; 2] },
+}
+
+impl SupportEdit {
+    /// One regrow over `gaps`, across every layer they span. A gap's outline
+    /// is only its highest layer, and a layer under it can reach past that,
+    /// so the region is each gap's box, which holds it on every layer.
+    pub(crate) fn over_gaps(gaps: &[CoverageGap]) -> Self {
+        let corner = |p: [f32; 2]| [f64::from(p[0]), f64::from(p[1])];
+        SupportEdit::Regrow {
+            region: gaps
+                .iter()
+                .map(|g| {
+                    let (lo, hi) = (corner(g.min), corner(g.max));
+                    vec![lo, [hi[0], lo[1]], hi, [lo[0], hi[1]]]
+                })
+                .collect(),
+            z: [
+                gaps.iter().map(|g| g.z[0]).fold(f64::INFINITY, f64::min),
+                gaps.iter()
+                    .map(|g| g.z[1])
+                    .fold(f64::NEG_INFINITY, f64::max),
+            ],
+        }
+    }
 }
 
 /// What one edit did.
@@ -42,7 +74,9 @@ pub(crate) struct EditOutcome {
     pub stood: usize,
     /// Coverage area after the edit less the area before it, mm², specks included.
     pub newly_floating_mm2: f64,
-    /// Coverage gaps that were not there before the edit, specks included.
+    /// Coverage gaps the edit leaves, specks included: for a prune the ones
+    /// that were not there before it, for a regrow the ones whose outline
+    /// still meets its region.
     pub floating: Vec<CoverageGap>,
 }
 
@@ -53,7 +87,9 @@ pub(crate) enum EditStatus {
     /// Every site matched, the farthest one `moved_mm` away: more than
     /// `REBOUND_MM` across, or born on another layer.
     Rebound { moved_mm: f64 },
-    /// `missed` sites matched no limb. The others still applied.
+    /// `missed` of the edit's targets matched nothing: sites that matched
+    /// no limb, or a regrow's region with no unheld demand in it. The rest
+    /// still applied.
     Stale { missed: usize },
 }
 
@@ -61,9 +97,13 @@ pub(crate) enum EditStatus {
 /// tip the site was taken from.
 const REBOUND_MM: f64 = 0.3;
 
+/// A regrow's region is widened by this. A coverage gap's outline is
+/// simplified, so it can sit up to the tolerance inside the area it reports.
+const REGION_SLOP_MM: f64 = 2.0 * COVERAGE_OUTLINE_MM;
+
 impl Supports {
-    /// Apply `edits` in order. Each one prunes, then stands again only the
-    /// layers it changed.
+    /// Apply `edits` in order. Each one prunes or regrows, then stands again
+    /// only the layers it changed.
     pub(crate) fn apply(
         &mut self,
         edits: &[SupportEdit],
@@ -79,8 +119,11 @@ impl Supports {
         // the user removed what held them.
         let mut before = self.coverage_from(bands, contours, 0.0);
         for edit in edits {
+            let by = self.edits;
+            self.edits += 1;
             let (status, dirty) = match edit {
-                SupportEdit::Prune { sites } => self.prune(sites, bands),
+                SupportEdit::Prune { sites } => self.prune(sites, bands, by),
+                SupportEdit::Regrow { region, z } => self.regrow(region, *z, bands, contours, by),
             };
             let (changed, stood) = self.rebuild(&dirty, bands, contours);
             let after = if changed.is_empty() {
@@ -93,11 +136,14 @@ impl Supports {
                 changed,
                 stood,
                 newly_floating_mm2: area(&after) - area(&before),
-                floating: after
-                    .iter()
-                    .filter(|g| !before.contains(g))
-                    .cloned()
-                    .collect(),
+                floating: match edit {
+                    SupportEdit::Prune { .. } => after
+                        .iter()
+                        .filter(|g| !before.contains(g))
+                        .cloned()
+                        .collect(),
+                    SupportEdit::Regrow { region, z } => gaps_in(&after, region, *z),
+                },
             });
             before = after;
         }
@@ -141,7 +187,12 @@ impl Supports {
     /// Tombstone the limbs born at `sites` and trim what then carries
     /// nothing. Returns how the sites matched and, per layer, whether a knot
     /// on it stopped printing.
-    fn prune(&mut self, sites: &[TipSite], bands: &[LayerBand]) -> (EditStatus, Vec<bool>) {
+    fn prune(
+        &mut self,
+        sites: &[TipSite],
+        bands: &[LayerBand],
+        by: u32,
+    ) -> (EditStatus, Vec<bool>) {
         let tol = Pitch::of(&self.opts).keep * 0.5;
         let limbs = &mut self.forest.limbs;
         let mut born: Vec<Vec<usize>> = vec![Vec::new(); bands.len()];
@@ -174,10 +225,11 @@ impl Supports {
         for k in (0..limbs.len()).rev() {
             let limb = &mut limbs[k];
             let pruned = pick[k] || limb.life != Life::Live;
+            let by = limb.life.pruned_by().unwrap_or(by);
             let life = match (pruned, need[k]) {
                 (false, _) => Life::Live,
-                (true, Some(to)) => Life::Trimmed { to },
-                (true, None) => Life::Removed,
+                (true, Some(to)) => Life::Trimmed { to, by },
+                (true, None) => Life::Removed { by },
             };
             if life != limb.life {
                 let was = limb.reach();
@@ -193,6 +245,159 @@ impl Supports {
             }
         }
         (status, dirty)
+    }
+
+    /// Grow new limbs for the demand in `region` on the layers within `z`
+    /// that the layers do not print, walking among the kept limbs as fixed
+    /// knots, and restore the interface over that demand. Returns `Stale`
+    /// when there is none, and per layer whether the edit touched it.
+    fn regrow(
+        &mut self,
+        region: &[Loop],
+        z: [f64; 2],
+        bands: &[LayerBand],
+        contours: &[Vec<Loop>],
+        by: u32,
+    ) -> (EditStatus, Vec<bool>) {
+        let n = self.layers.len();
+        if self.opts.style != SupportStyle::Tree {
+            return (EditStatus::Stale { missed: 1 }, vec![false; n]);
+        }
+        let region = offset_loops(region, REGION_SLOP_MM);
+        let masks: Vec<Vec<Loop>> = (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let z_in = bands[i].z >= z[0] - 1e-6 && bands[i].z <= z[1] + 1e-6;
+                if !z_in || self.demanded[i].is_empty() {
+                    return Vec::new();
+                }
+                let unheld = boolean_diff(&self.demanded[i], &self.layers[i].interface);
+                drop_slivers(boolean_intersect(&unheld, &region), UNHELD_PIECE_MM2)
+            })
+            .collect();
+        let mut dirty = vec![false; n];
+        let (Some(lowest), Some(top)) = (
+            masks.iter().position(|m| !m.is_empty()),
+            masks.iter().rposition(|m| !m.is_empty()),
+        ) else {
+            return (EditStatus::Stale { missed: 1 }, dirty);
+        };
+        let first = self.forest.limbs.len();
+        // The load each kept limb carries for regrown limbs joined at or
+        // above the current layer. Earlier regrows' joins below it wait in
+        // `joins`, lowest first.
+        let mut extra = vec![0.0; first];
+        let mut joins = self.kept_joins();
+        let mut walk = Walk::new(bands, contours, &self.opts, first as u32 + 1);
+        for i in (0..=top).rev() {
+            if i < lowest && walk.nodes.is_empty() {
+                break;
+            }
+            let mask = &masks[i];
+            let born = if mask.is_empty() || self.born[i].is_empty() {
+                Vec::new()
+            } else {
+                drop_slivers(boolean_intersect(&self.born[i], mask), 0.05)
+            };
+            walk.arrive(i, &born, mask);
+            self.forest.record(i, &walk.nodes);
+            let mut fixed = Fixed::new(match i {
+                0 => Vec::new(),
+                _ => {
+                    while let Some(&(_, host, load)) = joins.last().filter(|j| j.0 >= i - 1) {
+                        extra[host] += load;
+                        joins.pop();
+                    }
+                    self.kept_at(i - 1, first, &extra, &joins)
+                }
+            });
+            walk.descend(i, &mut fixed, &mut self.forest);
+            for (host, load) in fixed.joined {
+                extra[host.0 as usize - 1] += load;
+            }
+        }
+        if self.forest.limbs.len() > first {
+            self.regrown.push(first);
+        }
+        for (i, mask) in masks.into_iter().enumerate() {
+            if !mask.is_empty() {
+                dirty[i] = true;
+                self.restored[i].push((by, mask));
+            }
+        }
+        for limb in &self.forest.limbs[first..] {
+            dirty[limb.bottom()..=limb.top].fill(true);
+        }
+        (EditStatus::Applied, dirty)
+    }
+
+    /// Knots of the limbs before `first` whose disks stand on `layer`, by
+    /// id, as hosts. Each limb carries `extra` more load than it recorded,
+    /// and the regrown tips joined `below` on lower layers. A knot's load is
+    /// raised so that it takes no more than the tightest of those lower
+    /// knots still can.
+    fn kept_at(
+        &self,
+        layer: usize,
+        first: usize,
+        extra: &[f64],
+        below: &[(usize, usize, f64)],
+    ) -> Vec<Node> {
+        let (tip_r, load_factor) = (tip_radius(&self.opts), load_factor_of(&self.opts));
+        let limbs = &self.forest.limbs;
+        let mut room: HashMap<usize, (f64, f64)> = HashMap::new();
+        for &(at, host, load) in below.iter().rev() {
+            let knot = limbs[host].knots[limbs[host].top - at];
+            let (carried, least) = room.entry(host).or_insert((extra[host], f64::INFINITY));
+            *carried += load;
+            *least =
+                least.min(section_load(knot.radius, tip_r, load_factor) - knot.load - *carried);
+        }
+        self.layers[layer]
+            .disks
+            .iter()
+            .map(|d| d.node.0 as usize - 1)
+            .filter(|&k| k < first)
+            .map(|k| {
+                let limb = &limbs[k];
+                let mut knot = limb.knots[limb.top - layer];
+                knot.load += extra[k];
+                if let Some(&(_, least)) = room.get(&k) {
+                    let tight = section_load(knot.radius, tip_r, load_factor) - least;
+                    knot.load = knot.load.max(tight);
+                }
+                knot
+            })
+            .collect()
+    }
+
+    /// Every regrown limb still carrying a tip that joined a kept limb: the
+    /// layer the kept limb took it on, the kept limb, and the load. Lowest
+    /// layer first.
+    fn kept_joins(&self) -> Vec<(usize, usize, f64)> {
+        let limbs = &self.forest.limbs;
+        let mut joins: Vec<(usize, usize, f64)> = self
+            .regrown
+            .iter()
+            .enumerate()
+            .flat_map(|(r, &from)| {
+                let to = self.regrown.get(r + 1).copied().unwrap_or(limbs.len());
+                (from..to).filter_map(move |g| {
+                    let limb = &limbs[g];
+                    match (limb.end, limb.life) {
+                        (_, Life::Removed { .. }) => None,
+                        (End::Merged { into }, _) if (into.0 as usize) <= from => Some((
+                            limb.bottom() - 1,
+                            into.0 as usize - 1,
+                            limb.knots[limb.knots.len() - 1].load,
+                        )),
+                        _ => None,
+                    }
+                })
+            })
+            .collect();
+        joins.sort_by_key(|j| j.0);
+        joins
     }
 
     /// Stand every layer again from the lowest dirty one up, until a layer
@@ -252,7 +457,8 @@ impl Supports {
 
     /// Layer `i` as the walk and the edits leave it, before it is stood on
     /// the layer below: the disks of the knots still printed, and the
-    /// demanded interface less what only pruned tips held.
+    /// demanded interface less what only pruned tips held and no later
+    /// regrow restored.
     fn fresh(&self, i: usize, contours: &[Vec<Loop>]) -> SupportLayer {
         let mut live = Vec::new();
         let mut pruned = Vec::new();
@@ -261,15 +467,21 @@ impl Supports {
             let knot = limb.knots[limb.top - i];
             if limb.reach().is_some_and(|to| i <= to) {
                 live.push(knot);
-            } else if knot.freeze > 0 {
-                pruned.push(knot.xy);
+            } else if let (true, Some(by)) = (knot.freeze > 0, limb.life.pruned_by()) {
+                pruned.push((knot.xy, by));
             }
         }
         let pitch = Pitch::of(&self.opts);
         let part = contours.get(i).map(Vec::as_slice).unwrap_or(&[]);
         SupportLayer {
             sparse: self.layers[i].sparse.clone(),
-            interface: held_interface(&self.demanded[i], &pruned, &live, pitch.keep + pitch.fine),
+            interface: held_interface(
+                &self.demanded[i],
+                &pruned,
+                &live,
+                pitch.keep + pitch.fine,
+                &self.restored[i],
+            ),
             disks: organic_disks(&live, part, self.opts.xy_gap),
         }
     }
@@ -285,7 +497,8 @@ fn site(limb: &Limb, bands: &[LayerBand]) -> TipSite {
 /// The limb born nearest `site`, with how far it is across and in z. It is
 /// born on the layer whose z is nearest the site's, or else one beside it,
 /// and within `tol` across. Pruned limbs count, so pruning the same sites
-/// twice matches the same limbs.
+/// twice matches the same limbs. A live limb wins a tie, so a site a regrow
+/// bore a tip on exactly names the regrown limb, not the pruned one.
 fn nearest(
     site: &TipSite,
     limbs: &[Limb],
@@ -320,15 +533,51 @@ fn nearest(
                     (k, (xy[0] - site.xy[0]).hypot(xy[1] - site.xy[1]))
                 })
                 .filter(|&(_, across)| across <= tol)
-                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .min_by(|a, b| {
+                    let pruned = |k: usize| limbs[k].life != Life::Live;
+                    a.1.total_cmp(&b.1).then(pruned(a.0).cmp(&pruned(b.0)))
+                })
                 .map(|(k, across)| (k, across, dz(i)))
         })
 }
 
+/// The gaps on the layers within `z` whose outline meets `region`, widened
+/// as a regrow widens it.
+pub(crate) fn gaps_in(gaps: &[CoverageGap], region: &[Loop], z: [f64; 2]) -> Vec<CoverageGap> {
+    let region = offset_loops(region, REGION_SLOP_MM);
+    gaps.iter()
+        .filter(|g| {
+            g.z[0] <= z[1] + 1e-6
+                && g.z[1] >= z[0] - 1e-6
+                && solid_area(&boolean_intersect(&region, &outline_loops(g))) > 0.0
+        })
+        .cloned()
+        .collect()
+}
+
+/// A gap's outline as loops.
+fn outline_loops(g: &CoverageGap) -> Vec<Loop> {
+    g.outline
+        .iter()
+        .map(|l| {
+            l.iter()
+                .map(|p| [f64::from(p[0]), f64::from(p[1])])
+                .collect()
+        })
+        .collect()
+}
+
 /// `demanded` less the part only pruned tips held. Each point is held by
 /// the nearest knot on its layer, a frozen tip or a passing trunk, and a
-/// point nearest a pruned tip goes, out to `hold` from it.
-fn held_interface(demanded: &[Loop], pruned: &[[f64; 2]], live: &[Node], hold: f64) -> Vec<Loop> {
+/// point nearest a pruned tip goes, out to `hold` from it, unless a regrow
+/// numbered after the tip's prune restored it.
+fn held_interface(
+    demanded: &[Loop],
+    pruned: &[([f64; 2], u32)],
+    live: &[Node],
+    hold: f64,
+    restored: &[(u32, Vec<Loop>)],
+) -> Vec<Loop> {
     if pruned.is_empty() || demanded.is_empty() {
         return demanded.to_vec();
     }
@@ -338,19 +587,41 @@ fn held_interface(demanded: &[Loop], pruned: &[[f64; 2]], live: &[Node], hold: f
         grid.insert(k, n.xy);
     }
     let mut near = Vec::new();
-    let cells: Vec<Loop> = pruned
+    let cells: Vec<(Loop, u32)> = pruned
         .iter()
-        .filter_map(|&t| {
+        .filter_map(|&(t, by)| {
             grid.near(t, reach, &mut near);
             let mut rivals: Vec<[f64; 2]> = near.iter().map(|&k| live[k].xy).collect();
             rivals.sort_by(|a, b| dist(*a, t).total_cmp(&dist(*b, t)));
-            nearest_cell(t, &rivals, hold)
+            nearest_cell(t, &rivals, hold).map(|cell| (cell, by))
         })
         .collect();
+    let cells = unrestored(cells, restored);
     if cells.is_empty() {
         return demanded.to_vec();
     }
     drop_slivers(boolean_diff(demanded, &cells), 0.05)
+}
+
+/// Each cell less what regrows numbered after its tip's prune restored.
+fn unrestored(cells: Vec<(Loop, u32)>, restored: &[(u32, Vec<Loop>)]) -> Vec<Loop> {
+    if restored.is_empty() {
+        return cells.into_iter().map(|(cell, _)| cell).collect();
+    }
+    let mut prunes: Vec<u32> = cells.iter().map(|&(_, by)| by).collect();
+    prunes.sort_unstable();
+    prunes.dedup();
+    let mut left = Vec::new();
+    for by in prunes {
+        let mine: Vec<Loop> = cells
+            .iter()
+            .filter(|c| c.1 == by)
+            .map(|c| c.0.clone())
+            .collect();
+        let back = union_all(restored.iter().filter(|r| r.0 > by).map(|r| r.1.as_slice()));
+        left.extend(boolean_diff(&mine, &back));
+    }
+    left
 }
 
 fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
@@ -420,7 +691,9 @@ impl Supports {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{band, layers, pad_over_flank, plate, plate_opts, rect};
+    use super::super::tests::{
+        band, layers, pad_over_flank, plate, plate_opts, rect, unfooted_interface,
+    };
     use super::super::{Forest, SupportOpts, SupportStyle};
     use super::*;
     use crate::poly::in_solid;
@@ -797,8 +1070,11 @@ mod tests {
         let away = statuses(&bands, &shifted(&contours, 0.0, 40.0));
         let missed: Vec<EditStatus> = edits
             .iter()
-            .map(|SupportEdit::Prune { sites }| EditStatus::Stale {
-                missed: sites.len(),
+            .map(|edit| match edit {
+                SupportEdit::Prune { sites } => EditStatus::Stale {
+                    missed: sites.len(),
+                },
+                SupportEdit::Regrow { .. } => unreachable!("the plate edits only prune"),
             })
             .collect();
         assert_eq!(away, missed);
@@ -822,7 +1098,11 @@ mod tests {
             panic!("{out:?}");
         };
         assert!(missed >= off, "{missed} missed, {off} off the half plate");
-        assert!(cut.forest.limbs.iter().any(|l| l.life == Life::Removed));
+        assert!(cut
+            .forest
+            .limbs
+            .iter()
+            .any(|l| matches!(l.life, Life::Removed { .. })));
         assert_eq!(cut.layers, cut.rebuilt(&bands, &half));
     }
 
@@ -907,6 +1187,10 @@ mod tests {
             forest: Forest { limbs, at },
             layers: vec![empty; bands.len()],
             demanded: vec![Vec::new(); bands.len()],
+            born: vec![Vec::new(); bands.len()],
+            restored: vec![Vec::new(); bands.len()],
+            edits: 0,
+            regrown: Vec::new(),
             opts: plate_opts(),
         };
         s.layers = s.rebuilt(&bands, &contours);
@@ -946,5 +1230,417 @@ mod tests {
         assert!(host.contains(&site(&limbs[leaf], &bands)));
         assert!(host.contains(&site(&limbs[into.0 as usize - 1], &bands)));
         assert_eq!(s.tree_sites(id(leaf), &bands), s.tree_sites(into, &bands));
+    }
+
+    /// Everything a limb is, with every float as its bits.
+    type LimbBits = (usize, Vec<[u64; 10]>, End, Life);
+
+    fn bits(l: &Limb) -> LimbBits {
+        let knots = l
+            .knots
+            .iter()
+            .map(|n| {
+                [
+                    u64::from(n.id),
+                    n.xy[0].to_bits(),
+                    n.xy[1].to_bits(),
+                    n.above[0].to_bits(),
+                    n.above[1].to_bits(),
+                    n.radius.to_bits(),
+                    n.dist.to_bits(),
+                    u64::from(n.freeze),
+                    n.load.to_bits(),
+                    u64::from(n.to_bed),
+                ]
+            })
+            .collect();
+        (l.top, knots, l.end, l.life)
+    }
+
+    fn limb_bits(s: &Supports) -> Vec<LimbBits> {
+        s.forest.limbs.iter().map(bits).collect()
+    }
+
+    fn gap_area(gaps: &[CoverageGap]) -> f64 {
+        gaps.iter().map(|g| f64::from(g.area_mm2)).sum()
+    }
+
+    #[test]
+    fn regrowing_a_pruned_trees_gap_holds_it_again_and_keeps_every_kept_knot() {
+        for (name, fixture) in fixtures() {
+            let (bands, contours, _) = &fixture;
+            let mut s = build(&fixture);
+            let built = s.coverage(bands, contours);
+            let original = limb_bits(&s);
+            let tree = s.tree_sites(id(biggest_tree(&s, bands)), bands);
+            let pruned = s.apply(&[SupportEdit::Prune { sites: tree }], bands, contours);
+            let after_prune = limb_bits(&s);
+
+            // Every gap the prune leaves, the cut-off pad's included.
+            let gaps = s.coverage_from(bands, contours, 0.0);
+            assert!(!gaps.is_empty(), "{name}: nothing to regrow");
+            let edit = SupportEdit::over_gaps(&gaps);
+            let out = s.apply(std::slice::from_ref(&edit), bands, contours);
+            let o = &out[0];
+            assert_eq!(o.status, EditStatus::Applied, "{name}");
+            assert!(
+                s.forest.limbs.len() > original.len(),
+                "{name}: grew nothing"
+            );
+            assert_eq!(s.coverage(bands, contours), built, "{name}");
+            assert_eq!(
+                unfooted_interface(&s.layers, contours),
+                Vec::new(),
+                "{name}"
+            );
+            assert!(
+                (o.newly_floating_mm2 + pruned[0].newly_floating_mm2).abs() < 1e-3,
+                "{name}: the regrow gave back {} of the {} mm2 the prune left",
+                -o.newly_floating_mm2,
+                pruned[0].newly_floating_mm2
+            );
+            let SupportEdit::Regrow { region, z } = &edit else {
+                unreachable!()
+            };
+            let had = gaps_in(&built, region, *z);
+            assert_eq!(gap_area(&o.floating), gap_area(&had), "{name}");
+            for (k, was) in original.iter().enumerate() {
+                if s.forest.limbs[k].life == Life::Live {
+                    assert_eq!(&bits(&s.forest.limbs[k]), was, "{name}: kept limb {k}");
+                }
+            }
+            assert_eq!(&limb_bits(&s)[..original.len()], &after_prune[..], "{name}");
+            assert_eq!(s.layers, s.rebuilt(bands, contours), "{name}");
+        }
+    }
+
+    #[test]
+    fn pruning_a_regrown_tree_brings_its_gap_back() {
+        let (bands, contours) = plate();
+        let mut s = Supports::build(&bands, &contours, &plate_opts()).unwrap();
+        let first = s.forest.limbs.len();
+        let tree = s.tree_sites(id(biggest_tree(&s, &bands)), &bands);
+        let pruned = s.apply(&[SupportEdit::Prune { sites: tree }], &bands, &contours);
+        s.apply(
+            &[SupportEdit::over_gaps(&pruned[0].floating)],
+            &bands,
+            &contours,
+        );
+        assert_eq!(s.coverage(&bands, &contours), Vec::new());
+
+        let regrown: Vec<TipSite> = s.forest.limbs[first..]
+            .iter()
+            .map(|l| site(l, &bands))
+            .collect();
+        for (k, t) in (first..).zip(&regrown) {
+            assert_eq!(s.limb_site(id(k), &bands), *t);
+            assert!(s.branch_sites(id(k), &bands).contains(t));
+            assert!(s.tree_sites(id(k), &bands).contains(t));
+        }
+        let out = s.apply(&[SupportEdit::Prune { sites: regrown }], &bands, &contours);
+        assert_eq!(out[0].status, EditStatus::Applied);
+        assert!(s.forest.limbs[first..].iter().all(|l| l.life != Life::Live));
+        let back = gap_area(&s.coverage_from(&bands, &contours, 0.0));
+        let left = gap_area(&pruned[0].floating);
+        assert!(
+            (back - left).abs() < 0.5,
+            "{back} mm2 back, the prune left {left}"
+        );
+        assert_eq!(s.layers, s.rebuilt(&bands, &contours));
+    }
+
+    #[test]
+    fn regrowing_a_held_region_is_stale_and_changes_nothing() {
+        let (bands, contours) = plate();
+        let whole = SupportEdit::Regrow {
+            region: vec![rect(-5.0, -5.0, 45.0, 19.0)],
+            z: [0.0, 20.0],
+        };
+        let mut s = Supports::build(&bands, &contours, &plate_opts()).unwrap();
+        let (layers, limbs) = (s.layers.clone(), limb_bits(&s));
+        let out = s.apply(std::slice::from_ref(&whole), &bands, &contours);
+        let stale = EditOutcome {
+            status: EditStatus::Stale { missed: 1 },
+            changed: Vec::new(),
+            stood: 0,
+            newly_floating_mm2: 0.0,
+            floating: Vec::new(),
+        };
+        assert_eq!(out, vec![stale.clone()]);
+        assert_eq!((s.layers.clone(), limb_bits(&s)), (layers, limbs));
+
+        // Once a regrow has held what a prune left, regrowing it again is stale too.
+        let tree = s.tree_sites(id(biggest_tree(&s, &bands)), &bands);
+        let pruned = s.apply(&[SupportEdit::Prune { sites: tree }], &bands, &contours);
+        let regrow = SupportEdit::over_gaps(&pruned[0].floating);
+        s.apply(std::slice::from_ref(&regrow), &bands, &contours);
+        let (layers, limbs) = (s.layers.clone(), limb_bits(&s));
+        let again = s.apply(&[regrow, whole], &bands, &contours);
+        assert_eq!(again, vec![stale.clone(), stale]);
+        assert_eq!((s.layers.clone(), limb_bits(&s)), (layers, limbs));
+    }
+
+    #[test]
+    fn an_incremental_regrow_matches_a_full_rebuild() {
+        let mut rng = Rng(0xD1B5_4A32_D192_ED03);
+        let mut checked = 0;
+        for (name, fixture) in fixtures() {
+            let (bands, contours, _) = &fixture;
+            let base = build(&fixture);
+            let (min, max) = base
+                .layers
+                .iter()
+                .filter_map(|l| crate::poly::loop_bounds(&l.interface))
+                .fold(([f64::MAX; 2], [f64::MIN; 2]), |(a, b), (c, d)| {
+                    (
+                        [a[0].min(c[0]), a[1].min(c[1])],
+                        [b[0].max(d[0]), b[1].max(d[1])],
+                    )
+                });
+            let mut stacked = build(&fixture);
+            let mut list = Vec::new();
+            for (what, prune) in prunes(&base, bands, &mut rng) {
+                let mut s = build(&fixture);
+                let out = s.apply(std::slice::from_ref(&prune), bands, contours);
+                let mut edits = vec![prune];
+                if !out[0].floating.is_empty() {
+                    edits.push(SupportEdit::over_gaps(&out[0].floating));
+                }
+                // A box over a random half of the supports, across all layers.
+                let cut = min[0] + (max[0] - min[0]) * (rng.next() % 100) as f64 / 100.0;
+                let half = if rng.next() % 2 == 0 {
+                    rect(min[0] - 1.0, min[1] - 1.0, cut, max[1] + 1.0)
+                } else {
+                    rect(cut, min[1] - 1.0, max[0] + 1.0, max[1] + 1.0)
+                };
+                edits.push(SupportEdit::Regrow {
+                    region: vec![half],
+                    z: [0.0, bands[bands.len() - 1].z],
+                });
+                let outs = s.apply(&edits[1..], bands, contours);
+                assert_eq!(s.layers, s.rebuilt(bands, contours), "{name}, {what}");
+                assert!(
+                    outs.iter().all(|o| o.newly_floating_mm2 <= 1e-6),
+                    "{name}, {what}: {outs:?}"
+                );
+
+                let mut replayed = build(&fixture);
+                let all = replayed.apply(&edits, bands, contours);
+                assert_eq!(all[0], out[0], "{name}, {what}");
+                assert_eq!(all[1..], outs[..], "{name}, {what}");
+                assert_eq!(replayed.layers, s.layers, "{name}, {what}");
+
+                stacked.apply(&edits, bands, contours);
+                assert_eq!(
+                    stacked.layers,
+                    stacked.rebuilt(bands, contours),
+                    "{name}, stacked to {what}"
+                );
+                list.extend(edits);
+                checked += 1;
+            }
+            let mut replayed = build(&fixture);
+            replayed.apply(&list, bands, contours);
+            assert_eq!(
+                replayed.layers, stacked.layers,
+                "{name}, the stacked list replayed"
+            );
+        }
+        assert!(checked >= 30, "only {checked} sequences checked");
+    }
+
+    #[test]
+    fn replaying_a_prune_and_regrow_on_a_fresh_build_gives_the_same_layers() {
+        let (bands, contours) = plate();
+        let mut first = Supports::build(&bands, &contours, &plate_opts()).unwrap();
+        let tree = first.tree_sites(id(biggest_tree(&first, &bands)), &bands);
+        let prune = SupportEdit::Prune { sites: tree };
+        let pruned = first.apply(std::slice::from_ref(&prune), &bands, &contours);
+        let edits = vec![prune, SupportEdit::over_gaps(&pruned[0].floating)];
+        let regrown = first.apply(&edits[1..], &bands, &contours);
+        assert_eq!(regrown[0].status, EditStatus::Applied);
+        let mut again = Supports::build(&bands, &contours, &plate_opts()).unwrap();
+        let out = again.apply(&edits, &bands, &contours);
+        assert_eq!(out, [pruned, regrown].concat());
+        assert_eq!(again.layers, first.layers);
+        assert_eq!(limb_bits(&again), limb_bits(&first));
+    }
+
+    /// Two pads with the guest pruned and its pad regrown. When `host_load`
+    /// is set, the kept trunk is made to carry that many tips already.
+    fn regrow_beside_a_kept_trunk(host_load: Option<f64>) -> (Supports, Vec<LimbBits>) {
+        let fixture = two_pads();
+        let (bands, contours, _) = &fixture;
+        let mut s = build(&fixture);
+        if let Some(load) = host_load {
+            for k in &mut s.forest.limbs[0].knots {
+                k.load = load;
+            }
+        }
+        let sites = s.branch_sites(NodeId(2), bands);
+        let pruned = s.apply(&[SupportEdit::Prune { sites }], bands, contours);
+        let host = limb_bits(&s);
+        let out = s.apply(
+            &[SupportEdit::over_gaps(&pruned[0].floating)],
+            bands,
+            contours,
+        );
+        assert_eq!(out[0].status, EditStatus::Applied);
+        assert_eq!(s.coverage(bands, contours), Vec::new());
+        assert_eq!(s.layers, s.rebuilt(bands, contours));
+        (s, host)
+    }
+
+    #[test]
+    fn a_regrown_tip_joins_a_kept_trunk_only_when_it_is_thick_enough() {
+        // The trunk carries both pads below the merge, so it has room for one more.
+        let (s, before) = regrow_beside_a_kept_trunk(None);
+        let ends: Vec<End> = s.forest.limbs.iter().map(|l| l.end).collect();
+        assert_eq!(
+            ends,
+            vec![
+                End::Bed,
+                End::Merged { into: NodeId(1) },
+                End::Merged { into: NodeId(1) }
+            ]
+        );
+        assert_eq!(bits(&s.forest.limbs[0]), before[0]);
+
+        // A trunk already carrying 500 tips cannot take one more without
+        // growing, so the regrown tip stands on its own trunk to the bed.
+        let (s, before) = regrow_beside_a_kept_trunk(Some(500.0));
+        let ends: Vec<End> = s.forest.limbs.iter().map(|l| l.end).collect();
+        assert_eq!(
+            ends,
+            vec![End::Bed, End::Merged { into: NodeId(1) }, End::Bed]
+        );
+        assert_eq!(bits(&s.forest.limbs[0]), before[0]);
+        for l in &s.layers {
+            let host = l.disks.iter().find(|d| d.node == NodeId(1));
+            let new = l.disks.iter().find(|d| d.node == NodeId(3));
+            if let (Some(h), Some(n)) = (host, new) {
+                let gap = dist(h.xy, n.xy) - h.r - n.r;
+                assert!(
+                    gap >= -1e-9,
+                    "the regrown trunk overlaps the kept one by {}",
+                    -gap
+                );
+            }
+        }
+    }
+
+    /// A kept column of `radius` at the origin, from the bed up to layer
+    /// `top`, already carrying `load` tips, under `pads` of interface on
+    /// layers 39 and 40 that nothing holds. Layer 40 is at z 8.2.
+    fn kept_column(
+        radius: f64,
+        top: usize,
+        load: f64,
+        pads: &[Loop],
+    ) -> (Vec<LayerBand>, Supports) {
+        let bands = layers(41);
+        let mut column = column(1, top, 0, [0.0, 0.0], radius);
+        for k in &mut column.knots {
+            k.load = load;
+        }
+        let mut at = vec![Vec::new(); bands.len()];
+        for on in &mut at[..=top] {
+            on.push(0);
+        }
+        let mut demanded = vec![Vec::new(); bands.len()];
+        let mut born = vec![Vec::new(); bands.len()];
+        demanded[39] = pads.to_vec();
+        demanded[40] = pads.to_vec();
+        born[40] = pads.to_vec();
+        let empty = SupportLayer {
+            sparse: Vec::new(),
+            interface: Vec::new(),
+            disks: Vec::new(),
+        };
+        let mut s = Supports {
+            forest: Forest {
+                limbs: vec![column],
+                at,
+            },
+            layers: vec![empty; bands.len()],
+            demanded,
+            born,
+            restored: vec![Vec::new(); bands.len()],
+            edits: 0,
+            regrown: Vec::new(),
+            opts: plate_opts(),
+        };
+        s.layers = s.rebuilt(&bands, &[]);
+        (bands, s)
+    }
+
+    fn regrow_pads(pads: Vec<Loop>) -> SupportEdit {
+        SupportEdit::Regrow {
+            region: pads,
+            z: [7.8, 8.2],
+        }
+    }
+
+    #[test]
+    fn a_regrown_trunk_keeps_clear_of_a_kept_trunk_it_cannot_join() {
+        // The column is 1.5 mm wide up to layer 30 and carries 500 tips. The
+        // pad's tip is born 1.2 mm from its axis, over its edge.
+        let pad = vec![rect(0.95, -0.25, 1.45, 0.25)];
+        let (bands, mut s) = kept_column(1.5, 30, 500.0, &pad);
+        let contours = vec![Vec::new(); bands.len()];
+        let kept = bits(&s.forest.limbs[0]);
+        let out = s.apply(&[regrow_pads(pad)], &bands, &contours);
+        assert_eq!(out[0].status, EditStatus::Applied);
+        let ends: Vec<End> = s.forest.limbs.iter().map(|l| l.end).collect();
+        assert_eq!(ends, vec![End::Landed, End::Bed]);
+        assert_eq!(bits(&s.forest.limbs[0]), kept);
+        let beside: Vec<(usize, bool)> = (0..s.layers.len())
+            .filter_map(|i| {
+                let d = &s.layers[i].disks;
+                let h = d.iter().find(|d| d.node == NodeId(1))?;
+                let n = d.iter().find(|d| d.node == NodeId(2))?;
+                Some((i, dist(h.xy, n.xy) < h.r + n.r - 1e-9))
+            })
+            .collect();
+        assert_eq!(beside.len(), 30, "both trunks print on layers 0 to 29");
+        let overlapping: Vec<usize> = beside.iter().filter(|b| b.1).map(|b| b.0).collect();
+        // It steps clear one lean step a layer under the column's top, and
+        // overlaps again only where every trunk widens for the bed.
+        assert_eq!(overlapping, vec![0, 26, 27, 28, 29]);
+        assert_eq!(s.layers, s.rebuilt(&bands, &contours));
+    }
+
+    #[test]
+    fn a_kept_trunk_takes_only_as_many_regrown_tips_as_its_section_carries() {
+        // A 1 mm column up to layer 38 already carrying 31 tips has room for
+        // a 32nd: section_radius(32) is 0.996 mm and section_radius(33) is
+        // 1.012 mm. Two pads, either side of it, each grow one tip.
+        let pads = [
+            rect(2.25, -0.25, 2.75, 0.25),
+            rect(-2.75, -0.25, -2.25, 0.25),
+        ];
+        let contours = vec![Vec::new(); 41];
+        let grow = |edits: Vec<SupportEdit>| {
+            let (bands, mut s) = kept_column(1.0, 38, 31.0, &pads);
+            let kept = bits(&s.forest.limbs[0]);
+            let out = s.apply(&edits, &bands, &contours);
+            assert!(
+                out.iter().all(|o| o.status == EditStatus::Applied),
+                "{out:?}"
+            );
+            assert_eq!(bits(&s.forest.limbs[0]), kept);
+            assert_eq!(s.layers, s.rebuilt(&bands, &contours));
+            s.forest.limbs.iter().map(|l| l.end).collect::<Vec<End>>()
+        };
+        let one_taken = vec![End::Landed, End::Merged { into: NodeId(1) }, End::Bed];
+        // Both tips in one regrow, then one regrow per pad.
+        assert_eq!(grow(vec![regrow_pads(pads.to_vec())]), one_taken);
+        assert_eq!(
+            grow(vec![
+                regrow_pads(vec![pads[0].clone()]),
+                regrow_pads(vec![pads[1].clone()]),
+            ]),
+            one_taken
+        );
     }
 }
