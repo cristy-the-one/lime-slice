@@ -22,7 +22,16 @@ This is the plan for making tree supports editable without re-slicing the part. 
 **Edits.**
 - `Prune { sites }` removes the limbs born at those sites, then trims whatever no longer carries a surviving tip. Branch and tree are the same operation; the difference exists only in what the user selected.
 - `Regrow { region, z }` grows fresh tips for demand inside the region that nothing covers. Kept limbs stay fixed: they are pair targets that never move, obstacles, and merge hosts only when they are already thick enough. An edit never changes a kept knot.
+  - `z` is a range, low then high, not a top height. A single height would also regrow every unheld patch below it in the same footprint, including trees the user pruned on purpose. A coverage gap's own range is the natural input.
+  - On each layer in the range, the mask is the demanded interface less what the layer prints, inside the region widened by twice the coverage outline tolerance. Pieces under 0.05 mm² are dropped.
+  - Tips are born where the overhang reaches its contact inside the mask, and any piece of the mask no new tip covers gets a seeded tip, by the same sampling and packing as the walk.
+  - The walk runs the same per-layer step as a build. Kept knots on the layer it steps to are fixed. A new node pairs with a kept knot only if the knot can carry it, which means the same `to_bed` and `section_radius(host.load + guest.load) <= host.radius`. It joins the knot when it also holds the node's disk above. Otherwise it is pushed clear of the kept disk, at most one lean step a layer. A kept knot only counts if its disk stands on that layer.
+  - The load in that test counts the regrown tips the kept limb already took, at that layer and below, from this regrow and earlier ones. A knot also takes no more than the tightest lower knot of its limb, where an earlier regrown tip joined, still can. This is worked out from the forest and never written to a kept knot. The load is not followed into the limbs the kept limb merges into.
+  - New limbs get ids after every existing one, so a kept host always has the smaller id. A kept limb never merges into a new one.
+  - Regrowing a region with nothing unheld in it is `Stale` and changes nothing.
 - The interface is derived from the tips that hold it. A deleted tree's interface patch cannot survive on a neighbour's foot and bridge over air.
+  - Every edit is numbered, and a pruned limb records the edit that pruned it. Each regrow stores its mask per layer under its own number.
+  - A pruned tip's cell is cleared from the interface, less the masks of regrows numbered after its prune. Regrowing a pruned tree's gap therefore prints its interface again, and pruning the regrown tree clears it again.
 
 **Recompute.** Settling disks and dropping unfooted interface read only the finished layer below. They run as one bottom-up pass, starting at the lowest layer an edit changed and stopping once a layer above the change comes out unchanged. Support paths are rebuilt for the layers that changed. A property test checks that the incremental result equals a full rebuild. Travel order and G-code emit still run over the whole print until the separate-tours step.
 

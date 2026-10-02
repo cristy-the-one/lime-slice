@@ -101,6 +101,17 @@ pub(crate) struct Supports {
     /// Each layer's interface as the part demands it, before any patch with
     /// nothing under it is dropped. Coverage measures `layers` against it.
     demanded: Vec<Vec<Loop>>,
+    /// Each layer's overhang reaching its contact there, where the walk bore tips.
+    born: Vec<Vec<Loop>>,
+    /// Per layer, the area each regrow grew for, by the edit's number. It
+    /// undoes the interface clip of tips pruned by earlier edits.
+    restored: Vec<Vec<(u32, Vec<Loop>)>>,
+    /// Edits applied so far. The next one gets this number.
+    edits: u32,
+    /// The first limb each regrow grew, ascending. A limb merged into one
+    /// before its regrow's first joined a kept limb, whose knots never took
+    /// its load.
+    regrown: Vec<usize>,
     /// The settings it grew with. Edits re-stand layers with the same lean and pitch.
     opts: SupportOpts,
 }
@@ -153,7 +164,8 @@ pub(crate) struct Limb {
     pub life: Life,
 }
 
-/// A limb as edits leave it. Only a limb whose own tip was pruned is not `Live`.
+/// A limb as edits leave it. Only a limb whose own tip was pruned is not
+/// `Live`, and `by` numbers the edit that pruned it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Life {
     Live,
@@ -161,9 +173,21 @@ pub(crate) enum Life {
     /// knots up to layer `to`, where the highest of them joins it.
     Trimmed {
         to: usize,
+        by: u32,
     },
     /// Its tip is pruned and nothing merged into it survives.
-    Removed,
+    Removed {
+        by: u32,
+    },
+}
+
+impl Life {
+    fn pruned_by(self) -> Option<u32> {
+        match self {
+            Life::Live => None,
+            Life::Trimmed { by, .. } | Life::Removed { by } => Some(by),
+        }
+    }
 }
 
 /// How a limb stops, stepping down from its last knot.
@@ -216,8 +240,8 @@ impl Limb {
     fn reach(&self) -> Option<usize> {
         match self.life {
             Life::Live => Some(self.top),
-            Life::Trimmed { to } => Some(to),
-            Life::Removed => None,
+            Life::Trimmed { to, .. } => Some(to),
+            Life::Removed { .. } => None,
         }
     }
 }
@@ -259,6 +283,10 @@ impl Supports {
             forest,
             layers,
             demanded,
+            restored: vec![Vec::new(); demand.born.len()],
+            born: demand.born,
+            edits: 0,
+            regrown: Vec::new(),
             opts: *opts,
         })
     }
@@ -559,117 +587,231 @@ fn grow(
     opts: &SupportOpts,
 ) -> Option<(Forest, Vec<Vec<Disk>>)> {
     let n = bands.len();
-    let iface_n = opts.interface_layers.max(1);
-    let load_factor = load_factor_of(opts);
-    let tip_r = tip_radius(opts);
-    let trunk_r = (opts.trunk_diameter * 0.5).max(tip_r + 0.3).clamp(0.6, 8.0);
-    let lean = lean_of(opts);
-    let pitch = Pitch::of(opts);
-    let part_bb: Vec<Option<([f64; 2], [f64; 2])>> =
-        contours.iter().map(|c| loop_bounds(c)).collect();
-
-    let mut nodes: Vec<Node> = Vec::new();
-    let mut next_id = 1u32;
+    let mut walk = Walk::new(bands, contours, opts, 1);
     let mut forest = Forest::new(n);
     let mut disks = vec![Vec::new(); n];
-    let mut ended = Vec::new();
+    let mut none = Fixed::new(Vec::new());
     for i in (0..n).rev() {
         if opts.job.cancelled() {
             return None;
         }
-        let part = contours.get(i).map(Vec::as_slice).unwrap_or(&[]);
-        let born = &demand.born[i];
+        walk.arrive(i, &demand.born[i], &demand.interface[i]);
+        forest.record(i, &walk.nodes);
+        disks[i] = organic_disks(&walk.nodes, walk.part(i), opts.xy_gap);
+        walk.descend(i, &mut none, &mut forest);
+    }
+    Some((forest, disks))
+}
+
+/// The walk between layers: the nodes standing on the current layer and the
+/// settings they grow by. A build walks every layer with nothing fixed. A
+/// regrow walks the same steps on masked demand, among kept knots.
+struct Walk<'a> {
+    bands: &'a [LayerBand],
+    contours: &'a [Vec<Loop>],
+    xy_gap: f64,
+    iface_n: u32,
+    load_factor: f64,
+    tip_r: f64,
+    trunk_r: f64,
+    lean: f64,
+    pitch: Pitch,
+    part_bb: Vec<Option<Bounds>>,
+    nodes: Vec<Node>,
+    next_id: u32,
+    ended: Vec<(NodeId, End)>,
+}
+
+impl<'a> Walk<'a> {
+    /// A walk whose first tip gets `next_id`.
+    fn new(
+        bands: &'a [LayerBand],
+        contours: &'a [Vec<Loop>],
+        opts: &SupportOpts,
+        next_id: u32,
+    ) -> Self {
+        let tip_r = tip_radius(opts);
+        Self {
+            bands,
+            contours,
+            xy_gap: opts.xy_gap,
+            iface_n: opts.interface_layers.max(1),
+            load_factor: load_factor_of(opts),
+            tip_r,
+            trunk_r: (opts.trunk_diameter * 0.5).max(tip_r + 0.3).clamp(0.6, 8.0),
+            lean: lean_of(opts),
+            pitch: Pitch::of(opts),
+            part_bb: contours.iter().map(|c| loop_bounds(c)).collect(),
+            nodes: Vec::new(),
+            next_id,
+            ended: Vec::new(),
+        }
+    }
+
+    fn part(&self, i: usize) -> &'a [Loop] {
+        self.contours.get(i).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// Bear tips on `born` and give each piece of `interface` no node covers
+    /// a tip of its own, on layer `i`.
+    fn arrive(&mut self, i: usize, born: &[Loop], interface: &[Loop]) {
+        let part = self.part(i);
+        let land = |freeze| Land {
+            layer: i,
+            freeze,
+            lean: self.lean,
+            bands: self.bands,
+            contours: self.contours,
+            bounds: &self.part_bb,
+        };
         if !born.is_empty() {
             let cleared = if part.is_empty() {
-                born.clone()
+                born.to_vec()
             } else {
                 drop_slivers(
-                    boolean_diff(born, &offset_loops(part, opts.xy_gap * 0.35)),
+                    boolean_diff(born, &offset_loops(part, self.xy_gap * 0.35)),
                     0.02,
                 )
             };
             let seeds = if cleared.is_empty() { born } else { &cleared };
-            for (p, load, to_bed) in sample_tips(
-                seeds,
-                &pitch,
-                &Land {
-                    layer: i,
-                    freeze: iface_n,
-                    lean,
-                    bands,
-                    contours,
-                    bounds: &part_bb,
-                },
-            ) {
-                nodes.push(Node {
-                    id: next_id,
+            for (p, load, to_bed) in sample_tips(seeds, &self.pitch, &land(self.iface_n)) {
+                self.nodes.push(Node {
+                    id: self.next_id,
                     xy: p,
                     above: p,
-                    radius: tip_r,
+                    radius: self.tip_r,
                     dist: 0.0,
-                    freeze: iface_n,
+                    freeze: self.iface_n,
                     load,
                     to_bed,
                 });
-                next_id += 1;
+                self.next_id += 1;
             }
         }
         // Tips frozen at birth stay put while the part silhouette moves.
         // A patch that slid off every tip needs its own trunk, starting
         // on the very next layer, or the interface prints over air.
         seed_uncovered_interface(
-            &demand.interface[i],
-            &mut nodes,
-            &mut next_id,
-            tip_r,
-            &pitch,
-            &Land {
-                layer: i,
-                freeze: 1,
-                lean,
-                bands,
-                contours,
-                bounds: &part_bb,
-            },
+            interface,
+            &mut self.nodes,
+            &mut self.next_id,
+            self.tip_r,
+            &self.pitch,
+            &land(1),
         );
         if i == 0 {
-            for n in &mut nodes {
+            for n in &mut self.nodes {
                 if n.freeze == 0 {
-                    n.radius = n.radius.max(trunk_r * 0.95);
+                    n.radius = n.radius.max(self.trunk_r * 0.95);
                 }
             }
         }
-        forest.record(i, &nodes);
-        disks[i] = organic_disks(&nodes, part, opts.xy_gap);
+    }
 
-        if i > 0 {
-            let below = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
-            let below2 = if i > 1 {
-                contours.get(i - 2).map(Vec::as_slice).unwrap_or(&[])
-            } else {
-                &[]
-            };
-            nodes = propagate_nodes(
-                nodes,
-                below,
-                below2,
-                &Grow {
-                    height: bands[i].height,
-                    lean,
-                    tip_r,
-                    trunk_r,
-                    xy_gap: opts.xy_gap,
-                    next_is_bed: i == 1,
-                    load_factor,
-                },
-                &mut ended,
-            );
-            for (id, end) in ended.drain(..) {
-                forest.limbs[id.0 as usize - 1].end = end;
-            }
+    /// Step every node from layer `i` down to the next among `fixed`, and
+    /// record in `forest` how the limbs that stop here end.
+    fn descend(&mut self, i: usize, fixed: &mut Fixed, forest: &mut Forest) {
+        if i == 0 {
+            return;
+        }
+        let below2 = if i > 1 { self.part(i - 2) } else { &[] };
+        let grow = Grow {
+            height: self.bands[i].height,
+            lean: self.lean,
+            tip_r: self.tip_r,
+            trunk_r: self.trunk_r,
+            xy_gap: self.xy_gap,
+            next_is_bed: i == 1,
+            load_factor: self.load_factor,
+        };
+        let nodes = std::mem::take(&mut self.nodes);
+        self.nodes = propagate_nodes(
+            nodes,
+            self.part(i - 1),
+            below2,
+            &grow,
+            fixed,
+            &mut self.ended,
+        );
+        for (id, end) in self.ended.drain(..) {
+            forest.limbs[id.0 as usize - 1].end = end;
         }
     }
-    Some((forest, disks))
+}
+
+/// Kept knots on the layer a regrow steps down to. They never move. A new
+/// node may lean toward one and join it when it is already thick enough to
+/// carry the node too; otherwise the node keeps its disk clear of it.
+/// These are copies: each one's load counts the new nodes that joined its
+/// limb on the way down, and the limb's own knot never does.
+struct Fixed {
+    knots: Vec<Node>,
+    grid: CellGrid,
+    widest: f64,
+    /// The id of every kept knot joined on this step, and the load it took.
+    joined: Vec<(NodeId, f64)>,
+}
+
+impl Fixed {
+    /// `knots` in ascending id order.
+    fn new(knots: Vec<Node>) -> Self {
+        let mut grid = CellGrid::new(PAIR_CELL_MM);
+        for (k, n) in knots.iter().enumerate() {
+            grid.insert(k, n.xy);
+        }
+        let widest = knots.iter().map(|n| n.radius).fold(0.0, f64::max);
+        Self {
+            knots,
+            grid,
+            widest,
+            joined: Vec::new(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.knots.is_empty()
+    }
+
+    /// Join `n` to a kept knot on this layer if one takes it: the smallest
+    /// id that can carry it and whose disk holds `n`, at its grown radius,
+    /// where it printed on the layer above.
+    fn join(&mut self, n: &Node, grow: &Grow, max_step: f64) -> Option<NodeId> {
+        if self.is_empty() {
+            return None;
+        }
+        let reach = max_step + BEAD_OVERHANG_MM;
+        let k = self
+            .grid
+            .around(n.above, self.widest + reach)
+            .filter(|&k| {
+                let h = &self.knots[k];
+                can_carry(h, n, grow)
+                    && (n.above[0] - h.xy[0]).hypot(n.above[1] - h.xy[1]) + n.radius
+                        <= h.radius + reach
+            })
+            .min_by_key(|&k| self.knots[k].id)?;
+        let host = &mut self.knots[k];
+        host.load += n.load;
+        self.joined.push((NodeId(host.id), n.load));
+        Some(NodeId(host.id))
+    }
+
+    /// True when `n`'s disk at `p` would overlap a kept disk it cannot join.
+    fn blocks(&self, p: [f64; 2], n: &Node, grow: &Grow) -> bool {
+        !self.is_empty()
+            && self.grid.around(p, self.widest + n.radius).any(|k| {
+                let h = &self.knots[k];
+                (p[0] - h.xy[0]).hypot(p[1] - h.xy[1]) < h.radius + n.radius
+                    && !can_carry(h, n, grow)
+            })
+    }
+}
+
+/// True when kept `host` may take `guest` in without changing: both head
+/// for the same ground, and the host's section already carries both loads.
+fn can_carry(host: &Node, guest: &Node, grow: &Grow) -> bool {
+    host.to_bed == guest.to_bed
+        && section_radius(host.load + guest.load, grow.tip_r, grow.load_factor) <= host.radius
 }
 
 /// Area of layer `i` that needs a column under it: past the overhang angle,
@@ -902,6 +1044,11 @@ fn section_radius(load: f64, tip_r: f64, load_factor: f64) -> f64 {
     tip_r * (load.max(1.0) / factor).sqrt()
 }
 
+/// Load a section of `radius` carries: `section_radius` the other way round.
+fn section_load(radius: f64, tip_r: f64, load_factor: f64) -> f64 {
+    load_factor.max(0.5) * (radius / tip_r).powi(2)
+}
+
 /// Radius a branch gains per millimetre it falls, so a lone branch still
 /// widens toward its foot. Thickness mostly comes from merges, which add
 /// section area, so a branch is thick where it carries many tips and thin
@@ -917,11 +1064,13 @@ const PAIR_REACH_MM: f64 = 22.0;
 /// with, thicken for the load it already carries, merge when one trunk can hold both, and
 /// stop on a supported mesh face. Frozen nodes are the interface tips and do not move.
 /// Every node that does not reach the next layer is pushed onto `ended`.
+/// `fixed` are kept knots on the next layer: pair targets, hosts, and obstacles.
 fn propagate_nodes(
     nodes: Vec<Node>,
     below: &[Loop],
     below2: &[Loop],
     grow: &Grow,
+    fixed: &mut Fixed,
     ended: &mut Vec<(NodeId, End)>,
 ) -> Vec<Node> {
     let max_step = (grow.height * grow.lean).clamp(0.05, 4.0);
@@ -942,7 +1091,7 @@ fn propagate_nodes(
         }
         next.push(n);
     }
-    let steps = pair_steps(&next, grow, max_step);
+    let steps = pair_steps(&next, &fixed.knots, grow, max_step);
     for (n, xy) in next.iter_mut().zip(steps) {
         n.above = n.xy;
         n.xy = xy;
@@ -958,7 +1107,18 @@ fn propagate_nodes(
         n.radius = (n.radius + flare)
             .max(section_radius(n.load, grow.tip_r, grow.load_factor))
             .min(grow.trunk_r);
-        n.xy = push_out(n.xy, &below, grow.xy_gap + n.radius, max_step);
+        // A kept host has a smaller id than any new node, so it comes first.
+        if let Some(into) = fixed.join(&n, grow, max_step) {
+            ended.push((NodeId(n.id), End::Merged { into }));
+            continue;
+        }
+        let clearance = grow.xy_gap + n.radius;
+        let blocked = |p: [f64; 2]| {
+            (!below.is_empty() && (below.contains(p) || below.within(p, clearance)))
+                || fixed.blocks(p, &n, grow)
+        };
+        let to = push_out(n.xy, blocked, max_step);
+        n.xy = to;
         if below.contains(n.xy) {
             ended.push((NodeId(n.id), End::Pinched));
             continue;
@@ -983,30 +1143,67 @@ fn propagate_nodes(
 /// branches and branches into trunks. Leaning toward the centroid of every
 /// neighbour instead cancels out inside a row of tips, and the row falls as
 /// parallel columns. A node whose neighbours are all taken leans toward the
-/// nearest one and joins that branch after it merges.
-fn pair_steps(nodes: &[Node], grow: &Grow, max_step: f64) -> Vec<[f64; 2]> {
-    let mut live: Vec<usize> = (0..nodes.len()).filter(|&i| nodes[i].freeze == 0).collect();
-    live.sort_by(|&a, &b| nodes[a].xy[0].total_cmp(&nodes[b].xy[0]));
-    let mut rank = vec![usize::MAX; nodes.len()];
+/// nearest one and joins that branch after it merges. A `fixed` knot is
+/// matched like a node but never moves: its partner walks all the way to it.
+fn pair_steps(nodes: &[Node], fixed: &[Node], grow: &Grow, max_step: f64) -> Vec<[f64; 2]> {
+    // A fixed knot past the pair reach of every node pairs with none, and
+    // leaving it out keeps the order of the rest.
+    let bounds = if fixed.is_empty() {
+        None
+    } else {
+        loop_bounds(&[nodes.iter().map(|n| n.xy).collect()])
+    };
+    let fixed: Vec<Node> = match bounds {
+        Some((lo, hi)) => fixed
+            .iter()
+            .filter(|k| {
+                let reach = PAIR_REACH_MM + 1e-6;
+                k.xy[0] >= lo[0] - reach
+                    && k.xy[0] <= hi[0] + reach
+                    && k.xy[1] >= lo[1] - reach
+                    && k.xy[1] <= hi[1] + reach
+            })
+            .copied()
+            .collect(),
+        None => Vec::new(),
+    };
+    // Indices past the nodes are fixed knots.
+    let all = nodes.len() + fixed.len();
+    let node = |i: usize| {
+        if i < nodes.len() {
+            &nodes[i]
+        } else {
+            &fixed[i - nodes.len()]
+        }
+    };
+    let mut live: Vec<usize> = (0..all).filter(|&i| node(i).freeze == 0).collect();
+    live.sort_by(|&a, &b| node(a).xy[0].total_cmp(&node(b).xy[0]));
+    let mut rank = vec![usize::MAX; all];
     for (r, &i) in live.iter().enumerate() {
         rank[i] = r;
     }
     let mut grid = CellGrid::new(PAIR_CELL_MM);
     for &i in &live {
-        grid.insert(i, nodes[i].xy);
+        grid.insert(i, node(i).xy);
     }
     let pair = |u: usize, v: usize| -> Option<Pair> {
         let (a, b) = if rank[u] < rank[v] { (u, v) } else { (v, u) };
-        if nodes[b].xy[0] - nodes[a].xy[0] > PAIR_REACH_MM {
+        if node(b).xy[0] - node(a).xy[0] > PAIR_REACH_MM {
             return None;
         }
-        meet(&nodes[a], &nodes[b], grow).map(|(d, at)| Pair { d, a, b, at })
+        let met = match (a < nodes.len(), b < nodes.len()) {
+            (true, true) => meet(node(a), node(b), grow),
+            (true, false) => meet_fixed(node(a), node(b), grow),
+            (false, true) => meet_fixed(node(b), node(a), grow),
+            (false, false) => None,
+        };
+        met.map(|(d, at)| Pair { d, a, b, at })
     };
     // The best pair for `u` among nodes not in `taken`. Ring `r` of cells is
     // at least (r - 1) cells away, so the search stops once that passes the
     // best distance found, after every tie at that distance has been seen.
     let best_for = |u: usize, taken: &[bool]| -> Option<Pair> {
-        let (cx, cy) = grid.key(nodes[u].xy[0], nodes[u].xy[1]);
+        let (cx, cy) = grid.key(node(u).xy[0], node(u).xy[1]);
         let mut best: Option<Pair> = None;
         for r in 0i64.. {
             let floor = (r - 1).max(0) as f64 * grid.cell - 1e-6;
@@ -1031,9 +1228,9 @@ fn pair_steps(nodes: &[Node], grow: &Grow, max_step: f64) -> Vec<[f64; 2]> {
     // Greedy matching over pairs sorted by (distance, x order) is the same as
     // matching mutual best pairs in any order: the smallest pair left is
     // always mutual, and matching elsewhere never changes a mutual pair.
-    let none = vec![false; nodes.len()];
-    let mut best: Vec<Option<Pair>> = vec![None; nodes.len()];
-    let mut watchers: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+    let none = vec![false; all];
+    let mut best: Vec<Option<Pair>> = vec![None; all];
+    let mut watchers: Vec<Vec<usize>> = vec![Vec::new(); all];
     for &u in &live {
         best[u] = best_for(u, &none);
         if let Some(p) = &best[u] {
@@ -1041,8 +1238,8 @@ fn pair_steps(nodes: &[Node], grow: &Grow, max_step: f64) -> Vec<[f64; 2]> {
         }
     }
     let nearest: Vec<Option<[f64; 2]>> = best.iter().map(|p| p.as_ref().map(|p| p.at)).collect();
-    let mut taken = vec![false; nodes.len()];
-    let mut target: Vec<Option<[f64; 2]>> = vec![None; nodes.len()];
+    let mut taken = vec![false; all];
+    let mut target: Vec<Option<[f64; 2]>> = vec![None; all];
     let mut stack: Vec<usize> = live.iter().rev().copied().collect();
     while let Some(u) = stack.pop() {
         if taken[u] {
@@ -1129,6 +1326,13 @@ fn meet(a: &Node, b: &Node, grow: &Grow) -> Option<(f64, [f64; 2])> {
     Some((d, at))
 }
 
+/// `meet` for a node and a kept knot, which stays where it is. The node
+/// leans only toward a knot that can take it in.
+fn meet_fixed(n: &Node, kept: &Node, grow: &Grow) -> Option<(f64, [f64; 2])> {
+    let d = (n.xy[0] - kept.xy[0]).hypot(n.xy[1] - kept.xy[1]);
+    (d <= PAIR_REACH_MM && can_carry(kept, n, grow)).then_some((d, kept.xy))
+}
+
 /// Cells at Chebyshev distance exactly `r` from (cx, cy).
 fn ring_cells(cx: i64, cy: i64, r: i64) -> impl Iterator<Item = (i64, i64)> {
     let side = (-r..=r).flat_map(move |t| {
@@ -1154,12 +1358,11 @@ fn step_toward(xy: [f64; 2], target: [f64; 2], max_step: f64) -> [f64; 2] {
     [xy[0] + dx * scale, xy[1] + dy * scale]
 }
 
-/// Step toward the nearest point at least `clearance` from `part`, at most
-/// `max_step`. A node that needs a longer move takes it over several layers,
-/// so every disk still sits on the one under it.
-fn push_out(xy: [f64; 2], part: &LoopIndex, clearance: f64, max_step: f64) -> [f64; 2] {
-    let blocked = |p: [f64; 2]| part.contains(p) || part.within(p, clearance);
-    if part.is_empty() || !blocked(xy) {
+/// Step toward the nearest point that is not `blocked`, at most `max_step`.
+/// A node that needs a longer move takes it over several layers, so every
+/// disk still sits on the one under it.
+fn push_out(xy: [f64; 2], blocked: impl Fn([f64; 2]) -> bool, max_step: f64) -> [f64; 2] {
+    if !blocked(xy) {
         return xy;
     }
     let mut best: Option<[f64; 2]> = None;
@@ -1309,6 +1512,15 @@ impl CellGrid {
                 }
             }
         }
+    }
+
+    /// `near` as an iterator, for lookups made too often to fill a list.
+    fn around(&self, p: [f64; 2], r: f64) -> impl Iterator<Item = usize> + '_ {
+        let (lo, hi) = (self.key(p[0] - r, p[1] - r), self.key(p[0] + r, p[1] + r));
+        (lo.0..=hi.0)
+            .flat_map(move |cx| (lo.1..=hi.1).filter_map(move |cy| self.buckets.get(&(cx, cy))))
+            .flatten()
+            .copied()
     }
 }
 
@@ -2109,7 +2321,7 @@ mod tests {
                     next_is_bed: false,
                     load_factor,
                 };
-                let got = pair_steps(&nodes, &grow, 0.17);
+                let got = pair_steps(&nodes, &[], &grow, 0.17);
                 let want = pair_steps_by_scan(&nodes, &grow, 0.17);
                 assert_eq!(got, want, "case {case} load factor {load_factor}");
             }
@@ -2139,7 +2351,10 @@ mod tests {
         (0..n).map(|i| band(i, (i as f64 + 1.0) * 0.2)).collect()
     }
 
-    fn unfooted_interface(layers: &[SupportLayer], contours: &[Vec<Loop>]) -> Vec<(usize, f64)> {
+    pub(super) fn unfooted_interface(
+        layers: &[SupportLayer],
+        contours: &[Vec<Loop>],
+    ) -> Vec<(usize, f64)> {
         let mut bad = Vec::new();
         for i in 1..layers.len() {
             let part = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);

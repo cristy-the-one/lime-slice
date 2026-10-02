@@ -3374,7 +3374,7 @@ mod tests {
 #[cfg(test)]
 mod edit_cost {
     use super::*;
-    use crate::support::edit::{SupportEdit, TipSite};
+    use crate::support::edit::{gaps_in, SupportEdit, TipSite};
     use crate::support::{End, NodeId};
 
     /// What pruning costs against planning supports from scratch, on the mesh
@@ -3488,6 +3488,15 @@ mod edit_cost {
             ("one branch", base.supports.branch_sites(id(guest), bands)),
             ("1% of tips", subset),
         ];
+        let mid = cases[0].1.clone();
+        let warned = |p: &SupportPlan| {
+            let area: f64 = p.coverage.iter().map(|g| f64::from(g.area_mm2)).sum();
+            (p.coverage.len(), (area * 10.0).round() / 10.0)
+        };
+        let warned_built = warned(&base);
+        let built = base
+            .supports
+            .coverage_from(&object.bands, &object.contours, 0.0);
         drop(base);
         for (name, sites) in cases {
             let mut plan = plan();
@@ -3515,5 +3524,52 @@ mod edit_cost {
                 "{name}: the incremental rebuild differs from a full one"
             );
         }
+
+        let mut plan = plan();
+        let pruned = plan.supports.apply(
+            &[SupportEdit::Prune { sites: mid }],
+            &object.bands,
+            &object.contours,
+        );
+        plan.refresh(&object, &pruned[0].changed, &blend, &settings);
+        let edit = [SupportEdit::over_gaps(&pruned[0].floating)];
+        let SupportEdit::Regrow { region, z } = &edit[0] else {
+            unreachable!()
+        };
+        let area = |gaps: &[CoverageGap]| -> f64 {
+            gaps_in(gaps, region, *z)
+                .iter()
+                .map(|g| f64::from(g.area_mm2))
+                .sum()
+        };
+        let (limbs, warned_before) = (plan.supports.forest.limbs.len(), warned(&plan));
+        let started = Instant::now();
+        let out = plan.supports.apply(&edit, &object.bands, &object.contours);
+        let apply_ms = elapsed_ms(started);
+        let started = Instant::now();
+        let painted = plan.refresh(&object, &out[0].changed, &blend, &settings);
+        let refresh_ms = elapsed_ms(started);
+        let same = plan.supports.layers == plan.supports.rebuilt(&object.bands, &object.contours);
+        let (now, was) = (area(&out[0].floating), area(&built));
+        println!(
+            "mid-size tree pruned then regrown over its {} gaps: {:?}, apply {apply_ms:.0} ms, {} limbs grown, {} layers changed in {:?}, stood {}, refresh {refresh_ms:.0} ms repainting {} layers, warned coverage {warned_built:?} as built, {warned_before:?} pruned, {:?} regrown (gaps, mm2), newly floating {:.1} mm2, in the region {now:.1} mm2 against {was:.1} mm2 as built, incremental == full {same}",
+            pruned[0].floating.len(),
+            out[0].status,
+            plan.supports.forest.limbs.len() - limbs,
+            out[0].changed.len(),
+            out[0].changed.first().zip(out[0].changed.last()),
+            out[0].stood,
+            painted.len(),
+            warned(&plan),
+            out[0].newly_floating_mm2,
+        );
+        assert!(
+            same,
+            "regrow: the incremental rebuild differs from a full one"
+        );
+        assert!(
+            now <= was + 1e-3,
+            "the regrown region floats {now} mm2, more than the {was} mm2 it did as built"
+        );
     }
 }
