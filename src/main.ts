@@ -18,6 +18,7 @@ import { applySliceProgress, currentSliceProgress } from "./ui/slice-progress";
 import { authHeaders, currentApiTarget, engineDownMessage } from "./ui/api-base";
 import { mountCompact } from "./ui/compact/mount";
 import { mountConnection } from "./ui/connection";
+import type { CoverageGap, EditOutcome, SupportSkeleton } from "./support-edits";
 import { mountPlatform } from "./platform";
 import { mountToasts, pushToast } from "./ui/toasts";
 import { clampOffset, clipPolyline, flipSection, keepsPoint, layerCut, sectionReach, type SectionSpec, type Vec3 } from "./section-plane";
@@ -63,17 +64,6 @@ interface FeatureRow {
   filamentMm: number;
   filamentG: number;
 }
-/** Demanded support interface the finished supports do not print, over adjacent layers. */
-interface CoverageGap {
-  /** `z` of its lowest and highest layer. */
-  z: [number, number];
-  /** Largest unheld area on one of its layers. */
-  areaMm2: number;
-  min: [number, number];
-  max: [number, number];
-  /** The unheld region on its highest layer. */
-  outline: [number, number][][];
-}
 interface SliceResponse {
   coreMs: number;
   baselineMs: number;
@@ -111,6 +101,14 @@ interface SliceResponse {
     wallCpuMs?: number;
     /** Sum of per-layer infill time inside toolpathMs. */
     infillCpuMs?: number;
+    /** The part's layers came from memory; its clocks read zero. */
+    objectReused?: boolean;
+    /** The unedited supports came from memory; supportMs reads zero. */
+    supportBaseReused?: boolean;
+    /** Leading support edits whose result was already in memory. */
+    editsReused?: number;
+    editApplyMs?: number;
+    editRefreshMs?: number;
   };
   estimate?: {
     seconds: number;
@@ -127,6 +125,10 @@ interface SliceResponse {
   gcodeToken?: string;
   layers: PreviewLayer[];
   score?: { toughness: number };
+  /** One per requested support edit, in request order. Absent when none were sent. */
+  supportEdits?: EditOutcome[];
+  /** The grown trees after every edit. Only when the request set `includeSkeleton`. */
+  skeleton?: SupportSkeleton;
   error?: string;
 }
 

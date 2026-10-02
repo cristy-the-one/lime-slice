@@ -11,6 +11,7 @@ use crate::poly::{
 };
 
 pub(crate) mod edit;
+pub(crate) mod skeleton;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SupportStyle {
@@ -95,6 +96,7 @@ impl Default for SupportOpts {
 
 /// Supports planned for one part: the trees grown to hold it, and every
 /// layer as it prints.
+#[derive(Clone)]
 pub(crate) struct Supports {
     pub forest: Forest,
     pub layers: Vec<SupportLayer>,
@@ -145,7 +147,7 @@ struct Demand {
 }
 
 /// The tree-support walk as it ran. `limbs[k]` is the lineage of `NodeId(k + 1)`.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Forest {
     pub limbs: Vec<Limb>,
     /// `at[i]` lists, in ascending order, the index of every limb with a knot on layer `i`.
@@ -156,6 +158,7 @@ pub(crate) struct Forest {
 /// until it merges, lands, or reaches the bed. `knots[k]` is its node on layer
 /// `top - k` as `organic_disks` saw it; a frozen knot prints no disk. Its birth
 /// site is `knots[0].xy` at the top of layer `top`.
+#[derive(Clone)]
 pub(crate) struct Limb {
     pub top: usize,
     pub knots: Vec<Node>,

@@ -1,8 +1,15 @@
+use std::sync::Arc;
 use std::time::Instant;
 
 use base64::Engine;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+
+mod kept;
+mod wire;
+
+pub use kept::keep_support_bases;
+pub use wire::{EditOutcomeView, SiteSpec, SupportEditSpec};
 
 use crate::adaptive::{plan_bands, HeightOpts, LayerBand};
 use crate::cancel::Job;
@@ -18,6 +25,8 @@ use crate::strategy::{
     classicize, layer_weight, mix, pure, support_density, support_interface_density, support_speed,
     Axis, BlendMode, Gyroid3d, PrinterProfile, ResolvedStrategy, ScarfSeam, StrategyId, ZHopMode,
 };
+use crate::support::edit::{EditOutcome, SupportEdit};
+use crate::support::skeleton::{skeleton, SupportSkeleton};
 use crate::support::{CoverageGap, Disk, SupportLayer, SupportOpts, SupportStyle, Supports};
 use crate::toolpath::{
     apply_overhang, apply_scarf, apply_z_hop, comb_layer, order_layer, plan_region_split,
@@ -25,7 +34,7 @@ use crate::toolpath::{
     Seam, ShellBand,
 };
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SliceRequest {
     pub filename: String,
@@ -152,6 +161,13 @@ pub struct SliceRequest {
     /// STL and 3MF ignore it.
     #[serde(default = "default_step_tolerance")]
     pub step_tolerance_mm: f64,
+    /// Edits replayed on the grown supports, in order. Omitted when empty,
+    /// so a slice without edits keeps its cache key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub support_edits: Vec<SupportEditSpec>,
+    /// Also return the tree outline the UI picks limbs from.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_skeleton: bool,
 }
 
 /// Rigid placement of a mesh that was simplified in its scaled frame.
@@ -221,6 +237,10 @@ pub struct SliceSettings {
     pub pose: Option<RigidPose>,
     /// Hold up same-layer islands that have nothing under them. Overhang supports stay on `supports`.
     pub island_support: bool,
+    /// Edits applied to the grown supports, in order.
+    pub support_edits: Vec<SupportEdit>,
+    /// Report the tree outline on the response.
+    pub include_skeleton: bool,
     /// The shell job this slice belongs to. A stale job stops with "cancelled".
     pub job: Job,
 }
@@ -267,6 +287,8 @@ impl Default for SliceSettings {
             simplify_error_mm: 0.0,
             pose: None,
             island_support: true,
+            support_edits: Vec::new(),
+            include_skeleton: false,
             job: Job::default(),
         }
     }
@@ -381,7 +403,19 @@ impl SliceSettings {
             },
             pose: req.pose,
             island_support: true,
+            support_edits: Vec::new(),
+            include_skeleton: req.include_skeleton,
             job: Job::default(),
+        }
+    }
+
+    /// A copy for a side plan: no edits, and no preview, so it neither reads
+    /// nor evicts the kept interactive slices.
+    fn unkept(&self) -> Self {
+        Self {
+            support_edits: Vec::new(),
+            include_preview: false,
+            ..self.clone()
         }
     }
 
@@ -507,6 +541,12 @@ pub struct SliceResponse {
     /// Empty unless the request set `compare`.
     #[serde(default)]
     pub compare: Vec<CompareEstimate>,
+    /// One per requested support edit, in request order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub support_edits: Vec<EditOutcomeView>,
+    /// The grown trees after every edit. Only when the request asked for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skeleton: Option<SupportSkeleton>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -602,6 +642,21 @@ pub struct StageTimes {
     /// Sum of per-layer infill and gap-fill time inside `toolpath_ms`.
     #[serde(default)]
     pub infill_cpu_ms: f64,
+    /// The part's layers came from memory; its clocks above read zero.
+    #[serde(default)]
+    pub object_reused: bool,
+    /// The unedited supports came from memory; `support_ms` reads zero.
+    #[serde(default)]
+    pub support_base_reused: bool,
+    /// Leading edits whose result was already in memory.
+    #[serde(default)]
+    pub edits_reused: u32,
+    /// Pruning and regrowing the edits applied in this request.
+    #[serde(default)]
+    pub edit_apply_ms: f64,
+    /// Repainting the support layers those edits changed.
+    #[serde(default)]
+    pub edit_refresh_ms: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -693,6 +748,7 @@ pub fn slice_request(req: &SliceRequest, job: Job) -> Result<SliceResponse, Stri
     let profile = req.printer.clone().unwrap_or_default();
     let settings = SliceSettings {
         job,
+        support_edits: wire::parse_support_edits(&req.support_edits)?,
         ..SliceSettings::from_request(req)
     };
     slice_configured(&mesh, &req.blend, &profile, &settings)
@@ -804,15 +860,33 @@ pub fn slice_configured(
         roof_ms: planned_full.roof_ms,
         wall_cpu_ms: planned_full.wall_cpu_ms,
         infill_cpu_ms: planned_full.infill_cpu_ms,
+        object_reused: planned_full.reuse.object,
+        support_base_reused: planned_full.reuse.base,
+        edits_reused: planned_full.reuse.edits,
+        edit_apply_ms: planned_full.edit_apply_ms,
+        edit_refresh_ms: planned_full.edit_refresh_ms,
     };
+    let support_edits = planned_full
+        .outcomes
+        .iter()
+        .map(|o| EditOutcomeView::of(o, &planned_full.bands))
+        .collect();
+    let skeleton = settings
+        .include_skeleton
+        .then(|| skeleton(&planned_full.supports, &planned_full.bands));
 
     let (baseline_ms, baseline_label) = if settings.baseline {
         let baseline_mode = BlendMode::Single {
             strategy: StrategyId::Speed,
         };
         let baseline_started = Instant::now();
-        let baseline_planned =
-            plan(mesh, &baseline_mode, &settings, profile.nozzle_diameter)?.layers;
+        let baseline_planned = plan(
+            mesh,
+            &baseline_mode,
+            &settings.unkept(),
+            profile.nozzle_diameter,
+        )?
+        .layers;
         let _baseline_gcode = if settings.include_gcode {
             emit_gcode(
                 &baseline_planned,
@@ -942,6 +1016,8 @@ pub fn slice_configured(
             structural_mm3(&planned),
         ),
         compare,
+        support_edits,
+        skeleton,
     })
 }
 
@@ -968,7 +1044,7 @@ fn compare_estimates(
     layer_height: f64,
     line_width: f64,
 ) -> Result<Vec<CompareEstimate>, String> {
-    let mut quiet = settings.clone();
+    let mut quiet = settings.unkept();
     quiet.baseline = false;
     quiet.compare = false;
     let modes = [
@@ -1040,11 +1116,10 @@ pub fn pareto_estimates(
     profile: &PrinterProfile,
     settings: &SliceSettings,
 ) -> Result<Vec<ParetoPoint>, String> {
-    let mut quiet = settings.clone();
+    let mut quiet = settings.unkept();
     quiet.baseline = false;
     quiet.compare = false;
     quiet.include_gcode = false;
-    quiet.include_preview = false;
     let points = [
         (0.0, "speed"),
         (0.25, "weight 25%"),
@@ -1416,13 +1491,16 @@ struct LayerJob {
 }
 
 /// Everything `plan` derives from the mesh. `layers` is what the G-code writer
-/// consumes; the rest is kept for the audit.
+/// consumes; the rest is kept for the audit and the response.
 pub(crate) struct Plan {
     pub layers: Vec<LayerPaths>,
     pub bands: Vec<LayerBand>,
     pub contours: Vec<Vec<Loop>>,
-    pub supports: Supports,
+    pub supports: Arc<Supports>,
     pub coverage: Vec<CoverageGap>,
+    /// What each requested support edit did, in request order.
+    pub outcomes: Vec<EditOutcome>,
+    pub reuse: Reuse,
     pub contour_ms: f64,
     pub support_ms: f64,
     pub toolpath_ms: f64,
@@ -1434,6 +1512,18 @@ pub(crate) struct Plan {
     pub roof_ms: f64,
     pub wall_cpu_ms: f64,
     pub infill_cpu_ms: f64,
+    pub edit_apply_ms: f64,
+    pub edit_refresh_ms: f64,
+}
+
+/// What a plan took from the kept slices instead of planning again. The
+/// clocks of reused work read zero.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Reuse {
+    pub object: bool,
+    pub base: bool,
+    /// Leading edits whose result was already applied.
+    pub edits: u32,
 }
 
 /// A sixteenth of the nozzle: 0.025 mm for a 0.4 mm nozzle. Two outlines
@@ -1460,12 +1550,220 @@ fn outline_tolerance(settings: &SliceSettings, nozzle_diameter: f64) -> f64 {
     }
 }
 
+/// Slice the part, plan its supports, apply the settings' edits, and join
+/// them. An interactive slice with kept bases on starts from what memory
+/// already holds.
 pub(crate) fn plan(
     mesh: &Mesh,
     blend: &BlendMode,
     settings: &SliceSettings,
     nozzle_diameter: f64,
 ) -> Result<Plan, String> {
+    if kept::on() && settings.include_preview {
+        return plan_kept(mesh, blend, settings, nozzle_diameter);
+    }
+    let object = slice_mesh_object(mesh, blend, settings, nozzle_diameter)?;
+    plan_object(object, blend, settings)
+}
+
+/// `plan` from the mesh already cut into per-band contours.
+#[cfg(test)]
+fn plan_contours(
+    bands: Vec<LayerBand>,
+    contours: Vec<Vec<Loop>>,
+    bounds: ([f64; 3], [f64; 3]),
+    blend: &BlendMode,
+    settings: &SliceSettings,
+    nozzle_diameter: f64,
+) -> Result<Plan, String> {
+    let object = slice_object(bands, contours, bounds, blend, settings, nozzle_diameter)?;
+    plan_object(object, blend, settings)
+}
+
+/// Supports, the settings' edits, and assembly on a planned part, with
+/// nothing reused and nothing copied.
+fn plan_object(
+    mut object: ObjectSlice,
+    blend: &BlendMode,
+    settings: &SliceSettings,
+) -> Result<Plan, String> {
+    let mut supports = plan_supports(&object, blend, settings)?;
+    let edits = edit(
+        &mut supports,
+        &object,
+        &settings.support_edits,
+        blend,
+        settings,
+    );
+    let object_layers = std::mem::take(&mut object.layers);
+    let under = std::mem::take(&mut supports.paths);
+    let assembled = assemble(&object, object_layers, &supports, under, blend, settings);
+    let ObjectSlice {
+        bands,
+        contours,
+        clocks,
+        ..
+    } = object;
+    Ok(finish(
+        bands,
+        contours,
+        clocks,
+        &supports,
+        edits,
+        assembled,
+        Reuse::default(),
+    ))
+}
+
+/// `plan` from the kept slices. The part and its unedited supports are
+/// reused when their keys match. Edits extend the last edited state when
+/// they start with its edits, and otherwise replay from the base, which is
+/// how undoing an edit works.
+fn plan_kept(
+    mesh: &Mesh,
+    blend: &BlendMode,
+    settings: &SliceSettings,
+    nozzle_diameter: f64,
+) -> Result<Plan, String> {
+    let (key, object_key) = kept::keys(mesh, blend, settings, nozzle_diameter);
+    let (object, base, edited, mut reuse) = match kept::find(&key, &object_key) {
+        Some(kept::Hit::Base(entry)) => (
+            entry.object,
+            entry.base,
+            entry.edited,
+            Reuse {
+                object: true,
+                base: true,
+                edits: 0,
+            },
+        ),
+        Some(kept::Hit::Object(object)) => {
+            let base = Arc::new(plan_supports(&object, blend, settings)?);
+            (
+                object,
+                base,
+                None,
+                Reuse {
+                    object: true,
+                    base: false,
+                    edits: 0,
+                },
+            )
+        }
+        None => {
+            let object = Arc::new(slice_mesh_object(mesh, blend, settings, nozzle_diameter)?);
+            let base = Arc::new(plan_supports(&object, blend, settings)?);
+            (object, base, None, Reuse::default())
+        }
+    };
+    let want = &settings.support_edits;
+    let mut edits = Edits::default();
+    let fresh = (!want.is_empty()).then(|| {
+        let (mut plan, mut outcomes) = match edited.as_deref() {
+            Some(e) if want.starts_with(&e.edits) => {
+                reuse.edits = e.edits.len() as u32;
+                (e.plan.clone(), e.outcomes.clone())
+            }
+            _ => ((*base).clone(), Vec::new()),
+        };
+        edits = edit(
+            &mut plan,
+            &object,
+            &want[reuse.edits as usize..],
+            blend,
+            settings,
+        );
+        outcomes.append(&mut edits.outcomes);
+        edits.outcomes = outcomes;
+        Arc::new(kept::Edited {
+            edits: want.clone(),
+            plan,
+            outcomes: edits.outcomes.clone(),
+        })
+    });
+    kept::keep(kept::Entry {
+        key,
+        object_key,
+        object: Arc::clone(&object),
+        base: Arc::clone(&base),
+        edited: fresh.clone().or(edited),
+    });
+    let supports = fresh.as_deref().map_or(&*base, |e| &e.plan);
+    let assembled = assemble(
+        &object,
+        object.layers.clone(),
+        supports,
+        supports.paths.clone(),
+        blend,
+        settings,
+    );
+    Ok(finish(
+        object.bands.clone(),
+        object.contours.clone(),
+        object.clocks,
+        supports,
+        edits,
+        assembled,
+        reuse,
+    ))
+}
+
+/// The plan, with the clocks of reused work read as zero.
+fn finish(
+    bands: Vec<LayerBand>,
+    contours: Vec<Vec<Loop>>,
+    clocks: ObjectClocks,
+    supports: &SupportPlan,
+    edits: Edits,
+    assembled: Assembled,
+    reuse: Reuse,
+) -> Plan {
+    let object = if reuse.object {
+        ObjectClocks::default()
+    } else {
+        clocks
+    };
+    let (wall_cpu_ms, infill_cpu_ms) = if reuse.object {
+        (0.0, 0.0)
+    } else {
+        (assembled.wall_cpu_ms, assembled.infill_cpu_ms)
+    };
+    let (support_ms, support_path_ms) = if reuse.base {
+        (0.0, 0.0)
+    } else {
+        (supports.support_ms, supports.toolpath_ms)
+    };
+    Plan {
+        layers: assembled.layers,
+        bands,
+        contours,
+        supports: Arc::clone(&supports.supports),
+        coverage: supports.coverage.clone(),
+        outcomes: edits.outcomes,
+        reuse,
+        contour_ms: object.contour_ms,
+        support_ms,
+        toolpath_ms: object.toolpath_ms + support_path_ms,
+        order_ms: assembled.order_ms,
+        comb_ms: assembled.comb_ms,
+        index_ms: object.index_ms,
+        cut_cpu_ms: object.cut_cpu_ms,
+        simplify_cpu_ms: object.simplify_cpu_ms,
+        roof_ms: object.roof_ms,
+        wall_cpu_ms,
+        infill_cpu_ms,
+        edit_apply_ms: edits.apply_ms,
+        edit_refresh_ms: edits.refresh_ms,
+    }
+}
+
+/// Cuts the mesh into per-band contours and plans the part's own layers.
+fn slice_mesh_object(
+    mesh: &Mesh,
+    blend: &BlendMode,
+    settings: &SliceSettings,
+    nozzle_diameter: f64,
+) -> Result<ObjectSlice, String> {
     let (min, max) = mesh.bounds().ok_or("empty mesh")?;
     let max_h = if settings.adaptive {
         settings.adaptive_max.max(settings.adaptive_min)
@@ -1501,7 +1799,7 @@ pub(crate) fn plan(
     let cut_cpu_ms = cut.iter().map(|row| row.1).sum();
     let simplify_cpu_ms = cut.iter().map(|row| row.2).sum();
     let contours = cut.into_iter().map(|row| row.0).collect();
-    let mut planned = plan_contours(
+    let mut object = slice_object(
         bands,
         contours,
         (min, max),
@@ -1509,28 +1807,15 @@ pub(crate) fn plan(
         settings,
         nozzle_diameter,
     )?;
-    planned.contour_ms = contour_ms;
-    planned.index_ms = index_ms;
-    planned.cut_cpu_ms = cut_cpu_ms;
-    planned.simplify_cpu_ms = simplify_cpu_ms;
-    Ok(planned)
-}
-
-/// Everything `plan` does after the mesh is cut into per-band contours.
-fn plan_contours(
-    bands: Vec<LayerBand>,
-    contours: Vec<Vec<Loop>>,
-    bounds: ([f64; 3], [f64; 3]),
-    blend: &BlendMode,
-    settings: &SliceSettings,
-    nozzle_diameter: f64,
-) -> Result<Plan, String> {
-    let object = slice_object(bands, contours, bounds, blend, settings, nozzle_diameter)?;
-    let supports = plan_supports(&object, blend, settings)?;
-    assemble(object, supports, blend, settings)
+    object.clocks.contour_ms = contour_ms;
+    object.clocks.index_ms = index_ms;
+    object.clocks.cut_cpu_ms = cut_cpu_ms;
+    object.clocks.simplify_cpu_ms = simplify_cpu_ms;
+    Ok(object)
 }
 
 /// One layer of the part on its own. `note` names the strategy it used.
+#[derive(Clone)]
 struct ObjectLayer {
     paths: Vec<Extrusion>,
     note: String,
@@ -1540,19 +1825,32 @@ struct ObjectLayer {
 
 /// The part's own plan: contours, and every layer's walls, infill, and skin
 /// with overhangs split. Supports read it and never change it.
+#[derive(Clone)]
 pub(crate) struct ObjectSlice {
     bands: Vec<LayerBand>,
     contours: Vec<Vec<Loop>>,
     bounds: ([f64; 3], [f64; 3]),
     layers: Vec<ObjectLayer>,
+    clocks: ObjectClocks,
+}
+
+/// Wall-clock and CPU time the part's own planning took.
+#[derive(Clone, Copy, Default)]
+struct ObjectClocks {
+    contour_ms: f64,
+    index_ms: f64,
+    cut_cpu_ms: f64,
+    simplify_cpu_ms: f64,
     roof_ms: f64,
     toolpath_ms: f64,
 }
 
 /// Supports planned on an object slice: the forest, the regions and branches
-/// of every layer, and the paths printed from them.
+/// of every layer, and the paths printed from them. The forest is shared
+/// with the plan built from it; editing it copies it first.
+#[derive(Clone)]
 pub(crate) struct SupportPlan {
-    supports: Supports,
+    supports: Arc<Supports>,
     coverage: Vec<CoverageGap>,
     /// Layers each layer's support stands for, from `shaft_scales`.
     shaft: Vec<f64>,
@@ -1561,10 +1859,6 @@ pub(crate) struct SupportPlan {
     toolpath_ms: f64,
 }
 
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "edits reach the slice request in step 6")
-)]
 impl SupportPlan {
     /// Bring paths, shaft scales, and coverage up to date after edits
     /// changed the support on `changed` layers. A changed layer can move the
@@ -1595,6 +1889,43 @@ impl SupportPlan {
         self.shaft = shaft;
         self.coverage = self.supports.coverage(&object.bands, &object.contours);
         repaint
+    }
+}
+
+/// What applying edits to a support plan did, and what it cost.
+#[derive(Default)]
+struct Edits {
+    outcomes: Vec<EditOutcome>,
+    apply_ms: f64,
+    refresh_ms: f64,
+}
+
+/// Apply `edits` in order onto `plan`, then repaint the layers they changed.
+fn edit(
+    plan: &mut SupportPlan,
+    object: &ObjectSlice,
+    edits: &[SupportEdit],
+    blend: &BlendMode,
+    settings: &SliceSettings,
+) -> Edits {
+    if edits.is_empty() {
+        return Edits::default();
+    }
+    let started = Instant::now();
+    let outcomes = Arc::make_mut(&mut plan.supports).apply(edits, &object.bands, &object.contours);
+    let apply_ms = elapsed_ms(started);
+    let started = Instant::now();
+    let mut changed: Vec<usize> = outcomes
+        .iter()
+        .flat_map(|o| o.changed.iter().copied())
+        .collect();
+    changed.sort_unstable();
+    changed.dedup();
+    plan.refresh(object, &changed, blend, settings);
+    Edits {
+        outcomes,
+        apply_ms,
+        refresh_ms: elapsed_ms(started),
     }
 }
 
@@ -1664,8 +1995,11 @@ fn slice_object(
         contours,
         bounds: (min, max),
         layers,
-        roof_ms,
-        toolpath_ms,
+        clocks: ObjectClocks {
+            roof_ms,
+            toolpath_ms,
+            ..ObjectClocks::default()
+        },
     })
 }
 
@@ -1708,7 +2042,7 @@ fn plan_supports(
         return Err("cancelled".into());
     }
     Ok(SupportPlan {
-        supports,
+        supports: Arc::new(supports),
         coverage,
         shaft,
         paths,
@@ -1749,38 +2083,35 @@ fn paint(
         .collect()
 }
 
+/// The print as the G-code writer takes it, and what joining it cost.
+struct Assembled {
+    layers: Vec<LayerPaths>,
+    order_ms: f64,
+    comb_ms: f64,
+    wall_cpu_ms: f64,
+    infill_cpu_ms: f64,
+}
+
 /// Joins the part and its supports layer by layer: the skirt first, then
 /// supports, then the part, as the printer lays them down. Travel order,
-/// combing, and z-hop see the whole layer.
+/// combing, and z-hop see the whole layer. `object_layers` and `under` are
+/// the part's and the supports' paths, consumed as they are joined.
 fn assemble(
-    object: ObjectSlice,
-    supports: SupportPlan,
+    object: &ObjectSlice,
+    object_layers: Vec<ObjectLayer>,
+    supports: &SupportPlan,
+    under: Vec<Vec<Extrusion>>,
     blend: &BlendMode,
     settings: &SliceSettings,
-) -> Result<Plan, String> {
-    let ObjectSlice {
-        bands,
-        contours,
-        layers: object_layers,
-        roof_ms,
-        toolpath_ms: object_ms,
-        ..
-    } = object;
-    let SupportPlan {
-        supports,
-        coverage,
-        shaft: _,
-        paths: support_layer_paths,
-        support_ms,
-        toolpath_ms: support_path_ms,
-    } = supports;
+) -> Assembled {
+    let (bands, contours) = (&object.bands, &object.contours);
     let mut jobs: Vec<LayerJob> = object_layers
         .into_iter()
-        .zip(support_layer_paths)
+        .zip(under)
         .enumerate()
         .map(|(i, (part, under))| {
             let band = &bands[i];
-            let support = supports.layers.get(i);
+            let support = supports.supports.layers.get(i);
             let unsupported = support.is_none_or(|s| {
                 s.sparse.is_empty() && s.interface.is_empty() && s.disks.is_empty()
             });
@@ -1890,24 +2221,13 @@ fn assemble(
             note: job.note,
         })
         .collect();
-    Ok(Plan {
+    Assembled {
         layers,
-        bands,
-        contours,
-        supports,
-        coverage,
-        contour_ms: 0.0,
-        support_ms,
-        toolpath_ms: object_ms + support_path_ms,
         order_ms,
         comb_ms,
-        index_ms: 0.0,
-        cut_cpu_ms: 0.0,
-        simplify_cpu_ms: 0.0,
-        roof_ms,
         wall_cpu_ms,
         infill_cpu_ms,
-    })
+    }
 }
 
 fn roof_distances(bands: &[LayerBand], contours: &[Vec<Loop>], wall_stack: f64) -> Vec<f64> {
@@ -3503,7 +3823,8 @@ mod edit_cost {
             let tips = sites.len();
             let edit = [SupportEdit::Prune { sites }];
             let started = Instant::now();
-            let out = plan.supports.apply(&edit, &object.bands, &object.contours);
+            let out =
+                Arc::make_mut(&mut plan.supports).apply(&edit, &object.bands, &object.contours);
             let apply_ms = elapsed_ms(started);
             let started = Instant::now();
             let painted = plan.refresh(&object, &out[0].changed, &blend, &settings);
@@ -3526,7 +3847,7 @@ mod edit_cost {
         }
 
         let mut plan = plan();
-        let pruned = plan.supports.apply(
+        let pruned = Arc::make_mut(&mut plan.supports).apply(
             &[SupportEdit::Prune { sites: mid }],
             &object.bands,
             &object.contours,
@@ -3544,7 +3865,7 @@ mod edit_cost {
         };
         let (limbs, warned_before) = (plan.supports.forest.limbs.len(), warned(&plan));
         let started = Instant::now();
-        let out = plan.supports.apply(&edit, &object.bands, &object.contours);
+        let out = Arc::make_mut(&mut plan.supports).apply(&edit, &object.bands, &object.contours);
         let apply_ms = elapsed_ms(started);
         let started = Instant::now();
         let painted = plan.refresh(&object, &out[0].changed, &blend, &settings);
