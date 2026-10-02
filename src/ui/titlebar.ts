@@ -1,10 +1,7 @@
 import { createElement, Minus, Settings, Square, X, type IconNode } from "lucide";
+import { isDesktopShell, isTauri } from "../platform";
 
 const CHROME_KEY = "lime-slice-chrome";
-
-function isTauri() {
-  return !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-}
 
 function svgIcon(node: IconNode, size = 16) {
   return createElement(node, {
@@ -75,6 +72,7 @@ function winButton(id: string, label: string, icon: IconNode, extra = "") {
 async function bindWindow(gear: HTMLDetailsElement) {
   if (!isTauri()) return;
   document.documentElement.dataset.tauri = "1";
+  if (!isDesktopShell()) return;
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   const win = getCurrentWindow();
   const stored = localStorage.getItem(CHROME_KEY);

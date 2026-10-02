@@ -85,8 +85,10 @@ export function mountConnection(onSaved: () => void) {
 async function testConnection(base: string, token: string, result: HTMLElement) {
   result.dataset.state = "pending";
   result.textContent = `Testing ${base}…`;
+  const started = performance.now();
   try {
     const res = await fetch(`${base}/api/health`, { headers: authHeaders(token) });
+    result.dataset.rtt = String(Math.round(performance.now() - started));
     if (res.status === 401) throw new Error("unauthorized");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     result.dataset.state = "ok";

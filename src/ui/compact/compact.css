@@ -1,0 +1,546 @@
+/* Compact phone chrome. Every rule is under html.layout-compact so the desktop shell stays put. */
+
+@property --compact-sheet {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 56px;
+}
+html.layout-compact {
+  --compact-top: calc(44px + env(safe-area-inset-top));
+  --compact-tab: calc(49px + env(safe-area-inset-bottom));
+  --compact-sheet: 56px;
+  height: 100dvh;
+  padding: 0;
+  overscroll-behavior: none;
+  transition: --compact-sheet 180ms cubic-bezier(0.2, 0.9, 0.2, 1);
+}
+html.layout-compact body {
+  height: 100dvh;
+  overscroll-behavior: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+html.layout-compact input,
+html.layout-compact select,
+html.layout-compact textarea {
+  font-size: 16px;
+}
+html.layout-compact .app {
+  height: 100dvh;
+  display: grid;
+  grid-template-rows: var(--compact-top) minmax(0, 1fr) var(--compact-sheet) var(--compact-tab);
+  grid-template-columns: minmax(0, 1fr);
+  overflow: hidden;
+}
+html.layout-compact .top,
+html.layout-compact .status,
+html.layout-compact .win-controls,
+html.layout-compact #right,
+html.layout-compact .viewbar,
+html.layout-compact .legend,
+html.layout-compact .gizmo-readout { display: none !important; }
+html.layout-compact .banner-rail {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: calc(var(--compact-top) + 6px);
+  min-height: 0;
+  z-index: 7;
+  pointer-events: none;
+  grid-row: auto;
+}
+html.layout-compact .workspace {
+  grid-row: 2;
+  grid-column: 1;
+  display: block;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+html.layout-compact #stage {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+html.layout-compact .stage-body:not([hidden]) {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+}
+/* The desktop preview body is a 72px + 1fr grid. Once the scrubber is
+   position:absolute it would occupy that first column alone, so the 3D
+   pane must leave the grid and fill the stage. */
+html.layout-compact #previewBody {
+  display: block;
+  position: relative;
+}
+html.layout-compact .previews,
+html.layout-compact .pane,
+html.layout-compact #pane3d {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+html.layout-compact .previews { grid-template-columns: 1fr; }
+html.layout-compact #pane2d { display: none; }
+html.layout-compact #prepare,
+html.layout-compact #view,
+html.layout-compact #view3d {
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  display: block;
+}
+
+html:not(.layout-compact) #compactTop,
+html:not(.layout-compact) #compactSheet,
+html:not(.layout-compact) #compactTabs,
+html:not(.layout-compact) #compactDevice,
+html:not(.layout-compact) #compactMenu,
+html:not(.layout-compact) #compactProgress,
+html:not(.layout-compact) #compactIso,
+html:not(.layout-compact) #compactLayerTip,
+html:not(.layout-compact) #compactPlaySpeed { display: none !important; }
+
+#compactTop {
+  grid-row: 1;
+  grid-column: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: var(--compact-top);
+  padding: env(safe-area-inset-top) 10px 0;
+  background: var(--bar);
+  z-index: 6;
+}
+.compact-file {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--text);
+  text-align: left;
+}
+.compact-file b,
+.compact-file span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compact-file b { font-size: 14px; font-weight: 600; }
+.compact-file span { font-size: 11px; color: var(--text-dim); }
+.compact-icon {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text);
+}
+.compact-overflow { position: relative; }
+.compact-overflow nav {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 8;
+  min-width: 180px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.compact-overflow nav button {
+  height: 44px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  padding: 0 10px;
+}
+
+#compactTabs {
+  grid-row: 4;
+  grid-column: 1;
+  display: flex;
+  align-items: stretch;
+  height: var(--compact-tab);
+  padding: 0 4px env(safe-area-inset-bottom);
+  background: var(--bar);
+  border-top: 1px solid var(--line);
+  z-index: 6;
+}
+.compact-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 44px;
+  margin: auto 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+.compact-tab[aria-selected="true"] { color: var(--accent); }
+.compact-tab .ico { width: 18px; height: 18px; }
+
+#compactSheet {
+  grid-row: 3;
+  grid-column: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  border-radius: 16px 16px 0 0;
+  overflow: hidden;
+  z-index: 5;
+}
+#compactSheetHandle {
+  flex: 0 0 auto;
+  height: 28px;
+  border: 0;
+  background: transparent;
+  touch-action: none;
+}
+#compactSheetHandle::before {
+  content: "";
+  display: block;
+  width: 36px;
+  height: 4px;
+  margin: 8px auto 0;
+  border-radius: 4px;
+  background: var(--border-strong);
+}
+#compactSheetBody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+html.layout-compact #left {
+  display: block;
+  position: static;
+  width: auto;
+  max-height: none;
+  min-height: 0;
+  border: 0;
+  overflow: visible;
+}
+html.layout-compact #leftFoot { display: none; }
+html.layout-compact #compactSheet[data-detent="peek"] #leftBody { pointer-events: none; }
+
+html.layout-compact #toolRail {
+  position: absolute;
+  z-index: 4;
+  left: 8px;
+  top: 8px;
+  bottom: auto;
+  width: auto;
+  height: auto;
+  display: flex !important;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+html.layout-compact #toolRail .rail-sep,
+html.layout-compact #toolRail [data-tool="section"] { display: none; }
+html.layout-compact #toolRail .btn {
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  padding: 4px;
+  border: 0;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+}
+html.layout-compact #toolRail .btn .ico {
+  width: 20px;
+  height: 20px;
+}
+
+#compactIso {
+  position: absolute;
+  z-index: 4;
+  top: 8px;
+  right: 10px;
+  height: 36px;
+  min-width: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+  color: var(--text);
+}
+html.layout-compact #slice,
+html.layout-compact #cancel {
+  position: absolute;
+  z-index: 5;
+  right: 12px;
+  bottom: 12px;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  height: 40px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+}
+html.layout-compact #slice {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+html.layout-compact #cancel:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+html.layout-compact #cancel[disabled] { display: none !important; }
+html.layout-compact:has(#cancel:not(:disabled)) #slice { display: none !important; }
+
+#compactProgress {
+  position: absolute;
+  z-index: 4;
+  left: 12px;
+  right: 12px;
+  top: 8px;
+  height: 22px;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+#compactProgress[data-on="1"] { display: flex; }
+#compactProgress i {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--accent);
+}
+
+html.layout-compact #vslider {
+  position: absolute;
+  right: 2px;
+  top: 56px;
+  bottom: 72px;
+  width: 44px;
+  z-index: 4;
+  padding: 0;
+}
+html.layout-compact #vslider .readout {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+html.layout-compact .track,
+html.layout-compact .track input[type="range"] { width: 44px; }
+html.layout-compact .track input[type="range"]::-webkit-slider-thumb,
+html.layout-compact .track input[type="range"]::-moz-range-thumb {
+  width: 28px;
+  height: 28px;
+}
+#compactLayerTip {
+  position: absolute;
+  z-index: 5;
+  right: 52px;
+  top: 50%;
+  transform: translateY(-50%);
+  max-width: 70%;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+html.layout-compact .stage-tools {
+  display: block !important;
+  position: absolute;
+  left: 12px;
+  bottom: 8px;
+  width: auto;
+  max-width: calc(100% - 140px);
+  z-index: 4;
+  padding: 0;
+  background: transparent;
+}
+html.layout-compact .spark-wrap { display: none; }
+html.layout-compact .playback {
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  gap: 6px;
+  width: auto;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+}
+html.layout-compact #play,
+html.layout-compact #stop { width: auto; min-width: 44px; height: 36px; }
+#compactPlaySpeed {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 0 4px;
+}
+
+#compactDevice {
+  display: none;
+  grid-row: 2 / 4;
+  grid-column: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 16px 16px;
+  background: var(--bg);
+}
+html.layout-compact[data-compact-tab="device"] .workspace { visibility: hidden; }
+html.layout-compact[data-compact-tab="device"] #compactDevice { display: block; }
+html.layout-compact[data-compact-tab="preview"] #toolRail,
+html.layout-compact[data-compact-tab="device"] #toolRail,
+html.layout-compact[data-compact-tab="preview"] #compactIso,
+html.layout-compact[data-compact-tab="device"] #slice,
+html.layout-compact[data-compact-tab="prepare"] .stage-tools,
+html.layout-compact[data-compact-tab="prepare"] #compactLayerTip,
+html.layout-compact[data-compact-tab="prepare"] #compactProgress { display: none !important; }
+html.layout-compact[data-compact-tab="preview"] #compactProgress[data-on="1"] { display: flex !important; }
+
+.compact-device h2 { margin: 4px 0 0; font-size: 22px; letter-spacing: 0; text-transform: none; color: var(--text); }
+.compact-kicker { margin: 0 0 12px; color: var(--text-dim); font-size: 13px; }
+.compact-device h3 {
+  margin: 16px 0 8px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.compact-seg { display: flex; gap: 8px; }
+.compact-seg button {
+  flex: 1 1 0;
+  height: 40px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-dim);
+}
+.compact-seg button[aria-pressed="true"] { background: var(--surface-3); color: var(--text); }
+.compact-seg button:disabled { opacity: 0.55; }
+.compact-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 14px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+}
+.compact-status b { display: block; }
+.compact-status span { color: var(--text-dim); font-size: 12px; }
+.compact-status i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.compact-status[data-state="ok"] i { background: var(--ok); }
+.compact-status[data-state="down"] i { background: var(--danger); }
+html.layout-compact #compactDevice .connection { border: 0; padding: 0; }
+html.layout-compact #compactDevice .connection-actions .btn#apiTest {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: transparent;
+}
+.compact-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 44px;
+}
+.compact-row button {
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.compact-note { color: var(--text-dim); font-size: 12px; line-height: 1.4; }
+
+#compactMenu {
+  position: fixed;
+  z-index: 30;
+  min-width: 160px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+#compactMenu button {
+  height: 44px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 0 10px;
+  border-radius: 8px;
+}
+
+html.layout-compact.chrome-hidden {
+  --compact-top: 0px;
+  --compact-sheet: 0px;
+  --compact-tab: 0px;
+}
+html.layout-compact.chrome-hidden #compactTop,
+html.layout-compact.chrome-hidden #compactSheet,
+html.layout-compact.chrome-hidden #compactTabs,
+html.layout-compact.chrome-hidden #toolRail,
+html.layout-compact.chrome-hidden #compactIso,
+html.layout-compact.chrome-hidden #slice,
+html.layout-compact.chrome-hidden #cancel,
+html.layout-compact.chrome-hidden .stage-tools,
+html.layout-compact.chrome-hidden #compactLayerTip,
+html.layout-compact.chrome-hidden #compactProgress {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+html.layout-compact .toasts {
+  bottom: calc(var(--compact-tab) + var(--compact-sheet) + 12px);
+  top: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.layout-compact #compactSheet { transition: none; }
+}
