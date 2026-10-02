@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256};
 
-use super::{ObjectSlice, SliceSettings, SupportPlan};
+use super::{JoinedLayer, ObjectSlice, SliceSettings, SupportPlan};
 use crate::mesh::Mesh;
 use crate::strategy::BlendMode;
 use crate::support::edit::{EditOutcome, SupportEdit};
@@ -26,6 +26,10 @@ pub(super) struct Entry {
     /// The last edited state on `base`. A request whose edits extend its
     /// edits applies only the new ones.
     pub edited: Option<Arc<Edited>>,
+    /// The last plan's layers as joined, so the next plan joins again only
+    /// the layers whose supports or way in changed. Only the most recent
+    /// entry keeps them.
+    pub joined: Option<Arc<Vec<JoinedLayer>>>,
 }
 
 pub(super) struct Edited {
@@ -76,10 +80,13 @@ pub(super) fn find(key: &[u8; 32], object_key: &[u8; 32]) -> Option<Hit> {
 }
 
 /// Make `entry` the most recent, replacing any entry with its key, and drop
-/// the oldest past the capacity.
+/// the oldest past the capacity. Older entries forget their joined layers.
 pub(super) fn keep(entry: Entry) {
     let mut kept = entries();
     kept.retain(|e| e.key != entry.key);
+    for e in kept.iter_mut() {
+        e.joined = None;
+    }
     kept.insert(0, entry);
     kept.truncate(CAPACITY);
 }

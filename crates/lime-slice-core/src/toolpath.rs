@@ -119,7 +119,7 @@ pub enum TravelIn {
     Blocked,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Extrusion {
     pub kind: PathKind,
     pub strategy: StrategyId,

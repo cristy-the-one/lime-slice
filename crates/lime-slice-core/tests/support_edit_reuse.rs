@@ -98,6 +98,12 @@ fn edits_extend_the_kept_state_and_undo_replays_from_the_base() {
     assert_eq!(reuse(&base), (false, false, 0));
     assert_eq!(reuse(&pruned), (true, true, 0));
     assert_eq!(reuse(&both), (true, true, 1));
+    let joined = |reply: &Value| reply["stages"]["layersReused"].as_u64().unwrap();
+    assert_eq!(
+        (joined(&base), joined(&pruned), joined(&both)),
+        (0, 21, 23),
+        "layers an edit left alone are joined from the last plan"
+    );
     assert_eq!(both["supportEdits"][0]["status"], "applied");
     assert_eq!(both["supportEdits"][1]["status"], "applied");
     assert_eq!(both["supportEdits"][1]["changedLayers"], 57);

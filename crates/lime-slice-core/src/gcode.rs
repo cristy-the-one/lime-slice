@@ -376,6 +376,7 @@ fn write_preamble(
     }
 }
 
+#[derive(Clone)]
 pub struct LayerPaths {
     pub index: usize,
     pub z: f64,
