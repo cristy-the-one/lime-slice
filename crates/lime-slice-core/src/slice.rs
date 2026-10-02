@@ -29,9 +29,9 @@ use crate::support::edit::{EditOutcome, SupportEdit};
 use crate::support::skeleton::{skeleton, SupportSkeleton};
 use crate::support::{CoverageGap, Disk, SupportLayer, SupportOpts, SupportStyle, Supports};
 use crate::toolpath::{
-    apply_overhang, apply_scarf, apply_z_hop, comb_layer, order_layer, plan_region_split,
-    plan_skirt, plan_support, plan_tree_support, Extrusion, PathFeatures, PathKind, ScarfParams,
-    Seam, ShellBand,
+    apply_overhang, apply_scarf, apply_z_hop, comb_layer, order_part, order_supports,
+    plan_region_split, plan_skirt, plan_support, plan_tree_support, Extrusion, PathFeatures,
+    PathKind, ScarfParams, Seam, ShellBand,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1745,8 +1745,8 @@ fn finish(
         contour_ms: object.contour_ms,
         support_ms,
         toolpath_ms: object.toolpath_ms + support_path_ms,
-        order_ms: assembled.order_ms,
-        comb_ms: assembled.comb_ms,
+        order_ms: object.order_ms + assembled.order_ms,
+        comb_ms: object.comb_ms + assembled.comb_ms,
         index_ms: object.index_ms,
         cut_cpu_ms: object.cut_cpu_ms,
         simplify_cpu_ms: object.simplify_cpu_ms,
@@ -1824,6 +1824,14 @@ struct ObjectLayer {
     infill_ms: f64,
 }
 
+impl ObjectLayer {
+    /// The nozzle moves on this layer's part, so the layer ends where the
+    /// part's tour does.
+    fn prints(&self) -> bool {
+        self.paths.iter().any(|p| !p.points.is_empty())
+    }
+}
+
 /// The part's own plan: contours, and every layer's walls, infill, and skin
 /// with overhangs split. Supports read it and never change it.
 #[derive(Clone)]
@@ -1831,7 +1839,10 @@ pub(crate) struct ObjectSlice {
     bands: Vec<LayerBand>,
     contours: Vec<Vec<Loop>>,
     bounds: ([f64; 3], [f64; 3]),
+    /// Each layer's paths in print order, as `tour_part` left them.
     layers: Vec<ObjectLayer>,
+    /// Where each layer's tour ends, carried up through layers with no part.
+    ends: Vec<Option<[f64; 2]>>,
     clocks: ObjectClocks,
 }
 
@@ -1844,6 +1855,8 @@ struct ObjectClocks {
     simplify_cpu_ms: f64,
     roof_ms: f64,
     toolpath_ms: f64,
+    order_ms: f64,
+    comb_ms: f64,
 }
 
 /// Supports planned on an object slice: the forest, the regions and branches
@@ -1952,7 +1965,7 @@ fn slice_object(
     let roof_ms = elapsed_ms(roof_started);
     let (remain_low, remain_high) = interior_remainings(blend, settings, &bands, &roofs);
     let toolpath_started = Instant::now();
-    let layers: Vec<ObjectLayer> = bands
+    let mut layers: Vec<ObjectLayer> = bands
         .par_iter()
         .enumerate()
         .map(|(i, band)| {
@@ -1993,16 +2006,113 @@ fn slice_object(
     if settings.job.cancelled() {
         return Err("cancelled".into());
     }
+    let (ends, order_ms, comb_ms) = tour_part(&mut layers, &bands, &contours, blend, settings);
     Ok(ObjectSlice {
         bands,
         contours,
         bounds: (min, max),
         layers,
+        ends,
         clocks: ObjectClocks {
             roof_ms,
             toolpath_ms,
+            order_ms,
+            comb_ms,
             ..ObjectClocks::default()
         },
+    })
+}
+
+/// Orders each layer of the part as one tour, starting where the part's
+/// tour on the layer below ended, then combs and hops the travels between
+/// its paths. The tour never sees the supports, so editing them leaves it
+/// alone. The travel into a layer's first path depends on what prints
+/// before it, so `assemble` decides that one. Returns where each layer's
+/// tour ends, carried up through layers with no part, and the order and
+/// combing clocks.
+///
+/// The first layer's tour starts where a skirt around the part alone would
+/// end. That is where the skirt really ends when no support stands on the
+/// first layer, so a print without supports orders as it always did.
+fn tour_part(
+    layers: &mut [ObjectLayer],
+    bands: &[LayerBand],
+    contours: &[Vec<Loop>],
+    blend: &BlendMode,
+    settings: &SliceSettings,
+) -> (Vec<Option<[f64; 2]>>, f64, f64) {
+    let order_started = Instant::now();
+    let mut ends = Vec::with_capacity(layers.len());
+    if settings.travel_opt {
+        let mut end = bands.first().filter(|b| b.index == 0).and_then(|b| {
+            let mut skirt = skirt_paths(&contours[0], None, b.z, blend, settings);
+            order_supports(&mut skirt, None, scarf_params(settings, 0).as_ref())
+        });
+        for (i, layer) in layers.iter_mut().enumerate() {
+            let scarf = scarf_params(settings, bands[i].index);
+            end = order_part(&mut layer.paths, &contours[i], end, scarf.as_ref());
+            ends.push(end);
+        }
+    } else {
+        ends.resize(layers.len(), None);
+        layers.par_iter_mut().enumerate().for_each(|(i, layer)| {
+            if let Some(params) = scarf_params(settings, bands[i].index) {
+                apply_scarf(&mut layer.paths, &params);
+            }
+        });
+    }
+    let order_ms = elapsed_ms(order_started);
+    let comb_started = Instant::now();
+    let tops: Vec<bool> = layers.iter().map(|l| has_top(&l.paths)).collect();
+    layers.par_iter_mut().enumerate().for_each(|(i, layer)| {
+        if settings.travel_opt {
+            comb_layer(
+                &mut layer.paths,
+                &contours[i],
+                settings.combing,
+                settings.line_width * 0.8,
+                None,
+            );
+        }
+        hop_travels(
+            &mut layer.paths,
+            &contours[i],
+            i > 0 && tops[i - 1],
+            settings,
+        );
+    });
+    (ends, order_ms, elapsed_ms(comb_started))
+}
+
+fn has_top(paths: &[Extrusion]) -> bool {
+    paths.iter().any(|p| p.kind == PathKind::Top)
+}
+
+/// Z-hop on the travels between `paths`, which start a layer.
+fn hop_travels(paths: &mut [Extrusion], solid: &[Loop], after_top: bool, settings: &SliceSettings) {
+    if settings.z_hop == ZHopMode::Off || settings.z_hop_height <= 1e-6 || paths.len() < 2 {
+        return;
+    }
+    let infill = offset_loops(solid, -settings.line_width * 2.2);
+    apply_z_hop(
+        paths,
+        solid,
+        &infill,
+        settings.z_hop,
+        settings.z_hop_height,
+        settings.z_hop_min_travel,
+        after_top,
+    );
+}
+
+fn scarf_params(settings: &SliceSettings, layer_index: usize) -> Option<ScarfParams> {
+    (settings.scarf_seam != ScarfSeam::Off).then_some(ScarfParams {
+        mode: settings.scarf_seam,
+        length: settings.scarf_length,
+        steps: settings.scarf_steps,
+        start_height: settings.scarf_start_height,
+        start_flow: settings.scarf_start_flow,
+        layer_index,
     })
 }
 
@@ -2121,8 +2231,8 @@ impl JoinedLayer {
     }
 }
 
-/// A layer during `assemble`: taken from the last join, or ordered and
-/// still to be combed.
+/// A layer during `assemble`: taken from the last join, or with its skirt
+/// and supports ordered and the join still to finish.
 enum Slot {
     Kept(JoinedLayer),
     Fresh(JoinedLayer, Vec<Extrusion>),
@@ -2139,10 +2249,11 @@ struct Assembled {
     infill_cpu_ms: f64,
 }
 
-/// Joins the part and its supports layer by layer: the skirt first, then
-/// supports, then the part, as the printer lays them down. Travel order,
-/// combing, and z-hop see the whole layer. A layer of `kept`, the same
-/// print's last join, is reused when its inputs are the same.
+/// Joins the part and its supports layer by layer: the skirt and supports
+/// first as one tour from where the nozzle stands, then the part's own tour
+/// from `tour_part`. Only the travels the supports lead into are combed and
+/// hopped here. A layer of `kept`, the same print's last join, is reused
+/// when its inputs are the same.
 fn assemble(
     object: &ObjectSlice,
     supports: &SupportPlan,
@@ -2151,94 +2262,33 @@ fn assemble(
     kept: &[JoinedLayer],
 ) -> Assembled {
     let (bands, contours) = (&object.bands, &object.contours);
-    let scarf = |layer_index: usize| {
-        (settings.scarf_seam != ScarfSeam::Off).then_some(ScarfParams {
-            mode: settings.scarf_seam,
-            length: settings.scarf_length,
-            steps: settings.scarf_steps,
-            start_height: settings.scarf_start_height,
-            start_flow: settings.scarf_start_flow,
-            layer_index,
-        })
+    // A layer that prints part ends where the part's tour ends, so the next
+    // layer's way in is known before any support is ordered. Only a run of
+    // layers without part chains one support tour to the next.
+    let runs: Vec<std::ops::Range<usize>> = {
+        let mut starts: Vec<usize> = (0..bands.len())
+            .filter(|&i| i == 0 || object.layers[i - 1].prints())
+            .collect();
+        starts.push(bands.len());
+        starts.windows(2).map(|w| w[0]..w[1]).collect()
     };
-    // Ordering is serial: each layer starts where the one below ended. It does
-    // no combing, so it stays cheap; scarf, combing, and z-hop run after it.
     let order_started = Instant::now();
-    let mut slots: Vec<Slot> = Vec::with_capacity(bands.len());
-    let mut layer_end: Option<[f64; 2]> = None;
-    for (i, band) in bands.iter().enumerate() {
-        let support = supports.supports.layers.get(i);
-        let unsupported = support
-            .is_none_or(|s| s.sparse.is_empty() && s.interface.is_empty() && s.disks.is_empty());
-        let empty = contours[i].is_empty() && unsupported;
-        let skirt = if band.index == 0 && !empty {
-            skirt_paths(&contours[i], support, band.z, blend, settings)
-        } else {
-            Vec::new()
-        };
-        let under = &supports.paths[i];
-        let from = layer_end;
-        if let Some(k) = kept
-            .get(i)
-            .filter(|k| k.joins_like(empty, &skirt, under, from))
-        {
-            layer_end = k.end;
-            slots.push(Slot::Kept(k.clone()));
-            continue;
-        }
-        let mut paths = Vec::new();
-        if !empty {
-            paths.extend(skirt.iter().cloned());
-            paths.extend(under.iter().cloned());
-            paths.extend(object.layers[i].paths.iter().cloned());
-        }
-        if settings.travel_opt {
-            let params = scarf(band.index);
-            layer_end = order_layer(&mut paths, &contours[i], layer_end, params.as_ref());
-        }
-        let note = if empty {
-            "empty".into()
-        } else {
-            object.layers[i].note.clone()
-        };
-        let layer = LayerPaths {
-            index: band.index,
-            z: band.z,
-            height: band.height,
-            paths: Vec::new(),
-            note,
-        };
-        let joined = JoinedLayer {
-            empty,
-            skirt,
-            under: Arc::clone(under),
-            from,
-            end: layer_end,
-            layer: Arc::new(layer),
-        };
-        slots.push(Slot::Fresh(joined, paths));
-    }
-    if !settings.travel_opt {
-        slots.par_iter_mut().for_each(|slot| {
-            if let Slot::Fresh(joined, paths) = slot {
-                if let Some(params) = scarf(joined.layer.index) {
-                    apply_scarf(paths, &params);
-                }
-            }
-        });
-    }
-    let order_ms = elapsed_ms(order_started);
-    let comb_started = Instant::now();
-    let tops: Vec<bool> = slots
-        .iter()
-        .map(|slot| {
-            let paths = match slot {
-                Slot::Kept(k) => &k.layer.paths,
-                Slot::Fresh(_, paths) => paths,
-            };
-            paths.iter().any(|p| p.kind == PathKind::Top)
+    let slots: Vec<Slot> = runs
+        .into_par_iter()
+        .flat_map_iter(|run| {
+            let mut from = run.start.checked_sub(1).and_then(|i| object.ends[i]);
+            run.map(move |i| {
+                let slot = join_supports(object, supports, blend, settings, kept, i, from);
+                from = match &slot {
+                    Slot::Kept(k) => k.end,
+                    Slot::Fresh(j, _) => j.end,
+                };
+                slot
+            })
         })
         .collect();
+    let order_ms = elapsed_ms(order_started);
+    let comb_started = Instant::now();
     let reused = slots
         .iter()
         .filter(|slot| matches!(slot, Slot::Kept(_)))
@@ -2249,33 +2299,31 @@ fn assemble(
         .map(|(i, slot)| {
             let (mut joined, mut paths) = match slot {
                 Slot::Kept(k) => return k,
-                Slot::Fresh(joined, paths) => (joined, paths),
+                Slot::Fresh(joined, head) => (joined, head),
             };
+            // The skirt and supports, and the travel into the part's first path.
+            let lead = paths.len() + 1;
+            if !joined.empty {
+                paths.extend(object.layers[i].paths.iter().cloned());
+            }
+            let lead = lead.min(paths.len());
             if settings.travel_opt {
                 comb_layer(
-                    &mut paths,
+                    &mut paths[..lead],
                     &contours[i],
                     settings.combing,
                     settings.line_width * 0.8,
                     joined.from,
                 );
             }
-            let infill = offset_loops(&contours[i], -settings.line_width * 2.2);
-            apply_z_hop(
-                &mut paths,
-                &contours[i],
-                &infill,
-                settings.z_hop,
-                settings.z_hop_height,
-                settings.z_hop_min_travel,
-                i > 0 && tops[i - 1],
-            );
+            let after_top = i > 0 && has_top(&object.layers[i - 1].paths);
+            hop_travels(&mut paths[..lead], &contours[i], after_top, settings);
             Arc::make_mut(&mut joined.layer).paths = paths;
             joined
         })
         .collect();
     let comb_ms = elapsed_ms(comb_started);
-    let printed = || {
+    let parts = || {
         joined
             .iter()
             .zip(&object.layers)
@@ -2286,10 +2334,77 @@ fn assemble(
         reused,
         order_ms,
         comb_ms,
-        wall_cpu_ms: printed().map(|part| part.wall_ms).sum(),
-        infill_cpu_ms: printed().map(|part| part.infill_ms).sum(),
+        wall_cpu_ms: parts().map(|part| part.wall_ms).sum(),
+        infill_cpu_ms: parts().map(|part| part.infill_ms).sum(),
         joined,
     }
+}
+
+/// Layer `i`'s skirt and supports, ordered from `from`, or the kept layer
+/// when nothing it was joined from changed.
+fn join_supports(
+    object: &ObjectSlice,
+    supports: &SupportPlan,
+    blend: &BlendMode,
+    settings: &SliceSettings,
+    kept: &[JoinedLayer],
+    i: usize,
+    from: Option<[f64; 2]>,
+) -> Slot {
+    let band = &object.bands[i];
+    let contour = &object.contours[i];
+    let support = supports.supports.layers.get(i);
+    let unsupported =
+        support.is_none_or(|s| s.sparse.is_empty() && s.interface.is_empty() && s.disks.is_empty());
+    let empty = contour.is_empty() && unsupported;
+    let skirt = if band.index == 0 && !empty {
+        skirt_paths(contour, support, band.z, blend, settings)
+    } else {
+        Vec::new()
+    };
+    let under = &supports.paths[i];
+    if let Some(k) = kept
+        .get(i)
+        .filter(|k| k.joins_like(empty, &skirt, under, from))
+    {
+        return Slot::Kept(k.clone());
+    }
+    let mut head = Vec::new();
+    let mut end = from;
+    if !empty {
+        head.extend(skirt.iter().cloned());
+        head.extend(under.iter().cloned());
+        let scarf = scarf_params(settings, band.index);
+        if settings.travel_opt {
+            end = order_supports(&mut head, from, scarf.as_ref());
+        } else if let Some(params) = scarf {
+            apply_scarf(&mut head, &params);
+        }
+        if object.layers[i].prints() {
+            end = object.ends[i];
+        }
+    }
+    let note = if empty {
+        "empty".into()
+    } else {
+        object.layers[i].note.clone()
+    };
+    let layer = LayerPaths {
+        index: band.index,
+        z: band.z,
+        height: band.height,
+        paths: Vec::new(),
+        note,
+    };
+    let joined = JoinedLayer {
+        empty,
+        skirt,
+        under: Arc::clone(under),
+        from,
+        end,
+        layer: Arc::new(layer),
+    };
+    Slot::Fresh(joined, head)
 }
 
 fn roof_distances(bands: &[LayerBand], contours: &[Vec<Loop>], wall_stack: f64) -> Vec<f64> {

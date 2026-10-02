@@ -33,7 +33,7 @@ This is the plan for making tree supports editable without re-slicing the part. 
   - Every edit is numbered, and a pruned limb records the edit that pruned it. Each regrow stores its mask per layer under its own number.
   - A pruned tip's cell is cleared from the interface, less the masks of regrows numbered after its prune. Regrowing a pruned tree's gap therefore prints its interface again, and pruning the regrown tree clears it again.
 
-**Recompute.** Settling disks and dropping unfooted interface read only the finished layer below. They run as one bottom-up pass, starting at the lowest layer an edit changed and stopping once a layer above the change comes out unchanged. Support paths are rebuilt for the layers that changed. A property test checks that the incremental result equals a full rebuild. A kept slice also keeps its last plan's joined layers: travel order, combing, and z-hop rerun only on layers whose skirt, support paths, or entry point changed, and `stages.layersReused` counts the rest. G-code emit still runs over the whole print, because E is absolute and every layer above a change writes different E values.
+**Recompute.** Settling disks and dropping unfooted interface read only the finished layer below. They run as one bottom-up pass, starting at the lowest layer an edit changed and stopping once a layer above the change comes out unchanged. Support paths are rebuilt for the layers that changed. A property test checks that the incremental result equals a full rebuild. Each layer prints its skirt and supports as one tour, then the part as its own tour. The part's tour starts where its tour on the layer below ended, and on the first layer where a skirt around the part alone would end, so it never depends on the supports and is planned once with the part. The support tour starts where the nozzle stands, which is the end of the part's tour below, so each layer's support tour is ordered on its own and in parallel. A kept slice also keeps its last plan's joined layers: the support tour, its combing and z-hop, and the travel into the part rerun only on layers whose skirt, support paths, or entry point changed, and `stages.layersReused` counts the rest. G-code emit still runs over the whole print, because E is absolute and every layer above a change writes different E values.
 
 **Coverage.** A warning lists the demanded interface that was dropped because nothing holds it, by layer and area, with a region to regrow. Each edit reports the area it newly left floating.
 
@@ -47,8 +47,6 @@ This is the plan for making tree supports editable without re-slicing the part. 
 4. Prune and replay, the interface clip, and the incremental rebuild, with the incremental-equals-full test.
 5. Regrow with fixed limbs and masked tip seeding.
 6. Wire it up: `support_edits` on the request (omitted when empty, so cache keys do not change), a compact tree outline on the response for picking, and support paths rebuilt only for changed layers. The engine half is done; the UI half picks limbs from the skeleton and sends edits.
-
-After these: order supports and the part as separate travel tours.
 
 ## Wire
 
