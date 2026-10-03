@@ -1,6 +1,6 @@
 import { fx } from "./fx";
 import { state, session, worker, cachedRecipes, type ParetoPoint, type SliceResponse } from "./state";
-import { fnv1aHex, partFrameKey, quietRefresh, recipeKey, type SliceAction, sliceAction, sliceBusyLabel, FORCE_LABEL } from "../slice-action";
+import { fnv1aHex, partFrameKey, quietRefresh, recipeKey, type SliceAction, sliceAction, sliceBusyLabel, storesReply, FORCE_LABEL } from "../slice-action";
 import { currentPlacement, meshBase64, meshBytes, fail, isTauri } from "./files";
 import { adoptPatch, previewBase } from "./viewer";
 import { syncSliceDock } from "../ui/shell";
@@ -97,7 +97,6 @@ function quietEligible(): boolean {
     stale: stale(),
     cached: cachedRecipes.has(recipeKey(request, fingerprint)),
     sameFrame: !plateMockActive(state.plate) && session.slicedFrame === partFrameKey(request, fingerprint),
-    fromCache: !!state.result?.fromCache,
   });
 }
 
@@ -261,12 +260,12 @@ export async function runSlice(force = false) {
     session.resultFrame = frame;
     slicedBed.offset = replyOffset(body.offset);
     session.slicedBed = slicedBed;
+    const prev = session.slicedFrame !== null && session.shownRecipe !== null ? { frame: session.slicedFrame, recipe: session.shownRecipe } : null;
     session.slicedFrame = partFrame;
     state.slicedHash = hash;
     session.slicedEdits = edits;
     if (recipe) {
-      // The engine never stores a patched reply, so asking for this recipe again would plan it.
-      if (!body.previewPatch) cachedRecipes.add(recipe);
+      if (storesReply(prev, { frame: partFrame, recipe })) cachedRecipes.add(recipe);
       session.shownRecipe = recipe;
     }
     state.layer = layerNear(body, session.chosenZ?.high, state.layer);

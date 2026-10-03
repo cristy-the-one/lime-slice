@@ -11,6 +11,7 @@ mod wire;
 
 pub use kept::keep_support_bases;
 pub use patch::PreviewPatch;
+pub(crate) use patch::WholePreview;
 pub use wire::{EditOutcomeView, SiteSpec, SupportEditSpec};
 
 use crate::adaptive::{plan_bands, HeightOpts, LayerBand};
@@ -807,6 +808,25 @@ pub fn slice_request_watched(
     slice_sharing(&mesh, &req.blend, &profile, &settings, &mut None, watch)
 }
 
+/// Plan `req` into the kept stages and note its preview as the one the
+/// client holds, so the next request of the same part reuses every stage and
+/// gets a patch. For a reply the client got from elsewhere, such as the disk.
+/// Does nothing when no stages are kept or `req` draws no preview.
+pub(crate) fn warm_kept(req: SliceRequest, job: Job) {
+    if !kept::on() || !req.include_preview {
+        return;
+    }
+    let req = SliceRequest {
+        baseline: false,
+        compare: false,
+        include_gcode: false,
+        include_skeleton: false,
+        preview_base: None,
+        ..req
+    };
+    let _ = slice_request_watched(&req, job, &Watch::idle());
+}
+
 pub fn slice_with_baseline(
     mesh: &Mesh,
     blend: &BlendMode,
@@ -1204,6 +1224,12 @@ fn preview(
                     .map(|l| l.index)
                     .collect(),
                 changed,
+                whole: WholePreview {
+                    joined: Arc::clone(&kept.joined),
+                    profile: profile.clone(),
+                    blend: blend.clone(),
+                    layer_seconds: layer_seconds.to_vec(),
+                },
             };
             (Vec::new(), Some(patch))
         }
@@ -1476,14 +1502,14 @@ fn path_columns<S: serde::Serializer>(paths: &[PreviewPath], s: S) -> Result<S::
     c.serialize(s)
 }
 
-fn preview_of(
-    layers: &[PrintLayer],
+fn preview_of<'a>(
+    layers: impl IntoIterator<Item = &'a PrintLayer>,
     profile: &PrinterProfile,
     blend: &BlendMode,
     layer_seconds: &[f64],
 ) -> Vec<PreviewLayer> {
     layers
-        .iter()
+        .into_iter()
         .filter(|l| !l.paths.is_empty())
         .enumerate()
         .map(|(emitted, layer)| {

@@ -59,7 +59,7 @@ The UI draws the preview group, the support overlay, the section rig, and the re
 
 `previewToken` does not include the offset. After an X/Y-only change, a request that names the previous token gets a `previewPatch` with no changed layers and the new `offset`. Only the G-code emit runs again.
 
-The app sends that request by itself 200 ms after the move ends, whether auto-slice is on or off, and does the same for a recipe the engine already stores (`quietRefresh` in `src/slice-action.ts`). Export stays off until the reply lands. A result loaded from the disk cache is the exception for moves: a cache hit does not leave the engine the kept plan that the emit reuses, so the next move would plan in full and waits for Slice.
+The app sends that request by itself 200 ms after the move ends, whether auto-slice is on or off, and does the same for a recipe the engine already stores (`quietRefresh` in `src/slice-action.ts`). Export stays off until the reply lands. This holds after a result loaded from the disk cache too. After a cache hit, the engine plans the same request again in the background, so the kept stages and the shown preview match the loaded reply. A move that arrives before that plan finishes supersedes it and plans in full, reusing the stages the background plan already finished.
 
 ## Where the engine reads absolute X/Y
 
@@ -94,7 +94,7 @@ The kept slices (`crates/lime-slice-core/src/slice/kept.rs`) key each stage on w
 | Whole plan and `previewToken` | everything but edits, preview base, and job | no |
 | Emit | every layer, printer, emit settings, offset | yes |
 
-The disk cache in `serve --cache-dir` still keys on the whole request body. A move misses it and then hits the kept slices.
+The disk cache in `serve --cache-dir` still keys on the whole request body, less `previewBase`. A move misses it and then hits the kept slices. The engine stores a reply it sent as a `previewPatch` with its whole preview, so returning to a tweaked recipe later loads it from the disk. A request that differs from the one before it only in the pose's X/Y translation is not stored: a few nudges while arranging a part would push the recipes a user switches between off the disk, and the kept plan re-emits a move in a fraction of a second. The app mirrors this rule (`storesReply` in `src/slice-action.ts`), so it does not label a moved recipe as stored.
 
 ## Multi-object plates
 
