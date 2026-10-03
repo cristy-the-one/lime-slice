@@ -134,6 +134,7 @@ test("ui states from real slice fixtures", async ({ page }) => {
 
   await page.getByRole("button", { name: /^Speed/ }).click();
   await page.getByText("Samples", { exact: true }).click();
+  page.once("dialog", (dialog) => void dialog.accept());
   await page.getByRole("button", { name: "60 mm hull" }).click();
   await page.getByRole("tab", { name: "Preview", exact: true }).click();
   delay = 2500;
