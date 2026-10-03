@@ -13,7 +13,8 @@ import { hexToThree, themeColors } from "./theme";
 
 type Axis = "x" | "y" | "z";
 type HandleHit = { kind: "ring" | "move"; axis: Axis };
-type Drag = HandleHit | { kind: "cut" } | null;
+type XyDrag = { kind: "xy"; lastX: number; lastY: number; totalX: number; totalY: number; appliedX: number; appliedY: number };
+type Drag = HandleHit | { kind: "cut" } | XyDrag | null;
 
 export interface PrepareView {
   /** The same `canonical` array keeps the built geometry; only the pose matrix and bounds update. */
@@ -404,6 +405,20 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     return dragHit.sub(origin).dot(dir);
   }
 
+  const bedPoint = new THREE.Vector3();
+
+  /** Print X/Y where the pointer meets the bed. */
+  function printOnBed(): [number, number] | null {
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    if (!raycaster.ray.intersectPlane(plane, bedPoint)) return null;
+    const print = frame.fromScene(bedPoint);
+    return [print[0], print[1]];
+  }
+
+  function hitPart(): boolean {
+    return !!mesh && raycaster.intersectObject(mesh, true).length > 0;
+  }
+
   function hitCut(ev: PointerEvent): boolean {
     if (!split || cutPicks.length === 0) return false;
     ndc(ev);
@@ -491,6 +506,19 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       ev.stopPropagation();
       return;
     }
+    if (gizmoTool === "move" && meshBounds) {
+      ndc(ev);
+      const xy = hitPart() ? printOnBed() : null;
+      if (xy) {
+        drag = { kind: "xy", lastX: xy[0], lastY: xy[1], totalX: 0, totalY: 0, appliedX: 0, appliedY: 0 };
+        controls.enabled = false;
+        canvas.setPointerCapture(ev.pointerId);
+        canvas.style.cursor = "grabbing";
+        ev.preventDefault();
+        ev.stopPropagation();
+        return;
+      }
+    }
     const mod = hitModifier(ev);
     if (mod && "kind" in mod) {
       const origin = modifierOrigin();
@@ -539,8 +567,9 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     }
     if (!drag) {
       const handle = hitHandle(ev);
-      const overMod = !handle && hitModifier(ev);
-      canvas.style.cursor = handle || overMod || hitCut(ev) ? "grab" : "";
+      const overPart = !handle && gizmoTool === "move" && hitPart();
+      const overMod = !handle && !overPart && hitModifier(ev);
+      canvas.style.cursor = handle || overPart || overMod || hitCut(ev) ? "grab" : "";
       if (!sameHit(handle, hover)) {
         hover = handle;
         paintHandles(null, handle);
@@ -549,6 +578,32 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     }
     canvas.style.cursor = "grabbing";
     ndc(ev);
+    if (drag.kind === "xy") {
+      const xy = printOnBed();
+      if (!xy) return;
+      drag.totalX += xy[0] - drag.lastX;
+      drag.totalY += xy[1] - drag.lastY;
+      drag.lastX = xy[0];
+      drag.lastY = xy[1];
+      const targetX = snapStep(drag.totalX, ev.shiftKey, MOVE_SNAP_MM);
+      const targetY = snapStep(drag.totalY, ev.shiftKey, MOVE_SNAP_MM);
+      const sendX = targetX - drag.appliedX;
+      const sendY = targetY - drag.appliedY;
+      if (Math.abs(sendX) >= 0.02) {
+        drag.appliedX = targetX;
+        moveCb?.("x", sendX, targetX);
+      }
+      if (Math.abs(sendY) >= 0.02) {
+        drag.appliedY = targetY;
+        moveCb?.("y", sendY, targetY);
+      }
+      const rebased = printOnBed();
+      if (rebased) {
+        drag.lastX = rebased[0];
+        drag.lastY = rebased[1];
+      }
+      return;
+    }
     if (drag.kind === "cut") {
       if (!split || !meshBounds) return;
       const { min, max } = meshBounds;
@@ -611,7 +666,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     paintHandles(null, null);
     if (edited) editModEndCb?.();
     if (kind === "ring") rotateEndCb?.();
-    if (kind === "move") moveEndCb?.();
+    if (kind === "move" || kind === "xy") moveEndCb?.();
   };
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);

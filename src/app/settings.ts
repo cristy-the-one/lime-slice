@@ -539,9 +539,13 @@ export function objectList() {
     ${isStepName(state.mesh?.name ?? "") ? num("stepTol", "STEP chord mm", state.stepTolerance, 0.01, 2, 0.01) : ""}
     ${overlap ? `<div class="meta warn-text" id="plateOverlap">${escapeHtml(overlap)}</div>` : ""}
     ${selectedNotes.length ? `<div class="meta warn-text">${selectedNotes.join("; ")}</div>` : `<div class="meta">On the ${bedX}×${bedY}×${bedZ} mm bed.</div>`}
+    <div class="place-xy">
+      <label class="field setting" data-label="position x" data-keywords="placement move bed offset">X mm<input id="placeX" type="number" step="1" value="${cx}" aria-label="Position X" /></label>
+      <label class="field setting" data-label="position y" data-keywords="placement move bed offset">Y mm<input id="placeY" type="number" step="1" value="${cy}" aria-label="Position Y" /></label>
+    </div>
     <div class="meta" id="placeReadout">X ${cx} · Y ${cy} · bed Z ${z0} mm</div>
     ${many ? `<div class="meta" id="plateMock">Mock: more than one object is sent as one concatenated STL. The engine does not see objects.</div>` : ""}
-    <div class="meta">Gizmo sits at the left and edits the selected object. Drag a ring to rotate. Drag an arrow to move. Shift snaps 15° or 1 mm.</div>
+    <div class="meta">Gizmo sits at the left and edits the selected object. Drag a ring to rotate. Drag the part or an arrow to move. Shift snaps 15° or 1 mm.</div>
   `;
 }
 
@@ -757,6 +761,7 @@ export function onBlend(ev: Event) {
 
 export function onSettings(ev: Event) {
   const t = ev.target as HTMLInputElement;
+  if (t.id === "placeX" || t.id === "placeY") return;
   if (t.id === "find") {
     state.query = t.value;
     applyFilter();
