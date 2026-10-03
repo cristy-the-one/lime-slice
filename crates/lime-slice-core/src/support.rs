@@ -246,13 +246,33 @@ impl Limb {
 impl Supports {
     /// Project overhangs down to the bed as trunks or a sparse column plus a
     /// few dense interface layers. `None` when the job was cancelled.
+    #[cfg(test)]
     pub(crate) fn build(
         bands: &[LayerBand],
         contours: &[Vec<Loop>],
         opts: &SupportOpts,
     ) -> Option<Self> {
-        let mut supports = Self::walk(bands, contours, opts)?;
-        project(&mut supports.layers, 1, bands, contours, lean_of(opts));
+        Self::build_with(bands, contours, opts, &crate::progress::Watch::idle())
+    }
+
+    pub(crate) fn build_with(
+        bands: &[LayerBand],
+        contours: &[Vec<Loop>],
+        opts: &SupportOpts,
+        watch: &crate::progress::Watch,
+    ) -> Option<Self> {
+        let mut supports = Self::walk_with(bands, contours, opts, watch)?;
+        if !project(
+            &mut supports.layers,
+            1,
+            bands,
+            contours,
+            lean_of(opts),
+            watch,
+            opts.job,
+        ) {
+            return None;
+        }
         Some(supports)
     }
 
@@ -272,10 +292,20 @@ impl Supports {
     }
 
     /// The forest, with every layer as the walk leaves it, before `project`.
+    #[cfg(test)]
     fn walk(bands: &[LayerBand], contours: &[Vec<Loop>], opts: &SupportOpts) -> Option<Self> {
-        let demand = Demand::new(bands, contours, opts)?;
+        Self::walk_with(bands, contours, opts, &crate::progress::Watch::idle())
+    }
+
+    fn walk_with(
+        bands: &[LayerBand],
+        contours: &[Vec<Loop>],
+        opts: &SupportOpts,
+        watch: &crate::progress::Watch,
+    ) -> Option<Self> {
+        let demand = Demand::new(bands, contours, opts, watch)?;
         let (forest, disks) = if opts.style == SupportStyle::Tree {
-            grow(&demand, bands, contours, opts)?
+            grow(&demand, bands, contours, opts, watch)?
         } else {
             (Forest::default(), vec![Vec::new(); bands.len()])
         };
@@ -498,7 +528,12 @@ impl Patch {
 }
 
 impl Demand {
-    fn new(bands: &[LayerBand], contours: &[Vec<Loop>], opts: &SupportOpts) -> Option<Self> {
+    fn new(
+        bands: &[LayerBand],
+        contours: &[Vec<Loop>],
+        opts: &SupportOpts,
+        watch: &crate::progress::Watch,
+    ) -> Option<Self> {
         let n = bands.len();
         let mut demand = Demand {
             born: vec![Vec::new(); n],
@@ -534,7 +569,7 @@ impl Demand {
         let mut gens: Vec<(Vec<Loop>, u32)> = Vec::new();
         let mut sparse: Vec<Loop> = Vec::new();
         for i in (0..n).rev() {
-            if opts.job.cancelled() {
+            if opts.job.cancelled() || watch.cancelled() {
                 return None;
             }
             let mut born: Vec<Loop> = Vec::new();
@@ -582,6 +617,9 @@ impl Demand {
                 sparse = drop_slivers(local_diff(&sparse, part), 0.15);
             }
 
+            if opts.style != SupportStyle::Tree {
+                watch.tick();
+            }
             let overhang = &overhangs[i];
             if overhang.is_empty() {
                 continue;
@@ -606,6 +644,7 @@ fn grow(
     bands: &[LayerBand],
     contours: &[Vec<Loop>],
     opts: &SupportOpts,
+    watch: &crate::progress::Watch,
 ) -> Option<(Forest, Vec<Vec<Disk>>)> {
     let n = bands.len();
     let mut walk = Walk::new(bands, contours, opts, 1);
@@ -613,13 +652,14 @@ fn grow(
     let mut disks = vec![Vec::new(); n];
     let mut none = Fixed::new(Vec::new());
     for i in (0..n).rev() {
-        if opts.job.cancelled() {
+        if opts.job.cancelled() || watch.cancelled() {
             return None;
         }
         walk.arrive(i, &demand.born[i], &demand.interface[i]);
         forest.record(i, &walk.nodes);
         disks[i] = organic_disks(&walk.nodes, walk.part(i), opts.xy_gap);
         walk.descend(i, &mut none, &mut forest);
+        watch.tick();
     }
     Some((forest, disks))
 }
@@ -946,9 +986,14 @@ fn project(
     bands: &[LayerBand],
     contours: &[Vec<Loop>],
     lean: f64,
-) {
+    watch: &crate::progress::Watch,
+    job: crate::cancel::Job,
+) -> bool {
     let mut near = Vec::new();
     for i in from.max(1)..layers.len() {
+        if watch.stopped(job) {
+            return false;
+        }
         let (lower, upper) = layers.split_at_mut(i);
         stand(
             &mut upper[0],
@@ -960,6 +1005,7 @@ fn project(
             &mut near,
         );
     }
+    true
 }
 
 /// Stand layer `i` on the finished layer below it.
@@ -2574,7 +2620,15 @@ mod tests {
                 ],
             },
         ];
-        project(&mut layers, 1, &bands, &[Vec::new(), Vec::new()], 0.8);
+        project(
+            &mut layers,
+            1,
+            &bands,
+            &[Vec::new(), Vec::new()],
+            0.8,
+            &crate::progress::Watch::idle(),
+            crate::cancel::Job::default(),
+        );
         assert_eq!(layers[0].disks.len(), 1);
         let kept: Vec<([f64; 2], NodeId)> =
             layers[1].disks.iter().map(|d| (d.xy, d.node)).collect();
@@ -2944,7 +2998,15 @@ mod tests {
         let raw = Supports::walk(&bands, &contours, &opts).unwrap().layers;
         let lean = lean_of(&opts);
         let mut fused = raw.clone();
-        project(&mut fused, 1, &bands, &contours, lean);
+        project(
+            &mut fused,
+            1,
+            &bands,
+            &contours,
+            lean,
+            &crate::progress::Watch::idle(),
+            crate::cancel::Job::default(),
+        );
         let mut apart = raw.clone();
         let mut near = Vec::new();
         for i in 1..apart.len() {

@@ -681,7 +681,15 @@ impl Supports {
             .into_par_iter()
             .map(|i| self.fresh(i, contours))
             .collect();
-        super::project(&mut layers, 1, bands, contours, lean_of(&self.opts));
+        super::project(
+            &mut layers,
+            1,
+            bands,
+            contours,
+            lean_of(&self.opts),
+            &crate::progress::Watch::idle(),
+            self.opts.job,
+        );
         layers
     }
 }
