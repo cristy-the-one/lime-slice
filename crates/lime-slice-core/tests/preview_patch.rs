@@ -29,7 +29,7 @@ fn request(extra: Value) -> Value {
 }
 
 fn slice(req: &Value) -> Value {
-    let reply = slice_payload(&req.to_string(), None, Job::default(), |g| g).unwrap();
+    let reply = slice_payload(&req.to_string(), None, Job::default(), |g| g.text()).unwrap();
     serde_json::from_str(&reply).unwrap()
 }
 
@@ -188,4 +188,75 @@ fn a_named_preview_gets_only_its_changed_layers() {
         "an unknown base gets the whole preview"
     );
     assert_eq!(held(&stale["layers"]), held(&full["layers"]));
+
+    settings_tweaks_are_patches_too();
+}
+
+fn printer(nozzle_temp: f64, max_accel: f64) -> Value {
+    json!({
+        "name": "Generic Marlin 0.4 mm PLA",
+        "nozzleDiameter": 0.4,
+        "filamentDiameter": 1.75,
+        "nozzleTemp": nozzle_temp,
+        "bedTemp": 60.0,
+        "bedX": 220.0,
+        "bedY": 220.0,
+        "maxAccel": max_accel,
+    })
+}
+
+/// A temperature, an acceleration, and a support setting each come back as
+/// a patch on the preview before them, and each patch rebuilds the preview
+/// a cold slice draws.
+fn settings_tweaks_are_patches_too() {
+    let steps = [
+        json!({"printer": printer(200.0, 5000.0)}),
+        json!({"printer": printer(215.0, 5000.0)}),
+        json!({"printer": printer(215.0, 3000.0)}),
+        json!({"printer": printer(215.0, 3000.0), "supportAngle": 55}),
+    ];
+    keep_support_bases(true);
+    let mut replies: Vec<Value> = Vec::new();
+    for step in &steps {
+        let mut extra = step.clone();
+        if let Some(last) = replies.last() {
+            extra["previewBase"] = last["previewToken"].clone();
+        }
+        replies.push(slice(&request(extra)));
+    }
+    keep_support_bases(false);
+    let cold: Vec<Value> = steps.iter().map(|s| slice(&request(s.clone()))).collect();
+
+    let mut shown = held(&replies[0]["layers"]);
+    let mut seen = Vec::new();
+    for (k, reply) in replies.iter().enumerate().skip(1) {
+        let patch = &reply["previewPatch"];
+        assert_eq!(
+            patch["base"],
+            replies[k - 1]["previewToken"],
+            "step {k} is a patch"
+        );
+        shown = apply(&shown, patch);
+        assert_eq!(shown, held(&cold[k]["layers"]), "step {k} rebuilds cold");
+        let changed = patch["changed"].as_array().unwrap();
+        let sent: usize = changed
+            .iter()
+            .map(|l| l["paths"]["kind"].as_array().unwrap().len())
+            .sum();
+        seen.push((changed.len(), sent));
+    }
+    // How many layer times an acceleration change moves depends on float
+    // rounding: 35 layers on Windows, 33 on Linux. It never sends a path.
+    let (accel_layers, accel_paths) = seen[1];
+    assert!(
+        accel_layers > 0 && accel_paths == 0,
+        "an acceleration moves only some layer times: {:?}",
+        seen[1]
+    );
+    assert_eq!(
+        (seen[0], seen[2]),
+        ((0, 0), (57, 2165)),
+        "changed layers and paths sent: a temperature changes nothing drawn, a \
+         support angle the supported layers"
+    );
 }

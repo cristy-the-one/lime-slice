@@ -70,10 +70,8 @@ export interface SliceResponse {
     wallCpuMs?: number;
     /** Sum of per-layer infill time inside toolpathMs. */
     infillCpuMs?: number;
-    /** The part's layers came from memory; its clocks read zero. */
-    objectReused?: boolean;
-    /** The unedited supports came from memory; supportMs reads zero. */
-    supportBaseReused?: boolean;
+    /** Stages taken from memory, their clocks reading zero: contours, toolpaths, order, comb, supports, supportPaths. */
+    reused?: string[];
     /** Leading support edits whose result was already in memory. */
     editsReused?: number;
     editApplyMs?: number;

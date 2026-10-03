@@ -13,7 +13,7 @@ use serde::ser::{Serialize, SerializeMap, Serializer};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
-use crate::{slice_request, Job, SliceRequest};
+use crate::{slice_request, GcodeText, Job, SliceRequest};
 
 /// A folder of `<key>.json` files, each one slice reply with its G-code.
 /// Entries are written on background threads after the reply is out.
@@ -75,9 +75,10 @@ impl SliceCache {
         Some(reply)
     }
 
-    /// Write `reply` under `key` on a background thread. Skipped when `key` is
-    /// already being written or every write slot is taken.
-    fn store_later(&self, key: &str, reply: Arc<Value>) {
+    /// Write `reply` under `key` on a background thread, with `gcode` as its
+    /// G-code when the reply left it out. Skipped when `key` is already being
+    /// written or every write slot is taken.
+    fn store_later(&self, key: &str, reply: Arc<Value>, gcode: Option<GcodeText>) {
         {
             let mut writing = self.shared.writing.lock().expect("cache writes");
             if writing.len() >= MAX_WRITES || !writing.insert(key.to_owned()) {
@@ -90,7 +91,7 @@ impl SliceCache {
             .name("slice-cache-write".into())
             .spawn(move || {
                 // A slice that cannot be kept is still a slice.
-                let _ = writer.store(&owned, &reply);
+                let _ = writer.store(&owned, &reply, gcode.as_ref());
                 writer.release(&owned);
             });
         if spawned.is_err() {
@@ -111,7 +112,7 @@ impl Shared {
 
     /// The entry appears under its name only once it is complete and on disk,
     /// so a crash leaves a `.tmp` file that nothing reads.
-    fn store(&self, key: &str, reply: &Value) -> io::Result<()> {
+    fn store(&self, key: &str, reply: &Value, gcode: Option<&GcodeText>) -> io::Result<()> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         fs::create_dir_all(&self.dir)?;
         let tmp = self.dir.join(format!(
@@ -121,7 +122,8 @@ impl Shared {
         ));
         let written = (|| {
             let mut out = BufWriter::new(fs::File::create(&tmp)?);
-            serde_json::to_writer(&mut out, reply)?;
+            let gcode = gcode.map(GcodeText::text);
+            serde_json::to_writer(&mut out, &Stored { reply, gcode })?;
             out.flush()?;
             out.get_ref().sync_all()
         })();
@@ -177,7 +179,7 @@ pub fn slice_payload(
     payload: &str,
     cache: Option<&SliceCache>,
     job: Job,
-    park: impl FnOnce(String) -> String,
+    park: impl FnOnce(GcodeText) -> String,
 ) -> Result<String, String> {
     let mut value: Value = serde_json::from_str(payload).map_err(|e| e.to_string())?;
     let reslice = value
@@ -192,23 +194,25 @@ pub fn slice_payload(
         .filter(|_| !reslice)
         .and_then(|(cache, key)| cache.load(key));
     let from_cache = hit.is_some();
-    let reply = match hit {
-        Some(reply) => Arc::new(reply),
+    let (reply, text) = match hit {
+        Some(reply) => (Arc::new(reply), None),
         None => {
             let response = slice_request(&req, job)?;
             let mut reply = serde_json::to_value(&response).map_err(|e| e.to_string())?;
             reply["slicedAtMs"] = json!(now_ms());
             let reply = Arc::new(reply);
             if let Some((cache, key)) = cache.filter(|_| response.preview_patch.is_none()) {
-                cache.store_later(key, Arc::clone(&reply));
+                cache.store_later(key, Arc::clone(&reply), response.gcode_text.clone());
             }
-            reply
+            (reply, response.gcode_text)
         }
     };
     let obj = reply.as_object().ok_or("slice reply is not an object")?;
     let gcode_token = (!req.include_gcode).then(|| {
-        let gcode = obj.get("gcode").and_then(Value::as_str).unwrap_or_default();
-        park(gcode.to_owned())
+        park(text.unwrap_or_else(|| {
+            let gcode = obj.get("gcode").and_then(Value::as_str).unwrap_or_default();
+            GcodeText::ready(gcode.to_owned())
+        }))
     });
     serde_json::to_string(&Wire {
         reply: obj,
@@ -238,6 +242,30 @@ impl Serialize for Wire<'_> {
         map.serialize_entry("fromCache", &self.from_cache)?;
         if let Some(token) = &self.gcode_token {
             map.serialize_entry("gcodeToken", token)?;
+        }
+        map.end()
+    }
+}
+
+/// A reply as the disk keeps it: whole, with `gcode` in place of the empty
+/// text a reply that left its G-code out carries.
+struct Stored<'a> {
+    reply: &'a Value,
+    gcode: Option<String>,
+}
+
+impl Serialize for Stored<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let (Some(gcode), Some(fields)) = (&self.gcode, self.reply.as_object()) else {
+            return self.reply.serialize(serializer);
+        };
+        let mut map = serializer.serialize_map(Some(fields.len()))?;
+        for (k, v) in fields {
+            if k == "gcode" {
+                map.serialize_entry(k, gcode)?;
+            } else {
+                map.serialize_entry(k, v)?;
+            }
         }
         map.end()
     }
@@ -324,7 +352,7 @@ mod tests {
         let cache = cache("same-key");
         cache.shared.writing.lock().unwrap().insert("k".into());
 
-        cache.store_later("k", Arc::new(json!({"a": 1})));
+        cache.store_later("k", Arc::new(json!({"a": 1})), None);
 
         assert_eq!(written(&cache), 0);
         cache.shared.release("k");
@@ -343,14 +371,14 @@ mod tests {
                 .insert(format!("busy{n}"));
         }
 
-        cache.store_later("extra", Arc::new(json!({"a": 1})));
+        cache.store_later("extra", Arc::new(json!({"a": 1})), None);
 
         assert_eq!(written(&cache), 0);
         assert_eq!(cache.shared.writing.lock().unwrap().len(), MAX_WRITES);
         for n in 0..MAX_WRITES {
             cache.shared.release(&format!("busy{n}"));
         }
-        cache.store_later("extra", Arc::new(json!({"a": 1})));
+        cache.store_later("extra", Arc::new(json!({"a": 1})), None);
         cache.flush();
         assert_eq!(written(&cache), 1);
     }

@@ -33,7 +33,7 @@ fn request(extra: Value) -> Value {
 }
 
 fn slice(req: &Value) -> Value {
-    let reply = slice_payload(&req.to_string(), None, Job::default(), |g| g).unwrap();
+    let reply = slice_payload(&req.to_string(), None, Job::default(), |g| g.text()).unwrap();
     serde_json::from_str(&reply).unwrap()
 }
 
@@ -77,15 +77,29 @@ fn regrow_over(gaps: &[Value]) -> Value {
     json!({"kind": "regrow", "region": region, "z": [z0, z1]})
 }
 
-/// `(objectReused, supportBaseReused, editsReused)`.
-fn reuse(reply: &Value) -> (bool, bool, u64) {
+/// `(reused, editsReused)`: the stages taken from memory, and the leading
+/// edits whose result was.
+fn reuse(reply: &Value) -> (Vec<&str>, u64) {
     let s = &reply["stages"];
     (
-        s["objectReused"].as_bool().unwrap(),
-        s["supportBaseReused"].as_bool().unwrap(),
+        s["reused"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect(),
         s["editsReused"].as_u64().unwrap(),
     )
 }
+
+const ALL: [&str; 6] = [
+    "contours",
+    "toolpaths",
+    "order",
+    "comb",
+    "supports",
+    "supportPaths",
+];
 
 #[test]
 fn edits_extend_the_kept_state_and_undo_replays_from_the_base() {
@@ -95,9 +109,9 @@ fn edits_extend_the_kept_state_and_undo_replays_from_the_base() {
     let pruned = slice(&request(json!({"supportEdits": [prune]})));
     let regrow = regrow_over(pruned["supportEdits"][0]["floating"].as_array().unwrap());
     let both = slice(&request(json!({"supportEdits": [prune, regrow]})));
-    assert_eq!(reuse(&base), (false, false, 0));
-    assert_eq!(reuse(&pruned), (true, true, 0));
-    assert_eq!(reuse(&both), (true, true, 1));
+    assert_eq!(reuse(&base), (vec![], 0));
+    assert_eq!(reuse(&pruned), (ALL.to_vec(), 0));
+    assert_eq!(reuse(&both), (ALL.to_vec(), 1));
     let joined = |reply: &Value| reply["stages"]["layersReused"].as_u64().unwrap();
     assert_eq!(
         (joined(&base), joined(&pruned), joined(&both)),
@@ -116,7 +130,7 @@ fn edits_extend_the_kept_state_and_undo_replays_from_the_base() {
 
     keep_support_bases(false);
     let cold_both = slice(&request(json!({"supportEdits": [prune, regrow]})));
-    assert_eq!(reuse(&cold_both), (false, false, 0));
+    assert_eq!(reuse(&cold_both), (vec![], 0));
     assert_eq!(cold_both["gcode"], both["gcode"]);
     assert_eq!(cold_both["supportEdits"], both["supportEdits"]);
 
@@ -127,12 +141,12 @@ fn edits_extend_the_kept_state_and_undo_replays_from_the_base() {
     let cold_pruned = slice(&request(json!({"supportEdits": [prune]})));
     assert_eq!(
         reuse(&again),
-        (false, false, 0),
+        (vec![], 0),
         "turning keeping off forgot the bases"
     );
     assert_eq!(
         reuse(&undone),
-        (true, true, 0),
+        (ALL.to_vec(), 0),
         "a shorter edit list replays from the base"
     );
     assert_eq!(undone["gcode"], cold_pruned["gcode"]);
@@ -144,7 +158,7 @@ fn edits_extend_the_kept_state_and_undo_replays_from_the_base() {
     keep_support_bases(false);
     assert_eq!(
         reuse(&other_tip),
-        (true, false, 0),
+        (ALL[..4].to_vec(), 0),
         "a support setting reuses the part only"
     );
 }

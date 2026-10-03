@@ -122,7 +122,7 @@ pub fn audit_slice(
     let planned = plan(mesh, blend, settings, nozzle_diameter)?;
     let plan_ms = started.elapsed().as_secs_f64() * 1000.0;
     let index = ZIndex::build(mesh);
-    let bands = &planned.bands;
+    let bands = &planned.cut.bands;
     let supports = &planned.supports.layers;
     let regions: Vec<Vec<Loop>> = supports.par_iter().map(support_region).collect();
     let columns: Vec<Vec<Loop>> = supports.par_iter().map(column_region).collect();
@@ -132,12 +132,12 @@ pub fn audit_slice(
             let band = bands[i];
             let (fresh, stats) = index.slice_with_stats(band.cut_z());
             let mid = &fresh;
-            let piece = &planned.contours[i];
+            let piece = &planned.cut.contours[i];
             let region = &regions[i];
             let column_floating = if i == 0 || columns[i].is_empty() {
                 0.0
             } else {
-                let below = boolean_union(&regions[i - 1], &planned.contours[i - 1]);
+                let below = boolean_union(&regions[i - 1], &planned.cut.contours[i - 1]);
                 area_min(
                     &boolean_diff(&columns[i], &offset_loops(&below, FLOAT_TOLERANCE_MM)),
                     FLOAT_SPECK_MM2,
@@ -151,11 +151,11 @@ pub fn audit_slice(
                 crate::support::orphan_interface_area(
                     &supports[i].interface,
                     &supports[i - 1],
-                    &planned.contours[i - 1],
+                    &planned.cut.contours[i - 1],
                 )
             };
             let floating = column_floating + iface_floating;
-            let exposed = match planned.contours.get(i + 1) {
+            let exposed = match planned.cut.contours.get(i + 1) {
                 Some(above) => boolean_diff(piece, above),
                 None => piece.clone(),
             };

@@ -46,7 +46,7 @@ fn request(layer_height: f64, reslice: bool) -> String {
 fn slice(payload: &str, cache: &SliceCache) -> (Value, String) {
     let mut parked = String::new();
     let reply = slice_payload(payload, Some(cache), Job::default(), |gcode| {
-        parked = gcode;
+        parked = gcode.text();
         "token".into()
     })
     .unwrap();
