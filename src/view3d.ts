@@ -194,14 +194,14 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     mode: { value: 0 },
     sectionPlane,
   };
-  const marginMat = pathMaterial(pathUniforms, MARGIN_SHADE, 1, { side: THREE.DoubleSide }, clipPlanes);
+  const marginMat = pathMaterial(pathUniforms, MARGIN_SHADE, 1, { side: THREE.DoubleSide });
   const faceMat = pathMaterial(pathUniforms, 1, 1, {
     side: THREE.DoubleSide,
     polygonOffset: true,
     polygonOffsetFactor: -2,
     polygonOffsetUnits: -2,
-  }, clipPlanes);
-  const travelMat = pathMaterial(pathUniforms, 1, 0.7, { transparent: true }, clipPlanes);
+  });
+  const travelMat = pathMaterial(pathUniforms, 1, 0.7, { transparent: true });
   let planeSpec: { axis: "x" | "y"; at: number } | null = null;
   let planeCb: ((at: number) => void) | null = null;
   let section: SectionSpec | null = null;
@@ -220,6 +220,9 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   // Render only when something changed. Damping keeps emitting change
   // from controls.update() until the camera settles.
   let frameQueued = false;
+  /** A pointer is on the controls, and whether frames draw at one pixel per CSS pixel. */
+  let held = false;
+  let lowRes = false;
   function requestRender() {
     if (frameQueued) return;
     frameQueued = true;
@@ -227,18 +230,31 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   }
   function frame() {
     frameQueued = false;
-    controls.update();
+    const moved = controls.update();
+    // An orbit draws at device pixel ratio 1 from its first move until the camera settles, then once sharp.
+    const low = moved ? held || lowRes : held && lowRes;
+    if (low !== lowRes) {
+      lowRes = low;
+      applyPixelRatio(renderer, lowRes);
+    }
     fitSection();
     renderer.render(scene, camera);
   }
   controls.addEventListener("change", requestRender);
+  controls.addEventListener("start", () => {
+    held = true;
+  });
+  controls.addEventListener("end", () => {
+    held = false;
+    requestRender();
+  });
   requestRender();
 
   function resize() {
     requestRender();
     const rect = canvas.getBoundingClientRect();
     if (rect.width < 1 || rect.height < 1) return;
-    applyPixelRatio(renderer);
+    applyPixelRatio(renderer, lowRes);
     renderer.setSize(rect.width, rect.height, false);
     camera.aspect = rect.width / rect.height;
     camera.updateProjectionMatrix();
@@ -858,9 +874,8 @@ const [SPEED_LO, SPEED_HI] = SPEED_RANGE_MM_S;
  * Expands one segment per instance: from `segA` to `segB`, sideways by the
  * half width and down by the bead height in `segStyle`, colored by its kind
  * slot, blend weight, and speed. Hidden kinds and path ends collapse off-screen.
- * `sectionPlane` is scene space (xyz = normal, w = constant). Fragments on the negative side are dropped.
- * The Three.js clipping chunks sample the same plane; a ShaderMaterial does not discard unless it does this itself.
- * `mvPosition` is the name those chunks expect.
+ * Fragments on the negative side of `sectionPlane` (scene space, xyz = normal,
+ * w = constant) are dropped.
  */
 const PATH_VERTEX = `
 attribute vec3 corner;
@@ -874,7 +889,6 @@ uniform float shade;
 uniform vec4 sectionPlane;
 varying vec3 vColor;
 varying float vSectionDist;
-#include <clipping_planes_pars_vertex>
 void main() {
   float slot = floor(segStyle.x / ${KIND_SHIFT.toFixed(1)});
   int kind = int(slot);
@@ -889,7 +903,6 @@ void main() {
   point.xz += side * (segStyle.z * 0.001 * corner.y);
   point.y -= segStyle.w * 0.001 * corner.z;
   vec4 mvPosition = modelViewMatrix * vec4(point, 1.0);
-  #include <clipping_planes_vertex>
   vec4 worldPos = modelMatrix * vec4(point, 1.0);
   vSectionDist = dot(worldPos.xyz, sectionPlane.xyz) + sectionPlane.w;
   float weight = (segStyle.x - slot * ${KIND_SHIFT.toFixed(1)}) / ${WEIGHT_STEPS.toFixed(1)};
@@ -905,9 +918,7 @@ const PATH_FRAGMENT = `
 uniform float alpha;
 varying vec3 vColor;
 varying float vSectionDist;
-#include <clipping_planes_pars_fragment>
 void main() {
-  #include <clipping_planes_fragment>
   if (vSectionDist < -0.0001) discard;
   gl_FragColor = vec4(vColor, alpha);
   #include <colorspace_fragment>
@@ -933,15 +944,12 @@ function pathMaterial(
   shade: number,
   alpha: number,
   params: THREE.ShaderMaterialParameters,
-  clippingPlanes: THREE.Plane[],
 ) {
   return new THREE.ShaderMaterial({
     ...params,
     uniforms: { ...shared, shade: { value: shade }, alpha: { value: alpha } },
     vertexShader: PATH_VERTEX,
     fragmentShader: PATH_FRAGMENT,
-    clipping: true,
-    clippingPlanes,
   });
 }
 
@@ -1191,7 +1199,7 @@ function buildSupportOverlay(sectionClip: THREE.Plane, initial: ThemeColors) {
   };
 }
 
-function applyPixelRatio(renderer: THREE.WebGLRenderer) {
-  const dpr = window.devicePixelRatio || 1;
+function applyPixelRatio(renderer: THREE.WebGLRenderer, low = false) {
+  const dpr = low ? 1 : window.devicePixelRatio || 1;
   if (renderer.getPixelRatio() !== dpr) renderer.setPixelRatio(dpr);
 }
