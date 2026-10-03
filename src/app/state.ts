@@ -1,4 +1,4 @@
-import { ID_MATRIX, type Mat3, type MeshShift } from "../mesh-place";
+import { ID_MATRIX, type Mat3, type MeshShift, type PlacedPart } from "../mesh-place";
 import { loadProfile } from "../profiles";
 import type { ColorMode } from "../colors";
 import type { PathColumns } from "../preview-wire";
@@ -178,7 +178,7 @@ export const state = {
   playing: false,
   profile: loadProfile(),
   sourcePos: null as Float32Array | null,
-  placed: null as Float32Array | null,
+  placed: null as PlacedPart | null,
   orient: ID_MATRIX as Mat3,
   partScale: 1,
   stepTolerance: 0.1,

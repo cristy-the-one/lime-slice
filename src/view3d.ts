@@ -8,6 +8,7 @@ import { clampSplit, roundSplit, type AxisBounds } from "./split-at";
 import { fillHiddenKindMask, MARGIN_SHADE, MAX_KINDS, meshCenter, scenePoint } from "./preview-geom";
 import { aimSection, anchor, clampOffset, normalize, sectionReach, threeClip, type SectionSpec, type Vec3 } from "./section-plane";
 import { hexToThree, themeColors, type ThemeColors } from "./theme";
+import { poseAffine, type PlacedPart } from "./mesh-place";
 import type { CoverageGap } from "./support-edits";
 import type { Ray } from "./support-pick";
 
@@ -59,7 +60,8 @@ export interface PickEvent {
 
 export interface SliceView3d {
   setModel(min: number[], max: number[]): void;
-  setGhost(positions: Float32Array | null): void;
+  /** Rebuilds the ghost only for another `canonical` array; a pose change moves it. */
+  setGhost(part: PlacedPart | null): void;
   setBuffers(buffers: RibbonBuffers | null): void;
   setBed(x: number, y: number, z: number): void;
   setRange(low: number, high: number): void;
@@ -184,6 +186,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   let ribbon: THREE.Mesh | null = null;
   let ghost: THREE.Mesh | null = null;
   let ghostSig = "";
+  let ghostSource: Float32Array | null = null;
   const ghostMat = new THREE.MeshBasicMaterial({ color: hexToThree(colors.mesh), clippingPlanes: clipPlanes });
   attachSectionClip(ghostMat, sectionPlane);
   let face: THREE.Mesh | null = null;
@@ -720,30 +723,33 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       if (!on) press = null;
       if (!regionDrag && !sectionDrag) canvas.style.cursor = restCursor();
     },
-    setGhost(positions) {
-      const sig = !positions || positions.length < 9
-        ? ""
-        : `${positions.length}:${positions[0]}:${positions[positions.length >> 1]}:${positions[positions.length - 1]}:${origin.cx.toFixed(3)}:${origin.cy.toFixed(3)}`;
-      if (sig === ghostSig) return;
+    setGhost(part) {
+      const canonical = part && part.canonical.length >= 9 ? part.canonical : null;
+      const a = canonical && part ? poseAffine(part.pose) : null;
+      const sig = a ? `${a.join()}:${origin.cx}:${origin.cy}` : "";
+      if (sig === ghostSig && canonical === ghostSource) return;
       ghostSig = sig;
       requestRender();
-      if (ghost) {
-        scene.remove(ghost);
-        ghost.geometry.dispose();
-        ghost = null;
+      if (canonical !== ghostSource) {
+        ghostSource = canonical;
+        if (ghost) {
+          scene.remove(ghost);
+          ghost.geometry.dispose();
+          ghost = null;
+        }
+        if (canonical) {
+          const geometry = new THREE.BufferGeometry();
+          geometry.setAttribute("position", new THREE.BufferAttribute(canonical, 3));
+          ghost = new THREE.Mesh(geometry, ghostMat);
+          ghost.matrixAutoUpdate = false;
+          scene.add(ghost);
+        }
       }
-      if (!positions || positions.length < 9) return;
-      const xyz = new Float32Array(positions.length);
-      for (let i = 0; i < positions.length; i += 3) {
-        xyz[i] = positions[i] - origin.cx;
-        xyz[i + 1] = positions[i + 2];
-        xyz[i + 2] = -(positions[i + 1] - origin.cy);
+      if (ghost && a) {
+        // Print X, Y, Z is scene X, -Z, Y, centered on the model like the toolpaths.
+        ghost.matrix.set(a[0], a[1], a[2], a[3] - origin.cx, a[8], a[9], a[10], a[11], -a[4], -a[5], -a[6], origin.cy - a[7], 0, 0, 0, 1);
+        ghost.matrixWorldNeedsUpdate = true;
       }
-      const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute("position", new THREE.BufferAttribute(xyz, 3));
-      geometry.computeVertexNormals();
-      ghost = new THREE.Mesh(geometry, ghostMat);
-      scene.add(ghost);
     },
     setModel(min, max) {
       const next = { min: [...min], max: [...max] };
