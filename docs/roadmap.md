@@ -486,19 +486,19 @@ Strings are English in the UI and the engine errors.
 
 ## Recommended order
 
-Do not rebuild the rows marked exists.
+Do not rebuild the rows marked exists. This list follows [Decisions (2026-10-03)](#decisions-2026-10-03).
 
-1. **Printer and filament libraries.** Highest user value, and the place PA, flow, temperature, and retraction results have to live. Mostly UI. The emit path already prints one K.
-2. **Print-quality gaps.** Seam placement picker first, then ironing. Fuzzy skin after those. Arc fitting and variable-width walls stay as they are.
-3. **Send to printer.** One protocol, after the profile can store a host. No slice changes. Moonraker is the smallest honest client. The others wait on the questions below.
-4. **Calibration towers for flow, then temperature, then retraction.** Copy the PA tower. Store the answer on the filament.
-5. **Multi-object plates and arrange.** Follow [multi-object-and-support-painting.md](multi-object-and-support-painting.md). UI mock first. Engine when the one-object G-code is still byte-identical.
-6. **Support painting, then seam painting.** Same design note. Prune and regrow stay.
-7. **Height-range overrides beyond the blend band**, if the per-object key list is settled. Modifier meshes and mesh cut wait on plates.
-8. **Repair audit in the UI**, then split-to-objects once plates exist. Hollow and text emboss stay last among mesh tools.
-9. **Performance of G-code emit**, when a profile is slow on the inventory's dragon, not before the three above.
-10. **Multi-material last.** It is a different product. Filaments must exist first.
-11. **Polish in parallel with whoever owns release:** signing and the updater when a release is real, crash reporting with it, the tour after the printer picker exists, localization when the strings settle, foreign-project import after the libraries exist.
+1. **Printer, filament, and nozzle library.** Our own small catalog, not redistributed Prusa or Bambu profiles. Pressure advance is stored per filament and nozzle size. Vendor start and end G-code is editable header text on the UI side. Mostly UI. The emit path already prints one K.
+2. **Ironing and a seam picker.** Rear, nearest, and aligned are enough before seam painting. Ironing before fuzzy skin. Fuzzy skin after those. Arc fitting and variable-width walls stay as they are.
+3. **Send to printer: Prusa Link first.** After the profile can store a host. No slice changes. Moonraker and OctoPrint come after. Bambu LAN is out.
+4. **Multi-object plates and arrange.** Follow [multi-object-and-support-painting.md](multi-object-and-support-painting.md). UI mock first. Engine when the one-object G-code is still byte-identical.
+5. **Support painting, then seam painting.** Same design note. Prune and regrow stay.
+6. **Height-range overrides beyond the blend band**, if the per-object key list is settled. Modifier meshes and mesh cut wait on plates.
+7. **Repair audit in the UI**, then split-to-objects once plates exist. Hollow and text emboss stay last among mesh tools.
+8. **Performance of G-code emit**, when a profile is slow on the inventory's dragon, not before the rows above.
+9. **Polish in parallel with whoever owns release:** the tour after the printer picker exists, localization when the strings settle, foreign-project settings import after the libraries exist. Signing keys are undecided and may trail these rows.
+
+**Deferred.** Flow, temperature, and retraction towers wait. Multi-material waits until the single-extruder library and the send path exist. A utility or library for multi-material comes before any toolpath work.
 
 ## Questions for Marius
 
@@ -514,3 +514,20 @@ Do not rebuild the rows marked exists.
 10. Who holds the Apple, Windows, and updater keys, and is signing allowed to trail the three feature rows?
 11. Is the phone a target for send-to-printer, or desktop first, with compact only required to keep the prepare canvas at or above 70% when a sheet opens?
 12. Vendor start G-code: do we run it as text in the header (UI), or is matching a vendor's start sequence engine work?
+
+## Decisions (2026-10-03)
+
+Marius answered the questions above. The [recommended order](#recommended-order) follows these.
+
+1. **Own profiles.** Ship our own printer, filament, and nozzle profiles. Do not redistribute Prusa or Bambu profiles.
+2. **Pressure advance.** Store it per filament and per nozzle size, not per filament alone.
+3. **Send to printer.** Prusa Link is first. Moonraker and OctoPrint wait behind it.
+4. **Bambu LAN.** Out. No account or token client in this stretch.
+5. **Seam picker.** Rear, nearest, and aligned are enough before seam painting.
+6. **Ironing.** Ironing before fuzzy skin.
+7. **Towers.** Flow, temperature, and retraction towers wait. They are not in front of the library, ironing, the seam picker, or Prusa Link.
+8. **Multi-material.** Out until the single-extruder library and the send path exist. A utility or library comes before multi-material toolpaths.
+9. **Foreign 3MF.** Opens mesh-only for now. Settings import comes later.
+10. **Signing keys.** Decide later. Signing may trail the feature rows.
+11. **Desktop first.** Compact only has to keep the prepare canvas at or above 70% when a sheet opens. The phone is not a send-to-printer target yet.
+12. **Vendor start G-code.** UI-side header text. Matching a vendor start sequence is not engine work for now.
