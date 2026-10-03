@@ -380,7 +380,7 @@ export function machineSectionHtml(
       <div class="meta" id="machineTemps">Nozzle ${Math.round(live.nozzleTemp)} °C · bed ${Math.round(live.bedTemp)} °C</div>
       <div class="row">
         <button class="btn" id="machineSave" type="button">Save</button>
-        <details class="profile-more" id="machineMore">
+        <details class="machine-more" id="machineMore">
           <summary class="btn" aria-label="Machine actions">More</summary>
           <div class="profile-actions">
             <input id="machineName" type="text" aria-label="Printer name" placeholder="Printer name" />
