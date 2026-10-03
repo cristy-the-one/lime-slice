@@ -1,3 +1,4 @@
+import { redoUserEdit, undoUserEdit } from "../app/history";
 import { saveCurrentProject } from "../app/project-io";
 import { pickProjectFile } from "../platform";
 import { COMMANDS, helpEntries, rankCommands, type CommandSpec } from "./commands";
@@ -318,6 +319,12 @@ export function runCommand(id: string) {
       return;
     case "edit-supports":
       click('#toolRail [data-tool="supports"]');
+      return;
+    case "undo":
+      undoUserEdit();
+      return;
+    case "redo":
+      redoUserEdit();
       return;
     case "theme-system":
       setTheme("system");

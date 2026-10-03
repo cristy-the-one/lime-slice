@@ -8,6 +8,7 @@ import { syncLayerTip } from "../ui/layer-tip";
 import { type LayerGcode, indexLayerGcode, type PlayPoint, layerMoves, matchGcodeLine, layerClasses } from "../playback";
 import { applyPlace, fetchStoredGcode } from "./files";
 import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, stale, markStale } from "./settings";
+import { flushEdit, noteEdit } from "./history";
 import { type PreviewPath, decodePaths } from "../preview-wire";
 import { patchGeometry, patchLayers, type PreviewPatch } from "../preview-patch";
 import type { PreviewGeometry } from "../preview-geom";
@@ -391,6 +392,7 @@ export function refreshSplitNotice() {
 }
 
 export function commitSplit(at: number) {
+  noteEdit();
   const bounds = placedAxisBounds();
   state.atMm = bounds ? roundSplit(clampSplit(at, bounds, state.axis)) : roundSplit(at);
   state.splitCustom = true;
@@ -856,18 +858,21 @@ export function mountViews() {
   };
   prepare.onSplit((at) => commitSplit(at));
   prepare.onRotate((axis, deltaDeg, totalDeg) => {
+    noteEdit();
     const spin = axis === "x" ? rotX : axis === "y" ? rotY : rotZ;
     state.orient = matMul(spin(deltaDeg), state.orient);
     state.poseHud = `${axis.toUpperCase()} ${totalDeg >= 0 ? "+" : ""}${totalDeg.toFixed(0)}°`;
     applyPlace(false);
   });
   prepare.onRotateEnd(() => {
+    flushEdit();
     state.poseHud = "";
     paintGizmoReadout();
     renderChrome();
   });
   prepare.onMove((axis, deltaMm, totalMm) => {
     if (!state.sourcePos) return;
+    noteEdit();
     if (state.centered) {
       state.offset = centeringShift(state.sourcePos, state.orient, state.partScale, state.profile.bedX, state.profile.bedY);
       state.centered = false;
@@ -881,6 +886,7 @@ export function mountViews() {
     applyPlace(false);
   });
   prepare.onMoveEnd(() => {
+    flushEdit();
     state.poseHud = "";
     paintGizmoReadout();
     renderChrome();
