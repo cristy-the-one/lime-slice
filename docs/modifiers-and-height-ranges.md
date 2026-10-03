@@ -84,3 +84,18 @@ A slice with both arrays omitted must match a slice from before the fields exist
 6. A range that covers part of a layer: the layer `z` is one number. Is membership "the layer z is inside `[from, to]`", even when the band is thicker than the range?
 7. Should the first engine change refuse a `layerHeight` key on a range, so a later per-band height cannot sneak in as an ignored field?
 8. Do supports that pass through a volume keep the global support settings, or does a volume also override support density? This note leaves supports global.
+
+## Decisions (review, 2026-10-03)
+
+1. Yes, `heightRanges` and `modifierVolumes` are the names. Both are omitted when empty.
+2. The later volume wins. A height range applies only outside every volume, so the more specific region wins. Between overlapping ranges, the later one wins.
+3. `speed` is a cap inside the region. Every feature speed (outer, inner, sparse, solid, top, and the print speed) becomes min(its strategy speed, `speed`). The 3D gyroid speed is a feature speed too, so it takes the same cap. Users set a range speed to slow a fragile or detailed section. A cap never speeds a feature past what the strategy chose.
+4. `infill: 0` leaves the region walled with no sparse infill. Solid top and bottom skins stay. Today `plan_region_split` skips its whole infill block when density is 0.01 or less, and that block also draws the solid skins. The guard must let a solid shell through. `walls` must be 1 to 12 in the first version, and 0 is refused. A wall-less region whose infill becomes the shell surprises users and breaks seams and combing. Allowing 0 can come later.
+5. Yes. Volumes are axis-aligned with no rotation. A cylinder is always upright on Z.
+6. Membership is by the layer's z inside `[from, to]`, inclusive. This holds even when the layer band is thicker than the range.
+7. Yes. The range and volume structs use `deny_unknown_fields`. A `layerHeight` key or any typo is refused with the field name.
+8. Supports stay global. A volume does not change support settings in the first version.
+
+**Cache.** Overrides are part of the toolpath stage's cache key (see the staged cache from PR #98). Changing them recomputes toolpaths and later stages, not the cut. The stage keys hash the whole settings struct, so a new field lands in every stage key by default. The two new fields must be blanked in the contours key, the way `feature_speeds` is, or a change would recut.
+
+**Engine order.** The seam picker comes first, then height ranges and modifier volumes, then ironing, then support paint, then multi-object all-at-once, then sequential.

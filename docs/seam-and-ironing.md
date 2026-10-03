@@ -58,3 +58,15 @@ Not in the first engine change. When it is, it is a pass over the top skins of t
 5. A sharp convex corner currently keeps the corner and refuses a scarf. Does Rear still lose to that corner, or does Rear win?
 6. Ironing: top skins of the part only, or also the top of a support interface? What flow, speed, line spacing, and inset should the first version use, and does ironing add time to the existing estimate or only to the G-code?
 7. Should ironing be one boolean, or flow and speed on the request from the start? Omitted must stay byte-identical either way.
+
+## Decisions (review, 2026-10-03)
+
+1. Yes, `seam` is the name. It is omitted when it is `blend`, through `skip_serializing_if`. A request without it keeps its cache key and its G-code bytes. Golden checks that.
+2. Rear means maximum Y in the bed frame. That is the back of the bed, as in PrusaSlicer and OrcaSlicer.
+3. Aligned keeps today's rule. It takes the sharpest real corner and breaks ties toward +X. Rear uses the same corner rule, restricted to vertices within 1 mm of the loop's maximum Y. If no corner is in that band, Rear uses the rear-most vertex and breaks ties toward +X. This hides the seam in a corner when a corner sits at the back, and it stays stable from layer to layer.
+4. The override has the same scope as today's `SeamMode`. It applies to every closed loop the strategy seams, so inner walls follow the outer wall. Today an inner wall is planned with the mode but then gets `Seam::Nearest` in the tour, so it does not follow. An explicit `seam` must set the inner wall's seam kind to match the outer wall. With `blend`, inner walls stay as they are, so the default bytes do not move.
+5. The scarf refusal at a sharp convex corner is about joint geometry, not placement. It stays. Rear picks the start point. If that point is a sharp convex corner, the joint is a butt joint there, as today.
+6. Ironing covers the part's top skins only, not support interface. It is off by default. The first version uses a flow of 10% of a normal top line, a speed of 20 mm/s, a line spacing of 0.1 mm, and an inset of half a line width from the outer wall. Ironing is real G-code, so the estimate counts it automatically. The estimate comes from the same emit scan as the G-code.
+7. Ironing is one optional object, `"ironing": {"flow": 0.1, "speed": 20, "spacing": 0.1}`. Every key is optional and defaults to those values. `{}` turns ironing on with the defaults. Omitted means off, and the G-code stays byte-identical. Unknown keys are refused.
+
+**Implementation order.** The seam picker comes first. Ironing comes second. Fuzzy skin comes later and separately. The engine order across the design notes is the seam picker, then height ranges and modifier volumes, then ironing, then support paint, then multi-object all-at-once, then sequential.
