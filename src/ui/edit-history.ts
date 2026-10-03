@@ -18,6 +18,16 @@ export interface ProfileSnap {
   maxAccel: number;
   filamentDensityGCm3: number;
   filamentCostPerKg: number;
+  name?: string;
+  filamentDiameter?: number;
+  nozzleTemp?: number;
+  bedTemp?: number;
+}
+
+export interface MachineSnap {
+  printerId: string;
+  filamentId: string;
+  nozzleMm: number;
 }
 
 export interface EditSnap {
@@ -28,6 +38,8 @@ export interface EditSnap {
   profile: ProfileSnap;
   /** Settings panel level. A profile switch restores this with the preset. */
   level: SettingsLevel;
+  /** Active printer, filament, and nozzle. Absent on snaps from before the machine library. */
+  machine?: MachineSnap;
 }
 
 export interface EditHistory {

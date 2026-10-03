@@ -2,6 +2,8 @@ import { fx } from "./fx";
 import { session, state } from "./state";
 import { presetKeys } from "../presets";
 import { saveProfile } from "../profiles";
+import { loadMachineLibrary, storeMachineLibrary } from "./machine-library";
+import { selectIn, setAdvance } from "../ui/machine-library";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel";
 import {
   beginGesture,
@@ -42,8 +44,17 @@ function capture(): EditSnap {
       maxAccel: profile.maxAccel,
       filamentDensityGCm3: profile.filamentDensityGCm3,
       filamentCostPerKg: profile.filamentCostPerKg,
+      name: profile.name,
+      filamentDiameter: profile.filamentDiameter,
+      nozzleTemp: profile.nozzleTemp,
+      bedTemp: profile.bedTemp,
     },
     level: loadSettingsLevel(),
+    machine: {
+      printerId: loadMachineLibrary().printerId,
+      filamentId: loadMachineLibrary().filamentId,
+      nozzleMm: loadMachineLibrary().nozzleMm,
+    },
   };
 }
 
@@ -74,10 +85,18 @@ function applySnap(snap: EditSnap) {
   state.profile.maxAccel = snap.profile.maxAccel;
   state.profile.filamentDensityGCm3 = snap.profile.filamentDensityGCm3;
   state.profile.filamentCostPerKg = snap.profile.filamentCostPerKg;
+  if (typeof snap.profile.name === "string") state.profile.name = snap.profile.name;
+  if (typeof snap.profile.filamentDiameter === "number") state.profile.filamentDiameter = snap.profile.filamentDiameter;
+  if (typeof snap.profile.nozzleTemp === "number") state.profile.nozzleTemp = snap.profile.nozzleTemp;
+  if (typeof snap.profile.bedTemp === "number") state.profile.bedTemp = snap.profile.bedTemp;
   if (snap.level === "simple" || snap.level === "advanced" || snap.level === "expert") setSettingsLevel(snap.level);
   state.profile.pressureAdvance = state.pressureAdvance;
   state.profile.linearAdvance = state.linearAdvance;
   saveProfile(state.profile);
+  if (snap.machine) {
+    const selected = selectIn(loadMachineLibrary(), snap.machine.printerId, snap.machine.filamentId, snap.machine.nozzleMm);
+    if (typeof selected !== "string") storeMachineLibrary(setAdvance(selected, state.pressureAdvance, state.linearAdvance));
+  }
   applying = false;
   fx.applyPlace?.(true);
   paintHistoryButtons();
