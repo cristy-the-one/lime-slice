@@ -1096,14 +1096,13 @@ fn slice_plate(
                 .iter()
                 .map(|o| o.settings.support_edits.as_slice())
                 .collect();
-            let blends: Vec<&BlendMode> = objects.iter().map(|o| &o.blend).collect();
             let whole: Vec<[u8; 32]> = kept.iter().map(|k| k.key).collect();
             let contours: Vec<[u8; 32]> = kept.iter().map(|k| k.contours).collect();
             let prior = kept::plate_prior();
             kept::keep_plate(Arc::clone(&planned));
             KeptPlate {
                 token: patch::token(&whole, &profile, &edits),
-                drawn: patch::drawn(&contours, &blends, &profile),
+                drawn: patch::drawn(&contours, &profile),
                 prior,
             }
         });
@@ -1492,7 +1491,15 @@ fn preview(
     });
     let (layers, patched) = match base {
         Some((joined, shown)) => {
-            let bits = |s: Option<f64>| s.map(f64::to_bits);
+            let shown_blends: Vec<&BlendMode> = shown.blends.iter().collect();
+            let restyled: Vec<bool> = (0..blends.len())
+                .map(|o| {
+                    shown
+                        .blends
+                        .get(o)
+                        .is_none_or(|b| format!("{b:?}") != format!("{:?}", blends[o]))
+                })
+                .collect();
             let changed = planned
                 .par_iter()
                 .enumerate()
@@ -1500,16 +1507,14 @@ fn preview(
                     let now = seconds[i]?;
                     let was = joined.get(i);
                     let held = was.is_some() && shown.seconds.get(i).is_some_and(Option::is_some);
-                    let same_paths = held && was.is_some_and(|w| w.same(layer));
-                    if same_paths && bits(shown.seconds[i]) == bits(Some(now)) {
+                    let same = was.is_some_and(|w| w.same(layer))
+                        && layer.runs.iter().all(|r| !restyled[r.object as usize]);
+                    if held && same {
                         return None;
                     }
                     let layer = preview_layer(layer, profile, blends, now);
-                    if same_paths {
-                        return Some(patch::retimed(layer));
-                    }
                     let was = match was.filter(|_| held) {
-                        Some(was) => preview_layer(was, profile, blends, 0.0).paths,
+                        Some(was) => preview_layer(was, profile, &shown_blends, 0.0).paths,
                         None => Vec::new(),
                     };
                     Some(patch::diff_layer(&was, layer))
@@ -1523,6 +1528,7 @@ fn preview(
                     .map(|l| l.index)
                     .collect(),
                 changed,
+                seconds: seconds.iter().flatten().copied().collect(),
             };
             (Vec::new(), Some(patch))
         }
@@ -1533,6 +1539,7 @@ fn preview(
         patch::Shown {
             token: kept.token.clone(),
             drawn: kept.drawn,
+            blends: blends.iter().map(|&b| b.clone()).collect(),
             seconds,
         },
     );
