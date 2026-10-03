@@ -1,6 +1,6 @@
 import { fx } from "./fx";
 import { state, session } from "./state";
-import { ID_MATRIX, parseStl, placeMesh, encodeStl, scaledCanonical, encode3mf, type PlacedPart } from "../mesh-place";
+import { centeringShift, ID_MATRIX, parseStl, placeMesh, encodeStl, scaledCanonical, encode3mf, type PlacedPart } from "../mesh-place";
 import { needsEngine, apiBase, apiToken, markEngineDown, isStepName, renderChrome, markStale, stale, card } from "./settings";
 import { authHeaders, engineDownMessage } from "../ui/api-base";
 import { type SplitSync } from "../split-at";
@@ -108,9 +108,47 @@ export function applyPlace(rerender: boolean, sync: SplitSync = "transform") {
   fx.realignSplit(sync);
   fx.prepare.setMesh(state.placed, sync === "load");
   fx.prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
+  paintPlaceFields();
   markProjectDirty();
   markStale();
   if (rerender) renderChrome();
+}
+
+/** Move the placed part on one axis. X/Y also slides the sliced preview. */
+export function nudgePlacement(axis: "x" | "y" | "z", deltaMm: number) {
+  if (!state.sourcePos || !Number.isFinite(deltaMm) || deltaMm === 0) return;
+  if (state.centered) {
+    state.offset = centeringShift(state.sourcePos, state.orient, state.partScale, state.profile.bedX, state.profile.bedY);
+    state.centered = false;
+  }
+  state.offset = {
+    x: state.offset.x + (axis === "x" ? deltaMm : 0),
+    y: state.offset.y + (axis === "y" ? deltaMm : 0),
+    z: state.offset.z + (axis === "z" ? deltaMm : 0),
+  };
+  applyPlace(false);
+}
+
+/** Put the part's bounds center on this bed X or Y. */
+export function setPlaceCenter(axis: "x" | "y", mm: number) {
+  const placed = state.placed;
+  if (!placed || !Number.isFinite(mm)) return;
+  const i = axis === "x" ? 0 : 1;
+  const current = (placed.bounds.min[i] + placed.bounds.max[i]) / 2;
+  nudgePlacement(axis, mm - current);
+}
+
+function paintPlaceFields() {
+  const bounds = state.placed?.bounds;
+  const el = document.querySelector("#placeReadout");
+  if (!el || !bounds) return;
+  const cx = ((bounds.min[0] + bounds.max[0]) / 2).toFixed(1);
+  const cy = ((bounds.min[1] + bounds.max[1]) / 2).toFixed(1);
+  el.textContent = `X ${cx} · Y ${cy} · bed Z ${bounds.min[2].toFixed(1)} mm`;
+  for (const [id, value] of [["placeX", cx], ["placeY", cy]] as const) {
+    const input = document.querySelector<HTMLInputElement>(`#${id}`);
+    if (input && document.activeElement !== input) input.value = value;
+  }
 }
 
 let placing: { source: Float32Array; key: string; placement: PlacedPart } | null = null;
@@ -254,4 +292,4 @@ export function fail(err: unknown) {
   state.busy = false;
   renderChrome();
 }
-Object.assign(fx, { loadNamed, adoptBytes, previewRemote, refreshStepPreview, place, applyPlace, meshBytes, toBase64, isTauri, saveText, fetchStoredGcode, exportGcode, export3mf, download, fail });
+Object.assign(fx, { loadNamed, adoptBytes, previewRemote, refreshStepPreview, place, applyPlace, nudgePlacement, setPlaceCenter, meshBytes, toBase64, isTauri, saveText, fetchStoredGcode, exportGcode, export3mf, download, fail });

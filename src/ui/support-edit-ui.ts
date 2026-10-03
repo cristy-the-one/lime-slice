@@ -1,6 +1,7 @@
 import { createElement, TreeDeciduous, X } from "lucide";
 import type { CoverageGap, EditOutcome, SupportSkeleton } from "../support-edits";
 import { alignOutcomes, appendEdit, badgeOf, clearEdits, editTitle, gapsToShow, outcomeText, removeEdit, undoLast, type EditEntry } from "../support-edit-list";
+import { replyFrameEdit } from "../bed-offset";
 import { capsulesOf, indexSkeleton, pickGap, pickLimb, regrowFor, selectLimbs, sitesOf, type LimbIndex, type PickScope, type Visible } from "../support-pick";
 import type { PickEvent, SliceView3d } from "../view3d";
 import { isMobileLayout } from "../platform";
@@ -342,7 +343,7 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
   function deleteSelected() {
     const v = hooks.view();
     if (selected?.kind !== "limb" || !index || v.busy || !v.treeSupports) return;
-    const sites = sitesOf(index, limbsOf(selected));
+    const sites = replyFrameEdit(sitesOf(index, limbsOf(selected)));
     if (!sites.length) return;
     commit(appendEdit(v.edits, { id: nextId++, edit: { kind: "prune", sites }, scope: selected.scope }), "append");
   }
@@ -350,7 +351,7 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
   function regrow(gap: CoverageGap) {
     const v = hooks.view();
     if (v.busy || !v.treeSupports) return;
-    commit(appendEdit(v.edits, { id: nextId++, edit: regrowFor(gap), areaMm2: gap.areaMm2 }), "append");
+    commit(appendEdit(v.edits, { id: nextId++, edit: replyFrameEdit(regrowFor(gap)), areaMm2: gap.areaMm2 }), "append");
   }
 
   function landed(ok: boolean) {

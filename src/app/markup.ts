@@ -123,7 +123,7 @@ export function mountMarkup(root: HTMLElement) {
       <ul>
         <li>Force re-slice plans a saved recipe again</li>
         <li>Prepare gizmo sits at the left of the view. Drag a ring to rotate. <kbd>Shift</kbd> snaps 15°</li>
-        <li>Drag an arrow to move the mesh. <kbd>Shift</kbd> snaps 1 mm</li>
+        <li>Drag the part, or an arrow, to move it. <kbd>Shift</kbd> snaps 1 mm. X and Y fields set the bed position</li>
         <li>Drag the split plane when By region is on</li>
         <li>Bed fades the build plate. 0 hides it</li>
         <li>Section clips the preview. Cut moves the plane. Rings, parked at the left, aim it. The sheet is only a guide. Layers still apply. Neither changes the slice</li>

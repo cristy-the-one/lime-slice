@@ -1,3 +1,4 @@
+import type { SlicedBed } from "../bed-offset";
 import { emptyOverrides } from "../overrides";
 import { ID_MATRIX, type Mat3, type MeshShift, type PlacedPart } from "../mesh-place";
 import { loadProfile } from "../profiles";
@@ -101,6 +102,11 @@ export interface SliceResponse {
   previewToken?: string;
   /** Set instead of `layers` when the request's `previewBase` was what the engine last drew. */
   previewPatch?: PreviewPatch;
+  /**
+   * Bed offset in mm. Paths, patches, gaps, the skeleton, and in-air marks stay
+   * in the reply frame; draw them at this offset. Absent on today's engine.
+   */
+  offset?: [number, number];
   error?: string;
 }
 
@@ -219,6 +225,8 @@ export const session = {
   shownRecipe: null as string | null,
   /** Support edits the request behind `state.result` carried. */
   slicedEdits: [] as readonly EditEntry[],
+  /** Pose and reply offset the buffers on screen were built from. */
+  slicedBed: null as SlicedBed | null,
   supportUi: null as {
     refresh(): void;
     landed(ok: boolean): void;

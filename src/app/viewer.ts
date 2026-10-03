@@ -6,7 +6,8 @@ import { FEATURE_LABEL, FEATURE_COLOR, colorForPath } from "../colors";
 import { legendMarkup } from "../ui/legend";
 import { syncLayerTip } from "../ui/layer-tip";
 import { type LayerGcode, indexLayerGcode, type PlayPoint, layerMoves, matchGcodeLine, layerClasses } from "../playback";
-import { applyPlace, fetchStoredGcode } from "./files";
+import { shownBedOffset } from "../bed-offset";
+import { applyPlace, fetchStoredGcode, nudgePlacement } from "./files";
 import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, stale, markStale } from "./settings";
 import { flushEdit, noteEdit } from "./history";
 import { beginModifierEdit, endModifierEdit, nudgeModifier, selectModifier } from "./override-actions";
@@ -19,7 +20,7 @@ import { themeColors } from "../theme";
 import { resolved } from "../strategy";
 import { syncEmptyState } from "../ui/shell";
 import { type AxisBounds, type SplitSync, splitOutside, nextSplitAt, roundSplit, clampSplit } from "../split-at";
-import { centeringShift, matMul, rotX, rotY, rotZ } from "../mesh-place";
+import { matMul, rotX, rotY, rotZ } from "../mesh-place";
 import { type Vec3, sectionReach, type SectionSpec, keepsPoint, clipPolyline, layerCut } from "../section-plane";
 
 export function paintLegend() {
@@ -450,7 +451,7 @@ export function paintGizmoReadout() {
   }
   const tool = document.querySelector<HTMLElement>("#toolRail")?.dataset.tool;
   if (tool === "move") {
-    el.textContent = "Move · drag an arrow · Shift snaps 1 mm";
+    el.textContent = "Move · drag the part or an arrow · Shift snaps 1 mm";
     return;
   }
   if (tool === "rotate") {
@@ -544,12 +545,24 @@ export function previewMap(mesh: { min: number[]; max: number[] }) {
   const scale = Math.min((w - pad * 2) / spanX, (h - pad * 2) / spanY);
   const ox = (w - spanX * scale) / 2;
   const oy = (h - spanY * scale) / 2;
-  const map = (x: number, y: number): [number, number] => [ox + (x - mesh.min[0]) * scale, h - (oy + (y - mesh.min[1]) * scale)];
+  const [dx, dy] = shownOffset();
+  const map = (x: number, y: number): [number, number] => [ox + (x + dx - mesh.min[0]) * scale, h - (oy + (y + dy - mesh.min[1]) * scale)];
   const unmap = (px: number, py: number): [number, number] => [
-    mesh.min[0] + (px - ox) / scale,
-    mesh.min[1] + (h - py - oy) / scale,
+    mesh.min[0] + (px - ox) / scale - dx,
+    mesh.min[1] + (h - py - oy) / scale - dy,
   ];
-  return { map, unmap, dpr };
+  return { map, unmap, dpr, scale };
+}
+
+/** Reply offset plus any X/Y move since that slice. Rotation and scale wait for a new reply. */
+function shownOffset(): [number, number] {
+  const pose = state.placed?.pose;
+  return shownBedOffset(session.slicedBed, {
+    translation: [pose?.translation[0] ?? 0, pose?.translation[1] ?? 0],
+    orientKey: state.orient.join(","),
+    scale: state.partScale,
+    meshEpoch: session.meshEpoch,
+  });
 }
 
 export function canvasPx(ev: PointerEvent) {
@@ -655,13 +668,7 @@ export function draw() {
     sync3d();
     return;
   }
-  const pad = 28 * (window.devicePixelRatio || 1);
-  const spanX = Math.max(1e-6, mesh.max[0] - mesh.min[0]);
-  const spanY = Math.max(1e-6, mesh.max[1] - mesh.min[1]);
-  const scale = Math.min((w - pad * 2) / spanX, (h - pad * 2) / spanY);
-  const ox = (w - spanX * scale) / 2;
-  const oy = (h - spanY * scale) / 2;
-  const map = (x: number, y: number): [number, number] => [ox + (x - mesh.min[0]) * scale, h - (oy + (y - mesh.min[1]) * scale)];
+  const { map, scale } = previewMap(mesh);
   const played = movesNow()[state.move];
   const section = activeSection();
   const center = previewCenter();
@@ -794,6 +801,7 @@ export function applyGeom() {
     frame: session.resultFrame,
   });
   shownPreview = result.previewToken ? { token: result.previewToken, layers: result.layers, geom: session.geomReady.data } : null;
+  document.querySelector<HTMLCanvasElement>("#view3d")?.setAttribute("data-preview-token", shownPreview?.token ?? "");
   session.geomReady = null;
   fx.view3d.setRange(state.rangeLow, state.layer);
 }
@@ -803,6 +811,8 @@ export function sync3d() {
     session.shown = state.result;
     applyGeom();
   }
+  const [bedX, bedY] = shownOffset();
+  fx.view3d.setBedOffset(bedX, bedY);
   fx.view3d.setHidden(state.hidden);
   fx.view3d.setColorMode(state.colorMode);
   fx.view3d.setShowTravel(state.showTravel && !state.hidden.has("travel"));
@@ -894,17 +904,8 @@ export function mountViews() {
   prepare.onMove((axis, deltaMm, totalMm) => {
     if (!state.sourcePos) return;
     noteEdit();
-    if (state.centered) {
-      state.offset = centeringShift(state.sourcePos, state.orient, state.partScale, state.profile.bedX, state.profile.bedY);
-      state.centered = false;
-    }
-    state.offset = {
-      x: state.offset.x + (axis === "x" ? deltaMm : 0),
-      y: state.offset.y + (axis === "y" ? deltaMm : 0),
-      z: state.offset.z + (axis === "z" ? deltaMm : 0),
-    };
     state.poseHud = `${axis.toUpperCase()} ${totalMm >= 0 ? "+" : ""}${totalMm.toFixed(1)} mm`;
-    applyPlace(false);
+    nudgePlacement(axis, deltaMm);
   });
   prepare.onMoveEnd(() => {
     flushEdit();

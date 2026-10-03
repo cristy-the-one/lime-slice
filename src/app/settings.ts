@@ -508,8 +508,12 @@ export function objectList() {
     <label class="field setting" data-label="scale %" data-keywords="placement size percent">Scale %<input id="partScale" type="number" min="10" max="400" step="5" value="${Math.round(state.partScale * 100)}" /></label>
     ${isStepName(state.mesh?.name ?? "") ? num("stepTol", "STEP chord mm", state.stepTolerance, 0.01, 2, 0.01) : ""}
     ${notes.length ? `<div class="meta warn-text">${notes.join("; ")}</div>` : `<div class="meta">On the ${state.profile.bedX}×${state.profile.bedY}×${state.profile.bedZ} mm bed.</div>`}
+    <div class="place-xy">
+      <label class="field setting" data-label="position x" data-keywords="placement move bed offset">X mm<input id="placeX" type="number" step="1" value="${cx}" aria-label="Position X" /></label>
+      <label class="field setting" data-label="position y" data-keywords="placement move bed offset">Y mm<input id="placeY" type="number" step="1" value="${cy}" aria-label="Position Y" /></label>
+    </div>
     <div class="meta" id="placeReadout">X ${cx} · Y ${cy} · bed Z ${z0} mm</div>
-    <div class="meta">Gizmo sits at the left. Drag a ring to rotate. Drag an arrow to move. Shift snaps 15° or 1 mm.</div>
+    <div class="meta">Gizmo sits at the left. Drag a ring to rotate. Drag the part or an arrow to move. Shift snaps 15° or 1 mm.</div>
   `;
 }
 
@@ -725,6 +729,7 @@ export function onBlend(ev: Event) {
 
 export function onSettings(ev: Event) {
   const t = ev.target as HTMLInputElement;
+  if (t.id === "placeX" || t.id === "placeY") return;
   if (t.id === "find") {
     state.query = t.value;
     applyFilter();
