@@ -559,14 +559,13 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     fillHiddenKindMask(pathUniforms.hiddenKinds.value, kinds, hidden);
   }
 
-  function dropBuffers() {
-    for (const c of chunks) {
+  function dropChunks(drop: Iterable<ChunkMeshes>) {
+    for (const c of drop) {
       for (const mesh of [...c.beads.meshes, ...c.travel.meshes]) {
         root.remove(mesh);
         mesh.geometry.dispose();
       }
     }
-    chunks = [];
   }
 
   return {
@@ -578,8 +577,13 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     },
     setBuffers(buffers) {
       requestRender();
-      dropBuffers();
-      if (!buffers || buffers.chunks.length === 0) return;
+      // A chunk object the last buffers also held keeps its meshes and GPU buffers.
+      const shown = new Map(chunks.map((c) => [c.chunk, c]));
+      chunks = [];
+      if (!buffers || buffers.chunks.length === 0) {
+        dropChunks(shown.values());
+        return;
+      }
       origin = { cx: buffers.centerX, cy: buffers.centerY };
       kinds = buffers.kinds;
       const palette = pathUniforms.palette.value;
@@ -590,11 +594,17 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       const sphere = new THREE.Sphere(new THREE.Vector3(0, buffers.midZ, 0), buffers.span + 10);
       let first = 0;
       for (const chunk of buffers.chunks) {
-        const meshes = chunkMeshes(chunk, first, sphere, marginMat, faceMat, travelMat);
-        for (const mesh of [...meshes.beads.meshes, ...meshes.travel.meshes]) root.add(mesh);
+        let meshes = shown.get(chunk);
+        shown.delete(chunk);
+        if (!meshes) {
+          meshes = chunkMeshes(chunk, sphere, marginMat, faceMat, travelMat);
+          for (const mesh of [...meshes.beads.meshes, ...meshes.travel.meshes]) root.add(mesh);
+        }
+        meshes.first = first;
         chunks.push(meshes);
         first += chunk.indices.length;
       }
+      dropChunks(shown.values());
       const size = placeBed(buffers.span, buffers.centerX, buffers.centerY);
       if (buffers.frame !== framed) {
         framed = buffers.frame;
@@ -789,13 +799,13 @@ const FACE_CORNERS = [0, INNER_HALF_SCALE, 0, 0, -INNER_HALF_SCALE, 0, 1, INNER_
 const FACE_INDEX = [1, 3, 2, 1, 2, 0];
 const LINE_CORNERS = [0, 0, 0, 1, 0, 0];
 
-function chunkMeshes(chunk: PreviewChunk, first: number, sphere: THREE.Sphere, margin: THREE.Material, face: THREE.Material, travel: THREE.Material): ChunkMeshes {
+function chunkMeshes(chunk: PreviewChunk, sphere: THREE.Sphere, margin: THREE.Material, face: THREE.Material, travel: THREE.Material): ChunkMeshes {
   const beads = pointDraw(chunk.beads, [
     new THREE.Mesh(instanced(BOX_CORNERS, BOX_INDEX, sphere), margin),
     new THREE.Mesh(instanced(FACE_CORNERS, FACE_INDEX, sphere), face),
   ]);
   const lines = pointDraw(chunk.travel, [new THREE.LineSegments(instanced(LINE_CORNERS, null, sphere), travel)]);
-  return { chunk, first, beads, travel: lines };
+  return { chunk, first: 0, beads, travel: lines };
 }
 
 function pointDraw(run: PointRun, meshes: (THREE.Mesh | THREE.LineSegments)[]): PointDraw {

@@ -17,8 +17,11 @@ export const MARGIN_SHADE = 0.38;
 /** Kind slots the preview shader can color and hide. Later kinds share the last slot. */
 export const MAX_KINDS = 32;
 
-/** Layers per chunk, by engine layer index. */
-export const CHUNK_LAYERS = Infinity;
+/**
+ * Layers per chunk, by engine layer index. A patch re-uploads only the chunks
+ * it touches, and every chunk costs a few draw calls per frame.
+ */
+export const CHUNK_LAYERS = 32;
 
 /** u16 words per point in `PointRun.style`. */
 export const STYLE_WORDS = 4;
