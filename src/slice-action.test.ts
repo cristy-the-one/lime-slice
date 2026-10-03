@@ -1,4 +1,4 @@
-import { cacheStatus, coverageWarning, feed, fnv1aHex, inAirWarning, recipeKey, sliceAction, sliceBusyLabel, staleSliceCopy } from "./slice-action.ts";
+import { cacheStatus, coverageWarning, feed, fnv1aHex, inAirWarning, partFrameKey, quietRefresh, recipeKey, sliceAction, sliceBusyLabel, staleSliceCopy } from "./slice-action.ts";
 
 let failed = 0;
 
@@ -77,6 +77,27 @@ eq(
   recipeKey({ layerHeight: 0.2, blend: speed, supportEdits: [{ kind: "prune", sites: [{ xy: [1, 2], z: 3 }] }] }, "mesh-a"),
   '{"blend":{"mode":"single""strategy":"speed"}"layerHeight":0.2"supportEdits":[{"kind":"prune""sites":[{"xy":[1,2,]"z":3},]},]}\nmesh-a',
 );
+
+const posed = (translation: number[], rotation = [1, 0, 0, 0, 1, 0, 0, 0, 1]) => ({
+  layerHeight: 0.2,
+  blend: speed,
+  pose: { rotation, pivot: [10, 10, 5], translation },
+});
+const home = partFrameKey(posed([110, 110, 5]), "mesh-a");
+eq("an X/Y move keeps the part frame", partFrameKey(posed([140, 95, 5]), "mesh-a"), home);
+check("an X/Y move is still a new recipe", recipeKey(posed([140, 95, 5]), "mesh-a") !== recipeKey(posed([110, 110, 5]), "mesh-a"));
+check("a Z move leaves the part frame", partFrameKey(posed([110, 110, 7]), "mesh-a") !== home);
+check("a rotation leaves the part frame", partFrameKey(posed([110, 110, 5], [0, -1, 0, 1, 0, 0, 0, 0, 1]), "mesh-a") !== home);
+check("a setting leaves the part frame", partFrameKey({ ...posed([140, 95, 5]), layerHeight: 0.28 }, "mesh-a") !== home);
+check("other mesh bytes leave the part frame", partFrameKey(posed([110, 110, 5]), "mesh-b") !== home);
+eq("no pose, the part frame is the recipe", partFrameKey({ layerHeight: 0.2 }, "mesh-a"), recipeKey({ layerHeight: 0.2 }, "mesh-a"));
+
+eq("a fresh result needs no refresh", quietRefresh({ stale: false, cached: true, sameFrame: true, fromCache: false }), false);
+eq("an X/Y move refreshes on its own", quietRefresh({ stale: true, cached: false, sameFrame: true, fromCache: false }), true);
+eq("a stored recipe refreshes on its own", quietRefresh({ stale: true, cached: true, sameFrame: false, fromCache: false }), true);
+eq("a new recipe waits for Slice", quietRefresh({ stale: true, cached: false, sameFrame: false, fromCache: false }), false);
+eq("a move after a disk-cache load waits for Slice", quietRefresh({ stale: true, cached: false, sameFrame: true, fromCache: true }), false);
+eq("a stored recipe after a disk-cache load still refreshes", quietRefresh({ stale: true, cached: true, sameFrame: false, fromCache: true }), true);
 
 eq("feed sorts object keys and writes no commas", feed({ b: 1, a: true }), '{"a":true"b":1}');
 eq("feed keeps array order and a trailing comma", feed([1, 2]), "[1,2,]");

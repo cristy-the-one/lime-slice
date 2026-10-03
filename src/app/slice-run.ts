@@ -1,6 +1,6 @@
 import { fx } from "./fx";
 import { state, session, worker, cachedRecipes, type ParetoPoint, type SliceResponse } from "./state";
-import { fnv1aHex, recipeKey, type SliceAction, sliceAction, sliceBusyLabel, FORCE_LABEL } from "../slice-action";
+import { fnv1aHex, partFrameKey, quietRefresh, recipeKey, type SliceAction, sliceAction, sliceBusyLabel, FORCE_LABEL } from "../slice-action";
 import { currentPlacement, meshBase64, meshBytes, fail, isTauri } from "./files";
 import { adoptPatch, previewBase } from "./viewer";
 import { syncSliceDock } from "../ui/shell";
@@ -89,9 +89,38 @@ export function paintForceButton(button: HTMLButtonElement) {
   button.setAttribute("aria-label", FORCE_LABEL);
 }
 
+function quietEligible(): boolean {
+  if (!state.mesh) return false;
+  const request = payload();
+  const fingerprint = meshFingerprint();
+  return quietRefresh({
+    stale: stale(),
+    cached: cachedRecipes.has(recipeKey(request, fingerprint)),
+    sameFrame: !plateMockActive(state.plate) && session.slicedFrame === partFrameKey(request, fingerprint),
+    fromCache: !!state.result?.fromCache,
+  });
+}
+
+/** The stale result is refreshing by itself: waiting out the pause, or its request is in flight. */
+export function quietRefreshing(): boolean {
+  return quietEligible() && (state.busy || session.quietTried !== settingsHash());
+}
+
+function runQuiet() {
+  if (state.busy || !quietEligible()) return;
+  session.quietTried = settingsHash();
+  void runSlice();
+}
+
 export function scheduleAuto() {
   window.clearTimeout(session.autoTimer);
-  if (!state.autoSlice || !state.mesh || state.busy) return;
+  if (!state.mesh || state.busy) return;
+  if (quietEligible() && session.quietTried !== settingsHash()) {
+    // A gizmo drag refreshes once, at drag end.
+    if (!state.poseHud) session.autoTimer = window.setTimeout(runQuiet, 200);
+    return;
+  }
+  if (!state.autoSlice) return;
   const tris = state.result?.mesh.sourceTriangles ?? state.result?.mesh.triangles ?? Math.max(0, (state.mesh.bytes.byteLength - 84) / 50);
   if (tris >= 50000) return;
   session.autoTimer = window.setTimeout(() => void runSlice(), 300);
@@ -191,6 +220,7 @@ export async function runSlice(force = false) {
   });
   const frame = `${session.meshEpoch}:${state.partScale}`;
   const request: Record<string, unknown> = { ...payload(), reslice: action.reslice };
+  const partFrame = partFrameKey(request, meshFingerprint());
   const base = previewBase();
   if (base) request.previewBase = base.token;
   const edits = request.supportEdits ? state.supportEdits : [];
@@ -231,10 +261,12 @@ export async function runSlice(force = false) {
     session.resultFrame = frame;
     slicedBed.offset = replyOffset(body.offset);
     session.slicedBed = slicedBed;
+    session.slicedFrame = partFrame;
     state.slicedHash = hash;
     session.slicedEdits = edits;
     if (recipe) {
-      cachedRecipes.add(recipe);
+      // The engine never stores a patched reply, so asking for this recipe again would plan it.
+      if (!body.previewPatch) cachedRecipes.add(recipe);
       session.shownRecipe = recipe;
     }
     state.layer = layerNear(body, session.chosenZ?.high, state.layer);
@@ -453,4 +485,4 @@ export async function runPareto() {
     renderChrome();
   }
 }
-Object.assign(fx, { meshFingerprint, currentRecipeKey, currentSliceAction, setButtonLabel, paintSliceButton, paintForceButton, scheduleAuto, payload, printer, runSlice, layerNear, postSlice, parseInWorker, cancelSlice, runPaCal, applyPareto, runPareto });
+Object.assign(fx, { meshFingerprint, currentRecipeKey, currentSliceAction, setButtonLabel, paintSliceButton, paintForceButton, quietRefreshing, scheduleAuto, payload, printer, runSlice, layerNear, postSlice, parseInWorker, cancelSlice, runPaCal, applyPareto, runPareto });

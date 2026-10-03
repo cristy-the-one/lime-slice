@@ -139,6 +139,27 @@ export function recipeKey(request: unknown, meshFingerprint: string): string {
 }
 
 /**
+ * `recipeKey` without the pose's X/Y translation. The engine slices a posed part
+ * in its own frame (`docs/part-frame.md`), so two requests with one part-frame
+ * key differ at most by a bed move, which only re-emits the G-code.
+ */
+export function partFrameKey(request: Record<string, unknown>, meshFingerprint: string): string {
+  const pose = request.pose as { translation: number[] } | undefined;
+  if (!pose) return recipeKey(request, meshFingerprint);
+  return recipeKey({ ...request, pose: { ...pose, translation: [pose.translation[2]] } }, meshFingerprint);
+}
+
+/**
+ * A stale result the engine refreshes without planning: a stored recipe, or a
+ * move in X/Y only. Those run by themselves after a pause, even with auto-slice off.
+ * A result loaded from the disk cache did not leave the engine the plan a move
+ * re-emits from, so a move after it would plan in full and waits for Slice.
+ */
+export function quietRefresh(input: { stale: boolean; cached: boolean; sameFrame: boolean; fromCache: boolean }): boolean {
+  return input.stale && (input.cached || (input.sameFrame && !input.fromCache));
+}
+
+/**
  * Canonical layout of `lime_slice_core::slice_cache::feed`.
  * Objects sort their keys and write no commas. Arrays keep order and a trailing comma.
  */
