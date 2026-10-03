@@ -38,7 +38,7 @@ Layers inside a stage finish on the pool, out of order. The sink keeps the highe
 
 A cancel during emit sets the writer's cancelled bit and `slice_request` returns `cancelled` before a response exists. Baseline and compare, when a CLI or API caller asks for them, watch the same flag and publish nothing, so they cannot pull the fraction backwards.
 
-**Caches.** The disk cache is unchanged: the key is the request with `previewBase` left out, and a patch is still not stored. The kept shelves are unchanged: a stage is inserted only when its function returns. `Job` and the watch are not part of any key.
+**Caches.** The disk cache is unchanged: the key is the request with `previewBase` left out, and a reply sent as a patch is stored whole. The kept shelves are unchanged: a stage is inserted only when its function returns. `Job` and the watch are not part of any key.
 
 **Status.** `running` while the slice is in a stage. `done` with fraction 1 when the response is built. `cancelled` when the flag or the job stopped it. `error` when the slice failed for another reason. The fraction stays where it was on `cancelled` and `error`.
 

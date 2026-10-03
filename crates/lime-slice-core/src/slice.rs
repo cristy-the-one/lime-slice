@@ -13,6 +13,7 @@ mod wire;
 
 pub use kept::keep_support_bases;
 pub use patch::PreviewPatch;
+pub(crate) use patch::WholePreview;
 pub use wire::{Collision, EditOutcomeView, ObjectSpec, ObjectView, SiteSpec, SupportEditSpec};
 
 use crate::adaptive::{plan_bands, plan_plate_bands, HeightOpts, LayerBand};
@@ -888,6 +889,25 @@ struct Source<'a> {
     settings: SliceSettings,
 }
 
+/// Plan `req` into the kept stages and note its preview as the one the
+/// client holds, so the next request of the same part reuses every stage and
+/// gets a patch. For a reply the client got from elsewhere, such as the disk.
+/// Does nothing when no stages are kept or `req` draws no preview.
+pub(crate) fn warm_kept(req: SliceRequest, job: Job) {
+    if !kept::on() || !req.include_preview {
+        return;
+    }
+    let req = SliceRequest {
+        baseline: false,
+        compare: false,
+        include_gcode: false,
+        include_skeleton: false,
+        preview_base: None,
+        ..req
+    };
+    let _ = slice_request_watched(&req, job, &Watch::idle());
+}
+
 pub fn slice_with_baseline(
     mesh: &Mesh,
     blend: &BlendMode,
@@ -1529,6 +1549,12 @@ fn preview(
                     .collect(),
                 changed,
                 seconds: seconds.iter().flatten().copied().collect(),
+                whole: WholePreview {
+                    layers: Arc::clone(planned),
+                    profile: profile.clone(),
+                    blends: blends.iter().map(|&b| b.clone()).collect(),
+                    layer_seconds: layer_seconds.to_vec(),
+                },
             };
             (Vec::new(), Some(patch))
         }

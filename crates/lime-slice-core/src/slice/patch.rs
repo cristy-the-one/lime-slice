@@ -5,11 +5,13 @@
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::{PreviewLayer, PreviewPath};
+use super::{preview_of, PreviewLayer, PreviewPath};
+use crate::gcode::PlateLayer;
 use crate::strategy::{BlendMode, PrinterProfile};
 use crate::support::edit::SupportEdit;
 
@@ -75,6 +77,32 @@ pub struct PreviewPatch {
     pub changed: Vec<PatchLayer>,
     /// Every listed layer's estimator seconds, in the order of `layers`.
     pub seconds: Vec<f64>,
+    /// The preview this patch stands for, whole, for the disk cache.
+    #[serde(skip)]
+    pub(crate) whole: WholePreview,
+}
+
+/// A patched reply's whole preview, drawn only when read, from the layers
+/// the kept stages already hold.
+#[derive(Clone)]
+pub(crate) struct WholePreview {
+    pub(super) layers: Arc<Vec<PlateLayer>>,
+    pub(super) profile: PrinterProfile,
+    pub(super) blends: Vec<BlendMode>,
+    pub(super) layer_seconds: Vec<f64>,
+}
+
+impl WholePreview {
+    pub(crate) fn layers(&self) -> Vec<PreviewLayer> {
+        let blends: Vec<&BlendMode> = self.blends.iter().collect();
+        preview_of(&self.layers, &self.profile, &blends, &self.layer_seconds)
+    }
+}
+
+impl std::fmt::Debug for WholePreview {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WholePreview")
+    }
 }
 
 /// One changed layer. `layer.paths` holds only the paths the base layer
