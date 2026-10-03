@@ -11,6 +11,7 @@ import { adoptBytes, export3mf, exportGcode, fail, loadNamed, place, saveText } 
 import { mountProjectFiles, saveCurrentProject } from "./project-io";
 import { pickProjectFile } from "../platform";
 import { applyPreset, closedGroups, currentPreset, onBlend, onSettings, renderChrome, touch } from "./settings";
+import { noteEdit, redoUserEdit, undoUserEdit } from "./history";
 
 export function wireApp() {
   document.querySelector("#left")!.addEventListener("input", onSettings);
@@ -24,7 +25,16 @@ export function wireApp() {
   document.querySelector("#left")!.addEventListener("click", (ev) => {
     const t = ev.target as HTMLElement;
     if (t.id === "pacal") void runPaCal();
+    if (t.id === "undoEdit") {
+      undoUserEdit();
+      return;
+    }
+    if (t.id === "redoEdit") {
+      redoUserEdit();
+      return;
+    }
     if (t.id === "paapply") {
+      noteEdit();
       const chosen = Number((document.querySelector("#pachosen") as HTMLInputElement).value);
       if (state.paFirmware === "marlin") state.linearAdvance = chosen;
       else state.pressureAdvance = chosen;
@@ -52,11 +62,11 @@ export function wireApp() {
       writePresets(all);
       renderChrome();
     }
-    if (t.id === "center") { state.centered = true; state.offset = { x: 0, y: 0, z: 0 }; place(); }
-    if (t.id === "layflat" && state.sourcePos) { state.orient = layFlatMatrix(state.sourcePos); place(); }
-    if (t.id === "rotX") { state.orient = matMul(rotX(90), state.orient); place(); }
-    if (t.id === "rotY") { state.orient = matMul(rotY(90), state.orient); place(); }
-    if (t.id === "rotZ") { state.orient = matMul(rotZ(90), state.orient); place(); }
+    if (t.id === "center") { noteEdit(); state.centered = true; state.offset = { x: 0, y: 0, z: 0 }; place(); }
+    if (t.id === "layflat" && state.sourcePos) { noteEdit(); state.orient = layFlatMatrix(state.sourcePos); place(); }
+    if (t.id === "rotX") { noteEdit(); state.orient = matMul(rotX(90), state.orient); place(); }
+    if (t.id === "rotY") { noteEdit(); state.orient = matMul(rotY(90), state.orient); place(); }
+    if (t.id === "rotZ") { noteEdit(); state.orient = matMul(rotZ(90), state.orient); place(); }
     if (t.id === "profileExport") void saveText(profileJson(state.profile), `${state.profile.name.replace(/\s+/g, "_")}.json`, "json");
     if (t.id === "export3mf") void export3mf();
   });
@@ -73,6 +83,7 @@ export function wireApp() {
     const cardEl = (ev.target as HTMLElement).closest<HTMLElement>("[data-card]");
     if (!cardEl) return;
     const id = cardEl.dataset.card as CardId;
+    noteEdit();
     if (id === "speed") { state.blendKind = "single"; state.strategy = "speed"; }
     else if (id === "toughness") { state.blendKind = "single"; state.strategy = "toughness"; }
     else if (id === "efficiency") { state.blendKind = "weight"; state.toughness = 0.5; }
@@ -224,6 +235,12 @@ export function wireApp() {
     if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "s") {
       ev.preventDefault();
       void saveCurrentProject();
+      return;
+    }
+    if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "z" && !ev.altKey) {
+      ev.preventDefault();
+      if (ev.shiftKey) redoUserEdit();
+      else undoUserEdit();
       return;
     }
     if (typing) return;

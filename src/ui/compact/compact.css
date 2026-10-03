@@ -252,6 +252,13 @@ html.layout-compact #left {
 }
 html.layout-compact #leftFoot { display: none; }
 html.layout-compact #compactSheet[data-detent="peek"] #leftBody { pointer-events: none; }
+html.layout-compact .find-row {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--panel);
+  padding-bottom: 6px;
+}
 
 html.layout-compact #toolRail {
   position: absolute;
