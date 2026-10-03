@@ -278,6 +278,19 @@ input[type="number"] {
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
 }
+textarea.machine-gcode {
+  width: 100%;
+  min-height: 4.5rem;
+  box-sizing: border-box;
+  resize: vertical;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  color: var(--text);
+}
 .btn, select, input[type="number"], input[type="text"], input[type="search"], input[type="url"], input[type="password"] { color: var(--text); }
 .btn {
   display: inline-flex;

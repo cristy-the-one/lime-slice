@@ -1,0 +1,667 @@
+/**
+ * Printer, filament, and nozzle library. Version 1 stores our own profiles.
+ * A later version adds a function to `machineMigrations` at index `n` that rewrites version `n`
+ * into version `n + 1`.
+ *
+ * The slice request already accepts one printer: nozzle, temperatures, bed, flow, accel,
+ * density, cost, pressure advance, and linear advance. It has no filament catalog and no
+ * start or end G-code field. Those stay in this library. `enginePrinter` copies only the
+ * fields the engine already reads.
+ */
+import type { PrinterProfile } from "../profiles.ts";
+
+export const MACHINE_FILE_VERSION = 1;
+
+export const NOZZLE_MM = [0.4, 0.6, 0.8] as const;
+
+export interface PrinterRecord {
+  id: string;
+  name: string;
+  builtin: boolean;
+  bedX: number;
+  bedY: number;
+  bedZ: number;
+  maxVolumetricMm3S: number;
+  maxAccel: number;
+  /** Stored with the printer. Not sent on the slice request. */
+  startGcode: string;
+  /** Stored with the printer. Not sent on the slice request. */
+  endGcode: string;
+}
+
+export interface FilamentRecord {
+  id: string;
+  name: string;
+  builtin: boolean;
+  material: string;
+  diameterMm: number;
+  densityGCm3: number;
+  costPerKg: number;
+  nozzleTemp: number;
+  bedTemp: number;
+  /** Pressure advance keyed by nozzle millimetres, such as "0.4". */
+  pressureAdvance: Record<string, number>;
+  linearAdvance: Record<string, number>;
+}
+
+export interface MachineLibrary {
+  version: 1;
+  printers: PrinterRecord[];
+  filaments: FilamentRecord[];
+  printerId: string;
+  filamentId: string;
+  nozzleMm: number;
+}
+
+export interface MachineFile {
+  version: 1;
+  printer: Omit<PrinterRecord, "id" | "builtin">;
+  filament: Omit<FilamentRecord, "id" | "builtin">;
+  nozzleMm: number;
+}
+
+export type MachineFileResult = { ok: true; file: MachineFile } | { ok: false; message: string };
+
+/** `steps[n]` rewrites a version-n document into version n+1 and sets `version` to n+1. */
+export type MachineMigration = (doc: Record<string, unknown>) => Record<string, unknown>;
+
+/** Empty until a version 2 exists. */
+export const machineMigrations: readonly MachineMigration[] = [];
+
+export interface MachineNumbers {
+  nozzleDiameter: number;
+  filamentDiameter: number;
+  nozzleTemp: number;
+  bedTemp: number;
+  bedX: number;
+  bedY: number;
+  bedZ: number;
+  maxVolumetricMm3S: number;
+  maxAccel: number;
+  filamentDensityGCm3: number;
+  filamentCostPerKg: number;
+  pressureAdvance: number;
+  linearAdvance: number;
+  startGcode: string;
+  endGcode: string;
+}
+
+export function nozzleKey(mm: number): string {
+  return String(Math.round(mm * 1000) / 1000);
+}
+
+export function advanceFor(map: Record<string, number>, nozzleMm: number): number {
+  const value = map[nozzleKey(nozzleMm)];
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+export function emptyLibrary(): MachineLibrary {
+  return { version: 1, printers: [], filaments: [], printerId: "", filamentId: "", nozzleMm: 0.4 };
+}
+
+export function builtinLibrary(): MachineLibrary {
+  const printers = builtinPrinters();
+  const filaments = builtinFilaments();
+  return {
+    version: 1,
+    printers,
+    filaments,
+    printerId: printers[0]!.id,
+    filamentId: filaments[0]!.id,
+    nozzleMm: 0.4,
+  };
+}
+
+/** Put any missing built-in profile back. Stored copies of those ids are left as they are. */
+export function ensureBuiltins(library: MachineLibrary): MachineLibrary {
+  const printers = [...library.printers];
+  for (const printer of builtinPrinters()) {
+    if (!printers.some((row) => row.id === printer.id)) printers.push(printer);
+  }
+  const filaments = [...library.filaments];
+  for (const filament of builtinFilaments()) {
+    if (!filaments.some((row) => row.id === filament.id)) filaments.push(filament);
+  }
+  const printerId = printers.some((row) => row.id === library.printerId) ? library.printerId : printers[0]!.id;
+  const filamentId = filaments.some((row) => row.id === library.filamentId) ? library.filamentId : filaments[0]!.id;
+  const nozzleMm = Number.isFinite(library.nozzleMm) && library.nozzleMm > 0 ? library.nozzleMm : 0.4;
+  return { version: 1, printers, filaments, printerId, filamentId, nozzleMm };
+}
+
+export function selection(library: MachineLibrary): { printer: PrinterRecord; filament: FilamentRecord } | null {
+  const printer = library.printers.find((row) => row.id === library.printerId);
+  const filament = library.filaments.find((row) => row.id === library.filamentId);
+  if (!printer || !filament) return null;
+  return { printer, filament };
+}
+
+/** Printer fields the slice request already accepts. Start and end G-code are not among them. */
+export function enginePrinter(printer: PrinterRecord, filament: FilamentRecord, nozzleMm: number): PrinterProfile {
+  return {
+    name: printer.name,
+    nozzleDiameter: nozzleMm,
+    filamentDiameter: filament.diameterMm,
+    nozzleTemp: filament.nozzleTemp,
+    bedTemp: filament.bedTemp,
+    bedX: printer.bedX,
+    bedY: printer.bedY,
+    bedZ: printer.bedZ,
+    maxVolumetricMm3S: printer.maxVolumetricMm3S,
+    maxAccel: printer.maxAccel,
+    filamentDensityGCm3: filament.densityGCm3,
+    filamentCostPerKg: filament.costPerKg,
+    pressureAdvance: advanceFor(filament.pressureAdvance, nozzleMm),
+    linearAdvance: advanceFor(filament.linearAdvance, nozzleMm),
+  };
+}
+
+export function serializeLibrary(library: MachineLibrary): string {
+  return JSON.stringify(library);
+}
+
+export function parseLibrary(text: string | null): MachineLibrary {
+  if (!text) return emptyLibrary();
+  try {
+    const raw = JSON.parse(text) as unknown;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return emptyLibrary();
+    const doc = raw as Record<string, unknown>;
+    if (doc.version !== 1 || !Array.isArray(doc.printers) || !Array.isArray(doc.filaments)) return emptyLibrary();
+    const printers = doc.printers.map(readPrinter).filter((row): row is PrinterRecord => row !== null);
+    const filaments = doc.filaments.map(readFilament).filter((row): row is FilamentRecord => row !== null);
+    const nozzleMm = finite(doc.nozzleMm) && doc.nozzleMm > 0 ? doc.nozzleMm : 0.4;
+    return {
+      version: 1,
+      printers,
+      filaments,
+      printerId: typeof doc.printerId === "string" ? doc.printerId : "",
+      filamentId: typeof doc.filamentId === "string" ? doc.filamentId : "",
+      nozzleMm,
+    };
+  } catch {
+    return emptyLibrary();
+  }
+}
+
+export function machineFileName(printer: string, filament: string): string {
+  const safe = (name: string) => name.trim().replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || "machine";
+  return `${safe(printer)}__${safe(filament)}.limemachine.json`;
+}
+
+export function serializeMachineFile(file: MachineFile): string {
+  return JSON.stringify(file, null, 2);
+}
+
+export function fileFromSelection(library: MachineLibrary): MachineFile | null {
+  const picked = selection(library);
+  if (!picked) return null;
+  return {
+    version: 1,
+    printer: stripPrinter(picked.printer),
+    filament: stripFilament(picked.filament),
+    nozzleMm: library.nozzleMm,
+  };
+}
+
+export function parseMachineFile(
+  text: string,
+  steps: readonly MachineMigration[] = machineMigrations,
+  target = MACHINE_FILE_VERSION,
+): MachineFileResult {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return { ok: false, message: "This file is not a Lime Slice machine profile." };
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ok: false, message: "This file is not a Lime Slice machine profile." };
+  }
+  const migrated = applyMigrations(raw as Record<string, unknown>, steps, target);
+  if (!migrated.ok) return migrated;
+  return readFile(migrated.doc);
+}
+
+export function selectIn(library: MachineLibrary, printerId: string, filamentId: string, nozzleMm: number): MachineLibrary | string {
+  if (!library.printers.some((row) => row.id === printerId)) return "That printer is no longer saved.";
+  if (!library.filaments.some((row) => row.id === filamentId)) return "That filament is no longer saved.";
+  if (!Number.isFinite(nozzleMm) || nozzleMm <= 0) return "Choose a nozzle size.";
+  return { ...library, printerId, filamentId, nozzleMm };
+}
+
+export function setAdvance(library: MachineLibrary, pressure: number, linear: number): MachineLibrary {
+  const key = nozzleKey(library.nozzleMm);
+  return {
+    ...library,
+    filaments: library.filaments.map((filament) => filament.id === library.filamentId
+      ? {
+          ...filament,
+          pressureAdvance: { ...filament.pressureAdvance, [key]: pressure },
+          linearAdvance: { ...filament.linearAdvance, [key]: linear },
+        }
+      : filament),
+  };
+}
+
+export function setGcode(library: MachineLibrary, startGcode: string, endGcode: string): MachineLibrary {
+  return {
+    ...library,
+    printers: library.printers.map((printer) => printer.id === library.printerId ? { ...printer, startGcode, endGcode } : printer),
+  };
+}
+
+export function saveActive(library: MachineLibrary, numbers: MachineNumbers): MachineLibrary | string {
+  if (!selection(library)) return "Choose a printer and a filament first.";
+  return writeNumbers(library, library.printerId, library.filamentId, numbers);
+}
+
+/** Overwrite a printer with this name, or add one and select it. The active filament keeps the material numbers. */
+export function savePrinterName(library: MachineLibrary, name: string, numbers: MachineNumbers, id: string): MachineLibrary | string {
+  const trimmed = name.trim();
+  if (!trimmed) return "Name the printer first.";
+  if (!selection(library)) return "Choose a printer and a filament first.";
+  const existing = library.printers.find((printer) => printer.name === trimmed);
+  if (existing) return writeNumbers({ ...library, printerId: existing.id }, existing.id, library.filamentId, numbers);
+  const added: MachineLibrary = {
+    ...library,
+    printerId: id,
+    printers: [...library.printers, { ...blankPrinter(id, trimmed), builtin: false }],
+  };
+  return writeNumbers(added, id, library.filamentId, numbers);
+}
+
+export function duplicateActive(library: MachineLibrary, printerId: string, filamentId: string): MachineLibrary | string {
+  const picked = selection(library);
+  if (!picked) return "Choose a printer and a filament first.";
+  return {
+    ...library,
+    printerId,
+    filamentId,
+    printers: [...library.printers, { ...picked.printer, id: printerId, builtin: false, name: uniqueName(library.printers, `${picked.printer.name} copy`) }],
+    filaments: [...library.filaments, { ...picked.filament, id: filamentId, builtin: false, name: uniqueName(library.filaments, `${picked.filament.name} copy`), pressureAdvance: { ...picked.filament.pressureAdvance }, linearAdvance: { ...picked.filament.linearAdvance } }],
+  };
+}
+
+export function deleteActive(library: MachineLibrary): MachineLibrary | string {
+  const picked = selection(library);
+  if (!picked) return "Choose a printer and a filament first.";
+  if (picked.printer.builtin) return "Built-in profiles stay in the catalog. Duplicate one to change the copy.";
+  const printers = library.printers.filter((row) => row.id !== picked.printer.id);
+  const filaments = picked.filament.builtin ? library.filaments : library.filaments.filter((row) => row.id !== picked.filament.id);
+  const fallbackPrinter = printers.find((row) => row.id === "lime-220") ?? printers[0];
+  const fallbackFilament = filaments.find((row) => row.id === "lime-pla") ?? filaments[0];
+  if (!fallbackPrinter || !fallbackFilament) return "Choose a printer and a filament first.";
+  return {
+    ...library,
+    printers,
+    filaments,
+    printerId: printers.some((row) => row.id === library.printerId) ? library.printerId : fallbackPrinter.id,
+    filamentId: filaments.some((row) => row.id === library.filamentId) ? library.filamentId : fallbackFilament.id,
+  };
+}
+
+export function importInto(library: MachineLibrary, file: MachineFile, printerId: string, filamentId: string): MachineLibrary {
+  return {
+    ...library,
+    printerId,
+    filamentId,
+    nozzleMm: file.nozzleMm,
+    printers: [...library.printers, { ...file.printer, id: printerId, builtin: false, name: uniqueName(library.printers, file.printer.name) }],
+    filaments: [...library.filaments, { ...file.filament, id: filamentId, builtin: false, name: uniqueName(library.filaments, file.filament.name), pressureAdvance: { ...file.filament.pressureAdvance }, linearAdvance: { ...file.filament.linearAdvance } }],
+  };
+}
+
+export function adoptProfile(library: MachineLibrary, profile: PrinterProfile, printerId: string, filamentId: string): MachineLibrary {
+  const key = nozzleKey(profile.nozzleDiameter);
+  const printer: PrinterRecord = {
+    id: printerId,
+    name: profile.name,
+    builtin: false,
+    bedX: profile.bedX,
+    bedY: profile.bedY,
+    bedZ: profile.bedZ,
+    maxVolumetricMm3S: profile.maxVolumetricMm3S,
+    maxAccel: profile.maxAccel,
+    startGcode: "",
+    endGcode: "",
+  };
+  const filament: FilamentRecord = {
+    id: filamentId,
+    name: "Saved filament",
+    builtin: false,
+    material: "Saved",
+    diameterMm: profile.filamentDiameter,
+    densityGCm3: profile.filamentDensityGCm3,
+    costPerKg: profile.filamentCostPerKg,
+    nozzleTemp: profile.nozzleTemp,
+    bedTemp: profile.bedTemp,
+    pressureAdvance: { [key]: profile.pressureAdvance },
+    linearAdvance: { [key]: profile.linearAdvance },
+  };
+  return {
+    ...library,
+    printerId,
+    filamentId,
+    nozzleMm: profile.nozzleDiameter,
+    printers: [...library.printers, printer],
+    filaments: [...library.filaments, filament],
+  };
+}
+
+export function machineSectionHtml(
+  library: MachineLibrary,
+  live: { pressureAdvance: number; nozzleTemp: number; bedTemp: number },
+): string {
+  const picked = selection(library);
+  const nozzles: number[] = [...NOZZLE_MM];
+  if (!nozzles.some((size) => nozzleKey(size) === nozzleKey(library.nozzleMm))) nozzles.push(library.nozzleMm);
+  const printerOptions = library.printers
+    .map((printer) => `<option value="${escapeHtml(printer.id)}"${printer.id === library.printerId ? " selected" : ""}>${escapeHtml(printer.name)}</option>`)
+    .join("");
+  const filamentOptions = library.filaments
+    .map((filament) => `<option value="${escapeHtml(filament.id)}"${filament.id === library.filamentId ? " selected" : ""}>${escapeHtml(filament.name)}</option>`)
+    .join("");
+  const nozzleOptions = nozzles
+    .map((size) => `<option value="${nozzleKey(size)}"${nozzleKey(size) === nozzleKey(library.nozzleMm) ? " selected" : ""}>${nozzleKey(size)} mm</option>`)
+    .join("");
+  return `
+    <div class="machine-block">
+      <label class="field setting" data-label="printer" data-keywords="machine library bed">Printer
+        <select id="machinePrinter" aria-label="Printer">${printerOptions}</select>
+      </label>
+      <label class="field setting" data-label="filament" data-keywords="material pla petg abs tpu">Filament
+        <select id="machineFilament" aria-label="Filament">${filamentOptions}</select>
+      </label>
+      <label class="field setting" data-label="nozzle size" data-keywords="nozzle diameter">Nozzle
+        <select id="machineNozzle" aria-label="Nozzle size">${nozzleOptions}</select>
+      </label>
+      <label class="field setting" data-label="pressure advance" data-keywords="filament nozzle linear advance">Pressure advance
+        <input id="machinePa" type="number" min="0" max="2" step="0.001" value="${live.pressureAdvance}" aria-label="Pressure advance for this filament and nozzle" />
+      </label>
+      <div class="meta" id="machineTemps">Nozzle ${Math.round(live.nozzleTemp)} °C · bed ${Math.round(live.bedTemp)} °C</div>
+      <div class="row">
+        <button class="btn" id="machineSave" type="button">Save</button>
+        <details class="profile-more" id="machineMore">
+          <summary class="btn" aria-label="Machine actions">More</summary>
+          <div class="profile-actions">
+            <input id="machineName" type="text" aria-label="Printer name" placeholder="Printer name" />
+            <button class="btn" id="machineDuplicate" type="button">Duplicate</button>
+            <button class="btn" id="machineDelete" type="button">Delete</button>
+            <button class="btn" id="machineExport" type="button">Export</button>
+            <label class="btn file">Import<input id="machineFile" type="file" accept=".limemachine.json,application/json" /></label>
+            <label class="field setting" data-label="start g-code" data-keywords="start gcode header">Start G-code
+              <textarea id="machineStart" class="machine-gcode" rows="3" aria-label="Start G-code">${escapeHtml(picked?.printer.startGcode ?? "")}</textarea>
+            </label>
+            <label class="field setting" data-label="end g-code" data-keywords="end gcode footer">End G-code
+              <textarea id="machineEnd" class="machine-gcode" rows="3" aria-label="End G-code">${escapeHtml(picked?.printer.endGcode ?? "")}</textarea>
+            </label>
+            <p class="meta">Start and end G-code are stored with the printer. Slice still sends nozzle, temperatures, bed, and pressure advance. The engine writes its own header.</p>
+          </div>
+        </details>
+      </div>
+    </div>`;
+}
+
+function writeNumbers(library: MachineLibrary, printerId: string, filamentId: string, numbers: MachineNumbers): MachineLibrary {
+  const key = nozzleKey(numbers.nozzleDiameter);
+  return {
+    ...library,
+    printerId,
+    filamentId,
+    nozzleMm: numbers.nozzleDiameter,
+    printers: library.printers.map((printer) => printer.id === printerId
+      ? {
+          ...printer,
+          bedX: numbers.bedX,
+          bedY: numbers.bedY,
+          bedZ: numbers.bedZ,
+          maxVolumetricMm3S: numbers.maxVolumetricMm3S,
+          maxAccel: numbers.maxAccel,
+          startGcode: numbers.startGcode,
+          endGcode: numbers.endGcode,
+        }
+      : printer),
+    filaments: library.filaments.map((filament) => filament.id === filamentId
+      ? {
+          ...filament,
+          diameterMm: numbers.filamentDiameter,
+          densityGCm3: numbers.filamentDensityGCm3,
+          costPerKg: numbers.filamentCostPerKg,
+          nozzleTemp: numbers.nozzleTemp,
+          bedTemp: numbers.bedTemp,
+          pressureAdvance: { ...filament.pressureAdvance, [key]: numbers.pressureAdvance },
+          linearAdvance: { ...filament.linearAdvance, [key]: numbers.linearAdvance },
+        }
+      : filament),
+  };
+}
+
+function blankPrinter(id: string, name: string): PrinterRecord {
+  return {
+    id,
+    name,
+    builtin: false,
+    bedX: 220,
+    bedY: 220,
+    bedZ: 250,
+    maxVolumetricMm3S: 12,
+    maxAccel: 10000,
+    startGcode: "",
+    endGcode: "",
+  };
+}
+
+function stripPrinter(printer: PrinterRecord): MachineFile["printer"] {
+  return {
+    name: printer.name,
+    bedX: printer.bedX,
+    bedY: printer.bedY,
+    bedZ: printer.bedZ,
+    maxVolumetricMm3S: printer.maxVolumetricMm3S,
+    maxAccel: printer.maxAccel,
+    startGcode: printer.startGcode,
+    endGcode: printer.endGcode,
+  };
+}
+
+function stripFilament(filament: FilamentRecord): MachineFile["filament"] {
+  return {
+    name: filament.name,
+    material: filament.material,
+    diameterMm: filament.diameterMm,
+    densityGCm3: filament.densityGCm3,
+    costPerKg: filament.costPerKg,
+    nozzleTemp: filament.nozzleTemp,
+    bedTemp: filament.bedTemp,
+    pressureAdvance: { ...filament.pressureAdvance },
+    linearAdvance: { ...filament.linearAdvance },
+  };
+}
+
+function uniqueName(rows: { name: string }[], name: string): string {
+  const taken = new Set(rows.map((row) => row.name));
+  if (!taken.has(name)) return name;
+  let n = 2;
+  while (taken.has(`${name} ${n}`)) n += 1;
+  return `${name} ${n}`;
+}
+
+function builtinPrinters(): PrinterRecord[] {
+  return [
+    printer("lime-220", "Lime 220", 220, 220, 250, 12, 10000),
+    printer("lime-300", "Lime 300", 300, 300, 320, 15, 5000),
+    printer("lime-180", "Lime 180", 180, 180, 180, 8, 2000),
+  ];
+}
+
+function printer(id: string, name: string, bedX: number, bedY: number, bedZ: number, flow: number, accel: number): PrinterRecord {
+  return {
+    id,
+    name,
+    builtin: true,
+    bedX,
+    bedY,
+    bedZ,
+    maxVolumetricMm3S: flow,
+    maxAccel: accel,
+    startGcode: `; ${name}`,
+    endGcode: `; end ${name}`,
+  };
+}
+
+function builtinFilaments(): FilamentRecord[] {
+  return [
+    filament("lime-pla", "PLA", "PLA", 1.24, 20, 200, 60, { "0.4": 0, "0.6": 0.035, "0.8": 0.05 }),
+    filament("lime-petg", "PETG", "PETG", 1.27, 25, 240, 80, { "0.4": 0.05, "0.6": 0.06, "0.8": 0.07 }),
+    filament("lime-abs", "ABS", "ABS", 1.04, 25, 250, 100, { "0.4": 0.04, "0.6": 0.05, "0.8": 0.055 }),
+    filament("lime-tpu", "TPU", "TPU", 1.21, 35, 230, 40, { "0.4": 0.08, "0.6": 0.1, "0.8": 0.12 }),
+  ];
+}
+
+/** Starting pressure-advance numbers for our own filaments. Not a vendor table. */
+function filament(
+  id: string,
+  name: string,
+  material: string,
+  density: number,
+  cost: number,
+  nozzleTemp: number,
+  bedTemp: number,
+  pressureAdvance: Record<string, number>,
+): FilamentRecord {
+  return {
+    id,
+    name,
+    builtin: true,
+    material,
+    diameterMm: 1.75,
+    densityGCm3: density,
+    costPerKg: cost,
+    nozzleTemp,
+    bedTemp,
+    pressureAdvance,
+    linearAdvance: { "0.4": 0, "0.6": 0, "0.8": 0 },
+  };
+}
+
+function applyMigrations(
+  doc: Record<string, unknown>,
+  steps: readonly MachineMigration[],
+  target: number,
+): { ok: true; doc: Record<string, unknown> } | { ok: false; message: string } {
+  if (typeof doc.version !== "number" || !Number.isInteger(doc.version)) {
+    return { ok: false, message: "This machine profile has no version, so it cannot be opened." };
+  }
+  let current = doc;
+  let version = doc.version;
+  if (version > target) {
+    return { ok: false, message: `This machine profile is version ${version}. This app opens up to version ${target}.` };
+  }
+  while (version < target) {
+    const step = steps[version];
+    if (!step) return { ok: false, message: "This machine profile could not be updated to the current format." };
+    let next: Record<string, unknown>;
+    try {
+      next = step({ ...current });
+    } catch {
+      return { ok: false, message: "This machine profile could not be updated to the current format." };
+    }
+    if (!next || typeof next.version !== "number" || next.version !== version + 1) {
+      return { ok: false, message: "This machine profile could not be updated to the current format." };
+    }
+    current = next;
+    version = next.version;
+  }
+  return { ok: true, doc: current };
+}
+
+function readFile(doc: Record<string, unknown>): MachineFileResult {
+  if (doc.version !== MACHINE_FILE_VERSION) return { ok: false, message: "This machine profile could not be updated to the current format." };
+  const printer = readPrinterBody(doc.printer);
+  const filament = readFilamentBody(doc.filament);
+  if (!printer || !filament || !finite(doc.nozzleMm) || doc.nozzleMm <= 0) {
+    return { ok: false, message: "This machine profile is incomplete." };
+  }
+  return { ok: true, file: { version: 1, printer, filament, nozzleMm: doc.nozzleMm } };
+}
+
+function readPrinter(value: unknown): PrinterRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  const body = readPrinterBody(row);
+  if (!body || typeof row.id !== "string" || !row.id) return null;
+  return { ...body, id: row.id, builtin: row.builtin === true };
+}
+
+function readFilament(value: unknown): FilamentRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  const body = readFilamentBody(row);
+  if (!body || typeof row.id !== "string" || !row.id) return null;
+  return { ...body, id: row.id, builtin: row.builtin === true };
+}
+
+function readPrinterBody(value: unknown): Omit<PrinterRecord, "id" | "builtin"> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.name !== "string" || !row.name.trim()) return null;
+  if (!positive(row.bedX) || !positive(row.bedY) || !positive(row.bedZ)) return null;
+  if (!positive(row.maxVolumetricMm3S) || !positive(row.maxAccel)) return null;
+  if (typeof row.startGcode !== "string" || typeof row.endGcode !== "string") return null;
+  if (row.startGcode.length > 20000 || row.endGcode.length > 20000) return null;
+  return {
+    name: row.name.trim(),
+    bedX: row.bedX,
+    bedY: row.bedY,
+    bedZ: row.bedZ,
+    maxVolumetricMm3S: row.maxVolumetricMm3S,
+    maxAccel: row.maxAccel,
+    startGcode: row.startGcode,
+    endGcode: row.endGcode,
+  };
+}
+
+function readFilamentBody(value: unknown): Omit<FilamentRecord, "id" | "builtin"> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.name !== "string" || !row.name.trim()) return null;
+  if (typeof row.material !== "string" || !row.material.trim()) return null;
+  if (!positive(row.diameterMm) || !positive(row.densityGCm3)) return null;
+  if (!finite(row.costPerKg) || row.costPerKg < 0) return null;
+  if (!finite(row.nozzleTemp) || !finite(row.bedTemp)) return null;
+  const pressureAdvance = readAdvance(row.pressureAdvance);
+  const linearAdvance = readAdvance(row.linearAdvance);
+  if (!pressureAdvance || !linearAdvance) return null;
+  return {
+    name: row.name.trim(),
+    material: row.material.trim(),
+    diameterMm: row.diameterMm,
+    densityGCm3: row.densityGCm3,
+    costPerKg: row.costPerKg,
+    nozzleTemp: row.nozzleTemp,
+    bedTemp: row.bedTemp,
+    pressureAdvance,
+    linearAdvance,
+  };
+}
+
+function readAdvance(value: unknown): Record<string, number> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const out: Record<string, number> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (!finite(item) || item < 0 || item > 2) return null;
+    out[key] = item;
+  }
+  return out;
+}
+
+function finite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function positive(value: unknown): value is number {
+  return finite(value) && value > 0;
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]!);
+}

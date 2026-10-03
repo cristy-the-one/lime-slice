@@ -11,6 +11,9 @@ import { groupFeatures } from "../estimate";
 import { offBed } from "../mesh-place";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys, readPresets, diffPreset } from "../presets";
 import { loadProfile, type PrinterProfile, saveProfile } from "../profiles";
+import { noteAdvance, noteGcode, noteNozzle } from "./machine-actions";
+import { loadMachineLibrary } from "./machine-library";
+import { machineSectionHtml } from "../ui/machine-library";
 import { canRedoEdit, canUndoEdit, noteEdit } from "./history";
 import { loadProfileLibrary } from "./profile-library";
 import { SETTING_KEYWORDS, settingMatches } from "../ui/settings-search";
@@ -508,6 +511,7 @@ export function objectList() {
 export function profileFields() {
   const p = state.profile;
   return `
+    ${machineSectionHtml(loadMachineLibrary(), { pressureAdvance: state.pressureAdvance, nozzleTemp: p.nozzleTemp, bedTemp: p.bedTemp })}
     ${num("nozzle", "Nozzle mm", p.nozzleDiameter, 0.15, 1.2, 0.05, "simple")}
     ${num("bedx", "Bed X mm", p.bedX, 50, 1000, 1, "simple")}
     ${num("bedy", "Bed Y mm", p.bedY, 50, 1000, 1, "simple")}
@@ -720,7 +724,19 @@ export function onSettings(ev: Event) {
     applyFilter();
     return;
   }
-  if (t.id === "profileName" || t.id === "profilePick") return;
+  if (t.id === "profileName" || t.id === "profilePick" || t.id === "machineName") return;
+  if (t.id === "machineStart" || t.id === "machineEnd") {
+    const start = document.querySelector<HTMLTextAreaElement>("#machineStart")?.value ?? "";
+    const end = document.querySelector<HTMLTextAreaElement>("#machineEnd")?.value ?? "";
+    noteGcode(start, end);
+    return;
+  }
+  if (t.id === "machinePa") {
+    noteAdvance(Number(t.value) || 0, state.linearAdvance);
+    markProjectDirty();
+    markStale();
+    return;
+  }
   noteEdit();
   markProjectDirty();
   const numIds = ["lh", "amin", "amax", "pa", "la", "zhopht", "zhopmin", "scarflen", "scarfsteps", "sangle", "bangle", "tipd", "trunkd", "shmult", "pastart", "paend", "pastep", "nozzle", "bedx", "bedy", "bedz", "vol", "accel", "density", "cost", "partScale", "simperr"] as const;
@@ -728,8 +744,8 @@ export function onSettings(ev: Event) {
     lh: (v) => { state.layerHeight = v || 0.2; },
     amin: (v) => { state.adaptiveMin = v || 0.08; },
     amax: (v) => { state.adaptiveMax = v || 0.2; },
-    pa: (v) => { state.pressureAdvance = v || 0; },
-    la: (v) => { state.linearAdvance = v || 0; },
+    pa: (v) => { noteAdvance(v || 0, state.linearAdvance); },
+    la: (v) => { noteAdvance(state.pressureAdvance, v || 0); },
     zhopht: (v) => { state.zHopHeight = v || 0.4; },
     zhopmin: (v) => { state.zHopMinTravel = v || 2; },
     scarflen: (v) => { state.scarfLength = v || 10; },
@@ -742,7 +758,7 @@ export function onSettings(ev: Event) {
     pastart: (v) => { state.paStart = v || 0; },
     paend: (v) => { state.paEnd = v || 0; },
     pastep: (v) => { state.paStep = v || 0.005; },
-    nozzle: (v) => { state.profile.nozzleDiameter = v || 0.4; },
+    nozzle: (v) => { state.profile.nozzleDiameter = v || 0.4; noteNozzle(state.profile.nozzleDiameter); },
     bedx: (v) => { state.profile.bedX = v || 220; },
     bedy: (v) => { state.profile.bedY = v || 220; },
     bedz: (v) => { state.profile.bedZ = v || 250; },

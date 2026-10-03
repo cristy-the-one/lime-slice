@@ -27,8 +27,19 @@ import {
   typedProfileName,
 } from "./profile-actions";
 import { pushToast } from "../ui/toasts";
+import {
+  bootMachines,
+  chooseMachine,
+  deleteMachine,
+  duplicateMachine,
+  machineExportFile,
+  importMachineFile,
+  saveMachine,
+  typedMachineName,
+} from "./machine-actions";
 
 export function wireApp() {
+  bootMachines();
   document.querySelector("#left")!.addEventListener("input", onSettings);
   document.querySelector("#left")!.addEventListener("change", (ev) => {
     const target = ev.target as HTMLElement;
@@ -42,6 +53,20 @@ export function wireApp() {
       const file = input.files?.[0];
       input.value = "";
       if (file) void importSettingsProfileFile(file);
+      return;
+    }
+    if (target.id === "machinePrinter" || target.id === "machineFilament" || target.id === "machineNozzle") {
+      const printerId = document.querySelector<HTMLSelectElement>("#machinePrinter")?.value ?? "";
+      const filamentId = document.querySelector<HTMLSelectElement>("#machineFilament")?.value ?? "";
+      const nozzleMm = Number(document.querySelector<HTMLSelectElement>("#machineNozzle")?.value);
+      chooseMachine(printerId, filamentId, nozzleMm);
+      return;
+    }
+    if (target.id === "machineFile") {
+      const input = target as HTMLInputElement;
+      const file = input.files?.[0];
+      input.value = "";
+      if (file) void importMachineFile(file);
     }
   });
   document.querySelector("#left")!.addEventListener("toggle", (ev) => {
@@ -132,6 +157,23 @@ export function wireApp() {
     if (t.id === "rotX") { noteEdit(); state.orient = matMul(rotX(90), state.orient); place(); }
     if (t.id === "rotY") { noteEdit(); state.orient = matMul(rotY(90), state.orient); place(); }
     if (t.id === "rotZ") { noteEdit(); state.orient = matMul(rotZ(90), state.orient); place(); }
+    if (t.id === "machineSave") {
+      saveMachine(typedMachineName());
+      return;
+    }
+    if (t.id === "machineDuplicate") {
+      duplicateMachine();
+      return;
+    }
+    if (t.id === "machineDelete") {
+      deleteMachine();
+      return;
+    }
+    if (t.id === "machineExport") {
+      const file = machineExportFile();
+      if (file) void saveText(file.text, file.name, "json");
+      return;
+    }
     if (t.id === "profileExport") void saveText(profileJson(state.profile), `${state.profile.name.replace(/\s+/g, "_")}.json`, "json");
     if (t.id === "export3mf") void export3mf();
   });
