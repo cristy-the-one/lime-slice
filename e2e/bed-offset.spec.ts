@@ -116,6 +116,39 @@ test("Move drags the part in X/Y and Shift snaps to 1 mm", async ({ page }) => {
   expect(Math.abs(afterY - Math.round(afterY))).toBeLessThan(0.05);
 });
 
+test("a Move drag sends one refresh, after the drag ends", async ({ page }) => {
+  const calls: { previewBase?: string }[] = [];
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/slice", async (route) => {
+    const body = route.request().postDataJSON() as (typeof calls)[number];
+    calls.push(body);
+    await route.fulfill({ json: body.previewBase ? patched(body.previewBase) : firstSlice() });
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await page.getByText("Samples", { exact: true }).click();
+  await page.getByRole("button", { name: "20 mm cube" }).click();
+  await page.locator("#slice").click();
+  await expect(page.locator("#export")).toBeEnabled();
+  await page.getByRole("button", { name: "Top", exact: true }).click();
+  await page.locator("#toolRail [data-tool=move]").click();
+  const box = (await page.locator("#prepare").boundingBox())!;
+  const x = box.x + box.width * 0.58;
+  const y = box.y + box.height * 0.48;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 50, y + 20, { steps: 8 });
+  await page.waitForTimeout(500);
+  expect(calls).toHaveLength(1);
+  await expect(page.locator("#banner")).not.toContainText("Settings changed");
+  await page.mouse.move(x + 90, y + 36, { steps: 8 });
+  await page.mouse.up();
+  await expect(page.locator("#export")).toBeEnabled();
+  await page.waitForTimeout(500);
+  expect(calls).toHaveLength(2);
+  expect(calls[1]!.previewBase).toBe("bed-1");
+});
+
 test.describe("compact prepare still gives the canvas the peek", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
