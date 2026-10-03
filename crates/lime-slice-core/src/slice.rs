@@ -23,7 +23,7 @@ use crate::poly::{
     boolean_diff, boolean_union, clip_to_rect, loop_bounds, offset_loops, signed_area,
     simplify_loops, Loop,
 };
-use crate::progress::{Stage, Watch};
+use crate::progress::{Stage, Status, Watch};
 use crate::strategy::{
     classicize, layer_weight, mix, pure, support_density, support_interface_density, support_speed,
     Axis, BlendMode, Gyroid3d, PrinterProfile, ResolvedStrategy, ScarfSeam, StrategyId, ZHopMode,
@@ -824,16 +824,8 @@ pub fn slice_configured_watched(
     watch: &Watch,
 ) -> Result<SliceResponse, String> {
     let result = slice_sharing(mesh, blend, profile, settings, &mut None, watch);
-    finish_watch(watch, &result);
+    watch.finish(Status::of(&result));
     result
-}
-
-fn finish_watch(watch: &Watch, result: &Result<SliceResponse, String>) {
-    match result {
-        Ok(_) => watch.finish_ok(),
-        Err(err) if err == "cancelled" => watch.finish_cancel(),
-        Err(_) => watch.finish_err(),
-    }
 }
 
 /// `slice_configured`, sharing the cut through `cut` as `plan_sharing` does.

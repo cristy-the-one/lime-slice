@@ -28,14 +28,6 @@ fn cube_request(preview: bool) -> SliceRequest {
     .unwrap()
 }
 
-fn finish(watch: &Watch, result: &Result<lime_slice_core::SliceResponse, String>) {
-    match result {
-        Ok(_) => watch.finish_ok(),
-        Err(err) if err == "cancelled" => watch.finish_cancel(),
-        Err(_) => watch.finish_err(),
-    }
-}
-
 fn stage_index(name: &str) -> usize {
     Stage::ALL
         .iter()
@@ -49,7 +41,7 @@ fn a_watched_slice_reports_stages_in_order_and_matches_an_unwatched_one() {
     let plain = slice_request(&req, Job::default()).unwrap();
     let watch = Watch::new();
     let watched = slice_request_watched(&req, Job::default(), &watch);
-    finish(&watch, &watched);
+    watch.finish(Status::of(&watched));
     let watched = watched.unwrap();
     assert_eq!(watched.gcode, plain.gcode);
 
@@ -101,7 +93,7 @@ fn cancelling_at_each_stage_stops_there_and_a_rerun_matches() {
         let result = slice_request_watched(&req, Job::default(), &watch);
         let ms = started.elapsed().as_secs_f64() * 1000.0;
         assert_eq!(result.unwrap_err(), "cancelled");
-        finish(&watch, &Err("cancelled".into()));
+        watch.finish(Status::Cancelled);
         assert_eq!(watch.snapshot().status, Status::Cancelled);
         let seen: Vec<_> = watch
             .events()
@@ -127,7 +119,7 @@ fn cancelling_at_each_stage_stops_there_and_a_rerun_matches() {
 
     let watch = Watch::new();
     let again = slice_request_watched(&req, Job::default(), &watch).unwrap();
-    watch.finish_ok();
+    watch.finish(Status::Done);
     assert_eq!(again.gcode, plain.gcode);
 }
 
@@ -148,7 +140,7 @@ fn a_cancelled_slice_is_not_cached_and_the_next_one_is_the_full_result() {
     let watch = Watch::cancel_on(Stage::Part);
     let err = slice_payload_watched(&payload, Some(&cache), Job::default(), &watch, |g| g.text());
     assert_eq!(err, Err("cancelled".to_string()));
-    watch.finish_cancel();
+    watch.finish(Status::Cancelled);
     cache.flush();
     let files: Vec<_> = fs::read_dir(&dir).map_or(Vec::new(), |dir| dir.collect());
     assert!(files.is_empty(), "a cancelled slice left {}", files.len());

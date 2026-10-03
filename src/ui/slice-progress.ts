@@ -15,9 +15,9 @@ export function progressFromEvent(fraction: number, elapsedMs: number): SlicePro
 }
 
 /**
- * MOCK: the in-process invoke path has no job stream.
+ * MOCK: busy work with no progress stream, such as the blend comparison.
  * Hold indeterminate briefly, then ease toward 90% of a typical slice.
- * HTTP slices follow `/api/jobs` and do not call this.
+ * Slices report their own fraction and do not call this.
  */
 export const MOCK_PROGRESS_TYPICAL_MS = 12_000;
 export const MOCK_PROGRESS_HOLD_MS = 400;
@@ -40,9 +40,9 @@ export function formatProgress(sample: SliceProgress, stage = ""): string {
 }
 
 /**
- * A reported fraction wins. `live` is an HTTP job or the synchronous slice fallback:
- * fraction 0 stays indeterminate instead of the mock curve. The invoke path leaves
- * `live` false, so `mockSliceProgress` still fills in until a Tauri event arrives.
+ * A reported fraction wins. `live` is a slice: an HTTP job, the synchronous slice
+ * fallback, or the desktop `slice-progress` event. Fraction 0 then stays
+ * indeterminate instead of the mock curve.
  */
 export function currentSliceProgress(reported: number, elapsedMs: number, live = false): SliceProgress {
   if (live || reported > 0) return progressFromEvent(reported, elapsedMs);

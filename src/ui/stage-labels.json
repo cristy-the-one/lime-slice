@@ -1,0 +1,9 @@
+{
+  "load": "Loading mesh",
+  "cut": "Slicing layers",
+  "part": "Walls and infill",
+  "travel": "Travel",
+  "supports": "Supports",
+  "assemble": "Assembling",
+  "emit": "Writing G-code"
+}
