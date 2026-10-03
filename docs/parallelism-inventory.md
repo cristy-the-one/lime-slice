@@ -136,14 +136,14 @@ Dragon STL load + bed settle: **0.7 ms**. `ZIndex::build` (weld + Z buckets): **
 
 Still in the tree, not on the UI path.
 
-`slice_configured` plans and emits again with `BlendMode::Single { strategy: Speed }` when `settings.baseline` is true, then drops the G-code (`_baseline_gcode`). `SliceSettings::default()` sets `baseline: true`. The CLI `slice` command fills settings with `..Default::default()`, and `bench` uses `SliceSettings::default()` directly. `core_ms` does **not** include it. Wall clock does.
+`slice_configured` plans and emits again with `BlendMode::Single { strategy: Speed }` when `settings.baseline` is true, then drops the G-code (`_baseline_gcode`). `SliceSettings::default()` sets `baseline: true`. The CLI `slice` command passes `--baseline` (default false, so it skips the second slice unless asked), and `bench` uses `SliceSettings::default()` directly. `core_ms` does **not** include it. Wall clock does.
 
 | | Wall | `core_ms` | Second slice |
 | --- | ---: | ---: | ---: |
 | Cube speed | 26 ms | 12 ms | 14 ms |
 | Hull speed | 204 ms | 98 ms | 106 ms |
 
-The UI sends `baseline: false` (`src/main.ts`). Serve honors that flag. Do not parallelize the duplicate. Gate the default, or the bench keeps paying a full speed slice that the printed “slice ms” hides.
+The UI sends `baseline: false` (`src/main.ts`). Serve honors that flag. Do not parallelize the duplicate. `slice` now gates it with `--baseline`. Gate the default, or the bench keeps paying a full speed slice that the printed “slice ms” hides.
 
 ### Infill per island, gyroid nesting
 
@@ -189,7 +189,7 @@ Dragon’s 28 loops are not 28 equal islands of work. The hull has one loop. Per
 | Mesh STL / index build | Triangle | Dragon load 0.7 ms, index 4 ms | Serial | Weld map | Under 5 ms |
 | `preview_of` + JSON | Layer | 10 ms + 26–33 ms | Serial | Kind dictionary while streaming | Tens of ms. Not the bead mesh |
 | Bead extrusion | Segment, per layer | Synthetic **2.3 s** at hull-toughness point count | One worker, off the main thread | Kind-slot ids | Up to ~1 s off the time-to-3D, if the real worker matches the synthetic loop |
-| Second baseline slice | Whole extra speed plan + G-code | Hull speed **+106 ms** wall, **0** in `core_ms` | Serial, UI off | None: it is thrown away | Delete or stop defaulting it on. Do not parallelize |
+| Second baseline slice | Whole extra speed plan + G-code | Hull speed **+106 ms** wall, **0** in `core_ms` | Serial, UI off | None: it is thrown away | Delete or stop defaulting it on (`slice` no longer does). Do not parallelize |
 | `compare_estimates` | Whole slice × 4 | Off by default. Hull toughness would be ~4 × 3.8 s | Serial `for` | None if ordered like Pareto | Only if the flag is turned on |
 | Region low/high | Two regions per layer | Inside the region toolpath wall (hull **921 ms**) | Layers already parallel | Shared seam hint | Do not split the pair |
 
