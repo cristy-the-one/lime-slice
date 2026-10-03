@@ -31,12 +31,12 @@ test("an unreachable engine toasts Retry and a second probe connects", async ({ 
     return route.fulfill({ json: { ok: true } });
   });
   await page.goto("/");
-  const toast = page.getByRole("alert").filter({ hasText: "Slicer engine not running" });
+  const toast = page.locator("#toasts").getByRole("alert").filter({ hasText: "Slicer engine not running" });
   await expect(toast).toBeVisible();
   await expect(page.locator("#engineLink")).toHaveText("Engine unreachable");
   await toast.getByRole("button", { name: "Retry" }).click();
   await expect(page.locator("#engineLink")).toHaveText("Engine connected");
-  await expect(page.getByRole("alert").filter({ hasText: "Slicer engine not running" })).toHaveCount(0);
+  await expect(page.locator("#toasts").getByRole("alert").filter({ hasText: "Slicer engine not running" })).toHaveCount(0);
 });
 
 test("a failed slice toasts Retry and the next attempt can export", async ({ page }) => {
@@ -50,7 +50,7 @@ test("a failed slice toasts Retry and the next attempt can export", async ({ pag
   });
   await openCube(page);
   await page.locator("#slice").click();
-  const toast = page.getByRole("alert").filter({ hasText: "planner broke" });
+  const toast = page.locator("#toasts").getByRole("alert").filter({ hasText: "planner broke" });
   await expect(toast).toBeVisible();
   await expect(page.locator("#export")).toBeDisabled();
   await toast.getByRole("button", { name: "Retry" }).click();
@@ -68,7 +68,7 @@ test("a bad mesh and a bad project toast Retry that reopens the file picker", as
     mimeType: "model/stl",
     buffer: Buffer.from("this is not an stl"),
   });
-  const mesh = page.getByRole("alert").filter({ hasText: "Could not read bad.stl." });
+  const mesh = page.locator("#toasts").getByRole("alert").filter({ hasText: "Could not read bad.stl." });
   await expect(mesh).toBeVisible();
   const meshPicker = page.waitForEvent("filechooser");
   await mesh.getByRole("button", { name: "Retry" }).click();
@@ -79,7 +79,7 @@ test("a bad mesh and a bad project toast Retry that reopens the file picker", as
     mimeType: "application/json",
     buffer: Buffer.from("{not json"),
   });
-  const project = page.getByRole("alert").filter({ hasText: "This file is not a Lime Slice project." });
+  const project = page.locator("#toasts").getByRole("alert").filter({ hasText: "This file is not a Lime Slice project." });
   await expect(project).toBeVisible();
   const projectPicker = page.waitForEvent("filechooser");
   await project.getByRole("button", { name: "Retry" }).click();
