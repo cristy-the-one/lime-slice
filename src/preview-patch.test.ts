@@ -47,12 +47,12 @@ eq("a layer the holder lacks is refused", patchLayers(held, { ...patch, layers: 
 
 const bounds = { min: [0, 0, 0], max: [20, 10, 2] };
 const old = buildWirePreview({ layers: held, ...bounds });
-const fresh = buildWirePreview({ layers: patch.changed, ...bounds, kinds: old.kinds });
-const spliced = patchGeometry(old, held, patch, fresh);
+const changed = new Set(patch.changed.map((l) => l.index));
+const fresh = buildWirePreview({ layers: merged.filter((l) => changed.has(l.index)), ...bounds, kinds: old.kinds });
+const spliced = patchGeometry(old, patch, fresh);
 const rebuilt = buildWirePreview({ layers: merged, ...bounds, kinds: spliced.kinds });
-const arrays = (g: PreviewGeometry) => [g.ribbon, g.ribbonInfo, g.face, g.faceInfo, g.travel, g.travelInfo].map((a) => Array.from(a));
-eq("spliced ranges equal a full build", spliced.ranges, rebuilt.ranges);
-eq("spliced buffers equal a full build", arrays(spliced), arrays(rebuilt));
+const arrays = (g: PreviewGeometry) => g.chunks.map((c) => [c.indices, ...[c.beads, c.travel].flatMap((r) => [r.at, r.xyz, r.style].map((a) => Array.from(a)))]);
+eq("spliced points equal a full build", arrays(spliced), arrays(rebuilt));
 check("the splice kept every shown kind slot", old.kinds.every((k, i) => spliced.kinds[i] === k));
 
 if (failed) {

@@ -7,7 +7,7 @@ import type { ColorMode } from "../colors";
 import type { PathColumns } from "../preview-wire";
 import type { PreviewPatch } from "../preview-patch";
 import type { Vec3 } from "../section-plane";
-import type { RibbonBuffers } from "../view3d";
+import type { PreviewGeometry } from "../preview-geom";
 import type { CoverageGap, EditOutcome, SupportSkeleton } from "../support-edits";
 import type { EditEntry } from "../support-edit-list";
 
@@ -262,7 +262,7 @@ export const session = {
   projectRestoring: false,
   playTimer: 0,
   drag2d: false,
-  geomReady: null as { id: number; data: Omit<RibbonBuffers, "span" | "midZ" | "centerX" | "centerY"> } | null,
+  geomReady: null as { id: number; geom: PreviewGeometry } | null,
 };
 
 /** Recipes finished this session. A configured SliceCache stores each one. */

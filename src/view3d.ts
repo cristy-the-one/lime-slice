@@ -5,7 +5,7 @@ import { featureColor, SPEED_RAMP, SPEED_RANGE_MM_S, WEIGHT_RAMP, type ColorMode
 import { buildCutPlane, disposeTree, previewFrame, splitDragAt } from "./cut-plane";
 import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep } from "./gizmo-math";
 import { clampSplit, roundSplit, type AxisBounds } from "./split-at";
-import { fillHiddenKindMask, MARGIN_SHADE, MAX_KINDS, meshCenter, scenePoint } from "./preview-geom";
+import { fillHiddenKindMask, INNER_HALF_SCALE, KIND_SHIFT, MARGIN_SHADE, MAX_KINDS, meshCenter, scenePoint, STYLE_WORDS, WEIGHT_STEPS, type PointRun, type PreviewChunk, type PreviewGeometry } from "./preview-geom";
 import { aimSection, anchor, clampOffset, normalize, sectionReach, threeClip, type SectionSpec, type Vec3 } from "./section-plane";
 import { hexToThree, themeColors, type ThemeColors } from "./theme";
 import { poseAffine, type PlacedPart } from "./mesh-place";
@@ -13,24 +13,7 @@ import type { CoverageGap } from "./support-edits";
 import { replyFrameRay } from "./bed-offset";
 import type { Ray } from "./support-pick";
 
-export interface LayerRange {
-  ribbonStart: number;
-  ribbonCount: number;
-  faceStart: number;
-  faceCount: number;
-  travelStart: number;
-  travelCount: number;
-}
-
-export interface RibbonBuffers {
-  ranges: LayerRange[];
-  kinds: string[];
-  ribbonPos: Float32Array;
-  ribbonInfo: Float32Array;
-  facePos: Float32Array;
-  faceInfo: Float32Array;
-  travelPos: Float32Array;
-  travelInfo: Float32Array;
+export interface PreviewBuffers extends PreviewGeometry {
   span: number;
   midZ: number;
   centerX: number;
@@ -63,7 +46,7 @@ export interface SliceView3d {
   setModel(min: number[], max: number[]): void;
   /** Rebuilds the ghost only for another `canonical` array; a pose change moves it. */
   setGhost(part: PlacedPart | null): void;
-  setBuffers(buffers: RibbonBuffers | null): void;
+  setBuffers(buffers: PreviewBuffers | null): void;
   setBed(x: number, y: number, z: number): void;
   setRange(low: number, high: number): void;
   setShowTravel(show: boolean): void;
@@ -191,15 +174,12 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   previewShift.add(sectionRig.root);
   scene.add(sectionRig.gizmo);
 
-  let ribbon: THREE.Mesh | null = null;
   let ghost: THREE.Mesh | null = null;
   let ghostSig = "";
   let ghostSource: Float32Array | null = null;
   const ghostMat = new THREE.MeshBasicMaterial({ color: hexToThree(colors.mesh), clippingPlanes: clipPlanes });
   attachSectionClip(ghostMat, sectionPlane);
-  let face: THREE.Mesh | null = null;
-  let travelLines: THREE.LineSegments | null = null;
-  let ranges: LayerRange[] = [];
+  let chunks: ChunkMeshes[] = [];
   /** Frame key of the paths the camera was last aimed at. */
   let framed = "";
   let model: { min: number[]; max: number[] } | null = null;
@@ -214,6 +194,14 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     mode: { value: 0 },
     sectionPlane,
   };
+  const marginMat = pathMaterial(pathUniforms, MARGIN_SHADE, 1, { side: THREE.DoubleSide }, clipPlanes);
+  const faceMat = pathMaterial(pathUniforms, 1, 1, {
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  }, clipPlanes);
+  const travelMat = pathMaterial(pathUniforms, 1, 0.7, { transparent: true }, clipPlanes);
   let planeSpec: { axis: "x" | "y"; at: number } | null = null;
   let planeCb: ((at: number) => void) | null = null;
   let section: SectionSpec | null = null;
@@ -257,15 +245,11 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   }
 
   function applyFocus() {
-    if (ranges.length > 0 && ribbon && face && travelLines) {
-      const lo = Math.max(0, Math.min(low, ranges.length - 1));
-      const hi = Math.max(lo, Math.min(high, ranges.length - 1));
-      const first = ranges[lo];
-      const last = ranges[hi];
-      ribbon.geometry.setDrawRange(first.ribbonStart, last.ribbonStart + last.ribbonCount - first.ribbonStart);
-      face.geometry.setDrawRange(first.faceStart, last.faceStart + last.faceCount - first.faceStart);
-      travelLines.geometry.setDrawRange(first.travelStart, last.travelStart + last.travelCount - first.travelStart);
-      travelLines.visible = showTravel;
+    for (const c of chunks) {
+      const lo = Math.max(low, c.first) - c.first;
+      const hi = Math.min(high, c.first + c.chunk.indices.length - 1) - c.first;
+      showLayers(c.beads, c.chunk.beads, lo, hi);
+      showLayers(c.travel, c.chunk.travel, showTravel ? lo : 1, showTravel ? hi : 0);
     }
     placePlane();
   }
@@ -576,25 +560,13 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   }
 
   function dropBuffers() {
-    if (ribbon) {
-      root.remove(ribbon);
-      ribbon.geometry.dispose();
-      (ribbon.material as THREE.Material).dispose();
-      ribbon = null;
+    for (const c of chunks) {
+      for (const mesh of [...c.beads.meshes, ...c.travel.meshes]) {
+        root.remove(mesh);
+        mesh.geometry.dispose();
+      }
     }
-    if (face) {
-      root.remove(face);
-      face.geometry.dispose();
-      (face.material as THREE.Material).dispose();
-      face = null;
-    }
-    if (travelLines) {
-      root.remove(travelLines);
-      travelLines.geometry.dispose();
-      (travelLines.material as THREE.Material).dispose();
-      travelLines = null;
-    }
-    ranges = [];
+    chunks = [];
   }
 
   return {
@@ -607,38 +579,22 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     setBuffers(buffers) {
       requestRender();
       dropBuffers();
-      if (!buffers || buffers.ranges.length === 0) return;
-      ranges = buffers.ranges;
+      if (!buffers || buffers.chunks.length === 0) return;
       origin = { cx: buffers.centerX, cy: buffers.centerY };
       kinds = buffers.kinds;
       const palette = pathUniforms.palette.value;
       kinds.forEach((kind, i) => palette.set(linearRgb(featureColor(kind)), i * 3));
       applyHidden();
-      ribbon = new THREE.Mesh(
-        pathGeometry(buffers.ribbonPos, buffers.ribbonInfo),
-        pathMaterial(pathUniforms, MARGIN_SHADE, 1, { side: THREE.DoubleSide }, clipPlanes),
-      );
-      face = new THREE.Mesh(
-        pathGeometry(buffers.facePos, buffers.faceInfo),
-        pathMaterial(pathUniforms, 1, 1, {
-          side: THREE.DoubleSide,
-          polygonOffset: true,
-          polygonOffsetFactor: -2,
-          polygonOffsetUnits: -2,
-        }, clipPlanes),
-      );
-      travelLines = new THREE.LineSegments(
-        pathGeometry(buffers.travelPos, buffers.travelInfo),
-        pathMaterial(pathUniforms, 1, 0.7, { transparent: true }, clipPlanes),
-      );
-      // The renderer culls and depth-sorts by each geometry's bounding sphere
-      // and would compute it over every vertex, 1.8 s on the rear cover's
-      // preview. A sphere around the print's bounds holds every path.
+      // The renderer culls by each geometry's bounding sphere and cannot compute
+      // one for instanced points. A sphere around the print's bounds holds every path.
       const sphere = new THREE.Sphere(new THREE.Vector3(0, buffers.midZ, 0), buffers.span + 10);
-      for (const mesh of [ribbon, face, travelLines]) mesh.geometry.boundingSphere = sphere.clone();
-      root.add(ribbon);
-      root.add(face);
-      root.add(travelLines);
+      let first = 0;
+      for (const chunk of buffers.chunks) {
+        const meshes = chunkMeshes(chunk, first, sphere, marginMat, faceMat, travelMat);
+        for (const mesh of [...meshes.beads.meshes, ...meshes.travel.meshes]) root.add(mesh);
+        chunks.push(meshes);
+        first += chunk.indices.length;
+      }
       const size = placeBed(buffers.span, buffers.centerX, buffers.centerY);
       if (buffers.frame !== framed) {
         framed = buffers.frame;
@@ -782,7 +738,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       const same = !!model && model.min.every((v, i) => v === next.min[i]) && model.max.every((v, i) => v === next.max[i]);
       model = next;
       origin = meshCenter(min, max);
-      if (!same && ranges.length === 0) {
+      if (!same && chunks.length === 0) {
         const span = Math.max(next.max[0] - next.min[0], next.max[1] - next.min[1], next.max[2] - next.min[2], 1);
         const midZ = (next.min[2] + next.max[2]) / 2;
         placeBed(span, origin.cx, origin.cy);
@@ -804,11 +760,83 @@ function asBounds(min: number[], max: number[]): AxisBounds {
   };
 }
 
-function pathGeometry(pos: Float32Array, info: Float32Array) {
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-  geometry.setAttribute("info", new THREE.BufferAttribute(info, 3));
+/** One chunk's draws: margin box and bright face share the bead points; travel lines have their own. */
+interface ChunkMeshes {
+  chunk: PreviewChunk;
+  /** Position of the chunk's first layer in the whole preview. */
+  first: number;
+  beads: PointDraw;
+  travel: PointDraw;
+}
+
+/** Meshes drawing one point run, one instance per point. */
+interface PointDraw {
+  meshes: (THREE.Mesh | THREE.LineSegments)[];
+  xyz: THREE.InstancedInterleavedBuffer;
+  style: THREE.InstancedInterleavedBuffer;
+  /** Point the instance attributes start at. */
+  from: number;
+}
+
+/**
+ * Corner of the bead box per vertex: x picks the segment end, y the side
+ * (times half width), z the bottom (times bead height). Four sides, no caps,
+ * wound outward.
+ */
+const BOX_CORNERS = [0, 1, 0, 0, -1, 0, 1, 1, 0, 1, -1, 0, 0, 1, 1, 0, -1, 1, 1, 1, 1, 1, -1, 1];
+const BOX_INDEX = [1, 3, 2, 1, 2, 0, 5, 6, 7, 5, 4, 6, 0, 2, 6, 0, 6, 4, 1, 7, 3, 1, 5, 7];
+const FACE_CORNERS = [0, INNER_HALF_SCALE, 0, 0, -INNER_HALF_SCALE, 0, 1, INNER_HALF_SCALE, 0, 1, -INNER_HALF_SCALE, 0];
+const FACE_INDEX = [1, 3, 2, 1, 2, 0];
+const LINE_CORNERS = [0, 0, 0, 1, 0, 0];
+
+function chunkMeshes(chunk: PreviewChunk, first: number, sphere: THREE.Sphere, margin: THREE.Material, face: THREE.Material, travel: THREE.Material): ChunkMeshes {
+  const beads = pointDraw(chunk.beads, [
+    new THREE.Mesh(instanced(BOX_CORNERS, BOX_INDEX, sphere), margin),
+    new THREE.Mesh(instanced(FACE_CORNERS, FACE_INDEX, sphere), face),
+  ]);
+  const lines = pointDraw(chunk.travel, [new THREE.LineSegments(instanced(LINE_CORNERS, null, sphere), travel)]);
+  return { chunk, first, beads, travel: lines };
+}
+
+function pointDraw(run: PointRun, meshes: (THREE.Mesh | THREE.LineSegments)[]): PointDraw {
+  return {
+    meshes,
+    xyz: new THREE.InstancedInterleavedBuffer(run.xyz, 3),
+    style: new THREE.InstancedInterleavedBuffer(run.style, STYLE_WORDS),
+    from: -1,
+  };
+}
+
+function instanced(corners: number[], index: number[] | null, sphere: THREE.Sphere) {
+  const geometry = new THREE.InstancedBufferGeometry();
+  geometry.setAttribute("corner", new THREE.Float32BufferAttribute(corners, 3));
+  if (index) geometry.setIndex(index);
+  else geometry.setDrawRange(0, corners.length / 3);
+  geometry.boundingSphere = sphere.clone();
+  geometry.instanceCount = 0;
   return geometry;
+}
+
+/**
+ * Draws layers `lo..hi` of the chunk, none when `lo > hi`. Instance `i` is the
+ * segment from point `i` to point `i + 1`, so the attributes start at the
+ * layers' first point. A layer's last point ends a path: no instance for it.
+ */
+function showLayers(draw: PointDraw, run: PointRun, lo: number, hi: number) {
+  const count = lo <= hi ? run.at[hi + 1] - run.at[lo] - 1 : 0;
+  for (const mesh of draw.meshes) {
+    mesh.visible = count > 0;
+    (mesh.geometry as THREE.InstancedBufferGeometry).instanceCount = Math.max(0, count);
+  }
+  const from = run.at[lo];
+  if (count <= 0 || from === draw.from) return;
+  draw.from = from;
+  for (const mesh of draw.meshes) {
+    const geometry = mesh.geometry;
+    geometry.setAttribute("segA", new THREE.InterleavedBufferAttribute(draw.xyz, 3, from * 3));
+    geometry.setAttribute("segB", new THREE.InterleavedBufferAttribute(draw.xyz, 3, (from + 1) * 3));
+    geometry.setAttribute("segStyle", new THREE.InterleavedBufferAttribute(draw.style, STYLE_WORDS, from * STYLE_WORDS));
+  }
 }
 
 /** The legend's sRGB hex as the linear triple the shader works in, so both show the same color. */
@@ -817,13 +845,18 @@ const rgb = (hex: string) => `vec3(${linearRgb(hex).map((v) => v.toFixed(4)).joi
 const [SPEED_LO, SPEED_HI] = SPEED_RANGE_MM_S;
 
 /**
- * Colors each vertex from its (kind slot, blend weight, speed) triple; hidden kinds collapse off-screen.
+ * Expands one segment per instance: from `segA` to `segB`, sideways by the
+ * half width and down by the bead height in `segStyle`, colored by its kind
+ * slot, blend weight, and speed. Hidden kinds and path ends collapse off-screen.
  * `sectionPlane` is scene space (xyz = normal, w = constant). Fragments on the negative side are dropped.
  * The Three.js clipping chunks sample the same plane; a ShaderMaterial does not discard unless it does this itself.
  * `mvPosition` is the name those chunks expect.
  */
 const PATH_VERTEX = `
-attribute vec3 info;
+attribute vec3 corner;
+attribute vec3 segA;
+attribute vec3 segB;
+attribute vec4 segStyle;
 uniform vec3 palette[${MAX_KINDS}];
 uniform float hiddenKinds[${MAX_KINDS}];
 uniform int mode;
@@ -833,18 +866,27 @@ varying vec3 vColor;
 varying float vSectionDist;
 #include <clipping_planes_pars_vertex>
 void main() {
-  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-  #include <clipping_planes_vertex>
-  vec4 worldPos = modelMatrix * vec4(position, 1.0);
-  vSectionDist = dot(worldPos.xyz, sectionPlane.xyz) + sectionPlane.w;
-  int kind = int(info.x + 0.5);
-  if (hiddenKinds[kind] > 0.5) {
+  float slot = floor(segStyle.x / ${KIND_SHIFT.toFixed(1)});
+  int kind = int(slot);
+  if (segStyle.w < 0.5 || hiddenKinds[kind] > 0.5) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     return;
   }
+  vec2 run = segB.xz - segA.xz;
+  float len = length(run);
+  vec2 side = len > 0.0 ? vec2(run.y, -run.x) / len : vec2(0.0);
+  vec3 point = mix(segA, segB, corner.x);
+  point.xz += side * (segStyle.z * 0.001 * corner.y);
+  point.y -= segStyle.w * 0.001 * corner.z;
+  vec4 mvPosition = modelViewMatrix * vec4(point, 1.0);
+  #include <clipping_planes_vertex>
+  vec4 worldPos = modelMatrix * vec4(point, 1.0);
+  vSectionDist = dot(worldPos.xyz, sectionPlane.xyz) + sectionPlane.w;
+  float weight = (segStyle.x - slot * ${KIND_SHIFT.toFixed(1)}) / ${WEIGHT_STEPS.toFixed(1)};
+  float speed = segStyle.y * 0.1;
   vec3 color = palette[kind];
-  if (mode == 1) color = mix(${rgb(WEIGHT_RAMP[0])}, ${rgb(WEIGHT_RAMP[1])}, info.y);
-  if (mode == 2) color = mix(${rgb(SPEED_RAMP[0])}, ${rgb(SPEED_RAMP[1])}, clamp((info.z - ${SPEED_LO.toFixed(1)}) / ${(SPEED_HI - SPEED_LO).toFixed(1)}, 0.0, 1.0));
+  if (mode == 1) color = mix(${rgb(WEIGHT_RAMP[0])}, ${rgb(WEIGHT_RAMP[1])}, weight);
+  if (mode == 2) color = mix(${rgb(SPEED_RAMP[0])}, ${rgb(SPEED_RAMP[1])}, clamp((speed - ${SPEED_LO.toFixed(1)}) / ${(SPEED_HI - SPEED_LO).toFixed(1)}, 0.0, 1.0));
   vColor = color * shade;
   gl_Position = projectionMatrix * mvPosition;
 }`;
