@@ -44,6 +44,11 @@ export function stale() {
   return !!state.result && state.slicedHash !== settingsHash();
 }
 
+/** Stale and waiting on the user. A quiet refresh hides the warning while it runs; export still waits for its reply. */
+export function staleWarning() {
+  return stale() && !fx.quietRefreshing();
+}
+
 export function settingsHash() {
   const shift = state.offset;
   const mesh = state.mesh ? `${state.mesh.name}:${state.mesh.bytes.byteLength}:${state.partScale}:${state.centered}:${shift.x.toFixed(3)},${shift.y.toFixed(3)},${shift.z.toFixed(3)}:${state.orient.join(",")}` : "";
@@ -178,14 +183,15 @@ export function renderChrome() {
     : result
       ? `${(result.estimate?.seconds ?? 0) / 60 < 1 ? `${(result.estimate?.seconds ?? 0).toFixed(0)} s` : `${((result.estimate?.seconds ?? 0) / 60).toFixed(1)} min`} · ${(result.estimate?.filamentG ?? 0).toFixed(2)} g`
       : "No slice yet";
-  document.querySelector("#stage")!.classList.toggle("stale", isStale);
-  paintBanner(isStale);
+  const warn = staleWarning();
+  document.querySelector("#stage")!.classList.toggle("stale", warn);
+  paintBanner(warn);
   fx.paintLegend();
   fx.paintSlider();
   fx.paintSpark();
   fx.paintPlayback();
   fx.paintGcode();
-  paintStatus(isStale);
+  paintStatus(warn);
   paintSettingMarks(currentPreset());
   syncEmptyState(!!state.mesh);
   session.supportUi?.refresh();
@@ -898,11 +904,12 @@ export function markStale() {
   if (sliceBtn) fx.paintSliceButton(sliceBtn);
   if (forceBtn) fx.paintForceButton(forceBtn);
   if (exp) exp.disabled = !state.result || isStale || state.busy;
-  document.querySelector("#stage")?.classList.toggle("stale", isStale);
-  paintBanner(isStale);
+  const warn = staleWarning();
+  document.querySelector("#stage")?.classList.toggle("stale", warn);
+  paintBanner(warn);
   paintPresetDiff();
   paintSettingMarks(currentPreset());
-  paintStatus(isStale);
+  paintStatus(warn);
   fx.scheduleAuto();
   fx.draw();
 }
@@ -925,6 +932,6 @@ export async function probe() {
   } catch {
     markEngineDown(engineDownMessage(base));
   }
-  paintBanner(stale());
+  paintBanner(staleWarning());
 }
-Object.assign(fx, { apiBase, apiToken, card, stale, settingsHash, blend, currentWeight, renderChrome, markEngineDown, markEngineUp, paintEngineLink, paintStatus, markBusy, busyText, bannerLine, toastTransient, takeTransient, paintBanner, group, num, check, select, cardBtn, blendFields, paramLine, paramTable, layerReadout, triangleLine, triangleMeta, formatMs, stageHtml, estimateHtml, isStepName, needsEngine, objectList, profileFields, paretoHtml, formatTime, chips, pct, signed, currentPreset, presetHtml, applyPreset, paintPresetDiff, applyFilter, onBlend, onSettings, touch, markStale, escapeHtml, probe });
+Object.assign(fx, { apiBase, apiToken, card, stale, settingsHash, blend, currentWeight, renderChrome, markEngineDown, markEngineUp, paintEngineLink, paintStatus, markBusy, busyText, bannerLine, toastTransient, takeTransient, paintBanner, group, num, check, select, cardBtn, blendFields, paramLine, paramTable, layerReadout, triangleLine, triangleMeta, formatMs, stageHtml, estimateHtml, isStepName, needsEngine, objectList, profileFields, paretoHtml, formatTime, chips, pct, signed, currentPreset, presetHtml, applyPreset, paintPresetDiff, applyFilter, onBlend, onSettings, touch, markStale, staleWarning, escapeHtml, probe });

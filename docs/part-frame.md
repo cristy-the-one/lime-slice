@@ -59,6 +59,8 @@ The UI draws the preview group, the support overlay, the section rig, and the re
 
 `previewToken` does not include the offset. After an X/Y-only change, a request that names the previous token gets a `previewPatch` with no changed layers and the new `offset`. Only the G-code emit runs again.
 
+The app sends that request by itself 200 ms after the move ends, whether auto-slice is on or off, and does the same for a recipe the engine already stores (`quietRefresh` in `src/slice-action.ts`). Export stays off until the reply lands. A result loaded from the disk cache is the exception for moves: a cache hit does not leave the engine the kept plan that the emit reuses, so the next move would plan in full and waits for Slice.
+
 ## Where the engine reads absolute X/Y
 
 Each stage below was checked for a dependence on where the part sits on the bed.
