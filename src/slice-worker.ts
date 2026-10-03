@@ -47,8 +47,10 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
  * so the main thread never has to clone them a second time. A partial
  * preview goes to the main thread only, which holds the layers it patches.
  */
-function deliver(id: number, body: { layers?: unknown; mesh?: { min: number[]; max: number[] }; previewPatch?: unknown }) {
-  if (body.layers && body.mesh && !body.previewPatch) geomPort?.postMessage({ id, layers: body.layers, min: body.mesh.min, max: body.mesh.max });
+function deliver(id: number, body: { layers?: unknown; mesh?: { min: number[]; max: number[] }; previewPatch?: unknown; objects?: unknown[] }) {
+  if (body.layers && body.mesh && !body.previewPatch) {
+    geomPort?.postMessage({ id, layers: body.layers, min: body.mesh.min, max: body.mesh.max, objects: body.objects?.length ?? 1 });
+  }
   self.postMessage({ id, ok: true, body });
 }
 
@@ -56,8 +58,10 @@ async function run(msg: WorkerRequest) {
   const ctrl = new AbortController();
   jobs.set(msg.id, ctrl);
   try {
-    if (msg.bytes || msg.meshKey !== mesh.key) mesh = { key: msg.meshKey ?? "", b64: toBase64(new Uint8Array(msg.bytes ?? new ArrayBuffer(0))) };
-    const payload = { ...(msg.payload ?? {}), dataB64: mesh.b64 };
+    // A plate request carries each object's mesh already.
+    const plate = Array.isArray(msg.payload?.objects);
+    if (!plate && (msg.bytes || msg.meshKey !== mesh.key)) mesh = { key: msg.meshKey ?? "", b64: toBase64(new Uint8Array(msg.bytes ?? new ArrayBuffer(0))) };
+    const payload = plate ? msg.payload : { ...(msg.payload ?? {}), dataB64: mesh.b64 };
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (msg.token) headers.Authorization = `Bearer ${msg.token}`;
     const res = await fetch(`${msg.api}/api/slice`, {

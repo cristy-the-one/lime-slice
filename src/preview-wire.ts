@@ -18,6 +18,8 @@ export interface PathColumns {
   start: number[];
   xy: number[];
   z: (number | null)[];
+  /** Each path's plate object, drawn in that object's part frame. Absent when every path is object 0. */
+  object?: number[];
 }
 
 export interface PreviewPath {
@@ -30,6 +32,8 @@ export interface PreviewPath {
   effectiveSpeed: number;
   toughness: number;
   beadHeight: number;
+  /** Plate object index. Absent means 0. */
+  object?: number;
 }
 
 export function pathCount(cols: PathColumns): number {
@@ -54,6 +58,7 @@ export function decodePaths(cols: PathColumns, layerZ: number): PreviewPath[] {
       beadHeight: cols.beadHeight[i],
     };
     if (cols.z.length > 0) path.zs = cols.z.slice(a, b).map((z) => z ?? layerZ);
+    if (cols.object?.[i]) path.object = cols.object[i];
     out[i] = path;
   }
   return out;
@@ -81,5 +86,6 @@ export function encodePaths(paths: Partial<PreviewPath>[]): PathColumns {
     });
     cols.start.push(cols.xy.length / 2);
   }
+  if (paths.some((p) => p.object)) cols.object = paths.map((p) => p.object ?? 0);
   return cols;
 }

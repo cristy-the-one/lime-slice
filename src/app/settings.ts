@@ -335,9 +335,13 @@ export function paintBanner(isStale: boolean) {
   if (state.notice) bits.push(bannerLine(state.notice, "warn"));
   if (isStale) bits.push(bannerLine(staleSliceCopy(fx.currentSliceAction(false).state).banner, "warn"));
   if (state.result && !state.result.sanity.ok) bits.push(bannerLine(state.result.sanity.notes.join(" ") || "G-code checks failed"));
-  const unheld = coverageWarning(state.result?.coverage ?? []);
+  const objects = state.result?.objects;
+  const unheld = coverageWarning(objects ? objects.flatMap((o) => o.coverage) : (state.result?.coverage ?? []));
   if (unheld) bits.push(bannerLine(unheld, "warn"));
-  const floating = inAirWarning(state.result?.inAir);
+  const air = objects?.map((o) => o.inAir).filter((a) => !!a);
+  const floating = inAirWarning(
+    air?.length ? { islands: air.reduce((n, a) => n + a!.islands, 0), overhangs: air.reduce((n, a) => n + a!.overhangs, 0) } : state.result?.inAir,
+  );
   if (floating) bits.push(bannerLine(floating, "warn"));
   if (state.busy) {
     const sample = sliceSample();
@@ -550,7 +554,6 @@ export function objectList() {
       <label class="field setting" data-label="position y" data-keywords="placement move bed offset">Y mm<input id="placeY" type="number" step="1" value="${cy}" aria-label="Position Y" /></label>
     </div>
     <div class="meta" id="placeReadout">X ${cx} · Y ${cy} · bed Z ${z0} mm</div>
-    ${many ? `<div class="meta" id="plateMock">Mock: more than one object is sent as one concatenated STL. The engine does not see objects.</div>` : ""}
     <div class="meta">Gizmo sits at the left and edits the selected object. Drag a ring to rotate. Drag the part or an arrow to move. Shift snaps 15° or 1 mm.</div>
   `;
 }

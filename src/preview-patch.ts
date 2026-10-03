@@ -24,12 +24,16 @@ export interface PreviewPatch {
   base: string;
   /** `index` of every layer of the patched preview, in order. A layer not in `changed` is the base's. */
   layers: number[];
+  /** Layers whose paths changed. A layer whose time alone moved is not one of them. */
   changed: PatchLayer[];
+  /** Every listed layer's estimator seconds, in the order of `layers`. */
+  seconds?: number[];
 }
 
 interface HeldLayer {
   index: number;
   paths: PathColumns;
+  seconds?: number;
 }
 
 /**
@@ -40,12 +44,13 @@ export function patchLayers<L extends HeldLayer>(held: readonly L[], patch: Prev
   const byIndex = new Map(held.map((l) => [l.index, l]));
   const changed = new Map(patch.changed.map((l) => [l.index, l]));
   const out: L[] = [];
-  for (const index of patch.layers) {
+  for (const [k, index] of patch.layers.entries()) {
     const fresh = changed.get(index);
     const was = byIndex.get(index);
     if (!fresh) {
       if (!was) return null;
-      out.push(was);
+      const seconds = patch.seconds?.[k];
+      out.push(seconds === undefined || seconds === was.seconds ? was : { ...was, seconds });
       continue;
     }
     const paths = mergeColumns(was?.paths ?? null, fresh.paths, fresh.order);
@@ -110,6 +115,8 @@ function mergeColumns(was: PathColumns | null, fresh: PathColumns, order: readon
     out.effectiveSpeed[p] = cols.effectiveSpeed[i];
     out.toughness[p] = cols.toughness[i];
     out.beadHeight[p] = cols.beadHeight[i];
+    const object = cols.object?.[i] ?? 0;
+    if (object) (out.object ??= new Array<number>(n).fill(0))[p] = object;
     const a = cols.start[i];
     const b = cols.start[i + 1];
     const hasZ = cols.z.length > 0;
@@ -136,29 +143,32 @@ interface LayerSource {
  * its GPU buffers stay; any other chunk copies each layer from where it is.
  */
 export function patchGeometry(old: PreviewGeometry, patch: PreviewPatch, fresh: PreviewGeometry): PreviewGeometry {
-  const sources = new Map<number, LayerSource>();
+  const sources = new Map<string, LayerSource>();
   const index = (geom: PreviewGeometry) => {
-    for (const chunk of geom.chunks) chunk.indices.forEach((i, k) => sources.set(i, { chunk, k }));
+    for (const chunk of geom.chunks) chunk.indices.forEach((i, k) => sources.set(`${chunk.object}:${i}`, { chunk, k }));
   };
   index(old);
-  const oldChunks = new Map(old.chunks.map((chunk) => [chunkKey(chunk.indices[0]), chunk]));
+  const oldChunks = new Map(old.chunks.map((chunk) => [`${chunk.object}:${chunkKey(chunk.indices[0])}`, chunk]));
   index(fresh);
+  const objects = Math.max(1, ...[...old.chunks, ...fresh.chunks].map((c) => c.object + 1));
   const changed = new Set(patch.changed.map((l) => l.index));
   const chunks: PreviewChunk[] = [];
-  for (let i = 0; i < patch.layers.length;) {
-    const key = chunkKey(patch.layers[i]);
-    let j = i + 1;
-    while (j < patch.layers.length && chunkKey(patch.layers[j]) === key) j++;
-    const indices = patch.layers.slice(i, j);
-    const was = oldChunks.get(key);
-    const same = was && was.indices.length === indices.length && indices.every((n, k) => n === was.indices[k] && !changed.has(n));
-    chunks.push(same ? was : joinLayers(indices.map((n) => sources.get(n)!), indices));
-    i = j;
+  for (let object = 0; object < objects; object++) {
+    for (let i = 0; i < patch.layers.length;) {
+      const key = chunkKey(patch.layers[i]);
+      let j = i + 1;
+      while (j < patch.layers.length && chunkKey(patch.layers[j]) === key) j++;
+      const indices = patch.layers.slice(i, j);
+      const was = oldChunks.get(`${object}:${key}`);
+      const same = was && was.indices.length === indices.length && indices.every((n, k) => n === was.indices[k] && !changed.has(n));
+      chunks.push(same ? was : joinLayers(object, indices.map((n) => sources.get(`${object}:${n}`)!), indices));
+      i = j;
+    }
   }
   return { kinds: fresh.kinds, chunks };
 }
 
-function joinLayers(parts: LayerSource[], indices: number[]): PreviewChunk {
+function joinLayers(object: number, parts: LayerSource[], indices: number[]): PreviewChunk {
   const join = (run: (c: PreviewChunk) => PointRun): PointRun => {
     const at = new Int32Array(parts.length + 1);
     parts.forEach(({ chunk, k }, l) => {
@@ -174,5 +184,5 @@ function joinLayers(parts: LayerSource[], indices: number[]): PreviewChunk {
     });
     return out;
   };
-  return { indices, beads: join((c) => c.beads), travel: join((c) => c.travel) };
+  return { object, indices, beads: join((c) => c.beads), travel: join((c) => c.travel) };
 }

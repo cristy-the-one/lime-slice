@@ -58,6 +58,25 @@ eq("chunks group layers by index", spliced.chunks.map((c) => c.indices), [[0, 1,
 check("a chunk the patch does not touch keeps its buffers", spliced.chunks[1] === old.chunks[1]);
 check("the splice kept every shown kind slot", old.kinds.every((k, i) => spliced.kinds[i] === k));
 
+const ofB = (p: Partial<PreviewPath>): Partial<PreviewPath> => ({ ...p, object: 1 });
+const plate = [
+  layer(0, [bead("skirt", 0), bead("outer", 2), ofB(bead("skirt", 30)), ofB(bead("outer", 32))]),
+  layer(1, [bead("outer", 2), ofB(bead("support", 30)), ofB(bead("outer", 32))]),
+  layer(2, [ofB(bead("outer", 32))]),
+];
+const drawn = buildWirePreview({ layers: plate, ...bounds });
+eq("each object gets its own chunks over every layer", drawn.chunks.map((c) => [c.object, c.indices]), [[0, [0, 1, 2]], [1, [0, 1, 2]]]);
+eq("a chunk draws only its object's points", drawn.chunks.map((c) => Array.from(c.beads.at)), [[0, 6, 9, 9], [0, 6, 12, 15]]);
+const moved: PreviewPatch = { base: "p", layers: [0, 1, 2], changed: [], seconds: [4, 5, 6] };
+const relaid = patchLayers(plate, moved)!;
+eq("a move's patch keeps the paths and takes the new times", relaid.map((l) => [l.paths === plate[l.index].paths, (l as { seconds?: number }).seconds]), [[true, 4], [true, 5], [true, 6]]);
+const kept = patchGeometry(drawn, moved, buildWirePreview({ layers: [], ...bounds, kinds: drawn.kinds, objects: 2 }));
+check("a move's patch reuses every object's buffers", kept.chunks.length === 2 && kept.chunks.every((c, i) => c === drawn.chunks[i]));
+const reshaped: PreviewPatch = { base: "p", layers: [0, 1, 2], changed: [{ ...layer(1, [ofB(bead("support", 31))]), order: [0, -1, 2] }] };
+const relayered = patchLayers(plate, reshaped)!;
+const respliced = patchGeometry(drawn, reshaped, buildWirePreview({ layers: relayered.filter((l) => l.index === 1), ...bounds, kinds: drawn.kinds, objects: 2 }));
+eq("one object's changed layer rebuilds as a full build", arrays(respliced), arrays(buildWirePreview({ layers: relayered, ...bounds, kinds: respliced.kinds })));
+
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);

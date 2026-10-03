@@ -91,6 +91,15 @@ check("a rotation leaves the part frame", partFrameKey(posed([110, 110, 5], [0, 
 check("a setting leaves the part frame", partFrameKey({ ...posed([140, 95, 5]), layerHeight: 0.28 }, "mesh-a") !== home);
 check("other mesh bytes leave the part frame", partFrameKey(posed([110, 110, 5]), "mesh-b") !== home);
 eq("no pose, the part frame is the recipe", partFrameKey({ layerHeight: 0.2 }, "mesh-a"), recipeKey({ layerHeight: 0.2 }, "mesh-a"));
+const plate = (bx: number, bSettings: Record<string, unknown> = {}) => ({
+  layerHeight: 0.2,
+  objects: [
+    { id: "a", ...posed([60, 110, 5]) },
+    { id: "b", ...posed([bx, 110, 5]), settings: bSettings },
+  ],
+});
+eq("a move of any plate object keeps the part frame", partFrameKey(plate(170), "plate"), partFrameKey(plate(150), "plate"));
+check("a plate object's setting leaves the part frame", partFrameKey(plate(150, { supports: false }), "plate") !== partFrameKey(plate(150), "plate"));
 
 const before = { frame: "frame-a", recipe: "recipe-a1" };
 eq("the first reply is stored", storesReply(null, before), true);

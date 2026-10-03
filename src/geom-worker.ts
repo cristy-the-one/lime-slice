@@ -10,6 +10,8 @@ interface WireRequest {
   min: number[];
   max: number[];
   kinds?: string[];
+  /** Plate objects, each drawn in its own chunks. */
+  objects?: number;
 }
 
 /** The slice worker's port, once, then builds from the main thread for partial previews. */

@@ -1,6 +1,7 @@
 import { fx } from "./fx";
 import { state, session } from "./state";
-import { centeringShift, ID_MATRIX, parseStl, placeMesh, encodeStl, scaledCanonical, encode3mf, type PlacedPart } from "../mesh-place";
+import { centeringShift, ID_MATRIX, parseStl, placeMesh, encodeStl, scaledCanonical, encode3mf, type PlacedPart, type Placement } from "../mesh-place";
+import { fnv1aHex } from "../slice-action";
 import { needsEngine, apiBase, apiToken, markEngineDown, isStepName, renderChrome, markStale, stale, card } from "./settings";
 import { authHeaders, engineDownMessage } from "../ui/api-base";
 import { type SplitSync } from "../split-at";
@@ -10,7 +11,7 @@ import { clearEdits } from "../support-edit-list";
 import { clearEditHistory } from "./history";
 import { foreign3mfMessage, foreignSlicer3mf } from "../foreign-3mf";
 import { emptyOverrides } from "../overrides";
-import { boundEntries, concatenatedPositions, emptyPlate, oneObjectPlate, plateMockActive, resetHeldGeometry } from "../plate";
+import { boundEntries, emptyPlate, oneObjectPlate, placeObject, resetHeldGeometry, withLivePose, type PlateObject } from "../plate";
 import { syncPlateFromState } from "./plate-sync";
 
 export async function loadNamed(name: string) {
@@ -201,10 +202,6 @@ let encoded: { source: ArrayBuffer | Float32Array | null; scale: number; name: s
 
 /** The mesh as the engine takes it. Encoded once per mesh and scale, not once per slice. */
 export function meshBytes() {
-  if (plateMockActive(state.plate)) {
-    const positions = concatenatedPositions(state.plate, state.profile.bedX, state.profile.bedY);
-    if (positions) return encodeStl(positions, "plate-mock.stl");
-  }
   const source = state.sourcePos ?? state.mesh?.bytes ?? null;
   const name = state.mesh?.name ?? "part";
   if (encoded && encoded.source === source && encoded.scale === state.partScale && encoded.name === name) return encoded.bytes;
@@ -213,12 +210,72 @@ export function meshBytes() {
   return bytes;
 }
 
-/** `meshBytes` in Base64, kept with them. A plate mock is not that cache. */
+/** `meshBytes` in Base64, kept with them. */
 export function meshBase64() {
-  if (plateMockActive(state.plate)) return toBase64(new Uint8Array(meshBytes()));
   const bytes = meshBytes();
   encoded!.b64 ??= toBase64(new Uint8Array(bytes));
   return encoded!.b64;
+}
+
+/** The plate's objects, the selected one as the pose tools hold it now. */
+export function livePlate(): PlateObject[] {
+  if (!state.sourcePos || !state.mesh) return state.plate.objects;
+  return withLivePose(state.plate, {
+    fileName: state.mesh.name,
+    sourcePos: state.sourcePos,
+    orient: state.orient,
+    partScale: state.partScale,
+    centered: state.centered,
+    offset: state.offset,
+    stepTolerance: state.stepTolerance,
+    supportEdits: state.supportEdits,
+  });
+}
+
+/** One object's placement on the bed, kept until its pose or mesh changes. */
+const placed = new Map<string, { source: Float32Array; key: string; placement: Placement }>();
+export function objectPlacement(obj: PlateObject): Placement {
+  const key = JSON.stringify([obj.orient, obj.partScale, state.profile.bedX, state.profile.bedY, obj.centered, obj.offset]);
+  const held = placed.get(obj.id);
+  if (held?.source === obj.sourcePos && held.key === key) return held.placement;
+  const placement = placeObject(obj, state.profile.bedX, state.profile.bedY);
+  placed.set(obj.id, { source: obj.sourcePos, key, placement });
+  return placement;
+}
+
+/** One object's scaled, unposed mesh as the engine is sent it, with its Base64 and fingerprint once asked. */
+interface ObjectMesh {
+  source: Float32Array;
+  scale: number;
+  bytes: ArrayBuffer;
+  b64?: string;
+  finger?: string;
+}
+const objectMeshes = new Map<string, ObjectMesh>();
+function objectMesh(obj: PlateObject): ObjectMesh {
+  const held = objectMeshes.get(obj.id);
+  if (held?.source === obj.sourcePos && held.scale === obj.partScale) return held;
+  const mesh = { source: obj.sourcePos, scale: obj.partScale, bytes: encodeStl(scaledCanonical(obj.sourcePos, obj.partScale), obj.fileName) };
+  objectMeshes.set(obj.id, mesh);
+  return mesh;
+}
+
+export function objectBase64(obj: PlateObject): string {
+  const mesh = objectMesh(obj);
+  return (mesh.b64 ??= toBase64(new Uint8Array(mesh.bytes)));
+}
+
+export function objectFingerprint(obj: PlateObject): string {
+  const mesh = objectMesh(obj);
+  return (mesh.finger ??= fnv1aHex(new Uint8Array(mesh.bytes)));
+}
+
+/** A slice request with its mesh bytes on: each object's own for a plate, else the one mesh's. */
+export function withMeshData(req: Record<string, unknown>): Record<string, unknown> {
+  const objects = req.objects as { id: string }[] | undefined;
+  if (!objects) return { ...req, dataB64: meshBase64() };
+  const live = new Map(livePlate().map((obj) => [obj.id, obj]));
+  return { ...req, objects: objects.map((o) => ({ ...o, dataB64: objectBase64(live.get(o.id)!) })) };
 }
 
 export function toBase64(bytes: Uint8Array) {

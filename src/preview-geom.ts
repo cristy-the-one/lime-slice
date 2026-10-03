@@ -60,8 +60,10 @@ export interface PointRun {
   at: Int32Array;
 }
 
-/** Consecutive layers sharing one set of GPU buffers. */
+/** Consecutive layers of one plate object sharing one set of GPU buffers, in that object's part frame. */
 export interface PreviewChunk {
+  /** Plate object index. Each object is drawn under its own offset. */
+  object: number;
   /** Engine index of each layer, in order. */
   indices: number[];
   beads: PointRun;
@@ -82,18 +84,31 @@ export function chunkKey(index: number): number {
   return Math.floor(index / CHUNK_LAYERS);
 }
 
-/** `kinds` seeds the kind slots, so the result can be spliced into geometry built with that table. */
-export function buildWirePreview(msg: { layers: WireLayer[]; min: number[]; max: number[]; kinds?: readonly string[] }): PreviewGeometry {
+/** Plate objects a preview's layers draw: one more than the highest object index, at least one. */
+export function objectCount(layers: readonly WireLayer[]): number {
+  let n = 1;
+  for (const layer of layers) for (const o of layer.paths.object ?? []) n = Math.max(n, o + 1);
+  return n;
+}
+
+/**
+ * `kinds` seeds the kind slots, so the result can be spliced into geometry built with that table.
+ * `objects` is the plate's object count; every object gets a chunk for every layer range, empty or not.
+ */
+export function buildWirePreview(msg: { layers: WireLayer[]; min: number[]; max: number[]; kinds?: readonly string[]; objects?: number }): PreviewGeometry {
   const kinds = [...(msg.kinds ?? [])];
   const { cx, cy } = meshCenter(msg.min, msg.max);
   const chunks: PreviewChunk[] = [];
   const layers = msg.layers;
-  for (let i = 0; i < layers.length;) {
-    const key = chunkKey(layers[i].index);
-    let j = i + 1;
-    while (j < layers.length && chunkKey(layers[j].index) === key) j++;
-    chunks.push(buildChunk(layers.slice(i, j), kinds, cx, cy));
-    i = j;
+  const objects = Math.max(msg.objects ?? 1, objectCount(layers));
+  for (let object = 0; object < objects; object++) {
+    for (let i = 0; i < layers.length;) {
+      const key = chunkKey(layers[i].index);
+      let j = i + 1;
+      while (j < layers.length && chunkKey(layers[j].index) === key) j++;
+      chunks.push(buildChunk(layers.slice(i, j), kinds, cx, cy, object));
+      i = j;
+    }
   }
   return { kinds, chunks };
 }
@@ -104,8 +119,9 @@ function assignSlot(kinds: string[], kind: string): number {
   return i < 0 ? MAX_KINDS - 1 : i;
 }
 
-function buildChunk(layers: WireLayer[], kinds: string[], cx: number, cy: number): PreviewChunk {
+function buildChunk(layers: WireLayer[], kinds: string[], cx: number, cy: number, object: number): PreviewChunk {
   const travelSlot = layers.map((layer) => layer.paths.kinds.indexOf("travel"));
+  const mine = (cols: WireLayer["paths"], i: number) => (cols.object?.[i] ?? 0) === object;
   const beadAt = new Int32Array(layers.length + 1);
   const travelAt = new Int32Array(layers.length + 1);
   for (let l = 0; l < layers.length; l++) {
@@ -114,7 +130,7 @@ function buildChunk(layers: WireLayer[], kinds: string[], cx: number, cy: number
     let travel = 0;
     for (let i = 0; i < cols.kind.length; i++) {
       const points = cols.start[i + 1] - cols.start[i];
-      if (points < 2) continue;
+      if (points < 2 || !mine(cols, i)) continue;
       if (cols.kind[i] === travelSlot[l]) travel += points;
       else beads += points;
     }
@@ -133,7 +149,7 @@ function buildChunk(layers: WireLayer[], kinds: string[], cx: number, cy: number
     for (let i = 0; i < cols.kind.length; i++) {
       const start = cols.start[i];
       const end = cols.start[i + 1];
-      if (end - start < 2) continue;
+      if (end - start < 2 || !mine(cols, i)) continue;
       const isTravel = cols.kind[i] === travelSlot[l];
       const run = isTravel ? travel : beads;
       const at = isTravel ? t : b;
@@ -159,7 +175,7 @@ function buildChunk(layers: WireLayer[], kinds: string[], cx: number, cy: number
       else b += end - start;
     }
   }
-  return { indices: layers.map((layer) => layer.index), beads, travel };
+  return { object, indices: layers.map((layer) => layer.index), beads, travel };
 }
 
 function emptyRun(at: Int32Array): PointRun {

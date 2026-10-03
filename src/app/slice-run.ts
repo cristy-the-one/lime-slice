@@ -1,14 +1,14 @@
 import { fx } from "./fx";
 import { state, session, worker, cachedRecipes, type ParetoPoint, type SliceResponse } from "./state";
 import { fnv1aHex, partFrameKey, quietRefresh, recipeKey, type SliceAction, sliceAction, sliceBusyLabel, storesReply, FORCE_LABEL } from "../slice-action";
-import { currentPlacement, meshBase64, meshBytes, fail, isTauri } from "./files";
+import { currentPlacement, livePlate, meshBase64, meshBytes, fail, isTauri, objectFingerprint, objectPlacement, withMeshData } from "./files";
 import { adoptPatch, previewBase } from "./viewer";
 import { syncSliceDock } from "../ui/shell";
 import { blend, renderChrome, settingsHash, markBusy, paintBanner, busyText, markEngineDown, apiBase, stale, apiToken, touch } from "./settings";
 import { editRequestFields } from "../support-edit-list";
 import { replyOffset, type SlicedBed } from "../bed-offset";
 import { hasOverrides, OVERRIDES_STORED_TOAST, sliceOverrideFields } from "../overrides";
-import { identityPose, PLATE_MOCK_TOAST, plateMockActive, slicePlateFields } from "../plate";
+import { plateListed, slicePlateFields, type PlateObject, type PlateRequestObject } from "../plate";
 import { engineDownMessage, authHeaders } from "../ui/api-base";
 import { pushToast } from "../ui/toasts";
 import {
@@ -31,7 +31,7 @@ import {
 type DesktopProgress = { progress: number; message: string; stage: string; done: number; total: number; status: JobStatus };
 
 export function meshFingerprint(): string {
-  if (plateMockActive(state.plate)) return fnv1aHex(new Uint8Array(meshBytes()));
+  if (plateListed(state.plate)) return livePlate().map(objectFingerprint).join(",");
   const source = state.sourcePos ?? state.mesh?.bytes ?? null;
   if (source && source === session.fingerSource && state.partScale === session.fingerScale) return session.finger;
   session.fingerSource = source;
@@ -96,7 +96,7 @@ function quietEligible(): boolean {
   return quietRefresh({
     stale: stale(),
     cached: cachedRecipes.has(recipeKey(request, fingerprint)),
-    sameFrame: !plateMockActive(state.plate) && session.slicedFrame === partFrameKey(request, fingerprint),
+    sameFrame: session.slicedFrame === partFrameKey(request, fingerprint),
   });
 }
 
@@ -126,12 +126,24 @@ export function scheduleAuto() {
 }
 
 export function payload() {
+  // One object with no settings of its own sends today's body; any other plate sends `objects`.
+  const listed = plateListed(state.plate);
+  const objects = listed ? livePlate() : [];
+  const one = listed
+    ? {}
+    : {
+        filename: state.sourcePos ? (state.mesh!.name || "part").replace(/\.(3mf|step|stp)$/i, ".stl") : (state.mesh!.name || "part"),
+        pose: currentPlacement()?.pose,
+        ...editRequestFields(state.supportEdits, treeSupports()),
+      };
+  const plate = listed
+    ? {
+        ...slicePlateFields(objects, (obj) => objectPlacement(obj).pose, { supports: state.supports, supportStyle: state.supportStyle }),
+        ...(objects.some((obj) => objectTree(obj)) ? { includeSkeleton: true } : {}),
+      }
+    : {};
   return {
-    filename: plateMockActive(state.plate)
-      ? "plate-mock.stl"
-      : state.sourcePos
-        ? (state.mesh!.name || "part").replace(/\.(3mf|step|stp)$/i, ".stl")
-        : (state.mesh!.name || "part"),
+    ...one,
     stepToleranceMm: state.stepTolerance,
     layerHeight: state.layerHeight,
     lineWidth: Math.min(1.2, Math.max(0.2, state.profile.nozzleDiameter * 1.125)),
@@ -169,19 +181,20 @@ export function payload() {
     includePreview: true,
     simplify: state.simplify,
     simplifyErrorMm: state.simplifyError,
-    // Pose is sent as today for one object. A plate mock uses an identity pose
-    // because the concatenated vertices are already placed. Do not add `objects` or `offset`.
-    pose: plateMockActive(state.plate) ? identityPose() : currentPlacement()?.pose,
-    ...editRequestFields(state.supportEdits, treeSupports()),
     // ADAPTER: ranges and volumes stay in the project. SliceRequest has no fields for them.
     ...sliceOverrideFields(state.overrides),
-    // MOCK: SliceRequest has no `objects`. This adds nothing.
-    ...slicePlateFields(state.plate),
+    ...plate,
   };
 }
 
+/** The selected object prints tree supports, so its support edits travel with the slice. */
 export function treeSupports() {
-  return state.supports && state.supportStyle === "tree";
+  const obj = plateListed(state.plate) ? state.plate.objects.find((o) => o.id === state.plate.selectedId) : undefined;
+  return obj ? objectTree(obj) : state.supports && state.supportStyle === "tree";
+}
+
+function objectTree(obj: PlateObject): boolean {
+  return (obj.settings.supports ?? state.supports) && (obj.settings.supportStyle ?? state.supportStyle) === "tree";
 }
 
 export function printer() {
@@ -195,7 +208,6 @@ export function printer() {
 /** `force` plans again even when this recipe is already cached. */
 export async function runSlice(force = false) {
   if (hasOverrides(state.overrides)) pushToast(OVERRIDES_STORED_TOAST, "info");
-  if (plateMockActive(state.plate)) pushToast(PLATE_MOCK_TOAST, "info");
   if (!state.mesh) {
     state.error = "Load a mesh first.";
     renderChrome();
@@ -222,7 +234,22 @@ export async function runSlice(force = false) {
   const partFrame = partFrameKey(request, meshFingerprint());
   const base = previewBase();
   if (base) request.previewBase = base.token;
-  const edits = request.supportEdits ? state.supportEdits : [];
+  const listed = request.objects as PlateRequestObject[] | undefined;
+  const selected = listed?.find((o) => o.id === state.plate.selectedId);
+  const edits = (listed ? selected?.supportEdits : request.supportEdits) ? state.supportEdits : [];
+  const slicedObjects = listed?.map((o) => {
+    const obj = livePlate().find((p) => p.id === o.id)!;
+    return {
+      id: o.id,
+      bed: {
+        translation: [o.pose.translation[0], o.pose.translation[1]] as [number, number],
+        offset: [0, 0] as [number, number],
+        orientKey: obj.orient.join(","),
+        scale: obj.partScale,
+        meshEpoch: session.meshEpoch,
+      },
+    };
+  });
   const bytes = meshBytes();
   markBusy(action.recompute);
   state.error = "";
@@ -240,7 +267,7 @@ export async function runSlice(force = false) {
       unlisten = await listen<DesktopProgress>("slice-progress", ({ payload: p }) => {
         noteJob(id, { id: "", stage: p.stage, done: p.done, total: p.total, fraction: p.progress, status: p.status });
       });
-      send = async (req) => parseInWorker(id, await invoke<string>("slice_model", { payload: JSON.stringify({ ...req, dataB64: meshBase64() }) }));
+      send = async (req) => parseInWorker(id, await invoke<string>("slice_model", { payload: JSON.stringify(withMeshData(req)) }));
     } else {
       send = (req) => runHttpSlice(id, bytes, req, meshFingerprint());
     }
@@ -260,6 +287,8 @@ export async function runSlice(force = false) {
     session.resultFrame = frame;
     slicedBed.offset = replyOffset(body.offset);
     session.slicedBed = slicedBed;
+    session.slicedObjects =
+      slicedObjects?.map((o) => ({ ...o, bed: { ...o.bed, offset: replyOffset(body.objects?.find((v) => v.id === o.id)?.offset) } })) ?? null;
     const prev = session.slicedFrame !== null && session.shownRecipe !== null ? { frame: session.slicedFrame, recipe: session.shownRecipe } : null;
     session.slicedFrame = partFrame;
     state.slicedHash = hash;
@@ -329,8 +358,8 @@ function noteJob(uiId: number, snap: JobSnapshot) {
 async function runHttpSlice(uiId: number, bytes: ArrayBuffer, req: Record<string, unknown>, meshKey: string): Promise<SliceResponse> {
   const base = apiBase();
   const token = apiToken();
-  const started = await beginSliceJob((text) => postJson(base, token, "/api/jobs", text), { ...req, dataB64: meshBase64() });
-  if ("unsupported" in started) return postSlice(uiId, bytes, req, meshKey);
+  const started = await beginSliceJob((text) => postJson(base, token, "/api/jobs", text), withMeshData(req));
+  if ("unsupported" in started) return req.objects ? postSlice(uiId, new ArrayBuffer(0), withMeshData(req), "") : postSlice(uiId, bytes, req, meshKey);
   let stopped = false;
   activeHttp = { uiId, jobId: started.id, stop: () => { stopped = true; } };
   try {
@@ -459,6 +488,11 @@ export function applyPareto(index: number) {
 export async function runPareto() {
   if (!state.mesh) {
     state.error = "Load a mesh before comparing blends.";
+    renderChrome();
+    return;
+  }
+  if (plateListed(state.plate)) {
+    state.error = "Compare blends works on a plate of one object. Remove the other objects first.";
     renderChrome();
     return;
   }

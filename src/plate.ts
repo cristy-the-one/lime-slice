@@ -1,17 +1,12 @@
 /**
- * Multi-object plate.
+ * Multi-object plate: the object list, selection, placement, axis-aligned
+ * bounds, box overlap, arrange, `.lime` save, and undo. Overlap is the
+ * overlap of two axis-aligned boxes in XY, not a mesh intersection.
  *
- * REAL: the object list, selection, placement, axis-aligned bounds, box
- * overlap, arrange, `.lime` save, and undo. Those run in the client.
- * Overlap is the overlap of two axis-aligned boxes in XY. It is not a
- * mesh intersection.
- *
- * MOCK: `slicePlateFields` returns nothing. `SliceRequest` has no `objects`
- * field (main after #118 does not announce it). A one-object plate sends
- * today's `filename`, `dataB64`, and `pose`. More than one object is sent
- * as one concatenated STL of the placed meshes, with an identity pose, and
- * the toast says that body is a mock. Per-object tours and sequential
- * printing are not sent.
+ * A plate with one object and no per-object settings slices with today's
+ * body: `filename`, `dataB64`, and `pose`. Any other plate sends `objects`,
+ * each with its own mesh and pose, and the engine slices each in its own
+ * part frame (`docs/multi-object-and-support-painting.md`).
  * A one-object project with no per-object settings is written as version 1
  * and omits `objects`.
  */
@@ -19,7 +14,6 @@ import type { EditEntry } from "./support-edit-list.ts";
 import {
   boundsOf,
   centeringShift,
-  ID_MATRIX,
   placeMesh,
   type Bounds,
   type Mat3,
@@ -35,17 +29,6 @@ export const ARRANGE_GAP_MM = 2;
 
 /** Touching faces are not an overlap. Matches the bed warning slack. */
 export const OVERLAP_EPS_MM = 0.05;
-
-export const PLATE_MOCK_TOAST = "Mock: the engine sliced one mesh. This plate was sent as a single concatenated STL.";
-
-/** Pose for a concatenated body. Vertices are already in print space. */
-export function identityPose(): RigidPose {
-  return {
-    rotation: [...ID_MATRIX],
-    pivot: [0, 0, 0],
-    translation: [0, 0, 0],
-  };
-}
 
 /** Keys the plate may store per object. Layer height is not one of them. */
 export interface PlateObjectSettings {
@@ -172,16 +155,62 @@ export function plateFileIsVersion2(objects: { settings?: PlateObjectSettings }[
   return !settingsEmpty(objects[0]?.settings);
 }
 
-/**
- * MOCK: fields added to a slice request. Always empty. `SliceRequest` has no
- * `objects` array, and a key the engine would drop must not be sent.
- */
-export function slicePlateFields(_plate?: PlateState): Record<string, never> {
-  return {};
+/** One object of the slice request's `objects`, less its mesh bytes, which go on when it is sent. */
+export interface PlateRequestObject {
+  id: string;
+  filename: string;
+  pose: RigidPose;
+  stepToleranceMm: number;
+  settings?: PlateObjectSettings;
+  supportEdits?: EditEntry["edit"][];
 }
 
-export function plateMockActive(plate: PlateState): boolean {
-  return plate.objects.length > 1;
+/** The slice request sends `objects`: two or more objects, or one with its own settings. */
+export function plateListed(plate: PlateState): boolean {
+  return plate.objects.length > 1 || (plate.objects.length === 1 && !settingsEmpty(plate.objects[0].settings));
+}
+
+/**
+ * `objects` for the slice request, in plate order. `poseOf` places one object on the bed.
+ * Support edits go only with an object that prints tree supports, as for one object.
+ */
+export function slicePlateFields(
+  objects: readonly PlateObject[],
+  poseOf: (obj: PlateObject) => RigidPose,
+  plateTree: { supports: boolean; supportStyle: string },
+): { objects: PlateRequestObject[] } {
+  return {
+    objects: objects.map((obj) => {
+      const tree = (obj.settings.supports ?? plateTree.supports) && (obj.settings.supportStyle ?? plateTree.supportStyle) === "tree";
+      return {
+        id: obj.id,
+        filename: obj.fileName.replace(/\.(3mf|step|stp)$/i, ".stl"),
+        pose: poseOf(obj),
+        stepToleranceMm: obj.stepTolerance,
+        ...(settingsEmpty(obj.settings) ? {} : { settings: { ...obj.settings } }),
+        ...(tree && obj.supportEdits.length > 0 ? { supportEdits: obj.supportEdits.map((entry) => entry.edit) } : {}),
+      };
+    }),
+  };
+}
+
+/** The plate with the selected object's fields taken from the live pose tools. */
+export function withLivePose(plate: PlateState, live: SelectedPose & { fileName: string; sourcePos: Float32Array }): PlateObject[] {
+  return plate.objects.map((obj) =>
+    obj.id !== plate.selectedId
+      ? obj
+      : {
+          ...obj,
+          fileName: live.fileName,
+          sourcePos: live.sourcePos,
+          orient: live.orient,
+          partScale: live.partScale,
+          centered: live.centered,
+          offset: live.offset,
+          stepTolerance: live.stepTolerance,
+          supportEdits: live.supportEdits,
+        },
+  );
 }
 
 export function selectedObject(plate: PlateState): PlateObject | null {
@@ -354,23 +383,6 @@ export function assemblePlate(rows: Array<PlateFileObject & { bytes: ArrayBuffer
 
 export function placeObject(obj: PlateObject, bedX: number, bedY: number) {
   return placeMesh(obj.sourcePos, obj.orient, obj.partScale, bedX, bedY, obj.centered, obj.offset);
-}
-
-/**
- * MOCK body for a plate the engine cannot see as objects.
- * One object returns null so the caller keeps today's canonical STL.
- * More than one object is every placed mesh, in plate order, as one vertex buffer.
- */
-export function concatenatedPositions(plate: PlateState, bedX: number, bedY: number): Float32Array | null {
-  if (plate.objects.length <= 1) return null;
-  const parts = plate.objects.map((obj) => placeObject(obj, bedX, bedY).positions);
-  const out = new Float32Array(parts.reduce((sum, part) => sum + part.length, 0));
-  let at = 0;
-  for (const part of parts) {
-    out.set(part, at);
-    at += part.length;
-  }
-  return out;
 }
 
 export function boxesOverlapXY(a: Bounds, b: Bounds, eps = OVERLAP_EPS_MM): boolean {

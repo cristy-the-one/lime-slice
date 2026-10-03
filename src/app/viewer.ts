@@ -7,7 +7,7 @@ import { legendMarkup } from "../ui/legend";
 import { syncLayerTip } from "../ui/layer-tip";
 import { type LayerGcode, indexLayerGcode, type PlayPoint, layerMoves, matchGcodeLine, layerClasses } from "../playback";
 import { replyOffset, shownBedOffset } from "../bed-offset";
-import { applyPlace, fetchStoredGcode, nudgePlacement } from "./files";
+import { applyPlace, fetchStoredGcode, livePlate, nudgePlacement, objectPlacement } from "./files";
 import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, stale, markStale } from "./settings";
 import { flushEdit, noteEdit } from "./history";
 import { beginModifierEdit, endModifierEdit, nudgeModifier, selectModifier } from "./override-actions";
@@ -126,15 +126,47 @@ export function layerGcode(load = false): LayerGcode | null {
 }
 
 export const decoded = new WeakMap<PreviewLayer, PreviewPath[]>();
+const onPlate = new WeakMap<PreviewLayer, { key: string; paths: PreviewPath[] }>();
 
-/** One layer's paths as objects. Decoded on first use, only for layers that are drawn. */
+/**
+ * One layer's paths as objects. Decoded on first use, only for layers that are drawn.
+ * A plate's paths are each in their object's part frame, so they come back moved by
+ * each object's shown offset: on the bed, where the 2D view and playback read them.
+ */
 export function pathsOf(layer: PreviewLayer): PreviewPath[] {
   let paths = decoded.get(layer);
   if (!paths) {
     paths = decodePaths(layer.paths, layer.z);
     decoded.set(layer, paths);
   }
-  return paths;
+  if (!state.result?.objects) return paths;
+  const offsets = objectShownOffsets();
+  const key = offsets.join(";");
+  const held = onPlate.get(layer);
+  if (held?.key === key) return held.paths;
+  const moved = paths.map((path) => {
+    const [dx, dy] = offsets[path.object ?? 0] ?? [0, 0];
+    return dx || dy ? { ...path, pts: path.pts.map(([x, y]) => [x + dx, y + dy] as [number, number]) } : path;
+  });
+  onPlate.set(layer, { key, paths: moved });
+  return moved;
+}
+
+/**
+ * Where each object of a plate result is drawn: its reply offset plus any X/Y move of
+ * that object since the slice. One object at the origin when the result is not a plate.
+ */
+export function objectShownOffsets(): [number, number][] {
+  const objects = state.result?.objects;
+  if (!objects) return [[0, 0]];
+  const live = new Map(livePlate().map((obj) => [obj.id, obj]));
+  return objects.map((view) => {
+    const sliced = session.slicedObjects?.find((s) => s.id === view.id)?.bed ?? null;
+    const obj = live.get(view.id);
+    if (!sliced || !obj) return replyOffset(view.offset);
+    const t = objectPlacement(obj).pose.translation;
+    return shownBedOffset(sliced, { translation: [t[0], t[1]], orientKey: obj.orient.join(","), scale: obj.partScale, meshEpoch: session.meshEpoch });
+  });
 }
 
 export function movesNow(): PlayPoint[] {
@@ -560,8 +592,12 @@ export function previewMap(mesh: { min: number[]; max: number[] }) {
   return { map, unmap, dpr, scale };
 }
 
-/** Reply offset plus any X/Y move since that slice. Rotation and scale wait for a new reply. */
+/**
+ * Reply offset plus any X/Y move since that slice. Rotation and scale wait for a new reply.
+ * A plate's reply frame is the bed: each object moves by its own offset instead.
+ */
 function shownOffset(): [number, number] {
+  if (state.result?.objects) return [0, 0];
   const pose = state.placed?.pose;
   return shownBedOffset(session.slicedBed, {
     translation: [pose?.translation[0] ?? 0, pose?.translation[1] ?? 0],
@@ -792,8 +828,14 @@ export function adoptPatch(id: number, body: SliceResponse, base: ShownPreview |
   body.layers = layers;
   patching.set(id, { patch, base });
   const changed = new Set(patch.changed.map((l) => l.index));
-  geomWorker.postMessage({ id, layers: layers.filter((l) => changed.has(l.index)), min: body.mesh.min, max: body.mesh.max, kinds: base.geom.kinds });
+  geomWorker.postMessage({ id, layers: layers.filter((l) => changed.has(l.index)), min: body.mesh.min, max: body.mesh.max, kinds: base.geom.kinds, objects: body.objects?.length ?? 1 });
   return true;
+}
+
+/** The plate object the support editor works on: the selected one. 0 when the result is not a plate. */
+export function selectedObjectIndex(): number {
+  const at = state.result?.objects?.findIndex((o) => o.id === state.plate.selectedId) ?? -1;
+  return Math.max(0, at);
 }
 
 /** Shows the worker's buffers once they and the result they belong to have both arrived. */
@@ -826,6 +868,7 @@ export function sync3d() {
   }
   const [bedX, bedY] = shownOffset();
   fx.view3d.setBedOffset(bedX, bedY);
+  fx.view3d.setObjectOffsets(objectShownOffsets(), selectedObjectIndex());
   fx.view3d.setHidden(state.hidden);
   fx.view3d.setColorMode(state.colorMode);
   fx.view3d.setShowTravel(state.showTravel && !state.hidden.has("travel"));
