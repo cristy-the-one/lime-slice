@@ -1,7 +1,7 @@
-//! The last few interactive slices kept in memory, so an edit to supports
-//! starts from the planned part and its unedited supports instead of
-//! slicing again. One entry per mesh, blend, nozzle, and settings; entries
-//! for the same part share one `ObjectSlice`.
+//! The stages of the last interactive slices, kept in memory. Each stage is
+//! keyed on exactly what it and the stages before it read, so a request
+//! takes every stage whose inputs did not change and computes only from the
+//! first one whose inputs did.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -9,58 +9,149 @@ use std::sync::{Arc, Mutex};
 use sha2::{Digest, Sha256};
 
 use super::patch::Shown;
-use super::{JoinedLayer, ObjectSlice, SliceSettings, SupportPlan};
+use super::{Contours, JoinedLayer, PartPaths, PartTour, PartTravels, SliceSettings, SupportPlan};
 use crate::mesh::Mesh;
 use crate::strategy::BlendMode;
 use crate::support::edit::{EditOutcome, SupportEdit};
 
-/// One kept slice.
-#[derive(Clone)]
-pub(super) struct Entry {
-    /// Everything but the edits, the skeleton flag, and the job.
-    pub key: [u8; 32],
-    /// `key` less the settings only supports read.
-    pub object_key: [u8; 32],
-    pub object: Arc<ObjectSlice>,
-    /// Supports planned with no edits.
-    pub base: Arc<SupportPlan>,
-    /// The last edited state on `base`. A request whose edits extend its
-    /// edits applies only the new ones.
-    pub edited: Option<Arc<Edited>>,
-    /// The last plan's layers as joined, so the next plan joins again only
-    /// the layers whose supports or way in changed. Only the most recent
-    /// entry keeps them.
-    pub joined: Option<Arc<Vec<JoinedLayer>>>,
-    /// The preview the last reply drew from `joined`. Set once that reply
-    /// is built, so a slice that stops between the two leaves it unset.
-    pub shown: Option<Arc<Shown>>,
-}
-
+/// Supports with edits applied on a kept base.
 pub(super) struct Edited {
     pub edits: Vec<SupportEdit>,
     pub plan: SupportPlan,
     pub outcomes: Vec<EditOutcome>,
 }
 
-/// What a lookup found.
-pub(super) enum Hit {
-    /// The same slice: its part and its unedited supports.
-    Base(Entry),
-    /// The same part under other support settings.
-    Object(Arc<ObjectSlice>),
+/// One kept support plan: the supports grown and painted with no edits, and
+/// the last edited state on them. A request whose edits extend that state's
+/// edits applies only the new ones.
+struct SupportEntry {
+    grow: [u8; 32],
+    paint: [u8; 32],
+    base: Arc<SupportPlan>,
+    edited: Option<Arc<Edited>>,
 }
 
-static KEEP: AtomicBool = AtomicBool::new(false);
-static KEPT: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
-const CAPACITY: usize = 3;
+/// The supports a lookup found. `painted` is false when only the grown
+/// trees match and every layer still needs painting under the request's
+/// settings.
+pub(super) struct FoundSupports {
+    pub base: Arc<SupportPlan>,
+    pub edited: Option<Arc<Edited>>,
+    pub painted: bool,
+}
 
-/// Keep the last interactive slices in memory, so a support edit or a
-/// support setting change reuses what it can. For long-running shells; off
-/// by default, and turning it off forgets them.
+/// The newest plan's layers as joined, so the next plan of the same part
+/// joins again only the layers whose supports or way in changed, and the
+/// preview the last reply drew from them.
+struct Last {
+    comb: [u8; 32],
+    contours: [u8; 32],
+    joined: Arc<Vec<JoinedLayer>>,
+    shown: Option<Arc<Shown>>,
+}
+
+/// The newest plan's joined layers, and the preview drawn from them once
+/// its reply was built.
+pub(super) struct Prior {
+    pub joined: Arc<Vec<JoinedLayer>>,
+    pub shown: Option<Arc<Shown>>,
+    /// The part, its order, and its travels are this request's, so a layer
+    /// with the same supports and way in joins to the same paths.
+    pub same_part: bool,
+}
+
+/// Most recent first, at most `cap` values.
+pub(super) struct Shelf<T> {
+    cap: usize,
+    items: Vec<([u8; 32], Arc<T>)>,
+}
+
+impl<T> Shelf<T> {
+    const fn new(cap: usize) -> Self {
+        Self {
+            cap,
+            items: Vec::new(),
+        }
+    }
+
+    fn get(&mut self, key: &[u8; 32]) -> Option<Arc<T>> {
+        let at = self.items.iter().position(|(k, _)| k == key)?;
+        let item = self.items.remove(at);
+        let value = Arc::clone(&item.1);
+        self.items.insert(0, item);
+        Some(value)
+    }
+
+    fn put(&mut self, key: [u8; 32], value: Arc<T>) {
+        self.items.retain(|(k, _)| *k != key);
+        self.items.insert(0, (key, value));
+        self.items.truncate(self.cap);
+    }
+}
+
+pub(super) struct Kept {
+    contours: Shelf<Contours>,
+    toolpaths: Shelf<PartPaths>,
+    tours: Shelf<PartTour>,
+    travels: Shelf<PartTravels>,
+    supports: Vec<SupportEntry>,
+    last: Option<Last>,
+}
+
+const SUPPORT_CAPACITY: usize = 3;
+
+static KEEP: AtomicBool = AtomicBool::new(false);
+static KEPT: Mutex<Kept> = Mutex::new(Kept {
+    contours: Shelf::new(2),
+    toolpaths: Shelf::new(2),
+    tours: Shelf::new(2),
+    travels: Shelf::new(2),
+    supports: Vec::new(),
+    last: None,
+});
+
+/// A stage the kept slices hold, one shelf each.
+pub(super) trait Stage: Sized {
+    fn shelf(kept: &mut Kept) -> &mut Shelf<Self>;
+}
+
+impl Stage for Contours {
+    fn shelf(kept: &mut Kept) -> &mut Shelf<Self> {
+        &mut kept.contours
+    }
+}
+
+impl Stage for PartPaths {
+    fn shelf(kept: &mut Kept) -> &mut Shelf<Self> {
+        &mut kept.toolpaths
+    }
+}
+
+impl Stage for PartTour {
+    fn shelf(kept: &mut Kept) -> &mut Shelf<Self> {
+        &mut kept.tours
+    }
+}
+
+impl Stage for PartTravels {
+    fn shelf(kept: &mut Kept) -> &mut Shelf<Self> {
+        &mut kept.travels
+    }
+}
+
+/// Keep the stages of the last interactive slices in memory, so a support
+/// edit or a settings change recomputes only what it changed. For
+/// long-running shells; off by default, and turning it off forgets them.
 pub fn keep_support_bases(on: bool) {
     KEEP.store(on, Ordering::Relaxed);
     if !on {
-        entries().clear();
+        let mut kept = kept();
+        kept.contours.items.clear();
+        kept.toolpaths.items.clear();
+        kept.tours.items.clear();
+        kept.travels.items.clear();
+        kept.supports.clear();
+        kept.last = None;
     }
 }
 
@@ -68,73 +159,149 @@ pub(super) fn on() -> bool {
     KEEP.load(Ordering::Relaxed)
 }
 
-fn entries() -> std::sync::MutexGuard<'static, Vec<Entry>> {
+fn kept() -> std::sync::MutexGuard<'static, Kept> {
     KEPT.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The entry for `key`, else the part of any entry for `object_key`.
-pub(super) fn find(key: &[u8; 32], object_key: &[u8; 32]) -> Option<Hit> {
-    let kept = entries();
-    if let Some(entry) = kept.iter().find(|e| e.key == *key) {
-        return Some(Hit::Base(entry.clone()));
+/// The kept `T` under `key`, else what `make` returns, kept under `key`.
+/// `reused` says which. Nothing is held locked while `make` runs.
+pub(super) fn stage<T: Stage>(
+    key: &[u8; 32],
+    reused: &mut bool,
+    make: impl FnOnce() -> Result<T, String>,
+) -> Result<Arc<T>, String> {
+    if let Some(found) = T::shelf(&mut kept()).get(key) {
+        *reused = true;
+        return Ok(found);
     }
-    kept.iter()
-        .find(|e| e.object_key == *object_key)
-        .map(|e| Hit::Object(Arc::clone(&e.object)))
+    let made = Arc::new(make()?);
+    T::shelf(&mut kept()).put(*key, Arc::clone(&made));
+    Ok(made)
 }
 
-/// Make `entry` the most recent, replacing any entry with its key, and drop
-/// the oldest past the capacity. Older entries forget their joined layers.
-pub(super) fn keep(entry: Entry) {
-    let mut kept = entries();
-    kept.retain(|e| e.key != entry.key);
-    for e in kept.iter_mut() {
-        e.joined = None;
-        e.shown = None;
+/// The supports kept for `keys`: painted under the same settings, else
+/// only grown under the same support settings.
+pub(super) fn supports(keys: &Keys) -> Option<FoundSupports> {
+    let kept = kept();
+    let found = |e: &SupportEntry, painted| FoundSupports {
+        base: Arc::clone(&e.base),
+        edited: e.edited.clone(),
+        painted,
+    };
+    if let Some(e) = kept.supports.iter().find(|e| e.paint == keys.paint) {
+        return Some(found(e, true));
     }
-    kept.insert(0, entry);
-    kept.truncate(CAPACITY);
+    kept.supports
+        .iter()
+        .find(|e| e.grow == keys.grow)
+        .map(|e| found(e, false))
 }
 
-/// Record that a reply drew `shown` from the entry's `joined` layers. A
-/// newer plan that replaced them since wins.
-pub(super) fn show(key: &[u8; 32], joined: &Arc<Vec<JoinedLayer>>, shown: Shown) {
-    let mut kept = entries();
-    if let Some(e) = kept
-        .iter_mut()
-        .find(|e| e.key == *key && e.joined.as_ref().is_some_and(|j| Arc::ptr_eq(j, joined)))
+/// Make these supports the most recent, replacing the entry painted the
+/// same way, and drop the oldest past the capacity.
+pub(super) fn keep_supports(keys: &Keys, base: Arc<SupportPlan>, edited: Option<Arc<Edited>>) {
+    let mut kept = kept();
+    kept.supports.retain(|e| e.paint != keys.paint);
+    kept.supports.insert(
+        0,
+        SupportEntry {
+            grow: keys.grow,
+            paint: keys.paint,
+            base,
+            edited,
+        },
+    );
+    kept.supports.truncate(SUPPORT_CAPACITY);
+}
+
+/// The newest plan's joined layers when they cut the mesh as `keys` does.
+pub(super) fn prior(keys: &Keys) -> Option<Prior> {
+    let kept = kept();
+    let last = kept.last.as_ref().filter(|l| l.contours == keys.contours)?;
+    Some(Prior {
+        joined: Arc::clone(&last.joined),
+        shown: last.shown.clone(),
+        same_part: last.comb == keys.comb,
+    })
+}
+
+/// Make `joined` the newest plan's layers. Its preview is not drawn yet.
+pub(super) fn keep_joined(keys: &Keys, joined: Arc<Vec<JoinedLayer>>) {
+    kept().last = Some(Last {
+        comb: keys.comb,
+        contours: keys.contours,
+        joined,
+        shown: None,
+    });
+}
+
+/// Record that a reply drew `shown` from `joined`. A newer plan that
+/// replaced them since wins.
+pub(super) fn show(joined: &Arc<Vec<JoinedLayer>>, shown: Shown) {
+    if let Some(last) = kept()
+        .last
+        .as_mut()
+        .filter(|l| Arc::ptr_eq(&l.joined, joined))
     {
-        e.shown = Some(Arc::new(shown));
+        last.shown = Some(Arc::new(shown));
     }
 }
 
-/// `(key, object_key)` of a slice. Settings are hashed whole, minus the
-/// fields each key ignores, so a setting added later misses the cache
-/// instead of reusing a stale plan.
+/// One key per stage. Each hashes the settings whole, less the fields only
+/// later stages read, so a setting added later misses the cache instead of
+/// reusing a stale stage.
+pub(super) struct Keys {
+    /// The cut: mesh, nozzle, and layer settings. No blend.
+    pub contours: [u8; 32],
+    /// The part's own toolpaths.
+    pub toolpaths: [u8; 32],
+    /// The part's tour, before combing.
+    pub order: [u8; 32],
+    /// The part's combing and z-hop. Two plans with this key join the same
+    /// part.
+    pub comb: [u8; 32],
+    /// The supports as grown, before painting.
+    pub grow: [u8; 32],
+    /// The supports painted.
+    pub paint: [u8; 32],
+    /// Everything but the edits, the preview base, and the job.
+    pub whole: [u8; 32],
+}
+
 pub(super) fn keys(
     mesh: &Mesh,
     blend: &BlendMode,
     settings: &SliceSettings,
     nozzle_diameter: f64,
-) -> ([u8; 32], [u8; 32]) {
-    let mut hash = Sha256::new();
+) -> Keys {
+    let mut mesh_hash = Sha256::new();
     for tri in &mesh.triangles {
         for v in tri {
             for c in v {
-                hash.update(c.to_bits().to_le_bytes());
+                mesh_hash.update(c.to_bits().to_le_bytes());
             }
         }
     }
-    hash.update(format!("{blend:?}|{:x}|", nozzle_diameter.to_bits()));
+    mesh_hash.update(format!("{:x}|", nozzle_diameter.to_bits()));
     let blank = SliceSettings::default();
     let whole = SliceSettings {
         support_edits: Vec::new(),
         include_skeleton: false,
         preview_base: None,
         job: blank.job,
+        baseline: blank.baseline,
+        compare: blank.compare,
+        include_gcode: blank.include_gcode,
+        include_preview: blank.include_preview,
         ..settings.clone()
     };
-    let part = SliceSettings {
+    let no_emit = SliceSettings {
+        arc_fit: blank.arc_fit,
+        classic_estimator: blank.classic_estimator,
+        junction_deviation_mm: blank.junction_deviation_mm,
+        ..whole.clone()
+    };
+    let comb = SliceSettings {
         supports: blank.supports,
         support_angle: blank.support_angle,
         support_style: blank.support_style,
@@ -142,10 +309,64 @@ pub(super) fn keys(
         tip_diameter: blank.tip_diameter,
         trunk_diameter: blank.trunk_diameter,
         support_height_mult: blank.support_height_mult,
-        ..whole.clone()
+        ..no_emit.clone()
     };
-    let mut object_hash = hash.clone();
-    hash.update(format!("{whole:?}"));
-    object_hash.update(format!("{part:?}"));
-    (hash.finalize().into(), object_hash.finalize().into())
+    let order = SliceSettings {
+        combing: blank.combing,
+        z_hop: blank.z_hop,
+        z_hop_height: blank.z_hop_height,
+        z_hop_min_travel: blank.z_hop_min_travel,
+        ..comb.clone()
+    };
+    let toolpaths = SliceSettings {
+        travel_opt: blank.travel_opt,
+        scarf_seam: blank.scarf_seam,
+        scarf_length: blank.scarf_length,
+        scarf_steps: blank.scarf_steps,
+        scarf_start_height: blank.scarf_start_height,
+        scarf_start_flow: blank.scarf_start_flow,
+        ..order.clone()
+    };
+    let contours = SliceSettings {
+        variable_width: blank.variable_width,
+        overhang_control: blank.overhang_control,
+        classic: blank.classic,
+        feature_speeds: blank.feature_speeds,
+        infill_combine: blank.infill_combine,
+        gyroid_3d: blank.gyroid_3d,
+        ..toolpaths.clone()
+    };
+    let grow = SliceSettings {
+        supports: settings.supports,
+        support_angle: settings.support_angle,
+        support_style: settings.support_style,
+        branch_angle: settings.branch_angle,
+        tip_diameter: settings.tip_diameter,
+        trunk_diameter: settings.trunk_diameter,
+        ..contours.clone()
+    };
+    let paint = SliceSettings {
+        supports: settings.supports,
+        support_angle: settings.support_angle,
+        support_style: settings.support_style,
+        branch_angle: settings.branch_angle,
+        tip_diameter: settings.tip_diameter,
+        trunk_diameter: settings.trunk_diameter,
+        support_height_mult: settings.support_height_mult,
+        ..toolpaths.clone()
+    };
+    let key = |s: &SliceSettings, blend: Option<&BlendMode>| -> [u8; 32] {
+        let mut hash = mesh_hash.clone();
+        hash.update(format!("{blend:?}|{s:?}"));
+        hash.finalize().into()
+    };
+    Keys {
+        contours: key(&contours, None),
+        toolpaths: key(&toolpaths, Some(blend)),
+        order: key(&order, Some(blend)),
+        comb: key(&comb, Some(blend)),
+        grow: key(&grow, Some(blend)),
+        paint: key(&paint, Some(blend)),
+        whole: key(&whole, Some(blend)),
+    }
 }
