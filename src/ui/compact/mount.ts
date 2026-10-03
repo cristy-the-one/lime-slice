@@ -4,7 +4,7 @@ import { engineMode, pickModelFile, pickProjectFile, saveGcode, saveLayoutChoice
 import { haptic } from "../haptics";
 import { pushToast } from "../toasts";
 import { MOCK_ON_DEVICE_LABEL, MOCK_PLAYBACK_SPEED } from "./mocks";
-import { sheetHeight, snapDetent, type Detent } from "./sheet";
+import { moveDetent, sheetHeight, snapDetent, type Detent } from "./sheet";
 import { mountCompactTouch } from "./touch";
 import "./compact.css";
 
@@ -144,6 +144,20 @@ function sheet() {
   handle.type = "button";
   handle.id = "compactSheetHandle";
   handle.setAttribute("aria-label", "Resize settings");
+  handle.setAttribute("aria-keyshortcuts", "ArrowUp ArrowDown Home End");
+  handle.setAttribute("aria-valuetext", detent);
+  handle.addEventListener("keydown", (ev) => {
+    const next = moveDetent(detent, ev.key);
+    if (!next) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (next === detent) return;
+    detent = next;
+    el.dataset.detent = next;
+    handle.setAttribute("aria-valuetext", next);
+    applyHeights(sheetHeight(next, window.innerHeight), true);
+    window.dispatchEvent(new Event("resize"));
+  });
   const body = document.createElement("div");
   body.id = "compactSheetBody";
   const supports = document.createElement("div");
@@ -208,8 +222,24 @@ function tabs() {
     button.dataset.tab = id;
     button.setAttribute("role", "tab");
     button.setAttribute("aria-selected", id === "prepare" ? "true" : "false");
+    button.setAttribute("aria-controls", id === "device" ? "compactDevice" : id === "preview" ? "stage" : "compactSheet");
+    button.tabIndex = id === "prepare" ? 0 : -1;
     button.append(icon(node), document.createTextNode(label));
     button.addEventListener("click", () => selectTab(id));
+    button.addEventListener("keydown", (ev) => {
+      if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight" && ev.key !== "Home" && ev.key !== "End") return;
+      const tabs = [...nav.querySelectorAll<HTMLButtonElement>(".compact-tab")];
+      const index = tabs.indexOf(button);
+      if (index < 0) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const next = ev.key === "ArrowRight" ? tabs[(index + 1) % tabs.length]
+        : ev.key === "ArrowLeft" ? tabs[(index - 1 + tabs.length) % tabs.length]
+        : ev.key === "Home" ? tabs[0]
+        : tabs[tabs.length - 1];
+      next?.focus();
+      next?.click();
+    });
     nav.append(button);
   }
   return nav;
@@ -220,6 +250,7 @@ function isoButton() {
   button.type = "button";
   button.id = "compactIso";
   button.textContent = "Iso";
+  button.setAttribute("aria-label", "Iso view");
   button.addEventListener("click", () => {
     haptic("tap");
     document.querySelector<HTMLButtonElement>("#viewPresets button:last-child")?.click();
@@ -327,8 +358,11 @@ function selectTab(next: CompactTab) {
   if (next !== "preview") window.dispatchEvent(new CustomEvent("lime-support-edit-close"));
   document.documentElement.dataset.compactTab = next;
   document.querySelectorAll<HTMLButtonElement>("#compactTabs .compact-tab").forEach((button) => {
-    button.setAttribute("aria-selected", button.dataset.tab === next ? "true" : "false");
+    const on = button.dataset.tab === next;
+    button.setAttribute("aria-selected", on ? "true" : "false");
+    button.tabIndex = on ? 0 : -1;
   });
+  document.querySelector("#compactSheetHandle")?.setAttribute("aria-valuetext", detent);
   if (next === "prepare") {
     detent = "peek";
     document.querySelector<HTMLButtonElement>("#tabPrepare")?.click();
@@ -345,6 +379,7 @@ function selectTab(next: CompactTab) {
     sheetEl.dataset.detent = keepSheet ? detent : next === "preview" || next === "device" ? "closed" : detent;
   }
   applyHeights(sheetHeight(detent, window.innerHeight), true);
+  if (next === "settings") document.querySelector<HTMLInputElement>("#find")?.focus();
   haptic("tap");
   window.dispatchEvent(new Event("resize"));
 }

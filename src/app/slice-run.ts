@@ -222,7 +222,10 @@ export async function runSlice(force = false) {
     const message = err instanceof Error ? err.message : String(err);
     if (message === "cancelled") state.notice = "Slice cancelled.";
     else if (message === "Failed to fetch") markEngineDown(engineDownMessage(apiBase()));
-    else state.error = message;
+    else {
+      state.error = message;
+      pushToast(message, "error", { label: "Retry", run: () => { void runSlice(false); } });
+    }
   } finally {
     unlisten?.();
     if (id === session.job) {

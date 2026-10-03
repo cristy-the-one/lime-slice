@@ -58,7 +58,7 @@ export function renderChrome() {
   const result = state.result;
   document.querySelector("#leftBody")!.innerHTML = `
     ${levelBarHtml()}
-    <input id="find" type="search" placeholder="Search settings" value="${escapeHtml(state.query)}" />
+    <input id="find" type="search" placeholder="Search settings" aria-label="Search settings" value="${escapeHtml(state.query)}" />
     <h2>Mesh</h2>
     <div class="meta">${mesh ? `<b>${escapeHtml(mesh.name)}</b>` : "Nothing loaded"}</div>
     <div class="object-list" id="objectList">${objectList()}</div>
@@ -170,7 +170,13 @@ export function markEngineDown(message: string) {
   state.engine = message;
   if (session.announcedDown !== message) {
     session.announcedDown = message;
-    pushToast(message, "error");
+    pushToast(message, "error", {
+      label: "Retry",
+      run: () => {
+        session.announcedDown = "";
+        void probe();
+      },
+    });
   }
   paintEngineLink();
 }
