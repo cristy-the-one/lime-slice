@@ -59,9 +59,13 @@ test("add, select, place, overlap, arrange, undo, and save a plate", async ({ pa
   await expect(page.locator("#prepare")).toHaveAttribute("data-plate-overlap", "1");
 
   await page.locator("#partScale").fill("50");
+  await expect(page.locator("#partScale")).toHaveValue("50");
+  await page.waitForTimeout(400);
+  await page.locator("#rotZ").click();
   await expect(page.locator("[data-selected='true'] span")).toContainText("10.0");
   await expect(page.locator("[data-plate-id='part'] span")).toContainText("20.0");
-  await page.waitForTimeout(400);
+  await page.locator("#undoEdit").click();
+  await expect(page.locator("[data-selected='true'] span")).toContainText("10.0");
 
   await page.locator("[data-plate-select='part']").click();
   await expect(page.locator("#prepare")).toHaveAttribute("data-plate-selected", "part");
