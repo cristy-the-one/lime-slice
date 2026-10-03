@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { ViewHelper } from "three/addons/helpers/ViewHelper.js";
 import { syncBedGrid } from "./bed-grid";
-import { boundsOf } from "./mesh-place";
+import { poseAffine, type Bounds, type PlacedPart } from "./mesh-place";
 import { buildCutPlane, disposeTree, prepareFrame, splitDragAt, type PrintFrame } from "./cut-plane";
 import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep } from "./gizmo-math";
 import { clampSplit, roundSplit, type SplitAxis } from "./split-at";
@@ -13,7 +13,8 @@ type HandleHit = { kind: "ring" | "move"; axis: Axis };
 type Drag = HandleHit | { kind: "cut" } | null;
 
 export interface PrepareView {
-  setMesh(positions: Float32Array | null, frameCamera?: boolean): void;
+  /** The same `canonical` array keeps the built geometry; only the pose matrix and bounds update. */
+  setMesh(part: PlacedPart | null, frameCamera?: boolean): void;
   setBed(x: number, y: number, z: number): void;
   setBedOpacity(opacity: number): void;
   setSplit(split: { axis: SplitAxis; at: number } | null): void;
@@ -76,6 +77,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
 
   const material = new THREE.MeshStandardMaterial({ color: hexToThree(colors.mesh), roughness: 0.55, metalness: 0.05, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
   let mesh: THREE.Mesh | null = null;
+  /** Vertices `mesh` was built from. Normals and the edge outline are built once per array. */
+  let meshSource: Float32Array | null = null;
   const outlineMat = new THREE.LineBasicMaterial({ color: 0xd5dbe3, transparent: true, opacity: 0.9 });
   const hemi = new THREE.HemisphereLight(0xf4f6f8, 0x2a3140, 0.62);
   scene.add(hemi);
@@ -168,7 +171,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let cutPicks: THREE.Object3D[] = [];
   let cutKey = "";
   let split: { axis: SplitAxis; at: number } | null = null;
-  let meshBounds: ReturnType<typeof boundsOf> | null = null;
+  let meshBounds: Bounds | null = null;
 
   let bedX = 220;
   let bedY = 220;
@@ -556,36 +559,42 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       plate.visible = o > 0.004;
       requestRender();
     },
-    setMesh(positions, frameCamera = false) {
+    setMesh(part, frameCamera = false) {
       requestRender();
-      if (mesh) {
-        scene.remove(mesh);
-        mesh.traverse((node) => {
-          const child = node as THREE.Mesh;
-          if (child !== mesh) child.geometry?.dispose();
-        });
-        mesh.geometry.dispose();
-        mesh = null;
+      const canonical = part && part.canonical.length >= 9 ? part.canonical : null;
+      if (canonical !== meshSource) {
+        meshSource = canonical;
+        if (mesh) {
+          scene.remove(mesh);
+          mesh.traverse((node) => {
+            const child = node as THREE.Mesh;
+            if (child !== mesh) child.geometry?.dispose();
+          });
+          mesh.geometry.dispose();
+          mesh = null;
+        }
+        if (canonical) {
+          const geometry = new THREE.BufferGeometry();
+          geometry.setAttribute("position", new THREE.BufferAttribute(canonical, 3));
+          geometry.computeVertexNormals();
+          mesh = new THREE.Mesh(geometry, material);
+          mesh.matrixAutoUpdate = false;
+          const outline = new THREE.LineSegments(new THREE.EdgesGeometry(geometry, 25), outlineMat);
+          outline.raycast = () => undefined;
+          mesh.add(outline);
+          scene.add(mesh);
+        }
       }
-      meshBounds = positions && positions.length >= 9 ? boundsOf(positions) : null;
+      meshBounds = canonical && part ? part.bounds : null;
+      if (mesh && part) {
+        // Print X, Y, Z is scene X, -Z, Y. The rigid pose keeps the normals valid.
+        const [a, b, c, d, e, f, g, h, i, j, k, l] = poseAffine(part.pose);
+        mesh.matrix.set(a, b, c, d, i, j, k, l, -e, -f, -g, -h, 0, 0, 0, 1);
+        mesh.matrixWorldNeedsUpdate = true;
+      }
       placeGizmo();
       cutKey = "";
       rebuildCut();
-      if (!positions || positions.length < 9) return;
-      const geometry = new THREE.BufferGeometry();
-      const xyz = new Float32Array(positions.length);
-      for (let i = 0; i < positions.length; i += 3) {
-        xyz[i] = positions[i];
-        xyz[i + 1] = positions[i + 2];
-        xyz[i + 2] = -positions[i + 1];
-      }
-      geometry.setAttribute("position", new THREE.BufferAttribute(xyz, 3));
-      geometry.computeVertexNormals();
-      mesh = new THREE.Mesh(geometry, material);
-      const outline = new THREE.LineSegments(new THREE.EdgesGeometry(geometry, 25), outlineMat);
-      outline.raycast = () => undefined;
-      mesh.add(outline);
-      scene.add(mesh);
       if (frameCamera) framePart();
     },
     setSplit(next) {

@@ -35,17 +35,17 @@ const SLICE_CACHE_BYTES: u64 = 2 << 30;
 #[tauri::command]
 async fn slice_model(app: AppHandle, payload: String) -> Result<String, String> {
     let job = Job::start();
-    let cache = app
-        .path()
-        .app_cache_dir()
-        .ok()
-        .map(|dir| SliceCache::new(dir.join("slices"), SLICE_CACHE_BYTES));
+    // One cache for the app's life: it owns the background writes in flight.
+    static SLICE_CACHE: std::sync::OnceLock<SliceCache> = std::sync::OnceLock::new();
+    let cache = app.path().app_cache_dir().ok().map(|dir| {
+        SLICE_CACHE.get_or_init(|| SliceCache::new(dir.join("slices"), SLICE_CACHE_BYTES))
+    });
     tauri::async_runtime::spawn_blocking(move || {
         let _ = app.emit(
             "slice-progress",
             serde_json::json!({ "progress": 0.08, "message": "Planning toolpaths" }),
         );
-        let reply = slice_payload(&payload, cache.as_ref(), job, park_gcode)?;
+        let reply = slice_payload(&payload, cache, job, park_gcode)?;
         let _ = app.emit(
             "slice-progress",
             serde_json::json!({ "progress": 1.0, "message": "Done" }),

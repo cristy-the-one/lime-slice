@@ -188,11 +188,23 @@ export function scaledCanonical(source: Float32Array, scale: number) {
   return out;
 }
 
+/** The mesh as placed on the bed, with its bounds and the pose the slicer applies to [`scaledCanonical`]. */
+export interface Placement {
+  positions: Float32Array;
+  bounds: Bounds;
+  pose: RigidPose;
+}
+
+/** A placement with the scaled, unposed vertices it poses: what a renderer draws under `pose`. */
+export interface PlacedPart extends Placement {
+  canonical: Float32Array;
+}
+
 /**
- * Pose that takes [`scaledCanonical`] onto [`transformPositions`].
- * The translation is recovered from the placed mesh so settle and bed shift stay in one place.
+ * [`transformPositions`] plus what every reader of the placed mesh needs.
+ * The pose's translation is recovered from the placed mesh so settle and bed shift stay in one place.
  */
-export function placementPose(
+export function placeMesh(
   source: Float32Array,
   matrix: Mat3,
   scale: number,
@@ -200,14 +212,14 @@ export function placementPose(
   bedY: number,
   centered: boolean,
   shift?: MeshShift,
-): RigidPose {
+): Placement {
   const b = boundsOf(source);
   const pivot: [number, number, number] = [
     (b.min[0] + b.max[0]) / 2,
     (b.min[1] + b.max[1]) / 2,
     (b.min[2] + b.max[2]) / 2,
   ];
-  const placed = transformPositions(source, matrix, scale, bedX, bedY, centered, shift);
+  const positions = transformPositions(source, matrix, scale, bedX, bedY, centered, shift);
   const x = (source[0] - pivot[0]) * scale;
   const y = (source[1] - pivot[1]) * scale;
   const z = (source[2] - pivot[2]) * scale;
@@ -215,10 +227,26 @@ export function placementPose(
   const ry = matrix[3] * x + matrix[4] * y + matrix[5] * z;
   const rz = matrix[6] * x + matrix[7] * y + matrix[8] * z;
   return {
-    rotation: matrix,
-    pivot,
-    translation: [placed[0] - rx, placed[1] - ry, placed[2] - rz],
+    positions,
+    bounds: boundsOf(positions),
+    pose: {
+      rotation: matrix,
+      pivot,
+      translation: [positions[0] - rx, positions[1] - ry, positions[2] - rz],
+    },
   };
+}
+
+/** `pose` as the rows of a 3x4 affine matrix, so a renderer can apply it to the canonical mesh. */
+export function poseAffine(pose: RigidPose): [number, number, number, number, number, number, number, number, number, number, number, number] {
+  const m = pose.rotation;
+  const [px, py, pz] = pose.pivot;
+  const [tx, ty, tz] = pose.translation;
+  return [
+    m[0], m[1], m[2], tx - (m[0] * px + m[1] * py + m[2] * pz),
+    m[3], m[4], m[5], ty - (m[3] * px + m[4] * py + m[5] * pz),
+    m[6], m[7], m[8], tz - (m[6] * px + m[7] * py + m[8] * pz),
+  ];
 }
 
 export function applyRigidPose(pos: Float32Array, pose: RigidPose) {
@@ -290,8 +318,7 @@ function bedCenterShift(pos: Float32Array, bedX: number, bedY: number): MeshShif
   };
 }
 
-export function offBed(pos: Float32Array, bedX: number, bedY: number, bedZ: number) {
-  const b = boundsOf(pos);
+export function offBed(b: Bounds, bedX: number, bedY: number, bedZ: number) {
   const notes: string[] = [];
   if (b.min[0] < -0.05 || b.max[0] > bedX + 0.05) notes.push("outside the bed in X");
   if (b.min[1] < -0.05 || b.max[1] > bedY + 0.05) notes.push("outside the bed in Y");

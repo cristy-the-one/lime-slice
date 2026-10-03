@@ -133,16 +133,15 @@ export function matchGcodeLine(lines: GcodeLine[], point: PlayPoint | undefined)
   return best;
 }
 
+export type LayerKind = "slow" | "fast" | "ok";
+
 /**
- * Slow: above twice the median layer. Too fast: under the 8 s cooling floor.
+ * Each layer's kind. Slow: above twice the median layer. Too fast: under the 8 s cooling floor.
  * The planner has no min-layer-time, so a small part can flag almost every layer.
  */
-export function layerClass(seconds: number[], index: number, floorS = 8): "slow" | "fast" | "ok" {
-  if (seconds.length === 0) return "ok";
+export function layerClasses(seconds: readonly number[], floorS = 8): LayerKind[] {
   const sorted = [...seconds].sort((a, b) => a - b);
   const mid = sorted[Math.floor(sorted.length / 2)] ?? 0;
-  const value = seconds[index] ?? 0;
-  if (value > Math.max(mid * 2, mid + 1)) return "slow";
-  if (value > 0 && value < floorS) return "fast";
-  return "ok";
+  const slow = Math.max(mid * 2, mid + 1);
+  return seconds.map((value) => (value > slow ? "slow" : value > 0 && value < floorS ? "fast" : "ok"));
 }
