@@ -93,7 +93,28 @@ cargo build -p lime-slice-desktop
 
 **Windows:** Visual Studio Build Tools with the "Desktop development with C++" workload, and the WebView2 runtime (already present on current Windows 10 and 11). The NSIS installer target in `src-tauri/tauri.windows.conf.json` needs [NSIS](https://nsis.sourceforge.io/) on `PATH` when bundling. The Windows icon (`icons/icon.ico`) stays in `src-tauri/tauri.conf.json`.
 
-**macOS:** Xcode Command Line Tools (`xcode-select --install`). The shell uses the system WebKit; no extra GTK packages.
+**macOS:** Xcode Command Line Tools (`xcode-select --install`). The shell uses the system WebKit; no extra GTK packages. `src-tauri/tauri.macos.conf.json` bundles a `.dmg`. A local `tauri build` on Linux still follows `src-tauri/tauri.conf.json` and produces a `.deb` only.
+
+Clipper2 (`clipper2c-sys`) compiles its C++ sources with the Rust `cc` crate. The build does not need CMake. Linux needs `g++` and libstdc++ (GCC 13 on Ubuntu 24.04, as in `.cargo/config.toml`). Windows needs the MSVC C++ toolset (`cl.exe`). macOS needs Apple `clang` and `libc++`, including when an Apple silicon machine cross-compiles the Intel target.
+
+## Releases
+
+`.github/workflows/release.yml` builds unsigned installers when a tag named `v*` is pushed, and when someone runs the workflow by hand. The artifacts are attached to a **draft** GitHub Release. Linux is a `.deb` plus an `.AppImage` (Ubuntu 24.04). macOS is two `.dmg` files, Apple silicon and Intel, rather than one universal binary. Windows is an NSIS installer. The existing CI jobs are unchanged.
+
+These builds are unsigned. macOS Gatekeeper and Windows SmartScreen will warn, and the AppImage is not signed either. Code signing, notarization, and the Tauri updater plugin are not part of this workflow. A later signing setup would fill these secrets; none of them are read today:
+
+| Secret | Would be used for |
+| --- | --- |
+| `APPLE_CERTIFICATE` | Apple Developer ID application certificate (base64 `.p12`) |
+| `APPLE_CERTIFICATE_PASSWORD` | Password for that `.p12` |
+| `APPLE_SIGNING_IDENTITY` | Developer ID Application identity |
+| `APPLE_ID` | Apple ID for notarization |
+| `APPLE_PASSWORD` | App-specific password for notarization |
+| `APPLE_TEAM_ID` | Apple team id |
+| `TAURI_SIGNING_PRIVATE_KEY` | Updater minisign private key |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for that updater key |
+
+A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (today `v0.1.0`). Publishing that draft is a separate step. The workflow has not been executed from this repository yet.
 
 ## Headless slice and bench
 
