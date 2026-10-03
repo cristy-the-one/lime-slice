@@ -263,6 +263,7 @@ pub(super) fn show(layers: &Arc<Vec<PlateLayer>>, shown: Shown) {
 /// One key per stage. Each hashes the settings whole, less the fields only
 /// later stages read, so a setting added later misses the cache instead of
 /// reusing a stale stage.
+#[derive(Clone)]
 pub(super) struct Keys {
     /// The cut: mesh, nozzle, and layer settings. No blend.
     pub contours: [u8; 32],
@@ -279,6 +280,25 @@ pub(super) struct Keys {
     pub paint: [u8; 32],
     /// Everything but the edits, the preview base, and the job.
     pub whole: [u8; 32],
+}
+
+impl Keys {
+    /// These keys for supports grown among the other objects `ground` names.
+    /// The part's stages keep their keys.
+    pub(super) fn grounded(&self, ground: &[u8; 32]) -> Keys {
+        let mix = |key: &[u8; 32]| -> [u8; 32] {
+            let mut hash = Sha256::new();
+            hash.update(key);
+            hash.update(ground);
+            hash.finalize().into()
+        };
+        Keys {
+            grow: mix(&self.grow),
+            paint: mix(&self.paint),
+            whole: mix(&self.whole),
+            ..self.clone()
+        }
+    }
 }
 
 pub(super) fn keys(

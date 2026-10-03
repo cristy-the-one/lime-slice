@@ -1065,26 +1065,59 @@ fn slice_plate(
         kept::fit(objects.len());
     }
     let meshes: Vec<&Mesh> = objects.iter().map(|o| o.mesh.as_ref()).collect();
-    let mut plans: Vec<Plan> = Vec::with_capacity(objects.len());
+    // Every cut first: an object's supports read the cuts of the others.
+    let mut cuts: Vec<(Arc<Contours>, bool, Option<kept::Keys>)> =
+        Vec::with_capacity(objects.len());
     for o in &objects {
         let bands = plan_plate_bands(&o.mesh, &meshes, &height_opts(&o.settings))?;
+        let keys = kept_keys(
+            &o.mesh,
+            &bands,
+            &o.blend,
+            &o.settings,
+            profile.nozzle_diameter,
+        );
         let mut alone = None;
         let shared = if objects.len() == 1 {
             &mut *cut
         } else {
             &mut alone
         };
-        plans.push(plan_sharing(
+        let (cut, reused) = cut_object(
             &o.mesh,
+            bands,
+            &o.settings,
+            profile.nozzle_diameter,
+            keys.as_ref(),
+            shared,
+            watch,
+        )?;
+        cuts.push((cut, reused, keys));
+    }
+    let offsets: Vec<[f64; 2]> = objects.iter().map(PlateObject::to_bed).collect();
+    let mut plans: Vec<Plan> = Vec::with_capacity(objects.len());
+    for (a, (o, (cut, reused, keys))) in objects.iter().zip(&cuts).enumerate() {
+        let neighbours: Vec<plate::Neighbour> = cuts
+            .iter()
+            .enumerate()
+            .filter(|&(b, _)| b != a)
+            .map(|(b, (cut, _, keys))| plate::Neighbour {
+                cut: Arc::clone(cut),
+                key: keys.as_ref().map_or([0; 32], |k| k.contours),
+                shift: [offsets[b][0] - offsets[a][0], offsets[b][1] - offsets[a][1]],
+            })
+            .collect();
+        plans.push(plan_object(
+            Arc::clone(cut),
+            *reused,
+            keys.clone(),
             &o.blend,
             &o.settings,
-            bands,
             profile.nozzle_diameter,
-            shared,
+            &neighbours,
             watch,
         )?);
     }
-    let offsets: Vec<[f64; 2]> = objects.iter().map(PlateObject::to_bed).collect();
     let band_lists: Vec<&[LayerBand]> = plans.iter().map(|p| p.cut.bands.as_slice()).collect();
     let bands = plate::plate_bands(&band_lists);
     let labelled = objects.len() > 1;
@@ -2282,24 +2315,109 @@ fn plan_sharing(
     shared: &mut Option<Arc<Contours>>,
     watch: &Watch,
 ) -> Result<Plan, String> {
-    let plan = if kept::on() && settings.include_preview {
-        plan_kept(mesh, blend, settings, bands, nozzle_diameter, watch)?
-    } else {
-        let reuse = Reuse {
-            contours: shared.is_some(),
-            ..Reuse::default()
-        };
-        let cut = match shared {
-            Some(cut) => {
-                watch.complete(Stage::Cut);
-                Arc::clone(cut)
-            }
-            None => Arc::new(cut_mesh(mesh, bands, settings, nozzle_diameter, watch)?),
-        };
-        plan_cut(cut, reuse, blend, settings, nozzle_diameter, watch)?
+    let keys = kept_keys(mesh, &bands, blend, settings, nozzle_diameter);
+    let (cut, reused) = cut_object(
+        mesh,
+        bands,
+        settings,
+        nozzle_diameter,
+        keys.as_ref(),
+        shared,
+        watch,
+    )?;
+    plan_object(
+        cut,
+        reused,
+        keys,
+        blend,
+        settings,
+        nozzle_diameter,
+        &[],
+        watch,
+    )
+}
+
+/// The stage keys of an interactive slice while stages are kept.
+fn kept_keys(
+    mesh: &Mesh,
+    bands: &[LayerBand],
+    blend: &BlendMode,
+    settings: &SliceSettings,
+    nozzle_diameter: f64,
+) -> Option<kept::Keys> {
+    (kept::on() && settings.include_preview)
+        .then(|| kept::keys(mesh, bands, blend, settings, nozzle_diameter))
+}
+
+/// The mesh cut on `bands`: kept under `keys`, else the cut in `shared`,
+/// else cut now. `shared` holds it afterwards. The flag says it was not cut
+/// by this call.
+#[allow(clippy::too_many_arguments)]
+fn cut_object(
+    mesh: &Mesh,
+    bands: Vec<LayerBand>,
+    settings: &SliceSettings,
+    nozzle_diameter: f64,
+    keys: Option<&kept::Keys>,
+    shared: &mut Option<Arc<Contours>>,
+    watch: &Watch,
+) -> Result<(Arc<Contours>, bool), String> {
+    let mut reused = false;
+    let cut = match (keys, shared.as_ref()) {
+        (Some(keys), _) => kept::stage(&keys.contours, &mut reused, || {
+            cut_mesh(mesh, bands, settings, nozzle_diameter, watch)
+        })?,
+        (None, Some(cut)) => {
+            reused = true;
+            Arc::clone(cut)
+        }
+        (None, None) => Arc::new(cut_mesh(mesh, bands, settings, nozzle_diameter, watch)?),
     };
-    *shared = Some(Arc::clone(&plan.cut));
-    Ok(plan)
+    if reused {
+        watch.complete(Stage::Cut);
+    }
+    *shared = Some(Arc::clone(&cut));
+    Ok((cut, reused))
+}
+
+/// Every stage after the cut, from the kept stages when there are `keys`.
+/// Supports grow among the `neighbours` that come near them.
+#[allow(clippy::too_many_arguments)]
+fn plan_object(
+    cut: Arc<Contours>,
+    reused: bool,
+    keys: Option<kept::Keys>,
+    blend: &BlendMode,
+    settings: &SliceSettings,
+    nozzle_diameter: f64,
+    neighbours: &[plate::Neighbour],
+    watch: &Watch,
+) -> Result<Plan, String> {
+    let reuse = Reuse {
+        contours: reused,
+        ..Reuse::default()
+    };
+    match keys {
+        Some(keys) => plan_kept(
+            keys,
+            cut,
+            reuse,
+            blend,
+            settings,
+            nozzle_diameter,
+            neighbours,
+            watch,
+        ),
+        None => plan_cut(
+            cut,
+            reuse,
+            blend,
+            settings,
+            nozzle_diameter,
+            neighbours,
+            watch,
+        ),
+    }
 }
 
 /// `plan` from the mesh already cut into per-band contours.
@@ -2319,6 +2437,7 @@ fn plan_contours(
         blend,
         settings,
         nozzle_diameter,
+        &[],
         &Watch::idle(),
     )
 }
@@ -2331,6 +2450,7 @@ fn plan_cut(
     blend: &BlendMode,
     settings: &SliceSettings,
     nozzle_diameter: f64,
+    neighbours: &[plate::Neighbour],
     watch: &Watch,
 ) -> Result<Plan, String> {
     let mut spent = Spent::default();
@@ -2343,8 +2463,16 @@ fn plan_cut(
     spent.order_ms += tour.order_ms;
     let travels = comb_part(&cut, &tour, settings, watch)?;
     spent.comb_ms += travels.comb_ms;
-    let mut supports = plan_supports(&cut, blend, settings, watch)?;
-    spent.supports(&supports);
+    let mut supports = plate::settle(
+        &cut,
+        neighbours,
+        |ground| {
+            let plan = plan_supports(&cut, blend, settings, ground.map(|g| g.solid), watch)?;
+            spent.supports(&plan);
+            Ok(plan)
+        },
+        |plan| plan,
+    )?;
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
     }
@@ -2370,23 +2498,19 @@ fn plan_cut(
 /// `plan` from the kept stages. Each stage is reused when its key matches.
 /// Edits extend the last edited state when they start with its edits, and
 /// otherwise replay from the base, which is how undoing an edit works.
+#[allow(clippy::too_many_arguments)]
 fn plan_kept(
-    mesh: &Mesh,
+    keys: kept::Keys,
+    cut: Arc<Contours>,
+    mut reuse: Reuse,
     blend: &BlendMode,
     settings: &SliceSettings,
-    bands: Vec<LayerBand>,
     nozzle_diameter: f64,
+    neighbours: &[plate::Neighbour],
     watch: &Watch,
 ) -> Result<Plan, String> {
-    let keys = kept::keys(mesh, &bands, blend, settings, nozzle_diameter);
-    let mut reuse = Reuse::default();
     let mut spent = Spent::default();
-    let cut = kept::stage(&keys.contours, &mut reuse.contours, || {
-        cut_mesh(mesh, bands, settings, nozzle_diameter, watch)
-    })?;
-    if reuse.contours {
-        watch.complete(Stage::Cut);
-    } else {
+    if !reuse.contours {
         spent.cut(&cut);
     }
     if watch.stopped(settings.job) {
@@ -2425,49 +2549,28 @@ fn plan_kept(
     }
 
     let want = &settings.support_edits;
-    let (base, edited) = match kept::supports(&keys) {
-        Some(found) if found.painted => {
-            reuse.supports = true;
-            reuse.support_paths = true;
-            watch.complete(Stage::Supports);
-            (found.base, found.edited)
-        }
-        Some(found) => {
-            reuse.supports = true;
-            let layers = cut.bands.len().max(1) as u32;
-            watch.begin(Stage::Supports, layers);
-            if watch.stopped(settings.job) {
-                return Err("cancelled".into());
-            }
-            let base = Arc::new(found.base.repaint(&cut, blend, settings, watch));
-            spent.supports(&base);
-            if watch.stopped(settings.job) {
-                return Err("cancelled".into());
-            }
-            let edited = found
-                .edited
-                .filter(|e| !want.is_empty() && want.starts_with(&e.edits))
-                .map(|e| {
-                    let plan = e.plan.repaint(&cut, blend, settings, watch);
-                    spent.supports(&plan);
-                    Arc::new(kept::Edited {
-                        edits: e.edits.clone(),
-                        plan,
-                        outcomes: e.outcomes.clone(),
-                    })
-                });
-            if watch.stopped(settings.job) {
-                return Err("cancelled".into());
-            }
-            watch.fill();
-            (base, edited)
-        }
-        None => {
-            let base = Arc::new(plan_supports(&cut, blend, settings, watch)?);
-            spent.supports(&base);
-            (base, None)
-        }
-    };
+    let (keys, base, edited) = plate::settle(
+        &cut,
+        neighbours,
+        |ground| {
+            let keys = ground
+                .as_ref()
+                .map_or_else(|| keys.clone(), |g| keys.grounded(&g.key));
+            let (base, edited) = kept_supports(
+                &keys,
+                &cut,
+                blend,
+                settings,
+                ground.map(|g| g.solid),
+                &mut reuse,
+                &mut spent,
+                watch,
+            )?;
+            kept::keep_supports(&keys, Arc::clone(&base), edited.clone());
+            Ok((keys, base, edited))
+        },
+        |(_, base, _)| base,
+    )?;
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
     }
@@ -2523,6 +2626,68 @@ fn plan_kept(
     let mut plan = finish(cut, supports, edits, assembled, reuse, spent);
     plan.kept = Some(kept);
     Ok(plan)
+}
+
+/// The supports kept under `keys` and their last edited state: painted
+/// already, or grown and painted again under `settings`, or grown now among
+/// `solid`.
+#[allow(clippy::too_many_arguments)]
+fn kept_supports(
+    keys: &kept::Keys,
+    cut: &Contours,
+    blend: &BlendMode,
+    settings: &SliceSettings,
+    solid: Option<Arc<Vec<Vec<Loop>>>>,
+    reuse: &mut Reuse,
+    spent: &mut Spent,
+    watch: &Watch,
+) -> Result<(Arc<SupportPlan>, Option<Arc<kept::Edited>>), String> {
+    let want = &settings.support_edits;
+    reuse.supports = false;
+    reuse.support_paths = false;
+    match kept::supports(keys) {
+        Some(found) if found.painted => {
+            reuse.supports = true;
+            reuse.support_paths = true;
+            watch.complete(Stage::Supports);
+            Ok((found.base, found.edited))
+        }
+        Some(found) => {
+            reuse.supports = true;
+            let layers = cut.bands.len().max(1) as u32;
+            watch.begin(Stage::Supports, layers);
+            if watch.stopped(settings.job) {
+                return Err("cancelled".into());
+            }
+            let base = Arc::new(found.base.repaint(cut, blend, settings, watch));
+            spent.supports(&base);
+            if watch.stopped(settings.job) {
+                return Err("cancelled".into());
+            }
+            let edited = found
+                .edited
+                .filter(|e| !want.is_empty() && want.starts_with(&e.edits))
+                .map(|e| {
+                    let plan = e.plan.repaint(cut, blend, settings, watch);
+                    spent.supports(&plan);
+                    Arc::new(kept::Edited {
+                        edits: e.edits.clone(),
+                        plan,
+                        outcomes: e.outcomes.clone(),
+                    })
+                });
+            if watch.stopped(settings.job) {
+                return Err("cancelled".into());
+            }
+            watch.fill();
+            Ok((base, edited))
+        }
+        None => {
+            let base = Arc::new(plan_supports(cut, blend, settings, solid, watch)?);
+            spent.supports(&base);
+            Ok((base, None))
+        }
+    }
 }
 
 /// The plan, with the clocks of what was joined and edited added.
@@ -2615,6 +2780,8 @@ pub(crate) struct Contours {
     /// What prints over air with supports off, for the first overhang angle
     /// asked, keyed by its bits.
     in_air: std::sync::OnceLock<(u64, InAir)>,
+    /// Each layer's XY box, `None` on an empty layer, found when first asked.
+    boxes: std::sync::OnceLock<Vec<Option<XyRect>>>,
     clocks: CutClocks,
 }
 
@@ -2647,6 +2814,7 @@ impl Contours {
             bounds,
             roofs,
             in_air: std::sync::OnceLock::new(),
+            boxes: std::sync::OnceLock::new(),
             clocks: CutClocks {
                 roof_ms: elapsed_ms(roof_started),
                 ..CutClocks::default()
@@ -2656,6 +2824,18 @@ impl Contours {
 
     /// What prints over air at overhang angle `angle_deg`. It reads only
     /// the cut and the angle, so every blend of the cut shares it.
+    fn boxes(&self) -> &[Option<XyRect>] {
+        self.boxes
+            .get_or_init(|| self.contours.par_iter().map(|c| loop_bounds(c)).collect())
+    }
+
+    /// The band of this cut that prints at the Z where `band` is cut, if any.
+    fn band_at(&self, band: &LayerBand) -> Option<usize> {
+        let z = band.cut_z();
+        let i = self.bands.partition_point(|b| b.z < z);
+        self.bands.get(i).filter(|b| b.z - b.height <= z).map(|_| i)
+    }
+
     fn in_air(&self, angle_deg: f64) -> InAir {
         let bits = angle_deg.to_bits();
         if let Some(&(_, found)) = self.in_air.get().filter(|(at, _)| *at == bits) {
@@ -2766,11 +2946,20 @@ pub(crate) struct SupportPlan {
     /// Each layer's support paths. An edit repaints some layers and shares
     /// the rest with the plan it started from.
     paths: Vec<Arc<Vec<Extrusion>>>,
+    /// What the trees grew among when other objects stand near: the part
+    /// and those objects, per layer, in the part frame. `None` is the part
+    /// alone.
+    solid: Option<Arc<Vec<Vec<Loop>>>>,
     support_ms: f64,
     toolpath_ms: f64,
 }
 
 impl SupportPlan {
+    /// What the trees avoid and stand on.
+    fn solid<'a>(&'a self, cut: &'a Contours) -> &'a [Vec<Loop>] {
+        self.solid.as_deref().map_or(&cut.contours, Vec::as_slice)
+    }
+
     /// Bring paths, shaft scales, and coverage up to date after edits
     /// changed the support on `changed` layers. A changed layer can move the
     /// shaft scale of its run beyond itself, so layers whose scale moved are
@@ -2807,7 +2996,7 @@ impl SupportPlan {
             self.paths[i] = Arc::new(paths);
         }
         self.shaft = shaft;
-        self.coverage = self.supports.coverage(&cut.bands, &cut.contours);
+        self.coverage = self.supports.coverage(&cut.bands, self.solid(cut));
         repaint
     }
 
@@ -2844,6 +3033,7 @@ impl SupportPlan {
             in_air: self.in_air,
             shaft,
             paths,
+            solid: self.solid.clone(),
             support_ms: 0.0,
             toolpath_ms: elapsed_ms(started),
         }
@@ -2870,7 +3060,9 @@ fn edit(
         return Edits::default();
     }
     let started = Instant::now();
-    let outcomes = Arc::make_mut(&mut plan.supports).apply(edits, &cut.bands, &cut.contours);
+    let solid = plan.solid.clone();
+    let solid = solid.as_deref().map_or(&cut.contours, |s| s);
+    let outcomes = Arc::make_mut(&mut plan.supports).apply(edits, &cut.bands, solid);
     let apply_ms = elapsed_ms(started);
     let started = Instant::now();
     let mut changed: Vec<usize> = outcomes
@@ -3088,10 +3280,13 @@ fn scarf_params(settings: &SliceSettings, layer_index: usize) -> Option<ScarfPar
     })
 }
 
+/// Supports for the part of `cut`, grown among `solid` when other objects
+/// stand near, else among the part alone.
 fn plan_supports(
     cut: &Contours,
     blend: &BlendMode,
     settings: &SliceSettings,
+    solid: Option<Arc<Vec<Vec<Loop>>>>,
     watch: &Watch,
 ) -> Result<SupportPlan, String> {
     let support_started = Instant::now();
@@ -3124,15 +3319,17 @@ fn plan_supports(
             in_air: Some(in_air),
             shaft: vec![0.0; cut.bands.len()],
             paths: (0..cut.bands.len()).map(|_| Arc::new(Vec::new())).collect(),
+            solid: None,
             support_ms: elapsed_ms(support_started),
             toolpath_ms: 0.0,
         });
     }
-    let supports = Supports::build_with(&cut.bands, &cut.contours, &opts, watch);
+    let among = solid.as_deref().map_or(&cut.contours, |s| s);
+    let supports = Supports::build_with(&cut.bands, &cut.contours, among, &opts, watch);
     let Some(supports) = supports.filter(|_| !watch.stopped(settings.job)) else {
         return Err("cancelled".into());
     };
-    let coverage = supports.coverage(&cut.bands, &cut.contours);
+    let coverage = supports.coverage(&cut.bands, among);
     let support_ms = elapsed_ms(support_started);
     let shaft = shaft_scales(&supports.layers, settings.support_height_mult);
     let toolpath_started = Instant::now();
@@ -3161,6 +3358,7 @@ fn plan_supports(
         in_air: None,
         shaft,
         paths,
+        solid,
         support_ms,
         toolpath_ms,
     })
@@ -4981,7 +5179,7 @@ mod edit_cost {
             .map(|b| simplify_loops(index.slice(b.cut_z()), tolerance))
             .collect();
         let object = Contours::new(bands, contours, bounds, &settings);
-        let plan = || plan_supports(&object, &blend, &settings, &Watch::idle()).unwrap();
+        let plan = || plan_supports(&object, &blend, &settings, None, &Watch::idle()).unwrap();
 
         let started = Instant::now();
         let base = plan();
