@@ -2,13 +2,16 @@ import { expect, test, type Page } from "@playwright/test";
 import { encodePaths } from "../src/preview-wire";
 import { canvasShare } from "../src/ui/compact/viewport-share";
 
-test("an X/Y move slides the preview, and a reply offset replaces that slide", async ({ page }) => {
+test("an X/Y move slides the preview, re-emits by itself, and the reply offset replaces that slide", async ({ page }) => {
   const calls: { previewBase?: string; pose?: { translation: number[] }; offset?: unknown; objects?: unknown }[] = [];
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/slice", async (route) => {
     const body = route.request().postDataJSON() as (typeof calls)[number];
     calls.push(body);
     const moved = calls.length > 1;
+    if (moved) await held;
     await route.fulfill({
       json: moved && body.previewBase ? patched(body.previewBase) : firstSlice(),
     });
@@ -32,13 +35,14 @@ test("an X/Y move slides the preview, and a reply offset replaces that slide", a
   await commitX(page, "122");
   await expect(page.locator("#placeReadout")).toContainText("X 122.0");
   await expect(page.locator("#view3d")).toHaveAttribute("data-bed-offset", "12.000,0.000");
-  await expect(page.locator("#stage")).toHaveClass(/stale/);
+  await expect.poll(() => calls.length).toBe(2);
   await expect(page.locator("#export")).toBeDisabled();
+  await expect(page.locator("#stage")).not.toHaveClass(/stale/);
+  await expect(page.locator("#banner")).not.toContainText("Settings changed");
 
-  await page.locator("#slice").click();
+  release();
   await expect(page.locator("#view3d")).toHaveAttribute("data-bed-offset", "40.000,-5.000");
   await expect(page.locator("#export")).toBeEnabled();
-  await expect.poll(() => calls.length).toBeGreaterThan(1);
   const again = calls.at(-1)!;
   expect(again.previewBase).toBe("bed-1");
   expect(again.offset).toBeUndefined();
@@ -50,6 +54,38 @@ test("an X/Y move slides the preview, and a reply offset replaces that slide", a
   await page.locator("#tabPrepare").click();
   await page.locator("#rotZ").click();
   await expect(page.locator("#view3d")).toHaveAttribute("data-bed-offset", "40.000,-5.000");
+  await expect(page.locator("#export")).toBeDisabled();
+  expect(calls).toHaveLength(2);
+});
+
+test("rotation and scale still wait for Slice when auto-slice is off", async ({ page }) => {
+  let calls = 0;
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/slice", async (route) => {
+    calls += 1;
+    await route.fulfill({ json: firstSlice() });
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await page.getByText("Samples", { exact: true }).click();
+  await page.getByRole("button", { name: "20 mm cube" }).click();
+  await expect(page.locator("#autoslice")).not.toBeChecked();
+  await page.locator("#slice").click();
+  await expect(page.locator("#export")).toBeEnabled();
+
+  await page.locator("#rotZ").click();
+  await expect(page.locator("#banner")).toContainText("Settings changed since this slice. Export stays off until you re-slice.");
+  await expect(page.locator("#stage")).toHaveClass(/stale/);
+  await page.waitForTimeout(600);
+  expect(calls).toBe(1);
+  await expect(page.locator("#export")).toBeDisabled();
+
+  await page.locator("#slice").click();
+  await expect(page.locator("#export")).toBeEnabled();
+  await page.locator("#partScale").fill("150");
+  await expect(page.locator("#banner")).toContainText("Settings changed since this slice.");
+  await page.waitForTimeout(600);
+  expect(calls).toBe(2);
   await expect(page.locator("#export")).toBeDisabled();
 });
 
@@ -78,6 +114,39 @@ test("Move drags the part in X/Y and Shift snaps to 1 mm", async ({ page }) => {
   expect(Math.abs(afterX - before)).toBeGreaterThanOrEqual(1);
   expect(Math.abs(afterX - Math.round(afterX))).toBeLessThan(0.05);
   expect(Math.abs(afterY - Math.round(afterY))).toBeLessThan(0.05);
+});
+
+test("a Move drag sends one refresh, after the drag ends", async ({ page }) => {
+  const calls: { previewBase?: string }[] = [];
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/slice", async (route) => {
+    const body = route.request().postDataJSON() as (typeof calls)[number];
+    calls.push(body);
+    await route.fulfill({ json: body.previewBase ? patched(body.previewBase) : firstSlice() });
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await page.getByText("Samples", { exact: true }).click();
+  await page.getByRole("button", { name: "20 mm cube" }).click();
+  await page.locator("#slice").click();
+  await expect(page.locator("#export")).toBeEnabled();
+  await page.getByRole("button", { name: "Top", exact: true }).click();
+  await page.locator("#toolRail [data-tool=move]").click();
+  const box = (await page.locator("#prepare").boundingBox())!;
+  const x = box.x + box.width * 0.58;
+  const y = box.y + box.height * 0.48;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 50, y + 20, { steps: 8 });
+  await page.waitForTimeout(500);
+  expect(calls).toHaveLength(1);
+  await expect(page.locator("#banner")).not.toContainText("Settings changed");
+  await page.mouse.move(x + 90, y + 36, { steps: 8 });
+  await page.mouse.up();
+  await expect(page.locator("#export")).toBeEnabled();
+  await page.waitForTimeout(500);
+  expect(calls).toHaveLength(2);
+  expect(calls[1]!.previewBase).toBe("bed-1");
 });
 
 test.describe("compact prepare still gives the canvas the peek", () => {

@@ -931,6 +931,7 @@ export function mountViews() {
     state.poseHud = "";
     paintGizmoReadout();
     renderChrome();
+    fx.scheduleAuto();
   });
   prepare.onModifierSelect((id) => selectModifier(id));
   prepare.onModifierEditStart(() => beginModifierEdit());

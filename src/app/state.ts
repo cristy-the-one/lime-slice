@@ -229,6 +229,10 @@ export const session = {
   chosenZ: null as { high: number; low: number } | null,
   /** Recipe key of `state.result`, once a slice has landed. */
   shownRecipe: null as string | null,
+  /** `partFrameKey` of the request behind `state.result`. */
+  slicedFrame: null as string | null,
+  /** `settingsHash` a quiet refresh last ran for, so a failed or cancelled one does not retry until the next change. */
+  quietTried: "",
   /** Support edits the request behind `state.result` carried. */
   slicedEdits: [] as readonly EditEntry[],
   /** Pose and reply offset the buffers on screen were built from. */
