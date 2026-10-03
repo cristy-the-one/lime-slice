@@ -2,6 +2,7 @@ import { fx } from "./fx";
 import { session, state } from "./state";
 import { presetKeys } from "../presets";
 import { saveProfile } from "../profiles";
+import { emptyOverrides } from "../overrides";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library";
 import { selectIn, setAdvance } from "../ui/machine-library";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel";
@@ -55,6 +56,8 @@ function capture(): EditSnap {
       filamentId: loadMachineLibrary().filamentId,
       nozzleMm: loadMachineLibrary().nozzleMm,
     },
+    overrides: structuredClone(state.overrides),
+    selectedVolumeId: state.selectedVolumeId,
   };
 }
 
@@ -96,6 +99,11 @@ function applySnap(snap: EditSnap) {
   if (snap.machine) {
     const selected = selectIn(loadMachineLibrary(), snap.machine.printerId, snap.machine.filamentId, snap.machine.nozzleMm);
     if (typeof selected !== "string") storeMachineLibrary(setAdvance(selected, state.pressureAdvance, state.linearAdvance));
+  }
+  state.overrides = snap.overrides ? structuredClone(snap.overrides) : emptyOverrides();
+  state.selectedVolumeId = snap.selectedVolumeId ?? null;
+  if (state.selectedVolumeId && !state.overrides.volumes.some((volume) => volume.id === state.selectedVolumeId)) {
+    state.selectedVolumeId = null;
   }
   applying = false;
   fx.applyPlace?.(true);

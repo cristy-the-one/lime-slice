@@ -7,6 +7,7 @@ import type { PrinterProfile } from "./profiles.ts";
 import type { PresetSettings } from "./presets.ts";
 import { DEFAULT_PRESET, presetKeys } from "./presets.ts";
 import { fnv1aHex } from "./slice-action.ts";
+import { parseOverrides, type OverrideDocument } from "./overrides.ts";
 import type { EditEntry } from "./support-edit-list.ts";
 import type { SiteSpec } from "./support-edits.ts";
 
@@ -42,6 +43,8 @@ export interface LimeProject {
   profile: PrinterProfile;
   level: SettingsLevel;
   supportEdits: EditEntry[];
+  /** Present only when the user added a height range or a modifier volume. */
+  overrides?: OverrideDocument;
 }
 
 export type ProjectResult = { ok: true; project: LimeProject } | { ok: false; message: string };
@@ -148,7 +151,13 @@ function readProject(doc: Record<string, unknown>): ProjectResult {
   if (preset === undefined) return { ok: false, message: "This project file is incomplete." };
   const edits = readEdits(doc.supportEdits);
   if (typeof edits === "string") return { ok: false, message: edits };
-  return { ok: true, project: { version: 1, mesh, placement, settings, preset, profile, level, supportEdits: edits } };
+  const project: LimeProject = { version: 1, mesh, placement, settings, preset, profile, level, supportEdits: edits };
+  if (doc.overrides !== undefined) {
+    const overrides = parseOverrides(doc.overrides);
+    if (!overrides.ok) return overrides;
+    project.overrides = overrides.doc;
+  }
+  return { ok: true, project };
 }
 
 function readMesh(value: unknown): ProjectMesh | string {

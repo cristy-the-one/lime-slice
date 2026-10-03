@@ -1,4 +1,5 @@
 /** Undo stack for placement and settings. One gesture is one step. */
+import type { OverrideDocument } from "../overrides.ts";
 import type { SettingsLevel } from "../project.ts";
 
 export interface PlacementSnap {
@@ -40,6 +41,9 @@ export interface EditSnap {
   level: SettingsLevel;
   /** Active printer, filament, and nozzle. Absent on snaps from before the machine library. */
   machine?: MachineSnap;
+  /** Height ranges and volumes. Absent on snaps from before that editor. */
+  overrides?: OverrideDocument;
+  selectedVolumeId?: string | null;
 }
 
 export interface EditHistory {

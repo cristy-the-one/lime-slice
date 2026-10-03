@@ -21,6 +21,7 @@ import { canRedoEdit, canUndoEdit, noteEdit } from "./history";
 import { loadProfileLibrary } from "./profile-library";
 import { SETTING_KEYWORDS, settingMatches } from "../ui/settings-search";
 import { displayId } from "../ui/settings-profiles";
+import { overrideSectionHtml } from "../ui/overrides-panel";
 import { loadSettingsLevel } from "../ui/settings-panel";
 
 export function apiBase() {
@@ -45,7 +46,7 @@ export function stale() {
 export function settingsHash() {
   const shift = state.offset;
   const mesh = state.mesh ? `${state.mesh.name}:${state.mesh.bytes.byteLength}:${state.partScale}:${state.centered}:${shift.x.toFixed(3)},${shift.y.toFixed(3)},${shift.z.toFixed(3)}:${state.orient.join(",")}` : "";
-  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, ...rest } = state;
+  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, overrides: _ov, selectedVolumeId: _sel, modifierTool: _mt, ...rest } = state;
   return JSON.stringify({ mesh, profile: state.profile, rest });
 }
 
@@ -112,6 +113,7 @@ export function renderChrome() {
         ${num("trunkd", "Trunk diameter mm", state.trunkDiameter, 1.5, 12, 0.2, "expert")}` : ""}
         ${num("shmult", "Shaft height ×", state.supportHeightMult, 1, 4, 1, "advanced")}` : ""}
     `)}
+    ${group("Overrides", overrideSectionHtml(state.overrides, state.selectedVolumeId, state.modifierTool))}
     ${group("Other", `
       <h2>Printer</h2>
       ${profileFields()}
@@ -745,6 +747,7 @@ export function onSettings(ev: Event) {
     rememberPrusaForm();
     return;
   }
+  if (t.closest("[data-override-card]")) return;
   noteEdit();
   markProjectDirty();
   const numIds = ["lh", "amin", "amax", "pa", "la", "zhopht", "zhopmin", "scarflen", "scarfsteps", "sangle", "bangle", "tipd", "trunkd", "shmult", "pastart", "paend", "pastep", "nozzle", "bedx", "bedy", "bedz", "vol", "accel", "density", "cost", "partScale", "simperr"] as const;

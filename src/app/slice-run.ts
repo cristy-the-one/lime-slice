@@ -6,6 +6,7 @@ import { adoptPatch, previewBase } from "./viewer";
 import { syncSliceDock } from "../ui/shell";
 import { blend, renderChrome, settingsHash, markBusy, paintBanner, busyText, markEngineDown, apiBase, stale, apiToken, touch } from "./settings";
 import { editRequestFields } from "../support-edit-list";
+import { hasOverrides, OVERRIDES_STORED_TOAST, sliceOverrideFields } from "../overrides";
 import { engineDownMessage, authHeaders } from "../ui/api-base";
 import { pushToast } from "../ui/toasts";
 import {
@@ -133,6 +134,8 @@ export function payload() {
     simplifyErrorMm: state.simplifyError,
     pose: currentPlacement()?.pose,
     ...editRequestFields(state.supportEdits, treeSupports()),
+    // ADAPTER: ranges and volumes stay in the project. SliceRequest has no fields for them.
+    ...sliceOverrideFields(state.overrides),
   };
 }
 
@@ -150,6 +153,7 @@ export function printer() {
 
 /** `force` plans again even when this recipe is already cached. */
 export async function runSlice(force = false) {
+  if (hasOverrides(state.overrides)) pushToast(OVERRIDES_STORED_TOAST, "info");
   if (!state.mesh) {
     state.error = "Load a mesh first.";
     renderChrome();

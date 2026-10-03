@@ -1,6 +1,7 @@
 /** Save and open a `.lime` project against the live session. */
 import { saveProjectText } from "../platform.ts";
 import { confirmDiscard, markProjectClean } from "../project-dirty.ts";
+import { emptyOverrides, projectOverrides } from "../overrides.ts";
 import { base64ToBytes, meshRecord, parseProject, serializeProject, type LimeProject } from "../project.ts";
 import { saveProfile } from "../profiles.ts";
 import { DEFAULT_PRESET, readPresets, type PresetSettings } from "../presets.ts";
@@ -31,6 +32,8 @@ export async function saveCurrentProject() {
     level: loadSettingsLevel(),
     supportEdits: state.supportEdits.map((entry) => structuredClone(entry)),
   };
+  const overrides = projectOverrides(state.overrides);
+  if (overrides) project.overrides = structuredClone(overrides);
   const name = `${state.mesh.name.replace(/\.(stl|3mf|step|stp|lime)$/i, "")}.lime`;
   const wrote = await saveProjectText(serializeProject(project), name);
   if (!wrote) return;
@@ -87,6 +90,8 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
     applyPreset(project.settings);
     setSettingsLevel(project.level);
     state.supportEdits = project.supportEdits;
+    state.overrides = project.overrides ? structuredClone(project.overrides) : emptyOverrides();
+    state.selectedVolumeId = state.overrides.volumes[0]?.id ?? null;
     session.slicedEdits = [];
     place("load");
     session.supportUi?.refresh();

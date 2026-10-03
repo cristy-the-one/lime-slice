@@ -81,6 +81,7 @@ export function mountMarkup(root: HTMLElement) {
           <div class="vslider" id="vslider">
             <div class="readout" id="readHigh">—</div>
             <div class="track">
+              <div class="range-bands" id="rangeBands"></div>
               <div class="band" id="layerBand" hidden></div>
               <input id="rangeLow" type="range" min="0" max="0" value="0" aria-label="Lowest visible layer" />
               <input id="rangeHigh" type="range" min="0" max="0" value="0" aria-label="Current layer" />
@@ -90,6 +91,7 @@ export function mountMarkup(root: HTMLElement) {
           <div class="previews">
             <div class="pane" id="pane2d"><canvas id="view" aria-label="2D toolpath"></canvas></div>
             <div class="pane" id="pane3d">
+              <div class="viewport-bands" id="viewportBands" hidden></div>
               <canvas id="view3d" aria-label="3D toolpath"></canvas>
               <div class="section-readout" id="sectionReadout" hidden></div>
             </div>
