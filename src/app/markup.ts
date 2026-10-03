@@ -6,9 +6,12 @@ export function mountMarkup(root: HTMLElement) {
       <button class="btn panel-toggle" id="toggleLeft" type="button">Settings</button>
       <button class="btn panel-toggle" id="toggleRight" type="button">Blend</button>
       <label class="btn file">Open mesh<input id="file" type="file" accept=".stl,.3mf,.step,.stp,.STL,.3MF,.STEP,.STP" /></label>
+      <input id="projectFile" type="file" accept=".lime,application/json" hidden />
       <details class="menu" id="samples">
         <summary class="btn">Samples</summary>
         <nav>
+          <button type="button" data-project="open">Open project</button>
+          <button type="button" data-project="save">Save project</button>
           <button type="button" data-sample="calibration_cube_20mm.stl">20 mm cube</button>
           <button type="button" data-sample="lime_hull.stl">60 mm hull</button>
           <button type="button" data-sample="calibration_cube_20mm.3mf">Cube 3MF</button>

@@ -4,6 +4,7 @@ import { currentApiTarget, authHeaders, engineDownMessage } from "../ui/api-base
 import { layerWeight, resolved, type ResolvedCard } from "../strategy";
 import { levelBarHtml, paintSettingMarks, syncEmptyState } from "../ui/shell";
 import { pushToast } from "../ui/toasts";
+import { markProjectDirty } from "../project-dirty";
 import { sliceBusyStatus, staleSliceCopy, cacheStatus, coverageWarning, inAirWarning } from "../slice-action";
 import { applySliceProgress, currentSliceProgress } from "../ui/slice-progress";
 import { groupFeatures } from "../estimate";
@@ -607,6 +608,7 @@ export function applyFilter() {
 }
 
 export function onBlend(ev: Event) {
+  markProjectDirty();
   const t = ev.target as HTMLInputElement;
   if (t.id === "weight") {
     state.toughness = Number(t.value) / 100;
@@ -653,6 +655,7 @@ export function onSettings(ev: Event) {
     applyFilter();
     return;
   }
+  markProjectDirty();
   const numIds = ["lh", "amin", "amax", "pa", "la", "zhopht", "zhopmin", "scarflen", "scarfsteps", "sangle", "bangle", "tipd", "trunkd", "shmult", "pastart", "paend", "pastep", "nozzle", "bedx", "bedy", "bedz", "vol", "accel", "density", "cost", "partScale", "simperr"] as const;
   const map: Record<string, (v: number) => void> = {
     lh: (v) => { state.layerHeight = v || 0.2; },
@@ -748,6 +751,7 @@ export function onSettings(ev: Event) {
 }
 
 export function touch() {
+  markProjectDirty();
   state.notice = "";
   renderChrome();
   fx.draw();
