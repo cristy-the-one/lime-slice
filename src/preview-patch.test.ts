@@ -23,17 +23,18 @@ const held = [
   layer(0, [bead("skirt", 0), hop(1), bead("outer", 2)]),
   layer(1, [bead("support", 0), hop(1), bead("support", 3), hop(4), bead("outer", 6, [0.3, 0.35, 0.4]), bead("gap-fill", 12)]),
   layer(2, [bead("support", 9)]),
+  layer(40, [bead("outer", 1)]),
 ];
 const patch: PreviewPatch = {
   base: "a",
-  layers: [0, 1, 3],
+  layers: [0, 1, 3, 40],
   changed: [
     { ...layer(1, [hop(7), bead("support-interface", 8)]), order: [2, -1, -2, 4] },
     { ...layer(3, [bead("top", 1)]), order: [-1] },
   ],
 };
 const merged = patchLayers(held, patch)!;
-eq("layer list follows the patch", merged.map((l) => l.index), [0, 1, 3]);
+eq("layer list follows the patch", merged.map((l) => l.index), [0, 1, 3, 40]);
 check("an unchanged layer is the held one", merged[0] === held[0]);
 eq(
   "a changed layer mixes held and sent paths in order",
@@ -47,12 +48,14 @@ eq("a layer the holder lacks is refused", patchLayers(held, { ...patch, layers: 
 
 const bounds = { min: [0, 0, 0], max: [20, 10, 2] };
 const old = buildWirePreview({ layers: held, ...bounds });
-const fresh = buildWirePreview({ layers: patch.changed, ...bounds, kinds: old.kinds });
-const spliced = patchGeometry(old, held, patch, fresh);
+const changed = new Set(patch.changed.map((l) => l.index));
+const fresh = buildWirePreview({ layers: merged.filter((l) => changed.has(l.index)), ...bounds, kinds: old.kinds });
+const spliced = patchGeometry(old, patch, fresh);
 const rebuilt = buildWirePreview({ layers: merged, ...bounds, kinds: spliced.kinds });
-const arrays = (g: PreviewGeometry) => [g.ribbon, g.ribbonInfo, g.face, g.faceInfo, g.travel, g.travelInfo].map((a) => Array.from(a));
-eq("spliced ranges equal a full build", spliced.ranges, rebuilt.ranges);
-eq("spliced buffers equal a full build", arrays(spliced), arrays(rebuilt));
+const arrays = (g: PreviewGeometry) => g.chunks.map((c) => [c.indices, ...[c.beads, c.travel].flatMap((r) => [r.at, r.xyz, r.style].map((a) => Array.from(a)))]);
+eq("spliced points equal a full build", arrays(spliced), arrays(rebuilt));
+eq("chunks group layers by index", spliced.chunks.map((c) => c.indices), [[0, 1, 3], [40]]);
+check("a chunk the patch does not touch keeps its buffers", spliced.chunks[1] === old.chunks[1]);
 check("the splice kept every shown kind slot", old.kinds.every((k, i) => spliced.kinds[i] === k));
 
 if (failed) {

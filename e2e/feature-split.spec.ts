@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { FEATURE_COLOR, featureColor, hexRgb } from "../src/colors";
 import { groupFeatures } from "../src/estimate";
-import { buildPreviewGeometry, fillHiddenKindMask } from "../src/preview-geom";
+import { buildWirePreview, fillHiddenKindMask, KIND_SHIFT } from "../src/preview-geom";
 import { encodePaths } from "../src/preview-wire";
 
 const THIN = FEATURE_COLOR["thin-wall"];
@@ -39,30 +39,22 @@ test("thin-wall time sits with inner walls; gap fill stays with infill", () => {
 });
 
 test("hiding thin wall does not hide gap fill in the preview slots", () => {
-  const built = buildPreviewGeometry({
-    layers: [
-      {
-        z: 0.2,
-        paths: [
-          { kind: "thin-wall", pts: [[0, 0], [8, 0]], width: 0.4 },
-          { kind: "gap-fill", pts: [[0, 2], [8, 2]], width: 0.4 },
-        ],
-      },
-    ],
+  const built = buildWirePreview({
+    layers: [{
+      index: 0,
+      z: 0.2,
+      paths: encodePaths([
+        { kind: "thin-wall", pts: [[0, 0], [8, 0]], width: 0.4 },
+        { kind: "gap-fill", pts: [[0, 2], [8, 2]], width: 0.4 },
+      ]),
+    }],
     min: [0, -1, 0],
     max: [8, 3, 1],
   });
   expect(built.kinds).toEqual(["thin-wall", "gap-fill"]);
-  const thinSlot = built.ribbonInfo[0];
-  let gapSlot = -1;
-  for (let i = 0; i < built.ribbonInfo.length; i += 3) {
-    if (built.ribbonInfo[i] !== thinSlot) {
-      gapSlot = built.ribbonInfo[i];
-      break;
-    }
-  }
-  expect(thinSlot).toBe(0);
-  expect(gapSlot).toBe(1);
+  const style = built.chunks[0].beads.style;
+  expect(Math.floor(style[0] / KIND_SHIFT)).toBe(0);
+  expect(Math.floor(style[8] / KIND_SHIFT)).toBe(1);
 
   const mask = new Float32Array(8);
   fillHiddenKindMask(mask, built.kinds, new Set(["thin-wall"]));
