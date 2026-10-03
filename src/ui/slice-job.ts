@@ -1,9 +1,10 @@
 /**
  * HTTP slice jobs. `POST /api/jobs` is the same body as `POST /api/slice`.
- * The invoke path does not use this module; it still falls back to `mockSliceProgress`.
+ * The desktop app's `slice-progress` event carries the same stage, done, and total.
  */
 import { authHeaders } from "./api-base.ts";
 import { progressFromEvent } from "./slice-progress.ts";
+import stageNames from "./stage-labels.json" with { type: "json" };
 
 export type JobStatus = "running" | "done" | "cancelled" | "error";
 
@@ -16,16 +17,8 @@ export interface JobSnapshot {
   status: JobStatus;
 }
 
-/** Names for the stage budget in docs/slice-progress.md. */
-const STAGE_NAMES: Record<string, string> = {
-  load: "Loading mesh",
-  cut: "Slicing layers",
-  part: "Walls and infill",
-  travel: "Travel",
-  supports: "Supports",
-  assemble: "Assembling",
-  emit: "Writing G-code",
-};
+/** Names for the stage budget in docs/slice-progress.md. The desktop shell reads the same file. */
+const STAGE_NAMES: Record<string, string> = stageNames;
 
 export function stageLabel(stage: string): string {
   return STAGE_NAMES[stage] ?? (stage || "Slicing");

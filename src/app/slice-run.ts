@@ -23,7 +23,11 @@ import {
   postJson,
   stageLabel,
   type JobSnapshot,
+  type JobStatus,
 } from "../ui/slice-job";
+
+/** The desktop shell's `slice-progress` event. `message` is `stageLabel(stage)`. */
+type DesktopProgress = { progress: number; message: string; stage: string; done: number; total: number; status: JobStatus };
 
 export function meshFingerprint(): string {
   const source = state.sourcePos ?? state.mesh?.bytes ?? null;
@@ -192,19 +196,15 @@ export async function runSlice(force = false) {
   try {
     const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     let send: (req: Record<string, unknown>) => Promise<SliceResponse>;
+    session.liveProgress = true;
     if (tauri) {
       const { invoke } = await import("@tauri-apps/api/core");
       const { listen } = await import("@tauri-apps/api/event");
-      unlisten = await listen<{ progress: number; message: string }>("slice-progress", (ev) => {
-        if (id !== session.job) return;
-        state.progress = ev.payload.progress;
-        session.busyPhase = ev.payload.message;
-        paintBanner(false);
-        document.querySelector("#timing")!.textContent = busyText();
+      unlisten = await listen<DesktopProgress>("slice-progress", ({ payload: p }) => {
+        noteJob(id, { id: "", stage: p.stage, done: p.done, total: p.total, fraction: p.progress, status: p.status });
       });
       send = async (req) => parseInWorker(id, await invoke<string>("slice_model", { payload: JSON.stringify({ ...req, dataB64: meshBase64() }) }));
     } else {
-      session.liveProgress = true;
       send = (req) => runHttpSlice(id, bytes, req, meshFingerprint());
     }
     if (id !== session.job) return;
