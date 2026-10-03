@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use lime_slice_core::{
     cancel_all, keep_support_bases, load_slice_mesh_tol, mesh_preview_tol, pareto_estimates,
-    pressure_advance_from_request, slice_payload, strategy_card, GcodeText, Job, PaCalibRequest,
-    SliceCache, SliceRequest, SliceSettings,
+    pressure_advance_from_request, slice_payload_watched, strategy_card, GcodeText, Job,
+    PaCalibRequest, Progress, SliceCache, SliceRequest, SliceSettings, Status, Watch,
 };
+use serde_json::{json, Value};
 use tauri::AppHandle;
 use tauri::Emitter;
 use tauri::Manager;
@@ -32,25 +34,96 @@ fn park_gcode(text: GcodeText) -> String {
 /// Disk budget for kept slices. Past it, the least recently used go first.
 const SLICE_CACHE_BYTES: u64 = 2 << 30;
 
+/// About 10 Hz. The terminal event is sent whenever it happens.
+const PROGRESS_EVERY: Duration = Duration::from_millis(100);
+
+/// The newest slice's watch, so `cancel_slice` stops it at the next boundary.
+static CURRENT: Mutex<Watch> = Mutex::new(Watch::idle());
+
+/// The web UI's stage names, from the file `src/ui/slice-job.ts` imports.
+fn stage_label(stage: &str) -> String {
+    static LABELS: LazyLock<HashMap<String, String>> = LazyLock::new(|| {
+        serde_json::from_str(include_str!("../../src/ui/stage-labels.json")).expect("stage labels")
+    });
+    LABELS
+        .get(stage)
+        .cloned()
+        .unwrap_or_else(|| stage.to_string())
+}
+
+/// The `slice-progress` event the UI listens for.
+fn progress_event(progress: &Progress) -> Value {
+    json!({
+        "progress": progress.fraction,
+        "message": stage_label(progress.stage),
+        "stage": progress.stage,
+        "done": progress.done,
+        "total": progress.total,
+        "status": progress.status.as_str(),
+    })
+}
+
+/// Emits the newest state at most once per `every`, and the terminal state
+/// always. Returns after the terminal one.
+fn forward_progress(watch: &Watch, every: Duration, mut emit: impl FnMut(Value)) {
+    let mut seq = 0;
+    let mut not_before = Instant::now();
+    loop {
+        let (next, progress) = watch.latest_after(seq, not_before);
+        emit(progress_event(&progress));
+        if progress.status != Status::Running {
+            return;
+        }
+        seq = next;
+        not_before = Instant::now() + every;
+    }
+}
+
+/// Finishes the watch as an error if the slice panics, so the forwarder,
+/// which waits for a terminal state, still ends with the slice.
+struct FailOnPanic<'a>(&'a Watch);
+
+impl Drop for FailOnPanic<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.finish(Status::Error);
+        }
+    }
+}
+
+/// Slices `payload` while a second thread forwards its progress. Both end
+/// before this returns.
+fn slice_with_progress(
+    payload: &str,
+    cache: Option<&SliceCache>,
+    job: Job,
+    watch: &Watch,
+    every: Duration,
+    emit: impl FnMut(Value) + Send,
+) -> Result<String, String> {
+    std::thread::scope(|scope| {
+        scope.spawn(move || forward_progress(watch, every, emit));
+        let _settle = FailOnPanic(watch);
+        let result = slice_payload_watched(payload, cache, job, watch, park_gcode);
+        watch.finish(Status::of(&result));
+        result
+    })
+}
+
 #[tauri::command]
 async fn slice_model(app: AppHandle, payload: String) -> Result<String, String> {
     let job = Job::start();
+    let watch = Watch::new();
+    *CURRENT.lock().unwrap_or_else(PoisonError::into_inner) = watch.clone();
     // One cache for the app's life: it owns the background writes in flight.
     static SLICE_CACHE: std::sync::OnceLock<SliceCache> = std::sync::OnceLock::new();
     let cache = app.path().app_cache_dir().ok().map(|dir| {
         SLICE_CACHE.get_or_init(|| SliceCache::new(dir.join("slices"), SLICE_CACHE_BYTES))
     });
     tauri::async_runtime::spawn_blocking(move || {
-        let _ = app.emit(
-            "slice-progress",
-            serde_json::json!({ "progress": 0.08, "message": "Planning toolpaths" }),
-        );
-        let reply = slice_payload(&payload, cache, job, park_gcode)?;
-        let _ = app.emit(
-            "slice-progress",
-            serde_json::json!({ "progress": 1.0, "message": "Done" }),
-        );
-        Ok(reply)
+        slice_with_progress(&payload, cache, job, &watch, PROGRESS_EVERY, |event| {
+            let _ = app.emit("slice-progress", event);
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -59,6 +132,10 @@ async fn slice_model(app: AppHandle, payload: String) -> Result<String, String> 
 #[tauri::command]
 fn cancel_slice() {
     cancel_all();
+    CURRENT
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .cancel();
 }
 
 #[tauri::command]
@@ -204,4 +281,108 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("Lime Slice window failed to start");
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::thread;
+
+    use base64::Engine;
+    use lime_slice_core::Stage;
+
+    use super::*;
+
+    fn stage_names() -> Vec<&'static str> {
+        Stage::ALL.iter().map(|stage| stage.name()).collect()
+    }
+
+    #[test]
+    fn every_stage_has_the_web_ui_label() {
+        let labels: HashMap<String, String> =
+            serde_json::from_str(include_str!("../../src/ui/stage-labels.json")).unwrap();
+        let mut keys: Vec<&str> = labels.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        let mut names = stage_names();
+        names.sort_unstable();
+        assert_eq!(keys, names);
+        assert_eq!(stage_label("part"), "Walls and infill");
+    }
+
+    #[test]
+    fn a_desktop_slice_forwards_ordered_named_progress_and_ends_done() {
+        let stl = std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../samples/calibration_cube_20mm.stl"),
+        )
+        .unwrap();
+        let payload = json!({
+            "filename": "calibration_cube_20mm.stl",
+            "dataB64": base64::engine::general_purpose::STANDARD.encode(stl),
+            "baseline": false,
+            "compare": false,
+            "includePreview": false,
+            "includeGcode": false,
+        })
+        .to_string();
+        let mut events = Vec::new();
+        let reply = slice_with_progress(
+            &payload,
+            None,
+            Job::default(),
+            &Watch::new(),
+            Duration::ZERO,
+            |event| events.push(event),
+        );
+        assert!(reply.unwrap().contains("gcodeToken"));
+
+        let names = stage_names();
+        let mut previous = 0.0;
+        for event in &events {
+            let stage = event["stage"].as_str().unwrap();
+            assert!(names.contains(&stage), "unknown stage {event}");
+            assert_eq!(event["message"], stage_label(stage), "{event}");
+            let fraction = event["progress"].as_f64().unwrap();
+            assert!(fraction + 1e-12 >= previous, "{previous} -> {event}");
+            previous = fraction;
+        }
+        let (last, running) = events.split_last().unwrap();
+        assert!(!running.is_empty(), "only the terminal event: {last}");
+        assert!(running.iter().all(|event| event["status"] == "running"));
+        assert_eq!(last["status"], "done");
+        assert_eq!(last["progress"], 1.0);
+        assert_eq!(last["stage"], "emit");
+        assert_eq!(last["message"], "Writing G-code");
+    }
+
+    #[test]
+    fn forwarding_is_throttled_and_ends_with_the_terminal_state() {
+        let watch = Watch::new();
+        let mut events = Vec::new();
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                forward_progress(&watch, Duration::from_millis(100), |event| {
+                    events.push(event)
+                })
+            });
+            watch.begin(Stage::Part, 1_000);
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_millis(300) {
+                watch.tick();
+                thread::sleep(Duration::from_millis(1));
+            }
+            watch.finish(Status::Cancelled);
+        });
+        assert!((2..=6).contains(&events.len()), "{events:?}");
+        let last = events.last().unwrap();
+        assert_eq!(last["status"], "cancelled");
+        assert_eq!(last["stage"], "part");
+    }
+
+    #[test]
+    fn cancel_slice_cancels_the_current_watch() {
+        let watch = Watch::new();
+        *CURRENT.lock().unwrap() = watch.clone();
+        cancel_slice();
+        assert!(watch.cancelled());
+    }
 }
