@@ -6,6 +6,7 @@ import { adoptPatch, previewBase } from "./viewer";
 import { syncSliceDock } from "../ui/shell";
 import { blend, renderChrome, settingsHash, markBusy, paintBanner, busyText, markEngineDown, apiBase, stale, apiToken, touch } from "./settings";
 import { editRequestFields } from "../support-edit-list";
+import { replyOffset, type SlicedBed } from "../bed-offset";
 import { hasOverrides, OVERRIDES_STORED_TOAST, sliceOverrideFields } from "../overrides";
 import { engineDownMessage, authHeaders } from "../ui/api-base";
 import { pushToast } from "../ui/toasts";
@@ -136,6 +137,7 @@ export function payload() {
     includePreview: true,
     simplify: state.simplify,
     simplifyErrorMm: state.simplifyError,
+    // Pose is sent as today. Do not add offset or objects until the engine announces them.
     pose: currentPlacement()?.pose,
     ...editRequestFields(state.supportEdits, treeSupports()),
     // ADAPTER: ranges and volumes stay in the project. SliceRequest has no fields for them.
@@ -165,6 +167,14 @@ export async function runSlice(force = false) {
   }
   const id = ++session.job;
   const hash = settingsHash();
+  const sentPose = currentPlacement()?.pose;
+  const slicedBed: SlicedBed = {
+    translation: [sentPose?.translation[0] ?? 0, sentPose?.translation[1] ?? 0],
+    offset: [0, 0],
+    orientKey: state.orient.join(","),
+    scale: state.partScale,
+    meshEpoch: session.meshEpoch,
+  };
   const recipe = currentRecipeKey();
   const action = sliceAction({
     cached: recipe !== null && cachedRecipes.has(recipe),
@@ -211,6 +221,8 @@ export async function runSlice(force = false) {
     state.result = body;
     session.resultJob = id;
     session.resultFrame = frame;
+    slicedBed.offset = replyOffset(body.offset);
+    session.slicedBed = slicedBed;
     state.slicedHash = hash;
     session.slicedEdits = edits;
     if (recipe) {

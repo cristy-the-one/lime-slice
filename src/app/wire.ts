@@ -7,7 +7,7 @@ import { clampOffset, flipSection } from "../section-plane";
 import { state, type CardId } from "./state";
 import { draw, layerGcode, paintPlayback, paintSectionChrome, prepare, realignSplit, scrub, sectionLimit, setHelp, setStage, setView, stopPlay, syncGcodeHighlight, togglePlay, view3d } from "./viewer";
 import { applyPareto, cancelSlice, runPaCal, runPareto, runSlice } from "./slice-run";
-import { adoptBytes, export3mf, exportGcode, fail, loadNamed, place, saveText } from "./files";
+import { adoptBytes, export3mf, exportGcode, fail, loadNamed, place, saveText, setPlaceCenter } from "./files";
 import { mountProjectFiles, saveCurrentProject } from "./project-io";
 import { pickProjectFile } from "../platform";
 import { applyPreset, closedGroups, currentPreset, onBlend, onSettings, renderChrome, touch } from "./settings";
@@ -60,6 +60,13 @@ export function wireApp() {
   });
   document.querySelector("#left")!.addEventListener("change", (ev) => {
     const target = ev.target as HTMLElement;
+    if (target.id === "placeX" || target.id === "placeY") {
+      const mm = Number((target as HTMLInputElement).value);
+      if (!Number.isFinite(mm)) return;
+      noteEdit();
+      setPlaceCenter(target.id === "placeX" ? "x" : "y", mm);
+      return;
+    }
     if (target.id === "profilePick") {
       const id = (target as HTMLSelectElement).value;
       if (id) applyNamedProfile(id);

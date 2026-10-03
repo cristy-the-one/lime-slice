@@ -82,7 +82,7 @@ function mountToolRail(hooks: ChromeHooks) {
   rail.setAttribute("aria-label", "Prepare tools");
   rail.dataset.tool = "all";
 
-  const move = toolButton("move", Move3d, "Move", "M", "Drag an arrow. Shift snaps 1 mm.");
+  const move = toolButton("move", Move3d, "Move", "M", "Drag the part on the bed, or an arrow. Shift snaps 1 mm.");
   const rotate = toolButton("rotate", Rotate3d, "Rotate", "R", "Drag a ring. Shift snaps 15°.");
   const scale = toolButton("scale", Scaling, "Scale", "S", "No scale gizmo yet. Use Scale % in the mesh panel.");
   scale.classList.add("is-disabled");

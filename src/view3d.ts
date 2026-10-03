@@ -10,6 +10,7 @@ import { aimSection, anchor, clampOffset, normalize, sectionReach, threeClip, ty
 import { hexToThree, themeColors, type ThemeColors } from "./theme";
 import { poseAffine, type PlacedPart } from "./mesh-place";
 import type { CoverageGap } from "./support-edits";
+import { replyFrameRay } from "./bed-offset";
 import type { Ray } from "./support-pick";
 
 export interface LayerRange {
@@ -75,6 +76,8 @@ export interface SliceView3d {
   onSection(cb: ((section: SectionSpec, hud: string) => void) | null): void;
   setTheme(): void;
   setPlayhead(seg: { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number } | null): void;
+  /** Reply-frame geometry plus this bed offset, as a group matrix. Buffers stay put. */
+  setBedOffset(x: number, y: number): void;
   setSupportOverlay(overlay: SupportOverlay | null): void;
   /** Edit-mode pointer: `move` on hover, `click` on a press-release that moved under 5 px (a drag still orbits). Rays are print space. */
   onPick(cb: ((ev: PickEvent) => void) | null): void;
@@ -99,6 +102,7 @@ const noopView: SliceView3d = {
   onSection() {},
   setTheme() {},
   setPlayhead() {},
+  setBedOffset() {},
   setSupportOverlay() {},
   onPick() {},
   setPicking() {},
@@ -132,7 +136,11 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
 
   const root = new THREE.Group();
-  scene.add(root);
+  const previewShift = new THREE.Group();
+  previewShift.add(root);
+  scene.add(previewShift);
+  let bedOff: [number, number] = [0, 0];
+  canvas.dataset.bedOffset = "0.000,0.000";
   const bed = new THREE.Group();
   scene.add(bed);
   const bedPlateMat = new THREE.MeshBasicMaterial({
@@ -167,20 +175,20 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   const cursor = new THREE.Mesh(new THREE.SphereGeometry(0.7, 12, 10), cursorMat);
   cursor.visible = false;
   cursor.renderOrder = 4;
-  scene.add(cursor);
+  previewShift.add(cursor);
   const playGeo = new THREE.BufferGeometry();
   playGeo.setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 3));
   const playLine = new THREE.Line(playGeo, new THREE.LineBasicMaterial({ color: hexToThree(colors.amber), depthTest: false }));
   playLine.visible = false;
   playLine.renderOrder = 4;
-  scene.add(playLine);
+  previewShift.add(playLine);
 
   const clipPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 1e6);
   const clipPlanes = [clipPlane];
   // Scene-space plane. Negative distance is the arrow side and is discarded in the fragment shader.
   const sectionPlane = { value: new THREE.Vector4(0, 1, 0, 1e6) };
   const sectionRig = buildSectionRig();
-  scene.add(sectionRig.root);
+  previewShift.add(sectionRig.root);
   scene.add(sectionRig.gizmo);
 
   let ribbon: THREE.Mesh | null = null;
@@ -216,7 +224,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
   const support = buildSupportOverlay(clipPlane, colors);
-  scene.add(support.root);
+  previewShift.add(support.root);
   let picking = false;
   let pickCb: ((ev: PickEvent) => void) | null = null;
   let press: { x: number; y: number } | null = null;
@@ -288,7 +296,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     if (key === cutKey) return;
     cutKey = key;
     if (cut) {
-      scene.remove(cut);
+      cut.removeFromParent();
       disposeTree(cut);
       cut = null;
       cutPicks = [];
@@ -297,7 +305,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     const built = buildCutPlane(planeSpec.axis, planeSpec.at, bounds, previewFrame(origin.cx, origin.cy), bedX, bedY);
     cut = built.group;
     cutPicks = built.picks;
-    scene.add(cut);
+    previewShift.add(cut);
   }
 
   function pointerNdc(ev: PointerEvent) {
@@ -323,8 +331,10 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   }
 
   function writeClip(x: number, y: number, z: number, constant: number) {
-    clipPlane.set(new THREE.Vector3(x, y, z), constant);
-    sectionPlane.value.set(x, y, z, constant);
+    const shift = previewShift.position;
+    const adjusted = constant - (x * shift.x + y * shift.y + z * shift.z);
+    clipPlane.set(new THREE.Vector3(x, y, z), adjusted);
+    sectionPlane.value.set(x, y, z, adjusted);
   }
 
   function syncClip() {
@@ -501,7 +511,9 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       planeSpec.axis === "y" ? planeSpec.at : (bounds.min[1] + bounds.max[1]) / 2,
       (bounds.min[2] + bounds.max[2]) / 2,
     ];
-    const raw = splitDragAt(raycaster.ray, planeSpec.axis, pivot, previewFrame(origin.cx, origin.cy), camera.position);
+    const ray = raycaster.ray.clone();
+    ray.origin.sub(previewShift.position);
+    const raw = splitDragAt(ray, planeSpec.axis, pivot, previewFrame(origin.cx, origin.cy), camera.position);
     if (raw == null) return;
     const at = roundSplit(clampSplit(raw, bounds, planeSpec.axis));
     if (Math.abs(at - planeSpec.at) < 0.05) return;
@@ -535,9 +547,13 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     const d = raycaster.ray.direction;
     const rect = canvas.getBoundingClientRect();
     const viewMm = 2 * camera.position.distanceTo(controls.target) * Math.tan((camera.fov * Math.PI) / 360);
+    const [px, py, pz] = replyFrameRay(
+      [o.x + origin.cx, origin.cy - o.z, o.y],
+      [previewShift.position.x, -previewShift.position.z],
+    );
     pickCb({
       kind,
-      ray: { origin: [o.x + origin.cx, origin.cy - o.z, o.y], dir: [d.x, -d.z, d.y] },
+      ray: { origin: [px, py, pz], dir: [d.x, -d.z, d.y] },
       shiftKey: ev.shiftKey,
       pixelMm: viewMm / Math.max(1, rect.height) / camera.zoom,
     });
@@ -694,6 +710,16 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       support.recolor(colors);
       bed.userData.gridKey = "";
       syncBedGrid(bed, bedX, bedY, hexToThree(colors.line), hexToThree(colors.bedMinor), bed.userData.cx ?? 0, bed.userData.cy ?? 0);
+    },
+    setBedOffset(x, y) {
+      const ox = Number.isFinite(x) ? x : 0;
+      const oy = Number.isFinite(y) ? y : 0;
+      if (Math.abs(ox - bedOff[0]) < 1e-4 && Math.abs(oy - bedOff[1]) < 1e-4) return;
+      bedOff = [ox, oy];
+      previewShift.position.set(ox, 0, -oy);
+      canvas.dataset.bedOffset = `${ox.toFixed(3)},${oy.toFixed(3)}`;
+      syncClip();
+      requestRender();
     },
     setPlayhead(seg) {
       requestRender();
