@@ -311,7 +311,7 @@ async function runHttpSlice(uiId: number, bytes: ArrayBuffer, req: Record<string
     if (stopped || uiId !== session.job || terminal.status === "cancelled") throw new Error("cancelled");
     const result = await getText(base, token, `/api/jobs/${encodeURIComponent(started.id)}/result`);
     if (result.status !== 200) throw new Error(errorText(result.text, result.status));
-    return JSON.parse(result.text) as SliceResponse;
+    return parseInWorker(uiId, result.text);
   } finally {
     if (activeHttp?.jobId === started.id) activeHttp = null;
   }

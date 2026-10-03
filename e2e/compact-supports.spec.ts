@@ -100,6 +100,7 @@ test.describe("compact support editing", () => {
       localStorage.setItem("lime-slice-settings-level", "simple");
     });
     await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+    await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
     await page.route("**/api/slice", async (route) => {
       const edits = (route.request().postDataJSON()?.supportEdits ?? []) as { kind: string }[];
       requests.push(edits);

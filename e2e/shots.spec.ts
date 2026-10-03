@@ -48,6 +48,7 @@ test("ui states from real slice fixtures", async ({ page }) => {
       ],
     }),
   );
+  await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   await page.route("**/api/slice", async (route) => {
     if (delay) await new Promise((r) => setTimeout(r, delay));
     const name = route.request().postDataJSON()?.filename as string;

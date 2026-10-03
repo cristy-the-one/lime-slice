@@ -25,6 +25,7 @@ async function boot(page: Page, layout: string | null) {
     localStorage.setItem("lime-slice-settings-level", "simple");
   });
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   await page.route("**/api/slice", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 900));
     await route.fulfill({ json: hullSlice });

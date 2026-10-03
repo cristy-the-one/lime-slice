@@ -8,6 +8,7 @@ const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.js
 async function mockEngine(page: Page, delayMs: () => number) {
   const slices: unknown[] = [];
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   await page.route("**/api/slice", async (route) => {
     slices.push(route.request().postDataJSON());
     const delay = delayMs();
@@ -41,6 +42,7 @@ test("the parked G-code body is fetched once, when the G-code tab first needs it
   const body = [`;LAYER:${layer.index} Z:${layer.z}`, ";TYPE:OUTER", ...decodePaths(layer.paths, layer.z)[0].pts.map((p) => `G1 X${p[0]} Y${p[1]} E0.1 F1800`)].join("\n");
   const fetches: string[] = [];
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   await page.route("**/api/slice", (route) => route.fulfill({ json: { ...cube, gcode: "", gcodeToken: "t1" } }));
   await page.route("**/api/gcode/*", (route) => {
     fetches.push(route.request().url());

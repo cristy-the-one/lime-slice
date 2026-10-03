@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
+import { serveSliceJob } from "./serve-job";
 
 const out = "/opt/cursor/artifacts/preview-edges";
 fs.mkdirSync(out, { recursive: true });
@@ -12,7 +13,7 @@ test("feature-colored 3D preview keeps bead margins and the print head on the pa
   page.on("console", (msg) => logs.push(`${msg.type()}: ${msg.text()}`));
   page.on("pageerror", (err) => logs.push(`pageerror: ${err.message}`));
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
-  await page.route("**/api/slice", (route) => route.fulfill({ json: cube }));
+  await serveSliceJob(page, cube);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
   await page.getByText("Samples", { exact: true }).click();
