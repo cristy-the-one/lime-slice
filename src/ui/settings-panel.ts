@@ -1,4 +1,5 @@
 import { Layers, createElement } from "lucide";
+import { markProjectDirty } from "../project-dirty";
 import { changedPresetKeys, type PresetSettings } from "../presets";
 import "./shell.css";
 
@@ -54,6 +55,14 @@ export function applyStoredLevel() {
   document.documentElement.dataset.settingsLevel = loadSettingsLevel();
 }
 
+export function setSettingsLevel(level: SettingsLevel) {
+  localStorage.setItem(LEVEL_KEY, level);
+  document.documentElement.dataset.settingsLevel = level;
+  document.querySelectorAll<HTMLButtonElement>("[data-level-choice]").forEach((el) => {
+    el.setAttribute("aria-pressed", el.dataset.levelChoice === level ? "true" : "false");
+  });
+}
+
 export function levelBarHtml() {
   const level = loadSettingsLevel();
   const button = (id: SettingsLevel, label: string) =>
@@ -68,11 +77,8 @@ export function mountSettingsPanel() {
     const button = (ev.target as HTMLElement).closest<HTMLButtonElement>("[data-level-choice]");
     if (!button?.dataset.levelChoice) return;
     const level = button.dataset.levelChoice as SettingsLevel;
-    localStorage.setItem(LEVEL_KEY, level);
-    document.documentElement.dataset.settingsLevel = level;
-    document.querySelectorAll<HTMLButtonElement>("[data-level-choice]").forEach((el) => {
-      el.setAttribute("aria-pressed", el.dataset.levelChoice === level ? "true" : "false");
-    });
+    setSettingsLevel(level);
+    markProjectDirty();
   });
   mountSliceDock();
 }

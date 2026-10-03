@@ -11,7 +11,9 @@ export interface CommandSpec {
 export const COMMANDS: CommandSpec[] = [
   { id: "palette", label: "Command palette", group: "Window", shortcut: "Ctrl+K", keywords: "search commands" },
   { id: "help", label: "Shortcut sheet", group: "Window", shortcut: "?", keywords: "help keys" },
-  { id: "open-mesh", label: "Open mesh", group: "File", shortcut: "Ctrl+O", keywords: "file stl 3mf step" },
+  { id: "open-project", label: "Open project", group: "File", shortcut: "Ctrl+O", keywords: "lime file" },
+  { id: "save-project", label: "Save project", group: "File", shortcut: "Ctrl+S", keywords: "lime file" },
+  { id: "open-mesh", label: "Open mesh", group: "File", keywords: "file stl 3mf step" },
   { id: "samples", label: "Samples", group: "File", keywords: "cube hull example" },
   { id: "slice", label: "Slice", group: "Slice", shortcut: "Ctrl+Enter", keywords: "plan show result re-slice" },
   { id: "force-slice", label: "Force re-slice", group: "Slice", keywords: "recompute cache" },

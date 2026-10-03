@@ -230,6 +230,10 @@ export const session = {
   busyRecompute: true,
   lastToastText: "",
   lastToastAt: 0,
+  /** True after a mesh, pose, setting, or support edit that is not in the saved project. */
+  projectDirty: false,
+  /** Set while a project file is being applied, so those writes do not count as new edits. */
+  projectRestoring: false,
   playTimer: 0,
   drag2d: false,
   geomReady: null as { id: number; data: Omit<RibbonBuffers, "span" | "midZ" | "centerX" | "centerY"> } | null,

@@ -98,6 +98,33 @@ export function pickModelFile() {
   document.querySelector<HTMLInputElement>("#file")?.click();
 }
 
+/** Browser file input. TODO(iOS plugins): document picker. */
+export function pickProjectFile() {
+  const input = document.querySelector<HTMLInputElement>("#projectFile");
+  if (!input) return;
+  input.value = "";
+  input.click();
+}
+
+/**
+ * Browser save downloads the JSON. The desktop shell reuses the Tauri save
+ * command, which already asks through tauri-plugin-dialog and writes the file.
+ * TODO(iOS plugins): share sheet.
+ * Returns false when the desktop dialog is cancelled.
+ */
+export async function saveProjectText(text: string, name: string): Promise<boolean> {
+  if (isDesktopShell()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<boolean>("save_text_file", { text, defaultName: name, extension: "lime" });
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  return true;
+}
+
 /**
  * Browser export is the existing download path.
  * TODO(iOS plugins): share sheet. `navigator.share` is used when the export

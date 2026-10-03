@@ -56,7 +56,7 @@ function hint(el: Element | null, tip: string, shortcut = "") {
 function iconizeToolbar() {
   const open = document.querySelector("#file")?.closest("label") ?? null;
   iconize(open, FolderOpen);
-  hint(open, "Open a mesh", "Ctrl+O");
+  hint(open, "Open a mesh");
 
   const samples = document.querySelector("#samples summary");
   iconize(samples, Boxes);
