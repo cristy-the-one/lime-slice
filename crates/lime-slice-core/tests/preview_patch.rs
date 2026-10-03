@@ -245,10 +245,18 @@ fn settings_tweaks_are_patches_too() {
             .sum();
         seen.push((changed.len(), sent));
     }
+    // How many layer times an acceleration change moves depends on float
+    // rounding: 35 layers on Windows, 33 on Linux. It never sends a path.
+    let (accel_layers, accel_paths) = seen[1];
+    assert!(
+        accel_layers > 0 && accel_paths == 0,
+        "an acceleration moves only some layer times: {:?}",
+        seen[1]
+    );
     assert_eq!(
-        seen,
-        vec![(0, 0), (35, 0), (57, 2165)],
-        "changed layers and paths sent: a temperature changes nothing drawn, an \
-         acceleration only some layer times, a support angle the supported layers"
+        (seen[0], seen[2]),
+        ((0, 0), (57, 2165)),
+        "changed layers and paths sent: a temperature changes nothing drawn, a \
+         support angle the supported layers"
     );
 }
