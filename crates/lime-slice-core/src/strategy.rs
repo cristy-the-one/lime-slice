@@ -607,6 +607,25 @@ pub fn strategy_card(toughness: f64, layer_h: f64, line_width: f64, max_vol: f64
 }
 
 impl BlendMode {
+    /// This blend for a part frame `offset` from the bed. A region split
+    /// plane is in bed coordinates, so it moves by minus the offset; the
+    /// other blends do not read X/Y.
+    pub fn in_part_frame(&self, offset: [f64; 2]) -> BlendMode {
+        match *self {
+            BlendMode::ByRegion { axis, at_mm } => {
+                let shift = match axis {
+                    Axis::X => offset[0],
+                    Axis::Y => offset[1],
+                };
+                BlendMode::ByRegion {
+                    axis,
+                    at_mm: at_mm - shift,
+                }
+            }
+            _ => self.clone(),
+        }
+    }
+
     pub fn describe(&self) -> String {
         match self {
             BlendMode::Single { strategy } => format!("single {}", strategy.as_str()),

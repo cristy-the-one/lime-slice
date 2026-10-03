@@ -196,6 +196,19 @@ impl RigidPose {
     pub fn apply(&self, mesh: &Mesh) -> Mesh {
         mesh.rigid_move(&self.rotation, self.pivot, self.translation)
     }
+
+    /// This pose with its X/Y translation replaced by `centre`, and the
+    /// offset from that part frame to the bed. Bed coordinates are part-frame
+    /// coordinates plus the offset. The part frame does not depend on the
+    /// X/Y translation, so moving a part changes only the offset.
+    pub fn part_frame(&self, centre: [f64; 2]) -> (RigidPose, [f64; 2]) {
+        let [x, y, z] = self.translation;
+        let frame = RigidPose {
+            translation: [centre[0], centre[1], z],
+            ..*self
+        };
+        (frame, [x - centre[0], y - centre[1]])
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -529,6 +542,14 @@ pub struct SliceResponse {
     pub baseline_ms: f64,
     pub baseline_label: String,
     pub mesh: MeshInfo,
+    /// Where the reply frame sits on the bed. `layers`, `previewPatch`,
+    /// `coverage`, `skeleton`, `inAir`, the gaps in `supportEdits`, and
+    /// `mesh.min`/`max` are in the part frame: draw them at their coordinates
+    /// plus `offset`. The G-code and `sanity`'s bounds are in bed
+    /// coordinates. Absent when the request has no pose, since the two
+    /// frames are then the same.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<[f64; 2]>,
     /// Named slices of `core_ms`: contours, supports, toolpaths, order, combing, and G-code emit.
     /// Simplify time stays on `mesh` because it runs before the core timer.
     pub stages: StageTimes,
@@ -865,8 +886,19 @@ fn slice_sharing(
         profile.pressure_advance = 0.0;
         profile.linear_advance = 0.0;
     }
-    let posed = settings.pose.as_ref().map(|pose| pose.apply(mesh));
+    // Every stage runs in the part frame with no pose left in the settings,
+    // so no kept key sees where the part sits on the bed. Emit adds `offset`.
+    let (posed, offset) = match settings.pose.take() {
+        Some(pose) => {
+            let (frame, offset) = pose.part_frame([profile.bed_x * 0.5, profile.bed_y * 0.5]);
+            (Some(frame.apply(mesh)), Some(offset))
+        }
+        None => (None, None),
+    };
     let mesh = posed.as_ref().unwrap_or(mesh);
+    let to_bed = offset.unwrap_or([0.0, 0.0]);
+    let requested = blend;
+    let blend = &requested.in_part_frame(to_bed);
     let (min, max) = mesh.bounds().ok_or("empty mesh")?;
     let started = Instant::now();
     let planned_full = plan_sharing(mesh, blend, &settings, profile.nozzle_diameter, cut, watch)?;
@@ -879,13 +911,14 @@ fn slice_sharing(
         let gcode = emit_gcode(
             &planned,
             &profile,
-            blend,
+            requested,
             layer_height,
             line_width,
             &features,
             settings.arc_fit,
             settings.classic_estimator,
             settings.junction_deviation_mm,
+            to_bed,
             settings.job,
             watch,
         );
@@ -894,13 +927,14 @@ fn slice_sharing(
         let (gcode, text) = emit_later(
             &planned,
             &profile,
-            blend,
+            requested,
             layer_height,
             line_width,
             &features,
             settings.arc_fit,
             settings.classic_estimator,
             settings.junction_deviation_mm,
+            to_bed,
             settings.job,
             watch,
         );
@@ -966,6 +1000,7 @@ fn slice_sharing(
                 settings.arc_fit,
                 settings.classic_estimator,
                 settings.junction_deviation_mm,
+                to_bed,
                 settings.job,
                 &quiet,
             )
@@ -980,6 +1015,7 @@ fn slice_sharing(
                 settings.arc_fit,
                 settings.classic_estimator,
                 settings.junction_deviation_mm,
+                to_bed,
                 settings.job,
                 &quiet,
             )
@@ -1000,6 +1036,10 @@ fn slice_sharing(
         Vec::new()
     };
     let margin = 4.0;
+    let (min_bed, max_bed) = match offset {
+        Some([dx, dy]) => ([min[0] + dx, min[1] + dy], [max[0] + dx, max[1] + dy]),
+        None => ([min[0], min[1]], [max[0], max[1]]),
+    };
     let mut notes = Vec::new();
     if gcode.layer_count == 0 {
         notes.push("no layers were produced".into());
@@ -1010,16 +1050,16 @@ fn slice_sharing(
     if gcode.final_e <= 0.0 {
         notes.push("final E is not positive".into());
     }
-    if gcode.min_x < min[0] - margin || gcode.max_x > max[0] + margin {
+    if gcode.min_x < min_bed[0] - margin || gcode.max_x > max_bed[0] + margin {
         notes.push(format!(
             "X bounds {:.2}..{:.2} outside mesh {:.2}..{:.2} ± {margin}",
-            gcode.min_x, gcode.max_x, min[0], max[0]
+            gcode.min_x, gcode.max_x, min_bed[0], max_bed[0]
         ));
     }
-    if gcode.min_y < min[1] - margin || gcode.max_y > max[1] + margin {
+    if gcode.min_y < min_bed[1] - margin || gcode.max_y > max_bed[1] + margin {
         notes.push(format!(
             "Y bounds {:.2}..{:.2} outside mesh {:.2}..{:.2} ± {margin}",
-            gcode.min_y, gcode.max_y, min[1], max[1]
+            gcode.min_y, gcode.max_y, min_bed[1], max_bed[1]
         ));
     }
     if settings.include_gcode && !gcode.text.contains(";LAYER:") {
@@ -1048,6 +1088,7 @@ fn slice_sharing(
             min,
             max,
         },
+        offset,
         stages,
         sanity: Sanity {
             ok: notes.is_empty(),
@@ -1070,7 +1111,7 @@ fn slice_sharing(
         gcode: gcode.text,
         gcode_text,
         layers,
-        blend: blend.describe(),
+        blend: requested.describe(),
         estimate: {
             let (scarfed_loops, mean_scarf_mm, max_seam_z_step_mm) = seam_metrics(&planned);
             PrintEstimate {
@@ -4108,6 +4149,7 @@ mod tests {
                 settings.arc_fit,
                 settings.classic_estimator,
                 settings.junction_deviation_mm,
+                [0.0, 0.0],
                 settings.job,
                 &Watch::idle(),
             );
@@ -4121,6 +4163,7 @@ mod tests {
                 settings.arc_fit,
                 settings.classic_estimator,
                 settings.junction_deviation_mm,
+                [0.0, 0.0],
                 settings.job,
                 &Watch::idle(),
             );
@@ -4171,6 +4214,7 @@ mod tests {
             settings.arc_fit,
             settings.classic_estimator,
             settings.junction_deviation_mm,
+            [0.0, 0.0],
             settings.job,
             &Watch::idle(),
         );
@@ -4184,6 +4228,7 @@ mod tests {
             settings.arc_fit,
             settings.classic_estimator,
             settings.junction_deviation_mm,
+            [0.0, 0.0],
             settings.job,
             &Watch::idle(),
         );
@@ -4219,11 +4264,8 @@ mod tests {
             "canonical mesh was seated before the pose: {:?}",
             response.mesh.min
         );
-        assert!(
-            (response.mesh.max[0] - 20.0).abs() < 1e-6,
-            "identity pose moved X: {:?}",
-            response.mesh.max
-        );
+        assert_eq!(response.offset, Some([-100.0, -100.0]));
+        assert_eq!(response.mesh.max[0], 120.0, "part frame centred on the bed");
     }
 
     fn raised_cube_stl(z0: f64) -> String {

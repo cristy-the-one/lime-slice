@@ -199,6 +199,7 @@ pub(crate) fn emit_gcode(
     arc_fit: bool,
     classic_estimator: bool,
     junction_deviation_mm: f64,
+    offset: [f64; 2],
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> GcodeStats {
@@ -212,6 +213,7 @@ pub(crate) fn emit_gcode(
         arc_fit,
         classic_estimator,
         junction_deviation_mm,
+        offset,
         job,
         watch,
         true,
@@ -233,6 +235,7 @@ pub(crate) fn emit_estimates(
     arc_fit: bool,
     classic_estimator: bool,
     junction_deviation_mm: f64,
+    offset: [f64; 2],
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> GcodeStats {
@@ -246,6 +249,7 @@ pub(crate) fn emit_estimates(
         arc_fit,
         classic_estimator,
         junction_deviation_mm,
+        offset,
         job,
         watch,
         true,
@@ -267,6 +271,7 @@ pub(crate) fn emit_later(
     arc_fit: bool,
     classic_estimator: bool,
     junction_deviation_mm: f64,
+    offset: [f64; 2],
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> (GcodeStats, GcodeText) {
@@ -280,6 +285,7 @@ pub(crate) fn emit_later(
         arc_fit,
         classic_estimator,
         junction_deviation_mm,
+        offset,
         job,
         watch,
         true,
@@ -304,6 +310,7 @@ pub(crate) fn emit_gcode_linear(
     arc_fit: bool,
     classic_estimator: bool,
     junction_deviation_mm: f64,
+    offset: [f64; 2],
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> GcodeStats {
@@ -317,6 +324,7 @@ pub(crate) fn emit_gcode_linear(
         arc_fit,
         classic_estimator,
         junction_deviation_mm,
+        offset,
         job,
         watch,
         false,
@@ -336,12 +344,19 @@ fn emit_gcode_inner(
     arc_fit: bool,
     classic_estimator: bool,
     junction_deviation_mm: f64,
+    offset: [f64; 2],
     job: crate::cancel::Job,
     watch: &Watch,
     parallel: bool,
     text: Text,
 ) -> (GcodeStats, Option<GcodeText>) {
-    let cfg = EmitCfg::new(profile, arc_fit, classic_estimator, junction_deviation_mm);
+    let cfg = EmitCfg::new(
+        profile,
+        arc_fit,
+        classic_estimator,
+        junction_deviation_mm,
+        offset,
+    );
     let junction_deviation = cfg.junction_deviation;
     let emit_total = layers
         .iter()
@@ -489,6 +504,8 @@ struct EmitCfg {
     pa_base: f64,
     la_base: f64,
     emit_pa: bool,
+    /// Added to every written X/Y: the part frame's place on the bed.
+    offset: [f64; 2],
 }
 
 impl EmitCfg {
@@ -497,6 +514,7 @@ impl EmitCfg {
         arc_fit: bool,
         classic_estimator: bool,
         junction_deviation_mm: f64,
+        offset: [f64; 2],
     ) -> Self {
         let junction_deviation = if junction_deviation_mm.is_finite() && junction_deviation_mm > 0.0
         {
@@ -514,6 +532,7 @@ impl EmitCfg {
             pa_base: profile.pressure_advance.max(0.0),
             la_base: profile.linear_advance.max(0.0),
             emit_pa: profile.pressure_advance > 0.0 || profile.linear_advance > 0.0,
+            offset,
         }
     }
 }
@@ -704,7 +723,7 @@ pub(crate) fn scans_in_parallel(
     arc_fit: bool,
     classic_estimator: bool,
 ) -> bool {
-    let cfg = EmitCfg::new(profile, arc_fit, classic_estimator, 0.0);
+    let cfg = EmitCfg::new(profile, arc_fit, classic_estimator, 0.0, [0.0, 0.0]);
     let scripts: Vec<Arc<Vec<Vec<Span>>>> = layers.iter().map(|l| l.script(arc_fit)).collect();
     scan_layers(
         &cfg,
@@ -830,6 +849,7 @@ struct Writer {
     max_accel: f64,
     max_volumetric_mm3_s: f64,
     filament_diameter: f64,
+    offset: [f64; 2],
 }
 
 struct KinMove {
@@ -892,6 +912,17 @@ impl Writer {
             max_accel: cfg.max_accel,
             max_volumetric_mm3_s: cfg.max_volumetric_mm3_s,
             filament_diameter: cfg.filament_diameter,
+            offset: cfg.offset,
+        }
+    }
+
+    /// `[x, y]` in bed coordinates. A zero offset is not added, so a `-0.0`
+    /// keeps its sign and the text its bytes.
+    fn bed(&self, x: f64, y: f64) -> [f64; 2] {
+        if self.offset == [0.0, 0.0] {
+            [x, y]
+        } else {
+            [x + self.offset[0], y + self.offset[1]]
         }
     }
 
@@ -1372,11 +1403,12 @@ impl Writer {
             );
         }
         let f = (speed.max(10.0) * 60.0).round() as i32;
+        let [bx, by] = self.bed(x, y);
         if dz > 5e-4 {
-            self.put(format_args!("G1 X{x:.3} Y{y:.3} Z{z:.3} F{f}\n"));
+            self.put(format_args!("G1 X{bx:.3} Y{by:.3} Z{z:.3} F{f}\n"));
             self.z = z;
         } else {
-            self.put(format_args!("G1 X{x:.3} Y{y:.3} F{f}\n"));
+            self.put(format_args!("G1 X{bx:.3} Y{by:.3} F{f}\n"));
         }
         self.x = x;
         self.y = y;
@@ -1418,7 +1450,8 @@ impl Writer {
             }
         }
         let f = (speed.max(10.0) * 60.0).round() as i32;
-        self.put(format_args!("G1 X{x:.3} Y{y:.3} F{f}\n"));
+        let [bx, by] = self.bed(x, y);
+        self.put(format_args!("G1 X{bx:.3} Y{by:.3} F{f}\n"));
         self.x = x;
         self.y = y;
         self.has_pos = true;
@@ -1597,8 +1630,7 @@ impl Writer {
         let f = (speed.max(5.0) * 60.0).round() as i32;
         let cmd = if arc.cw { "G2" } else { "G3" };
         let e_now = self.e;
-        let x = arc.end[0];
-        let y = arc.end[1];
+        let [x, y] = self.bed(arc.end[0], arc.end[1]);
         let i = arc.ij[0];
         let j = arc.ij[1];
         self.put(format_args!(
@@ -1638,17 +1670,18 @@ impl Writer {
         self.add_filament(de);
         let f = (speed.max(5.0) * 60.0).round() as i32;
         let e_now = self.e;
+        let [bx, by] = self.bed(x, y);
         if let Some(z) = z {
             if (z - self.z).abs() > 5e-4 {
                 self.put(format_args!(
-                    "G1 X{x:.3} Y{y:.3} Z{z:.3} E{e_now:.5} F{f}\n"
+                    "G1 X{bx:.3} Y{by:.3} Z{z:.3} E{e_now:.5} F{f}\n"
                 ));
                 self.z = z;
             } else {
-                self.put(format_args!("G1 X{x:.3} Y{y:.3} E{e_now:.5} F{f}\n"));
+                self.put(format_args!("G1 X{bx:.3} Y{by:.3} E{e_now:.5} F{f}\n"));
             }
         } else {
-            self.put(format_args!("G1 X{x:.3} Y{y:.3} E{e_now:.5} F{f}\n"));
+            self.put(format_args!("G1 X{bx:.3} Y{by:.3} E{e_now:.5} F{f}\n"));
         }
         let dir = [x - self.x, y - self.y];
         self.note_motion([x, y], dir, dir, speed, accel, d);
@@ -1691,6 +1724,7 @@ impl Writer {
         if self.strings_only {
             return;
         }
+        let [x, y] = self.bed(x, y);
         if !self.bounds_init {
             self.min_x = x;
             self.max_x = x;
