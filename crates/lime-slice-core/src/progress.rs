@@ -6,6 +6,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Instant;
 
 use serde::Serialize;
 
@@ -99,6 +100,15 @@ impl Status {
             Status::Error => "error",
         }
     }
+
+    /// How a slice that returned `result` ended.
+    pub fn of<T>(result: &Result<T, String>) -> Status {
+        match result {
+            Ok(_) => Status::Done,
+            Err(err) if err == "cancelled" => Status::Cancelled,
+            Err(_) => Status::Error,
+        }
+    }
 }
 
 /// The budget position of `done` units out of `total` in `stage`.
@@ -126,12 +136,7 @@ struct Snap {
     fraction: f64,
     status: Status,
     seq: u64,
-    log: Vec<Logged>,
-}
-
-struct Logged {
-    seq: u64,
-    progress: Progress,
+    log: Vec<Progress>,
 }
 
 impl Snap {
@@ -201,9 +206,8 @@ impl Shared {
             }
         }
         guard.seq += 1;
-        let seq = guard.seq;
         let progress = guard.view();
-        guard.log.push(Logged { seq, progress });
+        guard.log.push(progress);
         drop(guard);
         self.changed.notify_all();
     }
@@ -350,23 +354,14 @@ impl Watch {
         }
     }
 
-    pub fn finish_ok(&self) {
-        self.finish(Status::Done);
-    }
-
-    pub fn finish_cancel(&self) {
-        self.cancel();
-        self.finish(Status::Cancelled);
-    }
-
-    pub fn finish_err(&self) {
-        self.finish(Status::Error);
-    }
-
-    fn finish(&self, status: Status) {
+    /// Publishes the terminal `status`. `Cancelled` also sets the flag.
+    pub fn finish(&self, status: Status) {
         let Some(shared) = &self.shared else {
             return;
         };
+        if status == Status::Cancelled {
+            self.cancel();
+        }
         let guard = shared.state.lock().unwrap_or_else(|e| e.into_inner());
         let stage = guard.stage;
         let done = guard.done;
@@ -401,30 +396,35 @@ impl Watch {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .log
-            .iter()
-            .map(|entry| entry.progress.clone())
-            .collect()
+            .clone()
     }
 
-    /// The next published event after `seq`, or the current one once the
-    /// slice has finished and nothing newer exists. `seq` 0 waits for the
-    /// first event.
-    pub fn wait_after(&self, seq: u64) -> (u64, Progress) {
+    /// The newest state, once something was published after `seq` and
+    /// `not_before` has passed. A finished slice returns at once, so a
+    /// follower always gets the terminal state. Intermediate states a slow
+    /// follower missed are skipped. `seq` 0 waits for the first publish.
+    pub fn latest_after(&self, seq: u64, not_before: Instant) -> (u64, Progress) {
         let Some(shared) = &self.shared else {
             return (0, self.snapshot());
         };
         let mut guard = shared.state.lock().unwrap_or_else(|e| e.into_inner());
         loop {
-            if let Some(entry) = guard.log.iter().find(|entry| entry.seq > seq) {
-                return (entry.seq, entry.progress.clone());
-            }
-            if guard.status != Status::Running {
+            let now = Instant::now();
+            if guard.status != Status::Running || (guard.seq > seq && now >= not_before) {
                 return (guard.seq, guard.view());
             }
-            guard = shared
-                .changed
-                .wait(guard)
-                .unwrap_or_else(|e| e.into_inner());
+            guard = if guard.seq > seq {
+                shared
+                    .changed
+                    .wait_timeout(guard, not_before - now)
+                    .unwrap_or_else(|e| e.into_inner())
+                    .0
+            } else {
+                shared
+                    .changed
+                    .wait(guard)
+                    .unwrap_or_else(|e| e.into_inner())
+            };
         }
     }
 }
@@ -514,7 +514,7 @@ mod tests {
         }
         assert_eq!(watch.snapshot().done, 100);
         assert_eq!(watch.snapshot().status, Status::Running);
-        watch.finish_ok();
+        watch.finish(Status::Done);
         let end = watch.snapshot();
         assert_eq!(end.status, Status::Done);
         assert!((end.fraction - 1.0).abs() < 1e-12);

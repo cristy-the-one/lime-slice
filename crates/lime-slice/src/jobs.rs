@@ -3,7 +3,8 @@
 
 use std::io::{self, Read};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::Instant;
 
 use lime_slice_core::{slice_payload_watched, Job, Progress, Status, Watch};
 use serde_json::json;
@@ -11,29 +12,82 @@ use tiny_http::{Header, Response, StatusCode};
 
 use crate::{cors_origin, err_json, park_gcode, SLICE_CACHE};
 
-struct Slot {
-    watch: Watch,
-    outcome: Mutex<Option<Result<String, String>>>,
+/// What `GET /api/jobs/{id}/result` answers. A reply can be tens of MB, so
+/// only the newest finished body is held, and only until it is read.
+enum Outcome {
+    Running,
+    Ready(String),
+    Read,
+    /// A newer job's body replaced this one.
+    Released,
+    Failed(String),
 }
 
-type JobList = Vec<(String, Arc<Slot>)>;
+impl Outcome {
+    /// Hands a body over once. Later reads get `410`.
+    fn take(&mut self) -> (u16, String) {
+        match self {
+            Outcome::Running => (409, err_json("running")),
+            Outcome::Ready(body) => {
+                let body = std::mem::take(body);
+                *self = Outcome::Read;
+                (200, body)
+            }
+            Outcome::Read => (410, err_json("result already read")),
+            Outcome::Released => (410, err_json("result released")),
+            Outcome::Failed(err) => (400, err_json(err)),
+        }
+    }
+}
+
+struct Entry {
+    id: String,
+    watch: Watch,
+    outcome: Outcome,
+}
 
 /// Newest first. Past eight, the oldest entry is dropped. The slice it named
 /// keeps running until it stops.
-fn jobs() -> &'static Mutex<JobList> {
-    static JOBS: LazyLock<Mutex<JobList>> = LazyLock::new(|| Mutex::new(Vec::new()));
-    &JOBS
-}
+static JOBS: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 
 const KEPT: usize = 8;
 
-fn find(id: &str) -> Option<Arc<Slot>> {
+fn jobs() -> MutexGuard<'static, Vec<Entry>> {
+    JOBS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn watch_of(id: &str) -> Option<Watch> {
     jobs()
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
         .iter()
-        .find(|(key, _)| key == id)
-        .map(|(_, slot)| Arc::clone(slot))
+        .find(|entry| entry.id == id)
+        .map(|entry| entry.watch.clone())
+}
+
+/// Stores how job `id` ended. A body releases every other body still held.
+fn settle(id: &str, result: Result<String, String>) {
+    let mut jobs = jobs();
+    let Some(index) = jobs.iter().position(|entry| entry.id == id) else {
+        return;
+    };
+    jobs[index].outcome = match result {
+        Ok(body) => {
+            for entry in jobs.iter_mut() {
+                if matches!(entry.outcome, Outcome::Ready(_)) {
+                    entry.outcome = Outcome::Released;
+                }
+            }
+            Outcome::Ready(body)
+        }
+        Err(err) => Outcome::Failed(err),
+    };
+}
+
+#[cfg(test)]
+pub fn held_bodies() -> usize {
+    jobs()
+        .iter()
+        .filter(|entry| matches!(entry.outcome, Outcome::Ready(_)))
+        .count()
 }
 
 fn progress_body(id: &str, progress: &Progress) -> String {
@@ -85,83 +139,67 @@ fn start(body: &str) -> (u16, String) {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let id = NEXT.fetch_add(1, Ordering::Relaxed).to_string();
     let watch = Watch::new();
-    let slot = Arc::new(Slot {
-        watch: watch.clone(),
-        outcome: Mutex::new(None),
-    });
     {
-        let mut jobs = jobs().lock().unwrap_or_else(|err| err.into_inner());
-        jobs.insert(0, (id.clone(), Arc::clone(&slot)));
+        let mut jobs = jobs();
+        jobs.insert(
+            0,
+            Entry {
+                id: id.clone(),
+                watch: watch.clone(),
+                outcome: Outcome::Running,
+            },
+        );
         jobs.truncate(KEPT);
     }
     let body = body.to_string();
-    let running = Arc::clone(&slot);
+    let running = watch.clone();
+    let job_id = id.clone();
     let spawned = std::thread::Builder::new()
         .name("slice-job".into())
         .spawn(move || {
-            let result = slice_payload_watched(
-                &body,
-                SLICE_CACHE.get(),
-                Job::start(),
-                &running.watch,
-                park_gcode,
-            );
-            *running
-                .outcome
-                .lock()
-                .unwrap_or_else(|err| err.into_inner()) = Some(result.clone());
-            match &result {
-                Ok(_) => running.watch.finish_ok(),
-                Err(err) if err == "cancelled" => running.watch.finish_cancel(),
-                Err(_) => running.watch.finish_err(),
-            }
+            let result =
+                slice_payload_watched(&body, SLICE_CACHE.get(), Job::start(), &running, park_gcode);
+            let status = Status::of(&result);
+            settle(&job_id, result);
+            running.finish(status);
         });
     if spawned.is_err() {
-        slot.watch.finish_err();
-        *slot.outcome.lock().unwrap_or_else(|err| err.into_inner()) =
-            Some(Err("could not start".into()));
+        settle(&id, Err("could not start".into()));
+        watch.finish(Status::Error);
     }
     (202, json!({ "id": id }).to_string())
 }
 
 fn poll(id: &str) -> (u16, String) {
-    let Some(slot) = find(id) else {
+    let Some(watch) = watch_of(id) else {
         return (404, err_json("not found"));
     };
-    (200, progress_body(id, &slot.watch.snapshot()))
+    (200, progress_body(id, &watch.snapshot()))
 }
 
 fn result(id: &str) -> (u16, String) {
-    let Some(slot) = find(id) else {
+    let mut jobs = jobs();
+    let Some(entry) = jobs.iter_mut().find(|entry| entry.id == id) else {
         return (404, err_json("not found"));
     };
-    let outcome = slot
-        .outcome
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
-        .clone();
-    match outcome {
-        None => (409, err_json("running")),
-        Some(Ok(body)) => (200, body),
-        Some(Err(err)) => (400, err_json(&err)),
-    }
+    entry.outcome.take()
 }
 
 fn cancel(id: &str) -> (u16, String) {
-    let Some(slot) = find(id) else {
+    let Some(watch) = watch_of(id) else {
         return (404, err_json("not found"));
     };
-    slot.watch.cancel();
+    watch.cancel();
     (200, r#"{"ok":true}"#.into())
 }
 
 fn events(id: &str) -> JobReply {
-    let Some(slot) = find(id) else {
+    let Some(watch) = watch_of(id) else {
         return json_reply(404, err_json("not found"));
     };
     JobReply::Events {
         id: id.to_string(),
-        watch: slot.watch.clone(),
+        watch,
     }
 }
 
@@ -196,7 +234,7 @@ impl Read for EventStream {
             if self.finished {
                 return Ok(0);
             }
-            let (seq, progress) = self.watch.wait_after(self.seq);
+            let (seq, progress) = self.watch.latest_after(self.seq, Instant::now());
             self.seq = seq;
             self.buf = format!("data: {}\n\n", progress_body(&self.id, &progress)).into_bytes();
             self.pos = 0;
