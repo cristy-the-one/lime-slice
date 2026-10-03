@@ -1,0 +1,95 @@
+# Unsigned desktop installers. Tag pushes named v* and a manual run both
+# upload a draft GitHub Release. This workflow is not the CI workflow:
+# its job name must stay distinct from the required CI checks.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  installers:
+    name: unsigned desktop installers (${{ matrix.label }})
+    permissions:
+      contents: write
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux
+            platform: ubuntu-24.04
+            # deb is the local Linux default; the release also builds an AppImage.
+            args: --bundles deb,appimage
+          - label: macos-arm
+            platform: macos-latest
+            args: --target aarch64-apple-darwin --bundles dmg
+          - label: macos-intel
+            platform: macos-latest
+            # Cross-compiled on the Apple Silicon runner. Two dmgs, not one universal binary.
+            args: --target x86_64-apple-darwin --bundles dmg
+          - label: windows
+            platform: windows-latest
+            args: --bundles nsis
+    env:
+      # linuxdeploy on GitHub runners has no FUSE device.
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      # clipper2c-sys compiles vendored Clipper2 C++ with the cc crate. It does
+      # not invoke CMake. Linux links libstdc++ through .cargo/config.toml,
+      # which names the GCC 13 directory shipped on ubuntu-24.04.
+      - name: Install Linux webview and C++ toolchain
+        if: matrix.platform == 'ubuntu-24.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            pkg-config \
+            libssl-dev \
+            patchelf \
+            file \
+            wget \
+            libxdo-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Extra Apple targets are unused on Linux and Windows.
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build unsigned installers and upload the draft release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
+          releaseName: Lime Slice ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
+          releaseBody: |
+            Unsigned desktop builds. macOS Gatekeeper and Windows SmartScreen will warn because these artifacts are not signed or notarized.
+            Linux ships a .deb and an .AppImage. macOS ships one .dmg for Apple silicon and one for Intel. Windows ships an NSIS installer.
+            Code signing, notarization, and the updater plugin are not configured.
+          releaseDraft: true
+          prerelease: false
+          uploadUpdaterJson: false
+          uploadUpdaterSignatures: false
+          retryAttempts: 3
+          args: ${{ matrix.args }}
