@@ -14,6 +14,9 @@ import { loadProfile, type PrinterProfile, saveProfile } from "../profiles";
 import { noteAdvance, noteGcode, noteNozzle } from "./machine-actions";
 import { loadMachineLibrary } from "./machine-library";
 import { machineSectionHtml } from "../ui/machine-library";
+import { loadPrusaLink } from "./prusa-link";
+import { prusaSummary, rememberPrusaForm } from "./prusa-actions";
+import { prusaFieldsHtml } from "../ui/prusa-link";
 import { canRedoEdit, canUndoEdit, noteEdit } from "./history";
 import { loadProfileLibrary } from "./profile-library";
 import { SETTING_KEYWORDS, settingMatches } from "../ui/settings-search";
@@ -524,6 +527,7 @@ export function profileFields() {
       <button class="btn" id="profileExport" type="button">Export JSON</button>
       <label class="btn file">Import JSON<input id="profileImport" type="file" accept="application/json,.json" /></label>
     </div>
+    ${prusaFieldsHtml(loadPrusaLink(), prusaSummary())}
   `;
 }
 
@@ -735,6 +739,10 @@ export function onSettings(ev: Event) {
     noteAdvance(Number(t.value) || 0, state.linearAdvance);
     markProjectDirty();
     markStale();
+    return;
+  }
+  if (t.id === "prusaUrl" || t.id === "prusaKey" || t.id === "prusaStart") {
+    rememberPrusaForm();
     return;
   }
   noteEdit();

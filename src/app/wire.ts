@@ -37,6 +37,7 @@ import {
   saveMachine,
   typedMachineName,
 } from "./machine-actions";
+import { refreshPrusaJob, rememberPrusaForm, testPrusaLink, uploadToPrusaLink } from "./prusa-actions";
 
 export function wireApp() {
   bootMachines();
@@ -46,6 +47,10 @@ export function wireApp() {
     if (target.id === "profilePick") {
       const id = (target as HTMLSelectElement).value;
       if (id) applyNamedProfile(id);
+      return;
+    }
+    if (target.id === "prusaUrl" || target.id === "prusaKey" || target.id === "prusaStart") {
+      rememberPrusaForm();
       return;
     }
     if (target.id === "profileFile") {
@@ -172,6 +177,18 @@ export function wireApp() {
     if (t.id === "machineExport") {
       const file = machineExportFile();
       if (file) void saveText(file.text, file.name, "json");
+      return;
+    }
+    if (t.id === "prusaTest") {
+      testPrusaLink();
+      return;
+    }
+    if (t.id === "prusaUpload") {
+      void uploadToPrusaLink();
+      return;
+    }
+    if (t.id === "prusaJob") {
+      refreshPrusaJob();
       return;
     }
     if (t.id === "profileExport") void saveText(profileJson(state.profile), `${state.profile.name.replace(/\s+/g, "_")}.json`, "json");
