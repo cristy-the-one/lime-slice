@@ -12,9 +12,38 @@ import { mountProjectFiles, saveCurrentProject } from "./project-io";
 import { pickProjectFile } from "../platform";
 import { applyPreset, closedGroups, currentPreset, onBlend, onSettings, renderChrome, touch } from "./settings";
 import { noteEdit, redoUserEdit, undoUserEdit } from "./history";
+import {
+  applyNamedProfile,
+  askProfileName,
+  deleteSettingsProfile,
+  duplicateSettingsProfile,
+  exportSettingsProfile,
+  importSettingsProfileFile,
+  openProfileMore,
+  overwriteSettingsProfile,
+  renameSettingsProfile,
+  saveSettingsProfile,
+  selectedProfileId,
+  typedProfileName,
+} from "./profile-actions";
+import { pushToast } from "../ui/toasts";
 
 export function wireApp() {
   document.querySelector("#left")!.addEventListener("input", onSettings);
+  document.querySelector("#left")!.addEventListener("change", (ev) => {
+    const target = ev.target as HTMLElement;
+    if (target.id === "profilePick") {
+      const id = (target as HTMLSelectElement).value;
+      if (id) applyNamedProfile(id);
+      return;
+    }
+    if (target.id === "profileFile") {
+      const input = target as HTMLInputElement;
+      const file = input.files?.[0];
+      input.value = "";
+      if (file) void importSettingsProfileFile(file);
+    }
+  });
   document.querySelector("#left")!.addEventListener("toggle", (ev) => {
     const details = ev.target as HTMLDetailsElement;
     const title = details.dataset.group;
@@ -41,6 +70,42 @@ export function wireApp() {
       touch();
     }
     if (t.id === "paexport" && state.paGcode) void saveText(state.paGcode, "pa-calibration.gcode", "gcode");
+    if (t.id === "profileSave") {
+      const typed = typedProfileName();
+      if (typed) saveSettingsProfile(typed);
+      else if (selectedProfileId()) overwriteSettingsProfile(selectedProfileId());
+      else {
+        openProfileMore();
+        pushToast("Name the profile first.", "info");
+      }
+      return;
+    }
+    if (t.id === "profileRename") {
+      const id = selectedProfileId();
+      if (!id) {
+        pushToast("Choose a profile first.", "info");
+        return;
+      }
+      const name = askProfileName("");
+      if (name) renameSettingsProfile(id, name);
+      return;
+    }
+    if (t.id === "profileDuplicate") {
+      const id = selectedProfileId();
+      if (!id) pushToast("Choose a profile first.", "info");
+      else duplicateSettingsProfile(id);
+      return;
+    }
+    if (t.id === "profileDelete") {
+      const id = selectedProfileId();
+      if (!id) pushToast("Choose a profile first.", "info");
+      else deleteSettingsProfile(id);
+      return;
+    }
+    if (t.id === "profileExport") {
+      exportSettingsProfile(selectedProfileId());
+      return;
+    }
     if (t.id === "presetSave") {
       const name = (document.querySelector("#presetName") as HTMLInputElement).value.trim();
       if (!name) return;

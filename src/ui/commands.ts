@@ -42,6 +42,12 @@ export const COMMANDS: CommandSpec[] = [
   { id: "level-simple", label: "Settings level: Simple", group: "Settings", keywords: "level" },
   { id: "level-advanced", label: "Settings level: Advanced", group: "Settings", keywords: "level" },
   { id: "level-expert", label: "Settings level: Expert", group: "Settings", keywords: "level" },
+  { id: "profile-save", label: "Save settings profile", group: "Settings", keywords: "limeprofile name" },
+  { id: "profile-rename", label: "Rename settings profile", group: "Settings", keywords: "limeprofile" },
+  { id: "profile-duplicate", label: "Duplicate settings profile", group: "Settings", keywords: "limeprofile copy" },
+  { id: "profile-delete", label: "Delete settings profile", group: "Settings", keywords: "limeprofile remove" },
+  { id: "profile-export", label: "Export settings profile", group: "Settings", keywords: "limeprofile json download" },
+  { id: "profile-import", label: "Import settings profile", group: "Settings", keywords: "limeprofile json open" },
   { id: "panel-left", label: "Toggle settings panel", group: "Window", keywords: "left collapse" },
   { id: "panel-right", label: "Toggle blend panel", group: "Window", keywords: "right collapse" },
 ];
