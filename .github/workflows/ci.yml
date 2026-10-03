@@ -46,7 +46,7 @@ jobs:
         run: cargo build -p lime-slice-desktop --locked
 
   ui:
-    name: typecheck, unit tests, and frontend
+    name: typecheck and frontend build
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
