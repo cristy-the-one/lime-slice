@@ -226,6 +226,13 @@ export const session = {
   announcedDown: "",
   busySince: 0,
   busyPhase: "",
+  /** Stage key last announced for the in-flight HTTP job, so a stage toasts once. */
+  jobStage: "",
+  /**
+   * HTTP slices report a real fraction, or none. The mock curve stays on for the
+   * invoke path, which still has no job stream.
+   */
+  liveProgress: false,
   /** True while the in-flight request will plan, false while it loads a saved slice. */
   busyRecompute: true,
   lastToastText: "",
