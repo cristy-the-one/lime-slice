@@ -260,3 +260,32 @@ A mock adapter stores `SupportPaint` on the object and draws the disks on the pr
 11. Does grid style honor paint, given that grid still has no prune or regrow?
 12. On compact, is the brush a prepare-sheet tool, or a mode of the existing support-edit chip on the preview?
 13. Is the concatenated-STL mock acceptable for the first UI pull request, as long as byte-identity is claimed only for the real one-object request that omits `objects` and `supportPaint`?
+
+## Decisions (review, 2026-10-03)
+
+1. The client omits `objects` for a one-object plate with no overrides and no paint. The engine must also accept a one-element `objects` and produce the same G-code as the omitted form. A test checks that. The omit rule guards the cache key.
+2. These per-object keys are legal.
+   - The blend.
+   - Support settings: on or off, angle, style, density, tip, and trunk.
+   - Scarf, gyroid3d, and infill combine.
+   - The same small override set as modifiers: infill, walls, and speed.
+
+   These plate-only keys are refused per object.
+   - Layer height, adaptive, line width and nozzle, and simplify.
+   - Temperatures and the printer profile.
+   - Z-hop, combing, arc fit, and travel opt, because travel and emit are plate-wide.
+
+   The request has no support density key today. Density comes from the strategy, so a per-object density follows from a per-object blend until a key exists.
+3. The first engine change is all-at-once only. `sequential` is refused with a clear error until clearance checking exists. Sequential is the second engine step.
+4. An axis-aligned XY box overlap warning is enough at first. Arrange is not blocked. The engine can later report real first-layer footprint overlap in `collisions`.
+5. Arrange stays a client box pack. An engine endpoint comes only when skirt or sequential clearance must be part of it.
+6. A plate that is still one object with no overrides and no paint is saved as version 1, so older apps open it. Anything else is saved as version 2.
+7. Paint is disks in the object's own mesh frame, before the pose. The slicer transforms them by the pose, so paint moves with the part when it is moved or rotated. Triangle indices break on remesh or STEP re-tessellation, so they are not used. This replaces the world-millimetre wording in the data model above.
+8. The later stroke wins, in paint order. That is what a user expects when painting enforce over block or block over enforce. This replaces "block wins" above. The disks need one ordered list with a kind on each disk, because two separate lists lose the order between kinds.
+9. Paint stays a sibling field of `supportEdits`. Paint changes demand, the input to the walk. Edits change the grown forest. They are different layers and replay in that order. Demand with paint comes first, then the walk, then edits.
+10. A regrow does not punch through a block. Block removes demand, and regrow only fills unheld demand.
+11. Yes, grid honors paint. Paint works at the demand level, so grid gets it for free. Both styles build their demand through the same `Demand` build in `crates/lime-slice-core/src/support.rs`.
+12. This is a UI choice for the UI owner. The suggestion is a mode of the existing support-edit chip on the preview, since that is where support editing already lives.
+13. Yes. The concatenated-STL mock is acceptable for the first UI pull request if it is labeled as a mock. Byte-identity is claimed only for the real one-object request.
+
+**Engine order across these notes.** The seam picker comes first, then height ranges and modifier volumes, then ironing, then support paint, then multi-object all-at-once, then sequential.
