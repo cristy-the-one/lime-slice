@@ -15,7 +15,6 @@ import { bandFractions } from "../overrides";
 import { type PreviewPath, decodePaths } from "../preview-wire";
 import { patchGeometry, patchLayers, type PreviewPatch } from "../preview-patch";
 import type { PreviewGeometry } from "../preview-geom";
-import type { RibbonBuffers } from "../view3d";
 import { themeColors } from "../theme";
 import { resolved } from "../strategy";
 import { syncEmptyState } from "../ui/shell";
@@ -765,16 +764,14 @@ export function segmentStart(paths: PreviewPath[], point: PlayPoint): [number, n
   return prev ?? [point.x, point.y];
 }
 
-type GeomData = Omit<RibbonBuffers, "span" | "midZ" | "centerX" | "centerY">;
-
 /** The preview on screen: the reply's token, its layers, and the buffers drawn from them. */
 interface ShownPreview {
   token: string;
   layers: PreviewLayer[];
-  geom: GeomData;
+  geom: PreviewGeometry;
 }
 let shownPreview: ShownPreview | null = null;
-/** Partial replies waiting for the geometry worker to build their new paths. */
+/** Partial replies waiting for the geometry worker to build their changed layers. */
 const patching = new Map<number, { patch: PreviewPatch; base: ShownPreview }>();
 
 /** What the next request can name as `previewBase`: the preview on screen, if the shown result drew it. */
@@ -784,7 +781,7 @@ export function previewBase(): ShownPreview | null {
 
 /**
  * Turn a partial reply into a whole one: its layers rebuilt from `base`, and
- * the new paths sent to the geometry worker, whose buffers `applyGeom` then
+ * the changed ones sent to the geometry worker, whose buffers `applyGeom` then
  * splices into the ones on screen. False when `base` is not what the patch
  * was made against, so the caller asks for the whole preview.
  */
@@ -794,12 +791,10 @@ export function adoptPatch(id: number, body: SliceResponse, base: ShownPreview |
   if (!patch || !base || !layers) return false;
   body.layers = layers;
   patching.set(id, { patch, base });
-  geomWorker.postMessage({ id, layers: patch.changed, min: body.mesh.min, max: body.mesh.max, kinds: base.geom.kinds });
+  const changed = new Set(patch.changed.map((l) => l.index));
+  geomWorker.postMessage({ id, layers: layers.filter((l) => changed.has(l.index)), min: body.mesh.min, max: body.mesh.max, kinds: base.geom.kinds });
   return true;
 }
-
-const toGeometry = (d: GeomData): PreviewGeometry => ({ ranges: d.ranges, kinds: d.kinds, ribbon: d.ribbonPos, ribbonInfo: d.ribbonInfo, face: d.facePos, faceInfo: d.faceInfo, travel: d.travelPos, travelInfo: d.travelInfo });
-const fromGeometry = (g: PreviewGeometry): GeomData => ({ ranges: g.ranges, kinds: g.kinds, ribbonPos: g.ribbon, ribbonInfo: g.ribbonInfo, facePos: g.face, faceInfo: g.faceInfo, travelPos: g.travel, travelInfo: g.travelInfo, frame: "" });
 
 /** Shows the worker's buffers once they and the result they belong to have both arrived. */
 export function applyGeom() {
@@ -811,14 +806,14 @@ export function applyGeom() {
   if (session.geomReady?.id !== session.resultJob) return;
   const mesh = result.mesh;
   fx.view3d.setBuffers({
-    ...session.geomReady.data,
+    ...session.geomReady.geom,
     span: Math.max(mesh.max[0] - mesh.min[0], mesh.max[1] - mesh.min[1], mesh.max[2] - mesh.min[2], 1),
     midZ: (mesh.min[2] + mesh.max[2]) / 2,
     centerX: (mesh.min[0] + mesh.max[0]) / 2,
     centerY: (mesh.min[1] + mesh.max[1]) / 2,
     frame: session.resultFrame,
   });
-  shownPreview = result.previewToken ? { token: result.previewToken, layers: result.layers, geom: session.geomReady.data } : null;
+  shownPreview = result.previewToken ? { token: result.previewToken, layers: result.layers, geom: session.geomReady.geom } : null;
   document.querySelector<HTMLCanvasElement>("#view3d")?.setAttribute("data-preview-token", shownPreview?.token ?? "");
   session.geomReady = null;
   fx.view3d.setRange(state.rangeLow, state.layer);
@@ -900,10 +895,8 @@ export function mountViews() {
   geomWorker.onmessage = (ev) => {
     const pending = patching.get(ev.data.id);
     patching.delete(ev.data.id);
-    const data: GeomData = pending
-      ? fromGeometry(patchGeometry(toGeometry(pending.base.geom), pending.base.layers, pending.patch, toGeometry(ev.data)))
-      : ev.data;
-    session.geomReady = { id: ev.data.id, data };
+    const fresh: PreviewGeometry = ev.data.geom;
+    session.geomReady = { id: ev.data.id, geom: pending ? patchGeometry(pending.base.geom, pending.patch, fresh) : fresh };
     if (session.shown === state.result) applyGeom();
   };
   prepare.onSplit((at) => commitSplit(at));

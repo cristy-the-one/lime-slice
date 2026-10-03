@@ -1,47 +1,13 @@
-/** Ribbon meshes for the 3D preview. Built off the main thread. */
+/** Compact point records for the 3D preview. Built off the main thread, expanded into beads by the shader. */
 
 import type { PathColumns } from "./preview-wire";
 
-export interface GeomPath {
-  kind: string;
-  pts: [number, number][];
-  zs?: number[];
-  width?: number;
-  /** Vertical bead size. Falls back to the layer height. */
-  beadHeight?: number;
-  speed?: number;
-  effectiveSpeed?: number;
-  toughness?: number;
-}
-
-export interface GeomLayer {
-  z: number;
-  /** Layer height in millimetres. Beads extrude down by this much. */
-  height?: number;
-  paths: GeomPath[];
-}
-
-export interface GeomRequest {
-  id: number;
-  layers: GeomLayer[];
-  min: number[];
-  max: number[];
-}
-
 /** One preview layer as the engine sends it: paths in columns, not one object per point. */
 export interface WireLayer {
+  index: number;
   z: number;
   height?: number;
   paths: PathColumns;
-}
-
-export interface LayerRange {
-  ribbonStart: number;
-  ribbonCount: number;
-  faceStart: number;
-  faceCount: number;
-  travelStart: number;
-  travelCount: number;
 }
 
 /** Fraction of bead half-width kept as the bright face. The rest is the dark margin. */
@@ -50,6 +16,18 @@ export const MARGIN_SHADE = 0.38;
 
 /** Kind slots the preview shader can color and hide. Later kinds share the last slot. */
 export const MAX_KINDS = 32;
+
+/**
+ * Layers per chunk, by engine layer index. A patch re-uploads only the chunks
+ * it touches, and every chunk costs a few draw calls per frame.
+ */
+export const CHUNK_LAYERS = 32;
+
+/** u16 words per point in `PointRun.style`. */
+export const STYLE_WORDS = 4;
+/** Blend weight steps in the low bits of the first style word; the kind slot sits above them. */
+export const WEIGHT_STEPS = 2047;
+export const KIND_SHIFT = 2048;
 
 /** Marks kind slots the preview should hide. One slot per kind name, so hiding thin wall leaves gap fill drawn. */
 export function fillHiddenKindMask(mask: Float32Array, kinds: readonly string[], hidden: ReadonlySet<string>) {
@@ -60,7 +38,7 @@ export function fillHiddenKindMask(mask: Float32Array, kinds: readonly string[],
   }
 }
 
-/** Machine XY + nozzle Z → scene, matching the centered ribbon mesh (Y up). */
+/** Machine XY + nozzle Z → scene, matching the centered preview (Y up). */
 export function scenePoint(x: number, y: number, z: number, cx: number, cy: number): [number, number, number] {
   return [x - cx, z, -(y - cy)];
 }
@@ -70,103 +48,54 @@ export function meshCenter(min: number[], max: number[]): { cx: number; cy: numb
 }
 
 /**
- * Positions plus one (kind slot, blend weight, speed) triple per vertex.
- * The shader turns the triple into a color, so color mode and hidden
- * kinds change without rebuilding.
- *
- * Each layer is written into its own span of these buffers, in layer index
- * order. Vertex order inside a layer stays path order.
+ * Path points in print order. `xyz` is each point in scene space. `style` is
+ * `STYLE_WORDS` u16 per point describing the segment that starts there:
+ * `[kind slot * KIND_SHIFT + blend weight * WEIGHT_STEPS, speed * 10, half width µm, bead height µm]`.
+ * A path's last point has all zeros, so no segment joins it to the next path.
  */
-export interface PreviewGeometry {
-  ranges: LayerRange[];
-  /** Kind name per slot in the info triples. */
-  kinds: string[];
-  /** Full-width dark margin under each bead. */
-  ribbon: Float32Array;
-  ribbonInfo: Float32Array;
-  /** Narrower bright face. Drawn with a polygon offset so it stays on the margin. */
-  face: Float32Array;
-  faceInfo: Float32Array;
-  travel: Float32Array;
-  travelInfo: Float32Array;
+export interface PointRun {
+  xyz: Float32Array;
+  style: Uint16Array;
+  /** First point of each layer of the chunk, then the point count. */
+  at: Int32Array;
 }
 
-/** Floats for one extrusion segment: four margin quads and one face quad, six verts each. */
-const RIBBON_FLOATS = 72;
-const FACE_FLOATS = 18;
-const TRAVEL_FLOATS = 6;
-
-interface LayerPlan {
-  slots: Int16Array;
-  ribbonFloats: number;
-  faceFloats: number;
-  travelFloats: number;
-}
-
-interface MeshSpans {
-  ribbon: Float32Array;
-  ribbonInfo: Float32Array;
-  face: Float32Array;
-  faceInfo: Float32Array;
-  travel: Float32Array;
-  travelInfo: Float32Array;
-}
-
-export function buildPreviewGeometry(msg: Omit<GeomRequest, "id">): PreviewGeometry {
-  const { kinds, plans } = planObjectLayers(msg.layers);
-  const center = meshCenter(msg.min, msg.max);
-  return assemble(plans, kinds, (layerIndex, spans, cur) => {
-    writeObjectLayer(msg.layers[layerIndex], plans[layerIndex], spans, cur, center);
-  });
+/** Consecutive layers sharing one set of GPU buffers. */
+export interface PreviewChunk {
+  /** Engine index of each layer, in order. */
+  indices: number[];
+  beads: PointRun;
+  travel: PointRun;
 }
 
 /**
- * Columnar layers, skipping the per-point objects `decodePaths` would allocate.
- * `kinds` seeds the kind slots, so the buffers can be spliced into ones built with that table.
+ * The 3D preview of a slice. Kind slots, blend weight, and speed go to the
+ * shader as numbers, so color mode and hidden kinds change without a rebuild.
  */
-export function buildWirePreview(msg: { layers: WireLayer[]; min: number[]; max: number[]; kinds?: readonly string[] }): PreviewGeometry {
-  const { kinds, plans } = planWireLayers(msg.layers, [...(msg.kinds ?? [])]);
-  const center = meshCenter(msg.min, msg.max);
-  return assemble(plans, kinds, (layerIndex, spans, cur) => {
-    writeWireLayer(msg.layers[layerIndex], plans[layerIndex], spans, cur, center);
-  });
+export interface PreviewGeometry {
+  /** Kind name per slot. */
+  kinds: string[];
+  chunks: PreviewChunk[];
 }
 
-function assemble(plans: LayerPlan[], kinds: string[], write: (layerIndex: number, spans: MeshSpans, cur: Cursor) => void): PreviewGeometry {
-  let ribbonFloats = 0;
-  let faceFloats = 0;
-  let travelFloats = 0;
-  for (const plan of plans) {
-    ribbonFloats += plan.ribbonFloats;
-    faceFloats += plan.faceFloats;
-    travelFloats += plan.travelFloats;
+export function chunkKey(index: number): number {
+  return Math.floor(index / CHUNK_LAYERS);
+}
+
+/** `kinds` seeds the kind slots, so the result can be spliced into geometry built with that table. */
+export function buildWirePreview(msg: { layers: WireLayer[]; min: number[]; max: number[]; kinds?: readonly string[] }): PreviewGeometry {
+  const kinds = [...(msg.kinds ?? [])];
+  const { cx, cy } = meshCenter(msg.min, msg.max);
+  const chunks: PreviewChunk[] = [];
+  const layers = msg.layers;
+  for (let i = 0; i < layers.length;) {
+    const key = chunkKey(layers[i].index);
+    let j = i + 1;
+    while (j < layers.length && chunkKey(layers[j].index) === key) j++;
+    chunks.push(buildChunk(layers.slice(i, j), kinds, cx, cy));
+    i = j;
   }
-  const ribbon = new Float32Array(ribbonFloats);
-  const ribbonInfo = new Float32Array(ribbonFloats);
-  const face = new Float32Array(faceFloats);
-  const faceInfo = new Float32Array(faceFloats);
-  const travel = new Float32Array(travelFloats);
-  const travelInfo = new Float32Array(travelFloats);
-  const spans: MeshSpans = { ribbon, ribbonInfo, face, faceInfo, travel, travelInfo };
-  const cur: Cursor = { ribbon: 0, ribbonInfo: 0, face: 0, faceInfo: 0, travel: 0, travelInfo: 0 };
-  const ranges: LayerRange[] = [];
-  for (let i = 0; i < plans.length; i++) {
-    const ribbonStart = cur.ribbon / 3;
-    const faceStart = cur.face / 3;
-    const travelStart = cur.travel / 3;
-    // Layers write one after another into the same buffers. That placement
-    // is the concatenation, in layer index order, with no second copy.
-    write(i, spans, cur);
-    ranges.push({
-      ribbonStart,
-      ribbonCount: cur.ribbon / 3 - ribbonStart,
-      faceStart,
-      faceCount: cur.face / 3 - faceStart,
-      travelStart,
-      travelCount: cur.travel / 3 - travelStart,
-    });
-  }
-  return { ranges, kinds, ribbon, ribbonInfo, face, faceInfo, travel, travelInfo };
+  return { kinds, chunks };
 }
 
 function assignSlot(kinds: string[], kind: string): number {
@@ -175,80 +104,71 @@ function assignSlot(kinds: string[], kind: string): number {
   return i < 0 ? MAX_KINDS - 1 : i;
 }
 
-function planObjectLayers(layers: GeomLayer[]): { kinds: string[]; plans: LayerPlan[] } {
-  const kinds: string[] = [];
-  const plans = layers.map((layer) => planLayer(kinds, layer.paths.length, (i) => {
-    const path = layer.paths[i];
-    const points = path.pts.length;
-    return points < 2 ? null : { name: path.kind, segs: points - 1, travel: path.kind === "travel" };
-  }));
-  return { kinds, plans };
-}
-
-function planWireLayers(layers: WireLayer[], kinds: string[]): { kinds: string[]; plans: LayerPlan[] } {
-  const plans = layers.map((layer) => {
-    const cols = layer.paths;
-    return planLayer(kinds, cols.kind.length, (i) => {
+function buildChunk(layers: WireLayer[], kinds: string[], cx: number, cy: number): PreviewChunk {
+  const travelSlot = layers.map((layer) => layer.paths.kinds.indexOf("travel"));
+  const beadAt = new Int32Array(layers.length + 1);
+  const travelAt = new Int32Array(layers.length + 1);
+  for (let l = 0; l < layers.length; l++) {
+    const cols = layers[l].paths;
+    let beads = 0;
+    let travel = 0;
+    for (let i = 0; i < cols.kind.length; i++) {
       const points = cols.start[i + 1] - cols.start[i];
-      if (points < 2) return null;
-      const name = cols.kinds[cols.kind[i]] ?? "";
-      return { name, segs: points - 1, travel: name === "travel" };
-    });
-  });
-  return { kinds, plans };
-}
-
-function planLayer(kinds: string[], pathCount: number, at: (i: number) => { name: string; segs: number; travel: boolean } | null): LayerPlan {
-  const slots = new Int16Array(pathCount);
-  let ribbonFloats = 0;
-  let faceFloats = 0;
-  let travelFloats = 0;
-  for (let i = 0; i < pathCount; i++) {
-    const path = at(i);
-    if (!path) {
-      slots[i] = -1;
-      continue;
+      if (points < 2) continue;
+      if (cols.kind[i] === travelSlot[l]) travel += points;
+      else beads += points;
     }
-    slots[i] = assignSlot(kinds, path.name);
-    if (path.travel) travelFloats += path.segs * TRAVEL_FLOATS;
-    else {
-      ribbonFloats += path.segs * RIBBON_FLOATS;
-      faceFloats += path.segs * FACE_FLOATS;
+    beadAt[l + 1] = beadAt[l] + beads;
+    travelAt[l + 1] = travelAt[l] + travel;
+  }
+  const beads = emptyRun(beadAt);
+  const travel = emptyRun(travelAt);
+  for (let l = 0; l < layers.length; l++) {
+    const layer = layers[l];
+    const cols = layer.paths;
+    // Slots go to kinds in the order their first drawn path appears, so names no path draws take none.
+    const slots = new Int16Array(cols.kinds.length).fill(-1);
+    let b = beadAt[l];
+    let t = travelAt[l];
+    for (let i = 0; i < cols.kind.length; i++) {
+      const start = cols.start[i];
+      const end = cols.start[i + 1];
+      if (end - start < 2) continue;
+      const isTravel = cols.kind[i] === travelSlot[l];
+      const run = isTravel ? travel : beads;
+      const at = isTravel ? t : b;
+      const z = cols.z.length >= end ? cols.z : null;
+      for (let k = start; k < end; k++) {
+        const o = (at + k - start) * 3;
+        run.xyz[o] = cols.xy[2 * k] - cx;
+        run.xyz[o + 1] = z ? (z[k] ?? layer.z) : layer.z;
+        run.xyz[o + 2] = -(cols.xy[2 * k + 1] - cy);
+      }
+      if (slots[cols.kind[i]] < 0) slots[cols.kind[i]] = assignSlot(kinds, cols.kinds[cols.kind[i]]);
+      const word = slots[cols.kind[i]] * KIND_SHIFT + Math.round(clamp01(cols.toughness[i] ?? 0) * WEIGHT_STEPS);
+      const speed = u16((cols.effectiveSpeed[i] ?? cols.speed[i] ?? 0) * 10);
+      const half = u16(halfWidth(cols.width[i]) * 1000);
+      const height = u16(beadHeight(cols.beadHeight[i], layer.height) * 1000);
+      for (let s = (at * STYLE_WORDS), last = (at + end - start - 1) * STYLE_WORDS; s < last; s += STYLE_WORDS) {
+        run.style[s] = word;
+        run.style[s + 1] = speed;
+        run.style[s + 2] = half;
+        run.style[s + 3] = height;
+      }
+      if (isTravel) t += end - start;
+      else b += end - start;
     }
   }
-  return { slots, ribbonFloats, faceFloats, travelFloats };
+  return { indices: layers.map((layer) => layer.index), beads, travel };
 }
 
-function writeObjectLayer(layer: GeomLayer, plan: LayerPlan, spans: MeshSpans, cur: Cursor, center: { cx: number; cy: number }) {
-  const slots = plan.slots;
-  // Keep machine coordinates as JS numbers until the Float32 store, matching the old mesh.
-  let scratch: number[] = [];
-  for (let i = 0; i < layer.paths.length; i++) {
-    if (slots[i] < 0) continue;
-    const path = layer.paths[i];
-    const n = path.pts.length;
-    if (scratch.length < n * 2) scratch = new Array(n * 2);
-    for (let p = 0; p < n; p++) {
-      scratch[p * 2] = path.pts[p][0];
-      scratch[p * 2 + 1] = path.pts[p][1];
-    }
-    const zs = path.zs && path.zs.length === n ? path.zs : null;
-    writePath(spans, cur, scratch, 0, n, zs, 0, layer.z, path.kind === "travel", halfWidth(path.width), beadHeight(path.beadHeight, layer.height), slots[i], path.toughness ?? 0, path.effectiveSpeed ?? path.speed ?? 0, center.cx, center.cy);
-  }
+function emptyRun(at: Int32Array): PointRun {
+  const points = at[at.length - 1];
+  return { xyz: new Float32Array(points * 3), style: new Uint16Array(points * STYLE_WORDS), at };
 }
 
-function writeWireLayer(layer: WireLayer, plan: LayerPlan, spans: MeshSpans, cur: Cursor, center: { cx: number; cy: number }) {
-  const cols = layer.paths;
-  const slots = plan.slots;
-  for (let i = 0; i < cols.kind.length; i++) {
-    if (slots[i] < 0) continue;
-    const a = cols.start[i];
-    const b = cols.start[i + 1];
-    const name = cols.kinds[cols.kind[i]] ?? "";
-    const useZ = cols.z.length >= b;
-    writePath(spans, cur, cols.xy, a, b - a, useZ ? cols.z : null, a, layer.z, name === "travel", halfWidth(cols.width[i]), beadHeight(cols.beadHeight[i], layer.height), slots[i], cols.toughness[i] ?? 0, cols.effectiveSpeed[i] ?? cols.speed[i] ?? 0, center.cx, center.cy);
-  }
-}
+const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+const u16 = (v: number) => Math.min(65535, Math.max(0, Math.round(v)));
 
 function halfWidth(width: number | undefined): number {
   return Math.max(0.05, (width ?? 0.45) / 2);
@@ -258,191 +178,4 @@ function beadHeight(bead: number | undefined, layerH: number | undefined): numbe
   const picked = bead && bead > 1e-6 ? bead : layerH;
   const height = picked && picked > 1e-6 ? picked : 0.2;
   return Math.max(0.04, height);
-}
-
-interface Cursor {
-  ribbon: number;
-  ribbonInfo: number;
-  face: number;
-  faceInfo: number;
-  travel: number;
-  travelInfo: number;
-}
-
-function writePath(
-  spans: MeshSpans,
-  cur: Cursor,
-  xy: ArrayLike<number>,
-  base: number,
-  n: number,
-  z: ArrayLike<number | null> | null,
-  zBase: number,
-  layerZ: number,
-  travel: boolean,
-  half: number,
-  height: number,
-  slot: number,
-  tough: number,
-  speed: number,
-  cx: number,
-  cy: number,
-) {
-  if (travel) writeTravelPath(spans, cur, xy, base, n, z, zBase, layerZ, slot, tough, speed, cx, cy);
-  else writeBeadPath(spans, cur, xy, base, n, z, zBase, layerZ, half, height, slot, tough, speed, cx, cy);
-}
-
-function writeTravelPath(
-  spans: MeshSpans,
-  cur: Cursor,
-  xy: ArrayLike<number>,
-  base: number,
-  n: number,
-  z: ArrayLike<number | null> | null,
-  zBase: number,
-  layerZ: number,
-  slot: number,
-  tough: number,
-  speed: number,
-  cx: number,
-  cy: number,
-) {
-  const tp = spans.travel;
-  const ti = spans.travelInfo;
-  let o = cur.travel;
-  let io = cur.travelInfo;
-  for (let i = 1; i < n; i++) {
-    const p0 = base + i - 1;
-    const p1 = base + i;
-    const z0 = z ? (z[zBase + i - 1] ?? layerZ) : layerZ;
-    const z1 = z ? (z[zBase + i] ?? layerZ) : layerZ;
-    tp[o++] = xy[p0 * 2] - cx;
-    tp[o++] = z0;
-    tp[o++] = -(xy[p0 * 2 + 1] - cy);
-    tp[o++] = xy[p1 * 2] - cx;
-    tp[o++] = z1;
-    tp[o++] = -(xy[p1 * 2 + 1] - cy);
-    ti[io++] = slot;
-    ti[io++] = tough;
-    ti[io++] = speed;
-    ti[io++] = slot;
-    ti[io++] = tough;
-    ti[io++] = speed;
-  }
-  cur.travel = o;
-  cur.travelInfo = io;
-}
-
-function writeBeadPath(
-  spans: MeshSpans,
-  cur: Cursor,
-  xy: ArrayLike<number>,
-  base: number,
-  n: number,
-  z: ArrayLike<number | null> | null,
-  zBase: number,
-  layerZ: number,
-  half: number,
-  height: number,
-  slot: number,
-  tough: number,
-  speed: number,
-  cx: number,
-  cy: number,
-) {
-  const rp = spans.ribbon;
-  const ri = spans.ribbonInfo;
-  const fp = spans.face;
-  const fi = spans.faceInfo;
-  const h = height;
-  const inner = half * INNER_HALF_SCALE;
-  let o = cur.ribbon;
-  let io = cur.ribbonInfo;
-  let fo = cur.face;
-  let fio = cur.faceInfo;
-  for (let i = 1; i < n; i++) {
-    const p0 = base + i - 1;
-    const p1 = base + i;
-    const x0 = xy[p0 * 2];
-    const y0 = xy[p0 * 2 + 1];
-    const x1 = xy[p1 * 2];
-    const y1 = xy[p1 * 2 + 1];
-    const z0 = z ? (z[zBase + i - 1] ?? layerZ) : layerZ;
-    const z1 = z ? (z[zBase + i] ?? layerZ) : layerZ;
-    const dx = x1 - x0;
-    const dy = y1 - y0;
-    const len = Math.hypot(dx, dy) || 1;
-    const inv = 1 / len;
-    const px = -dy * inv * half;
-    const py = dx * inv * half;
-    const ix = -dy * inv * inner;
-    const iy = dx * inv * inner;
-    const z0b = z0 - h;
-    const z1b = z1 - h;
-    const ax = x0 + px - cx;
-    const az = -((y0 + py) - cy);
-    const bx = x0 - px - cx;
-    const bz = -((y0 - py) - cy);
-    const cx1 = x1 - px - cx;
-    const cz = -((y1 - py) - cy);
-    const dx1 = x1 + px - cx;
-    const dz = -((y1 + py) - cy);
-    const fax = x0 + ix - cx;
-    const faz = -((y0 + iy) - cy);
-    const fbx = x0 - ix - cx;
-    const fbz = -((y0 - iy) - cy);
-    const fcx = x1 - ix - cx;
-    const fcz = -((y1 - iy) - cy);
-    const fdx = x1 + ix - cx;
-    const fdz = -((y1 + iy) - cy);
-
-    rp[o++] = ax; rp[o++] = z0; rp[o++] = az;
-    rp[o++] = bx; rp[o++] = z0; rp[o++] = bz;
-    rp[o++] = dx1; rp[o++] = z1; rp[o++] = dz;
-    rp[o++] = bx; rp[o++] = z0; rp[o++] = bz;
-    rp[o++] = cx1; rp[o++] = z1; rp[o++] = cz;
-    rp[o++] = dx1; rp[o++] = z1; rp[o++] = dz;
-
-    rp[o++] = ax; rp[o++] = z0b; rp[o++] = az;
-    rp[o++] = dx1; rp[o++] = z1b; rp[o++] = dz;
-    rp[o++] = bx; rp[o++] = z0b; rp[o++] = bz;
-    rp[o++] = dx1; rp[o++] = z1b; rp[o++] = dz;
-    rp[o++] = cx1; rp[o++] = z1b; rp[o++] = cz;
-    rp[o++] = bx; rp[o++] = z0b; rp[o++] = bz;
-
-    rp[o++] = ax; rp[o++] = z0; rp[o++] = az;
-    rp[o++] = ax; rp[o++] = z0b; rp[o++] = az;
-    rp[o++] = dx1; rp[o++] = z1; rp[o++] = dz;
-    rp[o++] = ax; rp[o++] = z0b; rp[o++] = az;
-    rp[o++] = dx1; rp[o++] = z1b; rp[o++] = dz;
-    rp[o++] = dx1; rp[o++] = z1; rp[o++] = dz;
-
-    rp[o++] = bx; rp[o++] = z0; rp[o++] = bz;
-    rp[o++] = cx1; rp[o++] = z1; rp[o++] = cz;
-    rp[o++] = bx; rp[o++] = z0b; rp[o++] = bz;
-    rp[o++] = cx1; rp[o++] = z1; rp[o++] = cz;
-    rp[o++] = cx1; rp[o++] = z1b; rp[o++] = cz;
-    rp[o++] = bx; rp[o++] = z0b; rp[o++] = bz;
-
-    fp[fo++] = fax; fp[fo++] = z0; fp[fo++] = faz;
-    fp[fo++] = fbx; fp[fo++] = z0; fp[fo++] = fbz;
-    fp[fo++] = fdx; fp[fo++] = z1; fp[fo++] = fdz;
-    fp[fo++] = fbx; fp[fo++] = z0; fp[fo++] = fbz;
-    fp[fo++] = fcx; fp[fo++] = z1; fp[fo++] = fcz;
-    fp[fo++] = fdx; fp[fo++] = z1; fp[fo++] = fdz;
-
-    for (let v = 0; v < 24; v++) {
-      ri[io++] = slot;
-      ri[io++] = tough;
-      ri[io++] = speed;
-    }
-    for (let v = 0; v < 6; v++) {
-      fi[fio++] = slot;
-      fi[fio++] = tough;
-      fi[fio++] = speed;
-    }
-  }
-  cur.ribbon = o;
-  cur.ribbonInfo = io;
-  cur.face = fo;
-  cur.faceInfo = fio;
 }

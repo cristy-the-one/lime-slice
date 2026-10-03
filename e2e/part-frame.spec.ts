@@ -1,7 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
 
 /**
- * Move a sliced part against a real engine, which replies in the part frame:
+ * Move a sliced part against a real engine, which replies in the part frame.
+ * The stored-recipe test needs the engine's disk cache, as the desktop app has:
+ *   lime-slice serve --port 43218 --cache-dir <dir>
  *   LIME_EDIT_API=http://127.0.0.1:43218 npx playwright test part-frame
  */
 const api = process.env.LIME_EDIT_API;
