@@ -31,6 +31,8 @@ struct Shared {
     idle: Condvar,
     /// The newest warm-up. Each one waits for the one before it.
     warming: Mutex<Option<JoinHandle<()>>>,
+    /// The newest request, loaded or planned: the one the kept plan follows.
+    last: Mutex<Option<Keys>>,
 }
 
 /// Held by every plan this module runs: a request the disk did not answer,
@@ -68,6 +70,7 @@ impl SliceCache {
                 writing: Mutex::new(HashSet::new()),
                 idle: Condvar::new(),
                 warming: Mutex::new(None),
+                last: Mutex::new(None),
             }),
         }
     }
@@ -99,6 +102,19 @@ impl SliceCache {
                 warm_kept(req, job);
             });
         *warming = spawned.ok();
+    }
+
+    /// Make `keys` the newest request, and say whether it only moves the one
+    /// before it on the bed. Such a reply is not stored: arranging a part
+    /// would push the recipes a user switches between off the disk, and the
+    /// kept plan re-emits a move in a fraction of a second.
+    fn only_moves_last(&self, keys: &Keys) -> bool {
+        let mut last = self.shared.last.lock().expect("newest request");
+        let moved = last
+            .as_ref()
+            .is_some_and(|l| l.frame == keys.frame && l.disk != keys.disk);
+        *last = Some(keys.clone());
+        moved
     }
 
     fn load(&self, key: &str) -> Option<Value> {
@@ -226,7 +242,8 @@ impl Shared {
 /// returns as `gcodeToken`. Every reply has `slicedAtMs` and `fromCache`.
 ///
 /// A new slice is returned first and written to `cache` afterwards, on a
-/// background thread. A reply loaded from `cache` is followed by a warm-up
+/// background thread, unless it only moves the request before it in X/Y.
+/// A reply loaded from `cache` is followed by a warm-up
 /// that plans it into the kept stages under `job`, so a move or a tweak after
 /// it reuses them as after a planned slice. Call `SliceCache::flush` to wait
 /// for both.
@@ -259,13 +276,14 @@ pub fn slice_payload_watched(
         .and_then(|o| o.remove("reslice"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let key = cache.and_then(|_| disk_key(&mut value));
-    let cache = cache.zip(key.as_deref());
+    let keys = cache.and_then(|_| request_keys(&mut value));
+    let cache = cache.zip(keys.as_ref());
     let req: SliceRequest = serde_json::from_value(value).map_err(|e| e.to_string())?;
     let hit = cache
         .filter(|_| !reslice)
-        .and_then(|(cache, key)| cache.load(key));
+        .and_then(|(cache, keys)| cache.load(&keys.disk));
     let from_cache = hit.is_some();
+    let moved = cache.is_some_and(|(cache, keys)| cache.only_moves_last(keys));
     let (reply, text) = match hit {
         Some(reply) => (Arc::new(reply), None),
         None => {
@@ -276,9 +294,9 @@ pub fn slice_payload_watched(
             let mut reply = serde_json::to_value(&response).map_err(|e| e.to_string())?;
             reply["slicedAtMs"] = json!(now_ms());
             let reply = Arc::new(reply);
-            if let Some((cache, key)) = cache {
+            if let Some((cache, keys)) = cache.filter(|_| !moved) {
                 cache.store_later(
-                    key,
+                    &keys.disk,
                     Arc::clone(&reply),
                     response.gcode_text.clone(),
                     response.preview_patch.map(|p| p.whole),
@@ -358,25 +376,52 @@ impl Serialize for Stored<'_> {
     }
 }
 
-/// The disk key of a request, or `None` when the engine cannot be hashed.
-/// `previewBase` is left out: it picks how the reply is sent, not what it holds.
-fn disk_key(request: &mut Value) -> Option<String> {
-    let engine = ENGINE.as_deref()?;
-    let preview_base = request
-        .as_object_mut()
-        .and_then(|o| o.remove("previewBase"));
-    let key = cache_key(engine, request);
-    if let (Some(base), Some(o)) = (preview_base, request.as_object_mut()) {
-        o.insert("previewBase".into(), base);
-    }
-    Some(key)
+/// What the disk knows a request by.
+#[derive(Clone)]
+struct Keys {
+    /// The entry's name.
+    disk: String,
+    /// The same request with the pose's X/Y translation left out, as
+    /// `partFrameKey` in `src/slice-action.ts`. Two requests with one frame
+    /// key differ at most by where the part sits on the bed.
+    frame: String,
 }
 
-fn cache_key(engine: &str, request: &Value) -> String {
-    let mut hash = Sha256::new();
-    hash.update(engine.as_bytes());
-    feed(&mut hash, request);
-    hex(&hash.finalize())
+/// The keys of a request object, or `None` when the engine cannot be hashed.
+/// `previewBase` is left out: it picks how the reply is sent, not what it holds.
+fn request_keys(request: &mut Value) -> Option<Keys> {
+    let engine = ENGINE.as_deref()?;
+    let fields = request.as_object_mut()?;
+    let preview_base = fields.remove("previewBase");
+    let pose = fields.remove("pose");
+    let mut rest = Sha256::new();
+    rest.update(engine.as_bytes());
+    feed(&mut rest, request);
+    let key = |pose: Option<&Value>| {
+        let mut hash = rest.clone();
+        if let Some(pose) = pose {
+            hash.update(b"pose:");
+            feed(&mut hash, pose);
+        }
+        hex(&hash.finalize())
+    };
+    let in_frame = pose.as_ref().map(|pose| {
+        let mut pose = pose.clone();
+        if let Some(t) = pose.get_mut("translation").and_then(Value::as_array_mut) {
+            if t.len() == 3 {
+                t.drain(..2);
+            }
+        }
+        pose
+    });
+    let keys = Keys {
+        disk: key(pose.as_ref()),
+        frame: key(in_frame.as_ref()),
+    };
+    let fields = request.as_object_mut()?;
+    fields.extend(pose.map(|p| ("pose".to_owned(), p)));
+    fields.extend(preview_base.map(|b| ("previewBase".to_owned(), b)));
+    Some(keys)
 }
 
 /// Object keys in sorted order, so the key does not depend on field order.

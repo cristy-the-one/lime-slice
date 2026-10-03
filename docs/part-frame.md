@@ -94,7 +94,7 @@ The kept slices (`crates/lime-slice-core/src/slice/kept.rs`) key each stage on w
 | Whole plan and `previewToken` | everything but edits, preview base, and job | no |
 | Emit | every layer, printer, emit settings, offset | yes |
 
-The disk cache in `serve --cache-dir` still keys on the whole request body, less `previewBase`. A move misses it and then hits the kept slices. The engine stores a reply it sent as a `previewPatch` with its whole preview, so returning to a moved recipe later loads it from the disk.
+The disk cache in `serve --cache-dir` still keys on the whole request body, less `previewBase`. A move misses it and then hits the kept slices. The engine stores a reply it sent as a `previewPatch` with its whole preview, so returning to a tweaked recipe later loads it from the disk. A request that differs from the one before it only in the pose's X/Y translation is not stored: a few nudges while arranging a part would push the recipes a user switches between off the disk, and the kept plan re-emits a move in a fraction of a second. The app mirrors this rule (`storesReply` in `src/slice-action.ts`), so it does not label a moved recipe as stored.
 
 ## Multi-object plates
 

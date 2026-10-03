@@ -122,8 +122,7 @@ test("an X/Y move after a disk-cache load re-emits without a click", async ({ pa
   // The engine plans the loaded recipe again in the background. A move sent
   // before that finishes supersedes it and plans in full.
   await page.waitForTimeout(2_000 + 3 * loaded.coreMs);
-  // A fresh X each run, so the moved recipe is not already on the engine's disk.
-  const dx = 20 + Math.round(Math.random() * 1000) / 100;
+  const dx = 25;
   const fromX = Number(await page.locator("#placeX").inputValue());
   const committed = Date.now();
   await commitX(page, String(fromX + dx));

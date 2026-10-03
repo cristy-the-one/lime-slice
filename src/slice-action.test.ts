@@ -1,4 +1,4 @@
-import { cacheStatus, coverageWarning, feed, fnv1aHex, inAirWarning, partFrameKey, quietRefresh, recipeKey, sliceAction, sliceBusyLabel, staleSliceCopy } from "./slice-action.ts";
+import { cacheStatus, coverageWarning, feed, fnv1aHex, inAirWarning, partFrameKey, quietRefresh, recipeKey, sliceAction, sliceBusyLabel, staleSliceCopy, storesReply } from "./slice-action.ts";
 
 let failed = 0;
 
@@ -91,6 +91,12 @@ check("a rotation leaves the part frame", partFrameKey(posed([110, 110, 5], [0, 
 check("a setting leaves the part frame", partFrameKey({ ...posed([140, 95, 5]), layerHeight: 0.28 }, "mesh-a") !== home);
 check("other mesh bytes leave the part frame", partFrameKey(posed([110, 110, 5]), "mesh-b") !== home);
 eq("no pose, the part frame is the recipe", partFrameKey({ layerHeight: 0.2 }, "mesh-a"), recipeKey({ layerHeight: 0.2 }, "mesh-a"));
+
+const before = { frame: "frame-a", recipe: "recipe-a1" };
+eq("the first reply is stored", storesReply(null, before), true);
+eq("a pure move is not stored", storesReply(before, { frame: "frame-a", recipe: "recipe-a2" }), false);
+eq("a tweak is stored", storesReply(before, { frame: "frame-b", recipe: "recipe-b1" }), true);
+eq("the same recipe again is stored", storesReply(before, before), true);
 
 eq("a fresh result needs no refresh", quietRefresh({ stale: false, cached: true, sameFrame: true }), false);
 eq("an X/Y move refreshes on its own, after a disk-cache load too", quietRefresh({ stale: true, cached: false, sameFrame: true }), true);

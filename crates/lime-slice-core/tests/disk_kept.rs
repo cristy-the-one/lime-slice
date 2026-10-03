@@ -1,6 +1,7 @@
 //! The disk cache with the kept slices: a reply loaded from disk warms the
-//! kept plan behind it, and a reply sent as a patch is stored whole. One
-//! test, because the kept slices are shared by the whole process.
+//! kept plan behind it, a reply sent as a patch is stored whole, and a reply
+//! that only moves the part on the bed is not stored. One test, because the
+//! kept slices are shared by the whole process.
 
 use base64::Engine;
 use lime_slice_core::{keep_support_bases, load_slice_mesh_tol, slice_payload, Job, SliceCache};
@@ -73,7 +74,7 @@ const ALL: [&str; 6] = [
 ];
 
 #[test]
-fn a_disk_hit_warms_the_kept_plan_and_a_patch_is_stored_whole() {
+fn a_disk_hit_warms_the_kept_plan_and_a_tweak_but_not_a_move_is_stored() {
     let dir = std::env::temp_dir().join(format!("lime-slice-disk-kept-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let cache = SliceCache::new(&dir, 1 << 30);
@@ -98,18 +99,36 @@ fn a_disk_hit_warms_the_kept_plan_and_a_patch_is_stored_whole() {
         &request(123.5, json!({"previewBase": hit["previewToken"]})),
         Job::default(),
     );
+    let after_moves = entries(&dir);
+    let steeper = |extra: Value| {
+        let mut req = request(123.5, json!({"supportAngle": 60}));
+        for (k, v) in extra.as_object().unwrap() {
+            req[k] = v.clone();
+        }
+        req
+    };
+    let tweak = slice(
+        &cache,
+        &steeper(json!({"previewBase": moved["previewToken"]})),
+        Job::default(),
+    );
+    let after_tweak = entries(&dir);
 
     restart();
     let back = slice(
         &cache,
-        &request(123.5, json!({"previewBase": "not-held"})),
+        &steeper(json!({"previewBase": "not-held"})),
         Job::default(),
     );
+    restart();
+    let cold = slice(&cache, &steeper(json!({"reslice": true})), Job::default());
     keep_support_bases(false);
     let _ = std::fs::remove_dir_all(&dir);
 
     assert_eq!(t0["fromCache"], json!(false));
     assert_eq!(t0["layers"].as_array().unwrap().len(), 80);
+    assert_eq!(after_moves, 1, "pure moves leave no new entry");
+    assert_eq!(after_tweak, 2, "a tweak is stored");
 
     assert_eq!(stale_hit["fromCache"], json!(true));
     assert_eq!(after_stale["fromCache"], json!(false));
@@ -128,17 +147,28 @@ fn a_disk_hit_warms_the_kept_plan_and_a_patch_is_stored_whole() {
     assert_eq!(moved["previewPatch"]["changed"], json!([]));
     assert_eq!(moved["previewToken"], t0["previewToken"]);
 
+    assert_eq!(tweak["fromCache"], json!(false));
+    assert!(tweak["previewPatch"].is_object(), "the tweak was a patch");
     assert_eq!(
         back["fromCache"],
         json!(true),
         "the patched reply was stored"
     );
     assert_eq!(back.get("previewPatch"), None);
-    assert_eq!(back["previewToken"], moved["previewToken"]);
-    assert_eq!(
-        back["layers"], t0["layers"],
-        "stored whole, in the part frame"
-    );
-    assert_eq!(back["gcode"], moved["gcode"]);
-    assert_eq!(back["offset"], moved["offset"]);
+    assert_eq!(back["previewToken"], tweak["previewToken"]);
+    assert_eq!(back["layers"].as_array().unwrap().len(), 80);
+    assert_eq!(cold["fromCache"], json!(false));
+    assert_eq!(back["layers"], cold["layers"], "stored whole");
+    assert_eq!(back["gcode"], cold["gcode"]);
+    assert_eq!(back["gcode"], tweak["gcode"]);
+}
+
+fn entries(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir).map_or(0, |d| {
+        d.filter(|e| {
+            e.as_ref()
+                .is_ok_and(|e| e.path().extension().is_some_and(|x| x == "json"))
+        })
+        .count()
+    })
 }

@@ -160,6 +160,14 @@ export function quietRefresh(input: { stale: boolean; cached: boolean; sameFrame
 }
 
 /**
+ * Whether the engine keeps the reply to `next` on disk. It skips a request that
+ * only moves the one before it on the bed: the same part frame, another recipe.
+ */
+export function storesReply(prev: { frame: string; recipe: string } | null, next: { frame: string; recipe: string }): boolean {
+  return !prev || prev.frame !== next.frame || prev.recipe === next.recipe;
+}
+
+/**
  * Canonical layout of `lime_slice_core::slice_cache::feed`.
  * Objects sort their keys and write no commas. Arrays keep order and a trailing comma.
  */
