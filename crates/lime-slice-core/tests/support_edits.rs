@@ -31,7 +31,7 @@ fn request(extra: Value) -> Value {
 }
 
 fn slice(req: &Value) -> Result<Value, String> {
-    slice_payload(&req.to_string(), None, Job::default(), |g| g)
+    slice_payload(&req.to_string(), None, Job::default(), |g| g.text())
         .map(|s| serde_json::from_str(&s).unwrap())
 }
 

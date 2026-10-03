@@ -4,21 +4,21 @@ use std::sync::Mutex;
 
 use lime_slice_core::{
     cancel_all, keep_support_bases, load_slice_mesh_tol, mesh_preview_tol, pareto_estimates,
-    pressure_advance_from_request, slice_payload, strategy_card, Job, PaCalibRequest, SliceCache,
-    SliceRequest, SliceSettings,
+    pressure_advance_from_request, slice_payload, strategy_card, GcodeText, Job, PaCalibRequest,
+    SliceCache, SliceRequest, SliceSettings,
 };
 use tauri::AppHandle;
 use tauri::Emitter;
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
-fn gcode_store() -> &'static Mutex<HashMap<String, String>> {
-    static STORE: std::sync::LazyLock<Mutex<HashMap<String, String>>> =
+fn gcode_store() -> &'static Mutex<HashMap<String, GcodeText>> {
+    static STORE: std::sync::LazyLock<Mutex<HashMap<String, GcodeText>>> =
         std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
     &STORE
 }
 
-fn park_gcode(text: String) -> String {
+fn park_gcode(text: GcodeText) -> String {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let token = NEXT.fetch_add(1, Ordering::Relaxed).to_string();
     let mut guard = gcode_store().lock().expect("gcode store");
@@ -74,7 +74,8 @@ fn gcode_text(token: String) -> Result<String, String> {
         .expect("gcode store")
         .get(&token)
         .cloned()
-        .ok_or_else(|| "g-code expired".into())
+        .ok_or_else(|| "g-code expired".to_string())
+        .map(|text| text.text())
 }
 
 #[tauri::command]

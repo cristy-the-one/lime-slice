@@ -6,8 +6,8 @@ use std::sync::Mutex;
 use base64::Engine;
 use clap::{Parser, Subcommand};
 use lime_slice_core::{
-    pareto_estimates, slice_request, Axis, BlendMode, Gyroid3d, Mesh, RigidPose, ScarfSeam,
-    SliceRequest, SliceSettings, StrategyId, ZHopMode,
+    pareto_estimates, slice_request, Axis, BlendMode, GcodeText, Gyroid3d, Mesh, RigidPose,
+    ScarfSeam, SliceRequest, SliceSettings, StrategyId, ZHopMode,
 };
 
 #[derive(Parser)]
@@ -771,13 +771,13 @@ fn classic_settings() -> SliceSettings {
     }
 }
 
-fn gcode_store() -> &'static Mutex<HashMap<String, String>> {
-    static STORE: std::sync::LazyLock<Mutex<HashMap<String, String>>> =
+fn gcode_store() -> &'static Mutex<HashMap<String, GcodeText>> {
+    static STORE: std::sync::LazyLock<Mutex<HashMap<String, GcodeText>>> =
         std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
     &STORE
 }
 
-fn park_gcode(text: String) -> String {
+fn park_gcode(text: GcodeText) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let token = NEXT.fetch_add(1, Ordering::Relaxed).to_string();
@@ -1015,7 +1015,7 @@ fn handle(mut request: tiny_http::Request, token: Option<&str>) {
                 .get(gcode_id)
                 .cloned();
             match text {
-                Some(text) => (200, text),
+                Some(text) => (200, text.text()),
                 None => (404, err_json("g-code expired")),
             }
         } else if method == "POST" && path.starts_with("/api/mesh") {

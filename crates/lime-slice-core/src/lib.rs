@@ -24,6 +24,7 @@ pub use calibrate::{
     PaCalibRequest, PaFirmware,
 };
 pub use cancel::{cancel_all, Job};
+pub use gcode::GcodeText;
 pub use inner_prof::{
     report as inner_profile, reset as reset_inner_profile, set_enabled as set_inner_profile,
 };

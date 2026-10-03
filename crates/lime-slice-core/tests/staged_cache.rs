@@ -29,7 +29,7 @@ fn request(extra: &Value) -> Value {
 }
 
 fn slice(req: &Value) -> Value {
-    let reply = slice_payload(&req.to_string(), None, Job::default(), |g| g).unwrap();
+    let reply = slice_payload(&req.to_string(), None, Job::default(), |g| g.text()).unwrap();
     serde_json::from_str(&reply).unwrap()
 }
 
@@ -76,6 +76,23 @@ fn each_tweak_reuses_the_stages_it_left_alone_and_slices_as_cold() {
 
     keep_support_bases(true);
     let staged: Vec<Value> = requests.iter().map(slice).collect();
+    // The same requests with the G-code parked, as the app asks: its text
+    // is formatted only when the parked G-code is read.
+    let parked: Vec<String> = requests
+        .iter()
+        .map(|req| {
+            let mut req = req.clone();
+            req["includeGcode"] = json!(false);
+            let mut text = String::new();
+            let reply = slice_payload(&req.to_string(), None, Job::default(), |g| {
+                text = g.text();
+                "parked".into()
+            })
+            .unwrap();
+            assert!(reply.contains("\"gcodeToken\":\"parked\""));
+            text
+        })
+        .collect();
     keep_support_bases(false);
     let cold: Vec<Value> = requests.iter().map(slice).collect();
 
@@ -125,7 +142,11 @@ fn each_tweak_reuses_the_stages_it_left_alone_and_slices_as_cold() {
             ),
         ]
     );
-    for (((name, _), staged), cold) in steps.iter().zip(&staged).zip(&cold) {
+    for ((((name, _), staged), cold), parked) in steps.iter().zip(&staged).zip(&cold).zip(&parked) {
+        assert!(
+            cold["gcode"] == json!(parked),
+            "{name}: parked g-code differs"
+        );
         assert_eq!(
             reused(cold),
             Vec::<&str>::new(),

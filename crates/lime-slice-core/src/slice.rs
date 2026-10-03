@@ -15,7 +15,7 @@ pub use wire::{EditOutcomeView, SiteSpec, SupportEditSpec};
 
 use crate::adaptive::{plan_bands, HeightOpts, LayerBand};
 use crate::cancel::Job;
-use crate::gcode::{emit_gcode, LayerPaths};
+use crate::gcode::{emit_gcode, emit_later, GcodeText, LayerPaths, PrintLayer};
 use crate::index::ZIndex;
 use crate::load::load_slice_mesh_tol;
 use crate::mesh::Mesh;
@@ -136,7 +136,8 @@ pub struct SliceRequest {
     /// When true, also slice pure speed, efficiency, toughness, and classic.
     #[serde(default)]
     pub compare: bool,
-    /// When false, the HTTP and desktop shells omit G-code from the JSON and keep it for export.
+    /// When false, the reply leaves the G-code out, and the HTTP and desktop
+    /// shells park it, formatted on first read, for playback and export.
     #[serde(default = "default_true")]
     pub include_gcode: bool,
     /// When false, skip preview polylines. Estimates and G-code still run.
@@ -392,9 +393,9 @@ impl SliceSettings {
             },
             baseline: req.baseline,
             compare: req.compare,
-            // The request flag is for the HTTP/desktop shell, which parks G-code
-            // beside the JSON. Pareto clears this on its own settings copy.
-            include_gcode: true,
+            // Without it the text is formatted only when the shell's parked
+            // G-code is first read.
+            include_gcode: req.include_gcode,
             include_preview: req.include_preview,
             classic_estimator: req.classic_estimator,
             junction_deviation_mm: if req.junction_deviation_mm > 0.0 {
@@ -538,6 +539,10 @@ pub struct SliceResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub in_air: Option<InAir>,
     pub gcode: String,
+    /// The G-code, formatted when first read, when the settings left it out
+    /// of `gcode`.
+    #[serde(skip)]
+    pub gcode_text: Option<GcodeText>,
     pub layers: Vec<PreviewLayer>,
     pub blend: String,
     pub estimate: PrintEstimate,
@@ -844,8 +849,8 @@ fn slice_sharing(
     let coverage = planned_full.coverage;
     let in_air = planned_full.in_air;
     let emit_started = Instant::now();
-    let gcode = if settings.include_gcode {
-        emit_gcode(
+    let (gcode, gcode_text) = if settings.include_gcode {
+        let gcode = emit_gcode(
             &planned,
             &profile,
             blend,
@@ -856,9 +861,10 @@ fn slice_sharing(
             settings.classic_estimator,
             settings.junction_deviation_mm,
             settings.job,
-        )
+        );
+        (gcode, None)
     } else {
-        crate::gcode::emit_estimates(
+        let (gcode, text) = emit_later(
             &planned,
             &profile,
             blend,
@@ -869,7 +875,8 @@ fn slice_sharing(
             settings.classic_estimator,
             settings.junction_deviation_mm,
             settings.job,
-        )
+        );
+        (gcode, Some(text))
     };
     let emit_ms = elapsed_ms(emit_started);
     if gcode.cancelled || settings.job.cancelled() {
@@ -996,11 +1003,6 @@ fn slice_sharing(
     } else {
         (Vec::new(), None, None)
     };
-    let gcode_text = if settings.include_gcode {
-        gcode.text.clone()
-    } else {
-        String::new()
-    };
     Ok(SliceResponse {
         core_ms,
         baseline_ms,
@@ -1030,7 +1032,8 @@ fn slice_sharing(
         },
         coverage,
         in_air,
-        gcode: gcode_text,
+        gcode: gcode.text,
+        gcode_text,
         layers,
         blend: blend.describe(),
         estimate: {
@@ -1067,7 +1070,7 @@ fn slice_sharing(
 /// cut under the same blend and flow cap, only the layers that differ go
 /// back, as a patch.
 fn preview(
-    planned: &[LayerPaths],
+    planned: &[PrintLayer],
     kept: Option<&KeptPlan>,
     profile: &PrinterProfile,
     blend: &BlendMode,
@@ -1101,7 +1104,7 @@ fn preview(
                     let now = seconds[i]?;
                     let was = &joined[i].layer;
                     let held = shown.seconds[i].is_some();
-                    let same_paths = held && same_layer(was, &kept.joined[i].layer);
+                    let same_paths = held && was.same(&kept.joined[i].layer);
                     if same_paths && bits(shown.seconds[i]) == bits(Some(now)) {
                         return None;
                     }
@@ -1139,11 +1142,6 @@ fn preview(
         },
     );
     (layers, Some(token), patched)
-}
-
-/// The same printed layer: shared, or equal path for path.
-fn same_layer(a: &Arc<LayerPaths>, b: &Arc<LayerPaths>) -> bool {
-    Arc::ptr_eq(a, b) || **a == **b
 }
 
 fn feature_estimates(
@@ -1291,7 +1289,7 @@ fn score_of(seconds: f64, grams: f64, toughness: f64) -> BlendScore {
     }
 }
 
-fn structural_mm3(layers: &[LayerPaths]) -> f64 {
+fn structural_mm3(layers: &[PrintLayer]) -> f64 {
     layers
         .iter()
         .map(|layer| {
@@ -1402,7 +1400,7 @@ fn path_columns<S: serde::Serializer>(paths: &[PreviewPath], s: S) -> Result<S::
 }
 
 fn preview_of(
-    layers: &[LayerPaths],
+    layers: &[PrintLayer],
     profile: &PrinterProfile,
     blend: &BlendMode,
     layer_seconds: &[f64],
@@ -1563,7 +1561,7 @@ fn decimate_path(
     (out, zs)
 }
 
-fn seam_metrics(layers: &[LayerPaths]) -> (usize, f64, f64) {
+fn seam_metrics(layers: &[PrintLayer]) -> (usize, f64, f64) {
     let mut n = 0usize;
     let mut sum = 0.0;
     let mut max_step = 0.0f64;
@@ -1619,7 +1617,7 @@ fn dist2(a: [f64; 2], b: [f64; 2]) -> f64 {
 /// Everything `plan` derives from the mesh. `layers` is what the G-code writer
 /// consumes; the rest is kept for the audit and the response.
 pub(crate) struct Plan {
-    pub layers: Vec<LayerPaths>,
+    pub layers: Vec<PrintLayer>,
     pub cut: Arc<Contours>,
     pub supports: Arc<Supports>,
     pub coverage: Vec<CoverageGap>,
@@ -1971,11 +1969,7 @@ fn finish(
     spent.edit_apply_ms += edits.apply_ms;
     spent.edit_refresh_ms += edits.refresh_ms;
     Plan {
-        layers: assembled
-            .joined
-            .into_iter()
-            .map(|j| Arc::unwrap_or_clone(j.layer))
-            .collect(),
+        layers: assembled.joined.into_iter().map(|j| j.layer).collect(),
         layers_reused: assembled.reused,
         kept: None,
         cut,
@@ -2576,7 +2570,7 @@ pub(crate) struct JoinedLayer {
     from: Option<[f64; 2]>,
     /// Where it stood when the layer ended.
     end: Option<[f64; 2]>,
-    layer: Arc<LayerPaths>,
+    layer: PrintLayer,
 }
 
 impl JoinedLayer {
@@ -2681,7 +2675,7 @@ fn assemble(
             }
             let after_top = i > 0 && has_top(&part.tour.layers[i - 1]);
             hop_travels(&mut paths[..lead], &contours[i], after_top, settings);
-            Arc::make_mut(&mut joined.layer).paths = paths;
+            joined.layer.set_paths(paths);
             joined
         })
         .collect();
@@ -2757,7 +2751,7 @@ fn join_supports(
         under: Arc::clone(under),
         from,
         end,
-        layer: Arc::new(layer),
+        layer: PrintLayer::new(layer),
     };
     Slot::Fresh(joined, head)
 }
@@ -4227,6 +4221,11 @@ mod tests {
         assert!(
             quiet.gcode.is_empty(),
             "discarded g-code should not be built"
+        );
+        assert!(full.gcode_text.is_none());
+        assert!(
+            quiet.gcode_text.as_ref().unwrap().text() == full.gcode,
+            "the text formatted later is the text a full emit writes"
         );
         assert!(quiet.sanity.ok, "{:?}", quiet.sanity.notes);
         assert_eq!(full.sanity.layers, quiet.sanity.layers);

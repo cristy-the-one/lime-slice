@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rayon::prelude::*;
 
@@ -40,9 +40,156 @@ pub struct FeatureStat {
     pub filament_mm: f64,
 }
 
+/// A planned layer as the G-code writer takes it. Its arc fit is kept
+/// beside it, so every emit of the same layer plans its arcs once.
+#[derive(Clone)]
+pub(crate) struct PrintLayer {
+    layer: Arc<LayerPaths>,
+    arcs: Arc<Arcs>,
+}
+
+impl PrintLayer {
+    pub(crate) fn new(layer: LayerPaths) -> Self {
+        Self {
+            layer: Arc::new(layer),
+            arcs: Arc::default(),
+        }
+    }
+
+    /// Replace the layer's paths, and the arcs planned for the old ones.
+    pub(crate) fn set_paths(&mut self, paths: Vec<Extrusion>) {
+        Arc::make_mut(&mut self.layer).paths = paths;
+        self.arcs = Arc::default();
+    }
+
+    /// Both are the same layer, shared or equal path for path.
+    pub(crate) fn same(&self, other: &PrintLayer) -> bool {
+        Arc::ptr_eq(&self.layer, &other.layer) || *self.layer == *other.layer
+    }
+
+    fn script(&self, arc_fit: bool) -> Arc<Vec<Vec<Span>>> {
+        let slot = if arc_fit {
+            &self.arcs.fitted
+        } else {
+            &self.arcs.lines
+        };
+        Arc::clone(slot.get_or_init(|| {
+            Arc::new(if self.layer.paths.is_empty() {
+                Vec::new()
+            } else {
+                chain_scripts(&self.layer, arc_fit)
+            })
+        }))
+    }
+}
+
+impl std::ops::Deref for PrintLayer {
+    type Target = LayerPaths;
+
+    fn deref(&self) -> &LayerPaths {
+        &self.layer
+    }
+}
+
+/// One layer's arc plan, with arc fitting on and off. Neither depends on
+/// the printer, so it lasts as long as the layer's paths.
+#[derive(Default)]
+struct Arcs {
+    fitted: OnceLock<Arc<Vec<Vec<Span>>>>,
+    lines: OnceLock<Arc<Vec<Vec<Span>>>>,
+}
+
+/// A slice's G-code text, formatted the first time it is read. The scan
+/// that found the print's totals left the machine state at each layer, so
+/// the text formats each layer on its own, as a whole emit does.
+#[derive(Clone)]
+pub struct GcodeText(Arc<Mutex<Body>>);
+
+enum Body {
+    Ready(String),
+    Later(Box<Formatter>),
+}
+
+impl GcodeText {
+    /// Text that is already formatted.
+    pub fn ready(text: String) -> Self {
+        Self(Arc::new(Mutex::new(Body::Ready(text))))
+    }
+
+    /// The text, formatted now if no read did yet.
+    pub fn text(&self) -> String {
+        let mut body = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Body::Later(formatter) = &*body {
+            *body = Body::Ready(formatter.format());
+        }
+        match &*body {
+            Body::Ready(text) => text.clone(),
+            Body::Later(_) => unreachable!("formatted above"),
+        }
+    }
+}
+
+impl std::fmt::Debug for GcodeText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("GcodeText")
+    }
+}
+
+/// What formatting the text needs once the scan is done.
+struct Formatter {
+    cfg: EmitCfg,
+    layers: Vec<PrintLayer>,
+    seeds: Vec<Seed>,
+    preamble: String,
+    epilogue: String,
+}
+
+impl Formatter {
+    fn format(&self) -> String {
+        let bodies: Vec<String> = self
+            .seeds
+            .par_iter()
+            .map(|seed| {
+                let layer = &self.layers[seed.index];
+                let mut layer_w = Writer::blank(&self.cfg, seed.carry, true);
+                let points: usize = layer
+                    .paths
+                    .iter()
+                    .map(|path| path.points.len() + path.lead_in.len())
+                    .sum();
+                layer_w
+                    .out
+                    .reserve(points.saturating_mul(48).saturating_add(128));
+                layer_w.replay = Some(layer.script(self.cfg.arc_fit));
+                layer_w.write_layer(layer);
+                layer_w.out
+            })
+            .collect();
+        let extra: usize = bodies.iter().map(String::len).sum::<usize>() + self.epilogue.len();
+        let mut text = String::with_capacity(self.preamble.len() + extra);
+        text.push_str(&self.preamble);
+        for body in &bodies {
+            text.push_str(body);
+        }
+        text.push_str(&self.epilogue);
+        text
+    }
+}
+
+/// When the G-code text is formatted.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Text {
+    /// Into `GcodeStats.text`.
+    Now,
+    /// When the returned `GcodeText` is read.
+    Later,
+    /// Never: only the totals are wanted.
+    Never,
+}
+
 #[allow(clippy::too_many_arguments)]
-pub fn emit_gcode(
-    layers: &[LayerPaths],
+pub(crate) fn emit_gcode(
+    layers: &[PrintLayer],
     profile: &PrinterProfile,
     blend: &BlendMode,
     layer_height: f64,
@@ -65,15 +212,16 @@ pub fn emit_gcode(
         junction_deviation_mm,
         job,
         true,
-        true,
+        Text::Now,
     )
+    .0
 }
 
 /// Print-time totals without the G-code text. The quiet scan is what the
 /// totals come from; formatting is only for the string the caller keeps.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_estimates(
-    layers: &[LayerPaths],
+    layers: &[PrintLayer],
     profile: &PrinterProfile,
     blend: &BlendMode,
     layer_height: f64,
@@ -96,7 +244,43 @@ pub(crate) fn emit_estimates(
         junction_deviation_mm,
         job,
         true,
-        false,
+        Text::Never,
+    )
+    .0
+}
+
+/// The totals now and the text when it is first read: the same bytes
+/// `emit_gcode` writes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_later(
+    layers: &[PrintLayer],
+    profile: &PrinterProfile,
+    blend: &BlendMode,
+    layer_height: f64,
+    line_width: f64,
+    features: &str,
+    arc_fit: bool,
+    classic_estimator: bool,
+    junction_deviation_mm: f64,
+    job: crate::cancel::Job,
+) -> (GcodeStats, GcodeText) {
+    let (stats, text) = emit_gcode_inner(
+        layers,
+        profile,
+        blend,
+        layer_height,
+        line_width,
+        features,
+        arc_fit,
+        classic_estimator,
+        junction_deviation_mm,
+        job,
+        true,
+        Text::Later,
+    );
+    (
+        stats,
+        text.unwrap_or_else(|| GcodeText::ready(String::new())),
     )
 }
 
@@ -104,7 +288,7 @@ pub(crate) fn emit_estimates(
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_gcode_linear(
-    layers: &[LayerPaths],
+    layers: &[PrintLayer],
     profile: &PrinterProfile,
     blend: &BlendMode,
     layer_height: f64,
@@ -127,13 +311,14 @@ pub(crate) fn emit_gcode_linear(
         junction_deviation_mm,
         job,
         false,
-        true,
+        Text::Now,
     )
+    .0
 }
 
 #[allow(clippy::too_many_arguments)]
 fn emit_gcode_inner(
-    layers: &[LayerPaths],
+    layers: &[PrintLayer],
     profile: &PrinterProfile,
     blend: &BlendMode,
     layer_height: f64,
@@ -144,8 +329,8 @@ fn emit_gcode_inner(
     junction_deviation_mm: f64,
     job: crate::cancel::Job,
     parallel: bool,
-    write_text: bool,
-) -> GcodeStats {
+    text: Text,
+) -> (GcodeStats, Option<GcodeText>) {
     let cfg = EmitCfg::new(profile, arc_fit, classic_estimator, junction_deviation_mm);
     let junction_deviation = cfg.junction_deviation;
     if !parallel {
@@ -173,24 +358,18 @@ fn emit_gcode_inner(
             emitted_layers += 1;
         }
         w.finish(profile);
-        return w.stats(emitted_layers, profile);
+        return (w.stats(emitted_layers, profile), None);
     }
 
     // Arc choices do not depend on machine state, so they are planned once per
-    // layer. A quiet scan then replays them to carry E, fan, accel, and
-    // pressure advance across layers. Formatting replays the same arcs into
-    // one string per layer and the strings are joined in layer index order.
-    // Lookahead stays on the quiet scan: it already stops at each layer, and
-    // that pass is what the print-time totals come from.
+    // layer and kept with it. A quiet scan then replays them to carry E, fan,
+    // accel, and pressure advance across layers. Formatting replays the same
+    // arcs into one string per layer and the strings are joined in layer index
+    // order. Lookahead stays on the quiet scan: it already stops at each layer,
+    // and that pass is what the print-time totals come from.
     let scripts: Vec<Arc<Vec<Vec<Span>>>> = layers
         .par_iter()
-        .map(|layer| {
-            Arc::new(if layer.paths.is_empty() {
-                Vec::new()
-            } else {
-                chain_scripts(layer, arc_fit)
-            })
-        })
+        .map(|layer| layer.script(arc_fit))
         .collect();
     let mut w = Writer::blank(&cfg, Carry::initial(&cfg), false);
     w.quiet = true;
@@ -233,19 +412,18 @@ fn emit_gcode_inner(
     if job.cancelled() {
         w.cancelled = true;
     }
-    if !write_text {
+    if text == Text::Never {
         w.finish(profile);
-        return w.stats(emitted_layers, profile);
+        return (w.stats(emitted_layers, profile), None);
     }
     w.quiet = false;
     w.out.clear();
     w.finish(profile);
     let epilogue = std::mem::take(&mut w.out);
     let mut stats = w.stats(emitted_layers, profile);
-
-    let mut text = String::new();
+    let mut preamble = String::new();
     write_preamble(
-        &mut text,
+        &mut preamble,
         profile,
         blend,
         layer_height,
@@ -254,32 +432,19 @@ fn emit_gcode_inner(
         classic_estimator,
         junction_deviation,
     );
-    let bodies: Vec<String> = seeds
-        .par_iter()
-        .map(|seed| {
-            let layer = &layers[seed.index];
-            let mut layer_w = Writer::blank(&cfg, seed.carry, true);
-            let points: usize = layer
-                .paths
-                .iter()
-                .map(|path| path.points.len() + path.lead_in.len())
-                .sum();
-            layer_w
-                .out
-                .reserve(points.saturating_mul(48).saturating_add(128));
-            layer_w.replay = Some(Arc::clone(&scripts[seed.index]));
-            layer_w.write_layer(layer);
-            layer_w.out
-        })
-        .collect();
-    let extra: usize = bodies.iter().map(String::len).sum::<usize>() + epilogue.len();
-    text.reserve(extra);
-    for body in &bodies {
-        text.push_str(body);
+    let formatter = Formatter {
+        cfg,
+        layers: layers.to_vec(),
+        seeds,
+        preamble,
+        epilogue,
+    };
+    if text == Text::Now {
+        stats.text = formatter.format();
+        return (stats, None);
     }
-    text.push_str(&epilogue);
-    stats.text = text;
-    stats
+    let later = GcodeText(Arc::new(Mutex::new(Body::Later(Box::new(formatter)))));
+    (stats, Some(later))
 }
 
 #[derive(Clone, Copy)]
@@ -422,6 +587,9 @@ struct LayerScan {
     bounds: Option<[f64; 4]>,
 }
 
+/// One layer scanned from `entry`. Without `log` the scan only finds where
+/// the layer leaves the machine, which does not depend on timing, so it
+/// skips lookahead and the totals.
 fn scan_layer(
     cfg: &EmitCfg,
     entry: Carry,
@@ -429,7 +597,7 @@ fn scan_layer(
     script: &Arc<Vec<Vec<Span>>>,
     log: bool,
 ) -> Writer {
-    let mut w = Writer::blank(cfg, entry, false);
+    let mut w = Writer::blank(cfg, entry, !log);
     w.quiet = true;
     w.log = log.then(Box::default);
     w.replay = Some(Arc::clone(script));
@@ -447,7 +615,7 @@ fn scan_layer(
 /// does not, this returns `None` and the caller scans serially.
 fn scan_layers(
     cfg: &EmitCfg,
-    layers: &[LayerPaths],
+    layers: &[PrintLayer],
     scripts: &[Arc<Vec<Vec<Span>>>],
     job: crate::cancel::Job,
 ) -> Option<Vec<LayerScan>> {
@@ -499,16 +667,13 @@ fn scan_layers(
 /// to one serial scan.
 #[cfg(test)]
 pub(crate) fn scans_in_parallel(
-    layers: &[LayerPaths],
+    layers: &[PrintLayer],
     profile: &PrinterProfile,
     arc_fit: bool,
     classic_estimator: bool,
 ) -> bool {
     let cfg = EmitCfg::new(profile, arc_fit, classic_estimator, 0.0);
-    let scripts: Vec<Arc<Vec<Vec<Span>>>> = layers
-        .iter()
-        .map(|layer| Arc::new(chain_scripts(layer, arc_fit)))
-        .collect();
+    let scripts: Vec<Arc<Vec<Vec<Span>>>> = layers.iter().map(|l| l.script(arc_fit)).collect();
     scan_layers(&cfg, layers, &scripts, crate::cancel::Job::default()).is_some()
 }
 
@@ -1330,36 +1495,34 @@ impl Writer {
     ) {
         let scarfed = z_frac.len() == points.len() && flow_frac.len() == points.len();
         let mut i = 0usize;
-        for span in spans {
-            match span {
-                Span::Line => {
-                    let p = points[i + 1];
-                    let (h, seg_flow, z) = if scarfed {
-                        let z0 = z_frac[i].clamp(0.0, 1.0);
-                        let z1 = z_frac[i + 1].clamp(0.0, 1.0);
-                        let f0 = flow_frac[i].clamp(0.0, 2.0);
-                        let f1 = flow_frac[i + 1].clamp(0.0, 2.0);
-                        (
-                            nominal_h * 0.5 * (z0 + z1),
-                            flow * 0.5 * (f0 + f1),
-                            Some(nozzle_z(layer_z, nominal_h, z1)),
-                        )
-                    } else {
-                        (layer_h, flow, None)
-                    };
-                    self.extrude(p[0], p[1], speed, width, h, seg_flow, filament_d, accel, z);
-                    i += 1;
-                }
-                Span::Arc { end_i, arc } => {
-                    let h = if scarfed {
-                        layer_h * z_frac[i].clamp(0.0, 1.0)
-                    } else {
-                        layer_h
-                    };
-                    self.arc(arc, speed, width, h, flow, filament_d, accel);
-                    i = *end_i as usize;
-                }
+        let mut arcs = spans.iter().peekable();
+        while i + 1 < points.len() {
+            if let Some(span) = arcs.next_if(|s| s.start_i as usize == i) {
+                let h = if scarfed {
+                    layer_h * z_frac[i].clamp(0.0, 1.0)
+                } else {
+                    layer_h
+                };
+                self.arc(&span.arc, speed, width, h, flow, filament_d, accel);
+                i = span.end_i as usize;
+                continue;
             }
+            let p = points[i + 1];
+            let (h, seg_flow, z) = if scarfed {
+                let z0 = z_frac[i].clamp(0.0, 1.0);
+                let z1 = z_frac[i + 1].clamp(0.0, 1.0);
+                let f0 = flow_frac[i].clamp(0.0, 2.0);
+                let f1 = flow_frac[i + 1].clamp(0.0, 2.0);
+                (
+                    nominal_h * 0.5 * (z0 + z1),
+                    flow * 0.5 * (f0 + f1),
+                    Some(nozzle_z(layer_z, nominal_h, z1)),
+                )
+            } else {
+                (layer_h, flow, None)
+            };
+            self.extrude(p[0], p[1], speed, width, h, seg_flow, filament_d, accel, z);
+            i += 1;
         }
     }
 
@@ -1799,7 +1962,8 @@ fn plan_spans(
         }
         if end >= i + 3 && span_planar(z_frac, flow_frac, i, end + 1) {
             if let Some(arc) = fit_arc(&points[i..=end], arc_tol, min_r) {
-                spans.push(Span::Arc {
+                spans.push(Span {
+                    start_i: i as u32,
                     end_i: end as u32,
                     arc,
                 });
@@ -1807,16 +1971,18 @@ fn plan_spans(
                 continue;
             }
         }
-        spans.push(Span::Line);
         i += 1;
     }
     spans
 }
 
+/// One arc of a path, from point `start_i` to point `end_i`. The segments
+/// between arcs print as lines, so a layer keeps only its arcs.
 #[derive(Clone)]
-enum Span {
-    Line,
-    Arc { end_i: u32, arc: ArcFit },
+struct Span {
+    start_i: u32,
+    end_i: u32,
+    arc: ArcFit,
 }
 
 fn fit_arc(pts: &[[f64; 2]], tol: f64, min_r: f64) -> Option<ArcFit> {

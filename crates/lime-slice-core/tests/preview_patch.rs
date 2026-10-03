@@ -29,7 +29,7 @@ fn request(extra: Value) -> Value {
 }
 
 fn slice(req: &Value) -> Value {
-    let reply = slice_payload(&req.to_string(), None, Job::default(), |g| g).unwrap();
+    let reply = slice_payload(&req.to_string(), None, Job::default(), |g| g.text()).unwrap();
     serde_json::from_str(&reply).unwrap()
 }
 
