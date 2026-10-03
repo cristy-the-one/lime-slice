@@ -8,6 +8,7 @@ import { confirmDiscard, markProjectDirty } from "../project-dirty";
 import { pushToast } from "../ui/toasts";
 import { clearEdits } from "../support-edit-list";
 import { clearEditHistory } from "./history";
+import { foreign3mfMessage, foreignSlicer3mf } from "../foreign-3mf";
 
 export async function loadNamed(name: string) {
   state.error = "";
@@ -44,6 +45,10 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
     if (!state.engine) pushToast(state.error || `Could not read ${name}.`, "error", { label: "Retry", run: openMeshPicker });
     renderChrome();
     return;
+  }
+  if (/\.3mf$/i.test(name)) {
+    const vendor = foreignSlicer3mf(new Uint8Array(bytes));
+    if (vendor) pushToast(foreign3mfMessage(vendor), "info");
   }
   place("load");
   fx.setStage("prepare");
