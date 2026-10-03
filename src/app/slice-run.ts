@@ -97,7 +97,6 @@ function quietEligible(): boolean {
     stale: stale(),
     cached: cachedRecipes.has(recipeKey(request, fingerprint)),
     sameFrame: !plateMockActive(state.plate) && session.slicedFrame === partFrameKey(request, fingerprint),
-    fromCache: !!state.result?.fromCache,
   });
 }
 
@@ -265,8 +264,7 @@ export async function runSlice(force = false) {
     state.slicedHash = hash;
     session.slicedEdits = edits;
     if (recipe) {
-      // The engine never stores a patched reply, so asking for this recipe again would plan it.
-      if (!body.previewPatch) cachedRecipes.add(recipe);
+      cachedRecipes.add(recipe);
       session.shownRecipe = recipe;
     }
     state.layer = layerNear(body, session.chosenZ?.high, state.layer);

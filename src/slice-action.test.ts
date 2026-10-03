@@ -92,12 +92,10 @@ check("a setting leaves the part frame", partFrameKey({ ...posed([140, 95, 5]), 
 check("other mesh bytes leave the part frame", partFrameKey(posed([110, 110, 5]), "mesh-b") !== home);
 eq("no pose, the part frame is the recipe", partFrameKey({ layerHeight: 0.2 }, "mesh-a"), recipeKey({ layerHeight: 0.2 }, "mesh-a"));
 
-eq("a fresh result needs no refresh", quietRefresh({ stale: false, cached: true, sameFrame: true, fromCache: false }), false);
-eq("an X/Y move refreshes on its own", quietRefresh({ stale: true, cached: false, sameFrame: true, fromCache: false }), true);
-eq("a stored recipe refreshes on its own", quietRefresh({ stale: true, cached: true, sameFrame: false, fromCache: false }), true);
-eq("a new recipe waits for Slice", quietRefresh({ stale: true, cached: false, sameFrame: false, fromCache: false }), false);
-eq("a move after a disk-cache load waits for Slice", quietRefresh({ stale: true, cached: false, sameFrame: true, fromCache: true }), false);
-eq("a stored recipe after a disk-cache load still refreshes", quietRefresh({ stale: true, cached: true, sameFrame: false, fromCache: true }), true);
+eq("a fresh result needs no refresh", quietRefresh({ stale: false, cached: true, sameFrame: true }), false);
+eq("an X/Y move refreshes on its own, after a disk-cache load too", quietRefresh({ stale: true, cached: false, sameFrame: true }), true);
+eq("a stored recipe refreshes on its own", quietRefresh({ stale: true, cached: true, sameFrame: false }), true);
+eq("a new recipe waits for Slice", quietRefresh({ stale: true, cached: false, sameFrame: false }), false);
 
 eq("feed sorts object keys and writes no commas", feed({ b: 1, a: true }), '{"a":true"b":1}');
 eq("feed keeps array order and a trailing comma", feed([1, 2]), "[1,2,]");

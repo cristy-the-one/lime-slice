@@ -1,7 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
 
 /**
- * Move a sliced part against a real engine, which replies in the part frame:
+ * Move a sliced part against a real engine, which replies in the part frame.
+ * The stored-recipe specs need the engine's disk cache:
+ *   lime-slice serve --port 43218 --cache-dir <dir>
  *   LIME_EDIT_API=http://127.0.0.1:43218 npx playwright test part-frame
  */
 const api = process.env.LIME_EDIT_API;
@@ -16,7 +18,7 @@ async function sliced(page: Page) {
   await expect(page.locator("#cancel")).toBeDisabled();
 }
 
-type Reply = { gcode?: string; gcodeToken?: string; fromCache?: boolean; previewPatch?: { changed: unknown[] } };
+type Reply = { gcode?: string; gcodeToken?: string; fromCache?: boolean; coreMs: number; previewPatch?: { changed: unknown[] } };
 
 /** Send the app's engine calls to the real engine, and keep each slice reply. */
 async function proxy(page: Page) {
@@ -62,7 +64,7 @@ test("an X/Y move re-emits the G-code at the new place without a click", async (
   await loadDragon(page);
   await page.locator("#slice").click();
   await sliced(page);
-  // A disk-cache hit leaves the engine nothing to re-emit from, so plan this one.
+  // Time a move after a planned slice. The next spec moves after a disk-cache load.
   await page.locator("#force").click();
   await sliced(page);
   await expect(page.locator("#export")).toBeEnabled();
@@ -100,6 +102,41 @@ test("settings switched back to a sliced recipe show it without a click", async 
   await expect(page.locator("#banner")).not.toContainText("Settings changed");
   expect(replies).toHaveLength(3);
   expect(replies[2]!.fromCache).toBe(true);
+});
+
+test("an X/Y move after a disk-cache load re-emits without a click", async ({ page }) => {
+  const replies = await proxy(page);
+  await loadDragon(page);
+  await page.locator("#slice").click();
+  await sliced(page);
+  await page.locator("#lh").fill("0.28");
+  await page.locator("#slice").click();
+  await sliced(page);
+  await page.locator("#lh").fill("0.2");
+  await expect(page.locator("#export")).toBeEnabled({ timeout: SLICE_MS });
+  expect(replies).toHaveLength(3);
+  const loaded = replies[2]!;
+  expect(loaded.fromCache).toBe(true);
+  const before = printedX(await gcodeOf(page, loaded));
+
+  // The engine plans the loaded recipe again in the background. A move sent
+  // before that finishes supersedes it and plans in full.
+  await page.waitForTimeout(2_000 + 3 * loaded.coreMs);
+  // A fresh X each run, so the moved recipe is not already on the engine's disk.
+  const dx = 20 + Math.round(Math.random() * 1000) / 100;
+  const fromX = Number(await page.locator("#placeX").inputValue());
+  const committed = Date.now();
+  await commitX(page, String(fromX + dx));
+  await expect(page.locator("#export")).toBeEnabled({ timeout: SLICE_MS });
+  console.log(`move after a disk-cache load: commit to export enabled ${Date.now() - committed} ms`);
+  await expect(page.locator("#banner")).not.toContainText("Settings changed");
+  expect(replies).toHaveLength(4);
+  const moved = replies[3]!;
+  expect(moved.fromCache).toBe(false);
+  expect(moved.previewPatch?.changed).toEqual([]);
+  const after = printedX(await gcodeOf(page, moved));
+  expect(after[0] - before[0]).toBeCloseTo(dx, 1);
+  expect(after[1] - before[1]).toBeCloseTo(dx, 1);
 });
 
 async function commitX(page: Page, value: string) {

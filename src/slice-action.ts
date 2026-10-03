@@ -152,11 +152,11 @@ export function partFrameKey(request: Record<string, unknown>, meshFingerprint: 
 /**
  * A stale result the engine refreshes without planning: a stored recipe, or a
  * move in X/Y only. Those run by themselves after a pause, even with auto-slice off.
- * A result loaded from the disk cache did not leave the engine the plan a move
- * re-emits from, so a move after it would plan in full and waits for Slice.
+ * After a result loaded from the disk cache, the engine plans it again in the
+ * background, so a move re-emits from that plan once it is ready.
  */
-export function quietRefresh(input: { stale: boolean; cached: boolean; sameFrame: boolean; fromCache: boolean }): boolean {
-  return input.stale && (input.cached || (input.sameFrame && !input.fromCache));
+export function quietRefresh(input: { stale: boolean; cached: boolean; sameFrame: boolean }): boolean {
+  return input.stale && (input.cached || input.sameFrame);
 }
 
 /**
