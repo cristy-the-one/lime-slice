@@ -1,5 +1,17 @@
 export type Detent = "peek" | "half" | "full";
 
+const DETENT_ORDER: Detent[] = ["peek", "half", "full"];
+
+/** ArrowUp grows the sheet. ArrowDown shrinks it. Home is full, End is peek. */
+export function moveDetent(current: Detent, key: string): Detent | null {
+  const index = DETENT_ORDER.indexOf(current);
+  if (key === "ArrowUp") return DETENT_ORDER[Math.min(DETENT_ORDER.length - 1, index + 1)] ?? current;
+  if (key === "ArrowDown") return DETENT_ORDER[Math.max(0, index - 1)] ?? current;
+  if (key === "Home") return "full";
+  if (key === "End") return "peek";
+  return null;
+}
+
 export const PEEK_PX = 56;
 export const TOP_PX = 44;
 export const TAB_PX = 49;

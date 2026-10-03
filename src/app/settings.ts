@@ -176,7 +176,13 @@ export function markEngineDown(message: string) {
   state.engine = message;
   if (session.announcedDown !== message) {
     session.announcedDown = message;
-    pushToast(message, "error");
+    pushToast(message, "error", {
+      label: "Retry",
+      run: () => {
+        session.announcedDown = "";
+        void probe();
+      },
+    });
   }
   paintEngineLink();
 }

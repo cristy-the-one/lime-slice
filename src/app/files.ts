@@ -5,6 +5,7 @@ import { needsEngine, apiBase, apiToken, markEngineDown, isStepName, renderChrom
 import { authHeaders, engineDownMessage } from "../ui/api-base";
 import { type SplitSync } from "../split-at";
 import { confirmDiscard, markProjectDirty } from "../project-dirty";
+import { pushToast } from "../ui/toasts";
 import { clearEdits } from "../support-edit-list";
 import { clearEditHistory } from "./history";
 
@@ -30,7 +31,20 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
   clearEditHistory();
   session.supportUi?.reset();
   const parsed = needsEngine(name) ? null : parseStl(bytes);
+  if (!needsEngine(name) && !parsed) {
+    state.mesh = null;
+    state.sourcePos = null;
+    state.error = `Could not read ${name}.`;
+    pushToast(state.error, "error", { label: "Retry", run: openMeshPicker });
+    renderChrome();
+    return;
+  }
   state.sourcePos = parsed ?? (await previewRemote(name, bytes));
+  if (!state.sourcePos) {
+    if (!state.engine) pushToast(state.error || `Could not read ${name}.`, "error", { label: "Retry", run: openMeshPicker });
+    renderChrome();
+    return;
+  }
   place("load");
   fx.setStage("prepare");
 }
@@ -221,6 +235,10 @@ export function download(text: string, name: string) {
   a.download = name;
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+function openMeshPicker() {
+  document.querySelector<HTMLInputElement>("#file")?.click();
 }
 
 export function fail(err: unknown) {

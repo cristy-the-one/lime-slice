@@ -98,6 +98,13 @@
 .toast-info { border-color: var(--info); }
 .toast-warn { border-color: var(--warn); }
 .toast-error { border-color: var(--danger); }
+.toast-text { flex: 1 1 auto; min-width: 0; }
+.toast-action {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+}
 .toast-close {
   border: 0;
   background: transparent;

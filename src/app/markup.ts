@@ -54,7 +54,7 @@ export function mountMarkup(root: HTMLElement) {
             <button class="btn mode tab" id="tabGcode" type="button" role="tab" data-tab="gcode" aria-selected="false" aria-pressed="false" aria-controls="gcodePane">G-code</button>
           </div>
           <label class="field">Color
-            <select id="colorBy">
+            <select id="colorBy" aria-label="Color by">
               <option value="feature">Feature</option>
               <option value="weight">Blend weight</option>
               <option value="speed">Speed</option>
@@ -102,8 +102,8 @@ export function mountMarkup(root: HTMLElement) {
             <canvas id="spark" aria-label="Per-layer time"></canvas>
           </div>
           <div class="playback">
-            <button class="btn" id="play" type="button" disabled>Play</button>
-            <button class="btn" id="stop" type="button" disabled>Stop</button>
+            <button class="btn" id="play" type="button" disabled aria-label="Play layer">Play</button>
+            <button class="btn" id="stop" type="button" disabled aria-label="Stop playback">Stop</button>
             <input id="move" type="range" min="0" max="0" value="0" aria-label="Toolpath playback" />
             <div class="play-readout" id="playReadout">Feature — · feed — · E —</div>
           </div>

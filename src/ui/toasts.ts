@@ -1,5 +1,10 @@
 export type ToastTone = "success" | "info" | "warn" | "error";
 
+export interface ToastAction {
+  label: string;
+  run: () => void;
+}
+
 const HOLD_MS = 6000;
 let host: HTMLElement | null = null;
 let seq = 0;
@@ -14,8 +19,8 @@ export function mountToasts() {
   document.body.append(host);
 }
 
-/** Transient status. Blocking problems stay in the banner rail. */
-export function pushToast(message: string, tone: ToastTone = "info") {
+/** Transient status. Blocking problems stay in the banner rail. `action` is a button such as Retry. */
+export function pushToast(message: string, tone: ToastTone = "info", action?: ToastAction) {
   if (!host) mountToasts();
   const rail = host!;
   const toast = document.createElement("div");
@@ -23,7 +28,21 @@ export function pushToast(message: string, tone: ToastTone = "info") {
   toast.className = `toast toast-${tone}`;
   toast.dataset.toast = String(id);
   toast.setAttribute("role", tone === "error" || tone === "warn" ? "alert" : "status");
-  toast.textContent = message;
+  const text = document.createElement("span");
+  text.className = "toast-text";
+  text.textContent = message;
+  toast.append(text);
+  if (action) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "toast-action";
+    button.textContent = action.label;
+    button.addEventListener("click", () => {
+      toast.remove();
+      action.run();
+    });
+    toast.append(button);
+  }
   const close = document.createElement("button");
   close.type = "button";
   close.className = "toast-close";

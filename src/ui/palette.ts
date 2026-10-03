@@ -40,7 +40,7 @@ export function mountPalette() {
         <button class="btn" type="button" id="paletteClose">Close</button>
       </div>
       <input id="paletteInput" type="search" role="combobox" aria-expanded="true" aria-controls="paletteList" aria-autocomplete="list" placeholder="Search actions" autocomplete="off" />
-      <ul id="paletteList" role="listbox"></ul>
+      <ul id="paletteList" role="listbox" aria-label="Matching commands"></ul>
     </div>
   `;
   document.body.append(root);

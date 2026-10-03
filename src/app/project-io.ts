@@ -42,7 +42,7 @@ export async function openProjectFile(file: File) {
   if (!confirmDiscard()) return;
   const parsed = parseProject(await file.text());
   if (!parsed.ok) {
-    pushToast(parsed.message, "error");
+    pushToast(parsed.message, "error", { label: "Retry", run: openProjectPicker });
     return;
   }
   if (await restoreProject(parsed.project)) pushToast(`Opened ${file.name}.`, "success");
@@ -63,10 +63,14 @@ export function mountProjectFiles() {
   });
 }
 
+function openProjectPicker() {
+  document.querySelector<HTMLInputElement>("#projectFile")?.click();
+}
+
 async function restoreProject(project: LimeProject): Promise<boolean> {
   const bytes = base64ToBytes(project.mesh.bytesBase64);
   if (!bytes) {
-    pushToast("The mesh in this project is damaged.", "error");
+    pushToast("The mesh in this project is damaged.", "error", { label: "Retry", run: openProjectPicker });
     return false;
   }
   session.projectRestoring = true;
