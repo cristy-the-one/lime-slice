@@ -11,6 +11,9 @@ import { groupFeatures } from "../estimate";
 import { offBed } from "../mesh-place";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys, readPresets, diffPreset } from "../presets";
 import { loadProfile, type PrinterProfile, saveProfile } from "../profiles";
+import { loadPrusaLink } from "./prusa-link";
+import { prusaSummary, rememberPrusaForm } from "./prusa-actions";
+import { prusaFieldsHtml } from "../ui/prusa-link";
 import { canRedoEdit, canUndoEdit, noteEdit } from "./history";
 import { loadProfileLibrary } from "./profile-library";
 import { SETTING_KEYWORDS, settingMatches } from "../ui/settings-search";
@@ -520,6 +523,7 @@ export function profileFields() {
       <button class="btn" id="profileExport" type="button">Export JSON</button>
       <label class="btn file">Import JSON<input id="profileImport" type="file" accept="application/json,.json" /></label>
     </div>
+    ${prusaFieldsHtml(loadPrusaLink(), prusaSummary())}
   `;
 }
 
@@ -721,6 +725,10 @@ export function onSettings(ev: Event) {
     return;
   }
   if (t.id === "profileName" || t.id === "profilePick") return;
+  if (t.id === "prusaUrl" || t.id === "prusaKey" || t.id === "prusaStart") {
+    rememberPrusaForm();
+    return;
+  }
   noteEdit();
   markProjectDirty();
   const numIds = ["lh", "amin", "amax", "pa", "la", "zhopht", "zhopmin", "scarflen", "scarfsteps", "sangle", "bangle", "tipd", "trunkd", "shmult", "pastart", "paend", "pastep", "nozzle", "bedx", "bedy", "bedz", "vol", "accel", "density", "cost", "partScale", "simperr"] as const;

@@ -27,6 +27,7 @@ import {
   typedProfileName,
 } from "./profile-actions";
 import { pushToast } from "../ui/toasts";
+import { refreshPrusaJob, rememberPrusaForm, testPrusaLink, uploadToPrusaLink } from "./prusa-actions";
 
 export function wireApp() {
   document.querySelector("#left")!.addEventListener("input", onSettings);
@@ -35,6 +36,10 @@ export function wireApp() {
     if (target.id === "profilePick") {
       const id = (target as HTMLSelectElement).value;
       if (id) applyNamedProfile(id);
+      return;
+    }
+    if (target.id === "prusaUrl" || target.id === "prusaKey" || target.id === "prusaStart") {
+      rememberPrusaForm();
       return;
     }
     if (target.id === "profileFile") {
@@ -132,6 +137,18 @@ export function wireApp() {
     if (t.id === "rotX") { noteEdit(); state.orient = matMul(rotX(90), state.orient); place(); }
     if (t.id === "rotY") { noteEdit(); state.orient = matMul(rotY(90), state.orient); place(); }
     if (t.id === "rotZ") { noteEdit(); state.orient = matMul(rotZ(90), state.orient); place(); }
+    if (t.id === "prusaTest") {
+      testPrusaLink();
+      return;
+    }
+    if (t.id === "prusaUpload") {
+      void uploadToPrusaLink();
+      return;
+    }
+    if (t.id === "prusaJob") {
+      refreshPrusaJob();
+      return;
+    }
     if (t.id === "profileExport") void saveText(profileJson(state.profile), `${state.profile.name.replace(/\s+/g, "_")}.json`, "json");
     if (t.id === "export3mf") void export3mf();
   });
