@@ -6,7 +6,7 @@ import { FEATURE_LABEL, FEATURE_COLOR, colorForPath } from "../colors";
 import { legendMarkup } from "../ui/legend";
 import { syncLayerTip } from "../ui/layer-tip";
 import { type LayerGcode, indexLayerGcode, type PlayPoint, layerMoves, matchGcodeLine, layerClasses } from "../playback";
-import { shownBedOffset } from "../bed-offset";
+import { replyOffset, shownBedOffset } from "../bed-offset";
 import { applyPlace, fetchStoredGcode, nudgePlacement } from "./files";
 import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, stale, markStale } from "./settings";
 import { flushEdit, noteEdit } from "./history";
@@ -144,6 +144,12 @@ export function movesNow(): PlayPoint[] {
   return layerMoves(pathsOf(layer), layer.z, layer.height);
 }
 
+/** A preview point where the reply's G-code prints it: the G-code is in bed coordinates. */
+function onBed(point: PlayPoint | undefined): PlayPoint | undefined {
+  const [dx, dy] = replyOffset(state.result?.offset);
+  return point && (dx || dy) ? { ...point, x: point.x + dx, y: point.y + dy } : point;
+}
+
 export function paintPlayback() {
   const moves = movesNow();
   const max = Math.max(0, moves.length - 1);
@@ -171,7 +177,7 @@ export function paintPlayback() {
     return;
   }
   const gcode = layerGcode()?.layer(state.result?.layers[state.layer]?.index ?? state.layer) ?? [];
-  const hit = matchGcodeLine(gcode, point);
+  const hit = matchGcodeLine(gcode, onBed(point));
   const line = hit >= 0 ? gcode[hit] : undefined;
   const feed = line?.feed ?? point.feed;
   const e = line?.e ?? point.e;
@@ -209,7 +215,7 @@ export function paintGcode() {
     return;
   }
   const point = movesNow()[state.move];
-  const active = matchGcodeLine(lines, point);
+  const active = matchGcodeLine(lines, onBed(point));
   pane.innerHTML = lines.map((line, i) => `<div class="line${i === active ? " on" : ""}" data-gline="${i}">${escapeHtml(line.text)}</div>`).join("");
   pane.querySelector(".line.on")?.scrollIntoView({ block: "center" });
 }
@@ -221,7 +227,7 @@ export function syncGcodeHighlight() {
   if (lines.length === 0) return;
   const layer = state.result?.layers[state.layer];
   const parsed = layer ? layerGcode()?.layer(layer.index) ?? [] : [];
-  const active = matchGcodeLine(parsed, movesNow()[state.move]);
+  const active = matchGcodeLine(parsed, onBed(movesNow()[state.move]));
   lines.forEach((el, i) => el.classList.toggle("on", i === active));
   pane.querySelector(".line.on")?.scrollIntoView({ block: "nearest" });
 }
@@ -390,9 +396,10 @@ export function realignSplit(reason: SplitSync) {
 export function noticeBounds(): AxisBounds | null {
   if (state.result && !stale()) {
     const mesh = state.result.mesh;
+    const [dx, dy] = shownOffset();
     return {
-      min: [mesh.min[0], mesh.min[1], mesh.min[2]],
-      max: [mesh.max[0], mesh.max[1], mesh.max[2]],
+      min: [mesh.min[0] + dx, mesh.min[1] + dy, mesh.min[2]],
+      max: [mesh.max[0] + dx, mesh.max[1] + dy, mesh.max[2]],
     };
   }
   return placedAxisBounds();
@@ -472,7 +479,7 @@ export function syncPlanes() {
       : null;
   if (model) fx.view3d.setModel(model.min, model.max);
   fx.view3d.setGhost(state.result ? null : state.placed);
-  fx.view3d.setPlane(show && model ? { axis: state.axis, at: state.atMm } : null);
+  fx.view3d.setPlane(show && model ? { axis: state.axis, at: splitInReply() } : null);
   syncSplitField();
   paintGizmoReadout();
 }
@@ -487,7 +494,7 @@ export function paintRegionOverlay(
   dpr: number,
 ) {
   const colors = themeColors();
-  const at = state.atMm;
+  const at = splitInReply();
   const x0 = mesh.min[0];
   const x1 = mesh.max[0];
   const y0 = mesh.min[1];
@@ -563,6 +570,17 @@ function shownOffset(): [number, number] {
     scale: state.partScale,
     meshEpoch: session.meshEpoch,
   });
+}
+
+/** `state.atMm` is a bed coordinate. The preview draws the reply frame, where the plane sits at minus the shown offset. */
+function splitInReply(): number {
+  const [dx, dy] = shownOffset();
+  return state.atMm - (state.axis === "x" ? dx : dy);
+}
+
+function splitOnBed(at: number): number {
+  const [dx, dy] = shownOffset();
+  return at + (state.axis === "x" ? dx : dy);
 }
 
 export function canvasPx(ev: PointerEvent) {
@@ -862,7 +880,8 @@ export function mountViews() {
     const mesh = state.result.mesh;
     const { map, dpr } = previewMap(mesh);
     const px = canvasPx(ev);
-    const line = state.axis === "x" ? map(state.atMm, mesh.min[1])[0] : map(mesh.min[0], state.atMm)[1];
+    const at = splitInReply();
+    const line = state.axis === "x" ? map(at, mesh.min[1])[0] : map(mesh.min[0], at)[1];
     const dist = state.axis === "x" ? Math.abs(px.x - line) : Math.abs(px.y - line);
     if (dist > 16 * dpr) return;
     session.drag2d = true;
@@ -874,7 +893,7 @@ export function mountViews() {
     const { unmap } = previewMap(state.result.mesh);
     const px = canvasPx(ev);
     const [x, y] = unmap(px.x, px.y);
-    commitSplit(state.axis === "x" ? x : y);
+    commitSplit(splitOnBed(state.axis === "x" ? x : y));
   });
   canvas.addEventListener("pointerup", endRegionDrag);
   canvas.addEventListener("pointercancel", endRegionDrag);
@@ -917,7 +936,7 @@ export function mountViews() {
   prepare.onModifierEditStart(() => beginModifierEdit());
   prepare.onModifierEdit((id, kind, axis, deltaMm) => nudgeModifier(id, kind, axis, deltaMm));
   prepare.onModifierEditEnd(() => endModifierEdit());
-  view3d.onPlane((at) => commitSplit(at));
+  view3d.onPlane((at) => commitSplit(splitOnBed(at)));
 }
 
 Object.assign(fx, { paintLegend, paintSlider, loadGcode, layerGcode, pathsOf, movesNow, paintPlayback, paintGcode, syncGcodeHighlight, paintSpark, stopPlay, togglePlay, scrub, setView, setStage, setHelp, placedAxisBounds, realignSplit, noticeBounds, refreshSplitNotice, commitSplit, syncSplitField, paintGizmoReadout, syncPlanes, clampPlane, paintRegionOverlay, previewMap, canvasPx, resize, previewCenter, sectionLimit, activeSection, sectionKeeps, paintSectionChrome, draw, segmentStart, applyGeom, sync3d, fitNarrow });
