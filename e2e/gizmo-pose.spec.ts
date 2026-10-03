@@ -101,6 +101,7 @@ test("scaled canonical plus pose matches placement", () => {
 test("zoom keeps the gizmo the same size and an arrow move is what gets sliced", async ({ page }) => {
   let captured: { buf: Buffer; pose?: RigidPose } | null = null;
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   await page.route("**/api/slice", async (route) => {
     const body = route.request().postDataJSON() as { dataB64: string; pose?: RigidPose };
     const buf = Buffer.from(body.dataB64, "base64");

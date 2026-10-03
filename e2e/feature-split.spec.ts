@@ -123,6 +123,7 @@ function voidSlice() {
 test("legend toggles and the estimate table keep thin wall and gap fill apart", async ({ page }) => {
   const slice = voidSlice();
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   await page.route("**/api/slice", (route) => route.fulfill({ json: slice }));
   await page.goto("/");
   await page.getByText("Samples", { exact: true }).click();

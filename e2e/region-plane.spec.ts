@@ -31,6 +31,7 @@ test("split defaults to the mesh midpoint", () => {
 
 test("bridge By region starts inside the mesh and the plane and gizmo move it", async ({ page }) => {
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   await page.route("**/api/slice", (route) => route.fulfill({ json: fakeSlice() }));
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
