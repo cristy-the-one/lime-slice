@@ -12,7 +12,10 @@ import { offBed } from "../mesh-place";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys, readPresets, diffPreset } from "../presets";
 import { loadProfile, type PrinterProfile, saveProfile } from "../profiles";
 import { canRedoEdit, canUndoEdit, noteEdit } from "./history";
+import { loadProfileLibrary } from "./profile-library";
 import { SETTING_KEYWORDS, settingMatches } from "../ui/settings-search";
+import { displayId } from "../ui/settings-profiles";
+import { loadSettingsLevel } from "../ui/settings-panel";
 
 export function apiBase() {
   return currentApiTarget().base;
@@ -60,6 +63,7 @@ export function renderChrome() {
   const result = state.result;
   document.querySelector("#leftBody")!.innerHTML = `
     ${levelBarHtml()}
+    ${profileHeaderHtml()}
     <div class="find-row">
       <input id="find" type="search" placeholder="Search settings" aria-label="Search settings" value="${escapeHtml(state.query)}" />
       <button class="btn history-btn" id="undoEdit" type="button" aria-label="Undo" ${canUndoEdit() ? "" : "disabled"}>Undo</button>
@@ -578,6 +582,35 @@ export function signed(n: number) {
   return n > 0 ? `+${v}%` : `${v}%`;
 }
 
+function profileHeaderHtml() {
+  const library = loadProfileLibrary();
+  const selected = displayId(library, currentPreset(), loadSettingsLevel());
+  const options = library.profiles
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((profile) => `<option value="${escapeHtml(profile.id)}"${profile.id === selected ? " selected" : ""}>${escapeHtml(profile.name)}</option>`)
+    .join("");
+  return `
+    <div class="profile-row">
+      <select id="profilePick" aria-label="Settings profile">
+        <option value="">Current</option>
+        ${options}
+      </select>
+      <button class="btn history-btn" id="profileSave" type="button">Save</button>
+      <details class="profile-more">
+        <summary class="btn history-btn" aria-label="Profile actions">More</summary>
+        <div class="profile-actions">
+          <input id="profileName" type="text" aria-label="Profile name" placeholder="Profile name" />
+          <button class="btn history-btn" id="profileRename" type="button">Rename</button>
+          <button class="btn history-btn" id="profileDuplicate" type="button">Duplicate</button>
+          <button class="btn history-btn" id="profileDelete" type="button">Delete</button>
+          <button class="btn history-btn" id="settingsProfileExport" type="button">Export</button>
+          <label class="btn history-btn file">Import<input id="profileFile" type="file" accept=".limeprofile.json,application/json" /></label>
+        </div>
+      </details>
+    </div>`;
+}
+
 export function currentPreset(): PresetSettings {
   const out = { ...DEFAULT_PRESET };
   for (const key of presetKeys()) {
@@ -687,6 +720,7 @@ export function onSettings(ev: Event) {
     applyFilter();
     return;
   }
+  if (t.id === "profileName" || t.id === "profilePick") return;
   noteEdit();
   markProjectDirty();
   const numIds = ["lh", "amin", "amax", "pa", "la", "zhopht", "zhopmin", "scarflen", "scarfsteps", "sangle", "bangle", "tipd", "trunkd", "shmult", "pastart", "paend", "pastep", "nozzle", "bedx", "bedy", "bedz", "vol", "accel", "density", "cost", "partScale", "simperr"] as const;

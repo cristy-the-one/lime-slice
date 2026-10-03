@@ -1,4 +1,15 @@
 import { redoUserEdit, undoUserEdit } from "../app/history";
+import {
+  askProfileName,
+  deleteSettingsProfile,
+  duplicateSettingsProfile,
+  exportSettingsProfile,
+  openProfileFile,
+  overwriteSettingsProfile,
+  renameSettingsProfile,
+  saveSettingsProfile,
+  selectedProfileId,
+} from "../app/profile-actions";
 import { saveCurrentProject } from "../app/project-io";
 import { pickProjectFile } from "../platform";
 import { COMMANDS, helpEntries, rankCommands, type CommandSpec } from "./commands";
@@ -343,6 +354,45 @@ export function runCommand(id: string) {
       return;
     case "level-expert":
       setLevel("expert");
+      return;
+    case "profile-save": {
+      const typed = document.querySelector<HTMLInputElement>("#profileName")?.value.trim() ?? "";
+      if (typed) saveSettingsProfile(typed);
+      else if (selectedProfileId()) overwriteSettingsProfile(selectedProfileId());
+      else {
+        const name = askProfileName("");
+        if (name) saveSettingsProfile(name);
+      }
+      return;
+    }
+    case "profile-rename": {
+      const id = selectedProfileId();
+      if (!id) {
+        pushToast("Choose a profile first.", "info");
+        return;
+      }
+      const current = document.querySelector<HTMLSelectElement>("#profilePick")?.selectedOptions[0]?.textContent ?? "";
+      const name = askProfileName(current === "Current" ? "" : current);
+      if (name) renameSettingsProfile(id, name);
+      return;
+    }
+    case "profile-duplicate": {
+      const id = selectedProfileId();
+      if (!id) pushToast("Choose a profile first.", "info");
+      else duplicateSettingsProfile(id);
+      return;
+    }
+    case "profile-delete": {
+      const id = selectedProfileId();
+      if (!id) pushToast("Choose a profile first.", "info");
+      else deleteSettingsProfile(id);
+      return;
+    }
+    case "profile-export":
+      exportSettingsProfile(selectedProfileId());
+      return;
+    case "profile-import":
+      openProfileFile();
       return;
     case "panel-left":
       togglePanel("left");

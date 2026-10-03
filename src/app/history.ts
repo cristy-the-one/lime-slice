@@ -2,6 +2,7 @@ import { fx } from "./fx";
 import { session, state } from "./state";
 import { presetKeys } from "../presets";
 import { saveProfile } from "../profiles";
+import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel";
 import {
   beginGesture,
   canRedo,
@@ -42,6 +43,7 @@ function capture(): EditSnap {
       filamentDensityGCm3: profile.filamentDensityGCm3,
       filamentCostPerKg: profile.filamentCostPerKg,
     },
+    level: loadSettingsLevel(),
   };
 }
 
@@ -72,6 +74,7 @@ function applySnap(snap: EditSnap) {
   state.profile.maxAccel = snap.profile.maxAccel;
   state.profile.filamentDensityGCm3 = snap.profile.filamentDensityGCm3;
   state.profile.filamentCostPerKg = snap.profile.filamentCostPerKg;
+  if (snap.level === "simple" || snap.level === "advanced" || snap.level === "expert") setSettingsLevel(snap.level);
   state.profile.pressureAdvance = state.pressureAdvance;
   state.profile.linearAdvance = state.linearAdvance;
   saveProfile(state.profile);

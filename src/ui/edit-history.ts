@@ -1,4 +1,5 @@
 /** Undo stack for placement and settings. One gesture is one step. */
+import type { SettingsLevel } from "../project.ts";
 
 export interface PlacementSnap {
   orient: number[];
@@ -25,6 +26,8 @@ export interface EditSnap {
   settings: Record<string, string | number | boolean>;
   splitCustom: boolean;
   profile: ProfileSnap;
+  /** Settings panel level. A profile switch restores this with the preset. */
+  level: SettingsLevel;
 }
 
 export interface EditHistory {

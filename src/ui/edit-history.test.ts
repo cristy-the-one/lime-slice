@@ -18,7 +18,7 @@ function check(name: string, cond: boolean, detail = ""): void {
   console.error(`FAIL ${name}${detail ? `: ${detail}` : ""}`);
 }
 
-function snap(scale: number, layer = 0.2): EditSnap {
+function snap(scale: number, layer = 0.2, level: "simple" | "advanced" | "expert" = "expert"): EditSnap {
   return {
     placement: {
       orient: [1, 0, 0, 0, 1, 0, 0, 0, 1],
@@ -39,11 +39,12 @@ function snap(scale: number, layer = 0.2): EditSnap {
       filamentDensityGCm3: 1.24,
       filamentCostPerKg: 20,
     },
+    level,
   };
 }
 
-const before = snap(1, 0.2);
-const after = snap(1.5, 0.28);
+const before = snap(1, 0.2, "expert");
+const after = snap(1.5, 0.28, "simple");
 let history = beginGesture(emptyHistory(), before);
 history = beginGesture(history, after);
 check("a gesture keeps the first snapshot", sameSnap(history.pending!, before));
@@ -55,6 +56,7 @@ check("redo is empty", !canRedo(history, after));
 const undone = undoSnap(history, after);
 check("undo restores the scale", undone?.restore.placement.partScale === 1);
 check("undo keeps the layer height", undone?.restore.settings.layerHeight === 0.2);
+check("undo restores the settings level", undone?.restore.level === "expert");
 history = undone!.history;
 check("redo is available after undo", canRedo(history, undone!.restore) && history.redo.length === 1);
 
