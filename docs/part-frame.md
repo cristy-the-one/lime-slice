@@ -104,14 +104,12 @@ A plate is a list of objects, each with its own `pose` (see `docs/multi-object-a
 - Each object has its own `offset`. The reply carries one per object, beside each object's `min` and `max`.
 - Emit writes each object's paths plus its own offset.
 
-Some plate stages read more than one object. They key on the offsets of the objects they read:
+Two things read more than one object:
 
-- the travel between objects on a layer, and the object order;
-- supports that must avoid, or may land on, another object;
-- combing across the gap between two objects;
-- sequential printing's clearance check.
+- The plate join puts each object's skirt and supports, then each object's part, in plate order, and decides the travel between objects. It runs on every request and reads the offsets.
+- Supports avoid, and may land on, another object that comes near them. They key on that object's cut and its shift into their frame, only while it is near.
 
-Those stages run in bed coordinates, from each object's part-frame result plus its offset. A move then re-runs only them and the emit.
+A travel between objects is not combed: it leaves one part for another, so it retracts. Sequential printing's clearance check is a later step. The design, the rules, and the measured costs are in "Engine design: all-at-once plates" in `docs/multi-object-and-support-painting.md`.
 
 ## Measured cost of a move
 

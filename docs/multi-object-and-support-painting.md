@@ -492,6 +492,18 @@ The frame key strips `translation[0]` and `translation[1]` from the top-level `p
 
 Progress reports each stage once per object, so the bar runs once for each object.
 
+### Measured cost
+
+Measured through `serve` on this laptop, with the app's settings: speed blend, tree supports, G-code parked, a 450 mm bed, and the meshes sent as the app sends them. Times are the whole request, client side. Each move and change sends `previewBase`.
+
+| Plate | Cold | Move of one object | B's support angle | B's blend | One object alone: cold, move |
+| --- | --- | --- | --- | --- | --- |
+| Baby Dragon and the dragon sample | 5.42 s | 0.31 to 0.33 s, 0 changed layers | 1.14 s | 1.51 s | 4.22 s, 0.18 to 0.20 s |
+| Rear cover and boots | 5.49 s | 0.23 s, 0 changed layers | 0.46 to 0.48 s | 1.52 s | 5.10 s, 0.13 to 0.19 s |
+| The dragon sample twice | 1.20 s | 0.09 to 0.10 s, 0 changed layers | 0.80 to 1.02 s | 1.45 s | 1.09 s, 0.05 to 0.06 s |
+
+A move reuses every stage of both objects. A support angle change on B plans only B's supports, and a blend change plans B from its cut; A reuses every stage in both. Two copies of one mesh with one setting share every stage, so the second dragon costs nothing on the cold slice. The rest of a plate move over a single move is the second mesh's decode and hash, which every request pays.
+
 ### Rejected alternatives
 
 - Concatenate the objects into one mesh, as the UI mock does. Every change and move re-slices everything, and overlapping solids fuse.
