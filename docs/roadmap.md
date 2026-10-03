@@ -8,9 +8,9 @@ Multi-object plates and support painting are designed, not built. The design is 
 
 ## Multi-object plates and arrange
 
-**Status.** Missing.
+**Status.** Partial. The UI lists, places, warns on axis-aligned overlap, arranges boxes, and saves the plate (`src/plate.ts`). The slice still sends one mesh. Separate solids, per-object tours, and sequential printing are not in the engine.
 
-**User value.** High for anyone printing more than one part. The other slicers arrange a bed and keep each body separate. Here a second file replaces the first (`state.mesh` in `src/app/state.ts`). STEP assemblies and 3MF models become one mesh (`crates/lime-slice-core/src/step.rs`, `load_3mf` in `crates/lime-slice-core/src/load.rs`).
+**User value.** High for anyone printing more than one part. The other slicers arrange a bed and keep each body separate. Opening a mesh still replaces the plate (`adoptBytes` in `src/app/files.ts`). Add object copies the loaded mesh. STEP assemblies and 3MF models become one mesh (`crates/lime-slice-core/src/step.rs`, `load_3mf` in `crates/lime-slice-core/src/load.rs`).
 
 **Effort.** Large for a real plate. Small for a mock that only shows several bounds.
 

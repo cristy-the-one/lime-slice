@@ -1,6 +1,6 @@
 # Multi-object plates and support painting
 
-This is a design for Claude to review. Nothing in this note is implemented. Sections marked **Proposal** are not the current wire. The two features share one rule: a plate with one object and no paint must emit the same G-code the engine emits today.
+This is a design for Claude to review. Sections marked **Proposal** are not the current wire. The plate list, placement, axis-aligned overlap, arrange, save, and undo are in the app (`src/plate.ts`). That slice is still one mesh: `objects` is omitted. Support painting and the engine `objects` array are not implemented. The two features share one rule: a plate with one object and no paint must emit the same G-code the engine emits today.
 
 ## Multi-object plates
 

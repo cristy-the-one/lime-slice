@@ -83,8 +83,8 @@ eq("an array is not a project", parseProject("[]"), { ok: false, message: "This 
 eq("a file with no version cannot be opened", parseProject("{}"), { ok: false, message: "This project file has no version, so it cannot be opened." });
 eq(
   "a newer file is refused",
-  parseProject(JSON.stringify({ ...JSON.parse(text), version: 2 })),
-  { ok: false, message: "This project is version 2. This app opens up to version 1." },
+  parseProject(JSON.stringify({ ...JSON.parse(text), version: 3 })),
+  { ok: false, message: "This project is version 3. This app opens up to version 2." },
 );
 eq(
   "version 0 has no built-in migration",
@@ -95,10 +95,10 @@ eq(
 const step: Migration = (doc) => ({ ...doc, version: 1, level: doc.level ?? "simple" });
 const legacy = { ...JSON.parse(text), version: 0 };
 delete (legacy as { level?: unknown }).level;
-const hooked = parseProject(JSON.stringify(legacy), [step]);
+const hooked = parseProject(JSON.stringify(legacy), [step], 1);
 check("a migration hook brings version 0 up to 1", hooked.ok && hooked.project.level === "simple" && hooked.project.mesh.name === "bracket.stl");
 
-const bumped = applyMigrations({ version: 0, kept: true }, [step]);
+const bumped = applyMigrations({ version: 0, kept: true }, [step], 1);
 eq("applyMigrations reports the rewritten document", bumped, { ok: true, doc: { version: 1, kept: true, level: "simple" } });
 
 const stuck: Migration = (doc) => doc;
@@ -128,6 +128,54 @@ eq(
   parseProject(JSON.stringify({ ...JSON.parse(serializeProject(project)), overrides: { version: 1, ranges: [{ id: "r", zFrom: 0, zTo: 1, override: { layerHeight: 0.08 } }], volumes: [] } })),
   { ok: false, message: "Layer height is not an override. The slice has one layer height." },
 );
+
+const wireProject = JSON.parse(text) as { version: number; objects?: unknown; mesh?: unknown };
+check("a one-object project stays version 1", wireProject.version === 1);
+check("a one-object project omits objects", wireProject.objects === undefined);
+check("a one-object project keeps its mesh", wireProject.mesh !== undefined);
+
+const migrated = applyMigrations(JSON.parse(text) as Record<string, unknown>);
+check("version 1 migrates to one object", migrated.ok);
+if (migrated.ok) {
+  const objects = migrated.doc.objects as { id: string }[];
+  check("the migrated object id is part", objects.length === 1 && objects[0]?.id === "part");
+  check("version 2 drops the top-level mesh", migrated.doc.mesh === undefined && migrated.doc.version === 2);
+}
+
+const secondPlacement = { ...project.placement, centered: false, offset: { x: 40, y: 8, z: 0 } };
+const multi: LimeProject = {
+  ...project,
+  version: 2,
+  objects: [
+    { id: "part", name: "bracket.stl", mesh: project.mesh, placement: project.placement, supportEdits: project.supportEdits },
+    { id: "obj-2", name: "bracket.stl 2", mesh: project.mesh, placement: secondPlacement, supportEdits: [] },
+  ],
+};
+const multiText = serializeProject(multi);
+const multiWire = JSON.parse(multiText) as { version: number; mesh?: unknown; placement?: unknown; supportEdits?: unknown; objects: { id: string; settings?: unknown }[] };
+check("a plate writes version 2", multiWire.version === 2 && multiWire.objects.length === 2);
+check("version 2 omits the single mesh, placement, and support edits", multiWire.mesh === undefined && multiWire.placement === undefined && multiWire.supportEdits === undefined);
+const openedMulti = parseProject(multiText);
+check("a plate round trip opens", openedMulti.ok);
+if (openedMulti.ok) {
+  eq("a plate keeps both objects", openedMulti.project.objects?.map((obj) => obj.id), ["part", "obj-2"]);
+  eq("the first object stays the mesh the one-object path knows", openedMulti.project.mesh, project.mesh);
+  eq("the second object keeps its offset", openedMulti.project.objects?.[1]?.placement.offset, { x: 40, y: 8, z: 0 });
+}
+const layered = JSON.parse(multiText) as { objects: { settings?: unknown }[] };
+layered.objects[0]!.settings = { layerHeight: 0.08 };
+eq(
+  "layer height on an object is refused",
+  parseProject(JSON.stringify(layered)),
+  { ok: false, message: "Layer height is not a per-object setting. The slice has one layer height." },
+);
+const soloSettings: LimeProject = {
+  ...project,
+  version: 2,
+  objects: [{ id: "part", name: "bracket.stl", mesh: project.mesh, placement: project.placement, supportEdits: [], settings: { supports: true } }],
+};
+const soloWire = JSON.parse(serializeProject(soloSettings)) as { version: number; objects: { settings: { supports: boolean } }[]; mesh?: unknown };
+check("one object with its own settings stays version 2", soloWire.version === 2 && soloWire.objects[0]?.settings.supports === true && soloWire.mesh === undefined);
 
 if (failed) {
   console.error(`${failed} failed`);

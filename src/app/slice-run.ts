@@ -7,6 +7,7 @@ import { syncSliceDock } from "../ui/shell";
 import { blend, renderChrome, settingsHash, markBusy, paintBanner, busyText, markEngineDown, apiBase, stale, apiToken, touch } from "./settings";
 import { editRequestFields } from "../support-edit-list";
 import { hasOverrides, OVERRIDES_STORED_TOAST, sliceOverrideFields } from "../overrides";
+import { PLATE_MOCK_TOAST, plateMockActive, slicePlateFields } from "../plate";
 import { engineDownMessage, authHeaders } from "../ui/api-base";
 import { pushToast } from "../ui/toasts";
 import {
@@ -136,6 +137,9 @@ export function payload() {
     ...editRequestFields(state.supportEdits, treeSupports()),
     // ADAPTER: ranges and volumes stay in the project. SliceRequest has no fields for them.
     ...sliceOverrideFields(state.overrides),
+    // MOCK: the plate stays in the project. Omitting `objects` keeps a one-mesh body,
+    // and a multi-object plate still sends only the selected mesh.
+    ...slicePlateFields(state.plate),
   };
 }
 
@@ -154,6 +158,7 @@ export function printer() {
 /** `force` plans again even when this recipe is already cached. */
 export async function runSlice(force = false) {
   if (hasOverrides(state.overrides)) pushToast(OVERRIDES_STORED_TOAST, "info");
+  if (plateMockActive(state.plate)) pushToast(PLATE_MOCK_TOAST, "info");
   if (!state.mesh) {
     state.error = "Load a mesh first.";
     renderChrome();

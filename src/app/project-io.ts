@@ -1,14 +1,22 @@
 /** Save and open a `.lime` project against the live session. */
+import { parseStl } from "../mesh-place.ts";
 import { saveProjectText } from "../platform.ts";
 import { confirmDiscard, markProjectClean } from "../project-dirty.ts";
 import { emptyOverrides, projectOverrides } from "../overrides.ts";
-import { base64ToBytes, meshRecord, parseProject, serializeProject, type LimeProject } from "../project.ts";
+import {
+  assemblePlate,
+  plateFileIsVersion2,
+  settingsEmpty,
+  type PlateFileObject,
+} from "../plate.ts";
+import { base64ToBytes, meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement } from "../project.ts";
 import { saveProfile } from "../profiles.ts";
 import { DEFAULT_PRESET, readPresets, type PresetSettings } from "../presets.ts";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel.ts";
 import { pushToast } from "../ui/toasts.ts";
-import { adoptBytes, place } from "./files.ts";
-import { applyPreset, currentPreset, renderChrome } from "./settings.ts";
+import { adoptBytes, place, previewRemote } from "./files.ts";
+import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
+import { applyPreset, currentPreset, needsEngine, renderChrome } from "./settings.ts";
 import { session, state } from "./state.ts";
 
 export async function saveCurrentProject() {
@@ -16,6 +24,7 @@ export async function saveCurrentProject() {
     pushToast("Load a mesh before saving a project.", "info");
     return;
   }
+  syncPlateFromState();
   const project: LimeProject = {
     version: 1,
     mesh: meshRecord(state.mesh.name, new Uint8Array(state.mesh.bytes)),
@@ -32,6 +41,11 @@ export async function saveCurrentProject() {
     level: loadSettingsLevel(),
     supportEdits: state.supportEdits.map((entry) => structuredClone(entry)),
   };
+  const objects = fileObjects();
+  if (plateFileIsVersion2(objects)) {
+    project.version = 2;
+    project.objects = objects;
+  }
   const overrides = projectOverrides(state.overrides);
   if (overrides) project.overrides = structuredClone(overrides);
   const name = `${state.mesh.name.replace(/\.(stl|3mf|step|stp|lime)$/i, "")}.lime`;
@@ -92,6 +106,15 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
     state.supportEdits = project.supportEdits;
     state.overrides = project.overrides ? structuredClone(project.overrides) : emptyOverrides();
     state.selectedVolumeId = state.overrides.volumes[0]?.id ?? null;
+    if (project.objects && project.objects.length > 0) {
+      const loaded = await loadPlateObjects(project.objects);
+      if (typeof loaded === "string") {
+        pushToast(loaded, "error", { label: "Retry", run: openProjectPicker });
+        return false;
+      }
+      state.plate = loaded;
+      applySelectedToState(loaded);
+    }
     session.slicedEdits = [];
     place("load");
     session.supportUi?.refresh();
@@ -103,6 +126,47 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
   } finally {
     session.projectRestoring = false;
   }
+}
+
+function fileObjects(): PlateFileObject[] {
+  return state.plate.objects.map((obj) => {
+    const record: PlateFileObject = {
+      id: obj.id,
+      name: obj.name,
+      mesh: meshRecord(obj.fileName, new Uint8Array(obj.bytes)),
+      placement: {
+        orient: [...obj.orient] as ProjectPlacement["orient"],
+        scale: obj.partScale,
+        centered: obj.centered,
+        offset: { ...obj.offset },
+        stepTolerance: obj.stepTolerance,
+      },
+      supportEdits: obj.supportEdits.map((entry) => structuredClone(entry)),
+    };
+    if (!settingsEmpty(obj.settings)) record.settings = { ...obj.settings };
+    return record;
+  });
+}
+
+async function loadPlateObjects(objects: PlateFileObject[]) {
+  const rows = [];
+  for (const row of objects) {
+    const bytes = base64ToBytes(row.mesh.bytesBase64);
+    if (!bytes) return "The mesh in this project is damaged.";
+    const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+    let sourcePos = needsEngine(row.mesh.name) ? null : parseStl(copy);
+    if (!sourcePos && state.sourcePos && state.mesh && row.mesh.hash === hashOf(state.mesh.bytes) && row.mesh.name === state.mesh.name) {
+      sourcePos = state.sourcePos;
+    }
+    if (!sourcePos) sourcePos = await previewRemote(row.mesh.name, copy);
+    if (!sourcePos) return `Could not read ${row.name}.`;
+    rows.push({ ...row, bytes: copy, sourcePos });
+  }
+  return assemblePlate(rows);
+}
+
+function hashOf(bytes: ArrayBuffer): string {
+  return meshRecord("part", new Uint8Array(bytes)).hash;
 }
 
 function matchingPreset(current: PresetSettings): string | null {

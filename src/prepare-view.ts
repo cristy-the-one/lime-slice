@@ -8,6 +8,7 @@ import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep } 
 import { clampSplit, roundSplit, type SplitAxis } from "./split-at";
 import { createModifierScene } from "./modifier-scene";
 import type { OverrideDocument } from "./overrides";
+import type { PlateBound } from "./plate";
 import { hexToThree, themeColors } from "./theme";
 
 type Axis = "x" | "y" | "z";
@@ -30,6 +31,8 @@ export interface PrepareView {
   setGizmoTool(tool: "all" | "move" | "rotate"): void;
   /** Translucent height slabs and modifier volumes. The part gizmo stays parked on the left. */
   setModifiers(doc: OverrideDocument, selectedId: string | null, tool: "move" | "scale"): void;
+  /** Axis-aligned bounds for every object on the plate. The solid mesh stays the selection. */
+  setPlateBounds(entries: PlateBound[]): void;
   onModifierSelect(cb: ((id: string) => void) | null): void;
   onModifierEditStart(cb: (() => void) | null): void;
   onModifierEdit(cb: ((id: string, kind: "move" | "scale", axis: Axis, deltaMm: number) => void) | null): void;
@@ -113,6 +116,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   const handlePicks: THREE.Object3D[] = [];
   const handleNodes: { kind: HandleHit["kind"]; nodes: THREE.Object3D[] }[] = [];
   let gizmoTool: "all" | "move" | "rotate" = "all";
+  let plateEntries: PlateBound[] = [];
+  let plateGroup: THREE.Group | null = null;
   const axisHex = (axis: Axis) => hexToThree(axis === "x" ? colors.axisX : axis === "y" ? colors.axisY : colors.axisZ);
   for (const axis of ["x", "y", "z"] as const) {
     const ringMat = new THREE.MeshBasicMaterial({ color: axisHex(axis), depthTest: false, transparent: true, opacity: 0.95, toneMapped: false });
@@ -733,6 +738,10 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       modifierTool = tool;
       syncModifiers();
     },
+    setPlateBounds(entries) {
+      plateEntries = entries;
+      syncPlateBounds();
+    },
     onModifierSelect(cb) { selectModCb = cb; },
     onModifierEditStart(cb) { editModStartCb = cb; },
     onModifierEdit(cb) { editModCb = cb; },
@@ -758,9 +767,66 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       }
       bed.userData.gridKey = "";
       syncBedGrid(bed, bedX, bedY, hexToThree(colors.line), hexToThree(colors.bedMinor));
+      syncPlateBounds();
       requestRender();
     },
   };
+
+  function syncPlateBounds() {
+    if (plateGroup) {
+      scene.remove(plateGroup);
+      plateGroup.traverse((node) => {
+        const line = node as THREE.LineSegments;
+        line.geometry?.dispose();
+        const material = line.material as THREE.Material | undefined;
+        material?.dispose();
+      });
+      plateGroup = null;
+    }
+    canvas.dataset.plateObjects = String(plateEntries.length);
+    canvas.dataset.plateOverlap = plateEntries.some((entry) => entry.overlap) ? "1" : "0";
+    canvas.dataset.plateSelected = plateEntries.find((entry) => entry.selected)?.id ?? "";
+    if (plateEntries.length === 0) {
+      requestRender();
+      return;
+    }
+    plateGroup = new THREE.Group();
+    for (const entry of plateEntries) {
+      const color = entry.overlap ? colors.amber : entry.selected ? colors.teal : colors.line;
+      const material = new THREE.LineBasicMaterial({ color: hexToThree(color), transparent: true, opacity: entry.selected ? 1 : 0.75 });
+      const lines = new THREE.LineSegments(plateBoxGeometry(entry.min, entry.max), material);
+      lines.userData.plateId = entry.id;
+      plateGroup.add(lines);
+    }
+    scene.add(plateGroup);
+    requestRender();
+  }
+
+  function plateBoxGeometry(min: [number, number, number], max: [number, number, number]) {
+    const corner = (x: number, y: number, z: number) => frame.toScene(x, y, z);
+    const pts = [
+      corner(min[0], min[1], min[2]),
+      corner(max[0], min[1], min[2]),
+      corner(max[0], max[1], min[2]),
+      corner(min[0], max[1], min[2]),
+      corner(min[0], min[1], max[2]),
+      corner(max[0], min[1], max[2]),
+      corner(max[0], max[1], max[2]),
+      corner(min[0], max[1], max[2]),
+    ];
+    const edges = [0, 1, 1, 2, 2, 3, 3, 0, 4, 5, 5, 6, 6, 7, 7, 4, 0, 4, 1, 5, 2, 6, 3, 7];
+    const pos = new Float32Array(edges.length * 3);
+    edges.forEach((index, i) => {
+      const point = pts[index];
+      if (!point) return;
+      pos[i * 3] = point.x;
+      pos[i * 3 + 1] = point.y;
+      pos[i * 3 + 2] = point.z;
+    });
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    return geometry;
+  }
 }
 
 function muteViewHelper(helper: THREE.Object3D) {
