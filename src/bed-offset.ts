@@ -1,14 +1,20 @@
 /**
  * Bed offset for a sliced preview.
  *
- * The request still sends the pose unchanged. The engine (when it grows this
- * field) keeps rotation and Z in the slice and returns X/Y as `offset`.
- * Every path, patch, gap, skeleton, and in-air mark in that reply is in the
- * reply frame. Draw it at reply coordinates plus the offset, as a group
- * matrix. Do not rewrite the buffers.
+ * The request still sends the pose unchanged. `SliceResponse` in
+ * `crates/lime-slice-core/src/slice.rs` (main after #118) has no bed-offset
+ * field and no `objects` field. Serde renames that struct to camelCase, so
+ * the reply keys that do exist are `layers`, `previewPatch`, `previewToken`,
+ * `coverage`, `skeleton` (`siteX`, `siteY`, `siteZ`), and `inAir`.
  *
- * A reply with no `offset` is today's engine: the paths already include X/Y,
- * so the offset is [0, 0] and a later move is only the change since that pose.
+ * When a reply grows the contracted key `offset` (`[x, y]` mm), rotation and
+ * Z stay in the slice and X/Y translation is that offset. Every path, patch,
+ * gap, skeleton, and in-air mark stays in the reply frame. Draw them at reply
+ * coordinates plus the offset, as a group matrix. Do not rewrite the buffers.
+ *
+ * A reply with no `offset` is the engine that ships today: the paths already
+ * include X/Y, so the offset is [0, 0] and a later move is only the change
+ * since that pose.
  */
 
 export type Xy = readonly [number, number];
