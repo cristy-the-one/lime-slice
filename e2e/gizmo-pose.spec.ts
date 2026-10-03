@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
 import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, parkLeftNdcX, snapStep } from "../src/gizmo-math";
-import { applyRigidPose, boundsOf, centeringShift, ID_MATRIX, placementPose, rotX, rotZ, scaledCanonical, transformPositions, type Mat3, type MeshShift, type RigidPose } from "../src/mesh-place";
+import { applyRigidPose, boundsOf, centeringShift, ID_MATRIX, placeMesh, rotX, rotZ, scaledCanonical, transformPositions, type Mat3, type MeshShift, type RigidPose } from "../src/mesh-place";
 import { encodePaths } from "../src/preview-wire";
 
 const out = "/opt/cursor/artifacts/gizmo-pose";
@@ -91,7 +91,7 @@ test("scaled canonical plus pose matches placement", () => {
   ];
   for (const [matrix, scale, centered, shift] of cases) {
     const placed = transformPositions(src, matrix, scale, 220, 200, centered, shift);
-    const pose = placementPose(src, matrix, scale, 220, 200, centered, shift);
+    const { pose } = placeMesh(src, matrix, scale, 220, 200, centered, shift);
     const via = applyRigidPose(scaledCanonical(src, scale), pose);
     expect(via.length).toBe(placed.length);
     for (let i = 0; i < placed.length; i++) expect(via[i]).toBeCloseTo(placed[i], 4);

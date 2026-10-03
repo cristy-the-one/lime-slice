@@ -1,6 +1,6 @@
 import { fx } from "./fx";
 import { state, session } from "./state";
-import { ID_MATRIX, parseStl, transformPositions, encodeStl, scaledCanonical, encode3mf } from "../mesh-place";
+import { ID_MATRIX, parseStl, placeMesh, encodeStl, scaledCanonical, encode3mf, type PlacedPart } from "../mesh-place";
 import { needsEngine, apiBase, apiToken, markEngineDown, isStepName, renderChrome, markStale, stale, card } from "./settings";
 import { authHeaders, engineDownMessage } from "../ui/api-base";
 import { type SplitSync } from "../split-at";
@@ -73,18 +73,41 @@ export function place(sync: SplitSync = "transform") {
 }
 
 export function applyPlace(rerender: boolean, sync: SplitSync = "transform") {
-  if (!state.sourcePos) {
-    state.placed = null;
+  state.placed = currentPlacement();
+  if (!state.placed) {
     fx.prepare.setMesh(null);
     if (rerender) renderChrome();
     return;
   }
-  state.placed = transformPositions(state.sourcePos, state.orient, state.partScale, state.profile.bedX, state.profile.bedY, state.centered, state.offset);
   fx.realignSplit(sync);
   fx.prepare.setMesh(state.placed, sync === "load");
   fx.prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
   markStale();
   if (rerender) renderChrome();
+}
+
+let placing: { source: Float32Array; key: string; placement: PlacedPart } | null = null;
+
+/** Placement of the current mesh and pose. The slice request and both views share one build per change. */
+export function currentPlacement(): PlacedPart | null {
+  const source = state.sourcePos;
+  if (!source) return null;
+  const key = JSON.stringify([state.orient, state.partScale, state.profile.bedX, state.profile.bedY, state.centered, state.offset]);
+  if (placing?.source !== source || placing.key !== key) {
+    const placement = placeMesh(source, state.orient, state.partScale, state.profile.bedX, state.profile.bedY, state.centered, state.offset);
+    placing = { source, key, placement: { ...placement, canonical: canonicalMesh(source) } };
+  }
+  return placing.placement;
+}
+
+let canonical: { source: Float32Array; scale: number; positions: Float32Array } | null = null;
+
+/** The scaled, unposed vertices: what the engine is sent and what both views draw under the pose matrix. */
+function canonicalMesh(source: Float32Array) {
+  if (canonical?.source !== source || canonical.scale !== state.partScale) {
+    canonical = { source, scale: state.partScale, positions: scaledCanonical(source, state.partScale) };
+  }
+  return canonical.positions;
 }
 
 /** The bytes `meshBytes` last built, and their Base64, for the mesh and scale they came from. */
@@ -95,7 +118,7 @@ export function meshBytes() {
   const source = state.sourcePos ?? state.mesh?.bytes ?? null;
   const name = state.mesh?.name ?? "part";
   if (encoded && encoded.source === source && encoded.scale === state.partScale && encoded.name === name) return encoded.bytes;
-  const bytes = !state.sourcePos ? (state.mesh?.bytes ?? new ArrayBuffer(0)) : encodeStl(scaledCanonical(state.sourcePos, state.partScale), name);
+  const bytes = !state.sourcePos ? (state.mesh?.bytes ?? new ArrayBuffer(0)) : encodeStl(canonicalMesh(state.sourcePos), name);
   encoded = { source, scale: state.partScale, name, bytes };
   return bytes;
 }
@@ -172,7 +195,7 @@ export async function exportGcode() {
 
 export async function export3mf() {
   if (!state.placed) return;
-  const bytes = encode3mf(state.placed);
+  const bytes = encode3mf(state.placed.positions);
   const name = `${(state.mesh?.name ?? "part").replace(/\.(stl|3mf|step|stp)$/i, "")}.3mf`;
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");

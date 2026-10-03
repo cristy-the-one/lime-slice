@@ -50,6 +50,7 @@ fn slice(payload: &str, cache: &SliceCache) -> (Value, String) {
         "token".into()
     })
     .unwrap();
+    cache.flush();
     (serde_json::from_str(&reply).unwrap(), parked)
 }
 
@@ -130,6 +131,85 @@ fn the_cache_drops_the_oldest_slices_past_its_cap() {
         slice(&request(0.3, false), &cache).0["fromCache"],
         json!(true)
     );
+}
+
+fn json_entries(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().unwrap() == "json")
+        .collect()
+}
+
+#[test]
+fn a_cached_reply_equals_the_fresh_one() {
+    let dir = tempdir("equal");
+    let cache = SliceCache::new(&dir, 1 << 30);
+    let request = {
+        let mut req: Value = serde_json::from_str(&request(0.2, false)).unwrap();
+        req["includeGcode"] = json!(true);
+        req["includePreview"] = json!(true);
+        req.to_string()
+    };
+
+    let (mut fresh, _) = slice(&request, &cache);
+    let (mut cached, _) = slice(&request, &cache);
+
+    assert_eq!(fresh["fromCache"], json!(false));
+    assert_eq!(cached["fromCache"], json!(true));
+    assert!(fresh["gcode"].as_str().unwrap().contains("G1"));
+    assert!(!fresh["layers"].as_array().unwrap().is_empty());
+    fresh.as_object_mut().unwrap().remove("fromCache");
+    cached.as_object_mut().unwrap().remove("fromCache");
+    assert_eq!(cached, fresh);
+
+    let on_disk: Value =
+        serde_json::from_slice(&std::fs::read(&json_entries(&dir)[0]).unwrap()).unwrap();
+    assert_eq!(on_disk, fresh, "the file holds the whole reply");
+}
+
+#[test]
+fn a_half_written_temp_file_is_ignored() {
+    let dir = tempdir("halfway");
+    let cache = SliceCache::new(&dir, 1 << 30);
+    slice(&request(0.2, false), &cache);
+    let entry = json_entries(&dir).remove(0);
+    let key = entry.file_stem().unwrap().to_str().unwrap().to_owned();
+    let whole = std::fs::read(&entry).unwrap();
+    std::fs::remove_file(&entry).unwrap();
+    let half = dir.join(format!("{key}.4242.0.tmp"));
+    std::fs::write(&half, &whole[..whole.len() / 2]).unwrap();
+
+    let (again, _) = slice(&request(0.2, false), &cache);
+
+    assert_eq!(
+        again["fromCache"],
+        json!(false),
+        "the temp file is no entry"
+    );
+    assert_eq!(json_entries(&dir), vec![entry], "a whole entry replaces it");
+    assert!(
+        half.exists(),
+        "a recent temp file may belong to a live write"
+    );
+}
+
+#[test]
+fn a_stale_temp_file_is_cleaned_up_by_the_next_write() {
+    let dir = tempdir("stale");
+    std::fs::create_dir_all(&dir).unwrap();
+    let stale = dir.join("dead.1.0.tmp");
+    std::fs::write(&stale, b"{\"half\":").unwrap();
+    let file = std::fs::File::options().write(true).open(&stale).unwrap();
+    let two_hours = std::time::Duration::from_secs(2 * 3600);
+    file.set_modified(std::time::SystemTime::now() - two_hours)
+        .unwrap();
+    drop(file);
+
+    slice(&request(0.2, false), &SliceCache::new(&dir, 1 << 30));
+
+    assert!(!stale.exists());
+    assert_eq!(entries(&dir), 1);
 }
 
 fn tempdir(name: &str) -> std::path::PathBuf {

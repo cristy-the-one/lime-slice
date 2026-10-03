@@ -148,8 +148,9 @@ enum Cmd {
         /// Also check contour coverage and support placement, and print the report.
         #[arg(long, default_value_t = false)]
         audit: bool,
-        /// Also plan a single-strategy speed slice and report its time.
-        #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+        /// Also plan a single-strategy speed slice and report its time. Off by
+        /// default: it doubles the wall time and changes no output.
+        #[arg(long, action = clap::ArgAction::Set, default_value_t = false)]
         baseline: bool,
         /// A JSON array of support edits to replay on the grown supports.
         #[arg(long)]
@@ -1630,6 +1631,23 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{}: {e}", input.display()));
             assert!(response.sanity.ok, "{}", input.display());
         }
+    }
+
+    #[test]
+    fn slice_skips_the_baseline_pass_unless_asked() {
+        use clap::Parser;
+        let baseline = |extra: &[&str]| {
+            let args = ["lime-slice", "slice", "part.stl", "-o", "out.gcode"]
+                .into_iter()
+                .chain(extra.iter().copied());
+            let Cmd::Slice { baseline, .. } = Cli::try_parse_from(args).unwrap().cmd else {
+                panic!("slice");
+            };
+            baseline
+        };
+        assert!(!baseline(&[]));
+        assert!(baseline(&["--baseline", "true"]));
+        assert!(!baseline(&["--baseline", "false"]));
     }
 
     #[test]

@@ -5,7 +5,7 @@ import { createSliceView, type SliceView3d } from "../view3d";
 import { FEATURE_LABEL, FEATURE_COLOR, colorForPath } from "../colors";
 import { legendMarkup } from "../ui/legend";
 import { syncLayerTip } from "../ui/layer-tip";
-import { type LayerGcode, indexLayerGcode, type PlayPoint, layerMoves, matchGcodeLine, layerClass } from "../playback";
+import { type LayerGcode, indexLayerGcode, type PlayPoint, layerMoves, matchGcodeLine, layerClasses } from "../playback";
 import { applyPlace, fetchStoredGcode } from "./files";
 import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, stale, markStale } from "./settings";
 import { type PreviewPath, decodePaths } from "../preview-wire";
@@ -16,7 +16,7 @@ import { themeColors } from "../theme";
 import { resolved } from "../strategy";
 import { syncEmptyState } from "../ui/shell";
 import { type AxisBounds, type SplitSync, splitOutside, nextSplitAt, roundSplit, clampSplit } from "../split-at";
-import { boundsOf, centeringShift, matMul, rotX, rotY, rotZ } from "../mesh-place";
+import { centeringShift, matMul, rotX, rotY, rotZ } from "../mesh-place";
 import { type Vec3, sectionReach, type SectionSpec, keepsPoint, clipPolyline, layerCut } from "../section-plane";
 
 export function paintLegend() {
@@ -203,43 +203,63 @@ export function syncGcodeHighlight() {
   pane.querySelector(".line.on")?.scrollIntoView({ block: "nearest" });
 }
 
+/** The histogram bars for one result, size, and palette. A slider step only repaints the current-layer marker over them. */
+let spark: ReturnType<typeof sparkBars> | null = null;
+
+function sparkBars(layers: PreviewLayer[], width: number, height: number, dpr: number, colors: ReturnType<typeof themeColors>, palette: string) {
+  const seconds = layers.map((layer) => layer.seconds ?? 0);
+  const kinds = layerClasses(seconds);
+  const bars = document.createElement("canvas");
+  bars.width = width;
+  bars.height = height;
+  const g = bars.getContext("2d")!;
+  const max = Math.max(...seconds, 0.001);
+  const gap = seconds.length > 80 ? 0 : 1 * dpr;
+  const barW = width / Math.max(1, seconds.length);
+  const heights = seconds.map((value, i) => {
+    const kind = kinds[i];
+    g.fillStyle = kind === "slow" ? colors.slow : kind === "fast" ? colors.fast : colors.spark;
+    const h = Math.max(dpr, (value / max) * (height - 3 * dpr));
+    g.fillRect(i * barW, height - h, Math.max(dpr, barW - gap), h);
+    return h;
+  });
+  return { layers, width, height, palette, kinds, bars, heights, barW, gap };
+}
+
 export function paintSpark() {
   const canvasEl = document.querySelector<HTMLCanvasElement>("#spark");
   const label = document.querySelector("#sparkLabel");
   if (!canvasEl) return;
   const layers = state.result?.layers ?? [];
-  const seconds = layers.map((layer) => layer.seconds ?? 0);
+  const rect = canvasEl.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(1, Math.floor(rect.width * dpr));
+  const height = Math.max(1, Math.floor(rect.height * dpr));
+  if (canvasEl.width !== width) canvasEl.width = width;
+  if (canvasEl.height !== height) canvasEl.height = height;
+  const colors = themeColors();
+  const palette = `${colors.slow} ${colors.fast} ${colors.spark}`;
+  if (spark?.layers !== layers || spark.width !== width || spark.height !== height || spark.palette !== palette) {
+    spark = sparkBars(layers, width, height, dpr, colors, palette);
+  }
   const here = layers[state.layer];
-  const klass = here ? layerClass(seconds, state.layer) : "ok";
+  const klass = here ? spark.kinds[state.layer] : "ok";
   if (label) {
     const tag = klass === "slow" ? "slow" : klass === "fast" ? "too fast" : "typical";
     label.innerHTML = here
       ? `<i style="background:var(--slow)"></i>slow<br><i style="background:var(--fast)"></i>too fast<br>${(here.seconds ?? 0).toFixed(1)} s · ${tag}`
       : "Layer time";
   }
-  const rect = canvasEl.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  canvasEl.width = Math.max(1, Math.floor(rect.width * dpr));
-  canvasEl.height = Math.max(1, Math.floor(rect.height * dpr));
   const g = canvasEl.getContext("2d");
   if (!g) return;
-  const colors = themeColors();
-  g.clearRect(0, 0, canvasEl.width, canvasEl.height);
-  if (seconds.length === 0) return;
-  const max = Math.max(...seconds, 0.001);
-  const gap = seconds.length > 80 ? 0 : 1 * dpr;
-  const barW = canvasEl.width / seconds.length;
-  seconds.forEach((value, i) => {
-    const kind = layerClass(seconds, i);
-    g.fillStyle = kind === "slow" ? colors.slow : kind === "fast" ? colors.fast : colors.spark;
-    const h = Math.max(dpr, (value / max) * (canvasEl.height - 3 * dpr));
-    g.fillRect(i * barW, canvasEl.height - h, Math.max(dpr, barW - gap), h);
-    if (i === state.layer) {
-      g.strokeStyle = colors.teal;
-      g.lineWidth = Math.max(1, dpr);
-      g.strokeRect(i * barW + 0.5, canvasEl.height - h, Math.max(dpr, barW - gap) - 1, h - 1);
-    }
-  });
+  g.clearRect(0, 0, width, height);
+  if (layers.length === 0) return;
+  g.drawImage(spark.bars, 0, 0);
+  if (!here) return;
+  const h = spark.heights[state.layer];
+  g.strokeStyle = colors.teal;
+  g.lineWidth = Math.max(1, dpr);
+  g.strokeRect(state.layer * spark.barW + 0.5, height - h, Math.max(dpr, spark.barW - spark.gap) - 1, h - 1);
 }
 
 export function stopPlay() {
@@ -332,8 +352,7 @@ export function setHelp(open: boolean) {
 }
 
 export function placedAxisBounds(): AxisBounds | null {
-  if (!state.placed) return null;
-  return boundsOf(state.placed);
+  return state.placed?.bounds ?? null;
 }
 
 export function realignSplit(reason: SplitSync) {
@@ -543,7 +562,7 @@ export function previewCenter(): Vec3 | null {
     ];
   }
   if (!state.placed) return null;
-  const bounds = boundsOf(state.placed);
+  const { bounds } = state.placed;
   return [
     (bounds.min[0] + bounds.max[0]) / 2,
     (bounds.min[1] + bounds.max[1]) / 2,
@@ -555,7 +574,7 @@ export function sectionLimit() {
   const mesh = state.result?.mesh;
   if (mesh) return sectionReach(mesh.min, mesh.max);
   if (state.placed) {
-    const bounds = boundsOf(state.placed);
+    const { bounds } = state.placed;
     return sectionReach(bounds.min, bounds.max);
   }
   return 100;

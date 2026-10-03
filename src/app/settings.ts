@@ -7,7 +7,7 @@ import { pushToast } from "../ui/toasts";
 import { sliceBusyStatus, staleSliceCopy, cacheStatus, coverageWarning, inAirWarning } from "../slice-action";
 import { applySliceProgress, currentSliceProgress } from "../ui/slice-progress";
 import { groupFeatures } from "../estimate";
-import { boundsOf, offBed } from "../mesh-place";
+import { offBed } from "../mesh-place";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys, readPresets, diffPreset } from "../presets";
 import { loadProfile, type PrinterProfile, saveProfile } from "../profiles";
 
@@ -452,16 +452,16 @@ export function needsEngine(name: string) {
 
 export function objectList() {
   if (!state.placed) return `<div class="meta">Drop an STL, 3MF, or STEP file, or open a sample.</div>`;
-  const b = boundsOf(state.placed);
+  const b = state.placed.bounds;
   const size = b.max.map((v, i) => (v - b.min[i]).toFixed(1)).join(" × ");
   const cx = ((b.min[0] + b.max[0]) / 2).toFixed(1);
   const cy = ((b.min[1] + b.max[1]) / 2).toFixed(1);
   const z0 = b.min[2].toFixed(1);
-  const notes = offBed(state.placed, state.profile.bedX, state.profile.bedY, state.profile.bedZ);
+  const notes = offBed(b, state.profile.bedX, state.profile.bedY, state.profile.bedZ);
   return `
     <div class="obj" role="listitem">
       <b>${escapeHtml(state.mesh?.name ?? "part")}</b>
-      <span>${triangleLine(state.placed.length / 9)} · ${size} mm</span>
+      <span>${triangleLine(state.placed.positions.length / 9)} · ${size} mm</span>
     </div>
     <div class="row">
       <button class="btn" id="center" type="button">Center</button>
@@ -722,6 +722,10 @@ export function onSettings(ev: Event) {
     state.profile.pressureAdvance = state.pressureAdvance;
     state.profile.linearAdvance = state.linearAdvance;
     saveProfile(state.profile);
+    if (!["bedx", "bedy", "bedz"].includes(t.id)) {
+      markStale();
+      return;
+    }
     fx.prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
     fx.view3d.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
     fx.applyPlace(false);
