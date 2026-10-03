@@ -52,7 +52,7 @@ test("a profile switch restores with undo", async ({ page }) => {
 
   await openMore(page);
   const download = page.waitForEvent("download");
-  await page.locator("#profileExport").click();
+  await page.locator("#settingsProfileExport").click();
   expect((await download).suggestedFilename()).toBe("Thick.limeprofile.json");
 
   await page.keyboard.press("Control+k");

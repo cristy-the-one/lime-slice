@@ -604,7 +604,7 @@ function profileHeaderHtml() {
           <button class="btn history-btn" id="profileRename" type="button">Rename</button>
           <button class="btn history-btn" id="profileDuplicate" type="button">Duplicate</button>
           <button class="btn history-btn" id="profileDelete" type="button">Delete</button>
-          <button class="btn history-btn" id="profileExport" type="button">Export</button>
+          <button class="btn history-btn" id="settingsProfileExport" type="button">Export</button>
           <label class="btn history-btn file">Import<input id="profileFile" type="file" accept=".limeprofile.json,application/json" /></label>
         </div>
       </details>

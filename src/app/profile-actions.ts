@@ -122,6 +122,8 @@ export async function importSettingsProfileFile(file: File) {
 }
 
 export function openProfileFile() {
+  const details = document.querySelector<HTMLDetailsElement>(".profile-more");
+  if (details) details.open = true;
   document.querySelector<HTMLInputElement>("#profileFile")?.click();
 }
 

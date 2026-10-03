@@ -102,7 +102,7 @@ export function wireApp() {
       else deleteSettingsProfile(id);
       return;
     }
-    if (t.id === "profileExport") {
+    if (t.id === "settingsProfileExport") {
       exportSettingsProfile(selectedProfileId());
       return;
     }
