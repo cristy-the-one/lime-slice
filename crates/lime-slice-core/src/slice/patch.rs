@@ -22,11 +22,18 @@ pub(super) struct Shown {
     pub seconds: Vec<Option<f64>>,
 }
 
-/// Names the preview of a kept slice: its key, the printer profile, and the
-/// edits. The same name always means the same preview.
-pub(super) fn token(key: &[u8; 32], profile: &PrinterProfile, edits: &[SupportEdit]) -> String {
+/// Names the preview of a kept plate: each object's key and edits, in plate
+/// order, and the printer profile. The same name always means the same
+/// preview.
+pub(super) fn token(
+    keys: &[[u8; 32]],
+    profile: &PrinterProfile,
+    edits: &[&[SupportEdit]],
+) -> String {
     let mut hash = Sha256::new();
-    hash.update(key);
+    for key in keys {
+        hash.update(key);
+    }
     hash.update(profile_digest(profile));
     hash.update(format!("{edits:?}"));
     hash.finalize()[..16]
@@ -39,16 +46,20 @@ fn profile_digest(profile: &PrinterProfile) -> [u8; 32] {
     Sha256::digest(format!("{profile:?}")).into()
 }
 
-/// What a preview reads besides its printed layers: the cut they share,
-/// the blend that weights each path, and the flow cap on its speeds. Two
+/// What a preview reads besides its printed layers: each object's cut, the
+/// blend that weights its paths, and the flow cap on its speeds. Two
 /// previews alike in these draw equal layers as equal paths.
-pub(super) fn drawn(contours: &[u8; 32], blend: &BlendMode, profile: &PrinterProfile) -> [u8; 32] {
+pub(super) fn drawn(
+    contours: &[[u8; 32]],
+    blends: &[&BlendMode],
+    profile: &PrinterProfile,
+) -> [u8; 32] {
     let mut hash = Sha256::new();
-    hash.update(contours);
-    hash.update(format!(
-        "{blend:?}|{:x}",
-        profile.max_volumetric_mm3_s.to_bits()
-    ));
+    for (cut, blend) in contours.iter().zip(blends) {
+        hash.update(cut);
+        hash.update(format!("{blend:?}|"));
+    }
+    hash.update(format!("{:x}", profile.max_volumetric_mm3_s.to_bits()));
     hash.finalize().into()
 }
 

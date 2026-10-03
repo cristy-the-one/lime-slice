@@ -10,6 +10,8 @@ use sha2::{Digest, Sha256};
 
 use super::patch::Shown;
 use super::{Contours, JoinedLayer, PartPaths, PartTour, PartTravels, SliceSettings, SupportPlan};
+use crate::adaptive::LayerBand;
+use crate::gcode::PlateLayer;
 use crate::mesh::Mesh;
 use crate::strategy::BlendMode;
 use crate::support::edit::{EditOutcome, SupportEdit};
@@ -40,24 +42,10 @@ pub(super) struct FoundSupports {
     pub painted: bool,
 }
 
-/// The newest plan's layers as joined, so the next plan of the same part
-/// joins again only the layers whose supports or way in changed, and the
-/// preview the last reply drew from them.
+/// The newest plate's layers, and the preview the last reply drew from them.
 struct Last {
-    comb: [u8; 32],
-    contours: [u8; 32],
-    joined: Arc<Vec<JoinedLayer>>,
+    layers: Arc<Vec<PlateLayer>>,
     shown: Option<Arc<Shown>>,
-}
-
-/// The newest plan's joined layers, and the preview drawn from them once
-/// its reply was built.
-pub(super) struct Prior {
-    pub joined: Arc<Vec<JoinedLayer>>,
-    pub shown: Option<Arc<Shown>>,
-    /// The part, its order, and its travels are this request's, so a layer
-    /// with the same supports and way in joins to the same paths.
-    pub same_part: bool,
 }
 
 /// Most recent first, at most `cap` values.
@@ -95,10 +83,13 @@ pub(super) struct Kept {
     tours: Shelf<PartTour>,
     travels: Shelf<PartTravels>,
     supports: Vec<SupportEntry>,
+    support_cap: usize,
+    /// Each object's newest layers as joined, by comb key, so the next plan
+    /// of the same part joins again only the layers whose supports or way in
+    /// changed.
+    joins: Shelf<Vec<JoinedLayer>>,
     last: Option<Last>,
 }
-
-const SUPPORT_CAPACITY: usize = 3;
 
 static KEEP: AtomicBool = AtomicBool::new(false);
 static KEPT: Mutex<Kept> = Mutex::new(Kept {
@@ -107,8 +98,23 @@ static KEPT: Mutex<Kept> = Mutex::new(Kept {
     tours: Shelf::new(2),
     travels: Shelf::new(2),
     supports: Vec::new(),
+    support_cap: 3,
+    joins: Shelf::new(2),
     last: None,
 });
+
+/// Room for a plate of `objects`: every object's stages plus one older entry
+/// per shelf, so changing one object never evicts another.
+pub(super) fn fit(objects: usize) {
+    let mut kept = kept();
+    let cap = objects.max(1) + 1;
+    kept.contours.cap = cap;
+    kept.toolpaths.cap = cap;
+    kept.tours.cap = cap;
+    kept.travels.cap = cap;
+    kept.joins.cap = cap;
+    kept.support_cap = (2 * objects + 1).max(3);
+}
 
 /// A stage the kept slices hold, one shelf each.
 pub(super) trait Stage: Sized {
@@ -151,6 +157,7 @@ pub fn keep_support_bases(on: bool) {
         kept.tours.items.clear();
         kept.travels.items.clear();
         kept.supports.clear();
+        kept.joins.items.clear();
         kept.last = None;
     }
 }
@@ -211,37 +218,43 @@ pub(super) fn keep_supports(keys: &Keys, base: Arc<SupportPlan>, edited: Option<
             edited,
         },
     );
-    kept.supports.truncate(SUPPORT_CAPACITY);
+    let cap = kept.support_cap;
+    kept.supports.truncate(cap);
 }
 
-/// The newest plan's joined layers when they cut the mesh as `keys` does.
-pub(super) fn prior(keys: &Keys) -> Option<Prior> {
-    let kept = kept();
-    let last = kept.last.as_ref().filter(|l| l.contours == keys.contours)?;
-    Some(Prior {
-        joined: Arc::clone(&last.joined),
-        shown: last.shown.clone(),
-        same_part: last.comb == keys.comb,
-    })
+/// The newest join of the part `keys` names: the same part, order, and
+/// travels, so a layer with the same supports and way in joins to the same
+/// paths.
+pub(super) fn prior(keys: &Keys) -> Option<Arc<Vec<JoinedLayer>>> {
+    kept().joins.get(&keys.comb)
 }
 
-/// Make `joined` the newest plan's layers. Its preview is not drawn yet.
 pub(super) fn keep_joined(keys: &Keys, joined: Arc<Vec<JoinedLayer>>) {
+    kept().joins.put(keys.comb, joined);
+}
+
+/// The newest plate's layers and the preview a reply drew from them.
+pub(super) fn plate_prior() -> Option<(Arc<Vec<PlateLayer>>, Arc<Shown>)> {
+    let kept = kept();
+    let last = kept.last.as_ref()?;
+    Some((Arc::clone(&last.layers), last.shown.clone()?))
+}
+
+/// Make `layers` the newest plate's. Its preview is not drawn yet.
+pub(super) fn keep_plate(layers: Arc<Vec<PlateLayer>>) {
     kept().last = Some(Last {
-        comb: keys.comb,
-        contours: keys.contours,
-        joined,
+        layers,
         shown: None,
     });
 }
 
-/// Record that a reply drew `shown` from `joined`. A newer plan that
+/// Record that a reply drew `shown` from `layers`. A newer plate that
 /// replaced them since wins.
-pub(super) fn show(joined: &Arc<Vec<JoinedLayer>>, shown: Shown) {
+pub(super) fn show(layers: &Arc<Vec<PlateLayer>>, shown: Shown) {
     if let Some(last) = kept()
         .last
         .as_mut()
-        .filter(|l| Arc::ptr_eq(&l.joined, joined))
+        .filter(|l| Arc::ptr_eq(&l.layers, layers))
     {
         last.shown = Some(Arc::new(shown));
     }
@@ -270,6 +283,7 @@ pub(super) struct Keys {
 
 pub(super) fn keys(
     mesh: &Mesh,
+    bands: &[LayerBand],
     blend: &BlendMode,
     settings: &SliceSettings,
     nozzle_diameter: f64,
@@ -283,6 +297,12 @@ pub(super) fn keys(
         }
     }
     mesh_hash.update(format!("{:x}|", nozzle_diameter.to_bits()));
+    // On a plate the bands follow the other objects too, so they are an
+    // input of their own.
+    for b in bands {
+        mesh_hash.update(b.z.to_bits().to_le_bytes());
+        mesh_hash.update(b.height.to_bits().to_le_bytes());
+    }
     let blank = SliceSettings::default();
     let whole = SliceSettings {
         support_edits: Vec::new(),

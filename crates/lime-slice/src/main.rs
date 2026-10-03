@@ -1348,6 +1348,8 @@ fn request_for(
     SliceRequest {
         filename: input.name.clone(),
         data_b64: base64::engine::general_purpose::STANDARD.encode(&input.bytes),
+        objects: None,
+        print_order: None,
         layer_height: settings.layer_height,
         line_width: settings.line_width,
         blend: blend.clone(),

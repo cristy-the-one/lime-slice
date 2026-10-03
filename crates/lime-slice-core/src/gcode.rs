@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
+use std::ops::Range;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use rayon::prelude::*;
@@ -92,6 +93,99 @@ impl std::ops::Deref for PrintLayer {
     }
 }
 
+/// One printed layer of a plate: runs of the objects' own joined layers, each
+/// in its object's part frame. A layer with no run prints nothing.
+#[derive(Clone)]
+pub(crate) struct PlateLayer {
+    pub index: usize,
+    pub z: f64,
+    pub height: f64,
+    pub note: String,
+    pub runs: Vec<Run>,
+}
+
+/// A stretch of one object's joined layer: its head (skirt and supports) or
+/// its part. The layer is shared with the object's plan, arcs and all.
+#[derive(Clone)]
+pub(crate) struct Run {
+    pub object: u16,
+    pub layer: PrintLayer,
+    pub paths: Range<usize>,
+    pub entry: Entry,
+    /// Written as `;OBJECT:<label>` before the run.
+    pub label: Option<Arc<str>>,
+}
+
+/// How the nozzle reaches a run's first path.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Entry {
+    /// The run before is the same object's, so the nozzle stands where that
+    /// object's plan left it and the planned travel holds.
+    AsPlanned,
+    /// The run before is another object's: a straight travel that retracts,
+    /// and hops `z_hop` millimetres when that is not zero.
+    Cross { z_hop: f64 },
+}
+
+impl PlateLayer {
+    /// One object's layer as the whole plate layer.
+    #[cfg(test)]
+    pub(crate) fn single(layer: PrintLayer) -> Self {
+        let runs = if layer.paths.is_empty() {
+            Vec::new()
+        } else {
+            vec![Run {
+                object: 0,
+                paths: 0..layer.paths.len(),
+                layer: layer.clone(),
+                entry: Entry::AsPlanned,
+                label: None,
+            }]
+        };
+        Self {
+            index: layer.index,
+            z: layer.z,
+            height: layer.height,
+            note: layer.note.clone(),
+            runs,
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.runs.is_empty()
+    }
+
+    /// Every path in print order, with the object it belongs to.
+    pub(crate) fn paths(&self) -> impl Iterator<Item = (u16, &Extrusion)> + '_ {
+        self.runs
+            .iter()
+            .flat_map(|r| r.layer.paths[r.paths.clone()].iter().map(|p| (r.object, p)))
+    }
+
+    /// The same runs of the same object layers, entered the same way.
+    pub(crate) fn same(&self, other: &PlateLayer) -> bool {
+        self.runs.len() == other.runs.len()
+            && self.runs.iter().zip(&other.runs).all(|(a, b)| {
+                a.object == b.object
+                    && a.paths == b.paths
+                    && std::mem::discriminant(&a.entry) == std::mem::discriminant(&b.entry)
+                    && a.label == b.label
+                    && a.layer.same(&b.layer)
+            })
+    }
+}
+
+impl Run {
+    /// Index of the run's first arc script: one script per path of two or
+    /// more points, as `chain_scripts` plans them.
+    fn first_script(&self) -> usize {
+        self.layer.paths[..self.paths.start]
+            .iter()
+            .filter(|p| p.points.len() >= 2)
+            .count()
+    }
+}
+
 /// One layer's arc plan, with arc fitting on and off. Neither depends on
 /// the printer, so it lasts as long as the layer's paths.
 #[derive(Default)]
@@ -139,7 +233,7 @@ impl std::fmt::Debug for GcodeText {
 /// What formatting the text needs once the scan is done.
 struct Formatter {
     cfg: EmitCfg,
-    layers: Vec<PrintLayer>,
+    layers: Vec<PlateLayer>,
     seeds: Vec<Seed>,
     preamble: String,
     epilogue: String,
@@ -154,14 +248,13 @@ impl Formatter {
                 let layer = &self.layers[seed.index];
                 let mut layer_w = Writer::blank(&self.cfg, seed.carry, true);
                 let points: usize = layer
-                    .paths
-                    .iter()
-                    .map(|path| path.points.len() + path.lead_in.len())
+                    .paths()
+                    .map(|(_, path)| path.points.len() + path.lead_in.len())
                     .sum();
                 layer_w
                     .out
                     .reserve(points.saturating_mul(48).saturating_add(128));
-                layer_w.replay = Some(layer.script(self.cfg.arc_fit));
+                layer_w.scripted = true;
                 layer_w.write_layer(layer);
                 layer_w.out
             })
@@ -190,7 +283,7 @@ enum Text {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_gcode(
-    layers: &[PrintLayer],
+    layers: &[PlateLayer],
     profile: &PrinterProfile,
     blend: &BlendMode,
     layer_height: f64,
@@ -199,7 +292,7 @@ pub(crate) fn emit_gcode(
     arc_fit: bool,
     classic_estimator: bool,
     junction_deviation_mm: f64,
-    offset: [f64; 2],
+    offsets: &[[f64; 2]],
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> GcodeStats {
@@ -213,7 +306,7 @@ pub(crate) fn emit_gcode(
         arc_fit,
         classic_estimator,
         junction_deviation_mm,
-        offset,
+        offsets,
         job,
         watch,
         true,
@@ -226,7 +319,7 @@ pub(crate) fn emit_gcode(
 /// totals come from; formatting is only for the string the caller keeps.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_estimates(
-    layers: &[PrintLayer],
+    layers: &[PlateLayer],
     profile: &PrinterProfile,
     blend: &BlendMode,
     layer_height: f64,
@@ -235,7 +328,7 @@ pub(crate) fn emit_estimates(
     arc_fit: bool,
     classic_estimator: bool,
     junction_deviation_mm: f64,
-    offset: [f64; 2],
+    offsets: &[[f64; 2]],
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> GcodeStats {
@@ -249,7 +342,7 @@ pub(crate) fn emit_estimates(
         arc_fit,
         classic_estimator,
         junction_deviation_mm,
-        offset,
+        offsets,
         job,
         watch,
         true,
@@ -262,7 +355,7 @@ pub(crate) fn emit_estimates(
 /// `emit_gcode` writes.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_later(
-    layers: &[PrintLayer],
+    layers: &[PlateLayer],
     profile: &PrinterProfile,
     blend: &BlendMode,
     layer_height: f64,
@@ -271,7 +364,7 @@ pub(crate) fn emit_later(
     arc_fit: bool,
     classic_estimator: bool,
     junction_deviation_mm: f64,
-    offset: [f64; 2],
+    offsets: &[[f64; 2]],
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> (GcodeStats, GcodeText) {
@@ -285,7 +378,7 @@ pub(crate) fn emit_later(
         arc_fit,
         classic_estimator,
         junction_deviation_mm,
-        offset,
+        offsets,
         job,
         watch,
         true,
@@ -301,7 +394,7 @@ pub(crate) fn emit_later(
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_gcode_linear(
-    layers: &[PrintLayer],
+    layers: &[PlateLayer],
     profile: &PrinterProfile,
     blend: &BlendMode,
     layer_height: f64,
@@ -310,7 +403,7 @@ pub(crate) fn emit_gcode_linear(
     arc_fit: bool,
     classic_estimator: bool,
     junction_deviation_mm: f64,
-    offset: [f64; 2],
+    offsets: &[[f64; 2]],
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> GcodeStats {
@@ -324,7 +417,7 @@ pub(crate) fn emit_gcode_linear(
         arc_fit,
         classic_estimator,
         junction_deviation_mm,
-        offset,
+        offsets,
         job,
         watch,
         false,
@@ -335,7 +428,7 @@ pub(crate) fn emit_gcode_linear(
 
 #[allow(clippy::too_many_arguments)]
 fn emit_gcode_inner(
-    layers: &[PrintLayer],
+    layers: &[PlateLayer],
     profile: &PrinterProfile,
     blend: &BlendMode,
     layer_height: f64,
@@ -344,7 +437,7 @@ fn emit_gcode_inner(
     arc_fit: bool,
     classic_estimator: bool,
     junction_deviation_mm: f64,
-    offset: [f64; 2],
+    offsets: &[[f64; 2]],
     job: crate::cancel::Job,
     watch: &Watch,
     parallel: bool,
@@ -355,12 +448,12 @@ fn emit_gcode_inner(
         arc_fit,
         classic_estimator,
         junction_deviation_mm,
-        offset,
+        offsets,
     );
     let junction_deviation = cfg.junction_deviation;
     let emit_total = layers
         .iter()
-        .filter(|layer| !layer.paths.is_empty())
+        .filter(|layer| !layer.is_empty())
         .count()
         .max(1) as u32;
     watch.begin(Stage::Emit, emit_total);
@@ -382,7 +475,7 @@ fn emit_gcode_inner(
                 w.cancelled = true;
                 break;
             }
-            if layer.paths.is_empty() {
+            if layer.is_empty() {
                 continue;
             }
             w.write_layer(layer);
@@ -397,20 +490,21 @@ fn emit_gcode_inner(
     }
 
     // Arc choices do not depend on machine state, so they are planned once per
-    // layer and kept with it. A quiet scan then replays them to carry E, fan,
-    // accel, and pressure advance across layers. Formatting replays the same
-    // arcs into one string per layer and the strings are joined in layer index
-    // order. Lookahead stays on the quiet scan: it already stops at each layer,
-    // and that pass is what the print-time totals come from.
-    let scripts: Vec<Arc<Vec<Vec<Span>>>> = layers
-        .par_iter()
-        .map(|layer| layer.script(arc_fit))
-        .collect();
+    // object layer and kept with it. A quiet scan then replays them to carry E,
+    // fan, accel, and pressure advance across layers. Formatting replays the
+    // same arcs into one string per layer and the strings are joined in layer
+    // index order. Lookahead stays on the quiet scan: it already stops at each
+    // layer, and that pass is what the print-time totals come from.
+    layers.par_iter().for_each(|layer| {
+        for run in &layer.runs {
+            run.layer.script(arc_fit);
+        }
+    });
     let mut w = Writer::blank(&cfg, Carry::initial(&cfg), false);
     w.quiet = true;
     let mut seeds = Vec::new();
     let mut emitted_layers = 0usize;
-    match scan_layers(&cfg, layers, &scripts, job, watch) {
+    match scan_layers(&cfg, layers, job, watch) {
         Some(scans) => {
             for scan in scans {
                 if watch.stopped(job) {
@@ -435,15 +529,14 @@ fn emit_gcode_inner(
                     w.cancelled = true;
                     break;
                 }
-                if layer.paths.is_empty() {
+                if layer.is_empty() {
                     continue;
                 }
                 seeds.push(Seed {
                     index,
                     carry: w.carry(),
                 });
-                w.replay = Some(Arc::clone(&scripts[index]));
-                w.replay_i = 0;
+                w.scripted = true;
                 w.write_layer(layer);
                 emitted_layers += 1;
                 watch.tick();
@@ -493,7 +586,7 @@ fn emit_gcode_inner(
     (stats, Some(later))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct EmitCfg {
     classic_estimator: bool,
     junction_deviation: f64,
@@ -504,8 +597,9 @@ struct EmitCfg {
     pa_base: f64,
     la_base: f64,
     emit_pa: bool,
-    /// Added to every written X/Y: the part frame's place on the bed.
-    offset: [f64; 2],
+    /// Each object's part frame's place on the bed, added to every X/Y
+    /// written in that frame.
+    offsets: Arc<[[f64; 2]]>,
 }
 
 impl EmitCfg {
@@ -514,8 +608,13 @@ impl EmitCfg {
         arc_fit: bool,
         classic_estimator: bool,
         junction_deviation_mm: f64,
-        offset: [f64; 2],
+        offsets: &[[f64; 2]],
     ) -> Self {
+        let offsets = if offsets.is_empty() {
+            Arc::from([[0.0, 0.0]])
+        } else {
+            Arc::from(offsets)
+        };
         let junction_deviation = if junction_deviation_mm.is_finite() && junction_deviation_mm > 0.0
         {
             junction_deviation_mm
@@ -532,7 +631,7 @@ impl EmitCfg {
             pa_base: profile.pressure_advance.max(0.0),
             la_base: profile.linear_advance.max(0.0),
             emit_pa: profile.pressure_advance > 0.0 || profile.linear_advance > 0.0,
-            offset,
+            offsets,
         }
     }
 }
@@ -551,6 +650,8 @@ struct Carry {
     fan: i32,
     pa_cur: f64,
     la_cur: f64,
+    /// The object whose part frame `x` and `y` are in.
+    frame: u16,
 }
 
 impl Carry {
@@ -566,6 +667,7 @@ impl Carry {
             fan: 0,
             pa_cur: cfg.pa_base,
             la_cur: cfg.la_base,
+            frame: 0,
         }
     }
 }
@@ -579,6 +681,7 @@ impl Carry {
                 [c.x, c.y, c.z, c.retracted, c.accel, c.pa_cur, c.la_cur].map(f64::to_bits),
                 c.has_pos,
                 c.fan,
+                c.frame,
             )
         };
         bits(self) == bits(other)
@@ -640,17 +743,11 @@ struct LayerScan {
 /// One layer scanned from `entry`. Without `log` the scan only finds where
 /// the layer leaves the machine, which does not depend on timing, so it
 /// skips lookahead and the totals.
-fn scan_layer(
-    cfg: &EmitCfg,
-    entry: Carry,
-    layer: &LayerPaths,
-    script: &Arc<Vec<Vec<Span>>>,
-    log: bool,
-) -> Writer {
+fn scan_layer(cfg: &EmitCfg, entry: Carry, layer: &PlateLayer, log: bool) -> Writer {
     let mut w = Writer::blank(cfg, entry, !log);
     w.quiet = true;
     w.log = log.then(Box::default);
-    w.replay = Some(Arc::clone(script));
+    w.scripted = true;
     w.write_layer(layer);
     w
 }
@@ -665,18 +762,17 @@ fn scan_layer(
 /// does not, this returns `None` and the caller scans serially.
 fn scan_layers(
     cfg: &EmitCfg,
-    layers: &[PrintLayer],
-    scripts: &[Arc<Vec<Vec<Span>>>],
+    layers: &[PlateLayer],
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> Option<Vec<LayerScan>> {
     let order: Vec<usize> = (0..layers.len())
-        .filter(|&i| !layers[i].paths.is_empty())
+        .filter(|&i| !layers[i].is_empty())
         .collect();
     let initial = Carry::initial(cfg);
     let exits: Vec<Carry> = order
         .par_iter()
-        .map(|&i| scan_layer(cfg, initial, &layers[i], &scripts[i], false).carry())
+        .map(|&i| scan_layer(cfg, initial, &layers[i], false).carry())
         .collect();
     if watch.stopped(job) {
         return None;
@@ -693,7 +789,7 @@ fn scan_layers(
                     ..exits[k - 1]
                 }
             };
-            let mut w = scan_layer(cfg, entry, &layers[i], &scripts[i], true);
+            let mut w = scan_layer(cfg, entry, &layers[i], true);
             LayerScan {
                 index: i,
                 entry,
@@ -718,21 +814,13 @@ fn scan_layers(
 /// to one serial scan.
 #[cfg(test)]
 pub(crate) fn scans_in_parallel(
-    layers: &[PrintLayer],
+    layers: &[PlateLayer],
     profile: &PrinterProfile,
     arc_fit: bool,
     classic_estimator: bool,
 ) -> bool {
-    let cfg = EmitCfg::new(profile, arc_fit, classic_estimator, 0.0, [0.0, 0.0]);
-    let scripts: Vec<Arc<Vec<Vec<Span>>>> = layers.iter().map(|l| l.script(arc_fit)).collect();
-    scan_layers(
-        &cfg,
-        layers,
-        &scripts,
-        crate::cancel::Job::default(),
-        &Watch::idle(),
-    )
-    .is_some()
+    let cfg = EmitCfg::new(profile, arc_fit, classic_estimator, 0.0, &[]);
+    scan_layers(&cfg, layers, crate::cancel::Job::default(), &Watch::idle()).is_some()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -835,7 +923,9 @@ struct Writer {
     /// Klipper junction deviation, millimetres. Ignored by the classic estimator.
     junction_deviation: f64,
     pending: Vec<KinMove>,
-    /// Planned arcs for this layer, shared with the formatter. Empty means fit inline.
+    /// Replay the arcs planned on each run's layer. Off means fit inline.
+    scripted: bool,
+    /// The current run's planned arcs, shared with the formatter.
     replay: Option<Arc<Vec<Vec<Span>>>>,
     replay_i: usize,
     /// Skip string writes. The carry scan uses this so formatting can run per layer.
@@ -849,6 +939,9 @@ struct Writer {
     max_accel: f64,
     max_volumetric_mm3_s: f64,
     filament_diameter: f64,
+    offsets: Arc<[[f64; 2]]>,
+    /// The object whose part frame `x` and `y` are in, and its offset.
+    frame: u16,
     offset: [f64; 2],
 }
 
@@ -903,6 +996,7 @@ impl Writer {
             classic_estimator: cfg.classic_estimator,
             junction_deviation: cfg.junction_deviation,
             pending: Vec::new(),
+            scripted: false,
             replay: None,
             replay_i: 0,
             quiet: false,
@@ -912,7 +1006,9 @@ impl Writer {
             max_accel: cfg.max_accel,
             max_volumetric_mm3_s: cfg.max_volumetric_mm3_s,
             filament_diameter: cfg.filament_diameter,
-            offset: cfg.offset,
+            offsets: Arc::clone(&cfg.offsets),
+            frame: carry.frame,
+            offset: cfg.offsets[carry.frame as usize],
         }
     }
 
@@ -938,7 +1034,23 @@ impl Writer {
             fan: self.fan,
             pa_cur: self.pa_cur,
             la_cur: self.la_cur,
+            frame: self.frame,
         }
+    }
+
+    /// Stand in object `frame`'s part frame. The position moves with it, so
+    /// it stays the same point on the bed.
+    fn enter_frame(&mut self, frame: u16) {
+        if frame == self.frame {
+            return;
+        }
+        let to = self.offsets[frame as usize];
+        if to != self.offset {
+            self.x = self.x + self.offset[0] - to[0];
+            self.y = self.y + self.offset[1] - to[1];
+        }
+        self.frame = frame;
+        self.offset = to;
     }
 
     fn put(&mut self, args: std::fmt::Arguments<'_>) {
@@ -955,79 +1067,102 @@ impl Writer {
         self.out.push_str(text);
     }
 
-    /// Header, paths, then flush. The flush used to run at the next layer's
+    /// Header, runs, then flush. The flush used to run at the next layer's
     /// header, before that layer's Z time, which is the same moment.
-    fn write_layer(&mut self, layer: &LayerPaths) {
+    fn write_layer(&mut self, layer: &PlateLayer) {
         self.layer_header(layer);
-        for path in &layer.paths {
-            self.set_advance(path.kind.as_str());
-            if layer.index >= 2 {
-                self.set_fan(path.fan);
-            } else if layer.index == 1 {
-                self.set_fan(128);
-            } else {
-                self.set_fan(0);
+        for run in &layer.runs {
+            self.enter_frame(run.object);
+            if let Some(label) = &run.label {
+                self.put(format_args!(";OBJECT:{label}\n"));
             }
-            let speed = if layer.index == 0 {
-                path.speed.min(30.0)
-            } else {
-                path.speed
-            };
-            let flow = if layer.index == 0 { 1.06 } else { 1.0 };
-            if !self.quiet {
-                self.comment(&format!("TYPE:{}", path.kind.as_str().to_ascii_uppercase()));
+            if self.scripted {
+                self.replay = Some(run.layer.script(self.arc_fit));
+                self.replay_i = run.first_script();
             }
-            if path.points.is_empty() {
-                continue;
+            let mut entry = run.entry;
+            for path in &run.layer.paths[run.paths.clone()] {
+                self.write_path(layer, path, entry);
+                if !path.points.is_empty() {
+                    entry = Entry::AsPlanned;
+                }
             }
-            let bead_h = if path.bead_height > 1e-6 {
-                path.bead_height
-            } else {
-                layer.height
-            };
-            self.kind = "travel";
-            let travel_accel = cap_accel(path.travel_accel, self.max_accel);
-            let print_accel = cap_accel(path.accel, self.max_accel);
-            self.set_accel(travel_accel);
-            let mut hop = path.lead_in.clone();
-            hop.push(path.points[0]);
-            let (retract_mm, min_travel) = path.travel_retract();
-            self.travel_chain(
-                &hop,
-                path.travel_speed,
-                retract_mm,
-                min_travel,
-                travel_accel,
-                path.z_hop,
-                layer.z,
-            );
-            self.kind = path.kind.as_str();
-            self.set_accel(print_accel);
-            let limited = limit_speed(
-                speed,
-                path.width,
-                bead_h,
-                flow * path.flow,
-                self.max_volumetric_mm3_s,
-            );
-            let (fit, loose) = chain_fit(self.arc_fit, path);
-            self.emit_chain(
-                &path.points,
-                limited,
-                path.width,
-                bead_h,
-                flow * path.flow,
-                self.filament_diameter,
-                print_accel,
-                fit,
-                loose,
-                &path.z_frac,
-                &path.flow_frac,
-                layer.z,
-                layer.height,
-            );
         }
         self.close_layer();
+    }
+
+    fn write_path(&mut self, layer: &PlateLayer, path: &Extrusion, entry: Entry) {
+        self.set_advance(path.kind.as_str());
+        if layer.index >= 2 {
+            self.set_fan(path.fan);
+        } else if layer.index == 1 {
+            self.set_fan(128);
+        } else {
+            self.set_fan(0);
+        }
+        let speed = if layer.index == 0 {
+            path.speed.min(30.0)
+        } else {
+            path.speed
+        };
+        let flow = if layer.index == 0 { 1.06 } else { 1.0 };
+        if !self.quiet {
+            self.comment(&format!("TYPE:{}", path.kind.as_str().to_ascii_uppercase()));
+        }
+        if path.points.is_empty() {
+            return;
+        }
+        let bead_h = if path.bead_height > 1e-6 {
+            path.bead_height
+        } else {
+            layer.height
+        };
+        self.kind = "travel";
+        let travel_accel = cap_accel(path.travel_accel, self.max_accel);
+        let print_accel = cap_accel(path.accel, self.max_accel);
+        self.set_accel(travel_accel);
+        let (hop, (retract_mm, min_travel), z_hop) = match entry {
+            Entry::AsPlanned => {
+                let mut hop = path.lead_in.clone();
+                hop.push(path.points[0]);
+                (hop, path.travel_retract(), path.z_hop)
+            }
+            Entry::Cross { z_hop } => (vec![path.points[0]], (path.retract_mm, 0.0), z_hop),
+        };
+        self.travel_chain(
+            &hop,
+            path.travel_speed,
+            retract_mm,
+            min_travel,
+            travel_accel,
+            z_hop,
+            layer.z,
+        );
+        self.kind = path.kind.as_str();
+        self.set_accel(print_accel);
+        let limited = limit_speed(
+            speed,
+            path.width,
+            bead_h,
+            flow * path.flow,
+            self.max_volumetric_mm3_s,
+        );
+        let (fit, loose) = chain_fit(self.arc_fit, path);
+        self.emit_chain(
+            &path.points,
+            limited,
+            path.width,
+            bead_h,
+            flow * path.flow,
+            self.filament_diameter,
+            print_accel,
+            fit,
+            loose,
+            &path.z_frac,
+            &path.flow_frac,
+            layer.z,
+            layer.height,
+        );
     }
 
     fn flush_motion(&mut self) {
@@ -1164,6 +1299,7 @@ impl Writer {
         }
         let c = scan.exit;
         (self.x, self.y, self.z, self.has_pos) = (c.x, c.y, c.z, c.has_pos);
+        (self.frame, self.offset) = (c.frame, self.offsets[c.frame as usize]);
         (self.retracted, self.accel, self.fan) = (c.retracted, c.accel, c.fan);
         (self.pa_cur, self.la_cur) = (c.pa_cur, c.la_cur);
     }
@@ -1200,7 +1336,7 @@ impl Writer {
         self.put_str("\n");
     }
 
-    fn layer_header(&mut self, layer: &LayerPaths) {
+    fn layer_header(&mut self, layer: &PlateLayer) {
         self.put(format_args!(
             ";LAYER:{} Z:{:.3} H:{:.3} {}\n",
             layer.index, layer.z, layer.height, layer.note
