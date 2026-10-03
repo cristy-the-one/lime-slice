@@ -10,15 +10,14 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use super::{PreviewLayer, PreviewPath};
-use crate::strategy::PrinterProfile;
+use crate::strategy::{BlendMode, PrinterProfile};
 use crate::support::edit::SupportEdit;
 
 /// The preview a reply left the client holding.
 pub(super) struct Shown {
     pub token: String,
-    /// Digest of the printer profile it was drawn for. Speeds and layer
-    /// times in the preview depend on it, but the kept key does not.
-    pub profile: [u8; 32],
+    /// What the preview was drawn under besides its layers, from `drawn`.
+    pub drawn: [u8; 32],
     /// Each band's layer time, `None` for a band with nothing printed.
     pub seconds: Vec<Option<f64>>,
 }
@@ -36,8 +35,21 @@ pub(super) fn token(key: &[u8; 32], profile: &PrinterProfile, edits: &[SupportEd
         .collect()
 }
 
-pub(super) fn profile_digest(profile: &PrinterProfile) -> [u8; 32] {
+fn profile_digest(profile: &PrinterProfile) -> [u8; 32] {
     Sha256::digest(format!("{profile:?}")).into()
+}
+
+/// What a preview reads besides its printed layers: the cut they share,
+/// the blend that weights each path, and the flow cap on its speeds. Two
+/// previews alike in these draw equal layers as equal paths.
+pub(super) fn drawn(contours: &[u8; 32], blend: &BlendMode, profile: &PrinterProfile) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(contours);
+    hash.update(format!(
+        "{blend:?}|{:x}",
+        profile.max_volumetric_mm3_s.to_bits()
+    ));
+    hash.finalize().into()
 }
 
 /// The layers of a preview that differ from the one the client holds.
@@ -62,6 +74,14 @@ pub struct PatchLayer {
     /// `k >= 0` is path `k` of the base layer with this index, and
     /// `-1 - j` is `layer.paths[j]`.
     pub order: Vec<i32>,
+}
+
+/// `now` as a patch on a base layer with the same paths: only its layer
+/// time changed.
+pub(super) fn retimed(mut now: PreviewLayer) -> PatchLayer {
+    let order = (0..now.paths.len() as i32).collect();
+    now.paths = Vec::new();
+    PatchLayer { layer: now, order }
 }
 
 /// `now` as a patch on `base`: every path of `now` that `base` already has

@@ -1063,8 +1063,9 @@ fn slice_sharing(
 }
 
 /// The reply's preview. A kept slice names it with a token, and when the
-/// request's `previewBase` is the preview the engine last drew from this
-/// slice, only the layers that differ go back, as a patch.
+/// request's `previewBase` is the preview the engine last drew from the same
+/// cut under the same blend and flow cap, only the layers that differ go
+/// back, as a patch.
 fn preview(
     planned: &[LayerPaths],
     kept: Option<&KeptPlan>,
@@ -1085,10 +1086,10 @@ fn preview(
         .iter()
         .map(|l| (!l.paths.is_empty()).then(|| emitted.next().copied().unwrap_or(0.0)))
         .collect();
-    let digest = patch::profile_digest(profile);
+    let drawn = patch::drawn(&kept.contours, blend, profile);
     let token = patch::token(&kept.key, profile, &settings.support_edits);
     let base = kept.prior.as_ref().filter(|(_, shown)| {
-        settings.preview_base.as_deref() == Some(shown.token.as_str()) && shown.profile == digest
+        settings.preview_base.as_deref() == Some(shown.token.as_str()) && shown.drawn == drawn
     });
     let (layers, patched) = match base {
         Some((joined, shown)) => {
@@ -1098,14 +1099,21 @@ fn preview(
                 .enumerate()
                 .filter_map(|(i, layer)| {
                     let now = seconds[i]?;
-                    let same = !kept.fresh[i] && bits(shown.seconds[i]) == bits(Some(now));
-                    if same {
+                    let was = &joined[i].layer;
+                    let held = shown.seconds[i].is_some();
+                    let same_paths = held && same_layer(was, &kept.joined[i].layer);
+                    if same_paths && bits(shown.seconds[i]) == bits(Some(now)) {
                         return None;
                     }
-                    let was = shown.seconds[i]
-                        .map(|_| preview_layer(&joined[i].layer, profile, blend, 0.0).paths)
-                        .unwrap_or_default();
                     let layer = preview_layer(layer, profile, blend, now);
+                    if same_paths {
+                        return Some(patch::retimed(layer));
+                    }
+                    let was = if held {
+                        preview_layer(was, profile, blend, 0.0).paths
+                    } else {
+                        Vec::new()
+                    };
                     Some(patch::diff_layer(&was, layer))
                 })
                 .collect();
@@ -1126,11 +1134,16 @@ fn preview(
         &kept.joined,
         patch::Shown {
             token: token.clone(),
-            profile: digest,
+            drawn,
             seconds,
         },
     );
     (layers, Some(token), patched)
+}
+
+/// The same printed layer: shared, or equal path for path.
+fn same_layer(a: &Arc<LayerPaths>, b: &Arc<LayerPaths>) -> bool {
+    Arc::ptr_eq(a, b) || **a == **b
 }
 
 fn feature_estimates(
@@ -1624,12 +1637,12 @@ pub(crate) struct Plan {
 pub(crate) struct KeptPlan {
     /// Names the plan for its preview token.
     key: [u8; 32],
+    /// The cut's key. A preview patches only one drawn from the same cut.
+    contours: [u8; 32],
     /// This plan's layers, as the kept stages hold them.
     joined: Arc<Vec<JoinedLayer>>,
-    /// Layers joined again rather than taken from the last plan.
-    fresh: Vec<bool>,
-    /// The last plan's layers and the preview the client was given from
-    /// them, when this plan joined the same part.
+    /// The last plan of the same cut, and the preview the client was given
+    /// from it.
     prior: Option<(Arc<Vec<JoinedLayer>>, Arc<patch::Shown>)>,
 }
 
@@ -1913,7 +1926,7 @@ fn plan_kept(
         })
     });
     let supports = fresh.as_deref().map_or(&*base, |e| &e.plan);
-    let prior = kept::prior(&keys).filter(|p| p.same_part);
+    let prior = kept::prior(&keys);
     let part = Part {
         paths: &paths,
         tour: &tour,
@@ -1925,15 +1938,18 @@ fn plan_kept(
         supports,
         blend,
         settings,
-        prior.as_ref().map_or(&[], |p| p.joined.as_slice()),
+        prior
+            .as_ref()
+            .filter(|p| p.same_part)
+            .map_or(&[], |p| p.joined.as_slice()),
     );
     let joined = Arc::new(assembled.joined.clone());
     kept::keep_joined(&keys, Arc::clone(&joined));
     kept::keep_supports(&keys, Arc::clone(&base), fresh.clone().or(edited));
     let kept = KeptPlan {
         key: keys.whole,
+        contours: keys.contours,
         joined,
-        fresh: assembled.fresh.clone(),
         prior: prior.and_then(|p| Some((p.joined, p.shown?))),
     };
     let mut plan = finish(cut, supports, edits, assembled, reuse, spent);
@@ -2589,8 +2605,6 @@ enum Slot {
 /// The print as the G-code writer takes it, and what joining it cost.
 struct Assembled {
     joined: Vec<JoinedLayer>,
-    /// Layers joined again rather than taken from `kept`.
-    fresh: Vec<bool>,
     /// Layers taken from `kept` instead of joined again.
     reused: u32,
     order_ms: f64,
@@ -2638,11 +2652,10 @@ fn assemble(
         .collect();
     let order_ms = elapsed_ms(order_started);
     let comb_started = Instant::now();
-    let fresh: Vec<bool> = slots
+    let reused = slots
         .iter()
-        .map(|slot| matches!(slot, Slot::Fresh(..)))
-        .collect();
-    let reused = fresh.iter().filter(|f| !**f).count() as u32;
+        .filter(|slot| matches!(slot, Slot::Kept(..)))
+        .count() as u32;
     let joined: Vec<JoinedLayer> = slots
         .into_par_iter()
         .enumerate()
@@ -2673,7 +2686,6 @@ fn assemble(
         })
         .collect();
     Assembled {
-        fresh,
         reused,
         order_ms,
         comb_ms: elapsed_ms(comb_started),
