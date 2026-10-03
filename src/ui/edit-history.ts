@@ -1,5 +1,6 @@
 /** Undo stack for placement and settings. One gesture is one step. */
 import type { OverrideDocument } from "../overrides.ts";
+import type { PlateSnap } from "../plate.ts";
 import type { SettingsLevel } from "../project.ts";
 
 export interface PlacementSnap {
@@ -44,6 +45,8 @@ export interface EditSnap {
   /** Height ranges and volumes. Absent on snaps from before that editor. */
   overrides?: OverrideDocument;
   selectedVolumeId?: string | null;
+  /** Plate list and which object is selected. Absent on snaps from before the plate. */
+  plate?: PlateSnap;
 }
 
 export interface EditHistory {

@@ -3,6 +3,8 @@ import { session, state } from "./state";
 import { presetKeys } from "../presets";
 import { saveProfile } from "../profiles";
 import { emptyOverrides } from "../overrides";
+import { revivePlate, snapPlate } from "../plate";
+import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library";
 import { selectIn, setAdvance } from "../ui/machine-library";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel";
@@ -23,6 +25,7 @@ let timer = 0;
 let applying = false;
 
 function capture(): EditSnap {
+  syncPlateFromState();
   const settings: EditSnap["settings"] = {};
   for (const key of presetKeys()) settings[key] = state[key] as string | number | boolean;
   const profile = state.profile;
@@ -58,6 +61,7 @@ function capture(): EditSnap {
     },
     overrides: structuredClone(state.overrides),
     selectedVolumeId: state.selectedVolumeId,
+    plate: snapPlate(state.plate),
   };
 }
 
@@ -104,6 +108,13 @@ function applySnap(snap: EditSnap) {
   state.selectedVolumeId = snap.selectedVolumeId ?? null;
   if (state.selectedVolumeId && !state.overrides.volumes.some((volume) => volume.id === state.selectedVolumeId)) {
     state.selectedVolumeId = null;
+  }
+  if (snap.plate && snap.plate.objects.length > 0) {
+    const revived = revivePlate(snap.plate);
+    if (revived) {
+      state.plate = revived;
+      applySelectedToState(revived);
+    }
   }
   applying = false;
   fx.applyPlace?.(true);

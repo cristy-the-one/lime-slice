@@ -10,6 +10,8 @@ import { clearEdits } from "../support-edit-list";
 import { clearEditHistory } from "./history";
 import { foreign3mfMessage, foreignSlicer3mf } from "../foreign-3mf";
 import { emptyOverrides } from "../overrides";
+import { boundEntries, concatenatedPositions, emptyPlate, oneObjectPlate, plateMockActive, resetHeldGeometry } from "../plate";
+import { syncPlateFromState } from "./plate-sync";
 
 export async function loadNamed(name: string) {
   state.error = "";
@@ -38,6 +40,8 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
   if (!needsEngine(name) && !parsed) {
     state.mesh = null;
     state.sourcePos = null;
+    state.plate = emptyPlate();
+    resetHeldGeometry();
     state.error = `Could not read ${name}.`;
     pushToast(state.error, "error", { label: "Retry", run: openMeshPicker });
     renderChrome();
@@ -45,10 +49,24 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
   }
   state.sourcePos = parsed ?? (await previewRemote(name, bytes));
   if (!state.sourcePos) {
+    state.plate = emptyPlate();
+    resetHeldGeometry();
     if (!state.engine) pushToast(state.error || `Could not read ${name}.`, "error", { label: "Retry", run: openMeshPicker });
     renderChrome();
     return;
   }
+  state.plate = oneObjectPlate({
+    name,
+    fileName: name,
+    bytes,
+    sourcePos: state.sourcePos,
+    orient: state.orient,
+    partScale: state.partScale,
+    centered: state.centered,
+    offset: state.offset,
+    stepTolerance: state.stepTolerance,
+    supportEdits: state.supportEdits,
+  });
   if (/\.3mf$/i.test(name)) {
     const vendor = foreignSlicer3mf(new Uint8Array(bytes));
     if (vendor) pushToast(foreign3mfMessage(vendor), "info");
@@ -99,15 +117,18 @@ export function place(sync: SplitSync = "transform") {
 }
 
 export function applyPlace(rerender: boolean, sync: SplitSync = "transform") {
+  syncPlateFromState();
   state.placed = currentPlacement();
   if (!state.placed) {
     fx.prepare.setMesh(null);
+    fx.prepare.setPlateBounds?.([]);
     if (rerender) renderChrome();
     return;
   }
   fx.realignSplit(sync);
   fx.prepare.setMesh(state.placed, sync === "load");
   fx.prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
+  fx.prepare.setPlateBounds(boundEntries(state.plate, state.profile.bedX, state.profile.bedY));
   paintPlaceFields();
   markProjectDirty();
   markStale();
@@ -180,6 +201,10 @@ let encoded: { source: ArrayBuffer | Float32Array | null; scale: number; name: s
 
 /** The mesh as the engine takes it. Encoded once per mesh and scale, not once per slice. */
 export function meshBytes() {
+  if (plateMockActive(state.plate)) {
+    const positions = concatenatedPositions(state.plate, state.profile.bedX, state.profile.bedY);
+    if (positions) return encodeStl(positions, "plate-mock.stl");
+  }
   const source = state.sourcePos ?? state.mesh?.bytes ?? null;
   const name = state.mesh?.name ?? "part";
   if (encoded && encoded.source === source && encoded.scale === state.partScale && encoded.name === name) return encoded.bytes;
@@ -188,8 +213,9 @@ export function meshBytes() {
   return bytes;
 }
 
-/** `meshBytes` in Base64, kept with them. */
+/** `meshBytes` in Base64, kept with them. A plate mock is not that cache. */
 export function meshBase64() {
+  if (plateMockActive(state.plate)) return toBase64(new Uint8Array(meshBytes()));
   const bytes = meshBytes();
   encoded!.b64 ??= toBase64(new Uint8Array(bytes));
   return encoded!.b64;

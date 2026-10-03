@@ -1,5 +1,8 @@
 /**
- * A `.lime` project file. Version 1 embeds the mesh so the file opens on its own.
+ * A `.lime` project file. Version 1 embeds one mesh so the file opens on its own.
+ * Version 2 is a plate of objects. `migrations[1]` wraps a version 1 document into
+ * that plate. A plate that is still one object with no per-object settings is
+ * written back as version 1 and omits `objects`.
  * A later version adds a function to `migrations` at index `n` that rewrites version `n`
  * into version `n + 1`. `applyMigrations` is that hook.
  */
@@ -8,10 +11,11 @@ import type { PresetSettings } from "./presets.ts";
 import { DEFAULT_PRESET, presetKeys } from "./presets.ts";
 import { fnv1aHex } from "./slice-action.ts";
 import { parseOverrides, type OverrideDocument } from "./overrides.ts";
+import { plateFileIsVersion2, readPlateSettings, settingsEmpty, type PlateFileObject } from "./plate.ts";
 import type { EditEntry } from "./support-edit-list.ts";
 import type { SiteSpec } from "./support-edits.ts";
 
-export const PROJECT_VERSION = 1;
+export const PROJECT_VERSION = 2;
 
 export type SettingsLevel = "simple" | "advanced" | "expert";
 
@@ -32,9 +36,13 @@ export interface ProjectPlacement {
   stepTolerance: number;
 }
 
-/** What version 1 stores. Support edits keep birth sites, not walk ids. */
+/**
+ * What the app holds after a project opens.
+ * Version 1 is one mesh. Version 2 keeps that mesh as the first object and adds `objects`.
+ * Support edits keep birth sites, not walk ids.
+ */
 export interface LimeProject {
-  version: 1;
+  version: 1 | 2;
   mesh: ProjectMesh;
   placement: ProjectPlacement;
   settings: PresetSettings;
@@ -45,6 +53,11 @@ export interface LimeProject {
   supportEdits: EditEntry[];
   /** Present only when the user added a height range or a modifier volume. */
   overrides?: OverrideDocument;
+  /**
+   * Present only for a multi-object plate, or one object with its own settings.
+   * Omitted on version 1 so an older app still opens a one-object file.
+   */
+  objects?: PlateFileObject[];
 }
 
 export type ProjectResult = { ok: true; project: LimeProject } | { ok: false; message: string };
@@ -52,8 +65,13 @@ export type ProjectResult = { ok: true; project: LimeProject } | { ok: false; me
 /** `steps[n]` rewrites a version-n document into version n+1 and sets `version` to n+1. */
 export type Migration = (doc: Record<string, unknown>) => Record<string, unknown>;
 
-/** Empty until a version 2 exists. Index 0 would migrate a version-0 file, which was never written. */
-export const migrations: readonly Migration[] = [];
+/**
+ * Index 0 would migrate a version-0 file, which was never written.
+ * Index 1 wraps a version 1 file into one object, id `part`.
+ */
+const migrationSteps: Migration[] = [];
+migrationSteps[1] = migrateVersion1;
+export const migrations: readonly Migration[] = migrationSteps;
 
 export function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
@@ -78,7 +96,61 @@ export function meshRecord(name: string, bytes: Uint8Array): ProjectMesh {
 }
 
 export function serializeProject(project: LimeProject): string {
-  return JSON.stringify(project, null, 2);
+  const overrides = project.overrides;
+  if (project.version === 2 && project.objects && plateFileIsVersion2(project.objects)) {
+    const wire: Record<string, unknown> = {
+      version: 2,
+      settings: project.settings,
+      preset: project.preset,
+      profile: project.profile,
+      level: project.level,
+      objects: project.objects.map(stripEmptySettings),
+    };
+    if (overrides) wire.overrides = overrides;
+    return JSON.stringify(wire, null, 2);
+  }
+  const wire: Record<string, unknown> = {
+    version: 1,
+    mesh: project.mesh,
+    placement: project.placement,
+    settings: project.settings,
+    preset: project.preset,
+    profile: project.profile,
+    level: project.level,
+    supportEdits: project.supportEdits,
+  };
+  if (overrides) wire.overrides = overrides;
+  return JSON.stringify(wire, null, 2);
+}
+
+/** Version 1 becomes one object. Plate settings stay on the document. The single mesh fields move onto that object. */
+function migrateVersion1(doc: Record<string, unknown>): Record<string, unknown> {
+  const mesh = doc.mesh;
+  let name = "part";
+  if (mesh && typeof mesh === "object" && !Array.isArray(mesh)) {
+    const meshName = (mesh as { name?: unknown }).name;
+    if (typeof meshName === "string" && meshName.trim()) name = meshName;
+  }
+  const object: Record<string, unknown> = {
+    id: "part",
+    name,
+    mesh: doc.mesh,
+    placement: doc.placement,
+    supportEdits: doc.supportEdits ?? [],
+  };
+  const next: Record<string, unknown> = { ...doc, version: 2, objects: [object] };
+  delete next.mesh;
+  delete next.placement;
+  delete next.supportEdits;
+  return next;
+}
+
+function stripEmptySettings(object: PlateFileObject): PlateFileObject {
+  if (settingsEmpty(object.settings)) {
+    const { settings: _settings, ...rest } = object;
+    return rest;
+  }
+  return object;
 }
 
 /**
@@ -132,9 +204,14 @@ export function parseProject(text: string, steps: readonly Migration[] = migrati
 }
 
 function readProject(doc: Record<string, unknown>): ProjectResult {
-  if (doc.version !== PROJECT_VERSION) {
+  if (doc.version === 2) return readVersion2(doc);
+  if (doc.version !== 1) {
     return { ok: false, message: "This project could not be updated to the current format." };
   }
+  return readVersion1(doc);
+}
+
+function readVersion1(doc: Record<string, unknown>): ProjectResult {
   const mesh = readMesh(doc.mesh);
   if (typeof mesh === "string") return { ok: false, message: mesh };
   const placement = readPlacement(doc.placement);
@@ -158,6 +235,72 @@ function readProject(doc: Record<string, unknown>): ProjectResult {
     project.overrides = overrides.doc;
   }
   return { ok: true, project };
+}
+
+function readVersion2(doc: Record<string, unknown>): ProjectResult {
+  const settings = readSettings(doc.settings);
+  if (typeof settings === "string") return { ok: false, message: settings };
+  const profile = readProfile(doc.profile);
+  if (typeof profile === "string") return { ok: false, message: profile };
+  const level = doc.level;
+  if (level !== "simple" && level !== "advanced" && level !== "expert") {
+    return { ok: false, message: "This project file is incomplete." };
+  }
+  const preset = doc.preset === null ? null : typeof doc.preset === "string" ? doc.preset : undefined;
+  if (preset === undefined) return { ok: false, message: "This project file is incomplete." };
+  const objects = readPlateObjects(doc.objects);
+  if (typeof objects === "string") return { ok: false, message: objects };
+  const primary = objects[0];
+  if (!primary) return { ok: false, message: "This project file is incomplete." };
+  const project: LimeProject = {
+    version: plateFileIsVersion2(objects) ? 2 : 1,
+    mesh: primary.mesh,
+    placement: primary.placement,
+    settings,
+    preset,
+    profile,
+    level,
+    supportEdits: primary.supportEdits,
+  };
+  if (project.version === 2) project.objects = objects;
+  if (doc.overrides !== undefined) {
+    const overrides = parseOverrides(doc.overrides);
+    if (!overrides.ok) return overrides;
+    project.overrides = overrides.doc;
+  }
+  return { ok: true, project };
+}
+
+function readPlateObjects(value: unknown): PlateFileObject[] | string {
+  if (!Array.isArray(value) || value.length === 0) return "This project file is incomplete.";
+  const out: PlateFileObject[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    const read = readPlateObject(item);
+    if (typeof read === "string") return read;
+    if (seen.has(read.id)) return "This project file is incomplete.";
+    seen.add(read.id);
+    out.push(read);
+  }
+  return out;
+}
+
+function readPlateObject(value: unknown): PlateFileObject | string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "This project file is incomplete.";
+  const row = value as Record<string, unknown>;
+  if (typeof row.id !== "string" || !row.id) return "This project file is incomplete.";
+  if (typeof row.name !== "string" || !row.name.trim()) return "This project file is incomplete.";
+  const mesh = readMesh(row.mesh);
+  if (typeof mesh === "string") return mesh;
+  const placement = readPlacement(row.placement);
+  if (typeof placement === "string") return placement;
+  const edits = row.supportEdits === undefined ? [] : readEdits(row.supportEdits);
+  if (typeof edits === "string") return edits;
+  const settings = readPlateSettings(row.settings);
+  if (typeof settings === "string") return settings;
+  const object: PlateFileObject = { id: row.id, name: row.name, mesh, placement, supportEdits: edits };
+  if (settings) object.settings = settings;
+  return object;
 }
 
 function readMesh(value: unknown): ProjectMesh | string {
