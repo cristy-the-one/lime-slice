@@ -1,3 +1,5 @@
+import { saveCurrentProject } from "../app/project-io";
+import { pickProjectFile } from "../platform";
 import { COMMANDS, helpEntries, rankCommands, type CommandSpec } from "./commands";
 import { pushToast } from "./toasts";
 import "./phase2.css";
@@ -237,6 +239,12 @@ export function runCommand(id: string) {
       return;
     case "help":
       document.dispatchEvent(new CustomEvent("lime-open-help"));
+      return;
+    case "open-project":
+      pickProjectFile();
+      return;
+    case "save-project":
+      void saveCurrentProject();
       return;
     case "open-mesh":
       click("#file");

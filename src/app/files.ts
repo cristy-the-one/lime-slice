@@ -4,6 +4,7 @@ import { ID_MATRIX, parseStl, placeMesh, encodeStl, scaledCanonical, encode3mf, 
 import { needsEngine, apiBase, apiToken, markEngineDown, isStepName, renderChrome, markStale, stale, card } from "./settings";
 import { authHeaders, engineDownMessage } from "../ui/api-base";
 import { type SplitSync } from "../split-at";
+import { confirmDiscard, markProjectDirty } from "../project-dirty";
 import { clearEdits } from "../support-edit-list";
 
 export async function loadNamed(name: string) {
@@ -14,6 +15,7 @@ export async function loadNamed(name: string) {
 }
 
 export async function adoptBytes(name: string, bytes: ArrayBuffer) {
+  if (!session.projectRestoring && !confirmDiscard()) return;
   session.meshEpoch += 1;
   session.chosenZ = null;
   state.mesh = { name, bytes };
@@ -82,6 +84,7 @@ export function applyPlace(rerender: boolean, sync: SplitSync = "transform") {
   fx.realignSplit(sync);
   fx.prepare.setMesh(state.placed, sync === "load");
   fx.prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
+  markProjectDirty();
   markStale();
   if (rerender) renderChrome();
 }

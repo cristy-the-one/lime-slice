@@ -70,6 +70,7 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await expect(page.locator("#help")).toBeVisible();
   await shot(page, "p1-shortcuts.png");
   await page.keyboard.press("Escape");
+  page.once("dialog", (dialog) => void dialog.accept());
   const dropped = fs.readFileSync(path.resolve("samples/calibration_cube_20mm.stl")).toString("base64");
   await page.evaluate(async (b64) => {
     const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
@@ -180,6 +181,7 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Export G-code" })).toBeDisabled();
   await shot(page, "v3-10-stale.png");
 
+  page.once("dialog", (dialog) => void dialog.accept());
   await page.unroute("**/api/health");
   await page.route("**/api/health", (route) => route.abort());
   await page.goto("/");

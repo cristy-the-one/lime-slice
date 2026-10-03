@@ -1,5 +1,6 @@
 import { Box, createElement, Layers, MoreHorizontal, Printer, Search, SlidersHorizontal, type IconNode } from "lucide";
-import { engineMode, pickModelFile, saveGcode, saveLayoutChoice, type LayoutChoice } from "../../platform";
+import { saveCurrentProject } from "../../app/project-io";
+import { engineMode, pickModelFile, pickProjectFile, saveGcode, saveLayoutChoice, type LayoutChoice } from "../../platform";
 import { haptic } from "../haptics";
 import { pushToast } from "../toasts";
 import { MOCK_ON_DEVICE_LABEL, MOCK_PLAYBACK_SPEED } from "./mocks";
@@ -111,6 +112,8 @@ function topBar() {
     ["20 mm cube", () => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click()],
     ["60 mm hull", () => document.querySelector<HTMLButtonElement>('[data-sample="lime_hull.stl"]')?.click()],
     ["Open mesh", () => pickModelFile()],
+    ["Open project", () => pickProjectFile()],
+    ["Save project", () => void saveCurrentProject()],
     ["Export G-code", () => void saveGcode()],
     ["Force re-slice", () => document.querySelector<HTMLButtonElement>("#force")?.click()],
     ["Edit supports", () => {

@@ -8,6 +8,8 @@ import { state, type CardId } from "./state";
 import { draw, layerGcode, paintPlayback, paintSectionChrome, prepare, realignSplit, scrub, sectionLimit, setHelp, setStage, setView, stopPlay, syncGcodeHighlight, togglePlay, view3d } from "./viewer";
 import { applyPareto, cancelSlice, runPaCal, runPareto, runSlice } from "./slice-run";
 import { adoptBytes, export3mf, exportGcode, fail, loadNamed, place, saveText } from "./files";
+import { mountProjectFiles, saveCurrentProject } from "./project-io";
+import { pickProjectFile } from "../platform";
 import { applyPreset, closedGroups, currentPreset, onBlend, onSettings, renderChrome, touch } from "./settings";
 
 export function wireApp() {
@@ -84,13 +86,23 @@ export function wireApp() {
   document.querySelector("#right")!.addEventListener("input", onBlend);
 
   document.querySelector("#samples")!.addEventListener("click", (ev) => {
+    const project = (ev.target as HTMLElement).closest<HTMLButtonElement>("[data-project]");
+    if (project) {
+      (document.querySelector("#samples") as HTMLDetailsElement).open = false;
+      if (project.dataset.project === "save") void saveCurrentProject();
+      else pickProjectFile();
+      return;
+    }
     const button = (ev.target as HTMLElement).closest<HTMLButtonElement>("[data-sample]");
     if (!button) return;
     void loadNamed(button.dataset.sample!).catch(fail);
     (document.querySelector("#samples") as HTMLDetailsElement).open = false;
   });
+  mountProjectFiles();
   document.querySelector("#file")!.addEventListener("change", (ev) => {
-    const file = (ev.target as HTMLInputElement).files?.[0];
+    const input = ev.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
     if (!file) return;
     file.arrayBuffer().then((bytes) => adoptBytes(file.name, bytes)).catch(fail);
   });
@@ -204,12 +216,17 @@ export function wireApp() {
       setHelp(false);
       return;
     }
-    if (typing) return;
     if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "o") {
       ev.preventDefault();
-      document.querySelector<HTMLInputElement>("#file")?.click();
+      pickProjectFile();
       return;
     }
+    if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "s") {
+      ev.preventDefault();
+      void saveCurrentProject();
+      return;
+    }
+    if (typing) return;
     if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") {
       ev.preventDefault();
       void runSlice(false);

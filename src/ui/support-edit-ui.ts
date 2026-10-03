@@ -4,6 +4,7 @@ import { alignOutcomes, appendEdit, badgeOf, clearEdits, editTitle, gapsToShow, 
 import { capsulesOf, indexSkeleton, pickGap, pickLimb, regrowFor, selectLimbs, sitesOf, type LimbIndex, type PickScope, type Visible } from "../support-pick";
 import type { PickEvent, SliceView3d } from "../view3d";
 import { isMobileLayout } from "../platform";
+import { markProjectDirty } from "../project-dirty";
 import { haptic } from "./haptics";
 import { pushToast } from "./toasts";
 import { chipAction, peekLine, scopeForGesture, selectionLabel, type CompactSelection } from "./compact/support-gesture";
@@ -296,6 +297,7 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
 
   function refresh() {
     const v = hooks.view();
+    for (const entry of v.edits) if (entry.id >= nextId) nextId = entry.id + 1;
     sync(v);
     if (editing && !ready()) switchMode(false);
     paintToggle();
@@ -332,6 +334,7 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
 
   function commit(next: EditEntry[], why: Why) {
     if (hooks.view().busy) return;
+    markProjectDirty();
     announce = why;
     hooks.apply(next);
   }
