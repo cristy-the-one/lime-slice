@@ -7,6 +7,7 @@ import { syncSliceDock } from "../ui/shell";
 import { blend, renderChrome, settingsHash, markBusy, paintBanner, busyText, markEngineDown, apiBase, stale, apiToken, touch } from "./settings";
 import { editRequestFields } from "../support-edit-list";
 import { hasOverrides, OVERRIDES_STORED_TOAST, sliceOverrideFields } from "../overrides";
+import { identityPose, PLATE_MOCK_TOAST, plateMockActive, slicePlateFields } from "../plate";
 import { engineDownMessage, authHeaders } from "../ui/api-base";
 import { pushToast } from "../ui/toasts";
 import {
@@ -29,6 +30,7 @@ import {
 type DesktopProgress = { progress: number; message: string; stage: string; done: number; total: number; status: JobStatus };
 
 export function meshFingerprint(): string {
+  if (plateMockActive(state.plate)) return fnv1aHex(new Uint8Array(meshBytes()));
   const source = state.sourcePos ?? state.mesh?.bytes ?? null;
   if (source && source === session.fingerSource && state.partScale === session.fingerScale) return session.finger;
   session.fingerSource = source;
@@ -96,9 +98,11 @@ export function scheduleAuto() {
 
 export function payload() {
   return {
-    filename: state.sourcePos
-      ? (state.mesh!.name || "part").replace(/\.(3mf|step|stp)$/i, ".stl")
-      : (state.mesh!.name || "part"),
+    filename: plateMockActive(state.plate)
+      ? "plate-mock.stl"
+      : state.sourcePos
+        ? (state.mesh!.name || "part").replace(/\.(3mf|step|stp)$/i, ".stl")
+        : (state.mesh!.name || "part"),
     stepToleranceMm: state.stepTolerance,
     layerHeight: state.layerHeight,
     lineWidth: Math.min(1.2, Math.max(0.2, state.profile.nozzleDiameter * 1.125)),
@@ -136,10 +140,14 @@ export function payload() {
     includePreview: true,
     simplify: state.simplify,
     simplifyErrorMm: state.simplifyError,
-    pose: currentPlacement()?.pose,
+    // Pose is sent as today for one object. A plate mock uses an identity pose
+    // because the concatenated vertices are already placed. Do not add `objects` or `offset`.
+    pose: plateMockActive(state.plate) ? identityPose() : currentPlacement()?.pose,
     ...editRequestFields(state.supportEdits, treeSupports()),
     // ADAPTER: ranges and volumes stay in the project. SliceRequest has no fields for them.
     ...sliceOverrideFields(state.overrides),
+    // MOCK: SliceRequest has no `objects`. This adds nothing.
+    ...slicePlateFields(state.plate),
   };
 }
 
@@ -158,6 +166,7 @@ export function printer() {
 /** `force` plans again even when this recipe is already cached. */
 export async function runSlice(force = false) {
   if (hasOverrides(state.overrides)) pushToast(OVERRIDES_STORED_TOAST, "info");
+  if (plateMockActive(state.plate)) pushToast(PLATE_MOCK_TOAST, "info");
   if (!state.mesh) {
     state.error = "Load a mesh first.";
     renderChrome();

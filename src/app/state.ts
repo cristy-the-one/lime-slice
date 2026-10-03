@@ -1,4 +1,5 @@
 import { emptyOverrides } from "../overrides";
+import { emptyPlate, type PlateState } from "../plate";
 import { ID_MATRIX, type Mat3, type MeshShift, type PlacedPart } from "../mesh-place";
 import { loadProfile } from "../profiles";
 import type { ColorMode } from "../colors";
@@ -199,6 +200,11 @@ export const state = {
   overrides: emptyOverrides(),
   selectedVolumeId: null as string | null,
   modifierTool: "move" as "move" | "scale",
+  /**
+   * REAL plate list. The selected object's pose is also `orient` / `offset` so the
+   * existing gizmo edits that object. MOCK: the slice still sends one mesh.
+   */
+  plate: emptyPlate() as PlateState,
 };
 
 export const session = {

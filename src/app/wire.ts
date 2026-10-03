@@ -1,5 +1,6 @@
 import { type ColorMode } from "../colors";
 import { layFlatMatrix, matMul, rotX, rotY, rotZ } from "../mesh-place";
+import { addPlateObject, arrangePlate, removePlateObject, selectPlateObject } from "./plate-actions";
 import { DEFAULT_PRESET, readPresets, writePresets } from "../presets";
 import { profileJson } from "../profiles";
 import { applyTheme, type ThemeChoice } from "../theme";
@@ -173,6 +174,24 @@ export function wireApp() {
       delete all[name];
       writePresets(all);
       renderChrome();
+    }
+    if (t.id === "plateAdd" || t.id === "plateDuplicate") {
+      addPlateObject();
+      return;
+    }
+    if (t.id === "plateArrange") {
+      arrangePlate();
+      return;
+    }
+    const plateSelect = t.closest<HTMLElement>("[data-plate-select]")?.dataset.plateSelect;
+    if (plateSelect) {
+      selectPlateObject(plateSelect);
+      return;
+    }
+    const plateRemove = t.closest<HTMLElement>("[data-plate-remove]")?.dataset.plateRemove;
+    if (plateRemove) {
+      removePlateObject(plateRemove);
+      return;
     }
     if (t.id === "center") { noteEdit(); state.centered = true; state.offset = { x: 0, y: 0, z: 0 }; place(); }
     if (t.id === "layflat" && state.sourcePos) { noteEdit(); state.orient = layFlatMatrix(state.sourcePos); place(); }

@@ -9,6 +9,7 @@ import { sliceBusyStatus, staleSliceCopy, cacheStatus, coverageWarning, inAirWar
 import { applySliceProgress, currentSliceProgress } from "../ui/slice-progress";
 import { groupFeatures } from "../estimate";
 import { offBed } from "../mesh-place";
+import { boundsSize, overlapPairs, placeObject, selectedObject } from "../plate";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys, readPresets, diffPreset } from "../presets";
 import { loadProfile, type PrinterProfile, saveProfile } from "../profiles";
 import { noteAdvance, noteGcode, noteNozzle } from "./machine-actions";
@@ -46,8 +47,15 @@ export function stale() {
 export function settingsHash() {
   const shift = state.offset;
   const mesh = state.mesh ? `${state.mesh.name}:${state.mesh.bytes.byteLength}:${state.partScale}:${state.centered}:${shift.x.toFixed(3)},${shift.y.toFixed(3)},${shift.z.toFixed(3)}:${state.orient.join(",")}` : "";
-  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, overrides: _ov, selectedVolumeId: _sel, modifierTool: _mt, ...rest } = state;
-  return JSON.stringify({ mesh, profile: state.profile, rest });
+  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, overrides: _ov, selectedVolumeId: _sel, modifierTool: _mt, plate: _plate, ...rest } = state;
+  const hashed = { mesh, profile: state.profile, rest };
+  if (state.plate.objects.length > 1) {
+    return JSON.stringify({
+      ...hashed,
+      plate: state.plate.objects.map((obj) => `${obj.id}:${obj.partScale}:${obj.offset.x.toFixed(3)},${obj.offset.y.toFixed(3)},${obj.offset.z.toFixed(3)}:${obj.orient.join(",")}:${obj.sourcePos.length}`).join("|"),
+    });
+  }
+  return JSON.stringify(hashed);
 }
 
 export function blend() {
@@ -486,18 +494,40 @@ export function needsEngine(name: string) {
 
 export function objectList() {
   if (!state.placed) return `<div class="meta">Drop an STL, 3MF, or STEP file, or open a sample.</div>`;
-  const b = state.placed.bounds;
-  const size = b.max.map((v, i) => (v - b.min[i]).toFixed(1)).join(" × ");
+  const bedX = state.profile.bedX;
+  const bedY = state.profile.bedY;
+  const bedZ = state.profile.bedZ;
+  const rows = state.plate.objects.length > 0
+    ? state.plate.objects.map((obj) => ({ obj, part: placeObject(obj, bedX, bedY) }))
+    : [];
+  const pairs = overlapPairs(rows.map(({ obj, part }) => ({ id: obj.id, name: obj.name, bounds: part.bounds })));
+  const many = rows.length > 1;
+  const list = rows.map(({ obj, part }) => {
+    const notes = offBed(part.bounds, bedX, bedY, bedZ);
+    const selected = obj.id === state.plate.selectedId;
+    return `
+      <div class="obj obj-row" role="listitem" data-plate-id="${escapeHtml(obj.id)}" data-selected="${selected ? "true" : "false"}">
+        <button class="obj-select" type="button" data-plate-select="${escapeHtml(obj.id)}" aria-pressed="${selected ? "true" : "false"}">
+          <b>${escapeHtml(obj.name)}</b>
+          <span>${triangleLine(part.positions.length / 9)} · ${boundsSize(part.bounds)} mm${notes.length ? ` · ${escapeHtml(notes.join("; "))}` : ""}</span>
+        </button>
+        ${many ? `<button class="btn" type="button" data-plate-remove="${escapeHtml(obj.id)}" aria-label="Remove ${escapeHtml(obj.name)}">Remove</button>` : ""}
+      </div>`;
+  }).join("");
+  const selected = selectedObject(state.plate);
+  const selectedPart = selected ? placeObject(selected, bedX, bedY) : state.placed;
+  const b = selectedPart.bounds;
   const cx = ((b.min[0] + b.max[0]) / 2).toFixed(1);
   const cy = ((b.min[1] + b.max[1]) / 2).toFixed(1);
   const z0 = b.min[2].toFixed(1);
-  const notes = offBed(b, state.profile.bedX, state.profile.bedY, state.profile.bedZ);
+  const selectedNotes = offBed(b, bedX, bedY, bedZ);
+  const overlap = pairs.map((pair) => pair.line).join("; ");
   return `
-    <div class="obj" role="listitem">
-      <b>${escapeHtml(state.mesh?.name ?? "part")}</b>
-      <span>${triangleLine(state.placed.positions.length / 9)} · ${size} mm</span>
-    </div>
+    <div role="list">${list || `<div class="obj" role="listitem"><b>${escapeHtml(state.mesh?.name ?? "part")}</b><span>${triangleLine(state.placed.positions.length / 9)} · ${boundsSize(state.placed.bounds)} mm</span></div>`}</div>
     <div class="row">
+      <button class="btn" id="plateAdd" type="button">Add object</button>
+      <button class="btn" id="plateDuplicate" type="button">Duplicate</button>
+      <button class="btn" id="plateArrange" type="button" ${many ? "" : "disabled"}>Arrange</button>
       <button class="btn" id="center" type="button">Center</button>
       <button class="btn" id="layflat" type="button">Lay flat</button>
       <button class="btn" id="rotX" type="button" aria-label="Rotate 90 degrees around X">Rot X</button>
@@ -507,9 +537,11 @@ export function objectList() {
     </div>
     <label class="field setting" data-label="scale %" data-keywords="placement size percent">Scale %<input id="partScale" type="number" min="10" max="400" step="5" value="${Math.round(state.partScale * 100)}" /></label>
     ${isStepName(state.mesh?.name ?? "") ? num("stepTol", "STEP chord mm", state.stepTolerance, 0.01, 2, 0.01) : ""}
-    ${notes.length ? `<div class="meta warn-text">${notes.join("; ")}</div>` : `<div class="meta">On the ${state.profile.bedX}×${state.profile.bedY}×${state.profile.bedZ} mm bed.</div>`}
+    ${overlap ? `<div class="meta warn-text" id="plateOverlap">${escapeHtml(overlap)}</div>` : ""}
+    ${selectedNotes.length ? `<div class="meta warn-text">${selectedNotes.join("; ")}</div>` : `<div class="meta">On the ${bedX}×${bedY}×${bedZ} mm bed.</div>`}
     <div class="meta" id="placeReadout">X ${cx} · Y ${cy} · bed Z ${z0} mm</div>
-    <div class="meta">Gizmo sits at the left. Drag a ring to rotate. Drag an arrow to move. Shift snaps 15° or 1 mm.</div>
+    ${many ? `<div class="meta" id="plateMock">Mock: more than one object is sent as one concatenated STL. The engine does not see objects.</div>` : ""}
+    <div class="meta">Gizmo sits at the left and edits the selected object. Drag a ring to rotate. Drag an arrow to move. Shift snaps 15° or 1 mm.</div>
   `;
 }
 
