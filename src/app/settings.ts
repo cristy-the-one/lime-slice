@@ -217,7 +217,9 @@ export function paintStatus(isStale: boolean) {
   const status = document.querySelector("#status");
   if (!status) return;
   if (!mesh) status.textContent = "Load an STL, 3MF, or STEP file from Samples or Open mesh. Arrow keys move the layer.";
-  else if (state.busy) status.textContent = sliceBusyStatus(mesh.name, session.busyRecompute);
+  else if (state.busy) status.textContent = session.liveProgress && session.busyPhase
+    ? `${session.busyPhase}. ${sliceBusyStatus(mesh.name, session.busyRecompute)}`
+    : sliceBusyStatus(mesh.name, session.busyRecompute);
   else if (isStale) status.textContent = staleSliceCopy(fx.currentSliceAction(false).state).status;
   else if (result?.fromCache) status.textContent = cacheStatus(result.blend, new Date(result.slicedAtMs ?? 0).toLocaleString());
   else if (result) status.textContent = result.blend;
@@ -231,6 +233,8 @@ export function markBusy(recompute: boolean) {
   session.busySince = performance.now();
   session.busyRecompute = recompute;
   session.busyPhase = recompute ? "" : "Loading…";
+  session.jobStage = "";
+  session.liveProgress = false;
   const mine = session.busySince;
   const tick = window.setInterval(() => {
     if (!state.busy || session.busySince !== mine) {
@@ -238,8 +242,13 @@ export function markBusy(recompute: boolean) {
       return;
     }
     document.querySelector("#timing")!.textContent = busyText();
-    applySliceProgress(currentSliceProgress(state.progress, performance.now() - session.busySince));
+    applySliceProgress(sliceSample(), session.liveProgress ? session.busyPhase : "");
+    paintStatus(stale());
   }, 100);
+}
+
+function sliceSample() {
+  return currentSliceProgress(state.progress, Math.max(0, performance.now() - session.busySince), session.liveProgress);
 }
 
 export function busyText() {
@@ -293,7 +302,7 @@ export function paintBanner(isStale: boolean) {
   const floating = inAirWarning(state.result?.inAir);
   if (floating) bits.push(bannerLine(floating, "warn"));
   if (state.busy) {
-    const sample = currentSliceProgress(state.progress, Math.max(0, performance.now() - session.busySince));
+    const sample = sliceSample();
     const indeterminate = !(sample.fraction > 0 && sample.fraction < 1);
     const pct = indeterminate ? 30 : Math.max(4, sample.fraction * 100);
     bits.push(`<div class="progress${indeterminate ? " indeterminate" : ""}" data-state="slicing" role="progressbar" aria-label="Slice progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(sample.fraction * 100)}"><span style="width:${pct}%"></span></div>`);
@@ -301,7 +310,7 @@ export function paintBanner(isStale: boolean) {
   rail.innerHTML = bits.join("");
   const meter = document.querySelector<HTMLElement>("#sliceMeter");
   if (!state.busy) meter?.setAttribute("hidden", "");
-  else applySliceProgress(currentSliceProgress(state.progress, Math.max(0, performance.now() - session.busySince)));
+  else applySliceProgress(sliceSample(), session.liveProgress ? session.busyPhase : "");
 }
 
 export const closedGroups = new Set<string>();

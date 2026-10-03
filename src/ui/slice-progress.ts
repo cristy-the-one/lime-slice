@@ -15,9 +15,9 @@ export function progressFromEvent(fraction: number, elapsedMs: number): SlicePro
 }
 
 /**
- * MOCK/TODO: the HTTP slice API does not stream progress or an ETA.
+ * MOCK: the in-process invoke path has no job stream.
  * Hold indeterminate briefly, then ease toward 90% of a typical slice.
- * Replace this with `progressFromEvent` when a request reports real fractions.
+ * HTTP slices follow `/api/jobs` and do not call this.
  */
 export const MOCK_PROGRESS_TYPICAL_MS = 12_000;
 export const MOCK_PROGRESS_HOLD_MS = 400;
@@ -29,21 +29,28 @@ export function mockSliceProgress(elapsedMs: number, typicalMs = MOCK_PROGRESS_T
   return { fraction, etaSeconds: eta, source: "mock" };
 }
 
-export function formatProgress(sample: SliceProgress): string {
-  if (!(sample.fraction > 0)) return "";
+export function formatProgress(sample: SliceProgress, stage = ""): string {
+  const name = stage.trim();
+  if (!(sample.fraction > 0)) return name;
   const pct = Math.round(sample.fraction * 100);
   const eta = sample.etaSeconds == null ? "" : ` · ~${Math.max(1, Math.round(sample.etaSeconds))} s`;
   const prefix = sample.source === "mock" ? "est. " : "";
-  return `${prefix}${pct}%${eta}`;
+  const head = name ? `${name} · ` : "";
+  return `${head}${prefix}${pct}%${eta}`;
 }
 
-export function currentSliceProgress(reported: number, elapsedMs: number): SliceProgress {
-  if (reported > 0) return progressFromEvent(reported, elapsedMs);
+/**
+ * A reported fraction wins. `live` is an HTTP job or the synchronous slice fallback:
+ * fraction 0 stays indeterminate instead of the mock curve. The invoke path leaves
+ * `live` false, so `mockSliceProgress` still fills in until a Tauri event arrives.
+ */
+export function currentSliceProgress(reported: number, elapsedMs: number, live = false): SliceProgress {
+  if (live || reported > 0) return progressFromEvent(reported, elapsedMs);
   return mockSliceProgress(elapsedMs);
 }
 
 /** Updates the banner bar and the status-line meter. No-op until those nodes exist. */
-export function applySliceProgress(sample: SliceProgress) {
+export function applySliceProgress(sample: SliceProgress, stage = "") {
   const bar = document.querySelector<HTMLElement>("[data-state=slicing]");
   if (bar) {
     const known = sample.fraction > 0 && sample.fraction < 1;
@@ -55,7 +62,7 @@ export function applySliceProgress(sample: SliceProgress) {
   }
   const meter = document.querySelector<HTMLElement>("#sliceMeter");
   if (!meter) return;
-  const text = formatProgress(sample);
+  const text = formatProgress(sample, stage);
   meter.textContent = text;
   meter.dataset.source = sample.source;
   meter.toggleAttribute("hidden", !text);

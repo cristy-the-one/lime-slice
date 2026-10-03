@@ -7,6 +7,21 @@ import { syncSliceDock } from "../ui/shell";
 import { blend, renderChrome, settingsHash, markBusy, paintBanner, busyText, markEngineDown, apiBase, stale, apiToken, touch } from "./settings";
 import { editRequestFields } from "../support-edit-list";
 import { engineDownMessage, authHeaders } from "../ui/api-base";
+import { pushToast } from "../ui/toasts";
+import {
+  beginSliceJob,
+  browserJobEvents,
+  cancelJob,
+  errorText,
+  followJobProgress,
+  formatStageLine,
+  getText,
+  jobEventsUrl,
+  parseJobSnapshot,
+  postJson,
+  stageLabel,
+  type JobSnapshot,
+} from "../ui/slice-job";
 
 export function meshFingerprint(): string {
   const source = state.sourcePos ?? state.mesh?.bytes ?? null;
@@ -175,7 +190,8 @@ export async function runSlice(force = false) {
       });
       send = async (req) => parseInWorker(id, await invoke<string>("slice_model", { payload: JSON.stringify({ ...req, dataB64: meshBase64() }) }));
     } else {
-      send = (req) => postSlice(id, bytes, req, meshFingerprint());
+      session.liveProgress = true;
+      send = (req) => runHttpSlice(id, bytes, req, meshFingerprint());
     }
     if (id !== session.job) return;
     let body = await send(request);
@@ -236,6 +252,52 @@ export function layerNear(result: SliceResponse, z: number | undefined, index: n
 /** Mesh the slice worker holds in Base64, so it is sent and encoded once per mesh. */
 let workerMesh = "";
 
+let activeHttp: { uiId: number; jobId: string; stop: () => void } | null = null;
+
+function noteJob(uiId: number, snap: JobSnapshot) {
+  if (uiId !== session.job) return;
+  state.progress = snap.fraction;
+  if (snap.stage && snap.stage !== session.jobStage) {
+    session.jobStage = snap.stage;
+    pushToast(stageLabel(snap.stage), "info");
+  }
+  session.busyPhase = formatStageLine(snap);
+  paintBanner(false);
+  const timing = document.querySelector("#timing");
+  if (timing) timing.textContent = busyText();
+}
+
+/** Jobs when `POST /api/jobs` exists. A 404 or a dead connection uses `POST /api/slice`. */
+async function runHttpSlice(uiId: number, bytes: ArrayBuffer, req: Record<string, unknown>, meshKey: string): Promise<SliceResponse> {
+  const base = apiBase();
+  const token = apiToken();
+  const started = await beginSliceJob((text) => postJson(base, token, "/api/jobs", text), { ...req, dataB64: meshBase64() });
+  if ("unsupported" in started) return postSlice(uiId, bytes, req, meshKey);
+  let stopped = false;
+  activeHttp = { uiId, jobId: started.id, stop: () => { stopped = true; } };
+  try {
+    const terminal = await followJobProgress({
+      eventsUrl: jobEventsUrl(base, started.id, token),
+      openEvents: typeof EventSource === "undefined" ? null : browserJobEvents,
+      poll: async () => {
+        const res = await getText(base, token, `/api/jobs/${encodeURIComponent(started.id)}`);
+        const snap = parseJobSnapshot(res.text);
+        if (!snap) throw new Error(errorText(res.text, res.status));
+        return snap;
+      },
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      shouldStop: () => stopped || uiId !== session.job,
+      onUpdate: (snap) => noteJob(uiId, snap),
+    });
+    if (stopped || uiId !== session.job || terminal.status === "cancelled") throw new Error("cancelled");
+    const result = await getText(base, token, `/api/jobs/${encodeURIComponent(started.id)}/result`);
+    if (result.status !== 200) throw new Error(errorText(result.text, result.status));
+    return JSON.parse(result.text) as SliceResponse;
+  } finally {
+    if (activeHttp?.jobId === started.id) activeHttp = null;
+  }
+}
+
 export function postSlice(id: number, bytes: ArrayBuffer, body: unknown, meshKey: string) {
   return new Promise<SliceResponse>((resolve, reject) => {
     const onMsg = (ev: MessageEvent) => {
@@ -266,12 +328,18 @@ export function parseInWorker(id: number, text: string) {
 }
 
 export function cancelSlice() {
+  const http = activeHttp && activeHttp.uiId === session.job ? activeHttp : null;
+  http?.stop();
   worker.postMessage({ id: session.job, cancel: true });
   session.job += 1;
   state.busy = false;
+  state.progress = 0;
+  session.liveProgress = false;
+  session.jobStage = "";
   state.notice = "Slice cancelled.";
   const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-  if (tauri) void import("@tauri-apps/api/core").then(({ invoke }) => invoke("cancel_slice"));
+  if (http) void cancelJob(apiBase(), apiToken(), http.jobId).catch(() => undefined);
+  else if (tauri) void import("@tauri-apps/api/core").then(({ invoke }) => invoke("cancel_slice"));
   else void fetch(`${apiBase()}/api/cancel`, { method: "POST", headers: authHeaders(apiToken()) }).catch(() => undefined);
   renderChrome();
   session.supportUi?.landed(false);
