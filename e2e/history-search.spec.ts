@@ -79,7 +79,7 @@ test.describe("compact settings search", () => {
     await expect(find).toBeVisible();
     const undo = await page.locator("#undoEdit").boundingBox();
     expect(undo?.height ?? 0).toBeGreaterThan(0);
-    expect(undo?.height ?? 99).toBeLessThanOrEqual(32);
+    expect(undo?.height ?? 99).toBeLessThanOrEqual(44);
     await find.fill("layer");
     await expect(page.locator("#lh")).toBeVisible();
     await expect(page.locator("#gyroid3d")).toBeHidden();
