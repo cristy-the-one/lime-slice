@@ -110,6 +110,25 @@ eq(
 
 check("embedded bytes decode to the original mesh", bytesToBase64(bytes).length > 0);
 
+const withOverrides: LimeProject = {
+  ...project,
+  overrides: {
+    version: 1,
+    ranges: [{ id: "range-a", zFrom: 0, zTo: 4, override: { infill: 0.4, walls: 4, speed: 40 } }],
+    volumes: [{ id: "volume-a", kind: "box", x: 110, y: 110, z: 10, sx: 30, sy: 30, sz: 20, override: { infill: 0.6, walls: 3 } }],
+  },
+};
+const savedOverrides = parseProject(serializeProject(withOverrides));
+check("overrides round trip", savedOverrides.ok);
+if (savedOverrides.ok) eq("overrides stay on the project", savedOverrides.project.overrides, withOverrides.overrides);
+const wireOverrides = JSON.parse(serializeProject(project)) as { overrides?: unknown };
+check("a project with no ranges omits overrides", wireOverrides.overrides === undefined);
+eq(
+  "a layer height override is refused",
+  parseProject(JSON.stringify({ ...JSON.parse(serializeProject(project)), overrides: { version: 1, ranges: [{ id: "r", zFrom: 0, zTo: 1, override: { layerHeight: 0.08 } }], volumes: [] } })),
+  { ok: false, message: "Layer height is not an override. The slice has one layer height." },
+);
+
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);

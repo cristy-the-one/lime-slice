@@ -9,6 +9,8 @@ import { type LayerGcode, indexLayerGcode, type PlayPoint, layerMoves, matchGcod
 import { applyPlace, fetchStoredGcode } from "./files";
 import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, stale, markStale } from "./settings";
 import { flushEdit, noteEdit } from "./history";
+import { beginModifierEdit, endModifierEdit, nudgeModifier, selectModifier } from "./override-actions";
+import { bandFractions } from "../overrides";
 import { type PreviewPath, decodePaths } from "../preview-wire";
 import { patchGeometry, patchLayers, type PreviewPatch } from "../preview-patch";
 import type { PreviewGeometry } from "../preview-geom";
@@ -69,7 +71,26 @@ export function paintSlider() {
     band.style.top = "35%";
     band.style.height = "25%";
   }
+  paintRangeBands();
+  prepare?.setModifiers(state.overrides, state.selectedVolumeId, state.modifierTool);
   syncLayerTip();
+}
+
+function paintRangeBands() {
+  const layers = state.result?.layers;
+  const z0 = layers && layers.length > 0 ? layers[0].z : 0;
+  const z1 = layers && layers.length > 1 ? layers[layers.length - 1].z : Math.max(state.profile.bedZ, z0 + 1);
+  const html = state.overrides.ranges.map((range) => {
+    const box = bandFractions(range.zFrom, range.zTo, z0, z1);
+    return `<div class="range-band" style="top:${(box.top * 100).toFixed(2)}%;height:${(box.height * 100).toFixed(2)}%"></div>`;
+  }).join("");
+  const slider = document.querySelector("#rangeBands");
+  const viewport = document.querySelector("#viewportBands");
+  if (slider) slider.innerHTML = html;
+  if (viewport) {
+    viewport.innerHTML = html;
+    viewport.toggleAttribute("hidden", state.overrides.ranges.length === 0);
+  }
 }
 
 export const gcodeLoads = new WeakMap<SliceResponse, Promise<string>>();
@@ -891,6 +912,10 @@ export function mountViews() {
     paintGizmoReadout();
     renderChrome();
   });
+  prepare.onModifierSelect((id) => selectModifier(id));
+  prepare.onModifierEditStart(() => beginModifierEdit());
+  prepare.onModifierEdit((id, kind, axis, deltaMm) => nudgeModifier(id, kind, axis, deltaMm));
+  prepare.onModifierEditEnd(() => endModifierEdit());
   view3d.onPlane((at) => commitSplit(at));
 }
 

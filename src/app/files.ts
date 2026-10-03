@@ -9,6 +9,7 @@ import { pushToast } from "../ui/toasts";
 import { clearEdits } from "../support-edit-list";
 import { clearEditHistory } from "./history";
 import { foreign3mfMessage, foreignSlicer3mf } from "../foreign-3mf";
+import { emptyOverrides } from "../overrides";
 
 export async function loadNamed(name: string) {
   state.error = "";
@@ -29,6 +30,8 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
   state.centered = true;
   state.offset = { x: 0, y: 0, z: 0 };
   state.supportEdits = clearEdits();
+  state.overrides = emptyOverrides();
+  state.selectedVolumeId = null;
   clearEditHistory();
   session.supportUi?.reset();
   const parsed = needsEngine(name) ? null : parseStl(bytes);

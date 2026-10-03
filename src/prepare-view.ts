@@ -6,6 +6,8 @@ import { poseAffine, type Bounds, type PlacedPart } from "./mesh-place";
 import { buildCutPlane, disposeTree, prepareFrame, splitDragAt, type PrintFrame } from "./cut-plane";
 import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep } from "./gizmo-math";
 import { clampSplit, roundSplit, type SplitAxis } from "./split-at";
+import { createModifierScene } from "./modifier-scene";
+import type { OverrideDocument } from "./overrides";
 import { hexToThree, themeColors } from "./theme";
 
 type Axis = "x" | "y" | "z";
@@ -26,6 +28,12 @@ export interface PrepareView {
   setTheme(): void;
   /** Show move arrows, rotate rings, or both. Does not add a new manipulator. */
   setGizmoTool(tool: "all" | "move" | "rotate"): void;
+  /** Translucent height slabs and modifier volumes. The part gizmo stays parked on the left. */
+  setModifiers(doc: OverrideDocument, selectedId: string | null, tool: "move" | "scale"): void;
+  onModifierSelect(cb: ((id: string) => void) | null): void;
+  onModifierEditStart(cb: (() => void) | null): void;
+  onModifierEdit(cb: ((id: string, kind: "move" | "scale", axis: Axis, deltaMm: number) => void) | null): void;
+  onModifierEditEnd(cb: (() => void) | null): void;
   /** Top, front, or the same iso pose as a freshly loaded part. Does not run on load. */
   setViewPreset(preset: "top" | "front" | "iso"): void;
   resize(): void;
@@ -181,6 +189,16 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let rotateEndCb: (() => void) | null = null;
   let moveCb: ((axis: Axis, deltaMm: number, totalMm: number) => void) | null = null;
   let moveEndCb: (() => void) | null = null;
+  const modifiers = createModifierScene(frame);
+  scene.add(modifiers.group);
+  let modifierDoc: OverrideDocument = { version: 1, ranges: [], volumes: [] };
+  let modifierSelected: string | null = null;
+  let modifierTool: "move" | "scale" = "move";
+  let selectModCb: ((id: string) => void) | null = null;
+  let editModStartCb: (() => void) | null = null;
+  let editModCb: ((id: string, kind: "move" | "scale", axis: Axis, deltaMm: number) => void) | null = null;
+  let editModEndCb: (() => void) | null = null;
+  let modDrag: { id: string; kind: "move" | "scale"; axis: Axis; last: number } | null = null;
 
   const park = new THREE.Vector3();
   let drag: Drag = null;
@@ -219,6 +237,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     renderer.getSize(drawSize);
     renderer.setViewport(0, 0, drawSize.x, drawSize.y);
     renderer.render(scene, camera);
+    publishModifierMarker();
     // ViewHelper.render clears color for its corner viewport. With scissor off,
     // that clear wipes the whole canvas and the next frame stays in the corner.
     if (canvas.clientWidth > 2 && canvas.clientHeight > 2) {
@@ -246,6 +265,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       new THREE.Vector3(0, y, -bedY),
     ]);
     triad.position.set(0, 0.2, 0);
+    syncModifiers();
     requestRender();
   }
   function frameBed() {
@@ -254,6 +274,36 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     controls.update();
     requestRender();
   }
+  function syncModifiers() {
+    modifiers.sync(modifierDoc, modifierSelected, modifierTool, bedX, bedY);
+    canvas.dataset.modifierRanges = String(modifierDoc.ranges.length);
+    canvas.dataset.modifierVolumes = String(modifierDoc.volumes.length);
+    canvas.dataset.modifierGizmo = modifierSelected ? modifierTool : "";
+    canvas.dataset.modifierSelected = modifierSelected ?? "";
+    requestRender();
+  }
+
+  function publishModifierMarker() {
+    const origin = modifierOrigin();
+    const volume = modifierDoc.volumes.find((item) => item.id === modifierSelected);
+    if (!origin || !volume) {
+      canvas.dataset.modifierNx = "";
+      canvas.dataset.modifierNy = "";
+      return;
+    }
+    const dist = modifierTool === "scale" ? volume.sx / 2 : 12;
+    const tip = origin.clone().add(sceneAxis("x").multiplyScalar(dist));
+    const p = tip.project(camera);
+    canvas.dataset.modifierNx = (p.x * 0.5 + 0.5).toFixed(4);
+    canvas.dataset.modifierNy = (-p.y * 0.5 + 0.5).toFixed(4);
+  }
+
+  function modifierOrigin(): THREE.Vector3 | null {
+    const volume = modifierDoc.volumes.find((item) => item.id === modifierSelected);
+    if (!volume) return null;
+    return frame.toScene(volume.x, volume.y, volume.z);
+  }
+
   layoutBed();
   frameBed();
 
@@ -317,6 +367,36 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     if (gizmoTool === "move" && kind !== "move") return null;
     if (gizmoTool === "rotate" && kind !== "ring") return null;
     return { kind, axis };
+  }
+
+  function hitModifier(ev: PointerEvent): { id: string; kind: "move" | "scale"; axis: Axis } | { volumeId: string } | null {
+    ndc(ev);
+    const handle = raycaster.intersectObjects(modifiers.handlePicks(), false)[0];
+    const kind = handle?.object.userData.modHandle as "move" | "scale" | undefined;
+    const axis = handle?.object.userData.axis as Axis | undefined;
+    if ((kind === "move" || kind === "scale") && (axis === "x" || axis === "y" || axis === "z") && modifierSelected) {
+      return { id: modifierSelected, kind, axis };
+    }
+    const body = raycaster.intersectObjects(modifiers.volumePicks(), false)[0];
+    const volumeId = body?.object.userData.volumeId;
+    if (typeof volumeId === "string") return { volumeId };
+    return null;
+  }
+
+  function axisCoordAt(origin: THREE.Vector3, axis: Axis): number | null {
+    const dir = sceneAxis(axis);
+    const camDir = camera.position.clone().sub(origin);
+    if (camDir.lengthSq() < 1e-8) return null;
+    camDir.normalize();
+    const side = new THREE.Vector3().crossVectors(dir, camDir);
+    if (side.lengthSq() < 1e-6) {
+      side.crossVectors(dir, Math.abs(dir.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0));
+    }
+    side.normalize();
+    const normal = new THREE.Vector3().crossVectors(side, dir).normalize();
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, origin);
+    if (!raycaster.ray.intersectPlane(plane, dragHit)) return null;
+    return dragHit.sub(origin).dot(dir);
   }
 
   function hitCut(ev: PointerEvent): boolean {
@@ -406,6 +486,23 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       ev.stopPropagation();
       return;
     }
+    const mod = hitModifier(ev);
+    if (mod && "kind" in mod) {
+      const origin = modifierOrigin();
+      modDrag = { id: mod.id, kind: mod.kind, axis: mod.axis, last: origin ? axisCoordAt(origin, mod.axis) ?? 0 : 0 };
+      controls.enabled = false;
+      canvas.setPointerCapture(ev.pointerId);
+      editModStartCb?.();
+      ev.preventDefault();
+      ev.stopPropagation();
+      return;
+    }
+    if (mod && "volumeId" in mod) {
+      selectModCb?.(mod.volumeId);
+      ev.preventDefault();
+      ev.stopPropagation();
+      return;
+    }
     if (hitCut(ev) && split && meshBounds) {
       drag = { kind: "cut" };
       controls.enabled = false;
@@ -416,9 +513,29 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   }, { capture: true });
 
   canvas.addEventListener("pointermove", (ev) => {
+    if (modDrag) {
+      canvas.style.cursor = "grabbing";
+      ndc(ev);
+      const origin = modifierOrigin();
+      if (!origin) return;
+      const coord = axisCoordAt(origin, modDrag.axis);
+      if (coord == null) return;
+      const step = coord - modDrag.last;
+      modDrag.last = coord;
+      if (Math.abs(step) < 0.02) return;
+      const delta = modDrag.kind === "scale" ? step * 2 : step;
+      editModCb?.(modDrag.id, modDrag.kind, modDrag.axis, delta);
+      const moved = modifierOrigin();
+      if (moved) {
+        const rebased = axisCoordAt(moved, modDrag.axis);
+        if (rebased != null) modDrag.last = rebased;
+      }
+      return;
+    }
     if (!drag) {
       const handle = hitHandle(ev);
-      canvas.style.cursor = handle || hitCut(ev) ? "grab" : "";
+      const overMod = !handle && hitModifier(ev);
+      canvas.style.cursor = handle || overMod || hitCut(ev) ? "grab" : "";
       if (!sameHit(handle, hover)) {
         hover = handle;
         paintHandles(null, handle);
@@ -480,11 +597,14 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
 
   const endDrag = () => {
     const kind = drag?.kind;
+    const edited = modDrag;
     drag = null;
+    modDrag = null;
     hover = null;
     controls.enabled = true;
     canvas.style.cursor = "";
     paintHandles(null, null);
+    if (edited) editModEndCb?.();
     if (kind === "ring") rotateEndCb?.();
     if (kind === "move") moveEndCb?.();
   };
@@ -607,6 +727,16 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     onMove(cb) { moveCb = cb; },
     onMoveEnd(cb) { moveEndCb = cb; },
     setViewPreset(preset) { applyViewPreset(preset); },
+    setModifiers(doc, selectedId, tool) {
+      modifierDoc = doc;
+      modifierSelected = selectedId;
+      modifierTool = tool;
+      syncModifiers();
+    },
+    onModifierSelect(cb) { selectModCb = cb; },
+    onModifierEditStart(cb) { editModStartCb = cb; },
+    onModifierEdit(cb) { editModCb = cb; },
+    onModifierEditEnd(cb) { editModEndCb = cb; },
     setGizmoTool(tool) {
       gizmoTool = tool;
       for (const entry of handleNodes) {

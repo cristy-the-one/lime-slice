@@ -1,3 +1,4 @@
+import { emptyOverrides } from "../overrides";
 import { ID_MATRIX, type Mat3, type MeshShift, type PlacedPart } from "../mesh-place";
 import { loadProfile } from "../profiles";
 import type { ColorMode } from "../colors";
@@ -194,6 +195,10 @@ export const state = {
   sectionHud: "",
   /** Kept across setting and pose changes; the engine replays them and flags the ones that no longer match. */
   supportEdits: [] as EditEntry[],
+  /** Height ranges and modifier volumes. Stored only. The slice request does not carry them yet. */
+  overrides: emptyOverrides(),
+  selectedVolumeId: null as string | null,
+  modifierTool: "move" as "move" | "scale",
 };
 
 export const session = {

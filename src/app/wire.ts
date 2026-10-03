@@ -26,6 +26,15 @@ import {
   selectedProfileId,
   typedProfileName,
 } from "./profile-actions";
+import {
+  addHeightRange,
+  addModifier,
+  commitOverrideInput,
+  editOverrideInput,
+  removeOverrideCard,
+  selectModifier,
+  setModifierTool,
+} from "./override-actions";
 import { pushToast } from "../ui/toasts";
 import {
   bootMachines,
@@ -41,7 +50,14 @@ import { refreshPrusaJob, rememberPrusaForm, testPrusaLink, uploadToPrusaLink } 
 
 export function wireApp() {
   bootMachines();
-  document.querySelector("#left")!.addEventListener("input", onSettings);
+  document.querySelector("#left")!.addEventListener("input", (ev) => {
+    const target = ev.target as HTMLInputElement;
+    if (target.closest?.("[data-override-card]")) {
+      editOverrideInput(target);
+      return;
+    }
+    onSettings(ev);
+  });
   document.querySelector("#left")!.addEventListener("change", (ev) => {
     const target = ev.target as HTMLElement;
     if (target.id === "profilePick") {
@@ -73,6 +89,7 @@ export function wireApp() {
       input.value = "";
       if (file) void importMachineFile(file);
     }
+    if (target instanceof HTMLInputElement && target.closest("[data-override-card]")) commitOverrideInput(target);
   });
   document.querySelector("#left")!.addEventListener("toggle", (ev) => {
     const details = ev.target as HTMLDetailsElement;
@@ -162,6 +179,28 @@ export function wireApp() {
     if (t.id === "rotX") { noteEdit(); state.orient = matMul(rotX(90), state.orient); place(); }
     if (t.id === "rotY") { noteEdit(); state.orient = matMul(rotY(90), state.orient); place(); }
     if (t.id === "rotZ") { noteEdit(); state.orient = matMul(rotZ(90), state.orient); place(); }
+    if (t.id === "heightAdd") {
+      addHeightRange();
+      return;
+    }
+    if (t.id === "volumeBox" || t.id === "volumeCylinder" || t.id === "volumeSphere") {
+      addModifier(t.id === "volumeBox" ? "box" : t.id === "volumeCylinder" ? "cylinder" : "sphere");
+      return;
+    }
+    if (t.id === "modToolMove" || t.id === "modToolScale") {
+      setModifierTool(t.id === "modToolScale" ? "scale" : "move");
+      return;
+    }
+    const selectId = t.closest<HTMLElement>("[data-override-select]")?.dataset.overrideSelect;
+    if (selectId) {
+      selectModifier(selectId);
+      return;
+    }
+    if (t.dataset.overrideRemove) {
+      const card = t.closest<HTMLElement>("[data-override-card]");
+      if (card) removeOverrideCard(card);
+      return;
+    }
     if (t.id === "machineSave") {
       saveMachine(typedMachineName());
       return;
