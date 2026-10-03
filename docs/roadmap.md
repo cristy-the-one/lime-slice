@@ -496,7 +496,7 @@ Do not rebuild the rows marked exists. This list follows [Decisions (2026-10-03)
 6. **Height-range overrides beyond the blend band**, if the per-object key list is settled. Modifier meshes and mesh cut wait on plates.
 7. **Repair audit in the UI**, then split-to-objects once plates exist. Hollow and text emboss stay last among mesh tools.
 8. **Performance of G-code emit**, when a profile is slow on the inventory's dragon, not before the rows above.
-9. **Polish in parallel with whoever owns release:** the tour after the printer picker exists, localization when the strings settle, foreign-project settings import after the libraries exist. Signing keys are undecided and may trail these rows.
+9. **Polish in parallel with whoever owns release:** the tour after the printer picker exists, localization when the strings settle, foreign-project settings import after the libraries exist. Signing trails these rows. Ship unsigned installers until public release.
 
 **Deferred.** Flow, temperature, and retraction towers wait. Multi-material waits until the single-extruder library and the send path exist. A utility or library for multi-material comes before any toolpath work.
 
@@ -528,6 +528,6 @@ Marius answered the questions above. The [recommended order](#recommended-order)
 7. **Towers.** Flow, temperature, and retraction towers wait. They are not in front of the library, ironing, the seam picker, or Prusa Link.
 8. **Multi-material.** Out until the single-extruder library and the send path exist. A utility or library comes before multi-material toolpaths.
 9. **Foreign 3MF.** Opens mesh-only for now. Settings import comes later.
-10. **Signing keys.** Decide later. Signing may trail the feature rows.
+10. **Signing keys.** Option A: signing trails the features. Ship unsigned installers for now. At public-release time Marius will get the Apple account, the Windows certificate, and the updater key, and add them as the GitHub secrets the release workflow already names: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`, `TAURI_SIGNING_PRIVATE_KEY`, and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The workflow does not read those secrets today. A Windows Authenticode secret is not in that list yet; the certificate joins them at the same time.
 11. **Desktop first.** Compact only has to keep the prepare canvas at or above 70% when a sheet opens. The phone is not a send-to-printer target yet.
 12. **Vendor start G-code.** UI-side header text. Matching a vendor start sequence is not engine work for now.
