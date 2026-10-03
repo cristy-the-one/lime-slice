@@ -397,11 +397,9 @@ test("the slice button names a cache hit, a real recompute, and a forced recompu
   await slice.click();
   await expect.poll(() => slices.length).toBe(4);
   await page.locator("#lh").fill("0.2");
-  await expect(slice).toHaveText("Show result");
-  await expect(page.locator("#status")).toHaveText("This preview is stale. Show the saved result before export.");
-  await expect(page.locator("#banner")).toContainText("until you show the saved result.");
-  await slice.click();
   await expect.poll(() => slices.length).toBe(5);
+  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#banner")).not.toContainText("Settings changed");
   expect(slices.map((s) => [s.layerHeight, s.reslice])).toEqual([
     [0.2, false],
     [0.2, false],

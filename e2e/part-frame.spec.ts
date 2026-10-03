@@ -16,6 +16,92 @@ async function sliced(page: Page) {
   await expect(page.locator("#cancel")).toBeDisabled();
 }
 
+type Reply = { gcode?: string; gcodeToken?: string; fromCache?: boolean; previewPatch?: { changed: unknown[] } };
+
+/** Send the app's engine calls to the real engine, and keep each slice reply. */
+async function proxy(page: Page) {
+  const replies: Reply[] = [];
+  await page.route("http://127.0.0.1:43118/**", async (route) => {
+    const url = route.request().url().replace("http://127.0.0.1:43118", api!);
+    const response = await route.fetch({ url, timeout: SLICE_MS });
+    if (/\/api\/jobs\/[^/]+\/result$|\/api\/slice$/.test(url) && response.status() === 200) replies.push(JSON.parse(await response.text()));
+    await route.fulfill({ response });
+  });
+  return replies;
+}
+
+async function gcodeOf(page: Page, reply: Reply) {
+  if (reply.gcode) return reply.gcode;
+  const res = await page.request.get(`${api}/api/gcode/${reply.gcodeToken}`);
+  expect(res.ok()).toBe(true);
+  return res.text();
+}
+
+/** X range of the extrusions from the first layer marker on, so start G-code is left out. */
+function printedX(gcode: string): [number, number] {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const line of gcode.slice(gcode.indexOf(";LAYER:")).split("\n")) {
+    const x = /^G1 .*X(-?[\d.]+).*E/.exec(line);
+    if (!x) continue;
+    min = Math.min(min, Number(x[1]));
+    max = Math.max(max, Number(x[1]));
+  }
+  return [min, max];
+}
+
+async function loadDragon(page: Page) {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await page.locator("#file").setInputFiles("samples/dragon_2_5.stl");
+  await expect(page.locator("#status")).toContainText("loaded", { timeout: 30_000 });
+}
+
+test("an X/Y move re-emits the G-code at the new place without a click", async ({ page }) => {
+  const replies = await proxy(page);
+  await loadDragon(page);
+  await page.locator("#slice").click();
+  await sliced(page);
+  // A disk-cache hit leaves the engine nothing to re-emit from, so plan this one.
+  await page.locator("#force").click();
+  await sliced(page);
+  await expect(page.locator("#export")).toBeEnabled();
+  expect(replies[1]!.fromCache).toBe(false);
+  const before = printedX(await gcodeOf(page, replies.at(-1)!));
+  const fromX = Number(await page.locator("#placeX").inputValue());
+
+  const committed = Date.now();
+  await commitX(page, String(fromX + 25));
+  await expect(page.locator("#export")).toBeEnabled({ timeout: SLICE_MS });
+  console.log(`move: commit to export enabled ${Date.now() - committed} ms`);
+  await expect(page.locator("#banner")).not.toContainText("Settings changed");
+  expect(replies).toHaveLength(3);
+  const moved = replies[2]!;
+  expect(moved.fromCache || moved.previewPatch?.changed.length === 0, "the move re-emitted or came from the store").toBe(true);
+  const after = printedX(await gcodeOf(page, moved));
+  expect(after[0] - before[0]).toBeCloseTo(25, 1);
+  expect(after[1] - before[1]).toBeCloseTo(25, 1);
+});
+
+test("settings switched back to a sliced recipe show it without a click", async ({ page }) => {
+  const replies = await proxy(page);
+  await loadDragon(page);
+  await page.locator("#slice").click();
+  await sliced(page);
+  await page.locator("#lh").fill("0.28");
+  await expect(page.locator("#banner")).toContainText("Export stays off until you re-slice.");
+  await page.locator("#slice").click();
+  await sliced(page);
+  await expect(page.locator("#export")).toBeEnabled();
+  expect(replies).toHaveLength(2);
+
+  await page.locator("#lh").fill("0.2");
+  await expect(page.locator("#export")).toBeEnabled({ timeout: SLICE_MS });
+  await expect(page.locator("#banner")).not.toContainText("Settings changed");
+  expect(replies).toHaveLength(3);
+  expect(replies[2]!.fromCache).toBe(true);
+});
+
 async function commitX(page: Page, value: string) {
   const field = page.locator("#placeX");
   await field.fill(value);
