@@ -32,6 +32,8 @@ export const COMMANDS: CommandSpec[] = [
   { id: "tool-rotate", label: "Rotate", group: "Tools", shortcut: "R", keywords: "gizmo" },
   { id: "tool-scale", label: "Scale", group: "Tools", shortcut: "S", keywords: "percent field" },
   { id: "tool-layflat", label: "Lay flat", group: "Tools", shortcut: "F", keywords: "bed face" },
+  { id: "undo", label: "Undo", group: "Edit", shortcut: "Ctrl+Z", keywords: "placement settings revert" },
+  { id: "redo", label: "Redo", group: "Edit", shortcut: "Ctrl+Shift+Z", keywords: "placement settings again" },
   { id: "tool-section", label: "Section", group: "Tools", shortcut: "C", keywords: "clip cut" },
   { id: "edit-supports", label: "Edit supports", group: "Tools", shortcut: "E", keywords: "tree branch delete prune regrow" },
   { id: "theme-system", label: "Theme: System", group: "Settings", keywords: "theme appearance" },

@@ -354,7 +354,10 @@ table.est td:nth-child(3) { width: 5.5rem; font-variant-numeric: tabular-nums; }
 .legend label { display: flex; gap: 6px; align-items: center; }
 .swatch { width: 10px; height: 10px; display: inline-block; border-radius: 2px; }
 canvas { width: 100%; height: 100%; display: block; touch-action: none; }
-.setting.hidden { display: none; }
+.setting.hidden, .group.hidden { display: none; }
+.find-row { display: flex; gap: 4px; align-items: center; margin-bottom: 8px; }
+.find-row input { flex: 1 1 auto; min-width: 0; }
+.history-btn { flex: 0 0 auto; height: 28px; padding: 0 8px; font-size: 12px; }
 .stage-tabs { margin-right: 8px; }
 .row { display: flex; flex-wrap: wrap; gap: 6px; }
 .object-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }

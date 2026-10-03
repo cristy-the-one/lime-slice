@@ -11,6 +11,8 @@ import { groupFeatures } from "../estimate";
 import { offBed } from "../mesh-place";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys, readPresets, diffPreset } from "../presets";
 import { loadProfile, type PrinterProfile, saveProfile } from "../profiles";
+import { canRedoEdit, canUndoEdit, noteEdit } from "./history";
+import { SETTING_KEYWORDS, settingMatches } from "../ui/settings-search";
 
 export function apiBase() {
   return currentApiTarget().base;
@@ -58,7 +60,11 @@ export function renderChrome() {
   const result = state.result;
   document.querySelector("#leftBody")!.innerHTML = `
     ${levelBarHtml()}
-    <input id="find" type="search" placeholder="Search settings" value="${escapeHtml(state.query)}" />
+    <div class="find-row">
+      <input id="find" type="search" placeholder="Search settings" aria-label="Search settings" value="${escapeHtml(state.query)}" />
+      <button class="btn history-btn" id="undoEdit" type="button" aria-label="Undo" ${canUndoEdit() ? "" : "disabled"}>Undo</button>
+      <button class="btn history-btn" id="redoEdit" type="button" aria-label="Redo" ${canRedoEdit() ? "" : "disabled"}>Redo</button>
+    </div>
     <h2>Mesh</h2>
     <div class="meta">${mesh ? `<b>${escapeHtml(mesh.name)}</b>` : "Nothing loaded"}</div>
     <div class="object-list" id="objectList">${objectList()}</div>
@@ -481,7 +487,7 @@ export function objectList() {
       <button class="btn" id="rotZ" type="button" aria-label="Rotate 90 degrees around Z">Rot Z</button>
       <button class="btn" id="export3mf" type="button">Export 3MF</button>
     </div>
-    <label class="field">Scale %<input id="partScale" type="number" min="10" max="400" step="5" value="${Math.round(state.partScale * 100)}" /></label>
+    <label class="field setting" data-label="scale %" data-keywords="placement size percent">Scale %<input id="partScale" type="number" min="10" max="400" step="5" value="${Math.round(state.partScale * 100)}" /></label>
     ${isStepName(state.mesh?.name ?? "") ? num("stepTol", "STEP chord mm", state.stepTolerance, 0.01, 2, 0.01) : ""}
     ${notes.length ? `<div class="meta warn-text">${notes.join("; ")}</div>` : `<div class="meta">On the ${state.profile.bedX}×${state.profile.bedY}×${state.profile.bedZ} mm bed.</div>`}
     <div class="meta" id="placeReadout">X ${cx} · Y ${cy} · bed Z ${z0} mm</div>
@@ -593,6 +599,7 @@ export function presetHtml() {
 }
 
 export function applyPreset(next: PresetSettings) {
+  noteEdit();
   for (const key of presetKeys()) {
     (state as unknown as Record<string, unknown>)[key] = next[key];
   }
@@ -609,14 +616,24 @@ export function paintPresetDiff() {
 }
 
 export function applyFilter() {
-  const q = state.query.trim().toLowerCase();
+  const q = state.query.trim();
   document.querySelector("#left")?.classList.toggle("is-searching", !!q);
   document.querySelectorAll<HTMLElement>("#left .setting").forEach((el) => {
-    el.classList.toggle("hidden", !!q && !(el.dataset.label ?? "").includes(q));
+    const control = el.querySelector("input, select, textarea");
+    const id = control instanceof HTMLElement ? control.id : "";
+    const keywords = `${el.dataset.keywords ?? ""} ${SETTING_KEYWORDS[id] ?? ""}`;
+    el.classList.toggle("hidden", !settingMatches(q, el.dataset.label ?? "", keywords));
+  });
+  document.querySelectorAll<HTMLDetailsElement>("#left .group").forEach((group) => {
+    const settings = [...group.querySelectorAll<HTMLElement>(".setting")];
+    const any = settings.some((el) => !el.classList.contains("hidden"));
+    group.classList.toggle("hidden", !!q && settings.length > 0 && !any);
+    if (q && any) group.open = true;
   });
 }
 
 export function onBlend(ev: Event) {
+  noteEdit();
   markProjectDirty();
   const t = ev.target as HTMLInputElement;
   if (t.id === "weight") {
@@ -664,6 +681,7 @@ export function onSettings(ev: Event) {
     applyFilter();
     return;
   }
+  noteEdit();
   markProjectDirty();
   const numIds = ["lh", "amin", "amax", "pa", "la", "zhopht", "zhopmin", "scarflen", "scarfsteps", "sangle", "bangle", "tipd", "trunkd", "shmult", "pastart", "paend", "pastep", "nozzle", "bedx", "bedy", "bedz", "vol", "accel", "density", "cost", "partScale", "simperr"] as const;
   const map: Record<string, (v: number) => void> = {
@@ -720,6 +738,7 @@ export function onSettings(ev: Event) {
     const file = t.files?.[0];
     if (!file) return;
     void file.text().then((text) => {
+      noteEdit();
       state.profile = { ...loadProfile(), ...JSON.parse(text) } as PrinterProfile;
       state.pressureAdvance = state.profile.pressureAdvance;
       state.linearAdvance = state.profile.linearAdvance;

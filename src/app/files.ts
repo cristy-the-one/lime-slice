@@ -6,6 +6,7 @@ import { authHeaders, engineDownMessage } from "../ui/api-base";
 import { type SplitSync } from "../split-at";
 import { confirmDiscard, markProjectDirty } from "../project-dirty";
 import { clearEdits } from "../support-edit-list";
+import { clearEditHistory } from "./history";
 
 export async function loadNamed(name: string) {
   state.error = "";
@@ -26,6 +27,7 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
   state.centered = true;
   state.offset = { x: 0, y: 0, z: 0 };
   state.supportEdits = clearEdits();
+  clearEditHistory();
   session.supportUi?.reset();
   const parsed = needsEngine(name) ? null : parseStl(bytes);
   state.sourcePos = parsed ?? (await previewRemote(name, bytes));
