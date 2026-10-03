@@ -11,6 +11,7 @@ mod inner_prof;
 mod load;
 mod mesh;
 mod poly;
+mod progress;
 mod slice;
 mod slice_cache;
 mod step;
@@ -32,13 +33,15 @@ pub use load::{
     load_mesh, load_slice_mesh, load_slice_mesh_tol, mesh_preview, mesh_preview_tol, MeshPreview,
 };
 pub use mesh::Mesh;
+pub use progress::{fraction, Progress, Stage, Status, Watch};
 pub use slice::{
     contour_times, keep_support_bases, outline_tolerance_mm, pareto_estimates, slice_configured,
-    slice_request, slice_with_baseline, BlendScore, CompareEstimate, EditOutcomeView,
-    FeatureEstimate, ParetoPoint, PreviewLayer, PrintEstimate, RigidPose, SiteSpec, SliceRequest,
-    SliceResponse, SliceSettings, SupportEditSpec,
+    slice_configured_watched, slice_request, slice_request_watched, slice_with_baseline,
+    BlendScore, CompareEstimate, EditOutcomeView, FeatureEstimate, ParetoPoint, PreviewLayer,
+    PrintEstimate, RigidPose, SiteSpec, SliceRequest, SliceResponse, SliceSettings,
+    SupportEditSpec,
 };
-pub use slice_cache::{slice_payload, SliceCache};
+pub use slice_cache::{slice_payload, slice_payload_watched, SliceCache};
 pub use step::{
     load_step, load_step_timed, resolve_step_tolerance, StepTimings, STEP_TOLERANCE_DEFAULT_MM,
     STEP_TOLERANCE_MAX_MM, STEP_TOLERANCE_MIN_MM,

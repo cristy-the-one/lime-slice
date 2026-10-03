@@ -5,6 +5,8 @@ use std::sync::Mutex;
 
 use base64::Engine;
 use clap::{Parser, Subcommand};
+mod jobs;
+
 use lime_slice_core::{
     pareto_estimates, slice_request, Axis, BlendMode, GcodeText, Gyroid3d, Mesh, RigidPose,
     ScarfSeam, SliceRequest, SliceSettings, StrategyId, ZHopMode,
@@ -966,6 +968,24 @@ fn handle(mut request: tiny_http::Request, token: Option<&str>) {
             ));
             return;
         }
+        if method != "OPTIONS" {
+            if let Some(reply) = jobs::route(&method, &path, &body) {
+                match reply {
+                    jobs::JobReply::Json(status, payload) => {
+                        let _ = request.respond(text_response(
+                            status,
+                            &payload,
+                            token_required,
+                            origin.as_deref(),
+                        ));
+                    }
+                    jobs::JobReply::Events { id, watch } => {
+                        jobs::respond_events(request, id, watch, token_required, origin.as_deref());
+                    }
+                }
+                return;
+            }
+        }
         let (status, payload) = if method == "OPTIONS" {
             (204, String::new())
         } else if method == "GET" && path.starts_with("/api/strategies") {
@@ -1850,5 +1870,252 @@ mod tests {
             }
         }
         String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    fn http_exchange_for(addr: &str, head: &str, timeout: std::time::Duration) -> String {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        let mut stream = TcpStream::connect(addr).expect("connect");
+        stream.set_read_timeout(Some(timeout)).expect("timeout");
+        stream.write_all(head.as_bytes()).expect("write");
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 4096];
+        loop {
+            match stream.read(&mut tmp) {
+                Ok(0) => break,
+                Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::WouldBlock
+                        || err.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    break;
+                }
+                Err(err) => panic!("{err}"),
+            }
+        }
+        String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    fn response_body(raw: &str) -> &str {
+        raw.split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .unwrap_or("")
+    }
+
+    /// SSE responses have no Content-Length, so tiny_http frames them as
+    /// chunked transfer. A browser strips that framing; this test reads the
+    /// socket itself.
+    fn event_payload(raw: &str) -> String {
+        let Some((head, body)) = raw.split_once("\r\n\r\n") else {
+            return String::new();
+        };
+        let chunked = head.lines().any(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.starts_with("transfer-encoding:") && lower.contains("chunked")
+        });
+        if chunked {
+            decode_chunked(body.as_bytes())
+        } else {
+            body.to_string()
+        }
+    }
+
+    fn decode_chunked(mut body: &[u8]) -> String {
+        let mut out = Vec::new();
+        while !body.is_empty() {
+            let Some(split) = body.windows(2).position(|pair| pair == b"\r\n") else {
+                break;
+            };
+            let size_line = std::str::from_utf8(&body[..split]).unwrap_or("");
+            let size_hex = size_line.split(';').next().unwrap_or("").trim();
+            let Ok(size) = usize::from_str_radix(size_hex, 16) else {
+                break;
+            };
+            body = &body[split + 2..];
+            if size == 0 || body.len() < size {
+                break;
+            }
+            out.extend_from_slice(&body[..size]);
+            body = &body[size..];
+            if body.starts_with(b"\r\n") {
+                body = &body[2..];
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    #[test]
+    fn jobs_follow_a_slice_and_cancel_under_the_token() {
+        use base64::Engine;
+        let server = tiny_http::Server::http(listen_addr("127.0.0.1", 0)).unwrap();
+        let endpoint = server
+            .server_addr()
+            .to_ip()
+            .expect("tcp listener")
+            .to_string();
+        std::thread::spawn(move || {
+            for request in server.incoming_requests() {
+                handle(request, Some("s3cret"));
+            }
+        });
+
+        let stl = std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples/calibration_cube_20mm.stl"),
+        )
+        .unwrap();
+        let payload = serde_json::json!({
+            "filename": "calibration_cube_20mm.stl",
+            "dataB64": base64::engine::general_purpose::STANDARD.encode(stl),
+            "baseline": false,
+            "compare": false,
+            "includePreview": false,
+            "includeGcode": true,
+        })
+        .to_string();
+        let post = |path: &str, token: bool| {
+            let auth = if token {
+                "Authorization: Bearer s3cret\r\nOrigin: http://10.0.0.8:43117\r\n"
+            } else {
+                ""
+            };
+            format!(
+                "POST {path} HTTP/1.1\r\nHost: localhost\r\n{auth}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                payload.len()
+            )
+        };
+
+        let denied = http_exchange(&endpoint, &post("/api/jobs", false));
+        assert!(
+            denied.starts_with("HTTP/1.0 401") || denied.starts_with("HTTP/1.1 401"),
+            "{denied}"
+        );
+
+        let started = http_exchange(&endpoint, &post("/api/jobs", true));
+        assert!(
+            started.starts_with("HTTP/1.0 202") || started.starts_with("HTTP/1.1 202"),
+            "{started}"
+        );
+        assert!(started.contains("Access-Control-Allow-Origin: http://10.0.0.8:43117"));
+        assert!(started.contains("Vary: Origin"));
+        let id: String = serde_json::from_str::<serde_json::Value>(response_body(&started))
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let cancel = http_exchange(
+            &endpoint,
+            &format!(
+                "POST /api/jobs/{id}/cancel?token=s3cret HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            ),
+        );
+        assert!(
+            cancel.starts_with("HTTP/1.0 200") || cancel.starts_with("HTTP/1.1 200"),
+            "{cancel}"
+        );
+
+        let mut saw_cancelled = false;
+        for _ in 0..50 {
+            let poll = http_exchange(
+                &endpoint,
+                &format!(
+                    "GET /api/jobs/{id} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer s3cret\r\nConnection: close\r\n\r\n"
+                ),
+            );
+            assert!(
+                poll.starts_with("HTTP/1.0 200") || poll.starts_with("HTTP/1.1 200"),
+                "{poll}"
+            );
+            let body: serde_json::Value = serde_json::from_str(response_body(&poll)).unwrap();
+            let status = body["status"].as_str().unwrap();
+            assert!(body["fraction"].as_f64().unwrap() <= 1.0);
+            if status == "cancelled" {
+                saw_cancelled = true;
+                break;
+            }
+            assert_ne!(status, "done", "cancel lost the race: {body}");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(saw_cancelled, "job {id} did not cancel");
+
+        let result = http_exchange(
+            &endpoint,
+            &format!(
+                "GET /api/jobs/{id}/result HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer s3cret\r\nConnection: close\r\n\r\n"
+            ),
+        );
+        assert!(
+            result.starts_with("HTTP/1.0 400") || result.starts_with("HTTP/1.1 400"),
+            "{result}"
+        );
+        assert!(response_body(&result).contains("cancelled"));
+
+        let missing = http_exchange(
+            &endpoint,
+            "GET /api/jobs/missing HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer s3cret\r\nConnection: close\r\n\r\n",
+        );
+        assert!(
+            missing.starts_with("HTTP/1.0 404") || missing.starts_with("HTTP/1.1 404"),
+            "{missing}"
+        );
+
+        let started = http_exchange(&endpoint, &post("/api/jobs", true));
+        let id: String = serde_json::from_str::<serde_json::Value>(response_body(&started))
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let events = http_exchange_for(
+            &endpoint,
+            &format!(
+                "GET /api/jobs/{id}/events?token=s3cret HTTP/1.1\r\nHost: localhost\r\nOrigin: http://10.0.0.8:43117\r\nConnection: close\r\n\r\n"
+            ),
+            std::time::Duration::from_secs(60),
+        );
+        assert!(
+            events.contains("text/event-stream"),
+            "missing event stream header: {events}"
+        );
+        assert!(
+            events.contains("Access-Control-Allow-Origin: http://10.0.0.8:43117"),
+            "{events}"
+        );
+        let payload = event_payload(&events);
+        assert!(payload.contains("data: "), "{events}");
+        assert!(payload.contains("\"status\":\"done\""), "{payload}");
+        let mut previous = 0.0;
+        for line in payload.lines() {
+            let Some(data) = line.strip_prefix("data: ") else {
+                continue;
+            };
+            let event: serde_json::Value = serde_json::from_str(data).unwrap();
+            let fraction = event["fraction"].as_f64().unwrap();
+            assert!(fraction + 1e-9 >= previous, "{payload}");
+            previous = fraction;
+        }
+        assert!((previous - 1.0).abs() < 1e-9, "{payload}");
+
+        let result = http_exchange_for(
+            &endpoint,
+            &format!(
+                "GET /api/jobs/{id}/result HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer s3cret\r\nConnection: close\r\n\r\n"
+            ),
+            std::time::Duration::from_secs(5),
+        );
+        assert!(
+            result.starts_with("HTTP/1.0 200") || result.starts_with("HTTP/1.1 200"),
+            "{result}"
+        );
+        assert!(response_body(&result).contains("generated by Lime Slice"));
+
+        let preflight = http_exchange(
+            &endpoint,
+            "OPTIONS /api/jobs HTTP/1.1\r\nHost: localhost\r\nOrigin: http://10.0.0.8:43117\r\nConnection: close\r\n\r\n",
+        );
+        assert!(
+            preflight.starts_with("HTTP/1.0 204") || preflight.starts_with("HTTP/1.1 204"),
+            "{preflight}"
+        );
+        assert!(preflight.contains("Access-Control-Allow-Headers: Content-Type, Authorization"));
     }
 }

@@ -13,7 +13,7 @@ use serde::ser::{Serialize, SerializeMap, Serializer};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
-use crate::{slice_request, GcodeText, Job, SliceRequest};
+use crate::{slice_request_watched, GcodeText, Job, SliceRequest, Watch};
 
 /// A folder of `<key>.json` files, each one slice reply with its G-code.
 /// Entries are written on background threads after the reply is out.
@@ -181,6 +181,19 @@ pub fn slice_payload(
     job: Job,
     park: impl FnOnce(GcodeText) -> String,
 ) -> Result<String, String> {
+    slice_payload_watched(payload, cache, job, &Watch::idle(), park)
+}
+
+/// [`slice_payload`], publishing into `watch`. The caller marks the watch
+/// finished after it has stored the reply, so a poll never sees `done`
+/// before the result is there.
+pub fn slice_payload_watched(
+    payload: &str,
+    cache: Option<&SliceCache>,
+    job: Job,
+    watch: &Watch,
+    park: impl FnOnce(GcodeText) -> String,
+) -> Result<String, String> {
     let mut value: Value = serde_json::from_str(payload).map_err(|e| e.to_string())?;
     let reslice = value
         .as_object_mut()
@@ -197,7 +210,7 @@ pub fn slice_payload(
     let (reply, text) = match hit {
         Some(reply) => (Arc::new(reply), None),
         None => {
-            let response = slice_request(&req, job)?;
+            let response = slice_request_watched(&req, job, watch)?;
             let mut reply = serde_json::to_value(&response).map_err(|e| e.to_string())?;
             reply["slicedAtMs"] = json!(now_ms());
             let reply = Arc::new(reply);

@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use rayon::prelude::*;
 
+use crate::progress::{Stage, Watch};
 use crate::strategy::{BlendMode, PrinterProfile};
 use crate::toolpath::Extrusion;
 
@@ -199,6 +200,7 @@ pub(crate) fn emit_gcode(
     classic_estimator: bool,
     junction_deviation_mm: f64,
     job: crate::cancel::Job,
+    watch: &Watch,
 ) -> GcodeStats {
     emit_gcode_inner(
         layers,
@@ -211,6 +213,7 @@ pub(crate) fn emit_gcode(
         classic_estimator,
         junction_deviation_mm,
         job,
+        watch,
         true,
         Text::Now,
     )
@@ -231,6 +234,7 @@ pub(crate) fn emit_estimates(
     classic_estimator: bool,
     junction_deviation_mm: f64,
     job: crate::cancel::Job,
+    watch: &Watch,
 ) -> GcodeStats {
     emit_gcode_inner(
         layers,
@@ -243,6 +247,7 @@ pub(crate) fn emit_estimates(
         classic_estimator,
         junction_deviation_mm,
         job,
+        watch,
         true,
         Text::Never,
     )
@@ -263,6 +268,7 @@ pub(crate) fn emit_later(
     classic_estimator: bool,
     junction_deviation_mm: f64,
     job: crate::cancel::Job,
+    watch: &Watch,
 ) -> (GcodeStats, GcodeText) {
     let (stats, text) = emit_gcode_inner(
         layers,
@@ -275,6 +281,7 @@ pub(crate) fn emit_later(
         classic_estimator,
         junction_deviation_mm,
         job,
+        watch,
         true,
         Text::Later,
     );
@@ -298,6 +305,7 @@ pub(crate) fn emit_gcode_linear(
     classic_estimator: bool,
     junction_deviation_mm: f64,
     job: crate::cancel::Job,
+    watch: &Watch,
 ) -> GcodeStats {
     emit_gcode_inner(
         layers,
@@ -310,6 +318,7 @@ pub(crate) fn emit_gcode_linear(
         classic_estimator,
         junction_deviation_mm,
         job,
+        watch,
         false,
         Text::Now,
     )
@@ -328,11 +337,18 @@ fn emit_gcode_inner(
     classic_estimator: bool,
     junction_deviation_mm: f64,
     job: crate::cancel::Job,
+    watch: &Watch,
     parallel: bool,
     text: Text,
 ) -> (GcodeStats, Option<GcodeText>) {
     let cfg = EmitCfg::new(profile, arc_fit, classic_estimator, junction_deviation_mm);
     let junction_deviation = cfg.junction_deviation;
+    let emit_total = layers
+        .iter()
+        .filter(|layer| !layer.paths.is_empty())
+        .count()
+        .max(1) as u32;
+    watch.begin(Stage::Emit, emit_total);
     if !parallel {
         let mut w = Writer::blank(&cfg, Carry::initial(&cfg), false);
         write_preamble(
@@ -347,7 +363,7 @@ fn emit_gcode_inner(
         );
         let mut emitted_layers = 0usize;
         for layer in layers {
-            if job.cancelled() {
+            if watch.stopped(job) {
                 w.cancelled = true;
                 break;
             }
@@ -356,6 +372,10 @@ fn emit_gcode_inner(
             }
             w.write_layer(layer);
             emitted_layers += 1;
+            watch.tick();
+        }
+        if !w.cancelled {
+            watch.fill();
         }
         w.finish(profile);
         return (w.stats(emitted_layers, profile), None);
@@ -375,9 +395,13 @@ fn emit_gcode_inner(
     w.quiet = true;
     let mut seeds = Vec::new();
     let mut emitted_layers = 0usize;
-    match scan_layers(&cfg, layers, &scripts, job) {
+    match scan_layers(&cfg, layers, &scripts, job, watch) {
         Some(scans) => {
             for scan in scans {
+                if watch.stopped(job) {
+                    w.cancelled = true;
+                    break;
+                }
                 seeds.push(Seed {
                     index: scan.index,
                     carry: Carry {
@@ -387,11 +411,12 @@ fn emit_gcode_inner(
                 });
                 w.take_scan(scan);
                 emitted_layers += 1;
+                watch.tick();
             }
         }
         None => {
             for (index, layer) in layers.iter().enumerate() {
-                if job.cancelled() {
+                if watch.stopped(job) {
                     w.cancelled = true;
                     break;
                 }
@@ -406,11 +431,14 @@ fn emit_gcode_inner(
                 w.replay_i = 0;
                 w.write_layer(layer);
                 emitted_layers += 1;
+                watch.tick();
             }
         }
     }
-    if job.cancelled() {
+    if watch.stopped(job) {
         w.cancelled = true;
+    } else {
+        watch.fill();
     }
     if text == Text::Never {
         w.finish(profile);
@@ -420,6 +448,7 @@ fn emit_gcode_inner(
     w.out.clear();
     w.finish(profile);
     let epilogue = std::mem::take(&mut w.out);
+    let cancelled = w.cancelled;
     let mut stats = w.stats(emitted_layers, profile);
     let mut preamble = String::new();
     write_preamble(
@@ -440,7 +469,9 @@ fn emit_gcode_inner(
         epilogue,
     };
     if text == Text::Now {
-        stats.text = formatter.format();
+        if !cancelled {
+            stats.text = formatter.format();
+        }
         return (stats, None);
     }
     let later = GcodeText(Arc::new(Mutex::new(Body::Later(Box::new(formatter)))));
@@ -618,6 +649,7 @@ fn scan_layers(
     layers: &[PrintLayer],
     scripts: &[Arc<Vec<Vec<Span>>>],
     job: crate::cancel::Job,
+    watch: &Watch,
 ) -> Option<Vec<LayerScan>> {
     let order: Vec<usize> = (0..layers.len())
         .filter(|&i| !layers[i].paths.is_empty())
@@ -627,7 +659,7 @@ fn scan_layers(
         .par_iter()
         .map(|&i| scan_layer(cfg, initial, &layers[i], &scripts[i], false).carry())
         .collect();
-    if job.cancelled() {
+    if watch.stopped(job) {
         return None;
     }
     let scans: Vec<LayerScan> = order
@@ -674,7 +706,14 @@ pub(crate) fn scans_in_parallel(
 ) -> bool {
     let cfg = EmitCfg::new(profile, arc_fit, classic_estimator, 0.0);
     let scripts: Vec<Arc<Vec<Vec<Span>>>> = layers.iter().map(|l| l.script(arc_fit)).collect();
-    scan_layers(&cfg, layers, &scripts, crate::cancel::Job::default()).is_some()
+    scan_layers(
+        &cfg,
+        layers,
+        &scripts,
+        crate::cancel::Job::default(),
+        &Watch::idle(),
+    )
+    .is_some()
 }
 
 #[allow(clippy::too_many_arguments)]
