@@ -354,7 +354,7 @@ A request with `objects`, including a one-element `objects`, gets the objects sh
 
 - Each `objects[i]` holds that object's `min`, `max`, `coverage`, `inAir`, `skeleton`, and `supportEdits` outcomes, in its part frame. Draw them at `offset`. `reused` names the stages the object took from memory.
 - The top-level `offset`, `coverage`, `inAir`, `skeleton`, and `supportEdits` are absent. The top-level `mesh.min` and `mesh.max` are the union of every object's box in bed coordinates. `mesh.triangles` is the sum.
-- `collisions` lists every pair whose XY boxes in bed coordinates overlap with positive area, in plate order. `overlap` is `[minX, minY, maxX, maxY]`.
+- `collisions` lists every pair whose XY boxes in bed coordinates overlap with positive area, in plate order. Each box is the object's box grown to hold everything it prints on its first layer, skirt and supports, to the outer edge of each bead, so two objects whose skirts would print into each other are reported. `overlap` is `[minX, minY, maxX, maxY]` of the grown boxes.
 - Preview paths gain an `object` column, an index into `objects`. It is omitted when every path is object 0, so a one-object reply keeps its bytes.
 - A preview path is in its object's part frame. A travel from one object to another is not drawn.
 - G-code is in bed coordinates. `;OBJECT:<id>` starts each object's part tour when the plate has two or more objects. A one-element `objects` writes the same bytes as the omitted form.
@@ -418,7 +418,7 @@ Each object's contours key hashes its own band list. Under a fixed height that l
 
 Today's skirt is not a ring around the plate. `skirt_paths` draws one or two loops one line width out from each island of the first layer's part and supports. It hugs the part like a brim. It stays per object, inside that object's head run, in its part frame. A move never recomputes it.
 
-Two objects closer than the skirt reach, two line widths at most, print skirt loops into each other. The `collisions` box test does not grow by that reach in this step.
+Two objects closer than the skirt reach, two line widths and half a bead at most, print skirt loops into each other. `collisions` reports them, because it compares each object's first-layer reach.
 
 ### Design: supports across objects
 

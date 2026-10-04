@@ -7,7 +7,7 @@ use std::sync::Arc;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
-use super::{Collision, Contours, SliceSettings, SupportPlan, XyRect};
+use super::{Collision, Contours, Plan, SliceSettings, SupportPlan, XyRect};
 use crate::adaptive::LayerBand;
 use crate::gcode::{Entry, PlateLayer, PrintLayer, Run};
 use crate::poly::{boolean_union, loop_bounds, offset_loops, Loop};
@@ -368,6 +368,27 @@ fn solid_among(cut: &Contours, neighbours: &[Neighbour], near: &[usize]) -> Vec<
             solid
         })
         .collect()
+}
+
+/// An object's box on the bed, from `lo` to `hi`, grown to hold everything it
+/// prints on its first layer, skirt and supports, to the outer edge of each
+/// bead. Two objects whose skirts would print into each other then collide.
+pub(super) fn first_layer_reach(
+    plan: &Plan,
+    lo: [f64; 2],
+    hi: [f64; 2],
+    offset: [f64; 2],
+) -> ([f64; 2], [f64; 2]) {
+    let (mut lo, mut hi) = (lo, hi);
+    for path in plan.layers.first().into_iter().flat_map(|l| l.paths.iter()) {
+        let r = path.width * 0.5;
+        for p in &path.points {
+            let (x, y) = (p[0] + offset[0], p[1] + offset[1]);
+            lo = [lo[0].min(x - r), lo[1].min(y - r)];
+            hi = [hi[0].max(x + r), hi[1].max(y + r)];
+        }
+    }
+    (lo, hi)
 }
 
 /// Every pair of objects whose XY boxes on the bed overlap with positive

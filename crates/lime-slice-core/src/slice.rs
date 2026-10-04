@@ -1445,7 +1445,12 @@ fn slice_plate(
         let boxes: Vec<(&str, [f64; 2], [f64; 2])> = objects
             .iter()
             .zip(&on_bed)
-            .map(|(o, b)| (o.id.unwrap_or_default(), b.0, b.1))
+            .zip(&plans)
+            .map(|((o, b), plan)| {
+                let [dx, dy] = o.to_bed();
+                let (lo, hi) = plate::first_layer_reach(plan, b.0, b.1, [dx, dy]);
+                (o.id.unwrap_or_default(), lo, hi)
+            })
             .collect();
         plate::collisions(&boxes)
     });

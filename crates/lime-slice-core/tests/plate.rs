@@ -132,26 +132,39 @@ fn two_objects_print_each_layer_in_plate_order() {
 
 #[test]
 fn overlapping_objects_are_reported() {
-    let req = plate(json!({
-        "supports": false,
-        "objects": [
-            object("a", "calibration_cube_20mm.stl", 100.0, 110.0),
-            object("b", "calibration_cube_20mm.stl", 115.0, 110.0),
-        ],
-    }));
-    let reply = slice(&req).unwrap();
-    let hit = &reply["collisions"][0];
+    // Two 20 mm cubes with b's centre at `bx`, and the box they share, if any.
+    let shared = |bx: f64| {
+        let req = plate(json!({
+            "supports": false,
+            "objects": [
+                object("a", "calibration_cube_20mm.stl", 100.0, 110.0),
+                object("b", "calibration_cube_20mm.stl", bx, 110.0),
+            ],
+        }));
+        let reply = slice(&req).unwrap();
+        let hits = reply["collisions"].as_array().unwrap().clone();
+        hits.first().map(|hit| {
+            assert_eq!(
+                (hit["a"].as_str(), hit["b"].as_str()),
+                (Some("a"), Some("b"))
+            );
+            hit["overlap"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| (v.as_f64().unwrap() * 10.0).round() / 10.0)
+                .collect::<Vec<f64>>()
+        })
+    };
+    // Each cube's first layer reaches past it by its skirt: two loops one
+    // line width apart, to the outer edge of the second bead.
+    assert_eq!(shared(115.0), Some(vec![103.9, 98.9, 111.1, 121.1]));
     assert_eq!(
-        (hit["a"].as_str(), hit["b"].as_str()),
-        (Some("a"), Some("b"))
+        shared(121.0),
+        Some(vec![109.9, 98.9, 111.1, 121.1]),
+        "1 mm apart, the skirts print into each other"
     );
-    let overlap: Vec<f64> = hit["overlap"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| (v.as_f64().unwrap() * 1000.0).round() / 1000.0)
-        .collect();
-    assert_eq!(overlap, [105.0, 100.0, 110.0, 120.0]);
+    assert_eq!(shared(124.0), None, "4 mm apart, the skirts clear");
 }
 
 #[test]
