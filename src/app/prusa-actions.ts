@@ -47,7 +47,7 @@ export async function uploadToPrusaLink() {
   }
   let gcode = "";
   try {
-    gcode = await fx.loadGcode(result);
+    gcode = await fx.printableGcode(result);
   } catch {
     gcode = "";
   }

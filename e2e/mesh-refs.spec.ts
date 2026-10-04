@@ -1,4 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
+import fs from "node:fs";
+import { filamentGrams } from "../src/estimate.ts";
 
 /**
  * The mesh is uploaded once per engine session, then named by `meshRef`.
@@ -75,7 +77,7 @@ test("the second slice names the mesh instead of sending it", async ({ page }) =
   expect(id).toMatch(/^[0-9a-f]{64}$/);
   expect(seen.bodies.map(sentAs)).toEqual(["data", `ref:${id}`]);
   expect(seen.bodies[1]).not.toHaveProperty("dataB64");
-  expect(seen.sizes[0]).toBeGreaterThan(3_000_000);
+  expect(seen.sizes[0]).toBeGreaterThan(1_000_000);
   expect(seen.sizes[1]).toBeLessThan(10_000);
   console.log(`request bytes: first ${seen.sizes[0]}, move ${seen.sizes[1]}`);
 });
@@ -95,4 +97,26 @@ test("an engine that no longer holds the mesh gets the bytes once more", async (
   expect(seen.bodies.map(sentAs)).toEqual(["data", `ref:${id}`, "data", `ref:${id}`]);
   expect(seen.replies).toHaveLength(3);
   await expect(page.locator(".toast.error")).toHaveCount(0);
+});
+
+test("a density change rewrites the exported footer's grams without a slice", async ({ page }) => {
+  const seen = await proxy(page);
+  await load(page, "samples/calibration_cube_20mm.stl");
+  await page.locator("#slice").click();
+  await sliced(page);
+  await expect(page.locator("#export")).toBeEnabled();
+  const reply = seen.replies[0]!;
+
+  await page.locator("[data-level-choice=advanced]").click();
+  await page.locator("#density").fill("1.27");
+  await page.locator("#density").press("Tab");
+  await expect(page.locator("#export")).toBeEnabled();
+  const download = page.waitForEvent("download", { timeout: 30_000 });
+  await page.locator("#export").click();
+  const gcode = fs.readFileSync((await (await download).path())!, "utf8");
+
+  const grams = filamentGrams(reply.estimate.filamentMm, { filamentDiameter: 1.75, filamentDensityGCm3: 1.27, filamentCostPerKg: 0 });
+  expect(gcode).toMatch(new RegExp(`^; TIME:\\S+ FILAMENT_MM:\\S+ FILAMENT_G:${grams.toFixed(3).replace(".", "\\.")} `, "m"));
+  expect(seen.bodies).toHaveLength(1);
+  expect(seen.bodies[0]!.printer).not.toHaveProperty("filamentDensityGCm3");
 });

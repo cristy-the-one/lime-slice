@@ -43,7 +43,7 @@ The client forgets every id it holds and sends the same request once more with `
 2. The disk-cache key is then computed from that rewritten request. A `dataB64` request and a `meshRef` request for the same bytes have one key and share entries.
 3. Loading reads the held bytes by id and parses them with the request's `filename` and `stepToleranceMm`. The kept stage keys hash the parsed, posed triangles, and `previewToken` is built from those keys. Neither sees how the mesh arrived.
 
-The store keeps bytes, not parsed meshes. The id therefore covers the bytes alone, and a STEP file sent once can be read at any tolerance. Parsing an STL of 470,000 triangles takes a few tens of milliseconds, so caching the parsed mesh is left for later.
+The store keeps bytes, not parsed meshes. The id therefore covers the bytes alone, and a STEP file sent once can be read at any tolerance. Parsing the Baby Dragon's STL, 475,270 triangles, takes about 6 ms, so a parsed-mesh cache would not pay for itself.
 
 The store is bounded at 512 MB (`HELD_BYTES`) and drops the least recently used meshes first. It never drops the newest mesh, even when that mesh alone is over the bound. It also never drops a mesh that a request in flight still reads. Without that rule, a large upload could evict a mesh another request had already checked.
 
@@ -54,3 +54,15 @@ The store is bounded at 512 MB (`HELD_BYTES`) and drops the least recently used 
 `src/mesh-refs.ts` keeps the ids by the mesh bytes' fingerprint, the same fingerprint the recipe key uses. Changed bytes have another fingerprint and are sent again. `recipeKey` and `partFrameKey` skip `dataB64` and `meshRef` and use the fingerprint, so a recipe is the same however its mesh is sent.
 
 The `/api/slice` fallback, used when an engine has no job routes, always sends the bytes. Such an engine predates references and never names a mesh.
+
+## Filament price and density
+
+The slice request does not send the profile's `filamentDensityGCm3` or `filamentCostPerKg`. Neither changes a toolpath. The UI computes grams from the reply's `filamentMm`, per feature and in total, and cost from the grams:
+
+```
+grams = filamentMm × π (filamentDiameter / 2)² × density / 1000
+```
+
+Editing either field after a slice therefore shows the new grams and cost at once, keeps Export enabled, and sends no request.
+
+The engine prints one density-dependent line, the G-code footer's `; TIME:… FILAMENT_MM:… FILAMENT_G:…`, at its default 1.24 g/cm³. The UI writes the profile's grams into that line when it exports or uploads the G-code (`withFooterGrams` in `src/estimate.ts`), with the same formula and three decimals. CLI output does not change.

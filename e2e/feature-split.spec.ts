@@ -18,23 +18,26 @@ test("thin wall and gap fill use different legend colors, and the preview reads 
 });
 
 test("thin-wall time sits with inner walls; gap fill stays with infill", () => {
-  const groups = groupFeatures([
-    { kind: "outer", seconds: 10, filamentG: 0.2 },
-    { kind: "inner", seconds: 20, filamentG: 0.4 },
-    { kind: "wall", seconds: 4, filamentG: 0.05 },
-    { kind: "thin-wall", seconds: 15, filamentG: 0.15 },
-    { kind: "gap-fill", seconds: 8, filamentG: 0.1 },
-    { kind: "sparse", seconds: 7, filamentG: 0.08 },
-    { kind: "solid", seconds: 3, filamentG: 0.04 },
-    { kind: "skirt", seconds: 3, filamentG: 0.02 },
-  ]);
+  const groups = groupFeatures(
+    [
+      { kind: "outer", seconds: 10, filamentMm: 20 },
+      { kind: "inner", seconds: 20, filamentMm: 40 },
+      { kind: "wall", seconds: 4, filamentMm: 5 },
+      { kind: "thin-wall", seconds: 15, filamentMm: 15 },
+      { kind: "gap-fill", seconds: 8, filamentMm: 10 },
+      { kind: "sparse", seconds: 7, filamentMm: 8 },
+      { kind: "solid", seconds: 3, filamentMm: 4 },
+      { kind: "skirt", seconds: 3, filamentMm: 2 },
+    ],
+    { filamentDiameter: 1.75, filamentDensityGCm3: 1.24, filamentCostPerKg: 20 },
+  );
   const row = (label: string) => groups.find((group) => group.label === label);
   expect(row("Inner wall")?.seconds).toBeCloseTo(39);
-  expect(row("Inner wall")?.grams).toBeCloseTo(0.6);
+  expect(row("Inner wall")?.grams).toBeCloseTo(0.17895, 5);
   expect(row("Infill")?.seconds).toBeCloseTo(18);
-  expect(row("Infill")?.grams).toBeCloseTo(0.22);
+  expect(row("Infill")?.grams).toBeCloseTo(0.06562, 5);
   expect(row("Other")?.seconds).toBeCloseTo(3);
-  expect(row("Other")?.grams).toBeCloseTo(0.02);
+  expect(row("Other")?.grams).toBeCloseTo(0.005965, 6);
   expect(groups.some((group) => group.label === "Thin wall")).toBe(false);
 });
 

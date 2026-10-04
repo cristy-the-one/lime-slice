@@ -199,9 +199,15 @@ function objectTree(obj: PlateObject): boolean {
   return (obj.settings.supports ?? state.supports) && (obj.settings.supportStyle ?? state.supportStyle) === "tree";
 }
 
+/**
+ * The printer as a slice request sends it. Filament density and price are left
+ * out: they change no toolpath, and the UI turns the reply's filament length
+ * into grams and cost itself, so editing them never makes a slice stale.
+ */
 export function printer() {
+  const { filamentDensityGCm3: _density, filamentCostPerKg: _cost, ...profile } = state.profile;
   return {
-    ...state.profile,
+    ...profile,
     pressureAdvance: state.pressureAdvance,
     linearAdvance: state.linearAdvance,
   };
@@ -534,7 +540,7 @@ export async function runPareto() {
   markBusy(true);
   renderChrome();
   try {
-    const body = { ...payload(), dataB64: meshBase64() };
+    const body = { ...payload(), printer: { ...printer(), filamentDensityGCm3: state.profile.filamentDensityGCm3 }, dataB64: meshBase64() };
     let points: ParetoPoint[];
     if (isTauri()) {
       const { invoke } = await import("@tauri-apps/api/core");
