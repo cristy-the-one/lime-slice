@@ -97,7 +97,7 @@ export function mountMarkup(root: HTMLElement) {
             </div>
           </div>
         </div>
-        <div class="gcode-pane" id="gcodePane" role="tabpanel" aria-labelledby="tabGcode" hidden></div>
+        <div class="gcode-pane" id="gcodePane" role="tabpanel" aria-labelledby="tabGcode" tabindex="-1" hidden></div>
         <div class="stage-tools">
           <div class="spark-wrap">
             <div class="spark-label" id="sparkLabel">Layer time</div>

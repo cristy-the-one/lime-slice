@@ -11,7 +11,7 @@ import { applyPareto, cancelSlice, runPaCal, runPareto, runSlice } from "./slice
 import { adoptBytes, export3mf, exportGcode, fail, loadNamed, place, saveText, setPlaceCenter } from "./files";
 import { mountProjectFiles, saveCurrentProject } from "./project-io";
 import { pickProjectFile } from "../platform";
-import { applyPreset, closedGroups, currentPreset, onBlend, onSettings, renderChrome, touch } from "./settings";
+import { applyPreset, clearSettingsSearch, closedGroups, currentPreset, focusSettingsSearch, onBlend, onSettings, renderChrome, syncFindStuck, touch } from "./settings";
 import { noteEdit, redoUserEdit, undoUserEdit } from "./history";
 import {
   applyNamedProfile,
@@ -412,8 +412,29 @@ export function wireApp() {
       ev.preventDefault();
       return;
     }
-    if (ev.key === "Escape" && state.help) {
-      setHelp(false);
+    if (ev.key === "Escape") {
+      if (state.help) {
+        setHelp(false);
+        return;
+      }
+      const inFind = target?.id === "find";
+      const otherField = typing && !inFind;
+      if (!ev.defaultPrevented && !otherField && (inFind || state.query)) {
+        ev.preventDefault();
+        clearSettingsSearch();
+        return;
+      }
+    }
+    if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && ev.key.toLowerCase() === "f") {
+      if (target instanceof Node && document.querySelector("#gcodePane")?.contains(target)) return;
+      if (typing) return;
+      ev.preventDefault();
+      focusSettingsSearch();
+      return;
+    }
+    if (ev.key === "/" && !ev.ctrlKey && !ev.metaKey && !ev.altKey && !typing) {
+      ev.preventDefault();
+      focusSettingsSearch();
       return;
     }
     if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "o") {
@@ -455,6 +476,12 @@ export function wireApp() {
     if (ev.key === "Home") scrub(0);
     if (ev.key === "End") scrub(n - 1);
   });
+
+  document.addEventListener("scroll", (ev) => {
+    const scrolling = ev.target;
+    if (!(scrolling instanceof HTMLElement)) return;
+    if (scrolling.id === "left" || scrolling.id === "compactSheetBody") syncFindStuck();
+  }, true);
 
   document.querySelector(".app")!.addEventListener("dragover", (ev) => {
     ev.preventDefault();
