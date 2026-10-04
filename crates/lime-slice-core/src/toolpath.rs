@@ -208,16 +208,7 @@ pub(crate) fn plan_region_split(
                 emit_variable_feature(
                     &mut paths, contours, strategy, width, min_w, max_w, seam_hint,
                 );
-                emit_void_fill(
-                    &mut paths,
-                    contours,
-                    &[],
-                    false,
-                    strategy,
-                    line_width,
-                    f64::MAX,
-                    seam_hint,
-                );
+                emit_void_fill(&mut paths, contours, &[], strategy, line_width, seam_hint);
                 return (paths, ms_since(wall_started), 0.0);
             }
         }
@@ -320,10 +311,8 @@ pub(crate) fn plan_region_split(
                 &mut paths,
                 contours,
                 &infill_loops,
-                true,
                 strategy,
                 line_width,
-                f64::MAX,
                 seam_hint,
             );
             return (paths, wall_ms, ms_since(infill_started));
@@ -344,21 +333,18 @@ pub(crate) fn plan_region_split(
             }
         }
     }
-    let wide_limit = if solid_shell {
-        f64::MAX
+    // Every void in a wide sparse area is a cell the pattern left on purpose.
+    // Only an area too narrow for those cells can be one the pattern missed.
+    let cells = if solid_shell {
+        Vec::new()
     } else {
-        // Narrower than a sparse cell: the pattern never placed a bead here.
-        line_width * 6.0
+        let narrow_sample = crate::inner_prof::Sample::start();
+        let cells = wide_part(&infill_loops, line_width * 6.0);
+        narrow_sample.void_narrow();
+        cells
     };
     emit_void_fill(
-        &mut paths,
-        contours,
-        &infill_loops,
-        false,
-        strategy,
-        line_width,
-        wide_limit,
-        seam_hint,
+        &mut paths, contours, &cells, strategy, line_width, seam_hint,
     );
     (paths, wall_ms, ms_since(infill_started))
 }
@@ -367,17 +353,14 @@ fn ms_since(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
 }
 
-/// Fill contour area the walls did not cover and infill was not asked to cover.
+/// Fill contour area that no bead covers, outside `skip`.
 /// A flared wing pinches between perimeters; that leftover used to stay empty.
-#[allow(clippy::too_many_arguments)]
 fn emit_void_fill(
     paths: &mut Vec<Extrusion>,
     contours: &[Loop],
-    claimed: &[Loop],
-    subtract_claimed: bool,
+    skip: &[Loop],
     strategy: &ResolvedStrategy,
     line_width: f64,
-    wide_limit: f64,
     seam_hint: &mut [f64; 2],
 ) {
     let sample = crate::inner_prof::Sample::start();
@@ -390,11 +373,7 @@ fn emit_void_fill(
     } else {
         boolean_diff(contours, &cover)
     };
-    let voids = if subtract_claimed && !claimed.is_empty() {
-        boolean_diff(&missed, claimed)
-    } else {
-        missed
-    };
+    let voids = boolean_diff(&missed, skip);
     bool_sample.void_bool();
     let island_sample = crate::inner_prof::Sample::start();
     let regions = island_loops(&voids);
@@ -413,81 +392,45 @@ fn emit_void_fill(
     // A void is an outline with the holes inside it. A ring-shaped void read
     // loop by loop is two discs, and its fill runs straight across the hole.
     for region in regions {
-        if net_area(&region) < speck {
+        let area = net_area(&region);
+        if area < speck {
             continue;
         }
-        let owned = !claimed.is_empty()
-            && loop_bounds(&region).is_some_and(|(min, max)| {
-                in_solid(claimed, (min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5)
-            });
-        let limit = if owned { wide_limit } else { f64::MAX };
-        // A taper is one polygon: wide at the root, thin at the tip. Keep the
-        // thin peninsula and leave a genuinely wide sparse cell alone.
-        // `region` is already one island. Re-running that split only pays when
-        // erosion actually cuts the island into pieces.
-        let narrow_sample = crate::inner_prof::Sample::start();
-        let narrowed = narrow_parts(&region, limit);
-        narrow_sample.void_narrow();
-        // Erosion that removes nothing leaves this island intact, so the
-        // containment split that built it would only rebuild the same group.
-        let pieces = match narrowed {
-            None => vec![region],
-            Some(narrowed) => {
-                let piece_sample = crate::inner_prof::Sample::start();
-                let pieces = island_loops(&narrowed);
-                piece_sample.void_island();
-                pieces
-            }
+        let skin_sample = crate::inner_prof::Sample::start();
+        let skin = outside_area(&region, &core, &mut core_near) > 0.01;
+        skin_sample.void_skin();
+        if !skin && area < 0.25 {
+            continue;
+        }
+        // Under 0.1 mm the width probe reads nothing. Skin that thin is
+        // where two faces cross, and still needs its bead.
+        let width = match region_width(&region) {
+            Some(width) => width,
+            None if skin => 0.0,
+            None => continue,
         };
-        for piece_region in pieces {
-            let piece_area = net_area(&piece_region);
-            if piece_area < speck {
-                continue;
-            }
-            let skin_sample = crate::inner_prof::Sample::start();
-            let skin = outside_area(&piece_region, &core, &mut core_near) > 0.01;
-            skin_sample.void_skin();
-            if !skin && piece_area < 0.25 {
-                continue;
-            }
-            // Under 0.1 mm the width probe reads nothing. Skin that thin is
-            // where two faces cross, and still needs its bead.
-            let piece_width = match region_width(&piece_region) {
-                Some(width) => width,
-                None if skin => 0.0,
-                None => continue,
-            };
-            let kind = if skin {
-                PathKind::ThinWall
-            } else {
-                PathKind::GapFill
-            };
-            if piece_width >= min_w {
-                fill_void_piece(
-                    paths,
-                    &piece_region,
-                    piece_width,
-                    kind,
-                    strategy,
-                    line_width,
-                    seam_hint,
-                );
-            } else if skin {
-                // Skin thinner than the narrowest bead: a membrane whose faces
-                // meet, or a spike tip past its wall. Where no bead is within
-                // reach, dropping it opens a hole through the part, so print one
-                // bead down its spine, a little proud of the model. The hairline
-                // a wall leaves against a curved outline is within reach and stays.
-                let near = near_bead.get_or_insert_with(|| offset_loops(&cover, reach));
-                for bare in bare_stretches(&piece_region, near, reach) {
-                    let spine = match bare.as_slice() {
-                        [outline] => sliver_spine(outline, min_w),
-                        _ => ring_spine(&bare),
-                    };
-                    if let Some(spine) = spine {
-                        *seam_hint = *spine.last().unwrap();
-                        paths.push(extrusion(kind, strategy, spine, line_width));
-                    }
+        let kind = if skin {
+            PathKind::ThinWall
+        } else {
+            PathKind::GapFill
+        };
+        if width >= min_w {
+            fill_void_piece(paths, &region, width, kind, strategy, line_width, seam_hint);
+        } else if skin {
+            // Skin thinner than the narrowest bead: a membrane whose faces
+            // meet, or a spike tip past its wall. Where no bead is within
+            // reach, dropping it opens a hole through the part, so print one
+            // bead down its spine, a little proud of the model. The hairline
+            // a wall leaves against a curved outline is within reach and stays.
+            let near = near_bead.get_or_insert_with(|| offset_loops(&cover, reach));
+            for bare in bare_stretches(&region, near, reach) {
+                let spine = match bare.as_slice() {
+                    [outline] => sliver_spine(outline, min_w),
+                    _ => ring_spine(&bare),
+                };
+                if let Some(spine) = spine {
+                    *seam_hint = *spine.last().unwrap();
+                    paths.push(extrusion(kind, strategy, spine, line_width));
                 }
             }
         }
@@ -657,20 +600,18 @@ fn sliver_spine(ring: &[[f64; 2]], step: f64) -> Option<Vec<[f64; 2]>> {
     )
 }
 
-/// Parts of `region` narrower than `limit`. `None` means the whole island is
-/// already narrower than `limit` (or there is no limit), so the caller keeps
-/// the island as one piece. A wide blob grows back from its core and is
-/// dropped; a thin peninsula attached to that blob does not.
-fn narrow_parts(region: &[Loop], limit: f64) -> Option<Vec<Loop>> {
-    if !limit.is_finite() {
-        return None;
+/// The part of `region` at least `width` across. The eroded core grows back
+/// by sqrt(2) times the erosion, so a right-angle corner stays whole; a sharper
+/// corner is a taper tip and stays out.
+fn wide_part(region: &[Loop], width: f64) -> Vec<Loop> {
+    let core = offset_loops(region, -width * 0.5);
+    if core.is_empty() {
+        return Vec::new();
     }
-    let eroded = offset_loops(region, -limit * 0.5);
-    if eroded.is_empty() {
-        return None;
-    }
-    let grown = offset_loops(&eroded, limit * 0.5);
-    Some(boolean_diff(region, &grown))
+    boolean_intersect(
+        &offset_loops(&core, width * 0.5 * std::f64::consts::SQRT_2),
+        region,
+    )
 }
 
 /// Core loops whose boxes can meet a query box. A loop that misses every
