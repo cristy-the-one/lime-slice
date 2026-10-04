@@ -17,6 +17,7 @@ check("keyword matches when the label does not", settingMatches("lattice", "3D g
 check("placement keyword matches scale", settingMatches("placement", "scale %", SETTING_KEYWORDS.partScale));
 check("seam keyword matches the scarf control", settingMatches("seam", "Scarf seam", SETTING_KEYWORDS.scarf));
 check("rear finds the seam position", settingMatches("rear", "Seam position", SETTING_KEYWORDS.seam));
+check("top skin finds ironing", settingMatches("skin", "Ironing", SETTING_KEYWORDS.ironing));
 check("unknown word misses", !settingMatches("nozzleplate", "Layer height mm", SETTING_KEYWORDS.lh));
 
 if (failed) {

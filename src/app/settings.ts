@@ -23,6 +23,7 @@ import { loadProfileLibrary } from "./profile-library";
 import { SETTING_KEYWORDS, settingMatches } from "../ui/settings-search";
 import { displayId } from "../ui/settings-profiles";
 import { overrideSectionHtml } from "../ui/overrides-panel";
+import { IRONING_STORED_TOAST, ironingFlowPercent, readIroningFlowPercent, readIroningSpacing, readIroningSpeed } from "../ironing";
 import { loadSettingsLevel } from "../ui/settings-panel";
 
 export function apiBase() {
@@ -105,6 +106,8 @@ export function renderChrome() {
       ${check("vwidth", "Variable walls", state.variableWidth, "simple")}
       ${check("travelopt", "Travel and seam", state.travelOpt, "advanced")}
       ${select("seam", "Seam position", state.seam, [["blend", "Blend (strategy)"], ["nearest", "Nearest"], ["aligned", "Aligned"], ["rear", "Rear"]], "advanced")}
+      ${check("ironing", "Ironing", state.ironing, "advanced")}
+      ${state.ironing ? `${num("ironflow", "Ironing flow %", ironingFlowPercent(state.ironingFlow), 1, 100, 1, "advanced")}${num("ironspeed", "Ironing speed mm/s", state.ironingSpeed, 1, 200, 1, "advanced")}${num("ironspace", "Ironing spacing mm", state.ironingSpacing, 0.05, 1, 0.01, "advanced")}<div class="meta">Stored only. Top skins are not ironed until the slicer reads this. Defaults are 10% flow, 20 mm/s, and 0.1 mm spacing.</div>` : ""}
       ${select("scarf", "Scarf seam", state.scarfSeam, [["blend", "Blend default"], ["off", "Off"], ["outer", "Outer walls"], ["all", "Outer and inner"]], "advanced")}
       ${state.scarfSeam === "off" ? "" : `${num("scarflen", "Scarf length mm", state.scarfLength, 1, 30, 1, "expert")}${num("scarfsteps", "Scarf steps", state.scarfSteps, 2, 32, 1, "expert")}`}
     `)}
@@ -866,6 +869,13 @@ export function onSettings(ev: Event) {
   if (t.id === "gyroid3d") state.gyroid3d = t.value as typeof state.gyroid3d;
   if (t.id === "zhop") state.zHop = t.value as typeof state.zHop;
   if (t.id === "seam") state.seam = t.value as typeof state.seam;
+  const ironingTurnedOn = t.id === "ironing" && t.checked && !state.ironing;
+  const ironingTuned = t.id === "ironflow" || t.id === "ironspeed" || t.id === "ironspace";
+  if (t.id === "ironing") state.ironing = t.checked;
+  if (t.id === "ironflow") state.ironingFlow = readIroningFlowPercent(t.value);
+  if (t.id === "ironspeed") state.ironingSpeed = readIroningSpeed(t.value);
+  if (t.id === "ironspace") state.ironingSpacing = readIroningSpacing(t.value);
+  if (ironingTurnedOn || (ironingTuned && ev.type === "change" && state.ironing)) pushToast(IRONING_STORED_TOAST, "info");
   if (t.id === "scarf") state.scarfSeam = t.value as typeof state.scarfSeam;
   if (t.id === "sstyle") state.supportStyle = t.value as typeof state.supportStyle;
   if (t.id === "pafw") state.paFirmware = t.value as typeof state.paFirmware;
@@ -912,7 +922,7 @@ export function onSettings(ev: Event) {
     session.stepTimer = window.setTimeout(() => { void fx.refreshStepPreview(); }, 250);
     return;
   }
-  const structural = ["adaptive", "supports", "zhop", "scarf", "gyroid3d"].includes(t.id);
+  const structural = ["adaptive", "supports", "zhop", "scarf", "gyroid3d", "ironing"].includes(t.id);
   if (structural) renderChrome();
   markStale();
 }

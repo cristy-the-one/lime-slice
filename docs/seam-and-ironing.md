@@ -87,6 +87,8 @@ The seam picker landed as decided above. Ironing did not.
 
 **UI.** One select, Seam position, sits beside Scarf seam in Strength at the advanced level. Its options are Blend (strategy), Nearest, Aligned, and Rear. Blend is left out of the slice body. Presets, settings profiles, and project files store `seam`. A profile or project file written before `seam` existed opens at Blend, through `readPresetSettings` in `src/presets.ts`.
 
+Ironing is a checkbox under that select, off by default, with flow, speed, and spacing when it is on (10%, 20 mm/s, 0.1 mm). Those four keys are stored the same way, and a file from before them opens with ironing off. The slice body does not include `ironing`. Turning it on, changing a number, or slicing while it is on toasts that the choice is stored and not sliced.
+
 **Measured cost.** These times were measured through `serve --cache-dir` on this laptop, client side, with a speed blend, tree supports, the G-code parked, and a 450 mm bed. Each change sends `previewBase`. There were two runs with a fresh server each time.
 
 | Mesh | Cold | Seam change (rear, aligned, nearest) | Back to a stored seam |
@@ -96,8 +98,8 @@ The seam picker landed as decided above. Ironing did not.
 
 With `rear`, every closed outer loop starts within 1 mm of its back: 4825 of 4825 on the Baby Dragon and 1089 of 1089 on the rear cover. Under `blend`, the counts are 1604 of 4825 and 352 of 1089. Overhang control splits some outer walls into open pieces at the overhang's edge. Those pieces start at the split, as they do under `aligned`.
 
-**Ironing still needs** the following:
+**Ironing still needs** the engine. The UI control is in place and mocked (`sliceIroningFields` in `src/ironing.ts` returns nothing). `ironingRequest` is the body to send once the field exists: omitted when off, `{}` at the defaults, and only the keys that differ otherwise.
 
 - The request object `ironing` with optional `flow`, `speed`, and `spacing`. Unknown keys are refused, and an omitted object stays byte-identical.
-- A pass over the part's top skins, after the top skin is planned. Use 10% flow, 20 mm/s, 0.1 mm spacing, and an inset of half a line width from the outer wall.
-- A place in the toolpaths key, a UI control, and a golden run that shows the omitted request is unchanged.
+- A pass over the part's top skins, after the top skin is planned. Use 10% flow, 20 mm/s, 0.1 mm spacing, and an inset of half a line width from the outer wall. The inset is not a UI field.
+- A place in the toolpaths key, and a golden run that shows the omitted request is unchanged.
