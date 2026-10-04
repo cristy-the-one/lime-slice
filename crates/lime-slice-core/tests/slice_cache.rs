@@ -162,6 +162,8 @@ fn a_cached_reply_equals_the_fresh_one() {
     fresh.as_object_mut().unwrap().remove("fromCache");
     cached.as_object_mut().unwrap().remove("fromCache");
     assert_eq!(cached, fresh);
+    let named = fresh.as_object_mut().unwrap().remove("meshId");
+    assert!(named.is_some(), "a reply names its mesh; the file does not");
 
     let on_disk: Value =
         serde_json::from_slice(&std::fs::read(&json_entries(&dir)[0]).unwrap()).unwrap();

@@ -7,7 +7,7 @@ import { pushToast } from "../ui/toasts";
 import { markProjectDirty } from "../project-dirty";
 import { sliceBusyStatus, staleSliceCopy, cacheStatus, coverageWarning, inAirWarning } from "../slice-action";
 import { applySliceProgress, currentSliceProgress } from "../ui/slice-progress";
-import { groupFeatures } from "../estimate";
+import { filamentCost, filamentGrams, groupFeatures } from "../estimate";
 import { offBed } from "../mesh-place";
 import { boundsSize, overlapPairs, placeObject, selectedObject } from "../plate";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys, readPresets, diffPreset } from "../presets";
@@ -52,8 +52,10 @@ export function staleWarning() {
 export function settingsHash() {
   const shift = state.offset;
   const mesh = state.mesh ? `${state.mesh.name}:${state.mesh.bytes.byteLength}:${state.partScale}:${state.centered}:${shift.x.toFixed(3)},${shift.y.toFixed(3)},${shift.z.toFixed(3)}:${state.orient.join(",")}` : "";
-  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, selectedVolumeId: _sel, modifierTool: _mt, plate: _plate, ...rest } = state;
-  const hashed = { mesh, profile: state.profile, rest };
+  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, selectedVolumeId: _sel, modifierTool: _mt, plate: _plate, profile: _profile, ...rest } = state;
+  // Price and density only weigh the estimate, which the UI computes from the reply.
+  const { filamentDensityGCm3: _density, filamentCostPerKg: _cost, ...profile } = state.profile;
+  const hashed = { mesh, profile, rest };
   if (state.plate.objects.length > 1) {
     return JSON.stringify({
       ...hashed,
@@ -179,11 +181,7 @@ export function renderChrome() {
   sliceBtn.disabled = state.busy || !state.mesh;
   (document.querySelector("#cancel") as HTMLButtonElement).disabled = !state.busy;
   (document.querySelector("#export") as HTMLButtonElement).disabled = !result || isStale || state.busy;
-  document.querySelector("#timing")!.textContent = state.busy
-    ? busyText()
-    : result
-      ? `${(result.estimate?.seconds ?? 0) / 60 < 1 ? `${(result.estimate?.seconds ?? 0).toFixed(0)} s` : `${((result.estimate?.seconds ?? 0) / 60).toFixed(1)} min`} · ${(result.estimate?.filamentG ?? 0).toFixed(2)} g`
-      : "No slice yet";
+  document.querySelector("#timing")!.textContent = timingText();
   const warn = staleWarning();
   document.querySelector("#stage")!.classList.toggle("stale", warn);
   paintBanner(warn);
@@ -196,6 +194,27 @@ export function renderChrome() {
   paintSettingMarks(currentPreset());
   syncEmptyState(!!state.mesh);
   session.supportUi?.refresh();
+}
+
+function timingText() {
+  const result = state.result;
+  if (state.busy) return busyText();
+  if (!result) return "No slice yet";
+  const seconds = result.estimate?.seconds ?? 0;
+  return `${seconds / 60 < 1 ? `${seconds.toFixed(0)} s` : `${(seconds / 60).toFixed(1)} min`} · ${shownGrams(result).toFixed(2)} g`;
+}
+
+/** The slice's filament in grams at the profile's density. */
+export function shownGrams(result: SliceResponse) {
+  return filamentGrams(result.estimate?.filamentMm ?? 0, state.profile);
+}
+
+/** Show grams and cost at the profile's density and price, without asking the engine. */
+function paintEstimate() {
+  const est = document.querySelector("#estimate");
+  if (est) est.innerHTML = estimateHtml();
+  const timing = document.querySelector("#timing");
+  if (timing) timing.textContent = timingText();
 }
 
 export function markEngineDown(message: string) {
@@ -481,13 +500,14 @@ export function stageHtml(result: SliceResponse | null) {
 export function estimateHtml() {
   const est = state.result?.estimate;
   if (!est) return `<div class="meta">Slice to compare minutes and grams.</div>`;
-  const groups = groupFeatures(est.byFeature ?? []);
+  const groups = groupFeatures(est.byFeature ?? [], state.profile);
   const total = Math.max(0.001, est.seconds);
   const rows = groups.map((row) => `<tr><td>${row.label}</td><td>${row.seconds.toFixed(0)} s</td><td>${row.grams.toFixed(2)} g</td><td><div class="bar"><span style="width:${Math.min(100, (row.seconds / total) * 100)}%"></span></div></td></tr>`).join("");
   const meters = (est.filamentMm / 1000).toFixed(2);
-  const cost = ((est.filamentG / 1000) * state.profile.filamentCostPerKg).toFixed(2);
+  const grams = filamentGrams(est.filamentMm, state.profile);
+  const cost = filamentCost(grams, state.profile).toFixed(2);
   return `
-    <div class="meta"><b>${formatTime(est.seconds)}</b> · <b>${est.filamentG.toFixed(2)} g</b> · ${meters} m · €${cost}</div>
+    <div class="meta"><b>${formatTime(est.seconds)}</b> · <b id="estGrams">${grams.toFixed(2)} g</b> · ${meters} m · €<span id="estCost">${cost}</span></div>
     <div class="meta">Filament €${state.profile.filamentCostPerKg.toFixed(2)} / kg from the printer profile.</div>
     <table class="est">${rows}</table>
     <div class="chips">${chips()}</div>
@@ -868,6 +888,10 @@ export function onSettings(ev: Event) {
     state.profile.pressureAdvance = state.pressureAdvance;
     state.profile.linearAdvance = state.linearAdvance;
     saveProfile(state.profile);
+    if (t.id === "density" || t.id === "cost") {
+      paintEstimate();
+      return;
+    }
     if (!["bedx", "bedy", "bedz"].includes(t.id)) {
       markStale();
       return;

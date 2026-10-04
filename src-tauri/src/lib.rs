@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use lime_slice_core::{
     cancel_all, keep_support_bases, load_slice_mesh_tol, mesh_preview_tol, pareto_estimates,
     pressure_advance_from_request, slice_payload_watched, strategy_card, GcodeText, Job,
-    PaCalibRequest, Progress, SliceCache, SliceRequest, SliceSettings, Status, Watch,
+    PaCalibRequest, PayloadError, Progress, SliceCache, SliceRequest, SliceSettings, Status, Watch,
 };
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -100,7 +100,7 @@ fn slice_with_progress(
     watch: &Watch,
     every: Duration,
     emit: impl FnMut(Value) + Send,
-) -> Result<String, String> {
+) -> Result<String, PayloadError> {
     std::thread::scope(|scope| {
         scope.spawn(move || forward_progress(watch, every, emit));
         let _settle = FailOnPanic(watch);
@@ -124,9 +124,19 @@ async fn slice_model(app: AppHandle, payload: String) -> Result<String, String> 
         slice_with_progress(&payload, cache, job, &watch, PROGRESS_EVERY, |event| {
             let _ = app.emit("slice-progress", event);
         })
+        .map_err(command_error)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// The message, or for an unknown `meshRef` the JSON body `serve` answers
+/// with, so the UI reads its `code` the same way on both.
+fn command_error(err: PayloadError) -> String {
+    match err {
+        PayloadError::UnknownMesh(_) => err.json(),
+        PayloadError::Failed(message) => message,
+    }
 }
 
 #[tauri::command]
@@ -352,6 +362,24 @@ mod tests {
         assert_eq!(last["progress"], 1.0);
         assert_eq!(last["stage"], "emit");
         assert_eq!(last["message"], "Writing G-code");
+    }
+
+    #[test]
+    fn an_unknown_mesh_ref_fails_with_the_serve_code() {
+        let payload = json!({"filename": "a.stl", "meshRef": "0".repeat(64)}).to_string();
+        let err = slice_with_progress(
+            &payload,
+            None,
+            Job::default(),
+            &Watch::new(),
+            Duration::ZERO,
+            |_| {},
+        )
+        .map_err(command_error)
+        .unwrap_err();
+        let body: Value = serde_json::from_str(&err).unwrap();
+        assert_eq!(body["code"], "unknownMeshRef");
+        assert_eq!(body["meshRefs"], json!(["0".repeat(64)]));
     }
 
     #[test]

@@ -14,6 +14,7 @@ use serde::ser::{Serialize, SerializeMap, Serializer};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
+use crate::meshes::{self, Interned, PayloadError};
 use crate::slice::{warm_kept, PreviewLayer, WholePreview};
 use crate::{slice_request_watched, GcodeText, Job, SliceRequest, Watch};
 
@@ -251,12 +252,18 @@ impl Shared {
 /// `previewBase` is left out of the cache key, and a reply sent as a
 /// `previewPatch` is stored with its whole preview: a stored reply is always
 /// whole, which is right for any client.
+///
+/// Each mesh is held by id once it arrives, and the reply names it: `meshId`
+/// for the request's own mesh, `meshIds` by object id for a plate's. A later
+/// request may send `meshRef` with that id in place of `dataB64`, and gets the
+/// same reply from the same cache entries. A `meshRef` the engine does not
+/// hold fails with [`PayloadError::UnknownMesh`]. See `docs/mesh-refs.md`.
 pub fn slice_payload(
     payload: &str,
     cache: Option<&SliceCache>,
     job: Job,
     park: impl FnOnce(GcodeText) -> String,
-) -> Result<String, String> {
+) -> Result<String, PayloadError> {
     slice_payload_watched(payload, cache, job, &Watch::idle(), park)
 }
 
@@ -269,13 +276,14 @@ pub fn slice_payload_watched(
     job: Job,
     watch: &Watch,
     park: impl FnOnce(GcodeText) -> String,
-) -> Result<String, String> {
+) -> Result<String, PayloadError> {
     let mut value: Value = serde_json::from_str(payload).map_err(|e| e.to_string())?;
     let reslice = value
         .as_object_mut()
         .and_then(|o| o.remove("reslice"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let meshes = meshes::intern(&mut value)?;
     let keys = cache.and_then(|_| request_keys(&mut value));
     let cache = cache.zip(keys.as_ref());
     let req: SliceRequest = serde_json::from_value(value).map_err(|e| e.to_string())?;
@@ -305,7 +313,9 @@ pub fn slice_payload_watched(
             (reply, response.gcode_text)
         }
     };
-    let obj = reply.as_object().ok_or("slice reply is not an object")?;
+    let obj = reply
+        .as_object()
+        .ok_or_else(|| "slice reply is not an object".to_string())?;
     let gcode_token = (!req.include_gcode).then(|| {
         park(text.unwrap_or_else(|| {
             let gcode = obj.get("gcode").and_then(Value::as_str).unwrap_or_default();
@@ -316,6 +326,7 @@ pub fn slice_payload_watched(
         reply: obj,
         from_cache,
         gcode_token,
+        meshes: &meshes,
     })
     .map_err(|e| e.to_string())?;
     if let Some((cache, _)) = cache.filter(|_| from_cache) {
@@ -331,6 +342,7 @@ struct Wire<'a> {
     from_cache: bool,
     /// Present when the G-code was parked instead of sent.
     gcode_token: Option<String>,
+    meshes: &'a Interned,
 }
 
 impl Serialize for Wire<'_> {
@@ -344,6 +356,18 @@ impl Serialize for Wire<'_> {
         map.serialize_entry("fromCache", &self.from_cache)?;
         if let Some(token) = &self.gcode_token {
             map.serialize_entry("gcodeToken", token)?;
+        }
+        if let Some(id) = &self.meshes.mesh_id {
+            map.serialize_entry("meshId", id)?;
+        }
+        if !self.meshes.object_ids.is_empty() {
+            let ids: Map<String, Value> = self
+                .meshes
+                .object_ids
+                .iter()
+                .map(|(object, mesh)| (object.clone(), Value::String(mesh.clone())))
+                .collect();
+            map.serialize_entry("meshIds", &ids)?;
         }
         map.end()
     }

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
-use lime_slice_core::{slice_payload_watched, Job, Progress, Status, Watch};
+use lime_slice_core::{slice_payload_watched, Job, PayloadError, Progress, Status, Watch};
 use serde_json::json;
 use tiny_http::{Header, Response, StatusCode};
 
@@ -20,7 +20,7 @@ enum Outcome {
     Read,
     /// A newer job's body replaced this one.
     Released,
-    Failed(String),
+    Failed(PayloadError),
 }
 
 impl Outcome {
@@ -35,7 +35,7 @@ impl Outcome {
             }
             Outcome::Read => (410, err_json("result already read")),
             Outcome::Released => (410, err_json("result released")),
-            Outcome::Failed(err) => (400, err_json(err)),
+            Outcome::Failed(err) => (err.status(), err.json()),
         }
     }
 }
@@ -64,7 +64,7 @@ fn watch_of(id: &str) -> Option<Watch> {
 }
 
 /// Stores how job `id` ended. A body releases every other body still held.
-fn settle(id: &str, result: Result<String, String>) {
+fn settle(id: &str, result: Result<String, PayloadError>) {
     let mut jobs = jobs();
     let Some(index) = jobs.iter().position(|entry| entry.id == id) else {
         return;
@@ -164,7 +164,7 @@ fn start(body: &str) -> (u16, String) {
             running.finish(status);
         });
     if spawned.is_err() {
-        settle(&id, Err("could not start".into()));
+        settle(&id, Err(PayloadError::Failed("could not start".into())));
         watch.finish(Status::Error);
     }
     (202, json!({ "id": id }).to_string())

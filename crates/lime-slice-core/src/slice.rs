@@ -2,7 +2,6 @@ use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Instant;
 
-use base64::Engine;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -26,6 +25,7 @@ use crate::gcode::{emit_gcode, emit_later, Entry, GcodeText, LayerPaths, PlateLa
 use crate::index::ZIndex;
 use crate::load::load_slice_mesh_tol;
 use crate::mesh::Mesh;
+use crate::meshes::{self, PayloadError};
 use crate::modifiers::{zone_runs, Overrides, Print, Tweak};
 use crate::poly::{
     boolean_diff, boolean_intersect, boolean_union, clip_to_rect, loop_bounds, offset_loops,
@@ -52,8 +52,14 @@ pub struct SliceRequest {
     /// Empty when `objects` carries the meshes.
     #[serde(default)]
     pub filename: String,
+    /// The mesh bytes. Empty when `meshRef` names them or `objects` carries
+    /// the meshes.
     #[serde(default)]
     pub data_b64: String,
+    /// A mesh the engine already holds, by the `meshId` a reply named it
+    /// with, in place of `dataB64`. See `docs/mesh-refs.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh_ref: Option<String>,
     /// The plate, in print order. Omitted for one object with no overrides,
     /// which is then the request's own `filename`, `dataB64`, and `pose`.
     /// Never serialized: `wire::object_requests` serializes the request to
@@ -901,10 +907,23 @@ fn load_object(
     overrides: &Overrides,
     job: Job,
 ) -> Result<(Mesh, SliceSettings), String> {
-    let bytes = decode_b64(&req.data_b64)?;
+    let held;
+    let decoded;
+    let bytes: &[u8] = match (&req.mesh_ref, req.data_b64.is_empty()) {
+        (Some(id), true) => {
+            held = meshes::find(id)
+                .ok_or_else(|| PayloadError::UnknownMesh(vec![id.clone()]).to_string())?;
+            &held
+        }
+        (Some(_), false) => return Err("send dataB64 or meshRef, not both".into()),
+        (None, _) => {
+            decoded = meshes::decode_b64(&req.data_b64)?;
+            &decoded
+        }
+    };
     let mesh = load_slice_mesh_tol(
         &req.filename,
-        &bytes,
+        bytes,
         req.pose.is_some(),
         req.step_tolerance_mm,
     )?;
@@ -4684,17 +4703,6 @@ fn elapsed_ms(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
 }
 
-fn decode_b64(data: &str) -> Result<Vec<u8>, String> {
-    let trimmed = data.trim();
-    let payload = trimmed
-        .split_once(',')
-        .map(|(_, rest)| rest)
-        .unwrap_or(trimmed);
-    base64::engine::general_purpose::STANDARD
-        .decode(payload.trim())
-        .map_err(|e| format!("base64: {e}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5059,6 +5067,7 @@ mod tests {
     #[test]
     fn pose_is_applied_without_seating_the_canonical_mesh() {
         let stl = raised_cube_stl(5.0);
+        use base64::Engine;
         let data_b64 = base64::engine::general_purpose::STANDARD.encode(stl.as_bytes());
         let req: SliceRequest = serde_json::from_value(serde_json::json!({
             "filename": "raised-cube.stl",

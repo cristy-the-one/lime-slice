@@ -1,7 +1,8 @@
 import { fx } from "./fx";
 import { state, session, worker, cachedRecipes, type ParetoPoint, type SliceResponse } from "./state";
 import { fnv1aHex, partFrameKey, quietRefresh, recipeKey, type SliceAction, sliceAction, sliceBusyLabel, storesReply, FORCE_LABEL } from "../slice-action";
-import { currentPlacement, livePlate, meshBase64, meshBytes, fail, isTauri, objectFingerprint, objectPlacement, withMeshData } from "./files";
+import { currentPlacement, livePlate, meshBase64, meshBytes, fail, isTauri, objectBase64, objectFingerprint, objectPlacement, withMeshData } from "./files";
+import { MeshRefs, sendWithMeshes, unknownMeshRef, type MeshFields, type SentMesh } from "../mesh-refs";
 import { adoptPatch, previewBase } from "./viewer";
 import { syncSliceDock } from "../ui/shell";
 import { blend, renderChrome, settingsHash, markBusy, paintBanner, busyText, markEngineDown, apiBase, stale, apiToken, touch } from "./settings";
@@ -198,12 +199,40 @@ function objectTree(obj: PlateObject): boolean {
   return (obj.settings.supports ?? state.supports) && (obj.settings.supportStyle ?? state.supportStyle) === "tree";
 }
 
+/**
+ * The printer as a slice request sends it. Filament density and price are left
+ * out: they change no toolpath, and the UI turns the reply's filament length
+ * into grams and cost itself, so editing them never makes a slice stale.
+ */
 export function printer() {
+  const { filamentDensityGCm3: _density, filamentCostPerKg: _cost, ...profile } = state.profile;
   return {
-    ...state.profile,
+    ...profile,
     pressureAdvance: state.pressureAdvance,
     linearAdvance: state.linearAdvance,
   };
+}
+
+/** The meshes this engine session holds, so a slice names them instead of sending them. */
+const meshRefs = new MeshRefs();
+
+/** `req` with its meshes on: named by `meshRef` where `named` holds them, else sent as `dataB64`. */
+function attachMeshes(req: Record<string, unknown>, named: MeshRefs | null): { body: Record<string, unknown>; sent: SentMesh[] } {
+  const fields = (fingerprint: string, base64: () => string): MeshFields => (named ? named.fields(fingerprint, base64) : { dataB64: base64() });
+  const objects = req.objects as { id: string }[] | undefined;
+  if (!objects) {
+    const fingerprint = meshFingerprint();
+    return { body: { ...req, ...fields(fingerprint, meshBase64) }, sent: [{ fingerprint }] };
+  }
+  const live = new Map(livePlate().map((obj) => [obj.id, obj]));
+  const sent: SentMesh[] = [];
+  const listed = objects.map((o) => {
+    const obj = live.get(o.id)!;
+    const fingerprint = objectFingerprint(obj);
+    sent.push({ object: o.id, fingerprint });
+    return { ...o, ...fields(fingerprint, () => objectBase64(obj)) };
+  });
+  return { body: { ...req, objects: listed }, sent };
 }
 
 /** `force` plans again even when this recipe is already cached. */
@@ -267,9 +296,18 @@ export async function runSlice(force = false) {
       unlisten = await listen<DesktopProgress>("slice-progress", ({ payload: p }) => {
         noteJob(id, { id: "", stage: p.stage, done: p.done, total: p.total, fraction: p.progress, status: p.status });
       });
-      send = async (req) => parseInWorker(id, await invoke<string>("slice_model", { payload: JSON.stringify(withMeshData(req)) }));
+      const invokeSlice = async (body: Record<string, unknown>) => {
+        let text: string;
+        try {
+          text = await invoke<string>("slice_model", { payload: JSON.stringify(body) });
+        } catch (err) {
+          throw (typeof err === "string" && unknownMeshRef(err)) || err;
+        }
+        return parseInWorker(id, text);
+      };
+      send = (req) => sendWithMeshes(meshRefs, (named) => attachMeshes(req, named), invokeSlice);
     } else {
-      send = (req) => runHttpSlice(id, bytes, req, meshFingerprint());
+      send = (req) => sendWithMeshes(meshRefs, (named) => attachMeshes(req, named), (body) => runHttpSlice(id, bytes, req, body, meshFingerprint()));
     }
     if (id !== session.job) return;
     let body = await send(request);
@@ -354,11 +392,14 @@ function noteJob(uiId: number, snap: JobSnapshot) {
   if (timing) timing.textContent = busyText();
 }
 
-/** Jobs when `POST /api/jobs` exists. A 404 or a dead connection uses `POST /api/slice`. */
-async function runHttpSlice(uiId: number, bytes: ArrayBuffer, req: Record<string, unknown>, meshKey: string): Promise<SliceResponse> {
+/**
+ * Jobs when `POST /api/jobs` exists, sending `body`, which is `req` with its meshes on.
+ * A 404 or a dead connection posts `req` to `POST /api/slice` with every mesh's bytes.
+ */
+async function runHttpSlice(uiId: number, bytes: ArrayBuffer, req: Record<string, unknown>, body: Record<string, unknown>, meshKey: string): Promise<SliceResponse> {
   const base = apiBase();
   const token = apiToken();
-  const started = await beginSliceJob((text) => postJson(base, token, "/api/jobs", text), withMeshData(req));
+  const started = await beginSliceJob((text) => postJson(base, token, "/api/jobs", text), body);
   if ("unsupported" in started) return req.objects ? postSlice(uiId, new ArrayBuffer(0), withMeshData(req), "") : postSlice(uiId, bytes, req, meshKey);
   let stopped = false;
   activeHttp = { uiId, jobId: started.id, stop: () => { stopped = true; } };
@@ -378,7 +419,7 @@ async function runHttpSlice(uiId: number, bytes: ArrayBuffer, req: Record<string
     });
     if (stopped || uiId !== session.job || terminal.status === "cancelled") throw new Error("cancelled");
     const result = await getText(base, token, `/api/jobs/${encodeURIComponent(started.id)}/result`);
-    if (result.status !== 200) throw new Error(errorText(result.text, result.status));
+    if (result.status !== 200) throw unknownMeshRef(result.text) ?? new Error(errorText(result.text, result.status));
     return parseInWorker(uiId, result.text);
   } finally {
     if (activeHttp?.jobId === started.id) activeHttp = null;
@@ -499,7 +540,7 @@ export async function runPareto() {
   markBusy(true);
   renderChrome();
   try {
-    const body = { ...payload(), dataB64: meshBase64() };
+    const body = { ...payload(), printer: { ...printer(), filamentDensityGCm3: state.profile.filamentDensityGCm3 }, dataB64: meshBase64() };
     let points: ParetoPoint[];
     if (isTauri()) {
       const { invoke } = await import("@tauri-apps/api/core");

@@ -1102,7 +1102,7 @@ fn handle(mut request: tiny_http::Request, token: Option<&str>) {
                 park_gcode,
             ) {
                 Ok(reply) => (200, reply),
-                Err(err) => (400, err_json(&err)),
+                Err(err) => (err.status(), err.json()),
             }
         } else {
             (404, err_json("not found"))
@@ -1355,6 +1355,7 @@ fn request_for(
     SliceRequest {
         filename: input.name.clone(),
         data_b64: base64::engine::general_purpose::STANDARD.encode(&input.bytes),
+        mesh_ref: None,
         objects: None,
         print_order: None,
         layer_height: settings.layer_height,

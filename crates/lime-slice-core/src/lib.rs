@@ -10,6 +10,7 @@ mod index;
 mod inner_prof;
 mod load;
 mod mesh;
+mod meshes;
 mod modifiers;
 mod poly;
 mod progress;
@@ -34,6 +35,7 @@ pub use load::{
     load_mesh, load_slice_mesh, load_slice_mesh_tol, mesh_preview, mesh_preview_tol, MeshPreview,
 };
 pub use mesh::Mesh;
+pub use meshes::{mesh_id, PayloadError, HELD_BYTES};
 pub use progress::{fraction, Progress, Stage, Status, Watch};
 pub use slice::{
     contour_times, keep_support_bases, outline_tolerance_mm, pareto_estimates, slice_configured,

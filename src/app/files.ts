@@ -2,7 +2,9 @@ import { fx } from "./fx";
 import { state, session } from "./state";
 import { centeringShift, ID_MATRIX, parseStl, placeMesh, encodeStl, scaledCanonical, encode3mf, type PlacedPart, type Placement } from "../mesh-place";
 import { fnv1aHex } from "../slice-action";
-import { needsEngine, apiBase, apiToken, markEngineDown, isStepName, renderChrome, markStale, stale, card } from "./settings";
+import { needsEngine, apiBase, apiToken, markEngineDown, isStepName, renderChrome, markStale, stale, card, shownGrams } from "./settings";
+import { withFooterGrams } from "../estimate";
+import type { SliceResponse } from "./state";
 import { authHeaders, engineDownMessage } from "../ui/api-base";
 import { type SplitSync } from "../split-at";
 import { confirmDiscard, markProjectDirty } from "../project-dirty";
@@ -320,12 +322,18 @@ export async function fetchStoredGcode(token: string) {
   return res.text();
 }
 
+/** The G-code to print: the engine's, with the footer's grams at the profile's density. */
+export async function printableGcode(result: SliceResponse) {
+  const text = await fx.loadGcode(result);
+  return text && withFooterGrams(text, shownGrams(result));
+}
+
 export async function exportGcode() {
   const result = state.result;
   if (!result || stale()) return;
   let text: string;
   try {
-    text = await fx.loadGcode(result);
+    text = await printableGcode(result);
   } catch {
     return;
   }
@@ -335,7 +343,7 @@ export async function exportGcode() {
     return;
   }
   const minutes = Math.max(1, Math.round((result.estimate?.seconds ?? 0) / 60));
-  const grams = (result.estimate?.filamentG ?? 0).toFixed(0);
+  const grams = shownGrams(result).toFixed(0);
   const base = (state.mesh?.name ?? "part").replace(/\.(stl|3mf|step|stp)$/i, "");
   const blend = card();
   await saveText(text, `${base}_${blend}_${minutes}m_${grams}g.gcode`, "gcode");
@@ -375,4 +383,4 @@ export function fail(err: unknown) {
   state.busy = false;
   renderChrome();
 }
-Object.assign(fx, { loadNamed, adoptBytes, previewRemote, refreshStepPreview, place, applyPlace, nudgePlacement, setPlaceCenter, meshBytes, toBase64, isTauri, saveText, fetchStoredGcode, exportGcode, export3mf, download, fail });
+Object.assign(fx, { printableGcode, loadNamed, adoptBytes, previewRemote, refreshStepPreview, place, applyPlace, nudgePlacement, setPlaceCenter, meshBytes, toBase64, isTauri, saveText, fetchStoredGcode, exportGcode, export3mf, download, fail });
