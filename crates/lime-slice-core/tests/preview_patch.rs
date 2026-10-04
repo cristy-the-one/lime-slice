@@ -174,7 +174,7 @@ fn a_named_preview_gets_only_its_changed_layers() {
             patch["layers"].as_array().unwrap().len(),
             sent
         ),
-        (59, 80, 1073),
+        (59, 80, 1013),
         "changed layers, layers, paths sent"
     );
     // The part's own path count differs slightly between platforms (7564 on

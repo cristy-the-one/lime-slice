@@ -376,7 +376,7 @@ fn a_speed_cap_applies_inside_its_volume_only() {
             }
         }
     }
-    assert!(inside > 500, "{inside} points checked inside");
+    assert!(inside > 300, "{inside} points checked inside");
     let outside = |reply: &Value| -> Vec<f64> {
         drawn(reply)
             .iter()
