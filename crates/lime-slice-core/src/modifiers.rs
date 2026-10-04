@@ -7,6 +7,10 @@
 use crate::poly::Loop;
 use crate::strategy::{InfillPattern, ResolvedStrategy};
 
+/// Layer z values are sums of layer heights, so a layer at 2 mm can sit a
+/// hair below 2. A range or volume end holds the layers within this of it.
+const Z_SLACK: f64 = 1e-6;
+
 /// What a range or a volume changes. `None` keeps the strategy's value.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Tweak {
@@ -130,7 +134,7 @@ impl Overrides {
         self.ranges
             .iter()
             .rev()
-            .find(|r| r.z[0] <= z && z <= r.z[1])
+            .find(|r| r.z[0] - Z_SLACK <= z && z <= r.z[1] + Z_SLACK)
             .map(|r| r.tweak)
     }
 
@@ -163,7 +167,7 @@ impl Volume {
         let c = [self.center[0], self.center[1]];
         let h = [self.size[0] * 0.5, self.size[1] * 0.5, self.size[2] * 0.5];
         let dz = z - self.center[2];
-        if dz.abs() > h[2] {
+        if dz.abs() > h[2] + Z_SLACK {
             return None;
         }
         match self.shape {

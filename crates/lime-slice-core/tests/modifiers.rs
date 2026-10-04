@@ -234,6 +234,20 @@ fn a_range_with_four_walls_prints_four_walls_on_its_layers_only() {
         "{}",
         at_3["note"]
     );
+
+    // 0.2 mm layers land a hair off 2.0 and 4.0, and the ends still count.
+    let fine = slice(&request(
+        speed(),
+        json!({"layerHeight": 0.2, "heightRanges": [{"z": [2, 4], "walls": 4}]}),
+    ))
+    .unwrap();
+    let four: Vec<f64> = walls_by_layer(&fine)
+        .into_iter()
+        .filter(|l| l.1 == 4)
+        .map(|l| (l.0 * 1000.0).round() / 1000.0)
+        .collect();
+    assert_eq!(four.len(), 11, "{four:?}");
+    assert_eq!((four[0], four[10]), (2.0, 4.0));
 }
 
 #[test]
