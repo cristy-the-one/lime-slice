@@ -56,7 +56,7 @@ Scarfed seams, aligned seams on a sharp corner, and nearest seams are in the pla
 
 ### Ironing
 
-**Status.** Missing.
+**Status.** Shipped 2026-10-04. See [seam-and-ironing.md](seam-and-ironing.md#shipped-ironing-2026-10-04).
 
 **User value.** Medium. Expected on top surfaces. Not required to match a bench cube.
 
