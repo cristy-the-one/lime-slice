@@ -9,7 +9,7 @@ use std::time::Instant;
 use base64::Engine;
 use lime_slice_core::{
     keep_support_bases, slice_payload, slice_payload_watched, slice_request, slice_request_watched,
-    Job, SliceCache, SliceRequest, Stage, Status, Watch,
+    Job, PayloadError, SliceCache, SliceRequest, Stage, Status, Watch,
 };
 use serde_json::{json, Value};
 
@@ -139,7 +139,7 @@ fn a_cancelled_slice_is_not_cached_and_the_next_one_is_the_full_result() {
 
     let watch = Watch::cancel_on(Stage::Part);
     let err = slice_payload_watched(&payload, Some(&cache), Job::default(), &watch, |g| g.text());
-    assert_eq!(err, Err("cancelled".to_string()));
+    assert_eq!(err, Err(PayloadError::Failed("cancelled".into())));
     watch.finish(Status::Cancelled);
     cache.flush();
     let files: Vec<_> = fs::read_dir(&dir).map_or(Vec::new(), |dir| dir.collect());

@@ -17,7 +17,11 @@ use crate::support::{CoverageGap, InAir};
 pub struct ObjectSpec {
     pub id: String,
     pub filename: String,
+    /// The mesh bytes, unless `meshRef` names them.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub data_b64: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh_ref: Option<String>,
     /// Absent means the bytes are already in print space.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pose: Option<RigidPose>,
@@ -103,6 +107,7 @@ pub(crate) fn object_requests(req: &SliceRequest) -> Result<Vec<SliceRequest>, S
     for (field, sent) in [
         ("filename", !req.filename.is_empty()),
         ("dataB64", !req.data_b64.is_empty()),
+        ("meshRef", req.mesh_ref.is_some()),
         ("pose", req.pose.is_some()),
         ("supportEdits", !req.support_edits.is_empty()),
     ] {
@@ -157,6 +162,7 @@ pub(crate) fn object_requests(req: &SliceRequest) -> Result<Vec<SliceRequest>, S
                 .map_err(|e| format!("objects[{i}].settings: {e}"))?;
             one.filename = spec.filename.clone();
             one.data_b64 = spec.data_b64.clone();
+            one.mesh_ref = spec.mesh_ref.clone();
             one.pose = spec.pose;
             one.support_edits = spec.support_edits.clone();
             if let Some(tol) = spec.step_tolerance_mm {

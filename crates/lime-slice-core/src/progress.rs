@@ -102,10 +102,10 @@ impl Status {
     }
 
     /// How a slice that returned `result` ended.
-    pub fn of<T>(result: &Result<T, String>) -> Status {
+    pub fn of<T, E: ToString>(result: &Result<T, E>) -> Status {
         match result {
             Ok(_) => Status::Done,
-            Err(err) if err == "cancelled" => Status::Cancelled,
+            Err(err) if err.to_string() == "cancelled" => Status::Cancelled,
             Err(_) => Status::Error,
         }
     }
