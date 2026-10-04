@@ -258,7 +258,13 @@ impl Supports {
         // `joins`, lowest first.
         let mut extra = vec![0.0; first];
         let mut joins = self.kept_joins();
-        let mut walk = Walk::new(bands, contours, &self.opts, first as u32 + 1);
+        let mut walk = Walk::new(
+            bands,
+            contours,
+            &self.demanded,
+            &self.opts,
+            first as u32 + 1,
+        );
         for i in (0..=top).rev() {
             if i < lowest && walk.nodes.is_empty() {
                 break;

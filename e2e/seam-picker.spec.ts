@@ -28,6 +28,11 @@ async function loadCube(page: Page) {
   await expect(page.locator("#status")).toContainText("loaded");
 }
 
+/** The slice request is recorded before the reply rebuilds the settings panel. */
+async function sliceSettled(page: Page) {
+  await expect(page.locator("#slice")).toBeEnabled();
+}
+
 test("the seam position is left out at Blend, sent otherwise, and kept in a preset", async ({ page }) => {
   await quiet(page);
   const bodies = await captureSlices(page);
@@ -39,6 +44,7 @@ test("the seam position is left out at Blend, sent otherwise, and kept in a pres
   await expect(seam.locator("option")).toHaveText(["Blend (strategy)", "Nearest", "Aligned", "Rear"]);
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(1);
+  await sliceSettled(page);
   expect(bodies[0]).not.toHaveProperty("seam");
   expect(bodies[0]).toHaveProperty("scarfSeam", "blend");
 
@@ -46,6 +52,7 @@ test("the seam position is left out at Blend, sent otherwise, and kept in a pres
   await expect(page.locator("#presetDiff")).toContainText("Seam position: rear (default blend)");
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(2);
+  await sliceSettled(page);
   expect(bodies[1]).toHaveProperty("seam", "rear");
 
   await page.locator("#presetName").fill("Back seam");
@@ -54,6 +61,7 @@ test("the seam position is left out at Blend, sent otherwise, and kept in a pres
   await expect(page.locator("#seam")).toHaveValue("blend");
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(3);
+  await sliceSettled(page);
   expect(bodies[2]).not.toHaveProperty("seam");
 
   await page.locator("#presetPick").selectOption("Back seam");

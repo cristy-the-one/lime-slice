@@ -402,3 +402,52 @@ fn a_plate_object_carries_its_own_paint() {
         "objects[0]: supportPaint[0].r is 50 mm, it must be 0.2 to 40 mm"
     );
 }
+
+/// 25° from horizontal: the gentle slope of the rear cover's sloped overhang.
+const WEDGE_SLOPE_DEG: f64 = 25.0;
+
+/// A 30 mm deep wedge on a 10 mm post. Its underside rises at 25° from
+/// x = 10, z = 10 out to x = 40.
+fn wedge_b64() -> String {
+    let rise = 30.0 * WEDGE_SLOPE_DEG.to_radians().tan();
+    let xz = [
+        [0.0, 0.0],
+        [10.0, 0.0],
+        [10.0, 10.0],
+        [40.0, 10.0 + rise],
+        [40.0, 12.0 + rise],
+        [0.0, 12.0 + rise],
+    ];
+    b64(prism_stl(&xz, 30.0).as_bytes())
+}
+
+/// A speed slice of the wedge with tree supports, as on the rear cover.
+fn wedge(extra: Value) -> Value {
+    let mut req = request("wedge.stl", wedge_b64(), extra);
+    req["blend"] = json!({"mode": "single", "strategy": "speed"});
+    req
+}
+
+#[test]
+fn a_block_disk_inside_a_sloped_overhang_adds_no_tips() {
+    let plain = sliced(&wedge(json!({})));
+    let (before, before_mm) = (sites(&plain).len(), support_mm(&plain));
+    assert!(before > 0 && before_mm > 0.0);
+    let s = WEDGE_SLOPE_DEG.to_radians();
+    let p = [25.0, 15.0, 10.0 + 15.0 * s.tan()];
+    let grown: Vec<(f64, usize, f64)> = [1.0, 3.0, 8.0]
+        .into_iter()
+        .map(|r| {
+            let blocked = sliced(&wedge(json!({
+                "supportPaint": [disk("block", p, [s.sin(), 0.0, -s.cos()], r)]
+            })));
+            (r, sites(&blocked).len(), support_mm(&blocked))
+        })
+        .collect();
+    assert!(
+        grown
+            .iter()
+            .all(|&(_, n, mm)| n <= before && mm <= before_mm),
+        "unpainted {before} limbs, {before_mm:.0} mm; blocked (r, limbs, mm): {grown:.0?}"
+    );
+}
