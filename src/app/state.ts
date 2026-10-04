@@ -112,6 +112,10 @@ export interface SliceResponse {
   objects?: ReplyObject[];
   /** Objects whose boxes overlap on the bed. Present when the request sent `objects`. */
   collisions?: { a: string; b: string; overlap: [number, number, number, number] }[];
+  /** The engine's id for the request's own mesh, sent back as `meshRef`. */
+  meshId?: string;
+  /** Each object's mesh id, by object id. */
+  meshIds?: Record<string, string>;
   error?: string;
 }
 

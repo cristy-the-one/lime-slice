@@ -123,12 +123,12 @@ export function inAirWarning(air: { islands: number; overhangs: number } | undef
 }
 
 /** Fields the slicer strips or that the UI replaces before comparing recipes. */
-const SKIPPED = new Set(["reslice", "dataB64", "previewBase"]);
+const SKIPPED = new Set(["reslice", "dataB64", "meshRef", "previewBase"]);
 
 /**
- * Identity of one slice request. `meshFingerprint` stands in for `dataB64`:
- * the slicer hashes those bytes inside the request, and the same bytes must
- * keep the same key. `reslice` is omitted, matching `slice_payload`.
+ * Identity of one slice request. `meshFingerprint` stands in for `dataB64`
+ * or `meshRef`: the same bytes keep the same key however they are sent.
+ * `reslice` is omitted, matching `slice_payload`.
  */
 export function recipeKey(request: unknown, meshFingerprint: string): string {
   const body =
