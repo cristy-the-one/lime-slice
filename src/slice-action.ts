@@ -139,14 +139,17 @@ export function recipeKey(request: unknown, meshFingerprint: string): string {
 }
 
 /**
- * `recipeKey` without the pose's X/Y translation. The engine slices a posed part
- * in its own frame (`docs/part-frame.md`), so two requests with one part-frame
- * key differ at most by a bed move, which only re-emits the G-code.
+ * `recipeKey` without the X/Y translation of the pose, or of every plate
+ * object's pose. The engine slices each posed part in its own frame
+ * (`docs/part-frame.md`), so two requests with one part-frame key differ at
+ * most by bed moves of any of their objects, which only re-emit the G-code.
  */
 export function partFrameKey(request: Record<string, unknown>, meshFingerprint: string): string {
-  const pose = request.pose as { translation: number[] } | undefined;
-  if (!pose) return recipeKey(request, meshFingerprint);
-  return recipeKey({ ...request, pose: { ...pose, translation: [pose.translation[2]] } }, meshFingerprint);
+  type Posed = { pose?: { translation: number[] } };
+  const inFrame = <T extends Posed>(item: T): T =>
+    item.pose ? { ...item, pose: { ...item.pose, translation: [item.pose.translation[2]] } } : item;
+  const objects = request.objects as Posed[] | undefined;
+  return recipeKey({ ...inFrame(request as Posed), ...(objects ? { objects: objects.map(inFrame) } : {}) }, meshFingerprint);
 }
 
 /**

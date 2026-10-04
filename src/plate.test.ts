@@ -1,15 +1,14 @@
-import { encodeStl, ID_MATRIX, offBed } from "./mesh-place.ts";
+import { ID_MATRIX, offBed } from "./mesh-place.ts";
 import {
   addedCopy,
   arrangeBoxes,
   arrangedObjects,
   boxesOverlapXY,
-  concatenatedPositions,
-  identityPose,
   oneObjectPlate,
   overlapPairs,
   placeObject,
   plateFileIsVersion2,
+  plateListed,
   revivePlate,
   slicePlateFields,
   snapPlate,
@@ -115,16 +114,20 @@ const revived = revivePlate(snap);
 check("undo can restore the arranged plate", revived?.objects.length === 2 && revived.selectedId === arranged[1]!.id);
 check("the restored offset matches", near(revived!.objects[1]!.offset.x, arranged[1]!.offset.x));
 
-check("one object is not concatenated", concatenatedPositions(plate, bed, bed) === null);
-const fused = concatenatedPositions(copied!, bed, bed);
-check("two objects become one vertex buffer", fused !== null && fused.length === placeObject(left, bed, bed).positions.length * 2);
-const mockStl = encodeStl(fused!, "plate-mock.stl");
-check("the mock body is one STL of both meshes", new DataView(mockStl).getUint32(80, true) === fused!.length / 9);
-const pose = identityPose();
-check("the mock pose is identity", pose.translation.every((value) => value === 0) && pose.pivot.every((value) => value === 0) && pose.rotation.every((value, index) => value === ID_MATRIX[index]));
+check("one object without settings sends today's body", !plateListed(plate));
+check("two objects send objects", plateListed(copied!));
+check("one object with its own settings sends objects", plateListed({ objects: [{ ...left, settings: { supports: false } }], selectedId: "part" }));
 const shoved = object(20, "wide", false, { x: 250, y: 0, z: 0 });
 check("a box past the bed warns in X", offBed(placeObject(shoved, bed, bed).bounds, bed, bed, 250).includes("outside the bed in X"));
-check("the slice adapter adds no fields", Object.keys(slicePlateFields({ objects: arranged, selectedId: "part" })).length === 0);
+const prune = { id: 1, edit: { kind: "prune", sites: [{ xy: [1, 2], z: 3 }] } } as unknown as PlateObject["supportEdits"][number];
+const edited = arranged.map((obj, i) => (i === 0 ? { ...obj, supportEdits: [prune], settings: { supportAngle: 50 } } : obj));
+const sent = slicePlateFields(edited, (obj) => placeObject(obj, bed, bed).pose, { supports: true, supportStyle: "tree" }).objects;
+check("each object carries its id and its own pose", sent.map((o) => o.id).join() === "part,obj-1" && sent[0]!.pose.translation[0] !== sent[1]!.pose.translation[0], JSON.stringify(sent.map((o) => o.id)));
+check("a mesh named step is sent as its tessellated STL", slicePlateFields([{ ...left, fileName: "cover.step" }], (obj) => placeObject(obj, bed, bed).pose, { supports: false, supportStyle: "tree" }).objects[0]!.filename === "cover.stl");
+check("settings and edits go only with the object that has them", JSON.stringify(sent[0]!.settings) === '{"supportAngle":50}' && sent[0]!.supportEdits?.length === 1 && !("settings" in sent[1]!) && !("supportEdits" in sent[1]!));
+const gridded = slicePlateFields(edited, (obj) => placeObject(obj, bed, bed).pose, { supports: true, supportStyle: "grid" }).objects;
+check("edits stay home without tree supports", !("supportEdits" in gridded[0]!));
+check("no mesh bytes ride in the request yet", sent.every((o) => !("dataB64" in o)));
 check("one object with no settings stays version 1", !plateFileIsVersion2([{ settings: {} }]) && !plateFileIsVersion2([{}]));
 check("two objects are version 2", plateFileIsVersion2([{ settings: {} }, { settings: {} }]));
 check("one object with settings is version 2", plateFileIsVersion2([{ settings: { supports: true } }]));

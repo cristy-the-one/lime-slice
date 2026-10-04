@@ -394,34 +394,75 @@ fn request_keys(request: &mut Value) -> Option<Keys> {
     let fields = request.as_object_mut()?;
     let preview_base = fields.remove("previewBase");
     let pose = fields.remove("pose");
+    let objects = fields.remove("objects");
     let mut rest = Sha256::new();
     rest.update(engine.as_bytes());
     feed(&mut rest, request);
-    let key = |pose: Option<&Value>| {
+    let key = |in_frame: bool| {
         let mut hash = rest.clone();
-        if let Some(pose) = pose {
+        if let Some(pose) = &pose {
             hash.update(b"pose:");
-            feed(&mut hash, pose);
+            feed_pose(&mut hash, pose, in_frame);
+        }
+        if let Some(objects) = &objects {
+            hash.update(b"objects:");
+            feed_objects(&mut hash, objects, in_frame);
         }
         hex(&hash.finalize())
     };
-    let in_frame = pose.as_ref().map(|pose| {
-        let mut pose = pose.clone();
+    let keys = Keys {
+        disk: key(false),
+        frame: key(true),
+    };
+    let fields = request.as_object_mut()?;
+    fields.extend(pose.map(|p| ("pose".to_owned(), p)));
+    fields.extend(objects.map(|o| ("objects".to_owned(), o)));
+    fields.extend(preview_base.map(|b| ("previewBase".to_owned(), b)));
+    Some(keys)
+}
+
+/// `pose`, less its X/Y translation when `in_frame`.
+fn feed_pose(hash: &mut Sha256, pose: &Value, in_frame: bool) {
+    let mut pose = pose.clone();
+    if in_frame {
         if let Some(t) = pose.get_mut("translation").and_then(Value::as_array_mut) {
             if t.len() == 3 {
                 t.drain(..2);
             }
         }
-        pose
-    });
-    let keys = Keys {
-        disk: key(pose.as_ref()),
-        frame: key(in_frame.as_ref()),
+    }
+    feed(hash, &pose);
+}
+
+/// The plate's objects in order, as `feed` lays them out, each pose less its
+/// X/Y translation when `in_frame`. A move of any object keeps the frame key.
+fn feed_objects(hash: &mut Sha256, objects: &Value, in_frame: bool) {
+    let Some(objects) = objects.as_array() else {
+        return feed(hash, objects);
     };
-    let fields = request.as_object_mut()?;
-    fields.extend(pose.map(|p| ("pose".to_owned(), p)));
-    fields.extend(preview_base.map(|b| ("previewBase".to_owned(), b)));
-    Some(keys)
+    hash.update(b"[");
+    for object in objects {
+        match object.as_object() {
+            Some(map) => {
+                let mut keys: Vec<&String> = map.keys().collect();
+                keys.sort();
+                hash.update(b"{");
+                for k in keys {
+                    feed(hash, &Value::String(k.clone()));
+                    hash.update(b":");
+                    if k == "pose" {
+                        feed_pose(hash, &map[k], in_frame);
+                    } else {
+                        feed(hash, &map[k]);
+                    }
+                }
+                hash.update(b"}");
+            }
+            None => feed(hash, object),
+        }
+        hash.update(b",");
+    }
+    hash.update(b"]");
 }
 
 /// Object keys in sorted order, so the key does not depend on field order.
@@ -513,5 +554,34 @@ mod tests {
         cache.store_later("extra", Arc::new(json!({"a": 1})), None, None);
         cache.flush();
         assert_eq!(written(&cache), 1);
+    }
+
+    #[test]
+    fn a_move_of_any_object_keeps_the_frame_key() {
+        let plate = |bx: f64, b_supports: bool| {
+            let object = |id: &str, x: f64, supports: bool| {
+                json!({
+                    "id": id,
+                    "dataB64": "AAAA",
+                    "pose": {"rotation": [1, 0, 0, 0, 1, 0, 0, 0, 1], "pivot": [0, 0, 0], "translation": [x, 110, 2]},
+                    "settings": {"supports": supports},
+                })
+            };
+            let mut req = json!({
+                "layerHeight": 0.2,
+                "objects": [object("a", 60.0, true), object("b", bx, b_supports)],
+            });
+            let keys = request_keys(&mut req).unwrap();
+            assert!(
+                req["objects"][1]["pose"].is_object(),
+                "the request is left whole"
+            );
+            keys
+        };
+        let (at, moved, changed) = (plate(150.0, true), plate(165.0, true), plate(150.0, false));
+
+        assert_eq!(at.frame, moved.frame);
+        assert_ne!(at.disk, moved.disk);
+        assert_ne!(at.frame, changed.frame);
     }
 }

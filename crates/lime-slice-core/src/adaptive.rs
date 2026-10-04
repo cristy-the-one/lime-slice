@@ -36,6 +36,17 @@ struct Facet {
 const QUALITY_MM: f64 = 0.12;
 
 pub fn plan_bands(mesh: &Mesh, opts: &HeightOpts) -> Result<Vec<LayerBand>, String> {
+    plan_plate_bands(mesh, &[mesh], opts)
+}
+
+/// `mesh`'s bands on a plate of `plate`. Adaptive heights follow the slopes
+/// of every mesh on the plate, so each Z takes the thinnest layer any of them
+/// needs and every object's bands agree up to its own top.
+pub fn plan_plate_bands(
+    mesh: &Mesh,
+    plate: &[&Mesh],
+    opts: &HeightOpts,
+) -> Result<Vec<LayerBand>, String> {
     let (_, max) = mesh.bounds().ok_or("empty mesh")?;
     let top = max[2];
     let (min_h, max_h) = if opts.adaptive {
@@ -49,8 +60,11 @@ pub fn plan_bands(mesh: &Mesh, opts: &HeightOpts) -> Result<Vec<LayerBand>, Stri
     if top < min_h * 0.5 {
         return Err("mesh is flatter than one layer".into());
     }
-    let facets = if opts.adaptive {
-        facets_of(mesh, min_h, max_h)
+    let facets: Vec<Facet> = if opts.adaptive {
+        plate
+            .iter()
+            .flat_map(|m| facets_of(m, min_h, max_h))
+            .collect()
     } else {
         Vec::new()
     };

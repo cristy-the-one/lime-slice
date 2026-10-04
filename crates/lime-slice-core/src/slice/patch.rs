@@ -10,24 +10,35 @@ use std::sync::Arc;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::{preview_of, JoinedLayer, PreviewLayer, PreviewPath};
+use super::{preview_of, PreviewLayer, PreviewPath};
+use crate::gcode::PlateLayer;
 use crate::strategy::{BlendMode, PrinterProfile};
 use crate::support::edit::SupportEdit;
 
 /// The preview a reply left the client holding.
 pub(super) struct Shown {
     pub token: String,
-    /// What the preview was drawn under besides its layers, from `drawn`.
+    /// What the preview was drawn under besides its layers and blends, from
+    /// `drawn`.
     pub drawn: [u8; 32],
+    /// Each object's blend in its part frame, which weights its paths.
+    pub blends: Vec<BlendMode>,
     /// Each band's layer time, `None` for a band with nothing printed.
     pub seconds: Vec<Option<f64>>,
 }
 
-/// Names the preview of a kept slice: its key, the printer profile, and the
-/// edits. The same name always means the same preview.
-pub(super) fn token(key: &[u8; 32], profile: &PrinterProfile, edits: &[SupportEdit]) -> String {
+/// Names the preview of a kept plate: each object's key and edits, in plate
+/// order, and the printer profile. The same name always means the same
+/// preview.
+pub(super) fn token(
+    keys: &[[u8; 32]],
+    profile: &PrinterProfile,
+    edits: &[&[SupportEdit]],
+) -> String {
     let mut hash = Sha256::new();
-    hash.update(key);
+    for key in keys {
+        hash.update(key);
+    }
     hash.update(profile_digest(profile));
     hash.update(format!("{edits:?}"));
     hash.finalize()[..16]
@@ -40,16 +51,15 @@ fn profile_digest(profile: &PrinterProfile) -> [u8; 32] {
     Sha256::digest(format!("{profile:?}")).into()
 }
 
-/// What a preview reads besides its printed layers: the cut they share,
-/// the blend that weights each path, and the flow cap on its speeds. Two
-/// previews alike in these draw equal layers as equal paths.
-pub(super) fn drawn(contours: &[u8; 32], blend: &BlendMode, profile: &PrinterProfile) -> [u8; 32] {
+/// What a preview reads besides its printed layers and blends: each object's
+/// cut and the flow cap on its speeds. Two previews alike in these draw equal
+/// layers of objects with equal blends as equal paths.
+pub(super) fn drawn(contours: &[[u8; 32]], profile: &PrinterProfile) -> [u8; 32] {
     let mut hash = Sha256::new();
-    hash.update(contours);
-    hash.update(format!(
-        "{blend:?}|{:x}",
-        profile.max_volumetric_mm3_s.to_bits()
-    ));
+    for cut in contours {
+        hash.update(cut);
+    }
+    hash.update(format!("{:x}", profile.max_volumetric_mm3_s.to_bits()));
     hash.finalize().into()
 }
 
@@ -62,7 +72,11 @@ pub struct PreviewPatch {
     /// `PreviewLayer.index` of every layer of the patched preview, in order.
     /// A layer not in `changed` is the base's layer with the same index.
     pub layers: Vec<usize>,
+    /// The layers whose paths changed. A layer whose time alone changed is
+    /// not one of them: its time is in `seconds`.
     pub changed: Vec<PatchLayer>,
+    /// Every listed layer's estimator seconds, in the order of `layers`.
+    pub seconds: Vec<f64>,
     /// The preview this patch stands for, whole, for the disk cache.
     #[serde(skip)]
     pub(crate) whole: WholePreview,
@@ -72,20 +86,16 @@ pub struct PreviewPatch {
 /// the kept stages already hold.
 #[derive(Clone)]
 pub(crate) struct WholePreview {
-    pub(super) joined: Arc<Vec<JoinedLayer>>,
+    pub(super) layers: Arc<Vec<PlateLayer>>,
     pub(super) profile: PrinterProfile,
-    pub(super) blend: BlendMode,
+    pub(super) blends: Vec<BlendMode>,
     pub(super) layer_seconds: Vec<f64>,
 }
 
 impl WholePreview {
     pub(crate) fn layers(&self) -> Vec<PreviewLayer> {
-        preview_of(
-            self.joined.iter().map(|j| &j.layer),
-            &self.profile,
-            &self.blend,
-            &self.layer_seconds,
-        )
+        let blends: Vec<&BlendMode> = self.blends.iter().collect();
+        preview_of(&self.layers, &self.profile, &blends, &self.layer_seconds)
     }
 }
 
@@ -105,14 +115,6 @@ pub struct PatchLayer {
     /// `k >= 0` is path `k` of the base layer with this index, and
     /// `-1 - j` is `layer.paths[j]`.
     pub order: Vec<i32>,
-}
-
-/// `now` as a patch on a base layer with the same paths: only its layer
-/// time changed.
-pub(super) fn retimed(mut now: PreviewLayer) -> PatchLayer {
-    let order = (0..now.paths.len() as i32).collect();
-    now.paths = Vec::new();
-    PatchLayer { layer: now, order }
 }
 
 /// `now` as a patch on `base`: every path of `now` that `base` already has
@@ -144,6 +146,7 @@ fn path_hash(path: &PreviewPath) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     path.kind.hash(&mut h);
     path.strategy.hash(&mut h);
+    path.object.hash(&mut h);
     for p in &path.pts {
         p[0].to_bits().hash(&mut h);
         p[1].to_bits().hash(&mut h);

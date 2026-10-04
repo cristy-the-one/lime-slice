@@ -252,21 +252,31 @@ impl Supports {
         contours: &[Vec<Loop>],
         opts: &SupportOpts,
     ) -> Option<Self> {
-        Self::build_with(bands, contours, opts, &crate::progress::Watch::idle())
+        Self::build_with(
+            bands,
+            contours,
+            contours,
+            opts,
+            &crate::progress::Watch::idle(),
+        )
     }
 
+    /// Supports holding up `own`, the part's contours. `solid` is what the
+    /// trees avoid and may stand on: the part, and any other object moved
+    /// into the part's frame. Alone, it is `own`.
     pub(crate) fn build_with(
         bands: &[LayerBand],
-        contours: &[Vec<Loop>],
+        own: &[Vec<Loop>],
+        solid: &[Vec<Loop>],
         opts: &SupportOpts,
         watch: &crate::progress::Watch,
     ) -> Option<Self> {
-        let mut supports = Self::walk_with(bands, contours, opts, watch)?;
+        let mut supports = Self::walk_with(bands, own, solid, opts, watch)?;
         if !project(
             &mut supports.layers,
             1,
             bands,
-            contours,
+            solid,
             lean_of(opts),
             watch,
             opts.job,
@@ -294,18 +304,25 @@ impl Supports {
     /// The forest, with every layer as the walk leaves it, before `project`.
     #[cfg(test)]
     fn walk(bands: &[LayerBand], contours: &[Vec<Loop>], opts: &SupportOpts) -> Option<Self> {
-        Self::walk_with(bands, contours, opts, &crate::progress::Watch::idle())
+        Self::walk_with(
+            bands,
+            contours,
+            contours,
+            opts,
+            &crate::progress::Watch::idle(),
+        )
     }
 
     fn walk_with(
         bands: &[LayerBand],
-        contours: &[Vec<Loop>],
+        own: &[Vec<Loop>],
+        solid: &[Vec<Loop>],
         opts: &SupportOpts,
         watch: &crate::progress::Watch,
     ) -> Option<Self> {
-        let demand = Demand::new(bands, contours, opts, watch)?;
+        let demand = Demand::new(bands, own, solid, opts, watch)?;
         let (forest, disks) = if opts.style == SupportStyle::Tree {
-            grow(&demand, bands, contours, opts, watch)?
+            grow(&demand, bands, solid, opts, watch)?
         } else {
             (Forest::default(), vec![Vec::new(); bands.len()])
         };
@@ -331,6 +348,32 @@ impl Supports {
             regrown: Vec::new(),
             opts: *opts,
         })
+    }
+
+    /// Each layer's XY box of everything printed: trunk disks at their
+    /// radius, sparse columns, and interface. `None` on a layer with none.
+    pub(crate) fn reach(&self) -> Vec<Option<([f64; 2], [f64; 2])>> {
+        self.layers
+            .par_iter()
+            .map(|layer| {
+                let disks = layer.disks.iter().map(|d| {
+                    (
+                        [d.xy[0] - d.r, d.xy[1] - d.r],
+                        [d.xy[0] + d.r, d.xy[1] + d.r],
+                    )
+                });
+                [loop_bounds(&layer.sparse), loop_bounds(&layer.interface)]
+                    .into_iter()
+                    .flatten()
+                    .chain(disks)
+                    .reduce(|(amn, amx), (bmn, bmx)| {
+                        (
+                            [amn[0].min(bmn[0]), amn[1].min(bmn[1])],
+                            [amx[0].max(bmx[0]), amx[1].max(bmx[1])],
+                        )
+                    })
+            })
+            .collect()
     }
 
     /// The demanded interface the finished layers do not print, less the
@@ -528,12 +571,16 @@ impl Patch {
 }
 
 impl Demand {
+    /// Overhangs come from `own`. Interface keeps clear of `solid`, and a
+    /// column that reaches it stops there.
     fn new(
         bands: &[LayerBand],
-        contours: &[Vec<Loop>],
+        own: &[Vec<Loop>],
+        solid: &[Vec<Loop>],
         opts: &SupportOpts,
         watch: &crate::progress::Watch,
     ) -> Option<Self> {
+        let contours = solid;
         let n = bands.len();
         let mut demand = Demand {
             born: vec![Vec::new(); n],
@@ -550,7 +597,7 @@ impl Demand {
         // parallel. The pass below carries each overhang down to its contact.
         let overhangs: Vec<Vec<Loop>> = (0..n)
             .into_par_iter()
-            .map(|i| overhang_at(bands, contours, i, angle))
+            .map(|i| overhang_at(bands, own, i, angle))
             .collect();
         let gaps: Vec<Vec<Loop>> = contours
             .par_iter()

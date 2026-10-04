@@ -48,7 +48,7 @@ test("add, select, place, overlap, arrange, undo, and save a plate", async ({ pa
   expect(alone).not.toHaveProperty("offset");
   expect(String(alone.filename)).toContain("cube");
   expect(alone).toHaveProperty("pose");
-  const aloneTris = stlTriangles(alone);
+  const aloneTris = stlTriangles(alone.dataB64);
 
   const [single] = await Promise.all([
     page.waitForEvent("download"),
@@ -64,7 +64,6 @@ test("add, select, place, overlap, arrange, undo, and save a plate", async ({ pa
   await expect(page.locator("[data-selected='true']")).toContainText("2");
   await expect(page.locator("#plateOverlap")).toContainText("overlaps");
   await expect(page.locator("#plateDuplicate")).toBeVisible();
-  await expect(page.locator("#plateMock")).toContainText("concatenated STL");
   await expect(page.locator("#prepare")).toHaveAttribute("data-plate-objects", "2");
   await expect(page.locator("#prepare")).toHaveAttribute("data-plate-overlap", "1");
 
@@ -137,21 +136,17 @@ test("add, select, place, overlap, arrange, undo, and save a plate", async ({ pa
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(beforeSlice + 1);
   const sent = bodies.at(-1)!;
-  expect(sent).not.toHaveProperty("objects");
-  expect(sent).not.toHaveProperty("printOrder");
-  expect(sent).not.toHaveProperty("offset");
-  expect(sent.filename).toBe("plate-mock.stl");
-  expect(sent.pose).toEqual({
-    rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1],
-    pivot: [0, 0, 0],
-    translation: [0, 0, 0],
-  });
-  expect(stlTriangles(sent)).toBe(aloneTris * 2);
-  await expect(page.locator("#toasts").getByRole("status").filter({ hasText: "The engine sliced one mesh." })).toBeVisible();
+  type Sent = { id: string; filename: string; dataB64: string; pose: { translation: number[] } };
+  const objects = sent.objects as Sent[];
+  for (const key of ["filename", "dataB64", "pose", "printOrder", "offset"]) expect(sent).not.toHaveProperty(key);
+  expect(objects.map((o) => o.id)).toEqual(["part", expect.stringMatching(/^obj-/)]);
+  expect(objects.map((o) => o.filename)).toEqual(["calibration_cube_20mm.stl", "calibration_cube_20mm.stl"]);
+  expect(objects.map((o) => stlTriangles(o.dataB64))).toEqual([aloneTris, aloneTris]);
+  expect(objects[0]!.pose.translation[0]).not.toBeCloseTo(objects[1]!.pose.translation[0], 1);
 });
 
-function stlTriangles(body: Record<string, unknown>): number {
-  const raw = Buffer.from(String(body.dataB64), "base64");
+function stlTriangles(dataB64: unknown): number {
+  const raw = Buffer.from(String(dataB64), "base64");
   return raw.readUInt32LE(80);
 }
 

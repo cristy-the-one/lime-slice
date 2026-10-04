@@ -289,3 +289,240 @@ A mock adapter stores `SupportPaint` on the object and draws the disks on the pr
 13. Yes. The concatenated-STL mock is acceptable for the first UI pull request if it is labeled as a mock. Byte-identity is claimed only for the real one-object request.
 
 **Engine order across these notes.** The seam picker comes first, then height ranges and modifier volumes, then ironing, then support paint, then multi-object all-at-once, then sequential.
+
+## Engine design: all-at-once plates (2026-10-04)
+
+This section is the contract and the design for the first engine step: `objects` with all-at-once print order. It replaces the proposal above where the two differ. Sequential order and support paint are not in this step.
+
+The goal is the part-frame rule from `docs/part-frame.md`, per object. Moving one object in X/Y re-runs only the plate join and the G-code emit. Changing one object re-plans only that object.
+
+### Contract: request
+
+```json
+{
+  "layerHeight": 0.2, "printer": {}, "supports": true, "supportStyle": "tree",
+  "printOrder": "all-at-once",
+  "objects": [
+    { "id": "a", "filename": "dragon.stl", "dataB64": "...",
+      "pose": { "rotation": [1, 0, 0, 0, 1, 0, 0, 0, 1], "pivot": [0, 0, 0], "translation": [80, 110, 0] } },
+    { "id": "b", "filename": "bracket.step", "dataB64": "...", "stepToleranceMm": 0.05,
+      "pose": { "rotation": [1, 0, 0, 0, 1, 0, 0, 0, 1], "pivot": [0, 0, 0], "translation": [150, 110, 0] },
+      "settings": { "supports": false, "blend": { "mode": "single", "strategy": "toughness" } },
+      "supportEdits": [] }
+  ]
+}
+```
+
+- `objects` is omitted for a plate with one object and no overrides. The body is then today's body.
+- When `objects` is present, the top-level `filename`, `dataB64`, `pose`, and `supportEdits` must be absent. The error names the field.
+- An empty `objects` is refused. Duplicate ids are refused. An id is 1 to 64 characters from `A-Z a-z 0-9 . _ -`, because it is written into a G-code comment.
+- `printOrder` is omitted or `"all-at-once"`. `"sequential"` is refused with `printOrder "sequential" is not supported yet`.
+- `stepToleranceMm` is a load parameter of each object, not a setting.
+- A missing `pose` means the object's bytes are already in print space, with offset `[0, 0]`.
+- `compare` is refused with `objects`. `baseline` is skipped for a plate.
+
+`objects[i].settings` is checked key by key against one table in `crates/lime-slice-core/src/slice/wire.rs`. Each key has one of three scopes.
+
+| Scope | Keys | Error |
+| --- | --- | --- |
+| Object | `blend`, `supports`, `supportAngle`, `supportStyle`, `tipDiameter`, `trunkDiameter`, `branchAngle`, `supportHeightMult`, `scarfSeam`, `scarfLength`, `scarfSteps`, `scarfStartHeight`, `scarfStartFlow`, `gyroid3d`, `infillCombine`, `variableWidth` | none |
+| Plate | `layerHeight`, `adaptive`, `adaptiveMin`, `adaptiveMax`, `lineWidth`, `printer`, `simplify`, `simplifyErrorMm`, `zHop`, `zHopHeight`, `zHopMinTravel`, `combing`, `arcFit`, `travelOpt`, and every other request key | `objects[1].settings.layerHeight is a plate setting` |
+| Not yet | `infill`, `walls`, `speed` | `objects[1].settings.walls is not supported yet` |
+
+Any other key is refused with `objects[1].settings.foo is not a setting`. `variableWidth` is per object because it changes only that object's toolpaths, and the UI plate already stores it.
+
+An object's settings are the request's settings with that object's keys written over them. The engine then resolves them with the same `SliceSettings::from_request` as a single slice, so clamps and defaults have one source.
+
+### Contract: response
+
+A request that omits `objects` gets today's reply, with one change for every reply (see the preview patch contract below).
+
+A request with `objects`, including a one-element `objects`, gets the objects shape:
+
+```json
+{
+  "mesh": { "triangles": 52100, "outlineToleranceMm": 0.025, "min": [61, 92, 0], "max": [171, 128, 40] },
+  "objects": [
+    { "id": "a", "min": [95, 92, 0], "max": [125, 128, 40], "triangles": 50000, "offset": [-15, 0],
+      "coverage": [], "supportEdits": [], "reused": ["contours", "toolpaths", "order", "comb", "supports", "supportPaths"] },
+    { "id": "b", "min": [100, 100, 0], "max": [120, 120, 20], "triangles": 2100, "offset": [40, 0],
+      "coverage": [], "inAir": { "islands": 0, "overhangs": 1 }, "reused": [] }
+  ],
+  "collisions": [{ "a": "a", "b": "b", "overlap": [140, 100, 141, 120] }]
+}
+```
+
+- Each `objects[i]` holds that object's `min`, `max`, `coverage`, `inAir`, `skeleton`, and `supportEdits` outcomes, in its part frame. Draw them at `offset`. `reused` names the stages the object took from memory.
+- The top-level `offset`, `coverage`, `inAir`, `skeleton`, and `supportEdits` are absent. The top-level `mesh.min` and `mesh.max` are the union of every object's box in bed coordinates. `mesh.triangles` is the sum.
+- `collisions` lists every pair whose XY boxes in bed coordinates overlap with positive area, in plate order. Each box is the object's box grown to hold everything it prints on its first layer, skirt and supports, to the outer edge of each bead, so two objects whose skirts would print into each other are reported. `overlap` is `[minX, minY, maxX, maxY]` of the grown boxes.
+- Preview paths gain an `object` column, an index into `objects`. It is omitted when every path is object 0, so a one-object reply keeps its bytes.
+- A preview path is in its object's part frame. A travel from one object to another is not drawn.
+- G-code is in bed coordinates. `;OBJECT:<id>` starts each object's part tour when the plate has two or more objects. A one-element `objects` writes the same bytes as the omitted form.
+
+### Contract: preview patch
+
+`previewPatch` gains `seconds`, every listed layer's estimator time, aligned with `previewPatch.layers`. A layer whose paths did not change is no longer in `changed`, even when its time did. This applies to single-object replies too, and the old "retimed" patch layers are gone.
+
+The reason is the move rule. On a plate, the travel between two objects changes length when either moves, so the time of almost every layer changes. With times in their own column, a move is a patch with 0 changed layers, new `objects[i].offset` values, and new seconds.
+
+### Design: a plate is N alone-plans and one join
+
+Each object is planned exactly as a single object is planned today, in its own part frame: cut, toolpaths, tour, comb, supports, edits, and `assemble`. The result is that object's joined layers, the same `Vec<JoinedLayer>` a single slice makes. A request without `objects` is a plate of one object. So the one-object byte-identity is structural and not a special case.
+
+The plate join only interleaves what the objects already planned. It does not order or copy paths.
+
+```rust
+// gcode.rs: what emit takes
+pub(crate) struct PlateLayer { index: usize, z: f64, height: f64, note: String, runs: Vec<Run> }
+pub(crate) struct Run {
+    object: u16,
+    layer: PrintLayer,          // that object's joined layer, shared, with its arc fit
+    paths: Range<usize>,        // its head (skirt and supports) or its part
+    entry: Entry,
+    label: Option<Arc<str>>,    // `;OBJECT:<id>` before a part run on a plate of 2+
+}
+pub(crate) enum Entry { AsPlanned, Cross { z_hop: f64 } }
+```
+
+On each plate layer, the join writes the head run of every object in plate order, then the part run of every object in plate order. This is the order the spec asks for: supports first, then each object's part tour.
+
+A run's entry is `AsPlanned` when the run before it, on this layer or the last printed layer, belongs to the same object. In that case the nozzle stands exactly where the object alone would have left it, so the planned lead-in, retract, and hop hold. Otherwise the entry is `Cross`: a straight travel with a retract. It hops when z-hop is on for the target path, the target is not a scarf ramp, and the travel in bed coordinates is at least `zHopMinTravel`. A cross travel never needs to route around a standing object, because nothing on the plate is taller than the layer being printed.
+
+The join is a pure function of the joined layers and the offsets. It runs on every request and costs `Arc` clones per layer.
+
+### Design: tour start
+
+Each object's part tour starts where that object's own tour on the layer below ended. Layer 0 starts where that object's own skirt ends. This is today's rule for one part. The first object's tour therefore starts where today's single part tour starts.
+
+The spec also says each later object starts where the previous one ended. The nozzle does: the cross travel goes from the previous object's last point to this object's first path. The choice of that first path, the seams, and the order inside the object do not read the previous object's end. Reading it would put `offsetA - offsetB` into B's tour, so every move would re-order, re-comb, and re-fit the arcs of every later object on every layer. That is the cost this work exists to remove.
+
+### Design: emit with one offset per object
+
+`emit_gcode` takes `&[PlateLayer]` and `Frames`, the offset of each object. The single `offset` argument is gone.
+
+- `Writer` and `Carry` gain `frame`, the object whose part frame the X/Y position is in. `Writer::bed` adds that object's offset, and still skips an offset of exactly zero, so a `-0.0` keeps its bytes.
+- A `Cross` entry converts the position into the new frame: `x + o_old - o_new`. Same frame means no arithmetic at all.
+- Inside an object, lengths, arcs, E, and time are computed in its part frame. They are bit-identical across moves. Only the cross travel changes with a move.
+- A run replays the arcs cached on its own `PrintLayer`, starting at its first path. A move never re-fits an arc.
+- The layer header, first-layer speed, and fan tiers read the plate layer's index.
+
+### Design: shared layer Z and the adaptive rule
+
+With a fixed layer height, every object plans its own bands as today. Bands start at Z 0 and step by the layer height, so two objects share every band up to the shorter one's top. Only that top band, clipped to the object's own top, differs. The plate merges the objects' bands by `(z, height)` into plate layers. A shorter object's clipped top becomes its own plate layer.
+
+With adaptive layers, the rule is union demand. Every object plans bands to its own top from the facets of every object on the plate, so at each Z the thinnest layer any object needs wins. The bands then agree bit for bit up to each object's top and merge as above.
+
+Each object's contours key hashes its own band list. Under a fixed height that list depends only on the object. Under adaptive layers, a change to any object's mesh can change every object's bands, and those objects are cut again. That is the price of one shared Z.
+
+### Design: the skirt
+
+Today's skirt is not a ring around the plate. `skirt_paths` draws one or two loops one line width out from each island of the first layer's part and supports. It hugs the part like a brim. It stays per object, inside that object's head run, in its part frame. A move never recomputes it.
+
+Two objects closer than the skirt reach, two line widths and half a bead at most, print skirt loops into each other. `collisions` reports them, because it compares each object's first-layer reach.
+
+### Design: supports across objects
+
+The support code reads `contours` in two roles today: the overhangs that need support, and the solid that trees avoid and land on. `Footing { own, solid }` splits them. Demand reads `own`. The walk, the landing test, `project`, coverage, and edits read `solid`. Alone, `solid` is `own`, so supports are unchanged bit for bit.
+
+Other objects enter only `solid`. Trees of A avoid B and may land on B, as they land on A. B never makes demand for A.
+
+Which objects are solid for A is decided by a closure that starts from A's supports grown alone:
+
+```
+S = {}
+P = supports of A grown with solid = A's contours        // the alone growth, keyed as today
+loop:
+    new = { B not in S : on some layer i, box(B, i) moved into A's frame and grown by the margin
+                         meets box(P, i) }
+    if new is empty: stop
+    S = S + new
+    P = supports of A grown with solid = A ∪ (every B in S, moved into A's frame)
+```
+
+- `box(P, i)` is the XY box of A's supports on layer i: disks with their radius, sparse loops, and interface loops. `box(B, i)` is the box of B's contours on its layer at the same Z.
+- The margin is A's support XY gap plus 1 mm.
+- `S` only grows, so the loop ends after at most N - 1 regrowths.
+- The grown plan is keyed by the alone grow key and the sorted list of (obstacle contours key, shift into A's frame). With `S` empty the key is the alone key.
+
+A cold slice and an incremental one run the same closure on the same inputs, and the cache returns a plan only on key equality, so both write the same G-code. The rule starts from the alone growth, never from the plan held in memory, because a plan that bent around B would hide the bend after B moves away.
+
+The move rule follows. A move of B changes A's supports only when B's old or new footprint, grown by the margin, meets A's alone supports. Otherwise `S` is unchanged and A's supports are taken from memory.
+
+`supportEdits` are per object, in that object's part frame. They replay on whichever plan the closure settled on. A move that keeps `S` reuses the edited plan. A move that changes `S` replays the edits on the new plan, and prunes whose site moved report `stale` as today.
+
+Two objects' trees never print in the same place. Objects are planned in plate order, and the trees an earlier object grew, after its edits, are candidates for a later object's `S` just as parts are. They enter its solid as everything they print: columns, interface, and each trunk disk as far as its bead reaches, grown by one more bead. A disk thinner than a bead prints as one circle on its edge, and a squeezed disk of the later object may stand as close as `MIN_DISK_R` to the solid, so the extra bead keeps the two beads apart. The later object's trees then route around the earlier ones, and may stand on them, as on a part. Such a neighbour is keyed by the earlier object's whole key and edits and its shift, so it is cached like a part and joins `S` only while it comes near. A far move leaves `S`, and so every stage, as it was. The order is plate order, so the same plate always yields the same trees.
+
+The closure uses the supports before edits, so a regrow edit that reaches toward a far object does not add it to `S`.
+
+### Design: kept stages
+
+Every stage key is computed per object from that object's mesh in its part frame, its band list, its resolved settings, and its blend in its part frame. No key contains an offset, except the grown supports through a non-empty `S`, and a `byRegion` blend through `atMm - offset` as today.
+
+| Stage | Scope | Key |
+| --- | --- | --- |
+| Contours | object | mesh, nozzle, layer settings, band list |
+| Toolpaths, order, comb | object | as today, from the object's settings and blend |
+| Supports grown, painted | object | as today, plus the obstacle list when `S` is not empty |
+| Supports edited | object | the edit prefix on that entry, as today |
+| Joined layers | object | `joins_like` against that object's last join, as today |
+| Plate join | plate | not kept, rebuilt per request |
+| Preview token | plate | each object's whole key and obstacle list, in plate order, the profile, and each object's edits |
+
+`kept::fit(n)` sizes each shelf to `max(2, n + 1)` entries and the support shelf to `max(3, 2n + 1)`, so a change to B never evicts A. The single `last` join slot becomes one slot per object, found by contours key, plus one shown preview for the plate.
+
+### Design: preview
+
+- `preview_layer` walks the runs of a plate layer. A `Cross` run resets the travel cursor, so no travel between objects is drawn. Each path carries its object index, which is part of path equality and the patch path hash.
+- A plate layer is unchanged when it has the same runs: the same object, the same shared `PrintLayer`, the same range, and the same entry kind. A move changes none of these.
+- `drawn` hashes every object's contours key and part-frame blend and the flow cap. The client patches only a preview drawn from the same cuts.
+
+The client builds the preview geometry per (object, 32-layer chunk) and draws each object's chunks under a group at that object's offset. A move then updates group matrices and layer times, and uploads no buffer.
+
+### Design: disk cache
+
+The frame key strips `translation[0]` and `translation[1]` from the top-level `pose` and from every `objects[i].pose`. `partFrameKey` in `src/slice-action.ts` does the same. A request whose frame key equals the previous request's and whose disk key differs is a pure move of any number of objects, and is not written to disk. A disk hit still warms the kept stages, which on a plate plans every object.
+
+### What a change recomputes
+
+| Change | Recomputed | Taken from memory |
+| --- | --- | --- |
+| X/Y move of any object | the support closure's box tests; supports of an object whose `S` changed; plate join; emit; preview diff (0 changed layers) | every object's cut, toolpaths, tour, comb, joined layers, arcs, and supports whose `S` did not change |
+| B's blend, scarf, gyroid, infill combine, variable width | B from its first stage whose key changed; plate join; emit | everything of A |
+| B's support settings or edits | B's supports and joined layers; plate join; emit | everything of A, and B's part stages |
+| B's mesh, rotation, or Z | B in full; A's supports if B is in A's `S`; under adaptive layers, any object whose bands changed | everything else |
+| A plate setting | every object from the first stage that reads it | the stages before it |
+
+Progress is one bar for the plate, with the same stage labels. Each object is weighed by its share of the plate's triangles. The cut runs for every object first, so each object fills its share of the cut budget in turn. Then each object fills its share of the part, travel, supports, and assembly budgets together, before the next object starts. Load and emit are the plate's.
+
+### Measured cost
+
+Measured through `serve` on this laptop, with the app's settings: speed blend, tree supports, G-code parked, a 450 mm bed, and the meshes sent as the app sends them. Times are the whole request, client side. Each move and change sends `previewBase`.
+
+| Plate | Cold | Move of one object | B's support angle | B's blend | One object alone: cold, move |
+| --- | --- | --- | --- | --- | --- |
+| Baby Dragon and the dragon sample | 5.41 s | 0.29 to 0.30 s, 0 changed layers | 1.08 to 1.12 s | 1.52 s | 4.26 s, 0.20 to 0.22 s |
+| Rear cover and boots | 5.52 s | 0.22 to 0.26 s, 0 changed layers | 0.48 to 0.50 s | 1.59 s | 5.10 s, 0.11 to 0.12 s |
+| The dragon sample twice | 1.22 s | 0.07 to 0.12 s, 0 changed layers | 0.76 to 1.04 s | 1.39 s | 1.11 s, 0.04 to 0.06 s |
+
+A move reuses every stage of both objects. A support angle change on B plans only B's supports, and a blend change plans B from its cut; A reuses every stage in both. Two copies of one mesh with one setting share every stage, so the second dragon costs nothing on the cold slice. The rest of a plate move over a single move is the second mesh's decode and hash, which every request pays.
+
+### Rejected alternatives
+
+- Concatenate the objects into one mesh, as the UI mock does. Every change and move re-slices everything, and overlapping solids fuse.
+- Move paths into bed coordinates at the join and keep one offset in emit. Every move then copies every point and re-fits every arc, which is the expensive part of emit.
+- Grow one support plan for the whole plate in bed coordinates. Any move regrows every tree.
+- Decide obstacles from a fixed envelope, the part's box grown by its height times the branch lean. For a tall part it covers most of the bed, so far moves still regrow.
+- Print each object as a block, its supports then its part, before the next object. It is as cheap as the chosen order but departs from the spec's supports-first order.
+- Keep layer times inside patch layers. A move would then change almost every layer.
+
+### Tests
+
+`crates/lime-slice-core/tests/plate.rs` checks, with literal values:
+
+- a one-element `objects` writes the same G-code bytes as the omitted form;
+- on two objects, layer 0 carries `;OBJECT:a` then `;OBJECT:b`, and `;LAYER:1` comes after both;
+- moving B reuses every stage of A and of B, returns a patch with 0 changed layers, and writes the same G-code as a cold slice at the new position;
+- changing B's settings re-plans only B;
+- A's supports avoid B, and a far move of B keeps A's supports;
+- support edits survive moves;
+- refused keys and orders return errors that name the field.

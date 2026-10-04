@@ -9,7 +9,7 @@ import { mountConnection } from "./ui/connection";
 import { mountPlatform } from "./platform";
 import { mountToasts } from "./ui/toasts";
 import { session, state } from "./app/state";
-import { activeSection, draw, fitNarrow, mountViews, paintGizmoReadout, prepare, previewCenter, resize, setHelp, setStage, setView, view3d } from "./app/viewer";
+import { activeSection, draw, fitNarrow, mountViews, paintGizmoReadout, prepare, previewCenter, resize, selectedObjectIndex, setHelp, setStage, setView, view3d } from "./app/viewer";
 import { probe, renderChrome } from "./app/settings";
 import { runSlice, treeSupports } from "./app/slice-run";
 import { mountSupportEdits } from "./ui/support-edit-ui";
@@ -46,8 +46,10 @@ session.supportUi = mountSupportEdits(view3d, {
     const high = layers[state.layer];
     const spec = activeSection();
     const center = previewCenter();
+    // On a plate the editor works on the selected object, in that object's part frame.
+    const objects = state.result?.objects;
     return {
-      result: state.result,
+      result: objects ? (objects[selectedObjectIndex()] ?? null) : state.result,
       sent: session.slicedEdits,
       edits: state.supportEdits,
       busy: state.busy,

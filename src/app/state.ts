@@ -108,7 +108,24 @@ export interface SliceResponse {
    * in the reply frame; draw them at this offset. Absent on today's engine.
    */
   offset?: [number, number];
+  /** Present when the request sent `objects`: each object's results in its own part frame, drawn at its `offset`. */
+  objects?: ReplyObject[];
+  /** Objects whose boxes overlap on the bed. Present when the request sent `objects`. */
+  collisions?: { a: string; b: string; overlap: [number, number, number, number] }[];
   error?: string;
+}
+
+export interface ReplyObject {
+  id: string;
+  min: number[];
+  max: number[];
+  triangles: number;
+  offset: [number, number];
+  coverage: CoverageGap[];
+  inAir?: { islands: number; overhangs: number };
+  skeleton?: SupportSkeleton;
+  supportEdits?: EditOutcome[];
+  reused: string[];
 }
 
 export interface ParetoPoint {
@@ -237,6 +254,8 @@ export const session = {
   slicedEdits: [] as readonly EditEntry[],
   /** Pose and reply offset the buffers on screen were built from. */
   slicedBed: null as SlicedBed | null,
+  /** For a plate: each object's sent pose and reply offset, by id. */
+  slicedObjects: null as { id: string; bed: SlicedBed }[] | null,
   supportUi: null as {
     refresh(): void;
     landed(ok: boolean): void;

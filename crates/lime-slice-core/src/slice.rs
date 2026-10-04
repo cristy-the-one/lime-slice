@@ -1,22 +1,25 @@
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Instant;
 
 use base64::Engine;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 mod kept;
 mod patch;
+mod plate;
 mod wire;
 
 pub use kept::keep_support_bases;
 pub use patch::PreviewPatch;
 pub(crate) use patch::WholePreview;
-pub use wire::{EditOutcomeView, SiteSpec, SupportEditSpec};
+pub use wire::{Collision, EditOutcomeView, ObjectSpec, ObjectView, SiteSpec, SupportEditSpec};
 
-use crate::adaptive::{plan_bands, HeightOpts, LayerBand};
+use crate::adaptive::{plan_bands, plan_plate_bands, HeightOpts, LayerBand};
 use crate::cancel::Job;
-use crate::gcode::{emit_gcode, emit_later, GcodeText, LayerPaths, PrintLayer};
+use crate::gcode::{emit_gcode, emit_later, Entry, GcodeText, LayerPaths, PlateLayer, PrintLayer};
 use crate::index::ZIndex;
 use crate::load::load_slice_mesh_tol;
 use crate::mesh::Mesh;
@@ -41,8 +44,20 @@ use crate::toolpath::{
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SliceRequest {
+    /// Empty when `objects` carries the meshes.
+    #[serde(default)]
     pub filename: String,
+    #[serde(default)]
     pub data_b64: String,
+    /// The plate, in print order. Omitted for one object with no overrides,
+    /// which is then the request's own `filename`, `dataB64`, and `pose`.
+    /// Never serialized: `wire::object_requests` serializes the request to
+    /// resolve each object's settings over the plate's.
+    #[serde(default, skip_serializing)]
+    pub objects: Option<Vec<ObjectSpec>>,
+    /// `all-at-once` when omitted. `sequential` is refused for now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub print_order: Option<String>,
     #[serde(default = "default_layer")]
     pub layer_height: f64,
     #[serde(default = "default_width")]
@@ -588,6 +603,14 @@ pub struct SliceResponse {
     /// empty when this is set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview_patch: Option<PreviewPatch>,
+    /// One per requested object, in plate order. Empty when the request
+    /// omitted `objects`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub objects: Vec<ObjectView>,
+    /// Pairs of objects whose boxes overlap on the bed. Only when the
+    /// request sent `objects`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collisions: Option<Vec<Collision>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -760,6 +783,9 @@ pub struct PreviewPath {
     /// Vertical bead size. `0` means the layer height.
     #[serde(default)]
     pub bead_height: f64,
+    /// Index of the plate object it prints, in that object's part frame.
+    #[serde(default)]
+    pub object: u16,
 }
 
 /// Milliseconds to contour every layer with the Z index, then with a full triangle scan.
@@ -791,6 +817,54 @@ pub fn slice_request_watched(
     if watch.stopped(job) {
         return Err("cancelled".into());
     }
+    let profile = req.printer.clone().unwrap_or_default();
+    let listed = req.objects.is_some();
+    let requests = if listed {
+        wire::object_requests(req)?
+    } else {
+        Vec::new()
+    };
+    let loaded: Vec<(Mesh, SliceSettings)> = if listed {
+        requests
+            .iter()
+            .enumerate()
+            .map(|(i, one)| load_object(one, job).map_err(|e| format!("objects[{i}]: {e}")))
+            .collect::<Result<_, _>>()?
+    } else {
+        vec![load_object(req, job)?]
+    };
+    watch.tick();
+    let ids = req.objects.iter().flatten().map(|o| o.id.as_str());
+    let sources: Vec<Source<'_>> = if listed {
+        loaded
+            .iter()
+            .zip(&requests)
+            .zip(ids)
+            .map(|(((mesh, settings), one), id)| Source {
+                id: Some(id),
+                mesh,
+                blend: &one.blend,
+                settings: settings.clone(),
+            })
+            .collect()
+    } else {
+        vec![Source {
+            id: None,
+            mesh: &loaded[0].0,
+            blend: &req.blend,
+            settings: loaded[0].1.clone(),
+        }]
+    };
+    let settings = SliceSettings {
+        job,
+        ..SliceSettings::from_request(req)
+    };
+    slice_plate(&sources, &req.blend, &profile, &settings, &mut None, watch)
+}
+
+/// One object's mesh as the request sends it, and its settings with its
+/// edits and pose.
+fn load_object(req: &SliceRequest, job: Job) -> Result<(Mesh, SliceSettings), String> {
     let bytes = decode_b64(&req.data_b64)?;
     let mesh = load_slice_mesh_tol(
         &req.filename,
@@ -798,14 +872,22 @@ pub fn slice_request_watched(
         req.pose.is_some(),
         req.step_tolerance_mm,
     )?;
-    watch.tick();
-    let profile = req.printer.clone().unwrap_or_default();
     let settings = SliceSettings {
         job,
         support_edits: wire::parse_support_edits(&req.support_edits)?,
         ..SliceSettings::from_request(req)
     };
-    slice_sharing(&mesh, &req.blend, &profile, &settings, &mut None, watch)
+    Ok((mesh, settings))
+}
+
+/// An object of a plate before its part frame is taken: the mesh as loaded,
+/// and its settings with `pose` still set.
+struct Source<'a> {
+    /// `None` when the request omitted `objects`.
+    id: Option<&'a str>,
+    mesh: &'a Mesh,
+    blend: &'a BlendMode,
+    settings: SliceSettings,
 }
 
 /// Plan `req` into the kept stages and note its preview as the one the
@@ -878,11 +960,21 @@ fn slice_sharing(
     cut: &mut Option<Arc<Contours>>,
     watch: &Watch,
 ) -> Result<SliceResponse, String> {
-    let layer_height = settings.layer_height.clamp(0.05, 0.6);
-    let line_width = settings.line_width.clamp(0.15, 1.2);
+    let source = Source {
+        id: None,
+        mesh,
+        blend,
+        settings: settings.clone(),
+    };
+    slice_plate(&[source], blend, profile, settings, cut, watch)
+}
+
+/// The settings the stages read: lengths clamped, and every later feature
+/// off under `classic`.
+fn resolved(settings: &SliceSettings) -> SliceSettings {
     let mut settings = SliceSettings {
-        layer_height,
-        line_width,
+        layer_height: settings.layer_height.clamp(0.05, 0.6),
+        line_width: settings.line_width.clamp(0.15, 1.2),
         ..settings.clone()
     };
     if settings.classic {
@@ -899,6 +991,41 @@ fn slice_sharing(
         settings.support_style = SupportStyle::Grid;
         settings.support_height_mult = 1.0;
     }
+    settings
+}
+
+/// One object of a plate in its part frame, ready to plan.
+struct PlateObject<'a> {
+    id: Option<&'a str>,
+    mesh: Cow<'a, Mesh>,
+    /// Where the part frame sits on the bed. `None` when it has no pose.
+    offset: Option<[f64; 2]>,
+    /// Its blend, moved into its part frame.
+    blend: BlendMode,
+    /// Its settings, with no pose left.
+    settings: SliceSettings,
+}
+
+impl PlateObject<'_> {
+    fn to_bed(&self) -> [f64; 2] {
+        self.offset.unwrap_or([0.0, 0.0])
+    }
+}
+
+/// Plan each object alone in its own part frame, join the plans layer by
+/// layer, write the G-code with each object's offset, and build the reply.
+/// A request without `objects` is a plate of one, sliced exactly as before.
+fn slice_plate(
+    sources: &[Source<'_>],
+    requested: &BlendMode,
+    profile: &PrinterProfile,
+    settings: &SliceSettings,
+    cut: &mut Option<Arc<Contours>>,
+    watch: &Watch,
+) -> Result<SliceResponse, String> {
+    let listed = sources.iter().any(|s| s.id.is_some());
+    let settings = resolved(settings);
+    let (layer_height, line_width) = (settings.layer_height, settings.line_width);
     let features = settings.feature_note();
     let mut profile = profile.clone();
     if settings.classic {
@@ -906,26 +1033,163 @@ fn slice_sharing(
         profile.pressure_advance = 0.0;
         profile.linear_advance = 0.0;
     }
+    let centre = [profile.bed_x * 0.5, profile.bed_y * 0.5];
     // Every stage runs in the part frame with no pose left in the settings,
-    // so no kept key sees where the part sits on the bed. Emit adds `offset`.
-    let (posed, offset) = match settings.pose.take() {
-        Some(pose) => {
-            let (frame, offset) = pose.part_frame([profile.bed_x * 0.5, profile.bed_y * 0.5]);
-            (Some(frame.apply(mesh)), Some(offset))
-        }
-        None => (None, None),
-    };
-    let mesh = posed.as_ref().unwrap_or(mesh);
-    let to_bed = offset.unwrap_or([0.0, 0.0]);
-    let requested = blend;
-    let blend = &requested.in_part_frame(to_bed);
-    let (min, max) = mesh.bounds().ok_or("empty mesh")?;
+    // so no kept key sees where a part sits on the bed. Emit adds the offset.
+    let objects: Vec<PlateObject<'_>> = sources
+        .iter()
+        .map(|s| {
+            let mut settings = resolved(&s.settings);
+            let (mesh, offset) = match settings.pose.take() {
+                Some(pose) => {
+                    let (frame, offset) = pose.part_frame(centre);
+                    (Cow::Owned(frame.apply(s.mesh)), Some(offset))
+                }
+                None => (Cow::Borrowed(s.mesh), None),
+            };
+            let blend = s.blend.in_part_frame(offset.unwrap_or([0.0, 0.0]));
+            PlateObject {
+                id: s.id,
+                mesh,
+                offset,
+                blend,
+                settings,
+            }
+        })
+        .collect();
+    let bounds: Vec<([f64; 3], [f64; 3])> = objects
+        .iter()
+        .map(|o| o.mesh.bounds().ok_or("empty mesh"))
+        .collect::<Result<_, _>>()?;
     let started = Instant::now();
-    let planned_full = plan_sharing(mesh, blend, &settings, profile.nozzle_diameter, cut, watch)?;
-    let planned = planned_full.layers;
-    let kept_plan = planned_full.kept.as_ref();
-    let coverage = planned_full.coverage;
-    let in_air = planned_full.in_air;
+    if kept::on() {
+        kept::fit(objects.len());
+    }
+    let meshes: Vec<&Mesh> = objects.iter().map(|o| o.mesh.as_ref()).collect();
+    // One bar for the plate: each object fills its share of the per-object
+    // stages, weighed by its triangles.
+    let watches: Vec<Watch> = if objects.len() == 1 {
+        vec![watch.clone()]
+    } else {
+        let tris: Vec<f64> = meshes.iter().map(|m| m.triangle_count() as f64).collect();
+        let all = tris.iter().sum::<f64>().max(1.0);
+        let mut before = 0.0;
+        tris.iter()
+            .map(|&t| {
+                let slot = watch.object(before, t / all);
+                before += t / all;
+                slot
+            })
+            .collect()
+    };
+    // Every cut first: an object's supports read the cuts of the others.
+    let mut cuts: Vec<(Arc<Contours>, bool, Option<kept::Keys>)> =
+        Vec::with_capacity(objects.len());
+    for (k, o) in objects.iter().enumerate() {
+        let bands = plan_plate_bands(&o.mesh, &meshes, &height_opts(&o.settings))?;
+        let keys = kept_keys(
+            &o.mesh,
+            &bands,
+            &o.blend,
+            &o.settings,
+            profile.nozzle_diameter,
+        );
+        let mut alone = None;
+        let shared = if objects.len() == 1 {
+            &mut *cut
+        } else {
+            &mut alone
+        };
+        let (cut, reused) = cut_object(
+            &o.mesh,
+            bands,
+            &o.settings,
+            profile.nozzle_diameter,
+            keys.as_ref(),
+            shared,
+            &watches[k],
+        )?;
+        cuts.push((cut, reused, keys));
+    }
+    let offsets: Vec<[f64; 2]> = objects.iter().map(PlateObject::to_bed).collect();
+    let mut plans: Vec<Plan> = Vec::with_capacity(objects.len());
+    for (a, (o, (cut, reused, keys))) in objects.iter().zip(&cuts).enumerate() {
+        let shift = |b: usize| [offsets[b][0] - offsets[a][0], offsets[b][1] - offsets[a][1]];
+        // Every other part, and the trees of the objects planned before this
+        // one, so two objects' trees never print in the same place.
+        let parts = cuts
+            .iter()
+            .enumerate()
+            .filter(|&(b, _)| b != a)
+            .map(|(b, (cut, _, keys))| {
+                plate::Neighbour::part(cut, keys.as_ref().map_or([0; 32], |k| k.contours), shift(b))
+            });
+        let trees = plans.iter().enumerate().map(|(b, plan)| {
+            let key = plan.kept.as_ref().map_or([0; 32], |k| {
+                let edits = &objects[b].settings.support_edits;
+                Sha256::digest(format!("trees|{:?}|{edits:?}", k.key)).into()
+            });
+            plate::Neighbour::trees(
+                &plan.cut,
+                &plan.supports,
+                objects[b].settings.line_width,
+                key,
+                shift(b),
+            )
+        });
+        let neighbours: Vec<plate::Neighbour> = parts.chain(trees).collect();
+        plans.push(plan_object(
+            Arc::clone(cut),
+            *reused,
+            keys.clone(),
+            &o.blend,
+            &o.settings,
+            profile.nozzle_diameter,
+            &neighbours,
+            &watches[a],
+        )?);
+    }
+    let band_lists: Vec<&[LayerBand]> = plans.iter().map(|p| p.cut.bands.as_slice()).collect();
+    let bands = plate::plate_bands(&band_lists);
+    let labelled = objects.len() > 1;
+    let joinable: Vec<plate::Joinable<'_>> = plans
+        .iter()
+        .zip(&objects)
+        .map(|(p, o)| plate::Joinable {
+            layers: &p.layers,
+            heads: &p.heads,
+            offset: o.to_bed(),
+            label: o.id.filter(|_| labelled).map(Arc::from),
+        })
+        .collect();
+    let planned = Arc::new(plate::join(&joinable, &bands, &settings));
+    // Each object's band, renumbered as the plate's layer it prints on.
+    let mut plate_index: Vec<Vec<usize>> =
+        plans.iter().map(|p| vec![0; p.cut.bands.len()]).collect();
+    for (k, band) in bands.iter().enumerate() {
+        for &(o, i) in &band.members {
+            plate_index[o][i] = k;
+        }
+    }
+    let kept_plate = plans
+        .iter()
+        .map(|p| p.kept.as_ref())
+        .collect::<Option<Vec<&KeptPlan>>>()
+        .map(|kept| {
+            let edits: Vec<&[SupportEdit]> = objects
+                .iter()
+                .map(|o| o.settings.support_edits.as_slice())
+                .collect();
+            let whole: Vec<[u8; 32]> = kept.iter().map(|k| k.key).collect();
+            let contours: Vec<[u8; 32]> = kept.iter().map(|k| k.contours).collect();
+            let prior = kept::plate_prior();
+            kept::keep_plate(Arc::clone(&planned));
+            KeptPlate {
+                token: patch::token(&whole, &profile, &edits),
+                drawn: patch::drawn(&contours, &profile),
+                prior,
+            }
+        });
     let emit_started = Instant::now();
     let (gcode, gcode_text) = if settings.include_gcode {
         let gcode = emit_gcode(
@@ -938,7 +1202,7 @@ fn slice_sharing(
             settings.arc_fit,
             settings.classic_estimator,
             settings.junction_deviation_mm,
-            to_bed,
+            &offsets,
             settings.job,
             watch,
         );
@@ -954,7 +1218,7 @@ fn slice_sharing(
             settings.arc_fit,
             settings.classic_estimator,
             settings.junction_deviation_mm,
-            to_bed,
+            &offsets,
             settings.job,
             watch,
         );
@@ -965,7 +1229,10 @@ fn slice_sharing(
         return Err("cancelled".into());
     }
     let core_ms = elapsed_ms(started);
-    let spent = planned_full.spent;
+    let mut spent = Spent::default();
+    for p in &plans {
+        spent.add(&p.spent);
+    }
     let stages = StageTimes {
         contour_ms: spent.contour_ms,
         support_ms: spent.support_ms,
@@ -979,36 +1246,81 @@ fn slice_sharing(
         roof_ms: spent.roof_ms,
         wall_cpu_ms: spent.wall_cpu_ms,
         infill_cpu_ms: spent.infill_cpu_ms,
-        reused: planned_full.reuse.names(),
-        edits_reused: planned_full.reuse.edits,
+        reused: plans
+            .iter()
+            .map(|p| p.reuse)
+            .reduce(Reuse::both)
+            .unwrap_or_default()
+            .names(),
+        edits_reused: plans.iter().map(|p| p.reuse.edits).sum(),
         edit_apply_ms: spent.edit_apply_ms,
         edit_refresh_ms: spent.edit_refresh_ms,
-        layers_reused: planned_full.layers_reused,
+        layers_reused: plans.iter().map(|p| p.layers_reused).sum(),
     };
-    let support_edits = planned_full
-        .outcomes
+    let views: Vec<ObjectView> = plans
         .iter()
-        .map(|o| EditOutcomeView::of(o, &planned_full.cut.bands))
+        .zip(&objects)
+        .zip(&bounds)
+        .enumerate()
+        .map(|(o, ((p, obj), &(min, max)))| {
+            let indexed: Vec<LayerBand> = p
+                .cut
+                .bands
+                .iter()
+                .map(|b| LayerBand {
+                    index: plate_index[o][b.index],
+                    ..*b
+                })
+                .collect();
+            ObjectView {
+                id: obj.id.unwrap_or_default().to_owned(),
+                min,
+                max,
+                triangles: obj.mesh.triangle_count(),
+                offset: obj.to_bed(),
+                coverage: p.coverage.clone(),
+                in_air: p.in_air,
+                skeleton: obj
+                    .settings
+                    .include_skeleton
+                    .then(|| skeleton(&p.supports, &indexed)),
+                support_edits: p
+                    .outcomes
+                    .iter()
+                    .map(|out| EditOutcomeView::of(out, &indexed))
+                    .collect(),
+                reused: p.reuse.names(),
+            }
+        })
         .collect();
-    let skeleton = settings
-        .include_skeleton
-        .then(|| skeleton(&planned_full.supports, &planned_full.cut.bands));
 
-    let (baseline_ms, baseline_label) = if settings.baseline {
+    let alone = objects.len() == 1;
+    let (baseline_ms, baseline_label) = if settings.baseline && alone {
+        let object = &objects[0];
         let baseline_mode = BlendMode::Single {
             strategy: StrategyId::Speed,
         };
         let baseline_started = Instant::now();
         let quiet = watch.silent();
-        let baseline_planned = plan_sharing(
-            mesh,
+        let baseline_plan = plan_sharing(
+            &object.mesh,
             &baseline_mode,
-            &settings.unkept(),
+            &object.settings.unkept(),
+            plans[0].cut.bands.clone(),
             profile.nozzle_diameter,
             cut,
             &quiet,
-        )?
-        .layers;
+        )?;
+        let baseline_planned = plate::join(
+            &[plate::Joinable {
+                layers: &baseline_plan.layers,
+                heads: &baseline_plan.heads,
+                offset: object.to_bed(),
+                label: None,
+            }],
+            &bands,
+            &settings,
+        );
         let baseline_gcode = if settings.include_gcode {
             emit_gcode(
                 &baseline_planned,
@@ -1020,7 +1332,7 @@ fn slice_sharing(
                 settings.arc_fit,
                 settings.classic_estimator,
                 settings.junction_deviation_mm,
-                to_bed,
+                &offsets,
                 settings.job,
                 &quiet,
             )
@@ -1035,7 +1347,7 @@ fn slice_sharing(
                 settings.arc_fit,
                 settings.classic_estimator,
                 settings.junction_deviation_mm,
-                to_bed,
+                &offsets,
                 settings.job,
                 &quiet,
             )
@@ -1050,16 +1362,36 @@ fn slice_sharing(
     } else {
         (0.0, "skipped".into())
     };
-    let compare = if settings.compare {
-        compare_estimates(mesh, &settings, &profile, cut, &watch.silent())?
+    let compare = if settings.compare && alone {
+        compare_estimates(
+            &objects[0].mesh,
+            &objects[0].settings,
+            &profile,
+            cut,
+            &watch.silent(),
+        )?
     } else {
         Vec::new()
     };
+    let on_bed: Vec<([f64; 2], [f64; 2])> = objects
+        .iter()
+        .zip(&bounds)
+        .map(|(o, (min, max))| {
+            let [dx, dy] = o.to_bed();
+            ([min[0] + dx, min[1] + dy], [max[0] + dx, max[1] + dy])
+        })
+        .collect();
+    let min_bed = on_bed
+        .iter()
+        .map(|b| b.0)
+        .reduce(|a, b| [a[0].min(b[0]), a[1].min(b[1])])
+        .unwrap_or([0.0, 0.0]);
+    let max_bed = on_bed
+        .iter()
+        .map(|b| b.1)
+        .reduce(|a, b| [a[0].max(b[0]), a[1].max(b[1])])
+        .unwrap_or([0.0, 0.0]);
     let margin = 4.0;
-    let (min_bed, max_bed) = match offset {
-        Some([dx, dy]) => ([min[0] + dx, min[1] + dy], [max[0] + dx, max[1] + dy]),
-        None => ([min[0], min[1]], [max[0], max[1]]),
-    };
     let mut notes = Vec::new();
     if gcode.layer_count == 0 {
         notes.push("no layers were produced".into());
@@ -1086,28 +1418,76 @@ fn slice_sharing(
         notes.push("g-code is missing layer markers".into());
     }
 
+    let blends: Vec<&BlendMode> = objects.iter().map(|o| &o.blend).collect();
     let (layers, preview_token, preview_patch) = if settings.include_preview {
         preview(
             &planned,
-            kept_plan,
+            kept_plate,
             &profile,
-            blend,
-            &settings,
+            &blends,
+            settings.preview_base.as_deref(),
             &gcode.layer_seconds,
         )
     } else {
         (Vec::new(), None, None)
     };
+    let mesh = if listed {
+        MeshInfo {
+            triangles: objects.iter().map(|o| o.mesh.triangle_count()).sum(),
+            outline_tolerance_mm: outline_tolerance(&settings, profile.nozzle_diameter),
+            min: [
+                min_bed[0],
+                min_bed[1],
+                bounds.iter().map(|b| b.0[2]).fold(f64::INFINITY, f64::min),
+            ],
+            max: [
+                max_bed[0],
+                max_bed[1],
+                bounds
+                    .iter()
+                    .map(|b| b.1[2])
+                    .fold(f64::NEG_INFINITY, f64::max),
+            ],
+        }
+    } else {
+        MeshInfo {
+            triangles: objects[0].mesh.triangle_count(),
+            outline_tolerance_mm: outline_tolerance(&settings, profile.nozzle_diameter),
+            min: bounds[0].0,
+            max: bounds[0].1,
+        }
+    };
+    let collisions = listed.then(|| {
+        let boxes: Vec<(&str, [f64; 2], [f64; 2])> = objects
+            .iter()
+            .zip(&on_bed)
+            .zip(&plans)
+            .map(|((o, b), plan)| {
+                let [dx, dy] = o.to_bed();
+                let (lo, hi) = plate::first_layer_reach(plan, b.0, b.1, [dx, dy]);
+                (o.id.unwrap_or_default(), lo, hi)
+            })
+            .collect();
+        plate::collisions(&boxes)
+    });
+    let (offset, coverage, in_air, support_edits, skeleton, objects_view) = if listed {
+        (None, Vec::new(), None, Vec::new(), None, views)
+    } else {
+        let view = views.into_iter().next().expect("one object");
+        (
+            objects[0].offset,
+            view.coverage,
+            view.in_air,
+            view.support_edits,
+            view.skeleton,
+            Vec::new(),
+        )
+    };
     Ok(SliceResponse {
         core_ms,
         baseline_ms,
         baseline_label,
-        mesh: MeshInfo {
-            triangles: mesh.triangle_count(),
-            outline_tolerance_mm: outline_tolerance(&settings, profile.nozzle_diameter),
-            min,
-            max,
-        },
+        mesh,
         offset,
         stages,
         sanity: Sanity {
@@ -1158,24 +1538,34 @@ fn slice_sharing(
         skeleton,
         preview_token,
         preview_patch,
+        objects: objects_view,
+        collisions,
     })
 }
 
-/// The reply's preview. A kept slice names it with a token, and when the
+/// A plate preview's name and what it was drawn from, when every object came
+/// from the kept stages, and the preview the client was given before.
+struct KeptPlate {
+    token: String,
+    drawn: [u8; 32],
+    prior: Option<(Arc<Vec<PlateLayer>>, Arc<patch::Shown>)>,
+}
+
+/// The reply's preview. A kept plate names it with a token, and when the
 /// request's `previewBase` is the preview the engine last drew from the same
-/// cut under the same blend and flow cap, only the layers that differ go
+/// cuts under the same blends and flow cap, only the layers that differ go
 /// back, as a patch.
 fn preview(
-    planned: &[PrintLayer],
-    kept: Option<&KeptPlan>,
+    planned: &Arc<Vec<PlateLayer>>,
+    kept: Option<KeptPlate>,
     profile: &PrinterProfile,
-    blend: &BlendMode,
-    settings: &SliceSettings,
+    blends: &[&BlendMode],
+    preview_base: Option<&str>,
     layer_seconds: &[f64],
 ) -> (Vec<PreviewLayer>, Option<String>, Option<PreviewPatch>) {
     let Some(kept) = kept else {
         return (
-            preview_of(planned, profile, blend, layer_seconds),
+            preview_of(planned, profile, blends, layer_seconds),
             None,
             None,
         );
@@ -1183,35 +1573,38 @@ fn preview(
     let mut emitted = layer_seconds.iter();
     let seconds: Vec<Option<f64>> = planned
         .iter()
-        .map(|l| (!l.paths.is_empty()).then(|| emitted.next().copied().unwrap_or(0.0)))
+        .map(|l| (!l.is_empty()).then(|| emitted.next().copied().unwrap_or(0.0)))
         .collect();
-    let drawn = patch::drawn(&kept.contours, blend, profile);
-    let token = patch::token(&kept.key, profile, &settings.support_edits);
     let base = kept.prior.as_ref().filter(|(_, shown)| {
-        settings.preview_base.as_deref() == Some(shown.token.as_str()) && shown.drawn == drawn
+        preview_base == Some(shown.token.as_str()) && shown.drawn == kept.drawn
     });
     let (layers, patched) = match base {
         Some((joined, shown)) => {
-            let bits = |s: Option<f64>| s.map(f64::to_bits);
+            let shown_blends: Vec<&BlendMode> = shown.blends.iter().collect();
+            let restyled: Vec<bool> = (0..blends.len())
+                .map(|o| {
+                    shown
+                        .blends
+                        .get(o)
+                        .is_none_or(|b| format!("{b:?}") != format!("{:?}", blends[o]))
+                })
+                .collect();
             let changed = planned
                 .par_iter()
                 .enumerate()
                 .filter_map(|(i, layer)| {
                     let now = seconds[i]?;
-                    let was = &joined[i].layer;
-                    let held = shown.seconds[i].is_some();
-                    let same_paths = held && was.same(&kept.joined[i].layer);
-                    if same_paths && bits(shown.seconds[i]) == bits(Some(now)) {
+                    let was = joined.get(i);
+                    let held = was.is_some() && shown.seconds.get(i).is_some_and(Option::is_some);
+                    let same = was.is_some_and(|w| w.same(layer))
+                        && layer.runs.iter().all(|r| !restyled[r.object as usize]);
+                    if held && same {
                         return None;
                     }
-                    let layer = preview_layer(layer, profile, blend, now);
-                    if same_paths {
-                        return Some(patch::retimed(layer));
-                    }
-                    let was = if held {
-                        preview_layer(was, profile, blend, 0.0).paths
-                    } else {
-                        Vec::new()
+                    let layer = preview_layer(layer, profile, blends, now);
+                    let was = match was.filter(|_| held) {
+                        Some(was) => preview_layer(was, profile, &shown_blends, 0.0).paths,
+                        None => Vec::new(),
                     };
                     Some(patch::diff_layer(&was, layer))
                 })
@@ -1220,30 +1613,32 @@ fn preview(
                 base: shown.token.clone(),
                 layers: planned
                     .iter()
-                    .filter(|l| !l.paths.is_empty())
+                    .filter(|l| !l.is_empty())
                     .map(|l| l.index)
                     .collect(),
                 changed,
+                seconds: seconds.iter().flatten().copied().collect(),
                 whole: WholePreview {
-                    joined: Arc::clone(&kept.joined),
+                    layers: Arc::clone(planned),
                     profile: profile.clone(),
-                    blend: blend.clone(),
+                    blends: blends.iter().map(|&b| b.clone()).collect(),
                     layer_seconds: layer_seconds.to_vec(),
                 },
             };
             (Vec::new(), Some(patch))
         }
-        None => (preview_of(planned, profile, blend, layer_seconds), None),
+        None => (preview_of(planned, profile, blends, layer_seconds), None),
     };
     kept::show(
-        &kept.joined,
+        planned,
         patch::Shown {
-            token: token.clone(),
-            drawn,
+            token: kept.token.clone(),
+            drawn: kept.drawn,
+            blends: blends.iter().map(|&b| b.clone()).collect(),
             seconds,
         },
     );
-    (layers, Some(token), patched)
+    (layers, Some(kept.token), patched)
 }
 
 fn feature_estimates(
@@ -1392,14 +1787,13 @@ fn score_of(seconds: f64, grams: f64, toughness: f64) -> BlendScore {
     }
 }
 
-fn structural_mm3(layers: &[PrintLayer]) -> f64 {
+fn structural_mm3(layers: &[PlateLayer]) -> f64 {
     layers
         .iter()
         .map(|layer| {
             layer
-                .paths
-                .iter()
-                .map(|path| {
+                .paths()
+                .map(|(_, path)| {
                     let len = path
                         .points
                         .windows(2)
@@ -1450,6 +1844,9 @@ struct PathColumns<'a> {
     start: Vec<u32>,
     xy: Vec<Rounded>,
     z: Vec<Rounded>,
+    /// Each path's object. Empty when every path is object 0.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    object: Vec<u16>,
 }
 
 fn path_columns<S: serde::Serializer>(paths: &[PreviewPath], s: S) -> Result<S::Ok, S::Error> {
@@ -1477,6 +1874,11 @@ fn path_columns<S: serde::Serializer>(paths: &[PreviewPath], s: S) -> Result<S::
         start: Vec::with_capacity(paths.len() + 1),
         xy: Vec::with_capacity(points * 2),
         z: Vec::with_capacity(if has_z { points } else { 0 }),
+        object: if paths.iter().any(|p| p.object != 0) {
+            paths.iter().map(|p| p.object).collect()
+        } else {
+            Vec::new()
+        },
     };
     c.start.push(0);
     for p in paths {
@@ -1502,92 +1904,57 @@ fn path_columns<S: serde::Serializer>(paths: &[PreviewPath], s: S) -> Result<S::
     c.serialize(s)
 }
 
-fn preview_of<'a>(
-    layers: impl IntoIterator<Item = &'a PrintLayer>,
+fn preview_of(
+    layers: &[PlateLayer],
     profile: &PrinterProfile,
-    blend: &BlendMode,
+    blends: &[&BlendMode],
     layer_seconds: &[f64],
 ) -> Vec<PreviewLayer> {
     layers
-        .into_iter()
-        .filter(|l| !l.paths.is_empty())
+        .iter()
+        .filter(|l| !l.is_empty())
         .enumerate()
         .map(|(emitted, layer)| {
             let seconds = layer_seconds.get(emitted).copied().unwrap_or(0.0);
-            preview_layer(layer, profile, blend, seconds)
+            preview_layer(layer, profile, blends, seconds)
         })
         .collect()
 }
 
 /// One printed layer as the preview draws it: a travel before each path
-/// that moves the nozzle, then the path, decimated.
+/// that moves the nozzle, then the path, decimated. Each path is in its
+/// object's part frame, so a travel from another object is not drawn.
 fn preview_layer(
-    layer: &LayerPaths,
+    layer: &PlateLayer,
     profile: &PrinterProfile,
-    blend: &BlendMode,
+    blends: &[&BlendMode],
     seconds: f64,
 ) -> PreviewLayer {
     let mut paths = Vec::new();
     let mut cursor: Option<[f64; 2]> = None;
     let mut speed_walls = 0u32;
     let mut toughness_walls = 0u32;
-    for path in &layer.paths {
-        if path.kind.is_wall() {
-            match path.strategy {
-                StrategyId::Speed => speed_walls += 1,
-                StrategyId::Toughness => toughness_walls += 1,
+    let mut support_paths = 0u32;
+    for run in &layer.runs {
+        if run.entry != Entry::AsPlanned {
+            cursor = None;
+        }
+        let blend = blends[run.object as usize];
+        for path in &run.layer.paths[run.paths.clone()] {
+            if path.kind == PathKind::Support || path.kind == PathKind::SupportInterface {
+                support_paths += 1;
             }
+            preview_path(
+                &mut paths,
+                &mut cursor,
+                (&mut speed_walls, &mut toughness_walls),
+                layer,
+                path,
+                run.object,
+                profile,
+                blend,
+            );
         }
-        if let (Some(c), Some(start)) = (cursor, path.points.first()) {
-            let mut pts = vec![c];
-            pts.extend(path.lead_in.iter().copied());
-            pts.push(*start);
-            if pts.len() > 2 || dist2(c, *start) > 0.05 * 0.05 {
-                paths.push(PreviewPath {
-                    kind: "travel".into(),
-                    strategy: path.strategy.as_str().into(),
-                    pts,
-                    width: 0.0,
-                    speed: path.travel_speed,
-                    effective_speed: path.travel_speed,
-                    toughness: path_weight(blend, layer.z, path.strategy),
-                    zs: Vec::new(),
-                    bead_height: 0.0,
-                });
-            }
-        }
-        let (pts, zs) = decimate_path(&path.points, &path.z_frac, layer.z, layer.height);
-        let bead = if path.bead_height > 1e-6 {
-            path.bead_height
-        } else {
-            layer.height
-        };
-        let mut limited = crate::gcode::limit_speed(
-            path.speed,
-            path.width,
-            bead,
-            path.flow,
-            profile.max_volumetric_mm3_s,
-        );
-        if layer.index == 0 {
-            limited = limited.min(30.0);
-        }
-        paths.push(PreviewPath {
-            kind: path.kind.as_str().into(),
-            strategy: path.strategy.as_str().into(),
-            pts,
-            width: path.width,
-            speed: path.speed,
-            effective_speed: limited,
-            toughness: path_weight(blend, layer.z, path.strategy),
-            zs,
-            bead_height: if path.bead_height > 1e-6 {
-                path.bead_height
-            } else {
-                0.0
-            },
-        });
-        cursor = path.points.last().copied();
     }
     PreviewLayer {
         index: layer.index,
@@ -1596,14 +1963,81 @@ fn preview_layer(
         note: layer.note.clone(),
         speed_walls,
         toughness_walls,
-        support_paths: layer
-            .paths
-            .iter()
-            .filter(|p| p.kind == PathKind::Support || p.kind == PathKind::SupportInterface)
-            .count() as u32,
+        support_paths,
         seconds,
         paths,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn preview_path(
+    paths: &mut Vec<PreviewPath>,
+    cursor: &mut Option<[f64; 2]>,
+    (speed_walls, toughness_walls): (&mut u32, &mut u32),
+    layer: &PlateLayer,
+    path: &Extrusion,
+    object: u16,
+    profile: &PrinterProfile,
+    blend: &BlendMode,
+) {
+    if path.kind.is_wall() {
+        match path.strategy {
+            StrategyId::Speed => *speed_walls += 1,
+            StrategyId::Toughness => *toughness_walls += 1,
+        }
+    }
+    if let (Some(c), Some(start)) = (*cursor, path.points.first()) {
+        let mut pts = vec![c];
+        pts.extend(path.lead_in.iter().copied());
+        pts.push(*start);
+        if pts.len() > 2 || dist2(c, *start) > 0.05 * 0.05 {
+            paths.push(PreviewPath {
+                kind: "travel".into(),
+                strategy: path.strategy.as_str().into(),
+                pts,
+                width: 0.0,
+                speed: path.travel_speed,
+                effective_speed: path.travel_speed,
+                toughness: path_weight(blend, layer.z, path.strategy),
+                zs: Vec::new(),
+                bead_height: 0.0,
+                object,
+            });
+        }
+    }
+    let (pts, zs) = decimate_path(&path.points, &path.z_frac, layer.z, layer.height);
+    let bead = if path.bead_height > 1e-6 {
+        path.bead_height
+    } else {
+        layer.height
+    };
+    let mut limited = crate::gcode::limit_speed(
+        path.speed,
+        path.width,
+        bead,
+        path.flow,
+        profile.max_volumetric_mm3_s,
+    );
+    if layer.index == 0 {
+        limited = limited.min(30.0);
+    }
+    paths.push(PreviewPath {
+        kind: path.kind.as_str().into(),
+        strategy: path.strategy.as_str().into(),
+        pts,
+        width: path.width,
+        speed: path.speed,
+        effective_speed: limited,
+        toughness: path_weight(blend, layer.z, path.strategy),
+        zs,
+        bead_height: if path.bead_height > 1e-6 {
+            path.bead_height
+        } else {
+            0.0
+        },
+        object,
+    });
+    *cursor = path.points.last().copied();
 }
 
 fn path_weight(blend: &BlendMode, z: f64, strategy: StrategyId) -> f64 {
@@ -1664,12 +2098,12 @@ fn decimate_path(
     (out, zs)
 }
 
-fn seam_metrics(layers: &[PrintLayer]) -> (usize, f64, f64) {
+fn seam_metrics(layers: &[PlateLayer]) -> (usize, f64, f64) {
     let mut n = 0usize;
     let mut sum = 0.0;
     let mut max_step = 0.0f64;
     for layer in layers {
-        for path in &layer.paths {
+        for (_, path) in layer.paths() {
             if path.scarf_mm <= 0.0 {
                 continue;
             }
@@ -1721,6 +2155,8 @@ fn dist2(a: [f64; 2], b: [f64; 2]) -> f64 {
 /// consumes; the rest is kept for the audit and the response.
 pub(crate) struct Plan {
     pub layers: Vec<PrintLayer>,
+    /// How many leading paths of each layer are its skirt and supports.
+    pub heads: Vec<usize>,
     pub cut: Arc<Contours>,
     pub supports: Arc<Supports>,
     pub coverage: Vec<CoverageGap>,
@@ -1734,17 +2170,12 @@ pub(crate) struct Plan {
     pub kept: Option<KeptPlan>,
 }
 
-/// What a plan from the kept stages needs for a partial preview.
+/// What a plan from the kept stages adds to its plate's preview token.
 pub(crate) struct KeptPlan {
-    /// Names the plan for its preview token.
+    /// Names the plan.
     key: [u8; 32],
-    /// The cut's key. A preview patches only one drawn from the same cut.
+    /// The cut's key. A preview patches only one drawn from the same cuts.
     contours: [u8; 32],
-    /// This plan's layers, as the kept stages hold them.
-    joined: Arc<Vec<JoinedLayer>>,
-    /// The last plan of the same cut, and the preview the client was given
-    /// from it.
-    prior: Option<(Arc<Vec<JoinedLayer>>, Arc<patch::Shown>)>,
 }
 
 /// The stages a plan took from the kept slices instead of computing them.
@@ -1776,6 +2207,19 @@ impl Reuse {
         .filter_map(|(on, name)| on.then_some(name))
         .collect()
     }
+
+    /// The stages both plans reused.
+    fn both(self, other: Reuse) -> Reuse {
+        Reuse {
+            contours: self.contours && other.contours,
+            toolpaths: self.toolpaths && other.toolpaths,
+            order: self.order && other.order,
+            comb: self.comb && other.comb,
+            supports: self.supports && other.supports,
+            support_paths: self.support_paths && other.support_paths,
+            edits: self.edits.min(other.edits),
+        }
+    }
 }
 
 /// Wall-clock and CPU time of the stages a plan computed. A reused stage
@@ -1798,6 +2242,22 @@ pub(crate) struct Spent {
 }
 
 impl Spent {
+    fn add(&mut self, other: &Spent) {
+        self.contour_ms += other.contour_ms;
+        self.index_ms += other.index_ms;
+        self.cut_cpu_ms += other.cut_cpu_ms;
+        self.simplify_cpu_ms += other.simplify_cpu_ms;
+        self.roof_ms += other.roof_ms;
+        self.support_ms += other.support_ms;
+        self.toolpath_ms += other.toolpath_ms;
+        self.order_ms += other.order_ms;
+        self.comb_ms += other.comb_ms;
+        self.wall_cpu_ms += other.wall_cpu_ms;
+        self.infill_cpu_ms += other.infill_cpu_ms;
+        self.edit_apply_ms += other.edit_apply_ms;
+        self.edit_refresh_ms += other.edit_refresh_ms;
+    }
+
     fn cut(&mut self, cut: &Contours) {
         let c = &cut.clocks;
         self.contour_ms += c.contour_ms;
@@ -1856,42 +2316,144 @@ pub(crate) fn plan(
         mesh,
         blend,
         settings,
+        plan_bands(mesh, &height_opts(settings))?,
         nozzle_diameter,
         &mut None,
         &Watch::idle(),
     )
 }
 
-/// `plan`, cutting the mesh only when `shared` holds no cut of it yet, and
-/// leaving this plan's cut there. The side plans of one request (baseline,
-/// compare, Pareto) cut the same mesh with the same layer settings, and
-/// the cut does not depend on the blend.
+/// How the layer settings ask for bands.
+fn height_opts(settings: &SliceSettings) -> HeightOpts {
+    HeightOpts {
+        nominal: settings.layer_height,
+        adaptive: settings.adaptive,
+        min_h: settings.adaptive_min,
+        max_h: if settings.adaptive {
+            settings.adaptive_max.max(settings.adaptive_min)
+        } else {
+            settings.layer_height
+        },
+    }
+}
+
+/// `plan` on `bands`, cutting the mesh only when `shared` holds no cut of it
+/// yet, and leaving this plan's cut there. The side plans of one request
+/// (baseline, compare, Pareto) cut the same mesh with the same layer
+/// settings, and the cut does not depend on the blend.
+#[allow(clippy::too_many_arguments)]
 fn plan_sharing(
     mesh: &Mesh,
     blend: &BlendMode,
     settings: &SliceSettings,
+    bands: Vec<LayerBand>,
     nozzle_diameter: f64,
     shared: &mut Option<Arc<Contours>>,
     watch: &Watch,
 ) -> Result<Plan, String> {
-    let plan = if kept::on() && settings.include_preview {
-        plan_kept(mesh, blend, settings, nozzle_diameter, watch)?
-    } else {
-        let reuse = Reuse {
-            contours: shared.is_some(),
-            ..Reuse::default()
-        };
-        let cut = match shared {
-            Some(cut) => {
-                watch.complete(Stage::Cut);
-                Arc::clone(cut)
-            }
-            None => Arc::new(cut_mesh(mesh, settings, nozzle_diameter, watch)?),
-        };
-        plan_cut(cut, reuse, blend, settings, nozzle_diameter, watch)?
+    let keys = kept_keys(mesh, &bands, blend, settings, nozzle_diameter);
+    let (cut, reused) = cut_object(
+        mesh,
+        bands,
+        settings,
+        nozzle_diameter,
+        keys.as_ref(),
+        shared,
+        watch,
+    )?;
+    plan_object(
+        cut,
+        reused,
+        keys,
+        blend,
+        settings,
+        nozzle_diameter,
+        &[],
+        watch,
+    )
+}
+
+/// The stage keys of an interactive slice while stages are kept.
+fn kept_keys(
+    mesh: &Mesh,
+    bands: &[LayerBand],
+    blend: &BlendMode,
+    settings: &SliceSettings,
+    nozzle_diameter: f64,
+) -> Option<kept::Keys> {
+    (kept::on() && settings.include_preview)
+        .then(|| kept::keys(mesh, bands, blend, settings, nozzle_diameter))
+}
+
+/// The mesh cut on `bands`: kept under `keys`, else the cut in `shared`,
+/// else cut now. `shared` holds it afterwards. The flag says it was not cut
+/// by this call.
+#[allow(clippy::too_many_arguments)]
+fn cut_object(
+    mesh: &Mesh,
+    bands: Vec<LayerBand>,
+    settings: &SliceSettings,
+    nozzle_diameter: f64,
+    keys: Option<&kept::Keys>,
+    shared: &mut Option<Arc<Contours>>,
+    watch: &Watch,
+) -> Result<(Arc<Contours>, bool), String> {
+    let mut reused = false;
+    let cut = match (keys, shared.as_ref()) {
+        (Some(keys), _) => kept::stage(&keys.contours, &mut reused, || {
+            cut_mesh(mesh, bands, settings, nozzle_diameter, watch)
+        })?,
+        (None, Some(cut)) => {
+            reused = true;
+            Arc::clone(cut)
+        }
+        (None, None) => Arc::new(cut_mesh(mesh, bands, settings, nozzle_diameter, watch)?),
     };
-    *shared = Some(Arc::clone(&plan.cut));
-    Ok(plan)
+    if reused {
+        watch.complete(Stage::Cut);
+    }
+    *shared = Some(Arc::clone(&cut));
+    Ok((cut, reused))
+}
+
+/// Every stage after the cut, from the kept stages when there are `keys`.
+/// Supports grow among the `neighbours` that come near them.
+#[allow(clippy::too_many_arguments)]
+fn plan_object(
+    cut: Arc<Contours>,
+    reused: bool,
+    keys: Option<kept::Keys>,
+    blend: &BlendMode,
+    settings: &SliceSettings,
+    nozzle_diameter: f64,
+    neighbours: &[plate::Neighbour],
+    watch: &Watch,
+) -> Result<Plan, String> {
+    let reuse = Reuse {
+        contours: reused,
+        ..Reuse::default()
+    };
+    match keys {
+        Some(keys) => plan_kept(
+            keys,
+            cut,
+            reuse,
+            blend,
+            settings,
+            nozzle_diameter,
+            neighbours,
+            watch,
+        ),
+        None => plan_cut(
+            cut,
+            reuse,
+            blend,
+            settings,
+            nozzle_diameter,
+            neighbours,
+            watch,
+        ),
+    }
 }
 
 /// `plan` from the mesh already cut into per-band contours.
@@ -1911,6 +2473,7 @@ fn plan_contours(
         blend,
         settings,
         nozzle_diameter,
+        &[],
         &Watch::idle(),
     )
 }
@@ -1923,6 +2486,7 @@ fn plan_cut(
     blend: &BlendMode,
     settings: &SliceSettings,
     nozzle_diameter: f64,
+    neighbours: &[plate::Neighbour],
     watch: &Watch,
 ) -> Result<Plan, String> {
     let mut spent = Spent::default();
@@ -1935,8 +2499,16 @@ fn plan_cut(
     spent.order_ms += tour.order_ms;
     let travels = comb_part(&cut, &tour, settings, watch)?;
     spent.comb_ms += travels.comb_ms;
-    let mut supports = plan_supports(&cut, blend, settings, watch)?;
-    spent.supports(&supports);
+    let mut supports = plate::settle(
+        &cut,
+        neighbours,
+        |ground| {
+            let plan = plan_supports(&cut, blend, settings, ground.map(|g| g.solid), watch)?;
+            spent.supports(&plan);
+            Ok(plan)
+        },
+        |plan| plan,
+    )?;
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
     }
@@ -1962,22 +2534,19 @@ fn plan_cut(
 /// `plan` from the kept stages. Each stage is reused when its key matches.
 /// Edits extend the last edited state when they start with its edits, and
 /// otherwise replay from the base, which is how undoing an edit works.
+#[allow(clippy::too_many_arguments)]
 fn plan_kept(
-    mesh: &Mesh,
+    keys: kept::Keys,
+    cut: Arc<Contours>,
+    mut reuse: Reuse,
     blend: &BlendMode,
     settings: &SliceSettings,
     nozzle_diameter: f64,
+    neighbours: &[plate::Neighbour],
     watch: &Watch,
 ) -> Result<Plan, String> {
-    let keys = kept::keys(mesh, blend, settings, nozzle_diameter);
-    let mut reuse = Reuse::default();
     let mut spent = Spent::default();
-    let cut = kept::stage(&keys.contours, &mut reuse.contours, || {
-        cut_mesh(mesh, settings, nozzle_diameter, watch)
-    })?;
-    if reuse.contours {
-        watch.complete(Stage::Cut);
-    } else {
+    if !reuse.contours {
         spent.cut(&cut);
     }
     if watch.stopped(settings.job) {
@@ -2016,49 +2585,28 @@ fn plan_kept(
     }
 
     let want = &settings.support_edits;
-    let (base, edited) = match kept::supports(&keys) {
-        Some(found) if found.painted => {
-            reuse.supports = true;
-            reuse.support_paths = true;
-            watch.complete(Stage::Supports);
-            (found.base, found.edited)
-        }
-        Some(found) => {
-            reuse.supports = true;
-            let layers = cut.bands.len().max(1) as u32;
-            watch.begin(Stage::Supports, layers);
-            if watch.stopped(settings.job) {
-                return Err("cancelled".into());
-            }
-            let base = Arc::new(found.base.repaint(&cut, blend, settings, watch));
-            spent.supports(&base);
-            if watch.stopped(settings.job) {
-                return Err("cancelled".into());
-            }
-            let edited = found
-                .edited
-                .filter(|e| !want.is_empty() && want.starts_with(&e.edits))
-                .map(|e| {
-                    let plan = e.plan.repaint(&cut, blend, settings, watch);
-                    spent.supports(&plan);
-                    Arc::new(kept::Edited {
-                        edits: e.edits.clone(),
-                        plan,
-                        outcomes: e.outcomes.clone(),
-                    })
-                });
-            if watch.stopped(settings.job) {
-                return Err("cancelled".into());
-            }
-            watch.fill();
-            (base, edited)
-        }
-        None => {
-            let base = Arc::new(plan_supports(&cut, blend, settings, watch)?);
-            spent.supports(&base);
-            (base, None)
-        }
-    };
+    let (keys, base, edited) = plate::settle(
+        &cut,
+        neighbours,
+        |ground| {
+            let keys = ground
+                .as_ref()
+                .map_or_else(|| keys.clone(), |g| keys.grounded(&g.key));
+            let (base, edited) = kept_supports(
+                &keys,
+                &cut,
+                blend,
+                settings,
+                ground.map(|g| g.solid),
+                &mut reuse,
+                &mut spent,
+                watch,
+            )?;
+            kept::keep_supports(&keys, Arc::clone(&base), edited.clone());
+            Ok((keys, base, edited))
+        },
+        |(_, base, _)| base,
+    )?;
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
     }
@@ -2102,24 +2650,80 @@ fn plan_kept(
         supports,
         blend,
         settings,
-        prior
-            .as_ref()
-            .filter(|p| p.same_part)
-            .map_or(&[], |p| p.joined.as_slice()),
+        prior.as_ref().map_or(&[], |p| p.as_slice()),
         watch,
     )?;
-    let joined = Arc::new(assembled.joined.clone());
-    kept::keep_joined(&keys, Arc::clone(&joined));
+    kept::keep_joined(&keys, Arc::new(assembled.joined.clone()));
     kept::keep_supports(&keys, Arc::clone(&base), fresh.clone().or(edited));
     let kept = KeptPlan {
         key: keys.whole,
         contours: keys.contours,
-        joined,
-        prior: prior.and_then(|p| Some((p.joined, p.shown?))),
     };
     let mut plan = finish(cut, supports, edits, assembled, reuse, spent);
     plan.kept = Some(kept);
     Ok(plan)
+}
+
+/// The supports kept under `keys` and their last edited state: painted
+/// already, or grown and painted again under `settings`, or grown now among
+/// `solid`.
+#[allow(clippy::too_many_arguments)]
+fn kept_supports(
+    keys: &kept::Keys,
+    cut: &Contours,
+    blend: &BlendMode,
+    settings: &SliceSettings,
+    solid: Option<Arc<Vec<Vec<Loop>>>>,
+    reuse: &mut Reuse,
+    spent: &mut Spent,
+    watch: &Watch,
+) -> Result<(Arc<SupportPlan>, Option<Arc<kept::Edited>>), String> {
+    let want = &settings.support_edits;
+    reuse.supports = false;
+    reuse.support_paths = false;
+    match kept::supports(keys) {
+        Some(found) if found.painted => {
+            reuse.supports = true;
+            reuse.support_paths = true;
+            watch.complete(Stage::Supports);
+            Ok((found.base, found.edited))
+        }
+        Some(found) => {
+            reuse.supports = true;
+            let layers = cut.bands.len().max(1) as u32;
+            watch.begin(Stage::Supports, layers);
+            if watch.stopped(settings.job) {
+                return Err("cancelled".into());
+            }
+            let base = Arc::new(found.base.repaint(cut, blend, settings, watch));
+            spent.supports(&base);
+            if watch.stopped(settings.job) {
+                return Err("cancelled".into());
+            }
+            let edited = found
+                .edited
+                .filter(|e| !want.is_empty() && want.starts_with(&e.edits))
+                .map(|e| {
+                    let plan = e.plan.repaint(cut, blend, settings, watch);
+                    spent.supports(&plan);
+                    Arc::new(kept::Edited {
+                        edits: e.edits.clone(),
+                        plan,
+                        outcomes: e.outcomes.clone(),
+                    })
+                });
+            if watch.stopped(settings.job) {
+                return Err("cancelled".into());
+            }
+            watch.fill();
+            Ok((base, edited))
+        }
+        None => {
+            let base = Arc::new(plan_supports(cut, blend, settings, solid, watch)?);
+            spent.supports(&base);
+            Ok((base, None))
+        }
+    }
 }
 
 /// The plan, with the clocks of what was joined and edited added.
@@ -2135,8 +2739,10 @@ fn finish(
     spent.comb_ms += assembled.comb_ms;
     spent.edit_apply_ms += edits.apply_ms;
     spent.edit_refresh_ms += edits.refresh_ms;
+    let heads = assembled.joined.iter().map(|j| j.head).collect();
     Plan {
         layers: assembled.joined.into_iter().map(|j| j.layer).collect(),
+        heads,
         layers_reused: assembled.reused,
         kept: None,
         cut,
@@ -2153,25 +2759,12 @@ fn finish(
 /// shells read off them.
 fn cut_mesh(
     mesh: &Mesh,
+    bands: Vec<LayerBand>,
     settings: &SliceSettings,
     nozzle_diameter: f64,
     watch: &Watch,
 ) -> Result<Contours, String> {
     let bounds = mesh.bounds().ok_or("empty mesh")?;
-    let max_h = if settings.adaptive {
-        settings.adaptive_max.max(settings.adaptive_min)
-    } else {
-        settings.layer_height
-    };
-    let bands = plan_bands(
-        mesh,
-        &HeightOpts {
-            nominal: settings.layer_height,
-            adaptive: settings.adaptive,
-            min_h: settings.adaptive_min,
-            max_h,
-        },
-    )?;
     let index_started = Instant::now();
     let index = ZIndex::build(mesh);
     let index_ms = elapsed_ms(index_started);
@@ -2223,6 +2816,8 @@ pub(crate) struct Contours {
     /// What prints over air with supports off, for the first overhang angle
     /// asked, keyed by its bits.
     in_air: std::sync::OnceLock<(u64, InAir)>,
+    /// Each layer's XY box, `None` on an empty layer, found when first asked.
+    boxes: std::sync::OnceLock<Vec<Option<XyRect>>>,
     clocks: CutClocks,
 }
 
@@ -2255,6 +2850,7 @@ impl Contours {
             bounds,
             roofs,
             in_air: std::sync::OnceLock::new(),
+            boxes: std::sync::OnceLock::new(),
             clocks: CutClocks {
                 roof_ms: elapsed_ms(roof_started),
                 ..CutClocks::default()
@@ -2264,6 +2860,18 @@ impl Contours {
 
     /// What prints over air at overhang angle `angle_deg`. It reads only
     /// the cut and the angle, so every blend of the cut shares it.
+    fn boxes(&self) -> &[Option<XyRect>] {
+        self.boxes
+            .get_or_init(|| self.contours.par_iter().map(|c| loop_bounds(c)).collect())
+    }
+
+    /// The band of this cut that prints at the Z where `band` is cut, if any.
+    fn band_at(&self, band: &LayerBand) -> Option<usize> {
+        let z = band.cut_z();
+        let i = self.bands.partition_point(|b| b.z < z);
+        self.bands.get(i).filter(|b| b.z - b.height <= z).map(|_| i)
+    }
+
     fn in_air(&self, angle_deg: f64) -> InAir {
         let bits = angle_deg.to_bits();
         if let Some(&(_, found)) = self.in_air.get().filter(|(at, _)| *at == bits) {
@@ -2374,11 +2982,20 @@ pub(crate) struct SupportPlan {
     /// Each layer's support paths. An edit repaints some layers and shares
     /// the rest with the plan it started from.
     paths: Vec<Arc<Vec<Extrusion>>>,
+    /// What the trees grew among when other objects stand near: the part
+    /// and those objects, per layer, in the part frame. `None` is the part
+    /// alone.
+    solid: Option<Arc<Vec<Vec<Loop>>>>,
     support_ms: f64,
     toolpath_ms: f64,
 }
 
 impl SupportPlan {
+    /// What the trees avoid and stand on.
+    fn solid<'a>(&'a self, cut: &'a Contours) -> &'a [Vec<Loop>] {
+        self.solid.as_deref().map_or(&cut.contours, Vec::as_slice)
+    }
+
     /// Bring paths, shaft scales, and coverage up to date after edits
     /// changed the support on `changed` layers. A changed layer can move the
     /// shaft scale of its run beyond itself, so layers whose scale moved are
@@ -2415,7 +3032,7 @@ impl SupportPlan {
             self.paths[i] = Arc::new(paths);
         }
         self.shaft = shaft;
-        self.coverage = self.supports.coverage(&cut.bands, &cut.contours);
+        self.coverage = self.supports.coverage(&cut.bands, self.solid(cut));
         repaint
     }
 
@@ -2452,6 +3069,7 @@ impl SupportPlan {
             in_air: self.in_air,
             shaft,
             paths,
+            solid: self.solid.clone(),
             support_ms: 0.0,
             toolpath_ms: elapsed_ms(started),
         }
@@ -2478,7 +3096,9 @@ fn edit(
         return Edits::default();
     }
     let started = Instant::now();
-    let outcomes = Arc::make_mut(&mut plan.supports).apply(edits, &cut.bands, &cut.contours);
+    let solid = plan.solid.clone();
+    let solid = solid.as_deref().map_or(&cut.contours, |s| s);
+    let outcomes = Arc::make_mut(&mut plan.supports).apply(edits, &cut.bands, solid);
     let apply_ms = elapsed_ms(started);
     let started = Instant::now();
     let mut changed: Vec<usize> = outcomes
@@ -2696,10 +3316,13 @@ fn scarf_params(settings: &SliceSettings, layer_index: usize) -> Option<ScarfPar
     })
 }
 
+/// Supports for the part of `cut`, grown among `solid` when other objects
+/// stand near, else among the part alone.
 fn plan_supports(
     cut: &Contours,
     blend: &BlendMode,
     settings: &SliceSettings,
+    solid: Option<Arc<Vec<Vec<Loop>>>>,
     watch: &Watch,
 ) -> Result<SupportPlan, String> {
     let support_started = Instant::now();
@@ -2732,15 +3355,17 @@ fn plan_supports(
             in_air: Some(in_air),
             shaft: vec![0.0; cut.bands.len()],
             paths: (0..cut.bands.len()).map(|_| Arc::new(Vec::new())).collect(),
+            solid: None,
             support_ms: elapsed_ms(support_started),
             toolpath_ms: 0.0,
         });
     }
-    let supports = Supports::build_with(&cut.bands, &cut.contours, &opts, watch);
+    let among = solid.as_deref().map_or(&cut.contours, |s| s);
+    let supports = Supports::build_with(&cut.bands, &cut.contours, among, &opts, watch);
     let Some(supports) = supports.filter(|_| !watch.stopped(settings.job)) else {
         return Err("cancelled".into());
     };
-    let coverage = supports.coverage(&cut.bands, &cut.contours);
+    let coverage = supports.coverage(&cut.bands, among);
     let support_ms = elapsed_ms(support_started);
     let shaft = shaft_scales(&supports.layers, settings.support_height_mult);
     let toolpath_started = Instant::now();
@@ -2769,6 +3394,7 @@ fn plan_supports(
         in_air: None,
         shaft,
         paths,
+        solid,
         support_ms,
         toolpath_ms,
     })
@@ -2826,6 +3452,8 @@ pub(crate) struct JoinedLayer {
     from: Option<[f64; 2]>,
     /// Where it stood when the layer ended.
     end: Option<[f64; 2]>,
+    /// How many leading paths of `layer` are the skirt and supports.
+    head: usize,
     layer: PrintLayer,
 }
 
@@ -2932,6 +3560,7 @@ fn assemble(
                 Slot::Kept(k) => return k,
                 Slot::Fresh(joined, head) => (joined, head),
             };
+            joined.head = paths.len();
             // The skirt and supports, and the travel into the part's first path.
             let lead = paths.len() + 1;
             if !joined.empty {
@@ -2974,6 +3603,7 @@ fn empty_slot() -> Slot {
         under: Arc::new(Vec::new()),
         from: None,
         end: None,
+        head: 0,
         layer: PrintLayer::new(LayerPaths {
             index: 0,
             z: 0.0,
@@ -3048,6 +3678,7 @@ fn join_supports(
         under: Arc::clone(under),
         from,
         end,
+        head: 0,
         layer: PrintLayer::new(layer),
     };
     Slot::Fresh(joined, head)
@@ -4163,7 +4794,10 @@ mod tests {
         ] {
             let planned = plan(&mesh, &blend, &settings, profile.nozzle_diameter)
                 .unwrap()
-                .layers;
+                .layers
+                .into_iter()
+                .map(PlateLayer::single)
+                .collect::<Vec<_>>();
             let features = settings.feature_note();
             let parallel = crate::gcode::emit_gcode(
                 &planned,
@@ -4175,7 +4809,7 @@ mod tests {
                 settings.arc_fit,
                 settings.classic_estimator,
                 settings.junction_deviation_mm,
-                [0.0, 0.0],
+                &[[0.0, 0.0]],
                 settings.job,
                 &Watch::idle(),
             );
@@ -4189,7 +4823,7 @@ mod tests {
                 settings.arc_fit,
                 settings.classic_estimator,
                 settings.junction_deviation_mm,
-                [0.0, 0.0],
+                &[[0.0, 0.0]],
                 settings.job,
                 &Watch::idle(),
             );
@@ -4228,7 +4862,10 @@ mod tests {
         };
         let planned = plan(&mesh, &blend, &settings, profile.nozzle_diameter)
             .unwrap()
-            .layers;
+            .layers
+            .into_iter()
+            .map(PlateLayer::single)
+            .collect::<Vec<_>>();
         let features = settings.feature_note();
         let parallel = crate::gcode::emit_gcode(
             &planned,
@@ -4240,7 +4877,7 @@ mod tests {
             settings.arc_fit,
             settings.classic_estimator,
             settings.junction_deviation_mm,
-            [0.0, 0.0],
+            &[[0.0, 0.0]],
             settings.job,
             &Watch::idle(),
         );
@@ -4254,7 +4891,7 @@ mod tests {
             settings.arc_fit,
             settings.classic_estimator,
             settings.junction_deviation_mm,
-            [0.0, 0.0],
+            &[[0.0, 0.0]],
             settings.job,
             &Watch::idle(),
         );
@@ -4578,7 +5215,7 @@ mod edit_cost {
             .map(|b| simplify_loops(index.slice(b.cut_z()), tolerance))
             .collect();
         let object = Contours::new(bands, contours, bounds, &settings);
-        let plan = || plan_supports(&object, &blend, &settings, &Watch::idle()).unwrap();
+        let plan = || plan_supports(&object, &blend, &settings, None, &Watch::idle()).unwrap();
 
         let started = Instant::now();
         let base = plan();

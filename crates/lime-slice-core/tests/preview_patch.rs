@@ -94,7 +94,8 @@ fn apply(base: &[(u64, Value, Vec<Value>)], patch: &Value) -> Vec<(u64, Value, V
         .as_array()
         .unwrap()
         .iter()
-        .map(|i| {
+        .enumerate()
+        .map(|(k, i)| {
             let index = i.as_u64().unwrap();
             let was = base.iter().find(|l| l.0 == index);
             let Some(changed) = patch["changed"]
@@ -103,7 +104,9 @@ fn apply(base: &[(u64, Value, Vec<Value>)], patch: &Value) -> Vec<(u64, Value, V
                 .iter()
                 .find(|l| l["index"] == *i)
             else {
-                return was.expect("an unchanged layer the base has").clone();
+                let mut kept = was.expect("an unchanged layer the base has").clone();
+                kept.1["seconds"] = patch["seconds"][k].clone();
+                return kept;
             };
             let mut meta = changed.clone();
             let obj = meta.as_object_mut().unwrap();
@@ -245,18 +248,18 @@ fn settings_tweaks_are_patches_too() {
             .sum();
         seen.push((changed.len(), sent));
     }
-    // How many layer times an acceleration change moves depends on float
-    // rounding: 35 layers on Windows, 33 on Linux. It never sends a path.
-    let (accel_layers, accel_paths) = seen[1];
-    assert!(
-        accel_layers > 0 && accel_paths == 0,
-        "an acceleration moves only some layer times: {:?}",
-        seen[1]
-    );
     assert_eq!(
-        (seen[0], seen[2]),
-        ((0, 0), (57, 2165)),
-        "changed layers and paths sent: a temperature changes nothing drawn, a \
-         support angle the supported layers"
+        seen,
+        [(0, 0), (0, 0), (56, 2165)],
+        "changed layers and paths sent: a temperature and an acceleration change \
+         nothing drawn, a support angle the supported layers"
+    );
+    // How many layer times an acceleration change moves depends on float
+    // rounding, so only that some moved is pinned.
+    let times = |r: &Value| r["previewPatch"]["seconds"].as_array().unwrap().clone();
+    assert_ne!(
+        times(&replies[2]),
+        times(&replies[1]),
+        "an acceleration moves layer times"
     );
 }

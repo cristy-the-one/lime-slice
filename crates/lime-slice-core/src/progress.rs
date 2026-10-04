@@ -129,6 +129,33 @@ pub fn fraction(stage: Stage, done: u32, total: u32) -> f64 {
     }
 }
 
+/// One plate object's share of the per-object stages: the objects before it
+/// and its own, as fractions of the plate's work.
+#[derive(Clone, Copy, Debug)]
+struct Slot {
+    before: f64,
+    weight: f64,
+}
+
+/// `fraction` for one object of a plate. The cut runs for every object first,
+/// so each object takes its share of the cut budget. Then each object runs
+/// its part, travel, supports, and assembly in turn, so each takes its share
+/// of those budgets together. Load and emit are the plate's.
+fn fraction_in(stage: Stage, done: u32, total: u32, slot: Option<Slot>) -> f64 {
+    let flat = fraction(stage, done, total);
+    let Some(Slot { before, weight }) = slot else {
+        return flat;
+    };
+    let base = |s: Stage| -> f64 { WEIGHTS[..s.index()].iter().sum() };
+    let (lo, span) = match stage {
+        Stage::Load | Stage::Emit => return flat,
+        Stage::Cut => (base(Stage::Cut), WEIGHTS[Stage::Cut.index()]),
+        _ => (base(Stage::Part), base(Stage::Emit) - base(Stage::Part)),
+    };
+    let within = ((flat - lo) / span).clamp(0.0, 1.0);
+    lo + span * (before + weight * within)
+}
+
 struct Snap {
     stage: Stage,
     done: u32,
@@ -175,14 +202,21 @@ struct Shared {
 }
 
 impl Shared {
-    fn publish(&self, stage: Stage, done: u32, total: u32, terminal: Option<Status>) {
+    fn publish(
+        &self,
+        stage: Stage,
+        done: u32,
+        total: u32,
+        terminal: Option<Status>,
+        slot: Option<Slot>,
+    ) {
         let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if guard.status != Status::Running && terminal.is_none() {
             return;
         }
         let fraction = match terminal {
             Some(Status::Done) => 1.0,
-            _ => fraction(stage, done, total),
+            _ => fraction_in(stage, done, total, slot),
         };
         if terminal.is_none() && fraction + 1e-12 < guard.fraction {
             return;
@@ -223,6 +257,8 @@ pub struct Watch {
     /// When false, cancel still works and nothing is published. Baseline and
     /// compare use this so they cannot pull the fraction backwards.
     report: bool,
+    /// For one object of a plate: where its stages sit in the plate's bar.
+    slot: Option<Slot>,
 }
 
 impl Default for Watch {
@@ -236,6 +272,7 @@ impl Watch {
         Self {
             shared: None,
             report: false,
+            slot: None,
         }
     }
 
@@ -251,6 +288,7 @@ impl Watch {
                 changed: Condvar::new(),
             })),
             report: true,
+            slot: None,
         }
     }
 
@@ -263,11 +301,22 @@ impl Watch {
         watch
     }
 
+    /// This watch for one object of a plate whose earlier objects do
+    /// `before` of the work and this one `weight` of it, so the plate fills
+    /// one bar in order.
+    pub(crate) fn object(&self, before: f64, weight: f64) -> Self {
+        Self {
+            slot: Some(Slot { before, weight }),
+            ..self.clone()
+        }
+    }
+
     /// Same flag, and no progress. For the baseline and compare passes.
     pub fn silent(&self) -> Self {
         Self {
             shared: self.shared.clone(),
             report: false,
+            slot: self.slot,
         }
     }
 
@@ -308,7 +357,7 @@ impl Watch {
         shared.stage.store(stage as u8, Ordering::Relaxed);
         shared.total.store(total, Ordering::Relaxed);
         shared.counter.store(0, Ordering::Relaxed);
-        shared.publish(stage, 0, total, None);
+        shared.publish(stage, 0, total, None, self.slot);
     }
 
     /// One unit of the stage `begin` opened has finished.
@@ -323,7 +372,7 @@ impl Watch {
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1)
             .min(total);
-        shared.publish(stage, done, total, None);
+        shared.publish(stage, done, total, None, self.slot);
     }
 
     /// The current stage finished, whatever the counter says.
@@ -334,7 +383,7 @@ impl Watch {
         let stage = Stage::from_u8(shared.stage.load(Ordering::Relaxed));
         let total = shared.total.load(Ordering::Relaxed).max(1);
         shared.counter.store(total, Ordering::Relaxed);
-        shared.publish(stage, total, total, None);
+        shared.publish(stage, total, total, None, self.slot);
     }
 
     /// A stage that was reused rather than run. Counts as the whole budget.
@@ -367,7 +416,7 @@ impl Watch {
         let done = guard.done;
         let total = guard.total;
         drop(guard);
-        shared.publish(stage, done, total, Some(status));
+        shared.publish(stage, done, total, Some(status), None);
     }
 
     pub fn snapshot(&self) -> Progress {

@@ -10,7 +10,7 @@ import { aimSection, anchor, clampOffset, normalize, sectionReach, threeClip, ty
 import { hexToThree, themeColors, type ThemeColors } from "./theme";
 import { poseAffine, type PlacedPart } from "./mesh-place";
 import type { CoverageGap } from "./support-edits";
-import { replyFrameRay } from "./bed-offset";
+import { replyFrameRay, sceneShift } from "./bed-offset";
 import type { Ray } from "./support-pick";
 
 export interface PreviewBuffers extends PreviewGeometry {
@@ -61,6 +61,11 @@ export interface SliceView3d {
   setPlayhead(seg: { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number } | null): void;
   /** Reply-frame geometry plus this bed offset, as a group matrix. Buffers stay put. */
   setBedOffset(x: number, y: number): void;
+  /**
+   * Each plate object's paths drawn at its own offset on top of the bed offset, one group
+   * matrix per object, and the support overlay and picking at object `support`'s offset.
+   */
+  setObjectOffsets(offsets: readonly (readonly [number, number])[], support: number): void;
   setSupportOverlay(overlay: SupportOverlay | null): void;
   /** Edit-mode pointer: `move` on hover, `click` on a press-release that moved under 5 px (a drag still orbits). Rays are print space. */
   onPick(cb: ((ev: PickEvent) => void) | null): void;
@@ -86,6 +91,7 @@ const noopView: SliceView3d = {
   setTheme() {},
   setPlayhead() {},
   setBedOffset() {},
+  setObjectOffsets() {},
   setSupportOverlay() {},
   onPick() {},
   setPicking() {},
@@ -119,6 +125,9 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
 
   const root = new THREE.Group();
+  /** One group per plate object, positioned at that object's offset. */
+  const objectGroups: THREE.Group[] = [];
+  let objectsKey = "";
   const previewShift = new THREE.Group();
   previewShift.add(root);
   scene.add(previewShift);
@@ -549,7 +558,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     const viewMm = 2 * camera.position.distanceTo(controls.target) * Math.tan((camera.fov * Math.PI) / 360);
     const [px, py, pz] = replyFrameRay(
       [o.x + origin.cx, origin.cy - o.z, o.y],
-      [previewShift.position.x, -previewShift.position.z],
+      [previewShift.position.x + support.root.position.x, -(previewShift.position.z + support.root.position.z)],
     );
     pickCb({
       kind,
@@ -578,10 +587,20 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   function dropChunks(drop: Iterable<ChunkMeshes>) {
     for (const c of drop) {
       for (const mesh of [...c.beads.meshes, ...c.travel.meshes]) {
-        root.remove(mesh);
+        mesh.removeFromParent();
         mesh.geometry.dispose();
       }
     }
+  }
+
+  /** The group object `o`'s chunks draw under, made on first use. */
+  function objectGroup(o: number) {
+    while (objectGroups.length <= o) {
+      const group = new THREE.Group();
+      root.add(group);
+      objectGroups.push(group);
+    }
+    return objectGroups[o];
   }
 
   return {
@@ -608,13 +627,20 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       // The renderer culls by each geometry's bounding sphere and cannot compute
       // one for instanced points. A sphere around the print's bounds holds every path.
       const sphere = new THREE.Sphere(new THREE.Vector3(0, buffers.midZ, 0), buffers.span + 10);
+      // `first` counts layers within one object: every object's chunks span the whole preview.
       let first = 0;
+      let object = -1;
       for (const chunk of buffers.chunks) {
+        if (chunk.object !== object) {
+          object = chunk.object;
+          first = 0;
+        }
         let meshes = shown.get(chunk);
         shown.delete(chunk);
         if (!meshes) {
           meshes = chunkMeshes(chunk, sphere, marginMat, faceMat, travelMat);
-          for (const mesh of [...meshes.beads.meshes, ...meshes.travel.meshes]) root.add(mesh);
+          const group = objectGroup(chunk.object);
+          for (const mesh of [...meshes.beads.meshes, ...meshes.travel.meshes]) group.add(mesh);
         }
         meshes.first = first;
         chunks.push(meshes);
@@ -701,6 +727,16 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       previewShift.position.set(ox, 0, -oy);
       canvas.dataset.bedOffset = `${ox.toFixed(3)},${oy.toFixed(3)}`;
       syncClip();
+      requestRender();
+    },
+    setObjectOffsets(offsets, supportObject) {
+      const key = `${offsets.map((o) => `${o[0].toFixed(4)},${o[1].toFixed(4)}`).join(";")}|${supportObject}`;
+      if (key === objectsKey) return;
+      objectsKey = key;
+      offsets.forEach(([x, y], o) => objectGroup(o).position.set(...sceneShift([x, y])));
+      const [sx, sy] = offsets[supportObject] ?? [0, 0];
+      support.root.position.set(...sceneShift([sx, sy]));
+      canvas.dataset.objectOffsets = offsets.map((o) => `${o[0].toFixed(3)},${o[1].toFixed(3)}`).join(";");
       requestRender();
     },
     setPlayhead(seg) {
