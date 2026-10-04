@@ -2768,6 +2768,69 @@ fn flared_wing_taper_is_filled_on_speed_and_toughness() {
     }
 }
 
+/// A closed box from (x0, y0, 0) to (x1, y1, z1).
+fn block(x0: f64, y0: f64, x1: f64, y1: f64, z1: f64) -> Mesh {
+    let (a, b, c, d) = ([x0, y0, 0.0], [x1, y0, 0.0], [x1, y1, 0.0], [x0, y1, 0.0]);
+    let (e, f, g, h) = ([x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]);
+    Mesh {
+        triangles: vec![
+            [a, c, b],
+            [a, d, c],
+            [e, f, g],
+            [e, g, h],
+            [a, b, f],
+            [a, f, e],
+            [b, c, g],
+            [b, g, f],
+            [c, d, h],
+            [c, h, g],
+            [d, a, e],
+            [d, e, h],
+        ],
+    }
+}
+
+#[test]
+fn dense_sparse_grid_cells_get_no_gap_fill() {
+    // Weight at 60% toughness lays a 34% grid with cells about 0.9 mm across.
+    // The void fill used to read each cell as a missed gap and bead it.
+    let response = slice_configured(
+        &block(80.0, 80.0, 120.0, 120.0, 10.0),
+        &BlendMode::Weight { toughness: 0.6 },
+        &profile(),
+        &SliceSettings {
+            layer_height: 0.25,
+            baseline: false,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    let layer = response
+        .layers
+        .iter()
+        .find(|l| (l.z - 5.0).abs() < 1e-6)
+        .expect("layer at Z 5.0");
+    let count = |kind: &str| layer.paths.iter().filter(|p| p.kind == kind).count();
+    assert_eq!((count("sparse"), count("gap-fill")), (28, 0));
+    let mut runs = std::collections::BTreeMap::new();
+    let mut at_z5 = false;
+    for line in response.gcode.lines() {
+        if line.starts_with(";LAYER:") {
+            at_z5 = line.contains(" Z:5.000 ");
+        } else if let Some(kind) = line.strip_prefix("; TYPE:").filter(|_| at_z5) {
+            *runs.entry(kind).or_insert(0) += 1;
+        }
+    }
+    assert_eq!(
+        runs,
+        std::collections::BTreeMap::from([("INNER", 3), ("OUTER", 1), ("SPARSE", 28)])
+    );
+    assert_eq!(
+        layer.note,
+        "toughness walls=4 infill=34% grid 83mm/s h=0.250"
+    );
+}
+
 #[test]
 fn printer_profile_keeps_cost_and_bed_when_fields_are_absent() {
     let parsed: lime_slice_core::PrinterProfile =
