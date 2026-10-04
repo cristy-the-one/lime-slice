@@ -12,6 +12,7 @@ export function syncPlateFromState() {
     offset: state.offset,
     stepTolerance: state.stepTolerance,
     supportEdits: state.supportEdits,
+    supportPaint: state.supportPaint,
     fileName: state.mesh.name,
     bytes: state.mesh.bytes,
     sourcePos: state.sourcePos,
@@ -29,4 +30,5 @@ export function applySelectedToState(plate: PlateState) {
   state.offset = { ...obj.offset };
   state.stepTolerance = obj.stepTolerance;
   state.supportEdits = obj.supportEdits.map((entry) => structuredClone(entry));
+  state.supportPaint = obj.supportPaint;
 }

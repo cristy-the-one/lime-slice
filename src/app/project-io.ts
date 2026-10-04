@@ -116,6 +116,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
       applySelectedToState(loaded);
     }
     session.slicedEdits = [];
+    session.slicedPaint = [];
     place("load");
     session.supportUi?.refresh();
     renderChrome();
@@ -144,6 +145,7 @@ function fileObjects(): PlateFileObject[] {
       supportEdits: obj.supportEdits.map((entry) => structuredClone(entry)),
     };
     if (!settingsEmpty(obj.settings)) record.settings = { ...obj.settings };
+    if (obj.supportPaint.length > 0) record.supportPaint = obj.supportPaint.map((disk) => structuredClone(disk));
     return record;
   });
 }

@@ -17,6 +17,11 @@ function compact() {
   return document.documentElement.classList.contains("layout-compact");
 }
 
+/** The support brush is on: a tap paints, so it neither hides the chrome nor opens the menu. */
+function painting() {
+  return document.documentElement.dataset.supportPaint === "1";
+}
+
 function wire(
   canvas: HTMLCanvasElement,
   hooks: { toggleChrome(): void; onFit(): void; onLongPress(x: number, y: number): void },
@@ -44,7 +49,7 @@ function wire(
     consumed = ev.defaultPrevented;
     window.clearTimeout(hold);
     hold = window.setTimeout(() => {
-      if (!pressed || moved || !compact()) return;
+      if (!pressed || moved || !compact() || painting()) return;
       held = true;
       haptic("snap");
       if (document.documentElement.dataset.supportEdit === "1") {
@@ -65,7 +70,7 @@ function wire(
     if (!pressed) return;
     pressed = false;
     window.clearTimeout(hold);
-    if (document.documentElement.dataset.supportEdit === "1") return;
+    if (document.documentElement.dataset.supportEdit === "1" || painting()) return;
     if (!compact() || moved || held || consumed || ev.button !== 0) return;
     const now = performance.now();
     if (now - lastTap < 280) {

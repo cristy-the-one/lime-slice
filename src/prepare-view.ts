@@ -9,12 +9,21 @@ import { clampSplit, roundSplit, type SplitAxis } from "./split-at";
 import { createModifierScene } from "./modifier-scene";
 import type { OverrideDocument } from "./overrides";
 import type { PlateBound } from "./plate";
+import type { PaintDisk, PaintKind, Vec3 } from "./support-paint";
 import { hexToThree, themeColors } from "./theme";
 
 type Axis = "x" | "y" | "z";
 type HandleHit = { kind: "ring" | "move"; axis: Axis };
 type XyDrag = { kind: "xy"; lastX: number; lastY: number; totalX: number; totalY: number; appliedX: number; appliedY: number };
 type Drag = HandleHit | { kind: "cut" } | XyDrag | null;
+
+/** A drag of the support brush, as the app records it. `cancel` drops the stroke for a second finger. */
+export interface BrushHooks {
+  start(): void;
+  hit(point: Vec3, normal: Vec3): void;
+  end(): void;
+  cancel(): void;
+}
 
 export interface PrepareView {
   /** The same `canonical` array keeps the built geometry; only the pose matrix and bounds update. */
@@ -40,6 +49,14 @@ export interface PrepareView {
   onModifierEditEnd(cb: (() => void) | null): void;
   /** Top, front, or the same iso pose as a freshly loaded part. Does not run on load. */
   setViewPreset(preset: "top" | "front" | "iso"): void;
+  /** Support paint drawn on the part, in the mesh frame `setMesh` poses. */
+  setPaint(disks: readonly PaintDisk[]): void;
+  /**
+   * The support brush, or null for none. While it is on, a press on the part paints: the left
+   * button or one finger. Off the part the left button orbits, and two fingers always orbit.
+   */
+  setBrush(brush: { kind: PaintKind; radius: number } | null): void;
+  onBrush(hooks: BrushHooks | null): void;
   resize(): void;
 }
 
@@ -205,6 +222,30 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let editModCb: ((id: string, kind: "move" | "scale", axis: Axis, deltaMm: number) => void) | null = null;
   let editModEndCb: (() => void) | null = null;
   let modDrag: { id: string; kind: "move" | "scale"; axis: Axis; last: number } | null = null;
+
+  let brush: { kind: PaintKind; radius: number } | null = null;
+  let brushHooks: BrushHooks | null = null;
+  let stroke: number | null = null;
+  // Each dab draws as the ball it reaches: the engine applies paint to every surface inside it.
+  const disk = new THREE.SphereGeometry(1, 20, 14);
+  const paintMat = new THREE.MeshBasicMaterial({
+    transparent: true,
+    opacity: 0.5,
+    depthWrite: false,
+    toneMapped: false,
+  });
+  let paintSpots = new THREE.InstancedMesh(disk, paintMat, 1);
+  paintSpots.count = 0;
+  paintSpots.matrixAutoUpdate = false;
+  paintSpots.raycast = () => undefined;
+  scene.add(paintSpots);
+  let paintDisks: readonly PaintDisk[] = [];
+  const cursorMat = new THREE.MeshBasicMaterial({ depthTest: false, transparent: true, opacity: 0.9, side: THREE.DoubleSide, toneMapped: false });
+  const cursor = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 48), cursorMat);
+  cursor.renderOrder = 8;
+  cursor.visible = false;
+  cursor.raycast = () => undefined;
+  scene.add(cursor);
 
   const park = new THREE.Vector3();
   let drag: Drag = null;
@@ -419,6 +460,70 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     return !!mesh && raycaster.intersectObject(mesh, true).length > 0;
   }
 
+  const sceneNormal = new THREE.Vector3();
+
+  /** Where the ray meets the part, and the face's outward normal there, both in print millimetres. */
+  function brushHit(): { point: Vec3; normal: Vec3; scene: THREE.Vector3 } | null {
+    const hit = mesh ? raycaster.intersectObject(mesh, false)[0] : undefined;
+    if (!hit?.face) return null;
+    sceneNormal.copy(hit.face.normal).transformDirection(mesh!.matrixWorld);
+    const [nx, ny, nz] = frame.fromScene(sceneNormal);
+    return { point: frame.fromScene(hit.point) as Vec3, normal: [nx, ny, nz], scene: hit.point.clone() };
+  }
+
+  function paintColor(kind: PaintKind) {
+    return hexToThree(kind === "enforce" ? colors.paintEnforce : colors.paintBlock);
+  }
+
+  /** Ring under the pointer at the brush radius, in the brush's colour. */
+  function showCursor(hit: { scene: THREE.Vector3 } | null) {
+    cursor.visible = !!brush && !!hit;
+    canvas.dataset.brushHit = hit && brush ? (frame.fromScene(hit.scene).map((v) => v.toFixed(1)).join(",")) : "";
+    if (!brush || !hit) {
+      requestRender();
+      return;
+    }
+    cursor.position.copy(hit.scene).addScaledVector(sceneNormal, 0.05);
+    cursor.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), sceneNormal);
+    cursor.scale.setScalar(brush.radius);
+    cursorMat.color.setHex(paintColor(brush.kind));
+    requestRender();
+  }
+
+  const spot = new THREE.Matrix4();
+  const tint = new THREE.Color();
+
+  function drawPaint() {
+    if (paintSpots.instanceMatrix.count < paintDisks.length) {
+      scene.remove(paintSpots);
+      paintSpots.dispose();
+      paintSpots = new THREE.InstancedMesh(disk, paintMat, Math.max(64, paintDisks.length * 2));
+      paintSpots.matrixAutoUpdate = false;
+      paintSpots.raycast = () => undefined;
+      scene.add(paintSpots);
+    }
+    if (mesh) paintSpots.matrix.copy(mesh.matrix);
+    paintSpots.count = paintDisks.length;
+    paintDisks.forEach((d, k) => {
+      spot.makeScale(d.r, d.r, d.r).setPosition(d.p[0], d.p[1], d.p[2]);
+      paintSpots.setMatrixAt(k, spot);
+      paintSpots.setColorAt(k, tint.setHex(paintColor(d.kind)));
+    });
+    paintSpots.instanceMatrix.needsUpdate = true;
+    if (paintSpots.instanceColor) paintSpots.instanceColor.needsUpdate = true;
+    paintSpots.visible = !!mesh && paintDisks.length > 0;
+    canvas.dataset.paintDisks = String(paintDisks.length);
+    requestRender();
+  }
+
+  function endStroke(keep: boolean) {
+    if (stroke === null) return;
+    stroke = null;
+    controls.enabled = true;
+    if (keep) brushHooks?.end();
+    else brushHooks?.cancel();
+  }
+
   function hitCut(ev: PointerEvent): boolean {
     if (!split || cutPicks.length === 0) return false;
     ndc(ev);
@@ -488,6 +593,26 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       return;
     }
     const handle = hitHandle(ev);
+    if (!handle && brush && mesh) {
+      if (ev.pointerType === "touch" && !ev.isPrimary) {
+        // A second finger orbits, so the first finger's stroke was not paint.
+        endStroke(false);
+        return;
+      }
+      ndc(ev);
+      const hit = brushHit();
+      if (hit) {
+        stroke = ev.pointerId;
+        if (ev.pointerType !== "touch") controls.enabled = false;
+        canvas.setPointerCapture(ev.pointerId);
+        showCursor(hit);
+        brushHooks?.start();
+        brushHooks?.hit(hit.point, hit.normal);
+        ev.preventDefault();
+        ev.stopPropagation();
+        return;
+      }
+    }
     if (handle) {
       drag = handle;
       controls.enabled = false;
@@ -563,6 +688,21 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
         const rebased = axisCoordAt(moved, modDrag.axis);
         if (rebased != null) modDrag.last = rebased;
       }
+      return;
+    }
+    if (stroke !== null) {
+      if (ev.pointerId !== stroke) return;
+      ndc(ev);
+      const hit = brushHit();
+      showCursor(hit);
+      if (hit) brushHooks?.hit(hit.point, hit.normal);
+      return;
+    }
+    if (!drag && brush) {
+      ndc(ev);
+      const hit = ev.pointerType === "touch" ? null : brushHit();
+      showCursor(hit);
+      canvas.style.cursor = hit ? "crosshair" : "";
       return;
     }
     if (!drag) {
@@ -655,7 +795,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     if (rebased != null) lastAngle = rebased;
   });
 
-  const endDrag = () => {
+  const endDrag = (ev: PointerEvent) => {
+    if (stroke !== null && ev.pointerId === stroke) endStroke(ev.type === "pointerup");
     const kind = drag?.kind;
     const edited = modDrag;
     drag = null;
@@ -772,6 +913,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
         mesh.matrix.set(a, b, c, d, i, j, k, l, -e, -f, -g, -h, 0, 0, 0, 1);
         mesh.matrixWorldNeedsUpdate = true;
       }
+      drawPaint();
       placeGizmo();
       cutKey = "";
       rebuildCut();
@@ -787,6 +929,26 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     onMove(cb) { moveCb = cb; },
     onMoveEnd(cb) { moveEndCb = cb; },
     setViewPreset(preset) { applyViewPreset(preset); },
+    setPaint(disks) {
+      paintDisks = disks;
+      drawPaint();
+    },
+    setBrush(next) {
+      brush = next;
+      if (!brush) endStroke(true);
+      controls.touches.ONE = brush ? (-1 as THREE.TOUCH) : THREE.TOUCH.ROTATE;
+      controls.touches.TWO = brush ? THREE.TOUCH.DOLLY_ROTATE : THREE.TOUCH.DOLLY_PAN;
+      canvas.dataset.brush = brush ? brush.kind : "";
+      if (!brush) {
+        canvas.style.cursor = "";
+        showCursor(null);
+      } else if (cursor.visible) {
+        cursor.scale.setScalar(brush.radius);
+        cursorMat.color.setHex(paintColor(brush.kind));
+        requestRender();
+      }
+    },
+    onBrush(hooks) { brushHooks = hooks; },
     setModifiers(doc, selectedId, tool) {
       modifierDoc = doc;
       modifierSelected = selectedId;
@@ -823,6 +985,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       bed.userData.gridKey = "";
       syncBedGrid(bed, bedX, bedY, hexToThree(colors.line), hexToThree(colors.bedMinor));
       syncPlateBounds();
+      drawPaint();
       requestRender();
     },
   };

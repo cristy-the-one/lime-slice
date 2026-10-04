@@ -21,6 +21,8 @@ export interface ThemeColors {
   axisX: string;
   axisY: string;
   axisZ: string;
+  paintEnforce: string;
+  paintBlock: string;
 }
 
 export function loadTheme(): ThemeChoice {
@@ -57,6 +59,8 @@ export function themeColors(): ThemeColors {
     axisX: pick("--axis-x", "#e85d4c"),
     axisY: pick("--axis-y", "#8fce6a"),
     axisZ: pick("--axis-z", "#6aa7ff"),
+    paintEnforce: pick("--paint-enforce", "#0f8a4c"),
+    paintBlock: pick("--paint-block", "#e5484d"),
   };
 }
 

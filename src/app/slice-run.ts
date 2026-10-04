@@ -11,7 +11,9 @@ import { replyOffset, type SlicedBed } from "../bed-offset";
 import { sliceOverrideFields } from "../overrides";
 import { ironingSpacingMax, sliceIroningFields } from "../ironing";
 import { seamSliceField } from "../seam";
-import { plateListed, slicePlateFields, type PlateObject, type PlateRequestObject } from "../plate";
+import { plateListed, slicePlateFields, sourceFrame, type PlateObject, type PlateRequestObject } from "../plate";
+import { paintRequestFields } from "../support-paint";
+import { noteTally } from "./paint-actions";
 import { engineDownMessage, authHeaders } from "../ui/api-base";
 import { pushToast } from "../ui/toasts";
 import {
@@ -138,6 +140,7 @@ export function payload() {
         filename: state.sourcePos ? (state.mesh!.name || "part").replace(/\.(3mf|step|stp)$/i, ".stl") : (state.mesh!.name || "part"),
         pose: currentPlacement()?.pose,
         ...editRequestFields(state.supportEdits, treeSupports()),
+        ...(state.sourcePos ? paintRequestFields(state.supportPaint, sourceFrame(state.sourcePos, state.partScale)) : {}),
       };
   const plate = listed
     ? {
@@ -274,6 +277,8 @@ export async function runSlice(force = false) {
   const listed = request.objects as PlateRequestObject[] | undefined;
   const selected = listed?.find((o) => o.id === state.plate.selectedId);
   const edits = (listed ? selected?.supportEdits : request.supportEdits) ? state.supportEdits : [];
+  const paint = state.supportPaint;
+  const paintedIndex = listed ? Math.max(0, listed.findIndex((o) => o.id === state.plate.selectedId)) : 0;
   const slicedObjects = listed?.map((o) => {
     const obj = livePlate().find((p) => p.id === o.id)!;
     return {
@@ -339,6 +344,9 @@ export async function runSlice(force = false) {
     session.slicedFrame = partFrame;
     state.slicedHash = hash;
     session.slicedEdits = edits;
+    const paintBefore = session.slicedPaint;
+    session.slicedPaint = paint;
+    noteTally(body, paintedIndex, paint, paintBefore);
     if (recipe) {
       if (storesReply(prev, { frame: partFrame, recipe })) cachedRecipes.add(recipe);
       session.shownRecipe = recipe;

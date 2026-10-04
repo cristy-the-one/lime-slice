@@ -48,6 +48,9 @@
   --axis-x: #e85d4c;
   --axis-y: #8fce6a;
   --axis-z: #6aa7ff;
+  /* Support paint on the lime mesh, in both themes: a deep green and a red that read on it. */
+  --paint-enforce: #0f8a4c;
+  --paint-block: #e5484d;
   --sheet: #f4efe4;
   --gizmo-hot: #ffffff;
   --mid: #e6d3a3;

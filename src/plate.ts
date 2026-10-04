@@ -11,6 +11,7 @@
  * and omits `objects`.
  */
 import type { EditEntry } from "./support-edit-list.ts";
+import { paintRequestFields, type PaintDisk, type WireDisk } from "./support-paint.ts";
 import {
   boundsOf,
   centeringShift,
@@ -58,6 +59,8 @@ export interface PlateFileObject {
     stepTolerance: number;
   };
   supportEdits: EditEntry[];
+  /** Omitted when empty. In the source frame, as `PlateObject.supportPaint`. */
+  supportPaint?: PaintDisk[];
   /** Omitted when empty. Not sent on the slice request. */
   settings?: PlateObjectSettings;
 }
@@ -75,6 +78,8 @@ export interface PlateObject {
   offset: MeshShift;
   stepTolerance: number;
   supportEdits: EditEntry[];
+  /** Enforce and block disks in this object's source frame, in paint order. */
+  supportPaint: readonly PaintDisk[];
   settings: PlateObjectSettings;
 }
 
@@ -94,6 +99,7 @@ export interface PlateSnapObject {
   offset: MeshShift;
   stepTolerance: number;
   supportEdits: EditEntry[];
+  supportPaint: PaintDisk[];
   settings: PlateObjectSettings;
 }
 
@@ -149,10 +155,10 @@ export function settingsEmpty(settings: PlateObjectSettings | undefined): boolea
   return !settings || Object.keys(settings).length === 0;
 }
 
-/** Version 2 is a plate with more than one object, or one object that has its own settings. */
-export function plateFileIsVersion2(objects: { settings?: PlateObjectSettings }[]): boolean {
+/** Version 2 is a plate with more than one object, or one object that has its own settings or support paint. */
+export function plateFileIsVersion2(objects: { settings?: PlateObjectSettings; supportPaint?: readonly PaintDisk[] }[]): boolean {
   if (objects.length !== 1) return objects.length > 1;
-  return !settingsEmpty(objects[0]?.settings);
+  return !settingsEmpty(objects[0]?.settings) || (objects[0]?.supportPaint?.length ?? 0) > 0;
 }
 
 /** One object of the slice request's `objects`, less its mesh bytes, which go on when it is sent. */
@@ -163,6 +169,7 @@ export interface PlateRequestObject {
   stepToleranceMm: number;
   settings?: PlateObjectSettings;
   supportEdits?: EditEntry["edit"][];
+  supportPaint?: WireDisk[];
 }
 
 /** The slice request sends `objects`: two or more objects, or one with its own settings. */
@@ -173,6 +180,7 @@ export function plateListed(plate: PlateState): boolean {
 /**
  * `objects` for the slice request, in plate order. `poseOf` places one object on the bed.
  * Support edits go only with an object that prints tree supports, as for one object.
+ * Paint goes with every object that has some, in that object's mesh frame.
  */
 export function slicePlateFields(
   objects: readonly PlateObject[],
@@ -189,6 +197,7 @@ export function slicePlateFields(
         stepToleranceMm: obj.stepTolerance,
         ...(settingsEmpty(obj.settings) ? {} : { settings: { ...obj.settings } }),
         ...(tree && obj.supportEdits.length > 0 ? { supportEdits: obj.supportEdits.map((entry) => entry.edit) } : {}),
+        ...paintRequestFields(obj.supportPaint, sourceFrame(obj.sourcePos, obj.partScale)),
       };
     }),
   };
@@ -209,8 +218,22 @@ export function withLivePose(plate: PlateState, live: SelectedPose & { fileName:
           offset: live.offset,
           stepTolerance: live.stepTolerance,
           supportEdits: live.supportEdits,
+          supportPaint: live.supportPaint,
         },
   );
+}
+
+const centres = new WeakMap<Float32Array, [number, number, number]>();
+
+/** Where the engine's mesh frame sits in an object's source frame: scaled about its bounds centre. */
+export function sourceFrame(sourcePos: Float32Array, partScale: number) {
+  let centre = centres.get(sourcePos);
+  if (!centre) {
+    const b = boundsOf(sourcePos);
+    centre = [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2];
+    centres.set(sourcePos, centre);
+  }
+  return { centre, scale: partScale };
 }
 
 export function selectedObject(plate: PlateState): PlateObject | null {
@@ -233,6 +256,7 @@ export function oneObjectPlate(input: {
   offset: MeshShift;
   stepTolerance: number;
   supportEdits: EditEntry[];
+  supportPaint: readonly PaintDisk[];
 }): PlateState {
   resetHeldGeometry();
   const obj: PlateObject = {
@@ -247,6 +271,7 @@ export function oneObjectPlate(input: {
     offset: { ...input.offset },
     stepTolerance: input.stepTolerance,
     supportEdits: input.supportEdits,
+    supportPaint: input.supportPaint,
     settings: {},
   };
   hold(obj);
@@ -283,6 +308,7 @@ export interface SelectedPose {
   offset: MeshShift;
   stepTolerance: number;
   supportEdits: EditEntry[];
+  supportPaint: readonly PaintDisk[];
   fileName?: string;
   bytes?: ArrayBuffer;
   sourcePos?: Float32Array | null;
@@ -303,6 +329,7 @@ export function withSelectedPose(plate: PlateState, pose: SelectedPose): PlateSt
       offset: { ...pose.offset },
       stepTolerance: pose.stepTolerance,
       supportEdits: pose.supportEdits,
+      supportPaint: pose.supportPaint,
       settings: obj.settings,
     };
     if (pose.fileName) next.fileName = pose.fileName;
@@ -328,6 +355,7 @@ export function snapPlate(plate: PlateState): PlateSnap {
       offset: { ...obj.offset },
       stepTolerance: obj.stepTolerance,
       supportEdits: obj.supportEdits.map((entry) => structuredClone(entry)),
+      supportPaint: obj.supportPaint.map((disk) => structuredClone(disk)),
       settings: { ...obj.settings },
     })),
   };
@@ -351,6 +379,7 @@ export function revivePlate(snap: PlateSnap): PlateState | null {
       offset: { ...row.offset },
       stepTolerance: row.stepTolerance,
       supportEdits: row.supportEdits.map((entry) => structuredClone(entry)),
+      supportPaint: (row.supportPaint ?? []).map((disk) => structuredClone(disk)),
       settings: { ...row.settings },
     });
   }
@@ -373,6 +402,7 @@ export function assemblePlate(rows: Array<PlateFileObject & { bytes: ArrayBuffer
       offset: { ...row.placement.offset },
       stepTolerance: row.placement.stepTolerance,
       supportEdits: row.supportEdits.map((entry) => structuredClone(entry)),
+      supportPaint: (row.supportPaint ?? []).map((disk) => structuredClone(disk)),
       settings: { ...(row.settings ?? {}) },
     };
     hold(obj);

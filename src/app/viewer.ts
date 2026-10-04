@@ -398,6 +398,7 @@ export function setStage(stage: "prepare" | "preview" | "gcode") {
   document.querySelector("#viewModes")?.toggleAttribute("hidden", stage !== "preview");
   document.querySelector(".stage-tools")?.toggleAttribute("hidden", stage === "prepare");
   document.querySelector<HTMLElement>("#viewPresets")?.toggleAttribute("hidden", stage !== "prepare");
+  if (stage !== "prepare") session.paintUi?.stop();
   syncEmptyState(!!state.mesh);
   paintSectionChrome();
   paintGcode();

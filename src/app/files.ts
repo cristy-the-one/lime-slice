@@ -35,6 +35,7 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
   state.centered = true;
   state.offset = { x: 0, y: 0, z: 0 };
   state.supportEdits = clearEdits();
+  state.supportPaint = [];
   state.overrides = emptyOverrides();
   state.selectedVolumeId = null;
   clearEditHistory();
@@ -69,6 +70,7 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
     offset: state.offset,
     stepTolerance: state.stepTolerance,
     supportEdits: state.supportEdits,
+    supportPaint: state.supportPaint,
   });
   if (/\.3mf$/i.test(name)) {
     const vendor = foreignSlicer3mf(new Uint8Array(bytes));
@@ -130,6 +132,7 @@ export function applyPlace(rerender: boolean, sync: SplitSync = "transform") {
   }
   fx.realignSplit(sync);
   fx.prepare.setMesh(state.placed, sync === "load");
+  fx.drawPaint?.();
   fx.prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
   fx.prepare.setPlateBounds(boundEntries(state.plate, state.profile.bedX, state.profile.bedY));
   paintPlaceFields();
@@ -231,6 +234,7 @@ export function livePlate(): PlateObject[] {
     offset: state.offset,
     stepTolerance: state.stepTolerance,
     supportEdits: state.supportEdits,
+    supportPaint: state.supportPaint,
   });
 }
 
