@@ -51,12 +51,13 @@ export function groupFeatures(rows: FeatureEstimate[], filament: Filament): Feat
     grams: filamentGrams(hit.reduce((s, r) => s + r.filamentMm, 0), filament),
   });
   const of = (kinds: string[]) => rows.filter((row) => kinds.includes(row.kind));
-  const used = new Set(["outer", "inner", "wall", "thin-wall", "sparse", "infill", "solid", "gap-fill", "top", "support", "support-interface", "travel"]);
+  const used = new Set(["outer", "inner", "wall", "thin-wall", "sparse", "infill", "solid", "gap-fill", "top", "ironing", "support", "support-interface", "travel"]);
   return [
     bucket("Outer wall", of(["outer"])),
     bucket("Inner wall", of(["inner", "wall", "thin-wall"])),
     bucket("Infill", of(["sparse", "infill", "solid", "gap-fill"])),
     bucket("Top / bottom", of(["top"])),
+    bucket("Ironing", of(["ironing"])),
     bucket("Supports", of(["support", "support-interface"])),
     bucket("Travel", of(["travel"])),
     bucket("Other", rows.filter((row) => !used.has(row.kind))),

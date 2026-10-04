@@ -2,7 +2,7 @@
 
 The seam picker is done. It landed on main in #127, engine and UI together. See [Shipped](#shipped-2026-10-04). Do not add another seam control.
 
-Ironing waits for Claude. `SliceRequest` has `seam` and no ironing field, and `crates/` has no ironing pass. The UI stores the choice and does not send it. The sections before Shipped are the plan as it was reviewed, and they describe the engine before the picker.
+Ironing is done too. The engine irons when the request carries `ironing`, and the UI sends it. See [Shipped: ironing](#shipped-ironing-2026-10-04). The sections before the Shipped notes are the plan as it was reviewed, and they describe the engine before the picker.
 
 The 2026-10-03 roadmap decision stands: a rear, nearest, and aligned picker is enough before seam painting, and ironing comes before fuzzy skin.
 
@@ -91,7 +91,7 @@ The seam picker landed as decided above. Ironing did not.
 
 **UI.** One select, Seam position, sits beside Scarf seam in Strength at the advanced level. Its options are Blend (strategy), Nearest, Aligned, and Rear. Blend is left out of the slice body. Presets, settings profiles, and project files store `seam`. A profile or project file written before `seam` existed opens at Blend, through `readPresetSettings` in `src/presets.ts`.
 
-Ironing is a checkbox under that select, off by default, with flow, speed, and spacing when it is on (10%, 20 mm/s, 0.1 mm). Those four keys are stored the same way, and a file from before them opens with ironing off. The slice body does not include `ironing`. Turning it on, changing a number, or slicing while it is on toasts that the choice is stored and not sliced.
+Ironing is a checkbox under that select, off by default, with flow, speed, and spacing when it is on (10%, 20 mm/s, 0.1 mm). Those four keys are stored the same way, and a file from before them opens with ironing off. When the seam picker shipped, the slice body did not include `ironing`, and a toast said the choice was stored only. [Shipped: ironing](#shipped-ironing-2026-10-04) replaced both.
 
 **Measured cost.** These times were measured through `serve --cache-dir` on this laptop, client side, with a speed blend, tree supports, the G-code parked, and a 450 mm bed. Each change sends `previewBase`. There were two runs with a fresh server each time.
 
@@ -102,8 +102,48 @@ Ironing is a checkbox under that select, off by default, with flow, speed, and s
 
 With `rear`, every closed outer loop starts within 1 mm of its back: 4825 of 4825 on the Baby Dragon and 1089 of 1089 on the rear cover. Under `blend`, the counts are 1604 of 4825 and 352 of 1089. Overhang control splits some outer walls into open pieces at the overhang's edge. Those pieces start at the split, as they do under `aligned`.
 
-**Ironing waits for Claude.** The engine on main has no ironing setting and no request field. The UI control is in place and mocked (`sliceIroningFields` in `src/ironing.ts` returns nothing). `ironingRequest` is the body to send once Claude adds the field: omitted when off, `{}` at the defaults, and only the keys that differ otherwise. The engine still needs the following:
+**Ironing waited for Claude.** This paragraph is the state when the seam picker shipped. The engine on main had no ironing setting and no request field. The UI control was in place and mocked (`sliceIroningFields` in `src/ironing.ts` returned nothing). `ironingRequest` was the body to send once Claude added the field: omitted when off, `{}` at the defaults, and only the keys that differ otherwise. The engine still needed the following:
 
 - The request object `ironing` with optional `flow`, `speed`, and `spacing`. Unknown keys are refused, and an omitted object stays byte-identical.
 - A pass over the part's top skins, after the top skin is planned. Use 10% flow, 20 mm/s, 0.1 mm spacing, and an inset of half a line width from the outer wall. The inset is not a UI field.
 - A place in the toolpaths key, and a golden run that shows the omitted request is unchanged.
+
+## Shipped: ironing (2026-10-04)
+
+Ironing landed as decided above, engine and UI together.
+
+**Request.** `ironing` sits on `SliceRequest` beside `seam`. It is an object with optional `flow`, `speed`, and `spacing`, which default to 0.1, 20 mm/s, and 0.1 mm. `{}` is on at the defaults. Omitted or `null`, ironing is off, the field is left out of the serialized request, and the request keeps its cache key and its G-code bytes. The engine refuses a bad value with the field name in the error:
+
+- An unknown key: `ironing.fl0w is not an ironing setting; send flow, speed, or spacing`.
+- A value that is not a number: `ironing.flow "high" is not a number`.
+- A value that is not an object: `ironing true is not an object; send {} or any of flow, speed, and spacing`.
+- A value out of range. `flow` must be above 0 and at most 1, `speed` above 0, and `spacing` above 0 and below the line width. NaN and infinity are refused too. An example is `ironing.spacing 0.45 must be above 0 and below the line width, 0.45 mm`.
+
+The CLI takes `--ironing` with the same JSON object, for example `--ironing '{}'`. The G-code header line `; features:` ends in `; ironing flow 0.1 speed 20 spacing 0.1` only when ironing is on. `classic` irons nothing.
+
+**Which layers.** A layer irons when it is a roof, the same test the top skin uses: its roof distance is 0. The layer above leaves open an area deeper than the walls, or nothing is above it. The ironed area is what the layer above leaves open, intersected with the layer's outline inset by half a line width. The outermost line then runs on the outer wall's centreline, the same inset as PrusaSlicer's and OrcaSlicer's default of half the nozzle. On a box, only the top layer irons. The skin layers under the top have top skin and do not iron, because the layer above covers them. A slope whose open strip is thinner than the walls is not a roof, so it does not iron. Support interface is never ironed, because the pass reads only the part's own cut. The tests slice a ledge with and without supports and get the same ironing.
+
+**Direction.** The lines run along Y and step in X by `spacing`. The top skin is filled at 45° on every layer, so the ironing is 45° off the skin lines. This follows PrusaSlicer, which irons at its fill angle plus 45°. OrcaSlicer irons along the top surface's own direction plus a user offset that defaults to 0°. Rows link along the outline where the link stays inside the area, so a rectangle irons as one zigzag.
+
+**Extrusion.** Each line has the width of a top line, the layer height, and `flow` times a top line's extrusion per millimetre, at `speed`. On the first layer the usual first-layer flow and speed cap apply, as they do to every path. Ironing prints after everything else on its island, so the top skin under it is finished. Ranges and modifier volumes do not change ironing. Z-hop treats an ironing line like a top-skin line, so a travel after it hops under the same rules. Combing and retraction follow the existing rules.
+
+**Preview and G-code.** Ironing is its own kind, `ironing`, with the comment `; TYPE:IRONING`. The legend shows it as Ironing in teal, `#5EEAD4` in `src/colors.ts`, which reads against the top skin's yellow. It can be hidden like any kind. The estimate counts it from the same emit scan as the G-code, and the estimate table gives it its own row, Ironing. On the 20 mm box at the defaults, ironing adds about 190 s.
+
+**Plates.** `ironing` is a plate setting, because decision 2 of [multi-object-and-support-painting.md](multi-object-and-support-painting.md) does not list it per object. A plate passes it to every object. `objects[i].settings.ironing` is refused as a plate setting.
+
+**Kept stages.** Ironing is planned in the toolpaths stage, after each layer's walls, infill, and skin. It is in the toolpaths key. It is blanked in the contours key and in the painted-supports key, so turning ironing on never cuts the mesh again or repaints supports. The layer keys from #133 leave ironing out, and each layer's own inputs include ironing only on a roof. An ironing change therefore plans only the roof layers again, and every other layer keeps its toolpaths. The tour and combing then take every layer whose paths and start point did not change. A move with ironing on reuses every stage, because ironing is planned in the part frame. `tests/ironing_replan.rs` checks that on the box each part stage reuses 14 of 15 layers and the preview patch changes only layer 14. `tests/part_frame.rs` checks the move.
+
+**UI.** `sliceIroningFields` in `src/ironing.ts` sends `ironingRequest`. The stored-only toast is gone. The staleness hash counts ironing as it is sent, so changing a number while ironing is off does not stale a slice. The spacing field still accepts up to 1 mm. With a nozzle under 0.9 mm, a spacing at or above the line width is refused by the engine with the message above.
+
+**Measured cost.** These times were measured through `serve --cache-dir` on this laptop, client side. The request used a speed blend, tree supports, the G-code parked, and no pose. Each change sent `previewBase`. There were two runs, with a fresh server and an empty cache for each sequence.
+
+| Mesh | Cold, no ironing | Cold with ironing | Ironing turned on after a slice | Flow 0.1 to 0.2 |
+| --- | --- | --- | --- | --- |
+| Baby Dragon, 133 layers | 4.91 to 5.51 s | 5.10 to 5.31 s | 1.24 to 1.43 s: 25 layers planned again, 31 changed in the preview | 1.25 to 1.29 s: 25 planned again, 25 changed |
+| Rear cover, 208 layers | 4.97 to 6.14 s | 5.03 to 5.71 s | 0.83 to 0.85 s: 9 planned again, 21 changed | 0.54 to 0.72 s: 9 planned again, 9 changed |
+
+Every change reused the cut, the supports, and the support paths. The tour and combing take the layers below the first roof as they were. From there they tour again until a layer starts where it did before, so turning ironing on changes more preview layers than it plans again. A flow change moves no line, so only the roof layers change.
+
+Ironing costs print time. At the defaults it adds 304 s to 8762 s on the Baby Dragon. On the rear cover it adds 10901 s to 38294 s, because its large flat top is ironed at 20 mm/s.
+
+**Golden.** `tools/golden_ab.sh` against the stored run of c7012d5, with the rear cover and boots.stl in `GOLDEN_EXTRA`, gave 60 same and 0 different. No golden config sends `ironing`, so this shows that an omitted request keeps its bytes.

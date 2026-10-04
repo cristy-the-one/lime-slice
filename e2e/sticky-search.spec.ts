@@ -42,7 +42,6 @@ async function findInScroller(page: Page, scroller: string) {
       portBottom: portBox.bottom,
       levelBottom: levelBox.bottom,
       profileBottom: profileBox.bottom,
-      stuck: document.querySelector(".find-row")?.classList.contains("is-stuck") ?? false,
     };
   }, scroller);
 }
@@ -67,7 +66,7 @@ test("search stays pinned, shortcuts focus it, and a query scrolls to the match"
   expect(pinned!.findBottom).toBeLessThanOrEqual(pinned!.portBottom + 1);
   expect(pinned!.levelBottom).toBeLessThanOrEqual(pinned!.portTop + 1);
   expect(pinned!.profileBottom).toBeLessThanOrEqual(pinned!.portTop + 1);
-  expect(pinned!.stuck).toBe(true);
+  await expect(page.locator(".find-row")).toHaveClass(/is-stuck/);
 
   await page.locator("#left").evaluate((el) => {
     el.scrollTop = 0;
@@ -189,7 +188,7 @@ test.describe("compact sticky search", () => {
     expect(pinned!.findBottom).toBeLessThanOrEqual(pinned!.portBottom + 1);
     expect(pinned!.levelBottom).toBeLessThanOrEqual(pinned!.portTop + 1);
     expect(pinned!.profileBottom).toBeLessThanOrEqual(pinned!.portTop + 1);
-    expect(pinned!.stuck).toBe(true);
+    await expect(page.locator(".find-row")).toHaveClass(/is-stuck/);
 
     await page.locator("#compactTabs [data-tab=prepare]").click();
     await page.waitForTimeout(250);

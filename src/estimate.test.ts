@@ -35,6 +35,7 @@ const rows = [
   { kind: "outer", seconds: 10, filamentMm: 400 },
   { kind: "inner", seconds: 5, filamentMm: 300 },
   { kind: "thin-wall", seconds: 1, filamentMm: 100 },
+  { kind: "ironing", seconds: 4, filamentMm: 20 },
   { kind: "travel", seconds: 3, filamentMm: 0 },
   { kind: "skirt", seconds: 2, filamentMm: 50 },
 ];
@@ -44,6 +45,7 @@ eq(
   [
     ["Outer wall", 10, "1.222"],
     ["Inner wall", 6, "1.222"],
+    ["Ironing", 4, "0.061"],
     ["Travel", 3, "0.000"],
     ["Other", 2, "0.153"],
   ],

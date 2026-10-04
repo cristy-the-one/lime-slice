@@ -8,8 +8,8 @@ use clap::{Parser, Subcommand};
 mod jobs;
 
 use lime_slice_core::{
-    pareto_estimates, slice_request, Axis, BlendMode, GcodeText, Gyroid3d, Mesh, RigidPose,
-    ScarfSeam, SeamPlacement, SliceRequest, SliceSettings, StrategyId, ZHopMode,
+    pareto_estimates, slice_request, Axis, BlendMode, GcodeText, Gyroid3d, Ironing, Mesh,
+    RigidPose, ScarfSeam, SeamPlacement, SliceRequest, SliceSettings, StrategyId, ZHopMode,
 };
 
 #[derive(Parser)]
@@ -109,6 +109,10 @@ enum Cmd {
         /// `aligned`, or `rear`.
         #[arg(long, default_value = "blend")]
         seam: String,
+        /// Iron the top surfaces, as the request's JSON object: `{}` for the
+        /// defaults, or any of `flow`, `speed`, and `spacing`.
+        #[arg(long)]
+        ironing: Option<String>,
         /// Scarf joints: `blend` (strategy default), `off`, `outer`, or `all`.
         #[arg(long, default_value = "blend")]
         scarf_seam: String,
@@ -259,6 +263,7 @@ fn run() -> Result<(), String> {
             combing,
             feature_speeds,
             seam,
+            ironing,
             scarf_seam,
             scarf_length,
             scarf_steps,
@@ -279,6 +284,9 @@ fn run() -> Result<(), String> {
             output,
         } => {
             let seam = SeamPlacement::parse(&seam)?;
+            let ironing = ironing
+                .map(|text| serde_json::from_str::<Ironing>(&text).map_err(|e| e.to_string()))
+                .transpose()?;
             let scarf_seam = ScarfSeam::parse(&scarf_seam)?;
             let gyroid_3d = Gyroid3d::parse(&gyroid_3d)?;
             let z_hop = ZHopMode::parse(&z_hop)?;
@@ -321,6 +329,7 @@ fn run() -> Result<(), String> {
                 combing,
                 feature_speeds,
                 seam,
+                ironing,
                 scarf_seam,
                 scarf_length,
                 scarf_steps,
@@ -1387,6 +1396,7 @@ fn request_for(
         combing: settings.combing,
         feature_speeds: settings.feature_speeds,
         seam: settings.seam,
+        ironing: settings.ironing,
         scarf_seam: settings.scarf_seam,
         scarf_length: settings.scarf_length,
         scarf_steps: settings.scarf_steps,

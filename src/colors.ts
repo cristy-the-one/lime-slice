@@ -8,6 +8,8 @@ export const FEATURE_COLOR: Record<string, string> = {
   infill: "#009E73",
   solid: "#CC79A7",
   top: "#F0E442",
+  // Ironing runs over the top skin, so it is a cool teal that reads against the top's yellow.
+  ironing: "#5EEAD4",
   bridge: "#D55E00",
   // A bead that reaches the outline stays coral. An enclosed gap is fuchsia so
   // the legend swatch and the 3D preview (same palette) can tell them apart.
@@ -27,6 +29,7 @@ export const FEATURE_LABEL: Record<string, string> = {
   infill: "Infill",
   solid: "Solid infill",
   top: "Top / bottom",
+  ironing: "Ironing",
   bridge: "Bridge",
   "thin-wall": "Thin wall",
   "gap-fill": "Gap fill",

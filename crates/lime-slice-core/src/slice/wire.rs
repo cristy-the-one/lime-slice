@@ -65,6 +65,7 @@ const SETTING_SCOPES: &[(&str, Scope)] = &[
     ("infillCombine", Scope::Object),
     ("variableWidth", Scope::Object),
     ("seam", Scope::Plate),
+    ("ironing", Scope::Plate),
     ("heightRanges", Scope::Plate),
     ("modifierVolumes", Scope::Plate),
     ("infill", Scope::NotYet),
