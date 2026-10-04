@@ -1,17 +1,21 @@
 # Seam placement and ironing
 
-The seam picker has shipped. See [Shipped](#shipped-2026-10-04) at the end. Ironing is not implemented. The sections before Shipped are the plan as it was reviewed, and they describe the engine before the picker.
+The seam picker is done. It landed on main in #127, engine and UI together. See [Shipped](#shipped-2026-10-04). Do not add another seam control.
+
+Ironing waits for Claude. `SliceRequest` has `seam` and no ironing field, and `crates/` has no ironing pass, so this note does not add a control. The sections before Shipped are the plan as it was reviewed, and they describe the engine before the picker.
 
 The 2026-10-03 roadmap decision stands: a rear, nearest, and aligned picker is enough before seam painting, and ironing comes before fuzzy skin.
 
-## What the engine does today
+## What the engine did before the picker
 
-Seam placement is `SeamMode` on the resolved strategy, not a request field (`crates/lime-slice-core/src/strategy.rs`).
+This section is the engine before #127. Seam placement is now the `seam` field on `SliceRequest`. See [Shipped](#shipped-2026-10-04).
+
+Seam placement was `SeamMode` on the resolved strategy, not a request field (`crates/lime-slice-core/src/strategy.rs`).
 
 - **Nearest.** The loop starts near the previous extrusion. Speed uses this.
 - **Aligned.** The seam stacks on one side: the sharpest real corner, ties toward +X, or the +X vertex when the loop has no corner. Toughness uses this.
 
-A weight mix follows the resolved strategy. The user cannot ask for rear, or force nearest on a toughness blend, without a new field.
+A weight mix followed the resolved strategy. The user could not ask for rear, or force nearest on a toughness blend, without a new field. #127 added that field.
 
 Scarf is a different control and it already has a request field: `scarfSeam` is `blend`, `off`, `outer`, or `all`. That changes the joint from a butt seam to a scarf. It does not choose rear, nearest, or aligned. The picker must not be wired through `scarfSeam`.
 
@@ -96,7 +100,7 @@ The seam picker landed as decided above. Ironing did not.
 
 With `rear`, every closed outer loop starts within 1 mm of its back: 4825 of 4825 on the Baby Dragon and 1089 of 1089 on the rear cover. Under `blend`, the counts are 1604 of 4825 and 352 of 1089. Overhang control splits some outer walls into open pieces at the overhang's edge. Those pieces start at the split, as they do under `aligned`.
 
-**Ironing still needs** the following:
+**Ironing waits for Claude.** The engine on main has no ironing setting and no request field, so there is no UI for it. When Claude adds it, it still needs the following:
 
 - The request object `ironing` with optional `flow`, `speed`, and `spacing`. Unknown keys are refused, and an omitted object stays byte-identical.
 - A pass over the part's top skins, after the top skin is planned. Use 10% flow, 20 mm/s, 0.1 mm spacing, and an inset of half a line width from the outer wall.
