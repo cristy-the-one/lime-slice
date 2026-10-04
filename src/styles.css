@@ -394,7 +394,17 @@ table.est td:nth-child(3) { width: 5.5rem; font-variant-numeric: tabular-nums; }
 .swatch { width: 10px; height: 10px; display: inline-block; border-radius: 2px; }
 canvas { width: 100%; height: 100%; display: block; touch-action: none; }
 .setting.hidden, .group.hidden { display: none; }
-.find-row { display: flex; gap: 4px; align-items: center; margin-bottom: 8px; }
+.find-row {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin-bottom: 8px;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--panel);
+}
+.find-row.is-stuck { box-shadow: 0 1px 0 var(--line); }
 .find-row input { flex: 1 1 auto; min-width: 0; }
 .history-btn { flex: 0 0 auto; height: 28px; padding: 0 8px; font-size: 12px; }
 .profile-row { display: flex; gap: 4px; align-items: center; margin-bottom: 8px; }

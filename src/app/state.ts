@@ -182,6 +182,11 @@ export const state = {
   travelOpt: true,
   overhangControl: true,
   seam: "blend" as "blend" | "nearest" | "aligned" | "rear",
+  /** Stored only. The slice request has no ironing field yet. */
+  ironing: false,
+  ironingFlow: 0.1,
+  ironingSpeed: 20,
+  ironingSpacing: 0.1,
   scarfSeam: "blend" as "blend" | "off" | "outer" | "all",
   scarfLength: 10,
   scarfSteps: 8,
