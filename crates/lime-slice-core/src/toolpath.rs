@@ -9,7 +9,7 @@ use crate::poly::{
     offset_loops, offset_paths, paths_from_loops, point_in_loop, principal_axis, resolve_nonzero,
     signed_area, Loop,
 };
-use crate::strategy::{InfillPattern, ResolvedStrategy, ScarfSeam, SeamMode, StrategyId};
+use crate::strategy::{InfillPattern, Ironing, ResolvedStrategy, ScarfSeam, SeamMode, StrategyId};
 use crate::support::Disk;
 use clipper2::{EndType, FillRule, JoinType, Milli, Paths};
 
@@ -28,6 +28,7 @@ pub enum PathKind {
     Bridge,
     Support,
     SupportInterface,
+    Ironing,
 }
 
 impl PathKind {
@@ -46,6 +47,7 @@ impl PathKind {
             PathKind::Bridge => "bridge",
             PathKind::Support => "support",
             PathKind::SupportInterface => "support-interface",
+            PathKind::Ironing => "ironing",
         }
     }
 
@@ -1245,7 +1247,7 @@ fn apply_feed(path: &mut Extrusion, strategy: &ResolvedStrategy) {
             }
         }
         PathKind::Solid | PathKind::GapFill => (strategy.solid_speed, strategy.solid_accel),
-        PathKind::Top => (strategy.top_speed, strategy.top_accel),
+        PathKind::Top | PathKind::Ironing => (strategy.top_speed, strategy.top_accel),
         PathKind::Bridge => (strategy.top_speed.min(36.0), strategy.top_accel),
         PathKind::Support | PathKind::SupportInterface => (strategy.print_speed, strategy.accel),
     };
@@ -1268,7 +1270,7 @@ fn kind_strength(kind: PathKind, strategy: &ResolvedStrategy) -> f64 {
             }
         }
         PathKind::Bridge => 0.7,
-        PathKind::Skirt | PathKind::Support | PathKind::SupportInterface => 0.0,
+        PathKind::Skirt | PathKind::Support | PathKind::SupportInterface | PathKind::Ironing => 0.0,
     }
 }
 
@@ -1492,6 +1494,30 @@ fn build_infill(
         InfillPattern::Lightning => sample.lightning(),
     }
     paths
+}
+
+/// Ironing over `area`: lines `spacing` apart along Y, 45° off the top
+/// skin's lines as PrusaSlicer irons, at a `flow` fraction of a top line's
+/// extrusion and at the ironing speed.
+pub fn plan_ironing(
+    area: &[Loop],
+    strategy: &ResolvedStrategy,
+    line_width: f64,
+    ironing: &Ironing,
+) -> Vec<Extrusion> {
+    let rows = solid_fill(area, ironing.spacing, std::f64::consts::FRAC_PI_2, None);
+    // The links between rows run along the outline, where clipping to the
+    // outline itself drops every other one. Ten microns of slack keep them
+    // and still cut a link across a gap.
+    clip_infill(rows, &offset_loops(area, 0.01))
+        .into_iter()
+        .map(|pts| {
+            let mut path = extrusion(PathKind::Ironing, strategy, pts, line_width);
+            path.flow = ironing.flow;
+            path.speed = ironing.speed;
+            path
+        })
+        .collect()
 }
 
 /// Drop any infill chord that leaves the region, including arc-fit bulges and
@@ -2543,6 +2569,7 @@ fn infill_travel_group(kind: PathKind) -> bool {
             | PathKind::Bridge
             | PathKind::Support
             | PathKind::SupportInterface
+            | PathKind::Ironing
     )
 }
 
@@ -4275,13 +4302,13 @@ pub fn apply_z_hop(
         }
         if matches!(
             path.kind,
-            PathKind::Outer | PathKind::Inner | PathKind::Wall | PathKind::Top
+            PathKind::Outer | PathKind::Inner | PathKind::Wall | PathKind::Top | PathKind::Ironing
         ) {
             for w in path.points.windows(2) {
                 printed.push((w[0], w[1]));
             }
         }
-        prev_top = path.kind == PathKind::Top;
+        prev_top = matches!(path.kind, PathKind::Top | PathKind::Ironing);
         cursor = path.points.last().copied();
     }
 }

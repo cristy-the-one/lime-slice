@@ -34,16 +34,16 @@ use crate::poly::{
 use crate::progress::{Stage, Status, Watch};
 use crate::strategy::{
     classicize, layer_weight, mix, pure, support_density, support_interface_density, support_speed,
-    Axis, BlendMode, Gyroid3d, PrinterProfile, ResolvedStrategy, ScarfSeam, SeamPlacement,
+    Axis, BlendMode, Gyroid3d, Ironing, PrinterProfile, ResolvedStrategy, ScarfSeam, SeamPlacement,
     StrategyId, ZHopMode,
 };
 use crate::support::edit::{EditOutcome, SupportEdit};
 use crate::support::skeleton::{skeleton, SupportSkeleton};
 use crate::support::{CoverageGap, Disk, InAir, SupportLayer, SupportOpts, SupportStyle, Supports};
 use crate::toolpath::{
-    apply_overhang, apply_scarf, apply_z_hop, comb_layer, order_supports, plan_region_split,
-    plan_skirt, plan_support, plan_tree_support, Extrusion, PartLayout, PathFeatures, PathKind,
-    ScarfParams, Seam, ShellBand, TravelIn,
+    apply_overhang, apply_scarf, apply_z_hop, comb_layer, order_supports, plan_ironing,
+    plan_region_split, plan_skirt, plan_support, plan_tree_support, Extrusion, PartLayout,
+    PathFeatures, PathKind, ScarfParams, Seam, ShellBand, TravelIn,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -135,6 +135,10 @@ pub struct SliceRequest {
     /// `aligned`, or `rear`. Left out at `blend`, so the request's key holds.
     #[serde(default, skip_serializing_if = "SeamPlacement::is_blend")]
     pub seam: SeamPlacement,
+    /// A low-flow pass over the part's top surfaces. Left out when off, so
+    /// the request's key holds. `{}` is on at the defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ironing: Option<Ironing>,
     /// `blend` follows the strategy, or `off` / `outer` / `all`.
     #[serde(default)]
     pub scarf_seam: ScarfSeam,
@@ -273,6 +277,7 @@ pub struct SliceSettings {
     pub combing: bool,
     pub feature_speeds: bool,
     pub seam: SeamPlacement,
+    pub ironing: Option<Ironing>,
     pub scarf_seam: ScarfSeam,
     pub scarf_length: f64,
     pub scarf_steps: u32,
@@ -334,6 +339,7 @@ impl Default for SliceSettings {
             combing: true,
             feature_speeds: true,
             seam: SeamPlacement::Blend,
+            ironing: None,
             scarf_seam: ScarfSeam::Blend,
             scarf_length: default_scarf_length(),
             scarf_steps: default_scarf_steps(),
@@ -422,6 +428,7 @@ impl SliceSettings {
             combing: req.combing && !req.classic,
             feature_speeds: req.feature_speeds && !req.classic,
             seam: req.seam,
+            ironing: req.ironing,
             scarf_seam: if req.classic {
                 ScarfSeam::Off
             } else {
@@ -542,7 +549,13 @@ impl SliceSettings {
             SeamPlacement::Blend => String::new(),
             placed => format!("; seam {}", placed.as_str()),
         };
-        format!("{layers}; {supports}; {combine}; {scarf}; {gyroid}; {hop}{seam}")
+        let ironing = self.ironing.map_or(String::new(), |i| {
+            format!(
+                "; ironing flow {} speed {} spacing {}",
+                i.flow, i.speed, i.spacing
+            )
+        });
+        format!("{layers}; {supports}; {combine}; {scarf}; {gyroid}; {hop}{seam}{ironing}")
     }
 }
 
@@ -864,6 +877,9 @@ pub fn slice_request_watched(
     }
     let profile = req.printer.clone().unwrap_or_default();
     let overrides = wire::parse_overrides(req, [profile.bed_x, profile.bed_y])?;
+    if let Some(ironing) = &req.ironing {
+        ironing.check(SliceSettings::from_request(req).line_width)?;
+    }
     let listed = req.objects.is_some();
     let requests = if listed {
         wire::object_requests(req)?
@@ -1052,6 +1068,7 @@ fn resolved(settings: &SliceSettings) -> SliceSettings {
         settings.combing = false;
         settings.feature_speeds = false;
         settings.seam = SeamPlacement::Blend;
+        settings.ironing = None;
         settings.scarf_seam = ScarfSeam::Off;
         settings.gyroid_3d = Gyroid3d::Off;
         settings.z_hop = ZHopMode::Off;
@@ -3004,8 +3021,8 @@ struct ObjectLayer {
 /// overhangs split, in the order they were planned. Supports never read it.
 pub(crate) struct PartPaths {
     layers: Vec<Arc<ObjectLayer>>,
-    /// Each layer's overrides as resolved for it, from `layer_overrides`.
-    overrides: Vec<[u8; 32]>,
+    /// Each layer's own inputs, from `layer_inputs`.
+    inputs: Vec<[u8; 32]>,
     /// The kept layer key the layers were planned under.
     base: [u8; 32],
     /// Layers taken from a kept plan instead of planned.
@@ -3255,9 +3272,9 @@ fn edit(
     }
 }
 
-/// Every layer's walls, infill, and skin, with overhangs split. A layer of
-/// `kept`, planned under the same `base`, is taken as it is when its own
-/// overrides are the same.
+/// Every layer's walls, infill, and skin, with overhangs split, and the
+/// ironing over each roof. A layer of `kept`, planned under the same `base`,
+/// is taken as it is when its own inputs are the same.
 fn part_paths(
     cut: &Contours,
     blend: &BlendMode,
@@ -3280,10 +3297,11 @@ fn part_paths(
         .par_iter()
         .enumerate()
         .map(|(i, band)| {
-            let overrides = layer_overrides(&settings.overrides, band.z, &contours[i]);
-            if let Some(kept) = kept.filter(|k| k.overrides.get(i) == Some(&overrides)) {
+            let ironing = settings.ironing.filter(|_| cut.roofs[i] == 0.0);
+            let inputs = layer_inputs(&settings.overrides, band.z, &contours[i], ironing);
+            if let Some(kept) = kept.filter(|k| k.inputs.get(i) == Some(&inputs)) {
                 watch.tick();
-                return (overrides, Arc::clone(&kept.layers[i]), true);
+                return (inputs, Arc::clone(&kept.layers[i]), true);
             }
             if watch.stopped(settings.job) {
                 let layer = ObjectLayer {
@@ -3292,7 +3310,7 @@ fn part_paths(
                     wall_ms: 0.0,
                     infill_ms: 0.0,
                 };
-                return (overrides, Arc::new(layer), false);
+                return (inputs, Arc::new(layer), false);
             }
             let mut layer = object_layer(
                 band.index,
@@ -3316,8 +3334,13 @@ fn part_paths(
                     settings.line_width,
                 );
             }
+            if let Some(ironing) = ironing {
+                layer
+                    .paths
+                    .extend(iron_layer(cut, i, blend, settings, &ironing));
+            }
             watch.tick();
-            (overrides, Arc::new(layer), false)
+            (inputs, Arc::new(layer), false)
         })
         .collect();
     let toolpath_ms = elapsed_ms(toolpath_started);
@@ -3330,20 +3353,59 @@ fn part_paths(
         wall_cpu_ms: fresh().map(|l| l.wall_ms).sum(),
         infill_cpu_ms: fresh().map(|l| l.infill_ms).sum(),
         reused: planned.iter().filter(|p| p.2).count() as u32,
-        overrides: planned.iter().map(|p| p.0).collect(),
+        inputs: planned.iter().map(|p| p.0).collect(),
         layers: planned.into_iter().map(|p| p.1).collect(),
         base,
         toolpath_ms,
     })
 }
 
-/// What the overrides change on the layer at `z` with `contours`: the range
-/// over it and the volumes that can reach it, hashed. Every other input of a
-/// layer's toolpaths is the same for all layers of a plan.
-fn layer_overrides(overrides: &Overrides, z: f64, contours: &[Loop]) -> [u8; 32] {
+/// The inputs of the layer at `z` with `contours` that differ from layer to
+/// layer, hashed: the range over it, the volumes that can reach it, and its
+/// ironing, which only a roof has. Every other input of a layer's toolpaths
+/// is the same for all layers of a plan.
+fn layer_inputs(
+    overrides: &Overrides,
+    z: f64,
+    contours: &[Loop],
+    ironing: Option<Ironing>,
+) -> [u8; 32] {
     let range = overrides.range_at(z);
     let prints = layer_footprints(overrides, z, contours);
-    Sha256::digest(format!("{range:?}|{prints:?}")).into()
+    Sha256::digest(format!("{range:?}|{prints:?}|{ironing:?}")).into()
+}
+
+/// Ironing over layer `i`'s top surface: what the layer above leaves open,
+/// within the outline inset by half a line width. Ranges and volumes do not
+/// change it.
+fn iron_layer(
+    cut: &Contours,
+    i: usize,
+    blend: &BlendMode,
+    settings: &SliceSettings,
+    ironing: &Ironing,
+) -> Vec<Extrusion> {
+    let contours = &cut.contours[i];
+    let open = match cut.contours.get(i + 1) {
+        Some(above) if !above.is_empty() => boolean_diff(contours, above),
+        _ => contours.clone(),
+    };
+    let area = boolean_intersect(&open, &offset_loops(contours, -settings.line_width * 0.5));
+    if area.is_empty() {
+        return Vec::new();
+    }
+    let iron =
+        |strategy: &ResolvedStrategy| plan_ironing(&area, strategy, settings.line_width, ironing);
+    match blend {
+        BlendMode::ByRegion { axis, at_mm } => {
+            let tough = iron(&resolve(pure(StrategyId::Toughness), settings));
+            let speed = iron(&resolve(pure(StrategyId::Speed), settings));
+            let mut paths = keep_side(tough, *axis, *at_mm, true);
+            paths.extend(keep_side(speed, *axis, *at_mm, false));
+            paths
+        }
+        other => iron(&layer_strategy(other, cut.bands[i].z, settings)),
+    }
 }
 
 /// Orders each layer of the part as one tour, starting where the part's
