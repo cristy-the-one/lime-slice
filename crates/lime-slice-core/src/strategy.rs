@@ -109,6 +109,82 @@ pub enum SeamPlacement {
     Rear,
 }
 
+/// A second pass over the part's top surfaces at low flow, which smooths
+/// them. Every key is optional on the wire: `{}` is on at 10% flow, 20 mm/s,
+/// and 0.1 mm spacing.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "serde_json::Value")]
+pub struct Ironing {
+    /// Fraction of a normal top line's extrusion per millimetre.
+    pub flow: f64,
+    /// Millimetres per second.
+    pub speed: f64,
+    /// Millimetres between ironing lines.
+    pub spacing: f64,
+}
+
+impl Default for Ironing {
+    fn default() -> Self {
+        Self {
+            flow: 0.1,
+            speed: 20.0,
+            spacing: 0.1,
+        }
+    }
+}
+
+impl Ironing {
+    /// Refuses a value no print can use. Spacing has to stay below the line
+    /// width, or the passes leave stripes of the top skin untouched.
+    pub fn check(&self, line_width: f64) -> Result<(), String> {
+        if !(self.flow.is_finite() && self.flow > 0.0 && self.flow <= 1.0) {
+            return Err(format!(
+                "ironing.flow {} must be above 0 and at most 1",
+                self.flow
+            ));
+        }
+        if !(self.speed.is_finite() && self.speed > 0.0) {
+            return Err(format!("ironing.speed {} must be above 0 mm/s", self.speed));
+        }
+        if !(self.spacing.is_finite() && self.spacing > 0.0 && self.spacing < line_width) {
+            return Err(format!(
+                "ironing.spacing {} must be above 0 and below the line width, {line_width} mm",
+                self.spacing
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl TryFrom<serde_json::Value> for Ironing {
+    type Error = String;
+
+    fn try_from(value: serde_json::Value) -> Result<Self, String> {
+        let serde_json::Value::Object(keys) = value else {
+            return Err(format!(
+                "ironing {value} is not an object; send {{}} or any of flow, speed, and spacing"
+            ));
+        };
+        let mut ironing = Ironing::default();
+        for (key, value) in keys {
+            let slot = match key.as_str() {
+                "flow" => &mut ironing.flow,
+                "speed" => &mut ironing.speed,
+                "spacing" => &mut ironing.spacing,
+                _ => {
+                    return Err(format!(
+                        "ironing.{key} is not an ironing setting; send flow, speed, or spacing"
+                    ))
+                }
+            };
+            *slot = value
+                .as_f64()
+                .ok_or_else(|| format!("ironing.{key} {value} is not a number"))?;
+        }
+        Ok(ironing)
+    }
+}
+
 /// Where a scarf joint replaces a butt seam.
 ///
 /// `Blend` follows the resolved strategy: toughness (and a weight mix at or

@@ -133,6 +133,8 @@ fn moving_a_part_on_the_bed_only_shifts_the_gcode() {
     let region_left = slice(&at_t1(region(100.0)));
     let rear_t0 = slice(&at_t0(json!({"seam": "rear"})));
     let rear_t1 = slice(&at_t1(json!({"seam": "rear"})));
+    let iron_t0 = slice(&at_t0(json!({"ironing": {}})));
+    let iron_t1 = slice(&at_t1(json!({"ironing": {}})));
     keep_support_bases(false);
     let cold_t1 = slice(&at_t1(json!({})));
     let cold_pruned_t1 = slice(&at_t1(json!({"supportEdits": [prune]})));
@@ -202,11 +204,34 @@ fn moving_a_part_on_the_bed_only_shifts_the_gcode() {
         vec!["contours", "supports", "supportPaths"],
         "a seam change plans the part's paths again"
     );
-    assert_eq!(reused(&rear_t1), ALL.to_vec(), "rear is read in the part frame");
+    assert_eq!(
+        reused(&rear_t1),
+        ALL.to_vec(),
+        "rear is read in the part frame"
+    );
     assert!(rear_t0["gcode"] != t0["gcode"]);
     assert_shifted(
         rear_t0["gcode"].as_str().unwrap(),
         rear_t1["gcode"].as_str().unwrap(),
+    );
+
+    assert_eq!(
+        reused(&iron_t0),
+        vec!["contours", "supports", "supportPaths"],
+        "turning ironing on keeps the cut and the supports"
+    );
+    assert_eq!(
+        reused(&iron_t1),
+        ALL.to_vec(),
+        "ironing is planned in the part frame"
+    );
+    assert!(iron_t0["gcode"]
+        .as_str()
+        .unwrap()
+        .contains("; TYPE:IRONING"));
+    assert_shifted(
+        iron_t0["gcode"].as_str().unwrap(),
+        iron_t1["gcode"].as_str().unwrap(),
     );
 }
 
