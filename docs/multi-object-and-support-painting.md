@@ -450,7 +450,9 @@ The move rule follows. A move of B changes A's supports only when B's old or new
 
 `supportEdits` are per object, in that object's part frame. They replay on whichever plan the closure settled on. A move that keeps `S` reuses the edited plan. A move that changes `S` replays the edits on the new plan, and prunes whose site moved report `stale` as today.
 
-Not in this step: supports of two objects do not avoid each other. Two trees in the gap between objects can overlap. The closure uses the supports before edits, so a regrow edit that reaches toward a far object does not add it to `S`.
+Two objects' trees never print in the same place. Objects are planned in plate order, and the trees an earlier object grew, after its edits, are candidates for a later object's `S` just as parts are. They enter its solid as everything they print: columns, interface, and each trunk disk as far as its bead reaches, grown by one more bead. A disk thinner than a bead prints as one circle on its edge, and a squeezed disk of the later object may stand as close as `MIN_DISK_R` to the solid, so the extra bead keeps the two beads apart. The later object's trees then route around the earlier ones, and may stand on them, as on a part. Such a neighbour is keyed by the earlier object's whole key and edits and its shift, so it is cached like a part and joins `S` only while it comes near. A far move leaves `S`, and so every stage, as it was. The order is plate order, so the same plate always yields the same trees.
+
+The closure uses the supports before edits, so a regrow edit that reaches toward a far object does not add it to `S`.
 
 ### Design: kept stages
 

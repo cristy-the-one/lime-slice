@@ -10,9 +10,9 @@ use sha2::{Digest, Sha256};
 use super::{Collision, Contours, SliceSettings, SupportPlan, XyRect};
 use crate::adaptive::LayerBand;
 use crate::gcode::{Entry, PlateLayer, PrintLayer, Run};
-use crate::poly::{boolean_union, loop_bounds, Loop};
+use crate::poly::{boolean_union, loop_bounds, offset_loops, Loop};
 use crate::strategy::{StrategyId, ZHopMode};
-use crate::support::SupportOpts;
+use crate::support::{SupportLayer, SupportOpts, Supports};
 use crate::toolpath::Extrusion;
 
 /// One layer Z of the plate, and for each object printing at it, the object
@@ -168,13 +168,95 @@ fn cross_hop(settings: &SliceSettings, path: &Extrusion, dist: f64) -> f64 {
     }
 }
 
-/// Another object of the plate, as one object's supports may see it.
+/// Another object of the plate, as one object's supports may see it: its
+/// part, or the trees it already grew.
 pub(super) struct Neighbour {
-    pub cut: Arc<Contours>,
-    /// Its cut's content key, so the obstacle list does not depend on plate order.
-    pub key: [u8; 32],
+    /// Its cut. Its layers follow these bands.
+    cut: Arc<Contours>,
+    /// Its printed supports when this is its trees rather than its part.
+    trees: Option<Arc<Supports>>,
+    /// The line width its trees print with. Unused for a part.
+    bead: f64,
+    /// Each band's XY box of what it prints, in its own frame.
+    boxes: Vec<Option<XyRect>>,
+    /// Its content key, so the obstacle list does not depend on plate order.
+    key: [u8; 32],
     /// Added to its coordinates to bring them into the seeing object's frame.
-    pub shift: [f64; 2],
+    shift: [f64; 2],
+}
+
+impl Neighbour {
+    pub fn part(cut: &Arc<Contours>, key: [u8; 32], shift: [f64; 2]) -> Self {
+        Self {
+            boxes: cut.boxes().to_vec(),
+            cut: Arc::clone(cut),
+            trees: None,
+            bead: 0.0,
+            key,
+            shift,
+        }
+    }
+
+    /// `bead` is the line width the trees print with.
+    pub fn trees(
+        cut: &Arc<Contours>,
+        trees: &Arc<Supports>,
+        bead: f64,
+        key: [u8; 32],
+        shift: [f64; 2],
+    ) -> Self {
+        Self {
+            boxes: trees.reach(),
+            cut: Arc::clone(cut),
+            trees: Some(Arc::clone(trees)),
+            bead,
+            key,
+            shift,
+        }
+    }
+
+    /// What it occupies on its band `j`, in its own frame.
+    fn outline(&self, j: usize) -> Vec<Loop> {
+        match &self.trees {
+            None => self.cut.contours[j].clone(),
+            Some(trees) => footprint(&trees.layers[j], self.bead),
+        }
+    }
+}
+
+/// One layer's support as solid: its columns, its interface, and every trunk
+/// disk as far as its bead reaches, grown by one more bead. A disk thinner
+/// than a bead prints as one circle centred on its edge (`plan_tree_support`),
+/// and a squeezed disk of the other object stands as little as
+/// `MIN_DISK_R` from this outline, so the extra bead keeps the two apart.
+fn footprint(layer: &SupportLayer, bead: f64) -> Vec<Loop> {
+    let disks: Vec<Loop> = layer
+        .disks
+        .iter()
+        .map(|d| {
+            let r = if d.r <= bead * 0.95 {
+                d.r.max(0.32) + bead * 0.5
+            } else {
+                d.r
+            };
+            (0..24)
+                .map(|k| {
+                    let t = k as f64 * std::f64::consts::TAU / 24.0;
+                    [d.xy[0] + r * t.cos(), d.xy[1] + r * t.sin()]
+                })
+                .collect()
+        })
+        .collect();
+    let areas = boolean_union(&layer.interface, &layer.sparse);
+    let printed = match (areas.is_empty(), disks.split_first()) {
+        (true, Some((first, rest))) => boolean_union(std::slice::from_ref(first), rest),
+        _ => boolean_union(&areas, &disks),
+    };
+    if printed.is_empty() {
+        printed
+    } else {
+        offset_loops(&printed, bead)
+    }
 }
 
 /// Other objects a support plan grows among: their outlines unioned with the
@@ -236,7 +318,7 @@ pub(super) fn settle<T>(
 /// plan on some layer of `cut`.
 fn meets(cut: &Contours, reach: &[Option<XyRect>], neighbour: &Neighbour) -> bool {
     let pad = margin();
-    let boxes = neighbour.cut.boxes();
+    let boxes = &neighbour.boxes;
     cut.bands.iter().zip(reach).any(|(band, printed)| {
         let (Some((lo, hi)), Some(j)) = (printed, neighbour.cut.band_at(band)) else {
             return false;
@@ -266,7 +348,8 @@ fn solid_among(cut: &Contours, neighbours: &[Neighbour], near: &[usize]) -> Vec<
                     continue;
                 };
                 let [dx, dy] = n.shift;
-                let moved: Vec<Loop> = n.cut.contours[j]
+                let moved: Vec<Loop> = n
+                    .outline(j)
                     .iter()
                     .map(|l| l.iter().map(|p| [p[0] + dx, p[1] + dy]).collect())
                     .collect();

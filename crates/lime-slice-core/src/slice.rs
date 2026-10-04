@@ -5,6 +5,7 @@ use std::time::Instant;
 use base64::Engine;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 mod kept;
 mod patch;
@@ -1097,16 +1098,30 @@ fn slice_plate(
     let offsets: Vec<[f64; 2]> = objects.iter().map(PlateObject::to_bed).collect();
     let mut plans: Vec<Plan> = Vec::with_capacity(objects.len());
     for (a, (o, (cut, reused, keys))) in objects.iter().zip(&cuts).enumerate() {
-        let neighbours: Vec<plate::Neighbour> = cuts
+        let shift = |b: usize| [offsets[b][0] - offsets[a][0], offsets[b][1] - offsets[a][1]];
+        // Every other part, and the trees of the objects planned before this
+        // one, so two objects' trees never print in the same place.
+        let parts = cuts
             .iter()
             .enumerate()
             .filter(|&(b, _)| b != a)
-            .map(|(b, (cut, _, keys))| plate::Neighbour {
-                cut: Arc::clone(cut),
-                key: keys.as_ref().map_or([0; 32], |k| k.contours),
-                shift: [offsets[b][0] - offsets[a][0], offsets[b][1] - offsets[a][1]],
-            })
-            .collect();
+            .map(|(b, (cut, _, keys))| {
+                plate::Neighbour::part(cut, keys.as_ref().map_or([0; 32], |k| k.contours), shift(b))
+            });
+        let trees = plans.iter().enumerate().map(|(b, plan)| {
+            let key = plan.kept.as_ref().map_or([0; 32], |k| {
+                let edits = &objects[b].settings.support_edits;
+                Sha256::digest(format!("trees|{:?}|{edits:?}", k.key)).into()
+            });
+            plate::Neighbour::trees(
+                &plan.cut,
+                &plan.supports,
+                objects[b].settings.line_width,
+                key,
+                shift(b),
+            )
+        });
+        let neighbours: Vec<plate::Neighbour> = parts.chain(trees).collect();
         plans.push(plan_object(
             Arc::clone(cut),
             *reused,
