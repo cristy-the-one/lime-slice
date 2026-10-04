@@ -66,3 +66,25 @@ grams = filamentMm × π (filamentDiameter / 2)² × density / 1000
 Editing either field after a slice therefore shows the new grams and cost at once, keeps Export enabled, and sends no request.
 
 The engine prints one density-dependent line, the G-code footer's `; TIME:… FILAMENT_MM:… FILAMENT_G:…`, at its default 1.24 g/cm³. The UI writes the profile's grams into that line when it exports or uploads the G-code (`withFooterGrams` in `src/estimate.ts`), with the same formula and three decimals. CLI output does not change.
+
+## Measured
+
+Measured on 2026-10-04 through `serve --cache-dir`, from a Python client on the same machine, with the release build. A move shifts the part 25 mm in X. A tweak changes the nozzle temperature by 5 °C. Each figure is the median of three, after one cold slice. "Before" is 27ef8ea, which sends `dataB64` on every request.
+
+| Mesh | Step | Request before | Request after | Wall before | Wall after |
+|---|---|---|---|---|---|
+| Baby Dragon, 475,270 triangles | move | 31.7 MB | 1.2 KB | 195 ms | 107 ms |
+| Baby Dragon | tweak | 31.7 MB | 1.2 KB | 190 ms | 97 ms |
+| Rear cover, STEP at 0.1 mm | move | 0.36 MB | 1.2 KB | 86 ms | 86 ms |
+| Rear cover | tweak | 0.36 MB | 1.2 KB | 63 ms | 63 ms |
+
+The engine's own time (`coreMs`) stayed at 55 to 62 ms on the dragon and 36 to 50 ms on the cover. The STEP cover tessellates to a 0.36 MB STL at the app's default tolerance, so its upload was already small. In the e2e run, the 2.5 MB dragon sample's first job body was 2.5 MB and its move's body was 1,268 bytes.
+
+The desktop app passes the request as one string over Tauri IPC, and that is where the bytes cost most. Timed in the webview around `invoke("slice_model")`, with the same build sending `dataB64` on every call and then `meshRef`:
+
+| Mesh | Step | Wall with `dataB64` | Wall with `meshRef` |
+|---|---|---|---|
+| Baby Dragon | move | 1,125 ms | 77 ms |
+| Baby Dragon | tweak | 1,168 ms | 96 ms |
+
+On the engine side, hashing the dragon's 23.8 MB once takes 14 ms and parsing it takes 6 ms.
