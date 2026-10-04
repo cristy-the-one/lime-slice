@@ -41,8 +41,8 @@ pub use slice::{
     contour_times, keep_support_bases, outline_tolerance_mm, pareto_estimates, slice_configured,
     slice_configured_watched, slice_request, slice_request_watched, slice_with_baseline,
     BlendScore, CompareEstimate, EditOutcomeView, FeatureEstimate, HeightRangeSpec,
-    ModifierVolumeSpec, ParetoPoint, PreviewLayer, PrintEstimate, RigidPose, SiteSpec,
-    SliceRequest, SliceResponse, SliceSettings, SupportEditSpec, VolumeKind,
+    ModifierVolumeSpec, PaintDiskSpec, ParetoPoint, PreviewLayer, PrintEstimate, RigidPose,
+    SiteSpec, SliceRequest, SliceResponse, SliceSettings, SupportEditSpec, VolumeKind,
 };
 pub use slice_cache::{slice_payload, slice_payload_watched, SliceCache};
 pub use step::{
@@ -54,5 +54,6 @@ pub use strategy::{
     SeamPlacement, StrategyCard, StrategyId, ZHopMode,
 };
 pub use support::edit::{EditStatus, SupportEdit, TipSite};
+pub use support::paint::{PaintDisk, PaintKind, PaintTally};
 pub use support::skeleton::SupportSkeleton;
 pub use support::{CoverageGap, InAir, SupportStyle};

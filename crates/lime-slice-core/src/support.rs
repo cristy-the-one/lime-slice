@@ -11,7 +11,10 @@ use crate::poly::{
 };
 
 pub(crate) mod edit;
+pub(crate) mod paint;
 pub(crate) mod skeleton;
+
+use paint::PaintDisk;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SupportStyle {
@@ -256,22 +259,24 @@ impl Supports {
             bands,
             contours,
             contours,
+            &[],
             opts,
             &crate::progress::Watch::idle(),
         )
     }
 
-    /// Supports holding up `own`, the part's contours. `solid` is what the
-    /// trees avoid and may stand on: the part, and any other object moved
-    /// into the part's frame. Alone, it is `own`.
+    /// Supports holding up `own`, the part's contours, as `paint` asks.
+    /// `solid` is what the trees avoid and may stand on: the part, and any
+    /// other object moved into the part's frame. Alone, it is `own`.
     pub(crate) fn build_with(
         bands: &[LayerBand],
         own: &[Vec<Loop>],
         solid: &[Vec<Loop>],
+        paint: &[PaintDisk],
         opts: &SupportOpts,
         watch: &crate::progress::Watch,
     ) -> Option<Self> {
-        let mut supports = Self::walk_with(bands, own, solid, opts, watch)?;
+        let mut supports = Self::walk_with(bands, own, solid, paint, opts, watch)?;
         if !project(
             &mut supports.layers,
             1,
@@ -308,6 +313,7 @@ impl Supports {
             bands,
             contours,
             contours,
+            &[],
             opts,
             &crate::progress::Watch::idle(),
         )
@@ -317,10 +323,11 @@ impl Supports {
         bands: &[LayerBand],
         own: &[Vec<Loop>],
         solid: &[Vec<Loop>],
+        paint: &[PaintDisk],
         opts: &SupportOpts,
         watch: &crate::progress::Watch,
     ) -> Option<Self> {
-        let demand = Demand::new(bands, own, solid, opts, watch)?;
+        let demand = Demand::new(bands, own, solid, paint, opts, watch)?;
         let (forest, disks) = if opts.style == SupportStyle::Tree {
             grow(&demand, bands, solid, opts, watch)?
         } else {
@@ -571,12 +578,13 @@ impl Patch {
 }
 
 impl Demand {
-    /// Overhangs come from `own`. Interface keeps clear of `solid`, and a
-    /// column that reaches it stops there.
+    /// Overhangs come from `own`, painted. Interface keeps clear of
+    /// `solid`, and a column that reaches it stops there.
     fn new(
         bands: &[LayerBand],
         own: &[Vec<Loop>],
         solid: &[Vec<Loop>],
+        paint: &[PaintDisk],
         opts: &SupportOpts,
         watch: &crate::progress::Watch,
     ) -> Option<Self> {
@@ -597,7 +605,7 @@ impl Demand {
         // parallel. The pass below carries each overhang down to its contact.
         let overhangs: Vec<Vec<Loop>> = (0..n)
             .into_par_iter()
-            .map(|i| overhang_at(bands, own, i, angle))
+            .map(|i| paint::paint_layer(paint, bands, own, i, overhang_at(bands, own, i, angle)))
             .collect();
         let gaps: Vec<Vec<Loop>> = contours
             .par_iter()

@@ -8,6 +8,8 @@ use super::{RigidPose, SliceRequest};
 use crate::adaptive::LayerBand;
 use crate::modifiers::{HeightRange, Overrides, Shape, Tweak, Volume};
 use crate::support::edit::{EditOutcome, EditStatus, SupportEdit, TipSite};
+use crate::support::paint::PaintTally;
+use crate::support::paint::{PaintDisk, PaintKind};
 use crate::support::skeleton::SupportSkeleton;
 use crate::support::{CoverageGap, InAir};
 
@@ -33,6 +35,9 @@ pub struct ObjectSpec {
     pub settings: Map<String, Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub support_edits: Vec<SupportEditSpec>,
+    /// In this object's mesh frame, like its own `supportEdits`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub support_paint: Vec<PaintDiskSpec>,
 }
 
 /// Who may set a request key.
@@ -111,6 +116,7 @@ pub(crate) fn object_requests(req: &SliceRequest) -> Result<Vec<SliceRequest>, S
         ("meshRef", req.mesh_ref.is_some()),
         ("pose", req.pose.is_some()),
         ("supportEdits", !req.support_edits.is_empty()),
+        ("supportPaint", !req.support_paint.is_empty()),
     ] {
         if sent {
             return Err(format!(
@@ -166,6 +172,7 @@ pub(crate) fn object_requests(req: &SliceRequest) -> Result<Vec<SliceRequest>, S
             one.mesh_ref = spec.mesh_ref.clone();
             one.pose = spec.pose;
             one.support_edits = spec.support_edits.clone();
+            one.support_paint = spec.support_paint.clone();
             if let Some(tol) = spec.step_tolerance_mm {
                 one.step_tolerance_mm = tol;
             }
@@ -191,6 +198,9 @@ pub struct ObjectView {
     pub skeleton: Option<SupportSkeleton>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub support_edits: Vec<EditOutcomeView>,
+    /// Only when the object was sent with paint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support_paint: Option<PaintTally>,
     /// Stages taken from memory, as `StageTimes.reused` names them.
     pub reused: Vec<&'static str>,
 }
@@ -230,6 +240,76 @@ const MAX_EDITS: usize = 1000;
 const MAX_SITES: usize = 200_000;
 const MAX_REGION_POINTS: usize = 100_000;
 const MAX_MM: f64 = 100_000.0;
+
+/// One support paint disk on the wire, in the mesh frame of the object it
+/// was painted on: the frame of the mesh bytes, before the pose.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaintDiskSpec {
+    /// `enforce` or `block`.
+    pub kind: String,
+    pub p: [f64; 3],
+    pub n: [f64; 3],
+    pub r: f64,
+}
+
+const MAX_PAINT_DISKS: usize = 20_000;
+const PAINT_RADIUS_MM: std::ops::RangeInclusive<f64> = 0.2..=40.0;
+
+/// Checks every disk and turns it into the engine's form, with a unit
+/// normal. The error names the disk, as `supportPaint[3].r`.
+pub(crate) fn parse_support_paint(specs: &[PaintDiskSpec]) -> Result<Vec<PaintDisk>, String> {
+    if specs.len() > MAX_PAINT_DISKS {
+        return Err(format!(
+            "supportPaint has {} disks, at most {MAX_PAINT_DISKS} are allowed",
+            specs.len()
+        ));
+    }
+    specs
+        .iter()
+        .enumerate()
+        .map(|(k, spec)| {
+            let field = |name: &str| format!("supportPaint[{k}].{name}");
+            let kind = match spec.kind.as_str() {
+                "enforce" => PaintKind::Enforce,
+                "block" => PaintKind::Block,
+                other => {
+                    return Err(format!(
+                        "{} \"{other}\" is not enforce or block",
+                        field("kind")
+                    ))
+                }
+            };
+            for (name, v) in [("p", &spec.p), ("n", &spec.n)] {
+                if v.iter().any(|c| !c.is_finite()) {
+                    return Err(format!("{} is not finite", field(name)));
+                }
+                if v.iter().any(|c| c.abs() > MAX_MM) {
+                    return Err(format!("{} is out of range", field(name)));
+                }
+            }
+            if !spec.r.is_finite() || !PAINT_RADIUS_MM.contains(&spec.r) {
+                return Err(format!(
+                    "{} is {} mm, it must be {} to {} mm",
+                    field("r"),
+                    spec.r,
+                    PAINT_RADIUS_MM.start(),
+                    PAINT_RADIUS_MM.end()
+                ));
+            }
+            let len = spec.n.iter().map(|c| c * c).sum::<f64>().sqrt();
+            if len < 1e-9 {
+                return Err(format!("{} has no length", field("n")));
+            }
+            Ok(PaintDisk {
+                kind,
+                p: spec.p,
+                n: spec.n.map(|c| c / len),
+                r: spec.r,
+            })
+        })
+        .collect()
+}
 
 /// Checks every edit and turns it into the engine's form. The error names
 /// the edit, as `supportEdits[1]: a prune needs at least one site`.
@@ -486,4 +566,34 @@ fn tweak(infill: Option<f64>, walls: Option<u32>, speed: Option<f64>) -> Result<
         walls,
         speed,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_non_finite_paint_disk_names_its_field() {
+        let disk = |p: [f64; 3], n: [f64; 3], r: f64| PaintDiskSpec {
+            kind: "block".into(),
+            p,
+            n,
+            r,
+        };
+        let refuse = |spec| parse_support_paint(&[spec]).unwrap_err();
+        assert_eq!(
+            refuse(disk([f64::NAN, 0.0, 0.0], [0.0, 0.0, 1.0], 1.0)),
+            "supportPaint[0].p is not finite"
+        );
+        assert_eq!(
+            refuse(disk([0.0, 0.0, 0.0], [0.0, f64::INFINITY, 1.0], 1.0)),
+            "supportPaint[0].n is not finite"
+        );
+        assert_eq!(
+            refuse(disk([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], f64::NAN)),
+            "supportPaint[0].r is NaN mm, it must be 0.2 to 40 mm"
+        );
+        let ok = parse_support_paint(&[disk([1.0, 2.0, 3.0], [0.0, 0.0, -2.0], 0.2)]).unwrap();
+        assert_eq!(ok[0].n, [0.0, 0.0, -1.0]);
+    }
 }
