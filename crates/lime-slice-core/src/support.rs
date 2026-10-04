@@ -5,9 +5,9 @@ use serde::Serialize;
 
 use crate::adaptive::LayerBand;
 use crate::poly::{
-    boolean_diff, boolean_union, distance_to_outline, drop_slivers, in_solid, local_diff,
-    local_union, loop_bounds, offset_loops, point_in_loop, resolve_nonzero, signed_area,
-    simplify_loops, Loop, LoopIndex,
+    boolean_diff, boolean_intersect, boolean_union, distance_to_outline, drop_slivers, in_solid,
+    local_diff, local_union, loop_bounds, offset_loops, point_in_loop, resolve_nonzero,
+    signed_area, simplify_loops, Loop, LoopIndex,
 };
 
 pub(crate) mod edit;
@@ -702,7 +702,7 @@ fn grow(
     watch: &crate::progress::Watch,
 ) -> Option<(Forest, Vec<Vec<Disk>>)> {
     let n = bands.len();
-    let mut walk = Walk::new(bands, contours, opts, 1);
+    let mut walk = Walk::new(bands, contours, &demand.interface, opts, 1);
     let mut forest = Forest::new(n);
     let mut disks = vec![Vec::new(); n];
     let mut none = Fixed::new(Vec::new());
@@ -725,6 +725,8 @@ fn grow(
 struct Walk<'a> {
     bands: &'a [LayerBand],
     contours: &'a [Vec<Loop>],
+    /// Interface the demand asks for on each layer, before any is dropped.
+    demanded: &'a [Vec<Loop>],
     xy_gap: f64,
     iface_n: u32,
     load_factor: f64,
@@ -743,6 +745,7 @@ impl<'a> Walk<'a> {
     fn new(
         bands: &'a [LayerBand],
         contours: &'a [Vec<Loop>],
+        demanded: &'a [Vec<Loop>],
         opts: &SupportOpts,
         next_id: u32,
     ) -> Self {
@@ -750,6 +753,7 @@ impl<'a> Walk<'a> {
         Self {
             bands,
             contours,
+            demanded,
             xy_gap: opts.xy_gap,
             iface_n: opts.interface_layers.max(1),
             load_factor: load_factor_of(opts),
@@ -769,9 +773,16 @@ impl<'a> Walk<'a> {
     }
 
     /// Bear tips on `born` and give each piece of `interface` no node covers
-    /// a tip of its own, on layer `i`.
+    /// a tip of its own, on layer `i`. A sample a tip within reach already
+    /// carries bears none: see `tip_samples`.
     fn arrive(&mut self, i: usize, born: &[Loop], interface: &[Loop]) {
         let part = self.part(i);
+        let demanded = self.demanded;
+        // The interface demanded on layer `k`, which a piece's interface stands on.
+        let held = |k: Option<usize>| {
+            Nearby::new(k.and_then(|k| demanded.get(k)).cloned().unwrap_or_default())
+        };
+        let mut carriers = Carriers::new(&self.nodes, self.pitch.keep);
         let land = |freeze| Land {
             layer: i,
             freeze,
@@ -790,10 +801,13 @@ impl<'a> Walk<'a> {
                 )
             };
             let seeds = if cleared.is_empty() { born } else { &cleared };
+            // A fresh patch prints `iface_n` layers dense, so the lowest of
+            // them stands on the layer below that.
+            let under = held(i.checked_sub(self.iface_n as usize));
             let tips = sample_tips(
                 seeds,
-                &self.nodes,
-                self.tip_r,
+                &mut carriers,
+                &under,
                 &self.pitch,
                 &land(self.iface_n),
             );
@@ -819,6 +833,8 @@ impl<'a> Walk<'a> {
             &mut self.nodes,
             &mut self.next_id,
             self.tip_r,
+            &mut carriers,
+            &held(i.checked_sub(1)),
             &self.pitch,
             &land(1),
         );
@@ -1837,32 +1853,163 @@ fn tip_radius(opts: &SupportOpts) -> f64 {
 /// so the interface bridges to that neighbour instead of growing a parallel trunk.
 /// Tips that can lean onto the model and tips that have to reach the bed pack
 /// separately: swallowing the second into the first deletes the bed trunk.
-/// A piece one tip carries gets none when the disk of a `standing` node or
-/// of a tip born here already foots it.
+/// Each tip joins `carriers`.
 fn sample_tips(
     region: &[Loop],
-    standing: &[Node],
-    tip_r: f64,
+    carriers: &mut Carriers,
+    held: &Nearby,
     pitch: &Pitch,
     land: &Land<'_>,
 ) -> Vec<([f64; 2], f64, bool)> {
-    let mut pts: Vec<([f64; 2], f64, bool)> = Vec::new();
+    let mut pts = Vec::new();
     for comp in components(region) {
-        let mut hit = sample_component(&comp, pitch.fine);
-        if hit.len() <= 1 {
-            let born = pts.iter().map(|t| (t.0, tip_r));
-            if foots(&comp, standing.iter().map(|n| (n.xy, n.radius)).chain(born)) {
-                continue;
-            }
+        let hit = tip_samples(&comp, carriers, held, pitch);
+        let packed = pack_by_landing(hit, &comp, pitch, land);
+        for tip in &packed {
+            carriers.add(tip.0);
         }
-        if hit.is_empty() {
-            if let Some(p) = point_inside(&comp) {
-                hit.push(p);
-            }
-        }
-        pts.extend(pack_by_landing(hit, &comp, pitch, land));
+        pts.extend(packed);
     }
     pts
+}
+
+/// Where a fresh sample would bear a tip on `comp`, less every sample a
+/// carrier already holds.
+///
+/// A strip too thin for the fine grid takes one sample in each cell of a
+/// grid fixed to the bed that it crosses, so a strip a block disk cuts
+/// yields the cells of the strip it still covers and no more.
+///
+/// A sample folds into a carrier when `held`, the interface demanded on the
+/// layer that `comp`'s interface stands on, touches `comp`. That interface
+/// holds it from below, as each layer of a slope holds the next, so a tip
+/// within a pitch is enough. An island has nothing under it and keeps its own.
+fn tip_samples(comp: &[Loop], carriers: &Carriers, held: &Nearby, pitch: &Pitch) -> Vec<[f64; 2]> {
+    let mut hit = sample_component(comp, pitch.fine);
+    if hit.len() <= 1 && is_strip(comp, pitch) {
+        let cells = sample_cells(comp, pitch.keep);
+        if cells.len() > 1 {
+            hit = cells;
+        }
+    }
+    if hit.is_empty() {
+        if let Some(p) = point_inside(comp) {
+            hit.push(p);
+        }
+    }
+    if hit.iter().any(|s| carriers.carries(*s)) && stands_on(comp, held) {
+        hit.retain(|s| !carriers.carries(*s));
+    }
+    hit
+}
+
+/// True when `comp` is narrower than a quarter of the fine grid, so the grid misses
+/// it, and longer than one tip's pitch.
+fn is_strip(comp: &[Loop], pitch: &Pitch) -> bool {
+    let Some((min, max)) = loop_bounds(comp) else {
+        return false;
+    };
+    let perimeter: f64 = comp
+        .iter()
+        .map(|ring| {
+            (0..ring.len())
+                .map(|k| {
+                    let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+                    (b[0] - a[0]).hypot(b[1] - a[1])
+                })
+                .sum::<f64>()
+        })
+        .sum();
+    let width = 2.0 * solid_area(comp) / perimeter.max(1e-9);
+    width < pitch.fine * 0.25 && (max[0] - min[0]).hypot(max[1] - min[1]) > pitch.keep
+}
+
+/// One point in each cell of a `cell` grid fixed to the bed that `comp`
+/// crosses. A thin strip crosses only the cells its outline passes through.
+fn sample_cells(comp: &[Loop], cell: f64) -> Vec<[f64; 2]> {
+    let key = |p: [f64; 2]| ((p[0] / cell).floor() as i64, (p[1] / cell).floor() as i64);
+    let mut cells: Vec<(i64, i64)> = Vec::new();
+    for ring in comp {
+        for (k, &a) in ring.iter().enumerate() {
+            let b = ring[(k + 1) % ring.len()];
+            let steps = ((b[0] - a[0]).hypot(b[1] - a[1]) / (cell * 0.5))
+                .ceil()
+                .max(1.0) as usize;
+            for t in 0..=steps {
+                let f = t as f64 / steps as f64;
+                cells.push(key([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]));
+            }
+        }
+    }
+    cells.sort_unstable_by_key(|&(cx, cy)| (cy, cx));
+    cells.dedup();
+    cells
+        .into_iter()
+        .filter_map(|(cx, cy)| {
+            let (x, y) = (cx as f64 * cell, cy as f64 * cell);
+            let square = vec![[x, y], [x + cell, y], [x + cell, y + cell], [x, y + cell]];
+            let inside = boolean_intersect(comp, &[square]);
+            if solid_area(&inside) < CELL_SPECK_MM2 {
+                return None;
+            }
+            point_inside(&inside)
+        })
+        .collect()
+}
+
+/// Less of a strip than this in one cell bears no sample there, mm².
+const CELL_SPECK_MM2: f64 = 0.05;
+
+/// True when `held` foots `comp` as `drop_unfooted_interface` tests it.
+fn stands_on(comp: &[Loop], held: &Nearby) -> bool {
+    let Some(bounds) = loop_bounds(comp) else {
+        return false;
+    };
+    let near = held.near(bounds, INTERFACE_FOOT_MM + 0.05);
+    if near.is_empty() {
+        return false;
+    }
+    overlaps(
+        comp,
+        &offset_loops(&resolve_nonzero(near), INTERFACE_FOOT_MM),
+        0.02,
+    )
+}
+
+/// The tips standing on a layer, or born on it, that a fresh sample within
+/// `reach` folds into. A packed tip carries samples half a pitch to either
+/// side of it, but a slope sweeps past a carrier on one side only, so a
+/// reach of one pitch spaces slope tips as a flat patch spaces its tips.
+struct Carriers {
+    at: Vec<[f64; 2]>,
+    grid: CellGrid,
+    reach: f64,
+}
+
+impl Carriers {
+    fn new(nodes: &[Node], reach: f64) -> Self {
+        let mut carriers = Self {
+            at: Vec::with_capacity(nodes.len()),
+            grid: CellGrid::new(reach.max(0.5)),
+            reach,
+        };
+        for n in nodes {
+            carriers.add(n.xy);
+        }
+        carriers
+    }
+
+    fn add(&mut self, p: [f64; 2]) {
+        self.grid.insert(self.at.len(), p);
+        self.at.push(p);
+    }
+
+    fn carries(&self, s: [f64; 2]) -> bool {
+        self.grid.around(s, self.reach).any(|k| {
+            let p = self.at[k];
+            (p[0] - s[0]).hypot(p[1] - s[1]) <= self.reach
+        })
+    }
 }
 
 fn pack_by_landing(
@@ -2016,31 +2163,18 @@ fn tip_covers(comp: &[Loop], xy: [f64; 2], reach: f64) -> bool {
     in_solid(comp, xy[0], xy[1]) || distance_to_outline(comp, xy) <= reach
 }
 
-/// True when one of the `disks` (centre, radius) foots `comp` as
-/// `branch_foots` tests it.
-fn foots(comp: &[Loop], mut disks: impl Iterator<Item = ([f64; 2], f64)>) -> bool {
-    let Some((min, max)) = loop_bounds(comp) else {
-        return false;
-    };
-    disks.any(|(p, r)| {
-        let reach = r + INTERFACE_FOOT_MM;
-        p[0] >= min[0] - reach
-            && p[0] <= max[0] + reach
-            && p[1] >= min[1] - reach
-            && p[1] <= max[1] + reach
-            && tip_covers(comp, p, reach)
-    })
-}
-
-/// Give every interface component no node covers a tip. A piece one tip
-/// carries needs none when a node's disk already foots it.
-/// `freeze` is 1 so the disk prints on the next layer, directly under this
-/// patch, instead of after the whole interface stack.
+/// Give every interface component no node covers a tip, unless a carrier
+/// holds it with `held`, the interface demanded on the layer below, under
+/// it: see `tip_samples`. `freeze` is 1 so the disk prints on the next layer,
+/// directly under this patch, instead of after the whole interface stack.
+#[allow(clippy::too_many_arguments)]
 fn seed_uncovered_interface(
     region: &[Loop],
     nodes: &mut Vec<Node>,
     next_id: &mut u32,
     tip_r: f64,
+    carriers: &mut Carriers,
+    held: &Nearby,
     pitch: &Pitch,
     land: &Land<'_>,
 ) {
@@ -2051,16 +2185,9 @@ fn seed_uncovered_interface(
         if nodes.iter().any(|n| tip_covers(&comp, n.xy, tip_r)) {
             continue;
         }
-        let mut seeds = sample_component(&comp, pitch.fine);
-        if seeds.len() <= 1 && foots(&comp, nodes.iter().map(|n| (n.xy, n.radius))) {
-            continue;
-        }
-        if seeds.is_empty() {
-            if let Some(p) = point_inside(&comp) {
-                seeds.push(p);
-            }
-        }
+        let seeds = tip_samples(&comp, carriers, held, pitch);
         for (xy, load, to_bed) in pack_by_landing(seeds, &comp, pitch, land) {
+            carriers.add(xy);
             nodes.push(Node {
                 id: *next_id,
                 xy,
