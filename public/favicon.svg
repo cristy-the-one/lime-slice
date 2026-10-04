@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <title>Lime Slice</title>
+  <g transform="rotate(-38 128 86)">
+    <path fill="#0e4a18" d="M54.00,86.00 A74.00,74.00 0 0 1 202.00,86.00 Z"/>
+    <path fill="#e4f34a" d="M72.00,86.00 A56.00,56.00 0 0 1 184.00,86.00 Z"/>
+    <g stroke="#0e4a18" stroke-width="20" stroke-linecap="butt">
+      <line x1="128.00" y1="86.00" x2="100.50" y2="38.37"/><line x1="128.00" y1="86.00" x2="155.50" y2="38.37"/>
+    </g>
+    <rect x="54.00" y="78.00" width="148.00" height="16" fill="#0e4a18"/>
+  </g>
+  <g fill="#1c7a32">
+    <rect x="28" y="112" width="200" height="18"/>
+    <rect x="28" y="162" width="160" height="18"/>
+    <rect x="28" y="212" width="120" height="18"/>
+  </g>
+</svg>

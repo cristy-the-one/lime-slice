@@ -276,6 +276,8 @@ pub fn run() {
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_decorations(native_window_decorations());
+                let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/128x128.png"))?;
+                window.set_icon(icon)?;
             }
             Ok(())
         })
