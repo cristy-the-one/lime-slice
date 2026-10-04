@@ -1,13 +1,20 @@
 /**
- * Prusa Link HTTP client. The slicer engine has no send-to-printer API.
- * This talks to the printer's own Prusa Link: GET /api/version, PUT /api/v1/files/local,
- * and GET /api/v1/status. Nothing here is a fake printer.
+ * Real Prusa Link HTTP client. The slicer has no send-to-printer API.
+ * This talks to the printer: GET /api/version, PUT /api/v1/files/local/<name>,
+ * and GET /api/v1/status.
+ *
+ * CI never calls a printer. Tests pass a mock `PrusaFetch`. That mock is not a
+ * device in the UI.
+ * Desktop `http://` goes through the helper in `src-tauri/src/prusa_http.rs`,
+ * because the printer does not send the CORS headers a webview requires.
+ * The browser, and any `https://` host, use `fetch`.
  */
-export const PRUSA_LINK_VERSION = 1;
+import { isTauri } from "../platform.ts";
 
-export interface PrusaLinkSettings {
-  version: 1;
-  /** Printer origin, such as http://192.168.1.50. Empty until the user sets one. */
+/** Old browser-only key. Boot copies it onto the active printer once, then deletes it. */
+export const LEGACY_PRUSA_LINK_KEY = "lime-slice-prusa-link";
+
+export interface PrusaLinkTarget {
   url: string;
   apiKey: string;
   startPrint: boolean;
@@ -20,10 +27,37 @@ export interface PrusaLinkRequest {
   body?: string;
 }
 
+export interface PrusaResponse {
+  status: number;
+  text: string;
+}
+
+/** Injected in tests. The app uses `transportFetch`, which is the real printer call. */
+export type PrusaFetch = (request: PrusaLinkRequest) => Promise<PrusaResponse>;
+
 export type PrusaLinkResult = { ok: true; summary: string } | { ok: false; message: string };
 
-export function emptyPrusaLink(): PrusaLinkSettings {
-  return { version: 1, url: "", apiKey: "", startPrint: false };
+export type PrinterStateResult =
+  | { ok: true; state: string; summary: string }
+  | { ok: false; message: string };
+
+const BUSY_STATES = new Set(["PRINTING", "BUSY", "PAUSED"]);
+
+export function parseLegacyPrusaLink(text: string | null): PrusaLinkTarget | null {
+  if (!text) return null;
+  try {
+    const raw = JSON.parse(text) as unknown;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const row = raw as Record<string, unknown>;
+    if (row.version !== 1) return null;
+    return {
+      url: typeof row.url === "string" ? row.url : "",
+      apiKey: typeof row.apiKey === "string" ? row.apiKey : "",
+      startPrint: row.startPrint === true,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function parsePrusaOrigin(value: string): string | null {
@@ -32,10 +66,32 @@ export function parsePrusaOrigin(value: string): string | null {
   try {
     const url = new URL(trimmed);
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    if (!url.hostname) return null;
     return url.origin;
   } catch {
     return null;
   }
+}
+
+/** Empty host, or a value that is not an http(s) origin. */
+export function hostProblem(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return "Add a Prusa Link host on this printer first.";
+  if (!parsePrusaOrigin(trimmed)) return "That host is not a Prusa Link URL. Use http:// or https:// and a host name.";
+  return null;
+}
+
+export function keyProblem(apiKey: string): string | null {
+  if (!apiKey.trim()) return "Add the Prusa Link API key for this printer.";
+  return null;
+}
+
+export function isPrinterBusy(state: string): boolean {
+  return BUSY_STATES.has(state.trim().toUpperCase());
+}
+
+export function busyMessage(state: string): string {
+  return `The printer is busy (${state}). Wait until it is idle, then send again.`;
 }
 
 export function gcodeFileName(meshName: string): string {
@@ -82,7 +138,7 @@ export function readVersion(status: number, text: string): PrusaLinkResult {
   return { ok: true, summary: label };
 }
 
-export function readStatus(status: number, text: string): PrusaLinkResult {
+export function readPrinterState(status: number, text: string): PrinterStateResult {
   if (status === 401) return { ok: false, message: "Prusa Link refused the API key." };
   if (status !== 200) return { ok: false, message: `Prusa Link returned ${status}.` };
   let body: unknown;
@@ -100,37 +156,98 @@ export function readStatus(status: number, text: string): PrusaLinkResult {
   const progress = job && typeof job.progress === "number" && Number.isFinite(job.progress) ? `${Math.round(job.progress)}%` : "";
   const left = job && typeof job.time_remaining === "number" && Number.isFinite(job.time_remaining) ? formatLeft(job.time_remaining) : "";
   const bits = [state, progress, left].filter(Boolean);
-  return { ok: true, summary: bits.join(" · ") };
+  return { ok: true, state, summary: bits.join(" · ") };
+}
+
+export function readStatus(status: number, text: string): PrusaLinkResult {
+  const parsed = readPrinterState(status, text);
+  if (!parsed.ok) return parsed;
+  return { ok: true, summary: parsed.summary };
 }
 
 export function readUpload(status: number): PrusaLinkResult {
-  if (status === 201) return { ok: true, summary: "Uploaded." };
+  if (status === 201 || status === 200) return { ok: true, summary: "Uploaded." };
   if (status === 401) return { ok: false, message: "Prusa Link refused the API key." };
-  if (status === 409) return { ok: false, message: "Prusa Link already has that file and would not replace it." };
+  if (status === 409) return { ok: false, message: "The printer is busy with that file and would not replace it." };
   return { ok: false, message: `Prusa Link returned ${status}.` };
 }
 
 export function unreachable(origin: string): PrusaLinkResult {
-  return { ok: false, message: `Could not reach Prusa Link at ${origin}. The printer may be off, or the browser blocked the request.` };
+  return { ok: false, message: `Could not reach Prusa Link at ${origin}. The printer may be off, or the page was blocked from calling it.` };
 }
 
-export function prusaFieldsHtml(settings: PrusaLinkSettings, summary: string): string {
-  return `
-    <h2>Prusa Link</h2>
-    <label class="field setting" data-label="prusa link url" data-keywords="printer host send">Printer URL
-      <input id="prusaUrl" type="url" inputmode="url" autocomplete="off" placeholder="http://192.168.1.50" value="${escapeHtml(settings.url)}" aria-label="Prusa Link URL" />
-    </label>
-    <label class="field setting" data-label="prusa link api key" data-keywords="printer key password">API key
-      <input id="prusaKey" type="password" autocomplete="off" value="${escapeHtml(settings.apiKey)}" aria-label="Prusa Link API key" />
-    </label>
-    <label class="check setting" data-label="start print after upload" data-keywords="prusa link"><input id="prusaStart" type="checkbox" ${settings.startPrint ? "checked" : ""}/> Start print after upload</label>
-    <div class="row">
-      <button class="btn" id="prusaTest" type="button">Test connection</button>
-      <button class="btn" id="prusaUpload" type="button">Upload G-code</button>
-      <button class="btn" id="prusaJob" type="button">Job status</button>
-    </div>
-    <div class="meta" id="prusaStatus">${escapeHtml(summary)}</div>
-    <p class="meta">URL and API key stay in this browser. Upload uses Prusa Link's file API. A browser on another machine can be blocked by the printer's CORS policy.</p>`;
+export async function performPrusa(
+  request: PrusaLinkRequest,
+  fetchImpl: PrusaFetch,
+  read: (status: number, text: string) => PrusaLinkResult,
+): Promise<PrusaLinkResult> {
+  try {
+    const res = await fetchImpl(request);
+    return read(res.status, res.text);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!message || message === "Failed to fetch" || message.includes("Failed to fetch") || message.startsWith("NetworkError")) {
+      return unreachable(originOf(request.url));
+    }
+    return { ok: false, message };
+  }
+}
+
+/**
+ * Upload G-code. When start-print is set, a busy printer is refused before the upload.
+ * A failed status check is returned as-is and does not continue into the upload.
+ */
+export async function sendGcode(
+  target: PrusaLinkTarget,
+  filename: string,
+  gcode: string,
+  fetchImpl: PrusaFetch,
+): Promise<PrusaLinkResult> {
+  const host = hostProblem(target.url);
+  if (host) return { ok: false, message: host };
+  const key = keyProblem(target.apiKey);
+  if (key) return { ok: false, message: key };
+  const origin = parsePrusaOrigin(target.url)!;
+  if (target.startPrint) {
+    const status = await performPrusa(statusRequest(origin, target.apiKey), fetchImpl, (code, text) => {
+      const parsed = readPrinterState(code, text);
+      if (!parsed.ok) return parsed;
+      if (isPrinterBusy(parsed.state)) return { ok: false, message: busyMessage(parsed.state) };
+      return { ok: true, summary: parsed.state };
+    });
+    if (!status.ok) return status;
+  }
+  const uploaded = await performPrusa(
+    uploadRequest(origin, target.apiKey, filename, gcode, target.startPrint),
+    fetchImpl,
+    (code) => readUpload(code),
+  );
+  if (!uploaded.ok || !target.startPrint) return uploaded;
+  const job = await performPrusa(statusRequest(origin, target.apiKey), fetchImpl, (code, text) => readStatus(code, text));
+  if (!job.ok) return { ok: true, summary: `${uploaded.summary} ${job.message}` };
+  return { ok: true, summary: `Uploaded. ${job.summary}` };
+}
+
+/** Browser `fetch`, or the desktop helper for `http://` so a missing CORS header does not block the printer. */
+export async function transportFetch(request: PrusaLinkRequest): Promise<PrusaResponse> {
+  if (isTauri() && request.url.startsWith("http://")) return desktopFetch(request);
+  const res = await fetch(request.url, { method: request.method, headers: request.headers, body: request.body });
+  return { status: res.status, text: await res.text() };
+}
+
+async function desktopFetch(request: PrusaLinkRequest): Promise<PrusaResponse> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await invoke<PrusaResponse>("prusa_link_http", {
+      url: request.url,
+      method: request.method,
+      headers: request.headers,
+      body: request.body ?? null,
+    });
+  } catch (err) {
+    const message = typeof err === "string" && err.trim() ? err : err instanceof Error && err.message.trim() ? err.message : "";
+    throw new Error(message || `Could not reach Prusa Link at ${originOf(request.url)}. The printer may be off or not on this network.`);
+  }
 }
 
 function authHeaders(apiKey: string): Record<string, string> {
@@ -143,6 +260,10 @@ function formatLeft(seconds: number): string {
   return `${minutes} min left`;
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]!);
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return url;
+  }
 }
