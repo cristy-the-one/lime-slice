@@ -69,6 +69,20 @@ check("a file from before the seam picker opens at blend", olderOpened.ok && old
 delete beforeSeam.settings.scarfSeam;
 eq("a file without its scarf seam is incomplete", parseProject(JSON.stringify(beforeSeam)), { ok: false, message: "This project file is incomplete." });
 
+const ironed = JSON.parse(serializeProject({
+  ...project,
+  settings: { ...project.settings, ironing: true, ironingFlow: 0.15, ironingSpeed: 30, ironingSpacing: 0.2 },
+})) as { version: number; settings: Record<string, unknown> };
+eq("ironing stays on a version 1 project", ironed.version, 1);
+const ironOpened = parseProject(JSON.stringify(ironed));
+check("ironing round-trips", ironOpened.ok && ironOpened.project.settings.ironing === true && ironOpened.project.settings.ironingFlow === 0.15 && ironOpened.project.settings.ironingSpeed === 30 && ironOpened.project.settings.ironingSpacing === 0.2);
+delete ironed.settings.ironing;
+delete ironed.settings.ironingFlow;
+delete ironed.settings.ironingSpeed;
+delete ironed.settings.ironingSpacing;
+const beforeIron = parseProject(JSON.stringify(ironed));
+check("a file from before ironing opens off, at the defaults", beforeIron.ok && beforeIron.project.settings.ironing === false && beforeIron.project.settings.ironingFlow === 0.1 && beforeIron.project.settings.ironingSpeed === 20 && beforeIron.project.settings.ironingSpacing === 0.1);
+
 const wire = JSON.parse(text) as { supportEdits: { edit: Record<string, unknown> }[] };
 eq("a prune stores sites, not a walk id", wire.supportEdits[0].edit, {
   kind: "prune",

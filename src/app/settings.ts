@@ -23,6 +23,7 @@ import { loadProfileLibrary } from "./profile-library";
 import { SETTING_KEYWORDS, settingMatches } from "../ui/settings-search";
 import { displayId } from "../ui/settings-profiles";
 import { overrideSectionHtml } from "../ui/overrides-panel";
+import { IRONING_STORED_TOAST, ironingFlowPercent, readIroningFlowPercent, readIroningSpacing, readIroningSpeed } from "../ironing";
 import { loadSettingsLevel } from "../ui/settings-panel";
 
 export function apiBase() {
@@ -52,8 +53,9 @@ export function staleWarning() {
 export function settingsHash() {
   const shift = state.offset;
   const mesh = state.mesh ? `${state.mesh.name}:${state.mesh.bytes.byteLength}:${state.partScale}:${state.centered}:${shift.x.toFixed(3)},${shift.y.toFixed(3)},${shift.z.toFixed(3)}:${state.orient.join(",")}` : "";
-  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, selectedVolumeId: _sel, modifierTool: _mt, plate: _plate, profile: _profile, ...rest } = state;
+  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, selectedVolumeId: _sel, modifierTool: _mt, plate: _plate, profile: _profile, ironing: _ironing, ironingFlow: _ironingFlow, ironingSpeed: _ironingSpeed, ironingSpacing: _ironingSpacing, ...rest } = state;
   // Price and density only weigh the estimate, which the UI computes from the reply.
+  // Ironing is stored only. It is not on the slice request, so it does not stale a result.
   const { filamentDensityGCm3: _density, filamentCostPerKg: _cost, ...profile } = state.profile;
   const hashed = { mesh, profile, rest };
   if (state.plate.objects.length > 1) {
@@ -105,6 +107,8 @@ export function renderChrome() {
       ${check("vwidth", "Variable walls", state.variableWidth, "simple")}
       ${check("travelopt", "Travel and seam", state.travelOpt, "advanced")}
       ${select("seam", "Seam position", state.seam, [["blend", "Blend (strategy)"], ["nearest", "Nearest"], ["aligned", "Aligned"], ["rear", "Rear"]], "advanced")}
+      ${check("ironing", "Ironing", state.ironing, "advanced")}
+      ${state.ironing ? `${num("ironflow", "Ironing flow %", ironingFlowPercent(state.ironingFlow), 1, 100, 1, "advanced")}${num("ironspeed", "Ironing speed mm/s", state.ironingSpeed, 1, 200, 1, "advanced")}${num("ironspace", "Ironing spacing mm", state.ironingSpacing, 0.05, 1, 0.01, "advanced")}<div class="meta">Stored only. Top skins are not ironed until the slicer reads this. Defaults are 10% flow, 20 mm/s, and 0.1 mm spacing.</div>` : ""}
       ${select("scarf", "Scarf seam", state.scarfSeam, [["blend", "Blend default"], ["off", "Off"], ["outer", "Outer walls"], ["all", "Outer and inner"]], "advanced")}
       ${state.scarfSeam === "off" ? "" : `${num("scarflen", "Scarf length mm", state.scarfLength, 1, 30, 1, "expert")}${num("scarfsteps", "Scarf steps", state.scarfSteps, 2, 32, 1, "expert")}`}
     `)}
@@ -866,6 +870,13 @@ export function onSettings(ev: Event) {
   if (t.id === "gyroid3d") state.gyroid3d = t.value as typeof state.gyroid3d;
   if (t.id === "zhop") state.zHop = t.value as typeof state.zHop;
   if (t.id === "seam") state.seam = t.value as typeof state.seam;
+  const ironingTurnedOn = t.id === "ironing" && t.checked && !state.ironing;
+  const ironingTuned = t.id === "ironflow" || t.id === "ironspeed" || t.id === "ironspace";
+  if (t.id === "ironing") state.ironing = t.checked;
+  if (t.id === "ironflow") state.ironingFlow = readIroningFlowPercent(t.value);
+  if (t.id === "ironspeed") state.ironingSpeed = readIroningSpeed(t.value);
+  if (t.id === "ironspace") state.ironingSpacing = readIroningSpacing(t.value);
+  if (ironingTurnedOn || (ironingTuned && ev.type === "change" && state.ironing)) pushToast(IRONING_STORED_TOAST, "info");
   if (t.id === "scarf") state.scarfSeam = t.value as typeof state.scarfSeam;
   if (t.id === "sstyle") state.supportStyle = t.value as typeof state.supportStyle;
   if (t.id === "pafw") state.paFirmware = t.value as typeof state.paFirmware;
@@ -912,7 +923,7 @@ export function onSettings(ev: Event) {
     session.stepTimer = window.setTimeout(() => { void fx.refreshStepPreview(); }, 250);
     return;
   }
-  const structural = ["adaptive", "supports", "zhop", "scarf", "gyroid3d"].includes(t.id);
+  const structural = ["adaptive", "supports", "zhop", "scarf", "gyroid3d", "ironing"].includes(t.id);
   if (structural) renderChrome();
   markStale();
 }

@@ -29,6 +29,14 @@ export interface PresetSettings {
   travelOpt: boolean;
   overhangControl: boolean;
   seam: string;
+  /** Off until the user asks. The slice body does not carry this yet. */
+  ironing: boolean;
+  /** Fraction of a normal top line. 0.1 is 10%. */
+  ironingFlow: number;
+  /** Millimetres per second. */
+  ironingSpeed: number;
+  /** Millimetres between ironing lines. */
+  ironingSpacing: number;
   scarfSeam: string;
   scarfLength: number;
   scarfSteps: number;
@@ -71,6 +79,10 @@ export const DEFAULT_PRESET: PresetSettings = {
   travelOpt: true,
   overhangControl: true,
   seam: "blend",
+  ironing: false,
+  ironingFlow: 0.1,
+  ironingSpeed: 20,
+  ironingSpacing: 0.1,
   scarfSeam: "blend",
   scarfLength: 10,
   scarfSteps: 8,
@@ -114,6 +126,10 @@ const LABELS: Record<keyof PresetSettings, string> = {
   travelOpt: "Travel and seam",
   overhangControl: "Overhang control",
   seam: "Seam position",
+  ironing: "Ironing",
+  ironingFlow: "Ironing flow",
+  ironingSpeed: "Ironing speed",
+  ironingSpacing: "Ironing spacing",
   scarfSeam: "Scarf seam",
   scarfLength: "Scarf length",
   scarfSteps: "Scarf steps",
@@ -132,7 +148,7 @@ export function presetKeys(): (keyof PresetSettings)[] {
 }
 
 /** Keys added after project and profile files were versioned. A file written before one reads its default. */
-const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam"]);
+const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing"]);
 
 /** The preset a project or profile file stores, or null when a key is missing or has the wrong type. */
 export function readPresetSettings(value: unknown): PresetSettings | null {
