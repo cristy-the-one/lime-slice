@@ -26,10 +26,10 @@ use crate::gcode::{emit_gcode, emit_later, Entry, GcodeText, LayerPaths, PlateLa
 use crate::index::ZIndex;
 use crate::load::load_slice_mesh_tol;
 use crate::mesh::Mesh;
-use crate::modifiers::{Overrides, Tweak};
+use crate::modifiers::{zone_runs, Overrides, Print, Tweak};
 use crate::poly::{
-    boolean_diff, boolean_union, clip_to_rect, loop_bounds, offset_loops, signed_area,
-    simplify_loops, Loop,
+    boolean_diff, boolean_intersect, boolean_union, clip_to_rect, loop_bounds, offset_loops,
+    signed_area, simplify_loops, Loop,
 };
 use crate::progress::{Stage, Status, Watch};
 use crate::strategy::{
@@ -3981,6 +3981,70 @@ fn keep_side(paths: Vec<Extrusion>, axis: Axis, at: f64, low_side: bool) -> Vec<
     out
 }
 
+/// The volumes whose footprint at `z` can meet the layer's outline, in
+/// request order.
+fn layer_footprints(overrides: &Overrides, z: f64, contours: &[Loop]) -> Vec<Print> {
+    if overrides.volumes.is_empty() {
+        return Vec::new();
+    }
+    let Some((lo, hi)) = loop_bounds(contours) else {
+        return Vec::new();
+    };
+    overrides
+        .footprints(z)
+        .into_iter()
+        .filter(|p| {
+            let (a, b) = p.outline.bounds();
+            a[0] <= hi[0] && b[0] >= lo[0] && a[1] <= hi[1] && b[1] >= lo[1]
+        })
+        .collect()
+}
+
+/// The most walls a zone with `tweak` prints at `z`.
+fn zone_walls(blend: &BlendMode, z: f64, settings: &SliceSettings, tweak: &Tweak) -> u32 {
+    match blend {
+        BlendMode::ByRegion { .. } => [StrategyId::Toughness, StrategyId::Speed]
+            .into_iter()
+            .map(|id| tweak.apply(resolve(pure(id), settings)).walls)
+            .max()
+            .unwrap_or(0),
+        other => tweak.apply(layer_strategy(other, z, settings)).walls,
+    }
+}
+
+/// The beads of one zone's plan that lie in that zone: outside every
+/// footprint for `None`, else where footprint `zone` is the last to hold
+/// them. A closed loop cut open keeps the run through its start whole, as
+/// `keep_side` does.
+fn keep_zone(paths: Vec<Extrusion>, prints: &[Print], zone: Option<usize>) -> Vec<Extrusion> {
+    let mut out = Vec::with_capacity(paths.len());
+    for path in paths {
+        let mut kept = zone_runs(&path.points, prints, zone);
+        if kept.len() == 1 && kept[0] == path.points {
+            out.push(path);
+            continue;
+        }
+        let closed = path.points.len() > 2 && path.points.first() == path.points.last();
+        if closed && kept.len() >= 2 && kept[0].first() == path.points.first() {
+            let head = kept.remove(0);
+            let tail = kept.last_mut().unwrap();
+            tail.extend_from_slice(&head[1..]);
+        }
+        out.extend(
+            kept.into_iter()
+                .filter(|pts| poly_len(pts) > 0.05)
+                .map(|pts| {
+                    let mut piece = cut_piece(&path, pts);
+                    if piece.kind.is_closed() {
+                        piece.seam = Seam::Cut;
+                    }
+                    piece
+                }),
+        );
+    }
+    out
+}
+
 /// Both sides' beads with each high run of a travel group right after the low
 /// run of the same group. Ordering chains paths only within a run of one
 /// group, so a wall or infill line that ends on the cut continues on the
@@ -4119,7 +4183,35 @@ fn object_layer(
         (paths, wall_ms, infill_ms, note)
     };
     let range = settings.overrides.range_at(z);
-    let (paths, wall_ms, infill_ms, mut note) = plan(contours, range.as_ref());
+    let prints = layer_footprints(&settings.overrides, z, contours);
+    let (paths, wall_ms, infill_ms, mut note) = if prints.is_empty() {
+        plan(contours, range.as_ref())
+    } else {
+        // Each zone plans the part's own outline, so its walls follow the
+        // real perimeter. The base zone plans the whole layer; a volume plans
+        // the part within reach of its footprint, so the walls of that clip
+        // edge lie outside the footprint. Each keeps only the beads in its
+        // zone, and beads cut at a footprint edge meet the other zone's.
+        let (mut paths, mut wall_ms, mut infill_ms, mut note) = plan(contours, range.as_ref());
+        paths = keep_zone(paths, &prints, None);
+        for (k, print) in prints.iter().enumerate() {
+            let walls = zone_walls(blend, z, settings, &print.tweak);
+            let reach = offset_loops(&[print.outline.polygon()], (walls + 2) as f64 * line_width);
+            let region = boolean_intersect(contours, &reach);
+            if region.is_empty() {
+                continue;
+            }
+            let (own, own_wall, own_infill, _) = plan(&region, Some(&print.tweak));
+            wall_ms += own_wall;
+            infill_ms += own_infill;
+            let own = keep_zone(own, &prints, Some(k));
+            if !own.is_empty() {
+                note.push_str(&format!(" · volume {}", print.volume));
+            }
+            paths = pair_sides(paths, own);
+        }
+        (paths, wall_ms, infill_ms, note)
+    };
     if paths.iter().any(|p| p.kind == PathKind::GapFill) && !note.contains("gap-fill") {
         note.push_str(" · gap-fill");
     }

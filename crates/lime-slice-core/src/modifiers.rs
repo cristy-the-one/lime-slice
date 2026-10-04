@@ -273,9 +273,99 @@ impl Footprint {
     }
 }
 
+/// The index of the footprint that owns `p`: the last one holding it.
+pub fn owner(prints: &[Print], p: [f64; 2]) -> Option<usize> {
+    prints.iter().rposition(|f| f.outline.contains(p))
+}
+
+/// The runs of the polyline `pts` that `prints` give to `zone`, split where
+/// it crosses a footprint outline.
+pub fn zone_runs(pts: &[[f64; 2]], prints: &[Print], zone: Option<usize>) -> Vec<Vec<[f64; 2]>> {
+    let mut runs = Vec::new();
+    let mut run: Vec<[f64; 2]> = Vec::new();
+    let mut ts = Vec::new();
+    let at =
+        |a: [f64; 2], b: [f64; 2], t: f64| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    for w in pts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        ts.clear();
+        ts.push(0.0);
+        for f in prints {
+            f.outline.crossings(a, b, &mut ts);
+        }
+        ts.push(1.0);
+        ts.sort_by(f64::total_cmp);
+        // The run's last point is a split inside this segment, so a kept
+        // span after it moves that point instead of adding one on the line.
+        let mut split = false;
+        for span in ts.windows(2) {
+            let (t0, t1) = (span[0], span[1]);
+            if t1 - t0 < 1e-12 {
+                continue;
+            }
+            if owner(prints, at(a, b, (t0 + t1) * 0.5)) == zone {
+                if run.is_empty() {
+                    run.push(at(a, b, t0));
+                } else if split {
+                    run.pop();
+                }
+                run.push(if t1 >= 1.0 { b } else { at(a, b, t1) });
+                split = t1 < 1.0;
+            } else {
+                split = false;
+                if !run.is_empty() {
+                    runs.push(std::mem::take(&mut run));
+                }
+            }
+        }
+    }
+    if !run.is_empty() {
+        runs.push(run);
+    }
+    runs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_segment_through_a_box_and_a_later_ellipse_splits_by_owner() {
+        let print = |outline, volume| Print {
+            outline,
+            tweak: Tweak::default(),
+            volume,
+        };
+        let prints = [
+            print(
+                Footprint::Rect {
+                    c: [0.0, 0.0],
+                    h: [2.0, 2.0],
+                },
+                0,
+            ),
+            print(
+                Footprint::Ellipse {
+                    c: [2.0, 0.0],
+                    r: [1.0, 1.0],
+                },
+                1,
+            ),
+        ];
+        let line = [[-4.0, 0.0], [4.0, 0.0]];
+        assert_eq!(
+            zone_runs(&line, &prints, None),
+            vec![vec![[-4.0, 0.0], [-2.0, 0.0]], vec![[3.0, 0.0], [4.0, 0.0]]]
+        );
+        assert_eq!(
+            zone_runs(&line, &prints, Some(0)),
+            vec![vec![[-2.0, 0.0], [1.0, 0.0]]]
+        );
+        assert_eq!(
+            zone_runs(&line, &prints, Some(1)),
+            vec![vec![[1.0, 0.0], [3.0, 0.0]]]
+        );
+    }
 
     #[test]
     fn a_sphere_narrows_toward_its_poles() {
