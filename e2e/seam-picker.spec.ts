@@ -126,9 +126,9 @@ test("ironing is stored, left out of the slice, and undone", async ({ page }) =>
   expect(bodies[3]).toHaveProperty("seam", "rear");
 
   await page.locator("#seam").selectOption("blend");
-  await page.waitForTimeout(400);
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(5);
+  await page.waitForTimeout(400);
   expect(bodies[4]).not.toHaveProperty("seam");
   expect(bodies[4]).not.toHaveProperty("ironing");
 
@@ -151,7 +151,7 @@ test("ironing is stored, left out of the slice, and undone", async ({ page }) =>
   await expect.poll(() => bodies.length).toBe(6);
   expect(bodies[5]).not.toHaveProperty("seam");
   expect(bodies[5]).not.toHaveProperty("ironing");
-  await expect(page.locator("#toasts").getByRole("status").filter({ hasText: "Ironing is stored but not yet sliced." })).toBeVisible();
+  await expect(page.locator("#toasts").getByRole("status").filter({ hasText: "Ironing is stored but not yet sliced." }).first()).toBeVisible();
 
   await page.locator("#undoEdit").click();
   await expect(page.locator("#ironspace")).toHaveValue("0.1");
