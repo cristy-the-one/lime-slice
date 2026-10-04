@@ -15,7 +15,10 @@ mod wire;
 pub use kept::keep_support_bases;
 pub use patch::PreviewPatch;
 pub(crate) use patch::WholePreview;
-pub use wire::{Collision, EditOutcomeView, ObjectSpec, ObjectView, SiteSpec, SupportEditSpec};
+pub use wire::{
+    Collision, EditOutcomeView, HeightRangeSpec, ModifierVolumeSpec, ObjectSpec, ObjectView,
+    SiteSpec, SupportEditSpec, VolumeKind,
+};
 
 use crate::adaptive::{plan_bands, plan_plate_bands, HeightOpts, LayerBand};
 use crate::cancel::Job;
@@ -23,6 +26,7 @@ use crate::gcode::{emit_gcode, emit_later, Entry, GcodeText, LayerPaths, PlateLa
 use crate::index::ZIndex;
 use crate::load::load_slice_mesh_tol;
 use crate::mesh::Mesh;
+use crate::modifiers::{Overrides, Tweak};
 use crate::poly::{
     boolean_diff, boolean_union, clip_to_rect, loop_bounds, offset_loops, signed_area,
     simplify_loops, Loop,
@@ -190,6 +194,14 @@ pub struct SliceRequest {
     /// so a slice without edits keeps its cache key.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub support_edits: Vec<SupportEditSpec>,
+    /// Z spans that print with their own infill, walls, or speed cap.
+    /// Omitted when empty, so a slice without them keeps its cache key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub height_ranges: Vec<HeightRangeSpec>,
+    /// Boxes, cylinders, and spheres on the bed, in bed millimetres, that
+    /// print with their own infill, walls, or speed cap. Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modifier_volumes: Vec<ModifierVolumeSpec>,
     /// Also return the tree outline the UI picks limbs from.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub include_skeleton: bool,
@@ -281,6 +293,9 @@ pub struct SliceSettings {
     pub pose: Option<RigidPose>,
     /// Edits applied to the grown supports, in order.
     pub support_edits: Vec<SupportEdit>,
+    /// Height ranges and modifier volumes. Volumes are in bed coordinates
+    /// until the plate moves them into each part frame.
+    pub overrides: Overrides,
     /// Report the tree outline on the response.
     pub include_skeleton: bool,
     /// The preview the client holds, from `SliceRequest::preview_base`.
@@ -332,6 +347,7 @@ impl Default for SliceSettings {
             simplify_error_mm: 0.0,
             pose: None,
             support_edits: Vec::new(),
+            overrides: Overrides::default(),
             include_skeleton: false,
             preview_base: None,
             job: Job::default(),
@@ -449,6 +465,7 @@ impl SliceSettings {
             },
             pose: req.pose,
             support_edits: Vec::new(),
+            overrides: Overrides::default(),
             include_skeleton: req.include_skeleton,
             preview_base: req.preview_base.clone(),
             job: Job::default(),
@@ -830,6 +847,7 @@ pub fn slice_request_watched(
         return Err("cancelled".into());
     }
     let profile = req.printer.clone().unwrap_or_default();
+    let overrides = wire::parse_overrides(req, [profile.bed_x, profile.bed_y])?;
     let listed = req.objects.is_some();
     let requests = if listed {
         wire::object_requests(req)?
@@ -840,10 +858,12 @@ pub fn slice_request_watched(
         requests
             .iter()
             .enumerate()
-            .map(|(i, one)| load_object(one, job).map_err(|e| format!("objects[{i}]: {e}")))
+            .map(|(i, one)| {
+                load_object(one, &overrides, job).map_err(|e| format!("objects[{i}]: {e}"))
+            })
             .collect::<Result<_, _>>()?
     } else {
-        vec![load_object(req, job)?]
+        vec![load_object(req, &overrides, job)?]
     };
     watch.tick();
     let ids = req.objects.iter().flatten().map(|o| o.id.as_str());
@@ -875,8 +895,12 @@ pub fn slice_request_watched(
 }
 
 /// One object's mesh as the request sends it, and its settings with its
-/// edits and pose.
-fn load_object(req: &SliceRequest, job: Job) -> Result<(Mesh, SliceSettings), String> {
+/// edits, pose, and the plate's overrides.
+fn load_object(
+    req: &SliceRequest,
+    overrides: &Overrides,
+    job: Job,
+) -> Result<(Mesh, SliceSettings), String> {
     let bytes = decode_b64(&req.data_b64)?;
     let mesh = load_slice_mesh_tol(
         &req.filename,
@@ -887,6 +911,7 @@ fn load_object(req: &SliceRequest, job: Job) -> Result<(Mesh, SliceSettings), St
     let settings = SliceSettings {
         job,
         support_edits: wire::parse_support_edits(&req.support_edits)?,
+        overrides: overrides.clone(),
         ..SliceSettings::from_request(req)
     };
     Ok((mesh, settings))
@@ -1061,6 +1086,14 @@ fn slice_plate(
                 None => (Cow::Borrowed(s.mesh), None),
             };
             let blend = s.blend.in_part_frame(offset.unwrap_or([0.0, 0.0]));
+            if !settings.overrides.is_empty() {
+                if let Some((min, max)) = mesh.bounds() {
+                    settings.overrides =
+                        settings
+                            .overrides
+                            .for_part(offset.unwrap_or([0.0, 0.0]), min, max);
+                }
+            }
             PlateObject {
                 id: s.id,
                 mesh,
@@ -4019,64 +4052,74 @@ fn object_layer(
         interior_remaining: remain_low.0,
         interior_run: remain_low.1,
     };
-    let mut paths = Vec::new();
-    let mut wall_ms = 0.0;
-    let mut infill_ms = 0.0;
-    let note = match blend {
-        BlendMode::ByRegion { axis, at_mm } => {
-            let (low_rect, high_rect) = split_rects(*axis, *at_mm, min, max, contours);
-            let tough = resolve(pure(StrategyId::Toughness), settings);
-            let speed = resolve(pure(StrategyId::Speed), settings);
-            let margin = cut_margin(&tough, &speed, line_width);
-            let low_plan = widen_rect(low_rect, *axis, true, margin);
-            let high_plan = widen_rect(high_rect, *axis, false, margin);
-            let low = clip_to_rect(contours, low_plan.0, low_plan.1);
-            let high = clip_to_rect(contours, high_plan.0, high_plan.1);
-            let mut hint = [min[0], min[1]];
-            let mut low_feat = features.clone();
-            low_feat.shell = shell_of(z, roof_distance, &tough);
-            low_feat.interior_remaining = remain_low.0;
-            low_feat.interior_run = remain_low.1;
-            let mut high_feat = features.clone();
-            high_feat.shell = shell_of(z, roof_distance, &speed);
-            high_feat.interior_remaining = remain_high.0;
-            high_feat.interior_run = remain_high.1;
-            let (low_paths, low_wall, low_infill) =
-                plan_region_split(&low, &tough, line_width, &mut hint, &low_feat);
-            let (high_paths, high_wall, high_infill) =
-                plan_region_split(&high, &speed, line_width, &mut hint, &high_feat);
-            wall_ms += low_wall + high_wall;
-            infill_ms += low_infill + high_infill;
-            paths.extend(pair_sides(
-                keep_side(low_paths, *axis, *at_mm, true),
-                keep_side(high_paths, *axis, *at_mm, false),
-            ));
-            format!("region low=toughness high=speed split {at_mm:.2} h={height:.3}")
-        }
-        other => {
-            let resolved = layer_strategy(other, z, settings);
-            let mut hint = [max[0], (min[1] + max[1]) * 0.5];
-            let mut feat = features.clone();
-            feat.shell = shell_of(z, roof_distance, &resolved);
-            feat.interior_remaining = remain_low.0;
-            feat.interior_run = remain_low.1;
-            let (region, region_wall, region_infill) =
-                plan_region_split(contours, &resolved, line_width, &mut hint, &feat);
-            wall_ms += region_wall;
-            infill_ms += region_infill;
-            paths.extend(region);
-            format!(
-                "{} walls={} infill={:.0}% {} {:.0}mm/s h={:.3}",
-                resolved.id.as_str(),
-                resolved.walls,
-                resolved.infill_density * 100.0,
-                pattern_label(&resolved),
-                resolved.print_speed,
-                height
-            )
-        }
+    // The blend's plan of `region`, with `tweak` over every strategy it prints.
+    let plan = |region: &[Loop], tweak: Option<&Tweak>| {
+        let tweaked = |s: ResolvedStrategy| match tweak {
+            Some(t) => t.apply(s),
+            None => s,
+        };
+        let mut paths = Vec::new();
+        let mut wall_ms = 0.0;
+        let mut infill_ms = 0.0;
+        let contours = region;
+        let note = match blend {
+            BlendMode::ByRegion { axis, at_mm } => {
+                let (low_rect, high_rect) = split_rects(*axis, *at_mm, min, max, contours);
+                let tough = tweaked(resolve(pure(StrategyId::Toughness), settings));
+                let speed = tweaked(resolve(pure(StrategyId::Speed), settings));
+                let margin = cut_margin(&tough, &speed, line_width);
+                let low_plan = widen_rect(low_rect, *axis, true, margin);
+                let high_plan = widen_rect(high_rect, *axis, false, margin);
+                let low = clip_to_rect(contours, low_plan.0, low_plan.1);
+                let high = clip_to_rect(contours, high_plan.0, high_plan.1);
+                let mut hint = [min[0], min[1]];
+                let mut low_feat = features.clone();
+                low_feat.shell = shell_of(z, roof_distance, &tough);
+                low_feat.interior_remaining = remain_low.0;
+                low_feat.interior_run = remain_low.1;
+                let mut high_feat = features.clone();
+                high_feat.shell = shell_of(z, roof_distance, &speed);
+                high_feat.interior_remaining = remain_high.0;
+                high_feat.interior_run = remain_high.1;
+                let (low_paths, low_wall, low_infill) =
+                    plan_region_split(&low, &tough, line_width, &mut hint, &low_feat);
+                let (high_paths, high_wall, high_infill) =
+                    plan_region_split(&high, &speed, line_width, &mut hint, &high_feat);
+                wall_ms += low_wall + high_wall;
+                infill_ms += low_infill + high_infill;
+                paths.extend(pair_sides(
+                    keep_side(low_paths, *axis, *at_mm, true),
+                    keep_side(high_paths, *axis, *at_mm, false),
+                ));
+                format!("region low=toughness high=speed split {at_mm:.2} h={height:.3}")
+            }
+            other => {
+                let resolved = tweaked(layer_strategy(other, z, settings));
+                let mut hint = [max[0], (min[1] + max[1]) * 0.5];
+                let mut feat = features.clone();
+                feat.shell = shell_of(z, roof_distance, &resolved);
+                feat.interior_remaining = remain_low.0;
+                feat.interior_run = remain_low.1;
+                let (region, region_wall, region_infill) =
+                    plan_region_split(contours, &resolved, line_width, &mut hint, &feat);
+                wall_ms += region_wall;
+                infill_ms += region_infill;
+                paths.extend(region);
+                format!(
+                    "{} walls={} infill={:.0}% {} {:.0}mm/s h={:.3}",
+                    resolved.id.as_str(),
+                    resolved.walls,
+                    resolved.infill_density * 100.0,
+                    pattern_label(&resolved),
+                    resolved.print_speed,
+                    height
+                )
+            }
+        };
+        (paths, wall_ms, infill_ms, note)
     };
-    let mut note = note;
+    let range = settings.overrides.range_at(z);
+    let (paths, wall_ms, infill_ms, mut note) = plan(contours, range.as_ref());
     if paths.iter().any(|p| p.kind == PathKind::GapFill) && !note.contains("gap-fill") {
         note.push_str(" · gap-fill");
     }

@@ -302,7 +302,8 @@ pub(crate) fn plan_region_split(
         );
     }
     let solid_shell = matches!(features.shell, ShellBand::Bottom | ShellBand::Top);
-    if strategy.infill_density > 0.01
+    // An empty sparse fill still closes the part with its solid skins.
+    if (strategy.infill_density > 0.01 || solid_shell)
         && !infill_loops.is_empty()
         && (solid_shell || infill_kept(strategy, features))
     {

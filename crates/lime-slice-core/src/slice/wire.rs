@@ -6,6 +6,7 @@ use serde_json::{Map, Value};
 
 use super::{RigidPose, SliceRequest};
 use crate::adaptive::LayerBand;
+use crate::modifiers::{HeightRange, Overrides, Shape, Tweak, Volume};
 use crate::support::edit::{EditOutcome, EditStatus, SupportEdit, TipSite};
 use crate::support::skeleton::SupportSkeleton;
 use crate::support::{CoverageGap, InAir};
@@ -39,8 +40,9 @@ enum Scope {
     NotYet,
 }
 
-/// Keys an object may set, and keys it will once modifiers land. Every
-/// other request key is a plate setting.
+/// Keys an object may set, and the override keys it may not set yet: ranges
+/// and volumes are plate-wide and reach every object they meet. Every other
+/// request key is a plate setting.
 const SETTING_SCOPES: &[(&str, Scope)] = &[
     ("blend", Scope::Object),
     ("supports", Scope::Object),
@@ -59,6 +61,8 @@ const SETTING_SCOPES: &[(&str, Scope)] = &[
     ("infillCombine", Scope::Object),
     ("variableWidth", Scope::Object),
     ("seam", Scope::Plate),
+    ("heightRanges", Scope::Plate),
+    ("modifierVolumes", Scope::Plate),
     ("infill", Scope::NotYet),
     ("walls", Scope::NotYet),
     ("speed", Scope::NotYet),
@@ -344,4 +348,135 @@ impl EditOutcomeView {
             floating: outcome.floating.clone(),
         }
     }
+}
+
+/// One height range on the wire.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HeightRangeSpec {
+    /// Print Z, low then high. A layer whose z lies inside, ends included,
+    /// takes the range.
+    pub z: [f64; 2],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub infill: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub walls: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum VolumeKind {
+    Box,
+    Cylinder,
+    Sphere,
+}
+
+/// One modifier volume on the wire, in bed millimetres. Axis-aligned.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModifierVolumeSpec {
+    pub kind: VolumeKind,
+    pub center: [f64; 3],
+    /// Full extent along X, Y, and Z.
+    pub size: [f64; 3],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub infill: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub walls: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f64>,
+}
+
+const MAX_OVERRIDES: usize = 64;
+const MIN_EXTENT_MM: f64 = 0.2;
+const MAX_WALLS: u32 = 12;
+const MAX_SPEED: f64 = 1000.0;
+
+/// Checks every range and volume and turns them into the engine's form.
+/// The error names the entry and its field, as
+/// `heightRanges[0]: walls 0 is outside 1 to 12`.
+pub(crate) fn parse_overrides(req: &SliceRequest, bed: [f64; 2]) -> Result<Overrides, String> {
+    for (field, n) in [
+        ("heightRanges", req.height_ranges.len()),
+        ("modifierVolumes", req.modifier_volumes.len()),
+    ] {
+        if n > MAX_OVERRIDES {
+            return Err(format!(
+                "{field}: {n} entries, at most {MAX_OVERRIDES} are allowed"
+            ));
+        }
+    }
+    let ranges = req
+        .height_ranges
+        .iter()
+        .enumerate()
+        .map(|(n, r)| range(r).map_err(|e| format!("heightRanges[{n}]: {e}")))
+        .collect::<Result<_, _>>()?;
+    let volumes = req
+        .modifier_volumes
+        .iter()
+        .enumerate()
+        .map(|(n, v)| volume(v, n, bed).map_err(|e| format!("modifierVolumes[{n}]: {e}")))
+        .collect::<Result<_, _>>()?;
+    Ok(Overrides { ranges, volumes })
+}
+
+fn range(r: &HeightRangeSpec) -> Result<HeightRange, String> {
+    finite(r.z[0], "z low")?;
+    finite(r.z[1], "z high")?;
+    if r.z[0] > r.z[1] {
+        return Err(format!("z runs low to high, got {} to {}", r.z[0], r.z[1]));
+    }
+    Ok(HeightRange {
+        z: r.z,
+        tweak: tweak(r.infill, r.walls, r.speed)?,
+    })
+}
+
+fn volume(v: &ModifierVolumeSpec, index: usize, bed: [f64; 2]) -> Result<Volume, String> {
+    for (c, axis) in v.center.iter().zip(["center x", "center y", "center z"]) {
+        finite(*c, axis)?;
+    }
+    // The profile has no bed height, so Z is bounded like a coordinate.
+    for (s, (axis, most)) in v
+        .size
+        .iter()
+        .zip([("x", bed[0]), ("y", bed[1]), ("z", MAX_MM)])
+    {
+        if !(s.is_finite() && (MIN_EXTENT_MM..=most).contains(s)) {
+            return Err(format!(
+                "size {axis} {s} is outside {MIN_EXTENT_MM} to {most} mm"
+            ));
+        }
+    }
+    Ok(Volume {
+        shape: match v.kind {
+            VolumeKind::Box => Shape::Box,
+            VolumeKind::Cylinder => Shape::Cylinder,
+            VolumeKind::Sphere => Shape::Sphere,
+        },
+        center: v.center,
+        size: v.size,
+        tweak: tweak(v.infill, v.walls, v.speed)?,
+        index,
+    })
+}
+
+fn tweak(infill: Option<f64>, walls: Option<u32>, speed: Option<f64>) -> Result<Tweak, String> {
+    if let Some(f) = infill.filter(|f| !(f.is_finite() && (0.0..=1.0).contains(f))) {
+        return Err(format!("infill {f} is outside 0 to 1"));
+    }
+    if let Some(w) = walls.filter(|w| !(1..=MAX_WALLS).contains(w)) {
+        return Err(format!("walls {w} is outside 1 to {MAX_WALLS}"));
+    }
+    if let Some(s) = speed.filter(|s| !(s.is_finite() && *s > 0.0 && *s <= MAX_SPEED)) {
+        return Err(format!("speed {s} is outside 0 to {MAX_SPEED} mm/s"));
+    }
+    Ok(Tweak {
+        infill,
+        walls,
+        speed,
+    })
 }
