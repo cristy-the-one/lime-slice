@@ -707,7 +707,10 @@ export function currentPreset(): PresetSettings {
 export function presetHtml() {
   const saved = readPresets();
   const names = Object.keys(saved).sort();
-  const options = names.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("");
+  // Called while the previous panel is still in the document, so a slice
+  // finishing between choosing a preset and loading it does not drop the choice.
+  const picked = document.querySelector<HTMLSelectElement>("#presetPick")?.value ?? "";
+  const options = names.map((name) => `<option value="${escapeHtml(name)}"${name === picked ? " selected" : ""}>${escapeHtml(name)}</option>`).join("");
   const diff = diffPreset(currentPreset());
   const body = diff.length ? diff.map((line) => escapeHtml(line)).join("<br>") : "Matches the default preset.";
   return `
