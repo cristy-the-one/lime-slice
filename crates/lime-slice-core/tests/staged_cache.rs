@@ -45,11 +45,12 @@ fn reused(reply: &Value) -> Vec<&str> {
 #[test]
 fn each_tweak_reuses_the_stages_it_left_alone_and_slices_as_cold() {
     // Each step adds one change to the step before it.
-    let steps: [(&str, Value); 7] = [
+    let steps: [(&str, Value); 8] = [
         ("base", json!({})),
         ("arc fit off", json!({"arcFit": false})),
         ("z-hop always", json!({"zHop": "always"})),
         ("scarf off", json!({"scarfSeam": "off"})),
+        ("seam rear", json!({"seam": "rear"})),
         ("feature speeds off", json!({"featureSpeeds": false})),
         ("support angle 55", json!({"supportAngle": 55})),
         (
@@ -124,6 +125,7 @@ fn each_tweak_reuses_the_stages_it_left_alone_and_slices_as_cold() {
                 "scarf off",
                 vec!["contours", "toolpaths", "supports", "supportPaths"]
             ),
+            ("seam rear", vec!["contours", "supports", "supportPaths"]),
             ("feature speeds off", vec!["contours", "supports"]),
             (
                 "support angle 55",

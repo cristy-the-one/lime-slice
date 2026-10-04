@@ -131,6 +131,8 @@ fn moving_a_part_on_the_bed_only_shifts_the_gcode() {
     let region_t0 = slice(&at_t0(region(100.0)));
     let region_t1 = slice(&at_t1(region(100.0 + DX)));
     let region_left = slice(&at_t1(region(100.0)));
+    let rear_t0 = slice(&at_t0(json!({"seam": "rear"})));
+    let rear_t1 = slice(&at_t1(json!({"seam": "rear"})));
     keep_support_bases(false);
     let cold_t1 = slice(&at_t1(json!({})));
     let cold_pruned_t1 = slice(&at_t1(json!({"supportEdits": [prune]})));
@@ -194,6 +196,18 @@ fn moving_a_part_on_the_bed_only_shifts_the_gcode() {
         reused(&region_left)
     );
     assert_eq!(reused(&region_t0), vec!["contours"]);
+
+    assert_eq!(
+        reused(&rear_t0),
+        vec!["contours", "supports", "supportPaths"],
+        "a seam change plans the part's paths again"
+    );
+    assert_eq!(reused(&rear_t1), ALL.to_vec(), "rear is read in the part frame");
+    assert!(rear_t0["gcode"] != t0["gcode"]);
+    assert_shifted(
+        rear_t0["gcode"].as_str().unwrap(),
+        rear_t1["gcode"].as_str().unwrap(),
+    );
 }
 
 /// Birth sites of every limb in the lowest-numbered tree with at least two limbs.
