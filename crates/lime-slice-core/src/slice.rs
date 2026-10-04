@@ -759,6 +759,16 @@ pub struct StageTimes {
     /// slice because their supports and the nozzle's way in were the same.
     #[serde(default)]
     pub layers_reused: u32,
+    /// Layers of a part stage that ran again but took them from a kept
+    /// slice, because the only change was overrides that miss them: their
+    /// toolpaths, their tour (same paths from the same start), and their
+    /// combing (same tour). A stage reused whole is in `reused` instead.
+    #[serde(default)]
+    pub toolpath_layers_reused: u32,
+    #[serde(default)]
+    pub order_layers_reused: u32,
+    #[serde(default)]
+    pub comb_layers_reused: u32,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1321,6 +1331,9 @@ fn slice_plate(
         edit_apply_ms: spent.edit_apply_ms,
         edit_refresh_ms: spent.edit_refresh_ms,
         layers_reused: plans.iter().map(|p| p.layers_reused).sum(),
+        toolpath_layers_reused: plans.iter().map(|p| p.reuse.toolpath_layers).sum(),
+        order_layers_reused: plans.iter().map(|p| p.reuse.order_layers).sum(),
+        comb_layers_reused: plans.iter().map(|p| p.reuse.comb_layers).sum(),
     };
     let views: Vec<ObjectView> = plans
         .iter()
@@ -2255,6 +2268,10 @@ pub(crate) struct Reuse {
     pub support_paths: bool,
     /// Leading edits whose result was already applied.
     pub edits: u32,
+    /// Layers a part stage computed again took from a kept plan.
+    pub toolpath_layers: u32,
+    pub order_layers: u32,
+    pub comb_layers: u32,
 }
 
 impl Reuse {
@@ -2283,6 +2300,9 @@ impl Reuse {
             supports: self.supports && other.supports,
             support_paths: self.support_paths && other.support_paths,
             edits: self.edits.min(other.edits),
+            toolpath_layers: self.toolpath_layers.min(other.toolpath_layers),
+            order_layers: self.order_layers.min(other.order_layers),
+            comb_layers: self.comb_layers.min(other.comb_layers),
         }
     }
 }
@@ -2558,11 +2578,11 @@ fn plan_cut(
     if !reuse.contours {
         spent.cut(&cut);
     }
-    let paths = part_paths(&cut, blend, settings, nozzle_diameter, watch)?;
+    let paths = part_paths(&cut, blend, settings, nozzle_diameter, [0; 32], None, watch)?;
     spent.toolpaths(&paths);
-    let tour = tour_part(&cut, &paths, blend, settings, watch)?;
+    let tour = tour_part(&cut, &paths, blend, settings, [0; 32], None, watch)?;
     spent.order_ms += tour.order_ms;
-    let travels = comb_part(&cut, &tour, settings, watch)?;
+    let travels = comb_part(&cut, &tour, settings, [0; 32], None, watch)?;
     spent.comb_ms += travels.comb_ms;
     let mut supports = plate::settle(
         &cut,
@@ -2617,33 +2637,56 @@ fn plan_kept(
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
     }
+    let base = &keys.layers;
     let paths = kept::stage(&keys.toolpaths, &mut reuse.toolpaths, || {
-        part_paths(&cut, blend, settings, nozzle_diameter, watch)
+        let kept = kept::newest::<PartPaths>(|p| p.base == base.toolpaths);
+        part_paths(
+            &cut,
+            blend,
+            settings,
+            nozzle_diameter,
+            base.toolpaths,
+            kept.as_deref(),
+            watch,
+        )
     })?;
     if reuse.toolpaths {
         watch.complete(Stage::Part);
     } else {
         spent.toolpaths(&paths);
+        reuse.toolpath_layers = paths.reused;
     }
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
     }
     let tour = kept::stage(&keys.order, &mut reuse.order, || {
-        tour_part(&cut, &paths, blend, settings, watch)
+        let kept = kept::newest::<PartTour>(|t| t.base == base.order);
+        tour_part(
+            &cut,
+            &paths,
+            blend,
+            settings,
+            base.order,
+            kept.as_deref(),
+            watch,
+        )
     })?;
     if reuse.order {
         watch.complete(Stage::Travel);
     } else {
         spent.order_ms += tour.order_ms;
+        reuse.order_layers = tour.reused;
     }
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
     }
     let travels = kept::stage(&keys.comb, &mut reuse.comb, || {
-        comb_part(&cut, &tour, settings, watch)
+        let kept = kept::newest::<PartTravels>(|t| t.base == base.comb);
+        comb_part(&cut, &tour, settings, base.comb, kept.as_deref(), watch)
     })?;
     if !reuse.comb {
         spent.comb_ms += travels.comb_ms;
+        reuse.comb_layers = travels.reused;
     }
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
@@ -2960,7 +3003,13 @@ struct ObjectLayer {
 /// The part's own toolpaths: every layer's walls, infill, and skin with
 /// overhangs split, in the order they were planned. Supports never read it.
 pub(crate) struct PartPaths {
-    layers: Vec<ObjectLayer>,
+    layers: Vec<Arc<ObjectLayer>>,
+    /// Each layer's overrides as resolved for it, from `layer_overrides`.
+    overrides: Vec<[u8; 32]>,
+    /// The kept layer key the layers were planned under.
+    base: [u8; 32],
+    /// Layers taken from a kept plan instead of planned.
+    reused: u32,
     toolpath_ms: f64,
     wall_cpu_ms: f64,
     infill_cpu_ms: f64,
@@ -2969,17 +3018,37 @@ pub(crate) struct PartPaths {
 /// The part's layers in print order, each one tour scarfed as it went,
 /// before any travel is combed or hopped.
 pub(crate) struct PartTour {
-    layers: Vec<Vec<Extrusion>>,
-    /// Where each layer's tour ends, carried up through layers with no part.
-    ends: Vec<Option<[f64; 2]>>,
+    layers: Vec<Arc<TourLayer>>,
+    base: [u8; 32],
+    reused: u32,
     order_ms: f64,
 }
 
+/// One layer of the part's tour and what it was toured from.
+pub(crate) struct TourLayer {
+    source: Arc<ObjectLayer>,
+    /// Where the tour started: where the tour below ended.
+    from: Option<[f64; 2]>,
+    paths: Vec<Extrusion>,
+    /// Where the tour ends, carried up through layers with no part.
+    end: Option<[f64; 2]>,
+}
+
 /// How the nozzle travels into each path of the part's tour, combed and
-/// hopped, one entry per path of `PartTour.layers`.
+/// hopped.
 pub(crate) struct PartTravels {
-    layers: Vec<Vec<Travel>>,
+    layers: Vec<Arc<CombLayer>>,
+    base: [u8; 32],
+    reused: u32,
     comb_ms: f64,
+}
+
+/// One travel per path of `tour`.
+pub(crate) struct CombLayer {
+    tour: Arc<TourLayer>,
+    /// The layer below has top skin, which z-hop reads.
+    after_top: bool,
+    travels: Vec<Travel>,
 }
 
 /// What combing and z-hop decide about the travel into one path.
@@ -3021,14 +3090,20 @@ impl Part<'_> {
     /// The nozzle moves on layer `i`'s part, so the layer ends where the
     /// part's tour does.
     fn prints(&self, i: usize) -> bool {
-        self.tour.layers[i].iter().any(|p| !p.points.is_empty())
+        self.tour.layers[i]
+            .paths
+            .iter()
+            .any(|p| !p.points.is_empty())
     }
 
     /// Layer `i` of the part in print order, combed and hopped.
     fn combed(&self, i: usize) -> impl Iterator<Item = Extrusion> + '_ {
-        self.tour.layers[i]
+        let layer = &self.travels.layers[i];
+        layer
+            .tour
+            .paths
             .iter()
-            .zip(&self.travels.layers[i])
+            .zip(&layer.travels)
             .map(|(path, travel)| travel.onto(path))
     }
 }
@@ -3180,12 +3255,16 @@ fn edit(
     }
 }
 
-/// Every layer's walls, infill, and skin, with overhangs split.
+/// Every layer's walls, infill, and skin, with overhangs split. A layer of
+/// `kept`, planned under the same `base`, is taken as it is when its own
+/// overrides are the same.
 fn part_paths(
     cut: &Contours,
     blend: &BlendMode,
     settings: &SliceSettings,
     nozzle_diameter: f64,
+    base: [u8; 32],
+    kept: Option<&PartPaths>,
     watch: &Watch,
 ) -> Result<PartPaths, String> {
     let (bands, contours) = (&cut.bands, &cut.contours);
@@ -3196,17 +3275,24 @@ fn part_paths(
     }
     let (remain_low, remain_high) = interior_remainings(blend, settings, bands, &cut.roofs);
     let toolpath_started = Instant::now();
-    let layers: Vec<ObjectLayer> = bands
+    let kept = kept.filter(|k| k.base == base);
+    let planned: Vec<([u8; 32], Arc<ObjectLayer>, bool)> = bands
         .par_iter()
         .enumerate()
         .map(|(i, band)| {
+            let overrides = layer_overrides(&settings.overrides, band.z, &contours[i]);
+            if let Some(kept) = kept.filter(|k| k.overrides.get(i) == Some(&overrides)) {
+                watch.tick();
+                return (overrides, Arc::clone(&kept.layers[i]), true);
+            }
             if watch.stopped(settings.job) {
-                return ObjectLayer {
+                let layer = ObjectLayer {
                     paths: Vec::new(),
                     note: String::new(),
                     wall_ms: 0.0,
                     infill_ms: 0.0,
                 };
+                return (overrides, Arc::new(layer), false);
             }
             let mut layer = object_layer(
                 band.index,
@@ -3231,7 +3317,7 @@ fn part_paths(
                 );
             }
             watch.tick();
-            layer
+            (overrides, Arc::new(layer), false)
         })
         .collect();
     let toolpath_ms = elapsed_ms(toolpath_started);
@@ -3239,26 +3325,44 @@ fn part_paths(
         return Err("cancelled".into());
     }
     watch.fill();
+    let fresh = || planned.iter().filter(|p| !p.2).map(|p| &p.1);
     Ok(PartPaths {
-        wall_cpu_ms: layers.iter().map(|l| l.wall_ms).sum(),
-        infill_cpu_ms: layers.iter().map(|l| l.infill_ms).sum(),
-        layers,
+        wall_cpu_ms: fresh().map(|l| l.wall_ms).sum(),
+        infill_cpu_ms: fresh().map(|l| l.infill_ms).sum(),
+        reused: planned.iter().filter(|p| p.2).count() as u32,
+        overrides: planned.iter().map(|p| p.0).collect(),
+        layers: planned.into_iter().map(|p| p.1).collect(),
+        base,
         toolpath_ms,
     })
 }
 
+/// What the overrides change on the layer at `z` with `contours`: the range
+/// over it and the volumes that can reach it, hashed. Every other input of a
+/// layer's toolpaths is the same for all layers of a plan.
+fn layer_overrides(overrides: &Overrides, z: f64, contours: &[Loop]) -> [u8; 32] {
+    let range = overrides.range_at(z);
+    let prints = layer_footprints(overrides, z, contours);
+    Sha256::digest(format!("{range:?}|{prints:?}")).into()
+}
+
 /// Orders each layer of the part as one tour, starting where the part's
 /// tour on the layer below ended. The tour never sees the supports, so
-/// editing them leaves it alone.
+/// editing them leaves it alone. A layer of `kept`, toured under the same
+/// `base`, is taken as it is when it toured the same paths from the same
+/// point.
 ///
 /// The first layer's tour starts where a skirt around the part alone would
 /// end. That is where the skirt really ends when no support stands on the
 /// first layer, so a print without supports orders as it always did.
+#[allow(clippy::too_many_arguments)]
 fn tour_part(
     cut: &Contours,
     part: &PartPaths,
     blend: &BlendMode,
     settings: &SliceSettings,
+    base: [u8; 32],
+    kept: Option<&PartTour>,
     watch: &Watch,
 ) -> Result<PartTour, String> {
     let (bands, contours) = (&cut.bands, &cut.contours);
@@ -3267,84 +3371,154 @@ fn tour_part(
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
     }
-    let mut layers: Vec<Vec<Extrusion>> = part.layers.par_iter().map(|l| l.paths.clone()).collect();
-    let mut ends = Vec::with_capacity(layers.len());
-    if settings.travel_opt {
+    let kept = kept.filter(|k| k.base == base);
+    let same_paths = |i: usize| {
+        kept.and_then(|k| k.layers.get(i))
+            .filter(|k| Arc::ptr_eq(&k.source, &part.layers[i]))
+    };
+    let bits = |p: Option<[f64; 2]>| p.map(|p| p.map(f64::to_bits));
+    let mut reused = 0;
+    let layers: Vec<Arc<TourLayer>> = if settings.travel_opt {
+        // A layer with new paths is toured again whatever its start, so its
+        // copy is taken up front, in parallel.
+        let mut fresh: Vec<Option<Vec<Extrusion>>> = part
+            .layers
+            .par_iter()
+            .enumerate()
+            .map(|(i, l)| same_paths(i).is_none().then(|| l.paths.clone()))
+            .collect();
         let mut end = bands.first().filter(|b| b.index == 0).and_then(|b| {
             let mut skirt = skirt_paths(&contours[0], None, b.z, blend, settings);
             order_supports(&mut skirt, None, scarf_params(settings, 0).as_ref())
         });
-        for (i, layer) in layers.iter_mut().enumerate() {
+        let mut layers = Vec::with_capacity(bands.len());
+        for (i, source) in part.layers.iter().enumerate() {
             if watch.stopped(settings.job) {
                 return Err("cancelled".into());
             }
-            let scarf = scarf_params(settings, bands[i].index);
-            end = order_part(layer, &contours[i], end, scarf.as_ref());
-            ends.push(end);
+            let layer = match same_paths(i).filter(|k| bits(k.from) == bits(end)) {
+                Some(k) => {
+                    reused += 1;
+                    Arc::clone(k)
+                }
+                None => {
+                    let mut paths = fresh[i].take().unwrap_or_else(|| source.paths.clone());
+                    let scarf = scarf_params(settings, bands[i].index);
+                    let to = order_part(&mut paths, &contours[i], end, scarf.as_ref());
+                    Arc::new(TourLayer {
+                        source: Arc::clone(source),
+                        from: end,
+                        paths,
+                        end: to,
+                    })
+                }
+            };
+            end = layer.end;
+            layers.push(layer);
             watch.tick();
         }
+        layers
     } else {
-        ends.resize(layers.len(), None);
-        layers.par_iter_mut().enumerate().for_each(|(i, layer)| {
-            if watch.stopped(settings.job) {
-                return;
-            }
-            if let Some(params) = scarf_params(settings, bands[i].index) {
-                apply_scarf(layer, &params);
-            }
-            watch.tick();
-        });
+        let toured: Vec<(Arc<TourLayer>, bool)> = part
+            .layers
+            .par_iter()
+            .enumerate()
+            .map(|(i, source)| {
+                if let Some(k) = same_paths(i) {
+                    watch.tick();
+                    return (Arc::clone(k), true);
+                }
+                let mut paths = Vec::new();
+                if !watch.stopped(settings.job) {
+                    paths = source.paths.clone();
+                    if let Some(params) = scarf_params(settings, bands[i].index) {
+                        apply_scarf(&mut paths, &params);
+                    }
+                }
+                watch.tick();
+                let layer = TourLayer {
+                    source: Arc::clone(source),
+                    from: None,
+                    paths,
+                    end: None,
+                };
+                (Arc::new(layer), false)
+            })
+            .collect();
         if watch.stopped(settings.job) {
             return Err("cancelled".into());
         }
-    }
+        reused = toured.iter().filter(|t| t.1).count() as u32;
+        toured.into_iter().map(|t| t.0).collect()
+    };
     watch.fill();
     Ok(PartTour {
         layers,
-        ends,
+        base,
+        reused,
         order_ms: elapsed_ms(order_started),
     })
 }
 
 /// Combs and hops the travels between the part's paths on each layer. The
 /// travel into a layer's first path depends on what prints before it, so
-/// `assemble` decides that one.
+/// `assemble` decides that one. A layer of `kept`, combed under the same
+/// `base`, is taken as it is when it combed the same tour after the same
+/// kind of layer.
 fn comb_part(
     cut: &Contours,
     tour: &PartTour,
     settings: &SliceSettings,
+    base: [u8; 32],
+    kept: Option<&PartTravels>,
     watch: &Watch,
 ) -> Result<PartTravels, String> {
     let comb_started = Instant::now();
     let contours = &cut.contours;
-    let tops: Vec<bool> = tour.layers.iter().map(|l| has_top(l)).collect();
-    let layers: Vec<Vec<Travel>> = tour
+    let kept = kept.filter(|k| k.base == base);
+    let tops: Vec<bool> = tour.layers.iter().map(|l| has_top(&l.paths)).collect();
+    let combed: Vec<(Arc<CombLayer>, bool)> = tour
         .layers
         .par_iter()
         .enumerate()
-        .map(|(i, paths)| {
-            if watch.stopped(settings.job) {
-                return Vec::new();
+        .map(|(i, layer)| {
+            let after_top = i > 0 && tops[i - 1];
+            let same = kept
+                .and_then(|k| k.layers.get(i))
+                .filter(|k| Arc::ptr_eq(&k.tour, layer) && k.after_top == after_top);
+            if let Some(k) = same {
+                return (Arc::clone(k), true);
             }
-            let mut paths = paths.clone();
-            if settings.travel_opt {
-                comb_layer(
-                    &mut paths,
-                    &contours[i],
-                    settings.combing,
-                    settings.line_width * 0.8,
-                    None,
-                );
+            let mut travels = Vec::new();
+            if !watch.stopped(settings.job) {
+                let mut paths = layer.paths.clone();
+                if settings.travel_opt {
+                    comb_layer(
+                        &mut paths,
+                        &contours[i],
+                        settings.combing,
+                        settings.line_width * 0.8,
+                        None,
+                    );
+                }
+                hop_travels(&mut paths, &contours[i], after_top, settings);
+                travels = paths.into_iter().map(Travel::of).collect();
             }
-            hop_travels(&mut paths, &contours[i], i > 0 && tops[i - 1], settings);
-            paths.into_iter().map(Travel::of).collect()
+            let layer = CombLayer {
+                tour: Arc::clone(layer),
+                after_top,
+                travels,
+            };
+            (Arc::new(layer), false)
         })
         .collect();
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
     }
     Ok(PartTravels {
-        layers,
+        reused: combed.iter().filter(|c| c.1).count() as u32,
+        layers: combed.into_iter().map(|c| c.0).collect(),
+        base,
         comb_ms: elapsed_ms(comb_started),
     })
 }
@@ -3504,13 +3678,16 @@ fn paint(
         .collect()
 }
 
-/// One layer as `assemble` joined it, with the inputs that decided it. The
-/// part is the same on every plan with the same comb key, so a layer whose
-/// skirt, support paths, and way in are the same joins to the same paths.
+/// One layer as `assemble` joined it, with the inputs that decided it. A
+/// layer whose part, skirt, support paths, and way in are the same joins to
+/// the same paths.
 #[derive(Clone)]
 pub(crate) struct JoinedLayer {
     /// No contour and no support: the layer prints nothing.
     empty: bool,
+    /// The part's layer, toured and combed. `None` only on a layer never
+    /// joined because the slice stopped.
+    part: Option<Arc<CombLayer>>,
     skirt: Vec<Extrusion>,
     under: Arc<Vec<Extrusion>>,
     /// Where the nozzle stood when the layer began.
@@ -3526,12 +3703,14 @@ impl JoinedLayer {
     fn joins_like(
         &self,
         empty: bool,
+        part: &Arc<CombLayer>,
         skirt: &[Extrusion],
         under: &Arc<Vec<Extrusion>>,
         from: Option<[f64; 2]>,
     ) -> bool {
         let bits = |p: Option<[f64; 2]>| p.map(|p| p.map(f64::to_bits));
         self.empty == empty
+            && self.part.as_ref().is_some_and(|p| Arc::ptr_eq(p, part))
             && bits(self.from) == bits(from)
             && self.skirt == skirt
             && (Arc::ptr_eq(&self.under, under) || self.under == *under)
@@ -3587,7 +3766,10 @@ fn assemble(
     let slots: Vec<Slot> = runs
         .into_par_iter()
         .flat_map_iter(|run| {
-            let mut from = run.start.checked_sub(1).and_then(|i| part.tour.ends[i]);
+            let mut from = run
+                .start
+                .checked_sub(1)
+                .and_then(|i| part.tour.layers[i].end);
             run.map(move |i| {
                 if watch.stopped(settings.job) {
                     return empty_slot();
@@ -3641,7 +3823,7 @@ fn assemble(
                     joined.from,
                 );
             }
-            let after_top = i > 0 && has_top(&part.tour.layers[i - 1]);
+            let after_top = part.travels.layers[i].after_top;
             hop_travels(&mut paths[..lead], &contours[i], after_top, settings);
             joined.layer.set_paths(paths);
             joined
@@ -3664,6 +3846,7 @@ fn assemble(
 fn empty_slot() -> Slot {
     Slot::Kept(JoinedLayer {
         empty: true,
+        part: None,
         skirt: Vec::new(),
         under: Arc::new(Vec::new()),
         from: None,
@@ -3704,9 +3887,10 @@ fn join_supports(
         Vec::new()
     };
     let under = &supports.paths[i];
+    let own = &part.travels.layers[i];
     if let Some(k) = kept
         .get(i)
-        .filter(|k| k.joins_like(empty, &skirt, under, from))
+        .filter(|k| k.joins_like(empty, own, &skirt, under, from))
     {
         return Slot::Kept(k.clone());
     }
@@ -3722,7 +3906,7 @@ fn join_supports(
             apply_scarf(&mut head, &params);
         }
         if part.prints(i) {
-            end = part.tour.ends[i];
+            end = own.tour.end;
         }
     }
     let note = if empty {
@@ -3739,6 +3923,7 @@ fn join_supports(
     };
     let joined = JoinedLayer {
         empty,
+        part: Some(Arc::clone(own)),
         skirt,
         under: Arc::clone(under),
         from,

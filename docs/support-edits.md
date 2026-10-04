@@ -61,9 +61,18 @@ The engine refuses a request whose edits are malformed, naming the edit: `suppor
 
 **Skeleton.** `skeleton` is present only when asked for. It holds every limb that still prints as parallel columns in ascending limb id: `id`, `tree` (the root limb's id), `into` (the merge parent's id, 0 for a root), `live` (1 until the limb's own tip is pruned), `siteX` and `siteY` (1 µm), `siteZ` (the band z, exact), and `start` into the knot columns `xs`, `ys`, `zs`, `rs` (0.01 mm, top to bottom). Knots are thinned: an interior disk is dropped when the straight run between its kept neighbours stays within 0.05 mm of it in x, y, and radius. The UI builds a branch's sites from a limb plus every limb whose `into` chain reaches it, and a tree's sites from every limb with the same `tree`.
 
-**Stage clocks.** `stages` gains `objectReused`, `supportBaseReused`, `editsReused`, `editApplyMs`, `editRefreshMs`, and `layersReused`. The clocks of reused work read zero.
+**Stage clocks.** `stages` gains `objectReused`, `supportBaseReused`, `editsReused`, `editApplyMs`, `editRefreshMs`, `layersReused`, `toolpathLayersReused`, `orderLayersReused`, and `combLayersReused`. The clocks of reused work read zero.
 
 **Kept bases.** The desktop app and `serve` call `keep_support_bases(true)`. The engine then keeps the last 3 interactive slices (those with `includePreview`) in memory. Each entry holds the part's slice, its supports planned with no edits, and the last edited state on them. The entry key hashes the mesh, blend, nozzle, and every setting except the edits, the skeleton flag, and the job. A second key leaves out the support-only settings too, so a support setting change reuses the part and plans only supports. Entries for the same part share one copy of it. A request whose edits start with the kept edited state's edits applies only the new ones. Any other edit list, including a shorter one after an undo, replays from the base. Baseline, compare, and Pareto plans never read or evict the kept entries. The CLI `slice`, tests, and golden leave keeping off, and turning it off forgets every entry.
+
+**Kept part layers.** Height ranges and modifier volumes are the only settings resolved layer by layer. Each part stage (toolpaths, tour, combing) therefore has a second key, `kept::LayerKeys`: its stage key with the overrides left out. When a stage key misses, the stage runs again against the newest kept stage with the same layer key, and takes each layer whose own inputs are the same:
+
+- Toolpaths. A layer's inputs are the cut, the settings, and the overrides as resolved for it: the range over its z and the volumes whose footprint can reach its outline (`layer_overrides`, a hash of both). A layer with the same hash takes the kept layer.
+- Tour. Each layer starts where the layer below ended, so a layer is taken only when it tours the same toolpaths (the same shared layer) from the same start, to the bit. Above a changed layer the tour runs again until a layer starts where it did before. From there it takes the kept layers again.
+- Combing. A layer is taken when it combs the same tour layer and the layer below it has top skin as before.
+- Join. A kept joined layer also needs the same combed part layer. So after an override change, the support tour, its combing, and the travel into the part rerun only where the part changed or the way in moved.
+
+`stages.toolpathLayersReused`, `orderLayersReused`, and `combLayersReused` count the layers taken this way. A stage reused whole is named in `stages.reused` instead, and its count reads 0. Layers are shared, not copied, so a kept stage costs memory only for the layers it changed.
 
 **Partial previews.** A click changes the supports of some layers, and most of each changed layer's paths stay the same. So the reply after a click can carry only what the client lacks.
 
