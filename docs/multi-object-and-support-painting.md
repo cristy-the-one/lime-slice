@@ -500,9 +500,9 @@ Measured through `serve` on this laptop, with the app's settings: speed blend, t
 
 | Plate | Cold | Move of one object | B's support angle | B's blend | One object alone: cold, move |
 | --- | --- | --- | --- | --- | --- |
-| Baby Dragon and the dragon sample | 5.42 s | 0.31 to 0.33 s, 0 changed layers | 1.14 s | 1.51 s | 4.22 s, 0.18 to 0.20 s |
-| Rear cover and boots | 5.49 s | 0.23 s, 0 changed layers | 0.46 to 0.48 s | 1.52 s | 5.10 s, 0.13 to 0.19 s |
-| The dragon sample twice | 1.20 s | 0.09 to 0.10 s, 0 changed layers | 0.80 to 1.02 s | 1.45 s | 1.09 s, 0.05 to 0.06 s |
+| Baby Dragon and the dragon sample | 5.41 s | 0.29 to 0.30 s, 0 changed layers | 1.08 to 1.12 s | 1.52 s | 4.26 s, 0.20 to 0.22 s |
+| Rear cover and boots | 5.52 s | 0.22 to 0.26 s, 0 changed layers | 0.48 to 0.50 s | 1.59 s | 5.10 s, 0.11 to 0.12 s |
+| The dragon sample twice | 1.22 s | 0.07 to 0.12 s, 0 changed layers | 0.76 to 1.04 s | 1.39 s | 1.11 s, 0.04 to 0.06 s |
 
 A move reuses every stage of both objects. A support angle change on B plans only B's supports, and a blend change plans B from its cut; A reuses every stage in both. Two copies of one mesh with one setting share every stage, so the second dragon costs nothing on the cold slice. The rest of a plate move over a single move is the second mesh's decode and hash, which every request pays.
 
