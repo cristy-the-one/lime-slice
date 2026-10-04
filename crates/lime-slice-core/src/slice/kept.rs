@@ -70,6 +70,14 @@ impl<T> Shelf<T> {
         Some(value)
     }
 
+    /// The most recent value `pick` takes, left where it is.
+    fn find(&self, pick: impl Fn(&T) -> bool) -> Option<Arc<T>> {
+        self.items
+            .iter()
+            .find(|(_, v)| pick(v))
+            .map(|(_, v)| Arc::clone(v))
+    }
+
     fn put(&mut self, key: [u8; 32], value: Arc<T>) {
         self.items.retain(|(k, _)| *k != key);
         self.items.insert(0, (key, value));
@@ -186,6 +194,12 @@ pub(super) fn stage<T: Stage>(
     Ok(made)
 }
 
+/// The newest kept `T` that `pick` takes. A stage whose key missed reuses
+/// from it each layer whose own inputs are the same.
+pub(super) fn newest<T: Stage>(pick: impl Fn(&T) -> bool) -> Option<Arc<T>> {
+    T::shelf(&mut kept()).find(pick)
+}
+
 /// The supports kept for `keys`: painted under the same settings, else
 /// only grown under the same support settings.
 pub(super) fn supports(keys: &Keys) -> Option<FoundSupports> {
@@ -222,15 +236,14 @@ pub(super) fn keep_supports(keys: &Keys, base: Arc<SupportPlan>, edited: Option<
     kept.supports.truncate(cap);
 }
 
-/// The newest join of the part `keys` names: the same part, order, and
-/// travels, so a layer with the same supports and way in joins to the same
-/// paths.
+/// The newest join of the part `keys` names under any overrides. A layer
+/// with the same part layer, supports, and way in joins to the same paths.
 pub(super) fn prior(keys: &Keys) -> Option<Arc<Vec<JoinedLayer>>> {
-    kept().joins.get(&keys.comb)
+    kept().joins.get(&keys.layers.comb)
 }
 
 pub(super) fn keep_joined(keys: &Keys, joined: Arc<Vec<JoinedLayer>>) {
-    kept().joins.put(keys.comb, joined);
+    kept().joins.put(keys.layers.comb, joined);
 }
 
 /// The newest plate's layers and the preview a reply drew from them.
@@ -280,6 +293,19 @@ pub(super) struct Keys {
     pub paint: [u8; 32],
     /// Everything but the edits, the preview base, and the job.
     pub whole: [u8; 32],
+    /// The part stages' keys without the overrides.
+    pub layers: LayerKeys,
+}
+
+/// The part stages' keys with the overrides left out. Ranges and volumes are
+/// the only settings resolved layer by layer, so two plans with the same
+/// layer key share every layer whose own overrides, and whose inputs from
+/// the stage before, are the same.
+#[derive(Clone)]
+pub(super) struct LayerKeys {
+    pub toolpaths: [u8; 32],
+    pub order: [u8; 32],
+    pub comb: [u8; 32],
 }
 
 impl Keys {
@@ -406,7 +432,19 @@ pub(super) fn keys(
         hash.update(format!("{blend:?}|{s:?}"));
         hash.finalize().into()
     };
+    let bare = |s: &SliceSettings| -> [u8; 32] {
+        let s = SliceSettings {
+            overrides: blank.overrides.clone(),
+            ..s.clone()
+        };
+        key(&s, Some(blend))
+    };
     Keys {
+        layers: LayerKeys {
+            toolpaths: bare(&toolpaths),
+            order: bare(&order),
+            comb: bare(&comb),
+        },
         contours: key(&contours, None),
         toolpaths: key(&toolpaths, Some(blend)),
         order: key(&order, Some(blend)),

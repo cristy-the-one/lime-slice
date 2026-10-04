@@ -96,7 +96,7 @@ A slice with both arrays omitted must match a slice from before the fields exist
 7. Yes. The range and volume structs use `deny_unknown_fields`. A `layerHeight` key or any typo is refused with the field name.
 8. Supports stay global. A volume does not change support settings in the first version.
 
-**Cache.** Overrides are part of the toolpath stage's cache key (see the staged cache from PR #98). Changing them recomputes toolpaths and later stages, not the cut. The stage keys hash the whole settings struct, so a new field lands in every stage key by default. The two new fields must be blanked in the contours key, the way `feature_speeds` is, or a change would recut.
+**Cache.** Overrides are part of the toolpath stage's cache key (see the staged cache from PR #98). Changing them recomputes toolpaths and later stages, not the cut. Only the layers whose resolved overrides changed are planned again, and the tour, combing, and join reuse every other layer they can (see "Kept part layers" in `docs/support-edits.md`). The stage keys hash the whole settings struct, so a new field lands in every stage key by default. The two new fields must be blanked in the contours key, the way `feature_speeds` is, or a change would recut.
 
 **Engine order.** The seam picker comes first, then height ranges and modifier volumes, then ironing, then support paint, then multi-object all-at-once, then sequential.
 
