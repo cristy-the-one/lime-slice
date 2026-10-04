@@ -2182,72 +2182,107 @@ const TRAVEL_WIN_MM: f64 = 0.05;
 /// and a real gap between parts does not.
 const ISLAND_GAP_MM: f64 = 2.2;
 
-/// Print order for the part's paths on one layer, starting at `from`.
-///
-/// The part prints one island at a time, nearest unprinted island next, each
-/// island's paths in plan order. Printing kind by kind across the layer
-/// crossed the bed once per kind; the Baby Dragon has up to 93 islands a
-/// layer, so that was 93 outer walls, then 93 inner walls, and so on.
-///
-/// Inside an island each run of one kind is reordered: walls and closed thin
-/// walls by nearest neighbor, infill, skin, and gap fill by the best of
-/// island, Hilbert, and stripe orders. A loop with a nearest seam starts at
-/// the corner nearest the nozzle; an aligned seam stays put. A wall is
-/// scarfed as soon as its seam is final, so the next path starts from where
-/// the scarf overlap really ends. Returns where the tour ends.
-pub fn order_part(
+/// `PartLayout::tour` in place.
+#[cfg(test)]
+fn order_part(
     paths: &mut Vec<Extrusion>,
     solid: &[Loop],
     from: Option<[f64; 2]>,
     scarf: Option<&ScarfParams>,
 ) -> Option<[f64; 2]> {
-    if paths.is_empty() {
-        return from;
-    }
-    let islands: Vec<Outline<'static>> = island_loops(solid)
-        .into_iter()
-        .map(Outline::owned)
-        .collect();
-    let mut parts: Vec<Vec<Extrusion>> = vec![Vec::new(); islands.len() + 1];
-    for path in paths.drain(..) {
-        let at = island_for(&islands, &path).unwrap_or(islands.len());
-        parts[at].push(path);
-    }
-    let mut out = Vec::new();
-    let mut cursor = from;
-    let blocks: Vec<Vec<Extrusion>> = parts.into_iter().filter(|p| !p.is_empty()).collect();
-    let tour = island_tour(&blocks, cursor);
-    let mut slots: Vec<Option<Vec<Extrusion>>> = blocks.into_iter().map(Some).collect();
-    for i in tour {
-        if let Some(block) = slots[i].take() {
-            cursor = order_block(block, cursor, &mut out, scarf);
+    let (out, end) = PartLayout::new(std::mem::take(paths), solid).tour(from, scarf);
+    *paths = out;
+    end
+}
+
+/// One layer's part paths as the tour reads them: split into islands and
+/// runs of one travel group, with everything the tour needs that does not
+/// depend on where it starts. Every layer can be laid out at once; only the
+/// tour itself has to wait for the layer below.
+pub struct PartLayout {
+    blocks: Vec<Vec<Run>>,
+    /// The gap between each pair of islands, `blocks.len()` squared, or
+    /// empty for one island.
+    gaps: Vec<f64>,
+}
+
+impl PartLayout {
+    pub fn new(paths: Vec<Extrusion>, solid: &[Loop]) -> Self {
+        if paths.is_empty() {
+            return Self {
+                blocks: Vec::new(),
+                gaps: Vec::new(),
+            };
+        }
+        let islands: Vec<Outline<'static>> = island_loops(solid)
+            .into_iter()
+            .map(Outline::owned)
+            .collect();
+        let mut parts: Vec<Vec<Extrusion>> = vec![Vec::new(); islands.len() + 1];
+        for path in paths {
+            let at = island_for(&islands, &path).unwrap_or(islands.len());
+            parts[at].push(path);
+        }
+        let blocks: Vec<Vec<Extrusion>> = parts.into_iter().filter(|p| !p.is_empty()).collect();
+        let gaps = island_gaps(&blocks);
+        Self {
+            blocks: blocks.into_iter().map(runs_of).collect(),
+            gaps,
         }
     }
-    *paths = out;
-    cursor
+
+    /// Print order for the part's paths on one layer, starting at `from`,
+    /// and where the tour ends.
+    ///
+    /// The part prints one island at a time, nearest unprinted island next,
+    /// each island's paths in plan order. Printing kind by kind across the
+    /// layer crossed the bed once per kind; the Baby Dragon has up to 93
+    /// islands a layer, so that was 93 outer walls, then 93 inner walls, and
+    /// so on.
+    ///
+    /// Inside an island each run of one kind is reordered: walls and closed
+    /// thin walls by nearest neighbor, infill, skin, and gap fill by the best
+    /// of island, Hilbert, and stripe orders. A loop with a nearest seam
+    /// starts at the corner nearest the nozzle; an aligned seam stays put. A
+    /// wall is scarfed as soon as its seam is final, so the next path starts
+    /// from where the scarf overlap really ends.
+    pub fn tour(
+        self,
+        from: Option<[f64; 2]>,
+        scarf: Option<&ScarfParams>,
+    ) -> (Vec<Extrusion>, Option<[f64; 2]>) {
+        let mut out = Vec::new();
+        let mut cursor = from;
+        let tour = island_tour(&self.blocks, &self.gaps, cursor);
+        let mut slots: Vec<Option<Vec<Run>>> = self.blocks.into_iter().map(Some).collect();
+        for i in tour {
+            if let Some(block) = slots[i].take() {
+                cursor = order_runs(block, cursor, &mut out, scarf);
+            }
+        }
+        (out, cursor)
+    }
 }
 
 /// Print order for a layer's skirt and supports, starting where the nozzle
 /// stands (`from`). They keep the order they were planned in, and each run
-/// of one kind is reordered as in `order_part`. Returns where the nozzle ends.
+/// of one kind is reordered as in `PartLayout::tour`. Returns where the nozzle ends.
 pub fn order_supports(
     paths: &mut Vec<Extrusion>,
     from: Option<[f64; 2]>,
     scarf: Option<&ScarfParams>,
 ) -> Option<[f64; 2]> {
     let mut out = Vec::with_capacity(paths.len());
-    let end = order_block(std::mem::take(paths), from, &mut out, scarf);
+    let end = order_runs(runs_of(std::mem::take(paths)), from, &mut out, scarf);
     *paths = out;
     end
 }
 
-/// Visit order for the part's islands. Nearest-neighbor from the cursor, then
-/// 2-opt on the gaps between island outlines: nearest-neighbor alone leaves
-/// islands behind and crosses the layer to come back for them.
-fn island_tour(blocks: &[Vec<Extrusion>], cursor: Option<[f64; 2]>) -> Vec<usize> {
+/// The gaps between every pair of islands' walls, for `island_tour`.
+fn island_gaps(blocks: &[Vec<Extrusion>]) -> Vec<f64> {
     let n = blocks.len();
     if n <= 1 {
-        return (0..n).collect();
+        return Vec::new();
     }
     let reps: Vec<Vec<[f64; 2]>> = blocks.iter().map(|b| block_reps(b)).collect();
     let mut gap = vec![0.0; n * n];
@@ -2258,9 +2293,20 @@ fn island_tour(blocks: &[Vec<Extrusion>], cursor: Option<[f64; 2]>) -> Vec<usize
             gap[j * n + i] = d;
         }
     }
+    gap
+}
+
+/// Visit order for the part's islands. Nearest-neighbor from the cursor, then
+/// 2-opt on the gaps between island outlines: nearest-neighbor alone leaves
+/// islands behind and crosses the layer to come back for them.
+fn island_tour(blocks: &[Vec<Run>], gap: &[f64], cursor: Option<[f64; 2]>) -> Vec<usize> {
+    let n = blocks.len();
+    if n <= 1 {
+        return (0..n).collect();
+    }
     let start: Vec<f64> = blocks
         .iter()
-        .map(|b| cursor.map_or(0.0, |c| block_entry(b, c).sqrt()))
+        .map(|b| cursor.map_or(0.0, |c| block_entry(&b[0].paths, c).sqrt()))
         .collect();
     let mut tour = Vec::with_capacity(n);
     let mut used = vec![false; n];
@@ -2375,51 +2421,106 @@ fn block_entry(block: &[Extrusion], cursor: [f64; 2]) -> f64 {
         .fold(f64::MAX, f64::min)
 }
 
-/// Order each run of one travel group in `block` from the cursor, in turn.
-fn order_block(
-    block: Vec<Extrusion>,
-    mut cursor: Option<[f64; 2]>,
-    out: &mut Vec<Extrusion>,
-    scarf: Option<&ScarfParams>,
-) -> Option<[f64; 2]> {
+/// One run of a travel group in an island, in plan order, with what ordering
+/// it reads from the paths alone.
+struct Run {
+    paths: Vec<Extrusion>,
+    grid: Option<ApproachGrid>,
+    /// Set on a run `order_infill` sorts.
+    infill: Option<InfillLayout>,
+}
+
+/// What `order_infill` reads from a run's paths alone.
+struct InfillLayout {
+    closed: bool,
+    comps: Vec<Vec<usize>>,
+    stripes: Vec<Vec<usize>>,
+    hilbert: Vec<usize>,
+}
+
+/// `block` split into runs of one travel group, each laid out.
+fn runs_of(block: Vec<Extrusion>) -> Vec<Run> {
+    let mut runs = Vec::new();
     let mut group: Vec<Extrusion> = Vec::new();
     for path in block {
         if group
             .last()
             .is_some_and(|last| last.travel_group() != path.travel_group())
         {
-            cursor = order_group(std::mem::take(&mut group), cursor, out, scarf);
+            runs.push(Run::new(std::mem::take(&mut group)));
         }
         group.push(path);
     }
     if !group.is_empty() {
-        cursor = order_group(group, cursor, out, scarf);
+        runs.push(Run::new(group));
+    }
+    runs
+}
+
+impl Run {
+    fn new(paths: Vec<Extrusion>) -> Self {
+        let infill = paths
+            .first()
+            .is_some_and(|p| infill_travel_group(p.travel_group()))
+            && paths.len() >= 2;
+        let infill = infill.then(|| {
+            let sample = crate::inner_prof::Sample::start();
+            let comps = islands(&paths);
+            sample.order_islands(paths.len() as u64);
+            InfillLayout {
+                closed: paths.iter().any(geom_closed),
+                comps,
+                stripes: stripe_orders(&paths),
+                hilbert: hilbert_curve(&paths),
+            }
+        });
+        Self {
+            grid: approach_grid(&paths),
+            paths,
+            infill,
+        }
+    }
+}
+
+/// Order each run of a block from the cursor, in turn.
+fn order_runs(
+    block: Vec<Run>,
+    mut cursor: Option<[f64; 2]>,
+    out: &mut Vec<Extrusion>,
+    scarf: Option<&ScarfParams>,
+) -> Option<[f64; 2]> {
+    for run in block {
+        cursor = order_run(run, cursor, out, scarf);
     }
     cursor
 }
 
-fn order_group(
-    group: Vec<Extrusion>,
+fn order_run(
+    run: Run,
     cursor: Option<[f64; 2]>,
     out: &mut Vec<Extrusion>,
     scarf: Option<&ScarfParams>,
 ) -> Option<[f64; 2]> {
     let (at, has) = (cursor.unwrap_or([0.0, 0.0]), cursor.is_some());
-    let infill = group
-        .first()
-        .is_some_and(|p| infill_travel_group(p.travel_group()));
-    let ordered = if !LEGACY_TRAVEL.load(Ordering::SeqCst) && infill && group.len() >= 2 {
-        let sample = crate::inner_prof::Sample::start();
-        let n = group.len() as u64;
-        let ordered = order_infill(group, at, has);
-        sample.order_infill(n);
-        ordered
-    } else {
-        let sample = crate::inner_prof::Sample::start();
-        let n = group.len() as u64;
-        let ordered = order_nearest(group, at, has, scarf);
-        sample.order_nearest(n);
-        ordered
+    let Run {
+        paths,
+        grid,
+        infill,
+    } = run;
+    let n = paths.len() as u64;
+    let ordered = match infill.filter(|_| !LEGACY_TRAVEL.load(Ordering::SeqCst)) {
+        Some(layout) => {
+            let sample = crate::inner_prof::Sample::start();
+            let ordered = order_infill(paths, layout, grid, at, has);
+            sample.order_infill(n);
+            ordered
+        }
+        None => {
+            let sample = crate::inner_prof::Sample::start();
+            let ordered = order_nearest(paths, grid.as_ref(), at, has, scarf);
+            sample.order_nearest(n);
+            ordered
+        }
     };
     let mut end = cursor;
     for path in ordered {
@@ -2445,11 +2546,22 @@ fn infill_travel_group(kind: PathKind) -> bool {
     )
 }
 
-fn order_infill(paths: Vec<Extrusion>, cursor: [f64; 2], has: bool) -> Vec<Extrusion> {
+fn order_infill(
+    paths: Vec<Extrusion>,
+    layout: InfillLayout,
+    grid: Option<ApproachGrid>,
+    cursor: [f64; 2],
+    has: bool,
+) -> Vec<Extrusion> {
     let n = paths.len();
-    let closed = paths.iter().any(geom_closed);
+    let InfillLayout {
+        closed,
+        comps,
+        stripes,
+        hilbert,
+    } = layout;
     let legacy_sample = crate::inner_prof::Sample::start();
-    let legacy = legacy_nn_indices(&paths, cursor, has);
+    let legacy = legacy_nn_indices(&paths, grid.as_ref(), cursor, has);
     legacy_sample.order_legacy(n as u64);
     let off = walk_cost(&paths, &legacy, cursor, has, false);
     let on = if closed {
@@ -2472,18 +2584,18 @@ fn order_infill(paths: Vec<Extrusion>, cursor: [f64; 2], has: bool) -> Vec<Extru
     };
     // Open paths already score both ends in the legacy scan, so a second
     // nearest-neighbor pass only pays off once closed seams move the target.
-    let mut candidates = vec![hilbert_order(&paths, cursor, has), (0..n).collect()];
+    let mut candidates = vec![
+        hilbert_order(&paths, hilbert, cursor, has),
+        (0..n).collect(),
+    ];
     if closed {
         candidates.insert(0, nn_order(&paths, cursor, has));
     }
-    let island_sample = crate::inner_prof::Sample::start();
-    let comps = islands(&paths);
-    island_sample.order_islands(n as u64);
     if comps.len() > 1 {
         candidates.push(island_order(&paths, &comps, cursor, has));
     }
     let rest_sample = crate::inner_prof::Sample::start();
-    candidates.extend(stripe_orders(&paths));
+    candidates.extend(stripes);
     for order in candidates {
         consider(&paths, order, cursor, has, closed, &mut best);
     }
@@ -2510,7 +2622,7 @@ fn order_infill(paths: Vec<Extrusion>, cursor: [f64; 2], has: bool) -> Vec<Extru
     }
     if !best.rotate && best.order == legacy {
         rest_sample.order_rest(n as u64);
-        return order_nearest(paths, cursor, has, None);
+        return order_nearest(paths, grid.as_ref(), cursor, has, None);
     }
     let ordered = apply_order(paths, &best.order, cursor, has, best.rotate);
     rest_sample.order_rest(n as u64);
@@ -2787,28 +2899,16 @@ fn unite(parent: &mut [usize], a: usize, b: usize) {
     parent[b] = a;
 }
 
-fn hilbert_order(paths: &[Extrusion], cursor: [f64; 2], has: bool) -> Vec<usize> {
-    let n = paths.len();
-    if n == 0 {
-        return Vec::new();
-    }
-    let cents: Vec<[f64; 2]> = paths.iter().map(centroid).collect();
-    let mut min = [f64::INFINITY; 2];
-    let mut max = [f64::NEG_INFINITY; 2];
-    for c in &cents {
-        min[0] = min[0].min(c[0]);
-        min[1] = min[1].min(c[1]);
-        max[0] = max[0].max(c[0]);
-        max[1] = max[1].max(c[1]);
-    }
-    let span = (max[0] - min[0]).max(max[1] - min[1]).max(1e-9);
-    let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&a, &b| {
-        hilbert_key(cents[a], min, span)
-            .cmp(&hilbert_key(cents[b], min, span))
-            .then(a.cmp(&b))
-    });
-    if !has {
+/// `order`, the paths along a Hilbert curve, started at the path nearest the
+/// cursor and walked whichever way travels less.
+fn hilbert_order(
+    paths: &[Extrusion],
+    order: Vec<usize>,
+    cursor: [f64; 2],
+    has: bool,
+) -> Vec<usize> {
+    let n = order.len();
+    if !has || n == 0 {
         return order;
     }
     let start = order
@@ -2835,6 +2935,32 @@ fn hilbert_order(paths: &[Extrusion], cursor: [f64; 2], has: bool) -> Vec<usize>
     } else {
         fwd
     }
+}
+
+/// The paths sorted by where their centroids fall on a Hilbert curve over
+/// the run's box.
+fn hilbert_curve(paths: &[Extrusion]) -> Vec<usize> {
+    let n = paths.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let cents: Vec<[f64; 2]> = paths.iter().map(centroid).collect();
+    let mut min = [f64::INFINITY; 2];
+    let mut max = [f64::NEG_INFINITY; 2];
+    for c in &cents {
+        min[0] = min[0].min(c[0]);
+        min[1] = min[1].min(c[1]);
+        max[0] = max[0].max(c[0]);
+        max[1] = max[1].max(c[1]);
+    }
+    let span = (max[0] - min[0]).max(max[1] - min[1]).max(1e-9);
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| {
+        hilbert_key(cents[a], min, span)
+            .cmp(&hilbert_key(cents[b], min, span))
+            .then(a.cmp(&b))
+    });
+    order
 }
 
 fn hilbert_key(p: [f64; 2], min: [f64; 2], span: f64) -> u64 {
@@ -3475,14 +3601,19 @@ fn reverse_open(path: &mut Extrusion) {
     }
 }
 
-fn legacy_nn_indices(paths: &[Extrusion], mut cursor: [f64; 2], mut has: bool) -> Vec<usize> {
+/// `grid` is `approach_grid(paths)`.
+fn legacy_nn_indices(
+    paths: &[Extrusion],
+    grid: Option<&ApproachGrid>,
+    mut cursor: [f64; 2],
+    mut has: bool,
+) -> Vec<usize> {
     let n = paths.len();
     let mut pending: Vec<usize> = (0..n).collect();
     let mut pos: Vec<usize> = (0..n).collect();
-    let grid = (n > NN_LINEAR_LIMIT).then(|| ApproachGrid::build(paths));
     let mut out = Vec::with_capacity(n);
     while !pending.is_empty() {
-        let best_i = pending_winner(paths, &pending, &pos, &grid, cursor, has);
+        let best_i = pending_winner(paths, &pending, &pos, grid, cursor, has);
         let idx = pending.swap_remove(best_i);
         pos[idx] = usize::MAX;
         if best_i < pending.len() {
@@ -3503,6 +3634,12 @@ fn legacy_nn_indices(paths: &[Extrusion], mut cursor: [f64; 2], mut has: bool) -
 const NN_LINEAR_LIMIT: usize = 48;
 
 const NN_CELL_MM: f64 = 2.0;
+
+/// The grid nearest-neighbor ordering of `paths` searches, when there are
+/// enough of them to pay for it.
+fn approach_grid(paths: &[Extrusion]) -> Option<ApproachGrid> {
+    (paths.len() > NN_LINEAR_LIMIT).then(|| ApproachGrid::build(paths))
+}
 
 type ApproachBuckets = HashMap<(i64, i64), Vec<(usize, [f64; 2])>>;
 
@@ -3652,14 +3789,14 @@ fn pending_winner(
     paths: &[Extrusion],
     pending: &[usize],
     pos: &[usize],
-    grid: &Option<ApproachGrid>,
+    grid: Option<&ApproachGrid>,
     cursor: [f64; 2],
     has: bool,
 ) -> usize {
-    if !has || grid.is_none() || pending.len() <= NN_LINEAR_LIMIT {
-        return pending_winner_linear(paths, pending, cursor, has);
+    match grid {
+        Some(grid) if has && pending.len() > NN_LINEAR_LIMIT => grid.winner(pos, cursor),
+        _ => pending_winner_linear(paths, pending, cursor, has),
     }
-    grid.as_ref().unwrap().winner(pos, cursor)
 }
 
 fn pending_winner_linear(
@@ -3675,14 +3812,14 @@ fn pending_winner_slots(
     slots: &[Option<Extrusion>],
     pending: &[usize],
     pos: &[usize],
-    grid: &Option<ApproachGrid>,
+    grid: Option<&ApproachGrid>,
     cursor: [f64; 2],
     has: bool,
 ) -> usize {
-    if !has || grid.is_none() || pending.len() <= NN_LINEAR_LIMIT {
-        return pending_winner_scored(pending, cursor, has, |idx| slots[idx].as_ref());
+    match grid {
+        Some(grid) if has && pending.len() > NN_LINEAR_LIMIT => grid.winner(pos, cursor),
+        _ => pending_winner_scored(pending, cursor, has, |idx| slots[idx].as_ref()),
     }
-    grid.as_ref().unwrap().winner(pos, cursor)
 }
 
 fn pending_winner_scored<'a>(
@@ -3711,20 +3848,21 @@ fn pending_winner_scored<'a>(
 
 /// Nearest neighbor that seats each path as it is chosen, so the next choice
 /// is measured from where that path really ends, scarf overlap included.
+/// `grid` is `approach_grid(&paths)`.
 fn order_nearest(
     paths: Vec<Extrusion>,
+    grid: Option<&ApproachGrid>,
     mut cursor: [f64; 2],
     mut has: bool,
     scarf: Option<&ScarfParams>,
 ) -> Vec<Extrusion> {
     let n = paths.len();
-    let grid = (n > NN_LINEAR_LIMIT).then(|| ApproachGrid::build(&paths));
     let mut slots: Vec<Option<Extrusion>> = paths.into_iter().map(Some).collect();
     let mut pending: Vec<usize> = (0..n).collect();
     let mut pos: Vec<usize> = (0..n).collect();
     let mut out = Vec::with_capacity(n);
     while !pending.is_empty() {
-        let best_i = pending_winner_slots(&slots, &pending, &pos, &grid, cursor, has);
+        let best_i = pending_winner_slots(&slots, &pending, &pos, grid, cursor, has);
         let id = pending.swap_remove(best_i);
         pos[id] = usize::MAX;
         if best_i < pending.len() {
@@ -5050,7 +5188,8 @@ mod travel_tests {
             ));
         }
         let cursor = [12.5, -3.0];
-        let got = legacy_nn_indices(&paths, cursor, true);
+        let grid = approach_grid(&paths);
+        let got = legacy_nn_indices(&paths, grid.as_ref(), cursor, true);
         let mut pending: Vec<usize> = (0..paths.len()).collect();
         let mut expect = Vec::new();
         let mut at = cursor;
@@ -5065,7 +5204,7 @@ mod travel_tests {
             expect.push(idx);
         }
         assert_eq!(got, expect);
-        let seated = order_nearest(paths.clone(), cursor, true, None);
+        let seated = order_nearest(paths.clone(), grid.as_ref(), cursor, true, None);
         let mut replay = Vec::new();
         let mut at = cursor;
         let mut has = true;

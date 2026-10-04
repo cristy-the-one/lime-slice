@@ -153,6 +153,13 @@ fn range(z: [f64; 2], walls: u32) -> Value {
     json!({"heightRanges": [{"z": z, "walls": walls}]})
 }
 
+fn with(mut a: Value, b: Value) -> Value {
+    for (k, v) in b.as_object().unwrap() {
+        a[k] = v.clone();
+    }
+    a
+}
+
 fn volume(infill: f64) -> Value {
     json!({"modifierVolumes": [{"kind": "box", "center": [0, 0, 7], "size": [8, 8, 2.2], "infill": infill}]})
 }
@@ -168,6 +175,8 @@ fn an_override_change_replans_only_the_layers_it_reaches() {
         range([5.9, 8.1], 6),
         volume(1.0),
         volume(0.5),
+        with(volume(0.5), json!({"scarfLength": 14})),
+        with(volume(0.5), json!({"scarfLength": 14, "seam": "rear"})),
     ];
     keep_support_bases(true);
     let mut replies: Vec<Value> = Vec::new();
@@ -226,4 +235,9 @@ fn an_override_change_replans_only_the_layers_it_reaches() {
             "step {k} combed {comb} joined {joined}"
         );
     }
+    // A scarf change keeps the toolpaths and tours every layer again; a seam
+    // change plans every layer again. Neither takes a layer.
+    let toolpaths = ["contours", "toolpaths", "supports", "supportPaths"].to_vec();
+    assert_eq!(reuse(&replies[6]), (toolpaths, [0, 0, 0, 0]));
+    assert_eq!(reuse(&replies[7]), (part, [0, 0, 0, 0]));
 }

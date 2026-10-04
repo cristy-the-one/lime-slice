@@ -41,9 +41,9 @@ use crate::support::edit::{EditOutcome, SupportEdit};
 use crate::support::skeleton::{skeleton, SupportSkeleton};
 use crate::support::{CoverageGap, Disk, InAir, SupportLayer, SupportOpts, SupportStyle, Supports};
 use crate::toolpath::{
-    apply_overhang, apply_scarf, apply_z_hop, comb_layer, order_part, order_supports,
-    plan_region_split, plan_skirt, plan_support, plan_tree_support, Extrusion, PathFeatures,
-    PathKind, ScarfParams, Seam, ShellBand, TravelIn,
+    apply_overhang, apply_scarf, apply_z_hop, comb_layer, order_supports, plan_region_split,
+    plan_skirt, plan_support, plan_tree_support, Extrusion, PartLayout, PathFeatures, PathKind,
+    ScarfParams, Seam, ShellBand, TravelIn,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -3379,13 +3379,17 @@ fn tour_part(
     let bits = |p: Option<[f64; 2]>| p.map(|p| p.map(f64::to_bits));
     let mut reused = 0;
     let layers: Vec<Arc<TourLayer>> = if settings.travel_opt {
-        // A layer with new paths is toured again whatever its start, so its
-        // copy is taken up front, in parallel.
-        let mut fresh: Vec<Option<Vec<Extrusion>>> = part
+        // Every layer from the first with new paths up may start somewhere
+        // new, so each is laid out up front, in parallel, and the serial pass
+        // only tours. Layers below it start where they did before.
+        let first = (0..bands.len())
+            .find(|&i| same_paths(i).is_none())
+            .unwrap_or(bands.len());
+        let mut laid: Vec<Option<PartLayout>> = part
             .layers
             .par_iter()
             .enumerate()
-            .map(|(i, l)| same_paths(i).is_none().then(|| l.paths.clone()))
+            .map(|(i, l)| (i >= first).then(|| PartLayout::new(l.paths.clone(), &contours[i])))
             .collect();
         let mut end = bands.first().filter(|b| b.index == 0).and_then(|b| {
             let mut skirt = skirt_paths(&contours[0], None, b.z, blend, settings);
@@ -3402,9 +3406,11 @@ fn tour_part(
                     Arc::clone(k)
                 }
                 None => {
-                    let mut paths = fresh[i].take().unwrap_or_else(|| source.paths.clone());
+                    let layout = laid[i]
+                        .take()
+                        .unwrap_or_else(|| PartLayout::new(source.paths.clone(), &contours[i]));
                     let scarf = scarf_params(settings, bands[i].index);
-                    let to = order_part(&mut paths, &contours[i], end, scarf.as_ref());
+                    let (paths, to) = layout.tour(end, scarf.as_ref());
                     Arc::new(TourLayer {
                         source: Arc::clone(source),
                         from: end,
