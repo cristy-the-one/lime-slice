@@ -28,6 +28,7 @@ export interface PresetSettings {
   arcFit: boolean;
   travelOpt: boolean;
   overhangControl: boolean;
+  seam: string;
   scarfSeam: string;
   scarfLength: number;
   scarfSteps: number;
@@ -69,6 +70,7 @@ export const DEFAULT_PRESET: PresetSettings = {
   arcFit: true,
   travelOpt: true,
   overhangControl: true,
+  seam: "blend",
   scarfSeam: "blend",
   scarfLength: 10,
   scarfSteps: 8,
@@ -111,6 +113,7 @@ const LABELS: Record<keyof PresetSettings, string> = {
   arcFit: "Arc fit",
   travelOpt: "Travel and seam",
   overhangControl: "Overhang control",
+  seam: "Seam position",
   scarfSeam: "Scarf seam",
   scarfLength: "Scarf length",
   scarfSteps: "Scarf steps",
@@ -126,6 +129,23 @@ const LABELS: Record<keyof PresetSettings, string> = {
 
 export function presetKeys(): (keyof PresetSettings)[] {
   return Object.keys(DEFAULT_PRESET) as (keyof PresetSettings)[];
+}
+
+/** Keys added after project and profile files were versioned. A file written before one reads its default. */
+const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam"]);
+
+/** The preset a project or profile file stores, or null when a key is missing or has the wrong type. */
+export function readPresetSettings(value: unknown): PresetSettings | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  const out = { ...DEFAULT_PRESET };
+  for (const key of presetKeys()) {
+    const got = row[key];
+    if (got === undefined && LATER_KEYS.has(key)) continue;
+    if (typeof got !== typeof DEFAULT_PRESET[key]) return null;
+    (out as unknown as Record<string, unknown>)[key] = got;
+  }
+  return out;
 }
 
 export function readPresets(): Record<string, PresetSettings> {

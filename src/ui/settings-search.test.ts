@@ -16,6 +16,7 @@ check("mixed words miss", !settingMatches("layer scarf", "Layer height mm"));
 check("keyword matches when the label does not", settingMatches("lattice", "3D gyroid", SETTING_KEYWORDS.gyroid3d));
 check("placement keyword matches scale", settingMatches("placement", "scale %", SETTING_KEYWORDS.partScale));
 check("seam keyword matches the scarf control", settingMatches("seam", "Scarf seam", SETTING_KEYWORDS.scarf));
+check("rear finds the seam position", settingMatches("rear", "Seam position", SETTING_KEYWORDS.seam));
 check("unknown word misses", !settingMatches("nozzleplate", "Layer height mm", SETTING_KEYWORDS.lh));
 
 if (failed) {

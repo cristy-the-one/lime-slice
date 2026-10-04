@@ -4,6 +4,7 @@ export const SETTING_KEYWORDS: Record<string, string> = {
   adaptive: "variable layer height",
   amin: "variable layer",
   amax: "variable layer",
+  seam: "rear aligned nearest start",
   scarf: "seam joint",
   scarflen: "seam",
   scarfsteps: "seam",

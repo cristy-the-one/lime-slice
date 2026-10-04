@@ -166,6 +166,8 @@ export function payload() {
     arcFit: state.arcFit,
     travelOpt: state.travelOpt,
     overhangControl: state.overhangControl,
+    // Blend is left out, so a default slice keeps its bytes and its recipe key.
+    ...(state.seam === "blend" ? {} : { seam: state.seam }),
     scarfSeam: state.scarfSeam,
     scarfLength: state.scarfLength,
     scarfSteps: state.scarfSteps,

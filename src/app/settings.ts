@@ -102,6 +102,7 @@ export function renderChrome() {
     ${group("Strength", `
       ${check("vwidth", "Variable walls", state.variableWidth, "simple")}
       ${check("travelopt", "Travel and seam", state.travelOpt, "advanced")}
+      ${select("seam", "Seam position", state.seam, [["blend", "Blend (strategy)"], ["nearest", "Nearest"], ["aligned", "Aligned"], ["rear", "Rear"]], "advanced")}
       ${select("scarf", "Scarf seam", state.scarfSeam, [["blend", "Blend default"], ["off", "Off"], ["outer", "Outer walls"], ["all", "Outer and inner"]], "advanced")}
       ${state.scarfSeam === "off" ? "" : `${num("scarflen", "Scarf length mm", state.scarfLength, 1, 30, 1, "expert")}${num("scarfsteps", "Scarf steps", state.scarfSteps, 2, 32, 1, "expert")}`}
     `)}
@@ -844,6 +845,7 @@ export function onSettings(ev: Event) {
   }
   if (t.id === "gyroid3d") state.gyroid3d = t.value as typeof state.gyroid3d;
   if (t.id === "zhop") state.zHop = t.value as typeof state.zHop;
+  if (t.id === "seam") state.seam = t.value as typeof state.seam;
   if (t.id === "scarf") state.scarfSeam = t.value as typeof state.scarfSeam;
   if (t.id === "sstyle") state.supportStyle = t.value as typeof state.supportStyle;
   if (t.id === "pafw") state.paFirmware = t.value as typeof state.paFirmware;

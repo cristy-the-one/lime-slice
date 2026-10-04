@@ -177,6 +177,7 @@ export const state = {
   arcFit: true,
   travelOpt: true,
   overhangControl: true,
+  seam: "blend" as "blend" | "nearest" | "aligned" | "rear",
   scarfSeam: "blend" as "blend" | "off" | "outer" | "all",
   scarfLength: 10,
   scarfSteps: 8,

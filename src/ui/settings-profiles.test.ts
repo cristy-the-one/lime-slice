@@ -64,6 +64,14 @@ check("import stores the file", imported.profiles[0]?.name === "Imported" && imp
 const clash = importInto(imported, file.ok ? file.profile : { version: 1, name: "Imported", settings: DEFAULT_PRESET, level: "advanced" }, "y");
 check("import keeps a unique name", clash.profiles.map((profile) => profile.name).join(",") === "Imported,Imported 2");
 
+const rear = parseSettingsProfile(serializeSettingsProfile({ version: 1, name: "Rear", settings: { ...DEFAULT_PRESET, seam: "rear" }, level: "advanced" }));
+check("a rear seam round-trips", rear.ok && rear.profile.settings.seam === "rear");
+const { seam: _seam, ...beforeSeam } = DEFAULT_PRESET;
+const older = parseSettingsProfile(JSON.stringify({ version: 1, name: "Older", settings: beforeSeam, level: "expert" }));
+check("a profile from before the seam picker reads blend", older.ok && older.profile.settings.seam === "blend");
+const olderLibrary = parseLibrary(JSON.stringify({ version: 1, activeId: "o", profiles: [{ id: "o", name: "Older", settings: beforeSeam, level: "expert" }] }));
+check("a stored profile from before the seam picker stays", olderLibrary.profiles.length === 1 && olderLibrary.activeId === "o" && olderLibrary.profiles[0]?.settings.seam === "blend");
+
 const badJson = parseSettingsProfile("{");
 check("bad json is refused", !badJson.ok && badJson.message === "This file is not a Lime Slice settings profile.");
 const missingVersion = parseSettingsProfile("{}");
