@@ -492,7 +492,7 @@ The frame key strips `translation[0]` and `translation[1]` from the top-level `p
 | B's mesh, rotation, or Z | B in full; A's supports if B is in A's `S`; under adaptive layers, any object whose bands changed | everything else |
 | A plate setting | every object from the first stage that reads it | the stages before it |
 
-Progress reports each stage once per object, so the bar runs once for each object.
+Progress is one bar for the plate, with the same stage labels. Each object is weighed by its share of the plate's triangles. The cut runs for every object first, so each object fills its share of the cut budget in turn. Then each object fills its share of the part, travel, supports, and assembly budgets together, before the next object starts. Load and emit are the plate's.
 
 ### Measured cost
 

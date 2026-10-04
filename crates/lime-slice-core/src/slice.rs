@@ -1066,10 +1066,26 @@ fn slice_plate(
         kept::fit(objects.len());
     }
     let meshes: Vec<&Mesh> = objects.iter().map(|o| o.mesh.as_ref()).collect();
+    // One bar for the plate: each object fills its share of the per-object
+    // stages, weighed by its triangles.
+    let watches: Vec<Watch> = if objects.len() == 1 {
+        vec![watch.clone()]
+    } else {
+        let tris: Vec<f64> = meshes.iter().map(|m| m.triangle_count() as f64).collect();
+        let all = tris.iter().sum::<f64>().max(1.0);
+        let mut before = 0.0;
+        tris.iter()
+            .map(|&t| {
+                let slot = watch.object(before, t / all);
+                before += t / all;
+                slot
+            })
+            .collect()
+    };
     // Every cut first: an object's supports read the cuts of the others.
     let mut cuts: Vec<(Arc<Contours>, bool, Option<kept::Keys>)> =
         Vec::with_capacity(objects.len());
-    for o in &objects {
+    for (k, o) in objects.iter().enumerate() {
         let bands = plan_plate_bands(&o.mesh, &meshes, &height_opts(&o.settings))?;
         let keys = kept_keys(
             &o.mesh,
@@ -1091,7 +1107,7 @@ fn slice_plate(
             profile.nozzle_diameter,
             keys.as_ref(),
             shared,
-            watch,
+            &watches[k],
         )?;
         cuts.push((cut, reused, keys));
     }
@@ -1130,7 +1146,7 @@ fn slice_plate(
             &o.settings,
             profile.nozzle_diameter,
             &neighbours,
-            watch,
+            &watches[a],
         )?);
     }
     let band_lists: Vec<&[LayerBand]> = plans.iter().map(|p| p.cut.bands.as_slice()).collect();

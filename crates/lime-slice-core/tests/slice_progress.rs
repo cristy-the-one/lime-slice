@@ -186,3 +186,61 @@ fn a_cancel_during_part_leaves_the_kept_shelves_usable() {
 
     assert_eq!(again.gcode, plain.gcode);
 }
+
+#[test]
+fn a_plate_fills_one_bar_in_object_order() {
+    let object = |id: &str, name: &str, x: f64| {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../samples/{name}"));
+        json!({
+            "id": id,
+            "filename": name,
+            "dataB64": base64::engine::general_purpose::STANDARD.encode(fs::read(path).unwrap()),
+            "pose": {"rotation": [1, 0, 0, 0, 1, 0, 0, 0, 1], "pivot": [0, 0, 0], "translation": [x, 60, 0]},
+        })
+    };
+    // The cube has 12 triangles and the ledge 24, so the cube is a third of the plate.
+    let req: SliceRequest = serde_json::from_value(json!({
+        "baseline": false,
+        "includePreview": false,
+        "includeGcode": true,
+        "objects": [
+            object("cube", "calibration_cube_20mm.stl", 40.0),
+            object("ledge", "overhang_ledge.stl", 120.0),
+        ],
+    }))
+    .unwrap();
+    let watch = Watch::new();
+    let sliced = slice_request_watched(&req, Job::default(), &watch);
+    watch.finish(Status::of(&sliced));
+    sliced.unwrap();
+
+    let events = watch.events();
+    let mut fraction = 0.0;
+    for event in &events {
+        assert!(event.fraction + 1e-12 >= fraction, "{event:?}");
+        fraction = event.fraction;
+    }
+    let starts = |stage: &str| -> Vec<f64> {
+        events
+            .iter()
+            .filter(|e| e.stage == stage && e.done == 0)
+            .map(|e| (e.fraction * 1e6).round() / 1e6)
+            .collect()
+    };
+    // The ledge's cut starts where the cube's ends, so only its ticks show.
+    let cuts: Vec<f64> = events
+        .iter()
+        .filter(|e| e.stage == "cut")
+        .map(|e| (e.fraction * 1e6).round() / 1e6)
+        .collect();
+    assert_eq!(starts("cut"), [0.02], "the cut starts once");
+    assert!(cuts.contains(&0.046667), "the cube's cut ends a third in");
+    assert_eq!(cuts.last(), Some(&0.1), "the ledge's cut fills the rest");
+    assert_eq!(
+        starts("part"),
+        [0.1, 0.373333],
+        "the ledge's stages start where the cube's end"
+    );
+    assert_eq!(starts("emit"), [0.92], "one emit for the plate");
+    assert_eq!(watch.snapshot().fraction, 1.0);
+}
