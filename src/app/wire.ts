@@ -73,7 +73,7 @@ export function wireApp() {
       if (id) applyNamedProfile(id);
       return;
     }
-    if (target.id === "prusaUrl" || target.id === "prusaKey" || target.id === "prusaStart") {
+    if (target.id === "machineHost" || target.id === "machineKey" || target.id === "machineStartPrint") {
       rememberPrusaForm();
       return;
     }
@@ -248,10 +248,6 @@ export function wireApp() {
       testPrusaLink();
       return;
     }
-    if (t.id === "prusaUpload") {
-      void uploadToPrusaLink();
-      return;
-    }
     if (t.id === "prusaJob") {
       refreshPrusaJob();
       return;
@@ -400,6 +396,7 @@ export function wireApp() {
   document.querySelector("#force")!.addEventListener("click", () => void runSlice(true));
   document.querySelector("#cancel")!.addEventListener("click", () => cancelSlice());
   document.querySelector("#export")!.addEventListener("click", () => void exportGcode());
+  document.querySelector("#sendPrinter")!.addEventListener("click", () => void uploadToPrusaLink());
   document.querySelector("#helpClose")!.addEventListener("click", () => setHelp(false));
 
   window.addEventListener("keydown", (ev) => {

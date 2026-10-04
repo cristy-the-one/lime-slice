@@ -2149,6 +2149,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-window-state",
+ "url",
 ]
 
 [[package]]

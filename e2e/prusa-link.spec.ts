@@ -37,6 +37,7 @@ test("a printer answers, an unreachable host can be retried, and upload can star
     }
     return route.abort();
   });
+  let statusCalls = 0;
   await page.route("http://printer.local/**", async (route) => {
     const request = route.request();
     if (request.method() === "PUT" && request.url().includes("/api/v1/files/local/")) {
@@ -44,6 +45,8 @@ test("a printer answers, an unreachable host can be retried, and upload can star
       return route.fulfill({ status: 201, body: "" });
     }
     if (request.url().endsWith("/api/v1/status")) {
+      statusCalls += 1;
+      if (statusCalls === 1) return route.fulfill({ json: { printer: { state: "IDLE" } } });
       return route.fulfill({ json: { printer: { state: "PRINTING" }, job: { progress: 10, time_remaining: 60 } } });
     }
     return route.fulfill({ status: 404, body: "" });
@@ -52,8 +55,11 @@ test("a printer answers, an unreachable host can be retried, and upload can star
   await page.route("**/api/slice", (route) => route.fulfill({ json: cube }));
 
   await page.goto("/");
-  await page.locator("#prusaUrl").fill("http://127.0.0.1:9");
-  await page.locator("#prusaKey").fill("secret");
+  await expect(page.locator("#sendPrinter")).toBeDisabled();
+  await page.locator("#machineMore > summary").click();
+  await page.locator("#machineHost").fill("http://127.0.0.1:9");
+  await page.locator("#machineKey").fill("secret");
+  await expect(page.locator("#sendPrinter")).toBeDisabled();
   await page.locator("#prusaTest").click();
   const toast = page.locator("#toasts").getByRole("alert").filter({ hasText: "Could not reach Prusa Link" });
   await expect(toast).toBeVisible();
@@ -66,9 +72,11 @@ test("a printer answers, an unreachable host can be retried, and upload can star
   await expect(page.locator("#status")).toContainText("loaded");
   await page.locator("#slice").click();
   await expect(page.locator("#export")).toBeEnabled({ timeout: 15_000 });
-  await page.locator("#prusaUrl").fill("http://printer.local");
-  await page.locator("#prusaStart").check();
-  await page.locator("#prusaUpload").click();
+  await expect(page.locator("#sendPrinter")).toBeEnabled();
+  await page.locator("#machineMore > summary").click();
+  await page.locator("#machineHost").fill("http://printer.local");
+  await page.locator("#machineStartPrint").check();
+  await page.locator("#sendPrinter").click();
   await expect(page.locator("#prusaStatus")).toHaveText("Uploaded. PRINTING · 10% · 1 min left");
   expect(uploads).toHaveLength(1);
   expect(uploads[0]?.header).toBe("?1");
@@ -94,12 +102,21 @@ test.describe("compact Prusa Link", () => {
     const prepare = await share(page, "#prepare");
     expect(prepare, `prepare viewport share ${prepare}`).toBeGreaterThanOrEqual(0.7);
     await page.locator("#compactTabs [data-tab=settings]").click();
-    await expect(page.locator("#prusaUrl")).toBeVisible();
+    await page.locator("#machineMore > summary").click();
+    await expect(page.locator("#machineHost")).toBeVisible();
     await expect(page.locator("#prusaTest")).toBeVisible();
     await page.locator("#compactTabs [data-tab=prepare]").click();
     await expect(page.locator("#compactSheet")).toHaveAttribute("data-detent", "peek");
     await page.waitForTimeout(250);
     const peeked = await share(page, "#prepare");
     expect(peeked, `peek viewport share ${peeked}`).toBeGreaterThanOrEqual(0.7);
+    await page.locator("#compactTabs [data-tab=device]").click();
+    await expect(page.locator("#compactSend")).toBeVisible();
+    await expect(page.locator("#compactShare")).toBeVisible();
+    await page.locator("#compactTabs [data-tab=prepare]").click();
+    await expect(page.locator("#compactSheet")).toHaveAttribute("data-detent", "peek");
+    await page.waitForTimeout(250);
+    const afterDevice = await share(page, "#prepare");
+    expect(afterDevice, `prepare viewport share after device ${afterDevice}`).toBeGreaterThanOrEqual(0.7);
   });
 });

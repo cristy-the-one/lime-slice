@@ -19,6 +19,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "force-slice", label: "Force re-slice", group: "Slice", keywords: "recompute cache" },
   { id: "cancel-slice", label: "Cancel slice", group: "Slice", keywords: "stop abort" },
   { id: "export", label: "Export G-code", group: "Slice", shortcut: "Ctrl+E", keywords: "save download" },
+  { id: "send-printer", label: "Send to printer", group: "Slice", keywords: "prusa link upload gcode host" },
   { id: "tab-prepare", label: "Prepare", group: "View", keywords: "tab mesh" },
   { id: "tab-preview", label: "Preview", group: "View", keywords: "tab toolpath" },
   { id: "tab-gcode", label: "G-code", group: "View", keywords: "tab gcode" },

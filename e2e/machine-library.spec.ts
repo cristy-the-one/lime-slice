@@ -96,6 +96,9 @@ test("filament and nozzle pick the pressure advance, and a bad file can be retri
   await expect(page.locator("#bedx")).toHaveValue("250");
   await expect(page.locator("#machinePa")).toHaveValue("0.02");
   await expect(page.locator("#machineTemps")).toHaveText("Nozzle 210 °C · bed 55 °C");
+  await page.locator("#machineMore > summary").click();
+  await expect(page.locator("#machineHost")).toHaveValue("");
+  await page.locator("#machineMore > summary").click();
 
   await page.locator("#machinePrinter").selectOption("lime-220");
   await page.locator("#machineMore > summary").click();

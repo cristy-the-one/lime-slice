@@ -497,6 +497,7 @@ html.layout-compact #compactDevice .connection-actions .btn#apiTest {
   border: 1px solid var(--border);
   background: var(--surface-2);
 }
+.compact-row-actions { display: flex; gap: 8px; flex: 0 0 auto; }
 .compact-note { color: var(--text-dim); font-size: 12px; line-height: 1.4; }
 
 #compactMenu {

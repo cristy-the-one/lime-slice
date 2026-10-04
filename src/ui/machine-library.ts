@@ -1,16 +1,16 @@
 /**
- * Printer, filament, and nozzle library. Version 1 stores our own profiles.
+ * Printer, filament, and nozzle library. Version 2 stores our own profiles.
  * A later version adds a function to `machineMigrations` at index `n` that rewrites version `n`
  * into version `n + 1`.
  *
  * The slice request already accepts one printer: nozzle, temperatures, bed, flow, accel,
- * density, cost, pressure advance, and linear advance. It has no filament catalog and no
- * start or end G-code field. Those stay in this library. `enginePrinter` copies only the
- * fields the engine already reads.
+ * density, cost, pressure advance, and linear advance. It has no filament catalog, no
+ * start or end G-code field, and no printer host. Those stay in this library.
+ * `enginePrinter` copies only the fields the engine already reads.
  */
 import type { PrinterProfile } from "../profiles.ts";
 
-export const MACHINE_FILE_VERSION = 1;
+export const MACHINE_FILE_VERSION = 2;
 
 export const NOZZLE_MM = [0.4, 0.6, 0.8] as const;
 
@@ -27,6 +27,12 @@ export interface PrinterRecord {
   startGcode: string;
   /** Stored with the printer. Not sent on the slice request. */
   endGcode: string;
+  /** Prusa Link origin, such as http://192.168.1.50. Empty on a built-in printer. Not sent on the slice request. */
+  host: string;
+  /** Prusa Link API key or password. Stored with the printer. Not sent on the slice request. */
+  apiKey: string;
+  /** When set, Send asks Prusa Link to start the job after the upload. */
+  startPrint: boolean;
 }
 
 export interface FilamentRecord {
@@ -45,7 +51,7 @@ export interface FilamentRecord {
 }
 
 export interface MachineLibrary {
-  version: 1;
+  version: 2;
   printers: PrinterRecord[];
   filaments: FilamentRecord[];
   printerId: string;
@@ -54,7 +60,7 @@ export interface MachineLibrary {
 }
 
 export interface MachineFile {
-  version: 1;
+  version: 2;
   printer: Omit<PrinterRecord, "id" | "builtin">;
   filament: Omit<FilamentRecord, "id" | "builtin">;
   nozzleMm: number;
@@ -65,8 +71,13 @@ export type MachineFileResult = { ok: true; file: MachineFile } | { ok: false; m
 /** `steps[n]` rewrites a version-n document into version n+1 and sets `version` to n+1. */
 export type MachineMigration = (doc: Record<string, unknown>) => Record<string, unknown>;
 
-/** Empty until a version 2 exists. */
-export const machineMigrations: readonly MachineMigration[] = [];
+/**
+ * Index 0 would migrate a version-0 file, which was never written.
+ * Index 1 adds an empty Prusa Link host, API key, and start-print flag onto each printer.
+ */
+const machineMigrationSteps: MachineMigration[] = [];
+machineMigrationSteps[1] = migrateMachineVersion1;
+export const machineMigrations: readonly MachineMigration[] = machineMigrationSteps;
 
 export interface MachineNumbers {
   nozzleDiameter: number;
@@ -84,6 +95,9 @@ export interface MachineNumbers {
   linearAdvance: number;
   startGcode: string;
   endGcode: string;
+  host: string;
+  apiKey: string;
+  startPrint: boolean;
 }
 
 export function nozzleKey(mm: number): string {
@@ -96,14 +110,14 @@ export function advanceFor(map: Record<string, number>, nozzleMm: number): numbe
 }
 
 export function emptyLibrary(): MachineLibrary {
-  return { version: 1, printers: [], filaments: [], printerId: "", filamentId: "", nozzleMm: 0.4 };
+  return { version: MACHINE_FILE_VERSION, printers: [], filaments: [], printerId: "", filamentId: "", nozzleMm: 0.4 };
 }
 
 export function builtinLibrary(): MachineLibrary {
   const printers = builtinPrinters();
   const filaments = builtinFilaments();
   return {
-    version: 1,
+    version: MACHINE_FILE_VERSION,
     printers,
     filaments,
     printerId: printers[0]!.id,
@@ -125,7 +139,7 @@ export function ensureBuiltins(library: MachineLibrary): MachineLibrary {
   const printerId = printers.some((row) => row.id === library.printerId) ? library.printerId : printers[0]!.id;
   const filamentId = filaments.some((row) => row.id === library.filamentId) ? library.filamentId : filaments[0]!.id;
   const nozzleMm = Number.isFinite(library.nozzleMm) && library.nozzleMm > 0 ? library.nozzleMm : 0.4;
-  return { version: 1, printers, filaments, printerId, filamentId, nozzleMm };
+  return { version: MACHINE_FILE_VERSION, printers, filaments, printerId, filamentId, nozzleMm };
 }
 
 export function selection(library: MachineLibrary): { printer: PrinterRecord; filament: FilamentRecord } | null {
@@ -135,7 +149,7 @@ export function selection(library: MachineLibrary): { printer: PrinterRecord; fi
   return { printer, filament };
 }
 
-/** Printer fields the slice request already accepts. Start and end G-code are not among them. */
+/** Printer fields the slice request already accepts. Start G-code, end G-code, and the Prusa Link host are not among them. */
 export function enginePrinter(printer: PrinterRecord, filament: FilamentRecord, nozzleMm: number): PrinterProfile {
   return {
     name: printer.name,
@@ -164,13 +178,15 @@ export function parseLibrary(text: string | null): MachineLibrary {
   try {
     const raw = JSON.parse(text) as unknown;
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return emptyLibrary();
-    const doc = raw as Record<string, unknown>;
-    if (doc.version !== 1 || !Array.isArray(doc.printers) || !Array.isArray(doc.filaments)) return emptyLibrary();
+    const migrated = applyMigrations(raw as Record<string, unknown>, machineMigrations, MACHINE_FILE_VERSION);
+    if (!migrated.ok) return emptyLibrary();
+    const doc = migrated.doc;
+    if (doc.version !== MACHINE_FILE_VERSION || !Array.isArray(doc.printers) || !Array.isArray(doc.filaments)) return emptyLibrary();
     const printers = doc.printers.map(readPrinter).filter((row): row is PrinterRecord => row !== null);
     const filaments = doc.filaments.map(readFilament).filter((row): row is FilamentRecord => row !== null);
     const nozzleMm = finite(doc.nozzleMm) && doc.nozzleMm > 0 ? doc.nozzleMm : 0.4;
     return {
-      version: 1,
+      version: MACHINE_FILE_VERSION,
       printers,
       filaments,
       printerId: typeof doc.printerId === "string" ? doc.printerId : "",
@@ -195,7 +211,7 @@ export function fileFromSelection(library: MachineLibrary): MachineFile | null {
   const picked = selection(library);
   if (!picked) return null;
   return {
-    version: 1,
+    version: MACHINE_FILE_VERSION,
     printer: stripPrinter(picked.printer),
     filament: stripFilament(picked.filament),
     nozzleMm: library.nozzleMm,
@@ -247,6 +263,29 @@ export function setGcode(library: MachineLibrary, startGcode: string, endGcode: 
     ...library,
     printers: library.printers.map((printer) => printer.id === library.printerId ? { ...printer, startGcode, endGcode } : printer),
   };
+}
+
+/** Store the Prusa Link host on the active printer. An empty host means Send stays off. */
+export function setLink(library: MachineLibrary, host: string, apiKey: string, startPrint: boolean): MachineLibrary {
+  return {
+    ...library,
+    printers: library.printers.map((printer) => printer.id === library.printerId ? { ...printer, host, apiKey, startPrint } : printer),
+  };
+}
+
+/**
+ * Copy a previously saved host onto the active printer when that printer has none.
+ * The caller drops the old store after this so a cleared host stays cleared.
+ */
+export function adoptLegacyLink(
+  library: MachineLibrary,
+  legacy: { url: string; apiKey: string; startPrint: boolean } | null,
+): MachineLibrary {
+  const url = legacy?.url.trim() ?? "";
+  if (!url) return library;
+  const picked = selection(library);
+  if (!picked || picked.printer.host.trim()) return library;
+  return setLink(library, url, legacy?.apiKey ?? "", legacy?.startPrint === true);
 }
 
 export function saveActive(library: MachineLibrary, numbers: MachineNumbers): MachineLibrary | string {
@@ -323,6 +362,9 @@ export function adoptProfile(library: MachineLibrary, profile: PrinterProfile, p
     maxAccel: profile.maxAccel,
     startGcode: "",
     endGcode: "",
+    host: "",
+    apiKey: "",
+    startPrint: false,
   };
   const filament: FilamentRecord = {
     id: filamentId,
@@ -350,6 +392,7 @@ export function adoptProfile(library: MachineLibrary, profile: PrinterProfile, p
 export function machineSectionHtml(
   library: MachineLibrary,
   live: { pressureAdvance: number; nozzleTemp: number; bedTemp: number },
+  linkSummary = "Not checked.",
 ): string {
   const picked = selection(library);
   const nozzles: number[] = [...NOZZLE_MM];
@@ -395,6 +438,19 @@ export function machineSectionHtml(
               <textarea id="machineEnd" class="machine-gcode" rows="3" aria-label="End G-code">${escapeHtml(picked?.printer.endGcode ?? "")}</textarea>
             </label>
             <p class="meta">Start and end G-code are stored with the printer. Slice still sends nozzle, temperatures, bed, and pressure advance. The engine writes its own header.</p>
+            <label class="field setting machine-link" data-label="prusa link host" data-keywords="printer host url send">Prusa Link host
+              <input id="machineHost" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://192.168.1.50" value="${escapeHtml(picked?.printer.host ?? "")}" aria-label="Prusa Link host" />
+            </label>
+            <label class="field setting machine-link" data-label="prusa link api key" data-keywords="printer key password send">Prusa Link API key
+              <input id="machineKey" type="password" autocomplete="off" spellcheck="false" value="${escapeHtml(picked?.printer.apiKey ?? "")}" aria-label="Prusa Link API key" />
+            </label>
+            <label class="check setting machine-link" data-label="start print after upload" data-keywords="prusa link send"><input id="machineStartPrint" type="checkbox" ${picked?.printer.startPrint ? "checked" : ""}/> Start print after upload</label>
+            <div class="row machine-link">
+              <button class="btn" id="prusaTest" type="button">Test connection</button>
+              <button class="btn" id="prusaJob" type="button">Job status</button>
+            </div>
+            <div class="meta machine-link" id="prusaStatus">${escapeHtml(linkSummary)}</div>
+            <p class="meta machine-link">Host and API key are stored on this printer and in an exported machine file. Built-in printers start with an empty host. Send uploads the current G-code to Prusa Link. The slicer does not talk to the printer.</p>
           </div>
         </details>
       </div>
@@ -418,6 +474,9 @@ function writeNumbers(library: MachineLibrary, printerId: string, filamentId: st
           maxAccel: numbers.maxAccel,
           startGcode: numbers.startGcode,
           endGcode: numbers.endGcode,
+          host: numbers.host,
+          apiKey: numbers.apiKey,
+          startPrint: numbers.startPrint,
         }
       : printer),
     filaments: library.filaments.map((filament) => filament.id === filamentId
@@ -447,6 +506,9 @@ function blankPrinter(id: string, name: string): PrinterRecord {
     maxAccel: 10000,
     startGcode: "",
     endGcode: "",
+    host: "",
+    apiKey: "",
+    startPrint: false,
   };
 }
 
@@ -460,6 +522,9 @@ function stripPrinter(printer: PrinterRecord): MachineFile["printer"] {
     maxAccel: printer.maxAccel,
     startGcode: printer.startGcode,
     endGcode: printer.endGcode,
+    host: printer.host,
+    apiKey: printer.apiKey,
+    startPrint: printer.startPrint,
   };
 }
 
@@ -505,6 +570,9 @@ function printer(id: string, name: string, bedX: number, bedY: number, bedZ: num
     maxAccel: accel,
     startGcode: `; ${name}`,
     endGcode: `; end ${name}`,
+    host: "",
+    apiKey: "",
+    startPrint: false,
   };
 }
 
@@ -581,7 +649,7 @@ function readFile(doc: Record<string, unknown>): MachineFileResult {
   if (!printer || !filament || !finite(doc.nozzleMm) || doc.nozzleMm <= 0) {
     return { ok: false, message: "This machine profile is incomplete." };
   }
-  return { ok: true, file: { version: 1, printer, filament, nozzleMm: doc.nozzleMm } };
+  return { ok: true, file: { version: MACHINE_FILE_VERSION, printer, filament, nozzleMm: doc.nozzleMm } };
 }
 
 function readPrinter(value: unknown): PrinterRecord | null {
@@ -608,6 +676,8 @@ function readPrinterBody(value: unknown): Omit<PrinterRecord, "id" | "builtin"> 
   if (!positive(row.maxVolumetricMm3S) || !positive(row.maxAccel)) return null;
   if (typeof row.startGcode !== "string" || typeof row.endGcode !== "string") return null;
   if (row.startGcode.length > 20000 || row.endGcode.length > 20000) return null;
+  if (typeof row.host !== "string" || typeof row.apiKey !== "string" || typeof row.startPrint !== "boolean") return null;
+  if (row.host.length > 500 || row.apiKey.length > 500) return null;
   return {
     name: row.name.trim(),
     bedX: row.bedX,
@@ -617,6 +687,28 @@ function readPrinterBody(value: unknown): Omit<PrinterRecord, "id" | "builtin"> 
     maxAccel: row.maxAccel,
     startGcode: row.startGcode,
     endGcode: row.endGcode,
+    host: row.host.trim(),
+    apiKey: row.apiKey,
+    startPrint: row.startPrint,
+  };
+}
+
+/** Version 1 printers have no host. Version 2 adds an empty Prusa Link connection. */
+function migrateMachineVersion1(doc: Record<string, unknown>): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...doc, version: 2 };
+  if (Array.isArray(doc.printers)) next.printers = doc.printers.map(withConnection);
+  if (doc.printer && typeof doc.printer === "object" && !Array.isArray(doc.printer)) next.printer = withConnection(doc.printer);
+  return next;
+}
+
+function withConnection(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const row = value as Record<string, unknown>;
+  return {
+    ...row,
+    host: typeof row.host === "string" ? row.host : "",
+    apiKey: typeof row.apiKey === "string" ? row.apiKey : "",
+    startPrint: row.startPrint === true,
   };
 }
 

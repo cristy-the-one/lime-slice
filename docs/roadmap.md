@@ -214,19 +214,21 @@ The estimate is seconds, filament grams, and a euro cost from the profile's €/
 
 ## Send to printer
 
-**Status.** Missing.
+**Status.** Partial. Prusa Link only, desktop first, as of 2026-10-04.
 
-Export writes a G-code file (`exportGcode` in `src/app/files.ts`). Nothing speaks OctoPrint, Moonraker, Bambu LAN, or Prusa Link.
+The printer profile stores a Prusa Link host and API key (`host` and `apiKey` on `PrinterRecord` in `src/ui/machine-library.ts`, version 2 of the machine file). After a slice, Send uploads that G-code with `PUT /api/v1/files/local/<name>` and can start the print (`Print-After-Upload`). Export to a file stays (`exportGcode` in `src/app/files.ts`). Moonraker, OctoPrint, and Bambu LAN are not implemented. The phone is not a send target.
+
+Desktop `http://` is sent by a small helper (`src-tauri/src/prusa_http.rs`) because Prusa Link does not grant the webview CORS. The browser, and any `https://` host, use `fetch`. CI never calls a printer: unit tests pass a mock fetch, and the smoke test fulfills the printer routes. That mock is not a device in the UI.
 
 **User value.** High. Orca and Bambu Studio are used because the slice lands on the machine. A download is the step people want to skip.
 
-**Effort.** Medium per protocol. The slice does not change.
+**Effort.** Medium per protocol still outstanding. Prusa Link does not change the slice.
 
-**Who.** UI-only. Each sender is a client of an HTTP API. No `crates/` planner work. A desktop build can use the same fetch the browser uses, unless a vendor SDK is required later.
+**Who.** UI-only, plus the desktop HTTP helper. No `crates/` planner work.
 
-**Dependencies.** A printer profile that stores the host URL. That is the library row, not a new slicer.
+**Dependencies.** The host lives on the printer profile. Met for Prusa Link.
 
-**Compact.** Send belongs on the Device page next to Share. The canvas stays put.
+**Compact.** Send is on the Device page next to Share. The prepare canvas stays at least 70% at the peek.
 
 ## Modifiers and painting
 
@@ -490,7 +492,7 @@ Do not rebuild the rows marked exists. This list follows [Decisions (2026-10-03)
 
 1. **Printer, filament, and nozzle library.** Our own small catalog, not redistributed Prusa or Bambu profiles. Pressure advance is stored per filament and nozzle size. Vendor start and end G-code is editable header text on the UI side. Mostly UI. The emit path already prints one K.
 2. **Ironing and a seam picker.** Rear, nearest, and aligned are enough before seam painting. Ironing before fuzzy skin. Fuzzy skin after those. Arc fitting and variable-width walls stay as they are.
-3. **Send to printer: Prusa Link first.** After the profile can store a host. No slice changes. Moonraker and OctoPrint come after. Bambu LAN is out.
+3. **Send to printer: Prusa Link first.** Partial as of 2026-10-04: desktop send, host on the printer profile. Moonraker and OctoPrint still wait. Bambu LAN is out.
 4. **Multi-object plates and arrange.** Follow [multi-object-and-support-painting.md](multi-object-and-support-painting.md). UI mock first. Engine when the one-object G-code is still byte-identical.
 5. **Support painting, then seam painting.** Same design note. Prune and regrow stay.
 6. **Height-range overrides beyond the blend band**, if the per-object key list is settled. Modifier meshes and mesh cut wait on plates.

@@ -17,10 +17,20 @@ import {
   serializeLibrary,
   serializeMachineFile,
   setAdvance,
+  setLink,
+  adoptLegacyLink,
   type MachineNumbers,
 } from "./machine-library.ts";
 
 let failed = 0;
+
+function stripLink(printer: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...printer };
+  delete next.host;
+  delete next.apiKey;
+  delete next.startPrint;
+  return next;
+}
 
 function check(name: string, cond: boolean, detail = ""): void {
   if (cond) return;
@@ -30,6 +40,7 @@ function check(name: string, cond: boolean, detail = ""): void {
 
 const library = builtinLibrary();
 check("built-in printers", library.printers.map((printer) => printer.name).join(",") === "Lime 220,Lime 300,Lime 180");
+check("built-in printers leave the host empty", library.printers.every((printer) => printer.host === "" && printer.apiKey === "" && printer.startPrint === false));
 check("built-in filaments", library.filaments.map((filament) => filament.material).join(",") === "PLA,PETG,ABS,TPU");
 
 const pla = library.filaments.find((filament) => filament.id === "lime-pla");
@@ -41,7 +52,7 @@ const picked = selection(library);
 check("selection is lime 220 and pla", picked?.printer.id === "lime-220" && picked.filament.id === "lime-pla");
 const sent = picked ? enginePrinter(picked.printer, picked.filament, 0.4) : null;
 const sentKeys = sent ? Object.keys(sent).sort() : [];
-check("the slice printer has no start or end g-code", sent !== null && !("startGcode" in sent) && !("endGcode" in sent));
+check("the slice printer has no start g-code, end g-code, or host", sent !== null && !("startGcode" in sent) && !("endGcode" in sent) && !("host" in sent) && !("apiKey" in sent));
 check(
   "the slice printer is the existing fields",
   sentKeys.join(",") === ["bedTemp", "bedX", "bedY", "bedZ", "filamentCostPerKg", "filamentDensityGCm3", "filamentDiameter", "linearAdvance", "maxAccel", "maxVolumetricMm3S", "name", "nozzleDiameter", "nozzleTemp", "pressureAdvance"].join(","),
@@ -73,10 +84,14 @@ const numbers: MachineNumbers = {
   linearAdvance: 0,
   startGcode: "; shop",
   endGcode: "; end",
+  host: "http://shop.local",
+  apiKey: "shop-key",
+  startPrint: true,
 };
 const named = savePrinterName(library, "Shop", numbers, "shop");
 check("save as adds a printer", typeof named !== "string" && named.printers.some((printer) => printer.name === "Shop" && printer.bedX === 250 && !printer.builtin));
 check("save as keeps the g-code off the slice printer", typeof named !== "string" && selection(named) !== null && !("startGcode" in enginePrinter(selection(named)!.printer, selection(named)!.filament, named.nozzleMm)) && selection(named)!.printer.startGcode === "; shop");
+check("save as keeps the host on the printer", typeof named !== "string" && selection(named)?.printer.host === "http://shop.local" && selection(named)?.printer.apiKey === "shop-key" && selection(named)?.printer.startPrint === true);
 
 const saved = typeof named === "string" ? library : saveActive(named, { ...numbers, bedX: 260 });
 check("save writes the active printer", typeof saved !== "string" && selection(saved)?.printer.bedX === 260);
@@ -101,8 +116,37 @@ const imported = file ? importInto(library, file, "imp", "impf") : library;
 check("import keeps a unique name", imported.printers.some((printer) => printer.name === "Lime 220 2") && imported.printerId === "imp");
 check("file name uses the machine suffix", machineFileName("Lime 220", "PLA") === "Lime_220__PLA.limemachine.json");
 
+const linked = setLink(library, "http://printer.local/extra", "secret", true);
+check("the host is stored on the active printer", selection(linked)?.printer.host === "http://printer.local/extra" && selection(linked)?.printer.apiKey === "secret" && selection(linked)?.printer.startPrint === true);
+const linkedFile = fileFromSelection(linked);
+const linkedRound = linkedFile ? parseMachineFile(serializeMachineFile(linkedFile)) : null;
+check("the host round-trips through the machine file", linkedRound?.ok === true && linkedRound.file.printer.host === "http://printer.local/extra" && linkedRound.file.printer.apiKey === "secret" && linkedRound.file.printer.startPrint === true);
+
+const legacyFile = fileFromSelection(library);
+const version1 = legacyFile
+  ? parseMachineFile(JSON.stringify({
+      ...JSON.parse(serializeMachineFile(legacyFile)),
+      version: 1,
+      printer: stripLink(JSON.parse(serializeMachineFile(legacyFile)).printer),
+    }))
+  : null;
+check("a version 1 file gains an empty host", version1?.ok === true && version1.file.version === 2 && version1.file.printer.host === "" && version1.file.printer.apiKey === "" && version1.file.printer.startPrint === false);
+
 const stored = parseLibrary(serializeLibrary(library));
-check("the library round-trips", stored.printers.length === 3 && stored.filaments.length === 4 && stored.printerId === "lime-220");
+check("the library round-trips", stored.version === 2 && stored.printers.length === 3 && stored.filaments.length === 4 && stored.printerId === "lime-220" && stored.printers.every((printer) => printer.host === ""));
+const version1Library = JSON.parse(serializeLibrary(library)) as { version: number; printers: Record<string, unknown>[] };
+version1Library.version = 1;
+for (const printer of version1Library.printers) {
+  delete printer.host;
+  delete printer.apiKey;
+  delete printer.startPrint;
+}
+const migratedLibrary = parseLibrary(JSON.stringify(version1Library));
+check("a version 1 library gains an empty host", migratedLibrary.version === 2 && migratedLibrary.printers.length === 3 && migratedLibrary.printers.every((printer) => printer.host === "" && printer.apiKey === "" && printer.startPrint === false));
+const adopted = adoptLegacyLink(builtinLibrary(), { url: "http://printer.local", apiKey: "secret", startPrint: true });
+check("a legacy host lands on the active printer", selection(adopted)?.printer.host === "http://printer.local" && selection(adopted)?.printer.apiKey === "secret" && selection(adopted)?.printer.startPrint === true);
+check("a printer that already has a host keeps it", selection(adoptLegacyLink(linked, { url: "http://other.local", apiKey: "nope", startPrint: false }))?.printer.host === "http://printer.local/extra");
+check("an empty legacy host changes nothing", selection(adoptLegacyLink(library, { url: "  ", apiKey: "x", startPrint: true }))?.printer.host === "");
 const restored = ensureBuiltins(parseLibrary("nope"));
 check("a corrupt library grows the built-ins back", restored.printers.some((printer) => printer.id === "lime-220") && restored.filaments.some((filament) => filament.id === "lime-tpu"));
 

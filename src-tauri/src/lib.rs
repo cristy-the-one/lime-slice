@@ -14,6 +14,9 @@ use tauri::Emitter;
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
+mod prusa_http;
+use prusa_http::prusa_link_http;
+
 fn gcode_store() -> &'static Mutex<HashMap<String, GcodeText>> {
     static STORE: std::sync::LazyLock<Mutex<HashMap<String, GcodeText>>> =
         std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -289,7 +292,8 @@ pub fn run() {
             gcode_text,
             save_text_file,
             pareto_model,
-            preview_mesh
+            preview_mesh,
+            prusa_link_http
         ])
         .run(tauri::generate_context!())
         .expect("Lime Slice window failed to start");
