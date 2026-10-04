@@ -1,6 +1,6 @@
 # Modifier volumes and height-range settings
 
-This is the plan for changing infill, walls, and speed inside a Z range or inside a box, cylinder, or sphere, without touching the rest of the part. The engine does not accept those overrides yet. This note is for Claude to review before any `crates/` change. The UI that stores and draws them is a separate pull request and sends nothing new on the slice request.
+This is the plan for changing infill, walls, and speed inside a Z range or inside a box, cylinder, or sphere, without touching the rest of the part. Height ranges and modifier volumes have shipped. See [Shipped](#shipped-2026-10-04) at the end. The sections before Shipped are the plan as it was reviewed, and they describe the engine and the UI before the engine read the overrides.
 
 ## Goals
 
@@ -99,3 +99,72 @@ A slice with both arrays omitted must match a slice from before the fields exist
 **Cache.** Overrides are part of the toolpath stage's cache key (see the staged cache from PR #98). Changing them recomputes toolpaths and later stages, not the cut. The stage keys hash the whole settings struct, so a new field lands in every stage key by default. The two new fields must be blanked in the contours key, the way `feature_speeds` is, or a change would recut.
 
 **Engine order.** The seam picker comes first, then height ranges and modifier volumes, then ironing, then support paint, then multi-object all-at-once, then sequential.
+
+## Shipped (2026-10-04)
+
+Height ranges and modifier volumes landed as decided above. The UI sends them, and the "stored but not yet sliced" toast is gone.
+
+**Request.** `heightRanges` and `modifierVolumes` sit on `SliceRequest` beside `supportEdits` (`HeightRangeSpec` and `ModifierVolumeSpec` in `crates/lime-slice-core/src/slice/wire.rs`). Both are left out of the serialized request when empty, so a request without them keeps its cache key and its G-code bytes. Both entry types use `deny_unknown_fields`, so `layerHeight` or a typo is refused with an "unknown field" error that names the key. The parser refuses a bad entry with its index and field, for example `heightRanges[0]: walls 0 is outside 1 to 12` or `modifierVolumes[0]: size x 300 is outside 0.2 to 220 mm`. The limits are 64 ranges, 64 volumes, `walls` 1 to 12, `infill` 0 to 1, `speed` above 0 and at most 1000 mm/s, and coordinates within 100000 mm. A volume's X and Y size runs from 0.2 mm to the bed's X and Y. The printer profile has no bed height, so the Z size is bounded like a coordinate.
+
+**Membership.** A range holds a layer whose z lies in `[from, to]`, ends included. A layer's z is a sum of layer heights, so a 0.2 mm layer at 2 mm can sit a hair off 2. The ends therefore hold every layer within 1 µm of them. Without that slack, a range from 2 to 4 missed both end layers. The same slack applies to a volume's Z extent.
+
+**Strategy changes.** A region's strategy is the blend's strategy with the override applied (`Tweak::apply` in `crates/lime-slice-core/src/modifiers.rs`). `walls` replaces the wall count. `speed` caps the print, outer, inner, sparse, solid, top, and 3D gyroid speeds. `infill` replaces the density. A density the user asks for fills the whole region, so lightning becomes grid and the roof pruning of lightning and lines is off. Without that, a dense volume deep in a speed-blend part printed no infill at all. `infill: 0` leaves no sparse infill. The infill block in `plan_region_split` now runs for a solid shell at any density, so the region keeps its walls and its top and bottom skins. The existing void fill still gap-fills interior pockets narrower than six bead widths.
+
+**Walls in a volume.** PrusaSlicer slices a modifier mesh as its own region. When its perimeter count differs, each region gets perimeters along the modifier's boundary, so walls appear inside the part along the modifier's edge ([Prusa forum](https://forum.prusa3d.com/forum/prusaslicer/adding-more-perimeters-to-one-location-only-nicely/)). OrcaSlicer descends from the same layer-region code. Lime Slice does not print those walls. Lime Slice applies the wall count to the part's own perimeters inside the volume and clips everything else:
+
+- Each zone plans the part's real outline with its own strategy, through the `plan_region_split` machinery the region blend uses. The base zone plans the whole layer with the range that holds the layer, if any. A volume plans the part within its walls plus two beads of its footprint, so the walls along that clip edge fall outside the footprint.
+- Each zone keeps only the beads in its zone. The base zone keeps beads outside every footprint. A volume keeps beads where it is the last footprint to hold them. Beads cut at a footprint edge meet the other zone's beads there. A wall loop the cut opens prints as one open piece through its start, as `keep_side` does for the region plane.
+- `pair_sides` chains the zones' runs of each travel group, so a wall cut at a footprint edge continues in the next zone without a travel.
+
+So a volume with `walls: 6` over the edge of a 40 mm box prints 6 wall beads where the part's outline passes through the volume and 4 elsewhere. No wall runs along the volume's edge inside the part. A volume that does not meet the part's outline, or a hole's outline, changes no walls.
+
+**Footprints.** A footprint is the volume's cross-section at the layer's z. A box gives a rectangle, a cylinder gives an ellipse with radii of half its X and Y size, and a sphere gives the ellipse of its slice. Bead clipping is analytic: segments split where they cross the rectangle or the ellipse. The planning region uses a 96-sided polygon of the footprint. The layer note names each volume it prints, as `toughness walls=4 infill=34% grid 83mm/s h=0.250 · volume 0`.
+
+**Frames.** Volume centres arrive in bed millimetres, which is how the UI stores them (`x`, `y`, `z` in `src/overrides.ts`, drawn at `frame.toScene(x, y, z)`). Since #122 the engine slices in the part frame. Each object therefore moves the centres into its part frame by minus its offset, as the region blend moves `atMm`. The result is rounded to 1 µm, so a volume moved by the same X/Y as its part lands on the same bits. That move reuses every stage, and a volume left behind plans the toolpaths again. Z does not move. Volumes and ranges that cannot reach a part's bounds are dropped before its stage keys are taken. A far volume therefore never re-plans a part.
+
+**Plates.** Ranges and volumes are plate-wide. Each object takes every range and every volume that reaches it, in its own part frame. `objects[i].settings.heightRanges` and `objects[i].settings.modifierVolumes` are refused as plate settings. The per-object `infill`, `walls`, and `speed` keys of decision 2 in [multi-object-and-support-painting.md](multi-object-and-support-painting.md) stay refused as "not supported yet". The UI plate has no per-object override yet, and a plate-wide volume already reaches one object by position. A per-object override set would also need its own place in the overlap order.
+
+**Kept stages.** The overrides are in the toolpaths key. They are blanked in the contours key and in the painted-supports key, because supports stay global. A range or volume change reuses `contours`, `supports`, and `supportPaths`, and plans toolpaths, order, and comb again for every layer.
+
+**UI.** `payload()` sends `sliceOverrideFields(state.overrides)`. Each list is left out when empty. A range is `{ z: [low, high], infill?, walls?, speed? }`, and a volume is `{ kind, center, size, infill?, walls?, speed? }`. The overrides are part of the settings hash, so an edit marks the slice stale and auto-slice picks it up. The walls inputs run from 1 to 12. A project saved with walls outside that range opens with the value clamped. Speed is capped at 1000 mm/s.
+
+**Evidence.** A 40 × 40 × 10 mm box at weight 0.6 has grid infill at 34% and 4 walls. A box volume over its left edge, `center [80, 100, 5]`, `size [20, 20, 20]`, `walls: 6`, and `infill: 1`, gives these G-code numbers on the layer at Z 5:
+
+| Measure | No volume | Volume |
+| --- | --- | --- |
+| Wall beads crossing y = 100 in the volume | 4 | 6 |
+| Wall beads crossing y = 85, outside it | 4 | 4 |
+| Sparse mm per mm² inside the footprint | 1.265 | 3.083 |
+| Sparse mm per mm² away from it | 1.518 | 1.517 |
+
+**Measured cost.** These times were measured through `serve --cache-dir` on this laptop, client side, with a speed blend, tree supports, the G-code parked, and the default 220 mm bed. Each change sends `previewBase` and differs from every earlier request, so none hits the disk. Each cold slice ran on a fresh server. There were two runs. The range spans the middle half of the part's height with `walls` 4, 5, then 6 and `speed: 40`. The three volumes are a box with infill 0.8, 0.9, then 1, a cylinder with 4 walls, and a sphere with a 30 mm/s cap.
+
+| Mesh | Cold | Range change | Volume change | Cold with 3 volumes |
+| --- | --- | --- | --- | --- |
+| Baby Dragon | 4.09 to 4.31 s | 2.66 to 2.78 s, 66 or 67 changed layers | 2.49 to 2.91 s, 53 to 120 changed layers | 4.38 to 4.45 s, volumes on 120 of 133 layers |
+| Rear cover | 5.15 to 5.34 s | 2.17 to 2.43 s, 106 or 120 changed layers | 2.69 to 3.47 s, 80 to 157 changed layers | 5.21 to 5.32 s, volumes on 150 of 208 layers |
+
+An override change costs 40 to 70% of a cold slice. The toolpaths key covers the whole part, so every layer is planned, ordered, and combed again, even a layer no range or volume reaches. By the run means, three volumes add about 6% to a cold slice of the Baby Dragon and about 1% to the rear cover.
+
+**Golden.** `tools/golden_ab.sh e7624fe` with the rear cover and the boots gives 60 same, 0 different against the stored seam-picker run.
+
+**Tests.** `crates/lime-slice-core/tests/modifiers.rs` checks, with literal values:
+
+- empty lists, and entries out of the part's reach, keep the G-code bytes;
+- a range with `walls: 4` gives 4 walls on its layers and 2 elsewhere, including both end layers at 0.2 mm;
+- `infill: 0` keeps the walls and the solid skins and drops every sparse layer;
+- a dense box changes infill only inside its footprint;
+- walls in a volume follow the part's outline;
+- a speed cap applies inside its volume only;
+- the later volume wins, and a range applies outside every volume;
+- refusals name their field;
+- a plate-wide volume reaches only the object it meets, in bed coordinates.
+
+`tests/modifier_stages.rs` checks that a volume moved with its part reuses every stage, that a volume left behind plans the toolpaths again, and that an override change never cuts again, with kept and cold G-code equal. `e2e/overrides-engine.spec.ts` adds a range in the UI, slices on a real engine, and reads its walls and speed cap from the reply and the G-code.
+
+**Not done.**
+
+- Per-layer toolpath reuse. A change that touches 10 layers still plans all of them.
+- Per-object `infill`, `walls`, and `speed`, as above.
+- Rotated volumes, mesh modifiers, per-range layer height, and support overrides, as in the non-goals.
+- Where a volume cuts the outer wall, the wall prints as open pieces that start at the cut. The planned seam on that loop is lost on those layers.

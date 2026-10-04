@@ -375,6 +375,7 @@ pub(super) fn keys(
         feature_speeds: blank.feature_speeds,
         infill_combine: blank.infill_combine,
         gyroid_3d: blank.gyroid_3d,
+        overrides: blank.overrides.clone(),
         ..toolpaths.clone()
     };
     let grow = SliceSettings {
@@ -396,6 +397,8 @@ pub(super) fn keys(
         support_height_mult: settings.support_height_mult,
         // Support paths are never loops, so where a loop starts never reaches them.
         seam: blank.seam,
+        // Supports stay global: ranges and volumes change only the part.
+        overrides: blank.overrides.clone(),
         ..toolpaths.clone()
     };
     let key = |s: &SliceSettings, blend: Option<&BlendMode>| -> [u8; 32] {

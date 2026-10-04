@@ -1406,6 +1406,8 @@ fn request_for(
         pose: None,
         step_tolerance_mm: lime_slice_core::STEP_TOLERANCE_DEFAULT_MM,
         support_edits: Vec::new(),
+        height_ranges: Vec::new(),
+        modifier_volumes: Vec::new(),
         include_skeleton: false,
         preview_base: None,
     }

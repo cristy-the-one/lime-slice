@@ -7,7 +7,7 @@ import { syncSliceDock } from "../ui/shell";
 import { blend, renderChrome, settingsHash, markBusy, paintBanner, busyText, markEngineDown, apiBase, stale, apiToken, touch } from "./settings";
 import { editRequestFields } from "../support-edit-list";
 import { replyOffset, type SlicedBed } from "../bed-offset";
-import { hasOverrides, OVERRIDES_STORED_TOAST, sliceOverrideFields } from "../overrides";
+import { sliceOverrideFields } from "../overrides";
 import { plateListed, slicePlateFields, type PlateObject, type PlateRequestObject } from "../plate";
 import { engineDownMessage, authHeaders } from "../ui/api-base";
 import { pushToast } from "../ui/toasts";
@@ -183,7 +183,6 @@ export function payload() {
     includePreview: true,
     simplify: state.simplify,
     simplifyErrorMm: state.simplifyError,
-    // ADAPTER: ranges and volumes stay in the project. SliceRequest has no fields for them.
     ...sliceOverrideFields(state.overrides),
     ...plate,
   };
@@ -209,7 +208,6 @@ export function printer() {
 
 /** `force` plans again even when this recipe is already cached. */
 export async function runSlice(force = false) {
-  if (hasOverrides(state.overrides)) pushToast(OVERRIDES_STORED_TOAST, "info");
   if (!state.mesh) {
     state.error = "Load a mesh first.";
     renderChrome();

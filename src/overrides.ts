@@ -1,17 +1,17 @@
 /**
- * Height ranges and modifier volumes the UI stores.
- *
- * ADAPTER: `SliceRequest` in `crates/lime-slice-core/src/slice.rs` has no
- * `heightRanges` or `modifierVolumes`. By-layer and by-region blends are one
- * band and one plane (`BlendMode` in `crates/lime-slice-core/src/strategy.rs`),
- * not these lists. `sliceOverrideFields` returns nothing so the slice body,
- * the recipe key, and the G-code stay the bytes of a slice without them.
+ * Height ranges and modifier volumes: infill, walls, and a speed cap inside
+ * a Z span or a box, cylinder, or sphere on the bed. The slice request
+ * carries them as `heightRanges` and `modifierVolumes`
+ * (`crates/lime-slice-core/src/slice/wire.rs`), and leaves both out when
+ * empty, so a slice without them keeps its bytes and its recipe key.
  * Layer height is not an override: the request has one `layerHeight`.
  */
 
 export const OVERRIDE_VERSION = 1;
 
-export const OVERRIDES_STORED_TOAST = "Overrides are stored but not yet sliced.";
+/** The engine refuses a wall count outside this span. */
+export const MIN_WALLS = 1;
+export const MAX_WALLS = 12;
 
 export type VolumeKind = "box" | "cylinder" | "sphere";
 export type AxisName = "x" | "y" | "z";
@@ -20,9 +20,9 @@ export type AxisName = "x" | "y" | "z";
 export interface SettingOverride {
   /** Sparse infill, 0 to 1. */
   infill?: number;
-  /** Perimeter count. */
+  /** Perimeter count, 1 to 12. */
   walls?: number;
-  /** Millimetres per second. */
+  /** A cap on every feature speed, millimetres per second. */
   speed?: number;
 }
 
@@ -68,12 +68,39 @@ export function projectOverrides(doc: OverrideDocument): OverrideDocument | unde
   return hasOverrides(doc) ? doc : undefined;
 }
 
-/**
- * Fields added to a slice request. Always empty until the engine grows
- * `heightRanges` and `modifierVolumes` and this adapter is removed.
- */
-export function sliceOverrideFields(_doc: OverrideDocument): Record<string, never> {
-  return {};
+export interface HeightRangeWire extends SettingOverride {
+  /** Print Z, low then high. */
+  z: [number, number];
+}
+
+export interface ModifierVolumeWire extends SettingOverride {
+  kind: VolumeKind;
+  /** Bed millimetres. */
+  center: [number, number, number];
+  size: [number, number, number];
+}
+
+/** The request fields for `doc`. Each list is left out when it is empty. */
+export function sliceOverrideFields(doc: OverrideDocument): {
+  heightRanges?: HeightRangeWire[];
+  modifierVolumes?: ModifierVolumeWire[];
+} {
+  const fields: { heightRanges?: HeightRangeWire[]; modifierVolumes?: ModifierVolumeWire[] } = {};
+  if (doc.ranges.length > 0) {
+    fields.heightRanges = doc.ranges.map((range) => {
+      const ordered = orderRange(range);
+      return { z: [ordered.zFrom, ordered.zTo], ...range.override };
+    });
+  }
+  if (doc.volumes.length > 0) {
+    fields.modifierVolumes = doc.volumes.map((volume) => ({
+      kind: volume.kind,
+      center: [volume.x, volume.y, volume.z],
+      size: [volume.sx, volume.sy, volume.sz],
+      ...volume.override,
+    }));
+  }
+  return fields;
 }
 
 let seq = 0;
@@ -228,7 +255,8 @@ function readOverride(value: unknown): SettingOverride | string {
   }
   if (row.walls !== undefined) {
     if (!finite(row.walls) || row.walls < 0 || row.walls > 20 || !Number.isInteger(row.walls)) return "This project file is incomplete.";
-    override.walls = row.walls;
+    // Files saved before the engine read walls allowed 0 to 20.
+    override.walls = clampWalls(row.walls);
   }
   if (row.speed !== undefined) {
     if (!finite(row.speed) || row.speed <= 0 || row.speed > 1000) return "This project file is incomplete.";
@@ -239,6 +267,10 @@ function readOverride(value: unknown): SettingOverride | string {
 
 function finite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+export function clampWalls(value: number): number {
+  return Math.min(MAX_WALLS, Math.max(MIN_WALLS, Math.round(value)));
 }
 
 function clamp01(value: number): number {

@@ -30,17 +30,29 @@ function check(name: string, cond: boolean, detail = ""): void {
 
 const empty = emptyOverrides();
 eq("an empty document adds no slice fields", sliceOverrideFields(empty), {});
-eq("a filled document still adds no slice fields", sliceOverrideFields({
+eq("a filled document sends both lists in bed millimetres", sliceOverrideFields({
   version: 1,
-  ranges: [defaultRange("range-a")],
-  volumes: [defaultVolume("box", 220, 220, "volume-a")],
-}), {});
+  ranges: [{ id: "range-a", zFrom: 6, zTo: 2, override: { walls: 4 } }],
+  volumes: [defaultVolume("box", 220, 200, "volume-a")],
+}), {
+  heightRanges: [{ z: [2, 6], walls: 4 }],
+  modifierVolumes: [{ kind: "box", center: [110, 100, 10], size: [30, 30, 20], infill: 0.6, walls: 3 }],
+});
+eq("only ranges leaves the volumes out", sliceOverrideFields(addRange(empty, defaultRange("range-b"))), {
+  heightRanges: [{ z: [0, 4], infill: 0.4, walls: 4, speed: 40 }],
+});
 
 const body = { layerHeight: 0.2, blend: { mode: "single", strategy: "speed" } };
 eq(
-  "spreading the adapter leaves the request body alone",
+  "an empty document leaves the request body alone",
   { ...body, ...sliceOverrideFields(empty) },
   body,
+);
+const legacy = parseOverrides({ version: 1, ranges: [{ id: "r", zFrom: 0, zTo: 1, override: { walls: 0 } }, { id: "s", zFrom: 0, zTo: 1, override: { walls: 20 } }], volumes: [] });
+eq(
+  "walls saved outside 1 to 12 open clamped",
+  legacy.ok ? legacy.doc.ranges.map((range) => range.override.walls) : legacy.message,
+  [1, 12],
 );
 check("no modifiers means the project omits the field", projectOverrides(empty) === undefined);
 check("a range is kept on the project", projectOverrides(addRange(empty, defaultRange("range-a")))?.ranges.length === 1);
@@ -82,4 +94,4 @@ if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);
 }
-console.log("overrides: store, adapter, and bands ok");
+console.log("overrides: store, request fields, and bands ok");
