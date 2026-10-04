@@ -1,13 +1,12 @@
-/** Edits to height ranges and modifier volumes. Nothing here is copied onto the slice request. */
+/** Edits to height ranges and modifier volumes. The slice request carries them (`sliceOverrideFields`). */
 import { fx } from "./fx";
 import { flushEdit, noteEdit } from "./history";
 import { state } from "./state";
 import { markProjectDirty } from "../project-dirty";
-import { pushToast } from "../ui/toasts";
-import { renderChrome } from "./settings";
+import { markStale, renderChrome } from "./settings";
 import {
-  OVERRIDES_STORED_TOAST,
   addRange,
+  clampWalls,
   addVolume,
   defaultRange,
   defaultVolume,
@@ -29,7 +28,6 @@ export function addHeightRange() {
   noteEdit();
   state.overrides = addRange(state.overrides, defaultRange());
   markProjectDirty();
-  pushToast(OVERRIDES_STORED_TOAST, "info");
   flushEdit();
   renderChrome();
 }
@@ -40,7 +38,6 @@ export function addModifier(kind: VolumeKind) {
   state.overrides = addVolume(state.overrides, volume);
   state.selectedVolumeId = volume.id;
   markProjectDirty();
-  pushToast(OVERRIDES_STORED_TOAST, "info");
   flushEdit();
   renderChrome();
 }
@@ -103,6 +100,7 @@ export function editOverrideInput(input: HTMLInputElement) {
   }
   markProjectDirty();
   fx.paintSlider?.();
+  markStale();
 }
 
 export function commitOverrideInput(input: HTMLInputElement) {
@@ -151,14 +149,14 @@ function applyOverride(override: SettingOverride, field: string, raw: string): S
   } else if (field === "walls") {
     if (!trimmed) delete next.walls;
     else {
-      const value = Math.round(Number(trimmed));
-      if (Number.isFinite(value)) next.walls = Math.min(20, Math.max(0, value));
+      const value = Number(trimmed);
+      if (Number.isFinite(value)) next.walls = clampWalls(value);
     }
   } else if (field === "speed") {
     if (!trimmed) delete next.speed;
     else {
       const value = Number(trimmed);
-      if (Number.isFinite(value) && value > 0) next.speed = value;
+      if (Number.isFinite(value) && value > 0) next.speed = Math.min(1000, value);
     }
   }
   return next;

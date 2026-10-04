@@ -23,7 +23,7 @@ async function share(page: Page, selector: string) {
   return canvasShare({ width: box!.width, height: box!.height }, { width: box!.viewW, height: box!.viewH });
 }
 
-test("ranges and volumes are stored and drawn, and a slice does not send them", async ({ page }) => {
+test("ranges and volumes are stored, drawn, and sent with the slice", async ({ page }) => {
   const bodies: Record<string, unknown>[] = [];
   await quiet(page);
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "not found" }) }));
@@ -35,7 +35,6 @@ test("ranges and volumes are stored and drawn, and a slice does not send them", 
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
   await expect(page.locator("#status")).toContainText("loaded");
   await page.locator("#heightAdd").click();
-  await expect(page.locator("#toasts").getByRole("status").filter({ hasText: "Overrides are stored but not yet sliced." })).toBeVisible();
   await expect(page.locator("[data-range]")).toHaveCount(1);
   await expect(page.locator("[data-range] input[data-field=zFrom]")).toHaveValue("0");
   await expect(page.locator("[data-range] input[data-field=zTo]")).toHaveValue("4");
@@ -88,13 +87,22 @@ test("ranges and volumes are stored and drawn, and a slice does not send them", 
   await page.locator("#undoEdit").click();
   await expect(sx).toHaveValue("30");
 
+  const before = bodies.length;
   await page.locator("#slice").click();
-  await expect.poll(() => bodies.length).toBeGreaterThan(0);
-  const sent = bodies[0];
-  expect(sent).not.toHaveProperty("heightRanges");
-  expect(sent).not.toHaveProperty("modifierVolumes");
+  await expect.poll(() => bodies.length).toBeGreaterThan(before);
+  const sent = bodies.at(-1)!;
+  expect(sent.heightRanges).toEqual([{ z: [0, 4], infill: 0.4, walls: 4, speed: 40 }]);
+  expect(sent.modifierVolumes).toEqual([{ kind: "box", center: [110, 110, 10], size: [30, 30, 20], infill: 0.6, walls: 3 }]);
   expect(sent).not.toHaveProperty("overrides");
-  await expect(page.locator("#toasts").getByRole("status").filter({ hasText: "Overrides are stored but not yet sliced." }).first()).toBeVisible();
+  await expect(page.locator("#toasts").getByText("not yet sliced")).toHaveCount(0);
+
+  await page.locator("[data-range] [data-override-remove=range]").click();
+  await page.locator("[data-volume] [data-override-remove=volume]").click();
+  const cleared = bodies.length;
+  await page.locator("#slice").click();
+  await expect.poll(() => bodies.length).toBeGreaterThan(cleared);
+  expect(bodies.at(-1)).not.toHaveProperty("heightRanges");
+  expect(bodies.at(-1)).not.toHaveProperty("modifierVolumes");
 });
 
 test.describe("compact overrides", () => {

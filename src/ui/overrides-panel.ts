@@ -20,7 +20,7 @@ export function overrideSectionHtml(doc: OverrideDocument, selectedId: string | 
       ${num("zFrom", "From Z mm", String(range.zFrom), 0, 1000, 0.1)}
       ${num("zTo", "To Z mm", String(range.zTo), 0, 1000, 0.1)}
       ${num("infill", "Infill %", optional(range.override.infill === undefined ? undefined : range.override.infill * 100), 0, 100, 1)}
-      ${num("walls", "Walls", optional(range.override.walls), 0, 20, 1)}
+      ${num("walls", "Walls", optional(range.override.walls), 1, 12, 1)}
       ${num("speed", "Speed mm/s", optional(range.override.speed), 1, 1000, 1)}
       <button class="btn" type="button" data-override-remove="range">Remove range</button>
     </div>`).join("");
@@ -34,13 +34,13 @@ export function overrideSectionHtml(doc: OverrideDocument, selectedId: string | 
       ${num("sy", "Size Y mm", String(volume.sy), 0.2, 1000, 0.1)}
       ${num("sz", "Size Z mm", String(volume.sz), 0.2, 1000, 0.1)}
       ${num("infill", "Infill %", optional(volume.override.infill === undefined ? undefined : volume.override.infill * 100), 0, 100, 1)}
-      ${num("walls", "Walls", optional(volume.override.walls), 0, 20, 1)}
+      ${num("walls", "Walls", optional(volume.override.walls), 1, 12, 1)}
       ${num("speed", "Speed mm/s", optional(volume.override.speed), 1, 1000, 1)}
       <button class="btn" type="button" data-override-remove="volume">Remove volume</button>
     </div>`).join("");
   return `
-    <p class="meta">Infill, walls, and speed are stored with the project. Slice does not send them yet.</p>
-    <p class="meta">Layer height stays the one slice setting. A range cannot change it until the engine accepts that.</p>
+    <p class="meta">Infill, walls, and a speed cap apply on a range's layers and inside a volume. A volume wins over a range, and a later entry wins over an earlier one. Supports stay as set.</p>
+    <p class="meta">Layer height stays the one slice setting. A range cannot change it.</p>
     <h3>Height ranges</h3>
     <div id="heightList">${ranges || `<p class="meta">No height ranges.</p>`}</div>
     <button class="btn" id="heightAdd" type="button">Add range</button>
