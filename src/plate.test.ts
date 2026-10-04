@@ -48,6 +48,7 @@ function object(size: number, id: string, centered: boolean, offset = { x: 0, y:
     offset,
     stepTolerance: 0.1,
     supportEdits: [],
+    supportPaint: [],
     settings: {},
   };
 }
@@ -83,6 +84,7 @@ const plate = oneObjectPlate({
   offset: { x: 0, y: 0, z: 0 },
   stepTolerance: 0.1,
   supportEdits: [],
+  supportPaint: [],
 });
 const copied = addedCopy(plate);
 check("add selects the copy", copied?.selectedId !== "part" && copied?.objects.length === 2);

@@ -1,8 +1,9 @@
 /**
  * A `.lime` project file. Version 1 embeds one mesh so the file opens on its own.
  * Version 2 is a plate of objects. `migrations[1]` wraps a version 1 document into
- * that plate. A plate that is still one object with no per-object settings is
- * written back as version 1 and omits `objects`.
+ * that plate. A plate that is still one object with no per-object settings and no
+ * support paint is written back as version 1 and omits `objects`. Support paint is
+ * an optional field on each version 2 object, so a version 2 file without it still opens.
  * A later version adds a function to `migrations` at index `n` that rewrites version `n`
  * into version `n + 1`. `applyMigrations` is that hook.
  */
@@ -13,6 +14,7 @@ import { fnv1aHex } from "./slice-action.ts";
 import { parseOverrides, type OverrideDocument } from "./overrides.ts";
 import { plateFileIsVersion2, readPlateSettings, settingsEmpty, type PlateFileObject } from "./plate.ts";
 import type { EditEntry } from "./support-edit-list.ts";
+import { readPaint } from "./support-paint.ts";
 import type { SiteSpec } from "./support-edits.ts";
 
 export const PROJECT_VERSION = 2;
@@ -298,8 +300,11 @@ function readPlateObject(value: unknown): PlateFileObject | string {
   if (typeof edits === "string") return edits;
   const settings = readPlateSettings(row.settings);
   if (typeof settings === "string") return settings;
+  const paint = readPaint(row.supportPaint);
+  if (typeof paint === "string") return paint;
   const object: PlateFileObject = { id: row.id, name: row.name, mesh, placement, supportEdits: edits };
   if (settings) object.settings = settings;
+  if (paint.length > 0) object.supportPaint = paint;
   return object;
 }
 

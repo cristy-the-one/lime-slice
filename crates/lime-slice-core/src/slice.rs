@@ -16,7 +16,7 @@ pub use patch::PreviewPatch;
 pub(crate) use patch::WholePreview;
 pub use wire::{
     Collision, EditOutcomeView, HeightRangeSpec, ModifierVolumeSpec, ObjectSpec, ObjectView,
-    SiteSpec, SupportEditSpec, VolumeKind,
+    PaintDiskSpec, SiteSpec, SupportEditSpec, VolumeKind,
 };
 
 use crate::adaptive::{plan_bands, plan_plate_bands, HeightOpts, LayerBand};
@@ -38,6 +38,7 @@ use crate::strategy::{
     StrategyId, ZHopMode,
 };
 use crate::support::edit::{EditOutcome, SupportEdit};
+use crate::support::paint::{self, PaintDisk, PaintTally};
 use crate::support::skeleton::{skeleton, SupportSkeleton};
 use crate::support::{CoverageGap, Disk, InAir, SupportLayer, SupportOpts, SupportStyle, Supports};
 use crate::toolpath::{
@@ -204,6 +205,10 @@ pub struct SliceRequest {
     /// so a slice without edits keeps its cache key.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub support_edits: Vec<SupportEditSpec>,
+    /// Enforce and block disks in the mesh frame, in paint order. Omitted
+    /// when empty, so a slice without paint keeps its cache key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub support_paint: Vec<PaintDiskSpec>,
     /// Z spans that print with their own infill, walls, or speed cap.
     /// Omitted when empty, so a slice without them keeps its cache key.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -304,6 +309,9 @@ pub struct SliceSettings {
     pub pose: Option<RigidPose>,
     /// Edits applied to the grown supports, in order.
     pub support_edits: Vec<SupportEdit>,
+    /// Paint that changes the demand the supports grow on, in paint order:
+    /// in the mesh frame while `pose` is set, then in the part frame.
+    pub support_paint: Vec<PaintDisk>,
     /// Height ranges and modifier volumes. Volumes are in bed coordinates
     /// until the plate moves them into each part frame.
     pub overrides: Overrides,
@@ -359,6 +367,7 @@ impl Default for SliceSettings {
             simplify_error_mm: 0.0,
             pose: None,
             support_edits: Vec::new(),
+            support_paint: Vec::new(),
             overrides: Overrides::default(),
             include_skeleton: false,
             preview_base: None,
@@ -478,6 +487,7 @@ impl SliceSettings {
             },
             pose: req.pose,
             support_edits: Vec::new(),
+            support_paint: Vec::new(),
             overrides: Overrides::default(),
             include_skeleton: req.include_skeleton,
             preview_base: req.preview_base.clone(),
@@ -640,6 +650,9 @@ pub struct SliceResponse {
     /// One per requested support edit, in request order.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub support_edits: Vec<EditOutcomeView>,
+    /// How the request's support paint landed. Only when it sent paint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support_paint: Option<PaintTally>,
     /// The grown trees after every edit. Only when the request asked for it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skeleton: Option<SupportSkeleton>,
@@ -956,6 +969,7 @@ fn load_object(
     let settings = SliceSettings {
         job,
         support_edits: wire::parse_support_edits(&req.support_edits)?,
+        support_paint: wire::parse_support_paint(&req.support_paint)?,
         overrides: overrides.clone(),
         ..SliceSettings::from_request(req)
     };
@@ -1127,6 +1141,9 @@ fn slice_plate(
             let (mesh, offset) = match settings.pose.take() {
                 Some(pose) => {
                     let (frame, offset) = pose.part_frame(centre);
+                    for disk in &mut settings.support_paint {
+                        *disk = disk.posed(&frame.rotation, frame.pivot, frame.translation);
+                    }
                     (Cow::Owned(frame.apply(s.mesh)), Some(offset))
                 }
                 None => (Cow::Borrowed(s.mesh), None),
@@ -1384,6 +1401,14 @@ fn slice_plate(
                     .iter()
                     .map(|out| EditOutcomeView::of(out, &indexed))
                     .collect(),
+                support_paint: (!obj.settings.support_paint.is_empty()).then(|| {
+                    paint::tally(
+                        &obj.settings.support_paint,
+                        &obj.mesh,
+                        &p.cut.bands,
+                        obj.settings.supports,
+                    )
+                }),
                 reused: p.reuse.names(),
             }
         })
@@ -1565,8 +1590,9 @@ fn slice_plate(
             .collect();
         plate::collisions(&boxes)
     });
-    let (offset, coverage, in_air, support_edits, skeleton, objects_view) = if listed {
-        (None, Vec::new(), None, Vec::new(), None, views)
+    let (offset, coverage, in_air, support_edits, support_paint, skeleton, objects_view) = if listed
+    {
+        (None, Vec::new(), None, Vec::new(), None, None, views)
     } else {
         let view = views.into_iter().next().expect("one object");
         (
@@ -1574,6 +1600,7 @@ fn slice_plate(
             view.coverage,
             view.in_air,
             view.support_edits,
+            view.support_paint,
             view.skeleton,
             Vec::new(),
         )
@@ -1630,6 +1657,7 @@ fn slice_plate(
         ),
         compare,
         support_edits,
+        support_paint,
         skeleton,
         preview_token,
         preview_patch,
@@ -3675,7 +3703,14 @@ fn plan_supports(
         });
     }
     let among = solid.as_deref().map_or(&cut.contours, |s| s);
-    let supports = Supports::build_with(&cut.bands, &cut.contours, among, &opts, watch);
+    let supports = Supports::build_with(
+        &cut.bands,
+        &cut.contours,
+        among,
+        &settings.support_paint,
+        &opts,
+        watch,
+    );
     let Some(supports) = supports.filter(|_| !watch.stopped(settings.job)) else {
         return Err("cancelled".into());
     };

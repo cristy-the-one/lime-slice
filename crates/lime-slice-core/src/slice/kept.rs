@@ -375,6 +375,7 @@ pub(super) fn keys(
         tip_diameter: blank.tip_diameter,
         trunk_diameter: blank.trunk_diameter,
         support_height_mult: blank.support_height_mult,
+        support_paint: Vec::new(),
         ..no_emit.clone()
     };
     let order = SliceSettings {
@@ -412,6 +413,7 @@ pub(super) fn keys(
         branch_angle: settings.branch_angle,
         tip_diameter: settings.tip_diameter,
         trunk_diameter: settings.trunk_diameter,
+        support_paint: settings.support_paint.clone(),
         ..contours.clone()
     };
     let paint = SliceSettings {
@@ -422,6 +424,7 @@ pub(super) fn keys(
         tip_diameter: settings.tip_diameter,
         trunk_diameter: settings.trunk_diameter,
         support_height_mult: settings.support_height_mult,
+        support_paint: settings.support_paint.clone(),
         // Support paths are never loops, so where a loop starts never reaches them.
         seam: blank.seam,
         ironing: blank.ironing,

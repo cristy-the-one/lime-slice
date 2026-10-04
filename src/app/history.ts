@@ -132,6 +132,13 @@ export function noteEdit() {
   }, 280);
 }
 
+/** Start a gesture that stays open until `flushEdit`, however long it lasts: one brush drag. */
+export function beginEdit() {
+  if (applying || session.projectRestoring) return;
+  window.clearTimeout(timer);
+  history = beginGesture(history, capture());
+}
+
 export function flushEdit() {
   window.clearTimeout(timer);
   history = commitGesture(history, capture());

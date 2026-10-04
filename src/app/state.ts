@@ -10,6 +10,7 @@ import type { Vec3 } from "../section-plane";
 import type { PreviewGeometry } from "../preview-geom";
 import type { CoverageGap, EditOutcome, SupportSkeleton } from "../support-edits";
 import type { EditEntry } from "../support-edit-list";
+import type { PaintDisk, PaintTally } from "../support-paint";
 
 export type { CoverageGap, EditOutcome, SupportSkeleton };
 
@@ -97,6 +98,8 @@ export interface SliceResponse {
   score?: { toughness: number };
   /** One per requested support edit, in request order. Absent when none were sent. */
   supportEdits?: EditOutcome[];
+  /** How the request's support paint landed. Absent when none was sent. */
+  supportPaint?: PaintTally;
   /** The grown trees after every edit. Only when the request set `includeSkeleton`. */
   skeleton?: SupportSkeleton;
   /** Names this preview. Sent back as `previewBase` so the next reply can be a patch on it. */
@@ -129,6 +132,7 @@ export interface ReplyObject {
   inAir?: { islands: number; overhangs: number };
   skeleton?: SupportSkeleton;
   supportEdits?: EditOutcome[];
+  supportPaint?: PaintTally;
   reused: string[];
 }
 
@@ -228,6 +232,8 @@ export const state = {
   sectionHud: "",
   /** Kept across setting and pose changes; the engine replays them and flags the ones that no longer match. */
   supportEdits: [] as EditEntry[],
+  /** The selected object's enforce and block disks, in its source frame. Sent with every slice. */
+  supportPaint: [] as readonly PaintDisk[],
   /** Height ranges and modifier volumes. Stored only. The slice request does not carry them yet. */
   overrides: emptyOverrides(),
   selectedVolumeId: null as string | null,
@@ -261,6 +267,9 @@ export const session = {
   quietTried: "",
   /** Support edits the request behind `state.result` carried. */
   slicedEdits: [] as readonly EditEntry[],
+  /** The selected object's paint the request behind `state.result` carried. */
+  slicedPaint: [] as readonly PaintDisk[],
+  paintUi: null as { refresh(): void; stop(): void } | null,
   /** Pose and reply offset the buffers on screen were built from. */
   slicedBed: null as SlicedBed | null,
   /** For a plate: each object's sent pose and reply offset, by id. */

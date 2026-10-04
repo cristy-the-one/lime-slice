@@ -200,6 +200,24 @@ const soloSettings: LimeProject = {
 const soloWire = JSON.parse(serializeProject(soloSettings)) as { version: number; objects: { settings: { supports: boolean } }[]; mesh?: unknown };
 check("one object with its own settings stays version 2", soloWire.version === 2 && soloWire.objects[0]?.settings.supports === true && soloWire.mesh === undefined);
 
+const dabs = [
+  { kind: "block" as const, p: [36, 12, 12] as [number, number, number], n: [0, 0, -1] as [number, number, number], r: 4 },
+  { kind: "enforce" as const, p: [30, 12, 12] as [number, number, number], n: [0, 0, -1] as [number, number, number], r: 2.5 },
+];
+const painted: LimeProject = {
+  ...project,
+  version: 2,
+  objects: [{ id: "part", name: "bracket.stl", mesh: project.mesh, placement: project.placement, supportEdits: [], supportPaint: dabs }],
+};
+const paintedWire = JSON.parse(serializeProject(painted)) as { version: number; objects: { supportPaint?: unknown }[] };
+eq("one object with support paint writes version 2 and keeps it in paint order", [paintedWire.version, paintedWire.objects[0]?.supportPaint], [2, dabs]);
+const paintedOpened = parseProject(JSON.stringify(paintedWire));
+eq("support paint round-trips", paintedOpened.ok ? paintedOpened.project.objects?.[0]?.supportPaint : null, dabs);
+const unpaintedOpened = parseProject(multiText);
+eq("a plate saved before support paint opens with none", unpaintedOpened.ok ? unpaintedOpened.project.objects?.map((obj) => obj.supportPaint ?? []) : null, [[], []]);
+paintedWire.objects[0]!.supportPaint = [{ kind: "paint", p: [0, 0, 0], n: [0, 0, 1], r: 1 }];
+eq("damaged paint fails the open", parseProject(JSON.stringify(paintedWire)), { ok: false, message: "The support paint in this project is damaged." });
+
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);

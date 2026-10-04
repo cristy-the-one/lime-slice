@@ -13,6 +13,10 @@ import { activeSection, draw, fitNarrow, mountViews, paintGizmoReadout, prepare,
 import { probe, renderChrome } from "./app/settings";
 import { runSlice, treeSupports } from "./app/slice-run";
 import { mountSupportEdits } from "./ui/support-edit-ui";
+import { mountSupportPaint } from "./ui/support-paint-ui";
+import { clearPaint, drawPaint, paintStroke, tallyOf } from "./app/paint-actions";
+import { fx } from "./app/fx";
+import { plateListed } from "./plate";
 import { mountMarkup } from "./app/markup";
 import { wireApp } from "./app/wire";
 
@@ -71,6 +75,26 @@ session.supportUi = mountSupportEdits(view3d, {
     if (state.viewMode !== "solid") setView("solid");
   },
 });
+session.paintUi = mountSupportPaint(prepare, {
+  view() {
+    const listed = plateListed(state.plate);
+    const obj = listed ? state.plate.objects.find((o) => o.id === state.plate.selectedId) : undefined;
+    const fresh = session.slicedPaint === state.supportPaint;
+    return {
+      disks: state.supportPaint,
+      supportsOn: obj?.settings.supports ?? state.supports,
+      tally: fresh ? tallyOf(state.result, selectedObjectIndex()) : null,
+      hasMesh: !!state.placed,
+    };
+  },
+  stroke: paintStroke,
+  clear: clearPaint,
+  reveal() {
+    if (state.stage !== "prepare") setStage("prepare");
+  },
+});
+fx.drawPaint = drawPaint;
+drawPaint();
 mountConnection(() => {
   void probe();
 });
