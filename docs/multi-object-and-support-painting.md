@@ -1,6 +1,6 @@
 # Multi-object plates and support painting
 
-This is a design for Claude to review. Nothing in this note is implemented. Sections marked **Proposal** are not the current wire. The two features share one rule: a plate with one object and no paint must emit the same G-code the engine emits today.
+This note began as a design for Claude to review. All-at-once plates (#126) and support painting have since shipped. Sections marked **Proposal** are the plan as reviewed. Where they differ from the Decisions, the engine design, or [Shipped: support painting](#shipped-support-painting-2026-10-04), those win. The two features share one rule: a plate with one object and no paint must emit the same G-code the engine emits today.
 
 ## Multi-object plates
 
@@ -139,6 +139,8 @@ A mock plate lives in the session, beside `state.mesh`. The adapter is marked mo
 ## Support painting
 
 An enforce brush and a block brush on the mesh. Enforce adds support demand the overhang angle would skip. Block removes demand the angle would keep.
+
+Support painting is done. See [Shipped: support painting](#shipped-support-painting-2026-10-04). The subsections below are the proposal as reviewed.
 
 ### Goals
 
@@ -289,6 +291,84 @@ A mock adapter stores `SupportPaint` on the object and draws the disks on the pr
 13. Yes. The concatenated-STL mock is acceptable for the first UI pull request if it is labeled as a mock. Byte-identity is claimed only for the real one-object request.
 
 **Engine order across these notes.** The seam picker comes first, then height ranges and modifier volumes, then ironing, then support paint, then multi-object all-at-once, then sequential.
+
+## Shipped: support painting (2026-10-04)
+
+Support painting landed as Decisions 7 to 12 describe. The engine change and the UI ship together on branch `claude/support-paint`.
+
+### Wire
+
+**Request.** `supportPaint` is one ordered list of disks, next to `supportEdits`:
+
+```json
+"supportPaint": [
+  { "kind": "block", "p": [36.0, 12.0, 12.0], "n": [0, 0, -1], "r": 3 },
+  { "kind": "enforce", "p": [30.5, 8.25, 12.0], "n": [0, 0, -1], "r": 3 }
+]
+```
+
+- `p` and `n` are in the object's mesh frame: the frame of the mesh bytes the request sends, before the pose. A request without a pose has no mesh frame of its own, so its disks are in print space after the bed settle, the frame `mesh.min` and `mesh.max` report.
+- `kind` is `enforce` or `block`. Disks apply in list order, so the later disk wins where two overlap.
+- The list is omitted when empty, on the request and so in every cache key. A request with an empty list slices to the same bytes as one without the field.
+- The list stays one object per disk. At the cap, 20000 disks, that is about 1.3 MB of JSON, less than most meshes the same request carries. A column encoding was not worth a second shape on the wire. The app rounds `p` to 0.0001 mm and `n` to 5 places, so a stroke's JSON stays short and stable.
+- Refusals name the field: `supportPaint has 20001 disks, at most 20000 are allowed`, `supportPaint[0].kind "paint" is not enforce or block`, `supportPaint[1].r is 0.1 mm, it must be 0.2 to 40 mm`, `supportPaint[0].p is not finite`, `supportPaint[0].p is out of range` (past 100 m), and `supportPaint[0].n has no length`. The engine normalizes `n`.
+
+**Plates.** Paint is per object, in `objects[i].supportPaint`, in that object's mesh frame. A top-level `supportPaint` beside `objects` is refused with `supportPaint belongs on each object when objects is sent`. An object's refusal reads `objects[0]: supportPaint[0].r is 50 mm, it must be 0.2 to 40 mm`. A one-object plate with no settings of its own sends today's body with a top-level `supportPaint`, as it does `supportEdits`. Decision 1 still holds: one-element `objects` and the omitted form write the same G-code.
+
+**Response.** `supportPaint` appears only when the request sent paint, at the top level for one object and in `objects[i]` for a plate:
+
+```json
+"supportPaint": { "enforce": 12, "block": 4, "enforceUnhit": 1, "blockUnhit": 0, "supportsOff": true }
+```
+
+- `enforce` and `block` count disks whose ball reaches at least one layer.
+- `enforceUnhit` and `blockUnhit` count disks whose point and normal miss the mesh: no triangle crosses the segment from 0.5 mm out along the normal to 0.5 mm in. A miss does not fail the slice. The disk still applies wherever its ball reaches.
+- `supportsOff` is present, and true, only when Smart supports is off. The paint is kept and counted, nothing prints, and the reply carries `inAir` as before. Enforce paint never turns supports on.
+
+### Engine
+
+A disk reaches every surface inside its ball. On a layer it covers the circle where the ball meets the layer's band, so one disk works the same on a flat underside and on a curved one. The normal is used only for the hit count.
+
+The slicer moves every disk by the object's pose into the part frame before anything reads it, then builds demand per layer in `Demand::new` (`crates/lime-slice-core/src/support/paint.rs`):
+
+1. Demand from the overhang angle and islands, as before.
+2. Each run of disks of one kind, in paint order. Enforce adds the layer's underside inside the run's circles: the part of the layer with nothing of the part under it, at any angle. A vertical wall and a top surface have no underside, so enforce there adds nothing. Block removes the run's circles.
+3. The walk, then `supportEdits`, as before.
+
+Tree and grid both build demand there, so grid honors paint (Decision 11). A regrow fills only demand the walk was born on, which is demand after paint, so a regrow never punches through a block (Decision 10). A prune saved before paint replays as before: when the paint moved or removed the tips it named, it reports `stale` and changes nothing.
+
+### Kept stages
+
+Paint is in the `grow` key and the support-paths key in `crates/lime-slice-core/src/slice/kept.rs`, and blanked from the `comb` key down, so it never reaches the contours, toolpaths, order, or comb keys. A stroke takes `contours`, `toolpaths`, `order`, and `comb` from memory and regrows only the supports and their paths. Paint is moved into the part frame before the keys are built, and the part frame has no X/Y translation, so a pure X/Y move of a painted part reuses all six stages. `tests/support_paint_stages.rs` checks both, and also that the moved slice writes the same G-code as a cold slice at the new place.
+
+### UI
+
+Paint is a tool in the Prepare rail, **Paint supports** (`B`), not a mode of the support-edit chip. The brush has to work before the first slice, on the prepare mesh. The support-edit chip lives in the preview, which exists only after a slice and draws toolpaths, not the part's surface. One rail tool reaches both goals and adds no mode to the preview editor.
+
+- The bar holds Enforce, Block, a radius slider (0.5 to 20 mm, `[` and `]` step it), Clear, Done, and a status line. On desktop it sits at the top center of the prepare view. On compact it is a strip above the floating Slice button, every target at least 44 px. The prepare canvas keeps 82% of a 390 by 844 screen at the peek with the brush on (`e2e/compact-paint.spec.ts`).
+- A press on the part paints along the ray hits, one disk each time the hit moves half a radius. With the mouse, a drag off the part still orbits and the right button pans. On touch, one finger paints and two fingers orbit and zoom. A second finger that lands mid-stroke cancels that stroke.
+- `src/support-paint.ts` turns a hit back through the pose and the scale into the object's source frame, the vertices as loaded. Paint therefore follows moves, turns, and scale changes. `payload()` in `src/app/slice-run.ts` and `slicePlateFields` in `src/plate.ts` send it in the mesh frame and leave it out when empty.
+- Each dab draws as a translucent ball, green for enforce and red for block (`--paint-enforce`, `--paint-block`), because the engine applies paint to everything inside the ball. A ring under the pointer shows the radius. The preview does not draw paint yet.
+- One drag is one undo step, through `beginEdit` and `flushEdit` in `src/app/history.ts`. Paint lives on each plate object, so the plate snapshot carries it.
+- A stroke slices as a support edit does: when a result is shown, it slices at once; before the first slice it marks the settings changed. It is not an X/Y move, so it never takes the quiet refresh.
+- After a slice the status line reports the engine's counts. It warns, and a toast says once, when disks missed the part or when supports are off. With supports off the bar says so before any slice.
+- Projects keep paint as an optional `supportPaint` on each version 2 object. A one-object project with paint is version 2, as Decision 6 says. Files without paint open as before. A damaged paint entry fails the open with `The support paint in this project is damaged.`
+
+### Measured cost
+
+Through `serve` on this laptop: speed blend, tree supports, G-code parked, a 450 mm bed, the part centred, and each request after the first carrying `previewBase`, as the app sends it. Each stroke adds 20 disks of radius 3 mm. Times are the whole request, client side.
+
+| Mesh | Cold | Stroke 1, 20 block disks | Stroke 2, 20 enforce disks more | Undo of stroke 2 |
+| --- | --- | --- | --- | --- |
+| Baby Dragon, 475270 triangles | 4.97 s, 511 limbs | 1.51 s (core 1.32 s, supports 1.16 s), 498 limbs | 1.69 s (supports 1.32 s), 647 limbs | 0.78 s from the disk cache |
+| Rear cover, STEP, 5314 triangles | 4.62 s, 683 limbs | 2.26 s (core 1.65 s, supports 1.30 s), 887 limbs | 2.19 s (supports 1.24 s), 1069 limbs | 1.69 s from the disk cache |
+
+A stroke costs the supports stage and what follows it. The cut and the part's plan come from memory every time.
+
+### Known limits
+
+- A block disk inside a sloped overhang can add tips. Each layer's demand there is a thin strip, and the walk gives every connected piece of a strip, and of its interface, a tip of its own. A ball that splits the strips adds a tip per layer it spans. On the rear cover one 3 mm block ball on a 25° underside adds 40 limbs and 145 mm of support filament. A 25 mm ball there still adds 86 limbs but saves 212 mm. On a flat underside block removes tips as expected: the overhang ledge goes from 8 limbs to 3 when half of it is blocked. The fix belongs to how the walk seeds tips, and it would change unpainted G-code, so it is a separate change.
+- The preview does not draw the painted balls.
 
 ## Engine design: all-at-once plates (2026-10-04)
 
