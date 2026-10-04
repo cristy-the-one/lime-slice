@@ -2921,6 +2921,8 @@ pub(crate) struct Contours {
     bounds: ([f64; 3], [f64; 3]),
     /// Each layer's distance below the nearest roof, from `roof_distances`.
     roofs: Vec<f64>,
+    /// Each layer's height above the nearest floor, from `floor_distances`.
+    floors: Vec<f64>,
     /// What prints over air with supports off, for the first overhang angle
     /// asked, keyed by its bits.
     in_air: std::sync::OnceLock<(u64, InAir)>,
@@ -2951,12 +2953,15 @@ impl Contours {
             .min(pure(StrategyId::Toughness).walls)
             .max(1);
         let roof_started = Instant::now();
-        let roofs = roof_distances(&bands, &contours, settings.line_width * fewest_walls as f64);
+        let wall_stack = settings.line_width * fewest_walls as f64;
+        let roofs = roof_distances(&bands, &contours, wall_stack);
+        let floors = floor_distances(&bands, &contours, wall_stack);
         Self {
             bands,
             contours,
             bounds,
             roofs,
+            floors,
             in_air: std::sync::OnceLock::new(),
             boxes: std::sync::OnceLock::new(),
             clocks: CutClocks {
@@ -3273,7 +3278,8 @@ fn part_paths(
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
     }
-    let (remain_low, remain_high) = interior_remainings(blend, settings, bands, &cut.roofs);
+    let (remain_low, remain_high) =
+        interior_remainings(blend, settings, bands, &cut.floors, &cut.roofs);
     let toolpath_started = Instant::now();
     let kept = kept.filter(|k| k.base == base);
     let planned: Vec<([u8; 32], Arc<ObjectLayer>, bool)> = bands
@@ -3301,6 +3307,7 @@ fn part_paths(
                 &contours[i],
                 blend,
                 settings,
+                cut.floors[i],
                 cut.roofs[i],
                 min,
                 max,
@@ -3946,7 +3953,7 @@ fn roof_distances(bands: &[LayerBand], contours: &[Vec<Loop>], wall_stack: f64) 
         .into_par_iter()
         .map(|i| {
             i + 1 >= n
-                || layer_is_roof(
+                || exposed_past_walls(
                     &contours[i],
                     contours.get(i + 1).map(Vec::as_slice).unwrap_or(&[]),
                     wall_stack,
@@ -3965,16 +3972,38 @@ fn roof_distances(bands: &[LayerBand], contours: &[Vec<Loop>], wall_stack: f64) 
     dist
 }
 
-/// A roof exposes area the layer above does not cover, reaching deeper than the
-/// walls. A thinner strip along the outline, as on a slope, is closed by the walls.
-fn layer_is_roof(current: &[Loop], above: &[Loop], wall_stack: f64) -> bool {
+/// Each layer's print height from the underside of the nearest floor at or
+/// below it, its own height included. A floor hangs past the layer below it,
+/// as a bridge deck or an overhang starts, and the first layer is the floor on
+/// the bed, so there this is the layer's Z.
+fn floor_distances(bands: &[LayerBand], contours: &[Vec<Loop>], wall_stack: f64) -> Vec<f64> {
+    let floor: Vec<bool> = (0..bands.len())
+        .into_par_iter()
+        .map(|i| i == 0 || exposed_past_walls(&contours[i], &contours[i - 1], wall_stack))
+        .collect();
+    let mut dist = vec![0.0; bands.len()];
+    let mut since = 0.0;
+    for (i, band) in bands.iter().enumerate() {
+        if floor[i] {
+            since = 0.0;
+        }
+        since += band.height;
+        dist[i] = since;
+    }
+    dist
+}
+
+/// `current` has area `other` does not cover, reaching deeper than the walls:
+/// a roof when `other` is the layer above, a floor when it is the layer below.
+/// A thinner strip along the outline, as on a slope, is closed by the walls.
+fn exposed_past_walls(current: &[Loop], other: &[Loop], wall_stack: f64) -> bool {
     if current.is_empty() {
         return false;
     }
-    if above.is_empty() {
+    if other.is_empty() {
         return true;
     }
-    let exposed = boolean_diff(current, above);
+    let exposed = boolean_diff(current, other);
     if exposed.is_empty() {
         return false;
     }
@@ -4034,10 +4063,10 @@ fn resolve(mut strategy: ResolvedStrategy, settings: &SliceSettings) -> Resolved
     strategy
 }
 
-fn shell_of(z: f64, roof: f64, strategy: &ResolvedStrategy) -> ShellBand {
+fn shell_of(floor: f64, roof: f64, strategy: &ResolvedStrategy) -> ShellBand {
     let bottom = if strategy.toughness > 0.6 { 1.2 } else { 0.6 };
     let top = if strategy.toughness > 0.6 { 1.0 } else { 0.6 };
-    if z <= bottom + 1e-6 {
+    if floor <= bottom + 1e-6 {
         ShellBand::Bottom
     } else if roof <= top {
         ShellBand::Top
@@ -4078,13 +4107,14 @@ fn interior_remainings(
     blend: &BlendMode,
     settings: &SliceSettings,
     bands: &[crate::adaptive::LayerBand],
+    floors: &[f64],
     roofs: &[f64],
 ) -> (Vec<InteriorSpan>, Vec<InteriorSpan>) {
     let shells_for = |pick: &dyn Fn(f64) -> ResolvedStrategy| -> Vec<ShellBand> {
         bands
             .iter()
-            .zip(roofs.iter())
-            .map(|(b, r)| shell_of(b.z, *r, &pick(b.z)))
+            .enumerate()
+            .map(|(i, b)| shell_of(floors[i], roofs[i], &pick(b.z)))
             .collect()
     };
     match blend {
@@ -4307,6 +4337,7 @@ fn object_layer(
     contours: &[Loop],
     blend: &BlendMode,
     settings: &SliceSettings,
+    floor_distance: f64,
     roof_distance: f64,
     min: [f64; 3],
     max: [f64; 3],
@@ -4348,11 +4379,11 @@ fn object_layer(
                 let high = clip_to_rect(contours, high_plan.0, high_plan.1);
                 let mut hint = [min[0], min[1]];
                 let mut low_feat = features.clone();
-                low_feat.shell = shell_of(z, roof_distance, &tough);
+                low_feat.shell = shell_of(floor_distance, roof_distance, &tough);
                 low_feat.interior_remaining = remain_low.0;
                 low_feat.interior_run = remain_low.1;
                 let mut high_feat = features.clone();
-                high_feat.shell = shell_of(z, roof_distance, &speed);
+                high_feat.shell = shell_of(floor_distance, roof_distance, &speed);
                 high_feat.interior_remaining = remain_high.0;
                 high_feat.interior_run = remain_high.1;
                 let (low_paths, low_wall, low_infill) =
@@ -4371,7 +4402,7 @@ fn object_layer(
                 let resolved = tweaked(layer_strategy(other, z, settings));
                 let mut hint = [max[0], (min[1] + max[1]) * 0.5];
                 let mut feat = features.clone();
-                feat.shell = shell_of(z, roof_distance, &resolved);
+                feat.shell = shell_of(floor_distance, roof_distance, &resolved);
                 feat.interior_remaining = remain_low.0;
                 feat.interior_run = remain_low.1;
                 let (region, region_wall, region_infill) =
