@@ -76,6 +76,13 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      # dtolnay/rust-toolchain@stable installs its targets input on the stable
+      # channel. rust-toolchain.toml pins 1.88.0, and that is the toolchain
+      # Tauri invokes, so the Intel cross target has to be added there.
+      - name: Install the Intel macOS Rust target
+        if: matrix.label == 'macos-intel'
+        run: rustup target add x86_64-apple-darwin
+
       - name: Build unsigned installers and upload the draft release
         uses: tauri-apps/tauri-action@v1
         env:
