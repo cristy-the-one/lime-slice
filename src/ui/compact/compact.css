@@ -252,15 +252,6 @@ html.layout-compact #left {
 }
 html.layout-compact #leftFoot { display: none; }
 html.layout-compact #compactSheet[data-detent="peek"] #leftBody { pointer-events: none; }
-html.layout-compact .find-row,
-html.layout-compact .profile-row {
-  position: sticky;
-  z-index: 2;
-  background: var(--panel);
-  padding-bottom: 6px;
-}
-html.layout-compact .profile-row { top: 0; z-index: 3; }
-html.layout-compact .find-row { top: 48px; }
 
 html.layout-compact #toolRail {
   position: absolute;

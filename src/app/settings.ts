@@ -86,6 +86,10 @@ export function currentWeight() {
 export function renderChrome() {
   const mesh = state.mesh;
   const result = state.result;
+  const find = document.querySelector<HTMLInputElement>("#find");
+  const findFocused = find != null && document.activeElement === find;
+  const selStart = find?.selectionStart ?? null;
+  const selEnd = find?.selectionEnd ?? null;
   document.querySelector("#leftBody")!.innerHTML = `
     ${levelBarHtml()}
     ${profileHeaderHtml()}
@@ -156,7 +160,9 @@ export function renderChrome() {
       ${stageHtml(result)}
     `)}
   `;
+  restoreFindCaret(findFocused, selStart, selEnd);
   applyFilter();
+  syncFindStuck();
 
   const live = resolved(currentWeight(), state.layerHeight);
   document.querySelector("#right")!.innerHTML = `
@@ -735,6 +741,71 @@ export function paintPresetDiff() {
   node.innerHTML = `<b>Vs default</b><br>${diff.length ? diff.map((line) => escapeHtml(line)).join("<br>") : "Matches the default preset."}`;
 }
 
+function restoreFindCaret(focused: boolean, selStart: number | null, selEnd: number | null) {
+  if (!focused) return;
+  const next = document.querySelector<HTMLInputElement>("#find");
+  if (!next) return;
+  next.focus({ preventScroll: true });
+  const max = next.value.length;
+  const start = Math.min(selStart ?? max, max);
+  const end = Math.min(selEnd ?? max, max);
+  next.setSelectionRange(start, end);
+}
+
+/** The panel that actually scrolls: `#left` on the desktop, the phone sheet body in compact. */
+export function settingsScroller(): HTMLElement | null {
+  const row = document.querySelector(".find-row");
+  let node = row?.parentElement ?? null;
+  while (node) {
+    const oy = getComputedStyle(node).overflowY;
+    if (oy === "auto" || oy === "scroll" || oy === "overlay") return node;
+    node = node.parentElement;
+  }
+  return document.querySelector("#left");
+}
+
+export function syncFindStuck() {
+  const row = document.querySelector(".find-row");
+  const scroller = settingsScroller();
+  if (!row || !scroller) return;
+  const style = getComputedStyle(scroller);
+  const fromTop = row.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+  const stickyLine = (parseFloat(style.paddingTop) || 0) + 2;
+  const stuck = scroller.scrollTop > 2 && fromTop <= stickyLine;
+  row.classList.toggle("is-stuck", stuck);
+}
+
+export function scrollSettingsToQuery() {
+  const scroller = settingsScroller();
+  if (!scroller) return;
+  const q = state.query.trim();
+  const match = q ? document.querySelector<HTMLElement>("#left .setting:not(.hidden)") : null;
+  if (!match) {
+    scroller.scrollTop = 0;
+  } else {
+    const row = document.querySelector(".find-row");
+    const gap = (row?.getBoundingClientRect().height ?? 0) + 4;
+    const delta = match.getBoundingClientRect().top - scroller.getBoundingClientRect().top - gap;
+    scroller.scrollTop = Math.max(0, scroller.scrollTop + delta);
+  }
+  syncFindStuck();
+}
+
+export function focusSettingsSearch() {
+  const find = document.querySelector<HTMLInputElement>("#find");
+  if (!find) return;
+  find.focus({ preventScroll: true });
+  find.select();
+}
+
+export function clearSettingsSearch() {
+  const find = document.querySelector<HTMLInputElement>("#find");
+  state.query = "";
+  if (find) find.value = "";
+  applyFilter();
+  scrollSettingsToQuery();
+}
+
 export function applyFilter() {
   const q = state.query.trim();
   document.querySelector("#left")?.classList.toggle("is-searching", !!q);
@@ -800,6 +871,7 @@ export function onSettings(ev: Event) {
   if (t.id === "find") {
     state.query = t.value;
     applyFilter();
+    scrollSettingsToQuery();
     return;
   }
   if (t.id === "profileName" || t.id === "profilePick" || t.id === "machineName") return;
