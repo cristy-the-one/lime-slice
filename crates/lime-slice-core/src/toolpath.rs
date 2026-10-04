@@ -1218,9 +1218,9 @@ fn extrusion(
         fit_arcs: false,
         z_hop: 0.0,
         seam: match (kind, strategy.seam) {
-            (PathKind::Inner, _) => Seam::Nearest,
+            (PathKind::Inner, _) if !strategy.inner_follows_seam => Seam::Nearest,
             (_, SeamMode::Nearest) => Seam::Corner,
-            (_, SeamMode::Aligned) => Seam::Fixed,
+            (_, SeamMode::Aligned | SeamMode::Rear) => Seam::Fixed,
         },
     };
     apply_feed(&mut path, strategy);
@@ -1317,6 +1317,7 @@ fn seam_rotate(loop_: &[[f64; 2]], mode: SeamMode, hint: [f64; 2]) -> Vec<[f64; 
     let idx = match mode {
         SeamMode::Aligned => aligned_seam(loop_),
         SeamMode::Nearest => nearest_seam(loop_, hint),
+        SeamMode::Rear => rear_seam(loop_),
     };
     let mut pts: Vec<[f64; 2]> = loop_[idx..]
         .iter()
@@ -1343,6 +1344,34 @@ fn aligned_seam(ring: &[[f64; 2]]) -> usize {
             (0, f64::MIN),
             |best, (i, p)| if p[0] > best.1 { (i, p[0]) } else { best },
         )
+        .0
+}
+
+/// The sharpest real corner within 1 mm of the loop's back, ties to +X, or
+/// the rear-most vertex, ties to +X. The slice turns the part before it
+/// cuts and only moves it after, so the part frame's +Y is the bed's back.
+fn rear_seam(ring: &[[f64; 2]]) -> usize {
+    let back = ring.iter().fold(f64::MIN, |y, p| y.max(p[1]));
+    let in_band = |p: [f64; 2]| {
+        if p[1] >= back - 1.0 {
+            -p[0]
+        } else {
+            f64::INFINITY
+        }
+    };
+    let corner = sharpest_near(ring, in_band, f64::MAX);
+    if real_corner(turn_penalty(ring, corner)) {
+        return corner;
+    }
+    ring.iter()
+        .enumerate()
+        .fold((0, [f64::MIN; 2]), |best, (i, p)| {
+            if p[1] > best.1[1] || (p[1] == best.1[1] && p[0] > best.1[0]) {
+                (i, *p)
+            } else {
+                best
+            }
+        })
         .0
 }
 
@@ -4791,6 +4820,63 @@ mod travel_tests {
             paths[1].points[0],
             [0.45, 0.45],
             "inner wall should start by the outer seam"
+        );
+    }
+
+    #[test]
+    fn a_rear_seam_takes_a_corner_at_the_back_and_aligned_the_sharpest() {
+        let house = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 6.0], [5.0, 10.0], [0.0, 6.0]];
+        assert_eq!(rear_seam(&house), 3, "the roof peak");
+        assert_eq!(aligned_seam(&house), 1, "the front +X corner");
+    }
+
+    #[test]
+    fn a_rear_seam_without_a_back_corner_takes_the_rear_most_vertex() {
+        let mut d: Vec<[f64; 2]> = vec![[-10.0, 0.0]];
+        d.extend((0..32).map(|k| {
+            let a = std::f64::consts::PI * k as f64 / 32.0;
+            [10.0 * a.cos(), 10.0 * a.sin()]
+        }));
+        let at = rear_seam(&d);
+        assert_eq!(at, 17);
+        assert_eq!(d[at][1], 10.0);
+        assert_eq!(aligned_seam(&d), 1, "aligned keeps the front +X corner");
+    }
+
+    #[test]
+    fn a_rear_seam_breaks_a_tie_toward_plus_x() {
+        let flat = vec![[0.0, 0.0], [4.0, 0.0], [8.0, 0.0], [8.0, 5.0], [4.0, 5.0], [0.0, 5.0]];
+        assert_eq!(rear_seam(&flat), 3);
+    }
+
+    /// Where a square's outer wall and a triangle's inner wall start, planned
+    /// under `strategy` and toured from the front-left corner. The inner
+    /// wall's back corner is far from where the outer wall ends.
+    fn wall_starts(strategy: &ResolvedStrategy) -> Vec<(PathKind, [f64; 2])> {
+        let mut paths = Vec::new();
+        let mut hint = [0.0, 0.0];
+        let outer = [square_at(0.0, 0.0, 10.0)];
+        let inner = [vec![[1.0, 1.0], [7.0, 1.0], [1.0, 6.0]]];
+        emit_loops(&mut paths, &outer, PathKind::Outer, strategy, 0.45, &mut hint);
+        emit_loops(&mut paths, &inner, PathKind::Inner, strategy, 0.45, &mut hint);
+        order_part(&mut paths, &[], Some([0.0, 0.0]), None);
+        paths.iter().map(|p| (p.kind, p.points[0])).collect()
+    }
+
+    #[test]
+    fn an_explicit_seam_starts_the_inner_wall_where_the_outer_wall_starts() {
+        let mut placed = pure(StrategyId::Speed);
+        placed.seam = SeamMode::Rear;
+        placed.inner_follows_seam = true;
+        assert_eq!(
+            wall_starts(&placed),
+            vec![(PathKind::Outer, [10.0, 10.0]), (PathKind::Inner, [1.0, 6.0])]
+        );
+        placed.inner_follows_seam = false;
+        assert_eq!(
+            wall_starts(&placed),
+            vec![(PathKind::Outer, [10.0, 10.0]), (PathKind::Inner, [7.0, 1.0])],
+            "without an explicit seam the inner wall starts near the nozzle"
         );
     }
 

@@ -33,6 +33,9 @@ pub struct ObjectSpec {
 /// Who may set a request key.
 enum Scope {
     Object,
+    /// A plate setting the plate leaves out at its default, so the plate's
+    /// own keys cannot name it.
+    Plate,
     NotYet,
 }
 
@@ -55,6 +58,7 @@ const SETTING_SCOPES: &[(&str, Scope)] = &[
     ("gyroid3d", Scope::Object),
     ("infillCombine", Scope::Object),
     ("variableWidth", Scope::Object),
+    ("seam", Scope::Plate),
     ("infill", Scope::NotYet),
     ("walls", Scope::NotYet),
     ("speed", Scope::NotYet),
@@ -133,6 +137,9 @@ pub(crate) fn object_requests(req: &SliceRequest) -> Result<Vec<SliceRequest>, S
             for (key, value) in &spec.settings {
                 match SETTING_SCOPES.iter().find(|(k, _)| k == key) {
                     Some((_, Scope::Object)) => merged[key] = value.clone(),
+                    Some((_, Scope::Plate)) => {
+                        return Err(format!("objects[{i}].settings.{key} is a plate setting"))
+                    }
                     Some((_, Scope::NotYet)) => {
                         return Err(format!("objects[{i}].settings.{key} is not supported yet"))
                     }

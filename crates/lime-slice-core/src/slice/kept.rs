@@ -368,6 +368,7 @@ pub(super) fn keys(
         ..order.clone()
     };
     let contours = SliceSettings {
+        seam: blank.seam,
         variable_width: blank.variable_width,
         overhang_control: blank.overhang_control,
         classic: blank.classic,
@@ -393,6 +394,8 @@ pub(super) fn keys(
         tip_diameter: settings.tip_diameter,
         trunk_diameter: settings.trunk_diameter,
         support_height_mult: settings.support_height_mult,
+        // Support paths are never loops, so where a loop starts never reaches them.
+        seam: blank.seam,
         ..toolpaths.clone()
     };
     let key = |s: &SliceSettings, blend: Option<&BlendMode>| -> [u8; 32] {
