@@ -71,6 +71,9 @@ const older = parseSettingsProfile(JSON.stringify({ version: 1, name: "Older", s
 check("a profile from before the seam picker reads blend", older.ok && older.profile.settings.seam === "blend");
 const olderLibrary = parseLibrary(JSON.stringify({ version: 1, activeId: "o", profiles: [{ id: "o", name: "Older", settings: beforeSeam, level: "expert" }] }));
 check("a stored profile from before the seam picker stays", olderLibrary.profiles.length === 1 && olderLibrary.activeId === "o" && olderLibrary.profiles[0]?.settings.seam === "blend");
+const { ironing: _ironing, ironingFlow: _flow, ironingSpeed: _speed, ironingSpacing: _spacing, ...beforeIron } = DEFAULT_PRESET;
+const olderIron = parseSettingsProfile(JSON.stringify({ version: 1, name: "Before iron", settings: beforeIron, level: "advanced" }));
+check("a profile from before ironing stays off", olderIron.ok && olderIron.profile.settings.ironing === false && olderIron.profile.settings.ironingFlow === 0.1 && olderIron.profile.settings.ironingSpeed === 20 && olderIron.profile.settings.ironingSpacing === 0.1);
 
 const badJson = parseSettingsProfile("{");
 check("bad json is refused", !badJson.ok && badJson.message === "This file is not a Lime Slice settings profile.");
