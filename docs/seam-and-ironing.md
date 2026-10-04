@@ -1,6 +1,6 @@
 # Seam placement and ironing
 
-The UI does not ship a rear / nearest / aligned picker yet. `SliceRequest` has no field for seam placement, and adding one is engine work in `crates/`. Ironing is not implemented. This note is the plan for Claude to review before that work.
+The seam picker has shipped. See [Shipped](#shipped-2026-10-04) at the end. Ironing is not implemented. The sections before Shipped are the plan as it was reviewed, and they describe the engine before the picker.
 
 The 2026-10-03 roadmap decision stands: a rear, nearest, and aligned picker is enough before seam painting, and ironing comes before fuzzy skin.
 
@@ -70,3 +70,34 @@ Not in the first engine change. When it is, it is a pass over the top skins of t
 7. Ironing is one optional object, `"ironing": {"flow": 0.1, "speed": 20, "spacing": 0.1}`. Every key is optional and defaults to those values. `{}` turns ironing on with the defaults. Omitted means off, and the G-code stays byte-identical. Unknown keys are refused.
 
 **Implementation order.** The seam picker comes first. Ironing comes second. Fuzzy skin comes later and separately. The engine order across the design notes is the seam picker, then height ranges and modifier volumes, then ironing, then support paint, then multi-object all-at-once, then sequential.
+
+## Shipped (2026-10-04)
+
+The seam picker landed as decided above. Ironing did not.
+
+**Request.** `seam` sits on `SliceRequest` beside `scarfSeam`. It takes `blend`, `nearest`, `aligned`, or `rear`. `blend` is the default and is left out of the serialized request, so a request without it keeps its cache key and its G-code bytes. Any other value is refused with `seam "left" is not a seam placement; send blend, nearest, aligned, or rear`. The CLI takes `--seam`. The G-code header line `; features:` ends in `; seam rear` (or the other value) only when the seam is explicit. `classic` forces `blend`.
+
+**Placement.** `nearest` and `aligned` replace the strategy's `SeamMode` on every wall it seams, with today's rules. `rear` is `SeamMode::Rear`. It takes the sharpest real corner within 1 mm of the loop's maximum Y, ties toward +X. If no corner is in that band, it takes the rear-most vertex, ties toward +X. Under an explicit seam, inner walls keep their planned start (`Seam::Fixed`, or `Seam::Corner` for `nearest`) instead of the vertex nearest the nozzle. Under `blend`, inner walls stay as they were. The scarf refusal at a sharp convex corner is unchanged.
+
+**Part frame.** The part frame applies the pose's rotation before the cut, and the X/Y offset is added only at emit. Max Y in the part frame is therefore max Y on the bed, and a move with `rear` set reuses every stage (`tests/part_frame.rs`).
+
+**Plates.** `seam` is a plate setting, because decision 2 of [multi-object-and-support-painting.md](multi-object-and-support-painting.md) does not list it per object. A plate request passes it to every object. `objects[i].settings.seam` is refused as a plate setting.
+
+**Kept stages.** `seam` is in the toolpaths key. It is blanked in the contours key and in the painted-supports key, because support paths are never loops and never read a seam. A seam change reuses `contours`, `supports`, and `supportPaths`, and plans toolpaths, order, and comb again.
+
+**UI.** One select, Seam position, sits beside Scarf seam in Strength at the advanced level. Its options are Blend (strategy), Nearest, Aligned, and Rear. Blend is left out of the slice body. Presets, settings profiles, and project files store `seam`. A profile or project file written before `seam` existed opens at Blend, through `readPresetSettings` in `src/presets.ts`.
+
+**Measured cost.** These times were measured through `serve --cache-dir` on this laptop, client side, with a speed blend, tree supports, the G-code parked, and a 450 mm bed. Each change sends `previewBase`. There were two runs with a fresh server each time.
+
+| Mesh | Cold | Seam change (rear, aligned, nearest) | Back to a stored seam |
+| --- | --- | --- | --- |
+| Baby Dragon | 3.95 to 3.98 s | 2.47 to 2.64 s, 133 changed layers | 0.34 to 0.45 s, disk hit |
+| Rear cover | 4.85 to 5.07 s | 3.15 to 3.52 s, 208 changed layers | 0.79 to 0.87 s, disk hit |
+
+With `rear`, every closed outer loop starts within 1 mm of its back: 4825 of 4825 on the Baby Dragon and 1089 of 1089 on the rear cover. Under `blend`, the counts are 1604 of 4825 and 352 of 1089. Overhang control splits some outer walls into open pieces at the overhang's edge. Those pieces start at the split, as they do under `aligned`.
+
+**Ironing still needs** the following:
+
+- The request object `ironing` with optional `flow`, `speed`, and `spacing`. Unknown keys are refused, and an omitted object stays byte-identical.
+- A pass over the part's top skins, after the top skin is planned. Use 10% flow, 20 mm/s, 0.1 mm spacing, and an inset of half a line width from the outer wall.
+- A place in the toolpaths key, a UI control, and a golden run that shows the omitted request is unchanged.
