@@ -89,6 +89,24 @@ pub enum SeamMode {
     Nearest,
     /// Stack the seam on the +X side.
     Aligned,
+    /// Stack the seam at the back of the bed, +Y.
+    Rear,
+}
+
+/// Where the request places each wall's seam.
+///
+/// `Blend` keeps the strategy's `SeamMode`. Toughness (and a weight mix at or
+/// above 50%) aligns, speed starts near the nozzle, and inner walls start
+/// near the nozzle either way. The others replace the mode on every wall the
+/// strategy seams, and inner walls follow the outer wall.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", try_from = "String")]
+pub enum SeamPlacement {
+    #[default]
+    Blend,
+    Nearest,
+    Aligned,
+    Rear,
 }
 
 /// Where a scarf joint replaces a butt seam.
@@ -182,6 +200,51 @@ impl Gyroid3d {
     }
 }
 
+impl SeamPlacement {
+    pub fn parse(name: &str) -> Result<Self, String> {
+        match name {
+            "blend" => Ok(SeamPlacement::Blend),
+            "nearest" => Ok(SeamPlacement::Nearest),
+            "aligned" => Ok(SeamPlacement::Aligned),
+            "rear" => Ok(SeamPlacement::Rear),
+            other => Err(format!(
+                "seam \"{other}\" is not a seam placement; send blend, nearest, aligned, or rear"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SeamPlacement::Blend => "blend",
+            SeamPlacement::Nearest => "nearest",
+            SeamPlacement::Aligned => "aligned",
+            SeamPlacement::Rear => "rear",
+        }
+    }
+
+    pub fn is_blend(&self) -> bool {
+        *self == SeamPlacement::Blend
+    }
+
+    /// The mode that replaces the strategy's, or `None` to keep it.
+    pub fn mode(self) -> Option<SeamMode> {
+        match self {
+            SeamPlacement::Blend => None,
+            SeamPlacement::Nearest => Some(SeamMode::Nearest),
+            SeamPlacement::Aligned => Some(SeamMode::Aligned),
+            SeamPlacement::Rear => Some(SeamMode::Rear),
+        }
+    }
+}
+
+impl TryFrom<String> for SeamPlacement {
+    type Error = String;
+
+    fn try_from(name: String) -> Result<Self, String> {
+        SeamPlacement::parse(&name)
+    }
+}
+
 impl ScarfSeam {
     pub fn parse(name: &str) -> Result<Self, String> {
         match name.trim().to_ascii_lowercase().as_str() {
@@ -215,6 +278,9 @@ pub struct ResolvedStrategy {
     pub travel_speed: f64,
     pub accel: f64,
     pub seam: SeamMode,
+    /// Inner walls start as the outer wall does. Set by an explicit `seam`;
+    /// otherwise they start near the nozzle.
+    pub inner_follows_seam: bool,
     pub retract_mm: f64,
     pub retract_min_travel: f64,
     pub fan: u8,
@@ -266,6 +332,7 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             travel_speed: 300.0,
             accel: 3500.0,
             seam: SeamMode::Nearest,
+            inner_follows_seam: false,
             retract_mm: 0.35,
             retract_min_travel: 4.0,
             fan: 255,
@@ -302,6 +369,7 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             travel_speed: 140.0,
             accel: 800.0,
             seam: SeamMode::Aligned,
+            inner_follows_seam: false,
             retract_mm: 0.9,
             retract_min_travel: 1.2,
             fan: 150,
@@ -366,6 +434,7 @@ pub fn mix(toughness: f64) -> ResolvedStrategy {
         } else {
             SeamMode::Nearest
         },
+        inner_follows_seam: false,
         retract_mm: lerp(speed.retract_mm, tough.retract_mm),
         retract_min_travel: lerp(speed.retract_min_travel, tough.retract_min_travel),
         fan: lerp(speed.fan as f64, tough.fan as f64).round() as u8,

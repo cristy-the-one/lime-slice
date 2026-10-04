@@ -27,6 +27,7 @@ const FIELD_KEYS: Record<string, keyof PresetSettings> = {
   zhopmin: "zHopMinTravel",
   vwidth: "variableWidth",
   travelopt: "travelOpt",
+  seam: "seam",
   scarf: "scarfSeam",
   scarflen: "scarfLength",
   scarfsteps: "scarfSteps",

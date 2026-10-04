@@ -30,7 +30,8 @@ use crate::poly::{
 use crate::progress::{Stage, Status, Watch};
 use crate::strategy::{
     classicize, layer_weight, mix, pure, support_density, support_interface_density, support_speed,
-    Axis, BlendMode, Gyroid3d, PrinterProfile, ResolvedStrategy, ScarfSeam, StrategyId, ZHopMode,
+    Axis, BlendMode, Gyroid3d, PrinterProfile, ResolvedStrategy, ScarfSeam, SeamPlacement,
+    StrategyId, ZHopMode,
 };
 use crate::support::edit::{EditOutcome, SupportEdit};
 use crate::support::skeleton::{skeleton, SupportSkeleton};
@@ -120,6 +121,10 @@ pub struct SliceRequest {
     /// Per-feature speeds and accels. Default on.
     #[serde(default = "default_true")]
     pub feature_speeds: bool,
+    /// Where each wall starts. `blend` follows the strategy, or `nearest`,
+    /// `aligned`, or `rear`. Left out at `blend`, so the request's key holds.
+    #[serde(default, skip_serializing_if = "SeamPlacement::is_blend")]
+    pub seam: SeamPlacement,
     /// `blend` follows the strategy, or `off` / `outer` / `all`.
     #[serde(default)]
     pub scarf_seam: ScarfSeam,
@@ -249,6 +254,7 @@ pub struct SliceSettings {
     pub infill_combine: bool,
     pub combing: bool,
     pub feature_speeds: bool,
+    pub seam: SeamPlacement,
     pub scarf_seam: ScarfSeam,
     pub scarf_length: f64,
     pub scarf_steps: u32,
@@ -306,6 +312,7 @@ impl Default for SliceSettings {
             infill_combine: true,
             combing: true,
             feature_speeds: true,
+            seam: SeamPlacement::Blend,
             scarf_seam: ScarfSeam::Blend,
             scarf_length: default_scarf_length(),
             scarf_steps: default_scarf_steps(),
@@ -392,6 +399,7 @@ impl SliceSettings {
             infill_combine: req.infill_combine && !req.classic,
             combing: req.combing && !req.classic,
             feature_speeds: req.feature_speeds && !req.classic,
+            seam: req.seam,
             scarf_seam: if req.classic {
                 ScarfSeam::Off
             } else {
@@ -507,7 +515,11 @@ impl SliceSettings {
             self.z_hop_height,
             self.z_hop_min_travel
         );
-        format!("{layers}; {supports}; {combine}; {scarf}; {gyroid}; {hop}")
+        let seam = match self.seam {
+            SeamPlacement::Blend => String::new(),
+            placed => format!("; seam {}", placed.as_str()),
+        };
+        format!("{layers}; {supports}; {combine}; {scarf}; {gyroid}; {hop}{seam}")
     }
 }
 
@@ -985,6 +997,7 @@ fn resolved(settings: &SliceSettings) -> SliceSettings {
         settings.infill_combine = false;
         settings.combing = false;
         settings.feature_speeds = false;
+        settings.seam = SeamPlacement::Blend;
         settings.scarf_seam = ScarfSeam::Off;
         settings.gyroid_3d = Gyroid3d::Off;
         settings.z_hop = ZHopMode::Off;
@@ -3743,6 +3756,10 @@ fn resolve(mut strategy: ResolvedStrategy, settings: &SliceSettings) -> Resolved
     }
     if !settings.infill_combine {
         strategy.infill_combine = 1;
+    }
+    if let Some(mode) = settings.seam.mode() {
+        strategy.seam = mode;
+        strategy.inner_follows_seam = true;
     }
     if !settings.classic {
         match settings.gyroid_3d {

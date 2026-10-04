@@ -8,7 +8,7 @@
  */
 import type { PrinterProfile } from "./profiles.ts";
 import type { PresetSettings } from "./presets.ts";
-import { DEFAULT_PRESET, presetKeys } from "./presets.ts";
+import { readPresetSettings } from "./presets.ts";
 import { fnv1aHex } from "./slice-action.ts";
 import { parseOverrides, type OverrideDocument } from "./overrides.ts";
 import { plateFileIsVersion2, readPlateSettings, settingsEmpty, type PlateFileObject } from "./plate.ts";
@@ -342,16 +342,7 @@ function readPlacement(value: unknown): ProjectPlacement | string {
 }
 
 function readSettings(value: unknown): PresetSettings | string {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return "This project file is incomplete.";
-  const row = value as Record<string, unknown>;
-  const out = { ...DEFAULT_PRESET };
-  for (const key of presetKeys()) {
-    const sample = DEFAULT_PRESET[key];
-    const got = row[key];
-    if (typeof got !== typeof sample) return "This project file is incomplete.";
-    (out as unknown as Record<string, unknown>)[key] = got;
-  }
-  return out;
+  return readPresetSettings(value) ?? "This project file is incomplete.";
 }
 
 const PROFILE_NUMBERS = [

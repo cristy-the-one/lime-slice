@@ -60,6 +60,15 @@ const opened = parseProject(text);
 check("round trip opens", opened.ok);
 if (opened.ok) eq("round trip keeps the project", opened.project, project);
 
+const beforeSeam = JSON.parse(serializeProject({ ...project, settings: { ...project.settings, seam: "rear" } })) as { settings: Record<string, unknown> };
+const rearOpened = parseProject(JSON.stringify(beforeSeam));
+check("a rear seam is stored and opened", rearOpened.ok && rearOpened.project.settings.seam === "rear");
+delete beforeSeam.settings.seam;
+const olderOpened = parseProject(JSON.stringify(beforeSeam));
+check("a file from before the seam picker opens at blend", olderOpened.ok && olderOpened.project.settings.seam === "blend");
+delete beforeSeam.settings.scarfSeam;
+eq("a file without its scarf seam is incomplete", parseProject(JSON.stringify(beforeSeam)), { ok: false, message: "This project file is incomplete." });
+
 const wire = JSON.parse(text) as { supportEdits: { edit: Record<string, unknown> }[] };
 eq("a prune stores sites, not a walk id", wire.supportEdits[0].edit, {
   kind: "prune",

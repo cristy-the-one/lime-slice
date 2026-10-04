@@ -4,7 +4,7 @@
  * into version `n + 1`.
  */
 import type { SettingsLevel } from "../project.ts";
-import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../presets.ts";
+import { readPresetSettings, type PresetSettings } from "../presets.ts";
 
 export const SETTINGS_PROFILE_VERSION = 1;
 
@@ -224,16 +224,7 @@ function readNamed(value: unknown): NamedSettingsProfile | null {
 }
 
 function readPreset(value: unknown): PresetSettings | string {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return "This settings profile is incomplete.";
-  const row = value as Record<string, unknown>;
-  const out = { ...DEFAULT_PRESET };
-  for (const key of presetKeys()) {
-    const sample = DEFAULT_PRESET[key];
-    const got = row[key];
-    if (typeof got !== typeof sample) return "This settings profile is incomplete.";
-    (out as unknown as Record<string, unknown>)[key] = got;
-  }
-  return out;
+  return readPresetSettings(value) ?? "This settings profile is incomplete.";
 }
 
 function isLevel(value: unknown): value is SettingsLevel {

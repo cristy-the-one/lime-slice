@@ -9,7 +9,7 @@ mod jobs;
 
 use lime_slice_core::{
     pareto_estimates, slice_request, Axis, BlendMode, GcodeText, Gyroid3d, Mesh, RigidPose,
-    ScarfSeam, SliceRequest, SliceSettings, StrategyId, ZHopMode,
+    ScarfSeam, SeamPlacement, SliceRequest, SliceSettings, StrategyId, ZHopMode,
 };
 
 #[derive(Parser)]
@@ -105,6 +105,10 @@ enum Cmd {
         /// Per-feature speeds and accelerations.
         #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
         feature_speeds: bool,
+        /// Where each wall starts. `blend` (strategy default), `nearest`,
+        /// `aligned`, or `rear`.
+        #[arg(long, default_value = "blend")]
+        seam: String,
         /// Scarf joints: `blend` (strategy default), `off`, `outer`, or `all`.
         #[arg(long, default_value = "blend")]
         scarf_seam: String,
@@ -254,6 +258,7 @@ fn run() -> Result<(), String> {
             infill_combine,
             combing,
             feature_speeds,
+            seam,
             scarf_seam,
             scarf_length,
             scarf_steps,
@@ -273,6 +278,7 @@ fn run() -> Result<(), String> {
             support_edits,
             output,
         } => {
+            let seam = SeamPlacement::parse(&seam)?;
             let scarf_seam = ScarfSeam::parse(&scarf_seam)?;
             let gyroid_3d = Gyroid3d::parse(&gyroid_3d)?;
             let z_hop = ZHopMode::parse(&z_hop)?;
@@ -314,6 +320,7 @@ fn run() -> Result<(), String> {
                 infill_combine,
                 combing,
                 feature_speeds,
+                seam,
                 scarf_seam,
                 scarf_length,
                 scarf_steps,
@@ -1378,6 +1385,7 @@ fn request_for(
         infill_combine: settings.infill_combine,
         combing: settings.combing,
         feature_speeds: settings.feature_speeds,
+        seam: settings.seam,
         scarf_seam: settings.scarf_seam,
         scarf_length: settings.scarf_length,
         scarf_steps: settings.scarf_steps,
