@@ -790,7 +790,14 @@ impl<'a> Walk<'a> {
                 )
             };
             let seeds = if cleared.is_empty() { born } else { &cleared };
-            for (p, load, to_bed) in sample_tips(seeds, &self.pitch, &land(self.iface_n)) {
+            let tips = sample_tips(
+                seeds,
+                &self.nodes,
+                self.tip_r,
+                &self.pitch,
+                &land(self.iface_n),
+            );
+            for (p, load, to_bed) in tips {
                 self.nodes.push(Node {
                     id: self.next_id,
                     xy: p,
@@ -1830,10 +1837,24 @@ fn tip_radius(opts: &SupportOpts) -> f64 {
 /// so the interface bridges to that neighbour instead of growing a parallel trunk.
 /// Tips that can lean onto the model and tips that have to reach the bed pack
 /// separately: swallowing the second into the first deletes the bed trunk.
-fn sample_tips(region: &[Loop], pitch: &Pitch, land: &Land<'_>) -> Vec<([f64; 2], f64, bool)> {
-    let mut pts = Vec::new();
+/// A piece one tip carries gets none when the disk of a `standing` node or
+/// of a tip born here already foots it.
+fn sample_tips(
+    region: &[Loop],
+    standing: &[Node],
+    tip_r: f64,
+    pitch: &Pitch,
+    land: &Land<'_>,
+) -> Vec<([f64; 2], f64, bool)> {
+    let mut pts: Vec<([f64; 2], f64, bool)> = Vec::new();
     for comp in components(region) {
         let mut hit = sample_component(&comp, pitch.fine);
+        if hit.len() <= 1 {
+            let born = pts.iter().map(|t| (t.0, tip_r));
+            if foots(&comp, standing.iter().map(|n| (n.xy, n.radius)).chain(born)) {
+                continue;
+            }
+        }
         if hit.is_empty() {
             if let Some(p) = point_inside(&comp) {
                 hit.push(p);
@@ -1995,9 +2016,26 @@ fn tip_covers(comp: &[Loop], xy: [f64; 2], reach: f64) -> bool {
     in_solid(comp, xy[0], xy[1]) || distance_to_outline(comp, xy) <= reach
 }
 
-/// Give every interface component a tip. `freeze` is 1 so the disk prints on
-/// the next layer, directly under this patch, instead of after the whole
-/// interface stack.
+/// True when one of the `disks` (centre, radius) foots `comp` as
+/// `branch_foots` tests it.
+fn foots(comp: &[Loop], mut disks: impl Iterator<Item = ([f64; 2], f64)>) -> bool {
+    let Some((min, max)) = loop_bounds(comp) else {
+        return false;
+    };
+    disks.any(|(p, r)| {
+        let reach = r + INTERFACE_FOOT_MM;
+        p[0] >= min[0] - reach
+            && p[0] <= max[0] + reach
+            && p[1] >= min[1] - reach
+            && p[1] <= max[1] + reach
+            && tip_covers(comp, p, reach)
+    })
+}
+
+/// Give every interface component no node covers a tip. A piece one tip
+/// carries needs none when a node's disk already foots it.
+/// `freeze` is 1 so the disk prints on the next layer, directly under this
+/// patch, instead of after the whole interface stack.
 fn seed_uncovered_interface(
     region: &[Loop],
     nodes: &mut Vec<Node>,
@@ -2014,6 +2052,9 @@ fn seed_uncovered_interface(
             continue;
         }
         let mut seeds = sample_component(&comp, pitch.fine);
+        if seeds.len() <= 1 && foots(&comp, nodes.iter().map(|n| (n.xy, n.radius))) {
+            continue;
+        }
         if seeds.is_empty() {
             if let Some(p) = point_inside(&comp) {
                 seeds.push(p);
