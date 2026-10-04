@@ -87,7 +87,7 @@ test("a settings profile keeps the seam position", async ({ page }) => {
   await expect(page.locator("label.setting", { has: page.locator("#lh") })).toBeHidden();
 });
 
-test("ironing is stored, left out of the slice, and undone", async ({ page }) => {
+test("ironing is sent only while on, without a toast, and undone", async ({ page }) => {
   await quiet(page);
   const bodies = await captureSlices(page);
   await page.goto("/");
@@ -133,7 +133,6 @@ test("ironing is stored, left out of the slice, and undone", async ({ page }) =>
   expect(bodies[4]).not.toHaveProperty("ironing");
 
   await page.locator("#ironing").check();
-  await expect(page.locator("#toasts").getByRole("status").filter({ hasText: "Ironing is stored but not yet sliced." })).toBeVisible();
   await expect(page.locator("#ironflow")).toHaveValue("10");
   await expect(page.locator("#ironspeed")).toHaveValue("20");
   await expect(page.locator("#ironspace")).toHaveValue("0.1");
@@ -150,8 +149,8 @@ test("ironing is stored, left out of the slice, and undone", async ({ page }) =>
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(6);
   expect(bodies[5]).not.toHaveProperty("seam");
-  expect(bodies[5]).not.toHaveProperty("ironing");
-  await expect(page.locator("#toasts").getByRole("status").filter({ hasText: "Ironing is stored but not yet sliced." }).first()).toBeVisible();
+  expect(bodies[5]).toHaveProperty("ironing", { flow: 0.15, speed: 30, spacing: 0.2 });
+  await expect(page.locator("#toasts").getByRole("status").filter({ hasText: /ironing/i })).toHaveCount(0);
 
   await page.locator("#undoEdit").click();
   await expect(page.locator("#ironspace")).toHaveValue("0.1");
@@ -161,6 +160,9 @@ test("ironing is stored, left out of the slice, and undone", async ({ page }) =>
   await page.locator("#undoEdit").click();
   await expect(page.locator("#ironflow")).toHaveValue("10");
   await expect(page.locator("#ironing")).toBeChecked();
+  await page.locator("#slice").click();
+  await expect.poll(() => bodies.length).toBe(7);
+  expect(bodies[6]).toHaveProperty("ironing", {});
   await page.locator("#undoEdit").click();
   await expect(page.locator("#ironing")).not.toBeChecked();
 });
