@@ -4,6 +4,7 @@ import {
   createElement,
   Download,
   FolderOpen,
+  Printer,
   Layers,
   Move3d,
   RefreshCw,
@@ -70,6 +71,8 @@ function iconizeToolbar() {
 
   iconize(document.querySelector("#export"), Download);
   hint(document.querySelector("#export"), "Save G-code", "Ctrl+E");
+
+  iconize(document.querySelector("#sendPrinter"), Printer);
 
   iconize(document.querySelector("#force"), RefreshCw);
 }

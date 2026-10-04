@@ -35,6 +35,7 @@ export function mountMarkup(root: HTMLElement) {
         <button class="btn primary" id="slice" type="button" data-slice-action="none">Slice</button>
         <button class="btn" id="cancel" type="button" disabled>Cancel</button>
         <button class="btn" id="export" type="button" disabled>Export G-code</button>
+        <button class="btn" id="sendPrinter" type="button" disabled title="Slice first, and add a Prusa Link host on this printer.">Send to printer</button>
         <button class="btn" id="force" type="button" disabled title="Plan this recipe again. Available when a saved slice would be shown.">Force re-slice</button>
       </div>
     </header>

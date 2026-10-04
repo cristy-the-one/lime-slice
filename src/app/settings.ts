@@ -15,9 +15,7 @@ import { loadProfile, type PrinterProfile, saveProfile } from "../profiles";
 import { noteAdvance, noteGcode, noteNozzle } from "./machine-actions";
 import { loadMachineLibrary } from "./machine-library";
 import { machineSectionHtml } from "../ui/machine-library";
-import { loadPrusaLink } from "./prusa-link";
-import { prusaSummary, rememberPrusaForm } from "./prusa-actions";
-import { prusaFieldsHtml } from "../ui/prusa-link";
+import { prusaSummary, rememberPrusaForm, syncSendButtons } from "./prusa-actions";
 import { canRedoEdit, canUndoEdit, noteEdit } from "./history";
 import { loadProfileLibrary } from "./profile-library";
 import { SETTING_KEYWORDS, settingMatches } from "../ui/settings-search";
@@ -192,6 +190,7 @@ export function renderChrome() {
   sliceBtn.disabled = state.busy || !state.mesh;
   (document.querySelector("#cancel") as HTMLButtonElement).disabled = !state.busy;
   (document.querySelector("#export") as HTMLButtonElement).disabled = !result || isStale || state.busy;
+  syncSendButtons();
   document.querySelector("#timing")!.textContent = timingText();
   const warn = staleWarning();
   document.querySelector("#stage")!.classList.toggle("stale", warn);
@@ -593,7 +592,7 @@ export function objectList() {
 export function profileFields() {
   const p = state.profile;
   return `
-    ${machineSectionHtml(loadMachineLibrary(), { pressureAdvance: state.pressureAdvance, nozzleTemp: p.nozzleTemp, bedTemp: p.bedTemp })}
+    ${machineSectionHtml(loadMachineLibrary(), { pressureAdvance: state.pressureAdvance, nozzleTemp: p.nozzleTemp, bedTemp: p.bedTemp }, prusaSummary())}
     ${num("nozzle", "Nozzle mm", p.nozzleDiameter, 0.15, 1.2, 0.05, "simple")}
     ${num("bedx", "Bed X mm", p.bedX, 50, 1000, 1, "simple")}
     ${num("bedy", "Bed Y mm", p.bedY, 50, 1000, 1, "simple")}
@@ -606,7 +605,6 @@ export function profileFields() {
       <button class="btn" id="profileExport" type="button">Export JSON</button>
       <label class="btn file">Import JSON<input id="profileImport" type="file" accept="application/json,.json" /></label>
     </div>
-    ${prusaFieldsHtml(loadPrusaLink(), prusaSummary())}
   `;
 }
 
@@ -881,14 +879,14 @@ export function onSettings(ev: Event) {
     noteGcode(start, end);
     return;
   }
+  if (t.id === "machineHost" || t.id === "machineKey" || t.id === "machineStartPrint") {
+    rememberPrusaForm();
+    return;
+  }
   if (t.id === "machinePa") {
     noteAdvance(Number(t.value) || 0, state.linearAdvance);
     markProjectDirty();
     markStale();
-    return;
-  }
-  if (t.id === "prusaUrl" || t.id === "prusaKey" || t.id === "prusaStart") {
-    rememberPrusaForm();
     return;
   }
   if (t.closest("[data-override-card]")) return;
@@ -1014,6 +1012,7 @@ export function markStale() {
   if (sliceBtn) fx.paintSliceButton(sliceBtn);
   if (forceBtn) fx.paintForceButton(forceBtn);
   if (exp) exp.disabled = !state.result || isStale || state.busy;
+  syncSendButtons();
   const warn = staleWarning();
   document.querySelector("#stage")?.classList.toggle("stale", warn);
   paintBanner(warn);

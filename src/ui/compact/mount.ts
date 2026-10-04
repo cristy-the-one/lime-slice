@@ -1,4 +1,5 @@
 import { Box, createElement, Layers, MoreHorizontal, Printer, Search, SlidersHorizontal, type IconNode } from "lucide";
+import { syncSendButtons, uploadToPrusaLink } from "../../app/prusa-actions";
 import { saveCurrentProject } from "../../app/project-io";
 import { engineMode, pickModelFile, pickProjectFile, saveGcode, saveLayoutChoice, type LayoutChoice } from "../../platform";
 import { haptic } from "../haptics";
@@ -291,7 +292,7 @@ function devicePage() {
     <h3>Printer</h3>
     <div class="compact-row"><div><b>Profile</b><div id="compactBed">Bed</div></div><button type="button" id="compactEditPrinter">Edit</button></div>
     <h3>Output</h3>
-    <div class="compact-row"><div><b>Last G-code</b><div id="compactGcode">Slice to export</div></div><button type="button" id="compactShare">Share</button></div>
+    <div class="compact-row"><div><b>Last G-code</b><div id="compactGcode">Slice to export</div></div><div class="compact-row-actions"><button type="button" id="compactShare">Share</button><button type="button" id="compactSend" disabled title="Slice first, and add a Prusa Link host on this printer." aria-label="Send to printer">Send</button></div></div>
     <p class="compact-note">Local-network access must be allowed for a later iOS build. The engine is reachable over LAN or Tailscale from the browser today.</p>
     <label class="field">Interface layout
       <select id="layoutChoiceCompact" aria-label="Interface layout">
@@ -303,6 +304,7 @@ function devicePage() {
   `;
   page.querySelector("#compactEditPrinter")?.addEventListener("click", () => selectTab("settings"));
   page.querySelector("#compactShare")?.addEventListener("click", () => void saveGcode());
+  page.querySelector("#compactSend")?.addEventListener("click", () => void uploadToPrusaLink());
   const select = page.querySelector<HTMLSelectElement>("#layoutChoiceCompact");
   select?.addEventListener("change", () => {
     saveLayoutChoice((select.value as LayoutChoice) || "auto");
@@ -493,6 +495,7 @@ function refresh() {
   const exportButton = document.querySelector<HTMLButtonElement>("#export");
   const gcode = document.querySelector("#compactGcode");
   if (gcode) gcode.textContent = exportButton && !exportButton.disabled ? "Ready to share" : "Slice to export";
+  syncSendButtons();
   const high = document.querySelector<HTMLInputElement>("#rangeHigh");
   const z = document.querySelector("#readHigh")?.textContent ?? "";
   const tip = document.querySelector("#compactLayerTip");

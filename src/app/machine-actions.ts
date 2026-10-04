@@ -21,11 +21,13 @@ import {
   selectIn,
   selection,
   serializeMachineFile,
+  adoptLegacyLink,
   setAdvance,
   setGcode,
   type MachineLibrary,
   type MachineNumbers,
 } from "../ui/machine-library.ts";
+import { LEGACY_PRUSA_LINK_KEY, parseLegacyPrusaLink } from "../ui/prusa-link.ts";
 
 export function newMachineId(): string {
   return crypto.randomUUID();
@@ -40,6 +42,7 @@ export function bootMachines() {
       library = adoptProfile(library, { ...state.profile, pressureAdvance: state.pressureAdvance, linearAdvance: state.linearAdvance }, "saved-printer", "saved-filament");
     }
   }
+  library = adoptLegacyLink(library, takeLegacyPrusa());
   storeMachineLibrary(library);
   writeState(library);
 }
@@ -178,8 +181,12 @@ function writeState(library: MachineLibrary) {
 }
 
 function currentNumbers(): MachineNumbers {
-  const startGcode = document.querySelector<HTMLTextAreaElement>("#machineStart")?.value ?? selection(loadMachineLibrary())?.printer.startGcode ?? "";
-  const endGcode = document.querySelector<HTMLTextAreaElement>("#machineEnd")?.value ?? selection(loadMachineLibrary())?.printer.endGcode ?? "";
+  const picked = selection(loadMachineLibrary())?.printer;
+  const startGcode = document.querySelector<HTMLTextAreaElement>("#machineStart")?.value ?? picked?.startGcode ?? "";
+  const endGcode = document.querySelector<HTMLTextAreaElement>("#machineEnd")?.value ?? picked?.endGcode ?? "";
+  const hostField = document.querySelector<HTMLInputElement>("#machineHost");
+  const keyField = document.querySelector<HTMLInputElement>("#machineKey");
+  const startField = document.querySelector<HTMLInputElement>("#machineStartPrint");
   return {
     nozzleDiameter: state.profile.nozzleDiameter,
     filamentDiameter: state.profile.filamentDiameter,
@@ -196,7 +203,20 @@ function currentNumbers(): MachineNumbers {
     linearAdvance: state.linearAdvance,
     startGcode,
     endGcode,
+    host: hostField?.value.trim() ?? picked?.host ?? "",
+    apiKey: keyField?.value ?? picked?.apiKey ?? "",
+    startPrint: startField ? startField.checked : picked?.startPrint === true,
   };
+}
+
+function takeLegacyPrusa(): { url: string; apiKey: string; startPrint: boolean } | null {
+  try {
+    const text = localStorage.getItem(LEGACY_PRUSA_LINK_KEY);
+    if (text !== null) localStorage.removeItem(LEGACY_PRUSA_LINK_KEY);
+    return parseLegacyPrusaLink(text);
+  } catch {
+    return null;
+  }
 }
 
 function syncAdvanceInputs(pressure: number, linear: number) {

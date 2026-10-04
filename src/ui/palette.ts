@@ -286,6 +286,16 @@ export function runCommand(id: string) {
     case "export":
       click("#export");
       return;
+    case "send-printer": {
+      const button = document.querySelector<HTMLButtonElement>("#sendPrinter");
+      if (!button) return;
+      if (button.disabled) {
+        pushToast(button.title || "Slice first, then send.", "info");
+        return;
+      }
+      button.click();
+      return;
+    }
     case "tab-prepare":
       click("#tabPrepare");
       return;
