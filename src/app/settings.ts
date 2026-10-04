@@ -23,7 +23,7 @@ import { loadProfileLibrary } from "./profile-library";
 import { SETTING_KEYWORDS, settingMatches } from "../ui/settings-search";
 import { displayId } from "../ui/settings-profiles";
 import { overrideSectionHtml } from "../ui/overrides-panel";
-import { ironingFlowPercent, ironingRequest, readIroningFlowPercent, readIroningSpacing, readIroningSpeed } from "../ironing";
+import { ironingFlowPercent, ironingRequest, ironingSpacingMax, readIroningFlowPercent, readIroningSpacing, readIroningSpeed } from "../ironing";
 import { loadSettingsLevel } from "../ui/settings-panel";
 
 export function apiBase() {
@@ -113,7 +113,7 @@ export function renderChrome() {
       ${check("travelopt", "Travel and seam", state.travelOpt, "advanced")}
       ${select("seam", "Seam position", state.seam, [["blend", "Blend (strategy)"], ["nearest", "Nearest"], ["aligned", "Aligned"], ["rear", "Rear"]], "advanced")}
       ${check("ironing", "Ironing", state.ironing, "advanced")}
-      ${state.ironing ? `${num("ironflow", "Ironing flow %", ironingFlowPercent(state.ironingFlow), 1, 100, 1, "advanced")}${num("ironspeed", "Ironing speed mm/s", state.ironingSpeed, 1, 200, 1, "advanced")}${num("ironspace", "Ironing spacing mm", state.ironingSpacing, 0.05, 1, 0.01, "advanced")}<div class="meta">A second pass over each top surface at low flow, inset half a line from the outline. Spacing stays below the line width. Defaults are 10% flow, 20 mm/s, and 0.1 mm spacing.</div>` : ""}
+      ${state.ironing ? `${num("ironflow", "Ironing flow %", ironingFlowPercent(state.ironingFlow), 1, 100, 1, "advanced")}${num("ironspeed", "Ironing speed mm/s", state.ironingSpeed, 1, 200, 1, "advanced")}${num("ironspace", "Ironing spacing mm", state.ironingSpacing, 0.05, ironingSpacingMax(fx.lineWidth()), 0.01, "advanced")}<div class="meta">A second pass over each top surface at low flow, inset half a line from the outline. Spacing stays below the line width. Defaults are 10% flow, 20 mm/s, and 0.1 mm spacing.</div>` : ""}
       ${select("scarf", "Scarf seam", state.scarfSeam, [["blend", "Blend default"], ["off", "Off"], ["outer", "Outer walls"], ["all", "Outer and inner"]], "advanced")}
       ${state.scarfSeam === "off" ? "" : `${num("scarflen", "Scarf length mm", state.scarfLength, 1, 30, 1, "expert")}${num("scarfsteps", "Scarf steps", state.scarfSteps, 2, 32, 1, "expert")}`}
     `)}
@@ -946,7 +946,7 @@ export function onSettings(ev: Event) {
   if (t.id === "ironing") state.ironing = t.checked;
   if (t.id === "ironflow") state.ironingFlow = readIroningFlowPercent(t.value);
   if (t.id === "ironspeed") state.ironingSpeed = readIroningSpeed(t.value);
-  if (t.id === "ironspace") state.ironingSpacing = readIroningSpacing(t.value);
+  if (t.id === "ironspace") state.ironingSpacing = readIroningSpacing(t.value, ironingSpacingMax(fx.lineWidth()));
   if (t.id === "scarf") state.scarfSeam = t.value as typeof state.scarfSeam;
   if (t.id === "sstyle") state.supportStyle = t.value as typeof state.supportStyle;
   if (t.id === "pafw") state.paFirmware = t.value as typeof state.paFirmware;

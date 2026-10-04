@@ -9,7 +9,7 @@ import { blend, renderChrome, settingsHash, markBusy, paintBanner, busyText, mar
 import { editRequestFields } from "../support-edit-list";
 import { replyOffset, type SlicedBed } from "../bed-offset";
 import { sliceOverrideFields } from "../overrides";
-import { sliceIroningFields } from "../ironing";
+import { ironingSpacingMax, sliceIroningFields } from "../ironing";
 import { seamSliceField } from "../seam";
 import { plateListed, slicePlateFields, type PlateObject, type PlateRequestObject } from "../plate";
 import { engineDownMessage, authHeaders } from "../ui/api-base";
@@ -149,7 +149,7 @@ export function payload() {
     ...one,
     stepToleranceMm: state.stepTolerance,
     layerHeight: state.layerHeight,
-    lineWidth: Math.min(1.2, Math.max(0.2, state.profile.nozzleDiameter * 1.125)),
+    lineWidth: lineWidth(),
     blend: blend(),
     adaptive: state.adaptive,
     adaptiveMin: state.adaptiveMin,
@@ -172,7 +172,7 @@ export function payload() {
     // Blend is left out, so a default slice keeps its bytes and its recipe key.
     ...seamSliceField(state.seam),
     // Off is left out, so a slice that does not iron keeps its bytes and its recipe key.
-    ...sliceIroningFields({ on: state.ironing, flow: state.ironingFlow, speed: state.ironingSpeed, spacing: state.ironingSpacing }),
+    ...sliceIroningFields({ on: state.ironing, flow: state.ironingFlow, speed: state.ironingSpeed, spacing: Math.min(state.ironingSpacing, ironingSpacingMax(lineWidth())) }),
     scarfSeam: state.scarfSeam,
     scarfLength: state.scarfLength,
     scarfSteps: state.scarfSteps,
@@ -194,6 +194,10 @@ export function payload() {
 }
 
 /** The selected object prints tree supports, so its support edits travel with the slice. */
+export function lineWidth() {
+  return Math.min(1.2, Math.max(0.2, state.profile.nozzleDiameter * 1.125));
+}
+
 export function treeSupports() {
   const obj = plateListed(state.plate) ? state.plate.objects.find((o) => o.id === state.plate.selectedId) : undefined;
   return obj ? objectTree(obj) : state.supports && state.supportStyle === "tree";
@@ -563,4 +567,4 @@ export async function runPareto() {
     renderChrome();
   }
 }
-Object.assign(fx, { meshFingerprint, currentRecipeKey, currentSliceAction, setButtonLabel, paintSliceButton, paintForceButton, quietRefreshing, scheduleAuto, payload, printer, runSlice, layerNear, postSlice, parseInWorker, cancelSlice, runPaCal, applyPareto, runPareto });
+Object.assign(fx, { lineWidth, meshFingerprint, currentRecipeKey, currentSliceAction, setButtonLabel, paintSliceButton, paintForceButton, quietRefreshing, scheduleAuto, payload, printer, runSlice, layerNear, postSlice, parseInWorker, cancelSlice, runPaCal, applyPareto, runPareto });

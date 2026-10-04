@@ -6,6 +6,7 @@ import {
   ironingFlowPercent,
   ironingRequest,
   readIroningFlowPercent,
+  ironingSpacingMax,
   readIroningSpacing,
   readIroningSpeed,
   sliceIroningFields,
@@ -54,6 +55,9 @@ eq("flow percent is clamped", readIroningFlowPercent("250"), 1);
 eq("a blank flow falls back", readIroningFlowPercent(""), IRONING_FLOW);
 eq("speed is clamped", readIroningSpeed("0"), 1);
 eq("spacing is clamped", readIroningSpacing("2"), 1);
+eq("spacing stays below a 0.45 mm line", readIroningSpacing("0.5", ironingSpacingMax(0.45)), 0.44);
+eq("spacing max for a 0.45 mm line", ironingSpacingMax(0.45), 0.44);
+eq("spacing max never passes 1 mm", ironingSpacingMax(1.2), 1);
 check("the flow field shows 10", ironingFlowPercent(IRONING_FLOW) === 10);
 
 if (failed) {

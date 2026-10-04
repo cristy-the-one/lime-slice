@@ -65,10 +65,15 @@ export function readIroningSpeed(text: string): number {
   return Math.min(200, Math.max(1, speed));
 }
 
-export function readIroningSpacing(text: string): number {
+/** The engine refuses a spacing at or above the line width. */
+export function ironingSpacingMax(lineWidth: number): number {
+  return Math.min(1, Math.floor((lineWidth - 0.005) * 100) / 100);
+}
+
+export function readIroningSpacing(text: string, max = 1): number {
   const spacing = finiteOrBlank(text);
-  if (spacing === null) return IRONING_SPACING;
-  return Math.min(1, Math.max(0.05, spacing));
+  if (spacing === null) return Math.min(IRONING_SPACING, max);
+  return Math.min(max, Math.max(0.05, spacing));
 }
 
 /** Whole percent for the flow field. 0.1 is 10. */
