@@ -97,7 +97,10 @@ fn a_side_block_roof_skins_only_the_side_block() {
     let req = json!({
         "filename": "side_block.stl",
         "dataB64": stl_b64(&tris),
-        "blend": {"mode": "single", "strategy": "speed"},
+        // Toughness fills the inside the full height, so its sparse shows
+        // the cube's inside is interior. Speed's lightning would print
+        // only what some skin needs.
+        "blend": {"mode": "single", "strategy": "toughness"},
         "includeGcode": true,
         "includePreview": false,
         "baseline": false,
@@ -108,7 +111,7 @@ fn a_side_block_roof_skins_only_the_side_block() {
     .unwrap();
     let layers = lengths_by_layer(reply["gcode"].as_str().unwrap());
     let get = |by: &HashMap<String, f64>, k: &str| by.get(k).copied().unwrap_or(0.0);
-    // The side block's top skin runs from its roof at Z 10 down 0.6 mm.
+    // The side block's top skin runs from its roof at Z 10 down 1 mm.
     let under_roof: Vec<_> = layers
         .iter()
         .filter(|(z, _)| *z > 9.45 && *z < 10.05)

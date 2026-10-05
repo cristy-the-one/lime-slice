@@ -1,14 +1,15 @@
 //! Lightning infill as trees that stand on the walls.
 //!
 //! On every layer a tree joins the nodes of a grid fixed to the bed to the
-//! walls around the layer's interior: each node leans on the nearest node
-//! that is closer to a wall. A node under top skin prints its whole chain
+//! walls around the layer's interior: each node leans on its neighbour on
+//! the shortest path to a wall, so branches merge into straight trunks. A node under top skin prints its whole chain
 //! on the layer just below that skin. On every layer further down, each
 //! chain prints one overhang step less of itself, so a branch backs off
 //! toward the wall it ends on, and every bead overhangs the bead under it by
 //! at most that step. Interior that holds up no skin prints nothing.
 
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 use std::sync::Arc;
 
 use rayon::prelude::*;
@@ -24,7 +25,7 @@ const LEAN_DEG: f64 = 40.0;
 /// Spacing of the points along a wall that branches end on, mm.
 const WALL_SAMPLE_MM: f64 = 1.4;
 /// A node leans on a neighbour at most this many grid pitches away.
-const REACH_PITCHES: f64 = 2.4;
+const REACH_PITCHES: f64 = 1.5;
 
 /// One layer's planned branches, as segments in the part's frame.
 pub(crate) type Branches = Arc<Vec<[[f64; 2]; 2]>>;
@@ -219,24 +220,61 @@ fn tree(interior: &[Loop], over: &[Loop], pitch: f64) -> Tree {
                 }
             })
             .collect();
+    // Shortest paths out from the walls over edges that stay inside. An
+    // edge whose ends are both clear of every wall point by more than half
+    // its length plus the wall points' spacing cannot cross a wall.
     let all = Hash::new(&t.xy, pitch);
     let reach = pitch * REACH_PITCHES;
-    t.parent = (0..t.xy.len())
-        .map(|k| {
-            if k < walls {
-                return None;
-            }
-            all.lean(t.xy[k], reach, |j| t.dist[j] < t.dist[k] - 1e-6)
+    let inside = |a: usize, b: usize| {
+        let (p, q) = (t.xy[a], t.xy[b]);
+        let len = (q[0] - p[0]).hypot(q[1] - p[1]);
+        if t.dist[a].min(t.dist[b]) > len * 0.5 + WALL_SAMPLE_MM {
+            return true;
+        }
+        [0.25, 0.5, 0.75].iter().all(|f| {
+            in_solid(interior, p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f)
         })
-        .collect();
-    // A parent is closer to a wall than its child, so parents come first.
-    let mut nearer: Vec<usize> = (0..t.xy.len()).collect();
-    nearer.sort_by(|&a, &b| t.dist[a].total_cmp(&t.dist[b]));
-    t.along = vec![0.0; t.xy.len()];
-    for k in nearer {
-        if let Some(p) = t.parent[k] {
-            let (a, b) = (t.xy[p], t.xy[k]);
-            t.along[k] = t.along[p] + (b[0] - a[0]).hypot(b[1] - a[1]);
+    };
+    t.along = vec![f64::INFINITY; t.xy.len()];
+    t.parent = vec![None; t.xy.len()];
+    let mut heap = BinaryHeap::new();
+    for k in 0..walls {
+        t.along[k] = 0.0;
+    }
+    // Every grid node first reaches the walls in one step where it can.
+    for k in walls..t.xy.len() {
+        for j in all.within(t.xy[k], reach) {
+            if j < walls && inside(k, j) {
+                let d = (t.xy[j][0] - t.xy[k][0]).hypot(t.xy[j][1] - t.xy[k][1]);
+                if d < t.along[k] {
+                    t.along[k] = d;
+                    t.parent[k] = Some(j);
+                }
+            }
+        }
+        if t.parent[k].is_some() {
+            heap.push(Reverse((Ordered(t.along[k]), k)));
+        }
+    }
+    while let Some(Reverse((Ordered(d), k))) = heap.pop() {
+        if d > t.along[k] {
+            continue;
+        }
+        for j in all.within(t.xy[k], reach) {
+            if j < walls || j == k {
+                continue;
+            }
+            let step = (t.xy[j][0] - t.xy[k][0]).hypot(t.xy[j][1] - t.xy[k][1]);
+            if d + step < t.along[j] - 1e-9 && inside(k, j) {
+                t.along[j] = d + step;
+                t.parent[j] = Some(k);
+                heap.push(Reverse((Ordered(t.along[j]), j)));
+            }
+        }
+    }
+    for a in t.along.iter_mut() {
+        if !a.is_finite() {
+            *a = 0.0;
         }
     }
     let held = if over.is_empty() {
@@ -306,22 +344,39 @@ impl<'a> Hash<'a> {
         }
     }
 
-    /// The nearest point within `reach` that `ok` accepts.
-    fn lean(&self, p: [f64; 2], reach: f64, ok: impl Fn(usize) -> bool) -> Option<usize> {
+    /// Every point within `reach` of `p`.
+    fn within(&self, p: [f64; 2], reach: f64) -> Vec<usize> {
         let (cx, cy) = Self::key_of(p, self.cell);
         let r = (reach / self.cell).ceil() as i64;
-        let mut best: Option<(usize, f64)> = None;
+        let mut out = Vec::new();
         for dx in -r..=r {
             for dy in -r..=r {
                 for &k in self.buckets.get(&(cx + dx, cy + dy)).into_iter().flatten() {
                     let q = self.pts[k];
-                    let d = (q[0] - p[0]).hypot(q[1] - p[1]);
-                    if d <= reach && ok(k) && best.is_none_or(|(_, bd)| d < bd) {
-                        best = Some((k, d));
+                    if (q[0] - p[0]).hypot(q[1] - p[1]) <= reach {
+                        out.push(k);
                     }
                 }
             }
         }
-        best.map(|(k, _)| k)
+        out
+    }
+}
+
+/// An `f64` ordered by `total_cmp`, for the shortest-path heap.
+#[derive(Clone, Copy, PartialEq)]
+struct Ordered(f64);
+
+impl Eq for Ordered {}
+
+impl PartialOrd for Ordered {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Ordered {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
     }
 }
