@@ -29,6 +29,12 @@ test("preview canvases keep a device-pixel backing store across resize", async (
   await page.goto("/");
   await page.waitForSelector("#view3d");
 
+  const initial = await bufferMatchesCss(page, "view3d");
+  console.log("perspective", JSON.stringify(initial));
+  expect(initial.match, JSON.stringify(initial)).toBe(true);
+
+  await page.getByRole("button", { name: "Split", exact: true }).click();
+  await afterViewport(page);
   const split = await bufferMatchesCss(page, "view3d");
   const flat = await bufferMatchesCss(page, "view");
   console.log("split", JSON.stringify({ view3d: split, view: flat }));
