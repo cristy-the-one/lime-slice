@@ -60,3 +60,29 @@ export function snapStep(total: number, shift: boolean, step: number): number {
   if (!shift || !(step > 0) || !Number.isFinite(total)) return total;
   return Math.round(total / step) * step;
 }
+
+/**
+ * Fine steps for the prepare gizmo. Smaller than the Shift snap (1 mm / 15°).
+ * The on-screen gizmo and its pick geometry stay the same size; these steps are
+ * how a touchpad moves one increment without dragging.
+ */
+export const GIZMO_NUDGE_MM = 0.1;
+export const GIZMO_NUDGE_DEG = 1;
+
+/**
+ * One discrete step from a mouse wheel or touchpad scroll.
+ * Pixel deltas accumulate until `threshold`; a line or page delta is one step.
+ * Positive `deltaY` (scroll down) yields a negative notch.
+ */
+export function wheelNotch(
+  deltaY: number,
+  deltaMode: number,
+  accum: number,
+  threshold = 48,
+): { notches: number; accum: number } {
+  if (!Number.isFinite(deltaY) || deltaY === 0) return { notches: 0, accum };
+  if (deltaMode === 1 || deltaMode === 2) return { notches: deltaY > 0 ? -1 : 1, accum: 0 };
+  const next = accum + deltaY;
+  if (Math.abs(next) < threshold) return { notches: 0, accum: next };
+  return { notches: next > 0 ? -1 : 1, accum: 0 };
+}

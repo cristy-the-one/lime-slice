@@ -116,6 +116,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 5000);
+  canvas.dataset.projection = camera.isPerspectiveCamera ? "perspective" : "orthographic";
   const controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
@@ -250,14 +251,16 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     renderer.render(scene, camera);
   }
   controls.addEventListener("change", requestRender);
+  let userAimed = false;
   controls.addEventListener("start", () => {
     held = true;
+    userAimed = true;
   });
   controls.addEventListener("end", () => {
     held = false;
     requestRender();
   });
-  requestRender();
+  frameEmptyPerspective();
 
   function resize() {
     requestRender();
@@ -294,6 +297,16 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     volume.scale.set(bedX, bedZ, bedY);
     volume.position.set(bedX / 2 - centerX, bedZ / 2, -(bedY / 2 - centerY));
     return size;
+  }
+
+  /** Iso perspective of the empty bed. A user orbit, a mesh, or a slice keeps its own camera. */
+  function frameEmptyPerspective() {
+    if (userAimed || model || chunks.length > 0) return;
+    placeBed(Math.max(bedX, bedY));
+    camera.position.set(bedX * 0.85, bedZ * 0.55, bedY * 0.95);
+    controls.target.set(bedX / 2, Math.min(30, bedZ * 0.12), -bedY / 2);
+    controls.update();
+    requestRender();
   }
 
   function placePlane() {
@@ -609,6 +622,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       bedX = x;
       bedY = y;
       bedZ = z;
+      frameEmptyPerspective();
     },
     setBuffers(buffers) {
       requestRender();
