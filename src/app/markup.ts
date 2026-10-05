@@ -42,12 +42,12 @@ export function mountMarkup(root: HTMLElement) {
     <div class="banner-rail" id="banner"></div>
     <div class="workspace">
       <aside class="panel" id="left"><div id="leftBody"></div><div id="leftFoot"></div></aside>
-      <section class="stage mode-split" id="stage">
+      <section class="stage mode-solid" id="stage">
         <div class="viewbar">
           <div class="modes" id="viewModes">
             <button class="btn mode" type="button" data-mode="flat" aria-pressed="false">2D</button>
-            <button class="btn mode" type="button" data-mode="split" aria-pressed="true">Split</button>
-            <button class="btn mode" type="button" data-mode="solid" aria-pressed="false">3D</button>
+            <button class="btn mode" type="button" data-mode="split" aria-pressed="false">Split</button>
+            <button class="btn mode" type="button" data-mode="solid" aria-pressed="true">3D</button>
           </div>
           <div class="modes" role="tablist" aria-label="Workspace">
             <button class="btn mode tab" id="tabPrepare" type="button" role="tab" data-tab="prepare" aria-selected="false" aria-pressed="false" aria-controls="prepareBody">Prepare</button>
@@ -81,12 +81,14 @@ export function mountMarkup(root: HTMLElement) {
         <div class="stage-body" id="previewBody" role="tabpanel" aria-labelledby="tabPreview">
           <div class="vslider" id="vslider">
             <div class="readout" id="readHigh">—</div>
+            <button class="layer-step" id="layerNext" type="button" aria-label="Next layer" disabled>▲</button>
             <div class="track">
               <div class="range-bands" id="rangeBands"></div>
               <div class="band" id="layerBand" hidden></div>
               <input id="rangeLow" type="range" min="0" max="0" value="0" aria-label="Lowest visible layer" />
               <input id="rangeHigh" type="range" min="0" max="0" value="0" aria-label="Current layer" />
             </div>
+            <button class="layer-step" id="layerPrev" type="button" aria-label="Previous layer" disabled>▼</button>
             <div class="readout" id="readLow">Z —</div>
           </div>
           <div class="previews">
@@ -128,7 +130,8 @@ export function mountMarkup(root: HTMLElement) {
         <li>Drag the split plane when By region is on</li>
         <li>Bed fades the build plate. 0 hides it</li>
         <li>Section clips the preview. Cut moves the plane. Rings, parked at the left, aim it. The sheet is only a guide. Layers still apply. Neither changes the slice</li>
-        <li><kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> Layer</li>
+        <li><kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> Layer. The ▲ ▼ buttons step one layer; the slider still scrubs</li>
+        <li>Prepare nudge buttons step 0.1 mm, or 1° when Rotate is on. A scroll on a handle does the same</li>
       </ul>
       <button class="btn" id="helpClose" type="button">Close</button>
     </div>
