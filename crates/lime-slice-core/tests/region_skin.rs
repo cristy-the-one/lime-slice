@@ -1,6 +1,7 @@
-//! Skin goes where a surface is open above or below, not across the whole
-//! layer: a closed part's inside prints as interior even on a layer where
-//! some other feature has its roof or floor.
+//! Inside a closed part. Skin goes where a surface is open above or below,
+//! not across the whole layer, so the inside prints as interior even on a
+//! layer where some other feature has its roof or floor. And the infill
+//! holding a roof up stands on something all the way down.
 
 use std::collections::HashMap;
 
@@ -96,7 +97,10 @@ fn a_side_block_roof_skins_only_the_side_block() {
     let req = json!({
         "filename": "side_block.stl",
         "dataB64": stl_b64(&tris),
-        "blend": {"mode": "single", "strategy": "speed"},
+        // Toughness fills the inside the full height, so its sparse shows
+        // the cube's inside is interior. Speed's lightning would print
+        // only what some skin needs.
+        "blend": {"mode": "single", "strategy": "toughness"},
         "includeGcode": true,
         "includePreview": false,
         "baseline": false,
@@ -107,7 +111,7 @@ fn a_side_block_roof_skins_only_the_side_block() {
     .unwrap();
     let layers = lengths_by_layer(reply["gcode"].as_str().unwrap());
     let get = |by: &HashMap<String, f64>, k: &str| by.get(k).copied().unwrap_or(0.0);
-    // The side block's top skin runs from its roof at Z 10 down 0.6 mm.
+    // The side block's top skin runs from its roof at Z 10 down 1 mm.
     let under_roof: Vec<_> = layers
         .iter()
         .filter(|(z, _)| *z > 9.45 && *z < 10.05)
@@ -128,4 +132,105 @@ fn a_side_block_roof_skins_only_the_side_block() {
             "z {z}: the cube's inside prints no sparse infill: {by:?}"
         );
     }
+}
+
+/// One extruded move: its feature and its two ends.
+type Move = (String, [f64; 2], [f64; 2]);
+
+/// Every extruded move of each layer, with the layer's Z.
+fn segments_by_layer(gcode: &str) -> Vec<(f64, Vec<Move>)> {
+    let mut layers: Vec<(f64, Vec<Move>)> = Vec::new();
+    let (mut x, mut y, mut e) = (0.0f64, 0.0f64, 0.0f64);
+    let mut kind = String::new();
+    for line in gcode.lines() {
+        if let Some(rest) = line.strip_prefix(";LAYER:") {
+            let z = rest
+                .split("Z:")
+                .nth(1)
+                .unwrap()
+                .split_whitespace()
+                .next()
+                .unwrap();
+            layers.push((z.parse().unwrap(), Vec::new()));
+            continue;
+        }
+        if let Some(k) = line.strip_prefix("; TYPE:") {
+            kind = k.trim().to_string();
+            continue;
+        }
+        if !line.starts_with("G1") {
+            continue;
+        }
+        let word = |c: char| {
+            line.split_whitespace()
+                .find_map(|w| w.strip_prefix(c).and_then(|v| v.parse::<f64>().ok()))
+        };
+        let (nx, ny, ne) = (
+            word('X').unwrap_or(x),
+            word('Y').unwrap_or(y),
+            word('E').unwrap_or(e),
+        );
+        if ne > e && (word('X').is_some() || word('Y').is_some()) {
+            if let Some((_, segs)) = layers.last_mut() {
+                segs.push((kind.clone(), [x, y], [nx, ny]));
+            }
+        }
+        (x, y, e) = (nx, ny, ne);
+    }
+    layers
+}
+
+fn to_segment(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 < 1e-12 {
+        0.0
+    } else {
+        (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0)
+    };
+    (p[0] - a[0] - t * dx).hypot(p[1] - a[1] - t * dy)
+}
+
+#[test]
+fn lightning_under_a_roof_stands_on_the_layer_below() {
+    // A 20 mm cube at speed: lightning holds up its top skin. Every sparse
+    // move must start and end within one line width of a bead on the layer
+    // below, all the way down, so no band of it starts over the empty
+    // inside. A straight move between two held ends is a short bridge.
+    let req = json!({
+        "filename": "cube.stl",
+        "dataB64": stl_b64(&cuboid([0.0, 0.0, 0.0], [20.0, 20.0, 20.0])),
+        "blend": {"mode": "single", "strategy": "speed"},
+        "includeGcode": true,
+        "includePreview": false,
+        "baseline": false,
+    });
+    let reply: Value = serde_json::from_str(
+        &slice_payload(&req.to_string(), None, Job::default(), |g| g.text()).unwrap(),
+    )
+    .unwrap();
+    let layers = segments_by_layer(reply["gcode"].as_str().unwrap());
+    let reach = 0.45;
+    let mut sparse_layers = 0;
+    for w in layers.windows(2) {
+        let ((_, below), (z, here)) = (&w[0], &w[1]);
+        let sparse: Vec<_> = here.iter().filter(|s| s.0 == "SPARSE").collect();
+        if sparse.is_empty() {
+            continue;
+        }
+        sparse_layers += 1;
+        for (_, a, b) in sparse {
+            for p in [*a, *b] {
+                let held = below
+                    .iter()
+                    .map(|(_, c, d)| to_segment(p, *c, *d))
+                    .fold(f64::MAX, f64::min);
+                assert!(
+                    held <= reach,
+                    "z {z}: sparse bead at {p:?} is {held:.2} mm from anything on the layer below"
+                );
+            }
+        }
+    }
+    assert!(sparse_layers > 0, "the cube printed no lightning");
 }

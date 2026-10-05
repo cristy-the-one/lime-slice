@@ -7,6 +7,7 @@ mod cancel;
 mod gcode;
 mod gyroid;
 mod index;
+mod lightning;
 mod inner_prof;
 mod load;
 mod mesh;

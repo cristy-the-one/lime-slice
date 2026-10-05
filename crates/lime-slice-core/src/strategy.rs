@@ -485,7 +485,7 @@ pub fn mix(toughness: f64) -> ResolvedStrategy {
     let (pattern, range) = if t < 0.20 {
         (InfillPattern::Lightning, lerp(4.0, 3.2))
     } else if t < 0.45 {
-        (InfillPattern::Lines, lerp(2.4, 0.0))
+        (InfillPattern::Lines, 0.0)
     } else if t < 0.75 {
         (InfillPattern::Grid, 0.0)
     } else {

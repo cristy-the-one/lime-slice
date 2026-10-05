@@ -110,6 +110,9 @@ pub struct PathFeatures {
     pub shell: ShellBand,
     /// The areas of this layer that print as skin.
     pub skin: std::sync::Arc<Skin>,
+    /// This layer's lightning branches, grown with the layers around it,
+    /// when the strategy prints the lightning they were grown for.
+    pub lightning: Option<crate::lightning::Branches>,
     /// Absolute layer Z. The 3D gyroid section is evaluated here.
     pub z: f64,
     /// Nozzle diameter used to cap combined sparse beads.
@@ -130,6 +133,7 @@ impl Default for PathFeatures {
             layer_height: 0.2,
             shell: ShellBand::Interior,
             skin: std::sync::Arc::default(),
+            lightning: None,
             z: 0.0,
             nozzle_diameter: 0.4,
             interior_remaining: 1,
@@ -975,7 +979,9 @@ fn wall_kind(outer: bool, strategy: &ResolvedStrategy) -> PathKind {
 }
 
 fn infill_kept(strategy: &ResolvedStrategy, features: &PathFeatures) -> bool {
-    strategy.lightning_range_mm <= 1e-6
+    // Grown lightning prints only the branches some skin needs.
+    (strategy.pattern == InfillPattern::Lightning && features.lightning.is_some())
+        || strategy.lightning_range_mm <= 1e-6
         || features.roof_distance_mm <= strategy.lightning_range_mm + 1e-6
 }
 
@@ -1444,6 +1450,12 @@ fn inset_loops(loops: &[Loop], delta: f64) -> Vec<Loop> {
     drop_slivers(loops_from_paths(offset_paths(&paths, -delta)), 0.8)
 }
 
+/// Grid pitch of `strategy`'s lightning at its full density, mm.
+pub(crate) fn lightning_pitch(strategy: &ResolvedStrategy, line_width: f64) -> f64 {
+    let spacing = (line_width / strategy.infill_density.max(0.02)).clamp(line_width * 1.05, 14.0);
+    spacing.max(line_width * 3.0)
+}
+
 fn build_infill(
     loops: &[Loop],
     strategy: &ResolvedStrategy,
@@ -1452,7 +1464,14 @@ fn build_infill(
 ) -> Vec<Vec<[f64; 2]>> {
     let sample = crate::inner_prof::Sample::start();
     let mut density = strategy.infill_density;
-    if strategy.pattern == InfillPattern::Lightning && strategy.lightning_range_mm > 1e-6 {
+    let grown = features
+        .lightning
+        .as_ref()
+        .filter(|_| strategy.pattern == InfillPattern::Lightning);
+    if grown.is_none()
+        && strategy.pattern == InfillPattern::Lightning
+        && strategy.lightning_range_mm > 1e-6
+    {
         let t = 1.0 - (features.roof_distance_mm / strategy.lightning_range_mm).clamp(0.0, 1.0);
         density *= 0.30 + 0.70 * t;
     }
@@ -1477,9 +1496,19 @@ fn build_infill(
             };
             clip_infill(paths, loops)
         }
-        InfillPattern::Lightning => {
-            clip_infill(lightning(loops, spacing.max(line_width * 3.0)), loops)
-        }
+        InfillPattern::Lightning => match grown {
+            Some(branches) => {
+                // Join only branch ends that meet. A weld across a gap would
+                // be a bead no branch on the layer below holds up.
+                let segs = branches.iter().map(|s| s.to_vec()).collect();
+                chain_ends(
+                    clip_infill(segs, loops),
+                    lightning_pitch(strategy, line_width) * 1.25,
+                    Some(loops),
+                )
+            }
+            None => clip_infill(lightning(loops, spacing.max(line_width * 3.0)), loops),
+        },
     };
     match strategy.pattern {
         InfillPattern::Lines => sample.lines(),

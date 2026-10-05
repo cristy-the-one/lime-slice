@@ -23,6 +23,7 @@ use crate::adaptive::{plan_bands, plan_plate_bands, HeightOpts, LayerBand};
 use crate::cancel::Job;
 use crate::gcode::{emit_gcode, emit_later, Entry, GcodeText, LayerPaths, PlateLayer, PrintLayer};
 use crate::index::ZIndex;
+use crate::lightning::{Branches, Lightning};
 use crate::load::load_slice_mesh_tol;
 use crate::mesh::Mesh;
 use crate::meshes::{self, PayloadError};
@@ -42,9 +43,9 @@ use crate::support::paint::{self, PaintDisk, PaintTally};
 use crate::support::skeleton::{skeleton, SupportSkeleton};
 use crate::support::{CoverageGap, Disk, InAir, SupportLayer, SupportOpts, SupportStyle, Supports};
 use crate::toolpath::{
-    apply_overhang, apply_scarf, apply_z_hop, comb_layer, island_loops, order_supports,
-    plan_ironing, plan_region_split, plan_skirt, plan_support, plan_tree_support, Extrusion,
-    PartLayout, PathFeatures, PathKind, ScarfParams, Seam, ShellBand, Skin, TravelIn,
+    apply_overhang, apply_scarf, apply_z_hop, comb_layer, island_loops, lightning_pitch,
+    order_supports, plan_ironing, plan_region_split, plan_skirt, plan_support, plan_tree_support,
+    Extrusion, PartLayout, PathFeatures, PathKind, ScarfParams, Seam, ShellBand, Skin, TravelIn,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -3325,6 +3326,7 @@ fn part_paths(
         return Err("cancelled".into());
     }
     let (remain_low, remain_high) = interior_remainings(blend, settings, bands, &cut.skins);
+    let lightning = grow_lightning(cut, blend, settings);
     let toolpath_started = Instant::now();
     let kept = kept.filter(|k| k.base == base);
     let planned: Vec<([u8; 32], Arc<ObjectLayer>, bool)> = bands
@@ -3360,6 +3362,7 @@ fn part_paths(
                 nozzle_diameter,
                 remain_low[i],
                 remain_high[i],
+                lightning.as_ref().map(|l| (l, i)),
             );
             if settings.overhang_control && i > 0 {
                 apply_overhang(
@@ -4475,6 +4478,36 @@ fn pair_sides(low: Vec<Extrusion>, high: Vec<Extrusion>) -> Vec<Extrusion> {
 }
 
 /// The strategy a non-region blend prints at height `z`.
+/// The lightning branches of every layer, grown once for the strategy the
+/// blend prints lightning with: speed on a region blend's high side, else
+/// the first layer's strategy that prints lightning. `None` when none does.
+fn grow_lightning(
+    cut: &Contours,
+    blend: &BlendMode,
+    settings: &SliceSettings,
+) -> Option<Lightning> {
+    let strategy = match blend {
+        BlendMode::ByRegion { .. } => resolve(pure(StrategyId::Speed), settings),
+        other => cut
+            .bands
+            .iter()
+            .map(|b| layer_strategy(other, b.z, settings))
+            .find(|s| s.pattern == crate::strategy::InfillPattern::Lightning)?,
+    };
+    if strategy.pattern != crate::strategy::InfillPattern::Lightning {
+        return None;
+    }
+    let skins = &cut.skins[usize::from(strategy.toughness > 0.6)];
+    Some(crate::lightning::grow(
+        &cut.bands,
+        &cut.contours,
+        skins,
+        strategy.walls,
+        settings.line_width,
+        lightning_pitch(&strategy, settings.line_width),
+    ))
+}
+
 fn layer_strategy(blend: &BlendMode, z: f64, settings: &SliceSettings) -> ResolvedStrategy {
     resolve(
         match blend {
@@ -4505,8 +4538,17 @@ fn object_layer(
     nozzle_diameter: f64,
     remain_low: (u32, u32),
     remain_high: (u32, u32),
+    lightning: Option<(&Lightning, usize)>,
 ) -> ObjectLayer {
     let line_width = settings.line_width;
+    // The grown branches, for a strategy that prints the lightning they were grown for.
+    let grown = |s: &ResolvedStrategy| -> Option<Branches> {
+        let (plan, i) = lightning?;
+        let fits = s.pattern == crate::strategy::InfillPattern::Lightning
+            && s.walls == plan.walls
+            && (lightning_pitch(s, line_width) - plan.pitch).abs() < 1e-9;
+        fits.then(|| Arc::clone(&plan.layers[i]))
+    };
     let features = PathFeatures {
         variable_width: settings.variable_width,
         roof_distance_mm: roof_distance,
@@ -4514,6 +4556,7 @@ fn object_layer(
         layer_height: height,
         shell: ShellBand::Interior,
         skin: Arc::default(),
+        lightning: None,
         z,
         nozzle_diameter,
         interior_remaining: remain_low.0,
@@ -4542,11 +4585,13 @@ fn object_layer(
                 let mut hint = [min[0], min[1]];
                 let mut low_feat = features.clone();
                 low_feat.skin = skin_of(skins, &tough);
+                low_feat.lightning = grown(&tough);
                 low_feat.shell = low_feat.skin.shell();
                 low_feat.interior_remaining = remain_low.0;
                 low_feat.interior_run = remain_low.1;
                 let mut high_feat = features.clone();
                 high_feat.skin = skin_of(skins, &speed);
+                high_feat.lightning = grown(&speed);
                 high_feat.shell = high_feat.skin.shell();
                 high_feat.interior_remaining = remain_high.0;
                 high_feat.interior_run = remain_high.1;
@@ -4567,6 +4612,7 @@ fn object_layer(
                 let mut hint = [max[0], (min[1] + max[1]) * 0.5];
                 let mut feat = features.clone();
                 feat.skin = skin_of(skins, &resolved);
+                feat.lightning = grown(&resolved);
                 feat.shell = feat.skin.shell();
                 feat.interior_remaining = remain_low.0;
                 feat.interior_run = remain_low.1;
