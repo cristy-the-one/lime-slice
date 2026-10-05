@@ -207,7 +207,7 @@ export const state = {
   autoSlice: false,
   simplify: true,
   simplifyError: 0,
-  viewMode: "split" as "flat" | "split" | "solid",
+  viewMode: "solid" as "flat" | "split" | "solid",
   query: "",
   move: 0,
   stage: "preview" as "prepare" | "preview" | "gcode",
@@ -259,6 +259,8 @@ export const session = {
   resultFrame: "",
   /** Heights the layer sliders were last moved to, kept across results of one mesh. */
   chosenZ: null as { high: number; low: number } | null,
+  /** Set when the user picks 2D, Split, or 3D. A fresh preview stays perspective until then. */
+  previewViewChosen: null as null | "flat" | "split" | "solid",
   /** Recipe key of `state.result`, once a slice has landed. */
   shownRecipe: null as string | null,
   /** `partFrameKey` of the request behind `state.result`. */
