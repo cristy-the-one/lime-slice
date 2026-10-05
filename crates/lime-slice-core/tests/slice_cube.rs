@@ -2834,7 +2834,9 @@ fn dense_sparse_grid_cells_get_no_gap_fill() {
 #[test]
 fn a_bridge_deck_prints_a_bottom_skin_over_the_span() {
     // Two 8 mm pillars carry a 2 mm deck from Z 8. The deck's first layer
-    // hangs over the 14 mm gap between them.
+    // hangs over the 14 mm gap between them, and only there is it skin: over
+    // the pillars the deck is the inside of the part, and any sparse fill it
+    // prints stays over them.
     for strategy in [StrategyId::Speed, StrategyId::Toughness] {
         let response = slice_configured(
             &bridge_span(),
@@ -2851,11 +2853,17 @@ fn a_bridge_deck_prints_a_bottom_skin_over_the_span() {
             .iter()
             .find(|l| (l.z - 8.2).abs() < 1e-6)
             .expect("layer at Z 8.2");
-        let sparse = layer.paths.iter().filter(|p| p.kind == "sparse").count();
+        let sparse_over_span = layer
+            .paths
+            .iter()
+            .filter(|p| p.kind == "sparse")
+            .flat_map(|p| p.pts.iter())
+            .filter(|q| q[0] > 8.5 && q[0] < 21.5)
+            .count();
         let along: Vec<bool> = (9..=21).map(|x| covered(layer, x as f64, 8.0)).collect();
         let across: Vec<bool> = (5..=11).map(|y| covered(layer, 15.0, y as f64)).collect();
         assert_eq!(
-            (sparse, along, across),
+            (sparse_over_span, along, across),
             (0, vec![true; 13], vec![true; 7]),
             "{strategy:?} {}",
             layer.note

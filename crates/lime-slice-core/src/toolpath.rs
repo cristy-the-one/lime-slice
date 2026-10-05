@@ -74,6 +74,29 @@ pub enum ShellBand {
     Top,
 }
 
+/// The areas of a layer that print as skin. `bottom` hangs over open air or
+/// the bed within the bottom shell's depth below, `top` lies under open air
+/// within the top shell's depth above. The rest inside the walls is interior.
+#[derive(Clone, Debug, Default)]
+pub struct Skin {
+    pub bottom: Vec<Loop>,
+    pub top: Vec<Loop>,
+}
+
+impl Skin {
+    /// The band a layer with this skin is in, for what still works layer by
+    /// layer. Bottom wins, as it does where a floor and a roof are close.
+    pub fn shell(&self) -> ShellBand {
+        if !self.bottom.is_empty() {
+            ShellBand::Bottom
+        } else if !self.top.is_empty() {
+            ShellBand::Top
+        } else {
+            ShellBand::Interior
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PathFeatures {
     pub variable_width: bool,
@@ -82,7 +105,11 @@ pub struct PathFeatures {
     #[allow(dead_code)]
     pub layer_index: usize,
     pub layer_height: f64,
+    /// `Interior` unless some area of the layer is skin. Infill combine and
+    /// the gyroid's graded core read it; the skin itself comes from `skin`.
     pub shell: ShellBand,
+    /// The areas of this layer that print as skin.
+    pub skin: std::sync::Arc<Skin>,
     /// Absolute layer Z. The 3D gyroid section is evaluated here.
     pub z: f64,
     /// Nozzle diameter used to cap combined sparse beads.
@@ -102,6 +129,7 @@ impl Default for PathFeatures {
             layer_index: 0,
             layer_height: 0.2,
             shell: ShellBand::Interior,
+            skin: std::sync::Arc::default(),
             z: 0.0,
             nozzle_diameter: 0.4,
             interior_remaining: 1,
@@ -294,32 +322,35 @@ pub(crate) fn plan_region_split(
             seam_hint,
         );
     }
-    let solid_shell = matches!(features.shell, ShellBand::Bottom | ShellBand::Top);
-    // An empty sparse fill still closes the part with its solid skins.
-    if (strategy.infill_density > 0.01 || solid_shell)
-        && !infill_loops.is_empty()
-        && (solid_shell || infill_kept(strategy, features))
-    {
-        let infill = if solid_shell {
-            clip_infill(
-                solid_fill(&infill_loops, line_width, std::f64::consts::FRAC_PI_4, None),
-                &infill_loops,
-            )
-        } else {
-            build_infill(&infill_loops, strategy, line_width, features)
-        };
+    // Skin closes the part where a surface is open above or below. Inside a
+    // closed part the layer is interior, however much skin the rest of it has.
+    let (bottom, rest) = carve(&infill_loops, &features.skin.bottom, line_width * 2.0);
+    let (top, interior) = carve(&rest, &features.skin.top, line_width * 2.0);
+    let arcs = strategy.gyroid_3d && strategy.pattern == crate::strategy::InfillPattern::Gyroid;
+    for (area, shell) in [(&bottom, ShellBand::Bottom), (&top, ShellBand::Top)] {
+        if area.is_empty() {
+            continue;
+        }
+        let kind = infill_kind(strategy, shell);
+        let fill = solid_fill(area, line_width, std::f64::consts::FRAC_PI_4, None);
+        for pts in clip_infill(fill, area) {
+            if pts.len() >= 2 {
+                *seam_hint = *pts.last().unwrap();
+                let mut path = extrusion(kind, strategy, pts, line_width);
+                path.fit_arcs = arcs;
+                paths.push(path);
+            }
+        }
+    }
+    if strategy.infill_density > 0.01 && !interior.is_empty() && infill_kept(strategy, features) {
+        let infill = build_infill(&interior, strategy, line_width, features);
         let Some(bead) = combine_bead(strategy, features) else {
             emit_void_fill(
-                &mut paths,
-                contours,
-                &infill_loops,
-                strategy,
-                line_width,
-                seam_hint,
+                &mut paths, contours, &interior, strategy, line_width, seam_hint,
             );
             return (paths, wall_ms, ms_since(infill_started));
         };
-        let kind = infill_kind(strategy, features.shell);
+        let kind = infill_kind(strategy, ShellBand::Interior);
         for pts in infill {
             if pts.len() >= 2 {
                 *seam_hint = *pts.last().unwrap();
@@ -327,21 +358,18 @@ pub(crate) fn plan_region_split(
                 if (bead - features.layer_height).abs() > 1e-6 {
                     path.bead_height = bead;
                 }
-                if strategy.gyroid_3d && strategy.pattern == crate::strategy::InfillPattern::Gyroid
-                {
-                    path.fit_arcs = true;
-                }
+                path.fit_arcs = arcs;
                 paths.push(path);
             }
         }
     }
     // Every void in a wide sparse area is a cell the pattern left on purpose.
     // Only an area too narrow for those cells can be one the pattern missed.
-    let cells = if solid_shell {
+    let cells = if interior.is_empty() {
         Vec::new()
     } else {
         let narrow_sample = crate::inner_prof::Sample::start();
-        let cells = wide_part(&infill_loops, line_width * 6.0);
+        let cells = wide_part(&interior, line_width * 6.0);
         narrow_sample.void_narrow();
         cells
     };
@@ -349,6 +377,34 @@ pub(crate) fn plan_region_split(
         &mut paths, contours, &cells, strategy, line_width, seam_hint,
     );
     (paths, wall_ms, ms_since(infill_started))
+}
+
+/// Skin pieces smaller than this are boolean noise along a skin edge, mm².
+const SKIN_SLIVER_MM2: f64 = 0.05;
+
+/// `area` split into what lies inside `skin` and the rest. A piece of the
+/// rest no wider than `narrow` cannot hold a fill of its own and joins the
+/// skin, as under a thin fin standing on a roof. An area all inside or all
+/// outside keeps its own loops, so a layer that is all skin or has none
+/// plans exactly as it did when skin was chosen layer by layer.
+fn carve(area: &[Loop], skin: &[Loop], narrow: f64) -> (Vec<Loop>, Vec<Loop>) {
+    if area.is_empty() || skin.is_empty() {
+        return (Vec::new(), area.to_vec());
+    }
+    let cut = drop_slivers(boolean_diff(area, skin), SKIN_SLIVER_MM2);
+    let rest: Vec<Loop> = island_loops(&cut)
+        .into_iter()
+        .filter(|piece| !offset_loops(piece, -narrow * 0.5).is_empty())
+        .flatten()
+        .collect();
+    if rest.is_empty() {
+        return (area.to_vec(), Vec::new());
+    }
+    let inside = drop_slivers(boolean_diff(area, &rest), SKIN_SLIVER_MM2);
+    if inside.is_empty() {
+        return (Vec::new(), area.to_vec());
+    }
+    (inside, rest)
 }
 
 fn ms_since(started: Instant) -> f64 {
@@ -919,9 +975,6 @@ fn wall_kind(outer: bool, strategy: &ResolvedStrategy) -> PathKind {
 }
 
 fn infill_kept(strategy: &ResolvedStrategy, features: &PathFeatures) -> bool {
-    if features.shell != ShellBand::Interior {
-        return true;
-    }
     strategy.lightning_range_mm <= 1e-6
         || features.roof_distance_mm <= strategy.lightning_range_mm + 1e-6
 }

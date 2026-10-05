@@ -29,7 +29,7 @@ use crate::meshes::{self, PayloadError};
 use crate::modifiers::{zone_runs, Overrides, Print, Tweak};
 use crate::poly::{
     boolean_diff, boolean_intersect, boolean_union, clip_to_rect, loop_bounds, offset_loops,
-    signed_area, simplify_loops, Loop,
+    resolve_nonzero, signed_area, simplify_loops, Loop,
 };
 use crate::progress::{Stage, Status, Watch};
 use crate::strategy::{
@@ -42,9 +42,9 @@ use crate::support::paint::{self, PaintDisk, PaintTally};
 use crate::support::skeleton::{skeleton, SupportSkeleton};
 use crate::support::{CoverageGap, Disk, InAir, SupportLayer, SupportOpts, SupportStyle, Supports};
 use crate::toolpath::{
-    apply_overhang, apply_scarf, apply_z_hop, comb_layer, order_supports, plan_ironing,
-    plan_region_split, plan_skirt, plan_support, plan_tree_support, Extrusion, PartLayout,
-    PathFeatures, PathKind, ScarfParams, Seam, ShellBand, TravelIn,
+    apply_overhang, apply_scarf, apply_z_hop, comb_layer, island_loops, order_supports,
+    plan_ironing, plan_region_split, plan_skirt, plan_support, plan_tree_support, Extrusion,
+    PartLayout, PathFeatures, PathKind, ScarfParams, Seam, ShellBand, Skin, TravelIn,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2966,8 +2966,9 @@ pub(crate) struct Contours {
     bounds: ([f64; 3], [f64; 3]),
     /// Each layer's distance below the nearest roof, from `roof_distances`.
     roofs: Vec<f64>,
-    /// Each layer's height above the nearest floor, from `floor_distances`.
-    floors: Vec<f64>,
+    /// Each layer's skin, from `skin_regions`: `[0]` at speed's shell
+    /// depths, `[1]` at toughness's. `skin_of` picks one for a strategy.
+    skins: [Vec<Arc<Skin>>; 2],
     /// What prints over air with supports off, for the first overhang angle
     /// asked, keyed by its bits.
     in_air: std::sync::OnceLock<(u64, InAir)>,
@@ -3000,13 +3001,13 @@ impl Contours {
         let roof_started = Instant::now();
         let wall_stack = settings.line_width * fewest_walls as f64;
         let roofs = roof_distances(&bands, &contours, wall_stack);
-        let floors = floor_distances(&bands, &contours, wall_stack);
+        let skins = skin_regions(&bands, &contours, wall_stack);
         Self {
             bands,
             contours,
             bounds,
             roofs,
-            floors,
+            skins,
             in_air: std::sync::OnceLock::new(),
             boxes: std::sync::OnceLock::new(),
             clocks: CutClocks {
@@ -3323,8 +3324,7 @@ fn part_paths(
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
     }
-    let (remain_low, remain_high) =
-        interior_remainings(blend, settings, bands, &cut.floors, &cut.roofs);
+    let (remain_low, remain_high) = interior_remainings(blend, settings, bands, &cut.skins);
     let toolpath_started = Instant::now();
     let kept = kept.filter(|k| k.base == base);
     let planned: Vec<([u8; 32], Arc<ObjectLayer>, bool)> = bands
@@ -3353,7 +3353,7 @@ fn part_paths(
                 &contours[i],
                 blend,
                 settings,
-                cut.floors[i],
+                [&cut.skins[0][i], &cut.skins[1][i]],
                 cut.roofs[i],
                 min,
                 max,
@@ -4069,25 +4069,102 @@ fn roof_distances(bands: &[LayerBand], contours: &[Vec<Loop>], wall_stack: f64) 
     dist
 }
 
-/// Each layer's print height from the underside of the nearest floor at or
-/// below it, its own height included. A floor hangs past the layer below it,
-/// as a bridge deck or an overhang starts, and the first layer is the floor on
-/// the bed, so there this is the layer's Z.
-fn floor_distances(bands: &[LayerBand], contours: &[Vec<Loop>], wall_stack: f64) -> Vec<f64> {
-    let floor: Vec<bool> = (0..bands.len())
+/// Each layer's skin at both pairs of shell depths `shell_depths` gives,
+/// speed's first. A floor is the area of a layer that the layer below does
+/// not cover, and a roof the area the layer above does not cover; the first
+/// layer is all floor and the last all roof. A layer's bottom skin is every
+/// floor whose underside is within the bottom depth below its top, and its
+/// top skin every roof within the top depth above it, each clipped to the
+/// layer. Inside a closed part neither reaches, so it prints as interior.
+fn skin_regions(
+    bands: &[LayerBand],
+    contours: &[Vec<Loop>],
+    wall_stack: f64,
+) -> [Vec<Arc<Skin>>; 2] {
+    let n = bands.len();
+    let floors: Vec<Vec<Loop>> = (0..n)
         .into_par_iter()
-        .map(|i| i == 0 || exposed_past_walls(&contours[i], &contours[i - 1], wall_stack))
+        .map(|i| match i {
+            0 => contours[0].clone(),
+            _ => exposed_core(&contours[i], &contours[i - 1], wall_stack),
+        })
         .collect();
-    let mut dist = vec![0.0; bands.len()];
-    let mut since = 0.0;
-    for (i, band) in bands.iter().enumerate() {
-        if floor[i] {
-            since = 0.0;
-        }
-        since += band.height;
-        dist[i] = since;
+    let roofs: Vec<Vec<Loop>> = (0..n)
+        .into_par_iter()
+        .map(|i| match contours.get(i + 1) {
+            None => contours[i].clone(),
+            Some(above) => exposed_core(&contours[i], above, wall_stack),
+        })
+        .collect();
+    let at = |(bottom, top): (f64, f64)| -> Vec<Arc<Skin>> {
+        (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let mut under: Vec<Loop> = Vec::new();
+                for f in (0..=i).rev() {
+                    let dist = bands[f..=i].iter().fold(0.0, |d, b| d + b.height);
+                    if dist > bottom + 1e-6 {
+                        break;
+                    }
+                    under.extend(floors[f].iter().cloned());
+                }
+                let mut over: Vec<Loop> = Vec::new();
+                for r in i..n {
+                    let dist = bands[i + 1..=r].iter().rev().fold(0.0, |d, b| d + b.height);
+                    if dist > top {
+                        break;
+                    }
+                    over.extend(roofs[r].iter().cloned());
+                }
+                Arc::new(Skin {
+                    bottom: clipped_union(&contours[i], under),
+                    top: clipped_union(&contours[i], over),
+                })
+            })
+            .collect()
+    };
+    [at(SPEED_SHELLS), at(TOUGH_SHELLS)]
+}
+
+/// Core of an exposed island, past half the walls, that makes it skin, mm².
+const SKIN_CORE_MM2: f64 = 0.05;
+
+/// Bottom and top shell depths, mm: speed's, and a strategy's over 0.6 toughness.
+const SPEED_SHELLS: (f64, f64) = (0.6, 0.6);
+const TOUGH_SHELLS: (f64, f64) = (1.2, 1.0);
+
+/// The skin of a layer, of `skins` at both shell depths, for `strategy`.
+fn skin_of(skins: [&Arc<Skin>; 2], strategy: &ResolvedStrategy) -> Arc<Skin> {
+    Arc::clone(skins[usize::from(strategy.toughness > 0.6)])
+}
+
+/// The part of `layer` inside any of `pieces`, which may overlap.
+fn clipped_union(layer: &[Loop], pieces: Vec<Loop>) -> Vec<Loop> {
+    if pieces.is_empty() || layer.is_empty() {
+        return Vec::new();
     }
-    dist
+    boolean_intersect(layer, &resolve_nonzero(pieces))
+}
+
+/// The islands of `current` that `other` does not cover, each kept only when
+/// it reaches deeper than the walls. A thinner strip along the outline, as on
+/// a slope, is closed by the walls; an island with any core left is skin.
+fn exposed_core(current: &[Loop], other: &[Loop], wall_stack: f64) -> Vec<Loop> {
+    if current.is_empty() {
+        return Vec::new();
+    }
+    if other.is_empty() {
+        return current.to_vec();
+    }
+    let exposed = boolean_diff(current, other);
+    island_loops(&exposed)
+        .into_iter()
+        .filter(|island| {
+            let core = offset_loops(island, -wall_stack * 0.5);
+            core.iter().map(|l| signed_area(l)).sum::<f64>() >= SKIN_CORE_MM2
+        })
+        .flatten()
+        .collect()
 }
 
 /// `current` has area `other` does not cover, reaching deeper than the walls:
@@ -4160,18 +4237,6 @@ fn resolve(mut strategy: ResolvedStrategy, settings: &SliceSettings) -> Resolved
     strategy
 }
 
-fn shell_of(floor: f64, roof: f64, strategy: &ResolvedStrategy) -> ShellBand {
-    let bottom = if strategy.toughness > 0.6 { 1.2 } else { 0.6 };
-    let top = if strategy.toughness > 0.6 { 1.0 } else { 0.6 };
-    if floor <= bottom + 1e-6 {
-        ShellBand::Bottom
-    } else if roof <= top {
-        ShellBand::Top
-    } else {
-        ShellBand::Interior
-    }
-}
-
 fn shaft_scales(supports: &[crate::support::SupportLayer], mult: f64) -> Vec<f64> {
     let m = if mult < 1.0 {
         1
@@ -4204,14 +4269,13 @@ fn interior_remainings(
     blend: &BlendMode,
     settings: &SliceSettings,
     bands: &[crate::adaptive::LayerBand],
-    floors: &[f64],
-    roofs: &[f64],
+    skins: &[Vec<Arc<Skin>>; 2],
 ) -> (Vec<InteriorSpan>, Vec<InteriorSpan>) {
     let shells_for = |pick: &dyn Fn(f64) -> ResolvedStrategy| -> Vec<ShellBand> {
         bands
             .iter()
             .enumerate()
-            .map(|(i, b)| shell_of(floors[i], roofs[i], &pick(b.z)))
+            .map(|(i, b)| skin_of([&skins[0][i], &skins[1][i]], &pick(b.z)).shell())
             .collect()
     };
     match blend {
@@ -4434,7 +4498,7 @@ fn object_layer(
     contours: &[Loop],
     blend: &BlendMode,
     settings: &SliceSettings,
-    floor_distance: f64,
+    skins: [&Arc<Skin>; 2],
     roof_distance: f64,
     min: [f64; 3],
     max: [f64; 3],
@@ -4449,6 +4513,7 @@ fn object_layer(
         layer_index: index,
         layer_height: height,
         shell: ShellBand::Interior,
+        skin: Arc::default(),
         z,
         nozzle_diameter,
         interior_remaining: remain_low.0,
@@ -4476,11 +4541,13 @@ fn object_layer(
                 let high = clip_to_rect(contours, high_plan.0, high_plan.1);
                 let mut hint = [min[0], min[1]];
                 let mut low_feat = features.clone();
-                low_feat.shell = shell_of(floor_distance, roof_distance, &tough);
+                low_feat.skin = skin_of(skins, &tough);
+                low_feat.shell = low_feat.skin.shell();
                 low_feat.interior_remaining = remain_low.0;
                 low_feat.interior_run = remain_low.1;
                 let mut high_feat = features.clone();
-                high_feat.shell = shell_of(floor_distance, roof_distance, &speed);
+                high_feat.skin = skin_of(skins, &speed);
+                high_feat.shell = high_feat.skin.shell();
                 high_feat.interior_remaining = remain_high.0;
                 high_feat.interior_run = remain_high.1;
                 let (low_paths, low_wall, low_infill) =
@@ -4499,7 +4566,8 @@ fn object_layer(
                 let resolved = tweaked(layer_strategy(other, z, settings));
                 let mut hint = [max[0], (min[1] + max[1]) * 0.5];
                 let mut feat = features.clone();
-                feat.shell = shell_of(floor_distance, roof_distance, &resolved);
+                feat.skin = skin_of(skins, &resolved);
+                feat.shell = feat.skin.shell();
                 feat.interior_remaining = remain_low.0;
                 feat.interior_run = remain_low.1;
                 let (region, region_wall, region_infill) =
