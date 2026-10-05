@@ -15,6 +15,7 @@ import { plateListed, slicePlateFields, sourceFrame, type PlateObject, type Plat
 import { paintRequestFields } from "../support-paint";
 import { noteTally } from "./paint-actions";
 import { engineDownMessage, authHeaders } from "../ui/api-base";
+import { topLayerIndex } from "../ui/preview-ux";
 import { pushToast } from "../ui/toasts";
 import {
   beginSliceJob,
@@ -351,7 +352,7 @@ export async function runSlice(force = false) {
       if (storesReply(prev, { frame: partFrame, recipe })) cachedRecipes.add(recipe);
       session.shownRecipe = recipe;
     }
-    state.layer = layerNear(body, session.chosenZ?.high, state.layer);
+    state.layer = layerNear(body, session.chosenZ?.high, topLayerIndex(body.layers.length));
     state.rangeLow = layerNear(body, session.chosenZ?.low, state.rangeLow);
     fx.clampPlane();
     landed = true;

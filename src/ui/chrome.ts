@@ -103,7 +103,7 @@ function mountToolRail(hooks: ChromeHooks) {
 
   const sep = document.createElement("div");
   sep.className = "rail-sep";
-  rail.append(move, rotate, scale, lay, sep, section, supports);
+  rail.append(move, rotate, scale, lay, sep, section, supports, gizmoNudge());
   host?.before(rail);
 
   const buttons = { move, rotate, scale, lay, section };
@@ -123,6 +123,28 @@ function mountToolRail(hooks: ChromeHooks) {
   syncLay(lay);
   syncSection(section);
   return buttons;
+}
+
+function gizmoNudge() {
+  const row = document.createElement("div");
+  row.id = "gizmoNudge";
+  row.className = "gizmo-nudge";
+  row.hidden = true;
+  row.setAttribute("role", "group");
+  row.setAttribute("aria-label", "Fine gizmo nudge");
+  for (const axis of ["x", "y", "z"] as const) {
+    for (const sign of [-1, 1] as const) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.axis = axis;
+      button.dataset.sign = String(sign);
+      const dir = sign < 0 ? "−" : "+";
+      button.textContent = `${axis.toUpperCase()}${dir}`;
+      button.setAttribute("aria-label", `Nudge ${axis.toUpperCase()} ${dir}0.1 mm`);
+      row.append(button);
+    }
+  }
+  return row;
 }
 
 function toolButton(id: string, node: IconNode, label: string, shortcut: string, tip: string) {

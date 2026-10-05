@@ -39,7 +39,13 @@ html.layout-compact .win-controls,
 html.layout-compact #right,
 html.layout-compact .viewbar,
 html.layout-compact .legend,
-html.layout-compact .gizmo-readout { display: none !important; }
+html.layout-compact .gizmo-readout,
+html.layout-compact #gizmoNudge { display: none !important; }
+html.layout-compact .layer-step {
+  width: 20px;
+  height: 16px;
+  font-size: 10px;
+}
 html.layout-compact .banner-rail {
   position: absolute;
   left: 12px;

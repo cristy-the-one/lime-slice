@@ -4,7 +4,7 @@ import { ViewHelper } from "three/addons/helpers/ViewHelper.js";
 import { syncBedGrid } from "./bed-grid";
 import { poseAffine, type Bounds, type PlacedPart } from "./mesh-place";
 import { buildCutPlane, disposeTree, prepareFrame, splitDragAt, type PrintFrame } from "./cut-plane";
-import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep } from "./gizmo-math";
+import { GIZMO_NUDGE_DEG, GIZMO_NUDGE_MM, GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep, wheelNotch } from "./gizmo-math";
 import { clampSplit, roundSplit, type SplitAxis } from "./split-at";
 import { createModifierScene } from "./modifier-scene";
 import type { OverrideDocument } from "./overrides";
@@ -394,7 +394,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     requestRender();
   }
 
-  function ndc(ev: PointerEvent) {
+  function ndc(ev: { clientX: number; clientY: number }) {
     const rect = canvas.getBoundingClientRect();
     pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
@@ -403,7 +403,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     raycaster.setFromCamera(pointer, camera);
   }
 
-  function hitHandle(ev: PointerEvent): HandleHit | null {
+  function hitHandle(ev: { clientX: number; clientY: number }): HandleHit | null {
     if (!meshBounds) return null;
     ndc(ev);
     const hit = raycaster.intersectObjects(handlePicks, false)[0];
@@ -811,6 +811,33 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   };
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
+
+  // Touchpad scroll on the handle the pointer is already over steps 0.1 mm or 1°.
+  // The pick size is unchanged; a miss still zooms the camera.
+  let gizmoWheel = 0;
+  let gizmoWheelKind: "ring" | "move" | null = null;
+  let gizmoWheelTimer = 0;
+  canvas.addEventListener("wheel", (ev) => {
+    if (!meshBounds || brush || drag || stroke !== null) return;
+    const handle = hitHandle(ev);
+    if (!handle) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const turned = wheelNotch(ev.deltaY, ev.deltaMode, gizmoWheel);
+    gizmoWheel = turned.accum;
+    if (turned.notches === 0) return;
+    gizmoWheelKind = handle.kind;
+    if (handle.kind === "ring") rotateCb?.(handle.axis, turned.notches * GIZMO_NUDGE_DEG, turned.notches * GIZMO_NUDGE_DEG);
+    else moveCb?.(handle.axis, turned.notches * GIZMO_NUDGE_MM, turned.notches * GIZMO_NUDGE_MM);
+    window.clearTimeout(gizmoWheelTimer);
+    gizmoWheelTimer = window.setTimeout(() => {
+      const kind = gizmoWheelKind;
+      gizmoWheelKind = null;
+      gizmoWheel = 0;
+      if (kind === "ring") rotateEndCb?.();
+      else if (kind === "move") moveEndCb?.();
+    }, 280);
+  }, { passive: false, capture: true });
 
   function hitViewHelper(ev: PointerEvent) {
     const rect = canvas.getBoundingClientRect();

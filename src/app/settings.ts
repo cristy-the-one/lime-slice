@@ -204,6 +204,7 @@ export function renderChrome() {
   paintSettingMarks(currentPreset());
   syncEmptyState(!!state.mesh);
   session.supportUi?.refresh();
+  fx.syncPreviewPending?.();
 }
 
 function timingText() {

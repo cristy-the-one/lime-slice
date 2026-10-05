@@ -5,8 +5,9 @@ import { DEFAULT_PRESET, readPresets, writePresets } from "../presets";
 import { profileJson } from "../profiles";
 import { applyTheme, type ThemeChoice } from "../theme";
 import { clampOffset, flipSection } from "../section-plane";
+import { wheelNotch } from "../gizmo-math";
 import { state, type CardId } from "./state";
-import { draw, layerGcode, paintPlayback, paintSectionChrome, prepare, realignSplit, scrub, sectionLimit, setHelp, setStage, setView, stopPlay, syncGcodeHighlight, togglePlay, view3d } from "./viewer";
+import { draw, layerGcode, paintPlayback, paintSectionChrome, prepare, realignSplit, scrub, sectionLimit, setHelp, setStage, setView, stepGizmo, stopPlay, syncGcodeHighlight, togglePlay, view3d } from "./viewer";
 import { applyPareto, cancelSlice, runPaCal, runPareto, runSlice } from "./slice-run";
 import { adoptBytes, export3mf, exportGcode, fail, loadNamed, place, saveText, setPlaceCenter } from "./files";
 import { mountProjectFiles, saveCurrentProject } from "./project-io";
@@ -303,7 +304,7 @@ export function wireApp() {
     file.arrayBuffer().then((bytes) => adoptBytes(file.name, bytes)).catch(fail);
   });
   document.querySelectorAll<HTMLButtonElement>(".mode:not(.tab)").forEach((button) => {
-    button.addEventListener("click", () => setView(button.dataset.mode as typeof state.viewMode));
+    button.addEventListener("click", () => setView(button.dataset.mode as typeof state.viewMode, "user"));
   });
   document.querySelector("#theme")!.addEventListener("change", (ev) => {
     applyTheme((ev.target as HTMLSelectElement).value as ThemeChoice);
@@ -376,6 +377,24 @@ export function wireApp() {
     if (kind === "travel") state.showTravel = input.checked;
     view3d.setShowTravel(state.showTravel && !state.hidden.has("travel"));
     draw();
+  });
+  document.querySelector("#layerNext")!.addEventListener("click", () => scrub(state.layer + 1));
+  document.querySelector("#layerPrev")!.addEventListener("click", () => scrub(state.layer - 1));
+  let layerWheel = 0;
+  document.querySelector<HTMLElement>("#vslider")!.addEventListener("wheel", (ev) => {
+    if (!state.result) return;
+    ev.preventDefault();
+    const turned = wheelNotch(ev.deltaY, ev.deltaMode, layerWheel);
+    layerWheel = turned.accum;
+    if (turned.notches !== 0) scrub(state.layer + turned.notches);
+  }, { passive: false });
+  document.addEventListener("click", (ev) => {
+    const button = (ev.target as Element | null)?.closest<HTMLButtonElement>("#gizmoNudge button");
+    if (!button) return;
+    const axis = button.dataset.axis;
+    const sign = Number(button.dataset.sign);
+    if ((axis !== "x" && axis !== "y" && axis !== "z") || !Number.isFinite(sign) || sign === 0) return;
+    stepGizmo(axis, sign);
   });
   document.querySelector("#rangeHigh")!.addEventListener("input", (ev) => {
     const value = Number((ev.target as HTMLInputElement).value);
@@ -461,9 +480,9 @@ export function wireApp() {
       void exportGcode();
       return;
     }
-    if (ev.key === "1") setView("flat");
-    if (ev.key === "2") setView("split");
-    if (ev.key === "3") setView("solid");
+    if (ev.key === "1") setView("flat", "user");
+    if (ev.key === "2") setView("split", "user");
+    if (ev.key === "3") setView("solid", "user");
     if (!state.result || state.stage !== "preview") return;
     const n = state.result.layers.length;
     if (ev.key === "ArrowUp" || ev.key === "]") scrub(state.layer + 1);

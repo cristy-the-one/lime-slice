@@ -18,6 +18,7 @@ import type { PreviewGeometry } from "../preview-geom";
 import { themeColors } from "../theme";
 import { resolved } from "../strategy";
 import { syncEmptyState } from "../ui/shell";
+import { freshPreviewMode, gizmoNudge, viewportPending } from "../ui/preview-ux";
 import { type AxisBounds, type SplitSync, splitOutside, nextSplitAt, roundSplit, clampSplit } from "../split-at";
 import { matMul, rotX, rotY, rotZ } from "../mesh-place";
 import { type Vec3, sectionReach, type SectionSpec, keepsPoint, clipPolyline, layerCut } from "../section-plane";
@@ -53,6 +54,10 @@ export function paintSlider() {
   state.rangeLow = Math.min(state.rangeLow, state.layer);
   hi.value = String(state.layer);
   lo.value = String(state.rangeLow);
+  const nextBtn = document.querySelector<HTMLButtonElement>("#layerNext");
+  const prevBtn = document.querySelector<HTMLButtonElement>("#layerPrev");
+  if (nextBtn) nextBtn.disabled = n === 0 || state.layer >= max;
+  if (prevBtn) prevBtn.disabled = n === 0 || state.layer <= state.rangeLow;
   const layer = state.result?.layers[state.layer];
   document.querySelector("#readHigh")!.textContent = layer ? `Z ${layer.z.toFixed(2)}` : "—";
   document.querySelector("#readLow")!.textContent = layer ? `${(layer.seconds ?? 0).toFixed(1)} s` : "Z —";
@@ -377,7 +382,8 @@ export function scrub(next: number) {
   draw();
 }
 
-export function setView(mode: typeof state.viewMode) {
+export function setView(mode: typeof state.viewMode, source: "user" | "auto" = "auto") {
+  if (source === "user") session.previewViewChosen = mode;
   state.viewMode = mode;
   const stage = document.querySelector("#stage")!;
   stage.classList.remove("mode-flat", "mode-split", "mode-solid");
@@ -399,6 +405,10 @@ export function setStage(stage: "prepare" | "preview" | "gcode") {
   document.querySelector(".stage-tools")?.toggleAttribute("hidden", stage === "prepare");
   document.querySelector<HTMLElement>("#viewPresets")?.toggleAttribute("hidden", stage !== "prepare");
   if (stage !== "prepare") session.paintUi?.stop();
+  if (stage === "preview" && session.previewViewChosen == null) {
+    const mode = freshPreviewMode(session.previewViewChosen);
+    if (state.viewMode !== mode) setView(mode);
+  }
   syncEmptyState(!!state.mesh);
   paintSectionChrome();
   paintGcode();
@@ -473,6 +483,9 @@ export function syncSplitField(force = false) {
 }
 
 export function paintGizmoReadout() {
+  const tool = document.querySelector<HTMLElement>("#toolRail")?.dataset.tool;
+  const rotate = tool === "rotate";
+  paintGizmoNudge(rotate);
   const el = document.querySelector<HTMLElement>("#gizmoReadout");
   if (!el) return;
   if (state.stage !== "prepare" || !state.placed) {
@@ -488,16 +501,53 @@ export function paintGizmoReadout() {
     el.textContent = `Split ${state.axis.toUpperCase()} ${state.atMm.toFixed(1)} mm · low toughness · high speed`;
     return;
   }
-  const tool = document.querySelector<HTMLElement>("#toolRail")?.dataset.tool;
   if (tool === "move") {
-    el.textContent = "Move · drag the part or an arrow · Shift snaps 1 mm";
+    el.textContent = "Move · drag the part or an arrow · nudge 0.1 mm · Shift snaps 1 mm";
     return;
   }
-  if (tool === "rotate") {
-    el.textContent = "Rotate · drag a ring · Shift snaps 15°";
+  if (rotate) {
+    el.textContent = "Rotate · drag a ring · nudge 1° · Shift snaps 15°";
     return;
   }
-  el.textContent = "Parked left · drag a ring to rotate · an arrow to move · Shift snaps";
+  el.textContent = "Parked left · drag a ring or an arrow · nudge 0.1 mm · Shift snaps";
+}
+
+function paintGizmoNudge(rotate: boolean) {
+  const nudgeEl = document.querySelector<HTMLElement>("#gizmoNudge");
+  if (!nudgeEl) return;
+  const show = state.stage === "prepare" && !!state.placed;
+  nudgeEl.hidden = !show;
+  const unit = rotate ? "1°" : "0.1 mm";
+  for (const button of nudgeEl.querySelectorAll<HTMLButtonElement>("button")) {
+    const axis = (button.dataset.axis ?? "").toUpperCase();
+    const dir = button.dataset.sign === "-1" ? "−" : "+";
+    button.dataset.tip = `Nudge ${axis} ${dir}${unit}`;
+    button.setAttribute("aria-label", `Nudge ${axis} ${dir}${unit}`);
+  }
+}
+
+/** One fine gizmo step. Move is 0.1 mm; Rotate is 1°. Hit targets stay as they are. */
+export function stepGizmo(axis: "x" | "y" | "z", sign: number) {
+  if (!state.sourcePos || !state.placed) return;
+  const tool = document.querySelector<HTMLElement>("#toolRail")?.dataset.tool;
+  const nudge = gizmoNudge(tool, sign);
+  if (nudge.amount === 0) return;
+  noteEdit();
+  if (nudge.kind === "rotate") {
+    const spin = axis === "x" ? rotX : axis === "y" ? rotY : rotZ;
+    state.orient = matMul(spin(nudge.amount), state.orient);
+    applyPlace(false);
+  } else {
+    nudgePlacement(axis, nudge.amount);
+  }
+  flushEdit();
+  state.poseHud = "";
+  paintGizmoReadout();
+  renderChrome();
+}
+
+export function syncPreviewPending() {
+  document.querySelector("#pane3d")?.classList.toggle("is-pending", viewportPending(state.busy, !!state.result));
 }
 
 export function syncPlanes() {
@@ -706,6 +756,7 @@ export function paintSectionChrome() {
 }
 
 export function draw() {
+  syncPreviewPending();
   const w = fx.canvas.width;
   const h = fx.canvas.height;
   fx.ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -977,4 +1028,4 @@ export function mountViews() {
   view3d.onPlane((at) => commitSplit(splitOnBed(at)));
 }
 
-Object.assign(fx, { paintLegend, paintSlider, loadGcode, layerGcode, pathsOf, movesNow, paintPlayback, paintGcode, syncGcodeHighlight, paintSpark, stopPlay, togglePlay, scrub, setView, setStage, setHelp, placedAxisBounds, realignSplit, noticeBounds, refreshSplitNotice, commitSplit, syncSplitField, paintGizmoReadout, syncPlanes, clampPlane, paintRegionOverlay, previewMap, canvasPx, resize, previewCenter, sectionLimit, activeSection, sectionKeeps, paintSectionChrome, draw, segmentStart, applyGeom, sync3d, fitNarrow });
+Object.assign(fx, { paintLegend, paintSlider, loadGcode, layerGcode, pathsOf, movesNow, paintPlayback, paintGcode, syncGcodeHighlight, paintSpark, stopPlay, togglePlay, scrub, setView, setStage, setHelp, placedAxisBounds, realignSplit, noticeBounds, refreshSplitNotice, commitSplit, syncSplitField, paintGizmoReadout, syncPlanes, clampPlane, paintRegionOverlay, previewMap, canvasPx, resize, previewCenter, sectionLimit, activeSection, sectionKeeps, paintSectionChrome, draw, segmentStart, applyGeom, sync3d, fitNarrow, stepGizmo, syncPreviewPending });
