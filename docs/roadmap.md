@@ -39,16 +39,15 @@ A row is **done** when a user can do the thing and the engine honors it. **In pr
 - Sequential printing. Omitted order stays all-at-once. `sequential` finishes each object, supports and skirt included, before the next. Clearance is the mesh box. [#164](https://github.com/cristy-the-one/lime-slice/pull/164)
 - Belt floor supports, opt-in. `belt.floorSupports` is omitted when off, so a belt slice still prints no supports. With the flag, supports clip to the tilted belt and trunks land on it. A raft with the flag is refused. Edits and paint stay refused. [#165](https://github.com/cristy-the-one/lime-slice/pull/165)
 - A second filament on the machine, stored only. `secondFilamentId` is omitted when none is chosen. The slice request does not gain a field, and there is no tool change, purge tower, or second extruder. [#166](https://github.com/cristy-the-one/lime-slice/pull/166)
+- Repair audit in the sheet. After a slice, the triangle line shows repaired layers and dropped chains from the cut the slice already does. No interactive hole fill. [#167](https://github.com/cristy-the-one/lime-slice/pull/167)
 
 ### In progress
 
-None. The next pull request starts from the remaining list.
+None.
 
 ### Remaining, in the order this run will build them
 
-Each engine feature is opt-in or default-off, with a cartesian lock so an unused feature leaves G-code bytes and the request cache key unchanged. One feature per pull request. A short design note goes in the same pull request when the feature is small, and as its own note when it is not.
-
-1. **Repair audit in the sheet.** The engine already reports repaired and dropped chains. Show that text. No interactive hole fill.
+None. The deferred rows below stay deferred.
 
 ### Deferred, and why
 
@@ -441,7 +440,7 @@ Loaders fuse bodies (`crates/lime-slice-core/src/step.rs`, `parse_3mf_model` in 
 
 ### Repair
 
-**Status.** Partial.
+**Status.** Partial. After a slice the sheet shows repaired layers and dropped chains from the cut ([#167](https://github.com/cristy-the-one/lime-slice/pull/167)). There is still no repair button and no interactive hole fill. See the [checklist](#build-checklist-2026-10-06). The paragraph below is the 2026-10-03 gap.
 
 The slicer welds a broken contour and closes gaps up to 1.25 mm, and the audit reports repaired and dropped chains (README, `crates/lime-slice-core/src/audit.rs`). There is no repair button, no hole-fill preview, and no "discarded faces" dialog before the slice.
 

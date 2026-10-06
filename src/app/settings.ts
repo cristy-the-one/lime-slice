@@ -506,7 +506,9 @@ export function triangleMeta(result: SliceResponse | null) {
   if (!result) return "Triangles <b>—</b>";
   const tol = result.mesh.outlineToleranceMm ?? 0;
   const outline = tol > 0 ? ` · outline ${tol.toFixed(3)} mm` : "";
-  return `Triangles <b>${result.mesh.triangles}</b>${outline}`;
+  const repaired = result.mesh.repairedLayers ?? 0;
+  const dropped = result.mesh.droppedChains ?? 0;
+  return `Triangles <b>${result.mesh.triangles}</b>${outline}<br>Repaired layers ${repaired} · dropped chains ${dropped}`;
 }
 
 export function formatMs(ms: number) {

@@ -838,6 +838,10 @@ pub struct MeshInfo {
     pub outline_tolerance_mm: f64,
     pub min: [f64; 3],
     pub max: [f64; 3],
+    /// Layers whose contour closed a mesh gap. The cut already counts these.
+    pub repaired_layers: usize,
+    /// Open chains the cut could not close. Their outline is lost.
+    pub dropped_chains: usize,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -2195,10 +2199,14 @@ fn slice_plate(
             belt_tilt.as_ref(),
         )
     };
+    let repaired_layers = plans.iter().map(|plan| plan.cut.repaired_layers).sum();
+    let dropped_chains = plans.iter().map(|plan| plan.cut.dropped_chains).sum();
     let mesh = if listed {
         MeshInfo {
             triangles: objects.iter().map(|o| o.mesh.triangle_count()).sum(),
             outline_tolerance_mm: outline_tolerance(&settings, profile.nozzle_diameter),
+            repaired_layers,
+            dropped_chains,
             min: [
                 min_bed[0],
                 min_bed[1],
@@ -2219,6 +2227,8 @@ fn slice_plate(
             outline_tolerance_mm: outline_tolerance(&settings, profile.nozzle_diameter),
             min: bounds[0].0,
             max: bounds[0].1,
+            repaired_layers,
+            dropped_chains,
         }
     };
     let collisions = listed.then(|| {
@@ -3620,24 +3630,32 @@ fn cut_mesh(
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
     }
-    let cut: Vec<(Vec<Loop>, f64, f64)> = bands
+    let cut: Vec<(Vec<Loop>, f64, f64, usize, usize)> = bands
         .par_iter()
         .map(|band| {
             if watch.stopped(settings.job) {
-                return (Vec::new(), 0.0, 0.0);
+                return (Vec::new(), 0.0, 0.0, 0, 0);
             }
             let cut_started = Instant::now();
-            let raw = index.slice(band.cut_z());
+            let (raw, stats) = index.slice_with_stats(band.cut_z());
             let cut_ms = elapsed_ms(cut_started);
             let simplify_started = Instant::now();
             let loops = simplify_loops(raw, tolerance);
             watch.tick();
-            (loops, cut_ms, elapsed_ms(simplify_started))
+            (
+                loops,
+                cut_ms,
+                elapsed_ms(simplify_started),
+                usize::from(stats.bridged > 0),
+                stats.dropped,
+            )
         })
         .collect();
     let contour_ms = elapsed_ms(contour_started);
     let cut_cpu_ms = cut.iter().map(|row| row.1).sum();
     let simplify_cpu_ms = cut.iter().map(|row| row.2).sum();
+    let repaired_layers = cut.iter().map(|row| row.3).sum();
+    let dropped_chains = cut.iter().map(|row| row.4).sum();
     let contours = cut.into_iter().map(|row| row.0).collect();
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
@@ -3648,6 +3666,8 @@ fn cut_mesh(
     cut.clocks.index_ms = index_ms;
     cut.clocks.cut_cpu_ms = cut_cpu_ms;
     cut.clocks.simplify_cpu_ms = simplify_cpu_ms;
+    cut.repaired_layers = repaired_layers;
+    cut.dropped_chains = dropped_chains;
     Ok(cut)
 }
 
@@ -3668,6 +3688,9 @@ pub(crate) struct Contours {
     /// Each layer's XY box, `None` on an empty layer, found when first asked.
     boxes: std::sync::OnceLock<Vec<Option<XyRect>>>,
     clocks: CutClocks,
+    /// Layers that closed a mesh gap, and chains that stayed open.
+    repaired_layers: usize,
+    dropped_chains: usize,
 }
 
 /// Wall-clock and CPU time the cut took.
@@ -3703,6 +3726,8 @@ impl Contours {
             skins,
             in_air: std::sync::OnceLock::new(),
             boxes: std::sync::OnceLock::new(),
+            repaired_layers: 0,
+            dropped_chains: 0,
             clocks: CutClocks {
                 roof_ms: elapsed_ms(roof_started),
                 ..CutClocks::default()

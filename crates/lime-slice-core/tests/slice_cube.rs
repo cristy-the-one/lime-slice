@@ -124,6 +124,8 @@ fn speed_and_toughness_differ_and_gcode_is_printable() {
     )
     .unwrap();
     assert_eq!(speed.mesh.triangles, 12);
+    assert_eq!(speed.mesh.repaired_layers, 0);
+    assert_eq!(speed.mesh.dropped_chains, 0);
     assert_eq!(speed.sanity.layers, 100, "20 mm / 0.2 mm");
     assert!(speed.sanity.ok, "{:?}", speed.sanity.notes);
     assert!(tough.sanity.ok, "{:?}", tough.sanity.notes);
@@ -2910,6 +2912,20 @@ fn a_hole_in_the_mesh_does_not_drop_the_layer() {
     );
     assert_eq!(report.dropped_chains, 0);
     assert_eq!(report.repaired_layers, report.layers);
+    let reply = slice_configured(
+        &mesh,
+        &speed_mode(),
+        &profile(),
+        &SliceSettings {
+            include_gcode: false,
+            include_preview: false,
+            baseline: false,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(reply.mesh.repaired_layers, report.repaired_layers);
+    assert_eq!(reply.mesh.dropped_chains, report.dropped_chains);
     // One chord of a 64-gon, r = 10: 2·10·sin(π/64) ≈ 0.981 mm, every layer.
     let per_layer = report.bridged_mm / report.layers as f64;
     assert!(
@@ -2927,7 +2943,8 @@ fn open_chains_1_5mm_apart_stay_open() {
     let mut tris = Vec::new();
     open_sheet(&mut tris, 0.0, 8.0, 0.0, 0.0, 4.0);
     open_sheet(&mut tris, 0.0, 8.0, 1.5, 0.0, 4.0);
-    let report = audit(&Mesh { triangles: tris });
+    let mesh = Mesh { triangles: tris };
+    let report = audit(&mesh);
     assert_eq!(
         report.repaired_layers, 0,
         "1.5 mm gap was fused into a wall"
@@ -2946,6 +2963,20 @@ fn open_chains_1_5mm_apart_stay_open() {
         report.dropped_chains > 0,
         "the open chains were not left open"
     );
+    let reply = slice_configured(
+        &mesh,
+        &speed_mode(),
+        &profile(),
+        &SliceSettings {
+            include_gcode: false,
+            include_preview: false,
+            baseline: false,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(reply.mesh.repaired_layers, 0);
+    assert!(reply.mesh.dropped_chains > 0);
 }
 
 fn open_sheet(tris: &mut Vec<[[f64; 3]; 3]>, x0: f64, x1: f64, y: f64, z0: f64, z1: f64) {
