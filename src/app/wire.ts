@@ -40,6 +40,7 @@ import {
 import { pushToast } from "../ui/toasts";
 import {
   bootMachines,
+  noteBeltForm,
   chooseMachine,
   deleteMachine,
   duplicateMachine,
@@ -54,6 +55,10 @@ export function wireApp() {
   bootMachines();
   document.querySelector("#left")!.addEventListener("input", (ev) => {
     const target = ev.target as HTMLInputElement;
+    if (isBeltField(target)) {
+      noteBeltForm();
+      return;
+    }
     if (target.closest?.("[data-override-card]")) {
       editOverrideInput(target);
       return;
@@ -62,6 +67,10 @@ export function wireApp() {
   });
   document.querySelector("#left")!.addEventListener("change", (ev) => {
     const target = ev.target as HTMLElement;
+    if (isBeltField(target)) {
+      noteBeltForm();
+      return;
+    }
     if (target.id === "placeX" || target.id === "placeY") {
       const mm = Number((target as HTMLInputElement).value);
       if (!Number.isFinite(mm)) return;
@@ -514,4 +523,8 @@ export function wireApp() {
     if (!file) return;
     void file.arrayBuffer().then((bytes: ArrayBuffer) => adoptBytes(file.name, bytes)).catch(fail);
   });
+}
+
+function isBeltField(target: HTMLElement): boolean {
+  return target.id === "machineKind" || target.id.startsWith("belt");
 }

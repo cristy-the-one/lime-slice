@@ -14,6 +14,9 @@ import { seamSliceField } from "../seam";
 import { plateListed, slicePlateFields, sourceFrame, type PlateObject, type PlateRequestObject } from "../plate";
 import { paintRequestFields } from "../support-paint";
 import { noteTally } from "./paint-actions";
+import { loadMachineLibrary } from "./machine-library";
+import { beltStamp } from "../ui/machine-library";
+import { mockBeltSlice } from "../beltAdapter.mock";
 import { engineDownMessage, authHeaders } from "../ui/api-base";
 import { topLayerIndex } from "../ui/preview-ux";
 import { pushToast } from "../ui/toasts";
@@ -301,39 +304,53 @@ export async function runSlice(force = false) {
   let unlisten: (() => void) | undefined;
   let landed = false;
   try {
-    const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-    let send: (req: Record<string, unknown>) => Promise<SliceResponse>;
-    session.liveProgress = true;
-    if (tauri) {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const { listen } = await import("@tauri-apps/api/event");
-      unlisten = await listen<DesktopProgress>("slice-progress", ({ payload: p }) => {
-        noteJob(id, { id: "", stage: p.stage, done: p.done, total: p.total, fraction: p.progress, status: p.status });
-      });
-      const invokeSlice = async (body: Record<string, unknown>) => {
-        let text: string;
-        try {
-          text = await invoke<string>("slice_model", { payload: JSON.stringify(body) });
-        } catch (err) {
-          throw (typeof err === "string" && unknownMeshRef(err)) || err;
-        }
-        return parseInWorker(id, text);
-      };
-      send = (req) => sendWithMeshes(meshRefs, (named) => attachMeshes(req, named), invokeSlice);
+    const belt = beltStamp(loadMachineLibrary());
+    let body: SliceResponse;
+    if (belt) {
+      // MOCK. The engine does not slice a belt. This preview is not G-code.
+      body = await parseInWorker(id, JSON.stringify(mockBeltSlice({
+        bounds: state.placed?.bounds ?? null,
+        layerHeight: state.layerHeight,
+        belt,
+        triangles: Math.max(0, Math.round((state.placed?.positions.length ?? 0) / 9)),
+      })));
     } else {
-      send = (req) => sendWithMeshes(meshRefs, (named) => attachMeshes(req, named), (body) => runHttpSlice(id, bytes, req, body, meshFingerprint()));
-    }
-    if (id !== session.job) return;
-    let body = await send(request);
-    if (id !== session.job) return;
-    if (body.error) throw new Error(body.error);
-    if (body.previewPatch && !adoptPatch(id, body, base)) {
-      // The engine patched a preview this view no longer holds: ask for the whole one.
-      delete request.previewBase;
+      const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+      let send: (req: Record<string, unknown>) => Promise<SliceResponse>;
+      session.liveProgress = true;
+      if (tauri) {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const { listen } = await import("@tauri-apps/api/event");
+        unlisten = await listen<DesktopProgress>("slice-progress", ({ payload: p }) => {
+          noteJob(id, { id: "", stage: p.stage, done: p.done, total: p.total, fraction: p.progress, status: p.status });
+        });
+        const invokeSlice = async (body: Record<string, unknown>) => {
+          let text: string;
+          try {
+            text = await invoke<string>("slice_model", { payload: JSON.stringify(body) });
+          } catch (err) {
+            throw (typeof err === "string" && unknownMeshRef(err)) || err;
+          }
+          return parseInWorker(id, text);
+        };
+        send = (req) => sendWithMeshes(meshRefs, (named) => attachMeshes(req, named), invokeSlice);
+      } else {
+        send = (req) => sendWithMeshes(meshRefs, (named) => attachMeshes(req, named), (body) => runHttpSlice(id, bytes, req, body, meshFingerprint()));
+      }
+      if (id !== session.job) return;
       body = await send(request);
       if (id !== session.job) return;
       if (body.error) throw new Error(body.error);
+      if (body.previewPatch && !adoptPatch(id, body, base)) {
+        // The engine patched a preview this view no longer holds: ask for the whole one.
+        delete request.previewBase;
+        body = await send(request);
+        if (id !== session.job) return;
+        if (body.error) throw new Error(body.error);
+      }
     }
+    if (id !== session.job) return;
+    if (body.error) throw new Error(body.error);
     state.result = body;
     session.resultJob = id;
     session.resultFrame = frame;
@@ -349,7 +366,8 @@ export async function runSlice(force = false) {
     session.slicedPaint = paint;
     noteTally(body, paintedIndex, paint, paintBefore);
     if (recipe) {
-      if (storesReply(prev, { frame: partFrame, recipe })) cachedRecipes.add(recipe);
+      // A belt mock is not an engine result, so it does not join the slice cache.
+      if (!body.beltMock && storesReply(prev, { frame: partFrame, recipe })) cachedRecipes.add(recipe);
       session.shownRecipe = recipe;
     }
     state.layer = layerNear(body, session.chosenZ?.high, topLayerIndex(body.layers.length));

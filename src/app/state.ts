@@ -39,6 +39,8 @@ export interface SliceResponse {
   coreMs: number;
   baselineMs: number;
   blend: string;
+  /** Set by the belt mock. The preview is a sketch and the G-code is empty. */
+  beltMock?: boolean;
   /** Set when the engine loaded this slice from its cache instead of planning it. */
   fromCache?: boolean;
   slicedAtMs?: number;

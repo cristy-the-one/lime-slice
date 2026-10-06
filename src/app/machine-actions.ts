@@ -22,11 +22,14 @@ import {
   selection,
   serializeMachineFile,
   adoptLegacyLink,
+  beltStamp,
+  setActiveBelt,
   setAdvance,
   setGcode,
   type MachineLibrary,
   type MachineNumbers,
 } from "../ui/machine-library.ts";
+import { coerceBelt, type PrinterKind } from "../belt.ts";
 import { LEGACY_PRUSA_LINK_KEY, parseLegacyPrusaLink } from "../ui/prusa-link.ts";
 
 export function newMachineId(): string {
@@ -83,6 +86,40 @@ export function noteNozzle(mm: number) {
   syncAdvanceInputs(printer.pressureAdvance, printer.linearAdvance);
   const nozzle = document.querySelector<HTMLSelectElement>("#machineNozzle");
   if (nozzle) nozzle.value = String(Math.round(mm * 1000) / 1000);
+}
+
+/** Read the belt fields and store them on the active printer. A kind change rebuilds the panel. */
+export function noteBeltForm() {
+  const library = loadMachineLibrary();
+  const picked = selection(library);
+  const kindEl = document.querySelector<HTMLSelectElement>("#machineKind");
+  if (!picked || !kindEl) return;
+  const kind: PrinterKind = kindEl.value === "belt" ? "belt" : "cartesian";
+  const num = (id: string) => {
+    const el = document.querySelector<HTMLInputElement>(`#${id}`);
+    if (!el || el.value.trim() === "") return undefined;
+    const value = Number(el.value);
+    return Number.isFinite(value) ? value : undefined;
+  };
+  const unlimited = document.querySelector<HTMLInputElement>("#beltUnlimited")?.checked === true;
+  const axis = document.querySelector<HTMLSelectElement>("#beltAxis")?.value;
+  const direction = Number(document.querySelector<HTMLSelectElement>("#beltDirection")?.value);
+  const belt = coerceBelt({
+    angleDeg: num("beltAngle"),
+    axis,
+    direction,
+    widthMm: num("beltWidth"),
+    maxLengthMm: unlimited ? null : (num("beltLength") ?? picked.printer.belt.maxLengthMm ?? 200),
+    copies: num("beltCopies"),
+    gapMm: num("beltGap"),
+  }, picked.printer.bedX);
+  const next = setActiveBelt(library, kind, belt);
+  storeMachineLibrary(next);
+  syncBeltViews(next);
+  const length = document.querySelector<HTMLInputElement>("#beltLength");
+  if (length) length.disabled = belt.maxLengthMm == null;
+  if (kind !== picked.printer.kind) fx.renderChrome?.();
+  else fx.markStale?.();
 }
 
 export function noteGcode(startGcode: string, endGcode: string) {
@@ -178,6 +215,13 @@ function writeState(library: MachineLibrary) {
   saveProfile(state.profile);
   fx.prepare?.setBed(next.bedX, next.bedY, next.bedZ);
   fx.view3d?.setBed(next.bedX, next.bedY, next.bedZ);
+  syncBeltViews(library);
+}
+
+function syncBeltViews(library: MachineLibrary) {
+  const belt = beltStamp(library);
+  fx.prepare?.setBelt(belt);
+  fx.view3d?.setBelt(belt);
 }
 
 function currentNumbers(): MachineNumbers {

@@ -10,6 +10,7 @@ import { createModifierScene } from "./modifier-scene";
 import type { OverrideDocument } from "./overrides";
 import type { PlateBound } from "./plate";
 import type { PaintDisk, PaintKind, Vec3 } from "./support-paint";
+import { beltStripLength, tiltPose, type BeltSettings } from "./belt";
 import { hexToThree, themeColors } from "./theme";
 
 type Axis = "x" | "y" | "z";
@@ -29,6 +30,8 @@ export interface PrepareView {
   /** The same `canonical` array keeps the built geometry; only the pose matrix and bounds update. */
   setMesh(part: PlacedPart | null, frameCamera?: boolean): void;
   setBed(x: number, y: number, z: number): void;
+  /** A conveyor, or null for the cartesian plate. The tilted plane and the copies are visual. */
+  setBelt(belt: BeltSettings | null): void;
   setBedOpacity(opacity: number): void;
   setSplit(split: { axis: SplitAxis; at: number } | null): void;
   onSplit(cb: ((at: number) => void) | null): void;
@@ -101,6 +104,45 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   const volumeMat = new THREE.LineBasicMaterial({ color: hexToThree(colors.teal), transparent: true, opacity: 0.4 });
   const volume = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)), volumeMat);
   scene.add(volume);
+  const tiltMat = new THREE.MeshBasicMaterial({
+    color: hexToThree(colors.amber),
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.22,
+    depthWrite: false,
+  });
+  const tilt = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), tiltMat);
+  const tiltEdge = new THREE.LineLoop(
+    new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-0.5, -0.5, 0),
+      new THREE.Vector3(0.5, -0.5, 0),
+      new THREE.Vector3(0.5, 0.5, 0),
+      new THREE.Vector3(-0.5, 0.5, 0),
+    ]),
+    new THREE.LineBasicMaterial({ color: hexToThree(colors.amber) }),
+  );
+  tiltEdge.raycast = () => undefined;
+  tilt.add(tiltEdge);
+  tilt.visible = false;
+  tilt.raycast = () => undefined;
+  scene.add(tilt);
+  const beltArrow = new THREE.Line(
+    new THREE.BufferGeometry(),
+    new THREE.LineBasicMaterial({ color: hexToThree(colors.amber) }),
+  );
+  beltArrow.visible = false;
+  beltArrow.raycast = () => undefined;
+  scene.add(beltArrow);
+  const copyMat = new THREE.MeshStandardMaterial({
+    color: hexToThree(colors.mesh),
+    transparent: true,
+    opacity: 0.28,
+    roughness: 0.55,
+    metalness: 0.05,
+    depthWrite: false,
+  });
+  const ghosts = new THREE.Group();
+  scene.add(ghosts);
   const triad = buildTriad(colors.axisX, colors.axisY, colors.axisZ);
   scene.add(triad);
 
@@ -207,6 +249,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let bedX = 220;
   let bedY = 220;
   let bedZ = 250;
+  let belt: BeltSettings | null = null;
   let splitCb: ((at: number) => void) | null = null;
   let rotateCb: ((axis: Axis, deltaDeg: number, totalDeg: number) => void) | null = null;
   let rotateEndCb: (() => void) | null = null;
@@ -298,23 +341,84 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   controls.addEventListener("change", requestRender);
 
   function layoutBed() {
-    syncBedGrid(bed, bedX, bedY, hexToThree(colors.line), hexToThree(colors.bedMinor));
-    plate.scale.set(bedX, bedY, 1);
-    plate.position.set(bedX / 2, -0.04, -bedY / 2);
-    volume.scale.set(bedX, bedZ, bedY);
-    volume.position.set(bedX / 2, bedZ / 2, -bedY / 2);
+    const depth = meshBounds ? Math.max(1, meshBounds.max[1] - meshBounds.min[1]) : 30;
+    const strip = belt ? beltStripLength(belt, depth) : null;
+    const spanX = strip ? belt!.widthMm : bedX;
+    const spanY = strip ? strip.lengthMm : bedY;
+    syncBedGrid(bed, spanX, spanY, hexToThree(colors.line), hexToThree(colors.bedMinor));
+    plate.scale.set(spanX, spanY, 1);
+    plate.position.set(spanX / 2, -0.04, -spanY / 2);
+    volume.visible = !belt;
+    volume.scale.set(spanX, bedZ, spanY);
+    volume.position.set(spanX / 2, bedZ / 2, -spanY / 2);
     const y = 0.08;
     bedEdge.geometry.dispose();
     bedEdge.geometry = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(0, y, 0),
-      new THREE.Vector3(bedX, y, 0),
-      new THREE.Vector3(bedX, y, -bedY),
-      new THREE.Vector3(0, y, -bedY),
+      new THREE.Vector3(spanX, y, 0),
+      new THREE.Vector3(spanX, y, -spanY),
+      new THREE.Vector3(0, y, -spanY),
     ]);
     triad.position.set(0, 0.2, 0);
+    if (belt && strip) {
+      const pose = tiltPose(spanX, bedZ, belt.angleDeg);
+      tilt.visible = true;
+      tilt.scale.set(spanX, pose.slopeMm, 1);
+      tilt.rotation.set(pose.rotationX, 0, 0);
+      tilt.position.set(pose.x, pose.y, pose.z);
+      beltArrow.visible = true;
+      beltArrow.geometry.dispose();
+      beltArrow.geometry = beltArrowGeometry(spanX, spanY, belt.direction);
+      canvas.dataset.belt = "1";
+      canvas.dataset.beltPlane = "1";
+      canvas.dataset.beltCopies = String(belt.copies);
+      canvas.dataset.beltAngle = String(belt.angleDeg);
+      canvas.dataset.beltLength = strip.lengthMm.toFixed(1);
+      canvas.dataset.beltUnlimited = strip.unlimited ? "1" : "0";
+    } else {
+      tilt.visible = false;
+      beltArrow.visible = false;
+      canvas.dataset.belt = "0";
+      canvas.dataset.beltPlane = "0";
+      canvas.dataset.beltCopies = "0";
+      canvas.dataset.beltAngle = "";
+      canvas.dataset.beltLength = "";
+      canvas.dataset.beltUnlimited = "0";
+    }
+    syncGhosts();
     syncModifiers();
     requestRender();
   }
+
+  function clearGhosts() {
+    for (const child of [...ghosts.children]) {
+      ghosts.remove(child);
+    }
+  }
+
+  function syncGhosts() {
+    clearGhosts();
+    if (!belt || !mesh || !meshBounds || belt.copies < 2) return;
+    const depth = Math.max(1, meshBounds.max[1] - meshBounds.min[1]);
+    const stride = depth + Math.max(0, belt.gapMm);
+    const sign = belt.direction >= 0 ? 1 : -1;
+    for (let i = 1; i < belt.copies; i++) {
+      const copy = new THREE.Mesh(mesh.geometry, copyMat);
+      copy.matrixAutoUpdate = false;
+      copy.matrix.copy(mesh.matrix);
+      copy.matrix.elements[14] -= sign * i * stride;
+      copy.matrixWorldNeedsUpdate = true;
+      copy.raycast = () => undefined;
+      const outline = mesh.children[0] as THREE.LineSegments | undefined;
+      if (outline?.geometry) {
+        const line = new THREE.LineSegments(outline.geometry, outlineMat);
+        line.raycast = () => undefined;
+        copy.add(line);
+      }
+      ghosts.add(copy);
+    }
+  }
+
   function frameBed() {
     camera.position.set(bedX * 0.85, bedZ * 0.55, bedY * 0.95);
     controls.target.set(bedX / 2, Math.min(30, bedZ * 0.12), -bedY / 2);
@@ -894,6 +998,12 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       layoutBed();
       rebuildCut();
     },
+    setBelt(next) {
+      belt = next;
+      cutKey = "";
+      layoutBed();
+      rebuildCut();
+    },
     setBedOpacity(opacity) {
       const o = Math.min(1, Math.max(0, opacity));
       const solid = o >= 0.999;
@@ -912,6 +1022,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       const canonical = part && part.canonical.length >= 9 ? part.canonical : null;
       if (canonical !== meshSource) {
         meshSource = canonical;
+        clearGhosts();
         if (mesh) {
           scene.remove(mesh);
           mesh.traverse((node) => {
@@ -940,6 +1051,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
         mesh.matrix.set(a, b, c, d, i, j, k, l, -e, -f, -g, -h, 0, 0, 0, 1);
         mesh.matrixWorldNeedsUpdate = true;
       }
+      if (belt) layoutBed();
+      else clearGhosts();
       drawPaint();
       placeGizmo();
       cutKey = "";
@@ -1005,12 +1118,16 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       material.color.setHex(hexToThree(colors.mesh));
       (bedEdge.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.teal));
       volumeMat.color.setHex(hexToThree(colors.teal));
+      tiltMat.color.setHex(hexToThree(colors.amber));
+      (tiltEdge.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.amber));
+      (beltArrow.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.amber));
+      copyMat.color.setHex(hexToThree(colors.mesh));
       for (const [axis, { ringMat, moveMats }] of handles) {
         ringMat.color.setHex(axisHex(axis));
         for (const mat of moveMats) mat.color.setHex(axisHex(axis));
       }
       bed.userData.gridKey = "";
-      syncBedGrid(bed, bedX, bedY, hexToThree(colors.line), hexToThree(colors.bedMinor));
+      layoutBed();
       syncPlateBounds();
       drawPaint();
       requestRender();
@@ -1091,6 +1208,23 @@ function muteViewHelper(helper: THREE.Object3D) {
 
 function ghostMat() {
   return new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
+}
+
+function beltArrowGeometry(width: number, length: number, direction: 1 | -1): THREE.BufferGeometry {
+  const sign = direction >= 0 ? 1 : -1;
+  const tail = sign > 0 ? length * 0.12 : length * 0.88;
+  const head = sign > 0 ? length * 0.88 : length * 0.12;
+  const back = head - sign * Math.min(18, length * 0.08);
+  const x = width / 2;
+  const z = (printY: number) => -printY;
+  const y = 0.35;
+  return new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(x, y, z(tail)),
+    new THREE.Vector3(x, y, z(head)),
+    new THREE.Vector3(x - 8, y, z(back)),
+    new THREE.Vector3(x, y, z(head)),
+    new THREE.Vector3(x + 8, y, z(back)),
+  ]);
 }
 
 function tagHandle(mesh: THREE.Object3D, kind: HandleHit["kind"], axis: Axis) {

@@ -14,7 +14,8 @@ import { type PresetSettings, DEFAULT_PRESET, presetKeys, readPresets, diffPrese
 import { loadProfile, type PrinterProfile, saveProfile } from "../profiles";
 import { noteAdvance, noteGcode, noteNozzle } from "./machine-actions";
 import { loadMachineLibrary } from "./machine-library";
-import { machineSectionHtml } from "../ui/machine-library";
+import { BELT_MOCK_BANNER, BELT_MOCK_EXPORT } from "../belt";
+import { beltStamp, machineSectionHtml } from "../ui/machine-library";
 import { prusaSummary, rememberPrusaForm, syncSendButtons } from "./prusa-actions";
 import { canRedoEdit, canUndoEdit, noteEdit } from "./history";
 import { loadProfileLibrary } from "./profile-library";
@@ -56,7 +57,9 @@ export function settingsHash() {
   const { filamentDensityGCm3: _density, filamentCostPerKg: _cost, ...profile } = state.profile;
   // Ironing counts as it is sent, so a number changed while it is off stales nothing.
   const ironing = ironingRequest({ on: state.ironing, flow: state.ironingFlow, speed: state.ironingSpeed, spacing: state.ironingSpacing });
-  const hashed = { mesh, profile, rest, ...ironing };
+  // A cartesian printer leaves this off, so its hash is the one it had before belt profiles.
+  const belt = beltStamp(loadMachineLibrary());
+  const hashed = { mesh, profile, rest, ...ironing, ...(belt ? { belt } : {}) };
   if (state.plate.objects.length > 1) {
     return JSON.stringify({
       ...hashed,
@@ -189,7 +192,7 @@ export function renderChrome() {
   fx.paintForceButton(document.querySelector<HTMLButtonElement>("#force")!);
   sliceBtn.disabled = state.busy || !state.mesh;
   (document.querySelector("#cancel") as HTMLButtonElement).disabled = !state.busy;
-  (document.querySelector("#export") as HTMLButtonElement).disabled = !result || isStale || state.busy;
+  paintExport(document.querySelector("#export"), isStale);
   syncSendButtons();
   document.querySelector("#timing")!.textContent = timingText();
   const warn = staleWarning();
@@ -211,6 +214,7 @@ function timingText() {
   const result = state.result;
   if (state.busy) return busyText();
   if (!result) return "No slice yet";
+  if (result.beltMock) return "Mock preview · no print time";
   const seconds = result.estimate?.seconds ?? 0;
   return `${seconds / 60 < 1 ? `${seconds.toFixed(0)} s` : `${(seconds / 60).toFixed(1)} min`} · ${shownGrams(result).toFixed(2)} g`;
 }
@@ -363,6 +367,7 @@ export function paintBanner(isStale: boolean) {
   const bits: string[] = [];
   if (state.engine) bits.push(bannerLine(state.engine));
   if (state.error) bits.push(bannerLine(state.error, "", true));
+  if (state.result?.beltMock) bits.push(bannerLine(BELT_MOCK_BANNER, "warn"));
   if (state.notice) bits.push(bannerLine(state.notice, "warn"));
   if (isStale) bits.push(bannerLine(staleSliceCopy(fx.currentSliceAction(false).state).banner, "warn"));
   if (state.result && !state.result.sanity.ok) bits.push(bannerLine(state.result.sanity.notes.join(" ") || "G-code checks failed"));
@@ -509,6 +514,7 @@ export function stageHtml(result: SliceResponse | null) {
 }
 
 export function estimateHtml() {
+  if (state.result?.beltMock) return `<div class="meta">${escapeHtml(BELT_MOCK_BANNER)}</div>`;
   const est = state.result?.estimate;
   if (!est) return `<div class="meta">Slice to compare minutes and grams.</div>`;
   const groups = groupFeatures(est.byFeature ?? [], state.profile);
@@ -1008,6 +1014,14 @@ export function touch() {
   fx.scheduleAuto();
 }
 
+function paintExport(button: HTMLButtonElement | null, isStale: boolean) {
+  if (!button) return;
+  const mock = state.result?.beltMock === true;
+  button.disabled = !state.result || isStale || state.busy || mock;
+  if (mock) button.dataset.tip = BELT_MOCK_EXPORT;
+  else if (button.dataset.tip === BELT_MOCK_EXPORT) button.dataset.tip = "Save G-code";
+}
+
 export function markStale() {
   const sliceBtn = document.querySelector<HTMLButtonElement>("#slice");
   const forceBtn = document.querySelector<HTMLButtonElement>("#force");
@@ -1015,7 +1029,7 @@ export function markStale() {
   const isStale = stale();
   if (sliceBtn) fx.paintSliceButton(sliceBtn);
   if (forceBtn) fx.paintForceButton(forceBtn);
-  if (exp) exp.disabled = !state.result || isStale || state.busy;
+  paintExport(exp, isStale);
   syncSendButtons();
   const warn = staleWarning();
   document.querySelector("#stage")?.classList.toggle("stale", warn);
