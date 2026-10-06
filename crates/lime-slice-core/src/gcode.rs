@@ -302,6 +302,7 @@ pub(crate) fn emit_gcode(
     junction_deviation_mm: f64,
     offsets: &[[f64; 2]],
     belt: Option<&crate::belt::Belt>,
+    flow: f64,
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> GcodeStats {
@@ -317,6 +318,7 @@ pub(crate) fn emit_gcode(
         junction_deviation_mm,
         offsets,
         belt,
+        flow,
         job,
         watch,
         true,
@@ -340,6 +342,7 @@ pub(crate) fn emit_estimates(
     junction_deviation_mm: f64,
     offsets: &[[f64; 2]],
     belt: Option<&crate::belt::Belt>,
+    flow: f64,
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> GcodeStats {
@@ -355,6 +358,7 @@ pub(crate) fn emit_estimates(
         junction_deviation_mm,
         offsets,
         belt,
+        flow,
         job,
         watch,
         true,
@@ -378,6 +382,7 @@ pub(crate) fn emit_later(
     junction_deviation_mm: f64,
     offsets: &[[f64; 2]],
     belt: Option<&crate::belt::Belt>,
+    flow: f64,
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> (GcodeStats, GcodeText) {
@@ -393,6 +398,7 @@ pub(crate) fn emit_later(
         junction_deviation_mm,
         offsets,
         belt,
+        flow,
         job,
         watch,
         true,
@@ -419,6 +425,7 @@ pub(crate) fn emit_gcode_linear(
     junction_deviation_mm: f64,
     offsets: &[[f64; 2]],
     belt: Option<&crate::belt::Belt>,
+    flow: f64,
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> GcodeStats {
@@ -434,6 +441,7 @@ pub(crate) fn emit_gcode_linear(
         junction_deviation_mm,
         offsets,
         belt,
+        flow,
         job,
         watch,
         false,
@@ -455,6 +463,7 @@ fn emit_gcode_inner(
     junction_deviation_mm: f64,
     offsets: &[[f64; 2]],
     belt: Option<&crate::belt::Belt>,
+    flow: f64,
     job: crate::cancel::Job,
     watch: &Watch,
     parallel: bool,
@@ -467,6 +476,7 @@ fn emit_gcode_inner(
         junction_deviation_mm,
         offsets,
         belt,
+        flow,
     );
     let junction_deviation = cfg.junction_deviation;
     let emit_total = layers
@@ -623,6 +633,8 @@ struct EmitCfg {
     /// Set for a belt slice. Cartesian emit leaves this empty and writes
     /// the same bytes it wrote before belt existed.
     belt: Option<crate::belt::Belt>,
+    /// Multiplies every extrusion. `1` leaves the filament length unchanged.
+    flow_scale: f64,
 }
 
 impl EmitCfg {
@@ -633,6 +645,7 @@ impl EmitCfg {
         junction_deviation_mm: f64,
         offsets: &[[f64; 2]],
         belt: Option<&crate::belt::Belt>,
+        flow: f64,
     ) -> Self {
         let offsets = if offsets.is_empty() {
             Arc::from([[0.0, 0.0]])
@@ -664,6 +677,7 @@ impl EmitCfg {
             emit_pa: profile.pressure_advance > 0.0 || profile.linear_advance > 0.0,
             offsets,
             belt: belt.copied(),
+            flow_scale: if flow.is_finite() { flow } else { 1.0 },
         }
     }
 }
@@ -851,7 +865,7 @@ pub(crate) fn scans_in_parallel(
     arc_fit: bool,
     classic_estimator: bool,
 ) -> bool {
-    let cfg = EmitCfg::new(profile, arc_fit, classic_estimator, 0.0, &[], None);
+    let cfg = EmitCfg::new(profile, arc_fit, classic_estimator, 0.0, &[], None, 1.0);
     scan_layers(&cfg, layers, crate::cancel::Job::default(), &Watch::idle()).is_some()
 }
 
@@ -980,6 +994,7 @@ struct Writer {
     frame: u16,
     offset: [f64; 2],
     belt: Option<crate::belt::Belt>,
+    flow_scale: f64,
 }
 
 struct KinMove {
@@ -1047,6 +1062,7 @@ impl Writer {
             frame: carry.frame,
             offset: cfg.offsets[carry.frame as usize],
             belt: cfg.belt,
+            flow_scale: cfg.flow_scale,
         }
     }
 
@@ -1175,7 +1191,10 @@ impl Writer {
         } else {
             path.speed
         };
-        let flow = if layer.index == 0 { 1.06 } else { 1.0 };
+        let layer_flow = if layer.index == 0 { 1.06 } else { 1.0 };
+        // `1.0` times the layer flow is the same float, so an unused multiplier
+        // leaves every E value where it was.
+        let flow = layer_flow * self.flow_scale;
         if !self.quiet {
             self.comment(&format!("TYPE:{}", path.kind.as_str().to_ascii_uppercase()));
         }

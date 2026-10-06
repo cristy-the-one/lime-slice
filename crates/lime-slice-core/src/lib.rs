@@ -25,8 +25,9 @@ mod toolpath;
 
 pub use audit::{audit_slice, SliceAudit};
 pub use calibrate::{
-    pressure_advance_from_request, pressure_advance_tower, PaBand, PaCalib, PaCalibOutput,
-    PaCalibRequest, PaFirmware,
+    flow_from_request, flow_tower, pressure_advance_from_request, pressure_advance_tower, FlowBand,
+    FlowCalib, FlowCalibOutput, FlowCalibRequest, PaBand, PaCalib, PaCalibOutput, PaCalibRequest,
+    PaFirmware,
 };
 pub use cancel::{cancel_all, Job};
 pub use gcode::GcodeText;

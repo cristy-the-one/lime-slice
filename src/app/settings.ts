@@ -12,7 +12,7 @@ import { offBed } from "../mesh-place";
 import { boundsSize, overlapPairs, placeObject, selectedObject } from "../plate";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys, readPresets, diffPreset } from "../presets";
 import { loadProfile, type PrinterProfile, saveProfile } from "../profiles";
-import { noteAdvance, noteGcode, noteNozzle } from "./machine-actions";
+import { noteAdvance, noteFlow, noteGcode, noteNozzle } from "./machine-actions";
 import { loadMachineLibrary } from "./machine-library";
 import { beltStamp, machineSectionHtml } from "../ui/machine-library";
 import { prusaSummary, rememberPrusaForm, syncSendButtons } from "./prusa-actions";
@@ -52,7 +52,7 @@ export function staleWarning() {
 export function settingsHash() {
   const shift = state.offset;
   const mesh = state.mesh ? `${state.mesh.name}:${state.mesh.bytes.byteLength}:${state.partScale}:${state.centered}:${shift.x.toFixed(3)},${shift.y.toFixed(3)},${shift.z.toFixed(3)}:${state.orient.join(",")}` : "";
-  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, selectedVolumeId: _sel, modifierTool: _mt, plate: _plate, profile: _profile, ironing: _ironing, ironingFlow: _ironingFlow, ironingSpeed: _ironingSpeed, ironingSpacing: _ironingSpacing, fuzzySkin: _fuzzy, fuzzyThickness: _fuzzyThickness, fuzzyPointDistance: _fuzzyDistance, ...rest } = state;
+  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, flowBands: _fb, flowGcode: _fg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, selectedVolumeId: _sel, modifierTool: _mt, plate: _plate, profile: _profile, ironing: _ironing, ironingFlow: _ironingFlow, ironingSpeed: _ironingSpeed, ironingSpacing: _ironingSpacing, fuzzySkin: _fuzzy, fuzzyThickness: _fuzzyThickness, fuzzyPointDistance: _fuzzyDistance, ...rest } = state;
   // Price and density only weigh the estimate, which the UI computes from the reply.
   const { filamentDensityGCm3: _density, filamentCostPerKg: _cost, ...profile } = state.profile;
   // Ironing counts as it is sent, so a number changed while it is off stales nothing.
@@ -159,6 +159,17 @@ export function renderChrome() {
           ${num("pachosen", "Chosen K", state.paFirmware === "marlin" ? state.linearAdvance : state.pressureAdvance, 0, 2, 0.005)}
           <button class="btn" id="paapply" type="button">Save K to profile</button>
           <button class="btn" id="paexport" type="button">Export PA G-code</button>` : ""}
+      `, "expert")}
+      ${group("Flow calibration", `
+        ${num("flowstart", "Flow start", state.flowStart, 0.5, 1.5, 0.01, "expert")}
+        ${num("flowend", "Flow end", state.flowEnd, 0.5, 1.5, 0.01, "expert")}
+        ${num("flowstep", "Flow step", state.flowStep, 0.01, 0.2, 0.01, "expert")}
+        <button class="btn" id="flowcal" type="button">Generate flow test</button>
+        ${state.flowBands.length ? `<div class="meta">${state.flowBands.map((b) => `band ${b.index}: flow ${b.flow.toFixed(3)} · Z ${b.z0.toFixed(2)}–${b.z1.toFixed(2)}`).join("<br>")}</div>
+          ${num("flowchosen", "Chosen flow", state.flow, 0.5, 1.5, 0.01)}
+          <button class="btn" id="flowapply" type="button">Save flow to filament</button>
+          <button class="btn" id="flowexport" type="button">Export flow G-code</button>` : ""}
+        <p class="meta">Each band is one hollow wall. The length of extrusion is the band's multiplier. Saving writes that multiplier onto the filament. 1 leaves a slice unchanged.</p>
       `, "expert")}
       <label class="check setting" data-level="advanced" data-label="auto-slice under 50k triangles"><input id="autoslice" type="checkbox" ${state.autoSlice ? "checked" : ""}/> Auto-slice under 50k triangles</label>
       <div class="meta">${triangleMeta(result)}</div>
@@ -600,7 +611,7 @@ export function objectList() {
 export function profileFields() {
   const p = state.profile;
   return `
-    ${machineSectionHtml(loadMachineLibrary(), { pressureAdvance: state.pressureAdvance, nozzleTemp: p.nozzleTemp, bedTemp: p.bedTemp }, prusaSummary())}
+    ${machineSectionHtml(loadMachineLibrary(), { pressureAdvance: state.pressureAdvance, nozzleTemp: p.nozzleTemp, bedTemp: p.bedTemp, flow: state.flow }, prusaSummary())}
     ${num("nozzle", "Nozzle mm", p.nozzleDiameter, 0.15, 1.2, 0.05, "simple")}
     ${num("bedx", "Bed X mm", p.bedX, 50, 1000, 1, "simple")}
     ${num("bedy", "Bed Y mm", p.bedY, 50, 1000, 1, "simple")}
@@ -900,10 +911,16 @@ export function onSettings(ev: Event) {
     markStale();
     return;
   }
+  if (t.id === "machineFlow") {
+    noteFlow(Number(t.value));
+    markProjectDirty();
+    markStale();
+    return;
+  }
   if (t.closest("[data-override-card]")) return;
   noteEdit();
   markProjectDirty();
-  const numIds = ["lh", "amin", "amax", "pa", "la", "zhopht", "zhopmin", "scarflen", "scarfsteps", "sangle", "bangle", "tipd", "trunkd", "shmult", "pastart", "paend", "pastep", "nozzle", "bedx", "bedy", "bedz", "vol", "accel", "density", "cost", "partScale", "simperr"] as const;
+  const numIds = ["lh", "amin", "amax", "pa", "la", "zhopht", "zhopmin", "scarflen", "scarfsteps", "sangle", "bangle", "tipd", "trunkd", "shmult", "pastart", "paend", "pastep", "flowstart", "flowend", "flowstep", "nozzle", "bedx", "bedy", "bedz", "vol", "accel", "density", "cost", "partScale", "simperr"] as const;
   const map: Record<string, (v: number) => void> = {
     lh: (v) => { state.layerHeight = v || 0.2; },
     amin: (v) => { state.adaptiveMin = v || 0.08; },
@@ -922,6 +939,9 @@ export function onSettings(ev: Event) {
     pastart: (v) => { state.paStart = v || 0; },
     paend: (v) => { state.paEnd = v || 0; },
     pastep: (v) => { state.paStep = v || 0.005; },
+    flowstart: (v) => { state.flowStart = v || 0.9; },
+    flowend: (v) => { state.flowEnd = v || 1.1; },
+    flowstep: (v) => { state.flowStep = v || 0.05; },
     nozzle: (v) => { state.profile.nozzleDiameter = v || 0.4; noteNozzle(state.profile.nozzleDiameter); },
     bedx: (v) => { state.profile.bedX = v || 220; },
     bedy: (v) => { state.profile.bedY = v || 220; },

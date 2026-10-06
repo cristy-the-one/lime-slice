@@ -25,6 +25,7 @@ import {
   beltStamp,
   setActiveBelt,
   setAdvance,
+  setFlow,
   setGcode,
   type MachineLibrary,
   type MachineNumbers,
@@ -57,6 +58,17 @@ export function chooseMachine(printerId: string, filamentId: string, nozzleMm: n
     return;
   }
   commitSwitch(next);
+}
+
+export function noteFlow(flow: number) {
+  noteEdit();
+  const value = Math.min(1.5, Math.max(0.5, Math.round((Number.isFinite(flow) ? flow : 1) * 1000) / 1000));
+  state.flow = value;
+  storeMachineLibrary(setFlow(loadMachineLibrary(), value));
+  const machineFlow = document.querySelector<HTMLInputElement>("#machineFlow");
+  if (machineFlow && document.activeElement !== machineFlow) machineFlow.value = String(value);
+  const chosen = document.querySelector<HTMLInputElement>("#flowchosen");
+  if (chosen && document.activeElement !== chosen) chosen.value = String(value);
 }
 
 export function noteAdvance(pressure: number, linear: number) {
@@ -216,6 +228,7 @@ function writeState(library: MachineLibrary) {
   state.profile = next;
   state.pressureAdvance = next.pressureAdvance;
   state.linearAdvance = next.linearAdvance;
+  state.flow = picked.filament.flow;
   saveProfile(state.profile);
   fx.prepare?.setBed(next.bedX, next.bedY, next.bedZ);
   fx.view3d?.setBed(next.bedX, next.bedY, next.bedZ);
@@ -249,6 +262,7 @@ function currentNumbers(): MachineNumbers {
     filamentCostPerKg: state.profile.filamentCostPerKg,
     pressureAdvance: state.pressureAdvance,
     linearAdvance: state.linearAdvance,
+    flow: state.flow,
     startGcode,
     endGcode,
     host: hostField?.value.trim() ?? picked?.host ?? "",

@@ -8,7 +8,7 @@ import { clampOffset, flipSection } from "../section-plane";
 import { wheelNotch } from "../gizmo-math";
 import { state, type CardId } from "./state";
 import { draw, layerGcode, paintPlayback, paintSectionChrome, prepare, realignSplit, scrub, sectionLimit, setHelp, setStage, setView, stepGizmo, stopPlay, syncGcodeHighlight, togglePlay, view3d } from "./viewer";
-import { applyPareto, cancelSlice, runPaCal, runPareto, runSlice } from "./slice-run";
+import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runSlice } from "./slice-run";
 import { adoptBytes, export3mf, exportGcode, fail, loadNamed, place, saveText, setPlaceCenter } from "./files";
 import { mountProjectFiles, saveCurrentProject } from "./project-io";
 import { pickProjectFile } from "../platform";
@@ -41,6 +41,7 @@ import { pushToast } from "../ui/toasts";
 import {
   bootMachines,
   noteBeltForm,
+  noteFlow,
   chooseMachine,
   deleteMachine,
   duplicateMachine,
@@ -119,6 +120,7 @@ export function wireApp() {
   document.querySelector("#left")!.addEventListener("click", (ev) => {
     const t = ev.target as HTMLElement;
     if (t.id === "pacal") void runPaCal();
+    if (t.id === "flowcal") void runFlowCal();
     if (t.id === "undoEdit") {
       undoUserEdit();
       return;
@@ -135,6 +137,13 @@ export function wireApp() {
       touch();
     }
     if (t.id === "paexport" && state.paGcode) void saveText(state.paGcode, "pa-calibration.gcode", "gcode");
+    if (t.id === "flowapply") {
+      noteEdit();
+      noteFlow(Number((document.querySelector("#flowchosen") as HTMLInputElement).value));
+      touch();
+      return;
+    }
+    if (t.id === "flowexport" && state.flowGcode) void saveText(state.flowGcode, "flow-calibration.gcode", "gcode");
     if (t.id === "profileSave") {
       const typed = typedProfileName();
       if (typed) saveSettingsProfile(typed);

@@ -24,6 +24,8 @@ export interface PresetSettings {
   featureSpeeds: boolean;
   pressureAdvance: number;
   linearAdvance: number;
+  /** Extrusion multiplier. `1` is omitted from a slice. */
+  flow: number;
   variableWidth: boolean;
   arcFit: boolean;
   travelOpt: boolean;
@@ -80,6 +82,7 @@ export const DEFAULT_PRESET: PresetSettings = {
   featureSpeeds: true,
   pressureAdvance: 0,
   linearAdvance: 0,
+  flow: 1,
   variableWidth: true,
   arcFit: true,
   travelOpt: true,
@@ -130,6 +133,7 @@ const LABELS: Record<keyof PresetSettings, string> = {
   featureSpeeds: "Feature speeds",
   pressureAdvance: "Pressure advance",
   linearAdvance: "Linear advance",
+  flow: "Flow",
   variableWidth: "Variable walls",
   arcFit: "Arc fit",
   travelOpt: "Travel and seam",
@@ -160,7 +164,7 @@ export function presetKeys(): (keyof PresetSettings)[] {
 }
 
 /** Keys added after project and profile files were versioned. A file written before one reads its default. */
-const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance"]);
+const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow"]);
 
 /** The preset a project or profile file stores, or null when a key is missing or has the wrong type. */
 export function readPresetSettings(value: unknown): PresetSettings | null {

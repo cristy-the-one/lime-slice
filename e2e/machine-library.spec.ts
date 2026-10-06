@@ -26,6 +26,7 @@ test("filament and nozzle pick the pressure advance, and a bad file can be retri
   await expect(page.locator("#machineFilament")).toHaveValue("lime-pla");
   await expect(page.locator("#machineNozzle")).toHaveValue("0.4");
   await expect(page.locator("#machinePa")).toHaveValue("0");
+  await expect(page.locator("#machineFlow")).toHaveValue("1");
   await expect(page.locator("#machineTemps")).toHaveText("Nozzle 200 °C · bed 60 °C");
 
   await page.locator("#machineFilament").selectOption("lime-petg");
