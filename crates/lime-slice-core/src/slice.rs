@@ -159,6 +159,15 @@ pub struct SliceRequest {
     /// Retract and unretract speed in mm/s. Left out to keep 30 mm/s.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retract_speed: Option<f64>,
+    /// Sparse infill for this object, 0 to 1. Left out to keep the strategy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub infill: Option<f64>,
+    /// Wall count for this object, 1 to 12. Left out to keep the strategy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub walls: Option<u32>,
+    /// Speed cap for this object, mm/s. Left out to keep the strategy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f64>,
     /// `blend` follows the strategy, or `off` / `outer` / `all`.
     #[serde(default)]
     pub scarf_seam: ScarfSeam,
@@ -352,6 +361,9 @@ pub struct SliceSettings {
     /// Height ranges and modifier volumes. Volumes are in bed coordinates
     /// until the plate moves them into each part frame.
     pub overrides: Overrides,
+    /// Infill, walls, and speed for this object. Empty keeps the strategy.
+    /// A range or volume wins on each field it sets.
+    pub object_tweak: Tweak,
     /// Report the tree outline on the response.
     pub include_skeleton: bool,
     /// The preview the client holds, from `SliceRequest::preview_base`.
@@ -411,6 +423,7 @@ impl Default for SliceSettings {
             support_paint: Vec::new(),
             seam_paint: Vec::new(),
             overrides: Overrides::default(),
+            object_tweak: Tweak::default(),
             include_skeleton: false,
             preview_base: None,
             job: Job::default(),
@@ -536,6 +549,11 @@ impl SliceSettings {
             support_paint: Vec::new(),
             seam_paint: Vec::new(),
             overrides: Overrides::default(),
+            object_tweak: Tweak {
+                infill: req.infill,
+                walls: req.walls,
+                speed: req.speed,
+            },
             include_skeleton: req.include_skeleton,
             preview_base: req.preview_base.clone(),
             job: Job::default(),
@@ -1591,6 +1609,16 @@ fn slice_plate(
             }
         })
         .collect();
+    for (i, object) in objects.iter().enumerate() {
+        let tweak = object.settings.object_tweak;
+        if let Err(err) = wire::tweak(tweak.infill, tweak.walls, tweak.speed) {
+            return Err(if listed {
+                format!("objects[{i}].settings: {err}")
+            } else {
+                err
+            });
+        }
+    }
     let seam_disks: usize = objects.iter().map(|o| o.settings.seam_paint.len()).sum();
     if seam_disks > 0 {
         features.push_str(&format!("; seam paint {seam_disks} disks"));
@@ -4823,12 +4851,24 @@ fn interior_remainings(
     };
     match blend {
         BlendMode::ByRegion { .. } => {
-            let low = shells_for(&|_| resolve(pure(StrategyId::Toughness), settings));
-            let high = shells_for(&|_| resolve(pure(StrategyId::Speed), settings));
+            let low = shells_for(&|_| {
+                settings
+                    .object_tweak
+                    .apply(resolve(pure(StrategyId::Toughness), settings))
+            });
+            let high = shells_for(&|_| {
+                settings
+                    .object_tweak
+                    .apply(resolve(pure(StrategyId::Speed), settings))
+            });
             (remaining_interior(&low), remaining_interior(&high))
         }
         other => {
-            let low = shells_for(&|z| resolve(strategy_at(other, z), settings));
+            let low = shells_for(&|z| {
+                settings
+                    .object_tweak
+                    .apply(resolve(strategy_at(other, z), settings))
+            });
             (remaining_interior(&low), vec![(0, 0); bands.len()])
         }
     }
@@ -5034,6 +5074,7 @@ fn grow_lightning(
             .map(|b| layer_strategy(other, b.z, settings))
             .find(|s| s.pattern == crate::strategy::InfillPattern::Lightning)?,
     };
+    let strategy = settings.object_tweak.apply(strategy);
     if strategy.pattern != crate::strategy::InfillPattern::Lightning {
         return None;
     }
@@ -5176,7 +5217,9 @@ fn object_layer(
         };
         (paths, wall_ms, infill_ms, note)
     };
-    let range = settings.overrides.range_at(z);
+    let range = settings
+        .object_tweak
+        .under(settings.overrides.range_at(z));
     let prints = layer_footprints(&settings.overrides, z, contours);
     let (paths, wall_ms, infill_ms, mut note) = if prints.is_empty() {
         plan(contours, range.as_ref())
@@ -5189,13 +5232,17 @@ fn object_layer(
         let (mut paths, mut wall_ms, mut infill_ms, mut note) = plan(contours, range.as_ref());
         paths = keep_zone(paths, &prints, None);
         for (k, print) in prints.iter().enumerate() {
-            let walls = zone_walls(blend, z, settings, &print.tweak);
+            let stacked = settings
+                .object_tweak
+                .under(Some(print.tweak))
+                .unwrap_or(print.tweak);
+            let walls = zone_walls(blend, z, settings, &stacked);
             let reach = offset_loops(&[print.outline.polygon()], (walls + 2) as f64 * line_width);
             let region = boolean_intersect(contours, &reach);
             if region.is_empty() {
                 continue;
             }
-            let (own, own_wall, own_infill, _) = plan(&region, Some(&print.tweak));
+            let (own, own_wall, own_infill, _) = plan(&region, Some(&stacked));
             wall_ms += own_wall;
             infill_ms += own_infill;
             let own = keep_zone(own, &prints, Some(k));

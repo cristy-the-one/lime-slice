@@ -207,8 +207,8 @@ fn refused_requests_name_the_field() {
         "objects[0].settings.zHop is a plate setting"
     );
     assert_eq!(
-        setting("walls", json!(3)),
-        "objects[0].settings.walls is not supported yet"
+        setting("walls", json!(0)),
+        "objects[0].settings: walls 0 is outside 1 to 12"
     );
     assert_eq!(
         setting("colour", json!("red")),

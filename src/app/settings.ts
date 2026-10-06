@@ -9,7 +9,7 @@ import { sliceBusyStatus, staleSliceCopy, cacheStatus, coverageWarning, inAirWar
 import { applySliceProgress, currentSliceProgress } from "../ui/slice-progress";
 import { filamentCost, filamentGrams, groupFeatures } from "../estimate";
 import { offBed } from "../mesh-place";
-import { boundsSize, overlapPairs, placeObject, selectedObject } from "../plate";
+import { boundsSize, overlapPairs, placeObject, selectedObject, settingsEmpty } from "../plate";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys, readPresets, diffPreset } from "../presets";
 import { loadProfile, type PrinterProfile, saveProfile } from "../profiles";
 import { noteAdvance, noteFlow, noteGcode, noteNozzle, noteRetract } from "./machine-actions";
@@ -62,7 +62,11 @@ export function settingsHash() {
   // A cartesian printer leaves this off, so its hash is the one it had before belt profiles.
   const belt = beltStamp(loadMachineLibrary());
   const retract = state.retractOn ? { retractLength: state.retractLength, retractSpeed: state.retractSpeed } : {};
-  const hashed = { mesh, profile, rest, ...ironing, ...fuzzy, ...retract, ...(belt ? { belt } : {}) };
+  const objectSettings = state.plate.objects
+    .filter((obj) => !settingsEmpty(obj.settings))
+    .map((obj) => `${obj.id}:${JSON.stringify(obj.settings)}`)
+    .join("|");
+  const hashed = { mesh, profile, rest, ...ironing, ...fuzzy, ...retract, ...(belt ? { belt } : {}), ...(objectSettings ? { objectSettings } : {}) };
   if (state.plate.objects.length > 1) {
     return JSON.stringify({
       ...hashed,
@@ -577,6 +581,26 @@ export function needsEngine(name: string) {
   return /\.(3mf|step|stp)$/i.test(name);
 }
 
+function objectOverrideFields(obj: NonNullable<ReturnType<typeof selectedObject>>): string {
+  const infill = obj.settings.infill;
+  const walls = obj.settings.walls;
+  const speed = obj.settings.speed;
+  const shown = (value: number | undefined) => (value === undefined ? "" : String(value));
+  return `
+    <div class="place-xy">
+      <label class="field setting" data-label="object infill" data-keywords="per object density percent">Infill %
+        <input id="objInfill" type="number" min="0" max="100" step="5" placeholder="strategy" value="${infill === undefined ? "" : String(Math.round(infill * 100))}" aria-label="Object infill percent" />
+      </label>
+      <label class="field setting" data-label="object walls" data-keywords="per object perimeters">Walls
+        <input id="objWalls" type="number" min="1" max="12" step="1" placeholder="strategy" value="${shown(walls)}" aria-label="Object walls" />
+      </label>
+      <label class="field setting" data-label="object speed" data-keywords="per object speed cap">Speed mm/s
+        <input id="objSpeed" type="number" min="1" max="1000" step="5" placeholder="strategy" value="${shown(speed)}" aria-label="Object speed cap" />
+      </label>
+    </div>
+    <div class="meta">Empty keeps the strategy. A height range or a modifier still wins on a field it sets.</div>`;
+}
+
 export function objectList() {
   if (!state.placed) return `<div class="meta">Drop an STL, 3MF, or STEP file, or open a sample.</div>`;
   const bedX = state.profile.bedX;
@@ -629,6 +653,7 @@ export function objectList() {
       <label class="field setting" data-label="position y" data-keywords="placement move bed offset">Y mm<input id="placeY" type="number" step="1" value="${cy}" aria-label="Position Y" /></label>
     </div>
     <div class="meta" id="placeReadout">X ${cx} · Y ${cy} · bed Z ${z0} mm</div>
+    ${selected ? objectOverrideFields(selected) : ""}
     <div class="meta">Gizmo sits at the left and edits the selected object. Drag a ring to rotate. Drag the part or an arrow to move. Shift snaps 15° or 1 mm.</div>
   `;
 }
@@ -912,7 +937,7 @@ export function onBlend(ev: Event) {
 
 export function onSettings(ev: Event) {
   const t = ev.target as HTMLInputElement;
-  if (t.id === "placeX" || t.id === "placeY") return;
+  if (t.id === "placeX" || t.id === "placeY" || t.id === "objInfill" || t.id === "objWalls" || t.id === "objSpeed") return;
   if (t.id === "find") {
     state.query = t.value;
     applyFilter();

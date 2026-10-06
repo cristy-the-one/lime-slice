@@ -211,6 +211,13 @@ const soloSettings: LimeProject = {
 };
 const soloWire = JSON.parse(serializeProject(soloSettings)) as { version: number; objects: { settings: { supports: boolean } }[]; mesh?: unknown };
 check("one object with its own settings stays version 2", soloWire.version === 2 && soloWire.objects[0]?.settings.supports === true && soloWire.mesh === undefined);
+const walled: LimeProject = {
+  ...project,
+  version: 2,
+  objects: [{ id: "part", name: "bracket.stl", mesh: project.mesh, placement: project.placement, supportEdits: [], settings: { walls: 3, infill: 0.8, speed: 40 } }],
+};
+const walledOpen = parseProject(serializeProject(walled));
+check("object infill, walls, and speed round-trip", walledOpen.ok && walledOpen.ok && walledOpen.project.objects?.[0]?.settings?.walls === 3 && walledOpen.project.objects?.[0]?.settings?.infill === 0.8 && walledOpen.project.objects?.[0]?.settings?.speed === 40);
 
 const dabs = [
   { kind: "block" as const, p: [36, 12, 12] as [number, number, number], n: [0, 0, -1] as [number, number, number], r: 4 },
