@@ -52,7 +52,7 @@ export function staleWarning() {
 export function settingsHash() {
   const shift = state.offset;
   const mesh = state.mesh ? `${state.mesh.name}:${state.mesh.bytes.byteLength}:${state.partScale}:${state.centered}:${shift.x.toFixed(3)},${shift.y.toFixed(3)},${shift.z.toFixed(3)}:${state.orient.join(",")}` : "";
-  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, flowBands: _fb, flowGcode: _fg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, selectedVolumeId: _sel, modifierTool: _mt, plate: _plate, profile: _profile, ironing: _ironing, ironingFlow: _ironingFlow, ironingSpeed: _ironingSpeed, ironingSpacing: _ironingSpacing, fuzzySkin: _fuzzy, fuzzyThickness: _fuzzyThickness, fuzzyPointDistance: _fuzzyDistance, ...rest } = state;
+  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, flowBands: _fb, flowGcode: _fg, tempBands: _tb, tempGcode: _tg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, selectedVolumeId: _sel, modifierTool: _mt, plate: _plate, profile: _profile, ironing: _ironing, ironingFlow: _ironingFlow, ironingSpeed: _ironingSpeed, ironingSpacing: _ironingSpacing, fuzzySkin: _fuzzy, fuzzyThickness: _fuzzyThickness, fuzzyPointDistance: _fuzzyDistance, ...rest } = state;
   // Price and density only weigh the estimate, which the UI computes from the reply.
   const { filamentDensityGCm3: _density, filamentCostPerKg: _cost, ...profile } = state.profile;
   // Ironing counts as it is sent, so a number changed while it is off stales nothing.
@@ -170,6 +170,17 @@ export function renderChrome() {
           <button class="btn" id="flowapply" type="button">Save flow to filament</button>
           <button class="btn" id="flowexport" type="button">Export flow G-code</button>` : ""}
         <p class="meta">Each band is one hollow wall. The length of extrusion is the band's multiplier. Saving writes that multiplier onto the filament. 1 leaves a slice unchanged.</p>
+      `, "expert")}
+      ${group("Temperature calibration", `
+        ${num("tempstart", "°C start", state.tempStart, 150, 320, 1, "expert")}
+        ${num("tempend", "°C end", state.tempEnd, 150, 320, 1, "expert")}
+        ${num("tempstep", "°C step", state.tempStep, 1, 50, 1, "expert")}
+        <button class="btn" id="tempcal" type="button">Generate temperature test</button>
+        ${state.tempBands.length ? `<div class="meta">${state.tempBands.map((b) => `band ${b.index}: ${b.temp.toFixed(0)} °C · Z ${b.z0.toFixed(2)}–${b.z1.toFixed(2)}`).join("<br>")}</div>
+          ${num("tempchosen", "Chosen °C", state.profile.nozzleTemp, 150, 320, 1)}
+          <button class="btn" id="tempapply" type="button">Save temperature to filament</button>
+          <button class="btn" id="tempexport" type="button">Export temperature G-code</button>` : ""}
+        <p class="meta">Each band is one hollow wall. The nozzle waits at that band's temperature before the wall starts. Saving writes the chosen °C onto the filament. A normal slice still sends that nozzle temperature, and nothing else.</p>
       `, "expert")}
       <label class="check setting" data-level="advanced" data-label="auto-slice under 50k triangles"><input id="autoslice" type="checkbox" ${state.autoSlice ? "checked" : ""}/> Auto-slice under 50k triangles</label>
       <div class="meta">${triangleMeta(result)}</div>
@@ -920,7 +931,7 @@ export function onSettings(ev: Event) {
   if (t.closest("[data-override-card]")) return;
   noteEdit();
   markProjectDirty();
-  const numIds = ["lh", "amin", "amax", "pa", "la", "zhopht", "zhopmin", "scarflen", "scarfsteps", "sangle", "bangle", "tipd", "trunkd", "shmult", "pastart", "paend", "pastep", "flowstart", "flowend", "flowstep", "nozzle", "bedx", "bedy", "bedz", "vol", "accel", "density", "cost", "partScale", "simperr"] as const;
+  const numIds = ["lh", "amin", "amax", "pa", "la", "zhopht", "zhopmin", "scarflen", "scarfsteps", "sangle", "bangle", "tipd", "trunkd", "shmult", "pastart", "paend", "pastep", "flowstart", "flowend", "flowstep", "tempstart", "tempend", "tempstep", "nozzle", "bedx", "bedy", "bedz", "vol", "accel", "density", "cost", "partScale", "simperr"] as const;
   const map: Record<string, (v: number) => void> = {
     lh: (v) => { state.layerHeight = v || 0.2; },
     amin: (v) => { state.adaptiveMin = v || 0.08; },
@@ -942,6 +953,9 @@ export function onSettings(ev: Event) {
     flowstart: (v) => { state.flowStart = v || 0.9; },
     flowend: (v) => { state.flowEnd = v || 1.1; },
     flowstep: (v) => { state.flowStep = v || 0.05; },
+    tempstart: (v) => { state.tempStart = v || 190; },
+    tempend: (v) => { state.tempEnd = v || 230; },
+    tempstep: (v) => { state.tempStep = v || 5; },
     nozzle: (v) => { state.profile.nozzleDiameter = v || 0.4; noteNozzle(state.profile.nozzleDiameter); },
     bedx: (v) => { state.profile.bedX = v || 220; },
     bedy: (v) => { state.profile.bedY = v || 220; },

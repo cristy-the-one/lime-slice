@@ -32,6 +32,7 @@ A row is **done** when a user can do the thing and the engine honors it. **In pr
 - Fuzzy skin, off by default. `fuzzySkin` is omitted when off. On, it offsets outer walls after the seam is chosen and leaves a scarf ramp alone. [#157](https://github.com/cristy-the-one/lime-slice/pull/157)
 - Seam painting. Disks on the mesh, omitted when empty. A painted disk pulls the nearest wall vertex and pins it. The picker stays the default. [#158](https://github.com/cristy-the-one/lime-slice/pull/158)
 - Flow tower, and a filament flow multiplier. `flow` is omitted at 1, so a slice that does not scale extrusion keeps its G-code. The tower is a hollow wall per band, and the chosen band is written onto the filament. [#159](https://github.com/cristy-the-one/lime-slice/pull/159)
+- Temperature tower. Nozzle temperature steps by height. The chosen band writes the filament's existing nozzle temperature. There is no new slice field. [#160](https://github.com/cristy-the-one/lime-slice/pull/160)
 
 ### In progress
 
@@ -41,8 +42,7 @@ None. The next pull request starts from the remaining list.
 
 Each engine feature is opt-in or default-off, with a cartesian lock so an unused feature leaves G-code bytes and the request cache key unchanged. One feature per pull request. A short design note goes in the same pull request when the feature is small, and as its own note when it is not.
 
-1. **Temperature tower.** Nozzle temperature steps by height. The chosen band writes the filament's nozzle temperature.
-2. **Retraction length and speed, then a retraction tower.** Length is still inside the strategy (0.35 mm on speed, 0.9 mm on toughness). Omitted fields keep that. The tower comes after the fields exist, so the result has a place to land.
+1. **Retraction length and speed, then a retraction tower.** Length is still inside the strategy (0.35 mm on speed, 0.9 mm on toughness). Omitted fields keep that. The tower comes after the fields exist, so the result has a place to land.
 3. **Belt preview patches.** A belt reply is always a whole preview, because the patch token leaves out copies, axis, and direction. Put those in the token. G-code stays the bytes of a belt slice today.
 4. **Per-object infill, walls, and speed.** The plate design allows them. The engine still refuses `objects[i].settings.walls` as not supported yet. Ranges and volumes stay plate-wide.
 5. **Sequential printing.** `printOrder: "sequential"` is refused until clearance exists. All-at-once stays the omitted default.

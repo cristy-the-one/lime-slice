@@ -265,6 +265,15 @@ export function setFlow(library: MachineLibrary, flow: number): MachineLibrary {
   };
 }
 
+export function setNozzleTemp(library: MachineLibrary, temp: number): MachineLibrary {
+  const rounded = Math.round(temp);
+  const safe = Number.isFinite(rounded) ? Math.min(320, Math.max(150, rounded)) : 200;
+  return {
+    ...library,
+    filaments: library.filaments.map((filament) => filament.id === library.filamentId ? { ...filament, nozzleTemp: safe } : filament),
+  };
+}
+
 export function setAdvance(library: MachineLibrary, pressure: number, linear: number): MachineLibrary {
   const key = nozzleKey(library.nozzleMm);
   return {

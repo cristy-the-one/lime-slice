@@ -27,6 +27,7 @@ import {
   setAdvance,
   setFlow,
   setGcode,
+  setNozzleTemp,
   type MachineLibrary,
   type MachineNumbers,
 } from "../ui/machine-library.ts";
@@ -69,6 +70,17 @@ export function noteFlow(flow: number) {
   if (machineFlow && document.activeElement !== machineFlow) machineFlow.value = String(value);
   const chosen = document.querySelector<HTMLInputElement>("#flowchosen");
   if (chosen && document.activeElement !== chosen) chosen.value = String(value);
+}
+
+export function noteNozzleTemp(temp: number) {
+  noteEdit();
+  const library = setNozzleTemp(loadMachineLibrary(), temp);
+  storeMachineLibrary(library);
+  const next = selection(library)?.filament.nozzleTemp ?? 200;
+  state.profile.nozzleTemp = next;
+  saveProfile(state.profile);
+  const readout = document.querySelector("#machineTemps");
+  if (readout) readout.textContent = `Nozzle ${Math.round(next)} °C · bed ${Math.round(state.profile.bedTemp)} °C`;
 }
 
 export function noteAdvance(pressure: number, linear: number) {
