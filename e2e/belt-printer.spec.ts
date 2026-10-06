@@ -35,6 +35,8 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await expect(page.locator("#beltAngle")).toHaveValue("45");
   await expect(page.locator("#beltFields")).toBeVisible();
   await expect(page.locator("#beltSeam")).not.toBeChecked();
+  await expect(page.locator("#beltRaft")).not.toBeChecked();
+  await expect(page.locator("#beltRaftLayers")).toBeDisabled();
   await expect(page.getByText("Mock only")).toHaveCount(0);
   await page.locator("#beltCopies").fill("3");
   await page.locator("#beltCopies").blur();
@@ -51,6 +53,7 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   expect(belt.copies).toBe(3);
   expect(belt).not.toHaveProperty("maxLengthMm");
   expect(belt).not.toHaveProperty("seamOnEdge");
+  expect(belt).not.toHaveProperty("raftLayers");
   expect(bodies[0].printer).not.toHaveProperty("belt");
   await expect(page.locator("#banner")).not.toContainText("Mock");
   await expect(page.locator("#export")).toBeEnabled();
@@ -60,12 +63,19 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await expect(page.locator("#beltMockTag")).toHaveCount(0);
 
   await page.locator("#tabPrepare").click();
+  await page.locator("#beltRaft").check();
+  await expect(page.locator("#beltRaftLayers")).toBeEnabled();
+  await page.locator("#beltRaftLayers").fill("2");
+  await page.locator("#beltRaftLayers").blur();
+  await page.locator("#slice").click();
+  await expect.poll(() => bodies.length).toBe(2);
+  expect((bodies[1].belt as Record<string, unknown>).raftLayers).toBe(2);
   await page.locator("#machineKind").selectOption("cartesian");
   await expect(page.locator("#beltFields")).toBeHidden();
   await expect(page.locator("#prepare")).toHaveAttribute("data-belt", "0");
   await page.locator("#slice").click();
-  await expect.poll(() => bodies.length).toBe(2);
-  expect(bodies[1]).not.toHaveProperty("belt");
+  await expect.poll(() => bodies.length).toBe(3);
+  expect(bodies[2]).not.toHaveProperty("belt");
   await expect(page.locator("#export")).toBeEnabled();
 });
 

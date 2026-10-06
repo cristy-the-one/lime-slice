@@ -34,6 +34,10 @@ pub struct BeltSpec {
     /// on that edge.
     #[serde(default, skip_serializing_if = "is_false")]
     pub seam_on_edge: bool,
+    /// Layers of a solid pad on the belt before the part. Omitted when 0,
+    /// so a belt slice that does not ask for a raft keeps its bytes.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub raft_layers: u32,
 }
 
 /// Which firmware axis the belt is wired to.
@@ -57,6 +61,7 @@ pub(crate) struct Belt {
     pub copies: u32,
     pub gap_mm: f64,
     pub seam_on_edge: bool,
+    pub raft_layers: u32,
 }
 
 /// The rotation that laid the plate flat, so preview points can be mapped back.
@@ -79,6 +84,10 @@ const ANGLE_MAX: f64 = 80.0;
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 impl Belt {
@@ -117,6 +126,12 @@ impl Belt {
         if !spec.gap_mm.is_finite() || spec.gap_mm < 0.0 || spec.gap_mm > 500.0 {
             return Err(format!("belt.gapMm {} must be from 0 to 500", spec.gap_mm));
         }
+        if spec.raft_layers > 8 {
+            return Err(format!(
+                "belt.raftLayers {} must be from 1 to 8, or omitted",
+                spec.raft_layers
+            ));
+        }
         let rad = spec.angle_deg.to_radians();
         Ok(Self {
             angle_deg: spec.angle_deg,
@@ -129,6 +144,7 @@ impl Belt {
             copies: spec.copies,
             gap_mm: spec.gap_mm,
             seam_on_edge: spec.seam_on_edge,
+            raft_layers: spec.raft_layers,
         })
     }
 
@@ -161,10 +177,14 @@ impl Belt {
             BeltAxis::Z => "Z",
         };
         let dir = if self.direction < 0.0 { "-1" } else { "+1" };
-        format!(
+        let mut comment = format!(
             "; belt: angle {} axis {axis} dir {dir}\n",
             format_angle(self.angle_deg)
-        )
+        );
+        if self.raft_layers > 0 {
+            comment.push_str(&format!("; belt raft {} layers\n", self.raft_layers));
+        }
+        comment
     }
 }
 
@@ -282,6 +302,10 @@ fn rotate_x(mesh: &Mesh, cos_a: f64, sin_a: f64) -> Mesh {
         triangles.push(out);
     }
     Mesh { triangles }
+}
+
+pub(crate) fn shift_z(mesh: &Mesh, dz: f64) -> Mesh {
+    shift_yz(mesh, 0.0, dz)
 }
 
 fn shift_yz(mesh: &Mesh, dy: f64, dz: f64) -> Mesh {
@@ -442,6 +466,7 @@ mod tests {
             copies: 1,
             gap_mm: 5.0,
             seam_on_edge: false,
+            raft_layers: 0,
         })
         .unwrap()
     }
@@ -541,6 +566,7 @@ mod tests {
             copies: 1,
             gap_mm: 5.0,
             seam_on_edge: false,
+            raft_layers: 0,
         })
         .unwrap_err();
         assert!(err.contains("belt.angleDeg"), "{err}");

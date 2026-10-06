@@ -21,7 +21,9 @@ pub use wire::{
 
 use crate::adaptive::{plan_bands, plan_plate_bands, HeightOpts, LayerBand};
 use crate::cancel::Job;
-use crate::gcode::{emit_gcode, emit_later, Entry, GcodeText, LayerPaths, PlateLayer, PrintLayer};
+use crate::gcode::{
+    emit_gcode, emit_later, Entry, GcodeText, LayerPaths, PlateLayer, PrintLayer, Run,
+};
 use crate::index::ZIndex;
 use crate::lightning::{Branches, Lightning};
 use crate::load::load_slice_mesh_tol;
@@ -44,7 +46,8 @@ use crate::support::skeleton::{skeleton, SupportSkeleton};
 use crate::support::{CoverageGap, Disk, InAir, SupportLayer, SupportOpts, SupportStyle, Supports};
 use crate::toolpath::{
     apply_overhang, apply_scarf, apply_z_hop, comb_layer, island_loops, lightning_pitch,
-    order_supports, plan_ironing, plan_region_split, plan_skirt, plan_support, plan_tree_support,
+    belt_raft_paths, order_supports, plan_ironing, plan_region_split, plan_skirt, plan_support,
+    plan_tree_support,
     Extrusion, PartLayout, PathFeatures, PathKind, ScarfParams, Seam, ShellBand, Skin, TravelIn,
 };
 
@@ -1134,6 +1137,17 @@ struct BeltJob {
     offsets: Vec<Option<[f64; 2]>>,
     /// Part-frame bounds in the lab, with the later copies included along Y.
     lab_bounds: Vec<([f64; 3], [f64; 3])>,
+    /// A pad on the belt, in the slice frame, when the request asked for one.
+    raft: Option<BeltRaft>,
+}
+
+struct BeltRaft {
+    layers: u32,
+    /// Top of the pad. The part mesh starts here.
+    top: f64,
+    min: [f64; 2],
+    max: [f64; 2],
+    line_width: f64,
 }
 
 /// Lay the plate on the belt, and turn off the features that assume a flat bed.
@@ -1169,7 +1183,29 @@ fn prepare_belt(
             object.to_bed(),
         ));
     }
-    let (laid, frame) = crate::belt::lay_flat(&placed, &belt)?;
+    let (mut laid, frame) = crate::belt::lay_flat(&placed, &belt)?;
+    if belt.raft_layers > 0 && settings.adaptive {
+        return Err(
+            "belt.raftLayers needs a fixed layer height; turn adaptive layers off".into(),
+        );
+    }
+    let raft = if belt.raft_layers > 0 {
+        let (min, max) = xy_bounds(&laid)?;
+        let height = settings.layer_height.clamp(0.05, 0.6);
+        let top = f64::from(belt.raft_layers) * height;
+        for mesh in &mut laid {
+            *mesh = crate::belt::shift_z(mesh, top);
+        }
+        Some(BeltRaft {
+            layers: belt.raft_layers,
+            top,
+            min,
+            max,
+            line_width: settings.line_width,
+        })
+    } else {
+        None
+    };
     let (span_x, max_z) = crate::belt::plate_span(&laid)?;
     let extent = max_z / belt.sin_a;
     crate::belt::check_fit(&belt, span_x, extent)?;
@@ -1208,13 +1244,60 @@ fn prepare_belt(
         extent,
         offsets,
         lab_bounds,
+        raft,
     })
+}
+
+fn xy_bounds(meshes: &[Mesh]) -> Result<([f64; 2], [f64; 2]), String> {
+    let mut min = [f64::INFINITY; 2];
+    let mut max = [f64::NEG_INFINITY; 2];
+    for mesh in meshes {
+        let (lo, hi) = mesh.bounds().ok_or("empty mesh")?;
+        min[0] = min[0].min(lo[0]);
+        min[1] = min[1].min(lo[1]);
+        max[0] = max[0].max(hi[0]);
+        max[1] = max[1].max(hi[1]);
+    }
+    if !max[0].is_finite() {
+        return Err("empty mesh".into());
+    }
+    Ok((min, max))
 }
 
 /// One planned plate, emitted once per copy. The first copy keeps the writer's
 /// layer-0 treatment. Later copies' first layer is slowed here, because the
 /// writer only does that for index 0.
 fn belt_output(mut layers: Vec<PlateLayer>, job: &BeltJob) -> Vec<PlateLayer> {
+    if let Some(raft) = &job.raft {
+        let paths = belt_raft_paths(raft.min, raft.max, raft.line_width);
+        let n = paths.len();
+        for layer in layers.iter_mut().take(raft.layers as usize) {
+            if layer.z > raft.top + 1e-4 {
+                break;
+            }
+            let print = PrintLayer::new(LayerPaths {
+                index: layer.index,
+                z: layer.z,
+                height: layer.height,
+                paths: paths.clone(),
+                note: format!("belt raft {} layers", raft.layers),
+            });
+            *layer = PlateLayer {
+                index: layer.index,
+                z: layer.z,
+                height: layer.height,
+                note: print.note.clone(),
+                runs: vec![Run {
+                    object: 0,
+                    layer: print,
+                    paths: 0..n,
+                    entry: Entry::AsPlanned,
+                    label: None,
+                }],
+                belt_shift: 0.0,
+            };
+        }
+    }
     for layer in &mut layers {
         if layer.index != 0 {
             retouch_layer(layer, &job.frame, false);

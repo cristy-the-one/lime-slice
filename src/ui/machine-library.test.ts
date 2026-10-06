@@ -159,7 +159,7 @@ for (const printer of version2.printers) {
 }
 const fromVersion2 = parseLibrary(JSON.stringify(version2));
 const lime = fromVersion2.printers.find((printer) => printer.id === "lime-220");
-check("a version 2 library gains a cartesian belt block", fromVersion2.version === 3 && lime?.bedX === 220 && lime.kind === "cartesian" && lime.belt.angleDeg === 45 && lime.belt.copies === 1 && lime.belt.maxLengthMm === null && lime.belt.widthMm === 220);
+check("a version 2 library gains a cartesian belt block", fromVersion2.version === 3 && lime?.bedX === 220 && lime.kind === "cartesian" && lime.belt.angleDeg === 45 && lime.belt.copies === 1 && lime.belt.maxLengthMm === null && lime.belt.widthMm === 220 && lime.belt.raftLayers === 0 && lime.belt.seamOnEdge === false);
 
 const belted = setActiveBelt(library, "belt", { ...defaultBelt(180), angleDeg: 35, axis: "y", direction: -1, copies: 3, gapMm: 8, maxLengthMm: null });
 const beltRow = selection(belted);
@@ -168,7 +168,7 @@ check("a belt printer still sends today's fields", beltSent !== null && Object.k
 check("belt settings stay on the record", beltRow?.printer.kind === "belt" && beltRow.printer.belt.copies === 3 && beltRow.printer.belt.axis === "y" && beltRow.printer.belt.direction === -1);
 const beltFile = fileFromSelection(belted);
 const beltRound = beltFile ? parseMachineFile(serializeMachineFile(beltFile)) : null;
-check("a belt file round-trips", beltRound?.ok === true && beltRound.file.version === 3 && beltRound.file.printer.kind === "belt" && beltRound.file.printer.belt.angleDeg === 35 && beltRound.file.printer.belt.gapMm === 8 && beltRound.file.printer.belt.maxLengthMm === null && beltRound.file.printer.bedX === 220);
+check("a belt file round-trips", beltRound?.ok === true && beltRound.file.version === 3 && beltRound.file.printer.kind === "belt" && beltRound.file.printer.belt.angleDeg === 35 && beltRound.file.printer.belt.gapMm === 8 && beltRound.file.printer.belt.maxLengthMm === null && beltRound.file.printer.bedX === 220 && beltRound.file.printer.belt.raftLayers === 0);
 
 const restored = ensureBuiltins(parseLibrary("nope"));
 check("a corrupt library grows the built-ins back", restored.printers.some((printer) => printer.id === "lime-220") && restored.filaments.some((filament) => filament.id === "lime-tpu"));
