@@ -29,6 +29,7 @@ import {
   setGcode,
   setNozzleTemp,
   setRetract,
+  setSecondFilament,
   type MachineLibrary,
   type MachineNumbers,
 } from "../ui/machine-library.ts";
@@ -51,6 +52,16 @@ export function bootMachines() {
   library = adoptLegacyLink(library, takeLegacyPrusa());
   storeMachineLibrary(library);
   writeState(library);
+}
+
+/** Store a second filament. The slice keeps using the first, so this does not stale it. */
+export function noteSecondFilament(id: string) {
+  const next = setSecondFilament(loadMachineLibrary(), id);
+  if (typeof next === "string") {
+    pushToast(next, "info");
+    return;
+  }
+  storeMachineLibrary(next);
 }
 
 export function chooseMachine(printerId: string, filamentId: string, nozzleMm: number) {

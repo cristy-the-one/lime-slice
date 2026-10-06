@@ -69,6 +69,11 @@ export interface MachineLibrary {
   filaments: FilamentRecord[];
   printerId: string;
   filamentId: string;
+  /**
+   * A second filament stored on this machine. Omitted when none is chosen.
+   * The slice still uses `filamentId`. There is no tool change.
+   */
+  secondFilamentId?: string;
   nozzleMm: number;
 }
 
@@ -155,7 +160,14 @@ export function ensureBuiltins(library: MachineLibrary): MachineLibrary {
   const printerId = printers.some((row) => row.id === library.printerId) ? library.printerId : printers[0]!.id;
   const filamentId = filaments.some((row) => row.id === library.filamentId) ? library.filamentId : filaments[0]!.id;
   const nozzleMm = Number.isFinite(library.nozzleMm) && library.nozzleMm > 0 ? library.nozzleMm : 0.4;
-  return { version: MACHINE_FILE_VERSION, printers, filaments, printerId, filamentId, nozzleMm };
+  const secondFilamentId = keptSecond(filaments, filamentId, library.secondFilamentId);
+  return { version: MACHINE_FILE_VERSION, printers, filaments, printerId, filamentId, nozzleMm, ...(secondFilamentId ? { secondFilamentId } : {}) };
+}
+
+/** A stored second filament that is still in the catalog and is not the one the slice uses. */
+function keptSecond(filaments: FilamentRecord[], filamentId: string, secondFilamentId: string | undefined): string | undefined {
+  if (!secondFilamentId || secondFilamentId === filamentId) return undefined;
+  return filaments.some((row) => row.id === secondFilamentId) ? secondFilamentId : undefined;
 }
 
 export function selection(library: MachineLibrary): { printer: PrinterRecord; filament: FilamentRecord } | null {
@@ -208,6 +220,9 @@ export function parseLibrary(text: string | null): MachineLibrary {
       printerId: typeof doc.printerId === "string" ? doc.printerId : "",
       filamentId: typeof doc.filamentId === "string" ? doc.filamentId : "",
       nozzleMm,
+      ...(keptSecond(filaments, typeof doc.filamentId === "string" ? doc.filamentId : "", typeof doc.secondFilamentId === "string" ? doc.secondFilamentId : undefined)
+        ? { secondFilamentId: doc.secondFilamentId as string }
+        : {}),
     };
   } catch {
     return emptyLibrary();
@@ -257,7 +272,24 @@ export function selectIn(library: MachineLibrary, printerId: string, filamentId:
   if (!library.printers.some((row) => row.id === printerId)) return "That printer is no longer saved.";
   if (!library.filaments.some((row) => row.id === filamentId)) return "That filament is no longer saved.";
   if (!Number.isFinite(nozzleMm) || nozzleMm <= 0) return "Choose a nozzle size.";
-  return { ...library, printerId, filamentId, nozzleMm };
+  const secondFilamentId = keptSecond(library.filaments, filamentId, library.secondFilamentId);
+  const next = { ...library, printerId, filamentId, nozzleMm };
+  if (!secondFilamentId) {
+    const { secondFilamentId: _drop, ...rest } = next;
+    return rest;
+  }
+  return { ...next, secondFilamentId };
+}
+
+/** Remember a second filament. Empty clears it. It is not the filament the slice uses. */
+export function setSecondFilament(library: MachineLibrary, id: string): MachineLibrary | string {
+  if (id === "") {
+    const { secondFilamentId: _drop, ...rest } = library;
+    return rest;
+  }
+  if (id === library.filamentId) return "The slice already uses that filament.";
+  if (!library.filaments.some((row) => row.id === id)) return "That filament is no longer saved.";
+  return { ...library, secondFilamentId: id };
 }
 
 export function setFlow(library: MachineLibrary, flow: number): MachineLibrary {
@@ -396,13 +428,20 @@ export function deleteActive(library: MachineLibrary): MachineLibrary | string {
   const fallbackPrinter = printers.find((row) => row.id === "lime-220") ?? printers[0];
   const fallbackFilament = filaments.find((row) => row.id === "lime-pla") ?? filaments[0];
   if (!fallbackPrinter || !fallbackFilament) return "Choose a printer and a filament first.";
-  return {
+  const filamentId = filaments.some((row) => row.id === library.filamentId) ? library.filamentId : fallbackFilament.id;
+  const secondFilamentId = keptSecond(filaments, filamentId, library.secondFilamentId);
+  const next: MachineLibrary = {
     ...library,
     printers,
     filaments,
     printerId: printers.some((row) => row.id === library.printerId) ? library.printerId : fallbackPrinter.id,
-    filamentId: filaments.some((row) => row.id === library.filamentId) ? library.filamentId : fallbackFilament.id,
+    filamentId,
   };
+  if (!secondFilamentId) {
+    const { secondFilamentId: _drop, ...rest } = next;
+    return rest;
+  }
+  return { ...next, secondFilamentId };
 }
 
 export function importInto(library: MachineLibrary, file: MachineFile, printerId: string, filamentId: string): MachineLibrary {
@@ -473,6 +512,12 @@ export function machineSectionHtml(
   const filamentOptions = library.filaments
     .map((filament) => `<option value="${escapeHtml(filament.id)}"${filament.id === library.filamentId ? " selected" : ""}>${escapeHtml(filament.name)}</option>`)
     .join("");
+  const secondId = keptSecond(library.filaments, library.filamentId, library.secondFilamentId) ?? "";
+  const secondOptions = [`<option value=""${secondId ? "" : " selected"}>None</option>`]
+    .concat(library.filaments
+      .filter((filament) => filament.id !== library.filamentId)
+      .map((filament) => `<option value="${escapeHtml(filament.id)}"${filament.id === secondId ? " selected" : ""}>${escapeHtml(filament.name)}</option>`))
+    .join("");
   const nozzleOptions = nozzles
     .map((size) => `<option value="${nozzleKey(size)}"${nozzleKey(size) === nozzleKey(library.nozzleMm) ? " selected" : ""}>${nozzleKey(size)} mm</option>`)
     .join("");
@@ -484,6 +529,10 @@ export function machineSectionHtml(
       <label class="field setting" data-label="filament" data-keywords="material pla petg abs tpu">Filament
         <select id="machineFilament" aria-label="Filament">${filamentOptions}</select>
       </label>
+      <label class="field setting" data-label="second filament" data-keywords="multi material second extruder">Second filament
+        <select id="secondFilament" aria-label="Second filament">${secondOptions}</select>
+      </label>
+      <div class="meta">Stored on this machine. The slice still uses the filament above. No tool change, purge tower, or second extruder.</div>
       <label class="field setting" data-label="nozzle size" data-keywords="nozzle diameter">Nozzle
         <select id="machineNozzle" aria-label="Nozzle size">${nozzleOptions}</select>
       </label>

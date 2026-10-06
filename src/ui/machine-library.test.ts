@@ -21,6 +21,7 @@ import {
   setActiveBelt,
   setNozzleTemp,
   setRetract,
+  setSecondFilament,
   setLink,
   adoptLegacyLink,
   type MachineNumbers,
@@ -196,6 +197,19 @@ check("the chosen temperature lands on the active filament", warmRow?.filament.n
 check("another filament keeps its temperature", warmed.filaments.find((filament) => filament.id === "lime-petg")?.nozzleTemp === 240);
 check("a cold temperature is held at 150", selection(setNozzleTemp(builtinLibrary(), 10))?.filament.nozzleTemp === 150);
 check("a hot temperature is held at 320", selection(setNozzleTemp(builtinLibrary(), 400))?.filament.nozzleTemp === 320);
+
+const secondStored = setSecondFilament(builtinLibrary(), "lime-petg");
+check("a second filament is remembered", typeof secondStored !== "string" && secondStored.secondFilamentId === "lime-petg");
+const secondRound = typeof secondStored === "string" ? null : parseLibrary(serializeLibrary(secondStored));
+check("a second filament round-trips", secondRound?.secondFilamentId === "lime-petg");
+const cleared = typeof secondStored === "string" ? secondStored : setSecondFilament(secondStored, "");
+check("clearing the second filament omits it", typeof cleared !== "string" && cleared.secondFilamentId === undefined && !serializeLibrary(cleared).includes("secondFilamentId"));
+check("the loaded filament cannot be the second", setSecondFilament(builtinLibrary(), "lime-pla") === "The slice already uses that filament.");
+const switched = typeof secondStored === "string" ? secondStored : selectIn(secondStored, secondStored.printerId, "lime-petg", secondStored.nozzleMm);
+check("choosing the second filament as the slice filament clears the slot", typeof switched !== "string" && switched.filamentId === "lime-petg" && switched.secondFilamentId === undefined);
+const sentSecond = typeof secondStored === "string" ? null : enginePrinter(selection(secondStored)!.printer, selection(secondStored)!.filament, secondStored.nozzleMm);
+check("the engine profile stays the first filament", sentSecond?.nozzleTemp === 200 && sentSecond !== null && !("secondFilamentId" in sentSecond));
+check("builtins keep the second filament", typeof secondStored !== "string" && ensureBuiltins(secondStored).secondFilamentId === "lime-petg");
 
 const restored = ensureBuiltins(parseLibrary("nope"));
 check("a corrupt library grows the built-ins back", restored.printers.some((printer) => printer.id === "lime-220") && restored.filaments.some((filament) => filament.id === "lime-tpu"));

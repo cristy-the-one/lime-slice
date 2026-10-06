@@ -46,6 +46,7 @@ import {
   noteNozzleTemp,
   noteRetract,
   chooseMachine,
+  noteSecondFilament,
   deleteMachine,
   duplicateMachine,
   machineExportFile,
@@ -104,6 +105,10 @@ export function wireApp() {
       const file = input.files?.[0];
       input.value = "";
       if (file) void importSettingsProfileFile(file);
+      return;
+    }
+    if (target.id === "secondFilament") {
+      noteSecondFilament((target as HTMLSelectElement).value);
       return;
     }
     if (target.id === "machinePrinter" || target.id === "machineFilament" || target.id === "machineNozzle") {

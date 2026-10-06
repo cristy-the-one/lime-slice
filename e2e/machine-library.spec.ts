@@ -1,5 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
+import fs from "node:fs";
+import path from "node:path";
 import { canvasShare } from "../src/ui/compact/viewport-share.ts";
+
+const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 
 async function quiet(page: Page) {
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
@@ -110,6 +114,35 @@ test("filament and nozzle pick the pressure advance, and a bad file can be retri
   await expect(page.locator("#toasts").getByRole("status").filter({ hasText: "Built-in profiles stay in the catalog." })).toBeVisible();
   await page.locator("#machineDuplicate").click();
   await expect(page.locator("#machinePrinter option", { hasText: "Lime 220 copy" })).toHaveCount(1);
+});
+
+test("a second filament is stored and left out of the slice", async ({ page }) => {
+  await quiet(page);
+  const bodies: Record<string, unknown>[] = [];
+  await page.route("**/api/slice", async (route) => {
+    bodies.push(route.request().postDataJSON() as Record<string, unknown>);
+    await route.fulfill({ json: cube });
+  });
+  await page.goto("/");
+  await expect(page.locator("#secondFilament")).toHaveValue("");
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
+  await expect(page.locator("#slice")).toBeEnabled();
+  await page.locator("#slice").click();
+  await expect(page.locator("#export")).toBeEnabled();
+  await expect.poll(() => bodies.length).toBeGreaterThan(0);
+  const sent = bodies.length;
+  await page.locator("#secondFilament").selectOption("lime-petg");
+  await expect(page.locator("#secondFilament")).toHaveValue("lime-petg");
+  await expect(page.locator("#machineTemps")).toHaveText("Nozzle 200 °C · bed 60 °C");
+  await expect(page.locator("#export")).toBeEnabled();
+  await page.waitForTimeout(400);
+  expect(bodies).toHaveLength(sent);
+  const printer = bodies[0].printer as Record<string, unknown>;
+  expect(printer.nozzleTemp).toBe(200);
+  expect(bodies[0]).not.toHaveProperty("secondFilamentId");
+  await page.reload();
+  await expect(page.locator("#secondFilament")).toHaveValue("lime-petg");
+  await expect(page.locator("#machineFilament")).toHaveValue("lime-pla");
 });
 
 test.describe("compact machine library", () => {
