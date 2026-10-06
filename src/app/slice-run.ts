@@ -208,7 +208,17 @@ export function payload() {
     simplifyErrorMm: state.simplifyError,
     ...sliceOverrideFields(state.overrides),
     ...plate,
+    ...orderSliceFields(),
   };
+}
+
+/** All-at-once is omitted. Clearance is omitted at 0, which means the nozzle radius plus one line width. */
+function orderSliceFields(): { printOrder?: "sequential"; sequentialClearanceMm?: number } {
+  if (state.plate.objects.length < 2 || state.printOrder !== "sequential") return {};
+  const out: { printOrder: "sequential"; sequentialClearanceMm?: number } = { printOrder: "sequential" };
+  const gap = state.sequentialClearance;
+  if (Number.isFinite(gap) && gap > 0) out.sequentialClearanceMm = Math.min(50, Math.round(gap * 1000) / 1000);
+  return out;
 }
 
 /** The selected object prints tree supports, so its support edits travel with the slice. */

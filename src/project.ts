@@ -61,6 +61,10 @@ export interface LimeProject {
    * Omitted on version 1 so an older app still opens a one-object file.
    */
   objects?: PlateFileObject[];
+  /** Omitted for all-at-once, so a project saved before sequential printing still opens. */
+  printOrder?: "sequential";
+  /** Omitted at 0, which means the nozzle radius plus one line width. */
+  sequentialClearanceMm?: number;
 }
 
 export type ProjectResult = { ok: true; project: LimeProject } | { ok: false; message: string };
@@ -110,6 +114,12 @@ export function serializeProject(project: LimeProject): string {
       objects: project.objects.map(stripEmptySettings),
     };
     if (overrides) wire.overrides = overrides;
+    if (project.printOrder === "sequential") {
+      wire.printOrder = "sequential";
+      if (project.sequentialClearanceMm !== undefined && project.sequentialClearanceMm > 0) {
+        wire.sequentialClearanceMm = project.sequentialClearanceMm;
+      }
+    }
     return JSON.stringify(wire, null, 2);
   }
   const wire: Record<string, unknown> = {
@@ -270,6 +280,12 @@ function readVersion2(doc: Record<string, unknown>): ProjectResult {
     const overrides = parseOverrides(doc.overrides);
     if (!overrides.ok) return overrides;
     project.overrides = overrides.doc;
+  }
+  if (project.version === 2 && doc.printOrder === "sequential") {
+    project.printOrder = "sequential";
+    if (finite(doc.sequentialClearanceMm) && (doc.sequentialClearanceMm as number) > 0 && (doc.sequentialClearanceMm as number) <= 50) {
+      project.sequentialClearanceMm = doc.sequentialClearanceMm as number;
+    }
   }
   return { ok: true, project };
 }

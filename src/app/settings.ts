@@ -52,7 +52,7 @@ export function staleWarning() {
 export function settingsHash() {
   const shift = state.offset;
   const mesh = state.mesh ? `${state.mesh.name}:${state.mesh.bytes.byteLength}:${state.partScale}:${state.centered}:${shift.x.toFixed(3)},${shift.y.toFixed(3)},${shift.z.toFixed(3)}:${state.orient.join(",")}` : "";
-  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, flowBands: _fb, flowGcode: _fg, tempBands: _tb, tempGcode: _tg, retractBands: _rb, retractGcode: _rg, retractStart: _rs, retractEnd: _re, retractStep: _rp, retractOn: _ron, retractLength: _rl, retractSpeed: _rsp, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, selectedVolumeId: _sel, modifierTool: _mt, plate: _plate, profile: _profile, ironing: _ironing, ironingFlow: _ironingFlow, ironingSpeed: _ironingSpeed, ironingSpacing: _ironingSpacing, fuzzySkin: _fuzzy, fuzzyThickness: _fuzzyThickness, fuzzyPointDistance: _fuzzyDistance, ...rest } = state;
+  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, flowBands: _fb, flowGcode: _fg, tempBands: _tb, tempGcode: _tg, retractBands: _rb, retractGcode: _rg, retractStart: _rs, retractEnd: _re, retractStep: _rp, retractOn: _ron, retractLength: _rl, retractSpeed: _rsp, printOrder: _printOrder, sequentialClearance: _sequentialClearance, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, selectedVolumeId: _sel, modifierTool: _mt, plate: _plate, profile: _profile, ironing: _ironing, ironingFlow: _ironingFlow, ironingSpeed: _ironingSpeed, ironingSpacing: _ironingSpacing, fuzzySkin: _fuzzy, fuzzyThickness: _fuzzyThickness, fuzzyPointDistance: _fuzzyDistance, ...rest } = state;
   // Price and density only weigh the estimate, which the UI computes from the reply.
   const { filamentDensityGCm3: _density, filamentCostPerKg: _cost, ...profile } = state.profile;
   // Ironing counts as it is sent, so a number changed while it is off stales nothing.
@@ -62,11 +62,14 @@ export function settingsHash() {
   // A cartesian printer leaves this off, so its hash is the one it had before belt profiles.
   const belt = beltStamp(loadMachineLibrary());
   const retract = state.retractOn ? { retractLength: state.retractLength, retractSpeed: state.retractSpeed } : {};
+  const order = state.plate.objects.length > 1 && state.printOrder === "sequential"
+    ? { printOrder: "sequential" as const, ...(state.sequentialClearance > 0 ? { sequentialClearanceMm: state.sequentialClearance } : {}) }
+    : {};
   const objectSettings = state.plate.objects
     .filter((obj) => !settingsEmpty(obj.settings))
     .map((obj) => `${obj.id}:${JSON.stringify(obj.settings)}`)
     .join("|");
-  const hashed = { mesh, profile, rest, ...ironing, ...fuzzy, ...retract, ...(belt ? { belt } : {}), ...(objectSettings ? { objectSettings } : {}) };
+  const hashed = { mesh, profile, rest, ...ironing, ...fuzzy, ...retract, ...order, ...(belt ? { belt } : {}), ...(objectSettings ? { objectSettings } : {}) };
   if (state.plate.objects.length > 1) {
     return JSON.stringify({
       ...hashed,
@@ -581,6 +584,14 @@ export function needsEngine(name: string) {
   return /\.(3mf|step|stp)$/i.test(name);
 }
 
+function printOrderFields(many: boolean): string {
+  if (!many) return "";
+  const clearance = state.sequentialClearance > 0 ? String(state.sequentialClearance) : "";
+  return `
+    ${select("printOrder", "Print order", state.printOrder, [["all-at-once", "All at once"], ["sequential", "One at a time"]])}
+    ${state.printOrder === "sequential" ? `<label class="field setting" data-label="sequential clearance" data-keywords="one at a time gap nozzle">Clearance mm<input id="seqclear" type="number" min="0" max="50" step="0.1" placeholder="auto" value="${clearance}" aria-label="Sequential clearance" /></label><div class="meta">One object finishes, including its supports, before the next starts. Empty is the nozzle radius plus one line width. Too close is an error and no G-code.</div>` : ""}`;
+}
+
 function objectOverrideFields(obj: NonNullable<ReturnType<typeof selectedObject>>): string {
   const infill = obj.settings.infill;
   const walls = obj.settings.walls;
@@ -646,6 +657,7 @@ export function objectList() {
     </div>
     <label class="field setting" data-label="scale %" data-keywords="placement size percent">Scale %<input id="partScale" type="number" min="10" max="400" step="5" value="${Math.round(state.partScale * 100)}" /></label>
     ${isStepName(state.mesh?.name ?? "") ? num("stepTol", "STEP chord mm", state.stepTolerance, 0.01, 2, 0.01) : ""}
+    ${printOrderFields(many)}
     ${overlap ? `<div class="meta warn-text" id="plateOverlap">${escapeHtml(overlap)}</div>` : ""}
     ${selectedNotes.length ? `<div class="meta warn-text">${selectedNotes.join("; ")}</div>` : `<div class="meta">On the ${bedX}×${bedY}×${bedZ} mm bed.</div>`}
     <div class="place-xy">
@@ -937,7 +949,7 @@ export function onBlend(ev: Event) {
 
 export function onSettings(ev: Event) {
   const t = ev.target as HTMLInputElement;
-  if (t.id === "placeX" || t.id === "placeY" || t.id === "objInfill" || t.id === "objWalls" || t.id === "objSpeed") return;
+  if (t.id === "placeX" || t.id === "placeY" || t.id === "objInfill" || t.id === "objWalls" || t.id === "objSpeed" || t.id === "seqclear") return;
   if (t.id === "find") {
     state.query = t.value;
     applyFilter();
@@ -1087,7 +1099,8 @@ export function onSettings(ev: Event) {
     session.stepTimer = window.setTimeout(() => { void fx.refreshStepPreview(); }, 250);
     return;
   }
-  const structural = ["adaptive", "supports", "zhop", "scarf", "gyroid3d", "ironing", "fuzzy", "retractset"].includes(t.id);
+  if (t.id === "printOrder") state.printOrder = t.value === "sequential" ? "sequential" : "all-at-once";
+  const structural = ["adaptive", "supports", "zhop", "scarf", "gyroid3d", "ironing", "fuzzy", "retractset", "printOrder"].includes(t.id);
   if (structural) renderChrome();
   markStale();
 }

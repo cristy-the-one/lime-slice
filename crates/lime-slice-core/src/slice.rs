@@ -71,9 +71,15 @@ pub struct SliceRequest {
     /// resolve each object's settings over the plate's.
     #[serde(default, skip_serializing)]
     pub objects: Option<Vec<ObjectSpec>>,
-    /// `all-at-once` when omitted. `sequential` is refused for now.
+    /// `all-at-once` when omitted. `sequential` finishes each object before
+    /// the next. See `docs/sequential-printing.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub print_order: Option<String>,
+    /// Millimetres of XY clearance between a finished object and the next,
+    /// only with `printOrder: "sequential"`. `0` or omitted means the nozzle
+    /// radius plus one line width.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequential_clearance_mm: Option<f64>,
     #[serde(default = "default_layer")]
     pub layer_height: f64,
     #[serde(default = "default_width")]
@@ -988,6 +994,11 @@ pub fn slice_request_watched(
         return Err(format!("flow {} must be from 0.5 to 1.5", req.flow));
     }
     let profile = req.printer.clone().unwrap_or_default();
+    let order = plate_order(
+        req,
+        profile.nozzle_diameter,
+        req.line_width.clamp(0.15, 1.2),
+    )?;
     let overrides = wire::parse_overrides(req, [profile.bed_x, profile.bed_y])?;
     if let Some(ironing) = &req.ironing {
         ironing.check(SliceSettings::from_request(req).line_width)?;
@@ -1044,6 +1055,7 @@ pub fn slice_request_watched(
         &profile,
         &settings,
         req.belt.as_ref(),
+        order,
         &mut None,
         watch,
     )
@@ -1173,7 +1185,58 @@ fn slice_sharing(
         blend,
         settings: settings.clone(),
     };
-    slice_plate(&[source], blend, profile, settings, None, cut, watch)
+    slice_plate(
+        &[source],
+        blend,
+        profile,
+        settings,
+        None,
+        PlateOrder::AllAtOnce,
+        cut,
+        watch,
+    )
+}
+
+/// How a plate joins its objects. All-at-once is the omitted default.
+/// Sequential carries the clearance already resolved, never zero.
+#[derive(Clone, Copy)]
+enum PlateOrder {
+    AllAtOnce,
+    Sequential { clearance_mm: f64 },
+}
+
+/// `printOrder` and `sequentialClearanceMm`. A bad value is an error before
+/// any mesh is planned. Omitted order is all-at-once.
+fn plate_order(req: &SliceRequest, nozzle: f64, line_width: f64) -> Result<PlateOrder, String> {
+    let sequential = match req.print_order.as_deref() {
+        None | Some("all-at-once") => false,
+        Some("sequential") => true,
+        Some(other) => {
+            return Err(format!(
+                "printOrder \"{other}\" is not a print order; send \"all-at-once\" or \"sequential\""
+            ))
+        }
+    };
+    if let Some(n) = req.sequential_clearance_mm {
+        if !sequential {
+            return Err(
+                "sequentialClearanceMm is sent only with printOrder \"sequential\"".into(),
+            );
+        }
+        if !n.is_finite() || !(0.0..=50.0).contains(&n) {
+            return Err(format!("sequentialClearanceMm {n} must be from 0 to 50"));
+        }
+    }
+    if !sequential {
+        return Ok(PlateOrder::AllAtOnce);
+    }
+    let set = req.sequential_clearance_mm.unwrap_or(0.0);
+    let clearance_mm = if set <= 1e-9 {
+        nozzle.max(0.0) * 0.5 + line_width
+    } else {
+        set
+    };
+    Ok(PlateOrder::Sequential { clearance_mm })
 }
 
 /// The settings the stages read: lengths clamped, and every later feature
@@ -1539,12 +1602,14 @@ fn tilt_layer(view: &mut PreviewLayer, layer: &PlateLayer, tilt: &patch::BeltTil
 /// Plan each object alone in its own part frame, join the plans layer by
 /// layer, write the G-code with each object's offset, and build the reply.
 /// A request without `objects` is a plate of one, sliced exactly as before.
+#[allow(clippy::too_many_arguments)]
 fn slice_plate(
     sources: &[Source<'_>],
     requested: &BlendMode,
     profile: &PrinterProfile,
     settings: &SliceSettings,
     belt_spec: Option<&crate::belt::BeltSpec>,
+    order: PlateOrder,
     cut: &mut Option<Arc<Contours>>,
     watch: &Watch,
 ) -> Result<SliceResponse, String> {
@@ -1639,6 +1704,19 @@ fn slice_plate(
             .map(|o| o.mesh.bounds().ok_or("empty mesh"))
             .collect::<Result<_, _>>()?
     };
+    if let PlateOrder::Sequential { clearance_mm } = order {
+        let mut boxes = Vec::with_capacity(objects.len());
+        for object in &objects {
+            let (min, max) = object.mesh.bounds().ok_or("empty mesh")?;
+            let [dx, dy] = object.to_bed();
+            boxes.push((
+                object.id.unwrap_or("part"),
+                [min[0] + dx, min[1] + dy],
+                [max[0] + dx, max[1] + dy],
+            ));
+        }
+        plate::sequential_clearance(&boxes, clearance_mm)?;
+    }
     let started = Instant::now();
     if kept::on() {
         kept::fit(objects.len());
@@ -1728,7 +1806,11 @@ fn slice_plate(
         )?);
     }
     let band_lists: Vec<&[LayerBand]> = plans.iter().map(|p| p.cut.bands.as_slice()).collect();
-    let bands = plate::plate_bands(&band_lists);
+    let bands = match order {
+        PlateOrder::AllAtOnce => plate::plate_bands(&band_lists),
+        PlateOrder::Sequential { .. } => plate::sequential_bands(&band_lists),
+    };
+    let sequential_stamp = matches!(order, PlateOrder::Sequential { .. }) && objects.len() > 1;
     let labelled = objects.len() > 1;
     let joinable: Vec<plate::Joinable<'_>> = plans
         .iter()
@@ -1766,10 +1848,17 @@ fn slice_plate(
             let prior = kept::plate_prior();
             kept::keep_plate(Arc::clone(&planned));
             KeptPlate {
-                token: patch::token(&whole, &profile, &edits, belt_stamp.as_ref()),
+                token: patch::token(
+                    &whole,
+                    &profile,
+                    &edits,
+                    belt_stamp.as_ref(),
+                    sequential_stamp,
+                ),
                 drawn: patch::drawn(&contours, &profile),
                 prior,
                 belt: belt_stamp,
+                sequential: sequential_stamp,
             }
         });
     // Copies are emit-only. Contour stages stay the single planned part.
@@ -2222,6 +2311,8 @@ struct KeptPlate {
     drawn: [u8; 32],
     prior: Option<(Arc<Vec<PlateLayer>>, Arc<patch::Shown>)>,
     belt: Option<patch::BeltStamp>,
+    /// True only when two or more objects print one at a time.
+    sequential: bool,
 }
 
 /// The reply's preview. A kept plate names it with a token, and when the
@@ -2255,6 +2346,7 @@ fn preview(
         preview_base == Some(shown.token.as_str())
             && shown.drawn == kept.drawn
             && shown.belt == kept.belt
+            && shown.sequential == kept.sequential
     });
     let (mut layers, mut patched) = match base {
         Some((joined, shown)) => {
@@ -2327,6 +2419,7 @@ fn preview(
             blends: blends.iter().map(|&b| b.clone()).collect(),
             seconds,
             belt: kept.belt,
+            sequential: kept.sequential,
         },
     );
     (layers, Some(kept.token), patched)

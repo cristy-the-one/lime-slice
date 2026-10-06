@@ -183,8 +183,16 @@ fn refused_requests_name_the_field() {
         slice(&plate(json!({ "objects": [obj] }))).unwrap_err()
     };
     assert_eq!(
-        with(json!({"printOrder": "sequential"})),
-        "printOrder \"sequential\" is not supported yet; omit it or send \"all-at-once\""
+        with(json!({"printOrder": "sideways"})),
+        "printOrder \"sideways\" is not a print order; send \"all-at-once\" or \"sequential\""
+    );
+    assert_eq!(
+        with(json!({"sequentialClearanceMm": 2.0})),
+        "sequentialClearanceMm is sent only with printOrder \"sequential\""
+    );
+    assert_eq!(
+        with(json!({"printOrder": "sequential", "sequentialClearanceMm": 80})),
+        "sequentialClearanceMm 80 must be from 0 to 50"
     );
     assert_eq!(
         with(json!({"objects": []})),

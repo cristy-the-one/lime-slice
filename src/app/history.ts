@@ -62,6 +62,8 @@ function capture(): EditSnap {
     overrides: structuredClone(state.overrides),
     selectedVolumeId: state.selectedVolumeId,
     plate: snapPlate(state.plate),
+    printOrder: state.printOrder,
+    sequentialClearanceMm: state.sequentialClearance,
   };
 }
 
@@ -114,6 +116,8 @@ function applySnap(snap: EditSnap) {
   if (state.selectedVolumeId && !state.overrides.volumes.some((volume) => volume.id === state.selectedVolumeId)) {
     state.selectedVolumeId = null;
   }
+  state.printOrder = snap.printOrder === "sequential" ? "sequential" : "all-at-once";
+  state.sequentialClearance = snap.sequentialClearanceMm ?? 0;
   if (snap.plate && snap.plate.objects.length > 0) {
     const revived = revivePlate(snap.plate);
     if (revived) {
