@@ -9,7 +9,9 @@ use crate::poly::{
     offset_loops, offset_paths, paths_from_loops, point_in_loop, principal_axis, resolve_nonzero,
     signed_area, Loop,
 };
-use crate::strategy::{InfillPattern, Ironing, ResolvedStrategy, ScarfSeam, SeamMode, StrategyId};
+use crate::strategy::{
+    FuzzySkin, InfillPattern, Ironing, ResolvedStrategy, ScarfSeam, SeamMode, StrategyId,
+};
 use crate::support::Disk;
 use clipper2::{EndType, FillRule, JoinType, Milli, Paths};
 
@@ -115,6 +117,8 @@ pub struct PathFeatures {
     pub lightning: Option<crate::lightning::Branches>,
     /// Absolute layer Z. The 3D gyroid section is evaluated here.
     pub z: f64,
+    /// Outer-wall noise. `None` leaves the walls as planned.
+    pub fuzzy_skin: Option<FuzzySkin>,
     /// Nozzle diameter used to cap combined sparse beads.
     pub nozzle_diameter: f64,
     /// Interior layers from this one through the last before a shell, including this one.
@@ -135,6 +139,7 @@ impl Default for PathFeatures {
             skin: std::sync::Arc::default(),
             lightning: None,
             z: 0.0,
+            fuzzy_skin: None,
             nozzle_diameter: 0.4,
             interior_remaining: 1,
             interior_run: 1,
@@ -192,6 +197,16 @@ pub struct Extrusion {
     pub z_hop: f64,
     /// How the travel order may move where this closed path starts.
     pub seam: Seam,
+    /// Noise applied once the seam and any scarf ramp are final. `None`
+    /// leaves the path as planned.
+    pub fuzzy: Option<FuzzyMark>,
+}
+
+/// Outer-wall noise waiting for the seam to be chosen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FuzzyMark {
+    pub skin: FuzzySkin,
+    pub z: f64,
 }
 
 /// How the travel order may move a closed path's start.
@@ -243,7 +258,7 @@ pub(crate) fn plan_region_split(
                     &mut paths, contours, strategy, width, min_w, max_w, seam_hint,
                 );
                 emit_void_fill(&mut paths, contours, &[], strategy, line_width, seam_hint);
-                return (paths, ms_since(wall_started), 0.0);
+                return (finish_paths(paths, features), ms_since(wall_started), 0.0);
             }
         }
     }
@@ -352,7 +367,7 @@ pub(crate) fn plan_region_split(
             emit_void_fill(
                 &mut paths, contours, &interior, strategy, line_width, seam_hint,
             );
-            return (paths, wall_ms, ms_since(infill_started));
+            return (finish_paths(paths, features), wall_ms, ms_since(infill_started));
         };
         let kind = infill_kind(strategy, ShellBand::Interior);
         for pts in infill {
@@ -380,7 +395,98 @@ pub(crate) fn plan_region_split(
     emit_void_fill(
         &mut paths, contours, &cells, strategy, line_width, seam_hint,
     );
-    (paths, wall_ms, ms_since(infill_started))
+    (finish_paths(paths, features), wall_ms, ms_since(infill_started))
+}
+
+/// Tags outer walls. The offset waits until the seam is chosen, so the seam
+/// stays on the corner and a scarf ramp, which lands after that, is skipped.
+/// `None` does not touch the paths.
+fn finish_paths(mut paths: Vec<Extrusion>, features: &PathFeatures) -> Vec<Extrusion> {
+    if let Some(skin) = features.fuzzy_skin {
+        for path in &mut paths {
+            if path.kind == PathKind::Outer {
+                path.fuzzy = Some(FuzzyMark { skin, z: features.z });
+            }
+        }
+    }
+    paths
+}
+
+/// The offset, after the seam and the scarf. A scarf ramp already has a
+/// height and a flow on each point, so it is left alone. Taking the mark
+/// means a second pass does nothing.
+pub(crate) fn apply_fuzzy_skin(paths: &mut [Extrusion]) {
+    for path in paths {
+        fuzz_settled(path);
+    }
+}
+
+fn fuzz_settled(path: &mut Extrusion) {
+    let Some(mark) = path.fuzzy.take() else {
+        return;
+    };
+    if path.kind != PathKind::Outer || path.points.len() < 2 {
+        return;
+    }
+    if !path.z_frac.is_empty() || !path.flow_frac.is_empty() {
+        return;
+    }
+    path.points = fuzz_polyline(&path.points, mark.skin, mark.z);
+}
+
+fn fuzz_polyline(points: &[[f64; 2]], fuzzy: FuzzySkin, z: f64) -> Vec<[f64; 2]> {
+    let mut length = 0.0;
+    for w in points.windows(2) {
+        length += hypot2(w[0], w[1]);
+    }
+    if length < fuzzy.point_distance * 1.5 {
+        return points.to_vec();
+    }
+    let last = *points.last().unwrap();
+    let mut out = vec![points[0]];
+    let mut acc = 0.0;
+    let mut next = fuzzy.point_distance;
+    for w in points.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let dx = b[0] - a[0];
+        let dy = b[1] - a[1];
+        let seg = dx.hypot(dy);
+        if seg < 1e-9 {
+            continue;
+        }
+        while acc + seg + 1e-9 >= next && next < length - 1e-6 {
+            let t = ((next - acc) / seg).clamp(0.0, 1.0);
+            let sample = [a[0] + dx * t, a[1] + dy * t];
+            let nx = -dy / seg;
+            let ny = dx / seg;
+            let n = fuzzy_noise(sample[0], sample[1], z);
+            out.push([
+                sample[0] + nx * n * fuzzy.thickness,
+                sample[1] + ny * n * fuzzy.thickness,
+            ]);
+            next += fuzzy.point_distance;
+        }
+        acc += seg;
+    }
+    if hypot2(*out.last().unwrap(), last) > 1e-6 {
+        out.push(last);
+    } else {
+        *out.last_mut().unwrap() = last;
+    }
+    out
+}
+
+fn hypot2(a: [f64; 2], b: [f64; 2]) -> f64 {
+    (a[0] - b[0]).hypot(a[1] - b[1])
+}
+
+/// -1 to 1, stable for the same point and layer.
+fn fuzzy_noise(x: f64, y: f64, z: f64) -> f64 {
+    let s = (x * 12.9898 + y * 78.233 + z * 45.164).sin() * 43758.5453;
+    // `fract` of a negative value stays negative, which would push the
+    // offset past one thickness. `floor` keeps the fraction in [0, 1).
+    let frac = s - s.floor();
+    frac * 2.0 - 1.0
 }
 
 /// Skin pieces smaller than this are boolean noise along a skin edge, mm².
@@ -1225,6 +1331,7 @@ fn extrusion(
             (_, SeamMode::Nearest) => Seam::Corner,
             (_, SeamMode::Aligned | SeamMode::Rear) => Seam::Fixed,
         },
+        fuzzy: None,
     };
     apply_feed(&mut path, strategy);
     path
@@ -3972,6 +4079,7 @@ fn order_nearest(
         if let Some(params) = scarf {
             scarf_one(&mut path, params);
         }
+        fuzz_settled(&mut path);
         if let Some(end) = path.points.last() {
             cursor = *end;
             has = true;
@@ -5392,5 +5500,82 @@ mod travel_tests {
                 assert_eq!(index.hits(min, max), expect, "{label}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod fuzzy_tests {
+    use super::*;
+    use crate::strategy::{FuzzySkin, StrategyId};
+
+    fn path(kind: PathKind, pts: Vec<[f64; 2]>) -> Extrusion {
+        extrusion(kind, &crate::strategy::pure(StrategyId::Speed), pts, 0.45)
+    }
+
+    fn dist_seg(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+        let ab = [b[0] - a[0], b[1] - a[1]];
+        let ap = [p[0] - a[0], p[1] - a[1]];
+        let ab2 = ab[0] * ab[0] + ab[1] * ab[1];
+        if ab2 < 1e-18 {
+            return ap[0].hypot(ap[1]);
+        }
+        let t = ((ap[0] * ab[0] + ap[1] * ab[1]) / ab2).clamp(0.0, 1.0);
+        (p[0] - (a[0] + ab[0] * t)).hypot(p[1] - (a[1] + ab[1] * t))
+    }
+
+    fn dist_poly(p: [f64; 2], poly: &[[f64; 2]]) -> f64 {
+        poly.windows(2)
+            .map(|w| dist_seg(p, w[0], w[1]))
+            .fold(f64::MAX, f64::min)
+    }
+
+    #[test]
+    fn fuzzy_skin_offsets_outer_walls_and_leaves_a_scarf_ramp() {
+        let loop_pts = vec![
+            [0.0, 0.0],
+            [12.0, 0.0],
+            [12.0, 8.0],
+            [0.0, 8.0],
+            [0.0, 0.0],
+        ];
+        let features = PathFeatures {
+            fuzzy_skin: Some(FuzzySkin::default()),
+            z: 1.2,
+            ..PathFeatures::default()
+        };
+        let mut plain = finish_paths(vec![path(PathKind::Outer, loop_pts.clone())], &features);
+        fuzz_settled(&mut plain[0]);
+        assert_eq!(plain[0].points[0], loop_pts[0]);
+        assert_eq!(*plain[0].points.last().unwrap(), *loop_pts.last().unwrap());
+        assert!(plain[0].points.len() > loop_pts.len());
+        let mut moved = false;
+        for p in &plain[0].points {
+            let d = dist_poly(*p, &loop_pts);
+            assert!(d <= 0.3 + 1e-9, "{p:?} is {d} mm off the wall");
+            if d > 0.05 {
+                moved = true;
+            }
+        }
+        assert!(moved, "the wall did not move");
+
+        let mut scarfed = finish_paths(vec![path(PathKind::Outer, loop_pts.clone())], &features);
+        scarfed[0].z_frac = vec![0.2; loop_pts.len()];
+        scarfed[0].flow_frac = vec![1.0; loop_pts.len()];
+        fuzz_settled(&mut scarfed[0]);
+        assert_eq!(scarfed[0].points, loop_pts);
+
+        let mut inner = finish_paths(vec![path(PathKind::Inner, loop_pts.clone())], &features);
+        fuzz_settled(&mut inner[0]);
+        assert_eq!(inner[0].points, loop_pts);
+
+        let mut smooth = finish_paths(
+            vec![path(PathKind::Outer, loop_pts.clone())],
+            &PathFeatures {
+                fuzzy_skin: None,
+                ..features
+            },
+        );
+        fuzz_settled(&mut smooth[0]);
+        assert_eq!(smooth[0].points, loop_pts);
     }
 }

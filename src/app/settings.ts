@@ -21,6 +21,7 @@ import { loadProfileLibrary } from "./profile-library";
 import { SETTING_KEYWORDS, settingMatches } from "../ui/settings-search";
 import { displayId } from "../ui/settings-profiles";
 import { overrideSectionHtml } from "../ui/overrides-panel";
+import { fuzzyRequest, readFuzzyPointDistance, readFuzzyThickness } from "../fuzzy-skin";
 import { ironingFlowPercent, ironingRequest, ironingSpacingMax, readIroningFlowPercent, readIroningSpacing, readIroningSpeed } from "../ironing";
 import { loadSettingsLevel } from "../ui/settings-panel";
 
@@ -51,14 +52,16 @@ export function staleWarning() {
 export function settingsHash() {
   const shift = state.offset;
   const mesh = state.mesh ? `${state.mesh.name}:${state.mesh.bytes.byteLength}:${state.partScale}:${state.centered}:${shift.x.toFixed(3)},${shift.y.toFixed(3)},${shift.z.toFixed(3)}:${state.orient.join(",")}` : "";
-  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, selectedVolumeId: _sel, modifierTool: _mt, plate: _plate, profile: _profile, ironing: _ironing, ironingFlow: _ironingFlow, ironingSpeed: _ironingSpeed, ironingSpacing: _ironingSpacing, ...rest } = state;
+  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, selectedVolumeId: _sel, modifierTool: _mt, plate: _plate, profile: _profile, ironing: _ironing, ironingFlow: _ironingFlow, ironingSpeed: _ironingSpeed, ironingSpacing: _ironingSpacing, fuzzySkin: _fuzzy, fuzzyThickness: _fuzzyThickness, fuzzyPointDistance: _fuzzyDistance, ...rest } = state;
   // Price and density only weigh the estimate, which the UI computes from the reply.
   const { filamentDensityGCm3: _density, filamentCostPerKg: _cost, ...profile } = state.profile;
   // Ironing counts as it is sent, so a number changed while it is off stales nothing.
   const ironing = ironingRequest({ on: state.ironing, flow: state.ironingFlow, speed: state.ironingSpeed, spacing: state.ironingSpacing });
+  // Fuzzy skin counts as it is sent, so a number changed while it is off stales nothing.
+  const fuzzy = fuzzyRequest({ on: state.fuzzySkin, thickness: state.fuzzyThickness, pointDistance: state.fuzzyPointDistance });
   // A cartesian printer leaves this off, so its hash is the one it had before belt profiles.
   const belt = beltStamp(loadMachineLibrary());
-  const hashed = { mesh, profile, rest, ...ironing, ...(belt ? { belt } : {}) };
+  const hashed = { mesh, profile, rest, ...ironing, ...fuzzy, ...(belt ? { belt } : {}) };
   if (state.plate.objects.length > 1) {
     return JSON.stringify({
       ...hashed,
@@ -114,6 +117,8 @@ export function renderChrome() {
       ${select("seam", "Seam position", state.seam, [["blend", "Blend (strategy)"], ["nearest", "Nearest"], ["aligned", "Aligned"], ["rear", "Rear"]], "advanced")}
       ${check("ironing", "Ironing", state.ironing, "advanced")}
       ${state.ironing ? `${num("ironflow", "Ironing flow %", ironingFlowPercent(state.ironingFlow), 1, 100, 1, "advanced")}${num("ironspeed", "Ironing speed mm/s", state.ironingSpeed, 1, 200, 1, "advanced")}${num("ironspace", "Ironing spacing mm", state.ironingSpacing, 0.05, ironingSpacingMax(fx.lineWidth()), 0.01, "advanced")}<div class="meta">A second pass over each top surface at low flow, inset half a line from the outline. Spacing stays below the line width. Defaults are 10% flow, 20 mm/s, and 0.1 mm spacing.</div>` : ""}
+      ${check("fuzzy", "Fuzzy skin", state.fuzzySkin, "advanced")}
+      ${state.fuzzySkin ? `${num("fuzzythick", "Fuzzy thickness mm", state.fuzzyThickness, 0.05, 1, 0.05, "advanced")}${num("fuzzydist", "Fuzzy point spacing mm", state.fuzzyPointDistance, 0.1, 5, 0.1, "advanced")}<div class="meta">A stable sideways noise on the outer walls. Endpoints stay put, so a loop still meets. Defaults are 0.3 mm thickness and 0.8 mm between points.</div>` : ""}
       ${select("scarf", "Scarf seam", state.scarfSeam, [["blend", "Blend default"], ["off", "Off"], ["outer", "Outer walls"], ["all", "Outer and inner"]], "advanced")}
       ${state.scarfSeam === "off" ? "" : `${num("scarflen", "Scarf length mm", state.scarfLength, 1, 30, 1, "expert")}${num("scarfsteps", "Scarf steps", state.scarfSteps, 2, 32, 1, "expert")}`}
     `)}
@@ -951,6 +956,9 @@ export function onSettings(ev: Event) {
   if (t.id === "ironflow") state.ironingFlow = readIroningFlowPercent(t.value);
   if (t.id === "ironspeed") state.ironingSpeed = readIroningSpeed(t.value);
   if (t.id === "ironspace") state.ironingSpacing = readIroningSpacing(t.value, ironingSpacingMax(fx.lineWidth()));
+  if (t.id === "fuzzy") state.fuzzySkin = t.checked;
+  if (t.id === "fuzzythick") state.fuzzyThickness = readFuzzyThickness(t.value);
+  if (t.id === "fuzzydist") state.fuzzyPointDistance = readFuzzyPointDistance(t.value);
   if (t.id === "scarf") state.scarfSeam = t.value as typeof state.scarfSeam;
   if (t.id === "sstyle") state.supportStyle = t.value as typeof state.supportStyle;
   if (t.id === "pafw") state.paFirmware = t.value as typeof state.paFirmware;
@@ -997,7 +1005,7 @@ export function onSettings(ev: Event) {
     session.stepTimer = window.setTimeout(() => { void fx.refreshStepPreview(); }, 250);
     return;
   }
-  const structural = ["adaptive", "supports", "zhop", "scarf", "gyroid3d", "ironing"].includes(t.id);
+  const structural = ["adaptive", "supports", "zhop", "scarf", "gyroid3d", "ironing", "fuzzy"].includes(t.id);
   if (structural) renderChrome();
   markStale();
 }

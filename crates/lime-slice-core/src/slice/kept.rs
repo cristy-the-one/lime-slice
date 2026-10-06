@@ -300,7 +300,8 @@ pub(super) struct Keys {
 /// The part stages' keys with the overrides and the ironing left out. Ranges,
 /// volumes, and ironing are the only settings that differ layer by layer, so
 /// two plans with the same layer key share every layer whose own inputs, and
-/// whose inputs from the stage before, are the same.
+/// whose inputs from the stage before, are the same. Fuzzy skin is not left
+/// out: it moves every outer wall, so a change replans the toolpaths.
 #[derive(Clone)]
 pub(super) struct LayerKeys {
     pub toolpaths: [u8; 32],
@@ -397,6 +398,7 @@ pub(super) fn keys(
     let contours = SliceSettings {
         seam: blank.seam,
         ironing: blank.ironing,
+        fuzzy_skin: blank.fuzzy_skin,
         variable_width: blank.variable_width,
         overhang_control: blank.overhang_control,
         classic: blank.classic,
@@ -428,6 +430,7 @@ pub(super) fn keys(
         // Support paths are never loops, so where a loop starts never reaches them.
         seam: blank.seam,
         ironing: blank.ironing,
+        fuzzy_skin: blank.fuzzy_skin,
         // Supports stay global: ranges and volumes change only the part.
         overrides: blank.overrides.clone(),
         ..toolpaths.clone()

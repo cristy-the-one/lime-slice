@@ -37,7 +37,7 @@ use crate::poly::{
 use crate::progress::{Stage, Status, Watch};
 use crate::strategy::{
     classicize, layer_weight, mix, pure, support_density, support_interface_density, support_speed,
-    Axis, BlendMode, Gyroid3d, Ironing, PrinterProfile, ResolvedStrategy, ScarfSeam, SeamPlacement,
+    Axis, BlendMode, FuzzySkin, Gyroid3d, Ironing, PrinterProfile, ResolvedStrategy, ScarfSeam, SeamPlacement,
     StrategyId, ZHopMode,
 };
 use crate::support::edit::{EditOutcome, SupportEdit};
@@ -144,6 +144,10 @@ pub struct SliceRequest {
     /// the request's key holds. `{}` is on at the defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ironing: Option<Ironing>,
+    /// Noise on the outer walls. Left out when off, so the request's key holds.
+    /// `{}` is on at 0.3 mm thickness and 0.8 mm point spacing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fuzzy_skin: Option<FuzzySkin>,
     /// `blend` follows the strategy, or `off` / `outer` / `all`.
     #[serde(default)]
     pub scarf_seam: ScarfSeam,
@@ -291,6 +295,7 @@ pub struct SliceSettings {
     pub feature_speeds: bool,
     pub seam: SeamPlacement,
     pub ironing: Option<Ironing>,
+    pub fuzzy_skin: Option<FuzzySkin>,
     pub scarf_seam: ScarfSeam,
     pub scarf_length: f64,
     pub scarf_steps: u32,
@@ -356,6 +361,7 @@ impl Default for SliceSettings {
             feature_speeds: true,
             seam: SeamPlacement::Blend,
             ironing: None,
+            fuzzy_skin: None,
             scarf_seam: ScarfSeam::Blend,
             scarf_length: default_scarf_length(),
             scarf_steps: default_scarf_steps(),
@@ -446,6 +452,7 @@ impl SliceSettings {
             feature_speeds: req.feature_speeds && !req.classic,
             seam: req.seam,
             ironing: req.ironing,
+            fuzzy_skin: if req.classic { None } else { req.fuzzy_skin },
             scarf_seam: if req.classic {
                 ScarfSeam::Off
             } else {
@@ -573,7 +580,13 @@ impl SliceSettings {
                 i.flow, i.speed, i.spacing
             )
         });
-        format!("{layers}; {supports}; {combine}; {scarf}; {gyroid}; {hop}{seam}{ironing}")
+        let fuzzy = self.fuzzy_skin.map_or(String::new(), |f| {
+            format!(
+                "; fuzzy skin {} mm / {} mm",
+                f.thickness, f.point_distance
+            )
+        });
+        format!("{layers}; {supports}; {combine}; {scarf}; {gyroid}; {hop}{seam}{ironing}{fuzzy}")
     }
 }
 
@@ -901,6 +914,9 @@ pub fn slice_request_watched(
     if let Some(ironing) = &req.ironing {
         ironing.check(SliceSettings::from_request(req).line_width)?;
     }
+    if let Some(fuzzy) = &req.fuzzy_skin {
+        fuzzy.check()?;
+    }
     let listed = req.objects.is_some();
     let requests = if listed {
         wire::object_requests(req)?
@@ -1099,6 +1115,7 @@ fn resolved(settings: &SliceSettings) -> SliceSettings {
         settings.feature_speeds = false;
         settings.seam = SeamPlacement::Blend;
         settings.ironing = None;
+        settings.fuzzy_skin = None;
         settings.scarf_seam = ScarfSeam::Off;
         settings.gyroid_3d = Gyroid3d::Off;
         settings.z_hop = ZHopMode::Off;
@@ -3915,6 +3932,7 @@ fn tour_part(
                     if let Some(params) = scarf_params(settings, bands[i].index) {
                         apply_scarf(&mut paths, &params);
                     }
+                    crate::toolpath::apply_fuzzy_skin(&mut paths);
                 }
                 watch.tick();
                 let layer = TourLayer {
@@ -4933,6 +4951,7 @@ fn object_layer(
         skin: Arc::default(),
         lightning: None,
         z,
+        fuzzy_skin: settings.fuzzy_skin,
         nozzle_diameter,
         interior_remaining: remain_low.0,
         interior_run: remain_low.1,

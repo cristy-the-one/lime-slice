@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 mod jobs;
 
 use lime_slice_core::{
-    pareto_estimates, slice_request, Axis, BlendMode, GcodeText, Gyroid3d, Ironing, Mesh,
+    pareto_estimates, slice_request, Axis, BlendMode, FuzzySkin, GcodeText, Gyroid3d, Ironing, Mesh,
     RigidPose, ScarfSeam, SeamPlacement, SliceRequest, SliceSettings, StrategyId, ZHopMode,
 };
 
@@ -113,6 +113,11 @@ enum Cmd {
         /// defaults, or any of `flow`, `speed`, and `spacing`.
         #[arg(long)]
         ironing: Option<String>,
+        /// Noise on the outer walls, as the request's JSON object: `{}` for
+        /// 0.3 mm thickness and 0.8 mm point spacing, or `thickness` and
+        /// `pointDistance`. Omitted, the walls stay smooth.
+        #[arg(long)]
+        fuzzy_skin: Option<String>,
         /// Scarf joints: `blend` (strategy default), `off`, `outer`, or `all`.
         #[arg(long, default_value = "blend")]
         scarf_seam: String,
@@ -264,6 +269,7 @@ fn run() -> Result<(), String> {
             feature_speeds,
             seam,
             ironing,
+            fuzzy_skin,
             scarf_seam,
             scarf_length,
             scarf_steps,
@@ -286,6 +292,9 @@ fn run() -> Result<(), String> {
             let seam = SeamPlacement::parse(&seam)?;
             let ironing = ironing
                 .map(|text| serde_json::from_str::<Ironing>(&text).map_err(|e| e.to_string()))
+                .transpose()?;
+            let fuzzy_skin = fuzzy_skin
+                .map(|text| serde_json::from_str::<FuzzySkin>(&text).map_err(|e| e.to_string()))
                 .transpose()?;
             let scarf_seam = ScarfSeam::parse(&scarf_seam)?;
             let gyroid_3d = Gyroid3d::parse(&gyroid_3d)?;
@@ -330,6 +339,7 @@ fn run() -> Result<(), String> {
                 feature_speeds,
                 seam,
                 ironing,
+                fuzzy_skin,
                 scarf_seam,
                 scarf_length,
                 scarf_steps,
@@ -1397,6 +1407,7 @@ fn request_for(
         feature_speeds: settings.feature_speeds,
         seam: settings.seam,
         ironing: settings.ironing,
+        fuzzy_skin: settings.fuzzy_skin,
         scarf_seam: settings.scarf_seam,
         scarf_length: settings.scarf_length,
         scarf_steps: settings.scarf_steps,

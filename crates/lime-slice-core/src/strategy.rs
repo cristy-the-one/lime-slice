@@ -133,6 +133,85 @@ impl Default for Ironing {
     }
 }
 
+/// Noise on the outer walls. Off when the request omits it.
+/// `{}` is on at 0.3 mm thickness and 0.8 mm point spacing.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", try_from = "serde_json::Value")]
+pub struct FuzzySkin {
+    /// Peak offset either side of the wall, millimetres. Default 0.3.
+    #[serde(default = "default_fuzzy_thickness")]
+    pub thickness: f64,
+    /// Distance between the offset points, millimetres. Default 0.8.
+    #[serde(default = "default_fuzzy_distance")]
+    pub point_distance: f64,
+}
+
+fn default_fuzzy_thickness() -> f64 {
+    0.3
+}
+
+fn default_fuzzy_distance() -> f64 {
+    0.8
+}
+
+impl Default for FuzzySkin {
+    fn default() -> Self {
+        Self {
+            thickness: default_fuzzy_thickness(),
+            point_distance: default_fuzzy_distance(),
+        }
+    }
+}
+
+impl FuzzySkin {
+    pub fn check(&self) -> Result<(), String> {
+        if !(self.thickness.is_finite() && self.thickness > 0.0 && self.thickness <= 1.0) {
+            return Err(format!(
+                "fuzzySkin.thickness {} must be above 0 and at most 1 mm",
+                self.thickness
+            ));
+        }
+        if !(self.point_distance.is_finite()
+            && self.point_distance >= 0.1
+            && self.point_distance <= 5.0)
+        {
+            return Err(format!(
+                "fuzzySkin.pointDistance {} must be from 0.1 to 5 mm",
+                self.point_distance
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl TryFrom<serde_json::Value> for FuzzySkin {
+    type Error = String;
+
+    fn try_from(value: serde_json::Value) -> Result<Self, String> {
+        let serde_json::Value::Object(keys) = value else {
+            return Err(format!(
+                "fuzzySkin {value} is not an object; send {{}} or thickness and pointDistance"
+            ));
+        };
+        let mut fuzzy = FuzzySkin::default();
+        for (key, value) in keys {
+            let slot = match key.as_str() {
+                "thickness" => &mut fuzzy.thickness,
+                "pointDistance" => &mut fuzzy.point_distance,
+                _ => {
+                    return Err(format!(
+                        "fuzzySkin.{key} is not a fuzzy skin setting; send thickness or pointDistance"
+                    ))
+                }
+            };
+            *slot = value
+                .as_f64()
+                .ok_or_else(|| format!("fuzzySkin.{key} {value} is not a number"))?;
+        }
+        Ok(fuzzy)
+    }
+}
+
 impl Ironing {
     /// Refuses a value no print can use. Spacing has to stay below the line
     /// width, or the passes leave stripes of the top skin untouched.

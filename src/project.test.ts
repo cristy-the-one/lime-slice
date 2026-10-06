@@ -83,6 +83,18 @@ delete ironed.settings.ironingSpacing;
 const beforeIron = parseProject(JSON.stringify(ironed));
 check("a file from before ironing opens off, at the defaults", beforeIron.ok && beforeIron.project.settings.ironing === false && beforeIron.project.settings.ironingFlow === 0.1 && beforeIron.project.settings.ironingSpeed === 20 && beforeIron.project.settings.ironingSpacing === 0.1);
 
+const fuzzed = JSON.parse(serializeProject({
+  ...project,
+  settings: { ...project.settings, fuzzySkin: true, fuzzyThickness: 0.5, fuzzyPointDistance: 1.2 },
+})) as { settings: Record<string, unknown> };
+const fuzzOpened = parseProject(JSON.stringify(fuzzed));
+check("fuzzy skin round-trips", fuzzOpened.ok && fuzzOpened.project.settings.fuzzySkin === true && fuzzOpened.project.settings.fuzzyThickness === 0.5 && fuzzOpened.project.settings.fuzzyPointDistance === 1.2);
+delete fuzzed.settings.fuzzySkin;
+delete fuzzed.settings.fuzzyThickness;
+delete fuzzed.settings.fuzzyPointDistance;
+const beforeFuzzy = parseProject(JSON.stringify(fuzzed));
+check("a file from before fuzzy skin opens off, at the defaults", beforeFuzzy.ok && beforeFuzzy.project.settings.fuzzySkin === false && beforeFuzzy.project.settings.fuzzyThickness === 0.3 && beforeFuzzy.project.settings.fuzzyPointDistance === 0.8);
+
 const wire = JSON.parse(text) as { supportEdits: { edit: Record<string, unknown> }[] };
 eq("a prune stores sites, not a walk id", wire.supportEdits[0].edit, {
   kind: "prune",
