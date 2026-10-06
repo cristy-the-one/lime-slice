@@ -25,6 +25,52 @@ pub(super) struct Shown {
     pub blends: Vec<BlendMode>,
     /// Each band's layer time, `None` for a band with nothing printed.
     pub seconds: Vec<Option<f64>>,
+    /// Belt copies, axis, direction, and gap. `None` on a cartesian plate.
+    /// A patch is only against a preview with the same stamp: those change
+    /// the tilted drawing without changing the planned paths.
+    pub belt: Option<BeltStamp>,
+}
+
+/// What a belt preview draws besides the planned plate. Hashed into the
+/// token, and compared before a patch. A cartesian slice leaves it out, so
+/// that token's bytes stay what they were.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct BeltStamp {
+    copies: u32,
+    axis: u8,
+    direction: i8,
+    gap_bits: u64,
+}
+
+impl BeltStamp {
+    pub(super) fn from_belt(belt: &crate::belt::Belt) -> Self {
+        Self {
+            copies: belt.copies,
+            axis: match belt.axis {
+                crate::belt::BeltAxis::X => 0,
+                crate::belt::BeltAxis::Y => 1,
+                crate::belt::BeltAxis::Z => 2,
+            },
+            direction: if belt.direction < 0.0 { -1 } else { 1 },
+            gap_bits: belt.gap_mm.to_bits(),
+        }
+    }
+
+    fn mix(&self, hash: &mut Sha256) {
+        hash.update(self.copies.to_le_bytes());
+        hash.update([self.axis]);
+        hash.update(self.direction.to_le_bytes());
+        hash.update(self.gap_bits.to_le_bytes());
+    }
+}
+
+/// The rotation and the belt a tilted preview is drawn with. Stored with a
+/// patched reply so the disk copy is the tilted plate, not the slice frame.
+#[derive(Clone)]
+pub(super) struct BeltTilt {
+    pub frame: crate::belt::Frame,
+    pub belt: crate::belt::Belt,
+    pub offsets: Vec<Option<[f64; 2]>>,
 }
 
 /// Names the preview of a kept plate: each object's key and edits, in plate
@@ -34,6 +80,7 @@ pub(super) fn token(
     keys: &[[u8; 32]],
     profile: &PrinterProfile,
     edits: &[&[SupportEdit]],
+    belt: Option<&BeltStamp>,
 ) -> String {
     let mut hash = Sha256::new();
     for key in keys {
@@ -41,6 +88,10 @@ pub(super) fn token(
     }
     hash.update(profile_digest(profile));
     hash.update(format!("{edits:?}"));
+    // Absent on a cartesian plate, so the digest above is the whole token.
+    if let Some(belt) = belt {
+        belt.mix(&mut hash);
+    }
     hash.finalize()[..16]
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -90,12 +141,18 @@ pub(crate) struct WholePreview {
     pub(super) profile: PrinterProfile,
     pub(super) blends: Vec<BlendMode>,
     pub(super) layer_seconds: Vec<f64>,
+    /// Set for a belt plate, so the stored reply is the tilted preview.
+    pub(super) tilt: Option<BeltTilt>,
 }
 
 impl WholePreview {
     pub(crate) fn layers(&self) -> Vec<PreviewLayer> {
         let blends: Vec<&BlendMode> = self.blends.iter().collect();
-        preview_of(&self.layers, &self.profile, &blends, &self.layer_seconds)
+        let mut layers = preview_of(&self.layers, &self.profile, &blends, &self.layer_seconds);
+        if let Some(tilt) = &self.tilt {
+            super::tilt_held(&mut layers, &self.layers, tilt);
+        }
+        layers
     }
 }
 

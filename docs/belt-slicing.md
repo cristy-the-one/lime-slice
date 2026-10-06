@@ -136,7 +136,9 @@ Layer 0 keeps the writer's 30 mm/s, flow 1.06, and fan off. Later layers slow on
 
 `belt.raftLayers` from 1 to 8, after the mesh is laid flat and before the fit check, lifts every object by `N * clamp(layerHeight, 0.05, 0.6)` and records the laid footprint. `belt_output` then replaces the first N plate layers whose slice Z is at most that lift with one outer loop 1 mm outside the footprint and solid lines spaced by the line width. Those paths are 30 mm/s, flow 1.0, and fan 0. The writer still multiplies layer 0 by 1.06, so the first pad layer is 1.06 and later pad layers stay at 1.0 and 30 mm/s. Adaptive layers with a raft are refused (`belt.raftLayers needs a fixed layer height; turn adaptive layers off`). Each copy repeats the pad, because the replacement happens before the copy loop. Omitted and 0 print no pad, and the request JSON omits the field. The machine file stores `raftLayers: 0` for an old belt block that has no key.
 
-Preview `zs` are lab height above the belt, in the part frame, including travels, so a layer draws tilted. The layer's own `z` is the belt position. Patches are skipped: the kept token does not include copies, axis, or direction. Print time is the existing estimator. The belt step is timed like a Z travel, at 120 mm/s.
+Preview `zs` are lab height above the belt, in the part frame, including travels, so a layer draws tilted. The layer's own `z` is the belt position. Print time is the existing estimator. The belt step is timed like a Z travel, at 120 mm/s.
+
+A kept belt slice names that tilted preview. The token is the plate token plus copies, axis, direction, and the gap. The gap is in it because a different gap moves later copies along the belt without changing the planned paths, and the same token has to mean the same drawing. A cartesian request passes no stamp, so its token bytes stay what they were. When the client sends that token back and the stamp still matches, the reply is a patch: unchanged layers stay references, and the paths that did change are already tilted. A different stamp is a whole preview. The disk copy of a patch is the tilted plate, not the slice frame. G-code is still the expanded belt file. `previewBase` stays out of the disk key.
 
 A belt axis of X or Y permutes the letters. The nozzle plane is no longer machine XY, so arc fitting is off. Z, the CR-30 axis, keeps `G2`/`G3`.
 
@@ -144,7 +146,6 @@ A belt axis of X or Y permutes the letters. The nozzle plane is no longer machin
 
 - Supports grown on the belt floor, with the down vector tilted by `α`. Until then a belt slice has no supports, and edits or paint are refused.
 - Pulling an explicit seam onto the belt edge is opt-in. `belt.seamOnEdge`, omitted when false, rewrites nearest and aligned to `rear` as well. `blend` still moves without the flag.
-- Preview patches for a belt plate.
 - A part-frame move that does not recut. Baking the bed offset means a move across the belt, or a move of one object relative to another along it, changes the mesh the contour key hashes.
 - World-space shear for a firmware that does not already tilt. Not used for the four machines above.
 - The fan ramp on layer 1 (128) is the writer's, once per file. Later copies do not repeat it. Their first layer does get fan 0 from the belt-wall retouch.
