@@ -74,6 +74,9 @@ check("a stored profile from before the seam picker stays", olderLibrary.profile
 const { ironing: _ironing, ironingFlow: _flow, ironingSpeed: _speed, ironingSpacing: _spacing, ...beforeIron } = DEFAULT_PRESET;
 const olderIron = parseSettingsProfile(JSON.stringify({ version: 1, name: "Before iron", settings: beforeIron, level: "advanced" }));
 check("a profile from before ironing stays off", olderIron.ok && olderIron.profile.settings.ironing === false && olderIron.profile.settings.ironingFlow === 0.1 && olderIron.profile.settings.ironingSpeed === 20 && olderIron.profile.settings.ironingSpacing === 0.1);
+const { fuzzySkin: _fuzzy, fuzzyThickness: _thick, fuzzyPointDistance: _dist, ...beforeFuzzy } = DEFAULT_PRESET;
+const olderFuzzy = parseSettingsProfile(JSON.stringify({ version: 1, name: "Before fuzzy", settings: beforeFuzzy, level: "advanced" }));
+check("a profile from before fuzzy skin stays off", olderFuzzy.ok && olderFuzzy.profile.settings.fuzzySkin === false && olderFuzzy.profile.settings.fuzzyThickness === 0.3 && olderFuzzy.profile.settings.fuzzyPointDistance === 0.8);
 
 const badJson = parseSettingsProfile("{");
 check("bad json is refused", !badJson.ok && badJson.message === "This file is not a Lime Slice settings profile.");

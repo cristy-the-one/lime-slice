@@ -37,6 +37,12 @@ export interface PresetSettings {
   ironingSpeed: number;
   /** Millimetres between ironing lines. */
   ironingSpacing: number;
+  /** Off until the user asks. Omitted from the slice body while off. */
+  fuzzySkin: boolean;
+  /** Peak offset either side of an outer wall, millimetres. */
+  fuzzyThickness: number;
+  /** Millimetres between fuzzy-skin points. */
+  fuzzyPointDistance: number;
   scarfSeam: string;
   scarfLength: number;
   scarfSteps: number;
@@ -83,6 +89,9 @@ export const DEFAULT_PRESET: PresetSettings = {
   ironingFlow: 0.1,
   ironingSpeed: 20,
   ironingSpacing: 0.1,
+  fuzzySkin: false,
+  fuzzyThickness: 0.3,
+  fuzzyPointDistance: 0.8,
   scarfSeam: "blend",
   scarfLength: 10,
   scarfSteps: 8,
@@ -130,6 +139,9 @@ const LABELS: Record<keyof PresetSettings, string> = {
   ironingFlow: "Ironing flow",
   ironingSpeed: "Ironing speed",
   ironingSpacing: "Ironing spacing",
+  fuzzySkin: "Fuzzy skin",
+  fuzzyThickness: "Fuzzy thickness",
+  fuzzyPointDistance: "Fuzzy point spacing",
   scarfSeam: "Scarf seam",
   scarfLength: "Scarf length",
   scarfSteps: "Scarf steps",
@@ -148,7 +160,7 @@ export function presetKeys(): (keyof PresetSettings)[] {
 }
 
 /** Keys added after project and profile files were versioned. A file written before one reads its default. */
-const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing"]);
+const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance"]);
 
 /** The preset a project or profile file stores, or null when a key is missing or has the wrong type. */
 export function readPresetSettings(value: unknown): PresetSettings | null {

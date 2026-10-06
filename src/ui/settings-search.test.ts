@@ -18,6 +18,7 @@ check("placement keyword matches scale", settingMatches("placement", "scale %", 
 check("seam keyword matches the scarf control", settingMatches("seam", "Scarf seam", SETTING_KEYWORDS.scarf));
 check("rear finds the seam position", settingMatches("rear", "Seam position", SETTING_KEYWORDS.seam));
 check("top skin finds ironing", settingMatches("skin", "Ironing", SETTING_KEYWORDS.ironing));
+check("noise finds fuzzy skin", settingMatches("noise", "Fuzzy skin", SETTING_KEYWORDS.fuzzy));
 check("unknown word misses", !settingMatches("nozzleplate", "Layer height mm", SETTING_KEYWORDS.lh));
 
 if (failed) {

@@ -9,6 +9,7 @@ import { blend, renderChrome, settingsHash, markBusy, paintBanner, busyText, mar
 import { editRequestFields } from "../support-edit-list";
 import { replyOffset, type SlicedBed } from "../bed-offset";
 import { sliceOverrideFields } from "../overrides";
+import { sliceFuzzyFields } from "../fuzzy-skin";
 import { ironingSpacingMax, sliceIroningFields } from "../ironing";
 import { seamSliceField } from "../seam";
 import { plateListed, slicePlateFields, sourceFrame, type PlateObject, type PlateRequestObject } from "../plate";
@@ -182,6 +183,8 @@ export function payload() {
     ...seamSliceField(state.seam),
     // Off is left out, so a slice that does not iron keeps its bytes and its recipe key.
     ...sliceIroningFields({ on: state.ironing, flow: state.ironingFlow, speed: state.ironingSpeed, spacing: Math.min(state.ironingSpacing, ironingSpacingMax(lineWidth())) }),
+    // Off is left out, so a slice that does not ask for fuzzy skin keeps its bytes and its recipe key.
+    ...sliceFuzzyFields({ on: state.fuzzySkin, thickness: state.fuzzyThickness, pointDistance: state.fuzzyPointDistance }),
     scarfSeam: state.scarfSeam,
     scarfLength: state.scarfLength,
     scarfSteps: state.scarfSteps,

@@ -52,7 +52,7 @@ pub use step::{
     STEP_TOLERANCE_MAX_MM, STEP_TOLERANCE_MIN_MM,
 };
 pub use strategy::{
-    strategy_card, Axis, BlendMode, Gyroid3d, Ironing, PrinterProfile, ScarfSeam,
+    strategy_card, Axis, BlendMode, FuzzySkin, Gyroid3d, Ironing, PrinterProfile, ScarfSeam,
     SeamPlacement, StrategyCard, StrategyId, ZHopMode,
 };
 pub use support::edit::{EditStatus, SupportEdit, TipSite};
