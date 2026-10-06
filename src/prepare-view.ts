@@ -9,6 +9,7 @@ import { clampSplit, roundSplit, type SplitAxis } from "./split-at";
 import { createModifierScene } from "./modifier-scene";
 import type { OverrideDocument } from "./overrides";
 import type { PlateBound } from "./plate";
+import type { SeamDisk } from "./seam-paint";
 import type { PaintDisk, PaintKind, Vec3 } from "./support-paint";
 import { beltStripLength, tiltPose, type BeltSettings } from "./belt";
 import { hexToThree, themeColors } from "./theme";
@@ -54,11 +55,13 @@ export interface PrepareView {
   setViewPreset(preset: "top" | "front" | "iso"): void;
   /** Support paint drawn on the part, in the mesh frame `setMesh` poses. */
   setPaint(disks: readonly PaintDisk[]): void;
+  /** Seam paint drawn on the part, in the same frame as support paint. */
+  setSeamPaint(disks: readonly SeamDisk[]): void;
   /**
-   * The support brush, or null for none. While it is on, a press on the part paints: the left
+   * The support or seam brush, or null for none. While it is on, a press on the part paints: the left
    * button or one finger. Off the part the left button orbits, and two fingers always orbit.
    */
-  setBrush(brush: { kind: PaintKind; radius: number } | null): void;
+  setBrush(brush: { kind: PaintKind | "seam"; radius: number } | null): void;
   onBrush(hooks: BrushHooks | null): void;
   resize(): void;
 }
@@ -266,7 +269,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let editModEndCb: (() => void) | null = null;
   let modDrag: { id: string; kind: "move" | "scale"; axis: Axis; last: number } | null = null;
 
-  let brush: { kind: PaintKind; radius: number } | null = null;
+  let brush: { kind: PaintKind | "seam"; radius: number } | null = null;
   let brushHooks: BrushHooks | null = null;
   let stroke: number | null = null;
   // Each dab draws as the ball it reaches: the engine applies paint to every surface inside it.
@@ -283,6 +286,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   paintSpots.raycast = () => undefined;
   scene.add(paintSpots);
   let paintDisks: readonly PaintDisk[] = [];
+  let seamDisks: readonly SeamDisk[] = [];
   const cursorMat = new THREE.MeshBasicMaterial({ depthTest: false, transparent: true, opacity: 0.9, side: THREE.DoubleSide, toneMapped: false });
   const cursor = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 48), cursorMat);
   cursor.renderOrder = 8;
@@ -575,7 +579,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     return { point: frame.fromScene(hit.point) as Vec3, normal: [nx, ny, nz], scene: hit.point.clone() };
   }
 
-  function paintColor(kind: PaintKind) {
+  function paintColor(kind: PaintKind | "seam") {
+    if (kind === "seam") return hexToThree(colors.paintSeam);
     return hexToThree(kind === "enforce" ? colors.paintEnforce : colors.paintBlock);
   }
 
@@ -598,25 +603,31 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   const tint = new THREE.Color();
 
   function drawPaint() {
-    if (paintSpots.instanceMatrix.count < paintDisks.length) {
+    const drawn = paintDisks.length + seamDisks.length;
+    if (paintSpots.instanceMatrix.count < drawn) {
       scene.remove(paintSpots);
       paintSpots.dispose();
-      paintSpots = new THREE.InstancedMesh(disk, paintMat, Math.max(64, paintDisks.length * 2));
+      paintSpots = new THREE.InstancedMesh(disk, paintMat, Math.max(64, drawn * 2));
       paintSpots.matrixAutoUpdate = false;
       paintSpots.raycast = () => undefined;
       scene.add(paintSpots);
     }
     if (mesh) paintSpots.matrix.copy(mesh.matrix);
-    paintSpots.count = paintDisks.length;
-    paintDisks.forEach((d, k) => {
+    paintSpots.count = drawn;
+    const spots = [
+      ...paintDisks.map((d) => ({ p: d.p, r: d.r, kind: d.kind as PaintKind | "seam" })),
+      ...seamDisks.map((d) => ({ p: d.p, r: d.r, kind: "seam" as const })),
+    ];
+    spots.forEach((d, k) => {
       spot.makeScale(d.r, d.r, d.r).setPosition(d.p[0], d.p[1], d.p[2]);
       paintSpots.setMatrixAt(k, spot);
       paintSpots.setColorAt(k, tint.setHex(paintColor(d.kind)));
     });
     paintSpots.instanceMatrix.needsUpdate = true;
     if (paintSpots.instanceColor) paintSpots.instanceColor.needsUpdate = true;
-    paintSpots.visible = !!mesh && paintDisks.length > 0;
+    paintSpots.visible = !!mesh && drawn > 0;
     canvas.dataset.paintDisks = String(paintDisks.length);
+    canvas.dataset.seamDisks = String(seamDisks.length);
     requestRender();
   }
 
@@ -1071,6 +1082,10 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     setViewPreset(preset) { applyViewPreset(preset); },
     setPaint(disks) {
       paintDisks = disks;
+      drawPaint();
+    },
+    setSeamPaint(disks) {
+      seamDisks = disks;
       drawPaint();
     },
     setBrush(next) {

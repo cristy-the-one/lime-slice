@@ -146,6 +146,7 @@ function fileObjects(): PlateFileObject[] {
     };
     if (!settingsEmpty(obj.settings)) record.settings = { ...obj.settings };
     if (obj.supportPaint.length > 0) record.supportPaint = obj.supportPaint.map((disk) => structuredClone(disk));
+    if (obj.seamPaint.length > 0) record.seamPaint = obj.seamPaint.map((disk) => structuredClone(disk));
     return record;
   });
 }

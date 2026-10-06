@@ -23,6 +23,7 @@ export interface ThemeColors {
   axisZ: string;
   paintEnforce: string;
   paintBlock: string;
+  paintSeam: string;
 }
 
 export function loadTheme(): ThemeChoice {
@@ -61,6 +62,7 @@ export function themeColors(): ThemeColors {
     axisZ: pick("--axis-z", "#6aa7ff"),
     paintEnforce: pick("--paint-enforce", "#0f8a4c"),
     paintBlock: pick("--paint-block", "#e5484d"),
+    paintSeam: pick("--paint-seam", "#f5a524"),
   };
 }
 

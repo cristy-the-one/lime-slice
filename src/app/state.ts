@@ -10,6 +10,7 @@ import type { Vec3 } from "../section-plane";
 import type { PreviewGeometry } from "../preview-geom";
 import type { CoverageGap, EditOutcome, SupportSkeleton } from "../support-edits";
 import type { EditEntry } from "../support-edit-list";
+import type { SeamDisk } from "../seam-paint";
 import type { PaintDisk, PaintTally } from "../support-paint";
 
 export type { CoverageGap, EditOutcome, SupportSkeleton };
@@ -237,6 +238,7 @@ export const state = {
   supportEdits: [] as EditEntry[],
   /** The selected object's enforce and block disks, in its source frame. Sent with every slice. */
   supportPaint: [] as readonly PaintDisk[],
+  seamPaint: [] as readonly SeamDisk[],
   /** Height ranges and modifier volumes. Sent on the slice request when the lists are not empty. */
   overrides: emptyOverrides(),
   selectedVolumeId: null as string | null,
@@ -275,7 +277,8 @@ export const session = {
   slicedEdits: [] as readonly EditEntry[],
   /** The selected object's paint the request behind `state.result` carried. */
   slicedPaint: [] as readonly PaintDisk[],
-  paintUi: null as { refresh(): void; stop(): void } | null,
+  paintUi: null as { refresh(): void; stop(): void; bind(): void } | null,
+  seamUi: null as { refresh(): void; stop(): void } | null,
   /** Pose and reply offset the buffers on screen were built from. */
   slicedBed: null as SlicedBed | null,
   /** For a plate: each object's sent pose and reply offset, by id. */

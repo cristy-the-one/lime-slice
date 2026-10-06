@@ -13,6 +13,8 @@ import { activeSection, draw, fitNarrow, mountViews, paintGizmoReadout, prepare,
 import { probe, renderChrome } from "./app/settings";
 import { runSlice, treeSupports } from "./app/slice-run";
 import { mountSupportEdits } from "./ui/support-edit-ui";
+import { clearSeam, drawSeam, seamStroke } from "./app/seam-actions";
+import { mountSeamPaint } from "./ui/seam-paint-ui";
 import { mountSupportPaint } from "./ui/support-paint-ui";
 import { clearPaint, drawPaint, paintStroke, tallyOf } from "./app/paint-actions";
 import { fx } from "./app/fx";
@@ -76,6 +78,9 @@ session.supportUi = mountSupportEdits(view3d, {
   },
 });
 session.paintUi = mountSupportPaint(prepare, {
+  yieldBrush() {
+    session.seamUi?.stop();
+  },
   view() {
     const listed = plateListed(state.plate);
     const obj = listed ? state.plate.objects.find((o) => o.id === state.plate.selectedId) : undefined;
@@ -93,8 +98,28 @@ session.paintUi = mountSupportPaint(prepare, {
     if (state.stage !== "prepare") setStage("prepare");
   },
 });
-fx.drawPaint = drawPaint;
+session.seamUi = mountSeamPaint(prepare, {
+  view() {
+    return { disks: state.seamPaint, hasMesh: !!state.placed };
+  },
+  stroke: seamStroke,
+  clear: clearSeam,
+  reveal() {
+    if (state.stage !== "prepare") setStage("prepare");
+  },
+  yieldBrush() {
+    session.paintUi?.stop();
+  },
+  restoreBrush() {
+    session.paintUi?.bind();
+  },
+});
+fx.drawPaint = () => {
+  drawPaint();
+  drawSeam();
+};
 drawPaint();
+drawSeam();
 mountConnection(() => {
   void probe();
 });

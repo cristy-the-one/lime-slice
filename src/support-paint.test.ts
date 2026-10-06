@@ -101,6 +101,7 @@ const frame = { centre: [10, 5, 2] as [number, number, number], scale: 2 };
     stepTolerance: 0.1,
     supportEdits: [],
     supportPaint: [],
+  seamPaint: [],
   });
   const snap = (paint: readonly PaintDisk[]): EditSnap => ({
     placement: { orient: [...quarter], partScale: 2, centered: true, offset: { x: 0, y: 0, z: 0 }, stepTolerance: 0.1 },
@@ -108,7 +109,7 @@ const frame = { centre: [10, 5, 2] as [number, number, number], scale: 2 };
     splitCustom: false,
     profile: { nozzleDiameter: 0.4, bedX: 220, bedY: 220, bedZ: 250, maxVolumetricMm3S: 15, maxAccel: 3000, filamentDensityGCm3: 1.24, filamentCostPerKg: 20 },
     level: "simple",
-    plate: snapPlate(withSelectedPose(plate, { orient: quarter, partScale: 2, centered: true, offset: { x: 0, y: 0, z: 0 }, stepTolerance: 0.1, supportEdits: [], supportPaint: paint })),
+    plate: snapPlate(withSelectedPose(plate, { orient: quarter, partScale: 2, centered: true, offset: { x: 0, y: 0, z: 0 }, stepTolerance: 0.1, supportEdits: [], supportPaint: paint, seamPaint: [] })),
   });
   const dab = (x: number): PaintDisk => ({ kind: "block", p: [x, 5, 0], n: [0, 0, -1], r: 2 });
   let history = beginGesture(emptyHistory(), snap([dab(0)]));

@@ -13,6 +13,7 @@ import { sliceFuzzyFields } from "../fuzzy-skin";
 import { ironingSpacingMax, sliceIroningFields } from "../ironing";
 import { seamSliceField } from "../seam";
 import { plateListed, slicePlateFields, sourceFrame, type PlateObject, type PlateRequestObject } from "../plate";
+import { seamRequestFields } from "../seam-paint";
 import { paintRequestFields } from "../support-paint";
 import { noteTally } from "./paint-actions";
 import { loadMachineLibrary } from "./machine-library";
@@ -146,6 +147,7 @@ export function payload() {
         pose: currentPlacement()?.pose,
         ...editRequestFields(state.supportEdits, treeSupports()),
         ...(state.sourcePos ? paintRequestFields(state.supportPaint, sourceFrame(state.sourcePos, state.partScale)) : {}),
+        ...(state.sourcePos ? seamRequestFields(state.seamPaint, sourceFrame(state.sourcePos, state.partScale)) : {}),
       };
   const plate = listed
     ? {

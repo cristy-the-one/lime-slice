@@ -16,6 +16,8 @@ export interface SupportPaintHooks {
   clear(): void;
   /** Show the Prepare tab. */
   reveal(): void;
+  /** Turn the other brush off before this one turns on. */
+  yieldBrush?(): void;
 }
 
 const KIND_LABEL: Record<PaintKind, string> = { enforce: "Enforce", block: "Block" };
@@ -93,31 +95,36 @@ export function mountSupportPaint(prepare: PrepareView, hooks: SupportPaintHooks
 
   function setOn(next: boolean) {
     if (next && !hooks.view().hasMesh) return;
+    if (next) hooks.yieldBrush?.();
     on = next;
     if (on) hooks.reveal();
     sync();
+    if (on) bind();
   }
 
   let current: BrushHooks | null = null;
   // A stroke's hooks are taken at its first dab, so a kind or radius change mid-drag waits for the next one.
-  prepare.onBrush({
-    start: () => {
-      current = hooks.stroke(kind, radius());
-      current.start();
-      haptic("tap");
-    },
-    hit: (point, normal) => current?.hit(point, normal),
-    end: () => {
-      current?.end();
-      current = null;
-      sync();
-    },
-    cancel: () => {
-      current?.cancel();
-      current = null;
-      sync();
-    },
-  });
+  function bind() {
+    prepare.onBrush({
+      start: () => {
+        current = hooks.stroke(kind, radius());
+        current.start();
+        haptic("tap");
+      },
+      hit: (point, normal) => current?.hit(point, normal),
+      end: () => {
+        current?.end();
+        current = null;
+        sync();
+      },
+      cancel: () => {
+        current?.cancel();
+        current = null;
+        sync();
+      },
+    });
+  }
+  bind();
 
   tool.addEventListener("click", () => setOn(!on));
   bar.addEventListener("click", (ev) => {
@@ -164,5 +171,7 @@ export function mountSupportPaint(prepare: PrepareView, hooks: SupportPaintHooks
     stop() {
       if (on) setOn(false);
     },
+    /** Put this brush's stroke hooks back after the seam brush releases them. */
+    bind,
   };
 }
