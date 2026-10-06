@@ -29,6 +29,11 @@ pub struct BeltSpec {
     pub max_length_mm: Option<f64>,
     pub copies: u32,
     pub gap_mm: f64,
+    /// Pull an explicit seam onto the belt edge. Omitted when off, so a
+    /// request that does not set it keeps its bytes. `blend` already lands
+    /// on that edge.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub seam_on_edge: bool,
 }
 
 /// Which firmware axis the belt is wired to.
@@ -51,6 +56,7 @@ pub(crate) struct Belt {
     pub max_length_mm: Option<f64>,
     pub copies: u32,
     pub gap_mm: f64,
+    pub seam_on_edge: bool,
 }
 
 /// The rotation that laid the plate flat, so preview points can be mapped back.
@@ -70,6 +76,10 @@ pub(crate) const WALL_FLOW: f64 = 1.06;
 
 const ANGLE_MIN: f64 = 10.0;
 const ANGLE_MAX: f64 = 80.0;
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
 
 impl Belt {
     pub(crate) fn resolve(spec: &BeltSpec) -> Result<Self, String> {
@@ -118,6 +128,7 @@ impl Belt {
             max_length_mm: spec.max_length_mm,
             copies: spec.copies,
             gap_mm: spec.gap_mm,
+            seam_on_edge: spec.seam_on_edge,
         })
     }
 
@@ -430,6 +441,7 @@ mod tests {
             max_length_mm: None,
             copies: 1,
             gap_mm: 5.0,
+            seam_on_edge: false,
         })
         .unwrap()
     }
@@ -528,6 +540,7 @@ mod tests {
             max_length_mm: None,
             copies: 1,
             gap_mm: 5.0,
+            seam_on_edge: false,
         })
         .unwrap_err();
         assert!(err.contains("belt.angleDeg"), "{err}");

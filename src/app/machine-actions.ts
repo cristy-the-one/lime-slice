@@ -112,6 +112,7 @@ export function noteBeltForm() {
     maxLengthMm: unlimited ? null : (num("beltLength") ?? picked.printer.belt.maxLengthMm ?? 200),
     copies: num("beltCopies"),
     gapMm: num("beltGap"),
+    seamOnEdge: document.querySelector<HTMLInputElement>("#beltSeam")?.checked === true,
   }, picked.printer.bedX);
   const next = setActiveBelt(library, kind, belt);
   storeMachineLibrary(next);

@@ -34,6 +34,8 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await expect(page.locator("#prepare")).toHaveAttribute("data-belt-plane", "1");
   await expect(page.locator("#beltAngle")).toHaveValue("45");
   await expect(page.locator("#beltFields")).toBeVisible();
+  await expect(page.locator("#beltSeam")).not.toBeChecked();
+  await expect(page.getByText("Mock only")).toHaveCount(0);
   await page.locator("#beltCopies").fill("3");
   await page.locator("#beltCopies").blur();
   await expect(page.locator("#prepare")).toHaveAttribute("data-belt-copies", "3");
@@ -48,6 +50,7 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   expect(belt.direction).toBe(1);
   expect(belt.copies).toBe(3);
   expect(belt).not.toHaveProperty("maxLengthMm");
+  expect(belt).not.toHaveProperty("seamOnEdge");
   expect(bodies[0].printer).not.toHaveProperty("belt");
   await expect(page.locator("#banner")).not.toContainText("Mock");
   await expect(page.locator("#export")).toBeEnabled();

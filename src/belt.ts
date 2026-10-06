@@ -22,6 +22,8 @@ export interface BeltSettings {
   copies: number;
   /** Gap between copies along the belt, mm. */
   gapMm: number;
+  /** Pull an explicit seam onto the belt edge. Off leaves nearest and aligned. */
+  seamOnEdge: boolean;
 }
 
 /**
@@ -29,10 +31,16 @@ export interface BeltSettings {
  * `maxLengthMm` is omitted when the belt is unlimited, so a missing cap is
  * the same bytes as an unlimited belt.
  */
-export function beltSliceField(belt: BeltSettings | null): { belt?: Omit<BeltSettings, "maxLengthMm"> & { maxLengthMm?: number } } {
+export function beltSliceField(belt: BeltSettings | null): { belt?: Omit<BeltSettings, "maxLengthMm" | "seamOnEdge"> & { maxLengthMm?: number; seamOnEdge?: true } } {
   if (!belt) return {};
-  const { maxLengthMm, ...rest } = belt;
-  return maxLengthMm == null ? { belt: rest } : { belt: { ...rest, maxLengthMm } };
+  const { maxLengthMm, seamOnEdge, ...rest } = belt;
+  return {
+    belt: {
+      ...rest,
+      ...(maxLengthMm == null ? {} : { maxLengthMm }),
+      ...(seamOnEdge ? { seamOnEdge: true as const } : {}),
+    },
+  };
 }
 
 export function defaultBelt(widthMm = 220): BeltSettings {
@@ -44,6 +52,7 @@ export function defaultBelt(widthMm = 220): BeltSettings {
     maxLengthMm: null,
     copies: 1,
     gapMm: 5,
+    seamOnEdge: false,
   };
 }
 
@@ -102,7 +111,8 @@ export function coerceBelt(value: unknown, widthFallback: number): BeltSettings 
   }
   const copies = finite(row.copies) ? Math.round(clamp(row.copies, 1, 24)) : 1;
   const gapMm = finite(row.gapMm) && row.gapMm >= 0 ? clamp(row.gapMm, 0, 500) : 5;
-  return { angleDeg, axis, direction, widthMm, maxLengthMm, copies, gapMm };
+  const seamOnEdge = row.seamOnEdge === true;
+  return { angleDeg, axis, direction, widthMm, maxLengthMm, copies, gapMm, seamOnEdge };
 }
 
 function clamp(value: number, lo: number, hi: number): number {

@@ -26,6 +26,8 @@ A row is **done** when a user can do the thing and the engine honors it. **In pr
 - Pressure-advance tower. `lime-slice calibrate pa`, and the sheet writes the chosen K onto the filament.
 - Belt slicing, phases 1, 2, and 5, plus the belt wall and the `blend` seam rewritten to the belt edge. Design [#147](https://github.com/cristy-the-one/lime-slice/pull/147), profile [#148](https://github.com/cristy-the-one/lime-slice/pull/148), engine [#151](https://github.com/cristy-the-one/lime-slice/pull/151), UI [#152](https://github.com/cristy-the-one/lime-slice/pull/152). A cartesian request with no `belt` object keeps its G-code (`crates/lime-slice-core/tests/cartesian_lock.rs`).
 - Preview time, cost, layer scrubber, and the layer-time chart.
+- Start and end G-code on export and send. Blank text, including the old built-in `; Name` comments, leaves the engine bytes. [#154](https://github.com/cristy-the-one/lime-slice/pull/154)
+- Belt seam on the belt edge, opt-in. `belt.seamOnEdge` is omitted when off, so an explicit nearest or aligned seam stays unless the box is checked. [#155](https://github.com/cristy-the-one/lime-slice/pull/155)
 
 ### In progress
 
@@ -35,20 +37,18 @@ None. The next pull request starts from the remaining list.
 
 Each engine feature is opt-in or default-off, with a cartesian lock so an unused feature leaves G-code bytes and the request cache key unchanged. One feature per pull request. A short design note goes in the same pull request when the feature is small, and as its own note when it is not.
 
-1. **Start and end G-code on export and send.** The library already stores both as UI text and keeps them off the slice request. Export and Send still ship the engine file alone. Splice non-empty text around that file. Stock built-in printers use an empty template so a default export stays the engine bytes.
-2. **Belt seam on the belt edge, opt-in.** Today only `seam: blend` is rewritten to rear. An explicit nearest or aligned seam stays. A belt flag, omitted when off, pulls an explicit seam onto the belt edge too.
-3. **Belt raft, opt-in.** A few layers on the belt before the part, so the first contact is not a sliver `drop_slivers` throws away. `drop_slivers` stays global.
-4. **Fuzzy skin, off by default.** A noise offset on outer walls. Ironing already shipped, so this is the next surface look. No painting.
-5. **Seam painting.** Disks on the mesh, the same idea as support paint, omitted when empty. The picker stays the default.
-6. **Flow tower.** A generator beside `calibrate pa`, and a sheet control that writes a flow multiplier onto the filament.
-7. **Temperature tower.** Nozzle temperature steps by height. The chosen band writes the filament's nozzle temperature.
-8. **Retraction length and speed, then a retraction tower.** Length is still inside the strategy (0.35 mm on speed, 0.9 mm on toughness). Omitted fields keep that. The tower comes after the fields exist, so the result has a place to land.
-9. **Belt preview patches.** A belt reply is always a whole preview, because the patch token leaves out copies, axis, and direction. Put those in the token. G-code stays the bytes of a belt slice today.
-10. **Per-object infill, walls, and speed.** The plate design allows them. The engine still refuses `objects[i].settings.walls` as not supported yet. Ranges and volumes stay plate-wide.
-11. **Sequential printing.** `printOrder: "sequential"` is refused until clearance exists. All-at-once stays the omitted default.
-12. **Supports grown from the tilted belt floor.** Until this lands, a belt slice forces supports off and refuses support edits and paint. This is the largest belt follow-up, so it waits until the smaller belt flags are in.
-13. **Multi-material.** A design note, plus UI groundwork for a second filament on the machine, and no toolpath. Tool changes, a purge tower, and a second extruder stay out of the engine in this run.
-14. **Repair audit in the sheet.** The engine already reports repaired and dropped chains. Show that text. No interactive hole fill.
+1. **Belt raft, opt-in.** A few layers on the belt before the part, so the first contact is not a sliver `drop_slivers` throws away. `drop_slivers` stays global.
+2. **Fuzzy skin, off by default.** A noise offset on outer walls. Ironing already shipped, so this is the next surface look. No painting. Engine and the Strength checkbox are on `cursor/fuzzy-skin-9ec7`, not opened until the belt seam pull request has merged.
+3. **Seam painting.** Disks on the mesh, the same idea as support paint, omitted when empty. The picker stays the default.
+4. **Flow tower.** A generator beside `calibrate pa`, and a sheet control that writes a flow multiplier onto the filament.
+5. **Temperature tower.** Nozzle temperature steps by height. The chosen band writes the filament's nozzle temperature.
+6. **Retraction length and speed, then a retraction tower.** Length is still inside the strategy (0.35 mm on speed, 0.9 mm on toughness). Omitted fields keep that. The tower comes after the fields exist, so the result has a place to land.
+7. **Belt preview patches.** A belt reply is always a whole preview, because the patch token leaves out copies, axis, and direction. Put those in the token. G-code stays the bytes of a belt slice today.
+8. **Per-object infill, walls, and speed.** The plate design allows them. The engine still refuses `objects[i].settings.walls` as not supported yet. Ranges and volumes stay plate-wide.
+9. **Sequential printing.** `printOrder: "sequential"` is refused until clearance exists. All-at-once stays the omitted default.
+10. **Supports grown from the tilted belt floor.** Until this lands, a belt slice forces supports off and refuses support edits and paint. This is the largest belt follow-up, so it waits until the smaller belt flags are in.
+11. **Multi-material.** A design note, plus UI groundwork for a second filament on the machine, and no toolpath. Tool changes, a purge tower, and a second extruder stay out of the engine in this run.
+12. **Repair audit in the sheet.** The engine already reports repaired and dropped chains. Show that text. No interactive hole fill.
 
 ### Deferred, and why
 
@@ -71,8 +71,6 @@ Each engine feature is opt-in or default-off, with a cartesian lock so an unused
 - Playback speed chip, "1×", no effect.
 - Slice progress on the invoke path with no job stream uses the estimated curve (`src/ui/slice-progress.ts`). HTTP jobs report a real fraction.
 
-Two comments in `src/app/state.ts` are stale and will be corrected in the first code change that touches that file: the plate slice does send `objects` when the plate has more than one mesh or a per-object setting, and height ranges and modifier volumes are on the slice request.
-
 ## Multi-object plates and arrange
 
 **Status.** Done for all-at-once ([#126](https://github.com/cristy-the-one/lime-slice/pull/126)). Sequential is remaining. See the [checklist](#build-checklist-2026-10-06). The paragraphs below are the 2026-10-03 gap.
@@ -89,7 +87,7 @@ Two comments in `src/app/state.ts` are stale and will be corrected in the first 
 
 ## Printer and filament libraries
 
-**Status.** Done ([#110](https://github.com/cristy-the-one/lime-slice/pull/110)). Start and end G-code are stored and not yet spliced into export or send. See the [checklist](#build-checklist-2026-10-06). The paragraph below is the 2026-10-03 gap.
+**Status.** Done ([#110](https://github.com/cristy-the-one/lime-slice/pull/110)). Start and end G-code are spliced into export and send ([#154](https://github.com/cristy-the-one/lime-slice/pull/154)). See the [checklist](#build-checklist-2026-10-06). The paragraph below is the 2026-10-03 gap.
 
 One printer profile is stored and edited: nozzle, filament diameter, temperatures, bed size, volumetric cap, accel, density, cost, pressure advance, and linear advance (`src/profiles.ts`, `profileFields` in `src/app/settings.ts`). Import and export are one JSON file. The default is "Generic Marlin 0.4 mm PLA". Named settings profiles are slice presets, not printers or filaments (`src/ui/settings-profiles.ts`). There is no vendor catalog and no filament that carries its own pressure advance apart from that one profile. The engine already emits Klipper `SET_PRESSURE_ADVANCE` and Marlin `M900` from those two numbers (README, `crates/lime-slice-core/src/strategy.rs`).
 
