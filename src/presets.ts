@@ -26,6 +26,10 @@ export interface PresetSettings {
   linearAdvance: number;
   /** Extrusion multiplier. `1` is omitted from a slice. */
   flow: number;
+  /** Off keeps the strategy retract length and 30 mm/s. */
+  retractOn: boolean;
+  retractLength: number;
+  retractSpeed: number;
   variableWidth: boolean;
   arcFit: boolean;
   travelOpt: boolean;
@@ -83,6 +87,9 @@ export const DEFAULT_PRESET: PresetSettings = {
   pressureAdvance: 0,
   linearAdvance: 0,
   flow: 1,
+  retractOn: false,
+  retractLength: 0.4,
+  retractSpeed: 30,
   variableWidth: true,
   arcFit: true,
   travelOpt: true,
@@ -134,6 +141,9 @@ const LABELS: Record<keyof PresetSettings, string> = {
   pressureAdvance: "Pressure advance",
   linearAdvance: "Linear advance",
   flow: "Flow",
+  retractOn: "Custom retraction",
+  retractLength: "Retract length",
+  retractSpeed: "Retract speed",
   variableWidth: "Variable walls",
   arcFit: "Arc fit",
   travelOpt: "Travel and seam",
@@ -164,7 +174,7 @@ export function presetKeys(): (keyof PresetSettings)[] {
 }
 
 /** Keys added after project and profile files were versioned. A file written before one reads its default. */
-const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow"]);
+const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow", "retractOn", "retractLength", "retractSpeed"]);
 
 /** The preset a project or profile file stores, or null when a key is missing or has the wrong type. */
 export function readPresetSettings(value: unknown): PresetSettings | null {

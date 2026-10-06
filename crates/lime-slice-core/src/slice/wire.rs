@@ -76,6 +76,8 @@ const SETTING_SCOPES: &[(&str, Scope)] = &[
     ("ironing", Scope::Plate),
     ("fuzzySkin", Scope::Plate),
     ("flow", Scope::Plate),
+    ("retractLength", Scope::Plate),
+    ("retractSpeed", Scope::Plate),
     ("heightRanges", Scope::Plate),
     ("modifierVolumes", Scope::Plate),
     ("infill", Scope::NotYet),

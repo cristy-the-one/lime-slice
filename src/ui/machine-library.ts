@@ -57,6 +57,10 @@ export interface FilamentRecord {
   linearAdvance: Record<string, number>;
   /** Extrusion multiplier. `1` is omitted from a slice request. */
   flow: number;
+  /** Set when the filament overrides the strategy retract length. */
+  retractLength?: number;
+  /** Set when the retract feed is not 30 mm/s. */
+  retractSpeed?: number;
 }
 
 export interface MachineLibrary {
@@ -262,6 +266,24 @@ export function setFlow(library: MachineLibrary, flow: number): MachineLibrary {
   return {
     ...library,
     filaments: library.filaments.map((filament) => filament.id === library.filamentId ? { ...filament, flow: safe } : filament),
+  };
+}
+
+export function setRetract(library: MachineLibrary, length: number | null, speed: number | null): MachineLibrary {
+  return {
+    ...library,
+    filaments: library.filaments.map((filament) => {
+      if (filament.id !== library.filamentId) return filament;
+      const next = { ...filament };
+      delete next.retractLength;
+      delete next.retractSpeed;
+      if (length == null || !Number.isFinite(length)) return next;
+      next.retractLength = Math.min(5, Math.max(0, Math.round(length * 1000) / 1000));
+      if (speed != null && Number.isFinite(speed) && Math.abs(speed - 30) > 1e-6) {
+        next.retractSpeed = Math.min(80, Math.max(5, Math.round(speed)));
+      }
+      return next;
+    }),
   };
 }
 
@@ -854,6 +876,8 @@ function readFilamentBody(value: unknown): Omit<FilamentRecord, "id" | "builtin"
   const pressureAdvance = readAdvance(row.pressureAdvance);
   const linearAdvance = readAdvance(row.linearAdvance);
   if (!pressureAdvance || !linearAdvance) return null;
+  const retract = optionalRetract(row.retractLength, row.retractSpeed);
+  if (!retract) return null;
   return {
     name: row.name.trim(),
     material: row.material.trim(),
@@ -865,7 +889,25 @@ function readFilamentBody(value: unknown): Omit<FilamentRecord, "id" | "builtin"
     pressureAdvance,
     linearAdvance,
     flow: readFlow(row.flow),
+    ...retract,
   };
+}
+
+function optionalRetract(length: unknown, speed: unknown): { retractLength?: number; retractSpeed?: number } | null {
+  const out: { retractLength?: number; retractSpeed?: number } = {};
+  if (length == null) {
+    // absent
+  } else if (typeof length === "number" && Number.isFinite(length) && length >= 0 && length <= 5) {
+    out.retractLength = Math.round(length * 1000) / 1000;
+  } else {
+    return null;
+  }
+  if (speed == null) return out;
+  if (typeof speed === "number" && Number.isFinite(speed) && speed >= 5 && speed <= 80) {
+    out.retractSpeed = Math.round(speed);
+    return out;
+  }
+  return null;
 }
 
 function readFlow(value: unknown): number {

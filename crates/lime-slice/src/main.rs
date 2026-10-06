@@ -259,6 +259,23 @@ enum CalibrateCmd {
         #[arg(short, long)]
         output: PathBuf,
     },
+    /// Two posts per band. The travel between them retracts by that band's length.
+    Retract {
+        #[arg(long, default_value_t = 0.2)]
+        start: f64,
+        #[arg(long, default_value_t = 1.2)]
+        end: f64,
+        #[arg(long, default_value_t = 0.2)]
+        step: f64,
+        #[arg(long, default_value_t = 0.2)]
+        layer_height: f64,
+        #[arg(long, default_value_t = 5.0)]
+        band_height: f64,
+        #[arg(long, default_value_t = 30.0)]
+        speed: f64,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
 }
 
 fn main() {
@@ -576,6 +593,46 @@ fn calibrate(kind: CalibrateCmd) -> Result<(), String> {
                 println!(
                     "  band {}  {:.0} °C  Z {:.3}..{:.3}",
                     band.index, band.temp, band.z0, band.z1
+                );
+            }
+            println!("wrote {}", output.display());
+            Ok(())
+        }
+        CalibrateCmd::Retract {
+            start,
+            end,
+            step,
+            layer_height,
+            band_height,
+            speed,
+            output,
+        } => {
+            let tower = lime_slice_core::retract_tower(&lime_slice_core::RetractCalib {
+                start,
+                end,
+                step,
+                layer_height,
+                band_height,
+                speed_mm_s: speed,
+                ..lime_slice_core::RetractCalib::default()
+            })?;
+            if let Some(parent) = output.parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            fs::write(&output, &tower.gcode).map_err(|e| e.to_string())?;
+            println!(
+                "retract  bands {}  {:.3}..{:.3} mm step {:.3}  {:.0} mm/s  E {:.1} mm",
+                tower.bands.len(),
+                tower.bands.first().map(|b| b.length).unwrap_or(0.0),
+                tower.bands.last().map(|b| b.length).unwrap_or(0.0),
+                step,
+                tower.speed_mm_s,
+                tower.final_e
+            );
+            for band in &tower.bands {
+                println!(
+                    "  band {}  {:.3} mm  Z {:.3}..{:.3}",
+                    band.index, band.length, band.z0, band.z1
                 );
             }
             println!("wrote {}", output.display());
@@ -1156,6 +1213,17 @@ fn handle(mut request: tiny_http::Request, token: Option<&str>) {
             (200, r#"{"ok":true}"#.into())
         } else if method == "GET" && path.starts_with("/api/health") {
             (200, r#"{"ok":true}"#.into())
+        } else if method == "POST" && path.starts_with("/api/calibrate/retract") {
+            match serde_json::from_str::<lime_slice_core::RetractCalibRequest>(&body) {
+                Ok(req) => match lime_slice_core::retract_from_request(&req) {
+                    Ok(res) => (
+                        200,
+                        serde_json::to_string(&res).unwrap_or_else(|e| err_json(&e.to_string())),
+                    ),
+                    Err(err) => (400, err_json(&err)),
+                },
+                Err(err) => (400, err_json(&err.to_string())),
+            }
         } else if method == "POST" && path.starts_with("/api/calibrate/temp") {
             match serde_json::from_str::<lime_slice_core::TempCalibRequest>(&body) {
                 Ok(req) => match lime_slice_core::temperature_from_request(&req) {
@@ -1545,6 +1613,8 @@ fn request_for(
         ironing: settings.ironing,
         fuzzy_skin: settings.fuzzy_skin,
         flow: settings.flow,
+        retract_length: settings.retract_length,
+        retract_speed: settings.retract_speed,
         scarf_seam: settings.scarf_seam,
         scarf_length: settings.scarf_length,
         scarf_steps: settings.scarf_steps,
