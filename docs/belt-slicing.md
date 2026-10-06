@@ -1,15 +1,15 @@
 # Belt slicing
 
-A belt printer (Creality CR-30, iFactory3D One, BlackBelt, PowerBelt3D) lays each layer on a plane tilted to an endless belt, usually at 45°. The belt advances one step per layer and the part can be as long as the belt. This note is the engine plan. The UI can store a belt profile and draw a stand-in before any of it lands. Nothing under `crates/` changes for that.
+A belt printer (Creality CR-30, iFactory3D One, BlackBelt, PowerBelt3D) lays each layer on a plane tilted to an endless belt, usually at 45°. The belt advances one step per layer and the part can be as long as the belt. This note is the engine plan. The UI stores a belt profile. The engine reads an optional `belt` object on the slice request. The UI still draws a labelled mock until it sends that object.
 
 ## Decisions
 
 - Slice with the planar pipeline. Rotate the mesh so the nozzle plane is horizontal, plan, then map toolpaths back. A shear is what BeltEngine feeds Cura, and it is the wrong frame for this planner.
 - Belt advance per layer is `layer_height / sin(α)`. `α` is the angle between the belt and the nozzle plane. 45° is the default. At 45° the step is `layer_height * √2`.
-- Belt fields live on the machine profile (`.limemachine.json`), not on `SliceRequest`, until the engine reads them. A cartesian request keeps its cache key and its G-code bytes.
+- Belt fields live on the machine profile (`.limemachine.json`). The slice request carries `belt` only for a belt printer. A request without that object keeps its cache key and its G-code bytes. `enginePrinter` still returns only `PrinterProfile` fields; `belt` sits beside `printer` on the request.
 - Supports stay off on a belt slice until they are grown in the rotated frame. Today's supports assume a horizontal bed.
 - Copies are one planned part, emitted again with a belt shift. They do not enter the contour key.
-- With no belt field, G-code is byte-identical. `tools/golden_ab.sh` is the check.
+- With no belt field, G-code is byte-identical. `crates/lime-slice-core/tests/cartesian_lock.rs` hashes a small box sliced with no belt object. `tools/golden_ab.sh` is the same check against a base revision.
 
 ## How a belt printer prints
 
@@ -67,13 +67,13 @@ The first tilted plane meets a part that sits on the belt in a thin polygon. `dr
 
 BeltEngine and ideaMaker do not solve this by keeping every speck. They put a raft on the belt, a few layers before the part, so the first real plane has area, and they mark the belt-contact edge of the part as its own feature (belt wall): slower, more flow. ideaMaker also pulls the seam onto that edge.
 
-On this engine the "first layer" is `layer.index == 0` only: 30 mm/s, flow 1.06, fan off (`gcode.rs`). On a belt every layer has a belt-contact edge. That edge is the first layer, on every layer. Phase 2 applies the layer-0 speed and flow there, and adds the raft. Phase 1 of the engine keeps `drop_slivers` as it is. Lowering the global threshold would keep specks in cartesian slices. A belt raft is the adhesion answer, not a quieter sliver filter.
+On this engine the "first layer" is `layer.index == 0` only: 30 mm/s, flow 1.06, fan off (`gcode.rs`). On a belt every layer has a belt-contact edge. That edge gets the same speed and flow, on `outer` and `wall` only, for runs of at least 0.8 mm. `drop_slivers` is unchanged. Lowering the global threshold would keep specks in cartesian slices. A belt raft is still the adhesion answer, and it is not built yet.
 
 ## Overhangs
 
 In the rotated frame, down is the nozzle normal, not gravity. The previous layer supports the next one along that normal. A face that leans with the belt (the side the belt carries away) can pass vertical in the lab and still sit on plastic. A face that leans against the belt (back toward the gantry) loses the previous layer sooner.
 
-Support generation therefore runs after the rotation, against a belt floor in that frame. BeltEngine builds an extra mesh with `down_vector` tilted by the gantry angle and refuses Cura's own supports. Orca clips supports to a belt-floor polygon for the same reason. Phase 2 here does the same with the existing tree walk: the floor is the rotated belt, not Z 0. Until that exists a belt slice forces supports off. Emitting today's horizontal supports would plant them on a bed the printer does not have.
+Support generation has to run after the rotation, against a belt floor in that frame. BeltEngine builds an extra mesh with `down_vector` tilted by the gantry angle and refuses Cura's own supports. Orca clips supports to a belt-floor polygon for the same reason. That tree walk is not in yet: the floor would be the rotated belt, not Z 0. Until it exists a belt slice forces supports off. Emitting today's horizontal supports would plant them on a bed the printer does not have.
 
 ## Profile and the machine file
 
@@ -84,9 +84,9 @@ A version-2 printer gains:
 - `kind`: `"cartesian"`.
 - `belt`: angle 45°, axis `"z"`, direction `+1`, width copied from `bedX`, `maxLengthMm` null (unlimited), copies 1, gap 5 mm.
 
-Nothing else moves. Bed, temperatures, start and end G-code, and the host stay. A version-1 file still climbs through version 2, then this step. A newer version is still refused. `enginePrinter` keeps returning only the fields `PrinterProfile` knows. Belt, start G-code, end G-code, and the host stay off the slice request, so `recipeKey` and `slice_cache::feed` do not move.
+Nothing else moves. Bed, temperatures, start and end G-code, and the host stay. A version-1 file still climbs through version 2, then this step. A newer version is still refused. `enginePrinter` keeps returning only the fields `PrinterProfile` knows. Start G-code, end G-code, and the host stay off the slice request. `belt` is a sibling of `printer`, not a field of it, so a cartesian `recipeKey` does not grow a belt object.
 
-When the engine accepts a belt, the request gains one object, omitted unless `kind` is belt, the same way empty `supportEdits` are omitted:
+The request gains one object, omitted unless `kind` is belt, the same way empty `supportEdits` are omitted:
 
 ```json
 "belt": { "angleDeg": 45, "axis": "z", "direction": 1, "widthMm": 200, "maxLengthMm": null, "copies": 1, "gapMm": 5 }
@@ -108,43 +108,65 @@ Print time is the existing estimator on the transformed segments. There is no se
 
 ## Cache keys
 
-The rotation is part of the mesh the contour key hashes. Angle, axis, and direction change those triangles or the emitted coordinates.
+The rotation is part of the mesh the contour key hashes. `belt` is not a `SliceSettings` field. `kept::keys` hashes `format!("{settings:?}")`, so a new field there would move every cartesian key. Axis, direction, copies, and gap therefore stay off that struct.
 
 - Angle changes the rotated mesh, so it belongs in the mesh hash. It also changes the belt step, which is emit.
-- Axis and direction change only emit. They are blanked with `arc_fit` and the estimator, in `no_emit`, so a direction change re-emits and does not recut.
-- Copies and gap are emit-only too. The part is planned once. Emit repeats it, shifted along the belt by the part's extent along the belt plus the gap. The extent is already in the mesh hash. The count and the gap are not.
-- A request with no `belt` field builds the keys it builds today. Golden covers that.
-- The disk key is the request. Omitting `belt` on a cartesian slice is what keeps the key. `previewBase` stays out of it, as now.
+- Axis, direction, copies, and gap change only emit. They are not blanked in `no_emit`, because they are not on `SliceSettings` at all. A change misses the disk cache (the body differs) and still reuses the in-process contour stages, whose key is the rotated mesh.
+- Copies are one planned part, emitted again. The shift along the belt is the part's extent plus the gap. The extent is the settled slice height divided by `sin(α)`, which is the belt length of the diagonal, not the lab height. A 20 mm cube at 45° has extent 40 mm.
+- A request with no `belt` field builds the keys it builds today. `cartesian_lock` covers the G-code. The disk key is the request. Omitting `belt` on a cartesian slice is what keeps it. `maxLengthMm: null` is omitted, not sent as null. `previewBase` stays out of the disk key, as now.
 
 `bedY` is not a stand-in for belt length. Putting the length in `bedY` would change the part frame (`docs/part-frame.md` centers the pivot on `bedX / 2, bedY / 2`) and would look like a different cartesian printer.
 
 ## Test plan
 
-- `tools/golden_ab.sh`: a request with no belt field matches today's G-code, byte for byte, including a cube.
-- Once the engine flag is on: a 20 mm cube at 45°, 0.2 mm layers. Belt step `0.2 * √2`. The XY length of a wall matches the nozzle-plane length, not the sheared length. A second cube at 35° checks that the step is `h / sin(35°)`, not `h / cos(35°)`.
-- An overhang part: supports forced off, and the face that leans against the belt is the one a later support phase has to hold. The golden file records the unsupported toolpath so phase 2 has a diff to explain.
-- Copies: two copies, one contour plan (`stages.reused` or a layer count that does not double the cut), two placements in the file separated by extent plus gap.
+- `cartesian_lock`: a request with no belt field matches the G-code hashed before belt emit existed.
+- A small box at 45°, 0.2 mm layers. Belt step `0.2 * √2`. The rotation test checks that a nozzle-plane segment stays length 1. A second box at 35° checks that the step is `h / sin(35°)`, not `h / cos(35°)`.
+- An overhang part: supports forced off, so the file has no `TYPE:SUPPORT`. The face that leans against the belt is the one a later support phase has to hold.
+- Copies: two copies, twice the layers, the second copy's first layer one extent plus the gap further along the belt. The part is planned once.
 - Profile: a version-2 `.limemachine.json` loads as cartesian with the default belt block, and its bed numbers are unchanged. A version-3 belt file round-trips. `enginePrinter` still has today's keys.
-- UI, until the engine: the mock's `gcode` is empty, export and send stay off, and a cartesian slice still calls the engine.
+- UI, until it sends `belt`: the mock's `gcode` is empty, export and send stay off, and a cartesian slice still calls the engine.
+
+## What the engine does
+
+`prepare_belt` (`slice.rs`) bakes each object's bed offset into the mesh, rotates about X by `+α` (`y' = y cos α − z sin α`, `z' = y sin α + z cos α`), then drops the plate so the lowest slice Z is 0 and shifts Y so the rail starts at 0. One frame is shared, so two objects keep their relative place. A shared shift of the whole plate along the belt is absorbed by that settle. The planar pipeline then runs unchanged. Emit does not inverse-rotate the G-code: slice X and slice Y are already the gantry plane, and the belt axis is `direction * (slice_z / sin α + copy_shift)`.
+
+Usable width is the across-belt span (`max X − min X`), not a check that the part sits inside `[0, width]`. Max length is `copies * extent + (copies − 1) * gap`. A bad angle, axis, direction, width, length, copies, or gap names that field (`belt.angleDeg`, and the same for the others).
+
+Layer 0 keeps the writer's 30 mm/s, flow 1.06, and fan off. Later layers slow only `outer` and `wall` runs whose bead bottom is within `0.75 * height` of the belt in the lab, and only when that run is at least 0.8 mm. A later copy's first layer is slowed the same way in the paths, because the writer only treats index 0 as the first layer. Scarf and Z hop are forced off: both would move the belt axis between beads. `seam: blend` becomes `rear` (+Y after the rotation, the belt edge). An explicit seam is kept. Ironing is left on. Supports are forced off with no error. Support edits, support paint, and `compare` are errors.
+
+Preview `zs` are lab height above the belt, in the part frame, including travels, so a layer draws tilted. The layer's own `z` is the belt position. Patches are skipped: the kept token does not include copies, axis, or direction. Print time is the existing estimator. The belt step is timed like a Z travel, at 120 mm/s.
+
+A belt axis of X or Y permutes the letters. The nozzle plane is no longer machine XY, so arc fitting is off. Z, the CR-30 axis, keeps `G2`/`G3`.
+
+## Deferred
+
+- A belt raft, and any change to `drop_slivers`. The first contact can still be a sliver the skin filter throws away.
+- Supports grown on the belt floor, with the down vector tilted by `α`. Until then a belt slice has no supports, and edits or paint are refused.
+- Pulling an explicit seam onto the belt edge. Only `blend` is rewritten to `rear`.
+- Preview patches for a belt plate.
+- A part-frame move that does not recut. Baking the bed offset means a move across the belt, or a move of one object relative to another along it, changes the mesh the contour key hashes.
+- World-space shear for a firmware that does not already tilt. Not used for the four machines above.
+- The fan ramp on layer 1 (128) is the writer's, once per file. Later copies do not repeat it. Their first layer does get fan 0 from the belt-wall retouch.
+- The UI mock, export, and send. Those wait until the request actually carries `belt`.
 
 ## Phases
 
-1. UI only. Version 3 of the machine file, a Belt kind, the fields above, the prepare view as a belt with the tilted plane and N copies, and a mock adapter on the UI side. The mock does not produce G-code. Export and send stay off. No crate changes.
-2. Engine. Rotate, slice, inverse-rotate, emit the gantry frame. Supports forced off. Golden cube and overhang. `golden_ab.sh` for a request with no belt field.
-3. Belt contact. Raft, belt wall (layer-0 speed and flow on the contact edge of every layer), seam on that edge. Sliver policy stays global.
-4. Supports in the rotated frame, on a belt floor, with the down vector tilted by `α`.
-5. Lab-frame preview from real `zs`, and print time from the transformed segments. The mock goes away.
+1. UI only. Version 3 of the machine file, a Belt kind, the fields above, the prepare view as a belt with the tilted plane and N copies, and a mock adapter on the UI side. The mock does not produce G-code. Export and send stay off. Done.
+2. Engine. Rotate, slice, emit the gantry frame. Supports forced off. Fit checks, copies, and `cartesian_lock`. Done.
+3. Belt contact. The belt wall and the `blend` → `rear` seam are in. The raft is not. Sliver policy stays global.
+4. Supports in the rotated frame, on a belt floor, with the down vector tilted by `α`. Not started.
+5. Lab-frame preview from real `zs`, and print time from the transformed segments. The engine side is in. The UI mock goes away when the UI sends `belt`.
 
 ## Review questions
 
 1. Is rotation of the mesh, so the nozzle plane is horizontal, the slice frame, with the gantry-axis remap only at emit, so widths, speeds, and flow stay the planner's nozzle-plane numbers?
 2. Is belt advance per layer `layer_height / sin(α)`, with `α` the angle between the belt and the nozzle plane, default 45°? At 35° that disagrees with a formula written as `h / cos θ`.
-3. Do belt fields stay off `SliceRequest` and off `enginePrinter` until the engine reads them, so a cartesian request keeps its cache key and its G-code bytes?
+3. Belt settings are a sibling of `printer` on `SliceRequest`, omitted when absent, and still absent from `enginePrinter`. Is that the right split, so a cartesian request keeps its cache key and its G-code bytes?
 4. Is version 3 of `.limemachine.json` the right bump, with a version-2 file migrating to `kind: "cartesian"` and a default belt block that is stored and not sent?
 5. Is the emit frame the gantry frame (belt axis constant per layer, the other two axes spanning the nozzle plane), with no extra world-space shear, for the CR-30, iFactory3D, BlackBelt, and PowerBelt3D?
 6. Should `drop_slivers` stay at its present areas, and the first-contact sliver be handled by a belt raft in phase 3, rather than by lowering the threshold for every slice?
-7. Is the belt-contact edge of every layer the first layer (today 30 mm/s and flow 1.06 on `layer.index == 0` only), and is that phase 3 with the belt wall?
+7. Is the belt wall right as shipped: `outer` and `wall` only, 0.8 mm minimum, the writer's layer-0 treatment left on index 0 so the flow is not applied twice, and a later copy's first layer slowed in the paths?
 8. Should a belt slice force supports off until they are grown in the rotated frame against a belt floor, so today's horizontal supports are never emitted for a belt?
 9. Are back-to-back copies one planned part emitted N times with a belt shift, so the count and the gap stay out of the contour key?
-10. Is a belt preview's `zs` the height above the belt, is the print time the existing estimator on the transformed segments, and is the UI mock forbidden from standing in for either once phase 2 exists?
-11. Is the bar a golden cube, a golden overhang with supports off, a 35° step check, and `tools/golden_ab.sh` byte-identical for a request with no belt field, before the engine flag turns on?
+10. Is a belt preview's `zs` the height above the belt, with the layer `z` left as the belt position, and is the print time the existing estimator? The UI mock still stands in until the UI sends `belt`.
+11. Is the bar a small belt slice (45° step, 35° sine, copies, fit errors, supports absent), plus `cartesian_lock` byte-identical for a request with no belt field?

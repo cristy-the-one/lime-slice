@@ -126,6 +126,7 @@ pub(super) fn join(
                 height: band.height,
                 note: layer_note(objects, band),
                 runs,
+                belt_shift: 0.0,
             }
         })
         .collect()
