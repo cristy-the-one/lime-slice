@@ -1474,35 +1474,48 @@ fn retouch_layer(layer: &mut PlateLayer, frame: &crate::belt::Frame, slow_all: b
 
 /// Preview points go back to the lab, in the part frame, so a layer draws tilted.
 /// `z` on the layer is the belt position the scrubber already prints.
-fn tilt_preview(preview: &mut [PreviewLayer], planned: &[PlateLayer], job: &BeltJob) {
+fn tilt_preview(preview: &mut [PreviewLayer], planned: &[PlateLayer], tilt: &patch::BeltTilt) {
     let printed: Vec<&PlateLayer> = planned.iter().filter(|layer| !layer.is_empty()).collect();
     for (view, layer) in preview.iter_mut().zip(printed) {
-        for path in &mut view.paths {
-            let [dx, dy] = job
-                .offsets
-                .get(path.object as usize)
-                .copied()
-                .flatten()
-                .unwrap_or([0.0, 0.0]);
-            let shift = job.belt.direction * layer.belt_shift;
-            let mut pts = Vec::with_capacity(path.pts.len());
-            let mut zs = Vec::with_capacity(path.pts.len());
-            for (i, pt) in path.pts.iter().enumerate() {
-                let slice_z = path
-                    .zs
-                    .get(i)
-                    .copied()
-                    .filter(|z| z.is_finite())
-                    .unwrap_or(layer.z);
-                let lab = job.frame.lab(pt[0], pt[1], slice_z);
-                pts.push([lab[0] - dx, lab[1] - dy + shift]);
-                zs.push(lab[2]);
-            }
-            path.pts = pts;
-            path.zs = zs;
-        }
-        view.z = job.belt.position(layer.z, layer.belt_shift);
+        tilt_layer(view, layer, tilt);
     }
+}
+
+/// The same tilt, for a stored patch whose plate is the expanded belt plate.
+fn tilt_held(
+    preview: &mut [PreviewLayer],
+    planned: &[PlateLayer],
+    tilt: &patch::BeltTilt,
+) {
+    tilt_preview(preview, planned, tilt);
+}
+
+fn tilt_layer(view: &mut PreviewLayer, layer: &PlateLayer, tilt: &patch::BeltTilt) {
+    for path in &mut view.paths {
+        let [dx, dy] = tilt
+            .offsets
+            .get(path.object as usize)
+            .copied()
+            .flatten()
+            .unwrap_or([0.0, 0.0]);
+        let shift = tilt.belt.direction * layer.belt_shift;
+        let mut pts = Vec::with_capacity(path.pts.len());
+        let mut zs = Vec::with_capacity(path.pts.len());
+        for (i, pt) in path.pts.iter().enumerate() {
+            let slice_z = path
+                .zs
+                .get(i)
+                .copied()
+                .filter(|z| z.is_finite())
+                .unwrap_or(layer.z);
+            let lab = tilt.frame.lab(pt[0], pt[1], slice_z);
+            pts.push([lab[0] - dx, lab[1] - dy + shift]);
+            zs.push(lab[2]);
+        }
+        path.pts = pts;
+        path.zs = zs;
+    }
+    view.z = tilt.belt.position(layer.z, layer.belt_shift);
 }
 
 /// Plan each object alone in its own part frame, join the plans layer by
@@ -1708,6 +1721,9 @@ fn slice_plate(
             plate_index[o][i] = k;
         }
     }
+    let belt_stamp = belt_job
+        .as_ref()
+        .map(|job| patch::BeltStamp::from_belt(&job.belt));
     let kept_plate = plans
         .iter()
         .map(|p| p.kept.as_ref())
@@ -1722,20 +1738,30 @@ fn slice_plate(
             let prior = kept::plate_prior();
             kept::keep_plate(Arc::clone(&planned));
             KeptPlate {
-                token: patch::token(&whole, &profile, &edits),
+                token: patch::token(&whole, &profile, &edits, belt_stamp.as_ref()),
                 drawn: patch::drawn(&contours, &profile),
                 prior,
+                belt: belt_stamp,
             }
         });
-    // Copies are emit-only. The kept plate stays the single planned part.
+    // Copies are emit-only. Contour stages stay the single planned part.
+    // The preview prior is the expanded plate, which is what the client draws.
     let belt_emit = belt_job.as_ref().map(|job| &job.belt);
-    let expanded = belt_job
-        .as_ref()
-        .map(|job| belt_output((*planned).clone(), job));
-    let emit_layers: &[PlateLayer] = match &expanded {
-        Some(layers) => layers.as_slice(),
-        None => planned.as_slice(),
+    let belt_tilt = belt_job.as_ref().map(|job| patch::BeltTilt {
+        frame: job.frame,
+        belt: job.belt,
+        offsets: job.offsets.clone(),
+    });
+    let emit_held = if let Some(job) = &belt_job {
+        let arc = Arc::new(belt_output((*planned).clone(), job));
+        if kept_plate.is_some() {
+            kept::keep_plate(Arc::clone(&arc));
+        }
+        arc
+    } else {
+        Arc::clone(&planned)
     };
+    let emit_layers: &[PlateLayer] = emit_held.as_slice();
     let emit_started = Instant::now();
     let (gcode, gcode_text) = if settings.include_gcode {
         let gcode = emit_gcode(
@@ -2022,20 +2048,15 @@ fn slice_plate(
     let blends: Vec<&BlendMode> = objects.iter().map(|o| &o.blend).collect();
     let (layers, preview_token, preview_patch) = if !settings.include_preview {
         (Vec::new(), None, None)
-    } else if let Some(job) = &belt_job {
-        // A patch token is the unexpanded plate. Copies, axis, and direction
-        // are not in it, so a belt preview is always the whole tilted plate.
-        let mut layers = preview_of(emit_layers, &profile, &blends, &gcode.layer_seconds);
-        tilt_preview(&mut layers, emit_layers, job);
-        (layers, None, None)
     } else {
         preview(
-            &planned,
+            &emit_held,
             kept_plate,
             &profile,
             &blends,
             settings.preview_base.as_deref(),
             &gcode.layer_seconds,
+            belt_tilt.as_ref(),
         )
     };
     let mesh = if listed {
@@ -2172,6 +2193,7 @@ struct KeptPlate {
     token: String,
     drawn: [u8; 32],
     prior: Option<(Arc<Vec<PlateLayer>>, Arc<patch::Shown>)>,
+    belt: Option<patch::BeltStamp>,
 }
 
 /// The reply's preview. A kept plate names it with a token, and when the
@@ -2185,23 +2207,28 @@ fn preview(
     blends: &[&BlendMode],
     preview_base: Option<&str>,
     layer_seconds: &[f64],
+    tilt: Option<&patch::BeltTilt>,
 ) -> (Vec<PreviewLayer>, Option<String>, Option<PreviewPatch>) {
     let Some(kept) = kept else {
-        return (
-            preview_of(planned, profile, blends, layer_seconds),
-            None,
-            None,
-        );
+        let mut layers = preview_of(planned, profile, blends, layer_seconds);
+        if let Some(tilt) = tilt {
+            tilt_preview(&mut layers, planned, tilt);
+        }
+        return (layers, None, None);
     };
     let mut emitted = layer_seconds.iter();
     let seconds: Vec<Option<f64>> = planned
         .iter()
         .map(|l| (!l.is_empty()).then(|| emitted.next().copied().unwrap_or(0.0)))
         .collect();
+    // A different belt stamp is a different drawing. The planned paths can
+    // match while the tilt does not, so that reply is the whole plate.
     let base = kept.prior.as_ref().filter(|(_, shown)| {
-        preview_base == Some(shown.token.as_str()) && shown.drawn == kept.drawn
+        preview_base == Some(shown.token.as_str())
+            && shown.drawn == kept.drawn
+            && shown.belt == kept.belt
     });
-    let (layers, patched) = match base {
+    let (mut layers, mut patched) = match base {
         Some((joined, shown)) => {
             let shown_blends: Vec<&BlendMode> = shown.blends.iter().collect();
             let restyled: Vec<bool> = (0..blends.len())
@@ -2246,12 +2273,24 @@ fn preview(
                     profile: profile.clone(),
                     blends: blends.iter().map(|&b| b.clone()).collect(),
                     layer_seconds: layer_seconds.to_vec(),
+                    tilt: tilt.cloned(),
                 },
             };
             (Vec::new(), Some(patch))
         }
         None => (preview_of(planned, profile, blends, layer_seconds), None),
     };
+    if let Some(tilt) = tilt {
+        if let Some(patch) = patched.as_mut() {
+            for changed in &mut patch.changed {
+                if let Some(plate) = planned.iter().find(|l| l.index == changed.layer.index) {
+                    tilt_layer(&mut changed.layer, plate, tilt);
+                }
+            }
+        } else {
+            tilt_preview(&mut layers, planned, tilt);
+        }
+    }
     kept::show(
         planned,
         patch::Shown {
@@ -2259,6 +2298,7 @@ fn preview(
             drawn: kept.drawn,
             blends: blends.iter().map(|&b| b.clone()).collect(),
             seconds,
+            belt: kept.belt,
         },
     );
     (layers, Some(kept.token), patched)
