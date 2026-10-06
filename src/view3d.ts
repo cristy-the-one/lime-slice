@@ -7,6 +7,7 @@ import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep } 
 import { clampSplit, roundSplit, type AxisBounds } from "./split-at";
 import { fillHiddenKindMask, INNER_HALF_SCALE, KIND_SHIFT, MARGIN_SHADE, MAX_KINDS, meshCenter, scenePoint, STYLE_WORDS, WEIGHT_STEPS, type PointRun, type PreviewChunk, type PreviewGeometry } from "./preview-geom";
 import { aimSection, anchor, clampOffset, normalize, sectionReach, threeClip, type SectionSpec, type Vec3 } from "./section-plane";
+import { beltStripLength, tiltPose, type BeltSettings } from "./belt";
 import { hexToThree, themeColors, type ThemeColors } from "./theme";
 import { poseAffine, type PlacedPart } from "./mesh-place";
 import type { CoverageGap } from "./support-edits";
@@ -48,6 +49,8 @@ export interface SliceView3d {
   setGhost(part: PlacedPart | null): void;
   setBuffers(buffers: PreviewBuffers | null): void;
   setBed(x: number, y: number, z: number): void;
+  /** A conveyor under the preview, or null for the cartesian plate. */
+  setBelt(belt: BeltSettings | null): void;
   setRange(low: number, high: number): void;
   setShowTravel(show: boolean): void;
   setHidden(kinds: ReadonlySet<string>): void;
@@ -79,6 +82,7 @@ const noopView: SliceView3d = {
   setGhost() {},
   setBuffers() {},
   setBed() {},
+  setBelt() {},
   setRange() {},
   setShowTravel() {},
   setHidden() {},
@@ -156,9 +160,32 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     new THREE.LineBasicMaterial({ color: hexToThree(colors.teal), transparent: true, opacity: 0.35 }),
   );
   scene.add(volume);
+  const tiltMat = new THREE.MeshBasicMaterial({
+    color: hexToThree(colors.amber),
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.22,
+    depthWrite: false,
+  });
+  const tilt = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), tiltMat);
+  const tiltEdge = new THREE.LineLoop(
+    new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-0.5, -0.5, 0),
+      new THREE.Vector3(0.5, -0.5, 0),
+      new THREE.Vector3(0.5, 0.5, 0),
+      new THREE.Vector3(-0.5, 0.5, 0),
+    ]),
+    new THREE.LineBasicMaterial({ color: hexToThree(colors.amber) }),
+  );
+  tiltEdge.raycast = () => undefined;
+  tilt.add(tiltEdge);
+  tilt.visible = false;
+  tilt.raycast = () => undefined;
+  scene.add(tilt);
   let bedX = 220;
   let bedY = 220;
   let bedZ = 250;
+  let belt: BeltSettings | null = null;
   syncBedGrid(bed, bedX, bedY, hexToThree(colors.line), hexToThree(colors.bedMinor));
 
   let cut: THREE.Group | null = null;
@@ -282,29 +309,51 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     placePlane();
   }
 
+  function plateSpan() {
+    if (!belt) return { x: bedX, y: bedY };
+    const depth = model ? Math.max(1, model.max[1] - model.min[1]) : 40;
+    return { x: Math.max(10, belt.widthMm), y: beltStripLength(belt, depth).lengthMm };
+  }
+
   function placeBed(span: number, centerX = 0, centerY = 0) {
-    const size = Math.max(bedX, bedY, span);
-    syncBedGrid(bed, bedX, bedY, hexToThree(colors.line), hexToThree(colors.bedMinor), centerX, centerY);
-    bedPlate.scale.set(bedX, bedY, 1);
-    bedPlate.position.set(bedX / 2 - centerX, -0.05, -(bedY / 2 - centerY));
+    const plate = plateSpan();
+    const size = Math.max(plate.x, plate.y, span);
+    syncBedGrid(bed, plate.x, plate.y, hexToThree(colors.line), hexToThree(colors.bedMinor), centerX, centerY);
+    bedPlate.scale.set(plate.x, plate.y, 1);
+    bedPlate.position.set(plate.x / 2 - centerX, -0.05, -(plate.y / 2 - centerY));
     bedEdge.geometry.dispose();
     bedEdge.geometry = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(-centerX, 0.08, centerY),
-      new THREE.Vector3(bedX - centerX, 0.08, centerY),
-      new THREE.Vector3(bedX - centerX, 0.08, -(bedY - centerY)),
-      new THREE.Vector3(-centerX, 0.08, -(bedY - centerY)),
+      new THREE.Vector3(plate.x - centerX, 0.08, centerY),
+      new THREE.Vector3(plate.x - centerX, 0.08, -(plate.y - centerY)),
+      new THREE.Vector3(-centerX, 0.08, -(plate.y - centerY)),
     ]);
-    volume.scale.set(bedX, bedZ, bedY);
-    volume.position.set(bedX / 2 - centerX, bedZ / 2, -(bedY / 2 - centerY));
+    volume.visible = !belt;
+    volume.scale.set(plate.x, bedZ, plate.y);
+    volume.position.set(plate.x / 2 - centerX, bedZ / 2, -(plate.y / 2 - centerY));
+    if (belt) {
+      const pose = tiltPose(plate.x, bedZ, belt.angleDeg);
+      tilt.visible = true;
+      tilt.scale.set(plate.x, pose.slopeMm, 1);
+      tilt.rotation.set(pose.rotationX, 0, 0);
+      tilt.position.set(pose.x - centerX, pose.y, pose.z + centerY);
+      canvas.dataset.belt = "1";
+      canvas.dataset.beltPlane = "1";
+    } else {
+      tilt.visible = false;
+      canvas.dataset.belt = "0";
+      canvas.dataset.beltPlane = "0";
+    }
     return size;
   }
 
   /** Iso perspective of the empty bed. A user orbit, a mesh, or a slice keeps its own camera. */
   function frameEmptyPerspective() {
     if (userAimed || model || chunks.length > 0) return;
-    placeBed(Math.max(bedX, bedY));
-    camera.position.set(bedX * 0.85, bedZ * 0.55, bedY * 0.95);
-    controls.target.set(bedX / 2, Math.min(30, bedZ * 0.12), -bedY / 2);
+    const plate = plateSpan();
+    placeBed(Math.max(plate.x, plate.y));
+    camera.position.set(plate.x * 0.85, bedZ * 0.55, plate.y * 0.95);
+    controls.target.set(plate.x / 2, Math.min(30, bedZ * 0.12), -plate.y / 2);
     controls.update();
     requestRender();
   }
@@ -622,6 +671,13 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       bedX = x;
       bedY = y;
       bedZ = z;
+      if (belt || model || chunks.length > 0) placeBed(Math.max(plateSpan().x, plateSpan().y), bed.userData.cx ?? 0, bed.userData.cy ?? 0);
+      frameEmptyPerspective();
+    },
+    setBelt(next) {
+      belt = next;
+      const plate = plateSpan();
+      placeBed(Math.max(plate.x, plate.y), bed.userData.cx ?? 0, bed.userData.cy ?? 0);
       frameEmptyPerspective();
     },
     setBuffers(buffers) {
@@ -729,9 +785,11 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       (bedEdge.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.teal));
       (playLine.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.amber));
       (volume.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.teal));
+      tiltMat.color.setHex(hexToThree(colors.amber));
+      (tiltEdge.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.amber));
       support.recolor(colors);
       bed.userData.gridKey = "";
-      syncBedGrid(bed, bedX, bedY, hexToThree(colors.line), hexToThree(colors.bedMinor), bed.userData.cx ?? 0, bed.userData.cy ?? 0);
+      placeBed(Math.max(plateSpan().x, plateSpan().y), bed.userData.cx ?? 0, bed.userData.cy ?? 0);
     },
     setBedOffset(x, y) {
       const ox = Number.isFinite(x) ? x : 0;

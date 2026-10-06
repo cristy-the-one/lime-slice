@@ -1,16 +1,17 @@
 /**
- * Printer, filament, and nozzle library. Version 2 stores our own profiles.
+ * Printer, filament, and nozzle library. Version 3 stores belt printers.
  * A later version adds a function to `machineMigrations` at index `n` that rewrites version `n`
  * into version `n + 1`.
  *
  * The slice request already accepts one printer: nozzle, temperatures, bed, flow, accel,
  * density, cost, pressure advance, and linear advance. It has no filament catalog, no
- * start or end G-code field, and no printer host. Those stay in this library.
+ * start or end G-code field, no printer host, and no belt. Those stay in this library.
  * `enginePrinter` copies only the fields the engine already reads.
  */
+import { coerceBelt, defaultBelt, type BeltSettings, type PrinterKind } from "../belt.ts";
 import type { PrinterProfile } from "../profiles.ts";
 
-export const MACHINE_FILE_VERSION = 2;
+export const MACHINE_FILE_VERSION = 3;
 
 export const NOZZLE_MM = [0.4, 0.6, 0.8] as const;
 
@@ -33,6 +34,10 @@ export interface PrinterRecord {
   apiKey: string;
   /** When set, Send asks Prusa Link to start the job after the upload. */
   startPrint: boolean;
+  /** Cartesian bed, or a conveyor. The engine slices a cartesian printer only. */
+  kind: PrinterKind;
+  /** Stored with the printer. Not sent on the slice request. */
+  belt: BeltSettings;
 }
 
 export interface FilamentRecord {
@@ -51,7 +56,7 @@ export interface FilamentRecord {
 }
 
 export interface MachineLibrary {
-  version: 2;
+  version: 3;
   printers: PrinterRecord[];
   filaments: FilamentRecord[];
   printerId: string;
@@ -60,7 +65,7 @@ export interface MachineLibrary {
 }
 
 export interface MachineFile {
-  version: 2;
+  version: 3;
   printer: Omit<PrinterRecord, "id" | "builtin">;
   filament: Omit<FilamentRecord, "id" | "builtin">;
   nozzleMm: number;
@@ -74,9 +79,11 @@ export type MachineMigration = (doc: Record<string, unknown>) => Record<string, 
 /**
  * Index 0 would migrate a version-0 file, which was never written.
  * Index 1 adds an empty Prusa Link host, API key, and start-print flag onto each printer.
+ * Index 2 adds a cartesian kind and a default belt block. The belt is stored and not sliced.
  */
 const machineMigrationSteps: MachineMigration[] = [];
 machineMigrationSteps[1] = migrateMachineVersion1;
+machineMigrationSteps[2] = migrateMachineVersion2;
 export const machineMigrations: readonly MachineMigration[] = machineMigrationSteps;
 
 export interface MachineNumbers {
@@ -265,6 +272,21 @@ export function setGcode(library: MachineLibrary, startGcode: string, endGcode: 
   };
 }
 
+/** The active printer's belt, or null when the printer is cartesian. */
+export function beltStamp(library: MachineLibrary): BeltSettings | null {
+  const printer = selection(library)?.printer;
+  if (!printer || printer.kind !== "belt") return null;
+  return printer.belt;
+}
+
+/** Store the kind and belt on the active printer. Neither is sent on the slice request. */
+export function setActiveBelt(library: MachineLibrary, kind: PrinterKind, belt: BeltSettings): MachineLibrary {
+  return {
+    ...library,
+    printers: library.printers.map((printer) => printer.id === library.printerId ? { ...printer, kind, belt } : printer),
+  };
+}
+
 /** Store the Prusa Link host on the active printer. An empty host means Send stays off. */
 export function setLink(library: MachineLibrary, host: string, apiKey: string, startPrint: boolean): MachineLibrary {
   return {
@@ -365,6 +387,8 @@ export function adoptProfile(library: MachineLibrary, profile: PrinterProfile, p
     host: "",
     apiKey: "",
     startPrint: false,
+    kind: "cartesian",
+    belt: defaultBelt(profile.bedX),
   };
   const filament: FilamentRecord = {
     id: filamentId,
@@ -417,6 +441,7 @@ export function machineSectionHtml(
       <label class="field setting" data-label="nozzle size" data-keywords="nozzle diameter">Nozzle
         <select id="machineNozzle" aria-label="Nozzle size">${nozzleOptions}</select>
       </label>
+      ${beltFieldsHtml(picked?.printer)}
       <label class="field setting" data-label="pressure advance" data-keywords="filament nozzle linear advance">Pressure advance
         <input id="machinePa" type="number" min="0" max="2" step="0.001" value="${live.pressureAdvance}" aria-label="Pressure advance for this filament and nozzle" />
       </label>
@@ -509,6 +534,8 @@ function blankPrinter(id: string, name: string): PrinterRecord {
     host: "",
     apiKey: "",
     startPrint: false,
+    kind: "cartesian",
+    belt: defaultBelt(220),
   };
 }
 
@@ -525,6 +552,8 @@ function stripPrinter(printer: PrinterRecord): MachineFile["printer"] {
     host: printer.host,
     apiKey: printer.apiKey,
     startPrint: printer.startPrint,
+    kind: printer.kind,
+    belt: { ...printer.belt },
   };
 }
 
@@ -573,6 +602,8 @@ function printer(id: string, name: string, bedX: number, bedY: number, bedZ: num
     host: "",
     apiKey: "",
     startPrint: false,
+    kind: "cartesian",
+    belt: defaultBelt(bedX),
   };
 }
 
@@ -678,6 +709,8 @@ function readPrinterBody(value: unknown): Omit<PrinterRecord, "id" | "builtin"> 
   if (row.startGcode.length > 20000 || row.endGcode.length > 20000) return null;
   if (typeof row.host !== "string" || typeof row.apiKey !== "string" || typeof row.startPrint !== "boolean") return null;
   if (row.host.length > 500 || row.apiKey.length > 500) return null;
+  if (row.kind !== "cartesian" && row.kind !== "belt") return null;
+  if (!row.belt || typeof row.belt !== "object" || Array.isArray(row.belt)) return null;
   return {
     name: row.name.trim(),
     bedX: row.bedX,
@@ -690,7 +723,70 @@ function readPrinterBody(value: unknown): Omit<PrinterRecord, "id" | "builtin"> 
     host: row.host.trim(),
     apiKey: row.apiKey,
     startPrint: row.startPrint,
+    kind: row.kind,
+    belt: coerceBelt(row.belt, row.bedX),
   };
+}
+
+/** Version 2 printers have no belt. Version 3 adds a cartesian kind and a default belt block. */
+function migrateMachineVersion2(doc: Record<string, unknown>): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...doc, version: 3 };
+  if (Array.isArray(doc.printers)) next.printers = doc.printers.map(withBelt);
+  if (doc.printer && typeof doc.printer === "object" && !Array.isArray(doc.printer)) next.printer = withBelt(doc.printer);
+  return next;
+}
+
+function withBelt(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const row = value as Record<string, unknown>;
+  const width = typeof row.bedX === "number" && row.bedX > 0 ? row.bedX : 220;
+  return {
+    ...row,
+    kind: row.kind === "belt" ? "belt" : "cartesian",
+    belt: coerceBelt(row.belt, width),
+  };
+}
+
+function beltFieldsHtml(printer: PrinterRecord | undefined): string {
+  const kind = printer?.kind ?? "cartesian";
+  const belt = printer?.belt ?? defaultBelt(printer?.bedX ?? 220);
+  const axis = (value: string) => `<option value="${value}"${belt.axis === value ? " selected" : ""}>${value.toUpperCase()}</option>`;
+  const length = belt.maxLengthMm == null ? "" : String(belt.maxLengthMm);
+  return `
+      <label class="field setting" data-label="printer kind" data-keywords="belt conveyor cr-30 ifactory blackbelt cartesian">Kind
+        <select id="machineKind" aria-label="Printer kind">
+          <option value="cartesian"${kind === "cartesian" ? " selected" : ""}>Cartesian</option>
+          <option value="belt"${kind === "belt" ? " selected" : ""}>Belt</option>
+        </select>
+      </label>
+      <div class="belt-grid" id="beltFields"${kind === "belt" ? "" : " hidden"}>
+        <label class="field setting" data-label="belt angle" data-keywords="gantry tilt degrees">Angle °
+          <input id="beltAngle" type="number" min="10" max="80" step="1" value="${belt.angleDeg}" aria-label="Belt angle" />
+        </label>
+        <label class="field setting" data-label="belt axis" data-keywords="conveyor axis">Belt axis
+          <select id="beltAxis" aria-label="Belt axis">${axis("x")}${axis("y")}${axis("z")}</select>
+        </label>
+        <label class="field setting" data-label="belt direction" data-keywords="belt sign">Direction
+          <select id="beltDirection" aria-label="Belt direction">
+            <option value="1"${belt.direction === 1 ? " selected" : ""}>+ axis</option>
+            <option value="-1"${belt.direction === -1 ? " selected" : ""}>− axis</option>
+          </select>
+        </label>
+        <label class="field setting" data-label="belt width" data-keywords="usable width">Width mm
+          <input id="beltWidth" type="number" min="10" max="4000" step="1" value="${belt.widthMm}" aria-label="Belt width" />
+        </label>
+        <label class="check setting belt-wide" data-label="unlimited belt" data-keywords="endless length"><input id="beltUnlimited" type="checkbox"${belt.maxLengthMm == null ? " checked" : ""}/> Unlimited length</label>
+        <label class="field setting" data-label="belt length" data-keywords="max length">Max length mm
+          <input id="beltLength" type="number" min="10" step="1" value="${length}"${belt.maxLengthMm == null ? " disabled" : ""} aria-label="Belt max length" />
+        </label>
+        <label class="field setting" data-label="belt copies" data-keywords="back to back repeat">Copies
+          <input id="beltCopies" type="number" min="1" max="24" step="1" value="${belt.copies}" aria-label="Belt copies" />
+        </label>
+        <label class="field setting" data-label="belt gap" data-keywords="copy spacing">Gap mm
+          <input id="beltGap" type="number" min="0" max="500" step="1" value="${belt.gapMm}" aria-label="Gap between copies" />
+        </label>
+        <p class="meta belt-wide">Mock only. The engine does not slice a belt yet, so export and send stay off.</p>
+      </div>`;
 }
 
 /** Version 1 printers have no host. Version 2 adds an empty Prusa Link connection. */

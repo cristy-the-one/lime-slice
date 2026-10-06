@@ -17,10 +17,12 @@ import {
   serializeLibrary,
   serializeMachineFile,
   setAdvance,
+  setActiveBelt,
   setLink,
   adoptLegacyLink,
   type MachineNumbers,
 } from "./machine-library.ts";
+import { defaultBelt } from "../belt.ts";
 
 let failed = 0;
 
@@ -130,10 +132,11 @@ const version1 = legacyFile
       printer: stripLink(JSON.parse(serializeMachineFile(legacyFile)).printer),
     }))
   : null;
-check("a version 1 file gains an empty host", version1?.ok === true && version1.file.version === 2 && version1.file.printer.host === "" && version1.file.printer.apiKey === "" && version1.file.printer.startPrint === false);
+check("a version 1 file gains an empty host", version1?.ok === true && version1.file.version === 3 && version1.file.printer.host === "" && version1.file.printer.apiKey === "" && version1.file.printer.startPrint === false);
+check("a version 1 file stays cartesian", version1?.ok === true && version1.file.printer.kind === "cartesian" && version1.file.printer.belt.angleDeg === 45 && version1.file.printer.belt.maxLengthMm === null);
 
 const stored = parseLibrary(serializeLibrary(library));
-check("the library round-trips", stored.version === 2 && stored.printers.length === 3 && stored.filaments.length === 4 && stored.printerId === "lime-220" && stored.printers.every((printer) => printer.host === ""));
+check("the library round-trips", stored.version === 3 && stored.printers.length === 3 && stored.filaments.length === 4 && stored.printerId === "lime-220" && stored.printers.every((printer) => printer.host === "" && printer.kind === "cartesian"));
 const version1Library = JSON.parse(serializeLibrary(library)) as { version: number; printers: Record<string, unknown>[] };
 version1Library.version = 1;
 for (const printer of version1Library.printers) {
@@ -142,11 +145,30 @@ for (const printer of version1Library.printers) {
   delete printer.startPrint;
 }
 const migratedLibrary = parseLibrary(JSON.stringify(version1Library));
-check("a version 1 library gains an empty host", migratedLibrary.version === 2 && migratedLibrary.printers.length === 3 && migratedLibrary.printers.every((printer) => printer.host === "" && printer.apiKey === "" && printer.startPrint === false));
+check("a version 1 library gains an empty host", migratedLibrary.version === 3 && migratedLibrary.printers.length === 3 && migratedLibrary.printers.every((printer) => printer.host === "" && printer.apiKey === "" && printer.startPrint === false && printer.kind === "cartesian" && printer.belt.axis === "z"));
 const adopted = adoptLegacyLink(builtinLibrary(), { url: "http://printer.local", apiKey: "secret", startPrint: true });
 check("a legacy host lands on the active printer", selection(adopted)?.printer.host === "http://printer.local" && selection(adopted)?.printer.apiKey === "secret" && selection(adopted)?.printer.startPrint === true);
 check("a printer that already has a host keeps it", selection(adoptLegacyLink(linked, { url: "http://other.local", apiKey: "nope", startPrint: false }))?.printer.host === "http://printer.local/extra");
 check("an empty legacy host changes nothing", selection(adoptLegacyLink(library, { url: "  ", apiKey: "x", startPrint: true }))?.printer.host === "");
+const version2 = JSON.parse(serializeLibrary(library)) as { version: number; printers: Record<string, unknown>[] };
+version2.version = 2;
+for (const printer of version2.printers) {
+  delete printer.kind;
+  delete printer.belt;
+}
+const fromVersion2 = parseLibrary(JSON.stringify(version2));
+const lime = fromVersion2.printers.find((printer) => printer.id === "lime-220");
+check("a version 2 library gains a cartesian belt block", fromVersion2.version === 3 && lime?.bedX === 220 && lime.kind === "cartesian" && lime.belt.angleDeg === 45 && lime.belt.copies === 1 && lime.belt.maxLengthMm === null && lime.belt.widthMm === 220);
+
+const belted = setActiveBelt(library, "belt", { ...defaultBelt(180), angleDeg: 35, axis: "y", direction: -1, copies: 3, gapMm: 8, maxLengthMm: null });
+const beltRow = selection(belted);
+const beltSent = beltRow ? enginePrinter(beltRow.printer, beltRow.filament, 0.4) : null;
+check("a belt printer still sends today's fields", beltSent !== null && Object.keys(beltSent).sort().join(",") === sentKeys.join(","));
+check("belt settings stay on the record", beltRow?.printer.kind === "belt" && beltRow.printer.belt.copies === 3 && beltRow.printer.belt.axis === "y" && beltRow.printer.belt.direction === -1);
+const beltFile = fileFromSelection(belted);
+const beltRound = beltFile ? parseMachineFile(serializeMachineFile(beltFile)) : null;
+check("a belt file round-trips", beltRound?.ok === true && beltRound.file.version === 3 && beltRound.file.printer.kind === "belt" && beltRound.file.printer.belt.angleDeg === 35 && beltRound.file.printer.belt.gapMm === 8 && beltRound.file.printer.belt.maxLengthMm === null && beltRound.file.printer.bedX === 220);
+
 const restored = ensureBuiltins(parseLibrary("nope"));
 check("a corrupt library grows the built-ins back", restored.printers.some((printer) => printer.id === "lime-220") && restored.filaments.some((filament) => filament.id === "lime-tpu"));
 
