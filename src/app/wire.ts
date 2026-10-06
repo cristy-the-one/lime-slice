@@ -8,7 +8,7 @@ import { clampOffset, flipSection } from "../section-plane";
 import { wheelNotch } from "../gizmo-math";
 import { state, type CardId } from "./state";
 import { draw, layerGcode, paintPlayback, paintSectionChrome, prepare, realignSplit, scrub, sectionLimit, setHelp, setStage, setView, stepGizmo, stopPlay, syncGcodeHighlight, togglePlay, view3d } from "./viewer";
-import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runSlice, runTempCal } from "./slice-run";
+import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCal, runSlice, runTempCal } from "./slice-run";
 import { adoptBytes, export3mf, exportGcode, fail, loadNamed, place, saveText, setPlaceCenter } from "./files";
 import { mountProjectFiles, saveCurrentProject } from "./project-io";
 import { pickProjectFile } from "../platform";
@@ -43,6 +43,7 @@ import {
   noteBeltForm,
   noteFlow,
   noteNozzleTemp,
+  noteRetract,
   chooseMachine,
   deleteMachine,
   duplicateMachine,
@@ -123,6 +124,7 @@ export function wireApp() {
     if (t.id === "pacal") void runPaCal();
     if (t.id === "flowcal") void runFlowCal();
     if (t.id === "tempcal") void runTempCal();
+    if (t.id === "retractcal") void runRetractCal();
     if (t.id === "undoEdit") {
       undoUserEdit();
       return;
@@ -153,6 +155,15 @@ export function wireApp() {
       return;
     }
     if (t.id === "tempexport" && state.tempGcode) void saveText(state.tempGcode, "temperature-calibration.gcode", "gcode");
+    if (t.id === "retractapply") {
+      noteEdit();
+      const length = Number((document.querySelector("#retractchosen") as HTMLInputElement).value);
+      const speed = state.retractOn && Math.abs(state.retractSpeed - 30) > 1e-6 ? state.retractSpeed : null;
+      noteRetract(length, speed);
+      touch();
+      return;
+    }
+    if (t.id === "retractexport" && state.retractGcode) void saveText(state.retractGcode, "retraction-calibration.gcode", "gcode");
     if (t.id === "profileSave") {
       const typed = typedProfileName();
       if (typed) saveSettingsProfile(typed);

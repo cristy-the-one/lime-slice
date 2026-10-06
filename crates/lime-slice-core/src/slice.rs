@@ -152,6 +152,13 @@ pub struct SliceRequest {
     /// change flow keeps its cache key. It scales filament length only.
     #[serde(default = "default_one", skip_serializing_if = "is_one")]
     pub flow: f64,
+    /// Retract length in millimetres. Left out to keep the strategy length
+    /// (0.35 mm on speed, 0.9 mm on toughness).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retract_length: Option<f64>,
+    /// Retract and unretract speed in mm/s. Left out to keep 30 mm/s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retract_speed: Option<f64>,
     /// `blend` follows the strategy, or `off` / `outer` / `all`.
     #[serde(default)]
     pub scarf_seam: ScarfSeam,
@@ -306,6 +313,10 @@ pub struct SliceSettings {
     pub fuzzy_skin: Option<FuzzySkin>,
     /// Extrusion multiplier. `1` leaves filament length where it was.
     pub flow: f64,
+    /// `None` keeps the strategy retract length.
+    pub retract_length: Option<f64>,
+    /// `None` keeps the 30 mm/s retract feed.
+    pub retract_speed: Option<f64>,
     pub scarf_seam: ScarfSeam,
     pub scarf_length: f64,
     pub scarf_steps: u32,
@@ -376,6 +387,8 @@ impl Default for SliceSettings {
             ironing: None,
             fuzzy_skin: None,
             flow: 1.0,
+            retract_length: None,
+            retract_speed: None,
             scarf_seam: ScarfSeam::Blend,
             scarf_length: default_scarf_length(),
             scarf_steps: default_scarf_steps(),
@@ -469,6 +482,8 @@ impl SliceSettings {
             ironing: req.ironing,
             fuzzy_skin: if req.classic { None } else { req.fuzzy_skin },
             flow: req.flow,
+            retract_length: req.retract_length,
+            retract_speed: req.retract_speed,
             scarf_seam: if req.classic {
                 ScarfSeam::Off
             } else {
@@ -608,7 +623,19 @@ impl SliceSettings {
         } else {
             format!("; flow {:.3}", self.flow)
         };
-        format!("{layers}; {supports}; {combine}; {scarf}; {gyroid}; {hop}{seam}{ironing}{fuzzy}{flow}")
+        let retract = match (self.retract_length, self.retract_speed) {
+            (None, None) => String::new(),
+            (length, speed) => {
+                let len = length
+                    .map(|n| format!("{n:.3} mm"))
+                    .unwrap_or_else(|| "strategy".into());
+                let spd = speed
+                    .map(|n| format!("{n:.0} mm/s"))
+                    .unwrap_or_else(|| "30 mm/s".into());
+                format!("; retract {len} at {spd}")
+            }
+        };
+        format!("{layers}; {supports}; {combine}; {scarf}; {gyroid}; {hop}{seam}{ironing}{fuzzy}{flow}{retract}")
     }
 }
 
@@ -1493,6 +1520,16 @@ fn slice_plate(
     if !settings.flow.is_finite() || !(0.5..=1.5).contains(&settings.flow) {
         return Err(format!("flow {} must be from 0.5 to 1.5", settings.flow));
     }
+    if let Some(n) = settings.retract_length {
+        if !n.is_finite() || !(0.0..=5.0).contains(&n) {
+            return Err(format!("retractLength {n} must be from 0 to 5"));
+        }
+    }
+    if let Some(n) = settings.retract_speed {
+        if !n.is_finite() || !(5.0..=80.0).contains(&n) {
+            return Err(format!("retractSpeed {n} must be from 5 to 80"));
+        }
+    }
     let listed = sources.iter().any(|s| s.id.is_some());
     let mut settings = resolved(settings);
     let (layer_height, line_width) = (settings.layer_height, settings.line_width);
@@ -1714,6 +1751,10 @@ fn slice_plate(
             &offsets,
             belt_emit,
             settings.flow,
+            crate::gcode::RetractEmit {
+                length_mm: settings.retract_length,
+                speed_mm_s: settings.retract_speed,
+            },
             settings.job,
             watch,
         );
@@ -1732,6 +1773,10 @@ fn slice_plate(
             &offsets,
             belt_emit,
             settings.flow,
+            crate::gcode::RetractEmit {
+                length_mm: settings.retract_length,
+                speed_mm_s: settings.retract_speed,
+            },
             settings.job,
             watch,
         );
@@ -1871,6 +1916,10 @@ fn slice_plate(
                 &offsets,
                 baseline_belt,
                 settings.flow,
+                crate::gcode::RetractEmit {
+                    length_mm: settings.retract_length,
+                    speed_mm_s: settings.retract_speed,
+                },
                 settings.job,
                 &quiet,
             )
@@ -1888,6 +1937,10 @@ fn slice_plate(
                 &offsets,
                 baseline_belt,
                 settings.flow,
+                crate::gcode::RetractEmit {
+                    length_mm: settings.retract_length,
+                    speed_mm_s: settings.retract_speed,
+                },
                 settings.job,
                 &quiet,
             )
@@ -5854,6 +5907,10 @@ mod tests {
                 &[[0.0, 0.0]],
                 None,
                 settings.flow,
+                crate::gcode::RetractEmit {
+                    length_mm: settings.retract_length,
+                    speed_mm_s: settings.retract_speed,
+                },
                 settings.job,
                 &Watch::idle(),
             );
@@ -5870,6 +5927,10 @@ mod tests {
                 &[[0.0, 0.0]],
                 None,
                 settings.flow,
+                crate::gcode::RetractEmit {
+                    length_mm: settings.retract_length,
+                    speed_mm_s: settings.retract_speed,
+                },
                 settings.job,
                 &Watch::idle(),
             );
@@ -5926,6 +5987,10 @@ mod tests {
             &[[0.0, 0.0]],
             None,
             settings.flow,
+            crate::gcode::RetractEmit {
+                length_mm: settings.retract_length,
+                speed_mm_s: settings.retract_speed,
+            },
             settings.job,
             &Watch::idle(),
         );
@@ -5942,6 +6007,10 @@ mod tests {
             &[[0.0, 0.0]],
             None,
             settings.flow,
+            crate::gcode::RetractEmit {
+                length_mm: settings.retract_length,
+                speed_mm_s: settings.retract_speed,
+            },
             settings.job,
             &Watch::idle(),
         );

@@ -178,6 +178,7 @@ export function payload() {
     printer: printer(),
     // Omitted at 1, so a filament that does not scale extrusion keeps its recipe key.
     ...flowSliceField(state.flow),
+    ...retractSliceFields(),
     // Beside `printer`, and omitted for a cartesian machine, so that recipe stays the same bytes.
     ...beltSliceField(beltStamp(loadMachineLibrary())),
     variableWidth: state.variableWidth,
@@ -229,6 +230,16 @@ function objectTree(obj: PlateObject): boolean {
  * out: they change no toolpath, and the UI turns the reply's filament length
  * into grams and cost itself, so editing them never makes a slice stale.
  */
+function retractSliceFields(): { retractLength?: number; retractSpeed?: number } {
+  if (!state.retractOn) return {};
+  const length = Math.min(5, Math.max(0, Math.round(state.retractLength * 1000) / 1000));
+  const out: { retractLength: number; retractSpeed?: number } = { retractLength: length };
+  if (Number.isFinite(state.retractSpeed) && Math.abs(state.retractSpeed - 30) > 1e-6) {
+    out.retractSpeed = Math.min(80, Math.max(5, Math.round(state.retractSpeed)));
+  }
+  return out;
+}
+
 export function printer() {
   const { filamentDensityGCm3: _density, filamentCostPerKg: _cost, ...profile } = state.profile;
   return {
@@ -659,4 +670,38 @@ export async function runTempCal() {
   }
 }
 
-Object.assign(fx, { lineWidth, meshFingerprint, currentRecipeKey, currentSliceAction, setButtonLabel, paintSliceButton, paintForceButton, quietRefreshing, scheduleAuto, payload, printer, runSlice, layerNear, postSlice, parseInWorker, cancelSlice, runPaCal, runFlowCal, runTempCal, applyPareto, runPareto });
+export async function runRetractCal() {
+  markBusy(true);
+  state.error = "";
+  renderChrome();
+  try {
+    const body = {
+      start: state.retractStart,
+      end: state.retractEnd,
+      step: state.retractStep,
+      layerHeight: state.layerHeight,
+      bandHeight: 5,
+      speedMmS: state.retractOn ? state.retractSpeed : 30,
+      printer: printer(),
+    };
+    const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    let result: { gcode: string; bands: typeof state.retractBands; error?: string };
+    if (tauri) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      result = JSON.parse(await invoke<string>("calibrate_retract", { payload: JSON.stringify(body) }));
+    } else {
+      const res = await fetch(`${apiBase()}/api/calibrate/retract`, { method: "POST", headers: authHeaders(apiToken(), { "Content-Type": "application/json" }), body: JSON.stringify(body) });
+      result = await res.json();
+      if (!res.ok) throw new Error(result.error || `calibration failed (${res.status})`);
+    }
+    state.retractBands = result.bands;
+    state.retractGcode = result.gcode;
+  } catch (err) {
+    fail(err);
+  } finally {
+    state.busy = false;
+    renderChrome();
+  }
+}
+
+Object.assign(fx, { lineWidth, meshFingerprint, currentRecipeKey, currentSliceAction, setButtonLabel, paintSliceButton, paintForceButton, quietRefreshing, scheduleAuto, payload, printer, runSlice, layerNear, postSlice, parseInWorker, cancelSlice, runPaCal, runFlowCal, runTempCal, runRetractCal, applyPareto, runPareto });

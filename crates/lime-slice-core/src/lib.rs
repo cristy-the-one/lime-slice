@@ -26,8 +26,9 @@ mod toolpath;
 pub use audit::{audit_slice, SliceAudit};
 pub use calibrate::{
     flow_from_request, flow_tower, pressure_advance_from_request, pressure_advance_tower,
-    temperature_from_request, temperature_tower, FlowBand, FlowCalib, FlowCalibOutput,
-    FlowCalibRequest, PaBand, PaCalib, PaCalibOutput, PaCalibRequest, PaFirmware, TempBand,
+    retract_from_request, retract_tower, temperature_from_request, temperature_tower, FlowBand,
+    FlowCalib, FlowCalibOutput, FlowCalibRequest, PaBand, PaCalib, PaCalibOutput, PaCalibRequest,
+    PaFirmware, RetractBand, RetractCalib, RetractCalibOutput, RetractCalibRequest, TempBand,
     TempCalib, TempCalibOutput, TempCalibRequest,
 };
 pub use cancel::{cancel_all, Job};

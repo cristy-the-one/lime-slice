@@ -362,6 +362,9 @@ pub(super) fn keys(
         include_preview: blank.include_preview,
         // Flow scales filament length at emit. The cut and the toolpaths do not move.
         flow: blank.flow,
+        // Retract length and speed change the emitted retract move, not the cut.
+        retract_length: blank.retract_length,
+        retract_speed: blank.retract_speed,
         ..settings.clone()
     };
     let no_emit = SliceSettings {

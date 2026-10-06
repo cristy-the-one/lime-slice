@@ -28,6 +28,7 @@ import {
   setFlow,
   setGcode,
   setNozzleTemp,
+  setRetract,
   type MachineLibrary,
   type MachineNumbers,
 } from "../ui/machine-library.ts";
@@ -70,6 +71,16 @@ export function noteFlow(flow: number) {
   if (machineFlow && document.activeElement !== machineFlow) machineFlow.value = String(value);
   const chosen = document.querySelector<HTMLInputElement>("#flowchosen");
   if (chosen && document.activeElement !== chosen) chosen.value = String(value);
+}
+
+export function noteRetract(length: number | null, speed: number | null) {
+  noteEdit();
+  const library = setRetract(loadMachineLibrary(), length, speed);
+  storeMachineLibrary(library);
+  const filament = selection(library)?.filament;
+  state.retractOn = typeof filament?.retractLength === "number";
+  state.retractLength = filament?.retractLength ?? state.retractLength;
+  state.retractSpeed = filament?.retractSpeed ?? 30;
 }
 
 export function noteNozzleTemp(temp: number) {
@@ -241,6 +252,9 @@ function writeState(library: MachineLibrary) {
   state.pressureAdvance = next.pressureAdvance;
   state.linearAdvance = next.linearAdvance;
   state.flow = picked.filament.flow;
+  state.retractOn = typeof picked.filament.retractLength === "number";
+  state.retractLength = picked.filament.retractLength ?? state.retractLength;
+  state.retractSpeed = picked.filament.retractSpeed ?? 30;
   saveProfile(state.profile);
   fx.prepare?.setBed(next.bedX, next.bedY, next.bedZ);
   fx.view3d?.setBed(next.bedX, next.bedY, next.bedZ);

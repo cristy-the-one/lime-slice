@@ -278,6 +278,13 @@ impl Formatter {
     }
 }
 
+/// Retract length and speed for emit. `None` keeps the planned length and 30 mm/s.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RetractEmit {
+    pub length_mm: Option<f64>,
+    pub speed_mm_s: Option<f64>,
+}
+
 /// When the G-code text is formatted.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Text {
@@ -303,6 +310,7 @@ pub(crate) fn emit_gcode(
     offsets: &[[f64; 2]],
     belt: Option<&crate::belt::Belt>,
     flow: f64,
+    retract: RetractEmit,
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> GcodeStats {
@@ -319,6 +327,7 @@ pub(crate) fn emit_gcode(
         offsets,
         belt,
         flow,
+        retract,
         job,
         watch,
         true,
@@ -343,6 +352,7 @@ pub(crate) fn emit_estimates(
     offsets: &[[f64; 2]],
     belt: Option<&crate::belt::Belt>,
     flow: f64,
+    retract: RetractEmit,
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> GcodeStats {
@@ -359,6 +369,7 @@ pub(crate) fn emit_estimates(
         offsets,
         belt,
         flow,
+        retract,
         job,
         watch,
         true,
@@ -383,6 +394,7 @@ pub(crate) fn emit_later(
     offsets: &[[f64; 2]],
     belt: Option<&crate::belt::Belt>,
     flow: f64,
+    retract: RetractEmit,
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> (GcodeStats, GcodeText) {
@@ -399,6 +411,7 @@ pub(crate) fn emit_later(
         offsets,
         belt,
         flow,
+        retract,
         job,
         watch,
         true,
@@ -426,6 +439,7 @@ pub(crate) fn emit_gcode_linear(
     offsets: &[[f64; 2]],
     belt: Option<&crate::belt::Belt>,
     flow: f64,
+    retract: RetractEmit,
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> GcodeStats {
@@ -442,6 +456,7 @@ pub(crate) fn emit_gcode_linear(
         offsets,
         belt,
         flow,
+        retract,
         job,
         watch,
         false,
@@ -464,6 +479,7 @@ fn emit_gcode_inner(
     offsets: &[[f64; 2]],
     belt: Option<&crate::belt::Belt>,
     flow: f64,
+    retract: RetractEmit,
     job: crate::cancel::Job,
     watch: &Watch,
     parallel: bool,
@@ -477,6 +493,7 @@ fn emit_gcode_inner(
         offsets,
         belt,
         flow,
+        retract,
     );
     let junction_deviation = cfg.junction_deviation;
     let emit_total = layers
@@ -635,9 +652,14 @@ struct EmitCfg {
     belt: Option<crate::belt::Belt>,
     /// Multiplies every extrusion. `1` leaves the filament length unchanged.
     flow_scale: f64,
+    /// `None` keeps each path's planned retract length.
+    retract_length: Option<f64>,
+    /// Retract feed. 30 mm/s is `F1800`, the feed a slice had before this existed.
+    retract_speed: f64,
 }
 
 impl EmitCfg {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         profile: &PrinterProfile,
         arc_fit: bool,
@@ -646,6 +668,7 @@ impl EmitCfg {
         offsets: &[[f64; 2]],
         belt: Option<&crate::belt::Belt>,
         flow: f64,
+        retract: RetractEmit,
     ) -> Self {
         let offsets = if offsets.is_empty() {
             Arc::from([[0.0, 0.0]])
@@ -678,6 +701,11 @@ impl EmitCfg {
             offsets,
             belt: belt.copied(),
             flow_scale: if flow.is_finite() { flow } else { 1.0 },
+            retract_length: retract.length_mm.filter(|n| n.is_finite()),
+            retract_speed: retract
+                .speed_mm_s
+                .filter(|n| n.is_finite() && *n > 0.0)
+                .unwrap_or(30.0),
         }
     }
 }
@@ -865,7 +893,16 @@ pub(crate) fn scans_in_parallel(
     arc_fit: bool,
     classic_estimator: bool,
 ) -> bool {
-    let cfg = EmitCfg::new(profile, arc_fit, classic_estimator, 0.0, &[], None, 1.0);
+    let cfg = EmitCfg::new(
+        profile,
+        arc_fit,
+        classic_estimator,
+        0.0,
+        &[],
+        None,
+        1.0,
+        RetractEmit::default(),
+    );
     scan_layers(&cfg, layers, crate::cancel::Job::default(), &Watch::idle()).is_some()
 }
 
@@ -995,6 +1032,9 @@ struct Writer {
     offset: [f64; 2],
     belt: Option<crate::belt::Belt>,
     flow_scale: f64,
+    retract_length: Option<f64>,
+    retract_speed: f64,
+    retract_feed: i32,
 }
 
 struct KinMove {
@@ -1063,6 +1103,9 @@ impl Writer {
             offset: cfg.offsets[carry.frame as usize],
             belt: cfg.belt,
             flow_scale: cfg.flow_scale,
+            retract_length: cfg.retract_length,
+            retract_speed: cfg.retract_speed,
+            retract_feed: (cfg.retract_speed * 60.0).round() as i32,
         }
     }
 
@@ -1218,6 +1261,7 @@ impl Writer {
             }
             Entry::Cross { z_hop } => (vec![path.points[0]], (path.retract_mm, 0.0), z_hop),
         };
+        let retract_mm = self.retract_length.unwrap_or(retract_mm);
         self.travel_chain(
             &hop,
             path.travel_speed,
@@ -1481,10 +1525,11 @@ impl Writer {
             let feed = self.retracted;
             self.retracted = 0.0;
             let e_now = self.e;
-            self.put(format_args!("G1 E{e_now:.5} F1800\n"));
+            let retract_feed = self.retract_feed;
+            self.put(format_args!("G1 E{e_now:.5} F{retract_feed}\n"));
             let prev = self.kind;
             self.kind = "travel";
-            self.add_time(feed / 30.0);
+            self.add_time(feed / self.retract_speed);
             self.kind = prev;
         }
     }
@@ -1538,8 +1583,9 @@ impl Writer {
             self.retracted = retract_mm;
             self.retracts += 1;
             let e_now = self.e;
-            self.put(format_args!("G1 E{e_now:.5} F1800\n"));
-            self.add_time(retract_mm / 30.0);
+            let retract_feed = self.retract_feed;
+            self.put(format_args!("G1 E{e_now:.5} F{retract_feed}\n"));
+            self.add_time(retract_mm / self.retract_speed);
         }
         self.z_hops += 1;
         let ramp = (z_hop * 4.0).clamp(0.6, 2.5).min(total * 0.45);
@@ -1671,8 +1717,9 @@ impl Writer {
                 self.retracted = retract_mm;
                 self.retracts += 1;
                 let e_now = self.e;
-                self.put(format_args!("G1 E{e_now:.5} F1800\n"));
-                self.add_time(retract_mm / 30.0);
+                let retract_feed = self.retract_feed;
+                self.put(format_args!("G1 E{e_now:.5} F{retract_feed}\n"));
+                self.add_time(retract_mm / self.retract_speed);
             }
             self.add_travelled(d);
             let cruise = speed.max(10.0);
@@ -1991,7 +2038,8 @@ impl Writer {
             self.e -= 1.0;
             self.retracted = 1.0;
             let e_now = self.e;
-            self.put(format_args!("G1 E{e_now:.5} F1800\n"));
+            let retract_feed = self.retract_feed;
+            self.put(format_args!("G1 E{e_now:.5} F{retract_feed}\n"));
         }
         let z = self.z + 10.0;
         if self.permutes() {

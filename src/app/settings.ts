@@ -12,7 +12,7 @@ import { offBed } from "../mesh-place";
 import { boundsSize, overlapPairs, placeObject, selectedObject } from "../plate";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys, readPresets, diffPreset } from "../presets";
 import { loadProfile, type PrinterProfile, saveProfile } from "../profiles";
-import { noteAdvance, noteFlow, noteGcode, noteNozzle } from "./machine-actions";
+import { noteAdvance, noteFlow, noteGcode, noteNozzle, noteRetract } from "./machine-actions";
 import { loadMachineLibrary } from "./machine-library";
 import { beltStamp, machineSectionHtml } from "../ui/machine-library";
 import { prusaSummary, rememberPrusaForm, syncSendButtons } from "./prusa-actions";
@@ -52,7 +52,7 @@ export function staleWarning() {
 export function settingsHash() {
   const shift = state.offset;
   const mesh = state.mesh ? `${state.mesh.name}:${state.mesh.bytes.byteLength}:${state.partScale}:${state.centered}:${shift.x.toFixed(3)},${shift.y.toFixed(3)},${shift.z.toFixed(3)}:${state.orient.join(",")}` : "";
-  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, flowBands: _fb, flowGcode: _fg, tempBands: _tb, tempGcode: _tg, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, selectedVolumeId: _sel, modifierTool: _mt, plate: _plate, profile: _profile, ironing: _ironing, ironingFlow: _ironingFlow, ironingSpeed: _ironingSpeed, ironingSpacing: _ironingSpacing, fuzzySkin: _fuzzy, fuzzyThickness: _fuzzyThickness, fuzzyPointDistance: _fuzzyDistance, ...rest } = state;
+  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, flowBands: _fb, flowGcode: _fg, tempBands: _tb, tempGcode: _tg, retractBands: _rb, retractGcode: _rg, retractStart: _rs, retractEnd: _re, retractStep: _rp, retractOn: _ron, retractLength: _rl, retractSpeed: _rsp, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, selectedVolumeId: _sel, modifierTool: _mt, plate: _plate, profile: _profile, ironing: _ironing, ironingFlow: _ironingFlow, ironingSpeed: _ironingSpeed, ironingSpacing: _ironingSpacing, fuzzySkin: _fuzzy, fuzzyThickness: _fuzzyThickness, fuzzyPointDistance: _fuzzyDistance, ...rest } = state;
   // Price and density only weigh the estimate, which the UI computes from the reply.
   const { filamentDensityGCm3: _density, filamentCostPerKg: _cost, ...profile } = state.profile;
   // Ironing counts as it is sent, so a number changed while it is off stales nothing.
@@ -61,7 +61,8 @@ export function settingsHash() {
   const fuzzy = fuzzyRequest({ on: state.fuzzySkin, thickness: state.fuzzyThickness, pointDistance: state.fuzzyPointDistance });
   // A cartesian printer leaves this off, so its hash is the one it had before belt profiles.
   const belt = beltStamp(loadMachineLibrary());
-  const hashed = { mesh, profile, rest, ...ironing, ...fuzzy, ...(belt ? { belt } : {}) };
+  const retract = state.retractOn ? { retractLength: state.retractLength, retractSpeed: state.retractSpeed } : {};
+  const hashed = { mesh, profile, rest, ...ironing, ...fuzzy, ...retract, ...(belt ? { belt } : {}) };
   if (state.plate.objects.length > 1) {
     return JSON.stringify({
       ...hashed,
@@ -181,6 +182,19 @@ export function renderChrome() {
           <button class="btn" id="tempapply" type="button">Save temperature to filament</button>
           <button class="btn" id="tempexport" type="button">Export temperature G-code</button>` : ""}
         <p class="meta">Each band is one hollow wall. The nozzle waits at that band's temperature before the wall starts. Saving writes the chosen °C onto the filament. A normal slice still sends that nozzle temperature, and nothing else.</p>
+      `, "expert")}
+      ${group("Retraction", `
+        ${check("retractset", "Custom retraction", state.retractOn, "expert")}
+        ${state.retractOn ? `${num("retractlen", "Length mm", state.retractLength, 0, 5, 0.05, "expert")}${num("retractspd", "Speed mm/s", state.retractSpeed, 5, 80, 1, "expert")}` : `<div class="meta">Off, a slice keeps the strategy length: 0.35 mm on speed, 0.9 mm on toughness, at 30 mm/s.</div>`}
+        ${num("retractstart", "Tower start mm", state.retractStart, 0, 5, 0.05, "expert")}
+        ${num("retractend", "Tower end mm", state.retractEnd, 0, 5, 0.05, "expert")}
+        ${num("retractstep", "Tower step mm", state.retractStep, 0.05, 1, 0.05, "expert")}
+        <button class="btn" id="retractcal" type="button">Generate retraction test</button>
+        ${state.retractBands.length ? `<div class="meta">${state.retractBands.map((b) => `band ${b.index}: ${b.length.toFixed(3)} mm · Z ${b.z0.toFixed(2)}–${b.z1.toFixed(2)}`).join("<br>")}</div>
+          ${num("retractchosen", "Chosen length mm", state.retractLength, 0, 5, 0.05)}
+          <button class="btn" id="retractapply" type="button">Save retraction to filament</button>
+          <button class="btn" id="retractexport" type="button">Export retraction G-code</button>` : ""}
+        <p class="meta">Each band is two posts. The travel between them retracts by that band's length. Saving writes the length onto the filament, and the speed when it is not 30 mm/s. Off, the slice is unchanged.</p>
       `, "expert")}
       <label class="check setting" data-level="advanced" data-label="auto-slice under 50k triangles"><input id="autoslice" type="checkbox" ${state.autoSlice ? "checked" : ""}/> Auto-slice under 50k triangles</label>
       <div class="meta">${triangleMeta(result)}</div>
@@ -931,7 +945,7 @@ export function onSettings(ev: Event) {
   if (t.closest("[data-override-card]")) return;
   noteEdit();
   markProjectDirty();
-  const numIds = ["lh", "amin", "amax", "pa", "la", "zhopht", "zhopmin", "scarflen", "scarfsteps", "sangle", "bangle", "tipd", "trunkd", "shmult", "pastart", "paend", "pastep", "flowstart", "flowend", "flowstep", "tempstart", "tempend", "tempstep", "nozzle", "bedx", "bedy", "bedz", "vol", "accel", "density", "cost", "partScale", "simperr"] as const;
+  const numIds = ["lh", "amin", "amax", "pa", "la", "zhopht", "zhopmin", "scarflen", "scarfsteps", "sangle", "bangle", "tipd", "trunkd", "shmult", "pastart", "paend", "pastep", "flowstart", "flowend", "flowstep", "tempstart", "tempend", "tempstep", "retractlen", "retractspd", "retractstart", "retractend", "retractstep", "nozzle", "bedx", "bedy", "bedz", "vol", "accel", "density", "cost", "partScale", "simperr"] as const;
   const map: Record<string, (v: number) => void> = {
     lh: (v) => { state.layerHeight = v || 0.2; },
     amin: (v) => { state.adaptiveMin = v || 0.08; },
@@ -956,6 +970,11 @@ export function onSettings(ev: Event) {
     tempstart: (v) => { state.tempStart = v || 190; },
     tempend: (v) => { state.tempEnd = v || 230; },
     tempstep: (v) => { state.tempStep = v || 5; },
+    retractlen: (v) => { noteRetract(Number.isFinite(v) ? v : 0.4, state.retractSpeed); },
+    retractspd: (v) => { noteRetract(state.retractLength, Number.isFinite(v) ? v : 30); },
+    retractstart: (v) => { state.retractStart = Number.isFinite(v) ? v : 0.2; },
+    retractend: (v) => { state.retractEnd = Number.isFinite(v) ? v : 1.2; },
+    retractstep: (v) => { state.retractStep = v || 0.05; },
     nozzle: (v) => { state.profile.nozzleDiameter = v || 0.4; noteNozzle(state.profile.nozzleDiameter); },
     bedx: (v) => { state.profile.bedX = v || 220; },
     bedy: (v) => { state.profile.bedY = v || 220; },
@@ -991,6 +1010,10 @@ export function onSettings(ev: Event) {
   if (t.id === "ironspeed") state.ironingSpeed = readIroningSpeed(t.value);
   if (t.id === "ironspace") state.ironingSpacing = readIroningSpacing(t.value, ironingSpacingMax(fx.lineWidth()));
   if (t.id === "fuzzy") state.fuzzySkin = t.checked;
+  if (t.id === "retractset") {
+    if (t.checked) noteRetract(state.retractLength, Math.abs(state.retractSpeed - 30) < 1e-6 ? null : state.retractSpeed);
+    else noteRetract(null, null);
+  }
   if (t.id === "fuzzythick") state.fuzzyThickness = readFuzzyThickness(t.value);
   if (t.id === "fuzzydist") state.fuzzyPointDistance = readFuzzyPointDistance(t.value);
   if (t.id === "scarf") state.scarfSeam = t.value as typeof state.scarfSeam;
@@ -1039,7 +1062,7 @@ export function onSettings(ev: Event) {
     session.stepTimer = window.setTimeout(() => { void fx.refreshStepPreview(); }, 250);
     return;
   }
-  const structural = ["adaptive", "supports", "zhop", "scarf", "gyroid3d", "ironing", "fuzzy"].includes(t.id);
+  const structural = ["adaptive", "supports", "zhop", "scarf", "gyroid3d", "ironing", "fuzzy", "retractset"].includes(t.id);
   if (structural) renderChrome();
   markStale();
 }

@@ -20,6 +20,7 @@ import {
   setFlow,
   setActiveBelt,
   setNozzleTemp,
+  setRetract,
   setLink,
   adoptLegacyLink,
   type MachineNumbers,
@@ -180,6 +181,14 @@ check("belt settings stay on the record", beltRow?.printer.kind === "belt" && be
 const beltFile = fileFromSelection(belted);
 const beltRound = beltFile ? parseMachineFile(serializeMachineFile(beltFile)) : null;
 check("a belt file round-trips", beltRound?.ok === true && beltRound.file.version === 3 && beltRound.file.printer.kind === "belt" && beltRound.file.printer.belt.angleDeg === 35 && beltRound.file.printer.belt.gapMm === 8 && beltRound.file.printer.belt.maxLengthMm === null && beltRound.file.printer.bedX === 220 && beltRound.file.printer.belt.raftLayers === 0);
+
+const pulled = setRetract(builtinLibrary(), 1.2, 45);
+const pulledRow = selection(pulled);
+check("a retract length lands on the active filament", pulledRow?.filament.retractLength === 1.2 && pulledRow.filament.retractSpeed === 45);
+check("30 mm/s is left off the filament", setRetract(builtinLibrary(), 0.8, 30).filaments.find((filament) => filament.id === "lime-pla")?.retractSpeed === undefined);
+check("clearing retract removes it", selection(setRetract(pulled, null, null))?.filament.retractLength === undefined);
+const parsedRetract = parseLibrary(JSON.stringify(pulled));
+check("a saved retract length reads back", selection(parsedRetract)?.filament.retractLength === 1.2 && selection(parsedRetract)?.filament.retractSpeed === 45);
 
 const warmed = setNozzleTemp(builtinLibrary(), 215.4);
 const warmRow = selection(warmed);

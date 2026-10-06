@@ -6,7 +6,7 @@ import { emptyOverrides } from "../overrides";
 import { revivePlate, snapPlate } from "../plate";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library";
-import { selectIn, setAdvance, setNozzleTemp } from "../ui/machine-library";
+import { selectIn, setAdvance, setNozzleTemp, setRetract } from "../ui/machine-library";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel";
 import {
   beginGesture,
@@ -102,7 +102,12 @@ function applySnap(snap: EditSnap) {
   saveProfile(state.profile);
   if (snap.machine) {
     const selected = selectIn(loadMachineLibrary(), snap.machine.printerId, snap.machine.filamentId, snap.machine.nozzleMm);
-    if (typeof selected !== "string") storeMachineLibrary(setNozzleTemp(setAdvance(selected, state.pressureAdvance, state.linearAdvance), state.profile.nozzleTemp));
+    if (typeof selected !== "string") {
+      const withAdvance = setAdvance(selected, state.pressureAdvance, state.linearAdvance);
+      const withTemp = setNozzleTemp(withAdvance, state.profile.nozzleTemp);
+      const speed = state.retractOn && Math.abs(state.retractSpeed - 30) > 1e-6 ? state.retractSpeed : null;
+      storeMachineLibrary(setRetract(withTemp, state.retractOn ? state.retractLength : null, speed));
+    }
   }
   state.overrides = snap.overrides ? structuredClone(snap.overrides) : emptyOverrides();
   state.selectedVolumeId = snap.selectedVolumeId ?? null;
