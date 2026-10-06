@@ -19,6 +19,7 @@ import {
   setAdvance,
   setFlow,
   setActiveBelt,
+  setNozzleTemp,
   setLink,
   adoptLegacyLink,
   type MachineNumbers,
@@ -179,6 +180,13 @@ check("belt settings stay on the record", beltRow?.printer.kind === "belt" && be
 const beltFile = fileFromSelection(belted);
 const beltRound = beltFile ? parseMachineFile(serializeMachineFile(beltFile)) : null;
 check("a belt file round-trips", beltRound?.ok === true && beltRound.file.version === 3 && beltRound.file.printer.kind === "belt" && beltRound.file.printer.belt.angleDeg === 35 && beltRound.file.printer.belt.gapMm === 8 && beltRound.file.printer.belt.maxLengthMm === null && beltRound.file.printer.bedX === 220 && beltRound.file.printer.belt.raftLayers === 0);
+
+const warmed = setNozzleTemp(builtinLibrary(), 215.4);
+const warmRow = selection(warmed);
+check("the chosen temperature lands on the active filament", warmRow?.filament.nozzleTemp === 215 && warmRow.filament.id === "lime-pla");
+check("another filament keeps its temperature", warmed.filaments.find((filament) => filament.id === "lime-petg")?.nozzleTemp === 240);
+check("a cold temperature is held at 150", selection(setNozzleTemp(builtinLibrary(), 10))?.filament.nozzleTemp === 150);
+check("a hot temperature is held at 320", selection(setNozzleTemp(builtinLibrary(), 400))?.filament.nozzleTemp === 320);
 
 const restored = ensureBuiltins(parseLibrary("nope"));
 check("a corrupt library grows the built-ins back", restored.printers.some((printer) => printer.id === "lime-220") && restored.filaments.some((filament) => filament.id === "lime-tpu"));

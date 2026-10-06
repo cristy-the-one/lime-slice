@@ -625,4 +625,38 @@ export async function runPareto() {
     renderChrome();
   }
 }
-Object.assign(fx, { lineWidth, meshFingerprint, currentRecipeKey, currentSliceAction, setButtonLabel, paintSliceButton, paintForceButton, quietRefreshing, scheduleAuto, payload, printer, runSlice, layerNear, postSlice, parseInWorker, cancelSlice, runPaCal, runFlowCal, applyPareto, runPareto });
+export async function runTempCal() {
+  markBusy(true);
+  state.error = "";
+  renderChrome();
+  try {
+    const body = {
+      start: state.tempStart,
+      end: state.tempEnd,
+      step: state.tempStep,
+      layerHeight: state.layerHeight,
+      bandHeight: 5,
+      speedMmS: 40,
+      printer: printer(),
+    };
+    const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    let result: { gcode: string; bands: typeof state.tempBands; error?: string };
+    if (tauri) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      result = JSON.parse(await invoke<string>("calibrate_temp", { payload: JSON.stringify(body) }));
+    } else {
+      const res = await fetch(`${apiBase()}/api/calibrate/temp`, { method: "POST", headers: authHeaders(apiToken(), { "Content-Type": "application/json" }), body: JSON.stringify(body) });
+      result = await res.json();
+      if (!res.ok) throw new Error(result.error || `calibration failed (${res.status})`);
+    }
+    state.tempBands = result.bands;
+    state.tempGcode = result.gcode;
+  } catch (err) {
+    fail(err);
+  } finally {
+    state.busy = false;
+    renderChrome();
+  }
+}
+
+Object.assign(fx, { lineWidth, meshFingerprint, currentRecipeKey, currentSliceAction, setButtonLabel, paintSliceButton, paintForceButton, quietRefreshing, scheduleAuto, payload, printer, runSlice, layerNear, postSlice, parseInWorker, cancelSlice, runPaCal, runFlowCal, runTempCal, applyPareto, runPareto });

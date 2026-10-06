@@ -8,7 +8,7 @@ import { clampOffset, flipSection } from "../section-plane";
 import { wheelNotch } from "../gizmo-math";
 import { state, type CardId } from "./state";
 import { draw, layerGcode, paintPlayback, paintSectionChrome, prepare, realignSplit, scrub, sectionLimit, setHelp, setStage, setView, stepGizmo, stopPlay, syncGcodeHighlight, togglePlay, view3d } from "./viewer";
-import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runSlice } from "./slice-run";
+import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runSlice, runTempCal } from "./slice-run";
 import { adoptBytes, export3mf, exportGcode, fail, loadNamed, place, saveText, setPlaceCenter } from "./files";
 import { mountProjectFiles, saveCurrentProject } from "./project-io";
 import { pickProjectFile } from "../platform";
@@ -42,6 +42,7 @@ import {
   bootMachines,
   noteBeltForm,
   noteFlow,
+  noteNozzleTemp,
   chooseMachine,
   deleteMachine,
   duplicateMachine,
@@ -121,6 +122,7 @@ export function wireApp() {
     const t = ev.target as HTMLElement;
     if (t.id === "pacal") void runPaCal();
     if (t.id === "flowcal") void runFlowCal();
+    if (t.id === "tempcal") void runTempCal();
     if (t.id === "undoEdit") {
       undoUserEdit();
       return;
@@ -144,6 +146,13 @@ export function wireApp() {
       return;
     }
     if (t.id === "flowexport" && state.flowGcode) void saveText(state.flowGcode, "flow-calibration.gcode", "gcode");
+    if (t.id === "tempapply") {
+      noteEdit();
+      noteNozzleTemp(Number((document.querySelector("#tempchosen") as HTMLInputElement).value));
+      touch();
+      return;
+    }
+    if (t.id === "tempexport" && state.tempGcode) void saveText(state.tempGcode, "temperature-calibration.gcode", "gcode");
     if (t.id === "profileSave") {
       const typed = typedProfileName();
       if (typed) saveSettingsProfile(typed);

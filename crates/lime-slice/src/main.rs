@@ -242,6 +242,23 @@ enum CalibrateCmd {
         #[arg(short, long)]
         output: PathBuf,
     },
+    /// Hollow single-wall tower. Each band waits at one nozzle temperature.
+    Temp {
+        #[arg(long, default_value_t = 190.0)]
+        start: f64,
+        #[arg(long, default_value_t = 230.0)]
+        end: f64,
+        #[arg(long, default_value_t = 5.0)]
+        step: f64,
+        #[arg(long, default_value_t = 0.2)]
+        layer_height: f64,
+        #[arg(long, default_value_t = 5.0)]
+        band_height: f64,
+        #[arg(long, default_value_t = 40.0)]
+        speed: f64,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
 }
 
 fn main() {
@@ -519,6 +536,46 @@ fn calibrate(kind: CalibrateCmd) -> Result<(), String> {
                 println!(
                     "  band {}  flow {:.3}  Z {:.3}..{:.3}",
                     band.index, band.flow, band.z0, band.z1
+                );
+            }
+            println!("wrote {}", output.display());
+            Ok(())
+        }
+        CalibrateCmd::Temp {
+            start,
+            end,
+            step,
+            layer_height,
+            band_height,
+            speed,
+            output,
+        } => {
+            let tower = lime_slice_core::temperature_tower(&lime_slice_core::TempCalib {
+                start,
+                end,
+                step,
+                layer_height,
+                band_height,
+                speed_mm_s: speed,
+                ..lime_slice_core::TempCalib::default()
+            })?;
+            if let Some(parent) = output.parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            fs::write(&output, &tower.gcode).map_err(|e| e.to_string())?;
+            println!(
+                "temp  bands {}  {:.0}..{:.0} °C step {:.0}  {:.1} mm/s  E {:.1} mm",
+                tower.bands.len(),
+                tower.bands.first().map(|b| b.temp).unwrap_or(0.0),
+                tower.bands.last().map(|b| b.temp).unwrap_or(0.0),
+                step,
+                tower.speed_mm_s,
+                tower.final_e
+            );
+            for band in &tower.bands {
+                println!(
+                    "  band {}  {:.0} °C  Z {:.3}..{:.3}",
+                    band.index, band.temp, band.z0, band.z1
                 );
             }
             println!("wrote {}", output.display());
@@ -1099,6 +1156,17 @@ fn handle(mut request: tiny_http::Request, token: Option<&str>) {
             (200, r#"{"ok":true}"#.into())
         } else if method == "GET" && path.starts_with("/api/health") {
             (200, r#"{"ok":true}"#.into())
+        } else if method == "POST" && path.starts_with("/api/calibrate/temp") {
+            match serde_json::from_str::<lime_slice_core::TempCalibRequest>(&body) {
+                Ok(req) => match lime_slice_core::temperature_from_request(&req) {
+                    Ok(res) => (
+                        200,
+                        serde_json::to_string(&res).unwrap_or_else(|e| err_json(&e.to_string())),
+                    ),
+                    Err(err) => (400, err_json(&err)),
+                },
+                Err(err) => (400, err_json(&err.to_string())),
+            }
         } else if method == "POST" && path.starts_with("/api/calibrate/flow") {
             match serde_json::from_str::<lime_slice_core::FlowCalibRequest>(&body) {
                 Ok(req) => match lime_slice_core::flow_from_request(&req) {
