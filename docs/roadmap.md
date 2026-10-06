@@ -36,6 +36,7 @@ A row is **done** when a user can do the thing and the engine honors it. **In pr
 - Retraction length and speed, then a retraction tower. `retractLength` and `retractSpeed` are omitted when unused, so the strategy length and `F1800` stay. The tower is two posts, and the chosen length is written onto the filament. [#161](https://github.com/cristy-the-one/lime-slice/pull/161)
 - Belt preview patches. The token includes copies, axis, direction, and the gap, so a later slice of the same belt can be a patch. A different stamp is a whole preview. G-code stays the belt file. [#162](https://github.com/cristy-the-one/lime-slice/pull/162)
 - Per-object infill, walls, and speed. Omitted, the strategy stays. A height range or a modifier wins on each field it sets. [#163](https://github.com/cristy-the-one/lime-slice/pull/163)
+- Sequential printing. Omitted order stays all-at-once. `sequential` finishes each object, supports and skirt included, before the next. Clearance is the mesh box. [#164](https://github.com/cristy-the-one/lime-slice/pull/164)
 
 ### In progress
 
@@ -45,10 +46,9 @@ None. The next pull request starts from the remaining list.
 
 Each engine feature is opt-in or default-off, with a cartesian lock so an unused feature leaves G-code bytes and the request cache key unchanged. One feature per pull request. A short design note goes in the same pull request when the feature is small, and as its own note when it is not.
 
-1. **Sequential printing.** `printOrder: "sequential"` is refused until clearance exists. All-at-once stays the omitted default.
-3. **Supports grown from the tilted belt floor.** Until this lands, a belt slice forces supports off and refuses support edits and paint. This is the largest belt follow-up, so it waits until the smaller belt flags are in.
-4. **Multi-material.** A design note, plus UI groundwork for a second filament on the machine, and no toolpath. Tool changes, a purge tower, and a second extruder stay out of the engine in this run.
-5. **Repair audit in the sheet.** The engine already reports repaired and dropped chains. Show that text. No interactive hole fill.
+1. **Supports grown from the tilted belt floor.** Until this lands, a belt slice forces supports off and refuses support edits and paint. This is the largest belt follow-up, so it waits until the smaller belt flags are in.
+2. **Multi-material.** A design note, plus UI groundwork for a second filament on the machine, and no toolpath. Tool changes, a purge tower, and a second extruder stay out of the engine in this run.
+3. **Repair audit in the sheet.** The engine already reports repaired and dropped chains. Show that text. No interactive hole fill.
 
 ### Deferred, and why
 
@@ -73,7 +73,7 @@ Each engine feature is opt-in or default-off, with a cartesian lock so an unused
 
 ## Multi-object plates and arrange
 
-**Status.** Done for all-at-once ([#126](https://github.com/cristy-the-one/lime-slice/pull/126)). Sequential is remaining. See the [checklist](#build-checklist-2026-10-06). The paragraphs below are the 2026-10-03 gap.
+**Status.** Done for all-at-once ([#126](https://github.com/cristy-the-one/lime-slice/pull/126)) and sequential ([#164](https://github.com/cristy-the-one/lime-slice/pull/164)). See the [checklist](#build-checklist-2026-10-06). The paragraphs below are the 2026-10-03 gap.
 
 **User value.** High for anyone printing more than one part. The other slicers arrange a bed and keep each body separate. Here a second file replaces the first (`state.mesh` in `src/app/state.ts`). STEP assemblies and 3MF models become one mesh (`crates/lime-slice-core/src/step.rs`, `load_3mf` in `crates/lime-slice-core/src/load.rs`).
 
