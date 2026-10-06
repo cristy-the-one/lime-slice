@@ -1422,6 +1422,7 @@ fn request_for(
         modifier_volumes: Vec::new(),
         include_skeleton: false,
         preview_base: None,
+        belt: None,
     }
 }
 

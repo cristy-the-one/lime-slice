@@ -2,6 +2,7 @@
 
 mod adaptive;
 mod audit;
+mod belt;
 mod calibrate;
 mod cancel;
 mod gcode;

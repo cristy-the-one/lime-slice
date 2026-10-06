@@ -226,6 +226,10 @@ pub struct SliceRequest {
     /// of `layers`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview_base: Option<String>,
+    /// Present only for a belt printer. Omitted on a cartesian request, so
+    /// the request bytes and the cache key stay what they were.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub belt: Option<crate::belt::BeltSpec>,
 }
 
 /// Rigid placement of a mesh that was simplified in its scaled frame.
@@ -937,7 +941,15 @@ pub fn slice_request_watched(
         job,
         ..SliceSettings::from_request(req)
     };
-    slice_plate(&sources, &req.blend, &profile, &settings, &mut None, watch)
+    slice_plate(
+        &sources,
+        &req.blend,
+        &profile,
+        &settings,
+        req.belt.as_ref(),
+        &mut None,
+        watch,
+    )
 }
 
 /// One object's mesh as the request sends it, and its settings with its
@@ -1063,7 +1075,7 @@ fn slice_sharing(
         blend,
         settings: settings.clone(),
     };
-    slice_plate(&[source], blend, profile, settings, cut, watch)
+    slice_plate(&[source], blend, profile, settings, None, cut, watch)
 }
 
 /// The settings the stages read: lengths clamped, and every later feature
@@ -1111,6 +1123,220 @@ impl PlateObject<'_> {
     }
 }
 
+/// A belt slice: the rotation that laid the plate flat, and the placement
+/// the reply still reports. The planner sees the settled meshes, with no offset.
+struct BeltJob {
+    belt: crate::belt::Belt,
+    frame: crate::belt::Frame,
+    /// Belt length of one copy, from the settled slice height.
+    extent: f64,
+    /// Each object's part-frame offset before that shift was baked into the mesh.
+    offsets: Vec<Option<[f64; 2]>>,
+    /// Part-frame bounds in the lab, with the later copies included along Y.
+    lab_bounds: Vec<([f64; 3], [f64; 3])>,
+}
+
+/// Lay the plate on the belt, and turn off the features that assume a flat bed.
+fn prepare_belt(
+    objects: &mut [PlateObject<'_>],
+    settings: &mut SliceSettings,
+    spec: &crate::belt::BeltSpec,
+) -> Result<BeltJob, String> {
+    let belt = crate::belt::Belt::resolve(spec)?;
+    if settings.compare {
+        return Err("belt: compare is not supported yet".into());
+    }
+    for object in objects.iter() {
+        if !object.settings.support_edits.is_empty() {
+            return Err(
+                "belt: support edits are not available until supports are grown on the belt".into(),
+            );
+        }
+        if !object.settings.support_paint.is_empty() {
+            return Err(
+                "belt: support paint is not available until supports are grown on the belt".into(),
+            );
+        }
+    }
+    let offsets: Vec<Option<[f64; 2]>> = objects.iter().map(|o| o.offset).collect();
+    let mut lab_bounds = Vec::with_capacity(objects.len());
+    let mut placed = Vec::with_capacity(objects.len());
+    for object in objects.iter() {
+        let (min, max) = object.mesh.bounds().ok_or("empty mesh")?;
+        lab_bounds.push((min, max));
+        placed.push(crate::belt::translate_xy(
+            object.mesh.as_ref(),
+            object.to_bed(),
+        ));
+    }
+    let (laid, frame) = crate::belt::lay_flat(&placed, &belt)?;
+    let (span_x, max_z) = crate::belt::plate_span(&laid)?;
+    let extent = max_z / belt.sin_a;
+    crate::belt::check_fit(&belt, span_x, extent)?;
+    for (object, mesh) in objects.iter_mut().zip(laid) {
+        object.mesh = Cow::Owned(mesh);
+        object.offset = None;
+        // Horizontal supports would stand on a bed this printer does not have.
+        object.settings.supports = false;
+        // A scarf ramp and a hop both move machine Z. On a belt that axis is
+        // the belt, so either one would walk the part between beads.
+        object.settings.z_hop = ZHopMode::Off;
+        object.settings.scarf_seam = ScarfSeam::Off;
+        // Blend would hide the seam wherever the strategy likes. The belt edge
+        // is the back of the nozzle plane, which is Rear after the rotation.
+        if object.settings.seam == SeamPlacement::Blend {
+            object.settings.seam = SeamPlacement::Rear;
+        }
+    }
+    settings.supports = false;
+    settings.z_hop = ZHopMode::Off;
+    settings.scarf_seam = ScarfSeam::Off;
+    let extra = f64::from(belt.copies - 1) * belt.stride(extent);
+    if extra > 0.0 {
+        for (min, max) in &mut lab_bounds {
+            if belt.direction >= 0.0 {
+                max[1] += extra;
+            } else {
+                min[1] -= extra;
+            }
+        }
+    }
+    Ok(BeltJob {
+        belt,
+        frame,
+        extent,
+        offsets,
+        lab_bounds,
+    })
+}
+
+/// One planned plate, emitted once per copy. The first copy keeps the writer's
+/// layer-0 treatment. Later copies' first layer is slowed here, because the
+/// writer only does that for index 0.
+fn belt_output(mut layers: Vec<PlateLayer>, job: &BeltJob) -> Vec<PlateLayer> {
+    for layer in &mut layers {
+        if layer.index != 0 {
+            retouch_layer(layer, &job.frame, false);
+        }
+    }
+    let stride = job.belt.stride(job.extent);
+    let mut out = Vec::with_capacity(layers.len() * job.belt.copies as usize);
+    for copy in 0..job.belt.copies {
+        for layer in &layers {
+            let mut layer = layer.clone();
+            if copy > 0 && layer.index == 0 {
+                retouch_layer(&mut layer, &job.frame, true);
+            }
+            layer.belt_shift = f64::from(copy) * stride;
+            layer.index = out.len();
+            out.push(layer);
+        }
+    }
+    out
+}
+
+/// Slow the belt-contact edge. Runs that share one path list are rebuilt
+/// together, so a split wall does not leave the head and the body on different lists.
+fn retouch_layer(layer: &mut PlateLayer, frame: &crate::belt::Frame, slow_all: bool) {
+    let mut seen = vec![false; layer.runs.len()];
+    for i in 0..layer.runs.len() {
+        if seen[i] {
+            continue;
+        }
+        let mut group = vec![i];
+        seen[i] = true;
+        for (j, run) in layer.runs.iter().enumerate().skip(i + 1) {
+            if run.layer.shares_paths(&layer.runs[i].layer) {
+                group.push(j);
+                seen[j] = true;
+            }
+        }
+        let paths = layer.runs[i].layer.paths.clone();
+        let mut touched = vec![false; paths.len()];
+        for &run in &group {
+            for k in layer.runs[run].paths.clone() {
+                if let Some(flag) = touched.get_mut(k) {
+                    *flag = true;
+                }
+            }
+        }
+        let mut next = Vec::with_capacity(paths.len());
+        let mut placed: Vec<std::ops::Range<usize>> = Vec::with_capacity(paths.len());
+        let mut changed = false;
+        for (k, path) in paths.iter().enumerate() {
+            let start = next.len();
+            if touched[k] {
+                let pieces = crate::belt::retouch(path, layer.z, layer.height, frame, slow_all);
+                if pieces.len() != 1
+                    || pieces[0].points.len() != path.points.len()
+                    || pieces[0].speed != path.speed
+                    || pieces[0].flow != path.flow
+                    || pieces[0].fan != path.fan
+                {
+                    changed = true;
+                }
+                next.extend(pieces);
+            } else {
+                next.push(path.clone());
+            }
+            placed.push(start..next.len());
+        }
+        if !changed {
+            continue;
+        }
+        let mut printed = layer.runs[i].layer.clone();
+        printed.set_paths(next);
+        for &run in &group {
+            let range = layer.runs[run].paths.clone();
+            let rebuilt = if range.is_empty() {
+                let at = if range.start >= placed.len() {
+                    printed.paths.len()
+                } else {
+                    placed[range.start].start
+                };
+                at..at
+            } else {
+                placed[range.start].start..placed[range.end - 1].end
+            };
+            layer.runs[run].layer = printed.clone();
+            layer.runs[run].paths = rebuilt;
+        }
+    }
+}
+
+/// Preview points go back to the lab, in the part frame, so a layer draws tilted.
+/// `z` on the layer is the belt position the scrubber already prints.
+fn tilt_preview(preview: &mut [PreviewLayer], planned: &[PlateLayer], job: &BeltJob) {
+    let printed: Vec<&PlateLayer> = planned.iter().filter(|layer| !layer.is_empty()).collect();
+    for (view, layer) in preview.iter_mut().zip(printed) {
+        for path in &mut view.paths {
+            let [dx, dy] = job
+                .offsets
+                .get(path.object as usize)
+                .copied()
+                .flatten()
+                .unwrap_or([0.0, 0.0]);
+            let shift = job.belt.direction * layer.belt_shift;
+            let mut pts = Vec::with_capacity(path.pts.len());
+            let mut zs = Vec::with_capacity(path.pts.len());
+            for (i, pt) in path.pts.iter().enumerate() {
+                let slice_z = path
+                    .zs
+                    .get(i)
+                    .copied()
+                    .filter(|z| z.is_finite())
+                    .unwrap_or(layer.z);
+                let lab = job.frame.lab(pt[0], pt[1], slice_z);
+                pts.push([lab[0] - dx, lab[1] - dy + shift]);
+                zs.push(lab[2]);
+            }
+            path.pts = pts;
+            path.zs = zs;
+        }
+        view.z = job.belt.position(layer.z, layer.belt_shift);
+    }
+}
+
 /// Plan each object alone in its own part frame, join the plans layer by
 /// layer, write the G-code with each object's offset, and build the reply.
 /// A request without `objects` is a plate of one, sliced exactly as before.
@@ -1119,11 +1345,12 @@ fn slice_plate(
     requested: &BlendMode,
     profile: &PrinterProfile,
     settings: &SliceSettings,
+    belt_spec: Option<&crate::belt::BeltSpec>,
     cut: &mut Option<Arc<Contours>>,
     watch: &Watch,
 ) -> Result<SliceResponse, String> {
     let listed = sources.iter().any(|s| s.id.is_some());
-    let settings = resolved(settings);
+    let mut settings = resolved(settings);
     let (layer_height, line_width) = (settings.layer_height, settings.line_width);
     let features = settings.feature_note();
     let mut profile = profile.clone();
@@ -1135,7 +1362,7 @@ fn slice_plate(
     let centre = [profile.bed_x * 0.5, profile.bed_y * 0.5];
     // Every stage runs in the part frame with no pose left in the settings,
     // so no kept key sees where a part sits on the bed. Emit adds the offset.
-    let objects: Vec<PlateObject<'_>> = sources
+    let mut objects: Vec<PlateObject<'_>> = sources
         .iter()
         .map(|s| {
             let mut settings = resolved(&s.settings);
@@ -1167,10 +1394,22 @@ fn slice_plate(
             }
         })
         .collect();
-    let bounds: Vec<([f64; 3], [f64; 3])> = objects
-        .iter()
-        .map(|o| o.mesh.bounds().ok_or("empty mesh"))
-        .collect::<Result<_, _>>()?;
+    // A belt lays the placed meshes flat, then the planar pipeline runs in
+    // that frame. Bed XY is baked in first so two objects keep their relative
+    // place, which a shift along the belt turns into a different nozzle plane.
+    // The whole plate is then settled so the belt and the rail start at 0.
+    let belt_job = match belt_spec {
+        Some(spec) => Some(prepare_belt(&mut objects, &mut settings, spec)?),
+        None => None,
+    };
+    let bounds: Vec<([f64; 3], [f64; 3])> = if let Some(job) = &belt_job {
+        job.lab_bounds.clone()
+    } else {
+        objects
+            .iter()
+            .map(|o| o.mesh.bounds().ok_or("empty mesh"))
+            .collect::<Result<_, _>>()?
+    };
     let started = Instant::now();
     if kept::on() {
         kept::fit(objects.len());
@@ -1300,10 +1539,19 @@ fn slice_plate(
                 prior,
             }
         });
+    // Copies are emit-only. The kept plate stays the single planned part.
+    let belt_emit = belt_job.as_ref().map(|job| &job.belt);
+    let expanded = belt_job
+        .as_ref()
+        .map(|job| belt_output((*planned).clone(), job));
+    let emit_layers: &[PlateLayer] = match &expanded {
+        Some(layers) => layers.as_slice(),
+        None => planned.as_slice(),
+    };
     let emit_started = Instant::now();
     let (gcode, gcode_text) = if settings.include_gcode {
         let gcode = emit_gcode(
-            &planned,
+            emit_layers,
             &profile,
             requested,
             layer_height,
@@ -1313,13 +1561,14 @@ fn slice_plate(
             settings.classic_estimator,
             settings.junction_deviation_mm,
             &offsets,
+            belt_emit,
             settings.job,
             watch,
         );
         (gcode, None)
     } else {
         let (gcode, text) = emit_later(
-            &planned,
+            emit_layers,
             &profile,
             requested,
             layer_height,
@@ -1329,6 +1578,7 @@ fn slice_plate(
             settings.classic_estimator,
             settings.junction_deviation_mm,
             &offsets,
+            belt_emit,
             settings.job,
             watch,
         );
@@ -1390,7 +1640,11 @@ fn slice_plate(
                 min,
                 max,
                 triangles: obj.mesh.triangle_count(),
-                offset: obj.to_bed(),
+                offset: if let Some(job) = &belt_job {
+                    job.offsets[o].unwrap_or([0.0, 0.0])
+                } else {
+                    obj.to_bed()
+                },
                 coverage: p.coverage.clone(),
                 in_air: p.in_air,
                 skeleton: obj
@@ -1442,9 +1696,17 @@ fn slice_plate(
             &bands,
             &settings,
         );
+        let baseline_owned;
+        let baseline_layers: &[PlateLayer] = if let Some(job) = &belt_job {
+            baseline_owned = belt_output(baseline_planned, job);
+            &baseline_owned
+        } else {
+            &baseline_planned
+        };
+        let baseline_belt = belt_job.as_ref().map(|job| &job.belt);
         let baseline_gcode = if settings.include_gcode {
             emit_gcode(
-                &baseline_planned,
+                baseline_layers,
                 &profile,
                 &baseline_mode,
                 layer_height,
@@ -1454,12 +1716,13 @@ fn slice_plate(
                 settings.classic_estimator,
                 settings.junction_deviation_mm,
                 &offsets,
+                baseline_belt,
                 settings.job,
                 &quiet,
             )
         } else {
             crate::gcode::emit_estimates(
-                &baseline_planned,
+                baseline_layers,
                 &profile,
                 &baseline_mode,
                 layer_height,
@@ -1469,6 +1732,7 @@ fn slice_plate(
                 settings.classic_estimator,
                 settings.junction_deviation_mm,
                 &offsets,
+                baseline_belt,
                 settings.job,
                 &quiet,
             )
@@ -1497,8 +1761,13 @@ fn slice_plate(
     let on_bed: Vec<([f64; 2], [f64; 2])> = objects
         .iter()
         .zip(&bounds)
-        .map(|(o, (min, max))| {
-            let [dx, dy] = o.to_bed();
+        .enumerate()
+        .map(|(i, (o, (min, max)))| {
+            let [dx, dy] = if let Some(job) = &belt_job {
+                job.offsets[i].unwrap_or([0.0, 0.0])
+            } else {
+                o.to_bed()
+            };
             ([min[0] + dx, min[1] + dy], [max[0] + dx, max[1] + dy])
         })
         .collect();
@@ -1523,24 +1792,35 @@ fn slice_plate(
     if gcode.final_e <= 0.0 {
         notes.push("final E is not positive".into());
     }
-    if gcode.min_x < min_bed[0] - margin || gcode.max_x > max_bed[0] + margin {
-        notes.push(format!(
-            "X bounds {:.2}..{:.2} outside mesh {:.2}..{:.2} ± {margin}",
-            gcode.min_x, gcode.max_x, min_bed[0], max_bed[0]
-        ));
-    }
-    if gcode.min_y < min_bed[1] - margin || gcode.max_y > max_bed[1] + margin {
-        notes.push(format!(
-            "Y bounds {:.2}..{:.2} outside mesh {:.2}..{:.2} ± {margin}",
-            gcode.min_y, gcode.max_y, min_bed[1], max_bed[1]
-        ));
+    // Gantry XY is the nozzle plane, not the lab box, so this check is cartesian only.
+    if belt_job.is_none() {
+        if gcode.min_x < min_bed[0] - margin || gcode.max_x > max_bed[0] + margin {
+            notes.push(format!(
+                "X bounds {:.2}..{:.2} outside mesh {:.2}..{:.2} ± {margin}",
+                gcode.min_x, gcode.max_x, min_bed[0], max_bed[0]
+            ));
+        }
+        if gcode.min_y < min_bed[1] - margin || gcode.max_y > max_bed[1] + margin {
+            notes.push(format!(
+                "Y bounds {:.2}..{:.2} outside mesh {:.2}..{:.2} ± {margin}",
+                gcode.min_y, gcode.max_y, min_bed[1], max_bed[1]
+            ));
+        }
     }
     if settings.include_gcode && !gcode.text.contains(";LAYER:") {
         notes.push("g-code is missing layer markers".into());
     }
 
     let blends: Vec<&BlendMode> = objects.iter().map(|o| &o.blend).collect();
-    let (layers, preview_token, preview_patch) = if settings.include_preview {
+    let (layers, preview_token, preview_patch) = if !settings.include_preview {
+        (Vec::new(), None, None)
+    } else if let Some(job) = &belt_job {
+        // A patch token is the unexpanded plate. Copies, axis, and direction
+        // are not in it, so a belt preview is always the whole tilted plate.
+        let mut layers = preview_of(emit_layers, &profile, &blends, &gcode.layer_seconds);
+        tilt_preview(&mut layers, emit_layers, job);
+        (layers, None, None)
+    } else {
         preview(
             &planned,
             kept_plate,
@@ -1549,8 +1829,6 @@ fn slice_plate(
             settings.preview_base.as_deref(),
             &gcode.layer_seconds,
         )
-    } else {
-        (Vec::new(), None, None)
     };
     let mesh = if listed {
         MeshInfo {
@@ -1579,16 +1857,25 @@ fn slice_plate(
         }
     };
     let collisions = listed.then(|| {
-        let boxes: Vec<(&str, [f64; 2], [f64; 2])> = objects
-            .iter()
-            .zip(&on_bed)
-            .zip(&plans)
-            .map(|((o, b), plan)| {
-                let [dx, dy] = o.to_bed();
-                let (lo, hi) = plate::first_layer_reach(plan, b.0, b.1, [dx, dy]);
-                (o.id.unwrap_or_default(), lo, hi)
-            })
-            .collect();
+        let boxes: Vec<(&str, [f64; 2], [f64; 2])> = if belt_job.is_some() {
+            // The plan is in the nozzle plane. The lab boxes are the overlap.
+            objects
+                .iter()
+                .zip(&on_bed)
+                .map(|(o, b)| (o.id.unwrap_or_default(), b.0, b.1))
+                .collect()
+        } else {
+            objects
+                .iter()
+                .zip(&on_bed)
+                .zip(&plans)
+                .map(|((o, b), plan)| {
+                    let [dx, dy] = o.to_bed();
+                    let (lo, hi) = plate::first_layer_reach(plan, b.0, b.1, [dx, dy]);
+                    (o.id.unwrap_or_default(), lo, hi)
+                })
+                .collect()
+        };
         plate::collisions(&boxes)
     });
     let (offset, coverage, in_air, support_edits, support_paint, skeleton, objects_view) = if listed
@@ -1597,7 +1884,11 @@ fn slice_plate(
     } else {
         let view = views.into_iter().next().expect("one object");
         (
-            objects[0].offset,
+            if let Some(job) = &belt_job {
+                job.offsets[0]
+            } else {
+                objects[0].offset
+            },
             view.coverage,
             view.in_air,
             view.support_edits,
@@ -1636,7 +1927,7 @@ fn slice_plate(
         layers,
         blend: requested.describe(),
         estimate: {
-            let (scarfed_loops, mean_scarf_mm, max_seam_z_step_mm) = seam_metrics(&planned);
+            let (scarfed_loops, mean_scarf_mm, max_seam_z_step_mm) = seam_metrics(emit_layers);
             PrintEstimate {
                 seconds: gcode.print_time_s,
                 filament_mm: gcode.filament_mm,
@@ -1654,7 +1945,7 @@ fn slice_plate(
         score: score_of(
             gcode.print_time_s,
             gcode.filament_g,
-            structural_mm3(&planned),
+            structural_mm3(emit_layers),
         ),
         compare,
         support_edits,
@@ -5403,6 +5694,7 @@ mod tests {
                 settings.classic_estimator,
                 settings.junction_deviation_mm,
                 &[[0.0, 0.0]],
+                None,
                 settings.job,
                 &Watch::idle(),
             );
@@ -5417,6 +5709,7 @@ mod tests {
                 settings.classic_estimator,
                 settings.junction_deviation_mm,
                 &[[0.0, 0.0]],
+                None,
                 settings.job,
                 &Watch::idle(),
             );
@@ -5471,6 +5764,7 @@ mod tests {
             settings.classic_estimator,
             settings.junction_deviation_mm,
             &[[0.0, 0.0]],
+            None,
             settings.job,
             &Watch::idle(),
         );
@@ -5485,6 +5779,7 @@ mod tests {
             settings.classic_estimator,
             settings.junction_deviation_mm,
             &[[0.0, 0.0]],
+            None,
             settings.job,
             &Watch::idle(),
         );

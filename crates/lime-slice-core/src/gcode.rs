@@ -69,6 +69,11 @@ impl PrintLayer {
         Arc::ptr_eq(&self.layer, &other.layer) || *self.layer == *other.layer
     }
 
+    /// The runs of one object layer share this path list.
+    pub(crate) fn shares_paths(&self, other: &PrintLayer) -> bool {
+        Arc::ptr_eq(&self.layer, &other.layer)
+    }
+
     fn script(&self, arc_fit: bool) -> Arc<Vec<Vec<Span>>> {
         let slot = if arc_fit {
             &self.arcs.fitted
@@ -102,6 +107,8 @@ pub(crate) struct PlateLayer {
     pub height: f64,
     pub note: String,
     pub runs: Vec<Run>,
+    /// Added to the belt position before the direction sign. Zero on a cartesian layer.
+    pub belt_shift: f64,
 }
 
 /// A stretch of one object's joined layer: its head (skirt and supports) or
@@ -148,6 +155,7 @@ impl PlateLayer {
             height: layer.height,
             note: layer.note.clone(),
             runs,
+            belt_shift: 0.0,
         }
     }
 
@@ -293,6 +301,7 @@ pub(crate) fn emit_gcode(
     classic_estimator: bool,
     junction_deviation_mm: f64,
     offsets: &[[f64; 2]],
+    belt: Option<&crate::belt::Belt>,
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> GcodeStats {
@@ -307,6 +316,7 @@ pub(crate) fn emit_gcode(
         classic_estimator,
         junction_deviation_mm,
         offsets,
+        belt,
         job,
         watch,
         true,
@@ -329,6 +339,7 @@ pub(crate) fn emit_estimates(
     classic_estimator: bool,
     junction_deviation_mm: f64,
     offsets: &[[f64; 2]],
+    belt: Option<&crate::belt::Belt>,
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> GcodeStats {
@@ -343,6 +354,7 @@ pub(crate) fn emit_estimates(
         classic_estimator,
         junction_deviation_mm,
         offsets,
+        belt,
         job,
         watch,
         true,
@@ -365,6 +377,7 @@ pub(crate) fn emit_later(
     classic_estimator: bool,
     junction_deviation_mm: f64,
     offsets: &[[f64; 2]],
+    belt: Option<&crate::belt::Belt>,
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> (GcodeStats, GcodeText) {
@@ -379,6 +392,7 @@ pub(crate) fn emit_later(
         classic_estimator,
         junction_deviation_mm,
         offsets,
+        belt,
         job,
         watch,
         true,
@@ -404,6 +418,7 @@ pub(crate) fn emit_gcode_linear(
     classic_estimator: bool,
     junction_deviation_mm: f64,
     offsets: &[[f64; 2]],
+    belt: Option<&crate::belt::Belt>,
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> GcodeStats {
@@ -418,6 +433,7 @@ pub(crate) fn emit_gcode_linear(
         classic_estimator,
         junction_deviation_mm,
         offsets,
+        belt,
         job,
         watch,
         false,
@@ -438,6 +454,7 @@ fn emit_gcode_inner(
     classic_estimator: bool,
     junction_deviation_mm: f64,
     offsets: &[[f64; 2]],
+    belt: Option<&crate::belt::Belt>,
     job: crate::cancel::Job,
     watch: &Watch,
     parallel: bool,
@@ -449,6 +466,7 @@ fn emit_gcode_inner(
         classic_estimator,
         junction_deviation_mm,
         offsets,
+        belt,
     );
     let junction_deviation = cfg.junction_deviation;
     let emit_total = layers
@@ -468,6 +486,7 @@ fn emit_gcode_inner(
             features,
             classic_estimator,
             junction_deviation,
+            belt,
         );
         let mut emitted_layers = 0usize;
         for layer in layers {
@@ -568,6 +587,7 @@ fn emit_gcode_inner(
         features,
         classic_estimator,
         junction_deviation,
+        belt,
     );
     let formatter = Formatter {
         cfg,
@@ -600,6 +620,9 @@ struct EmitCfg {
     /// Each object's part frame's place on the bed, added to every X/Y
     /// written in that frame.
     offsets: Arc<[[f64; 2]]>,
+    /// Set for a belt slice. Cartesian emit leaves this empty and writes
+    /// the same bytes it wrote before belt existed.
+    belt: Option<crate::belt::Belt>,
 }
 
 impl EmitCfg {
@@ -609,6 +632,7 @@ impl EmitCfg {
         classic_estimator: bool,
         junction_deviation_mm: f64,
         offsets: &[[f64; 2]],
+        belt: Option<&crate::belt::Belt>,
     ) -> Self {
         let offsets = if offsets.is_empty() {
             Arc::from([[0.0, 0.0]])
@@ -621,6 +645,13 @@ impl EmitCfg {
         } else {
             DEFAULT_JUNCTION_DEVIATION_MM
         };
+        // G2/G3 are arcs in the machine XY plane. That plane is the nozzle
+        // plane only when the belt is Z. Any other belt axis prints lines.
+        let arc_fit = arc_fit
+            && !matches!(
+                belt.map(|b| b.axis),
+                Some(crate::belt::BeltAxis::X | crate::belt::BeltAxis::Y)
+            );
         Self {
             classic_estimator,
             junction_deviation,
@@ -632,6 +663,7 @@ impl EmitCfg {
             la_base: profile.linear_advance.max(0.0),
             emit_pa: profile.pressure_advance > 0.0 || profile.linear_advance > 0.0,
             offsets,
+            belt: belt.copied(),
         }
     }
 }
@@ -819,7 +851,7 @@ pub(crate) fn scans_in_parallel(
     arc_fit: bool,
     classic_estimator: bool,
 ) -> bool {
-    let cfg = EmitCfg::new(profile, arc_fit, classic_estimator, 0.0, &[]);
+    let cfg = EmitCfg::new(profile, arc_fit, classic_estimator, 0.0, &[], None);
     scan_layers(&cfg, layers, crate::cancel::Job::default(), &Watch::idle()).is_some()
 }
 
@@ -833,6 +865,7 @@ fn write_preamble(
     features: &str,
     classic_estimator: bool,
     junction_deviation: f64,
+    belt: Option<&crate::belt::Belt>,
 ) {
     let filament = profile.filament_diameter;
     let bed = profile.bed_temp;
@@ -869,6 +902,9 @@ fn write_preamble(
     if profile.linear_advance > 0.0 {
         let linear = profile.linear_advance;
         let _ = writeln!(out, "M900 K{linear:.3}");
+    }
+    if let Some(belt) = belt {
+        out.push_str(&belt.comment());
     }
 }
 
@@ -943,6 +979,7 @@ struct Writer {
     /// The object whose part frame `x` and `y` are in, and its offset.
     frame: u16,
     offset: [f64; 2],
+    belt: Option<crate::belt::Belt>,
 }
 
 struct KinMove {
@@ -1009,6 +1046,39 @@ impl Writer {
             offsets: Arc::clone(&cfg.offsets),
             frame: carry.frame,
             offset: cfg.offsets[carry.frame as usize],
+            belt: cfg.belt,
+        }
+    }
+
+    /// Belt position of this layer, or the slice Z when this is not a belt.
+    fn written_z(&self, layer: &PlateLayer) -> f64 {
+        match self.belt {
+            Some(belt) => belt.position(layer.z, layer.belt_shift),
+            None => layer.z,
+        }
+    }
+
+    /// The belt is not machine Z, so plane moves are not G-code XY.
+    fn permutes(&self) -> bool {
+        matches!(
+            self.belt.map(|b| b.axis),
+            Some(crate::belt::BeltAxis::X | crate::belt::BeltAxis::Y)
+        )
+    }
+
+    /// A nozzle-plane move. `x` and `y` are across-belt and along-rail.
+    fn put_permuted(&mut self, x: f64, y: f64, f: i32, e: Option<f64>) {
+        let axis = self.belt.expect("permuted move").axis;
+        match (axis, e) {
+            (crate::belt::BeltAxis::Y, Some(e)) => {
+                self.put(format_args!("G1 X{x:.3} Z{y:.3} E{e:.5} F{f}\n"))
+            }
+            (crate::belt::BeltAxis::Y, None) => self.put(format_args!("G1 X{x:.3} Z{y:.3} F{f}\n")),
+            (crate::belt::BeltAxis::X, Some(e)) => {
+                self.put(format_args!("G1 Y{x:.3} Z{y:.3} E{e:.5} F{f}\n"))
+            }
+            (crate::belt::BeltAxis::X, None) => self.put(format_args!("G1 Y{x:.3} Z{y:.3} F{f}\n")),
+            (crate::belt::BeltAxis::Z, _) => unreachable!("Z belt keeps machine XY"),
         }
     }
 
@@ -1337,14 +1407,22 @@ impl Writer {
     }
 
     fn layer_header(&mut self, layer: &PlateLayer) {
+        let z = self.written_z(layer);
         self.put(format_args!(
             ";LAYER:{} Z:{:.3} H:{:.3} {}\n",
-            layer.index, layer.z, layer.height, layer.note
+            layer.index, z, layer.height, layer.note
         ));
-        let dz = (layer.z - self.z).abs();
+        let dz = (z - self.z).abs();
         let f = (120.0_f64 * 60.0) as i32;
-        let z = layer.z;
-        self.put(format_args!("G1 Z{z:.3} F{f}\n"));
+        if self.permutes() {
+            match self.belt.expect("permuted layer").axis {
+                crate::belt::BeltAxis::X => self.put(format_args!("G1 X{z:.3} F{f}\n")),
+                crate::belt::BeltAxis::Y => self.put(format_args!("G1 Y{z:.3} F{f}\n")),
+                crate::belt::BeltAxis::Z => unreachable!("Z belt is not permuted"),
+            }
+        } else {
+            self.put(format_args!("G1 Z{z:.3} F{f}\n"));
+        }
         self.close_layer();
         self.kind = "travel";
         if dz > 1e-6 {
@@ -1355,7 +1433,7 @@ impl Writer {
             log.mark = log.time.len();
         }
         self.layer_open = true;
-        self.z = layer.z;
+        self.z = z;
         self.has_dir = false;
     }
 
@@ -1540,7 +1618,9 @@ impl Writer {
         }
         let f = (speed.max(10.0) * 60.0).round() as i32;
         let [bx, by] = self.bed(x, y);
-        if dz > 5e-4 {
+        if self.permutes() {
+            self.put_permuted(bx, by, f, None);
+        } else if dz > 5e-4 {
             self.put(format_args!("G1 X{bx:.3} Y{by:.3} Z{z:.3} F{f}\n"));
             self.z = z;
         } else {
@@ -1587,7 +1667,11 @@ impl Writer {
         }
         let f = (speed.max(10.0) * 60.0).round() as i32;
         let [bx, by] = self.bed(x, y);
-        self.put(format_args!("G1 X{bx:.3} Y{by:.3} F{f}\n"));
+        if self.permutes() {
+            self.put_permuted(bx, by, f, None);
+        } else {
+            self.put(format_args!("G1 X{bx:.3} Y{by:.3} F{f}\n"));
+        }
         self.x = x;
         self.y = y;
         self.has_pos = true;
@@ -1735,6 +1819,11 @@ impl Writer {
     }
 
     fn set_z(&mut self, z: f64) {
+        // Scarf and Z hop are off on a belt. A slice-frame Z here would move
+        // the belt by a fraction of a layer, which is not a hop.
+        if self.belt.is_some() {
+            return;
+        }
         if (z - self.z).abs() < 5e-4 {
             return;
         }
@@ -1807,7 +1896,9 @@ impl Writer {
         let f = (speed.max(5.0) * 60.0).round() as i32;
         let e_now = self.e;
         let [bx, by] = self.bed(x, y);
-        if let Some(z) = z {
+        if self.permutes() {
+            self.put_permuted(bx, by, f, Some(e_now));
+        } else if let Some(z) = z {
             if (z - self.z).abs() > 5e-4 {
                 self.put(format_args!(
                     "G1 X{bx:.3} Y{by:.3} Z{z:.3} E{e_now:.5} F{f}\n"
@@ -1884,7 +1975,15 @@ impl Writer {
             self.put(format_args!("G1 E{e_now:.5} F1800\n"));
         }
         let z = self.z + 10.0;
-        self.put(format_args!("G1 Z{z:.3} F600\n"));
+        if self.permutes() {
+            match self.belt.expect("permuted lift").axis {
+                crate::belt::BeltAxis::X => self.put(format_args!("G1 X{z:.3} F600\n")),
+                crate::belt::BeltAxis::Y => self.put(format_args!("G1 Y{z:.3} F600\n")),
+                crate::belt::BeltAxis::Z => unreachable!("Z belt is not permuted"),
+            }
+        } else {
+            self.put(format_args!("G1 Z{z:.3} F600\n"));
+        }
         self.put_str("M106 S0\n");
         self.put_str("M104 S0\nM140 S0\n");
         let bed_x = profile.bed_x;
