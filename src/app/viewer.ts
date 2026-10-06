@@ -406,7 +406,10 @@ export function setStage(stage: "prepare" | "preview" | "gcode") {
   document.querySelector("#viewModes")?.toggleAttribute("hidden", stage !== "preview");
   document.querySelector(".stage-tools")?.toggleAttribute("hidden", stage === "prepare");
   document.querySelector<HTMLElement>("#viewPresets")?.toggleAttribute("hidden", stage !== "prepare");
-  if (stage !== "prepare") session.paintUi?.stop();
+  if (stage !== "prepare") {
+    session.paintUi?.stop();
+    session.seamUi?.stop();
+  }
   if (stage === "preview" && session.previewViewChosen == null) {
     const mode = freshPreviewMode(session.previewViewChosen);
     if (state.viewMode !== mode) setView(mode);

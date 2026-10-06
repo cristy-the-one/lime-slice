@@ -9,7 +9,7 @@ use crate::adaptive::LayerBand;
 use crate::modifiers::{HeightRange, Overrides, Shape, Tweak, Volume};
 use crate::support::edit::{EditOutcome, EditStatus, SupportEdit, TipSite};
 use crate::support::paint::PaintTally;
-use crate::support::paint::{PaintDisk, PaintKind};
+use crate::support::paint::{PaintDisk, PaintKind, SeamDisk};
 use crate::support::skeleton::SupportSkeleton;
 use crate::support::{CoverageGap, InAir};
 
@@ -38,6 +38,9 @@ pub struct ObjectSpec {
     /// In this object's mesh frame, like its own `supportEdits`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub support_paint: Vec<PaintDiskSpec>,
+    /// Seam disks in this object's mesh frame. Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seam_paint: Vec<SeamDiskSpec>,
 }
 
 /// Who may set a request key.
@@ -118,6 +121,7 @@ pub(crate) fn object_requests(req: &SliceRequest) -> Result<Vec<SliceRequest>, S
         ("pose", req.pose.is_some()),
         ("supportEdits", !req.support_edits.is_empty()),
         ("supportPaint", !req.support_paint.is_empty()),
+        ("seamPaint", !req.seam_paint.is_empty()),
     ] {
         if sent {
             return Err(format!(
@@ -174,6 +178,7 @@ pub(crate) fn object_requests(req: &SliceRequest) -> Result<Vec<SliceRequest>, S
             one.pose = spec.pose;
             one.support_edits = spec.support_edits.clone();
             one.support_paint = spec.support_paint.clone();
+            one.seam_paint = spec.seam_paint.clone();
             if let Some(tol) = spec.step_tolerance_mm {
                 one.step_tolerance_mm = tol;
             }
@@ -304,6 +309,60 @@ pub(crate) fn parse_support_paint(specs: &[PaintDiskSpec]) -> Result<Vec<PaintDi
             }
             Ok(PaintDisk {
                 kind,
+                p: spec.p,
+                n: spec.n.map(|c| c / len),
+                r: spec.r,
+            })
+        })
+        .collect()
+}
+
+/// One seam paint disk on the wire, in the mesh frame of the object it was
+/// painted on. No kind: every disk pulls the seam.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SeamDiskSpec {
+    pub p: [f64; 3],
+    pub n: [f64; 3],
+    pub r: f64,
+}
+
+/// Checks every disk and turns it into the engine's form, with a unit
+/// normal. The error names the disk, as `seamPaint[3].r`.
+pub(crate) fn parse_seam_paint(specs: &[SeamDiskSpec]) -> Result<Vec<SeamDisk>, String> {
+    if specs.len() > MAX_PAINT_DISKS {
+        return Err(format!(
+            "seamPaint has {} disks, at most {MAX_PAINT_DISKS} are allowed",
+            specs.len()
+        ));
+    }
+    specs
+        .iter()
+        .enumerate()
+        .map(|(k, spec)| {
+            let field = |name: &str| format!("seamPaint[{k}].{name}");
+            for (name, v) in [("p", &spec.p), ("n", &spec.n)] {
+                if v.iter().any(|c| !c.is_finite()) {
+                    return Err(format!("{} is not finite", field(name)));
+                }
+                if v.iter().any(|c| c.abs() > MAX_MM) {
+                    return Err(format!("{} is out of range", field(name)));
+                }
+            }
+            if !spec.r.is_finite() || !PAINT_RADIUS_MM.contains(&spec.r) {
+                return Err(format!(
+                    "{} is {} mm, it must be {} to {} mm",
+                    field("r"),
+                    spec.r,
+                    PAINT_RADIUS_MM.start(),
+                    PAINT_RADIUS_MM.end()
+                ));
+            }
+            let len = spec.n.iter().map(|c| c * c).sum::<f64>().sqrt();
+            if len < 1e-9 {
+                return Err(format!("{} has no length", field("n")));
+            }
+            Ok(SeamDisk {
                 p: spec.p,
                 n: spec.n.map(|c| c / len),
                 r: spec.r,

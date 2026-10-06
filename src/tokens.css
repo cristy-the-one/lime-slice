@@ -51,6 +51,7 @@
   /* Support paint on the lime mesh, in both themes: a deep green and a red that read on it. */
   --paint-enforce: #0f8a4c;
   --paint-block: #e5484d;
+  --paint-seam: #f5a524;
   --sheet: #f4efe4;
   --gizmo-hot: #ffffff;
   --mid: #e6d3a3;

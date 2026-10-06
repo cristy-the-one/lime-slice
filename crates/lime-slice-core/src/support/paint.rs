@@ -256,6 +256,50 @@ fn crosses(a: [f64; 3], b: [f64; 3], t: &[[f64; 3]; 3]) -> bool {
     u >= -eps && v >= -eps && u + v <= 1.0 + eps && (-eps..=1.0 + eps).contains(&along)
 }
 
+/// One seam dab, in the frame of the part it was painted on. The seam of a
+/// wall loop moves to a vertex inside this ball. The normal is the brush
+/// hit, kept so a later tally can say whether the dab met the mesh.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SeamDisk {
+    pub p: [f64; 3],
+    pub n: [f64; 3],
+    pub r: f64,
+}
+
+impl SeamDisk {
+    /// This disk where `rotation` (row-major) about `pivot`, then
+    /// `translation`, places it: the same move the part's mesh takes.
+    pub(crate) fn posed(
+        &self,
+        rotation: &[f64; 9],
+        pivot: [f64; 3],
+        translation: [f64; 3],
+    ) -> Self {
+        let turn = |v: [f64; 3]| {
+            let r = rotation;
+            [
+                r[0] * v[0] + r[1] * v[1] + r[2] * v[2],
+                r[3] * v[0] + r[4] * v[1] + r[5] * v[2],
+                r[6] * v[0] + r[7] * v[1] + r[8] * v[2],
+            ]
+        };
+        let q = turn([
+            self.p[0] - pivot[0],
+            self.p[1] - pivot[1],
+            self.p[2] - pivot[2],
+        ]);
+        Self {
+            p: [
+                q[0] + translation[0],
+                q[1] + translation[1],
+                q[2] + translation[2],
+            ],
+            n: turn(self.n),
+            r: self.r,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

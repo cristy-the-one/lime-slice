@@ -14,6 +14,7 @@ import { fnv1aHex } from "./slice-action.ts";
 import { parseOverrides, type OverrideDocument } from "./overrides.ts";
 import { plateFileIsVersion2, readPlateSettings, settingsEmpty, type PlateFileObject } from "./plate.ts";
 import type { EditEntry } from "./support-edit-list.ts";
+import { readSeamPaint } from "./seam-paint.ts";
 import { readPaint } from "./support-paint.ts";
 import type { SiteSpec } from "./support-edits.ts";
 
@@ -302,9 +303,12 @@ function readPlateObject(value: unknown): PlateFileObject | string {
   if (typeof settings === "string") return settings;
   const paint = readPaint(row.supportPaint);
   if (typeof paint === "string") return paint;
+  const seam = readSeamPaint(row.seamPaint);
+  if (typeof seam === "string") return seam;
   const object: PlateFileObject = { id: row.id, name: row.name, mesh, placement, supportEdits: edits };
   if (settings) object.settings = settings;
   if (paint.length > 0) object.supportPaint = paint;
+  if (seam.length > 0) object.seamPaint = seam;
   return object;
 }
 

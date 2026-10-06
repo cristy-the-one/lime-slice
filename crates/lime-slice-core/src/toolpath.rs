@@ -12,6 +12,7 @@ use crate::poly::{
 use crate::strategy::{
     FuzzySkin, InfillPattern, Ironing, ResolvedStrategy, ScarfSeam, SeamMode, StrategyId,
 };
+use crate::support::paint::SeamDisk;
 use crate::support::Disk;
 use clipper2::{EndType, FillRule, JoinType, Milli, Paths};
 
@@ -119,6 +120,8 @@ pub struct PathFeatures {
     pub z: f64,
     /// Outer-wall noise. `None` leaves the walls as planned.
     pub fuzzy_skin: Option<FuzzySkin>,
+    /// Seam disks in the part frame. Empty leaves the picker's start.
+    pub seam_paint: Vec<SeamDisk>,
     /// Nozzle diameter used to cap combined sparse beads.
     pub nozzle_diameter: f64,
     /// Interior layers from this one through the last before a shell, including this one.
@@ -140,6 +143,7 @@ impl Default for PathFeatures {
             lightning: None,
             z: 0.0,
             fuzzy_skin: None,
+            seam_paint: Vec::new(),
             nozzle_diameter: 0.4,
             interior_remaining: 1,
             interior_run: 1,
@@ -402,6 +406,26 @@ pub(crate) fn plan_region_split(
 /// stays on the corner and a scarf ramp, which lands after that, is skipped.
 /// `None` does not touch the paths.
 fn finish_paths(mut paths: Vec<Extrusion>, features: &PathFeatures) -> Vec<Extrusion> {
+    if !features.seam_paint.is_empty() {
+        for path in &mut paths {
+            if !matches!(path.kind, PathKind::Outer | PathKind::Wall | PathKind::Inner) {
+                continue;
+            }
+            if !geom_closed(path) {
+                continue;
+            }
+            let ring = path.points.len() - 1;
+            if let Some(at) = painted_vertex(
+                &path.points[..ring],
+                &features.seam_paint,
+                features.z,
+                features.layer_height,
+            ) {
+                rotate_closed_at(path, at);
+                path.seam = Seam::Fixed;
+            }
+        }
+    }
     if let Some(skin) = features.fuzzy_skin {
         for path in &mut paths {
             if path.kind == PathKind::Outer {
@@ -3773,6 +3797,30 @@ fn rotate_closed_extrusion(path: &mut Extrusion, hint: [f64; 2]) {
     rotate_closed_at(path, best);
 }
 
+/// The vertex of `ring` that sits inside a seam disk on this layer, closest
+/// to that disk's centre. `None` when the paint misses the loop, so the
+/// picker's start stays.
+fn painted_vertex(ring: &[[f64; 2]], disks: &[SeamDisk], z: f64, height: f64) -> Option<usize> {
+    let lo = z - height;
+    let mut best: Option<(usize, f64)> = None;
+    for disk in disks {
+        let dz = (lo - disk.p[2]).max(disk.p[2] - z).max(0.0);
+        if dz >= disk.r {
+            continue;
+        }
+        let reach2 = disk.r * disk.r - dz * dz;
+        for (i, p) in ring.iter().enumerate() {
+            let dx = p[0] - disk.p[0];
+            let dy = p[1] - disk.p[1];
+            let dist = dx * dx + dy * dy;
+            if dist <= reach2 + 1e-8 && best.map(|(_, b)| dist < b).unwrap_or(true) {
+                best = Some((i, dist));
+            }
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
 fn rotate_closed_at(path: &mut Extrusion, at: usize) {
     let n = path.points.len();
     if at == 0 || at + 1 >= n {
@@ -5577,5 +5625,41 @@ mod fuzzy_tests {
         );
         fuzz_settled(&mut smooth[0]);
         assert_eq!(smooth[0].points, loop_pts);
+    }
+
+    #[test]
+    fn seam_paint_starts_a_wall_inside_the_disk_and_leaves_infill() {
+        let loop_pts = vec![
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 10.0],
+            [0.0, 10.0],
+            [0.0, 0.0],
+        ];
+        let features = PathFeatures {
+            z: 0.2,
+            layer_height: 0.2,
+            seam_paint: vec![crate::support::paint::SeamDisk {
+                p: [10.0, 10.0, 0.1],
+                n: [0.0, 0.0, 1.0],
+                r: 1.5,
+            }],
+            ..PathFeatures::default()
+        };
+        let walls = finish_paths(vec![path(PathKind::Outer, loop_pts.clone())], &features);
+        assert_eq!(walls[0].points[0], [10.0, 10.0]);
+        assert_eq!(walls[0].seam, Seam::Fixed);
+        let fill = finish_paths(vec![path(PathKind::Solid, loop_pts.clone())], &features);
+        assert_eq!(fill[0].points, loop_pts);
+        let miss = PathFeatures {
+            seam_paint: vec![crate::support::paint::SeamDisk {
+                p: [5.0, 5.0, 0.1],
+                n: [0.0, 0.0, 1.0],
+                r: 1.0,
+            }],
+            ..features
+        };
+        let plain = finish_paths(vec![path(PathKind::Outer, loop_pts.clone())], &miss);
+        assert_eq!(plain[0].points, loop_pts);
     }
 }

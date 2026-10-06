@@ -39,6 +39,7 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
   state.offset = { x: 0, y: 0, z: 0 };
   state.supportEdits = clearEdits();
   state.supportPaint = [];
+  state.seamPaint = [];
   state.overrides = emptyOverrides();
   state.selectedVolumeId = null;
   clearEditHistory();
@@ -74,6 +75,7 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
     stepTolerance: state.stepTolerance,
     supportEdits: state.supportEdits,
     supportPaint: state.supportPaint,
+    seamPaint: state.seamPaint,
   });
   if (/\.3mf$/i.test(name)) {
     const vendor = foreignSlicer3mf(new Uint8Array(bytes));
@@ -238,6 +240,7 @@ export function livePlate(): PlateObject[] {
     stepTolerance: state.stepTolerance,
     supportEdits: state.supportEdits,
     supportPaint: state.supportPaint,
+    seamPaint: state.seamPaint,
   });
 }
 

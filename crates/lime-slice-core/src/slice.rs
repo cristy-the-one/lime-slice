@@ -217,6 +217,10 @@ pub struct SliceRequest {
     /// when empty, so a slice without paint keeps its cache key.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub support_paint: Vec<PaintDiskSpec>,
+    /// Seam disks in the mesh frame. Omitted when empty, so a slice without
+    /// seam paint keeps its cache key and its G-code.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seam_paint: Vec<crate::slice::wire::SeamDiskSpec>,
     /// Z spans that print with their own infill, walls, or speed cap.
     /// Omitted when empty, so a slice without them keeps its cache key.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -325,6 +329,9 @@ pub struct SliceSettings {
     /// Paint that changes the demand the supports grow on, in paint order:
     /// in the mesh frame while `pose` is set, then in the part frame.
     pub support_paint: Vec<PaintDisk>,
+    /// Seam disks. Empty leaves the picker's seam. In the mesh frame while
+    /// `pose` is set, then in the part frame.
+    pub seam_paint: Vec<crate::support::paint::SeamDisk>,
     /// Height ranges and modifier volumes. Volumes are in bed coordinates
     /// until the plate moves them into each part frame.
     pub overrides: Overrides,
@@ -382,6 +389,7 @@ impl Default for SliceSettings {
             pose: None,
             support_edits: Vec::new(),
             support_paint: Vec::new(),
+            seam_paint: Vec::new(),
             overrides: Overrides::default(),
             include_skeleton: false,
             preview_base: None,
@@ -503,6 +511,7 @@ impl SliceSettings {
             pose: req.pose,
             support_edits: Vec::new(),
             support_paint: Vec::new(),
+            seam_paint: Vec::new(),
             overrides: Overrides::default(),
             include_skeleton: req.include_skeleton,
             preview_base: req.preview_base.clone(),
@@ -1002,6 +1011,7 @@ fn load_object(
         job,
         support_edits: wire::parse_support_edits(&req.support_edits)?,
         support_paint: wire::parse_support_paint(&req.support_paint)?,
+        seam_paint: wire::parse_seam_paint(&req.seam_paint)?,
         overrides: overrides.clone(),
         ..SliceSettings::from_request(req)
     };
@@ -1186,6 +1196,12 @@ fn prepare_belt(
         if !object.settings.support_paint.is_empty() {
             return Err(
                 "belt: support paint is not available until supports are grown on the belt".into(),
+            );
+        }
+        if !object.settings.seam_paint.is_empty() {
+            return Err(
+                "belt: seam paint is not available until the disks move with the belt frame"
+                    .into(),
             );
         }
     }
@@ -1453,7 +1469,7 @@ fn slice_plate(
     let listed = sources.iter().any(|s| s.id.is_some());
     let mut settings = resolved(settings);
     let (layer_height, line_width) = (settings.layer_height, settings.line_width);
-    let features = settings.feature_note();
+    let mut features = settings.feature_note();
     let mut profile = profile.clone();
     if settings.classic {
         profile.max_volumetric_mm3_s = f64::INFINITY;
@@ -1471,6 +1487,9 @@ fn slice_plate(
                 Some(pose) => {
                     let (frame, offset) = pose.part_frame(centre);
                     for disk in &mut settings.support_paint {
+                        *disk = disk.posed(&frame.rotation, frame.pivot, frame.translation);
+                    }
+                    for disk in &mut settings.seam_paint {
                         *disk = disk.posed(&frame.rotation, frame.pivot, frame.translation);
                     }
                     (Cow::Owned(frame.apply(s.mesh)), Some(offset))
@@ -1495,6 +1514,10 @@ fn slice_plate(
             }
         })
         .collect();
+    let seam_disks: usize = objects.iter().map(|o| o.settings.seam_paint.len()).sum();
+    if seam_disks > 0 {
+        features.push_str(&format!("; seam paint {seam_disks} disks"));
+    }
     // A belt lays the placed meshes flat, then the planar pipeline runs in
     // that frame. Bed XY is baked in first so two objects keep their relative
     // place, which a shift along the belt turns into a different nozzle plane.
@@ -4952,6 +4975,7 @@ fn object_layer(
         lightning: None,
         z,
         fuzzy_skin: settings.fuzzy_skin,
+        seam_paint: settings.seam_paint.clone(),
         nozzle_diameter,
         interior_remaining: remain_low.0,
         interior_run: remain_low.1,

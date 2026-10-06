@@ -11,6 +11,7 @@
  * and omits `objects`.
  */
 import type { EditEntry } from "./support-edit-list.ts";
+import { seamRequestFields, type SeamDisk, type SeamWireDisk } from "./seam-paint.ts";
 import { paintRequestFields, type PaintDisk, type WireDisk } from "./support-paint.ts";
 import {
   boundsOf,
@@ -61,6 +62,8 @@ export interface PlateFileObject {
   supportEdits: EditEntry[];
   /** Omitted when empty. In the source frame, as `PlateObject.supportPaint`. */
   supportPaint?: PaintDisk[];
+  /** Omitted when empty. In the source frame, as `PlateObject.seamPaint`. */
+  seamPaint?: SeamDisk[];
   /** Omitted when empty. Not sent on the slice request. */
   settings?: PlateObjectSettings;
 }
@@ -80,6 +83,8 @@ export interface PlateObject {
   supportEdits: EditEntry[];
   /** Enforce and block disks in this object's source frame, in paint order. */
   supportPaint: readonly PaintDisk[];
+  /** Seam disks in this object's source frame. */
+  seamPaint: readonly SeamDisk[];
   settings: PlateObjectSettings;
 }
 
@@ -100,6 +105,7 @@ export interface PlateSnapObject {
   stepTolerance: number;
   supportEdits: EditEntry[];
   supportPaint: PaintDisk[];
+  seamPaint: SeamDisk[];
   settings: PlateObjectSettings;
 }
 
@@ -156,9 +162,10 @@ export function settingsEmpty(settings: PlateObjectSettings | undefined): boolea
 }
 
 /** Version 2 is a plate with more than one object, or one object that has its own settings or support paint. */
-export function plateFileIsVersion2(objects: { settings?: PlateObjectSettings; supportPaint?: readonly PaintDisk[] }[]): boolean {
+export function plateFileIsVersion2(objects: { settings?: PlateObjectSettings; supportPaint?: readonly PaintDisk[]; seamPaint?: readonly SeamDisk[] }[]): boolean {
   if (objects.length !== 1) return objects.length > 1;
-  return !settingsEmpty(objects[0]?.settings) || (objects[0]?.supportPaint?.length ?? 0) > 0;
+  const one = objects[0];
+  return !settingsEmpty(one?.settings) || (one?.supportPaint?.length ?? 0) > 0 || (one?.seamPaint?.length ?? 0) > 0;
 }
 
 /** One object of the slice request's `objects`, less its mesh bytes, which go on when it is sent. */
@@ -170,6 +177,7 @@ export interface PlateRequestObject {
   settings?: PlateObjectSettings;
   supportEdits?: EditEntry["edit"][];
   supportPaint?: WireDisk[];
+  seamPaint?: SeamWireDisk[];
 }
 
 /** The slice request sends `objects`: two or more objects, or one with its own settings. */
@@ -198,6 +206,7 @@ export function slicePlateFields(
         ...(settingsEmpty(obj.settings) ? {} : { settings: { ...obj.settings } }),
         ...(tree && obj.supportEdits.length > 0 ? { supportEdits: obj.supportEdits.map((entry) => entry.edit) } : {}),
         ...paintRequestFields(obj.supportPaint, sourceFrame(obj.sourcePos, obj.partScale)),
+        ...seamRequestFields(obj.seamPaint, sourceFrame(obj.sourcePos, obj.partScale)),
       };
     }),
   };
@@ -219,6 +228,7 @@ export function withLivePose(plate: PlateState, live: SelectedPose & { fileName:
           stepTolerance: live.stepTolerance,
           supportEdits: live.supportEdits,
           supportPaint: live.supportPaint,
+          seamPaint: live.seamPaint,
         },
   );
 }
@@ -257,6 +267,7 @@ export function oneObjectPlate(input: {
   stepTolerance: number;
   supportEdits: EditEntry[];
   supportPaint: readonly PaintDisk[];
+  seamPaint: readonly SeamDisk[];
 }): PlateState {
   resetHeldGeometry();
   const obj: PlateObject = {
@@ -272,6 +283,7 @@ export function oneObjectPlate(input: {
     stepTolerance: input.stepTolerance,
     supportEdits: input.supportEdits,
     supportPaint: input.supportPaint,
+    seamPaint: input.seamPaint,
     settings: {},
   };
   hold(obj);
@@ -309,6 +321,7 @@ export interface SelectedPose {
   stepTolerance: number;
   supportEdits: EditEntry[];
   supportPaint: readonly PaintDisk[];
+  seamPaint: readonly SeamDisk[];
   fileName?: string;
   bytes?: ArrayBuffer;
   sourcePos?: Float32Array | null;
@@ -330,6 +343,7 @@ export function withSelectedPose(plate: PlateState, pose: SelectedPose): PlateSt
       stepTolerance: pose.stepTolerance,
       supportEdits: pose.supportEdits,
       supportPaint: pose.supportPaint,
+      seamPaint: pose.seamPaint,
       settings: obj.settings,
     };
     if (pose.fileName) next.fileName = pose.fileName;
@@ -356,6 +370,7 @@ export function snapPlate(plate: PlateState): PlateSnap {
       stepTolerance: obj.stepTolerance,
       supportEdits: obj.supportEdits.map((entry) => structuredClone(entry)),
       supportPaint: obj.supportPaint.map((disk) => structuredClone(disk)),
+      seamPaint: obj.seamPaint.map((disk) => structuredClone(disk)),
       settings: { ...obj.settings },
     })),
   };
@@ -380,6 +395,7 @@ export function revivePlate(snap: PlateSnap): PlateState | null {
       stepTolerance: row.stepTolerance,
       supportEdits: row.supportEdits.map((entry) => structuredClone(entry)),
       supportPaint: (row.supportPaint ?? []).map((disk) => structuredClone(disk)),
+      seamPaint: (row.seamPaint ?? []).map((disk) => structuredClone(disk)),
       settings: { ...row.settings },
     });
   }
@@ -403,6 +419,7 @@ export function assemblePlate(rows: Array<PlateFileObject & { bytes: ArrayBuffer
       stepTolerance: row.placement.stepTolerance,
       supportEdits: row.supportEdits.map((entry) => structuredClone(entry)),
       supportPaint: (row.supportPaint ?? []).map((disk) => structuredClone(disk)),
+      seamPaint: (row.seamPaint ?? []).map((disk) => structuredClone(disk)),
       settings: { ...(row.settings ?? {}) },
     };
     hold(obj);
