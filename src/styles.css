@@ -214,22 +214,6 @@ input[type="checkbox"], input[type="range"] { accent-color: var(--accent); }
 .belt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 8px; }
 .belt-grid[hidden] { display: none; }
 .belt-wide { grid-column: 1 / -1; }
-.belt-mock-tag {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  z-index: 2;
-  pointer-events: none;
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--warn);
-  background: color-mix(in srgb, var(--panel) 88%, transparent);
-  border: 1px solid color-mix(in srgb, var(--warn) 55%, var(--border));
-  border-radius: 4px;
-  padding: 2px 6px;
-}
-.belt-mock-tag[hidden] { display: none; }
 .stage.mode-flat .previews, .stage.mode-solid .previews { grid-template-columns: 1fr; }
 .stage.mode-flat #pane3d, .stage.mode-solid #pane2d { display: none; }
 /* Empty preview and an in-progress slice. The bed stays visible, only blurred. */

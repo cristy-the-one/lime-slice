@@ -24,12 +24,16 @@ export interface BeltSettings {
   gapMm: number;
 }
 
-export const BELT_MOCK_BANNER =
-  "Mock belt preview. These layers are a stand-in, not a toolpath. Export and send stay off.";
-export const BELT_MOCK_EXPORT =
-  "Belt preview is a mock. Export stays off until the engine slices belts.";
-export const BELT_MOCK_SEND =
-  "Belt preview is a mock. Send stays off until the engine slices belts.";
+/**
+ * The `belt` object on a slice request, or nothing for a cartesian printer.
+ * `maxLengthMm` is omitted when the belt is unlimited, so a missing cap is
+ * the same bytes as an unlimited belt.
+ */
+export function beltSliceField(belt: BeltSettings | null): { belt?: Omit<BeltSettings, "maxLengthMm"> & { maxLengthMm?: number } } {
+  if (!belt) return {};
+  const { maxLengthMm, ...rest } = belt;
+  return maxLengthMm == null ? { belt: rest } : { belt: { ...rest, maxLengthMm } };
+}
 
 export function defaultBelt(widthMm = 220): BeltSettings {
   return {

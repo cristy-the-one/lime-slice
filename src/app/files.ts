@@ -3,7 +3,6 @@ import { state, session } from "./state";
 import { centeringShift, ID_MATRIX, parseStl, placeMesh, encodeStl, scaledCanonical, encode3mf, type PlacedPart, type Placement } from "../mesh-place";
 import { fnv1aHex } from "../slice-action";
 import { needsEngine, apiBase, apiToken, markEngineDown, isStepName, renderChrome, markStale, stale, card, shownGrams } from "./settings";
-import { BELT_MOCK_EXPORT } from "../belt";
 import { withFooterGrams } from "../estimate";
 import type { SliceResponse } from "./state";
 import { authHeaders, engineDownMessage } from "../ui/api-base";
@@ -336,11 +335,6 @@ export async function printableGcode(result: SliceResponse) {
 export async function exportGcode() {
   const result = state.result;
   if (!result || stale()) return;
-  if (result.beltMock) {
-    state.error = BELT_MOCK_EXPORT;
-    renderChrome();
-    return;
-  }
   let text: string;
   try {
     text = await printableGcode(result);

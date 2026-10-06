@@ -21,11 +21,11 @@ async function share(page: Page, selector: string) {
   return canvasShare({ width: box!.width, height: box!.height }, { width: box!.viewW, height: box!.viewH });
 }
 
-test("a belt printer shows the belt and a mock slice, and a cartesian printer still slices", async ({ page }) => {
+test("a belt printer sends belt settings and a cartesian printer does not", async ({ page }) => {
   await quiet(page);
-  let slices = 0;
+  const bodies: Record<string, unknown>[] = [];
   await page.route("**/api/slice", async (route) => {
-    slices += 1;
+    bodies.push(route.request().postDataJSON() as Record<string, unknown>);
     await route.fulfill({ json: cube });
   });
   await page.goto("/");
@@ -41,22 +41,29 @@ test("a belt printer shows the belt and a mock slice, and a cartesian printer st
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
   await expect(page.locator("#slice")).toBeEnabled();
   await page.locator("#slice").click();
-  await expect(page.locator("#banner")).toContainText("Mock belt preview");
-  await expect(page.locator("#export")).toBeDisabled();
+  await expect.poll(() => bodies.length).toBe(1);
+  const belt = bodies[0].belt as Record<string, unknown>;
+  expect(belt.angleDeg).toBe(45);
+  expect(belt.axis).toBe("z");
+  expect(belt.direction).toBe(1);
+  expect(belt.copies).toBe(3);
+  expect(belt).not.toHaveProperty("maxLengthMm");
+  expect(bodies[0].printer).not.toHaveProperty("belt");
+  await expect(page.locator("#banner")).not.toContainText("Mock");
+  await expect(page.locator("#export")).toBeEnabled();
   await expect(page.locator("#sendPrinter")).toBeDisabled();
+  await expect(page.locator("#sendPrinter")).toHaveAttribute("data-tip", /Prusa Link/);
   await page.locator("#tabPreview").click();
-  await expect(page.locator("#beltMockTag")).toBeVisible();
-  await expect(page.locator("#view3d")).toHaveAttribute("data-belt-mock", "");
-  expect(slices).toBe(0);
+  await expect(page.locator("#beltMockTag")).toHaveCount(0);
 
   await page.locator("#tabPrepare").click();
   await page.locator("#machineKind").selectOption("cartesian");
   await expect(page.locator("#beltFields")).toBeHidden();
   await expect(page.locator("#prepare")).toHaveAttribute("data-belt", "0");
   await page.locator("#slice").click();
-  await expect.poll(() => slices).toBe(1);
+  await expect.poll(() => bodies.length).toBe(2);
+  expect(bodies[1]).not.toHaveProperty("belt");
   await expect(page.locator("#export")).toBeEnabled();
-  await expect(page.locator("#beltMockTag")).toBeHidden();
 });
 
 test.describe("belt fields stay in the sheet", () => {

@@ -14,7 +14,6 @@ import { type PresetSettings, DEFAULT_PRESET, presetKeys, readPresets, diffPrese
 import { loadProfile, type PrinterProfile, saveProfile } from "../profiles";
 import { noteAdvance, noteGcode, noteNozzle } from "./machine-actions";
 import { loadMachineLibrary } from "./machine-library";
-import { BELT_MOCK_BANNER, BELT_MOCK_EXPORT } from "../belt";
 import { beltStamp, machineSectionHtml } from "../ui/machine-library";
 import { prusaSummary, rememberPrusaForm, syncSendButtons } from "./prusa-actions";
 import { canRedoEdit, canUndoEdit, noteEdit } from "./history";
@@ -214,7 +213,6 @@ function timingText() {
   const result = state.result;
   if (state.busy) return busyText();
   if (!result) return "No slice yet";
-  if (result.beltMock) return "Mock preview · no print time";
   const seconds = result.estimate?.seconds ?? 0;
   return `${seconds / 60 < 1 ? `${seconds.toFixed(0)} s` : `${(seconds / 60).toFixed(1)} min`} · ${shownGrams(result).toFixed(2)} g`;
 }
@@ -367,7 +365,6 @@ export function paintBanner(isStale: boolean) {
   const bits: string[] = [];
   if (state.engine) bits.push(bannerLine(state.engine));
   if (state.error) bits.push(bannerLine(state.error, "", true));
-  if (state.result?.beltMock) bits.push(bannerLine(BELT_MOCK_BANNER, "warn"));
   if (state.notice) bits.push(bannerLine(state.notice, "warn"));
   if (isStale) bits.push(bannerLine(staleSliceCopy(fx.currentSliceAction(false).state).banner, "warn"));
   if (state.result && !state.result.sanity.ok) bits.push(bannerLine(state.result.sanity.notes.join(" ") || "G-code checks failed"));
@@ -514,7 +511,6 @@ export function stageHtml(result: SliceResponse | null) {
 }
 
 export function estimateHtml() {
-  if (state.result?.beltMock) return `<div class="meta">${escapeHtml(BELT_MOCK_BANNER)}</div>`;
   const est = state.result?.estimate;
   if (!est) return `<div class="meta">Slice to compare minutes and grams.</div>`;
   const groups = groupFeatures(est.byFeature ?? [], state.profile);
@@ -1016,10 +1012,7 @@ export function touch() {
 
 function paintExport(button: HTMLButtonElement | null, isStale: boolean) {
   if (!button) return;
-  const mock = state.result?.beltMock === true;
-  button.disabled = !state.result || isStale || state.busy || mock;
-  if (mock) button.dataset.tip = BELT_MOCK_EXPORT;
-  else if (button.dataset.tip === BELT_MOCK_EXPORT) button.dataset.tip = "Save G-code";
+  button.disabled = !state.result || isStale || state.busy;
 }
 
 export function markStale() {
