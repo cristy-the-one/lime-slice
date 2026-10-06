@@ -67,7 +67,7 @@ The first tilted plane meets a part that sits on the belt in a thin polygon. `dr
 
 BeltEngine and ideaMaker do not solve this by keeping every speck. They put a raft on the belt, a few layers before the part, so the first real plane has area, and they mark the belt-contact edge of the part as its own feature (belt wall): slower, more flow. ideaMaker also pulls the seam onto that edge.
 
-On this engine the "first layer" is `layer.index == 0` only: 30 mm/s, flow 1.06, fan off (`gcode.rs`). On a belt every layer has a belt-contact edge. That edge gets the same speed and flow, on `outer` and `wall` only, for runs of at least 0.8 mm. `drop_slivers` is unchanged. Lowering the global threshold would keep specks in cartesian slices. A belt raft is still the adhesion answer, and it is not built yet.
+On this engine the "first layer" is `layer.index == 0` only: 30 mm/s, flow 1.06, fan off (`gcode.rs`). On a belt every layer has a belt-contact edge. That edge gets the same speed and flow, on `outer` and `wall` only, for runs of at least 0.8 mm. `drop_slivers` is unchanged. Lowering the global threshold would keep specks in cartesian slices. The adhesion answer is an opt-in belt raft: `belt.raftLayers`, omitted when 0.
 
 ## Overhangs
 
@@ -134,13 +134,14 @@ Usable width is the across-belt span (`max X − min X`), not a check that the p
 
 Layer 0 keeps the writer's 30 mm/s, flow 1.06, and fan off. Later layers slow only `outer` and `wall` runs whose bead bottom is within `0.75 * height` of the belt in the lab, and only when that run is at least 0.8 mm. A later copy's first layer is slowed the same way in the paths, because the writer only treats index 0 as the first layer. Scarf and Z hop are forced off: both would move the belt axis between beads. `seam: blend` becomes `rear` (+Y after the rotation, the belt edge). An explicit seam is kept unless `belt.seamOnEdge` is true, which is omitted when off. Ironing is left on. Supports are forced off with no error. Support edits, support paint, and `compare` are errors.
 
+`belt.raftLayers` from 1 to 8, after the mesh is laid flat and before the fit check, lifts every object by `N * clamp(layerHeight, 0.05, 0.6)` and records the laid footprint. `belt_output` then replaces the first N plate layers whose slice Z is at most that lift with one outer loop 1 mm outside the footprint and solid lines spaced by the line width. Those paths are 30 mm/s, flow 1.0, and fan 0. The writer still multiplies layer 0 by 1.06, so the first pad layer is 1.06 and later pad layers stay at 1.0 and 30 mm/s. Adaptive layers with a raft are refused (`belt.raftLayers needs a fixed layer height; turn adaptive layers off`). Each copy repeats the pad, because the replacement happens before the copy loop. Omitted and 0 print no pad, and the request JSON omits the field. The machine file stores `raftLayers: 0` for an old belt block that has no key.
+
 Preview `zs` are lab height above the belt, in the part frame, including travels, so a layer draws tilted. The layer's own `z` is the belt position. Patches are skipped: the kept token does not include copies, axis, or direction. Print time is the existing estimator. The belt step is timed like a Z travel, at 120 mm/s.
 
 A belt axis of X or Y permutes the letters. The nozzle plane is no longer machine XY, so arc fitting is off. Z, the CR-30 axis, keeps `G2`/`G3`.
 
 ## Deferred
 
-- A belt raft, and any change to `drop_slivers`. The first contact can still be a sliver the skin filter throws away.
 - Supports grown on the belt floor, with the down vector tilted by `α`. Until then a belt slice has no supports, and edits or paint are refused.
 - Pulling an explicit seam onto the belt edge is opt-in. `belt.seamOnEdge`, omitted when false, rewrites nearest and aligned to `rear` as well. `blend` still moves without the flag.
 - Preview patches for a belt plate.
@@ -152,7 +153,7 @@ A belt axis of X or Y permutes the letters. The nozzle plane is no longer machin
 
 1. UI. Version 3 of the machine file, a Belt kind, the fields above, and the prepare view as a belt with the tilted plane and N copies. The slice request carries `belt`. Export is on. Send follows the printer connection. Done.
 2. Engine. Rotate, slice, emit the gantry frame. Supports forced off. Fit checks, copies, and `cartesian_lock`. Done.
-3. Belt contact. The belt wall and the `blend` → `rear` seam are in. The raft is not. Sliver policy stays global.
+3. Belt contact. The belt wall, the `blend` → `rear` seam, the opt-in `seamOnEdge` flag, and the opt-in raft are in. Sliver policy stays global.
 4. Supports in the rotated frame, on a belt floor, with the down vector tilted by `α`. Not started.
 5. Lab-frame preview from real `zs`, and print time from the transformed segments. The UI sends `belt` and draws that preview. Nothing in the belt path is mocked.
 
@@ -169,3 +170,7 @@ A belt axis of X or Y permutes the letters. The nozzle plane is no longer machin
 9. Are back-to-back copies one planned part emitted N times with a belt shift, so the count and the gap stay out of the contour key?
 10. Is a belt preview's `zs` the height above the belt, with the layer `z` left as the belt position, and is the print time the existing estimator? The UI draws that preview and no longer substitutes a mock.
 11. Is the bar a small belt slice (45° step, 35° sine, copies, fit errors, supports absent), plus `cartesian_lock` byte-identical for a request with no belt field?
+12. Is a 1 mm outset rectangle plus line-width spaced solid lines the right pad, or should the pad follow the part's actual footprint?
+13. Is refusing adaptive layers with a raft right, because the pad height is `N * clamp(layerHeight, 0.05, 0.6)`?
+14. Layer 0 still gets the writer's flow 1.06. Later pad layers stay at path flow 1.0 and 30 mm/s. Should later pad layers also be 1.06?
+15. The writer forces layer 1 to fan 128 even when the pad path asks for fan 0. Leave that?

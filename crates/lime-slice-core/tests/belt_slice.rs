@@ -436,4 +436,41 @@ fn an_omitted_belt_is_absent_from_the_request_json() {
         "{}",
         value["belt"]
     );
+    assert!(value["belt"].get("raftLayers").is_none(), "{}", value["belt"]);
+}
+
+#[test]
+fn a_belt_raft_is_opt_in_and_prints_before_the_part() {
+    let stl = box_stl(10.0, 10.0, 2.0);
+    let off = request(
+        &stl,
+        "box.stl",
+        json!({ "belt": belt(45.0, "z", 1, 5.0), "includePreview": false }),
+    );
+    let mut raft = belt(45.0, "z", 1, 5.0);
+    raft["raftLayers"] = json!(2);
+    let on = request(
+        &stl,
+        "box.stl",
+        json!({ "belt": raft, "includePreview": false }),
+    );
+    let off_g = slice_request(&off, Job::default()).unwrap();
+    let on_g = slice_request(&on, Job::default()).unwrap();
+    assert!(off_g.sanity.ok, "{:?}", off_g.sanity.notes);
+    assert!(on_g.sanity.ok, "{:?}", on_g.sanity.notes);
+    assert!(!off_g.gcode.contains("belt raft"));
+    assert!(on_g.gcode.contains("; belt raft 2 layers\n"));
+    assert_eq!(layer_zs(&on_g.gcode).len(), layer_zs(&off_g.gcode).len() + 2);
+    let first = on_g.gcode.split(";LAYER:1").next().unwrap();
+    assert!(first.contains("TYPE:SOLID"), "the pad fills the first layer");
+    let bad = request(
+        &stl,
+        "box.stl",
+        json!({ "belt": { "angleDeg": 45, "axis": "z", "direction": 1, "widthMm": 220, "copies": 1, "gapMm": 5, "raftLayers": 9 } }),
+    );
+    let err = slice_request(&bad, Job::default()).unwrap_err();
+    assert!(
+        err.contains("belt.raftLayers 9 must be from 1 to 8"),
+        "{err}"
+    );
 }

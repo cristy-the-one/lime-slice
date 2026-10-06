@@ -113,12 +113,15 @@ export function noteBeltForm() {
     copies: num("beltCopies"),
     gapMm: num("beltGap"),
     seamOnEdge: document.querySelector<HTMLInputElement>("#beltSeam")?.checked === true,
+    raftLayers: document.querySelector<HTMLInputElement>("#beltRaft")?.checked === true ? (num("beltRaftLayers") ?? 3) : 0,
   }, picked.printer.bedX);
   const next = setActiveBelt(library, kind, belt);
   storeMachineLibrary(next);
   syncBeltViews(next);
   const length = document.querySelector<HTMLInputElement>("#beltLength");
   if (length) length.disabled = belt.maxLengthMm == null;
+  const raftLayers = document.querySelector<HTMLInputElement>("#beltRaftLayers");
+  if (raftLayers) raftLayers.disabled = belt.raftLayers === 0;
   if (kind !== picked.printer.kind) fx.renderChrome?.();
   else fx.markStale?.();
 }

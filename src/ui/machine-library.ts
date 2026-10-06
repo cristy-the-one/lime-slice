@@ -788,7 +788,11 @@ function beltFieldsHtml(printer: PrinterRecord | undefined): string {
           <input id="beltGap" type="number" min="0" max="500" step="1" value="${belt.gapMm}" aria-label="Gap between copies" />
         </label>
         <label class="check setting belt-wide" data-label="seam on belt edge" data-keywords="seam rear belt"><input id="beltSeam" type="checkbox"${belt.seamOnEdge ? " checked" : ""}/> Seam on the belt edge</label>
-        <p class="meta belt-wide">The engine slices this belt. Export follows the slice. Send follows the printer connection. Seam on the belt edge is off until that box is checked, so an explicit nearest or aligned seam stays where it was.</p>
+        <label class="check setting belt-wide" data-label="belt raft" data-keywords="raft pad adhesion first layers"><input id="beltRaft" type="checkbox"${belt.raftLayers > 0 ? " checked" : ""}/> Belt raft</label>
+        <label class="field setting" data-label="belt raft layers" data-keywords="raft layers pad">Raft layers
+          <input id="beltRaftLayers" type="number" min="1" max="8" step="1" value="${belt.raftLayers > 0 ? belt.raftLayers : 3}"${belt.raftLayers > 0 ? "" : " disabled"} aria-label="Belt raft layers" />
+        </label>
+        <p class="meta belt-wide">The engine slices this belt. Export follows the slice. Send follows the printer connection. Seam on the belt edge and the belt raft stay off until those boxes are checked. A raft prints a few solid layers on the belt before the part.</p>
       </div>`;
 }
 
