@@ -917,9 +917,6 @@ export function applyGeom() {
 }
 
 export function sync3d() {
-  const mock = state.result?.beltMock === true;
-  document.querySelector("#beltMockTag")?.toggleAttribute("hidden", !mock);
-  document.querySelector<HTMLCanvasElement>("#view3d")?.toggleAttribute("data-belt-mock", mock);
   if (state.result !== session.shown) {
     session.shown = state.result;
     applyGeom();

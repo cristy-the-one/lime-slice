@@ -94,7 +94,6 @@ export function mountMarkup(root: HTMLElement) {
           <div class="previews">
             <div class="pane" id="pane2d"><canvas id="view" aria-label="2D toolpath"></canvas></div>
             <div class="pane" id="pane3d">
-              <div class="belt-mock-tag" id="beltMockTag" hidden>Mock belt preview</div>
               <div class="viewport-bands" id="viewportBands" hidden></div>
               <canvas id="view3d" aria-label="3D toolpath"></canvas>
               <div class="section-readout" id="sectionReadout" hidden></div>

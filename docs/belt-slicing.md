@@ -1,6 +1,6 @@
 # Belt slicing
 
-A belt printer (Creality CR-30, iFactory3D One, BlackBelt, PowerBelt3D) lays each layer on a plane tilted to an endless belt, usually at 45°. The belt advances one step per layer and the part can be as long as the belt. This note is the engine plan. The UI stores a belt profile. The engine reads an optional `belt` object on the slice request. The UI still draws a labelled mock until it sends that object.
+A belt printer (Creality CR-30, iFactory3D One, BlackBelt, PowerBelt3D) lays each layer on a plane tilted to an endless belt, usually at 45°. The belt advances one step per layer and the part can be as long as the belt. This note is the engine plan. The UI stores a belt profile and, for a belt printer, sends `belt` beside `printer` on the slice request. A cartesian printer omits it. Preview `zs` are lab height, so the 3D view draws the layers tilted. Export follows a normal slice. Send stays on the printer's connection: a Prusa Link host enables it, and anything else leaves it disabled with the reason on the button.
 
 ## Decisions
 
@@ -124,7 +124,7 @@ The rotation is part of the mesh the contour key hashes. `belt` is not a `SliceS
 - An overhang part: supports forced off, so the file has no `TYPE:SUPPORT`. The face that leans against the belt is the one a later support phase has to hold.
 - Copies: two copies, twice the layers, the second copy's first layer one extent plus the gap further along the belt. The part is planned once.
 - Profile: a version-2 `.limemachine.json` loads as cartesian with the default belt block, and its bed numbers are unchanged. A version-3 belt file round-trips. `enginePrinter` still has today's keys.
-- UI, until it sends `belt`: the mock's `gcode` is empty, export and send stay off, and a cartesian slice still calls the engine.
+- UI: a belt slice posts `belt` and omits `maxLengthMm` when it is null. Export turns on. Send stays disabled until the printer has a Prusa Link host, with that reason on the button. A cartesian slice sends no `belt`.
 
 ## What the engine does
 
@@ -147,26 +147,25 @@ A belt axis of X or Y permutes the letters. The nozzle plane is no longer machin
 - A part-frame move that does not recut. Baking the bed offset means a move across the belt, or a move of one object relative to another along it, changes the mesh the contour key hashes.
 - World-space shear for a firmware that does not already tilt. Not used for the four machines above.
 - The fan ramp on layer 1 (128) is the writer's, once per file. Later copies do not repeat it. Their first layer does get fan 0 from the belt-wall retouch.
-- The UI mock, export, and send. Those wait until the request actually carries `belt`.
 
 ## Phases
 
-1. UI only. Version 3 of the machine file, a Belt kind, the fields above, the prepare view as a belt with the tilted plane and N copies, and a mock adapter on the UI side. The mock does not produce G-code. Export and send stay off. Done.
+1. UI. Version 3 of the machine file, a Belt kind, the fields above, and the prepare view as a belt with the tilted plane and N copies. The slice request carries `belt`. Export is on. Send follows the printer connection. Done.
 2. Engine. Rotate, slice, emit the gantry frame. Supports forced off. Fit checks, copies, and `cartesian_lock`. Done.
 3. Belt contact. The belt wall and the `blend` → `rear` seam are in. The raft is not. Sliver policy stays global.
 4. Supports in the rotated frame, on a belt floor, with the down vector tilted by `α`. Not started.
-5. Lab-frame preview from real `zs`, and print time from the transformed segments. The engine side is in. The UI mock goes away when the UI sends `belt`.
+5. Lab-frame preview from real `zs`, and print time from the transformed segments. The UI sends `belt` and draws that preview. Nothing in the belt path is mocked.
 
 ## Review questions
 
 1. Is rotation of the mesh, so the nozzle plane is horizontal, the slice frame, with the gantry-axis remap only at emit, so widths, speeds, and flow stay the planner's nozzle-plane numbers?
 2. Is belt advance per layer `layer_height / sin(α)`, with `α` the angle between the belt and the nozzle plane, default 45°? At 35° that disagrees with a formula written as `h / cos θ`.
 3. Belt settings are a sibling of `printer` on `SliceRequest`, omitted when absent, and still absent from `enginePrinter`. Is that the right split, so a cartesian request keeps its cache key and its G-code bytes?
-4. Is version 3 of `.limemachine.json` the right bump, with a version-2 file migrating to `kind: "cartesian"` and a default belt block that is stored and not sent?
+4. Is version 3 of `.limemachine.json` the right bump, with a version-2 file migrating to `kind: "cartesian"` and a default belt block that is stored and, for a cartesian printer, not sent?
 5. Is the emit frame the gantry frame (belt axis constant per layer, the other two axes spanning the nozzle plane), with no extra world-space shear, for the CR-30, iFactory3D, BlackBelt, and PowerBelt3D?
 6. Should `drop_slivers` stay at its present areas, and the first-contact sliver be handled by a belt raft in phase 3, rather than by lowering the threshold for every slice?
 7. Is the belt wall right as shipped: `outer` and `wall` only, 0.8 mm minimum, the writer's layer-0 treatment left on index 0 so the flow is not applied twice, and a later copy's first layer slowed in the paths?
 8. Should a belt slice force supports off until they are grown in the rotated frame against a belt floor, so today's horizontal supports are never emitted for a belt?
 9. Are back-to-back copies one planned part emitted N times with a belt shift, so the count and the gap stay out of the contour key?
-10. Is a belt preview's `zs` the height above the belt, with the layer `z` left as the belt position, and is the print time the existing estimator? The UI mock still stands in until the UI sends `belt`.
+10. Is a belt preview's `zs` the height above the belt, with the layer `z` left as the belt position, and is the print time the existing estimator? The UI draws that preview and no longer substitutes a mock.
 11. Is the bar a small belt slice (45° step, 35° sine, copies, fit errors, supports absent), plus `cartesian_lock` byte-identical for a request with no belt field?

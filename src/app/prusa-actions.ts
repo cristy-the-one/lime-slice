@@ -3,7 +3,6 @@ import { fx } from "./fx.ts";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library.ts";
 import { state } from "./state.ts";
 import { pushToast } from "../ui/toasts.ts";
-import { BELT_MOCK_SEND } from "../belt.ts";
 import { selection, setLink } from "../ui/machine-library.ts";
 import {
   gcodeFileName,
@@ -67,11 +66,6 @@ export function refreshPrusaJob() {
 export async function uploadToPrusaLink() {
   rememberPrusaForm();
   const result = state.result;
-  if (result?.beltMock) {
-    show(BELT_MOCK_SEND);
-    pushToast(BELT_MOCK_SEND, "info");
-    return;
-  }
   if (!result || fx.stale?.() || state.busy) {
     const message = state.busy ? "Wait for the slice to finish, then send." : "Slice first, then send.";
     show(message);
@@ -154,7 +148,6 @@ function retry(action: "test" | "upload" | "job") {
 
 function sendBlock(): string | null {
   if (state.busy) return "Wait for the slice to finish, then send.";
-  if (state.result?.beltMock) return BELT_MOCK_SEND;
   const host = hostProblem(selection(loadMachineLibrary())?.printer.host ?? "");
   const hasGcode = !!state.result && !fx.stale?.();
   if (!hasGcode && host) return "Slice first, and add a Prusa Link host on this printer.";

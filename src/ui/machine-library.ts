@@ -3,10 +3,11 @@
  * A later version adds a function to `machineMigrations` at index `n` that rewrites version `n`
  * into version `n + 1`.
  *
- * The slice request already accepts one printer: nozzle, temperatures, bed, flow, accel,
- * density, cost, pressure advance, and linear advance. It has no filament catalog, no
- * start or end G-code field, no printer host, and no belt. Those stay in this library.
- * `enginePrinter` copies only the fields the engine already reads.
+ * The slice request's `printer` is nozzle, temperatures, bed, flow, accel,
+ * density, cost, pressure advance, and linear advance. It has no filament catalog,
+ * no start or end G-code, and no printer host. Those stay in this library.
+ * A belt printer also sends `belt` beside `printer`. `enginePrinter` still copies
+ * only the fields `PrinterProfile` knows.
  */
 import { coerceBelt, defaultBelt, type BeltSettings, type PrinterKind } from "../belt.ts";
 import type { PrinterProfile } from "../profiles.ts";
@@ -279,7 +280,7 @@ export function beltStamp(library: MachineLibrary): BeltSettings | null {
   return printer.belt;
 }
 
-/** Store the kind and belt on the active printer. Neither is sent on the slice request. */
+/** Store the kind and belt on the active printer. `enginePrinter` still omits the belt; the slice request sends it beside `printer`. */
 export function setActiveBelt(library: MachineLibrary, kind: PrinterKind, belt: BeltSettings): MachineLibrary {
   return {
     ...library,

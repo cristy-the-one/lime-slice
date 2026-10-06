@@ -1,5 +1,5 @@
-import { beltAdvanceMm, beltStripLength, coerceBelt, defaultBelt, tiltPose } from "./belt.ts";
-import { mockBeltSlice } from "./beltAdapter.mock.ts";
+import { beltAdvanceMm, beltSliceField, beltStripLength, coerceBelt, defaultBelt, tiltPose } from "./belt.ts";
+import { recipeKey } from "./slice-action.ts";
 
 let failed = 0;
 
@@ -27,28 +27,17 @@ check("an unlimited belt is a finite strip", open.unlimited && open.lengthMm >= 
 const capped = beltStripLength({ ...defaultBelt(200), maxLengthMm: 300, copies: 2, gapMm: 10 }, 40);
 check("a cap still fits the copies", capped.unlimited === false && capped.lengthMm >= 40 + 10 + 40);
 
-const cube = mockBeltSlice({
-  bounds: { min: [0, 0, 0], max: [20, 20, 20] },
-  layerHeight: 0.2,
-  belt: defaultBelt(200),
-  triangles: 12,
-});
-check("the mock emits no g-code", cube.gcode === "" && !JSON.stringify(cube).includes("G0") && !JSON.stringify(cube).includes("G1"));
-check("the mock is marked", cube.beltMock === true && cube.blend === "Mock belt preview");
-check("the mock has several layers", cube.layers.length >= 3 && cube.layers.length <= 28);
-const mid = cube.layers[Math.floor(cube.layers.length / 2)];
-const z = mid.paths.z.filter((value): value is number => typeof value === "number");
-check("a mock layer is slanted", z.length >= 3 && Math.max(...z) - Math.min(...z) > 1);
-check("the layer says it is a mock", cube.layers.every((layer) => layer.note.includes("Mock")));
-
-const copies = mockBeltSlice({
-  bounds: { min: [0, 0, 0], max: [20, 20, 20] },
-  layerHeight: 0.2,
-  belt: { ...defaultBelt(180), copies: 3, gapMm: 8, direction: -1 },
-  triangles: 12,
-});
-check("copies are outlines, still with no g-code", copies.gcode === "" && copies.layers[0].paths.kind.length === 3);
-check("copies extend the preview bounds", copies.mesh.min[1] < 0);
+const cartesian = { layerHeight: 0.2, printer: { nozzleDiameter: 0.4 } };
+const plain = recipeKey(cartesian, "mesh");
+check("a cartesian request gains no belt key", recipeKey({ ...cartesian, ...beltSliceField(null) }, "mesh") === plain);
+const sent = beltSliceField(defaultBelt(200));
+check("an unlimited belt omits maxLengthMm", !!sent.belt && !("maxLengthMm" in sent.belt) && sent.belt.angleDeg === 45 && sent.belt.axis === "z" && sent.belt.copies === 1);
+check("a belt changes the recipe", recipeKey({ ...cartesian, ...sent }, "mesh") !== plain);
+const sentCap = beltSliceField({ ...defaultBelt(180), maxLengthMm: 300, copies: 2, gapMm: 8, direction: -1, axis: "y" });
+check(
+  "a capped belt is sent beside the printer",
+  sentCap.belt?.maxLengthMm === 300 && sentCap.belt.copies === 2 && sentCap.belt.axis === "y" && sentCap.belt.direction === -1 && sentCap.belt.widthMm === 180,
+);
 
 const messy = coerceBelt({ angleDeg: 0, axis: "nope", direction: -1, widthMm: -4, maxLengthMm: null, copies: 100, gapMm: -2 }, 220);
 check(
@@ -60,4 +49,4 @@ if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);
 }
-console.log("belt: advance, strip, and mock preview ok");
+console.log("belt: advance, strip, and slice field ok");
