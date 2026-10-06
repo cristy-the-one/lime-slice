@@ -1,5 +1,6 @@
 import { type ColorMode } from "../colors";
 import { layFlatMatrix, matMul, rotX, rotY, rotZ } from "../mesh-place";
+import { setSelectedOverride } from "../plate";
 import { addPlateObject, arrangePlate, removePlateObject, selectPlateObject } from "./plate-actions";
 import { DEFAULT_PRESET, readPresets, writePresets } from "../presets";
 import { profileJson } from "../profiles";
@@ -79,6 +80,10 @@ export function wireApp() {
       if (!Number.isFinite(mm)) return;
       noteEdit();
       setPlaceCenter(target.id === "placeX" ? "x" : "y", mm);
+      return;
+    }
+    if (target.id === "objInfill" || target.id === "objWalls" || target.id === "objSpeed") {
+      noteObjectOverride(target.id, (target as HTMLInputElement).value);
       return;
     }
     if (target.id === "profilePick") {
@@ -556,4 +561,29 @@ export function wireApp() {
 
 function isBeltField(target: HTMLElement): boolean {
   return target.id === "machineKind" || target.id.startsWith("belt");
+}
+
+function noteObjectOverride(id: "objInfill" | "objWalls" | "objSpeed", raw: string) {
+  const text = raw.trim();
+  let value: number | undefined;
+  if (text !== "") {
+    const n = Number(text);
+    if (!Number.isFinite(n)) return;
+    if (id === "objInfill") {
+      if (n < 0 || n > 100) return;
+      value = Math.round(n) / 100;
+    } else if (id === "objWalls") {
+      const walls = Math.round(n);
+      if (walls < 1 || walls > 12) return;
+      value = walls;
+    } else if (n <= 0 || n > 1000) {
+      return;
+    } else {
+      value = n;
+    }
+  }
+  noteEdit();
+  const key = id === "objInfill" ? "infill" : id === "objWalls" ? "walls" : "speed";
+  state.plate = setSelectedOverride(state.plate, key, value);
+  touch();
 }

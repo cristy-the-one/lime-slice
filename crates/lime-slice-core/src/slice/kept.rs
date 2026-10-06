@@ -412,6 +412,8 @@ pub(super) fn keys(
         infill_combine: blank.infill_combine,
         gyroid_3d: blank.gyroid_3d,
         overrides: blank.overrides.clone(),
+        // Walls, infill, and a speed cap change the beads, not the outline.
+        object_tweak: blank.object_tweak,
         ..toolpaths.clone()
     };
     let grow = SliceSettings {
@@ -438,8 +440,10 @@ pub(super) fn keys(
         ironing: blank.ironing,
         fuzzy_skin: blank.fuzzy_skin,
         seam_paint: Vec::new(),
-        // Supports stay global: ranges and volumes change only the part.
+        // Supports stay global: ranges, volumes, and an object's infill,
+        // walls, and speed change only the part.
         overrides: blank.overrides.clone(),
+        object_tweak: blank.object_tweak,
         ..toolpaths.clone()
     };
     let key = |s: &SliceSettings, blend: Option<&BlendMode>| -> [u8; 32] {

@@ -49,12 +49,11 @@ enum Scope {
     /// A plate setting the plate leaves out at its default, so the plate's
     /// own keys cannot name it.
     Plate,
-    NotYet,
 }
 
-/// Keys an object may set, and the override keys it may not set yet: ranges
-/// and volumes are plate-wide and reach every object they meet. Every other
-/// request key is a plate setting.
+/// Keys an object may set. Ranges and volumes stay plate-wide and reach every
+/// object they meet. Infill, walls, and speed are per object; a range or a
+/// volume wins on each field it sets. Every other request key is a plate setting.
 const SETTING_SCOPES: &[(&str, Scope)] = &[
     ("blend", Scope::Object),
     ("supports", Scope::Object),
@@ -80,9 +79,9 @@ const SETTING_SCOPES: &[(&str, Scope)] = &[
     ("retractSpeed", Scope::Plate),
     ("heightRanges", Scope::Plate),
     ("modifierVolumes", Scope::Plate),
-    ("infill", Scope::NotYet),
-    ("walls", Scope::NotYet),
-    ("speed", Scope::NotYet),
+    ("infill", Scope::Object),
+    ("walls", Scope::Object),
+    ("speed", Scope::Object),
 ];
 
 const MAX_OBJECTS: usize = 256;
@@ -163,9 +162,6 @@ pub(crate) fn object_requests(req: &SliceRequest) -> Result<Vec<SliceRequest>, S
                     Some((_, Scope::Object)) => merged[key] = value.clone(),
                     Some((_, Scope::Plate)) => {
                         return Err(format!("objects[{i}].settings.{key} is a plate setting"))
-                    }
-                    Some((_, Scope::NotYet)) => {
-                        return Err(format!("objects[{i}].settings.{key} is not supported yet"))
                     }
                     None if plate.get(key).is_some() => {
                         return Err(format!("objects[{i}].settings.{key} is a plate setting"))
@@ -614,7 +610,11 @@ fn volume(v: &ModifierVolumeSpec, index: usize, bed: [f64; 2]) -> Result<Volume,
     })
 }
 
-fn tweak(infill: Option<f64>, walls: Option<u32>, speed: Option<f64>) -> Result<Tweak, String> {
+pub(crate) fn tweak(
+    infill: Option<f64>,
+    walls: Option<u32>,
+    speed: Option<f64>,
+) -> Result<Tweak, String> {
     if let Some(f) = infill.filter(|f| !(f.is_finite() && (0.0..=1.0).contains(f))) {
         return Err(format!("infill {f} is outside 0 to 1"));
     }

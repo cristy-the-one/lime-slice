@@ -41,6 +41,12 @@ export interface PlateObjectSettings {
   variableWidth?: boolean;
   scarfSeam?: string;
   gyroid3d?: string;
+  /** Sparse infill, 0 to 1. Absent keeps the strategy. */
+  infill?: number;
+  /** Wall count, 1 to 12. Absent keeps the strategy. */
+  walls?: number;
+  /** Speed cap, mm/s. Absent keeps the strategy. */
+  speed?: number;
 }
 
 export interface PlateFileObject {
@@ -144,6 +150,9 @@ const ALLOWED_SETTINGS = new Set([
   "variableWidth",
   "scarfSeam",
   "gyroid3d",
+  "infill",
+  "walls",
+  "speed",
 ]);
 
 const held = new Map<string, { fileName: string; bytes: ArrayBuffer; sourcePos: Float32Array }>();
@@ -244,6 +253,25 @@ export function sourceFrame(sourcePos: Float32Array, partScale: number) {
     centres.set(sourcePos, centre);
   }
   return { centre, scale: partScale };
+}
+
+/** Set or clear one override on the selected object. An empty value deletes the key. */
+export function setSelectedOverride(
+  plate: PlateState,
+  key: "infill" | "walls" | "speed",
+  value: number | undefined,
+): PlateState {
+  if (!plate.selectedId) return plate;
+  return {
+    ...plate,
+    objects: plate.objects.map((obj) => {
+      if (obj.id !== plate.selectedId) return obj;
+      const settings: PlateObjectSettings = { ...obj.settings };
+      if (value === undefined) delete settings[key];
+      else settings[key] = value;
+      return { ...obj, settings };
+    }),
+  };
 }
 
 export function selectedObject(plate: PlateState): PlateObject | null {
@@ -549,6 +577,27 @@ export function readPlateSettings(value: unknown): PlateObjectSettings | undefin
     if (key === "scarfSeam" || key === "gyroid3d") {
       if (typeof got !== "string") return "This project file is incomplete.";
       settings[key] = got;
+      continue;
+    }
+    if (key === "infill") {
+      if (typeof got !== "number" || !Number.isFinite(got) || got < 0 || got > 1) {
+        return "This project's object infill is not a fraction from 0 to 1.";
+      }
+      settings.infill = got;
+      continue;
+    }
+    if (key === "walls") {
+      if (typeof got !== "number" || !Number.isInteger(got) || got < 1 || got > 12) {
+        return "This project's object walls are not a count from 1 to 12.";
+      }
+      settings.walls = got;
+      continue;
+    }
+    if (key === "speed") {
+      if (typeof got !== "number" || !Number.isFinite(got) || got <= 0 || got > 1000) {
+        return "This project's object speed is not from 0 to 1000 mm/s.";
+      }
+      settings.speed = got;
     }
   }
   return settingsEmpty(settings) ? undefined : settings;

@@ -23,6 +23,27 @@ pub struct Tweak {
 }
 
 impl Tweak {
+    pub fn is_set(&self) -> bool {
+        self.infill.is_some() || self.walls.is_some() || self.speed.is_some()
+    }
+
+    /// `over` wins on each field it sets. `None` when neither sets a field,
+    /// which is what a layer with no override plans today.
+    pub fn under(self, over: Option<Tweak>) -> Option<Tweak> {
+        let top = over.filter(|tweak| tweak.is_set());
+        if !self.is_set() {
+            return top;
+        }
+        let Some(top) = top else {
+            return Some(self);
+        };
+        Some(Tweak {
+            infill: top.infill.or(self.infill),
+            walls: top.walls.or(self.walls),
+            speed: top.speed.or(self.speed),
+        })
+    }
+
     pub fn apply(&self, mut s: ResolvedStrategy) -> ResolvedStrategy {
         if let Some(walls) = self.walls {
             s.walls = walls;
