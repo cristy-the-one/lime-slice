@@ -50,6 +50,10 @@ export interface SliceResponse {
     outlineToleranceMm?: number;
     min: number[];
     max: number[];
+    /** Layers whose contour closed a mesh gap. Missing on an older reply. */
+    repairedLayers?: number;
+    /** Open chains the cut could not close. Missing on an older reply. */
+    droppedChains?: number;
   };
   sanity: { ok: boolean; notes: string[]; layers: number; finalE: number; extrusionLengthMm: number };
   /** Largest first. Missing from replies an older engine cached. */
