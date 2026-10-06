@@ -43,6 +43,7 @@ function check(name: string, cond: boolean, detail = ""): void {
 const library = builtinLibrary();
 check("built-in printers", library.printers.map((printer) => printer.name).join(",") === "Lime 220,Lime 300,Lime 180");
 check("built-in printers leave the host empty", library.printers.every((printer) => printer.host === "" && printer.apiKey === "" && printer.startPrint === false));
+check("built-in printers leave start and end G-code empty", library.printers.every((printer) => printer.startGcode === "" && printer.endGcode === ""));
 check("built-in filaments", library.filaments.map((filament) => filament.material).join(",") === "PLA,PETG,ABS,TPU");
 
 const pla = library.filaments.find((filament) => filament.id === "lime-pla");

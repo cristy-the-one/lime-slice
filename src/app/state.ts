@@ -234,13 +234,14 @@ export const state = {
   supportEdits: [] as EditEntry[],
   /** The selected object's enforce and block disks, in its source frame. Sent with every slice. */
   supportPaint: [] as readonly PaintDisk[],
-  /** Height ranges and modifier volumes. Stored only. The slice request does not carry them yet. */
+  /** Height ranges and modifier volumes. Sent on the slice request when the lists are not empty. */
   overrides: emptyOverrides(),
   selectedVolumeId: null as string | null,
   modifierTool: "move" as "move" | "scale",
   /**
-   * REAL plate list. The selected object's pose is also `orient` / `offset` so the
-   * existing gizmo edits that object. MOCK: the slice still sends one mesh.
+   * Plate list. The selected object's pose is also `orient` / `offset` so the
+   * existing gizmo edits that object. One object with no settings of its own
+   * sends today's single-mesh body. Any other plate sends `objects`.
    */
   plate: emptyPlate() as PlateState,
 };

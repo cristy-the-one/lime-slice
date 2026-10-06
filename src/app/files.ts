@@ -4,6 +4,9 @@ import { centeringShift, ID_MATRIX, parseStl, placeMesh, encodeStl, scaledCanoni
 import { fnv1aHex } from "../slice-action";
 import { needsEngine, apiBase, apiToken, markEngineDown, isStepName, renderChrome, markStale, stale, card, shownGrams } from "./settings";
 import { withFooterGrams } from "../estimate";
+import { legacyStockEnd, legacyStockStart, spliceText, withMachineGcode } from "../machine-gcode";
+import { loadMachineLibrary } from "./machine-library";
+import { selection } from "../ui/machine-library";
 import type { SliceResponse } from "./state";
 import { authHeaders, engineDownMessage } from "../ui/api-base";
 import { type SplitSync } from "../split-at";
@@ -326,10 +329,18 @@ export async function fetchStoredGcode(token: string) {
   return res.text();
 }
 
-/** The G-code to print: the engine's, with the footer's grams at the profile's density. */
+/** The G-code to print: the engine's, with the footer's grams at the profile's density, then the printer's start and end text. */
 export async function printableGcode(result: SliceResponse) {
   const text = await fx.loadGcode(result);
-  return text && withFooterGrams(text, shownGrams(result));
+  if (!text) return text;
+  const grams = withFooterGrams(text, shownGrams(result));
+  const picked = selection(loadMachineLibrary());
+  if (!picked) return grams;
+  return withMachineGcode(
+    grams,
+    spliceText(picked.printer.startGcode, legacyStockStart(picked.printer.name)),
+    spliceText(picked.printer.endGcode, legacyStockEnd(picked.printer.name)),
+  );
 }
 
 export async function exportGcode() {
