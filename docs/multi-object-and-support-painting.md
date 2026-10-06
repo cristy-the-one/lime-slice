@@ -396,7 +396,7 @@ The goal is the part-frame rule from `docs/part-frame.md`, per object. Moving on
 - `objects` is omitted for a plate with one object and no overrides. The body is then today's body.
 - When `objects` is present, the top-level `filename`, `dataB64`, `pose`, and `supportEdits` must be absent. The error names the field.
 - An empty `objects` is refused. Duplicate ids are refused. An id is 1 to 64 characters from `A-Z a-z 0-9 . _ -`, because it is written into a G-code comment.
-- `printOrder` is omitted or `"all-at-once"`. `"sequential"` is refused with `printOrder "sequential" is not supported yet`.
+- `printOrder` is omitted or `"all-at-once"`. `"sequential"` was refused in this step. It is now [sequential printing](sequential-printing.md).
 - `stepToleranceMm` is a load parameter of each object, not a setting.
 - A missing `pose` means the object's bytes are already in print space, with offset `[0, 0]`.
 - `compare` is refused with `objects`. `baseline` is skipped for a plate.

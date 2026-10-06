@@ -93,20 +93,6 @@ pub(crate) fn object_requests(req: &SliceRequest) -> Result<Vec<SliceRequest>, S
     let Some(objects) = &req.objects else {
         return Err("no objects".into());
     };
-    match req.print_order.as_deref() {
-        None | Some("all-at-once") => {}
-        Some("sequential") => {
-            return Err(
-                "printOrder \"sequential\" is not supported yet; omit it or send \"all-at-once\""
-                    .into(),
-            )
-        }
-        Some(other) => {
-            return Err(format!(
-                "printOrder \"{other}\" is not a print order; send \"all-at-once\""
-            ))
-        }
-    }
     if objects.is_empty() {
         return Err("objects is empty; send at least one object".into());
     }

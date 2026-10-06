@@ -221,6 +221,10 @@ export const state = {
   retractOn: false,
   retractLength: 0.4,
   retractSpeed: 30,
+  /** Omitted from the request until the plate has two objects and this is sequential. */
+  printOrder: "all-at-once" as "all-at-once" | "sequential",
+  /** 0 means the nozzle radius plus one line width. Sent only with sequential. */
+  sequentialClearance: 0,
   retractStart: 0.2,
   retractEnd: 1.2,
   retractStep: 0.2,

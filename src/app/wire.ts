@@ -86,6 +86,10 @@ export function wireApp() {
       noteObjectOverride(target.id, (target as HTMLInputElement).value);
       return;
     }
+    if (target.id === "seqclear") {
+      noteSequentialClearance((target as HTMLInputElement).value);
+      return;
+    }
     if (target.id === "profilePick") {
       const id = (target as HTMLSelectElement).value;
       if (id) applyNamedProfile(id);
@@ -561,6 +565,19 @@ export function wireApp() {
 
 function isBeltField(target: HTMLElement): boolean {
   return target.id === "machineKind" || target.id.startsWith("belt");
+}
+
+function noteSequentialClearance(raw: string) {
+  const text = raw.trim();
+  let value = 0;
+  if (text !== "") {
+    const n = Number(text);
+    if (!Number.isFinite(n) || n < 0 || n > 50) return;
+    value = Math.round(n * 1000) / 1000;
+  }
+  noteEdit();
+  state.sequentialClearance = value;
+  touch();
 }
 
 function noteObjectOverride(id: "objInfill" | "objWalls" | "objSpeed", raw: string) {

@@ -29,6 +29,11 @@ pub(super) struct Shown {
     /// A patch is only against a preview with the same stamp: those change
     /// the tilted drawing without changing the planned paths.
     pub belt: Option<BeltStamp>,
+    /// Two or more objects printing one at a time. All-at-once, and one
+    /// object, leave this false so the token bytes stay what they were.
+    /// A patch is only against a preview with the same order: sequential
+    /// renumbers the layers without changing the planned paths.
+    pub sequential: bool,
 }
 
 /// What a belt preview draws besides the planned plate. Hashed into the
@@ -81,6 +86,7 @@ pub(super) fn token(
     profile: &PrinterProfile,
     edits: &[&[SupportEdit]],
     belt: Option<&BeltStamp>,
+    sequential: bool,
 ) -> String {
     let mut hash = Sha256::new();
     for key in keys {
@@ -91,6 +97,10 @@ pub(super) fn token(
     // Absent on a cartesian plate, so the digest above is the whole token.
     if let Some(belt) = belt {
         belt.mix(&mut hash);
+    }
+    // All-at-once and a single object leave this out, so that token holds.
+    if sequential {
+        hash.update(b"sequential");
     }
     hash.finalize()[..16]
         .iter()

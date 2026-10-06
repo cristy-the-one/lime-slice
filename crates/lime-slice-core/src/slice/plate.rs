@@ -60,6 +60,60 @@ pub(super) fn plate_bands(per_object: &[&[LayerBand]]) -> Vec<PlateBand> {
     out
 }
 
+/// Each object's bands in plate order, one object finished before the next
+/// starts. The join then travels from the last run of one object into the
+/// first run of the next.
+pub(super) fn sequential_bands(per_object: &[&[LayerBand]]) -> Vec<PlateBand> {
+    let mut out = Vec::new();
+    for (o, bands) in per_object.iter().enumerate() {
+        for (i, band) in bands.iter().enumerate() {
+            out.push(PlateBand {
+                z: band.z,
+                height: band.height,
+                members: vec![(o, i)],
+            });
+        }
+    }
+    out
+}
+
+/// `next` must clear every earlier object's mesh box by `gap` on X and Y.
+/// Touching the expanded box is enough: a smaller gap is an error.
+pub(super) fn sequential_clearance(
+    boxes: &[(&str, [f64; 2], [f64; 2])],
+    gap: f64,
+) -> Result<(), String> {
+    for (i, next) in boxes.iter().enumerate().skip(1) {
+        for prev in &boxes[..i] {
+            let lo = [prev.1[0] - gap, prev.1[1] - gap];
+            let hi = [prev.2[0] + gap, prev.2[1] + gap];
+            let hit = hi[0] > next.1[0]
+                && next.2[0] > lo[0]
+                && hi[1] > next.1[1]
+                && next.2[1] > lo[1];
+            if hit {
+                return Err(format!(
+                    "printOrder \"sequential\": \"{}\" does not clear \"{}\" by {} mm",
+                    next.0,
+                    prev.0,
+                    mm_text(gap)
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn mm_text(n: f64) -> String {
+    let text = format!("{n:.3}");
+    let trimmed = text.trim_end_matches('0').trim_end_matches('.');
+    if trimmed.is_empty() {
+        "0".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
 /// One object's planned layers as the join reads them.
 pub(super) struct Joinable<'a> {
     pub layers: &'a [PrintLayer],
