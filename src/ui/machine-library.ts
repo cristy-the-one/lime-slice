@@ -7,7 +7,8 @@
  * density, cost, pressure advance, and linear advance. It has no filament catalog,
  * no start or end G-code, and no printer host. Those stay in this library.
  * A belt printer also sends `belt` beside `printer`. `enginePrinter` still copies
- * only the fields `PrinterProfile` knows.
+ * only the fields `PrinterProfile` knows. Start and end G-code are spliced
+ * into the exported file by the UI, and stay off the slice request.
  */
 import { coerceBelt, defaultBelt, type BeltSettings, type PrinterKind } from "../belt.ts";
 import type { PrinterProfile } from "../profiles.ts";
@@ -463,7 +464,7 @@ export function machineSectionHtml(
             <label class="field setting" data-label="end g-code" data-keywords="end gcode footer">End G-code
               <textarea id="machineEnd" class="machine-gcode" rows="3" aria-label="End G-code">${escapeHtml(picked?.printer.endGcode ?? "")}</textarea>
             </label>
-            <p class="meta">Start and end G-code are stored with the printer. Slice still sends nozzle, temperatures, bed, and pressure advance. The engine writes its own header.</p>
+            <p class="meta">Start and end G-code are inserted into Export and Send. They are not sent to the slicer. The engine still writes temperatures, homing, and the park. Leave both blank and the file stays the engine's bytes.</p>
             <label class="field setting machine-link" data-label="prusa link host" data-keywords="printer host url send">Prusa Link host
               <input id="machineHost" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://192.168.1.50" value="${escapeHtml(picked?.printer.host ?? "")}" aria-label="Prusa Link host" />
             </label>
@@ -598,8 +599,8 @@ function printer(id: string, name: string, bedX: number, bedY: number, bedZ: num
     bedZ,
     maxVolumetricMm3S: flow,
     maxAccel: accel,
-    startGcode: `; ${name}`,
-    endGcode: `; end ${name}`,
+    startGcode: "",
+    endGcode: "",
     host: "",
     apiKey: "",
     startPrint: false,
