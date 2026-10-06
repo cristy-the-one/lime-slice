@@ -4,11 +4,78 @@ Ranked against PrusaSlicer, OrcaSlicer, Bambu Studio, and Cura. Status is what t
 
 Shipped work that this list does not treat as a gap: one-mesh slice of STL, 3MF, and STEP (`crates/lime-slice-core/src/load.rs`, `crates/lime-slice-core/src/step.rs`); strategy blends (`crates/lime-slice-core/src/strategy.rs`, README); tree and grid supports with prune and regrow (`docs/support-edits.md`, `src/ui/support-edit-ui.ts`); slice jobs, progress, and cancel (`docs/slice-progress.md`); a `.lime` project (`src/project.ts`); named settings profiles that store a preset and a level (`src/ui/settings-profiles.ts`); undo of placement and settings (`src/app/history.ts`); compact layout with a 70% prepare canvas (`src/ui/compact/`).
 
-Multi-object plates and support painting are designed, not built. The design is [multi-object-and-support-painting.md](multi-object-and-support-painting.md).
+The [build checklist](#build-checklist-2026-10-06) is the status of this tree. A Status line in a section below is the gap write-up from 2026-10-03. Where the two disagree, the checklist wins.
+
+## Build checklist (2026-10-06)
+
+Standing decisions in [Decisions (2026-10-03)](#decisions-2026-10-03) still hold. This run does not add code signing, a Bambu LAN client, redistributed vendor profiles, or a native iOS shell. The phone layout stays a secondary check that the prepare canvas remains at least 70%.
+
+A row is **done** when a user can do the thing and the engine honors it. **In progress** means a pull request is open for it. **Remaining** means it is not in the app or the engine. Links are the pull request that landed the work.
+
+### Done
+
+- Printer, filament, and nozzle library. Our own profiles. Pressure advance is per filament and nozzle. [#110](https://github.com/cristy-the-one/lime-slice/pull/110)
+- Seam picker: blend, nearest, aligned, rear. [#127](https://github.com/cristy-the-one/lime-slice/pull/127)
+- Ironing, off unless the request carries `ironing`. [#136](https://github.com/cristy-the-one/lime-slice/pull/136), controls in [#131](https://github.com/cristy-the-one/lime-slice/pull/131)
+- Arc fitting and Arachne-style variable-width walls. Both default on. They are not a gap.
+- Prusa Link send from the desktop app. [#140](https://github.com/cristy-the-one/lime-slice/pull/140), earlier UI in [#111](https://github.com/cristy-the-one/lime-slice/pull/111)
+- Multi-object plates, all-at-once, each object in its own part frame. [#126](https://github.com/cristy-the-one/lime-slice/pull/126), UI plate in [#121](https://github.com/cristy-the-one/lime-slice/pull/121)
+- Support painting, enforce and block disks, sliced. [#139](https://github.com/cristy-the-one/lime-slice/pull/139)
+- Height ranges and modifier volumes, sliced. [#128](https://github.com/cristy-the-one/lime-slice/pull/128), editor in [#115](https://github.com/cristy-the-one/lime-slice/pull/115), per-layer replan in [#133](https://github.com/cristy-the-one/lime-slice/pull/133)
+- Foreign 3MF opens mesh-only. [#113](https://github.com/cristy-the-one/lime-slice/pull/113)
+- Pressure-advance tower. `lime-slice calibrate pa`, and the sheet writes the chosen K onto the filament.
+- Belt slicing, phases 1, 2, and 5, plus the belt wall and the `blend` seam rewritten to the belt edge. Design [#147](https://github.com/cristy-the-one/lime-slice/pull/147), profile [#148](https://github.com/cristy-the-one/lime-slice/pull/148), engine [#151](https://github.com/cristy-the-one/lime-slice/pull/151), UI [#152](https://github.com/cristy-the-one/lime-slice/pull/152). A cartesian request with no `belt` object keeps its G-code (`crates/lime-slice-core/tests/cartesian_lock.rs`).
+- Preview time, cost, layer scrubber, and the layer-time chart.
+
+### In progress
+
+None. The next pull request starts from the remaining list.
+
+### Remaining, in the order this run will build them
+
+Each engine feature is opt-in or default-off, with a cartesian lock so an unused feature leaves G-code bytes and the request cache key unchanged. One feature per pull request. A short design note goes in the same pull request when the feature is small, and as its own note when it is not.
+
+1. **Start and end G-code on export and send.** The library already stores both as UI text and keeps them off the slice request. Export and Send still ship the engine file alone. Splice non-empty text around that file. Stock built-in printers use an empty template so a default export stays the engine bytes.
+2. **Belt seam on the belt edge, opt-in.** Today only `seam: blend` is rewritten to rear. An explicit nearest or aligned seam stays. A belt flag, omitted when off, pulls an explicit seam onto the belt edge too.
+3. **Belt raft, opt-in.** A few layers on the belt before the part, so the first contact is not a sliver `drop_slivers` throws away. `drop_slivers` stays global.
+4. **Fuzzy skin, off by default.** A noise offset on outer walls. Ironing already shipped, so this is the next surface look. No painting.
+5. **Seam painting.** Disks on the mesh, the same idea as support paint, omitted when empty. The picker stays the default.
+6. **Flow tower.** A generator beside `calibrate pa`, and a sheet control that writes a flow multiplier onto the filament.
+7. **Temperature tower.** Nozzle temperature steps by height. The chosen band writes the filament's nozzle temperature.
+8. **Retraction length and speed, then a retraction tower.** Length is still inside the strategy (0.35 mm on speed, 0.9 mm on toughness). Omitted fields keep that. The tower comes after the fields exist, so the result has a place to land.
+9. **Belt preview patches.** A belt reply is always a whole preview, because the patch token leaves out copies, axis, and direction. Put those in the token. G-code stays the bytes of a belt slice today.
+10. **Per-object infill, walls, and speed.** The plate design allows them. The engine still refuses `objects[i].settings.walls` as not supported yet. Ranges and volumes stay plate-wide.
+11. **Sequential printing.** `printOrder: "sequential"` is refused until clearance exists. All-at-once stays the omitted default.
+12. **Supports grown from the tilted belt floor.** Until this lands, a belt slice forces supports off and refuses support edits and paint. This is the largest belt follow-up, so it waits until the smaller belt flags are in.
+13. **Multi-material.** A design note, plus UI groundwork for a second filament on the machine, and no toolpath. Tool changes, a purge tower, and a second extruder stay out of the engine in this run.
+14. **Repair audit in the sheet.** The engine already reports repaired and dropped chains. Show that text. No interactive hole fill.
+
+### Deferred, and why
+
+- **Code signing and the updater.** Decided later. Unsigned installers stay ([#103](https://github.com/cristy-the-one/lime-slice/pull/103)).
+- **Bambu LAN, Moonraker, and OctoPrint.** Prusa Link is the send path. The others wait.
+- **Redistributed Prusa or Bambu profiles.** We ship our own.
+- **Native iOS.** The TODOs in `src/platform.ts` stay. On-device slicing (`MOCK_ON_DEVICE_LABEL` in `src/ui/compact/mocks.ts`) stays labelled mock.
+- **Playback speed.** The compact chip is a mock 1× (`MOCK_PLAYBACK_SPEED`). It does not change a toolpath and is not in this run.
+- **Hollow and text emboss.** Large mesh booleans, low user value next to the rows above.
+- **Cut to two bodies, and split-to-objects at load.** Both need a plate slot for the new body. The plate exists, but a mesh boolean and a loader split are their own projects. The section plane stays a view.
+- **Localization, crash reporting, and an onboarding tour.** Strings are still moving. No crash vendor. The empty state already says to open a mesh.
+- **Foreign settings import.** A foreign 3MF stays mesh-only.
+- **G-code emit performance.** Not ahead of the rows above.
+- **World-space shear for a belt firmware that does not tilt.** Not used for the machines in `docs/belt-slicing.md`.
+- **Per-range layer height, rotated modifier volumes, and mesh modifiers.** Non-goals in `docs/modifiers-and-height-ranges.md`.
+
+### Mocks that stay labelled
+
+- On-device engine button, disabled, "On-device later".
+- Playback speed chip, "1×", no effect.
+- Slice progress on the invoke path with no job stream uses the estimated curve (`src/ui/slice-progress.ts`). HTTP jobs report a real fraction.
+
+Two comments in `src/app/state.ts` are stale and will be corrected in the first code change that touches that file: the plate slice does send `objects` when the plate has more than one mesh or a per-object setting, and height ranges and modifier volumes are on the slice request.
 
 ## Multi-object plates and arrange
 
-**Status.** Missing.
+**Status.** Done for all-at-once ([#126](https://github.com/cristy-the-one/lime-slice/pull/126)). Sequential is remaining. See the [checklist](#build-checklist-2026-10-06). The paragraphs below are the 2026-10-03 gap.
 
 **User value.** High for anyone printing more than one part. The other slicers arrange a bed and keep each body separate. Here a second file replaces the first (`state.mesh` in `src/app/state.ts`). STEP assemblies and 3MF models become one mesh (`crates/lime-slice-core/src/step.rs`, `load_3mf` in `crates/lime-slice-core/src/load.rs`).
 
@@ -22,7 +89,7 @@ Multi-object plates and support painting are designed, not built. The design is 
 
 ## Printer and filament libraries
 
-**Status.** Partial.
+**Status.** Done ([#110](https://github.com/cristy-the-one/lime-slice/pull/110)). Start and end G-code are stored and not yet spliced into export or send. See the [checklist](#build-checklist-2026-10-06). The paragraph below is the 2026-10-03 gap.
 
 One printer profile is stored and edited: nozzle, filament diameter, temperatures, bed size, volumetric cap, accel, density, cost, pressure advance, and linear advance (`src/profiles.ts`, `profileFields` in `src/app/settings.ts`). Import and export are one JSON file. The default is "Generic Marlin 0.4 mm PLA". Named settings profiles are slice presets, not printers or filaments (`src/ui/settings-profiles.ts`). There is no vendor catalog and no filament that carries its own pressure advance apart from that one profile. The engine already emits Klipper `SET_PRESSURE_ADVANCE` and Marlin `M900` from those two numbers (README, `crates/lime-slice-core/src/strategy.rs`).
 
@@ -40,7 +107,7 @@ One printer profile is stored and edited: nozzle, filament diameter, temperature
 
 ### Seam control
 
-**Status.** Partial.
+**Status.** The picker is done ([#127](https://github.com/cristy-the-one/lime-slice/pull/127)). Seam painting is remaining. See the [checklist](#build-checklist-2026-10-06). The paragraph below is the 2026-10-03 gap.
 
 Scarfed seams, aligned seams on a sharp corner, and nearest seams are in the planner and on by default (`--scarf-seam`, `--travel-opt` in the README; `scarfSeam` in `src/app/settings.ts`). There is no seam painter and no "rear / random / aligned" picker beyond scarf off, outer, and all.
 
@@ -214,7 +281,7 @@ The estimate is seconds, filament grams, and a euro cost from the profile's €/
 
 ## Send to printer
 
-**Status.** Partial. Prusa Link only, desktop first, as of 2026-10-04.
+**Status.** Prusa Link is done, desktop first ([#140](https://github.com/cristy-the-one/lime-slice/pull/140)). Moonraker, OctoPrint, and Bambu LAN stay out. See the [checklist](#build-checklist-2026-10-06).
 
 The printer profile stores a Prusa Link host and API key (`host` and `apiKey` on `PrinterRecord` in `src/ui/machine-library.ts`, version 2 of the machine file). After a slice, Send uploads that G-code with `PUT /api/v1/files/local/<name>` and can start the print (`Print-After-Upload`). Export to a file stays (`exportGcode` in `src/app/files.ts`). Moonraker, OctoPrint, and Bambu LAN are not implemented. The phone is not a send target.
 
@@ -250,7 +317,7 @@ Birth-site prune and region regrow are in the engine and the UI (`docs/support-e
 
 ### Support painting
 
-**Status.** Missing.
+**Status.** Done ([#139](https://github.com/cristy-the-one/lime-slice/pull/139)). See the [checklist](#build-checklist-2026-10-06). The paragraph below is the 2026-10-03 gap.
 
 Demand is the overhang angle (`overhang_at` in `crates/lime-slice-core/src/support.rs`). There is no enforce or block brush. The design is in [multi-object-and-support-painting.md](multi-object-and-support-painting.md).
 
@@ -282,7 +349,7 @@ Seams are chosen by the planner, not by a stroke on the mesh.
 
 ### Modifier volumes
 
-**Status.** Partial.
+**Status.** Done for box, cylinder, and sphere ([#128](https://github.com/cristy-the-one/lime-slice/pull/128)). Mesh modifiers stay out. See the [checklist](#build-checklist-2026-10-06). The paragraph below is the 2026-10-03 gap.
 
 By-region blend is one plane: low side toughness, high side speed (`byRegion` in `src/app/settings.ts`, drag in Prepare). It is not a box, a mesh, or a stack of modifier shapes. By-layer blend is one height band, below.
 
@@ -298,7 +365,7 @@ By-region blend is one plane: low side toughness, high side speed (`byRegion` in
 
 ### Height-range settings
 
-**Status.** Partial.
+**Status.** Done for infill, walls, and a speed cap ([#128](https://github.com/cristy-the-one/lime-slice/pull/128)). Per-range layer height stays out. See the [checklist](#build-checklist-2026-10-06). The paragraph below is the 2026-10-03 gap.
 
 By-layer blend uses a bottom band and a transition (`bottomMm`, `transitionMm`). It mixes two strategies. It is not a list of Z ranges each with its own infill, walls, and speed.
 
@@ -488,7 +555,7 @@ Strings are English in the UI and the engine errors.
 
 ## Recommended order
 
-Do not rebuild the rows marked exists. This list follows [Decisions (2026-10-03)](#decisions-2026-10-03).
+Do not rebuild the rows marked exists. This list is the 2026-10-03 order. The [build checklist](#build-checklist-2026-10-06) is the order from here. It follows [Decisions (2026-10-03)](#decisions-2026-10-03).
 
 1. **Printer, filament, and nozzle library.** Our own small catalog, not redistributed Prusa or Bambu profiles. Pressure advance is stored per filament and nozzle size. Vendor start and end G-code is editable header text on the UI side. Mostly UI. The emit path already prints one K.
 2. **Ironing and a seam picker.** Rear, nearest, and aligned are enough before seam painting. Ironing before fuzzy skin. Fuzzy skin after those. Arc fitting and variable-width walls stay as they are.
@@ -500,7 +567,7 @@ Do not rebuild the rows marked exists. This list follows [Decisions (2026-10-03)
 8. **Performance of G-code emit**, when a profile is slow on the inventory's dragon, not before the rows above.
 9. **Polish in parallel with whoever owns release:** the tour after the printer picker exists, localization when the strings settle, foreign-project settings import after the libraries exist. Signing trails these rows. Ship unsigned installers until public release.
 
-**Deferred.** Flow, temperature, and retraction towers wait. Multi-material waits until the single-extruder library and the send path exist. A utility or library for multi-material comes before any toolpath work.
+**Deferred, as of 2026-10-03.** Flow, temperature, and retraction towers waited on the library and the send path. Both exist now, so the [checklist](#build-checklist-2026-10-06) builds the towers after fuzzy skin and seam painting. Multi-material is a design note and UI groundwork only, after the towers. A utility or library for multi-material comes before any toolpath work.
 
 ## Questions for Marius
 
