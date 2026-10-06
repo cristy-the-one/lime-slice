@@ -30,6 +30,7 @@ A row is **done** when a user can do the thing and the engine honors it. **In pr
 - Belt seam on the belt edge, opt-in. `belt.seamOnEdge` is omitted when off, so an explicit nearest or aligned seam stays unless the box is checked. [#155](https://github.com/cristy-the-one/lime-slice/pull/155)
 - Belt raft, opt-in. `belt.raftLayers` is omitted when 0. A count from 1 to 8 prints a solid pad on the belt before the part. `drop_slivers` stays global. [#156](https://github.com/cristy-the-one/lime-slice/pull/156)
 - Fuzzy skin, off by default. `fuzzySkin` is omitted when off. On, it offsets outer walls after the seam is chosen and leaves a scarf ramp alone. [#157](https://github.com/cristy-the-one/lime-slice/pull/157)
+- Seam painting. Disks on the mesh, omitted when empty. A painted disk pulls the nearest wall vertex and pins it. The picker stays the default. [#158](https://github.com/cristy-the-one/lime-slice/pull/158)
 
 ### In progress
 
@@ -39,16 +40,15 @@ None. The next pull request starts from the remaining list.
 
 Each engine feature is opt-in or default-off, with a cartesian lock so an unused feature leaves G-code bytes and the request cache key unchanged. One feature per pull request. A short design note goes in the same pull request when the feature is small, and as its own note when it is not.
 
-1. **Seam painting.** Disks on the mesh, the same idea as support paint, omitted when empty. The picker stays the default.
-2. **Flow tower.** A generator beside `calibrate pa`, and a sheet control that writes a flow multiplier onto the filament.
-3. **Temperature tower.** Nozzle temperature steps by height. The chosen band writes the filament's nozzle temperature.
-4. **Retraction length and speed, then a retraction tower.** Length is still inside the strategy (0.35 mm on speed, 0.9 mm on toughness). Omitted fields keep that. The tower comes after the fields exist, so the result has a place to land.
-5. **Belt preview patches.** A belt reply is always a whole preview, because the patch token leaves out copies, axis, and direction. Put those in the token. G-code stays the bytes of a belt slice today.
-6. **Per-object infill, walls, and speed.** The plate design allows them. The engine still refuses `objects[i].settings.walls` as not supported yet. Ranges and volumes stay plate-wide.
-7. **Sequential printing.** `printOrder: "sequential"` is refused until clearance exists. All-at-once stays the omitted default.
-8. **Supports grown from the tilted belt floor.** Until this lands, a belt slice forces supports off and refuses support edits and paint. This is the largest belt follow-up, so it waits until the smaller belt flags are in.
-9. **Multi-material.** A design note, plus UI groundwork for a second filament on the machine, and no toolpath. Tool changes, a purge tower, and a second extruder stay out of the engine in this run.
-10. **Repair audit in the sheet.** The engine already reports repaired and dropped chains. Show that text. No interactive hole fill.
+1. **Flow tower.** A generator beside `calibrate pa`, and a sheet control that writes a flow multiplier onto the filament.
+2. **Temperature tower.** Nozzle temperature steps by height. The chosen band writes the filament's nozzle temperature.
+3. **Retraction length and speed, then a retraction tower.** Length is still inside the strategy (0.35 mm on speed, 0.9 mm on toughness). Omitted fields keep that. The tower comes after the fields exist, so the result has a place to land.
+4. **Belt preview patches.** A belt reply is always a whole preview, because the patch token leaves out copies, axis, and direction. Put those in the token. G-code stays the bytes of a belt slice today.
+5. **Per-object infill, walls, and speed.** The plate design allows them. The engine still refuses `objects[i].settings.walls` as not supported yet. Ranges and volumes stay plate-wide.
+6. **Sequential printing.** `printOrder: "sequential"` is refused until clearance exists. All-at-once stays the omitted default.
+7. **Supports grown from the tilted belt floor.** Until this lands, a belt slice forces supports off and refuses support edits and paint. This is the largest belt follow-up, so it waits until the smaller belt flags are in.
+8. **Multi-material.** A design note, plus UI groundwork for a second filament on the machine, and no toolpath. Tool changes, a purge tower, and a second extruder stay out of the engine in this run.
+9. **Repair audit in the sheet.** The engine already reports repaired and dropped chains. Show that text. No interactive hole fill.
 
 ### Deferred, and why
 
@@ -105,7 +105,7 @@ One printer profile is stored and edited: nozzle, filament diameter, temperature
 
 ### Seam control
 
-**Status.** The picker is done ([#127](https://github.com/cristy-the-one/lime-slice/pull/127)). Seam painting is remaining. See the [checklist](#build-checklist-2026-10-06). The paragraph below is the 2026-10-03 gap.
+**Status.** The picker is done ([#127](https://github.com/cristy-the-one/lime-slice/pull/127)). Seam painting is done ([#158](https://github.com/cristy-the-one/lime-slice/pull/158)). See the [checklist](#build-checklist-2026-10-06). The paragraph below is the 2026-10-03 gap.
 
 Scarfed seams, aligned seams on a sharp corner, and nearest seams are in the planner and on by default (`--scarf-seam`, `--travel-opt` in the README; `scarfSeam` in `src/app/settings.ts`). There is no seam painter and no "rear / random / aligned" picker beyond scarf off, outer, and all.
 
