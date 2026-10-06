@@ -132,7 +132,7 @@ The rotation is part of the mesh the contour key hashes. `belt` is not a `SliceS
 
 Usable width is the across-belt span (`max X − min X`), not a check that the part sits inside `[0, width]`. Max length is `copies * extent + (copies − 1) * gap`. A bad angle, axis, direction, width, length, copies, or gap names that field (`belt.angleDeg`, and the same for the others).
 
-Layer 0 keeps the writer's 30 mm/s, flow 1.06, and fan off. Later layers slow only `outer` and `wall` runs whose bead bottom is within `0.75 * height` of the belt in the lab, and only when that run is at least 0.8 mm. A later copy's first layer is slowed the same way in the paths, because the writer only treats index 0 as the first layer. Scarf and Z hop are forced off: both would move the belt axis between beads. `seam: blend` becomes `rear` (+Y after the rotation, the belt edge). An explicit seam is kept. Ironing is left on. Supports are forced off with no error. Support edits, support paint, and `compare` are errors.
+Layer 0 keeps the writer's 30 mm/s, flow 1.06, and fan off. Later layers slow only `outer` and `wall` runs whose bead bottom is within `0.75 * height` of the belt in the lab, and only when that run is at least 0.8 mm. A later copy's first layer is slowed the same way in the paths, because the writer only treats index 0 as the first layer. Scarf and Z hop are forced off: both would move the belt axis between beads. `seam: blend` becomes `rear` (+Y after the rotation, the belt edge). An explicit seam is kept unless `belt.seamOnEdge` is true, which is omitted when off. Ironing is left on. Supports are forced off with no error. Support edits, support paint, and `compare` are errors.
 
 Preview `zs` are lab height above the belt, in the part frame, including travels, so a layer draws tilted. The layer's own `z` is the belt position. Patches are skipped: the kept token does not include copies, axis, or direction. Print time is the existing estimator. The belt step is timed like a Z travel, at 120 mm/s.
 
@@ -142,7 +142,7 @@ A belt axis of X or Y permutes the letters. The nozzle plane is no longer machin
 
 - A belt raft, and any change to `drop_slivers`. The first contact can still be a sliver the skin filter throws away.
 - Supports grown on the belt floor, with the down vector tilted by `α`. Until then a belt slice has no supports, and edits or paint are refused.
-- Pulling an explicit seam onto the belt edge. Only `blend` is rewritten to `rear`.
+- Pulling an explicit seam onto the belt edge is opt-in. `belt.seamOnEdge`, omitted when false, rewrites nearest and aligned to `rear` as well. `blend` still moves without the flag.
 - Preview patches for a belt plate.
 - A part-frame move that does not recut. Baking the bed offset means a move across the belt, or a move of one object relative to another along it, changes the mesh the contour key hashes.
 - World-space shear for a firmware that does not already tilt. Not used for the four machines above.

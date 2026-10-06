@@ -1184,7 +1184,8 @@ fn prepare_belt(
         object.settings.scarf_seam = ScarfSeam::Off;
         // Blend would hide the seam wherever the strategy likes. The belt edge
         // is the back of the nozzle plane, which is Rear after the rotation.
-        if object.settings.seam == SeamPlacement::Blend {
+        // An explicit seam stays unless the printer asks for the belt edge.
+        if belt.seam_on_edge || object.settings.seam == SeamPlacement::Blend {
             object.settings.seam = SeamPlacement::Rear;
         }
     }

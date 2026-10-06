@@ -306,6 +306,117 @@ fn supports_edits_and_compare_are_refused() {
 }
 
 #[test]
+fn seam_on_the_belt_edge_is_opt_in() {
+    use sha2::{Digest, Sha256};
+    let stl = box_stl(20.0, 10.0, 2.0);
+    let aligned = belt(45.0, "z", 1, 5.0);
+    let off = request(
+        &stl,
+        "box.stl",
+        json!({ "belt": aligned, "seam": "aligned", "includePreview": false }),
+    );
+    let wire = serde_json::to_value(&off).unwrap();
+    assert!(wire["belt"].get("seamOnEdge").is_none(), "{}", wire["belt"]);
+    let off_gcode = slice_request(&off, Job::default()).unwrap().gcode;
+    let hash = off_gcode
+        .as_bytes()
+        .iter()
+        .fold(Sha256::new(), |mut h, b| {
+            h.update([*b]);
+            h
+        });
+    // Aligned, with the flag omitted. Captured after the flag existed and
+    // stayed off, so this is the belt file a request without the flag writes.
+    let hex: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        hex,
+        "ec5ebbe00e225386353f1090c1dc86bb8514a2f1491944cd4712a1ae2b8fe5c3"
+    );
+
+    let mut on_belt = aligned.clone();
+    on_belt["seamOnEdge"] = json!(true);
+    let on = request(
+        &stl,
+        "box.stl",
+        json!({ "belt": on_belt, "seam": "aligned", "includePreview": false }),
+    );
+    let on_reply = slice_request(&on, Job::default()).unwrap();
+    assert!(on_reply.sanity.ok, "{:?}", on_reply.sanity.notes);
+    assert_ne!(on_reply.gcode, off_gcode);
+    let placed = layer_seam_ys(&on_reply.gcode);
+    assert!(placed.len() > 4, "layers {}", placed.len());
+    let missed: Vec<_> = placed
+        .iter()
+        .copied()
+        .filter(|(start, back)| (start - back).abs() >= 1.0)
+        .collect();
+    assert!(
+        missed.is_empty(),
+        "the first outer start is not the belt edge: {missed:?}"
+    );
+}
+
+/// `(first outer seam Y, max outer Y)` per layer, in gantry coordinates.
+/// A wall the fan change splits is still one seam: the first outer start.
+fn layer_seam_ys(gcode: &str) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    let mut ys: Vec<f64> = Vec::new();
+    let mut seam: Option<f64> = None;
+    let mut cursor_y = 0.0;
+    let mut in_outer = false;
+    let mut saw_outer = false;
+    let flush = |ys: &mut Vec<f64>, seam: &mut Option<f64>, saw: &mut bool, out: &mut Vec<(f64, f64)>| {
+        if *saw {
+            if let (Some(y0), Some(back)) = (*seam, ys.iter().copied().reduce(f64::max)) {
+                out.push((y0, back));
+            }
+        }
+        ys.clear();
+        *seam = None;
+        *saw = false;
+    };
+    for line in gcode.lines() {
+        if line.starts_with(";LAYER:") {
+            flush(&mut ys, &mut seam, &mut saw_outer, &mut out);
+            in_outer = false;
+            continue;
+        }
+        if line == "; TYPE:OUTER" {
+            in_outer = true;
+            saw_outer = true;
+            continue;
+        }
+        if line.starts_with("; TYPE:") {
+            in_outer = false;
+            continue;
+        }
+        if !line.starts_with("G0 ") && !line.starts_with("G1 ") {
+            continue;
+        }
+        let y = gcode_word(line, 'Y');
+        if in_outer && gcode_word(line, 'E').is_some() {
+            if seam.is_none() {
+                seam = Some(cursor_y);
+            }
+            if let Some(y) = y {
+                ys.push(y);
+            }
+            ys.push(cursor_y);
+        }
+        if let Some(y) = y {
+            cursor_y = y;
+        }
+    }
+    flush(&mut ys, &mut seam, &mut saw_outer, &mut out);
+    out
+}
+
+fn gcode_word(line: &str, axis: char) -> Option<f64> {
+    line.split_whitespace()
+        .find_map(|word| word.strip_prefix(axis)?.parse().ok())
+}
+
+#[test]
 fn an_omitted_belt_is_absent_from_the_request_json() {
     let req = request(
         &box_stl(8.0, 8.0, 1.6),

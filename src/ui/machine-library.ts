@@ -787,7 +787,8 @@ function beltFieldsHtml(printer: PrinterRecord | undefined): string {
         <label class="field setting" data-label="belt gap" data-keywords="copy spacing">Gap mm
           <input id="beltGap" type="number" min="0" max="500" step="1" value="${belt.gapMm}" aria-label="Gap between copies" />
         </label>
-        <p class="meta belt-wide">Mock only. The engine does not slice a belt yet, so export and send stay off.</p>
+        <label class="check setting belt-wide" data-label="seam on belt edge" data-keywords="seam rear belt"><input id="beltSeam" type="checkbox"${belt.seamOnEdge ? " checked" : ""}/> Seam on the belt edge</label>
+        <p class="meta belt-wide">The engine slices this belt. Export follows the slice. Send follows the printer connection. Seam on the belt edge is off until that box is checked, so an explicit nearest or aligned seam stays where it was.</p>
       </div>`;
 }
 

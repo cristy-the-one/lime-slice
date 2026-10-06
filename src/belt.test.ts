@@ -31,7 +31,9 @@ const cartesian = { layerHeight: 0.2, printer: { nozzleDiameter: 0.4 } };
 const plain = recipeKey(cartesian, "mesh");
 check("a cartesian request gains no belt key", recipeKey({ ...cartesian, ...beltSliceField(null) }, "mesh") === plain);
 const sent = beltSliceField(defaultBelt(200));
-check("an unlimited belt omits maxLengthMm", !!sent.belt && !("maxLengthMm" in sent.belt) && sent.belt.angleDeg === 45 && sent.belt.axis === "z" && sent.belt.copies === 1);
+check("an unlimited belt omits maxLengthMm and the seam flag", !!sent.belt && !("maxLengthMm" in sent.belt) && !("seamOnEdge" in sent.belt) && sent.belt.angleDeg === 45 && sent.belt.axis === "z" && sent.belt.copies === 1);
+const edged = beltSliceField({ ...defaultBelt(200), seamOnEdge: true });
+check("the seam flag is sent only when on", edged.belt?.seamOnEdge === true && !("seamOnEdge" in (beltSliceField(defaultBelt(200)).belt ?? {})));
 check("a belt changes the recipe", recipeKey({ ...cartesian, ...sent }, "mesh") !== plain);
 const sentCap = beltSliceField({ ...defaultBelt(180), maxLengthMm: 300, copies: 2, gapMm: 8, direction: -1, axis: "y" });
 check(
@@ -42,7 +44,7 @@ check(
 const messy = coerceBelt({ angleDeg: 0, axis: "nope", direction: -1, widthMm: -4, maxLengthMm: null, copies: 100, gapMm: -2 }, 220);
 check(
   "a bad belt block is clamped",
-  messy.angleDeg === 10 && messy.axis === "z" && messy.direction === -1 && messy.widthMm === 220 && messy.maxLengthMm === null && messy.copies === 24 && messy.gapMm === 5,
+  messy.angleDeg === 10 && messy.axis === "z" && messy.direction === -1 && messy.widthMm === 220 && messy.maxLengthMm === null && messy.copies === 24 && messy.gapMm === 5 && messy.seamOnEdge === false,
 );
 
 if (failed) {
