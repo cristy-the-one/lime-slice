@@ -2,6 +2,30 @@
 
 Filament FDM slicer. A Rust core turns an STL, 3MF, or STEP mesh into toolpaths, and a Tauri 2 desktop UI previews them. STEP (`.step` / `.stp`) is tessellated in-process with the pure-Rust [truck](https://github.com/ricosjp/truck) kernel: planes, cylinders, cones, spheres, tori, and NURBS, with file units converted to millimetres. Assemblies and multi-body parts become one mesh; each instance keeps its placement. The chord tolerance defaults to 0.1 mm (0.01–2 mm) via the Prepare field or `slice --step-tolerance`. Faceted brep and AP242 tessellated solids are rejected with an error. Named strategies (`speed`, `toughness`) are real parameter sets — wall count, infill pattern and density, print speed, acceleration, seam, retraction — and blends mix those outputs by weight, by layer, or by region.
 
+## Screenshots
+
+Dark theme. These are the web UI against the local engine, at 1440×900 except the phone frame. The part is `samples/overhang_ledge.stl`, sliced on the speed blend with organic supports. That slice finished at 8.1 min and 3.68 g.
+
+![Prepare view. The overhang sample sits on the build plate, and the settings panel is open beside it.](docs/screenshots/prepare.png)
+
+Prepare. The model is on the plate, with the settings panel open.
+
+![Perspective 3D preview of the finished slice. Toolpaths are coloured by feature, with the layer slider and the feature legend.](docs/screenshots/preview-3d.png)
+
+Preview. Perspective 3D of the finished slice. Walls, infill, and supports keep their feature colours, and the layer slider sits on the view.
+
+![The layer at Z 12.60 mm drawn solid, with the print-time and filament breakdown beside it.](docs/screenshots/layer-estimate.png)
+
+The layer at Z 12.60 mm, where the shelf starts, and the print-time and filament breakdown.
+
+![Printer, filament, and nozzle library. Lime 220, PLA, and a 0.4 mm nozzle.](docs/screenshots/machine-library.png)
+
+Printer, filament, and nozzle. Lime 220, PLA, 0.4 mm.
+
+<img alt="Compact phone layout. The prepare view fills the screen, with the overhang on the plate and the settings sheet peeked." src="docs/screenshots/prepare-phone.png" width="240">
+
+Phone layout (`?layout=compact`). The prepare view fills the screen.
+
 ## Run the UI
 
 Two processes. The slicer is the Rust binary; the window is either the browser dev server or Tauri.
