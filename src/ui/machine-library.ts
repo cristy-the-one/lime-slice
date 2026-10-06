@@ -839,10 +839,11 @@ function beltFieldsHtml(printer: PrinterRecord | undefined): string {
         </label>
         <label class="check setting belt-wide" data-label="seam on belt edge" data-keywords="seam rear belt"><input id="beltSeam" type="checkbox"${belt.seamOnEdge ? " checked" : ""}/> Seam on the belt edge</label>
         <label class="check setting belt-wide" data-label="belt raft" data-keywords="raft pad adhesion first layers"><input id="beltRaft" type="checkbox"${belt.raftLayers > 0 ? " checked" : ""}/> Belt raft</label>
+        <label class="check setting belt-wide" data-label="belt floor supports" data-keywords="support overhang belt floor"><input id="beltFloor" type="checkbox"${belt.floorSupports ? " checked" : ""}/> Supports on the belt</label>
         <label class="field setting" data-label="belt raft layers" data-keywords="raft layers pad">Raft layers
           <input id="beltRaftLayers" type="number" min="1" max="8" step="1" value="${belt.raftLayers > 0 ? belt.raftLayers : 3}"${belt.raftLayers > 0 ? "" : " disabled"} aria-label="Belt raft layers" />
         </label>
-        <p class="meta belt-wide">The engine slices this belt. Export follows the slice. Send follows the printer connection. Seam on the belt edge and the belt raft stay off until those boxes are checked. A raft prints a few solid layers on the belt before the part.</p>
+        <p class="meta belt-wide">The engine slices this belt. Export follows the slice. Send follows the printer connection. Seam on the belt edge, the belt raft, and supports on the belt stay off until those boxes are checked. A raft prints a few solid layers on the belt before the part. Supports on the belt grow down to the tilted floor. They are not available together with a raft.</p>
       </div>`;
 }
 

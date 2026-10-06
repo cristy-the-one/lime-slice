@@ -5,8 +5,8 @@ use serde::Serialize;
 
 use crate::adaptive::LayerBand;
 use crate::poly::{
-    boolean_diff, boolean_intersect, boolean_union, distance_to_outline, drop_slivers, in_solid,
-    local_diff, local_union, loop_bounds, offset_loops, point_in_loop, resolve_nonzero,
+    boolean_diff, boolean_intersect, boolean_union, clip_to_rect, distance_to_outline, drop_slivers,
+    in_solid, local_diff, local_union, loop_bounds, offset_loops, point_in_loop, resolve_nonzero,
     signed_area, simplify_loops, Loop, LoopIndex,
 };
 
@@ -69,6 +69,99 @@ pub struct SupportOpts {
     pub max_tip_spacing: f64,
     /// Stop the walk early when this slice has been superseded.
     pub job: crate::cancel::Job,
+    /// The tilted belt, when supports land on it instead of on Z 0.
+    /// `None` on a cartesian plate, and on a belt that did not ask.
+    pub floor: Option<FloorPlane>,
+}
+
+/// The belt in the slice frame. Printable material is `y <= y_max(z)`.
+/// `None` leaves every support path where it was.
+#[derive(Clone, Copy, Debug)]
+pub struct FloorPlane {
+    tan_a: f64,
+    y_shift: f64,
+    z_drop: f64,
+}
+
+impl FloorPlane {
+    pub(crate) fn new(tan_a: f64, y_shift: f64, z_drop: f64) -> Self {
+        Self {
+            tan_a,
+            y_shift,
+            z_drop,
+        }
+    }
+
+    /// Slice Z of the belt at this Y.
+    fn z_at(self, y: f64) -> f64 {
+        (y + self.y_shift) * self.tan_a - self.z_drop
+    }
+
+    /// Largest printable Y on a layer whose top is `z`.
+    fn y_max(self, z: f64) -> f64 {
+        (z + self.z_drop) / self.tan_a - self.y_shift
+    }
+
+    pub(crate) fn tan_a(self) -> f64 {
+        self.tan_a
+    }
+
+    pub(crate) fn y_shift(self) -> f64 {
+        self.y_shift
+    }
+
+    pub(crate) fn z_drop(self) -> f64 {
+        self.z_drop
+    }
+}
+
+/// Drop loops and disks that would print through the belt.
+fn clip_support_layer(layer: &mut SupportLayer, y_max: f64) {
+    if !layer.interface.is_empty() {
+        layer.interface = clip_half(&layer.interface, y_max);
+    }
+    if !layer.sparse.is_empty() {
+        layer.sparse = clip_half(&layer.sparse, y_max);
+    }
+    clip_disks(&mut layer.disks, y_max);
+}
+
+fn clip_printed(layers: &mut [SupportLayer], bands: &[LayerBand], floor: Option<FloorPlane>) {
+    let Some(floor) = floor else {
+        return;
+    };
+    for (layer, band) in layers.iter_mut().zip(bands) {
+        clip_support_layer(layer, floor.y_max(band.z));
+    }
+}
+
+/// The half-plane `y <= y_max`. A region already inside is returned as it is,
+/// so Clipper does not rewrite a loop that never crossed the belt.
+fn clip_half(loops: &[Loop], y_max: f64) -> Vec<Loop> {
+    if loops.is_empty() {
+        return Vec::new();
+    }
+    let inside = loops
+        .iter()
+        .all(|loop_| loop_.iter().all(|p| p[1] <= y_max + 1e-6));
+    if inside {
+        return loops.to_vec();
+    }
+    drop_slivers(
+        clip_to_rect(loops, [-1.0e5, -1.0e5], [1.0e5, y_max]),
+        0.02,
+    )
+}
+
+fn clip_disks(disks: &mut Vec<Disk>, y_max: f64) {
+    disks.retain_mut(|disk| {
+        let room = y_max - disk.xy[1];
+        if room < MIN_DISK_R {
+            return false;
+        }
+        disk.r = disk.r.min(room);
+        true
+    });
 }
 
 impl Default for SupportOpts {
@@ -87,6 +180,7 @@ impl Default for SupportOpts {
             load_factor: 0.0,
             max_tip_spacing: 0.0,
             job: crate::cancel::Job::default(),
+            floor: None,
         }
     }
 }
@@ -288,6 +382,7 @@ impl Supports {
         ) {
             return None;
         }
+        clip_printed(&mut supports.layers, bands, opts.floor);
         Some(supports)
     }
 
@@ -627,6 +722,17 @@ impl Demand {
             if opts.job.cancelled() || watch.cancelled() {
                 return None;
             }
+            // A column carried from above stops where the belt rises through it.
+            if let Some(floor) = opts.floor {
+                let cap = floor.y_max(bands[i].z);
+                for (region, _) in &mut gens {
+                    *region = clip_half(region, cap);
+                }
+                gens.retain(|(region, _)| !region.is_empty());
+                if !sparse.is_empty() {
+                    sparse = clip_half(&sparse, cap);
+                }
+            }
             let mut born: Vec<Loop> = Vec::new();
             pending.retain(|(contact_z, region)| {
                 if bands[i].z <= *contact_z + 1e-6 {
@@ -638,9 +744,14 @@ impl Demand {
             });
             let part = contours.get(i).map(Vec::as_slice).unwrap_or(&[]);
             if !born.is_empty() {
-                let born = drop_slivers(born, 0.05);
-                gens.insert(0, (born.clone(), iface_n));
-                demand.born[i] = born;
+                let mut born = drop_slivers(born, 0.05);
+                if let Some(floor) = opts.floor {
+                    born = clip_half(&born, floor.y_max(bands[i].z));
+                }
+                if !born.is_empty() {
+                    gens.insert(0, (born.clone(), iface_n));
+                    demand.born[i] = born;
+                }
             }
 
             let gap = &gaps[i];
@@ -649,6 +760,15 @@ impl Demand {
             if !tree {
                 let sparse_only = local_diff(&sparse, &iface_area);
                 demand.sparse[i] = drop_slivers(local_diff(&sparse_only, gap), 0.05);
+            }
+            if let Some(floor) = opts.floor {
+                let cap = floor.y_max(bands[i].z);
+                if !demand.interface[i].is_empty() {
+                    demand.interface[i] = clip_half(&demand.interface[i], cap);
+                }
+                if !demand.sparse[i].is_empty() {
+                    demand.sparse[i] = clip_half(&demand.sparse[i], cap);
+                }
             }
 
             // A column that has landed on the model stops.
@@ -735,6 +855,8 @@ struct Walk<'a> {
     lean: f64,
     pitch: Pitch,
     part_bb: Vec<Option<Bounds>>,
+    /// The belt, when trunks land on it instead of walking to layer 0.
+    floor: Option<FloorPlane>,
     nodes: Vec<Node>,
     next_id: u32,
     ended: Vec<(NodeId, End)>,
@@ -762,6 +884,7 @@ impl<'a> Walk<'a> {
             lean: lean_of(opts),
             pitch: Pitch::of(opts),
             part_bb: contours.iter().map(|c| loop_bounds(c)).collect(),
+            floor: opts.floor,
             nodes: Vec::new(),
             next_id,
             ended: Vec::new(),
@@ -838,9 +961,27 @@ impl<'a> Walk<'a> {
             &self.pitch,
             &land(1),
         );
-        if i == 0 {
+        if self.floor.is_none() {
+            if i == 0 {
+                for n in &mut self.nodes {
+                    if n.freeze == 0 {
+                        n.radius = n.radius.max(self.trunk_r * 0.95);
+                    }
+                }
+            }
+        } else if let Some(floor) = self.floor {
+            // The next layer is under the belt at this xy, so this knot is the foot.
+            let next_z = if i == 0 {
+                None
+            } else {
+                Some(self.bands[i - 1].z)
+            };
             for n in &mut self.nodes {
-                if n.freeze == 0 {
+                if n.freeze != 0 {
+                    continue;
+                }
+                let lands = next_z.is_none_or(|z| z + 1e-9 < floor.z_at(n.xy[1]));
+                if lands {
                     n.radius = n.radius.max(self.trunk_r * 0.95);
                 }
             }
@@ -862,6 +1003,7 @@ impl<'a> Walk<'a> {
             xy_gap: self.xy_gap,
             next_is_bed: i == 1,
             load_factor: self.load_factor,
+            floor_y_max: self.floor.map(|floor| floor.y_max(self.bands[i - 1].z)),
         };
         let nodes = std::mem::take(&mut self.nodes);
         self.nodes = propagate_nodes(
@@ -1204,6 +1346,9 @@ struct Grow {
     xy_gap: f64,
     next_is_bed: bool,
     load_factor: f64,
+    /// Largest Y that still sits on the belt on the layer being stepped onto.
+    /// `None` keeps the cartesian walk.
+    floor_y_max: Option<f64>,
 }
 
 /// Pitch actually left standing. An explicit `max_tip_spacing` wins; otherwise
@@ -1275,6 +1420,13 @@ fn propagate_nodes(
     let (below, below2) = (LoopIndex::new(below), LoopIndex::new(below2));
     let mut next = Vec::with_capacity(nodes.len());
     for mut n in nodes {
+        if grow
+            .floor_y_max
+            .is_some_and(|y_max| n.xy[1] > y_max)
+        {
+            ended.push((NodeId(n.id), End::Landed));
+            continue;
+        }
         if n.freeze > 0 {
             n.freeze -= 1;
             next.push(n);
@@ -1319,6 +1471,13 @@ fn propagate_nodes(
         n.xy = to;
         if below.contains(n.xy) {
             ended.push((NodeId(n.id), End::Pinched));
+            continue;
+        }
+        if grow
+            .floor_y_max
+            .is_some_and(|y_max| n.xy[1] > y_max)
+        {
+            ended.push((NodeId(n.id), End::Landed));
             continue;
         }
         kept.push(n);
@@ -2663,6 +2822,7 @@ mod tests {
                     xy_gap: 0.55,
                     next_is_bed: false,
                     load_factor,
+                    floor_y_max: None,
                 };
                 let got = pair_steps(&nodes, &[], &grow, 0.17);
                 let want = pair_steps_by_scan(&nodes, &grow, 0.17);
@@ -3406,6 +3566,7 @@ mod tests {
             xy_gap: 0.55,
             next_is_bed: false,
             load_factor,
+            floor_y_max: None,
         };
         let pair = |load| {
             vec![[0.0, 0.0], [0.5, 0.0]]

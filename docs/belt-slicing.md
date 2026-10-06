@@ -73,7 +73,7 @@ On this engine the "first layer" is `layer.index == 0` only: 30 mm/s, flow 1.06,
 
 In the rotated frame, down is the nozzle normal, not gravity. The previous layer supports the next one along that normal. A face that leans with the belt (the side the belt carries away) can pass vertical in the lab and still sit on plastic. A face that leans against the belt (back toward the gantry) loses the previous layer sooner.
 
-Support generation has to run after the rotation, against a belt floor in that frame. BeltEngine builds an extra mesh with `down_vector` tilted by the gantry angle and refuses Cura's own supports. Orca clips supports to a belt-floor polygon for the same reason. That tree walk is not in yet: the floor would be the rotated belt, not Z 0. Until it exists a belt slice forces supports off. Emitting today's horizontal supports would plant them on a bed the printer does not have.
+Support generation runs after the rotation, against a belt floor in that frame. BeltEngine builds an extra mesh with `down_vector` tilted by the gantry angle and refuses Cura's own supports. Orca clips supports to a belt-floor polygon for the same reason. Here the floor is the tilted plane, not Z 0. `belt.floorSupports` is omitted when off, and a belt slice that does not send it still forces supports off. See `docs/belt-floor-supports.md`.
 
 ## Profile and the machine file
 

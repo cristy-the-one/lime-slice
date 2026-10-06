@@ -37,6 +37,7 @@ A row is **done** when a user can do the thing and the engine honors it. **In pr
 - Belt preview patches. The token includes copies, axis, direction, and the gap, so a later slice of the same belt can be a patch. A different stamp is a whole preview. G-code stays the belt file. [#162](https://github.com/cristy-the-one/lime-slice/pull/162)
 - Per-object infill, walls, and speed. Omitted, the strategy stays. A height range or a modifier wins on each field it sets. [#163](https://github.com/cristy-the-one/lime-slice/pull/163)
 - Sequential printing. Omitted order stays all-at-once. `sequential` finishes each object, supports and skirt included, before the next. Clearance is the mesh box. [#164](https://github.com/cristy-the-one/lime-slice/pull/164)
+- Belt floor supports, opt-in. `belt.floorSupports` is omitted when off, so a belt slice still prints no supports. With the flag, supports clip to the tilted belt and trunks land on it. A raft with the flag is refused. Edits and paint stay refused. [#165](https://github.com/cristy-the-one/lime-slice/pull/165)
 
 ### In progress
 
@@ -46,9 +47,8 @@ None. The next pull request starts from the remaining list.
 
 Each engine feature is opt-in or default-off, with a cartesian lock so an unused feature leaves G-code bytes and the request cache key unchanged. One feature per pull request. A short design note goes in the same pull request when the feature is small, and as its own note when it is not.
 
-1. **Supports grown from the tilted belt floor.** Until this lands, a belt slice forces supports off and refuses support edits and paint. This is the largest belt follow-up, so it waits until the smaller belt flags are in.
-2. **Multi-material.** A design note, plus UI groundwork for a second filament on the machine, and no toolpath. Tool changes, a purge tower, and a second extruder stay out of the engine in this run.
-3. **Repair audit in the sheet.** The engine already reports repaired and dropped chains. Show that text. No interactive hole fill.
+1. **Multi-material.** A design note, plus UI groundwork for a second filament on the machine, and no toolpath. Tool changes, a purge tower, and a second extruder stay out of the engine in this run.
+2. **Repair audit in the sheet.** The engine already reports repaired and dropped chains. Show that text. No interactive hole fill.
 
 ### Deferred, and why
 

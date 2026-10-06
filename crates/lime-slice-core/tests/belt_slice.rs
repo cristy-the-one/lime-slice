@@ -306,6 +306,64 @@ fn supports_edits_and_compare_are_refused() {
 }
 
 #[test]
+fn floor_supports_land_on_the_belt() {
+    let ledge = fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples/overhang_ledge.stl"),
+    )
+    .unwrap();
+    let mut belt_on = belt(45.0, "z", 1, 5.0);
+    belt_on["floorSupports"] = json!(true);
+    let body = json!({
+        "filename": "overhang_ledge.stl",
+        "dataB64": base64::engine::general_purpose::STANDARD.encode(ledge),
+        "layerHeight": 0.2,
+        "lineWidth": 0.45,
+        "baseline": false,
+        "compare": false,
+        "includePreview": true,
+        "includeGcode": true,
+        "supports": true,
+        "belt": belt_on,
+    });
+    let sliced = slice_request(&serde_json::from_value(body.clone()).unwrap(), Job::default()).unwrap();
+    assert!(sliced.sanity.ok, "{:?}", sliced.sanity.notes);
+    assert!(
+        sliced.gcode.contains("TYPE:SUPPORT"),
+        "floor supports produced no support beads"
+    );
+    assert!(sliced.gcode.contains("; belt floor supports\n"));
+    let mut lowest = f64::INFINITY;
+    let mut beads = 0usize;
+    for layer in &sliced.layers {
+        for path in &layer.paths {
+            if path.kind != "support" && path.kind != "support-interface" {
+                continue;
+            }
+            assert!(!path.zs.is_empty(), "a support path has no lab height");
+            beads += 1;
+            for z in &path.zs {
+                lowest = lowest.min(*z);
+            }
+        }
+    }
+    assert!(beads > 0, "preview has no support paths");
+    assert!(
+        lowest >= -0.05,
+        "a support bead went through the belt, lab z {lowest}"
+    );
+
+    let mut edited = body.clone();
+    edited["supportEdits"] = json!([{ "kind": "prune", "sites": [{ "xy": [1.0, 1.0], "z": 0.2 }] }]);
+    let err = slice_request(&serde_json::from_value(edited).unwrap(), Job::default()).unwrap_err();
+    assert!(err.contains("support edits"), "{err}");
+
+    let mut rafted = body;
+    rafted["belt"]["raftLayers"] = json!(2);
+    let err = slice_request(&serde_json::from_value(rafted).unwrap(), Job::default()).unwrap_err();
+    assert!(err.contains("belt.floorSupports"), "{err}");
+}
+
+#[test]
 fn seam_on_the_belt_edge_is_opt_in() {
     use sha2::{Digest, Sha256};
     let stl = box_stl(20.0, 10.0, 2.0);

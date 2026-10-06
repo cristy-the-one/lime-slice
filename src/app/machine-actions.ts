@@ -149,6 +149,7 @@ export function noteBeltForm() {
     gapMm: num("beltGap"),
     seamOnEdge: document.querySelector<HTMLInputElement>("#beltSeam")?.checked === true,
     raftLayers: document.querySelector<HTMLInputElement>("#beltRaft")?.checked === true ? (num("beltRaftLayers") ?? 3) : 0,
+    floorSupports: document.querySelector<HTMLInputElement>("#beltFloor")?.checked === true,
   }, picked.printer.bedX);
   const next = setActiveBelt(library, kind, belt);
   storeMachineLibrary(next);

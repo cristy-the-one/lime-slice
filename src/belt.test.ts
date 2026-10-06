@@ -31,11 +31,13 @@ const cartesian = { layerHeight: 0.2, printer: { nozzleDiameter: 0.4 } };
 const plain = recipeKey(cartesian, "mesh");
 check("a cartesian request gains no belt key", recipeKey({ ...cartesian, ...beltSliceField(null) }, "mesh") === plain);
 const sent = beltSliceField(defaultBelt(200));
-check("an unlimited belt omits maxLengthMm, the seam flag, and the raft", !!sent.belt && !("maxLengthMm" in sent.belt) && !("seamOnEdge" in sent.belt) && !("raftLayers" in sent.belt) && sent.belt.angleDeg === 45 && sent.belt.axis === "z" && sent.belt.copies === 1);
+check("an unlimited belt omits maxLengthMm, the seam flag, the raft, and floor supports", !!sent.belt && !("maxLengthMm" in sent.belt) && !("seamOnEdge" in sent.belt) && !("raftLayers" in sent.belt) && !("floorSupports" in sent.belt) && sent.belt.angleDeg === 45 && sent.belt.axis === "z" && sent.belt.copies === 1);
 const edged = beltSliceField({ ...defaultBelt(200), seamOnEdge: true });
 check("the seam flag is sent only when on", edged.belt?.seamOnEdge === true && !("seamOnEdge" in (beltSliceField(defaultBelt(200)).belt ?? {})));
 const rafted = beltSliceField({ ...defaultBelt(200), raftLayers: 3 });
 check("raft layers are sent only when the pad is on", rafted.belt?.raftLayers === 3 && !("raftLayers" in (beltSliceField(defaultBelt(200)).belt ?? {})));
+const floored = beltSliceField({ ...defaultBelt(200), floorSupports: true });
+check("floor supports are sent only when on", floored.belt?.floorSupports === true && !("floorSupports" in (beltSliceField(defaultBelt(200)).belt ?? {})));
 check("a belt changes the recipe", recipeKey({ ...cartesian, ...sent }, "mesh") !== plain);
 const sentCap = beltSliceField({ ...defaultBelt(180), maxLengthMm: 300, copies: 2, gapMm: 8, direction: -1, axis: "y" });
 check(
@@ -46,7 +48,7 @@ check(
 const messy = coerceBelt({ angleDeg: 0, axis: "nope", direction: -1, widthMm: -4, maxLengthMm: null, copies: 100, gapMm: -2 }, 220);
 check(
   "a bad belt block is clamped",
-  messy.angleDeg === 10 && messy.axis === "z" && messy.direction === -1 && messy.widthMm === 220 && messy.maxLengthMm === null && messy.copies === 24 && messy.gapMm === 5 && messy.seamOnEdge === false && messy.raftLayers === 0,
+  messy.angleDeg === 10 && messy.axis === "z" && messy.direction === -1 && messy.widthMm === 220 && messy.maxLengthMm === null && messy.copies === 24 && messy.gapMm === 5 && messy.seamOnEdge === false && messy.raftLayers === 0 && messy.floorSupports === false,
 );
 const rafty = coerceBelt({ raftLayers: 9.2 }, 220);
 check("raft layers clamp to 1 through 8", rafty.raftLayers === 8 && coerceBelt({ raftLayers: 0 }, 220).raftLayers === 0 && coerceBelt({}, 220).raftLayers === 0);

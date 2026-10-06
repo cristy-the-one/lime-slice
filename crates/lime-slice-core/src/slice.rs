@@ -43,7 +43,9 @@ use crate::strategy::{
 use crate::support::edit::{EditOutcome, SupportEdit};
 use crate::support::paint::{self, PaintDisk, PaintTally};
 use crate::support::skeleton::{skeleton, SupportSkeleton};
-use crate::support::{CoverageGap, Disk, InAir, SupportLayer, SupportOpts, SupportStyle, Supports};
+use crate::support::{
+    CoverageGap, Disk, FloorPlane, InAir, SupportLayer, SupportOpts, SupportStyle, Supports,
+};
 use crate::toolpath::{
     apply_overhang, apply_scarf, apply_z_hop, comb_layer, island_loops, lightning_pitch,
     belt_raft_paths, order_supports, plan_ironing, plan_region_split, plan_skirt, plan_support,
@@ -1298,6 +1300,8 @@ struct BeltJob {
     lab_bounds: Vec<([f64; 3], [f64; 3])>,
     /// A pad on the belt, in the slice frame, when the request asked for one.
     raft: Option<BeltRaft>,
+    /// Set when supports grow to the tilted belt. `None` forces supports off.
+    floor: Option<FloorPlane>,
 }
 
 struct BeltRaft {
@@ -1318,6 +1322,9 @@ fn prepare_belt(
     let belt = crate::belt::Belt::resolve(spec)?;
     if settings.compare {
         return Err("belt: compare is not supported yet".into());
+    }
+    if belt.floor_supports && belt.raft_layers > 0 {
+        return Err("belt.floorSupports is not available with a raft yet".into());
     }
     for object in objects.iter() {
         if !object.settings.support_edits.is_empty() {
@@ -1378,7 +1385,10 @@ fn prepare_belt(
         object.mesh = Cow::Owned(mesh);
         object.offset = None;
         // Horizontal supports would stand on a bed this printer does not have.
-        object.settings.supports = false;
+        // `floorSupports` grows them to the tilted belt instead.
+        if !belt.floor_supports {
+            object.settings.supports = false;
+        }
         // A scarf ramp and a hop both move machine Z. On a belt that axis is
         // the belt, so either one would walk the part between beads.
         object.settings.z_hop = ZHopMode::Off;
@@ -1390,7 +1400,9 @@ fn prepare_belt(
             object.settings.seam = SeamPlacement::Rear;
         }
     }
-    settings.supports = false;
+    if !belt.floor_supports {
+        settings.supports = false;
+    }
     settings.z_hop = ZHopMode::Off;
     settings.scarf_seam = ScarfSeam::Off;
     let extra = f64::from(belt.copies - 1) * belt.stride(extent);
@@ -1403,6 +1415,9 @@ fn prepare_belt(
             }
         }
     }
+    let floor = belt.floor_supports.then(|| {
+        FloorPlane::new(belt.sin_a / belt.cos_a, frame.y_shift, frame.z_drop)
+    });
     Ok(BeltJob {
         belt,
         frame,
@@ -1410,6 +1425,7 @@ fn prepare_belt(
         offsets,
         lab_bounds,
         raft,
+        floor,
     })
 }
 
@@ -1739,6 +1755,7 @@ fn slice_plate(
             .collect()
     };
     // Every cut first: an object's supports read the cuts of the others.
+    let floor = belt_job.as_ref().and_then(|job| job.floor);
     let mut cuts: Vec<(Arc<Contours>, bool, Option<kept::Keys>)> =
         Vec::with_capacity(objects.len());
     for (k, o) in objects.iter().enumerate() {
@@ -1749,6 +1766,7 @@ fn slice_plate(
             &o.blend,
             &o.settings,
             profile.nozzle_diameter,
+            floor,
         );
         let mut alone = None;
         let shared = if objects.len() == 1 {
@@ -1802,6 +1820,7 @@ fn slice_plate(
             &o.settings,
             profile.nozzle_diameter,
             &neighbours,
+            floor,
             &watches[a],
         )?);
     }
@@ -3142,7 +3161,7 @@ fn plan_sharing(
     shared: &mut Option<Arc<Contours>>,
     watch: &Watch,
 ) -> Result<Plan, String> {
-    let keys = kept_keys(mesh, &bands, blend, settings, nozzle_diameter);
+    let keys = kept_keys(mesh, &bands, blend, settings, nozzle_diameter, None);
     let (cut, reused) = cut_object(
         mesh,
         bands,
@@ -3160,20 +3179,24 @@ fn plan_sharing(
         settings,
         nozzle_diameter,
         &[],
+        None,
         watch,
     )
 }
 
 /// The stage keys of an interactive slice while stages are kept.
+/// `floor` is mixed into the support keys only when it is set, so a
+/// cartesian slice keeps the key bytes it had.
 fn kept_keys(
     mesh: &Mesh,
     bands: &[LayerBand],
     blend: &BlendMode,
     settings: &SliceSettings,
     nozzle_diameter: f64,
+    floor: Option<FloorPlane>,
 ) -> Option<kept::Keys> {
     (kept::on() && settings.include_preview)
-        .then(|| kept::keys(mesh, bands, blend, settings, nozzle_diameter))
+        .then(|| kept::keys(mesh, bands, blend, settings, nozzle_diameter, floor))
 }
 
 /// The mesh cut on `bands`: kept under `keys`, else the cut in `shared`,
@@ -3218,6 +3241,7 @@ fn plan_object(
     settings: &SliceSettings,
     nozzle_diameter: f64,
     neighbours: &[plate::Neighbour],
+    floor: Option<FloorPlane>,
     watch: &Watch,
 ) -> Result<Plan, String> {
     let reuse = Reuse {
@@ -3233,6 +3257,7 @@ fn plan_object(
             settings,
             nozzle_diameter,
             neighbours,
+            floor,
             watch,
         ),
         None => plan_cut(
@@ -3242,6 +3267,7 @@ fn plan_object(
             settings,
             nozzle_diameter,
             neighbours,
+            floor,
             watch,
         ),
     }
@@ -3265,12 +3291,14 @@ fn plan_contours(
         settings,
         nozzle_diameter,
         &[],
+        None,
         &Watch::idle(),
     )
 }
 
 /// Every stage after the cut, with nothing kept. `reuse.contours` says the
 /// cut was computed elsewhere, so its clocks are not this plan's.
+#[allow(clippy::too_many_arguments)]
 fn plan_cut(
     cut: Arc<Contours>,
     reuse: Reuse,
@@ -3278,6 +3306,7 @@ fn plan_cut(
     settings: &SliceSettings,
     nozzle_diameter: f64,
     neighbours: &[plate::Neighbour],
+    floor: Option<FloorPlane>,
     watch: &Watch,
 ) -> Result<Plan, String> {
     let mut spent = Spent::default();
@@ -3294,7 +3323,7 @@ fn plan_cut(
         &cut,
         neighbours,
         |ground| {
-            let plan = plan_supports(&cut, blend, settings, ground.map(|g| g.solid), watch)?;
+            let plan = plan_supports(&cut, blend, settings, ground.map(|g| g.solid), floor, watch)?;
             spent.supports(&plan);
             Ok(plan)
         },
@@ -3334,6 +3363,7 @@ fn plan_kept(
     settings: &SliceSettings,
     nozzle_diameter: f64,
     neighbours: &[plate::Neighbour],
+    floor: Option<FloorPlane>,
     watch: &Watch,
 ) -> Result<Plan, String> {
     let mut spent = Spent::default();
@@ -3412,6 +3442,7 @@ fn plan_kept(
                 blend,
                 settings,
                 ground.map(|g| g.solid),
+                floor,
                 &mut reuse,
                 &mut spent,
                 watch,
@@ -3488,6 +3519,7 @@ fn kept_supports(
     blend: &BlendMode,
     settings: &SliceSettings,
     solid: Option<Arc<Vec<Vec<Loop>>>>,
+    floor: Option<FloorPlane>,
     reuse: &mut Reuse,
     spent: &mut Spent,
     watch: &Watch,
@@ -3533,7 +3565,7 @@ fn kept_supports(
             Ok((base, edited))
         }
         None => {
-            let base = Arc::new(plan_supports(cut, blend, settings, solid, watch)?);
+            let base = Arc::new(plan_supports(cut, blend, settings, solid, floor, watch)?);
             spent.supports(&base);
             Ok((base, None))
         }
@@ -4329,10 +4361,11 @@ fn plan_supports(
     blend: &BlendMode,
     settings: &SliceSettings,
     solid: Option<Arc<Vec<Vec<Loop>>>>,
+    floor: Option<FloorPlane>,
     watch: &Watch,
 ) -> Result<SupportPlan, String> {
     let support_started = Instant::now();
-    let opts = SupportOpts {
+    let mut opts = SupportOpts {
         angle_deg: settings.support_angle,
         z_gap: settings.layer_height.max(0.12),
         style: settings.support_style,
@@ -4345,6 +4378,7 @@ fn plan_supports(
         job: settings.job,
         ..SupportOpts::default()
     };
+    opts.floor = floor;
     watch.begin(Stage::Supports, cut.bands.len().max(1) as u32);
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
@@ -6515,7 +6549,7 @@ mod edit_cost {
             .map(|b| simplify_loops(index.slice(b.cut_z()), tolerance))
             .collect();
         let object = Contours::new(bands, contours, bounds, &settings);
-        let plan = || plan_supports(&object, &blend, &settings, None, &Watch::idle()).unwrap();
+        let plan = || plan_supports(&object, &blend, &settings, None, None, &Watch::idle()).unwrap();
 
         let started = Instant::now();
         let base = plan();

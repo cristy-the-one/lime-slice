@@ -26,6 +26,8 @@ export interface BeltSettings {
   seamOnEdge: boolean;
   /** Solid pad layers on the belt before the part. 0 is off. */
   raftLayers: number;
+  /** Grow supports down to the tilted belt. Off forces supports off. */
+  floorSupports: boolean;
 }
 
 /**
@@ -33,15 +35,16 @@ export interface BeltSettings {
  * `maxLengthMm` is omitted when the belt is unlimited, so a missing cap is
  * the same bytes as an unlimited belt.
  */
-export function beltSliceField(belt: BeltSettings | null): { belt?: Omit<BeltSettings, "maxLengthMm" | "seamOnEdge" | "raftLayers"> & { maxLengthMm?: number; seamOnEdge?: true; raftLayers?: number } } {
+export function beltSliceField(belt: BeltSettings | null): { belt?: Omit<BeltSettings, "maxLengthMm" | "seamOnEdge" | "raftLayers" | "floorSupports"> & { maxLengthMm?: number; seamOnEdge?: true; raftLayers?: number; floorSupports?: true } } {
   if (!belt) return {};
-  const { maxLengthMm, seamOnEdge, raftLayers, ...rest } = belt;
+  const { maxLengthMm, seamOnEdge, raftLayers, floorSupports, ...rest } = belt;
   return {
     belt: {
       ...rest,
       ...(maxLengthMm == null ? {} : { maxLengthMm }),
       ...(seamOnEdge ? { seamOnEdge: true as const } : {}),
       ...(raftLayers > 0 ? { raftLayers } : {}),
+      ...(floorSupports ? { floorSupports: true as const } : {}),
     },
   };
 }
@@ -57,6 +60,7 @@ export function defaultBelt(widthMm = 220): BeltSettings {
     gapMm: 5,
     seamOnEdge: false,
     raftLayers: 0,
+    floorSupports: false,
   };
 }
 
@@ -117,7 +121,8 @@ export function coerceBelt(value: unknown, widthFallback: number): BeltSettings 
   const gapMm = finite(row.gapMm) && row.gapMm >= 0 ? clamp(row.gapMm, 0, 500) : 5;
   const seamOnEdge = row.seamOnEdge === true;
   const raftLayers = finite(row.raftLayers) && row.raftLayers > 0 ? Math.round(clamp(row.raftLayers, 1, 8)) : 0;
-  return { angleDeg, axis, direction, widthMm, maxLengthMm, copies, gapMm, seamOnEdge, raftLayers };
+  const floorSupports = row.floorSupports === true;
+  return { angleDeg, axis, direction, widthMm, maxLengthMm, copies, gapMm, seamOnEdge, raftLayers, floorSupports };
 }
 
 function clamp(value: number, lo: number, hi: number): number {
