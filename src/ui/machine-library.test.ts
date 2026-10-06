@@ -171,7 +171,7 @@ for (const printer of version2.printers) {
 }
 const fromVersion2 = parseLibrary(JSON.stringify(version2));
 const lime = fromVersion2.printers.find((printer) => printer.id === "lime-220");
-check("a version 2 library gains a cartesian belt block", fromVersion2.version === 3 && lime?.bedX === 220 && lime.kind === "cartesian" && lime.belt.angleDeg === 45 && lime.belt.copies === 1 && lime.belt.maxLengthMm === null && lime.belt.widthMm === 220 && lime.belt.raftLayers === 0 && lime.belt.seamOnEdge === false);
+check("a version 2 library gains a cartesian belt block", fromVersion2.version === 3 && lime?.bedX === 220 && lime.kind === "cartesian" && lime.belt.angleDeg === 45 && lime.belt.copies === 1 && lime.belt.maxLengthMm === null && lime.belt.widthMm === 220 && lime.belt.raftLayers === 0 && lime.belt.seamOnEdge === false && lime.belt.floorSupports === false);
 
 const belted = setActiveBelt(library, "belt", { ...defaultBelt(180), angleDeg: 35, axis: "y", direction: -1, copies: 3, gapMm: 8, maxLengthMm: null });
 const beltRow = selection(belted);

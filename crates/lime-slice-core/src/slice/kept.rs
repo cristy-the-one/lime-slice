@@ -334,6 +334,7 @@ pub(super) fn keys(
     blend: &BlendMode,
     settings: &SliceSettings,
     nozzle_diameter: f64,
+    floor: Option<crate::support::FloorPlane>,
 ) -> Keys {
     let mut mesh_hash = Sha256::new();
     for tri in &mesh.triangles {
@@ -459,6 +460,20 @@ pub(super) fn keys(
         };
         key(&s, Some(blend))
     };
+    // The belt floor changes where supports land. It is mixed only when set,
+    // so a cartesian key, and a belt that did not ask, keeps its bytes.
+    let stamp = |key: [u8; 32]| -> [u8; 32] {
+        let Some(floor) = floor else {
+            return key;
+        };
+        let mut hash = Sha256::new();
+        hash.update(key);
+        hash.update(b"|belt-floor|");
+        for bits in [floor.tan_a(), floor.y_shift(), floor.z_drop()] {
+            hash.update(bits.to_le_bytes());
+        }
+        hash.finalize().into()
+    };
     Keys {
         layers: LayerKeys {
             toolpaths: bare(&toolpaths),
@@ -469,8 +484,8 @@ pub(super) fn keys(
         toolpaths: key(&toolpaths, Some(blend)),
         order: key(&order, Some(blend)),
         comb: key(&comb, Some(blend)),
-        grow: key(&grow, Some(blend)),
-        paint: key(&paint, Some(blend)),
+        grow: stamp(key(&grow, Some(blend))),
+        paint: stamp(key(&paint, Some(blend))),
         whole: key(&whole, Some(blend)),
     }
 }

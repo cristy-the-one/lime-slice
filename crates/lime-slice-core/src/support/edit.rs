@@ -391,7 +391,7 @@ impl Supports {
         let hi = dirty.iter().rposition(|&d| d).unwrap_or(lo);
         let mut fresh = (lo..=hi)
             .into_par_iter()
-            .map(|i| dirty[i].then(|| self.fresh(i, contours)))
+            .map(|i| dirty[i].then(|| self.fresh(i, contours, bands)))
             .collect::<Vec<_>>()
             .into_iter();
         let lean = lean_of(&self.opts);
@@ -409,7 +409,7 @@ impl Supports {
                 }
                 continue;
             }
-            let mut layer = pre.unwrap_or_else(|| self.fresh(i, contours));
+            let mut layer = pre.unwrap_or_else(|| self.fresh(i, contours, bands));
             if i > 0 {
                 stand(
                     &mut layer,
@@ -420,6 +420,9 @@ impl Supports {
                     lean,
                     &mut near,
                 );
+            }
+            if let Some(floor) = self.opts.floor {
+                super::clip_support_layer(&mut layer, floor.y_max(bands[i].z));
             }
             stood += 1;
             below_changed = layer != self.layers[i];
@@ -435,7 +438,7 @@ impl Supports {
     /// the layer below: the disks of the knots still printed, and the
     /// demanded interface less what only pruned tips held and no later
     /// regrow restored.
-    fn fresh(&self, i: usize, contours: &[Vec<Loop>]) -> SupportLayer {
+    fn fresh(&self, i: usize, contours: &[Vec<Loop>], bands: &[LayerBand]) -> SupportLayer {
         let mut live = Vec::new();
         let mut pruned = Vec::new();
         for &k in &self.forest.at[i] {
@@ -449,7 +452,7 @@ impl Supports {
         }
         let pitch = Pitch::of(&self.opts);
         let part = contours.get(i).map(Vec::as_slice).unwrap_or(&[]);
-        SupportLayer {
+        let mut layer = SupportLayer {
             sparse: self.layers[i].sparse.clone(),
             interface: held_interface(
                 &self.demanded[i],
@@ -459,7 +462,11 @@ impl Supports {
                 &self.restored[i],
             ),
             disks: organic_disks(&live, part, self.opts.xy_gap),
+        };
+        if let Some(floor) = self.opts.floor {
+            super::clip_support_layer(&mut layer, floor.y_max(bands[i].z));
         }
+        layer
     }
 }
 
@@ -685,7 +692,7 @@ impl Supports {
     pub(crate) fn rebuilt(&self, bands: &[LayerBand], contours: &[Vec<Loop>]) -> Vec<SupportLayer> {
         let mut layers: Vec<SupportLayer> = (0..self.layers.len())
             .into_par_iter()
-            .map(|i| self.fresh(i, contours))
+            .map(|i| self.fresh(i, contours, bands))
             .collect();
         super::project(
             &mut layers,
@@ -696,6 +703,7 @@ impl Supports {
             &crate::progress::Watch::idle(),
             self.opts.job,
         );
+        super::clip_printed(&mut layers, bands, self.opts.floor);
         layers
     }
 }

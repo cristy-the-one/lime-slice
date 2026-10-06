@@ -38,6 +38,11 @@ pub struct BeltSpec {
     /// so a belt slice that does not ask for a raft keeps its bytes.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub raft_layers: u32,
+    /// Grow supports down to the tilted belt instead of forcing them off.
+    /// Omitted when off, so a belt slice that does not ask keeps its bytes,
+    /// including one that set `supports` and still prints none.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub floor_supports: bool,
 }
 
 /// Which firmware axis the belt is wired to.
@@ -62,6 +67,7 @@ pub(crate) struct Belt {
     pub gap_mm: f64,
     pub seam_on_edge: bool,
     pub raft_layers: u32,
+    pub floor_supports: bool,
 }
 
 /// The rotation that laid the plate flat, so preview points can be mapped back.
@@ -145,6 +151,7 @@ impl Belt {
             gap_mm: spec.gap_mm,
             seam_on_edge: spec.seam_on_edge,
             raft_layers: spec.raft_layers,
+            floor_supports: spec.floor_supports,
         })
     }
 
@@ -183,6 +190,9 @@ impl Belt {
         );
         if self.raft_layers > 0 {
             comment.push_str(&format!("; belt raft {} layers\n", self.raft_layers));
+        }
+        if self.floor_supports {
+            comment.push_str("; belt floor supports\n");
         }
         comment
     }
@@ -467,6 +477,7 @@ mod tests {
             gap_mm: 5.0,
             seam_on_edge: false,
             raft_layers: 0,
+            floor_supports: false,
         })
         .unwrap()
     }
@@ -567,9 +578,38 @@ mod tests {
             gap_mm: 5.0,
             seam_on_edge: false,
             raft_layers: 0,
+            floor_supports: false,
         })
         .unwrap_err();
         assert!(err.contains("belt.angleDeg"), "{err}");
+    }
+
+    #[test]
+    fn floor_supports_are_omitted_when_off() {
+        let spec = BeltSpec {
+            angle_deg: 45.0,
+            axis: "z".into(),
+            direction: 1,
+            width_mm: 220.0,
+            max_length_mm: None,
+            copies: 1,
+            gap_mm: 5.0,
+            seam_on_edge: false,
+            raft_layers: 0,
+            floor_supports: false,
+        };
+        let value = serde_json::to_value(&spec).unwrap();
+        assert!(value.get("floorSupports").is_none(), "{value}");
+        let parsed: BeltSpec = serde_json::from_value(serde_json::json!({
+            "angleDeg": 45.0,
+            "axis": "z",
+            "direction": 1,
+            "widthMm": 220.0,
+            "copies": 1,
+            "gapMm": 5.0
+        }))
+        .unwrap();
+        assert!(!parsed.floor_supports);
     }
 
     #[test]
