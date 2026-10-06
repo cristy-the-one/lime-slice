@@ -148,6 +148,10 @@ pub struct SliceRequest {
     /// `{}` is on at 0.3 mm thickness and 0.8 mm point spacing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fuzzy_skin: Option<FuzzySkin>,
+    /// Extrusion multiplier. `1` is left out, so a request that does not
+    /// change flow keeps its cache key. It scales filament length only.
+    #[serde(default = "default_one", skip_serializing_if = "is_one")]
+    pub flow: f64,
     /// `blend` follows the strategy, or `off` / `outer` / `all`.
     #[serde(default)]
     pub scarf_seam: ScarfSeam,
@@ -300,6 +304,8 @@ pub struct SliceSettings {
     pub seam: SeamPlacement,
     pub ironing: Option<Ironing>,
     pub fuzzy_skin: Option<FuzzySkin>,
+    /// Extrusion multiplier. `1` leaves filament length where it was.
+    pub flow: f64,
     pub scarf_seam: ScarfSeam,
     pub scarf_length: f64,
     pub scarf_steps: u32,
@@ -369,6 +375,7 @@ impl Default for SliceSettings {
             seam: SeamPlacement::Blend,
             ironing: None,
             fuzzy_skin: None,
+            flow: 1.0,
             scarf_seam: ScarfSeam::Blend,
             scarf_length: default_scarf_length(),
             scarf_steps: default_scarf_steps(),
@@ -461,6 +468,7 @@ impl SliceSettings {
             seam: req.seam,
             ironing: req.ironing,
             fuzzy_skin: if req.classic { None } else { req.fuzzy_skin },
+            flow: req.flow,
             scarf_seam: if req.classic {
                 ScarfSeam::Off
             } else {
@@ -595,7 +603,12 @@ impl SliceSettings {
                 f.thickness, f.point_distance
             )
         });
-        format!("{layers}; {supports}; {combine}; {scarf}; {gyroid}; {hop}{seam}{ironing}{fuzzy}")
+        let flow = if is_one(&self.flow) {
+            String::new()
+        } else {
+            format!("; flow {:.3}", self.flow)
+        };
+        format!("{layers}; {supports}; {combine}; {scarf}; {gyroid}; {hop}{seam}{ironing}{fuzzy}{flow}")
     }
 }
 
@@ -621,6 +634,14 @@ fn default_width() -> f64 {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_one() -> f64 {
+    1.0
+}
+
+fn is_one(value: &f64) -> bool {
+    (*value - 1.0).abs() < 1e-9
 }
 
 fn default_scarf_length() -> f64 {
@@ -917,6 +938,9 @@ pub fn slice_request_watched(
     watch.begin(Stage::Load, 1);
     if watch.stopped(job) {
         return Err("cancelled".into());
+    }
+    if !req.flow.is_finite() || !(0.5..=1.5).contains(&req.flow) {
+        return Err(format!("flow {} must be from 0.5 to 1.5", req.flow));
     }
     let profile = req.printer.clone().unwrap_or_default();
     let overrides = wire::parse_overrides(req, [profile.bed_x, profile.bed_y])?;
@@ -1466,6 +1490,9 @@ fn slice_plate(
     cut: &mut Option<Arc<Contours>>,
     watch: &Watch,
 ) -> Result<SliceResponse, String> {
+    if !settings.flow.is_finite() || !(0.5..=1.5).contains(&settings.flow) {
+        return Err(format!("flow {} must be from 0.5 to 1.5", settings.flow));
+    }
     let listed = sources.iter().any(|s| s.id.is_some());
     let mut settings = resolved(settings);
     let (layer_height, line_width) = (settings.layer_height, settings.line_width);
@@ -1686,6 +1713,7 @@ fn slice_plate(
             settings.junction_deviation_mm,
             &offsets,
             belt_emit,
+            settings.flow,
             settings.job,
             watch,
         );
@@ -1703,6 +1731,7 @@ fn slice_plate(
             settings.junction_deviation_mm,
             &offsets,
             belt_emit,
+            settings.flow,
             settings.job,
             watch,
         );
@@ -1841,6 +1870,7 @@ fn slice_plate(
                 settings.junction_deviation_mm,
                 &offsets,
                 baseline_belt,
+                settings.flow,
                 settings.job,
                 &quiet,
             )
@@ -1857,6 +1887,7 @@ fn slice_plate(
                 settings.junction_deviation_mm,
                 &offsets,
                 baseline_belt,
+                settings.flow,
                 settings.job,
                 &quiet,
             )
@@ -5822,6 +5853,7 @@ mod tests {
                 settings.junction_deviation_mm,
                 &[[0.0, 0.0]],
                 None,
+                settings.flow,
                 settings.job,
                 &Watch::idle(),
             );
@@ -5837,6 +5869,7 @@ mod tests {
                 settings.junction_deviation_mm,
                 &[[0.0, 0.0]],
                 None,
+                settings.flow,
                 settings.job,
                 &Watch::idle(),
             );
@@ -5892,6 +5925,7 @@ mod tests {
             settings.junction_deviation_mm,
             &[[0.0, 0.0]],
             None,
+            settings.flow,
             settings.job,
             &Watch::idle(),
         );
@@ -5907,6 +5941,7 @@ mod tests {
             settings.junction_deviation_mm,
             &[[0.0, 0.0]],
             None,
+            settings.flow,
             settings.job,
             &Watch::idle(),
         );

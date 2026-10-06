@@ -55,6 +55,8 @@ export interface FilamentRecord {
   /** Pressure advance keyed by nozzle millimetres, such as "0.4". */
   pressureAdvance: Record<string, number>;
   linearAdvance: Record<string, number>;
+  /** Extrusion multiplier. `1` is omitted from a slice request. */
+  flow: number;
 }
 
 export interface MachineLibrary {
@@ -102,6 +104,7 @@ export interface MachineNumbers {
   filamentCostPerKg: number;
   pressureAdvance: number;
   linearAdvance: number;
+  flow: number;
   startGcode: string;
   endGcode: string;
   host: string;
@@ -251,6 +254,15 @@ export function selectIn(library: MachineLibrary, printerId: string, filamentId:
   if (!library.filaments.some((row) => row.id === filamentId)) return "That filament is no longer saved.";
   if (!Number.isFinite(nozzleMm) || nozzleMm <= 0) return "Choose a nozzle size.";
   return { ...library, printerId, filamentId, nozzleMm };
+}
+
+export function setFlow(library: MachineLibrary, flow: number): MachineLibrary {
+  const value = Math.min(1.5, Math.max(0.5, Math.round(flow * 1000) / 1000));
+  const safe = Number.isFinite(value) ? value : 1;
+  return {
+    ...library,
+    filaments: library.filaments.map((filament) => filament.id === library.filamentId ? { ...filament, flow: safe } : filament),
+  };
 }
 
 export function setAdvance(library: MachineLibrary, pressure: number, linear: number): MachineLibrary {
@@ -404,6 +416,7 @@ export function adoptProfile(library: MachineLibrary, profile: PrinterProfile, p
     bedTemp: profile.bedTemp,
     pressureAdvance: { [key]: profile.pressureAdvance },
     linearAdvance: { [key]: profile.linearAdvance },
+    flow: 1,
   };
   return {
     ...library,
@@ -417,7 +430,7 @@ export function adoptProfile(library: MachineLibrary, profile: PrinterProfile, p
 
 export function machineSectionHtml(
   library: MachineLibrary,
-  live: { pressureAdvance: number; nozzleTemp: number; bedTemp: number },
+  live: { pressureAdvance: number; nozzleTemp: number; bedTemp: number; flow: number },
   linkSummary = "Not checked.",
 ): string {
   const picked = selection(library);
@@ -446,6 +459,9 @@ export function machineSectionHtml(
       ${beltFieldsHtml(picked?.printer)}
       <label class="field setting" data-label="pressure advance" data-keywords="filament nozzle linear advance">Pressure advance
         <input id="machinePa" type="number" min="0" max="2" step="0.001" value="${live.pressureAdvance}" aria-label="Pressure advance for this filament and nozzle" />
+      </label>
+      <label class="field setting" data-label="flow" data-keywords="extrusion multiplier flow ratio">Flow
+        <input id="machineFlow" type="number" min="0.5" max="1.5" step="0.01" value="${live.flow}" aria-label="Flow multiplier for this filament" />
       </label>
       <div class="meta" id="machineTemps">Nozzle ${Math.round(live.nozzleTemp)} °C · bed ${Math.round(live.bedTemp)} °C</div>
       <div class="row">
@@ -516,6 +532,7 @@ function writeNumbers(library: MachineLibrary, printerId: string, filamentId: st
           bedTemp: numbers.bedTemp,
           pressureAdvance: { ...filament.pressureAdvance, [key]: numbers.pressureAdvance },
           linearAdvance: { ...filament.linearAdvance, [key]: numbers.linearAdvance },
+          flow: numbers.flow,
         }
       : filament),
   };
@@ -570,6 +587,7 @@ function stripFilament(filament: FilamentRecord): MachineFile["filament"] {
     bedTemp: filament.bedTemp,
     pressureAdvance: { ...filament.pressureAdvance },
     linearAdvance: { ...filament.linearAdvance },
+    flow: filament.flow,
   };
 }
 
@@ -641,6 +659,7 @@ function filament(
     bedTemp,
     pressureAdvance,
     linearAdvance: { "0.4": 0, "0.6": 0, "0.8": 0 },
+    flow: 1,
   };
 }
 
@@ -836,7 +855,13 @@ function readFilamentBody(value: unknown): Omit<FilamentRecord, "id" | "builtin"
     bedTemp: row.bedTemp,
     pressureAdvance,
     linearAdvance,
+    flow: readFlow(row.flow),
   };
+}
+
+function readFlow(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 1;
+  return Math.min(1.5, Math.max(0.5, Math.round(value * 1000) / 1000));
 }
 
 function readAdvance(value: unknown): Record<string, number> | null {

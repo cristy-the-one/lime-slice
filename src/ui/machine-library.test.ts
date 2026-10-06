@@ -17,6 +17,7 @@ import {
   serializeLibrary,
   serializeMachineFile,
   setAdvance,
+  setFlow,
   setActiveBelt,
   setLink,
   adoptLegacyLink,
@@ -49,6 +50,14 @@ check("built-in filaments", library.filaments.map((filament) => filament.materia
 const pla = library.filaments.find((filament) => filament.id === "lime-pla");
 const petg = library.filaments.find((filament) => filament.id === "lime-petg");
 check("pla at 0.4 mm is the factory advance", pla !== undefined && advanceFor(pla.pressureAdvance, 0.4) === 0);
+check("built-in filaments start at flow 1", library.filaments.every((filament) => filament.flow === 1));
+const flowed = setFlow(library, 1.05);
+check("flow is stored on the filament", selection(flowed)?.filament.flow === 1.05);
+check("a missing flow reads as 1", (() => {
+  const raw = JSON.parse(serializeLibrary(library)) as { filaments: { flow?: number }[] };
+  delete raw.filaments[0].flow;
+  return parseLibrary(JSON.stringify(raw)).filaments[0]?.flow === 1;
+})());
 check("petg advance depends on the nozzle", petg !== undefined && advanceFor(petg.pressureAdvance, 0.4) === 0.05 && advanceFor(petg.pressureAdvance, 0.6) === 0.06);
 
 const picked = selection(library);
@@ -85,6 +94,7 @@ const numbers: MachineNumbers = {
   filamentCostPerKg: 18,
   pressureAdvance: 0.03,
   linearAdvance: 0,
+  flow: 1.05,
   startGcode: "; shop",
   endGcode: "; end",
   host: "http://shop.local",

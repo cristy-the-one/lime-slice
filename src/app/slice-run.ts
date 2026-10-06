@@ -19,6 +19,7 @@ import { noteTally } from "./paint-actions";
 import { loadMachineLibrary } from "./machine-library";
 import { beltStamp } from "../ui/machine-library";
 import { beltSliceField } from "../belt";
+import { flowSliceField } from "../flow";
 import { engineDownMessage, authHeaders } from "../ui/api-base";
 import { topLayerIndex } from "../ui/preview-ux";
 import { pushToast } from "../ui/toasts";
@@ -175,6 +176,8 @@ export function payload() {
     combing: state.combing,
     featureSpeeds: state.featureSpeeds,
     printer: printer(),
+    // Omitted at 1, so a filament that does not scale extrusion keeps its recipe key.
+    ...flowSliceField(state.flow),
     // Beside `printer`, and omitted for a cartesian machine, so that recipe stays the same bytes.
     ...beltSliceField(beltStamp(loadMachineLibrary())),
     variableWidth: state.variableWidth,
@@ -539,6 +542,40 @@ export async function runPaCal() {
   }
 }
 
+export async function runFlowCal() {
+  markBusy(true);
+  state.error = "";
+  renderChrome();
+  try {
+    const body = {
+      start: state.flowStart,
+      end: state.flowEnd,
+      step: state.flowStep,
+      layerHeight: state.layerHeight,
+      bandHeight: 5,
+      speedMmS: 40,
+      printer: printer(),
+    };
+    const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    let result: { gcode: string; bands: typeof state.flowBands; error?: string };
+    if (tauri) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      result = JSON.parse(await invoke<string>("calibrate_flow", { payload: JSON.stringify(body) }));
+    } else {
+      const res = await fetch(`${apiBase()}/api/calibrate/flow`, { method: "POST", headers: authHeaders(apiToken(), { "Content-Type": "application/json" }), body: JSON.stringify(body) });
+      result = await res.json();
+      if (!res.ok) throw new Error(result.error || `calibration failed (${res.status})`);
+    }
+    state.flowBands = result.bands;
+    state.flowGcode = result.gcode;
+  } catch (err) {
+    fail(err);
+  } finally {
+    state.busy = false;
+    renderChrome();
+  }
+}
+
 export function applyPareto(index: number) {
   const point = state.pareto[index];
   if (!point) return;
@@ -588,4 +625,4 @@ export async function runPareto() {
     renderChrome();
   }
 }
-Object.assign(fx, { lineWidth, meshFingerprint, currentRecipeKey, currentSliceAction, setButtonLabel, paintSliceButton, paintForceButton, quietRefreshing, scheduleAuto, payload, printer, runSlice, layerNear, postSlice, parseInWorker, cancelSlice, runPaCal, applyPareto, runPareto });
+Object.assign(fx, { lineWidth, meshFingerprint, currentRecipeKey, currentSliceAction, setButtonLabel, paintSliceButton, paintForceButton, quietRefreshing, scheduleAuto, payload, printer, runSlice, layerNear, postSlice, parseInWorker, cancelSlice, runPaCal, runFlowCal, applyPareto, runPareto });

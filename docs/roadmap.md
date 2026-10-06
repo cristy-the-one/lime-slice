@@ -31,6 +31,7 @@ A row is **done** when a user can do the thing and the engine honors it. **In pr
 - Belt raft, opt-in. `belt.raftLayers` is omitted when 0. A count from 1 to 8 prints a solid pad on the belt before the part. `drop_slivers` stays global. [#156](https://github.com/cristy-the-one/lime-slice/pull/156)
 - Fuzzy skin, off by default. `fuzzySkin` is omitted when off. On, it offsets outer walls after the seam is chosen and leaves a scarf ramp alone. [#157](https://github.com/cristy-the-one/lime-slice/pull/157)
 - Seam painting. Disks on the mesh, omitted when empty. A painted disk pulls the nearest wall vertex and pins it. The picker stays the default. [#158](https://github.com/cristy-the-one/lime-slice/pull/158)
+- Flow tower, and a filament flow multiplier. `flow` is omitted at 1, so a slice that does not scale extrusion keeps its G-code. The tower is a hollow wall per band, and the chosen band is written onto the filament. [#159](https://github.com/cristy-the-one/lime-slice/pull/159)
 
 ### In progress
 
@@ -40,15 +41,14 @@ None. The next pull request starts from the remaining list.
 
 Each engine feature is opt-in or default-off, with a cartesian lock so an unused feature leaves G-code bytes and the request cache key unchanged. One feature per pull request. A short design note goes in the same pull request when the feature is small, and as its own note when it is not.
 
-1. **Flow tower.** A generator beside `calibrate pa`, and a sheet control that writes a flow multiplier onto the filament.
-2. **Temperature tower.** Nozzle temperature steps by height. The chosen band writes the filament's nozzle temperature.
-3. **Retraction length and speed, then a retraction tower.** Length is still inside the strategy (0.35 mm on speed, 0.9 mm on toughness). Omitted fields keep that. The tower comes after the fields exist, so the result has a place to land.
-4. **Belt preview patches.** A belt reply is always a whole preview, because the patch token leaves out copies, axis, and direction. Put those in the token. G-code stays the bytes of a belt slice today.
-5. **Per-object infill, walls, and speed.** The plate design allows them. The engine still refuses `objects[i].settings.walls` as not supported yet. Ranges and volumes stay plate-wide.
-6. **Sequential printing.** `printOrder: "sequential"` is refused until clearance exists. All-at-once stays the omitted default.
-7. **Supports grown from the tilted belt floor.** Until this lands, a belt slice forces supports off and refuses support edits and paint. This is the largest belt follow-up, so it waits until the smaller belt flags are in.
-8. **Multi-material.** A design note, plus UI groundwork for a second filament on the machine, and no toolpath. Tool changes, a purge tower, and a second extruder stay out of the engine in this run.
-9. **Repair audit in the sheet.** The engine already reports repaired and dropped chains. Show that text. No interactive hole fill.
+1. **Temperature tower.** Nozzle temperature steps by height. The chosen band writes the filament's nozzle temperature.
+2. **Retraction length and speed, then a retraction tower.** Length is still inside the strategy (0.35 mm on speed, 0.9 mm on toughness). Omitted fields keep that. The tower comes after the fields exist, so the result has a place to land.
+3. **Belt preview patches.** A belt reply is always a whole preview, because the patch token leaves out copies, axis, and direction. Put those in the token. G-code stays the bytes of a belt slice today.
+4. **Per-object infill, walls, and speed.** The plate design allows them. The engine still refuses `objects[i].settings.walls` as not supported yet. Ranges and volumes stay plate-wide.
+5. **Sequential printing.** `printOrder: "sequential"` is refused until clearance exists. All-at-once stays the omitted default.
+6. **Supports grown from the tilted belt floor.** Until this lands, a belt slice forces supports off and refuses support edits and paint. This is the largest belt follow-up, so it waits until the smaller belt flags are in.
+7. **Multi-material.** A design note, plus UI groundwork for a second filament on the machine, and no toolpath. Tool changes, a purge tower, and a second extruder stay out of the engine in this run.
+8. **Repair audit in the sheet.** The engine already reports repaired and dropped chains. Show that text. No interactive hole fill.
 
 ### Deferred, and why
 

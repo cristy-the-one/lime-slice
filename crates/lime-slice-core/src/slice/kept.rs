@@ -360,6 +360,8 @@ pub(super) fn keys(
         compare: blank.compare,
         include_gcode: blank.include_gcode,
         include_preview: blank.include_preview,
+        // Flow scales filament length at emit. The cut and the toolpaths do not move.
+        flow: blank.flow,
         ..settings.clone()
     };
     let no_emit = SliceSettings {

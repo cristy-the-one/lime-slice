@@ -5,8 +5,9 @@ use std::time::{Duration, Instant};
 
 use lime_slice_core::{
     cancel_all, keep_support_bases, load_slice_mesh_tol, mesh_preview_tol, pareto_estimates,
-    pressure_advance_from_request, slice_payload_watched, strategy_card, GcodeText, Job,
-    PaCalibRequest, PayloadError, Progress, SliceCache, SliceRequest, SliceSettings, Status, Watch,
+    flow_from_request, pressure_advance_from_request, slice_payload_watched, strategy_card,
+    FlowCalibRequest, GcodeText, Job, PaCalibRequest, PayloadError, Progress, SliceCache,
+    SliceRequest, SliceSettings, Status, Watch,
 };
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -235,6 +236,13 @@ fn base64_decode(data: &str) -> Result<Vec<u8>, String> {
 }
 
 #[tauri::command]
+fn calibrate_flow(payload: String) -> Result<String, String> {
+    let req: FlowCalibRequest = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+    let response = flow_from_request(&req)?;
+    serde_json::to_string(&response).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn calibrate_pa(payload: String) -> Result<String, String> {
     let req: PaCalibRequest = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
     let response = pressure_advance_from_request(&req)?;
@@ -288,6 +296,7 @@ pub fn run() {
             slice_model,
             cancel_slice,
             calibrate_pa,
+            calibrate_flow,
             strategies,
             gcode_text,
             save_text_file,
