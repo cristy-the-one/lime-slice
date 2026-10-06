@@ -49,3 +49,31 @@ test("preview opens in perspective, blurs until a slice, and steps one layer", a
   await page.locator("#layerNext").click();
   await expect(page.locator("#rangeHigh")).toHaveValue(String(max));
 });
+
+test("a slice on Prepare paints the layer chart at its on-screen size", async ({ page }) => {
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await serveSliceJob(page, cube);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+
+  await page.getByRole("tab", { name: "Prepare", exact: true }).click();
+  await page.getByText("Samples", { exact: true }).click();
+  await page.getByRole("button", { name: "20 mm cube" }).click();
+  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator(".stage-tools")).toBeHidden();
+
+  await page.locator("#slice").click();
+  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator(".stage-tools")).toBeHidden();
+  const hidden = await page.locator("#spark").evaluate((el: HTMLCanvasElement) => [el.width, el.height]);
+  expect(hidden).not.toEqual([1, 1]);
+
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
+  await expect.poll(async () => page.locator("#spark").evaluate((canvas: HTMLCanvasElement) => {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = Math.floor(rect.width * dpr);
+    const cssH = Math.floor(rect.height * dpr);
+    return cssW > 1 && cssH > 1 && canvas.width === cssW && canvas.height === cssH;
+  })).toBe(true);
+});

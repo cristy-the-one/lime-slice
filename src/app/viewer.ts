@@ -298,8 +298,10 @@ export function paintSpark() {
   const layers = state.result?.layers ?? [];
   const rect = canvasEl.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
-  const width = Math.max(1, Math.floor(rect.width * dpr));
-  const height = Math.max(1, Math.floor(rect.height * dpr));
+  // Prepare hides the chart, so the box is 0×0. A 1×1 bitmap then stretches into a solid bar when Preview shows it.
+  const width = Math.floor(rect.width * dpr);
+  const height = Math.floor(rect.height * dpr);
+  if (width < 1 || height < 1) return;
   if (canvasEl.width !== width) canvasEl.width = width;
   if (canvasEl.height !== height) canvasEl.height = height;
   const colors = themeColors();
@@ -413,6 +415,7 @@ export function setStage(stage: "prepare" | "preview" | "gcode") {
   paintSectionChrome();
   paintGcode();
   resize();
+  paintSpark();
 }
 
 export function setHelp(open: boolean) {
@@ -953,6 +956,8 @@ export function mountViews() {
   const ctx = canvas.getContext("2d")!;
   view3d = createSliceView(document.querySelector<HTMLCanvasElement>("#view3d")!);
   prepare = createPrepareView(document.querySelector<HTMLCanvasElement>("#prepare")!);
+  const sparkCanvas = document.querySelector<HTMLCanvasElement>("#spark");
+  if (sparkCanvas) new ResizeObserver(() => paintSpark()).observe(sparkCanvas);
   prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
   view3d.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
   prepare.setBedOpacity(state.bedOpacity);
