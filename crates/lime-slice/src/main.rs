@@ -1582,6 +1582,7 @@ fn request_for(
         objects: None,
         print_order: None,
         sequential_clearance_mm: None,
+        sequential_gantry_mm: None,
         layer_height: settings.layer_height,
         line_width: settings.line_width,
         blend: blend.clone(),

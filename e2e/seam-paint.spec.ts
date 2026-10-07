@@ -45,7 +45,7 @@ test("seam paint is omitted until a disk is painted", async ({ page }) => {
   await page.mouse.up();
   expect(hit, "the brush meets the cube").not.toBe("");
   await expect(page.locator("#prepare")).toHaveAttribute("data-seam-disks", /[1-9]/);
-  await page.locator("#slice").click();
+  // The stroke re-slices on its own; a Slice click here would race it.
   await expect.poll(() => bodies.length).toBe(2);
   const disks = bodies[1].seamPaint as { r: number; p: number[] }[];
   expect(disks.length).toBeGreaterThan(0);

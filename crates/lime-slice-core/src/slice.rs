@@ -78,10 +78,15 @@ pub struct SliceRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub print_order: Option<String>,
     /// Millimetres of XY clearance between a finished object and the next,
-    /// only with `printOrder: "sequential"`. `0` or omitted means the nozzle
-    /// radius plus one line width.
+    /// only with `printOrder: "sequential"`: the toolhead's reach around the
+    /// nozzle. `0` or omitted means `SEQUENTIAL_TOOLHEAD_MM`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sequential_clearance_mm: Option<f64>,
+    /// Millimetres from the nozzle tip up to the gantry, only with
+    /// `printOrder: "sequential"`. Every object but the last must be lower.
+    /// `0` or omitted means `SEQUENTIAL_GANTRY_MM`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequential_gantry_mm: Option<f64>,
     #[serde(default = "default_layer")]
     pub layer_height: f64,
     #[serde(default = "default_width")]
@@ -1000,11 +1005,7 @@ pub fn slice_request_watched(
         return Err(format!("flow {} must be from 0.5 to 1.5", req.flow));
     }
     let profile = req.printer.clone().unwrap_or_default();
-    let order = plate_order(
-        req,
-        profile.nozzle_diameter,
-        req.line_width.clamp(0.15, 1.2),
-    )?;
+    let order = plate_order(req)?;
     let overrides = wire::parse_overrides(req, [profile.bed_x, profile.bed_y])?;
     if let Some(ironing) = &req.ironing {
         ironing.check(SliceSettings::from_request(req).line_width)?;
@@ -1208,12 +1209,20 @@ fn slice_sharing(
 #[derive(Clone, Copy)]
 enum PlateOrder {
     AllAtOnce,
-    Sequential { clearance_mm: f64 },
+    Sequential { clearance_mm: f64, gantry_mm: f64 },
 }
+
+/// Reach of a typical toolhead around its nozzle: heater block, fan duct and
+/// carriage. A plate printed one object at a time keeps each object this far
+/// from every earlier one unless the request says how far its head reaches.
+const SEQUENTIAL_TOOLHEAD_MM: f64 = 35.0;
+/// Height of a typical gantry above the nozzle tip. Only the last object of a
+/// plate printed one object at a time may be taller.
+const SEQUENTIAL_GANTRY_MM: f64 = 20.0;
 
 /// `printOrder` and `sequentialClearanceMm`. A bad value is an error before
 /// any mesh is planned. Omitted order is all-at-once.
-fn plate_order(req: &SliceRequest, nozzle: f64, line_width: f64) -> Result<PlateOrder, String> {
+fn plate_order(req: &SliceRequest) -> Result<PlateOrder, String> {
     let sequential = match req.print_order.as_deref() {
         None | Some("all-at-once") => false,
         Some("sequential") => true,
@@ -1229,20 +1238,34 @@ fn plate_order(req: &SliceRequest, nozzle: f64, line_width: f64) -> Result<Plate
                 "sequentialClearanceMm is sent only with printOrder \"sequential\"".into(),
             );
         }
-        if !n.is_finite() || !(0.0..=50.0).contains(&n) {
-            return Err(format!("sequentialClearanceMm {n} must be from 0 to 50"));
+        if !n.is_finite() || !(0.0..=100.0).contains(&n) {
+            return Err(format!("sequentialClearanceMm {n} must be from 0 to 100"));
+        }
+    }
+    if let Some(n) = req.sequential_gantry_mm {
+        if !sequential {
+            return Err("sequentialGantryMm is sent only with printOrder \"sequential\"".into());
+        }
+        if !n.is_finite() || !(0.0..=500.0).contains(&n) {
+            return Err(format!("sequentialGantryMm {n} must be from 0 to 500"));
         }
     }
     if !sequential {
         return Ok(PlateOrder::AllAtOnce);
     }
-    let set = req.sequential_clearance_mm.unwrap_or(0.0);
-    let clearance_mm = if set <= 1e-9 {
-        nozzle.max(0.0) * 0.5 + line_width
-    } else {
-        set
+    // The belt advances once per layer. Starting the next object again at its
+    // first layer would run the belt backwards into the head.
+    if req.belt.is_some() {
+        return Err("printOrder \"sequential\" is not available on a belt printer".into());
+    }
+    let set = |n: Option<f64>, auto: f64| match n {
+        Some(n) if n > 1e-9 => n,
+        _ => auto,
     };
-    Ok(PlateOrder::Sequential { clearance_mm })
+    Ok(PlateOrder::Sequential {
+        clearance_mm: set(req.sequential_clearance_mm, SEQUENTIAL_TOOLHEAD_MM),
+        gantry_mm: set(req.sequential_gantry_mm, SEQUENTIAL_GANTRY_MM),
+    })
 }
 
 /// The settings the stages read: lengths clamped, and every later feature
@@ -1469,6 +1492,8 @@ fn belt_output(mut layers: Vec<PlateLayer>, job: &BeltJob) -> Vec<PlateLayer> {
             });
             *layer = PlateLayer {
                 index: layer.index,
+                own: layer.own,
+                clear_z: layer.clear_z,
                 z: layer.z,
                 height: layer.height,
                 note: print.note.clone(),
@@ -1724,16 +1749,23 @@ fn slice_plate(
             .map(|o| o.mesh.bounds().ok_or("empty mesh"))
             .collect::<Result<_, _>>()?
     };
-    if let PlateOrder::Sequential { clearance_mm } = order {
+    if let PlateOrder::Sequential {
+        clearance_mm,
+        gantry_mm,
+    } = order
+    {
         let mut boxes = Vec::with_capacity(objects.len());
-        for object in &objects {
+        for (k, object) in objects.iter().enumerate() {
             let (min, max) = object.mesh.bounds().ok_or("empty mesh")?;
             let [dx, dy] = object.to_bed();
-            boxes.push((
-                object.id.unwrap_or("part"),
-                [min[0] + dx, min[1] + dy],
-                [max[0] + dx, max[1] + dy],
-            ));
+            let id = object.id.unwrap_or("part");
+            let tall = max[2] - min[2];
+            if k + 1 < objects.len() && tall > gantry_mm + 1e-9 {
+                return Err(format!(
+                    "printOrder \"sequential\": \"{id}\" is {tall:.1} mm tall, above the {gantry_mm} mm gantry; only the last object may be taller"
+                ));
+            }
+            boxes.push((id, [min[0] + dx, min[1] + dy], [max[0] + dx, max[1] + dy]));
         }
         plate::sequential_clearance(&boxes, clearance_mm)?;
     }

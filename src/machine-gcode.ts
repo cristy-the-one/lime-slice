@@ -27,9 +27,15 @@ export function spliceText(text: string, stock: string): string {
 }
 
 /**
- * `gcode` with `start` after the leading comment header and `end` before the
- * engine cooldown. Either argument blank leaves that side untouched. Both
+ * `gcode` with `start` after the engine has heated and homed, and `end` before
+ * the engine cooldown. Either argument blank leaves that side untouched. Both
  * blank returns `gcode` with the same bytes.
+ *
+ * A start block purges with a hot nozzle and its mesh probe survives, since
+ * the engine's `G28` came first. After it the engine waits for its own
+ * temperatures again, goes back to absolute moves and extrusion, and zeroes
+ * E, so a block that cools, purges, or switches to relative moves cannot
+ * throw off the first layer.
  */
 export function withMachineGcode(gcode: string, start: string, end: string): string {
   const head = start.trim();
@@ -37,9 +43,8 @@ export function withMachineGcode(gcode: string, start: string, end: string): str
   if (head === "" && tail === "") return gcode;
   let out = gcode;
   if (head !== "") {
-    const header = /^(?:;.*\n)*/.exec(out);
-    const at = header ? header[0].length : 0;
-    out = `${out.slice(0, at)}${head}\n${out.slice(at)}`;
+    const at = afterHoming(out);
+    out = `${out.slice(0, at)}${head}\n${restore(out.slice(0, at))}${out.slice(at)}`;
   }
   if (tail !== "") {
     const cooldown = out.lastIndexOf("M106 S0\nM104 S0\nM140 S0\n");
@@ -55,4 +60,23 @@ export function withMachineGcode(gcode: string, start: string, end: string): str
     }
   }
   return out;
+}
+
+/**
+ * Where the start block goes: after the engine's `G28` and the `G92 E0` that
+ * follows it, or after the leading comment header when the file never homes.
+ */
+function afterHoming(gcode: string): number {
+  const home = /^G28\b.*\n(?:G92 E0\n)?/m.exec(gcode);
+  if (home) return home.index + home[0].length;
+  const header = /^(?:;.*\n)*/.exec(gcode);
+  return header ? header[0].length : 0;
+}
+
+/** The engine's heating, waited for again, then absolute moves and E at zero. */
+function restore(preamble: string): string {
+  const heat = ["M140", "M104", "M190", "M109"]
+    .map((code) => new RegExp(`^${code} S[\\d.]+$`, "m").exec(preamble)?.[0])
+    .filter((line): line is string => line !== undefined);
+  return [...heat, "G90", "M82", "G92 E0"].join("\n") + "\n";
 }

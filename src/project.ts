@@ -65,6 +65,7 @@ export interface LimeProject {
   printOrder?: "sequential";
   /** Omitted at 0, which means the nozzle radius plus one line width. */
   sequentialClearanceMm?: number;
+  sequentialGantryMm?: number;
 }
 
 export type ProjectResult = { ok: true; project: LimeProject } | { ok: false; message: string };
@@ -118,6 +119,9 @@ export function serializeProject(project: LimeProject): string {
       wire.printOrder = "sequential";
       if (project.sequentialClearanceMm !== undefined && project.sequentialClearanceMm > 0) {
         wire.sequentialClearanceMm = project.sequentialClearanceMm;
+      }
+      if (project.sequentialGantryMm !== undefined && project.sequentialGantryMm > 0) {
+        wire.sequentialGantryMm = project.sequentialGantryMm;
       }
     }
     return JSON.stringify(wire, null, 2);
@@ -283,8 +287,11 @@ function readVersion2(doc: Record<string, unknown>): ProjectResult {
   }
   if (project.version === 2 && doc.printOrder === "sequential") {
     project.printOrder = "sequential";
-    if (finite(doc.sequentialClearanceMm) && (doc.sequentialClearanceMm as number) > 0 && (doc.sequentialClearanceMm as number) <= 50) {
+    if (finite(doc.sequentialClearanceMm) && (doc.sequentialClearanceMm as number) > 0 && (doc.sequentialClearanceMm as number) <= 100) {
       project.sequentialClearanceMm = doc.sequentialClearanceMm as number;
+    }
+    if (finite(doc.sequentialGantryMm) && (doc.sequentialGantryMm as number) > 0 && (doc.sequentialGantryMm as number) <= 500) {
+      project.sequentialGantryMm = doc.sequentialGantryMm as number;
     }
   }
   return { ok: true, project };

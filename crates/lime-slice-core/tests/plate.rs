@@ -191,8 +191,16 @@ fn refused_requests_name_the_field() {
         "sequentialClearanceMm is sent only with printOrder \"sequential\""
     );
     assert_eq!(
-        with(json!({"printOrder": "sequential", "sequentialClearanceMm": 80})),
-        "sequentialClearanceMm 80 must be from 0 to 50"
+        with(json!({"printOrder": "sequential", "sequentialClearanceMm": 120})),
+        "sequentialClearanceMm 120 must be from 0 to 100"
+    );
+    assert_eq!(
+        with(json!({"sequentialGantryMm": 30.0})),
+        "sequentialGantryMm is sent only with printOrder \"sequential\""
+    );
+    assert_eq!(
+        with(json!({"printOrder": "sequential", "sequentialGantryMm": 600})),
+        "sequentialGantryMm 600 must be from 0 to 500"
     );
     assert_eq!(
         with(json!({"objects": []})),

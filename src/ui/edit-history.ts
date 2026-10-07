@@ -50,6 +50,7 @@ export interface EditSnap {
   /** Absent on snaps from before sequential printing, which means all-at-once. */
   printOrder?: "all-at-once" | "sequential";
   sequentialClearanceMm?: number;
+  sequentialGantryMm?: number;
 }
 
 export interface EditHistory {

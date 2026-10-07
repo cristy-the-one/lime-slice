@@ -103,6 +103,14 @@ impl std::ops::Deref for PrintLayer {
 #[derive(Clone)]
 pub(crate) struct PlateLayer {
     pub index: usize,
+    /// The layer's place in its own object's stack. It is `index` unless the
+    /// plate prints one object at a time, where each object starts at 0 and
+    /// its first layer gets the first-layer speed, flow and fan.
+    pub own: usize,
+    /// On a plate printed one object at a time, the first layer of every
+    /// object after the first: the height in mm the nozzle climbs to, above
+    /// every object already printed, before it travels to this one.
+    pub clear_z: Option<f64>,
     pub z: f64,
     pub height: f64,
     pub note: String,
@@ -151,6 +159,8 @@ impl PlateLayer {
         };
         Self {
             index: layer.index,
+            own: layer.index,
+            clear_z: None,
             z: layer.z,
             height: layer.height,
             note: layer.note.clone(),
@@ -1199,6 +1209,9 @@ impl Writer {
     /// Header, runs, then flush. The flush used to run at the next layer's
     /// header, before that layer's Z time, which is the same moment.
     fn write_layer(&mut self, layer: &PlateLayer) {
+        if let Some(clear) = layer.clear_z {
+            self.clear_to(layer, clear);
+        }
         self.layer_header(layer);
         for run in &layer.runs {
             self.enter_frame(run.object);
@@ -1220,21 +1233,56 @@ impl Writer {
         self.close_layer();
     }
 
+    /// Leave a finished object for the next one on a plate printed one object
+    /// at a time: retract, climb to `clear`, travel to the next object's first
+    /// point up there, and let the layer header bring the nozzle down. Going
+    /// down first would drive it through the object it just finished.
+    fn clear_to(&mut self, layer: &PlateLayer, clear: f64) {
+        let first = layer.runs.iter().find_map(|r| {
+            r.layer.paths[r.paths.clone()]
+                .iter()
+                .find(|p| !p.points.is_empty())
+                .map(|p| (r.object, p))
+        });
+        let Some((object, path)) = first else {
+            return;
+        };
+        if !self.has_pos {
+            return;
+        }
+        let retract = self.retract_length.unwrap_or(path.retract_mm);
+        if retract > 0.0 && self.retracted == 0.0 {
+            self.flush_motion();
+            self.add_e(-retract);
+            self.retracted = retract;
+            self.retracts += 1;
+            let e_now = self.e;
+            let retract_feed = self.retract_feed;
+            self.put(format_args!("G1 E{e_now:.5} F{retract_feed}\n"));
+            self.add_time(retract / self.retract_speed);
+        }
+        self.set_z(clear.max(self.z));
+        self.enter_frame(object);
+        self.set_accel(cap_accel(path.travel_accel, self.max_accel));
+        let to = path.points[0];
+        self.travel_dry(to[0], to[1], path.travel_speed, path.travel_accel);
+    }
+
     fn write_path(&mut self, layer: &PlateLayer, path: &Extrusion, entry: Entry) {
         self.set_advance(path.kind.as_str());
-        if layer.index >= 2 {
+        if layer.own >= 2 {
             self.set_fan(path.fan);
-        } else if layer.index == 1 {
+        } else if layer.own == 1 {
             self.set_fan(128);
         } else {
             self.set_fan(0);
         }
-        let speed = if layer.index == 0 {
+        let speed = if layer.own == 0 {
             path.speed.min(30.0)
         } else {
             path.speed
         };
-        let layer_flow = if layer.index == 0 { 1.06 } else { 1.0 };
+        let layer_flow = if layer.own == 0 { 1.06 } else { 1.0 };
         // `1.0` times the layer flow is the same float, so an unused multiplier
         // leaves every E value where it was.
         let flow = layer_flow * self.flow_scale;

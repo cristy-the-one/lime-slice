@@ -218,11 +218,11 @@ const walled: LimeProject = {
 };
 const walledOpen = parseProject(serializeProject(walled));
 check("object infill, walls, and speed round-trip", walledOpen.ok && walledOpen.ok && walledOpen.project.objects?.[0]?.settings?.walls === 3 && walledOpen.project.objects?.[0]?.settings?.infill === 0.8 && walledOpen.project.objects?.[0]?.settings?.speed === 40);
-const ordered: LimeProject = { ...multi, printOrder: "sequential", sequentialClearanceMm: 4 };
+const ordered: LimeProject = { ...multi, printOrder: "sequential", sequentialClearanceMm: 4, sequentialGantryMm: 30 };
 const orderedWire = JSON.parse(serializeProject(ordered)) as { printOrder?: string; sequentialClearanceMm?: number };
 eq("a sequential plate writes the order and the clearance", [orderedWire.printOrder, orderedWire.sequentialClearanceMm], ["sequential", 4]);
 const orderedOpen = parseProject(serializeProject(ordered));
-check("a sequential plate round-trips", orderedOpen.ok && orderedOpen.ok && orderedOpen.project.printOrder === "sequential" && orderedOpen.project.sequentialClearanceMm === 4);
+check("a sequential plate round-trips", orderedOpen.ok && orderedOpen.ok && orderedOpen.project.printOrder === "sequential" && orderedOpen.project.sequentialClearanceMm === 4 && orderedOpen.project.sequentialGantryMm === 30);
 const autoWire = JSON.parse(serializeProject({ ...multi, printOrder: "sequential" })) as { printOrder?: string; sequentialClearanceMm?: unknown };
 check("clearance 0 is omitted", autoWire.printOrder === "sequential" && autoWire.sequentialClearanceMm === undefined);
 const plainWire = JSON.parse(multiText) as { printOrder?: unknown };
