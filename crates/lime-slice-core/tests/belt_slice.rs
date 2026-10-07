@@ -545,7 +545,7 @@ fn a_belt_raft_is_a_pad_on_the_belt_under_the_part() {
     );
 }
 
-/// Each extruded endpoint of a belt file, put back on the part as
+/// Both ends of each extruding move of a belt file, put back on the part as
 /// `[across, along the belt, height]`, one list per layer. The nozzle is
 /// `gantry * sin α` above the belt and `gantry * cos α` behind the line where
 /// its plane meets the belt.
@@ -568,11 +568,13 @@ fn part_points(
         if !(line.starts_with("G1 ") || line.starts_with("G2 ") || line.starts_with("G3 ")) {
             continue;
         }
+        let from = [x, b * dir - u * c, u * s];
         b = gcode_word(line, belt_axis).unwrap_or(b);
         u = gcode_word(line, gantry_axis).unwrap_or(u);
         x = gcode_word(line, across).unwrap_or(x);
         let moved = gcode_word(line, across).is_some() || gcode_word(line, gantry_axis).is_some();
         if let (Some(layer), true, Some(_)) = (layers.last_mut(), moved, gcode_word(line, 'E')) {
+            layer.push(from);
             layer.push([x, b * dir - u * c, u * s]);
         }
     }

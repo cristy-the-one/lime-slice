@@ -83,6 +83,52 @@ pub(crate) struct Frame {
     pub y_shift: f64,
 }
 
+/// A pad on the belt under the plate, in the lab: the footprint it covers and
+/// how far it stands off the belt. The parts are lifted onto its top.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Raft {
+    pub min: [f64; 2],
+    pub max: [f64; 2],
+    pub top: f64,
+    pub line_width: f64,
+}
+
+impl Raft {
+    fn corners(&self) -> [[f64; 3]; 8] {
+        let ([x0, y0], [x1, y1], z1) = (self.min, self.max, self.top);
+        [
+            [x0, y0, 0.0],
+            [x1, y0, 0.0],
+            [x0, y1, 0.0],
+            [x1, y1, 0.0],
+            [x0, y0, z1],
+            [x1, y0, z1],
+            [x0, y1, z1],
+            [x1, y1, z1],
+        ]
+    }
+
+    /// Slice Y of each pad line on the nozzle plane at `slice_z`. A plane
+    /// crosses the pad in a band from the belt up to `top / sin(angle)`; the
+    /// fewest lines that cover it share it evenly, and only where the band is
+    /// over the footprint along the belt.
+    pub(crate) fn lines(&self, frame: &Frame, slice_z: f64) -> Vec<f64> {
+        let band = self.top / frame.sin_a;
+        let n = ((band / self.line_width).ceil() as usize).max(1);
+        let z_rot = slice_z + frame.z_drop;
+        (0..n)
+            .map(|k| {
+                let gantry = (k as f64 + 0.5) * band / n as f64;
+                z_rot * frame.cos_a / frame.sin_a - gantry - frame.y_shift
+            })
+            .filter(|&y| {
+                let lab_y = frame.lab(0.0, y, slice_z)[1];
+                (self.min[1]..=self.max[1]).contains(&lab_y)
+            })
+            .collect()
+    }
+}
+
 /// Layer-0 speed and flow, applied to the belt-contact edge of later layers.
 pub(crate) const WALL_SPEED_MM_S: f64 = 30.0;
 pub(crate) const WALL_FLOW: f64 = 1.06;
@@ -139,13 +185,6 @@ impl Belt {
                 "belt.raftLayers {} must be from 1 to 8, or omitted",
                 spec.raft_layers
             ));
-        }
-        if spec.raft_layers > 0 {
-            return Err(
-                "belt.raftLayers is not available yet: the pad is laid in the nozzle plane, \
-                 so half of it would print below the belt"
-                    .into(),
-            );
         }
         let rad = spec.angle_deg.to_radians();
         Ok(Self {
@@ -253,8 +292,13 @@ pub(crate) fn translate_xy(mesh: &Mesh, offset: [f64; 2]) -> Mesh {
 }
 
 /// Rotate each mesh about X by the belt angle, then drop the plate onto Z = 0
-/// and shift Y so the rail starts at 0. One frame for the whole plate.
-pub(crate) fn lay_flat(meshes: &[Mesh], belt: &Belt) -> Result<(Vec<Mesh>, Frame), String> {
+/// and shift Y so the rail starts at 0. One frame for the whole plate and its
+/// raft, so the first layer is where the plane first meets either.
+pub(crate) fn lay_flat(
+    meshes: &[Mesh],
+    belt: &Belt,
+    raft: Option<&Raft>,
+) -> Result<(Vec<Mesh>, Frame), String> {
     let rotated: Vec<Mesh> = meshes
         .iter()
         .map(|m| rotate_x(m, belt.cos_a, belt.sin_a))
@@ -269,6 +313,10 @@ pub(crate) fn lay_flat(meshes: &[Mesh], belt: &Belt) -> Result<(Vec<Mesh>, Frame
         any = true;
         min_y = min_y.min(min[1]);
         min_z = min_z.min(min[2]);
+    }
+    for [_, y, z] in raft.map(Raft::corners).into_iter().flatten() {
+        min_y = min_y.min(y * belt.cos_a - z * belt.sin_a);
+        min_z = min_z.min(y * belt.sin_a + z * belt.cos_a);
     }
     if !any || !min_z.is_finite() {
         return Err("empty mesh".into());
@@ -529,7 +577,7 @@ mod tests {
         let mesh = Mesh {
             triangles: vec![[[0.0, 0.0, 0.0], [0.0, c, -s], [1.0, 0.0, 0.0]]],
         };
-        let (laid, frame) = lay_flat(&[mesh], &belt).unwrap();
+        let (laid, frame) = lay_flat(&[mesh], &belt, None).unwrap();
         let tri = laid[0].triangles[0];
         let dy = tri[1][1] - tri[0][1];
         let dz = tri[1][2] - tri[0][2];
@@ -549,7 +597,7 @@ mod tests {
         let mesh = Mesh {
             triangles: vec![[[0.0, 0.0, 0.0], [20.0, 0.0, 0.0], [0.0, 20.0, 20.0]]],
         };
-        let (laid, frame) = lay_flat(&[mesh], &belt).unwrap();
+        let (laid, frame) = lay_flat(&[mesh], &belt, None).unwrap();
         for tri in &laid[0].triangles {
             for v in tri {
                 let lab = frame.lab(v[0], v[1], v[2]);
@@ -569,7 +617,7 @@ mod tests {
     fn a_cube_extent_at_45_is_the_diagonal() {
         let belt = belt_at(45.0);
         let mesh = box20();
-        let (laid, _) = lay_flat(&[mesh], &belt).unwrap();
+        let (laid, _) = lay_flat(&[mesh], &belt, None).unwrap();
         let (_, height) = plate_span(&laid).unwrap();
         let extent = height / belt.sin_a;
         assert!((extent - 40.0).abs() < 1e-6, "extent {extent}");
