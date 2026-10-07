@@ -55,10 +55,10 @@ test("the parked G-code body is fetched once, when the G-code tab first needs it
   await page.waitForTimeout(300);
   expect(fetches).toEqual([]);
   await page.getByRole("tab", { name: "G-code", exact: true }).click();
-  await expect(page.locator("#gcodePane .line").first()).toHaveText(`;LAYER:${layer.index} Z:${layer.z}`);
+  await expect(page.locator("#gcodePane .gcode-text")).toHaveText(body);
   await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.getByRole("tab", { name: "G-code", exact: true }).click();
-  await expect(page.locator("#gcodePane .line").nth(1)).toHaveText(";TYPE:OUTER");
+  await expect(page.locator("#gcodePane .gcode-text")).toHaveText(body);
   expect(fetches).toHaveLength(1);
   expect(fetches[0]).toMatch(/\/api\/gcode\/t1$/);
 });
@@ -397,8 +397,12 @@ test("the slice button names a cache hit, a real recompute, and a forced recompu
   expect(Math.abs(resliceBox.x - sliceBox.x)).toBeLessThan(1);
   await slice.click();
   await expect.poll(() => slices.length).toBe(4);
+  // Returning to a stored recipe refreshes on its own only once this reply has landed, which a loaded runner can take seconds to do.
+  await expect(slice).toBeEnabled({ timeout: 20_000 });
+  await expect(slice).toHaveText("Show result");
   await page.locator("#lh").fill("0.2");
   await expect.poll(() => slices.length).toBe(5);
+  await expect(slice).toBeEnabled({ timeout: 20_000 });
   await expect(page.locator("#export")).toBeEnabled();
   await expect(page.locator("#banner")).not.toContainText("Settings changed");
   expect(slices.map((s) => [s.layerHeight, s.reslice])).toEqual([

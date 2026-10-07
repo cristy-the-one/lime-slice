@@ -1,5 +1,7 @@
 /// Base64-encode the mesh and parse the slice JSON off the main thread.
 
+import { bytesToBase64 } from "./base64";
+
 export interface WorkerRequest {
   id: number;
   /** Absent when the worker already holds the mesh named by `meshKey`. */
@@ -60,7 +62,7 @@ async function run(msg: WorkerRequest) {
   try {
     // A plate request carries each object's mesh already.
     const plate = Array.isArray(msg.payload?.objects);
-    if (!plate && (msg.bytes || msg.meshKey !== mesh.key)) mesh = { key: msg.meshKey ?? "", b64: toBase64(new Uint8Array(msg.bytes ?? new ArrayBuffer(0))) };
+    if (!plate && (msg.bytes || msg.meshKey !== mesh.key)) mesh = { key: msg.meshKey ?? "", b64: bytesToBase64(new Uint8Array(msg.bytes ?? new ArrayBuffer(0))) };
     const payload = plate ? msg.payload : { ...(msg.payload ?? {}), dataB64: mesh.b64 };
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (msg.token) headers.Authorization = `Bearer ${msg.token}`;
@@ -87,11 +89,3 @@ async function run(msg: WorkerRequest) {
   }
 }
 
-function toBase64(bytes: Uint8Array) {
-  let binary = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-}

@@ -65,10 +65,13 @@ test("an X/Y move re-emits the G-code at the new place without a click", async (
   await page.locator("#slice").click();
   await sliced(page);
   // Time a move after a planned slice. The next spec moves after a disk-cache load.
-  await page.locator("#force").click();
-  await sliced(page);
+  if (replies[0]!.fromCache) {
+    await page.locator("#force").click();
+    await sliced(page);
+  }
   await expect(page.locator("#export")).toBeEnabled();
-  expect(replies[1]!.fromCache).toBe(false);
+  expect(replies.at(-1)!.fromCache).toBe(false);
+  const planned = replies.length;
   const before = printedX(await gcodeOf(page, replies.at(-1)!));
   const fromX = Number(await page.locator("#placeX").inputValue());
 
@@ -77,8 +80,8 @@ test("an X/Y move re-emits the G-code at the new place without a click", async (
   await expect(page.locator("#export")).toBeEnabled({ timeout: SLICE_MS });
   console.log(`move: commit to export enabled ${Date.now() - committed} ms`);
   await expect(page.locator("#banner")).not.toContainText("Settings changed");
-  expect(replies).toHaveLength(3);
-  const moved = replies[2]!;
+  expect(replies).toHaveLength(planned + 1);
+  const moved = replies[planned]!;
   expect(moved.fromCache || moved.previewPatch?.changed.length === 0, "the move re-emitted or came from the store").toBe(true);
   const after = printedX(await gcodeOf(page, moved));
   expect(after[0] - before[0]).toBeCloseTo(25, 1);
@@ -167,6 +170,6 @@ test("a moved part keeps its split plane and G-code line on the bed", async ({ p
   await expect(page.locator("#banner")).not.toContainText("outside the mesh");
 
   await page.locator("#tabGcode").click();
-  await expect(page.locator("#gcodePane .line")).not.toHaveCount(0);
-  await expect(page.locator("#gcodePane .line.on")).toHaveCount(1);
+  await expect(page.locator("#gcodePane .gcode-text")).toContainText(";LAYER:");
+  await expect(page.locator("#gcodePane .gcode-mark")).toBeVisible();
 });

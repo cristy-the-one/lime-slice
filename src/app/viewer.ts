@@ -252,20 +252,33 @@ export function paintGcode() {
   }
   const point = movesNow()[state.move];
   const active = matchGcodeLine(lines, onBed(point));
-  pane.innerHTML = lines.map((line, i) => `<div class="line${i === active ? " on" : ""}" data-gline="${i}">${escapeHtml(line.text)}</div>`).join("");
-  pane.querySelector(".line.on")?.scrollIntoView({ block: "center" });
+  // One text block and one bar: a div per line cost 50-90 ms of layout per layer step on a 5k-line layer.
+  pane.innerHTML = `<div class="gcode-mark" hidden></div><pre class="gcode-text">${escapeHtml(lines.map((line) => line.text).join("\n"))}</pre>`;
+  markGcodeLine(pane as HTMLElement, active, "center");
 }
 
 export function syncGcodeHighlight() {
-  const pane = document.querySelector("#gcodePane");
-  if (!pane || state.stage !== "gcode") return;
-  const lines = [...pane.querySelectorAll<HTMLElement>(".line")];
-  if (lines.length === 0) return;
+  const pane = document.querySelector<HTMLElement>("#gcodePane");
+  if (!pane || state.stage !== "gcode" || !pane.querySelector(".gcode-text")) return;
   const layer = state.result?.layers[state.layer];
   const parsed = layer ? layerGcode()?.layer(layer.index) ?? [] : [];
-  const active = matchGcodeLine(parsed, onBed(movesNow()[state.move]));
-  lines.forEach((el, i) => el.classList.toggle("on", i === active));
-  pane.querySelector(".line.on")?.scrollIntoView({ block: "nearest" });
+  markGcodeLine(pane, matchGcodeLine(parsed, onBed(movesNow()[state.move])), "nearest");
+}
+
+/** Put the bar under line `active` and scroll it into view, from line height alone. */
+function markGcodeLine(pane: HTMLElement, active: number, block: "center" | "nearest") {
+  const mark = pane.querySelector<HTMLElement>(".gcode-mark");
+  if (!mark) return;
+  mark.hidden = active < 0;
+  if (active < 0) return;
+  mark.style.setProperty("--gline", String(active));
+  const style = getComputedStyle(pane);
+  const pad = parseFloat(style.paddingTop);
+  const lh = parseFloat(style.lineHeight);
+  const top = pad + active * lh;
+  if (block === "center") pane.scrollTop = top - (pane.clientHeight - lh) / 2;
+  else if (top < pane.scrollTop) pane.scrollTop = top - pad;
+  else if (top + lh > pane.scrollTop + pane.clientHeight) pane.scrollTop = top + lh + pad - pane.clientHeight;
 }
 
 /** The histogram bars for one result, size, and palette. A slider step only repaints the current-layer marker over them. */

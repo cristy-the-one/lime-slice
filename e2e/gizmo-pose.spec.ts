@@ -6,7 +6,7 @@ import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, parkLeftNdc
 import { applyRigidPose, boundsOf, centeringShift, ID_MATRIX, placeMesh, rotX, rotZ, scaledCanonical, transformPositions, type Mat3, type MeshShift, type RigidPose } from "../src/mesh-place";
 import { encodePaths } from "../src/preview-wire";
 
-const out = "/opt/cursor/artifacts/gizmo-pose";
+const out = path.resolve("artifacts/gizmo-pose");
 fs.mkdirSync(out, { recursive: true });
 
 test("screen radius tracks camera distance and shift snaps the drag", () => {
@@ -131,7 +131,6 @@ test("zoom keeps the gizmo the same size and an arrow move is what gets sliced",
   expect(Math.abs(fit.midY - fit.cssH / 2)).toBeLessThan(fit.cssH * 0.14);
   expect(fit.meshMidX).toBeGreaterThan(fit.cssW * 0.38);
   expect(fit.meshMidX - fit.midX).toBeGreaterThan(fit.cssW * 0.12);
-  fs.copyFileSync(path.join(out, "zoom-fit.png"), "/opt/cursor/artifacts/prepare-gizmo-parked-left.png");
 
   await wheel(page, -120, 12);
   const zoomedIn = await shotBox(page, "zoom-in.png");

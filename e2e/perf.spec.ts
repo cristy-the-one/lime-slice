@@ -102,7 +102,7 @@ test("preview responsiveness on a real slice", async ({ page }) => {
 
   out.gcodeFetchesBeforeGcodeTab = gcodeFetches;
   await page.getByRole("tab", { name: "G-code", exact: true }).click();
-  await expect(page.locator("#gcodePane .line").first()).toBeVisible({ timeout: 60_000 });
+  await expect(page.locator("#gcodePane .gcode-text")).toBeVisible({ timeout: 60_000 });
   out.layerStepGcode = await stepInput(page, "#rangeHigh", steps.map((s) => s - 10));
   await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await settle(page);

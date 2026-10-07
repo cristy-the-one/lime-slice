@@ -2,7 +2,6 @@ import { defaultProfile } from "./profiles.ts";
 import { DEFAULT_PRESET } from "./presets.ts";
 import {
   applyMigrations,
-  bytesToBase64,
   meshRecord,
   parseProject,
   serializeProject,
@@ -10,6 +9,7 @@ import {
   type Migration,
 } from "./project.ts";
 import type { EditEntry } from "./support-edit-list.ts";
+import { bytesToBase64 } from "./base64.ts";
 
 let failed = 0;
 
