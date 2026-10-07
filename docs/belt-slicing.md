@@ -53,7 +53,7 @@ A new setting lands in every stage key unless it is blanked the way `feature_spe
 **Emit is a second, smaller map**, after the inverse rotation has put points back in the gantry frame:
 
 - Across-belt axis: the slice X.
-- Axis along the nozzle plane: the slice Y. Rotation preserved it, so it is the rail length.
+- Axis along the nozzle plane: the distance up the plane from the belt, which is the lab height over `sin(α)`. It is not the slice Y. Rotation keeps lengths, but the line where a layer's plane meets the belt sits at slice Y `z * cot(α)`, so the slice Y zero moves every layer. Slice Y also runs down the plane, so the gantry axis mirrors it, and an arc on a Z belt swaps `G2` and `G3` and negates `J`. Writing slice Y printed a 20 mm cube's first layer 10 mm above the belt.
 - Belt axis: constant on a layer, `n * h / sin(α)` from the start of the belt. The sign is the profile direction.
 - The profile names which firmware axis is the belt. Z is the usual one. X and Y are there for a machine that wired it differently.
 
@@ -68,6 +68,8 @@ The first tilted plane meets a part that sits on the belt in a thin polygon. `dr
 BeltEngine and ideaMaker do not solve this by keeping every speck. They put a raft on the belt, a few layers before the part, so the first real plane has area, and they mark the belt-contact edge of the part as its own feature (belt wall): slower, more flow. ideaMaker also pulls the seam onto that edge.
 
 On this engine the "first layer" is `layer.index == 0` only: 30 mm/s, flow 1.06, fan off (`gcode.rs`). On a belt every layer has a belt-contact edge. That edge gets the same speed and flow, on `outer` and `wall` only, for runs of at least 0.8 mm. `drop_slivers` is unchanged. Lowering the global threshold would keep specks in cartesian slices. The adhesion answer is an opt-in belt raft: `belt.raftLayers`, omitted when 0.
+
+A belt slice has no skirt (`SliceSettings::skirt` is off). The skirt is an outward loop around the first layer in the nozzle plane, and on the belt side that loop crosses below the belt line.
 
 ## Overhangs
 
@@ -133,6 +135,8 @@ The rotation is part of the mesh the contour key hashes. `belt` is not a `SliceS
 Usable width is the across-belt span (`max X − min X`), not a check that the part sits inside `[0, width]`. Max length is `copies * extent + (copies − 1) * gap`. A bad angle, axis, direction, width, length, copies, or gap names that field (`belt.angleDeg`, and the same for the others).
 
 Layer 0 keeps the writer's 30 mm/s, flow 1.06, and fan off. Later layers slow only `outer` and `wall` runs whose bead bottom is within `0.75 * height` of the belt in the lab, and only when that run is at least 0.8 mm. A later copy's first layer is slowed the same way in the paths, because the writer only treats index 0 as the first layer. Scarf and Z hop are forced off: both would move the belt axis between beads. `seam: blend` becomes `rear` (+Y after the rotation, the belt edge). An explicit seam is kept unless `belt.seamOnEdge` is true, which is omitted when off. Ironing is left on. Supports are forced off with no error. Support edits, support paint, and `compare` are errors.
+
+`belt.raftLayers` is refused for now: `belt.raftLayers is not available yet: the pad is laid in the nozzle plane, so half of it would print below the belt`. Once the gantry axis carried the real distance up the plane, the pad below came out from about 10 mm under the belt to 10 mm over it for a 20 mm cube, because it is a slab in the nozzle plane, not on the belt. It needs a slab parallel to the belt under the footprint. The rest of this paragraph is the pad as it was built.
 
 `belt.raftLayers` from 1 to 8, after the mesh is laid flat and before the fit check, lifts every object by `N * clamp(layerHeight, 0.05, 0.6)` and records the laid footprint. `belt_output` then replaces the first N plate layers whose slice Z is at most that lift with one outer loop 1 mm outside the footprint and solid lines spaced by the line width. Those paths are 30 mm/s, flow 1.0, and fan 0. The writer still multiplies layer 0 by 1.06, so the first pad layer is 1.06 and later pad layers stay at 1.0 and 30 mm/s. Adaptive layers with a raft are refused (`belt.raftLayers needs a fixed layer height; turn adaptive layers off`). Each copy repeats the pad, because the replacement happens before the copy loop. Omitted and 0 print no pad, and the request JSON omits the field. The machine file stores `raftLayers: 0` for an old belt block that has no key.
 

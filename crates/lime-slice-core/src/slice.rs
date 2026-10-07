@@ -339,6 +339,8 @@ pub struct SliceSettings {
     pub retract_length: Option<f64>,
     /// `None` keeps the 30 mm/s retract feed.
     pub retract_speed: Option<f64>,
+    /// Off on a belt, where an outward loop around the first layer crosses the belt line.
+    pub skirt: bool,
     pub scarf_seam: ScarfSeam,
     pub scarf_length: f64,
     pub scarf_steps: u32,
@@ -414,6 +416,7 @@ impl Default for SliceSettings {
             flow: 1.0,
             retract_length: None,
             retract_speed: None,
+            skirt: true,
             scarf_seam: ScarfSeam::Blend,
             scarf_length: default_scarf_length(),
             scarf_steps: default_scarf_steps(),
@@ -510,6 +513,7 @@ impl SliceSettings {
             flow: req.flow,
             retract_length: req.retract_length,
             retract_speed: req.retract_speed,
+            skirt: true,
             scarf_seam: if req.classic {
                 ScarfSeam::Off
             } else {
@@ -1317,8 +1321,8 @@ impl PlateObject<'_> {
 /// A belt slice: the rotation that laid the plate flat, and the placement
 /// the reply still reports. The planner sees the settled meshes, with no offset.
 struct BeltJob {
+    /// Its `frame` is the rotation that laid this plate flat.
     belt: crate::belt::Belt,
-    frame: crate::belt::Frame,
     /// Belt length of one copy, from the settled slice height.
     extent: f64,
     /// Each object's part-frame offset before that shift was baked into the mesh.
@@ -1346,7 +1350,7 @@ fn prepare_belt(
     settings: &mut SliceSettings,
     spec: &crate::belt::BeltSpec,
 ) -> Result<BeltJob, String> {
-    let belt = crate::belt::Belt::resolve(spec)?;
+    let mut belt = crate::belt::Belt::resolve(spec)?;
     if settings.compare {
         return Err("belt: compare is not supported yet".into());
     }
@@ -1383,6 +1387,7 @@ fn prepare_belt(
         ));
     }
     let (mut laid, frame) = crate::belt::lay_flat(&placed, &belt)?;
+    belt.frame = frame;
     if belt.raft_layers > 0 && settings.adaptive {
         return Err(
             "belt.raftLayers needs a fixed layer height; turn adaptive layers off".into(),
@@ -1420,6 +1425,7 @@ fn prepare_belt(
         // the belt, so either one would walk the part between beads.
         object.settings.z_hop = ZHopMode::Off;
         object.settings.scarf_seam = ScarfSeam::Off;
+        object.settings.skirt = false;
         // Blend would hide the seam wherever the strategy likes. The belt edge
         // is the back of the nozzle plane, which is Rear after the rotation.
         // An explicit seam stays unless the printer asks for the belt edge.
@@ -1432,6 +1438,7 @@ fn prepare_belt(
     }
     settings.z_hop = ZHopMode::Off;
     settings.scarf_seam = ScarfSeam::Off;
+    settings.skirt = false;
     let extra = f64::from(belt.copies - 1) * belt.stride(extent);
     if extra > 0.0 {
         for (min, max) in &mut lab_bounds {
@@ -1447,7 +1454,6 @@ fn prepare_belt(
     });
     Ok(BeltJob {
         belt,
-        frame,
         extent,
         offsets,
         lab_bounds,
@@ -1510,7 +1516,7 @@ fn belt_output(mut layers: Vec<PlateLayer>, job: &BeltJob) -> Vec<PlateLayer> {
     }
     for layer in &mut layers {
         if layer.index != 0 {
-            retouch_layer(layer, &job.frame, false);
+            retouch_layer(layer, &job.belt.frame, false);
         }
     }
     let stride = job.belt.stride(job.extent);
@@ -1519,7 +1525,7 @@ fn belt_output(mut layers: Vec<PlateLayer>, job: &BeltJob) -> Vec<PlateLayer> {
         for layer in &layers {
             let mut layer = layer.clone();
             if copy > 0 && layer.index == 0 {
-                retouch_layer(&mut layer, &job.frame, true);
+                retouch_layer(&mut layer, &job.belt.frame, true);
             }
             layer.belt_shift = f64::from(copy) * stride;
             layer.index = out.len();
@@ -1634,7 +1640,7 @@ fn tilt_layer(view: &mut PreviewLayer, layer: &PlateLayer, tilt: &patch::BeltTil
                 .copied()
                 .filter(|z| z.is_finite())
                 .unwrap_or(layer.z);
-            let lab = tilt.frame.lab(pt[0], pt[1], slice_z);
+            let lab = tilt.belt.frame.lab(pt[0], pt[1], slice_z);
             pts.push([lab[0] - dx, lab[1] - dy + shift]);
             zs.push(lab[2]);
         }
@@ -1920,7 +1926,6 @@ fn slice_plate(
     // The preview prior is the expanded plate, which is what the client draws.
     let belt_emit = belt_job.as_ref().map(|job| &job.belt);
     let belt_tilt = belt_job.as_ref().map(|job| patch::BeltTilt {
-        frame: job.frame,
         belt: job.belt,
         offsets: job.offsets.clone(),
     });
@@ -5512,7 +5517,7 @@ fn skirt_paths(
         .map(|s| (s.sparse.as_slice(), s.interface.as_slice()))
         .unwrap_or((&[], &[]));
     let outline = boolean_union(contours, &boolean_union(sparse, interface));
-    if outline.is_empty() {
+    if outline.is_empty() || !settings.skirt {
         return Vec::new();
     }
     let strategy = match blend {

@@ -352,15 +352,10 @@ fn floor_supports_land_on_the_belt() {
         "a support bead went through the belt, lab z {lowest}"
     );
 
-    let mut edited = body.clone();
+    let mut edited = body;
     edited["supportEdits"] = json!([{ "kind": "prune", "sites": [{ "xy": [1.0, 1.0], "z": 0.2 }] }]);
     let err = slice_request(&serde_json::from_value(edited).unwrap(), Job::default()).unwrap_err();
     assert!(err.contains("support edits"), "{err}");
-
-    let mut rafted = body;
-    rafted["belt"]["raftLayers"] = json!(2);
-    let err = slice_request(&serde_json::from_value(rafted).unwrap(), Job::default()).unwrap_err();
-    assert!(err.contains("belt.floorSupports"), "{err}");
 }
 
 #[test]
@@ -388,7 +383,7 @@ fn seam_on_the_belt_edge_is_opt_in() {
     let hex: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
     assert_eq!(
         hex,
-        "ec5ebbe00e225386353f1090c1dc86bb8514a2f1491944cd4712a1ae2b8fe5c3"
+        "577e6692387e750d06124925fb6e4724d1f658c6fe80a78ed9443b5ba7a8cee2"
     );
 
     let mut on_belt = aligned.clone();
@@ -406,7 +401,7 @@ fn seam_on_the_belt_edge_is_opt_in() {
     let missed: Vec<_> = placed
         .iter()
         .copied()
-        .filter(|(start, back)| (start - back).abs() >= 1.0)
+        .filter(|(start, edge)| (start - edge).abs() >= 1.0)
         .collect();
     assert!(
         missed.is_empty(),
@@ -414,7 +409,8 @@ fn seam_on_the_belt_edge_is_opt_in() {
     );
 }
 
-/// `(first outer seam Y, max outer Y)` per layer, in gantry coordinates.
+/// `(first outer seam Y, min outer Y)` per layer, in gantry coordinates,
+/// where the belt edge is the lowest.
 /// A wall the fan change splits is still one seam: the first outer start.
 fn layer_seam_ys(gcode: &str) -> Vec<(f64, f64)> {
     let mut out = Vec::new();
@@ -425,8 +421,8 @@ fn layer_seam_ys(gcode: &str) -> Vec<(f64, f64)> {
     let mut saw_outer = false;
     let flush = |ys: &mut Vec<f64>, seam: &mut Option<f64>, saw: &mut bool, out: &mut Vec<(f64, f64)>| {
         if *saw {
-            if let (Some(y0), Some(back)) = (*seam, ys.iter().copied().reduce(f64::max)) {
-                out.push((y0, back));
+            if let (Some(y0), Some(edge)) = (*seam, ys.iter().copied().reduce(f64::min)) {
+                out.push((y0, edge));
             }
         }
         ys.clear();
@@ -498,7 +494,7 @@ fn an_omitted_belt_is_absent_from_the_request_json() {
 }
 
 #[test]
-fn a_belt_raft_is_opt_in_and_prints_before_the_part() {
+fn a_belt_raft_is_refused_until_it_lies_on_the_belt() {
     let stl = box_stl(10.0, 10.0, 2.0);
     let off = request(
         &stl,
@@ -513,14 +509,13 @@ fn a_belt_raft_is_opt_in_and_prints_before_the_part() {
         json!({ "belt": raft, "includePreview": false }),
     );
     let off_g = slice_request(&off, Job::default()).unwrap();
-    let on_g = slice_request(&on, Job::default()).unwrap();
     assert!(off_g.sanity.ok, "{:?}", off_g.sanity.notes);
-    assert!(on_g.sanity.ok, "{:?}", on_g.sanity.notes);
     assert!(!off_g.gcode.contains("belt raft"));
-    assert!(on_g.gcode.contains("; belt raft 2 layers\n"));
-    assert_eq!(layer_zs(&on_g.gcode).len(), layer_zs(&off_g.gcode).len() + 2);
-    let first = on_g.gcode.split(";LAYER:1").next().unwrap();
-    assert!(first.contains("TYPE:SOLID"), "the pad fills the first layer");
+    assert_eq!(
+        slice_request(&on, Job::default()).unwrap_err(),
+        "belt.raftLayers is not available yet: the pad is laid in the nozzle plane, \
+         so half of it would print below the belt"
+    );
     let bad = request(
         &stl,
         "box.stl",
@@ -531,4 +526,192 @@ fn a_belt_raft_is_opt_in_and_prints_before_the_part() {
         err.contains("belt.raftLayers 9 must be from 1 to 8"),
         "{err}"
     );
+}
+
+/// Each extruded endpoint of a belt file, put back on the part as
+/// `[across, along the belt, height]`, one list per layer. The nozzle is
+/// `gantry * sin α` above the belt and `gantry * cos α` behind the line where
+/// its plane meets the belt.
+fn part_points(
+    gcode: &str,
+    angle: f64,
+    belt_axis: char,
+    gantry_axis: char,
+    dir: f64,
+) -> Vec<Vec<[f64; 3]>> {
+    let (s, c) = (angle.to_radians().sin(), angle.to_radians().cos());
+    let across = if belt_axis == 'X' { 'Y' } else { 'X' };
+    let (mut b, mut u, mut x) = (0.0, 0.0, 0.0);
+    let mut layers: Vec<Vec<[f64; 3]>> = Vec::new();
+    for line in gcode.lines() {
+        if line.starts_with(";LAYER:") {
+            layers.push(Vec::new());
+            continue;
+        }
+        if !(line.starts_with("G1 ") || line.starts_with("G2 ") || line.starts_with("G3 ")) {
+            continue;
+        }
+        b = gcode_word(line, belt_axis).unwrap_or(b);
+        u = gcode_word(line, gantry_axis).unwrap_or(u);
+        x = gcode_word(line, across).unwrap_or(x);
+        let moved = gcode_word(line, across).is_some() || gcode_word(line, gantry_axis).is_some();
+        if let (Some(layer), true, Some(_)) = (layers.last_mut(), moved, gcode_word(line, 'E')) {
+            layer.push([x, b * dir - u * c, u * s]);
+        }
+    }
+    layers.retain(|layer| !layer.is_empty());
+    layers
+}
+
+fn span(points: &[[f64; 3]], axis: usize) -> (f64, f64) {
+    points
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+            (lo.min(p[axis]), hi.max(p[axis]))
+        })
+}
+
+#[test]
+fn a_belt_cube_prints_as_a_cube() {
+    for (axis, belt_axis, gantry_axis, dir) in [("z", 'Z', 'Y', 1.0), ("y", 'Y', 'Z', -1.0)] {
+        let mut spec = belt(45.0, axis, 1, 5.0);
+        spec["direction"] = json!(dir as i32);
+        let req = request(
+            &box_stl(20.0, 20.0, 20.0),
+            "cube.stl",
+            json!({ "belt": spec, "includePreview": false }),
+        );
+        let response = slice_request(&req, Job::default()).unwrap();
+        assert!(response.sanity.ok, "{:?}", response.sanity.notes);
+        assert!(
+            !response.gcode.contains("; TYPE:SKIRT"),
+            "{axis}: a skirt around the first layer crosses the belt line"
+        );
+        let layers = part_points(&response.gcode, 45.0, belt_axis, gantry_axis, dir);
+        let all: Vec<[f64; 3]> = layers.concat();
+        let (first_lo, first_hi) = span(&layers[0], 2);
+        let (last_lo, _) = span(layers.last().unwrap(), 2);
+        let (z_lo, z_hi) = span(&all, 2);
+        let (y_lo, y_hi) = span(&all, 1);
+        let (x_lo, x_hi) = span(&all, 0);
+        assert!(
+            first_lo >= 0.0 && first_hi < 0.6,
+            "{axis}: the first layer is on the belt, heights {first_lo:.3}..{first_hi:.3}"
+        );
+        assert!(
+            last_lo > 19.0,
+            "{axis}: the last layer is at the top edge, from {last_lo:.3}"
+        );
+        assert!(
+            z_lo >= 0.0 && z_hi <= 20.2,
+            "{axis}: heights {z_lo:.3}..{z_hi:.3}"
+        );
+        assert!(
+            y_hi - y_lo <= 20.0 && y_hi - y_lo > 19.0,
+            "{axis}: along the belt {y_lo:.3}..{y_hi:.3}"
+        );
+        assert!(
+            x_hi - x_lo <= 20.0 && x_hi - x_lo > 19.0,
+            "{axis}: across {x_lo:.3}..{x_hi:.3}"
+        );
+    }
+}
+
+/// A cylinder whose axis is the nozzle-plane normal at 45°, so every layer is a circle.
+fn tilted_cylinder(r: f64, len: f64, n: usize) -> String {
+    let (s, c) = (45f64.to_radians().sin(), 45f64.to_radians().cos());
+    let tilt = |p: [f64; 3]| [p[0], p[1] * c + p[2] * s, -p[1] * s + p[2] * c];
+    let ring = |z: f64| -> Vec<[f64; 3]> {
+        (0..n)
+            .map(|i| {
+                let t = std::f64::consts::TAU * i as f64 / n as f64;
+                tilt([r * t.cos(), r * t.sin(), z])
+            })
+            .collect()
+    };
+    let (lo, hi) = (ring(0.0), ring(len));
+    let (c0, c1) = (tilt([0.0, 0.0, 0.0]), tilt([0.0, 0.0, len]));
+    let mut faces = Vec::new();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        faces.push([lo[i], lo[j], hi[j]]);
+        faces.push([lo[i], hi[j], hi[i]]);
+        faces.push([c0, lo[j], lo[i]]);
+        faces.push([c1, hi[i], hi[j]]);
+    }
+    let min_z = faces
+        .iter()
+        .flatten()
+        .map(|v| v[2])
+        .fold(f64::INFINITY, f64::min);
+    let mut out = String::from("solid cyl\n");
+    for face in faces {
+        out.push_str("facet normal 0 0 0\nouter loop\n");
+        for v in face {
+            out.push_str(&format!("vertex {} {} {}\n", v[0], v[1], v[2] - min_z));
+        }
+        out.push_str("endloop\nendfacet\n");
+    }
+    out.push_str("endsolid cyl\n");
+    out
+}
+
+#[test]
+fn belt_arcs_keep_their_radius_and_direction() {
+    let req = request(
+        &tilted_cylinder(10.0, 6.0, 128),
+        "cyl.stl",
+        json!({ "belt": belt(45.0, "z", 1, 5.0), "includePreview": false }),
+    );
+    let response = slice_request(&req, Job::default()).unwrap();
+    assert!(response.sanity.ok, "{:?}", response.sanity.notes);
+    let (mut x, mut y, mut e) = (0.0, 0.0, 0.0);
+    let mut line_rates = Vec::new();
+    let mut arcs = 0;
+    for line in response.gcode.lines() {
+        let word = |a| gcode_word(line, a);
+        let arc = line.starts_with("G2 ") || line.starts_with("G3 ");
+        if !(arc || line.starts_with("G1 ")) {
+            continue;
+        }
+        let (nx, ny) = (word('X').unwrap_or(x), word('Y').unwrap_or(y));
+        let ne = word('E').unwrap_or(e);
+        if arc {
+            let (cx, cy) = (x + word('I').unwrap(), y + word('J').unwrap());
+            let (r0, r1) = ((x - cx).hypot(y - cy), (nx - cx).hypot(ny - cy));
+            assert!(
+                (r0 - r1).abs() < 0.01,
+                "radius {r0:.4} at the start, {r1:.4} at the end: {line}"
+            );
+            let (a0, a1) = ((y - cy).atan2(x - cx), (ny - cy).atan2(nx - cx));
+            let ccw = (a1 - a0).rem_euclid(std::f64::consts::TAU);
+            let sweep = if line.starts_with("G3 ") {
+                ccw
+            } else {
+                std::f64::consts::TAU - ccw
+            };
+            line_rates.push((ne - e) / (r0 * sweep));
+            arcs += 1;
+        } else if word('E').is_some() && (word('X').is_some() || word('Y').is_some()) {
+            let d = (nx - x).hypot(ny - y);
+            if d > 0.5 {
+                line_rates.push(-(ne - e) / d);
+            }
+        }
+        (x, y, e) = (nx, ny, ne);
+    }
+    assert!(arcs > 20, "only {arcs} arcs");
+    let mut lines: Vec<f64> = line_rates
+        .iter()
+        .filter(|r| **r < 0.0)
+        .map(|r| -r)
+        .collect();
+    lines.sort_by(f64::total_cmp);
+    let typical = lines[lines.len() / 2];
+    for rate in line_rates.iter().filter(|r| **r >= 0.0) {
+        assert!(
+            *rate > typical * 0.5 && *rate < typical * 2.0,
+            "an arc lays {rate:.5} E/mm, lines lay {typical:.5}: it sweeps the wrong way"
+        );
+    }
 }
