@@ -140,7 +140,8 @@ test("the 3D view draws only while something changes", async ({ page }) => {
     await page.waitForTimeout(ms);
     return (await draws()) - start;
   };
-  await expect.poll(() => drawsIn(500), { timeout: 8000, message: "damping settles and drawing stops" }).toBe(0);
+  // Damping settles in frames (about 115), and a software-GL CI runner draws about 10 a second.
+  await expect.poll(() => drawsIn(500), { timeout: 30_000, message: "damping settles and drawing stops" }).toBe(0);
 });
 
 test("playback readout does not resize the print slider", async ({ page }) => {
