@@ -189,3 +189,21 @@ fn seam_paint_on_a_plate_belongs_on_the_object() {
     .unwrap_err();
     assert_eq!(err, "seamPaint belongs on each object when objects is sent");
 }
+
+#[test]
+fn a_disk_on_a_straight_side_starts_the_wall_inside_it() {
+    // Mid-way along the -X side, 5 mm from either corner: no wall vertex is
+    // inside the disk, so the seam needs a point of its own.
+    let on = slice(&request(json!({
+        "seamPaint": [disk([0.0, 5.0, 0.6], 1.0)]
+    })))
+    .unwrap();
+    let starts = outer_starts(gcode(&on));
+    assert!(!starts.is_empty());
+    for start in &starts {
+        assert!(
+            start[0] < 1.0 && (start[1] - 5.0).abs() < 1.0,
+            "outer start {start:?} is outside the painted disk"
+        );
+    }
+}
