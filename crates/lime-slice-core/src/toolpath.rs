@@ -4164,11 +4164,14 @@ impl Extrusion {
     }
 
     /// Retract length and minimum travel for the move into this path.
-    pub fn travel_retract(&self) -> (f64, f64) {
+    /// `length` replaces the strategy's length; a travel that combs inside
+    /// the part still does not retract.
+    pub fn travel_retract(&self, length: Option<f64>) -> (f64, f64) {
+        let mm = length.unwrap_or(self.retract_mm);
         match self.travel_in {
-            TravelIn::Unchecked => (self.retract_mm, self.retract_min_travel),
+            TravelIn::Unchecked => (mm, self.retract_min_travel),
             TravelIn::Inside => (0.0, self.retract_min_travel),
-            TravelIn::Blocked => (self.retract_mm, 0.0),
+            TravelIn::Blocked => (mm, 0.0),
         }
     }
 }

@@ -1312,11 +1312,13 @@ impl Writer {
             Entry::AsPlanned => {
                 let mut hop = path.lead_in.clone();
                 hop.push(path.points[0]);
-                (hop, path.travel_retract(), path.z_hop)
+                (hop, path.travel_retract(self.retract_length), path.z_hop)
             }
-            Entry::Cross { z_hop } => (vec![path.points[0]], (path.retract_mm, 0.0), z_hop),
+            Entry::Cross { z_hop } => {
+                let mm = self.retract_length.unwrap_or(path.retract_mm);
+                (vec![path.points[0]], (mm, 0.0), z_hop)
+            }
         };
-        let retract_mm = self.retract_length.unwrap_or(retract_mm);
         self.travel_chain(
             &hop,
             path.travel_speed,
