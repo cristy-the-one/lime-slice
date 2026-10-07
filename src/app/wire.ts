@@ -10,7 +10,7 @@ import { wheelNotch } from "../gizmo-math";
 import { state, type CardId } from "./state";
 import { draw, layerGcode, paintPlayback, paintSectionChrome, prepare, realignSplit, scrub, sectionLimit, setHelp, setStage, setView, stepGizmo, stopPlay, syncGcodeHighlight, togglePlay, view3d } from "./viewer";
 import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCal, runSlice, runTempCal } from "./slice-run";
-import { adoptBytes, export3mf, exportGcode, fail, loadNamed, place, saveText, setPlaceCenter } from "./files";
+import { adoptBytes, export3mf, exportGcode, fail, loadNamed, place, saveText, setPlaceCenter, withPrinterGcode } from "./files";
 import { mountProjectFiles, saveCurrentProject } from "./project-io";
 import { pickProjectFile } from "../platform";
 import { applyPreset, clearSettingsSearch, closedGroups, currentPreset, focusSettingsSearch, onBlend, onSettings, renderChrome, syncFindStuck, touch } from "./settings";
@@ -158,21 +158,21 @@ export function wireApp() {
       else state.pressureAdvance = chosen;
       touch();
     }
-    if (t.id === "paexport" && state.paGcode) void saveText(state.paGcode, "pa-calibration.gcode", "gcode");
+    if (t.id === "paexport" && state.paGcode) void saveText(withPrinterGcode(state.paGcode), "pa-calibration.gcode", "gcode");
     if (t.id === "flowapply") {
       noteEdit();
       noteFlow(Number((document.querySelector("#flowchosen") as HTMLInputElement).value));
       touch();
       return;
     }
-    if (t.id === "flowexport" && state.flowGcode) void saveText(state.flowGcode, "flow-calibration.gcode", "gcode");
+    if (t.id === "flowexport" && state.flowGcode) void saveText(withPrinterGcode(state.flowGcode), "flow-calibration.gcode", "gcode");
     if (t.id === "tempapply") {
       noteEdit();
       noteNozzleTemp(Number((document.querySelector("#tempchosen") as HTMLInputElement).value));
       touch();
       return;
     }
-    if (t.id === "tempexport" && state.tempGcode) void saveText(state.tempGcode, "temperature-calibration.gcode", "gcode");
+    if (t.id === "tempexport" && state.tempGcode) void saveText(withPrinterGcode(state.tempGcode), "temperature-calibration.gcode", "gcode");
     if (t.id === "retractapply") {
       noteEdit();
       const length = Number((document.querySelector("#retractchosen") as HTMLInputElement).value);
@@ -181,7 +181,7 @@ export function wireApp() {
       touch();
       return;
     }
-    if (t.id === "retractexport" && state.retractGcode) void saveText(state.retractGcode, "retraction-calibration.gcode", "gcode");
+    if (t.id === "retractexport" && state.retractGcode) void saveText(withPrinterGcode(state.retractGcode), "retraction-calibration.gcode", "gcode");
     if (t.id === "profileSave") {
       const typed = typedProfileName();
       if (typed) saveSettingsProfile(typed);

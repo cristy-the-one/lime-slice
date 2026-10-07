@@ -336,11 +336,15 @@ export async function fetchStoredGcode(token: string) {
 export async function printableGcode(result: SliceResponse) {
   const text = await fx.loadGcode(result);
   if (!text) return text;
-  const grams = withFooterGrams(text, shownGrams(result));
+  return withPrinterGcode(withFooterGrams(text, shownGrams(result)));
+}
+
+/** `gcode` with the selected printer's start and end text, as Export and Send write it. */
+export function withPrinterGcode(gcode: string) {
   const picked = selection(loadMachineLibrary());
-  if (!picked) return grams;
+  if (!picked) return gcode;
   return withMachineGcode(
-    grams,
+    gcode,
     spliceText(picked.printer.startGcode, legacyStockStart(picked.printer.name)),
     spliceText(picked.printer.endGcode, legacyStockEnd(picked.printer.name)),
   );
