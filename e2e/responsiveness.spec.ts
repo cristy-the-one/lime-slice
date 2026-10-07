@@ -397,8 +397,7 @@ test("the slice button names a cache hit, a real recompute, and a forced recompu
   expect(Math.abs(resliceBox.x - sliceBox.x)).toBeLessThan(1);
   await slice.click();
   await expect.poll(() => slices.length).toBe(4);
-  // Returning to a stored recipe refreshes on its own only once this reply has landed.
-  // Filling while the re-slice is still running drops that timer, and a slow reply then misses the poll.
+  // Returning to a stored recipe refreshes on its own only once this reply has landed, which a loaded runner can take seconds to do.
   await expect(slice).toBeEnabled({ timeout: 20_000 });
   await expect(slice).toHaveText("Show result");
   await page.locator("#lh").fill("0.2");
