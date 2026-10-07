@@ -1,4 +1,4 @@
-import { cacheStatus, coverageWarning, feed, fnv1aHex, inAirWarning, partFrameKey, quietRefresh, recipeKey, sliceAction, sliceBusyLabel, staleSliceCopy, storesReply } from "./slice-action.ts";
+import { cacheStatus, coverageWarning, feed, fnv1aHex, inAirWarning, meshKeyHex, partFrameKey, quietRefresh, recipeKey, sliceAction, sliceBusyLabel, staleSliceCopy, storesReply } from "./slice-action.ts";
 
 let failed = 0;
 
@@ -123,6 +123,11 @@ eq("FNV-1a 64 of foobar", fnv1aHex(ascii("foobar")), "85944171f73967e8");
 const megabyte = new Uint8Array(1 << 20);
 for (let i = 0; i < megabyte.length; i++) megabyte[i] = Math.imul(i, 2654435761) >>> 24;
 eq("a megabyte keeps the fingerprint saved projects carry", fnv1aHex(megabyte), "1fd4120eb1b09c60");
+const stl = megabyte.subarray(0, 84 + 50 * 7);
+eq("same mesh bytes, same session key", meshKeyHex(stl), meshKeyHex(stl.slice()));
+check("a changed word changes the session key", meshKeyHex(stl) !== meshKeyHex(Uint8Array.from(stl, (b, i) => (i === 100 ? b ^ 1 : b))));
+check("a changed tail byte changes the session key", meshKeyHex(stl) !== meshKeyHex(Uint8Array.from(stl, (b, i) => (i === stl.length - 1 ? b ^ 1 : b))));
+eq("an unaligned view keys as its bytes do", meshKeyHex(megabyte.subarray(3, 3 + 434)), meshKeyHex(megabyte.slice(3, 3 + 434)));
 
 eq("no coverage gaps, no warning", coverageWarning([]), null);
 eq("one coverage gap", coverageWarning([{ areaMm2: 16 }]), "Supports leave 1 overhang patch unheld, 16.0 mm² in all.");
