@@ -7,7 +7,6 @@ import { buildCutPlane, disposeTree, prepareFrame, splitDragAt, type PrintFrame 
 import { GIZMO_NUDGE_DEG, GIZMO_NUDGE_MM, GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep, wheelNotch } from "./gizmo-math";
 import { clampSplit, roundSplit, type SplitAxis } from "./split-at";
 import { createModifierScene } from "./modifier-scene";
-import { sharpEdges } from "./mesh-edges";
 import type { OverrideDocument } from "./overrides";
 import type { PlateBound } from "./plate";
 import type { SeamDisk } from "./seam-paint";
@@ -307,6 +306,25 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   const dragHit = new THREE.Vector3();
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
+
+  let edgesWorker: Worker | null = null;
+  let outlineJob = 0;
+  /** The mesh draws at once; its outline joins when the worker has built it, if the mesh is still shown. */
+  function addOutline(target: THREE.Mesh, canonical: Float32Array) {
+    const id = ++outlineJob;
+    edgesWorker ??= new Worker(new URL("./edges-worker.ts", import.meta.url), { type: "module" });
+    edgesWorker.onmessage = (ev: MessageEvent<{ id: number; edges: Float32Array }>) => {
+      if (ev.data.id !== outlineJob || mesh !== target) return;
+      const edges = new THREE.BufferGeometry();
+      edges.setAttribute("position", new THREE.BufferAttribute(ev.data.edges, 3));
+      const outline = new THREE.LineSegments(edges, outlineMat);
+      outline.raycast = () => undefined;
+      target.add(outline);
+      requestRender();
+    };
+    const positions = canonical.slice();
+    edgesWorker.postMessage({ id, positions, thresholdDeg: 25 }, [positions.buffer]);
+  }
 
   let frameQueued = false;
   let lastPaint = performance.now();
@@ -1050,12 +1068,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
           geometry.computeVertexNormals();
           mesh = new THREE.Mesh(geometry, material);
           mesh.matrixAutoUpdate = false;
-          const edges = new THREE.BufferGeometry();
-          edges.setAttribute("position", new THREE.BufferAttribute(sharpEdges(canonical, 25), 3));
-          const outline = new THREE.LineSegments(edges, outlineMat);
-          outline.raycast = () => undefined;
-          mesh.add(outline);
           scene.add(mesh);
+          addOutline(mesh, canonical);
         }
       }
       meshBounds = canonical && part ? part.bounds : null;

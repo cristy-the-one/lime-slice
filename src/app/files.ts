@@ -1,7 +1,7 @@
 import { fx } from "./fx";
 import { state, session } from "./state";
 import { centeringShift, ID_MATRIX, parseStl, placeMesh, encodeStl, scaledCanonical, encode3mf, type PlacedPart, type Placement } from "../mesh-place";
-import { fnv1aHex } from "../slice-action";
+import { meshKeyHex } from "../slice-action";
 import { bytesToBase64 } from "../base64";
 import { needsEngine, apiBase, apiToken, markEngineDown, isStepName, renderChrome, markStale, stale, card, shownGrams } from "./settings";
 import { withFooterGrams } from "../estimate";
@@ -280,7 +280,7 @@ export function objectBase64(obj: PlateObject): string {
 
 export function objectFingerprint(obj: PlateObject): string {
   const mesh = objectMesh(obj);
-  return (mesh.finger ??= fnv1aHex(new Uint8Array(mesh.bytes)));
+  return (mesh.finger ??= meshKeyHex(new Uint8Array(mesh.bytes)));
 }
 
 /** A slice request with its mesh bytes on: each object's own for a plate, else the one mesh's. */

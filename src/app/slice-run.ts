@@ -1,6 +1,6 @@
 import { fx } from "./fx";
 import { state, session, worker, cachedRecipes, type ParetoPoint, type SliceResponse } from "./state";
-import { fnv1aHex, partFrameKey, quietRefresh, recipeKey, type SliceAction, sliceAction, sliceBusyLabel, storesReply, FORCE_LABEL } from "../slice-action";
+import { meshKeyHex, partFrameKey, quietRefresh, recipeKey, type SliceAction, sliceAction, sliceBusyLabel, storesReply, FORCE_LABEL } from "../slice-action";
 import { currentPlacement, livePlate, meshBase64, meshBytes, fail, isTauri, objectBase64, objectFingerprint, objectPlacement, withMeshData } from "./files";
 import { MeshRefs, sendWithMeshes, unknownMeshRef, type MeshFields, type SentMesh } from "../mesh-refs";
 import { adoptPatch, previewBase } from "./viewer";
@@ -48,7 +48,7 @@ export function meshFingerprint(): string {
   if (source && source === session.fingerSource && state.partScale === session.fingerScale) return session.finger;
   session.fingerSource = source;
   session.fingerScale = state.partScale;
-  session.finger = source ? fnv1aHex(new Uint8Array(meshBytes())) : "";
+  session.finger = source ? meshKeyHex(new Uint8Array(meshBytes())) : "";
   return session.finger;
 }
 
