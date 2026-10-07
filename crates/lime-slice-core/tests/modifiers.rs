@@ -556,3 +556,18 @@ fn a_plate_volume_reaches_each_object_it_meets_in_bed_coordinates() {
         "objects[0].settings.heightRanges is a plate setting"
     );
 }
+
+#[test]
+fn a_volume_that_sets_infill_keeps_the_walls_of_its_range() {
+    // The box covers the part's left edge at x 80. It sets infill only, so
+    // the 4 walls of the range hold inside it as well as outside it.
+    let volume = json!({"kind": "box", "center": [80, 100, 5], "size": [20, 20, 20], "infill": 0.8});
+    let reply = slice(&request(
+        speed(),
+        json!({"heightRanges": [{"z": [0, 10], "walls": 4}], "modifierVolumes": [volume]}),
+    ))
+    .unwrap();
+    let left = wall_crossings(&reply, 5.0, 100.0, 90.0);
+    let all = wall_crossings(&reply, 5.0, 100.0, 200.0);
+    assert_eq!((left, all - left), (4, 4), "wall beads on the left and right edges");
+}
