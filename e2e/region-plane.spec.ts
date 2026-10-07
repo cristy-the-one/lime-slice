@@ -6,7 +6,7 @@ import { boundsOf, ID_MATRIX, parseStl, transformPositions } from "../src/mesh-p
 import { encodePaths } from "../src/preview-wire";
 import { nextSplitAt, roundSplit, splitMidpoint } from "../src/split-at";
 
-const out = "/opt/cursor/artifacts/region-plane";
+const out = path.resolve("artifacts/region-plane");
 fs.mkdirSync(out, { recursive: true });
 
 const bridgeFile = fs.readFileSync(path.resolve("samples/bridge_span.stl"));

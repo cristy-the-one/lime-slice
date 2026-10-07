@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { serveSliceJob } from "./serve-job";
 
-const out = "/opt/cursor/artifacts/preview-edges";
+const out = path.resolve("artifacts/preview-edges");
 fs.mkdirSync(out, { recursive: true });
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
