@@ -949,6 +949,44 @@ mod tests {
     }
 
     #[test]
+    fn a_printer_slower_than_10_mm_s_at_the_bead_still_gets_towers() {
+        // 0.5 mm^3/s over a 0.45 x 0.2 mm bead caps the feed at 5.6 mm/s.
+        let profile = PrinterProfile {
+            max_volumetric_mm3_s: 0.5,
+            ..PrinterProfile::default()
+        };
+        let feeds = |gcode: &str| -> (f64, f64) {
+            gcode
+                .lines()
+                .filter(|l| l.starts_with("G1 ") && l.contains(" E") && l.contains(" X"))
+                .filter_map(|l| l.split_whitespace().find_map(|w| w.strip_prefix('F')?.parse().ok()))
+                .fold((f64::INFINITY, 0.0), |(lo, hi), f: f64| (lo.min(f), hi.max(f)))
+        };
+        let pa = pressure_advance_tower(&PaCalib {
+            profile: profile.clone(),
+            ..PaCalib::default()
+        })
+        .unwrap();
+        let flow = flow_tower(&FlowCalib {
+            profile: profile.clone(),
+            ..FlowCalib::default()
+        })
+        .unwrap();
+        let temp = temperature_tower(&TempCalib {
+            profile,
+            ..TempCalib::default()
+        })
+        .unwrap();
+        for (name, gcode) in [("flow", &flow.gcode), ("temp", &temp.gcode)] {
+            let (_, top) = feeds(gcode);
+            assert!(top > 0.0 && top <= 5.6 * 60.0, "{name}: fastest print feed F{top}");
+        }
+        // The fast pass keeps its 5 mm/s over the slow one, as it always has.
+        let (slow, _) = feeds(&pa.gcode);
+        assert!(slow <= 5.6 * 60.0, "pa: slowest print feed F{slow}");
+    }
+
+    #[test]
     fn klipper_bands_step_and_sit_at_the_right_z() {
         let out = pressure_advance_tower(&PaCalib {
             end: 0.04,
