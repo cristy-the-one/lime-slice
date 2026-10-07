@@ -657,12 +657,18 @@ fn emit_void_fill(
         if !skin && area < 0.25 {
             continue;
         }
+        // The fill reads the width only through these steps, so the search
+        // stops once they agree at both ends of its bracket.
+        let reading = |r: f64| (r >= 0.05, r * 2.0 >= min_w, void_rows(r * 2.0, line_width));
+        let radius = inradius_until(&region, 8.0, |lo, hi| reading(lo) == reading(hi));
         // Under 0.1 mm the width probe reads nothing. Skin that thin is
         // where two faces cross, and still needs its bead.
-        let width = match region_width(&region) {
-            Some(width) => width,
-            None if skin => 0.0,
-            None => continue,
+        let width = if radius >= 0.05 {
+            radius * 2.0
+        } else if skin {
+            0.0
+        } else {
+            continue;
         };
         let kind = if skin {
             PathKind::ThinWall
@@ -670,7 +676,8 @@ fn emit_void_fill(
             PathKind::GapFill
         };
         if width >= min_w {
-            fill_void_piece(paths, &region, width, kind, strategy, line_width, seam_hint);
+            let rows = void_rows(width, line_width);
+            fill_void_piece(paths, &region, rows, kind, strategy, line_width, seam_hint);
         } else if skin {
             // Skin thinner than the narrowest bead: a membrane whose faces
             // meet, or a spike tip past its wall. Where no bead is within
@@ -697,7 +704,7 @@ fn emit_void_fill(
 fn fill_void_piece(
     paths: &mut Vec<Extrusion>,
     region: &[Loop],
-    width: f64,
+    rows: f64,
     kind: PathKind,
     strategy: &ResolvedStrategy,
     line_width: f64,
@@ -710,7 +717,6 @@ fn fill_void_piece(
     let Some((center, angle)) = principal_axis(&region[0]) else {
         return;
     };
-    let rows = (width / line_width).round().max(1.0);
     let shift = if rows % 2.0 == 0.0 {
         line_width * 0.5
     } else {
@@ -722,6 +728,7 @@ fn fill_void_piece(
     ];
     let hatched = clip_infill(solid_fill(region, line_width, angle, Some(through)), region);
     if hatched.is_empty() {
+        let width = inradius(region, 8.0) * 2.0;
         fill_remaining(
             paths,
             &paths_from_loops(region),
@@ -778,10 +785,9 @@ fn net_area(region: &[Loop]) -> f64 {
     region.iter().map(|l| signed_area(l)).sum::<f64>().abs()
 }
 
-/// Twice the inradius of a region, holes included. `None` under 0.1 mm.
-fn region_width(region: &[Loop]) -> Option<f64> {
-    let radius = inradius(region, 8.0);
-    (radius >= 0.05).then_some(radius * 2.0)
+/// Rows of beads along a void piece `width` across.
+fn void_rows(width: f64, line_width: f64) -> f64 {
+    (width / line_width).round().max(1.0)
 }
 
 /// Center line of a sliver: split its outline at its two tips and average the
@@ -1210,6 +1216,13 @@ fn feature_width(contours: &[Loop]) -> Option<f64> {
 }
 
 fn inradius(loops: &[Loop], cap: f64) -> f64 {
+    inradius_until(loops, cap, |_, _| false)
+}
+
+/// The bisection of [`inradius`], stopped once `settled(lo, hi)`. The full
+/// search ends in `[lo, hi)`, so a caller that reads the radius through steps
+/// that only rise with it, equal at `lo` and `hi`, reads the same from `lo`.
+fn inradius_until(loops: &[Loop], cap: f64, settled: impl Fn(f64, f64) -> bool) -> f64 {
     let paths = paths_from_loops(loops);
     let mut lo = 0.0;
     let mut hi = cap;
@@ -1223,6 +1236,9 @@ fn inradius(loops: &[Loop], cap: f64) -> f64 {
         .map(|(mn, mx)| (mx[0] - mn[0]).min(mx[1] - mn[1]) * 0.5)
         .unwrap_or(cap);
     for _ in 0..14 {
+        if settled(lo, hi) {
+            break;
+        }
         let mid = (lo + hi) * 0.5;
         if mid > limit || loops_from_paths(offset_paths(&paths, -mid)).is_empty() {
             hi = mid;
