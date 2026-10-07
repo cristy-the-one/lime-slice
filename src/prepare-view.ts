@@ -7,6 +7,7 @@ import { buildCutPlane, disposeTree, prepareFrame, splitDragAt, type PrintFrame 
 import { GIZMO_NUDGE_DEG, GIZMO_NUDGE_MM, GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep, wheelNotch } from "./gizmo-math";
 import { clampSplit, roundSplit, type SplitAxis } from "./split-at";
 import { createModifierScene } from "./modifier-scene";
+import { sharpEdges } from "./mesh-edges";
 import type { OverrideDocument } from "./overrides";
 import type { PlateBound } from "./plate";
 import type { SeamDisk } from "./seam-paint";
@@ -1049,7 +1050,9 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
           geometry.computeVertexNormals();
           mesh = new THREE.Mesh(geometry, material);
           mesh.matrixAutoUpdate = false;
-          const outline = new THREE.LineSegments(new THREE.EdgesGeometry(geometry, 25), outlineMat);
+          const edges = new THREE.BufferGeometry();
+          edges.setAttribute("position", new THREE.BufferAttribute(sharpEdges(canonical, 25), 3));
+          const outline = new THREE.LineSegments(edges, outlineMat);
           outline.raycast = () => undefined;
           mesh.add(outline);
           scene.add(mesh);
