@@ -232,6 +232,7 @@ pub fn pressure_advance_tower(opts: &PaCalib) -> Result<PaCalibOutput, String> {
                 band.k
             ));
             pen.out.push_str(&format!("G1 Z{z:.3} F7200\n"));
+            pen.layer_fan(layer_i);
             pen.comment("TYPE:PA_SLOW");
             pen.travel(x0, y0, slow);
             pen.extrude(x0 + length, y0, slow);
@@ -255,7 +256,7 @@ pub fn pressure_advance_tower(opts: &PaCalib) -> Result<PaCalibOutput, String> {
     out.push_str(&format!("G1 E{parked:.5} F1800\n"));
     out.push_str(&format!("G1 Z{z_park:.3} F600\n"));
     out.push_str(&format!("; FILAMENT_E:{e:.3}\n"));
-    out.push_str("M104 S0\nM140 S0\nM84\n");
+    out.push_str("M106 S0\nM104 S0\nM140 S0\nM84\n");
     Ok(PaCalibOutput {
         gcode: out,
         bands,
@@ -443,6 +444,7 @@ pub fn flow_tower(opts: &FlowCalib) -> Result<FlowCalibOutput, String> {
                     band.flow
                 ));
                 pen.out.push_str(&format!("G1 Z{z:.3} F7200\n"));
+                pen.layer_fan(layer_i);
                 pen.comment("TYPE:FLOW_WALL");
                 pen.travel(x0, y0, speed);
                 pen.extrude(x0 + side, y0, speed);
@@ -458,7 +460,7 @@ pub fn flow_tower(opts: &FlowCalib) -> Result<FlowCalibOutput, String> {
     out.push_str(&format!("G1 E{parked:.5} F1800\n"));
     out.push_str(&format!("G1 Z{z_park:.3} F600\n"));
     out.push_str(&format!("; FILAMENT_E:{e:.3}\n"));
-    out.push_str("M104 S0\nM140 S0\nM84\n");
+    out.push_str("M106 S0\nM104 S0\nM140 S0\nM84\n");
     Ok(FlowCalibOutput {
         gcode: out,
         bands,
@@ -551,6 +553,9 @@ pub fn temperature_from_request(req: &TempCalibRequest) -> Result<TempCalibOutpu
     })
 }
 
+/// How far above the tower top the nozzle waits for a new band temperature.
+const TEMP_WAIT_LIFT_MM: f64 = 5.0;
+
 pub fn temperature_tower(opts: &TempCalib) -> Result<TempCalibOutput, String> {
     if !opts.start.is_finite() || !opts.end.is_finite() || !opts.step.is_finite() {
         return Err("temperature start, end, and step must be finite".into());
@@ -635,8 +640,19 @@ pub fn temperature_tower(opts: &TempCalib) -> Result<TempCalibOutput, String> {
                 "; TEMP_BAND_START index={} temp={:.0} z0={:.3} z1={:.3}\n",
                 band.index, band.temp, band.z0, band.z1
             ));
+            // Wait clear of the tower, so the hot nozzle does not sit on
+            // the top layer and ooze onto it while the temperature changes.
+            if band.index > 0 {
+                pen.filament(-1.0, 30.0);
+                pen.out
+                    .push_str(&format!("G1 Z{:.3} F600\n", band.z0 + TEMP_WAIT_LIFT_MM));
+                pen.travel(x0 - 10.0, y0 - 10.0, speed);
+            }
             pen.out
                 .push_str(&format!("M104 S{:.0}\nM109 S{:.0}\n", band.temp, band.temp));
+            if band.index > 0 {
+                pen.filament(1.0, 30.0);
+            }
             let first_layer = ((band.z0 / layer_h).round() as usize).saturating_sub(1);
             let last_layer = (band.z1 / layer_h).round() as usize;
             for layer_i in first_layer..last_layer {
@@ -646,6 +662,7 @@ pub fn temperature_tower(opts: &TempCalib) -> Result<TempCalibOutput, String> {
                     band.temp
                 ));
                 pen.out.push_str(&format!("G1 Z{z:.3} F7200\n"));
+                pen.layer_fan(layer_i);
                 pen.comment("TYPE:TEMP_WALL");
                 pen.travel(x0, y0, speed);
                 pen.extrude(x0 + side, y0, speed);
@@ -661,7 +678,7 @@ pub fn temperature_tower(opts: &TempCalib) -> Result<TempCalibOutput, String> {
     out.push_str(&format!("G1 E{parked:.5} F1800\n"));
     out.push_str(&format!("G1 Z{z_park:.3} F600\n"));
     out.push_str(&format!("; FILAMENT_E:{e:.3}\n"));
-    out.push_str("M104 S0\nM140 S0\nM84\n");
+    out.push_str("M106 S0\nM104 S0\nM140 S0\nM84\n");
     Ok(TempCalibOutput {
         gcode: out,
         bands,
@@ -847,6 +864,7 @@ pub fn retract_tower(opts: &RetractCalib) -> Result<RetractCalibOutput, String> 
                     band.length
                 ));
                 pen.out.push_str(&format!("G1 Z{z:.3} F7200\n"));
+                pen.layer_fan(layer_i);
                 pen.comment("TYPE:RETRACT_POST");
                 pen.filament(-band.length, retract_speed);
                 pen.travel(ax, ay, 120.0);
@@ -871,7 +889,7 @@ pub fn retract_tower(opts: &RetractCalib) -> Result<RetractCalibOutput, String> 
     out.push_str(&format!("G1 E{parked:.5} F1800\n"));
     out.push_str(&format!("G1 Z{z_park:.3} F600\n"));
     out.push_str(&format!("; FILAMENT_E:{e:.3}\n"));
-    out.push_str("M104 S0\nM140 S0\nM84\n");
+    out.push_str("M106 S0\nM104 S0\nM140 S0\nM84\n");
     Ok(RetractCalibOutput {
         gcode: out,
         bands,
@@ -926,6 +944,17 @@ impl Pen<'_> {
         self.known = true;
     }
 
+    /// The fan a slice runs: off on the first layer, half on the second,
+    /// full from the third.
+    fn layer_fan(&mut self, layer: usize) {
+        match layer {
+            0 => self.out.push_str("M106 S0\n"),
+            1 => self.out.push_str("M106 S128\n"),
+            2 => self.out.push_str("M106 S255\n"),
+            _ => {}
+        }
+    }
+
     /// A pure filament move. Negative `delta` retracts.
     fn filament(&mut self, delta: f64, speed: f64) {
         if delta.abs() < 1e-9 {
@@ -962,19 +991,39 @@ mod tests {
     #[test]
     fn towers_ramp_the_fan_like_a_slice() {
         let towers = [
-            ("pa", pressure_advance_tower(&PaCalib::default()).unwrap().gcode),
+            (
+                "pa",
+                pressure_advance_tower(&PaCalib::default()).unwrap().gcode,
+            ),
             ("flow", flow_tower(&FlowCalib::default()).unwrap().gcode),
-            ("temp", temperature_tower(&TempCalib::default()).unwrap().gcode),
-            ("retract", retract_tower(&RetractCalib::default()).unwrap().gcode),
+            (
+                "temp",
+                temperature_tower(&TempCalib::default()).unwrap().gcode,
+            ),
+            (
+                "retract",
+                retract_tower(&RetractCalib::default()).unwrap().gcode,
+            ),
         ];
         for (name, gcode) in &towers {
-            assert!(!layer_lines(gcode, 0).iter().any(|l| l.starts_with("M106 S") && *l != "M106 S0"), "{name}: fan on layer 0");
-            assert!(layer_lines(gcode, 1).contains(&"M106 S128"), "{name}: layer 1 is not at half fan");
-            assert!(layer_lines(gcode, 2).contains(&"M106 S255"), "{name}: layer 2 is not at full fan");
-            assert!(gcode.contains("M106 S0
-M104 S0
-M140 S0
-"), "{name}: fan left on at the end");
+            assert!(
+                !layer_lines(gcode, 0)
+                    .iter()
+                    .any(|l| l.starts_with("M106 S") && *l != "M106 S0"),
+                "{name}: fan on layer 0"
+            );
+            assert!(
+                layer_lines(gcode, 1).contains(&"M106 S128"),
+                "{name}: layer 1 is not at half fan"
+            );
+            assert!(
+                layer_lines(gcode, 2).contains(&"M106 S255"),
+                "{name}: layer 2 is not at full fan"
+            );
+            assert!(
+                gcode.contains("M106 S0\nM104 S0\nM140 S0\n"),
+                "{name}: fan left on at the end"
+            );
         }
     }
 
@@ -998,7 +1047,10 @@ M140 S0
             // The first band waits before anything is printed.
             if line.starts_with("M109 ") && top > 0.0 {
                 waits += 1;
-                assert!(z >= top + 2.0, "M109 at Z{z} over a tower printed to Z{top}");
+                assert!(
+                    z >= top + 2.0,
+                    "M109 at Z{z} over a tower printed to Z{top}"
+                );
             }
         }
         assert!(waits > 0, "no wait over the printed tower");
