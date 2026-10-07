@@ -2,6 +2,7 @@ import { fx } from "./fx";
 import { state, session } from "./state";
 import { centeringShift, ID_MATRIX, parseStl, placeMesh, encodeStl, scaledCanonical, encode3mf, type PlacedPart, type Placement } from "../mesh-place";
 import { fnv1aHex } from "../slice-action";
+import { bytesToBase64 } from "../base64";
 import { needsEngine, apiBase, apiToken, markEngineDown, isStepName, renderChrome, markStale, stale, card, shownGrams } from "./settings";
 import { withFooterGrams } from "../estimate";
 import { legacyStockEnd, legacyStockStart, spliceText, withMachineGcode } from "../machine-gcode";
@@ -86,7 +87,7 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
 }
 
 export async function previewRemote(name: string, bytes: ArrayBuffer): Promise<Float32Array | null> {
-  const payload = { filename: name, dataB64: toBase64(new Uint8Array(bytes)), stepToleranceMm: state.stepTolerance };
+  const payload = { filename: name, dataB64: bytesToBase64(new Uint8Array(bytes)), stepToleranceMm: state.stepTolerance };
   const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   try {
     let body: { positions?: number[]; error?: string };
@@ -223,7 +224,7 @@ export function meshBytes() {
 /** `meshBytes` in Base64, kept with them. */
 export function meshBase64() {
   const bytes = meshBytes();
-  encoded!.b64 ??= toBase64(new Uint8Array(bytes));
+  encoded!.b64 ??= bytesToBase64(new Uint8Array(bytes));
   return encoded!.b64;
 }
 
@@ -274,7 +275,7 @@ function objectMesh(obj: PlateObject): ObjectMesh {
 
 export function objectBase64(obj: PlateObject): string {
   const mesh = objectMesh(obj);
-  return (mesh.b64 ??= toBase64(new Uint8Array(mesh.bytes)));
+  return (mesh.b64 ??= bytesToBase64(new Uint8Array(mesh.bytes)));
 }
 
 export function objectFingerprint(obj: PlateObject): string {
@@ -288,13 +289,6 @@ export function withMeshData(req: Record<string, unknown>): Record<string, unkno
   if (!objects) return { ...req, dataB64: meshBase64() };
   const live = new Map(livePlate().map((obj) => [obj.id, obj]));
   return { ...req, objects: objects.map((o) => ({ ...o, dataB64: objectBase64(live.get(o.id)!) })) };
-}
-
-export function toBase64(bytes: Uint8Array) {
-  let binary = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  return btoa(binary);
 }
 
 export function isTauri() {
@@ -377,7 +371,7 @@ export async function export3mf() {
   const name = `${(state.mesh?.name ?? "part").replace(/\.(stl|3mf|step|stp)$/i, "")}.3mf`;
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("save_text_file", { text: "", defaultName: name, extension: "3mf", bytesB64: toBase64(bytes) });
+    await invoke("save_text_file", { text: "", defaultName: name, extension: "3mf", bytesB64: bytesToBase64(bytes) });
     return;
   }
   const blob = new Blob([bytes], { type: "model/3mf" });
@@ -405,4 +399,4 @@ export function fail(err: unknown) {
   state.busy = false;
   renderChrome();
 }
-Object.assign(fx, { printableGcode, loadNamed, adoptBytes, previewRemote, refreshStepPreview, place, applyPlace, nudgePlacement, setPlaceCenter, meshBytes, toBase64, isTauri, saveText, fetchStoredGcode, exportGcode, export3mf, download, fail });
+Object.assign(fx, { printableGcode, loadNamed, adoptBytes, previewRemote, refreshStepPreview, place, applyPlace, nudgePlacement, setPlaceCenter, meshBytes, isTauri, saveText, fetchStoredGcode, exportGcode, export3mf, download, fail });
