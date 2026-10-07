@@ -24,6 +24,7 @@ import {
   setSecondFilament,
   setLink,
   adoptLegacyLink,
+  beltStamp,
   type MachineNumbers,
 } from "./machine-library.ts";
 import { defaultBelt } from "../belt.ts";
@@ -45,7 +46,18 @@ function check(name: string, cond: boolean, detail = ""): void {
 }
 
 const library = builtinLibrary();
-check("built-in printers", library.printers.map((printer) => printer.name).join(",") === "Lime 220,Lime 300,Lime 180");
+check("built-in printers", library.printers.map((printer) => printer.name).join(",") === "Lime 220,Lime 300,Lime 180,Generic belt 45°");
+const genericBelt = library.printers.find((printer) => printer.id === "generic-belt-45");
+check(
+  "the generic belt is a 45° belt along Z with no length limit",
+  genericBelt?.builtin === true &&
+    genericBelt.kind === "belt" &&
+    JSON.stringify(genericBelt.belt) === JSON.stringify({ angleDeg: 45, axis: "z", direction: 1, widthMm: 200, maxLengthMm: null, copies: 1, gapMm: 5, seamOnEdge: false, raftLayers: 0, floorSupports: false }),
+  JSON.stringify(genericBelt),
+);
+const onBelt = selectIn(library, "generic-belt-45", "lime-pla", 0.4);
+check("picking the generic belt slices on the belt", typeof onBelt !== "string" && beltStamp(onBelt)?.angleDeg === 45, String(onBelt));
+check("the default printer slices without a belt", beltStamp(library) === null);
 check("built-in printers leave the host empty", library.printers.every((printer) => printer.host === "" && printer.apiKey === "" && printer.startPrint === false));
 check("built-in printers leave start and end G-code empty", library.printers.every((printer) => printer.startGcode === "" && printer.endGcode === ""));
 check("built-in filaments", library.filaments.map((filament) => filament.material).join(",") === "PLA,PETG,ABS,TPU");
@@ -150,8 +162,10 @@ check("a version 1 file gains an empty host", version1?.ok === true && version1.
 check("a version 1 file stays cartesian", version1?.ok === true && version1.file.printer.kind === "cartesian" && version1.file.printer.belt.angleDeg === 45 && version1.file.printer.belt.maxLengthMm === null);
 
 const stored = parseLibrary(serializeLibrary(library));
-check("the library round-trips", stored.version === 3 && stored.printers.length === 3 && stored.filaments.length === 4 && stored.printerId === "lime-220" && stored.printers.every((printer) => printer.host === "" && printer.kind === "cartesian"));
-const version1Library = JSON.parse(serializeLibrary(library)) as { version: number; printers: Record<string, unknown>[] };
+check("the library round-trips", stored.version === 3 && stored.printers.length === 4 && stored.filaments.length === 4 && stored.printerId === "lime-220" && stored.printers.every((printer) => printer.host === "" && printer.kind === (printer.id === "generic-belt-45" ? "belt" : "cartesian")));
+// Libraries saved before version 3 predate belt printers.
+const cartesianOnly = { ...library, printers: library.printers.filter((printer) => printer.kind === "cartesian") };
+const version1Library = JSON.parse(serializeLibrary(cartesianOnly)) as { version: number; printers: Record<string, unknown>[] };
 version1Library.version = 1;
 for (const printer of version1Library.printers) {
   delete printer.host;
@@ -164,7 +178,7 @@ const adopted = adoptLegacyLink(builtinLibrary(), { url: "http://printer.local",
 check("a legacy host lands on the active printer", selection(adopted)?.printer.host === "http://printer.local" && selection(adopted)?.printer.apiKey === "secret" && selection(adopted)?.printer.startPrint === true);
 check("a printer that already has a host keeps it", selection(adoptLegacyLink(linked, { url: "http://other.local", apiKey: "nope", startPrint: false }))?.printer.host === "http://printer.local/extra");
 check("an empty legacy host changes nothing", selection(adoptLegacyLink(library, { url: "  ", apiKey: "x", startPrint: true }))?.printer.host === "");
-const version2 = JSON.parse(serializeLibrary(library)) as { version: number; printers: Record<string, unknown>[] };
+const version2 = JSON.parse(serializeLibrary(cartesianOnly)) as { version: number; printers: Record<string, unknown>[] };
 version2.version = 2;
 for (const printer of version2.printers) {
   delete printer.kind;

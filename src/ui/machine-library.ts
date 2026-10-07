@@ -36,9 +36,9 @@ export interface PrinterRecord {
   apiKey: string;
   /** When set, Send asks Prusa Link to start the job after the upload. */
   startPrint: boolean;
-  /** Cartesian bed, or a conveyor. The engine slices a cartesian printer only. */
+  /** Cartesian bed, or a conveyor. */
   kind: PrinterKind;
-  /** Stored with the printer. Not sent on the slice request. */
+  /** Sent beside `printer` on the slice request when `kind` is a belt. */
   belt: BeltSettings;
 }
 
@@ -684,6 +684,7 @@ function builtinPrinters(): PrinterRecord[] {
     printer("lime-220", "Lime 220", 220, 220, 250, 12, 10000),
     printer("lime-300", "Lime 300", 300, 300, 320, 15, 5000),
     printer("lime-180", "Lime 180", 180, 180, 180, 8, 2000),
+    { ...printer("generic-belt-45", "Generic belt 45°", 200, 200, 200, 12, 5000), kind: "belt" },
   ];
 }
 
