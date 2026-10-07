@@ -79,7 +79,15 @@ jobs:
           key: playwright-chromium-${{ runner.os }}-${{ steps.playwright.outputs.version }}
 
       - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+        # A stuck apt mirror once held this step for over an hour. Each try
+        # gets five minutes, and a hung or failed try runs once more.
+        timeout-minutes: 12
+        run: |
+          for attempt in 1 2; do
+            timeout 300 npx playwright install --with-deps chromium && exit 0
+            echo "Playwright install try $attempt failed"
+          done
+          exit 1
 
       - name: Playwright smoke
         run: npm run test:smoke
@@ -153,7 +161,15 @@ jobs:
           key: playwright-chromium-${{ runner.os }}-${{ steps.playwright.outputs.version }}
 
       - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+        # A stuck apt mirror once held this step for over an hour. Each try
+        # gets five minutes, and a hung or failed try runs once more.
+        timeout-minutes: 12
+        run: |
+          for attempt in 1 2; do
+            timeout 300 npx playwright install --with-deps chromium && exit 0
+            echo "Playwright install try $attempt failed"
+          done
+          exit 1
 
       - name: Frontend build
         run: npx vite build
