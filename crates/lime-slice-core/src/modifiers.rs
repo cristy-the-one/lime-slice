@@ -1,8 +1,9 @@
 //! Height ranges and modifier volumes: the parts of a layer that print with
 //! their own infill, walls, or speed cap.
 //!
-//! The later volume wins over an earlier one. A range applies only outside
-//! every volume, and the later range wins over an earlier one.
+//! The later volume wins over an earlier one, and the later range wins over
+//! an earlier one. Inside a volume, the volume wins on each field it sets
+//! and the range fills the fields it leaves empty.
 
 use crate::poly::Loop;
 use crate::strategy::{InfillPattern, ResolvedStrategy};
