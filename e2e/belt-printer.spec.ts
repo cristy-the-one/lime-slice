@@ -73,7 +73,12 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await expect.poll(() => bodies.length).toBe(3);
   expect(bodies[2].belt).not.toHaveProperty("floorSupports");
   await expect(page.locator("#export")).toBeEnabled();
+  await page.locator("#beltFloor").check();
+  await expect(page.locator("#beltRaft")).toBeDisabled();
+  await page.locator("#beltFloor").uncheck();
+  await expect(page.locator("#beltRaft")).toBeEnabled();
   await page.locator("#beltRaft").check();
+  await expect(page.locator("#beltFloor")).toBeDisabled();
   await expect(page.locator("#beltRaftLayers")).toBeEnabled();
   await page.locator("#beltRaftLayers").fill("2");
   await page.locator("#beltRaftLayers").blur();
@@ -89,6 +94,21 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await expect.poll(() => bodies.length).toBe(5);
   expect(bodies[4]).not.toHaveProperty("belt");
   await expect(page.locator("#export")).toBeEnabled();
+});
+
+test("a belt edit is one undo step", async ({ page }) => {
+  await quiet(page);
+  await page.goto("/");
+  await page.locator("#machineKind").selectOption("belt");
+  await expect(page.locator("#beltAngle")).toHaveValue("45");
+  await page.locator("#beltAngle").fill("35");
+  await page.locator("#beltAngle").blur();
+  await page.waitForTimeout(400);
+  await expect(page.locator("#undoEdit")).toBeEnabled();
+  await page.locator("#undoEdit").click();
+  await expect(page.locator("#beltAngle")).toHaveValue("45");
+  await page.locator("#redoEdit").click();
+  await expect(page.locator("#beltAngle")).toHaveValue("35");
 });
 
 test.describe("belt fields stay in the sheet", () => {
