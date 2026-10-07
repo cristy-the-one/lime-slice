@@ -2103,7 +2103,8 @@ impl Writer {
             let retract_feed = self.retract_feed;
             self.put(format_args!("G1 E{e_now:.5} F{retract_feed}\n"));
         }
-        let z = self.z + 10.0;
+        // On a belt this axis is the belt: carry the part on the way it went.
+        let z = self.z + 10.0 * self.belt.map_or(1.0, |b| b.direction);
         if self.permutes() {
             match self.belt.expect("permuted lift").axis {
                 crate::belt::BeltAxis::X => self.put(format_args!("G1 X{z:.3} F600\n")),

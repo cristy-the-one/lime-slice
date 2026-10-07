@@ -761,6 +761,9 @@ fn the_end_move_carries_the_part_on_the_way_it_went() {
             f64::from(dir),
             "{axis}: the last layer is at {last}, the end move goes to {end}"
         );
-        assert!(((end - last).abs() - 10.0).abs() < 1e-6, "{axis}: {last} -> {end}");
+        assert!(
+            ((end - last).abs() - 10.0).abs() < 1e-6,
+            "{axis}: {last} -> {end}"
+        );
     }
 }
