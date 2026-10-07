@@ -13,6 +13,7 @@ use super::{Contours, JoinedLayer, PartPaths, PartTour, PartTravels, SliceSettin
 use crate::adaptive::LayerBand;
 use crate::gcode::PlateLayer;
 use crate::mesh::Mesh;
+use crate::modifiers::Tweak;
 use crate::strategy::BlendMode;
 use crate::support::edit::{EditOutcome, SupportEdit};
 
@@ -383,6 +384,12 @@ pub(super) fn keys(
         trunk_diameter: blank.trunk_diameter,
         support_height_mult: blank.support_height_mult,
         support_paint: Vec::new(),
+        // The part stages plan without the object's speed cap. `finish`
+        // applies it to the joined layers.
+        object_tweak: Tweak {
+            speed: None,
+            ..settings.object_tweak
+        },
         ..no_emit.clone()
     };
     let order = SliceSettings {
