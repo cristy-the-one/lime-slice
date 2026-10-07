@@ -60,6 +60,44 @@ test("sequential is omitted until the plate prints one object at a time", async 
   expect(bodies[3]?.sequentialClearanceMm).toBe(4);
 });
 
+for (const { id, field, typed } of [
+  { id: "#seqclear", field: "sequentialClearanceMm", typed: 4 },
+  { id: "#seqgantry", field: "sequentialGantryMm", typed: 30 },
+] as const) {
+  test(`a slice reply keeps ${id} typed while it was on the way`, async ({ page }) => {
+    await quiet(page);
+    const bodies: Record<string, unknown>[] = [];
+    let release = () => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    await page.route("**/api/slice", async (route) => {
+      bodies.push(route.request().postDataJSON());
+      if (bodies.length === 1) await held;
+      await route.fulfill({ json: cube });
+    });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/");
+    await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
+    await expect(page.locator("#status")).toContainText("loaded");
+    await page.locator("#plateAdd").click();
+    await page.locator("#printOrder").selectOption("sequential");
+    await expect(page.locator(id)).toBeVisible();
+
+    await page.locator("#slice").click();
+    await expect.poll(() => bodies.length).toBe(1);
+    await page.locator(id).fill(String(typed));
+    release();
+    await expect(page.locator("#cancel")).toBeDisabled();
+    await expect(page.locator(id)).toBeFocused();
+    await expect(page.locator(id)).toHaveValue(String(typed));
+    await page.locator(id).blur();
+    await expect(page.locator(id)).toHaveValue(String(typed));
+
+    await page.locator("#slice").click();
+    await expect.poll(() => bodies.length).toBe(2);
+    expect(bodies[1]?.[field]).toBe(typed);
+  });
+}
+
 test.describe("sequential controls stay in the sheet", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
