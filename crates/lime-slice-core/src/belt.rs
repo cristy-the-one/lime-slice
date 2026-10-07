@@ -68,6 +68,8 @@ pub(crate) struct Belt {
     pub seam_on_edge: bool,
     pub raft_layers: u32,
     pub floor_supports: bool,
+    /// The rotation that laid the plate flat. No shift until `lay_flat` sets it.
+    pub frame: Frame,
 }
 
 /// The rotation that laid the plate flat, so preview points can be mapped back.
@@ -152,7 +154,20 @@ impl Belt {
             seam_on_edge: spec.seam_on_edge,
             raft_layers: spec.raft_layers,
             floor_supports: spec.floor_supports,
+            frame: Frame {
+                sin_a: rad.sin(),
+                cos_a: rad.cos(),
+                z_drop: 0.0,
+                y_shift: 0.0,
+            },
         })
+    }
+
+    /// Gantry coordinate of a slice-frame point: how far up the nozzle plane
+    /// it is from the belt, which is its lab height over `sin(angle)`. Slice Y
+    /// runs down the plane and its zero moves every layer, so it is not this.
+    pub(crate) fn gantry(&self, y: f64, slice_z: f64) -> f64 {
+        self.frame.lab(0.0, y, slice_z)[2] / self.sin_a
     }
 
     /// Belt travel between two layers of perpendicular height `layer_height`.

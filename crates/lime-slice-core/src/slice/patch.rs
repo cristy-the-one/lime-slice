@@ -73,7 +73,6 @@ impl BeltStamp {
 /// patched reply so the disk copy is the tilted plate, not the slice frame.
 #[derive(Clone)]
 pub(super) struct BeltTilt {
-    pub frame: crate::belt::Frame,
     pub belt: crate::belt::Belt,
     pub offsets: Vec<Option<[f64; 2]>>,
 }

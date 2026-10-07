@@ -53,7 +53,7 @@ A new setting lands in every stage key unless it is blanked the way `feature_spe
 **Emit is a second, smaller map**, after the inverse rotation has put points back in the gantry frame:
 
 - Across-belt axis: the slice X.
-- Axis along the nozzle plane: the slice Y. Rotation preserved it, so it is the rail length.
+- Axis along the nozzle plane: the distance up the plane from the belt, which is the lab height over `sin(α)`. It is not the slice Y. Rotation keeps lengths, but the line where a layer's plane meets the belt sits at slice Y `z * cot(α)`, so the slice Y zero moves every layer. Slice Y also runs down the plane, so the gantry axis mirrors it, and an arc on a Z belt swaps `G2` and `G3` and negates `J`. Writing slice Y printed a 20 mm cube's first layer 10 mm above the belt.
 - Belt axis: constant on a layer, `n * h / sin(α)` from the start of the belt. The sign is the profile direction.
 - The profile names which firmware axis is the belt. Z is the usual one. X and Y are there for a machine that wired it differently.
 

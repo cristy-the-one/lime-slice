@@ -1317,8 +1317,8 @@ impl PlateObject<'_> {
 /// A belt slice: the rotation that laid the plate flat, and the placement
 /// the reply still reports. The planner sees the settled meshes, with no offset.
 struct BeltJob {
+    /// Its `frame` is the rotation that laid this plate flat.
     belt: crate::belt::Belt,
-    frame: crate::belt::Frame,
     /// Belt length of one copy, from the settled slice height.
     extent: f64,
     /// Each object's part-frame offset before that shift was baked into the mesh.
@@ -1346,7 +1346,7 @@ fn prepare_belt(
     settings: &mut SliceSettings,
     spec: &crate::belt::BeltSpec,
 ) -> Result<BeltJob, String> {
-    let belt = crate::belt::Belt::resolve(spec)?;
+    let mut belt = crate::belt::Belt::resolve(spec)?;
     if settings.compare {
         return Err("belt: compare is not supported yet".into());
     }
@@ -1383,6 +1383,7 @@ fn prepare_belt(
         ));
     }
     let (mut laid, frame) = crate::belt::lay_flat(&placed, &belt)?;
+    belt.frame = frame;
     if belt.raft_layers > 0 && settings.adaptive {
         return Err(
             "belt.raftLayers needs a fixed layer height; turn adaptive layers off".into(),
@@ -1447,7 +1448,6 @@ fn prepare_belt(
     });
     Ok(BeltJob {
         belt,
-        frame,
         extent,
         offsets,
         lab_bounds,
@@ -1510,7 +1510,7 @@ fn belt_output(mut layers: Vec<PlateLayer>, job: &BeltJob) -> Vec<PlateLayer> {
     }
     for layer in &mut layers {
         if layer.index != 0 {
-            retouch_layer(layer, &job.frame, false);
+            retouch_layer(layer, &job.belt.frame, false);
         }
     }
     let stride = job.belt.stride(job.extent);
@@ -1519,7 +1519,7 @@ fn belt_output(mut layers: Vec<PlateLayer>, job: &BeltJob) -> Vec<PlateLayer> {
         for layer in &layers {
             let mut layer = layer.clone();
             if copy > 0 && layer.index == 0 {
-                retouch_layer(&mut layer, &job.frame, true);
+                retouch_layer(&mut layer, &job.belt.frame, true);
             }
             layer.belt_shift = f64::from(copy) * stride;
             layer.index = out.len();
@@ -1634,7 +1634,7 @@ fn tilt_layer(view: &mut PreviewLayer, layer: &PlateLayer, tilt: &patch::BeltTil
                 .copied()
                 .filter(|z| z.is_finite())
                 .unwrap_or(layer.z);
-            let lab = tilt.frame.lab(pt[0], pt[1], slice_z);
+            let lab = tilt.belt.frame.lab(pt[0], pt[1], slice_z);
             pts.push([lab[0] - dx, lab[1] - dy + shift]);
             zs.push(lab[2]);
         }
@@ -1920,7 +1920,6 @@ fn slice_plate(
     // The preview prior is the expanded plate, which is what the client draws.
     let belt_emit = belt_job.as_ref().map(|job| &job.belt);
     let belt_tilt = belt_job.as_ref().map(|job| patch::BeltTilt {
-        frame: job.frame,
         belt: job.belt,
         offsets: job.offsets.clone(),
     });

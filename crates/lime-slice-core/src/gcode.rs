@@ -1041,6 +1041,8 @@ struct Writer {
     frame: u16,
     offset: [f64; 2],
     belt: Option<crate::belt::Belt>,
+    /// Slice Z of the layer being written. A belt's gantry coordinate needs it.
+    slice_z: f64,
     flow_scale: f64,
     retract_length: Option<f64>,
     retract_speed: f64,
@@ -1112,6 +1114,7 @@ impl Writer {
             frame: carry.frame,
             offset: cfg.offsets[carry.frame as usize],
             belt: cfg.belt,
+            slice_z: 0.0,
             flow_scale: cfg.flow_scale,
             retract_length: cfg.retract_length,
             retract_speed: cfg.retract_speed,
@@ -1152,12 +1155,16 @@ impl Writer {
     }
 
     /// `[x, y]` in bed coordinates. A zero offset is not added, so a `-0.0`
-    /// keeps its sign and the text its bytes.
+    /// keeps its sign and the text its bytes. On a belt `y` is the gantry.
     fn bed(&self, x: f64, y: f64) -> [f64; 2] {
-        if self.offset == [0.0, 0.0] {
+        let [x, y] = if self.offset == [0.0, 0.0] {
             [x, y]
         } else {
             [x + self.offset[0], y + self.offset[1]]
+        };
+        match self.belt {
+            Some(belt) => [x, belt.gantry(y, self.slice_z)],
+            None => [x, y],
         }
     }
 
@@ -1518,6 +1525,7 @@ impl Writer {
     }
 
     fn layer_header(&mut self, layer: &PlateLayer) {
+        self.slice_z = layer.z;
         let z = self.written_z(layer);
         self.put(format_args!(
             ";LAYER:{} Z:{:.3} H:{:.3} {}\n",
@@ -1967,11 +1975,15 @@ impl Writer {
         self.add_e(de);
         self.add_filament(de);
         let f = (speed.max(5.0) * 60.0).round() as i32;
-        let cmd = if arc.cw { "G2" } else { "G3" };
+        // The gantry runs against slice Y, so a belt mirrors the arc.
+        let (cw, j) = match self.belt {
+            Some(_) => (!arc.cw, -arc.ij[1]),
+            None => (arc.cw, arc.ij[1]),
+        };
+        let cmd = if cw { "G2" } else { "G3" };
         let e_now = self.e;
         let [x, y] = self.bed(arc.end[0], arc.end[1]);
         let i = arc.ij[0];
-        let j = arc.ij[1];
         self.put(format_args!(
             "{cmd} X{x:.3} Y{y:.3} I{i:.4} J{j:.4} E{e_now:.5} F{f}\n"
         ));
