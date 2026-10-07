@@ -16,7 +16,14 @@ const engine = [
   "; features: seam blend",
   "M140 S60",
   "M104 S200",
+  "M190 S60",
+  "M109 S200",
+  "G21",
+  "G90",
+  "M82",
   "G28",
+  "G92 E0",
+  "M106 S0",
   ";LAYER:0 Z:0.200",
   "G1 X10 Y10 E0.1",
   "G1 Z10.200 F600",
@@ -39,7 +46,28 @@ const wrapped = withMachineGcode(
   spliceText("G4 P100 ; settle", legacyStockStart("Lime 220")),
   spliceText("M107 ; fan off", legacyStockEnd("Lime 220")),
 );
-eq("start sits after the comment header", wrapped.includes("; features: seam blend\nG4 P100 ; settle\nM140 S60"), true);
+// A vendor start purges and probes: it must run hot and after the engine's
+// G28, and the engine must take back temperatures, modes and E after it.
+eq(
+  "start runs after heating and homing, and the engine restores its state",
+  wrapped.includes(
+    "M109 S200\nG21\nG90\nM82\nG28\nG92 E0\nG4 P100 ; settle\n" +
+      "M140 S60\nM104 S200\nM190 S60\nM109 S200\nG90\nM82\nG92 E0\nM106 S0\n",
+  ),
+  true,
+);
+eq("the engine homes once before the start block", wrapped.indexOf("G28\n") < wrapped.indexOf("G4 P100"), true);
+const purge = withMachineGcode(engine, "M83\nG1 X60 E9 F1000 ; purge", "");
+eq(
+  "E is zeroed and absolute after a relative purge",
+  purge.includes("E9 F1000 ; purge\nM140 S60\nM104 S200\nM190 S60\nM109 S200\nG90\nM82\nG92 E0\n"),
+  true,
+);
+eq(
+  "a file that never homes takes the start after its comments",
+  withMachineGcode("; head\nG1 X1\n", "G4 P1", ""),
+  "; head\nG4 P1\nG90\nM82\nG92 E0\nG1 X1\n",
+);
 eq("end sits before the cooldown", wrapped.includes("M107 ; fan off\nM106 S0\nM104 S0\nM140 S0\n"), true);
 eq("the engine homing line stays", wrapped.includes("G28\n"), true);
 eq("a file with no cooldown appends the end", withMachineGcode("G1 X1\n", "", "M84 ; done"), "G1 X1\nM84 ; done\n");
