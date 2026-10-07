@@ -77,6 +77,7 @@ test("polyline clip and layer line follow the same plane", () => {
 });
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
+const out = path.resolve("artifacts/preview-section");
 
 test("bed opacity and section controls are preview-only chrome", async ({ page }) => {
   const logs: string[] = [];
@@ -116,7 +117,6 @@ test("bed opacity and section controls are preview-only chrome", async ({ page }
   });
   await expect(page.locator("#sectionReadout")).toContainText("0.0 mm");
   await page.waitForTimeout(400);
-  const out = "/opt/cursor/artifacts/preview-section";
   fs.mkdirSync(out, { recursive: true });
   await page.locator("#view3d").screenshot({ path: path.join(out, "section-plus-z.png") });
   await page.locator("#sectionOn").uncheck();
@@ -158,7 +158,7 @@ const RINGS: [number, number, number][] = [
 /** Lime is the solid ghost. Pigment is feature-colored bead faces, ignoring the section rings. */
 async function colorBuckets(page: Page, name = ""): Promise<{ lime: number; pigment: number; travel: number }> {
   const png = name
-    ? await page.locator("#view3d").screenshot({ path: path.join("/opt/cursor/artifacts/preview-section", `${name}.png`) })
+    ? await page.locator("#view3d").screenshot({ path: path.join(out, `${name}.png`) })
     : await page.locator("#view3d").screenshot();
   return page.evaluate(async ({ data, pigment, rings }) => {
     const img = new Image();
@@ -249,7 +249,7 @@ test("section plane clips 3D beads, travels, and the solid ghost", async ({ page
   const logs: string[] = [];
   page.on("console", (msg) => logs.push(`${msg.type()}: ${msg.text()}`));
   page.on("pageerror", (err) => logs.push(`pageerror: ${err.message}`));
-  fs.mkdirSync("/opt/cursor/artifacts/preview-section", { recursive: true });
+  fs.mkdirSync(out, { recursive: true });
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await serveSliceJob(page, cube);
   await page.setViewportSize({ width: 1440, height: 900 });
