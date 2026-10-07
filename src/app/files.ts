@@ -193,7 +193,7 @@ export function currentPlacement(): PlacedPart | null {
   const key = JSON.stringify([state.orient, state.partScale, state.profile.bedX, state.profile.bedY, state.centered, state.offset]);
   if (placing?.source !== source || placing.key !== key) {
     const placement = placeMesh(source, state.orient, state.partScale, state.profile.bedX, state.profile.bedY, state.centered, state.offset);
-    placing = { source, key, placement: { ...placement, canonical: canonicalMesh(source) } };
+    placing = { source, key, placement: Object.assign(placement, { canonical: canonicalMesh(source) }) };
   }
   return placing.placement;
 }

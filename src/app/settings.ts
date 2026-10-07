@@ -638,7 +638,7 @@ export function objectList() {
       <div class="obj obj-row" role="listitem" data-plate-id="${escapeHtml(obj.id)}" data-selected="${selected ? "true" : "false"}">
         <button class="obj-select" type="button" data-plate-select="${escapeHtml(obj.id)}" aria-pressed="${selected ? "true" : "false"}">
           <b>${escapeHtml(obj.name)}</b>
-          <span>${triangleLine(part.positions.length / 9)} · ${boundsSize(part.bounds)} mm${notes.length ? ` · ${escapeHtml(notes.join("; "))}` : ""}</span>
+          <span>${triangleLine(obj.sourcePos.length / 9)} ·${boundsSize(part.bounds)} mm${notes.length ? ` · ${escapeHtml(notes.join("; "))}` : ""}</span>
         </button>
         ${many ? `<button class="btn" type="button" data-plate-remove="${escapeHtml(obj.id)}" aria-label="Remove ${escapeHtml(obj.name)}">Remove</button>` : ""}
       </div>`;
@@ -652,7 +652,7 @@ export function objectList() {
   const selectedNotes = offBed(b, bedX, bedY, bedZ);
   const overlap = pairs.map((pair) => pair.line).join("; ");
   return `
-    <div role="list">${list || `<div class="obj" role="listitem"><b>${escapeHtml(state.mesh?.name ?? "part")}</b><span>${triangleLine(state.placed.positions.length / 9)} · ${boundsSize(state.placed.bounds)} mm</span></div>`}</div>
+    <div role="list">${list || `<div class="obj" role="listitem"><b>${escapeHtml(state.mesh?.name ?? "part")}</b><span>${triangleLine(state.placed.canonical.length / 9)} · ${boundsSize(state.placed.bounds)} mm</span></div>`}</div>
     <div class="row">
       <button class="btn" id="plateAdd" type="button">Add object</button>
       <button class="btn" id="plateDuplicate" type="button">Duplicate</button>

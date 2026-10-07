@@ -43,7 +43,9 @@ interface Case {
 const cases: Case[] = [
   { name: "rotated, centered", orient: matMul(rotZ(37), rotX(90)), scale: 1.5, centered: true },
   { name: "gizmo turn, moved off center", orient: matMul(rotY(-23.5), rotX(12.25)), scale: 2.5, centered: false, shift: { x: 41.5, y: 97, z: 3 } },
+  { name: "gizmo turn, moved again", orient: matMul(rotY(-23.5), rotX(12.25)), scale: 2.5, centered: false, shift: { x: -7.25, y: 13, z: 0 } },
   { name: "lay flat, centered", orient: layFlatMatrix(source), scale: 1, centered: true },
+  { name: "rotated, centered again", orient: matMul(rotZ(37), rotX(90)), scale: 1.5, centered: true },
 ];
 
 // Captured from the request path before the Prepare view moved placement onto the GPU.
@@ -51,7 +53,9 @@ const cases: Case[] = [
 const expected: Record<string, { mesh: string; pose: string; placed: string }> = {
   "rotated, centered": { mesh: "62ebef914590fe3b", pose: "ef86f79e06d5f8d8", placed: "178177dec39e25f5" },
   "gizmo turn, moved off center": { mesh: "eae01a4b3b0946bf", pose: "6a94caccd6ab8dff", placed: "59973c107fb18b8b" },
+  "gizmo turn, moved again": { mesh: "eae01a4b3b0946bf", pose: "fb5716d0ac81ae45", placed: "c57e76606f34bb9d" },
   "lay flat, centered": { mesh: "c976d71f284991b4", pose: "2e595b43c2400aaf", placed: "ebcce71d0bdfbc2b" },
+  "rotated, centered again": { mesh: "62ebef914590fe3b", pose: "ef86f79e06d5f8d8", placed: "178177dec39e25f5" },
 };
 
 for (const c of cases) {
