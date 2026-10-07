@@ -2620,4 +2620,15 @@ mod tests {
             "start and end tangents of a quarter circle, cos {cos}"
         );
     }
+
+    #[test]
+    fn a_straight_side_between_two_rounded_corners_is_not_an_arc() {
+        // Every point is on one circle, but the 80° side between the second
+        // and third is a straight line 2.3 mm inside it.
+        let pts: Vec<[f64; 2]> = [0.0_f64, 5.0, 85.0, 90.0]
+            .iter()
+            .map(|deg| [deg.to_radians().cos() * 10.0, deg.to_radians().sin() * 10.0])
+            .collect();
+        assert!(fit_arc(&pts, 0.07, 0.8).is_none());
+    }
 }
