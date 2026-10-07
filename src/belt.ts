@@ -121,7 +121,8 @@ export function coerceBelt(value: unknown, widthFallback: number): BeltSettings 
   const gapMm = finite(row.gapMm) && row.gapMm >= 0 ? clamp(row.gapMm, 0, 500) : 5;
   const seamOnEdge = row.seamOnEdge === true;
   const raftLayers = finite(row.raftLayers) && row.raftLayers > 0 ? Math.round(clamp(row.raftLayers, 1, 8)) : 0;
-  const floorSupports = row.floorSupports === true;
+  // The engine refuses the two together; a raft already holds the part.
+  const floorSupports = row.floorSupports === true && raftLayers === 0;
   return { angleDeg, axis, direction, widthMm, maxLengthMm, copies, gapMm, seamOnEdge, raftLayers, floorSupports };
 }
 

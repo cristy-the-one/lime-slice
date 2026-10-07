@@ -510,8 +510,10 @@ export function triangleMeta(result: SliceResponse | null) {
   if (!result) return "Triangles <b>—</b>";
   const tol = result.mesh.outlineToleranceMm ?? 0;
   const outline = tol > 0 ? ` · outline ${tol.toFixed(3)} mm` : "";
-  const repaired = result.mesh.repairedLayers ?? 0;
-  const dropped = result.mesh.droppedChains ?? 0;
+  // An older reply has no counts, which is unknown, not zero.
+  const count = (n: number | undefined) => (typeof n === "number" ? String(n) : "—");
+  const repaired = count(result.mesh.repairedLayers);
+  const dropped = count(result.mesh.droppedChains);
   return `Triangles <b>${result.mesh.triangles}</b>${outline}<br>Repaired layers ${repaired} · dropped chains ${dropped}`;
 }
 

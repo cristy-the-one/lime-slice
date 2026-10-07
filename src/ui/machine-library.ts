@@ -887,8 +887,8 @@ function beltFieldsHtml(printer: PrinterRecord | undefined): string {
           <input id="beltGap" type="number" min="0" max="500" step="1" value="${belt.gapMm}" aria-label="Gap between copies" />
         </label>
         <label class="check setting belt-wide" data-label="seam on belt edge" data-keywords="seam rear belt"><input id="beltSeam" type="checkbox"${belt.seamOnEdge ? " checked" : ""}/> Seam on the belt edge</label>
-        <label class="check setting belt-wide" data-label="belt raft" data-keywords="raft pad adhesion first layers"><input id="beltRaft" type="checkbox"${belt.raftLayers > 0 ? " checked" : ""}/> Belt raft</label>
-        <label class="check setting belt-wide" data-label="belt floor supports" data-keywords="support overhang belt floor"><input id="beltFloor" type="checkbox"${belt.floorSupports ? " checked" : ""}/> Supports on the belt</label>
+        <label class="check setting belt-wide" data-label="belt raft" data-keywords="raft pad adhesion first layers"><input id="beltRaft" type="checkbox"${belt.raftLayers > 0 ? " checked" : ""}${belt.floorSupports ? " disabled" : ""}/> Belt raft</label>
+        <label class="check setting belt-wide" data-label="belt floor supports" data-keywords="support overhang belt floor"><input id="beltFloor" type="checkbox"${belt.floorSupports ? " checked" : ""}${belt.raftLayers > 0 ? " disabled" : ""}/> Supports on the belt</label>
         <label class="field setting" data-label="belt raft layers" data-keywords="raft layers pad">Raft layers
           <input id="beltRaftLayers" type="number" min="1" max="8" step="1" value="${belt.raftLayers > 0 ? belt.raftLayers : 3}"${belt.raftLayers > 0 ? "" : " disabled"} aria-label="Belt raft layers" />
         </label>
