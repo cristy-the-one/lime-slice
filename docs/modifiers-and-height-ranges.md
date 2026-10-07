@@ -89,6 +89,7 @@ A slice with both arrays omitted must match a slice from before the fields exist
 
 1. Yes, `heightRanges` and `modifierVolumes` are the names. Both are omitted when empty.
 2. The later volume wins. A height range applies only outside every volume, so the more specific region wins. Between overlapping ranges, the later one wins.
+   Amended 2026-10-07: the volume wins on each field it sets, and the range fills the fields the volume leaves empty, then the object's own values. Applying the range only outside every volume meant a volume that set only infill dropped a range's 4 walls back to 2 inside its footprint, so one layer printed two wall counts.
 3. `speed` is a cap inside the region. Every feature speed (outer, inner, sparse, solid, top, and the print speed) becomes min(its strategy speed, `speed`). The 3D gyroid speed is a feature speed too, so it takes the same cap. Users set a range speed to slow a fragile or detailed section. A cap never speeds a feature past what the strategy chose.
 4. `infill: 0` leaves the region walled with no sparse infill. Solid top and bottom skins stay. Today `plan_region_split` skips its whole infill block when density is 0.01 or less, and that block also draws the solid skins. The guard must let a solid shell through. `walls` must be 1 to 12 in the first version, and 0 is refused. A wall-less region whose infill becomes the shell surprises users and breaks seams and combing. Allowing 0 can come later.
 5. Yes. Volumes are axis-aligned with no rotation. A cylinder is always upright on Z.
@@ -157,6 +158,7 @@ An override change costs 40 to 70% of a cold slice. The toolpaths key covers the
 - walls in a volume follow the part's outline;
 - a speed cap applies inside its volume only;
 - the later volume wins, and a range applies outside every volume;
+- a volume that sets only infill keeps its range's walls;
 - refusals name their field;
 - a plate-wide volume reaches only the object it meets, in bed coordinates.
 

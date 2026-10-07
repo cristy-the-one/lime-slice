@@ -259,7 +259,7 @@ pub(crate) fn plan_region_split(
         if let Some(width) = feature_width(contours) {
             if width < line_width * strategy.walls.max(1) as f64 * 0.98 && width >= min_w {
                 emit_variable_feature(
-                    &mut paths, contours, strategy, width, min_w, max_w, seam_hint,
+                    &mut paths, contours, strategy, width, min_w, max_w, seam_hint, features,
                 );
                 emit_void_fill(&mut paths, contours, &[], strategy, line_width, seam_hint);
                 return (finish_paths(paths, features), ms_since(wall_started), 0.0);
@@ -294,6 +294,7 @@ pub(crate) fn plan_region_split(
             let deeper = offset_paths(&next, -line_width);
             if loops_from_paths(deeper).is_empty() {
                 last_wall_loops = loops.clone();
+                let first = paths.len();
                 emit_loops(
                     &mut paths,
                     &loops,
@@ -302,6 +303,7 @@ pub(crate) fn plan_region_split(
                     line_width,
                     seam_hint,
                 );
+                mark_outer_walls(&mut paths[first..], features);
                 let core = paths_from_loops(&loops);
                 fill_remaining(
                     &mut paths,
@@ -317,6 +319,7 @@ pub(crate) fn plan_region_split(
         }
         current = next;
         last_wall_loops = loops.clone();
+        let first = paths.len();
         emit_loops(
             &mut paths,
             &loops,
@@ -325,6 +328,9 @@ pub(crate) fn plan_region_split(
             line_width,
             seam_hint,
         );
+        if i == 0 {
+            mark_outer_walls(&mut paths[first..], features);
+        }
     }
     let wall_ms = ms_since(wall_started);
     let infill_started = Instant::now();
@@ -436,6 +442,16 @@ fn finish_paths(mut paths: Vec<Extrusion>, features: &PathFeatures) -> Vec<Extru
     paths
 }
 
+/// With feature speeds off every wall is a `Wall`, so the kind no longer
+/// says which one is outermost. The wall planner marks those as it emits them.
+fn mark_outer_walls(paths: &mut [Extrusion], features: &PathFeatures) {
+    if let Some(skin) = features.fuzzy_skin {
+        for path in paths.iter_mut().filter(|p| p.kind == PathKind::Wall) {
+            path.fuzzy = Some(FuzzyMark { skin, z: features.z });
+        }
+    }
+}
+
 /// The offset, after the seam and the scarf. A scarf ramp already has a
 /// height and a flow on each point, so it is left alone. Taking the mark
 /// means a second pass does nothing.
@@ -449,7 +465,7 @@ fn fuzz_settled(path: &mut Extrusion) {
     let Some(mark) = path.fuzzy.take() else {
         return;
     };
-    if path.kind != PathKind::Outer || path.points.len() < 2 {
+    if !matches!(path.kind, PathKind::Outer | PathKind::Wall) || path.points.len() < 2 {
         return;
     }
     if !path.z_frac.is_empty() || !path.flow_frac.is_empty() {
@@ -1170,6 +1186,7 @@ fn inradius(loops: &[Loop], cap: f64) -> f64 {
     lo
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_variable_feature(
     paths: &mut Vec<Extrusion>,
     contours: &[Loop],
@@ -1178,6 +1195,7 @@ fn emit_variable_feature(
     min_w: f64,
     max_w: f64,
     seam_hint: &mut [f64; 2],
+    features: &PathFeatures,
 ) {
     let nominal = max_w / 1.30;
     let n = bead_count(width, nominal, strategy.walls.max(1), min_w, max_w);
@@ -1208,7 +1226,11 @@ fn emit_variable_feature(
         } else {
             wall_kind(i == 0, strategy)
         };
+        let first = paths.len();
         emit_loops(paths, &loops, kind, strategy, bead, seam_hint);
+        if i == 0 {
+            mark_outer_walls(&mut paths[first..], features);
+        }
     }
 }
 
@@ -4164,11 +4186,14 @@ impl Extrusion {
     }
 
     /// Retract length and minimum travel for the move into this path.
-    pub fn travel_retract(&self) -> (f64, f64) {
+    /// `length` replaces the strategy's length; a travel that combs inside
+    /// the part still does not retract.
+    pub fn travel_retract(&self, length: Option<f64>) -> (f64, f64) {
+        let mm = length.unwrap_or(self.retract_mm);
         match self.travel_in {
-            TravelIn::Unchecked => (self.retract_mm, self.retract_min_travel),
+            TravelIn::Unchecked => (mm, self.retract_min_travel),
             TravelIn::Inside => (0.0, self.retract_min_travel),
-            TravelIn::Blocked => (self.retract_mm, 0.0),
+            TravelIn::Blocked => (mm, 0.0),
         }
     }
 }

@@ -160,7 +160,8 @@ pub fn pressure_advance_tower(opts: &PaCalib) -> Result<PaCalibOutput, String> {
     } else {
         500.0
     };
-    let slow = opts.slow_mm_s.clamp(10.0, cap);
+    // A printer that cannot reach 10 mm/s at this bead prints at its cap.
+    let slow = opts.slow_mm_s.clamp(cap.min(10.0), cap);
     let fast = opts.fast_mm_s.max(slow + 5.0).min(cap.max(slow + 5.0));
     let accel = opts.accel.clamp(100.0, 20000.0);
     let fil = std::f64::consts::PI * (opts.profile.filament_diameter * 0.5).powi(2);
@@ -383,7 +384,7 @@ pub fn flow_tower(opts: &FlowCalib) -> Result<FlowCalibOutput, String> {
     } else {
         500.0
     };
-    let speed = opts.speed_mm_s.clamp(10.0, cap);
+    let speed = opts.speed_mm_s.clamp(cap.min(10.0), cap);
     let fil = std::f64::consts::PI * (opts.profile.filament_diameter * 0.5).powi(2);
 
     let mut bands = Vec::new();
@@ -585,7 +586,7 @@ pub fn temperature_tower(opts: &TempCalib) -> Result<TempCalibOutput, String> {
     } else {
         500.0
     };
-    let speed = opts.speed_mm_s.clamp(10.0, cap);
+    let speed = opts.speed_mm_s.clamp(cap.min(10.0), cap);
     let fil = std::f64::consts::PI * (opts.profile.filament_diameter * 0.5).powi(2);
 
     let mut bands = Vec::new();
@@ -946,6 +947,44 @@ mod tests {
             .filter_map(|l| l.strip_prefix("SET_PRESSURE_ADVANCE ADVANCE="))
             .filter_map(|v| v.parse().ok())
             .collect()
+    }
+
+    #[test]
+    fn a_printer_slower_than_10_mm_s_at_the_bead_still_gets_towers() {
+        // 0.5 mm^3/s over a 0.45 x 0.2 mm bead caps the feed at 5.6 mm/s.
+        let profile = PrinterProfile {
+            max_volumetric_mm3_s: 0.5,
+            ..PrinterProfile::default()
+        };
+        let feeds = |gcode: &str| -> (f64, f64) {
+            gcode
+                .lines()
+                .filter(|l| l.starts_with("G1 ") && l.contains(" E") && l.contains(" X"))
+                .filter_map(|l| l.split_whitespace().find_map(|w| w.strip_prefix('F')?.parse().ok()))
+                .fold((f64::INFINITY, 0.0), |(lo, hi), f: f64| (lo.min(f), hi.max(f)))
+        };
+        let pa = pressure_advance_tower(&PaCalib {
+            profile: profile.clone(),
+            ..PaCalib::default()
+        })
+        .unwrap();
+        let flow = flow_tower(&FlowCalib {
+            profile: profile.clone(),
+            ..FlowCalib::default()
+        })
+        .unwrap();
+        let temp = temperature_tower(&TempCalib {
+            profile,
+            ..TempCalib::default()
+        })
+        .unwrap();
+        for (name, gcode) in [("flow", &flow.gcode), ("temp", &temp.gcode)] {
+            let (_, top) = feeds(gcode);
+            assert!(top > 0.0 && top <= 5.6 * 60.0, "{name}: fastest print feed F{top}");
+        }
+        // The fast pass keeps its 5 mm/s over the slow one, as it always has.
+        let (slow, _) = feeds(&pa.gcode);
+        assert!(slow <= 5.6 * 60.0, "pa: slowest print feed F{slow}");
     }
 
     #[test]

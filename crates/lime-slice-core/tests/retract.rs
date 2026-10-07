@@ -123,3 +123,38 @@ fn omitted_retract_serializes_as_absent_and_a_plate_refuses_it_per_object() {
     })).unwrap(), lime_slice_core::Job::start()).unwrap_err();
     assert!(err.contains("objects[0].settings.retractLength is a plate setting"), "{err}");
 }
+
+#[test]
+fn a_set_length_retracts_only_where_the_strategy_retracts() {
+    let mesh = box_mesh(20.0, 3.0);
+    let blend = BlendMode::Single { strategy: StrategyId::Speed };
+    let profile = PrinterProfile::default();
+    let pulls = |retract_length: Option<f64>| {
+        let response = slice_configured(
+            &mesh,
+            &blend,
+            &profile,
+            &SliceSettings {
+                layer_height: 0.2,
+                line_width: 0.45,
+                baseline: false,
+                compare: false,
+                include_preview: false,
+                retract_length,
+                ..SliceSettings::default()
+            },
+        )
+        .unwrap();
+        pull_mm(&response.gcode)
+    };
+    let planned = pulls(None);
+    let set = pulls(Some(2.0));
+    assert_eq!(
+        set.len(),
+        planned.len(),
+        "a travel that combs inside the part still does not retract"
+    );
+    // The last pull is the end of the print, a fixed 1 mm.
+    let travels = &set[..set.len() - 1];
+    assert!(travels.iter().all(|n| (*n - 2.0).abs() < 1e-3), "{set:?}");
+}

@@ -5411,8 +5411,10 @@ fn object_layer(
         let (mut paths, mut wall_ms, mut infill_ms, mut note) = plan(contours, range.as_ref());
         paths = keep_zone(paths, &prints, None);
         for (k, print) in prints.iter().enumerate() {
-            let stacked = settings
-                .object_tweak
+            // The volume wins on each field it sets; the range, then the
+            // object, fill the rest.
+            let stacked = range
+                .unwrap_or_default()
                 .under(Some(print.tweak))
                 .unwrap_or(print.tweak);
             let walls = zone_walls(blend, z, settings, &stacked);

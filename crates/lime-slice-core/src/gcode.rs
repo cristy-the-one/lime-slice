@@ -1312,11 +1312,13 @@ impl Writer {
             Entry::AsPlanned => {
                 let mut hop = path.lead_in.clone();
                 hop.push(path.points[0]);
-                (hop, path.travel_retract(), path.z_hop)
+                (hop, path.travel_retract(self.retract_length), path.z_hop)
             }
-            Entry::Cross { z_hop } => (vec![path.points[0]], (path.retract_mm, 0.0), z_hop),
+            Entry::Cross { z_hop } => {
+                let mm = self.retract_length.unwrap_or(path.retract_mm);
+                (vec![path.points[0]], (mm, 0.0), z_hop)
+            }
         };
-        let retract_mm = self.retract_length.unwrap_or(retract_mm);
         self.travel_chain(
             &hop,
             path.travel_speed,
@@ -2103,7 +2105,8 @@ impl Writer {
             let retract_feed = self.retract_feed;
             self.put(format_args!("G1 E{e_now:.5} F{retract_feed}\n"));
         }
-        let z = self.z + 10.0;
+        // On a belt this axis is the belt: carry the part on the way it went.
+        let z = self.z + 10.0 * self.belt.map_or(1.0, |b| b.direction);
         if self.permutes() {
             match self.belt.expect("permuted lift").axis {
                 crate::belt::BeltAxis::X => self.put(format_args!("G1 X{z:.3} F600\n")),
