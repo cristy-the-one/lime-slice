@@ -627,5 +627,5 @@ function round3(value: number): number {
 }
 
 export function placedBounds(obj: PlateObject, bedX: number, bedY: number): Bounds {
-  return boundsOf(placeObject(obj, bedX, bedY).positions);
+  return placeObject(obj, bedX, bedY).bounds;
 }

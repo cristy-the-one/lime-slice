@@ -213,26 +213,31 @@ export function placeMesh(
   centered: boolean,
   shift?: MeshShift,
 ): Placement {
-  const b = boundsOf(source);
-  const pivot: [number, number, number] = [
-    (b.min[0] + b.max[0]) / 2,
-    (b.min[1] + b.max[1]) / 2,
-    (b.min[2] + b.max[2]) / 2,
-  ];
-  const positions = transformPositions(source, matrix, scale, bedX, bedY, centered, shift);
+  const p = parked(source, matrix, scale);
+  const move = bedMove(p, bedX, bedY, centered, shift);
+  const d = [move.x, move.y, move.z];
+  // A float32 sum is monotonic, so these are the bounds and first vertex of the shifted copy without making it.
+  const at = (v: number, a: number) => (d[a] ? Math.fround(v + d[a]!) : v);
+  const pivot = p.pivot;
   const x = (source[0] - pivot[0]) * scale;
   const y = (source[1] - pivot[1]) * scale;
   const z = (source[2] - pivot[2]) * scale;
   const rx = matrix[0] * x + matrix[1] * y + matrix[2] * z;
   const ry = matrix[3] * x + matrix[4] * y + matrix[5] * z;
   const rz = matrix[6] * x + matrix[7] * y + matrix[8] * z;
+  let positions: Float32Array | undefined;
   return {
-    positions,
-    bounds: boundsOf(positions),
+    get positions() {
+      return (positions ??= shifted(p.positions, move));
+    },
+    bounds: {
+      min: [at(p.bounds.min[0], 0), at(p.bounds.min[1], 1), at(p.bounds.min[2], 2)],
+      max: [at(p.bounds.max[0], 0), at(p.bounds.max[1], 1), at(p.bounds.max[2], 2)],
+    },
     pose: {
       rotation: matrix,
       pivot,
-      translation: [positions[0] - rx, positions[1] - ry, positions[2] - rz],
+      translation: [at(p.positions[0]!, 0) - rx, at(p.positions[1]!, 1) - ry, at(p.positions[2]!, 2) - rz],
     },
   };
 }
@@ -274,11 +279,37 @@ export function transformPositions(
   centered: boolean,
   shift?: MeshShift,
 ) {
-  const out = new Float32Array(source.length);
+  const p = parked(source, matrix, scale);
+  return shifted(p.positions, bedMove(p, bedX, bedY, centered, shift));
+}
+
+/** XY shift that places the settled part's bounds on the bed center. Z stays on the plate. */
+export function centeringShift(source: Float32Array, matrix: Mat3, scale: number, bedX: number, bedY: number): MeshShift {
+  return bedMove(parked(source, matrix, scale), bedX, bedY, true);
+}
+
+/** The source scaled and turned about its bounds center, then settled on the plate: every placement before its bed shift. */
+interface Parked {
+  matrix: Mat3;
+  scale: number;
+  pivot: [number, number, number];
+  positions: Float32Array;
+  bounds: Bounds;
+}
+
+/**
+ * The last parked mesh per source. An X/Y move reuses it, where re-turning the source took five passes over every
+ * vertex, several times per move. Sources are never written after load, as the other per-source caches assume.
+ */
+const parkedBySource = new WeakMap<Float32Array, Parked>();
+
+function parked(source: Float32Array, matrix: Mat3, scale: number): Parked {
+  const held = parkedBySource.get(source);
+  if (held && held.scale === scale && held.matrix.every((v, i) => v === matrix[i])) return held;
   const b = boundsOf(source);
-  const cx = (b.min[0] + b.max[0]) / 2;
-  const cy = (b.min[1] + b.max[1]) / 2;
-  const cz = (b.min[2] + b.max[2]) / 2;
+  const pivot: [number, number, number] = [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2];
+  const [cx, cy, cz] = pivot;
+  const out = new Float32Array(source.length);
   for (let i = 0; i < source.length; i += 3) {
     const x = (source[i] - cx) * scale;
     const y = (source[i + 1] - cy) * scale;
@@ -288,11 +319,20 @@ export function transformPositions(
     out[i + 2] = matrix[6] * x + matrix[7] * y + matrix[8] * z + cz;
   }
   settle(out);
-  const move = centered ? bedCenterShift(out, bedX, bedY) : {
-    x: shift?.x ?? 0,
-    y: shift?.y ?? 0,
-    z: shift?.z ?? 0,
-  };
+  const next: Parked = { matrix: [...matrix] as Mat3, scale, pivot, positions: out, bounds: boundsOf(out) };
+  parkedBySource.set(source, next);
+  return next;
+}
+
+function bedMove(p: Parked, bedX: number, bedY: number, centered: boolean, shift?: MeshShift): MeshShift {
+  if (centered) {
+    return { x: bedX / 2 - (p.bounds.min[0] + p.bounds.max[0]) / 2, y: bedY / 2 - (p.bounds.min[1] + p.bounds.max[1]) / 2, z: 0 };
+  }
+  return { x: shift?.x ?? 0, y: shift?.y ?? 0, z: shift?.z ?? 0 };
+}
+
+function shifted(pos: Float32Array, move: MeshShift): Float32Array {
+  const out = new Float32Array(pos);
   if (move.x || move.y || move.z) {
     for (let i = 0; i < out.length; i += 3) {
       out[i] += move.x;
@@ -301,21 +341,6 @@ export function transformPositions(
     }
   }
   return out;
-}
-
-/** XY shift that places the settled part's bounds on the bed center. Z stays on the plate. */
-export function centeringShift(source: Float32Array, matrix: Mat3, scale: number, bedX: number, bedY: number): MeshShift {
-  const parked = transformPositions(source, matrix, scale, bedX, bedY, false);
-  return bedCenterShift(parked, bedX, bedY);
-}
-
-function bedCenterShift(pos: Float32Array, bedX: number, bedY: number): MeshShift {
-  const placed = boundsOf(pos);
-  return {
-    x: bedX / 2 - (placed.min[0] + placed.max[0]) / 2,
-    y: bedY / 2 - (placed.min[1] + placed.max[1]) / 2,
-    z: 0,
-  };
 }
 
 export function offBed(b: Bounds, bedX: number, bedY: number, bedZ: number) {
