@@ -99,6 +99,11 @@ export function currentWeight() {
 }
 
 export function renderChrome() {
+  const typing = typedSequentialField();
+  if (typing && noteSequential(typing.id, typing.value)) {
+    touch();
+    return;
+  }
   const mesh = state.mesh;
   const result = state.result;
   const find = document.querySelector<HTMLInputElement>("#find");
@@ -213,6 +218,7 @@ export function renderChrome() {
     `)}
   `;
   restoreFindCaret(findFocused, selStart, selEnd);
+  if (typing) document.querySelector<HTMLInputElement>(`#${typing.id}`)?.focus({ preventScroll: true });
   applyFilter();
   syncFindStuck();
 
@@ -590,6 +596,38 @@ export function isStepName(name: string) {
 
 export function needsEngine(name: string) {
   return /\.(3mf|step|stp)$/i.test(name);
+}
+
+const SEQUENTIAL = {
+  seqclear: { key: "sequentialClearance", max: 100 },
+  seqgantry: { key: "sequentialGantry", max: 500 },
+} as const;
+type SequentialId = keyof typeof SEQUENTIAL;
+
+/** These commit on `change`, so a re-render while one has focus must commit it first and give focus back. */
+function typedSequentialField(): { id: SequentialId; value: string } | null {
+  const el = document.activeElement;
+  if (!(el instanceof HTMLInputElement) || (el.id !== "seqclear" && el.id !== "seqgantry")) return null;
+  return { id: el.id, value: el.value };
+}
+
+/** Empty is 0, the engine's default. A value outside `0..max` is ignored. */
+function sequentialMm(raw: string, max: number): number | undefined {
+  const text = raw.trim();
+  if (text === "") return 0;
+  const n = Number(text);
+  if (!Number.isFinite(n) || n < 0 || n > max) return undefined;
+  return Math.round(n * 1000) / 1000;
+}
+
+/** Stores a typed clearance or gantry height. False when it is unreadable or already stored. */
+export function noteSequential(id: SequentialId, raw: string): boolean {
+  const { key, max } = SEQUENTIAL[id];
+  const value = sequentialMm(raw, max);
+  if (value === undefined || value === state[key]) return false;
+  noteEdit();
+  state[key] = value;
+  return true;
 }
 
 function printOrderFields(many: boolean): string {
