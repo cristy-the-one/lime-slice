@@ -66,6 +66,50 @@ test("a saved band writes the filament nozzle temperature", async ({ page }) => 
   expect((bodies[0].printer as { nozzleTemp: number }).nozzleTemp).toBe(215);
 });
 
+test("an exported tower carries the printer's start and end G-code", async ({ page }) => {
+  await quiet(page);
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "showSaveFilePicker", { configurable: true, value: undefined });
+  });
+  const tower = [
+    "; TEMP_CALIBRATION",
+    "M140 S60",
+    "M104 S190",
+    "M190 S60",
+    "M109 S190",
+    "G21",
+    "G90",
+    "M82",
+    "G28",
+    "G92 E0",
+    ";LAYER:0 Z:0.200 H:0.200 temp=190",
+    "G1 X20 Y20 E1 F2400",
+    "M106 S0",
+    "M104 S0",
+    "M140 S0",
+    "M84",
+    "",
+  ].join("\n");
+  await page.route("**/api/calibrate/temp", (route) =>
+    route.fulfill({
+      json: { gcode: tower, bands: [{ index: 0, temp: 190, z0: 0.2, z1: 5 }], finalE: 1, speedMmS: 40 },
+    }),
+  );
+  await page.goto("/");
+  await page.locator("#machineMore > summary").click();
+  await page.locator("#machineStart").fill("G29 ; probe");
+  await page.locator("#machineEnd").fill("M300 ; beep");
+  await page.locator("#machineEnd").blur();
+  await page.locator("[data-level-choice=expert]").click();
+  await page.locator("#tempcal").click();
+  await expect(page.locator("#tempexport")).toBeVisible();
+  const download = page.waitForEvent("download");
+  await page.locator("#tempexport").click();
+  const text = fs.readFileSync(await (await download).path(), "utf8");
+  expect(text).toContain("G28\nG92 E0\nG29 ; probe\n");
+  expect(text).toContain("M300 ; beep\nM106 S0\nM104 S0\nM140 S0\n");
+});
+
 test.describe("temperature stays in the sheet", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 

@@ -421,12 +421,19 @@ fn finish_paths(mut paths: Vec<Extrusion>, features: &PathFeatures) -> Vec<Extru
                 continue;
             }
             let ring = path.points.len() - 1;
-            if let Some(at) = painted_vertex(
-                &path.points[..ring],
-                &features.seam_paint,
-                features.z,
-                features.layer_height,
-            ) {
+            let (z, h) = (features.z, features.layer_height);
+            let at =
+                painted_vertex(&path.points[..ring], &features.seam_paint, z, h).or_else(|| {
+                    // No vertex in any disk: start at the wall's nearest point
+                    // to a disk centre, which a straight side may not have yet.
+                    if !path.z_frac.is_empty() || !path.flow_frac.is_empty() {
+                        return None;
+                    }
+                    let (i, q) = painted_edge(&path.points, &features.seam_paint, z, h)?;
+                    path.points.insert(i + 1, q);
+                    Some(i + 1)
+                });
+            if let Some(at) = at {
                 rotate_closed_at(path, at);
                 path.seam = Seam::Fixed;
             }
@@ -3825,6 +3832,42 @@ fn painted_vertex(ring: &[[f64; 2]], disks: &[SeamDisk], z: f64, height: f64) ->
         }
     }
     best.map(|(i, _)| i)
+}
+
+/// The segment of the closed `points` that passes nearest a disk centre
+/// within the disk, and that nearest point, strictly between its ends.
+fn painted_edge(
+    points: &[[f64; 2]],
+    disks: &[SeamDisk],
+    z: f64,
+    height: f64,
+) -> Option<(usize, [f64; 2])> {
+    let lo = z - height;
+    let mut best: Option<(usize, [f64; 2], f64)> = None;
+    for disk in disks {
+        let dz = (lo - disk.p[2]).max(disk.p[2] - z).max(0.0);
+        if dz >= disk.r {
+            continue;
+        }
+        let reach2 = disk.r * disk.r - dz * dz;
+        for (i, w) in points.windows(2).enumerate() {
+            let d = [w[1][0] - w[0][0], w[1][1] - w[0][1]];
+            let len2 = d[0] * d[0] + d[1] * d[1];
+            if len2 < 1e-12 {
+                continue;
+            }
+            let t = ((disk.p[0] - w[0][0]) * d[0] + (disk.p[1] - w[0][1]) * d[1]) / len2;
+            if t <= 1e-6 || t >= 1.0 - 1e-6 {
+                continue;
+            }
+            let q = [w[0][0] + d[0] * t, w[0][1] + d[1] * t];
+            let dist = (q[0] - disk.p[0]).powi(2) + (q[1] - disk.p[1]).powi(2);
+            if dist <= reach2 + 1e-8 && best.is_none_or(|(_, _, b)| dist < b) {
+                best = Some((i, q, dist));
+            }
+        }
+    }
+    best.map(|(i, q, _)| (i, q))
 }
 
 fn rotate_closed_at(path: &mut Extrusion, at: usize) {
