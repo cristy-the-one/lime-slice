@@ -85,7 +85,7 @@ jobs:
         run: npm run test:smoke
 
   bench:
-    name: release bench and engine e2e
+    name: release bench smoke
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
