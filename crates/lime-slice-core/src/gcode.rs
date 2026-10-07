@@ -1840,6 +1840,8 @@ impl Writer {
         let arc_tol = if loose_arcs { 0.16 } else { 0.07 };
         let min_r = if loose_arcs { 0.35 } else { 0.8 };
         let max_span = if loose_arcs { 64 } else { 32 };
+        // Half a bead: the bead laid on the arc still covers the line it replaces.
+        let sag = width * 0.5;
         let mut i = 0usize;
         while i + 1 < points.len() {
             let mut end = i + 1;
@@ -1849,7 +1851,7 @@ impl Writer {
                     && j - i <= max_span
                     && span_planar(z_frac, flow_frac, i, j + 1)
                 {
-                    if fit_arc(&points[i..=j], arc_tol, min_r).is_some() {
+                    if fit_arc(&points[i..=j], arc_tol, min_r, sag).is_some() {
                         end = j;
                         j += 1;
                     } else {
@@ -1858,7 +1860,7 @@ impl Writer {
                 }
             }
             if end >= i + 3 && span_planar(z_frac, flow_frac, i, end + 1) {
-                if let Some(arc) = fit_arc(&points[i..=end], arc_tol, min_r) {
+                if let Some(arc) = fit_arc(&points[i..=end], arc_tol, min_r, sag) {
                     let h = if scarfed {
                         layer_h * z_frac[i].clamp(0.0, 1.0)
                     } else {
@@ -2364,6 +2366,7 @@ fn chain_scripts(layer: &LayerPaths, arc_fit: bool) -> Vec<Vec<Span>> {
             &path.flow_frac,
             fit,
             loose,
+            path.width,
         ));
     }
     scripts
@@ -2375,10 +2378,12 @@ fn plan_spans(
     flow_frac: &[f64],
     arc_fit: bool,
     loose_arcs: bool,
+    width: f64,
 ) -> Vec<Span> {
     let arc_tol = if loose_arcs { 0.16 } else { 0.07 };
     let min_r = if loose_arcs { 0.35 } else { 0.8 };
     let max_span = if loose_arcs { 64 } else { 32 };
+    let sag = width * 0.5;
     let mut spans = Vec::new();
     let mut i = 0usize;
     while i + 1 < points.len() {
@@ -2387,7 +2392,7 @@ fn plan_spans(
             let mut j = i + 3;
             while j < points.len() && j - i <= max_span && span_planar(z_frac, flow_frac, i, j + 1)
             {
-                if fit_arc(&points[i..=j], arc_tol, min_r).is_some() {
+                if fit_arc(&points[i..=j], arc_tol, min_r, sag).is_some() {
                     end = j;
                     j += 1;
                 } else {
@@ -2396,7 +2401,7 @@ fn plan_spans(
             }
         }
         if end >= i + 3 && span_planar(z_frac, flow_frac, i, end + 1) {
-            if let Some(arc) = fit_arc(&points[i..=end], arc_tol, min_r) {
+            if let Some(arc) = fit_arc(&points[i..=end], arc_tol, min_r, sag) {
                 spans.push(Span {
                     start_i: i as u32,
                     end_i: end as u32,
@@ -2420,7 +2425,9 @@ struct Span {
     arc: ArcFit,
 }
 
-fn fit_arc(pts: &[[f64; 2]], tol: f64, min_r: f64) -> Option<ArcFit> {
+/// An arc through `pts`: every point within `tol` of it, and every straight
+/// stretch between two points bowed off it by at most `chord_sag`.
+fn fit_arc(pts: &[[f64; 2]], tol: f64, min_r: f64, chord_sag: f64) -> Option<ArcFit> {
     if pts.len() < 4 {
         return None;
     }
@@ -2435,6 +2442,16 @@ fn fit_arc(pts: &[[f64; 2]], tol: f64, min_r: f64) -> Option<ArcFit> {
     for p in pts {
         let d = hypot(p[0] - center[0], p[1] - center[1]);
         if (d - r).abs() > tol {
+            return None;
+        }
+    }
+    // Between two points the path is a straight line, which sits inside the
+    // arc by the chord's sagitta. Both ends on the circle say nothing about it:
+    // two tight corners at the ends of a long side fit one circle. A facet of
+    // a tessellated circle bows a little, and the arc is the circle it came from.
+    for w in pts.windows(2) {
+        let half = hypot(w[1][0] - w[0][0], w[1][1] - w[0][1]) * 0.5;
+        if half >= r || r - (r * r - half * half).sqrt() > chord_sag {
             return None;
         }
     }
@@ -2610,7 +2627,7 @@ mod tests {
             let a = std::f64::consts::FRAC_PI_2 * (i as f64) / 8.0;
             pts.push([a.cos() * 10.0, a.sin() * 10.0]);
         }
-        let arc = fit_arc(&pts, 0.05, 0.8).expect("quarter circle");
+        let arc = fit_arc(&pts, 0.05, 0.8, 0.225).expect("quarter circle");
         let dot = arc.dir[0] * arc.exit_dir[0] + arc.dir[1] * arc.exit_dir[1];
         let n0 = hypot(arc.dir[0], arc.dir[1]);
         let n1 = hypot(arc.exit_dir[0], arc.exit_dir[1]);
@@ -2619,5 +2636,16 @@ mod tests {
             cos.abs() < 0.2,
             "start and end tangents of a quarter circle, cos {cos}"
         );
+    }
+
+    #[test]
+    fn a_straight_side_between_two_rounded_corners_is_not_an_arc() {
+        // Every point is on one circle, but the 80° side between the second
+        // and third is a straight line 2.3 mm inside it.
+        let pts: Vec<[f64; 2]> = [0.0_f64, 5.0, 85.0, 90.0]
+            .iter()
+            .map(|deg| [deg.to_radians().cos() * 10.0, deg.to_radians().sin() * 10.0])
+            .collect();
+        assert!(fit_arc(&pts, 0.07, 0.8, 0.225).is_none());
     }
 }
