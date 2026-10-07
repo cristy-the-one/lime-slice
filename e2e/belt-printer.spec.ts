@@ -43,6 +43,11 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await expect(page.locator("#beltFloor")).not.toBeChecked();
   await expect(page.locator("#beltRaft")).not.toBeChecked();
   await expect(page.locator("#beltRaftLayers")).toBeDisabled();
+  // Before any slice, so a toggle back to a sliced recipe cannot refresh it by itself.
+  await page.locator("#beltFloor").check();
+  await expect(page.locator("#beltRaft")).toBeDisabled();
+  await page.locator("#beltFloor").uncheck();
+  await expect(page.locator("#beltRaft")).toBeEnabled();
   await expect(page.getByText("Mock only")).toHaveCount(0);
   await page.locator("#beltCopies").fill("3");
   await page.locator("#beltCopies").blur();
@@ -80,10 +85,6 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await expect.poll(() => bodies.length).toBe(3);
   expect(bodies[2].belt).not.toHaveProperty("floorSupports");
   await expect(page.locator("#export")).toBeEnabled();
-  await page.locator("#beltFloor").check();
-  await expect(page.locator("#beltRaft")).toBeDisabled();
-  await page.locator("#beltFloor").uncheck();
-  await expect(page.locator("#beltRaft")).toBeEnabled();
   await page.locator("#beltRaft").check();
   await expect(page.locator("#beltFloor")).toBeDisabled();
   await expect(page.locator("#beltRaftLayers")).toBeEnabled();
