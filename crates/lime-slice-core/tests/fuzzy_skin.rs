@@ -258,3 +258,22 @@ fn a_plate_refuses_fuzzy_skin_per_object() {
     .unwrap_err();
     assert_eq!(err, "objects[1].settings.fuzzySkin is a plate setting");
 }
+
+#[test]
+fn feature_speeds_off_still_roughens_the_outer_wall() {
+    let plain = slice(&on_box(json!({ "featureSpeeds": false }))).unwrap();
+    let rough = slice(&on_box(json!({ "featureSpeeds": false, "fuzzySkin": {} }))).unwrap();
+    let walls = |reply: &Value| {
+        moves(gcode(reply))
+            .into_iter()
+            .filter(|m| m.kind == "WALL")
+            .count()
+    };
+    assert!(gcode(&plain).contains("; TYPE:WALL"));
+    assert!(
+        walls(&rough) > walls(&plain) * 2,
+        "walls {} plain, {} with fuzzy skin",
+        walls(&plain),
+        walls(&rough)
+    );
+}
