@@ -195,6 +195,9 @@ pub struct Extrusion {
     pub scarf_mm: f64,
     /// Set when overhang splitting slowed this span. Scarf stays off those spans.
     pub on_overhang: bool,
+    /// Set on a part path the object's speed cap lowers: no range or volume
+    /// set its speed. `speed` is planned without the cap.
+    pub cap_feed: Option<CapFeed>,
     /// Run the existing G2/G3 fitter on this open path (3D gyroid).
     pub fit_arcs: bool,
     /// Lift height for the travel into this path. `0` stays on the layer.
@@ -204,6 +207,43 @@ pub struct Extrusion {
     /// Noise applied once the seam and any scarf ramp are final. `None`
     /// leaves the path as planned.
     pub fuzzy: Option<FuzzyMark>,
+}
+
+/// The feed a path was planned at and how overhang splitting slowed it, so
+/// a speed cap can be applied after planning exactly as it is before.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CapFeed {
+    pub feed: f64,
+    pub slow: Slowdown,
+}
+
+impl CapFeed {
+    /// The path's speed had `cap` been on its strategy while planning.
+    pub fn speed(&self, cap: f64) -> f64 {
+        self.slow.speed(self.feed.min(cap))
+    }
+}
+
+/// How overhang splitting slows a span from its feed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Slowdown {
+    None,
+    Bridge,
+    /// Over air at 42° to 68°.
+    Overhang,
+    /// Over air at 68° or more.
+    Steep,
+}
+
+impl Slowdown {
+    pub fn speed(self, feed: f64) -> f64 {
+        match self {
+            Slowdown::None => feed,
+            Slowdown::Bridge => feed.clamp(18.0, 36.0),
+            Slowdown::Overhang => (feed * 0.55).max(16.0),
+            Slowdown::Steep => (feed * 0.32).max(16.0),
+        }
+    }
 }
 
 /// Outer-wall noise waiting for the seam to be chosen.
@@ -1377,6 +1417,7 @@ fn extrusion(
         flow_frac: Vec::new(),
         scarf_mm: 0.0,
         on_overhang: false,
+        cap_feed: None,
         fit_arcs: false,
         z_hop: 0.0,
         seam: match (kind, strategy.seam) {
@@ -4865,20 +4906,27 @@ fn span_class(
 fn paint(src: &Extrusion, points: Vec<[f64; 2]>, class: SpanClass) -> Extrusion {
     let mut path = src.clone();
     path.points = points;
-    match class {
-        SpanClass::Supported => {}
+    let slow = match class {
+        SpanClass::Supported => Slowdown::None,
         SpanClass::Bridge => {
             path.kind = PathKind::Bridge;
-            path.speed = path.speed.clamp(18.0, 36.0);
             path.fan = 255;
             path.strength = path.strength.min(0.7);
+            Slowdown::Bridge
         }
         SpanClass::Overhang(angle) => {
-            let scale = if angle >= 68.0 { 0.32 } else { 0.55 };
-            path.speed = (path.speed * scale).max(16.0);
             path.fan = path.fan.max(if angle >= 68.0 { 255 } else { 220 });
             path.on_overhang = true;
+            if angle >= 68.0 {
+                Slowdown::Steep
+            } else {
+                Slowdown::Overhang
+            }
         }
+    };
+    path.speed = slow.speed(path.speed);
+    if let Some(cap) = &mut path.cap_feed {
+        cap.slow = slow;
     }
     path
 }

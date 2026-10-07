@@ -64,6 +64,12 @@ impl PrintLayer {
         self.arcs = Arc::default();
     }
 
+    /// Change the layer, and forget the arcs planned for the old one.
+    pub(crate) fn edit(&mut self, change: impl FnOnce(&mut LayerPaths)) {
+        change(Arc::make_mut(&mut self.layer));
+        self.arcs = Arc::default();
+    }
+
     /// Both are the same layer, shared or equal path for path.
     pub(crate) fn same(&self, other: &PrintLayer) -> bool {
         Arc::ptr_eq(&self.layer, &other.layer) || *self.layer == *other.layer

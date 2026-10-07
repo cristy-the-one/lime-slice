@@ -50,7 +50,8 @@ use crate::toolpath::{
     apply_overhang, apply_scarf, apply_z_hop, comb_layer, island_loops, lightning_pitch,
     belt_raft_paths, order_supports, plan_ironing, plan_region_split, plan_skirt, plan_support,
     plan_tree_support,
-    Extrusion, PartLayout, PathFeatures, PathKind, ScarfParams, Seam, ShellBand, Skin, TravelIn,
+    CapFeed, Extrusion, PartLayout, PathFeatures, PathKind, ScarfParams, Seam, ShellBand, Skin,
+    Slowdown, TravelIn,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -3385,7 +3386,8 @@ fn plan_cut(
         travels: &travels,
     };
     let assembled = assemble(&cut, part, &supports, blend, settings, &[], watch)?;
-    Ok(finish(cut, &supports, edits, assembled, reuse, spent))
+    let cap = settings.object_tweak.speed;
+    Ok(finish(cut, &supports, edits, assembled, reuse, spent, cap))
 }
 
 /// `plan` from the kept stages. Each stage is reused when its key matches.
@@ -3541,7 +3543,8 @@ fn plan_kept(
         key: keys.whole,
         contours: keys.contours,
     };
-    let mut plan = finish(cut, supports, edits, assembled, reuse, spent);
+    let cap = settings.object_tweak.speed;
+    let mut plan = finish(cut, supports, edits, assembled, reuse, spent, cap);
     plan.kept = Some(kept);
     Ok(plan)
 }
@@ -3609,7 +3612,8 @@ fn kept_supports(
     }
 }
 
-/// The plan, with the clocks of what was joined and edited added.
+/// The plan, with the object's speed cap `cap` applied and the clocks of
+/// what was joined and edited added.
 fn finish(
     cut: Arc<Contours>,
     supports: &SupportPlan,
@@ -3617,6 +3621,7 @@ fn finish(
     assembled: Assembled,
     reuse: Reuse,
     mut spent: Spent,
+    cap: Option<f64>,
 ) -> Plan {
     spent.order_ms += assembled.order_ms;
     spent.comb_ms += assembled.comb_ms;
@@ -3624,7 +3629,11 @@ fn finish(
     spent.edit_refresh_ms += edits.refresh_ms;
     let heads = assembled.joined.iter().map(|j| j.head).collect();
     Plan {
-        layers: assembled.joined.into_iter().map(|j| j.layer).collect(),
+        layers: assembled
+            .joined
+            .into_par_iter()
+            .map(|j| j.capped(cap))
+            .collect(),
         heads,
         layers_reused: assembled.reused,
         kept: None,
@@ -3792,8 +3801,23 @@ impl Contours {
 struct ObjectLayer {
     paths: Vec<Extrusion>,
     note: String,
+    /// The print speed `note` names, when the object's speed cap lowers it.
+    shown_speed: Option<f64>,
     wall_ms: f64,
     infill_ms: f64,
+}
+
+impl ObjectLayer {
+    /// `note` under the object's speed cap `cap`.
+    fn note_under(&self, cap: f64) -> String {
+        match self.shown_speed {
+            Some(speed) if cap < speed => {
+                self.note
+                    .replacen(&speed_label(speed), &speed_label(cap), 1)
+            }
+            _ => self.note.clone(),
+        }
+    }
 }
 
 /// The part's own toolpaths: every layer's walls, infill, and skin with
@@ -4087,6 +4111,7 @@ fn part_paths(
                 let layer = ObjectLayer {
                     paths: Vec::new(),
                     note: String::new(),
+                    shown_speed: None,
                     wall_ms: 0.0,
                     infill_ms: 0.0,
                 };
@@ -4574,6 +4599,28 @@ impl JoinedLayer {
             && bits(self.from) == bits(from)
             && self.skirt == skirt
             && (Arc::ptr_eq(&self.under, under) || self.under == *under)
+    }
+
+    /// The layer with the object's speed cap `cap` on its part's paths and
+    /// note. A layer the cap leaves alone stays shared, arcs and all.
+    fn capped(self, cap: Option<f64>) -> PrintLayer {
+        let mut layer = self.layer;
+        let (Some(cap), Some(part), false) = (cap, &self.part, self.empty) else {
+            return layer;
+        };
+        let note = part.tour.source.note_under(cap);
+        let slower = |p: &Extrusion| p.cap_feed.is_some_and(|c| c.speed(cap) != p.speed);
+        if note != layer.note || layer.paths.iter().any(slower) {
+            layer.edit(|l| {
+                l.note = note;
+                for path in &mut l.paths {
+                    if let Some(c) = path.cap_feed {
+                        path.speed = c.speed(cap);
+                    }
+                }
+            });
+        }
+        layer
     }
 }
 
@@ -5324,12 +5371,16 @@ fn object_layer(
         interior_remaining: remain_low.0,
         interior_run: remain_low.1,
     };
-    // The blend's plan of `region`, with `tweak` over every strategy it prints.
+    // The blend's plan of `region`, with `tweak` over every strategy it
+    // prints, and the print speed the note names when the object's cap
+    // lowers it.
     let plan = |region: &[Loop], tweak: Option<&Tweak>| {
         let tweaked = |s: ResolvedStrategy| match tweak {
             Some(t) => t.apply(s),
             None => s,
         };
+        let takes_cap = tweak.and_then(|t| t.speed).is_none();
+        let mut shown = None;
         let mut paths = Vec::new();
         let mut wall_ms = 0.0;
         let mut infill_ms = 0.0;
@@ -5383,24 +5434,37 @@ fn object_layer(
                 wall_ms += region_wall;
                 infill_ms += region_infill;
                 paths.extend(region);
+                shown = takes_cap.then_some(resolved.print_speed);
                 format!(
-                    "{} walls={} infill={:.0}% {} {:.0}mm/s h={:.3}",
+                    "{} walls={} infill={:.0}% {}{}h={:.3}",
                     resolved.id.as_str(),
                     resolved.walls,
                     resolved.infill_density * 100.0,
                     pattern_label(&resolved),
-                    resolved.print_speed,
+                    speed_label(resolved.print_speed),
                     height
                 )
             }
         };
-        (paths, wall_ms, infill_ms, note)
+        if takes_cap {
+            for path in &mut paths {
+                path.cap_feed = Some(CapFeed {
+                    feed: path.speed,
+                    slow: Slowdown::None,
+                });
+            }
+        }
+        (paths, wall_ms, infill_ms, note, shown)
     };
-    let range = settings
-        .object_tweak
-        .under(settings.overrides.range_at(z));
+    // The object's speed cap is applied once the layers are joined, so a
+    // cap change reuses every part stage.
+    let object = Tweak {
+        speed: None,
+        ..settings.object_tweak
+    };
+    let range = object.under(settings.overrides.range_at(z));
     let prints = layer_footprints(&settings.overrides, z, contours);
-    let (paths, wall_ms, infill_ms, mut note) = if prints.is_empty() {
+    let (paths, wall_ms, infill_ms, mut note, shown) = if prints.is_empty() {
         plan(contours, range.as_ref())
     } else {
         // Each zone plans the part's own outline, so its walls follow the
@@ -5408,7 +5472,8 @@ fn object_layer(
         // the part within reach of its footprint, so the walls of that clip
         // edge lie outside the footprint. Each keeps only the beads in its
         // zone, and beads cut at a footprint edge meet the other zone's.
-        let (mut paths, mut wall_ms, mut infill_ms, mut note) = plan(contours, range.as_ref());
+        let (mut paths, mut wall_ms, mut infill_ms, mut note, shown) =
+            plan(contours, range.as_ref());
         paths = keep_zone(paths, &prints, None);
         for (k, print) in prints.iter().enumerate() {
             // The volume wins on each field it sets; the range, then the
@@ -5423,7 +5488,7 @@ fn object_layer(
             if region.is_empty() {
                 continue;
             }
-            let (own, own_wall, own_infill, _) = plan(&region, Some(&stacked));
+            let (own, own_wall, own_infill, _, _) = plan(&region, Some(&stacked));
             wall_ms += own_wall;
             infill_ms += own_infill;
             let own = keep_zone(own, &prints, Some(k));
@@ -5432,7 +5497,7 @@ fn object_layer(
             }
             paths = pair_sides(paths, own);
         }
-        (paths, wall_ms, infill_ms, note)
+        (paths, wall_ms, infill_ms, note, shown)
     };
     if paths.iter().any(|p| p.kind == PathKind::GapFill) && !note.contains("gap-fill") {
         note.push_str(" · gap-fill");
@@ -5440,9 +5505,15 @@ fn object_layer(
     ObjectLayer {
         paths,
         note,
+        shown_speed: shown,
         wall_ms,
         infill_ms,
     }
+}
+
+/// A print speed as a layer note names it, with the spaces around it.
+fn speed_label(speed: f64) -> String {
+    format!(" {speed:.0}mm/s ")
 }
 
 /// Paths printed from one layer's support regions and branches.
