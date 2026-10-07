@@ -1361,53 +1361,37 @@ fn extrusion(
     path
 }
 
-/// A solid pad: one loop around `bounds`, then lines across it. The caller
-/// prints these before the part, so the belt's first contact is this pad
-/// and not a sliver of the part. Speed and flow are the first-layer values
-/// the writer already applies to layer 0; later raft layers keep 30 mm/s.
-pub(crate) fn belt_raft_paths(min: [f64; 2], max: [f64; 2], line_width: f64) -> Vec<Extrusion> {
-    let margin = 1.0;
-    let min = [min[0] - margin, min[1] - margin];
-    let max = [max[0] + margin, max[1] + margin];
+/// A layer's strip of the belt raft: one line across the belt at each slice
+/// Y in `ys`, alternating direction, the first from `x[1]` when `flip`.
+/// 30 mm/s, flow 1.0 and fan off, so the pad lays down like a first layer.
+pub(crate) fn belt_raft_paths(
+    x: [f64; 2],
+    ys: &[f64],
+    line_width: f64,
+    flip: bool,
+) -> Vec<Extrusion> {
     let strategy = crate::strategy::pure(crate::strategy::StrategyId::Speed);
-    let mut paths = Vec::new();
-    let mut wall = extrusion(
-        PathKind::Outer,
-        &strategy,
-        vec![
-            [min[0], min[1]],
-            [max[0], min[1]],
-            [max[0], max[1]],
-            [min[0], max[1]],
-            [min[0], min[1]],
-        ],
-        line_width,
-    );
-    wall.speed = 30.0;
-    wall.flow = 1.0;
-    wall.fan = 0;
-    wall.seam = Seam::Fixed;
-    paths.push(wall);
-    let span = max[1] - min[1];
-    if span > line_width * 2.0 {
-        let mut y = min[1] + line_width;
-        let inset = line_width * 0.5;
-        while y < max[1] - line_width * 0.5 {
+    ys.iter()
+        .enumerate()
+        .map(|(i, &y)| {
+            let (from, to) = if (i % 2 == 1) == flip {
+                (x[0], x[1])
+            } else {
+                (x[1], x[0])
+            };
             let mut line = extrusion(
                 PathKind::Solid,
                 &strategy,
-                vec![[min[0] + inset, y], [max[0] - inset, y]],
+                vec![[from, y], [to, y]],
                 line_width,
             );
             line.speed = 30.0;
             line.flow = 1.0;
             line.fan = 0;
             line.seam = Seam::Fixed;
-            paths.push(line);
-            y += line_width;
-        }
-    }
-    paths
+            line
+        })
+        .collect()
 }
 
 fn apply_feed(path: &mut Extrusion, strategy: &ResolvedStrategy) {

@@ -892,7 +892,7 @@ function beltFieldsHtml(printer: PrinterRecord | undefined): string {
         <label class="field setting" data-label="belt raft layers" data-keywords="raft layers pad">Raft layers
           <input id="beltRaftLayers" type="number" min="1" max="8" step="1" value="${belt.raftLayers > 0 ? belt.raftLayers : 3}"${belt.raftLayers > 0 ? "" : " disabled"} aria-label="Belt raft layers" />
         </label>
-        <p class="meta belt-wide">The engine slices this belt. Export follows the slice. Send follows the printer connection. Seam on the belt edge, the belt raft, and supports on the belt stay off until those boxes are checked. A raft prints a few solid layers on the belt before the part. Supports on the belt grow down to the tilted floor. They are not available together with a raft.</p>
+        <p class="meta belt-wide">The engine slices this belt. Export follows the slice. Send follows the printer connection. Seam on the belt edge, the belt raft, and supports on the belt stay off until those boxes are checked. A raft is a pad on the belt under the part and 1 mm past it, raft layers times the layer height thick; the part stands on it. Supports on the belt grow down to the tilted floor. They are not available together with a raft.</p>
       </div>`;
 }
 

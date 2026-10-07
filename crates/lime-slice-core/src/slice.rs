@@ -1330,19 +1330,13 @@ struct BeltJob {
     /// Part-frame bounds in the lab, with the later copies included along Y.
     lab_bounds: Vec<([f64; 3], [f64; 3])>,
     /// A pad on the belt, in the slice frame, when the request asked for one.
-    raft: Option<BeltRaft>,
+    raft: Option<crate::belt::Raft>,
     /// Set when supports grow to the tilted belt. `None` forces supports off.
     floor: Option<FloorPlane>,
 }
 
-struct BeltRaft {
-    layers: u32,
-    /// Top of the pad. The part mesh starts here.
-    top: f64,
-    min: [f64; 2],
-    max: [f64; 2],
-    line_width: f64,
-}
+/// How far the belt raft reaches past the plate's footprint on every side.
+const BELT_RAFT_MARGIN_MM: f64 = 1.0;
 
 /// Lay the plate on the belt, and turn off the features that assume a flat bed.
 fn prepare_belt(
@@ -1386,30 +1380,29 @@ fn prepare_belt(
             object.to_bed(),
         ));
     }
-    let (mut laid, frame) = crate::belt::lay_flat(&placed, &belt)?;
-    belt.frame = frame;
     if belt.raft_layers > 0 && settings.adaptive {
         return Err(
             "belt.raftLayers needs a fixed layer height; turn adaptive layers off".into(),
         );
     }
+    // The pad lies on the belt under the footprint, and the parts stand on it.
     let raft = if belt.raft_layers > 0 {
-        let (min, max) = xy_bounds(&laid)?;
-        let height = settings.layer_height.clamp(0.05, 0.6);
-        let top = f64::from(belt.raft_layers) * height;
-        for mesh in &mut laid {
+        let (min, max) = xy_bounds(&placed)?;
+        let top = f64::from(belt.raft_layers) * settings.layer_height.clamp(0.05, 0.6);
+        for mesh in &mut placed {
             *mesh = crate::belt::shift_z(mesh, top);
         }
-        Some(BeltRaft {
-            layers: belt.raft_layers,
+        Some(crate::belt::Raft {
+            min: [min[0] - BELT_RAFT_MARGIN_MM, min[1] - BELT_RAFT_MARGIN_MM],
+            max: [max[0] + BELT_RAFT_MARGIN_MM, max[1] + BELT_RAFT_MARGIN_MM],
             top,
-            min,
-            max,
             line_width: settings.line_width,
         })
     } else {
         None
     };
+    let (laid, frame) = crate::belt::lay_flat(&placed, &belt, raft.as_ref())?;
+    belt.frame = frame;
     let (span_x, max_z) = crate::belt::plate_span(&laid)?;
     let extent = max_z / belt.sin_a;
     crate::belt::check_fit(&belt, span_x, extent)?;
@@ -1483,35 +1476,32 @@ fn xy_bounds(meshes: &[Mesh]) -> Result<([f64; 2], [f64; 2]), String> {
 /// writer only does that for index 0.
 fn belt_output(mut layers: Vec<PlateLayer>, job: &BeltJob) -> Vec<PlateLayer> {
     if let Some(raft) = &job.raft {
-        let paths = belt_raft_paths(raft.min, raft.max, raft.line_width);
-        let n = paths.len();
-        for layer in layers.iter_mut().take(raft.layers as usize) {
-            if layer.z > raft.top + 1e-4 {
-                break;
+        let across = [raft.min[0], raft.max[0]];
+        for layer in &mut layers {
+            let ys = raft.lines(&job.belt.frame, layer.z);
+            if ys.is_empty() {
+                continue;
             }
-            let print = PrintLayer::new(LayerPaths {
-                index: layer.index,
-                z: layer.z,
-                height: layer.height,
-                paths: paths.clone(),
-                note: format!("belt raft {} layers", raft.layers),
-            });
-            *layer = PlateLayer {
-                index: layer.index,
-                own: layer.own,
-                clear_z: layer.clear_z,
-                z: layer.z,
-                height: layer.height,
-                note: print.note.clone(),
-                runs: vec![Run {
-                    object: 0,
-                    layer: print,
-                    paths: 0..n,
-                    entry: Entry::AsPlanned,
-                    label: None,
-                }],
-                belt_shift: 0.0,
+            let paths = belt_raft_paths(across, &ys, raft.line_width, layer.index % 2 == 1);
+            let n = paths.len();
+            // The part's plan does not know the nozzle ends on the pad.
+            if let Some(first) = layer.runs.first_mut() {
+                first.entry = Entry::Cross { z_hop: 0.0 };
+            }
+            let pad = Run {
+                object: 0,
+                layer: PrintLayer::new(LayerPaths {
+                    index: layer.index,
+                    z: layer.z,
+                    height: layer.height,
+                    paths,
+                    note: layer.note.clone(),
+                }),
+                paths: 0..n,
+                entry: Entry::AsPlanned,
+                label: None,
             };
+            layer.runs.insert(0, pad);
         }
     }
     for layer in &mut layers {

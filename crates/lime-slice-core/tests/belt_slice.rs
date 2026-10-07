@@ -494,30 +494,47 @@ fn an_omitted_belt_is_absent_from_the_request_json() {
 }
 
 #[test]
-fn a_belt_raft_is_refused_until_it_lies_on_the_belt() {
-    let stl = box_stl(10.0, 10.0, 2.0);
-    let off = request(
-        &stl,
-        "box.stl",
-        json!({ "belt": belt(45.0, "z", 1, 5.0), "includePreview": false }),
+fn a_belt_raft_is_a_pad_on_the_belt_under_the_part() {
+    let mut spec = belt(45.0, "z", 1, 5.0);
+    spec["raftLayers"] = json!(3);
+    let req = request(
+        &box_stl(20.0, 20.0, 20.0),
+        "cube.stl",
+        json!({ "belt": spec, "includePreview": false }),
     );
-    let mut raft = belt(45.0, "z", 1, 5.0);
-    raft["raftLayers"] = json!(2);
-    let on = request(
-        &stl,
-        "box.stl",
-        json!({ "belt": raft, "includePreview": false }),
+    let response = slice_request(&req, Job::default()).unwrap();
+    assert!(response.sanity.ok, "{:?}", response.sanity.notes);
+    assert!(response.gcode.contains("; belt raft 3 layers
+"));
+    // Three 0.2 mm layers of pad, measured up from the belt.
+    let top = 0.6;
+    let layers = part_points(&response.gcode, 45.0, 'Z', 'Y', 1.0);
+    let all: Vec<[f64; 3]> = layers.concat();
+    let pad: Vec<[f64; 3]> = all.iter().copied().filter(|p| p[2] <= top).collect();
+    let (z_lo, z_hi) = span(&all, 2);
+    assert!(z_lo >= 0.0, "a move went below the belt, at {z_lo:.3}");
+    assert!(
+        z_hi > 20.0 + top - 0.2 && z_hi <= 20.0 + top + 0.2,
+        "the cube stands on the pad, top {z_hi:.3}"
     );
-    let off_g = slice_request(&off, Job::default()).unwrap();
-    assert!(off_g.sanity.ok, "{:?}", off_g.sanity.notes);
-    assert!(!off_g.gcode.contains("belt raft"));
-    assert_eq!(
-        slice_request(&on, Job::default()).unwrap_err(),
-        "belt.raftLayers is not available yet: the pad is laid in the nozzle plane, \
-         so half of it would print below the belt"
+    assert!(
+        layers[0].iter().all(|p| p[2] <= top),
+        "the plane meets the pad before the part"
     );
+    // The footprint and 1 mm around it, less half a bead at each edge.
+    let (x_lo, x_hi) = span(&pad, 0);
+    let (y_lo, y_hi) = span(&pad, 1);
+    assert!(
+        x_hi - x_lo > 21.0 && x_hi - x_lo <= 22.0,
+        "pad across {x_lo:.3}..{x_hi:.3}"
+    );
+    assert!(
+        y_hi - y_lo > 21.0 && y_hi - y_lo <= 22.0,
+        "pad along the belt {y_lo:.3}..{y_hi:.3}"
+    );
+
     let bad = request(
-        &stl,
+        &box_stl(10.0, 10.0, 2.0),
         "box.stl",
         json!({ "belt": { "angleDeg": 45, "axis": "z", "direction": 1, "widthMm": 220, "copies": 1, "gapMm": 5, "raftLayers": 9 } }),
     );
@@ -528,7 +545,7 @@ fn a_belt_raft_is_refused_until_it_lies_on_the_belt() {
     );
 }
 
-/// Each extruded endpoint of a belt file, put back on the part as
+/// Both ends of each extruding move of a belt file, put back on the part as
 /// `[across, along the belt, height]`, one list per layer. The nozzle is
 /// `gantry * sin α` above the belt and `gantry * cos α` behind the line where
 /// its plane meets the belt.
@@ -551,11 +568,13 @@ fn part_points(
         if !(line.starts_with("G1 ") || line.starts_with("G2 ") || line.starts_with("G3 ")) {
             continue;
         }
+        let from = [x, b * dir - u * c, u * s];
         b = gcode_word(line, belt_axis).unwrap_or(b);
         u = gcode_word(line, gantry_axis).unwrap_or(u);
         x = gcode_word(line, across).unwrap_or(x);
         let moved = gcode_word(line, across).is_some() || gcode_word(line, gantry_axis).is_some();
         if let (Some(layer), true, Some(_)) = (layers.last_mut(), moved, gcode_word(line, 'E')) {
+            layer.push(from);
             layer.push([x, b * dir - u * c, u * s]);
         }
     }
