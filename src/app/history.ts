@@ -6,7 +6,7 @@ import { emptyOverrides } from "../overrides";
 import { revivePlate, snapPlate } from "../plate";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library";
-import { selectIn, setAdvance, setNozzleTemp, setRetract } from "../ui/machine-library";
+import { beltStamp, selectIn, selection, setActiveBelt, setAdvance, setNozzleTemp, setRetract } from "../ui/machine-library";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel";
 import {
   beginGesture,
@@ -54,17 +54,24 @@ function capture(): EditSnap {
       bedTemp: profile.bedTemp,
     },
     level: loadSettingsLevel(),
-    machine: {
-      printerId: loadMachineLibrary().printerId,
-      filamentId: loadMachineLibrary().filamentId,
-      nozzleMm: loadMachineLibrary().nozzleMm,
-    },
+    machine: machineSnap(),
     overrides: structuredClone(state.overrides),
     selectedVolumeId: state.selectedVolumeId,
     plate: snapPlate(state.plate),
     printOrder: state.printOrder,
     sequentialClearanceMm: state.sequentialClearance,
     sequentialGantryMm: state.sequentialGantry,
+  };
+}
+
+function machineSnap(): EditSnap["machine"] {
+  const library = loadMachineLibrary();
+  const printer = selection(library)?.printer;
+  return {
+    printerId: library.printerId,
+    filamentId: library.filamentId,
+    nozzleMm: library.nozzleMm,
+    ...(printer ? { kind: printer.kind, belt: structuredClone(printer.belt) } : {}),
   };
 }
 
@@ -110,6 +117,14 @@ function applySnap(snap: EditSnap) {
       const withTemp = setNozzleTemp(withAdvance, state.profile.nozzleTemp);
       const speed = state.retractOn && Math.abs(state.retractSpeed - 30) > 1e-6 ? state.retractSpeed : null;
       storeMachineLibrary(setRetract(withTemp, state.retractOn ? state.retractLength : null, speed));
+    }
+    if (snap.machine.kind && snap.machine.belt) {
+      const kindBefore = selection(loadMachineLibrary())?.printer.kind;
+      const library = setActiveBelt(loadMachineLibrary(), snap.machine.kind, snap.machine.belt);
+      storeMachineLibrary(library);
+      fx.prepare?.setBelt(beltStamp(library));
+      fx.view3d?.setBelt(beltStamp(library));
+      if (kindBefore !== snap.machine.kind) fx.renderChrome?.();
     }
   }
   state.overrides = snap.overrides ? structuredClone(snap.overrides) : emptyOverrides();

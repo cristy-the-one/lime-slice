@@ -31,7 +31,8 @@ test("the sheet shows repaired layers and dropped chains from the slice", async 
   await expect(page.locator("#leftBody")).not.toContainText("Repaired layers");
 
   await page.locator("#slice").click();
-  await expect(page.locator("#leftBody")).toContainText("Repaired layers 0 · dropped chains 0");
+  // The fixture reply has no counts: unknown, not zero.
+  await expect(page.locator("#leftBody")).toContainText("Repaired layers — · dropped chains —");
 
   await page.locator("#slice").click();
   await expect(page.locator("#leftBody")).toContainText("Repaired layers 4 · dropped chains 2");

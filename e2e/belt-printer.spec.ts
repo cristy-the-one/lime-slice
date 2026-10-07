@@ -4,6 +4,10 @@ import path from "node:path";
 import { canvasShare } from "../src/ui/compact/viewport-share.ts";
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
+// The engine's reply for the same cube on a 45° belt: layer z is the belt
+// position, 40 mm at the top. Regenerate with the ignored test in
+// crates/lime-slice-core/tests/e2e_fixtures.rs.
+const beltCube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-belt.json"), "utf8"));
 
 async function quiet(page: Page) {
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
@@ -25,8 +29,9 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await quiet(page);
   const bodies: Record<string, unknown>[] = [];
   await page.route("**/api/slice", async (route) => {
-    bodies.push(route.request().postDataJSON() as Record<string, unknown>);
-    await route.fulfill({ json: cube });
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    bodies.push(body);
+    await route.fulfill({ json: body.belt ? beltCube : cube });
   });
   await page.goto("/");
   await page.locator("#machineKind").selectOption("belt");
@@ -63,6 +68,8 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await expect(page.locator("#sendPrinter")).toHaveAttribute("data-tip", /Prusa Link/);
   await page.locator("#tabPreview").click();
   await expect(page.locator("#beltMockTag")).toHaveCount(0);
+  await expect(page.locator("#readHigh")).toHaveText(`Z ${beltCube.layers.at(-1).z.toFixed(2)}`);
+  await expect(page.locator("#readHigh")).toHaveText("Z 40.00");
 
   await page.locator("#tabPrepare").click();
   await page.locator("#beltFloor").check();
@@ -73,7 +80,12 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await expect.poll(() => bodies.length).toBe(3);
   expect(bodies[2].belt).not.toHaveProperty("floorSupports");
   await expect(page.locator("#export")).toBeEnabled();
+  await page.locator("#beltFloor").check();
+  await expect(page.locator("#beltRaft")).toBeDisabled();
+  await page.locator("#beltFloor").uncheck();
+  await expect(page.locator("#beltRaft")).toBeEnabled();
   await page.locator("#beltRaft").check();
+  await expect(page.locator("#beltFloor")).toBeDisabled();
   await expect(page.locator("#beltRaftLayers")).toBeEnabled();
   await page.locator("#beltRaftLayers").fill("2");
   await page.locator("#beltRaftLayers").blur();
@@ -89,6 +101,21 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await expect.poll(() => bodies.length).toBe(5);
   expect(bodies[4]).not.toHaveProperty("belt");
   await expect(page.locator("#export")).toBeEnabled();
+});
+
+test("a belt edit is one undo step", async ({ page }) => {
+  await quiet(page);
+  await page.goto("/");
+  await page.locator("#machineKind").selectOption("belt");
+  await expect(page.locator("#beltAngle")).toHaveValue("45");
+  await page.locator("#beltAngle").fill("35");
+  await page.locator("#beltAngle").blur();
+  await page.waitForTimeout(400);
+  await expect(page.locator("#undoEdit")).toBeEnabled();
+  await page.locator("#undoEdit").click();
+  await expect(page.locator("#beltAngle")).toHaveValue("45");
+  await page.locator("#redoEdit").click();
+  await expect(page.locator("#beltAngle")).toHaveValue("35");
 });
 
 test.describe("belt fields stay in the sheet", () => {

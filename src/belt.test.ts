@@ -52,6 +52,8 @@ check(
 );
 const rafty = coerceBelt({ raftLayers: 9.2 }, 220);
 check("raft layers clamp to 1 through 8", rafty.raftLayers === 8 && coerceBelt({ raftLayers: 0 }, 220).raftLayers === 0 && coerceBelt({}, 220).raftLayers === 0);
+const both = coerceBelt({ raftLayers: 3, floorSupports: true }, 220);
+check("a raft and floor supports together keep the raft, which the engine accepts", both.raftLayers === 3 && both.floorSupports === false);
 
 if (failed) {
   console.error(`${failed} failed`);

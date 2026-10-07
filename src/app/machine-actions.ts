@@ -140,6 +140,7 @@ export function noteBeltForm() {
   const picked = selection(library);
   const kindEl = document.querySelector<HTMLSelectElement>("#machineKind");
   if (!picked || !kindEl) return;
+  noteEdit();
   const kind: PrinterKind = kindEl.value === "belt" ? "belt" : "cartesian";
   const num = (id: string) => {
     const el = document.querySelector<HTMLInputElement>(`#${id}`);
@@ -169,6 +170,10 @@ export function noteBeltForm() {
   if (length) length.disabled = belt.maxLengthMm == null;
   const raftLayers = document.querySelector<HTMLInputElement>("#beltRaftLayers");
   if (raftLayers) raftLayers.disabled = belt.raftLayers === 0;
+  const raft = document.querySelector<HTMLInputElement>("#beltRaft");
+  if (raft) raft.disabled = belt.floorSupports;
+  const floor = document.querySelector<HTMLInputElement>("#beltFloor");
+  if (floor) floor.disabled = belt.raftLayers > 0;
   if (kind !== picked.printer.kind) fx.renderChrome?.();
   else fx.markStale?.();
 }

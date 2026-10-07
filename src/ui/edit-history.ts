@@ -1,4 +1,5 @@
 /** Undo stack for placement and settings. One gesture is one step. */
+import type { BeltSettings, PrinterKind } from "../belt.ts";
 import type { OverrideDocument } from "../overrides.ts";
 import type { PlateSnap } from "../plate.ts";
 import type { SettingsLevel } from "../project.ts";
@@ -30,6 +31,9 @@ export interface MachineSnap {
   printerId: string;
   filamentId: string;
   nozzleMm: number;
+  /** The active printer's kind and belt. Absent on snaps from before belt undo. */
+  kind?: PrinterKind;
+  belt?: BeltSettings;
 }
 
 export interface EditSnap {
