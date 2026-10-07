@@ -160,7 +160,8 @@ pub fn pressure_advance_tower(opts: &PaCalib) -> Result<PaCalibOutput, String> {
     } else {
         500.0
     };
-    let slow = opts.slow_mm_s.clamp(10.0, cap);
+    // A printer that cannot reach 10 mm/s at this bead prints at its cap.
+    let slow = opts.slow_mm_s.clamp(cap.min(10.0), cap);
     let fast = opts.fast_mm_s.max(slow + 5.0).min(cap.max(slow + 5.0));
     let accel = opts.accel.clamp(100.0, 20000.0);
     let fil = std::f64::consts::PI * (opts.profile.filament_diameter * 0.5).powi(2);
@@ -383,7 +384,7 @@ pub fn flow_tower(opts: &FlowCalib) -> Result<FlowCalibOutput, String> {
     } else {
         500.0
     };
-    let speed = opts.speed_mm_s.clamp(10.0, cap);
+    let speed = opts.speed_mm_s.clamp(cap.min(10.0), cap);
     let fil = std::f64::consts::PI * (opts.profile.filament_diameter * 0.5).powi(2);
 
     let mut bands = Vec::new();
@@ -585,7 +586,7 @@ pub fn temperature_tower(opts: &TempCalib) -> Result<TempCalibOutput, String> {
     } else {
         500.0
     };
-    let speed = opts.speed_mm_s.clamp(10.0, cap);
+    let speed = opts.speed_mm_s.clamp(cap.min(10.0), cap);
     let fil = std::f64::consts::PI * (opts.profile.filament_diameter * 0.5).powi(2);
 
     let mut bands = Vec::new();
