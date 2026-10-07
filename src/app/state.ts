@@ -229,6 +229,7 @@ export const state = {
   printOrder: "all-at-once" as "all-at-once" | "sequential",
   /** 0 means the nozzle radius plus one line width. Sent only with sequential. */
   sequentialClearance: 0,
+  sequentialGantry: 0,
   retractStart: 0.2,
   retractEnd: 1.2,
   retractStep: 0.2,

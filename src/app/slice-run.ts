@@ -212,12 +212,17 @@ export function payload() {
   };
 }
 
-/** All-at-once is omitted. Clearance is omitted at 0, which means the nozzle radius plus one line width. */
-function orderSliceFields(): { printOrder?: "sequential"; sequentialClearanceMm?: number } {
+/**
+ * All-at-once is omitted. Clearance and gantry height are omitted at 0, which
+ * means the engine's 35 mm toolhead and 20 mm gantry.
+ */
+function orderSliceFields(): { printOrder?: "sequential"; sequentialClearanceMm?: number; sequentialGantryMm?: number } {
   if (state.plate.objects.length < 2 || state.printOrder !== "sequential") return {};
-  const out: { printOrder: "sequential"; sequentialClearanceMm?: number } = { printOrder: "sequential" };
+  const out: { printOrder: "sequential"; sequentialClearanceMm?: number; sequentialGantryMm?: number } = { printOrder: "sequential" };
   const gap = state.sequentialClearance;
-  if (Number.isFinite(gap) && gap > 0) out.sequentialClearanceMm = Math.min(50, Math.round(gap * 1000) / 1000);
+  if (Number.isFinite(gap) && gap > 0) out.sequentialClearanceMm = Math.min(100, Math.round(gap * 1000) / 1000);
+  const gantry = state.sequentialGantry;
+  if (Number.isFinite(gantry) && gantry > 0) out.sequentialGantryMm = Math.min(500, Math.round(gantry * 1000) / 1000);
   return out;
 }
 

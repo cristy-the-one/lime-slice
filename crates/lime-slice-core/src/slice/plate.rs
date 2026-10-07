@@ -21,7 +21,16 @@ pub(super) struct PlateBand {
     pub z: f64,
     pub height: f64,
     pub members: Vec<(usize, usize)>,
+    /// The band's place in its object's own stack, for the first-layer rules.
+    pub own: usize,
+    /// Where the nozzle climbs before it starts this band's object, when an
+    /// earlier object is already printed in full.
+    pub clear: Option<f64>,
 }
+
+/// How far above the tallest printed object the nozzle travels to the next
+/// one on a plate printed one object at a time, mm.
+const SEQUENTIAL_LIFT_MM: f64 = 2.0;
 
 /// The objects' bands merged by `(z, height)`, lowest first. Objects share
 /// every band below the shorter one's clipped top, so only that top makes
@@ -54,6 +63,8 @@ pub(super) fn plate_bands(per_object: &[&[LayerBand]]) -> Vec<PlateBand> {
                 z,
                 height,
                 members: vec![(o, i)],
+                own: out.len(),
+                clear: None,
             }),
         }
     }
@@ -61,17 +72,26 @@ pub(super) fn plate_bands(per_object: &[&[LayerBand]]) -> Vec<PlateBand> {
 }
 
 /// Each object's bands in plate order, one object finished before the next
-/// starts. The join then travels from the last run of one object into the
-/// first run of the next.
+/// starts. Each object's first band climbs above every object printed before
+/// it, so the travel to it passes over them, and starts its own layer count
+/// so it gets the first-layer speed, flow and fan.
 pub(super) fn sequential_bands(per_object: &[&[LayerBand]]) -> Vec<PlateBand> {
     let mut out = Vec::new();
+    let mut tallest: Option<f64> = None;
     for (o, bands) in per_object.iter().enumerate() {
         for (i, band) in bands.iter().enumerate() {
             out.push(PlateBand {
                 z: band.z,
                 height: band.height,
                 members: vec![(o, i)],
+                own: i,
+                clear: tallest
+                    .filter(|_| i == 0)
+                    .map(|top| top + SEQUENTIAL_LIFT_MM),
             });
+        }
+        if let Some(top) = bands.last().map(|b| b.z) {
+            tallest = Some(tallest.map_or(top, |t| t.max(top)));
         }
     }
     out
@@ -176,6 +196,8 @@ pub(super) fn join(
             }
             PlateLayer {
                 index,
+                own: band.own,
+                clear_z: band.clear,
                 z: band.z,
                 height: band.height,
                 note: layer_note(objects, band),

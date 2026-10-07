@@ -52,7 +52,7 @@ export function staleWarning() {
 export function settingsHash() {
   const shift = state.offset;
   const mesh = state.mesh ? `${state.mesh.name}:${state.mesh.bytes.byteLength}:${state.partScale}:${state.centered}:${shift.x.toFixed(3)},${shift.y.toFixed(3)},${shift.z.toFixed(3)}:${state.orient.join(",")}` : "";
-  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, flowBands: _fb, flowGcode: _fg, tempBands: _tb, tempGcode: _tg, retractBands: _rb, retractGcode: _rg, retractStart: _rs, retractEnd: _re, retractStep: _rp, retractOn: _ron, retractLength: _rl, retractSpeed: _rsp, printOrder: _printOrder, sequentialClearance: _sequentialClearance, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, selectedVolumeId: _sel, modifierTool: _mt, plate: _plate, profile: _profile, ironing: _ironing, ironingFlow: _ironingFlow, ironingSpeed: _ironingSpeed, ironingSpacing: _ironingSpacing, fuzzySkin: _fuzzy, fuzzyThickness: _fuzzyThickness, fuzzyPointDistance: _fuzzyDistance, ...rest } = state;
+  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, flowBands: _fb, flowGcode: _fg, tempBands: _tb, tempGcode: _tg, retractBands: _rb, retractGcode: _rg, retractStart: _rs, retractEnd: _re, retractStep: _rp, retractOn: _ron, retractLength: _rl, retractSpeed: _rsp, printOrder: _printOrder, sequentialClearance: _sequentialClearance, sequentialGantry: _sequentialGantry, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, selectedVolumeId: _sel, modifierTool: _mt, plate: _plate, profile: _profile, ironing: _ironing, ironingFlow: _ironingFlow, ironingSpeed: _ironingSpeed, ironingSpacing: _ironingSpacing, fuzzySkin: _fuzzy, fuzzyThickness: _fuzzyThickness, fuzzyPointDistance: _fuzzyDistance, ...rest } = state;
   // Price and density only weigh the estimate, which the UI computes from the reply.
   const { filamentDensityGCm3: _density, filamentCostPerKg: _cost, ...profile } = state.profile;
   // Ironing counts as it is sent, so a number changed while it is off stales nothing.
@@ -63,7 +63,11 @@ export function settingsHash() {
   const belt = beltStamp(loadMachineLibrary());
   const retract = state.retractOn ? { retractLength: state.retractLength, retractSpeed: state.retractSpeed } : {};
   const order = state.plate.objects.length > 1 && state.printOrder === "sequential"
-    ? { printOrder: "sequential" as const, ...(state.sequentialClearance > 0 ? { sequentialClearanceMm: state.sequentialClearance } : {}) }
+    ? {
+        printOrder: "sequential" as const,
+        ...(state.sequentialClearance > 0 ? { sequentialClearanceMm: state.sequentialClearance } : {}),
+        ...(state.sequentialGantry > 0 ? { sequentialGantryMm: state.sequentialGantry } : {}),
+      }
     : {};
   const objectSettings = state.plate.objects
     .filter((obj) => !settingsEmpty(obj.settings))
@@ -589,9 +593,10 @@ export function needsEngine(name: string) {
 function printOrderFields(many: boolean): string {
   if (!many) return "";
   const clearance = state.sequentialClearance > 0 ? String(state.sequentialClearance) : "";
+  const gantry = state.sequentialGantry > 0 ? String(state.sequentialGantry) : "";
   return `
     ${select("printOrder", "Print order", state.printOrder, [["all-at-once", "All at once"], ["sequential", "One at a time"]])}
-    ${state.printOrder === "sequential" ? `<label class="field setting" data-label="sequential clearance" data-keywords="one at a time gap nozzle">Clearance mm<input id="seqclear" type="number" min="0" max="50" step="0.1" placeholder="auto" value="${clearance}" aria-label="Sequential clearance" /></label><div class="meta">One object finishes, including its supports, before the next starts. Empty is the nozzle radius plus one line width. Too close is an error and no G-code.</div>` : ""}`;
+    ${state.printOrder === "sequential" ? `<label class="field setting" data-label="sequential clearance" data-keywords="one at a time gap nozzle toolhead">Toolhead clearance mm<input id="seqclear" type="number" min="0" max="100" step="0.1" placeholder="35" value="${clearance}" aria-label="Sequential clearance" /></label><label class="field setting" data-label="sequential gantry height" data-keywords="one at a time gantry height">Gantry height mm<input id="seqgantry" type="number" min="0" max="500" step="0.1" placeholder="20" value="${gantry}" aria-label="Sequential gantry height" /></label><div class="meta">One object finishes, including its supports, before the next starts, and the nozzle climbs above the printed ones before it moves on. Clearance is how far your toolhead reaches around the nozzle, 35 mm when empty. Gantry height is from the nozzle tip to the gantry, 20 mm when empty; only the last object may be taller. Too close or too tall is an error and no G-code.</div>` : ""}`;
 }
 
 function objectOverrideFields(obj: NonNullable<ReturnType<typeof selectedObject>>): string {
@@ -951,7 +956,7 @@ export function onBlend(ev: Event) {
 
 export function onSettings(ev: Event) {
   const t = ev.target as HTMLInputElement;
-  if (t.id === "placeX" || t.id === "placeY" || t.id === "objInfill" || t.id === "objWalls" || t.id === "objSpeed" || t.id === "seqclear") return;
+  if (t.id === "placeX" || t.id === "placeY" || t.id === "objInfill" || t.id === "objWalls" || t.id === "objSpeed" || t.id === "seqclear" || t.id === "seqgantry") return;
   if (t.id === "find") {
     state.query = t.value;
     applyFilter();

@@ -91,6 +91,10 @@ export function wireApp() {
       noteSequentialClearance((target as HTMLInputElement).value);
       return;
     }
+    if (target.id === "seqgantry") {
+      noteSequentialGantry((target as HTMLInputElement).value);
+      return;
+    }
     if (target.id === "profilePick") {
       const id = (target as HTMLSelectElement).value;
       if (id) applyNamedProfile(id);
@@ -572,16 +576,28 @@ function isBeltField(target: HTMLElement): boolean {
   return target.id === "machineKind" || target.id.startsWith("belt");
 }
 
-function noteSequentialClearance(raw: string) {
+/** Empty is 0, the engine's default. A value outside `0..max` is ignored. */
+function sequentialMm(raw: string, max: number): number | undefined {
   const text = raw.trim();
-  let value = 0;
-  if (text !== "") {
-    const n = Number(text);
-    if (!Number.isFinite(n) || n < 0 || n > 50) return;
-    value = Math.round(n * 1000) / 1000;
-  }
+  if (text === "") return 0;
+  const n = Number(text);
+  if (!Number.isFinite(n) || n < 0 || n > max) return undefined;
+  return Math.round(n * 1000) / 1000;
+}
+
+function noteSequentialClearance(raw: string) {
+  const value = sequentialMm(raw, 100);
+  if (value === undefined) return;
   noteEdit();
   state.sequentialClearance = value;
+  touch();
+}
+
+function noteSequentialGantry(raw: string) {
+  const value = sequentialMm(raw, 500);
+  if (value === undefined) return;
+  noteEdit();
+  state.sequentialGantry = value;
   touch();
 }
 

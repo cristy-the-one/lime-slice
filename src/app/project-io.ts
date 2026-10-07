@@ -51,6 +51,7 @@ export async function saveCurrentProject() {
   if (project.version === 2 && state.printOrder === "sequential") {
     project.printOrder = "sequential";
     if (state.sequentialClearance > 0) project.sequentialClearanceMm = state.sequentialClearance;
+    if (state.sequentialGantry > 0) project.sequentialGantryMm = state.sequentialGantry;
   }
   const name = `${state.mesh.name.replace(/\.(stl|3mf|step|stp|lime)$/i, "")}.lime`;
   const wrote = await saveProjectText(serializeProject(project), name);
@@ -111,6 +112,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
     state.overrides = project.overrides ? structuredClone(project.overrides) : emptyOverrides();
     state.printOrder = project.printOrder === "sequential" ? "sequential" : "all-at-once";
     state.sequentialClearance = project.sequentialClearanceMm ?? 0;
+    state.sequentialGantry = project.sequentialGantryMm ?? 0;
     state.selectedVolumeId = state.overrides.volumes[0]?.id ?? null;
     if (project.objects && project.objects.length > 0) {
       const loaded = await loadPlateObjects(project.objects);
