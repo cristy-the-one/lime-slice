@@ -7,7 +7,7 @@ function withLayerGcode(src: { gcode?: string; layers: { index: number; z: numbe
   const body = structuredClone(src);
   if (typeof body.gcode === "string" && body.gcode.includes(";LAYER:")) return body;
   const lines = ["; preview sync"];
-  for (const layer of body.layers.slice(0, 4)) {
+  for (const layer of body.layers) {
     lines.push(`;LAYER:${layer.index} Z:${layer.z.toFixed(3)} H:${layer.height.toFixed(3)}`);
     let e = 0;
     for (const path of decodePaths(layer.paths, layer.z)) {

@@ -38,7 +38,7 @@ test("a setting changed during a slice leaves the finished result stale", async 
 });
 
 test("the parked G-code body is fetched once, when the G-code tab first needs it", async ({ page }) => {
-  const layer = cube.layers[0];
+  const layer = cube.layers.at(-1);
   const body = [`;LAYER:${layer.index} Z:${layer.z}`, ";TYPE:OUTER", ...decodePaths(layer.paths, layer.z)[0].pts.map((p) => `G1 X${p[0]} Y${p[1]} E0.1 F1800`)].join("\n");
   const fetches: string[] = [];
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
@@ -224,7 +224,7 @@ test("layer scrub does not resize the spark or the layer track", async ({ page }
   const z0 = await page.locator("#readHigh").innerText();
   await page.locator("#rangeHigh").evaluate((el) => {
     const input = el as HTMLInputElement;
-    input.value = input.max;
+    input.value = input.min;
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await expect(page.locator("#readHigh")).not.toHaveText(z0);

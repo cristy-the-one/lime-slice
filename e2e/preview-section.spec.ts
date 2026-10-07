@@ -195,7 +195,7 @@ async function zoomPart(page: Page) {
     const rect = el.getBoundingClientRect();
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
-    for (let i = 0; i < 14; i++) {
+    for (let i = 0; i < 6; i++) {
       el.dispatchEvent(new WheelEvent("wheel", { deltaY: -350, clientX: cx, clientY: cy, bubbles: true, cancelable: true }));
     }
   });
@@ -264,7 +264,6 @@ test("section plane clips 3D beads, travels, and the solid ghost", async ({ page
   await page.locator("#sectionOn").check();
   await setOffset(page, "0");
   const ghostHalf = await colorBuckets(page, "ghost-half");
-  const rings = await ringAnchor(page);
   const beforeDrag = sectionOffsetOf(await page.locator("#sectionReadout").innerText());
   const box = (await page.locator("#view3d").boundingBox())!;
   const x = box.x + box.width / 2;
@@ -296,6 +295,8 @@ test("section plane clips 3D beads, travels, and the solid ghost", async ({ page
   await page.locator("#sectionOn").check();
   await setOffset(page, "0");
   const beadsHalf = await colorBuckets(page, "beads-half");
+  // Before a slice the view is blurred, which washes the rings out.
+  const rings = await ringAnchor(page);
   await setOffset(page, "min");
   const beadsCut = await colorBuckets(page, "beads-cut");
 
