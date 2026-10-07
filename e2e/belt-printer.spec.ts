@@ -104,6 +104,33 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await expect(page.locator("#export")).toBeEnabled();
 });
 
+test("the generic belt printer is one pick in the printer list", async ({ page }) => {
+  await quiet(page);
+  const bodies: Record<string, unknown>[] = [];
+  await page.route("**/api/slice", async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    bodies.push(body);
+    await route.fulfill({ json: body.belt ? beltCube : cube });
+  });
+  await page.goto("/");
+  await expect(page.locator("#beltFields")).toBeHidden();
+  await page.locator("#machinePrinter").selectOption({ label: "Generic belt 45°" });
+  await expect(page.locator("#machineKind")).toHaveValue("belt");
+  await expect(page.locator("#beltFields")).toBeVisible();
+  await expect(page.locator("#beltAngle")).toHaveValue("45");
+  await expect(page.locator("#prepare")).toHaveAttribute("data-belt", "1");
+
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
+  await expect(page.locator("#slice")).toBeEnabled();
+  await page.locator("#slice").click();
+  await expect.poll(() => bodies.length).toBe(1);
+  expect((bodies[0].belt as Record<string, unknown>).angleDeg).toBe(45);
+
+  await page.locator("#machinePrinter").selectOption("lime-220");
+  await expect(page.locator("#beltFields")).toBeHidden();
+  await expect(page.locator("#prepare")).toHaveAttribute("data-belt", "0");
+});
+
 test("a belt edit is one undo step", async ({ page }) => {
   await quiet(page);
   await page.goto("/");
