@@ -21,14 +21,21 @@ pub fn point_in_loop(loop_: &[[f64; 2]], x: f64, y: f64) -> bool {
     }
     let mut j = n - 1;
     for i in 0..n {
-        let (xi, yi) = (loop_[i][0], loop_[i][1]);
-        let (xj, yj) = (loop_[j][0], loop_[j][1]);
-        if ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi) {
+        if ray_crosses(x, y, loop_[i], loop_[j]) {
             inside = !inside;
         }
         j = i;
     }
     inside
+}
+
+/// Whether the ray from `(x, y)` toward +x crosses the edge from `pj` to `pi`,
+/// counted the way `point_in_loop` counts it.
+#[inline]
+pub(crate) fn ray_crosses(x: f64, y: f64, pi: [f64; 2], pj: [f64; 2]) -> bool {
+    let (xi, yi) = (pi[0], pi[1]);
+    let (xj, yj) = (pj[0], pj[1]);
+    ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)
 }
 
 pub fn in_solid(loops: &[Loop], x: f64, y: f64) -> bool {

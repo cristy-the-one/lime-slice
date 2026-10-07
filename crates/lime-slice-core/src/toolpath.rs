@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::cmp::{Ordering as CmpOrdering, Reverse};
 use std::collections::{BinaryHeap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use crate::poly::{
@@ -2265,15 +2266,33 @@ pub fn clip_open_segment(loops: &[Loop], a: [f64; 2], b: [f64; 2]) -> Vec<[[f64;
 /// The pieces of `a..b` inside the loops.
 fn clip_segment_in(outline: &Outline, a: [f64; 2], b: [f64; 2]) -> Vec<[[f64; 2]; 2]> {
     let mut ts = vec![0.0, 1.0];
-    for loop_ in outline.touching(a, b) {
-        let n = loop_.len();
-        for i in 0..n {
-            let c = loop_[i];
-            let d = loop_[(i + 1) % n];
-            if let Some(t) = segment_t(a, b, c, d) {
-                if (0.0..=1.0).contains(&t) {
-                    ts.push(t);
-                }
+    // An edge whose box misses the segment's, grown by a Clipper unit for
+    // rounding, cuts it nowhere.
+    let lo = [a[0].min(b[0]) - 1e-3, a[1].min(b[1]) - 1e-3];
+    let hi = [a[0].max(b[0]) + 1e-3, a[1].max(b[1]) + 1e-3];
+    let mut cut = |c: [f64; 2], d: [f64; 2]| {
+        if !edge_box_meets(c, d, lo, hi) {
+            return;
+        }
+        if let Some(t) = segment_t(a, b, c, d) {
+            if (0.0..=1.0).contains(&t) {
+                ts.push(t);
+            }
+        }
+    };
+    if let Some(cells) = outline.cells() {
+        // An edge listed twice adds its cut twice, which the dedup drops.
+        for (l, k) in cells.near(a, b) {
+            if outline.loop_meets(l, a, b) {
+                let (c, d) = outline.edge(l, k);
+                cut(c, d);
+            }
+        }
+    } else {
+        for loop_ in outline.touching(a, b) {
+            let n = loop_.len();
+            for i in 0..n {
+                cut(loop_[i], loop_[(i + 1) % n]);
             }
         }
     }
@@ -4668,6 +4687,8 @@ struct Outline<'a> {
     loops: Cow<'a, [Loop]>,
     boxes: Vec<([f64; 2], [f64; 2])>,
     bounds: Option<([f64; 2], [f64; 2])>,
+    /// Built at the first test on an outline with many edges.
+    cells: OnceLock<Option<EdgeCells>>,
 }
 
 impl<'a> Outline<'a> {
@@ -4689,7 +4710,28 @@ impl<'a> Outline<'a> {
             loops,
             boxes,
             bounds,
+            cells: OnceLock::new(),
         }
+    }
+
+    fn cells(&self) -> Option<&EdgeCells> {
+        self.cells
+            .get_or_init(|| EdgeCells::build(&self.loops, self.bounds?))
+            .as_ref()
+    }
+
+    /// Whether loop `l`'s box meets the box of `a..b`.
+    fn loop_meets(&self, l: usize, a: [f64; 2], b: [f64; 2]) -> bool {
+        let lo = [a[0].min(b[0]), a[1].min(b[1])];
+        let hi = [a[0].max(b[0]), a[1].max(b[1])];
+        let (mn, mx) = self.boxes[l];
+        !(hi[0] < mn[0] || lo[0] > mx[0] || hi[1] < mn[1] || lo[1] > mx[1])
+    }
+
+    /// Edge `k` of loop `l`, from vertex `k` to the next.
+    fn edge(&self, l: usize, k: usize) -> ([f64; 2], [f64; 2]) {
+        let loop_ = &self.loops[l];
+        (loop_[k], loop_[(k + 1) % loop_.len()])
     }
 
     fn box_holds(&self, p: [f64; 2]) -> bool {
@@ -4700,19 +4742,25 @@ impl<'a> Outline<'a> {
 
     /// Loops whose box meets the box of `a..b`. The others cannot touch it.
     fn touching(&self, a: [f64; 2], b: [f64; 2]) -> impl Iterator<Item = &Loop> + '_ {
-        let lo = [a[0].min(b[0]), a[1].min(b[1])];
-        let hi = [a[0].max(b[0]), a[1].max(b[1])];
-        self.loops
-            .iter()
-            .zip(&self.boxes)
-            .filter(move |(_, (mn, mx))| {
-                !(hi[0] < mn[0] || lo[0] > mx[0] || hi[1] < mn[1] || lo[1] > mx[1])
-            })
-            .map(|(l, _)| l)
+        (0..self.loops.len())
+            .filter(move |&l| self.loop_meets(l, a, b))
+            .map(|l| &self.loops[l])
     }
 
     /// Same answer as `in_solid`: a point outside a loop's box is outside that loop.
     fn contains(&self, p: [f64; 2]) -> bool {
+        if let Some(cells) = self.cells() {
+            // The parity of every crossing over the loops `touching` keeps.
+            let mut inside = false;
+            for &(l, k) in cells.row(p[1]) {
+                let (l, k) = (l as usize, k as usize);
+                if self.loops[l].len() >= 3 && self.loop_meets(l, p, p) {
+                    let (pj, pi) = self.edge(l, k);
+                    inside ^= crate::poly::ray_crosses(p[0], p[1], pi, pj);
+                }
+            }
+            return inside;
+        }
         self.touching(p, p)
             .filter(|l| crate::poly::point_in_loop(l, p[0], p[1]))
             .count()
@@ -4721,6 +4769,12 @@ impl<'a> Outline<'a> {
     }
 
     fn crosses(&self, a: [f64; 2], b: [f64; 2]) -> bool {
+        if let Some(cells) = self.cells() {
+            return cells.near(a, b).any(|(l, k)| {
+                let (c, d) = self.edge(l, k);
+                self.loop_meets(l, a, b) && segments_properly_cross(a, b, c, d)
+            });
+        }
         self.touching(a, b).any(|l| {
             let n = l.len();
             n >= 2 && (0..n).any(|i| segments_properly_cross(a, b, l[i], l[(i + 1) % n]))
@@ -4773,6 +4827,102 @@ impl<'a> Outline<'a> {
 
     fn clip_segment(&self, a: [f64; 2], b: [f64; 2]) -> Vec<[[f64; 2]; 2]> {
         clip_segment_in(self, a, b)
+    }
+}
+
+/// An outline's edges on a grid, so a test reads the edges near it instead of
+/// every edge. A cell lists each edge whose box meets it, a row each edge
+/// whose height range meets it. Callers still apply their exact test and the
+/// loop boxes `Outline::touching` applies.
+struct EdgeCells {
+    origin: [f64; 2],
+    cell: f64,
+    nx: usize,
+    ny: usize,
+    cells: Vec<Vec<(u32, u32)>>,
+    rows: Vec<Vec<(u32, u32)>>,
+}
+
+/// Outlines with fewer edges are scanned whole.
+const EDGE_CELLS_MIN: usize = 64;
+
+/// How far from a segment `near` still finds an edge, mm. Far above the
+/// rounding in the segment tests, far below a cell.
+const EDGE_CELLS_SLACK: f64 = 1e-3;
+
+impl EdgeCells {
+    fn build(loops: &[Loop], (min, max): ([f64; 2], [f64; 2])) -> Option<Self> {
+        let edges: usize = loops.iter().filter(|l| l.len() >= 2).map(|l| l.len()).sum();
+        if edges < EDGE_CELLS_MIN {
+            return None;
+        }
+        let w = (max[0] - min[0]).max(1e-6);
+        let h = (max[1] - min[1]).max(1e-6);
+        // About one edge per cell, at most 256 cells a side.
+        let cell = (w * h / edges as f64).sqrt().max(w / 256.0).max(h / 256.0);
+        let (nx, ny) = ((w / cell) as usize + 1, (h / cell) as usize + 1);
+        let mut grid = Self {
+            origin: min,
+            cell,
+            nx,
+            ny,
+            cells: vec![Vec::new(); nx * ny],
+            rows: vec![Vec::new(); ny],
+        };
+        for (l, loop_) in loops.iter().enumerate() {
+            if loop_.len() < 2 {
+                continue;
+            }
+            for k in 0..loop_.len() {
+                let (c, d) = (loop_[k], loop_[(k + 1) % loop_.len()]);
+                let (x0, x1) = (grid.col(c[0].min(d[0])), grid.col(c[0].max(d[0])));
+                for y in grid.row_at(c[1].min(d[1]))..=grid.row_at(c[1].max(d[1])) {
+                    grid.rows[y].push((l as u32, k as u32));
+                    for x in x0..=x1 {
+                        grid.cells[y * grid.nx + x].push((l as u32, k as u32));
+                    }
+                }
+            }
+        }
+        Some(grid)
+    }
+
+    fn col(&self, x: f64) -> usize {
+        (((x - self.origin[0]) / self.cell).floor().max(0.0) as usize).min(self.nx - 1)
+    }
+
+    fn row_at(&self, y: f64) -> usize {
+        (((y - self.origin[1]) / self.cell).floor().max(0.0) as usize).min(self.ny - 1)
+    }
+
+    /// Edges whose height range can hold `y`, each once.
+    fn row(&self, y: f64) -> &[(u32, u32)] {
+        &self.rows[self.row_at(y)]
+    }
+
+    /// Edges within `EDGE_CELLS_SLACK` of segment `a..b`, some more than once.
+    /// Each column the segment spans gives the rows its height covers there.
+    fn near(&self, a: [f64; 2], b: [f64; 2]) -> impl Iterator<Item = (usize, usize)> + '_ {
+        let s = EDGE_CELLS_SLACK;
+        let (x_lo, x_hi) = (a[0].min(b[0]), a[0].max(b[0]));
+        let y_at = move |x: f64| {
+            let t = ((x - a[0]) / (b[0] - a[0])).clamp(0.0, 1.0);
+            a[1] + (b[1] - a[1]) * t
+        };
+        (self.col(x_lo - s)..=self.col(x_hi + s))
+            .flat_map(move |x| {
+                let (y0, y1) = if (b[0] - a[0]).abs() < 1e-9 {
+                    (a[1].min(b[1]), a[1].max(b[1]))
+                } else {
+                    let left = self.origin[0] + x as f64 * self.cell - s;
+                    let right = left + self.cell + 2.0 * s;
+                    let (ya, yb) = (y_at(left.max(x_lo)), y_at(right.min(x_hi)));
+                    (ya.min(yb), ya.max(yb))
+                };
+                (self.row_at(y0 - s)..=self.row_at(y1 + s)).map(move |y| y * self.nx + x)
+            })
+            .flat_map(move |i| self.cells[i].iter())
+            .map(|&(l, k)| (l as usize, k as usize))
     }
 }
 
@@ -5396,6 +5546,63 @@ mod travel_tests {
         let outline = Outline::new(std::slice::from_ref(&loop_));
         assert!(!outline.route_inside([0.0, 0.0], [4.0, 4.0]));
         assert!(outline.route_inside([2.0, 2.0], [4.0, 4.0]));
+    }
+
+    #[test]
+    fn edge_cells_answer_as_the_full_scan() {
+        // A wavy band on Clipper's 1 µm grid, with enough edges for the grid.
+        let ring = |r: f64, n: usize| -> Loop {
+            (0..n)
+                .map(|i| {
+                    let a = i as f64 / n as f64 * std::f64::consts::TAU;
+                    let rr = r + r * 0.1 * (7.0 * a).sin();
+                    let snap = |v: f64| (v * 1000.0).round() / 1000.0;
+                    [snap(50.0 + rr * a.cos()), snap(40.0 + rr * a.sin())]
+                })
+                .collect()
+        };
+        let mut hole = ring(12.0, 150);
+        hole.reverse();
+        let loops = vec![ring(30.0, 250), hole];
+        let indexed = Outline::new(&loops);
+        let scanned = Outline::new(&loops);
+        assert!(indexed.cells().is_some());
+        assert!(scanned.cells.set(None).is_ok());
+        assert!(indexed.contains([71.0, 40.3]));
+        assert!(!indexed.contains([50.0, 40.3]));
+        assert!(indexed.crosses([50.0, 40.3], [71.0, 40.3]));
+        assert_eq!(
+            indexed.clip_segment([10.0, 40.3], [90.0, 40.3]).len(),
+            2,
+            "a chord through the hole keeps the band on each side"
+        );
+        // Random points, then the outline's own vertices, whose segments run
+        // along edges and through vertices.
+        let mut seed = 7u64;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut pts: Vec<[f64; 2]> = (0..2000)
+            .map(|_| [10.0 + next() * 80.0, next() * 80.0])
+            .collect();
+        pts.extend(loops.iter().flatten().copied());
+        for w in pts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            assert_eq!(indexed.contains(a), scanned.contains(a), "contains {a:?}");
+            assert_eq!(
+                indexed.crosses(a, b),
+                scanned.crosses(a, b),
+                "crosses {a:?} {b:?}"
+            );
+            assert_eq!(
+                indexed.clip_segment(a, b),
+                scanned.clip_segment(a, b),
+                "clip {a:?} {b:?}"
+            );
+        }
     }
 
     #[test]
