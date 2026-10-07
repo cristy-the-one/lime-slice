@@ -104,7 +104,7 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await expect(page.locator("#playReadout")).toContainText("mm/s");
   await page.locator(".stage-tools").screenshot({ path: path.join(out, "p2-spark-playback.png") });
   await page.getByRole("tab", { name: "G-code", exact: true }).click();
-  await expect(page.locator("#gcodePane .line.on")).toBeVisible();
+  await expect(page.locator("#gcodePane .gcode-mark")).toBeVisible();
   await page.locator("#gcodePane").screenshot({ path: path.join(out, "p2-gcode-sync.png") });
   await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });

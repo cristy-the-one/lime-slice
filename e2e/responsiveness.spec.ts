@@ -55,10 +55,10 @@ test("the parked G-code body is fetched once, when the G-code tab first needs it
   await page.waitForTimeout(300);
   expect(fetches).toEqual([]);
   await page.getByRole("tab", { name: "G-code", exact: true }).click();
-  await expect(page.locator("#gcodePane .line").first()).toHaveText(`;LAYER:${layer.index} Z:${layer.z}`);
+  await expect(page.locator("#gcodePane .gcode-text")).toHaveText(body);
   await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.getByRole("tab", { name: "G-code", exact: true }).click();
-  await expect(page.locator("#gcodePane .line").nth(1)).toHaveText(";TYPE:OUTER");
+  await expect(page.locator("#gcodePane .gcode-text")).toHaveText(body);
   expect(fetches).toHaveLength(1);
   expect(fetches[0]).toMatch(/\/api\/gcode\/t1$/);
 });

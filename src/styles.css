@@ -532,11 +532,22 @@ kbd { border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; backg
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: 12px;
   line-height: 1.45;
-  padding: 8px 12px 12px;
+  --gcode-pad: 8px;
+  padding: var(--gcode-pad) 12px 12px;
 }
 .gcode-pane[hidden] { display: none; }
-.gcode-pane .line { white-space: pre; }
-.gcode-pane .line.on { background: color-mix(in srgb, var(--accent) 28%, transparent); }
+.gcode-pane { position: relative; isolation: isolate; }
+.gcode-pane .gcode-text { margin: 0; font: inherit; white-space: pre; }
+.gcode-pane .gcode-mark {
+  position: absolute;
+  z-index: -1;
+  left: 0;
+  right: 0;
+  height: 1lh;
+  top: calc(var(--gcode-pad) + var(--gline) * 1lh);
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  pointer-events: none;
+}
 .stage.tab-gcode .stage-body { display: none; }
 .deferred { font-size: 12px; color: var(--muted); }
 .diff { max-height: 140px; overflow: auto; }

@@ -170,6 +170,6 @@ test("a moved part keeps its split plane and G-code line on the bed", async ({ p
   await expect(page.locator("#banner")).not.toContainText("outside the mesh");
 
   await page.locator("#tabGcode").click();
-  await expect(page.locator("#gcodePane .line")).not.toHaveCount(0);
-  await expect(page.locator("#gcodePane .line.on")).toHaveCount(1);
+  await expect(page.locator("#gcodePane .gcode-text")).toContainText(";LAYER:");
+  await expect(page.locator("#gcodePane .gcode-mark")).toBeVisible();
 });
