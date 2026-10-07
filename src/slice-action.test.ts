@@ -116,6 +116,13 @@ eq("feed sorts object keys and writes no commas", feed({ b: 1, a: true }), '{"a"
 eq("feed keeps array order and a trailing comma", feed([1, 2]), "[1,2,]");
 eq("same bytes, same fingerprint", fnv1aHex(new Uint8Array([1, 2, 3])), fnv1aHex(new Uint8Array([1, 2, 3])));
 check("different bytes, different fingerprint", fnv1aHex(new Uint8Array([1, 2, 3])) !== fnv1aHex(new Uint8Array([1, 2, 4])));
+const ascii = (text: string) => new TextEncoder().encode(text);
+eq("FNV-1a 64 of nothing", fnv1aHex(new Uint8Array()), "cbf29ce484222325");
+eq("FNV-1a 64 of a", fnv1aHex(ascii("a")), "af63dc4c8601ec8c");
+eq("FNV-1a 64 of foobar", fnv1aHex(ascii("foobar")), "85944171f73967e8");
+const megabyte = new Uint8Array(1 << 20);
+for (let i = 0; i < megabyte.length; i++) megabyte[i] = Math.imul(i, 2654435761) >>> 24;
+eq("a megabyte keeps the fingerprint saved projects carry", fnv1aHex(megabyte), "1fd4120eb1b09c60");
 
 eq("no coverage gaps, no warning", coverageWarning([]), null);
 eq("one coverage gap", coverageWarning([{ areaMm2: 16 }]), "Supports leave 1 overhang patch unheld, 16.0 mm² in all.");

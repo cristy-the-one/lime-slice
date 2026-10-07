@@ -192,14 +192,19 @@ export function feed(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
-/** FNV-1a 64-bit, hex. Same bytes in, same fingerprint out. */
+/**
+ * FNV-1a 64-bit, hex. Same bytes in, same fingerprint out.
+ * The hash is two 32-bit halves: a BigInt per byte took 0.4 s on a 24 MB mesh.
+ * The prime is 2^40 + 0x1b3, so a product is h * 0x1b3 plus the low half shifted 8 into the high one.
+ */
 export function fnv1aHex(bytes: Uint8Array): string {
-  let hash = 0xcbf29ce484222325n;
-  const prime = 0x100000001b3n;
-  const mask = 0xffffffffffffffffn;
+  let hi = 0xcbf29ce4;
+  let lo = 0x84222325;
   for (let i = 0; i < bytes.length; i++) {
-    hash ^= BigInt(bytes[i]!);
-    hash = (hash * prime) & mask;
+    lo ^= bytes[i]!;
+    const low = (lo >>> 0) * 0x1b3;
+    hi = (Math.imul(hi, 0x1b3) + Math.floor(low / 0x100000000) + (lo << 8)) >>> 0;
+    lo = low >>> 0;
   }
-  return hash.toString(16).padStart(16, "0");
+  return hi.toString(16).padStart(8, "0") + lo.toString(16).padStart(8, "0");
 }
