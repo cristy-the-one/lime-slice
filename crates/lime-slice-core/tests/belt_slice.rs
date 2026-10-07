@@ -734,3 +734,33 @@ fn belt_arcs_keep_their_radius_and_direction() {
         );
     }
 }
+
+#[test]
+fn the_end_move_carries_the_part_on_the_way_it_went() {
+    for (axis, word, dir) in [("z", 'Z', 1), ("y", 'Y', -1)] {
+        let mut spec = belt(45.0, axis, 1, 5.0);
+        spec["direction"] = json!(dir);
+        let req = request(
+            &box_stl(8.0, 8.0, 1.6),
+            "box.stl",
+            json!({ "belt": spec, "includePreview": false }),
+        );
+        let gcode = slice_request(&req, Job::default()).unwrap().gcode;
+        let zs = layer_zs(&gcode);
+        let last = *zs.last().unwrap();
+        let tail = &gcode[gcode.rfind(";LAYER:").unwrap()..];
+        let end = tail
+            .lines()
+            .take_while(|line| *line != "M106 S0")
+            .filter(|line| line.starts_with("G1 ") && line.split_whitespace().count() == 3)
+            .filter_map(|line| gcode_word(line, word))
+            .last()
+            .unwrap();
+        assert_eq!(
+            (end - last).signum(),
+            f64::from(dir),
+            "{axis}: the last layer is at {last}, the end move goes to {end}"
+        );
+        assert!(((end - last).abs() - 10.0).abs() < 1e-6, "{axis}: {last} -> {end}");
+    }
+}
