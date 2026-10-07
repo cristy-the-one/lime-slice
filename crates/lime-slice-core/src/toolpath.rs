@@ -1186,6 +1186,7 @@ fn inradius(loops: &[Loop], cap: f64) -> f64 {
     lo
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_variable_feature(
     paths: &mut Vec<Extrusion>,
     contours: &[Loop],
