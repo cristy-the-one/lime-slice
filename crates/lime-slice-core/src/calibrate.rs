@@ -949,6 +949,61 @@ mod tests {
             .collect()
     }
 
+    /// The command lines after `;LAYER:{n} `, up to the next layer.
+    fn layer_lines(gcode: &str, n: usize) -> Vec<&str> {
+        gcode
+            .lines()
+            .skip_while(|l| !l.starts_with(&format!(";LAYER:{n} ")))
+            .skip(1)
+            .take_while(|l| !l.starts_with(";LAYER:"))
+            .collect()
+    }
+
+    #[test]
+    fn towers_ramp_the_fan_like_a_slice() {
+        let towers = [
+            ("pa", pressure_advance_tower(&PaCalib::default()).unwrap().gcode),
+            ("flow", flow_tower(&FlowCalib::default()).unwrap().gcode),
+            ("temp", temperature_tower(&TempCalib::default()).unwrap().gcode),
+            ("retract", retract_tower(&RetractCalib::default()).unwrap().gcode),
+        ];
+        for (name, gcode) in &towers {
+            assert!(!layer_lines(gcode, 0).iter().any(|l| l.starts_with("M106 S") && *l != "M106 S0"), "{name}: fan on layer 0");
+            assert!(layer_lines(gcode, 1).contains(&"M106 S128"), "{name}: layer 1 is not at half fan");
+            assert!(layer_lines(gcode, 2).contains(&"M106 S255"), "{name}: layer 2 is not at full fan");
+            assert!(gcode.contains("M106 S0
+M104 S0
+M140 S0
+"), "{name}: fan left on at the end");
+        }
+    }
+
+    #[test]
+    fn the_temperature_tower_waits_with_the_nozzle_off_the_part() {
+        let out = temperature_tower(&TempCalib::default()).unwrap();
+        let body = &out.gcode[out.gcode.find("G28").unwrap()..];
+        let mut z = 0.0;
+        let mut waits = 0;
+        let mut top = 0.0_f64;
+        for line in body.lines() {
+            if let Some(v) = line
+                .strip_prefix("G1 ")
+                .and_then(|m| m.split_whitespace().find_map(|w| w.strip_prefix('Z')))
+            {
+                z = v.parse().unwrap();
+            }
+            if line.starts_with("G1 ") && line.contains(" E") && line.contains(" X") {
+                top = top.max(z);
+            }
+            // The first band waits before anything is printed.
+            if line.starts_with("M109 ") && top > 0.0 {
+                waits += 1;
+                assert!(z >= top + 2.0, "M109 at Z{z} over a tower printed to Z{top}");
+            }
+        }
+        assert!(waits > 0, "no wait over the printed tower");
+    }
+
     #[test]
     fn a_printer_slower_than_10_mm_s_at_the_bead_still_gets_towers() {
         // 0.5 mm^3/s over a 0.45 x 0.2 mm bead caps the feed at 5.6 mm/s.
