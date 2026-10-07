@@ -352,15 +352,10 @@ fn floor_supports_land_on_the_belt() {
         "a support bead went through the belt, lab z {lowest}"
     );
 
-    let mut edited = body.clone();
+    let mut edited = body;
     edited["supportEdits"] = json!([{ "kind": "prune", "sites": [{ "xy": [1.0, 1.0], "z": 0.2 }] }]);
     let err = slice_request(&serde_json::from_value(edited).unwrap(), Job::default()).unwrap_err();
     assert!(err.contains("support edits"), "{err}");
-
-    let mut rafted = body;
-    rafted["belt"]["raftLayers"] = json!(2);
-    let err = slice_request(&serde_json::from_value(rafted).unwrap(), Job::default()).unwrap_err();
-    assert!(err.contains("belt.floorSupports"), "{err}");
 }
 
 #[test]
@@ -388,7 +383,7 @@ fn seam_on_the_belt_edge_is_opt_in() {
     let hex: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
     assert_eq!(
         hex,
-        "b4542d6f0da4d05ceaf9c6bf3f766a99e684c12330472d5dffeb7c5ad6bf5baf"
+        "dcdd642a286d9d4ffbcb1163bb4204ced4523944ae27558e4f4daf9e097f3a83"
     );
 
     let mut on_belt = aligned.clone();
@@ -499,7 +494,7 @@ fn an_omitted_belt_is_absent_from_the_request_json() {
 }
 
 #[test]
-fn a_belt_raft_is_opt_in_and_prints_before_the_part() {
+fn a_belt_raft_is_refused_until_it_lies_on_the_belt() {
     let stl = box_stl(10.0, 10.0, 2.0);
     let off = request(
         &stl,
@@ -514,14 +509,13 @@ fn a_belt_raft_is_opt_in_and_prints_before_the_part() {
         json!({ "belt": raft, "includePreview": false }),
     );
     let off_g = slice_request(&off, Job::default()).unwrap();
-    let on_g = slice_request(&on, Job::default()).unwrap();
     assert!(off_g.sanity.ok, "{:?}", off_g.sanity.notes);
-    assert!(on_g.sanity.ok, "{:?}", on_g.sanity.notes);
     assert!(!off_g.gcode.contains("belt raft"));
-    assert!(on_g.gcode.contains("; belt raft 2 layers\n"));
-    assert_eq!(layer_zs(&on_g.gcode).len(), layer_zs(&off_g.gcode).len() + 2);
-    let first = on_g.gcode.split(";LAYER:1").next().unwrap();
-    assert!(first.contains("TYPE:SOLID"), "the pad fills the first layer");
+    assert_eq!(
+        slice_request(&on, Job::default()).unwrap_err(),
+        "belt.raftLayers is not available yet: the pad is laid in the nozzle plane, \
+         so half of it would print below the belt"
+    );
     let bad = request(
         &stl,
         "box.stl",
@@ -534,9 +528,8 @@ fn a_belt_raft_is_opt_in_and_prints_before_the_part() {
     );
 }
 
-/// Each extruded endpoint of a belt file's part, put back on the part as
-/// `[across, along the belt, height]`, one list per layer. The skirt is not
-/// part of the part. The nozzle is
+/// Each extruded endpoint of a belt file, put back on the part as
+/// `[across, along the belt, height]`, one list per layer. The nozzle is
 /// `gantry * sin α` above the belt and `gantry * cos α` behind the line where
 /// its plane meets the belt.
 fn part_points(
@@ -550,14 +543,10 @@ fn part_points(
     let across = if belt_axis == 'X' { 'Y' } else { 'X' };
     let (mut b, mut u, mut x) = (0.0, 0.0, 0.0);
     let mut layers: Vec<Vec<[f64; 3]>> = Vec::new();
-    let mut skirt = false;
     for line in gcode.lines() {
         if line.starts_with(";LAYER:") {
             layers.push(Vec::new());
             continue;
-        }
-        if let Some(kind) = line.strip_prefix("; TYPE:") {
-            skirt = kind == "SKIRT";
         }
         if !(line.starts_with("G1 ") || line.starts_with("G2 ") || line.starts_with("G3 ")) {
             continue;
@@ -566,9 +555,7 @@ fn part_points(
         u = gcode_word(line, gantry_axis).unwrap_or(u);
         x = gcode_word(line, across).unwrap_or(x);
         let moved = gcode_word(line, across).is_some() || gcode_word(line, gantry_axis).is_some();
-        if let (Some(layer), true, false, Some(_)) =
-            (layers.last_mut(), moved, skirt, gcode_word(line, 'E'))
-        {
+        if let (Some(layer), true, Some(_)) = (layers.last_mut(), moved, gcode_word(line, 'E')) {
             layer.push([x, b * dir - u * c, u * s]);
         }
     }
@@ -596,6 +583,10 @@ fn a_belt_cube_prints_as_a_cube() {
         );
         let response = slice_request(&req, Job::default()).unwrap();
         assert!(response.sanity.ok, "{:?}", response.sanity.notes);
+        assert!(
+            !response.gcode.contains("; TYPE:SKIRT"),
+            "{axis}: a skirt around the first layer crosses the belt line"
+        );
         let layers = part_points(&response.gcode, 45.0, belt_axis, gantry_axis, dir);
         let all: Vec<[f64; 3]> = layers.concat();
         let (first_lo, first_hi) = span(&layers[0], 2);

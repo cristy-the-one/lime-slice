@@ -140,6 +140,13 @@ impl Belt {
                 spec.raft_layers
             ));
         }
+        if spec.raft_layers > 0 {
+            return Err(
+                "belt.raftLayers is not available yet: the pad is laid in the nozzle plane, \
+                 so half of it would print below the belt"
+                    .into(),
+            );
+        }
         let rad = spec.angle_deg.to_radians();
         Ok(Self {
             angle_deg: spec.angle_deg,

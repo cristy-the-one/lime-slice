@@ -339,6 +339,8 @@ pub struct SliceSettings {
     pub retract_length: Option<f64>,
     /// `None` keeps the 30 mm/s retract feed.
     pub retract_speed: Option<f64>,
+    /// Off on a belt, where an outward loop around the first layer crosses the belt line.
+    pub skirt: bool,
     pub scarf_seam: ScarfSeam,
     pub scarf_length: f64,
     pub scarf_steps: u32,
@@ -414,6 +416,7 @@ impl Default for SliceSettings {
             flow: 1.0,
             retract_length: None,
             retract_speed: None,
+            skirt: true,
             scarf_seam: ScarfSeam::Blend,
             scarf_length: default_scarf_length(),
             scarf_steps: default_scarf_steps(),
@@ -510,6 +513,7 @@ impl SliceSettings {
             flow: req.flow,
             retract_length: req.retract_length,
             retract_speed: req.retract_speed,
+            skirt: true,
             scarf_seam: if req.classic {
                 ScarfSeam::Off
             } else {
@@ -1421,6 +1425,7 @@ fn prepare_belt(
         // the belt, so either one would walk the part between beads.
         object.settings.z_hop = ZHopMode::Off;
         object.settings.scarf_seam = ScarfSeam::Off;
+        object.settings.skirt = false;
         // Blend would hide the seam wherever the strategy likes. The belt edge
         // is the back of the nozzle plane, which is Rear after the rotation.
         // An explicit seam stays unless the printer asks for the belt edge.
@@ -1433,6 +1438,7 @@ fn prepare_belt(
     }
     settings.z_hop = ZHopMode::Off;
     settings.scarf_seam = ScarfSeam::Off;
+    settings.skirt = false;
     let extra = f64::from(belt.copies - 1) * belt.stride(extent);
     if extra > 0.0 {
         for (min, max) in &mut lab_bounds {
@@ -5511,7 +5517,7 @@ fn skirt_paths(
         .map(|s| (s.sparse.as_slice(), s.interface.as_slice()))
         .unwrap_or((&[], &[]));
     let outline = boolean_union(contours, &boolean_union(sparse, interface));
-    if outline.is_empty() {
+    if outline.is_empty() || !settings.skirt {
         return Vec::new();
     }
     let strategy = match blend {
