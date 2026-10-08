@@ -47,6 +47,44 @@ test("an object's walls are omitted until they are set", async ({ page }) => {
   expect(bodies[1]?.objects?.[0]?.settings).toEqual({ walls: 3, infill: 0.8 });
 });
 
+for (const { id, key, typed, want } of [
+  { id: "#objInfill", key: "infill", typed: "80", want: 0.8 },
+  { id: "#objWalls", key: "walls", typed: "3", want: 3 },
+  { id: "#objSpeed", key: "speed", typed: "120", want: 120 },
+] as const) {
+  test(`a slice reply keeps ${id} typed while it was on the way`, async ({ page }) => {
+    await quiet(page);
+    const bodies: { objects?: { settings?: Record<string, number> }[] }[] = [];
+    let release = () => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    await page.route("**/api/slice", async (route) => {
+      bodies.push(route.request().postDataJSON());
+      if (bodies.length === 2) await held;
+      await route.fulfill({ json: cube });
+    });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/");
+    await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
+    await expect(page.locator("#status")).toContainText("loaded");
+    await page.locator("#slice").click();
+    await expect.poll(() => bodies.length).toBe(1);
+
+    await page.locator("#slice").click();
+    await expect.poll(() => bodies.length).toBe(2);
+    await page.locator(id).fill(typed);
+    release();
+    await expect(page.locator("#cancel")).toBeDisabled();
+    await expect(page.locator(id)).toBeFocused();
+    await expect(page.locator(id)).toHaveValue(typed);
+    await page.locator(id).blur();
+    await expect(page.locator(id)).toHaveValue(typed);
+
+    await page.locator("#slice").click();
+    await expect.poll(() => bodies.length).toBe(3);
+    expect(bodies[2]?.objects?.[0]?.settings?.[key]).toBe(want);
+  });
+}
+
 test.describe("object overrides stay in the sheet", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
