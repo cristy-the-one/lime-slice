@@ -86,9 +86,9 @@ for (const { id, axis } of [{ id: "#placeX", axis: 0 }, { id: "#placeY", axis: 1
     release();
     await expect(page.locator("#cancel")).toBeDisabled();
     await expect(page.locator(id)).toBeFocused();
-    await expect(page.locator(id)).toHaveValue(String(before + 12));
+    await expect.poll(async () => Number(await page.locator(id).inputValue())).toBe(before + 12);
     await page.locator(id).blur();
-    await expect(page.locator(id)).toHaveValue(String(before + 12));
+    await expect.poll(async () => Number(await page.locator(id).inputValue())).toBe(before + 12);
 
     await page.locator("#slice").click();
     await expect.poll(() => calls.length).toBeGreaterThanOrEqual(3);

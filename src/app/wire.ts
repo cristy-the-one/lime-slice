@@ -1,6 +1,5 @@
 import { type ColorMode } from "../colors";
 import { layFlatMatrix, matMul, rotX, rotY, rotZ } from "../mesh-place";
-import { setSelectedOverride } from "../plate";
 import { addPlateObject, arrangePlate, removePlateObject, selectPlateObject } from "./plate-actions";
 import { DEFAULT_PRESET, readPresets, writePresets } from "../presets";
 import { profileJson } from "../profiles";
@@ -13,7 +12,7 @@ import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCa
 import { adoptBytes, export3mf, exportGcode, fail, loadNamed, place, saveText, setPlaceCenter, withPrinterGcode } from "./files";
 import { mountProjectFiles, saveCurrentProject } from "./project-io";
 import { pickProjectFile } from "../platform";
-import { applyPreset, clearSettingsSearch, closedGroups, currentPreset, focusSettingsSearch, onBlend, noteSequential, onSettings, renderChrome, syncFindStuck, touch } from "./settings";
+import { applyPreset, clearSettingsSearch, closedGroups, currentPreset, focusSettingsSearch, noteObjectOverride, noteSequential, onBlend, onSettings, renderChrome, syncFindStuck, touch } from "./settings";
 import { noteEdit, redoUserEdit, undoUserEdit } from "./history";
 import {
   applyNamedProfile,
@@ -84,7 +83,7 @@ export function wireApp() {
       return;
     }
     if (target.id === "objInfill" || target.id === "objWalls" || target.id === "objSpeed") {
-      noteObjectOverride(target.id, (target as HTMLInputElement).value);
+      if (noteObjectOverride(target.id, (target as HTMLInputElement).value)) touch();
       return;
     }
     if (target.id === "seqclear" || target.id === "seqgantry") {
@@ -570,29 +569,4 @@ export function wireApp() {
 
 function isBeltField(target: HTMLElement): boolean {
   return target.id === "machineKind" || target.id.startsWith("belt");
-}
-
-function noteObjectOverride(id: "objInfill" | "objWalls" | "objSpeed", raw: string) {
-  const text = raw.trim();
-  let value: number | undefined;
-  if (text !== "") {
-    const n = Number(text);
-    if (!Number.isFinite(n)) return;
-    if (id === "objInfill") {
-      if (n < 0 || n > 100) return;
-      value = Math.round(n) / 100;
-    } else if (id === "objWalls") {
-      const walls = Math.round(n);
-      if (walls < 1 || walls > 12) return;
-      value = walls;
-    } else if (n <= 0 || n > 1000) {
-      return;
-    } else {
-      value = n;
-    }
-  }
-  noteEdit();
-  const key = id === "objInfill" ? "infill" : id === "objWalls" ? "walls" : "speed";
-  state.plate = setSelectedOverride(state.plate, key, value);
-  touch();
 }
