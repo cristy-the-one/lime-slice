@@ -100,7 +100,12 @@ export function currentWeight() {
 
 export function renderChrome() {
   const typing = typedField();
-  if (typing && commitTypedField(typing)) markProjectDirty();
+  // The later change finds the value stored and does nothing, so the auto
+  // slice is queued here, as `touch` would.
+  if (typing && commitTypedField(typing)) {
+    markProjectDirty();
+    fx.scheduleAuto();
+  }
   const mesh = state.mesh;
   const result = state.result;
   const find = document.querySelector<HTMLInputElement>("#find");
