@@ -58,6 +58,45 @@ test("an X/Y move slides the preview, re-emits by itself, and the reply offset r
   expect(calls).toHaveLength(2);
 });
 
+for (const { id, axis } of [{ id: "#placeX", axis: 0 }, { id: "#placeY", axis: 1 }] as const) {
+  test(`a slice reply keeps ${id} typed while it was on the way`, async ({ page }) => {
+    await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+    await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
+    const calls: { pose?: { translation: number[] } }[] = [];
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route("**/api/slice", async (route) => {
+      calls.push(route.request().postDataJSON());
+      if (calls.length === 2) await held;
+      await route.fulfill({ json: firstSlice() });
+    });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/");
+    await page.getByText("Samples", { exact: true }).click();
+    await page.getByRole("button", { name: "20 mm cube" }).click();
+    await expect(page.locator(id)).not.toHaveValue("");
+    await page.locator("#slice").click();
+    await expect.poll(() => calls.length).toBe(1);
+    await expect(page.locator("#export")).toBeEnabled();
+
+    const before = Number(await page.locator(id).inputValue());
+    await page.locator("#slice").click();
+    await expect.poll(() => calls.length).toBe(2);
+    await page.locator(id).fill(String(before + 12));
+    release();
+    await expect(page.locator("#cancel")).toBeDisabled();
+    await expect(page.locator(id)).toBeFocused();
+    await expect.poll(async () => Number(await page.locator(id).inputValue())).toBe(before + 12);
+    await page.locator(id).blur();
+    await expect.poll(async () => Number(await page.locator(id).inputValue())).toBe(before + 12);
+
+    await page.locator("#slice").click();
+    await expect.poll(() => calls.length).toBeGreaterThanOrEqual(3);
+    const last = calls.at(-1)!.pose!.translation[axis];
+    expect(last - calls[0]!.pose!.translation[axis]).toBeCloseTo(12, 3);
+  });
+}
+
 test("rotation and scale still wait for Slice when auto-slice is off", async ({ page }) => {
   let calls = 0;
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));

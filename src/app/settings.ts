@@ -9,7 +9,7 @@ import { sliceBusyStatus, staleSliceCopy, cacheStatus, coverageWarning, inAirWar
 import { applySliceProgress, currentSliceProgress } from "../ui/slice-progress";
 import { filamentCost, filamentGrams, groupFeatures } from "../estimate";
 import { offBed } from "../mesh-place";
-import { boundsSize, overlapPairs, placeObject, selectedObject, settingsEmpty } from "../plate";
+import { boundsSize, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty } from "../plate";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys, readPresets, diffPreset } from "../presets";
 import { loadProfile, type PrinterProfile, saveProfile } from "../profiles";
 import { noteAdvance, noteFlow, noteGcode, noteNozzle, noteRetract } from "./machine-actions";
@@ -99,10 +99,12 @@ export function currentWeight() {
 }
 
 export function renderChrome() {
-  const typing = typedSequentialField();
-  if (typing && noteSequential(typing.id, typing.value)) {
-    touch();
-    return;
+  const typing = typedField();
+  // The later change finds the value stored and does nothing, so the auto
+  // slice is queued here, as `touch` would.
+  if (typing && commitTypedField(typing)) {
+    markProjectDirty();
+    fx.scheduleAuto();
   }
   const mesh = state.mesh;
   const result = state.result;
@@ -604,11 +606,36 @@ const SEQUENTIAL = {
 } as const;
 type SequentialId = keyof typeof SEQUENTIAL;
 
-/** These commit on `change`, so a re-render while one has focus must commit it first and give focus back. */
-function typedSequentialField(): { id: SequentialId; value: string } | null {
+const TYPED_FIELDS = ["seqclear", "seqgantry", "placeX", "placeY", "objInfill", "objWalls", "objSpeed"];
+
+/** These commit on `change`, so a re-render while one holds typed text must commit it first and give focus back. */
+function typedField(): HTMLInputElement | null {
   const el = document.activeElement;
-  if (!(el instanceof HTMLInputElement) || (el.id !== "seqclear" && el.id !== "seqgantry")) return null;
-  return { id: el.id, value: el.value };
+  if (!(el instanceof HTMLInputElement) || !TYPED_FIELDS.includes(el.id)) return null;
+  return el.value === el.defaultValue ? null : el;
+}
+
+/** Commits a typed field the way its change handler does. False when nothing was stored. */
+function commitTypedField(el: HTMLInputElement): boolean {
+  switch (el.id) {
+    case "seqclear":
+    case "seqgantry":
+      return noteSequential(el.id, el.value);
+    case "placeX":
+    case "placeY": {
+      const mm = Number(el.value);
+      if (!Number.isFinite(mm)) return false;
+      noteEdit();
+      fx.setPlaceCenter(el.id === "placeX" ? "x" : "y", mm);
+      return true;
+    }
+    case "objInfill":
+    case "objWalls":
+    case "objSpeed":
+      return noteObjectOverride(el.id, el.value);
+    default:
+      return false;
+  }
 }
 
 /** Empty is 0, the engine's default. A value outside `0..max` is ignored. */
@@ -627,6 +654,33 @@ export function noteSequential(id: SequentialId, raw: string): boolean {
   if (value === undefined || value === state[key]) return false;
   noteEdit();
   state[key] = value;
+  return true;
+}
+
+/** Stores an object's infill, walls or speed override. False when it is unreadable or already stored. */
+export function noteObjectOverride(id: "objInfill" | "objWalls" | "objSpeed", raw: string): boolean {
+  const text = raw.trim();
+  let value: number | undefined;
+  if (text !== "") {
+    const n = Number(text);
+    if (!Number.isFinite(n)) return false;
+    if (id === "objInfill") {
+      if (n < 0 || n > 100) return false;
+      value = Math.round(n) / 100;
+    } else if (id === "objWalls") {
+      const walls = Math.round(n);
+      if (walls < 1 || walls > 12) return false;
+      value = walls;
+    } else if (n <= 0 || n > 1000) {
+      return false;
+    } else {
+      value = n;
+    }
+  }
+  const key = id === "objInfill" ? "infill" : id === "objWalls" ? "walls" : "speed";
+  if (!state.plate.selectedId || selectedObject(state.plate)?.settings[key] === value) return false;
+  noteEdit();
+  state.plate = setSelectedOverride(state.plate, key, value);
   return true;
 }
 
