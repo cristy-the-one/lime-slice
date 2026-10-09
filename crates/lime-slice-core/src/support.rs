@@ -377,6 +377,7 @@ impl Supports {
             bands,
             solid,
             lean_of(opts),
+            opts.floor,
             watch,
             opts.job,
         ) {
@@ -1200,12 +1201,14 @@ const MIN_DISK_R: f64 = 0.3;
 /// reads layer `i - 1` and writes only its own part of layer `i`, disks or
 /// interface, so the two never see each other's change. Layers under `from`
 /// must already be final.
+#[allow(clippy::too_many_arguments)]
 fn project(
     layers: &mut [SupportLayer],
     from: usize,
     bands: &[LayerBand],
     contours: &[Vec<Loop>],
     lean: f64,
+    floor: Option<FloorPlane>,
     watch: &crate::progress::Watch,
     job: crate::cancel::Job,
 ) -> bool {
@@ -1222,13 +1225,15 @@ fn project(
             bands,
             contours,
             lean,
+            floor,
             &mut near,
         );
     }
     true
 }
 
-/// Stand layer `i` on the finished layer below it.
+/// Stand layer `i` on the finished layer below it, or on the belt.
+#[allow(clippy::too_many_arguments)]
 fn stand(
     layer: &mut SupportLayer,
     below: &SupportLayer,
@@ -1236,11 +1241,13 @@ fn stand(
     bands: &[LayerBand],
     contours: &[Vec<Loop>],
     lean: f64,
+    floor: Option<FloorPlane>,
     near: &mut Vec<usize>,
 ) {
     let part = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
     let reach = bands[i].height * lean + BEAD_OVERHANG_MM;
-    settle_disks(&mut layer.disks, &below.disks, part, reach, near);
+    let belt = floor.map(|floor| floor.y_max(bands[i - 1].z));
+    settle_disks(&mut layer.disks, &below.disks, part, belt, reach, near);
     // A trunk that cannot stand is dropped above. The interface that was
     // waiting on it would otherwise stay as a raft in the air.
     drop_unfooted_interface(&mut layer.interface, below, part);
@@ -1257,6 +1264,7 @@ fn settle_disks(
     disks: &mut Vec<Disk>,
     below: &[Disk],
     part: &[Loop],
+    belt: Option<f64>,
     reach: f64,
     near: &mut Vec<usize>,
 ) {
@@ -1272,6 +1280,10 @@ fn settle_disks(
     }
     disks.retain_mut(|d| {
         let c = d.xy;
+        // The walk lands a trunk where the belt is under its centre.
+        if belt.is_some_and(|y_max| c[1] > y_max) {
+            return true;
+        }
         grid.near(c, span, near);
         let mut room = near
             .iter()
@@ -3009,6 +3021,7 @@ mod tests {
             &bands,
             &[Vec::new(), Vec::new()],
             0.8,
+            None,
             &crate::progress::Watch::idle(),
             crate::cancel::Job::default(),
         );
@@ -3387,6 +3400,7 @@ mod tests {
             &bands,
             &contours,
             lean,
+            None,
             &crate::progress::Watch::idle(),
             crate::cancel::Job::default(),
         );
@@ -3400,6 +3414,7 @@ mod tests {
                 &mut upper[0].disks,
                 &lower[i - 1].disks,
                 part,
+                None,
                 reach,
                 &mut near,
             );

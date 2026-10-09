@@ -358,6 +358,187 @@ fn floor_supports_land_on_the_belt() {
     assert!(err.contains("support edits"), "{err}");
 }
 
+/// A tower with an arm reaching up the belt, `[across, along, height]` in mm.
+/// The arm's tip meets the nozzle plane before the tower's foot does, 12 mm
+/// over the belt, so its supports have to grow below the first part layer.
+fn tower_with_arm() -> String {
+    let outline: [[f64; 2]; 8] = [
+        [0.0, 0.0],
+        [10.0, 0.0],
+        [10.0, 12.0],
+        [10.0, 20.0],
+        [0.0, 20.0],
+        [-15.0, 20.0],
+        [-15.0, 12.0],
+        [0.0, 12.0],
+    ];
+    let at = |x: f64, [y, z]: [f64; 2]| [x, y, z];
+    let mut faces = Vec::new();
+    for k in 0..outline.len() {
+        let (p, q) = (outline[k], outline[(k + 1) % outline.len()]);
+        faces.push([at(0.0, p), at(0.0, q), at(10.0, p)]);
+        faces.push([at(0.0, q), at(10.0, q), at(10.0, p)]);
+    }
+    // The reflex corner sees the whole outline, so a fan from it covers the caps.
+    let hub = outline[7];
+    for k in 0..6 {
+        let (p, q) = (outline[k], outline[k + 1]);
+        faces.push([at(10.0, hub), at(10.0, p), at(10.0, q)]);
+        faces.push([at(0.0, hub), at(0.0, q), at(0.0, p)]);
+    }
+    let mut out = String::from("solid arm\n");
+    for face in faces {
+        out.push_str("facet normal 0 0 0\nouter loop\n");
+        for v in face {
+            out.push_str(&format!("vertex {} {} {}\n", v[0], v[1], v[2]));
+        }
+        out.push_str("endloop\nendfacet\n");
+    }
+    out.push_str("endsolid arm\n");
+    out
+}
+
+/// How high each support trunk of a Z-axis, +1 belt file ends over the belt:
+/// the lowest bead of each patch of trunk beads with no support under them
+/// within a cell, and no part near. Layers are compared in the slice frame,
+/// where a trunk stands straight.
+fn trunk_feet(gcode: &str, angle: f64) -> Vec<f64> {
+    const CELL: f64 = 0.5;
+    type Cell = (i64, i64);
+    type Cells = std::collections::HashSet<Cell>;
+    let (s, c) = (angle.to_radians().sin(), angle.to_radians().cos());
+    let cell = |p: [f64; 3]| {
+        let y = p[1] * c - p[2] * s;
+        ((p[0] / CELL).floor() as i64, (y / CELL).floor() as i64)
+    };
+    // Per layer: trunk samples, and the cells of any support and of the part.
+    let mut layers: Vec<(Vec<[f64; 3]>, Cells, Cells)> = Vec::new();
+    let (mut b, mut u, mut x) = (0.0, 0.0, 0.0);
+    let mut kind = "";
+    for line in gcode.lines() {
+        if line.starts_with(";LAYER:") {
+            layers.push(Default::default());
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("; TYPE:") {
+            kind = rest.trim();
+            continue;
+        }
+        if !(line.starts_with("G1 ") || line.starts_with("G2 ") || line.starts_with("G3 ")) {
+            continue;
+        }
+        let from = [x, b - u * c, u * s];
+        b = gcode_word(line, 'Z').unwrap_or(b);
+        u = gcode_word(line, 'Y').unwrap_or(u);
+        x = gcode_word(line, 'X').unwrap_or(x);
+        let to = [x, b - u * c, u * s];
+        let moved = gcode_word(line, 'X').is_some() || gcode_word(line, 'Y').is_some();
+        let Some((trunk, support, part)) = layers.last_mut() else {
+            continue;
+        };
+        if !moved || gcode_word(line, 'E').is_none() {
+            continue;
+        }
+        let len = (to[0] - from[0])
+            .hypot(to[1] - from[1])
+            .hypot(to[2] - from[2]);
+        let n = (len / 0.25).ceil();
+        for k in 0..=(n as usize) {
+            let t = k as f64 / n.max(1.0);
+            let p = [0, 1, 2].map(|i| from[i] + (to[i] - from[i]) * t);
+            if kind == "SUPPORT" {
+                trunk.push(p);
+            }
+            if kind.starts_with("SUPPORT") {
+                support.insert(cell(p));
+            } else {
+                part.insert(cell(p));
+            }
+        }
+    }
+    let near = |cells: &Cells, (i, j): Cell, r: i64| {
+        (-r..=r).any(|di| (-r..=r).any(|dj| cells.contains(&(i + di, j + dj))))
+    };
+    // Lowest bead height of every unheld cell, by layer and cell.
+    let mut ends: std::collections::HashMap<(usize, Cell), f64> = Default::default();
+    for (k, (trunk, _, _)) in layers.iter().enumerate() {
+        for &p in trunk {
+            let at = cell(p);
+            let held = k > 0 && {
+                let (_, support, part) = &layers[k - 1];
+                near(support, at, 1) || near(part, at, 3)
+            };
+            if !held {
+                let z = ends.entry((k, at)).or_insert(f64::INFINITY);
+                *z = z.min(p[2]);
+            }
+        }
+    }
+    // One foot is the unheld cells that touch, over a couple of layers.
+    let mut feet = Vec::new();
+    let mut left: Vec<(usize, Cell)> = ends.keys().copied().collect();
+    left.sort();
+    let mut seen = std::collections::HashSet::new();
+    for start in left {
+        if !seen.insert(start) {
+            continue;
+        }
+        let (mut stack, mut low) = (vec![start], f64::INFINITY);
+        while let Some((k, (i, j))) = stack.pop() {
+            low = low.min(ends[&(k, (i, j))]);
+            for dk in k.saturating_sub(2)..=k + 2 {
+                for di in -1..=1 {
+                    for dj in -1..=1 {
+                        let next = (dk, (i + di, j + dj));
+                        if ends.contains_key(&next) && seen.insert(next) {
+                            stack.push(next);
+                        }
+                    }
+                }
+            }
+        }
+        feet.push(low);
+    }
+    feet
+}
+
+#[test]
+fn floor_support_trunks_stand_on_the_belt() {
+    let mut spec = belt(45.0, "z", 1, 5.0);
+    spec["floorSupports"] = json!(true);
+    let req = request(
+        &tower_with_arm(),
+        "arm.stl",
+        json!({
+            "belt": spec,
+            "supports": true,
+            "supportStyle": "tree",
+            "supportAngle": 60.0,
+            "includePreview": false,
+        }),
+    );
+    let sliced = slice_request(&req, Job::default()).unwrap();
+    assert!(sliced.sanity.ok, "{:?}", sliced.sanity.notes);
+    let feet = trunk_feet(&sliced.gcode, 45.0);
+    assert!(!feet.is_empty(), "the arm grew no trunks");
+    let high: Vec<String> = feet
+        .iter()
+        .filter(|&&z| z > 0.3)
+        .map(|z| format!("{z:.2}"))
+        .collect();
+    assert!(
+        high.is_empty(),
+        "{} of {} trunks end over the belt, at {} mm",
+        high.len(),
+        feet.len(),
+        high.join(", ")
+    );
+    // The belt run starts with the lowest foot, as layer 0, one layer in.
+    let gcode = &sliced.gcode;
+    let first = gcode.lines().find(|l| l.starts_with(";LAYER:")).unwrap();
+    assert!(first.starts_with(";LAYER:0 Z:0.283 "), "{first}");
+}
+
 #[test]
 fn seam_on_the_belt_edge_is_opt_in() {
     use sha2::{Digest, Sha256};
