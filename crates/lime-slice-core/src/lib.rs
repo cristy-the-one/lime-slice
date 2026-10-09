@@ -45,7 +45,7 @@ pub use progress::{fraction, Progress, Stage, Status, Watch};
 pub use slice::{
     contour_times, keep_support_bases, outline_tolerance_mm, pareto_estimates, slice_configured,
     slice_configured_watched, slice_request, slice_request_watched, slice_with_baseline,
-    BlendScore, CompareEstimate, EditOutcomeView, FeatureEstimate, HeightRangeSpec,
+    BeltCopies, BlendScore, CompareEstimate, EditOutcomeView, FeatureEstimate, HeightRangeSpec,
     ModifierVolumeSpec, PaintDiskSpec, ParetoPoint, PreviewLayer, PrintEstimate, RigidPose,
     SiteSpec, SliceRequest, SliceResponse, SliceSettings, SupportEditSpec, VolumeKind,
 };

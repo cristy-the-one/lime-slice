@@ -3,7 +3,8 @@
 //! names the layer it prints on. A prune by the skeleton's sites applies,
 //! reuses the kept stages, and equals a fresh slice. A prune leaves a gap,
 //! drawn on the layer it sits on, and the regrow built from it grows the
-//! supports back. One test, because the kept slices are shared by the whole
+//! supports back. Copies print the planned part again, and the reply says how
+//! far each moves in the reply frame. One test, because the kept slices are shared by the whole
 //! process.
 
 use base64::Engine;
@@ -462,6 +463,7 @@ fn a_belt_skeleton_is_in_the_reply_frame_and_its_prunes_apply() {
     assert_eq!(whole_preview(&fresh, &held), whole_preview(&patched, &held));
 
     regrow_a_gap_on_a_belt();
+    copies_are_the_planned_part_moved_along_the_belt();
 }
 
 /// `slice`, for a request that may be refused.
@@ -638,4 +640,82 @@ fn regrow_a_gap_on_a_belt() {
     let flat_regrown = slice(&flat(json!({"supportEdits": [flat_prune, flat_regrow]})));
     assert_eq!(flat_regrown.support_edits[1].status, EditStatus::Applied);
     assert!(flat_regrown.support_edits[1].changed_layers > 0);
+}
+
+/// A belt's copies are one planned part, emitted again with a belt shift. The
+/// skeleton and the gaps are the first copy's; the reply's `beltCopies` is how
+/// far each later copy sits from it, in the reply frame's Y and in the belt
+/// position a layer's `z` and a knot's `ls` carry. It is the same number.
+fn copies_are_the_planned_part_moved_along_the_belt() {
+    let with_copies = |copies: u32, direction: i32| {
+        let mut req = belt(json!({"includeSkeleton": true}));
+        req["belt"]["copies"] = json!(copies);
+        req["belt"]["direction"] = json!(direction);
+        slice(&req)
+    };
+    for direction in [1, -1] {
+        let one = with_copies(1, direction);
+        let two = with_copies(2, direction);
+        assert!(two.sanity.ok, "{:?}", two.sanity.notes);
+        let copies = two
+            .belt_copies
+            .as_ref()
+            .expect("two copies say their shift");
+        assert_eq!(copies.count, 2);
+        assert_eq!(copies.shift_mm.signum(), f64::from(direction));
+
+        // The planned part is the same, so the overlay's data is the first copy's.
+        assert_eq!(two.skeleton, one.skeleton);
+        assert_eq!(one.layers.len() * 2, two.layers.len());
+        let n = one.layers.len();
+        let shift = copies.shift_mm;
+        // The first layer of a later copy is slowed, so its paths may split.
+        for k in 1..n {
+            let (a, b) = (&two.layers[k], &two.layers[k + n]);
+            assert!(
+                (b.z - a.z - shift).abs() < 1e-6,
+                "layer {k}: z {} then {}, shift {shift}",
+                a.z,
+                b.z
+            );
+            assert_eq!(a.paths.len(), b.paths.len(), "layer {k}");
+            for (p, q) in a.paths.iter().zip(&b.paths) {
+                assert_eq!(p.kind, q.kind);
+                assert_eq!(p.pts.len(), q.pts.len());
+                assert_eq!(p.zs, q.zs, "a copy is the same height in the lab");
+                for (u, v) in p.pts.iter().zip(&q.pts) {
+                    assert!((v[0] - u[0]).abs() < 1e-6, "x is across the belt");
+                    assert!((v[1] - u[1] - shift).abs() < 1e-6, "{u:?} then {v:?}");
+                }
+            }
+        }
+        // The first copy is what one copy draws, layer for layer.
+        for (a, b) in one.layers.iter().zip(&two.layers).skip(1) {
+            assert_eq!(a.z, b.z);
+        }
+
+        // Three copies step by the same shift.
+        let three = with_copies(3, direction);
+        let steps = three.belt_copies.as_ref().unwrap();
+        assert_eq!(steps.count, 3);
+        assert_eq!(steps.shift_mm, shift);
+        let m = three.layers.len() / 3;
+        assert!((three.layers[2 * m + 1].z - three.layers[1].z - 2.0 * shift).abs() < 1e-6);
+
+        // One copy has nothing to say, and nor does a flat bed.
+        assert!(one.belt_copies.is_none());
+        assert!(serde_json::to_value(&one)
+            .unwrap()
+            .get("beltCopies")
+            .is_none());
+    }
+    let level = slice(&flat(json!({"includeSkeleton": true})));
+    assert!(level.belt_copies.is_none());
+    assert!(serde_json::to_value(&level)
+        .unwrap()
+        .get("beltCopies")
+        .is_none());
+    let two = serde_json::to_value(with_copies(2, 1)).unwrap();
+    assert_eq!(two["beltCopies"]["count"], 2);
+    assert!(two["beltCopies"]["shiftMm"].as_f64().unwrap() > 0.0);
 }
