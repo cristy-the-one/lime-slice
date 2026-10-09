@@ -10,6 +10,9 @@ use serde_json::json;
 
 type P = [f64; 3];
 
+/// Cross-section of the 1.75 mm filament the G-code's E values count.
+const FILAMENT_AREA_MM2: f64 = std::f64::consts::PI * 0.875 * 0.875;
+
 fn quad(out: &mut Vec<[P; 3]>, a: P, b: P, c: P, d: P) {
     out.push([a, b, c]);
     out.push([a, c, d]);
@@ -231,6 +234,11 @@ fn solid_strips_of_a_cover_print_along_their_length() {
 struct Travels {
     by_kind: BTreeMap<String, (usize, f64)>,
     seconds: f64,
+    /// All the filament the print takes, mm.
+    filament_mm: f64,
+    /// Solid extruded between Z 10 and 40, mm3, and the layers that holds.
+    mid_solid_mm3: f64,
+    mid_layers: usize,
 }
 
 impl Travels {
@@ -244,8 +252,20 @@ fn travels(belt: bool) -> Travels {
     let mut by_kind: BTreeMap<String, (usize, f64)> = BTreeMap::new();
     let (mut kind, mut x, mut y, mut e) = (String::new(), 0.0f64, 0.0f64, 0.0f64);
     let mut retracts = 0;
+    let (mut layer_z, mut mid_solid_mm3, mut mid_layers) = (0.0, 0.0, 0);
     for line in reply.gcode.lines() {
-        if let Some(rest) = line.strip_prefix("; TYPE:") {
+        if let Some(rest) = line.strip_prefix(";LAYER:") {
+            layer_z = rest
+                .split("Z:")
+                .nth(1)
+                .unwrap()
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap();
+            mid_layers += usize::from((10.0..40.0).contains(&layer_z));
+        } else if let Some(rest) = line.strip_prefix("; TYPE:") {
             kind = rest.trim().to_string();
         } else if line.starts_with("G1") {
             let word = |c: char| {
@@ -263,6 +283,8 @@ fn travels(belt: bool) -> Travels {
                 let row = by_kind.entry(kind.clone()).or_default();
                 row.0 += 1;
                 row.1 += (nx - x).hypot(ny - y);
+            } else if kind == "SOLID" && (10.0..40.0).contains(&layer_z) {
+                mid_solid_mm3 += (ne - e) * FILAMENT_AREA_MM2;
             }
             (x, y, e) = (nx, ny, ne);
         }
@@ -273,13 +295,22 @@ fn travels(belt: bool) -> Travels {
         .iter()
         .find(|f| f.kind == "travel")
         .map_or(0.0, |f| f.seconds);
-    let found = Travels { by_kind, seconds };
+    let found = Travels {
+        by_kind,
+        seconds,
+        filament_mm: reply.estimate.filament_mm,
+        mid_solid_mm3,
+        mid_layers,
+    };
     println!(
-        "belt {belt}: {} travel moves, {:.0} s travel, {retracts} retracts, {:.0} s and {:.1} g in all",
+        "belt {belt}: {} travel moves, {:.0} s travel, {retracts} retracts, {:.0} s and {:.1} g ({:.2} mm) in all, mid solid {:.1} mm3 over {} layers",
         found.moves(),
         found.seconds,
         reply.estimate.seconds,
-        reply.estimate.filament_g
+        reply.estimate.filament_g,
+        found.filament_mm,
+        found.mid_solid_mm3,
+        found.mid_layers
     );
     for (kind, (n, mm)) in &found.by_kind {
         println!("  {kind}: {n} moves, {:.1} m", mm / 1000.0);
@@ -312,5 +343,55 @@ fn gap_fill_of_a_rounded_cover_prints_beside_its_solid() {
         "belt cover: {:.0} s travelling, {} travel moves",
         tilted.seconds,
         tilted.moves()
+    );
+}
+
+/// The area of a 150 x 300 mm rounded box shrunk by `inset` on every side,
+/// its corners 30 mm in radius before the shrink.
+fn rounded_box_mm2(inset: f64) -> f64 {
+    let r = 30.0 - inset;
+    (150.0 - 2.0 * inset) * (300.0 - 2.0 * inset) - (4.0 - std::f64::consts::PI) * r * r
+}
+
+#[test]
+fn solid_in_the_wall_of_a_rounded_cover_follows_the_strip() {
+    // On 4a6d8e1 the strip of each layer was a hundred short rows, all linked
+    // by hops: 41441 solid hops on the flat cover and 34045 on the belt, with
+    // 966 s and 1875 s of travel. Loops along the strip print it in a few.
+    let (before_flat, before_belt) = (41441, 34045);
+    let (flat_mm, belt_mm) = (106907.44, 103488.74);
+    let flat = travels(false);
+    let tilted = travels(true);
+    let hops = |t: &Travels| t.by_kind["SOLID"].0;
+    assert!(
+        hops(&flat) * 3 <= before_flat && hops(&tilted) * 3 <= before_belt,
+        "solid hops: {} flat (was {before_flat}), {} on the belt (was {before_belt})",
+        hops(&flat),
+        hops(&tilted)
+    );
+    assert!(
+        flat.seconds <= 400.0 && tilted.seconds <= 1600.0,
+        "travel: {:.0} s flat (was 966), {:.0} s on the belt (was 1875)",
+        flat.seconds,
+        tilted.seconds
+    );
+    // The strip is filled to its area: the mid layers' solid extrudes the
+    // strip times the layer height. The rows it had overlapped by 12%.
+    let strip = (rounded_box_mm2(0.9) - rounded_box_mm2(2.1)) * 0.2 * flat.mid_layers as f64;
+    assert!(
+        (flat.mid_solid_mm3 / strip - 1.0).abs() <= 0.01,
+        "flat mid layers: {:.0} mm3 of solid for a strip of {strip:.0} mm3",
+        flat.mid_solid_mm3
+    );
+    // The print takes no more plastic than the strips ask for. The rows
+    // overfilled the flat cover by 2.3% of its plastic and left the belt
+    // cover's 2% short, so the files move that far and no more.
+    assert!(
+        (flat.filament_mm / flat_mm - 1.0).abs() <= 0.03
+            && flat.filament_mm <= flat_mm * 1.005
+            && (tilted.filament_mm / belt_mm - 1.0).abs() <= 0.02,
+        "filament {:.0} mm flat (was {flat_mm}), {:.0} mm on the belt (was {belt_mm})",
+        flat.filament_mm,
+        tilted.filament_mm
     );
 }

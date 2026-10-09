@@ -412,8 +412,25 @@ pub(crate) fn plan_region_split(
             }
         }
     }
+    let mut hairlines: Vec<Loop> = Vec::new();
     if strategy.infill_density > 0.01 && !interior.is_empty() && infill_kept(strategy, features) {
-        let infill = build_infill(&interior, strategy, line_width, features);
+        let wide = if solid_infill(strategy) && features.variable_width {
+            fill_strips(
+                &mut paths,
+                &interior,
+                strategy,
+                line_width,
+                seam_hint,
+                &mut hairlines,
+            )
+        } else {
+            interior.clone()
+        };
+        let infill = if wide.is_empty() {
+            Vec::new()
+        } else {
+            build_infill(&wide, strategy, line_width, features)
+        };
         let Some(bead) = combine_bead(strategy, features) else {
             emit_void_fill(
                 &mut paths, contours, &interior, strategy, line_width, seam_hint,
@@ -444,8 +461,9 @@ pub(crate) fn plan_region_split(
         Vec::new()
     } else {
         let narrow_sample = crate::inner_prof::Sample::start();
-        let cells = wide_part(&interior, line_width * 6.0);
+        let mut cells = wide_part(&interior, line_width * 6.0);
         narrow_sample.void_narrow();
+        cells.append(&mut hairlines);
         cells
     };
     emit_void_fill(
@@ -2032,6 +2050,162 @@ fn solid_rows(loops: &[Loop], spacing: f64, base: f64) -> Vec<Vec<[f64; 2]>> {
         paths.extend(clip_infill(solid_fill(&rest, spacing, base, None), &rest));
     }
     paths
+}
+
+/// A solid island nowhere farther than this many beads from its edge is a
+/// strip, like the wall of a cover, and prints as beads along its edge.
+const STRIP_REACH_BEADS: f64 = 3.0;
+
+/// The widest a single bead may be down the middle of a strip, in line
+/// widths. Wider than that takes two.
+const STRIP_BEAD_MAX: f64 = 1.5;
+
+/// Fills each strip of `region` with beads along its edge and returns the
+/// rest, for rows. A strip takes loops a half bead in from its edge and then
+/// a bead apiece, so a band round a part is a few closed loops that bend with
+/// it, straight sides and corners alike. Loops stop where two beads from
+/// opposite sides would overlap; what lies between them is one bead down the
+/// middle, or two when it is wider than one bead can be, each as wide as the
+/// strip there. So a strip is filled to its area, and a sliver the beads
+/// leave narrower than the narrowest bead, a hairline at a corner or a
+/// pinch, is no bead's and goes to `hairlines`, so the gap fill does not
+/// cross the layer to a corner for it. With no strip, the rest is `region`
+/// itself.
+fn fill_strips(
+    paths: &mut Vec<Extrusion>,
+    region: &[Loop],
+    strategy: &ResolvedStrategy,
+    line_width: f64,
+    seam_hint: &mut [f64; 2],
+    hairlines: &mut Vec<Loop>,
+) -> Vec<Loop> {
+    let kind = infill_kind(strategy, ShellBand::Bottom);
+    let mut rest: Vec<Loop> = Vec::new();
+    let mut found = false;
+    for island in island_loops(region) {
+        if !offset_loops(&island, -line_width * STRIP_REACH_BEADS).is_empty() {
+            rest.extend(island);
+            continue;
+        }
+        found = true;
+        let first = paths.len();
+        let mut core = paths_from_loops(&island);
+        loop {
+            let deeper = offset_paths(&core, -line_width);
+            if loops_from_paths(deeper.clone()).is_empty() {
+                break;
+            }
+            let loops = loops_from_paths(offset_paths(&core, -line_width * 0.5));
+            push_rings(paths, loops, kind, strategy, line_width, seam_hint);
+            core = deeper;
+        }
+        let cover = bead_cover(&paths[first..]);
+        let left = if cover.is_empty() {
+            island.clone()
+        } else {
+            drop_slivers(boolean_diff(&island, &cover), SKIN_SLIVER_MM2)
+        };
+        for piece in island_loops(&left) {
+            fill_between(paths, &piece, kind, strategy, line_width, seam_hint);
+        }
+        let cover = bead_cover(&paths[first..]);
+        let bare = if cover.is_empty() {
+            island
+        } else {
+            drop_slivers(boolean_diff(&island, &cover), SKIN_SLIVER_MM2)
+        };
+        hairlines.extend(
+            island_loops(&bare)
+                .into_iter()
+                .filter(|piece| mean_width(piece) < min_bead(line_width))
+                .flatten(),
+        );
+    }
+    if found {
+        rest
+    } else {
+        region.to_vec()
+    }
+}
+
+/// How wide `piece`, an outline with its holes, is on average.
+fn mean_width(piece: &[Loop]) -> f64 {
+    let perimeter: f64 = piece.iter().map(closed_len).sum();
+    2.0 * net_area(piece) / perimeter.max(1e-9)
+}
+
+/// The bead or two that fill `piece`, a strip no wider than two beads, to its
+/// mean width. A piece too narrow for the narrowest bead or wider than two
+/// beads is left.
+fn fill_between(
+    paths: &mut Vec<Extrusion>,
+    piece: &[Loop],
+    kind: PathKind,
+    strategy: &ResolvedStrategy,
+    line_width: f64,
+    seam_hint: &mut [f64; 2],
+) {
+    let width = mean_width(piece);
+    if width < min_bead(line_width) || width > line_width * 2.0 {
+        return;
+    }
+    if width > line_width * STRIP_BEAD_MAX {
+        let loops = offset_loops(piece, -width * 0.25);
+        push_rings(paths, loops, kind, strategy, width * 0.5, seam_hint);
+        return;
+    }
+    let spine = match piece {
+        [outline] => sliver_spine(outline, line_width).map(|s| thin_polyline(&s, 0.02)),
+        _ => ring_spine(piece),
+    };
+    if let Some(spine) = spine {
+        *seam_hint = *spine.last().unwrap();
+        paths.push(extrusion(kind, strategy, spine, width));
+    }
+}
+
+/// `loops` as closed beads `width` wide, nearest first from `seam_hint`, each
+/// starting at the vertex nearest the last.
+fn push_rings(
+    paths: &mut Vec<Extrusion>,
+    mut loops: Vec<Loop>,
+    kind: PathKind,
+    strategy: &ResolvedStrategy,
+    width: f64,
+    seam_hint: &mut [f64; 2],
+) {
+    loops.retain(|l| l.len() >= 3);
+    while !loops.is_empty() {
+        let (k, v, _) = loops
+            .iter()
+            .enumerate()
+            .flat_map(|(k, ring)| {
+                let at = *seam_hint;
+                ring.iter()
+                    .enumerate()
+                    .map(move |(v, p)| (k, v, dist2(*p, at)))
+            })
+            .min_by(|a, b| a.2.total_cmp(&b.2))
+            .unwrap();
+        let ring = loops.swap_remove(k);
+        let mut pts: Vec<[f64; 2]> = ring[v..].iter().chain(&ring[..v]).copied().collect();
+        pts.push(pts[0]);
+        *seam_hint = pts[0];
+        paths.push(extrusion(kind, strategy, pts, width));
+    }
+}
+
+/// `pts` without the vertices that lie within `tol` of the line between the
+/// last one kept and the next.
+fn thin_polyline(pts: &[[f64; 2]], tol: f64) -> Vec<[f64; 2]> {
+    let mut out = vec![pts[0]];
+    for (p, next) in pts.iter().zip(&pts[1..]).skip(1) {
+        if point_seg_dist(*p, *out.last().unwrap(), *next) > tol {
+            out.push(*p);
+        }
+    }
+    out.push(*pts.last().unwrap());
+    out
 }
 
 /// Row pitch and grid for a stretch `piece` of `region` that runs along
