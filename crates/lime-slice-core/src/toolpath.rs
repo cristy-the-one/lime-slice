@@ -2069,8 +2069,10 @@ const STRIP_BEAD_MAX: f64 = 1.5;
 /// strip there. So a strip is filled to its area, and a sliver the beads
 /// leave narrower than the narrowest bead, a hairline at a corner or a
 /// pinch, is no bead's and goes to `hairlines`, so the gap fill does not
-/// cross the layer to a corner for it. With no strip, the rest is `region`
-/// itself.
+/// cross the layer to a corner for it. A band joined to ribs and bosses is
+/// split from them first (see `split_strips`): its strips take loops, and the
+/// wide parts they meet go to rows, edge to edge. With no strip, the rest is
+/// `region` itself.
 fn fill_strips(
     paths: &mut Vec<Extrusion>,
     region: &[Loop],
@@ -2083,13 +2085,14 @@ fn fill_strips(
     let mut rest: Vec<Loop> = Vec::new();
     let mut found = false;
     for island in island_loops(region) {
-        if !offset_loops(&island, -line_width * STRIP_REACH_BEADS).is_empty() {
-            rest.extend(island);
+        let (strip, wide) = split_strips(&island, line_width);
+        rest.extend(wide);
+        if strip.is_empty() {
             continue;
         }
         found = true;
         let first = paths.len();
-        let mut core = paths_from_loops(&island);
+        let mut core = paths_from_loops(&strip);
         loop {
             let deeper = offset_paths(&core, -line_width);
             if loops_from_paths(deeper.clone()).is_empty() {
@@ -2101,18 +2104,18 @@ fn fill_strips(
         }
         let cover = bead_cover(&paths[first..]);
         let left = if cover.is_empty() {
-            island.clone()
+            strip.clone()
         } else {
-            drop_slivers(boolean_diff(&island, &cover), SKIN_SLIVER_MM2)
+            drop_slivers(boolean_diff(&strip, &cover), SKIN_SLIVER_MM2)
         };
         for piece in island_loops(&left) {
             fill_between(paths, &piece, kind, strategy, line_width, seam_hint);
         }
         let cover = bead_cover(&paths[first..]);
         let bare = if cover.is_empty() {
-            island
+            strip
         } else {
-            drop_slivers(boolean_diff(&island, &cover), SKIN_SLIVER_MM2)
+            drop_slivers(boolean_diff(&strip, &cover), SKIN_SLIVER_MM2)
         };
         hairlines.extend(
             island_loops(&bare)
@@ -2126,6 +2129,34 @@ fn fill_strips(
     } else {
         region.to_vec()
     }
+}
+
+/// `island` split into the strips that print as loops and the wide part that
+/// prints as rows, in that order. A strip is nowhere farther than
+/// `STRIP_REACH_BEADS` from the island's edge, so the wide part is what an
+/// opening by that reach keeps: the island eroded by it and grown back. The
+/// rest is a strip when it is at least a bead wide and larger than a square
+/// of that reach; anything smaller, such as the crescent an opening leaves
+/// along a round boss, stays with the wide part. The two pieces share their
+/// edge, with no gap and no overlap. An island with no wide part is one strip,
+/// and one with no strip is all wide.
+fn split_strips(island: &[Loop], line_width: f64) -> (Vec<Loop>, Vec<Loop>) {
+    let reach = line_width * STRIP_REACH_BEADS;
+    let core = offset_loops(island, -reach);
+    if core.is_empty() {
+        return (island.to_vec(), Vec::new());
+    }
+    let opened = boolean_intersect(&offset_loops(&core, reach), island);
+    let strip: Vec<Loop> = island_loops(&boolean_diff(island, &opened))
+        .into_iter()
+        .filter(|piece| mean_width(piece) >= line_width && net_area(piece) >= reach * reach)
+        .flatten()
+        .collect();
+    if strip.is_empty() {
+        return (Vec::new(), island.to_vec());
+    }
+    let wide = drop_slivers(boolean_diff(island, &strip), SKIN_SLIVER_MM2);
+    (strip, wide)
 }
 
 /// How wide `piece`, an outline with its holes, is on average.
