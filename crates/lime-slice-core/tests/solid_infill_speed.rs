@@ -2,8 +2,10 @@
 //! across a strip make a turn every few millimetres and the head never reaches
 //! its feed, so those strips print along their length instead.
 
+use std::collections::BTreeMap;
+
 use base64::Engine;
-use lime_slice_core::{slice_request, Job, SliceRequest};
+use lime_slice_core::{slice_request, Job, SliceRequest, SliceResponse};
 use serde_json::json;
 
 type P = [f64; 3];
@@ -50,8 +52,49 @@ fn cover_stl(x: f64, y: f64, z: f64, wall: f64) -> String {
         let p = |q: [f64; 2]| [q[0], q[1], 0.0];
         quad(&mut f, p(o[k]), p(i[k]), p(i[n]), p(o[n]));
     }
+    stl_text(&f)
+}
+
+/// `cover_stl` with its corners rounded to `radius`, so its walls bend and the
+/// strips of solid between the perimeters change width along their length.
+fn round_cover_stl(x: f64, y: f64, z: f64, wall: f64, radius: f64) -> String {
+    let ring = |inset: f64| -> Vec<[f64; 2]> {
+        let mut pts = Vec::new();
+        for (corner, (cx, cy)) in [
+            (0, (x - radius, y - radius)),
+            (1, (radius, y - radius)),
+            (2, (radius, radius)),
+            (3, (x - radius, radius)),
+        ] {
+            for k in 0..=12 {
+                let a = (corner as f64 * 90.0 + k as f64 * 7.5).to_radians();
+                pts.push([
+                    cx + (radius - inset) * a.cos(),
+                    cy + (radius - inset) * a.sin(),
+                ]);
+            }
+        }
+        pts
+    };
+    let (outer, inner) = (ring(0.0), ring(wall));
+    let at = |q: [f64; 2], h: f64| [q[0], q[1], h];
+    let (middle, hi_z) = ([x / 2.0, y / 2.0], z - wall);
+    let mut f: Vec<[P; 3]> = Vec::new();
+    for k in 0..outer.len() {
+        let n = (k + 1) % outer.len();
+        let (o0, o1, i0, i1) = (outer[k], outer[n], inner[k], inner[n]);
+        quad(&mut f, at(o0, 0.0), at(o1, 0.0), at(o1, z), at(o0, z));
+        quad(&mut f, at(i1, 0.0), at(i0, 0.0), at(i0, hi_z), at(i1, hi_z));
+        quad(&mut f, at(o0, 0.0), at(i0, 0.0), at(i1, 0.0), at(o1, 0.0));
+        f.push([at(o0, z), at(o1, z), at(middle, z)]);
+        f.push([at(i1, hi_z), at(i0, hi_z), at(middle, hi_z)]);
+    }
+    stl_text(&f)
+}
+
+fn stl_text(facets: &[[P; 3]]) -> String {
     let mut s = String::from("solid cover\n");
-    for t in f {
+    for t in facets {
         s.push_str("facet normal 0 0 0\nouter loop\n");
         for v in t {
             s.push_str(&format!("vertex {} {} {}\n", v[0], v[1], v[2]));
@@ -69,10 +112,10 @@ struct Solid {
     mean_move_mm: f64,
 }
 
-fn solid_infill(belt: bool) -> Solid {
+fn cover_reply(belt: bool, stl: &str) -> SliceResponse {
     let mut body = json!({
         "filename": "cover.stl",
-        "dataB64": base64::engine::general_purpose::STANDARD.encode(cover_stl(150.0, 300.0, 50.0, 3.0)),
+        "dataB64": base64::engine::general_purpose::STANDARD.encode(stl),
         "layerHeight": 0.2,
         "lineWidth": 0.45,
         "blend": {"mode": "single", "strategy": "speed"},
@@ -103,7 +146,11 @@ fn solid_infill(belt: bool) -> Solid {
         });
     }
     let request: SliceRequest = serde_json::from_value(body).unwrap();
-    let reply = slice_request(&request, Job::default()).unwrap();
+    slice_request(&request, Job::default()).unwrap()
+}
+
+fn solid_infill(belt: bool) -> Solid {
+    let reply = cover_reply(belt, &cover_stl(150.0, 300.0, 50.0, 3.0));
     // Cartesian mid layers are all wall strips. A belt layer cuts the walls
     // aslant, so every belt layer is.
     let (mut layer_z, mut solid) = (0.0, false);
@@ -176,5 +223,94 @@ fn solid_strips_of_a_cover_print_along_their_length() {
         "belt cover: {:.2} mm3/s, mean solid move {:.2} mm",
         tilted.mm3_s,
         tilted.mean_move_mm
+    );
+}
+
+/// The G-code's moves that do not extrude, by the `; TYPE:` they come under:
+/// count and length in mm.
+struct Travels {
+    by_kind: BTreeMap<String, (usize, f64)>,
+    seconds: f64,
+}
+
+impl Travels {
+    fn moves(&self) -> usize {
+        self.by_kind.values().map(|v| v.0).sum()
+    }
+}
+
+fn travels(belt: bool) -> Travels {
+    let reply = cover_reply(belt, &round_cover_stl(150.0, 300.0, 50.0, 3.0, 30.0));
+    let mut by_kind: BTreeMap<String, (usize, f64)> = BTreeMap::new();
+    let (mut kind, mut x, mut y, mut e) = (String::new(), 0.0f64, 0.0f64, 0.0f64);
+    let mut retracts = 0;
+    for line in reply.gcode.lines() {
+        if let Some(rest) = line.strip_prefix("; TYPE:") {
+            kind = rest.trim().to_string();
+        } else if line.starts_with("G1") {
+            let word = |c: char| {
+                line.split_whitespace()
+                    .find_map(|w| w.strip_prefix(c).and_then(|v| v.parse::<f64>().ok()))
+            };
+            let (nx, ny, ne) = (
+                word('X').unwrap_or(x),
+                word('Y').unwrap_or(y),
+                word('E').unwrap_or(e),
+            );
+            if word('X').is_none() && word('Y').is_none() {
+                retracts += usize::from(ne < e);
+            } else if ne <= e {
+                let row = by_kind.entry(kind.clone()).or_default();
+                row.0 += 1;
+                row.1 += (nx - x).hypot(ny - y);
+            }
+            (x, y, e) = (nx, ny, ne);
+        }
+    }
+    let seconds = reply
+        .estimate
+        .by_feature
+        .iter()
+        .find(|f| f.kind == "travel")
+        .map_or(0.0, |f| f.seconds);
+    let found = Travels { by_kind, seconds };
+    println!(
+        "belt {belt}: {} travel moves, {:.0} s travel, {retracts} retracts, {:.0} s and {:.1} g in all",
+        found.moves(),
+        found.seconds,
+        reply.estimate.seconds,
+        reply.estimate.filament_g
+    );
+    for (kind, (n, mm)) in &found.by_kind {
+        println!("  {kind}: {n} moves, {:.1} m", mm / 1000.0);
+    }
+    found
+}
+
+#[test]
+fn gap_fill_of_a_rounded_cover_prints_beside_its_solid() {
+    // The gap fill beside the strips was ordered as a run of its own after
+    // the solid, so it toured the whole cover: hops of 100 to 250 m between
+    // corner beads, 96 m of travel on the flat cover.
+    let tilted = travels(true);
+    let flat = travels(false);
+    let gap_fill_m = |t: &Travels| t.by_kind["GAP-FILL"].1 / 1000.0;
+    assert!(
+        gap_fill_m(&flat) <= 20.0 && gap_fill_m(&tilted) <= 25.0,
+        "gap fill travels {:.1} m flat, {:.1} m on the belt",
+        gap_fill_m(&flat),
+        gap_fill_m(&tilted)
+    );
+    assert!(
+        flat.seconds <= 1150.0,
+        "flat cover: {:.0} s travelling, {} travel moves",
+        flat.seconds,
+        flat.moves()
+    );
+    assert!(
+        tilted.seconds <= 1950.0,
+        "belt cover: {:.0} s travelling, {} travel moves",
+        tilted.seconds,
+        tilted.moves()
     );
 }

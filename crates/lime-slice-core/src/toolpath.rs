@@ -4425,12 +4425,14 @@ impl Extrusion {
 
     /// Kind the travel optimizer orders this path with. A thin-wall stroke across
     /// a pinch comes out of void fill, and ordering it apart from the gap fill
-    /// around it costs travel.
+    /// around it costs travel. Gap fill lies beside the solid it fills, and
+    /// ordering it after the solid as a tour of its own crossed the layer for
+    /// every bead.
     pub(crate) fn travel_group(&self) -> PathKind {
-        if self.kind == PathKind::ThinWall && !self.is_loop() {
-            PathKind::GapFill
-        } else {
-            self.kind
+        match self.kind {
+            PathKind::ThinWall if !self.is_loop() => PathKind::Solid,
+            PathKind::GapFill => PathKind::Solid,
+            kind => kind,
         }
     }
 
