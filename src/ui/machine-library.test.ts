@@ -46,7 +46,7 @@ function check(name: string, cond: boolean, detail = ""): void {
 }
 
 const library = builtinLibrary();
-check("built-in printers", library.printers.map((printer) => printer.name).join(",") === "Lime 220,Lime 300,Lime 180,Generic belt 45°");
+check("built-in printers", library.printers.map((printer) => printer.name).join(",") === "Lime 220,Lime 300,Lime 180,Generic belt 45°,Ideaformer IR3 V2");
 const genericBelt = library.printers.find((printer) => printer.id === "generic-belt-45");
 check(
   "the generic belt is a 45° belt along Z with no length limit",
@@ -54,6 +54,16 @@ check(
     genericBelt.kind === "belt" &&
     JSON.stringify(genericBelt.belt) === JSON.stringify({ angleDeg: 45, axis: "z", direction: 1, widthMm: 200, maxLengthMm: null, copies: 1, gapMm: 5, seamOnEdge: false, raftLayers: 0, floorSupports: false }),
   JSON.stringify(genericBelt),
+);
+const ir3 = library.printers.find((printer) => printer.id === "ideaformer-ir3-v2");
+check(
+  "the IR3 V2 is a 250 mm wide 45° belt with an open length, 12 mm³/s, and its 20000 mm/s² limit",
+  ir3?.builtin === true &&
+    ir3.kind === "belt" &&
+    ir3.bedX === 250 && ir3.bedY === 250 && ir3.bedZ === 250 &&
+    ir3.maxVolumetricMm3S === 12 && ir3.maxAccel === 20000 &&
+    JSON.stringify(ir3.belt) === JSON.stringify({ angleDeg: 45, axis: "z", direction: 1, widthMm: 250, maxLengthMm: null, copies: 1, gapMm: 5, seamOnEdge: false, raftLayers: 0, floorSupports: false }),
+  JSON.stringify(ir3),
 );
 const onBelt = selectIn(library, "generic-belt-45", "lime-pla", 0.4);
 check("picking the generic belt slices on the belt", typeof onBelt !== "string" && beltStamp(onBelt)?.angleDeg === 45, String(onBelt));
@@ -162,7 +172,7 @@ check("a version 1 file gains an empty host", version1?.ok === true && version1.
 check("a version 1 file stays cartesian", version1?.ok === true && version1.file.printer.kind === "cartesian" && version1.file.printer.belt.angleDeg === 45 && version1.file.printer.belt.maxLengthMm === null);
 
 const stored = parseLibrary(serializeLibrary(library));
-check("the library round-trips", stored.version === 3 && stored.printers.length === 4 && stored.filaments.length === 4 && stored.printerId === "lime-220" && stored.printers.every((printer) => printer.host === "" && printer.kind === (printer.id === "generic-belt-45" ? "belt" : "cartesian")));
+check("the library round-trips", stored.version === 3 && stored.printers.length === 5 && stored.filaments.length === 4 && stored.printerId === "lime-220" && stored.printers.every((printer) => printer.host === "" && printer.kind === (printer.id === "generic-belt-45" || printer.id === "ideaformer-ir3-v2" ? "belt" : "cartesian")));
 // Libraries saved before version 3 predate belt printers.
 const cartesianOnly = { ...library, printers: library.printers.filter((printer) => printer.kind === "cartesian") };
 const version1Library = JSON.parse(serializeLibrary(cartesianOnly)) as { version: number; printers: Record<string, unknown>[] };

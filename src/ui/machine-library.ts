@@ -685,6 +685,8 @@ function builtinPrinters(): PrinterRecord[] {
     printer("lime-300", "Lime 300", 300, 300, 320, 15, 5000),
     printer("lime-180", "Lime 180", 180, 180, 180, 8, 2000),
     { ...printer("generic-belt-45", "Generic belt 45°", 200, 200, 200, 12, 5000), kind: "belt" },
+    // Klipper, 45° gantry, 250 mm belt and gantry, X/Y limited to 20000 mm/s².
+    { ...printer("ideaformer-ir3-v2", "Ideaformer IR3 V2", 250, 250, 250, 12, 20000), kind: "belt" },
   ];
 }
 
