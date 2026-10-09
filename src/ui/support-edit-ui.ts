@@ -1,6 +1,6 @@
 import { createElement, TreeDeciduous, X } from "lucide";
 import type { CoverageGap, EditOutcome, SupportSkeleton } from "../support-edits";
-import { alignOutcomes, appendEdit, badgeOf, clearEdits, editTitle, gapsToShow, outcomeText, removeEdit, undoLast, type EditEntry } from "../support-edit-list";
+import { alignOutcomes, appendEdit, badgeOf, clearEdits, editTitle, gapsToShow, gapZ, outcomeText, removeEdit, undoLast, type EditEntry } from "../support-edit-list";
 import { replyFrameEdit } from "../bed-offset";
 import { capsulesOf, indexSkeleton, pickGap, pickLimb, regrowFor, selectLimbs, sitesOf, type LimbIndex, type PickScope, type Visible } from "../support-pick";
 import type { PickEvent, SliceView3d } from "../view3d";
@@ -42,7 +42,6 @@ const SCOPE_LABEL: Record<PickScope, string> = { branch: "Branch", tree: "Tree" 
 /** Pick tolerance past a limb's radius: a fixed floor plus a few screen pixels. */
 const SLOP_MM = 0.3;
 const SLOP_PX = 4;
-const BELT_REGROW_HINT = "Regrowing supports in a gap isn't available on a belt printer yet.";
 const X_ICON = createElement(X, { width: 14, height: 14, "aria-hidden": "true", class: "ico" }).outerHTML;
 
 export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) {
@@ -102,6 +101,8 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
   let panelHtml = "";
   let index: LimbIndex | null = null;
   let gaps: CoverageGap[] = [];
+  /** A belt's gaps in view, which the layer slider decides. Rebuilt only when the gaps or the layers shown change. */
+  let drawn: { gaps: CoverageGap[]; key: string; shown: CoverageGap[] } | null = null;
   let gapsFor: { result: SupportEditView["result"]; sent: readonly EditEntry[] } | null = null;
   const caps = new WeakMap<object, { key: string; caps: Float32Array }>();
 
@@ -113,8 +114,8 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
       selected = null;
     }
     if (gapsFor?.result !== v.result || gapsFor.sent !== v.sent) {
-      // A belt reply's gaps are in the slice frame, and the engine cannot regrow on a belt yet.
-      gaps = onBelt() ? [] : gapsToShow(v.result?.coverage, v.sent, v.result?.supportEdits);
+      // A belt gap is drawn where it says. One from a reply that did not say cannot be.
+      gaps = gapsToShow(v.result?.coverage, v.sent, v.result?.supportEdits).filter((gap) => !onBelt() || gap.tilted);
       gapsFor = { result: v.result, sent: v.sent };
       if (selected?.kind === "gap" && !gaps.includes(selected.gap)) selected = null;
       if (hover?.kind === "gap" && !gaps.includes(hover.gap)) hover = null;
@@ -164,7 +165,10 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
 
   function describe(t: Target) {
     if (!t) return scope === "branch" ? "Click a support. Shift-click takes the whole tree." : "Click a support. Shift-click takes one branch.";
-    if (t.kind === "gap") return `Unheld · ${t.gap.areaMm2.toFixed(1)} mm² · Z ${t.gap.z[0].toFixed(2)}–${t.gap.z[1].toFixed(2)}`;
+    if (t.kind === "gap") {
+      const [low, high] = gapZ(t.gap);
+      return `Unheld · ${t.gap.areaMm2.toFixed(1)} mm² · Z ${low.toFixed(2)}–${high.toFixed(2)}`;
+    }
     const n = sitesOf(index!, limbsOf(t)).length;
     return `${SCOPE_LABEL[t.scope]} · ${n} tip${n === 1 ? "" : "s"}`;
   }
@@ -204,7 +208,7 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
         const badge = badgeOf(outcome);
         const text = outcome ? outcomeText(entry, outcome) : "Not applied yet. Slice to apply.";
         return `<li class="se-row" data-edit="${entry.id}">
-          <span class="se-idx">${i + 1}</span><span class="se-name">${editTitle(entry)}</span>
+          <span class="se-idx">${i + 1}</span><span class="se-name">${editTitle(entry, onBelt())}</span>
           <span class="se-badge" data-badge="${badge}">${badge}</span>
           <button class="se-remove" type="button" data-action="remove" data-id="${entry.id}" aria-label="Remove this edit"${dis}>${X_ICON}</button>
           <p class="se-text">${text}</p>
@@ -214,12 +218,11 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
       if (editing && gaps.length) {
         const locked = v.busy || !v.treeSupports ? " disabled" : "";
         const items = gaps.map((gap, i) => `<li class="se-gap" data-gap="${i}"${hotGap() === i ? ' data-hot="true"' : ""}>
-          <span>Z ${gap.z[0].toFixed(2)}–${gap.z[1].toFixed(2)} · ${gap.areaMm2.toFixed(1)} mm²</span>
+          <span>Z ${gapZ(gap)[0].toFixed(2)}–${gapZ(gap)[1].toFixed(2)} · ${gap.areaMm2.toFixed(1)} mm²</span>
           <button class="btn" type="button" data-action="regrow" data-gap="${i}"${locked}>Regrow</button>
         </li>`).join("");
         body += `<h3 class="se-sub">Unheld</h3><ul class="se-gaps">${items}</ul>`;
       }
-      if (editing && onBelt()) body += `<p class="se-note">${BELT_REGROW_HINT}</p>`;
       if (!v.treeSupports) body += `<p class="se-note">Tree supports are off. These edits apply again when they are back on.</p>`;
     }
     const html = `<div class="se-head">${head}${tools}</div>${body}`;
@@ -234,6 +237,17 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
     return t ? gaps.indexOf(t.gap) : null;
   }
 
+  /** A belt gap is in view by the belt position of its top layer, like a knot by its `ls`. A flat gap is cut by the overlay's height planes. */
+  function gapsInView(visible: Visible) {
+    if (!onBelt()) return gaps;
+    const key = `${visible.zLow},${visible.zHigh}`;
+    if (drawn?.gaps !== gaps || drawn.key !== key) {
+      const shown = gaps.filter((gap) => gap.tilted && gap.tilted.ls[1] >= visible.zLow - 1e-3 && gap.tilted.ls[1] <= visible.zHigh + 1e-3);
+      drawn = { gaps, key, shown };
+    }
+    return drawn.shown;
+  }
+
   function paintOverlay(v: SupportEditView) {
     pane.dataset.gaps = String(editing ? gaps.length : 0);
     if (!editing) {
@@ -244,7 +258,10 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
     const hov = same(hover, selected) ? null : capsulesFor(hover, v.visible);
     // The overlay's slab planes are heights; a belt's capsules were already cut by layer.
     const [zLow, zHigh] = onBelt() ? [-1e6, 1e6] : [v.visible.zLow, v.visible.zHigh];
-    view3d.setSupportOverlay({ hover: hov, selected: sel, gaps, hotGap: hotGap(), zLow, zHigh });
+    const shown = gapsInView(v.visible);
+    const hot = hotGap();
+    const hotShown = hot === null ? null : shown.indexOf(gaps[hot]);
+    view3d.setSupportOverlay({ hover: hov, selected: sel, gaps: shown, hotGap: hotShown === -1 ? null : hotShown, zLow, zHigh });
   }
 
   function paintToggle() {
@@ -263,7 +280,7 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
 
   function compactSelection(): CompactSelection | null {
     if (!selected || !index) return null;
-    if (selected.kind === "gap") return { kind: "gap", areaMm2: selected.gap.areaMm2, z: selected.gap.z };
+    if (selected.kind === "gap") return { kind: "gap", areaMm2: selected.gap.areaMm2, z: gapZ(selected.gap) };
     const sites = sitesOf(index, limbsOf(selected));
     // A site's z is a slice-frame id on a belt, not a height anyone sees.
     return { kind: "limb", scope: selected.scope, tips: sites.length, z: onBelt() ? null : sites[0]?.z ?? null };

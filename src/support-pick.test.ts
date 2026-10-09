@@ -106,6 +106,28 @@ eq("belt: capsules are clipped to the layers", round(capsulesOf(beltIndex, [0], 
 eq("belt: capsules inside the layers are whole", [...capsulesOf(beltIndex, [0], layers(1, 12))], [10, 10, 20, 1, 20, 10, 5, 1]);
 eq("belt: capsules outside the layers are dropped", capsulesOf(beltIndex, [0], layers(11, 12)).length, 0);
 
+// A belt gap: its slice-frame fields are what a regrow sends (nozzle plane height 19.4–19.8),
+// `tilted` is where the preview draws it. The plane through the outline is z + y = 30, and its
+// layers print at belt positions 4 and 6.5.
+const beltGap: CoverageGap = {
+  z: [19.4, 19.8],
+  areaMm2: 6,
+  min: [1, 2],
+  max: [3, 4],
+  outline: [[[1, 2], [3, 2], [3, 4], [1, 4]]],
+  tilted: { ls: [4, 6.5], outline: [[[1, 2, 28], [3, 2, 28], [3, 4, 26], [1, 4, 26]]] },
+};
+const downTo = (x: number, y: number) => ({ origin: [x, y, 40] as [number, number, number], dir: [0, 0, -4] as [number, number, number] });
+eq("belt gap: a ray hits the tilted plane, not the slice z", pickGap([beltGap], downTo(2, 3), layers(1, 12), 0.5), { gap: 0, distance: 13 });
+eq("belt gap: regrow still sends the slice-frame region and z", regrowFor(beltGap), { kind: "regrow", region: [[[1, 2], [3, 2], [3, 4], [1, 4]]], z: [19.4, 19.8] });
+eq("belt gap: beside the padded box misses", pickGap([beltGap], downTo(3.6, 3), layers(1, 12), 0.5), null);
+eq("belt gap: shown by its top layer's belt position", pickGap([beltGap], downTo(2, 3), layers(1, 6.5), 0.5)?.gap, 0);
+eq("belt gap: hidden above the top layer", pickGap([beltGap], downTo(2, 3), layers(1, 6.4), 0.5), null);
+eq("belt gap: hidden when the layers start above it", pickGap([beltGap], downTo(2, 3), layers(7, 12), 0.5), null);
+eq("belt gap: the slice z is not what the slider cuts", pickGap([beltGap], downTo(2, 3), layers(19, 20), 0.5), null);
+eq("belt gap: a ray from below meets it too", pickGap([beltGap], { origin: [2, 3, 0], dir: [0, 0, 1] }, layers(1, 12), 0.5)?.gap, 0);
+eq("belt gap: a ray along the plane misses", pickGap([beltGap], { origin: [2, 0, 28], dir: [0, 1, -1] }, layers(1, 12), 0.5), null);
+
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);

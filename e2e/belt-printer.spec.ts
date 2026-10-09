@@ -197,11 +197,9 @@ test("a belt printer's supports can be picked and pruned", async ({ page }) => {
   await quiet(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   const bodies: Record<string, unknown>[] = [];
-  // A gap in the slice frame, which a belt must not draw or offer to regrow.
-  const reply = { ...beltLedge, coverage: [{ z: [10, 12], areaMm2: 5, min: [0, 0], max: [4, 4], outline: [[[0, 0], [4, 0], [4, 4], [0, 4]]] }] };
   await page.route("**/api/slice", async (route) => {
     bodies.push(route.request().postDataJSON() as Record<string, unknown>);
-    await route.fulfill({ json: reply });
+    await route.fulfill({ json: beltLedge });
   });
   await page.goto("/");
   await page.locator("#machineKind").selectOption("belt");
@@ -221,8 +219,7 @@ test("a belt printer's supports can be picked and pruned", async ({ page }) => {
   await expect(readout).toHaveText("Click a support. Shift-click takes the whole tree.");
   await page.locator('#supportEditbar [data-scope="tree"]').click();
   await expect(page.locator("#pane3d")).toHaveAttribute("data-gaps", "0");
-  await expect(page.locator('#supportEdits [data-action="regrow"]')).toHaveCount(0);
-  await expect(page.locator("#supportEdits")).toContainText("Regrowing supports in a gap isn't available on a belt printer yet.");
+  await expect(page.locator("#supportEdits")).not.toContainText("isn't available on a belt printer");
 
   // Hide everything below belt z 12. Limb 1's top knot prints on layer 14.99 but sits at lab height 11.35,
   // so only a test of the knot's layer keeps it in view.
@@ -255,4 +252,108 @@ test("a belt printer's supports can be picked and pruned", async ({ page }) => {
   const s = beltLedge.skeleton;
   expect(bodies[1].supportEdits).toEqual([{ kind: "prune", sites: [{ xy: [s.siteX[0], s.siteY[0]], z: s.siteZ[0] }] }]);
   await expect(page.locator("#supportEdits li[data-edit]")).toHaveCount(1);
+});
+
+// The same ledge after a prune of its largest tree, which leaves a gap. `z`, `min`, `max`, and `outline` are in the
+// slice frame, where a regrow runs; `tilted` is where the preview draws it. Regenerate with the ignored test in
+// crates/lime-slice-core/tests/e2e_fixtures.rs.
+const beltLedgePruned = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/ledge-belt-pruned.json"), "utf8"));
+
+test("a belt printer draws the gap a prune left and regrows it by the slice-frame region", async ({ page }) => {
+  await quiet(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const gap = beltLedgePruned.supportEdits[0].floating[0];
+  expect(gap.tilted, "the fixture's gap says where the preview draws it").toBeTruthy();
+  // The tree the fixture pruned: the one with the most tips.
+  const s = beltLedge.skeleton;
+  const live = (root: number) => s.tree.filter((t: number, k: number) => t === root && s.live[k] === 1).length;
+  const root = [...s.tree].sort((a: number, b: number) => live(b) - live(a))[0];
+  const tips = live(root);
+  expect(tips).toBeGreaterThan(1);
+  const bodies: Record<string, unknown>[] = [];
+  await page.route("**/api/slice", async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    bodies.push(body);
+    const edits = (body.supportEdits ?? []) as { kind: string }[];
+    if (edits.some((edit) => edit.kind === "regrow")) {
+      const held = { status: "applied", changedLayers: 3, newlyFloatingMm2: -gap.areaMm2, floating: [] };
+      return route.fulfill({ json: { ...beltLedgePruned, coverage: [], supportEdits: [beltLedgePruned.supportEdits[0], held] } });
+    }
+    await route.fulfill({ json: edits.length ? beltLedgePruned : beltLedge });
+  });
+  await page.goto("/");
+  await page.locator("#machineKind").selectOption("belt");
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="overhang_ledge.stl"]')?.click());
+  await expect(page.locator("#slice")).toBeEnabled();
+  await page.locator("#supports").check();
+  await page.locator("#slice").click();
+  await expect.poll(() => bodies.length).toBe(1);
+  await page.locator("#tabPreview").click();
+  await page.getByRole("button", { name: "3D", exact: true }).click();
+  await expect(page.locator("#readHigh")).toHaveText(`Z ${beltLedge.layers.at(-1).z.toFixed(2)}`);
+
+  await page.keyboard.press("e");
+  await page.locator('#supportEditbar [data-scope="tree"]').click();
+  await expect(page.locator("#pane3d")).toHaveAttribute("data-gaps", "0");
+  const readout = page.locator("#supportReadout");
+  // The sweep moves the pointer over the view until the readout names what is under it.
+  const sweep = (label: string) =>
+    page.evaluate((want) => {
+      const canvas = document.querySelector<HTMLCanvasElement>("#view3d")!;
+      const text = document.querySelector("#supportReadout")!;
+      const box = canvas.getBoundingClientRect();
+      for (let y = box.top + 2; y < box.bottom; y += 3) {
+        for (let x = box.left + 2; x < box.right; x += 3) {
+          canvas.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, buttons: 0, bubbles: true }));
+          if (text.textContent?.startsWith(want)) return { x, y };
+        }
+      }
+      return null;
+    }, label);
+  const tree = await sweep(`Tree · ${tips} tips`);
+  expect(tree, "the largest tree under the pointer somewhere in the view").not.toBeNull();
+  await page.mouse.click(tree!.x, tree!.y);
+  await page.getByRole("button", { name: "Delete tree" }).click();
+  await expect.poll(() => bodies.length).toBe(2);
+  expect(bodies[1].supportEdits).toHaveLength(1);
+
+  // The gap is listed by its layers' belt positions, which the layer slider shows, not by the nozzle plane's height.
+  await expect(page.locator("#pane3d")).toHaveAttribute("data-gaps", "1");
+  const row = page.locator("#supportEdits li.se-gap");
+  await expect(row).toHaveCount(1);
+  await expect(row).toContainText(`Z ${gap.tilted.ls[0].toFixed(2)}–${gap.tilted.ls[1].toFixed(2)}`);
+  await expect(page.locator("#supportEdits")).not.toContainText("isn't available on a belt printer");
+  await expect(row.getByRole("button", { name: "Regrow" })).toBeEnabled();
+
+  // Above the gap's top layer the slider hides it, and nothing is under the pointer.
+  const above = beltLedgePruned.layers.findIndex((layer: { z: number }) => layer.z > gap.tilted.ls[1] + 0.01);
+  await page.locator("#rangeLow").evaluate((el: HTMLInputElement, value: number) => {
+    el.value = String(value);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }, above);
+  expect(await sweep("Unheld"), "a gap whose top layer is under the slider").toBeNull();
+  await page.locator("#rangeLow").evaluate((el: HTMLInputElement) => {
+    el.value = "0";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+  // It is drawn on the tilted layer: the pointer finds it where the preview shows it.
+  const found = await sweep("Unheld");
+  expect(found, "the gap under the pointer somewhere in the view").not.toBeNull();
+  await page.mouse.click(found!.x, found!.y);
+  await expect(readout).toHaveText(new RegExp(`^Unheld · ${gap.areaMm2.toFixed(1)} mm² · Z ${gap.tilted.ls[0].toFixed(2)}`));
+
+  // Regrow sends the slice-frame region and z, as they came, after the prune.
+  await page.getByRole("button", { name: "Regrow here" }).click();
+  await expect.poll(() => bodies.length).toBe(3);
+  const edits = bodies[2].supportEdits as Record<string, unknown>[];
+  expect(edits).toHaveLength(2);
+  expect(edits[0].kind).toBe("prune");
+  const [x0, y0] = gap.min;
+  const [x1, y1] = gap.max;
+  expect(edits[1]).toEqual({ kind: "regrow", region: [[[x0, y0], [x1, y0], [x1, y1], [x0, y1]]], z: gap.z });
+  expect(Math.abs(gap.z[1] - gap.tilted.ls[1])).toBeGreaterThan(1);
+  await expect(page.locator("#pane3d")).toHaveAttribute("data-gaps", "0");
+  await expect(page.locator("#supportEdits li[data-edit]")).toHaveCount(2);
+  await expect(page.locator("#supportEdits li[data-edit]").nth(1)).toContainText(`Regrow · ${gap.areaMm2.toFixed(1)} mm²`);
 });

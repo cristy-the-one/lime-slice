@@ -1,5 +1,5 @@
 /** Picking tree supports from the skeleton. Pure: no three.js, no DOM. Print space is X right, Y depth, Z up. */
-import type { CoverageGap, RegrowEdit, SiteSpec, SupportSkeleton } from "./support-edits.ts";
+import type { CoverageGap, RegrowEdit, SiteSpec, SupportSkeleton, TiltedGap } from "./support-edits.ts";
 import { keepsPoint, type SectionSpec, type Vec3 } from "./section-plane.ts";
 
 export type PickScope = "branch" | "tree";
@@ -105,22 +105,71 @@ export function pickLimb(index: LimbIndex, ray: Ray, visible: Visible, slop: num
   return best;
 }
 
-/** Gap whose padded bounds box the ray crosses at the gap's top z (`z[1]`), if that z is visible. */
+/**
+ * Gap whose padded bounds box the ray crosses at the gap's top z (`z[1]`), if that z is visible.
+ * A belt gap (`tilted`) is hit on its own plane, in the reply frame, and is visible by the belt position `ls[1]`
+ * of its top layer, like a belt knot.
+ */
 export function pickGap(gaps: readonly CoverageGap[], ray: Ray, visible: Visible, pad: number): { gap: number; distance: number } | null {
   const [o, d] = unitRay(ray);
   let best: { gap: number; distance: number } | null = null;
   gaps.forEach((gap, i) => {
-    const z = gap.z[1];
-    if (z < visible.zLow - SLAB_EPS || z > visible.zHigh + SLAB_EPS || Math.abs(d[2]) < 1e-9) return;
-    const t = (z - o[2]) / d[2];
-    if (t <= 0) return;
-    const x = o[0] + d[0] * t;
-    const y = o[1] + d[1] * t;
-    if (x < gap.min[0] - pad || x > gap.max[0] + pad || y < gap.min[1] - pad || y > gap.max[1] + pad) return;
-    if (visible.section && !keepsPoint([x, y, z], visible.section.center, visible.section.spec)) return;
-    if (!best || t < best.distance) best = { gap: i, distance: t };
+    const hit = gap.tilted ? hitTilted(gap.tilted, o, d, pad, visible) : hitFlat(gap, o, d, pad, visible);
+    if (hit && (!best || hit < best.distance)) best = { gap: i, distance: hit };
   });
   return best;
+}
+
+function hitFlat(gap: CoverageGap, o: Vec3, d: Vec3, pad: number, visible: Visible): number | null {
+  const z = gap.z[1];
+  if (z < visible.zLow - SLAB_EPS || z > visible.zHigh + SLAB_EPS || Math.abs(d[2]) < 1e-9) return null;
+  const t = (z - o[2]) / d[2];
+  if (t <= 0) return null;
+  const x = o[0] + d[0] * t;
+  const y = o[1] + d[1] * t;
+  if (x < gap.min[0] - pad || x > gap.max[0] + pad || y < gap.min[1] - pad || y > gap.max[1] + pad) return null;
+  if (visible.section && !keepsPoint([x, y, z], visible.section.center, visible.section.spec)) return null;
+  return t;
+}
+
+function hitTilted(gap: TiltedGap, o: Vec3, d: Vec3, pad: number, visible: Visible): number | null {
+  const top = gap.ls[1];
+  if (top < visible.zLow - SLAB_EPS || top > visible.zHigh + SLAB_EPS) return null;
+  const points = gap.outline.flat();
+  const plane = planeOf(points);
+  if (!plane) return null;
+  const [p, n] = plane;
+  const along = dot(d, n);
+  if (Math.abs(along) < 1e-9) return null;
+  const t = dot([p[0] - o[0], p[1] - o[1], p[2] - o[2]], n) / along;
+  if (t <= 0) return null;
+  const hit: Vec3 = [o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t];
+  // The layer is not vertical, so its box in x and y fixes where on it a point is.
+  const xs = points.map((q) => q[0]);
+  const ys = points.map((q) => q[1]);
+  if (hit[0] < Math.min(...xs) - pad || hit[0] > Math.max(...xs) + pad || hit[1] < Math.min(...ys) - pad || hit[1] > Math.max(...ys) + pad) return null;
+  if (visible.section && !keepsPoint(hit, visible.section.center, visible.section.spec)) return null;
+  return t;
+}
+
+/** A point on the plane through `points` and its unit normal, from the first point, the one farthest from it, and the one farthest from their line. Null when the points are collinear. */
+function planeOf(points: readonly Vec3[]): [Vec3, Vec3] | null {
+  const a = points[0];
+  if (!a) return null;
+  const from = (p: Vec3): Vec3 => [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+  let far: Vec3 = [0, 0, 0];
+  for (const p of points) {
+    const v = from(p);
+    if (dot(v, v) > dot(far, far)) far = v;
+  }
+  let normal: Vec3 = [0, 0, 0];
+  for (const p of points) {
+    const v = from(p);
+    const c: Vec3 = [far[1] * v[2] - far[2] * v[1], far[2] * v[0] - far[0] * v[2], far[0] * v[1] - far[1] * v[0]];
+    if (dot(c, c) > dot(normal, normal)) normal = c;
+  }
+  const len = Math.hypot(normal[0], normal[1], normal[2]);
+  return len < 1e-9 ? null : [a, [normal[0] / len, normal[1] / len, normal[2] / len]];
 }
 
 /** The regrow that targets one gap: its bounds box as one closed loop and its z range. Same as the engine's `over_gaps`. */

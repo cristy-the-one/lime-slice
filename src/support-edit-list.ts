@@ -55,9 +55,17 @@ const zRange = (z: readonly [number, number]) => `Z ${z[0].toFixed(2)}–${z[1].
 /** Coverage changes under this are boolean noise, the engine's smallest unheld piece. */
 const NOISE_MM2 = 0.05;
 
-/** Short title, e.g. "Delete tree · 36 tips", "Delete branch · 1 tip", "Regrow · Z 4.20–6.40". */
-export function editTitle(entry: EditEntry): string {
-  if (!("scope" in entry)) return `Regrow · ${zRange(entry.edit.z)}`;
+/** The z range a gap is shown at: the preview layers' own `z`, which on a belt is a belt position and not the gap's slice-frame `z`. */
+export function gapZ(gap: CoverageGap): [number, number] {
+  return gap.tilted?.ls ?? gap.z;
+}
+
+/**
+ * Short title, e.g. "Delete tree · 36 tips", "Delete branch · 1 tip", "Regrow · Z 4.20–6.40".
+ * On a belt a regrow's `z` is a slice-frame height no layer shows, so it names the area instead.
+ */
+export function editTitle(entry: EditEntry, belt = false): string {
+  if (!("scope" in entry)) return belt ? `Regrow · ${mm2(entry.areaMm2)}` : `Regrow · ${zRange(entry.edit.z)}`;
   return `Delete ${entry.scope} · ${tips(entry.edit.sites.length)}`;
 }
 

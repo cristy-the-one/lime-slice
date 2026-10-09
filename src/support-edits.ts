@@ -4,9 +4,14 @@
  * `crates/lime-slice-core/src/support/skeleton.rs`.
  */
 
-/** Demanded support interface the finished supports do not print, over adjacent layers. */
+/**
+ * Demanded support interface the finished supports do not print, over adjacent layers.
+ * `z`, `min`, `max`, and `outline` are what a regrow sends back, in the frame the engine grows in.
+ * On a flat bed that is the frame the preview is drawn in. On a belt it is the slice frame, where the
+ * part lies flat for the nozzle, and `tilted` says where the preview draws the gap.
+ */
 export interface CoverageGap {
-  /** `z` of its lowest and highest layer. */
+  /** `z` of its lowest and highest layer. On a belt, the nozzle plane's height, which no preview layer carries. */
   z: [number, number];
   /** Largest unheld area on one of its layers. */
   areaMm2: number;
@@ -14,6 +19,16 @@ export interface CoverageGap {
   max: [number, number];
   /** The unheld region on its highest layer. */
   outline: [number, number][][];
+  /** Belt only: the gap in the reply frame. Absent on a flat bed. */
+  tilted?: TiltedGap;
+}
+
+/** A belt gap as the preview draws it. */
+export interface TiltedGap {
+  /** `PreviewLayer.z` of its lowest and highest layer: their belt positions, which the layer slider cuts by. */
+  ls: [number, number];
+  /** `outline` as `[x, y, z]` in the reply frame, point for point. */
+  outline: [number, number, number][][];
 }
 
 /** A birth site: xy in mm at the exact `siteZ` the skeleton reported. */
