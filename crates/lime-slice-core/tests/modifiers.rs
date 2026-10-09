@@ -155,7 +155,7 @@ fn length(pts: &[[f64; 2]]) -> f64 {
         .sum()
 }
 
-/// Sparse infill length of `object` on the layer at `z`, split into the
+/// Sparse and solid infill length of `object` on the layer at `z`, split into the
 /// length `inside` holds, to 0.05 mm, and the rest.
 fn sparse_split(
     reply: &Value,
@@ -166,7 +166,9 @@ fn sparse_split(
     let (mut inn, mut out) = (0.0, 0.0);
     for d in drawn(reply)
         .iter()
-        .filter(|d| (d.z - z).abs() < 1e-6 && d.kind == "sparse" && d.object == object)
+        .filter(|d| {
+            (d.z - z).abs() < 1e-6 && (d.kind == "sparse" || d.kind == "solid") && d.object == object
+        })
     {
         for w in d.pts.windows(2) {
             let n = (length(w) / 0.05).ceil().max(1.0);

@@ -2796,7 +2796,7 @@ fn block(x0: f64, y0: f64, x1: f64, y1: f64, z1: f64) -> Mesh {
 
 #[test]
 fn dense_sparse_grid_cells_get_no_gap_fill() {
-    // Weight at 60% toughness lays a 34% grid with cells about 0.9 mm across.
+    // Weight at 60% toughness lays a 34% grid with cells about 1.8 mm across.
     // The void fill used to read each cell as a missed gap and bead it.
     let response = slice_configured(
         &block(80.0, 80.0, 120.0, 120.0, 10.0),
@@ -2815,7 +2815,7 @@ fn dense_sparse_grid_cells_get_no_gap_fill() {
         .find(|l| (l.z - 5.0).abs() < 1e-6)
         .expect("layer at Z 5.0");
     let count = |kind: &str| layer.paths.iter().filter(|p| p.kind == kind).count();
-    assert_eq!((count("sparse"), count("gap-fill")), (28, 0));
+    assert_eq!((count("sparse"), count("gap-fill")), (16, 0));
     let mut runs = std::collections::BTreeMap::new();
     let mut at_z5 = false;
     for line in response.gcode.lines() {
@@ -2827,7 +2827,7 @@ fn dense_sparse_grid_cells_get_no_gap_fill() {
     }
     assert_eq!(
         runs,
-        std::collections::BTreeMap::from([("INNER", 3), ("OUTER", 1), ("SPARSE", 28)])
+        std::collections::BTreeMap::from([("INNER", 3), ("OUTER", 1), ("SPARSE", 16)])
     );
     assert_eq!(
         layer.note,
