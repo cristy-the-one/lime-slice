@@ -1732,7 +1732,7 @@ fn build_infill(
         // Rows turn a quarter each layer, so no layer's lines cross.
         let quarters = if features.layer_index % 2 == 0 { 1.0 } else { 3.0 };
         let angle = std::f64::consts::FRAC_PI_4 * quarters;
-        return clip_infill(solid_fill(loops, line_width, angle, None), loops);
+        return solid_rows(loops, line_width, angle);
     }
     let sample = crate::inner_prof::Sample::start();
     let mut density = strategy.infill_density;
@@ -1968,6 +1968,126 @@ fn lightning(loops: &[Loop], spacing: f64) -> Vec<Vec<[f64; 2]>> {
     let chained = chain_ends(segs, spacing * 1.25, Some(loops));
     link.lightning_link();
     chained
+}
+
+/// Rows shorter than this end before the head reaches its feed, and each
+/// turn costs about as much as the row.
+const SOLID_ROW_MM: f64 = 10.0;
+
+/// Solid rows over `loops`, at `base` where they run long. A stretch only a
+/// few beads wide, like the wall of a cover, would take a turn every few
+/// millimetres at `base`, so it prints along its length: the longest edges of
+/// the region name those directions, and each takes the rows of at least
+/// `SOLID_ROW_MM` it finds in what the last left. Rows that all run long
+/// print as one region at `base`.
+fn solid_rows(loops: &[Loop], spacing: f64, base: f64) -> Vec<Vec<[f64; 2]>> {
+    let mut rest = loops.to_vec();
+    let mut paths = Vec::new();
+    for angle in std::iter::once(base).chain(long_edge_angles(loops, base)) {
+        let chords = horizontal_chords(&rotate_loops(&rest, -angle), spacing, None);
+        let (mut long, mut short) = (0.0, 0.0);
+        for (x0, x1) in chords.iter().flat_map(|(_, spans)| spans) {
+            if x1 - x0 >= SOLID_ROW_MM {
+                long += x1 - x0;
+            } else {
+                short += x1 - x0;
+            }
+        }
+        if long == 0.0 {
+            continue;
+        }
+        if short == 0.0 {
+            paths.extend(clip_infill(solid_fill(&rest, spacing, angle, None), &rest));
+            return paths;
+        }
+        let half = spacing * 0.5;
+        let mut rows = Vec::new();
+        for (y, spans) in &chords {
+            for &(x0, x1) in spans.iter().filter(|(x0, x1)| x1 - x0 >= SOLID_ROW_MM) {
+                rows.push(
+                    [
+                        [x0, y - half],
+                        [x1, y - half],
+                        [x1, y + half],
+                        [x0, y + half],
+                    ]
+                    .map(|p| rot(p, angle))
+                    .to_vec(),
+                );
+            }
+        }
+        // Grown by a row, so the bare edge a stretch's rows leave is its own.
+        let taken = boolean_intersect(&offset_loops(&resolve_nonzero(rows), spacing), &rest);
+        let whole = rest.clone();
+        rest = drop_slivers(boolean_diff(&rest, &taken), SKIN_SLIVER_MM2);
+        for piece in island_loops(&taken) {
+            let (pitch, through) = fit_rows(&piece, &whole, angle, spacing);
+            paths.extend(clip_infill(
+                solid_fill(&piece, pitch, angle, through),
+                &piece,
+            ));
+        }
+    }
+    if !rest.is_empty() {
+        paths.extend(clip_infill(solid_fill(&rest, spacing, base, None), &rest));
+    }
+    paths
+}
+
+/// Row pitch and grid for a stretch `piece` of `region` that runs along
+/// `angle`. A stretch only a few beads wide takes a whole number of rows, laid
+/// edge to edge, so it has no bare edge. Wider ones keep `spacing`.
+fn fit_rows(piece: &[Loop], region: &[Loop], angle: f64, spacing: f64) -> (f64, Option<[f64; 2]>) {
+    let Some((lo, hi)) = loop_bounds(&rotate_loops(piece, -angle)) else {
+        return (spacing, None);
+    };
+    // Across the stretch at its middle: a scan line square to the rows.
+    let across = angle + std::f64::consts::FRAC_PI_2;
+    let at = (lo[0] + hi[0]) * 0.5;
+    let line = horizontal_chords(&rotate_loops(region, -across), 1e9, Some(-at));
+    let mid = (lo[1] + hi[1]) * 0.5;
+    let Some(&(a, b)) = line
+        .iter()
+        .flat_map(|(_, spans)| spans)
+        .find(|(a, b)| *a <= mid && mid <= *b)
+    else {
+        return (spacing, None);
+    };
+    let width = b - a;
+    if width >= spacing * 6.0 {
+        return (spacing, None);
+    }
+    let pitch = width / (width / spacing).round().max(1.0);
+    (pitch, Some(rot([at, a + pitch * 0.5], angle)))
+}
+
+/// Directions of the longest edges of `loops`, at most two, each at least 20
+/// degrees from `base` and from each other.
+fn long_edge_angles(loops: &[Loop], base: f64) -> Vec<f64> {
+    use std::f64::consts::PI;
+    let mut edges: Vec<(f64, f64)> = loops
+        .iter()
+        .flat_map(|l| l.iter().zip(l.iter().cycle().skip(1)))
+        .map(|(a, b)| {
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            (dx.hypot(dy), dy.atan2(dx).rem_euclid(PI))
+        })
+        .collect();
+    edges.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let apart = |a: f64, b: f64| {
+        let d = (a - b).rem_euclid(PI);
+        d.min(PI - d) >= 20f64.to_radians()
+    };
+    let mut found: Vec<f64> = Vec::new();
+    for (_, angle) in edges {
+        if apart(angle, base) && found.iter().all(|f| apart(angle, *f)) {
+            found.push(angle);
+            if found.len() == 2 {
+                break;
+            }
+        }
+    }
+    found
 }
 
 /// Solid rectilinear in scan order. Alternate rows flip so the next chord
