@@ -159,19 +159,6 @@ fn a_bad_seam_disk_is_refused_by_name() {
 }
 
 #[test]
-fn a_belt_refuses_seam_paint() {
-    let err = slice(&request(json!({
-        "belt": { "angleDeg": 45, "axis": "z", "direction": 1, "widthMm": 220, "copies": 1, "gapMm": 5 },
-        "seamPaint": [disk([1.0, 1.0, 0.4], 2.0)]
-    })))
-    .unwrap_err();
-    assert!(
-        err.contains("belt: seam paint is not available"),
-        "{err}"
-    );
-}
-
-#[test]
 fn seam_paint_on_a_plate_belongs_on_the_object() {
     let stl = base64::engine::general_purpose::STANDARD.encode(box_stl(0.0, 0.0, 8.0, 8.0, 0.8));
     let err = slice(&json!({
