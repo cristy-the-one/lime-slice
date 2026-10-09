@@ -723,7 +723,7 @@ mod tests {
     use super::super::tests::{
         band, layers, pad_over_flank, plate, plate_opts, rect, unfooted_interface,
     };
-    use super::super::{Forest, SupportOpts, SupportStyle};
+    use super::super::{FloorPlane, Forest, SupportOpts, SupportStyle};
     use super::*;
     use crate::poly::in_solid;
 
@@ -853,13 +853,29 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_incremental_rebuild_matches_a_full_rebuild() {
+    /// Fails naming the first layers that differ, not the whole stack.
+    fn same_layers(got: &[SupportLayer], want: &[SupportLayer], what: &str) {
+        let differ: Vec<usize> = (0..got.len().max(want.len()))
+            .filter(|&i| got.get(i) != want.get(i))
+            .collect();
+        assert!(
+            differ.is_empty(),
+            "{what}: layers {differ:?} differ, first {:?} against {:?}",
+            got.get(differ[0]),
+            want.get(differ[0])
+        );
+    }
+
+    /// Prunes of each fixture, each alone and then all stacked on one build,
+    /// every one checked against a full rebuild. Returns how many ran.
+    fn incremental_matches_full(fixtures: Vec<(&'static str, Fixture)>) -> usize {
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
         let mut checked = 0;
-        for (name, fixture) in fixtures() {
+        for (name, fixture) in fixtures {
             let (bands, contours, _) = &fixture;
-            let edits = prunes(&build(&fixture), bands, &mut rng);
+            let built = build(&fixture);
+            same_layers(&built.layers, &built.rebuilt(bands, contours), name);
+            let edits = prunes(&built, bands, &mut rng);
             // Each prune alone, then all of them stacked on one build.
             for (what, edit) in &edits {
                 let mut s = build(&fixture);
@@ -868,20 +884,48 @@ mod tests {
                     s.forest.limbs.iter().any(|l| l.life != Life::Live),
                     "{name}, {what}: nothing was pruned"
                 );
-                assert_eq!(s.layers, s.rebuilt(bands, contours), "{name}, {what}");
+                same_layers(
+                    &s.layers,
+                    &s.rebuilt(bands, contours),
+                    &format!("{name}, {what}"),
+                );
                 checked += 1;
             }
             let mut s = build(&fixture);
             for (what, edit) in &edits {
                 s.apply(std::slice::from_ref(edit), bands, contours);
-                assert_eq!(
-                    s.layers,
-                    s.rebuilt(bands, contours),
-                    "{name}, stacked up to {what}"
+                same_layers(
+                    &s.layers,
+                    &s.rebuilt(bands, contours),
+                    &format!("{name}, stacked up to {what}"),
                 );
             }
         }
+        checked
+    }
+
+    #[test]
+    fn an_incremental_rebuild_matches_a_full_rebuild() {
+        let checked = incremental_matches_full(fixtures());
         assert!(checked >= 30, "only {checked} prunes checked");
+    }
+
+    #[test]
+    fn an_incremental_rebuild_matches_a_full_rebuild_on_a_belt_floor() {
+        // The belt at 45°, a few mm into the fixtures, so it clips their trunks.
+        let floor = FloorPlane::new(1.0, 2.0, 0.0);
+        let floored = fixtures()
+            .into_iter()
+            .map(|(name, (bands, contours, opts))| {
+                let opts = SupportOpts {
+                    floor: Some(floor),
+                    ..opts
+                };
+                (name, (bands, contours, opts))
+            })
+            .collect();
+        let checked = incremental_matches_full(floored);
+        assert!(checked >= 25, "only {checked} prunes checked");
     }
 
     /// A 4 mm pad 8 mm up, with one tip and so one tree.
