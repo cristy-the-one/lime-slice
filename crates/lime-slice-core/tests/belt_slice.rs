@@ -539,6 +539,136 @@ fn floor_support_trunks_stand_on_the_belt() {
     assert!(first.starts_with(";LAYER:0 Z:0.283 "), "{first}");
 }
 
+/// A tower with an arm reaching up the belt and a wedge under the arm's
+/// tip: the outline is `[along, height]` in mm, 4 mm across. The wedge's
+/// underside faces down at 45°, toward the upstream end of the belt, so in
+/// the nozzle frame it is a flat ceiling with nothing under it. Its lowest
+/// edge is 14 mm over the belt.
+fn arm_with_wedge() -> String {
+    let outline: [[f64; 2]; 8] = [
+        [0.0, 0.0],
+        [4.0, 0.0],
+        [4.0, 20.0],
+        [-12.0, 20.0],
+        [-12.0, 17.0],
+        [-9.0, 14.0],
+        [-6.0, 17.0],
+        [0.0, 17.0],
+    ];
+    // The outline's corners only, so the caps meet the walls edge to edge.
+    let caps = [
+        [0, 1, 7],
+        [1, 2, 7],
+        [7, 2, 3],
+        [7, 3, 6],
+        [6, 3, 4],
+        [4, 5, 6],
+    ];
+    let width = 4.0;
+    let at = |x: f64, [y, z]: [f64; 2]| [x, y, z];
+    let mut faces = Vec::new();
+    for k in 0..outline.len() {
+        let (p, q) = (outline[k], outline[(k + 1) % outline.len()]);
+        faces.push([at(0.0, p), at(0.0, q), at(width, p)]);
+        faces.push([at(0.0, q), at(width, q), at(width, p)]);
+    }
+    for corners in caps {
+        let [a, b, c] = corners.map(|k| outline[k]);
+        faces.push([at(width, a), at(width, b), at(width, c)]);
+        faces.push([at(0.0, a), at(0.0, c), at(0.0, b)]);
+    }
+    let mut out = String::from("solid wedge\n");
+    for face in faces {
+        out.push_str("facet normal 0 0 0\nouter loop\n");
+        for v in face {
+            out.push_str(&format!("vertex {} {} {}\n", v[0], v[1], v[2]));
+        }
+        out.push_str("endloop\nendfacet\n");
+    }
+    out.push_str("endsolid wedge\n");
+    out
+}
+
+/// Lean from the lab vertical, in degrees, of the trunk beads of a Z-axis,
+/// +1 belt file that print under lab height `under`: how far their lab XY
+/// moves per millimetre of lab height, by least squares. A column that
+/// stands plumb moves none.
+fn support_lean(gcode: &str, angle: f64, under: f64) -> f64 {
+    let (s, c) = (angle.to_radians().sin(), angle.to_radians().cos());
+    // Length-weighted sums of 1, x, y, z, xz, yz and zz over bead midpoints.
+    let mut sum = [0.0; 7];
+    let (mut b, mut u, mut x) = (0.0, 0.0, 0.0);
+    let mut kind = "";
+    for line in gcode.lines() {
+        if let Some(rest) = line.strip_prefix("; TYPE:") {
+            kind = rest.trim();
+            continue;
+        }
+        if !(line.starts_with("G1 ") || line.starts_with("G2 ") || line.starts_with("G3 ")) {
+            continue;
+        }
+        let from = [x, b - u * c, u * s];
+        b = gcode_word(line, 'Z').unwrap_or(b);
+        u = gcode_word(line, 'Y').unwrap_or(u);
+        x = gcode_word(line, 'X').unwrap_or(x);
+        let to = [x, b - u * c, u * s];
+        let moved = gcode_word(line, 'X').is_some() || gcode_word(line, 'Y').is_some();
+        if kind != "SUPPORT" || !moved || gcode_word(line, 'E').is_none() {
+            continue;
+        }
+        let [px, py, pz] = [0, 1, 2].map(|i| (from[i] + to[i]) * 0.5);
+        if pz >= under {
+            continue;
+        }
+        let w = (to[0] - from[0])
+            .hypot(to[1] - from[1])
+            .hypot(to[2] - from[2]);
+        let terms = [1.0, px, py, pz, px * pz, py * pz, pz * pz];
+        for (acc, v) in sum.iter_mut().zip(terms) {
+            *acc += w * v;
+        }
+    }
+    assert!(sum[0] > 0.0, "no trunk beads under {under} mm");
+    let [_, sx, sy, sz, sxz, syz, szz] = sum.map(|v| v / sum[0]);
+    let var_z = szz - sz * sz;
+    let dx = (sxz - sx * sz) / var_z;
+    let dy = (syz - sy * sz) / var_z;
+    dx.hypot(dy).atan().to_degrees()
+}
+
+#[test]
+fn floor_supports_grow_along_gravity() {
+    for style in ["tree", "grid"] {
+        let mut spec = belt(45.0, "z", 1, 5.0);
+        spec["floorSupports"] = json!(true);
+        let req = request(
+            &arm_with_wedge(),
+            "wedge.stl",
+            json!({
+                "belt": spec,
+                "supports": true,
+                "supportStyle": style,
+                "supportAngle": 45.0,
+                "includePreview": false,
+            }),
+        );
+        let sliced = slice_request(&req, Job::default()).unwrap();
+        assert!(sliced.sanity.ok, "{style}: {:?}", sliced.sanity.notes);
+        // Under the wedge, below its lowest edge, where nothing else grows.
+        let lean = support_lean(&sliced.gcode, 45.0, 13.0);
+        assert!(
+            lean < 10.0,
+            "{style} supports lean {lean:.1}° from the lab vertical"
+        );
+        let feet = trunk_feet(&sliced.gcode, 45.0);
+        assert!(!feet.is_empty(), "the wedge grew no {style} supports");
+        assert!(
+            feet.iter().all(|&z| z <= 0.3),
+            "{style} supports end over the belt, at {feet:?} mm"
+        );
+    }
+}
+
 #[test]
 fn seam_on_the_belt_edge_is_opt_in() {
     use sha2::{Digest, Sha256};
