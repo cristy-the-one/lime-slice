@@ -18,11 +18,16 @@ use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::Instant;
 
-use truck_meshalgo::prelude::PolygonMesh;
+use truck_meshalgo::prelude::{
+    MetricSpace, ParameterDivision2D, ParameterRange, ParametricSurface, ParametricSurface3D,
+    Point3, PolygonMesh, SPHint2D, SearchNearestParameter, SearchParameter, Vector3, D2,
+};
 use truck_meshalgo::tessellation::RobustMeshableShape;
+use truck_stepio::r#in::alias::{Curve3D, Surface};
 use truck_stepio::r#in::ruststep::ast::{DataSection, EntityInstance, Name, Parameter, Record};
 use truck_stepio::r#in::ruststep::parser;
 use truck_stepio::r#in::Table;
+use truck_topology::compress::{CompressedFace, CompressedShell};
 
 use crate::mesh::Mesh;
 
@@ -763,6 +768,128 @@ fn direction_of(entities: &HashMap<u64, Ent>, param: Option<&Parameter>) -> Opti
     ])
 }
 
+/// Truck's STEP surface as the tessellator sees it. Every call goes to the
+/// inner surface, except where a method says otherwise.
+#[derive(Clone)]
+struct MeshSurface(Surface);
+
+impl ParametricSurface for MeshSurface {
+    type Point = Point3;
+    type Vector = Vector3;
+    fn subs(&self, u: f64, v: f64) -> Point3 {
+        self.0.subs(u, v)
+    }
+    fn uder(&self, u: f64, v: f64) -> Vector3 {
+        self.0.uder(u, v)
+    }
+    fn vder(&self, u: f64, v: f64) -> Vector3 {
+        self.0.vder(u, v)
+    }
+    fn uuder(&self, u: f64, v: f64) -> Vector3 {
+        self.0.uuder(u, v)
+    }
+    fn uvder(&self, u: f64, v: f64) -> Vector3 {
+        self.0.uvder(u, v)
+    }
+    fn vvder(&self, u: f64, v: f64) -> Vector3 {
+        self.0.vvder(u, v)
+    }
+    fn parameter_range(&self) -> (ParameterRange, ParameterRange) {
+        self.0.parameter_range()
+    }
+    fn u_period(&self) -> Option<f64> {
+        self.0.u_period()
+    }
+    fn v_period(&self) -> Option<f64> {
+        self.0.v_period()
+    }
+}
+
+impl ParametricSurface3D for MeshSurface {
+    fn normal(&self, u: f64, v: f64) -> Vector3 {
+        self.0.normal(u, v)
+    }
+}
+
+impl ParameterDivision2D for MeshSurface {
+    fn parameter_division(
+        &self,
+        range: ((f64, f64), (f64, f64)),
+        tol: f64,
+    ) -> (Vec<f64>, Vec<f64>) {
+        self.0.parameter_division(range, tol)
+    }
+}
+
+impl SearchParameter<D2> for MeshSurface {
+    type Point = Point3;
+    fn search_parameter<H: Into<SPHint2D>>(
+        &self,
+        point: Point3,
+        hint: H,
+        trials: usize,
+    ) -> Option<(f64, f64)> {
+        self.0.search_parameter(point, hint, trials)
+    }
+}
+
+impl SearchNearestParameter<D2> for MeshSurface {
+    type Point = Point3;
+    /// Creo edges ride a few microns off a B-spline face, so truck's exact search
+    /// fails and it falls back to this one. Truck's Newton step is not clamped:
+    /// from a hint at a domain corner it can run to a stationary point outside the
+    /// knot range, and truck takes whatever comes back. The face rim then sits on
+    /// the surface at the wrong parameters, up to 77 mm off, and the face leaks.
+    /// Search from the hint and from scratch, pull each result into the knot range,
+    /// and keep the one nearest the point. Only splines have a real parameter
+    /// range: truck's plane and cone domains are a unit square their faces leave.
+    fn search_nearest_parameter<H: Into<SPHint2D>>(
+        &self,
+        point: Point3,
+        hint: H,
+        trials: usize,
+    ) -> Option<(f64, f64)> {
+        let hint = hint.into();
+        if !matches!(
+            self.0,
+            Surface::BSplineSurface(_) | Surface::NurbsSurface(_)
+        ) {
+            return self.0.search_nearest_parameter(point, hint, trials);
+        }
+        let (urange, vrange) = self.0.try_range_tuple();
+        let clamp = |x: f64, range: Option<(f64, f64)>| range.map_or(x, |(lo, hi)| x.clamp(lo, hi));
+        let cold = (hint != SPHint2D::None).then_some(SPHint2D::None);
+        [Some(hint), cold]
+            .into_iter()
+            .flatten()
+            .filter_map(|start| self.0.search_nearest_parameter(point, start, trials))
+            .map(|(u, v)| (clamp(u, urange), clamp(v, vrange)))
+            .min_by(|a, b| {
+                let miss = |&(u, v): &(f64, f64)| self.subs(u, v).distance2(point);
+                miss(a).total_cmp(&miss(b))
+            })
+    }
+}
+
+/// The same shell with each face surface wrapped in [`MeshSurface`].
+fn mesh_surfaces(
+    shell: CompressedShell<Point3, Curve3D, Surface>,
+) -> CompressedShell<Point3, Curve3D, MeshSurface> {
+    CompressedShell {
+        vertices: shell.vertices,
+        edges: shell.edges,
+        faces: shell
+            .faces
+            .into_iter()
+            .map(|face| CompressedFace {
+                boundaries: face.boundaries,
+                orientation: face.orientation,
+                surface: MeshSurface(face.surface),
+            })
+            .collect(),
+    }
+}
+
 fn tessellate_shell(
     table: &Table,
     shell_id: u64,
@@ -775,12 +902,15 @@ fn tessellate_shell(
     })?;
     let step_faces = shell.cfs_faces.len();
     let compress = Instant::now();
-    let compressed = table.to_compressed_shell(shell).map_err(|err| {
-        format!(
-            "STEP solid could not be converted: {}",
-            brief(&err.to_string())
-        )
-    })?;
+    let compressed = table
+        .to_compressed_shell(shell)
+        .map(mesh_surfaces)
+        .map_err(|err| {
+            format!(
+                "STEP solid could not be converted: {}",
+                brief(&err.to_string())
+            )
+        })?;
     timings.compress_ms += ms_since(compress);
     let kept = compressed.faces.len();
     if step_faces > 0 && kept < step_faces {
@@ -1225,4 +1355,55 @@ fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 
 fn mul_s(a: [f64; 3], scale: f64) -> [f64; 3] {
     [a[0] * scale, a[1] * scale, a[2] * scale]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use truck_stepio::r#in::alias::{BSplineSurface, KnotVec};
+
+    /// A 30 mm bicubic patch with 3 mm ripples and slightly uneven spacing, the
+    /// way a Creo export parameterizes a doubly curved face.
+    fn rippled_patch() -> MeshSurface {
+        #[rustfmt::skip]
+        let rows = [
+            [[-0.3, 0.4, -0.5], [-1.2, 10.5, -0.8], [-0.8, 21.1, 0.5], [1.0, 30.2, -2.2]],
+            [[9.0, 0.0, 1.8], [11.2, 9.1, 0.5], [10.0, 21.1, -0.7], [10.1, 30.9, -0.1]],
+            [[20.6, 0.0, 1.9], [20.6, 9.3, 0.3], [20.4, 21.3, -1.8], [21.2, 31.4, 0.6]],
+            [[30.7, -0.1, -0.9], [29.9, 10.6, -0.5], [30.5, 20.2, 0.7], [28.8, 28.6, 2.6]],
+        ];
+        let points = rows
+            .iter()
+            .map(|row| row.iter().map(|p| Point3::new(p[0], p[1], p[2])).collect())
+            .collect();
+        let knots = (KnotVec::bezier_knot(3), KnotVec::bezier_knot(3));
+        MeshSurface(Surface::BSplineSurface(Box::new(BSplineSurface::new(
+            knots, points,
+        ))))
+    }
+
+    /// Truck walks a face rim point by point, hinting each search with the
+    /// parameter of the one before. Creo edges ride a few microns off the surface,
+    /// so the exact search fails and the nearest-point Newton step runs from there.
+    /// Unclamped, it left the knot range from a corner hint and truck took the
+    /// result as is, which put the face rim up to 77 mm from the part.
+    #[test]
+    fn nearest_parameter_stays_on_the_patch_from_a_corner_hint() {
+        let patch = rippled_patch();
+        for k in 1..10 {
+            let (u, v) = (1.0, k as f64 / 10.0);
+            let on = patch.subs(u, v);
+            let off = on + patch.normal(u, v) * 0.003;
+            assert!(patch.search_parameter(off, Some((1.0, 0.0)), 100).is_none());
+            let (a, b) = patch
+                .search_nearest_parameter(off, Some((1.0, 0.0)), 100)
+                .unwrap_or_else(|| panic!("no parameter at v {v}"));
+            let miss = patch.subs(a, b).distance(off);
+            let inside = |x: f64| (-1e-6..=1.0 + 1e-6).contains(&x);
+            assert!(
+                inside(a) && inside(b) && miss < 0.01,
+                "v {v}: got ({a}, {b}), {miss} mm from the point"
+            );
+        }
+    }
 }
