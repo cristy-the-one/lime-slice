@@ -92,7 +92,14 @@ export function mountMarkup(root: HTMLElement) {
             <div class="readout" id="readLow">Z —</div>
           </div>
           <div class="previews">
-            <div class="pane" id="pane2d"><canvas id="view" aria-label="2D toolpath"></canvas></div>
+            <div class="pane" id="pane2d">
+              <canvas id="view" aria-label="2D toolpath"></canvas>
+              <div class="flat-tools" id="flatTools">
+                <button class="flat-tool" id="flatZoomOut" type="button" aria-label="Zoom out" disabled>−</button>
+                <button class="flat-tool" id="flatFit" type="button" aria-label="Fit layer" disabled>Fit</button>
+                <button class="flat-tool" id="flatZoomIn" type="button" aria-label="Zoom in" disabled>+</button>
+              </div>
+            </div>
             <div class="pane" id="pane3d">
               <div class="viewport-bands" id="viewportBands" hidden></div>
               <canvas id="view3d" aria-label="3D toolpath"></canvas>
@@ -128,6 +135,7 @@ export function mountMarkup(root: HTMLElement) {
         <li>Prepare gizmo sits at the left of the view. Drag a ring to rotate. <kbd>Shift</kbd> snaps 15°</li>
         <li>Drag the part, or an arrow, to move it. <kbd>Shift</kbd> snaps 1 mm. X and Y fields set the bed position</li>
         <li>Drag the split plane when By region is on</li>
+        <li>2D preview: drag to pan, two-finger scroll pans, wheel or pinch zooms at the cursor. Fit recenters the layer</li>
         <li>Bed fades the build plate. 0 hides it</li>
         <li>Section clips the preview. Cut moves the plane. Rings, parked at the left, aim it. The sheet is only a guide. Layers still apply. Neither changes the slice</li>
         <li><kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> Layer. The ▲ ▼ buttons step one layer; the slider still scrubs</li>

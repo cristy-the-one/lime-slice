@@ -19,6 +19,7 @@ import { themeColors } from "../theme";
 import { resolved } from "../strategy";
 import { syncEmptyState } from "../ui/shell";
 import { freshPreviewMode, gizmoNudge, viewportPending } from "../ui/preview-ux";
+import { FLAT_PAD_CSS, fitFlatView, frameFlatView, mapFlat, panFlat, unmapFlat, wheelKind, wheelZoomFactor, zoomFlat, type FlatView, type XyBounds } from "../ui/flat-view";
 import { type AxisBounds, type SplitSync, splitOutside, nextSplitAt, roundSplit, clampSplit } from "../split-at";
 import { plateUnionBounds } from "../plate";
 import { matMul, rotX, rotY, rotZ } from "../mesh-place";
@@ -653,23 +654,124 @@ export function paintRegionOverlay(
   if (at < y1 - 1) text((x0 + x1) / 2, (Math.max(at, y0) + y1) / 2, "speed", colors.teal);
 }
 
+/** The 2D camera. `fit` frames the current layer; `user` is a pan or zoom. */
+interface FlatCamera {
+  result: SliceResponse;
+  layer: number;
+  mode: "fit" | "user";
+  view: FlatView;
+  w: number;
+  h: number;
+  /** Fit was asked for, so the next draw frames this layer even if the zoom was close. */
+  force: boolean;
+}
+
+let flatCamera: FlatCamera | null = null;
+let flatPan: { id: number; x: number; y: number } | null = null;
+const flatPointers = new Map<number, { x: number; y: number }>();
+let flatPinch: { dist: number; midX: number; midY: number } | null = null;
+
+/** Bounds of the strokes on this layer, in the coordinates `map` draws. */
+function drawnLayerBounds(dx: number, dy: number): XyBounds | null {
+  const layer = state.result?.layers[state.layer];
+  if (!layer) return null;
+  let bounds: XyBounds | null = null;
+  for (const path of pathsOf(layer)) {
+    if (state.hidden.has(path.kind)) continue;
+    if (path.kind === "travel" && !state.showTravel) continue;
+    for (const [x, y] of path.pts) {
+      const wx = x + dx;
+      const wy = y + dy;
+      if (!Number.isFinite(wx) || !Number.isFinite(wy)) continue;
+      if (!bounds) bounds = { minX: wx, minY: wy, maxX: wx, maxY: wy };
+      else {
+        if (wx < bounds.minX) bounds.minX = wx;
+        if (wy < bounds.minY) bounds.minY = wy;
+        if (wx > bounds.maxX) bounds.maxX = wx;
+        if (wy > bounds.maxY) bounds.maxY = wy;
+      }
+    }
+  }
+  return bounds;
+}
+
+function flatPad(): number {
+  return FLAT_PAD_CSS * (window.devicePixelRatio || 1);
+}
+
+function syncFlatTools() {
+  const on = !!state.result?.layers[state.layer];
+  for (const id of ["#flatFit", "#flatZoomIn", "#flatZoomOut"]) {
+    document.querySelector<HTMLButtonElement>(id)?.toggleAttribute("disabled", !on);
+  }
+}
+
+/** Frame the layer that is about to be drawn. A user pan or zoom is kept until the layer would leave the canvas. */
+function syncFlatCamera(bounds: XyBounds): FlatView {
+  const w = fx.canvas.width;
+  const h = fx.canvas.height;
+  const pad = flatPad();
+  const result = state.result!;
+  if (!flatCamera || flatCamera.result !== result || flatCamera.force) {
+    flatCamera = { result, layer: state.layer, mode: "fit", view: fitFlatView(bounds, w, h, pad), w, h, force: false };
+    return flatCamera.view;
+  }
+  const sizeChanged = flatCamera.w !== w || flatCamera.h !== h;
+  const layerChanged = flatCamera.layer !== state.layer;
+  if (flatCamera.mode === "fit") {
+    flatCamera.view = sizeChanged ? fitFlatView(bounds, w, h, pad) : frameFlatView(flatCamera.view, bounds, w, h, pad, "fit");
+  } else if (layerChanged) {
+    flatCamera.view = frameFlatView(flatCamera.view, bounds, w, h, pad, "user");
+  }
+  flatCamera.layer = state.layer;
+  flatCamera.w = w;
+  flatCamera.h = h;
+  return flatCamera.view;
+}
+
+function userFlatView(): FlatView | null {
+  if (!flatCamera || !state.result) return null;
+  flatCamera.mode = "user";
+  return flatCamera.view;
+}
+
+export function fitFlatLayer() {
+  if (!flatCamera || !state.result) return;
+  flatCamera.mode = "fit";
+  flatCamera.force = true;
+  draw();
+}
+
+function zoomFlatStep(factor: number) {
+  const view = userFlatView();
+  if (!view || !flatCamera) return;
+  const w = fx.canvas.width;
+  const h = fx.canvas.height;
+  flatCamera.view = zoomFlat(view, w, h, w / 2, h / 2, factor);
+  draw();
+}
+
 export function previewMap(mesh: { min: number[]; max: number[] }) {
   const w = fx.canvas.width;
   const h = fx.canvas.height;
   const dpr = window.devicePixelRatio || 1;
-  const pad = 28 * dpr;
-  const spanX = Math.max(1e-6, mesh.max[0] - mesh.min[0]);
-  const spanY = Math.max(1e-6, mesh.max[1] - mesh.min[1]);
-  const scale = Math.min((w - pad * 2) / spanX, (h - pad * 2) / spanY);
-  const ox = (w - spanX * scale) / 2;
-  const oy = (h - spanY * scale) / 2;
   const [dx, dy] = shownOffset();
-  const map = (x: number, y: number): [number, number] => [ox + (x + dx - mesh.min[0]) * scale, h - (oy + (y + dy - mesh.min[1]) * scale)];
-  const unmap = (px: number, py: number): [number, number] => [
-    mesh.min[0] + (px - ox) / scale - dx,
-    mesh.min[1] + (h - py - oy) / scale - dy,
-  ];
-  return { map, unmap, dpr, scale };
+  const bounds = drawnLayerBounds(dx, dy) ?? {
+    minX: mesh.min[0] + dx,
+    minY: mesh.min[1] + dy,
+    maxX: mesh.max[0] + dx,
+    maxY: mesh.max[1] + dy,
+  };
+  const view = state.result ? syncFlatCamera(bounds) : fitFlatView(bounds, w, h, flatPad());
+  syncFlatTools();
+  fx.canvas.dataset.flatMode = flatCamera?.mode ?? "fit";
+  fx.canvas.dataset.flatScale = view.scale.toFixed(4);
+  const map = (x: number, y: number): [number, number] => mapFlat(view, w, h, x + dx, y + dy);
+  const unmap = (px: number, py: number): [number, number] => {
+    const [x, y] = unmapFlat(view, w, h, px, py);
+    return [x - dx, y - dy];
+  };
+  return { map, unmap, dpr, scale: view.scale };
 }
 
 /**
@@ -698,7 +800,7 @@ function splitOnBed(at: number): number {
   return at + (state.axis === "x" ? dx : dy);
 }
 
-export function canvasPx(ev: PointerEvent) {
+export function canvasPx(ev: { clientX: number; clientY: number }) {
   const rect = fx.canvas.getBoundingClientRect();
   return {
     x: (ev.clientX - rect.left) * (fx.canvas.width / Math.max(1, rect.width)),
@@ -996,28 +1098,88 @@ export function mountViews() {
     paintSectionChrome();
     draw();
   });
+  const endFlatPointer = (ev: PointerEvent) => {
+    flatPointers.delete(ev.pointerId);
+    if (flatPan?.id === ev.pointerId) flatPan = null;
+    if (flatPointers.size < 2) flatPinch = null;
+    if (!flatPan && !session.drag2d) canvas.classList.remove("is-panning");
+    endRegionDrag();
+  };
   canvas.addEventListener("pointerdown", (ev) => {
-    if (ev.button !== 0 || state.blendKind !== "byRegion" || !state.result) return;
-    const mesh = state.result.mesh;
-    const { map, dpr } = previewMap(mesh);
+    if (!state.result || (ev.button !== 0 && ev.button !== 1)) return;
     const px = canvasPx(ev);
-    const at = splitInReply();
-    const line = state.axis === "x" ? map(at, mesh.min[1])[0] : map(mesh.min[0], at)[1];
-    const dist = state.axis === "x" ? Math.abs(px.x - line) : Math.abs(px.y - line);
-    if (dist > 16 * dpr) return;
-    session.drag2d = true;
+    flatPointers.set(ev.pointerId, px);
     canvas.setPointerCapture(ev.pointerId);
-    ev.preventDefault();
+    if (flatPointers.size >= 2) {
+      flatPan = null;
+      session.drag2d = false;
+      const pts = [...flatPointers.values()];
+      flatPinch = { dist: Math.max(1, Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)), midX: (pts[0].x + pts[1].x) / 2, midY: (pts[0].y + pts[1].y) / 2 };
+      return;
+    }
+    if (ev.button === 0 && state.blendKind === "byRegion") {
+      const mesh = state.result.mesh;
+      const { map, dpr } = previewMap(mesh);
+      const at = splitInReply();
+      const line = state.axis === "x" ? map(at, mesh.min[1])[0] : map(mesh.min[0], at)[1];
+      const dist = state.axis === "x" ? Math.abs(px.x - line) : Math.abs(px.y - line);
+      if (dist <= 16 * dpr) {
+        session.drag2d = true;
+        canvas.setPointerCapture(ev.pointerId);
+        ev.preventDefault();
+        return;
+      }
+    }
+    flatPan = { id: ev.pointerId, x: px.x, y: px.y };
+    canvas.setPointerCapture(ev.pointerId);
+    if (ev.button === 1) ev.preventDefault();
   });
   canvas.addEventListener("pointermove", (ev) => {
-    if (!session.drag2d || !state.result) return;
-    const { unmap } = previewMap(state.result.mesh);
     const px = canvasPx(ev);
-    const [x, y] = unmap(px.x, px.y);
-    commitSplit(splitOnBed(state.axis === "x" ? x : y));
+    if (flatPointers.has(ev.pointerId)) flatPointers.set(ev.pointerId, px);
+    if (flatPinch && flatPointers.size >= 2 && flatCamera) {
+      const pts = [...flatPointers.values()];
+      const dist = Math.max(1, Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y));
+      const midX = (pts[0].x + pts[1].x) / 2;
+      const midY = (pts[0].y + pts[1].y) / 2;
+      const view = userFlatView();
+      if (!view) return;
+      flatCamera.view = zoomFlat(panFlat(view, midX - flatPinch.midX, midY - flatPinch.midY), fx.canvas.width, fx.canvas.height, midX, midY, dist / flatPinch.dist);
+      flatPinch = { dist, midX, midY };
+      draw();
+      return;
+    }
+    if (session.drag2d && state.result) {
+      const { unmap } = previewMap(state.result.mesh);
+      const [x, y] = unmap(px.x, px.y);
+      commitSplit(splitOnBed(state.axis === "x" ? x : y));
+      return;
+    }
+    if (!flatPan || ev.pointerId !== flatPan.id || !flatCamera) return;
+    const dsx = px.x - flatPan.x;
+    const dsy = px.y - flatPan.y;
+    if (dsx === 0 && dsy === 0) return;
+    flatPan = { id: flatPan.id, x: px.x, y: px.y };
+    canvas.classList.add("is-panning");
+    flatCamera.mode = "user";
+    flatCamera.view = panFlat(flatCamera.view, dsx, dsy);
+    draw();
   });
-  canvas.addEventListener("pointerup", endRegionDrag);
-  canvas.addEventListener("pointercancel", endRegionDrag);
+  canvas.addEventListener("pointerup", endFlatPointer);
+  canvas.addEventListener("pointercancel", endFlatPointer);
+  canvas.addEventListener("wheel", (ev) => {
+    if (!state.result || !flatCamera) return;
+    ev.preventDefault();
+    const px = canvasPx(ev);
+    const kind = wheelKind(ev.deltaX, ev.deltaY, ev.deltaMode, ev.ctrlKey, ev.metaKey);
+    flatCamera.mode = "user";
+    if (kind === "pan") flatCamera.view = panFlat(flatCamera.view, -ev.deltaX, -ev.deltaY);
+    else flatCamera.view = zoomFlat(flatCamera.view, fx.canvas.width, fx.canvas.height, px.x, px.y, wheelZoomFactor(ev.deltaY, ev.deltaMode));
+    draw();
+  }, { passive: false });
+  document.querySelector("#flatFit")?.addEventListener("click", () => fitFlatLayer());
+  document.querySelector("#flatZoomIn")?.addEventListener("click", () => zoomFlatStep(1.25));
+  document.querySelector("#flatZoomOut")?.addEventListener("click", () => zoomFlatStep(1 / 1.25));
   geomWorker.onmessage = (ev) => {
     const pending = patching.get(ev.data.id);
     patching.delete(ev.data.id);
