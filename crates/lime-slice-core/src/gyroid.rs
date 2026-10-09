@@ -9,12 +9,11 @@ use rayon::prelude::*;
 use crate::poly::{in_solid, loop_bounds, Loop};
 use crate::toolpath::clip_open_segment;
 
-/// Cell period for a target wall spacing. Adjacent gyroid sheets sit about
-/// half a period apart, so the period is twice the infill spacing.
+/// Cell period for a target wall spacing. A section of the surface carries
+/// about 2.45 / period of line per unit area, averaged over Z, so a period
+/// of 2.45 spacings extrudes as much as lines `spacing` apart.
 pub fn period_for_spacing(spacing: f64) -> f64 {
-    // The 2D sine draws two families of lines. One TPMS sheet needs a shorter
-    // period to land near that same extruded length.
-    (spacing * 1.15).clamp(0.6, 24.0)
+    (spacing * 2.45).clamp(0.6, 24.0)
 }
 
 pub fn section(loops: &[Loop], period: f64, z: f64, tol: f64) -> Vec<Vec<[f64; 2]>> {
