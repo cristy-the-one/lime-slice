@@ -1084,8 +1084,18 @@ fn snapped_triangles(
         .filter(|(_, n)| **n == 1)
         .flat_map(|(&(a, b), _)| [a, b])
         .collect();
-    let anchors: Vec<[f64; 3]> = loops.iter().flatten().copied().collect();
-    let reach2 = reach * reach;
+    // A rim vertex may belong to an anchor up to `reach` away, or half the gap
+    // to that anchor's neighbours on its loop where the loop is sparser. Creo
+    // leaves the edges of a 1 mm cone up to 0.15 mm off the cone.
+    let mut anchors: Vec<([f64; 3], f64)> = Vec::new();
+    for ring in loops {
+        for (k, &a) in ring.iter().enumerate() {
+            let before = ring[(k + ring.len() - 1) % ring.len()];
+            let after = ring[(k + 1) % ring.len()];
+            let gap2 = dist2(a, before).min(dist2(a, after));
+            anchors.push((a, (0.25 * gap2).max(reach * reach)));
+        }
+    }
     let positions: Vec<[f64; 3]> = mesh
         .positions()
         .iter()
@@ -1097,10 +1107,10 @@ fn snapped_triangles(
             }
             anchors
                 .iter()
-                .map(|a| (dist2(*a, p), *a))
-                .filter(|(d, _)| *d <= reach2)
+                .map(|(a, reach2)| (dist2(*a, p), *reach2, *a))
+                .filter(|(d, reach2, _)| d <= reach2)
                 .min_by(|x, y| x.0.total_cmp(&y.0))
-                .map_or(p, |(_, a)| a)
+                .map_or(p, |(_, _, a)| a)
         })
         .collect();
     let mut out = Vec::new();

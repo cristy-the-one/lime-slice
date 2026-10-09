@@ -192,6 +192,16 @@ fn an_extruded_arc_wall_follows_the_arc() {
     assert_eq!(boundary_edges(&mesh), 0);
 }
 
+/// Creo leaves the edges of a small cone up to 0.15 mm off it. The cylinder here
+/// is 1.2 mm across with its edge circles 0.12 mm outside it, past the 0.1 mm a
+/// rim vertex is moved to meet an edge, and it used to leave an open ring.
+#[test]
+fn a_small_cylinder_whose_edges_sit_off_it_is_closed() {
+    let mesh = load("loose_cylinder.step");
+    expect_box(&mesh, [-0.72, -0.72, 0.0], [0.72, 0.72, 1.5], 0.2);
+    assert_eq!(unpaired_edges(&mesh), 0);
+}
+
 #[test]
 fn cylinder_tessellates_inside_the_analytic_solid() {
     let mesh = load("cylinder.step");
