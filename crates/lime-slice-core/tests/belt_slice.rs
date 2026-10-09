@@ -2,6 +2,7 @@
 //! Cartesian requests are covered by `cartesian_lock`.
 
 use std::fs;
+use std::ops::Range;
 use std::path::PathBuf;
 
 use base64::Engine;
@@ -296,13 +297,18 @@ fn supports_edits_and_compare_are_refused() {
         Job::default(),
     )
     .unwrap_err();
-    assert!(err.contains("support edits"), "{err}");
+    assert!(
+        err.contains("belt: support edits are not available on a belt printer yet"),
+        "{err}"
+    );
 
+    // Without floor supports the paint is kept, and the reply says nothing prints.
     body.as_object_mut().unwrap().remove("supportEdits");
     body["supportPaint"] =
         json!([{ "kind": "block", "p": [1.0, 1.0, 1.0], "n": [0.0, 0.0, 1.0], "r": 1.0 }]);
-    let err = slice_request(&serde_json::from_value(body).unwrap(), Job::default()).unwrap_err();
-    assert!(err.contains("support paint"), "{err}");
+    let painted = slice_request(&serde_json::from_value(body).unwrap(), Job::default()).unwrap();
+    let tally = painted.support_paint.unwrap();
+    assert!(tally.supports_off, "{tally:?}");
 }
 
 #[test]
@@ -540,11 +546,11 @@ fn floor_support_trunks_stand_on_the_belt() {
 }
 
 /// A tower with an arm reaching up the belt and a wedge under the arm's
-/// tip: the outline is `[along, height]` in mm, 4 mm across. The wedge's
+/// tip: the outline is `[along, height]` in mm, `width` across. The wedge's
 /// underside faces down at 45°, toward the upstream end of the belt, so in
 /// the nozzle frame it is a flat ceiling with nothing under it. Its lowest
 /// edge is 14 mm over the belt.
-fn arm_with_wedge() -> String {
+fn arm_with_wedge(width: f64) -> String {
     let outline: [[f64; 2]; 8] = [
         [0.0, 0.0],
         [4.0, 0.0],
@@ -564,7 +570,6 @@ fn arm_with_wedge() -> String {
         [6, 3, 4],
         [4, 5, 6],
     ];
-    let width = 4.0;
     let at = |x: f64, [y, z]: [f64; 2]| [x, y, z];
     let mut faces = Vec::new();
     for k in 0..outline.len() {
@@ -642,7 +647,7 @@ fn floor_supports_grow_along_gravity() {
         let mut spec = belt(45.0, "z", 1, 5.0);
         spec["floorSupports"] = json!(true);
         let req = request(
-            &arm_with_wedge(),
+            &arm_with_wedge(4.0),
             "wedge.stl",
             json!({
                 "belt": spec,
@@ -667,6 +672,199 @@ fn floor_supports_grow_along_gravity() {
             "{style} supports end over the belt, at {feet:?} mm"
         );
     }
+}
+
+/// One extruding move of a belt file, put back on the part as
+/// `[across, along the belt, height]`.
+struct Bead {
+    layer: usize,
+    kind: String,
+    from: [f64; 3],
+    to: [f64; 3],
+}
+
+/// Every bead of a Z-axis, +1 belt file. Travels move the cursor, so the
+/// first bead after one starts where the nozzle landed.
+fn lab_beads(gcode: &str, angle: f64) -> Vec<Bead> {
+    let (s, c) = (angle.to_radians().sin(), angle.to_radians().cos());
+    let (mut b, mut u, mut x) = (0.0, 0.0, 0.0);
+    let (mut layer, mut kind) = (0, String::new());
+    let mut beads = Vec::new();
+    for line in gcode.lines() {
+        if line.starts_with(";LAYER:") {
+            layer += 1;
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("; TYPE:") {
+            kind = rest.trim().into();
+            continue;
+        }
+        let Some(word) = line.split_whitespace().next() else {
+            continue;
+        };
+        if !["G0", "G1", "G2", "G3"].contains(&word) {
+            continue;
+        }
+        let from = [x, b - u * c, u * s];
+        b = gcode_word(line, 'Z').unwrap_or(b);
+        u = gcode_word(line, 'Y').unwrap_or(u);
+        x = gcode_word(line, 'X').unwrap_or(x);
+        let moved = gcode_word(line, 'X').is_some() || gcode_word(line, 'Y').is_some();
+        if word != "G0" && moved && gcode_word(line, 'E').is_some() {
+            let to = [x, b - u * c, u * s];
+            beads.push(Bead {
+                layer,
+                kind: kind.clone(),
+                from,
+                to,
+            });
+        }
+    }
+    beads
+}
+
+/// The beads moved onto the mesh that spans `lo..hi` in X and Y. The part's
+/// beads are centred on it, since its walls sit half a bead in on each side.
+fn on_mesh(mut beads: Vec<Bead>, lo: [f64; 2], hi: [f64; 2]) -> Vec<Bead> {
+    let part: Vec<[f64; 3]> = beads
+        .iter()
+        .filter(|bead| !bead.kind.starts_with("SUPPORT"))
+        .flat_map(|bead| [bead.from, bead.to])
+        .collect();
+    let shift = [0, 1].map(|k| {
+        let (a, b) = span(&part, k);
+        (a + b - lo[k] - hi[k]) * 0.5
+    });
+    for bead in &mut beads {
+        for p in [&mut bead.from, &mut bead.to] {
+            p[0] -= shift[0];
+            p[1] -= shift[1];
+        }
+    }
+    beads
+}
+
+/// Support bead ends inside `x` by `y`, under height `z`.
+fn supports_in(beads: &[Bead], x: Range<f64>, y: Range<f64>, z: f64) -> usize {
+    beads
+        .iter()
+        .filter(|bead| bead.kind.starts_with("SUPPORT"))
+        .flat_map(|bead| [bead.from, bead.to])
+        .filter(|p| x.contains(&p[0]) && y.contains(&p[1]) && p[2] < z)
+        .count()
+}
+
+/// `arm_with_wedge(width)` with floor supports and `paint`, on the mesh.
+fn painted_wedge(width: f64, support_angle: f64, paint: Value) -> Vec<Bead> {
+    let mut spec = belt(45.0, "z", 1, 5.0);
+    spec["floorSupports"] = json!(true);
+    let req = request(
+        &arm_with_wedge(width),
+        "wedge.stl",
+        json!({
+            "belt": spec,
+            "supports": true,
+            "supportStyle": "tree",
+            "supportAngle": support_angle,
+            "includePreview": false,
+            "supportPaint": paint,
+        }),
+    );
+    let sliced = slice_request(&req, Job::default()).unwrap();
+    assert!(sliced.sanity.ok, "{:?}", sliced.sanity.notes);
+    on_mesh(lab_beads(&sliced.gcode, 45.0), [0.0, -12.0], [width, 4.0])
+}
+
+#[test]
+fn a_block_disk_keeps_belt_supports_off_its_patch() {
+    // The wedge's ceiling runs from (y -12, z 17) down to (y -9, z 14), 30 mm
+    // across. At 40° it is the only surface that needs support. The disk
+    // sits on its middle near one end and covers it from x 0 to 9.5.
+    let s = std::f64::consts::FRAC_1_SQRT_2;
+    let bare = painted_wedge(30.0, 40.0, json!([]));
+    let blocked = painted_wedge(
+        30.0,
+        40.0,
+        json!([{ "kind": "block", "p": [4.0, -10.5, 15.5], "n": [0.0, -s, -s], "r": 6.0 }]),
+    );
+    // Under the ceiling, below its lowest edge.
+    let (patch, rest, under) = (-1.0..6.0, 15.0..31.0, -12.5..-8.5);
+    let before = supports_in(&bare, patch.clone(), under.clone(), 13.5);
+    assert!(before > 0, "nothing held the patch before it was painted");
+    assert_eq!(supports_in(&blocked, patch, under.clone(), 13.5), 0);
+    let kept = supports_in(&blocked, rest, under, 13.5);
+    assert!(kept > 0, "the unpainted end lost its supports");
+}
+
+#[test]
+fn an_enforce_disk_adds_belt_supports_under_its_patch() {
+    // The arm's underside at z 17, from y -6 to the tower, is a 45° slope in
+    // the nozzle frame, which a 40° support angle prints unheld.
+    let bare = painted_wedge(12.0, 40.0, json!([]));
+    let enforced = painted_wedge(
+        12.0,
+        40.0,
+        json!([{ "kind": "enforce", "p": [6.0, -3.0, 17.0], "n": [0.0, 0.0, -1.0], "r": 2.5 }]),
+    );
+    let (patch, under) = (3.5..8.5, -5.0..-1.0);
+    assert_eq!(supports_in(&bare, patch.clone(), under.clone(), 16.5), 0);
+    let held = supports_in(&enforced, patch, under, 16.5);
+    assert!(held > 0, "the enforce disk grew no supports");
+}
+
+/// How far each layer's first outer start is from `p`, on the layers whose
+/// outer wall passes within `reach` of it.
+fn seam_misses(beads: &[Bead], p: [f64; 3], reach: f64) -> Vec<f64> {
+    let dist = |q: [f64; 3]| {
+        ((q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2) + (q[2] - p[2]).powi(2)).sqrt()
+    };
+    let last = beads.iter().map(|bead| bead.layer).max().unwrap_or(0);
+    let mut misses = Vec::new();
+    for layer in 0..=last {
+        let outer: Vec<&Bead> = beads
+            .iter()
+            .filter(|bead| bead.layer == layer && bead.kind == "OUTER")
+            .collect();
+        let Some(first) = outer.first() else {
+            continue;
+        };
+        let passes = outer.iter().any(|bead| {
+            (0..=40).any(|k| {
+                let t = f64::from(k) / 40.0;
+                dist([0, 1, 2].map(|i| bead.from[i] + (bead.to[i] - bead.from[i]) * t)) < reach
+            })
+        });
+        if passes {
+            misses.push(dist(first.from));
+        }
+    }
+    misses
+}
+
+#[test]
+fn seam_paint_on_a_belt_starts_the_outer_wall_at_the_disk() {
+    // A dab halfway up the left side of a 20 x 10 x 10 box.
+    let p = [0.0, 5.0, 5.0];
+    let slice = |paint: Value| {
+        let req = request(
+            &box_stl(20.0, 10.0, 10.0),
+            "box.stl",
+            json!({ "belt": belt(45.0, "z", 1, 5.0), "includePreview": false, "seamPaint": paint }),
+        );
+        let sliced = slice_request(&req, Job::default()).unwrap();
+        assert!(sliced.sanity.ok, "{:?}", sliced.sanity.notes);
+        on_mesh(lab_beads(&sliced.gcode, 45.0), [0.0, 0.0], [20.0, 10.0])
+    };
+    let bare = seam_misses(&slice(json!([])), p, 1.0);
+    assert!(bare.len() >= 5, "{} layers pass the dab", bare.len());
+    assert!(bare.iter().all(|&d| d > 3.0), "unpainted starts {bare:?}");
+    let dab = json!([{ "p": p, "n": [-1.0, 0.0, 0.0], "r": 2.0 }]);
+    let painted = seam_misses(&slice(dab), p, 1.0);
+    assert_eq!(painted.len(), bare.len());
+    assert!(
+        painted.iter().all(|&d| d < 2.3),
+        "painted starts {painted:?}"
+    );
 }
 
 #[test]
