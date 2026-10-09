@@ -138,6 +138,7 @@ export function applyPlace(rerender: boolean, sync: SplitSync = "transform") {
   }
   fx.realignSplit(sync);
   fx.prepare.setMesh(state.placed, sync === "load");
+  fx.syncCut();
   fx.drawPaint?.();
   fx.prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
   fx.prepare.setPlateBounds(boundEntries(state.plate, state.profile.bedX, state.profile.bedY));

@@ -20,6 +20,7 @@ import { resolved } from "../strategy";
 import { syncEmptyState } from "../ui/shell";
 import { freshPreviewMode, gizmoNudge, viewportPending } from "../ui/preview-ux";
 import { type AxisBounds, type SplitSync, splitOutside, nextSplitAt, roundSplit, clampSplit } from "../split-at";
+import { plateUnionBounds } from "../plate";
 import { matMul, rotX, rotY, rotZ } from "../mesh-place";
 import { type Vec3, sectionReach, type SectionSpec, keepsPoint, clipPolyline, layerCut } from "../section-plane";
 
@@ -441,8 +442,11 @@ export function setHelp(open: boolean) {
   if (open) document.querySelector<HTMLButtonElement>("#helpClose")?.focus();
 }
 
+/** By region is one plane across the plate: every object's box together, or the placed part's alone. */
 export function placedAxisBounds(): AxisBounds | null {
-  return state.placed?.bounds ?? null;
+  const placed = state.placed?.bounds ?? null;
+  if (!placed || state.plate.objects.length < 2) return placed;
+  return plateUnionBounds(livePlate(), state.profile.bedX, state.profile.bedY) ?? placed;
 }
 
 export function realignSplit(reason: SplitSync) {
@@ -569,10 +573,16 @@ export function syncPreviewPending() {
   document.querySelector("#pane3d")?.classList.toggle("is-pending", viewportPending(state.busy, !!state.result));
 }
 
+/** The Prepare cut and its boxes: all of the plate, so a move or turn of any object may resize them. */
+export function syncCut() {
+  const placed = placedAxisBounds();
+  fx.prepare.setSplit(state.blendKind === "byRegion" && placed ? { axis: state.axis, at: state.atMm, bounds: placed } : null);
+}
+
 export function syncPlanes() {
   const show = state.blendKind === "byRegion";
   const placed = placedAxisBounds();
-  fx.prepare.setSplit(show && placed ? { axis: state.axis, at: state.atMm } : null);
+  syncCut();
   const model = state.result
     ? { min: state.result.mesh.min, max: state.result.mesh.max }
     : placed
@@ -1049,4 +1059,4 @@ export function mountViews() {
   view3d.onPlane((at) => commitSplit(splitOnBed(at)));
 }
 
-Object.assign(fx, { paintLegend, paintSlider, loadGcode, layerGcode, pathsOf, movesNow, paintPlayback, paintGcode, syncGcodeHighlight, paintSpark, stopPlay, togglePlay, scrub, setView, setStage, setHelp, placedAxisBounds, realignSplit, noticeBounds, refreshSplitNotice, commitSplit, syncSplitField, paintGizmoReadout, syncPlanes, clampPlane, paintRegionOverlay, previewMap, canvasPx, resize, previewCenter, sectionLimit, activeSection, sectionKeeps, paintSectionChrome, draw, segmentStart, applyGeom, sync3d, fitNarrow, stepGizmo, syncPreviewPending });
+Object.assign(fx, { paintLegend, paintSlider, loadGcode, layerGcode, pathsOf, movesNow, paintPlayback, paintGcode, syncGcodeHighlight, paintSpark, stopPlay, togglePlay, scrub, setView, setStage, setHelp, placedAxisBounds, realignSplit, syncCut, noticeBounds, refreshSplitNotice, commitSplit, syncSplitField, paintGizmoReadout, syncPlanes, clampPlane, paintRegionOverlay, previewMap, canvasPx, resize, previewCenter, sectionLimit, activeSection, sectionKeeps, paintSectionChrome, draw, segmentStart, applyGeom, sync3d, fitNarrow, stepGizmo, syncPreviewPending });
