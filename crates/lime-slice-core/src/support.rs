@@ -102,6 +102,12 @@ impl FloorPlane {
         (z + self.z_drop) / self.tan_a - self.y_shift
     }
 
+    /// Slice Y a support moves toward the belt as it falls `height` in slice
+    /// Z. Gravity is normal to the belt, so this keeps a trunk plumb in the lab.
+    fn fall(self, height: f64) -> f64 {
+        height * self.tan_a
+    }
+
     pub(crate) fn tan_a(self) -> f64 {
         self.tan_a
     }
@@ -153,13 +159,21 @@ fn clip_half(loops: &[Loop], y_max: f64) -> Vec<Loop> {
     )
 }
 
+/// Each disk becomes the largest circle inside both it and the half-plane.
+/// It keeps the disk's upstream edge, so the foot of a trunk that meets the
+/// belt still stands on the layer above it.
 fn clip_disks(disks: &mut Vec<Disk>, y_max: f64) {
     disks.retain_mut(|disk| {
         let room = y_max - disk.xy[1];
-        if room < MIN_DISK_R {
+        if room >= disk.r {
+            return true;
+        }
+        let r = (room + disk.r) * 0.5;
+        if r < MIN_DISK_R {
             return false;
         }
-        disk.r = disk.r.min(room);
+        disk.xy[1] -= disk.r - r;
+        disk.r = r;
         true
     });
 }
@@ -723,8 +737,15 @@ impl Demand {
             if opts.job.cancelled() || watch.cancelled() {
                 return None;
             }
-            // A column carried from above stops where the belt rises through it.
+            // A column carried from above falls along gravity, and stops
+            // where the belt rises through it.
             if let Some(floor) = opts.floor {
+                if !sparse.is_empty() {
+                    let fall = floor.fall(bands[i + 1].height);
+                    for p in sparse.iter_mut().flatten() {
+                        p[1] += fall;
+                    }
+                }
                 let cap = floor.y_max(bands[i].z);
                 for (region, _) in &mut gens {
                     *region = clip_half(region, cap);
@@ -914,6 +935,7 @@ impl<'a> Walk<'a> {
             bands: self.bands,
             contours: self.contours,
             bounds: &self.part_bb,
+            floor: self.floor,
         };
         if !born.is_empty() {
             let cleared = if part.is_empty() {
@@ -977,11 +999,12 @@ impl<'a> Walk<'a> {
             } else {
                 Some(self.bands[i - 1].z)
             };
+            let fall = floor.fall(self.bands[i].height);
             for n in &mut self.nodes {
                 if n.freeze != 0 {
                     continue;
                 }
-                let lands = next_z.is_none_or(|z| z + 1e-9 < floor.z_at(n.xy[1]));
+                let lands = next_z.is_none_or(|z| z + 1e-9 < floor.z_at(n.xy[1] + fall));
                 if lands {
                     n.radius = n.radius.max(self.trunk_r * 0.95);
                 }
@@ -1005,6 +1028,9 @@ impl<'a> Walk<'a> {
             next_is_bed: i == 1,
             load_factor: self.load_factor,
             floor_y_max: self.floor.map(|floor| floor.y_max(self.bands[i - 1].z)),
+            drift: self
+                .floor
+                .map_or(0.0, |floor| floor.fall(self.bands[i].height)),
         };
         let nodes = std::mem::take(&mut self.nodes);
         self.nodes = propagate_nodes(
@@ -1247,7 +1273,16 @@ fn stand(
     let part = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
     let reach = bands[i].height * lean + BEAD_OVERHANG_MM;
     let belt = floor.map(|floor| floor.y_max(bands[i - 1].z));
-    settle_disks(&mut layer.disks, &below.disks, part, belt, reach, near);
+    let drift = floor.map_or(0.0, |floor| floor.fall(bands[i].height));
+    settle_disks(
+        &mut layer.disks,
+        &below.disks,
+        part,
+        belt,
+        drift,
+        reach,
+        near,
+    );
     // A trunk that cannot stand is dropped above. The interface that was
     // waiting on it would otherwise stay as a raft in the air.
     drop_unfooted_interface(&mut layer.interface, below, part);
@@ -1265,6 +1300,7 @@ fn settle_disks(
     below: &[Disk],
     part: &[Loop],
     belt: Option<f64>,
+    drift: f64,
     reach: f64,
     near: &mut Vec<usize>,
 ) {
@@ -1280,16 +1316,18 @@ fn settle_disks(
     }
     disks.retain_mut(|d| {
         let c = d.xy;
-        // The walk lands a trunk where the belt is under its centre.
-        if belt.is_some_and(|y_max| c[1] > y_max) {
+        // Where the disk lands one layer down. A disk whose centre lands on
+        // the belt stands on it.
+        let fell = [c[0], c[1] + drift];
+        if belt.is_some_and(|y_max| fell[1] > y_max) {
             return true;
         }
-        grid.near(c, span, near);
+        grid.near(fell, span, near);
         let mut room = near
             .iter()
             .map(|&k| {
                 let b = below[k];
-                b.r + reach - (c[0] - b.xy[0]).hypot(c[1] - b.xy[1])
+                b.r + reach - (fell[0] - b.xy[0]).hypot(fell[1] - b.xy[1])
             })
             .fold(f64::NEG_INFINITY, f64::max);
         if !part.is_empty() && in_solid(part, c[0], c[1]) {
@@ -1307,7 +1345,8 @@ fn settle_disks(
 pub(crate) struct Node {
     id: u32,
     xy: [f64; 2],
-    /// Where its disk printed on the layer above, before this layer's step.
+    /// Where its disk printed on the layer above, carried down by the fall to
+    /// this layer, before this layer's step.
     above: [f64; 2],
     radius: f64,
     /// Millimetres this branch has already fallen. Longer branches hold less.
@@ -1361,6 +1400,9 @@ struct Grow {
     /// Largest Y that still sits on the belt on the layer being stepped onto.
     /// `None` keeps the cartesian walk.
     floor_y_max: Option<f64>,
+    /// Slice Y every unfrozen node falls toward the belt on this step. `0`
+    /// off a belt, where nodes fall straight down.
+    drift: f64,
 }
 
 /// Pitch actually left standing. An explicit `max_tip_spacing` wins; otherwise
@@ -1432,9 +1474,11 @@ fn propagate_nodes(
     let (below, below2) = (LoopIndex::new(below), LoopIndex::new(below2));
     let mut next = Vec::with_capacity(nodes.len());
     for mut n in nodes {
+        // A plumb trunk meets the tilted belt over several layers, so it
+        // stops once its whole disk is past the belt.
         if grow
             .floor_y_max
-            .is_some_and(|y_max| n.xy[1] > y_max)
+            .is_some_and(|y_max| n.xy[1] - n.radius > y_max)
         {
             ended.push((NodeId(n.id), End::Landed));
             continue;
@@ -1452,6 +1496,11 @@ fn propagate_nodes(
             }
         }
         next.push(n);
+    }
+    if grow.drift > 0.0 {
+        for n in next.iter_mut().filter(|n| n.freeze == 0) {
+            n.xy[1] += grow.drift;
+        }
     }
     let steps = pair_steps(&next, &fixed.knots, grow, max_step);
     for (n, xy) in next.iter_mut().zip(steps) {
@@ -1479,7 +1528,9 @@ fn propagate_nodes(
             (!below.is_empty() && (below.contains(p) || below.within(p, clearance)))
                 || fixed.blocks(p, &n, grow)
         };
-        let to = push_out(n.xy, blocked, max_step);
+        // A node the part blocks may also undo its fall, so on a belt it can
+        // lean away from a wall that gravity runs along.
+        let to = push_out(n.xy, blocked, max_step + grow.drift);
         n.xy = to;
         if below.contains(n.xy) {
             ended.push((NodeId(n.id), End::Pinched));
@@ -1487,7 +1538,7 @@ fn propagate_nodes(
         }
         if grow
             .floor_y_max
-            .is_some_and(|y_max| n.xy[1] > y_max)
+            .is_some_and(|y_max| n.xy[1] - n.radius > y_max)
         {
             ended.push((NodeId(n.id), End::Landed));
             continue;
@@ -1939,6 +1990,8 @@ struct Land<'a> {
     bands: &'a [LayerBand],
     contours: &'a [Vec<Loop>],
     bounds: &'a [Option<([f64; 2], [f64; 2])>],
+    /// The belt, toward which a trunk drifts as it falls.
+    floor: Option<FloorPlane>,
 }
 
 /// True when a tip at `xy` can walk onto a roof before the bed. Horizontal
@@ -1949,10 +2002,14 @@ struct Land<'a> {
 fn reaches_model(xy: [f64; 2], land: &Land<'_>) -> bool {
     let first = land.layer.saturating_sub(land.freeze as usize + 1);
     let mut reach = 0.0;
+    let mut xy = xy;
     for j in (0..=first).rev() {
         let from = j + 1;
         if from < land.bands.len() {
             reach += land.bands[from].height * land.lean;
+            if let Some(floor) = land.floor {
+                xy[1] += floor.fall(land.bands[from].height);
+            }
         }
         if !is_roof(j, land) {
             continue;
@@ -2835,6 +2892,7 @@ mod tests {
                     next_is_bed: false,
                     load_factor,
                     floor_y_max: None,
+                    drift: 0.0,
                 };
                 let got = pair_steps(&nodes, &[], &grow, 0.17);
                 let want = pair_steps_by_scan(&nodes, &grow, 0.17);
@@ -3415,6 +3473,7 @@ mod tests {
                 &lower[i - 1].disks,
                 part,
                 None,
+                0.0,
                 reach,
                 &mut near,
             );
@@ -3582,6 +3641,7 @@ mod tests {
             next_is_bed: false,
             load_factor,
             floor_y_max: None,
+            drift: 0.0,
         };
         let pair = |load| {
             vec![[0.0, 0.0], [0.5, 0.0]]
