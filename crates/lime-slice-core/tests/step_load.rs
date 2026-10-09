@@ -134,6 +134,19 @@ fn a_cone_that_meets_at_its_apex_is_closed() {
     assert_eq!(unpaired_edges(&mesh), 0);
 }
 
+/// Creo leaves a 1 mm sliver face between two coincident edges, bounded by only
+/// two distinct points. Truck finds no loop to trim it by and meshes the whole
+/// parametric rectangle: a ribbon outside the part.
+#[test]
+fn a_zero_area_extrusion_face_adds_no_ribbon() {
+    let mesh = load("sliver_face.step");
+    expect_box(&mesh, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0], 1e-6);
+    assert_eq!(mesh.triangle_count(), load("cube.step").triangle_count());
+    assert_eq!(boundary_edges(&mesh), 0);
+    let vol = volume(&mesh);
+    assert!((vol - 1000.0).abs() < 1e-6, "volume {vol}");
+}
+
 #[test]
 fn cylinder_tessellates_inside_the_analytic_solid() {
     let mesh = load("cylinder.step");

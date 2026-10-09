@@ -955,6 +955,12 @@ fn tessellate_shell(
             .iter()
             .map(|wire| closed_loop(wire.iter().map(|e| polyline(e.index, e.orientation))))
             .collect();
+        // Truck finds no loop to trim a zero-area face by and meshes its whole
+        // parametric rectangle, a ribbon the part never had. Its neighbours
+        // already close along the same edges.
+        if !loops.is_empty() && loops.iter().all(|ring| flat_loop(ring)) {
+            continue;
+        }
         let mut tris = match &face.surface {
             Some(mesh) => {
                 let snap = Instant::now();
@@ -990,6 +996,20 @@ fn tessellate_shell(
         return Err("STEP solid tessellated to an empty mesh at this chord tolerance".into());
     }
     Ok(triangles)
+}
+
+/// A loop of fewer than three distinct points encloses nothing.
+fn flat_loop(ring: &[[f64; 3]]) -> bool {
+    let mut seen: Vec<[f64; 3]> = Vec::new();
+    for point in ring {
+        if !seen.contains(point) {
+            seen.push(*point);
+            if seen.len() == 3 {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// Edge polylines joined end to end, without the repeated joints or the
