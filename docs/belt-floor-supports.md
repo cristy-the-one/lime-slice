@@ -7,6 +7,7 @@ The planner runs after the plate is rotated so the nozzle plane is horizontal. I
 ## Decisions
 
 - The flag is opt-in and omitted when off. Honoring `supports: true` on a belt without it would emit horizontal supports onto a bed the printer does not have, and would change existing belt G-code.
+- With the flag, the belt frame starts at the plane that meets the belt under the plate's upstream edge, lowered in whole layer steps so the part is cut on the same planes. Starting at the first plane that meets the part left the planes between the belt and an overhang unsliced, so trunks ended mid-air where the part's first layer cut them. Layers before the lowest foot print nothing and are dropped; belt positions count from the first printed layer (`Belt::start`).
 - With the flag, tree and grid supports are clipped to the half-plane. A trunk whose next layer is under the belt at its xy stops and thickens there, the way a trunk thickens on layer 0. Disks are shrunk so the circle stays on the printable side of the plane.
 - The plane is not a field of `SliceSettings`. It is mixed into the support grow and paint keys only when the flag is on, so a cartesian key keeps its bytes. Contour keys do not move.
 - A raft and floor supports together are refused. Floor supports grow down to the belt, through the pad, and nothing yet decides whether they should stand on the pad instead.
@@ -16,4 +17,4 @@ The planner runs after the plate is rotated so the nozzle plane is horizontal. I
 
 ## UI
 
-The machine sheet has a checkbox, off by default, next to the raft. Off, the slice request omits `floorSupports`. A saved machine that has no such field reads as off.
+There is no separate checkbox. On a belt printer, Smart supports sends `floorSupports: true`, because the belt is the only floor supports can stand on. Unticked, the request omits it. Smart supports and the belt raft lock each other: while one is on, the other is disabled with a hint; a raft that is already on stays untickable. A `floorSupports` field in an older saved machine is kept but not read.
