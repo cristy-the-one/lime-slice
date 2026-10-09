@@ -106,7 +106,7 @@ pub struct PathFeatures {
     pub variable_width: bool,
     /// Distance downward from the nearest roof. Lightning fades out past the strategy range.
     pub roof_distance_mm: f64,
-    #[allow(dead_code)]
+    /// Solid infill turns a quarter on each layer by its parity.
     pub layer_index: usize,
     pub layer_height: f64,
     /// `Interior` unless some area of the layer is skin. Infill combine and
@@ -420,7 +420,12 @@ pub(crate) fn plan_region_split(
             );
             return (finish_paths(paths, features), wall_ms, ms_since(infill_started));
         };
-        let kind = infill_kind(strategy, ShellBand::Interior);
+        let shell = if solid_infill(strategy) {
+            ShellBand::Bottom
+        } else {
+            ShellBand::Interior
+        };
+        let kind = infill_kind(strategy, shell);
         for pts in infill {
             if pts.len() >= 2 {
                 *seam_hint = *pts.last().unwrap();
@@ -1115,7 +1120,7 @@ fn union_loops(loops: &[Loop]) -> Vec<Loop> {
 /// Bead height is `span × layer height`, capped near `0.75 ×` the nozzle diameter.
 fn combine_bead(strategy: &ResolvedStrategy, features: &PathFeatures) -> Option<f64> {
     let h = features.layer_height.max(0.05);
-    if features.shell != ShellBand::Interior {
+    if features.shell != ShellBand::Interior || solid_infill(strategy) {
         return Some(h);
     }
     let nozzle = features.nozzle_diameter.max(0.2);
@@ -1155,6 +1160,16 @@ fn combine_bead(strategy: &ResolvedStrategy, features: &PathFeatures) -> Option<
         every
     };
     Some(h * span as f64)
+}
+
+/// Density from which the infill is solid. Lines are already at their
+/// closest spacing from 95%, so this only drops the gaps and any crossing.
+/// The Infill % fields step by whole percents, so 99 and 100 both land here.
+const SOLID_DENSITY: f64 = 0.99;
+
+/// Infill that fills the whole region, whatever the pattern.
+fn solid_infill(strategy: &ResolvedStrategy) -> bool {
+    strategy.infill_density >= SOLID_DENSITY - 1e-9
 }
 
 fn infill_kind(strategy: &ResolvedStrategy, shell: ShellBand) -> PathKind {
@@ -1713,6 +1728,12 @@ fn build_infill(
     line_width: f64,
     features: &PathFeatures,
 ) -> Vec<Vec<[f64; 2]>> {
+    if solid_infill(strategy) {
+        // Rows turn a quarter each layer, so no layer's lines cross.
+        let quarters = if features.layer_index % 2 == 0 { 1.0 } else { 3.0 };
+        let angle = std::f64::consts::FRAC_PI_4 * quarters;
+        return clip_infill(solid_fill(loops, line_width, angle, None), loops);
+    }
     let sample = crate::inner_prof::Sample::start();
     let mut density = strategy.infill_density;
     let grown = features
@@ -1732,6 +1753,8 @@ fn build_infill(
             clip_infill(serpentine(scan_angle(loops, spacing, 0.0), loops), loops)
         }
         InfillPattern::Grid => {
+            // Two sets of lines, so each set covers half the density.
+            let spacing = (spacing * 2.0).min(14.0);
             let mut paths = serpentine(scan_angle(loops, spacing, 0.0), loops);
             paths.extend(serpentine(
                 scan_angle(loops, spacing, std::f64::consts::FRAC_PI_2),
