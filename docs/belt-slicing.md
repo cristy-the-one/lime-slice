@@ -7,7 +7,7 @@ A belt printer (Creality CR-30, iFactory3D One, BlackBelt, PowerBelt3D) lays eac
 - Slice with the planar pipeline. Rotate the mesh so the nozzle plane is horizontal, plan, then map toolpaths back. A shear is what BeltEngine feeds Cura, and it is the wrong frame for this planner.
 - Belt advance per layer is `layer_height / sin(α)`. `α` is the angle between the belt and the nozzle plane. 45° is the default. At 45° the step is `layer_height * √2`.
 - Belt fields live on the machine profile (`.limemachine.json`). The slice request carries `belt` only for a belt printer. A request without that object keeps its cache key and its G-code bytes. `enginePrinter` still returns only `PrinterProfile` fields; `belt` sits beside `printer` on the request.
-- Supports stay off on a belt slice until they are grown in the rotated frame. Today's supports assume a horizontal bed.
+- Supports on a belt grow in the rotated frame down to the belt, straight down along gravity (`docs/belt-floor-supports.md`). The app sends them when Smart supports is ticked on a belt printer.
 - Copies are one planned part, emitted again with a belt shift. They do not enter the contour key.
 - With no belt field, G-code is byte-identical. `crates/lime-slice-core/tests/cartesian_lock.rs` hashes a small box sliced with no belt object. `tools/golden_ab.sh` is the same check against a base revision.
 
@@ -159,7 +159,7 @@ A belt axis of X or Y permutes the letters. The nozzle plane is no longer machin
 1. UI. Version 3 of the machine file, a Belt kind, the fields above, and the prepare view as a belt with the tilted plane and N copies. The slice request carries `belt`. Export is on. Send follows the printer connection. Done.
 2. Engine. Rotate, slice, emit the gantry frame. Supports forced off. Fit checks, copies, and `cartesian_lock`. Done.
 3. Belt contact. The belt wall, the `blend` → `rear` seam, the opt-in `seamOnEdge` flag, and the opt-in raft are in. Sliver policy stays global.
-4. Supports in the rotated frame, on a belt floor, with the down vector tilted by `α`. Not started.
+4. Supports in the rotated frame, on a belt floor, with the down vector tilted by `α`. Done: floor supports, gravity trunks, support and seam paint, and support prunes. Regrowing supports in a gap is not done on a belt.
 5. Lab-frame preview from real `zs`, and print time from the transformed segments. The UI sends `belt` and draws that preview. Nothing in the belt path is mocked.
 
 ## Review questions
