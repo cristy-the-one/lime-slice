@@ -31,10 +31,12 @@ The reply gains `offset: [x, y]` in millimetres whenever the request had a `pose
 
 - `layers` paths and `previewPatch`;
 - `coverage` gaps;
-- the support `skeleton`;
+- the support `skeleton`'s knots (`xs`, `ys`, `zs`);
 - `inAir`;
 - the gaps in `supportEdits` outcomes;
 - `mesh.min` and `mesh.max`.
+
+On a belt printer the slice frame is the part laid flat for the nozzle plane, and the reply frame is the lab less the object's offset, as the preview's points are. These are in the reply frame: `layers`, `previewPatch`, `mesh`, and the skeleton's knots. These stay in the slice frame: `coverage`, `inAir`, the gaps in `supportEdits`, and the skeleton's sites (`siteX`, `siteY`, `siteZ`). The belt skeleton also has `ls`, the `PreviewLayer.z` of each knot's layer.
 
 The client draws at reply coordinates plus `offset`. A GPU matrix on the preview group does this without touching the buffers.
 
@@ -45,7 +47,7 @@ Two fields are in bed coordinates, because they describe the G-code:
 
 ### Support edits
 
-Support-edit sites and regrow regions arrive in the reply frame and the engine uses them as they are. The client copies them from the skeleton and the gaps, which are in the same frame. A support edit made before a move still applies after it.
+Support-edit sites and regrow regions arrive in the frame the engine plans in and the engine uses them as they are. On a flat bed that is the reply frame, and the client copies them from the skeleton and the gaps. On a belt the sites and gaps are in the slice frame, so the client sends a site back exactly as the skeleton gave it and never draws it. A support edit made before a move still applies after it.
 
 ### Client
 
