@@ -127,6 +127,39 @@ test("bridge By region starts inside the mesh and the plane and gizmo move it", 
   expect(Number.isFinite(afterSnap)).toBe(true);
 });
 
+test("two objects share one By region plane across the plate", async ({ page }) => {
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await page.getByText("Samples", { exact: true }).click();
+  await page.getByRole("button", { name: "Bridge" }).click();
+  await expect(page.locator("#status")).toContainText("loaded");
+  await page.locator("#plateDuplicate").click();
+  await expect(page.locator("[data-plate-id]")).toHaveCount(2);
+  await page.locator("#placeX").fill("150");
+  await page.locator("#placeX").dispatchEvent("change");
+  await expect(page.locator("#prepare")).toHaveAttribute("data-plate-objects", "2");
+  await page.getByRole("button", { name: /^By region/ }).click();
+
+  // The objects span X 95-125 and 135-165, so 130 is in the gap: a plate cut, not one object's.
+  await page.locator("#at").fill("130");
+  await page.locator("#at").dispatchEvent("input");
+  await expect(page.locator("#prepare")).toHaveAttribute("data-split-bounds", "95.0,102.0,165.0,118.0");
+  await expect(page.locator("#at")).toHaveValue("130");
+  await expect(page.locator("#banner")).not.toContainText("outside the mesh");
+
+  await page.locator("[data-plate-select]").first().click();
+  await expect(page.locator("#prepare")).toHaveAttribute("data-plate-selected", "part");
+  await expect(page.locator("#at")).toHaveValue("130");
+  await expect(page.locator("#prepare")).toHaveAttribute("data-split-bounds", "95.0,102.0,165.0,118.0");
+  await expect(page.locator("#banner")).not.toContainText("outside the mesh");
+
+  await page.locator("#at").fill("0");
+  await page.locator("#at").dispatchEvent("input");
+  await expect(page.locator("#banner")).toContainText(/outside the mesh \(95\.0.165\.0\)/);
+});
+
 function fakeSlice() {
   const min = [...placedBounds.min];
   const max = [...placedBounds.max];

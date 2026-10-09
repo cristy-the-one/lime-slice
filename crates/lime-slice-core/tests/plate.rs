@@ -5,6 +5,7 @@
 use base64::Engine;
 use lime_slice_core::{load_slice_mesh_tol, slice_payload, Job};
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 
 const SAMPLES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../samples/");
 
@@ -128,6 +129,44 @@ fn two_objects_print_each_layer_in_plate_order() {
         .map(|o| o.as_u64().unwrap())
         .collect();
     assert!(objects.contains(&0) && objects.contains(&1));
+}
+
+/// The region plane is one bed coordinate for the whole plate: each object reads it as
+/// `atMm - offset`, so an object left of it prints only toughness, one right of it only speed.
+#[test]
+fn a_region_plane_cuts_the_plate_not_each_object() {
+    let req = plate(json!({
+        "supports": false,
+        "blend": {"mode": "byRegion", "axis": "x", "atMm": 100.0},
+        "objects": [
+            object("a", "calibration_cube_20mm.stl", 60.0, 110.0),
+            object("b", "calibration_cube_20mm.stl", 140.0, 110.0),
+        ],
+    }));
+    let reply = slice(&req).unwrap();
+    assert_eq!(
+        reply["blend"],
+        json!("by region X = 100.00 mm (low toughness, high speed)")
+    );
+
+    let mut sides = [BTreeSet::new(), BTreeSet::new()];
+    for layer in reply["layers"].as_array().unwrap() {
+        let paths = &layer["paths"];
+        let names = paths["strategies"].as_array().unwrap();
+        let kinds = paths["kinds"].as_array().unwrap();
+        let object = paths["object"].as_array().unwrap();
+        for (i, strategy) in paths["strategy"].as_array().unwrap().iter().enumerate() {
+            // The skirt rings the whole plate, so neither side owns it.
+            if kinds[paths["kind"][i].as_u64().unwrap() as usize] == "skirt" {
+                continue;
+            }
+            let name = names[strategy.as_u64().unwrap() as usize].as_str().unwrap();
+            sides[object[i].as_u64().unwrap() as usize].insert(name.to_owned());
+        }
+    }
+    let only = |name: &str| BTreeSet::from([name.to_owned()]);
+    assert_eq!(sides[0], only("toughness"), "object a is left of the plane");
+    assert_eq!(sides[1], only("speed"), "object b is right of the plane");
 }
 
 #[test]

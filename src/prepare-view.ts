@@ -34,7 +34,8 @@ export interface PrepareView {
   /** A conveyor, or null for the cartesian plate. The tilted plane and the copies are visual. */
   setBelt(belt: BeltSettings | null): void;
   setBedOpacity(opacity: number): void;
-  setSplit(split: { axis: SplitAxis; at: number } | null): void;
+  /** One cut across the whole plate: `bounds` is its extent, which may span several objects. */
+  setSplit(split: { axis: SplitAxis; at: number; bounds: Bounds } | null): void;
   onSplit(cb: ((at: number) => void) | null): void;
   onRotate(cb: ((axis: Axis, deltaDeg: number, totalDeg: number) => void) | null): void;
   onRotateEnd(cb: (() => void) | null): void;
@@ -246,7 +247,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let cut: THREE.Group | null = null;
   let cutPicks: THREE.Object3D[] = [];
   let cutKey = "";
-  let split: { axis: SplitAxis; at: number } | null = null;
+  let split: { axis: SplitAxis; at: number; bounds: Bounds } | null = null;
   let meshBounds: Bounds | null = null;
 
   let bedX = 220;
@@ -502,19 +503,20 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   }
 
   function rebuildCut() {
-    const key = split && meshBounds
-      ? `${split.axis}:${split.at.toFixed(2)}:${meshBounds.min.map((v) => v.toFixed(2)).join()}:${meshBounds.max.map((v) => v.toFixed(2)).join()}:${bedX}:${bedY}`
+    const key = split
+      ? `${split.axis}:${split.at.toFixed(2)}:${split.bounds.min.map((v) => v.toFixed(2)).join()}:${split.bounds.max.map((v) => v.toFixed(2)).join()}:${bedX}:${bedY}`
       : "";
     if (key === cutKey) return;
     cutKey = key;
+    canvas.dataset.splitBounds = split ? [split.bounds.min[0], split.bounds.min[1], split.bounds.max[0], split.bounds.max[1]].map((v) => v.toFixed(1)).join() : "";
     if (cut) {
       scene.remove(cut);
       disposeTree(cut);
       cut = null;
       cutPicks = [];
     }
-    if (!split || !meshBounds) return;
-    const built = buildCutPlane(split.axis, split.at, meshBounds, frame, bedX, bedY);
+    if (!split) return;
+    const built = buildCutPlane(split.axis, split.at, split.bounds, frame, bedX, bedY);
     cut = built.group;
     cutPicks = built.picks;
     scene.add(cut);
@@ -795,7 +797,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       ev.stopPropagation();
       return;
     }
-    if (hitCut(ev) && split && meshBounds) {
+    if (hitCut(ev) && split) {
       drag = { kind: "cut" };
       controls.enabled = false;
       canvas.setPointerCapture(ev.pointerId);
@@ -879,8 +881,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       return;
     }
     if (drag.kind === "cut") {
-      if (!split || !meshBounds) return;
-      const { min, max } = meshBounds;
+      if (!split) return;
+      const { min, max } = split.bounds;
       const pivot: [number, number, number] = [
         split.axis === "x" ? split.at : (min[0] + max[0]) / 2,
         split.axis === "y" ? split.at : (min[1] + max[1]) / 2,
@@ -888,7 +890,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       ];
       const raw = splitDragAt(raycaster.ray, split.axis, pivot, frame, camera.position);
       if (raw == null) return;
-      const at = roundSplit(clampSplit(raw, meshBounds, split.axis));
+      const at = roundSplit(clampSplit(raw, split.bounds, split.axis));
       if (Math.abs(at - split.at) < 0.05) return;
       split = { ...split, at };
       cutKey = "";

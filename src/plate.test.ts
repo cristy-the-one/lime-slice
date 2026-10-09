@@ -1,4 +1,5 @@
 import { ID_MATRIX, offBed } from "./mesh-place.ts";
+import { nextSplitAt } from "./split-at.ts";
 import {
   addedCopy,
   arrangeBoxes,
@@ -9,6 +10,7 @@ import {
   placeObject,
   plateFileIsVersion2,
   plateListed,
+  plateUnionBounds,
   revivePlate,
   slicePlateFields,
   snapPlate,
@@ -135,6 +137,15 @@ check("no mesh bytes ride in the request yet", sent.every((o) => !("dataB64" in 
 check("one object with no settings stays version 1", !plateFileIsVersion2([{ settings: {} }]) && !plateFileIsVersion2([{}]));
 check("two objects are version 2", plateFileIsVersion2([{ settings: {} }, { settings: {} }]));
 check("one object with settings is version 2", plateFileIsVersion2([{ settings: { supports: true } }]));
+
+// By region is one plane across the plate, so its extent is every object, not the selected one.
+const apart = [object(20, "a", false, { x: 26.9, y: 10, z: 0 }), object(20, "b", false, { x: 51.4, y: 30, z: 0 })];
+const union = plateUnionBounds(apart, bed, bed)!;
+check("the union spans every object", near(union.min[0], 26.9) && near(union.max[0], 71.4) && near(union.min[1], 10) && near(union.max[1], 50), JSON.stringify(union));
+check("one object's union is its own bounds", JSON.stringify(plateUnionBounds([apart[0]!], bed, bed)) === JSON.stringify(placeObject(apart[0]!, bed, bed).bounds));
+check("no objects have no union", plateUnionBounds([], bed, bed) === null);
+check("a custom split between two objects survives a move", nextSplitAt("transform", 56.8, union, "x", true) === 56.8);
+check("one object's bounds would pull that split to its own midpoint", nextSplitAt("transform", 56.8, placeObject(apart[0]!, bed, bed).bounds, "x", true) === 36.9);
 
 if (failed) {
   console.error(`${failed} failed`);

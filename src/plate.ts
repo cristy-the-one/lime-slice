@@ -460,6 +460,21 @@ export function placeObject(obj: PlateObject, bedX: number, bedY: number) {
   return placeMesh(obj.sourcePos, obj.orient, obj.partScale, bedX, bedY, obj.centered, obj.offset);
 }
 
+/** The box around every object in the bed frame: the extent of a plate-wide cut. Null with no objects. */
+export function plateUnionBounds(objects: readonly PlateObject[], bedX: number, bedY: number): Bounds | null {
+  let union: Bounds | null = null;
+  for (const obj of objects) {
+    const { min, max } = placeObject(obj, bedX, bedY).bounds;
+    union = union
+      ? {
+          min: [Math.min(union.min[0], min[0]), Math.min(union.min[1], min[1]), Math.min(union.min[2], min[2])],
+          max: [Math.max(union.max[0], max[0]), Math.max(union.max[1], max[1]), Math.max(union.max[2], max[2])],
+        }
+      : { min: [...min], max: [...max] };
+  }
+  return union;
+}
+
 export function boxesOverlapXY(a: Bounds, b: Bounds, eps = OVERLAP_EPS_MM): boolean {
   const overlapX = Math.min(a.max[0], b.max[0]) - Math.max(a.min[0], b.min[0]);
   const overlapY = Math.min(a.max[1], b.max[1]) - Math.max(a.min[1], b.min[1]);

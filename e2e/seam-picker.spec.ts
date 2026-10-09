@@ -67,9 +67,11 @@ test("the seam position is left out at Blend, sent otherwise, and kept in a pres
   await page.locator("#presetPick").selectOption("Back seam");
   await page.locator("#presetLoad").click();
   await expect(page.locator("#seam")).toHaveValue("rear");
+  // The preset brings back a recipe the app already stored, so it may refresh by itself
+  // before this click lands: a slow runner sends that request and then the click's.
   await page.locator("#slice").click();
-  await expect.poll(() => bodies.length).toBe(4);
-  expect(bodies[3]).toHaveProperty("seam", "rear");
+  await expect.poll(() => bodies.length).toBeGreaterThanOrEqual(4);
+  expect(bodies.at(-1)).toHaveProperty("seam", "rear");
 
   await page.reload();
   await loadCube(page);
