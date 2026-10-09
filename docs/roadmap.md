@@ -41,6 +41,7 @@ A row is **done** when a user can do the thing and the engine honors it. **In pr
 - A second filament on the machine, stored only. `secondFilamentId` is omitted when none is chosen. The slice request does not gain a field, and there is no tool change, purge tower, or second extruder. [#166](https://github.com/cristy-the-one/lime-slice/pull/166)
 - Repair audit in the sheet. After a slice, the triangle line shows repaired layers and dropped chains from the cut the slice already does. No interactive hole fill. [#167](https://github.com/cristy-the-one/lime-slice/pull/167)
 - Regrow supports in a gap on a belt printer. A belt gap keeps its slice-frame `z`, region, and outline, which a regrow sends back, and gains `tilted`, its outline and layer belt positions in the reply frame, so the UI draws and picks it where the preview shows it. A flat bed's reply has no new field. `docs/support-edits.md`.
+- Support-edit overlay on every belt copy. The reply gains `beltCopies` (`count`, `shiftMm`) when there is more than one copy, and the UI repeats the highlight and the gaps on each copy, cuts each by its own belt positions, and picks the same limb or gap from any copy. One copy, and a flat bed, are as they were. `docs/support-edits.md`.
 
 ### In progress
 

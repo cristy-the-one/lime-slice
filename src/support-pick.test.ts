@@ -1,5 +1,5 @@
-import { branchLimbs, capsulesOf, indexSkeleton, pickGap, pickLimb, regrowFor, selectLimbs, sitesOf, treeLimbs, type Visible } from "./support-pick.ts";
-import type { CoverageGap, SupportSkeleton } from "./support-edits.ts";
+import { branchLimbs, capsulesOf, indexSkeleton, pickGap, pickLimb, placedGap, regrowFor, selectLimbs, sitesOf, treeLimbs, type Visible } from "./support-pick.ts";
+import type { BeltCopies, CoverageGap, SupportSkeleton } from "./support-edits.ts";
 
 let failed = 0;
 
@@ -127,6 +127,39 @@ eq("belt gap: hidden when the layers start above it", pickGap([beltGap], downTo(
 eq("belt gap: the slice z is not what the slider cuts", pickGap([beltGap], downTo(2, 3), layers(19, 20), 0.5), null);
 eq("belt gap: a ray from below meets it too", pickGap([beltGap], { origin: [2, 3, 0], dir: [0, 0, 1] }, layers(1, 12), 0.5)?.gap, 0);
 eq("belt gap: a ray along the plane misses", pickGap([beltGap], { origin: [2, 0, 28], dir: [0, 1, -1] }, layers(1, 12), 0.5), null);
+
+// Copies are the planned part again, `shiftMm` further along the belt: the same knots with that much added to y
+// and to every belt position. The skeleton and the gaps are the first copy's, so a pick on any copy names the same limb or gap.
+// The trunk's middle is (15, 10, 12.5) on copy 0, on layers 2 to 10, and (15, 30, 12.5) on copy 1, on layers 22 to 30.
+const copies: BeltCopies = { count: 2, shiftMm: 20 };
+const downAt = (x: number, y: number) => ({ origin: [x, y, 40] as [number, number, number], dir: [0, 0, -1] as [number, number, number] });
+eq("copies: a ray through the second copy's limb picks the first copy's limb", pickLimb(beltIndex, downAt(15, 30), layers(1, 40), 0.3, copies), { limb: 0, distance: 27.5 });
+eq("copies: the same ray through the first copy", pickLimb(beltIndex, downAt(15, 10), layers(1, 40), 0.3, copies), { limb: 0, distance: 27.5 });
+eq("copies: the second copy is not there without them", pickLimb(beltIndex, downAt(15, 30), layers(1, 40), 0.3), null);
+eq("copies: between the copies nothing is picked", pickLimb(beltIndex, downAt(15, 20), layers(1, 40), 0.3, copies), null);
+eq("copies: one copy picks as before", pickLimb(beltIndex, downAt(15, 30), layers(1, 40), 0.3, { count: 1, shiftMm: 20 }), null);
+eq("copies: the slider hides a copy by its own belt positions", pickLimb(beltIndex, downAt(15, 30), layers(1, 12), 0.3, copies), null);
+eq("copies: and leaves the first copy", pickLimb(beltIndex, downAt(15, 10), layers(1, 12), 0.3, copies)?.limb, 0);
+eq("copies: the slider over the first copy leaves the second", [pickLimb(beltIndex, downAt(15, 10), layers(21, 40), 0.3, copies), pickLimb(beltIndex, downAt(15, 30), layers(21, 40), 0.3, copies)?.limb], [null, 0]);
+eq("copies: the second copy's top knot is visible by its shifted layer", pickLimb(beltIndex, downAt(10, 30), layers(21, 31), 0.3, copies)?.limb, 0);
+eq("copies: and hidden above it", pickLimb(beltIndex, downAt(10, 30), layers(21, 25), 0.3, copies), null);
+eq("copies: a negative shift puts them the other way", pickLimb(beltIndex, downAt(15, -10), layers(-30, 0), 0.3, { count: 2, shiftMm: -20 })?.limb, 0);
+const keepFar: Visible = { zLow: 1, zHigh: 40, section: { center: [15, 25, 12.5], spec: { normal: [0, -1, 0], offset: 0 } } };
+eq("copies: a section cuts a copy where it is drawn", [pickLimb(beltIndex, downAt(15, 10), keepFar, 0.3, copies), pickLimb(beltIndex, downAt(15, 30), keepFar, 0.3, copies)?.limb], [null, 0]);
+eq("copies: capsules of the second copy are the first's moved", round(capsulesOf(beltIndex, [0], layers(21, 31), copies)), [10, 30, 20, 1, 20, 30, 5, 1]);
+eq("copies: a copy is cut by its own layers", round(capsulesOf(beltIndex, [0], layers(21, 26), copies)), [15, 30, 12.5, 1, 20, 30, 5, 1]);
+eq("copies: both copies draw when both are in view", round(capsulesOf(beltIndex, [0], layers(1, 40), copies)), [10, 10, 20, 1, 20, 10, 5, 1, 10, 30, 20, 1, 20, 30, 5, 1]);
+eq("copies: a cartesian reply's capsules ignore them", capsulesOf(index, [0], undefined, copies).length, capsulesOf(index, [0]).length);
+eq("copies: a gap placed on a copy is moved along y and the belt positions", placedGap(beltGap, 20), {
+  ...beltGap,
+  tilted: { ls: [24, 26.5], outline: [[[1, 22, 28], [3, 22, 28], [3, 24, 26], [1, 24, 26]]] },
+});
+eq("copies: a flat gap is not moved", placedGap(gap, 20), gap);
+eq("copies: a ray through the second copy's gap picks the gap", pickGap([beltGap], downTo(2, 23), layers(1, 40), 0.5, copies), { gap: 0, distance: 13 });
+eq("copies: and the first copy's", pickGap([beltGap], downTo(2, 3), layers(1, 40), 0.5, copies), { gap: 0, distance: 13 });
+eq("copies: a gap's copy is shown by its own top layer", [pickGap([beltGap], downTo(2, 23), layers(1, 12), 0.5, copies), pickGap([beltGap], downTo(2, 3), layers(1, 12), 0.5, copies)?.gap], [null, 0]);
+eq("copies: the slider over the first copy leaves the second gap", [pickGap([beltGap], downTo(2, 3), layers(20, 30), 0.5, copies), pickGap([beltGap], downTo(2, 23), layers(20, 30), 0.5, copies)?.gap], [null, 0]);
+eq("copies: the gap is not there without them", pickGap([beltGap], downTo(2, 23), layers(1, 40), 0.5), null);
 
 if (failed) {
   console.error(`${failed} failed`);

@@ -16,6 +16,7 @@ The planner runs after the plate is rotated so the nozzle plane is horizontal. I
 - The support grow and paint keys hash the moved disks, so a stroke on a belt regrows only the supports. A cartesian key does not change.
 - Support prunes and regrows apply, through the same kept stages as on a flat bed. The skeleton's knots are in the reply frame, with `ls` naming each knot's layer, and its sites stay in the slice frame (`docs/support-edits.md`). A coverage gap stays in the slice frame too: its `z`, `min`, `max`, and `outline` are what a regrow sends back, and the engine grows in that frame, so a regrow runs as on a flat bed. The gap's `tilted` says where the preview draws it. A prune stands the layers it touches on the unclipped layer below, as the build did.
 - Compare stays refused on a belt.
+- Support edits apply to the planned part, so with copies every copy changes together. The skeleton and the gaps are the first copy's; the reply's `beltCopies` says how far the others sit, and the edit overlay is drawn and picked on each copy (`docs/support-edits.md`).
 - `classic` still grows floor supports when the flag is on. It does not force them off.
 
 ## UI

@@ -63,6 +63,7 @@ session.supportUi = mountSupportEdits(view3d, {
       edits: state.supportEdits,
       busy: state.busy,
       treeSupports: treeSupports(),
+      copies: state.result?.beltCopies,
       visible: {
         zLow: low ? (belt ? low.z : low.z - low.height) : -1e6,
         zHigh: high ? high.z : 1e6,

@@ -773,6 +773,10 @@ pub struct SliceResponse {
     /// The grown trees after every edit. Only when the request asked for it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skeleton: Option<SupportSkeleton>,
+    /// Belt only, and only with more than one copy: where the later copies sit.
+    /// The skeleton and the gaps are the first copy's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub belt_copies: Option<BeltCopies>,
     /// Names the preview this reply leaves the client holding. Sent back as
     /// `previewBase`. Only for kept interactive slices.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -789,6 +793,17 @@ pub struct SliceResponse {
     /// request sent `objects`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub collisions: Option<Vec<Collision>>,
+}
+
+/// A belt's copies are one planned part, printed again after a shift along the
+/// belt. Copy `c` is the first copy's preview geometry with `c * shift_mm` added
+/// to Y, and to every layer `z` and skeleton `ls`, which are belt positions.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BeltCopies {
+    pub count: u32,
+    /// From one copy to the next, signed by the belt's direction.
+    pub shift_mm: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -2386,6 +2401,13 @@ fn slice_plate(
         support_edits,
         support_paint,
         skeleton,
+        belt_copies: belt_job
+            .as_ref()
+            .filter(|job| job.belt.copies > 1)
+            .map(|job| BeltCopies {
+                count: job.belt.copies,
+                shift_mm: job.belt.direction * job.belt.stride(job.extent),
+            }),
         preview_token,
         preview_patch,
         objects: objects_view,
