@@ -42,7 +42,7 @@ use crate::strategy::{
 };
 use crate::support::edit::{EditOutcome, SupportEdit};
 use crate::support::paint::{self, PaintDisk, PaintTally};
-use crate::support::skeleton::{skeleton, SupportSkeleton, Tilt as SkeletonTilt};
+use crate::support::skeleton::{skeleton, tilt_gaps, SupportSkeleton, Tilt as SkeletonTilt};
 use crate::support::{
     CoverageGap, Disk, FloorPlane, InAir, SupportLayer, SupportOpts, SupportStyle, Supports,
 };
@@ -737,7 +737,8 @@ pub struct SliceResponse {
     /// coordinates. Absent when the request has no pose, since the two
     /// frames are then the same. On a belt the reply frame is the lab less
     /// the offset: `coverage`, `inAir`, the gaps, and the skeleton's sites
-    /// stay in the slice frame, where the part lies flat for the nozzle.
+    /// stay in the slice frame, where the part lies flat for the nozzle. A
+    /// belt's gaps also carry `tilted`, their outline in the reply frame.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offset: Option<[f64; 2]>,
     /// Named slices of `core_ms`: contours, supports, toolpaths, order, combing, and G-code emit.
@@ -1353,16 +1354,6 @@ fn prepare_belt(
     }
     if belt.floor_supports && belt.raft_layers > 0 {
         return Err("belt.floorSupports is not available with a raft yet".into());
-    }
-    // A regrow reads a gap's outline, which is in the slice frame and not the preview's.
-    if objects
-        .iter()
-        .flat_map(|o| &o.settings.support_edits)
-        .any(|edit| matches!(edit, SupportEdit::Regrow { .. }))
-    {
-        return Err(
-            "belt: regrowing supports in a gap is not available on a belt printer yet".into(),
-        );
     }
     let offsets: Vec<Option<[f64; 2]>> = objects.iter().map(|o| o.offset).collect();
     let mut lab_bounds = Vec::with_capacity(objects.len());
@@ -2063,6 +2054,11 @@ fn slice_plate(
                     ..*b
                 })
                 .collect();
+            let tilt = belt_job.as_ref().map(|job| SkeletonTilt {
+                belt: &job.belt,
+                offset: job.offsets[o].unwrap_or([0.0, 0.0]),
+                plate: &planned,
+            });
             ObjectView {
                 id: obj.id.unwrap_or_default().to_owned(),
                 min,
@@ -2073,20 +2069,16 @@ fn slice_plate(
                 } else {
                     obj.to_bed()
                 },
-                coverage: p.coverage.clone(),
+                coverage: tilt_gaps(&p.coverage, &indexed, tilt.as_ref()),
                 in_air: p.in_air,
-                skeleton: obj.settings.include_skeleton.then(|| {
-                    let tilt = belt_job.as_ref().map(|job| SkeletonTilt {
-                        belt: &job.belt,
-                        offset: job.offsets[o].unwrap_or([0.0, 0.0]),
-                        plate: &planned,
-                    });
-                    skeleton(&p.supports, &indexed, tilt.as_ref())
-                }),
+                skeleton: obj
+                    .settings
+                    .include_skeleton
+                    .then(|| skeleton(&p.supports, &indexed, tilt.as_ref())),
                 support_edits: p
                     .outcomes
                     .iter()
-                    .map(|out| EditOutcomeView::of(out, &indexed, opened))
+                    .map(|out| EditOutcomeView::of(out, &indexed, opened, tilt.as_ref()))
                     .collect(),
                 support_paint: (!obj.settings.support_paint.is_empty()).then(|| {
                     paint::tally(

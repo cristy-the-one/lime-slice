@@ -1,4 +1,4 @@
-import { alignOutcomes, appendEdit, badgeOf, clearEdits, editRequestFields, editTitle, gapsToShow, outcomeText, removeEdit, undoLast, type EditEntry } from "./support-edit-list.ts";
+import { alignOutcomes, appendEdit, badgeOf, clearEdits, editRequestFields, editTitle, gapsToShow, gapZ, outcomeText, removeEdit, undoLast, type EditEntry } from "./support-edit-list.ts";
 import { recipeKey } from "./slice-action.ts";
 import type { CoverageGap, EditOutcome } from "./support-edits.ts";
 
@@ -49,6 +49,10 @@ eq("sites reach the recipe unrounded", recipeKey(editRequestFields([branch], tru
 eq("tree title", editTitle(tree), "Delete tree · 36 tips");
 eq("branch title", editTitle(branch), "Delete branch · 1 tip");
 eq("regrow title", editTitle(regrow), "Regrow · Z 4.20–6.40");
+eq("belt regrow title leaves out the slice-frame z", editTitle(regrow, true), "Regrow · 59.9 mm²");
+eq("belt prune title is as on a flat bed", editTitle(tree, true), "Delete tree · 36 tips");
+eq("a flat gap's z is its own", gapZ(gapA), [4.2, 6.4]);
+eq("a belt gap's z is its layers' belt positions", gapZ({ ...gapA, z: [19.4, 19.8], tilted: { ls: [15.27, 15.84], outline: [] } }), [15.27, 15.84]);
 
 eq("applied prune", outcomeText(tree, applied), "Removed 1 tree (36 tips). 59.9 mm² of overhang now unheld.");
 eq("applied prune that unholds nothing", outcomeText(branch, quiet), "Removed 1 branch (1 tip). Nothing new is unheld.");

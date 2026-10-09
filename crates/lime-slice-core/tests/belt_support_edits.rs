@@ -1,8 +1,10 @@
 //! Support edits on a belt printer. The reply's skeleton is drawn in the
 //! reply frame, so a click on the tilted preview finds a limb, and each knot
 //! names the layer it prints on. A prune by the skeleton's sites applies,
-//! reuses the kept stages, and equals a fresh slice. One test, because the
-//! kept slices are shared by the whole process.
+//! reuses the kept stages, and equals a fresh slice. A prune leaves a gap,
+//! drawn on the layer it sits on, and the regrow built from it grows the
+//! supports back. One test, because the kept slices are shared by the whole
+//! process.
 
 use base64::Engine;
 use lime_slice_core::{
@@ -458,4 +460,182 @@ fn a_belt_skeleton_is_in_the_reply_frame_and_its_prunes_apply() {
     assert!((last..=last + 2).contains(&hi), "{hi} after {last}");
     assert_eq!(edit.changed_span, patched.support_edits[0].changed_span);
     assert_eq!(whole_preview(&fresh, &held), whole_preview(&patched, &held));
+
+    regrow_a_gap_on_a_belt();
+}
+
+/// `slice`, for a request that may be refused.
+fn try_slice(req: &Value) -> Result<SliceResponse, String> {
+    let req: SliceRequest = serde_json::from_value(req.clone()).unwrap();
+    slice_request(&req, Job::default())
+}
+
+/// The regrow the client sends for a shown gap: its box as one closed loop
+/// and its `z` range, exactly as the reply carries them (`regrowFor`).
+fn regrow_of(gap: &Value) -> Value {
+    let (lo, hi) = (&gap["min"], &gap["max"]);
+    json!({
+        "kind": "regrow",
+        "region": [[
+            [lo[0], lo[1]], [hi[0], lo[1]], [hi[0], hi[1]], [lo[0], hi[1]],
+        ]],
+        "z": gap["z"],
+    })
+}
+
+/// The largest tree's prune, as an edit.
+fn prune_of_the_largest_tree(reply: &SliceResponse) -> Value {
+    let (_, sites) = trees(reply.skeleton.as_ref().unwrap())
+        .into_iter()
+        .max_by_key(|(_, sites)| sites.len())
+        .unwrap();
+    json!({"kind": "prune", "sites": sites})
+}
+
+fn gap_mm2(gaps: &[lime_slice_core::CoverageGap]) -> f64 {
+    gaps.iter().map(|g| f64::from(g.area_mm2)).sum()
+}
+
+/// A prune leaves a gap, and the regrow the client builds from it grows
+/// supports back. The gap's region and `z` are in the slice frame, the one
+/// the engine grows in, so they go back as they came.
+fn regrow_a_gap_on_a_belt() {
+    keep_support_bases(true);
+    let base = slice(&belt(json!({"includeSkeleton": true})));
+    let prune = prune_of_the_largest_tree(&base);
+    let pruned = slice(&belt(json!({
+        "supportEdits": [prune],
+        "includeSkeleton": true,
+    })));
+    let gaps = &pruned.support_edits[0].floating;
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    let gap = serde_json::to_value(&gaps[0]).unwrap();
+    assert!(gaps[0].area_mm2 > 1.0, "{:?}", gaps[0]);
+
+    // The gap names where the preview draws it, and the slice-frame fields a
+    // regrow sends back are untouched: the nozzle plane's height, not a belt position.
+    let tilted = gaps[0].tilted.as_ref().expect("a belt gap is drawn tilted");
+    assert_eq!(pruned.coverage[0].tilted.as_ref(), Some(tilted));
+    let layers: Vec<f64> = pruned.layers.iter().map(|l| l.z).collect();
+    for l in tilted.ls {
+        assert!(layers.contains(&l), "gap layer {l} is not in {layers:?}");
+        assert!(
+            gaps[0].z.iter().all(|z| (z - l).abs() > 1.0),
+            "{l} is a slice z"
+        );
+    }
+    assert!(tilted.ls[0] < tilted.ls[1]);
+    assert_eq!(tilted.outline.len(), gaps[0].outline.len());
+    // On its highest layer the preview is one plane, `z + tan(angle) * y` the
+    // same everywhere, and the outline lies in it.
+    let tan = ANGLE.to_radians().tan();
+    let top = pruned.layers.iter().find(|l| l.z == tilted.ls[1]).unwrap();
+    let on_plane: Vec<f64> = top
+        .paths
+        .iter()
+        .flat_map(|path| path.pts.iter().zip(&path.zs))
+        .map(|(pt, z)| z + tan * pt[1])
+        .collect();
+    assert!(on_plane.len() > 10);
+    let plane = on_plane[0];
+    assert!(on_plane.iter().all(|k| (k - plane).abs() < 0.02));
+    let points: Vec<[f64; 3]> = tilted
+        .outline
+        .iter()
+        .flatten()
+        .map(|p| p.map(f64::from))
+        .collect();
+    assert!(!points.is_empty());
+    for (p, flat) in points.iter().zip(gaps[0].outline.iter().flatten()) {
+        assert!(
+            (p[2] + tan * p[1] - plane).abs() < 0.02,
+            "{p:?} off the plane"
+        );
+        assert!(
+            (p[0] - f64::from(flat[0])).abs() < 0.006,
+            "x is across the belt"
+        );
+    }
+    // It is where the pruned tree stood: the knots a few layers under the gap
+    // are within a millimetre of the outline's box, in the reply frame.
+    let skeleton = base.skeleton.as_ref().unwrap();
+    let ls = skeleton.ls.as_ref().unwrap();
+    let box_of = |axis: usize| {
+        let at = points.iter().map(|p| p[axis]);
+        (
+            at.clone().fold(f64::INFINITY, f64::min),
+            at.fold(f64::NEG_INFINITY, f64::max),
+        )
+    };
+    let mut near = 0;
+    for (k, layer) in ls.iter().enumerate() {
+        if !(tilted.ls[0] - 1.0..tilted.ls[0]).contains(layer) {
+            continue;
+        }
+        let knot = [skeleton.xs[k], skeleton.ys[k], skeleton.zs[k]].map(f64::from);
+        let r = f64::from(skeleton.rs[k]);
+        let off = |axis: usize| {
+            let (lo, hi) = box_of(axis);
+            (lo - knot[axis]).max(knot[axis] - hi).max(0.0)
+        };
+        if off(0).hypot(off(1)).hypot(off(2)) <= r + 1.0 {
+            near += 1;
+        }
+    }
+    assert!(near > 0, "no knot under the gap, in the reply frame");
+
+    let regrow = regrow_of(&gap);
+    let edits = json!([prune, regrow]);
+    let regrown = try_slice(&belt(json!({
+        "supportEdits": edits,
+        "includeSkeleton": true,
+        "previewBase": pruned.preview_token,
+    })))
+    .unwrap();
+    let edit = &regrown.support_edits[1];
+    assert_eq!(edit.status, EditStatus::Applied);
+    assert!(edit.changed_layers > 0);
+    assert!(
+        gap_mm2(&edit.floating) < gap_mm2(gaps) * 0.5,
+        "{:?} left of {:?}",
+        edit.floating,
+        gaps
+    );
+    assert!(edit.newly_floating_mm2 < -f64::from(gaps[0].area_mm2) * 0.5);
+    assert!(
+        support_mm(&regrown) > support_mm(&pruned) + 1.0,
+        "the regrow printed no supports"
+    );
+
+    // Kept or cold, it is the same file.
+    keep_support_bases(false);
+    let cold = slice(&belt(json!({"supportEdits": edits})));
+    assert_eq!(cold.gcode, regrown.gcode);
+    keep_support_bases(true);
+
+    // The belt positions the preview carries are not the `z` a regrow takes:
+    // there is no demand at those heights, so it finds nothing to grow.
+    let mut by_belt = regrow_of(&gap);
+    by_belt["z"] = json!(tilted.ls);
+    let missed = slice(&belt(json!({"supportEdits": [prune, by_belt]})));
+    assert_eq!(
+        missed.support_edits[1].status,
+        EditStatus::Stale { missed: 1 }
+    );
+    assert_eq!(missed.gcode, pruned.gcode);
+
+    // A flat bed's gaps carry nothing new, and its regrow works as before.
+    let flat_base = slice(&flat(json!({"includeSkeleton": true})));
+    let flat_prune = prune_of_the_largest_tree(&flat_base);
+    let flat_pruned = slice(&flat(json!({"supportEdits": [flat_prune]})));
+    let flat_gaps = &flat_pruned.support_edits[0].floating;
+    assert!(!flat_gaps.is_empty());
+    for gap in flat_gaps.iter().chain(&flat_pruned.coverage) {
+        assert!(gap.tilted.is_none());
+        assert!(serde_json::to_value(gap).unwrap().get("tilted").is_none());
+    }
+    let flat_regrow = regrow_of(&serde_json::to_value(&flat_gaps[0]).unwrap());
+    let flat_regrown = slice(&flat(json!({"supportEdits": [flat_prune, flat_regrow]})));
+    assert_eq!(flat_regrown.support_edits[1].status, EditStatus::Applied);
+    assert!(flat_regrown.support_edits[1].changed_layers > 0);
 }

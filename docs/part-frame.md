@@ -47,7 +47,7 @@ Two fields are in bed coordinates, because they describe the G-code:
 
 ### Support edits
 
-Support-edit sites and regrow regions arrive in the frame the engine plans in and the engine uses them as they are. On a flat bed that is the reply frame, and the client copies them from the skeleton and the gaps. On a belt the sites and gaps are in the slice frame, so the client sends a site back exactly as the skeleton gave it and never draws it. A support edit made before a move still applies after it.
+Support-edit sites and regrow regions arrive in the frame the engine plans in and the engine uses them as they are. On a flat bed that is the reply frame, and the client copies them from the skeleton and the gaps. On a belt the sites and gaps are in the slice frame, so the client sends a site or a gap's region back exactly as the reply gave it and never draws it. A belt gap's `tilted` outline is what it draws. A support edit made before a move still applies after it.
 
 ### Client
 

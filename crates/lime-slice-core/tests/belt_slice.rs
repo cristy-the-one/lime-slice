@@ -255,7 +255,7 @@ fn fit_errors_name_the_field() {
 }
 
 #[test]
-fn compare_and_regrow_are_refused_and_a_prune_applies() {
+fn compare_is_refused_and_edits_are_accepted_but_stale_without_floor_supports() {
     let ledge = fs::read(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples/overhang_ledge.stl"),
     )
@@ -296,14 +296,16 @@ fn compare_and_regrow_are_refused_and_a_prune_applies() {
         "region": [[[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]]],
         "z": [0.2, 2.0],
     }]);
-    let err = slice_request(
+    // A regrow is accepted. With no floor supports there is no demand to grow for, so it is stale.
+    let regrown = slice_request(
         &serde_json::from_value(body.clone()).unwrap(),
         Job::default(),
     )
-    .unwrap_err();
-    assert!(
-        err.contains("belt: regrowing supports in a gap is not available on a belt printer yet"),
-        "{err}"
+    .unwrap();
+    assert_eq!(regrown.support_edits.len(), 1);
+    assert_eq!(
+        regrown.support_edits[0].status,
+        EditStatus::Stale { missed: 1 }
     );
 
     // A prune is accepted. With no floor supports there is nothing to match, so it is stale.

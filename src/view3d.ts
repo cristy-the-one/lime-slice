@@ -10,7 +10,7 @@ import { aimSection, anchor, clampOffset, normalize, sectionReach, threeClip, ty
 import { beltStripLength, tiltPose, type BeltSettings } from "./belt";
 import { hexToThree, themeColors, type ThemeColors } from "./theme";
 import { poseAffine, type PlacedPart } from "./mesh-place";
-import type { CoverageGap } from "./support-edits";
+import type { CoverageGap, TiltedGap } from "./support-edits";
 import { replyFrameRay, sceneShift } from "./bed-offset";
 import type { Ray } from "./support-pick";
 
@@ -1248,9 +1248,39 @@ function buildSupportOverlay(sectionClip: THREE.Plane, initial: ThemeColors) {
     });
   }
 
+  /** A belt gap lies on its tilted layer: the slice-frame outline is triangulated, and each corner goes to its reply-frame point. */
+  function fillTiltedGap(gap: CoverageGap, tilted: TiltedGap, hot: boolean, cx: number, cy: number) {
+    const loops = gap.outline
+      .map((flat, k) => ({ flat: flat.map(([x, y]) => new THREE.Vector2(x, y)), lab: tilted.outline[k] ?? [] }))
+      .filter((loop) => loop.flat.length >= 3 && loop.lab.length === loop.flat.length);
+    if (!loops.length) return;
+    const at = (p: [number, number, number]) => new THREE.Vector3(...scenePoint(p[0], p[1], p[2], cx, cy));
+    for (const loop of loops) {
+      const line = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(loop.lab.map(at)), gapLine);
+      line.renderOrder = 6;
+      gapGroup.add(line);
+    }
+    // A gap is one connected piece, so its largest loop is the outside and the rest are holes.
+    const byArea = [...loops].sort((p, r) => Math.abs(THREE.ShapeUtils.area(r.flat)) - Math.abs(THREE.ShapeUtils.area(p.flat)));
+    const contour = byArea[0].flat;
+    const holes = byArea.slice(1).map((loop) => loop.flat);
+    const faces = THREE.ShapeUtils.triangulateShape(contour, holes);
+    // Triangulating drops a repeated end point, so each loop's corners are as many as it kept.
+    const corners = byArea.flatMap((loop) => loop.lab.slice(0, loop.flat.length));
+    const geometry = new THREE.BufferGeometry().setFromPoints(corners.map(at));
+    geometry.setIndex(faces.flat());
+    const fill = new THREE.Mesh(geometry, hot ? gapHot : gapFill);
+    fill.renderOrder = 5;
+    gapGroup.add(fill);
+  }
+
   function fillGaps(gaps: readonly CoverageGap[], hot: number | null, cx: number, cy: number) {
     clear(gapGroup);
     gaps.forEach((gap, i) => {
+      if (gap.tilted) {
+        fillTiltedGap(gap, gap.tilted, i === hot, cx, cy);
+        return;
+      }
       const y = gap.z[1];
       const box: [number, number][] = [[gap.min[0], gap.min[1]], [gap.max[0], gap.min[1]], [gap.max[0], gap.max[1]], [gap.min[0], gap.max[1]]];
       const loops = gap.outline.filter((loop) => loop.length >= 3);
