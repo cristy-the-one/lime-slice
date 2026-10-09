@@ -418,6 +418,7 @@ impl Supports {
                     bands,
                     contours,
                     lean,
+                    self.opts.floor,
                     &mut near,
                 );
             }
@@ -700,6 +701,7 @@ impl Supports {
             bands,
             contours,
             lean_of(&self.opts),
+            self.opts.floor,
             &crate::progress::Watch::idle(),
             self.opts.job,
         );

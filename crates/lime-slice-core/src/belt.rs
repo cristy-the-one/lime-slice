@@ -70,6 +70,10 @@ pub(crate) struct Belt {
     pub floor_supports: bool,
     /// The rotation that laid the plate flat. No shift until `lay_flat` sets it.
     pub frame: Frame,
+    /// Slice Z the belt run starts from: the bottom of the first printed
+    /// layer. Above 0 only when floor supports lowered the frame further
+    /// than any tree reached.
+    pub start: f64,
 }
 
 /// The rotation that laid the plate flat, so preview points can be mapped back.
@@ -206,6 +210,7 @@ impl Belt {
                 z_drop: 0.0,
                 y_shift: 0.0,
             },
+            start: 0.0,
         })
     }
 
@@ -224,7 +229,7 @@ impl Belt {
     /// Belt position of a nozzle plane at slice height `slice_z`, plus the
     /// copy shift. `shift` is along the belt, before the direction sign.
     pub(crate) fn position(&self, slice_z: f64, shift: f64) -> f64 {
-        self.direction * (Self::advance(slice_z, self.sin_a) + shift)
+        self.direction * (Self::advance(slice_z - self.start, self.sin_a) + shift)
     }
 
     /// How far apart two copies sit on the belt: the part's belt extent plus the gap.
@@ -294,10 +299,13 @@ pub(crate) fn translate_xy(mesh: &Mesh, offset: [f64; 2]) -> Mesh {
 /// Rotate each mesh about X by the belt angle, then drop the plate onto Z = 0
 /// and shift Y so the rail starts at 0. One frame for the whole plate and its
 /// raft, so the first layer is where the plane first meets either.
+/// Floor supports lower the plate by whole `layer_height` steps, so the part
+/// is cut on the same planes.
 pub(crate) fn lay_flat(
     meshes: &[Mesh],
     belt: &Belt,
     raft: Option<&Raft>,
+    layer_height: f64,
 ) -> Result<(Vec<Mesh>, Frame), String> {
     let rotated: Vec<Mesh> = meshes
         .iter()
@@ -320,6 +328,12 @@ pub(crate) fn lay_flat(
     }
     if !any || !min_z.is_finite() {
         return Err("empty mesh".into());
+    }
+    // Supports grow down to the belt. The lowest plane any of them can need
+    // meets it under the plate's upstream edge.
+    if belt.floor_supports {
+        let belt_z = min_y * belt.sin_a / belt.cos_a;
+        min_z -= ((min_z - belt_z) / layer_height).ceil() * layer_height;
     }
     let frame = Frame {
         sin_a: belt.sin_a,
@@ -577,7 +591,7 @@ mod tests {
         let mesh = Mesh {
             triangles: vec![[[0.0, 0.0, 0.0], [0.0, c, -s], [1.0, 0.0, 0.0]]],
         };
-        let (laid, frame) = lay_flat(&[mesh], &belt, None).unwrap();
+        let (laid, frame) = lay_flat(&[mesh], &belt, None, 0.2).unwrap();
         let tri = laid[0].triangles[0];
         let dy = tri[1][1] - tri[0][1];
         let dz = tri[1][2] - tri[0][2];
@@ -597,7 +611,7 @@ mod tests {
         let mesh = Mesh {
             triangles: vec![[[0.0, 0.0, 0.0], [20.0, 0.0, 0.0], [0.0, 20.0, 20.0]]],
         };
-        let (laid, frame) = lay_flat(&[mesh], &belt, None).unwrap();
+        let (laid, frame) = lay_flat(&[mesh], &belt, None, 0.2).unwrap();
         for tri in &laid[0].triangles {
             for v in tri {
                 let lab = frame.lab(v[0], v[1], v[2]);
@@ -617,7 +631,7 @@ mod tests {
     fn a_cube_extent_at_45_is_the_diagonal() {
         let belt = belt_at(45.0);
         let mesh = box20();
-        let (laid, _) = lay_flat(&[mesh], &belt, None).unwrap();
+        let (laid, _) = lay_flat(&[mesh], &belt, None, 0.2).unwrap();
         let (_, height) = plate_span(&laid).unwrap();
         let extent = height / belt.sin_a;
         assert!((extent - 40.0).abs() < 1e-6, "extent {extent}");

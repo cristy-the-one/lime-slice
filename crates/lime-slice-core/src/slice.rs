@@ -1402,7 +1402,12 @@ fn prepare_belt(
     } else {
         None
     };
-    let (laid, frame) = crate::belt::lay_flat(&placed, &belt, raft.as_ref())?;
+    let (laid, frame) = crate::belt::lay_flat(
+        &placed,
+        &belt,
+        raft.as_ref(),
+        settings.layer_height.clamp(0.05, 0.6),
+    )?;
     belt.frame = frame;
     let (span_x, max_z) = crate::belt::plate_span(&laid)?;
     let extent = max_z / belt.sin_a;
@@ -1474,8 +1479,18 @@ fn xy_bounds(meshes: &[Mesh]) -> Result<([f64; 2], [f64; 2]), String> {
 
 /// One planned plate, emitted once per copy. The first copy keeps the writer's
 /// layer-0 treatment. Later copies' first layer is slowed here, because the
-/// writer only does that for index 0.
+/// writer only does that for index 0. Layers below the belt's start print
+/// nothing and are left out, so the lowest foot is layer 0.
 fn belt_output(mut layers: Vec<PlateLayer>, job: &BeltJob) -> Vec<PlateLayer> {
+    let opened = layers
+        .iter()
+        .take_while(|layer| layer.z <= job.belt.start + 1e-9)
+        .count();
+    layers.drain(..opened);
+    for layer in &mut layers {
+        layer.index -= opened;
+        layer.own -= opened;
+    }
     if let Some(raft) = &job.raft {
         let across = [raft.min[0], raft.max[0]];
         for layer in &mut layers {
@@ -1734,7 +1749,7 @@ fn slice_plate(
     // that frame. Bed XY is baked in first so two objects keep their relative
     // place, which a shift along the belt turns into a different nozzle plane.
     // The whole plate is then settled so the belt and the rail start at 0.
-    let belt_job = match belt_spec {
+    let mut belt_job = match belt_spec {
         Some(spec) => Some(prepare_belt(&mut objects, &mut settings, spec)?),
         None => None,
     };
@@ -1913,6 +1928,13 @@ fn slice_plate(
                 sequential: sequential_stamp,
             }
         });
+    // A frame lowered for floor supports starts with layers nothing reached.
+    if let Some(job) = belt_job.as_mut().filter(|job| job.floor.is_some()) {
+        job.belt.start = planned
+            .iter()
+            .find(|layer| !layer.is_empty())
+            .map_or(0.0, |layer| layer.z - layer.height);
+    }
     // Copies are emit-only. Contour stages stay the single planned part.
     // The preview prior is the expanded plate, which is what the client draws.
     let belt_emit = belt_job.as_ref().map(|job| &job.belt);
