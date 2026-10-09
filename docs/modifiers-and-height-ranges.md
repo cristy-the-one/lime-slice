@@ -109,7 +109,7 @@ Height ranges and modifier volumes landed as decided above. The UI sends them, a
 
 **Membership.** A range holds a layer whose z lies in `[from, to]`, ends included. A layer's z is a sum of layer heights, so a 0.2 mm layer at 2 mm can sit a hair off 2. The ends therefore hold every layer within 1 µm of them. Without that slack, a range from 2 to 4 missed both end layers. The same slack applies to a volume's Z extent.
 
-**Strategy changes.** A region's strategy is the blend's strategy with the override applied (`Tweak::apply` in `crates/lime-slice-core/src/modifiers.rs`). `walls` replaces the wall count. `speed` caps the print, outer, inner, sparse, solid, top, and 3D gyroid speeds. `infill` replaces the density. A density the user asks for fills the whole region, so lightning becomes grid and the roof pruning of lightning and lines is off. Without that, a dense volume deep in a speed-blend part printed no infill at all. `infill: 0` leaves no sparse infill. The infill block in `plan_region_split` now runs for a solid shell at any density, so the region keeps its walls and its top and bottom skins. The existing void fill still gap-fills interior pockets narrower than six bead widths.
+**Strategy changes.** A region's strategy is the blend's strategy with the override applied (`Tweak::apply` in `crates/lime-slice-core/src/modifiers.rs`). `walls` replaces the wall count. `speed` caps the print, outer, inner, sparse, solid, top, and 3D gyroid speeds. `infill` replaces the density. A density the user asks for fills the whole region, so lightning becomes grid and the roof pruning of lightning and lines is off. Density is the share of the layer the infill covers, so a grid lays each direction at twice the line spacing. From 99% the infill is solid whatever the pattern: parallel lines one bead apart, turning a quarter each layer, printed as `solid` at the solid speed, with no crossing lines. Without that, a dense volume deep in a speed-blend part printed no infill at all. `infill: 0` leaves no sparse infill. The infill block in `plan_region_split` now runs for a solid shell at any density, so the region keeps its walls and its top and bottom skins. The existing void fill still gap-fills interior pockets narrower than six bead widths.
 
 **Walls in a volume.** PrusaSlicer slices a modifier mesh as its own region. When its perimeter count differs, each region gets perimeters along the modifier's boundary, so walls appear inside the part along the modifier's edge ([Prusa forum](https://forum.prusa3d.com/forum/prusaslicer/adding-more-perimeters-to-one-location-only-nicely/)). OrcaSlicer descends from the same layer-region code. Lime Slice does not print those walls. Lime Slice applies the wall count to the part's own perimeters inside the volume and clips everything else:
 
@@ -129,14 +129,14 @@ So a volume with `walls: 6` over the edge of a 40 mm box prints 6 wall beads whe
 
 **UI.** `payload()` sends `sliceOverrideFields(state.overrides)`. Each list is left out when empty. A range is `{ z: [low, high], infill?, walls?, speed? }`, and a volume is `{ kind, center, size, infill?, walls?, speed? }`. The overrides are part of the settings hash, so an edit marks the slice stale and auto-slice picks it up. The walls inputs run from 1 to 12. A project saved with walls outside that range opens with the value clamped. Speed is capped at 1000 mm/s.
 
-**Evidence.** A 40 × 40 × 10 mm box at weight 0.6 has grid infill at 34% and 4 walls. A box volume over its left edge, `center [80, 100, 5]`, `size [20, 20, 20]`, `walls: 6`, and `infill: 1`, gives these G-code numbers on the layer at Z 5:
+**Evidence.** A 40 × 40 × 10 mm box at weight 0.6 has grid infill at 34% and 4 walls. A box volume over its left edge, `center [80, 100, 5]`, `size [20, 20, 20]`, `walls: 6`, and `infill: 1`, gives these G-code numbers on the layer at Z 5. The infill is sparse without the volume and solid inside it:
 
 | Measure | No volume | Volume |
 | --- | --- | --- |
 | Wall beads crossing y = 100 in the volume | 4 | 6 |
 | Wall beads crossing y = 85, outside it | 4 | 4 |
-| Sparse mm per mm² inside the footprint | 1.265 | 3.083 |
-| Sparse mm per mm² away from it | 1.518 | 1.517 |
+| Infill mm per mm² inside the footprint (x 80 to 90, y 90 to 110) | 0.681 | 1.672 |
+| Infill mm per mm² away from it (x 95 to 115, y 85 to 115) | 0.767 | 0.767 |
 
 **Measured cost.** These times were measured through `serve --cache-dir` on this laptop, client side, with a speed blend, tree supports, the G-code parked, and the default 220 mm bed. Each change sends `previewBase` and differs from every earlier request, so none hits the disk. Each cold slice ran on a fresh server. There were two runs. The range spans the middle half of the part's height with `walls` 4, 5, then 6 and `speed: 40`. The three volumes are a box with infill 0.8, 0.9, then 1, a cylinder with 4 walls, and a sphere with a 30 mm/s cap.
 
