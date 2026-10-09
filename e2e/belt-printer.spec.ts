@@ -40,13 +40,13 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await expect(page.locator("#beltAngle")).toHaveValue("45");
   await expect(page.locator("#beltFields")).toBeVisible();
   await expect(page.locator("#beltSeam")).not.toBeChecked();
-  await expect(page.locator("#beltFloor")).not.toBeChecked();
+  await expect(page.locator("#beltFloor")).toHaveCount(0);
   await expect(page.locator("#beltRaft")).not.toBeChecked();
   await expect(page.locator("#beltRaftLayers")).toBeDisabled();
   // Before any slice, so a toggle back to a sliced recipe cannot refresh it by itself.
-  await page.locator("#beltFloor").check();
+  await page.locator("#supports").check();
   await expect(page.locator("#beltRaft")).toBeDisabled();
-  await page.locator("#beltFloor").uncheck();
+  await page.locator("#supports").uncheck();
   await expect(page.locator("#beltRaft")).toBeEnabled();
   await expect(page.getByText("Mock only")).toHaveCount(0);
   await page.locator("#beltCopies").fill("3");
@@ -77,16 +77,16 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await expect(page.locator("#readHigh")).toHaveText("Z 40.00");
 
   await page.locator("#tabPrepare").click();
-  await page.locator("#beltFloor").check();
+  await page.locator("#supports").check();
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(2);
   expect((bodies[1].belt as Record<string, unknown>).floorSupports).toBe(true);
-  await page.locator("#beltFloor").uncheck();
+  await page.locator("#supports").uncheck();
   await expect.poll(() => bodies.length).toBe(3);
   expect(bodies[2].belt).not.toHaveProperty("floorSupports");
   await expect(page.locator("#export")).toBeEnabled();
   await page.locator("#beltRaft").check();
-  await expect(page.locator("#beltFloor")).toBeDisabled();
+  await expect(page.locator("#supports")).toBeDisabled();
   await expect(page.locator("#beltRaftLayers")).toBeEnabled();
   await page.locator("#beltRaftLayers").fill("2");
   await page.locator("#beltRaftLayers").blur();
@@ -98,6 +98,7 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await page.locator("#machineKind").selectOption("cartesian");
   await expect(page.locator("#beltFields")).toBeHidden();
   await expect(page.locator("#prepare")).toHaveAttribute("data-belt", "0");
+  await expect(page.locator("#supports")).toBeEnabled();
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(5);
   expect(bodies[4]).not.toHaveProperty("belt");
