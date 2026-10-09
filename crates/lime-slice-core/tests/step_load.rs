@@ -134,6 +134,74 @@ fn a_cone_that_meets_at_its_apex_is_closed() {
     assert_eq!(unpaired_edges(&mesh), 0);
 }
 
+/// Creo leaves a 1 mm sliver face between two coincident edges, bounded by only
+/// two distinct points. Truck finds no loop to trim it by and meshes the whole
+/// parametric rectangle: a ribbon outside the part.
+#[test]
+fn a_zero_area_extrusion_face_adds_no_ribbon() {
+    let mesh = load("sliver_face.step");
+    expect_box(&mesh, [0.0, 0.0, 0.0], [10.0, 10.0, 10.0], 1e-6);
+    assert_eq!(mesh.triangle_count(), load("cube.step").triangle_count());
+    assert_eq!(boundary_edges(&mesh), 0);
+    let vol = volume(&mesh);
+    assert!((vol - 1000.0).abs() < 1e-6, "volume {vol}");
+}
+
+/// A 300 mm wall that is a linear extrusion of a 50 mm radius arc, cut at the
+/// top by a sloped plane, like the long side walls of a Creo part. Truck's
+/// parameter space for it is 1 rad by 300 mm, so with no point between the two
+/// rims it fans every chord out from one corner and cuts across the arc.
+#[test]
+fn an_extruded_arc_wall_follows_the_arc() {
+    let mesh = load("arc_wall.step");
+    let radius = |p: [f64; 3]| (p[0] * p[0] + p[1] * p[1]).sqrt();
+    let mut worst: f64 = 0.0;
+    let mut wall = 0;
+    for tri in &mesh.triangles {
+        let (a, b, c) = (tri[0], tri[1], tri[2]);
+        let (ab, ac) = (
+            [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+            [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+        );
+        let nz = ab[0] * ac[1] - ab[1] * ac[0];
+        let area = (ab[0] * ac[1] - ab[1] * ac[0])
+            .hypot((ab[1] * ac[2] - ab[2] * ac[1]).hypot(ab[2] * ac[0] - ab[0] * ac[2]));
+        // The chord wall sits at y = 43.3, the caps face along z.
+        let flat = tri.iter().all(|p| (p[1] - 43.30127).abs() < 1e-6);
+        if flat || nz.abs() > 0.5 * area {
+            continue;
+        }
+        wall += 1;
+        let centroid = [0, 1, 2].map(|k| (a[k] + b[k] + c[k]) / 3.0);
+        for p in [a, b, c, centroid] {
+            worst = worst.max((radius(p) - 50.0).abs());
+        }
+    }
+    assert!(wall > 0);
+    assert!(
+        worst < 0.2,
+        "{wall} wall triangles stray {worst} mm from the arc"
+    );
+    let analytic =
+        300.0 * 1250.0 * (std::f64::consts::PI / 3.0 - (std::f64::consts::PI / 3.0).sin());
+    let vol = volume(&mesh);
+    assert!(
+        (vol - analytic).abs() / analytic < 0.03,
+        "volume {vol} analytic {analytic}"
+    );
+    assert_eq!(boundary_edges(&mesh), 0);
+}
+
+/// Creo leaves the edges of a small cone up to 0.15 mm off it. The cylinder here
+/// is 1.2 mm across with its edge circles 0.12 mm outside it, past the 0.1 mm a
+/// rim vertex is moved to meet an edge, and it used to leave an open ring.
+#[test]
+fn a_small_cylinder_whose_edges_sit_off_it_is_closed() {
+    let mesh = load("loose_cylinder.step");
+    expect_box(&mesh, [-0.72, -0.72, 0.0], [0.72, 0.72, 1.5], 0.2);
+    assert_eq!(unpaired_edges(&mesh), 0);
+}
+
 #[test]
 fn cylinder_tessellates_inside_the_analytic_solid() {
     let mesh = load("cylinder.step");

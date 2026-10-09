@@ -2134,6 +2134,7 @@ dependencies = [
  "sha2",
  "truck-meshalgo",
  "truck-stepio",
+ "truck-topology",
  "zip",
 ]
 
