@@ -134,7 +134,7 @@ The rotation is part of the mesh the contour key hashes. `belt` is not a `SliceS
 
 Usable width is the across-belt span (`max X − min X`), not a check that the part sits inside `[0, width]`. Max length is `copies * extent + (copies − 1) * gap`. A bad angle, axis, direction, width, length, copies, or gap names that field (`belt.angleDeg`, and the same for the others).
 
-Layer 0 keeps the writer's 30 mm/s, flow 1.06, and fan off. Later layers slow only `outer` and `wall` runs whose bead bottom is within `0.75 * height` of the belt in the lab, and only when that run is at least 0.8 mm. A later copy's first layer is slowed the same way in the paths, because the writer only treats index 0 as the first layer. Scarf and Z hop are forced off: both would move the belt axis between beads. `seam: blend` becomes `rear` (+Y after the rotation, the belt edge). An explicit seam is kept unless `belt.seamOnEdge` is true, which is omitted when off. Ironing is left on. Supports are forced off with no error unless the request sends `belt.floorSupports`. Support prunes apply (`docs/support-edits.md`), regrows and `compare` are errors. Support paint and seam paint move with the part (`docs/belt-floor-supports.md`).
+Layer 0 keeps the writer's 30 mm/s, flow 1.06, and fan off. Later layers slow only `outer` and `wall` runs whose bead bottom is within `0.75 * height` of the belt in the lab, and only when that run is at least 0.8 mm. A later copy's first layer is slowed the same way in the paths, because the writer only treats index 0 as the first layer. Scarf and Z hop are forced off: both would move the belt axis between beads. `seam: blend` becomes `rear` (+Y after the rotation, the belt edge). An explicit seam is kept unless `belt.seamOnEdge` is true, which is omitted when off. Ironing is left on. Supports are forced off with no error unless the request sends `belt.floorSupports`. Support prunes and regrows apply (`docs/support-edits.md`), and `compare` is an error. Support paint and seam paint move with the part (`docs/belt-floor-supports.md`).
 
 `belt.raftLayers` from 1 to 8 is a pad on the belt, under the plate's footprint and 1 mm past it on every side, `N * clamp(layerHeight, 0.05, 0.6)` thick, measured up from the belt. Before the plate is laid flat, every object is lifted onto the pad's top, and the pad's corners join the lay-flat frame, so the first layer is where the nozzle plane first meets the pad. Each nozzle plane crosses the pad in a band from the belt up to `top / sin(α)`. `belt_output` puts the fewest lines that cover that band across the belt, wherever the band is over the footprint, as a run before the part's; the part's next run then enters with a retracted travel. Those lines are 30 mm/s, flow 1.0 and fan 0, and alternate direction from layer to layer. Adaptive layers with a raft are refused (`belt.raftLayers needs a fixed layer height; turn adaptive layers off`). Each copy repeats the pad, because the lines are added before the copy loop. Omitted and 0 print no pad, and the request JSON omits the field. The machine file stores `raftLayers: 0` for an old belt block that has no key.
 
@@ -148,7 +148,6 @@ A belt axis of X or Y permutes the letters. The nozzle plane is no longer machin
 
 ## Deferred
 
-- Regrowing supports in a gap on a belt. Floor supports, support paint, seam paint, and support prunes work (`docs/belt-floor-supports.md`). A regrow is refused.
 - Pulling an explicit seam onto the belt edge is opt-in. `belt.seamOnEdge`, omitted when false, rewrites nearest and aligned to `rear` as well. `blend` still moves without the flag.
 - A part-frame move that does not recut. Baking the bed offset means a move across the belt, or a move of one object relative to another along it, changes the mesh the contour key hashes.
 - World-space shear for a firmware that does not already tilt. Not used for the four machines above.
@@ -159,7 +158,7 @@ A belt axis of X or Y permutes the letters. The nozzle plane is no longer machin
 1. UI. Version 3 of the machine file, a Belt kind, the fields above, and the prepare view as a belt with the tilted plane and N copies. The slice request carries `belt`. Export is on. Send follows the printer connection. Done.
 2. Engine. Rotate, slice, emit the gantry frame. Supports forced off. Fit checks, copies, and `cartesian_lock`. Done.
 3. Belt contact. The belt wall, the `blend` → `rear` seam, the opt-in `seamOnEdge` flag, and the opt-in raft are in. Sliver policy stays global.
-4. Supports in the rotated frame, on a belt floor, with the down vector tilted by `α`. Done: floor supports, gravity trunks, support and seam paint, and support prunes. Regrowing supports in a gap is not done on a belt.
+4. Supports in the rotated frame, on a belt floor, with the down vector tilted by `α`. Done: floor supports, gravity trunks, support and seam paint, and support prunes and regrows.
 5. Lab-frame preview from real `zs`, and print time from the transformed segments. The UI sends `belt` and draws that preview. Nothing in the belt path is mocked.
 
 ## Review questions
