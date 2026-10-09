@@ -56,7 +56,11 @@ export function sitesOf(index: LimbIndex, limbs: readonly number[]): SiteSpec[] 
   return limbs.filter((k) => s.live[k] === 1).map((k) => ({ xy: [s.siteX[k], s.siteY[k]], z: s.siteZ[k] }));
 }
 
-/** What the user can see: the layer slider's z slab and the section cut. */
+/**
+ * What the user can see: the layer slider's z slab and the section cut.
+ * On a belt reply (`skeleton.ls`) `zLow` and `zHigh` are the preview layer `z` of the lowest and highest
+ * shown layer, and a knot is in the slab by its `ls`, not by its lab height.
+ */
 export interface Visible {
   zLow: number;
   zHigh: number;
@@ -90,7 +94,7 @@ export function pickLimb(index: LimbIndex, ray: Ray, visible: Visible, slop: num
       const j = Math.min(i + 1, end - 1);
       const a: Vec3 = [s.xs[i], s.ys[i], s.zs[i]];
       const b: Vec3 = [s.xs[j], s.ys[j], s.zs[j]];
-      const span = visibleSpan(a, b, visible);
+      const span = visibleSpan(a, b, s.ls ? s.ls[i] : a[2], s.ls ? s.ls[j] : b[2], visible);
       if (!span) continue;
       const hit = closest(o, d, a, b, span[0], span[1]);
       const r = s.rs[i] + (s.rs[j] - s.rs[i]) * hit.s;
@@ -126,27 +130,34 @@ export function regrowFor(gap: CoverageGap): RegrowEdit {
   return { kind: "regrow", region: [[[x0, y0], [x1, y0], [x1, y1], [x0, y1]]], z: [gap.z[0], gap.z[1]] };
 }
 
-/** Visible capsules of `limbs` for drawing: `[ax, ay, az, ar, bx, by, bz, br]` per knot pair. Single-knot limbs give one zero-length capsule. */
-export function capsulesOf(index: LimbIndex, limbs: readonly number[]): Float32Array {
+/**
+ * Capsules of `limbs` for drawing: `[ax, ay, az, ar, bx, by, bz, br]` per knot pair. Single-knot limbs give one zero-length capsule.
+ * The overlay clips a cartesian reply to the layer slab itself. A belt reply has no such plane, so `visible` cuts the capsules by `ls` here.
+ */
+export function capsulesOf(index: LimbIndex, limbs: readonly number[], visible?: Visible): Float32Array {
   const s = index.skel;
-  let n = 0;
-  for (const k of limbs) {
-    const knots = s.start[k + 1] - s.start[k];
-    if (knots > 0) n += Math.max(1, knots - 1);
-  }
-  const out = new Float32Array(n * 8);
-  let w = 0;
+  const out: number[] = [];
+  const at = (a: number, b: number, t: number) => (t <= 0 ? a : t >= 1 ? b : a + (b - a) * t);
   for (const k of limbs) {
     const first = s.start[k];
     const end = s.start[k + 1];
     if (end <= first) continue;
     for (let i = first; i <= Math.max(first, end - 2); i++) {
       const j = Math.min(i + 1, end - 1);
-      out.set([s.xs[i], s.ys[i], s.zs[i], s.rs[i], s.xs[j], s.ys[j], s.zs[j], s.rs[j]], w);
-      w += 8;
+      let from = 0;
+      let to = 1;
+      if (s.ls && visible) {
+        const span = visibleSpan([s.xs[i], s.ys[i], s.zs[i]], [s.xs[j], s.ys[j], s.zs[j]], s.ls[i], s.ls[j], { ...visible, section: null });
+        if (!span) continue;
+        [from, to] = span;
+      }
+      out.push(
+        at(s.xs[i], s.xs[j], from), at(s.ys[i], s.ys[j], from), at(s.zs[i], s.zs[j], from), at(s.rs[i], s.rs[j], from),
+        at(s.xs[i], s.xs[j], to), at(s.ys[i], s.ys[j], to), at(s.zs[i], s.zs[j], to), at(s.rs[i], s.rs[j], to),
+      );
     }
   }
-  return out;
+  return Float32Array.from(out);
 }
 
 function unitRay(ray: Ray): [Vec3, Vec3] {
@@ -154,8 +165,8 @@ function unitRay(ray: Ray): [Vec3, Vec3] {
   return [ray.origin, [ray.dir[0] / len, ray.dir[1] / len, ray.dir[2] / len]];
 }
 
-/** The part of segment a→b, as `[s0, s1]` of its length, inside the z slab and on the kept side of the section. */
-function visibleSpan(a: Vec3, b: Vec3, visible: Visible): [number, number] | null {
+/** The part of segment a→b, as `[s0, s1]` of its length, inside the slab and on the kept side of the section. `ha` and `hb` are the ends' slab heights: lab z, or a belt knot's `ls`. */
+function visibleSpan(a: Vec3, b: Vec3, ha: number, hb: number, visible: Visible): [number, number] | null {
   let lo = 0;
   let hi = 1;
   const keep = (fa: number, fb: number) => {
@@ -167,8 +178,8 @@ function visibleSpan(a: Vec3, b: Vec3, visible: Visible): [number, number] | nul
     else hi = Math.min(hi, s);
     return true;
   };
-  if (!keep(a[2] - visible.zLow + SLAB_EPS, b[2] - visible.zLow + SLAB_EPS)) return null;
-  if (!keep(visible.zHigh + SLAB_EPS - a[2], visible.zHigh + SLAB_EPS - b[2])) return null;
+  if (!keep(ha - visible.zLow + SLAB_EPS, hb - visible.zLow + SLAB_EPS)) return null;
+  if (!keep(visible.zHigh + SLAB_EPS - ha, visible.zHigh + SLAB_EPS - hb)) return null;
   if (visible.section) {
     const { center, spec } = visible.section;
     const side = (p: Vec3) => {

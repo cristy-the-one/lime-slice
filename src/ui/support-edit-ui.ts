@@ -42,6 +42,7 @@ const SCOPE_LABEL: Record<PickScope, string> = { branch: "Branch", tree: "Tree" 
 /** Pick tolerance past a limb's radius: a fixed floor plus a few screen pixels. */
 const SLOP_MM = 0.3;
 const SLOP_PX = 4;
+const BELT_REGROW_HINT = "Regrowing supports in a gap isn't available on a belt printer yet.";
 const X_ICON = createElement(X, { width: 14, height: 14, "aria-hidden": "true", class: "ico" }).outerHTML;
 
 export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) {
@@ -102,7 +103,7 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
   let index: LimbIndex | null = null;
   let gaps: CoverageGap[] = [];
   let gapsFor: { result: SupportEditView["result"]; sent: readonly EditEntry[] } | null = null;
-  const caps = new WeakMap<object, Float32Array>();
+  const caps = new WeakMap<object, { key: string; caps: Float32Array }>();
 
   function sync(v: SupportEditView) {
     const skeleton = v.result?.skeleton ?? null;
@@ -112,11 +113,16 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
       selected = null;
     }
     if (gapsFor?.result !== v.result || gapsFor.sent !== v.sent) {
-      gaps = gapsToShow(v.result?.coverage, v.sent, v.result?.supportEdits);
+      // A belt reply's gaps are in the slice frame, and the engine cannot regrow on a belt yet.
+      gaps = onBelt() ? [] : gapsToShow(v.result?.coverage, v.sent, v.result?.supportEdits);
       gapsFor = { result: v.result, sent: v.sent };
       if (selected?.kind === "gap" && !gaps.includes(selected.gap)) selected = null;
       if (hover?.kind === "gap" && !gaps.includes(hover.gap)) hover = null;
     }
+  }
+
+  function onBelt() {
+    return !!index?.skel.ls;
   }
 
   function ready() {
@@ -127,14 +133,16 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
     return selectLimbs(index!, t.limb, t.scope);
   }
 
-  function capsulesFor(t: Target) {
+  function capsulesFor(t: Target, visible: Visible) {
     if (t?.kind !== "limb" || !index) return null;
+    // A belt's capsules are cut to the shown layers, so they change with the slider.
+    const key = onBelt() ? `${visible.zLow},${visible.zHigh}` : "";
     let hit = caps.get(t);
-    if (!hit) {
-      hit = capsulesOf(index, limbsOf(t));
+    if (hit?.key !== key) {
+      hit = { key, caps: capsulesOf(index, limbsOf(t), visible) };
       caps.set(t, hit);
     }
-    return hit;
+    return hit.caps;
   }
 
   function same(a: Target, b: Target) {
@@ -211,6 +219,7 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
         </li>`).join("");
         body += `<h3 class="se-sub">Unheld</h3><ul class="se-gaps">${items}</ul>`;
       }
+      if (editing && onBelt()) body += `<p class="se-note">${BELT_REGROW_HINT}</p>`;
       if (!v.treeSupports) body += `<p class="se-note">Tree supports are off. These edits apply again when they are back on.</p>`;
     }
     const html = `<div class="se-head">${head}${tools}</div>${body}`;
@@ -231,9 +240,11 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
       view3d.setSupportOverlay(null);
       return;
     }
-    const sel = capsulesFor(selected);
-    const hov = same(hover, selected) ? null : capsulesFor(hover);
-    view3d.setSupportOverlay({ hover: hov, selected: sel, gaps, hotGap: hotGap(), zLow: v.visible.zLow, zHigh: v.visible.zHigh });
+    const sel = capsulesFor(selected, v.visible);
+    const hov = same(hover, selected) ? null : capsulesFor(hover, v.visible);
+    // The overlay's slab planes are heights; a belt's capsules were already cut by layer.
+    const [zLow, zHigh] = onBelt() ? [-1e6, 1e6] : [v.visible.zLow, v.visible.zHigh];
+    view3d.setSupportOverlay({ hover: hov, selected: sel, gaps, hotGap: hotGap(), zLow, zHigh });
   }
 
   function paintToggle() {
@@ -254,7 +265,8 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
     if (!selected || !index) return null;
     if (selected.kind === "gap") return { kind: "gap", areaMm2: selected.gap.areaMm2, z: selected.gap.z };
     const sites = sitesOf(index, limbsOf(selected));
-    return { kind: "limb", scope: selected.scope, tips: sites.length, z: sites[0]?.z ?? null };
+    // A site's z is a slice-frame id on a belt, not a height anyone sees.
+    return { kind: "limb", scope: selected.scope, tips: sites.length, z: onBelt() ? null : sites[0]?.z ?? null };
   }
 
   function placePanel() {
