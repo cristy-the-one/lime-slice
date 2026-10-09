@@ -42,7 +42,7 @@ use crate::strategy::{
 };
 use crate::support::edit::{EditOutcome, SupportEdit};
 use crate::support::paint::{self, PaintDisk, PaintTally};
-use crate::support::skeleton::{skeleton, SupportSkeleton};
+use crate::support::skeleton::{skeleton, SupportSkeleton, Tilt as SkeletonTilt};
 use crate::support::{
     CoverageGap, Disk, FloorPlane, InAir, SupportLayer, SupportOpts, SupportStyle, Supports,
 };
@@ -731,11 +731,13 @@ pub struct SliceResponse {
     pub baseline_label: String,
     pub mesh: MeshInfo,
     /// Where the reply frame sits on the bed. `layers`, `previewPatch`,
-    /// `coverage`, `skeleton`, `inAir`, the gaps in `supportEdits`, and
-    /// `mesh.min`/`max` are in the part frame: draw them at their coordinates
-    /// plus `offset`. The G-code and `sanity`'s bounds are in bed
+    /// `coverage`, the skeleton's knots, `inAir`, the gaps in `supportEdits`,
+    /// and `mesh.min`/`max` are in the part frame: draw them at their
+    /// coordinates plus `offset`. The G-code and `sanity`'s bounds are in bed
     /// coordinates. Absent when the request has no pose, since the two
-    /// frames are then the same.
+    /// frames are then the same. On a belt the reply frame is the lab less
+    /// the offset: `coverage`, `inAir`, the gaps, and the skeleton's sites
+    /// stay in the slice frame, where the part lies flat for the nozzle.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offset: Option<[f64; 2]>,
     /// Named slices of `core_ms`: contours, supports, toolpaths, order, combing, and G-code emit.
@@ -1352,8 +1354,15 @@ fn prepare_belt(
     if belt.floor_supports && belt.raft_layers > 0 {
         return Err("belt.floorSupports is not available with a raft yet".into());
     }
-    if objects.iter().any(|o| !o.settings.support_edits.is_empty()) {
-        return Err("belt: support edits are not available on a belt printer yet".into());
+    // A regrow reads a gap's outline, which is in the slice frame and not the preview's.
+    if objects
+        .iter()
+        .flat_map(|o| &o.settings.support_edits)
+        .any(|edit| matches!(edit, SupportEdit::Regrow { .. }))
+    {
+        return Err(
+            "belt: regrowing supports in a gap is not available on a belt printer yet".into(),
+        );
     }
     let offsets: Vec<Option<[f64; 2]>> = objects.iter().map(|o| o.offset).collect();
     let mut lab_bounds = Vec::with_capacity(objects.len());
@@ -1472,15 +1481,21 @@ fn xy_bounds(meshes: &[Mesh]) -> Result<([f64; 2], [f64; 2]), String> {
     Ok((min, max))
 }
 
+/// How many leading layers of the planned plate print nothing under the belt's start.
+/// A belt reply numbers its layers from the first one after them.
+fn belt_opened(layers: &[PlateLayer], belt: &crate::belt::Belt) -> usize {
+    layers
+        .iter()
+        .take_while(|layer| layer.z <= belt.start + 1e-9)
+        .count()
+}
+
 /// One planned plate, emitted once per copy. The first copy keeps the writer's
 /// layer-0 treatment. Later copies' first layer is slowed here, because the
 /// writer only does that for index 0. Layers below the belt's start print
 /// nothing and are left out, so the lowest foot is layer 0.
 fn belt_output(mut layers: Vec<PlateLayer>, job: &BeltJob) -> Vec<PlateLayer> {
-    let opened = layers
-        .iter()
-        .take_while(|layer| layer.z <= job.belt.start + 1e-9)
-        .count();
+    let opened = belt_opened(&layers, &job.belt);
     layers.drain(..opened);
     for layer in &mut layers {
         layer.index -= opened;
@@ -2029,6 +2044,10 @@ fn slice_plate(
         order_layers_reused: plans.iter().map(|p| p.reuse.order_layers).sum(),
         comb_layers_reused: plans.iter().map(|p| p.reuse.comb_layers).sum(),
     };
+    // A belt reply numbers its layers after the leading ones that print nothing.
+    let opened = belt_job
+        .as_ref()
+        .map_or(0, |job| belt_opened(&planned, &job.belt));
     let views: Vec<ObjectView> = plans
         .iter()
         .zip(&objects)
@@ -2056,14 +2075,18 @@ fn slice_plate(
                 },
                 coverage: p.coverage.clone(),
                 in_air: p.in_air,
-                skeleton: obj
-                    .settings
-                    .include_skeleton
-                    .then(|| skeleton(&p.supports, &indexed)),
+                skeleton: obj.settings.include_skeleton.then(|| {
+                    let tilt = belt_job.as_ref().map(|job| SkeletonTilt {
+                        belt: &job.belt,
+                        offset: job.offsets[o].unwrap_or([0.0, 0.0]),
+                        plate: &planned,
+                    });
+                    skeleton(&p.supports, &indexed, tilt.as_ref())
+                }),
                 support_edits: p
                     .outcomes
                     .iter()
-                    .map(|out| EditOutcomeView::of(out, &indexed))
+                    .map(|out| EditOutcomeView::of(out, &indexed, opened))
                     .collect(),
                 support_paint: (!obj.settings.support_paint.is_empty()).then(|| {
                     paint::tally(

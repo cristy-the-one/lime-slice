@@ -54,14 +54,17 @@ session.supportUi = mountSupportEdits(view3d, {
     const center = previewCenter();
     // On a plate the editor works on the selected object, in that object's part frame.
     const objects = state.result?.objects;
+    const result = objects ? (objects[selectedObjectIndex()] ?? null) : state.result;
+    // A belt reply's layer z is the belt position, not a height, and its knots are cut by that z.
+    const belt = !!result?.skeleton?.ls;
     return {
-      result: objects ? (objects[selectedObjectIndex()] ?? null) : state.result,
+      result,
       sent: session.slicedEdits,
       edits: state.supportEdits,
       busy: state.busy,
       treeSupports: treeSupports(),
       visible: {
-        zLow: low ? low.z - low.height : -1e6,
+        zLow: low ? (belt ? low.z : low.z - low.height) : -1e6,
         zHigh: high ? high.z : 1e6,
         section: spec && center ? { center, spec } : null,
       },

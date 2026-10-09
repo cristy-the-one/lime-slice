@@ -84,6 +84,28 @@ eq(
 );
 eq("one capsule per two-knot limb", capsulesOf(index, [1, 2]).length, 16);
 
+// A belt reply: knots are in the reply frame, and `ls` is the preview layer z each knot prints on.
+// The trunk's top knot is lab z 20 on layer 10; its foot is lab z 5 on layer 2.
+const beltSkel: SupportSkeleton = {
+  id: [1], tree: [1], into: [0], live: [1],
+  siteX: [3], siteY: [4], siteZ: [5],
+  start: [0, 2],
+  xs: [10, 20], ys: [10, 10], zs: [20, 5], rs: [1, 1],
+  ls: [10, 2],
+};
+const beltIndex = indexSkeleton(beltSkel);
+const layers = (zLow: number, zHigh: number): Visible => ({ zLow, zHigh, section: null });
+eq("belt: a tilted limb is picked at its middle", pickLimb(beltIndex, along(15, 12.5), layers(1, 12), 0.3)?.limb, 0);
+eq("belt: the top knot is visible by its layer even though its lab z is above the range", pickLimb(beltIndex, along(10, 20), layers(1, 12), 0.3)?.limb, 0);
+eq("belt: knots above the top layer are hidden", pickLimb(beltIndex, along(10, 20), layers(1, 9), 0.3), null);
+eq("belt: the part below the top layer is still picked", pickLimb(beltIndex, along(19, 6.5), layers(1, 4), 0.3)?.limb, 0);
+eq("belt: knots below the low layer are hidden", pickLimb(beltIndex, along(20, 5), layers(5, 12), 0.3), null);
+eq("belt: the same limb without ls is hidden by its lab z", pickLimb(indexSkeleton({ ...beltSkel, ls: undefined }), along(10, 20), layers(1, 12), 0.3), null);
+const round = (a: Float32Array) => [...a].map((v) => Math.round(v * 10) / 10);
+eq("belt: capsules are clipped to the layers", round(capsulesOf(beltIndex, [0], layers(1, 6))), [15, 10, 12.5, 1, 20, 10, 5, 1]);
+eq("belt: capsules inside the layers are whole", [...capsulesOf(beltIndex, [0], layers(1, 12))], [10, 10, 20, 1, 20, 10, 5, 1]);
+eq("belt: capsules outside the layers are dropped", capsulesOf(beltIndex, [0], layers(11, 12)).length, 0);
+
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);

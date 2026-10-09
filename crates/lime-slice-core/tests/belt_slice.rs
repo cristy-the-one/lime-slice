@@ -6,7 +6,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 use base64::Engine;
-use lime_slice_core::{slice_request, Job, SliceRequest};
+use lime_slice_core::{slice_request, EditStatus, Job, SliceRequest};
 use serde_json::{json, Value};
 
 fn box_stl(x: f64, y: f64, z: f64) -> String {
@@ -255,7 +255,7 @@ fn fit_errors_name_the_field() {
 }
 
 #[test]
-fn supports_edits_and_compare_are_refused() {
+fn compare_and_regrow_are_refused_and_a_prune_applies() {
     let ledge = fs::read(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples/overhang_ledge.stl"),
     )
@@ -291,15 +291,32 @@ fn supports_edits_and_compare_are_refused() {
     assert!(err.contains("compare"), "{err}");
 
     body["compare"] = json!(false);
-    body["supportEdits"] = json!([{ "kind": "prune", "sites": [{ "xy": [1.0, 1.0], "z": 0.2 }] }]);
+    body["supportEdits"] = json!([{
+        "kind": "regrow",
+        "region": [[[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]]],
+        "z": [0.2, 2.0],
+    }]);
     let err = slice_request(
         &serde_json::from_value(body.clone()).unwrap(),
         Job::default(),
     )
     .unwrap_err();
     assert!(
-        err.contains("belt: support edits are not available on a belt printer yet"),
+        err.contains("belt: regrowing supports in a gap is not available on a belt printer yet"),
         "{err}"
+    );
+
+    // A prune is accepted. With no floor supports there is nothing to match, so it is stale.
+    body["supportEdits"] = json!([{ "kind": "prune", "sites": [{ "xy": [1.0, 1.0], "z": 0.2 }] }]);
+    let pruned = slice_request(
+        &serde_json::from_value(body.clone()).unwrap(),
+        Job::default(),
+    )
+    .unwrap();
+    assert_eq!(pruned.support_edits.len(), 1);
+    assert_eq!(
+        pruned.support_edits[0].status,
+        EditStatus::Stale { missed: 1 }
     );
 
     // Without floor supports the paint is kept, and the reply says nothing prints.
@@ -358,10 +375,23 @@ fn floor_supports_land_on_the_belt() {
         "a support bead went through the belt, lab z {lowest}"
     );
 
+    // The site is where the skeleton says a limb is born, in the slice frame.
+    let mut skeleton = body.clone();
+    skeleton["includeSkeleton"] = json!(true);
+    let skeleton = slice_request(&serde_json::from_value(skeleton).unwrap(), Job::default())
+        .unwrap()
+        .skeleton
+        .unwrap();
+    let site = json!({ "xy": [skeleton.site_x[0], skeleton.site_y[0]], "z": skeleton.site_z[0] });
     let mut edited = body;
-    edited["supportEdits"] = json!([{ "kind": "prune", "sites": [{ "xy": [1.0, 1.0], "z": 0.2 }] }]);
-    let err = slice_request(&serde_json::from_value(edited).unwrap(), Job::default()).unwrap_err();
-    assert!(err.contains("support edits"), "{err}");
+    edited["supportEdits"] = json!([{ "kind": "prune", "sites": [site] }]);
+    let pruned = slice_request(&serde_json::from_value(edited).unwrap(), Job::default()).unwrap();
+    assert_eq!(pruned.support_edits[0].status, EditStatus::Applied);
+    assert!(pruned.support_edits[0].changed_layers > 0);
+    assert!(
+        pruned.estimate.filament_mm < sliced.estimate.filament_mm,
+        "the prune left the supports as they were"
+    );
 }
 
 /// A tower with an arm reaching up the belt, `[across, along, height]` in mm.

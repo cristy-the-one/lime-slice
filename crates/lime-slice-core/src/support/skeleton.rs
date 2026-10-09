@@ -4,6 +4,8 @@ use serde::Serialize;
 
 use super::{End, Life, Limb, Supports};
 use crate::adaptive::LayerBand;
+use crate::belt::Belt;
+use crate::gcode::PlateLayer;
 
 /// Every limb that still prints, as parallel columns in ascending limb id.
 /// `start[k]..start[k + 1]` are limb `k`'s knots in `xs`, `ys`, `zs`, `rs`,
@@ -12,7 +14,11 @@ use crate::adaptive::LayerBand;
 /// The UI builds a branch's sites from a limb plus every limb whose `into`
 /// chain reaches it, and a tree's sites from every limb with the same
 /// `tree`. A site is `[siteX, siteY]` at `siteZ`, which is the exact band z
-/// an edit must send back.
+/// an edit must send back. Sites are in the slice frame and are ids to send
+/// back as they are, never to draw.
+///
+/// The knots are in the reply frame: the part frame on a flat bed, and on a
+/// belt the preview's frame, the lab less the object's offset.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SupportSkeleton {
@@ -36,13 +42,33 @@ pub struct SupportSkeleton {
     pub ys: Vec<f32>,
     pub zs: Vec<f32>,
     pub rs: Vec<f32>,
+    /// Belt only: the `PreviewLayer.z` of the layer each knot's disk prints
+    /// on, one per knot. A belt layer's `z` is the belt position, so the
+    /// knot's own height says nothing about which layer it is on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ls: Option<Vec<f64>>,
+}
+
+/// How a belt reply draws the slice frame. Its knots go to the lab, less the
+/// object's offset, as the preview's points do, and each is named by the belt
+/// position of its layer.
+pub(crate) struct Tilt<'a> {
+    pub belt: &'a Belt,
+    /// Where the object's part frame sits on the bed.
+    pub offset: [f64; 2],
+    /// The planned plate, which `LayerBand::index` numbers.
+    pub plate: &'a [PlateLayer],
 }
 
 /// A kept interior disk sits farther than this from the line between the
 /// disks around it, in x, y, or radius.
 const THIN_MM: f64 = 0.05;
 
-pub(crate) fn skeleton(supports: &Supports, bands: &[LayerBand]) -> SupportSkeleton {
+pub(crate) fn skeleton(
+    supports: &Supports,
+    bands: &[LayerBand],
+    tilt: Option<&Tilt>,
+) -> SupportSkeleton {
     let limbs = &supports.forest.limbs;
     let root = |mut k: usize| {
         while let End::Merged { into } = limbs[k].end {
@@ -54,6 +80,7 @@ pub(crate) fn skeleton(supports: &Supports, bands: &[LayerBand]) -> SupportSkele
         start: vec![0],
         ..SupportSkeleton::default()
     };
+    let mut on_layer = Vec::new();
     for (k, limb) in limbs.iter().enumerate() {
         let live = match limb.life {
             Life::Live => 1,
@@ -72,9 +99,19 @@ pub(crate) fn skeleton(supports: &Supports, bands: &[LayerBand]) -> SupportSkele
         out.site_x.push(um(x));
         out.site_y.push(um(y));
         out.site_z.push(bands[limb.top].z);
-        let disks = printed(limb, id, supports, bands);
+        let (disks, on): (Vec<[f64; 4]>, Vec<usize>) =
+            printed(limb, id, supports, bands).into_iter().unzip();
         for &i in &thinned(&disks) {
             let [x, y, z, r] = disks[i];
+            let [x, y, z] = match tilt {
+                Some(tilt) => {
+                    let layer = &tilt.plate[bands[on[i]].index];
+                    let lab = tilt.belt.frame.lab(x, y, layer.z);
+                    on_layer.push(tilt.belt.position(layer.z, layer.belt_shift));
+                    [lab[0] - tilt.offset[0], lab[1] - tilt.offset[1], lab[2]]
+                }
+                None => [x, y, z],
+            };
             out.xs.push(hundredth(x));
             out.ys.push(hundredth(y));
             out.zs.push(hundredth(z));
@@ -82,18 +119,25 @@ pub(crate) fn skeleton(supports: &Supports, bands: &[LayerBand]) -> SupportSkele
         }
         out.start.push(out.xs.len() as u32);
     }
+    out.ls = tilt.map(|_| on_layer);
     out
 }
 
-/// `[x, y, z, r]` of each disk the limb prints, top layer first.
-fn printed(limb: &Limb, id: u32, supports: &Supports, bands: &[LayerBand]) -> Vec<[f64; 4]> {
+/// `[x, y, z, r]` of each disk the limb prints, top layer first, with the
+/// band it prints on.
+fn printed(
+    limb: &Limb,
+    id: u32,
+    supports: &Supports,
+    bands: &[LayerBand],
+) -> Vec<([f64; 4], usize)> {
     (limb.bottom()..=limb.top)
         .rev()
         .filter_map(|i| {
             let disks = &supports.layers[i].disks;
             let at = disks.binary_search_by_key(&id, |d| d.node.0).ok()?;
             let d = disks[at];
-            Some([d.xy[0], d.xy[1], bands[i].z, d.r])
+            Some(([d.xy[0], d.xy[1], bands[i].z, d.r], i))
         })
         .collect()
 }

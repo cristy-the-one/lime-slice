@@ -454,9 +454,12 @@ fn finite(v: f64, what: &str) -> Result<(), String> {
 pub struct EditOutcomeView {
     #[serde(flatten)]
     pub status: EditStatus,
-    /// Layers whose printed support changed.
+    /// Layers whose printed support changed. On a belt it counts the ones
+    /// pruned away below the run's start, which `changed_span` leaves out.
     pub changed_layers: usize,
-    /// Lowest and highest changed layer, as `PreviewLayer.index` numbers them. Absent when none changed.
+    /// Lowest and highest changed layer, as `PreviewLayer.index` numbers them.
+    /// Absent when none changed, and on a belt when every changed layer is
+    /// one the run no longer prints, below its start.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changed_span: Option<[usize; 2]>,
     /// Coverage area after the edit less the area before it, mm².
@@ -466,12 +469,14 @@ pub struct EditOutcomeView {
 }
 
 impl EditOutcomeView {
-    pub(crate) fn of(outcome: &EditOutcome, bands: &[LayerBand]) -> Self {
-        let span = outcome
+    /// `bands` carry plate layer numbers. A belt reply drops its first
+    /// `opened` layers, which print nothing, and numbers from the next one.
+    pub(crate) fn of(outcome: &EditOutcome, bands: &[LayerBand], opened: usize) -> Self {
+        let mut shown = outcome
             .changed
-            .first()
-            .zip(outcome.changed.last())
-            .map(|(&lo, &hi)| [bands[lo].index, bands[hi].index]);
+            .iter()
+            .filter_map(|&k| bands[k].index.checked_sub(opened));
+        let span = shown.next().map(|lo| [lo, shown.next_back().unwrap_or(lo)]);
         Self {
             status: outcome.status,
             changed_layers: outcome.changed.len(),
