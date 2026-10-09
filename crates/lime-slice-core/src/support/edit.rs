@@ -391,7 +391,7 @@ impl Supports {
         let hi = dirty.iter().rposition(|&d| d).unwrap_or(lo);
         let mut fresh = (lo..=hi)
             .into_par_iter()
-            .map(|i| dirty[i].then(|| self.fresh(i, contours, bands)))
+            .map(|i| dirty[i].then(|| self.fresh(i, contours)))
             .collect::<Vec<_>>()
             .into_iter();
         let lean = lean_of(&self.opts);
@@ -409,11 +409,11 @@ impl Supports {
                 }
                 continue;
             }
-            let mut layer = pre.unwrap_or_else(|| self.fresh(i, contours, bands));
+            let mut layer = pre.unwrap_or_else(|| self.fresh(i, contours));
             if i > 0 {
                 stand(
                     &mut layer,
-                    &self.layers[i - 1],
+                    self.stood_layer(i - 1),
                     i,
                     bands,
                     contours,
@@ -422,24 +422,42 @@ impl Supports {
                     &mut near,
                 );
             }
-            if let Some(floor) = self.opts.floor {
-                super::clip_support_layer(&mut layer, floor.y_max(bands[i].z));
-            }
             stood += 1;
-            below_changed = layer != self.layers[i];
-            if below_changed {
+            below_changed = layer != *self.stood_layer(i);
+            if !below_changed {
+                continue;
+            }
+            let Some(floor) = self.opts.floor else {
                 changed.push(i);
                 self.layers[i] = layer;
+                continue;
+            };
+            let mut printed = layer.clone();
+            super::clip_support_layer(&mut printed, floor.y_max(bands[i].z));
+            if printed != self.layers[i] {
+                changed.push(i);
+                self.layers[i] = printed;
             }
+            self.stood[i] = layer;
         }
         (changed, stood)
+    }
+
+    /// Layer `i` as it was stood, which on a belt is before the clip. The
+    /// layer above is stood on this one, as the build stood it.
+    fn stood_layer(&self, i: usize) -> &SupportLayer {
+        if self.opts.floor.is_some() {
+            &self.stood[i]
+        } else {
+            &self.layers[i]
+        }
     }
 
     /// Layer `i` as the walk and the edits leave it, before it is stood on
     /// the layer below: the disks of the knots still printed, and the
     /// demanded interface less what only pruned tips held and no later
     /// regrow restored.
-    fn fresh(&self, i: usize, contours: &[Vec<Loop>], bands: &[LayerBand]) -> SupportLayer {
+    fn fresh(&self, i: usize, contours: &[Vec<Loop>]) -> SupportLayer {
         let mut live = Vec::new();
         let mut pruned = Vec::new();
         for &k in &self.forest.at[i] {
@@ -453,8 +471,8 @@ impl Supports {
         }
         let pitch = Pitch::of(&self.opts);
         let part = contours.get(i).map(Vec::as_slice).unwrap_or(&[]);
-        let mut layer = SupportLayer {
-            sparse: self.layers[i].sparse.clone(),
+        SupportLayer {
+            sparse: self.stood_layer(i).sparse.clone(),
             interface: held_interface(
                 &self.demanded[i],
                 &pruned,
@@ -463,11 +481,7 @@ impl Supports {
                 &self.restored[i],
             ),
             disks: organic_disks(&live, part, self.opts.xy_gap),
-        };
-        if let Some(floor) = self.opts.floor {
-            super::clip_support_layer(&mut layer, floor.y_max(bands[i].z));
         }
-        layer
     }
 }
 
@@ -693,7 +707,7 @@ impl Supports {
     pub(crate) fn rebuilt(&self, bands: &[LayerBand], contours: &[Vec<Loop>]) -> Vec<SupportLayer> {
         let mut layers: Vec<SupportLayer> = (0..self.layers.len())
             .into_par_iter()
-            .map(|i| self.fresh(i, contours, bands))
+            .map(|i| self.fresh(i, contours))
             .collect();
         super::project(
             &mut layers,
@@ -1261,6 +1275,7 @@ mod tests {
             layers: vec![empty; bands.len()],
             demanded: vec![Vec::new(); bands.len()],
             born: vec![Vec::new(); bands.len()],
+            stood: Vec::new(),
             restored: vec![Vec::new(); bands.len()],
             edits: 0,
             regrown: Vec::new(),
@@ -1638,6 +1653,7 @@ mod tests {
             layers: vec![empty; bands.len()],
             demanded,
             born,
+            stood: Vec::new(),
             restored: vec![Vec::new(); bands.len()],
             edits: 0,
             regrown: Vec::new(),

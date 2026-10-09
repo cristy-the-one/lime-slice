@@ -205,6 +205,8 @@ impl Default for SupportOpts {
 pub(crate) struct Supports {
     pub forest: Forest,
     pub layers: Vec<SupportLayer>,
+    /// `layers` before the belt clip, which each layer is stood on. Empty off a belt.
+    stood: Vec<SupportLayer>,
     /// Each layer's interface as the part demands it, before any patch with
     /// nothing under it is dropped. Coverage measures `layers` against it.
     demanded: Vec<Vec<Loop>>,
@@ -397,6 +399,9 @@ impl Supports {
         ) {
             return None;
         }
+        if opts.floor.is_some() {
+            supports.stood = supports.layers.clone();
+        }
         clip_printed(&mut supports.layers, bands, opts.floor);
         Some(supports)
     }
@@ -407,6 +412,7 @@ impl Supports {
         Self {
             forest: Forest::default(),
             layers: vec![SupportLayer::default(); layers],
+            stood: Vec::new(),
             demanded: empty.clone(),
             born: empty,
             restored: vec![Vec::new(); layers],
@@ -459,6 +465,7 @@ impl Supports {
             forest,
             layers,
             demanded,
+            stood: Vec::new(),
             restored: vec![Vec::new(); demand.born.len()],
             born: demand.born,
             edits: 0,
