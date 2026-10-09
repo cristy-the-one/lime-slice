@@ -1352,23 +1352,8 @@ fn prepare_belt(
     if belt.floor_supports && belt.raft_layers > 0 {
         return Err("belt.floorSupports is not available with a raft yet".into());
     }
-    for object in objects.iter() {
-        if !object.settings.support_edits.is_empty() {
-            return Err(
-                "belt: support edits are not available until supports are grown on the belt".into(),
-            );
-        }
-        if !object.settings.support_paint.is_empty() {
-            return Err(
-                "belt: support paint is not available until supports are grown on the belt".into(),
-            );
-        }
-        if !object.settings.seam_paint.is_empty() {
-            return Err(
-                "belt: seam paint is not available until the disks move with the belt frame"
-                    .into(),
-            );
-        }
+    if objects.iter().any(|o| !o.settings.support_edits.is_empty()) {
+        return Err("belt: support edits are not available on a belt printer yet".into());
     }
     let offsets: Vec<Option<[f64; 2]>> = objects.iter().map(|o| o.offset).collect();
     let mut lab_bounds = Vec::with_capacity(objects.len());
@@ -1412,7 +1397,17 @@ fn prepare_belt(
     let (span_x, max_z) = crate::belt::plate_span(&laid)?;
     let extent = max_z / belt.sin_a;
     crate::belt::check_fit(&belt, span_x, extent)?;
+    let lift = raft.map_or(0.0, |r| r.top);
     for (object, mesh) in objects.iter_mut().zip(laid) {
+        // Paint is in the part frame, as the mesh was, so it takes the
+        // mesh's move onto the bed, the pad and the belt.
+        let (rotation, pivot, translation) = frame.pose(object.to_bed(), lift);
+        for disk in &mut object.settings.support_paint {
+            *disk = disk.posed(&rotation, pivot, translation);
+        }
+        for disk in &mut object.settings.seam_paint {
+            *disk = disk.posed(&rotation, pivot, translation);
+        }
         object.mesh = Cow::Owned(mesh);
         object.offset = None;
         // Horizontal supports would stand on a bed this printer does not have.

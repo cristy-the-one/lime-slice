@@ -12,7 +12,9 @@ The planner runs after the plate is rotated so the nozzle plane is horizontal. I
 - With the flag, tree and grid supports are clipped to the half-plane. A trunk thickens where the belt is under its centre on the next layer, the way a trunk thickens on layer 0, and stops once its whole disk is past the belt. A disk that crosses the plane becomes the largest circle on the printable side that keeps its upstream edge, so the slanted foot stands on the layer above it.
 - The plane is not a field of `SliceSettings`. It is mixed into the support grow and paint keys only when the flag is on, so a cartesian key keeps its bytes. Contour keys do not move.
 - A raft and floor supports together are refused. Floor supports grow down to the belt, through the pad, and nothing yet decides whether they should stand on the pad instead.
-- Support edits and support paint stay refused. A disk is still in the part frame, and the planner is in the rotated frame. Seam paint stays refused for the same reason.
+- Support paint and seam paint move with the part. A disk arrives in the part frame, where the pose put it with the mesh (`docs/part-frame.md`). `prepare_belt` then gives it the mesh's move onto the belt: the bed offset, the raft lift, the rotation about X, and the frame's drop and shift (`Frame::pose` in `belt.rs`). The point takes all of it, the normal takes the rotation only, and the radius stays. A disk on a mesh vertex lands on that vertex's laid copy, bit for bit.
+- The support grow and paint keys hash the moved disks, so a stroke on a belt regrows only the supports. A cartesian key does not change.
+- Support edits stay refused, with `belt: support edits are not available on a belt printer yet`. They hook into the kept support stages, and that is not done on a belt.
 - Compare stays refused on a belt.
 - `classic` still grows floor supports when the flag is on. It does not force them off.
 
