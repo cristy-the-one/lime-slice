@@ -274,6 +274,18 @@ impl Frame {
         [x, y_lab, z_lab]
     }
 
+    /// The move a part at `to_bed`, lifted by `lift`, took to lie flat, as the
+    /// rotation (row-major), pivot and translation of a pose. A paint disk
+    /// posed with it lands where the mesh vertex under it did.
+    pub(crate) fn pose(&self, to_bed: [f64; 2], lift: f64) -> ([f64; 9], [f64; 3], [f64; 3]) {
+        let (c, s) = (self.cos_a, self.sin_a);
+        (
+            [1.0, 0.0, 0.0, 0.0, c, -s, 0.0, s, c],
+            [-to_bed[0], -to_bed[1], -lift],
+            [0.0, -self.y_shift, -self.z_drop],
+        )
+    }
+
     /// The bead bottom at `layer_z` is on the belt.
     pub(crate) fn on_belt(&self, x: f64, y: f64, layer_z: f64, height: f64) -> bool {
         let bottom = self.lab(x, y, (layer_z - height).max(0.0))[2];
@@ -623,6 +635,29 @@ mod tests {
                             && (p[2] - lab[2]).abs() < 1e-6
                     });
                 assert!(hit, "lab {lab:?} from slice {v:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_disk_posed_by_the_frame_lands_on_its_laid_vertex() {
+        use crate::support::paint::SeamDisk;
+        let belt = belt_at(45.0);
+        let (to_bed, lift) = ([12.5, -7.25], 0.6);
+        let placed = shift_z(&translate_xy(&box20(), to_bed), lift);
+        let (laid, frame) = lay_flat(&[placed], &belt, None, 0.2).unwrap();
+        let (rotation, pivot, translation) = frame.pose(to_bed, lift);
+        for (tri, flat) in box20().triangles.iter().zip(&laid[0].triangles) {
+            for (v, want) in tri.iter().zip(flat) {
+                let disk = SeamDisk {
+                    p: *v,
+                    n: [0.0, 0.0, -1.0],
+                    r: 1.5,
+                }
+                .posed(&rotation, pivot, translation);
+                assert_eq!(disk.p, *want);
+                assert_eq!(disk.n, [0.0, belt.sin_a, -belt.cos_a]);
+                assert_eq!(disk.r, 1.5);
             }
         }
     }

@@ -10,7 +10,7 @@ Disks on the mesh that pull a wall's start into the painted ball. The list is om
 - The chosen start is marked fixed, so travel ordering does not walk it back to the nearest corner. Fuzzy skin, when it is also on, still runs after that start.
 - Radius, finiteness, and the 20000 disk cap match support paint. A refusal names the field, as `seamPaint[0].r`.
 - On a plate the list is `objects[i].seamPaint`. A top-level `seamPaint` beside `objects` is refused. A one-object request with no `objects` array carries the list at the top level, and omits it when empty.
-- A belt slice refuses seam paint. The belt rotates the mesh after the disks are posed, so a disk would not land on the wall it was painted on. Support paint is already refused on a belt for the same class of reason.
+- On a belt, the disks take the move that lays the part flat, after the pose, so a disk lands on the wall it was painted on. Support paint moves the same way (`docs/belt-floor-supports.md`).
 - `classic` does not clear the list. The picker still runs, and paint still moves the start.
 - Contour keys ignore the list, because the cut does not move. Toolpath keys keep it. The support grow and support-paint keys ignore it, because those paths are not wall loops.
 
