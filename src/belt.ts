@@ -26,25 +26,27 @@ export interface BeltSettings {
   seamOnEdge: boolean;
   /** Solid pad layers on the belt before the part. 0 is off. */
   raftLayers: number;
-  /** Grow supports down to the tilted belt. Off forces supports off. */
+  /** Kept from older saves. Not read for the request: Smart supports decide it. */
   floorSupports: boolean;
 }
 
 /**
  * The `belt` object on a slice request, or nothing for a cartesian printer.
  * `maxLengthMm` is omitted when the belt is unlimited, so a missing cap is
- * the same bytes as an unlimited belt.
+ * the same bytes as an unlimited belt. Smart supports grow to the belt, so
+ * `floorSupports` is sent with them and never beside a raft. The stored
+ * `floorSupports` field is not read.
  */
-export function beltSliceField(belt: BeltSettings | null): { belt?: Omit<BeltSettings, "maxLengthMm" | "seamOnEdge" | "raftLayers" | "floorSupports"> & { maxLengthMm?: number; seamOnEdge?: true; raftLayers?: number; floorSupports?: true } } {
+export function beltSliceField(belt: BeltSettings | null, supports: boolean): { belt?: Omit<BeltSettings, "maxLengthMm" | "seamOnEdge" | "raftLayers" | "floorSupports"> & { maxLengthMm?: number; seamOnEdge?: true; raftLayers?: number; floorSupports?: true } } {
   if (!belt) return {};
-  const { maxLengthMm, seamOnEdge, raftLayers, floorSupports, ...rest } = belt;
+  const { maxLengthMm, seamOnEdge, raftLayers, floorSupports: _stored, ...rest } = belt;
   return {
     belt: {
       ...rest,
       ...(maxLengthMm == null ? {} : { maxLengthMm }),
       ...(seamOnEdge ? { seamOnEdge: true as const } : {}),
       ...(raftLayers > 0 ? { raftLayers } : {}),
-      ...(floorSupports ? { floorSupports: true as const } : {}),
+      ...(supports && raftLayers === 0 ? { floorSupports: true as const } : {}),
     },
   };
 }

@@ -46,8 +46,10 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   // Before any slice, so a toggle back to a sliced recipe cannot refresh it by itself.
   await page.locator("#supports").check();
   await expect(page.locator("#beltRaft")).toBeDisabled();
+  await expect(page.locator("label:has(#beltRaft)")).toHaveAttribute("data-tip", /Smart supports are on/);
   await page.locator("#supports").uncheck();
   await expect(page.locator("#beltRaft")).toBeEnabled();
+  await expect(page.locator("label:has(#beltRaft)")).not.toHaveAttribute("data-tip");
   await expect(page.getByText("Mock only")).toHaveCount(0);
   await page.locator("#beltCopies").fill("3");
   await page.locator("#beltCopies").blur();
@@ -87,6 +89,7 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await expect(page.locator("#export")).toBeEnabled();
   await page.locator("#beltRaft").check();
   await expect(page.locator("#supports")).toBeDisabled();
+  await expect(page.locator("label:has(#supports)")).toHaveAttribute("data-tip", /raft holds the part/);
   await expect(page.locator("#beltRaftLayers")).toBeEnabled();
   await page.locator("#beltRaftLayers").fill("2");
   await page.locator("#beltRaftLayers").blur();
@@ -103,6 +106,21 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await expect.poll(() => bodies.length).toBe(5);
   expect(bodies[4]).not.toHaveProperty("belt");
   await expect(page.locator("#export")).toBeEnabled();
+});
+
+test("a belt raft that is on can be unticked even with Smart supports on", async ({ page }) => {
+  await quiet(page);
+  await page.goto("/");
+  await page.locator("#machineKind").selectOption("belt");
+  await page.locator("#beltRaft").check();
+  // Smart supports are a cartesian setting until the printer is a belt again.
+  await page.locator("#machineKind").selectOption("cartesian");
+  await page.locator("#supports").check();
+  await page.locator("#machineKind").selectOption("belt");
+  await expect(page.locator("#beltRaft")).toBeChecked();
+  await expect(page.locator("#beltRaft")).toBeEnabled();
+  await page.locator("#beltRaft").uncheck();
+  await expect(page.locator("#supports")).toBeEnabled();
 });
 
 test("the generic belt printer is one pick in the printer list", async ({ page }) => {

@@ -12,7 +12,7 @@ import { offBed } from "../mesh-place";
 import { boundsSize, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty } from "../plate";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys, readPresets, diffPreset } from "../presets";
 import { loadProfile, type PrinterProfile, saveProfile } from "../profiles";
-import { noteAdvance, noteFlow, noteGcode, noteNozzle, noteRetract } from "./machine-actions";
+import { noteAdvance, noteFlow, noteGcode, noteNozzle, noteRetract, syncBeltSupportsLock } from "./machine-actions";
 import { loadMachineLibrary } from "./machine-library";
 import { beltStamp, machineSectionHtml } from "../ui/machine-library";
 import { prusaSummary, rememberPrusaForm, syncSendButtons } from "./prusa-actions";
@@ -266,6 +266,7 @@ export function renderChrome() {
   paintSettingMarks(currentPreset());
   syncEmptyState(!!state.mesh);
   session.supportUi?.refresh();
+  syncBeltSupportsLock();
   fx.syncPreviewPending?.();
 }
 

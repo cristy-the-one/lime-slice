@@ -29,17 +29,21 @@ check("a cap still fits the copies", capped.unlimited === false && capped.length
 
 const cartesian = { layerHeight: 0.2, printer: { nozzleDiameter: 0.4 } };
 const plain = recipeKey(cartesian, "mesh");
-check("a cartesian request gains no belt key", recipeKey({ ...cartesian, ...beltSliceField(null) }, "mesh") === plain);
-const sent = beltSliceField(defaultBelt(200));
+check("a cartesian request gains no belt key", recipeKey({ ...cartesian, ...beltSliceField(null, false) }, "mesh") === plain);
+const sent = beltSliceField(defaultBelt(200), false);
 check("an unlimited belt omits maxLengthMm, the seam flag, the raft, and floor supports", !!sent.belt && !("maxLengthMm" in sent.belt) && !("seamOnEdge" in sent.belt) && !("raftLayers" in sent.belt) && !("floorSupports" in sent.belt) && sent.belt.angleDeg === 45 && sent.belt.axis === "z" && sent.belt.copies === 1);
-const edged = beltSliceField({ ...defaultBelt(200), seamOnEdge: true });
-check("the seam flag is sent only when on", edged.belt?.seamOnEdge === true && !("seamOnEdge" in (beltSliceField(defaultBelt(200)).belt ?? {})));
-const rafted = beltSliceField({ ...defaultBelt(200), raftLayers: 3 });
-check("raft layers are sent only when the pad is on", rafted.belt?.raftLayers === 3 && !("raftLayers" in (beltSliceField(defaultBelt(200)).belt ?? {})));
-const floored = beltSliceField({ ...defaultBelt(200), floorSupports: true });
-check("floor supports are sent only when on", floored.belt?.floorSupports === true && !("floorSupports" in (beltSliceField(defaultBelt(200)).belt ?? {})));
+const edged = beltSliceField({ ...defaultBelt(200), seamOnEdge: true }, false);
+check("the seam flag is sent only when on", edged.belt?.seamOnEdge === true && !("seamOnEdge" in (beltSliceField(defaultBelt(200), false).belt ?? {})));
+const rafted = beltSliceField({ ...defaultBelt(200), raftLayers: 3 }, false);
+check("raft layers are sent only when the pad is on", rafted.belt?.raftLayers === 3 && !("raftLayers" in (beltSliceField(defaultBelt(200), false).belt ?? {})));
+const floored = beltSliceField(defaultBelt(200), true);
+check("floor supports are sent only when Smart supports is on", floored.belt?.floorSupports === true && !("floorSupports" in (beltSliceField(defaultBelt(200), false).belt ?? {})));
+const stored = beltSliceField({ ...defaultBelt(200), floorSupports: true }, false);
+check("a stored floor supports flag is not sent", !("floorSupports" in (stored.belt ?? {})));
+const raftedSupports = beltSliceField({ ...defaultBelt(200), raftLayers: 3 }, true);
+check("a raft and Smart supports are never sent together", !("floorSupports" in (raftedSupports.belt ?? {})) && raftedSupports.belt?.raftLayers === 3);
 check("a belt changes the recipe", recipeKey({ ...cartesian, ...sent }, "mesh") !== plain);
-const sentCap = beltSliceField({ ...defaultBelt(180), maxLengthMm: 300, copies: 2, gapMm: 8, direction: -1, axis: "y" });
+const sentCap = beltSliceField({ ...defaultBelt(180), maxLengthMm: 300, copies: 2, gapMm: 8, direction: -1, axis: "y" }, false);
 check(
   "a capped belt is sent beside the printer",
   sentCap.belt?.maxLengthMm === 300 && sentCap.belt.copies === 2 && sentCap.belt.axis === "y" && sentCap.belt.direction === -1 && sentCap.belt.widthMm === 180,

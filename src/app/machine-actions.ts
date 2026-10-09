@@ -161,7 +161,8 @@ export function noteBeltForm() {
     gapMm: num("beltGap"),
     seamOnEdge: document.querySelector<HTMLInputElement>("#beltSeam")?.checked === true,
     raftLayers: document.querySelector<HTMLInputElement>("#beltRaft")?.checked === true ? (num("beltRaftLayers") ?? 3) : 0,
-    floorSupports: document.querySelector<HTMLInputElement>("#beltFloor")?.checked === true,
+    // Smart supports decide the request now. The stored flag is kept as it was.
+    floorSupports: picked.printer.belt.floorSupports,
   }, picked.printer.bedX);
   const next = setActiveBelt(library, kind, belt);
   storeMachineLibrary(next);
@@ -170,12 +171,30 @@ export function noteBeltForm() {
   if (length) length.disabled = belt.maxLengthMm == null;
   const raftLayers = document.querySelector<HTMLInputElement>("#beltRaftLayers");
   if (raftLayers) raftLayers.disabled = belt.raftLayers === 0;
-  const raft = document.querySelector<HTMLInputElement>("#beltRaft");
-  if (raft) raft.disabled = belt.floorSupports;
-  const floor = document.querySelector<HTMLInputElement>("#beltFloor");
-  if (floor) floor.disabled = belt.raftLayers > 0;
+  syncBeltSupportsLock();
   if (kind !== picked.printer.kind) fx.renderChrome?.();
   else fx.markStale?.();
+}
+
+/**
+ * On a belt printer Smart supports and the belt raft exclude each other. Each
+ * box is disabled while the other is on, with a hint saying why. A raft that
+ * is on stays untickable, so the pair can always be cleared. Called after
+ * every panel render and belt edit.
+ */
+export function syncBeltSupportsLock() {
+  const raftOn = (beltStamp(loadMachineLibrary())?.raftLayers ?? 0) > 0;
+  const supports = document.querySelector<HTMLInputElement>("#supports");
+  if (supports) lockBox(supports, raftOn, "The belt raft holds the part.");
+  const raft = document.querySelector<HTMLInputElement>("#beltRaft");
+  if (raft) lockBox(raft, state.supports && !raftOn, "Smart supports are on. They grow to the belt.");
+}
+
+function lockBox(input: HTMLInputElement, locked: boolean, hint: string) {
+  input.disabled = locked;
+  const label = input.closest("label");
+  if (locked) label?.setAttribute("data-tip", hint);
+  else label?.removeAttribute("data-tip");
 }
 
 export function noteGcode(startGcode: string, endGcode: string) {

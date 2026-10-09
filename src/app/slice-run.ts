@@ -180,7 +180,7 @@ export function payload() {
     ...flowSliceField(state.flow),
     ...retractSliceFields(),
     // Beside `printer`, and omitted for a cartesian machine, so that recipe stays the same bytes.
-    ...beltSliceField(beltStamp(loadMachineLibrary())),
+    ...beltSliceField(beltStamp(loadMachineLibrary()), state.supports),
     variableWidth: state.variableWidth,
     arcFit: state.arcFit,
     travelOpt: state.travelOpt,
