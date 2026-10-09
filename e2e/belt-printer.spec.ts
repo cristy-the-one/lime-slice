@@ -188,3 +188,71 @@ test.describe("belt fields stay in the sheet", () => {
     expect(after, `prepare share ${after}`).toBeGreaterThanOrEqual(0.7);
   });
 });
+
+// overhang_ledge on a 45° belt with floor supports. The skeleton is in the reply frame and
+// `ls` names the preview layer each knot prints on; site ids stay in the slice frame.
+const beltLedge = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/ledge-belt-skeleton.json"), "utf8"));
+
+test("a belt printer's supports can be picked and pruned", async ({ page }) => {
+  await quiet(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const bodies: Record<string, unknown>[] = [];
+  // A gap in the slice frame, which a belt must not draw or offer to regrow.
+  const reply = { ...beltLedge, coverage: [{ z: [10, 12], areaMm2: 5, min: [0, 0], max: [4, 4], outline: [[[0, 0], [4, 0], [4, 4], [0, 4]]] }] };
+  await page.route("**/api/slice", async (route) => {
+    bodies.push(route.request().postDataJSON() as Record<string, unknown>);
+    await route.fulfill({ json: reply });
+  });
+  await page.goto("/");
+  await page.locator("#machineKind").selectOption("belt");
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="overhang_ledge.stl"]')?.click());
+  await expect(page.locator("#slice")).toBeEnabled();
+  await page.locator("#supports").check();
+  await page.locator("#slice").click();
+  await expect.poll(() => bodies.length).toBe(1);
+  expect((bodies[0].belt as Record<string, unknown>).floorSupports).toBe(true);
+  expect(bodies[0].includeSkeleton).toBe(true);
+  await page.locator("#tabPreview").click();
+  await page.getByRole("button", { name: "3D", exact: true }).click();
+  await expect(page.locator("#readHigh")).toHaveText(`Z ${beltLedge.layers.at(-1).z.toFixed(2)}`);
+
+  await page.keyboard.press("e");
+  const readout = page.locator("#supportReadout");
+  await expect(readout).toHaveText("Click a support. Shift-click takes the whole tree.");
+  await page.locator('#supportEditbar [data-scope="tree"]').click();
+  await expect(page.locator("#pane3d")).toHaveAttribute("data-gaps", "0");
+  await expect(page.locator('#supportEdits [data-action="regrow"]')).toHaveCount(0);
+  await expect(page.locator("#supportEdits")).toContainText("Regrowing supports in a gap isn't available on a belt printer yet.");
+
+  // Hide everything below belt z 12. Limb 1's top knot prints on layer 14.99 but sits at lab height 11.35,
+  // so only a test of the knot's layer keeps it in view.
+  const low = beltLedge.layers.findIndex((layer: { z: number }) => layer.z >= 12);
+  await page.locator("#rangeLow").evaluate((el: HTMLInputElement, value: number) => {
+    el.value = String(value);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }, low);
+
+  // Sweep the view with pointer moves until the one-tip tree (limb 1) is under the pointer.
+  const at = await page.evaluate(() => {
+    const canvas = document.querySelector<HTMLCanvasElement>("#view3d")!;
+    const label = document.querySelector("#supportReadout")!;
+    const box = canvas.getBoundingClientRect();
+    for (let y = box.top + 2; y < box.bottom; y += 4) {
+      for (let x = box.left + 2; x < box.right; x += 4) {
+        canvas.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, buttons: 0, bubbles: true }));
+        if (label.textContent === "Tree · 1 tip") return { x, y };
+      }
+    }
+    return null;
+  });
+  expect(at, "a support under the pointer somewhere in the view").not.toBeNull();
+  await page.mouse.click(at!.x, at!.y);
+  await expect(readout).toHaveText("Tree · 1 tip");
+  await expect(page.getByRole("button", { name: "Delete tree" })).toBeEnabled();
+
+  await page.getByRole("button", { name: "Delete tree" }).click();
+  await expect.poll(() => bodies.length).toBe(2);
+  const s = beltLedge.skeleton;
+  expect(bodies[1].supportEdits).toEqual([{ kind: "prune", sites: [{ xy: [s.siteX[0], s.siteY[0]], z: s.siteZ[0] }] }]);
+  await expect(page.locator("#supportEdits li[data-edit]")).toHaveCount(1);
+});

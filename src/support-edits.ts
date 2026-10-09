@@ -71,6 +71,8 @@ export type EditOutcome = EditStatus & {
  * A branch is a limb plus every limb whose `into` chain reaches it.
  * A tree is every limb with the same `tree`.
  * A site is `[siteX[k], siteY[k]]` at `siteZ[k]`, sent back exactly.
+ * On a belt reply the knots are in the reply frame and `ls` is, per knot, the `z` of the
+ * preview layer it prints on. Site ids stay in the slice frame: send them back, never draw them.
  */
 export interface SupportSkeleton {
   id: number[];
@@ -88,4 +90,6 @@ export interface SupportSkeleton {
   ys: number[];
   zs: number[];
   rs: number[];
+  /** Belt only: preview layer `z` of each knot. Absent on a cartesian reply. */
+  ls?: number[];
 }
