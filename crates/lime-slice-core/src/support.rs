@@ -231,7 +231,10 @@ pub(crate) struct Supports {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoverageGap {
-    /// `z` of the lowest and the highest layer it spans, as preview layers carry it.
+    /// `z` of the lowest and the highest layer it spans, as the layers were
+    /// cut, and as a regrow of it sends them back. On a flat bed that is
+    /// what preview layers carry. On a belt it is the nozzle plane's height
+    /// in the slice frame, and `tilted.ls` is what the preview carries.
     pub z: [f64; 2],
     /// Largest area left unheld on one of its layers, mm².
     pub area_mm2: f32,
@@ -239,7 +242,24 @@ pub struct CoverageGap {
     pub min: [f32; 2],
     pub max: [f32; 2],
     /// The unheld region on its highest layer, simplified, as closed loops.
+    /// `min`, `max`, and `outline` are in the slice frame, a regrow's region.
     pub outline: Vec<Vec<[f32; 2]>>,
+    /// Belt replies only: where the preview draws the gap.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tilted: Option<TiltedGap>,
+}
+
+/// A coverage gap in a belt reply's frame, for drawing. The gap's own fields
+/// stay in the slice frame, which is where a regrow of it runs.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TiltedGap {
+    /// `PreviewLayer.z` of the lowest and the highest layer the gap spans:
+    /// their belt positions, which the layer slider cuts by.
+    pub ls: [f64; 2],
+    /// `outline` as `[x, y, z]` in the reply frame, the lab less the
+    /// object's offset, point for point, 0.01 mm.
+    pub outline: Vec<Vec<[f32; 3]>>,
 }
 
 /// What the part asks of supports on each layer. It reads the part and the
@@ -690,6 +710,7 @@ impl Patch {
                 .into_iter()
                 .map(|l| l.into_iter().map(f32s).collect())
                 .collect(),
+            tilted: None,
         }
     }
 }

@@ -61,4 +61,4 @@ pub use strategy::{
 pub use support::edit::{EditStatus, SupportEdit, TipSite};
 pub use support::paint::{PaintDisk, PaintKind, PaintTally};
 pub use support::skeleton::SupportSkeleton;
-pub use support::{CoverageGap, InAir, SupportStyle};
+pub use support::{CoverageGap, InAir, SupportStyle, TiltedGap};

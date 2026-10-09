@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use super::{End, Life, Limb, Supports};
+use super::{CoverageGap, End, Life, Limb, Supports, TiltedGap};
 use crate::adaptive::LayerBand;
 use crate::belt::Belt;
 use crate::gcode::PlateLayer;
@@ -51,13 +51,66 @@ pub struct SupportSkeleton {
 
 /// How a belt reply draws the slice frame. Its knots go to the lab, less the
 /// object's offset, as the preview's points do, and each is named by the belt
-/// position of its layer.
+/// position of its layer. A coverage gap's outline goes the same way.
 pub(crate) struct Tilt<'a> {
     pub belt: &'a Belt,
     /// Where the object's part frame sits on the bed.
     pub offset: [f64; 2],
     /// The planned plate, which `LayerBand::index` numbers.
     pub plate: &'a [PlateLayer],
+}
+
+/// `gaps` with the place the belt preview draws each. `bands` carry plate
+/// layer numbers, as `skeleton`'s do. Without a tilt, a flat bed, they are
+/// as they are.
+pub(crate) fn tilt_gaps(
+    gaps: &[CoverageGap],
+    bands: &[LayerBand],
+    tilt: Option<&Tilt>,
+) -> Vec<CoverageGap> {
+    gaps.iter()
+        .map(|gap| tilt.map_or_else(|| gap.clone(), |tilt| tilt_gap(gap, bands, tilt)))
+        .collect()
+}
+
+/// A gap on a layer the bands do not name is returned as it is.
+fn tilt_gap(gap: &CoverageGap, bands: &[LayerBand], tilt: &Tilt) -> CoverageGap {
+    let layer_at = |z: f64| {
+        bands
+            .iter()
+            .find(|b| b.z == z)
+            .map(|b| &tilt.plate[b.index])
+    };
+    let (Some(low), Some(high)) = (layer_at(gap.z[0]), layer_at(gap.z[1])) else {
+        return gap.clone();
+    };
+    let position = |layer: &PlateLayer| tilt.belt.position(layer.z, layer.belt_shift);
+    let outline = gap
+        .outline
+        .iter()
+        .map(|l| {
+            l.iter()
+                .map(|p| {
+                    let lab = tilt
+                        .belt
+                        .frame
+                        .lab(f64::from(p[0]), f64::from(p[1]), high.z);
+                    [
+                        hundredth(lab[0] - tilt.offset[0]),
+                        hundredth(lab[1] - tilt.offset[1]),
+                        hundredth(lab[2]),
+                    ]
+                })
+                .collect()
+        })
+        .collect();
+    CoverageGap {
+        tilted: Some(TiltedGap {
+            ls: [position(low), position(high)],
+            outline,
+        }),
+        ..gap.clone()
+    }
 }
 
 /// A kept interior disk sits farther than this from the line between the

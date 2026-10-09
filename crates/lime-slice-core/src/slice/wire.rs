@@ -10,7 +10,7 @@ use crate::modifiers::{HeightRange, Overrides, Shape, Tweak, Volume};
 use crate::support::edit::{EditOutcome, EditStatus, SupportEdit, TipSite};
 use crate::support::paint::PaintTally;
 use crate::support::paint::{PaintDisk, PaintKind, SeamDisk};
-use crate::support::skeleton::SupportSkeleton;
+use crate::support::skeleton::{tilt_gaps, SupportSkeleton, Tilt as SkeletonTilt};
 use crate::support::{CoverageGap, InAir};
 
 /// One object of a plate on the wire.
@@ -471,7 +471,12 @@ pub struct EditOutcomeView {
 impl EditOutcomeView {
     /// `bands` carry plate layer numbers. A belt reply drops its first
     /// `opened` layers, which print nothing, and numbers from the next one.
-    pub(crate) fn of(outcome: &EditOutcome, bands: &[LayerBand], opened: usize) -> Self {
+    pub(crate) fn of(
+        outcome: &EditOutcome,
+        bands: &[LayerBand],
+        opened: usize,
+        tilt: Option<&SkeletonTilt>,
+    ) -> Self {
         let mut shown = outcome
             .changed
             .iter()
@@ -482,7 +487,7 @@ impl EditOutcomeView {
             changed_layers: outcome.changed.len(),
             changed_span: span,
             newly_floating_mm2: outcome.newly_floating_mm2,
-            floating: outcome.floating.clone(),
+            floating: tilt_gaps(&outcome.floating, bands, tilt),
         }
     }
 }
