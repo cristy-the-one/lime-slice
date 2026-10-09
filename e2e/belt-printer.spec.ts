@@ -357,3 +357,123 @@ test("a belt printer draws the gap a prune left and regrows it by the slice-fram
   await expect(page.locator("#supportEdits li[data-edit]")).toHaveCount(2);
   await expect(page.locator("#supportEdits li[data-edit]").nth(1)).toContainText(`Regrow · ${gap.areaMm2.toFixed(1)} mm²`);
 });
+
+// The same ledge printed twice, back to back. The skeleton and the gaps are the first copy's planned part, and
+// `beltCopies` says how far the second copy sits along the belt, in y and in belt position. Regenerate with the ignored
+// tests in crates/lime-slice-core/tests/e2e_fixtures.rs.
+const beltCopies = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/ledge-belt-copies.json"), "utf8"));
+const beltCopiesPruned = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/ledge-belt-copies-pruned.json"), "utf8"));
+
+/** Moves the pointer over the 3D view until the support readout starts with `label`. */
+function sweep(page: Page, label: string) {
+  return page.evaluate((want) => {
+    const canvas = document.querySelector<HTMLCanvasElement>("#view3d")!;
+    const text = document.querySelector("#supportReadout")!;
+    const box = canvas.getBoundingClientRect();
+    for (let y = box.top + 2; y < box.bottom; y += 3) {
+      for (let x = box.left + 2; x < box.right; x += 3) {
+        canvas.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, buttons: 0, bubbles: true }));
+        if (text.textContent?.startsWith(want)) return { x, y };
+      }
+    }
+    return null;
+  }, label);
+}
+
+/** Puts the layer slider's low end on layer `index`. */
+function lowLayer(page: Page, index: number) {
+  return page.locator("#rangeLow").evaluate((el: HTMLInputElement, value: number) => {
+    el.value = String(value);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }, index);
+}
+
+async function openTwoCopies(page: Page, replies: (edits: { kind: string }[]) => unknown) {
+  await quiet(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const bodies: Record<string, unknown>[] = [];
+  await page.route("**/api/slice", async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    bodies.push(body);
+    await route.fulfill({ json: replies((body.supportEdits ?? []) as { kind: string }[]) });
+  });
+  await page.goto("/");
+  await page.locator("#machineKind").selectOption("belt");
+  await page.locator("#beltCopies").fill("2");
+  await page.locator("#beltCopies").blur();
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="overhang_ledge.stl"]')?.click());
+  await expect(page.locator("#slice")).toBeEnabled();
+  await page.locator("#supports").check();
+  await page.locator("#slice").click();
+  await expect.poll(() => bodies.length).toBe(1);
+  expect((bodies[0].belt as Record<string, unknown>).copies).toBe(2);
+  await page.locator("#tabPreview").click();
+  await page.getByRole("button", { name: "3D", exact: true }).click();
+  await expect(page.locator("#readHigh")).toHaveText(`Z ${beltCopies.layers.at(-1).z.toFixed(2)}`);
+  await page.keyboard.press("e");
+  await page.locator('#supportEditbar [data-scope="tree"]').click();
+  return bodies;
+}
+
+test("a belt printer's second copy has its supports drawn and picked like the first", async ({ page }) => {
+  const bodies = await openTwoCopies(page, () => beltCopies);
+  const s = beltCopies.skeleton;
+  expect(beltCopies.beltCopies.count).toBe(2);
+  expect(beltCopies.layers.length % 2).toBe(0);
+  const second = beltCopies.layers.length / 2;
+  // Copy 1 prints on the same layers, a whole shift further along the belt.
+  expect(beltCopies.layers[second].z - beltCopies.layers[0].z).toBeCloseTo(beltCopies.beltCopies.shiftMm, 6);
+  const pane = page.locator("#pane3d");
+  await expect(pane).toHaveAttribute("data-copies", "2");
+
+  // Hide the first copy by the layer slider, so what the pointer finds is on the second.
+  await lowLayer(page, second);
+  const at = await sweep(page, "Tree · 1 tip");
+  expect(at, "a support of the second copy under the pointer somewhere in the view").not.toBeNull();
+  await page.mouse.click(at!.x, at!.y);
+  const readout = page.locator("#supportReadout");
+  await expect(readout).toHaveText("Tree · 1 tip");
+  await expect(page.getByRole("button", { name: "Delete tree" })).toBeEnabled();
+
+  // The selection is drawn on every copy in view. Limb 1 is the one-tip tree: its knot pairs are its capsules.
+  const pairs = s.start[1] - s.start[0] - 1;
+  await expect(pane).toHaveAttribute("data-capsules", String(pairs));
+  await lowLayer(page, 0);
+  await expect(pane).toHaveAttribute("data-capsules", String(2 * pairs));
+
+  // The edit is the planned part's: the first copy's sites, so every copy changes together.
+  await page.getByRole("button", { name: "Delete tree" }).click();
+  await expect.poll(() => bodies.length).toBe(2);
+  expect(bodies[1].supportEdits).toEqual([{ kind: "prune", sites: [{ xy: [s.siteX[0], s.siteY[0]], z: s.siteZ[0] }] }]);
+});
+
+test("a belt printer's second copy shows the gap a prune left and regrows it", async ({ page }) => {
+  const gap = beltCopiesPruned.supportEdits[0].floating[0];
+  const bodies = await openTwoCopies(page, (edits) => (edits.length ? beltCopiesPruned : beltCopies));
+  const pane = page.locator("#pane3d");
+  const second = beltCopies.layers.length / 2;
+  // Prune the largest tree, with both copies in view.
+  const tree = await sweep(page, "Tree · 2 tips");
+  expect(tree, "the two-tip tree under the pointer somewhere in the view").not.toBeNull();
+  await page.mouse.click(tree!.x, tree!.y);
+  await page.getByRole("button", { name: "Delete tree" }).click();
+  await expect.poll(() => bodies.length).toBe(2);
+  await expect(pane).toHaveAttribute("data-gaps", "1");
+  await expect(pane).toHaveAttribute("data-gaps-drawn", "2");
+
+  // The first copy's layers are hidden, so a gap under the pointer is the second copy's.
+  await lowLayer(page, second);
+  await expect(pane).toHaveAttribute("data-gaps-drawn", "1");
+  const found = await sweep(page, "Unheld");
+  expect(found, "the second copy's gap under the pointer somewhere in the view").not.toBeNull();
+  await page.mouse.click(found!.x, found!.y);
+  await expect(page.locator("#supportReadout")).toHaveText(new RegExp(`^Unheld · ${gap.areaMm2.toFixed(1)} mm²`));
+
+  // Regrow sends the slice-frame region and z of the one planned gap.
+  await page.getByRole("button", { name: "Regrow here" }).click();
+  await expect.poll(() => bodies.length).toBe(3);
+  const edits = bodies[2].supportEdits as Record<string, unknown>[];
+  const [x0, y0] = gap.min;
+  const [x1, y1] = gap.max;
+  expect(edits[1]).toEqual({ kind: "regrow", region: [[[x0, y0], [x1, y0], [x1, y1], [x0, y1]]], z: gap.z });
+});

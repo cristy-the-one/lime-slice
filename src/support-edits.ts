@@ -31,6 +31,17 @@ export interface TiltedGap {
   outline: [number, number, number][][];
 }
 
+/**
+ * A belt's copies are one planned part, printed again after a shift along the belt. The skeleton and the gaps
+ * are the first copy's. Copy `c` is the same geometry with `c * shiftMm` added to y and to every belt position
+ * (`PreviewLayer.z`, `skeleton.ls`, `tilted.ls`). Only on a belt reply with more than one copy.
+ */
+export interface BeltCopies {
+  count: number;
+  /** From one copy to the next, signed by the belt's direction. */
+  shiftMm: number;
+}
+
 /** A birth site: xy in mm at the exact `siteZ` the skeleton reported. */
 export interface SiteSpec {
   xy: [number, number];

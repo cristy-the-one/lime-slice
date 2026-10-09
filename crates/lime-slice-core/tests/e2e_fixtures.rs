@@ -77,12 +77,9 @@ fn write_ledge_belt_skeleton_fixture() {
     write_reply(&ledge_belt_request(), "ledge-belt-skeleton.json");
 }
 
-/// The same reply after pruning the tree with the most tips, which leaves a
-/// coverage gap: its slice-frame region and `z`, and where the preview draws it.
-#[test]
-#[ignore = "writes e2e/fixtures; run on purpose"]
-fn write_ledge_belt_pruned_fixture() {
-    let mut req = ledge_belt_request();
+/// `req` with its tree with the most tips pruned, which leaves a coverage gap:
+/// its slice-frame region and `z`, and where the preview draws it.
+fn pruned_largest_tree(mut req: Value) -> Value {
     let held = slice_payload(&req.to_string(), None, Job::default(), |g| g.text()).unwrap();
     let held: Value = serde_json::from_str(&held).unwrap();
     let skeleton = &held["skeleton"];
@@ -99,5 +96,32 @@ fn write_ledge_belt_pruned_fixture() {
         .map(|k| json!({"xy": [skeleton["siteX"][k], skeleton["siteY"][k]], "z": skeleton["siteZ"][k]}))
         .collect();
     req["supportEdits"] = json!([{"kind": "prune", "sites": sites}]);
-    write_reply(&req, "ledge-belt-pruned.json");
+    req
+}
+
+/// The same reply after pruning the tree with the most tips, which leaves a
+/// coverage gap: its slice-frame region and `z`, and where the preview draws it.
+#[test]
+#[ignore = "writes e2e/fixtures; run on purpose"]
+fn write_ledge_belt_pruned_fixture() {
+    write_reply(&pruned_largest_tree(ledge_belt_request()), "ledge-belt-pruned.json");
+}
+
+/// The same ledge printed twice, back to back: the skeleton is the first copy's,
+/// and `beltCopies` says how far the second sits along the belt.
+#[test]
+#[ignore = "writes e2e/fixtures; run on purpose"]
+fn write_ledge_belt_copies_fixture() {
+    let mut req = ledge_belt_request();
+    req["belt"]["copies"] = json!(2);
+    write_reply(&req, "ledge-belt-copies.json");
+}
+
+/// The two-copy ledge after the same prune: the gap is the first copy's, and the second copy draws it moved by `beltCopies`.
+#[test]
+#[ignore = "writes e2e/fixtures; run on purpose"]
+fn write_ledge_belt_copies_pruned_fixture() {
+    let mut req = ledge_belt_request();
+    req["belt"]["copies"] = json!(2);
+    write_reply(&pruned_largest_tree(req), "ledge-belt-copies-pruned.json");
 }

@@ -1,5 +1,5 @@
 /** Picking tree supports from the skeleton. Pure: no three.js, no DOM. Print space is X right, Y depth, Z up. */
-import type { CoverageGap, RegrowEdit, SiteSpec, SupportSkeleton, TiltedGap } from "./support-edits.ts";
+import type { BeltCopies, CoverageGap, RegrowEdit, SiteSpec, SupportSkeleton, TiltedGap } from "./support-edits.ts";
 import { keepsPoint, type SectionSpec, type Vec3 } from "./section-plane.ts";
 
 export type PickScope = "branch" | "tree";
@@ -76,12 +76,43 @@ export interface Ray {
 /** Matches the overlay's clip planes, so what draws is what picks. */
 const SLAB_EPS = 1e-3;
 
+/** How far each copy sits from the first along y and the belt position, in copy order. One copy, or none, sits at 0. */
+export function copyOffsets(copies?: BeltCopies | null): number[] {
+  return Array.from({ length: Math.max(1, copies?.count ?? 1) }, (_, c) => c * (copies?.shiftMm ?? 0));
+}
+
+/** What the first copy shows when a copy `by` along the belt shows `visible`: the layers and the section, moved back by `by`. */
+function backVisible(by: number, visible: Visible): Visible {
+  if (by === 0) return visible;
+  const section = visible.section;
+  return {
+    zLow: visible.zLow - by,
+    zHigh: visible.zHigh - by,
+    section: section && { ...section, center: [section.center[0], section.center[1] - by, section.center[2]] },
+  };
+}
+
+/** A belt copy moved `by` along the belt is the first copy under `ray` moved back by `by`. A distance along the ray is the same. */
+function backRay(by: number, ray: Ray): Ray {
+  return by === 0 ? ray : { origin: [ray.origin[0], ray.origin[1] - by, ray.origin[2]], dir: ray.dir };
+}
+
 /**
  * Nearest limb whose visible part the ray passes within `r + slop` of.
  * Each knot pair is a capsule; clip it to the z slab and to the kept side of the section first,
  * so hidden geometry can never be picked.
+ * On a belt, `copies` repeat the skeleton, and a limb picked on any copy is the same limb.
  */
-export function pickLimb(index: LimbIndex, ray: Ray, visible: Visible, slop: number): { limb: number; distance: number } | null {
+export function pickLimb(index: LimbIndex, ray: Ray, visible: Visible, slop: number, copies?: BeltCopies | null): { limb: number; distance: number } | null {
+  let best: { limb: number; distance: number } | null = null;
+  for (const by of copyOffsets(index.skel.ls ? copies : null)) {
+    const hit = pickLimbOn(index, backRay(by, ray), backVisible(by, visible), slop);
+    if (hit && (!best || hit.distance < best.distance)) best = hit;
+  }
+  return best;
+}
+
+function pickLimbOn(index: LimbIndex, ray: Ray, visible: Visible, slop: number): { limb: number; distance: number } | null {
   const s = index.skel;
   const [o, d] = unitRay(ray);
   let best: { limb: number; distance: number } | null = null;
@@ -110,14 +141,32 @@ export function pickLimb(index: LimbIndex, ray: Ray, visible: Visible, slop: num
  * A belt gap (`tilted`) is hit on its own plane, in the reply frame, and is visible by the belt position `ls[1]`
  * of its top layer, like a belt knot.
  */
-export function pickGap(gaps: readonly CoverageGap[], ray: Ray, visible: Visible, pad: number): { gap: number; distance: number } | null {
-  const [o, d] = unitRay(ray);
+export function pickGap(gaps: readonly CoverageGap[], ray: Ray, visible: Visible, pad: number, copies?: BeltCopies | null): { gap: number; distance: number } | null {
   let best: { gap: number; distance: number } | null = null;
-  gaps.forEach((gap, i) => {
-    const hit = gap.tilted ? hitTilted(gap.tilted, o, d, pad, visible) : hitFlat(gap, o, d, pad, visible);
-    if (hit && (!best || hit < best.distance)) best = { gap: i, distance: hit };
-  });
+  // Copies repeat a belt's gaps. A flat gap has no copy but the first.
+  for (const by of copyOffsets(copies)) {
+    const seen = backVisible(by, visible);
+    const [o, d] = unitRay(backRay(by, ray));
+    gaps.forEach((gap, i) => {
+      if (by !== 0 && !gap.tilted) return;
+      const hit = gap.tilted ? hitTilted(gap.tilted, o, d, pad, seen) : hitFlat(gap, o, d, pad, seen);
+      if (hit && (!best || hit < best.distance)) best = { gap: i, distance: hit };
+    });
+  }
   return best;
+}
+
+/** A belt gap on a copy `by` along the belt: where the preview draws it there. A flat gap, or the first copy, is as it is. */
+export function placedGap(gap: CoverageGap, by: number): CoverageGap {
+  const tilted = gap.tilted;
+  if (!tilted || by === 0) return gap;
+  return {
+    ...gap,
+    tilted: {
+      ls: [tilted.ls[0] + by, tilted.ls[1] + by],
+      outline: tilted.outline.map((loop) => loop.map(([x, y, z]): [number, number, number] => [x, y + by, z])),
+    },
+  };
 }
 
 function hitFlat(gap: CoverageGap, o: Vec3, d: Vec3, pad: number, visible: Visible): number | null {
@@ -182,28 +231,33 @@ export function regrowFor(gap: CoverageGap): RegrowEdit {
 /**
  * Capsules of `limbs` for drawing: `[ax, ay, az, ar, bx, by, bz, br]` per knot pair. Single-knot limbs give one zero-length capsule.
  * The overlay clips a cartesian reply to the layer slab itself. A belt reply has no such plane, so `visible` cuts the capsules by `ls` here.
+ * On a belt, `copies` repeat the capsules, each moved along y and cut by its own layers.
  */
-export function capsulesOf(index: LimbIndex, limbs: readonly number[], visible?: Visible): Float32Array {
+export function capsulesOf(index: LimbIndex, limbs: readonly number[], visible?: Visible, copies?: BeltCopies | null): Float32Array {
   const s = index.skel;
   const out: number[] = [];
   const at = (a: number, b: number, t: number) => (t <= 0 ? a : t >= 1 ? b : a + (b - a) * t);
-  for (const k of limbs) {
-    const first = s.start[k];
-    const end = s.start[k + 1];
-    if (end <= first) continue;
-    for (let i = first; i <= Math.max(first, end - 2); i++) {
-      const j = Math.min(i + 1, end - 1);
-      let from = 0;
-      let to = 1;
-      if (s.ls && visible) {
-        const span = visibleSpan([s.xs[i], s.ys[i], s.zs[i]], [s.xs[j], s.ys[j], s.zs[j]], s.ls[i], s.ls[j], { ...visible, section: null });
-        if (!span) continue;
-        [from, to] = span;
+  for (const by of copyOffsets(s.ls ? copies : null)) {
+    // Copy `by` shows the layers `visible` names, so the first copy's knots are cut by those layers moved back.
+    const seen = visible && backVisible(by, visible);
+    for (const k of limbs) {
+      const first = s.start[k];
+      const end = s.start[k + 1];
+      if (end <= first) continue;
+      for (let i = first; i <= Math.max(first, end - 2); i++) {
+        const j = Math.min(i + 1, end - 1);
+        let from = 0;
+        let to = 1;
+        if (s.ls && seen) {
+          const span = visibleSpan([s.xs[i], s.ys[i], s.zs[i]], [s.xs[j], s.ys[j], s.zs[j]], s.ls[i], s.ls[j], { ...seen, section: null });
+          if (!span) continue;
+          [from, to] = span;
+        }
+        out.push(
+          at(s.xs[i], s.xs[j], from), at(s.ys[i], s.ys[j], from) + by, at(s.zs[i], s.zs[j], from), at(s.rs[i], s.rs[j], from),
+          at(s.xs[i], s.xs[j], to), at(s.ys[i], s.ys[j], to) + by, at(s.zs[i], s.zs[j], to), at(s.rs[i], s.rs[j], to),
+        );
       }
-      out.push(
-        at(s.xs[i], s.xs[j], from), at(s.ys[i], s.ys[j], from), at(s.zs[i], s.zs[j], from), at(s.rs[i], s.rs[j], from),
-        at(s.xs[i], s.xs[j], to), at(s.ys[i], s.ys[j], to), at(s.zs[i], s.zs[j], to), at(s.rs[i], s.rs[j], to),
-      );
     }
   }
   return Float32Array.from(out);

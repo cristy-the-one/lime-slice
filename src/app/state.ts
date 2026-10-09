@@ -8,7 +8,7 @@ import type { PathColumns } from "../preview-wire";
 import type { PreviewPatch } from "../preview-patch";
 import type { Vec3 } from "../section-plane";
 import type { PreviewGeometry } from "../preview-geom";
-import type { CoverageGap, EditOutcome, SupportSkeleton } from "../support-edits";
+import type { BeltCopies, CoverageGap, EditOutcome, SupportSkeleton } from "../support-edits";
 import type { EditEntry } from "../support-edit-list";
 import type { SeamDisk } from "../seam-paint";
 import type { PaintDisk, PaintTally } from "../support-paint";
@@ -107,6 +107,8 @@ export interface SliceResponse {
   supportPaint?: PaintTally;
   /** The grown trees after every edit. Only when the request set `includeSkeleton`. */
   skeleton?: SupportSkeleton;
+  /** Belt only, with more than one copy: how far the later copies sit from the first, which the skeleton and the gaps describe. */
+  beltCopies?: BeltCopies;
   /** Names this preview. Sent back as `previewBase` so the next reply can be a patch on it. */
   previewToken?: string;
   /** Set instead of `layers` when the request's `previewBase` was what the engine last drew. */

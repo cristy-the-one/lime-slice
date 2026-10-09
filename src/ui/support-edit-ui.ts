@@ -1,8 +1,8 @@
 import { createElement, TreeDeciduous, X } from "lucide";
-import type { CoverageGap, EditOutcome, SupportSkeleton } from "../support-edits";
+import type { BeltCopies, CoverageGap, EditOutcome, SupportSkeleton } from "../support-edits";
 import { alignOutcomes, appendEdit, badgeOf, clearEdits, editTitle, gapsToShow, gapZ, outcomeText, removeEdit, undoLast, type EditEntry } from "../support-edit-list";
 import { replyFrameEdit } from "../bed-offset";
-import { capsulesOf, indexSkeleton, pickGap, pickLimb, regrowFor, selectLimbs, sitesOf, type LimbIndex, type PickScope, type Visible } from "../support-pick";
+import { capsulesOf, copyOffsets, indexSkeleton, pickGap, pickLimb, placedGap, regrowFor, selectLimbs, sitesOf, type LimbIndex, type PickScope, type Visible } from "../support-pick";
 import type { PickEvent, SliceView3d } from "../view3d";
 import { isMobileLayout } from "../platform";
 import { markProjectDirty } from "../project-dirty";
@@ -22,6 +22,8 @@ export interface SupportEditView {
   /** Edits travel with the next slice only while this holds. */
   treeSupports: boolean;
   visible: Visible;
+  /** A belt reply's copies, when it has more than one. The skeleton and the gaps are the first copy's, and the overlay repeats them. */
+  copies?: BeltCopies;
   /** The legend shows support, so limbs can be picked. */
   supportShown: boolean;
 }
@@ -101,8 +103,11 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
   let panelHtml = "";
   let index: LimbIndex | null = null;
   let gaps: CoverageGap[] = [];
-  /** A belt's gaps in view, which the layer slider decides. Rebuilt only when the gaps or the layers shown change. */
-  let drawn: { gaps: CoverageGap[]; key: string; shown: CoverageGap[] } | null = null;
+  /**
+   * The gaps in view as drawn, `of` naming each one's planned gap. A belt's copies each draw every gap, where the layer slider
+   * shows it. Rebuilt only when the gaps, the copies, or the layers shown change.
+   */
+  let drawn: { gaps: CoverageGap[]; key: string; shown: CoverageGap[]; of: number[] } | null = null;
   let gapsFor: { result: SupportEditView["result"]; sent: readonly EditEntry[] } | null = null;
   const caps = new WeakMap<object, { key: string; caps: Float32Array }>();
 
@@ -134,13 +139,18 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
     return selectLimbs(index!, t.limb, t.scope);
   }
 
-  function capsulesFor(t: Target, visible: Visible) {
+  /** A belt's copies, which the overlay repeats the skeleton on. */
+  function copiesOf(v: SupportEditView) {
+    return onBelt() ? v.copies : undefined;
+  }
+
+  function capsulesFor(t: Target, visible: Visible, copies: BeltCopies | undefined) {
     if (t?.kind !== "limb" || !index) return null;
-    // A belt's capsules are cut to the shown layers, so they change with the slider.
-    const key = onBelt() ? `${visible.zLow},${visible.zHigh}` : "";
+    // A belt's capsules are cut to the shown layers, so they change with the slider, and repeat on each copy.
+    const key = onBelt() ? `${visible.zLow},${visible.zHigh},${copies?.count},${copies?.shiftMm}` : "";
     let hit = caps.get(t);
     if (hit?.key !== key) {
-      hit = { key, caps: capsulesOf(index, limbsOf(t), visible) };
+      hit = { key, caps: capsulesOf(index, limbsOf(t), visible, copies) };
       caps.set(t, hit);
     }
     return hit.caps;
@@ -157,8 +167,9 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
     const held = ev.kind === "click" ? nextScope : null;
     if (ev.kind === "click") nextScope = null;
     const picked = held ?? (ev.shiftKey ? OTHER[scope] : scope);
-    const limb = v.supportShown && index ? pickLimb(index, ev.ray, v.visible, SLOP_MM + SLOP_PX * ev.pixelMm) : null;
-    const gap = pickGap(gaps, ev.ray, v.visible, SLOP_PX * ev.pixelMm);
+    const copies = copiesOf(v);
+    const limb = v.supportShown && index ? pickLimb(index, ev.ray, v.visible, SLOP_MM + SLOP_PX * ev.pixelMm, copies) : null;
+    const gap = pickGap(gaps, ev.ray, v.visible, SLOP_PX * ev.pixelMm, copies);
     if (gap && (!limb || gap.distance < limb.distance)) return { kind: "gap", gap: gaps[gap.gap] };
     return limb ? { kind: "limb", limb: limb.limb, scope: picked } : null;
   }
@@ -237,31 +248,52 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
     return t ? gaps.indexOf(t.gap) : null;
   }
 
-  /** A belt gap is in view by the belt position of its top layer, like a knot by its `ls`. A flat gap is cut by the overlay's height planes. */
-  function gapsInView(visible: Visible) {
-    if (!onBelt()) return gaps;
-    const key = `${visible.zLow},${visible.zHigh}`;
+  /** A belt gap is in view by the belt position of its top layer, like a knot by its `ls`, on each copy. A flat gap is cut by the overlay's height planes. */
+  function gapsInView(visible: Visible, copies: BeltCopies | undefined) {
+    const key = onBelt() ? `${visible.zLow},${visible.zHigh},${copies?.count},${copies?.shiftMm}` : "";
     if (drawn?.gaps !== gaps || drawn.key !== key) {
-      const shown = gaps.filter((gap) => gap.tilted && gap.tilted.ls[1] >= visible.zLow - 1e-3 && gap.tilted.ls[1] <= visible.zHigh + 1e-3);
-      drawn = { gaps, key, shown };
+      if (!onBelt()) {
+        drawn = { gaps, key, shown: gaps, of: gaps.map((_, i) => i) };
+      } else {
+        const shown: CoverageGap[] = [];
+        const of: number[] = [];
+        for (const by of copyOffsets(copies)) {
+          gaps.forEach((gap, i) => {
+            const placed = placedGap(gap, by);
+            const top = placed.tilted?.ls[1];
+            if (top === undefined || top < visible.zLow - 1e-3 || top > visible.zHigh + 1e-3) return;
+            shown.push(placed);
+            of.push(i);
+          });
+        }
+        drawn = { gaps, key, shown, of };
+      }
     }
-    return drawn.shown;
+    return drawn;
   }
 
   function paintOverlay(v: SupportEditView) {
     pane.dataset.gaps = String(editing ? gaps.length : 0);
     if (!editing) {
+      delete pane.dataset.copies;
+      delete pane.dataset.capsules;
+      delete pane.dataset.gapsDrawn;
       view3d.setSupportOverlay(null);
       return;
     }
-    const sel = capsulesFor(selected, v.visible);
-    const hov = same(hover, selected) ? null : capsulesFor(hover, v.visible);
+    const copies = copiesOf(v);
+    const sel = capsulesFor(selected, v.visible, copies);
+    const hov = same(hover, selected) ? null : capsulesFor(hover, v.visible, copies);
     // The overlay's slab planes are heights; a belt's capsules were already cut by layer.
     const [zLow, zHigh] = onBelt() ? [-1e6, 1e6] : [v.visible.zLow, v.visible.zHigh];
-    const shown = gapsInView(v.visible);
+    const { shown, of } = gapsInView(v.visible, copies);
     const hot = hotGap();
-    const hotShown = hot === null ? null : shown.indexOf(gaps[hot]);
-    view3d.setSupportOverlay({ hover: hov, selected: sel, gaps: shown, hotGap: hotShown === -1 ? null : hotShown, zLow, zHigh });
+    const hotShown = of.flatMap((gap, i) => (gap === hot ? [i] : []));
+    // What the overlay draws: the copies it repeats on, the selection's capsules in view, and the gaps in view.
+    pane.dataset.copies = String(copyOffsets(copies).length);
+    pane.dataset.capsules = String((sel?.length ?? 0) / 8);
+    pane.dataset.gapsDrawn = String(shown.length);
+    view3d.setSupportOverlay({ hover: hov, selected: sel, gaps: shown, hotGaps: hotShown, zLow, zHigh });
   }
 
   function paintToggle() {

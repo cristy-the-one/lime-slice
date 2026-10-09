@@ -28,8 +28,8 @@ export interface SupportOverlay {
   hover: Float32Array | null;
   selected: Float32Array | null;
   gaps: readonly CoverageGap[];
-  /** Hovered or selected gap, drawn brighter. */
-  hotGap: number | null;
+  /** Indices in `gaps` of the hovered or selected gap, drawn brighter. A belt draws a gap once on each copy. */
+  hotGaps: readonly number[];
   /** Layer slab, print z. The overlay clips to it. */
   zLow: number;
   zHigh: number;
@@ -1197,11 +1197,11 @@ function buildSupportOverlay(sectionClip: THREE.Plane, initial: ThemeColors) {
   const selectGroup = new THREE.Group();
   const gapGroup = new THREE.Group();
   root.add(gapGroup, selectGroup, hoverGroup);
-  let built: { hover: Float32Array | null; selected: Float32Array | null; gaps: readonly CoverageGap[] | null; hot: number | null; at: string } = {
+  let built: { hover: Float32Array | null; selected: Float32Array | null; gaps: readonly CoverageGap[] | null; hot: string; at: string } = {
     hover: null,
     selected: null,
     gaps: null,
-    hot: null,
+    hot: "",
     at: "",
   };
 
@@ -1274,11 +1274,11 @@ function buildSupportOverlay(sectionClip: THREE.Plane, initial: ThemeColors) {
     gapGroup.add(fill);
   }
 
-  function fillGaps(gaps: readonly CoverageGap[], hot: number | null, cx: number, cy: number) {
+  function fillGaps(gaps: readonly CoverageGap[], hot: readonly number[], cx: number, cy: number) {
     clear(gapGroup);
     gaps.forEach((gap, i) => {
       if (gap.tilted) {
-        fillTiltedGap(gap, gap.tilted, i === hot, cx, cy);
+        fillTiltedGap(gap, gap.tilted, hot.includes(i), cx, cy);
         return;
       }
       const y = gap.z[1];
@@ -1301,7 +1301,7 @@ function buildSupportOverlay(sectionClip: THREE.Plane, initial: ThemeColors) {
       const geometry = new THREE.ShapeGeometry(shape);
       geometry.rotateX(Math.PI / 2);
       geometry.translate(0, y, 0);
-      const fill = new THREE.Mesh(geometry, i === hot ? gapHot : gapFill);
+      const fill = new THREE.Mesh(geometry, hot.includes(i) ? gapHot : gapFill);
       fill.renderOrder = 5;
       gapGroup.add(fill);
     });
@@ -1316,15 +1316,16 @@ function buildSupportOverlay(sectionClip: THREE.Plane, initial: ThemeColors) {
       const hover = next?.hover ?? null;
       const selected = next?.selected ?? null;
       const gaps = next?.gaps ?? [];
-      const hot = next?.hotGap ?? null;
+      const hot = next?.hotGaps ?? [];
+      const hotKey = hot.join();
       if (moved || hover !== built.hover) fillCapsules(hoverGroup, hover, hoverMats, origin.cx, origin.cy);
       if (moved || selected !== built.selected) fillCapsules(selectGroup, selected, selectMats, origin.cx, origin.cy);
-      if (moved || gaps !== built.gaps || hot !== built.hot) fillGaps(gaps, hot, origin.cx, origin.cy);
+      if (moved || gaps !== built.gaps || hotKey !== built.hot) fillGaps(gaps, hot, origin.cx, origin.cy);
       const low = next ? -(next.zLow - 1e-3) : 1e6;
       const high = next ? next.zHigh + 1e-3 : 1e6;
-      const changed = moved || hover !== built.hover || selected !== built.selected || gaps !== built.gaps || hot !== built.hot
+      const changed = moved || hover !== built.hover || selected !== built.selected || gaps !== built.gaps || hotKey !== built.hot
         || low !== slabLow.constant || high !== slabHigh.constant;
-      built = { hover, selected, gaps, hot, at };
+      built = { hover, selected, gaps, hot: hotKey, at };
       slabLow.constant = low;
       slabHigh.constant = high;
       return changed;

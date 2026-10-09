@@ -124,7 +124,7 @@ The rotation is part of the mesh the contour key hashes. `belt` is not a `SliceS
 - `cartesian_lock`: a request with no belt field matches the G-code hashed before belt emit existed.
 - A small box at 45°, 0.2 mm layers. Belt step `0.2 * √2`. The rotation test checks that a nozzle-plane segment stays length 1. A second box at 35° checks that the step is `h / sin(35°)`, not `h / cos(35°)`.
 - An overhang part: supports forced off, so the file has no `TYPE:SUPPORT`. The face that leans against the belt is the one a later support phase has to hold.
-- Copies: two copies, twice the layers, the second copy's first layer one extent plus the gap further along the belt. The part is planned once.
+- Copies: two copies, twice the layers, the second copy's first layer one extent plus the gap further along the belt. The part is planned once. With more than one copy the reply carries `beltCopies` (`count`, and `shiftMm`, the signed stride), which is how far each later copy's preview geometry sits from the first along Y and in belt position, so the support-edit overlay can repeat on every copy (`docs/support-edits.md`).
 - Profile: a version-2 `.limemachine.json` loads as cartesian with the default belt block, and its bed numbers are unchanged. A version-3 belt file round-trips. `enginePrinter` still has today's keys.
 - UI: a belt slice posts `belt` and omits `maxLengthMm` when it is null. Export turns on. Send stays disabled until the printer has a Prusa Link host, with that reason on the button. A cartesian slice sends no `belt`.
 
