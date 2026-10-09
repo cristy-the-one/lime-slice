@@ -23,7 +23,7 @@ use truck_meshalgo::prelude::{
     Point3, PolygonMesh, SPHint2D, SearchNearestParameter, SearchParameter, Vector3, D2,
 };
 use truck_meshalgo::tessellation::RobustMeshableShape;
-use truck_stepio::r#in::alias::{Curve3D, Surface};
+use truck_stepio::r#in::alias::{Curve3D, Surface, SweptCurve};
 use truck_stepio::r#in::ruststep::ast::{DataSection, EntityInstance, Name, Parameter, Record};
 use truck_stepio::r#in::ruststep::parser;
 use truck_stepio::r#in::Table;
@@ -812,12 +812,40 @@ impl ParametricSurface3D for MeshSurface {
 }
 
 impl ParameterDivision2D for MeshSurface {
+    /// Truck gives a linear extrusion points along the curve and none along the
+    /// extrusion, so a long wall is meshed from its rims alone. Its parameter
+    /// space can be 1 rad by 300 mm, where every point on the far rim is about
+    /// as near as any other, and the triangulation fans chords across the whole
+    /// curve from one corner. Rows as far apart as the widest chord of the curve
+    /// division keep every triangle within one cell of the curve.
     fn parameter_division(
         &self,
         range: ((f64, f64), (f64, f64)),
         tol: f64,
     ) -> (Vec<f64>, Vec<f64>) {
-        self.0.parameter_division(range, tol)
+        let (udiv, vdiv) = self.0.parameter_division(range, tol);
+        let extruded = matches!(
+            &self.0,
+            Surface::SweptCurve(swept) if matches!(**swept, SweptCurve::ExtrudedCurve(_))
+        );
+        // Two points along the curve mean it is straight within tolerance.
+        if !extruded || udiv.len() < 3 {
+            return (udiv, vdiv);
+        }
+        let (v0, v1) = range.1;
+        let chord = udiv
+            .windows(2)
+            .map(|pair| self.0.subs(pair[0], v0).distance(self.0.subs(pair[1], v0)))
+            .fold(0.0, f64::max);
+        let height = self.0.subs(udiv[0], v0).distance(self.0.subs(udiv[0], v1));
+        if !(chord > 0.0 && height.is_finite()) {
+            return (udiv, vdiv);
+        }
+        let rows = ((height / chord).ceil() as usize).clamp(1, 256);
+        let vdiv = (0..=rows)
+            .map(|row| v0 + (v1 - v0) * row as f64 / rows as f64)
+            .collect();
+        (udiv, vdiv)
     }
 }
 
