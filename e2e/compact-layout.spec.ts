@@ -52,6 +52,7 @@ test.describe("iPhone 14 compact layout", () => {
 
     const prepare = await share(page, "#prepare");
     expect(prepare, `prepare viewport share ${prepare}`).toBeGreaterThanOrEqual(0.7);
+    await expect(page.locator(".stage-tools"), "playback belongs to Preview").toBeHidden();
     await page.screenshot({ path: path.join(out, "01-prepare-default.png") });
 
     await expect(page.locator("#compactSheet")).toHaveAttribute("data-detent", "peek");
@@ -64,11 +65,13 @@ test.describe("iPhone 14 compact layout", () => {
     const half = await share(page, "#prepare");
     expect(half, `half sheet share ${half}`).toBeGreaterThan(0.4);
     expect(half, `half sheet share ${half}`).toBeLessThan(0.55);
+    await expect(page.locator(".stage-tools")).toBeHidden();
     await page.screenshot({ path: path.join(out, "03-settings-half.png") });
 
     await page.locator("#slice").click();
     await page.locator("#compactTabs [data-tab=preview]").click();
     await expect(page.locator("#compactProgress")).toHaveAttribute("data-on", "1");
+    await expect(page.locator(".stage-tools")).toBeVisible();
     await page.screenshot({ path: path.join(out, "04-preview-progress.png") });
     await expect.poll(async () => page.locator("#rangeHigh").evaluate((el: HTMLInputElement) => Number(el.max))).toBeGreaterThan(0);
     await page.waitForTimeout(200);

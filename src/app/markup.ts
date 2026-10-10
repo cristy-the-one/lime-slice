@@ -46,13 +46,13 @@ export function mountMarkup(root: HTMLElement) {
         <button class="btn" id="cancel" type="button" hidden>Cancel</button>
         <button class="btn" id="sendPrinter" type="button" hidden disabled>Send</button>
         <div class="split" id="sliceSplit">
-          <button class="btn primary" id="slice" type="button" data-slice-action="none" data-key="Ctrl ↵">Slice</button>
+          <button class="btn primary" id="slice" type="button" data-slice-action="none">Slice</button>
           <details class="menu split-more" id="sliceMore">
             <summary class="btn primary" aria-label="Slice options" data-tip="More slice actions"><span class="caret" aria-hidden="true"></span></summary>
             <nav><button type="button" id="force" hidden>Force re-slice</button></nav>
           </details>
         </div>
-        <button class="btn" id="export" type="button" disabled aria-label="Export G-code" data-key="Ctrl E">Export</button>
+        <button class="btn" id="export" type="button" disabled aria-label="Export G-code">Export</button>
       </div>
       <div class="gear-items" hidden>
         <label class="theme-field">Theme
@@ -102,23 +102,23 @@ export function mountMarkup(root: HTMLElement) {
         <div class="stage-body" id="previewBody" role="tabpanel" aria-labelledby="tabPreview">
           <div class="vslider" id="vslider">
             <div class="readout" id="readHigh"></div>
-            <button class="layer-step" id="layerNext" type="button" aria-label="Next layer" disabled>▲</button>
+            <button class="layer-step" id="layerNext" type="button" aria-label="Next layer" disabled></button>
             <div class="track">
               <div class="range-bands" id="rangeBands"></div>
               <div class="band" id="layerBand" hidden></div>
               <input id="rangeLow" type="range" min="0" max="0" value="0" aria-label="Lowest visible layer" />
               <input id="rangeHigh" type="range" min="0" max="0" value="0" aria-label="Current layer" />
             </div>
-            <button class="layer-step" id="layerPrev" type="button" aria-label="Previous layer" disabled>▼</button>
+            <button class="layer-step" id="layerPrev" type="button" aria-label="Previous layer" disabled></button>
             <div class="readout" id="readLow"></div>
           </div>
           <div class="previews">
             <div class="pane" id="pane2d">
               <canvas id="view" aria-label="2D toolpath"></canvas>
               <div class="flat-tools" id="flatTools">
-                <button class="flat-tool" id="flatZoomOut" type="button" aria-label="Zoom out" disabled>−</button>
+                <button class="flat-tool" id="flatZoomOut" type="button" aria-label="Zoom out" disabled></button>
                 <button class="flat-tool" id="flatFit" type="button" aria-label="Fit layer" disabled>Fit</button>
-                <button class="flat-tool" id="flatZoomIn" type="button" aria-label="Zoom in" disabled>+</button>
+                <button class="flat-tool" id="flatZoomIn" type="button" aria-label="Zoom in" disabled></button>
               </div>
             </div>
             <div class="pane" id="pane3d">
@@ -131,7 +131,7 @@ export function mountMarkup(root: HTMLElement) {
         <div class="gcode-pane" id="gcodePane" role="tabpanel" aria-labelledby="tabGcode" tabindex="-1" hidden></div>
         <div class="stage-tools">
           <div class="spark-wrap">
-            <div class="spark-label" id="sparkLabel">Layer time</div>
+            <div class="spark-label" id="sparkLabel"><span>Layer time</span><span class="spark-key"><span><i style="background:var(--slow)"></i>slow</span><span><i style="background:var(--fast)"></i>too fast</span></span></div>
             <canvas id="spark" aria-label="Per-layer time"></canvas>
           </div>
           <div class="playback">

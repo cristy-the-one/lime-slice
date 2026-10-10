@@ -32,10 +32,10 @@ test("the sheet shows repaired layers and dropped chains from the slice", async 
 
   await page.locator("#slice").click();
   // The fixture reply has no counts: unknown, not zero.
-  await expect(page.locator("#right")).toContainText("Repaired layers — · dropped chains —");
+  await expect(page.locator("#right")).toContainText("Repaired layers — Dropped chains —");
 
   await page.locator("#slice").click();
-  await expect(page.locator("#right")).toContainText("Repaired layers 4 · dropped chains 2");
+  await expect(page.locator("#right")).toContainText("Repaired layers 4 Dropped chains 2");
 });
 
 test.describe("compact repair line", () => {
@@ -55,7 +55,7 @@ test.describe("compact repair line", () => {
     await expect(page.locator("#compactSheet")).toHaveAttribute("data-detent", "peek");
     await page.locator("#compactTabs [data-tab=settings]").click();
     await page.locator("#slice").click();
-    await expect(page.locator("#right")).toContainText("Repaired layers 1 · dropped chains 0");
+    await expect(page.locator("#right")).toContainText("Repaired layers 1 Dropped chains 0");
     await page.locator("#compactTabs [data-tab=prepare]").click();
     await expect(page.locator("#compactSheet")).toHaveAttribute("data-detent", "peek");
     await page.waitForTimeout(250);

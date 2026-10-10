@@ -619,8 +619,9 @@ export function readPlateSettings(value: unknown): PlateObjectSettings | undefin
   return settingsEmpty(settings) ? undefined : settings;
 }
 
+/** `20 × 20 × 20.5`: one decimal where the size has one, none where it does not. */
 export function boundsSize(bounds: Bounds): string {
-  return bounds.max.map((value, index) => (value - bounds.min[index]).toFixed(1)).join(" × ");
+  return bounds.max.map((value, index) => String(Number((value - bounds.min[index]).toFixed(1)))).join(" × ");
 }
 
 function hold(obj: PlateObject) {

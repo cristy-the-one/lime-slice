@@ -77,6 +77,19 @@ for (const group of GROUPS) {
   check(`${group.id}: group tier is no higher than its lowest control`, rows.some((spec) => shownAtLevel(spec.tier, group.tier)));
 }
 
+// The panel is 300 px wide: a strategy descriptor and a group summary must fit without a cut word.
+check("strategy descriptors are short and carry a full tip", STRATEGY_ROWS.every((row) => row.copy.length <= 22 && row.tip.length > row.copy.length - 4));
+const summaryOf = (id: string, s: Record<string, unknown>) => GROUPS.find((group) => group.id === id)!.summary(s as never, { belt: false, lineWidth: 0.45 });
+check("infill summary reads auto by default", summaryOf("infill", { gyroid3d: "blend", infillCombine: false }) === "auto");
+check("infill summary names the lattice and the combine", summaryOf("infill", { gyroid3d: "on", infillCombine: true }) === "3D gyroid · combined");
+check("walls summary counts extra surface effects", summaryOf("walls", { seam: "blend", ironing: true, fuzzySkin: true }) === "blend seam · +2");
+check("walls summary names one effect", summaryOf("walls", { seam: "rear", ironing: false, fuzzySkin: true }) === "rear seam · fuzzy");
+check("speed summary is one or two values", summaryOf("speed", { featureSpeeds: true, zHop: "smart" }) === "per feature · z-hop");
+for (const group of GROUPS) {
+  const worst = summaryOf(group.id, { layerHeight: 0.28, adaptive: true, seam: "aligned", ironing: true, fuzzySkin: true, gyroid3d: "on", infillCombine: true, featureSpeeds: true, zHop: "always", supports: true, supportStyle: "tree", supportAngle: 45, placed: {}, plate: { objects: [1] }, blendKind: "single", strategy: "speed", profile: { bedX: 220, bedY: 220, maxVolumetricMm3S: 15 } });
+  check(`${group.id}: summary fits the header (${worst})`, worst.length <= 24);
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);

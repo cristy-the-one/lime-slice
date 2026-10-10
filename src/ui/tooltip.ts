@@ -4,6 +4,11 @@ import { commandForElement, shortcutOf, targetSelector } from "./commands";
 
 const SHOW_MS = 380;
 
+/** A summary whose menu or popover is open: the tip would sit on top of what it opened. */
+function opensMenu(el: HTMLElement): boolean {
+  return el.tagName === "SUMMARY" && (el.parentElement as HTMLDetailsElement | null)?.open === true;
+}
+
 /** Small tooltip for elements with `data-tip` and for the buttons of keyed commands, which show their first key. */
 export function mountTooltips(root: ParentNode = document) {
   const hostSelector = `[data-tip], ${targetSelector()}`;
@@ -22,6 +27,10 @@ export function mountTooltips(root: ParentNode = document) {
   };
 
   const place = (el: HTMLElement) => {
+    if (opensMenu(el)) {
+      hide();
+      return;
+    }
     const command = commandForElement(el);
     const text = el.dataset.tip ?? command?.label ?? "";
     const shortcut = command ? shortcutOf(command) ?? "" : "";
@@ -67,9 +76,13 @@ export function mountTooltips(root: ParentNode = document) {
     const from = (mouse.target as Element | null)?.closest?.(hostSelector);
     if (from === host) hide();
   });
+  // A pointer press is the answer to the tip, and the focus it gives is not a keyboard visit.
+  root.addEventListener("pointerdown", hide, true);
+  root.addEventListener("click", hide, true);
+  root.addEventListener("toggle", hide, true);
   root.addEventListener("focusin", (ev) => {
     const el = (ev.target as Element | null)?.closest<HTMLElement>(hostSelector);
-    if (el) schedule(el, 0);
+    if (el?.matches(":focus-visible")) schedule(el, 0);
   });
   root.addEventListener("focusout", (ev) => {
     const el = (ev.target as Element | null)?.closest<HTMLElement>(hostSelector);

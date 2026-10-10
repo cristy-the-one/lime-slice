@@ -42,8 +42,10 @@ test("ranges and volumes are stored, drawn, and sent with the slice", async ({ p
   await expect(page.locator("#rangeBands .range-band")).toHaveCount(1);
   await expect(page.locator("#viewportBands .range-band")).toHaveCount(1);
 
+  await expect(page.locator("#modToolMove"), "the gizmo switch needs a selected volume").toHaveCount(0);
   await page.locator("#volumeBox").click();
   await expect(page.locator("[data-volume]")).toHaveCount(1);
+  await expect(page.locator("#modToolMove")).toBeVisible();
   await expect(page.locator("#prepare")).toHaveAttribute("data-modifier-volumes", "1");
   await expect(page.locator("#prepare")).toHaveAttribute("data-modifier-ranges", "1");
   await expect(page.locator("#prepare")).toHaveAttribute("data-modifier-gizmo", "move");
@@ -98,6 +100,7 @@ test("ranges and volumes are stored, drawn, and sent with the slice", async ({ p
 
   await page.locator("[data-range] [data-override-remove=range]").click();
   await page.locator("[data-volume] [data-override-remove=volume]").click();
+  await expect(page.locator("#modToolMove")).toHaveCount(0);
   const cleared = bodies.length;
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBeGreaterThan(cleared);

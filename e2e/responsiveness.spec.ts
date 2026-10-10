@@ -216,6 +216,8 @@ test("layer scrub does not resize the spark or the layer track", async ({ page }
   const spark0 = (await spark.boundingBox())!;
   const track0 = (await track.boundingBox())!;
   const label0 = await page.locator("#sparkLabel").innerText();
+  expect(label0, "the legend names the two swatches").toMatch(/slow[\s\S]*too fast/);
+  expect(label0, "the layer's time lives in the slider readout").not.toMatch(/\d s/);
   const z0 = await page.locator("#readHigh").innerText();
   await page.locator("#rangeHigh").evaluate((el) => {
     const input = el as HTMLInputElement;
@@ -225,7 +227,8 @@ test("layer scrub does not resize the spark or the layer track", async ({ page }
   await expect(page.locator("#readHigh")).not.toHaveText(z0);
   const spark1 = (await spark.boundingBox())!;
   const track1 = (await track.boundingBox())!;
-  expect(await page.locator("#sparkLabel").innerText()).not.toBe(label0);
+  expect(await page.locator("#sparkLabel").innerText(), "a scrub leaves the legend alone").toBe(label0);
+  await expect(page.locator("#readLow"), "the layer's time is in the slider readout").toHaveText(/^\d+\.\d s$/);
   expect(Math.abs(spark1.x - spark0.x)).toBeLessThan(1);
   expect(Math.abs(spark1.width - spark0.width)).toBeLessThan(1);
   expect(Math.abs(track1.x - track0.x)).toBeLessThan(1);
@@ -343,7 +346,7 @@ test("auto-slice picks up an edit made while a slice was running", async ({ page
   await page.locator("#arcs").uncheck();
   await expect.poll(() => slices.length, { timeout: 5000 }).toBe(2);
   expect((slices[1] as { arcFit: boolean }).arcFit).toBe(false);
-  await expect(page.locator("#slice")).toHaveText("Show result");
+  await expect(page.locator("#slice")).toHaveText("Slice");
   await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
 });
 
@@ -358,9 +361,10 @@ test("the slice button names a cache hit, a real recompute, and a forced recompu
   const sliceBox = (await slice.boundingBox())!;
   await slice.click();
   await expect.poll(() => slices.length).toBe(1);
-  await expect(slice).toHaveText("Show result");
-  await expect(slice).toHaveAttribute("data-slice-action", "cached");
-  await expect(slice).toHaveAttribute("data-tip", "Show the saved slice for these settings. Nothing is recomputed.");
+  await expect(slice).toHaveText("Slice");
+  await expect(slice).toHaveAttribute("data-slice-action", "current");
+  await expect(slice).toHaveAttribute("data-tip", "Up to date. Force re-slice is in the menu.");
+  await expect(page.locator("#export")).toHaveClass(/primary/);
   await expect(page.locator("#timing")).toContainText(" g");
   const shown = (await slice.boundingBox())!;
   expect(Math.abs(shown.width - sliceBox.width)).toBeLessThan(1);
@@ -393,7 +397,7 @@ test("the slice button names a cache hit, a real recompute, and a forced recompu
   await expect.poll(() => slices.length).toBe(4);
   // Returning to a stored recipe refreshes on its own only once this reply has landed, which a loaded runner can take seconds to do.
   await expect(slice).toBeEnabled({ timeout: 20_000 });
-  await expect(slice).toHaveText("Show result");
+  await expect(slice).toHaveText("Slice");
   await page.locator("#lh").fill("0.2");
   await expect.poll(() => slices.length).toBe(5);
   await expect(slice).toBeEnabled({ timeout: 20_000 });

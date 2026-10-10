@@ -4,6 +4,7 @@ import { flushEdit, noteEdit } from "./history";
 import { state } from "./state";
 import { markProjectDirty } from "../project-dirty";
 import { markStale, renderChrome } from "./settings";
+import { setModifierOpen } from "../ui/overrides-panel";
 import {
   addRange,
   clampWalls,
@@ -26,7 +27,9 @@ import {
 
 export function addHeightRange() {
   noteEdit();
-  state.overrides = addRange(state.overrides, defaultRange());
+  const range = defaultRange();
+  setModifierOpen(range.id, true);
+  state.overrides = addRange(state.overrides, range);
   markProjectDirty();
   flushEdit();
   renderChrome();
@@ -37,6 +40,7 @@ export function addModifier(kind: VolumeKind) {
   const volume = defaultVolume(kind, state.profile.bedX, state.profile.bedY);
   state.overrides = addVolume(state.overrides, volume);
   state.selectedVolumeId = volume.id;
+  setModifierOpen(volume.id, true);
   markProjectDirty();
   flushEdit();
   renderChrome();
@@ -58,6 +62,7 @@ export function removeOverrideCard(card: HTMLElement) {
 
 export function selectModifier(id: string) {
   state.selectedVolumeId = id;
+  setModifierOpen(id, true);
   renderChrome();
 }
 

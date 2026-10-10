@@ -5,7 +5,9 @@ export function mountViewport(hooks: { setViewPreset(preset: ViewPreset): void }
   mountEmptyDrop();
 }
 
+/** Without a mesh the stage is the drop zone: the layer slider and playback have nothing to drive. */
 export function syncEmptyState(hasMesh: boolean) {
+  document.querySelector("#stage")?.classList.toggle("is-empty", !hasMesh);
   document.querySelectorAll<HTMLElement>(".empty-drop").forEach((el) => {
     el.toggleAttribute("hidden", hasMesh);
   });

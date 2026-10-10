@@ -4,6 +4,7 @@ import {
   addedCopy,
   arrangeBoxes,
   arrangedObjects,
+  boundsSize,
   boxesOverlapXY,
   oneObjectPlate,
   overlapPairs,
@@ -149,6 +150,9 @@ check("one object's union is its own bounds", JSON.stringify(plateUnionBounds([a
 check("no objects have no union", plateUnionBounds([], bed, bed) === null);
 check("a custom split between two objects survives a move", nextSplitAt("transform", 56.8, union, "x", true) === 56.8);
 check("one object's bounds would pull that split to its own midpoint", nextSplitAt("transform", 56.8, placeObject(apart[0]!, bed, bed).bounds, "x", true) === 36.9);
+
+check("a whole-millimeter size drops its decimal", boundsSize({ min: [0, 0, 0], max: [20, 20.04, 20] }) === "20 × 20 × 20", boundsSize({ min: [0, 0, 0], max: [20, 20.04, 20] }));
+check("a fractional size keeps one decimal", boundsSize({ min: [1, 2, 0], max: [31.5, 12, 7.25] }) === "30.5 × 10 × 7.3", boundsSize({ min: [1, 2, 0], max: [31.5, 12, 7.25] }));
 
 if (failed) {
   console.error(`${failed} failed`);

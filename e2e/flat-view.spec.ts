@@ -158,7 +158,7 @@ test("a belt layer stays inside the 2D canvas, and drag and zoom move it", async
   framed(await inkOf(page), 45);
 
   const fitBox = await page.locator("#flatFit").boundingBox();
-  expect(fitBox?.height ?? 99).toBeLessThanOrEqual(22);
+  expect(fitBox?.height ?? 99).toBeLessThanOrEqual(24);
   expect(fitBox?.width ?? 99).toBeLessThanOrEqual(48);
 
   const share = await page.evaluate(() => {

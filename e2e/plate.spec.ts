@@ -72,10 +72,10 @@ test("add, select, place, overlap, arrange, undo, and save a plate", async ({ pa
   await expect(page.locator("#partScale")).toHaveValue("50");
   await page.waitForTimeout(400);
   await page.locator("#rotZ").click();
-  await expect(page.locator("[data-selected='true'] span")).toContainText("10.0");
-  await expect(page.locator("[data-plate-id='part'] span")).toContainText("20.0");
+  await expect(page.locator("[data-selected='true'] span")).toContainText("10 × 10 × 10 mm");
+  await expect(page.locator("[data-plate-id='part'] span")).toContainText("20 × 20 × 20 mm");
   await page.keyboard.press("Control+z");
-  await expect(page.locator("[data-selected='true'] span")).toContainText("10.0");
+  await expect(page.locator("[data-selected='true'] span")).toContainText("10 × 10 × 10 mm");
 
   await page.locator("[data-plate-select='part']").click();
   await expect(page.locator("#prepare")).toHaveAttribute("data-plate-selected", "part");
@@ -111,9 +111,9 @@ test("add, select, place, overlap, arrange, undo, and save a plate", async ({ pa
 
   await page.keyboard.press("Control+z");
   await expect(page.locator("#plateOverlap")).toContainText("overlaps");
-  await expect(page.locator("[data-selected='true'] span")).toContainText("10.0");
+  await expect(page.locator("[data-selected='true'] span")).toContainText("10 × 10 × 10 mm");
   await page.keyboard.press("Control+z");
-  await expect(page.locator("[data-selected='true'] span")).toContainText("20.0");
+  await expect(page.locator("[data-selected='true'] span")).toContainText("20 × 20 × 20 mm");
   await page.keyboard.press("Control+z");
   await expect(page.locator("[data-plate-id]")).toHaveCount(1);
 
@@ -124,8 +124,8 @@ test("add, select, place, overlap, arrange, undo, and save a plate", async ({ pa
     buffer: fs.readFileSync((await plateFile.path())!),
   });
   await expect(page.locator("[data-plate-id]")).toHaveCount(2);
-  await expect(page.locator("[data-plate-id='part'] span")).toContainText("20.0");
-  await expect(page.locator("[data-plate-id]").nth(1).locator("span")).toContainText("10.0");
+  await expect(page.locator("[data-plate-id='part'] span")).toContainText("20 × 20 × 20 mm");
+  await expect(page.locator("[data-plate-id]").nth(1).locator("span")).toContainText("10 × 10 × 10 mm");
   await expect(page.locator("#plateOverlap")).toHaveCount(0);
 
   await page.locator("[data-plate-remove]").nth(1).click();

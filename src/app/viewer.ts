@@ -297,12 +297,11 @@ function sparkBars(layers: PreviewLayer[], width: number, height: number, dpr: n
     g.fillRect(i * barW, height - h, Math.max(dpr, barW - gap), h);
     return h;
   });
-  return { layers, width, height, palette, kinds, bars, heights, barW, gap };
+  return { layers, width, height, palette, bars, heights, barW, gap };
 }
 
 export function paintSpark() {
   const canvasEl = document.querySelector<HTMLCanvasElement>("#spark");
-  const label = document.querySelector("#sparkLabel");
   if (!canvasEl) return;
   const layers = state.result?.layers ?? [];
   const rect = canvasEl.getBoundingClientRect();
@@ -319,13 +318,6 @@ export function paintSpark() {
     spark = sparkBars(layers, width, height, dpr, colors, palette);
   }
   const here = layers[state.layer];
-  const klass = here ? spark.kinds[state.layer] : "ok";
-  if (label) {
-    const tag = klass === "slow" ? "slow" : klass === "fast" ? "too fast" : "typical";
-    label.innerHTML = here
-      ? `<i style="background:var(--slow)"></i>slow<br><i style="background:var(--fast)"></i>too fast<br>${(here.seconds ?? 0).toFixed(1)} s · ${tag}`
-      : "Layer time";
-  }
   const g = canvasEl.getContext("2d");
   if (!g) return;
   g.clearRect(0, 0, width, height);
