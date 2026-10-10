@@ -6,7 +6,7 @@ const SHOW_MS = 380;
 
 /** A summary whose menu or popover is open: the tip would sit on top of what it opened. */
 function opensMenu(el: HTMLElement): boolean {
-  return el instanceof HTMLElement && el.tagName === "SUMMARY" && (el.parentElement as HTMLDetailsElement | null)?.open === true;
+  return el.tagName === "SUMMARY" && (el.parentElement as HTMLDetailsElement | null)?.open === true;
 }
 
 /** Small tooltip for elements with `data-tip` and for the buttons of keyed commands, which show their first key. */
