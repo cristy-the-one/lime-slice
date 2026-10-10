@@ -79,15 +79,17 @@ export function setButtonLabel(button: HTMLButtonElement, label: string) {
 
 export function paintSliceButton(button: HTMLButtonElement) {
   const action = currentSliceAction(false);
-  const label = state.busy ? sliceBusyLabel(session.busyRecompute) : action.label;
+  // The slice on screen is this recipe: showing it again would change nothing, so Export leads.
+  const upToDate = !state.busy && action.state === "cached" && !!state.result && !fx.stale?.();
+  const label = state.busy ? sliceBusyLabel(session.busyRecompute) : upToDate ? "Slice" : action.label;
   setButtonLabel(button, label);
-  button.dataset.tip = state.busy ? "" : action.detail;
+  button.dataset.tip = state.busy ? "" : upToDate ? "Up to date. Force re-slice is in the menu." : action.detail;
   button.removeAttribute("title");
   button.setAttribute("aria-label", label);
-  button.dataset.sliceAction = state.busy ? "busy" : action.state;
-  const showSaved = !state.busy && action.state === "cached";
+  button.dataset.sliceAction = state.busy ? "busy" : upToDate ? "current" : action.state;
+  const showSaved = !state.busy && action.state === "cached" && !upToDate;
   button.classList.toggle("show-result", showSaved);
-  button.classList.toggle("primary", !showSaved);
+  button.classList.toggle("primary", !showSaved && !upToDate);
   button.classList.toggle("reslice", !state.busy && action.state === "changed");
 }
 

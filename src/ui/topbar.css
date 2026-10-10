@@ -94,3 +94,6 @@
 #slice.reslice + .split-more > summary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 
 .status { min-height: 26px; padding: 0 var(--space-3); font-size: var(--fs-1); }
+
+/* Slice and Export trade the accent; one weight keeps both widths, so neither moves under the pointer. */
+.action-row .btn { font-weight: 600; }

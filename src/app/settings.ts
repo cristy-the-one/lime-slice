@@ -1301,6 +1301,7 @@ function paintExport(button: HTMLButtonElement | null, isStale: boolean) {
   button.disabled = !state.mesh || state.busy;
   button.dataset.slice = current ? "current" : "first";
   button.dataset.tip = current ? "Save G-code" : "Slice, then save G-code";
+  button.classList.toggle("primary", current && !state.busy);
 }
 
 export function markStale() {
