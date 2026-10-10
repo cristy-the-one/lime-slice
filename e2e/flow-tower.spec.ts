@@ -38,6 +38,7 @@ test("flow 1 is omitted and a saved multiplier is sent", async ({ page }) => {
   await expect(page.locator("#slice")).toBeEnabled();
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(1);
+  await expect(page.locator("#slice")).toBeEnabled();
   expect(bodies[0]).not.toHaveProperty("flow");
 
   await page.locator("#machineFlow").fill("1.05");
