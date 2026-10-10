@@ -123,7 +123,7 @@ test("rotation and scale still wait for Slice when auto-slice is off", async ({ 
   await page.locator("#slice").click();
   await expect(page.locator("#export")).toBeEnabled();
   await page.locator("#partScale").fill("150");
-  await expect(page.locator("#export")).toHaveAttribute("data-tip", "Settings changed. Slice again to export.");
+  await expect(page.locator("#export")).toHaveAttribute("data-tip", "Slice, then save G-code");
   await page.waitForTimeout(600);
   expect(calls).toBe(2);
   await expect(page.locator("#export")).toHaveAttribute("data-slice", "first");
