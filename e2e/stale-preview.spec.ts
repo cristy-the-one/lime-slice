@@ -2,6 +2,9 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 
+/** These specs are about auto-slice, so they start from the app's own default: on. */
+test.use({ storageState: { cookies: [], origins: [] } });
+
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 
 interface Reply {
