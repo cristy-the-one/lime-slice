@@ -13,6 +13,8 @@ export interface WireLayer {
 /** Fraction of bead half-width kept as the bright face. The rest is the dark margin. */
 export const INNER_HALF_SCALE = 0.78;
 export const MARGIN_SHADE = 0.38;
+/** Set in a point's speed word on odd layers, so the shader can alternate their brightness. */
+export const ODD_LAYER_BIT = 0x8000;
 
 /** Kind slots the preview shader can color and hide. Later kinds share the last slot. */
 export const MAX_KINDS = 32;
@@ -50,7 +52,7 @@ export function meshCenter(min: number[], max: number[]): { cx: number; cy: numb
 /**
  * Path points in print order. `xyz` is each point in scene space. `style` is
  * `STYLE_WORDS` u16 per point describing the segment that starts there:
- * `[kind slot * KIND_SHIFT + blend weight * WEIGHT_STEPS, speed * 10, half width µm, bead height µm]`.
+ * `[kind slot * KIND_SHIFT + blend weight * WEIGHT_STEPS, speed * 10 + ODD_LAYER_BIT on odd layers, half width µm, bead height µm]`.
  * A path's last point has all zeros, so no segment joins it to the next path.
  */
 export interface PointRun {
@@ -162,7 +164,7 @@ function buildChunk(layers: WireLayer[], kinds: string[], cx: number, cy: number
       }
       if (slots[cols.kind[i]] < 0) slots[cols.kind[i]] = assignSlot(kinds, cols.kinds[cols.kind[i]]);
       const word = slots[cols.kind[i]] * KIND_SHIFT + Math.round(clamp01(cols.toughness[i] ?? 0) * WEIGHT_STEPS);
-      const speed = u16((cols.effectiveSpeed[i] ?? cols.speed[i] ?? 0) * 10);
+      const speed = Math.min(ODD_LAYER_BIT - 1, u16((cols.effectiveSpeed[i] ?? cols.speed[i] ?? 0) * 10)) | (layer.index & 1 ? ODD_LAYER_BIT : 0);
       const half = u16(halfWidth(cols.width[i]) * 1000);
       const height = u16(beadHeight(cols.beadHeight[i], layer.height) * 1000);
       for (let s = (at * STYLE_WORDS), last = (at + end - start - 1) * STYLE_WORDS; s < last; s += STYLE_WORDS) {
