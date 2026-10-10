@@ -327,10 +327,12 @@ test("a collapsed settings group stays collapsed when the panel re-renders", asy
 test("auto-slice runs after a structural toggle", async ({ page }) => {
   const slices = await mockEngine(page, () => 0);
   await openCube(page);
+  await page.locator("#slice").click();
+  await expect.poll(() => slices.length).toBe(1);
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await page.locator("#autoslice").check();
-  await expect.poll(() => slices.length).toBe(1);
-  await expect(page.locator("#slice")).toBeEnabled();
+  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
   await page.locator("#adaptive").check();
   await expect.poll(() => slices.length, { timeout: 3000 }).toBe(2);
   expect((slices[1] as { adaptive: boolean }).adaptive).toBe(true);
@@ -340,9 +342,11 @@ test("auto-slice picks up an edit made while a slice was running", async ({ page
   let calls = 0;
   const slices = await mockEngine(page, () => (calls++ === 0 ? 1200 : 0));
   await openCube(page);
+  await page.locator("#slice").click();
+  await expect.poll(() => slices.length).toBe(1);
   await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await page.locator("#autoslice").check();
-  await expect.poll(() => slices.length).toBe(1);
+  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
   await page.locator("#arcs").uncheck();
   await expect.poll(() => slices.length, { timeout: 5000 }).toBe(2);
   expect((slices[1] as { arcFit: boolean }).arcFit).toBe(false);

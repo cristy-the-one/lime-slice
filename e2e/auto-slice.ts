@@ -5,6 +5,7 @@ import type { Page } from "@playwright/test";
  * The gear is the user's path; the compact layout has no gear, so it gets the input event the gear's switch sends.
  */
 export async function autoSliceOff(page: Page) {
+  await page.addInitScript(() => localStorage.setItem("lime-slice-auto-slice", "0"));
   const box = page.locator("#autoslice");
   await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   if (await box.isVisible()) await box.uncheck();
