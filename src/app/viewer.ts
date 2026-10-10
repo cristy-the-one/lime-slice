@@ -61,8 +61,8 @@ export function paintSlider() {
   if (nextBtn) nextBtn.disabled = n === 0 || state.layer >= max;
   if (prevBtn) prevBtn.disabled = n === 0 || state.layer <= state.rangeLow;
   const layer = state.result?.layers[state.layer];
-  document.querySelector("#readHigh")!.textContent = layer ? `Z ${layer.z.toFixed(2)}` : "—";
-  document.querySelector("#readLow")!.textContent = layer ? `${(layer.seconds ?? 0).toFixed(1)} s` : "Z —";
+  document.querySelector("#readHigh")!.textContent = layer ? `Z ${layer.z.toFixed(2)}` : "";
+  document.querySelector("#readLow")!.textContent = layer ? `${(layer.seconds ?? 0).toFixed(1)} s` : "";
   const band = document.querySelector<HTMLElement>("#layerBand")!;
   const show = state.blendKind === "byLayer";
   band.hidden = !show;
@@ -203,15 +203,15 @@ export function paintPlayback() {
     slider.disabled = moves.length === 0;
   }
   if (play) {
-    play.textContent = state.playing ? "Playing…" : "Play";
-    play.disabled = state.playing || moves.length === 0;
+    play.textContent = state.playing ? "Pause" : "Play";
+    play.disabled = moves.length === 0;
   }
   const stop = document.querySelector<HTMLButtonElement>("#stop");
   if (stop) stop.disabled = !state.playing;
   const point = moves[state.move];
   if (!readout) return;
   if (!point) {
-    readout.textContent = "Feature — · feed — · E —";
+    readout.textContent = "";
     return;
   }
   const gcode = layerGcode()?.layer(state.result?.layers[state.layer]?.index ?? state.layer) ?? [];
@@ -240,16 +240,12 @@ export function paintGcode() {
   const layer = state.result?.layers[state.layer];
   const doc = layerGcode(true);
   const lines = layer ? doc?.layer(layer.index) ?? [] : [];
-  if (!state.result) {
-    pane.innerHTML = `<div class="meta">Slice to read G-code for this layer.</div>`;
-    return;
-  }
-  if (!doc) {
-    pane.innerHTML = `<div class="meta">Loading G-code…</div>`;
+  if (!state.result || !doc) {
+    pane.innerHTML = "";
     return;
   }
   if (lines.length === 0) {
-    pane.innerHTML = `<div class="meta">No ;LAYER block in this G-code. Playback still follows the preview.</div>`;
+    pane.innerHTML = `<div class="meta">No ;LAYER block in this G-code.</div>`;
     return;
   }
   const point = movesNow()[state.move];
@@ -357,7 +353,10 @@ export function stopPlay() {
 }
 
 export function togglePlay() {
-  if (state.playing) return;
+  if (state.playing) {
+    stopPlay();
+    return;
+  }
   const moves = movesNow();
   if (moves.length === 0) return;
   layerGcode(true);
@@ -512,28 +511,9 @@ export function paintGizmoReadout() {
   paintGizmoNudge(rotate);
   const el = document.querySelector<HTMLElement>("#gizmoReadout");
   if (!el) return;
-  if (state.stage !== "prepare" || !state.placed) {
-    el.hidden = true;
-    return;
-  }
-  el.hidden = false;
-  if (state.poseHud) {
-    el.textContent = state.poseHud;
-    return;
-  }
-  if (state.blendKind === "byRegion") {
-    el.textContent = `Split ${state.axis.toUpperCase()} ${state.atMm.toFixed(1)} mm · low toughness · high speed`;
-    return;
-  }
-  if (tool === "move") {
-    el.textContent = "Move · drag the part or an arrow · nudge 0.1 mm · Shift snaps 1 mm";
-    return;
-  }
-  if (rotate) {
-    el.textContent = "Rotate · drag a ring · nudge 1° · Shift snaps 15°";
-    return;
-  }
-  el.textContent = "Parked left · drag a ring or an arrow · nudge 0.1 mm · Shift snaps";
+  const hud = state.stage === "prepare" && state.placed ? state.poseHud : "";
+  el.hidden = !hud;
+  el.textContent = hud;
 }
 
 function paintGizmoNudge(rotate: boolean) {
@@ -876,14 +856,9 @@ export function paintSectionChrome() {
   slider.max = reach.toFixed(2);
   if (document.activeElement !== slider) slider.value = String(state.sectionOffset);
   const readout = document.querySelector<HTMLElement>("#sectionReadout")!;
-  readout.hidden = !(preview && on);
-  if (preview && on) {
-    if (state.sectionHud) readout.textContent = state.sectionHud;
-    else {
-      const n = state.sectionNormal.map((v) => v.toFixed(2)).join(" ");
-      readout.textContent = `Section ${n} · ${state.sectionOffset.toFixed(1)} mm · hides arrow side · layers still apply`;
-    }
-  }
+  const hud = preview && on ? state.sectionHud : "";
+  readout.hidden = !hud;
+  readout.textContent = hud;
 }
 
 export function draw() {
@@ -897,10 +872,6 @@ export function draw() {
   const layer = state.result?.layers[state.layer];
   const mesh = state.result?.mesh;
   if (!layer || !mesh) {
-    fx.ctx.fillStyle = colors.muted;
-    fx.ctx.font = `${14 * (window.devicePixelRatio || 1)}px IBM Plex Sans, sans-serif`;
-    fx.ctx.fillText(state.mesh ? state.mesh.name : "Toolpath preview", 24, 36);
-    fx.ctx.fillText(state.mesh ? "Slice to preview the toolpath." : "Open a mesh, then slice.", 24, 60);
     sync3d();
     return;
   }
