@@ -56,8 +56,8 @@ None. The deferred rows below stay deferred.
 - **Code signing and the updater.** Decided later. Unsigned installers stay ([#103](https://github.com/cristy-the-one/lime-slice/pull/103)).
 - **Bambu LAN, Moonraker, and OctoPrint.** Prusa Link is the send path. The others wait.
 - **Redistributed Prusa or Bambu profiles.** We ship our own.
-- **Native iOS.** The TODOs in `src/platform.ts` stay. On-device slicing (`MOCK_ON_DEVICE_LABEL` in `src/ui/compact/mocks.ts`) stays labelled mock.
-- **Playback speed.** The compact chip is a mock 1× (`MOCK_PLAYBACK_SPEED`). It does not change a toolpath and is not in this run.
+- **Native iOS.** The TODOs in `src/platform.ts` stay. On-device slicing is not built.
+- **Playback speed.** There is no playback speed multiplier. It is not in this run.
 - **Hollow and text emboss.** Large mesh booleans, low user value next to the rows above.
 - **Cut to two bodies, and split-to-objects at load.** Both need a plate slot for the new body. The plate exists, but a mesh boolean and a loader split are their own projects. The section plane stays a view.
 - **Localization, crash reporting, and an onboarding tour.** Strings are still moving. No crash vendor. The empty state already says to open a mesh.

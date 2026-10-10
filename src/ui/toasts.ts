@@ -1,4 +1,4 @@
-export type ToastTone = "success" | "info" | "warn" | "error";
+export type ToastTone = "info" | "warn" | "error";
 
 export interface ToastAction {
   label: string;

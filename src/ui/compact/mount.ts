@@ -2,9 +2,8 @@ import { Box, createElement, Layers, MoreHorizontal, Printer, Search, SlidersHor
 import { syncSendButtons, uploadToPrusaLink } from "../../app/prusa-actions";
 import { saveCurrentProject } from "../../app/project-io";
 import { engineMode, pickModelFile, pickProjectFile, saveGcode, saveLayoutChoice, type LayoutChoice } from "../../platform";
+import { currentApiTarget } from "../api-base";
 import { haptic } from "../haptics";
-import { pushToast } from "../toasts";
-import { MOCK_ON_DEVICE_LABEL, MOCK_PLAYBACK_SPEED } from "./mocks";
 import { moveDetent, sheetHeight, snapDetent, type Detent } from "./sheet";
 import { mountCompactTouch } from "./touch";
 import "./compact.css";
@@ -34,24 +33,10 @@ export function mountCompact() {
   stage?.append(isoButton(), progressLine());
   const preview = document.querySelector("#previewBody");
   preview?.append(layerTip());
-  const playback = document.querySelector(".playback");
-  if (playback && !playback.querySelector("#compactPlaySpeed")) {
-    const speed = document.createElement("span");
-    speed.id = "compactPlaySpeed";
-    speed.title = "Mock: playback speed does not change the toolpath";
-    speed.dataset.mock = "playback-speed";
-    speed.textContent = MOCK_PLAYBACK_SPEED;
-    playback.append(speed);
-  }
   mountCompactTouch({
     toggleChrome,
     onFit: () => document.querySelector<HTMLButtonElement>("#viewPresets button:last-child")?.click(),
     onLongPress: openMenu,
-  });
-  document.addEventListener("click", (ev) => {
-    if (!active) return;
-    const target = ev.target as Element | null;
-    if (target?.closest("#layflat")) pushToast("Lay flat applied", "success");
   });
   window.addEventListener("lime-support-edit", (ev) => {
     supportEditing = (ev as CustomEvent<boolean>).detail === true;
@@ -88,7 +73,7 @@ function topBar() {
   file.type = "button";
   file.className = "compact-file";
   file.id = "compactFile";
-  file.innerHTML = `<b>No mesh</b><span>Open a sample or a file</span>`;
+  file.innerHTML = `<b>No mesh</b><span></span>`;
   file.addEventListener("click", () => {
     haptic("tap");
     pickModelFile();
@@ -278,12 +263,7 @@ function devicePage() {
   page.id = "compactDevice";
   page.innerHTML = `
     <h2>Device</h2>
-    <p class="compact-kicker">Engine and printer</p>
     <h3>Slicing engine</h3>
-    <div class="compact-seg" role="group" aria-label="Slicing engine">
-      <button type="button" id="engineRemote" aria-pressed="true">Remote</button>
-      <button type="button" id="engineLocal" disabled title="Mock: an on-device engine is not built">${MOCK_ON_DEVICE_LABEL}</button>
-    </div>
     <div class="compact-status" id="compactEngine" data-state="pending">
       <div><b>Engine …</b><span id="compactEngineMeta"></span></div>
       <i></i>
@@ -292,8 +272,7 @@ function devicePage() {
     <h3>Printer</h3>
     <div class="compact-row"><div><b>Profile</b><div id="compactBed">Bed</div></div><button type="button" id="compactEditPrinter">Edit</button></div>
     <h3>Output</h3>
-    <div class="compact-row"><div><b>Last G-code</b><div id="compactGcode">Slice to export</div></div><div class="compact-row-actions"><button type="button" id="compactShare">Share</button><button type="button" id="compactSend" disabled title="Slice first, and add a Prusa Link host on this printer." aria-label="Send to printer">Send</button></div></div>
-    <p class="compact-note">Local-network access must be allowed for a later iOS build. The engine is reachable over LAN or Tailscale from the browser today.</p>
+    <div class="compact-row"><div><b>G-code</b></div><div class="compact-row-actions"><button type="button" id="compactShare" disabled>Share</button><button type="button" id="compactSend" hidden disabled aria-label="Send to printer">Send</button></div></div>
     <label class="field">Interface layout
       <select id="layoutChoiceCompact" aria-label="Interface layout">
         <option value="auto">Auto</option>
@@ -440,11 +419,10 @@ function leave() {
   const rail = document.querySelector("#toolRail");
   if (rail) home.leftParent.insertBefore(home.left, rail);
   else home.leftParent.prepend(home.left);
+  home.action.prepend(home.cancel);
   const exportButton = home.action.querySelector("#export");
-  if (exportButton) {
-    home.action.insertBefore(home.slice, exportButton);
-    home.action.insertBefore(home.cancel, exportButton);
-  } else home.action.prepend(home.slice, home.cancel);
+  if (exportButton) home.action.insertBefore(home.slice, exportButton);
+  else home.action.append(home.slice);
   if (home.connection && home.gear) home.gear.append(home.connection);
   home = null;
   document.documentElement.classList.remove("chrome-hidden");
@@ -471,7 +449,7 @@ function refresh() {
   const file = document.querySelector("#compactFile");
   const name = document.querySelector(".obj b")?.textContent?.trim();
   const meta = document.querySelector(".obj span")?.textContent?.trim();
-  if (file) file.innerHTML = `<b>${escape(name || "No mesh")}</b><span>${escape(meta || "Open a sample or a file")}</span>`;
+  if (file) file.innerHTML = `<b>${escape(name || "No mesh")}</b><span>${escape(meta || "")}</span>`;
   const engine = document.querySelector<HTMLElement>("#engineLink");
   const card = document.querySelector<HTMLElement>("#compactEngine");
   const engineMeta = document.querySelector("#compactEngineMeta");
@@ -480,21 +458,18 @@ function refresh() {
     const title = card.querySelector("b");
     if (title) title.textContent = engine.textContent || "Engine";
   }
-  const using = document.querySelector("#apiUsing")?.textContent?.replace(/^Using\s/, "") ?? "";
   const rtt = document.querySelector<HTMLElement>("#apiTestResult")?.dataset.rtt;
   if (engineMeta) {
-    const mode = engineMode() === "invoke" ? "In-process" : using || "HTTP";
+    const mode = engineMode() === "invoke" ? "In-process" : currentApiTarget().base;
     engineMeta.textContent = rtt ? `${mode} · ${rtt} ms` : mode;
   }
-  const remote = document.querySelector<HTMLButtonElement>("#engineRemote");
-  if (remote) remote.setAttribute("aria-pressed", engineMode() === "http" ? "true" : "false");
   const bedX = document.querySelector<HTMLInputElement>("#bedx")?.value;
   const bedY = document.querySelector<HTMLInputElement>("#bedy")?.value;
   const bed = document.querySelector("#compactBed");
   if (bed) bed.textContent = bedX && bedY ? `Bed ${bedX} × ${bedY} mm` : "Bed";
   const exportButton = document.querySelector<HTMLButtonElement>("#export");
-  const gcode = document.querySelector("#compactGcode");
-  if (gcode) gcode.textContent = exportButton && !exportButton.disabled ? "Ready to share" : "Slice to export";
+  const share = document.querySelector<HTMLButtonElement>("#compactShare");
+  if (share) share.disabled = !exportButton || exportButton.disabled;
   syncSendButtons();
   const high = document.querySelector<HTMLInputElement>("#rangeHigh");
   const z = document.querySelector("#readHigh")?.textContent ?? "";
@@ -505,7 +480,7 @@ function refresh() {
   const progress = document.querySelector<HTMLElement>("#compactProgress");
   const timing = document.querySelector("#timing")?.textContent ?? "";
   const meter = document.querySelector("#sliceMeter")?.textContent ?? "";
-  const busy = document.querySelector<HTMLButtonElement>("#cancel")?.disabled === false;
+  const busy = document.querySelector<HTMLButtonElement>("#cancel")?.hidden === false;
   if (progress) {
     progress.dataset.on = busy ? "1" : "0";
     const span = progress.querySelector("span");
