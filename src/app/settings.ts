@@ -590,16 +590,17 @@ function objectListHtml(): string {
     const selected = obj.id === state.plate.selectedId;
     return `
       <div class="obj obj-row" role="listitem" data-plate-id="${escapeHtml(obj.id)}" data-selected="${selected ? "true" : "false"}">
-        <button class="obj-select" type="button" data-plate-select="${escapeHtml(obj.id)}" aria-pressed="${selected ? "true" : "false"}">
+        <button class="obj-select" type="button" data-plate-select="${escapeHtml(obj.id)}" aria-pressed="${selected ? "true" : "false"}" data-tip="${escapeHtml(obj.name)} · ${triangleLine(obj.sourcePos.length / 9)}">
           <b>${escapeHtml(obj.name)}</b>
-          <span>${boundsSize(part.bounds)} mm · ${triangleLine(obj.sourcePos.length / 9)}${notes.length ? ` · ${escapeHtml(notes.join("; "))}` : ""}</span>
+          <span>${boundsSize(part.bounds)} mm</span>
+          ${notes.length ? `<em class="obj-note">${escapeHtml(notes.join("; "))}</em>` : ""}
         </button>
         ${many ? `<button class="btn obj-remove" type="button" data-plate-remove="${escapeHtml(obj.id)}" aria-label="Remove ${escapeHtml(obj.name)}">Remove</button>` : ""}
       </div>`;
   }).join("");
   const overlap = pairs.map((pair) => pair.line).join("; ");
   return `
-    <div class="object-list" id="objectList"><div role="list">${list || `<div class="obj" role="listitem"><b>${escapeHtml(state.mesh?.name ?? "part")}</b><span>${boundsSize(state.placed.bounds)} mm · ${triangleLine(state.placed.canonical.length / 9)}</span></div>`}</div></div>
+    <div class="object-list" id="objectList"><div role="list">${list || `<div class="obj" role="listitem"><b>${escapeHtml(state.mesh?.name ?? "part")}</b><span>${boundsSize(state.placed.bounds)} mm</span></div>`}</div></div>
     ${overlap ? `<div class="meta warn-text" id="plateOverlap">${escapeHtml(overlap)} <button class="btn" type="button" data-plate-arrange>Arrange</button></div>` : ""}`;
 }
 
@@ -725,13 +726,13 @@ function objectOverrideFields(obj: NonNullable<ReturnType<typeof selectedObject>
   return `
     <div class="grid3" data-tip="Empty keeps the strategy. A height range or a modifier still wins on a field it sets.">
       <label class="setting" data-label="object infill" data-keywords="per object density percent">Infill %
-        <input id="objInfill" type="number" min="0" max="100" step="5" placeholder="strategy" value="${infill === undefined ? "" : String(Math.round(infill * 100))}" aria-label="Object infill percent" />
+        <input id="objInfill" type="number" min="0" max="100" step="5" placeholder="auto" value="${infill === undefined ? "" : String(Math.round(infill * 100))}" aria-label="Object infill percent" />
       </label>
       <label class="setting" data-label="object walls" data-keywords="per object perimeters">Walls
-        <input id="objWalls" type="number" min="1" max="12" step="1" placeholder="strategy" value="${shown(walls)}" aria-label="Object walls" />
+        <input id="objWalls" type="number" min="1" max="12" step="1" placeholder="auto" value="${shown(walls)}" aria-label="Object walls" />
       </label>
       <label class="setting" data-label="object speed" data-keywords="per object speed cap">Speed mm/s
-        <input id="objSpeed" type="number" min="1" max="1000" step="5" placeholder="strategy" value="${shown(speed)}" aria-label="Object speed cap" />
+        <input id="objSpeed" type="number" min="1" max="1000" step="5" placeholder="auto" value="${shown(speed)}" aria-label="Object speed cap" />
       </label>
     </div>`;
 }

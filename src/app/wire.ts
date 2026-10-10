@@ -36,6 +36,7 @@ import {
   selectModifier,
   setModifierTool,
 } from "./override-actions";
+import { setModifierOpen } from "../ui/overrides-panel";
 import { pushToast } from "../ui/toasts";
 import { currentRules } from "./rules";
 import { turnOnSupports } from "./support-actions";
@@ -124,6 +125,7 @@ export function wireApp() {
   // A search opens groups on its own; only a toggle outside one is the user's choice to keep.
   document.querySelector("#left")!.addEventListener("toggle", (ev) => {
     const details = ev.target as HTMLDetailsElement;
+    if (details.dataset.mod) setModifierOpen(details.dataset.mod, details.open);
     const id = details.dataset.group;
     if (!id || state.query.trim()) return;
     noteGroupToggle(id, details.open);
@@ -213,14 +215,15 @@ export function wireApp() {
       setModifierTool(t.id === "modToolScale" ? "scale" : "move");
       return;
     }
-    const selectId = t.closest<HTMLElement>("[data-override-select]")?.dataset.overrideSelect;
-    if (selectId) {
-      selectModifier(selectId);
-      return;
-    }
     if (t.dataset.overrideRemove) {
       const card = t.closest<HTMLElement>("[data-override-card]");
       if (card) removeOverrideCard(card);
+      return;
+    }
+    // Selecting a volume opens it. A click on the selected one is left to the summary, which closes it.
+    const selectId = t.closest<HTMLElement>("[data-override-select]")?.dataset.overrideSelect;
+    if (selectId && selectId !== state.selectedVolumeId) {
+      selectModifier(selectId);
       return;
     }
     if (t.id === "machineSave") {

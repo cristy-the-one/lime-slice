@@ -329,13 +329,6 @@ input[type="checkbox"], input[type="range"] { accent-color: var(--accent); }
   width: 10px;
   pointer-events: none;
 }
-.override-card {
-  display: grid;
-  gap: 6px;
-  padding: 8px 0;
-  border-top: 1px solid var(--line);
-}
-.override-card.is-selected { outline: 1px solid var(--teal); outline-offset: 2px; }
 
 h2, summary {
   margin: var(--space-3) 0 var(--space-2);
