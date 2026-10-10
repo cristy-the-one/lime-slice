@@ -67,6 +67,15 @@
   --chip: #1a2e22;
   --chip-bad: #3a2422;
   --progress-track: #2a2418;
+  /* One muted hue per settings group: the 3px tick in its header and nothing else. */
+  --group-strategy: var(--accent);
+  --group-objects: #2ec4b6;
+  --group-quality: #6aa7ff;
+  --group-walls: #e6a23c;
+  --group-infill: #3fb68b;
+  --group-speed: #c084fc;
+  --group-supports: #7aa2f7;
+  --group-printer: #8b93a1;
 
   --bg: var(--surface-0);
   --bar: var(--surface-1);
@@ -120,4 +129,12 @@
   --chip: #dcfce7;
   --chip-bad: #fee2e2;
   --progress-track: #e7edc8;
+  --group-strategy: var(--accent);
+  --group-objects: #0f766e;
+  --group-quality: #2563eb;
+  --group-walls: #b45309;
+  --group-infill: #15803d;
+  --group-speed: #7c3aed;
+  --group-supports: #4f46e5;
+  --group-printer: #64748b;
 }

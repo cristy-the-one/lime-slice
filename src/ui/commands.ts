@@ -63,18 +63,18 @@ export const COMMANDS: CommandSpec[] = [
   { id: "layer-down-10", label: "Ten layers down", group: "Layers", keys: ["PgDn"], when: "preview", repeat: true, show: "help" },
   { id: "layer-first", label: "First layer", group: "Layers", keys: ["Home"], when: "preview", show: "help" },
   { id: "layer-last", label: "Last layer", group: "Layers", keys: ["End"], when: "preview", show: "help" },
-  { id: "strategy-speed", label: "Strategy: Speed", group: "Strategy", keys: ["Shift+1"], target: '#right [data-card="speed"]', keywords: "blend" },
-  { id: "strategy-efficiency", label: "Strategy: Efficiency", group: "Strategy", keys: ["Shift+2"], target: '#right [data-card="efficiency"]', keywords: "blend" },
-  { id: "strategy-toughness", label: "Strategy: Toughness", group: "Strategy", keys: ["Shift+3"], target: '#right [data-card="toughness"]', keywords: "blend" },
-  { id: "strategy-layer", label: "Strategy: By layer", group: "Strategy", keys: ["Shift+4"], target: '#right [data-card="layer"]', keywords: "blend" },
-  { id: "strategy-region", label: "Strategy: By region", group: "Strategy", keys: ["Shift+5"], target: '#right [data-card="region"]', keywords: "blend split plane" },
+  { id: "strategy-speed", label: "Strategy: Speed", group: "Strategy", keys: ["Shift+1"], target: '[data-card="speed"]', keywords: "blend" },
+  { id: "strategy-efficiency", label: "Strategy: Efficiency", group: "Strategy", keys: ["Shift+2"], target: '[data-card="efficiency"]', keywords: "blend" },
+  { id: "strategy-toughness", label: "Strategy: Toughness", group: "Strategy", keys: ["Shift+3"], target: '[data-card="toughness"]', keywords: "blend" },
+  { id: "strategy-layer", label: "Strategy: By layer", group: "Strategy", keys: ["Shift+4"], target: '[data-card="layer"]', keywords: "blend" },
+  { id: "strategy-region", label: "Strategy: By region", group: "Strategy", keys: ["Shift+5"], target: '[data-card="region"]', keywords: "blend split plane" },
   { id: "plate-arrange", label: "Arrange plate", group: "Plate", keys: ["A"], when: "prepare", target: "#plateArrange", keywords: "objects pack" },
   { id: "plate-duplicate", label: "Duplicate object", group: "Plate", keys: ["Ctrl+D"], when: "prepare", target: "#plateDuplicate", keywords: "copy" },
   { id: "plate-remove", label: "Remove object", group: "Plate", keys: ["Del", "Backspace"], when: "objects", keywords: "delete" },
   { id: "tool-move", label: "Move", group: "Tools", keys: ["M"], target: '#toolRail [data-tool="move"]', keywords: "translate gizmo" },
   { id: "tool-rotate", label: "Rotate", group: "Tools", keys: ["R"], target: '#toolRail [data-tool="rotate"]', keywords: "gizmo" },
   { id: "tool-scale", label: "Scale", group: "Tools", keys: ["S"], target: '#toolRail [data-tool="scale"]', keywords: "percent field" },
-  { id: "tool-layflat", label: "Lay flat", group: "Tools", keys: ["F"], target: '#toolRail [data-tool="layflat"]', keywords: "bed face" },
+  { id: "tool-layflat", label: "Lay flat", group: "Tools", keys: ["F"], target: '#layflat, #toolRail [data-tool="layflat"]', keywords: "bed face" },
   { id: "tool-section", label: "Section", group: "Tools", keys: ["C"], target: '#toolRail [data-tool="section"]', keywords: "clip cut" },
   { id: "edit-supports", label: "Edit supports", group: "Tools", keys: ["E"], target: '#toolRail [data-tool="supports"]', keywords: "tree branch delete prune regrow" },
   { id: "paint-supports", label: "Paint supports", group: "Tools", keys: ["B"], target: '#toolRail [data-tool="paint"]', keywords: "brush enforce block" },
@@ -180,6 +180,17 @@ export function resolveKey(ev: KeyEventLike, ctx: KeyContext, commands: CommandS
 /** First chord: the one tooltips and palette rows show. */
 export function shortcutOf(command: CommandSpec): string | undefined {
   return command.keys?.[0];
+}
+
+/** The first chord of the command with this id. */
+export function keyOf(id: string, commands: CommandSpec[] = COMMANDS): string | undefined {
+  const command = commands.find((c) => c.id === id);
+  return command ? shortcutOf(command) : undefined;
+}
+
+/** A chord as a label prints it beside its text: ⇧1, Ctrl ↵, Ctrl E. Tooltips and the sheet keep the registry spelling. */
+export function chordGlyphs(chord: string): string {
+  return chord.replace("Shift+", "⇧").replace("Ctrl+", "Ctrl ").replace("Alt+", "Alt ").replace("Enter", "↵");
 }
 
 export function paletteCommands(commands: CommandSpec[] = COMMANDS): CommandSpec[] {

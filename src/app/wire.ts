@@ -1,19 +1,17 @@
 import { type ColorMode } from "../colors";
 import { layFlatMatrix, matMul, rotX, rotY, rotZ } from "../mesh-place";
 import { addPlateObject, arrangePlate, removePlateObject, selectPlateObject } from "./plate-actions";
-import { DEFAULT_PRESET, readPresets, writePresets } from "../presets";
-import { profileJson } from "../profiles";
 import { applyTheme, type ThemeChoice } from "../theme";
 import { clampOffset, flipSection } from "../section-plane";
 import { wheelNotch } from "../gizmo-math";
 import { state, type CardId } from "./state";
-import { commitSplit, draw, layerGcode, paintPlayback, paintSectionChrome, prepare, realignSplit, scrub, sectionLimit, setHelp, setStage, setView, stepGizmo, stopPlay, syncGcodeHighlight, togglePlay, view3d } from "./viewer";
+import { commitSplit, draw, layerGcode, paintPlayback, paintSectionChrome, prepare, scrub, sectionLimit, setHelp, setStage, setView, stepGizmo, stopPlay, syncGcodeHighlight, togglePlay, view3d } from "./viewer";
 import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCal, runSlice, runTempCal } from "./slice-run";
 import { adoptBytes, export3mf, exportGcode, fail, loadNamed, place, saveText, setPlaceCenter, withPrinterGcode } from "./files";
 import { mountProjectFiles, saveCurrentProject } from "./project-io";
 import { pickProjectFile } from "../platform";
-import { applyPreset, closedGroups, currentPreset, noteObjectOverride, noteSequential, onBlend, onSettings, renderChrome, syncFindStuck, touch } from "./settings";
-import { noteEdit, redoUserEdit, undoUserEdit } from "./history";
+import { noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, syncFindStuck, touch } from "./settings";
+import { noteEdit } from "./history";
 import {
   applyNamedProfile,
   askProfileName,
@@ -92,6 +90,11 @@ export function wireApp() {
       if (noteSequential(target.id, (target as HTMLInputElement).value)) touch();
       return;
     }
+    if (target.id === "at") {
+      const value = Number((target as HTMLInputElement).value);
+      if (Number.isFinite(value)) commitSplit(value);
+      return;
+    }
     if (target.id === "profilePick") {
       const id = (target as HTMLSelectElement).value;
       if (id) applyNamedProfile(id);
@@ -123,25 +126,29 @@ export function wireApp() {
     }
     if (target instanceof HTMLInputElement && target.closest("[data-override-card]")) commitOverrideInput(target);
   });
+  // A search opens groups on its own; only a toggle outside one is the user's choice to keep.
   document.querySelector("#left")!.addEventListener("toggle", (ev) => {
     const details = ev.target as HTMLDetailsElement;
-    const title = details.dataset.group;
-    if (!title) return;
-    if (details.open) closedGroups.delete(title);
-    else closedGroups.add(title);
+    const id = details.dataset.group;
+    if (!id || state.query.trim()) return;
+    noteGroupToggle(id, details.open);
   }, true);
   document.querySelector("#left")!.addEventListener("click", (ev) => {
-    const t = ev.target as HTMLElement;
+    const raw = ev.target as HTMLElement;
+    // An icon button is hit on its svg; the button is what the ids below name.
+    const t = raw.closest<HTMLElement>("button") ?? raw;
     if (t.id === "pacal") void runPaCal();
     if (t.id === "flowcal") void runFlowCal();
     if (t.id === "tempcal") void runTempCal();
     if (t.id === "retractcal") void runRetractCal();
-    if (t.id === "undoEdit") {
-      undoUserEdit();
+    const railTool = t.closest<HTMLElement>("[data-rail-tool]")?.dataset.railTool;
+    if (railTool) {
+      document.querySelector<HTMLButtonElement>(`#toolRail [data-tool="${railTool}"]`)?.click();
       return;
     }
-    if (t.id === "redoEdit") {
-      redoUserEdit();
+    const cardEl = t.closest<HTMLElement>("[data-card]");
+    if (cardEl) {
+      pickStrategy(cardEl.dataset.card as CardId);
       return;
     }
     if (t.id === "paapply") {
@@ -209,27 +216,6 @@ export function wireApp() {
     if (t.id === "settingsProfileExport") {
       exportSettingsProfile(selectedProfileId());
       return;
-    }
-    if (t.id === "presetSave") {
-      const name = (document.querySelector("#presetName") as HTMLInputElement).value.trim();
-      if (!name) return;
-      const all = readPresets();
-      all[name] = currentPreset();
-      writePresets(all);
-      renderChrome();
-    }
-    if (t.id === "presetLoad") {
-      const name = (document.querySelector("#presetPick") as HTMLSelectElement).value;
-      const preset = readPresets()[name];
-      if (preset) applyPreset({ ...DEFAULT_PRESET, ...preset });
-    }
-    if (t.id === "presetDelete") {
-      const name = (document.querySelector("#presetPick") as HTMLSelectElement).value;
-      if (!name) return;
-      const all = readPresets();
-      delete all[name];
-      writePresets(all);
-      renderChrome();
     }
     if (t.id === "plateAdd" || t.id === "plateDuplicate") {
       addPlateObject();
@@ -301,7 +287,6 @@ export function wireApp() {
       refreshPrusaJob();
       return;
     }
-    if (t.id === "profileExport") void saveText(profileJson(state.profile), `${state.profile.name.replace(/\s+/g, "_")}.json`, "json");
     if (t.id === "export3mf") void export3mf();
   });
   document.querySelector("#right")!.addEventListener("click", (ev) => {
@@ -314,24 +299,6 @@ export function wireApp() {
       void runPareto();
       return;
     }
-    const cardEl = (ev.target as HTMLElement).closest<HTMLElement>("[data-card]");
-    if (!cardEl) return;
-    const id = cardEl.dataset.card as CardId;
-    noteEdit();
-    if (id === "speed") { state.blendKind = "single"; state.strategy = "speed"; }
-    else if (id === "toughness") { state.blendKind = "single"; state.strategy = "toughness"; }
-    else if (id === "efficiency") { state.blendKind = "weight"; state.toughness = 0.5; }
-    else if (id === "layer") state.blendKind = "byLayer";
-    else {
-      state.blendKind = "byRegion";
-      realignSplit("open");
-    }
-    touch();
-  });
-  document.querySelector("#right")!.addEventListener("input", onBlend);
-  document.querySelector("#right")!.addEventListener("change", (ev) => {
-    const field = ev.target as HTMLInputElement;
-    if (field.id === "at" && Number.isFinite(Number(field.value))) commitSplit(Number(field.value));
   });
   document.querySelector("#banner")!.addEventListener("click", (ev) => {
     const action = (ev.target as HTMLElement).closest<HTMLElement>("[data-banner-action]")?.dataset.bannerAction;

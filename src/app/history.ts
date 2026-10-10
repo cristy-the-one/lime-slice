@@ -10,8 +10,6 @@ import { beltStamp, selectIn, selection, setActiveBelt, setActiveFirmware, setAd
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel";
 import {
   beginGesture,
-  canRedo,
-  canUndo,
   commitGesture,
   emptyHistory,
   redoSnap,
@@ -73,14 +71,6 @@ function machineSnap(): EditSnap["machine"] {
     nozzleMm: library.nozzleMm,
     ...(printer ? { kind: printer.kind, belt: structuredClone(printer.belt), firmware: printer.firmware } : {}),
   };
-}
-
-function paintHistoryButtons() {
-  const undo = document.querySelector<HTMLButtonElement>("#undoEdit");
-  const redo = document.querySelector<HTMLButtonElement>("#redoEdit");
-  const current = capture();
-  if (undo) undo.disabled = !canUndo(history, current);
-  if (redo) redo.disabled = !canRedo(history, current);
 }
 
 function applySnap(snap: EditSnap) {
@@ -145,7 +135,6 @@ function applySnap(snap: EditSnap) {
   }
   applying = false;
   fx.applyPlace?.(true);
-  paintHistoryButtons();
 }
 
 /** Start or continue a gesture. Call this before the state write. */
@@ -155,8 +144,7 @@ export function noteEdit() {
   window.clearTimeout(timer);
   timer = window.setTimeout(() => {
     history = commitGesture(history, capture());
-    paintHistoryButtons();
-  }, 280);
+    }, 280);
 }
 
 /** Start a gesture that stays open until `flushEdit`, however long it lasts: one brush drag. */
@@ -169,29 +157,18 @@ export function beginEdit() {
 export function flushEdit() {
   window.clearTimeout(timer);
   history = commitGesture(history, capture());
-  paintHistoryButtons();
-}
-
-export function canUndoEdit() {
-  return canUndo(history, capture());
-}
-
-export function canRedoEdit() {
-  return canRedo(history, capture());
 }
 
 export function clearEditHistory() {
   window.clearTimeout(timer);
   history = emptyHistory();
-  paintHistoryButtons();
 }
 
 export function undoUserEdit() {
   window.clearTimeout(timer);
   const step = undoSnap(history, capture());
   if (!step) {
-    paintHistoryButtons();
-    return;
+      return;
   }
   history = step.history;
   applySnap(step.restore);
@@ -201,8 +178,7 @@ export function redoUserEdit() {
   window.clearTimeout(timer);
   const step = redoSnap(history, capture());
   if (!step) {
-    paintHistoryButtons();
-    return;
+      return;
   }
   history = step.history;
   applySnap(step.restore);
