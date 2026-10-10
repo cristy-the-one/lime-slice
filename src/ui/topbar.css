@@ -51,7 +51,7 @@
 }
 .popover select { width: 100%; }
 
-.title-tabs { flex: 1 1 auto; justify-content: center; min-width: 0; }
+.title-tabs { flex: 0 1 auto; margin: 0 auto; min-width: 0; }
 .title-tabs .btn.mode { padding: 0 10px; gap: 6px; }
 .title-tabs .btn.mode[data-key]::after,
 .action-row .btn[data-key]::after {

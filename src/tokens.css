@@ -42,6 +42,9 @@
   --amber: #f5a524;
   --teal: #2ec4b6;
   --stage: #0b0d11;
+  --stage-chip: rgba(255, 255, 255, 0.07);
+  --stage-chip-line: rgba(255, 255, 255, 0.14);
+  --stage-chip-on: rgba(255, 255, 255, 0.2);
   --bed: #141820;
   --bed-minor: #222733;
   --mesh: #c6f26d;

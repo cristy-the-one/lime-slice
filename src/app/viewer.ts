@@ -206,8 +206,6 @@ export function paintPlayback() {
     play.textContent = state.playing ? "Pause" : "Play";
     play.disabled = moves.length === 0;
   }
-  const stop = document.querySelector<HTMLButtonElement>("#stop");
-  if (stop) stop.disabled = !state.playing;
   const point = moves[state.move];
   if (!readout) return;
   if (!point) {
@@ -344,12 +342,10 @@ export function stopPlay() {
   state.playing = false;
   window.clearInterval(session.playTimer);
   const play = document.querySelector<HTMLButtonElement>("#play");
-  const stop = document.querySelector<HTMLButtonElement>("#stop");
   if (play) {
     play.textContent = "Play";
     play.disabled = movesNow().length === 0;
   }
-  if (stop) stop.disabled = true;
 }
 
 export function togglePlay() {
@@ -480,7 +476,7 @@ export function syncSplitField(force = false) {
 export function paintGizmoReadout() {
   const tool = document.querySelector<HTMLElement>("#toolRail")?.dataset.tool;
   const rotate = tool === "rotate";
-  paintGizmoNudge(rotate);
+  paintGizmoNudge(rotate, tool === "move" || rotate);
   const el = document.querySelector<HTMLElement>("#gizmoReadout");
   if (!el) return;
   const hud = state.stage === "prepare" && state.placed ? state.poseHud : "";
@@ -488,10 +484,11 @@ export function paintGizmoReadout() {
   el.textContent = hud;
 }
 
-function paintGizmoNudge(rotate: boolean) {
+/** The fine nudge row belongs to the Move and Rotate tools; with neither on, the rail stays icons only. */
+function paintGizmoNudge(rotate: boolean, toolOn: boolean) {
   const nudgeEl = document.querySelector<HTMLElement>("#gizmoNudge");
   if (!nudgeEl) return;
-  const show = state.stage === "prepare" && !!state.placed;
+  const show = state.stage === "prepare" && !!state.placed && toolOn;
   nudgeEl.hidden = !show;
   const unit = rotate ? "1°" : "0.1 mm";
   for (const button of nudgeEl.querySelectorAll<HTMLButtonElement>("button")) {

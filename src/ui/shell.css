@@ -146,7 +146,7 @@ html[data-chrome="custom"] .win-controls { display: flex; }
 .empty-drop p { margin: 0 0 10px; }
 .app.dropping .empty-drop { border-color: var(--accent); color: var(--text); }
 
-#viewPresets { margin-left: 4px; }
+#viewPresets { margin-left: 0; }
 
 @media (max-width: 1200px) {
   .splitter-left { left: calc(var(--panel-left, 240px) - 4px); }

@@ -75,25 +75,25 @@ export function mountMarkup(root: HTMLElement) {
             <button class="btn mode" type="button" data-mode="split" aria-pressed="false">Split</button>
             <button class="btn mode" type="button" data-mode="solid" aria-pressed="true">3D</button>
           </div>
-          <label class="field">Color
+          <label class="view-inline">Color
             <select id="colorBy" aria-label="Color by">
               <option value="feature">Feature</option>
               <option value="weight">Blend weight</option>
               <option value="speed">Speed</option>
             </select>
           </label>
-          <label class="view-inline" title="Build plate opacity. 0 hides the plate. Does not change the slice.">
+          <label class="view-inline" data-tip="Build plate opacity. 0 hides the plate. Does not change the slice.">
             Bed
             <input id="bedOpacity" type="range" min="0" max="100" value="40" aria-label="Bed opacity" />
           </label>
-          <label class="check" id="sectionField" title="Clip the preview on the arrow side of a free plane. Cut slides the plane. Rings aim it. Does not change the slice.">
-            <input id="sectionOn" type="checkbox" /> Section
+          <label class="view-toggle" id="sectionField" data-tip="Section: clip the preview on the arrow side of a free plane. Cut slides the plane, the rings aim it. Does not change the slice.">
+            <input id="sectionOn" type="checkbox" aria-label="Section" /><span class="view-toggle-face">Section</span>
           </label>
-          <label class="view-inline" id="sectionOffsetField" hidden title="Distance from the part center along the section normal.">
+          <label class="view-inline" id="sectionOffsetField" hidden data-tip="Distance from the part center along the section normal.">
             Cut
             <input id="sectionOffset" type="range" min="-100" max="100" step="0.1" value="0" aria-label="Section offset" />
           </label>
-          <button class="btn" id="sectionFlip" type="button" hidden title="Hide the other side of the section plane">Flip</button>
+          <button class="btn" id="sectionFlip" type="button" hidden data-tip="Hide the other side of the section plane">Flip</button>
         </div>
         <div class="stage-body" id="prepareBody" role="tabpanel" aria-labelledby="tabPrepare" hidden>
           <canvas id="prepare" aria-label="Model on the build plate"></canvas>
@@ -136,7 +136,6 @@ export function mountMarkup(root: HTMLElement) {
           </div>
           <div class="playback">
             <button class="btn" id="play" type="button" disabled aria-label="Play layer">Play</button>
-            <button class="btn" id="stop" type="button" disabled aria-label="Stop playback">Stop</button>
             <input id="move" type="range" min="0" max="0" value="0" aria-label="Toolpath playback" />
             <div class="play-readout" id="playReadout"></div>
           </div>

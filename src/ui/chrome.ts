@@ -88,9 +88,12 @@ function mountToolRail(hooks: ChromeHooks) {
   supports.classList.add("is-disabled");
   supports.setAttribute("aria-disabled", "true");
 
-  const sep = document.createElement("div");
-  sep.className = "rail-sep";
-  rail.append(move, rotate, scale, lay, sep, section, supports, gizmoNudge());
+  const sep = () => {
+    const line = document.createElement("div");
+    line.className = "rail-sep";
+    return line;
+  };
+  rail.append(move, rotate, scale, lay, sep(), section, sep(), supports, gizmoNudge());
   host?.before(rail);
 
   const buttons = { move, rotate, scale, lay, section };

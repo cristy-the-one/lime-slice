@@ -375,7 +375,6 @@ export function wireApp() {
     });
   });
   document.querySelector("#play")!.addEventListener("click", () => togglePlay());
-  document.querySelector("#stop")!.addEventListener("click", () => stopPlay());
   document.querySelector("#move")!.addEventListener("input", (ev) => {
     const next = Number((ev.target as HTMLInputElement).value);
     if (next === state.move) return;
