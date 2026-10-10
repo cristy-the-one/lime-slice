@@ -527,7 +527,7 @@ function kbdHtml(command: string): string {
 function strategyRowsHtml(): string {
   const current = card();
   return `<div class="strat-list" role="group" aria-label="Strategy">${STRATEGY_ROWS.map((row) => `
-    <button class="strat" type="button" data-card="${row.id}" aria-pressed="${current === row.id}" data-tip="${escapeHtml(row.copy)}">
+    <button class="strat" type="button" data-card="${row.id}" aria-pressed="${current === row.id}" data-tip="${escapeHtml(row.tip)}">
       <i class="strat-swatch" data-swatch="${row.id}" aria-hidden="true"></i>
       <span class="strat-name">${row.name}</span>
       <small>${escapeHtml(row.copy)}</small>

@@ -132,10 +132,8 @@ export const GROUPS: GroupSpec[] = [
     tier: "simple",
     accent: "--group-walls",
     summary: (s) => {
-      const bits = [`seam: ${s.seam}`];
-      if (s.ironing) bits.push("ironing");
-      if (s.fuzzySkin) bits.push("fuzzy");
-      return bits.join(" · ");
+      const on = [s.ironing && "ironing", s.fuzzySkin && "fuzzy"].filter(Boolean);
+      return `${s.seam} seam${on.length === 1 ? ` · ${on[0]}` : on.length > 1 ? ` · +${on.length}` : ""}`;
     },
   },
   {
@@ -143,18 +141,17 @@ export const GROUPS: GroupSpec[] = [
     title: "Infill",
     tier: "advanced",
     accent: "--group-infill",
-    summary: (s) => `gyroid: ${s.gyroid3d}${s.infillCombine ? " · combined" : ""}`,
+    summary: (s) => {
+      const gyroid = s.gyroid3d === "on" ? "3D gyroid" : s.gyroid3d === "off" ? "2D sine" : "";
+      return [gyroid, s.infillCombine ? "combined" : ""].filter(Boolean).join(" · ") || "auto";
+    },
   },
   {
     id: "speed",
     title: "Speed & travel",
     tier: "simple",
     accent: "--group-speed",
-    summary: (s) => {
-      const bits = [s.featureSpeeds ? "per feature" : "one speed"];
-      if (s.zHop !== "blend") bits.push(`z-hop ${s.zHop}`);
-      return bits.join(" · ");
-    },
+    summary: (s) => `${s.featureSpeeds ? "per feature" : "one speed"}${s.zHop !== "blend" && s.zHop !== "off" ? " · z-hop" : ""}`,
   },
   {
     id: "supports",
@@ -178,12 +175,13 @@ export const PANEL_GROUPS: GroupId[] = GROUPS.map((group) => group.id);
 
 export type StrategyCard = "speed" | "efficiency" | "toughness" | "layer" | "region";
 
-export const STRATEGY_ROWS: { id: StrategyCard; name: string; copy: string; command: string }[] = [
-  { id: "speed", name: "Speed", copy: "2 walls · lightning · fast feeds", command: "strategy-speed" },
-  { id: "efficiency", name: "Efficiency", copy: "mid weight · lines then grid", command: "strategy-efficiency" },
-  { id: "toughness", name: "Toughness", copy: "5 walls · 48% 3D gyroid · scarf", command: "strategy-toughness" },
-  { id: "layer", name: "By layer", copy: "toughness at the bed, then speed", command: "strategy-layer" },
-  { id: "region", name: "By region", copy: "low side toughness, high side speed", command: "strategy-region" },
+/** `copy` fits the row at the default panel width; `tip` is the full description. */
+export const STRATEGY_ROWS: { id: StrategyCard; name: string; copy: string; tip: string; command: string }[] = [
+  { id: "speed", name: "Speed", copy: "2 walls · lightning", tip: "2 walls, lightning infill, fast feeds", command: "strategy-speed" },
+  { id: "efficiency", name: "Efficiency", copy: "lines, then grid", tip: "A mid weight blend: lines, then grid", command: "strategy-efficiency" },
+  { id: "toughness", name: "Toughness", copy: "5 walls · gyroid", tip: "5 walls, 48% 3D gyroid, scarf seam", command: "strategy-toughness" },
+  { id: "layer", name: "By layer", copy: "tough base, fast top", tip: "Toughness at the bed, then speed", command: "strategy-layer" },
+  { id: "region", name: "By region", copy: "tough side, fast side", tip: "Low side toughness, high side speed", command: "strategy-region" },
 ];
 
 export function strategyCard(s: Pick<Settings, "blendKind" | "strategy">): StrategyCard {

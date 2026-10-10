@@ -87,7 +87,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
   font-size: 11px;
   color: var(--text-faint);
@@ -170,7 +169,7 @@ input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2
 .strat-list { display: grid; gap: 3px; padding-top: 6px; }
 .strat {
   display: grid;
-  grid-template-columns: 10px 82px minmax(0, 1fr) auto;
+  grid-template-columns: 10px 72px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   height: 30px;
@@ -190,7 +189,7 @@ input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2
 .strat-swatch[data-swatch="layer"] { background: linear-gradient(var(--teal), var(--accent)); }
 .strat-swatch[data-swatch="region"] { background: linear-gradient(90deg, var(--teal) 50%, var(--accent) 50%); }
 .strat-name { font-weight: 500; }
-.strat small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-size: 11.5px; }
+.strat small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-size: 11px; }
 .strat kbd, .row-tools kbd { padding: 0 4px; font-size: 10.5px; color: var(--text-faint); background: transparent; border-color: transparent; }
 .strat kbd { justify-self: end; }
 
