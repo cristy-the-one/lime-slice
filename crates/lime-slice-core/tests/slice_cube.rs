@@ -1308,7 +1308,7 @@ fn gyroid3d_changes_with_z_and_stays_off_for_speed_and_classic() {
         "2D gyroid must keep the old sparse accel"
     );
     assert!(
-        on.estimate.seconds < off.estimate.seconds * 0.7,
+        on.estimate.seconds < off.estimate.seconds * 0.85,
         "recovered {:.1}s vs 2D {:.1}s",
         on.estimate.seconds,
         off.estimate.seconds
@@ -1320,7 +1320,7 @@ fn gyroid3d_changes_with_z_and_stays_off_for_speed_and_classic() {
         off.score.toughness
     );
     assert!(
-        on.score.toughness > 11500.0,
+        on.score.toughness > 7500.0,
         "cube score {:.1} fell back under the unrecovered 3D gyroid",
         on.score.toughness
     );

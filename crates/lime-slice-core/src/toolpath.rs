@@ -1814,7 +1814,8 @@ fn build_infill(
             let paths = if strategy.gyroid_3d {
                 gyroid_3d_graded(loops, strategy, spacing, features)
             } else {
-                gyroid(loops, spacing, strategy.toughness)
+                // Two families of waves, each about 10% longer than straight.
+                gyroid(loops, spacing * 2.2, strategy.toughness)
             };
             clip_infill(paths, loops)
         }
@@ -6420,5 +6421,52 @@ mod fuzzy_tests {
         };
         let plain = finish_paths(vec![path(PathKind::Outer, loop_pts.clone())], &miss);
         assert_eq!(plain[0].points, loop_pts);
+    }
+}
+#[cfg(test)]
+mod density_tests {
+    use super::*;
+    use crate::strategy::{pure, InfillPattern, StrategyId};
+
+    /// What the pattern covers of a square, mean over layers: extruded length
+    /// times line width over area. Stated density is what it should be.
+    fn coverage(pattern: InfillPattern, gyroid_3d: bool, density: f64) -> f64 {
+        let (lw, side, layers) = (0.45, 18.2, 150);
+        let square: Vec<Loop> = vec![vec![[0.0, 0.0], [side, 0.0], [side, side], [0.0, side]]];
+        let mut strategy = pure(StrategyId::Toughness);
+        strategy.pattern = pattern;
+        strategy.gyroid_3d = gyroid_3d;
+        strategy.infill_density = density;
+        strategy.lightning_range_mm = 0.0;
+        let length: f64 = (0..layers)
+            .map(|k| {
+                let features = PathFeatures {
+                    z: 0.1 + 0.2 * k as f64,
+                    layer_index: k,
+                    ..PathFeatures::default()
+                };
+                let paths = build_infill(&square, &strategy, lw, &features);
+                paths.iter().map(|p| polyline_len(p)).sum::<f64>()
+            })
+            .sum();
+        length / layers as f64 * lw / (side * side)
+    }
+
+    #[test]
+    fn every_pattern_covers_the_density_it_states() {
+        for (name, pattern, gyroid_3d) in [
+            ("lines", InfillPattern::Lines, false),
+            ("grid", InfillPattern::Grid, false),
+            ("gyroid", InfillPattern::Gyroid, false),
+            ("3D gyroid", InfillPattern::Gyroid, true),
+        ] {
+            for density in [0.1, 0.2, 0.4, 0.8] {
+                let share = coverage(pattern, gyroid_3d, density);
+                assert!(
+                    (share / density - 1.0).abs() < 0.08,
+                    "{name} at {density} covers {share:.3}"
+                );
+            }
+        }
     }
 }

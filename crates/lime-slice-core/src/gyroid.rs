@@ -9,13 +9,16 @@ use rayon::prelude::*;
 use crate::poly::{in_solid, loop_bounds, Loop};
 use crate::toolpath::clip_open_segment;
 
-/// Cell period for a target wall spacing. Adjacent gyroid sheets sit about
-/// half a period apart, so the period is twice the infill spacing.
+/// Cell period for a target wall spacing. A section of the surface carries
+/// about 2.45 / period of line per unit area, averaged over Z, so a period
+/// of 2.45 spacings extrudes as much as lines `spacing` apart.
 pub fn period_for_spacing(spacing: f64) -> f64 {
-    // The 2D sine draws two families of lines. One TPMS sheet needs a shorter
-    // period to land near that same extruded length.
-    (spacing * 1.15).clamp(0.6, 24.0)
+    (spacing * 2.45).clamp(0.6, 24.0)
 }
+
+/// Field samples held at once: 800 × 800, the window a section was limited to
+/// before, when a wider layer came back with no infill at all.
+const MAX_SAMPLES: usize = 640_000;
 
 pub fn section(loops: &[Loop], period: f64, z: f64, tol: f64) -> Vec<Vec<[f64; 2]>> {
     let Some((min, max)) = loop_bounds(loops) else {
@@ -35,10 +38,15 @@ pub fn section(loops: &[Loop], period: f64, z: f64, tol: f64) -> Vec<Vec<[f64; 2
 
     let nx = ((max[0] - min[0]) / step).ceil() as i32 + 1;
     let ny = ((max[1] - min[1]) / step).ceil() as i32 + 1;
-    if nx < 2 || ny < 2 || nx > 800 || ny > 800 {
+    if nx < 2 || ny < 2 {
         return Vec::new();
     }
-    let nxy = (nx * ny) as usize;
+    // Rows `r0..=r1` of the layer's grid. A wide layer is sampled one band at
+    // a time so memory stays bounded; bands share their edge row, so the
+    // segments of neighbouring bands meet exactly.
+    let band_segments = |r0: i32, r1: i32| -> Vec<[[f64; 2]; 2]> {
+    let rows = r1 - r0 + 1;
+    let nxy = (nx * rows) as usize;
     let mut samples = vec![0.0f64; nxy];
     let mut inside = vec![false; nxy];
     samples
@@ -47,19 +55,20 @@ pub fn section(loops: &[Loop], period: f64, z: f64, tol: f64) -> Vec<Vec<[f64; 2
         .enumerate()
         .for_each(|(id, (sample, inn))| {
             let ix = id as i32 % nx;
-            let iy = id as i32 / nx;
+            let iy = r0 + id as i32 / nx;
             let x = min[0] + ix as f64 * step;
             let y = min[1] + iy as f64 * step;
             *sample = field(x, y);
             *inn = in_solid(loops, x, y);
         });
 
-    let segs: Vec<[[f64; 2]; 2]> = (0..ny - 1)
+    (0..rows - 1)
         .into_par_iter()
-        .flat_map(|iy| {
+        .flat_map(|ly| {
+            let iy = r0 + ly;
             let mut row = Vec::new();
             for ix in 0..nx - 1 {
-            let id = (iy * nx + ix) as usize;
+            let id = (ly * nx + ix) as usize;
             let corners = [id, id + 1, id + nx as usize + 1, id + nx as usize];
             let mut mask = 0u8;
             let mut vals = [0.0; 4];
@@ -137,7 +146,16 @@ pub fn section(loops: &[Loop], period: f64, z: f64, tol: f64) -> Vec<Vec<[f64; 2
             }
             row
         })
-        .collect();
+        .collect()
+    };
+    let band = (MAX_SAMPLES / nx as usize).max(2) as i32;
+    let mut segs = Vec::new();
+    let mut r0 = 0;
+    while r0 < ny - 1 {
+        let r1 = (r0 + band - 1).min(ny - 1);
+        segs.extend(band_segments(r0, r1));
+        r0 = r1;
+    }
     let chained = bridge_gaps(chain(segs), loops, 0.5);
     let arc_tol = (tol.max(0.01) * 2.6).clamp(0.1, 0.16);
     chained
@@ -535,6 +553,22 @@ mod tests {
         let e = 0.15;
         (p[0] >= -e && p[0] <= size + e && p[1] >= -e && p[1] <= size + e)
             && (p[0] < e || p[1] < e || (size - p[0]) < e || (size - p[1]) < e)
+    }
+
+    /// A layer far wider than one sampling window still gets its gyroid, at the
+    /// same line length per area as a small one.
+    #[test]
+    fn a_wide_layer_is_filled_like_a_small_one() {
+        let per_area = |size: f64| {
+            let paths = section(&square(size), 2.3, 1.0, 0.05);
+            paths.iter().map(|p| polyline_len(p)).sum::<f64>() / (size * size)
+        };
+        let small = per_area(20.0);
+        let wide = per_area(200.0);
+        assert!(
+            (wide / small - 1.0).abs() < 0.05,
+            "{wide:.3} mm/mm² on a 200 mm square against {small:.3} on a 20 mm one"
+        );
     }
 
     #[test]
