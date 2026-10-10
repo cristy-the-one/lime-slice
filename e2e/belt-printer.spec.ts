@@ -39,17 +39,16 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await expect(page.locator("#prepare")).toHaveAttribute("data-belt-plane", "1");
   await expect(page.locator("#beltAngle")).toHaveValue("45");
   await expect(page.locator("#beltFields")).toBeVisible();
-  await expect(page.locator("#beltSeam")).not.toBeChecked();
+  await expect(page.locator("#beltSeam")).toHaveCount(0);
   await expect(page.locator("#beltFloor")).toHaveCount(0);
   await expect(page.locator("#beltRaft")).not.toBeChecked();
-  await expect(page.locator("#beltRaftLayers")).toBeDisabled();
+  // Sub-fields of an unticked box are not on the page, rather than disabled.
+  await expect(page.locator("#beltRaftLayers")).toHaveCount(0);
+  await expect(page.locator("#beltLength")).toHaveCount(0);
   // Before any slice, so a toggle back to a sliced recipe cannot refresh it by itself.
   await page.locator("#supports").check();
-  await expect(page.locator("#beltRaft")).toBeDisabled();
-  await expect(page.locator("label:has(#beltRaft)")).toHaveAttribute("data-tip", /Smart supports are on/);
-  await page.locator("#supports").uncheck();
   await expect(page.locator("#beltRaft")).toBeEnabled();
-  await expect(page.locator("label:has(#beltRaft)")).not.toHaveAttribute("data-tip");
+  await page.locator("#supports").uncheck();
   await expect(page.getByText("Mock only")).toHaveCount(0);
   await page.locator("#beltCopies").fill("3");
   await page.locator("#beltCopies").blur();
@@ -87,9 +86,8 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   expect(bodies[2].belt).not.toHaveProperty("floorSupports");
   await expect(page.locator("#export")).toBeEnabled();
   await page.locator("#beltRaft").check();
-  await expect(page.locator("#supports")).toBeDisabled();
-  await expect(page.locator("label:has(#supports)")).toHaveAttribute("data-tip", /raft holds the part/);
-  await expect(page.locator("#beltRaftLayers")).toBeEnabled();
+  await expect(page.locator("#supports")).not.toBeChecked();
+  await expect(page.locator("#beltRaftLayers")).toBeVisible();
   await page.locator("#beltRaftLayers").fill("2");
   await page.locator("#beltRaftLayers").blur();
   await page.locator("#slice").click();
@@ -107,19 +105,133 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await expect(page.locator("#export")).toBeEnabled();
 });
 
-test("a belt raft that is on can be unticked even with Smart supports on", async ({ page }) => {
+test("a belt raft and Smart supports replace each other, one undo step each", async ({ page }) => {
   await quiet(page);
   await page.goto("/");
   await page.locator("#machineKind").selectOption("belt");
   await page.locator("#beltRaft").check();
-  // Smart supports are a cartesian setting until the printer is a belt again.
-  await page.locator("#machineKind").selectOption("cartesian");
-  await page.locator("#supports").check();
-  await page.locator("#machineKind").selectOption("belt");
-  await expect(page.locator("#beltRaft")).toBeChecked();
-  await expect(page.locator("#beltRaft")).toBeEnabled();
-  await page.locator("#beltRaft").uncheck();
   await expect(page.locator("#supports")).toBeEnabled();
+  await page.waitForTimeout(400);
+  await page.locator("#supports").check();
+  await expect(page.locator("#beltRaft")).not.toBeChecked();
+  await expect(page.locator("#beltRaftLayers")).toHaveCount(0);
+  await page.waitForTimeout(400);
+  await page.locator("#undoEdit").click();
+  await expect(page.locator("#supports")).not.toBeChecked();
+  await expect(page.locator("#beltRaft")).toBeChecked();
+  await page.locator("#redoEdit").click();
+  await expect(page.locator("#supports")).toBeChecked();
+  await expect(page.locator("#beltRaft")).not.toBeChecked();
+  await page.waitForTimeout(400);
+  await page.locator("#beltRaft").check();
+  await expect(page.locator("#supports")).not.toBeChecked();
+  await page.waitForTimeout(400);
+  await page.locator("#undoEdit").click();
+  await expect(page.locator("#supports")).toBeChecked();
+  await expect(page.locator("#beltRaft")).not.toBeChecked();
+});
+
+test("a belt hides the settings it forces off or cannot use, and sends none of them", async ({ page }) => {
+  await quiet(page);
+  const bodies: Record<string, unknown>[] = [];
+  await page.route("**/api/slice", async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    bodies.push(body);
+    await route.fulfill({ json: body.belt ? beltCube : cube });
+  });
+  await page.goto("/");
+  // On a flat printer every one of them is on the page.
+  await expect(page.locator("#zhop")).toBeVisible();
+  await expect(page.locator("#scarf")).toBeVisible();
+  await expect(page.locator("#adaptive")).toBeVisible();
+  await expect(page.locator("#paretoBtn")).toBeVisible();
+  await expect(page.locator("#seam option[value=blend]")).toHaveText("Blend (strategy)");
+  await page.locator("#adaptive").check();
+  await page.locator("#zhop").selectOption("smart");
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
+  await expect(page.locator("#slice")).toBeEnabled();
+  await page.locator("#plateAdd").click();
+  await expect(page.locator("#printOrder")).toBeVisible();
+  await page.locator("#printOrder").selectOption("sequential");
+
+  await page.locator("#machineKind").selectOption("belt");
+  await expect(page.locator("#zhop")).toHaveCount(0);
+  await expect(page.locator("#zhopht")).toHaveCount(0);
+  await expect(page.locator("#scarf")).toHaveCount(0);
+  await expect(page.locator("#scarflen")).toHaveCount(0);
+  await expect(page.locator("#paretoBtn")).toHaveCount(0);
+  await expect(page.locator("#printOrder")).toHaveCount(0);
+  await expect(page.locator("#seam option[value=blend]")).toHaveText("Belt edge");
+
+  await page.locator("#slice").click();
+  await expect.poll(() => bodies.length).toBe(1);
+  for (const key of ["zHop", "zHopHeight", "zHopMinTravel", "scarfSeam", "scarfLength", "scarfSteps", "scarfStartHeight", "scarfStartFlow", "printOrder", "sequentialClearanceMm", "seam"]) {
+    expect(bodies[0], key).not.toHaveProperty(key);
+  }
+  expect(bodies[0].adaptive).toBe(true);
+
+  // A raft needs a fixed layer height: Adaptive goes, and is not sent.
+  await page.locator("#beltRaft").check();
+  await expect(page.locator("#adaptive")).toHaveCount(0);
+  await expect(page.locator("#amin")).toHaveCount(0);
+  await page.locator("#slice").click();
+  await expect.poll(() => bodies.length).toBe(2);
+  for (const key of ["adaptive", "adaptiveMin", "adaptiveMax"]) expect(bodies[1], key).not.toHaveProperty(key);
+  await page.locator("#beltRaft").uncheck();
+  await expect(page.locator("#adaptive")).toBeChecked();
+
+  // Back on a flat printer, the settings return with what they held.
+  await page.locator("#machineKind").selectOption("cartesian");
+  await expect(page.locator("#zhop")).toHaveValue("smart");
+  await expect(page.locator("#paretoBtn")).toBeVisible();
+  await expect(page.locator("#printOrder")).toHaveValue("sequential");
+});
+
+test("Max length shows only for a capped belt", async ({ page }) => {
+  await quiet(page);
+  await page.goto("/");
+  await page.locator("#machineKind").selectOption("belt");
+  await expect(page.locator("#beltUnlimited")).toBeChecked();
+  await expect(page.locator("#beltLength")).toHaveCount(0);
+  await page.locator("#beltUnlimited").uncheck();
+  await expect(page.locator("#beltLength")).toBeVisible();
+  await expect(page.locator("#beltLength")).toHaveValue("200");
+  await page.locator("#beltUnlimited").check();
+  await expect(page.locator("#beltLength")).toHaveCount(0);
+});
+
+test("a belt too short for the part offers the length that fits", async ({ page }) => {
+  await quiet(page);
+  const bodies: Record<string, unknown>[] = [];
+  await page.route("**/api/slice", async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    bodies.push(body);
+    const cap = (body.belt as { maxLengthMm?: number } | undefined)?.maxLengthMm;
+    if (cap !== undefined && cap < 57) {
+      return route.fulfill({ status: 400, json: { error: `belt.maxLengthMm ${cap} is shorter than the belt run of 56.57 mm` } });
+    }
+    await route.fulfill({ json: beltCube });
+  });
+  await page.goto("/");
+  await page.locator("#machineKind").selectOption("belt");
+  await page.locator("#beltUnlimited").uncheck();
+  await page.locator("#beltLength").fill("30");
+  await page.locator("#beltLength").blur();
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
+  await expect(page.locator("#slice")).toBeEnabled();
+  await page.locator("#slice").click();
+  const toast = page.locator("#toasts").getByRole("alert").filter({ hasText: "shorter than the belt run" });
+  await expect(toast).toBeVisible();
+  await expect(toast.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await expect(toast.getByRole("button", { name: "Unlimited" })).toBeVisible();
+  await page.waitForTimeout(400);
+  await toast.getByRole("button", { name: "Set max length to 57 mm" }).click();
+  await expect.poll(() => bodies.length).toBe(2);
+  expect((bodies[1].belt as Record<string, unknown>).maxLengthMm).toBe(57);
+  await expect(page.locator("#beltLength")).toHaveValue("57");
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
+  await page.locator("#undoEdit").click();
+  await expect(page.locator("#beltLength")).toHaveValue("30");
 });
 
 test("the generic belt printer is one pick in the printer list", async ({ page }) => {

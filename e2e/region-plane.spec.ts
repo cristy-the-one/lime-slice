@@ -76,13 +76,10 @@ test("bridge By region starts inside the mesh and the plane and gizmo move it", 
   await expect.poll(async () => Number(await page.locator("#at").inputValue())).toBeCloseTo(midX, 1);
 
   await page.locator("#at").fill("0");
-  await page.locator("#at").dispatchEvent("input");
-  await expect(page.locator("#banner")).toContainText("outside the mesh");
-  const warning = await page.locator("#banner").innerText();
-  const range = warning.match(/\(([\d.]+)[–-]([\d.]+)\)/);
-  expect(range).toBeTruthy();
-  const warnedMid = (Number(range![1]) + Number(range![2])) / 2;
-  expect(Math.abs(warnedMid - midX)).toBeLessThan(0.2);
+  // A plane typed past the mesh lands on its near face; nothing is refused.
+  await page.locator("#at").dispatchEvent("change");
+  await expect.poll(async () => Number(await page.locator("#at").inputValue())).toBeCloseTo(placedBounds.min[0], 1);
+  await expect(page.locator("#banner")).not.toContainText("outside the mesh");
 
   await page.locator("#axis").selectOption("y");
   await page.locator("#axis").selectOption("x");
@@ -157,8 +154,9 @@ test("two objects share one By region plane across the plate", async ({ page }) 
   await expect(page.locator("#banner")).not.toContainText("outside the mesh");
 
   await page.locator("#at").fill("0");
-  await page.locator("#at").dispatchEvent("input");
-  await expect(page.locator("#banner")).toContainText(/outside the mesh \(95\.0.165\.0\)/);
+  await page.locator("#at").dispatchEvent("change");
+  await expect(page.locator("#at")).toHaveValue("95.0");
+  await expect(page.locator("#banner")).not.toContainText("outside the mesh");
 });
 
 function fakeSlice() {

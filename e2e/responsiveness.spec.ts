@@ -34,7 +34,7 @@ test("a setting changed during a slice leaves the finished result stale", async 
   await expect(page.locator("#estimate")).toContainText("g", { timeout: 10_000 });
   await expect(page.locator("#slice")).toHaveText("Re-slice");
   await expect(page.locator("#slice")).toHaveAttribute("data-slice-action", "changed");
-  await expect(page.locator("#export")).toBeDisabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "first");
 });
 
 test("the parked G-code body is fetched once, when the G-code tab first needs it", async ({ page }) => {
@@ -385,7 +385,7 @@ test("the slice button names a cache hit, a real recompute, and a forced recompu
   await expect(slice).toHaveAttribute("data-slice-action", "changed");
   await expect(slice).toHaveAttribute("data-tip", "Settings changed. Plan this slice again.");
   await expect(page.locator("#stage")).toHaveClass(/stale/);
-  await expect(page.locator("#export")).toHaveAttribute("data-tip", "Settings changed. Slice again to export.");
+  await expect(page.locator("#export")).toHaveAttribute("data-tip", "Slice, then save G-code");
   await expect(page.locator("#banner")).toBeEmpty();
   await expect(force).toBeHidden();
   const resliceBox = (await slice.boundingBox())!;

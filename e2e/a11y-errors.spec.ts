@@ -39,22 +39,46 @@ test("an unreachable engine toasts Retry and a second probe connects", async ({ 
   await expect(page.locator("#toasts").getByRole("alert").filter({ hasText: "Slicer engine not running" })).toHaveCount(0);
 });
 
-test("a failed slice toasts Retry and the next attempt can export", async ({ page }) => {
+test("an unreadable slice reply toasts Retry and the next attempt can export", async ({ page }) => {
   let slices = 0;
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/jobs", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   await page.route("**/api/slice", (route) => {
     slices += 1;
-    if (slices === 1) return route.fulfill({ status: 500, json: { error: "planner broke" } });
+    if (slices === 1) return route.fulfill({ status: 502, body: "upstream" });
+    return route.fulfill({ json: cube });
+  });
+  await openCube(page);
+  await page.locator("#slice").click();
+  const toast = page.locator("#toasts").getByRole("alert").filter({ hasText: "not valid JSON" });
+  await expect(toast).toBeVisible();
+  await toast.getByRole("button", { name: "Retry" }).click();
+  await expect(page.locator("#estimate")).toContainText("g");
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
+  expect(slices).toBe(2);
+});
+
+test("an error the engine gives for the request offers no Retry, and Export slices again once it is fixed", async ({ page }) => {
+  let slices = 0;
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "showSaveFilePicker", { configurable: true, value: undefined });
+  });
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/jobs", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
+  await page.route("**/api/slice", (route) => {
+    slices += 1;
+    if (slices === 1) return route.fulfill({ status: 400, json: { error: "planner broke" } });
     return route.fulfill({ json: cube });
   });
   await openCube(page);
   await page.locator("#slice").click();
   const toast = page.locator("#toasts").getByRole("alert").filter({ hasText: "planner broke" });
   await expect(toast).toBeVisible();
-  await expect(page.locator("#export")).toBeDisabled();
-  await toast.getByRole("button", { name: "Retry" }).click();
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(toast.getByRole("button")).toHaveCount(1);
+  await expect(toast.getByRole("button", { name: "Dismiss" })).toHaveCount(1);
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "first");
+  const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#export").click()]);
+  expect(download.suggestedFilename()).toMatch(/\.gcode$/);
   expect(slices).toBe(2);
 });
 

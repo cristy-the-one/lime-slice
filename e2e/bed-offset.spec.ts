@@ -37,7 +37,7 @@ test("an X/Y move slides the preview, re-emits by itself, and the reply offset r
   await expect.poll(() => placeText(page)).toContain("X 122.0");
   await expect(page.locator("#view3d")).toHaveAttribute("data-bed-offset", "12.000,0.000");
   await expect.poll(() => calls.length).toBe(2);
-  await expect(page.locator("#export")).toBeDisabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "first");
   await expect(page.locator("#stage")).not.toHaveClass(/stale/);
   await expect(page.locator("#stage")).not.toHaveClass(/stale/);
 
@@ -55,7 +55,7 @@ test("an X/Y move slides the preview, re-emits by itself, and the reply offset r
   await page.locator("#tabPrepare").click();
   await page.locator("#rotZ").click();
   await expect(page.locator("#view3d")).toHaveAttribute("data-bed-offset", "40.000,-5.000");
-  await expect(page.locator("#export")).toBeDisabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "first");
   expect(calls).toHaveLength(2);
 });
 
@@ -114,11 +114,11 @@ test("rotation and scale still wait for Slice when auto-slice is off", async ({ 
   await expect(page.locator("#export")).toBeEnabled();
 
   await page.locator("#rotZ").click();
-  await expect(page.locator("#export")).toHaveAttribute("data-tip", "Settings changed. Slice again to export.");
+  await expect(page.locator("#export")).toHaveAttribute("data-tip", "Slice, then save G-code");
   await expect(page.locator("#stage")).toHaveClass(/stale/);
   await page.waitForTimeout(600);
   expect(calls).toBe(1);
-  await expect(page.locator("#export")).toBeDisabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "first");
 
   await page.locator("#slice").click();
   await expect(page.locator("#export")).toBeEnabled();
@@ -126,7 +126,7 @@ test("rotation and scale still wait for Slice when auto-slice is off", async ({ 
   await expect(page.locator("#export")).toHaveAttribute("data-tip", "Settings changed. Slice again to export.");
   await page.waitForTimeout(600);
   expect(calls).toBe(2);
-  await expect(page.locator("#export")).toBeDisabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "first");
 });
 
 test("Move drags the part in X/Y and Shift snaps to 1 mm", async ({ page }) => {

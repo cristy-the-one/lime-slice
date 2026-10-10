@@ -95,7 +95,7 @@ test("settings switched back to a sliced recipe show it without a click", async 
   await sliced(page);
   await page.locator("#lh").fill("0.28");
   await expect(page.locator("#stage")).toHaveClass(/stale/);
-  await expect(page.locator("#export")).toHaveAttribute("data-tip", "Settings changed. Slice again to export.");
+  await expect(page.locator("#export")).toHaveAttribute("data-tip", "Slice, then save G-code");
   await page.locator("#slice").click();
   await sliced(page);
   await expect(page.locator("#export")).toBeEnabled();

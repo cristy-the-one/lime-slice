@@ -180,7 +180,7 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.locator("#lh").fill("0.28");
   await page.locator("#lh").dispatchEvent("change");
   await expect(page.getByRole("button", { name: "Re-slice", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Export G-code" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Export G-code" })).toHaveAttribute("data-slice", "first");
   await shot(page, "v3-10-stale.png");
 
   page.once("dialog", (dialog) => void dialog.accept());
