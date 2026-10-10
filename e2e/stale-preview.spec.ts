@@ -164,3 +164,18 @@ test("auto-slice is on for a new user, and the switch is remembered after a rest
   await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await expect(page.locator("#autoslice")).toBeChecked();
 });
+
+test("undo never flips the auto-slice switch: it is a preference, not a print setting", async ({ page }) => {
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.goto("/");
+  await setAutoSlice(page, false);
+  await page.locator("#lh").fill("0.28");
+  await page.locator("#lh").dispatchEvent("change");
+  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await page.keyboard.press("Control+z");
+  await page.keyboard.press("Control+z");
+  await page.keyboard.press("Control+z");
+  await expect(page.locator("#lh")).toHaveValue("0.2");
+  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
+  await expect(page.locator("#autoslice")).not.toBeChecked();
+});
