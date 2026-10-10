@@ -131,3 +131,18 @@ test("a change made during a slice starts the next slice as soon as the first la
   await expect(chip(page)).toBeHidden({ timeout: 5000 });
   await expect(page.locator("#stage")).not.toHaveClass(/stale/);
 });
+
+test("auto-slice is on for a new user, and the switch is remembered after a restart", async ({ page }) => {
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.goto("/");
+  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
+  await expect(page.locator("#autoslice")).toBeChecked();
+  await page.locator("#autoslice").uncheck();
+  await page.reload();
+  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
+  await expect(page.locator("#autoslice")).not.toBeChecked();
+  await page.locator("#autoslice").check();
+  await page.reload();
+  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
+  await expect(page.locator("#autoslice")).toBeChecked();
+});

@@ -327,11 +327,12 @@ test("a collapsed settings group stays collapsed when the panel re-renders", asy
 test("auto-slice runs after a structural toggle", async ({ page }) => {
   const slices = await mockEngine(page, () => 0);
   await openCube(page);
-  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
-  await page.locator("#autoslice").check();
   await page.locator("#slice").click();
   await expect.poll(() => slices.length).toBe(1);
-  await expect(page.locator("#slice")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
+  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
+  await page.locator("#autoslice").check();
+  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
   await page.locator("#adaptive").check();
   await expect.poll(() => slices.length, { timeout: 3000 }).toBe(2);
   expect((slices[1] as { adaptive: boolean }).adaptive).toBe(true);

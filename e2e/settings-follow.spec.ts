@@ -150,6 +150,7 @@ test("the Edit supports tool turns on tree supports, slices, and opens when the 
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
+  await autoSliceOff(page);
   await page.locator("#machineKind").selectOption("belt");
   await loadCube(page, "overhang_ledge.stl");
   await expect(page.locator("#supports")).not.toBeChecked();

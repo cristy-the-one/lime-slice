@@ -14,6 +14,7 @@ import type { ControlId } from "../settings-rules.ts";
 import { seamOptions } from "../seam.ts";
 import { ironingFlowPercent, ironingSpacingMax, readIroningFlowPercent, readIroningSpacing, readIroningSpeed } from "../ironing.ts";
 import { readFuzzyPointDistance, readFuzzyThickness } from "../fuzzy-skin.ts";
+import { saveAutoSlice } from "../auto-slice-pref.ts";
 
 export type Settings = typeof state;
 export type Tier = SettingsLevel;
@@ -405,7 +406,13 @@ export const CONTROLS: ControlSpec[] = [
   { id: "retractstep", label: "Tower step mm", group: "calibrate", tier: "expert", kind: num(0.05, 1, 0.05), get: (s) => s.retractStep, set: (s, v) => { s.retractStep = v as number; } },
 
   // Gear panel
-  bound("autoSlice", { id: "autoslice", label: "Auto-slice when a slice takes under 20 s", group: "gear", tier: "simple", kind: check, keywords: "automatic" }),
+  {
+    ...bound("autoSlice", { id: "autoslice", label: "Auto-slice when a slice takes under 20 s", group: "gear", tier: "simple", kind: check, keywords: "automatic" }),
+    set: (s, v) => {
+      s.autoSlice = v as boolean;
+      saveAutoSlice(s.autoSlice);
+    },
+  },
 ];
 
 /**
