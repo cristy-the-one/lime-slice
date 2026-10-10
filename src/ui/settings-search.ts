@@ -1,33 +1,3 @@
-/** Extra words for the settings filter. The visible label is matched on its own. */
-export const SETTING_KEYWORDS: Record<string, string> = {
-  lh: "quality resolution thickness",
-  adaptive: "variable layer height",
-  amin: "variable layer",
-  amax: "variable layer",
-  seam: "rear aligned nearest start belt edge",
-  ironing: "top skin flow speed spacing",
-  ironflow: "ironing percent",
-  ironspeed: "ironing",
-  ironspace: "ironing line gap",
-  fuzzy: "outer wall noise texture",
-  fuzzythick: "fuzzy skin",
-  fuzzydist: "fuzzy skin spacing",
-  scarf: "seam joint",
-  scarflen: "seam",
-  scarfsteps: "seam",
-  supports: "overhang brace",
-  sstyle: "tree grid organic",
-  sangle: "overhang",
-  gyroid3d: "infill lattice",
-  partScale: "placement size percent",
-  nozzle: "printer line width",
-  bedx: "printer volume",
-  bedy: "printer volume",
-  bedz: "printer volume",
-  feeds: "speed feature",
-  zhop: "travel lift",
-};
-
 /**
  * Every word in `query` must sit in the label or the keywords.
  * An empty query matches everything.

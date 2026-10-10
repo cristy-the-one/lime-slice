@@ -50,7 +50,7 @@ export interface LimeProject {
   mesh: ProjectMesh;
   placement: ProjectPlacement;
   settings: PresetSettings;
-  /** Saved-preset name these settings matched, or null when they match none. */
+  /** Written as null since presets became profiles. Kept so older files still read. */
   preset: string | null;
   profile: PrinterProfile;
   level: SettingsLevel;

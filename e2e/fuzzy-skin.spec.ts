@@ -52,14 +52,14 @@ test("fuzzy skin is omitted until it is on, then sent, and undone", async ({ pag
   expect(bodies[1]).toHaveProperty("fuzzySkin", { thickness: 0.5, pointDistance: 1.2 });
   await expect(page.locator("#toasts").getByRole("status").filter({ hasText: /fuzzy/i })).toHaveCount(0);
 
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(page.locator("#fuzzydist")).toHaveValue("0.8");
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(page.locator("#fuzzythick")).toHaveValue("0.3");
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(3);
   expect(bodies[2]).toHaveProperty("fuzzySkin", {});
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(page.locator("#fuzzy")).not.toBeChecked();
 });
 

@@ -45,7 +45,7 @@ test("custom retraction is omitted until it is set", async ({ page }) => {
   });
   await page.goto("/");
   await expect(page.getByText("Mock only")).toHaveCount(0);
-  await page.locator("[data-level-choice=expert]").click();
+  await page.locator("#levelPick").selectOption("expert");
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
   await expect(page.locator("#slice")).toBeEnabled();
   await page.locator("#slice").click();
@@ -62,14 +62,17 @@ test("custom retraction is omitted until it is set", async ({ page }) => {
   expect(bodies[1].retractLength).toBe(1.2);
   expect(bodies[1]).not.toHaveProperty("retractSpeed");
 
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#calibrateOpen").click();
   await page.locator("#retractcal").click();
   await expect.poll(() => cals.length).toBe(1);
   expect(cals[0]).toMatchObject({ start: 0.2, end: 1.2, step: 0.2, speedMmS: 30 });
-  await expect(page.locator("#left")).toContainText("band 1: 0.800 mm");
+  await expect(page.locator("#calibrate")).toContainText("band 1: 0.800 mm");
   await page.locator("#retractchosen").fill("0.8");
   await page.locator("#retractchosen").blur();
   await page.waitForTimeout(400);
   await page.locator("#retractapply").click();
+  await page.locator("#calibrateClose").click();
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(3);
   expect(bodies[2].retractLength).toBe(0.8);

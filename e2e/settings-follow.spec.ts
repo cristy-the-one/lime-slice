@@ -6,6 +6,7 @@ const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.js
 const beltLedge = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/ledge-belt-skeleton.json"), "utf8"));
 
 async function quiet(page: Page) {
+  await page.addInitScript(() => localStorage.setItem("lime-slice-closed-groups", "[]"));
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   await page.addInitScript(() => {
@@ -100,7 +101,7 @@ test("Turn on supports in the in-air banner ticks Smart supports and slices, in 
   expect(bodies[1].supports).toBe(true);
   await expect(page.locator("#supports")).toBeChecked();
   await expect(page.locator("#banner")).not.toContainText("would print in the air");
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(page.locator("#supports")).not.toBeChecked();
 });
 
@@ -131,7 +132,7 @@ test("an Enforce disk turns Smart supports on; a Block disk does not", async ({ 
   await expect(canvas).toHaveAttribute("data-paint-disks", "2");
   await expect(page.locator("#supports")).toBeChecked();
   await page.waitForTimeout(400);
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(canvas).toHaveAttribute("data-paint-disks", "1");
   await expect(page.locator("#supports")).not.toBeChecked();
 });
@@ -234,10 +235,4 @@ test("a height range typed backwards is swapped, and a preset needs a name to sa
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(1);
   expect((bodies[0].heightRanges as { z: number[] }[])[0]!.z).toEqual([4, 12]);
-
-  await expect(page.locator("#presetSave")).toBeDisabled();
-  await page.locator("#presetName").fill("bench");
-  await expect(page.locator("#presetSave")).toBeEnabled();
-  await page.locator("#presetName").fill("");
-  await expect(page.locator("#presetSave")).toBeDisabled();
 });

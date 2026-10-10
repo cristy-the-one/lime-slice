@@ -113,7 +113,7 @@ eq("Ctrl+Shift+Enter forces a re-slice", [press("Ctrl+Shift+Enter"), press("Ctrl
 eq("Ctrl+B and Ctrl+Alt+B fold the panels", [press("Ctrl+B"), press("Ctrl+Alt+B")], ["panel-left", "panel-right"]);
 eq("Ctrl+K opens the palette, even from a field", [press("Ctrl+K"), press("Ctrl+K", { typing: true })], ["palette", "palette"]);
 eq("undo and redo work in a field", [press("Ctrl+Z", { typing: true }), press("Ctrl+Shift+Z", { typing: true })], ["undo", "redo"]);
-eq("Ctrl+O and Ctrl+S work in a field", [press("Ctrl+O", { typing: true }), press("Ctrl+S", { typing: true })], ["open-project", "save-project"]);
+eq("Ctrl+O and Ctrl+S work in a field", [press("Ctrl+O", { typing: true }), press("Ctrl+S", { typing: true })], ["open", "save-project"]);
 eq("/ and Ctrl+F search, but not from a field", [press("/"), press("Ctrl+F"), press("/", { typing: true }), press("Ctrl+F", { typing: true })], ["search", "search", null, null]);
 eq("Ctrl+F stays the browser's in the G-code pane", press("Ctrl+F", { stage: "gcode", inGcode: true }), null);
 eq("a letter does nothing in a field", ["M", "R", "S", "F", "C", "E", "B", "K", "T", "Y", "I", "A", "V", "1"].map((chord) => press(chord, { typing: true })), Array(14).fill(null));
@@ -137,7 +137,7 @@ const keyed = COMMANDS.filter((command) => command.keys && command.show !== "non
 const listed = helpGroups().flatMap((group) => group.entries);
 eq("the sheet lists every keyed command once", listed.map((entry) => entry.label), keyed.map((command) => command.label));
 eq("the sheet shows all of a command's chords", listed.find((entry) => entry.label === "Remove object")?.keys, ["Del", "Backspace"]);
-eq("the sheet spells the keys the old prose left out", ["Search settings", "Smaller brush", "Paint seam", "Layer up", "Toggle blend panel"].map((label) => listed.find((entry) => entry.label === label)?.keys), [["/", "Ctrl+F"], ["["], ["K"], ["↑", "]"], ["Ctrl+Alt+B"]]);
+eq("the sheet spells the keys the old prose left out", ["Search settings", "Smaller brush", "Paint seam", "Layer up", "Toggle results panel"].map((label) => listed.find((entry) => entry.label === label)?.keys), [["/", "Ctrl+F"], ["["], ["K"], ["↑", "]"], ["Ctrl+Alt+B"]]);
 eq("groups appear once each", helpGroups().map((group) => group.group), [...new Set(helpGroups().map((group) => group.group))]);
 check("the palette hides sheet-only commands", paletteCommands().every((command) => command.show !== "help" && command.show !== "none"));
 check("the palette lists the shortcut of a keyed command", shortcutOf(COMMANDS.find((command) => command.id === "slice")!) === "Ctrl+Enter");

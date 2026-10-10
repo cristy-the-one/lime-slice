@@ -121,7 +121,8 @@ test("legend toggles and the estimate table keep thin wall and gap fill apart", 
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   await page.route("**/api/slice", (route) => route.fulfill({ json: slice }));
   await page.goto("/");
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.getByRole("tab", { name: "Preview", exact: true }).click();
@@ -132,7 +133,7 @@ test("legend toggles and the estimate table keep thin wall and gap fill apart", 
   const estimate = await page.locator("#estimate table.est tr").evaluateAll((trs) =>
     trs.map((tr) => {
       const cells = [...tr.querySelectorAll("td")].map((td) => (td.textContent ?? "").trim());
-      return `${cells[0]} ${cells[1]}`;
+      return `${cells[0]} ${cells[2]}`;
     }),
   );
   expect(estimate).toEqual(["Outer wall 10 s", "Inner wall 35 s", "Infill 15 s", "Other 3 s"]);

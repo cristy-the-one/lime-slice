@@ -10,6 +10,7 @@ const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.js
 const beltCube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-belt.json"), "utf8"));
 
 async function quiet(page: Page) {
+  await page.addInitScript(() => localStorage.setItem("lime-slice-closed-groups", "[]"));
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
 }
@@ -116,17 +117,17 @@ test("a belt raft and Smart supports replace each other, one undo step each", as
   await expect(page.locator("#beltRaft")).not.toBeChecked();
   await expect(page.locator("#beltRaftLayers")).toHaveCount(0);
   await page.waitForTimeout(400);
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(page.locator("#supports")).not.toBeChecked();
   await expect(page.locator("#beltRaft")).toBeChecked();
-  await page.locator("#redoEdit").click();
+  await page.keyboard.press("Control+Shift+Z");
   await expect(page.locator("#supports")).toBeChecked();
   await expect(page.locator("#beltRaft")).not.toBeChecked();
   await page.waitForTimeout(400);
   await page.locator("#beltRaft").check();
   await expect(page.locator("#supports")).not.toBeChecked();
   await page.waitForTimeout(400);
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(page.locator("#supports")).toBeChecked();
   await expect(page.locator("#beltRaft")).not.toBeChecked();
 });
@@ -230,7 +231,7 @@ test("a belt too short for the part offers the length that fits", async ({ page 
   expect((bodies[1].belt as Record<string, unknown>).maxLengthMm).toBe(57);
   await expect(page.locator("#beltLength")).toHaveValue("57");
   await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(page.locator("#beltLength")).toHaveValue("30");
 });
 
@@ -244,7 +245,9 @@ test("the generic belt printer is one pick in the printer list", async ({ page }
   });
   await page.goto("/");
   await expect(page.locator("#beltFields")).toBeHidden();
+  await page.locator("#printerChip").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await page.locator("#machinePrinter").selectOption({ label: "Generic belt 45°" });
+  await page.locator("#printerChip").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
   await expect(page.locator("#machineKind")).toHaveValue("belt");
   await expect(page.locator("#beltFields")).toBeVisible();
   await expect(page.locator("#beltAngle")).toHaveValue("45");
@@ -256,7 +259,11 @@ test("the generic belt printer is one pick in the printer list", async ({ page }
   await expect.poll(() => bodies.length).toBe(1);
   expect((bodies[0].belt as Record<string, unknown>).angleDeg).toBe(45);
 
+  await page.locator("#printerChip").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
+
   await page.locator("#machinePrinter").selectOption("lime-220");
+
+  await page.locator("#printerChip").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
   await expect(page.locator("#beltFields")).toBeHidden();
   await expect(page.locator("#prepare")).toHaveAttribute("data-belt", "0");
 });
@@ -269,10 +276,9 @@ test("a belt edit is one undo step", async ({ page }) => {
   await page.locator("#beltAngle").fill("35");
   await page.locator("#beltAngle").blur();
   await page.waitForTimeout(400);
-  await expect(page.locator("#undoEdit")).toBeEnabled();
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(page.locator("#beltAngle")).toHaveValue("45");
-  await page.locator("#redoEdit").click();
+  await page.keyboard.press("Control+Shift+Z");
   await expect(page.locator("#beltAngle")).toHaveValue("35");
 });
 

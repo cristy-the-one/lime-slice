@@ -45,10 +45,11 @@ test("block paint on the ledge drops its supports, and undo brings them back", a
   const replies = await proxy(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
-  await page.locator("#samples summary").click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.locator('[data-sample="overhang_ledge.stl"]').click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 30_000 });
-  await page.locator('[data-level-choice="advanced"]').first().click();
+  await page.locator("#levelPick").selectOption("advanced");
   await page.locator("#supports").check();
   await page.locator("#sstyle").selectOption("tree");
   await page.locator("#slice").click();

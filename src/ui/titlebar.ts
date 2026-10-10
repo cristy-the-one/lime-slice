@@ -1,5 +1,6 @@
 import { createElement, Minus, Settings, Square, X, type IconNode } from "lucide";
 import { isDesktopShell, isTauri } from "../platform";
+import "./topbar.css";
 
 const CHROME_KEY = "lime-slice-chrome";
 
@@ -21,12 +22,7 @@ export function mountTitlebar() {
   top.setAttribute("data-tauri-drag-region", "");
   document.documentElement.dataset.chrome = "native";
 
-  const tabs = document.querySelector<HTMLElement>('#stage [role="tablist"]');
   const action = top.querySelector(".action-row");
-  if (tabs && action) {
-    tabs.classList.add("title-tabs");
-    action.before(tabs);
-  }
 
   const gear = document.createElement("details");
   gear.id = "gear";
@@ -38,8 +34,9 @@ export function mountTitlebar() {
   summary.append(svgIcon(Settings));
   const panel = document.createElement("div");
   panel.className = "gear-panel";
-  const theme = document.querySelector(".theme-field");
-  if (theme) panel.append(theme);
+  const items = document.querySelector(".gear-items");
+  if (items) panel.append(...items.children);
+  items?.remove();
   const native = document.createElement("label");
   native.className = "check tauri-only";
   native.innerHTML = `<input id="nativeFrame" type="checkbox" /> System title bar`;

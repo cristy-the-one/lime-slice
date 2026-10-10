@@ -11,7 +11,6 @@ import {
 } from "../plate.ts";
 import { base64ToBytes, meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement } from "../project.ts";
 import { saveProfile } from "../profiles.ts";
-import { DEFAULT_PRESET, readPresets, type PresetSettings } from "../presets.ts";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel.ts";
 import { pushToast } from "../ui/toasts.ts";
 import { adoptBytes, place, previewRemote } from "./files.ts";
@@ -36,7 +35,7 @@ export async function saveCurrentProject() {
       stepTolerance: state.stepTolerance,
     },
     settings: currentPreset(),
-    preset: matchingPreset(currentPreset()),
+    preset: null,
     profile: { ...state.profile },
     level: loadSettingsLevel(),
     supportEdits: state.supportEdits.map((entry) => structuredClone(entry)),
@@ -127,8 +126,6 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
     place("load");
     session.supportUi?.refresh();
     renderChrome();
-    const pick = document.querySelector<HTMLSelectElement>("#presetPick");
-    if (pick && project.preset) pick.value = project.preset;
     markProjectClean();
     return true;
   } finally {
@@ -177,11 +174,4 @@ async function loadPlateObjects(objects: PlateFileObject[]) {
 
 function hashOf(bytes: ArrayBuffer): string {
   return meshRecord("part", new Uint8Array(bytes)).hash;
-}
-
-function matchingPreset(current: PresetSettings): string | null {
-  for (const [name, preset] of Object.entries(readPresets())) {
-    if (JSON.stringify({ ...DEFAULT_PRESET, ...preset }) === JSON.stringify(current)) return name;
-  }
-  return null;
 }

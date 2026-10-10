@@ -12,10 +12,10 @@ import {
 } from "../app/profile-actions";
 import { removePlateObject } from "../app/plate-actions";
 import { saveCurrentProject } from "../app/project-io";
-import { clearSettingsSearch, commitTypedFields, focusSettingsSearch } from "../app/settings";
+import { clearSettingsSearch, commitTypedFields, focusSettingsSearch, revealPrinterDetails } from "../app/settings";
 import { state } from "../app/state";
 import { scrub, setView } from "../app/viewer";
-import { pickProjectFile } from "../platform";
+import { pickModelFile } from "../platform";
 import { chordMatches, COMMANDS, helpGroups, MOUSE_HINTS, paletteCommands, rankCommands, shortcutOf, type CommandSpec } from "./commands";
 import { pushToast } from "./toasts";
 import "./phase2.css";
@@ -282,17 +282,31 @@ export function runCommand(id: string) {
     case "help-close":
       click("#helpClose");
       return;
-    case "open-project":
-      pickProjectFile();
+    case "open":
+      pickModelFile();
       return;
     case "save-project":
       void saveCurrentProject();
       return;
     case "samples": {
+      const file = document.querySelector<HTMLDetailsElement>("#fileMenu");
       const menu = document.querySelector<HTMLDetailsElement>("#samples");
+      if (file) file.open = true;
       if (menu) menu.open = true;
       return;
     }
+    case "printer-pick": {
+      const chip = document.querySelector<HTMLDetailsElement>("#printerChip");
+      if (chip) chip.open = true;
+      chip?.querySelector<HTMLSelectElement>("#machinePrinter")?.focus();
+      return;
+    }
+    case "printer-edit":
+      revealPrinterDetails();
+      return;
+    case "calibrate":
+      document.dispatchEvent(new CustomEvent("lime-open-calibrate"));
+      return;
     case "slice": {
       const button = document.querySelector<HTMLButtonElement>("#slice");
       if (!button) return;

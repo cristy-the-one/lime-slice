@@ -96,6 +96,11 @@ export function paintForceButton(button: HTMLButtonElement) {
   const ready = !state.busy && !!state.mesh && action.state === "force";
   setButtonLabel(button, FORCE_LABEL);
   button.hidden = !ready;
+  const more = document.querySelector<HTMLDetailsElement>("#sliceMore");
+  if (more) {
+    more.classList.toggle("is-off", !ready);
+    if (!ready) more.open = false;
+  }
   button.dataset.tip = action.detail;
   button.removeAttribute("title");
   button.setAttribute("aria-label", FORCE_LABEL);

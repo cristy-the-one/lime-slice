@@ -6,6 +6,7 @@ import { canvasShare } from "../src/ui/compact/viewport-share.ts";
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 
 async function quiet(page: Page) {
+  await page.addInitScript(() => localStorage.setItem("lime-slice-closed-groups", "[]"));
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
 }

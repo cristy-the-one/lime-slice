@@ -80,6 +80,7 @@ test("moving one plate object re-emits only its G-code, without a click", async 
   await page.locator("#slice").click();
   await sliced(page);
   // A disk-cache hit leaves the kept plan to a background warm-up, so plan this one.
+  await page.locator("#sliceMore").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await page.locator("#force").click();
   await sliced(page);
   await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");

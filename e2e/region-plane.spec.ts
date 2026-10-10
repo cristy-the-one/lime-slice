@@ -35,7 +35,8 @@ test("bridge By region starts inside the mesh and the plane and gizmo move it", 
   await page.route("**/api/slice", (route) => route.fulfill({ json: fakeSlice() }));
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "Bridge" }).click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await expect(page.locator("#prepareBody")).toBeVisible();
@@ -130,7 +131,8 @@ test("two objects share one By region plane across the plate", async ({ page }) 
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "Bridge" }).click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#plateDuplicate").click();

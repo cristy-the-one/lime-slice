@@ -1,22 +1,21 @@
 import { type ColorMode } from "../colors";
 import { layFlatMatrix, matMul, rotX, rotY, rotZ } from "../mesh-place";
 import { addPlateObject, arrangePlate, removePlateObject, selectPlateObject } from "./plate-actions";
-import { DEFAULT_PRESET, readPresets, writePresets } from "../presets";
-import { profileJson } from "../profiles";
 import { applyTheme, type ThemeChoice } from "../theme";
 import { clampOffset, flipSection } from "../section-plane";
 import { wheelNotch } from "../gizmo-math";
 import { state, type CardId } from "./state";
-import { commitSplit, draw, layerGcode, paintPlayback, paintSectionChrome, prepare, realignSplit, scrub, sectionLimit, setHelp, setStage, setView, stepGizmo, stopPlay, syncGcodeHighlight, togglePlay, view3d } from "./viewer";
+import { commitSplit, draw, layerGcode, paintPlayback, paintSectionChrome, prepare, scrub, sectionLimit, setHelp, setStage, setView, stepGizmo, stopPlay, syncGcodeHighlight, togglePlay, view3d } from "./viewer";
 import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCal, runSlice, runTempCal } from "./slice-run";
 import { adoptBytes, export3mf, exportGcode, fail, loadNamed, place, saveText, setPlaceCenter, withPrinterGcode } from "./files";
-import { mountProjectFiles, saveCurrentProject } from "./project-io";
-import { pickProjectFile } from "../platform";
-import { applyPreset, closedGroups, currentPreset, noteObjectOverride, noteSequential, onBlend, onSettings, renderChrome, syncFindStuck, touch } from "./settings";
-import { noteEdit, redoUserEdit, undoUserEdit } from "./history";
+import { mountProjectFiles, openProjectFile, saveCurrentProject } from "./project-io";
+import { pickModelFile } from "../platform";
+import { noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, revealPrinterDetails, revealResults, setCalibrate, syncFindStuck, touch } from "./settings";
+import { noteEdit } from "./history";
 import {
   applyNamedProfile,
   askProfileName,
+  migrateLegacyPresets,
   deleteSettingsProfile,
   duplicateSettingsProfile,
   exportSettingsProfile,
@@ -59,6 +58,7 @@ import { refreshPrusaJob, rememberPrusaForm, testPrusaLink, uploadToPrusaLink } 
 
 export function wireApp() {
   bootMachines();
+  migrateLegacyPresets();
   document.querySelector("#left")!.addEventListener("input", (ev) => {
     const target = ev.target as HTMLInputElement;
     if (isBeltField(target)) {
@@ -92,6 +92,11 @@ export function wireApp() {
       if (noteSequential(target.id, (target as HTMLInputElement).value)) touch();
       return;
     }
+    if (target.id === "at") {
+      const value = Number((target as HTMLInputElement).value);
+      if (Number.isFinite(value)) commitSplit(value);
+      return;
+    }
     if (target.id === "profilePick") {
       const id = (target as HTMLSelectElement).value;
       if (id) applyNamedProfile(id);
@@ -108,13 +113,6 @@ export function wireApp() {
       if (file) void importSettingsProfileFile(file);
       return;
     }
-    if (target.id === "machinePrinter" || target.id === "machineFilament" || target.id === "machineNozzle") {
-      const printerId = document.querySelector<HTMLSelectElement>("#machinePrinter")?.value ?? "";
-      const filamentId = document.querySelector<HTMLSelectElement>("#machineFilament")?.value ?? "";
-      const nozzleMm = Number(document.querySelector<HTMLSelectElement>("#machineNozzle")?.value);
-      chooseMachine(printerId, filamentId, nozzleMm);
-      return;
-    }
     if (target.id === "machineFile") {
       const input = target as HTMLInputElement;
       const file = input.files?.[0];
@@ -123,57 +121,27 @@ export function wireApp() {
     }
     if (target instanceof HTMLInputElement && target.closest("[data-override-card]")) commitOverrideInput(target);
   });
+  // A search opens groups on its own; only a toggle outside one is the user's choice to keep.
   document.querySelector("#left")!.addEventListener("toggle", (ev) => {
     const details = ev.target as HTMLDetailsElement;
-    const title = details.dataset.group;
-    if (!title) return;
-    if (details.open) closedGroups.delete(title);
-    else closedGroups.add(title);
+    const id = details.dataset.group;
+    if (!id || state.query.trim()) return;
+    noteGroupToggle(id, details.open);
   }, true);
   document.querySelector("#left")!.addEventListener("click", (ev) => {
-    const t = ev.target as HTMLElement;
-    if (t.id === "pacal") void runPaCal();
-    if (t.id === "flowcal") void runFlowCal();
-    if (t.id === "tempcal") void runTempCal();
-    if (t.id === "retractcal") void runRetractCal();
-    if (t.id === "undoEdit") {
-      undoUserEdit();
+    const raw = ev.target as HTMLElement;
+    // An icon button is hit on its svg; the button is what the ids below name.
+    const t = raw.closest<HTMLElement>("button") ?? raw;
+    const railTool = t.closest<HTMLElement>("[data-rail-tool]")?.dataset.railTool;
+    if (railTool) {
+      document.querySelector<HTMLButtonElement>(`#toolRail [data-tool="${railTool}"]`)?.click();
       return;
     }
-    if (t.id === "redoEdit") {
-      redoUserEdit();
+    const cardEl = t.closest<HTMLElement>("[data-card]");
+    if (cardEl) {
+      pickStrategy(cardEl.dataset.card as CardId);
       return;
     }
-    if (t.id === "paapply") {
-      const chosen = Number((document.querySelector("#pachosen") as HTMLInputElement).value);
-      const marlin = currentRules().firmware === "marlin";
-      noteAdvance(marlin ? state.pressureAdvance : chosen, marlin ? chosen : state.linearAdvance);
-      touch();
-    }
-    if (t.id === "paexport" && state.paGcode) void saveText(withPrinterGcode(state.paGcode), "pa-calibration.gcode", "gcode");
-    if (t.id === "flowapply") {
-      noteEdit();
-      noteFlow(Number((document.querySelector("#flowchosen") as HTMLInputElement).value));
-      touch();
-      return;
-    }
-    if (t.id === "flowexport" && state.flowGcode) void saveText(withPrinterGcode(state.flowGcode), "flow-calibration.gcode", "gcode");
-    if (t.id === "tempapply") {
-      noteEdit();
-      noteNozzleTemp(Number((document.querySelector("#tempchosen") as HTMLInputElement).value));
-      touch();
-      return;
-    }
-    if (t.id === "tempexport" && state.tempGcode) void saveText(withPrinterGcode(state.tempGcode), "temperature-calibration.gcode", "gcode");
-    if (t.id === "retractapply") {
-      noteEdit();
-      const length = Number((document.querySelector("#retractchosen") as HTMLInputElement).value);
-      const speed = state.retractOn && Math.abs(state.retractSpeed - 30) > 1e-6 ? state.retractSpeed : null;
-      noteRetract(length, speed);
-      touch();
-      return;
-    }
-    if (t.id === "retractexport" && state.retractGcode) void saveText(withPrinterGcode(state.retractGcode), "retraction-calibration.gcode", "gcode");
     if (t.id === "profileSave") {
       const typed = typedProfileName();
       if (typed) saveSettingsProfile(typed);
@@ -209,27 +177,6 @@ export function wireApp() {
     if (t.id === "settingsProfileExport") {
       exportSettingsProfile(selectedProfileId());
       return;
-    }
-    if (t.id === "presetSave") {
-      const name = (document.querySelector("#presetName") as HTMLInputElement).value.trim();
-      if (!name) return;
-      const all = readPresets();
-      all[name] = currentPreset();
-      writePresets(all);
-      renderChrome();
-    }
-    if (t.id === "presetLoad") {
-      const name = (document.querySelector("#presetPick") as HTMLSelectElement).value;
-      const preset = readPresets()[name];
-      if (preset) applyPreset({ ...DEFAULT_PRESET, ...preset });
-    }
-    if (t.id === "presetDelete") {
-      const name = (document.querySelector("#presetPick") as HTMLSelectElement).value;
-      if (!name) return;
-      const all = readPresets();
-      delete all[name];
-      writePresets(all);
-      renderChrome();
     }
     if (t.id === "plateAdd" || t.id === "plateDuplicate") {
       addPlateObject();
@@ -301,8 +248,6 @@ export function wireApp() {
       refreshPrusaJob();
       return;
     }
-    if (t.id === "profileExport") void saveText(profileJson(state.profile), `${state.profile.name.replace(/\s+/g, "_")}.json`, "json");
-    if (t.id === "export3mf") void export3mf();
   });
   document.querySelector("#right")!.addEventListener("click", (ev) => {
     const dot = (ev.target as HTMLElement).closest<SVGElement>("[data-pareto]");
@@ -314,42 +259,28 @@ export function wireApp() {
       void runPareto();
       return;
     }
-    const cardEl = (ev.target as HTMLElement).closest<HTMLElement>("[data-card]");
-    if (!cardEl) return;
-    const id = cardEl.dataset.card as CardId;
-    noteEdit();
-    if (id === "speed") { state.blendKind = "single"; state.strategy = "speed"; }
-    else if (id === "toughness") { state.blendKind = "single"; state.strategy = "toughness"; }
-    else if (id === "efficiency") { state.blendKind = "weight"; state.toughness = 0.5; }
-    else if (id === "layer") state.blendKind = "byLayer";
-    else {
-      state.blendKind = "byRegion";
-      realignSplit("open");
-    }
-    touch();
-  });
-  document.querySelector("#right")!.addEventListener("input", onBlend);
-  document.querySelector("#right")!.addEventListener("change", (ev) => {
-    const field = ev.target as HTMLInputElement;
-    if (field.id === "at" && Number.isFinite(Number(field.value))) commitSplit(Number(field.value));
   });
   document.querySelector("#banner")!.addEventListener("click", (ev) => {
     const action = (ev.target as HTMLElement).closest<HTMLElement>("[data-banner-action]")?.dataset.bannerAction;
     if (action === "supports") turnOnSupports();
   });
 
-  document.querySelector("#samples")!.addEventListener("click", (ev) => {
-    const project = (ev.target as HTMLElement).closest<HTMLButtonElement>("[data-project]");
-    if (project) {
-      (document.querySelector("#samples") as HTMLDetailsElement).open = false;
-      if (project.dataset.project === "save") void saveCurrentProject();
-      else pickProjectFile();
-      return;
-    }
-    const button = (ev.target as HTMLElement).closest<HTMLButtonElement>("[data-sample]");
-    if (!button) return;
-    void loadNamed(button.dataset.sample!).catch(fail);
+  const fileMenu = document.querySelector<HTMLDetailsElement>("#fileMenu")!;
+  const closeFileMenu = () => {
+    fileMenu.open = false;
     (document.querySelector("#samples") as HTMLDetailsElement).open = false;
+  };
+  fileMenu.addEventListener("click", (ev) => {
+    const button = (ev.target as HTMLElement).closest<HTMLButtonElement>("button");
+    if (!button) return;
+    closeFileMenu();
+    const action = button.dataset.fileAction;
+    if (action === "open") pickModelFile();
+    else if (action === "save") void saveCurrentProject();
+    else if (button.dataset.sample) void loadNamed(button.dataset.sample).catch(fail);
+    else if (button.id === "export3mf") void export3mf();
+    else if (button.id === "machineOpen") revealPrinterDetails();
+    else if (button.id === "calibrateOpen") document.dispatchEvent(new CustomEvent("lime-open-calibrate"));
   });
   mountProjectFiles();
   document.querySelector("#file")!.addEventListener("change", (ev) => {
@@ -357,8 +288,84 @@ export function wireApp() {
     const file = input.files?.[0];
     input.value = "";
     if (!file) return;
+    if (/\.lime$/i.test(file.name)) {
+      void openProjectFile(file);
+      return;
+    }
     file.arrayBuffer().then((bytes) => adoptBytes(file.name, bytes)).catch(fail);
   });
+  // The printer chip's pickers also serve the compact Device page, so the listener sits on the document.
+  document.addEventListener("change", (ev) => {
+    const target = ev.target as HTMLElement;
+    if (target.id !== "machinePrinter" && target.id !== "machineFilament" && target.id !== "machineNozzle") return;
+    const printerId = document.querySelector<HTMLSelectElement>("#machinePrinter")?.value ?? "";
+    const filamentId = document.querySelector<HTMLSelectElement>("#machineFilament")?.value ?? "";
+    const nozzleMm = Number(document.querySelector<HTMLSelectElement>("#machineNozzle")?.value);
+    chooseMachine(printerId, filamentId, nozzleMm);
+  });
+  document.addEventListener("click", (ev) => {
+    if (!(ev.target as HTMLElement).closest("#editPrinter")) return;
+    const chip = document.querySelector<HTMLDetailsElement>("#printerChip");
+    if (chip) chip.open = false;
+    revealPrinterDetails();
+  });
+  document.querySelector("#timing")!.addEventListener("click", () => revealResults());
+  // A menu stays open until a click lands outside it, as its own summary toggles it.
+  document.addEventListener("pointerdown", (ev) => {
+    const target = ev.target as Element | null;
+    document.querySelectorAll<HTMLDetailsElement>("details.menu[open]").forEach((menu) => {
+      if (!target || !menu.contains(target)) menu.open = false;
+    });
+  });
+  document.addEventListener("lime-open-calibrate", () => setCalibrate(true));
+  document.querySelector("#calibrateClose")!.addEventListener("click", () => setCalibrate(false));
+  document.querySelector("#calibrate")!.addEventListener("mousedown", (ev) => {
+    if (ev.target === ev.currentTarget) setCalibrate(false);
+  });
+  window.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && document.documentElement.dataset.overlay === "calibrate") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      setCalibrate(false);
+    }
+  }, true);
+  document.querySelector("#calibrate")!.addEventListener("input", onSettings);
+  document.querySelector("#calibrate")!.addEventListener("click", (ev) => {
+    const t = (ev.target as HTMLElement).closest<HTMLButtonElement>("button");
+    if (!t) return;
+    if (t.id === "pacal") void runPaCal();
+    if (t.id === "flowcal") void runFlowCal();
+    if (t.id === "tempcal") void runTempCal();
+    if (t.id === "retractcal") void runRetractCal();
+    if (t.id === "paapply") {
+      const chosen = Number((document.querySelector("#pachosen") as HTMLInputElement).value);
+      const marlin = currentRules().firmware === "marlin";
+      noteAdvance(marlin ? state.pressureAdvance : chosen, marlin ? chosen : state.linearAdvance);
+      touch();
+    }
+    if (t.id === "paexport" && state.paGcode) void saveText(withPrinterGcode(state.paGcode), "pa-calibration.gcode", "gcode");
+    if (t.id === "flowapply") {
+      noteEdit();
+      noteFlow(Number((document.querySelector("#flowchosen") as HTMLInputElement).value));
+      touch();
+    }
+    if (t.id === "flowexport" && state.flowGcode) void saveText(withPrinterGcode(state.flowGcode), "flow-calibration.gcode", "gcode");
+    if (t.id === "tempapply") {
+      noteEdit();
+      noteNozzleTemp(Number((document.querySelector("#tempchosen") as HTMLInputElement).value));
+      touch();
+    }
+    if (t.id === "tempexport" && state.tempGcode) void saveText(withPrinterGcode(state.tempGcode), "temperature-calibration.gcode", "gcode");
+    if (t.id === "retractapply") {
+      noteEdit();
+      const length = Number((document.querySelector("#retractchosen") as HTMLInputElement).value);
+      const speed = state.retractOn && Math.abs(state.retractSpeed - 30) > 1e-6 ? state.retractSpeed : null;
+      noteRetract(length, speed);
+      touch();
+    }
+    if (t.id === "retractexport" && state.retractGcode) void saveText(withPrinterGcode(state.retractGcode), "retraction-calibration.gcode", "gcode");
+  });
+  document.querySelector(".top")!.addEventListener("input", onSettings);
   document.querySelectorAll<HTMLButtonElement>(".mode:not(.tab)").forEach((button) => {
     button.addEventListener("click", () => setView(button.dataset.mode as typeof state.viewMode, "user"));
   });
@@ -375,7 +382,6 @@ export function wireApp() {
     });
   });
   document.querySelector("#play")!.addEventListener("click", () => togglePlay());
-  document.querySelector("#stop")!.addEventListener("click", () => stopPlay());
   document.querySelector("#move")!.addEventListener("input", (ev) => {
     const next = Number((ev.target as HTMLInputElement).value);
     if (next === state.move) return;

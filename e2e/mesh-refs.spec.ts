@@ -51,6 +51,7 @@ async function load(page: Page, file: string) {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.addInitScript(() => {
     Object.defineProperty(window, "showSaveFilePicker", { configurable: true, value: undefined });
+    localStorage.setItem("lime-slice-closed-groups", "[]");
   });
   await page.goto("/");
   await page.locator("#file").setInputFiles(file);
@@ -107,7 +108,7 @@ test("a density change rewrites the exported footer's grams without a slice", as
   await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   const reply = seen.replies[0]!;
 
-  await page.locator("[data-level-choice=advanced]").click();
+  await page.locator("#levelPick").selectOption("advanced");
   await page.locator("#density").fill("1.27");
   await page.locator("#density").press("Tab");
   await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");

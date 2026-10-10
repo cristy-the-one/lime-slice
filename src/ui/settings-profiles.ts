@@ -139,6 +139,19 @@ export function deleteIn(library: ProfileLibrary, id: string): ProfileLibrary {
   };
 }
 
+/** Saved presets become profiles at the given level. A name that is already a profile is left alone. */
+export function adoptPresets(library: ProfileLibrary, presets: Record<string, PresetSettings>, level: SettingsLevel, newId: () => string): ProfileLibrary {
+  const taken = new Set(library.profiles.map((profile) => profile.name));
+  const added: NamedSettingsProfile[] = [];
+  for (const name of Object.keys(presets).sort()) {
+    if (taken.has(name)) continue;
+    taken.add(name);
+    added.push({ id: newId(), name, settings: cloneSettings(presets[name]!), level });
+  }
+  if (added.length === 0) return library;
+  return { ...library, profiles: [...library.profiles, ...added] };
+}
+
 export function importInto(library: ProfileLibrary, file: SettingsProfileFile, id: string): ProfileLibrary {
   return {
     version: 1,

@@ -6,6 +6,7 @@ import { canvasShare } from "../src/ui/compact/viewport-share.ts";
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 
 async function quiet(page: Page) {
+  await page.addInitScript(() => localStorage.setItem("lime-slice-closed-groups", "[]"));
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.addInitScript(() => {
     Object.defineProperty(window, "showSaveFilePicker", { configurable: true, value: undefined });
@@ -33,13 +34,21 @@ test("filament and nozzle pick the pressure advance, and a bad file can be retri
   await expect(page.locator("#machineFlow")).toHaveValue("1");
   await expect(page.locator("#machineTemps")).toHaveText("Nozzle 200 °C · bed 60 °C");
 
+  await page.locator("#printerChip").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
+
   await page.locator("#machineFilament").selectOption("lime-petg");
+
+  await page.locator("#printerChip").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
   await expect(page.locator("#machineAdvance")).toHaveValue("0.05");
   await expect(page.locator("#machineTemps")).toHaveText("Nozzle 240 °C · bed 80 °C");
 
+  await page.locator("#printerChip").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
+
   await page.locator("#machineNozzle").selectOption("0.6");
+
+  await page.locator("#printerChip").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
   await expect(page.locator("#machineAdvance")).toHaveValue("0.06");
-  await expect(page.locator("#nozzle")).toHaveValue("0.6");
+  await expect(page.locator("#printerChipLabel")).toHaveText("Lime 220 · PETG · 0.6 mm");
 
   await page.keyboard.press("Control+z");
   await expect(page.locator("#machineNozzle")).toHaveValue("0.4");
@@ -49,7 +58,11 @@ test("filament and nozzle pick the pressure advance, and a bad file can be retri
   await expect(page.locator("#machineAdvance")).toHaveValue("0");
   await expect(page.locator("#machineTemps")).toHaveText("Nozzle 200 °C · bed 60 °C");
 
+  await page.locator("#printerChip").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
+
   await page.locator("#machineFilament").selectOption("lime-petg");
+
+  await page.locator("#printerChip").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
   await page.locator("#machineMore > summary").click();
   await expect(page.locator("#machineStart")).toHaveValue("");
   await expect(page.locator("#machineEnd")).toHaveValue("");
@@ -107,7 +120,11 @@ test("filament and nozzle pick the pressure advance, and a bad file can be retri
   await expect(page.locator("#machineHost")).toHaveValue("");
   await page.locator("#machineMore > summary").click();
 
+  await page.locator("#printerChip").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
+
   await page.locator("#machinePrinter").selectOption("lime-220");
+
+  await page.locator("#printerChip").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
   await page.locator("#machineMore > summary").click();
   await page.locator("#machineDelete").click();
   await expect(page.locator("#toasts").getByRole("status").filter({ hasText: "Built-in profiles stay in the catalog." })).toBeVisible();
@@ -129,7 +146,9 @@ test("one advance control follows the printer's firmware, and only that advance 
   await expect(page.locator("#pafw")).toHaveCount(0);
   await expect(page.locator("#machineFirmware")).toHaveValue("klipper");
   await expect(page.locator("label:has(#machineAdvance)")).toContainText("Pressure advance");
+  await page.locator("#printerChip").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await page.locator("#machineFilament").selectOption("lime-petg");
+  await page.locator("#printerChip").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
   await expect(page.locator("#slice")).toBeEnabled();
   await page.locator("#slice").click();
@@ -168,9 +187,10 @@ test.describe("compact machine library", () => {
     await expect(page.locator("#compactSheet")).toHaveAttribute("data-detent", "peek");
     const prepare = await share(page, "#prepare");
     expect(prepare, `prepare viewport share ${prepare}`).toBeGreaterThanOrEqual(0.7);
+    await page.locator("#compactTabs [data-tab=device]").click();
+    await expect(page.locator("#compactDevice #machinePrinter")).toBeVisible();
+    await expect(page.locator("#compactDevice #machineFilament")).toBeVisible();
     await page.locator("#compactTabs [data-tab=settings]").click();
-    await expect(page.locator("#machinePrinter")).toBeVisible();
-    await expect(page.locator("#machineFilament")).toBeVisible();
     await expect(page.locator("#machineAdvance")).toBeVisible();
     await page.locator("#compactTabs [data-tab=prepare]").click();
     await expect(page.locator("#compactSheet")).toHaveAttribute("data-detent", "peek");

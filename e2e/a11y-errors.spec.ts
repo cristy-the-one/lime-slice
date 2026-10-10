@@ -18,7 +18,8 @@ async function share(page: Page, selector: string) {
 
 async function openCube(page: Page) {
   await page.goto("/");
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
 }
@@ -115,7 +116,6 @@ test("named controls expose labels", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator("#colorBy")).toHaveAttribute("aria-label", "Color by");
   await expect(page.locator("#play")).toHaveAttribute("aria-label", "Play layer");
-  await expect(page.locator("#stop")).toHaveAttribute("aria-label", "Stop playback");
   await expect(page.locator("#find")).toHaveAttribute("aria-label", "Search settings");
   await page.keyboard.press("Control+k");
   await expect(page.locator("#paletteInput")).toBeFocused();

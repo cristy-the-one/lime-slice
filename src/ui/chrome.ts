@@ -1,9 +1,7 @@
 import {
   ArrowDownToLine,
-  Boxes,
   createElement,
   Download,
-  FolderOpen,
   Printer,
   Layers,
   Move3d,
@@ -53,14 +51,6 @@ function hint(el: Element | null, tip: string) {
 }
 
 function iconizeToolbar() {
-  const open = document.querySelector("#file")?.closest("label") ?? null;
-  iconize(open, FolderOpen);
-  hint(open, "Open a mesh");
-
-  const samples = document.querySelector("#samples summary");
-  iconize(samples, Boxes);
-  hint(samples, "Load a sample mesh");
-
   iconize(document.querySelector("#slice"), Layers);
 
   iconize(document.querySelector("#cancel"), X);
@@ -98,9 +88,12 @@ function mountToolRail(hooks: ChromeHooks) {
   supports.classList.add("is-disabled");
   supports.setAttribute("aria-disabled", "true");
 
-  const sep = document.createElement("div");
-  sep.className = "rail-sep";
-  rail.append(move, rotate, scale, lay, sep, section, supports, gizmoNudge());
+  const sep = () => {
+    const line = document.createElement("div");
+    line.className = "rail-sep";
+    return line;
+  };
+  rail.append(move, rotate, scale, lay, sep(), section, sep(), supports, gizmoNudge());
   host?.before(rail);
 
   const buttons = { move, rotate, scale, lay, section };

@@ -16,7 +16,8 @@ test("feature-colored 3D preview keeps bead margins and the print head on the pa
   await serveSliceJob(page, cube);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#slice").click();

@@ -1,32 +1,50 @@
+import { ArrowDownToLine, Copy, Crosshair, LayoutGrid, Plus, RotateCw, createElement, type IconNode } from "lucide";
 import { fx } from "./fx";
 import { state, session, type CardId, type SliceResponse } from "./state";
 import { currentApiTarget, authHeaders, engineDownMessage } from "../ui/api-base";
 import { layerWeight, resolved, type ResolvedCard } from "../strategy";
-import { levelBarHtml, paintSettingMarks, syncEmptyState } from "../ui/shell";
+import { paintSettingMarks, syncEmptyState } from "../ui/shell";
 import { pushToast } from "../ui/toasts";
 import { markProjectDirty } from "../project-dirty";
 import { coverageWarning, inAirWarning } from "../slice-action";
 import { applySliceProgress, currentSliceProgress } from "../ui/slice-progress";
 import { filamentCost, filamentGrams, groupFeatures } from "../estimate";
+import { OTHER_COLOR, featureColor } from "../colors";
 import { offBed } from "../mesh-place";
 import { boundsSize, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty } from "../plate";
-import { type PresetSettings, DEFAULT_PRESET, presetKeys, readPresets, diffPreset } from "../presets";
-import { loadProfile, type PrinterProfile, saveProfile } from "../profiles";
-import { noteAdvance, noteFirmware, noteFlow, noteGcode, noteNozzle, noteRetract, setSmartSupports } from "./machine-actions";
+import { type PresetSettings, DEFAULT_PRESET, presetKeys } from "../presets";
+import { saveProfile } from "../profiles";
+import { noteAdvance, noteFirmware, noteFlow, noteGcode, noteRetract, setSmartSupports } from "./machine-actions";
 import { currentRules } from "./rules";
 import { ADVANCE, orderFields, type Rules } from "../settings-rules";
-import { seamOptions } from "../seam";
 import { loadMachineLibrary } from "./machine-library";
-import { beltStamp, machineSectionHtml } from "../ui/machine-library";
+import { beltStamp, machineChipLabel, machinePickHtml, machineSectionHtml } from "../ui/machine-library";
 import { prusaSummary, rememberPrusaForm, syncSendButtons } from "./prusa-actions";
-import { canRedoEdit, canUndoEdit, noteEdit } from "./history";
+import { noteEdit } from "./history";
 import { loadProfileLibrary } from "./profile-library";
-import { SETTING_KEYWORDS, settingMatches } from "../ui/settings-search";
+import { settingMatches } from "../ui/settings-search";
 import { displayId } from "../ui/settings-profiles";
 import { OVERRIDES_TIP, overrideSectionHtml } from "../ui/overrides-panel";
-import { fuzzyRequest, readFuzzyPointDistance, readFuzzyThickness } from "../fuzzy-skin";
-import { ironingFlowPercent, ironingRequest, ironingSpacingMax, readIroningFlowPercent, readIroningSpacing, readIroningSpeed } from "../ironing";
-import { loadSettingsLevel } from "../ui/settings-panel";
+import { fuzzyRequest } from "../fuzzy-skin";
+import { ironingRequest, ironingSpacingMax } from "../ironing";
+import { levelSelectHtml, loadClosedGroups, loadSettingsLevel, saveClosedGroups, setSettingsLevel } from "../ui/settings-panel";
+import {
+  GROUPS,
+  STRATEGY_ROWS,
+  controlById,
+  controlsOf,
+  isStructural,
+  keywordsOf,
+  resolveMax,
+  resolveOptions,
+  shownAtLevel,
+  strategyCard,
+  type ControlSpec,
+  type GroupSpec,
+  type SchemaContext,
+  type Tier,
+} from "../ui/settings-schema";
+import { chordGlyphs, keyOf } from "../ui/commands";
 
 export function apiBase() {
   return currentApiTarget().base;
@@ -37,10 +55,7 @@ export function apiToken() {
 }
 
 export function card(): CardId {
-  if (state.blendKind === "byLayer") return "layer";
-  if (state.blendKind === "byRegion") return "region";
-  if (state.blendKind === "weight") return "efficiency";
-  return state.strategy === "toughness" ? "toughness" : "speed";
+  return strategyCard(state);
 }
 
 export function stale() {
@@ -68,7 +83,7 @@ export function settingsHash() {
   // Hidden controls and the advance the firmware does not use are not part of the recipe.
   const rules = currentRules(library);
   const retract = state.retractOn ? { retractLength: state.retractLength, retractSpeed: state.retractSpeed } : {};
-  const order = orderFields(rules, { printOrder: state.printOrder, clearanceMm: state.sequentialClearance, gantryMm: state.sequentialGantry });
+  const order = orderFieldsOf(rules);
   const objectSettings = state.plate.objects
     .filter((obj) => !settingsEmpty(obj.settings))
     .map((obj) => `${obj.id}:${JSON.stringify(obj.settings)}`)
@@ -81,6 +96,11 @@ export function settingsHash() {
     });
   }
   return JSON.stringify(hashed);
+}
+
+
+function orderFieldsOf(rules: Rules) {
+  return orderFields(rules, { printOrder: state.printOrder, clearanceMm: state.sequentialClearance, gantryMm: state.sequentialGantry });
 }
 
 export function blend() {
@@ -105,116 +125,33 @@ export function commitTypedFields(typing = typedField()): boolean {
   return true;
 }
 
+function schemaContext(rules: Rules = currentRules()): SchemaContext {
+  return { belt: rules.belt, lineWidth: fx.lineWidth?.() ?? state.profile.nozzleDiameter * 1.125 };
+}
+
 export function renderChrome() {
   const typing = typedField();
   // The change that would have queued the auto slice does nothing now, so it is queued here, as `touch` would.
   if (commitTypedFields(typing)) fx.scheduleAuto();
-  const mesh = state.mesh;
   const result = state.result;
   const rules = currentRules();
+  const ctx = schemaContext(rules);
   const find = document.querySelector<HTMLInputElement>("#find");
   const findFocused = find != null && document.activeElement === find;
   const selStart = find?.selectionStart ?? null;
   const selEnd = find?.selectionEnd ?? null;
   document.querySelector("#leftBody")!.innerHTML = `
-    ${levelBarHtml()}
-    ${profileHeaderHtml()}
-    <div class="find-row">
-      <input id="find" type="search" placeholder="Search settings" aria-label="Search settings" value="${escapeHtml(state.query)}" />
-      <button class="btn history-btn" id="undoEdit" type="button" aria-label="Undo" ${canUndoEdit() ? "" : "disabled"}>Undo</button>
-      <button class="btn history-btn" id="redoEdit" type="button" aria-label="Redo" ${canRedoEdit() ? "" : "disabled"}>Redo</button>
+    <div class="panel-head">
+      ${profileHeaderHtml()}
+      <div class="find-row">
+        <div class="find-box">
+          <input id="find" type="search" placeholder="Search settings" aria-label="Search settings" value="${escapeHtml(state.query)}" />
+          <kbd aria-hidden="true">/</kbd>
+        </div>
+        ${levelSelectHtml()}
+      </div>
     </div>
-    ${mesh ? `<h2>Mesh</h2><div class="meta"><b>${escapeHtml(mesh.name)}</b></div>` : ""}
-    <div class="object-list" id="objectList">${objectList()}</div>
-    ${group("Quality", `
-      ${num("lh", "Layer height mm", state.layerHeight, 0.08, 0.4, 0.02, "simple")}
-      ${rules.hidden.has("adaptive") ? "" : check("adaptive", "Adaptive layers", state.adaptive, "advanced")}
-      ${state.adaptive && !rules.hidden.has("adaptive") ? `${num("amin", "Min mm", state.adaptiveMin, 0.04, 0.28, 0.02, "advanced")}${num("amax", "Max mm", state.adaptiveMax, 0.08, 0.4, 0.02, "advanced")}` : ""}
-      ${check("simplify", "Simplify outlines", state.simplify, "advanced")}
-      ${state.simplify ? `${num("simperr", "Outline tolerance mm, 0 = auto", state.simplifyError, 0, 0.2, 0.005, "expert", "Every triangle is cut. Each layer's outline then drops vertices closer than this to the line through their neighbors. Auto is a sixteenth of the nozzle, 0.025 mm for 0.4 mm, so a gap the nozzle can print never closes.")}` : ""}
-    `)}
-    ${group("Strength", `
-      ${check("vwidth", "Variable walls", state.variableWidth, "simple")}
-      ${check("travelopt", "Travel and seam", state.travelOpt, "advanced")}
-      ${select("seam", "Seam position", state.seam, seamOptions(rules.belt), "advanced")}
-      ${check("ironing", "Ironing", state.ironing, "advanced", "A second pass over each top surface at low flow, inset half a line from the outline. Spacing stays below the line width. Defaults are 10% flow, 20 mm/s, and 0.1 mm spacing.")}
-      ${state.ironing ? `${num("ironflow", "Ironing flow %", ironingFlowPercent(state.ironingFlow), 1, 100, 1, "advanced")}${num("ironspeed", "Ironing speed mm/s", state.ironingSpeed, 1, 200, 1, "advanced")}${num("ironspace", "Ironing spacing mm", state.ironingSpacing, 0.05, ironingSpacingMax(fx.lineWidth()), 0.01, "advanced")}` : ""}
-      ${check("fuzzy", "Fuzzy skin", state.fuzzySkin, "advanced", "A stable sideways noise on the outer walls. Endpoints stay put, so a loop still meets. Defaults are 0.3 mm thickness and 0.8 mm between points.")}
-      ${state.fuzzySkin ? `${num("fuzzythick", "Fuzzy thickness mm", state.fuzzyThickness, 0.05, 1, 0.05, "advanced")}${num("fuzzydist", "Fuzzy point spacing mm", state.fuzzyPointDistance, 0.1, 5, 0.1, "advanced")}` : ""}
-      ${rules.hidden.has("scarf") ? "" : `${select("scarf", "Scarf seam", state.scarfSeam, [["blend", "Blend default"], ["off", "Off"], ["outer", "Outer walls"], ["all", "Outer and inner"]], "advanced")}
-      ${state.scarfSeam === "off" ? "" : `${num("scarflen", "Scarf length mm", state.scarfLength, 1, 30, 1, "expert")}${num("scarfsteps", "Scarf steps", state.scarfSteps, 2, 32, 1, "expert")}`}`}
-    `)}
-    ${group("Speed", `
-      ${check("feeds", "Per-feature speeds", state.featureSpeeds, "simple")}
-      ${check("arcs", "Arc fit (G2/G3)", state.arcFit, "advanced")}
-      ${check("combine", "Combine sparse infill", state.infillCombine, "advanced")}
-      ${check("combing", "Hole-aware combing", state.combing, "advanced")}
-      ${check("overhang", "Overhang and bridges", state.overhangControl, "simple")}
-      ${select("gyroid3d", "3D gyroid", state.gyroid3d, [["blend", "Blend default"], ["off", "2D sine"], ["on", "Force 3D"]], "expert")}
-      ${rules.hidden.has("zHop") ? "" : `${select("zhop", "Z-hop", state.zHop, [["blend", "Blend default"], ["off", "Off"], ["smart", "Smart"], ["always", "Always"]], "advanced")}
-      ${state.zHop === "off" ? "" : `${num("zhopht", "Hop height mm", state.zHopHeight, 0.1, 2, 0.1, "expert")}${num("zhopmin", "Hop above travel mm", state.zHopMinTravel, 0.5, 20, 0.5, "expert")}`}`}
-    `)}
-    ${group("Support", `
-      ${check("supports", "Smart supports", state.supports, "simple")}
-      ${state.supports ? `${select("sstyle", "Style", state.supportStyle, [["grid", "Sparse grid"], ["tree", "Organic tree"]], "advanced")}
-        ${num("sangle", "Overhang angle °", state.supportAngle, 20, 70, 5, "advanced")}
-        ${state.supportStyle === "tree" ? `${num("bangle", "Branch angle °", state.branchAngle, 15, 60, 5, "expert")}
-        ${num("tipd", "Tip diameter mm", state.tipDiameter, 0.4, 2, 0.1, "expert")}
-        ${num("trunkd", "Trunk diameter mm", state.trunkDiameter, 1.5, 12, 0.2, "expert")}` : ""}
-        ${num("shmult", "Shaft height ×", state.supportHeightMult, 1, 4, 1, "advanced")}` : ""}
-    `)}
-    ${group("Overrides", overrideSectionHtml(state.overrides, state.selectedVolumeId, state.modifierTool), undefined, OVERRIDES_TIP)}
-    ${group("Other", `
-      <h2>Printer</h2>
-      ${profileFields()}
-      <h2>Presets</h2>
-      ${presetHtml()}
-      ${group("PA calibration", `
-        ${num("pastart", "K start", state.paStart, 0, 1, 0.005, "expert")}
-        ${num("paend", "K end", state.paEnd, 0, 1, 0.005, "expert")}
-        ${num("pastep", "K step", state.paStep, 0.001, 0.2, 0.005, "expert")}
-        <button class="btn" id="pacal" type="button">Generate PA test</button>
-        ${state.paBands.length ? `<div class="meta">${state.paBands.map((b) => `band ${b.index}: K ${b.k.toFixed(4)} · Z ${b.z0.toFixed(2)}–${b.z1.toFixed(2)}`).join("<br>")}</div>
-          ${num("pachosen", "Chosen K", state[ADVANCE[rules.firmware].key], 0, 2, 0.005)}
-          <button class="btn" id="paapply" type="button">Save K to profile</button>
-          <button class="btn" id="paexport" type="button">Export PA G-code</button>` : ""}
-      `, "expert")}
-      ${group("Flow calibration", `
-        ${num("flowstart", "Flow start", state.flowStart, 0.5, 1.5, 0.01, "expert")}
-        ${num("flowend", "Flow end", state.flowEnd, 0.5, 1.5, 0.01, "expert")}
-        ${num("flowstep", "Flow step", state.flowStep, 0.01, 0.2, 0.01, "expert")}
-        <button class="btn" id="flowcal" type="button" data-tip="Each band is one hollow wall. The length of extrusion is the band's multiplier. Saving writes that multiplier onto the filament. 1 leaves a slice unchanged.">Generate flow test</button>
-        ${state.flowBands.length ? `<div class="meta">${state.flowBands.map((b) => `band ${b.index}: flow ${b.flow.toFixed(3)} · Z ${b.z0.toFixed(2)}–${b.z1.toFixed(2)}`).join("<br>")}</div>
-          ${num("flowchosen", "Chosen flow", state.flow, 0.5, 1.5, 0.01)}
-          <button class="btn" id="flowapply" type="button">Save flow to filament</button>
-          <button class="btn" id="flowexport" type="button">Export flow G-code</button>` : ""}
-      `, "expert")}
-      ${group("Temperature calibration", `
-        ${num("tempstart", "°C start", state.tempStart, 150, 320, 1, "expert")}
-        ${num("tempend", "°C end", state.tempEnd, 150, 320, 1, "expert")}
-        ${num("tempstep", "°C step", state.tempStep, 1, 50, 1, "expert")}
-        <button class="btn" id="tempcal" type="button" data-tip="Each band is one hollow wall. The nozzle waits at that band's temperature before the wall starts. Saving writes the chosen °C onto the filament. A normal slice still sends that nozzle temperature, and nothing else.">Generate temperature test</button>
-        ${state.tempBands.length ? `<div class="meta">${state.tempBands.map((b) => `band ${b.index}: ${b.temp.toFixed(0)} °C · Z ${b.z0.toFixed(2)}–${b.z1.toFixed(2)}`).join("<br>")}</div>
-          ${num("tempchosen", "Chosen °C", state.profile.nozzleTemp, 150, 320, 1)}
-          <button class="btn" id="tempapply" type="button">Save temperature to filament</button>
-          <button class="btn" id="tempexport" type="button">Export temperature G-code</button>` : ""}
-      `, "expert")}
-      ${group("Retraction", `
-        ${check("retractset", "Custom retraction", state.retractOn, "expert", "Off, a slice keeps the strategy length: 0.35 mm on speed, 0.9 mm on toughness, at 30 mm/s.")}
-        ${state.retractOn ? `${num("retractlen", "Length mm", state.retractLength, 0, 5, 0.05, "expert")}${num("retractspd", "Speed mm/s", state.retractSpeed, 5, 80, 1, "expert")}` : ""}
-        ${num("retractstart", "Tower start mm", state.retractStart, 0, 5, 0.05, "expert")}
-        ${num("retractend", "Tower end mm", state.retractEnd, 0, 5, 0.05, "expert")}
-        ${num("retractstep", "Tower step mm", state.retractStep, 0.05, 1, 0.05, "expert")}
-        <button class="btn" id="retractcal" type="button" data-tip="Each band is two posts. The travel between them retracts by that band's length. Saving writes the length onto the filament, and the speed when it is not 30 mm/s. Off, the slice is unchanged.">Generate retraction test</button>
-        ${state.retractBands.length ? `<div class="meta">${state.retractBands.map((b) => `band ${b.index}: ${b.length.toFixed(3)} mm · Z ${b.z0.toFixed(2)}–${b.z1.toFixed(2)}`).join("<br>")}</div>
-          ${num("retractchosen", "Chosen length mm", state.retractLength, 0, 5, 0.05)}
-          <button class="btn" id="retractapply" type="button">Save retraction to filament</button>
-          <button class="btn" id="retractexport" type="button">Export retraction G-code</button>` : ""}
-      `, "expert")}
-      <label class="check setting" data-level="advanced" data-label="auto-slice under 50k triangles"><input id="autoslice" type="checkbox" ${state.autoSlice ? "checked" : ""}/> Auto-slice under 50k triangles</label>
-      ${result ? `<div class="meta">${triangleMeta(result)}</div>` : ""}
-      ${stageHtml(result)}
-    `)}
+    ${GROUPS.map((group) => groupCardHtml(group, rules, ctx)).join("")}
   `;
   restoreFindCaret(findFocused, selStart, selEnd);
   if (typing) document.querySelector<HTMLInputElement>(`#${typing.id}`)?.focus({ preventScroll: true });
@@ -222,26 +159,19 @@ export function renderChrome() {
   syncFindStuck();
 
   const live = resolved(currentWeight(), state.layerHeight);
+  const section = (title: string, body: string, tier?: Tier) => `<section class="res"${tier ? ` data-level="${tier}"` : ""}><h4>${title}</h4>${body}</section>`;
   document.querySelector("#right")!.innerHTML = `
-    <h2>Strategy blend</h2>
-    <div class="cards">
-      ${cardBtn("speed", "Speed", "2 walls · lightning · fast feeds")}
-      ${cardBtn("efficiency", "Efficiency", "Mid weight · lines then grid")}
-      ${cardBtn("toughness", "Toughness", "5 walls · 48% 3D gyroid · scarf")}
-      ${cardBtn("layer", "By layer", "Toughness at the bed, then speed")}
-      ${cardBtn("region", "By region", "Low side toughness, high side speed")}
-    </div>
-    <div class="stack" id="blendFields">${blendFields()}</div>
-    ${rules.hidden.has("blendCompare") ? "" : `<h2>Blend compare</h2>
-    <div id="pareto">${paretoHtml()}</div>`}
-    <h2>Resolved now</h2>
-    <div class="meta" id="resolved">${paramTable(live)}</div>
-    ${result ? `<h2>Estimate</h2>
-    <div id="estimate">${estimateHtml()}</div>
-    <h2>Active layer</h2>
-    <div class="meta" id="layerReadout">${layerReadout()}</div>` : ""}
+    ${result ? section("Estimate", `<div id="estimate">${estimateHtml()}</div>`) : ""}
+    ${result ? section("Active layer", `<div class="meta" id="layerReadout">${layerReadout()}</div>`) : ""}
+    ${rules.hidden.has("blendCompare") ? "" : section("Compare blends", `<div id="pareto"${state.mesh ? "" : ' class="is-off"'}>${paretoHtml()}</div>`)}
+    ${section("Resolved parameters", `<div class="meta" id="resolved">${paramTable(live)}</div>`, "advanced")}
+    ${result ? section("Diagnostics", `<div class="meta">${triangleMeta(result)}</div>${stageHtml(result)}`, "expert") : ""}
   `;
 
+  paintPrinterChip();
+  paintCalibrate();
+  const auto = document.querySelector<HTMLInputElement>("#autoslice");
+  if (auto) auto.checked = state.autoSlice;
   const isStale = stale();
   const sliceBtn = document.querySelector<HTMLButtonElement>("#slice")!;
   fx.paintSliceButton(sliceBtn);
@@ -270,8 +200,95 @@ function timingText() {
   const result = state.result;
   if (state.busy) return busyText();
   if (!result) return "";
-  const seconds = result.estimate?.seconds ?? 0;
-  return `${seconds / 60 < 1 ? `${seconds.toFixed(0)} s` : `${(seconds / 60).toFixed(1)} min`} · ${shownGrams(result).toFixed(2)} g`;
+  const grams = shownGrams(result);
+  return `${formatTime(result.estimate?.seconds ?? 0)} · ${grams.toFixed(2)} g · €${filamentCost(grams, state.profile).toFixed(2)}`;
+}
+
+type Band = { index: number; z0: number; z1: number };
+
+function bandLines<T extends Band>(bands: T[], value: (band: T) => string): string {
+  if (bands.length === 0) return "";
+  return `<div class="meta">${bands.map((b) => `band ${b.index}: ${value(b)} · Z ${b.z0.toFixed(2)}–${b.z1.toFixed(2)}`).join("<br>")}</div>`;
+}
+
+function plainRow(id: string, label: string, value: number, min: number, max: number, step: number) {
+  return `<label class="row"><span class="row-label">${label}</span><input id="${id}" type="number" min="${min}" max="${max}" step="${step}" value="${value}" /></label>`;
+}
+
+function calSection(title: string, help: string, fields: string[], generate: { id: string; label: string }, result: string) {
+  return `<section class="cal">
+    <h3>${title}</h3>
+    <p class="cal-help">${escapeHtml(help)}</p>
+    ${fields.map(fieldRow).join("")}
+    <div class="row-tools"><button class="btn" id="${generate.id}" type="button">${generate.label}</button></div>
+    ${result}
+  </section>`;
+}
+
+function calibrateHtml() {
+  const rules = currentRules();
+  const chosenK = state[ADVANCE[rules.firmware].key];
+  return [
+    calSection("Pressure advance", "Each band prints at one K. Pick the band whose corners are sharpest, then save that K to the filament.", ["pastart", "paend", "pastep"], { id: "pacal", label: "Generate PA test" },
+      state.paBands.length ? `${bandLines(state.paBands, (b) => `K ${b.k.toFixed(4)}`)}${plainRow("pachosen", "Chosen K", chosenK, 0, 2, 0.005)}<div class="row-tools"><button class="btn" id="paapply" type="button">Save K to profile</button><button class="btn" id="paexport" type="button">Export PA G-code</button></div>` : ""),
+    calSection("Flow", "Each band is one hollow wall at one multiplier. Measure the wall; the band that matches the line width is the flow. 1 leaves a slice unchanged.", ["flowstart", "flowend", "flowstep"], { id: "flowcal", label: "Generate flow test" },
+      state.flowBands.length ? `${bandLines(state.flowBands, (b) => `flow ${b.flow.toFixed(3)}`)}${plainRow("flowchosen", "Chosen flow", state.flow, 0.5, 1.5, 0.01)}<div class="row-tools"><button class="btn" id="flowapply" type="button">Save flow to filament</button><button class="btn" id="flowexport" type="button">Export flow G-code</button></div>` : ""),
+    calSection("Temperature", "Each band is one hollow wall; the nozzle waits at that band's temperature before it starts. Saving writes the chosen °C onto the filament.", ["tempstart", "tempend", "tempstep"], { id: "tempcal", label: "Generate temperature test" },
+      state.tempBands.length ? `${bandLines(state.tempBands, (b) => `${b.temp.toFixed(0)} °C`)}${plainRow("tempchosen", "Chosen °C", state.profile.nozzleTemp, 150, 320, 1)}<div class="row-tools"><button class="btn" id="tempapply" type="button">Save temperature to filament</button><button class="btn" id="tempexport" type="button">Export temperature G-code</button></div>` : ""),
+    calSection("Retraction", "Each band is two posts; the travel between them retracts by that band's length. Saving writes the length onto the filament, and the speed when it is not 30 mm/s.", ["retractstart", "retractend", "retractstep"], { id: "retractcal", label: "Generate retraction test" },
+      state.retractBands.length ? `${bandLines(state.retractBands, (b) => `${b.length.toFixed(3)} mm`)}${plainRow("retractchosen", "Chosen length mm", state.retractLength, 0, 5, 0.05)}<div class="row-tools"><button class="btn" id="retractapply" type="button">Save retraction to filament</button><button class="btn" id="retractexport" type="button">Export retraction G-code</button></div>` : ""),
+  ].join("");
+}
+
+function paintCalibrate() {
+  const body = document.querySelector("#calibrateBody");
+  if (!body) return;
+  const typing = document.activeElement instanceof HTMLInputElement && body.contains(document.activeElement) ? document.activeElement.id : "";
+  body.innerHTML = calibrateHtml();
+  if (typing) document.querySelector<HTMLInputElement>(`#${typing}`)?.focus({ preventScroll: true });
+}
+
+export function setCalibrate(open: boolean) {
+  const sheet = document.querySelector<HTMLElement>("#calibrate");
+  if (!sheet) return;
+  sheet.hidden = !open;
+  if (open) {
+    document.documentElement.dataset.overlay = "calibrate";
+    sheet.querySelector<HTMLElement>("input, button")?.focus();
+  } else if (document.documentElement.dataset.overlay === "calibrate") {
+    delete document.documentElement.dataset.overlay;
+  }
+}
+
+function paintPrinterChip() {
+  const library = loadMachineLibrary();
+  const label = document.querySelector("#printerChipLabel");
+  if (label) label.textContent = machineChipLabel(library);
+  const pick = document.querySelector("#printerPick");
+  if (pick) pick.innerHTML = machinePickHtml(library);
+}
+
+/** Open the Printer details group and scroll to it. Simple has no such group, so it steps up to Advanced. */
+export function revealPrinterDetails() {
+  if (loadSettingsLevel() === "simple") {
+    setSettingsLevel("advanced");
+    applyFilter();
+  }
+  if (closedGroups.has("printer")) noteGroupToggle("printer", true);
+  const group = document.querySelector<HTMLDetailsElement>('#left .group[data-group="printer"]');
+  if (!group) return;
+  group.open = true;
+  if (window.innerWidth <= 960) document.querySelector(".workspace")?.classList.add("show-left");
+  group.scrollIntoView({ block: "start", behavior: "smooth" });
+}
+
+/** Show the results panel where the layout hides it, and scroll it to the estimate. */
+export function revealResults() {
+  const workspace = document.querySelector(".workspace");
+  if (workspace?.classList.contains("is-right-collapsed")) document.querySelector<HTMLButtonElement>(".panel-collapse-right")?.click();
+  if (window.innerWidth <= 960) workspace?.classList.add("show-right");
+  const right = document.querySelector<HTMLElement>("#right");
+  if (right) right.scrollTop = 0;
 }
 
 /** The slice's filament in grams at the profile's density. */
@@ -427,151 +444,120 @@ export function paintBanner() {
   else applySliceProgress(sliceSample(), session.liveProgress ? session.busyPhase : "");
 }
 
-export const closedGroups = new Set<string>();
+// Group cards
 
-export function group(title: string, body: string, level?: "simple" | "advanced" | "expert", tip?: string) {
-  const attr = level ? ` data-level="${level}"` : "";
-  return `<details ${closedGroups.has(title) ? "" : "open"} class="group" data-group="${title}"${attr}><summary${tipAttr(tip)}>${title}</summary><div class="stack">${body}</div></details>`;
+/** Groups the user closed, kept across sessions. */
+export const closedGroups = loadClosedGroups(GROUPS.filter((group) => group.closed).map((group) => group.id));
+
+export function noteGroupToggle(id: string, open: boolean) {
+  if (open) closedGroups.delete(id);
+  else closedGroups.add(id);
+  saveClosedGroups(closedGroups);
+}
+
+function groupCardHtml(group: GroupSpec, rules: Rules, ctx: SchemaContext): string {
+  const body = controlsOf(group.id).map((spec) => controlHtml(spec, rules, ctx)).join("");
+  const hidden = group.id === "objects" && !state.placed ? " hidden" : "";
+  return `<details class="group" data-group="${group.id}" data-level="${group.tier}" style="--hue: var(${group.accent})"${closedGroups.has(group.id) ? "" : " open"}${hidden}>
+    <summary class="group-head"><span class="group-tick" aria-hidden="true"></span><span class="group-title">${escapeHtml(group.title)}</span><span class="group-sum">${escapeHtml(group.summary(state, ctx))}</span><span class="group-chev" aria-hidden="true"></span></summary>
+    <div class="group-body">${body}</div>
+  </details>`;
+}
+
+const CUSTOM: Record<string, () => string> = {
+  strategyRows: strategyRowsHtml,
+  objectTools: objectToolsHtml,
+  objectList: objectListHtml,
+  objectPlace: objectPlaceHtml,
+  objectOverrides: () => {
+    const selected = selectedObject(state.plate);
+    return selected ? objectOverrideFields(selected) : "";
+  },
+  printOrderFields: () => printOrderFields(currentRules()),
+  modifiers: () => `<div class="subhead" data-tip="${escapeHtml(OVERRIDES_TIP)}">Modifiers</div>${overrideSectionHtml(state.overrides, state.selectedVolumeId, state.modifierTool)}`,
+  seamTools: () => toolRow([{ id: "seamPaintBtn", tool: "seam", label: "Paint seam", command: "paint-seam" }]),
+  supportTools: () => toolRow([
+    { id: "paintSupportsBtn", tool: "paint", label: "Paint", command: "paint-supports" },
+    { id: "editTreesBtn", tool: "supports", label: "Edit trees", command: "edit-supports" },
+  ]),
+  machine: machineHtml,
+};
+
+function controlHtml(spec: ControlSpec, rules: Rules, ctx: SchemaContext): string {
+  if (spec.rule && rules.hidden.has(spec.rule)) return "";
+  if (spec.when && !spec.when(state)) return "";
+  if (spec.kind.type === "custom") {
+    const body = CUSTOM[spec.id]?.() ?? "";
+    return body ? `<div class="slot" data-slot="${spec.id}" data-level="${spec.tier}">${body}</div>` : "";
+  }
+  const value = spec.get!(state);
+  const attrs = `data-level="${spec.tier}" data-label="${escapeHtml(spec.label.toLowerCase())}"${spec.keywords ? ` data-keywords="${escapeHtml(spec.keywords)}"` : ""}${tipAttr(spec.tip)}`;
+  const cls = `row setting${spec.parent ? " sub" : ""}`;
+  const label = `<span class="row-label">${escapeHtml(spec.label)}</span>`;
+  if (spec.kind.type === "check") {
+    return `<label class="${cls}" ${attrs}>${label}<input id="${spec.id}" type="checkbox" class="switch" role="switch" ${value ? "checked" : ""}/></label>`;
+  }
+  if (spec.kind.type === "select") {
+    const options = resolveOptions(spec.kind, ctx).map(([v, l]) => `<option value="${v}" ${v === value ? "selected" : ""}>${l}</option>`).join("");
+    return `<label class="${cls}" ${attrs}>${label}<select id="${spec.id}">${options}</select></label>`;
+  }
+  const max = resolveMax(spec.kind, ctx);
+  if (spec.kind.type === "range") {
+    return `<label class="${cls} range" ${attrs} id="${spec.id}Label">${label}<output class="row-out" for="${spec.id}">${value}%</output><input id="${spec.id}" type="range" min="${spec.kind.min}" max="${max}" step="${spec.kind.step}" value="${value}" /></label>`;
+  }
+  return `<label class="${cls}" ${attrs}>${label}<input id="${spec.id}" type="number" min="${spec.kind.min}" max="${max}" step="${spec.kind.step}" value="${value}" /></label>`;
 }
 
 function tipAttr(tip?: string) {
   return tip ? ` data-tip="${escapeHtml(tip)}"` : "";
 }
 
-export function num(id: string, label: string, value: number, min: number, max: number, step: number, level?: "simple" | "advanced" | "expert", tip?: string) {
-  const attr = level ? ` data-level="${level}"` : "";
-  return `<label class="field setting"${attr} data-label="${label.toLowerCase()}"${tipAttr(tip)}>${label}<input id="${id}" type="number" min="${min}" max="${max}" step="${step}" value="${value}" /></label>`;
+/** A field row the calibration sheet and the gear panel render outside the group cards. */
+export function fieldRow(id: string): string {
+  const spec = controlById(id);
+  if (!spec) return "";
+  return controlHtml(spec, currentRules(), schemaContext());
 }
 
-export function check(id: string, label: string, on: boolean, level?: "simple" | "advanced" | "expert", tip?: string) {
-  const attr = level ? ` data-level="${level}"` : "";
-  return `<label class="check setting"${attr} data-label="${label.toLowerCase()}"${tipAttr(tip)}><input id="${id}" type="checkbox" ${on ? "checked" : ""}/> ${label}</label>`;
+function kbdHtml(command: string): string {
+  const chord = keyOf(command);
+  return chord ? `<kbd>${escapeHtml(chordGlyphs(chord))}</kbd>` : "";
 }
 
-export function select(id: string, label: string, value: string, options: [string, string][], level?: "simple" | "advanced" | "expert", tip?: string) {
-  const attr = level ? ` data-level="${level}"` : "";
-  return `<label class="field setting"${attr} data-label="${label.toLowerCase()}"${tipAttr(tip)}>${label}<select id="${id}">${options.map(([v, l]) => `<option value="${v}" ${v === value ? "selected" : ""}>${l}</option>`).join("")}</select></label>`;
+function strategyRowsHtml(): string {
+  const current = card();
+  return `<div class="strat-list" role="group" aria-label="Strategy">${STRATEGY_ROWS.map((row) => `
+    <button class="strat" type="button" data-card="${row.id}" aria-pressed="${current === row.id}" data-tip="${escapeHtml(row.copy)}">
+      <i class="strat-swatch" data-swatch="${row.id}" aria-hidden="true"></i>
+      <span class="strat-name">${row.name}</span>
+      <small>${escapeHtml(row.copy)}</small>
+      ${kbdHtml(row.command)}
+    </button>`).join("")}</div>`;
 }
 
-export function cardBtn(id: CardId, title: string, copy: string) {
-  const cls = id === "toughness" || id === "layer" ? "tough" : id === "efficiency" ? "mid" : "speed";
-  return `<button class="card ${cls}" type="button" data-card="${id}" aria-pressed="${card() === id}"><h3>${title}</h3><p>${copy}</p></button>`;
+function icon(node: IconNode): string {
+  return createElement(node, { width: 15, height: 15, "aria-hidden": "true", class: "ico" }).outerHTML;
 }
 
-export function blendFields() {
-  if (state.blendKind === "weight") {
-    return `<label class="field" id="weightLabel">Toughness weight ${(state.toughness * 100).toFixed(0)}%<input id="weight" type="range" min="0" max="100" value="${Math.round(state.toughness * 100)}" /></label>`;
-  }
-  if (state.blendKind === "byLayer") {
-    return `${num("bottom", "Toughness from the bed, mm", state.bottomMm, 0, 200, 0.2)}${num("trans", "Transition into speed, mm", state.transitionMm, 0, 200, 0.2)}`;
-  }
-  if (state.blendKind === "byRegion") {
-    return `${select("axis", "Split axis", state.axis, [["x", "X"], ["y", "Y"]])}${num("at", "Split at mm", Number(state.atMm.toFixed(1)), -500, 500, 0.1)}`;
-  }
-  return "";
+function toolRow(buttons: { id: string; tool: string; label: string; command: string }[]): string {
+  return `<div class="row-tools">${buttons.map((b) => `<button class="btn" id="${b.id}" type="button" data-rail-tool="${b.tool}">${escapeHtml(b.label)} ${kbdHtml(b.command)}</button>`).join("")}</div>`;
 }
 
-export function paramLine(card: ResolvedCard) {
-  const row = (name: string, feed: number, eff: number) => `${name} <b>${feed.toFixed(0)}</b> mm/s · effective <b>${eff.toFixed(0)}</b><br>`;
-  const gyroid = card.pattern === "gyroid" && state.gyroid3d !== "off"
-    ? row("3D gyroid", card.gyroidSpeed, card.effectiveGyroid)
-    : "";
-  return `${card.name} · ${card.walls} walls · ${card.pattern} · ${(card.density * 100).toFixed(0)}%<br>${row("outer", card.outer, card.effectiveOuter)}${row("inner", card.inner, card.effectiveInner)}${row("sparse", card.sparse, card.effectiveSparse)}${gyroid}${row("top", card.top, card.effectiveTop)}`;
-}
-
-export function paramTable(card: ResolvedCard) {
-  if (state.blendKind === "byRegion") {
-    return `Split ${state.axis.toUpperCase()} = ${state.atMm.toFixed(1)} mm<br>Low side ${paramLine(resolved(1, state.layerHeight))}<br>High side ${paramLine(resolved(0, state.layerHeight))}`;
-  }
-  return paramLine(card);
-}
-
-export function layerReadout() {
-  const layer = state.result?.layers[state.layer];
-  if (!layer) return "";
-  const below = (state.result?.layers ?? []).slice(0, state.layer).reduce((s, l) => s + (l.seconds ?? 0), 0);
-  return `Layer <b>${layer.index + 1}</b> / ${state.result?.layers.length}<br>Z <b>${layer.z.toFixed(2)}</b> mm · h <b>${layer.height.toFixed(3)}</b><br>Layer time <b>${(layer.seconds ?? 0).toFixed(1)}</b> s · cumulative <b>${(below + (layer.seconds ?? 0)).toFixed(1)}</b> s<br>${escapeHtml(layer.note)}`;
-}
-
-export function triangleLine(src: number) {
-  return `${src} triangles`;
-}
-
-export function triangleMeta(result: SliceResponse | null) {
-  if (!result) return "";
-  const tol = result.mesh.outlineToleranceMm ?? 0;
-  const outline = tol > 0 ? ` · outline ${tol.toFixed(3)} mm` : "";
-  // An older reply has no counts, which is unknown, not zero.
-  const count = (n: number | undefined) => (typeof n === "number" ? String(n) : "—");
-  const repaired = count(result.mesh.repairedLayers);
-  const dropped = count(result.mesh.droppedChains);
-  return `Triangles <b>${result.mesh.triangles}</b>${outline}<br>Repaired layers ${repaired} · dropped chains ${dropped}`;
-}
-
-export function formatMs(ms: number) {
-  if (!Number.isFinite(ms)) return "—";
-  const n = Math.max(0, ms);
-  const text = n >= 100 ? `${n.toFixed(0)} ms` : `${n.toFixed(1)} ms`;
-  if (n >= 1000) return `${text} · ${(n / 1000).toFixed(n >= 10000 ? 1 : 2)} s`;
-  return text;
-}
-
-export function stageHtml(result: SliceResponse | null) {
-  const stages = result?.stages;
-  if (!result || !stages) return "";
-  const named = stages.contourMs + stages.supportMs + stages.toolpathMs + stages.orderMs + stages.combMs + stages.emitMs + (stages.roofMs ?? 0) + (stages.indexMs ?? 0);
-  const other = Math.max(0, result.coreMs - named);
-  const rows: [string, string, boolean][] = [
-    ["index", formatMs(stages.indexMs ?? 0), false],
-    ["contours", formatMs(stages.contourMs), false],
-    ["roofs", formatMs(stages.roofMs ?? 0), false],
-    ["supports", formatMs(stages.supportMs), false],
-    ["toolpaths", formatMs(stages.toolpathMs), false],
-    ["order", formatMs(stages.orderMs), false],
-    ["combing", formatMs(stages.combMs), false],
-    ["emit", formatMs(stages.emitMs), false],
-  ];
-  if ((stages.cutCpuMs ?? 0) + (stages.simplifyCpuMs ?? 0) >= 1) {
-    rows.splice(2, 0, ["cut cpu", formatMs(stages.cutCpuMs ?? 0), false], ["simplify cpu", formatMs(stages.simplifyCpuMs ?? 0), false]);
-  }
-  if ((stages.wallCpuMs ?? 0) + (stages.infillCpuMs ?? 0) >= 1) {
-    const at = rows.findIndex((row) => row[0] === "order");
-    rows.splice(at, 0, ["walls cpu", formatMs(stages.wallCpuMs ?? 0), false], ["infill cpu", formatMs(stages.infillCpuMs ?? 0), false]);
-  }
-  if (other >= 1) rows.push(["other", formatMs(other), false]);
-  rows.push(["core", formatMs(result.coreMs), true]);
-  const title: Record<string, string> = {
-    contours: "Cut every layer and simplify its outline",
-    order: "Serial travel order: island tour, seams, and scarf",
-    combing: "Travel routing inside each island and z-hop, in parallel",
-    other: "Untimed remainder of core: layer bands and roofs",
-    core: "Plan and G-code emit"
-  };
-  const body = rows
-    .map(([name, value, total]) => {
-      const tip = title[name] ? ` title="${title[name]}"` : "";
-      const cls = [total ? "total" : "", name === "travel" ? "sub" : ""].filter(Boolean).join(" ");
-      return `<tr${cls ? ` class="${cls}"` : ""}><td${tip}>${name}</td><td>${value}</td></tr>`;
-    })
-    .join("");
-  return `<div class="stages"><div class="meta">Slice stages</div><table class="stages">${body}</table></div>`;
-}
-
-export function estimateHtml() {
-  const est = state.result?.estimate;
-  if (!est) return "";
-  const groups = groupFeatures(est.byFeature ?? [], state.profile);
-  const total = Math.max(0.001, est.seconds);
-  const rows = groups.map((row) => `<tr><td>${row.label}</td><td>${row.seconds.toFixed(0)} s</td><td>${row.grams.toFixed(2)} g</td><td><div class="bar"><span style="width:${Math.min(100, (row.seconds / total) * 100)}%"></span></div></td></tr>`).join("");
-  const meters = (est.filamentMm / 1000).toFixed(2);
-  const grams = filamentGrams(est.filamentMm, state.profile);
-  const cost = filamentCost(grams, state.profile).toFixed(2);
-  return `
-    <div class="meta" data-tip="Filament €${state.profile.filamentCostPerKg.toFixed(2)} / kg from the printer profile."><b>${formatTime(est.seconds)}</b> · <b id="estGrams">${grams.toFixed(2)} g</b> · ${meters} m · €<span id="estCost">${cost}</span></div>
-    <table class="est">${rows}</table>
-    <div class="chips">${chips()}</div>
-    <div class="meta">${est.arcMoves} arcs · ${est.retracts ?? 0} retracts · ${(est.travelMm ?? 0).toFixed(0)} mm travel · ${est.scarfedLoops ?? 0} scarfed loops</div>
-  `;
+function objectToolsHtml(): string {
+  const many = state.plate.objects.length > 1;
+  const tool = (id: string, node: IconNode, tip: string, extra = "", aria = tip) =>
+    `<button class="tool-btn" id="${id}" type="button" data-tip="${escapeHtml(tip)}" aria-label="${escapeHtml(aria)}"${extra}>${icon(node)}</button>`;
+  const spin = (axis: "X" | "Y" | "Z") =>
+    `<button class="tool-btn" id="rot${axis}" type="button" data-tip="Rotate 90° around ${axis}" aria-label="Rotate 90 degrees around ${axis}">${icon(RotateCw)}<sub>${axis.toLowerCase()}</sub></button>`;
+  return `<div class="obj-tools" role="toolbar" aria-label="Object tools">
+    ${tool("plateAdd", Plus, "Add object")}
+    ${tool("plateDuplicate", Copy, "Duplicate")}
+    ${tool("plateArrange", LayoutGrid, "Arrange", many ? "" : " disabled")}
+    ${tool("center", Crosshair, "Center on bed")}
+    ${tool("layflat", ArrowDownToLine, "Lay flat")}
+    <span class="tool-sep" aria-hidden="true"></span>
+    ${spin("X")}${spin("Y")}${spin("Z")}
+  </div>`;
 }
 
 export function isStepName(name: string) {
@@ -580,6 +566,62 @@ export function isStepName(name: string) {
 
 export function needsEngine(name: string) {
   return /\.(3mf|step|stp)$/i.test(name);
+}
+
+function plateRows() {
+  const bedX = state.profile.bedX;
+  const bedY = state.profile.bedY;
+  const bedZ = state.profile.bedZ;
+  const library = loadMachineLibrary();
+  const rules = currentRules(library);
+  const beltWidth = beltStamp(library)?.widthMm ?? bedX;
+  const limit = (bounds: Parameters<typeof offBed>[0]) => offBed(bounds, rules.belt ? beltWidth : bedX, bedY, bedZ, rules.belt);
+  const rows = state.plate.objects.map((obj) => ({ obj, part: placeObject(obj, bedX, bedY) }));
+  return { rows, limit };
+}
+
+function objectListHtml(): string {
+  if (!state.placed) return "";
+  const { rows, limit } = plateRows();
+  const pairs = overlapPairs(rows.map(({ obj, part }) => ({ id: obj.id, name: obj.name, bounds: part.bounds })));
+  const many = rows.length > 1;
+  const list = rows.map(({ obj, part }) => {
+    const notes = limit(part.bounds);
+    const selected = obj.id === state.plate.selectedId;
+    return `
+      <div class="obj obj-row" role="listitem" data-plate-id="${escapeHtml(obj.id)}" data-selected="${selected ? "true" : "false"}">
+        <button class="obj-select" type="button" data-plate-select="${escapeHtml(obj.id)}" aria-pressed="${selected ? "true" : "false"}">
+          <b>${escapeHtml(obj.name)}</b>
+          <span>${boundsSize(part.bounds)} mm · ${triangleLine(obj.sourcePos.length / 9)}${notes.length ? ` · ${escapeHtml(notes.join("; "))}` : ""}</span>
+        </button>
+        ${many ? `<button class="btn obj-remove" type="button" data-plate-remove="${escapeHtml(obj.id)}" aria-label="Remove ${escapeHtml(obj.name)}">Remove</button>` : ""}
+      </div>`;
+  }).join("");
+  const overlap = pairs.map((pair) => pair.line).join("; ");
+  return `
+    <div class="object-list" id="objectList"><div role="list">${list || `<div class="obj" role="listitem"><b>${escapeHtml(state.mesh?.name ?? "part")}</b><span>${boundsSize(state.placed.bounds)} mm · ${triangleLine(state.placed.canonical.length / 9)}</span></div>`}</div></div>
+    ${overlap ? `<div class="meta warn-text" id="plateOverlap">${escapeHtml(overlap)} <button class="btn" type="button" data-plate-arrange>Arrange</button></div>` : ""}`;
+}
+
+function objectPlaceHtml(): string {
+  if (!state.placed) return "";
+  const { limit } = plateRows();
+  const selected = selectedObject(state.plate);
+  const selectedPart = selected ? placeObject(selected, state.profile.bedX, state.profile.bedY) : state.placed;
+  const b = selectedPart.bounds;
+  const cx = ((b.min[0] + b.max[0]) / 2).toFixed(1);
+  const cy = ((b.min[1] + b.max[1]) / 2).toFixed(1);
+  const z0 = b.min[2].toFixed(1);
+  const selectedNotes = limit(b);
+  return `
+    ${selectedNotes.length ? `<div class="meta warn-text">${selectedNotes.join("; ")}</div>` : ""}
+    <div class="grid3" id="placeXY" data-bed-z="${z0}">
+      <label class="setting" data-label="position x" data-keywords="placement move bed offset">X mm<input id="placeX" type="number" step="1" value="${cx}" aria-label="Position X" /></label>
+      <label class="setting" data-label="position y" data-keywords="placement move bed offset">Y mm<input id="placeY" type="number" step="1" value="${cy}" aria-label="Position Y" /></label>
+      <label class="setting" data-label="scale %" data-keywords="placement size percent">Scale %<input id="partScale" type="number" min="10" max="400" step="5" value="${Math.round(state.partScale * 100)}" /></label>
+    </div>
+    ${isStepName(state.mesh?.name ?? "") ? `<label class="row setting" data-label="step chord mm" data-keywords="tessellation tolerance"><span class="row-label">STEP chord mm</span><input id="stepTol" type="number" min="0.01" max="2" step="0.01" value="${state.stepTolerance}" /></label>` : ""}
+  `;
 }
 
 const SEQUENTIAL = {
@@ -671,8 +713,8 @@ function printOrderFields(rules: Rules): string {
   const clearance = state.sequentialClearance > 0 ? String(state.sequentialClearance) : "";
   const gantry = state.sequentialGantry > 0 ? String(state.sequentialGantry) : "";
   return `
-    ${select("printOrder", "Print order", state.printOrder, [["all-at-once", "All at once"], ["sequential", "One at a time"]], undefined, "One at a time: one object finishes, including its supports, before the next starts, and the nozzle climbs above the printed ones before it moves on. Clearance is how far your toolhead reaches around the nozzle, 35 mm when empty. Gantry height is from the nozzle tip to the gantry, 20 mm when empty; only the last object may be taller. Too close or too tall is an error and no G-code.")}
-    ${state.printOrder === "sequential" ? `<label class="field setting" data-label="sequential clearance" data-keywords="one at a time gap nozzle toolhead">Toolhead clearance mm<input id="seqclear" type="number" min="0" max="100" step="0.1" placeholder="35" value="${clearance}" aria-label="Sequential clearance" /></label><label class="field setting" data-label="sequential gantry height" data-keywords="one at a time gantry height">Gantry height mm<input id="seqgantry" type="number" min="0" max="500" step="0.1" placeholder="20" value="${gantry}" aria-label="Sequential gantry height" /></label>` : ""}`;
+    <label class="row setting" data-label="print order" data-keywords="sequential one at a time" data-tip="One at a time: one object finishes, including its supports, before the next starts, and the nozzle climbs above the printed ones before it moves on. Clearance is how far your toolhead reaches around the nozzle, 35 mm when empty. Gantry height is from the nozzle tip to the gantry, 20 mm when empty; only the last object may be taller. Too close or too tall is an error and no G-code."><span class="row-label">Print order</span><select id="printOrder"><option value="all-at-once"${state.printOrder === "all-at-once" ? " selected" : ""}>All at once</option><option value="sequential"${state.printOrder === "sequential" ? " selected" : ""}>One at a time</option></select></label>
+    ${state.printOrder === "sequential" ? `<label class="row setting sub" data-label="sequential clearance" data-keywords="one at a time gap nozzle toolhead"><span class="row-label">Toolhead clearance mm</span><input id="seqclear" type="number" min="0" max="100" step="0.1" placeholder="35" value="${clearance}" aria-label="Sequential clearance" /></label><label class="row setting sub" data-label="sequential gantry height" data-keywords="one at a time gantry height"><span class="row-label">Gantry height mm</span><input id="seqgantry" type="number" min="0" max="500" step="0.1" placeholder="20" value="${gantry}" aria-label="Sequential gantry height" /></label>` : ""}`;
 }
 
 function objectOverrideFields(obj: NonNullable<ReturnType<typeof selectedObject>>): string {
@@ -681,97 +723,146 @@ function objectOverrideFields(obj: NonNullable<ReturnType<typeof selectedObject>
   const speed = obj.settings.speed;
   const shown = (value: number | undefined) => (value === undefined ? "" : String(value));
   return `
-    <div class="place-xy" data-tip="Empty keeps the strategy. A height range or a modifier still wins on a field it sets.">
-      <label class="field setting" data-label="object infill" data-keywords="per object density percent">Infill %
+    <div class="grid3" data-tip="Empty keeps the strategy. A height range or a modifier still wins on a field it sets.">
+      <label class="setting" data-label="object infill" data-keywords="per object density percent">Infill %
         <input id="objInfill" type="number" min="0" max="100" step="5" placeholder="strategy" value="${infill === undefined ? "" : String(Math.round(infill * 100))}" aria-label="Object infill percent" />
       </label>
-      <label class="field setting" data-label="object walls" data-keywords="per object perimeters">Walls
+      <label class="setting" data-label="object walls" data-keywords="per object perimeters">Walls
         <input id="objWalls" type="number" min="1" max="12" step="1" placeholder="strategy" value="${shown(walls)}" aria-label="Object walls" />
       </label>
-      <label class="field setting" data-label="object speed" data-keywords="per object speed cap">Speed mm/s
+      <label class="setting" data-label="object speed" data-keywords="per object speed cap">Speed mm/s
         <input id="objSpeed" type="number" min="1" max="1000" step="5" placeholder="strategy" value="${shown(speed)}" aria-label="Object speed cap" />
       </label>
     </div>`;
 }
 
-export function objectList() {
-  if (!state.placed) return "";
-  const bedX = state.profile.bedX;
-  const bedY = state.profile.bedY;
-  const bedZ = state.profile.bedZ;
-  const library = loadMachineLibrary();
-  const rules = currentRules(library);
-  const beltWidth = beltStamp(library)?.widthMm ?? bedX;
-  const limit = (bounds: Parameters<typeof offBed>[0]) => offBed(bounds, rules.belt ? beltWidth : bedX, bedY, bedZ, rules.belt);
-  const rows = state.plate.objects.length > 0
-    ? state.plate.objects.map((obj) => ({ obj, part: placeObject(obj, bedX, bedY) }))
-    : [];
-  const pairs = overlapPairs(rows.map(({ obj, part }) => ({ id: obj.id, name: obj.name, bounds: part.bounds })));
-  const many = rows.length > 1;
-  const list = rows.map(({ obj, part }) => {
-    const notes = limit(part.bounds);
-    const selected = obj.id === state.plate.selectedId;
-    return `
-      <div class="obj obj-row" role="listitem" data-plate-id="${escapeHtml(obj.id)}" data-selected="${selected ? "true" : "false"}">
-        <button class="obj-select" type="button" data-plate-select="${escapeHtml(obj.id)}" aria-pressed="${selected ? "true" : "false"}">
-          <b>${escapeHtml(obj.name)}</b>
-          <span>${triangleLine(obj.sourcePos.length / 9)} ·${boundsSize(part.bounds)} mm${notes.length ? ` · ${escapeHtml(notes.join("; "))}` : ""}</span>
-        </button>
-        ${many ? `<button class="btn" type="button" data-plate-remove="${escapeHtml(obj.id)}" aria-label="Remove ${escapeHtml(obj.name)}">Remove</button>` : ""}
-      </div>`;
-  }).join("");
-  const selected = selectedObject(state.plate);
-  const selectedPart = selected ? placeObject(selected, bedX, bedY) : state.placed;
-  const b = selectedPart.bounds;
-  const cx = ((b.min[0] + b.max[0]) / 2).toFixed(1);
-  const cy = ((b.min[1] + b.max[1]) / 2).toFixed(1);
-  const z0 = b.min[2].toFixed(1);
-  const selectedNotes = limit(b);
-  const overlap = pairs.map((pair) => pair.line).join("; ");
-  return `
-    <div role="list">${list || `<div class="obj" role="listitem"><b>${escapeHtml(state.mesh?.name ?? "part")}</b><span>${triangleLine(state.placed.canonical.length / 9)} · ${boundsSize(state.placed.bounds)} mm</span></div>`}</div>
-    <div class="row">
-      <button class="btn" id="plateAdd" type="button">Add object</button>
-      <button class="btn" id="plateDuplicate" type="button">Duplicate</button>
-      <button class="btn" id="plateArrange" type="button" ${many ? "" : "disabled"}>Arrange</button>
-      <button class="btn" id="center" type="button">Center</button>
-      <button class="btn" id="layflat" type="button">Lay flat</button>
-      <button class="btn" id="rotX" type="button" aria-label="Rotate 90 degrees around X">Rot X</button>
-      <button class="btn" id="rotY" type="button" aria-label="Rotate 90 degrees around Y">Rot Y</button>
-      <button class="btn" id="rotZ" type="button" aria-label="Rotate 90 degrees around Z">Rot Z</button>
-      <button class="btn" id="export3mf" type="button">Export 3MF</button>
-    </div>
-    <label class="field setting" data-label="scale %" data-keywords="placement size percent">Scale %<input id="partScale" type="number" min="10" max="400" step="5" value="${Math.round(state.partScale * 100)}" /></label>
-    ${isStepName(state.mesh?.name ?? "") ? num("stepTol", "STEP chord mm", state.stepTolerance, 0.01, 2, 0.01) : ""}
-    ${printOrderFields(rules)}
-    ${overlap ? `<div class="meta warn-text" id="plateOverlap">${escapeHtml(overlap)} <button class="btn" type="button" data-plate-arrange>Arrange</button></div>` : ""}
-    ${selectedNotes.length ? `<div class="meta warn-text">${selectedNotes.join("; ")}</div>` : ""}
-    <div class="place-xy" id="placeXY" data-bed-z="${z0}">
-      <label class="field setting" data-label="position x" data-keywords="placement move bed offset">X mm<input id="placeX" type="number" step="1" value="${cx}" aria-label="Position X" /></label>
-      <label class="field setting" data-label="position y" data-keywords="placement move bed offset">Y mm<input id="placeY" type="number" step="1" value="${cy}" aria-label="Position Y" /></label>
-    </div>
-    ${selected ? objectOverrideFields(selected) : ""}
-  `;
-}
-
-export function profileFields() {
+function machineHtml() {
   const p = state.profile;
   const library = loadMachineLibrary();
   const rules = currentRules(library);
+  return machineSectionHtml(library, { advance: state[ADVANCE[rules.firmware].key], nozzleTemp: p.nozzleTemp, bedTemp: p.bedTemp, flow: state.flow }, rules, prusaSummary());
+}
+
+export function paramLine(card: ResolvedCard) {
+  const row = (name: string, feed: number, eff: number) => `${name} <b>${feed.toFixed(0)}</b> mm/s · effective <b>${eff.toFixed(0)}</b><br>`;
+  const gyroid = card.pattern === "gyroid" && state.gyroid3d !== "off"
+    ? row("3D gyroid", card.gyroidSpeed, card.effectiveGyroid)
+    : "";
+  return `${card.name} · ${card.walls} walls · ${card.pattern} · ${(card.density * 100).toFixed(0)}%<br>${row("outer", card.outer, card.effectiveOuter)}${row("inner", card.inner, card.effectiveInner)}${row("sparse", card.sparse, card.effectiveSparse)}${gyroid}${row("top", card.top, card.effectiveTop)}`;
+}
+
+export function paramTable(card: ResolvedCard) {
+  if (state.blendKind === "byRegion") {
+    return `Split ${state.axis.toUpperCase()} = ${state.atMm.toFixed(1)} mm<br>Low side ${paramLine(resolved(1, state.layerHeight))}<br>High side ${paramLine(resolved(0, state.layerHeight))}`;
+  }
+  return paramLine(card);
+}
+
+export function layerReadout() {
+  const layer = state.result?.layers[state.layer];
+  if (!layer) return "";
+  const below = (state.result?.layers ?? []).slice(0, state.layer).reduce((s, l) => s + (l.seconds ?? 0), 0);
+  return `Layer <b>${layer.index + 1}</b> / ${state.result?.layers.length}<br>Z <b>${layer.z.toFixed(2)}</b> mm · h <b>${layer.height.toFixed(3)}</b><br>Layer time <b>${(layer.seconds ?? 0).toFixed(1)}</b> s · cumulative <b>${(below + (layer.seconds ?? 0)).toFixed(1)}</b> s<br>${escapeHtml(layer.note)}`;
+}
+
+export function triangleLine(src: number) {
+  return `${src} triangles`;
+}
+
+export function triangleMeta(result: SliceResponse | null) {
+  if (!result) return "";
+  const tol = result.mesh.outlineToleranceMm ?? 0;
+  const outline = tol > 0 ? ` · outline ${tol.toFixed(3)} mm` : "";
+  // An older reply has no counts, which is unknown, not zero.
+  const count = (n: number | undefined) => (typeof n === "number" ? String(n) : "—");
+  const repaired = count(result.mesh.repairedLayers);
+  const dropped = count(result.mesh.droppedChains);
+  return `Triangles <b>${result.mesh.triangles}</b>${outline}<br>Repaired layers ${repaired} · dropped chains ${dropped}`;
+}
+
+export function formatMs(ms: number) {
+  if (!Number.isFinite(ms)) return "—";
+  const n = Math.max(0, ms);
+  const text = n >= 100 ? `${n.toFixed(0)} ms` : `${n.toFixed(1)} ms`;
+  if (n >= 1000) return `${text} · ${(n / 1000).toFixed(n >= 10000 ? 1 : 2)} s`;
+  return text;
+}
+
+export function stageHtml(result: SliceResponse | null) {
+  const stages = result?.stages;
+  if (!result || !stages) return "";
+  const named = stages.contourMs + stages.supportMs + stages.toolpathMs + stages.orderMs + stages.combMs + stages.emitMs + (stages.roofMs ?? 0) + (stages.indexMs ?? 0);
+  const other = Math.max(0, result.coreMs - named);
+  const rows: [string, string, boolean][] = [
+    ["index", formatMs(stages.indexMs ?? 0), false],
+    ["contours", formatMs(stages.contourMs), false],
+    ["roofs", formatMs(stages.roofMs ?? 0), false],
+    ["supports", formatMs(stages.supportMs), false],
+    ["toolpaths", formatMs(stages.toolpathMs), false],
+    ["order", formatMs(stages.orderMs), false],
+    ["combing", formatMs(stages.combMs), false],
+    ["emit", formatMs(stages.emitMs), false],
+  ];
+  if ((stages.cutCpuMs ?? 0) + (stages.simplifyCpuMs ?? 0) >= 1) {
+    rows.splice(2, 0, ["cut cpu", formatMs(stages.cutCpuMs ?? 0), false], ["simplify cpu", formatMs(stages.simplifyCpuMs ?? 0), false]);
+  }
+  if ((stages.wallCpuMs ?? 0) + (stages.infillCpuMs ?? 0) >= 1) {
+    const at = rows.findIndex((row) => row[0] === "order");
+    rows.splice(at, 0, ["walls cpu", formatMs(stages.wallCpuMs ?? 0), false], ["infill cpu", formatMs(stages.infillCpuMs ?? 0), false]);
+  }
+  if (other >= 1) rows.push(["other", formatMs(other), false]);
+  rows.push(["core", formatMs(result.coreMs), true]);
+  const title: Record<string, string> = {
+    contours: "Cut every layer and simplify its outline",
+    order: "Serial travel order: island tour, seams, and scarf",
+    combing: "Travel routing inside each island and z-hop, in parallel",
+    other: "Untimed remainder of core: layer bands and roofs",
+    core: "Plan and G-code emit"
+  };
+  const body = rows
+    .map(([name, value, total]) => {
+      const tip = title[name] ? ` title="${title[name]}"` : "";
+      const cls = [total ? "total" : "", name === "travel" ? "sub" : ""].filter(Boolean).join(" ");
+      return `<tr${cls ? ` class="${cls}"` : ""}><td${tip}>${name}</td><td>${value}</td></tr>`;
+    })
+    .join("");
+  return `<div class="stages"><div class="meta">Slice stages</div><table class="stages">${body}</table></div>`;
+}
+
+/** The feature each estimate row is colored as. */
+const ROW_KIND: Record<string, string> = { "Outer wall": "outer", "Inner wall": "inner", Infill: "sparse", "Top / bottom": "top", Ironing: "ironing", Supports: "support", Travel: "travel" };
+
+function clockTime(seconds: number) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.round(seconds % 60);
+  const mm = String(h ? m : m).padStart(h ? 2 : 1, "0");
+  return `${h ? `${h}:` : ""}${mm}:${String(s).padStart(2, "0")}`;
+}
+
+export function estimateHtml() {
+  const est = state.result?.estimate;
+  if (!est) return "";
+  const groups = groupFeatures(est.byFeature ?? [], state.profile);
+  const longest = Math.max(0.001, ...groups.map((row) => row.seconds));
+  const rows = groups.map((row) => {
+    const kind = ROW_KIND[row.label];
+    const color = kind ? featureColor(kind) : OTHER_COLOR;
+    return `<tr><td>${row.label}</td><td><div class="bar"><span style="width:${Math.min(100, (row.seconds / longest) * 100)}%;background:${color}"></span></div></td><td>${row.seconds.toFixed(0)} s</td><td>${row.grams.toFixed(2)} g</td></tr>`;
+  }).join("");
+  const meters = (est.filamentMm / 1000).toFixed(2);
+  const grams = filamentGrams(est.filamentMm, state.profile);
+  const cost = filamentCost(grams, state.profile).toFixed(2);
+  const hours = est.seconds >= 3600;
   return `
-    ${machineSectionHtml(library, { advance: state[ADVANCE[rules.firmware].key], nozzleTemp: p.nozzleTemp, bedTemp: p.bedTemp, flow: state.flow }, rules, prusaSummary())}
-    ${num("nozzle", "Nozzle mm", p.nozzleDiameter, 0.15, 1.2, 0.05, "simple")}
-    ${num("bedx", "Bed X mm", p.bedX, 50, 1000, 1, "simple")}
-    ${num("bedy", "Bed Y mm", p.bedY, 50, 1000, 1, "simple")}
-    ${num("bedz", "Bed Z mm", p.bedZ, 20, 1000, 1, "simple")}
-    ${num("vol", "Max flow mm³/s", p.maxVolumetricMm3S, 1, 60, 0.5, "advanced")}
-    ${num("accel", "Max accel mm/s²", p.maxAccel, 100, 20000, 100, "advanced")}
-    ${num("density", "Density g/cm³", p.filamentDensityGCm3, 0.8, 2.5, 0.01, "advanced")}
-    ${num("cost", "Filament €/kg", p.filamentCostPerKg, 0, 200, 1, "advanced")}
-    <div class="row">
-      <button class="btn" id="profileExport" type="button">Export JSON</button>
-      <label class="btn file">Import JSON<input id="profileImport" type="file" accept="application/json,.json" /></label>
+    <div class="big" data-tip="Filament €${state.profile.filamentCostPerKg.toFixed(2)} / kg from the filament.">
+      <div><b>${clockTime(est.seconds)}</b><small>${hours ? "h:min:s" : "min:s"}</small></div>
+      <div><b id="estGrams">${grams.toFixed(2)} g</b><small>€<span id="estCost">${cost}</span> · ${meters} m</small></div>
     </div>
+    <h4 class="sub">Time by feature</h4>
+    <table class="est">${rows}</table>
+    <div class="chips">${chips()}</div>
+    <div class="meta">${est.arcMoves} arcs · ${est.retracts ?? 0} retracts · ${(est.travelMm ?? 0).toFixed(0)} mm travel · ${est.scarfedLoops ?? 0} scarfed loops</div>
   `;
 }
 
@@ -848,16 +939,16 @@ function profileHeaderHtml() {
         <option value="">Current</option>
         ${options}
       </select>
-      <button class="btn history-btn" id="profileSave" type="button">Save</button>
-      <details class="profile-more">
-        <summary class="btn history-btn" aria-label="Profile actions">More</summary>
+      <button class="btn" id="profileSave" type="button">Save</button>
+      <details class="profile-more menu">
+        <summary class="btn" aria-label="Profile actions" data-tip="Rename, duplicate, delete, export or import a profile">More</summary>
         <div class="profile-actions">
           <input id="profileName" type="text" aria-label="Profile name" placeholder="Profile name" />
-          <button class="btn history-btn" id="profileRename" type="button">Rename</button>
-          <button class="btn history-btn" id="profileDuplicate" type="button">Duplicate</button>
-          <button class="btn history-btn" id="profileDelete" type="button">Delete</button>
-          <button class="btn history-btn" id="settingsProfileExport" type="button">Export</button>
-          <label class="btn history-btn file">Import<input id="profileFile" type="file" accept=".limeprofile.json,application/json" /></label>
+          <button class="btn" id="profileRename" type="button">Rename</button>
+          <button class="btn" id="profileDuplicate" type="button">Duplicate</button>
+          <button class="btn" id="profileDelete" type="button">Delete</button>
+          <button class="btn" id="settingsProfileExport" type="button">Export</button>
+          <label class="btn file">Import<input id="profileFile" type="file" accept=".limeprofile.json,application/json" /></label>
         </div>
       </details>
     </div>`;
@@ -871,25 +962,6 @@ export function currentPreset(): PresetSettings {
   return out;
 }
 
-export function presetHtml() {
-  const saved = readPresets();
-  const names = Object.keys(saved).sort();
-  // Called while the previous panel is still in the document, so a slice
-  // finishing between choosing a preset and loading it does not drop the choice.
-  const picked = document.querySelector<HTMLSelectElement>("#presetPick")?.value ?? "";
-  const options = names.map((name) => `<option value="${escapeHtml(name)}"${name === picked ? " selected" : ""}>${escapeHtml(name)}</option>`).join("");
-  return `
-    <label class="field">Saved<select id="presetPick"><option value="">Choose…</option>${options}</select></label>
-    <div class="stack" style="flex-direction:row;flex-wrap:wrap">
-      <button class="btn" id="presetLoad" type="button">Load</button>
-      <button class="btn" id="presetDelete" type="button">Delete</button>
-    </div>
-    <label class="field">Name<input id="presetName" type="text" placeholder="bench speed" /></label>
-    <button class="btn" id="presetSave" type="button" disabled>Save preset</button>
-    <div class="meta diff" id="presetDiff">${presetDiffHtml()}</div>
-  `;
-}
-
 export function applyPreset(next: PresetSettings) {
   noteEdit();
   for (const key of presetKeys()) {
@@ -898,17 +970,6 @@ export function applyPreset(next: PresetSettings) {
   state.splitCustom = true;
   if (state.blendKind === "byRegion") fx.realignSplit("open");
   touch();
-}
-
-export function paintPresetDiff() {
-  const node = document.querySelector("#presetDiff");
-  if (!node) return;
-  node.innerHTML = presetDiffHtml();
-}
-
-function presetDiffHtml() {
-  const diff = diffPreset(currentPreset());
-  return diff.length ? `<b>Vs default</b><br>${diff.map((line) => escapeHtml(line)).join("<br>")}` : "";
 }
 
 function restoreFindCaret(focused: boolean, selStart: number | null, selEnd: number | null) {
@@ -924,8 +985,8 @@ function restoreFindCaret(focused: boolean, selStart: number | null, selEnd: num
 
 /** The panel that actually scrolls: `#left` on the desktop, the phone sheet body in compact. */
 export function settingsScroller(): HTMLElement | null {
-  const row = document.querySelector(".find-row");
-  let node = row?.parentElement ?? null;
+  const head = document.querySelector(".panel-head");
+  let node = head?.parentElement ?? null;
   while (node) {
     const oy = getComputedStyle(node).overflowY;
     if (oy === "auto" || oy === "scroll" || oy === "overlay") return node;
@@ -935,14 +996,14 @@ export function settingsScroller(): HTMLElement | null {
 }
 
 export function syncFindStuck() {
-  const row = document.querySelector(".find-row");
+  const head = document.querySelector(".panel-head");
   const scroller = settingsScroller();
-  if (!row || !scroller) return;
+  if (!head || !scroller) return;
   const style = getComputedStyle(scroller);
-  const fromTop = row.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+  const fromTop = head.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
   const stickyLine = (parseFloat(style.paddingTop) || 0) + 2;
   const stuck = scroller.scrollTop > 2 && fromTop <= stickyLine;
-  row.classList.toggle("is-stuck", stuck);
+  head.classList.toggle("is-stuck", stuck);
 }
 
 export function scrollSettingsToQuery() {
@@ -953,8 +1014,8 @@ export function scrollSettingsToQuery() {
   if (!match) {
     scroller.scrollTop = 0;
   } else {
-    const row = document.querySelector(".find-row");
-    const gap = (row?.getBoundingClientRect().height ?? 0) + 4;
+    const head = document.querySelector(".panel-head");
+    const gap = (head?.getBoundingClientRect().height ?? 0) + 4;
     const delta = match.getBoundingClientRect().top - scroller.getBoundingClientRect().top - gap;
     scroller.scrollTop = Math.max(0, scroller.scrollTop + delta);
   }
@@ -976,20 +1037,39 @@ export function clearSettingsSearch() {
   scrollSettingsToQuery();
 }
 
+function rowTier(el: HTMLElement): Tier {
+  const tier = el.dataset.level;
+  return tier === "advanced" || tier === "expert" ? tier : "simple";
+}
+
+/**
+ * Search rows across every tier, and in a tier hide the groups and slots with nothing left to
+ * show. A search opens the groups it matches in; clearing it puts the remembered collapse back.
+ */
 export function applyFilter() {
   const q = state.query.trim();
-  document.querySelector("#left")?.classList.toggle("is-searching", !!q);
+  const level = loadSettingsLevel();
+  const left = document.querySelector("#left");
+  left?.classList.toggle("is-searching", !!q);
+  const shows = (el: HTMLElement) => !el.classList.contains("hidden") && (!!q || shownAtLevel(rowTier(el), level));
   document.querySelectorAll<HTMLElement>("#left .setting").forEach((el) => {
     const control = el.querySelector("input, select, textarea");
     const id = control instanceof HTMLElement ? control.id : "";
-    const keywords = `${el.dataset.keywords ?? ""} ${SETTING_KEYWORDS[id] ?? ""}`;
-    el.classList.toggle("hidden", !settingMatches(q, el.dataset.label ?? "", keywords));
+    const keywords = `${el.dataset.keywords ?? ""} ${keywordsOf(id)}`;
+    const match = settingMatches(q, el.dataset.label ?? "", keywords);
+    el.classList.toggle("hidden", !match);
+    el.classList.toggle("is-match", !!q && match);
+  });
+  document.querySelectorAll<HTMLElement>("#left .slot").forEach((slot) => {
+    const settings = [...slot.querySelectorAll<HTMLElement>(".setting")];
+    slot.classList.toggle("hidden", !!q && !settings.some((el) => !el.classList.contains("hidden")));
   });
   document.querySelectorAll<HTMLDetailsElement>("#left .group").forEach((group) => {
-    const settings = [...group.querySelectorAll<HTMLElement>(".setting")];
-    const any = settings.some((el) => !el.classList.contains("hidden"));
-    group.classList.toggle("hidden", !!q && settings.length > 0 && !any);
+    const rows = [...group.querySelectorAll<HTMLElement>(".setting, .slot")];
+    const any = q ? rows.some((el) => el.classList.contains("setting") && shows(el)) : shownAtLevel(rowTier(group), level) && rows.some(shows);
+    group.classList.toggle("hidden", !any);
     if (q && any) group.open = true;
+    else if (!q) group.open = !closedGroups.has(group.dataset.group ?? "");
   });
 }
 
@@ -999,8 +1079,8 @@ export function onBlend(ev: Event) {
   const t = ev.target as HTMLInputElement;
   if (t.id === "weight") {
     state.toughness = Number(t.value) / 100;
-    const label = document.querySelector("#weightLabel");
-    if (label?.firstChild) label.firstChild.textContent = `Toughness weight ${(state.toughness * 100).toFixed(0)}%`;
+    const out = document.querySelector("#weightLabel .row-out");
+    if (out) out.textContent = `${(state.toughness * 100).toFixed(0)}%`;
     const node = document.querySelector("#resolved");
     if (node) node.innerHTML = paramTable(resolved(state.toughness, state.layerHeight));
     markStale();
@@ -1019,28 +1099,97 @@ export function onBlend(ev: Event) {
     state.atMm = Number.isFinite(next) ? next : 0;
     state.splitCustom = true;
   }
-  if (t.id === "price") {
-    state.pricePerKg = Number(t.value) || 0;
-    const est = document.querySelector("#estimate");
-    if (est) est.innerHTML = estimateHtml();
-    return;
-  }
   markStale();
-  if (t.id === "bottom" || t.id === "trans" || t.id === "at" || t.id === "axis") {
-    fx.paintSlider();
-    fx.draw();
-    const node = document.querySelector("#resolved");
-    if (node) node.innerHTML = paramTable(resolved(currentWeight(), state.layerHeight));
+  fx.paintSlider();
+  fx.draw();
+  const node = document.querySelector("#resolved");
+  if (node) node.innerHTML = paramTable(resolved(currentWeight(), state.layerHeight));
+}
+
+/** Picks the strategy a row stands for. */
+export function pickStrategy(id: CardId) {
+  noteEdit();
+  if (id === "speed") { state.blendKind = "single"; state.strategy = "speed"; }
+  else if (id === "toughness") { state.blendKind = "single"; state.strategy = "toughness"; }
+  else if (id === "efficiency") { state.blendKind = "weight"; state.toughness = 0.5; }
+  else if (id === "layer") state.blendKind = "byLayer";
+  else {
+    state.blendKind = "byRegion";
+    fx.realignSplit("open");
   }
+  touch();
+}
+
+/** The number a field holds, or the factory value when the text is not one. */
+function readNumber(spec: ControlSpec, raw: string): number {
+  const n = Number(raw);
+  const min = spec.kind.type === "number" || spec.kind.type === "range" ? spec.kind.min : 0;
+  if (Number.isFinite(n) && raw.trim() !== "" && !(n === 0 && min > 0)) return n;
+  const fallback = spec.preset ? DEFAULT_PRESET[spec.preset] : spec.get?.(state);
+  return typeof fallback === "number" ? fallback : 0;
+}
+
+/** What follows a stored value besides a stale mark: printer profile writes, the retract store, and estimate repaints. */
+function afterSet(spec: ControlSpec, value: number | boolean | string): "stale" | "done" {
+  switch (spec.id) {
+    case "supports":
+      setSmartSupports(value as boolean);
+      return "stale";
+    case "retractset":
+      if (value) noteRetract(state.retractLength, Math.abs(state.retractSpeed - 30) < 1e-6 ? null : state.retractSpeed);
+      else noteRetract(null, null);
+      return "stale";
+    case "retractlen":
+      noteRetract(state.retractLength, state.retractSpeed);
+      return "stale";
+    case "retractspd":
+      noteRetract(state.retractLength, state.retractSpeed);
+      return "stale";
+    case "bedx":
+    case "bedy":
+    case "bedz":
+      saveProfileFromState();
+      fx.prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
+      fx.view3d.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
+      fx.applyPlace(false);
+      return "done";
+    case "density":
+    case "cost":
+      saveProfileFromState();
+      paintEstimate();
+      return "done";
+    case "vol":
+    case "accel":
+      saveProfileFromState();
+      return "stale";
+    case "autoslice":
+      paintSettingMarks(currentPreset());
+      return "done";
+    default:
+      return spec.group === "calibrate" ? "done" : "stale";
+  }
+}
+
+function saveProfileFromState() {
+  state.profile.pressureAdvance = state.pressureAdvance;
+  state.profile.linearAdvance = state.linearAdvance;
+  saveProfile(state.profile);
 }
 
 export function onSettings(ev: Event) {
   const t = ev.target as HTMLInputElement;
-  if (t.id === "placeX" || t.id === "placeY" || t.id === "objInfill" || t.id === "objWalls" || t.id === "objSpeed" || t.id === "seqclear" || t.id === "seqgantry") return;
+  if (!t?.id || TYPED_FIELDS.includes(t.id)) return;
   if (t.id === "find") {
     state.query = t.value;
     applyFilter();
     scrollSettingsToQuery();
+    return;
+  }
+  if (t.id === "levelPick") {
+    const level = t.value;
+    if (level === "simple" || level === "advanced" || level === "expert") setSettingsLevel(level);
+    markProjectDirty();
+    applyFilter();
     return;
   }
   if (t.id === "profileName" || t.id === "profilePick" || t.id === "machineName") return;
@@ -1067,11 +1216,6 @@ export function onSettings(ev: Event) {
     markProjectDirty();
     return;
   }
-  if (t.id === "presetName") {
-    const save = document.querySelector<HTMLButtonElement>("#presetSave");
-    if (save) save.disabled = t.value.trim() === "";
-    return;
-  }
   if (t.id === "machineFlow") {
     noteFlow(Number(t.value));
     markProjectDirty();
@@ -1079,125 +1223,44 @@ export function onSettings(ev: Event) {
     return;
   }
   if (t.closest("[data-override-card]")) return;
-  noteEdit();
-  markProjectDirty();
-  const numIds = ["lh", "amin", "amax", "zhopht", "zhopmin", "scarflen", "scarfsteps", "sangle", "bangle", "tipd", "trunkd", "shmult", "pastart", "paend", "pastep", "flowstart", "flowend", "flowstep", "tempstart", "tempend", "tempstep", "retractlen", "retractspd", "retractstart", "retractend", "retractstep", "nozzle", "bedx", "bedy", "bedz", "vol", "accel", "density", "cost", "partScale", "simperr"] as const;
-  const map: Record<string, (v: number) => void> = {
-    lh: (v) => { state.layerHeight = v || 0.2; },
-    amin: (v) => { state.adaptiveMin = v || 0.08; },
-    amax: (v) => { state.adaptiveMax = v || 0.2; },
-    zhopht: (v) => { state.zHopHeight = v || 0.4; },
-    zhopmin: (v) => { state.zHopMinTravel = v || 2; },
-    scarflen: (v) => { state.scarfLength = v || 10; },
-    scarfsteps: (v) => { state.scarfSteps = v || 8; },
-    sangle: (v) => { state.supportAngle = v || 45; },
-    bangle: (v) => { state.branchAngle = v || 40; },
-    tipd: (v) => { state.tipDiameter = v || 0.8; },
-    trunkd: (v) => { state.trunkDiameter = v || 4.2; },
-    shmult: (v) => { state.supportHeightMult = v || 1; },
-    pastart: (v) => { state.paStart = v || 0; },
-    paend: (v) => { state.paEnd = v || 0; },
-    pastep: (v) => { state.paStep = v || 0.005; },
-    flowstart: (v) => { state.flowStart = v || 0.9; },
-    flowend: (v) => { state.flowEnd = v || 1.1; },
-    flowstep: (v) => { state.flowStep = v || 0.05; },
-    tempstart: (v) => { state.tempStart = v || 190; },
-    tempend: (v) => { state.tempEnd = v || 230; },
-    tempstep: (v) => { state.tempStep = v || 5; },
-    retractlen: (v) => { noteRetract(Number.isFinite(v) ? v : 0.4, state.retractSpeed); },
-    retractspd: (v) => { noteRetract(state.retractLength, Number.isFinite(v) ? v : 30); },
-    retractstart: (v) => { state.retractStart = Number.isFinite(v) ? v : 0.2; },
-    retractend: (v) => { state.retractEnd = Number.isFinite(v) ? v : 1.2; },
-    retractstep: (v) => { state.retractStep = v || 0.05; },
-    nozzle: (v) => { state.profile.nozzleDiameter = v || 0.4; noteNozzle(state.profile.nozzleDiameter); },
-    bedx: (v) => { state.profile.bedX = v || 220; },
-    bedy: (v) => { state.profile.bedY = v || 220; },
-    bedz: (v) => { state.profile.bedZ = v || 250; },
-    vol: (v) => { state.profile.maxVolumetricMm3S = v || 12; },
-    accel: (v) => { state.profile.maxAccel = v || 10000; },
-    density: (v) => { state.profile.filamentDensityGCm3 = v || 1.24; },
-    cost: (v) => { state.profile.filamentCostPerKg = v || 0; },
-    partScale: (v) => { state.partScale = (v || 100) / 100; },
-    simperr: (v) => { state.simplifyError = Math.max(0, v || 0); },
-  };
-  if (numIds.includes(t.id as typeof numIds[number])) map[t.id](Number(t.value));
-  if (t.id === "adaptive") state.adaptive = t.checked;
-  if (t.id === "feeds") state.featureSpeeds = t.checked;
-  if (t.id === "arcs") state.arcFit = t.checked;
-  if (t.id === "combine") state.infillCombine = t.checked;
-  if (t.id === "combing") state.combing = t.checked;
-  if (t.id === "overhang") state.overhangControl = t.checked;
-  if (t.id === "vwidth") state.variableWidth = t.checked;
-  if (t.id === "simplify") state.simplify = t.checked;
-  if (t.id === "travelopt") state.travelOpt = t.checked;
-  if (t.id === "supports") setSmartSupports(t.checked);
-  if (t.id === "autoslice") {
-    state.autoSlice = t.checked;
-    paintSettingMarks(currentPreset());
-    return;
-  }
-  if (t.id === "gyroid3d") state.gyroid3d = t.value as typeof state.gyroid3d;
-  if (t.id === "zhop") state.zHop = t.value as typeof state.zHop;
-  if (t.id === "seam") state.seam = t.value as typeof state.seam;
-  if (t.id === "ironing") state.ironing = t.checked;
-  if (t.id === "ironflow") state.ironingFlow = readIroningFlowPercent(t.value);
-  if (t.id === "ironspeed") state.ironingSpeed = readIroningSpeed(t.value);
-  if (t.id === "ironspace") state.ironingSpacing = readIroningSpacing(t.value, ironingSpacingMax(fx.lineWidth()));
-  if (t.id === "fuzzy") state.fuzzySkin = t.checked;
-  if (t.id === "retractset") {
-    if (t.checked) noteRetract(state.retractLength, Math.abs(state.retractSpeed - 30) < 1e-6 ? null : state.retractSpeed);
-    else noteRetract(null, null);
-  }
-  if (t.id === "fuzzythick") state.fuzzyThickness = readFuzzyThickness(t.value);
-  if (t.id === "fuzzydist") state.fuzzyPointDistance = readFuzzyPointDistance(t.value);
-  if (t.id === "scarf") state.scarfSeam = t.value as typeof state.scarfSeam;
-  if (t.id === "sstyle") state.supportStyle = t.value as typeof state.supportStyle;
-  if (t.id === "profileImport") {
-    const file = t.files?.[0];
-    if (!file) return;
-    void file.text().then((text) => {
-      noteEdit();
-      state.profile = { ...loadProfile(), ...JSON.parse(text) } as PrinterProfile;
-      state.pressureAdvance = state.profile.pressureAdvance;
-      state.linearAdvance = state.profile.linearAdvance;
-      saveProfile(state.profile);
-      fx.prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
-      touch();
-    }).catch(fx.fail);
-    return;
-  }
-  const profileIds = ["nozzle", "bedx", "bedy", "bedz", "vol", "accel", "density", "cost"];
-  if (profileIds.includes(t.id)) {
-    state.profile.pressureAdvance = state.pressureAdvance;
-    state.profile.linearAdvance = state.linearAdvance;
-    saveProfile(state.profile);
-    if (t.id === "density" || t.id === "cost") {
-      paintEstimate();
-      return;
-    }
-    if (!["bedx", "bedy", "bedz"].includes(t.id)) {
-      markStale();
-      return;
-    }
-    fx.prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
-    fx.view3d.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
-    fx.applyPlace(false);
-    return;
-  }
   if (t.id === "partScale") {
+    noteEdit();
+    markProjectDirty();
+    state.partScale = (Number(t.value) || 100) / 100;
     fx.applyPlace(false);
     return;
   }
   if (t.id === "stepTol") {
+    noteEdit();
+    markProjectDirty();
     const value = Number(t.value);
     state.stepTolerance = Number.isFinite(value) ? value : 0.1;
     window.clearTimeout(session.stepTimer);
     session.stepTimer = window.setTimeout(() => { void fx.refreshStepPreview(); }, 250);
     return;
   }
-  if (t.id === "printOrder") state.printOrder = t.value === "sequential" ? "sequential" : "all-at-once";
-  const structural = ["adaptive", "supports", "zhop", "scarf", "gyroid3d", "ironing", "fuzzy", "retractset", "printOrder"].includes(t.id);
-  if (structural) renderChrome();
+  if (t.id === "printOrder") {
+    noteEdit();
+    markProjectDirty();
+    state.printOrder = t.value === "sequential" ? "sequential" : "all-at-once";
+    renderChrome();
+    markStale();
+    return;
+  }
+  const spec = controlById(t.id);
+  if (!spec?.set) return;
+  if (spec.group === "strategy") {
+    onBlend(ev);
+    return;
+  }
+  noteEdit();
+  markProjectDirty();
+  const value = spec.kind.type === "check" ? t.checked : spec.kind.type === "select" ? t.value : readNumber(spec, t.value);
+  spec.set(state, value);
+  if (t.id === "ironspace") state.ironingSpacing = Math.min(state.ironingSpacing, ironingSpacingMax(fx.lineWidth()));
+  const next = afterSet(spec, value);
+  if (next === "done") return;
+  if (isStructural(t.id)) renderChrome();
   markStale();
 }
 
@@ -1230,10 +1293,19 @@ export function markStale() {
   const warn = staleWarning();
   document.querySelector("#stage")?.classList.toggle("stale", warn);
   paintBanner();
-  paintPresetDiff();
+  paintGroupSummaries();
   paintSettingMarks(currentPreset());
   fx.scheduleAuto();
   fx.draw();
+}
+
+/** Header summaries follow a value change without a rebuild. */
+function paintGroupSummaries() {
+  const ctx = schemaContext();
+  for (const group of GROUPS) {
+    const node = document.querySelector(`#left .group[data-group="${group.id}"] .group-sum`);
+    if (node) node.textContent = group.summary(state, ctx);
+  }
 }
 
 export function escapeHtml(value: string) {
@@ -1256,4 +1328,5 @@ export async function probe() {
   }
   paintBanner();
 }
-Object.assign(fx, { apiBase, apiToken, card, stale, settingsHash, blend, currentWeight, renderChrome, markEngineDown, markEngineUp, paintEngineLink, markBusy, busyText, bannerLine, toastTransient, takeTransient, paintBanner, group, num, check, select, cardBtn, blendFields, paramLine, paramTable, layerReadout, triangleLine, triangleMeta, formatMs, stageHtml, estimateHtml, isStepName, needsEngine, objectList, profileFields, paretoHtml, formatTime, chips, pct, signed, currentPreset, presetHtml, applyPreset, paintPresetDiff, applyFilter, onBlend, onSettings, touch, markStale, staleWarning, escapeHtml, probe });
+
+Object.assign(fx, { apiBase, apiToken, card, stale, settingsHash, blend, currentWeight, renderChrome, markEngineDown, markEngineUp, paintEngineLink, markBusy, busyText, bannerLine, toastTransient, takeTransient, paintBanner, paramLine, paramTable, layerReadout, triangleLine, triangleMeta, formatMs, stageHtml, estimateHtml, isStepName, needsEngine, paretoHtml, formatTime, chips, pct, signed, currentPreset, applyPreset, applyFilter, onBlend, onSettings, pickStrategy, touch, markStale, staleWarning, escapeHtml, probe, fieldRow, revealPrinterDetails, revealResults, setCalibrate });

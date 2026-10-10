@@ -74,7 +74,7 @@ test("add, select, place, overlap, arrange, undo, and save a plate", async ({ pa
   await page.locator("#rotZ").click();
   await expect(page.locator("[data-selected='true'] span")).toContainText("10.0");
   await expect(page.locator("[data-plate-id='part'] span")).toContainText("20.0");
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(page.locator("[data-selected='true'] span")).toContainText("10.0");
 
   await page.locator("[data-plate-select='part']").click();
@@ -82,8 +82,8 @@ test("add, select, place, overlap, arrange, undo, and save a plate", async ({ pa
   await expect(page.locator("#partScale")).toHaveValue("100");
   await page.locator("[data-plate-select]").nth(1).click();
   await expect(page.locator("#partScale")).toHaveValue("50");
-  await page.locator("#undoEdit").click();
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
+  await page.keyboard.press("Control+z");
   await expect(page.locator("#partScale")).toHaveValue("50");
 
   const before = await placeText(page);
@@ -109,12 +109,12 @@ test("add, select, place, overlap, arrange, undo, and save a plate", async ({ pa
   expect(plateDoc.objects?.[1]?.placement.scale).toBeCloseTo(0.5);
   expect(plateDoc).not.toHaveProperty("printOrder");
 
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(page.locator("#plateOverlap")).toContainText("overlaps");
   await expect(page.locator("[data-selected='true'] span")).toContainText("10.0");
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(page.locator("[data-selected='true'] span")).toContainText("20.0");
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(page.locator("[data-plate-id]")).toHaveCount(1);
 
   page.once("dialog", (dialog) => void dialog.accept());
@@ -130,7 +130,7 @@ test("add, select, place, overlap, arrange, undo, and save a plate", async ({ pa
 
   await page.locator("[data-plate-remove]").nth(1).click();
   await expect(page.locator("[data-plate-id]")).toHaveCount(1);
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(page.locator("[data-plate-id]")).toHaveCount(2);
 
   const beforeSlice = bodies.length;

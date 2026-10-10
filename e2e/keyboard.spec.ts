@@ -36,7 +36,8 @@ async function mockEngine(page: Page, hold = false): Promise<Calls> {
 
 async function openCube(page: Page) {
   await page.goto("/");
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await expect(page.locator("[data-plate-id='part']")).toBeVisible();
