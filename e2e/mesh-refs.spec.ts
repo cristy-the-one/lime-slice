@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import { filamentGrams } from "../src/estimate.ts";
+import { autoSliceOff } from "./auto-slice";
 
 /**
  * The mesh is uploaded once per engine session, then named by `meshRef`.
@@ -54,6 +55,7 @@ async function load(page: Page, file: string) {
     localStorage.setItem("lime-slice-closed-groups", "[]");
   });
   await page.goto("/");
+  await autoSliceOff(page);
   await page.locator("#file").setInputFiles(file);
   await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 30_000 });
 }

@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { canvasShare } from "../src/ui/compact/viewport-share.ts";
+import { autoSliceOff } from "./auto-slice";
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 // The engine's reply for the same cube on a 45° belt: layer z is the belt
@@ -35,6 +36,7 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
     await route.fulfill({ json: body.belt ? beltCube : cube });
   });
   await page.goto("/");
+  await autoSliceOff(page);
   await page.locator("#machineKind").selectOption("belt");
   await expect(page.locator("#prepare")).toHaveAttribute("data-belt", "1");
   await expect(page.locator("#prepare")).toHaveAttribute("data-belt-plane", "1");
@@ -141,6 +143,7 @@ test("a belt hides the settings it forces off or cannot use, and sends none of t
     await route.fulfill({ json: body.belt ? beltCube : cube });
   });
   await page.goto("/");
+  await autoSliceOff(page);
   // On a flat printer every one of them is on the page.
   await expect(page.locator("#zhop")).toBeVisible();
   await expect(page.locator("#scarf")).toBeVisible();
@@ -214,6 +217,7 @@ test("a belt too short for the part offers the length that fits", async ({ page 
     await route.fulfill({ json: beltCube });
   });
   await page.goto("/");
+  await autoSliceOff(page);
   await page.locator("#machineKind").selectOption("belt");
   await page.locator("#beltUnlimited").uncheck();
   await page.locator("#beltLength").fill("30");
@@ -244,6 +248,7 @@ test("the generic belt printer is one pick in the printer list", async ({ page }
     await route.fulfill({ json: body.belt ? beltCube : cube });
   });
   await page.goto("/");
+  await autoSliceOff(page);
   await expect(page.locator("#beltFields")).toBeHidden();
   await page.locator("#printerChip").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await page.locator("#machinePrinter").selectOption({ label: "Generic belt 45°" });
@@ -319,6 +324,7 @@ test("a belt printer's supports can be picked and pruned", async ({ page }) => {
     await route.fulfill({ json: beltLedge });
   });
   await page.goto("/");
+  await autoSliceOff(page);
   await page.locator("#machineKind").selectOption("belt");
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="overhang_ledge.stl"]')?.click());
   await expect(page.locator("#slice")).toBeEnabled();
@@ -399,6 +405,7 @@ test("a belt printer draws the gap a prune left and regrows it by the slice-fram
     await route.fulfill({ json: edits.length ? beltLedgePruned : beltLedge });
   });
   await page.goto("/");
+  await autoSliceOff(page);
   await page.locator("#machineKind").selectOption("belt");
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="overhang_ledge.stl"]')?.click());
   await expect(page.locator("#slice")).toBeEnabled();
@@ -515,6 +522,7 @@ async function openTwoCopies(page: Page, replies: (edits: { kind: string }[]) =>
     await route.fulfill({ json: replies((body.supportEdits ?? []) as { kind: string }[]) });
   });
   await page.goto("/");
+  await autoSliceOff(page);
   await page.locator("#machineKind").selectOption("belt");
   await page.locator("#beltCopies").fill("2");
   await page.locator("#beltCopies").blur();

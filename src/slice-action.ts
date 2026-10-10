@@ -134,6 +134,17 @@ export function partFrameKey(request: Record<string, unknown>, meshFingerprint: 
   return recipeKey({ ...inFrame(request as Posed), ...(objects ? { objects: objects.map(inFrame) } : {}) }, meshFingerprint);
 }
 
+/** A plate whose last slice took longer than this waits for the user instead of re-slicing after each edit. */
+export const AUTO_SLICE_MAX_MS = 20_000;
+
+/** Before any slice there is no time to go by, so the mesh size stands in for it. */
+const AUTO_SLICE_FIRST_TRIANGLES = 200_000;
+
+/** Whether auto-slice re-slices after a change: by the engine time of the last slice, or by mesh size before one. */
+export function autoSliceAllowed(input: { lastSliceMs: number | null; triangles: number }): boolean {
+  return input.lastSliceMs === null ? input.triangles < AUTO_SLICE_FIRST_TRIANGLES : input.lastSliceMs <= AUTO_SLICE_MAX_MS;
+}
+
 /**
  * A stale result the engine refreshes without planning: a stored recipe, or a
  * move in X/Y only. Those run by themselves after a pause, even with auto-slice off.

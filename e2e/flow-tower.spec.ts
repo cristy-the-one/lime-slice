@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { canvasShare } from "../src/ui/compact/viewport-share.ts";
+import { autoSliceOff } from "./auto-slice";
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 
@@ -30,12 +31,14 @@ test("flow 1 is omitted and a saved multiplier is sent", async ({ page }) => {
     await route.fulfill({ json: cube });
   });
   await page.goto("/");
+  await autoSliceOff(page);
   await expect(page.locator("#machineFlow")).toHaveValue("1");
   await expect(page.getByText("Mock only")).toHaveCount(0);
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
   await expect(page.locator("#slice")).toBeEnabled();
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(1);
+  await expect(page.locator("#slice")).toBeEnabled();
   expect(bodies[0]).not.toHaveProperty("flow");
 
   await page.locator("#machineFlow").fill("1.05");

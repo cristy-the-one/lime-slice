@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { canvasShare } from "../src/ui/compact/viewport-share.ts";
 import { placeText } from "./place";
+import { autoSliceOff } from "./auto-slice";
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 
@@ -40,6 +41,7 @@ test("add, select, place, overlap, arrange, undo, and save a plate", async ({ pa
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
+  await autoSliceOff(page);
   await loadCube(page);
 
   await page.locator("#slice").click();
@@ -133,6 +135,7 @@ test("add, select, place, overlap, arrange, undo, and save a plate", async ({ pa
   await page.keyboard.press("Control+z");
   await expect(page.locator("[data-plate-id]")).toHaveCount(2);
 
+  await expect(page.locator("#slice")).toBeEnabled();
   const beforeSlice = bodies.length;
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(beforeSlice + 1);

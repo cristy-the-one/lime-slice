@@ -6,6 +6,7 @@ import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, parkLeftNdc
 import { applyRigidPose, boundsOf, centeringShift, ID_MATRIX, placeMesh, rotX, rotZ, scaledCanonical, transformPositions, type Mat3, type MeshShift, type RigidPose } from "../src/mesh-place";
 import { encodePaths } from "../src/preview-wire";
 import { placeText } from "./place";
+import { autoSliceOff } from "./auto-slice";
 
 const out = path.resolve("artifacts/gizmo-pose");
 fs.mkdirSync(out, { recursive: true });
@@ -112,6 +113,7 @@ test("zoom keeps the gizmo the same size and an arrow move is what gets sliced",
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
+  await autoSliceOff(page);
   await page.locator("#fileMenu > summary").click();
   await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();

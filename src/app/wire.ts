@@ -477,6 +477,7 @@ export function wireApp() {
     document.querySelector(".workspace")!.classList.toggle("show-right");
   });
   document.querySelector("#slice")!.addEventListener("click", () => void runSlice(false));
+  document.querySelector("#staleReslice")!.addEventListener("click", () => void runSlice(false));
   document.querySelector("#force")!.addEventListener("click", () => void runSlice(true));
   document.querySelector("#cancel")!.addEventListener("click", () => cancelSlice());
   document.querySelector("#export")!.addEventListener("click", () => void exportGcode());

@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { canvasShare } from "../src/ui/compact/viewport-share.ts";
+import { autoSliceOff } from "./auto-slice";
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 
@@ -140,6 +141,7 @@ test("one advance control follows the printer's firmware, and only that advance 
     await route.fulfill({ json: cube });
   });
   await page.goto("/");
+  await autoSliceOff(page);
   await expect(page.locator("#secondFilament")).toHaveCount(0);
   await expect(page.locator("#pa")).toHaveCount(0);
   await expect(page.locator("#la")).toHaveCount(0);

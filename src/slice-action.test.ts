@@ -1,4 +1,4 @@
-import { coverageWarning, feed, fnv1aHex, inAirWarning, meshKeyHex, partFrameKey, quietRefresh, recipeKey, sliceAction, sliceBusyLabel, sliceErrorRetryable, storesReply } from "./slice-action.ts";
+import { autoSliceAllowed, coverageWarning, feed, fnv1aHex, inAirWarning, meshKeyHex, partFrameKey, quietRefresh, recipeKey, sliceAction, sliceBusyLabel, sliceErrorRetryable, storesReply } from "./slice-action.ts";
 
 let failed = 0;
 
@@ -143,6 +143,12 @@ eq(
   "Supports are off. 1 island and 2 overhangs would print in the air.",
 );
 eq("supports off, overhangs only", inAirWarning({ islands: 0, overhangs: 1 }), "Supports are off. 1 overhang would print in the air.");
+
+eq("a 19 s slice stays automatic", autoSliceAllowed({ lastSliceMs: 19_000, triangles: 5_000_000 }), true);
+eq("a 20 s slice stays automatic", autoSliceAllowed({ lastSliceMs: 20_000, triangles: 5_000_000 }), true);
+eq("a 21 s slice goes manual", autoSliceAllowed({ lastSliceMs: 21_000, triangles: 100 }), false);
+eq("before any slice, 199,999 triangles", autoSliceAllowed({ lastSliceMs: null, triangles: 199_999 }), true);
+eq("before any slice, 200,000 triangles", autoSliceAllowed({ lastSliceMs: null, triangles: 200_000 }), false);
 
 if (failed) throw new Error(`${failed} slice-action checks failed`);
 console.log("slice-action: none, cached, changed, force ok");

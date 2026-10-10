@@ -62,7 +62,7 @@ export function mountMarkup(root: HTMLElement) {
             <option value="light">Light</option>
           </select>
         </label>
-        <label class="row setting" data-label="auto-slice under 50k triangles" data-tip="Slice again by itself after a change, while the mesh is small enough to be quick."><span class="row-label">Auto-slice under 50k triangles</span><input id="autoslice" type="checkbox" class="switch" role="switch" /></label>
+        <label class="row setting" data-label="auto-slice when a slice takes under 20 s" data-tip="Slice again by itself after a change, while the last slice took under 20 seconds."><span class="row-label">Auto-slice when a slice takes under 20 s</span><input id="autoslice" type="checkbox" class="switch" role="switch" /></label>
       </div>
     </header>
     <div class="banner-rail" id="banner"></div>
@@ -100,6 +100,10 @@ export function mountMarkup(root: HTMLElement) {
           <div class="gizmo-readout" id="gizmoReadout" hidden></div>
         </div>
         <div class="stage-body" id="previewBody" role="tabpanel" aria-labelledby="tabPreview">
+          <div class="stale-chip" id="staleChip" role="status" hidden>
+            <span id="staleChipText"></span>
+            <button class="btn" id="staleReslice" type="button" data-tip="Slice again (Ctrl+Enter)" hidden>Re-slice</button>
+          </div>
           <div class="vslider" id="vslider">
             <div class="readout" id="readHigh"></div>
             <button class="layer-step" id="layerNext" type="button" aria-label="Next layer" disabled></button>

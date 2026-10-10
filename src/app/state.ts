@@ -12,6 +12,7 @@ import type { BeltCopies, CoverageGap, EditOutcome, SupportSkeleton } from "../s
 import type { EditEntry } from "../support-edit-list";
 import type { SeamDisk } from "../seam-paint";
 import type { PaintDisk, PaintTally } from "../support-paint";
+import { loadAutoSlice } from "../auto-slice-pref";
 
 export type { CoverageGap, EditOutcome, SupportSkeleton };
 
@@ -237,7 +238,7 @@ export const state = {
   retractBands: [] as { index: number; length: number; z0: number; z1: number }[],
   retractGcode: "",
   pricePerKg: 20,
-  autoSlice: false,
+  autoSlice: loadAutoSlice(),
   simplify: true,
   simplifyError: 0,
   viewMode: "solid" as "flat" | "split" | "solid",

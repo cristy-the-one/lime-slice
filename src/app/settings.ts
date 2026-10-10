@@ -63,6 +63,16 @@ export function stale() {
   return !!state.result && state.slicedHash !== settingsHash();
 }
 
+/** The out-of-date chip: shown with the dimmed preview, and an Updating note while a slice replaces it. */
+function paintStaleChip() {
+  const chip = document.querySelector<HTMLElement>("#staleChip");
+  if (!chip) return;
+  const show = staleWarning();
+  chip.hidden = !show;
+  document.querySelector("#staleChipText")!.textContent = state.busy ? "Updating…" : "Out of date";
+  document.querySelector<HTMLElement>("#staleReslice")!.hidden = state.busy;
+}
+
 /** Stale and waiting on the user. A quiet refresh hides the warning while it runs; export still waits for its reply. */
 export function staleWarning() {
   return stale() && !fx.quietRefreshing();
@@ -186,6 +196,7 @@ export function renderChrome() {
   paintTiming();
   const warn = staleWarning();
   document.querySelector("#stage")!.classList.toggle("stale", warn);
+  paintStaleChip();
   paintBanner();
   fx.paintLegend();
   fx.paintSlider();
@@ -1185,9 +1196,6 @@ function afterSet(spec: ControlSpec, value: number | boolean | string): "stale" 
     case "accel":
       saveProfileFromState();
       return "stale";
-    case "autoslice":
-      paintSettingMarks(currentPreset());
-      return "done";
     default:
       return spec.group === "calibrate" ? "done" : "stale";
   }
@@ -1276,6 +1284,12 @@ export function onSettings(ev: Event) {
     onBlend(ev);
     return;
   }
+  // A gear preference is the app's, not the print's: no undo step, no unsaved project, no stale slice.
+  if (spec.group === "gear") {
+    spec.set(state, spec.kind.type === "check" ? t.checked : t.value);
+    fx.scheduleAuto();
+    return;
+  }
   noteEdit();
   markProjectDirty();
   const value = spec.kind.type === "check" ? t.checked : spec.kind.type === "select" ? t.value : readNumber(spec, t.value);
@@ -1316,6 +1330,7 @@ export function markStale() {
   syncSendButtons();
   const warn = staleWarning();
   document.querySelector("#stage")?.classList.toggle("stale", warn);
+  paintStaleChip();
   paintBanner();
   paintGroupSummaries();
   paintSettingMarks(currentPreset());

@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { encodePaths } from "../src/preview-wire";
 import { canvasShare } from "../src/ui/compact/viewport-share";
 import { placeText } from "./place";
+import { autoSliceOff } from "./auto-slice";
 
 test("an X/Y move slides the preview, re-emits by itself, and the reply offset replaces that slide", async ({ page }) => {
   const calls: { previewBase?: string; pose?: { translation: number[] }; offset?: unknown; objects?: unknown }[] = [];
@@ -19,6 +20,7 @@ test("an X/Y move slides the preview, re-emits by itself, and the reply offset r
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
+  await autoSliceOff(page);
   await page.locator("#fileMenu > summary").click();
   await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
@@ -74,6 +76,7 @@ for (const { id, axis } of [{ id: "#placeX", axis: 0 }, { id: "#placeY", axis: 1
     });
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto("/");
+    await autoSliceOff(page);
     await page.locator("#fileMenu > summary").click();
     await page.locator("#samples > summary").click();
     await page.getByRole("button", { name: "20 mm cube" }).click();
@@ -109,10 +112,10 @@ test("rotation and scale still wait for Slice when auto-slice is off", async ({ 
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
+  await autoSliceOff(page);
   await page.locator("#fileMenu > summary").click();
   await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
-  await expect(page.locator("#autoslice")).not.toBeChecked();
   await page.locator("#slice").click();
   await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
 
@@ -170,6 +173,7 @@ test("a Move drag sends one refresh, after the drag ends", async ({ page }) => {
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
+  await autoSliceOff(page);
   await page.locator("#fileMenu > summary").click();
   await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();

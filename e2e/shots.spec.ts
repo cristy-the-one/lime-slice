@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { decodePaths, type PathColumns } from "../src/preview-wire";
+import { autoSliceOff } from "./auto-slice";
 
 function withLayerGcode(src: { gcode?: string; layers: { index: number; z: number; height: number; paths: PathColumns }[] }) {
   const body = structuredClone(src);
@@ -58,6 +59,7 @@ test("ui states from real slice fixtures", async ({ page }) => {
 
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
+  await autoSliceOff(page);
   await shot(page, "v3-01-empty.png");
 
   await page.locator("#fileMenu > summary").click();
@@ -182,7 +184,7 @@ test("ui states from real slice fixtures", async ({ page }) => {
 
   await page.locator("#lh").fill("0.28");
   await page.locator("#lh").dispatchEvent("change");
-  await expect(page.getByRole("button", { name: "Re-slice", exact: true })).toBeVisible();
+  await expect(page.locator("#slice")).toHaveAccessibleName("Re-slice");
   await expect(page.getByRole("button", { name: "Export G-code" })).toHaveAttribute("data-slice", "first");
   await shot(page, "v3-10-stale.png");
 
@@ -190,6 +192,7 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.unroute("**/api/health");
   await page.route("**/api/health", (route) => route.abort());
   await page.goto("/");
+  await autoSliceOff(page);
   await expect(page.locator("#banner")).toContainText("Slicer engine not running");
   await expect(page.locator("#banner")).toContainText("127.0.0.1:43118");
   await shot(page, "v3-11-error-banner.png");

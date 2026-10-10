@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { autoSliceOff } from "./auto-slice";
 
 /**
  * Move a sliced part against a real engine, which replies in the part frame.
@@ -55,6 +56,7 @@ function printedX(gcode: string): [number, number] {
 async function loadDragon(page: Page) {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
+  await autoSliceOff(page);
   await page.locator("#file").setInputFiles("samples/dragon_2_5.stl");
   await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 30_000 });
 }
@@ -157,6 +159,7 @@ test("a moved part keeps its split plane and G-code line on the bed", async ({ p
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
+  await autoSliceOff(page);
   await page.locator("#fileMenu > summary").click();
   await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "Bridge" }).click();

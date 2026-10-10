@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { filamentCost, filamentGrams } from "../src/estimate.ts";
+import { autoSliceOff } from "./auto-slice";
 import { formatMass, formatMoney } from "../src/format.ts";
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
@@ -26,6 +27,7 @@ test("price and density update the estimate without a slice, a stale mark, or a 
   });
   await page.addInitScript(() => localStorage.setItem("lime-slice-closed-groups", "[]"));
   await page.goto("/");
+  await autoSliceOff(page);
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#slice").click();

@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { canvasShare } from "../src/ui/compact/viewport-share.ts";
+import { autoSliceOff } from "./auto-slice";
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 
@@ -56,6 +57,7 @@ test("a printer answers, an unreachable host can be retried, and upload can star
   await page.route("**/api/slice", (route) => route.fulfill({ json: cube }));
 
   await page.goto("/");
+  await autoSliceOff(page);
   await expect(page.locator("#sendPrinter")).toBeHidden();
   await page.locator("#machineMore").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await page.locator("#machineHost").fill("http://127.0.0.1:9");
@@ -101,12 +103,16 @@ test.describe("compact Prusa Link", () => {
     await quiet(page);
     await page.goto("/?layout=compact");
     await expect(page.locator("html")).toHaveClass(/layout-compact/);
+    await autoSliceOff(page);
     await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
     await expect(page.locator("#compactSheet")).toHaveAttribute("data-detent", "peek");
     const prepare = await share(page, "#prepare");
     expect(prepare, `prepare viewport share ${prepare}`).toBeGreaterThanOrEqual(0.7);
     await page.locator("#compactTabs [data-tab=settings]").click();
-    await page.locator("#machineMore").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
+    await page.evaluate(() => {
+      const menu = document.querySelector<HTMLDetailsElement>("#machineMore");
+      if (menu) menu.open = true;
+    });
     await expect(page.locator("#machineHost")).toBeVisible();
     await expect(page.locator("#prusaTest")).toBeVisible();
     await page.locator("#compactTabs [data-tab=prepare]").click();
