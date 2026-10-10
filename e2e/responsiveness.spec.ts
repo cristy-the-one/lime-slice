@@ -228,7 +228,7 @@ test("layer scrub does not resize the spark or the layer track", async ({ page }
   const spark1 = (await spark.boundingBox())!;
   const track1 = (await track.boundingBox())!;
   expect(await page.locator("#sparkLabel").innerText(), "a scrub leaves the legend alone").toBe(label0);
-  await expect(page.locator("#readLow"), "the layer's time is in the slider readout").toHaveText(/^\d+\.\d s$/);
+  await expect(page.locator("#readLow"), "the layer's time is in the slider readout").toHaveText(/^\d+(\.\d)? s$|^\d+ min \d+ s$/);
   expect(Math.abs(spark1.x - spark0.x)).toBeLessThan(1);
   expect(Math.abs(spark1.width - spark0.width)).toBeLessThan(1);
   expect(Math.abs(track1.x - track0.x)).toBeLessThan(1);

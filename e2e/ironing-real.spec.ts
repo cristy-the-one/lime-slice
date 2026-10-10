@@ -67,7 +67,7 @@ test("ironing on slices the cube's top layer ironed, with no toast", async ({ pa
   expect(gcode).toContain("; ironing flow 0.1 speed 20 spacing 0.1");
   expect(gcode).toMatch(/; TYPE:IRONING\n(?:M204 S\d+\n)?G1 X[\d.]+ Y[\d.]+ F\d+\n(?:M204 S\d+\n)?G1 X[\d.]+ Y[\d.]+ E[\d.]+ F1200\n/);
 
-  await expect(page.locator("#estimate table.est")).toContainText("Ironing");
+  await expect(page.locator("#estimate .est")).toContainText("Ironing");
   await page.getByRole("tab", { name: "Preview", exact: true }).click();
   const swatch = page.locator("#legend label", { hasText: /^Ironing/ }).locator(".swatch");
   await expect(swatch).toHaveCSS("background-color", "rgb(108, 208, 232)");

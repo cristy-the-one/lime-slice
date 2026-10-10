@@ -130,13 +130,10 @@ test("legend toggles and the estimate table keep thin wall and gap fill apart", 
   await page.locator("#slice").click();
   await expect(page.locator("#estimate")).toContainText("Inner wall");
 
-  const estimate = await page.locator("#estimate table.est tr").evaluateAll((trs) =>
-    trs.map((tr) => {
-      const cells = [...tr.querySelectorAll("td")].map((td) => (td.textContent ?? "").trim());
-      return `${cells[0]} ${cells[2]}`;
-    }),
+  const estimate = await page.locator("#estimate .est-row").evaluateAll((rows) =>
+    rows.map((row) => `${row.querySelector(".est-label")!.textContent} ${row.querySelector(".est-time")!.textContent}`),
   );
-  expect(estimate).toEqual(["Outer wall 10 s", "Inner wall 35 s", "Infill 15 s", "Other 3 s"]);
+  expect(estimate).toEqual(["Outer wall 10 s", "Inner wall 35 s", "Infill 15 s", "Other 3.0 s"]);
 
   const swatch = (label: string) =>
     page.locator("#legend label", { hasText: new RegExp(`^${label}`) }).locator(".swatch").evaluate((el) => getComputedStyle(el).backgroundColor);

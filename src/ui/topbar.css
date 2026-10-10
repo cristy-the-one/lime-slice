@@ -61,8 +61,16 @@
 }
 .title-tabs .btn.mode[aria-pressed="true"]::after { opacity: 0.75; }
 
+/* The slot takes what the bar can spare; the estimate drops price, then mass, to stay whole in it. */
+.estimate-slot { flex: 0 1 252px; min-width: 104px; container: estimate / inline-size; display: flex; justify-content: flex-end; }
+.estimate-slot:has(.estimate:empty) { display: none; }
+@container estimate (max-width: 239px) { .est-cost { display: none; } }
+@container estimate (max-width: 179px) { .est-mass { display: none; } }
 .estimate {
-  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   height: var(--control-h);
   padding: 0 var(--space-2);
   border: 1px solid transparent;

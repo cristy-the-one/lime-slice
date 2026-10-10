@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { filamentCost, filamentGrams } from "../src/estimate.ts";
+import { formatMass, formatMoney } from "../src/format.ts";
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 const mm: number = cube.estimate.filamentMm;
@@ -33,16 +34,16 @@ test("price and density update the estimate without a slice, a stale mark, or a 
   expect(jobs[0]!.printer).not.toHaveProperty("filamentDensityGCm3");
   expect(jobs[0]!.printer).not.toHaveProperty("filamentCostPerKg");
   const pla = { filamentDiameter: 1.75, filamentDensityGCm3: 1.24, filamentCostPerKg: 20 };
-  await expect(page.locator("#estGrams")).toHaveText(`${filamentGrams(mm, pla).toFixed(2)} g`);
+  await expect(page.locator("#estGrams")).toHaveText(formatMass(filamentGrams(mm, pla)));
 
   await page.locator("#levelPick").selectOption("advanced");
   await page.locator("#density").fill("1.5");
   await page.locator("#cost").fill("40");
   const petg = { filamentDiameter: 1.75, filamentDensityGCm3: 1.5, filamentCostPerKg: 40 };
   const grams = filamentGrams(mm, petg);
-  await expect(page.locator("#estGrams")).toHaveText(`${grams.toFixed(2)} g`);
-  await expect(page.locator("#estCost")).toHaveText(filamentCost(grams, petg).toFixed(2));
-  await expect(page.locator("#timing")).toContainText(`${grams.toFixed(2)} g`);
+  await expect(page.locator("#estGrams")).toHaveText(formatMass(grams));
+  await expect(page.locator("#estCost")).toHaveText(formatMoney(filamentCost(grams, petg), "en-US"));
+  await expect(page.locator("#timing")).toContainText(formatMass(grams));
   await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   await expect(page.locator("#stage")).not.toHaveClass(/stale/);
   await expect(page.locator("#slice")).not.toHaveAttribute("data-slice-action", "changed");
