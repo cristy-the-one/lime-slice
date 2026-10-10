@@ -5,11 +5,6 @@
 
 const MISSING = "—";
 
-/** Round to `digits` places as a string, keeping trailing zeros. */
-function fixed(value: number, digits: number): string {
-  return value.toFixed(digits);
-}
-
 const separated = new Map<string, Intl.NumberFormat>();
 function grouped(value: number, digits: number, locale?: string): string {
   const key = `${locale ?? ""}:${digits}`;
@@ -29,7 +24,7 @@ export function formatDuration(seconds: number): string {
   if (!Number.isFinite(seconds)) return MISSING;
   const total = Math.max(0, seconds);
   if (total === 0) return "0 s";
-  if (total < 9.95) return `${fixed(total, 1)} s`;
+  if (total < 9.95) return `${total.toFixed(1)} s`;
   const whole = Math.round(total);
   if (whole < 60) return `${whole} s`;
   if (whole < 3600) return `${Math.floor(whole / 60)} min ${whole % 60} s`;
@@ -56,19 +51,19 @@ export function durationTile(seconds: number): { value: string; unit: string } {
 export function formatMass(grams: number): string {
   if (!Number.isFinite(grams)) return MISSING;
   const g = Math.max(0, grams);
-  if (g < 10) return `${fixed(g, 2)} g`;
-  if (Math.round(g * 10) / 10 < 1000) return `${fixed(g, 1)} g`;
-  return `${fixed(g / 1000, 2)} kg`;
+  if (g < 10) return `${g.toFixed(2)} g`;
+  if (Math.round(g * 10) / 10 < 1000) return `${g.toFixed(1)} g`;
+  return `${(g / 1000).toFixed(2)} kg`;
 }
 
 /** "843 mm" under a metre, "54.5 m" under a kilometre, "2.06 km" beyond. Under 10 mm one decimal stays. */
 export function formatLength(mm: number): string {
   if (!Number.isFinite(mm)) return MISSING;
   const v = Math.max(0, mm);
-  if (v < 10) return `${fixed(v, 1)} mm`;
+  if (v < 10) return `${v.toFixed(1)} mm`;
   if (Math.round(v) < 1000) return `${Math.round(v)} mm`;
-  if (Math.round(v / 100) / 10 < 1000) return `${fixed(v / 1000, 1)} m`;
-  return `${fixed(v / 1_000_000, 2)} km`;
+  if (Math.round(v / 100) / 10 < 1000) return `${(v / 1000).toFixed(1)} m`;
+  return `${(v / 1_000_000).toFixed(2)} km`;
 }
 
 /** Filament length, always in metres: "0.87 m", "54.5 m", "1,234.5 m". */
