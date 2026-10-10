@@ -52,6 +52,21 @@
 }
 .find-box input:focus + kbd, .find-box input:not(:placeholder-shown) + kbd { display: none; }
 .level-pick { flex: 0 0 auto; width: 104px; }
+/* Below the width where a pair of controls fits one line, each takes its own line. */
+@container left (max-width: 298px) {
+  .find-row { flex-wrap: wrap; }
+  .find-box, .level-pick { flex: 1 1 100%; width: auto; }
+}
+@container left (max-width: 238px) {
+  .find-box kbd { display: none; }
+  .find-box input { padding-right: var(--space-2); }
+}
+@container left (max-width: 278px) {
+  .profile-row { flex-wrap: wrap; }
+  .profile-row select { flex: 1 1 100%; }
+  .profile-row > .btn, .profile-row > .profile-more { flex: 1 1 0; }
+  .profile-more > summary { justify-content: center; width: 100%; }
+}
 
 /* Cards */
 .group {
@@ -196,6 +211,11 @@ input.switch:checked::after { transform: translateX(13px); background: var(--on-
 .strat small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-size: var(--fs-1); }
 .strat kbd, .row-tools kbd { padding: 0 var(--space-1); font-size: var(--fs-1); color: var(--text-faint); background: transparent; border-color: transparent; }
 .strat kbd { justify-self: end; }
+/* The descriptor is also the row's tooltip, so a narrow panel drops it. */
+@container left (max-width: 298px) {
+  .strat { grid-template-columns: 10px minmax(0, 1fr) auto; }
+  .strat small { display: none; }
+}
 
 /* Object toolbar, list, and placement grid */
 .obj-tools { display: flex; gap: 2px; align-items: center; padding-top: var(--space-2); flex-wrap: wrap; }
@@ -224,15 +244,15 @@ input.switch:checked::after { transform: translateX(13px); background: var(--on-
 .obj-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: normal; font-size: var(--fs-1); color: var(--warn); }
 .obj-remove { height: 24px; padding: 0 var(--space-2); font-size: var(--fs-2); }
 .warn-text { color: var(--warn); }
-.grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2); padding-top: var(--space-2); }
-.grid3 label { display: grid; gap: 3px; min-width: 0; font-size: var(--fs-1); color: var(--text-faint); }
+.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(5rem, 1fr)); gap: var(--space-2); padding-top: var(--space-2); }
+.grid3 label { white-space: nowrap; display: grid; gap: 3px; min-width: 0; font-size: var(--fs-1); color: var(--text-faint); }
 .grid3 input { width: 100%; text-align: right; }
 .grid3 label.hidden { display: none; }
 .subhead { margin: var(--space-3) 0 2px; font-size: var(--fs-1); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); }
 /* Modifiers: two add rows; each range or volume is a closed row until opened. */
 .mod-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-1) var(--space-2); min-height: var(--row-h); }
 .mod-label { min-width: 0; font-size: var(--fs-2); color: var(--text-dim); white-space: nowrap; }
-.mod-adds { display: flex; gap: var(--space-1); flex: 0 0 auto; }
+.mod-adds { display: flex; flex-wrap: wrap; gap: var(--space-1); min-width: 0; }
 .btn.mini { height: var(--control-h-sm); padding: 0 var(--space-2) 0 var(--space-1); gap: 2px; font-size: var(--fs-1); }
 .mod-item { margin: 0 0 var(--space-1); padding: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-1); }
 .mod-item.is-selected { border-color: color-mix(in srgb, var(--teal) 70%, transparent); }
@@ -288,16 +308,43 @@ input.switch:checked::after { transform: translateX(13px); background: var(--on-
   color: var(--text-faint);
 }
 .res h4.sub { margin-top: var(--space-3); }
+/*
+ * The panels answer to their own width, since the splitters resize them: wide, two tiles side by side and one-line
+ * feature rows; narrow, tiles stacked and each feature row on two lines. A number is never cut.
+ */
+#left { container: left / inline-size; }
+#right { container: right / inline-size; }
+
 .big { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
 .big > div { padding: var(--space-3); border-radius: 8px; background: var(--surface-2); min-width: 0; }
-.big b { display: block; font: 600 var(--fs-5) var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.big small { color: var(--text-faint); font-size: var(--fs-1); white-space: nowrap; }
-table.est { width: 100%; border-collapse: collapse; font-size: var(--fs-2); table-layout: fixed; color: var(--text-dim); }
-table.est td { padding: 3px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-table.est td:nth-child(2) { padding: 3px var(--space-2); }
-table.est td:nth-child(3) { width: 3.6rem; text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-table.est td:nth-child(4) { width: 3.8rem; text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-faint); }
-table.est .bar > span { background: var(--teal); }
+.big b { display: block; font: 600 min(var(--fs-5), calc(10cqi - 4px)) var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.big small { display: block; color: var(--text-faint); font-size: var(--fs-1); white-space: nowrap; }
+
+/* One shared grid, so the time and mass columns line up down the rows. */
+.est {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(24px, 1fr) max-content max-content;
+  column-gap: var(--space-3);
+  font-size: var(--fs-2);
+  color: var(--text-dim);
+}
+.est-row { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: center; padding: 3px 0; }
+.est-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.est-time, .est-mass { text-align: right; white-space: nowrap; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.est-mass { color: var(--text-faint); }
+.est .bar > span { background: var(--teal); }
+@container right (max-width: 299px) {
+  .est { grid-template-columns: minmax(0, 1fr) max-content; row-gap: 1px; }
+  .est-row { padding: 4px 0; row-gap: 3px; }
+  .est-label { grid-area: 1 / 1; }
+  .est-time { grid-area: 1 / 2; }
+  .est .bar { grid-area: 2 / 1; }
+  .est-mass { grid-area: 2 / 2; }
+}
+@container right (max-width: 239px) {
+  .big { grid-template-columns: minmax(0, 1fr); }
+  .big b { font-size: var(--fs-5); }
+}
 #pareto.is-off { opacity: var(--disabled); pointer-events: none; }
 #pareto .btn { width: 100%; }
 .res .chips { margin-top: var(--space-2); }
@@ -309,6 +356,8 @@ table.est .bar > span { background: var(--teal); }
 .stats > div { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-2); min-width: 0; }
 .stats span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
 .stats b { flex: 0 0 auto; font: 500 var(--fs-2) var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text); }
+#right .btn { height: auto; min-height: var(--control-h); white-space: normal; }
+@container right (max-width: 239px) { .stats { grid-template-columns: minmax(0, 1fr); } }
 .layer-note { margin: var(--space-2) 0 0; font-size: var(--fs-1); line-height: 1.4; color: var(--text-faint); overflow-wrap: anywhere; }
 .param-head { margin: 0 0 var(--space-1); font-size: var(--fs-2); color: var(--text-dim); }
 .param-head b { font-weight: 600; color: var(--text); text-transform: capitalize; }

@@ -31,8 +31,8 @@ async function exportedSupportMoves(page: Page) {
 }
 
 async function supportSeconds(page: Page) {
-  const text = (await page.locator('#legend label:has(input[data-kind="support"])').textContent()) ?? "";
-  return { text, seconds: Number(/· ([\d.]+) s/.exec(text)?.[1]) };
+  const row = page.locator('#legend label:has(input[data-kind="support"])');
+  return { text: (await row.textContent()) ?? "", seconds: Number(await row.getAttribute("data-seconds")) };
 }
 
 async function sliced(page: Page) {
