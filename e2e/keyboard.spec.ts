@@ -38,7 +38,7 @@ async function openCube(page: Page) {
   await page.goto("/");
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await expect(page.locator("[data-plate-id='part']")).toBeVisible();
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 }
@@ -145,9 +145,9 @@ test("Esc cancels a running slice", async ({ page }) => {
   const calls = await mockEngine(page, true);
   await openCube(page);
   await page.locator("#slice").click();
-  await expect(page.locator("#cancel")).toBeEnabled();
+  await expect(page.locator("#cancel")).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(page.locator("#cancel")).toBeDisabled();
+  await expect(page.locator("#cancel")).toBeHidden();
   expect(calls.cancels).toBe(1);
 });
 
