@@ -36,7 +36,7 @@ async function proxy(page: Page) {
 
 async function sliced(page: Page) {
   await expect(page.locator("#slice")).toBeEnabled({ timeout: SLICE_MS });
-  await expect(page.locator("#cancel")).toBeDisabled();
+  await expect(page.locator("#cancel")).toBeHidden();
 }
 
 const limbs = (reply: Reply | undefined) => reply?.skeleton?.id.length ?? -1;
@@ -47,7 +47,7 @@ test("block paint on the ledge drops its supports, and undo brings them back", a
   await page.goto("/");
   await page.locator("#samples summary").click();
   await page.locator('[data-sample="overhang_ledge.stl"]').click();
-  await expect(page.locator("#status")).toContainText("loaded", { timeout: 30_000 });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 30_000 });
   await page.locator('[data-level-choice="advanced"]').first().click();
   await page.locator("#supports").check();
   await page.locator("#sstyle").selectOption("tree");
@@ -98,7 +98,7 @@ test("block paint on the ledge drops its supports, and undo brings them back", a
   const blocked = replies.at(-1)!;
   expect(blocked.supportPaint).toEqual({ enforce: 0, block: painted, enforceUnhit: 0, blockUnhit: 0 });
   expect(limbs(blocked), "block paint drops tips").toBeLessThan(before);
-  await expect(page.locator("#paintStatus")).toHaveText(`Paint: 0 enforce disks, ${painted} block disk${painted === 1 ? "" : "s"}.`);
+  await expect(page.locator("#paintStatus")).toHaveText(`0 enforce, ${painted} block.`);
   await page.mouse.move(box.x + 4, box.y + 4);
   await page.waitForTimeout(400);
   await canvas.screenshot({ path: path.join(out, "support-paint-block.png") });

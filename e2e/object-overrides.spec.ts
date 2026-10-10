@@ -31,7 +31,7 @@ test("an object's walls are omitted until they are set", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(1);
   expect(bodies[0]?.objects).toBeUndefined();
@@ -65,7 +65,7 @@ for (const { id, key, typed, want } of [
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto("/");
     await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
-    await expect(page.locator("#status")).toContainText("loaded");
+    await expect(page.locator("#objectList .obj").first()).toBeVisible();
     await page.locator("#slice").click();
     await expect.poll(() => bodies.length).toBe(1);
 
@@ -73,7 +73,7 @@ for (const { id, key, typed, want } of [
     await expect.poll(() => bodies.length).toBe(2);
     await page.locator(id).fill(typed);
     release();
-    await expect(page.locator("#cancel")).toBeDisabled();
+    await expect(page.locator("#cancel")).toBeHidden();
     await expect(page.locator(id)).toBeFocused();
     await expect(page.locator(id)).toHaveValue(typed);
     await page.locator(id).blur();

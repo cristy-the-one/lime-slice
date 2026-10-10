@@ -5,6 +5,7 @@ import zlib from "node:zlib";
 import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, parkLeftNdcX, snapStep } from "../src/gizmo-math";
 import { applyRigidPose, boundsOf, centeringShift, ID_MATRIX, placeMesh, rotX, rotZ, scaledCanonical, transformPositions, type Mat3, type MeshShift, type RigidPose } from "../src/mesh-place";
 import { encodePaths } from "../src/preview-wire";
+import { placeText } from "./place";
 
 const out = path.resolve("artifacts/gizmo-pose");
 fs.mkdirSync(out, { recursive: true });
@@ -113,10 +114,10 @@ test("zoom keeps the gizmo the same size and an arrow move is what gets sliced",
   await page.goto("/");
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await expect(page.locator("#prepareBody")).toBeVisible();
-  await expect(page.locator("#gizmoReadout")).toContainText("arrow");
-  const home = await page.locator("#placeReadout").innerText();
+  await expect(page.locator("#gizmoReadout")).toBeHidden();
+  const home = await placeText(page);
   expect(home).toContain("X 110.0");
   expect(home).toContain("bed Z 0.0");
 
@@ -148,7 +149,7 @@ test("zoom keeps the gizmo the same size and an arrow move is what gets sliced",
   expect(Math.abs(zoomedOut.midX - fit.midX)).toBeLessThan(28);
   expect(Math.abs(zoomedOut.midY - fit.midY)).toBeLessThan(28);
 
-  const poseBeforeOrbit = await page.locator("#placeReadout").innerText();
+  const poseBeforeOrbit = await placeText(page);
   const box = (await prepare.boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
@@ -156,16 +157,16 @@ test("zoom keeps the gizmo the same size and an arrow move is what gets sliced",
   await page.mouse.up();
   await page.waitForTimeout(450);
   const orbited = await shotBox(page, "orbit.png");
-  expect(await page.locator("#placeReadout").innerText()).toBe(poseBeforeOrbit);
+  expect(await placeText(page)).toBe(poseBeforeOrbit);
   expect(Math.abs(orbited.midX - zoomedOut.midX)).toBeLessThan(36);
   expect(Math.abs(orbited.midY - zoomedOut.midY)).toBeLessThan(36);
   expect(orbited.meshMidX - orbited.midX).toBeGreaterThan(orbited.cssW * 0.1);
 
-  const before = parsePlace(await page.locator("#placeReadout").innerText());
+  const before = parsePlace(await placeText(page));
   const arrow = await arrowHandle(page);
   await drag(page, arrow.x, arrow.y, arrow.x + arrow.dx, arrow.y + arrow.dy);
   await page.locator("#prepare").screenshot({ path: path.join(out, "translated.png") });
-  const after = parsePlace(await page.locator("#placeReadout").innerText());
+  const after = parsePlace(await placeText(page));
   const delta = after[arrow.axis] - before[arrow.axis];
   expect(Math.abs(delta)).toBeGreaterThan(0.8);
   expect(Math.sign(delta)).toBe(1);
@@ -182,21 +183,21 @@ test("zoom keeps the gizmo the same size and an arrow move is what gets sliced",
   expect(Math.abs(midX - before.x) + Math.abs(midY - before.y) + Math.abs(sliced.min[2] - before.z)).toBeGreaterThan(0.8);
 
   await page.locator("#layflat").click();
-  const laid = await page.locator("#placeReadout").innerText();
+  const laid = await placeText(page);
   expect(laid).not.toBe(home);
   await page.locator("#center").click();
-  await expect(page.locator("#placeReadout")).toHaveText(home);
+  await expect.poll(() => placeText(page)).toBe(home);
 
   const again = await arrowHandle(page);
   await page.keyboard.down("Shift");
   await drag(page, again.x, again.y, again.x + again.dx, again.y + again.dy);
   await page.keyboard.up("Shift");
-  const snapped = parsePlace(await page.locator("#placeReadout").innerText());
+  const snapped = parsePlace(await placeText(page));
   const step = snapped[again.axis] - parsePlace(home)[again.axis];
   expect(Math.abs(step)).toBeGreaterThanOrEqual(1);
   expect(Math.abs(step - Math.round(step))).toBeLessThan(0.05);
   await page.locator("#center").click();
-  await expect(page.locator("#placeReadout")).toHaveText(home);
+  await expect.poll(() => placeText(page)).toBe(home);
 });
 
 function ratio(a: number, b: number) {

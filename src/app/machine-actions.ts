@@ -210,7 +210,6 @@ export function saveMachine(name: string): boolean {
     return false;
   }
   commitSwitch(next);
-  pushToast(name ? `Saved ${name.trim()}.` : "Saved the printer and filament.", "success");
   return true;
 }
 
@@ -221,8 +220,6 @@ export function duplicateMachine(): boolean {
     return false;
   }
   commitSwitch(next);
-  const picked = selection(next);
-  pushToast(`Duplicated as ${picked?.printer.name ?? "a copy"}.`, "success");
   return true;
 }
 
@@ -233,7 +230,6 @@ export function deleteMachine(): boolean {
     return false;
   }
   commitSwitch(next);
-  pushToast("Deleted the copy.", "success");
   return true;
 }
 
@@ -254,7 +250,6 @@ export async function importMachineFile(file: File) {
   }
   const next = importInto(loadMachineLibrary(), parsed.file, newMachineId(), newMachineId());
   commitSwitch(next);
-  pushToast(`Imported ${parsed.file.printer.name}.`, "success");
 }
 
 export function openMachineFile() {

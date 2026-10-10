@@ -62,7 +62,7 @@ test("ui states from real slice fixtures", async ({ page }) => {
 
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await expect(page.locator("#prepareBody")).toBeVisible();
   await page.waitForTimeout(400);
   await shot(page, "p1-prepare.png");
@@ -143,7 +143,7 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await expect(page.locator("[data-state=slicing]")).toBeVisible();
   await shot(page, "v3-08-slicing-progress.png");
   await page.getByRole("button", { name: "Cancel" }).click();
-  await expect(page.locator("#toasts")).toContainText("cancelled");
+  await expect(page.locator("#cancel")).toBeHidden();
   await shot(page, "v3-09-cancelled.png");
 
   delay = 0;
@@ -199,7 +199,7 @@ test("connection settings and a 390x844 layout", async ({ page }) => {
   await expect(page.locator("#engineLink")).toHaveAttribute("data-state", "ok");
   await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await expect(page.locator("#connection")).toBeVisible();
-  await expect(page.locator("#apiUsing")).toContainText("http://127.0.0.1:43118");
+  await expect(page.locator("#apiBase")).toHaveAttribute("placeholder", "http://127.0.0.1:43118");
   await page.locator(".gear-panel").screenshot({ path: path.join(out, "connection-settings.png") });
 
   await page.setViewportSize({ width: 390, height: 844 });

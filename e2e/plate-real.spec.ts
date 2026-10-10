@@ -23,7 +23,7 @@ type Reply = {
 
 async function sliced(page: Page) {
   await expect(page.locator("#slice")).toBeEnabled({ timeout: SLICE_MS });
-  await expect(page.locator("#cancel")).toBeDisabled();
+  await expect(page.locator("#cancel")).toBeHidden();
 }
 
 /** Send the app's engine calls to the real engine, and keep each slice reply. */
@@ -71,7 +71,7 @@ test("moving one plate object re-emits only its G-code, without a click", async 
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
   await page.locator("#file").setInputFiles("samples/dragon_2_5.stl");
-  await expect(page.locator("#status")).toContainText("loaded", { timeout: 30_000 });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 30_000 });
   await page.locator("#plateAdd").click();
   await expect(page.locator("[data-plate-id]")).toHaveCount(2);
   await page.locator("#plateArrange").click();
@@ -100,7 +100,7 @@ test("moving one plate object re-emits only its G-code, without a click", async 
   await expect(page.locator("#export")).toBeEnabled({ timeout: SLICE_MS });
   await expect.poll(() => replies.length, { timeout: SLICE_MS }).toBe(count + 1);
   console.log(`plate move: commit to export enabled ${Date.now() - committed} ms`);
-  await expect(page.locator("#banner")).not.toContainText("Settings changed");
+  await expect(page.locator("#stage")).not.toHaveClass(/stale/);
   const moved = replies.at(-1)!;
   expect(moved.fromCache || moved.previewPatch?.changed.length === 0, "the move re-emitted as a 0-layer patch or came from the store").toBe(true);
   expect(moved.objects!.find((o) => o.id === b)!.offset[0] - first.objects!.find((o) => o.id === b)!.offset[0]).toBeCloseTo(25, 1);

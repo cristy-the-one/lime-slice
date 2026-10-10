@@ -31,7 +31,7 @@ test("sequential is omitted until the plate prints one object at a time", async 
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(1);
   expect(bodies[0]).not.toHaveProperty("printOrder");
@@ -77,7 +77,7 @@ for (const { id, field, typed } of [
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto("/");
     await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
-    await expect(page.locator("#status")).toContainText("loaded");
+    await expect(page.locator("#objectList .obj").first()).toBeVisible();
     await page.locator("#plateAdd").click();
     await page.locator("#printOrder").selectOption("sequential");
     await expect(page.locator(id)).toBeVisible();
@@ -86,7 +86,7 @@ for (const { id, field, typed } of [
     await expect.poll(() => bodies.length).toBe(1);
     await page.locator(id).fill(String(typed));
     release();
-    await expect(page.locator("#cancel")).toBeDisabled();
+    await expect(page.locator("#cancel")).toBeHidden();
     await expect(page.locator(id)).toBeFocused();
     await expect(page.locator(id)).toHaveValue(String(typed));
     await page.locator(id).blur();
@@ -106,7 +106,7 @@ test.describe("sequential controls stay in the sheet", () => {
     await page.goto("/?layout=compact");
     await expect(page.locator("html")).toHaveClass(/layout-compact/);
     await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
-    await expect(page.locator("#status")).toContainText("loaded");
+    await expect(page.locator("#objectList .obj").first()).toBeVisible();
     await expect(page.locator("#compactSheet")).toHaveAttribute("data-detent", "peek");
     await page.locator("#compactTabs [data-tab=settings]").click();
     await page.locator("#plateAdd").click();

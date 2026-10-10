@@ -139,7 +139,7 @@ test.describe("compact support editing", () => {
     expect(editing, `edit peek share ${editing}`).toBeGreaterThanOrEqual(0.7);
     expect(editing, `edit peek share ${editing}`).toBeLessThan(0.86);
     console.log(`viewport shares prepare=${prepare.toFixed(3)} preview=${preview.toFixed(3)} editPeek=${editing.toFixed(3)}`);
-    await expect(page.locator("#compactSupportPeek")).toContainText("Tap a support");
+    await expect(page.locator("#compactSupportPeek")).toHaveText("");
 
     const canvas = page.locator("#view3d");
     const box = (await canvas.boundingBox())!;

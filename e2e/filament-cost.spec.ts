@@ -25,7 +25,7 @@ test("price and density update the estimate without a slice, a stale mark, or a 
   });
   await page.goto("/");
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#slice").click();
   await expect(page.locator("#export")).toBeEnabled();
   expect(jobs).toHaveLength(1);
@@ -43,7 +43,7 @@ test("price and density update the estimate without a slice, a stale mark, or a 
   await expect(page.locator("#estCost")).toHaveText(filamentCost(grams, petg).toFixed(2));
   await expect(page.locator("#timing")).toContainText(`${grams.toFixed(2)} g`);
   await expect(page.locator("#export")).toBeEnabled();
-  await expect(page.locator("#banner")).not.toContainText("Settings changed");
+  await expect(page.locator("#stage")).not.toHaveClass(/stale/);
   await expect(page.locator("#slice")).not.toHaveAttribute("data-slice-action", "changed");
   const download = page.waitForEvent("download", { timeout: 10_000 });
   await page.locator("#export").click();

@@ -43,10 +43,11 @@ export function alignOutcomes(list: readonly EditEntry[], sent: readonly EditEnt
   });
 }
 
-export type Badge = "applied" | "rebound" | "stale" | "pending";
+export type Badge = "rebound" | "stale";
 
-export function badgeOf(outcome: EditOutcome | undefined): Badge {
-  return outcome ? outcome.status : "pending";
+/** Only an edit that needs a second look carries a badge. */
+export function badgeOf(outcome: EditOutcome | undefined): Badge | null {
+  return outcome?.status === "rebound" || outcome?.status === "stale" ? outcome.status : null;
 }
 
 const tips = (n: number) => `${n} tip${n === 1 ? "" : "s"}`;
@@ -73,16 +74,15 @@ export function editTitle(entry: EditEntry, belt = false): string {
 export function outcomeText(entry: EditEntry, outcome: EditOutcome): string {
   if (!("scope" in entry)) {
     if (outcome.status === "stale") return "Nothing unheld to regrow here.";
-    if (outcome.newlyFloatingMm2 < -NOISE_MM2) return `Regrew supports. ${mm2(-outcome.newlyFloatingMm2)} of overhang held again.`;
-    return "Regrew supports. Nothing more is held.";
+    return outcome.newlyFloatingMm2 < -NOISE_MM2 ? `Regrew supports. ${mm2(-outcome.newlyFloatingMm2)} of overhang held again.` : "";
   }
   const n = entry.edit.sites.length;
-  const unheld = outcome.newlyFloatingMm2 > NOISE_MM2 ? `${mm2(outcome.newlyFloatingMm2)} of overhang now unheld.` : "Nothing new is unheld.";
+  const unheld = outcome.newlyFloatingMm2 > NOISE_MM2 ? ` ${mm2(outcome.newlyFloatingMm2)} of overhang now unheld.` : "";
   const removed = `Removed 1 ${entry.scope} (${tips(n)})`;
-  if (outcome.status === "applied") return `${removed}. ${unheld}`;
-  if (outcome.status === "rebound") return `${removed}, matched ${outcome.movedMm.toFixed(2)} mm from where it was picked. ${unheld}`;
+  if (outcome.status === "applied") return `${removed}.${unheld}`;
+  if (outcome.status === "rebound") return `${removed}, matched ${outcome.movedMm.toFixed(2)} mm from where it was picked.${unheld}`;
   if (outcome.missed >= n || outcome.changedLayers === 0) return "Nothing matched: the supports changed since this edit.";
-  return `${outcome.missed} of ${n} tips no longer ${outcome.missed === 1 ? "exists" : "exist"}, the rest were removed. ${unheld}`;
+  return `${outcome.missed} of ${n} tips no longer ${outcome.missed === 1 ? "exists" : "exist"}, the rest were removed.${unheld}`;
 }
 
 /**

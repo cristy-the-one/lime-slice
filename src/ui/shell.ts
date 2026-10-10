@@ -4,7 +4,7 @@ import { mountTitlebar } from "./titlebar";
 import { mountViewport, type ViewPreset } from "./viewport";
 import "./shell.css";
 
-export { applyStoredLevel, levelBarHtml, paintSettingMarks, syncSliceDock } from "./settings-panel";
+export { applyStoredLevel, levelBarHtml, paintSettingMarks } from "./settings-panel";
 export { syncEmptyState } from "./viewport";
 export type { ViewPreset } from "./viewport";
 

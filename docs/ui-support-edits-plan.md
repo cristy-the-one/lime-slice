@@ -30,7 +30,7 @@ A one-finger drag still orbits. Compact regrow uses the gap's own bounds and z r
 
 Picking, prune, regrow, undo, clear, the skeleton highlight, the coverage banner, and the slice request are the real API. Nothing in this editor invents a tip site or skips `supportEdits`.
 
-These mocks belong to the rest of the compact shell, not to support edits:
+The rest of the compact shell lacks these, and support edits do not depend on them:
 
-- Playback speed (`MOCK_PLAYBACK_SPEED`) does not change the toolpath.
-- On-device slicing (`MOCK_ON_DEVICE_LABEL`) is not built. The browser still slices over HTTP.
+- There is no playback speed multiplier.
+- On-device slicing is not built. The browser still slices over HTTP.

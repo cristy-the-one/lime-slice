@@ -27,7 +27,7 @@ test("the sheet shows repaired layers and dropped chains from the slice", async 
   });
   await page.goto("/");
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await expect(page.locator("#leftBody")).not.toContainText("Repaired layers");
 
   await page.locator("#slice").click();

@@ -1,4 +1,3 @@
-import { Layers, createElement } from "lucide";
 import { markProjectDirty } from "../project-dirty";
 import { changedPresetKeys, type PresetSettings } from "../presets";
 import "./shell.css";
@@ -88,7 +87,6 @@ export function mountSettingsPanel() {
     setSettingsLevel(level);
     markProjectDirty();
   });
-  mountSliceDock();
 }
 
 /** Dots for values that differ from the factory preset. Same comparison as the preset diff. */
@@ -99,39 +97,4 @@ export function paintSettingMarks(current: PresetSettings) {
     const row = input?.closest<HTMLElement>("label, .setting");
     row?.classList.toggle("is-modified", changed.has(key));
   }
-}
-
-export function syncSliceDock(source: HTMLButtonElement) {
-  const dock = document.querySelector<HTMLButtonElement>("#sliceDock");
-  if (!dock) return;
-  const label = source.querySelector(".btn-label")?.textContent ?? "";
-  const slot = dock.querySelector(".btn-label");
-  if (slot) slot.textContent = label;
-  dock.disabled = source.disabled;
-  dock.classList.toggle("primary", source.classList.contains("primary"));
-  dock.classList.toggle("show-result", source.classList.contains("show-result"));
-  dock.classList.toggle("reslice", source.classList.contains("reslice"));
-}
-
-function mountSliceDock() {
-  const foot = document.querySelector("#leftFoot");
-  if (!foot || foot.querySelector("#sliceDock")) return;
-  const button = document.createElement("button");
-  button.id = "sliceDock";
-  button.type = "button";
-  button.className = "btn primary slice-dock";
-  button.setAttribute("aria-label", "Slice from the settings panel");
-  button.dataset.tip = "Same action as Slice in the toolbar";
-  button.dataset.shortcut = "Ctrl+Enter";
-  const icon = createElement(Layers, { width: 16, height: 16, "aria-hidden": "true", class: "ico" });
-  const slot = document.createElement("span");
-  slot.className = "btn-label";
-  slot.setAttribute("aria-hidden", "true");
-  button.append(icon, slot);
-  button.addEventListener("click", () => {
-    document.querySelector<HTMLButtonElement>("#slice")?.click();
-  });
-  foot.append(button);
-  const slice = document.querySelector<HTMLButtonElement>("#slice");
-  if (slice) syncSliceDock(slice);
 }

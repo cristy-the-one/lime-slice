@@ -72,7 +72,7 @@ function mountEmptyDrop() {
     if (!host || host.querySelector(".empty-drop")) continue;
     const zone = document.createElement("div");
     zone.className = "empty-drop";
-    zone.innerHTML = `<div><strong>Drop a mesh</strong><p>STL, 3MF, or STEP onto the window.</p><button class="btn" type="button">Open mesh</button></div>`;
+    zone.innerHTML = `<div><strong>Drop a mesh</strong><p>STL · 3MF · STEP</p><button class="btn" type="button">Open mesh</button></div>`;
     zone.querySelector("button")?.addEventListener("click", () => {
       document.querySelector<HTMLInputElement>("#file")?.click();
     });

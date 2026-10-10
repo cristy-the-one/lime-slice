@@ -164,10 +164,10 @@
   font-size: 11px;
   line-height: 15px;
 }
-.se-badge[data-badge="applied"] { --tone: var(--ok); }
 .se-badge[data-badge="rebound"] { --tone: var(--info); }
 .se-badge[data-badge="stale"] { --tone: var(--warn); }
 .se-remove {
+  grid-column: 4;
   width: 24px;
   height: 24px;
   display: grid;
@@ -208,7 +208,6 @@
 }
 .se-gap[data-hot="true"] { background: color-mix(in srgb, var(--danger) 14%, transparent); }
 .se-gap .btn { height: 24px; padding: 0 8px; font-size: 12px; }
-.se-empty,
 .se-note {
   margin: var(--space-2) 0 0;
   padding-left: 2px;

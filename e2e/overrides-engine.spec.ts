@@ -59,7 +59,7 @@ test("a height range slices with its walls and speed cap", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
-  await expect(page.locator("#status")).toContainText("loaded", { timeout: 30_000 });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 30_000 });
   await page.locator("#heightAdd").click();
   await page.locator("[data-range] input[data-field=zFrom]").fill("2");
   await page.locator("[data-range] input[data-field=zTo]").fill("6");
@@ -70,7 +70,7 @@ test("a height range slices with its walls and speed cap", async ({ page }) => {
   const sent = bodies.length;
   await page.locator("#slice").click();
   await expect(page.locator("#slice")).toBeEnabled({ timeout: SLICE_MS });
-  await expect(page.locator("#cancel")).toBeDisabled();
+  await expect(page.locator("#cancel")).toBeHidden();
   await expect(page.locator("#export")).toBeEnabled();
   expect(bodies.length).toBeGreaterThan(sent);
   expect(bodies.at(-1)!.heightRanges).toEqual([{ z: [2, 6], walls: 6, speed: 25 }]);

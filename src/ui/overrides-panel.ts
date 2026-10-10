@@ -14,6 +14,8 @@ function optional(value: number | undefined, digits = 0): string {
   return String(Math.round(value * 10 ** digits) / 10 ** digits);
 }
 
+export const OVERRIDES_TIP = "Infill, walls, and a speed cap apply on a range's layers and inside a volume. A volume wins over a range, and a later entry wins over an earlier one. Supports stay as set. Layer height stays the one slice setting. A range cannot change it. Move and scale use the gizmo on the shape. Shift snaps 1 mm.";
+
 export function overrideSectionHtml(doc: OverrideDocument, selectedId: string | null, tool: "move" | "scale"): string {
   const ranges = doc.ranges.map((range) => `
     <div class="override-card" data-override-card data-range="${esc(range.id)}">
@@ -39,10 +41,8 @@ export function overrideSectionHtml(doc: OverrideDocument, selectedId: string | 
       <button class="btn" type="button" data-override-remove="volume">Remove volume</button>
     </div>`).join("");
   return `
-    <p class="meta">Infill, walls, and a speed cap apply on a range's layers and inside a volume. A volume wins over a range, and a later entry wins over an earlier one. Supports stay as set.</p>
-    <p class="meta">Layer height stays the one slice setting. A range cannot change it.</p>
     <h3>Height ranges</h3>
-    <div id="heightList">${ranges || `<p class="meta">No height ranges.</p>`}</div>
+    <div id="heightList">${ranges}</div>
     <button class="btn" id="heightAdd" type="button">Add range</button>
     <h3>Modifier volumes</h3>
     <div class="row">
@@ -52,8 +52,7 @@ export function overrideSectionHtml(doc: OverrideDocument, selectedId: string | 
       <button class="btn" id="modToolMove" type="button" aria-pressed="${tool === "move" ? "true" : "false"}">Move</button>
       <button class="btn" id="modToolScale" type="button" aria-pressed="${tool === "scale" ? "true" : "false"}">Scale</button>
     </div>
-    <p class="meta">Move and scale use the gizmo on the shape. Shift snaps 1 mm.</p>
-    <div id="volumeList">${volumes || `<p class="meta">No modifier volumes.</p>`}</div>`;
+    <div id="volumeList">${volumes}</div>`;
 }
 
 function volumeLabel(kind: "box" | "cylinder" | "sphere"): string {

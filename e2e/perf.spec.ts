@@ -73,7 +73,7 @@ test("preview responsiveness on a real slice", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
   await page.locator("#file").setInputFiles(mesh!);
-  await expect(page.locator("#status")).toContainText("loaded", { timeout: 60_000 });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 60_000 });
   await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.getByRole("button", { name: "3D", exact: true }).click();
 

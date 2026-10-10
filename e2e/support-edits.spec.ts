@@ -36,7 +36,7 @@ async function supportSeconds(page: Page) {
 
 async function sliced(page: Page) {
   await expect(page.locator("#slice")).toBeEnabled({ timeout: SLICE_MS });
-  await expect(page.locator("#cancel")).toBeDisabled();
+  await expect(page.locator("#cancel")).toBeHidden();
 }
 
 async function gapCount(page: Page) {
@@ -56,7 +56,7 @@ test("delete a tree, regrow its gap, undo, and clear", async ({ page }) => {
   await page.goto("/");
   await page.locator("#samples summary").click();
   await page.locator('[data-sample="overhang_ledge.stl"]').click();
-  await expect(page.locator("#status")).toContainText("loaded", { timeout: 30_000 });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 30_000 });
   await page.locator('[data-level-choice="advanced"]').first().click();
   await page.locator("#supports").check();
   await page.locator("#sstyle").selectOption("tree");
@@ -73,7 +73,8 @@ test("delete a tree, regrow its gap, undo, and clear", async ({ page }) => {
 
   await page.keyboard.press("e");
   const readout = page.locator("#supportReadout");
-  await expect(readout).toHaveText("Click a support. Shift-click takes the whole tree.");
+  await expect(page.locator('#toolRail [data-tool="supports"]')).toHaveAttribute("aria-pressed", "true");
+  await expect(readout).toBeEmpty();
   const box = (await page.locator("#view3d").boundingBox())!;
   let at: { x: number; y: number } | null = null;
   for (let row = 1; row < 24 && !at; row++) {
@@ -90,35 +91,30 @@ test("delete a tree, regrow its gap, undo, and clear", async ({ page }) => {
   await page.keyboard.up("Shift");
   await expect(readout).toHaveText(/^Tree · \d+ tips?$/);
 
+  const rows = page.locator("#supportEdits li[data-edit]");
   await page.keyboard.press("Delete");
-  await expect(page.locator(".toast").filter({ hasText: /Removed 1 tree \(\d+ tips?\)\./ })).toBeVisible({ timeout: SLICE_MS });
+  await expect(rows.first().locator(".se-text")).toContainText(/Removed 1 tree \(\d+ tips?\)\./, { timeout: SLICE_MS });
   await sliced(page);
   const pruned = await supportSeconds(page);
   expect(pruned.seconds).toBeLessThan(before.seconds);
   const gapsPruned = await gapCount(page);
   expect(gapsPruned).toBeGreaterThanOrEqual(1);
-  const rows = page.locator("#supportEdits li[data-edit]");
   await expect(rows).toHaveCount(1);
-  await expect(rows.first().locator(".se-badge")).toHaveText(/applied|rebound/);
   expect(await exportedSupportMoves(page)).toBeLessThan(movesBefore);
 
   await page.locator('#supportEdits [data-action="regrow"]').first().click();
   await expect(rows).toHaveCount(2);
-  await expect(page.locator(".toast").filter({ hasText: /^Regrew supports\./ })).toBeVisible({ timeout: SLICE_MS });
   await sliced(page);
   expect(await gapCount(page)).toBeLessThan(gapsPruned);
 
   await page.getByRole("button", { name: "Undo last" }).click();
-  await expect(page.locator(".toast").filter({ hasText: "Edit removed. Supports replayed." })).toBeVisible({ timeout: SLICE_MS });
   await sliced(page);
   await expect(rows).toHaveCount(1);
   expect(await gapCount(page)).toBe(gapsPruned);
 
   await page.getByRole("button", { name: "Clear all" }).click();
-  await expect(page.locator(".toast").filter({ hasText: "All support edits cleared." })).toBeVisible({ timeout: SLICE_MS });
   await sliced(page);
   await expect(rows).toHaveCount(0);
-  await expect(page.locator("#supportEdits")).toContainText("No edits yet.");
   expect((await supportSeconds(page)).text).toBe(before.text);
 });
 
@@ -135,7 +131,7 @@ test("Smart supports off prints no support, and on lets trees be edited", async 
   await page.goto("/");
   await page.locator("#samples summary").click();
   await page.locator('[data-sample="overhang_ledge.stl"]').click();
-  await expect(page.locator("#status")).toContainText("loaded", { timeout: 30_000 });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 30_000 });
   await expect(page.locator("#supports")).not.toBeChecked();
   await page.locator("#slice").click();
   await sliced(page);
@@ -154,5 +150,6 @@ test("Smart supports off prints no support, and on lets trees be edited", async 
   await expect(page.locator("#banner")).not.toContainText("Supports are off");
   await expect(toggle).toHaveAttribute("aria-disabled", "false");
   await page.keyboard.press("e");
-  await expect(page.locator("#supportReadout")).toHaveText("Click a support. Shift-click takes the whole tree.");
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#supportReadout")).toBeEmpty();
 });

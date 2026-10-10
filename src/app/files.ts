@@ -174,11 +174,11 @@ export function setPlaceCenter(axis: "x" | "y", mm: number) {
 
 function paintPlaceFields() {
   const bounds = state.placed?.bounds;
-  const el = document.querySelector("#placeReadout");
-  if (!el || !bounds) return;
+  if (!bounds) return;
   const cx = ((bounds.min[0] + bounds.max[0]) / 2).toFixed(1);
   const cy = ((bounds.min[1] + bounds.max[1]) / 2).toFixed(1);
-  el.textContent = `X ${cx} · Y ${cy} · bed Z ${bounds.min[2].toFixed(1)} mm`;
+  const row = document.querySelector<HTMLElement>("#placeXY");
+  if (row) row.dataset.bedZ = bounds.min[2].toFixed(1);
   for (const [id, value] of [["placeX", cx], ["placeY", cy]] as const) {
     const input = document.querySelector<HTMLInputElement>(`#${id}`);
     if (input && document.activeElement !== input) input.value = value;

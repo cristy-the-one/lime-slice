@@ -19,7 +19,7 @@ import {
   type PrusaLinkResult,
 } from "../ui/prusa-link.ts";
 
-let summary = "Not checked.";
+let summary = "";
 
 export function prusaSummary(): string {
   return summary;
@@ -34,12 +34,19 @@ export function sendTitle(): string {
   return sendBlock() ?? "Send the current G-code to this printer.";
 }
 
+function hostProblemNow(): string | null {
+  return hostProblem(selection(loadMachineLibrary())?.printer.host ?? "");
+}
+
+/** Send exists only for a printer with a Prusa Link host. */
 export function syncSendButtons() {
   const title = sendTitle();
   const ready = canSendToPrinter();
+  const hosted = hostProblemNow() === null;
   for (const id of ["#sendPrinter", "#compactSend"]) {
     const button = document.querySelector<HTMLButtonElement>(id);
     if (!button) continue;
+    button.hidden = !hosted;
     button.disabled = !ready;
     button.title = title;
     button.dataset.tip = title;
@@ -67,9 +74,7 @@ export async function uploadToPrusaLink() {
   rememberPrusaForm();
   const result = state.result;
   if (!result || fx.stale?.() || state.busy) {
-    const message = state.busy ? "Wait for the slice to finish, then send." : "Slice first, then send.";
-    show(message);
-    pushToast(message, "info");
+    show(state.busy ? "Wait for the slice to finish, then send." : "Slice first, then send.");
     return;
   }
   let gcode = "";
@@ -137,7 +142,6 @@ function finish(action: "test" | "upload" | "job", result: PrusaLinkResult) {
     return;
   }
   show(result.summary);
-  pushToast(result.summary, "success");
 }
 
 function retry(action: "test" | "upload" | "job") {
@@ -147,12 +151,11 @@ function retry(action: "test" | "upload" | "job") {
 }
 
 function sendBlock(): string | null {
+  const host = hostProblemNow();
+  if (host) return host;
   if (state.busy) return "Wait for the slice to finish, then send.";
-  const host = hostProblem(selection(loadMachineLibrary())?.printer.host ?? "");
-  const hasGcode = !!state.result && !fx.stale?.();
-  if (!hasGcode && host) return "Slice first, and add a Prusa Link host on this printer.";
-  if (!hasGcode) return "Slice first, then send.";
-  return host;
+  if (!state.result || fx.stale?.()) return "Slice first, then send.";
+  return null;
 }
 
 function show(text: string) {

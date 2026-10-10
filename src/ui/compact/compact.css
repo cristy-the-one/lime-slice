@@ -110,7 +110,6 @@ html:not(.layout-compact) #compactMenu,
 html:not(.layout-compact) #compactProgress,
 html:not(.layout-compact) #compactIso,
 html:not(.layout-compact) #compactLayerTip,
-html:not(.layout-compact) #compactPlaySpeed,
 html:not(.layout-compact) #compactSupportEdit,
 html:not(.layout-compact) #compactSupportChip { display: none !important; }
 
@@ -256,7 +255,6 @@ html.layout-compact #left {
   border: 0;
   overflow: visible;
 }
-html.layout-compact #leftFoot { display: none; }
 html.layout-compact #compactSheet[data-detent="peek"] #leftBody { pointer-events: none; }
 
 html.layout-compact #toolRail {
@@ -321,12 +319,11 @@ html.layout-compact #slice {
   background: var(--accent);
   color: var(--on-accent);
 }
-html.layout-compact #cancel:not(:disabled) {
+html.layout-compact #cancel {
   background: var(--surface-2);
   color: var(--text);
 }
-html.layout-compact #cancel[disabled] { display: none !important; }
-html.layout-compact:has(#cancel:not(:disabled)) #slice { display: none !important; }
+html.layout-compact:has(#cancel:not([hidden])) #slice { display: none !important; }
 
 #compactProgress {
   position: absolute;
@@ -416,11 +413,6 @@ html.layout-compact .playback {
 }
 html.layout-compact #play,
 html.layout-compact #stop { width: auto; min-width: 44px; height: 36px; }
-#compactPlaySpeed {
-  font-size: 12px;
-  color: var(--text-dim);
-  padding: 0 4px;
-}
 
 #compactDevice {
   display: none;
@@ -443,7 +435,6 @@ html.layout-compact[data-compact-tab="prepare"] #compactProgress { display: none
 html.layout-compact[data-compact-tab="preview"] #compactProgress[data-on="1"] { display: flex !important; }
 
 .compact-device h2 { margin: 4px 0 0; font-size: 22px; letter-spacing: 0; text-transform: none; color: var(--text); }
-.compact-kicker { margin: 0 0 12px; color: var(--text-dim); font-size: 13px; }
 .compact-device h3 {
   margin: 16px 0 8px;
   font-size: 11px;
@@ -451,17 +442,6 @@ html.layout-compact[data-compact-tab="preview"] #compactProgress[data-on="1"] { 
   text-transform: uppercase;
   color: var(--text-faint);
 }
-.compact-seg { display: flex; gap: 8px; }
-.compact-seg button {
-  flex: 1 1 0;
-  height: 40px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  color: var(--text-dim);
-}
-.compact-seg button[aria-pressed="true"] { background: var(--surface-3); color: var(--text); }
-.compact-seg button:disabled { opacity: 0.55; }
 .compact-status {
   display: flex;
   align-items: center;
@@ -504,7 +484,6 @@ html.layout-compact #compactDevice .connection-actions .btn#apiTest {
   background: var(--surface-2);
 }
 .compact-row-actions { display: flex; gap: 8px; flex: 0 0 auto; }
-.compact-note { color: var(--text-dim); font-size: 12px; line-height: 1.4; }
 
 #compactMenu {
   position: fixed;

@@ -32,14 +32,12 @@ export function mountConnection(onSaved: () => void) {
       <button type="button" class="btn" id="apiSave">Save</button>
       <button type="button" class="btn" id="apiTest">Test connection</button>
     </div>
-    <p id="apiUsing" class="connection-result"></p>
     <p id="apiTestResult" class="connection-result" role="status"></p>
   `;
   panel.append(section);
 
   const url = section.querySelector<HTMLInputElement>("#apiBase")!;
   const token = section.querySelector<HTMLInputElement>("#apiToken")!;
-  const using = section.querySelector<HTMLElement>("#apiUsing")!;
   const result = section.querySelector<HTMLElement>("#apiTestResult")!;
   url.value = localStorage.getItem(API_STORAGE_KEY) ?? "";
   token.value = localStorage.getItem(TOKEN_STORAGE_KEY) ?? "";
@@ -53,12 +51,6 @@ export function mountConnection(onSaved: () => void) {
   });
   token.placeholder = "Optional";
 
-  const paintUsing = () => {
-    const target = currentApiTarget();
-    using.textContent = target.token ? `Using ${target.base} with a token` : `Using ${target.base}`;
-  };
-  paintUsing();
-
   section.querySelector("#apiSave")!.addEventListener("click", () => {
     const next = normalizeBase(url.value);
     if (next) localStorage.setItem(API_STORAGE_KEY, next);
@@ -67,9 +59,8 @@ export function mountConnection(onSaved: () => void) {
     if (secret) localStorage.setItem(TOKEN_STORAGE_KEY, secret);
     else localStorage.removeItem(TOKEN_STORAGE_KEY);
     url.value = next;
-    result.dataset.state = "ok";
-    result.textContent = "Saved";
-    paintUsing();
+    delete result.dataset.state;
+    result.textContent = "";
     onSaved();
   });
 
@@ -84,7 +75,7 @@ export function mountConnection(onSaved: () => void) {
 
 async function testConnection(base: string, token: string, result: HTMLElement) {
   result.dataset.state = "pending";
-  result.textContent = `Testing ${base}…`;
+  result.textContent = "";
   const started = performance.now();
   try {
     const res = await fetch(`${base}/api/health`, { headers: authHeaders(token) });
@@ -92,7 +83,7 @@ async function testConnection(base: string, token: string, result: HTMLElement) 
     if (res.status === 401) throw new Error("unauthorized");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     result.dataset.state = "ok";
-    result.textContent = `OK · ${base}`;
+    result.textContent = `OK · ${result.dataset.rtt} ms`;
   } catch (err) {
     const reason = err instanceof Error && err.message !== "Failed to fetch" ? err.message : "unreachable";
     result.dataset.state = "bad";

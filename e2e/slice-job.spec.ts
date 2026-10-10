@@ -86,16 +86,17 @@ async function openCube(page: Page) {
   await page.goto("/");
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
 }
 
 test("a job stream shows the stage, then the slice result", async ({ page }) => {
   const calls = await mockJobs(page, "finish");
   await openCube(page);
   await page.locator("#slice").click();
-  await expect(page.locator("#toasts")).toContainText(/Slicing layers|Walls and infill/);
+  await expect(page.locator("#timing")).toContainText(/Slicing layers|Walls and infill/);
   await expect(page.locator("#sliceMeter")).toContainText("%");
-  await expect(page.locator("#status")).toContainText("Walls and infill");
+  await expect(page.locator("#timing")).toContainText("Walls and infill");
+  await expect(page.locator("#toasts .toast")).toHaveCount(0);
   await expect(page.locator("#export")).toBeEnabled({ timeout: 15_000 });
   expect(calls).toContain("POST /api/jobs");
   expect(calls).toContain("GET /api/jobs/7/result");
@@ -107,12 +108,12 @@ test("Cancel stops that job and leaves the synchronous cancel route alone", asyn
   const calls = await mockJobs(page, "hold");
   await openCube(page);
   await page.locator("#slice").click();
-  await expect(page.locator("#cancel")).toBeEnabled();
+  await expect(page.locator("#cancel")).toBeVisible();
   await expect(page.locator("#sliceMeter")).toContainText("Walls and infill");
   await page.locator("#cancel").click();
-  await expect(page.locator("#toasts")).toContainText("cancelled");
-  await expect(page.locator("#cancel")).toBeDisabled();
-  await expect(page.locator("#timing")).toHaveText("No slice yet");
+  await expect(page.locator("#cancel")).toBeHidden();
+  await expect(page.locator("#toasts .toast")).toHaveCount(0);
+  await expect(page.locator("#timing")).toHaveText("");
   expect(calls).toContain("POST /api/jobs/7/cancel");
   expect(calls).not.toContain("POST /api/cancel");
   expect(calls).not.toContain("GET /api/jobs/7/result");
@@ -147,11 +148,11 @@ test.describe("compact job progress", () => {
     const progress = page.locator("#compactProgress");
     await expect(progress).toHaveAttribute("data-on", "1");
     await expect(progress).toContainText("Walls and infill");
-    await expect(page.locator("#cancel")).toBeEnabled();
+    await expect(page.locator("#cancel")).toBeVisible();
     const view = await share(page, "#view3d");
     expect(view, `preview share ${view}`).toBeGreaterThanOrEqual(0.7);
     await page.locator("#cancel").click();
-    await expect(page.locator("#toasts")).toContainText("cancelled");
+    await expect(page.locator("#cancel")).toBeHidden();
     expect(calls).toContain("POST /api/jobs/7/cancel");
     await expect(progress).toHaveAttribute("data-on", "0");
   });

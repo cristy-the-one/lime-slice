@@ -73,6 +73,8 @@ eq(
   peekLine({ treeSupports: true, gaps: [gap], selected: null }),
   "Supports leave 1 overhang patch unheld, 16.0 mm² in all.",
 );
+eq("peek is quiet with nothing to say", peekLine({ treeSupports: true, gaps: [], selected: null }), "");
+eq("peek names tree supports off", peekLine({ treeSupports: false, gaps: [], selected: null }), "Tree supports are off.");
 eq(
   "peek prefers the selection",
   peekLine({ treeSupports: true, gaps: [gap], selected: "Tree · 2 tips" }),

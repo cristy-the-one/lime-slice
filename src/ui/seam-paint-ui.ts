@@ -64,9 +64,7 @@ export function mountSeamPaint(prepare: PrepareView, hooks: SeamPaintHooks) {
     document.documentElement.dataset.seamPaint = on ? "1" : "";
     radiusOut.textContent = `${radius().toFixed(1)} mm`;
     clear.disabled = view.disks.length === 0;
-    status.textContent = view.disks.length > 0
-      ? `${view.disks.length} seam disk${view.disks.length === 1 ? "" : "s"}. Slice to apply.`
-      : "Drag on the part to place the seam. Drag off it, or use two fingers, to orbit.";
+    status.textContent = view.disks.length > 0 ? `${view.disks.length} seam disk${view.disks.length === 1 ? "" : "s"}.` : "";
     prepare.setBrush(on ? { kind: "seam", radius: radius() } : null);
   }
 

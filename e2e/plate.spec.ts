@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { canvasShare } from "../src/ui/compact/viewport-share.ts";
+import { placeText } from "./place";
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 
@@ -26,7 +27,7 @@ async function share(page: Page, selector: string) {
 
 async function loadCube(page: Page) {
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await expect(page.locator("[data-plate-id='part']")).toBeVisible();
 }
 
@@ -85,11 +86,11 @@ test("add, select, place, overlap, arrange, undo, and save a plate", async ({ pa
   await page.locator("#undoEdit").click();
   await expect(page.locator("#partScale")).toHaveValue("50");
 
-  const before = await page.locator("#placeReadout").innerText();
+  const before = await placeText(page);
   await page.locator("#plateArrange").click();
   await expect(page.locator("#plateOverlap")).toHaveCount(0);
   await expect(page.locator("#prepare")).toHaveAttribute("data-plate-overlap", "0");
-  await expect(page.locator("#placeReadout")).not.toHaveText(before);
+  await expect.poll(() => placeText(page)).not.toBe(before);
 
   const [plateFile] = await Promise.all([
     page.waitForEvent("download"),

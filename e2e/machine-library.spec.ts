@@ -54,7 +54,7 @@ test("filament and nozzle pick the pressure advance, and a bad file can be retri
   await page.locator("#machineMore > summary").click();
   await expect(page.locator("#machineStart")).toHaveValue("");
   await expect(page.locator("#machineEnd")).toHaveValue("");
-  await expect(page.getByText("inserted into Export and Send")).toBeVisible();
+  await expect(page.locator("label", { has: page.locator("#machineStart") })).toHaveAttribute("data-tip", /inserted into Export and Send/);
   const download = page.waitForEvent("download");
   await page.locator("#machineExport").click();
   expect((await download).suggestedFilename()).toBe("Lime_220__PETG.limemachine.json");

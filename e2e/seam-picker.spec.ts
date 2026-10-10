@@ -25,7 +25,7 @@ async function captureSlices(page: Page) {
 
 async function loadCube(page: Page) {
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
 }
 
 /** The slice request is recorded before the reply rebuilds the settings panel. */
@@ -88,7 +88,7 @@ test("a settings profile keeps the seam position", async ({ page }) => {
   await page.locator("#left .profile-more > summary").click();
   await page.locator("#profileName").fill("Aligned seam");
   await page.locator("#profileSave").click();
-  await expect(page.locator("#toasts").getByRole("status").filter({ hasText: "Saved Aligned seam." })).toBeVisible();
+  await expect(page.locator("#profilePick option:checked")).toHaveText("Aligned seam");
   await page.locator("#seam").selectOption("blend");
   await page.locator("#profilePick").selectOption({ label: "Aligned seam" });
   await expect(page.locator("#seam")).toHaveValue("aligned");

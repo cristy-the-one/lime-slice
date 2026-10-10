@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { encodePaths } from "../src/preview-wire";
 import { canvasShare } from "../src/ui/compact/viewport-share";
+import { placeText } from "./place";
 
 test("an X/Y move slides the preview, re-emits by itself, and the reply offset replaces that slide", async ({ page }) => {
   const calls: { previewBase?: string; pose?: { translation: number[] }; offset?: unknown; objects?: unknown }[] = [];
@@ -21,7 +22,7 @@ test("an X/Y move slides the preview, re-emits by itself, and the reply offset r
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#placeX")).toHaveValue("110.0");
-  await expect(page.locator("#placeReadout")).toContainText("X 110.0");
+  await expect.poll(() => placeText(page)).toContain("X 110.0");
 
   await page.locator("#slice").click();
   await expect(page.locator("#left")).toContainText("outline 0.025 mm");
@@ -33,12 +34,12 @@ test("an X/Y move slides the preview, re-emits by itself, and the reply offset r
   await expect(page.locator("#export")).toBeEnabled();
 
   await commitX(page, "122");
-  await expect(page.locator("#placeReadout")).toContainText("X 122.0");
+  await expect.poll(() => placeText(page)).toContain("X 122.0");
   await expect(page.locator("#view3d")).toHaveAttribute("data-bed-offset", "12.000,0.000");
   await expect.poll(() => calls.length).toBe(2);
   await expect(page.locator("#export")).toBeDisabled();
   await expect(page.locator("#stage")).not.toHaveClass(/stale/);
-  await expect(page.locator("#banner")).not.toContainText("Settings changed");
+  await expect(page.locator("#stage")).not.toHaveClass(/stale/);
 
   release();
   await expect(page.locator("#view3d")).toHaveAttribute("data-bed-offset", "40.000,-5.000");
@@ -84,7 +85,7 @@ for (const { id, axis } of [{ id: "#placeX", axis: 0 }, { id: "#placeY", axis: 1
     await expect.poll(() => calls.length).toBe(2);
     await page.locator(id).fill(String(before + 12));
     release();
-    await expect(page.locator("#cancel")).toBeDisabled();
+    await expect(page.locator("#cancel")).toBeHidden();
     await expect(page.locator(id)).toBeFocused();
     await expect.poll(async () => Number(await page.locator(id).inputValue())).toBe(before + 12);
     await page.locator(id).blur();
@@ -113,7 +114,7 @@ test("rotation and scale still wait for Slice when auto-slice is off", async ({ 
   await expect(page.locator("#export")).toBeEnabled();
 
   await page.locator("#rotZ").click();
-  await expect(page.locator("#banner")).toContainText("Settings changed since this slice. Export stays off until you re-slice.");
+  await expect(page.locator("#export")).toHaveAttribute("data-tip", "Settings changed. Slice again to export.");
   await expect(page.locator("#stage")).toHaveClass(/stale/);
   await page.waitForTimeout(600);
   expect(calls).toBe(1);
@@ -122,7 +123,7 @@ test("rotation and scale still wait for Slice when auto-slice is off", async ({ 
   await page.locator("#slice").click();
   await expect(page.locator("#export")).toBeEnabled();
   await page.locator("#partScale").fill("150");
-  await expect(page.locator("#banner")).toContainText("Settings changed since this slice.");
+  await expect(page.locator("#export")).toHaveAttribute("data-tip", "Settings changed. Slice again to export.");
   await page.waitForTimeout(600);
   expect(calls).toBe(2);
   await expect(page.locator("#export")).toBeDisabled();
@@ -179,7 +180,7 @@ test("a Move drag sends one refresh, after the drag ends", async ({ page }) => {
   await page.mouse.move(x + 50, y + 20, { steps: 8 });
   await page.waitForTimeout(500);
   expect(calls).toHaveLength(1);
-  await expect(page.locator("#banner")).not.toContainText("Settings changed");
+  await expect(page.locator("#stage")).not.toHaveClass(/stale/);
   await page.mouse.move(x + 90, y + 36, { steps: 8 });
   await page.mouse.up();
   await expect(page.locator("#export")).toBeEnabled();

@@ -10,7 +10,7 @@ async function openCube(page: Page) {
   await page.goto("/");
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
 }
 
 async function share(page: Page, selector: string) {

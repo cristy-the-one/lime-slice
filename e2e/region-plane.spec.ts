@@ -37,13 +37,14 @@ test("bridge By region starts inside the mesh and the plane and gizmo move it", 
   await page.goto("/");
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "Bridge" }).click();
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await expect(page.locator("#prepareBody")).toBeVisible();
   await page.getByRole("button", { name: /^By region/ }).click();
   await expect.poll(async () => Number(await page.locator("#at").inputValue())).toBeCloseTo(midX, 1);
   await expect(page.locator("#banner")).not.toContainText("outside the mesh");
-  await expect(page.locator("#gizmoReadout")).toContainText("low toughness");
-  await expect(page.locator("#gizmoReadout")).toContainText("high speed");
+  await expect(page.locator("#gizmoReadout")).toBeHidden();
+  await expect(page.locator("#resolved")).toContainText("Low side");
+  await expect(page.locator("#resolved")).toContainText("High side");
   await page.waitForTimeout(400);
   await page.screenshot({ path: path.join(out, "prepare-region-plane.png") });
   await page.locator("#prepare").screenshot({ path: path.join(out, "prepare-canvas.png") });
@@ -134,7 +135,7 @@ test("two objects share one By region plane across the plate", async ({ page }) 
   await page.goto("/");
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "Bridge" }).click();
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#plateDuplicate").click();
   await expect(page.locator("[data-plate-id]")).toHaveCount(2);
   await page.locator("#placeX").fill("150");

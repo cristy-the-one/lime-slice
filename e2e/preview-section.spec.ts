@@ -99,7 +99,7 @@ test("bed opacity and section controls are preview-only chrome", async ({ page }
   await expect(page.locator("#sectionOffsetField")).toBeHidden();
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#slice").click();
   await expect(page.locator("#estimate")).toContainText("g");
   await expect(page.locator("#slice")).toHaveText("Show result");
@@ -108,14 +108,14 @@ test("bed opacity and section controls are preview-only chrome", async ({ page }
   await page.locator("#sectionOn").check();
   await expect(page.locator("#sectionOffset")).toBeVisible();
   await expect(page.locator("#sectionFlip")).toBeVisible();
-  await expect(page.locator("#sectionReadout")).toContainText("hides arrow side");
-  await expect(page.locator("#sectionReadout")).toContainText("layers still apply");
+  await expect(page.locator("#sectionReadout")).toBeHidden();
   await page.locator("#sectionOffset").evaluate((el) => {
     const input = el as HTMLInputElement;
     input.value = "0";
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  await expect(page.locator("#sectionReadout")).toContainText("0.0 mm");
+  await expect.poll(async () => Math.abs(await sectionOffsetOf(page))).toBeLessThan(0.05);
+  await expect(page.locator("#sectionReadout")).toBeHidden();
   await page.waitForTimeout(400);
   fs.mkdirSync(out, { recursive: true });
   await page.locator("#view3d").screenshot({ path: path.join(out, "section-plus-z.png") });
@@ -124,7 +124,7 @@ test("bed opacity and section controls are preview-only chrome", async ({ page }
   await page.locator("#view3d").screenshot({ path: path.join(out, "section-off.png") });
   await page.locator("#sectionOn").check();
   await page.locator("#sectionFlip").click();
-  await expect(page.locator("#sectionReadout")).toContainText("0.00 0.00 -1.00");
+  await expect(page.locator("#sectionReadout")).toBeHidden();
   await page.locator("#bedOpacity").evaluate((el) => {
     const input = el as HTMLInputElement;
     input.value = "0";
@@ -202,8 +202,8 @@ async function zoomPart(page: Page) {
   await page.waitForTimeout(400);
 }
 
-function sectionOffsetOf(text: string) {
-  return Number(text.match(/·\s*(-?\d+(?:\.\d+)?)\s*mm/)?.[1]);
+async function sectionOffsetOf(page: Page) {
+  return Number(await page.locator("#sectionOffset").inputValue());
 }
 
 /** Mean horizontal position of the aim rings, as a fraction of the 3D view width. */
@@ -256,7 +256,7 @@ test("section plane clips 3D beads, travels, and the solid ghost", async ({ page
   await page.goto("/");
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.getByRole("button", { name: "3D", exact: true }).click();
   await page.waitForTimeout(400);
@@ -264,7 +264,7 @@ test("section plane clips 3D beads, travels, and the solid ghost", async ({ page
   await page.locator("#sectionOn").check();
   await setOffset(page, "0");
   const ghostHalf = await colorBuckets(page, "ghost-half");
-  const beforeDrag = sectionOffsetOf(await page.locator("#sectionReadout").innerText());
+  const beforeDrag = await sectionOffsetOf(page);
   const box = (await page.locator("#view3d").boundingBox())!;
   const x = box.x + box.width / 2;
   const y = box.y + box.height / 2;
@@ -273,7 +273,7 @@ test("section plane clips 3D beads, travels, and the solid ghost", async ({ page
   await page.mouse.move(x, y + 48, { steps: 8 });
   await page.mouse.up();
   await page.waitForTimeout(200);
-  const afterDrag = sectionOffsetOf(await page.locator("#sectionReadout").innerText());
+  const afterDrag = await sectionOffsetOf(page);
   await setOffset(page, "min");
   const ghostCut = await colorBuckets(page, "ghost-cut");
 
