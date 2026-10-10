@@ -120,6 +120,9 @@ input[type="checkbox"], input[type="range"] { accent-color: var(--accent); }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.banner.has-action { display: flex; align-items: center; gap: 10px; }
+.banner-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.banner-action { flex: 0 0 auto; height: 1.6rem; padding: 0 10px; font-size: 12px; line-height: 1; }
 .banner.warn { background: var(--banner-warn); color: var(--banner-warn-text); }
 .banner.ok { background: var(--banner-ok); color: var(--ok); }
 .progress {

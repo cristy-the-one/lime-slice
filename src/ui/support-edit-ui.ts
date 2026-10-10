@@ -34,6 +34,8 @@ export interface SupportEditHooks {
   apply(next: EditEntry[]): void;
   /** Show the 3D preview. */
   reveal(): void;
+  /** Turn Organic tree supports on and slice, so there is a skeleton to edit. False when there is no mesh to slice. */
+  prepareTree(): boolean;
 }
 
 type Target = { kind: "limb"; limb: number; scope: PickScope } | { kind: "gap"; gap: CoverageGap } | null;
@@ -98,6 +100,8 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
   let selected: Target = null;
   let expanded = false;
   let announce: Why | null = null;
+  /** The tool was picked before any skeleton existed; the slice that makes one opens it. */
+  let openWhenLanded = false;
   let nextId = 1;
   let lastMove: PickEvent | null = null;
   let panelHtml = "";
@@ -370,7 +374,12 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
   }
 
   function setEditing(on: boolean) {
-    if (on && !ready()) return;
+    if (on && !ready()) {
+      // No skeleton yet: make one, and enter edit mode when the slice that has it lands.
+      if (hooks.prepareTree()) openWhenLanded = true;
+      else pushToast("Load a mesh to edit its supports.", "info");
+      return;
+    }
     if (on === editing) return;
     switchMode(on);
     if (on) {
@@ -413,6 +422,10 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
   }
 
   function landed(ok: boolean) {
+    if (openWhenLanded) {
+      openWhenLanded = false;
+      if (ok && ready()) setEditing(true);
+    }
     const why = announce;
     announce = null;
     if (!ok || !why) return;

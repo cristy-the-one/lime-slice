@@ -21,4 +21,4 @@ The planner runs after the plate is rotated so the nozzle plane is horizontal. I
 
 ## UI
 
-There is no separate checkbox. On a belt printer, Smart supports sends `floorSupports: true`, because the belt is the only floor supports can stand on. Unticked, the request omits it. Smart supports and the belt raft lock each other: while one is on, the other is disabled with a hint; a raft that is already on stays untickable. A `floorSupports` field in an older saved machine is kept but not read.
+There is no separate checkbox. On a belt printer, Smart supports sends `floorSupports: true`, because the belt is the only floor supports can stand on. Unticked, the request omits it. Smart supports and the belt raft replace each other: ticking one clears the other in the same undo step, and a printer picked with a raft clears Smart supports. A `floorSupports` field in an older saved machine is dropped on load.

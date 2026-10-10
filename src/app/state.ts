@@ -207,7 +207,6 @@ export const state = {
   zHop: "blend" as "off" | "blend" | "always" | "smart",
   zHopHeight: 0.4,
   zHopMinTravel: 2,
-  paFirmware: "klipper" as "klipper" | "marlin",
   paStart: 0,
   paEnd: 0.08,
   paStep: 0.005,

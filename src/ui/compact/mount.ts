@@ -272,7 +272,7 @@ function devicePage() {
     <h3>Printer</h3>
     <div class="compact-row"><div><b>Profile</b><div id="compactBed">Bed</div></div><button type="button" id="compactEditPrinter">Edit</button></div>
     <h3>Output</h3>
-    <div class="compact-row"><div><b>G-code</b></div><div class="compact-row-actions"><button type="button" id="compactShare" disabled>Share</button><button type="button" id="compactSend" hidden disabled aria-label="Send to printer">Send</button></div></div>
+    <div class="compact-row"><div><b>G-code</b></div><div class="compact-row-actions"><button type="button" id="compactShare">Share</button><button type="button" id="compactSend" hidden disabled aria-label="Send to printer">Send</button></div></div>
     <label class="field">Interface layout
       <select id="layoutChoiceCompact" aria-label="Interface layout">
         <option value="auto">Auto</option>

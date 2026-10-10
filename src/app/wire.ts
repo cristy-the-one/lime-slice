@@ -7,7 +7,7 @@ import { applyTheme, type ThemeChoice } from "../theme";
 import { clampOffset, flipSection } from "../section-plane";
 import { wheelNotch } from "../gizmo-math";
 import { state, type CardId } from "./state";
-import { draw, layerGcode, paintPlayback, paintSectionChrome, prepare, realignSplit, scrub, sectionLimit, setHelp, setStage, setView, stepGizmo, stopPlay, syncGcodeHighlight, togglePlay, view3d } from "./viewer";
+import { commitSplit, draw, layerGcode, paintPlayback, paintSectionChrome, prepare, realignSplit, scrub, sectionLimit, setHelp, setStage, setView, stepGizmo, stopPlay, syncGcodeHighlight, togglePlay, view3d } from "./viewer";
 import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCal, runSlice, runTempCal } from "./slice-run";
 import { adoptBytes, export3mf, exportGcode, fail, loadNamed, place, saveText, setPlaceCenter, withPrinterGcode } from "./files";
 import { mountProjectFiles, saveCurrentProject } from "./project-io";
@@ -38,14 +38,16 @@ import {
   setModifierTool,
 } from "./override-actions";
 import { pushToast } from "../ui/toasts";
+import { currentRules } from "./rules";
+import { turnOnSupports } from "./support-actions";
 import {
   bootMachines,
+  noteAdvance,
   noteBeltForm,
   noteFlow,
   noteNozzleTemp,
   noteRetract,
   chooseMachine,
-  noteSecondFilament,
   deleteMachine,
   duplicateMachine,
   machineExportFile,
@@ -60,7 +62,7 @@ export function wireApp() {
   document.querySelector("#left")!.addEventListener("input", (ev) => {
     const target = ev.target as HTMLInputElement;
     if (isBeltField(target)) {
-      noteBeltForm();
+      noteBeltForm(target.id);
       return;
     }
     if (target.closest?.("[data-override-card]")) {
@@ -72,7 +74,7 @@ export function wireApp() {
   document.querySelector("#left")!.addEventListener("change", (ev) => {
     const target = ev.target as HTMLElement;
     if (isBeltField(target)) {
-      noteBeltForm();
+      noteBeltForm(target.id);
       return;
     }
     if (target.id === "placeX" || target.id === "placeY") {
@@ -104,10 +106,6 @@ export function wireApp() {
       const file = input.files?.[0];
       input.value = "";
       if (file) void importSettingsProfileFile(file);
-      return;
-    }
-    if (target.id === "secondFilament") {
-      noteSecondFilament((target as HTMLSelectElement).value);
       return;
     }
     if (target.id === "machinePrinter" || target.id === "machineFilament" || target.id === "machineNozzle") {
@@ -147,10 +145,9 @@ export function wireApp() {
       return;
     }
     if (t.id === "paapply") {
-      noteEdit();
       const chosen = Number((document.querySelector("#pachosen") as HTMLInputElement).value);
-      if (state.paFirmware === "marlin") state.linearAdvance = chosen;
-      else state.pressureAdvance = chosen;
+      const marlin = currentRules().firmware === "marlin";
+      noteAdvance(marlin ? state.pressureAdvance : chosen, marlin ? chosen : state.linearAdvance);
       touch();
     }
     if (t.id === "paexport" && state.paGcode) void saveText(withPrinterGcode(state.paGcode), "pa-calibration.gcode", "gcode");
@@ -238,7 +235,7 @@ export function wireApp() {
       addPlateObject();
       return;
     }
-    if (t.id === "plateArrange") {
+    if (t.id === "plateArrange" || t.closest("[data-plate-arrange]")) {
       arrangePlate();
       return;
     }
@@ -332,6 +329,14 @@ export function wireApp() {
     touch();
   });
   document.querySelector("#right")!.addEventListener("input", onBlend);
+  document.querySelector("#right")!.addEventListener("change", (ev) => {
+    const field = ev.target as HTMLInputElement;
+    if (field.id === "at" && Number.isFinite(Number(field.value))) commitSplit(Number(field.value));
+  });
+  document.querySelector("#banner")!.addEventListener("click", (ev) => {
+    const action = (ev.target as HTMLElement).closest<HTMLElement>("[data-banner-action]")?.dataset.bannerAction;
+    if (action === "supports") turnOnSupports();
+  });
 
   document.querySelector("#samples")!.addEventListener("click", (ev) => {
     const project = (ev.target as HTMLElement).closest<HTMLButtonElement>("[data-project]");

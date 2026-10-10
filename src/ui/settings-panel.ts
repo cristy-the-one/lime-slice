@@ -18,8 +18,6 @@ const FIELD_KEYS: Record<string, keyof PresetSettings> = {
   combine: "infillCombine",
   combing: "combing",
   overhang: "overhangControl",
-  pa: "pressureAdvance",
-  la: "linearAdvance",
   gyroid3d: "gyroid3d",
   zhop: "zHop",
   zhopht: "zHopHeight",

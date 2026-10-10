@@ -19,8 +19,8 @@ export function mountToasts() {
   document.body.append(host);
 }
 
-/** Transient status. Blocking problems stay in the banner rail. `action` is a button such as Retry. */
-export function pushToast(message: string, tone: ToastTone = "info", action?: ToastAction) {
+/** Transient status. Blocking problems stay in the banner rail. `action` is a button such as Retry, or several. */
+export function pushToast(message: string, tone: ToastTone = "info", action?: ToastAction | readonly ToastAction[]) {
   if (!host) mountToasts();
   const rail = host!;
   const toast = document.createElement("div");
@@ -32,14 +32,14 @@ export function pushToast(message: string, tone: ToastTone = "info", action?: To
   text.className = "toast-text";
   text.textContent = message;
   toast.append(text);
-  if (action) {
+  for (const entry of action === undefined ? [] : "label" in action ? [action] : action) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "toast-action";
-    button.textContent = action.label;
+    button.textContent = entry.label;
     button.addEventListener("click", () => {
       toast.remove();
-      action.run();
+      entry.run();
     });
     toast.append(button);
   }

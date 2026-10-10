@@ -74,6 +74,15 @@ export function sliceAction(input: SliceActionInput): SliceAction {
   };
 }
 
+/**
+ * Whether sending the same request again could work. The engine refuses a bad
+ * request with an error that names the field, and refuses it the same way
+ * every time. Only a server failure or an unreadable reply is worth a retry.
+ */
+export function sliceErrorRetryable(message: string): boolean {
+  return /^slice failed \(5\d\d\)/.test(message) || /^(Unexpected (token|end)|JSON)/.test(message);
+}
+
 export function sliceBusyLabel(recompute: boolean): "Slicing…" | "Loading…" {
   return recompute ? "Slicing…" : "Loading…";
 }

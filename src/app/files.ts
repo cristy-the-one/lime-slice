@@ -345,8 +345,12 @@ export function withPrinterGcode(gcode: string) {
   );
 }
 
+/** Save the G-code. A missing or stale slice is made first, so Export needs only a mesh. */
 export async function exportGcode() {
+  if (!state.mesh || state.busy) return;
+  if (!state.result || stale()) await fx.runSlice(false);
   const result = state.result;
+  // The slice failed or the settings moved while it ran: the user sees why and presses Export again.
   if (!result || stale()) return;
   let text: string;
   try {
