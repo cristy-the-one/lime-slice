@@ -10,13 +10,18 @@ import {
   saveSettingsProfile,
   selectedProfileId,
 } from "../app/profile-actions";
+import { removePlateObject } from "../app/plate-actions";
 import { saveCurrentProject } from "../app/project-io";
+import { clearSettingsSearch, commitTypedFields, focusSettingsSearch } from "../app/settings";
+import { state } from "../app/state";
+import { scrub, setView } from "../app/viewer";
 import { pickProjectFile } from "../platform";
-import { COMMANDS, helpEntries, rankCommands, type CommandSpec } from "./commands";
+import { chordMatches, COMMANDS, helpGroups, MOUSE_HINTS, paletteCommands, rankCommands, shortcutOf, type CommandSpec } from "./commands";
 import { pushToast } from "./toasts";
 import "./phase2.css";
 
 const MAX_ROWS = 12;
+const PALETTE_CHORD = shortcutOf(COMMANDS.find((command) => command.id === "palette")!)!;
 
 export function mountStageTabs() {
   const list = document.querySelector<HTMLElement>('[role="tablist"][aria-label="Workspace"]');
@@ -85,7 +90,7 @@ export function mountPalette() {
   }
 
   function render(query: string) {
-    shown = rankCommands(COMMANDS, query).slice(0, MAX_ROWS);
+    shown = rankCommands(paletteCommands(), query).slice(0, MAX_ROWS);
     active = 0;
     if (shown.length === 0) {
       list.innerHTML = `<li class="palette-empty" role="presentation">No matching commands</li>`;
@@ -93,7 +98,8 @@ export function mountPalette() {
       return;
     }
     list.innerHTML = shown.map((command, index) => {
-      const hint = command.shortcut ? `<kbd>${escapeHtml(command.shortcut)}</kbd>` : "";
+      const key = shortcutOf(command);
+      const hint = key ? `<kbd>${escapeHtml(key)}</kbd>` : "";
       return `<li id="paletteOpt${index}" role="option" aria-selected="${index === 0 ? "true" : "false"}" data-id="${command.id}"><span>${escapeHtml(command.label)}<small>${escapeHtml(command.group)}</small></span>${hint}</li>`;
     }).join("");
     input.setAttribute("aria-activedescendant", "paletteOpt0");
@@ -140,15 +146,12 @@ export function mountPalette() {
     runActive();
   });
 
+  document.addEventListener("lime-open-palette", open);
+
+  // While open the palette owns every key. Opening is the `palette` command's, through `keys.ts`.
   window.addEventListener("keydown", (ev) => {
-    const chord = (ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "k" && !ev.altKey && !ev.shiftKey;
-    if (root.hidden) {
-      if (!chord) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      open();
-      return;
-    }
+    if (root.hidden) return;
+    const chord = chordMatches(PALETTE_CHORD, ev);
     if (chord || ev.key === "Escape") {
       ev.preventDefault();
       ev.stopPropagation();
@@ -202,8 +205,15 @@ export function mountPalette() {
   }, true);
 }
 
-export function fillHelpShortcuts(list: HTMLElement) {
-  list.innerHTML = helpEntries().map((entry) => `<li><kbd>${escapeHtml(entry.shortcut)}</kbd> ${escapeHtml(entry.label)}</li>`).join("");
+/** The whole shortcut sheet body, from the registry and the mouse gestures. */
+export function fillHelpShortcuts(host: HTMLElement) {
+  const section = (title: string, rows: { keys: string[]; label: string }[]) => {
+    const items = rows.map((row) => `<li><span class="help-keys">${row.keys.map((key) => `<kbd>${escapeHtml(key)}</kbd>`).join(" ")}</span><span>${escapeHtml(row.label)}</span></li>`);
+    return `<section class="help-group"><h3>${escapeHtml(title)}</h3><ul>${items.join("")}</ul></section>`;
+  };
+  const keys = helpGroups().map((group) => section(group.group, group.entries));
+  const mouse = section("Mouse", MOUSE_HINTS.map((hint) => ({ keys: [hint.gesture], label: hint.label })));
+  host.innerHTML = keys.join("") + mouse;
 }
 
 function escapeHtml(text: string) {
@@ -245,21 +255,38 @@ function focusScale() {
   field.select();
 }
 
+const VIEW_CYCLE = ["flat", "split", "solid"] as const;
+
+function stepBrush(by: number) {
+  const radius = document.querySelector<HTMLInputElement>('.paint-bar:not([hidden]) input[type="range"]');
+  if (!radius) return;
+  radius.value = String(Math.min(Number(radius.max), Math.max(Number(radius.min), Number(radius.value) + by)));
+  radius.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+/** Slice from a key: a field still holding typed text stores it first, as clicking Slice would. */
+function sliceFromKey(selector: string) {
+  commitTypedFields();
+  click(selector);
+}
+
+/** Runs the command's own case, else clicks its `target`. */
 export function runCommand(id: string) {
   switch (id) {
     case "palette":
+      document.dispatchEvent(new CustomEvent("lime-open-palette"));
       return;
     case "help":
       document.dispatchEvent(new CustomEvent("lime-open-help"));
+      return;
+    case "help-close":
+      click("#helpClose");
       return;
     case "open-project":
       pickProjectFile();
       return;
     case "save-project":
       void saveCurrentProject();
-      return;
-    case "open-mesh":
-      click("#file");
       return;
     case "samples": {
       const menu = document.querySelector<HTMLDetailsElement>("#samples");
@@ -270,17 +297,11 @@ export function runCommand(id: string) {
       const button = document.querySelector<HTMLButtonElement>("#slice");
       if (!button) return;
       if (button.disabled) return;
-      button.click();
+      sliceFromKey("#slice");
       return;
     }
     case "force-slice":
-      click("#force");
-      return;
-    case "cancel-slice":
-      click("#cancel");
-      return;
-    case "export":
-      click("#export");
+      sliceFromKey("#force");
       return;
     case "send-printer": {
       const button = document.querySelector<HTMLButtonElement>("#sendPrinter");
@@ -289,56 +310,50 @@ export function runCommand(id: string) {
       button.click();
       return;
     }
-    case "tab-prepare":
-      click("#tabPrepare");
+    case "view-cycle":
+      setView(VIEW_CYCLE[(VIEW_CYCLE.indexOf(state.viewMode) + 1) % VIEW_CYCLE.length]!, "user");
       return;
-    case "tab-preview":
-      click("#tabPreview");
+    case "layer-up":
+      scrub(state.layer + 1);
       return;
-    case "tab-gcode":
-      click("#tabGcode");
+    case "layer-down":
+      scrub(state.layer - 1);
       return;
-    case "view-2d":
-      click('[data-mode="flat"]');
+    case "layer-up-10":
+      scrub(state.layer + 10);
       return;
-    case "view-split":
-      click('[data-mode="split"]');
+    case "layer-down-10":
+      scrub(state.layer - 10);
       return;
-    case "view-3d":
-      click('[data-mode="solid"]');
+    case "layer-first":
+      scrub(0);
       return;
-    case "view-top":
-      click("#viewPresets button:nth-child(1)");
+    case "layer-last":
+      scrub((state.result?.layers.length ?? 1) - 1);
       return;
-    case "view-front":
-      click("#viewPresets button:nth-child(2)");
-      return;
-    case "view-iso":
-      click("#viewPresets button:nth-child(3)");
-      return;
-    case "tool-move":
-      click('#toolRail [data-tool="move"]');
-      return;
-    case "tool-rotate":
-      click('#toolRail [data-tool="rotate"]');
+    case "plate-remove":
+      if (state.plate.selectedId) removePlateObject(state.plate.selectedId);
       return;
     case "tool-scale":
       focusScale();
       return;
-    case "tool-layflat":
-      click('#toolRail [data-tool="layflat"]');
+    case "brush-smaller":
+      stepBrush(-0.5);
       return;
-    case "tool-section":
-      click('#toolRail [data-tool="section"]');
-      return;
-    case "edit-supports":
-      click('#toolRail [data-tool="supports"]');
+    case "brush-larger":
+      stepBrush(0.5);
       return;
     case "undo":
       undoUserEdit();
       return;
     case "redo":
       redoUserEdit();
+      return;
+    case "search":
+      focusSettingsSearch();
+      return;
+    case "search-clear":
+      clearSettingsSearch();
       return;
     case "theme-system":
       setTheme("system");
@@ -403,7 +418,10 @@ export function runCommand(id: string) {
     case "panel-right":
       togglePanel("right");
       return;
-    default:
-      return;
+    default: {
+      const target = COMMANDS.find((command) => command.id === id)?.target;
+      if (target) click(target);
+    }
   }
 }
+

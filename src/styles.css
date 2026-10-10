@@ -483,14 +483,22 @@ canvas { width: 100%; height: 100%; display: block; touch-action: none; }
 }
 .sheet[hidden] { display: none; }
 .sheet-card {
-  width: min(420px, calc(100% - 32px));
+  width: min(800px, calc(100% - 32px));
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   padding: 16px;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
 }
-.sheet-card ul { margin: 0 0 12px; padding-left: 18px; }
-.sheet-card li { margin: 6px 0; }
+.sheet-card h2 { margin: 0 0 12px; }
+.help-body { columns: 2 300px; column-gap: 28px; margin-bottom: 12px; }
+.help-group { break-inside: avoid; margin-bottom: 14px; }
+.help-group h3 { margin: 0 0 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.help-group ul { list-style: none; margin: 0; padding: 0; }
+.help-group li { display: grid; grid-template-columns: 10.5rem 1fr; gap: 10px; align-items: baseline; margin: 3px 0; }
+.help-keys { display: flex; flex-wrap: wrap; gap: 4px; }
+.help-group kbd { white-space: nowrap; }
 kbd { border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; background: var(--panel-2); font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; }
 #prepareBody, #previewBody { position: relative; }
 #prepareBody { display: block; flex: 1 1 auto; min-height: 0; height: auto; }

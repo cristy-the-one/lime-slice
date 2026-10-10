@@ -1,42 +1,90 @@
-/** Shared command list for the palette and the ? shortcut sheet. */
+/**
+ * The one list of commands. The palette, the shortcut sheet, button tooltips and the keyboard dispatcher
+ * (`keys.ts`) all read it. A command runs by its case in `runCommand` (`palette.ts`), else by clicking `target`.
+ */
+export type KeyScope =
+  | "always"
+  | "help"
+  | "prepare"
+  | "objects"
+  | "preview"
+  | "running"
+  | "searching"
+  | "brush"
+  | "find";
+
 export interface CommandSpec {
   id: string;
   label: string;
   group: string;
-  /** Shown in the palette and the shortcut sheet. Omit when the action has no key. */
-  shortcut?: string;
+  /** Chords in the sheet's own spelling: "Ctrl+Shift+Z", "Shift+1", "Esc", "↑", "PgUp", "Del". The first is shown in tooltips and palette rows. */
+  keys?: string[];
+  /** Where the chords fire. Default "always", which means the shortcut sheet is closed. */
+  when?: KeyScope;
+  /** Fires while a text field has focus. */
+  typing?: boolean;
+  /** Fires on key auto-repeat. */
+  repeat?: boolean;
+  /** Selector of the button this command mirrors. A keyed command shows its first chord in that button's tooltip. */
+  target?: string;
+  /** Where the command is listed. Default "both". */
+  show?: "both" | "help" | "none";
   keywords?: string;
 }
 
 export const COMMANDS: CommandSpec[] = [
-  { id: "palette", label: "Command palette", group: "Window", shortcut: "Ctrl+K", keywords: "search commands" },
-  { id: "help", label: "Shortcut sheet", group: "Window", shortcut: "?", keywords: "help keys" },
-  { id: "open-project", label: "Open project", group: "File", shortcut: "Ctrl+O", keywords: "lime file" },
-  { id: "save-project", label: "Save project", group: "File", shortcut: "Ctrl+S", keywords: "lime file" },
-  { id: "open-mesh", label: "Open mesh", group: "File", keywords: "file stl 3mf step" },
+  { id: "palette", label: "Command palette", group: "Window", keys: ["Ctrl+K"], typing: true, keywords: "search commands" },
+  { id: "help", label: "Shortcut sheet", group: "Window", keys: ["?"], keywords: "help keys" },
+  { id: "help-close", label: "Close shortcut sheet", group: "Window", keys: ["Esc", "?"], when: "help", typing: true, show: "none" },
+  { id: "panel-left", label: "Toggle settings panel", group: "Window", keys: ["Ctrl+B"], keywords: "left collapse" },
+  { id: "panel-right", label: "Toggle blend panel", group: "Window", keys: ["Ctrl+Alt+B"], keywords: "right collapse" },
+  { id: "open-project", label: "Open project", group: "File", keys: ["Ctrl+O"], typing: true, keywords: "lime file" },
+  { id: "save-project", label: "Save project", group: "File", keys: ["Ctrl+S"], typing: true, keywords: "lime file" },
+  { id: "open-mesh", label: "Open mesh", group: "File", target: "#file", keywords: "file stl 3mf step" },
   { id: "samples", label: "Samples", group: "File", keywords: "cube hull example" },
-  { id: "slice", label: "Slice", group: "Slice", shortcut: "Ctrl+Enter", keywords: "plan show result re-slice" },
-  { id: "force-slice", label: "Force re-slice", group: "Slice", keywords: "recompute cache" },
-  { id: "cancel-slice", label: "Cancel slice", group: "Slice", keywords: "stop abort" },
-  { id: "export", label: "Export G-code", group: "Slice", shortcut: "Ctrl+E", keywords: "save download" },
+  { id: "slice", label: "Slice", group: "Slice", keys: ["Ctrl+Enter"], typing: true, target: "#slice", keywords: "plan show result re-slice" },
+  { id: "force-slice", label: "Force re-slice", group: "Slice", keys: ["Ctrl+Shift+Enter"], typing: true, target: "#force", keywords: "recompute cache" },
+  { id: "cancel-slice", label: "Cancel slice", group: "Slice", keys: ["Esc"], when: "running", typing: true, target: "#cancel", keywords: "stop abort" },
+  { id: "export", label: "Export G-code", group: "Slice", keys: ["Ctrl+E"], target: "#export", keywords: "save download" },
   { id: "send-printer", label: "Send to printer", group: "Slice", keywords: "prusa link upload gcode host" },
-  { id: "tab-prepare", label: "Prepare", group: "View", keywords: "tab mesh" },
-  { id: "tab-preview", label: "Preview", group: "View", keywords: "tab toolpath" },
-  { id: "tab-gcode", label: "G-code", group: "View", keywords: "tab gcode" },
-  { id: "view-2d", label: "2D preview", group: "View", shortcut: "1", keywords: "flat" },
-  { id: "view-split", label: "Split preview", group: "View", shortcut: "2" },
-  { id: "view-3d", label: "3D preview", group: "View", shortcut: "3", keywords: "solid" },
-  { id: "view-top", label: "Top view", group: "View", shortcut: "T", keywords: "camera prepare" },
-  { id: "view-front", label: "Front view", group: "View", shortcut: "Y", keywords: "camera prepare" },
-  { id: "view-iso", label: "Iso view", group: "View", shortcut: "I", keywords: "camera prepare isometric" },
-  { id: "tool-move", label: "Move", group: "Tools", shortcut: "M", keywords: "translate gizmo" },
-  { id: "tool-rotate", label: "Rotate", group: "Tools", shortcut: "R", keywords: "gizmo" },
-  { id: "tool-scale", label: "Scale", group: "Tools", shortcut: "S", keywords: "percent field" },
-  { id: "tool-layflat", label: "Lay flat", group: "Tools", shortcut: "F", keywords: "bed face" },
-  { id: "undo", label: "Undo", group: "Edit", shortcut: "Ctrl+Z", keywords: "placement settings revert" },
-  { id: "redo", label: "Redo", group: "Edit", shortcut: "Ctrl+Shift+Z", keywords: "placement settings again" },
-  { id: "tool-section", label: "Section", group: "Tools", shortcut: "C", keywords: "clip cut" },
-  { id: "edit-supports", label: "Edit supports", group: "Tools", shortcut: "E", keywords: "tree branch delete prune regrow" },
+  { id: "tab-prepare", label: "Prepare", group: "View", keys: ["1"], target: "#tabPrepare", keywords: "tab mesh stage" },
+  { id: "tab-preview", label: "Preview", group: "View", keys: ["2"], target: "#tabPreview", keywords: "tab toolpath stage" },
+  { id: "tab-gcode", label: "G-code", group: "View", keys: ["3"], target: "#tabGcode", keywords: "tab gcode stage" },
+  { id: "view-cycle", label: "Cycle 2D, split, 3D", group: "View", keys: ["V"], when: "preview", keywords: "preview mode flat solid" },
+  { id: "view-2d", label: "2D preview", group: "View", target: '[data-mode="flat"]', keywords: "flat" },
+  { id: "view-split", label: "Split preview", group: "View", target: '[data-mode="split"]' },
+  { id: "view-3d", label: "3D preview", group: "View", target: '[data-mode="solid"]', keywords: "solid" },
+  { id: "view-top", label: "Top view", group: "View", keys: ["T"], target: "#viewPresets button:nth-child(1)", keywords: "camera prepare" },
+  { id: "view-front", label: "Front view", group: "View", keys: ["Y"], target: "#viewPresets button:nth-child(2)", keywords: "camera prepare" },
+  { id: "view-iso", label: "Iso view", group: "View", keys: ["I"], target: "#viewPresets button:nth-child(3)", keywords: "camera prepare isometric" },
+  { id: "layer-up", label: "Layer up", group: "Layers", keys: ["↑", "]"], when: "preview", repeat: true, show: "help" },
+  { id: "layer-down", label: "Layer down", group: "Layers", keys: ["↓", "["], when: "preview", repeat: true, show: "help" },
+  { id: "layer-up-10", label: "Ten layers up", group: "Layers", keys: ["PgUp"], when: "preview", repeat: true, show: "help" },
+  { id: "layer-down-10", label: "Ten layers down", group: "Layers", keys: ["PgDn"], when: "preview", repeat: true, show: "help" },
+  { id: "layer-first", label: "First layer", group: "Layers", keys: ["Home"], when: "preview", show: "help" },
+  { id: "layer-last", label: "Last layer", group: "Layers", keys: ["End"], when: "preview", show: "help" },
+  { id: "strategy-speed", label: "Strategy: Speed", group: "Strategy", keys: ["Shift+1"], target: '#right [data-card="speed"]', keywords: "blend" },
+  { id: "strategy-efficiency", label: "Strategy: Efficiency", group: "Strategy", keys: ["Shift+2"], target: '#right [data-card="efficiency"]', keywords: "blend" },
+  { id: "strategy-toughness", label: "Strategy: Toughness", group: "Strategy", keys: ["Shift+3"], target: '#right [data-card="toughness"]', keywords: "blend" },
+  { id: "strategy-layer", label: "Strategy: By layer", group: "Strategy", keys: ["Shift+4"], target: '#right [data-card="layer"]', keywords: "blend" },
+  { id: "strategy-region", label: "Strategy: By region", group: "Strategy", keys: ["Shift+5"], target: '#right [data-card="region"]', keywords: "blend split plane" },
+  { id: "plate-arrange", label: "Arrange plate", group: "Plate", keys: ["A"], when: "prepare", target: "#plateArrange", keywords: "objects pack" },
+  { id: "plate-duplicate", label: "Duplicate object", group: "Plate", keys: ["Ctrl+D"], when: "prepare", target: "#plateDuplicate", keywords: "copy" },
+  { id: "plate-remove", label: "Remove object", group: "Plate", keys: ["Del", "Backspace"], when: "objects", keywords: "delete" },
+  { id: "tool-move", label: "Move", group: "Tools", keys: ["M"], target: '#toolRail [data-tool="move"]', keywords: "translate gizmo" },
+  { id: "tool-rotate", label: "Rotate", group: "Tools", keys: ["R"], target: '#toolRail [data-tool="rotate"]', keywords: "gizmo" },
+  { id: "tool-scale", label: "Scale", group: "Tools", keys: ["S"], target: '#toolRail [data-tool="scale"]', keywords: "percent field" },
+  { id: "tool-layflat", label: "Lay flat", group: "Tools", keys: ["F"], target: '#toolRail [data-tool="layflat"]', keywords: "bed face" },
+  { id: "tool-section", label: "Section", group: "Tools", keys: ["C"], target: '#toolRail [data-tool="section"]', keywords: "clip cut" },
+  { id: "edit-supports", label: "Edit supports", group: "Tools", keys: ["E"], target: '#toolRail [data-tool="supports"]', keywords: "tree branch delete prune regrow" },
+  { id: "paint-supports", label: "Paint supports", group: "Tools", keys: ["B"], target: '#toolRail [data-tool="paint"]', keywords: "brush enforce block" },
+  { id: "paint-seam", label: "Paint seam", group: "Tools", keys: ["K"], target: '#toolRail [data-tool="seam"]', keywords: "brush" },
+  { id: "brush-smaller", label: "Smaller brush", group: "Tools", keys: ["["], when: "brush", repeat: true, show: "help" },
+  { id: "brush-larger", label: "Larger brush", group: "Tools", keys: ["]"], when: "brush", repeat: true, show: "help" },
+  { id: "undo", label: "Undo", group: "Edit", keys: ["Ctrl+Z"], typing: true, keywords: "placement settings revert" },
+  { id: "redo", label: "Redo", group: "Edit", keys: ["Ctrl+Shift+Z"], typing: true, keywords: "placement settings again" },
+  { id: "search", label: "Search settings", group: "Edit", keys: ["/", "Ctrl+F"], when: "find", keywords: "find filter" },
+  { id: "search-clear", label: "Clear settings search", group: "Edit", keys: ["Esc"], when: "searching", typing: true, show: "none" },
   { id: "theme-system", label: "Theme: System", group: "Settings", keywords: "theme appearance" },
   { id: "theme-dark", label: "Theme: Dark", group: "Settings", keywords: "theme appearance" },
   { id: "theme-light", label: "Theme: Light", group: "Settings", keywords: "theme appearance" },
@@ -49,12 +97,123 @@ export const COMMANDS: CommandSpec[] = [
   { id: "profile-delete", label: "Delete settings profile", group: "Settings", keywords: "limeprofile remove" },
   { id: "profile-export", label: "Export settings profile", group: "Settings", keywords: "limeprofile json download" },
   { id: "profile-import", label: "Import settings profile", group: "Settings", keywords: "limeprofile json open" },
-  { id: "panel-left", label: "Toggle settings panel", group: "Window", keywords: "left collapse" },
-  { id: "panel-right", label: "Toggle blend panel", group: "Window", keywords: "right collapse" },
 ];
 
-export function helpEntries(commands: CommandSpec[] = COMMANDS): { shortcut: string; label: string }[] {
-  return commands.filter((command) => command.shortcut).map((command) => ({ shortcut: command.shortcut!, label: command.label }));
+/** Gestures the sheet lists beside the keys. The pointer code lives in the views. */
+export const MOUSE_HINTS: { gesture: string; label: string }[] = [
+  { gesture: "Shift + drag", label: "Snap a move to 1 mm, a rotation to 15°" },
+  { gesture: "Scroll a handle", label: "Nudge 0.1 mm, or 1° on a ring" },
+  { gesture: "Drag the plane", label: "Move the By region split" },
+  { gesture: "2D: drag", label: "Pan the layer" },
+  { gesture: "2D: wheel", label: "Zoom at the cursor" },
+];
+
+/** Everything that decides whether a chord fires, read once per key press. */
+export interface KeyContext {
+  helpOpen: boolean;
+  typing: boolean;
+  stage: "prepare" | "preview" | "gcode";
+  hasResult: boolean;
+  running: boolean;
+  /** Focus is in the settings search, or a query is active and no other field has focus. */
+  searching: boolean;
+  /** A paint or seam brush is on. */
+  brushOn: boolean;
+  editingSupports: boolean;
+  /** Focus is in the G-code pane, where Ctrl+F stays the browser's. */
+  inGcode: boolean;
+}
+
+/** Scopes that share a chord must not overlap: Esc cancels a slice only when it is not clearing a search. */
+const SCOPES: Record<KeyScope, (c: KeyContext) => boolean> = {
+  always: (c) => !c.helpOpen,
+  help: (c) => c.helpOpen,
+  prepare: (c) => !c.helpOpen && c.stage === "prepare",
+  objects: (c) => !c.helpOpen && c.stage === "prepare" && !c.brushOn && !c.editingSupports,
+  preview: (c) => !c.helpOpen && c.stage === "preview" && c.hasResult,
+  running: (c) => !c.helpOpen && c.running && !c.searching,
+  searching: (c) => !c.helpOpen && c.searching,
+  brush: (c) => !c.helpOpen && c.stage === "prepare" && c.brushOn,
+  find: (c) => !c.helpOpen && !c.inGcode,
+};
+
+export type KeyEventLike = Pick<KeyboardEvent, "key" | "code" | "ctrlKey" | "metaKey" | "shiftKey" | "altKey" | "repeat">;
+
+const KEY_NAMES: Record<string, string> = {
+  Esc: "Escape",
+  "↑": "ArrowUp",
+  "↓": "ArrowDown",
+  PgUp: "PageUp",
+  PgDn: "PageDown",
+  Del: "Delete",
+};
+
+/** Does `chord` ("Ctrl+Shift+Z", "Shift+1", "]") describe this key press? Ctrl also stands for Cmd. */
+export function chordMatches(chord: string, ev: KeyEventLike): boolean {
+  const parts = chord.split("+");
+  const name = parts[parts.length - 1] ?? "";
+  const mods = parts.slice(0, -1);
+  const key = KEY_NAMES[name] ?? name;
+  if (mods.includes("Ctrl") !== (ev.ctrlKey || ev.metaKey)) return false;
+  if (mods.includes("Alt") !== ev.altKey) return false;
+  const punctuation = key.length === 1 && !/[a-z0-9]/i.test(key);
+  if (!punctuation && mods.includes("Shift") !== ev.shiftKey) return false;
+  // A shifted digit or an Alt letter reports another `key`, so those chords match the physical key.
+  if (/^[0-9]$/.test(key) && mods.includes("Shift")) return ev.code === `Digit${key}`;
+  if (/^[a-z]$/i.test(key) && mods.includes("Alt")) return ev.code === `Key${key.toUpperCase()}`;
+  return ev.key.toLowerCase() === key.toLowerCase();
+}
+
+export function fires(command: CommandSpec, ev: KeyEventLike, ctx: KeyContext): boolean {
+  if (!command.keys) return false;
+  if (!SCOPES[command.when ?? "always"](ctx)) return false;
+  if (ctx.typing && !command.typing) return false;
+  if (ev.repeat && !command.repeat) return false;
+  return command.keys.some((chord) => chordMatches(chord, ev));
+}
+
+/** The command a key press runs, or null. The tests keep a key press from firing two commands in one context. */
+export function resolveKey(ev: KeyEventLike, ctx: KeyContext, commands: CommandSpec[] = COMMANDS): CommandSpec | null {
+  return commands.find((command) => fires(command, ev, ctx)) ?? null;
+}
+
+/** First chord: the one tooltips and palette rows show. */
+export function shortcutOf(command: CommandSpec): string | undefined {
+  return command.keys?.[0];
+}
+
+export function paletteCommands(commands: CommandSpec[] = COMMANDS): CommandSpec[] {
+  return commands.filter((command) => (command.show ?? "both") === "both");
+}
+
+export interface HelpGroup {
+  group: string;
+  entries: { keys: string[]; label: string }[];
+}
+
+/** Keyed commands for the sheet, grouped in registry order. */
+export function helpGroups(commands: CommandSpec[] = COMMANDS): HelpGroup[] {
+  const groups: HelpGroup[] = [];
+  for (const command of commands) {
+    if (!command.keys || command.show === "none") continue;
+    let group = groups.find((g) => g.group === command.group);
+    if (!group) {
+      group = { group: command.group, entries: [] };
+      groups.push(group);
+    }
+    group.entries.push({ keys: command.keys, label: command.label });
+  }
+  return groups;
+}
+
+/** The keyed command a button stands for, found through `target`. */
+export function commandForElement(el: Element, commands: CommandSpec[] = COMMANDS): CommandSpec | undefined {
+  return commands.find((command) => command.keys && command.target && el.matches(command.target));
+}
+
+/** Every keyed `target` as one selector, for code that must notice those buttons. */
+export function targetSelector(commands: CommandSpec[] = COMMANDS): string {
+  return commands.flatMap((command) => (command.keys && command.target ? [command.target] : [])).join(", ");
 }
 
 /**

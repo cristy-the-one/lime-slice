@@ -28,8 +28,7 @@ export interface ChromeHooks {
 export function mountChrome(hooks: ChromeHooks) {
   iconizeToolbar();
   mountTooltips();
-  const rail = mountToolRail(hooks);
-  mountShortcuts(hooks, rail);
+  mountToolRail(hooks);
 }
 
 function svgIcon(node: IconNode, size = 16) {
@@ -47,10 +46,9 @@ function iconize(el: Element | null, node: IconNode) {
   el.classList.add("with-ico");
 }
 
-function hint(el: Element | null, tip: string, shortcut = "") {
+function hint(el: Element | null, tip: string) {
   if (!el || !(el instanceof HTMLElement)) return;
   el.dataset.tip = tip;
-  if (shortcut) el.dataset.shortcut = shortcut;
   el.removeAttribute("title");
 }
 
@@ -64,13 +62,12 @@ function iconizeToolbar() {
   hint(samples, "Load a sample mesh");
 
   iconize(document.querySelector("#slice"), Layers);
-  document.querySelector<HTMLElement>("#slice")?.setAttribute("data-shortcut", "Ctrl+Enter");
 
   iconize(document.querySelector("#cancel"), X);
   hint(document.querySelector("#cancel"), "Stop the slice in progress");
 
   iconize(document.querySelector("#export"), Download);
-  hint(document.querySelector("#export"), "Save G-code", "Ctrl+E");
+  hint(document.querySelector("#export"), "Save G-code");
 
   iconize(document.querySelector("#sendPrinter"), Printer);
 
@@ -85,18 +82,18 @@ function mountToolRail(hooks: ChromeHooks) {
   rail.setAttribute("aria-label", "Prepare tools");
   rail.dataset.tool = "all";
 
-  const move = toolButton("move", Move3d, "Move", "M", "Drag the part on the bed, or an arrow. Shift snaps 1 mm.");
-  const rotate = toolButton("rotate", Rotate3d, "Rotate", "R", "Drag a ring. Shift snaps 15°.");
-  const scale = toolButton("scale", Scaling, "Scale", "S", "No scale gizmo yet. Use Scale % in the mesh panel.");
+  const move = toolButton("move", Move3d, "Move", "Drag the part on the bed, or an arrow. Shift snaps 1 mm.");
+  const rotate = toolButton("rotate", Rotate3d, "Rotate", "Drag a ring. Shift snaps 15°.");
+  const scale = toolButton("scale", Scaling, "Scale", "No scale gizmo yet. Use Scale % in the mesh panel.");
   scale.classList.add("is-disabled");
   scale.setAttribute("aria-disabled", "true");
   scale.tabIndex = -1;
-  const lay = toolButton("layflat", ArrowDownToLine, "Lay flat", "F", "Drop the flattest face onto the bed.");
+  const lay = toolButton("layflat", ArrowDownToLine, "Lay flat", "Drop the flattest face onto the bed.");
   lay.classList.add("is-disabled");
   lay.setAttribute("aria-disabled", "true");
-  const section = toolButton("section", SquareSplitHorizontal, "Section", "C", "Clip the preview. Does not change the slice.");
+  const section = toolButton("section", SquareSplitHorizontal, "Section", "Clip the preview. Does not change the slice.");
   section.setAttribute("aria-pressed", "false");
-  const supports = toolButton("supports", TreeDeciduous, "Edit supports", "E", "Pick tree supports to delete or regrow. Does not move the part.");
+  const supports = toolButton("supports", TreeDeciduous, "Edit supports", "Pick tree supports to delete or regrow. Does not move the part.");
   supports.setAttribute("aria-pressed", "false");
   supports.classList.add("is-disabled");
   supports.setAttribute("aria-disabled", "true");
@@ -122,7 +119,6 @@ function mountToolRail(hooks: ChromeHooks) {
   if (left) new MutationObserver(() => syncLay(lay)).observe(left, { childList: true, subtree: true });
   syncLay(lay);
   syncSection(section);
-  return buttons;
 }
 
 function gizmoNudge() {
@@ -147,13 +143,12 @@ function gizmoNudge() {
   return row;
 }
 
-function toolButton(id: string, node: IconNode, label: string, shortcut: string, tip: string) {
+function toolButton(id: string, node: IconNode, label: string, tip: string) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "tool";
   button.dataset.tool = id;
   button.dataset.tip = tip;
-  button.dataset.shortcut = shortcut;
   button.setAttribute("aria-label", label);
   button.append(svgIcon(node));
   return button;
@@ -205,43 +200,3 @@ function syncLay(button: HTMLButtonElement) {
   else button.tabIndex = -1;
 }
 
-function mountShortcuts(
-  hooks: ChromeHooks,
-  buttons: { move: HTMLButtonElement; rotate: HTMLButtonElement },
-) {
-  window.addEventListener("keydown", (ev) => {
-    if (document.documentElement.dataset.overlay) return;
-    if (ev.metaKey || ev.ctrlKey || ev.altKey || ev.repeat) return;
-    const target = ev.target as HTMLElement | null;
-    const tag = target?.tagName;
-    const typing = tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || !!target?.isContentEditable;
-    if (typing) return;
-    const help = document.querySelector("#help");
-    if (help && !help.hasAttribute("hidden")) return;
-    const key = ev.key.toLowerCase();
-    if (key === "m") {
-      selectManipulator("move", buttons, hooks);
-      ev.preventDefault();
-    } else if (key === "r") {
-      selectManipulator("rotate", buttons, hooks);
-      ev.preventDefault();
-    } else if (key === "s") {
-      focusScale();
-      ev.preventDefault();
-    } else if (key === "f") {
-      document.querySelector<HTMLButtonElement>("#layflat")?.click();
-      ev.preventDefault();
-    } else if (key === "c") {
-      toggleSection();
-      ev.preventDefault();
-    }
-  });
-}
-
-function focusScale() {
-  if (window.innerWidth <= 960) document.querySelector(".workspace")?.classList.add("show-left");
-  const field = document.querySelector<HTMLInputElement>("#partScale");
-  if (!field) return;
-  field.focus();
-  field.select();
-}

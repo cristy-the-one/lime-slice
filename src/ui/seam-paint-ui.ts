@@ -27,7 +27,6 @@ export function mountSeamPaint(prepare: PrepareView, hooks: SeamPaintHooks) {
   tool.className = "tool";
   tool.dataset.tool = "seam";
   tool.dataset.tip = "Paint where the seam should sit. The picker stays until a disk covers a wall.";
-  tool.dataset.shortcut = "K";
   tool.setAttribute("aria-label", "Paint seam");
   tool.setAttribute("aria-pressed", "false");
   tool.append(createElement(Spline, { width: 16, height: 16, "aria-hidden": "true", class: "ico" }));
@@ -117,17 +116,8 @@ export function mountSeamPaint(prepare: PrepareView, hooks: SeamPaintHooks) {
     const tag = target?.tagName;
     if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || target?.isContentEditable) return;
     if (!document.querySelector("#help")?.hasAttribute("hidden")) return;
-    const key = ev.key.toLowerCase();
-    if (key === "k") {
-      setOn(!on);
-      ev.preventDefault();
-    } else if (on && ev.key === "Escape") {
+    if (on && ev.key === "Escape") {
       setOn(false);
-      ev.preventDefault();
-    } else if (on && (ev.key === "[" || ev.key === "]")) {
-      const step = ev.key === "]" ? 0.5 : -0.5;
-      radiusInput.value = String(Math.min(BRUSH_R_MAX_MM, Math.max(BRUSH_R_MIN_MM, radius() + step)));
-      sync();
       ev.preventDefault();
     }
   });

@@ -98,14 +98,17 @@ export function currentWeight() {
   return 1;
 }
 
+/** Stores the typed text of the focused field now, ahead of its `change`, which then finds the value stored and does nothing. True when it stored one. */
+export function commitTypedFields(typing = typedField()): boolean {
+  if (!typing || !commitTypedField(typing)) return false;
+  markProjectDirty();
+  return true;
+}
+
 export function renderChrome() {
   const typing = typedField();
-  // The later change finds the value stored and does nothing, so the auto
-  // slice is queued here, as `touch` would.
-  if (typing && commitTypedField(typing)) {
-    markProjectDirty();
-    fx.scheduleAuto();
-  }
+  // The change that would have queued the auto slice does nothing now, so it is queued here, as `touch` would.
+  if (commitTypedFields(typing)) fx.scheduleAuto();
   const mesh = state.mesh;
   const result = state.result;
   const find = document.querySelector<HTMLInputElement>("#find");

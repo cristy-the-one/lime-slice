@@ -129,7 +129,7 @@ export function mountMarkup(root: HTMLElement) {
   <div id="help" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="helpTitle">
     <div class="sheet-card">
       <h2 id="helpTitle">Shortcuts</h2>
-      <ul id="helpShortcuts"></ul>
+      <div id="helpShortcuts" class="help-body"></div>
       <button class="btn" id="helpClose" type="button">Close</button>
     </div>
   </div>

@@ -513,7 +513,7 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
     refresh();
   });
 
-  // Capture, so Escape that closes the shortcut sheet in main.ts is seen while the sheet is still open.
+  // Capture, so Escape that closes the shortcut sheet in keys.ts is seen while the sheet is still open.
   window.addEventListener("keydown", (ev) => {
     if (document.documentElement.dataset.overlay) return;
     const target = ev.target as HTMLElement | null;
@@ -526,11 +526,6 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
       return;
     }
     if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
-    if (ev.key.toLowerCase() === "e" && !ev.repeat && !ev.shiftKey) {
-      setEditing(!editing);
-      ev.preventDefault();
-      return;
-    }
     if (!editing) return;
     if (ev.key === "Escape") {
       setEditing(false);
