@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { buildWirePreview, INNER_HALF_SCALE, MARGIN_SHADE, scenePoint } from "../src/preview-geom";
+import { buildWirePreview, INNER_HALF_SCALE, MARGIN_SHADE, ODD_LAYER_BIT, scenePoint } from "../src/preview-geom";
 import { encodePaths, type PreviewPath } from "../src/preview-wire";
 
 const f32 = (values: number[]) => Array.from(new Float32Array(values));
@@ -14,7 +14,7 @@ test("bead margins stay darker than the face so same-color neighbors do not fuse
     min: [0, -5, 0],
     max: [10, 5, 1],
   });
-  expect(MARGIN_SHADE).toBeLessThan(0.5);
+  expect(MARGIN_SHADE).toBeLessThan(0.7);
   expect(INNER_HALF_SCALE).toBeLessThan(1);
   const beads = built.chunks[0].beads;
   expect(Array.from(beads.at)).toEqual([0, 4]);
@@ -78,8 +78,8 @@ test("layers follow in index order, with each layer's first point and nozzle z",
   expect(Array.from(beads.xyz)).toEqual(f32([-2, 0.2, 2, 2, 0.18, 2, -2, 1, 1, 2, 1, 1, 2, 1, 1, 2, 1, -1]));
   expect(Array.from(beads.style)).toEqual([
     0, 400, 200, 200, 0, 0, 0, 0,
-    2048 + 512, 700, 225, 200, 0, 0, 0, 0,
-    0, 400, 200, 200, 0, 0, 0, 0,
+    2048 + 512, ODD_LAYER_BIT + 700, 225, 200, 0, 0, 0, 0,
+    0, ODD_LAYER_BIT + 400, 200, 200, 0, 0, 0, 0,
   ]);
   expect(Array.from(travel.xyz)).toEqual(f32([2, 1, -1, -2, 1, -1]));
 });

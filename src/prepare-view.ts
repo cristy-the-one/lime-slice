@@ -154,13 +154,15 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let mesh: THREE.Mesh | null = null;
   /** Vertices `mesh` was built from. Normals and the edge outline are built once per array. */
   let meshSource: Float32Array | null = null;
-  const outlineMat = new THREE.LineBasicMaterial({ color: 0xd5dbe3, transparent: true, opacity: 0.9 });
-  const hemi = new THREE.HemisphereLight(0xf4f6f8, 0x2a3140, 0.62);
+  // Dark olive creases: a pale line on the mid-tone body would melt into its lit faces.
+  const outlineMat = new THREE.LineBasicMaterial({ color: 0x1b2608, transparent: true, opacity: 0.9 });
+  // Little sky light and a strong key, so a face turned away from the key drops well below a lit one.
+  const hemi = new THREE.HemisphereLight(0xf4f6f8, 0x1c2230, 0.9);
   scene.add(hemi);
-  const key = new THREE.DirectionalLight(0xffffff, 1.05);
+  const key = new THREE.DirectionalLight(0xffffff, 2.4);
   key.position.set(80, 160, 40);
   scene.add(key);
-  const fill = new THREE.DirectionalLight(0xd5dde8, 0.22);
+  const fill = new THREE.DirectionalLight(0xd5dde8, 0.3);
   fill.position.set(-70, 50, -40);
   scene.add(fill);
   const viewHelper = new ViewHelper(camera, canvas);
