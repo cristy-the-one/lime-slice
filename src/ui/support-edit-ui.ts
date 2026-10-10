@@ -175,7 +175,7 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
   }
 
   function describe(t: Target) {
-    if (!t) return scope === "branch" ? "Click a support. Shift-click takes the whole tree." : "Click a support. Shift-click takes one branch.";
+    if (!t) return "";
     if (t.kind === "gap") {
       const [low, high] = gapZ(t.gap);
       return `Unheld · ${t.gap.areaMm2.toFixed(1)} mm² · Z ${low.toFixed(2)}–${high.toFixed(2)}`;
@@ -217,15 +217,15 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
       const rows = v.edits.map((entry, i) => {
         const outcome = outcomes[i];
         const badge = badgeOf(outcome);
-        const text = outcome ? outcomeText(entry, outcome) : "Not applied yet. Slice to apply.";
+        const text = outcome ? outcomeText(entry, outcome) : "";
         return `<li class="se-row" data-edit="${entry.id}">
           <span class="se-idx">${i + 1}</span><span class="se-name">${editTitle(entry, onBelt())}</span>
-          <span class="se-badge" data-badge="${badge}">${badge}</span>
+          ${badge ? `<span class="se-badge" data-badge="${badge}">${badge}</span>` : ""}
           <button class="se-remove" type="button" data-action="remove" data-id="${entry.id}" aria-label="Remove this edit"${dis}>${X_ICON}</button>
-          <p class="se-text">${text}</p>
+          ${text ? `<p class="se-text">${text}</p>` : ""}
         </li>`;
       }).join("");
-      body += v.edits.length ? `<ol class="se-rows">${rows}</ol>` : editing ? `<p class="se-empty">No edits yet.</p>` : "";
+      body += v.edits.length ? `<ol class="se-rows">${rows}</ol>` : "";
       if (editing && gaps.length) {
         const locked = v.busy || !v.treeSupports ? " disabled" : "";
         const items = gaps.map((gap, i) => `<li class="se-gap" data-gap="${i}"${hotGap() === i ? ' data-hot="true"' : ""}>
@@ -234,7 +234,7 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
         </li>`).join("");
         body += `<h3 class="se-sub">Unheld</h3><ul class="se-gaps">${items}</ul>`;
       }
-      if (!v.treeSupports) body += `<p class="se-note">Tree supports are off. These edits apply again when they are back on.</p>`;
+      if (!v.treeSupports) body += `<p class="se-note">Tree supports are off.</p>`;
     }
     const html = `<div class="se-head">${head}${tools}</div>${body}`;
     if (html !== panelHtml) {
@@ -370,10 +370,7 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
   }
 
   function setEditing(on: boolean) {
-    if (on && !ready()) {
-      pushToast("Slice with Organic tree supports to edit them.", "info");
-      return;
-    }
+    if (on && !ready()) return;
     if (on === editing) return;
     switchMode(on);
     if (on) {
@@ -420,19 +417,12 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
     announce = null;
     if (!ok || !why) return;
     const v = hooks.view();
-    if (why === "clear") {
-      pushToast("All support edits cleared.", "success");
-      return;
-    }
-    if (why === "remove") {
-      pushToast(v.treeSupports ? "Edit removed. Supports replayed." : "Edit removed.", "success");
-      return;
-    }
+    if (why === "clear" || why === "remove") return;
     const newest = v.edits[v.edits.length - 1];
     const outcome = newest ? alignOutcomes(v.edits, v.sent, v.result?.supportEdits ?? [])[v.edits.length - 1] : undefined;
     if (!newest || !outcome) return;
     const warn = outcome.status === "stale" || outcome.newlyFloatingMm2 > 0.05;
-    pushToast(outcomeText(newest, outcome), warn ? "warn" : "success");
+    if (warn) pushToast(outcomeText(newest, outcome), "warn");
   }
 
   view3d.onPick((ev) => {

@@ -49,6 +49,6 @@ export function peekLine(input: {
   selected: string | null;
 }): string {
   if (input.selected) return input.selected;
-  if (!input.treeSupports) return "Tree supports are off. These edits apply again when they are back on.";
-  return coverageWarning(input.gaps) ?? "Tap a support. Hold for the whole tree.";
+  if (!input.treeSupports) return "Tree supports are off.";
+  return coverageWarning(input.gaps) ?? "";
 }

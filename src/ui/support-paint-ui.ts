@@ -78,17 +78,15 @@ export function mountSupportPaint(prepare: PrepareView, hooks: SupportPaintHooks
     bar.dataset.enforce = String(counts.enforce);
     bar.dataset.block = String(counts.block);
     status.dataset.warn = "";
+    const line = view.tally ? tallyText(view.tally) : null;
     if (!view.supportsOn) {
-      status.textContent = view.disks.length > 0 ? "Supports are off. The paint is kept, but nothing prints." : "Supports are off. Paint is kept for when they are on.";
+      status.textContent = "Supports are off.";
       status.dataset.warn = "1";
-    } else if (view.tally) {
-      const line = tallyText(view.tally);
+    } else if (line?.warn) {
       status.textContent = line.text;
-      status.dataset.warn = line.warn ? "1" : "";
-    } else if (view.disks.length > 0) {
-      status.textContent = `${counts.enforce} enforce, ${counts.block} block. Slice to apply.`;
+      status.dataset.warn = "1";
     } else {
-      status.textContent = "Drag on the part to paint. Drag off it, or use two fingers, to orbit.";
+      status.textContent = view.disks.length > 0 ? `${counts.enforce} enforce, ${counts.block} block.` : "";
     }
     prepare.setBrush(on ? { kind, radius: radius() } : null);
   }

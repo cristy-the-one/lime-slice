@@ -36,7 +36,7 @@ eq("clear", clearEdits(), []);
 eq("pending tail after a cancel", alignOutcomes([tree, regrow, branch], [tree, regrow], [applied, held]), [applied, held, undefined]);
 eq("remove in the middle pends the rest", alignOutcomes([tree, branch], [tree, regrow, branch], [applied, held, quiet]), [applied, undefined]);
 eq("same list lines up", alignOutcomes([tree, regrow], [tree, regrow], [applied, held]), [applied, held]);
-eq("badges", [badgeOf(applied), badgeOf(outcome({ status: "rebound", movedMm: 0.4 })), badgeOf(outcome({ status: "stale", missed: 1 })), badgeOf(undefined)], ["applied", "rebound", "stale", "pending"]);
+eq("badges", [badgeOf(applied), badgeOf(outcome({ status: "rebound", movedMm: 0.4 })), badgeOf(outcome({ status: "stale", missed: 1 })), badgeOf(undefined)], [null, "rebound", "stale", null]);
 
 eq("no edits, tree supports off", editRequestFields([], false), {});
 eq("no edits, tree supports on", editRequestFields([], true), { includeSkeleton: true });
@@ -55,7 +55,8 @@ eq("a flat gap's z is its own", gapZ(gapA), [4.2, 6.4]);
 eq("a belt gap's z is its layers' belt positions", gapZ({ ...gapA, z: [19.4, 19.8], tilted: { ls: [15.27, 15.84], outline: [] } }), [15.27, 15.84]);
 
 eq("applied prune", outcomeText(tree, applied), "Removed 1 tree (36 tips). 59.9 mm² of overhang now unheld.");
-eq("applied prune that unholds nothing", outcomeText(branch, quiet), "Removed 1 branch (1 tip). Nothing new is unheld.");
+eq("applied prune that unholds nothing", outcomeText(branch, quiet), "Removed 1 branch (1 tip).");
+eq("regrow that holds nothing more", outcomeText(regrow, outcome({ status: "applied", newlyFloatingMm2: 0 })), "");
 eq(
   "rebound prune",
   outcomeText(tree, outcome({ status: "rebound", movedMm: 0.4213, newlyFloatingMm2: 59.94 })),
