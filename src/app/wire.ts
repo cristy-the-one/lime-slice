@@ -8,9 +8,9 @@ import { state, type CardId } from "./state";
 import { commitSplit, draw, layerGcode, paintPlayback, paintSectionChrome, prepare, scrub, sectionLimit, setHelp, setStage, setView, stepGizmo, stopPlay, syncGcodeHighlight, togglePlay, view3d } from "./viewer";
 import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCal, runSlice, runTempCal } from "./slice-run";
 import { adoptBytes, export3mf, exportGcode, fail, loadNamed, place, saveText, setPlaceCenter, withPrinterGcode } from "./files";
-import { mountProjectFiles, saveCurrentProject } from "./project-io";
-import { pickProjectFile } from "../platform";
-import { noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, syncFindStuck, touch } from "./settings";
+import { mountProjectFiles, openProjectFile, saveCurrentProject } from "./project-io";
+import { pickModelFile } from "../platform";
+import { noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, revealPrinterDetails, revealResults, syncFindStuck, touch } from "./settings";
 import { noteEdit } from "./history";
 import {
   applyNamedProfile,
@@ -109,13 +109,6 @@ export function wireApp() {
       const file = input.files?.[0];
       input.value = "";
       if (file) void importSettingsProfileFile(file);
-      return;
-    }
-    if (target.id === "machinePrinter" || target.id === "machineFilament" || target.id === "machineNozzle") {
-      const printerId = document.querySelector<HTMLSelectElement>("#machinePrinter")?.value ?? "";
-      const filamentId = document.querySelector<HTMLSelectElement>("#machineFilament")?.value ?? "";
-      const nozzleMm = Number(document.querySelector<HTMLSelectElement>("#machineNozzle")?.value);
-      chooseMachine(printerId, filamentId, nozzleMm);
       return;
     }
     if (target.id === "machineFile") {
@@ -287,7 +280,6 @@ export function wireApp() {
       refreshPrusaJob();
       return;
     }
-    if (t.id === "export3mf") void export3mf();
   });
   document.querySelector("#right")!.addEventListener("click", (ev) => {
     const dot = (ev.target as HTMLElement).closest<SVGElement>("[data-pareto]");
@@ -305,18 +297,22 @@ export function wireApp() {
     if (action === "supports") turnOnSupports();
   });
 
-  document.querySelector("#samples")!.addEventListener("click", (ev) => {
-    const project = (ev.target as HTMLElement).closest<HTMLButtonElement>("[data-project]");
-    if (project) {
-      (document.querySelector("#samples") as HTMLDetailsElement).open = false;
-      if (project.dataset.project === "save") void saveCurrentProject();
-      else pickProjectFile();
-      return;
-    }
-    const button = (ev.target as HTMLElement).closest<HTMLButtonElement>("[data-sample]");
-    if (!button) return;
-    void loadNamed(button.dataset.sample!).catch(fail);
+  const fileMenu = document.querySelector<HTMLDetailsElement>("#fileMenu")!;
+  const closeFileMenu = () => {
+    fileMenu.open = false;
     (document.querySelector("#samples") as HTMLDetailsElement).open = false;
+  };
+  fileMenu.addEventListener("click", (ev) => {
+    const button = (ev.target as HTMLElement).closest<HTMLButtonElement>("button");
+    if (!button) return;
+    closeFileMenu();
+    const action = button.dataset.fileAction;
+    if (action === "open") pickModelFile();
+    else if (action === "save") void saveCurrentProject();
+    else if (button.dataset.sample) void loadNamed(button.dataset.sample).catch(fail);
+    else if (button.id === "export3mf") void export3mf();
+    else if (button.id === "machineOpen") revealPrinterDetails();
+    else if (button.id === "calibrateOpen") document.dispatchEvent(new CustomEvent("lime-open-calibrate"));
   });
   mountProjectFiles();
   document.querySelector("#file")!.addEventListener("change", (ev) => {
@@ -324,8 +320,29 @@ export function wireApp() {
     const file = input.files?.[0];
     input.value = "";
     if (!file) return;
+    if (/\.lime$/i.test(file.name)) {
+      void openProjectFile(file);
+      return;
+    }
     file.arrayBuffer().then((bytes) => adoptBytes(file.name, bytes)).catch(fail);
   });
+  // The printer chip's pickers also serve the compact Device page, so the listener sits on the document.
+  document.addEventListener("change", (ev) => {
+    const target = ev.target as HTMLElement;
+    if (target.id !== "machinePrinter" && target.id !== "machineFilament" && target.id !== "machineNozzle") return;
+    const printerId = document.querySelector<HTMLSelectElement>("#machinePrinter")?.value ?? "";
+    const filamentId = document.querySelector<HTMLSelectElement>("#machineFilament")?.value ?? "";
+    const nozzleMm = Number(document.querySelector<HTMLSelectElement>("#machineNozzle")?.value);
+    chooseMachine(printerId, filamentId, nozzleMm);
+  });
+  document.addEventListener("click", (ev) => {
+    if (!(ev.target as HTMLElement).closest("#editPrinter")) return;
+    const chip = document.querySelector<HTMLDetailsElement>("#printerChip");
+    if (chip) chip.open = false;
+    revealPrinterDetails();
+  });
+  document.querySelector("#timing")!.addEventListener("click", () => revealResults());
+  document.querySelector(".top")!.addEventListener("input", onSettings);
   document.querySelectorAll<HTMLButtonElement>(".mode:not(.tab)").forEach((button) => {
     button.addEventListener("click", () => setView(button.dataset.mode as typeof state.viewMode, "user"));
   });

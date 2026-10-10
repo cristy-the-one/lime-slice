@@ -1,9 +1,7 @@
 import {
   ArrowDownToLine,
-  Boxes,
   createElement,
   Download,
-  FolderOpen,
   Printer,
   Layers,
   Move3d,
@@ -53,14 +51,6 @@ function hint(el: Element | null, tip: string) {
 }
 
 function iconizeToolbar() {
-  const open = document.querySelector("#file")?.closest("label") ?? null;
-  iconize(open, FolderOpen);
-  hint(open, "Open a mesh");
-
-  const samples = document.querySelector("#samples summary");
-  iconize(samples, Boxes);
-  hint(samples, "Load a sample mesh");
-
   iconize(document.querySelector("#slice"), Layers);
 
   iconize(document.querySelector("#cancel"), X);

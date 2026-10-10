@@ -17,7 +17,7 @@ import { noteAdvance, noteFirmware, noteFlow, noteGcode, noteRetract, setSmartSu
 import { currentRules } from "./rules";
 import { ADVANCE, orderFields, type Rules } from "../settings-rules";
 import { loadMachineLibrary } from "./machine-library";
-import { beltStamp, machineSectionHtml } from "../ui/machine-library";
+import { beltStamp, machineChipLabel, machinePickHtml, machineSectionHtml } from "../ui/machine-library";
 import { prusaSummary, rememberPrusaForm, syncSendButtons } from "./prusa-actions";
 import { noteEdit } from "./history";
 import { loadProfileLibrary } from "./profile-library";
@@ -171,6 +171,9 @@ export function renderChrome() {
     ${stageHtml(result)}` : ""}
   `;
 
+  paintPrinterChip();
+  const auto = document.querySelector<HTMLInputElement>("#autoslice");
+  if (auto) auto.checked = state.autoSlice;
   const isStale = stale();
   const sliceBtn = document.querySelector<HTMLButtonElement>("#slice")!;
   fx.paintSliceButton(sliceBtn);
@@ -199,8 +202,39 @@ function timingText() {
   const result = state.result;
   if (state.busy) return busyText();
   if (!result) return "";
-  const seconds = result.estimate?.seconds ?? 0;
-  return `${seconds / 60 < 1 ? `${seconds.toFixed(0)} s` : `${(seconds / 60).toFixed(1)} min`} · ${shownGrams(result).toFixed(2)} g`;
+  const grams = shownGrams(result);
+  return `${formatTime(result.estimate?.seconds ?? 0)} · ${grams.toFixed(2)} g · €${filamentCost(grams, state.profile).toFixed(2)}`;
+}
+
+function paintPrinterChip() {
+  const library = loadMachineLibrary();
+  const label = document.querySelector("#printerChipLabel");
+  if (label) label.textContent = machineChipLabel(library);
+  const pick = document.querySelector("#printerPick");
+  if (pick) pick.innerHTML = machinePickHtml(library);
+}
+
+/** Open the Printer details group and scroll to it. Simple has no such group, so it steps up to Advanced. */
+export function revealPrinterDetails() {
+  if (loadSettingsLevel() === "simple") {
+    setSettingsLevel("advanced");
+    applyFilter();
+  }
+  if (closedGroups.has("printer")) noteGroupToggle("printer", true);
+  const group = document.querySelector<HTMLDetailsElement>('#left .group[data-group="printer"]');
+  if (!group) return;
+  group.open = true;
+  if (window.innerWidth <= 960) document.querySelector(".workspace")?.classList.add("show-left");
+  group.scrollIntoView({ block: "start", behavior: "smooth" });
+}
+
+/** Show the results panel where the layout hides it, and scroll it to the estimate. */
+export function revealResults() {
+  const workspace = document.querySelector(".workspace");
+  if (workspace?.classList.contains("is-right-collapsed")) document.querySelector<HTMLButtonElement>(".panel-collapse-right")?.click();
+  if (window.innerWidth <= 960) workspace?.classList.add("show-right");
+  const right = document.querySelector<HTMLElement>("#right");
+  if (right) right.scrollTop = 0;
 }
 
 /** The slice's filament in grams at the profile's density. */
@@ -1070,7 +1104,7 @@ function saveProfileFromState() {
 
 export function onSettings(ev: Event) {
   const t = ev.target as HTMLInputElement;
-  if (TYPED_FIELDS.includes(t.id)) return;
+  if (!t?.id || TYPED_FIELDS.includes(t.id)) return;
   if (t.id === "find") {
     state.query = t.value;
     applyFilter();
@@ -1221,4 +1255,4 @@ export async function probe() {
   paintBanner();
 }
 
-Object.assign(fx, { apiBase, apiToken, card, stale, settingsHash, blend, currentWeight, renderChrome, markEngineDown, markEngineUp, paintEngineLink, markBusy, busyText, bannerLine, toastTransient, takeTransient, paintBanner, paramLine, paramTable, layerReadout, triangleLine, triangleMeta, formatMs, stageHtml, estimateHtml, isStepName, needsEngine, paretoHtml, formatTime, chips, pct, signed, currentPreset, applyPreset, applyFilter, onBlend, onSettings, pickStrategy, touch, markStale, staleWarning, escapeHtml, probe, fieldRow });
+Object.assign(fx, { apiBase, apiToken, card, stale, settingsHash, blend, currentWeight, renderChrome, markEngineDown, markEngineUp, paintEngineLink, markBusy, busyText, bannerLine, toastTransient, takeTransient, paintBanner, paramLine, paramTable, layerReadout, triangleLine, triangleMeta, formatMs, stageHtml, estimateHtml, isStepName, needsEngine, paretoHtml, formatTime, chips, pct, signed, currentPreset, applyPreset, applyFilter, onBlend, onSettings, pickStrategy, touch, markStale, staleWarning, escapeHtml, probe, fieldRow, revealPrinterDetails, revealResults });

@@ -3,40 +3,66 @@ export function mountMarkup(root: HTMLElement) {
   <div class="app">
     <header class="top">
       <div class="brand">Lime <span>Slice</span></div>
-      <button class="btn panel-toggle" id="toggleLeft" type="button">Settings</button>
-      <button class="btn panel-toggle" id="toggleRight" type="button">Blend</button>
-      <label class="btn file">Open mesh<input id="file" type="file" accept=".stl,.3mf,.step,.stp,.STL,.3MF,.STEP,.STP" /></label>
-      <input id="projectFile" type="file" accept=".lime,application/json" hidden />
-      <details class="menu" id="samples">
-        <summary class="btn">Samples</summary>
+      <details class="menu" id="fileMenu">
+        <summary class="btn ghost" aria-label="File menu">File<span class="caret" aria-hidden="true"></span></summary>
         <nav>
-          <button type="button" data-project="open">Open project</button>
-          <button type="button" data-project="save">Save project</button>
-          <button type="button" data-sample="calibration_cube_20mm.stl">20 mm cube</button>
-          <button type="button" data-sample="lime_hull.stl">60 mm hull</button>
-          <button type="button" data-sample="calibration_cube_20mm.3mf">Cube 3MF</button>
-          <button type="button" data-sample="step_cube.step">STEP cube</button>
-          <button type="button" data-sample="overhang_ledge.stl">Overhang</button>
-          <button type="button" data-sample="slope_ramp.stl">Slope</button>
-          <button type="button" data-sample="thin_fin.stl">Thin wall</button>
-          <button type="button" data-sample="bridge_span.stl">Bridge</button>
-          <button type="button" data-sample="arc_post.stl">Arc post</button>
+          <button type="button" data-file-action="open" data-key="Ctrl O">Open…</button>
+          <button type="button" data-file-action="save" data-key="Ctrl S">Save project</button>
+          <details class="menu submenu" id="samples">
+            <summary>Samples<span class="caret right" aria-hidden="true"></span></summary>
+            <nav>
+              <button type="button" data-sample="calibration_cube_20mm.stl">20 mm cube</button>
+              <button type="button" data-sample="lime_hull.stl">60 mm hull</button>
+              <button type="button" data-sample="calibration_cube_20mm.3mf">Cube 3MF</button>
+              <button type="button" data-sample="step_cube.step">STEP cube</button>
+              <button type="button" data-sample="overhang_ledge.stl">Overhang</button>
+              <button type="button" data-sample="slope_ramp.stl">Slope</button>
+              <button type="button" data-sample="thin_fin.stl">Thin wall</button>
+              <button type="button" data-sample="bridge_span.stl">Bridge</button>
+              <button type="button" data-sample="arc_post.stl">Arc post</button>
+            </nav>
+          </details>
+          <button type="button" id="export3mf">Export 3MF</button>
+          <hr />
+          <button type="button" id="calibrateOpen">Calibrate…</button>
+          <button type="button" id="machineOpen">Printers and filaments…</button>
         </nav>
       </details>
-      <label class="theme-field">Theme
-        <select id="theme" aria-label="Theme">
-          <option value="system">System</option>
-          <option value="dark">Dark</option>
-          <option value="light">Light</option>
-        </select>
-      </label>
-      <div class="spacer"></div>
+      <input id="file" type="file" accept=".stl,.3mf,.step,.stp,.lime,.STL,.3MF,.STEP,.STP,.LIME" hidden />
+      <input id="projectFile" type="file" accept=".lime,application/json" hidden />
+      <details class="menu" id="printerChip">
+        <summary class="btn chip" aria-label="Printer, filament and nozzle" data-tip="Printer, filament and nozzle"><span id="printerChipLabel"></span><span class="caret" aria-hidden="true"></span></summary>
+        <div class="popover" id="printerPick"></div>
+      </details>
+      <div class="modes title-tabs" role="tablist" aria-label="Workspace">
+        <button class="btn mode tab" id="tabPrepare" type="button" role="tab" data-tab="prepare" aria-label="Prepare" aria-selected="false" aria-pressed="false" aria-controls="prepareBody" data-key="1">Prepare</button>
+        <button class="btn mode tab on" id="tabPreview" type="button" role="tab" data-tab="preview" aria-label="Preview" aria-selected="true" aria-pressed="true" aria-controls="previewBody" data-key="2">Preview</button>
+        <button class="btn mode tab" id="tabGcode" type="button" role="tab" data-tab="gcode" aria-label="G-code" aria-selected="false" aria-pressed="false" aria-controls="gcodePane" data-key="3">G-code</button>
+      </div>
+      <button class="btn panel-toggle" id="toggleLeft" type="button">Settings</button>
+      <button class="btn panel-toggle" id="toggleRight" type="button">Results</button>
+      <button class="estimate" id="timing" type="button" data-tip="Show the results panel"></button>
       <div class="action-row">
         <button class="btn" id="cancel" type="button" hidden>Cancel</button>
-        <button class="btn" id="force" type="button" hidden>Force re-slice</button>
-        <button class="btn" id="sendPrinter" type="button" hidden disabled>Send to printer</button>
-        <button class="btn primary" id="slice" type="button" data-slice-action="none">Slice</button>
-        <button class="btn" id="export" type="button" disabled>Export G-code</button>
+        <button class="btn" id="sendPrinter" type="button" hidden disabled>Send</button>
+        <div class="split" id="sliceSplit">
+          <button class="btn primary" id="slice" type="button" data-slice-action="none" data-key="Ctrl ↵">Slice</button>
+          <details class="menu split-more" id="sliceMore">
+            <summary class="btn primary" aria-label="Slice options" data-tip="More slice actions"><span class="caret" aria-hidden="true"></span></summary>
+            <nav><button type="button" id="force" hidden>Force re-slice</button></nav>
+          </details>
+        </div>
+        <button class="btn" id="export" type="button" disabled aria-label="Export G-code" data-key="Ctrl E">Export</button>
+      </div>
+      <div class="gear-items" hidden>
+        <label class="theme-field">Theme
+          <select id="theme" aria-label="Theme">
+            <option value="system">System</option>
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select>
+        </label>
+        <label class="row setting" data-label="auto-slice under 50k triangles" data-tip="Slice again by itself after a change, while the mesh is small enough to be quick."><span class="row-label">Auto-slice under 50k triangles</span><input id="autoslice" type="checkbox" class="switch" role="switch" /></label>
       </div>
     </header>
     <div class="banner-rail" id="banner"></div>
@@ -48,11 +74,6 @@ export function mountMarkup(root: HTMLElement) {
             <button class="btn mode" type="button" data-mode="flat" aria-pressed="false">2D</button>
             <button class="btn mode" type="button" data-mode="split" aria-pressed="false">Split</button>
             <button class="btn mode" type="button" data-mode="solid" aria-pressed="true">3D</button>
-          </div>
-          <div class="modes" role="tablist" aria-label="Workspace">
-            <button class="btn mode tab" id="tabPrepare" type="button" role="tab" data-tab="prepare" aria-selected="false" aria-pressed="false" aria-controls="prepareBody">Prepare</button>
-            <button class="btn mode tab on" id="tabPreview" type="button" role="tab" data-tab="preview" aria-selected="true" aria-pressed="true" aria-controls="previewBody">Preview</button>
-            <button class="btn mode tab" id="tabGcode" type="button" role="tab" data-tab="gcode" aria-selected="false" aria-pressed="false" aria-controls="gcodePane">G-code</button>
           </div>
           <label class="field">Color
             <select id="colorBy" aria-label="Color by">
@@ -124,7 +145,7 @@ export function mountMarkup(root: HTMLElement) {
       </section>
       <aside class="panel right" id="right"></aside>
     </div>
-    <footer class="status"><div class="timing" id="timing"></div><div id="sliceMeter" class="slice-meter" hidden></div><div id="engineLink" class="engine-link" data-state="pending">Engine …</div></footer>
+    <footer class="status"><div id="sliceMeter" class="slice-meter" hidden></div><div id="engineLink" class="engine-link" data-state="pending">Engine …</div></footer>
   </div>
   <div id="help" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="helpTitle">
     <div class="sheet-card">

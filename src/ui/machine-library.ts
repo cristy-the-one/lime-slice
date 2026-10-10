@@ -490,13 +490,15 @@ const GCODE_TIP = "Start and end G-code are inserted into Export and Send. They 
 
 const BELT_TIP = "The engine slices this belt. Export follows the slice. Send follows the printer connection. Seam on the belt edge and the belt raft stay off until those boxes are checked. A raft is a pad on the belt under the part and 1 mm past it, raft layers times the layer height thick; the part stands on it. Smart supports on a belt printer grow down to the tilted belt. They are not available together with a raft.";
 
-export function machineSectionHtml(
-  library: MachineLibrary,
-  live: { advance: number; nozzleTemp: number; bedTemp: number; flow: number },
-  rules: Rules,
-  linkSummary = "",
-): string {
+/** The printer chip's label: "Lime 220 · PLA · 0.4 mm". */
+export function machineChipLabel(library: MachineLibrary): string {
   const picked = selection(library);
+  if (!picked) return "No printer";
+  return `${picked.printer.name} · ${picked.filament.name} · ${nozzleKey(library.nozzleMm)} mm`;
+}
+
+/** The printer, filament, and nozzle pickers of the printer chip. */
+export function machinePickHtml(library: MachineLibrary): string {
   const nozzles: number[] = [...NOZZLE_MM];
   if (!nozzles.some((size) => nozzleKey(size) === nozzleKey(library.nozzleMm))) nozzles.push(library.nozzleMm);
   const printerOptions = library.printers
@@ -505,21 +507,32 @@ export function machineSectionHtml(
   const filamentOptions = library.filaments
     .map((filament) => `<option value="${escapeHtml(filament.id)}"${filament.id === library.filamentId ? " selected" : ""}>${escapeHtml(filament.name)}</option>`)
     .join("");
-  const advance = ADVANCE[rules.firmware];
   const nozzleOptions = nozzles
     .map((size) => `<option value="${nozzleKey(size)}"${nozzleKey(size) === nozzleKey(library.nozzleMm) ? " selected" : ""}>${nozzleKey(size)} mm</option>`)
     .join("");
   return `
+    <label class="field">Printer
+      <select id="machinePrinter" aria-label="Printer">${printerOptions}</select>
+    </label>
+    <label class="field">Filament
+      <select id="machineFilament" aria-label="Filament">${filamentOptions}</select>
+    </label>
+    <label class="field">Nozzle
+      <select id="machineNozzle" aria-label="Nozzle size">${nozzleOptions}</select>
+    </label>
+    <button class="btn" id="editPrinter" type="button">Edit printer…</button>`;
+}
+
+export function machineSectionHtml(
+  library: MachineLibrary,
+  live: { advance: number; nozzleTemp: number; bedTemp: number; flow: number },
+  rules: Rules,
+  linkSummary = "",
+): string {
+  const picked = selection(library);
+  const advance = ADVANCE[rules.firmware];
+  return `
     <div class="machine-block">
-      <label class="field setting" data-label="printer" data-keywords="machine library bed">Printer
-        <select id="machinePrinter" aria-label="Printer">${printerOptions}</select>
-      </label>
-      <label class="field setting" data-label="filament" data-keywords="material pla petg abs tpu">Filament
-        <select id="machineFilament" aria-label="Filament">${filamentOptions}</select>
-      </label>
-      <label class="field setting" data-label="nozzle size" data-keywords="nozzle diameter">Nozzle
-        <select id="machineNozzle" aria-label="Nozzle size">${nozzleOptions}</select>
-      </label>
       ${beltFieldsHtml(picked?.printer, rules)}
       <label class="field setting" data-label="firmware" data-keywords="klipper marlin pressure advance linear advance">Firmware
         <select id="machineFirmware" aria-label="Printer firmware">

@@ -2,13 +2,6 @@
 
 .top { overflow: visible; position: relative; }
 .title-drag { display: none; }
-.title-tabs {
-  flex: 1 1 auto;
-  justify-content: center;
-  min-width: 0;
-}
-.title-tabs .btn { padding: 0 8px; }
-.titlebar .spacer { display: none; }
 
 .gear-menu { position: relative; flex: 0 0 auto; }
 .gear-menu > summary {
@@ -90,7 +83,6 @@ html[data-chrome="custom"] .win-controls { display: flex; }
 .engine-link[data-state="pending"] { color: var(--muted); }
 
 .status { gap: 12px; }
-.timing { min-width: 16ch; max-width: 28ch; text-align: left; }
 
 #left.panel { padding: 0; }
 
