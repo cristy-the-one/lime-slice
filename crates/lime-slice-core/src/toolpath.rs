@@ -264,6 +264,9 @@ pub enum Seam {
     /// The vertex nearest the nozzle. Inner walls are hidden, and on a smooth
     /// curve the nearest vertex keeps the arc fitter's runs whole.
     Nearest,
+    /// The back corner of the loop, like `Fixed`, except that when several
+    /// corners are equally far back the one nearest the nozzle starts it.
+    Edge,
     /// A wall the region cut opened. It has no seam and prints from whichever
     /// end is nearer, so the next ring starts where this one ended.
     Cut,
@@ -1474,6 +1477,7 @@ fn extrusion(
             (PathKind::Inner, _) if !strategy.inner_follows_seam => Seam::Nearest,
             (_, SeamMode::Nearest) => Seam::Corner,
             (_, SeamMode::Aligned | SeamMode::Rear) => Seam::Fixed,
+            (_, SeamMode::Edge) => Seam::Edge,
         },
         fuzzy: None,
     };
@@ -1604,7 +1608,7 @@ fn seam_rotate(loop_: &[[f64; 2]], mode: SeamMode, hint: [f64; 2]) -> Vec<[f64; 
     let idx = match mode {
         SeamMode::Aligned => aligned_seam(loop_),
         SeamMode::Nearest => nearest_seam(loop_, hint),
-        SeamMode::Rear => rear_seam(loop_),
+        SeamMode::Rear | SeamMode::Edge => rear_seam(loop_),
     };
     let mut pts: Vec<[f64; 2]> = loop_[idx..]
         .iter()
@@ -1660,6 +1664,32 @@ fn rear_seam(ring: &[[f64; 2]]) -> usize {
             }
         })
         .0
+}
+
+/// The vertices of `ring` a `Seam::Edge` loop may start at: the real corners
+/// within 1 mm of its back that turn as sharply as `rear_seam`'s corner, or
+/// that vertex alone when the back has no corner. A U cut by the belt has a
+/// foot on each side, and the nozzle may be at either.
+fn edge_sites(ring: &[[f64; 2]]) -> Vec<usize> {
+    let first = rear_seam(ring);
+    let sharp = turn_penalty(ring, first);
+    if !real_corner(sharp) {
+        return vec![first];
+    }
+    let back = ring.iter().fold(f64::MIN, |y, p| y.max(p[1]));
+    (0..ring.len())
+        .filter(|&i| ring[i][1] >= back - 1.0 && turn_penalty(ring, i) <= sharp + 1e-3)
+        .collect()
+}
+
+/// The start of the closed `path` that a `Seam::Edge` loop takes with the
+/// nozzle at `hint`, as an index of its ring.
+fn edge_start(path: &Extrusion, hint: [f64; 2]) -> usize {
+    let ring = &path.points[..path.points.len() - 1];
+    edge_sites(ring)
+        .into_iter()
+        .min_by(|&a, &b| dist2(ring[a], hint).total_cmp(&dist2(ring[b], hint)))
+        .unwrap_or(0)
 }
 
 /// A turn of at least 30°, convex or concave, by `turn_penalty`'s scale.
@@ -4063,6 +4093,7 @@ fn oriented_ends(
                 Seam::Fixed | Seam::Cut => pts[0],
                 Seam::Corner => pts[nearest_seam(&pts[..pts.len() - 1], cursor)],
                 Seam::Nearest => nearest_vertex(path, cursor),
+                Seam::Edge => path.points[edge_start(path, cursor)],
             };
             return (v, v);
         }
@@ -4122,13 +4153,25 @@ fn approach_dist2(path: &Extrusion, cursor: [f64; 2], has: bool) -> f64 {
     if !has {
         return 0.0;
     }
-    if path.is_loop() && path.seam == Seam::Fixed {
+    if starts_fixed(path) {
         dist2(cursor, path.points[0])
+    } else if edge_loop(path) {
+        dist2(cursor, path.points[edge_start(path, cursor)])
     } else if path.is_loop() || geom_closed(path) {
         nearest_dist2(path, cursor)
     } else {
         dist2(cursor, path.points[0]).min(dist2(cursor, *path.points.last().unwrap()))
     }
+}
+
+/// A loop that starts where it was planned.
+fn starts_fixed(path: &Extrusion) -> bool {
+    path.is_loop() && (path.seam == Seam::Fixed || (path.seam == Seam::Edge && !geom_closed(path)))
+}
+
+/// A closed loop that starts at any of its `edge_sites`.
+fn edge_loop(path: &Extrusion) -> bool {
+    path.is_loop() && path.seam == Seam::Edge && geom_closed(path)
 }
 
 fn nearest_dist2(path: &Extrusion, hint: [f64; 2]) -> f64 {
@@ -4201,6 +4244,11 @@ fn orient_path(path: &mut Extrusion, cursor: [f64; 2], has: bool, rotate_seams: 
                 rotate_closed_at(path, at);
             }
             Seam::Corner => {}
+            Seam::Edge if geom_closed(path) => {
+                let at = edge_start(path, cursor);
+                rotate_closed_at(path, at);
+            }
+            Seam::Edge => {}
             Seam::Nearest => rotate_closed_extrusion(path, cursor),
         }
         return;
@@ -4494,8 +4542,15 @@ fn for_each_approach_site(path: &Extrusion, mut f: impl FnMut([f64; 2])) {
     if path.points.is_empty() {
         return;
     }
-    if path.is_loop() && path.seam == Seam::Fixed {
+    if starts_fixed(path) {
         f(path.points[0]);
+        return;
+    }
+    if edge_loop(path) {
+        let ring = &path.points[..path.points.len() - 1];
+        for i in edge_sites(ring) {
+            f(ring[i]);
+        }
         return;
     }
     if path.is_loop() || geom_closed(path) {
@@ -5888,6 +5943,37 @@ mod travel_tests {
             vec![(PathKind::Outer, [10.0, 10.0]), (PathKind::Inner, [7.0, 1.0])],
             "without an explicit seam the inner wall starts near the nozzle"
         );
+    }
+
+    /// Where the outer wall of a U with its feet at the back (+Y) starts when
+    /// the nozzle is at `from`. Its four rear corners are equally far back.
+    fn u_start(strategy: &ResolvedStrategy, from: [f64; 2]) -> [f64; 2] {
+        let u = [vec![
+            [0.0, 0.0],
+            [50.0, 0.0],
+            [50.0, 23.0],
+            [47.0, 23.0],
+            [47.0, 3.0],
+            [3.0, 3.0],
+            [3.0, 23.0],
+            [0.0, 23.0],
+        ]];
+        let mut paths = Vec::new();
+        emit_loops(&mut paths, &u, PathKind::Outer, strategy, 0.45, &mut [0.0, 0.0]);
+        order_part(&mut paths, &[], Some(from), None);
+        paths[0].points[0]
+    }
+
+    #[test]
+    fn an_edge_seam_starts_a_u_at_the_foot_nearest_the_nozzle() {
+        let mut edge = pure(StrategyId::Speed);
+        edge.seam = SeamMode::Edge;
+        assert_eq!(u_start(&edge, [1.0, 20.0]), [0.0, 23.0]);
+        assert_eq!(u_start(&edge, [49.0, 20.0]), [50.0, 23.0]);
+        let mut rear = pure(StrategyId::Speed);
+        rear.seam = SeamMode::Rear;
+        assert_eq!(u_start(&rear, [1.0, 20.0]), [50.0, 23.0], "rear stacks on +X");
+        assert_eq!(u_start(&rear, [49.0, 20.0]), [50.0, 23.0]);
     }
 
     #[test]

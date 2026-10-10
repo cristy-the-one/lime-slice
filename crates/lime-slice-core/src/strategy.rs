@@ -91,6 +91,10 @@ pub enum SeamMode {
     Aligned,
     /// Stack the seam at the back of the bed, +Y.
     Rear,
+    /// The belt edge: the back of the nozzle plane, like `Rear`, but where a
+    /// loop has several corners equally far back (the feet of a U on the belt)
+    /// the one nearest the nozzle starts it.
+    Edge,
 }
 
 /// Where the request places each wall's seam.
@@ -107,6 +111,10 @@ pub enum SeamPlacement {
     Nearest,
     Aligned,
     Rear,
+    /// The belt edge. Only a belt slice sets it, in place of `Blend`; the
+    /// wire has no name for it.
+    #[serde(skip)]
+    Edge,
 }
 
 /// A second pass over the part's top surfaces at low flow, which smooths
@@ -373,7 +381,7 @@ impl SeamPlacement {
             SeamPlacement::Blend => "blend",
             SeamPlacement::Nearest => "nearest",
             SeamPlacement::Aligned => "aligned",
-            SeamPlacement::Rear => "rear",
+            SeamPlacement::Rear | SeamPlacement::Edge => "rear",
         }
     }
 
@@ -388,6 +396,7 @@ impl SeamPlacement {
             SeamPlacement::Nearest => Some(SeamMode::Nearest),
             SeamPlacement::Aligned => Some(SeamMode::Aligned),
             SeamPlacement::Rear => Some(SeamMode::Rear),
+            SeamPlacement::Edge => Some(SeamMode::Edge),
         }
     }
 }
