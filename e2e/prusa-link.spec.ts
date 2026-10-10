@@ -109,7 +109,10 @@ test.describe("compact Prusa Link", () => {
     const prepare = await share(page, "#prepare");
     expect(prepare, `prepare viewport share ${prepare}`).toBeGreaterThanOrEqual(0.7);
     await page.locator("#compactTabs [data-tab=settings]").click();
-    await page.locator("#machineMore").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
+    await page.evaluate(() => {
+      const menu = document.querySelector<HTMLDetailsElement>("#machineMore");
+      if (menu) menu.open = true;
+    });
     await expect(page.locator("#machineHost")).toBeVisible();
     await expect(page.locator("#prusaTest")).toBeVisible();
     await page.locator("#compactTabs [data-tab=prepare]").click();

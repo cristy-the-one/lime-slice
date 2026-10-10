@@ -135,6 +135,7 @@ test("add, select, place, overlap, arrange, undo, and save a plate", async ({ pa
   await page.keyboard.press("Control+z");
   await expect(page.locator("[data-plate-id]")).toHaveCount(2);
 
+  await expect(page.locator("#slice")).toBeEnabled();
   const beforeSlice = bodies.length;
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(beforeSlice + 1);

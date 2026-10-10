@@ -112,9 +112,7 @@ test("rotation and scale still wait for Slice when auto-slice is off", async ({ 
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
-  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
-  await page.locator("#autoslice").uncheck();
-  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
+  await autoSliceOff(page);
   await page.locator("#fileMenu > summary").click();
   await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
