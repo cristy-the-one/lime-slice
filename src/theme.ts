@@ -50,7 +50,7 @@ export function themeColors(): ThemeColors {
     line: pick("--line", "#2a303a"),
     bed: pick("--bed", "#141820"),
     bedMinor: pick("--bed-minor", "#222733"),
-    mesh: pick("--mesh", "#8fbf3a"),
+    mesh: pick("--mesh", "#96be28"),
     danger: pick("--danger", "#f0615a"),
     slow: pick("--slow", "#f5a524"),
     fast: pick("--fast", "#d55e00"),

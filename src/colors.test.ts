@@ -170,7 +170,7 @@ check("speed mode starts on the slow stop", colorForPath("outer", "speed", 0, sl
 check("weight mode ends on the heavy stop", colorForPath("outer", "weight", 1) === WEIGHT_RAMP[2].toLowerCase());
 
 if (failed) {
-  console.error(`${failed} check(s) failed`);
-  process.exit(1);
+  console.error(`${failed} failed`);
+  throw new Error(`${failed} failed`);
 }
 console.log("colors.test.ts ok");

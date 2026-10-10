@@ -12,7 +12,7 @@ export interface WireLayer {
 
 /** Fraction of bead half-width kept as the bright face. The rest is the dark margin. */
 export const INNER_HALF_SCALE = 0.78;
-export const MARGIN_SHADE = 0.38;
+export const MARGIN_SHADE = 0.6;
 /** Set in a point's speed word on odd layers, so the shader can alternate their brightness. */
 export const ODD_LAYER_BIT = 0x8000;
 

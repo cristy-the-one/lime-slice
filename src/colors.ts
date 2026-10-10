@@ -51,7 +51,7 @@ export type Ramp = [string, string, string];
 /** Blend weight 0 to 1 maps along these, orange to pink to indigo. */
 export const WEIGHT_RAMP: Ramp = ["#F0922B", "#D1478C", "#5A4BD8"];
 /** Effective speed across `SPEED_RANGE_MM_S` maps along these, slow blue to fast yellow. */
-export const SPEED_RAMP: Ramp = ["#3A4FD8", "#27B39A", "#F0D22A"];
+export const SPEED_RAMP: Ramp = ["#3A4FD8", "#22A85A", "#F0D22A"];
 export const SPEED_RANGE_MM_S: [number, number] = [20, 180];
 
 export function featureColor(kind: string): string {

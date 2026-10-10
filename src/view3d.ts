@@ -983,18 +983,20 @@ const [SPEED_LO, SPEED_HI] = SPEED_RANGE_MM_S;
 
 /**
  * Light on the beads, fixed to the camera so orbiting does not relight them: a key from the upper left,
- * a weak fill from the right, little ambient. A crown facing the key reads about 1, a flank in shadow
- * about a third of that.
+ * a weak fill from the right, some ambient. A crown facing the key reads about 1, a flank in shadow
+ * about half of that.
  */
-const AMBIENT = 0.22;
-const KEY = 0.95;
-const FILL = 0.14;
+const AMBIENT = 0.3;
+const KEY = 0.88;
+const FILL = 0.15;
 const KEY_DIR = "normalize(vec3(-0.45, 0.62, 0.64))";
 const FILL_DIR = "normalize(vec3(0.7, 0.2, 0.5))";
+/** The flank's lower edge leans down (its normal's up part is 1 - this), so the seam between layers shades dark. */
+const FLANK_SAG = 2;
 /** Crown normal tilt per unit of bead half width. */
 const CROWN_TILT = 0.9;
 /** Share odd layers lose, so neighbouring layers show a line between them. */
-const LAYER_ALTERNATION = 0.07;
+const LAYER_ALTERNATION = 0.12;
 
 /**
  * Expands one segment per instance: from `segA` to `segB`, sideways by the
@@ -1040,7 +1042,7 @@ void main() {
   // A bead is a rounded roll: the crown (corner z 0) tilts outward toward its edge, the flank (z 1) faces sideways.
   vec3 outward = vec3(side.x, 0.0, side.y) * sign(corner.y);
   float tilt = mix(abs(corner.y) * ${CROWN_TILT.toFixed(2)}, 1.0, corner.z);
-  vec3 normal = normalize(vec3(0.0, 1.0 - corner.z, 0.0) + outward * tilt);
+  vec3 normal = normalize(vec3(0.0, 1.0 - corner.z * ${FLANK_SAG.toFixed(2)}, 0.0) + outward * tilt);
   vec3 view = normalize(normalMatrix * normal);
   float lit = ${AMBIENT.toFixed(2)} + ${KEY.toFixed(2)} * max(dot(view, ${KEY_DIR}), 0.0) + ${FILL.toFixed(2)} * max(dot(view, ${FILL_DIR}), 0.0);
   vColor = color * shade * lit * (1.0 - ${LAYER_ALTERNATION.toFixed(2)} * odd);
