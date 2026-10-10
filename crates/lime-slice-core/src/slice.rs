@@ -1438,8 +1438,11 @@ fn prepare_belt(
         // Blend would hide the seam wherever the strategy likes. The belt edge
         // is the back of the nozzle plane, which is Rear after the rotation.
         // An explicit seam stays unless the printer asks for the belt edge.
-        if belt.seam_on_edge || object.settings.seam == SeamPlacement::Blend {
-            object.settings.seam = SeamPlacement::Rear;
+        // An explicit rear stays stacked on +X; the edge takes whichever foot
+        // of a layer's U is nearer the nozzle.
+        let seam = object.settings.seam;
+        if seam != SeamPlacement::Rear && (belt.seam_on_edge || seam == SeamPlacement::Blend) {
+            object.settings.seam = SeamPlacement::Edge;
         }
     }
     if !belt.floor_supports {

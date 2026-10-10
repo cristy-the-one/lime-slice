@@ -189,6 +189,11 @@ struct Solid {
 }
 
 fn cover_reply(belt: bool, stl: &str) -> SliceResponse {
+    cover_reply_seam(belt, stl, None)
+}
+
+/// `cover_reply` with the seam placed by the request, not left to the blend.
+fn cover_reply_seam(belt: bool, stl: &str, seam: Option<&str>) -> SliceResponse {
     let mut body = json!({
         "filename": "cover.stl",
         "dataB64": base64::engine::general_purpose::STANDARD.encode(stl),
@@ -215,6 +220,9 @@ fn cover_reply(belt: bool, stl: &str) -> SliceResponse {
             "maxAccel": 7000.0,
         },
     });
+    if let Some(seam) = seam {
+        body["seam"] = json!(seam);
+    }
     if belt {
         body["belt"] = json!({
             "angleDeg": 45.0, "axis": "z", "direction": 1, "widthMm": 250.0,
@@ -612,4 +620,96 @@ fn solid_where_a_thin_band_joins_wide_parts_follows_the_band() {
         flat.filament_mm,
         tilted.filament_mm
     );
+}
+
+/// What the walls and the gap fill beside them cost in travel: the moves
+/// that do not extrude under `OUTER`, `INNER` and `GAP-FILL`, and the hops
+/// they make (a run of consecutive travel moves is one hop).
+struct WallTravel {
+    mm: f64,
+    hops: usize,
+    /// All the filament the print takes, mm.
+    filament_mm: f64,
+}
+
+fn wall_travel(belt: bool, stl: &str, seam: Option<&str>) -> WallTravel {
+    let reply = cover_reply_seam(belt, stl, seam);
+    let (mut kind, mut x, mut y, mut e) = (String::new(), 0.0f64, 0.0f64, 0.0f64);
+    let (mut mm, mut moves, mut hops, mut hopping) = (0.0, 0usize, 0usize, false);
+    for line in reply.gcode.lines() {
+        if let Some(rest) = line.strip_prefix("; TYPE:") {
+            kind = rest.trim().to_string();
+        } else if line.starts_with("G1") {
+            let word = |c: char| {
+                line.split_whitespace()
+                    .find_map(|w| w.strip_prefix(c).and_then(|v| v.parse::<f64>().ok()))
+            };
+            let (nx, ny, ne) = (
+                word('X').unwrap_or(x),
+                word('Y').unwrap_or(y),
+                word('E').unwrap_or(e),
+            );
+            if word('X').is_some() || word('Y').is_some() {
+                if ne > e {
+                    hopping = false;
+                } else if matches!(kind.as_str(), "OUTER" | "INNER" | "GAP-FILL") {
+                    mm += (nx - x).hypot(ny - y);
+                    moves += 1;
+                    hops += usize::from(!hopping);
+                    hopping = true;
+                } else {
+                    hopping = true;
+                }
+            }
+            (x, y, e) = (nx, ny, ne);
+        }
+    }
+    let found = WallTravel {
+        mm,
+        hops,
+        filament_mm: reply.estimate.filament_mm,
+    };
+    println!(
+        "belt {belt}: wall travel {:.1} m in {} moves and {} hops, {:.0} s and {:.0} mm of filament in all",
+        mm / 1000.0,
+        moves,
+        hops,
+        reply.estimate.seconds,
+        found.filament_mm
+    );
+    found
+}
+
+#[test]
+fn walls_of_a_belt_cover_start_where_the_nozzle_stands() {
+    // Each slanted layer of a cover is a U: the two side walls and the roof.
+    // Both feet of the U stand on the belt edge, and a rear seam always took
+    // the right one, so each layer's walls were reached by crossing the U from
+    // the foot where the layer below ended: 220 mm of travel under OUTER on
+    // every layer of the plain cover, 280 m in all. The belt's own seam takes
+    // the foot the nozzle is at, with the same plastic. An explicit `rear`
+    // still stacks the seam on +X, so it is the print as it was.
+    let covers = [
+        ("plain", cover_stl(150.0, 300.0, 50.0, 3.0)),
+        ("round", round_cover_stl(150.0, 300.0, 50.0, 3.0, 30.0)),
+        ("ribbed", ribbed_cover_stl()),
+    ];
+    for (name, stl) in covers {
+        let was = wall_travel(true, &stl, Some("rear"));
+        let found = wall_travel(true, &stl, None);
+        assert!(
+            found.mm <= was.mm * 0.3,
+            "{name} cover on the belt: {:.1} m of wall travel in {} hops (rear seam: {:.1} m in {})",
+            found.mm / 1000.0,
+            found.hops,
+            was.mm / 1000.0,
+            was.hops
+        );
+        assert!(
+            (found.filament_mm / was.filament_mm - 1.0).abs() <= 0.001,
+            "{name} cover on the belt: {:.0} mm of filament (rear seam: {:.0})",
+            found.filament_mm,
+            was.filament_mm
+        );
+    }
 }
