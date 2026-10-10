@@ -41,7 +41,7 @@ export function mountMarkup(root: HTMLElement) {
       </div>
       <button class="btn panel-toggle" id="toggleLeft" type="button">Settings</button>
       <button class="btn panel-toggle" id="toggleRight" type="button">Results</button>
-      <button class="estimate" id="timing" type="button" data-tip="Show the results panel"></button>
+      <div class="estimate-slot"><button class="estimate" id="timing" type="button" data-tip="Show the results panel"></button></div>
       <div class="action-row">
         <button class="btn" id="cancel" type="button" hidden>Cancel</button>
         <button class="btn" id="sendPrinter" type="button" hidden disabled>Send</button>

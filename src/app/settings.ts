@@ -9,6 +9,7 @@ import { markProjectDirty } from "../project-dirty";
 import { coverageWarning, inAirWarning } from "../slice-action";
 import { applySliceProgress, currentSliceProgress } from "../ui/slice-progress";
 import { filamentCost, filamentGrams, groupFeatures } from "../estimate";
+import { durationTile, formatCount, formatDuration, formatLength, formatMass, formatMetres, formatMoney, formatMs } from "../format";
 import { OTHER_COLOR, featureColor } from "../colors";
 import { offBed } from "../mesh-place";
 import { boundsSize, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty } from "../plate";
@@ -180,7 +181,7 @@ export function renderChrome() {
   document.querySelector<HTMLButtonElement>("#cancel")!.hidden = !state.busy;
   paintExport(document.querySelector("#export"), isStale);
   syncSendButtons();
-  document.querySelector("#timing")!.textContent = timingText();
+  paintTiming();
   const warn = staleWarning();
   document.querySelector("#stage")!.classList.toggle("stale", warn);
   paintBanner();
@@ -196,12 +197,23 @@ export function renderChrome() {
   fx.syncPreviewPending?.();
 }
 
-function timingText() {
+/** The top bar readout. Mass and price are spans so the bar can drop them, price first, when it runs short of room. */
+function paintTiming() {
+  const timing = document.querySelector<HTMLElement>("#timing");
+  if (!timing) return;
   const result = state.result;
-  if (state.busy) return busyText();
-  if (!result) return "";
+  timing.dataset.tip = "Show the results panel";
+  if (state.busy) {
+    timing.textContent = busyText();
+    return;
+  }
+  if (!result) {
+    timing.textContent = "";
+    return;
+  }
   const grams = shownGrams(result);
-  return `${formatTime(result.estimate?.seconds ?? 0)} · ${grams.toFixed(2)} g · €${filamentCost(grams, state.profile).toFixed(2)}`;
+  timing.innerHTML = `<span>${formatDuration(result.estimate?.seconds ?? 0)}</span><span class="est-mass"> · ${formatMass(grams)}</span><span class="est-cost"> · ${formatMoney(filamentCost(grams, state.profile))}</span>`;
+  timing.dataset.tip = `${timing.textContent} · Show the results panel`;
 }
 
 type Band = { index: number; z0: number; z1: number };
@@ -300,8 +312,7 @@ export function shownGrams(result: SliceResponse) {
 function paintEstimate() {
   const est = document.querySelector("#estimate");
   if (est) est.innerHTML = estimateHtml();
-  const timing = document.querySelector("#timing");
-  if (timing) timing.textContent = timingText();
+  paintTiming();
 }
 
 export function markEngineDown(message: string) {
@@ -621,7 +632,7 @@ function objectPlaceHtml(): string {
       <label class="setting" data-label="position y" data-keywords="placement move bed offset">Y mm<input id="placeY" type="number" step="1" value="${cy}" aria-label="Position Y" /></label>
       <label class="setting" data-label="scale %" data-keywords="placement size percent">Scale %<input id="partScale" type="number" min="10" max="400" step="5" value="${Math.round(state.partScale * 100)}" /></label>
     </div>
-    ${isStepName(state.mesh?.name ?? "") ? `<label class="row setting" data-label="step chord mm" data-keywords="tessellation tolerance"><span class="row-label">STEP chord mm</span><input id="stepTol" type="number" min="0.01" max="2" step="0.01" value="${state.stepTolerance}" /></label>` : ""}
+    ${isStepName(state.mesh?.name ?? "") ? `<label class="row setting" data-label="step chord mm" data-keywords="tessellation tolerance"><span class="row-label" data-tip="Largest gap between a curved STEP surface and its triangles, in mm">STEP chord</span><input id="stepTol" type="number" min="0.01" max="2" step="0.01" value="${state.stepTolerance}" /></label>` : ""}
   `;
 }
 
@@ -731,7 +742,7 @@ function objectOverrideFields(obj: NonNullable<ReturnType<typeof selectedObject>
       <label class="setting" data-label="object walls" data-keywords="per object perimeters">Walls
         <input id="objWalls" type="number" min="1" max="12" step="1" placeholder="auto" value="${shown(walls)}" aria-label="Object walls" />
       </label>
-      <label class="setting" data-label="object speed" data-keywords="per object speed cap">Speed mm/s
+      <label class="setting" data-label="object speed" data-keywords="per object speed cap" data-tip="Speed cap in mm/s">Speed
         <input id="objSpeed" type="number" min="1" max="1000" step="5" placeholder="auto" value="${shown(speed)}" aria-label="Object speed cap" />
       </label>
     </div>`;
@@ -778,8 +789,8 @@ export function layerReadout() {
     ["Layer", `${layer.index + 1} / ${state.result?.layers.length}`],
     ["Z", `${layer.z.toFixed(2)} mm`],
     ["Height", `${layer.height.toFixed(3)} mm`],
-    ["Layer time", `${(layer.seconds ?? 0).toFixed(1)} s`],
-    ["Cumulative", clockTime(below + (layer.seconds ?? 0))],
+    ["Layer time", formatDuration(layer.seconds ?? 0)],
+    ["Cumulative", formatDuration(below + (layer.seconds ?? 0))],
   ])}${layer.note ? `<p class="layer-note" data-level="advanced">${escapeHtml(layer.note)}</p>` : ""}`;
 }
 
@@ -791,23 +802,15 @@ export function triangleMeta(result: SliceResponse | null) {
   if (!result) return "";
   const tol = result.mesh.outlineToleranceMm ?? 0;
   // An older reply has no counts, which is unknown, not zero.
-  const count = (n: number | undefined) => (typeof n === "number" ? String(n) : "—");
+  const count = (n: number | undefined) => (typeof n === "number" ? formatCount(n) : "—");
   const repaired = count(result.mesh.repairedLayers);
   const dropped = count(result.mesh.droppedChains);
   return kvHtml([
-    ["Triangles", String(result.mesh.triangles)],
+    ["Triangles", formatCount(result.mesh.triangles)],
     ...(tol > 0 ? [["Outline", `${tol.toFixed(3)} mm`] as [string, string]] : []),
     ["Repaired layers", repaired],
     ["Dropped chains", dropped],
   ]);
-}
-
-export function formatMs(ms: number) {
-  if (!Number.isFinite(ms)) return "—";
-  const n = Math.max(0, ms);
-  const text = n >= 100 ? `${n.toFixed(0)} ms` : `${n.toFixed(1)} ms`;
-  if (n >= 1000) return `${text} · ${(n / 1000).toFixed(n >= 10000 ? 1 : 2)} s`;
-  return text;
 }
 
 export function stageHtml(result: SliceResponse | null) {
@@ -854,14 +857,6 @@ export function stageHtml(result: SliceResponse | null) {
 /** The feature each estimate row is colored as. */
 const ROW_KIND: Record<string, string> = { "Outer wall": "outer", "Inner wall": "inner", Infill: "sparse", "Top / bottom": "top", Ironing: "ironing", Supports: "support", Travel: "travel" };
 
-function clockTime(seconds: number) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.round(seconds % 60);
-  const mm = String(h ? m : m).padStart(h ? 2 : 1, "0");
-  return `${h ? `${h}:` : ""}${mm}:${String(s).padStart(2, "0")}`;
-}
-
 export function estimateHtml() {
   const est = state.result?.estimate;
   if (!est) return "";
@@ -870,21 +865,19 @@ export function estimateHtml() {
   const rows = groups.map((row) => {
     const kind = ROW_KIND[row.label];
     const color = kind ? featureColor(kind) : OTHER_COLOR;
-    return `<tr><td>${row.label}</td><td><div class="bar"><span style="width:${Math.min(100, (row.seconds / longest) * 100)}%;background:${color}"></span></div></td><td>${row.seconds.toFixed(0)} s</td><td>${row.grams.toFixed(2)} g</td></tr>`;
+    return `<div class="est-row"><span class="est-label">${row.label}</span><div class="bar"><span style="width:${Math.min(100, (row.seconds / longest) * 100)}%;background:${color}"></span></div><span class="est-time">${formatDuration(row.seconds)}</span><span class="est-mass">${formatMass(row.grams)}</span></div>`;
   }).join("");
-  const meters = (est.filamentMm / 1000).toFixed(2);
   const grams = filamentGrams(est.filamentMm, state.profile);
-  const cost = filamentCost(grams, state.profile).toFixed(2);
-  const hours = est.seconds >= 3600;
+  const tile = durationTile(est.seconds);
   return `
-    <div class="big" data-tip="Filament €${state.profile.filamentCostPerKg.toFixed(2)} / kg from the filament.">
-      <div><b>${clockTime(est.seconds)}</b><small>${hours ? "h:min:s" : "min:s"}</small></div>
-      <div><b id="estGrams">${grams.toFixed(2)} g</b><small>€<span id="estCost">${cost}</span> · ${meters} m</small></div>
+    <div class="big" data-tip="Filament ${formatMoney(state.profile.filamentCostPerKg)} / kg from the filament.">
+      <div><b>${tile.value}</b><small>${tile.unit}</small></div>
+      <div><b id="estGrams">${formatMass(grams)}</b><small><span id="estCost">${formatMoney(filamentCost(grams, state.profile))}</span> · ${formatMetres(est.filamentMm)}</small></div>
     </div>
     <h4 class="sub">Time by feature</h4>
-    <table class="est">${rows}</table>
+    <div class="est">${rows}</div>
     <div class="chips">${chips()}</div>
-    ${statGridHtml([["Arcs", String(est.arcMoves)], ["Retracts", String(est.retracts ?? 0)], ["Travel", `${(est.travelMm ?? 0).toFixed(0)} mm`], ["Scarfed loops", String(est.scarfedLoops ?? 0)]])}
+    ${statGridHtml([["Arcs", formatCount(est.arcMoves)], ["Retracts", formatCount(est.retracts ?? 0)], ["Travel", formatLength(est.travelMm ?? 0)], ["Scarfed loops", formatCount(est.scarfedLoops ?? 0)]])}
   `;
 }
 
@@ -902,11 +895,11 @@ export function paretoHtml() {
   const yOf = (g: number) => 150 - ((g - minG) / Math.max(0.01, maxG - minG)) * 120;
   const dots = pts.map((p, i) => {
     const r = 6 + (p.score / maxS) * 10;
-    return `<circle class="pareto-dot" data-pareto="${i}" cx="${xOf(p.seconds).toFixed(1)}" cy="${yOf(p.filamentG).toFixed(1)}" r="${r.toFixed(1)}" tabindex="0" role="button" aria-label="${p.label}, ${formatTime(p.seconds)}, ${p.filamentG.toFixed(2)} grams"><title>${p.label}: ${formatTime(p.seconds)}, ${p.filamentG.toFixed(2)} g, toughness ${p.score.toFixed(2)}</title></circle>`;
+    return `<circle class="pareto-dot" data-pareto="${i}" cx="${xOf(p.seconds).toFixed(1)}" cy="${yOf(p.filamentG).toFixed(1)}" r="${r.toFixed(1)}" tabindex="0" role="button" aria-label="${p.label}, ${formatDuration(p.seconds)}, ${formatMass(p.filamentG)}"><title>${p.label}: ${formatDuration(p.seconds)}, ${formatMass(p.filamentG)}, toughness ${p.score.toFixed(2)}</title></circle>`;
   }).join("");
   const tough = pts[pts.length - 1];
   const speed = pts[0];
-  const saveMin = (tough.seconds - speed.seconds) / 60;
+  const saveSeconds = tough.seconds - speed.seconds;
   const saveG = tough.filamentG - speed.filamentG;
   return `
     <svg class="pareto" viewBox="0 0 250 180" role="img" aria-label="Time versus filament">
@@ -914,15 +907,9 @@ export function paretoHtml() {
       <text x="150" y="174">time</text>
       ${dots}
     </svg>
-    <div class="meta">Speed saves <b>${saveMin.toFixed(1)} min</b> and <b>${saveG.toFixed(2)} g</b> versus toughness.</div>
+    <div class="meta">Speed saves <b>${formatDuration(saveSeconds)}</b> and <b>${formatMass(saveG)}</b> versus toughness.</div>
     <button class="btn" id="paretoBtn" type="button">Recompare</button>
   `;
-}
-
-export function formatTime(seconds: number) {
-  const m = Math.floor(seconds / 60);
-  const s = Math.round(seconds % 60);
-  return m > 0 ? `${m} min ${s} s` : `${s} s`;
 }
 
 export function chips() {
@@ -933,7 +920,7 @@ export function chips() {
     const dt = pct(est.seconds, row.seconds);
     const dg = pct(est.filamentG, row.filamentG);
     const bad = dt > 0 && dg > 0;
-    return `<span class="chip ${bad ? "bad" : ""}">vs ${row.label} ${signed(dt)} time · ${signed(dg)} g</span>`;
+    return `<span class="chip ${bad ? "bad" : ""}">vs ${row.label} <span>${signed(dt)} time</span> · <span>${signed(dg)} g</span></span>`;
   }).join("");
 }
 
@@ -943,8 +930,8 @@ export function pct(value: number, base: number) {
 }
 
 export function signed(n: number) {
-  const v = n.toFixed(0);
-  return n > 0 ? `+${v}%` : `${v}%`;
+  const v = Math.round(n);
+  return v > 0 ? `+${v}%` : `${v}%`;
 }
 
 function profileHeaderHtml() {
@@ -1352,4 +1339,4 @@ export async function probe() {
   paintBanner();
 }
 
-Object.assign(fx, { apiBase, apiToken, card, stale, settingsHash, blend, currentWeight, renderChrome, markEngineDown, markEngineUp, paintEngineLink, markBusy, busyText, bannerLine, toastTransient, takeTransient, paintBanner, paramLine, paramTable, layerReadout, triangleLine, triangleMeta, formatMs, stageHtml, estimateHtml, isStepName, needsEngine, paretoHtml, formatTime, chips, pct, signed, currentPreset, applyPreset, applyFilter, onBlend, onSettings, pickStrategy, touch, markStale, staleWarning, escapeHtml, probe, fieldRow, revealPrinterDetails, revealResults, setCalibrate });
+Object.assign(fx, { apiBase, apiToken, card, stale, settingsHash, blend, currentWeight, renderChrome, markEngineDown, markEngineUp, paintEngineLink, markBusy, busyText, bannerLine, toastTransient, takeTransient, paintBanner, paramLine, paramTable, layerReadout, triangleLine, triangleMeta, stageHtml, estimateHtml, isStepName, needsEngine, paretoHtml, chips, pct, signed, currentPreset, applyPreset, applyFilter, onBlend, onSettings, pickStrategy, touch, markStale, staleWarning, escapeHtml, probe, fieldRow, revealPrinterDetails, revealResults, setCalibrate });

@@ -1,3 +1,5 @@
+import { formatDuration, formatPercent } from "../format";
+
 export interface LegendRow {
   kind: string;
   label: string;
@@ -23,9 +25,10 @@ export function legendMarkup(rows: LegendRow[], scarf: boolean): string {
   const host = document.querySelector("#legend");
   const expanded = host?.querySelector(".legend-toggle")?.getAttribute("aria-expanded") !== "false";
   const body = rows.map((row) => {
-    const time = row.seconds == null ? "" : ` · ${row.seconds.toFixed(1)} s`;
-    const share = row.sharePct == null ? "" : ` · ${row.sharePct.toFixed(0)}%`;
-    return `<label><input type="checkbox" data-kind="${escapeAttr(row.kind)}" ${row.shown ? "checked" : ""}/><i class="swatch" style="background:${escapeAttr(row.color)}"></i>${escapeHtml(row.label)}${time}${share}</label>`;
+    const time = row.seconds == null ? "" : ` · ${formatDuration(row.seconds)}`;
+    const share = row.sharePct == null ? "" : ` · ${formatPercent(row.sharePct)}`;
+    const exact = row.seconds == null ? "" : ` data-seconds="${row.seconds.toFixed(1)}"`;
+    return `<label${exact}><input type="checkbox" data-kind="${escapeAttr(row.kind)}" ${row.shown ? "checked" : ""}/><i class="swatch" style="background:${escapeAttr(row.color)}"></i>${escapeHtml(row.label)}${time}${share}</label>`;
   }).join("");
   const scarfMark = scarf ? `<span><i class="swatch" style="background:#fff"></i>Scarf ramp</span>` : "";
   return `<button class="btn legend-toggle" type="button" aria-expanded="${expanded ? "true" : "false"}" aria-controls="legendRows">Features</button><div id="legendRows" class="legend-rows"${expanded ? "" : " hidden"}>${body}${scarfMark}</div>`;

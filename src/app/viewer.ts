@@ -4,6 +4,7 @@ import { createPrepareView } from "../prepare-view";
 import { createSliceView, type SliceView3d } from "../view3d";
 import { FEATURE_LABEL, FEATURE_COLOR, colorForPath } from "../colors";
 import { legendMarkup } from "../ui/legend";
+import { formatDuration } from "../format";
 import { syncLayerTip } from "../ui/layer-tip";
 import { type LayerGcode, indexLayerGcode, type PlayPoint, layerMoves, matchGcodeLine, layerClasses } from "../playback";
 import { replyOffset, shownBedOffset } from "../bed-offset";
@@ -62,7 +63,7 @@ export function paintSlider() {
   if (prevBtn) prevBtn.disabled = n === 0 || state.layer <= state.rangeLow;
   const layer = state.result?.layers[state.layer];
   document.querySelector("#readHigh")!.textContent = layer ? `Z ${layer.z.toFixed(2)}` : "";
-  document.querySelector("#readLow")!.textContent = layer ? `${(layer.seconds ?? 0).toFixed(1)} s` : "";
+  document.querySelector("#readLow")!.textContent = layer ? formatDuration(layer.seconds ?? 0) : "";
   const band = document.querySelector<HTMLElement>("#layerBand")!;
   const show = state.blendKind === "byLayer";
   band.hidden = !show;
