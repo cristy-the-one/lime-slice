@@ -103,6 +103,7 @@ test.describe("compact Prusa Link", () => {
     await quiet(page);
     await page.goto("/?layout=compact");
     await expect(page.locator("html")).toHaveClass(/layout-compact/);
+    await autoSliceOff(page);
     await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
     await expect(page.locator("#compactSheet")).toHaveAttribute("data-detent", "peek");
     const prepare = await share(page, "#prepare");
