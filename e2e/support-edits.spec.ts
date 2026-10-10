@@ -73,7 +73,8 @@ test("delete a tree, regrow its gap, undo, and clear", async ({ page }) => {
 
   await page.keyboard.press("e");
   const readout = page.locator("#supportReadout");
-  await expect(readout).toHaveText("Click a support. Shift-click takes the whole tree.");
+  await expect(page.locator('#toolRail [data-tool="supports"]')).toHaveAttribute("aria-pressed", "true");
+  await expect(readout).toBeEmpty();
   const box = (await page.locator("#view3d").boundingBox())!;
   let at: { x: number; y: number } | null = null;
   for (let row = 1; row < 24 && !at; row++) {
@@ -149,5 +150,6 @@ test("Smart supports off prints no support, and on lets trees be edited", async 
   await expect(page.locator("#banner")).not.toContainText("Supports are off");
   await expect(toggle).toHaveAttribute("aria-disabled", "false");
   await page.keyboard.press("e");
-  await expect(page.locator("#supportReadout")).toHaveText("Click a support. Shift-click takes the whole tree.");
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#supportReadout")).toBeEmpty();
 });
