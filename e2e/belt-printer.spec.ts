@@ -69,7 +69,7 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   expect(belt).not.toHaveProperty("floorSupports");
   expect(bodies[0].printer).not.toHaveProperty("belt");
   await expect(page.locator("#banner")).not.toContainText("Mock");
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   await expect(page.locator("#sendPrinter")).toBeHidden();
   await page.locator("#tabPreview").click();
   await expect(page.locator("#beltMockTag")).toHaveCount(0);
@@ -84,7 +84,7 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await page.locator("#supports").uncheck();
   await expect.poll(() => bodies.length).toBe(3);
   expect(bodies[2].belt).not.toHaveProperty("floorSupports");
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   await page.locator("#beltRaft").check();
   await expect(page.locator("#supports")).not.toBeChecked();
   await expect(page.locator("#beltRaftLayers")).toBeVisible();
@@ -102,7 +102,7 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(5);
   expect(bodies[4]).not.toHaveProperty("belt");
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
 });
 
 test("a belt raft and Smart supports replace each other, one undo step each", async ({ page }) => {

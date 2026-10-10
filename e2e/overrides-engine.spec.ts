@@ -71,7 +71,7 @@ test("a height range slices with its walls and speed cap", async ({ page }) => {
   await page.locator("#slice").click();
   await expect(page.locator("#slice")).toBeEnabled({ timeout: SLICE_MS });
   await expect(page.locator("#cancel")).toBeHidden();
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   expect(bodies.length).toBeGreaterThan(sent);
   expect(bodies.at(-1)!.heightRanges).toEqual([{ z: [2, 6], walls: 6, speed: 25 }]);
   // An auto slice started while typing may land too; read the last request's reply.

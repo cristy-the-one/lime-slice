@@ -64,7 +64,7 @@ test("a slice on Prepare paints the layer chart at its on-screen size", async ({
   await expect(page.locator(".stage-tools")).toBeHidden();
 
   await page.locator("#slice").click();
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   await expect(page.locator(".stage-tools")).toBeHidden();
   const hidden = await page.locator("#spark").evaluate((el: HTMLCanvasElement) => [el.width, el.height]);
   expect(hidden).not.toEqual([1, 1]);

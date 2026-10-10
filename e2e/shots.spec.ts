@@ -119,7 +119,7 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.getByRole("button", { name: "Compare speed, mixes, toughness" }).click();
   await expect(page.locator(".pareto-dot")).toHaveCount(5);
   await page.locator("#pareto").screenshot({ path: path.join(out, "p1-pareto.png") });
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   await page.locator(".top").screenshot({ path: path.join(out, "p1-export.png") });
 
   await page.getByRole("button", { name: /^By layer/ }).click();

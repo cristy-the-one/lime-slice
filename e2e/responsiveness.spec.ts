@@ -351,7 +351,7 @@ test("auto-slice picks up an edit made while a slice was running", async ({ page
   await expect.poll(() => slices.length, { timeout: 5000 }).toBe(2);
   expect((slices[1] as { arcFit: boolean }).arcFit).toBe(false);
   await expect(page.locator("#slice")).toHaveText("Show result");
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
 });
 
 test("the slice button names a cache hit, a real recompute, and a forced recompute", async ({ page }) => {
@@ -399,7 +399,7 @@ test("the slice button names a cache hit, a real recompute, and a forced recompu
   await page.locator("#lh").fill("0.2");
   await expect.poll(() => slices.length).toBe(5);
   await expect(slice).toBeEnabled({ timeout: 20_000 });
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   await expect(page.locator("#stage")).not.toHaveClass(/stale/);
   expect(slices.map((s) => [s.layerHeight, s.reslice])).toEqual([
     [0.2, false],

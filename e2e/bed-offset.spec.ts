@@ -31,7 +31,7 @@ test("an X/Y move slides the preview, re-emits by itself, and the reply offset r
   expect(calls[0].pose?.translation?.length).toBe(3);
   expect(calls[0].offset).toBeUndefined();
   expect(calls[0].objects).toBeUndefined();
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
 
   await commitX(page, "122");
   await expect.poll(() => placeText(page)).toContain("X 122.0");
@@ -43,7 +43,7 @@ test("an X/Y move slides the preview, re-emits by itself, and the reply offset r
 
   release();
   await expect(page.locator("#view3d")).toHaveAttribute("data-bed-offset", "40.000,-5.000");
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   const again = calls.at(-1)!;
   expect(again.previewBase).toBe("bed-1");
   expect(again.offset).toBeUndefined();
@@ -78,7 +78,7 @@ for (const { id, axis } of [{ id: "#placeX", axis: 0 }, { id: "#placeY", axis: 1
     await expect(page.locator(id)).not.toHaveValue("");
     await page.locator("#slice").click();
     await expect.poll(() => calls.length).toBe(1);
-    await expect(page.locator("#export")).toBeEnabled();
+    await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
 
     const before = Number(await page.locator(id).inputValue());
     await page.locator("#slice").click();
@@ -111,7 +111,7 @@ test("rotation and scale still wait for Slice when auto-slice is off", async ({ 
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#autoslice")).not.toBeChecked();
   await page.locator("#slice").click();
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
 
   await page.locator("#rotZ").click();
   await expect(page.locator("#export")).toHaveAttribute("data-tip", "Slice, then save G-code");
@@ -121,7 +121,7 @@ test("rotation and scale still wait for Slice when auto-slice is off", async ({ 
   await expect(page.locator("#export")).toHaveAttribute("data-slice", "first");
 
   await page.locator("#slice").click();
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   await page.locator("#partScale").fill("150");
   await expect(page.locator("#export")).toHaveAttribute("data-tip", "Slice, then save G-code");
   await page.waitForTimeout(600);
@@ -169,7 +169,7 @@ test("a Move drag sends one refresh, after the drag ends", async ({ page }) => {
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await page.locator("#slice").click();
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   await page.getByRole("button", { name: "Top", exact: true }).click();
   await page.locator("#toolRail [data-tool=move]").click();
   const box = (await page.locator("#prepare").boundingBox())!;
@@ -183,7 +183,7 @@ test("a Move drag sends one refresh, after the drag ends", async ({ page }) => {
   await expect(page.locator("#stage")).not.toHaveClass(/stale/);
   await page.mouse.move(x + 90, y + 36, { steps: 8 });
   await page.mouse.up();
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   await page.waitForTimeout(500);
   expect(calls).toHaveLength(2);
   expect(calls[1]!.previewBase).toBe("bed-1");
