@@ -829,6 +829,13 @@ export function paintSectionChrome() {
   readout.textContent = hud;
 }
 
+/** A bead is drawn at this share of its width, so the dark stage shows between neighbours. */
+const BEAD_GAP_SHARE = 0.88;
+/** Narrowest bead in CSS pixels, so a part zoomed far out still shows its lines. */
+const MIN_BEAD_PX = 1.5;
+/** Opacity of the part of a layer the playhead has not reached. */
+const AHEAD_ALPHA = 0.3;
+
 export function draw() {
   syncPreviewPending();
   const w = fx.canvas.width;
@@ -843,24 +850,28 @@ export function draw() {
     sync3d();
     return;
   }
-  const { map, scale } = previewMap(mesh);
+  const { map, scale, dpr } = previewMap(mesh);
   const played = movesNow()[state.move];
+  // The playhead dims what is still ahead of it. At rest on the layer's start nothing has been played, so the layer stays at full strength.
+  const dimsAhead = state.playing || state.move > 0;
   const section = activeSection();
   const center = previewCenter();
   const layerZ = layer.z;
   pathsOf(layer).forEach((path, pathIndex) => {
     if (state.hidden.has(path.kind)) return;
     if (path.kind === "travel" && !state.showTravel) return;
-    const cut = !played ? path.pts.length : pathIndex < played.path ? path.pts.length : pathIndex > played.path ? 1 : played.seg + 1;
+    const cut = !played || !dimsAhead ? path.pts.length : pathIndex < played.path ? path.pts.length : pathIndex > played.path ? 1 : played.seg + 1;
     strokePts(path, 0, cut, 1);
-    if (cut < path.pts.length) strokePts(path, Math.max(0, cut - 1), path.pts.length, 0.22);
+    if (cut < path.pts.length) strokePts(path, Math.max(0, cut - 1), path.pts.length, AHEAD_ALPHA);
   });
   fx.ctx.setLineDash([]);
   function strokePts(path: PreviewPath, from: number, to: number, alpha: number) {
     if (to - from < 1) return;
     fx.ctx.globalAlpha = alpha;
     fx.ctx.strokeStyle = colorForPath(path.kind, state.colorMode, path.toughness ?? 0, path.effectiveSpeed ?? path.speed ?? 0);
-    fx.ctx.lineWidth = path.kind === "travel" ? 1 : Math.max(1.2, scale * 0.1);
+    fx.ctx.lineWidth = path.kind === "travel" ? 1 : Math.max(MIN_BEAD_PX * dpr, (path.width || 0.45) * scale * BEAD_GAP_SHARE);
+    fx.ctx.lineCap = "round";
+    fx.ctx.lineJoin = "round";
     fx.ctx.setLineDash(path.kind === "travel" ? [4, 4] : []);
     const runs = section && center
       ? clipPolyline(path.pts, path.zs, layerZ, from, to, center, section)
