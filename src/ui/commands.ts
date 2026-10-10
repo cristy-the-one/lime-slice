@@ -42,7 +42,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "save-project", label: "Save project", group: "File", keys: ["Ctrl+S"], typing: true, keywords: "lime file" },
   { id: "open-mesh", label: "Open mesh", group: "File", target: "#file", keywords: "file stl 3mf step" },
   { id: "samples", label: "Samples", group: "File", keywords: "cube hull example" },
-  { id: "slice", label: "Slice", group: "Slice", keys: ["Ctrl+Enter"], typing: true, target: "#slice, #sliceDock", keywords: "plan show result re-slice" },
+  { id: "slice", label: "Slice", group: "Slice", keys: ["Ctrl+Enter"], typing: true, target: "#slice", keywords: "plan show result re-slice" },
   { id: "force-slice", label: "Force re-slice", group: "Slice", keys: ["Ctrl+Shift+Enter"], typing: true, target: "#force", keywords: "recompute cache" },
   { id: "cancel-slice", label: "Cancel slice", group: "Slice", keys: ["Esc"], when: "running", typing: true, target: "#cancel", keywords: "stop abort" },
   { id: "export", label: "Export G-code", group: "Slice", keys: ["Ctrl+E"], target: "#export", keywords: "save download" },
