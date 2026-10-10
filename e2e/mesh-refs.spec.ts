@@ -44,7 +44,7 @@ async function proxy(page: Page) {
 
 async function sliced(page: Page) {
   await expect(page.locator("#slice")).toBeEnabled({ timeout: SLICE_MS });
-  await expect(page.locator("#cancel")).toBeDisabled();
+  await expect(page.locator("#cancel")).toBeHidden();
 }
 
 async function load(page: Page, file: string) {
@@ -54,7 +54,7 @@ async function load(page: Page, file: string) {
   });
   await page.goto("/");
   await page.locator("#file").setInputFiles(file);
-  await expect(page.locator("#status")).toContainText("loaded", { timeout: 30_000 });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 30_000 });
 }
 
 async function moveX(page: Page, by: number) {
@@ -91,7 +91,7 @@ test("an engine that no longer holds the mesh gets the bytes once more", async (
 
   seen.lose = true;
   await moveX(page, 15);
-  await expect(page.locator("#banner")).not.toContainText("Settings changed");
+  await expect(page.locator("#stage")).not.toHaveClass(/stale/);
   await moveX(page, 15);
 
   expect(seen.bodies.map(sentAs)).toEqual(["data", `ref:${id}`, "data", `ref:${id}`]);

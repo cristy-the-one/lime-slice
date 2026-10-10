@@ -11,7 +11,7 @@ test("save a project, refuse a damaged file, and open it again", async ({ page }
   await page.goto("/");
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
 
   await page.keyboard.press("Control+k");
   await page.locator("#paletteInput").fill("project");
@@ -45,7 +45,7 @@ test("save a project, refuse a damaged file, and open it again", async ({ page }
     mimeType: "application/json",
     buffer: saved,
   });
-  await expect(page.locator("#status")).toContainText("calibration_cube");
+  await expect(page.locator("#objectList")).toContainText("calibration_cube");
   await expect(page.locator("#lh")).toHaveValue("0.2");
   await page.evaluate(() => document.querySelector("#toasts")?.replaceChildren());
   await page.screenshot({ path: path.join(out, "desktop-opened.png") });

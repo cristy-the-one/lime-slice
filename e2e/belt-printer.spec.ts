@@ -71,8 +71,7 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   expect(bodies[0].printer).not.toHaveProperty("belt");
   await expect(page.locator("#banner")).not.toContainText("Mock");
   await expect(page.locator("#export")).toBeEnabled();
-  await expect(page.locator("#sendPrinter")).toBeDisabled();
-  await expect(page.locator("#sendPrinter")).toHaveAttribute("data-tip", /Prusa Link/);
+  await expect(page.locator("#sendPrinter")).toBeHidden();
   await page.locator("#tabPreview").click();
   await expect(page.locator("#beltMockTag")).toHaveCount(0);
   await expect(page.locator("#readHigh")).toHaveText(`Z ${beltCube.layers.at(-1).z.toFixed(2)}`);
@@ -216,7 +215,7 @@ test("a belt printer's supports can be picked and pruned", async ({ page }) => {
 
   await page.keyboard.press("e");
   const readout = page.locator("#supportReadout");
-  await expect(readout).toHaveText("Click a support. Shift-click takes the whole tree.");
+  await expect(readout).toHaveText("");
   await page.locator('#supportEditbar [data-scope="tree"]').click();
   await expect(page.locator("#pane3d")).toHaveAttribute("data-gaps", "0");
   await expect(page.locator("#supportEdits")).not.toContainText("isn't available on a belt printer");

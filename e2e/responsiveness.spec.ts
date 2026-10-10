@@ -22,7 +22,7 @@ async function openCube(page: Page) {
   await page.goto("/");
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
 }
 
 test("a setting changed during a slice leaves the finished result stale", async ({ page }) => {
@@ -180,8 +180,8 @@ test("playback readout does not resize the print slider", async ({ page }) => {
   const hitX = playBefore.x + playBefore.width / 2;
   const hitY = playBefore.y + playBefore.height / 2;
   await page.mouse.click(hitX, hitY);
-  await expect(play).toHaveText("Playing…");
-  await expect(play).toBeDisabled();
+  await expect(play).toHaveText("Pause");
+  await expect(play).toBeEnabled();
   await expect(stop).toBeEnabled();
   const playing = await box();
   const playAfter = (await play.boundingBox())!;
@@ -194,10 +194,13 @@ test("playback readout does not resize the print slider", async ({ page }) => {
   expect(Math.abs(stopAfter.x - stopBefore.x)).toBeLessThan(1);
   expect(Math.abs(stopAfter.width - stopBefore.width)).toBeLessThan(1);
   await page.mouse.click(hitX, hitY);
-  await expect(play).toHaveText("Playing…");
+  await expect(play).toHaveText("Play");
+  await expect(stop).toBeDisabled();
+  await page.mouse.click(hitX, hitY);
+  await expect(play).toHaveText("Pause");
   await expect(stop).toBeEnabled();
   await page.waitForTimeout(240);
-  await expect(play).toHaveText("Playing…");
+  await expect(play).toHaveText("Pause");
   await expect(stop).toBeEnabled();
   const later = await box();
   expect(Math.abs(later.x - first.x)).toBeLessThan(1);
@@ -246,15 +249,11 @@ test("starting a slice keeps Cancel off the Slice hitbox and the action row stil
   const exportBtn = page.locator("#export");
   await expect(slice).toHaveText("Slice");
   await expect(slice).toBeEnabled();
-  await expect(cancel).toBeVisible();
-  await expect(cancel).toBeDisabled();
+  await expect(cancel).toBeHidden();
   const force = page.locator("#force");
-  await expect(force).toHaveText("Force re-slice");
-  await expect(force).toBeDisabled();
+  await expect(force).toBeHidden();
   const before = (await slice.boundingBox())!;
-  const cancelBefore = (await cancel.boundingBox())!;
   const exportBefore = (await exportBtn.boundingBox())!;
-  const forceBefore = (await force.boundingBox())!;
   const topBefore = (await page.locator(".top").boundingBox())!;
   const stageBefore = (await page.locator(".workspace").boundingBox())!;
   const x = before.x + before.width / 2;
@@ -262,22 +261,17 @@ test("starting a slice keeps Cancel off the Slice hitbox and the action row stil
   await page.mouse.click(x, y);
   await expect(slice).toHaveText("Slicing…");
   await expect(slice).toBeDisabled();
-  await expect(cancel).toBeEnabled();
+  await expect(cancel).toBeVisible();
   await expect(page.locator("[data-state=slicing]")).toBeVisible();
   const after = (await slice.boundingBox())!;
   const cancelAfter = (await cancel.boundingBox())!;
   const exportAfter = (await exportBtn.boundingBox())!;
-  const forceAfter = (await force.boundingBox())!;
   const topAfter = (await page.locator(".top").boundingBox())!;
   const stageAfter = (await page.locator(".workspace").boundingBox())!;
   expect(Math.abs(after.x - before.x)).toBeLessThan(1);
   expect(Math.abs(after.y - before.y)).toBeLessThan(1);
   expect(Math.abs(after.width - before.width)).toBeLessThan(1);
-  expect(Math.abs(cancelAfter.x - cancelBefore.x)).toBeLessThan(1);
-  expect(Math.abs(cancelAfter.y - cancelBefore.y)).toBeLessThan(1);
   expect(Math.abs(exportAfter.x - exportBefore.x)).toBeLessThan(1);
-  expect(Math.abs(forceAfter.x - forceBefore.x)).toBeLessThan(1);
-  expect(Math.abs(forceAfter.width - forceBefore.width)).toBeLessThan(1);
   expect(Math.abs(topAfter.y - topBefore.y)).toBeLessThan(1);
   expect(Math.abs(topAfter.height - topBefore.height)).toBeLessThan(1);
   expect(Math.abs(stageAfter.y - stageBefore.y)).toBeLessThan(1);
@@ -285,7 +279,7 @@ test("starting a slice keeps Cancel off the Slice hitbox and the action row stil
   expect(x).toBeLessThan(after.x + after.width);
   expect(x < cancelAfter.x || x >= cancelAfter.x + cancelAfter.width).toBe(true);
   await page.mouse.click(x, y);
-  await expect(page.locator("#banner")).not.toContainText("cancelled");
+  await expect(cancel).toBeVisible();
   await expect(page.locator("[data-state=slicing]")).toBeVisible();
   await expect(page.locator("#timing")).toHaveText(/^Slicing… \d+\.\d s$/);
   const timing = await page.locator("#timing").textContent();
@@ -294,7 +288,7 @@ test("starting a slice keeps Cancel off the Slice hitbox and the action row stil
   const ticked = (await slice.boundingBox())!;
   const cancelTicked = (await cancel.boundingBox())!;
   expect(Math.abs(ticked.x - before.x)).toBeLessThan(1);
-  expect(Math.abs(cancelTicked.x - cancelBefore.x)).toBeLessThan(1);
+  expect(Math.abs(cancelTicked.x - cancelAfter.x)).toBeLessThan(1);
   expect(Math.abs(((await page.locator(".workspace").boundingBox())!).y - stageBefore.y)).toBeLessThan(1);
 });
 
@@ -312,8 +306,9 @@ test("a running slice shows elapsed time and Cancel aborts the request", async (
   await page.waitForTimeout(600);
   expect(await page.locator("#timing").textContent()).not.toBe(first);
   await page.getByRole("button", { name: "Cancel" }).click();
-  await expect(page.locator("#toasts")).toContainText("cancelled");
-  await expect(page.locator("#timing")).toHaveText("No slice yet");
+  await expect(page.locator("#cancel")).toBeHidden();
+  await expect(page.locator("#toasts .toast")).toHaveCount(0);
+  await expect(page.locator("#timing")).toHaveText("");
   const railAfter = (await page.locator("#banner").boundingBox())!;
   const stageAfter = (await page.locator(".workspace").boundingBox())!;
   expect(Math.abs(railAfter.height - railBefore.height)).toBeLessThan(1);
@@ -366,18 +361,18 @@ test("the slice button names a cache hit, a real recompute, and a forced recompu
   const force = page.locator("#force");
   await expect(slice).toHaveText("Slice");
   await expect(slice).toHaveAttribute("data-tip", "Plan this slice.");
-  await expect(force).toBeDisabled();
+  await expect(force).toBeHidden();
   const sliceBox = (await slice.boundingBox())!;
   await slice.click();
   await expect.poll(() => slices.length).toBe(1);
   await expect(slice).toHaveText("Show result");
   await expect(slice).toHaveAttribute("data-slice-action", "cached");
   await expect(slice).toHaveAttribute("data-tip", "Show the saved slice for these settings. Nothing is recomputed.");
-  await expect(page.locator("#status")).toContainText("speed");
+  await expect(page.locator("#timing")).toContainText(" g");
   const shown = (await slice.boundingBox())!;
   expect(Math.abs(shown.width - sliceBox.width)).toBeLessThan(1);
   expect(Math.abs(shown.x - sliceBox.x)).toBeLessThan(1);
-  await expect(force).toBeEnabled();
+  await expect(force).toBeVisible();
   await expect(force).toHaveAttribute("data-tip", "Plan this slice again instead of showing the saved one.");
   await slice.click();
   await expect.poll(() => slices.length).toBe(2);
@@ -389,9 +384,10 @@ test("the slice button names a cache hit, a real recompute, and a forced recompu
   await expect(slice).toHaveText("Re-slice");
   await expect(slice).toHaveAttribute("data-slice-action", "changed");
   await expect(slice).toHaveAttribute("data-tip", "Settings changed. Plan this slice again.");
-  await expect(page.locator("#status")).toHaveText("This preview is stale. Re-slice before export.");
-  await expect(page.locator("#banner")).toContainText("Export stays off until you re-slice.");
-  await expect(force).toBeDisabled();
+  await expect(page.locator("#stage")).toHaveClass(/stale/);
+  await expect(page.locator("#export")).toHaveAttribute("data-tip", "Settings changed. Slice again to export.");
+  await expect(page.locator("#banner")).toBeEmpty();
+  await expect(force).toBeHidden();
   const resliceBox = (await slice.boundingBox())!;
   expect(Math.abs(resliceBox.width - sliceBox.width)).toBeLessThan(1);
   expect(Math.abs(resliceBox.x - sliceBox.x)).toBeLessThan(1);
@@ -404,7 +400,7 @@ test("the slice button names a cache hit, a real recompute, and a forced recompu
   await expect.poll(() => slices.length).toBe(5);
   await expect(slice).toBeEnabled({ timeout: 20_000 });
   await expect(page.locator("#export")).toBeEnabled();
-  await expect(page.locator("#banner")).not.toContainText("Settings changed");
+  await expect(page.locator("#stage")).not.toHaveClass(/stale/);
   expect(slices.map((s) => [s.layerHeight, s.reslice])).toEqual([
     [0.2, false],
     [0.2, false],

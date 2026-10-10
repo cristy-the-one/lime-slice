@@ -55,10 +55,11 @@ test("a printer answers, an unreachable host can be retried, and upload can star
   await page.route("**/api/slice", (route) => route.fulfill({ json: cube }));
 
   await page.goto("/");
-  await expect(page.locator("#sendPrinter")).toBeDisabled();
+  await expect(page.locator("#sendPrinter")).toBeHidden();
   await page.locator("#machineMore > summary").click();
   await page.locator("#machineHost").fill("http://127.0.0.1:9");
   await page.locator("#machineKey").fill("secret");
+  await expect(page.locator("#sendPrinter")).toBeVisible();
   await expect(page.locator("#sendPrinter")).toBeDisabled();
   await page.locator("#prusaTest").click();
   const toast = page.locator("#toasts").getByRole("alert").filter({ hasText: "Could not reach Prusa Link" });
@@ -69,7 +70,7 @@ test("a printer answers, an unreachable host can be retried, and upload can star
 
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#slice").click();
   await expect(page.locator("#export")).toBeEnabled({ timeout: 15_000 });
   await expect(page.locator("#sendPrinter")).toBeEnabled();
@@ -111,7 +112,7 @@ test.describe("compact Prusa Link", () => {
     const peeked = await share(page, "#prepare");
     expect(peeked, `peek viewport share ${peeked}`).toBeGreaterThanOrEqual(0.7);
     await page.locator("#compactTabs [data-tab=device]").click();
-    await expect(page.locator("#compactSend")).toBeVisible();
+    await expect(page.locator("#compactSend")).toBeHidden();
     await expect(page.locator("#compactShare")).toBeVisible();
     await page.locator("#compactTabs [data-tab=prepare]").click();
     await expect(page.locator("#compactSheet")).toHaveAttribute("data-detent", "peek");

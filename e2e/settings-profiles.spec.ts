@@ -31,7 +31,6 @@ test("a profile switch restores with undo", async ({ page }) => {
   await openMore(page);
   await page.locator("#profileName").fill("Simple");
   await page.locator("#profileSave").click();
-  await expect(page.locator("#toasts").getByRole("status").filter({ hasText: "Saved Simple." })).toBeVisible();
   await expect(page.locator("#profilePick option", { hasText: "Simple" })).toHaveCount(1);
 
   await page.locator("[data-level-choice=expert]").click();

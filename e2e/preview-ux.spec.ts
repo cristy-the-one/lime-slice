@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { serveSliceJob } from "./serve-job";
+import { placeText } from "./place";
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 
@@ -24,15 +25,15 @@ test("preview opens in perspective, blurs until a slice, and steps one layer", a
 
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await expect(page.locator("#gizmoNudge")).toBeVisible();
   const nudge = await page.locator("#gizmoNudge button").first().boundingBox();
   expect(nudge?.height ?? 99).toBeLessThanOrEqual(20);
   expect(nudge?.width ?? 99).toBeLessThanOrEqual(40);
 
-  const before = await page.locator("#placeReadout").innerText();
+  const before = await placeText(page);
   await page.getByRole("button", { name: "Nudge X +0.1 mm" }).click();
-  await expect(page.locator("#placeReadout")).not.toHaveText(before);
+  await expect.poll(() => placeText(page)).not.toBe(before);
 
   await page.locator("#slice").click();
   await page.getByRole("tab", { name: "Preview", exact: true }).click();
@@ -59,7 +60,7 @@ test("a slice on Prepare paints the layer chart at its on-screen size", async ({
   await page.getByRole("tab", { name: "Prepare", exact: true }).click();
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await expect(page.locator(".stage-tools")).toBeHidden();
 
   await page.locator("#slice").click();

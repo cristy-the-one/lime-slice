@@ -10,7 +10,7 @@ async function openCube(page: Page) {
   await page.goto("/");
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
 }
 
 async function share(page: Page, selector: string) {
@@ -130,11 +130,13 @@ test("search stays pinned, shortcuts focus it, and a query scrolls to the match"
     const s = scroller.getBoundingClientRect();
     const r = row.getBoundingClientRect();
     const m = match.getBoundingClientRect();
-    return { scrollTop: scroller.scrollTop, matchTop: m.top, rowBottom: r.bottom, scrollerBottom: s.bottom };
+    return { scrollTop: scroller.scrollTop, matchTop: m.top, rowBottom: r.bottom, scrollerBottom: s.bottom, atEnd: scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1 };
   });
   expect(placed.scrollTop).toBeLessThan(before);
   expect(placed.matchTop).toBeGreaterThanOrEqual(placed.rowBottom - 8);
-  expect(placed.matchTop).toBeLessThan(placed.rowBottom + 40);
+  // A short filtered list cannot scroll the match any higher than the end of the panel.
+  expect(placed.atEnd || placed.matchTop < placed.rowBottom + 40).toBe(true);
+  expect(placed.matchTop).toBeLessThan(placed.scrollerBottom);
 
   await find.fill("seam");
   await find.evaluate((el: HTMLInputElement) => {

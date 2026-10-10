@@ -24,7 +24,7 @@ async function captureSlices(page: Page) {
 
 async function loadCube(page: Page) {
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
 }
 
 test("fuzzy skin is omitted until it is on, then sent, and undone", async ({ page }) => {

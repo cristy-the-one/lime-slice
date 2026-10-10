@@ -31,7 +31,7 @@ test("a slicer 3MF opens as a mesh and says its settings were not imported", asy
   await quiet(page);
   await page.goto("/");
   await page.locator("#file").setInputFiles("samples/calibration_cube_20mm.3mf");
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await expect(page.locator("#toasts").getByText("were not imported")).toHaveCount(0);
 
   await page.locator("#file").setInputFiles({
@@ -39,7 +39,7 @@ test("a slicer 3MF opens as a mesh and says its settings were not imported", asy
     mimeType: "model/3mf",
     buffer: zipNamed("Metadata/Slic3r_PE_model.config"),
   });
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await expect(page.locator("#toasts").getByRole("status").filter({ hasText: "Opened the mesh only. PrusaSlicer settings in this 3MF were not imported." })).toBeVisible();
 
   await page.locator("#file").setInputFiles({

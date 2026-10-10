@@ -33,7 +33,7 @@ test("ranges and volumes are stored, drawn, and sent with the slice", async ({ p
   });
   await page.goto("/");
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#heightAdd").click();
   await expect(page.locator("[data-range]")).toHaveCount(1);
   await expect(page.locator("[data-range] input[data-field=zFrom]")).toHaveValue("0");

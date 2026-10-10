@@ -123,7 +123,7 @@ test("legend toggles and the estimate table keep thin wall and gap fill apart", 
   await page.goto("/");
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.getByRole("button", { name: "Split", exact: true }).click();
   await page.locator("#slice").click();

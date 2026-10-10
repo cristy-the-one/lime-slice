@@ -15,7 +15,7 @@ const SLICE_MS = 120_000;
 
 async function sliced(page: Page) {
   await expect(page.locator("#slice")).toBeEnabled({ timeout: SLICE_MS });
-  await expect(page.locator("#cancel")).toBeDisabled();
+  await expect(page.locator("#cancel")).toBeHidden();
 }
 
 type Reply = { gcode?: string; gcodeToken?: string; fromCache?: boolean; coreMs: number; previewPatch?: { changed: unknown[] } };
@@ -56,7 +56,7 @@ async function loadDragon(page: Page) {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
   await page.locator("#file").setInputFiles("samples/dragon_2_5.stl");
-  await expect(page.locator("#status")).toContainText("loaded", { timeout: 30_000 });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 30_000 });
 }
 
 test("an X/Y move re-emits the G-code at the new place without a click", async ({ page }) => {
@@ -79,7 +79,7 @@ test("an X/Y move re-emits the G-code at the new place without a click", async (
   await commitX(page, String(fromX + 25));
   await expect(page.locator("#export")).toBeEnabled({ timeout: SLICE_MS });
   console.log(`move: commit to export enabled ${Date.now() - committed} ms`);
-  await expect(page.locator("#banner")).not.toContainText("Settings changed");
+  await expect(page.locator("#stage")).not.toHaveClass(/stale/);
   expect(replies).toHaveLength(planned + 1);
   const moved = replies[planned]!;
   expect(moved.fromCache || moved.previewPatch?.changed.length === 0, "the move re-emitted or came from the store").toBe(true);
@@ -94,7 +94,8 @@ test("settings switched back to a sliced recipe show it without a click", async 
   await page.locator("#slice").click();
   await sliced(page);
   await page.locator("#lh").fill("0.28");
-  await expect(page.locator("#banner")).toContainText("Export stays off until you re-slice.");
+  await expect(page.locator("#stage")).toHaveClass(/stale/);
+  await expect(page.locator("#export")).toHaveAttribute("data-tip", "Settings changed. Slice again to export.");
   await page.locator("#slice").click();
   await sliced(page);
   await expect(page.locator("#export")).toBeEnabled();
@@ -102,7 +103,7 @@ test("settings switched back to a sliced recipe show it without a click", async 
 
   await page.locator("#lh").fill("0.2");
   await expect(page.locator("#export")).toBeEnabled({ timeout: SLICE_MS });
-  await expect(page.locator("#banner")).not.toContainText("Settings changed");
+  await expect(page.locator("#stage")).not.toHaveClass(/stale/);
   expect(replies).toHaveLength(3);
   expect(replies[2]!.fromCache).toBe(true);
 });
@@ -131,7 +132,7 @@ test("an X/Y move after a disk-cache load re-emits without a click", async ({ pa
   await commitX(page, String(fromX + dx));
   await expect(page.locator("#export")).toBeEnabled({ timeout: SLICE_MS });
   console.log(`move after a disk-cache load: commit to export enabled ${Date.now() - committed} ms`);
-  await expect(page.locator("#banner")).not.toContainText("Settings changed");
+  await expect(page.locator("#stage")).not.toHaveClass(/stale/);
   expect(replies).toHaveLength(4);
   const moved = replies[3]!;
   expect(moved.fromCache).toBe(false);
@@ -157,7 +158,7 @@ test("a moved part keeps its split plane and G-code line on the bed", async ({ p
   await page.goto("/");
   await page.getByText("Samples", { exact: true }).click();
   await page.getByRole("button", { name: "Bridge" }).click();
-  await expect(page.locator("#status")).toContainText("loaded", { timeout: 30_000 });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 30_000 });
   await page.getByRole("button", { name: /^By region/ }).click();
   await page.locator("#slice").click();
   await sliced(page);

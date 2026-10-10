@@ -51,7 +51,7 @@ test("ironing on slices the cube's top layer ironed, with no toast", async ({ pa
   const { bodies, replies } = await proxy(page);
   await page.goto("/");
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
-  await expect(page.locator("#status")).toContainText("loaded");
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
 
   await page.locator("#ironing").check();
   await expect(page.locator("#ironflow")).toHaveValue("10");
