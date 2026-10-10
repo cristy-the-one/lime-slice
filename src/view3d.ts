@@ -1,11 +1,11 @@
 import * as THREE from "three";
 import { syncBedGrid } from "./bed-grid";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { featureColor, SPEED_RAMP, SPEED_RANGE_MM_S, WEIGHT_RAMP, type ColorMode } from "./colors";
+import { featureColor, SPEED_RAMP, SPEED_RANGE_MM_S, WEIGHT_RAMP, type ColorMode, type Ramp } from "./colors";
 import { buildCutPlane, disposeTree, previewFrame, splitDragAt } from "./cut-plane";
 import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep } from "./gizmo-math";
 import { clampSplit, roundSplit, type AxisBounds } from "./split-at";
-import { fillHiddenKindMask, INNER_HALF_SCALE, KIND_SHIFT, MARGIN_SHADE, MAX_KINDS, meshCenter, scenePoint, STYLE_WORDS, WEIGHT_STEPS, type PointRun, type PreviewChunk, type PreviewGeometry } from "./preview-geom";
+import { fillHiddenKindMask, INNER_HALF_SCALE, KIND_SHIFT, MARGIN_SHADE, MAX_KINDS, meshCenter, ODD_LAYER_BIT, scenePoint, STYLE_WORDS, WEIGHT_STEPS, type PointRun, type PreviewChunk, type PreviewGeometry } from "./preview-geom";
 import { aimSection, anchor, clampOffset, normalize, sectionReach, threeClip, type SectionSpec, type Vec3 } from "./section-plane";
 import { beltStripLength, tiltPose, type BeltSettings } from "./belt";
 import { hexToThree, themeColors, type ThemeColors } from "./theme";
@@ -976,7 +976,27 @@ function showLayers(draw: PointDraw, run: PointRun, lo: number, hi: number) {
 /** The legend's sRGB hex as the linear triple the shader works in, so both show the same color. */
 const linearRgb = (hex: string) => new THREE.Color(hex).toArray() as [number, number, number];
 const rgb = (hex: string) => `vec3(${linearRgb(hex).map((v) => v.toFixed(4)).join(", ")})`;
+/** GLSL for `ramp` at `t` (an expression from 0 to 1), the same stops `rampColor` walks. */
+const rampGlsl = (ramp: Ramp, t: string) =>
+  `mix(mix(${rgb(ramp[0])}, ${rgb(ramp[1])}, clamp((${t}) * 2.0, 0.0, 1.0)), ${rgb(ramp[2])}, clamp((${t}) * 2.0 - 1.0, 0.0, 1.0))`;
 const [SPEED_LO, SPEED_HI] = SPEED_RANGE_MM_S;
+
+/**
+ * Light on the beads, fixed to the camera so orbiting does not relight them: a key from the upper left,
+ * a weak fill from the right, some ambient. A crown facing the key reads about 1, a flank in shadow
+ * about half of that.
+ */
+const AMBIENT = 0.3;
+const KEY = 0.88;
+const FILL = 0.15;
+const KEY_DIR = "normalize(vec3(-0.45, 0.62, 0.64))";
+const FILL_DIR = "normalize(vec3(0.7, 0.2, 0.5))";
+/** The flank's lower edge leans down (its normal's up part is 1 - this), so the seam between layers shades dark. */
+const FLANK_SAG = 2;
+/** Crown normal tilt per unit of bead half width. */
+const CROWN_TILT = 0.9;
+/** Share odd layers lose, so neighbouring layers show a line between them. */
+const LAYER_ALTERNATION = 0.12;
 
 /**
  * Expands one segment per instance: from `segA` to `segB`, sideways by the
@@ -1014,11 +1034,18 @@ void main() {
   vec4 worldPos = modelMatrix * vec4(point, 1.0);
   vSectionDist = dot(worldPos.xyz, sectionPlane.xyz) + sectionPlane.w;
   float weight = (segStyle.x - slot * ${KIND_SHIFT.toFixed(1)}) / ${WEIGHT_STEPS.toFixed(1)};
-  float speed = segStyle.y * 0.1;
+  float odd = step(${ODD_LAYER_BIT.toFixed(1)}, segStyle.y);
+  float speed = (segStyle.y - odd * ${ODD_LAYER_BIT.toFixed(1)}) * 0.1;
   vec3 color = palette[kind];
-  if (mode == 1) color = mix(${rgb(WEIGHT_RAMP[0])}, ${rgb(WEIGHT_RAMP[1])}, weight);
-  if (mode == 2) color = mix(${rgb(SPEED_RAMP[0])}, ${rgb(SPEED_RAMP[1])}, clamp((speed - ${SPEED_LO.toFixed(1)}) / ${(SPEED_HI - SPEED_LO).toFixed(1)}, 0.0, 1.0));
-  vColor = color * shade;
+  if (mode == 1) color = ${rampGlsl(WEIGHT_RAMP, "weight")};
+  if (mode == 2) color = ${rampGlsl(SPEED_RAMP, `clamp((speed - ${SPEED_LO.toFixed(1)}) / ${(SPEED_HI - SPEED_LO).toFixed(1)}, 0.0, 1.0)`)};
+  // A bead is a rounded roll: the crown (corner z 0) tilts outward toward its edge, the flank (z 1) faces sideways.
+  vec3 outward = vec3(side.x, 0.0, side.y) * sign(corner.y);
+  float tilt = mix(abs(corner.y) * ${CROWN_TILT.toFixed(2)}, 1.0, corner.z);
+  vec3 normal = normalize(vec3(0.0, 1.0 - corner.z * ${FLANK_SAG.toFixed(2)}, 0.0) + outward * tilt);
+  vec3 view = normalize(normalMatrix * normal);
+  float lit = ${AMBIENT.toFixed(2)} + ${KEY.toFixed(2)} * max(dot(view, ${KEY_DIR}), 0.0) + ${FILL.toFixed(2)} * max(dot(view, ${FILL_DIR}), 0.0);
+  vColor = color * shade * lit * (1.0 - ${LAYER_ALTERNATION.toFixed(2)} * odd);
   gl_Position = projectionMatrix * mvPosition;
 }`;
 

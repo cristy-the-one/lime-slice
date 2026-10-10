@@ -1,23 +1,28 @@
 export type ColorMode = "feature" | "weight" | "speed";
 
+/**
+ * Mid-tone hues on the dark stage. `colors.test.ts` holds the minimum CIEDE2000 distance
+ * between every pair of features that touch in a print, so a new color has to keep them apart.
+ */
 export const FEATURE_COLOR: Record<string, string> = {
-  outer: "#E69F00",
-  inner: "#0072B2",
-  wall: "#56B4E9",
-  sparse: "#009E73",
-  infill: "#009E73",
-  solid: "#CC79A7",
-  top: "#F0E442",
-  // Ironing runs over the top skin, so it is a cool teal that reads against the top's yellow.
-  ironing: "#5EEAD4",
-  bridge: "#D55E00",
-  // A bead that reaches the outline stays coral. An enclosed gap is fuchsia so
-  // the legend swatch and the 3D preview (same palette) can tell them apart.
-  "thin-wall": "#E85D4C",
-  "gap-fill": "#D946EF",
-  skirt: "#D7D2C6",
-  support: "#7AA2F7",
-  "support-interface": "#C6A0F6",
+  outer: "#E0690E",
+  inner: "#2A5FD6",
+  wall: "#4FA8E8",
+  sparse: "#2FA36B",
+  infill: "#2FA36B",
+  solid: "#E06FB0",
+  top: "#DCCB12",
+  // Ironing runs over the top skin, so it is a cool cyan that reads against the top's yellow.
+  ironing: "#6CD0E8",
+  bridge: "#C41E3A",
+  // A bead that reaches the outline is teal. An enclosed gap is near white, the one feature
+  // that stays pale, so a sliver of it still shows between walls.
+  "thin-wall": "#19B5A5",
+  "gap-fill": "#E6E8EE",
+  skirt: "#9AA0AA",
+  // Support is a quiet slate that recedes behind the part. Its interface sheet is aqua.
+  support: "#7D8DB8",
+  "support-interface": "#62DCC6",
   travel: "#4D5668",
 };
 
@@ -39,12 +44,14 @@ export const FEATURE_LABEL: Record<string, string> = {
   travel: "Travel",
 };
 
-export const OTHER_COLOR = "#C9C3B6";
+export const OTHER_COLOR = "#9AA0AA";
 
-/** Blend weight 0 to 1 maps linearly between these. */
-export const WEIGHT_RAMP: [string, string] = ["#E69F00", "#009E73"];
-/** Effective speed across `SPEED_RANGE_MM_S` maps linearly between these. */
-export const SPEED_RAMP: [string, string] = ["#0072B2", "#F0E442"];
+/** Stops spread evenly over 0 to 1. A middle stop keeps the ramp from passing through grey. */
+export type Ramp = [string, string, string];
+/** Blend weight 0 to 1 maps along these, orange to pink to indigo. */
+export const WEIGHT_RAMP: Ramp = ["#F0922B", "#D1478C", "#5A4BD8"];
+/** Effective speed across `SPEED_RANGE_MM_S` maps along these, slow blue to fast yellow. */
+export const SPEED_RAMP: Ramp = ["#3A4FD8", "#22A85A", "#F0D22A"];
 export const SPEED_RANGE_MM_S: [number, number] = [20, 180];
 
 export function featureColor(kind: string): string {
@@ -63,9 +70,13 @@ export function colorForPath(
   effectiveSpeed = 0,
 ): string {
   if (kind === "travel") return FEATURE_COLOR.travel;
-  if (mode === "weight") return lerpHex(WEIGHT_RAMP[0], WEIGHT_RAMP[1], clamp01(toughness));
-  if (mode === "speed") return lerpHex(SPEED_RAMP[0], SPEED_RAMP[1], speedT(effectiveSpeed));
+  if (mode === "weight") return rampColor(WEIGHT_RAMP, clamp01(toughness));
+  if (mode === "speed") return rampColor(SPEED_RAMP, speedT(effectiveSpeed));
   return featureColor(kind);
+}
+
+export function rampColor(ramp: Ramp, t: number): string {
+  return t < 0.5 ? lerpHex(ramp[0], ramp[1], t * 2) : lerpHex(ramp[1], ramp[2], t * 2 - 1);
 }
 
 export function lerpHex(a: string, b: string, t: number): string {

@@ -47,12 +47,12 @@
   --stage-chip-on: rgba(255, 255, 255, 0.2);
   --bed: #141820;
   --bed-minor: #222733;
-  --mesh: #c6f26d;
+  --mesh: #96be28;
   --axis-x: #e85d4c;
   --axis-y: #8fce6a;
   --axis-z: #6aa7ff;
-  /* Support paint on the lime mesh, in both themes: a deep green and a red that read on it. */
-  --paint-enforce: #0f8a4c;
+  /* Support paint on the lime mesh, in both themes: a blue and a red that read on it, lit or in shadow. */
+  --paint-enforce: #1e6fd9;
   --paint-block: #e5484d;
   --paint-seam: #f5a524;
   --sheet: #f4efe4;

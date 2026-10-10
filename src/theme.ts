@@ -50,7 +50,7 @@ export function themeColors(): ThemeColors {
     line: pick("--line", "#2a303a"),
     bed: pick("--bed", "#141820"),
     bedMinor: pick("--bed-minor", "#222733"),
-    mesh: pick("--mesh", "#c6f26d"),
+    mesh: pick("--mesh", "#96be28"),
     danger: pick("--danger", "#f0615a"),
     slow: pick("--slow", "#f5a524"),
     fast: pick("--fast", "#d55e00"),
@@ -60,7 +60,7 @@ export function themeColors(): ThemeColors {
     axisX: pick("--axis-x", "#e85d4c"),
     axisY: pick("--axis-y", "#8fce6a"),
     axisZ: pick("--axis-z", "#6aa7ff"),
-    paintEnforce: pick("--paint-enforce", "#0f8a4c"),
+    paintEnforce: pick("--paint-enforce", "#1e6fd9"),
     paintBlock: pick("--paint-block", "#e5484d"),
     paintSeam: pick("--paint-seam", "#f5a524"),
   };
