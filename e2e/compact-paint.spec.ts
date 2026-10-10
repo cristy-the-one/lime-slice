@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { canvasShare } from "../src/ui/compact/viewport-share";
+import { autoSliceOff } from "./auto-slice";
 
 const out = path.resolve("artifacts/compact");
 fs.mkdirSync(out, { recursive: true });
@@ -35,6 +36,7 @@ test.describe("compact support paint", () => {
       return route.fulfill({ status: 500, json: { error: "not under test" } });
     });
     await page.goto("/?layout=compact");
+    await autoSliceOff(page);
     await expect(page.locator("html")).toHaveClass(/layout-compact/);
     await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="lime_hull.stl"]')?.click());
     await expect(page.locator("#compactFile")).toContainText("lime_hull");

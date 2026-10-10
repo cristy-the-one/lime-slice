@@ -23,21 +23,23 @@ async function mockEngine(page: Page, replies: Reply[]) {
   return slices;
 }
 
-async function openSliced(page: Page, slices: unknown[]) {
+/** Auto-slice on slices the loaded mesh by itself; off, the first slice waits for the button. */
+async function openSliced(page: Page, slices: unknown[], auto = true, sample = "20 mm cube") {
   await page.goto("/");
+  if (!auto) await setAutoSlice(page, false);
   await page.locator("#fileMenu > summary").click();
   await page.locator("#samples > summary").click();
-  await page.getByRole("button", { name: "20 mm cube" }).click();
+  await page.getByRole("button", { name: sample }).click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
-  await page.locator("#slice").click();
+  if (!auto) await page.locator("#slice").click();
   await expect.poll(() => slices.length).toBe(1);
   await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   await page.locator("#tabPreview").click();
 }
 
-async function autoSliceOff(page: Page) {
+async function setAutoSlice(page: Page, on: boolean) {
   await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
-  await page.locator("#autoslice").uncheck();
+  await page.locator("#autoslice").setChecked(on);
   await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
 }
 
@@ -62,22 +64,22 @@ test("a pose change dims the preview and the next slice starts by itself", async
   await expect(page.locator("#stage")).not.toHaveClass(/stale/);
 });
 
-test("lay flat after a slice marks the preview out of date", async ({ page }) => {
+test("lay flat after a slice marks the preview out of date, then re-slices", async ({ page }) => {
   const slices = await mockEngine(page, [{}, { delayMs: 600 }]);
-  await openSliced(page, slices);
-  await autoSliceOff(page);
+  await openSliced(page, slices, true, "Slope");
   await page.locator("#tabPrepare").click();
-  await page.locator("#rotX").click();
   await page.locator("#layflat").click();
   await page.locator("#tabPreview").click();
   await expect(page.locator("#stage")).toHaveClass(/stale/);
   await expect(chip(page)).toContainText("Out of date");
+  await expect.poll(() => slices.length, { timeout: 3000 }).toBe(2);
+  await expect(chip(page)).toBeHidden({ timeout: 5000 });
+  await expect(page.locator("#stage")).not.toHaveClass(/stale/);
 });
 
 test("with auto-slice off the chip offers Re-slice and the click slices", async ({ page }) => {
   const slices = await mockEngine(page, [{}, {}]);
-  await openSliced(page, slices);
-  await autoSliceOff(page);
+  await openSliced(page, slices, false);
   await page.locator("#tabPrepare").click();
   await page.locator("#rotZ").click();
   await page.locator("#tabPreview").click();
@@ -96,8 +98,7 @@ test("with auto-slice off the chip offers Re-slice and the click slices", async 
 
 test("the Prepare tab never shows the chip", async ({ page }) => {
   const slices = await mockEngine(page, [{}]);
-  await openSliced(page, slices);
-  await autoSliceOff(page);
+  await openSliced(page, slices, false);
   await page.locator("#tabPrepare").click();
   await page.locator("#rotZ").click();
   await expect(page.locator("#stage")).toHaveClass(/stale/);

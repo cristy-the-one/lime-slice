@@ -2,6 +2,7 @@ import { expect, test, type Page, type Route } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { canvasShare } from "../src/ui/compact/viewport-share";
+import { autoSliceOff } from "./auto-slice";
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 
@@ -84,6 +85,7 @@ async function mockJobs(page: Page, mode: JobMode) {
 
 async function openCube(page: Page) {
   await page.goto("/");
+  await autoSliceOff(page);
   await page.locator("#fileMenu > summary").click();
   await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { autoSliceOff } from "./auto-slice";
 
 /**
  * A height range added in the UI reaches a real engine and changes the slice.
@@ -58,6 +59,7 @@ test("a height range slices with its walls and speed cap", async ({ page }) => {
   const { bodies, replies } = await proxy(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
+  await autoSliceOff(page);
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
   await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 30_000 });
   await page.locator("#heightAdd").click();

@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { canvasShare } from "../src/ui/compact/viewport-share.ts";
+import { autoSliceOff } from "./auto-slice";
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 
@@ -31,6 +32,7 @@ test("fuzzy skin is omitted until it is on, then sent, and undone", async ({ pag
   await quiet(page);
   const bodies = await captureSlices(page);
   await page.goto("/");
+  await autoSliceOff(page);
   await loadCube(page);
 
   await expect(page.locator("#fuzzy")).not.toBeChecked();
@@ -74,6 +76,7 @@ test.describe("compact fuzzy skin", () => {
   test("the prepare canvas stays at least 70% with fuzzy skin in the sheet", async ({ page }) => {
     await quiet(page);
     await page.goto("/?layout=compact");
+    await autoSliceOff(page);
     await expect(page.locator("html")).toHaveClass(/layout-compact/);
     await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
     await expect(page.locator("#compactSheet")).toHaveAttribute("data-detent", "peek");

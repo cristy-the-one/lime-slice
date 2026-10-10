@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
+import { autoSliceOff } from "./auto-slice";
 
 const out = path.resolve("artifacts/project");
 fs.mkdirSync(out, { recursive: true });
@@ -9,6 +10,7 @@ test("save a project, refuse a damaged file, and open it again", async ({ page }
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
+  await autoSliceOff(page);
   await page.locator("#fileMenu > summary").click();
   await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();

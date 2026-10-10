@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { canvasShare } from "../src/ui/compact/viewport-share.ts";
+import { autoSliceOff } from "./auto-slice";
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 
@@ -56,6 +57,7 @@ test("a printer answers, an unreachable host can be retried, and upload can star
   await page.route("**/api/slice", (route) => route.fulfill({ json: cube }));
 
   await page.goto("/");
+  await autoSliceOff(page);
   await expect(page.locator("#sendPrinter")).toBeHidden();
   await page.locator("#machineMore > summary").click();
   await page.locator("#machineHost").fill("http://127.0.0.1:9");

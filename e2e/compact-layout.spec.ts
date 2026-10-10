@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { canvasShare } from "../src/ui/compact/viewport-share";
+import { autoSliceOff } from "./auto-slice";
 
 const out = path.resolve("artifacts/compact");
 fs.mkdirSync(out, { recursive: true });
@@ -32,6 +33,7 @@ async function boot(page: Page, layout: string | null) {
   });
   const query = layout ? `/?layout=${layout}` : "/";
   await page.goto(query);
+  await autoSliceOff(page);
   await expect(page.locator(".app")).toBeVisible();
 }
 

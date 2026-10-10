@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { canvasShare } from "../src/ui/compact/viewport-share.ts";
+import { autoSliceOff } from "./auto-slice";
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 
@@ -37,6 +38,7 @@ test("the seam position is left out at Blend, sent otherwise, and kept in a pres
   await quiet(page);
   const bodies = await captureSlices(page);
   await page.goto("/");
+  await autoSliceOff(page);
   await loadCube(page);
 
   const seam = page.locator("#seam");
@@ -101,6 +103,7 @@ test("ironing is sent only while on, without a toast, and undone", async ({ page
   await quiet(page);
   const bodies = await captureSlices(page);
   await page.goto("/");
+  await autoSliceOff(page);
   await loadCube(page);
 
   await expect(page.locator("#ironing")).not.toBeChecked();
@@ -188,6 +191,7 @@ test.describe("compact seam position", () => {
   test("the prepare canvas keeps at least 70% at the peek", async ({ page }) => {
     await quiet(page);
     await page.goto("/?layout=compact");
+    await autoSliceOff(page);
     await expect(page.locator("html")).toHaveClass(/layout-compact/);
     await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
     await expect(page.locator("#compactSheet")).toHaveAttribute("data-detent", "peek");

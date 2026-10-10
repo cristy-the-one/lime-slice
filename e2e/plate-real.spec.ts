@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { autoSliceOff } from "./auto-slice";
 
 /**
  * A two-object plate against a real engine, which slices each object in its own
@@ -70,6 +71,7 @@ test("moving one plate object re-emits only its G-code, without a click", async 
   const replies = await proxy(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
+  await autoSliceOff(page);
   await page.locator("#file").setInputFiles("samples/dragon_2_5.stl");
   await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 30_000 });
   await page.locator("#plateAdd").click();

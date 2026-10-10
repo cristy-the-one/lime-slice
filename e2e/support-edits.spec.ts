@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
+import { autoSliceOff } from "./auto-slice";
 
 /**
  * Edit tree supports against a real engine:
@@ -54,6 +55,7 @@ test("delete a tree, regrow its gap, undo, and clear", async ({ page }) => {
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
+  await autoSliceOff(page);
   await page.locator("#fileMenu > summary").click();
   await page.locator("#samples > summary").click();
   await page.locator('[data-sample="overhang_ledge.stl"]').click();
@@ -130,6 +132,7 @@ test("Smart supports off prints no support, and on lets trees be edited", async 
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
+  await autoSliceOff(page);
   await page.locator("#fileMenu > summary").click();
   await page.locator("#samples > summary").click();
   await page.locator('[data-sample="overhang_ledge.stl"]').click();

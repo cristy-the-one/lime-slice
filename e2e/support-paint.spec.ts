@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
+import { autoSliceOff } from "./auto-slice";
 
 /**
  * Paint support blockers on the prepare mesh against a real engine, which serves stored
@@ -45,6 +46,7 @@ test("block paint on the ledge drops its supports, and undo brings them back", a
   const replies = await proxy(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
+  await autoSliceOff(page);
   await page.locator("#fileMenu > summary").click();
   await page.locator("#samples > summary").click();
   await page.locator('[data-sample="overhang_ledge.stl"]').click();

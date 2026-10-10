@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { serveSliceJob } from "./serve-job";
+import { autoSliceOff } from "./auto-slice";
 import {
   aimSection,
   clipDistance,
@@ -255,6 +256,7 @@ test("section plane clips 3D beads, travels, and the solid ghost", async ({ page
   await serveSliceJob(page, cube);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
+  await autoSliceOff(page);
   await page.locator("#fileMenu > summary").click();
   await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();

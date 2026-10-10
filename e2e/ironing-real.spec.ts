@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { autoSliceOff } from "./auto-slice";
 
 /**
  * Turn ironing on against a real engine and check the G-code irons the
@@ -50,6 +51,7 @@ function ironedLayers(gcode: string): number[] {
 test("ironing on slices the cube's top layer ironed, with no toast", async ({ page }) => {
   const { bodies, replies } = await proxy(page);
   await page.goto("/");
+  await autoSliceOff(page);
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
 

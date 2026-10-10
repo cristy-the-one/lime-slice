@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
+import { autoSliceOff } from "./auto-slice";
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 const beltLedge = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/ledge-belt-skeleton.json"), "utf8"));
@@ -28,6 +29,7 @@ test("Export slices first when the slice is missing or stale, then saves; Ctrl+E
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
+  await autoSliceOff(page);
   await expect(page.locator("#export")).toBeDisabled();
   await loadCube(page);
   await expect(page.locator("#export")).toBeEnabled();
@@ -68,6 +70,7 @@ test("Send slices first too, and still needs a host", async ({ page }) => {
     return route.fulfill({ json: cube });
   });
   await page.goto("/");
+  await autoSliceOff(page);
   await loadCube(page);
   await expect(page.locator("#sendPrinter")).toBeDisabled();
   await expect(page.locator("#sendPrinter")).toHaveAttribute("data-tip", /Prusa Link host/);
@@ -91,6 +94,7 @@ test("Turn on supports in the in-air banner ticks Smart supports and slices, in 
     return route.fulfill({ json: body.supports ? cube : { ...cube, inAir: { islands: 2, overhangs: 1 } } });
   });
   await page.goto("/");
+  await autoSliceOff(page);
   await loadCube(page);
   await page.locator("#slice").click();
   await expect(page.locator("#banner")).toContainText("would print in the air");
@@ -210,6 +214,7 @@ test("one at a time: Arrange keeps the toolhead clearance, and the request print
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
+  await autoSliceOff(page);
   await loadCube(page);
   await page.locator("#plateAdd").click();
   await expect(page.locator("[data-plate-id]")).toHaveCount(2);
@@ -242,6 +247,7 @@ test("a height range typed backwards is swapped, and a preset needs a name to sa
     return route.fulfill({ json: cube });
   });
   await page.goto("/");
+  await autoSliceOff(page);
   await loadCube(page);
   await page.locator("#heightAdd").click();
   const from = page.locator("[data-range] input[data-field=zFrom]");
