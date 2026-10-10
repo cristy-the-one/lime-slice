@@ -3,7 +3,6 @@ export type ViewPreset = "top" | "front" | "iso";
 export function mountViewport(hooks: { setViewPreset(preset: ViewPreset): void }) {
   mountViewKeys(hooks);
   mountEmptyDrop();
-  window.addEventListener("keydown", (ev) => onViewKey(ev, hooks));
 }
 
 export function syncEmptyState(hasMesh: boolean) {
@@ -22,9 +21,9 @@ function mountViewKeys(hooks: { setViewPreset(preset: ViewPreset): void }) {
   row.setAttribute("aria-label", "Camera");
   row.hidden = true;
   row.append(
-    viewButton("top", "Top", "T", hooks),
-    viewButton("front", "Front", "Y", hooks),
-    viewButton("iso", "Iso", "I", hooks),
+    viewButton("top", "Top", hooks),
+    viewButton("front", "Front", hooks),
+    viewButton("iso", "Iso", hooks),
   );
   const modes = document.querySelector("#viewModes");
   if (modes) modes.after(row);
@@ -34,7 +33,6 @@ function mountViewKeys(hooks: { setViewPreset(preset: ViewPreset): void }) {
 function viewButton(
   preset: ViewPreset,
   label: string,
-  shortcut: string,
   hooks: { setViewPreset(preset: ViewPreset): void },
 ) {
   const button = document.createElement("button");
@@ -42,28 +40,11 @@ function viewButton(
   button.className = "btn";
   button.textContent = label;
   button.dataset.tip = `${label} view`;
-  button.dataset.shortcut = shortcut;
   button.addEventListener("click", () => {
     document.querySelector<HTMLButtonElement>("#tabPrepare")?.click();
     hooks.setViewPreset(preset);
   });
   return button;
-}
-
-function onViewKey(ev: KeyboardEvent, hooks: { setViewPreset(preset: ViewPreset): void }) {
-  if (document.documentElement.dataset.overlay) return;
-  if (ev.metaKey || ev.ctrlKey || ev.altKey || ev.repeat) return;
-  const target = ev.target as HTMLElement | null;
-  const tag = target?.tagName;
-  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || target?.isContentEditable) return;
-  const help = document.querySelector("#help");
-  if (help && !help.hasAttribute("hidden")) return;
-  const key = ev.key.toLowerCase();
-  const preset = key === "t" ? "top" : key === "y" ? "front" : key === "i" ? "iso" : null;
-  if (!preset) return;
-  ev.preventDefault();
-  document.querySelector<HTMLButtonElement>("#tabPrepare")?.click();
-  hooks.setViewPreset(preset);
 }
 
 function mountEmptyDrop() {

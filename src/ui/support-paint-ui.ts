@@ -29,7 +29,6 @@ export function mountSupportPaint(prepare: PrepareView, hooks: SupportPaintHooks
   tool.className = "tool";
   tool.dataset.tool = "paint";
   tool.dataset.tip = "Paint where supports must grow (Enforce) or must not (Block).";
-  tool.dataset.shortcut = "B";
   tool.setAttribute("aria-label", "Paint supports");
   tool.setAttribute("aria-pressed", "false");
   tool.append(createElement(Paintbrush, { width: 16, height: 16, "aria-hidden": "true", class: "ico" }));
@@ -146,17 +145,8 @@ export function mountSupportPaint(prepare: PrepareView, hooks: SupportPaintHooks
     const tag = target?.tagName;
     if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || target?.isContentEditable) return;
     if (!document.querySelector("#help")?.hasAttribute("hidden")) return;
-    const key = ev.key.toLowerCase();
-    if (key === "b") {
-      setOn(!on);
-      ev.preventDefault();
-    } else if (on && ev.key === "Escape") {
+    if (on && ev.key === "Escape") {
       setOn(false);
-      ev.preventDefault();
-    } else if (on && (ev.key === "[" || ev.key === "]")) {
-      const step = ev.key === "]" ? 0.5 : -0.5;
-      radiusInput.value = String(Math.min(BRUSH_R_MAX_MM, Math.max(BRUSH_R_MIN_MM, radius() + step)));
-      sync();
       ev.preventDefault();
     }
   });

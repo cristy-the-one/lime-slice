@@ -12,7 +12,7 @@ import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCa
 import { adoptBytes, export3mf, exportGcode, fail, loadNamed, place, saveText, setPlaceCenter, withPrinterGcode } from "./files";
 import { mountProjectFiles, saveCurrentProject } from "./project-io";
 import { pickProjectFile } from "../platform";
-import { applyPreset, clearSettingsSearch, closedGroups, currentPreset, focusSettingsSearch, noteObjectOverride, noteSequential, onBlend, onSettings, renderChrome, syncFindStuck, touch } from "./settings";
+import { applyPreset, closedGroups, currentPreset, noteObjectOverride, noteSequential, onBlend, onSettings, renderChrome, syncFindStuck, touch } from "./settings";
 import { noteEdit, redoUserEdit, undoUserEdit } from "./history";
 import {
   applyNamedProfile,
@@ -468,81 +468,6 @@ export function wireApp() {
   document.querySelector("#export")!.addEventListener("click", () => void exportGcode());
   document.querySelector("#sendPrinter")!.addEventListener("click", () => void uploadToPrusaLink());
   document.querySelector("#helpClose")!.addEventListener("click", () => setHelp(false));
-
-  window.addEventListener("keydown", (ev) => {
-    if (document.documentElement.dataset.overlay) return;
-    const target = ev.target as HTMLElement | null;
-    const tag = target?.tagName;
-    const typing = tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || !!target?.isContentEditable;
-    if (ev.key === "?" && !typing) {
-      setHelp(!state.help);
-      ev.preventDefault();
-      return;
-    }
-    if (ev.key === "Escape") {
-      if (state.help) {
-        setHelp(false);
-        return;
-      }
-      const inFind = target?.id === "find";
-      const otherField = typing && !inFind;
-      if (!ev.defaultPrevented && !otherField && (inFind || state.query)) {
-        ev.preventDefault();
-        clearSettingsSearch();
-        return;
-      }
-    }
-    if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && ev.key.toLowerCase() === "f") {
-      if (target instanceof Node && document.querySelector("#gcodePane")?.contains(target)) return;
-      if (typing) return;
-      ev.preventDefault();
-      focusSettingsSearch();
-      return;
-    }
-    if (ev.key === "/" && !ev.ctrlKey && !ev.metaKey && !ev.altKey && !typing) {
-      ev.preventDefault();
-      focusSettingsSearch();
-      return;
-    }
-    if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "o") {
-      ev.preventDefault();
-      pickProjectFile();
-      return;
-    }
-    if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "s") {
-      ev.preventDefault();
-      void saveCurrentProject();
-      return;
-    }
-    if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "z" && !ev.altKey) {
-      ev.preventDefault();
-      if (ev.shiftKey) redoUserEdit();
-      else undoUserEdit();
-      return;
-    }
-    if (typing) return;
-    if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") {
-      ev.preventDefault();
-      void runSlice(false);
-      return;
-    }
-    if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "e") {
-      ev.preventDefault();
-      void exportGcode();
-      return;
-    }
-    if (ev.key === "1") setView("flat", "user");
-    if (ev.key === "2") setView("split", "user");
-    if (ev.key === "3") setView("solid", "user");
-    if (!state.result || state.stage !== "preview") return;
-    const n = state.result.layers.length;
-    if (ev.key === "ArrowUp" || ev.key === "]") scrub(state.layer + 1);
-    if (ev.key === "ArrowDown" || ev.key === "[") scrub(state.layer - 1);
-    if (ev.key === "PageUp") scrub(state.layer + 10);
-    if (ev.key === "PageDown") scrub(state.layer - 10);
-    if (ev.key === "Home") scrub(0);
-    if (ev.key === "End") scrub(n - 1);
-  });
 
   document.addEventListener("scroll", (ev) => {
     const scrolling = ev.target;
