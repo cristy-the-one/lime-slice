@@ -8,8 +8,8 @@ const THIN = FEATURE_COLOR["thin-wall"];
 const GAP = FEATURE_COLOR["gap-fill"];
 
 test("thin wall and gap fill use different legend colors, and the preview reads the same palette", () => {
-  expect(THIN).toBe("#E85D4C");
-  expect(GAP).toBe("#D946EF");
+  expect(THIN).toBe("#19B5A5");
+  expect(GAP).toBe("#E6E8EE");
   expect(THIN).not.toBe(GAP);
   expect(featureColor("thin-wall")).toBe(THIN);
   expect(featureColor("gap-fill")).toBe(GAP);

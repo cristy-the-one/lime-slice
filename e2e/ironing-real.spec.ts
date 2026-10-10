@@ -70,6 +70,6 @@ test("ironing on slices the cube's top layer ironed, with no toast", async ({ pa
   await expect(page.locator("#estimate table.est")).toContainText("Ironing");
   await page.getByRole("tab", { name: "Preview", exact: true }).click();
   const swatch = page.locator("#legend label", { hasText: /^Ironing/ }).locator(".swatch");
-  await expect(swatch).toHaveCSS("background-color", "rgb(94, 234, 212)");
+  await expect(swatch).toHaveCSS("background-color", "rgb(108, 208, 232)");
   await expect(page.locator("#toasts").getByRole("status").filter({ hasText: /ironing/i })).toHaveCount(0);
 });
