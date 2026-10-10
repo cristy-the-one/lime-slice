@@ -342,10 +342,11 @@ test("auto-slice picks up an edit made while a slice was running", async ({ page
   let calls = 0;
   const slices = await mockEngine(page, () => (calls++ === 0 ? 1200 : 0));
   await openCube(page);
-  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
-  await page.locator("#autoslice").check();
   await page.locator("#slice").click();
   await expect.poll(() => slices.length).toBe(1);
+  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
+  await page.locator("#autoslice").check();
+  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
   await page.locator("#arcs").uncheck();
   await expect.poll(() => slices.length, { timeout: 5000 }).toBe(2);
   expect((slices[1] as { arcFit: boolean }).arcFit).toBe(false);

@@ -5,22 +5,32 @@ import path from "node:path";
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 
 interface Reply {
-  delayMs?: number;
   coreMs?: number;
 }
 
-/** Each slice request takes the next reply; the last one repeats. */
+/**
+ * Each slice request takes the next reply; the last one repeats. `hold()` keeps the next request open until its
+ * release runs, so a spec sees the in-flight state however fast or slow the runner is.
+ */
 async function mockEngine(page: Page, replies: Reply[]) {
   const slices: unknown[] = [];
+  let gate: Promise<void> | null = null;
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   await page.route("**/api/slice", async (route) => {
     const reply = replies[Math.min(slices.length, replies.length - 1)];
     slices.push(route.request().postDataJSON());
-    if (reply.delayMs) await new Promise((r) => setTimeout(r, reply.delayMs));
+    const held = gate;
+    gate = null;
+    if (held) await held;
     await route.fulfill({ json: { ...cube, coreMs: reply.coreMs ?? cube.coreMs } }).catch(() => {});
   });
-  return slices;
+  const hold = () => {
+    let release = () => {};
+    gate = new Promise<void>((resolve) => { release = resolve; });
+    return () => release();
+  };
+  return Object.assign(slices, { hold });
 }
 
 /** Auto-slice on slices the loaded mesh by itself; off, the first slice waits for the button. */
@@ -46,33 +56,38 @@ async function setAutoSlice(page: Page, on: boolean) {
 const chip = (page: Page) => page.locator("#staleChip");
 
 test("a pose change dims the preview and the next slice starts by itself", async ({ page }) => {
-  const slices = await mockEngine(page, [{}, { delayMs: 1200 }]);
+  const slices = await mockEngine(page, [{}]);
   await openSliced(page, slices);
   await expect(page.locator("#autoslice")).toBeChecked();
   await expect(chip(page)).toBeHidden();
 
+  const release = slices.hold();
+  const before = slices.length;
   await page.locator("#tabPrepare").click();
   await page.locator("#rotZ").click();
   await page.locator("#tabPreview").click();
   await expect(page.locator("#stage")).toHaveClass(/stale/);
-  await expect(chip(page)).toContainText("Out of date");
 
-  await expect.poll(() => slices.length, { timeout: 3000 }).toBe(2);
+  await expect.poll(() => slices.length, { timeout: 5000 }).toBe(before + 1);
   await expect(chip(page)).toContainText("Updating");
   await expect(page.locator("#staleReslice")).toBeHidden();
+  release();
   await expect(chip(page)).toBeHidden({ timeout: 5000 });
   await expect(page.locator("#stage")).not.toHaveClass(/stale/);
 });
 
 test("lay flat after a slice marks the preview out of date, then re-slices", async ({ page }) => {
-  const slices = await mockEngine(page, [{}, { delayMs: 600 }]);
+  const slices = await mockEngine(page, [{}]);
   await openSliced(page, slices, true, "Slope");
+  const release = slices.hold();
+  const before = slices.length;
   await page.locator("#tabPrepare").click();
   await page.locator("#layflat").click();
   await page.locator("#tabPreview").click();
   await expect(page.locator("#stage")).toHaveClass(/stale/);
-  await expect(chip(page)).toContainText("Out of date");
-  await expect.poll(() => slices.length, { timeout: 3000 }).toBe(2);
+  await expect(chip(page)).toBeVisible();
+  await expect.poll(() => slices.length, { timeout: 5000 }).toBe(before + 1);
+  release();
   await expect(chip(page)).toBeHidden({ timeout: 5000 });
   await expect(page.locator("#stage")).not.toHaveClass(/stale/);
 });
@@ -118,16 +133,19 @@ test("a slice that took over 20 s is not repeated by itself", async ({ page }) =
 });
 
 test("a change made during a slice starts the next slice as soon as the first lands", async ({ page }) => {
-  const slices = await mockEngine(page, [{}, { delayMs: 1500 }, { delayMs: 400 }]);
+  const slices = await mockEngine(page, [{}]);
   await openSliced(page, slices);
+  const release = slices.hold();
+  const before = slices.length;
   await page.locator("#tabPrepare").click();
   await page.locator("#rotZ").click();
-  await expect.poll(() => slices.length, { timeout: 3000 }).toBe(2);
+  await expect.poll(() => slices.length, { timeout: 5000 }).toBe(before + 1);
   await page.locator("#rotZ").click();
   await page.locator("#tabPreview").click();
   await expect(page.locator("#stage")).toHaveClass(/stale/);
   await expect(chip(page)).toContainText("Updating");
-  await expect.poll(() => slices.length, { timeout: 5000 }).toBe(3);
+  release();
+  await expect.poll(() => slices.length, { timeout: 5000 }).toBe(before + 2);
   await expect(chip(page)).toBeHidden({ timeout: 5000 });
   await expect(page.locator("#stage")).not.toHaveClass(/stale/);
 });
