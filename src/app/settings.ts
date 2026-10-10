@@ -141,6 +141,7 @@ export function renderChrome() {
   const findFocused = find != null && document.activeElement === find;
   const selStart = find?.selectionStart ?? null;
   const selEnd = find?.selectionEnd ?? null;
+  const openMenus = openMenuIds();
   document.querySelector("#leftBody")!.innerHTML = `
     <div class="panel-head">
       ${profileHeaderHtml()}
@@ -168,6 +169,7 @@ export function renderChrome() {
     ${state.mesh ? section("Resolved parameters", `<div class="meta" id="resolved">${paramTable(live)}</div>`, "advanced") : ""}
     ${result ? section("Diagnostics", `${triangleMeta(result)}${stageHtml(result)}`, "expert") : ""}
   `;
+  reopenMenus(openMenus);
 
   paintPrinterChip();
   paintCalibrate();
@@ -949,7 +951,7 @@ function profileHeaderHtml() {
         ${options}
       </select>
       <button class="btn" id="profileSave" type="button">Save</button>
-      <details class="profile-more menu">
+      <details class="profile-more menu" id="profileMore">
         <summary class="btn" aria-label="Profile actions" data-tip="Rename, duplicate, delete, export or import a profile">More</summary>
         <div class="profile-actions">
           <input id="profileName" type="text" aria-label="Profile name" placeholder="Profile name" />
@@ -979,6 +981,18 @@ export function applyPreset(next: PresetSettings) {
   state.splitCustom = true;
   if (state.blendKind === "byRegion") fx.realignSplit("open");
   touch();
+}
+
+/** Menus open in the panels, by id. A re-render (a slice landing, an auto slice) must not close what the user opened. */
+function openMenuIds(): string[] {
+  return [...document.querySelectorAll<HTMLDetailsElement>("#leftBody details[open][id], #right details[open][id]")].map((menu) => menu.id);
+}
+
+function reopenMenus(ids: string[]) {
+  for (const id of ids) {
+    const menu = document.getElementById(id);
+    if (menu instanceof HTMLDetailsElement) menu.open = true;
+  }
 }
 
 function restoreFindCaret(focused: boolean, selStart: number | null, selEnd: number | null) {
