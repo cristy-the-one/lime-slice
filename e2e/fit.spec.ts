@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { serveSliceJob } from "./serve-job.ts";
+import { autoSliceOff } from "./auto-slice";
 
 const longPrint = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/long-print.json"), "utf8"));
 
@@ -18,6 +19,7 @@ async function openLongPrint(page: Page) {
   await serveSliceJob(page, longPrint);
   await page.addInitScript(() => localStorage.setItem("lime-slice-closed-groups", "[]"));
   await page.goto("/");
+  await autoSliceOff(page);
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#slice").click();
