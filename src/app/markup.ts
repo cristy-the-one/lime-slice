@@ -131,7 +131,7 @@ export function mountMarkup(root: HTMLElement) {
         <div class="gcode-pane" id="gcodePane" role="tabpanel" aria-labelledby="tabGcode" tabindex="-1" hidden></div>
         <div class="stage-tools">
           <div class="spark-wrap">
-            <div class="spark-label" id="sparkLabel">Layer time</div>
+            <div class="spark-label" id="sparkLabel"><span>Layer time</span><span class="spark-key"><span><i style="background:var(--slow)"></i>slow</span><span><i style="background:var(--fast)"></i>too fast</span></span></div>
             <canvas id="spark" aria-label="Per-layer time"></canvas>
           </div>
           <div class="playback">

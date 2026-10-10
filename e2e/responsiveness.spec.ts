@@ -216,6 +216,8 @@ test("layer scrub does not resize the spark or the layer track", async ({ page }
   const spark0 = (await spark.boundingBox())!;
   const track0 = (await track.boundingBox())!;
   const label0 = await page.locator("#sparkLabel").innerText();
+  expect(label0, "the legend names the two swatches").toMatch(/slow[\s\S]*too fast/);
+  expect(label0, "the layer's time lives in the slider readout").not.toMatch(/\d s/);
   const z0 = await page.locator("#readHigh").innerText();
   await page.locator("#rangeHigh").evaluate((el) => {
     const input = el as HTMLInputElement;
@@ -225,7 +227,8 @@ test("layer scrub does not resize the spark or the layer track", async ({ page }
   await expect(page.locator("#readHigh")).not.toHaveText(z0);
   const spark1 = (await spark.boundingBox())!;
   const track1 = (await track.boundingBox())!;
-  expect(await page.locator("#sparkLabel").innerText()).not.toBe(label0);
+  expect(await page.locator("#sparkLabel").innerText(), "a scrub leaves the legend alone").toBe(label0);
+  await expect(page.locator("#readLow"), "the layer's time is in the slider readout").toHaveText(/^\d+\.\d s$/);
   expect(Math.abs(spark1.x - spark0.x)).toBeLessThan(1);
   expect(Math.abs(spark1.width - spark0.width)).toBeLessThan(1);
   expect(Math.abs(track1.x - track0.x)).toBeLessThan(1);

@@ -162,10 +162,10 @@ export function renderChrome() {
   const section = (title: string, body: string, tier?: Tier) => `<section class="res"${tier ? ` data-level="${tier}"` : ""}><h4>${title}</h4>${body}</section>`;
   document.querySelector("#right")!.innerHTML = `
     ${result ? section("Estimate", `<div id="estimate">${estimateHtml()}</div>`) : ""}
-    ${result ? section("Active layer", `<div class="meta" id="layerReadout">${layerReadout()}</div>`) : ""}
+    ${result ? section("Active layer", `<div id="layerReadout">${layerReadout()}</div>`) : ""}
     ${rules.hidden.has("blendCompare") ? "" : section("Compare blends", `<div id="pareto"${state.mesh ? "" : ' class="is-off"'}>${paretoHtml()}</div>`)}
     ${section("Resolved parameters", `<div class="meta" id="resolved">${paramTable(live)}</div>`, "advanced")}
-    ${result ? section("Diagnostics", `<div class="meta">${triangleMeta(result)}</div>${stageHtml(result)}`, "expert") : ""}
+    ${result ? section("Diagnostics", `${triangleMeta(result)}${stageHtml(result)}`, "expert") : ""}
   `;
 
   paintPrinterChip();
@@ -745,25 +745,42 @@ function machineHtml() {
 }
 
 export function paramLine(card: ResolvedCard) {
-  const row = (name: string, feed: number, eff: number) => `${name} <b>${feed.toFixed(0)}</b> mm/s · effective <b>${eff.toFixed(0)}</b><br>`;
+  const row = (name: string, feed: number, eff: number) => `<tr><td>${name}</td><td>${feed.toFixed(0)}</td><td>${eff.toFixed(0)}</td></tr>`;
   const gyroid = card.pattern === "gyroid" && state.gyroid3d !== "off"
     ? row("3D gyroid", card.gyroidSpeed, card.effectiveGyroid)
     : "";
-  return `${card.name} · ${card.walls} walls · ${card.pattern} · ${(card.density * 100).toFixed(0)}%<br>${row("outer", card.outer, card.effectiveOuter)}${row("inner", card.inner, card.effectiveInner)}${row("sparse", card.sparse, card.effectiveSparse)}${gyroid}${row("top", card.top, card.effectiveTop)}`;
+  return `<div class="param-head"><b>${card.name}</b> · ${card.walls} walls · ${card.pattern} · ${(card.density * 100).toFixed(0)}%</div>
+    <table class="params"><thead><tr><th></th><th>mm/s</th><th>effective</th></tr></thead><tbody>${row("outer", card.outer, card.effectiveOuter)}${row("inner", card.inner, card.effectiveInner)}${row("sparse", card.sparse, card.effectiveSparse)}${gyroid}${row("top", card.top, card.effectiveTop)}</tbody></table>`;
 }
 
 export function paramTable(card: ResolvedCard) {
   if (state.blendKind === "byRegion") {
-    return `Split ${state.axis.toUpperCase()} = ${state.atMm.toFixed(1)} mm<br>Low side ${paramLine(resolved(1, state.layerHeight))}<br>High side ${paramLine(resolved(0, state.layerHeight))}`;
+    return `<div class="param-head">Split ${state.axis.toUpperCase()} = ${state.atMm.toFixed(1)} mm</div><div class="param-side">Low side</div>${paramLine(resolved(1, state.layerHeight))}<div class="param-side">High side</div>${paramLine(resolved(0, state.layerHeight))}`;
   }
   return paramLine(card);
+}
+
+/** Label and value rows. The values are the panel's own numbers; `value` is HTML. */
+function kvHtml(rows: [string, string][]): string {
+  return `<dl class="kv">${rows.map(([key, value]) => `<dt>${key}</dt><dd>${value}</dd>`).join("")}</dl>`;
+}
+
+/** Counts as a two-column grid of `label  value` cells. */
+function statGridHtml(cells: [string, string][]): string {
+  return `<div class="stats">${cells.map(([key, value]) => `<div><span>${key}</span><b>${value}</b></div>`).join("")}</div>`;
 }
 
 export function layerReadout() {
   const layer = state.result?.layers[state.layer];
   if (!layer) return "";
   const below = (state.result?.layers ?? []).slice(0, state.layer).reduce((s, l) => s + (l.seconds ?? 0), 0);
-  return `Layer <b>${layer.index + 1}</b> / ${state.result?.layers.length}<br>Z <b>${layer.z.toFixed(2)}</b> mm · h <b>${layer.height.toFixed(3)}</b><br>Layer time <b>${(layer.seconds ?? 0).toFixed(1)}</b> s · cumulative <b>${(below + (layer.seconds ?? 0)).toFixed(1)}</b> s<br>${escapeHtml(layer.note)}`;
+  return `${kvHtml([
+    ["Layer", `${layer.index + 1} / ${state.result?.layers.length}`],
+    ["Z", `${layer.z.toFixed(2)} mm`],
+    ["Height", `${layer.height.toFixed(3)} mm`],
+    ["Layer time", `${(layer.seconds ?? 0).toFixed(1)} s`],
+    ["Cumulative", clockTime(below + (layer.seconds ?? 0))],
+  ])}${layer.note ? `<p class="layer-note" data-level="advanced">${escapeHtml(layer.note)}</p>` : ""}`;
 }
 
 export function triangleLine(src: number) {
@@ -773,12 +790,16 @@ export function triangleLine(src: number) {
 export function triangleMeta(result: SliceResponse | null) {
   if (!result) return "";
   const tol = result.mesh.outlineToleranceMm ?? 0;
-  const outline = tol > 0 ? ` · outline ${tol.toFixed(3)} mm` : "";
   // An older reply has no counts, which is unknown, not zero.
   const count = (n: number | undefined) => (typeof n === "number" ? String(n) : "—");
   const repaired = count(result.mesh.repairedLayers);
   const dropped = count(result.mesh.droppedChains);
-  return `Triangles <b>${result.mesh.triangles}</b>${outline}<br>Repaired layers ${repaired} · dropped chains ${dropped}`;
+  return kvHtml([
+    ["Triangles", String(result.mesh.triangles)],
+    ...(tol > 0 ? [["Outline", `${tol.toFixed(3)} mm`] as [string, string]] : []),
+    ["Repaired layers", repaired],
+    ["Dropped chains", dropped],
+  ]);
 }
 
 export function formatMs(ms: number) {
@@ -827,7 +848,7 @@ export function stageHtml(result: SliceResponse | null) {
       return `<tr${cls ? ` class="${cls}"` : ""}><td${tip}>${name}</td><td>${value}</td></tr>`;
     })
     .join("");
-  return `<div class="stages"><div class="meta">Slice stages</div><table class="stages">${body}</table></div>`;
+  return `<div class="stages"><h4 class="sub">Slice stages</h4><table class="stages">${body}</table></div>`;
 }
 
 /** The feature each estimate row is colored as. */
@@ -863,7 +884,7 @@ export function estimateHtml() {
     <h4 class="sub">Time by feature</h4>
     <table class="est">${rows}</table>
     <div class="chips">${chips()}</div>
-    <div class="meta">${est.arcMoves} arcs · ${est.retracts ?? 0} retracts · ${(est.travelMm ?? 0).toFixed(0)} mm travel · ${est.scarfedLoops ?? 0} scarfed loops</div>
+    ${statGridHtml([["Arcs", String(est.arcMoves)], ["Retracts", String(est.retracts ?? 0)], ["Travel", `${(est.travelMm ?? 0).toFixed(0)} mm`], ["Scarfed loops", String(est.scarfedLoops ?? 0)]])}
   `;
 }
 

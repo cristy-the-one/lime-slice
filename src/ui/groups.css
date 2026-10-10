@@ -300,6 +300,21 @@ table.est .bar > span { background: var(--teal); }
 #pareto .btn { width: 100%; }
 .res .chips { margin-top: 8px; }
 .res .meta { margin-top: 6px; }
+.kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: 12px; }
+.kv dt { color: var(--text-dim); white-space: nowrap; }
+.kv dd { margin: 0; text-align: right; white-space: nowrap; font-family: "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; color: var(--text); }
+.stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 16px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 12px; }
+.stats > div { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; min-width: 0; }
+.stats span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
+.stats b { flex: 0 0 auto; font: 500 12px "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; color: var(--text); }
+.layer-note { margin: 8px 0 0; font-size: 11px; line-height: 1.4; color: var(--text-faint); overflow-wrap: anywhere; }
+.param-head { margin: 0 0 4px; font-size: 12px; color: var(--text-dim); }
+.param-head b { font-weight: 600; color: var(--text); text-transform: capitalize; }
+.param-side { margin: 10px 0 2px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); }
+table.params { width: 100%; border-collapse: collapse; font-family: "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; font-size: 12px; }
+table.params th { padding: 0 0 2px; font: 400 11px Inter, "Segoe UI", sans-serif; text-align: right; color: var(--text-faint); }
+table.params td { padding: 2px 0; text-align: right; color: var(--text); }
+table.params th:first-child, table.params td:first-child { text-align: left; font-family: Inter, "Segoe UI", sans-serif; font-size: 12px; color: var(--text-dim); }
 
 /* Calibrate sheet */
 .cal-card { width: min(920px, calc(100% - 32px)); }

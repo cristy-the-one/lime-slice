@@ -492,15 +492,17 @@ kbd { border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; backg
 .stage-tools { display: flex; flex-direction: column; gap: 4px; padding: 0 12px 8px; }
 .spark-wrap { display: grid; grid-template-columns: minmax(9.5rem, 9.5rem) minmax(0, 1fr); gap: 8px; align-items: end; }
 .spark-label {
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-variant-numeric: tabular-nums;
+  display: grid;
+  gap: 2px;
   font-size: 11px;
   color: var(--on-stage-dim);
   line-height: 1.35;
   min-width: 0;
   overflow: hidden;
 }
-.spark-label i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
+.spark-key { display: flex; flex-wrap: wrap; gap: 0 8px; }
+.spark-key span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.spark-label i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; }
 #spark { width: 100%; height: 46px; display: block; cursor: pointer; background: transparent; }
 .playback {
   display: grid;
