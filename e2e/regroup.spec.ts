@@ -106,3 +106,22 @@ test("no setting appears twice, and a tier hides the groups with nothing to show
   await page.locator("#levelPick").selectOption("expert");
   await expect(page.locator('#left .group[data-group="infill"]')).toBeVisible();
 });
+
+test("a tooltip leaves on a press and does not cover the popover it opened", async ({ page }) => {
+  await quiet(page);
+  await page.goto("/");
+  const tip = page.locator(".lime-tip[data-open=true]");
+  await page.locator("#printerChip > summary").hover();
+  await expect(tip).toBeVisible();
+  await page.locator("#printerChip > summary").click();
+  await expect(page.locator("#printerChip")).toHaveAttribute("open", "");
+  await expect(tip).toHaveCount(0);
+  await page.waitForTimeout(600);
+  await expect(tip, "the open chip keeps no tip").toHaveCount(0);
+  await page.locator("#printerChip > summary").click();
+  await page.locator("#tabPrepare").hover();
+  await expect(tip).toBeVisible();
+  await page.locator("#tabPrepare").click();
+  await page.waitForTimeout(600);
+  await expect(tip, "a clicked tab keeps no tip").toHaveCount(0);
+});
