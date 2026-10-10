@@ -9,6 +9,7 @@ import { markProjectDirty } from "../project-dirty";
 import { coverageWarning, inAirWarning } from "../slice-action";
 import { applySliceProgress, currentSliceProgress } from "../ui/slice-progress";
 import { filamentCost, filamentGrams, groupFeatures } from "../estimate";
+import { OTHER_COLOR, featureColor } from "../colors";
 import { offBed } from "../mesh-place";
 import { boundsSize, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty } from "../plate";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys } from "../presets";
@@ -158,17 +159,13 @@ export function renderChrome() {
   syncFindStuck();
 
   const live = resolved(currentWeight(), state.layerHeight);
+  const section = (title: string, body: string, tier?: Tier) => `<section class="res"${tier ? ` data-level="${tier}"` : ""}><h4>${title}</h4>${body}</section>`;
   document.querySelector("#right")!.innerHTML = `
-    ${rules.hidden.has("blendCompare") ? "" : `<h2>Blend compare</h2>
-    <div id="pareto">${paretoHtml()}</div>`}
-    <h2>Resolved now</h2>
-    <div class="meta" id="resolved">${paramTable(live)}</div>
-    ${result ? `<h2>Estimate</h2>
-    <div id="estimate">${estimateHtml()}</div>
-    <h2>Active layer</h2>
-    <div class="meta" id="layerReadout">${layerReadout()}</div>
-    <div class="meta">${triangleMeta(result)}</div>
-    ${stageHtml(result)}` : ""}
+    ${result ? section("Estimate", `<div id="estimate">${estimateHtml()}</div>`) : ""}
+    ${result ? section("Active layer", `<div class="meta" id="layerReadout">${layerReadout()}</div>`) : ""}
+    ${rules.hidden.has("blendCompare") ? "" : section("Compare blends", `<div id="pareto"${state.mesh ? "" : ' class="is-off"'}>${paretoHtml()}</div>`)}
+    ${section("Resolved parameters", `<div class="meta" id="resolved">${paramTable(live)}</div>`, "advanced")}
+    ${result ? section("Diagnostics", `<div class="meta">${triangleMeta(result)}</div>${stageHtml(result)}`, "expert") : ""}
   `;
 
   paintPrinterChip();
@@ -775,17 +772,37 @@ export function stageHtml(result: SliceResponse | null) {
   return `<div class="stages"><div class="meta">Slice stages</div><table class="stages">${body}</table></div>`;
 }
 
+/** The feature each estimate row is colored as. */
+const ROW_KIND: Record<string, string> = { "Outer wall": "outer", "Inner wall": "inner", Infill: "sparse", "Top / bottom": "top", Ironing: "ironing", Supports: "support", Travel: "travel" };
+
+function clockTime(seconds: number) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.round(seconds % 60);
+  const mm = String(h ? m : m).padStart(h ? 2 : 1, "0");
+  return `${h ? `${h}:` : ""}${mm}:${String(s).padStart(2, "0")}`;
+}
+
 export function estimateHtml() {
   const est = state.result?.estimate;
   if (!est) return "";
   const groups = groupFeatures(est.byFeature ?? [], state.profile);
-  const total = Math.max(0.001, est.seconds);
-  const rows = groups.map((row) => `<tr><td>${row.label}</td><td>${row.seconds.toFixed(0)} s</td><td>${row.grams.toFixed(2)} g</td><td><div class="bar"><span style="width:${Math.min(100, (row.seconds / total) * 100)}%"></span></div></td></tr>`).join("");
+  const longest = Math.max(0.001, ...groups.map((row) => row.seconds));
+  const rows = groups.map((row) => {
+    const kind = ROW_KIND[row.label];
+    const color = kind ? featureColor(kind) : OTHER_COLOR;
+    return `<tr><td>${row.label}</td><td><div class="bar"><span style="width:${Math.min(100, (row.seconds / longest) * 100)}%;background:${color}"></span></div></td><td>${row.seconds.toFixed(0)} s</td><td>${row.grams.toFixed(2)} g</td></tr>`;
+  }).join("");
   const meters = (est.filamentMm / 1000).toFixed(2);
   const grams = filamentGrams(est.filamentMm, state.profile);
   const cost = filamentCost(grams, state.profile).toFixed(2);
+  const hours = est.seconds >= 3600;
   return `
-    <div class="meta" data-tip="Filament €${state.profile.filamentCostPerKg.toFixed(2)} / kg from the printer profile."><b>${formatTime(est.seconds)}</b> · <b id="estGrams">${grams.toFixed(2)} g</b> · ${meters} m · €<span id="estCost">${cost}</span></div>
+    <div class="big" data-tip="Filament €${state.profile.filamentCostPerKg.toFixed(2)} / kg from the filament.">
+      <div><b>${clockTime(est.seconds)}</b><small>${hours ? "h:min:s" : "min:s"}</small></div>
+      <div><b id="estGrams">${grams.toFixed(2)} g</b><small>€<span id="estCost">${cost}</span> · ${meters} m</small></div>
+    </div>
+    <h4 class="sub">Time by feature</h4>
     <table class="est">${rows}</table>
     <div class="chips">${chips()}</div>
     <div class="meta">${est.arcMoves} arcs · ${est.retracts ?? 0} retracts · ${(est.travelMm ?? 0).toFixed(0)} mm travel · ${est.scarfedLoops ?? 0} scarfed loops</div>

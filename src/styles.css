@@ -391,10 +391,6 @@ table.stages td { padding: 1px 0; white-space: nowrap; }
 table.stages td:last-child { text-align: right; color: var(--text); }
 table.stages tr.sub td:first-child { padding-left: 1.1rem; }
 table.stages tr.total td { border-top: 1px solid var(--line); padding-top: 3px; color: var(--text); }
-table.est { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
-table.est td { padding: 3px 0; border-bottom: 1px solid var(--line); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-table.est td:nth-child(2) { width: 4.5rem; font-variant-numeric: tabular-nums; }
-table.est td:nth-child(3) { width: 5.5rem; font-variant-numeric: tabular-nums; }
 .bar { height: 6px; background: var(--track); border-radius: 3px; overflow: hidden; }
 .bar > span { display: block; height: 100%; background: var(--teal); }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
