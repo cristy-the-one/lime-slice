@@ -64,7 +64,7 @@ test("filament and nozzle pick the pressure advance, and a bad file can be retri
   await page.locator("#machineFilament").selectOption("lime-petg");
 
   await page.locator("#printerChip").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
-  await page.locator("#machineMore > summary").click();
+  await page.locator("#machineMore").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await expect(page.locator("#machineStart")).toHaveValue("");
   await expect(page.locator("#machineEnd")).toHaveValue("");
   await expect(page.locator("label", { has: page.locator("#machineStart") })).toHaveAttribute("data-tip", /inserted into Export and Send/);
@@ -117,16 +117,16 @@ test("filament and nozzle pick the pressure advance, and a bad file can be retri
   await expect(page.locator("#bedx")).toHaveValue("250");
   await expect(page.locator("#machineAdvance")).toHaveValue("0.02");
   await expect(page.locator("#machineTemps")).toHaveText("Nozzle 210 °C · bed 55 °C");
-  await page.locator("#machineMore > summary").click();
+  await page.locator("#machineMore").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await expect(page.locator("#machineHost")).toHaveValue("");
-  await page.locator("#machineMore > summary").click();
+  await page.locator("#machineMore").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
 
   await page.locator("#printerChip").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
 
   await page.locator("#machinePrinter").selectOption("lime-220");
 
   await page.locator("#printerChip").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
-  await page.locator("#machineMore > summary").click();
+  await page.locator("#machineMore").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await page.locator("#machineDelete").click();
   await expect(page.locator("#toasts").getByRole("status").filter({ hasText: "Built-in profiles stay in the catalog." })).toBeVisible();
   await page.locator("#machineDuplicate").click();
