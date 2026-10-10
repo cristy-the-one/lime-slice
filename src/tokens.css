@@ -25,6 +25,10 @@
   --accent: #a3e635;
   --accent-hover: #b6f04f;
   --accent-pressed: #8cc926;
+  /* The accent as text or an icon on a panel: the fill color is too light there in the light theme. */
+  --accent-text: var(--accent);
+  /* Focus ring: the accent where it reads, its dark form on light panels. Stage controls keep the bright one. */
+  --focus: var(--accent-text);
   --on-accent: #10150a;
   --info: #38bdf8;
   --warn: #f5a524;
@@ -125,6 +129,7 @@
   --accent: #84cc16;
   --accent-hover: #a3e635;
   --accent-pressed: #65a30d;
+  --accent-text: #3f6212;
   --on-accent: #10150a;
   --info: #0284c7;
   --warn: #b45309;

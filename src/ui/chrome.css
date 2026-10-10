@@ -48,7 +48,7 @@
 }
 .tool-rail button[aria-pressed="true"] {
   background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
 }
 .tool-rail .rail-sep {
