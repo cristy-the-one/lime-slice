@@ -4,11 +4,11 @@ use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use lime_slice_core::{
-    cancel_all, keep_support_bases, load_slice_mesh_tol, mesh_preview_tol, pareto_estimates,
+    cancel_all, keep_support_bases, mesh_preview_tol, pareto_request,
     flow_from_request, pressure_advance_from_request, retract_from_request,
     slice_payload_watched, strategy_card, temperature_from_request, FlowCalibRequest, GcodeText,
     Job, PaCalibRequest, PayloadError, Progress, RetractCalibRequest, SliceCache, SliceRequest,
-    SliceSettings, Status, TempCalibRequest, Watch,
+    Status, TempCalibRequest, Watch,
 };
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -202,19 +202,7 @@ async fn save_text_file(
 async fn pareto_model(payload: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let req: SliceRequest = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-        let bytes = base64_decode(&req.data_b64)?;
-        let mesh = load_slice_mesh_tol(
-            &req.filename,
-            &bytes,
-            req.pose.is_some(),
-            req.step_tolerance_mm,
-        )?;
-        let profile = req.printer.clone().unwrap_or_default();
-        let settings = SliceSettings {
-            job: Job::start(),
-            ..SliceSettings::from_request(&req)
-        };
-        let points = pareto_estimates(&mesh, &profile, &settings)?;
+        let points = pareto_request(&req, Job::start())?;
         serde_json::to_string(&points).map_err(|e| e.to_string())
     })
     .await
