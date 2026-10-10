@@ -26,7 +26,7 @@ test("an X/Y move slides the preview, re-emits by itself, and the reply offset r
   await expect.poll(() => placeText(page)).toContain("X 110.0");
 
   await page.locator("#slice").click();
-  await expect(page.locator("#right")).toContainText("outline 0.025 mm");
+  await expect(page.locator("#right")).toContainText("Outline 0.025 mm");
   await expect(page.locator("#view3d")).toHaveAttribute("data-bed-offset", "0.000,0.000");
   await expect(page.locator("#view3d")).toHaveAttribute("data-preview-token", "bed-1");
   expect(calls[0].pose?.translation?.length).toBe(3);

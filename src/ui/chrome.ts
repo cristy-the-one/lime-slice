@@ -1,7 +1,11 @@
 import {
   ArrowDownToLine,
+  ChevronDown,
+  ChevronUp,
   createElement,
   Download,
+  Minus,
+  Plus,
   Printer,
   Layers,
   Move3d,
@@ -44,6 +48,10 @@ function iconize(el: Element | null, node: IconNode) {
   el.classList.add("with-ico");
 }
 
+function iconOnly(el: Element | null, node: IconNode, size: number) {
+  if (el && !el.querySelector(":scope > .ico")) el.replaceChildren(svgIcon(node, size));
+}
+
 function hint(el: Element | null, tip: string) {
   if (!el || !(el instanceof HTMLElement)) return;
   el.dataset.tip = tip;
@@ -62,6 +70,11 @@ function iconizeToolbar() {
   iconize(document.querySelector("#sendPrinter"), Printer);
 
   iconize(document.querySelector("#force"), RefreshCw);
+
+  iconOnly(document.querySelector("#layerNext"), ChevronUp, 14);
+  iconOnly(document.querySelector("#layerPrev"), ChevronDown, 14);
+  iconOnly(document.querySelector("#flatZoomIn"), Plus, 14);
+  iconOnly(document.querySelector("#flatZoomOut"), Minus, 14);
 }
 
 function mountToolRail(hooks: ChromeHooks) {

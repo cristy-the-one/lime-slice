@@ -5,38 +5,29 @@
   left: 0;
   display: none;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   max-width: 280px;
-  padding: 6px 8px;
+  padding: var(--space-2) var(--space-2);
   border-radius: var(--radius-sm);
   background: var(--surface-3);
   color: var(--text);
   border: 1px solid var(--border-strong);
-  box-shadow: 0 8px 20px color-mix(in srgb, #000 35%, transparent);
-  font-size: 12px;
+  box-shadow: var(--shadow-pop);
+  font-size: var(--fs-2);
   line-height: 1.35;
   pointer-events: none;
 }
 .lime-tip[data-open="true"] { display: flex; }
-.lime-tip kbd {
-  flex: 0 0 auto;
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: 11px;
-  border: 1px solid var(--border-strong);
-  border-radius: 4px;
-  padding: 1px 5px;
-  background: var(--surface-1);
-  color: var(--text-dim);
-}
+.lime-tip kbd { flex: 0 0 auto; background: var(--surface-1); }
 
 .tool-rail {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   width: 40px;
   min-height: 0;
-  padding: 8px 0;
+  padding: var(--space-2) 0;
   background: var(--surface-1);
   border-right: 1px solid var(--border);
 }
@@ -60,10 +51,6 @@
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
 }
-.tool-rail button.is-disabled {
-  opacity: 0.38;
-  cursor: not-allowed;
-}
 .tool-rail .rail-sep {
   width: 16px;
   height: 1px;
@@ -76,7 +63,7 @@
   gap: 2px;
   width: 100%;
   margin-top: auto;
-  padding: 4px 3px 0;
+  padding: var(--space-1) 3px 0;
 }
 .tool-rail .gizmo-nudge button {
   width: 100%;
@@ -88,7 +75,7 @@
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-dim);
-  font-size: 10px;
+  font-size: var(--fs-1);
   line-height: 1;
   font-variant-numeric: tabular-nums;
 }

@@ -1,6 +1,6 @@
 /* Top bar: brand, File menu, printer chip, stage tabs, estimate readout, Slice, Export, gear. */
 
-.top { gap: 6px; }
+.top { gap: var(--space-2); }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--text-dim); }
 .btn.ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--text); border-color: transparent; }
 .caret {
@@ -14,12 +14,12 @@
   opacity: 0.7;
 }
 .caret.right { transform: translateY(0) rotate(-45deg); margin-left: auto; }
-.menu > summary { display: inline-flex; align-items: center; gap: 6px; }
-.menu nav hr { width: 100%; margin: 4px 0; border: 0; border-top: 1px solid var(--border); }
-.menu nav button { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.menu > summary { display: inline-flex; align-items: center; gap: var(--space-2); }
+.menu nav hr { width: 100%; margin: var(--space-1) 0; border: 0; border-top: 1px solid var(--border); }
+.menu nav button { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
 .menu nav button[data-key]::after {
   content: attr(data-key);
-  font: 11px "IBM Plex Mono", ui-monospace, monospace;
+  font: var(--fs-1) var(--font-mono);
   color: var(--text-faint);
 }
 .submenu { position: relative; }
@@ -27,36 +27,36 @@
   display: flex;
   align-items: center;
   height: var(--control-h);
-  padding: 6px 8px;
+  padding: var(--space-2) var(--space-2);
   border-radius: var(--radius-sm);
   cursor: pointer;
 }
 .submenu > summary:hover { background: var(--surface-2); }
-.submenu > nav { left: 100%; top: -4px; margin-top: 0; margin-left: 4px; }
+.submenu > nav { left: 100%; top: -4px; margin-top: 0; margin-left: var(--space-1); }
 
-.btn.chip { gap: 6px; max-width: 260px; }
+.btn.chip { gap: var(--space-2); max-width: 260px; }
 .btn.chip > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .popover {
   position: absolute;
   z-index: 8;
-  margin-top: 4px;
+  margin-top: var(--space-1);
   width: 240px;
   display: grid;
-  gap: 8px;
-  padding: 10px;
+  gap: var(--space-2);
+  padding: var(--space-3);
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  box-shadow: 0 8px 24px color-mix(in srgb, #000 28%, transparent);
+  box-shadow: var(--shadow-pop);
 }
 .popover select { width: 100%; }
 
 .title-tabs { flex: 0 1 auto; margin: 0 auto; min-width: 0; }
-.title-tabs .btn.mode { padding: 0 10px; gap: 6px; }
+.title-tabs .btn.mode { padding: 0 var(--space-3); gap: var(--space-2); }
 .title-tabs .btn.mode[data-key]::after,
 .action-row .btn[data-key]::after {
   content: attr(data-key);
-  font: 11px "IBM Plex Mono", ui-monospace, monospace;
+  font: var(--fs-1) var(--font-mono);
   opacity: 0.6;
 }
 .title-tabs .btn.mode[aria-pressed="true"]::after { opacity: 0.75; }
@@ -64,12 +64,12 @@
 .estimate {
   flex: 0 0 auto;
   height: var(--control-h);
-  padding: 0 8px;
+  padding: 0 var(--space-2);
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-dim);
-  font: 12px "IBM Plex Mono", ui-monospace, monospace;
+  font: var(--fs-2) var(--font-mono);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -93,4 +93,4 @@
 #slice.show-result + .split-more > summary { background: var(--panel-2); color: var(--text); border-color: var(--line); }
 #slice.reslice + .split-more > summary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 
-.status { min-height: 26px; padding: 0 var(--space-3); font-size: 11px; }
+.status { min-height: 26px; padding: 0 var(--space-3); font-size: var(--fs-1); }

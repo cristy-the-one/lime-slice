@@ -42,10 +42,11 @@ html.layout-compact .legend,
 html.layout-compact .gizmo-readout,
 html.layout-compact #gizmoNudge { display: none !important; }
 html.layout-compact .layer-step {
-  width: 20px;
-  height: 16px;
-  font-size: 10px;
+  width: 36px;
+  height: 28px;
 }
+/* The readouts leave the grid here, so the track takes the one stretching row. */
+html.layout-compact #vslider { grid-template-rows: auto minmax(0, 1fr) auto; }
 html.layout-compact .banner-rail {
   position: absolute;
   left: 12px;
@@ -118,10 +119,10 @@ html:not(.layout-compact) #compactSupportChip { display: none !important; }
   grid-column: 1;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
   height: var(--compact-top);
-  padding: env(safe-area-inset-top) 10px 0;
+  padding: env(safe-area-inset-top) var(--space-3) 0;
   background: var(--bar);
   z-index: 6;
 }
@@ -129,10 +130,12 @@ html:not(.layout-compact) #compactSupportChip { display: none !important; }
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 36px;
-  padding: 0 10px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0;
+  height: 40px;
+  padding: 0 var(--space-3);
   border: 0;
   border-radius: 12px;
   background: var(--surface-2);
@@ -147,8 +150,8 @@ html:not(.layout-compact) #compactSupportChip { display: none !important; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.compact-file b { font-size: 14px; font-weight: 600; }
-.compact-file span { font-size: 11px; color: var(--text-dim); }
+.compact-file b { font-size: var(--fs-4); font-weight: 600; }
+.compact-file span { font-size: var(--fs-1); color: var(--text-dim); }
 .compact-icon {
   flex: 0 0 auto;
   width: 44px;
@@ -160,13 +163,15 @@ html:not(.layout-compact) #compactSupportChip { display: none !important; }
   color: var(--text);
 }
 .compact-overflow { position: relative; }
+.compact-overflow > summary { display: grid; place-items: center; list-style: none; }
+.compact-overflow > summary::-webkit-details-marker { display: none; }
 .compact-overflow nav {
   position: absolute;
   right: 0;
   top: calc(100% + 4px);
   z-index: 8;
   min-width: 180px;
-  padding: 6px;
+  padding: var(--space-2);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -180,7 +185,7 @@ html:not(.layout-compact) #compactSupportChip { display: none !important; }
   border-radius: 8px;
   background: transparent;
   text-align: left;
-  padding: 0 10px;
+  padding: 0 var(--space-3);
 }
 
 #compactTabs {
@@ -189,7 +194,7 @@ html:not(.layout-compact) #compactSupportChip { display: none !important; }
   display: flex;
   align-items: stretch;
   height: var(--compact-tab);
-  padding: 0 4px env(safe-area-inset-bottom);
+  padding: 0 var(--space-1) env(safe-area-inset-bottom);
   background: var(--bar);
   border-top: 1px solid var(--line);
   z-index: 6;
@@ -202,7 +207,7 @@ html:not(.layout-compact) #compactSupportChip { display: none !important; }
   border: 0;
   background: transparent;
   color: var(--text-dim);
-  font-size: 10px;
+  font-size: var(--fs-1);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -236,7 +241,7 @@ html:not(.layout-compact) #compactSupportChip { display: none !important; }
   display: block;
   width: 36px;
   height: 4px;
-  margin: 8px auto 0;
+  margin: var(--space-2) auto 0;
   border-radius: 4px;
   background: var(--border-strong);
 }
@@ -278,7 +283,7 @@ html.layout-compact #toolRail .btn {
   width: 44px;
   height: 44px;
   min-height: 44px;
-  padding: 4px;
+  padding: var(--space-1);
   border: 0;
   border-radius: 14px;
   background: color-mix(in srgb, var(--surface-2) 92%, transparent);
@@ -295,7 +300,7 @@ html.layout-compact #toolRail .btn .ico {
   right: 10px;
   height: 36px;
   min-width: 44px;
-  padding: 0 12px;
+  padding: 0 var(--space-3);
   border: 0;
   border-radius: 12px;
   background: color-mix(in srgb, var(--surface-2) 92%, transparent);
@@ -311,7 +316,7 @@ html.layout-compact #cancel {
   min-width: 0;
   max-width: none;
   height: 40px;
-  padding: 0 16px;
+  padding: 0 var(--space-4);
   border: 0;
   border-radius: 999px;
 }
@@ -334,12 +339,12 @@ html.layout-compact:has(#cancel:not([hidden])) #slice { display: none !important
   height: 22px;
   display: none;
   align-items: center;
-  gap: 8px;
-  padding: 0 10px;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
   border-radius: 999px;
   background: color-mix(in srgb, var(--surface-2) 92%, transparent);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-2);
   overflow: hidden;
   white-space: nowrap;
 }
@@ -382,11 +387,11 @@ html.layout-compact .track input[type="range"]::-moz-range-thumb {
   top: 50%;
   transform: translateY(-50%);
   max-width: 70%;
-  padding: 6px 10px;
+  padding: var(--space-2) var(--space-3);
   border-radius: 999px;
   background: color-mix(in srgb, var(--surface-2) 92%, transparent);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-2);
   pointer-events: none;
   white-space: nowrap;
 }
@@ -404,14 +409,18 @@ html.layout-compact .stage-tools {
 }
 html.layout-compact .spark-wrap { display: none; }
 html.layout-compact .playback {
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
-  gap: 6px;
-  width: auto;
-  padding: 4px 8px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 44px;
+  padding: 0 var(--space-4) 0 var(--space-1);
   border-radius: 999px;
   background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+  box-shadow: var(--shadow-pop);
 }
-html.layout-compact #play { width: auto; min-width: 44px; height: 36px; }
+html.layout-compact #play { flex: 0 0 auto; width: auto; min-width: 56px; height: 36px; border: 0; border-radius: 999px; background: transparent; color: var(--text); }
+html.layout-compact .playback input[type="range"] { flex: 1 1 auto; width: auto; min-width: 96px; }
+html.layout-compact #playReadout { display: none; }
 
 #compactDevice {
   display: none;
@@ -419,7 +428,7 @@ html.layout-compact #play { width: auto; min-width: 44px; height: 36px; }
   grid-column: 1;
   min-height: 0;
   overflow: auto;
-  padding: 8px 16px 16px;
+  padding: var(--space-2) var(--space-4) var(--space-4);
   background: var(--bg);
 }
 html.layout-compact[data-compact-tab="device"] .workspace { visibility: hidden; }
@@ -433,10 +442,10 @@ html.layout-compact[data-compact-tab="prepare"] #compactLayerTip,
 html.layout-compact[data-compact-tab="prepare"] #compactProgress { display: none !important; }
 html.layout-compact[data-compact-tab="preview"] #compactProgress[data-on="1"] { display: flex !important; }
 
-.compact-device h2 { margin: 4px 0 0; font-size: 22px; letter-spacing: 0; text-transform: none; color: var(--text); }
+.compact-device h2 { margin: var(--space-1) 0 0; font-size: var(--fs-5); letter-spacing: 0; text-transform: none; color: var(--text); }
 .compact-device h3 {
-  margin: 16px 0 8px;
-  font-size: 11px;
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: var(--fs-1);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--text-faint);
@@ -445,15 +454,15 @@ html.layout-compact[data-compact-tab="preview"] #compactProgress[data-on="1"] { 
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin-top: 12px;
-  padding: 12px;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding: var(--space-3);
   border-radius: 14px;
   background: var(--surface-1);
   border: 1px solid var(--border);
 }
 .compact-status b { display: block; }
-.compact-status span { color: var(--text-dim); font-size: 12px; }
+.compact-status span { color: var(--text-dim); font-size: var(--fs-2); }
 .compact-status i {
   width: 8px;
   height: 8px;
@@ -462,7 +471,7 @@ html.layout-compact[data-compact-tab="preview"] #compactProgress[data-on="1"] { 
 }
 .compact-status[data-state="ok"] i { background: var(--ok); }
 .compact-status[data-state="down"] i { background: var(--danger); }
-html.layout-compact #compactDevice .connection { border: 0; padding: 0; }
+html.layout-compact #compactDevice .connection { margin-top: var(--space-4); border: 0; padding: 0; }
 html.layout-compact #compactDevice .connection-actions .btn#apiTest {
   background: var(--accent);
   color: var(--on-accent);
@@ -472,25 +481,25 @@ html.layout-compact #compactDevice .connection-actions .btn#apiTest {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-2);
   min-height: 44px;
 }
 .compact-row button {
   height: 36px;
-  padding: 0 12px;
+  padding: 0 var(--space-3);
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--surface-2);
 }
-.compact-row-actions { display: flex; gap: 8px; flex: 0 0 auto; }
-.compact-printer .popover { position: static; width: auto; margin: 0 0 8px; padding: 0; border: 0; box-shadow: none; background: transparent; }
+.compact-row-actions { display: flex; gap: var(--space-2); flex: 0 0 auto; }
+.compact-printer .popover { position: static; width: auto; margin: 0 0 var(--space-2); padding: 0; border: 0; box-shadow: none; background: transparent; }
 .compact-printer .popover #editPrinter { display: none; }
 
 #compactMenu {
   position: fixed;
   z-index: 30;
   min-width: 160px;
-  padding: 6px;
+  padding: var(--space-2);
   display: flex;
   flex-direction: column;
   background: var(--panel);
@@ -502,7 +511,7 @@ html.layout-compact #compactDevice .connection-actions .btn#apiTest {
   border: 0;
   background: transparent;
   text-align: left;
-  padding: 0 10px;
+  padding: 0 var(--space-3);
   border-radius: 8px;
 }
 
@@ -569,10 +578,10 @@ html.layout-compact[data-compact-tab="device"] #compactSupportEdit { display: no
   transform: translateX(-50%);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   max-width: calc(100% - 24px);
   height: 44px;
-  padding: 0 4px 0 12px;
+  padding: 0 var(--space-1) 0 var(--space-3);
   border-radius: 999px;
   background: color-mix(in srgb, var(--surface-2) 94%, transparent);
   color: var(--text);
@@ -584,32 +593,31 @@ html.layout-compact[data-compact-tab="device"] #compactSupportEdit { display: no
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: var(--fs-2);
   font-variant-numeric: tabular-nums;
 }
 #compactSupportChipAction {
   flex: 0 0 auto;
   height: 36px;
   min-width: 72px;
-  padding: 0 12px;
+  padding: 0 var(--space-3);
   border: 0;
   border-radius: 999px;
   background: var(--accent);
   color: var(--on-accent);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-3);
   font-weight: 600;
 }
 #compactSupportChip[data-action="prune"] #compactSupportChipAction {
   background: var(--danger);
   color: #fff;
 }
-#compactSupportChipAction:disabled { opacity: 0.45; }
 
 #compactSupportPeek {
   margin: 0;
-  padding: 0 12px 8px;
-  font-size: 12px;
+  padding: 0 var(--space-3) var(--space-2);
+  font-size: var(--fs-2);
   line-height: 16px;
   color: var(--text-dim);
   white-space: nowrap;

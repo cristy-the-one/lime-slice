@@ -263,6 +263,7 @@ function layerTip() {
 function devicePage() {
   const page = document.createElement("section");
   page.id = "compactDevice";
+  page.className = "compact-device";
   page.innerHTML = `
     <h2>Device</h2>
     <h3>Slicing engine</h3>

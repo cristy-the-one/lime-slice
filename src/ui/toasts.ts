@@ -1,3 +1,5 @@
+import { X, createElement } from "lucide";
+
 export type ToastTone = "info" | "warn" | "error";
 
 export interface ToastAction {
@@ -47,7 +49,7 @@ export function pushToast(message: string, tone: ToastTone = "info", action?: To
   close.type = "button";
   close.className = "toast-close";
   close.setAttribute("aria-label", "Dismiss");
-  close.textContent = "×";
+  close.append(createElement(X, { width: 14, height: 14, "aria-hidden": "true", class: "ico" }));
   close.addEventListener("click", () => toast.remove());
   toast.append(close);
   rail.prepend(toast);

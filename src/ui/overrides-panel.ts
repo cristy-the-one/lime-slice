@@ -49,7 +49,7 @@ function removeButton(kind: "range" | "volume", label: string): string {
 }
 
 function rangeItem(range: HeightRange): string {
-  const label = `Z ${mm(range.zFrom)}–${mm(range.zTo)} mm`;
+  const label = `${mm(range.zFrom)}–${mm(range.zTo)} mm`;
   return `
     <details class="mod-item" data-override-card data-range="${esc(range.id)}" data-mod="${esc(range.id)}"${openItems.has(range.id) ? " open" : ""}>
       <summary><span class="mod-name">${label}</span><span class="mod-val">${overrideSummary(range.override)}</span>${removeButton("range", "height range")}</summary>

@@ -164,7 +164,7 @@ export function renderChrome() {
     ${result ? section("Estimate", `<div id="estimate">${estimateHtml()}</div>`) : ""}
     ${result ? section("Active layer", `<div id="layerReadout">${layerReadout()}</div>`) : ""}
     ${rules.hidden.has("blendCompare") ? "" : section("Compare blends", `<div id="pareto"${state.mesh ? "" : ' class="is-off"'}>${paretoHtml()}</div>`)}
-    ${section("Resolved parameters", `<div class="meta" id="resolved">${paramTable(live)}</div>`, "advanced")}
+    ${state.mesh ? section("Resolved parameters", `<div class="meta" id="resolved">${paramTable(live)}</div>`, "advanced") : ""}
     ${result ? section("Diagnostics", `${triangleMeta(result)}${stageHtml(result)}`, "expert") : ""}
   `;
 
@@ -536,7 +536,7 @@ function strategyRowsHtml(): string {
 }
 
 function icon(node: IconNode): string {
-  return createElement(node, { width: 15, height: 15, "aria-hidden": "true", class: "ico" }).outerHTML;
+  return createElement(node, { width: 16, height: 16, "aria-hidden": "true", class: "ico" }).outerHTML;
 }
 
 function toolRow(buttons: { id: string; tool: string; label: string; command: string }[]): string {
@@ -762,12 +762,12 @@ export function paramTable(card: ResolvedCard) {
 
 /** Label and value rows. The values are the panel's own numbers; `value` is HTML. */
 function kvHtml(rows: [string, string][]): string {
-  return `<dl class="kv">${rows.map(([key, value]) => `<dt>${key}</dt><dd>${value}</dd>`).join("")}</dl>`;
+  return `<dl class="kv">${rows.map(([key, value]) => `<dt>${key}</dt> <dd>${value}</dd>`).join(" ")}</dl>`;
 }
 
 /** Counts as a two-column grid of `label  value` cells. */
 function statGridHtml(cells: [string, string][]): string {
-  return `<div class="stats">${cells.map(([key, value]) => `<div><span>${key}</span><b>${value}</b></div>`).join("")}</div>`;
+  return `<div class="stats">${cells.map(([key, value]) => `<div><span>${key}</span> <b>${value}</b></div>`).join(" ")}</div>`;
 }
 
 export function layerReadout() {

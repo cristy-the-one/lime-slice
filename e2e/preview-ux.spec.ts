@@ -47,7 +47,7 @@ test("preview opens in perspective, blurs until a slice, and steps one layer", a
   await expect(page.locator("#rangeHigh")).toHaveValue(String(max));
 
   const step = await page.locator("#layerNext").boundingBox();
-  expect(step?.height ?? 99).toBeLessThanOrEqual(22);
+  expect(step?.height ?? 99).toBeLessThanOrEqual(24);
   expect(step?.width ?? 99).toBeLessThanOrEqual(28);
   await page.locator("#layerPrev").click();
   await expect(page.locator("#rangeHigh")).toHaveValue(String(max - 1));
