@@ -27,7 +27,7 @@ test("price and density update the estimate without a slice, a stale mark, or a 
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#slice").click();
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   expect(jobs).toHaveLength(1);
   expect(jobs[0]!.printer).not.toHaveProperty("filamentDensityGCm3");
   expect(jobs[0]!.printer).not.toHaveProperty("filamentCostPerKg");
@@ -42,7 +42,7 @@ test("price and density update the estimate without a slice, a stale mark, or a 
   await expect(page.locator("#estGrams")).toHaveText(`${grams.toFixed(2)} g`);
   await expect(page.locator("#estCost")).toHaveText(filamentCost(grams, petg).toFixed(2));
   await expect(page.locator("#timing")).toContainText(`${grams.toFixed(2)} g`);
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   await expect(page.locator("#stage")).not.toHaveClass(/stale/);
   await expect(page.locator("#slice")).not.toHaveAttribute("data-slice-action", "changed");
   const download = page.waitForEvent("download", { timeout: 10_000 });

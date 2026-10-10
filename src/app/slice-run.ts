@@ -1,6 +1,6 @@
 import { fx } from "./fx";
 import { state, session, worker, cachedRecipes, type ParetoPoint, type SliceResponse } from "./state";
-import { meshKeyHex, partFrameKey, quietRefresh, recipeKey, type SliceAction, sliceAction, sliceBusyLabel, storesReply, FORCE_LABEL } from "../slice-action";
+import { meshKeyHex, partFrameKey, quietRefresh, recipeKey, type SliceAction, sliceAction, sliceBusyLabel, sliceErrorRetryable, storesReply, FORCE_LABEL } from "../slice-action";
 import { currentPlacement, livePlate, meshBase64, meshBytes, fail, isTauri, objectBase64, objectFingerprint, objectPlacement, withMeshData } from "./files";
 import { MeshRefs, sendWithMeshes, unknownMeshRef, type MeshFields, type SentMesh } from "../mesh-refs";
 import { adoptPatch, previewBase } from "./viewer";
@@ -17,11 +17,14 @@ import { paintRequestFields } from "../support-paint";
 import { noteTally } from "./paint-actions";
 import { loadMachineLibrary } from "./machine-library";
 import { beltStamp } from "../ui/machine-library";
-import { beltSliceField } from "../belt";
+import { beltRunTooLong, beltSliceField } from "../belt";
+import { currentRules } from "./rules";
+import { orderFields, sequentialClearance, tallestLast } from "../settings-rules";
 import { flowSliceField } from "../flow";
 import { engineDownMessage, authHeaders } from "../ui/api-base";
 import { topLayerIndex } from "../ui/preview-ux";
-import { pushToast } from "../ui/toasts";
+import { pushToast, type ToastAction } from "../ui/toasts";
+import { setBeltLength } from "./machine-actions";
 import {
   beginSliceJob,
   browserJobEvents,
@@ -136,13 +139,16 @@ export function scheduleAuto() {
 
 export function payload() {
   // One object with no settings of its own sends today's body; any other plate sends `objects`.
+  const library = loadMachineLibrary();
+  const rules = currentRules(library);
+  const order = { printOrder: state.printOrder, clearanceMm: state.sequentialClearance, gantryMm: state.sequentialGantry };
   const listed = plateListed(state.plate);
-  const objects = listed ? livePlate() : [];
+  // One object at a time prints the tallest last: the gantry only clears the objects before it.
+  const objects = !listed ? [] : sequentialClearance(rules, order) === null ? livePlate() : tallestLast(livePlate(), objectHeight);
   const one = listed
     ? {}
     : {
-        filename: state.sourcePos ? (state.mesh!.name || "part").replace(/\.(3mf|step|stp)$/i, ".stl") : (state.mesh!.name || "part"),
-        pose: currentPlacement()?.pose,
+        ...ownMesh(),
         ...editRequestFields(state.supportEdits, treeSupports()),
         ...(state.sourcePos ? paintRequestFields(state.supportPaint, sourceFrame(state.sourcePos, state.partScale)) : {}),
         ...(state.sourcePos ? seamRequestFields(state.seamPaint, sourceFrame(state.sourcePos, state.partScale)) : {}),
@@ -153,7 +159,7 @@ export function payload() {
         ...(objects.some((obj) => objectTree(obj)) ? { includeSkeleton: true } : {}),
       }
     : {};
-  return {
+  return rules.coerce({
     ...one,
     stepToleranceMm: state.stepTolerance,
     layerHeight: state.layerHeight,
@@ -177,7 +183,7 @@ export function payload() {
     ...flowSliceField(state.flow),
     ...retractSliceFields(),
     // Beside `printer`, and omitted for a cartesian machine, so that recipe stays the same bytes.
-    ...beltSliceField(beltStamp(loadMachineLibrary()), state.supports),
+    ...beltSliceField(beltStamp(library), state.supports),
     variableWidth: state.variableWidth,
     arcFit: state.arcFit,
     travelOpt: state.travelOpt,
@@ -205,29 +211,27 @@ export function payload() {
     simplifyErrorMm: state.simplifyError,
     ...sliceOverrideFields(state.overrides),
     ...plate,
-    ...orderSliceFields(),
-  };
+    ...orderFields(rules, order),
+  });
 }
 
-/**
- * All-at-once is omitted. Clearance and gantry height are omitted at 0, which
- * means the engine's 35 mm toolhead and 20 mm gantry.
- */
-function orderSliceFields(): { printOrder?: "sequential"; sequentialClearanceMm?: number; sequentialGantryMm?: number } {
-  if (state.plate.objects.length < 2 || state.printOrder !== "sequential") return {};
-  const out: { printOrder: "sequential"; sequentialClearanceMm?: number; sequentialGantryMm?: number } = { printOrder: "sequential" };
-  const gap = state.sequentialClearance;
-  if (Number.isFinite(gap) && gap > 0) out.sequentialClearanceMm = Math.min(100, Math.round(gap * 1000) / 1000);
-  const gantry = state.sequentialGantry;
-  if (Number.isFinite(gantry) && gantry > 0) out.sequentialGantryMm = Math.min(500, Math.round(gantry * 1000) / 1000);
-  return out;
+/** The loaded mesh as a request names it on its own: the object the pose tools hold, which is the selected one on a plate. */
+function ownMesh() {
+  const name = state.mesh!.name || "part";
+  return { filename: state.sourcePos ? name.replace(/\.(3mf|step|stp)$/i, ".stl") : name, pose: currentPlacement()?.pose };
 }
 
-/** The selected object prints tree supports, so its support edits travel with the slice. */
+/** How tall an object stands once placed, which is what the engine's gantry rule reads. */
+function objectHeight(obj: PlateObject): number {
+  const { min, max } = objectPlacement(obj).bounds;
+  return max[2] - min[2];
+}
+
 export function lineWidth() {
   return Math.min(1.2, Math.max(0.2, state.profile.nozzleDiameter * 1.125));
 }
 
+/** The selected object prints tree supports, so its support edits travel with the slice. */
 export function treeSupports() {
   const obj = plateListed(state.plate) ? state.plate.objects.find((o) => o.id === state.plate.selectedId) : undefined;
   return obj ? objectTree(obj) : state.supports && state.supportStyle === "tree";
@@ -392,7 +396,6 @@ export async function runSlice(force = false) {
     }
     state.layer = layerNear(body, session.chosenZ?.high, topLayerIndex(body.layers.length));
     state.rangeLow = layerNear(body, session.chosenZ?.low, state.rangeLow);
-    fx.clampPlane();
     landed = true;
   } catch (err) {
     if (id !== session.job) return;
@@ -401,7 +404,7 @@ export async function runSlice(force = false) {
     if (message === "Failed to fetch") markEngineDown(engineDownMessage(apiBase()));
     else {
       state.error = message;
-      pushToast(message, "error", { label: "Retry", run: () => { void runSlice(false); } });
+      pushToast(message, "error", sliceErrorActions(message));
     }
   } finally {
     unlisten?.();
@@ -414,6 +417,23 @@ export async function runSlice(force = false) {
       if (landed && stale()) scheduleAuto();
     }
   }
+}
+
+/**
+ * What the user can do about a slice error. A belt too short for the run gets
+ * the length that fits. Any other error the request causes is refused the same
+ * way every time, so it gets no Retry.
+ */
+function sliceErrorActions(message: string): ToastAction[] {
+  const run = beltRunTooLong(message);
+  if (run !== null) {
+    const mm = Math.floor(run) + 1;
+    return [
+      { label: `Set max length to ${mm} mm`, run: () => setBeltLength(mm) },
+      { label: "Unlimited", run: () => setBeltLength(null) },
+    ];
+  }
+  return sliceErrorRetryable(message) ? [{ label: "Retry", run: () => { void runSlice(false); } }] : [];
 }
 
 /**
@@ -528,7 +548,7 @@ export async function runPaCal() {
   renderChrome();
   try {
     const body = {
-      firmware: state.paFirmware,
+      firmware: currentRules().firmware,
       start: state.paStart,
       end: state.paEnd,
       step: state.paStep,
@@ -615,15 +635,12 @@ export async function runPareto() {
     renderChrome();
     return;
   }
-  if (plateListed(state.plate)) {
-    state.error = "Compare blends works on a plate of one object. Remove the other objects first.";
-    renderChrome();
-    return;
-  }
   markBusy(true);
   renderChrome();
   try {
-    const body = { ...payload(), printer: { ...printer(), filamentDensityGCm3: state.profile.filamentDensityGCm3 }, dataB64: meshBase64() };
+    // The engine estimates one object: on a plate, the selected one, alone and in the plate's settings.
+    const { objects: _objects, includeSkeleton: _skeleton, printOrder: _order, sequentialClearanceMm: _clearance, sequentialGantryMm: _gantry, ...single } = payload() as Record<string, unknown>;
+    const body = { ...single, ...ownMesh(), printer: { ...(single.printer as object), filamentDensityGCm3: state.profile.filamentDensityGCm3 }, dataB64: meshBase64() };
     let points: ParetoPoint[];
     if (isTauri()) {
       const { invoke } = await import("@tauri-apps/api/core");

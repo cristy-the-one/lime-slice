@@ -71,7 +71,7 @@ test("1, 2 and 3 switch the stage; V cycles the preview mode", async ({ page }) 
   await page.keyboard.press("2");
 
   await page.locator("#slice").click();
-  await expect(page.locator("#export")).toBeEnabled({ timeout: 15_000 });
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current", { timeout: 15_000 });
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   const mode = () => page.locator("[data-mode][aria-pressed=true]").getAttribute("data-mode");
   const first = await mode();
@@ -213,7 +213,7 @@ test("layer keys step the preview, and a typed ] is not a layer step", async ({ 
   await mockEngine(page);
   await openCube(page);
   await page.locator("#slice").click();
-  await expect(page.locator("#export")).toBeEnabled({ timeout: 15_000 });
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current", { timeout: 15_000 });
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.keyboard.press("2");
   const layer = () => page.locator("#rangeHigh").inputValue().then(Number);

@@ -343,8 +343,18 @@ function shifted(pos: Float32Array, move: MeshShift): Float32Array {
   return out;
 }
 
-export function offBed(b: Bounds, bedX: number, bedY: number, bedZ: number) {
+/**
+ * What a placed part pokes out of. On a belt only the part's width across the
+ * belt is a limit, as the engine checks it: the belt carries the part along Y,
+ * and the run is checked against Max length when it slices. `bedX` is then the
+ * belt width.
+ */
+export function offBed(b: Bounds, bedX: number, bedY: number, bedZ: number, belt = false) {
   const notes: string[] = [];
+  if (belt) {
+    if (b.max[0] - b.min[0] > bedX + 0.05) notes.push("wider than the belt");
+    return notes;
+  }
   if (b.min[0] < -0.05 || b.max[0] > bedX + 0.05) notes.push("outside the bed in X");
   if (b.min[1] < -0.05 || b.max[1] > bedY + 0.05) notes.push("outside the bed in Y");
   if (b.max[2] > bedZ + 0.05) notes.push("taller than the build volume");

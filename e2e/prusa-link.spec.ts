@@ -72,7 +72,7 @@ test("a printer answers, an unreachable host can be retried, and upload can star
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#slice").click();
-  await expect(page.locator("#export")).toBeEnabled({ timeout: 15_000 });
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current", { timeout: 15_000 });
   await expect(page.locator("#sendPrinter")).toBeEnabled();
   await page.locator("#machineMore > summary").click();
   await page.locator("#machineHost").fill("http://printer.local");

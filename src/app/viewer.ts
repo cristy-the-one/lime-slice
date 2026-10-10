@@ -8,7 +8,7 @@ import { syncLayerTip } from "../ui/layer-tip";
 import { type LayerGcode, indexLayerGcode, type PlayPoint, layerMoves, matchGcodeLine, layerClasses } from "../playback";
 import { replyOffset, shownBedOffset } from "../bed-offset";
 import { applyPlace, fetchStoredGcode, livePlate, nudgePlacement, objectPlacement } from "./files";
-import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, stale, markStale } from "./settings";
+import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, markStale } from "./settings";
 import { flushEdit, noteEdit } from "./history";
 import { beginModifierEdit, endModifierEdit, nudgeModifier, selectModifier } from "./override-actions";
 import { bandFractions } from "../overrides";
@@ -455,42 +455,14 @@ export function realignSplit(reason: SplitSync) {
   const outside = !!bounds && splitOutside(before, bounds, state.axis);
   state.atMm = nextSplitAt(reason, before, bounds, state.axis, state.splitCustom);
   if (reason === "load" || reason === "axis" || outside) state.splitCustom = false;
-  refreshSplitNotice();
 }
 
-export function noticeBounds(): AxisBounds | null {
-  if (state.result && !stale()) {
-    const mesh = state.result.mesh;
-    const [dx, dy] = shownOffset();
-    return {
-      min: [mesh.min[0] + dx, mesh.min[1] + dy, mesh.min[2]],
-      max: [mesh.max[0] + dx, mesh.max[1] + dy, mesh.max[2]],
-    };
-  }
-  return placedAxisBounds();
-}
-
-export function refreshSplitNotice() {
-  const splitNote = state.notice.startsWith("Split at ");
-  if (state.blendKind !== "byRegion") {
-    if (splitNote) state.notice = "";
-    return;
-  }
-  const bounds = noticeBounds();
-  if (!bounds || !splitOutside(state.atMm, bounds, state.axis)) {
-    if (splitNote) state.notice = "";
-    return;
-  }
-  const i = state.axis === "x" ? 0 : 1;
-  state.notice = `Split at ${state.atMm.toFixed(1)} mm is outside the mesh (${bounds.min[i].toFixed(1)}–${bounds.max[i].toFixed(1)}).`;
-}
-
+/** A split the user typed or dragged lands on the mesh: the plane is clamped to the bounds, not refused. */
 export function commitSplit(at: number) {
   noteEdit();
   const bounds = placedAxisBounds();
   state.atMm = bounds ? roundSplit(clampSplit(at, bounds, state.axis)) : roundSplit(at);
   state.splitCustom = true;
-  refreshSplitNotice();
   syncSplitField(true);
   const node = document.querySelector("#resolved");
   if (node && state.blendKind === "byRegion") node.innerHTML = paramTable(resolved(currentWeight(), state.layerHeight));
@@ -574,10 +546,6 @@ export function syncPlanes() {
   fx.view3d.setPlane(show && model ? { axis: state.axis, at: splitInReply() } : null);
   syncSplitField();
   paintGizmoReadout();
-}
-
-export function clampPlane() {
-  refreshSplitNotice();
 }
 
 export function paintRegionOverlay(
@@ -1192,4 +1160,4 @@ export function mountViews() {
   view3d.onPlane((at) => commitSplit(splitOnBed(at)));
 }
 
-Object.assign(fx, { paintLegend, paintSlider, loadGcode, layerGcode, pathsOf, movesNow, paintPlayback, paintGcode, syncGcodeHighlight, paintSpark, stopPlay, togglePlay, scrub, setView, setStage, setHelp, placedAxisBounds, realignSplit, syncCut, noticeBounds, refreshSplitNotice, commitSplit, syncSplitField, paintGizmoReadout, syncPlanes, clampPlane, paintRegionOverlay, previewMap, canvasPx, resize, previewCenter, sectionLimit, activeSection, sectionKeeps, paintSectionChrome, draw, segmentStart, applyGeom, sync3d, fitNarrow, stepGizmo, syncPreviewPending });
+Object.assign(fx, { paintLegend, paintSlider, loadGcode, layerGcode, pathsOf, movesNow, paintPlayback, paintGcode, syncGcodeHighlight, paintSpark, stopPlay, togglePlay, scrub, setView, setStage, setHelp, placedAxisBounds, realignSplit, syncCut, commitSplit, syncSplitField, paintGizmoReadout, syncPlanes, paintRegionOverlay, previewMap, canvasPx, resize, previewCenter, sectionLimit, activeSection, sectionKeeps, paintSectionChrome, draw, segmentStart, applyGeom, sync3d, fitNarrow, stepGizmo, syncPreviewPending });

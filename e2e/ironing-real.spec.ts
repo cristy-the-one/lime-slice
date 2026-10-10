@@ -57,7 +57,7 @@ test("ironing on slices the cube's top layer ironed, with no toast", async ({ pa
   await expect(page.locator("#ironflow")).toHaveValue("10");
   await page.locator("#slice").click();
   await expect(page.locator("#slice")).toBeEnabled({ timeout: SLICE_MS });
-  await expect(page.locator("#export")).toBeEnabled({ timeout: SLICE_MS });
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current", { timeout: SLICE_MS });
 
   expect(bodies.at(-1)).toHaveProperty("ironing", {});
   const gcode = await gcodeOf(page, replies.at(-1)!);

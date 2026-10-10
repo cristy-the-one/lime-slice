@@ -12,7 +12,10 @@ import { offBed } from "../mesh-place";
 import { boundsSize, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty } from "../plate";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys, readPresets, diffPreset } from "../presets";
 import { loadProfile, type PrinterProfile, saveProfile } from "../profiles";
-import { noteAdvance, noteFlow, noteGcode, noteNozzle, noteRetract, syncBeltSupportsLock } from "./machine-actions";
+import { noteAdvance, noteFirmware, noteFlow, noteGcode, noteNozzle, noteRetract, setSmartSupports } from "./machine-actions";
+import { currentRules } from "./rules";
+import { ADVANCE, orderFields, type Rules } from "../settings-rules";
+import { seamOptions } from "../seam";
 import { loadMachineLibrary } from "./machine-library";
 import { beltStamp, machineSectionHtml } from "../ui/machine-library";
 import { prusaSummary, rememberPrusaForm, syncSendButtons } from "./prusa-actions";
@@ -60,20 +63,17 @@ export function settingsHash() {
   // Fuzzy skin counts as it is sent, so a number changed while it is off stales nothing.
   const fuzzy = fuzzyRequest({ on: state.fuzzySkin, thickness: state.fuzzyThickness, pointDistance: state.fuzzyPointDistance });
   // A cartesian printer leaves this off, so its hash is the one it had before belt profiles.
-  const belt = beltStamp(loadMachineLibrary());
+  const library = loadMachineLibrary();
+  const belt = beltStamp(library);
+  // Hidden controls and the advance the firmware does not use are not part of the recipe.
+  const rules = currentRules(library);
   const retract = state.retractOn ? { retractLength: state.retractLength, retractSpeed: state.retractSpeed } : {};
-  const order = state.plate.objects.length > 1 && state.printOrder === "sequential"
-    ? {
-        printOrder: "sequential" as const,
-        ...(state.sequentialClearance > 0 ? { sequentialClearanceMm: state.sequentialClearance } : {}),
-        ...(state.sequentialGantry > 0 ? { sequentialGantryMm: state.sequentialGantry } : {}),
-      }
-    : {};
+  const order = orderFields(rules, { printOrder: state.printOrder, clearanceMm: state.sequentialClearance, gantryMm: state.sequentialGantry });
   const objectSettings = state.plate.objects
     .filter((obj) => !settingsEmpty(obj.settings))
     .map((obj) => `${obj.id}:${JSON.stringify(obj.settings)}`)
     .join("|");
-  const hashed = { mesh, profile, rest, ...ironing, ...fuzzy, ...retract, ...order, ...(belt ? { belt } : {}), ...(objectSettings ? { objectSettings } : {}) };
+  const hashed = { mesh, profile: rules.coerce(profile), rest: rules.coerce(rest), ...ironing, ...fuzzy, ...retract, ...order, ...(belt ? { belt } : {}), ...(objectSettings ? { objectSettings } : {}) };
   if (state.plate.objects.length > 1) {
     return JSON.stringify({
       ...hashed,
@@ -111,6 +111,7 @@ export function renderChrome() {
   if (commitTypedFields(typing)) fx.scheduleAuto();
   const mesh = state.mesh;
   const result = state.result;
+  const rules = currentRules();
   const find = document.querySelector<HTMLInputElement>("#find");
   const findFocused = find != null && document.activeElement === find;
   const selStart = find?.selectionStart ?? null;
@@ -127,21 +128,21 @@ export function renderChrome() {
     <div class="object-list" id="objectList">${objectList()}</div>
     ${group("Quality", `
       ${num("lh", "Layer height mm", state.layerHeight, 0.08, 0.4, 0.02, "simple")}
-      ${check("adaptive", "Adaptive layers", state.adaptive, "advanced")}
-      ${state.adaptive ? `${num("amin", "Min mm", state.adaptiveMin, 0.04, 0.28, 0.02, "advanced")}${num("amax", "Max mm", state.adaptiveMax, 0.08, 0.4, 0.02, "advanced")}` : ""}
+      ${rules.hidden.has("adaptive") ? "" : check("adaptive", "Adaptive layers", state.adaptive, "advanced")}
+      ${state.adaptive && !rules.hidden.has("adaptive") ? `${num("amin", "Min mm", state.adaptiveMin, 0.04, 0.28, 0.02, "advanced")}${num("amax", "Max mm", state.adaptiveMax, 0.08, 0.4, 0.02, "advanced")}` : ""}
       ${check("simplify", "Simplify outlines", state.simplify, "advanced")}
       ${state.simplify ? `${num("simperr", "Outline tolerance mm, 0 = auto", state.simplifyError, 0, 0.2, 0.005, "expert", "Every triangle is cut. Each layer's outline then drops vertices closer than this to the line through their neighbors. Auto is a sixteenth of the nozzle, 0.025 mm for 0.4 mm, so a gap the nozzle can print never closes.")}` : ""}
     `)}
     ${group("Strength", `
       ${check("vwidth", "Variable walls", state.variableWidth, "simple")}
       ${check("travelopt", "Travel and seam", state.travelOpt, "advanced")}
-      ${select("seam", "Seam position", state.seam, [["blend", "Blend (strategy)"], ["nearest", "Nearest"], ["aligned", "Aligned"], ["rear", "Rear"]], "advanced")}
+      ${select("seam", "Seam position", state.seam, seamOptions(rules.belt), "advanced")}
       ${check("ironing", "Ironing", state.ironing, "advanced", "A second pass over each top surface at low flow, inset half a line from the outline. Spacing stays below the line width. Defaults are 10% flow, 20 mm/s, and 0.1 mm spacing.")}
       ${state.ironing ? `${num("ironflow", "Ironing flow %", ironingFlowPercent(state.ironingFlow), 1, 100, 1, "advanced")}${num("ironspeed", "Ironing speed mm/s", state.ironingSpeed, 1, 200, 1, "advanced")}${num("ironspace", "Ironing spacing mm", state.ironingSpacing, 0.05, ironingSpacingMax(fx.lineWidth()), 0.01, "advanced")}` : ""}
       ${check("fuzzy", "Fuzzy skin", state.fuzzySkin, "advanced", "A stable sideways noise on the outer walls. Endpoints stay put, so a loop still meets. Defaults are 0.3 mm thickness and 0.8 mm between points.")}
       ${state.fuzzySkin ? `${num("fuzzythick", "Fuzzy thickness mm", state.fuzzyThickness, 0.05, 1, 0.05, "advanced")}${num("fuzzydist", "Fuzzy point spacing mm", state.fuzzyPointDistance, 0.1, 5, 0.1, "advanced")}` : ""}
-      ${select("scarf", "Scarf seam", state.scarfSeam, [["blend", "Blend default"], ["off", "Off"], ["outer", "Outer walls"], ["all", "Outer and inner"]], "advanced")}
-      ${state.scarfSeam === "off" ? "" : `${num("scarflen", "Scarf length mm", state.scarfLength, 1, 30, 1, "expert")}${num("scarfsteps", "Scarf steps", state.scarfSteps, 2, 32, 1, "expert")}`}
+      ${rules.hidden.has("scarf") ? "" : `${select("scarf", "Scarf seam", state.scarfSeam, [["blend", "Blend default"], ["off", "Off"], ["outer", "Outer walls"], ["all", "Outer and inner"]], "advanced")}
+      ${state.scarfSeam === "off" ? "" : `${num("scarflen", "Scarf length mm", state.scarfLength, 1, 30, 1, "expert")}${num("scarfsteps", "Scarf steps", state.scarfSteps, 2, 32, 1, "expert")}`}`}
     `)}
     ${group("Speed", `
       ${check("feeds", "Per-feature speeds", state.featureSpeeds, "simple")}
@@ -149,11 +150,9 @@ export function renderChrome() {
       ${check("combine", "Combine sparse infill", state.infillCombine, "advanced")}
       ${check("combing", "Hole-aware combing", state.combing, "advanced")}
       ${check("overhang", "Overhang and bridges", state.overhangControl, "simple")}
-      ${num("pa", "Pressure advance", state.pressureAdvance, 0, 0.2, 0.005, "expert")}
-      ${num("la", "Linear advance K", state.linearAdvance, 0, 2, 0.01, "expert")}
       ${select("gyroid3d", "3D gyroid", state.gyroid3d, [["blend", "Blend default"], ["off", "2D sine"], ["on", "Force 3D"]], "expert")}
-      ${select("zhop", "Z-hop", state.zHop, [["blend", "Blend default"], ["off", "Off"], ["smart", "Smart"], ["always", "Always"]], "advanced")}
-      ${state.zHop === "off" ? "" : `${num("zhopht", "Hop height mm", state.zHopHeight, 0.1, 2, 0.1, "expert")}${num("zhopmin", "Hop above travel mm", state.zHopMinTravel, 0.5, 20, 0.5, "expert")}`}
+      ${rules.hidden.has("zHop") ? "" : `${select("zhop", "Z-hop", state.zHop, [["blend", "Blend default"], ["off", "Off"], ["smart", "Smart"], ["always", "Always"]], "advanced")}
+      ${state.zHop === "off" ? "" : `${num("zhopht", "Hop height mm", state.zHopHeight, 0.1, 2, 0.1, "expert")}${num("zhopmin", "Hop above travel mm", state.zHopMinTravel, 0.5, 20, 0.5, "expert")}`}`}
     `)}
     ${group("Support", `
       ${check("supports", "Smart supports", state.supports, "simple")}
@@ -171,13 +170,12 @@ export function renderChrome() {
       <h2>Presets</h2>
       ${presetHtml()}
       ${group("PA calibration", `
-        ${select("pafw", "Firmware", state.paFirmware, [["klipper", "Klipper"], ["marlin", "Marlin"]], "expert")}
         ${num("pastart", "K start", state.paStart, 0, 1, 0.005, "expert")}
         ${num("paend", "K end", state.paEnd, 0, 1, 0.005, "expert")}
         ${num("pastep", "K step", state.paStep, 0.001, 0.2, 0.005, "expert")}
         <button class="btn" id="pacal" type="button">Generate PA test</button>
         ${state.paBands.length ? `<div class="meta">${state.paBands.map((b) => `band ${b.index}: K ${b.k.toFixed(4)} · Z ${b.z0.toFixed(2)}–${b.z1.toFixed(2)}`).join("<br>")}</div>
-          ${num("pachosen", "Chosen K", state.paFirmware === "marlin" ? state.linearAdvance : state.pressureAdvance, 0, 2, 0.005)}
+          ${num("pachosen", "Chosen K", state[ADVANCE[rules.firmware].key], 0, 2, 0.005)}
           <button class="btn" id="paapply" type="button">Save K to profile</button>
           <button class="btn" id="paexport" type="button">Export PA G-code</button>` : ""}
       `, "expert")}
@@ -234,8 +232,8 @@ export function renderChrome() {
       ${cardBtn("region", "By region", "Low side toughness, high side speed")}
     </div>
     <div class="stack" id="blendFields">${blendFields()}</div>
-    <h2>Blend compare</h2>
-    <div id="pareto">${paretoHtml()}</div>
+    ${rules.hidden.has("blendCompare") ? "" : `<h2>Blend compare</h2>
+    <div id="pareto">${paretoHtml()}</div>`}
     <h2>Resolved now</h2>
     <div class="meta" id="resolved">${paramTable(live)}</div>
     ${result ? `<h2>Estimate</h2>
@@ -265,7 +263,6 @@ export function renderChrome() {
   paintSettingMarks(currentPreset());
   syncEmptyState(!!state.mesh);
   session.supportUi?.refresh();
-  syncBeltSupportsLock();
   fx.syncPreviewPending?.();
 }
 
@@ -371,11 +368,13 @@ export function busyText() {
   return `${session.busyPhase || "Slicing…"} ${((performance.now() - session.busySince) / 1000).toFixed(1)} s`;
 }
 
-export function bannerLine(text: string, cls = "", alert = false) {
-  const kind = cls ? ` ${cls}` : "";
+/** `action` adds a button to the line; the click is read from `data-banner-action`. */
+export function bannerLine(text: string, cls = "", alert = false, action?: { id: string; label: string }) {
+  const kind = `${cls ? ` ${cls}` : ""}${action ? " has-action" : ""}`;
   const role = alert ? ` role="alert"` : "";
   const safe = escapeHtml(text);
-  return `<div class="banner${kind}"${role} title="${safe}">${safe}</div>`;
+  const button = action ? `<button class="btn banner-action" type="button" data-banner-action="${action.id}">${escapeHtml(action.label)}</button>` : "";
+  return `<div class="banner${kind}"${role} title="${safe}"><span class="banner-text">${safe}</span>${button}</div>`;
 }
 
 export const TRANSIENT_ERRORS = new Set([
@@ -415,7 +414,7 @@ export function paintBanner() {
   const floating = inAirWarning(
     air?.length ? { islands: air.reduce((n, a) => n + a!.islands, 0), overhangs: air.reduce((n, a) => n + a!.overhangs, 0) } : state.result?.inAir,
   );
-  if (floating) bits.push(bannerLine(floating, "warn"));
+  if (floating) bits.push(bannerLine(floating, "warn", false, { id: "supports", label: "Turn on supports" }));
   if (state.busy) {
     const sample = sliceSample();
     const indeterminate = !(sample.fraction > 0 && sample.fraction < 1);
@@ -667,8 +666,8 @@ export function noteObjectOverride(id: "objInfill" | "objWalls" | "objSpeed", ra
   return true;
 }
 
-function printOrderFields(many: boolean): string {
-  if (!many) return "";
+function printOrderFields(rules: Rules): string {
+  if (rules.hidden.has("printOrder")) return "";
   const clearance = state.sequentialClearance > 0 ? String(state.sequentialClearance) : "";
   const gantry = state.sequentialGantry > 0 ? String(state.sequentialGantry) : "";
   return `
@@ -700,13 +699,17 @@ export function objectList() {
   const bedX = state.profile.bedX;
   const bedY = state.profile.bedY;
   const bedZ = state.profile.bedZ;
+  const library = loadMachineLibrary();
+  const rules = currentRules(library);
+  const beltWidth = beltStamp(library)?.widthMm ?? bedX;
+  const limit = (bounds: Parameters<typeof offBed>[0]) => offBed(bounds, rules.belt ? beltWidth : bedX, bedY, bedZ, rules.belt);
   const rows = state.plate.objects.length > 0
     ? state.plate.objects.map((obj) => ({ obj, part: placeObject(obj, bedX, bedY) }))
     : [];
   const pairs = overlapPairs(rows.map(({ obj, part }) => ({ id: obj.id, name: obj.name, bounds: part.bounds })));
   const many = rows.length > 1;
   const list = rows.map(({ obj, part }) => {
-    const notes = offBed(part.bounds, bedX, bedY, bedZ);
+    const notes = limit(part.bounds);
     const selected = obj.id === state.plate.selectedId;
     return `
       <div class="obj obj-row" role="listitem" data-plate-id="${escapeHtml(obj.id)}" data-selected="${selected ? "true" : "false"}">
@@ -723,7 +726,7 @@ export function objectList() {
   const cx = ((b.min[0] + b.max[0]) / 2).toFixed(1);
   const cy = ((b.min[1] + b.max[1]) / 2).toFixed(1);
   const z0 = b.min[2].toFixed(1);
-  const selectedNotes = offBed(b, bedX, bedY, bedZ);
+  const selectedNotes = limit(b);
   const overlap = pairs.map((pair) => pair.line).join("; ");
   return `
     <div role="list">${list || `<div class="obj" role="listitem"><b>${escapeHtml(state.mesh?.name ?? "part")}</b><span>${triangleLine(state.placed.canonical.length / 9)} · ${boundsSize(state.placed.bounds)} mm</span></div>`}</div>
@@ -740,8 +743,8 @@ export function objectList() {
     </div>
     <label class="field setting" data-label="scale %" data-keywords="placement size percent">Scale %<input id="partScale" type="number" min="10" max="400" step="5" value="${Math.round(state.partScale * 100)}" /></label>
     ${isStepName(state.mesh?.name ?? "") ? num("stepTol", "STEP chord mm", state.stepTolerance, 0.01, 2, 0.01) : ""}
-    ${printOrderFields(many)}
-    ${overlap ? `<div class="meta warn-text" id="plateOverlap">${escapeHtml(overlap)}</div>` : ""}
+    ${printOrderFields(rules)}
+    ${overlap ? `<div class="meta warn-text" id="plateOverlap">${escapeHtml(overlap)} <button class="btn" type="button" data-plate-arrange>Arrange</button></div>` : ""}
     ${selectedNotes.length ? `<div class="meta warn-text">${selectedNotes.join("; ")}</div>` : ""}
     <div class="place-xy" id="placeXY" data-bed-z="${z0}">
       <label class="field setting" data-label="position x" data-keywords="placement move bed offset">X mm<input id="placeX" type="number" step="1" value="${cx}" aria-label="Position X" /></label>
@@ -753,8 +756,10 @@ export function objectList() {
 
 export function profileFields() {
   const p = state.profile;
+  const library = loadMachineLibrary();
+  const rules = currentRules(library);
   return `
-    ${machineSectionHtml(loadMachineLibrary(), { pressureAdvance: state.pressureAdvance, nozzleTemp: p.nozzleTemp, bedTemp: p.bedTemp, flow: state.flow }, prusaSummary())}
+    ${machineSectionHtml(library, { advance: state[ADVANCE[rules.firmware].key], nozzleTemp: p.nozzleTemp, bedTemp: p.bedTemp, flow: state.flow }, rules, prusaSummary())}
     ${num("nozzle", "Nozzle mm", p.nozzleDiameter, 0.15, 1.2, 0.05, "simple")}
     ${num("bedx", "Bed X mm", p.bedX, 50, 1000, 1, "simple")}
     ${num("bedy", "Bed Y mm", p.bedY, 50, 1000, 1, "simple")}
@@ -880,7 +885,7 @@ export function presetHtml() {
       <button class="btn" id="presetDelete" type="button">Delete</button>
     </div>
     <label class="field">Name<input id="presetName" type="text" placeholder="bench speed" /></label>
-    <button class="btn" id="presetSave" type="button">Save preset</button>
+    <button class="btn" id="presetSave" type="button" disabled>Save preset</button>
     <div class="meta diff" id="presetDiff">${presetDiffHtml()}</div>
   `;
 }
@@ -1013,7 +1018,6 @@ export function onBlend(ev: Event) {
     const next = Number(t.value);
     state.atMm = Number.isFinite(next) ? next : 0;
     state.splitCustom = true;
-    fx.refreshSplitNotice();
   }
   if (t.id === "price") {
     state.pricePerKg = Number(t.value) || 0;
@@ -1050,10 +1054,22 @@ export function onSettings(ev: Event) {
     rememberPrusaForm();
     return;
   }
-  if (t.id === "machinePa") {
-    noteAdvance(Number(t.value) || 0, state.linearAdvance);
+  if (t.id === "machineAdvance") {
+    const value = Number(t.value) || 0;
+    const key = ADVANCE[currentRules().firmware].key;
+    noteAdvance(key === "pressureAdvance" ? value : state.pressureAdvance, key === "linearAdvance" ? value : state.linearAdvance);
     markProjectDirty();
     markStale();
+    return;
+  }
+  if (t.id === "machineFirmware") {
+    noteFirmware(t.value);
+    markProjectDirty();
+    return;
+  }
+  if (t.id === "presetName") {
+    const save = document.querySelector<HTMLButtonElement>("#presetSave");
+    if (save) save.disabled = t.value.trim() === "";
     return;
   }
   if (t.id === "machineFlow") {
@@ -1065,13 +1081,11 @@ export function onSettings(ev: Event) {
   if (t.closest("[data-override-card]")) return;
   noteEdit();
   markProjectDirty();
-  const numIds = ["lh", "amin", "amax", "pa", "la", "zhopht", "zhopmin", "scarflen", "scarfsteps", "sangle", "bangle", "tipd", "trunkd", "shmult", "pastart", "paend", "pastep", "flowstart", "flowend", "flowstep", "tempstart", "tempend", "tempstep", "retractlen", "retractspd", "retractstart", "retractend", "retractstep", "nozzle", "bedx", "bedy", "bedz", "vol", "accel", "density", "cost", "partScale", "simperr"] as const;
+  const numIds = ["lh", "amin", "amax", "zhopht", "zhopmin", "scarflen", "scarfsteps", "sangle", "bangle", "tipd", "trunkd", "shmult", "pastart", "paend", "pastep", "flowstart", "flowend", "flowstep", "tempstart", "tempend", "tempstep", "retractlen", "retractspd", "retractstart", "retractend", "retractstep", "nozzle", "bedx", "bedy", "bedz", "vol", "accel", "density", "cost", "partScale", "simperr"] as const;
   const map: Record<string, (v: number) => void> = {
     lh: (v) => { state.layerHeight = v || 0.2; },
     amin: (v) => { state.adaptiveMin = v || 0.08; },
     amax: (v) => { state.adaptiveMax = v || 0.2; },
-    pa: (v) => { noteAdvance(v || 0, state.linearAdvance); },
-    la: (v) => { noteAdvance(state.pressureAdvance, v || 0); },
     zhopht: (v) => { state.zHopHeight = v || 0.4; },
     zhopmin: (v) => { state.zHopMinTravel = v || 2; },
     scarflen: (v) => { state.scarfLength = v || 10; },
@@ -1116,7 +1130,7 @@ export function onSettings(ev: Event) {
   if (t.id === "vwidth") state.variableWidth = t.checked;
   if (t.id === "simplify") state.simplify = t.checked;
   if (t.id === "travelopt") state.travelOpt = t.checked;
-  if (t.id === "supports") state.supports = t.checked;
+  if (t.id === "supports") setSmartSupports(t.checked);
   if (t.id === "autoslice") {
     state.autoSlice = t.checked;
     paintSettingMarks(currentPreset());
@@ -1138,7 +1152,6 @@ export function onSettings(ev: Event) {
   if (t.id === "fuzzydist") state.fuzzyPointDistance = readFuzzyPointDistance(t.value);
   if (t.id === "scarf") state.scarfSeam = t.value as typeof state.scarfSeam;
   if (t.id === "sstyle") state.supportStyle = t.value as typeof state.supportStyle;
-  if (t.id === "pafw") state.paFirmware = t.value as typeof state.paFirmware;
   if (t.id === "profileImport") {
     const file = t.files?.[0];
     if (!file) return;
@@ -1196,10 +1209,13 @@ export function touch() {
   fx.scheduleAuto();
 }
 
+/** Export is on whenever a mesh is loaded. Without a current slice it slices first, then saves. */
 function paintExport(button: HTMLButtonElement | null, isStale: boolean) {
   if (!button) return;
-  button.disabled = !state.result || isStale || state.busy;
-  button.dataset.tip = isStale ? "Settings changed. Slice again to export." : "Save G-code";
+  const current = !!state.result && !isStale;
+  button.disabled = !state.mesh || state.busy;
+  button.dataset.slice = current ? "current" : "first";
+  button.dataset.tip = current ? "Save G-code" : "Slice, then save G-code";
 }
 
 export function markStale() {

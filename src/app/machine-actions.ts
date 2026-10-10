@@ -3,6 +3,7 @@ import { flushEdit, noteEdit } from "./history.ts";
 import { loadMachineLibrary, machineLibraryStored, storeMachineLibrary } from "./machine-library.ts";
 import { markProjectDirty } from "../project-dirty.ts";
 import { fx } from "./fx.ts";
+import { currentRules } from "./rules.ts";
 import { saveProfile, defaultProfile, type PrinterProfile } from "../profiles.ts";
 import { state } from "./state.ts";
 import { pushToast } from "../ui/toasts.ts";
@@ -23,13 +24,14 @@ import {
   serializeMachineFile,
   adoptLegacyLink,
   beltStamp,
+  legacySeamOnEdge,
   setActiveBelt,
+  setActiveFirmware,
   setAdvance,
   setFlow,
   setGcode,
   setNozzleTemp,
   setRetract,
-  setSecondFilament,
   type MachineLibrary,
   type MachineNumbers,
 } from "../ui/machine-library.ts";
@@ -52,16 +54,6 @@ export function bootMachines() {
   library = adoptLegacyLink(library, takeLegacyPrusa());
   storeMachineLibrary(library);
   writeState(library);
-}
-
-/** Store a second filament. The slice keeps using the first, so this does not stale it. */
-export function noteSecondFilament(id: string) {
-  const next = setSecondFilament(loadMachineLibrary(), id);
-  if (typeof next === "string") {
-    pushToast(next, "info");
-    return;
-  }
-  storeMachineLibrary(next);
 }
 
 export function chooseMachine(printerId: string, filamentId: string, nozzleMm: number) {
@@ -116,6 +108,14 @@ export function noteAdvance(pressure: number, linear: number) {
   syncAdvanceInputs(pressure, linear);
 }
 
+/** The active printer's firmware, which decides the advance the slice sends. */
+export function noteFirmware(value: string) {
+  noteEdit();
+  storeMachineLibrary(setActiveFirmware(loadMachineLibrary(), value === "marlin" ? "marlin" : "klipper"));
+  fx.renderChrome?.();
+  fx.markStale?.();
+}
+
 export function noteNozzle(mm: number) {
   const library = loadMachineLibrary();
   const next = selectIn(library, library.printerId, library.filamentId, mm);
@@ -134,8 +134,11 @@ export function noteNozzle(mm: number) {
   if (nozzle) nozzle.value = String(Math.round(mm * 1000) / 1000);
 }
 
-/** Read the belt fields and store them on the active printer. A kind change rebuilds the panel. */
-export function noteBeltForm() {
+/** The controls whose change shows or hides others, so the panel is built again. */
+const STRUCTURAL_BELT_FIELDS = new Set(["machineKind", "beltUnlimited", "beltRaft"]);
+
+/** Read the belt fields and store them on the active printer. `field` is the id that changed. */
+export function noteBeltForm(field: string) {
   const library = loadMachineLibrary();
   const picked = selection(library);
   const kindEl = document.querySelector<HTMLSelectElement>("#machineKind");
@@ -151,6 +154,7 @@ export function noteBeltForm() {
   const unlimited = document.querySelector<HTMLInputElement>("#beltUnlimited")?.checked === true;
   const axis = document.querySelector<HTMLSelectElement>("#beltAxis")?.value;
   const direction = Number(document.querySelector<HTMLSelectElement>("#beltDirection")?.value);
+  const raft = document.querySelector<HTMLInputElement>("#beltRaft")?.checked === true;
   const belt = coerceBelt({
     angleDeg: num("beltAngle"),
     axis,
@@ -159,42 +163,51 @@ export function noteBeltForm() {
     maxLengthMm: unlimited ? null : (num("beltLength") ?? picked.printer.belt.maxLengthMm ?? 200),
     copies: num("beltCopies"),
     gapMm: num("beltGap"),
-    seamOnEdge: document.querySelector<HTMLInputElement>("#beltSeam")?.checked === true,
-    raftLayers: document.querySelector<HTMLInputElement>("#beltRaft")?.checked === true ? (num("beltRaftLayers") ?? 3) : 0,
-    // Smart supports decide the request now. The stored flag is kept as it was.
-    floorSupports: picked.printer.belt.floorSupports,
+    // The layers field is not in the panel while the raft is off.
+    raftLayers: raft ? (num("beltRaftLayers") ?? 3) : 0,
   }, picked.printer.bedX);
   const next = setActiveBelt(library, kind, belt);
   storeMachineLibrary(next);
   syncBeltViews(next);
-  const length = document.querySelector<HTMLInputElement>("#beltLength");
-  if (length) length.disabled = belt.maxLengthMm == null;
-  const raftLayers = document.querySelector<HTMLInputElement>("#beltRaftLayers");
-  if (raftLayers) raftLayers.disabled = belt.raftLayers === 0;
-  syncBeltSupportsLock();
-  if (kind !== picked.printer.kind) fx.renderChrome?.();
-  else fx.markStale?.();
+  const droppedSupports = reconcileSupports(next);
+  if (STRUCTURAL_BELT_FIELDS.has(field) || droppedSupports) fx.renderChrome?.();
+  fx.markStale?.();
+}
+
+/** Set the active belt's Max length, or null for unlimited, and slice again. One undo step. */
+export function setBeltLength(maxLengthMm: number | null) {
+  const library = loadMachineLibrary();
+  const belt = beltStamp(library);
+  if (!belt) return;
+  noteEdit();
+  const next = setActiveBelt(library, "belt", { ...belt, maxLengthMm });
+  storeMachineLibrary(next);
+  syncBeltViews(next);
+  flushEdit();
+  fx.renderChrome?.();
+  void fx.runSlice?.(false);
 }
 
 /**
- * On a belt printer Smart supports and the belt raft exclude each other. Each
- * box is disabled while the other is on, with a hint saying why. A raft that
- * is on stays untickable, so the pair can always be cleared. Called after
- * every panel render and belt edit.
+ * Smart supports on or off. The engine refuses supports under a belt raft, so
+ * on a belt that has one, ticking supports clears the raft. The caller has
+ * already opened the undo step.
  */
-export function syncBeltSupportsLock() {
-  const raftOn = (beltStamp(loadMachineLibrary())?.raftLayers ?? 0) > 0;
-  const supports = document.querySelector<HTMLInputElement>("#supports");
-  if (supports) lockBox(supports, raftOn, "The belt raft holds the part.");
-  const raft = document.querySelector<HTMLInputElement>("#beltRaft");
-  if (raft) lockBox(raft, state.supports && !raftOn, "Smart supports are on. They grow to the belt.");
+export function setSmartSupports(on: boolean) {
+  state.supports = on;
+  const library = loadMachineLibrary();
+  const belt = beltStamp(library);
+  if (!on || !belt || belt.raftLayers === 0) return;
+  const next = setActiveBelt(library, "belt", { ...belt, raftLayers: 0 });
+  storeMachineLibrary(next);
+  syncBeltViews(next);
 }
 
-function lockBox(input: HTMLInputElement, locked: boolean, hint: string) {
-  input.disabled = locked;
-  const label = input.closest("label");
-  if (locked) label?.setAttribute("data-tip", hint);
-  else label?.removeAttribute("data-tip");
+/** A belt raft that was just ticked, or a printer picked with one, holds the part, so Smart supports go off. */
+function reconcileSupports(library: MachineLibrary): boolean {
+  if (!state.supports || (beltStamp(library)?.raftLayers ?? 0) === 0) return false;
+  state.supports = false;
+  return true;
 }
 
 export function noteGcode(startGcode: string, endGcode: string) {
@@ -243,12 +256,15 @@ export function machineExportFile(): { text: string; name: string } | null {
 }
 
 export async function importMachineFile(file: File) {
-  const parsed = parseMachineFile(await file.text());
+  const text = await file.text();
+  const parsed = parseMachineFile(text);
   if (!parsed.ok) {
     pushToast(parsed.message, "error", { label: "Retry", run: openMachineFile });
     return;
   }
   const next = importInto(loadMachineLibrary(), parsed.file, newMachineId(), newMachineId());
+  // The belt-edge seam used to be a printer flag; it is now the Seam position choice.
+  if (legacySeamOnEdge(text) && (state.seam === "nearest" || state.seam === "aligned")) state.seam = "blend";
   commitSwitch(next);
 }
 
@@ -267,6 +283,7 @@ function commitSwitch(library: MachineLibrary) {
   noteEdit();
   storeMachineLibrary(library);
   writeState(library);
+  reconcileSupports(library);
   flushEdit();
   markProjectDirty();
   state.notice = "";
@@ -339,12 +356,8 @@ function takeLegacyPrusa(): { url: string; apiKey: string; startPrint: boolean }
 }
 
 function syncAdvanceInputs(pressure: number, linear: number) {
-  const machinePa = document.querySelector<HTMLInputElement>("#machinePa");
-  if (machinePa && document.activeElement !== machinePa) machinePa.value = String(pressure);
-  const pa = document.querySelector<HTMLInputElement>("#pa");
-  if (pa && document.activeElement !== pa) pa.value = String(pressure);
-  const la = document.querySelector<HTMLInputElement>("#la");
-  if (la && document.activeElement !== la) la.value = String(linear);
+  const input = document.querySelector<HTMLInputElement>("#machineAdvance");
+  if (input && document.activeElement !== input) input.value = String(currentRules().firmware === "marlin" ? linear : pressure);
 }
 
 function isFactoryProfile(profile: PrinterProfile, pressure: number, linear: number): boolean {

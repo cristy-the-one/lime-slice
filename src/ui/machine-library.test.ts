@@ -21,7 +21,8 @@ import {
   setActiveBelt,
   setNozzleTemp,
   setRetract,
-  setSecondFilament,
+  setActiveFirmware,
+  legacySeamOnEdge,
   setLink,
   adoptLegacyLink,
   beltStamp,
@@ -52,7 +53,7 @@ check(
   "the generic belt is a 45° belt along Z with no length limit",
   genericBelt?.builtin === true &&
     genericBelt.kind === "belt" &&
-    JSON.stringify(genericBelt.belt) === JSON.stringify({ angleDeg: 45, axis: "z", direction: 1, widthMm: 200, maxLengthMm: null, copies: 1, gapMm: 5, seamOnEdge: false, raftLayers: 0, floorSupports: false }),
+    JSON.stringify(genericBelt.belt) === JSON.stringify({ angleDeg: 45, axis: "z", direction: 1, widthMm: 200, maxLengthMm: null, copies: 1, gapMm: 5, raftLayers: 0 }),
   JSON.stringify(genericBelt),
 );
 const ir3 = library.printers.find((printer) => printer.id === "ideaformer-ir3-v2");
@@ -62,7 +63,7 @@ check(
     ir3.kind === "belt" &&
     ir3.bedX === 250 && ir3.bedY === 250 && ir3.bedZ === 250 &&
     ir3.maxVolumetricMm3S === 12 && ir3.maxAccel === 20000 &&
-    JSON.stringify(ir3.belt) === JSON.stringify({ angleDeg: 45, axis: "z", direction: 1, widthMm: 250, maxLengthMm: null, copies: 1, gapMm: 5, seamOnEdge: false, raftLayers: 0, floorSupports: false }),
+    JSON.stringify(ir3.belt) === JSON.stringify({ angleDeg: 45, axis: "z", direction: 1, widthMm: 250, maxLengthMm: null, copies: 1, gapMm: 5, raftLayers: 0 }),
   JSON.stringify(ir3),
 );
 const onBelt = selectIn(library, "generic-belt-45", "lime-pla", 0.4);
@@ -196,7 +197,7 @@ for (const printer of version2.printers) {
 }
 const fromVersion2 = parseLibrary(JSON.stringify(version2));
 const lime = fromVersion2.printers.find((printer) => printer.id === "lime-220");
-check("a version 2 library gains a cartesian belt block", fromVersion2.version === 3 && lime?.bedX === 220 && lime.kind === "cartesian" && lime.belt.angleDeg === 45 && lime.belt.copies === 1 && lime.belt.maxLengthMm === null && lime.belt.widthMm === 220 && lime.belt.raftLayers === 0 && lime.belt.seamOnEdge === false && lime.belt.floorSupports === false);
+check("a version 2 library gains a cartesian belt block", fromVersion2.version === 3 && lime?.bedX === 220 && lime.kind === "cartesian" && lime.belt.angleDeg === 45 && lime.belt.copies === 1 && lime.belt.maxLengthMm === null && lime.belt.widthMm === 220 && lime.belt.raftLayers === 0);
 
 const belted = setActiveBelt(library, "belt", { ...defaultBelt(180), angleDeg: 35, axis: "y", direction: -1, copies: 3, gapMm: 8, maxLengthMm: null });
 const beltRow = selection(belted);
@@ -222,18 +223,23 @@ check("another filament keeps its temperature", warmed.filaments.find((filament)
 check("a cold temperature is held at 150", selection(setNozzleTemp(builtinLibrary(), 10))?.filament.nozzleTemp === 150);
 check("a hot temperature is held at 320", selection(setNozzleTemp(builtinLibrary(), 400))?.filament.nozzleTemp === 320);
 
-const secondStored = setSecondFilament(builtinLibrary(), "lime-petg");
-check("a second filament is remembered", typeof secondStored !== "string" && secondStored.secondFilamentId === "lime-petg");
-const secondRound = typeof secondStored === "string" ? null : parseLibrary(serializeLibrary(secondStored));
-check("a second filament round-trips", secondRound?.secondFilamentId === "lime-petg");
-const cleared = typeof secondStored === "string" ? secondStored : setSecondFilament(secondStored, "");
-check("clearing the second filament omits it", typeof cleared !== "string" && cleared.secondFilamentId === undefined && !serializeLibrary(cleared).includes("secondFilamentId"));
-check("the loaded filament cannot be the second", (setSecondFilament(builtinLibrary(), "lime-pla") as { secondFilamentId?: string }).secondFilamentId === undefined);
-const switched = typeof secondStored === "string" ? secondStored : selectIn(secondStored, secondStored.printerId, "lime-petg", secondStored.nozzleMm);
-check("choosing the second filament as the slice filament clears the slot", typeof switched !== "string" && switched.filamentId === "lime-petg" && switched.secondFilamentId === undefined);
-const sentSecond = typeof secondStored === "string" ? null : enginePrinter(selection(secondStored)!.printer, selection(secondStored)!.filament, secondStored.nozzleMm);
-check("the engine profile stays the first filament", sentSecond?.nozzleTemp === 200 && sentSecond !== null && !("secondFilamentId" in sentSecond));
-check("builtins keep the second filament", typeof secondStored !== "string" && ensureBuiltins(secondStored).secondFilamentId === "lime-petg");
+const withSecond = parseLibrary(JSON.stringify({ ...JSON.parse(serializeLibrary(library)), secondFilamentId: "lime-petg" }));
+check("a stored second filament from an older save is ignored", !("secondFilamentId" in withSecond) && !serializeLibrary(ensureBuiltins(withSecond)).includes("secondFilamentId"));
+
+check("every built-in printer is Klipper", library.printers.every((printer) => printer.firmware === "klipper"));
+const marlin = setActiveFirmware(library, "marlin");
+check("the firmware is stored on the active printer only", selection(marlin)?.printer.firmware === "marlin" && marlin.printers.filter((printer) => printer.firmware === "marlin").length === 1);
+check("the firmware round-trips through the library", selection(parseLibrary(serializeLibrary(marlin)))?.printer.firmware === "marlin");
+const marlinFile = fileFromSelection(marlin);
+const marlinRound = marlinFile ? parseMachineFile(serializeMachineFile(marlinFile)) : null;
+check("the firmware round-trips through a machine file", marlinRound?.ok === true && marlinRound.file.printer.firmware === "marlin");
+const oldFirmwareless = JSON.parse(serializeLibrary(library)) as { printers: Record<string, unknown>[] };
+for (const printer of oldFirmwareless.printers) delete printer.firmware;
+check("a printer saved before firmware reads as Klipper", parseLibrary(JSON.stringify(oldFirmwareless)).printers.every((printer) => printer.firmware === "klipper"));
+const oldBelt = JSON.parse(serializeLibrary(library)) as { printers: { belt: Record<string, unknown> }[] };
+for (const printer of oldBelt.printers) Object.assign(printer.belt, { seamOnEdge: true, floorSupports: true });
+check("an old belt block's seam and floor supports flags are dropped on load", parseLibrary(JSON.stringify(oldBelt)).printers.every((printer) => !("seamOnEdge" in printer.belt) && !("floorSupports" in printer.belt)));
+check("an old machine file that put its seam on the belt edge is noticed", legacySeamOnEdge(JSON.stringify({ printer: { kind: "belt", belt: { seamOnEdge: true } } })) && !legacySeamOnEdge(JSON.stringify({ printer: { kind: "belt", belt: { seamOnEdge: false } } })) && !legacySeamOnEdge(JSON.stringify({ printer: { kind: "cartesian", belt: { seamOnEdge: true } } })) && !legacySeamOnEdge("nope"));
 
 const restored = ensureBuiltins(parseLibrary("nope"));
 check("a corrupt library grows the built-ins back", restored.printers.some((printer) => printer.id === "lime-220") && restored.filaments.some((filament) => filament.id === "lime-tpu"));

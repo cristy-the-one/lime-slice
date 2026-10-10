@@ -13,6 +13,7 @@ import { session, state } from "./app/state";
 import { activeSection, draw, fitNarrow, mountViews, paintGizmoReadout, prepare, previewCenter, resize, selectedObjectIndex, setHelp, setStage, setView, view3d } from "./app/viewer";
 import { probe, renderChrome } from "./app/settings";
 import { runSlice, treeSupports } from "./app/slice-run";
+import { turnOnSupports } from "./app/support-actions";
 import { mountSupportEdits } from "./ui/support-edit-ui";
 import { clearSeam, drawSeam, seamStroke } from "./app/seam-actions";
 import { mountSeamPaint } from "./ui/seam-paint-ui";
@@ -80,6 +81,11 @@ session.supportUi = mountSupportEdits(view3d, {
   reveal() {
     if (state.stage !== "preview") setStage("preview");
     if (state.viewMode !== "solid") setView("solid");
+  },
+  prepareTree() {
+    if (!state.mesh) return false;
+    turnOnSupports({ tree: true });
+    return true;
   },
 });
 session.paintUi = mountSupportPaint(prepare, {

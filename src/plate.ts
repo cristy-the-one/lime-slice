@@ -518,7 +518,8 @@ export function arrangeBoxes(boxes: ArrangeBox[], bedX: number, gap = ARRANGE_GA
   return out;
 }
 
-export function arrangedObjects(objects: PlateObject[], bedX: number, bedY: number): PlateObject[] {
+/** `gap` is the space left between objects; a one-at-a-time plate leaves its toolhead clearance. */
+export function arrangedObjects(objects: PlateObject[], bedX: number, bedY: number, gap = ARRANGE_GAP_MM): PlateObject[] {
   const placed = objects.map((obj) => ({ obj, part: placeObject(obj, bedX, bedY) }));
   const moves = arrangeBoxes(placed.map(({ obj, part }) => ({
     id: obj.id,
@@ -526,7 +527,7 @@ export function arrangedObjects(objects: PlateObject[], bedX: number, bedY: numb
     minY: part.bounds.min[1],
     maxX: part.bounds.max[0],
     maxY: part.bounds.max[1],
-  })), bedX);
+  })), bedX, gap);
   const byId = new Map(moves.map((move) => [move.id, move]));
   return placed.map(({ obj, part }) => {
     const move = byId.get(obj.id);

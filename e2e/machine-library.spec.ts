@@ -29,25 +29,24 @@ test("filament and nozzle pick the pressure advance, and a bad file can be retri
   await expect(page.locator("#machinePrinter")).toHaveValue("lime-220");
   await expect(page.locator("#machineFilament")).toHaveValue("lime-pla");
   await expect(page.locator("#machineNozzle")).toHaveValue("0.4");
-  await expect(page.locator("#machinePa")).toHaveValue("0");
+  await expect(page.locator("#machineAdvance")).toHaveValue("0");
   await expect(page.locator("#machineFlow")).toHaveValue("1");
   await expect(page.locator("#machineTemps")).toHaveText("Nozzle 200 °C · bed 60 °C");
 
   await page.locator("#machineFilament").selectOption("lime-petg");
-  await expect(page.locator("#machinePa")).toHaveValue("0.05");
+  await expect(page.locator("#machineAdvance")).toHaveValue("0.05");
   await expect(page.locator("#machineTemps")).toHaveText("Nozzle 240 °C · bed 80 °C");
-  await expect(page.locator("#pa")).toHaveValue("0.05");
 
   await page.locator("#machineNozzle").selectOption("0.6");
-  await expect(page.locator("#machinePa")).toHaveValue("0.06");
+  await expect(page.locator("#machineAdvance")).toHaveValue("0.06");
   await expect(page.locator("#nozzle")).toHaveValue("0.6");
 
   await page.keyboard.press("Control+z");
   await expect(page.locator("#machineNozzle")).toHaveValue("0.4");
-  await expect(page.locator("#machinePa")).toHaveValue("0.05");
+  await expect(page.locator("#machineAdvance")).toHaveValue("0.05");
   await page.keyboard.press("Control+z");
   await expect(page.locator("#machineFilament")).toHaveValue("lime-pla");
-  await expect(page.locator("#machinePa")).toHaveValue("0");
+  await expect(page.locator("#machineAdvance")).toHaveValue("0");
   await expect(page.locator("#machineTemps")).toHaveText("Nozzle 200 °C · bed 60 °C");
 
   await page.locator("#machineFilament").selectOption("lime-petg");
@@ -102,7 +101,7 @@ test("filament and nozzle pick the pressure advance, and a bad file can be retri
   });
   await expect(page.locator("#machinePrinter option", { hasText: "Shop" })).toHaveCount(1);
   await expect(page.locator("#bedx")).toHaveValue("250");
-  await expect(page.locator("#machinePa")).toHaveValue("0.02");
+  await expect(page.locator("#machineAdvance")).toHaveValue("0.02");
   await expect(page.locator("#machineTemps")).toHaveText("Nozzle 210 °C · bed 55 °C");
   await page.locator("#machineMore > summary").click();
   await expect(page.locator("#machineHost")).toHaveValue("");
@@ -116,7 +115,7 @@ test("filament and nozzle pick the pressure advance, and a bad file can be retri
   await expect(page.locator("#machinePrinter option", { hasText: "Lime 220 copy" })).toHaveCount(1);
 });
 
-test("a second filament is stored and left out of the slice", async ({ page }) => {
+test("one advance control follows the printer's firmware, and only that advance is sent", async ({ page }) => {
   await quiet(page);
   const bodies: Record<string, unknown>[] = [];
   await page.route("**/api/slice", async (route) => {
@@ -124,25 +123,33 @@ test("a second filament is stored and left out of the slice", async ({ page }) =
     await route.fulfill({ json: cube });
   });
   await page.goto("/");
-  await expect(page.locator("#secondFilament")).toHaveValue("");
+  await expect(page.locator("#secondFilament")).toHaveCount(0);
+  await expect(page.locator("#pa")).toHaveCount(0);
+  await expect(page.locator("#la")).toHaveCount(0);
+  await expect(page.locator("#pafw")).toHaveCount(0);
+  await expect(page.locator("#machineFirmware")).toHaveValue("klipper");
+  await expect(page.locator("label:has(#machineAdvance)")).toContainText("Pressure advance");
+  await page.locator("#machineFilament").selectOption("lime-petg");
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
   await expect(page.locator("#slice")).toBeEnabled();
   await page.locator("#slice").click();
-  await expect(page.locator("#export")).toBeEnabled();
-  await expect.poll(() => bodies.length).toBeGreaterThan(0);
-  const sent = bodies.length;
-  await page.locator("#secondFilament").selectOption("lime-petg");
-  await expect(page.locator("#secondFilament")).toHaveValue("lime-petg");
-  await expect(page.locator("#machineTemps")).toHaveText("Nozzle 200 °C · bed 60 °C");
-  await expect(page.locator("#export")).toBeEnabled();
-  await page.waitForTimeout(400);
-  expect(bodies).toHaveLength(sent);
-  const printer = bodies[0].printer as Record<string, unknown>;
-  expect(printer.nozzleTemp).toBe(200);
-  expect(bodies[0]).not.toHaveProperty("secondFilamentId");
+  await expect.poll(() => bodies.length).toBe(1);
+  expect(bodies[0].printer).toMatchObject({ pressureAdvance: 0.05 });
+  expect(bodies[0].printer).not.toHaveProperty("linearAdvance");
+
+  await page.locator("#machineFirmware").selectOption("marlin");
+  await expect(page.locator("label:has(#machineAdvance)")).toContainText("Linear advance K");
+  await expect(page.locator("#machineAdvance")).toHaveValue("0");
+  await page.locator("#machineAdvance").fill("0.8");
+  await page.locator("#slice").click();
+  await expect.poll(() => bodies.length).toBe(2);
+  expect(bodies[1].printer).toMatchObject({ linearAdvance: 0.8 });
+  expect(bodies[1].printer).not.toHaveProperty("pressureAdvance");
+
+  // The firmware is the printer's: it stays after a reload, and the value typed under it is kept.
   await page.reload();
-  await expect(page.locator("#secondFilament")).toHaveValue("lime-petg");
-  await expect(page.locator("#machineFilament")).toHaveValue("lime-pla");
+  await expect(page.locator("#machineFirmware")).toHaveValue("marlin");
+  await expect(page.locator("#machineAdvance")).toHaveValue("0.8");
 });
 
 test.describe("compact machine library", () => {
@@ -164,7 +171,7 @@ test.describe("compact machine library", () => {
     await page.locator("#compactTabs [data-tab=settings]").click();
     await expect(page.locator("#machinePrinter")).toBeVisible();
     await expect(page.locator("#machineFilament")).toBeVisible();
-    await expect(page.locator("#machinePa")).toBeVisible();
+    await expect(page.locator("#machineAdvance")).toBeVisible();
     await page.locator("#compactTabs [data-tab=prepare]").click();
     await expect(page.locator("#compactSheet")).toHaveAttribute("data-detent", "peek");
     await page.waitForTimeout(250);

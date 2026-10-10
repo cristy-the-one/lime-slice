@@ -82,7 +82,7 @@ test("moving one plate object re-emits only its G-code, without a click", async 
   // A disk-cache hit leaves the kept plan to a background warm-up, so plan this one.
   await page.locator("#force").click();
   await sliced(page);
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   const first = replies.at(-1)!;
   expect(first.fromCache).toBe(false);
   expect(first.objects?.map((o) => o.id)).toEqual(["part", expect.stringMatching(/^obj-/)]);
@@ -97,7 +97,7 @@ test("moving one plate object re-emits only its G-code, without a click", async 
   const count = replies.length;
   const committed = Date.now();
   await commitX(page, String(fromX + 25));
-  await expect(page.locator("#export")).toBeEnabled({ timeout: SLICE_MS });
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current", { timeout: SLICE_MS });
   await expect.poll(() => replies.length, { timeout: SLICE_MS }).toBe(count + 1);
   console.log(`plate move: commit to export enabled ${Date.now() - committed} ms`);
   await expect(page.locator("#stage")).not.toHaveClass(/stale/);

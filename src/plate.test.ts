@@ -95,6 +95,8 @@ check("add selects the copy", copied?.selectedId !== "part" && copied?.objects.l
 const arranged = arrangedObjects(copied!.objects, bed, bed);
 const bounds = arranged.map((obj) => placeObject(obj, bed, bed).bounds);
 check("arrange clears the overlap", !boxesOverlapXY(bounds[0]!, bounds[1]!));
+const spaced = arrangedObjects(copied!.objects, bed, bed, 35).map((obj) => placeObject(obj, bed, bed).bounds);
+check("arrange leaves the gap it is given", Math.abs(spaced[1]!.min[0] - spaced[0]!.max[0] - 35) < 0.01 || Math.abs(spaced[1]!.min[1] - spaced[0]!.max[1] - 35) < 0.01);
 for (const box of bounds) {
   check("arranged boxes stay inside the bed", box.min[0] >= -0.05 && box.min[1] >= -0.05 && box.max[0] <= bed + 0.05 && box.max[1] <= bed + 0.05, JSON.stringify(box));
 }
@@ -125,6 +127,7 @@ check("two objects send objects", plateListed(copied!));
 check("one object with its own settings sends objects", plateListed({ objects: [{ ...left, settings: { supports: false } }], selectedId: "part" }));
 const shoved = object(20, "wide", false, { x: 250, y: 0, z: 0 });
 check("a box past the bed warns in X", offBed(placeObject(shoved, bed, bed).bounds, bed, bed, 250).includes("outside the bed in X"));
+check("on a belt a box past the bed in X, Y, and Z is not a bed warning, only a width over the belt is", offBed({ min: [0, -300, 0], max: [20, 900, 900] }, 200, 200, 250, true).length === 0 && offBed({ min: [0, 0, 0], max: [260, 10, 10] }, 200, 200, 250, true).join() === "wider than the belt");
 const prune = { id: 1, edit: { kind: "prune", sites: [{ xy: [1, 2], z: 3 }] } } as unknown as PlateObject["supportEdits"][number];
 const edited = arranged.map((obj, i) => (i === 0 ? { ...obj, supportEdits: [prune], settings: { supportAngle: 50 } } : obj));
 const sent = slicePlateFields(edited, (obj) => placeObject(obj, bed, bed).pose, { supports: true, supportStyle: "tree" }).objects;

@@ -119,7 +119,7 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.getByRole("button", { name: "Compare speed, mixes, toughness" }).click();
   await expect(page.locator(".pareto-dot")).toHaveCount(5);
   await page.locator("#pareto").screenshot({ path: path.join(out, "p1-pareto.png") });
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   await page.locator(".top").screenshot({ path: path.join(out, "p1-export.png") });
 
   await page.getByRole("button", { name: /^By layer/ }).click();
@@ -180,7 +180,7 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.locator("#lh").fill("0.28");
   await page.locator("#lh").dispatchEvent("change");
   await expect(page.getByRole("button", { name: "Re-slice", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Export G-code" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Export G-code" })).toHaveAttribute("data-slice", "first");
   await shot(page, "v3-10-stale.png");
 
   page.once("dialog", (dialog) => void dialog.accept());

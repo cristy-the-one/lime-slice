@@ -22,33 +22,38 @@ export interface BeltSettings {
   copies: number;
   /** Gap between copies along the belt, mm. */
   gapMm: number;
-  /** Pull an explicit seam onto the belt edge. Off leaves nearest and aligned. */
-  seamOnEdge: boolean;
   /** Solid pad layers on the belt before the part. 0 is off. */
   raftLayers: number;
-  /** Kept from older saves. Not read for the request: Smart supports decide it. */
-  floorSupports: boolean;
 }
 
 /**
  * The `belt` object on a slice request, or nothing for a cartesian printer.
  * `maxLengthMm` is omitted when the belt is unlimited, so a missing cap is
  * the same bytes as an unlimited belt. Smart supports grow to the belt, so
- * `floorSupports` is sent with them and never beside a raft. The stored
- * `floorSupports` field is not read.
+ * `floorSupports` is sent with them and never beside a raft. The seam needs no
+ * belt flag: a blend seam is the belt edge on a belt.
  */
-export function beltSliceField(belt: BeltSettings | null, supports: boolean): { belt?: Omit<BeltSettings, "maxLengthMm" | "seamOnEdge" | "raftLayers" | "floorSupports"> & { maxLengthMm?: number; seamOnEdge?: true; raftLayers?: number; floorSupports?: true } } {
+export function beltSliceField(belt: BeltSettings | null, supports: boolean): { belt?: Omit<BeltSettings, "maxLengthMm" | "raftLayers"> & { maxLengthMm?: number; raftLayers?: number; floorSupports?: true } } {
   if (!belt) return {};
-  const { maxLengthMm, seamOnEdge, raftLayers, floorSupports: _stored, ...rest } = belt;
+  const { maxLengthMm, raftLayers, ...rest } = belt;
   return {
     belt: {
       ...rest,
       ...(maxLengthMm == null ? {} : { maxLengthMm }),
-      ...(seamOnEdge ? { seamOnEdge: true as const } : {}),
       ...(raftLayers > 0 ? { raftLayers } : {}),
       ...(supports && raftLayers === 0 ? { floorSupports: true as const } : {}),
     },
   };
+}
+
+/**
+ * The belt run an engine error reports when it is longer than the printer's
+ * Max length, or null for any other message. Matches
+ * `belt.maxLengthMm {cap} is shorter than the belt run of {run} mm`.
+ */
+export function beltRunTooLong(message: string): number | null {
+  const match = /belt\.maxLengthMm \S+ is shorter than the belt run of (\d+(?:\.\d+)?) mm/.exec(message);
+  return match ? Number(match[1]) : null;
 }
 
 export function defaultBelt(widthMm = 220): BeltSettings {
@@ -60,9 +65,7 @@ export function defaultBelt(widthMm = 220): BeltSettings {
     maxLengthMm: null,
     copies: 1,
     gapMm: 5,
-    seamOnEdge: false,
     raftLayers: 0,
-    floorSupports: false,
   };
 }
 
@@ -108,7 +111,10 @@ export function tiltPose(widthMm: number, heightMm: number, angleDeg: number): {
   };
 }
 
-/** Fill gaps and clamp. A missing length is unlimited. */
+/**
+ * Fill gaps and clamp. A missing length is unlimited. Keys this app no longer
+ * has, `seamOnEdge` and `floorSupports` from older saves, are dropped here.
+ */
 export function coerceBelt(value: unknown, widthFallback: number): BeltSettings {
   const row = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
   const angleDeg = finite(row.angleDeg) ? clamp(row.angleDeg, 10, 80) : 45;
@@ -121,11 +127,8 @@ export function coerceBelt(value: unknown, widthFallback: number): BeltSettings 
   }
   const copies = finite(row.copies) ? Math.round(clamp(row.copies, 1, 24)) : 1;
   const gapMm = finite(row.gapMm) && row.gapMm >= 0 ? clamp(row.gapMm, 0, 500) : 5;
-  const seamOnEdge = row.seamOnEdge === true;
   const raftLayers = finite(row.raftLayers) && row.raftLayers > 0 ? Math.round(clamp(row.raftLayers, 1, 8)) : 0;
-  // The engine refuses the two together; a raft already holds the part.
-  const floorSupports = row.floorSupports === true && raftLayers === 0;
-  return { angleDeg, axis, direction, widthMm, maxLengthMm, copies, gapMm, seamOnEdge, raftLayers, floorSupports };
+  return { angleDeg, axis, direction, widthMm, maxLengthMm, copies, gapMm, raftLayers };
 }
 
 function clamp(value: number, lo: number, hi: number): number {

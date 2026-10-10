@@ -1,4 +1,4 @@
-import { coverageWarning, feed, fnv1aHex, inAirWarning, meshKeyHex, partFrameKey, quietRefresh, recipeKey, sliceAction, sliceBusyLabel, storesReply } from "./slice-action.ts";
+import { coverageWarning, feed, fnv1aHex, inAirWarning, meshKeyHex, partFrameKey, quietRefresh, recipeKey, sliceAction, sliceBusyLabel, sliceErrorRetryable, storesReply } from "./slice-action.ts";
 
 let failed = 0;
 
@@ -57,6 +57,8 @@ eq("force with nothing cached does not set reslice", forceFresh.reslice, false);
 
 eq("busy recompute", sliceBusyLabel(true), "Slicing…");
 eq("busy cache load", sliceBusyLabel(false), "Loading…");
+check("an error that names a field is not worth a retry", !sliceErrorRetryable("belt.raftLayers needs a fixed layer height; turn adaptive layers off") && !sliceErrorRetryable("printOrder \"sequential\" is not available on a belt printer"));
+check("a server failure and an unreadable reply are", sliceErrorRetryable("slice failed (502)") && sliceErrorRetryable("Unexpected end of JSON input"));
 
 const speed = { mode: "single", strategy: "speed" };
 const keyA = recipeKey({ layerHeight: 0.2, reslice: true, blend: speed, dataB64: "abc" }, "mesh-a");

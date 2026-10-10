@@ -12,6 +12,7 @@
  */
 import { coerceBelt, defaultBelt, type BeltSettings, type PrinterKind } from "../belt.ts";
 import type { PrinterProfile } from "../profiles.ts";
+import { ADVANCE, type Firmware, type Rules } from "../settings-rules.ts";
 
 export const MACHINE_FILE_VERSION = 3;
 
@@ -36,6 +37,8 @@ export interface PrinterRecord {
   apiKey: string;
   /** When set, Send asks Prusa Link to start the job after the upload. */
   startPrint: boolean;
+  /** Which advance the printer takes: Klipper's pressure advance or Marlin's linear advance K. */
+  firmware: Firmware;
   /** Cartesian bed, or a conveyor. */
   kind: PrinterKind;
   /** Sent beside `printer` on the slice request when `kind` is a belt. */
@@ -69,11 +72,6 @@ export interface MachineLibrary {
   filaments: FilamentRecord[];
   printerId: string;
   filamentId: string;
-  /**
-   * A second filament stored on this machine. Omitted when none is chosen.
-   * The slice still uses `filamentId`. There is no tool change.
-   */
-  secondFilamentId?: string;
   nozzleMm: number;
 }
 
@@ -160,14 +158,7 @@ export function ensureBuiltins(library: MachineLibrary): MachineLibrary {
   const printerId = printers.some((row) => row.id === library.printerId) ? library.printerId : printers[0]!.id;
   const filamentId = filaments.some((row) => row.id === library.filamentId) ? library.filamentId : filaments[0]!.id;
   const nozzleMm = Number.isFinite(library.nozzleMm) && library.nozzleMm > 0 ? library.nozzleMm : 0.4;
-  const secondFilamentId = keptSecond(filaments, filamentId, library.secondFilamentId);
-  return { version: MACHINE_FILE_VERSION, printers, filaments, printerId, filamentId, nozzleMm, ...(secondFilamentId ? { secondFilamentId } : {}) };
-}
-
-/** A stored second filament that is still in the catalog and is not the one the slice uses. */
-function keptSecond(filaments: FilamentRecord[], filamentId: string, secondFilamentId: string | undefined): string | undefined {
-  if (!secondFilamentId || secondFilamentId === filamentId) return undefined;
-  return filaments.some((row) => row.id === secondFilamentId) ? secondFilamentId : undefined;
+  return { version: MACHINE_FILE_VERSION, printers, filaments, printerId, filamentId, nozzleMm };
 }
 
 export function selection(library: MachineLibrary): { printer: PrinterRecord; filament: FilamentRecord } | null {
@@ -220,12 +211,23 @@ export function parseLibrary(text: string | null): MachineLibrary {
       printerId: typeof doc.printerId === "string" ? doc.printerId : "",
       filamentId: typeof doc.filamentId === "string" ? doc.filamentId : "",
       nozzleMm,
-      ...(keptSecond(filaments, typeof doc.filamentId === "string" ? doc.filamentId : "", typeof doc.secondFilamentId === "string" ? doc.secondFilamentId : undefined)
-        ? { secondFilamentId: doc.secondFilamentId as string }
-        : {}),
     };
   } catch {
     return emptyLibrary();
+  }
+}
+
+/**
+ * Whether a machine file asks for its seam on the belt edge, as printers did
+ * before the Seam position choice had a Belt edge option. The flag is not kept;
+ * the caller moves the seam choice instead.
+ */
+export function legacySeamOnEdge(text: string): boolean {
+  try {
+    const doc = JSON.parse(text) as { printer?: { kind?: unknown; belt?: { seamOnEdge?: unknown } } };
+    return doc?.printer?.kind === "belt" && doc.printer.belt?.seamOnEdge === true;
+  } catch {
+    return false;
   }
 }
 
@@ -272,24 +274,7 @@ export function selectIn(library: MachineLibrary, printerId: string, filamentId:
   if (!library.printers.some((row) => row.id === printerId)) return "That printer is no longer saved.";
   if (!library.filaments.some((row) => row.id === filamentId)) return "That filament is no longer saved.";
   if (!Number.isFinite(nozzleMm) || nozzleMm <= 0) return "Choose a nozzle size.";
-  const secondFilamentId = keptSecond(library.filaments, filamentId, library.secondFilamentId);
-  const next = { ...library, printerId, filamentId, nozzleMm };
-  if (!secondFilamentId) {
-    const { secondFilamentId: _drop, ...rest } = next;
-    return rest;
-  }
-  return { ...next, secondFilamentId };
-}
-
-/** Remember a second filament. Empty clears it. It is not the filament the slice uses. */
-export function setSecondFilament(library: MachineLibrary, id: string): MachineLibrary | string {
-  if (id === "") {
-    const { secondFilamentId: _drop, ...rest } = library;
-    return rest;
-  }
-  if (id === library.filamentId) return library;
-  if (!library.filaments.some((row) => row.id === id)) return "That filament is no longer saved.";
-  return { ...library, secondFilamentId: id };
+  return { ...library, printerId, filamentId, nozzleMm };
 }
 
 export function setFlow(library: MachineLibrary, flow: number): MachineLibrary {
@@ -354,6 +339,14 @@ export function beltStamp(library: MachineLibrary): BeltSettings | null {
   const printer = selection(library)?.printer;
   if (!printer || printer.kind !== "belt") return null;
   return printer.belt;
+}
+
+/** Store the firmware on the active printer. It picks which advance the slice sends. */
+export function setActiveFirmware(library: MachineLibrary, firmware: Firmware): MachineLibrary {
+  return {
+    ...library,
+    printers: library.printers.map((printer) => printer.id === library.printerId ? { ...printer, firmware } : printer),
+  };
 }
 
 /** Store the kind and belt on the active printer. `enginePrinter` still omits the belt; the slice request sends it beside `printer`. */
@@ -429,19 +422,13 @@ export function deleteActive(library: MachineLibrary): MachineLibrary | string {
   const fallbackFilament = filaments.find((row) => row.id === "lime-pla") ?? filaments[0];
   if (!fallbackPrinter || !fallbackFilament) return "Choose a printer and a filament first.";
   const filamentId = filaments.some((row) => row.id === library.filamentId) ? library.filamentId : fallbackFilament.id;
-  const secondFilamentId = keptSecond(filaments, filamentId, library.secondFilamentId);
-  const next: MachineLibrary = {
+  return {
     ...library,
     printers,
     filaments,
     printerId: printers.some((row) => row.id === library.printerId) ? library.printerId : fallbackPrinter.id,
     filamentId,
   };
-  if (!secondFilamentId) {
-    const { secondFilamentId: _drop, ...rest } = next;
-    return rest;
-  }
-  return { ...next, secondFilamentId };
 }
 
 export function importInto(library: MachineLibrary, file: MachineFile, printerId: string, filamentId: string): MachineLibrary {
@@ -471,6 +458,7 @@ export function adoptProfile(library: MachineLibrary, profile: PrinterProfile, p
     host: "",
     apiKey: "",
     startPrint: false,
+    firmware: "klipper",
     kind: "cartesian",
     belt: defaultBelt(profile.bedX),
   };
@@ -504,7 +492,8 @@ const BELT_TIP = "The engine slices this belt. Export follows the slice. Send fo
 
 export function machineSectionHtml(
   library: MachineLibrary,
-  live: { pressureAdvance: number; nozzleTemp: number; bedTemp: number; flow: number },
+  live: { advance: number; nozzleTemp: number; bedTemp: number; flow: number },
+  rules: Rules,
   linkSummary = "",
 ): string {
   const picked = selection(library);
@@ -516,12 +505,7 @@ export function machineSectionHtml(
   const filamentOptions = library.filaments
     .map((filament) => `<option value="${escapeHtml(filament.id)}"${filament.id === library.filamentId ? " selected" : ""}>${escapeHtml(filament.name)}</option>`)
     .join("");
-  const secondId = keptSecond(library.filaments, library.filamentId, library.secondFilamentId) ?? "";
-  const secondOptions = [`<option value=""${secondId ? "" : " selected"}>None</option>`]
-    .concat(library.filaments
-      .filter((filament) => filament.id !== library.filamentId)
-      .map((filament) => `<option value="${escapeHtml(filament.id)}"${filament.id === secondId ? " selected" : ""}>${escapeHtml(filament.name)}</option>`))
-    .join("");
+  const advance = ADVANCE[rules.firmware];
   const nozzleOptions = nozzles
     .map((size) => `<option value="${nozzleKey(size)}"${nozzleKey(size) === nozzleKey(library.nozzleMm) ? " selected" : ""}>${nozzleKey(size)} mm</option>`)
     .join("");
@@ -533,15 +517,18 @@ export function machineSectionHtml(
       <label class="field setting" data-label="filament" data-keywords="material pla petg abs tpu">Filament
         <select id="machineFilament" aria-label="Filament">${filamentOptions}</select>
       </label>
-      <label class="field setting" data-label="second filament" data-keywords="multi material second extruder" data-tip="Stored on this machine. The slice still uses the filament above. No tool change, purge tower, or second extruder.">Second filament
-        <select id="secondFilament" aria-label="Second filament">${secondOptions}</select>
-      </label>
       <label class="field setting" data-label="nozzle size" data-keywords="nozzle diameter">Nozzle
         <select id="machineNozzle" aria-label="Nozzle size">${nozzleOptions}</select>
       </label>
-      ${beltFieldsHtml(picked?.printer)}
-      <label class="field setting" data-label="pressure advance" data-keywords="filament nozzle linear advance">Pressure advance
-        <input id="machinePa" type="number" min="0" max="2" step="0.001" value="${live.pressureAdvance}" aria-label="Pressure advance for this filament and nozzle" />
+      ${beltFieldsHtml(picked?.printer, rules)}
+      <label class="field setting" data-label="firmware" data-keywords="klipper marlin pressure advance linear advance">Firmware
+        <select id="machineFirmware" aria-label="Printer firmware">
+          <option value="klipper"${rules.firmware === "klipper" ? " selected" : ""}>Klipper</option>
+          <option value="marlin"${rules.firmware === "marlin" ? " selected" : ""}>Marlin</option>
+        </select>
+      </label>
+      <label class="field setting" data-label="${advance.label.toLowerCase()}" data-keywords="filament nozzle pressure advance linear advance klipper marlin">${advance.label}
+        <input id="machineAdvance" type="number" min="0" max="${advance.max}" step="${advance.step}" value="${live.advance}" aria-label="${advance.label} for this filament and nozzle" />
       </label>
       <label class="field setting" data-label="flow" data-keywords="extrusion multiplier flow ratio">Flow
         <input id="machineFlow" type="number" min="0.5" max="1.5" step="0.01" value="${live.flow}" aria-label="Flow multiplier for this filament" />
@@ -634,6 +621,7 @@ function blankPrinter(id: string, name: string): PrinterRecord {
     host: "",
     apiKey: "",
     startPrint: false,
+    firmware: "klipper",
     kind: "cartesian",
     belt: defaultBelt(220),
   };
@@ -652,6 +640,7 @@ function stripPrinter(printer: PrinterRecord): MachineFile["printer"] {
     host: printer.host,
     apiKey: printer.apiKey,
     startPrint: printer.startPrint,
+    firmware: printer.firmware,
     kind: printer.kind,
     belt: { ...printer.belt },
   };
@@ -706,6 +695,7 @@ function printer(id: string, name: string, bedX: number, bedY: number, bedZ: num
     host: "",
     apiKey: "",
     startPrint: false,
+    firmware: "klipper",
     kind: "cartesian",
     belt: defaultBelt(bedX),
   };
@@ -828,6 +818,7 @@ function readPrinterBody(value: unknown): Omit<PrinterRecord, "id" | "builtin"> 
     host: row.host.trim(),
     apiKey: row.apiKey,
     startPrint: row.startPrint,
+    firmware: row.firmware === "marlin" ? "marlin" : "klipper",
     kind: row.kind,
     belt: coerceBelt(row.belt, row.bedX),
   };
@@ -852,7 +843,7 @@ function withBelt(value: unknown): unknown {
   };
 }
 
-function beltFieldsHtml(printer: PrinterRecord | undefined): string {
+function beltFieldsHtml(printer: PrinterRecord | undefined, rules: Rules): string {
   const kind = printer?.kind ?? "cartesian";
   const belt = printer?.belt ?? defaultBelt(printer?.bedX ?? 220);
   const axis = (value: string) => `<option value="${value}"${belt.axis === value ? " selected" : ""}>${value.toUpperCase()}</option>`;
@@ -864,7 +855,7 @@ function beltFieldsHtml(printer: PrinterRecord | undefined): string {
           <option value="belt"${kind === "belt" ? " selected" : ""}>Belt</option>
         </select>
       </label>
-      <div class="belt-grid" id="beltFields"${kind === "belt" ? "" : " hidden"}>
+      <div class="belt-grid" id="beltFields"${rules.hidden.has("beltFields") ? " hidden" : ""}>
         <label class="field setting" data-label="belt angle" data-keywords="gantry tilt degrees">Angle °
           <input id="beltAngle" type="number" min="10" max="80" step="1" value="${belt.angleDeg}" aria-label="Belt angle" />
         </label>
@@ -881,20 +872,19 @@ function beltFieldsHtml(printer: PrinterRecord | undefined): string {
           <input id="beltWidth" type="number" min="10" max="4000" step="1" value="${belt.widthMm}" aria-label="Belt width" />
         </label>
         <label class="check setting belt-wide" data-label="unlimited belt" data-keywords="endless length"><input id="beltUnlimited" type="checkbox"${belt.maxLengthMm == null ? " checked" : ""}/> Unlimited length</label>
-        <label class="field setting" data-label="belt length" data-keywords="max length">Max length mm
-          <input id="beltLength" type="number" min="10" step="1" value="${length}"${belt.maxLengthMm == null ? " disabled" : ""} aria-label="Belt max length" />
-        </label>
+        ${rules.hidden.has("beltMaxLength") ? "" : `<label class="field setting" data-label="belt length" data-keywords="max length">Max length mm
+          <input id="beltLength" type="number" min="10" step="1" value="${length}" aria-label="Belt max length" />
+        </label>`}
         <label class="field setting" data-label="belt copies" data-keywords="back to back repeat">Copies
           <input id="beltCopies" type="number" min="1" max="24" step="1" value="${belt.copies}" aria-label="Belt copies" />
         </label>
         <label class="field setting" data-label="belt gap" data-keywords="copy spacing">Gap mm
           <input id="beltGap" type="number" min="0" max="500" step="1" value="${belt.gapMm}" aria-label="Gap between copies" />
         </label>
-        <label class="check setting belt-wide" data-label="seam on belt edge" data-keywords="seam rear belt"><input id="beltSeam" type="checkbox"${belt.seamOnEdge ? " checked" : ""}/> Seam on the belt edge</label>
-        <label class="check setting belt-wide" data-label="belt raft" data-keywords="raft pad adhesion first layers"><input id="beltRaft" type="checkbox"${belt.raftLayers > 0 ? " checked" : ""}/> Belt raft</label>
-        <label class="field setting" data-label="belt raft layers" data-keywords="raft layers pad">Raft layers
-          <input id="beltRaftLayers" type="number" min="1" max="8" step="1" value="${belt.raftLayers > 0 ? belt.raftLayers : 3}"${belt.raftLayers > 0 ? "" : " disabled"} aria-label="Belt raft layers" />
-        </label>
+        <label class="check setting belt-wide" data-label="belt raft" data-keywords="raft pad adhesion first layers" data-tip="A pad on the belt under the part, 1 mm past it. A raft and Smart supports replace each other."><input id="beltRaft" type="checkbox"${belt.raftLayers > 0 ? " checked" : ""}/> Belt raft</label>
+        ${rules.hidden.has("beltRaftLayers") ? "" : `<label class="field setting" data-label="belt raft layers" data-keywords="raft layers pad">Raft layers
+          <input id="beltRaftLayers" type="number" min="1" max="8" step="1" value="${belt.raftLayers}" aria-label="Belt raft layers" />
+        </label>`}
       </div>`;
 }
 

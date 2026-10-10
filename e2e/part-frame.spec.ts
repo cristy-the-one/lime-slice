@@ -69,7 +69,7 @@ test("an X/Y move re-emits the G-code at the new place without a click", async (
     await page.locator("#force").click();
     await sliced(page);
   }
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   expect(replies.at(-1)!.fromCache).toBe(false);
   const planned = replies.length;
   const before = printedX(await gcodeOf(page, replies.at(-1)!));
@@ -77,7 +77,7 @@ test("an X/Y move re-emits the G-code at the new place without a click", async (
 
   const committed = Date.now();
   await commitX(page, String(fromX + 25));
-  await expect(page.locator("#export")).toBeEnabled({ timeout: SLICE_MS });
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current", { timeout: SLICE_MS });
   console.log(`move: commit to export enabled ${Date.now() - committed} ms`);
   await expect(page.locator("#stage")).not.toHaveClass(/stale/);
   expect(replies).toHaveLength(planned + 1);
@@ -95,14 +95,14 @@ test("settings switched back to a sliced recipe show it without a click", async 
   await sliced(page);
   await page.locator("#lh").fill("0.28");
   await expect(page.locator("#stage")).toHaveClass(/stale/);
-  await expect(page.locator("#export")).toHaveAttribute("data-tip", "Settings changed. Slice again to export.");
+  await expect(page.locator("#export")).toHaveAttribute("data-tip", "Slice, then save G-code");
   await page.locator("#slice").click();
   await sliced(page);
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   expect(replies).toHaveLength(2);
 
   await page.locator("#lh").fill("0.2");
-  await expect(page.locator("#export")).toBeEnabled({ timeout: SLICE_MS });
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current", { timeout: SLICE_MS });
   await expect(page.locator("#stage")).not.toHaveClass(/stale/);
   expect(replies).toHaveLength(3);
   expect(replies[2]!.fromCache).toBe(true);
@@ -117,7 +117,7 @@ test("an X/Y move after a disk-cache load re-emits without a click", async ({ pa
   await page.locator("#slice").click();
   await sliced(page);
   await page.locator("#lh").fill("0.2");
-  await expect(page.locator("#export")).toBeEnabled({ timeout: SLICE_MS });
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current", { timeout: SLICE_MS });
   expect(replies).toHaveLength(3);
   const loaded = replies[2]!;
   expect(loaded.fromCache).toBe(true);
@@ -130,7 +130,7 @@ test("an X/Y move after a disk-cache load re-emits without a click", async ({ pa
   const fromX = Number(await page.locator("#placeX").inputValue());
   const committed = Date.now();
   await commitX(page, String(fromX + dx));
-  await expect(page.locator("#export")).toBeEnabled({ timeout: SLICE_MS });
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current", { timeout: SLICE_MS });
   console.log(`move after a disk-cache load: commit to export enabled ${Date.now() - committed} ms`);
   await expect(page.locator("#stage")).not.toHaveClass(/stale/);
   expect(replies).toHaveLength(4);

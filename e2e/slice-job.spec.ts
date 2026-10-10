@@ -97,7 +97,7 @@ test("a job stream shows the stage, then the slice result", async ({ page }) => 
   await expect(page.locator("#sliceMeter")).toContainText("%");
   await expect(page.locator("#timing")).toContainText("Walls and infill");
   await expect(page.locator("#toasts .toast")).toHaveCount(0);
-  await expect(page.locator("#export")).toBeEnabled({ timeout: 15_000 });
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current", { timeout: 15_000 });
   expect(calls).toContain("POST /api/jobs");
   expect(calls).toContain("GET /api/jobs/7/result");
   expect(calls).not.toContain("POST /api/slice");
@@ -123,7 +123,7 @@ test("a slicer without /api/jobs still slices through /api/slice", async ({ page
   const calls = await mockJobs(page, "missing");
   await openCube(page);
   await page.locator("#slice").click();
-  await expect(page.locator("#export")).toBeEnabled({ timeout: 15_000 });
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current", { timeout: 15_000 });
   expect(calls).toContain("POST /api/jobs");
   expect(calls).toContain("POST /api/slice");
   await expect(page.locator("[data-state=slicing]")).toHaveCount(0);

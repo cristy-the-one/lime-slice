@@ -61,7 +61,7 @@ async function moveX(page: Page, by: number) {
   const field = page.locator("#placeX");
   await field.fill(String(Number(await field.inputValue()) + by));
   await field.press("Tab");
-  await expect(page.locator("#export")).toBeEnabled({ timeout: SLICE_MS });
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current", { timeout: SLICE_MS });
 }
 
 const sentAs = (body: Body) => (body.meshRef ? `ref:${body.meshRef}` : body.dataB64 ? "data" : "none");
@@ -104,13 +104,13 @@ test("a density change rewrites the exported footer's grams without a slice", as
   await load(page, "samples/calibration_cube_20mm.stl");
   await page.locator("#slice").click();
   await sliced(page);
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   const reply = seen.replies[0]!;
 
   await page.locator("[data-level-choice=advanced]").click();
   await page.locator("#density").fill("1.27");
   await page.locator("#density").press("Tab");
-  await expect(page.locator("#export")).toBeEnabled();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   const download = page.waitForEvent("download", { timeout: 30_000 });
   await page.locator("#export").click();
   const gcode = fs.readFileSync((await (await download).path())!, "utf8");

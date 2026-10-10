@@ -31,7 +31,7 @@ export function canSendToPrinter(): boolean {
 
 /** Why Send is off, or a tip when it is on. */
 export function sendTitle(): string {
-  return sendBlock() ?? "Send the current G-code to this printer.";
+  return sendBlock() ?? (state.result && !fx.stale?.() ? "Send the current G-code to this printer." : "Slice, then send the G-code to this printer.");
 }
 
 function hostProblemNow(): string | null {
@@ -72,11 +72,11 @@ export function refreshPrusaJob() {
 
 export async function uploadToPrusaLink() {
   rememberPrusaForm();
+  if (sendBlock()) return;
+  // A missing or stale slice is made first, as Export does.
+  if (!state.result || fx.stale?.()) await fx.runSlice?.(false);
   const result = state.result;
-  if (!result || fx.stale?.() || state.busy) {
-    show(state.busy ? "Wait for the slice to finish, then send." : "Slice first, then send.");
-    return;
-  }
+  if (!result || fx.stale?.()) return;
   let gcode = "";
   try {
     gcode = await fx.printableGcode(result);
@@ -150,11 +150,12 @@ function retry(action: "test" | "upload" | "job") {
   else refreshPrusaJob();
 }
 
+/** Why Send is off. Send follows a mesh and a host: with no current slice it slices first. */
 function sendBlock(): string | null {
   const host = hostProblemNow();
   if (host) return host;
   if (state.busy) return "Wait for the slice to finish, then send.";
-  if (!state.result || fx.stale?.()) return "Slice first, then send.";
+  if (!state.mesh) return "Load a mesh, then send.";
   return null;
 }
 

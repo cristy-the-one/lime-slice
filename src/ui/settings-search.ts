@@ -4,7 +4,7 @@ export const SETTING_KEYWORDS: Record<string, string> = {
   adaptive: "variable layer height",
   amin: "variable layer",
   amax: "variable layer",
-  seam: "rear aligned nearest start",
+  seam: "rear aligned nearest start belt edge",
   ironing: "top skin flow speed spacing",
   ironflow: "ironing percent",
   ironspeed: "ironing",

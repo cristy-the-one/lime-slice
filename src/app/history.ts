@@ -6,7 +6,7 @@ import { emptyOverrides } from "../overrides";
 import { revivePlate, snapPlate } from "../plate";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library";
-import { beltStamp, selectIn, selection, setActiveBelt, setAdvance, setNozzleTemp, setRetract } from "../ui/machine-library";
+import { beltStamp, selectIn, selection, setActiveBelt, setActiveFirmware, setAdvance, setNozzleTemp, setRetract } from "../ui/machine-library";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel";
 import {
   beginGesture,
@@ -71,7 +71,7 @@ function machineSnap(): EditSnap["machine"] {
     printerId: library.printerId,
     filamentId: library.filamentId,
     nozzleMm: library.nozzleMm,
-    ...(printer ? { kind: printer.kind, belt: structuredClone(printer.belt) } : {}),
+    ...(printer ? { kind: printer.kind, belt: structuredClone(printer.belt), firmware: printer.firmware } : {}),
   };
 }
 
@@ -119,12 +119,13 @@ function applySnap(snap: EditSnap) {
       storeMachineLibrary(setRetract(withTemp, state.retractOn ? state.retractLength : null, speed));
     }
     if (snap.machine.kind && snap.machine.belt) {
-      const kindBefore = selection(loadMachineLibrary())?.printer.kind;
-      const library = setActiveBelt(loadMachineLibrary(), snap.machine.kind, snap.machine.belt);
+      const belted = setActiveBelt(loadMachineLibrary(), snap.machine.kind, snap.machine.belt);
+      const library = snap.machine.firmware ? setActiveFirmware(belted, snap.machine.firmware) : belted;
       storeMachineLibrary(library);
       fx.prepare?.setBelt(beltStamp(library));
       fx.view3d?.setBelt(beltStamp(library));
-      if (kindBefore !== snap.machine.kind) fx.renderChrome?.();
+      // The kind, the raft, the length cap, and the firmware each change which controls show.
+      fx.renderChrome?.();
     }
   }
   state.overrides = snap.overrides ? structuredClone(snap.overrides) : emptyOverrides();
