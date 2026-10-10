@@ -1,6 +1,6 @@
 import { fx } from "./fx";
 import { state, session, worker, cachedRecipes, type ParetoPoint, type SliceResponse } from "./state";
-import { meshKeyHex, partFrameKey, quietRefresh, recipeKey, type SliceAction, sliceAction, sliceBusyLabel, sliceErrorRetryable, storesReply, FORCE_LABEL } from "../slice-action";
+import { autoSliceAllowed, meshKeyHex, partFrameKey, quietRefresh, recipeKey, type SliceAction, sliceAction, sliceBusyLabel, sliceErrorRetryable, storesReply, FORCE_LABEL } from "../slice-action";
 import { currentPlacement, livePlate, meshBase64, meshBytes, fail, isTauri, objectBase64, objectFingerprint, objectPlacement, withMeshData } from "./files";
 import { MeshRefs, sendWithMeshes, unknownMeshRef, type MeshFields, type SentMesh } from "../mesh-refs";
 import { adoptPatch, previewBase } from "./viewer";
@@ -130,7 +130,14 @@ function runQuiet() {
   void runSlice();
 }
 
-export function scheduleAuto() {
+/** A change re-slices by itself: auto-slice is on and the plate has been quick to slice. */
+function autoSliceApplies(): boolean {
+  if (!state.mesh || !state.autoSlice) return false;
+  return autoSliceAllowed({ lastSliceMs: state.result?.coreMs ?? null, triangles: Math.max(0, (state.mesh.bytes.byteLength - 84) / 50) });
+}
+
+/** `waitMs` is the pause before an automatic slice; a change made during a slice passes 0. */
+export function scheduleAuto(waitMs = 300) {
   window.clearTimeout(session.autoTimer);
   if (!state.mesh || state.busy) return;
   if (quietEligible() && session.quietTried !== settingsHash()) {
@@ -138,10 +145,9 @@ export function scheduleAuto() {
     if (!state.poseHud) session.autoTimer = window.setTimeout(runQuiet, 200);
     return;
   }
-  if (!state.autoSlice) return;
-  const tris = state.result?.mesh.sourceTriangles ?? state.result?.mesh.triangles ?? Math.max(0, (state.mesh.bytes.byteLength - 84) / 50);
-  if (tris >= 50000) return;
-  session.autoTimer = window.setTimeout(() => void runSlice(), 300);
+  if (!autoSliceApplies()) return;
+  if (waitMs === 0) void runSlice();
+  else session.autoTimer = window.setTimeout(() => void runSlice(), waitMs);
 }
 
 export function payload() {
@@ -421,7 +427,7 @@ export async function runSlice(force = false) {
       renderChrome();
       fx.draw();
       session.supportUi?.landed(landed);
-      if (landed && stale()) scheduleAuto();
+      if (landed && stale()) scheduleAuto(0);
     }
   }
 }

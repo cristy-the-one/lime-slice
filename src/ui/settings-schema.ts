@@ -405,7 +405,7 @@ export const CONTROLS: ControlSpec[] = [
   { id: "retractstep", label: "Tower step mm", group: "calibrate", tier: "expert", kind: num(0.05, 1, 0.05), get: (s) => s.retractStep, set: (s, v) => { s.retractStep = v as number; } },
 
   // Gear panel
-  bound("autoSlice", { id: "autoslice", label: "Auto-slice under 50k triangles", group: "gear", tier: "simple", kind: check, keywords: "automatic" }),
+  bound("autoSlice", { id: "autoslice", label: "Auto-slice when a slice takes under 20 s", group: "gear", tier: "simple", kind: check, keywords: "automatic" }),
 ];
 
 /**

@@ -110,7 +110,7 @@ export const DEFAULT_PRESET: PresetSettings = {
   zHopHeight: 0.4,
   zHopMinTravel: 2,
   pricePerKg: 20,
-  autoSlice: false,
+  autoSlice: true,
   simplify: true,
   simplifyError: 0,
 };

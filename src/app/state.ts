@@ -237,7 +237,7 @@ export const state = {
   retractBands: [] as { index: number; length: number; z0: number; z1: number }[],
   retractGcode: "",
   pricePerKg: 20,
-  autoSlice: false,
+  autoSlice: true,
   simplify: true,
   simplifyError: 0,
   viewMode: "solid" as "flat" | "split" | "solid",
