@@ -5,7 +5,7 @@ import { layerWeight, resolved, type ResolvedCard } from "../strategy";
 import { levelBarHtml, paintSettingMarks, syncEmptyState } from "../ui/shell";
 import { pushToast } from "../ui/toasts";
 import { markProjectDirty } from "../project-dirty";
-import { sliceBusyStatus, staleSliceCopy, cacheStatus, coverageWarning, inAirWarning } from "../slice-action";
+import { coverageWarning, inAirWarning } from "../slice-action";
 import { applySliceProgress, currentSliceProgress } from "../ui/slice-progress";
 import { filamentCost, filamentGrams, groupFeatures } from "../estimate";
 import { offBed } from "../mesh-place";
@@ -20,7 +20,7 @@ import { canRedoEdit, canUndoEdit, noteEdit } from "./history";
 import { loadProfileLibrary } from "./profile-library";
 import { SETTING_KEYWORDS, settingMatches } from "../ui/settings-search";
 import { displayId } from "../ui/settings-profiles";
-import { overrideSectionHtml } from "../ui/overrides-panel";
+import { OVERRIDES_TIP, overrideSectionHtml } from "../ui/overrides-panel";
 import { fuzzyRequest, readFuzzyPointDistance, readFuzzyThickness } from "../fuzzy-skin";
 import { ironingFlowPercent, ironingRequest, ironingSpacingMax, readIroningFlowPercent, readIroningSpacing, readIroningSpeed } from "../ironing";
 import { loadSettingsLevel } from "../ui/settings-panel";
@@ -120,24 +120,23 @@ export function renderChrome() {
       <button class="btn history-btn" id="undoEdit" type="button" aria-label="Undo" ${canUndoEdit() ? "" : "disabled"}>Undo</button>
       <button class="btn history-btn" id="redoEdit" type="button" aria-label="Redo" ${canRedoEdit() ? "" : "disabled"}>Redo</button>
     </div>
-    <h2>Mesh</h2>
-    <div class="meta">${mesh ? `<b>${escapeHtml(mesh.name)}</b>` : "Nothing loaded"}</div>
+    ${mesh ? `<h2>Mesh</h2><div class="meta"><b>${escapeHtml(mesh.name)}</b></div>` : ""}
     <div class="object-list" id="objectList">${objectList()}</div>
     ${group("Quality", `
       ${num("lh", "Layer height mm", state.layerHeight, 0.08, 0.4, 0.02, "simple")}
       ${check("adaptive", "Adaptive layers", state.adaptive, "advanced")}
       ${state.adaptive ? `${num("amin", "Min mm", state.adaptiveMin, 0.04, 0.28, 0.02, "advanced")}${num("amax", "Max mm", state.adaptiveMax, 0.08, 0.4, 0.02, "advanced")}` : ""}
       ${check("simplify", "Simplify outlines", state.simplify, "advanced")}
-      ${state.simplify ? `${num("simperr", "Outline tolerance mm, 0 = auto", state.simplifyError, 0, 0.2, 0.005, "expert")}<div class="meta">Every triangle is cut. Each layer's outline then drops vertices closer than this to the line through their neighbors. Auto is a sixteenth of the nozzle, 0.025 mm for 0.4 mm, so a gap the nozzle can print never closes.</div>` : ""}
+      ${state.simplify ? `${num("simperr", "Outline tolerance mm, 0 = auto", state.simplifyError, 0, 0.2, 0.005, "expert", "Every triangle is cut. Each layer's outline then drops vertices closer than this to the line through their neighbors. Auto is a sixteenth of the nozzle, 0.025 mm for 0.4 mm, so a gap the nozzle can print never closes.")}` : ""}
     `)}
     ${group("Strength", `
       ${check("vwidth", "Variable walls", state.variableWidth, "simple")}
       ${check("travelopt", "Travel and seam", state.travelOpt, "advanced")}
       ${select("seam", "Seam position", state.seam, [["blend", "Blend (strategy)"], ["nearest", "Nearest"], ["aligned", "Aligned"], ["rear", "Rear"]], "advanced")}
-      ${check("ironing", "Ironing", state.ironing, "advanced")}
-      ${state.ironing ? `${num("ironflow", "Ironing flow %", ironingFlowPercent(state.ironingFlow), 1, 100, 1, "advanced")}${num("ironspeed", "Ironing speed mm/s", state.ironingSpeed, 1, 200, 1, "advanced")}${num("ironspace", "Ironing spacing mm", state.ironingSpacing, 0.05, ironingSpacingMax(fx.lineWidth()), 0.01, "advanced")}<div class="meta">A second pass over each top surface at low flow, inset half a line from the outline. Spacing stays below the line width. Defaults are 10% flow, 20 mm/s, and 0.1 mm spacing.</div>` : ""}
-      ${check("fuzzy", "Fuzzy skin", state.fuzzySkin, "advanced")}
-      ${state.fuzzySkin ? `${num("fuzzythick", "Fuzzy thickness mm", state.fuzzyThickness, 0.05, 1, 0.05, "advanced")}${num("fuzzydist", "Fuzzy point spacing mm", state.fuzzyPointDistance, 0.1, 5, 0.1, "advanced")}<div class="meta">A stable sideways noise on the outer walls. Endpoints stay put, so a loop still meets. Defaults are 0.3 mm thickness and 0.8 mm between points.</div>` : ""}
+      ${check("ironing", "Ironing", state.ironing, "advanced", "A second pass over each top surface at low flow, inset half a line from the outline. Spacing stays below the line width. Defaults are 10% flow, 20 mm/s, and 0.1 mm spacing.")}
+      ${state.ironing ? `${num("ironflow", "Ironing flow %", ironingFlowPercent(state.ironingFlow), 1, 100, 1, "advanced")}${num("ironspeed", "Ironing speed mm/s", state.ironingSpeed, 1, 200, 1, "advanced")}${num("ironspace", "Ironing spacing mm", state.ironingSpacing, 0.05, ironingSpacingMax(fx.lineWidth()), 0.01, "advanced")}` : ""}
+      ${check("fuzzy", "Fuzzy skin", state.fuzzySkin, "advanced", "A stable sideways noise on the outer walls. Endpoints stay put, so a loop still meets. Defaults are 0.3 mm thickness and 0.8 mm between points.")}
+      ${state.fuzzySkin ? `${num("fuzzythick", "Fuzzy thickness mm", state.fuzzyThickness, 0.05, 1, 0.05, "advanced")}${num("fuzzydist", "Fuzzy point spacing mm", state.fuzzyPointDistance, 0.1, 5, 0.1, "advanced")}` : ""}
       ${select("scarf", "Scarf seam", state.scarfSeam, [["blend", "Blend default"], ["off", "Off"], ["outer", "Outer walls"], ["all", "Outer and inner"]], "advanced")}
       ${state.scarfSeam === "off" ? "" : `${num("scarflen", "Scarf length mm", state.scarfLength, 1, 30, 1, "expert")}${num("scarfsteps", "Scarf steps", state.scarfSteps, 2, 32, 1, "expert")}`}
     `)}
@@ -162,7 +161,7 @@ export function renderChrome() {
         ${num("trunkd", "Trunk diameter mm", state.trunkDiameter, 1.5, 12, 0.2, "expert")}` : ""}
         ${num("shmult", "Shaft height ×", state.supportHeightMult, 1, 4, 1, "advanced")}` : ""}
     `)}
-    ${group("Overrides", overrideSectionHtml(state.overrides, state.selectedVolumeId, state.modifierTool))}
+    ${group("Overrides", overrideSectionHtml(state.overrides, state.selectedVolumeId, state.modifierTool), undefined, OVERRIDES_TIP)}
     ${group("Other", `
       <h2>Printer</h2>
       ${profileFields()}
@@ -183,39 +182,36 @@ export function renderChrome() {
         ${num("flowstart", "Flow start", state.flowStart, 0.5, 1.5, 0.01, "expert")}
         ${num("flowend", "Flow end", state.flowEnd, 0.5, 1.5, 0.01, "expert")}
         ${num("flowstep", "Flow step", state.flowStep, 0.01, 0.2, 0.01, "expert")}
-        <button class="btn" id="flowcal" type="button">Generate flow test</button>
+        <button class="btn" id="flowcal" type="button" data-tip="Each band is one hollow wall. The length of extrusion is the band's multiplier. Saving writes that multiplier onto the filament. 1 leaves a slice unchanged.">Generate flow test</button>
         ${state.flowBands.length ? `<div class="meta">${state.flowBands.map((b) => `band ${b.index}: flow ${b.flow.toFixed(3)} · Z ${b.z0.toFixed(2)}–${b.z1.toFixed(2)}`).join("<br>")}</div>
           ${num("flowchosen", "Chosen flow", state.flow, 0.5, 1.5, 0.01)}
           <button class="btn" id="flowapply" type="button">Save flow to filament</button>
           <button class="btn" id="flowexport" type="button">Export flow G-code</button>` : ""}
-        <p class="meta">Each band is one hollow wall. The length of extrusion is the band's multiplier. Saving writes that multiplier onto the filament. 1 leaves a slice unchanged.</p>
       `, "expert")}
       ${group("Temperature calibration", `
         ${num("tempstart", "°C start", state.tempStart, 150, 320, 1, "expert")}
         ${num("tempend", "°C end", state.tempEnd, 150, 320, 1, "expert")}
         ${num("tempstep", "°C step", state.tempStep, 1, 50, 1, "expert")}
-        <button class="btn" id="tempcal" type="button">Generate temperature test</button>
+        <button class="btn" id="tempcal" type="button" data-tip="Each band is one hollow wall. The nozzle waits at that band's temperature before the wall starts. Saving writes the chosen °C onto the filament. A normal slice still sends that nozzle temperature, and nothing else.">Generate temperature test</button>
         ${state.tempBands.length ? `<div class="meta">${state.tempBands.map((b) => `band ${b.index}: ${b.temp.toFixed(0)} °C · Z ${b.z0.toFixed(2)}–${b.z1.toFixed(2)}`).join("<br>")}</div>
           ${num("tempchosen", "Chosen °C", state.profile.nozzleTemp, 150, 320, 1)}
           <button class="btn" id="tempapply" type="button">Save temperature to filament</button>
           <button class="btn" id="tempexport" type="button">Export temperature G-code</button>` : ""}
-        <p class="meta">Each band is one hollow wall. The nozzle waits at that band's temperature before the wall starts. Saving writes the chosen °C onto the filament. A normal slice still sends that nozzle temperature, and nothing else.</p>
       `, "expert")}
       ${group("Retraction", `
-        ${check("retractset", "Custom retraction", state.retractOn, "expert")}
-        ${state.retractOn ? `${num("retractlen", "Length mm", state.retractLength, 0, 5, 0.05, "expert")}${num("retractspd", "Speed mm/s", state.retractSpeed, 5, 80, 1, "expert")}` : `<div class="meta">Off, a slice keeps the strategy length: 0.35 mm on speed, 0.9 mm on toughness, at 30 mm/s.</div>`}
+        ${check("retractset", "Custom retraction", state.retractOn, "expert", "Off, a slice keeps the strategy length: 0.35 mm on speed, 0.9 mm on toughness, at 30 mm/s.")}
+        ${state.retractOn ? `${num("retractlen", "Length mm", state.retractLength, 0, 5, 0.05, "expert")}${num("retractspd", "Speed mm/s", state.retractSpeed, 5, 80, 1, "expert")}` : ""}
         ${num("retractstart", "Tower start mm", state.retractStart, 0, 5, 0.05, "expert")}
         ${num("retractend", "Tower end mm", state.retractEnd, 0, 5, 0.05, "expert")}
         ${num("retractstep", "Tower step mm", state.retractStep, 0.05, 1, 0.05, "expert")}
-        <button class="btn" id="retractcal" type="button">Generate retraction test</button>
+        <button class="btn" id="retractcal" type="button" data-tip="Each band is two posts. The travel between them retracts by that band's length. Saving writes the length onto the filament, and the speed when it is not 30 mm/s. Off, the slice is unchanged.">Generate retraction test</button>
         ${state.retractBands.length ? `<div class="meta">${state.retractBands.map((b) => `band ${b.index}: ${b.length.toFixed(3)} mm · Z ${b.z0.toFixed(2)}–${b.z1.toFixed(2)}`).join("<br>")}</div>
           ${num("retractchosen", "Chosen length mm", state.retractLength, 0, 5, 0.05)}
           <button class="btn" id="retractapply" type="button">Save retraction to filament</button>
           <button class="btn" id="retractexport" type="button">Export retraction G-code</button>` : ""}
-        <p class="meta">Each band is two posts. The travel between them retracts by that band's length. Saving writes the length onto the filament, and the speed when it is not 30 mm/s. Off, the slice is unchanged.</p>
       `, "expert")}
       <label class="check setting" data-level="advanced" data-label="auto-slice under 50k triangles"><input id="autoslice" type="checkbox" ${state.autoSlice ? "checked" : ""}/> Auto-slice under 50k triangles</label>
-      <div class="meta">${triangleMeta(result)}</div>
+      ${result ? `<div class="meta">${triangleMeta(result)}</div>` : ""}
       ${stageHtml(result)}
     `)}
   `;
@@ -239,10 +235,10 @@ export function renderChrome() {
     <div id="pareto">${paretoHtml()}</div>
     <h2>Resolved now</h2>
     <div class="meta" id="resolved">${paramTable(live)}</div>
-    <h2>Estimate</h2>
+    ${result ? `<h2>Estimate</h2>
     <div id="estimate">${estimateHtml()}</div>
     <h2>Active layer</h2>
-    <div class="meta" id="layerReadout">${layerReadout()}</div>
+    <div class="meta" id="layerReadout">${layerReadout()}</div>` : ""}
   `;
 
   const isStale = stale();
@@ -250,19 +246,19 @@ export function renderChrome() {
   fx.paintSliceButton(sliceBtn);
   fx.paintForceButton(document.querySelector<HTMLButtonElement>("#force")!);
   sliceBtn.disabled = state.busy || !state.mesh;
-  (document.querySelector("#cancel") as HTMLButtonElement).disabled = !state.busy;
+  document.querySelector<HTMLButtonElement>("#cancel")!.hidden = !state.busy;
   paintExport(document.querySelector("#export"), isStale);
   syncSendButtons();
   document.querySelector("#timing")!.textContent = timingText();
   const warn = staleWarning();
   document.querySelector("#stage")!.classList.toggle("stale", warn);
-  paintBanner(warn);
+  paintBanner();
   fx.paintLegend();
   fx.paintSlider();
   fx.paintSpark();
   fx.paintPlayback();
   fx.paintGcode();
-  paintStatus(warn);
+  paintEngineLink();
   paintSettingMarks(currentPreset());
   syncEmptyState(!!state.mesh);
   session.supportUi?.refresh();
@@ -273,7 +269,7 @@ export function renderChrome() {
 function timingText() {
   const result = state.result;
   if (state.busy) return busyText();
-  if (!result) return "No slice yet";
+  if (!result) return "";
   const seconds = result.estimate?.seconds ?? 0;
   return `${seconds / 60 < 1 ? `${seconds.toFixed(0)} s` : `${(seconds / 60).toFixed(1)} min`} · ${shownGrams(result).toFixed(2)} g`;
 }
@@ -323,6 +319,7 @@ export function paintEngineLink() {
   }
   const base = apiBase();
   el.hidden = false;
+  el.removeAttribute("data-tip");
   el.title = base;
   if (!session.engineChecked) {
     el.dataset.state = "pending";
@@ -341,22 +338,8 @@ export function paintEngineLink() {
   }
   el.dataset.state = "ok";
   el.textContent = "Engine connected";
-}
-
-export function paintStatus(isStale: boolean) {
-  const mesh = state.mesh;
-  const result = state.result;
-  const status = document.querySelector("#status");
-  if (!status) return;
-  if (!mesh) status.textContent = "Load an STL, 3MF, or STEP file from Samples or Open mesh. Arrow keys move the layer.";
-  else if (state.busy) status.textContent = session.liveProgress && session.busyPhase
-    ? `${session.busyPhase}. ${sliceBusyStatus(mesh.name, session.busyRecompute)}`
-    : sliceBusyStatus(mesh.name, session.busyRecompute);
-  else if (isStale) status.textContent = staleSliceCopy(fx.currentSliceAction(false).state).status;
-  else if (result?.fromCache) status.textContent = cacheStatus(result.blend, new Date(result.slicedAtMs ?? 0).toLocaleString());
-  else if (result) status.textContent = result.blend;
-  else status.textContent = `${mesh.name} loaded. Choose a strategy, then slice.`;
-  paintEngineLink();
+  el.removeAttribute("title");
+  el.dataset.tip = "Engine connected";
 }
 
 export function markBusy(recompute: boolean) {
@@ -365,7 +348,6 @@ export function markBusy(recompute: boolean) {
   session.busySince = performance.now();
   session.busyRecompute = recompute;
   session.busyPhase = recompute ? "" : "Loading…";
-  session.jobStage = "";
   session.liveProgress = false;
   const mine = session.busySince;
   const tick = window.setInterval(() => {
@@ -375,7 +357,6 @@ export function markBusy(recompute: boolean) {
     }
     document.querySelector("#timing")!.textContent = busyText();
     applySliceProgress(sliceSample(), session.liveProgress ? session.busyPhase : "");
-    paintStatus(stale());
   }, 100);
 }
 
@@ -410,24 +391,19 @@ export function toastTransient(message: string, tone: "warn" | "error") {
 
 /** Short-lived notices leave the banner. Blocking problems stay there. */
 export function takeTransient() {
-  if (state.notice === "Slice cancelled.") {
-    toastTransient(state.notice, "warn");
-    state.notice = "";
-  }
   if (state.error && TRANSIENT_ERRORS.has(state.error)) {
     toastTransient(state.error, "error");
     state.error = "";
   }
 }
 
-export function paintBanner(isStale: boolean) {
+export function paintBanner() {
   takeTransient();
   const rail = document.querySelector("#banner")!;
   const bits: string[] = [];
   if (state.engine) bits.push(bannerLine(state.engine));
   if (state.error) bits.push(bannerLine(state.error, "", true));
   if (state.notice) bits.push(bannerLine(state.notice, "warn"));
-  if (isStale) bits.push(bannerLine(staleSliceCopy(fx.currentSliceAction(false).state).banner, "warn"));
   if (state.result && !state.result.sanity.ok) bits.push(bannerLine(state.result.sanity.notes.join(" ") || "G-code checks failed"));
   const objects = state.result?.objects;
   const unheld = coverageWarning(objects ? objects.flatMap((o) => o.coverage) : (state.result?.coverage ?? []));
@@ -451,24 +427,28 @@ export function paintBanner(isStale: boolean) {
 
 export const closedGroups = new Set<string>();
 
-export function group(title: string, body: string, level?: "simple" | "advanced" | "expert") {
+export function group(title: string, body: string, level?: "simple" | "advanced" | "expert", tip?: string) {
   const attr = level ? ` data-level="${level}"` : "";
-  return `<details ${closedGroups.has(title) ? "" : "open"} class="group" data-group="${title}"${attr}><summary>${title}</summary><div class="stack">${body}</div></details>`;
+  return `<details ${closedGroups.has(title) ? "" : "open"} class="group" data-group="${title}"${attr}><summary${tipAttr(tip)}>${title}</summary><div class="stack">${body}</div></details>`;
 }
 
-export function num(id: string, label: string, value: number, min: number, max: number, step: number, level?: "simple" | "advanced" | "expert") {
-  const attr = level ? ` data-level="${level}"` : "";
-  return `<label class="field setting"${attr} data-label="${label.toLowerCase()}">${label}<input id="${id}" type="number" min="${min}" max="${max}" step="${step}" value="${value}" /></label>`;
+function tipAttr(tip?: string) {
+  return tip ? ` data-tip="${escapeHtml(tip)}"` : "";
 }
 
-export function check(id: string, label: string, on: boolean, level?: "simple" | "advanced" | "expert") {
+export function num(id: string, label: string, value: number, min: number, max: number, step: number, level?: "simple" | "advanced" | "expert", tip?: string) {
   const attr = level ? ` data-level="${level}"` : "";
-  return `<label class="check setting"${attr} data-label="${label.toLowerCase()}"><input id="${id}" type="checkbox" ${on ? "checked" : ""}/> ${label}</label>`;
+  return `<label class="field setting"${attr} data-label="${label.toLowerCase()}"${tipAttr(tip)}>${label}<input id="${id}" type="number" min="${min}" max="${max}" step="${step}" value="${value}" /></label>`;
 }
 
-export function select(id: string, label: string, value: string, options: [string, string][], level?: "simple" | "advanced" | "expert") {
+export function check(id: string, label: string, on: boolean, level?: "simple" | "advanced" | "expert", tip?: string) {
   const attr = level ? ` data-level="${level}"` : "";
-  return `<label class="field setting"${attr} data-label="${label.toLowerCase()}">${label}<select id="${id}">${options.map(([v, l]) => `<option value="${v}" ${v === value ? "selected" : ""}>${l}</option>`).join("")}</select></label>`;
+  return `<label class="check setting"${attr} data-label="${label.toLowerCase()}"${tipAttr(tip)}><input id="${id}" type="checkbox" ${on ? "checked" : ""}/> ${label}</label>`;
+}
+
+export function select(id: string, label: string, value: string, options: [string, string][], level?: "simple" | "advanced" | "expert", tip?: string) {
+  const attr = level ? ` data-level="${level}"` : "";
+  return `<label class="field setting"${attr} data-label="${label.toLowerCase()}"${tipAttr(tip)}>${label}<select id="${id}">${options.map(([v, l]) => `<option value="${v}" ${v === value ? "selected" : ""}>${l}</option>`).join("")}</select></label>`;
 }
 
 export function cardBtn(id: CardId, title: string, copy: string) {
@@ -484,7 +464,7 @@ export function blendFields() {
     return `${num("bottom", "Toughness from the bed, mm", state.bottomMm, 0, 200, 0.2)}${num("trans", "Transition into speed, mm", state.transitionMm, 0, 200, 0.2)}`;
   }
   if (state.blendKind === "byRegion") {
-    return `${select("axis", "Split axis", state.axis, [["x", "X"], ["y", "Y"]])}${num("at", "Split at mm", Number(state.atMm.toFixed(1)), -500, 500, 0.1)}<p class="deferred">Low side of the plane is toughness. High side is speed. Drag the cut in Prepare, Split, or 3D.</p>`;
+    return `${select("axis", "Split axis", state.axis, [["x", "X"], ["y", "Y"]])}${num("at", "Split at mm", Number(state.atMm.toFixed(1)), -500, 500, 0.1)}`;
   }
   return "";
 }
@@ -499,14 +479,14 @@ export function paramLine(card: ResolvedCard) {
 
 export function paramTable(card: ResolvedCard) {
   if (state.blendKind === "byRegion") {
-    return `Split ${state.axis.toUpperCase()} = ${state.atMm.toFixed(1)} mm · low toughness, high speed.<br>Low side ${paramLine(resolved(1, state.layerHeight))}<br>High side ${paramLine(resolved(0, state.layerHeight))}`;
+    return `Split ${state.axis.toUpperCase()} = ${state.atMm.toFixed(1)} mm<br>Low side ${paramLine(resolved(1, state.layerHeight))}<br>High side ${paramLine(resolved(0, state.layerHeight))}`;
   }
   return paramLine(card);
 }
 
 export function layerReadout() {
   const layer = state.result?.layers[state.layer];
-  if (!layer) return "Slice to see this layer.";
+  if (!layer) return "";
   const below = (state.result?.layers ?? []).slice(0, state.layer).reduce((s, l) => s + (l.seconds ?? 0), 0);
   return `Layer <b>${layer.index + 1}</b> / ${state.result?.layers.length}<br>Z <b>${layer.z.toFixed(2)}</b> mm · h <b>${layer.height.toFixed(3)}</b><br>Layer time <b>${(layer.seconds ?? 0).toFixed(1)}</b> s · cumulative <b>${(below + (layer.seconds ?? 0)).toFixed(1)}</b> s<br>${escapeHtml(layer.note)}`;
 }
@@ -516,7 +496,7 @@ export function triangleLine(src: number) {
 }
 
 export function triangleMeta(result: SliceResponse | null) {
-  if (!result) return "Triangles <b>—</b>";
+  if (!result) return "";
   const tol = result.mesh.outlineToleranceMm ?? 0;
   const outline = tol > 0 ? ` · outline ${tol.toFixed(3)} mm` : "";
   // An older reply has no counts, which is unknown, not zero.
@@ -577,7 +557,7 @@ export function stageHtml(result: SliceResponse | null) {
 
 export function estimateHtml() {
   const est = state.result?.estimate;
-  if (!est) return `<div class="meta">Slice to compare minutes and grams.</div>`;
+  if (!est) return "";
   const groups = groupFeatures(est.byFeature ?? [], state.profile);
   const total = Math.max(0.001, est.seconds);
   const rows = groups.map((row) => `<tr><td>${row.label}</td><td>${row.seconds.toFixed(0)} s</td><td>${row.grams.toFixed(2)} g</td><td><div class="bar"><span style="width:${Math.min(100, (row.seconds / total) * 100)}%"></span></div></td></tr>`).join("");
@@ -585,8 +565,7 @@ export function estimateHtml() {
   const grams = filamentGrams(est.filamentMm, state.profile);
   const cost = filamentCost(grams, state.profile).toFixed(2);
   return `
-    <div class="meta"><b>${formatTime(est.seconds)}</b> · <b id="estGrams">${grams.toFixed(2)} g</b> · ${meters} m · €<span id="estCost">${cost}</span></div>
-    <div class="meta">Filament €${state.profile.filamentCostPerKg.toFixed(2)} / kg from the printer profile.</div>
+    <div class="meta" data-tip="Filament €${state.profile.filamentCostPerKg.toFixed(2)} / kg from the printer profile."><b>${formatTime(est.seconds)}</b> · <b id="estGrams">${grams.toFixed(2)} g</b> · ${meters} m · €<span id="estCost">${cost}</span></div>
     <table class="est">${rows}</table>
     <div class="chips">${chips()}</div>
     <div class="meta">${est.arcMoves} arcs · ${est.retracts ?? 0} retracts · ${(est.travelMm ?? 0).toFixed(0)} mm travel · ${est.scarfedLoops ?? 0} scarfed loops</div>
@@ -690,8 +669,8 @@ function printOrderFields(many: boolean): string {
   const clearance = state.sequentialClearance > 0 ? String(state.sequentialClearance) : "";
   const gantry = state.sequentialGantry > 0 ? String(state.sequentialGantry) : "";
   return `
-    ${select("printOrder", "Print order", state.printOrder, [["all-at-once", "All at once"], ["sequential", "One at a time"]])}
-    ${state.printOrder === "sequential" ? `<label class="field setting" data-label="sequential clearance" data-keywords="one at a time gap nozzle toolhead">Toolhead clearance mm<input id="seqclear" type="number" min="0" max="100" step="0.1" placeholder="35" value="${clearance}" aria-label="Sequential clearance" /></label><label class="field setting" data-label="sequential gantry height" data-keywords="one at a time gantry height">Gantry height mm<input id="seqgantry" type="number" min="0" max="500" step="0.1" placeholder="20" value="${gantry}" aria-label="Sequential gantry height" /></label><div class="meta">One object finishes, including its supports, before the next starts, and the nozzle climbs above the printed ones before it moves on. Clearance is how far your toolhead reaches around the nozzle, 35 mm when empty. Gantry height is from the nozzle tip to the gantry, 20 mm when empty; only the last object may be taller. Too close or too tall is an error and no G-code.</div>` : ""}`;
+    ${select("printOrder", "Print order", state.printOrder, [["all-at-once", "All at once"], ["sequential", "One at a time"]], undefined, "One at a time: one object finishes, including its supports, before the next starts, and the nozzle climbs above the printed ones before it moves on. Clearance is how far your toolhead reaches around the nozzle, 35 mm when empty. Gantry height is from the nozzle tip to the gantry, 20 mm when empty; only the last object may be taller. Too close or too tall is an error and no G-code.")}
+    ${state.printOrder === "sequential" ? `<label class="field setting" data-label="sequential clearance" data-keywords="one at a time gap nozzle toolhead">Toolhead clearance mm<input id="seqclear" type="number" min="0" max="100" step="0.1" placeholder="35" value="${clearance}" aria-label="Sequential clearance" /></label><label class="field setting" data-label="sequential gantry height" data-keywords="one at a time gantry height">Gantry height mm<input id="seqgantry" type="number" min="0" max="500" step="0.1" placeholder="20" value="${gantry}" aria-label="Sequential gantry height" /></label>` : ""}`;
 }
 
 function objectOverrideFields(obj: NonNullable<ReturnType<typeof selectedObject>>): string {
@@ -700,7 +679,7 @@ function objectOverrideFields(obj: NonNullable<ReturnType<typeof selectedObject>
   const speed = obj.settings.speed;
   const shown = (value: number | undefined) => (value === undefined ? "" : String(value));
   return `
-    <div class="place-xy">
+    <div class="place-xy" data-tip="Empty keeps the strategy. A height range or a modifier still wins on a field it sets.">
       <label class="field setting" data-label="object infill" data-keywords="per object density percent">Infill %
         <input id="objInfill" type="number" min="0" max="100" step="5" placeholder="strategy" value="${infill === undefined ? "" : String(Math.round(infill * 100))}" aria-label="Object infill percent" />
       </label>
@@ -710,12 +689,11 @@ function objectOverrideFields(obj: NonNullable<ReturnType<typeof selectedObject>
       <label class="field setting" data-label="object speed" data-keywords="per object speed cap">Speed mm/s
         <input id="objSpeed" type="number" min="1" max="1000" step="5" placeholder="strategy" value="${shown(speed)}" aria-label="Object speed cap" />
       </label>
-    </div>
-    <div class="meta">Empty keeps the strategy. A height range or a modifier still wins on a field it sets.</div>`;
+    </div>`;
 }
 
 export function objectList() {
-  if (!state.placed) return `<div class="meta">Drop an STL, 3MF, or STEP file, or open a sample.</div>`;
+  if (!state.placed) return "";
   const bedX = state.profile.bedX;
   const bedY = state.profile.bedY;
   const bedZ = state.profile.bedZ;
@@ -761,14 +739,12 @@ export function objectList() {
     ${isStepName(state.mesh?.name ?? "") ? num("stepTol", "STEP chord mm", state.stepTolerance, 0.01, 2, 0.01) : ""}
     ${printOrderFields(many)}
     ${overlap ? `<div class="meta warn-text" id="plateOverlap">${escapeHtml(overlap)}</div>` : ""}
-    ${selectedNotes.length ? `<div class="meta warn-text">${selectedNotes.join("; ")}</div>` : `<div class="meta">On the ${bedX}×${bedY}×${bedZ} mm bed.</div>`}
-    <div class="place-xy">
+    ${selectedNotes.length ? `<div class="meta warn-text">${selectedNotes.join("; ")}</div>` : ""}
+    <div class="place-xy" id="placeXY" data-bed-z="${z0}">
       <label class="field setting" data-label="position x" data-keywords="placement move bed offset">X mm<input id="placeX" type="number" step="1" value="${cx}" aria-label="Position X" /></label>
       <label class="field setting" data-label="position y" data-keywords="placement move bed offset">Y mm<input id="placeY" type="number" step="1" value="${cy}" aria-label="Position Y" /></label>
     </div>
-    <div class="meta" id="placeReadout">X ${cx} · Y ${cy} · bed Z ${z0} mm</div>
     ${selected ? objectOverrideFields(selected) : ""}
-    <div class="meta">Gizmo sits at the left and edits the selected object. Drag a ring to rotate. Drag the part or an arrow to move. Shift snaps 15° or 1 mm.</div>
   `;
 }
 
@@ -793,7 +769,7 @@ export function profileFields() {
 
 export function paretoHtml() {
   if (state.pareto.length === 0) {
-    return `<button class="btn" id="paretoBtn" type="button">Compare speed, mixes, toughness</button><div class="meta">Plots print time against grams. Bubble size is the toughness score.</div>`;
+    return `<button class="btn" id="paretoBtn" type="button" data-tip="Plots print time against grams. Bubble size is the toughness score.">Compare speed, mixes, toughness</button>`;
   }
   const pts = state.pareto;
   const minT = Math.min(...pts.map((p) => p.seconds));
@@ -894,8 +870,6 @@ export function presetHtml() {
   // finishing between choosing a preset and loading it does not drop the choice.
   const picked = document.querySelector<HTMLSelectElement>("#presetPick")?.value ?? "";
   const options = names.map((name) => `<option value="${escapeHtml(name)}"${name === picked ? " selected" : ""}>${escapeHtml(name)}</option>`).join("");
-  const diff = diffPreset(currentPreset());
-  const body = diff.length ? diff.map((line) => escapeHtml(line)).join("<br>") : "Matches the default preset.";
   return `
     <label class="field">Saved<select id="presetPick"><option value="">Choose…</option>${options}</select></label>
     <div class="stack" style="flex-direction:row;flex-wrap:wrap">
@@ -904,7 +878,7 @@ export function presetHtml() {
     </div>
     <label class="field">Name<input id="presetName" type="text" placeholder="bench speed" /></label>
     <button class="btn" id="presetSave" type="button">Save preset</button>
-    <div class="meta diff" id="presetDiff"><b>Vs default</b><br>${body}</div>
+    <div class="meta diff" id="presetDiff">${presetDiffHtml()}</div>
   `;
 }
 
@@ -921,8 +895,12 @@ export function applyPreset(next: PresetSettings) {
 export function paintPresetDiff() {
   const node = document.querySelector("#presetDiff");
   if (!node) return;
+  node.innerHTML = presetDiffHtml();
+}
+
+function presetDiffHtml() {
   const diff = diffPreset(currentPreset());
-  node.innerHTML = `<b>Vs default</b><br>${diff.length ? diff.map((line) => escapeHtml(line)).join("<br>") : "Matches the default preset."}`;
+  return diff.length ? `<b>Vs default</b><br>${diff.map((line) => escapeHtml(line)).join("<br>")}` : "";
 }
 
 function restoreFindCaret(focused: boolean, selStart: number | null, selEnd: number | null) {
@@ -1218,6 +1196,7 @@ export function touch() {
 function paintExport(button: HTMLButtonElement | null, isStale: boolean) {
   if (!button) return;
   button.disabled = !state.result || isStale || state.busy;
+  button.dataset.tip = isStale ? "Settings changed. Slice again to export." : "Save G-code";
 }
 
 export function markStale() {
@@ -1231,10 +1210,9 @@ export function markStale() {
   syncSendButtons();
   const warn = staleWarning();
   document.querySelector("#stage")?.classList.toggle("stale", warn);
-  paintBanner(warn);
+  paintBanner();
   paintPresetDiff();
   paintSettingMarks(currentPreset());
-  paintStatus(warn);
   fx.scheduleAuto();
   fx.draw();
 }
@@ -1257,6 +1235,6 @@ export async function probe() {
   } catch {
     markEngineDown(engineDownMessage(base));
   }
-  paintBanner(staleWarning());
+  paintBanner();
 }
-Object.assign(fx, { apiBase, apiToken, card, stale, settingsHash, blend, currentWeight, renderChrome, markEngineDown, markEngineUp, paintEngineLink, paintStatus, markBusy, busyText, bannerLine, toastTransient, takeTransient, paintBanner, group, num, check, select, cardBtn, blendFields, paramLine, paramTable, layerReadout, triangleLine, triangleMeta, formatMs, stageHtml, estimateHtml, isStepName, needsEngine, objectList, profileFields, paretoHtml, formatTime, chips, pct, signed, currentPreset, presetHtml, applyPreset, paintPresetDiff, applyFilter, onBlend, onSettings, touch, markStale, staleWarning, escapeHtml, probe });
+Object.assign(fx, { apiBase, apiToken, card, stale, settingsHash, blend, currentWeight, renderChrome, markEngineDown, markEngineUp, paintEngineLink, markBusy, busyText, bannerLine, toastTransient, takeTransient, paintBanner, group, num, check, select, cardBtn, blendFields, paramLine, paramTable, layerReadout, triangleLine, triangleMeta, formatMs, stageHtml, estimateHtml, isStepName, needsEngine, objectList, profileFields, paretoHtml, formatTime, chips, pct, signed, currentPreset, presetHtml, applyPreset, paintPresetDiff, applyFilter, onBlend, onSettings, touch, markStale, staleWarning, escapeHtml, probe });

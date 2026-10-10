@@ -287,7 +287,7 @@ export function setSecondFilament(library: MachineLibrary, id: string): MachineL
     const { secondFilamentId: _drop, ...rest } = library;
     return rest;
   }
-  if (id === library.filamentId) return "The slice already uses that filament.";
+  if (id === library.filamentId) return library;
   if (!library.filaments.some((row) => row.id === id)) return "That filament is no longer saved.";
   return { ...library, secondFilamentId: id };
 }
@@ -498,10 +498,14 @@ export function adoptProfile(library: MachineLibrary, profile: PrinterProfile, p
   };
 }
 
+const GCODE_TIP = "Start and end G-code are inserted into Export and Send. They are not sent to the slicer. The engine still writes temperatures, homing, and the park. Leave both blank and the file stays the engine's bytes.";
+
+const BELT_TIP = "The engine slices this belt. Export follows the slice. Send follows the printer connection. Seam on the belt edge and the belt raft stay off until those boxes are checked. A raft is a pad on the belt under the part and 1 mm past it, raft layers times the layer height thick; the part stands on it. Smart supports on a belt printer grow down to the tilted belt. They are not available together with a raft.";
+
 export function machineSectionHtml(
   library: MachineLibrary,
   live: { pressureAdvance: number; nozzleTemp: number; bedTemp: number; flow: number },
-  linkSummary = "Not checked.",
+  linkSummary = "",
 ): string {
   const picked = selection(library);
   const nozzles: number[] = [...NOZZLE_MM];
@@ -529,10 +533,9 @@ export function machineSectionHtml(
       <label class="field setting" data-label="filament" data-keywords="material pla petg abs tpu">Filament
         <select id="machineFilament" aria-label="Filament">${filamentOptions}</select>
       </label>
-      <label class="field setting" data-label="second filament" data-keywords="multi material second extruder">Second filament
+      <label class="field setting" data-label="second filament" data-keywords="multi material second extruder" data-tip="Stored on this machine. The slice still uses the filament above. No tool change, purge tower, or second extruder.">Second filament
         <select id="secondFilament" aria-label="Second filament">${secondOptions}</select>
       </label>
-      <div class="meta">Stored on this machine. The slice still uses the filament above. No tool change, purge tower, or second extruder.</div>
       <label class="field setting" data-label="nozzle size" data-keywords="nozzle diameter">Nozzle
         <select id="machineNozzle" aria-label="Nozzle size">${nozzleOptions}</select>
       </label>
@@ -554,14 +557,13 @@ export function machineSectionHtml(
             <button class="btn" id="machineDelete" type="button">Delete</button>
             <button class="btn" id="machineExport" type="button">Export</button>
             <label class="btn file">Import<input id="machineFile" type="file" accept=".limemachine.json,application/json" /></label>
-            <label class="field setting" data-label="start g-code" data-keywords="start gcode header">Start G-code
+            <label class="field setting" data-label="start g-code" data-keywords="start gcode header" data-tip="${GCODE_TIP}">Start G-code
               <textarea id="machineStart" class="machine-gcode" rows="3" aria-label="Start G-code">${escapeHtml(picked?.printer.startGcode ?? "")}</textarea>
             </label>
-            <label class="field setting" data-label="end g-code" data-keywords="end gcode footer">End G-code
+            <label class="field setting" data-label="end g-code" data-keywords="end gcode footer" data-tip="${GCODE_TIP}">End G-code
               <textarea id="machineEnd" class="machine-gcode" rows="3" aria-label="End G-code">${escapeHtml(picked?.printer.endGcode ?? "")}</textarea>
             </label>
-            <p class="meta">Start and end G-code are inserted into Export and Send. They are not sent to the slicer. The engine still writes temperatures, homing, and the park. Leave both blank and the file stays the engine's bytes.</p>
-            <label class="field setting machine-link" data-label="prusa link host" data-keywords="printer host url send">Prusa Link host
+            <label class="field setting machine-link" data-label="prusa link host" data-keywords="printer host url send" data-tip="Host and API key are stored on this printer and in an exported machine file. Built-in printers start with an empty host. Send uploads the current G-code to Prusa Link. The slicer does not talk to the printer.">Prusa Link host
               <input id="machineHost" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://192.168.1.50" value="${escapeHtml(picked?.printer.host ?? "")}" aria-label="Prusa Link host" />
             </label>
             <label class="field setting machine-link" data-label="prusa link api key" data-keywords="printer key password send">Prusa Link API key
@@ -573,7 +575,6 @@ export function machineSectionHtml(
               <button class="btn" id="prusaJob" type="button">Job status</button>
             </div>
             <div class="meta machine-link" id="prusaStatus">${escapeHtml(linkSummary)}</div>
-            <p class="meta machine-link">Host and API key are stored on this printer and in an exported machine file. Built-in printers start with an empty host. Send uploads the current G-code to Prusa Link. The slicer does not talk to the printer.</p>
           </div>
         </details>
       </div>
@@ -857,7 +858,7 @@ function beltFieldsHtml(printer: PrinterRecord | undefined): string {
   const axis = (value: string) => `<option value="${value}"${belt.axis === value ? " selected" : ""}>${value.toUpperCase()}</option>`;
   const length = belt.maxLengthMm == null ? "" : String(belt.maxLengthMm);
   return `
-      <label class="field setting" data-label="printer kind" data-keywords="belt conveyor cr-30 ifactory blackbelt cartesian">Kind
+      <label class="field setting" data-label="printer kind" data-keywords="belt conveyor cr-30 ifactory blackbelt cartesian" data-tip="${BELT_TIP}">Kind
         <select id="machineKind" aria-label="Printer kind">
           <option value="cartesian"${kind === "cartesian" ? " selected" : ""}>Cartesian</option>
           <option value="belt"${kind === "belt" ? " selected" : ""}>Belt</option>
@@ -894,7 +895,6 @@ function beltFieldsHtml(printer: PrinterRecord | undefined): string {
         <label class="field setting" data-label="belt raft layers" data-keywords="raft layers pad">Raft layers
           <input id="beltRaftLayers" type="number" min="1" max="8" step="1" value="${belt.raftLayers > 0 ? belt.raftLayers : 3}"${belt.raftLayers > 0 ? "" : " disabled"} aria-label="Belt raft layers" />
         </label>
-        <p class="meta belt-wide">The engine slices this belt. Export follows the slice. Send follows the printer connection. Seam on the belt edge and the belt raft stay off until those boxes are checked. A raft is a pad on the belt under the part and 1 mm past it, raft layers times the layer height thick; the part stands on it. Smart supports on a belt printer grow down to the tilted belt. They are not available together with a raft.</p>
       </div>`;
 }
 

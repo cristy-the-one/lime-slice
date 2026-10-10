@@ -4,7 +4,6 @@ import { meshKeyHex, partFrameKey, quietRefresh, recipeKey, type SliceAction, sl
 import { currentPlacement, livePlate, meshBase64, meshBytes, fail, isTauri, objectBase64, objectFingerprint, objectPlacement, withMeshData } from "./files";
 import { MeshRefs, sendWithMeshes, unknownMeshRef, type MeshFields, type SentMesh } from "../mesh-refs";
 import { adoptPatch, previewBase } from "./viewer";
-import { syncSliceDock } from "../ui/shell";
 import { blend, renderChrome, settingsHash, markBusy, paintBanner, busyText, markEngineDown, apiBase, stale, apiToken, touch } from "./settings";
 import { editRequestFields } from "../support-edit-list";
 import { replyOffset, type SlicedBed } from "../bed-offset";
@@ -34,7 +33,6 @@ import {
   jobEventsUrl,
   parseJobSnapshot,
   postJson,
-  stageLabel,
   type JobSnapshot,
   type JobStatus,
 } from "../ui/slice-job";
@@ -88,15 +86,14 @@ export function paintSliceButton(button: HTMLButtonElement) {
   button.classList.toggle("show-result", showSaved);
   button.classList.toggle("primary", !showSaved);
   button.classList.toggle("reslice", !state.busy && action.state === "changed");
-  syncSliceDock(button);
 }
 
 export function paintForceButton(button: HTMLButtonElement) {
   const action = currentSliceAction(true);
   const ready = !state.busy && !!state.mesh && action.state === "force";
   setButtonLabel(button, FORCE_LABEL);
-  button.disabled = !ready;
-  button.dataset.tip = ready ? action.detail : "Plan this recipe again. Available when a saved slice would be shown.";
+  button.hidden = !ready;
+  button.dataset.tip = action.detail;
   button.removeAttribute("title");
   button.setAttribute("aria-label", FORCE_LABEL);
 }
@@ -400,8 +397,8 @@ export async function runSlice(force = false) {
   } catch (err) {
     if (id !== session.job) return;
     const message = err instanceof Error ? err.message : String(err);
-    if (message === "cancelled") state.notice = "Slice cancelled.";
-    else if (message === "Failed to fetch") markEngineDown(engineDownMessage(apiBase()));
+    if (message === "cancelled") return;
+    if (message === "Failed to fetch") markEngineDown(engineDownMessage(apiBase()));
     else {
       state.error = message;
       pushToast(message, "error", { label: "Retry", run: () => { void runSlice(false); } });
@@ -440,12 +437,8 @@ let activeHttp: { uiId: number; jobId: string; stop: () => void } | null = null;
 function noteJob(uiId: number, snap: JobSnapshot) {
   if (uiId !== session.job) return;
   state.progress = snap.fraction;
-  if (snap.stage && snap.stage !== session.jobStage) {
-    session.jobStage = snap.stage;
-    pushToast(stageLabel(snap.stage), "info");
-  }
   session.busyPhase = formatStageLine(snap);
-  paintBanner(false);
+  paintBanner();
   const timing = document.querySelector("#timing");
   if (timing) timing.textContent = busyText();
 }
@@ -521,8 +514,6 @@ export function cancelSlice() {
   state.busy = false;
   state.progress = 0;
   session.liveProgress = false;
-  session.jobStage = "";
-  state.notice = "Slice cancelled.";
   const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   if (http) void cancelJob(apiBase(), apiToken(), http.jobId).catch(() => undefined);
   else if (tauri) void import("@tauri-apps/api/core").then(({ invoke }) => invoke("cancel_slice"));

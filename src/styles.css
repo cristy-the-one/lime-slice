@@ -77,7 +77,7 @@ input[type="checkbox"], input[type="range"] { accent-color: var(--accent); }
 }
 .action-row { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .action-row .btn { flex: 0 0 auto; }
-/* Slice, Show result, Re-slice, Loading…, and Slicing… share one slot so Cancel cannot slide under the pointer. */
+/* Slice, Show result, Re-slice, Loading…, and Slicing… share one slot. Cancel, Force, and Send sit left of it, so none of them moves it. */
 #slice {
   width: 132px;
   min-width: 132px;
@@ -99,7 +99,7 @@ input[type="checkbox"], input[type="range"] { accent-color: var(--accent); }
   border-color: var(--line);
   font-weight: 600;
 }
-#cancel:not(:disabled) { color: var(--danger); border-color: var(--danger); }
+#cancel { color: var(--danger); border-color: var(--danger); }
 
 .banner-rail {
   position: relative;

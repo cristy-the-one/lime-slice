@@ -78,33 +78,6 @@ export function sliceBusyLabel(recompute: boolean): "Slicing…" | "Loading…" 
   return recompute ? "Slicing…" : "Loading…";
 }
 
-export function sliceBusyStatus(meshName: string, recompute: boolean): string {
-  return recompute ? `Slicing ${meshName}…` : `Loading saved slice for ${meshName}…`;
-}
-
-export function cacheStatus(blend: string, when: string): string {
-  return `${blend} · Loaded from cache, sliced ${when}. Force re-slice to plan it again.`;
-}
-
-export function staleSliceCopy(state: SliceActionState): { banner: string; status: string } {
-  if (state === "cached") {
-    return {
-      banner: "Settings changed since this slice. Export stays off until you show the saved result.",
-      status: "This preview is stale. Show the saved result before export.",
-    };
-  }
-  if (state === "changed" || state === "force") {
-    return {
-      banner: "Settings changed since this slice. Export stays off until you re-slice.",
-      status: "This preview is stale. Re-slice before export.",
-    };
-  }
-  return {
-    banner: "Settings changed since this slice. Export stays off until you slice.",
-    status: "This preview is stale. Slice before export.",
-  };
-}
-
 /** One banner line for the overhang patches the supports leave unheld, or `null` when there are none. */
 export function coverageWarning(gaps: readonly { areaMm2: number }[]): string | null {
   if (!gaps.length) return null;
@@ -119,7 +92,7 @@ export function inAirWarning(air: { islands: number; overhangs: number } | undef
   const count = (n: number, one: string) => (n === 0 ? [] : [n === 1 ? `1 ${one}` : `${n} ${one}s`]);
   const parts = [...count(air.islands, "island"), ...count(air.overhangs, "overhang")];
   if (!parts.length) return null;
-  return `Supports are off. ${parts.join(" and ")} would print in the air. Tick Smart supports to hold them up.`;
+  return `Supports are off. ${parts.join(" and ")} would print in the air.`;
 }
 
 /** Fields the slicer strips or that the UI replaces before comparing recipes. */

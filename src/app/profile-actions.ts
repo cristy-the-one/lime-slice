@@ -32,7 +32,6 @@ export function saveSettingsProfile(name: string): boolean {
   }
   storeProfileLibrary(next);
   touch();
-  pushToast(`Saved ${name.trim()}.`, "success");
   return true;
 }
 
@@ -53,7 +52,6 @@ export function renameSettingsProfile(id: string, name: string): boolean {
   }
   storeProfileLibrary(next);
   touch();
-  pushToast(`Renamed to ${name.trim()}.`, "success");
   return true;
 }
 
@@ -64,9 +62,7 @@ export function duplicateSettingsProfile(id: string): boolean {
     return false;
   }
   storeProfileLibrary(next);
-  const copy = next.profiles.find((entry) => entry.id === next.activeId);
   touch();
-  pushToast(`Duplicated as ${copy?.name ?? "a copy"}.`, "success");
   return true;
 }
 
@@ -79,7 +75,6 @@ export function deleteSettingsProfile(id: string): boolean {
   }
   storeProfileLibrary(deleteIn(library, id));
   touch();
-  pushToast(`Deleted ${profile.name}.`, "success");
   return true;
 }
 
@@ -118,7 +113,6 @@ export async function importSettingsProfileFile(file: File) {
   const id = newProfileId();
   storeProfileLibrary(importInto(loadProfileLibrary(), parsed.profile, id));
   applyNamedProfile(id);
-  pushToast(`Imported ${parsed.profile.name}.`, "success");
 }
 
 export function openProfileFile() {

@@ -269,11 +269,7 @@ export function runCommand(id: string) {
     case "slice": {
       const button = document.querySelector<HTMLButtonElement>("#slice");
       if (!button) return;
-      if (button.disabled) {
-        const status = document.querySelector("#status")?.textContent ?? "";
-        if (status.startsWith("Load an")) pushToast("Load a mesh first.", "error");
-        return;
-      }
+      if (button.disabled) return;
       button.click();
       return;
     }
@@ -289,10 +285,7 @@ export function runCommand(id: string) {
     case "send-printer": {
       const button = document.querySelector<HTMLButtonElement>("#sendPrinter");
       if (!button) return;
-      if (button.disabled) {
-        pushToast(button.title || "Slice first, then send.", "info");
-        return;
-      }
+      if (button.disabled || button.hidden) return;
       button.click();
       return;
     }

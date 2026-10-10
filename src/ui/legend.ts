@@ -19,7 +19,7 @@ export function mountLegend() {
 }
 
 export function legendMarkup(rows: LegendRow[], scarf: boolean): string {
-  if (rows.length === 0) return `<span>Legend fills in after a slice.</span>`;
+  if (rows.length === 0) return "";
   const host = document.querySelector("#legend");
   const expanded = host?.querySelector(".legend-toggle")?.getAttribute("aria-expanded") !== "false";
   const body = rows.map((row) => {

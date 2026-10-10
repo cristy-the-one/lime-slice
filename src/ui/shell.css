@@ -70,6 +70,7 @@ html[data-chrome="custom"] .win-controls { display: flex; }
 .connection-result[data-state="ok"] { color: var(--ok); }
 .connection-result[data-state="bad"] { color: var(--danger); }
 .engine-link {
+  margin-left: auto;
   flex: 0 1 auto;
   max-width: 18ch;
   overflow: hidden;
@@ -77,31 +78,22 @@ html[data-chrome="custom"] .win-controls { display: flex; }
   white-space: nowrap;
   font-size: 12px;
 }
-.engine-link[data-state="ok"] { color: var(--ok); }
+.engine-link[data-state="ok"] {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ok);
+  text-indent: -9999px;
+}
 .engine-link[data-state="down"] { color: var(--danger); }
 .engine-link[data-state="pending"] { color: var(--muted); }
 
 .status { gap: 12px; }
-#status {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .timing { min-width: 16ch; max-width: 28ch; text-align: left; }
 
 #left.panel { padding: 0; }
 #leftBody { padding: var(--space-3); }
-#leftFoot {
-  position: sticky;
-  bottom: 0;
-  z-index: 2;
-  padding: 8px var(--space-3) 10px;
-  background: var(--panel);
-  border-top: 1px solid var(--line);
-}
-.slice-dock { width: 100%; }
 
 .level-bar { display: flex; gap: 4px; }
 .level-btn { flex: 1 1 0; padding: 0 6px; }
@@ -158,8 +150,7 @@ html[data-chrome="custom"] .win-controls { display: flex; }
 }
 .panel-collapse-left { left: calc(var(--panel-left, 240px) - 22px); }
 .panel-collapse-right { right: calc(var(--panel-right, 320px) - 22px); }
-.workspace.is-left-collapsed #leftBody,
-.workspace.is-left-collapsed #leftFoot { display: none; }
+.workspace.is-left-collapsed #leftBody { display: none; }
 .workspace.is-right-collapsed #right { display: none; }
 
 .empty-drop {
@@ -194,7 +185,6 @@ html[data-chrome="custom"] .win-controls { display: flex; }
   .panel-collapse { display: none; }
   .title-tabs { flex: 1 1 100%; order: 8; justify-content: flex-start; }
   .workspace.show-left #leftBody,
-  .workspace.show-left #leftFoot,
   .workspace.show-right #right { display: block; }
   .workspace.show-left #left { display: block; }
 }

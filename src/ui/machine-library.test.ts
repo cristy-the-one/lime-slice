@@ -228,7 +228,7 @@ const secondRound = typeof secondStored === "string" ? null : parseLibrary(seria
 check("a second filament round-trips", secondRound?.secondFilamentId === "lime-petg");
 const cleared = typeof secondStored === "string" ? secondStored : setSecondFilament(secondStored, "");
 check("clearing the second filament omits it", typeof cleared !== "string" && cleared.secondFilamentId === undefined && !serializeLibrary(cleared).includes("secondFilamentId"));
-check("the loaded filament cannot be the second", setSecondFilament(builtinLibrary(), "lime-pla") === "The slice already uses that filament.");
+check("the loaded filament cannot be the second", (setSecondFilament(builtinLibrary(), "lime-pla") as { secondFilamentId?: string }).secondFilamentId === undefined);
 const switched = typeof secondStored === "string" ? secondStored : selectIn(secondStored, secondStored.printerId, "lime-petg", secondStored.nozzleMm);
 check("choosing the second filament as the slice filament clears the slot", typeof switched !== "string" && switched.filamentId === "lime-petg" && switched.secondFilamentId === undefined);
 const sentSecond = typeof secondStored === "string" ? null : enginePrinter(selection(secondStored)!.printer, selection(secondStored)!.filament, secondStored.nozzleMm);

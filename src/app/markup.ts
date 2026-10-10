@@ -32,16 +32,16 @@ export function mountMarkup(root: HTMLElement) {
       </label>
       <div class="spacer"></div>
       <div class="action-row">
+        <button class="btn" id="cancel" type="button" hidden>Cancel</button>
+        <button class="btn" id="force" type="button" hidden>Force re-slice</button>
+        <button class="btn" id="sendPrinter" type="button" hidden disabled>Send to printer</button>
         <button class="btn primary" id="slice" type="button" data-slice-action="none">Slice</button>
-        <button class="btn" id="cancel" type="button" disabled>Cancel</button>
         <button class="btn" id="export" type="button" disabled>Export G-code</button>
-        <button class="btn" id="sendPrinter" type="button" disabled title="Slice first, and add a Prusa Link host on this printer.">Send to printer</button>
-        <button class="btn" id="force" type="button" disabled title="Plan this recipe again. Available when a saved slice would be shown.">Force re-slice</button>
       </div>
     </header>
     <div class="banner-rail" id="banner"></div>
     <div class="workspace">
-      <aside class="panel" id="left"><div id="leftBody"></div><div id="leftFoot"></div></aside>
+      <aside class="panel" id="left"><div id="leftBody"></div></aside>
       <section class="stage mode-solid" id="stage">
         <div class="viewbar">
           <div class="modes" id="viewModes">
@@ -80,7 +80,7 @@ export function mountMarkup(root: HTMLElement) {
         </div>
         <div class="stage-body" id="previewBody" role="tabpanel" aria-labelledby="tabPreview">
           <div class="vslider" id="vslider">
-            <div class="readout" id="readHigh">—</div>
+            <div class="readout" id="readHigh"></div>
             <button class="layer-step" id="layerNext" type="button" aria-label="Next layer" disabled>▲</button>
             <div class="track">
               <div class="range-bands" id="rangeBands"></div>
@@ -89,7 +89,7 @@ export function mountMarkup(root: HTMLElement) {
               <input id="rangeHigh" type="range" min="0" max="0" value="0" aria-label="Current layer" />
             </div>
             <button class="layer-step" id="layerPrev" type="button" aria-label="Previous layer" disabled>▼</button>
-            <div class="readout" id="readLow">Z —</div>
+            <div class="readout" id="readLow"></div>
           </div>
           <div class="previews">
             <div class="pane" id="pane2d">
@@ -117,30 +117,19 @@ export function mountMarkup(root: HTMLElement) {
             <button class="btn" id="play" type="button" disabled aria-label="Play layer">Play</button>
             <button class="btn" id="stop" type="button" disabled aria-label="Stop playback">Stop</button>
             <input id="move" type="range" min="0" max="0" value="0" aria-label="Toolpath playback" />
-            <div class="play-readout" id="playReadout">Feature — · feed — · E —</div>
+            <div class="play-readout" id="playReadout"></div>
           </div>
         </div>
         <div class="legend" id="legend"></div>
       </section>
       <aside class="panel right" id="right"></aside>
     </div>
-    <footer class="status"><div class="timing" id="timing">No slice yet</div><div id="sliceMeter" class="slice-meter" hidden></div><div id="engineLink" class="engine-link" data-state="pending">Engine …</div><div id="status">Load an STL, 3MF, or STEP file. Arrow keys move the layer. Press ? for shortcuts.</div></footer>
+    <footer class="status"><div class="timing" id="timing"></div><div id="sliceMeter" class="slice-meter" hidden></div><div id="engineLink" class="engine-link" data-state="pending">Engine …</div></footer>
   </div>
   <div id="help" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="helpTitle">
     <div class="sheet-card">
       <h2 id="helpTitle">Shortcuts</h2>
       <ul id="helpShortcuts"></ul>
-      <ul>
-        <li>Force re-slice plans a saved recipe again</li>
-        <li>Prepare gizmo sits at the left of the view. Drag a ring to rotate. <kbd>Shift</kbd> snaps 15°</li>
-        <li>Drag the part, or an arrow, to move it. <kbd>Shift</kbd> snaps 1 mm. X and Y fields set the bed position</li>
-        <li>Drag the split plane when By region is on</li>
-        <li>2D preview: drag to pan, two-finger scroll pans, wheel or pinch zooms at the cursor. Fit recenters the layer</li>
-        <li>Bed fades the build plate. 0 hides it</li>
-        <li>Section clips the preview. Cut moves the plane. Rings, parked at the left, aim it. The sheet is only a guide. Layers still apply. Neither changes the slice</li>
-        <li><kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> Layer. The ▲ ▼ buttons step one layer; the slider still scrubs</li>
-        <li>Prepare nudge buttons step 0.1 mm, or 1° when Rotate is on. A scroll on a handle does the same</li>
-      </ul>
       <button class="btn" id="helpClose" type="button">Close</button>
     </div>
   </div>

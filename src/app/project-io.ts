@@ -57,7 +57,6 @@ export async function saveCurrentProject() {
   const wrote = await saveProjectText(serializeProject(project), name);
   if (!wrote) return;
   markProjectClean();
-  pushToast("Saved project.", "success");
 }
 
 export async function openProjectFile(file: File) {
@@ -67,7 +66,7 @@ export async function openProjectFile(file: File) {
     pushToast(parsed.message, "error", { label: "Retry", run: openProjectPicker });
     return;
   }
-  if (await restoreProject(parsed.project)) pushToast(`Opened ${file.name}.`, "success");
+  await restoreProject(parsed.project);
 }
 
 export function mountProjectFiles() {

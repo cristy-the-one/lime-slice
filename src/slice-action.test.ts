@@ -1,4 +1,4 @@
-import { cacheStatus, coverageWarning, feed, fnv1aHex, inAirWarning, meshKeyHex, partFrameKey, quietRefresh, recipeKey, sliceAction, sliceBusyLabel, staleSliceCopy, storesReply } from "./slice-action.ts";
+import { coverageWarning, feed, fnv1aHex, inAirWarning, meshKeyHex, partFrameKey, quietRefresh, recipeKey, sliceAction, sliceBusyLabel, storesReply } from "./slice-action.ts";
 
 let failed = 0;
 
@@ -57,9 +57,6 @@ eq("force with nothing cached does not set reslice", forceFresh.reslice, false);
 
 eq("busy recompute", sliceBusyLabel(true), "Slicing…");
 eq("busy cache load", sliceBusyLabel(false), "Loading…");
-eq("stale cached status", staleSliceCopy("cached").status, "This preview is stale. Show the saved result before export.");
-eq("stale changed banner", staleSliceCopy("changed").banner, "Settings changed since this slice. Export stays off until you re-slice.");
-check("cache status names force", cacheStatus("speed", "today").includes("Force re-slice"));
 
 const speed = { mode: "single", strategy: "speed" };
 const keyA = recipeKey({ layerHeight: 0.2, reslice: true, blend: speed, dataB64: "abc" }, "mesh-a");
@@ -141,9 +138,9 @@ eq("supports off, nothing floats", inAirWarning({ islands: 0, overhangs: 0 }), n
 eq(
   "supports off, an island and two overhangs",
   inAirWarning({ islands: 1, overhangs: 2 }),
-  "Supports are off. 1 island and 2 overhangs would print in the air. Tick Smart supports to hold them up.",
+  "Supports are off. 1 island and 2 overhangs would print in the air.",
 );
-eq("supports off, overhangs only", inAirWarning({ islands: 0, overhangs: 1 }), "Supports are off. 1 overhang would print in the air. Tick Smart supports to hold them up.");
+eq("supports off, overhangs only", inAirWarning({ islands: 0, overhangs: 1 }), "Supports are off. 1 overhang would print in the air.");
 
 if (failed) throw new Error(`${failed} slice-action checks failed`);
 console.log("slice-action: none, cached, changed, force ok");
