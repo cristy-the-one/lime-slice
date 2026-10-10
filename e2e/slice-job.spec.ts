@@ -144,6 +144,7 @@ test.describe("compact job progress", () => {
     const calls = await mockJobs(page, "hold");
     await page.goto("/?layout=compact");
     await expect(page.locator("html")).toHaveClass(/layout-compact/);
+    await autoSliceOff(page);
     await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
     await expect(page.locator("#compactFile")).toContainText("calibration_cube");
     await page.locator("#slice").click();
