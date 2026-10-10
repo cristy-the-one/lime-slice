@@ -1,4 +1,4 @@
-import { beltAdvanceMm, beltSliceField, beltStripLength, coerceBelt, defaultBelt, tiltPose } from "./belt.ts";
+import { beltAdvanceMm, beltRunTooLong, beltSliceField, beltStripLength, coerceBelt, defaultBelt, tiltPose } from "./belt.ts";
 import { recipeKey } from "./slice-action.ts";
 
 let failed = 0;
@@ -31,15 +31,14 @@ const cartesian = { layerHeight: 0.2, printer: { nozzleDiameter: 0.4 } };
 const plain = recipeKey(cartesian, "mesh");
 check("a cartesian request gains no belt key", recipeKey({ ...cartesian, ...beltSliceField(null, false) }, "mesh") === plain);
 const sent = beltSliceField(defaultBelt(200), false);
-check("an unlimited belt omits maxLengthMm, the seam flag, the raft, and floor supports", !!sent.belt && !("maxLengthMm" in sent.belt) && !("seamOnEdge" in sent.belt) && !("raftLayers" in sent.belt) && !("floorSupports" in sent.belt) && sent.belt.angleDeg === 45 && sent.belt.axis === "z" && sent.belt.copies === 1);
-const edged = beltSliceField({ ...defaultBelt(200), seamOnEdge: true }, false);
-check("the seam flag is sent only when on", edged.belt?.seamOnEdge === true && !("seamOnEdge" in (beltSliceField(defaultBelt(200), false).belt ?? {})));
+check("an unlimited belt omits maxLengthMm, the raft, and floor supports", !!sent.belt && !("maxLengthMm" in sent.belt) && !("raftLayers" in sent.belt) && !("floorSupports" in sent.belt) && sent.belt.angleDeg === 45 && sent.belt.axis === "z" && sent.belt.copies === 1);
+check("no seam flag is ever sent: a blend seam is the belt edge", !("seamOnEdge" in (beltSliceField(defaultBelt(200), false).belt ?? {})));
 const rafted = beltSliceField({ ...defaultBelt(200), raftLayers: 3 }, false);
 check("raft layers are sent only when the pad is on", rafted.belt?.raftLayers === 3 && !("raftLayers" in (beltSliceField(defaultBelt(200), false).belt ?? {})));
 const floored = beltSliceField(defaultBelt(200), true);
 check("floor supports are sent only when Smart supports is on", floored.belt?.floorSupports === true && !("floorSupports" in (beltSliceField(defaultBelt(200), false).belt ?? {})));
-const stored = beltSliceField({ ...defaultBelt(200), floorSupports: true }, false);
-check("a stored floor supports flag is not sent", !("floorSupports" in (stored.belt ?? {})));
+const stored = beltSliceField(coerceBelt({ floorSupports: true, seamOnEdge: true }, 200), false);
+check("an old save's floor supports and seam flags are not read", !("floorSupports" in (stored.belt ?? {})) && !("seamOnEdge" in (stored.belt ?? {})));
 const raftedSupports = beltSliceField({ ...defaultBelt(200), raftLayers: 3 }, true);
 check("a raft and Smart supports are never sent together", !("floorSupports" in (raftedSupports.belt ?? {})) && raftedSupports.belt?.raftLayers === 3);
 check("a belt changes the recipe", recipeKey({ ...cartesian, ...sent }, "mesh") !== plain);
@@ -52,12 +51,14 @@ check(
 const messy = coerceBelt({ angleDeg: 0, axis: "nope", direction: -1, widthMm: -4, maxLengthMm: null, copies: 100, gapMm: -2 }, 220);
 check(
   "a bad belt block is clamped",
-  messy.angleDeg === 10 && messy.axis === "z" && messy.direction === -1 && messy.widthMm === 220 && messy.maxLengthMm === null && messy.copies === 24 && messy.gapMm === 5 && messy.seamOnEdge === false && messy.raftLayers === 0 && messy.floorSupports === false,
+  messy.angleDeg === 10 && messy.axis === "z" && messy.direction === -1 && messy.widthMm === 220 && messy.maxLengthMm === null && messy.copies === 24 && messy.gapMm === 5 && messy.raftLayers === 0,
 );
 const rafty = coerceBelt({ raftLayers: 9.2 }, 220);
 check("raft layers clamp to 1 through 8", rafty.raftLayers === 8 && coerceBelt({ raftLayers: 0 }, 220).raftLayers === 0 && coerceBelt({}, 220).raftLayers === 0);
-const both = coerceBelt({ raftLayers: 3, floorSupports: true }, 220);
-check("a raft and floor supports together keep the raft, which the engine accepts", both.raftLayers === 3 && both.floorSupports === false);
+
+check("the run an engine fit error reports is read", beltRunTooLong("belt.maxLengthMm 30 is shorter than the belt run of 56.57 mm") === 56.57);
+check("an error about the width is not a length fix", beltRunTooLong("belt.widthMm 10 is narrower than the part, which is 20.00 mm across the belt") === null);
+check("another message is not a length fix", beltRunTooLong("walls 0 is outside 1 to 12") === null);
 
 if (failed) {
   console.error(`${failed} failed`);

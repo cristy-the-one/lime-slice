@@ -1,4 +1,4 @@
-import { seamSliceField } from "./seam.ts";
+import { seamOptions, seamSliceField } from "./seam.ts";
 import {
   IRONING_FLOW,
   IRONING_SPACING,
@@ -36,6 +36,7 @@ eq("blend is left out of the slice body", seamSliceField("blend"), {});
 eq("nearest is sent", seamSliceField("nearest"), { seam: "nearest" });
 eq("aligned is sent", seamSliceField("aligned"), { seam: "aligned" });
 eq("rear is sent", seamSliceField("rear"), { seam: "rear" });
+eq("a belt offers the belt edge where a flat printer offers blend", [seamOptions(true)[0], seamOptions(false)[0]], [["blend", "Belt edge"], ["blend", "Blend (strategy)"]]);
 
 const plain = { layerHeight: 0.2, ...seamSliceField("blend"), ...sliceIroningFields(off) };
 check("a default slice has no seam and no ironing", !("seam" in plain) && !("ironing" in plain));
