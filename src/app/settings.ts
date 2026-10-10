@@ -1196,8 +1196,6 @@ function afterSet(spec: ControlSpec, value: number | boolean | string): "stale" 
     case "accel":
       saveProfileFromState();
       return "stale";
-    case "autoslice":
-      return "stale";
     default:
       return spec.group === "calibrate" ? "done" : "stale";
   }
@@ -1284,6 +1282,12 @@ export function onSettings(ev: Event) {
   if (!spec?.set) return;
   if (spec.group === "strategy") {
     onBlend(ev);
+    return;
+  }
+  // A gear preference is the app's, not the print's: no undo step, no unsaved project, no stale slice.
+  if (spec.group === "gear") {
+    spec.set(state, spec.kind.type === "check" ? t.checked : t.value);
+    fx.scheduleAuto();
     return;
   }
   noteEdit();

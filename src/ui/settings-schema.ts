@@ -407,7 +407,13 @@ export const CONTROLS: ControlSpec[] = [
 
   // Gear panel
   {
-    ...bound("autoSlice", { id: "autoslice", label: "Auto-slice when a slice takes under 20 s", group: "gear", tier: "simple", kind: check, keywords: "automatic" }),
+    id: "autoslice",
+    label: "Auto-slice when a slice takes under 20 s",
+    group: "gear",
+    tier: "simple",
+    kind: check,
+    keywords: "automatic",
+    get: (s) => s.autoSlice,
     set: (s, v) => {
       s.autoSlice = v as boolean;
       saveAutoSlice(s.autoSlice);

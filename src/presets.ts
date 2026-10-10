@@ -57,7 +57,6 @@ export interface PresetSettings {
   zHopHeight: number;
   zHopMinTravel: number;
   pricePerKg: number;
-  autoSlice: boolean;
   simplify: boolean;
   simplifyError: number;
 }
@@ -110,7 +109,6 @@ export const DEFAULT_PRESET: PresetSettings = {
   zHopHeight: 0.4,
   zHopMinTravel: 2,
   pricePerKg: 20,
-  autoSlice: true,
   simplify: true,
   simplifyError: 0,
 };
