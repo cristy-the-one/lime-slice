@@ -43,7 +43,8 @@ pub use mesh::Mesh;
 pub use meshes::{mesh_id, PayloadError, HELD_BYTES};
 pub use progress::{fraction, Progress, Stage, Status, Watch};
 pub use slice::{
-    contour_times, keep_support_bases, outline_tolerance_mm, pareto_estimates, slice_configured,
+    contour_times, keep_support_bases, outline_tolerance_mm, pareto_estimates, pareto_request,
+    slice_configured,
     slice_configured_watched, slice_request, slice_request_watched, slice_with_baseline,
     BeltCopies, BlendScore, CompareEstimate, EditOutcomeView, FeatureEstimate, HeightRangeSpec,
     ModifierVolumeSpec, PaintDiskSpec, ParetoPoint, PreviewLayer, PrintEstimate, RigidPose,

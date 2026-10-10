@@ -6,7 +6,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 use base64::Engine;
-use lime_slice_core::{slice_request, EditStatus, Job, SliceRequest};
+use lime_slice_core::{pareto_request, slice_request, EditStatus, Job, SliceRequest};
 use serde_json::{json, Value};
 
 fn box_stl(x: f64, y: f64, z: f64) -> String {
@@ -1307,4 +1307,45 @@ fn the_end_move_carries_the_part_on_the_way_it_went() {
             "{axis}: {last} -> {end}"
         );
     }
+}
+
+#[test]
+fn blend_compare_on_a_belt_estimates_the_belt_print() {
+    let stl = box_stl(40.0, 20.0, 10.0);
+    let quiet = json!({ "includePreview": false, "includeGcode": false });
+    let on_belt = |extra: Value| {
+        let mut body = quiet.clone();
+        body["belt"] = belt(45.0, "z", 1, 5.0);
+        for (key, value) in extra.as_object().unwrap() {
+            body[key] = value.clone();
+        }
+        request(&stl, "box.stl", body)
+    };
+    let points = pareto_request(&on_belt(json!({})), Job::default()).unwrap();
+    let blends = [
+        json!({ "mode": "single", "strategy": "speed" }),
+        json!({ "mode": "weight", "toughness": 0.25 }),
+        json!({ "mode": "weight", "toughness": 0.5 }),
+        json!({ "mode": "weight", "toughness": 0.75 }),
+        json!({ "mode": "single", "strategy": "toughness" }),
+    ];
+    assert_eq!(points.len(), blends.len());
+    for (point, blend) in points.iter().zip(blends) {
+        let one = slice_request(&on_belt(json!({ "blend": blend })), Job::default()).unwrap();
+        assert!(
+            (point.seconds - one.estimate.seconds).abs() < 1e-6,
+            "{}: compare {} s, belt slice {} s",
+            point.label,
+            point.seconds,
+            one.estimate.seconds
+        );
+        assert!((point.filament_g - one.estimate.filament_g).abs() < 1e-9, "{}", point.label);
+    }
+    let flat = pareto_request(&request(&stl, "box.stl", quiet), Job::default()).unwrap();
+    assert!(
+        (points[0].seconds - flat[0].seconds).abs() > 1.0,
+        "a belt and a flat bed print the same box in {} s and {} s",
+        points[0].seconds,
+        flat[0].seconds
+    );
 }

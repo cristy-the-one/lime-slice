@@ -2627,11 +2627,29 @@ pub struct ParetoPoint {
     pub score: f64,
 }
 
+/// `pareto_estimates` for a slice request: its mesh, printer, and settings.
+pub fn pareto_request(req: &SliceRequest, job: Job) -> Result<Vec<ParetoPoint>, String> {
+    let profile = req.printer.clone().unwrap_or_default();
+    let overrides = wire::parse_overrides(req, [profile.bed_x, profile.bed_y])?;
+    let (mesh, settings) = load_object(req, &overrides, job)?;
+    pareto_on(&mesh, &profile, &settings, req.belt.as_ref())
+}
+
 /// Speed, three weight mixes, and toughness. No preview polylines and no G-code text.
 pub fn pareto_estimates(
     mesh: &Mesh,
     profile: &PrinterProfile,
     settings: &SliceSettings,
+) -> Result<Vec<ParetoPoint>, String> {
+    pareto_on(mesh, profile, settings, None)
+}
+
+/// The five blends, laid on `belt` as a slice would be when there is one.
+fn pareto_on(
+    mesh: &Mesh,
+    profile: &PrinterProfile,
+    settings: &SliceSettings,
+    belt: Option<&crate::belt::BeltSpec>,
 ) -> Result<Vec<ParetoPoint>, String> {
     let mut quiet = settings.unkept();
     quiet.baseline = false;
@@ -2665,7 +2683,22 @@ pub fn pareto_estimates(
                     toughness: *toughness,
                 }
             };
-            let response = slice_sharing(mesh, &blend, profile, &quiet, &mut cut, &Watch::idle())?;
+            let source = Source {
+                id: None,
+                mesh,
+                blend: &blend,
+                settings: quiet.clone(),
+            };
+            let response = slice_plate(
+                &[source],
+                &blend,
+                profile,
+                &quiet,
+                belt,
+                PlateOrder::AllAtOnce,
+                &mut cut,
+                &Watch::idle(),
+            )?;
             Ok(ParetoPoint {
                 label: (*label).into(),
                 toughness: *toughness,

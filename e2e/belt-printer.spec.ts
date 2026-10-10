@@ -160,7 +160,7 @@ test("a belt hides the settings it forces off or cannot use, and sends none of t
   await expect(page.locator("#zhopht")).toHaveCount(0);
   await expect(page.locator("#scarf")).toHaveCount(0);
   await expect(page.locator("#scarflen")).toHaveCount(0);
-  await expect(page.locator("#paretoBtn")).toHaveCount(0);
+  await expect(page.locator("#paretoBtn")).toBeVisible();
   await expect(page.locator("#printOrder")).toHaveCount(0);
   await expect(page.locator("#seam option[value=blend]")).toHaveText("Belt edge");
 

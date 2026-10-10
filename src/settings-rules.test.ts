@@ -39,9 +39,6 @@ eq("a sequential plate sends the gantry too, capped", orderFields(settingsRules(
 eq("all at once sends nothing", orderFields(settingsRules({ ...flat, objects: 2 }), { printOrder: "all-at-once", clearanceMm: 40, gantryMm: 0 }), {});
 eq("the order keys are dropped from a belt's hash input", settingsRules(belt).coerce({ printOrder: "sequential", sequentialClearanceMm: 40, sequentialGantryMm: 20, mesh: "m" }), { mesh: "m" });
 
-// Ruling 3: Blend compare is a flat-bed estimate.
-check("a belt hides Blend compare", settingsRules(belt).hidden.has("blendCompare"));
-check("a flat printer shows Blend compare, whatever the object count", !settingsRules({ ...flat, objects: 4 }).hidden.has("blendCompare"));
 
 // Ruling 6: sequential Arrange keeps the toolhead clearance.
 eq("a sequential plate arranges with the typed clearance", sequentialClearance(settingsRules({ ...flat, objects: 2 }), sequential), 40);

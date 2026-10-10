@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 mod jobs;
 
 use lime_slice_core::{
-    pareto_estimates, slice_request, Axis, BlendMode, FuzzySkin, GcodeText, Gyroid3d, Ironing, Mesh,
+    pareto_request, slice_request, Axis, BlendMode, FuzzySkin, GcodeText, Gyroid3d, Ironing, Mesh,
     RigidPose, ScarfSeam, SeamPlacement, SliceRequest, SliceSettings, StrategyId, ZHopMode,
 };
 
@@ -1289,30 +1289,11 @@ fn handle(mut request: tiny_http::Request, token: Option<&str>) {
             }
         } else if method == "POST" && path.starts_with("/api/pareto") {
             match serde_json::from_str::<SliceRequest>(&body) {
-                Ok(req) => match decode_mesh(&req) {
-                    Ok(bytes) => match lime_slice_core::load_slice_mesh_tol(
-                        &req.filename,
-                        &bytes,
-                        req.pose.is_some(),
-                        req.step_tolerance_mm,
-                    ) {
-                        Ok(mesh) => {
-                            let profile = req.printer.clone().unwrap_or_default();
-                            let settings = SliceSettings {
-                                job: lime_slice_core::Job::start(),
-                                ..SliceSettings::from_request(&req)
-                            };
-                            match pareto_estimates(&mesh, &profile, &settings) {
-                                Ok(points) => (
-                                    200,
-                                    serde_json::to_string(&points)
-                                        .unwrap_or_else(|e| err_json(&e.to_string())),
-                                ),
-                                Err(err) => (400, err_json(&err)),
-                            }
-                        }
-                        Err(err) => (400, err_json(&err)),
-                    },
+                Ok(req) => match pareto_request(&req, lime_slice_core::Job::start()) {
+                    Ok(points) => (
+                        200,
+                        serde_json::to_string(&points).unwrap_or_else(|e| err_json(&e.to_string())),
+                    ),
                     Err(err) => (400, err_json(&err)),
                 },
                 Err(err) => (400, err_json(&err.to_string())),

@@ -163,7 +163,7 @@ export function renderChrome() {
   document.querySelector("#right")!.innerHTML = `
     ${result ? section("Estimate", `<div id="estimate">${estimateHtml()}</div>`) : ""}
     ${result ? section("Active layer", `<div id="layerReadout">${layerReadout()}</div>`) : ""}
-    ${rules.hidden.has("blendCompare") ? "" : section("Compare blends", `<div id="pareto"${state.mesh ? "" : ' class="is-off"'}>${paretoHtml()}</div>`)}
+    ${section("Compare blends", `<div id="pareto"${state.mesh ? "" : ' class="is-off"'}>${paretoHtml()}</div>`)}
     ${state.mesh ? section("Resolved parameters", `<div class="meta" id="resolved">${paramTable(live)}</div>`, "advanced") : ""}
     ${result ? section("Diagnostics", `${triangleMeta(result)}${stageHtml(result)}`, "expert") : ""}
   `;
