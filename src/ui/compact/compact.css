@@ -428,7 +428,7 @@ html.layout-compact[data-compact-tab="preview"] #toolRail,
 html.layout-compact[data-compact-tab="device"] #toolRail,
 html.layout-compact[data-compact-tab="preview"] #compactIso,
 html.layout-compact[data-compact-tab="device"] #slice,
-html.layout-compact[data-compact-tab="prepare"] .stage-tools,
+html.layout-compact:not([data-compact-tab="preview"]) .stage-tools,
 html.layout-compact[data-compact-tab="prepare"] #compactLayerTip,
 html.layout-compact[data-compact-tab="prepare"] #compactProgress { display: none !important; }
 html.layout-compact[data-compact-tab="preview"] #compactProgress[data-on="1"] { display: flex !important; }
