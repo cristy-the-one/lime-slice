@@ -172,6 +172,9 @@ input[type="checkbox"], input[type="range"] { accent-color: var(--accent); }
 .view-inline { display: flex; align-items: center; gap: var(--space-2); font-size: var(--fs-2); color: var(--on-stage-dim); white-space: nowrap; }
 .view-inline input[type="range"] { width: 72px; }
 .view-inline select { width: auto; height: 26px; padding: 0 var(--space-2); font-size: var(--fs-2); background: var(--stage-chip); border-color: var(--stage-chip-line); color: var(--on-stage); color-scheme: dark; }
+/* WebView2 keeps a native list's first colors across a theme switch; an option with its own colors never shows stale ones. */
+select option, select optgroup { background: var(--surface-1); color: var(--text); }
+.view-inline select option { background: var(--stage); color: var(--on-stage); }
 .view-toggle { position: relative; display: inline-flex; }
 .view-toggle input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
 .view-toggle-face {
