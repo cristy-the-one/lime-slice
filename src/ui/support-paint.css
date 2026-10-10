@@ -90,13 +90,6 @@ html.layout-compact .paint-bar .btn {
 }
 html.layout-compact .pb-radius { flex: 1 1 120px; min-height: 44px; }
 html.layout-compact .pb-radius input { flex: 1 1 auto; width: auto; min-height: 44px; }
-html.layout-compact #toolRail [data-tool="paint"] {
-  width: 44px;
-  height: 44px;
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
-}
 html.layout-compact #toolRail [data-tool="paint"][aria-pressed="true"] {
   background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
 }
-html.layout-compact #toolRail [data-tool="paint"] .ico { width: 20px; height: 20px; }

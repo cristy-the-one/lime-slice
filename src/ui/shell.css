@@ -12,7 +12,7 @@
 .gear-panel {
   position: absolute;
   right: 0;
-  z-index: 8;
+  z-index: var(--z-menu);
   margin-top: var(--space-1);
   padding: var(--space-2);
   min-width: 260px;
@@ -133,16 +133,16 @@ html[data-chrome="custom"] .win-controls { display: flex; }
   place-items: center;
   padding: var(--space-4);
   text-align: center;
-  color: var(--text-dim);
+  color: var(--on-stage-dim);
   background: color-mix(in srgb, var(--stage) 72%, transparent);
-  border: 1px dashed var(--border-strong);
+  border: 1px dashed var(--stage-chip-line);
   border-radius: var(--radius-lg);
   pointer-events: auto;
 }
 .empty-drop[hidden] { display: none !important; }
-.empty-drop strong { display: block; color: var(--text); font-size: var(--fs-4); margin-bottom: var(--space-1); }
+.empty-drop strong { display: block; color: var(--on-stage); font-size: var(--fs-4); margin-bottom: var(--space-1); }
 .empty-drop p { margin: 0 0 var(--space-3); }
-.app.dropping .empty-drop { border-color: var(--accent); color: var(--text); }
+.app.dropping .empty-drop { border-color: var(--accent); color: var(--on-stage); }
 
 #viewPresets { margin-left: 0; }
 

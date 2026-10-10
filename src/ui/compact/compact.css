@@ -279,7 +279,7 @@ html.layout-compact #toolRail {
 }
 html.layout-compact #toolRail .rail-sep,
 html.layout-compact #toolRail [data-tool="section"] { display: none; }
-html.layout-compact #toolRail .btn {
+html.layout-compact #toolRail button {
   width: 44px;
   height: 44px;
   min-height: 44px;
@@ -288,7 +288,7 @@ html.layout-compact #toolRail .btn {
   border-radius: 14px;
   background: color-mix(in srgb, var(--surface-2) 92%, transparent);
 }
-html.layout-compact #toolRail .btn .ico {
+html.layout-compact #toolRail button .ico {
   width: 20px;
   height: 20px;
 }

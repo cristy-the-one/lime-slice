@@ -56,6 +56,8 @@
   --dur: 140ms;
   --ease: ease;
   --disabled: 0.45;
+  /* Menus and popovers sit above the panel splitters and collapse buttons. */
+  --z-menu: 10;
   /* Pressed fill for ghost and row controls; `.btn` darkens to surface-0. */
   --press: color-mix(in srgb, var(--surface-0) 55%, var(--surface-3));
   --shadow-pop: 0 8px 24px color-mix(in srgb, #000 28%, transparent);

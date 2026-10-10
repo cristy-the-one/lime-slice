@@ -38,7 +38,7 @@
 .btn.chip > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .popover {
   position: absolute;
-  z-index: 8;
+  z-index: var(--z-menu);
   margin-top: var(--space-1);
   width: 240px;
   display: grid;
