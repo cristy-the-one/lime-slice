@@ -54,10 +54,11 @@ test("delete a tree, regrow its gap, undo, and clear", async ({ page }) => {
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
-  await page.locator("#samples summary").click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.locator('[data-sample="overhang_ledge.stl"]').click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 30_000 });
-  await page.locator('[data-level-choice="advanced"]').first().click();
+  await page.locator("#levelPick").selectOption("advanced");
   await page.locator("#supports").check();
   await page.locator("#sstyle").selectOption("tree");
   await page.locator("#slice").click();
@@ -129,7 +130,8 @@ test("Smart supports off prints no support, and on lets trees be edited", async 
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
-  await page.locator("#samples summary").click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.locator('[data-sample="overhang_ledge.stl"]').click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 30_000 });
   await expect(page.locator("#supports")).not.toBeChecked();
@@ -141,7 +143,7 @@ test("Smart supports off prints no support, and on lets trees be edited", async 
   const toggle = page.locator('#toolRail [data-tool="supports"]');
   await expect(toggle).toHaveAttribute("aria-disabled", "true");
 
-  await page.locator('[data-level-choice="advanced"]').first().click();
+  await page.locator("#levelPick").selectOption("advanced");
   await page.locator("#supports").check();
   await page.locator("#sstyle").selectOption("tree");
   await page.locator("#slice").click();

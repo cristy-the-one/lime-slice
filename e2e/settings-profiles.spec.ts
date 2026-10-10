@@ -27,13 +27,13 @@ async function openMore(page: Page) {
 test("a profile switch restores with undo", async ({ page }) => {
   await quiet(page);
   await page.goto("/");
-  await page.locator("[data-level-choice=simple]").click();
+  await page.locator("#levelPick").selectOption("simple");
   await openMore(page);
   await page.locator("#profileName").fill("Simple");
   await page.locator("#profileSave").click();
   await expect(page.locator("#profilePick option", { hasText: "Simple" })).toHaveCount(1);
 
-  await page.locator("[data-level-choice=expert]").click();
+  await page.locator("#levelPick").selectOption("expert");
   await page.locator("#lh").fill("0.28");
   await openMore(page);
   await page.locator("#profileName").fill("Thick");
@@ -43,10 +43,10 @@ test("a profile switch restores with undo", async ({ page }) => {
 
   await page.locator("#profilePick").selectOption({ label: "Simple" });
   await expect(page.locator("#lh")).toHaveValue("0.2");
-  await expect(page.locator("[data-level-choice=simple]")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#levelPick")).toHaveValue("simple");
   await page.keyboard.press("Control+z");
   await expect(page.locator("#lh")).toHaveValue("0.28");
-  await expect(page.locator("[data-level-choice=expert]")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#levelPick")).toHaveValue("expert");
   await expect(page.locator("#profilePick")).toHaveValue(thick);
 
   await openMore(page);
@@ -81,7 +81,7 @@ test("a bad profile file toasts Retry and a valid file applies", async ({ page }
     buffer: Buffer.from(JSON.stringify(file)),
   });
   await expect(page.locator("#lh")).toHaveValue("0.32");
-  await expect(page.locator("[data-level-choice=advanced]")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#levelPick")).toHaveValue("advanced");
   await expect(page.locator("#profilePick option", { hasText: "Imported" })).toHaveCount(1);
   await page.keyboard.press("Control+z");
   await expect(page.locator("#lh")).toHaveValue("0.2");

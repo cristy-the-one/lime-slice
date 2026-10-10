@@ -49,14 +49,16 @@ test("the seam position is left out at Blend, sent otherwise, and kept in a pres
   expect(bodies[0]).toHaveProperty("scarfSeam", "blend");
 
   await seam.selectOption("rear");
-  await expect(page.locator("#presetDiff")).toContainText("Seam position: rear (default blend)");
+  await expect(page.locator("label.setting", { has: page.locator("#seam") })).toHaveClass(/is-modified/);
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(2);
   await sliceSettled(page);
   expect(bodies[1]).toHaveProperty("seam", "rear");
 
-  await page.locator("#presetName").fill("Back seam");
-  await page.locator("#presetSave").click();
+  await page.locator("#left .profile-more > summary").click();
+  await page.locator("#profileName").fill("Back seam");
+  await page.locator("#profileSave").click();
+  await expect(page.locator("#profilePick option:checked")).toHaveText("Back seam");
   await page.locator("#seam").selectOption("blend");
   await expect(page.locator("#seam")).toHaveValue("blend");
   await page.locator("#slice").click();
@@ -64,10 +66,9 @@ test("the seam position is left out at Blend, sent otherwise, and kept in a pres
   await sliceSettled(page);
   expect(bodies[2]).not.toHaveProperty("seam");
 
-  await page.locator("#presetPick").selectOption("Back seam");
-  await page.locator("#presetLoad").click();
+  await page.locator("#profilePick").selectOption({ label: "Back seam" });
   await expect(page.locator("#seam")).toHaveValue("rear");
-  // The preset brings back a recipe the app already stored, so it may refresh by itself
+  // The profile brings back a recipe the app already stored, so it may refresh by itself
   // before this click lands: a slow runner sends that request and then the click's.
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBeGreaterThanOrEqual(4);
@@ -76,8 +77,7 @@ test("the seam position is left out at Blend, sent otherwise, and kept in a pres
   await page.reload();
   await loadCube(page);
   await expect(page.locator("#seam")).toHaveValue("blend");
-  await page.locator("#presetPick").selectOption("Back seam");
-  await page.locator("#presetLoad").click();
+  await page.locator("#profilePick").selectOption({ label: "Back seam" });
   await expect(page.locator("#seam")).toHaveValue("rear");
 });
 
@@ -107,9 +107,9 @@ test("ironing is sent only while on, without a toast, and undone", async ({ page
   await expect(page.locator("#ironflow")).toHaveCount(0);
   await page.locator("#seam").selectOption("rear");
   await page.waitForTimeout(400);
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(page.locator("#seam")).toHaveValue("blend");
-  await page.locator("#redoEdit").click();
+  await page.keyboard.press("Control+Shift+Z");
   await expect(page.locator("#seam")).toHaveValue("rear");
   await page.locator("#seam").selectOption("blend");
   await page.waitForTimeout(400);
@@ -162,18 +162,18 @@ test("ironing is sent only while on, without a toast, and undone", async ({ page
   expect(bodies[5]).toHaveProperty("ironing", { flow: 0.15, speed: 30, spacing: 0.2 });
   await expect(page.locator("#toasts").getByRole("status").filter({ hasText: /ironing/i })).toHaveCount(0);
 
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(page.locator("#ironspace")).toHaveValue("0.1");
   await expect(page.locator("#ironspeed")).toHaveValue("30");
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(page.locator("#ironspeed")).toHaveValue("20");
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(page.locator("#ironflow")).toHaveValue("10");
   await expect(page.locator("#ironing")).toBeChecked();
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(7);
   expect(bodies[6]).toHaveProperty("ironing", {});
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(page.locator("#ironing")).not.toBeChecked();
 });
 

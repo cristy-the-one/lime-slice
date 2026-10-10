@@ -66,6 +66,7 @@ test("an X/Y move re-emits the G-code at the new place without a click", async (
   await sliced(page);
   // Time a move after a planned slice. The next spec moves after a disk-cache load.
   if (replies[0]!.fromCache) {
+    await page.locator("#sliceMore").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
     await page.locator("#force").click();
     await sliced(page);
   }
@@ -156,7 +157,8 @@ test("a moved part keeps its split plane and G-code line on the bed", async ({ p
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "Bridge" }).click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 30_000 });
   await page.getByRole("button", { name: /^By region/ }).click();

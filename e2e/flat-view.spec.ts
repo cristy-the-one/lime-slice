@@ -77,7 +77,9 @@ async function showLayer(page: Page, layer: number) {
 async function open2d(page: Page, printer: "belt" | "cartesian") {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
+  await page.locator("#printerChip").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   if (printer === "belt") await page.locator("#machinePrinter").selectOption({ label: "Generic belt 45°" });
+  await page.locator("#printerChip").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
   await expect(page.locator("#slice")).toBeEnabled();
   await page.locator("#slice").click();

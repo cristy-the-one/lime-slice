@@ -185,10 +185,10 @@ input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2
 .strat:hover { background: var(--surface-2); }
 .strat[aria-pressed="true"] { border-color: color-mix(in srgb, var(--accent) 60%, transparent); background: color-mix(in srgb, var(--accent) 9%, transparent); }
 .strat-swatch { width: 8px; height: 8px; border-radius: 2px; background: var(--accent); }
-.strat-swatch[data-card="efficiency"] { background: var(--amber); }
-.strat-swatch[data-card="toughness"] { background: var(--teal); }
-.strat-swatch[data-card="layer"] { background: linear-gradient(var(--teal), var(--accent)); }
-.strat-swatch[data-card="region"] { background: linear-gradient(90deg, var(--teal) 50%, var(--accent) 50%); }
+.strat-swatch[data-swatch="efficiency"] { background: var(--amber); }
+.strat-swatch[data-swatch="toughness"] { background: var(--teal); }
+.strat-swatch[data-swatch="layer"] { background: linear-gradient(var(--teal), var(--accent)); }
+.strat-swatch[data-swatch="region"] { background: linear-gradient(90deg, var(--teal) 50%, var(--accent) 50%); }
 .strat-name { font-weight: 500; }
 .strat small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-size: 11.5px; }
 .strat kbd, .row-tools kbd { padding: 0 4px; font-size: 10.5px; color: var(--text-faint); background: transparent; border-color: transparent; }

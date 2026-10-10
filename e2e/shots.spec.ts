@@ -60,7 +60,9 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.goto("/");
   await shot(page, "v3-01-empty.png");
 
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await expect(page.locator("#prepareBody")).toBeVisible();
@@ -83,12 +85,13 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await expect(page.locator("#objectList")).toContainText("dropped-cube.stl");
   await shot(page, "p1-drop.png");
 
+  const strategy = page.locator('#left [data-group="strategy"]');
   await page.getByRole("button", { name: /^Speed/ }).click();
-  await page.locator("#right").screenshot({ path: path.join(out, "v3-03-card-speed.png") });
+  await strategy.screenshot({ path: path.join(out, "v3-03-card-speed.png") });
   await page.getByRole("button", { name: /^Efficiency/ }).click();
-  await page.locator("#right").screenshot({ path: path.join(out, "v3-04-card-efficiency.png") });
+  await strategy.screenshot({ path: path.join(out, "v3-04-card-efficiency.png") });
   await page.getByRole("button", { name: /^Toughness/ }).click();
-  await page.locator("#right").screenshot({ path: path.join(out, "v3-05-card-toughness.png") });
+  await strategy.screenshot({ path: path.join(out, "v3-05-card-toughness.png") });
   await page.getByRole("button", { name: /^Speed/ }).click();
 
   await page.locator("#slice").click();
@@ -115,7 +118,6 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await page.locator("#theme").selectOption("dark");
   await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
-  await page.locator("#presetDiff").screenshot({ path: path.join(out, "p2-preset-diff.png") });
   await page.getByRole("button", { name: "Compare speed, mixes, toughness" }).click();
   await expect(page.locator(".pareto-dot")).toHaveCount(5);
   await page.locator("#pareto").screenshot({ path: path.join(out, "p1-pareto.png") });
@@ -134,7 +136,8 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.locator("#view3d").screenshot({ path: path.join(out, "v3-07-region-blend-plane.png") });
 
   await page.getByRole("button", { name: /^Speed/ }).click();
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   page.once("dialog", (dialog) => void dialog.accept());
   await page.getByRole("button", { name: "60 mm hull" }).click();
   await page.getByRole("tab", { name: "Preview", exact: true }).click();

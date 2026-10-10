@@ -19,13 +19,14 @@ test("an X/Y move slides the preview, re-emits by itself, and the reply offset r
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#placeX")).toHaveValue("110.0");
   await expect.poll(() => placeText(page)).toContain("X 110.0");
 
   await page.locator("#slice").click();
-  await expect(page.locator("#left")).toContainText("outline 0.025 mm");
+  await expect(page.locator("#right")).toContainText("outline 0.025 mm");
   await expect(page.locator("#view3d")).toHaveAttribute("data-bed-offset", "0.000,0.000");
   await expect(page.locator("#view3d")).toHaveAttribute("data-preview-token", "bed-1");
   expect(calls[0].pose?.translation?.length).toBe(3);
@@ -73,7 +74,8 @@ for (const { id, axis } of [{ id: "#placeX", axis: 0 }, { id: "#placeY", axis: 1
     });
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto("/");
-    await page.getByText("Samples", { exact: true }).click();
+    await page.locator("#fileMenu > summary").click();
+    await page.locator("#samples > summary").click();
     await page.getByRole("button", { name: "20 mm cube" }).click();
     await expect(page.locator(id)).not.toHaveValue("");
     await page.locator("#slice").click();
@@ -107,7 +109,8 @@ test("rotation and scale still wait for Slice when auto-slice is off", async ({ 
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#autoslice")).not.toBeChecked();
   await page.locator("#slice").click();
@@ -133,7 +136,8 @@ test("Move drags the part in X/Y and Shift snaps to 1 mm", async ({ page }) => {
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#prepareBody")).toBeVisible();
   await page.getByRole("button", { name: "Top", exact: true }).click();
@@ -166,7 +170,8 @@ test("a Move drag sends one refresh, after the drag ends", async ({ page }) => {
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await page.locator("#slice").click();
   await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");

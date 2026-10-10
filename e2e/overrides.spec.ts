@@ -69,7 +69,7 @@ test("ranges and volumes are stored, drawn, and sent with the slice", async ({ p
   await page.mouse.up();
   await expect(x).not.toHaveValue("110");
 
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(x).toHaveValue("110");
   await page.locator("#modToolScale").click();
   await expect(canvas).toHaveAttribute("data-modifier-gizmo", "scale");
@@ -84,7 +84,7 @@ test("ranges and volumes are stored, drawn, and sent with the slice", async ({ p
   await page.mouse.move(scaleX + 60, scaleY, { steps: 8 });
   await page.mouse.up();
   await expect(sx).not.toHaveValue("30");
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(sx).toHaveValue("30");
 
   const before = bodies.length;

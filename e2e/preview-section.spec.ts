@@ -97,7 +97,8 @@ test("bed opacity and section controls are preview-only chrome", async ({ page }
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await expect(page.locator("#sectionOffsetField")).toBeHidden();
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#slice").click();
@@ -254,7 +255,8 @@ test("section plane clips 3D beads, travels, and the solid ghost", async ({ page
   await serveSliceJob(page, cube);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.getByRole("tab", { name: "Preview", exact: true }).click();

@@ -23,9 +23,13 @@ test("preview opens in perspective, blurs until a slice, and steps one layer", a
   await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await expect(page.locator("#stage")).toHaveClass(/mode-flat/);
 
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
+  await expect(page.locator("#gizmoNudge")).toBeHidden();
+  await page.locator('#toolRail [data-tool="move"]').click();
   await expect(page.locator("#gizmoNudge")).toBeVisible();
   const nudge = await page.locator("#gizmoNudge button").first().boundingBox();
   expect(nudge?.height ?? 99).toBeLessThanOrEqual(20);
@@ -58,7 +62,8 @@ test("a slice on Prepare paints the layer chart at its on-screen size", async ({
   await page.goto("/");
 
   await page.getByRole("tab", { name: "Prepare", exact: true }).click();
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await expect(page.locator(".stage-tools")).toBeHidden();

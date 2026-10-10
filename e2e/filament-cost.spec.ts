@@ -23,6 +23,7 @@ test("price and density update the estimate without a slice, a stale mark, or a 
     if (url.endsWith("/result")) return route.fulfill({ json: cube });
     return route.fulfill({ contentType: "application/json", body: done });
   });
+  await page.addInitScript(() => localStorage.setItem("lime-slice-closed-groups", "[]"));
   await page.goto("/");
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
@@ -34,7 +35,7 @@ test("price and density update the estimate without a slice, a stale mark, or a 
   const pla = { filamentDiameter: 1.75, filamentDensityGCm3: 1.24, filamentCostPerKg: 20 };
   await expect(page.locator("#estGrams")).toHaveText(`${filamentGrams(mm, pla).toFixed(2)} g`);
 
-  await page.locator("[data-level-choice=advanced]").click();
+  await page.locator("#levelPick").selectOption("advanced");
   await page.locator("#density").fill("1.5");
   await page.locator("#cost").fill("40");
   const petg = { filamentDiameter: 1.75, filamentDensityGCm3: 1.5, filamentCostPerKg: 40 };

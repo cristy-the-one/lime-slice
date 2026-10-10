@@ -6,6 +6,7 @@ import { canvasShare } from "../src/ui/compact/viewport-share.ts";
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 
 async function quiet(page: Page) {
+  await page.addInitScript(() => localStorage.setItem("lime-slice-closed-groups", "[]"));
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.addInitScript(() => {
     Object.defineProperty(window, "showSaveFilePicker", { configurable: true, value: undefined });
@@ -68,7 +69,9 @@ test("a printer answers, an unreachable host can be retried, and upload can star
   await toast.getByRole("button", { name: "Retry" }).click();
   await expect(page.locator("#prusaStatus")).toHaveText("PrusaLink 0.7.0");
 
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#slice").click();

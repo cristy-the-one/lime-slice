@@ -8,7 +8,8 @@ async function quietEngine(page: Page) {
 async function openCube(page: Page) {
   await quietEngine(page);
   await page.goto("/");
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
 }
@@ -28,20 +29,23 @@ async function findInScroller(page: Page, scroller: string) {
   return page.evaluate((sel) => {
     const port = document.querySelector(sel);
     const find = document.querySelector("#find");
-    const level = document.querySelector(".level-bar");
+    const level = document.querySelector("#levelPick");
     const profile = document.querySelector(".profile-row");
-    if (!port || !find || !level || !profile) return null;
+    const head = document.querySelector(".panel-head");
+    if (!port || !find || !level || !profile || !head) return null;
     const portBox = port.getBoundingClientRect();
     const findBox = find.getBoundingClientRect();
     const levelBox = level.getBoundingClientRect();
     const profileBox = profile.getBoundingClientRect();
+    const headBox = head.getBoundingClientRect();
     return {
       findTop: findBox.top,
       findBottom: findBox.bottom,
       portTop: portBox.top,
       portBottom: portBox.bottom,
-      levelBottom: levelBox.bottom,
-      profileBottom: profileBox.bottom,
+      levelTop: levelBox.top,
+      profileTop: profileBox.top,
+      headTop: headBox.top,
     };
   }, scroller);
 }
@@ -51,9 +55,9 @@ test.use({ viewport: { width: 1440, height: 900 } });
 test("search stays pinned, shortcuts focus it, and a query scrolls to the match", async ({ page }) => {
   await openCube(page);
   const find = page.locator("#find");
-  await expect(page.locator(".find-row")).toHaveCSS("position", "sticky");
+  await expect(page.locator(".panel-head")).toHaveCSS("position", "sticky");
+  await expect(page.locator(".find-row")).toHaveCSS("position", "static");
   await expect(page.locator(".profile-row")).toHaveCSS("position", "static");
-  await expect(page.locator(".level-bar")).toHaveCSS("position", "static");
 
   const overflow = await page.locator("#left").evaluate((el) => el.scrollHeight > el.clientHeight + 80);
   expect(overflow).toBe(true);
@@ -62,23 +66,24 @@ test("search stays pinned, shortcuts focus it, and a query scrolls to the match"
   });
   const pinned = await findInScroller(page, "#left");
   expect(pinned).not.toBeNull();
+  expect(pinned!.headTop).toBeGreaterThanOrEqual(pinned!.portTop - 1);
   expect(pinned!.findTop).toBeGreaterThanOrEqual(pinned!.portTop - 1);
   expect(pinned!.findBottom).toBeLessThanOrEqual(pinned!.portBottom + 1);
-  expect(pinned!.levelBottom).toBeLessThanOrEqual(pinned!.portTop + 1);
-  expect(pinned!.profileBottom).toBeLessThanOrEqual(pinned!.portTop + 1);
-  await expect(page.locator(".find-row")).toHaveClass(/is-stuck/);
+  expect(pinned!.levelTop).toBeGreaterThanOrEqual(pinned!.portTop - 1);
+  expect(pinned!.profileTop).toBeGreaterThanOrEqual(pinned!.portTop - 1);
+  await expect(page.locator(".panel-head")).toHaveClass(/is-stuck/);
 
   await page.locator("#left").evaluate((el) => {
     el.scrollTop = 0;
   });
-  await expect(page.locator(".find-row")).not.toHaveClass(/is-stuck/);
+  await expect(page.locator(".panel-head")).not.toHaveClass(/is-stuck/);
 
   await page.evaluate(() => document.documentElement.setAttribute("data-scheme", "light"));
-  const light = await page.locator(".find-row").evaluate((el) => getComputedStyle(el).backgroundColor);
+  const light = await page.locator(".panel-head").evaluate((el) => getComputedStyle(el).backgroundColor);
   expect(light).not.toBe("rgba(0, 0, 0, 0)");
   expect(light).not.toBe("transparent");
   await page.evaluate(() => document.documentElement.setAttribute("data-scheme", "dark"));
-  const dark = await page.locator(".find-row").evaluate((el) => getComputedStyle(el).backgroundColor);
+  const dark = await page.locator(".panel-head").evaluate((el) => getComputedStyle(el).backgroundColor);
   expect(dark).not.toBe("rgba(0, 0, 0, 0)");
   expect(dark).not.toBe(light);
 
@@ -125,7 +130,7 @@ test("search stays pinned, shortcuts focus it, and a query scrolls to the match"
   await expect(page.locator("#gyroid3d")).toBeVisible();
   const placed = await page.evaluate(() => {
     const scroller = document.querySelector("#left")!;
-    const row = document.querySelector(".find-row")!;
+    const row = document.querySelector(".panel-head")!;
     const match = document.querySelector("#gyroid3d")!.closest(".setting")!;
     const s = scroller.getBoundingClientRect();
     const r = row.getBoundingClientRect();
@@ -176,8 +181,8 @@ test.describe("compact sticky search", () => {
 
     await page.locator("#compactTabs [data-tab=settings]").click();
     await page.waitForTimeout(250);
-    await expect(page.locator(".find-row")).toHaveCSS("position", "sticky");
-    await expect(page.locator(".find-row")).toHaveCSS("top", "0px");
+    await expect(page.locator(".panel-head")).toHaveCSS("position", "sticky");
+    await expect(page.locator(".panel-head")).toHaveCSS("top", "0px");
     await expect(page.locator(".profile-row")).toHaveCSS("position", "static");
     const overflow = await page.locator("#compactSheetBody").evaluate((el) => el.scrollHeight > el.clientHeight + 40);
     expect(overflow).toBe(true);
@@ -188,9 +193,9 @@ test.describe("compact sticky search", () => {
     expect(pinned).not.toBeNull();
     expect(pinned!.findTop).toBeGreaterThanOrEqual(pinned!.portTop - 1);
     expect(pinned!.findBottom).toBeLessThanOrEqual(pinned!.portBottom + 1);
-    expect(pinned!.levelBottom).toBeLessThanOrEqual(pinned!.portTop + 1);
-    expect(pinned!.profileBottom).toBeLessThanOrEqual(pinned!.portTop + 1);
-    await expect(page.locator(".find-row")).toHaveClass(/is-stuck/);
+    expect(pinned!.levelTop).toBeGreaterThanOrEqual(pinned!.portTop - 1);
+    expect(pinned!.profileTop).toBeGreaterThanOrEqual(pinned!.portTop - 1);
+    await expect(page.locator(".panel-head")).toHaveClass(/is-stuck/);
 
     await page.locator("#compactTabs [data-tab=prepare]").click();
     await page.waitForTimeout(250);

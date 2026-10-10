@@ -310,6 +310,13 @@ export function wireApp() {
     revealPrinterDetails();
   });
   document.querySelector("#timing")!.addEventListener("click", () => revealResults());
+  // A menu stays open until a click lands outside it, as its own summary toggles it.
+  document.addEventListener("pointerdown", (ev) => {
+    const target = ev.target as Element | null;
+    document.querySelectorAll<HTMLDetailsElement>("details.menu[open]").forEach((menu) => {
+      if (!target || !menu.contains(target)) menu.open = false;
+    });
+  });
   document.addEventListener("lime-open-calibrate", () => setCalibrate(true));
   document.querySelector("#calibrateClose")!.addEventListener("click", () => setCalibrate(false));
   document.querySelector("#calibrate")!.addEventListener("mousedown", (ev) => {

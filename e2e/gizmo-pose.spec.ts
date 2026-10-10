@@ -112,7 +112,8 @@ test("zoom keeps the gizmo the same size and an arrow move is what gets sliced",
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await expect(page.locator("#prepareBody")).toBeVisible();
@@ -153,7 +154,9 @@ test("zoom keeps the gizmo the same size and an arrow move is what gets sliced",
   const box = (await prepare.boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width / 2 + 140, box.y + box.height / 2 - 30, { steps: 12 });
+  // OrbitControls turns per pixel of canvas height; the drag below was tuned at 726.5 px, and the arrow aim needs that pose.
+  const turn = box.height / 726.5;
+  await page.mouse.move(box.x + box.width / 2 + 140 * turn, box.y + box.height / 2 - 30 * turn, { steps: 12 });
   await page.mouse.up();
   await page.waitForTimeout(450);
   const orbited = await shotBox(page, "orbit.png");
@@ -174,7 +177,7 @@ test("zoom keeps the gizmo the same size and an arrow move is what gets sliced",
   await page.locator("#slice").click();
   await expect.poll(() => captured !== null).toBe(true);
   const sliced = captured!.pose ? posedBounds(captured!.buf, captured!.pose) : stlBounds(captured!.buf);
-  await expect(page.locator("#left")).toContainText("outline 0.025 mm");
+  await expect(page.locator("#right")).toContainText("outline 0.025 mm");
   const midX = (sliced.min[0] + sliced.max[0]) / 2;
   const midY = (sliced.min[1] + sliced.max[1]) / 2;
   expect(Math.abs(midX - after.x)).toBeLessThan(0.15);

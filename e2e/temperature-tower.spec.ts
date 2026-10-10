@@ -6,6 +6,7 @@ import { canvasShare } from "../src/ui/compact/viewport-share.ts";
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 
 async function quiet(page: Page) {
+  await page.addInitScript(() => localStorage.setItem("lime-slice-closed-groups", "[]"));
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
 }
@@ -45,16 +46,18 @@ test("a saved band writes the filament nozzle temperature", async ({ page }) => 
   });
   await page.goto("/");
   await expect(page.getByText("Mock only")).toHaveCount(0);
-  await page.locator("[data-level-choice=expert]").click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#calibrateOpen").click();
   await page.locator("#tempcal").click();
   await expect.poll(() => cals.length).toBe(1);
   expect(cals[0]).toMatchObject({ start: 190, end: 230, step: 5, bandHeight: 5, speedMmS: 40 });
-  await expect(page.locator("#left")).toContainText("band 1: 215 °C");
+  await expect(page.locator("#calibrate")).toContainText("band 1: 215 °C");
 
   await page.locator("#tempchosen").fill("215");
   await page.locator("#tempchosen").blur();
   await page.waitForTimeout(400);
   await page.locator("#tempapply").click();
+  await page.locator("#calibrateClose").click();
   await expect(page.locator("#machineTemps")).toHaveText("Nozzle 215 °C · bed 60 °C");
 
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
@@ -100,7 +103,8 @@ test("an exported tower carries the printer's start and end G-code", async ({ pa
   await page.locator("#machineStart").fill("G29 ; probe");
   await page.locator("#machineEnd").fill("M300 ; beep");
   await page.locator("#machineEnd").blur();
-  await page.locator("[data-level-choice=expert]").click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#calibrateOpen").click();
   await page.locator("#tempcal").click();
   await expect(page.locator("#tempexport")).toBeVisible();
   const download = page.waitForEvent("download");

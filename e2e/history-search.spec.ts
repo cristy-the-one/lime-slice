@@ -8,7 +8,8 @@ async function quietEngine(page: Page) {
 async function openCube(page: Page) {
   await quietEngine(page);
   await page.goto("/");
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
 }
@@ -30,13 +31,11 @@ test("undo and redo restore a placement edit", async ({ page }) => {
   await expect(scale).toHaveValue("100");
   await scale.fill("150");
   await expect(scale).toHaveValue("150");
-  await expect(page.locator("#undoEdit")).toBeEnabled();
   await page.keyboard.press("Control+z");
   await expect(scale).toHaveValue("100");
-  await expect(page.locator("#redoEdit")).toBeEnabled();
   await page.keyboard.press("Control+Shift+Z");
   await expect(scale).toHaveValue("150");
-  await page.locator("#undoEdit").click();
+  await page.keyboard.press("Control+z");
   await expect(scale).toHaveValue("100");
   await scale.fill("150");
   await page.keyboard.press("Control+k");
@@ -77,9 +76,6 @@ test.describe("compact settings search", () => {
     await page.locator("#compactTabs [data-tab=settings]").click();
     const find = page.getByLabel("Search settings");
     await expect(find).toBeVisible();
-    const undo = await page.locator("#undoEdit").boundingBox();
-    expect(undo?.height ?? 0).toBeGreaterThan(0);
-    expect(undo?.height ?? 99).toBeLessThanOrEqual(44);
     await find.fill("layer");
     await expect(page.locator("#lh")).toBeVisible();
     await expect(page.locator("#gyroid3d")).toBeHidden();

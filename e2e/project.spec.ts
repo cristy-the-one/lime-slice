@@ -9,14 +9,15 @@ test("save a project, refuse a damaged file, and open it again", async ({ page }
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
 
   await page.keyboard.press("Control+k");
   await page.locator("#paletteInput").fill("project");
   await expect(page.locator("#paletteList")).toContainText("Save project");
-  await expect(page.locator("#paletteList")).toContainText("Open project");
+  await expect(page.locator("#paletteList")).toContainText("Open mesh or project");
   await page.screenshot({ path: path.join(out, "desktop-commands.png") });
   await page.keyboard.press("Escape");
 

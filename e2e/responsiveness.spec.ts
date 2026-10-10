@@ -20,7 +20,8 @@ async function mockEngine(page: Page, delayMs: () => number) {
 
 async function openCube(page: Page) {
   await page.goto("/");
-  await page.getByText("Samples", { exact: true }).click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
 }
@@ -172,43 +173,33 @@ test("playback readout does not resize the print slider", async ({ page }) => {
   }
   expect(texts.size).toBeGreaterThan(1);
   const play = page.locator("#play");
-  const stop = page.locator("#stop");
   await expect(play).toHaveText("Play");
-  await expect(stop).toBeDisabled();
+  await expect(page.locator("#stop")).toHaveCount(0);
   const playBefore = (await play.boundingBox())!;
-  const stopBefore = (await stop.boundingBox())!;
   const hitX = playBefore.x + playBefore.width / 2;
   const hitY = playBefore.y + playBefore.height / 2;
   await page.mouse.click(hitX, hitY);
   await expect(play).toHaveText("Pause");
   await expect(play).toBeEnabled();
-  await expect(stop).toBeEnabled();
   const playing = await box();
   const playAfter = (await play.boundingBox())!;
-  const stopAfter = (await stop.boundingBox())!;
   expect(Math.abs(playing.x - first.x)).toBeLessThan(1);
   expect(Math.abs(playing.y - first.y)).toBeLessThan(1);
   expect(Math.abs(playing.width - first.width)).toBeLessThan(1);
   expect(Math.abs(playAfter.x - playBefore.x)).toBeLessThan(1);
   expect(Math.abs(playAfter.width - playBefore.width)).toBeLessThan(1);
-  expect(Math.abs(stopAfter.x - stopBefore.x)).toBeLessThan(1);
-  expect(Math.abs(stopAfter.width - stopBefore.width)).toBeLessThan(1);
   await page.mouse.click(hitX, hitY);
   await expect(play).toHaveText("Play");
-  await expect(stop).toBeDisabled();
   await page.mouse.click(hitX, hitY);
   await expect(play).toHaveText("Pause");
-  await expect(stop).toBeEnabled();
   await page.waitForTimeout(240);
   await expect(play).toHaveText("Pause");
-  await expect(stop).toBeEnabled();
   const later = await box();
   expect(Math.abs(later.x - first.x)).toBeLessThan(1);
   expect(Math.abs(later.width - first.width)).toBeLessThan(1);
-  await stop.click();
+  await page.mouse.click(hitX, hitY);
   await expect(play).toHaveText("Play");
   await expect(play).toBeEnabled();
-  await expect(stop).toBeDisabled();
   const stopped = await box();
   expect(Math.abs(stopped.x - first.x)).toBeLessThan(1);
   expect(Math.abs(stopped.width - first.width)).toBeLessThan(1);
@@ -319,18 +310,19 @@ test("a running slice shows elapsed time and Cancel aborts the request", async (
 test("a collapsed settings group stays collapsed when the panel re-renders", async ({ page }) => {
   await mockEngine(page, () => 0);
   await openCube(page);
-  const walls = page.locator('details[data-group="Strength"]');
+  const walls = page.locator('details[data-group="walls"]');
   await walls.locator("summary").click();
   await expect(walls).not.toHaveAttribute("open");
   await page.locator("#adaptive").check();
   await expect(page.locator("#amin")).toBeVisible();
   await expect(walls).not.toHaveAttribute("open");
-  await expect(page.locator('details[data-group="Quality"]')).toHaveAttribute("open");
+  await expect(page.locator('details[data-group="quality"]')).toHaveAttribute("open");
 });
 
 test("auto-slice runs after a structural toggle", async ({ page }) => {
   const slices = await mockEngine(page, () => 0);
   await openCube(page);
+  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await page.locator("#autoslice").check();
   await page.locator("#slice").click();
   await expect.poll(() => slices.length).toBe(1);
@@ -344,6 +336,7 @@ test("auto-slice picks up an edit made while a slice was running", async ({ page
   let calls = 0;
   const slices = await mockEngine(page, () => (calls++ === 0 ? 1200 : 0));
   await openCube(page);
+  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await page.locator("#autoslice").check();
   await page.locator("#slice").click();
   await expect.poll(() => slices.length).toBe(1);
@@ -372,11 +365,15 @@ test("the slice button names a cache hit, a real recompute, and a forced recompu
   const shown = (await slice.boundingBox())!;
   expect(Math.abs(shown.width - sliceBox.width)).toBeLessThan(1);
   expect(Math.abs(shown.x - sliceBox.x)).toBeLessThan(1);
+  await expect(page.locator("#sliceMore")).not.toHaveClass(/is-off/);
+  await page.locator("#sliceMore").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await expect(force).toBeVisible();
   await expect(force).toHaveAttribute("data-tip", "Plan this slice again instead of showing the saved one.");
+  await page.locator("#sliceMore").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
   await slice.click();
   await expect.poll(() => slices.length).toBe(2);
   expect(slices[1]!.reslice).toBe(false);
+  await page.locator("#sliceMore").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await force.click();
   await expect.poll(() => slices.length).toBe(3);
   expect(slices[2]!.reslice).toBe(true);
@@ -388,6 +385,7 @@ test("the slice button names a cache hit, a real recompute, and a forced recompu
   await expect(page.locator("#export")).toHaveAttribute("data-tip", "Slice, then save G-code");
   await expect(page.locator("#banner")).toBeEmpty();
   await expect(force).toBeHidden();
+  await expect(page.locator("#sliceMore")).toHaveClass(/is-off/);
   const resliceBox = (await slice.boundingBox())!;
   expect(Math.abs(resliceBox.width - sliceBox.width)).toBeLessThan(1);
   expect(Math.abs(resliceBox.x - sliceBox.x)).toBeLessThan(1);
