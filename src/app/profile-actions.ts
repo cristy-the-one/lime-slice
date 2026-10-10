@@ -5,10 +5,11 @@ import { flushEdit, noteEdit } from "./history.ts";
 import { loadProfileLibrary, storeProfileLibrary } from "./profile-library.ts";
 import { currentPreset, touch } from "./settings.ts";
 import { state } from "./state.ts";
-import { presetKeys } from "../presets.ts";
+import { LEGACY_PRESETS_KEY, parseLegacyPresets, presetKeys } from "../presets.ts";
 import { pushToast } from "../ui/toasts.ts";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel.ts";
 import {
+  adoptPresets,
   deleteIn,
   duplicateIn,
   importInto,
@@ -22,6 +23,20 @@ import {
 
 export function newProfileId(): string {
   return crypto.randomUUID();
+}
+
+/** Presets saved before settings profiles become profiles once, then their store is dropped. */
+export function migrateLegacyPresets() {
+  let text: string | null = null;
+  try {
+    text = localStorage.getItem(LEGACY_PRESETS_KEY);
+  } catch {
+    return;
+  }
+  if (text === null) return;
+  const presets = parseLegacyPresets(text);
+  if (Object.keys(presets).length > 0) storeProfileLibrary(adoptPresets(loadProfileLibrary(), presets, loadSettingsLevel(), newProfileId));
+  localStorage.removeItem(LEGACY_PRESETS_KEY);
 }
 
 export function saveSettingsProfile(name: string): boolean {

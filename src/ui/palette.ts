@@ -304,6 +304,9 @@ export function runCommand(id: string) {
     case "printer-edit":
       revealPrinterDetails();
       return;
+    case "calibrate":
+      document.dispatchEvent(new CustomEvent("lime-open-calibrate"));
+      return;
     case "slice": {
       const button = document.querySelector<HTMLButtonElement>("#slice");
       if (!button) return;

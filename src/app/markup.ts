@@ -147,6 +147,12 @@ export function mountMarkup(root: HTMLElement) {
     </div>
     <footer class="status"><div id="sliceMeter" class="slice-meter" hidden></div><div id="engineLink" class="engine-link" data-state="pending">Engine …</div></footer>
   </div>
+  <div id="calibrate" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="calibrateTitle">
+    <div class="sheet-card cal-card">
+      <div class="sheet-head"><h2 id="calibrateTitle">Calibrate</h2><button class="btn" id="calibrateClose" type="button">Close</button></div>
+      <div id="calibrateBody" class="cal-grid"></div>
+    </div>
+  </div>
   <div id="help" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="helpTitle">
     <div class="sheet-card">
       <h2 id="helpTitle">Shortcuts</h2>

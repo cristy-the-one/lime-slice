@@ -1,5 +1,6 @@
 import { DEFAULT_PRESET } from "../presets.ts";
 import {
+  adoptPresets,
   deleteIn,
   displayId,
   duplicateIn,
@@ -92,6 +93,18 @@ check("file name is the profile suffix", profileFileName("Bench speed") === "Ben
 const stored = parseLibrary(serializeLibrary(removed));
 check("the library round-trips", stored.profiles.length === 2 && stored.profiles[0]?.name === "Bench");
 check("a corrupt library is empty", parseLibrary("nope").profiles.length === 0);
+
+// Presets saved before profiles existed become profiles once; a taken name is skipped.
+{
+  let n = 0;
+  const base = saveInto(emptyLibrary(), "Thick", thick, "expert", "p1") as ProfileLibrary;
+  const adopted = adoptPresets(base, { Thick: { ...DEFAULT_PRESET, layerHeight: 0.1 }, "Bench speed": { ...DEFAULT_PRESET, supports: true } }, "advanced", () => `m${++n}`);
+  check("adopt adds the new name only", adopted.profiles.map((p) => p.name).join(",") === "Thick,Bench speed");
+  check("adopt keeps the existing profile's settings", adopted.profiles[0]!.settings.layerHeight === 0.28);
+  check("adopt stores the preset at the given level", adopted.profiles[1]!.level === "advanced" && adopted.profiles[1]!.settings.supports === true);
+  check("adopt keeps the active profile", adopted.activeId === "p1");
+  check("nothing to adopt returns the library", adoptPresets(base, {}, "simple", () => "x") === base);
+}
 
 if (failed) {
   console.error(`${failed} failed`);

@@ -43,6 +43,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "open", label: "Open mesh or project", group: "File", keys: ["Ctrl+O"], typing: true, keywords: "lime file stl 3mf step" },
   { id: "save-project", label: "Save project", group: "File", keys: ["Ctrl+S"], typing: true, keywords: "lime file" },
   { id: "samples", label: "Samples", group: "File", keywords: "cube hull example" },
+  { id: "calibrate", label: "Calibrate", group: "File", keywords: "pressure advance flow temperature retraction tower test" },
   { id: "slice", label: "Slice", group: "Slice", keys: ["Ctrl+Enter"], typing: true, target: "#slice", keywords: "plan show result re-slice" },
   { id: "force-slice", label: "Force re-slice", group: "Slice", keys: ["Ctrl+Shift+Enter"], typing: true, target: "#force", keywords: "recompute cache" },
   { id: "cancel-slice", label: "Cancel slice", group: "Slice", keys: ["Esc"], when: "running", typing: true, target: "#cancel", keywords: "stop abort" },

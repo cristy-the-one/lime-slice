@@ -267,3 +267,22 @@ table.est .bar > span { background: var(--teal); }
 #pareto .btn { width: 100%; }
 .res .chips { margin-top: 8px; }
 .res .meta { margin-top: 6px; }
+
+/* Calibrate sheet */
+.cal-card { width: min(920px, calc(100% - 32px)); }
+.sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.sheet-head h2 { margin: 0; }
+.cal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.cal {
+  display: grid;
+  gap: 2px;
+  align-content: start;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface-0) 35%, var(--surface-1));
+}
+.cal h3 { margin: 0 0 2px; font-size: 13px; font-weight: 600; }
+.cal-help { margin: 0 0 6px; font-size: 12px; line-height: 1.4; color: var(--text-faint); }
+.cal .row-tools { flex-wrap: wrap; }
+.cal .meta { margin-top: 6px; }

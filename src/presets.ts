@@ -1,4 +1,4 @@
-/** Named slice presets in localStorage, compared with the factory defaults. */
+/** The slice settings a profile or a project stores, compared with the factory defaults. */
 
 export interface PresetSettings {
   blendKind: string;
@@ -115,60 +115,6 @@ export const DEFAULT_PRESET: PresetSettings = {
   simplifyError: 0,
 };
 
-const KEY = "lime-slice-presets";
-const LABELS: Record<keyof PresetSettings, string> = {
-  blendKind: "Blend",
-  strategy: "Strategy",
-  toughness: "Toughness weight",
-  bottomMm: "Toughness band mm",
-  transitionMm: "Transition mm",
-  axis: "Split axis",
-  atMm: "Split at mm",
-  layerHeight: "Layer height",
-  adaptive: "Adaptive layers",
-  adaptiveMin: "Adaptive min",
-  adaptiveMax: "Adaptive max",
-  supports: "Supports",
-  supportAngle: "Support angle",
-  supportStyle: "Support style",
-  branchAngle: "Branch angle",
-  tipDiameter: "Tip diameter",
-  trunkDiameter: "Trunk diameter",
-  supportHeightMult: "Shaft height ×",
-  infillCombine: "Combine infill",
-  combing: "Combing",
-  featureSpeeds: "Feature speeds",
-  pressureAdvance: "Pressure advance",
-  linearAdvance: "Linear advance",
-  flow: "Flow",
-  retractOn: "Custom retraction",
-  retractLength: "Retract length",
-  retractSpeed: "Retract speed",
-  variableWidth: "Variable walls",
-  arcFit: "Arc fit",
-  travelOpt: "Travel and seam",
-  overhangControl: "Overhang control",
-  seam: "Seam position",
-  ironing: "Ironing",
-  ironingFlow: "Ironing flow",
-  ironingSpeed: "Ironing speed",
-  ironingSpacing: "Ironing spacing",
-  fuzzySkin: "Fuzzy skin",
-  fuzzyThickness: "Fuzzy thickness",
-  fuzzyPointDistance: "Fuzzy point spacing",
-  scarfSeam: "Scarf seam",
-  scarfLength: "Scarf length",
-  scarfSteps: "Scarf steps",
-  gyroid3d: "3D gyroid",
-  zHop: "Z-hop",
-  zHopHeight: "Hop height",
-  zHopMinTravel: "Hop travel",
-  pricePerKg: "Filament €/kg",
-  autoSlice: "Auto-slice",
-  simplify: "Simplify outlines",
-  simplifyError: "Outline tolerance mm",
-};
-
 export function presetKeys(): (keyof PresetSettings)[] {
   return Object.keys(DEFAULT_PRESET) as (keyof PresetSettings)[];
 }
@@ -190,33 +136,26 @@ export function readPresetSettings(value: unknown): PresetSettings | null {
   return out;
 }
 
-export function readPresets(): Record<string, PresetSettings> {
+/** Where presets lived before settings profiles. Read once, migrated, then removed. */
+export const LEGACY_PRESETS_KEY = "lime-slice-presets";
+
+/** The presets a pre-profile store held, by name. Rows that are not a preset are left out. */
+export function parseLegacyPresets(text: string | null): Record<string, PresetSettings> {
+  if (!text) return {};
   try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, PresetSettings>;
-    return parsed && typeof parsed === "object" ? parsed : {};
+    const parsed = JSON.parse(text) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, PresetSettings> = {};
+    for (const [name, row] of Object.entries(parsed as Record<string, unknown>)) {
+      const preset = readPresetSettings({ ...DEFAULT_PRESET, ...(row && typeof row === "object" ? (row as object) : {}) });
+      if (preset && name.trim()) out[name.trim()] = preset;
+    }
+    return out;
   } catch {
     return {};
   }
 }
 
-export function writePresets(all: Record<string, PresetSettings>) {
-  localStorage.setItem(KEY, JSON.stringify(all));
-}
-
 export function changedPresetKeys(current: PresetSettings, base: PresetSettings = DEFAULT_PRESET): (keyof PresetSettings)[] {
   return presetKeys().filter((key) => current[key] !== base[key]);
-}
-
-export function diffPreset(current: PresetSettings, base: PresetSettings = DEFAULT_PRESET): string[] {
-  return changedPresetKeys(current, base).map(
-    (key) => `${LABELS[key]}: ${formatVal(current[key])} (default ${formatVal(base[key])})`,
-  );
-}
-
-function formatVal(value: string | number | boolean) {
-  if (typeof value === "boolean") return value ? "on" : "off";
-  if (typeof value === "number") return Number.isInteger(value) ? String(value) : value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
-  return value;
 }

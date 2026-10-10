@@ -10,11 +10,12 @@ import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCa
 import { adoptBytes, export3mf, exportGcode, fail, loadNamed, place, saveText, setPlaceCenter, withPrinterGcode } from "./files";
 import { mountProjectFiles, openProjectFile, saveCurrentProject } from "./project-io";
 import { pickModelFile } from "../platform";
-import { noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, revealPrinterDetails, revealResults, syncFindStuck, touch } from "./settings";
+import { noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, revealPrinterDetails, revealResults, setCalibrate, syncFindStuck, touch } from "./settings";
 import { noteEdit } from "./history";
 import {
   applyNamedProfile,
   askProfileName,
+  migrateLegacyPresets,
   deleteSettingsProfile,
   duplicateSettingsProfile,
   exportSettingsProfile,
@@ -57,6 +58,7 @@ import { refreshPrusaJob, rememberPrusaForm, testPrusaLink, uploadToPrusaLink } 
 
 export function wireApp() {
   bootMachines();
+  migrateLegacyPresets();
   document.querySelector("#left")!.addEventListener("input", (ev) => {
     const target = ev.target as HTMLInputElement;
     if (isBeltField(target)) {
@@ -130,10 +132,6 @@ export function wireApp() {
     const raw = ev.target as HTMLElement;
     // An icon button is hit on its svg; the button is what the ids below name.
     const t = raw.closest<HTMLElement>("button") ?? raw;
-    if (t.id === "pacal") void runPaCal();
-    if (t.id === "flowcal") void runFlowCal();
-    if (t.id === "tempcal") void runTempCal();
-    if (t.id === "retractcal") void runRetractCal();
     const railTool = t.closest<HTMLElement>("[data-rail-tool]")?.dataset.railTool;
     if (railTool) {
       document.querySelector<HTMLButtonElement>(`#toolRail [data-tool="${railTool}"]`)?.click();
@@ -144,36 +142,6 @@ export function wireApp() {
       pickStrategy(cardEl.dataset.card as CardId);
       return;
     }
-    if (t.id === "paapply") {
-      const chosen = Number((document.querySelector("#pachosen") as HTMLInputElement).value);
-      const marlin = currentRules().firmware === "marlin";
-      noteAdvance(marlin ? state.pressureAdvance : chosen, marlin ? chosen : state.linearAdvance);
-      touch();
-    }
-    if (t.id === "paexport" && state.paGcode) void saveText(withPrinterGcode(state.paGcode), "pa-calibration.gcode", "gcode");
-    if (t.id === "flowapply") {
-      noteEdit();
-      noteFlow(Number((document.querySelector("#flowchosen") as HTMLInputElement).value));
-      touch();
-      return;
-    }
-    if (t.id === "flowexport" && state.flowGcode) void saveText(withPrinterGcode(state.flowGcode), "flow-calibration.gcode", "gcode");
-    if (t.id === "tempapply") {
-      noteEdit();
-      noteNozzleTemp(Number((document.querySelector("#tempchosen") as HTMLInputElement).value));
-      touch();
-      return;
-    }
-    if (t.id === "tempexport" && state.tempGcode) void saveText(withPrinterGcode(state.tempGcode), "temperature-calibration.gcode", "gcode");
-    if (t.id === "retractapply") {
-      noteEdit();
-      const length = Number((document.querySelector("#retractchosen") as HTMLInputElement).value);
-      const speed = state.retractOn && Math.abs(state.retractSpeed - 30) > 1e-6 ? state.retractSpeed : null;
-      noteRetract(length, speed);
-      touch();
-      return;
-    }
-    if (t.id === "retractexport" && state.retractGcode) void saveText(withPrinterGcode(state.retractGcode), "retraction-calibration.gcode", "gcode");
     if (t.id === "profileSave") {
       const typed = typedProfileName();
       if (typed) saveSettingsProfile(typed);
@@ -342,6 +310,54 @@ export function wireApp() {
     revealPrinterDetails();
   });
   document.querySelector("#timing")!.addEventListener("click", () => revealResults());
+  document.addEventListener("lime-open-calibrate", () => setCalibrate(true));
+  document.querySelector("#calibrateClose")!.addEventListener("click", () => setCalibrate(false));
+  document.querySelector("#calibrate")!.addEventListener("mousedown", (ev) => {
+    if (ev.target === ev.currentTarget) setCalibrate(false);
+  });
+  window.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && document.documentElement.dataset.overlay === "calibrate") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      setCalibrate(false);
+    }
+  }, true);
+  document.querySelector("#calibrate")!.addEventListener("input", onSettings);
+  document.querySelector("#calibrate")!.addEventListener("click", (ev) => {
+    const t = (ev.target as HTMLElement).closest<HTMLButtonElement>("button");
+    if (!t) return;
+    if (t.id === "pacal") void runPaCal();
+    if (t.id === "flowcal") void runFlowCal();
+    if (t.id === "tempcal") void runTempCal();
+    if (t.id === "retractcal") void runRetractCal();
+    if (t.id === "paapply") {
+      const chosen = Number((document.querySelector("#pachosen") as HTMLInputElement).value);
+      const marlin = currentRules().firmware === "marlin";
+      noteAdvance(marlin ? state.pressureAdvance : chosen, marlin ? chosen : state.linearAdvance);
+      touch();
+    }
+    if (t.id === "paexport" && state.paGcode) void saveText(withPrinterGcode(state.paGcode), "pa-calibration.gcode", "gcode");
+    if (t.id === "flowapply") {
+      noteEdit();
+      noteFlow(Number((document.querySelector("#flowchosen") as HTMLInputElement).value));
+      touch();
+    }
+    if (t.id === "flowexport" && state.flowGcode) void saveText(withPrinterGcode(state.flowGcode), "flow-calibration.gcode", "gcode");
+    if (t.id === "tempapply") {
+      noteEdit();
+      noteNozzleTemp(Number((document.querySelector("#tempchosen") as HTMLInputElement).value));
+      touch();
+    }
+    if (t.id === "tempexport" && state.tempGcode) void saveText(withPrinterGcode(state.tempGcode), "temperature-calibration.gcode", "gcode");
+    if (t.id === "retractapply") {
+      noteEdit();
+      const length = Number((document.querySelector("#retractchosen") as HTMLInputElement).value);
+      const speed = state.retractOn && Math.abs(state.retractSpeed - 30) > 1e-6 ? state.retractSpeed : null;
+      noteRetract(length, speed);
+      touch();
+    }
+    if (t.id === "retractexport" && state.retractGcode) void saveText(withPrinterGcode(state.retractGcode), "retraction-calibration.gcode", "gcode");
+  });
   document.querySelector(".top")!.addEventListener("input", onSettings);
   document.querySelectorAll<HTMLButtonElement>(".mode:not(.tab)").forEach((button) => {
     button.addEventListener("click", () => setView(button.dataset.mode as typeof state.viewMode, "user"));

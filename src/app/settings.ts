@@ -169,6 +169,7 @@ export function renderChrome() {
   `;
 
   paintPrinterChip();
+  paintCalibrate();
   const auto = document.querySelector<HTMLInputElement>("#autoslice");
   if (auto) auto.checked = state.autoSlice;
   const isStale = stale();
@@ -201,6 +202,62 @@ function timingText() {
   if (!result) return "";
   const grams = shownGrams(result);
   return `${formatTime(result.estimate?.seconds ?? 0)} · ${grams.toFixed(2)} g · €${filamentCost(grams, state.profile).toFixed(2)}`;
+}
+
+type Band = { index: number; z0: number; z1: number };
+
+function bandLines<T extends Band>(bands: T[], value: (band: T) => string): string {
+  if (bands.length === 0) return "";
+  return `<div class="meta">${bands.map((b) => `band ${b.index}: ${value(b)} · Z ${b.z0.toFixed(2)}–${b.z1.toFixed(2)}`).join("<br>")}</div>`;
+}
+
+function plainRow(id: string, label: string, value: number, min: number, max: number, step: number) {
+  return `<label class="row"><span class="row-label">${label}</span><input id="${id}" type="number" min="${min}" max="${max}" step="${step}" value="${value}" /></label>`;
+}
+
+function calSection(title: string, help: string, fields: string[], generate: { id: string; label: string }, result: string) {
+  return `<section class="cal">
+    <h3>${title}</h3>
+    <p class="cal-help">${escapeHtml(help)}</p>
+    ${fields.map(fieldRow).join("")}
+    <div class="row-tools"><button class="btn" id="${generate.id}" type="button">${generate.label}</button></div>
+    ${result}
+  </section>`;
+}
+
+function calibrateHtml() {
+  const rules = currentRules();
+  const chosenK = state[ADVANCE[rules.firmware].key];
+  return [
+    calSection("Pressure advance", "Each band prints at one K. Pick the band whose corners are sharpest, then save that K to the filament.", ["pastart", "paend", "pastep"], { id: "pacal", label: "Generate PA test" },
+      state.paBands.length ? `${bandLines(state.paBands, (b) => `K ${b.k.toFixed(4)}`)}${plainRow("pachosen", "Chosen K", chosenK, 0, 2, 0.005)}<div class="row-tools"><button class="btn" id="paapply" type="button">Save K to profile</button><button class="btn" id="paexport" type="button">Export PA G-code</button></div>` : ""),
+    calSection("Flow", "Each band is one hollow wall at one multiplier. Measure the wall; the band that matches the line width is the flow. 1 leaves a slice unchanged.", ["flowstart", "flowend", "flowstep"], { id: "flowcal", label: "Generate flow test" },
+      state.flowBands.length ? `${bandLines(state.flowBands, (b) => `flow ${b.flow.toFixed(3)}`)}${plainRow("flowchosen", "Chosen flow", state.flow, 0.5, 1.5, 0.01)}<div class="row-tools"><button class="btn" id="flowapply" type="button">Save flow to filament</button><button class="btn" id="flowexport" type="button">Export flow G-code</button></div>` : ""),
+    calSection("Temperature", "Each band is one hollow wall; the nozzle waits at that band's temperature before it starts. Saving writes the chosen °C onto the filament.", ["tempstart", "tempend", "tempstep"], { id: "tempcal", label: "Generate temperature test" },
+      state.tempBands.length ? `${bandLines(state.tempBands, (b) => `${b.temp.toFixed(0)} °C`)}${plainRow("tempchosen", "Chosen °C", state.profile.nozzleTemp, 150, 320, 1)}<div class="row-tools"><button class="btn" id="tempapply" type="button">Save temperature to filament</button><button class="btn" id="tempexport" type="button">Export temperature G-code</button></div>` : ""),
+    calSection("Retraction", "Each band is two posts; the travel between them retracts by that band's length. Saving writes the length onto the filament, and the speed when it is not 30 mm/s.", ["retractstart", "retractend", "retractstep"], { id: "retractcal", label: "Generate retraction test" },
+      state.retractBands.length ? `${bandLines(state.retractBands, (b) => `${b.length.toFixed(3)} mm`)}${plainRow("retractchosen", "Chosen length mm", state.retractLength, 0, 5, 0.05)}<div class="row-tools"><button class="btn" id="retractapply" type="button">Save retraction to filament</button><button class="btn" id="retractexport" type="button">Export retraction G-code</button></div>` : ""),
+  ].join("");
+}
+
+function paintCalibrate() {
+  const body = document.querySelector("#calibrateBody");
+  if (!body) return;
+  const typing = document.activeElement instanceof HTMLInputElement && body.contains(document.activeElement) ? document.activeElement.id : "";
+  body.innerHTML = calibrateHtml();
+  if (typing) document.querySelector<HTMLInputElement>(`#${typing}`)?.focus({ preventScroll: true });
+}
+
+export function setCalibrate(open: boolean) {
+  const sheet = document.querySelector<HTMLElement>("#calibrate");
+  if (!sheet) return;
+  sheet.hidden = !open;
+  if (open) {
+    document.documentElement.dataset.overlay = "calibrate";
+    sheet.querySelector<HTMLElement>("input, button")?.focus();
+  } else if (document.documentElement.dataset.overlay === "calibrate") {
+    delete document.documentElement.dataset.overlay;
+  }
 }
 
 function paintPrinterChip() {
@@ -1272,4 +1329,4 @@ export async function probe() {
   paintBanner();
 }
 
-Object.assign(fx, { apiBase, apiToken, card, stale, settingsHash, blend, currentWeight, renderChrome, markEngineDown, markEngineUp, paintEngineLink, markBusy, busyText, bannerLine, toastTransient, takeTransient, paintBanner, paramLine, paramTable, layerReadout, triangleLine, triangleMeta, formatMs, stageHtml, estimateHtml, isStepName, needsEngine, paretoHtml, formatTime, chips, pct, signed, currentPreset, applyPreset, applyFilter, onBlend, onSettings, pickStrategy, touch, markStale, staleWarning, escapeHtml, probe, fieldRow, revealPrinterDetails, revealResults });
+Object.assign(fx, { apiBase, apiToken, card, stale, settingsHash, blend, currentWeight, renderChrome, markEngineDown, markEngineUp, paintEngineLink, markBusy, busyText, bannerLine, toastTransient, takeTransient, paintBanner, paramLine, paramTable, layerReadout, triangleLine, triangleMeta, formatMs, stageHtml, estimateHtml, isStepName, needsEngine, paretoHtml, formatTime, chips, pct, signed, currentPreset, applyPreset, applyFilter, onBlend, onSettings, pickStrategy, touch, markStale, staleWarning, escapeHtml, probe, fieldRow, revealPrinterDetails, revealResults, setCalibrate });
