@@ -234,6 +234,16 @@ Hull speed is 47% less print time than classic (772.0 s vs 1464.8 s) and 41% les
 
 Tree uses 28% less filament and 28% less time than the grid on the same ledge. Doubling the sparse shaft height keeps the filament and cuts another 23 s, with the interface still at the model layer height. The cube and hull have no overhang, so grid and tree match there.
 
+### Comparing G-code from different slicers
+
+Each slicer times its own file with its own model, so two estimates are not comparable. `tools/gcode_profile.py` times any file with one move model: a trapezoid per move at the acceleration in force (`M204 S` or Klipper `SET_VELOCITY_LIMIT ACCEL=`), with junction speeds from the angle between moves. It reads `;TYPE:` (Orca, Prusa, Cura) and `; TYPE:` (Lime Slice), relative and absolute E, and G2/G3 arcs. It prints time, length, moves, volume and flow per feature. It ignores layer-time slowdowns and firmware smoothing.
+
+```bash
+python tools/gcode_profile.py --max-speed X=500,Y=500,Z=12 --travel-by-feature ours.gcode theirs.gcode
+```
+
+`--max-speed` caps each axis (a belt printer's belt axis is slow), `--max-accel` caps acceleration, `--junction-deviation` defaults to 0.02 mm, and `--travel-by-feature` splits travel by the feature it occurs in.
+
 ## Scarf seams
 
 A scarf replaces a butt seam on a closed wall when the seam is not already on a sharp convex corner. The loop starts at 15% of the layer height and 0.55 flow, rises to a full bead over 10 mm in 8 steps, then retraces that 10 mm at full Z while flow ramps back down. The second pass does not dip below plastic the start ramp already laid down. The seam metric is that overlap length, plus the largest Z step along the ramp. A butt seam has overlap 0. With the defaults the start-ramp step is `(1 − 0.15) × 0.2 / 8 = 0.021` mm, against a 0.20 mm layer. Nozzle Z stays inside the layer slab. The constant-Z body and the full-Z retrace can still be a G2/G3; the start ramp itself is linear.
