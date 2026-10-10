@@ -22,7 +22,6 @@ export interface RuleInput {
 export type ControlId =
   | "adaptive"
   | "printOrder"
-  | "blendCompare"
   | "zHop"
   | "scarf"
   | "beltFields"
@@ -33,7 +32,6 @@ export type ControlId =
 const OWNED: Record<ControlId, readonly string[]> = {
   adaptive: ["adaptive", "adaptiveMin", "adaptiveMax"],
   printOrder: ["printOrder", "sequentialClearance", "sequentialGantry", "sequentialClearanceMm", "sequentialGantryMm"],
-  blendCompare: [],
   zHop: ["zHop", "zHopHeight", "zHopMinTravel"],
   scarf: ["scarfSeam", "scarfLength", "scarfSteps", "scarfStartHeight", "scarfStartFlow"],
   beltFields: [],
@@ -66,7 +64,6 @@ export function settingsRules(input: RuleInput): Rules {
   const hidden = new Set<ControlId>();
   if (belt && input.belt.raftLayers > 0) hidden.add("adaptive");
   if (belt || input.objects < 2) hidden.add("printOrder");
-  if (belt) hidden.add("blendCompare");
   if (belt) hidden.add("zHop").add("scarf");
   if (!belt) hidden.add("beltFields");
   if (input.belt.maxLengthMm == null) hidden.add("beltMaxLength");

@@ -183,6 +183,24 @@ test("Blend compare estimates the selected object of a plate", async ({ page }) 
   await expect(page.locator("#banner")).not.toContainText("Compare blends");
 });
 
+test("Blend compare on a belt printer sends the belt, so the engine estimates the belt print", async ({ page }) => {
+  await quiet(page);
+  const bodies: Record<string, unknown>[] = [];
+  await page.route("**/api/pareto", (route) => {
+    bodies.push(route.request().postDataJSON() as Record<string, unknown>);
+    const point = (label: string, toughness: number, seconds: number, filamentG: number) => ({ label, toughness, seconds, filamentG, score: toughness });
+    return route.fulfill({ json: [point("speed", 0, 260, 2), point("toughness", 1, 520, 4)] });
+  });
+  await page.goto("/");
+  await loadCube(page);
+  await page.locator("#machineKind").selectOption("belt");
+  await page.locator("#paretoBtn").click();
+  await expect.poll(() => bodies.length).toBe(1);
+  expect(bodies[0]).toHaveProperty("belt");
+  expect((bodies[0].belt as { angleDeg: number }).angleDeg).toBe(45);
+  await expect(page.locator("#pareto svg.pareto")).toBeVisible();
+});
+
 test("one at a time: Arrange keeps the toolhead clearance, and the request prints the tallest last", async ({ page }) => {
   await quiet(page);
   const bodies: { objects?: { id: string }[]; printOrder?: string; sequentialClearanceMm?: number }[] = [];
