@@ -22,6 +22,8 @@ let home: {
   action: HTMLElement;
   connection: HTMLElement | null;
   gear: HTMLElement | null;
+  printerPick: HTMLElement | null;
+  chip: HTMLElement | null;
 } | null = null;
 
 export function mountCompact() {
@@ -271,6 +273,7 @@ function devicePage() {
     <div id="compactConnection"></div>
     <h3>Printer</h3>
     <div class="compact-row"><div><b>Profile</b><div id="compactBed">Bed</div></div><button type="button" id="compactEditPrinter">Edit</button></div>
+    <div id="compactPrinter" class="compact-printer"></div>
     <h3>Output</h3>
     <div class="compact-row"><div><b>G-code</b></div><div class="compact-row-actions"><button type="button" id="compactShare">Share</button><button type="button" id="compactSend" hidden disabled aria-label="Send to printer">Send</button></div></div>
     <label class="field">Interface layout
@@ -281,7 +284,10 @@ function devicePage() {
       </select>
     </label>
   `;
-  page.querySelector("#compactEditPrinter")?.addEventListener("click", () => selectTab("settings"));
+  page.querySelector("#compactEditPrinter")?.addEventListener("click", () => {
+    selectTab("settings");
+    document.querySelector<HTMLButtonElement>("#machineOpen")?.click();
+  });
   page.querySelector("#compactShare")?.addEventListener("click", () => void saveGcode());
   page.querySelector("#compactSend")?.addEventListener("click", () => void uploadToPrusaLink());
   const select = page.querySelector<HTMLSelectElement>("#layoutChoiceCompact");
@@ -395,6 +401,7 @@ function enter() {
   const body = document.querySelector("#compactSheetBody");
   if (!left || !slice || !cancel || !action || !workspace || !body || !left.parentElement) return;
   const connection = document.querySelector<HTMLElement>("#connection");
+  const printerPick = document.querySelector<HTMLElement>("#printerPick");
   home = {
     left,
     leftParent: left.parentElement,
@@ -403,11 +410,15 @@ function enter() {
     action,
     connection,
     gear: connection?.parentElement ?? null,
+    printerPick,
+    chip: printerPick?.parentElement ?? null,
   };
   body.append(left);
   workspace.append(slice, cancel);
   const host = document.querySelector("#compactConnection");
   if (connection && host) host.append(connection);
+  const printerHost = document.querySelector("#compactPrinter");
+  if (printerPick && printerHost) printerHost.append(printerPick);
   document.documentElement.dataset.compactTab = tab;
   selectTab(tab);
   observe();
@@ -424,6 +435,7 @@ function leave() {
   if (exportButton) home.action.insertBefore(home.slice, exportButton);
   else home.action.append(home.slice);
   if (home.connection && home.gear) home.gear.append(home.connection);
+  if (home.printerPick && home.chip) home.chip.append(home.printerPick);
   home = null;
   document.documentElement.classList.remove("chrome-hidden");
   delete document.documentElement.dataset.compactTab;
