@@ -643,7 +643,7 @@ function objectPlaceHtml(): string {
     <div class="grid3" id="placeXY" data-bed-z="${z0}">
       <label class="setting" data-label="position x" data-keywords="placement move bed offset"><span class="scrub-label" data-scrub="x">X mm</span><input id="placeX" type="number" step="0.1" value="${cx}" aria-label="Position X" /></label>
       <label class="setting" data-label="position y" data-keywords="placement move bed offset"><span class="scrub-label" data-scrub="y">Y mm</span><input id="placeY" type="number" step="0.1" value="${cy}" aria-label="Position Y" /></label>
-      <label class="setting" data-label="scale %" data-keywords="placement size percent">Scale %<input id="partScale" type="number" min="10" max="400" step="5" value="${Math.round(state.partScale * 100)}" /></label>
+      <label class="setting" data-label="scale %" data-keywords="placement size percent"><span class="scrub-label" data-scrub="scale">Scale %</span><input id="partScale" type="number" min="10" max="400" step="5" value="${Math.round(state.partScale * 100)}" /></label>
     </div>
     ${isStepName(state.mesh?.name ?? "") ? `<label class="row setting" data-label="step chord mm" data-keywords="tessellation tolerance"><span class="row-label" data-tip="Largest gap between a curved STEP surface and its triangles, in mm">STEP chord</span><input id="stepTol" type="number" min="0.01" max="2" step="0.01" value="${state.stepTolerance}" /></label>` : ""}
   `;

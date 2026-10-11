@@ -1,5 +1,6 @@
 /**
- * Drag the X or Y label. One gesture, one undo step, the same centre `setPlaceCenter` already writes.
+ * Drag a placement label. One gesture, one undo step.
+ * X and Y call `setPlaceCenter`. Scale writes the one `partScale` multiplier.
  * A short or vertical drag does not capture, so the sheet can scroll.
  */
 import { scrubIntent, scrubTarget, type ScrubIntent } from "../ui/scrub";
@@ -9,10 +10,14 @@ import { beginEdit, flushEdit } from "./history";
 import { renderChrome } from "./settings";
 import { state } from "./state";
 
-const STEP_MM = 0.1;
-const SHIFT_MM = 1;
+const MOVE_STEP_MM = 0.1;
+const MOVE_SHIFT_MM = 1;
+const SCALE_STEP = 1;
+const SCALE_SHIFT = 5;
+const SCALE_MIN = 10;
+const SCALE_MAX = 400;
 
-type Axis = "x" | "y";
+type Axis = "x" | "y" | "scale";
 
 type Drag = {
   id: number;
@@ -40,7 +45,14 @@ function hud(axis: Axis, total: number): string {
 
 function blurPlaceField() {
   const active = document.activeElement;
-  if (active instanceof HTMLInputElement && (active.id === "placeX" || active.id === "placeY")) active.blur();
+  if (active instanceof HTMLInputElement && (active.id === "placeX" || active.id === "placeY" || active.id === "partScale")) active.blur();
+}
+
+function writeScale(percent: number) {
+  state.partScale = percent / 100;
+  const input = document.querySelector<HTMLInputElement>("#partScale");
+  if (input && document.activeElement !== input) input.value = String(percent);
+  fx.applyPlace(false);
 }
 
 function stopTracking() {
@@ -74,19 +86,24 @@ function onMove(ev: PointerEvent) {
   }
   if (current.mode !== "scrub") return;
   ev.preventDefault();
-  const total = scrubTarget(dx, ev.shiftKey, STEP_MM, SHIFT_MM);
-  const next = Math.round((current.origin + total) * 1000) / 1000;
+  const move = current.axis !== "scale";
+  const total = scrubTarget(dx, ev.shiftKey, move ? MOVE_STEP_MM : SCALE_STEP, move ? MOVE_SHIFT_MM : SCALE_SHIFT);
+  const next = move
+    ? Math.round((current.origin + total) * 1000) / 1000
+    : Math.min(SCALE_MAX, Math.max(SCALE_MIN, Math.round(current.origin + total)));
   if (!current.opened) {
-    if (total === 0) return;
+    if (next === current.origin) return;
     beginEdit();
     current.opened = true;
   }
-  state.poseHud = hud(current.axis, total);
-  if (next !== current.written) {
-    current.written = next;
-    setPlaceCenter(current.axis, next);
+  if (current.axis === "x" || current.axis === "y") {
+    state.poseHud = hud(current.axis, total);
+    fx.paintGizmoReadout?.();
   }
-  fx.paintGizmoReadout?.();
+  if (next === current.written) return;
+  current.written = next;
+  if (current.axis === "scale") writeScale(next);
+  else setPlaceCenter(current.axis, next);
 }
 
 function onUp(ev: PointerEvent) {
@@ -100,8 +117,8 @@ export function bindPlaceScrub(root: HTMLElement) {
     if (ev.button !== 0 || drag) return;
     const label = (ev.target as HTMLElement).closest<HTMLElement>("[data-scrub]");
     const axis = label?.dataset.scrub;
-    if (axis !== "x" && axis !== "y") return;
-    const origin = centerOf(axis);
+    if (axis !== "x" && axis !== "y" && axis !== "scale") return;
+    const origin = axis === "scale" ? Math.round(state.partScale * 100) : centerOf(axis);
     if (origin == null) return;
     if (ev.pointerType !== "touch") ev.preventDefault();
     drag = {
