@@ -118,6 +118,7 @@ test("dragging X moves the centre by tenths, once, and a typed tenth is one undo
 
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(1);
+  await expect(page.locator("#slice")).toBeEnabled();
   const home = bodies[0]!;
   const moved = await dragLabel(page, "x", scrubTravel(14), 0);
   await moved.up();

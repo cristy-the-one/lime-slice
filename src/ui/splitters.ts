@@ -24,7 +24,9 @@ export function mountSplitters() {
   if (storedLeft) workspace.style.setProperty("--panel-left", `${storedLeft}px`);
   if (storedRight) workspace.style.setProperty("--panel-right", `${storedRight}px`);
   if (localStorage.getItem(LEFT_COLLAPSE) === "1") setCollapsed(workspace, "left", true, collapseLeft);
-  if (localStorage.getItem(RIGHT_COLLAPSE) === "1") setCollapsed(workspace, "right", true, collapseRight);
+  // A wide window starts with the results panel folded, so the viewport is at least 70% of the width.
+  // Nothing is written until the user folds it. A narrow window keeps the panel in the bottom row.
+  if (window.innerWidth > 1200 && localStorage.getItem(RIGHT_COLLAPSE) !== "0") setCollapsed(workspace, "right", true, collapseRight);
 
   bindDrag(workspace, left, "left", collapseLeft);
   bindDrag(workspace, right, "right", collapseRight);
@@ -84,6 +86,20 @@ function bindDrag(
     setCollapsed(workspace, side, false, collapse);
     localStorage.setItem(side === "left" ? LEFT_COLLAPSE : RIGHT_COLLAPSE, "0");
   });
+}
+
+/**
+ * Open the results column after a slice. A user who stored a collapse stays collapsed.
+ * The automatic open does not become the stored default, so the next fresh window folds again.
+ */
+export function openResultsAfterSlice() {
+  if (window.innerWidth <= 1200) return;
+  if (localStorage.getItem(RIGHT_COLLAPSE) === "1") return;
+  const workspace = document.querySelector<HTMLElement>(".workspace");
+  if (!workspace?.classList.contains("is-right-collapsed")) return;
+  const pref = localStorage.getItem(RIGHT_COLLAPSE);
+  document.querySelector<HTMLButtonElement>(".panel-collapse-right")?.click();
+  if (pref === null) localStorage.removeItem(RIGHT_COLLAPSE);
 }
 
 function toggleCollapsed(workspace: HTMLElement, side: "left" | "right", button: HTMLButtonElement) {

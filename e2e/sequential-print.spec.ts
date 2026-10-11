@@ -52,6 +52,8 @@ test("sequential is omitted until the plate prints one object at a time", async 
   await expect.poll(() => bodies.length).toBe(3);
   expect(bodies[2]?.printOrder).toBe("sequential");
   expect(bodies[2]).not.toHaveProperty("sequentialClearanceMm");
+  // The reply redraws the settings. Typing before that redraw lands on a field that is about to be replaced.
+  await expect(page.locator("#cancel")).toBeHidden();
 
   await page.locator("#seqclear").fill("4");
   await page.locator("#seqclear").blur();

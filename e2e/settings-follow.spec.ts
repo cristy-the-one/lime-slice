@@ -178,6 +178,7 @@ test("Blend compare estimates the selected object of a plate", async ({ page }) 
   await page.locator("#plateAdd").click();
   await expect(page.locator("[data-plate-id]")).toHaveCount(2);
   await page.locator("#printOrder").selectOption("sequential");
+  await page.locator(".panel-collapse-right").click();
   await page.locator("#paretoBtn").click();
   await expect.poll(() => bodies.length).toBe(1);
   expect(bodies[0]).not.toHaveProperty("objects");
@@ -199,6 +200,7 @@ test("Blend compare on a belt printer sends the belt, so the engine estimates th
   await page.goto("/");
   await loadCube(page);
   await page.locator("#machineKind").selectOption("belt");
+  await page.locator(".panel-collapse-right").click();
   await page.locator("#paretoBtn").click();
   await expect.poll(() => bodies.length).toBe(1);
   expect(bodies[0]).toHaveProperty("belt");

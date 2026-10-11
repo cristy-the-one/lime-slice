@@ -144,6 +144,8 @@ test("a belt hides the settings it forces off or cannot use, and sends none of t
   });
   await page.goto("/");
   await autoSliceOff(page);
+  // The results column starts folded, and Compare lives in it.
+  await page.locator(".panel-collapse-right").click();
   // On a flat printer every one of them is on the page.
   await expect(page.locator("#zhop")).toBeVisible();
   await expect(page.locator("#scarf")).toBeVisible();

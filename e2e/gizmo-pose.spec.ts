@@ -114,6 +114,8 @@ test("zoom keeps the gizmo the same size and an arrow move is what gets sliced",
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
   await autoSliceOff(page);
+  // The arrow drag below was tuned with the results column open. It starts folded so the viewport stays wide.
+  await page.locator(".panel-collapse-right").click();
   await page.locator("#fileMenu > summary").click();
   await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();

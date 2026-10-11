@@ -39,6 +39,7 @@ test("fuzzy skin is omitted until it is on, then sent, and undone", async ({ pag
   await expect(page.locator("#fuzzythick")).toHaveCount(0);
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(1);
+  await expect(page.locator("#slice")).toBeEnabled();
   expect(bodies[0]).not.toHaveProperty("fuzzySkin");
 
   await page.locator("#fuzzy").check();
