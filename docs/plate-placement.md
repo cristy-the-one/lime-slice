@@ -12,7 +12,7 @@ The order in the note is the order below. A rejection stops the order. Later con
 
 The typed step changes from 1 to 0.1 so the field can hold the tenth the drag writes. A typed `12.5` is one step on Enter or blur, which is the commit `placeX` already uses. Digits are not steps.
 
-### Scale scrub — built, in the next change
+### Scale scrub — built
 
 The Scale label is the same gesture on the one multiplier that already exists. One percentage point per step, Shift five, clamped to 10–400. The typed step stays 5. Scale still writes `partScale` and still re-slices, because scale is in the part frame. There is no second scale field and no per-axis scale.
 
@@ -28,7 +28,7 @@ Clicking Frame on the selected row frames again and does not open an undo step. 
 
 Arrange, when it changes an offset, frames the union of the packed boxes once, after the pack. That frame is not its own undo step. Removing solids until one remains frames that solid, again not its own step. On a belt the framed box is the original. Ghost copies are not in the box.
 
-### Marks on the object row — built, after Frame
+### Marks on the object row — next, after Frame
 
 Under the size line, one truncated line: `paint`, `seam`, `supports off`, `infill N%`, `walls N`, `speed N`. The line is omitted when every one of those is absent, so a plain solid keeps the row it has today. Off-bed stays the warning line. The tip keeps the triangle count. Marks are text, not buttons, and not a new slice field. Copy already copies paint and settings, so a copy shows the same line.
 
