@@ -22,7 +22,7 @@ Selecting a row does not move the camera. A Frame control on the row does.
 
 `setMesh` draws one solid, the selection. The others are wire boxes (`setPlateBounds` in `src/prepare-view.ts`). `selectPlateObject` already swaps that mesh in and leaves the camera where it is. `framePart` runs on the first mesh only. Orbit, pan, and zoom are how the user places the camera, and a row click is how they pick which solid the gizmo edits. Framing on every selection would replace a camera they just set. That is the note's reject case. The fallback is a separate control, still with no undo step of its own.
 
-Frame uses the flight `framePart` already uses: the middle of that solid's box, three-quarter view, distance `max(side, 28) × 2.4`. On a short or narrow canvas the distance only increases, until the solid fits beside the parked gizmo. The sheet is not resized. Top, front, and isometric are not changed. A click on the mesh still does not move the camera. The ray only hits the selected mesh, which is unchanged.
+Frame uses the flight `framePart` already uses: the middle of that solid's box, three-quarter view, distance `max(side, 28) × 2.4`. On a narrow canvas the distance only increases, until the solid fits beside the parked gizmo. A desktop view stays at 2.4. The sheet is not resized. Top, front, and isometric are not changed. A click on the mesh still does not move the camera. The ray only hits the selected mesh, which is unchanged.
 
 Clicking Frame on the selected row frames again and does not open an undo step. Clicking it on another row selects that row, which is the one undo step selection already costs, and then frames. The camera is not in the snapshot, so Undo restores the selection and does not try to restore the camera.
 
@@ -52,7 +52,7 @@ The drag math lives in `src/ui/scrub.ts`. Five pixels is still a scroll. Past th
 
 X and Y call `setPlaceCenter`. The typed `change` path is untouched apart from `step="0.1"`.
 
-Frame will call the same camera placement as `framePart`, on the bounds of the named solid or, after Arrange, on `plateUnionBounds`. The fit that may lengthen the distance is pure math, so a tall desktop view keeps 2.4. Marks will be a string from paint disks, seam disks, and the per-object settings that already exist, rendered only when it is non-empty.
+Frame calls the same camera placement as `framePart`, on the bounds of the named solid (`placeObject`) or, after Arrange, on `plateUnionBounds`. The distance is the largest side times `frameFactor`. That factor stays at 2.4 when the solid already fits beside the parked gizmo, and it only increases on a narrow canvas. Marks will be a string from paint disks, seam disks, and the per-object settings that already exist, rendered only when it is non-empty.
 
 No engine type, request field, or G-code path changes. A move remains an offset. A scale remains a new part frame.
 

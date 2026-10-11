@@ -13,6 +13,7 @@ import type { SeamDisk } from "./seam-paint";
 import type { PaintDisk, PaintKind, Vec3 } from "./support-paint";
 import { beltStripLength, tiltPose, type BeltSettings } from "./belt";
 import { hexToThree, themeColors } from "./theme";
+import { frameFactor } from "./frame-fit";
 
 type Axis = "x" | "y" | "z";
 type HandleHit = { kind: "ring" | "move"; axis: Axis };
@@ -54,6 +55,8 @@ export interface PrepareView {
   onModifierEditEnd(cb: (() => void) | null): void;
   /** Top, front, or the same iso pose as a freshly loaded part. Does not run on load. */
   setViewPreset(preset: "top" | "front" | "iso"): void;
+  /** The flight `framePart` uses, on this box. Does not change the armed view preset. */
+  frameBounds(bounds: Bounds): void;
   /** Support paint drawn on the part, in the mesh frame `setMesh` poses. */
   setPaint(disks: readonly PaintDisk[]): void;
   /** Seam paint drawn on the part, in the same frame as support paint. */
@@ -348,6 +351,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       if (!viewHelper.animating) controls.enabled = true;
     }
     controls.update();
+    stampCamera();
     fitGizmoScreen();
     viewHelper.center.copy(controls.target);
     renderer.getSize(drawSize);
@@ -999,18 +1003,30 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     else camera.position.set(target.x + dist * 0.85, target.y + dist * 0.62, target.z + dist * 0.9);
     controls.target.copy(target);
     controls.update();
+    stampCamera();
+    requestRender();
+  }
+
+  function stampCamera() {
+    canvas.dataset.cam = `${camera.position.x.toFixed(2)} ${camera.position.y.toFixed(2)} ${camera.position.z.toFixed(2)}`;
+  }
+
+  function frameBox(min: [number, number, number], max: [number, number, number]) {
+    const mid = frame.toScene((min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2);
+    const span = Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2], 28);
+    const rect = canvas.getBoundingClientRect();
+    const dist = span * frameFactor(span, camera.fov, { width: rect.width, height: rect.height });
+    camera.position.set(mid.x + dist * 0.85, mid.y + dist * 0.62, mid.z + dist * 0.9);
+    controls.target.copy(mid);
+    controls.update();
+    stampCamera();
+    canvas.dataset.framed = `${((min[0] + max[0]) / 2).toFixed(1)} ${((min[1] + max[1]) / 2).toFixed(1)} ${((min[2] + max[2]) / 2).toFixed(1)}`;
     requestRender();
   }
 
   function framePart() {
     if (!meshBounds) return;
-    const { min, max } = meshBounds;
-    const mid = frame.toScene((min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2);
-    const dist = Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2], 28) * 2.4;
-    camera.position.set(mid.x + dist * 0.85, mid.y + dist * 0.62, mid.z + dist * 0.9);
-    controls.target.copy(mid);
-    controls.update();
-    requestRender();
+    frameBox(meshBounds.min, meshBounds.max);
   }
 
   return {
@@ -1101,6 +1117,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     onMove(cb) { moveCb = cb; },
     onMoveEnd(cb) { moveEndCb = cb; },
     setViewPreset(preset) { applyViewPreset(preset); },
+    frameBounds(bounds) { frameBox(bounds.min, bounds.max); },
     setPaint(disks) {
       paintDisks = disks;
       drawPaint();

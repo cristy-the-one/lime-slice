@@ -1,6 +1,6 @@
 import { type ColorMode } from "../colors";
 import { layFlatMatrix, matMul, rotX, rotY, rotZ } from "../mesh-place";
-import { addPlateObject, arrangePlate, removePlateObject, selectPlateObject } from "./plate-actions";
+import { addPlateObject, arrangePlate, framePlateObject, removePlateObject, selectPlateObject } from "./plate-actions";
 import { applyTheme, type ThemeChoice } from "../theme";
 import { clampOffset, flipSection } from "../section-plane";
 import { wheelNotch } from "../gizmo-math";
@@ -188,6 +188,11 @@ export function wireApp() {
     }
     if (t.id === "plateArrange" || t.closest("[data-plate-arrange]")) {
       arrangePlate();
+      return;
+    }
+    const plateFrame = t.closest<HTMLElement>("[data-plate-frame]")?.dataset.plateFrame;
+    if (plateFrame) {
+      framePlateObject(plateFrame);
       return;
     }
     const plateSelect = t.closest<HTMLElement>("[data-plate-select]")?.dataset.plateSelect;
