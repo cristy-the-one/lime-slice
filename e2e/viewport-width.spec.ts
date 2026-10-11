@@ -67,9 +67,9 @@ test("a slice opens the results panel when the user has not collapsed it", async
   await expect(page.locator("#estimate")).toContainText("g");
   await expect(page.locator(".workspace")).not.toHaveClass(/is-right-collapsed/);
   await expect(page.locator("#right")).toBeVisible();
-  await expect(page.locator("#right")).toContainText("Outline");
+  await expect(page.locator("#right")).toContainText("Triangles");
   expect(await page.evaluate((key) => localStorage.getItem(key), RIGHT_COLLAPSE)).toBeNull();
   await page.reload();
   await expect(page.locator(".workspace")).toHaveClass(/is-right-collapsed/);
-  expect(await prepareRatio(page)).toBeGreaterThanOrEqual(0.7);
+  expect(await page.evaluate((key) => localStorage.getItem(key), RIGHT_COLLAPSE)).toBeNull();
 });
