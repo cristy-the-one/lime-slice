@@ -619,7 +619,10 @@ function objectListHtml(): string {
           <span>${boundsSize(part.bounds)} mm</span>
           ${notes.length ? `<em class="obj-note">${escapeHtml(notes.join("; "))}</em>` : ""}
         </button>
-        ${many ? `<button class="btn obj-remove" type="button" data-plate-remove="${escapeHtml(obj.id)}" aria-label="Remove ${escapeHtml(obj.name)}">Remove</button>` : ""}
+        <span class="obj-actions">
+          <button class="btn obj-frame" type="button" data-plate-frame="${escapeHtml(obj.id)}" aria-label="Frame ${escapeHtml(obj.name)}">Frame</button>
+          ${many ? `<button class="btn obj-remove" type="button" data-plate-remove="${escapeHtml(obj.id)}" aria-label="Remove ${escapeHtml(obj.name)}">Remove</button>` : ""}
+        </span>
       </div>`;
   }).join("");
   const overlap = pairs.map((pair) => pair.line).join("; ");
