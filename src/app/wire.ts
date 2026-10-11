@@ -12,6 +12,7 @@ import { mountProjectFiles, openProjectFile, saveCurrentProject } from "./projec
 import { pickModelFile } from "../platform";
 import { noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, revealPrinterDetails, revealResults, setCalibrate, syncFindStuck, touch } from "./settings";
 import { noteEdit } from "./history";
+import { bindPlaceScrub } from "./place-scrub";
 import {
   applyNamedProfile,
   askProfileName,
@@ -59,6 +60,7 @@ import { refreshPrusaJob, rememberPrusaForm, testPrusaLink, uploadToPrusaLink } 
 
 export function wireApp() {
   bootMachines();
+  bindPlaceScrub(document.querySelector("#left")!);
   migrateLegacyPresets();
   document.querySelector("#left")!.addEventListener("input", (ev) => {
     const target = ev.target as HTMLInputElement;
