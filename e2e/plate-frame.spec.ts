@@ -50,6 +50,7 @@ test("Frame shows the named solid and does not become an undo step", async ({ pa
   await page.locator("#viewPresets button").nth(0).click();
   await expect.poll(() => cam(page)).not.toBe(home);
   expect(await framed(page)).toBe(homeBox);
+  await page.screenshot({ path: path.join(shots, "during-top.png") });
 
   await page.locator("[data-plate-frame=part]").click();
   await expect.poll(() => cam(page)).toBe(home);
@@ -113,7 +114,7 @@ test.describe("compact frame", () => {
     await expect(page.locator("#compactSheet")).toHaveAttribute("data-detent", "half");
     await page.locator("#compactTabs [data-tab=prepare]").click();
     await expect(page.locator("#compactSheet")).toHaveAttribute("data-detent", "peek");
-    const after = await share(page);
-    expect(after, `peek share after frame ${after}`).toBeGreaterThanOrEqual(0.7);
+    // The sheet height animates. The canvas share is the settled peek, not a mid-transition frame.
+    await expect.poll(async () => share(page), { timeout: 3_000 }).toBeGreaterThanOrEqual(0.7);
   });
 });
