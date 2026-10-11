@@ -99,7 +99,7 @@ test("a cube and a ledge slice as two meshes, and a forgotten ref sends the byte
   expect(offsets).toHaveLength(2);
   expect(offsets[0]).not.toBe(offsets[1]);
 
-  await page.locator("[data-tab=preview]").click();
+  await page.locator("#tabPreview").click();
   await expect(page.locator("#view3d")).toBeVisible();
   await shot(page, "preview-after.png");
 
