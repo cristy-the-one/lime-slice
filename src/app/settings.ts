@@ -12,7 +12,7 @@ import { filamentCost, filamentGrams, groupFeatures } from "../estimate";
 import { durationTile, formatCount, formatDuration, formatLength, formatMass, formatMetres, formatMoney, formatMs } from "../format";
 import { OTHER_COLOR, featureColor } from "../colors";
 import { offBed } from "../mesh-place";
-import { boundsSize, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty } from "../plate";
+import { boundsSize, objectMarks, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty } from "../plate";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys } from "../presets";
 import { saveProfile } from "../profiles";
 import { noteAdvance, noteFirmware, noteFlow, noteGcode, noteRetract, setSmartSupports } from "./machine-actions";
@@ -611,12 +611,14 @@ function objectListHtml(): string {
   const many = rows.length > 1;
   const list = rows.map(({ obj, part }) => {
     const notes = limit(part.bounds);
+    const marks = objectMarks(obj);
     const selected = obj.id === state.plate.selectedId;
     return `
       <div class="obj obj-row" role="listitem" data-plate-id="${escapeHtml(obj.id)}" data-selected="${selected ? "true" : "false"}">
         <button class="obj-select" type="button" data-plate-select="${escapeHtml(obj.id)}" aria-pressed="${selected ? "true" : "false"}" data-tip="${escapeHtml(obj.name)} · ${triangleLine(obj.sourcePos.length / 9)}">
           <b>${escapeHtml(obj.name)}</b>
           <span>${boundsSize(part.bounds)} mm</span>
+          ${marks ? `<span class="obj-marks">${escapeHtml(marks)}</span>` : ""}
           ${notes.length ? `<em class="obj-note">${escapeHtml(notes.join("; "))}</em>` : ""}
         </button>
         <div class="obj-actions">

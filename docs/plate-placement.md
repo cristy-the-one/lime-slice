@@ -28,7 +28,7 @@ Clicking Frame on the selected row frames again and does not open an undo step. 
 
 Arrange, when it changes an offset, frames the union of the packed boxes once, after the pack. That frame is not its own undo step. Removing solids until one remains frames that solid, again not its own step. On a belt the framed box is the original. Ghost copies are not in the box.
 
-### Marks on the object row — next, after Frame
+### Marks on the object row — built
 
 Under the size line, one truncated line: `paint`, `seam`, `supports off`, `infill N%`, `walls N`, `speed N`. The line is omitted when every one of those is absent, so a plain solid keeps the row it has today. Off-bed stays the warning line. The tip keeps the triangle count. Marks are text, not buttons, and not a new slice field. Copy already copies paint and settings, so a copy shows the same line.
 
@@ -52,7 +52,7 @@ The drag math lives in `src/ui/scrub.ts`. Five pixels is still a scroll. Past th
 
 X and Y call `setPlaceCenter`. The typed `change` path is untouched apart from `step="0.1"`.
 
-Frame calls the same camera placement as `framePart`, on the bounds of the named solid (`placeObject`) or, after Arrange, on `plateUnionBounds`. The distance is the largest side times `frameFactor`. That factor stays at 2.4 when the solid already fits beside the parked gizmo, and it only increases on a narrow canvas. Marks will be a string from paint disks, seam disks, and the per-object settings that already exist, rendered only when it is non-empty.
+Frame calls the same camera placement as `framePart`, on the bounds of the named solid (`placeObject`) or, after Arrange, on `plateUnionBounds`. The distance is the largest side times `frameFactor`. That factor stays at 2.4 when the solid already fits beside the parked gizmo, and it only increases on a narrow canvas. Marks are `objectMarks`: paint disks, seam disks, and the per-object settings that already exist, rendered only when the string is non-empty. The row does not add a span when it is empty.
 
 No engine type, request field, or G-code path changes. A move remains an offset. A scale remains a new part frame.
 

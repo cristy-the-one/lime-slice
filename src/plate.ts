@@ -620,6 +620,26 @@ export function readPlateSettings(value: unknown): PlateObjectSettings | undefin
 }
 
 /** `20 × 20 × 20.5`: one decimal where the size has one, none where it does not. */
+/**
+ * One truncated line under the size. Omitted by the row when this is empty.
+ * Only facts already stored on the solid. Not a slice field.
+ */
+export function objectMarks(obj: {
+  supportPaint?: readonly unknown[];
+  seamPaint?: readonly unknown[];
+  settings?: PlateObjectSettings;
+}): string {
+  const marks: string[] = [];
+  if ((obj.supportPaint?.length ?? 0) > 0) marks.push("paint");
+  if ((obj.seamPaint?.length ?? 0) > 0) marks.push("seam");
+  const settings = obj.settings;
+  if (settings?.supports === false) marks.push("supports off");
+  if (settings?.infill !== undefined) marks.push(`infill ${Math.round(settings.infill * 100)}%`);
+  if (settings?.walls !== undefined) marks.push(`walls ${settings.walls}`);
+  if (settings?.speed !== undefined) marks.push(`speed ${settings.speed}`);
+  return marks.join(" · ");
+}
+
 export function boundsSize(bounds: Bounds): string {
   return bounds.max.map((value, index) => String(Number((value - bounds.min[index]).toFixed(1)))).join(" × ");
 }
