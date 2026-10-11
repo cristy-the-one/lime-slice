@@ -1,13 +1,13 @@
 import { type ColorMode } from "../colors";
 import { layFlatMatrix, matMul, rotX, rotY, rotZ } from "../mesh-place";
-import { addPlateObject, arrangePlate, framePlateObject, removePlateObject, selectPlateObject } from "./plate-actions";
+import { arrangePlate, duplicatePlateObject, framePlateObject, removePlateObject, selectPlateObject } from "./plate-actions";
 import { applyTheme, type ThemeChoice } from "../theme";
 import { clampOffset, flipSection } from "../section-plane";
 import { wheelNotch } from "../gizmo-math";
 import { state, type CardId } from "./state";
 import { commitSplit, draw, layerGcode, paintPlayback, paintSectionChrome, prepare, scrub, sectionLimit, setHelp, setStage, setView, stepGizmo, stopPlay, syncGcodeHighlight, togglePlay, view3d } from "./viewer";
 import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCal, runSlice, runTempCal } from "./slice-run";
-import { adoptBytes, export3mf, exportGcode, fail, loadNamed, place, saveText, setPlaceCenter, withPrinterGcode } from "./files";
+import { addMeshBytes, adoptBytes, export3mf, exportGcode, fail, loadNamed, pickAddedMesh, place, saveText, setPlaceCenter, withPrinterGcode } from "./files";
 import { mountProjectFiles, openProjectFile, saveCurrentProject } from "./project-io";
 import { pickModelFile } from "../platform";
 import { noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, revealPrinterDetails, revealResults, setCalibrate, syncFindStuck, touch } from "./settings";
@@ -182,8 +182,12 @@ export function wireApp() {
       exportSettingsProfile(selectedProfileId());
       return;
     }
-    if (t.id === "plateAdd" || t.id === "plateDuplicate") {
-      addPlateObject();
+    if (t.id === "plateAdd") {
+      pickAddedMesh();
+      return;
+    }
+    if (t.id === "plateDuplicate") {
+      duplicatePlateObject();
       return;
     }
     if (t.id === "plateArrange" || t.closest("[data-plate-arrange]")) {
@@ -303,6 +307,13 @@ export function wireApp() {
       return;
     }
     file.arrayBuffer().then((bytes) => adoptBytes(file.name, bytes)).catch(fail);
+  });
+  document.querySelector("#plateAddFile")!.addEventListener("change", (ev) => {
+    const input = ev.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    void file.arrayBuffer().then((bytes) => addMeshBytes(file.name, bytes)).catch(fail);
   });
   // The printer chip's pickers also serve the compact Device page, so the listener sits on the document.
   document.addEventListener("change", (ev) => {

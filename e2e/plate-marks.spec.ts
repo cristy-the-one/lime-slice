@@ -56,7 +56,7 @@ test("a row states seam and walls, and a plain row stays one size line", async (
   await page.locator("#objWalls").fill("4");
   await page.locator("#objWalls").blur();
   await page.waitForTimeout(400);
-  await page.locator("#plateAdd").click();
+  await page.locator("#plateDuplicate").click();
   await expect(page.locator(".obj-marks")).toHaveCount(2);
   await expect(page.locator(".obj-marks").nth(0)).toHaveText("walls 4");
   await expect(page.locator(".obj-marks").nth(1)).toHaveText("walls 4");

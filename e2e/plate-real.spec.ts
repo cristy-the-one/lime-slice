@@ -74,7 +74,7 @@ test("moving one plate object re-emits only its G-code, without a click", async 
   await autoSliceOff(page);
   await page.locator("#file").setInputFiles("samples/dragon_2_5.stl");
   await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 30_000 });
-  await page.locator("#plateAdd").click();
+  await page.locator("#plateDuplicate").click();
   await expect(page.locator("[data-plate-id]")).toHaveCount(2);
   await page.locator("#plateArrange").click();
   await expect(page.locator("#plateOverlap")).toHaveCount(0);

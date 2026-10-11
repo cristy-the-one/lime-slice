@@ -156,7 +156,7 @@ test("a belt hides the settings it forces off or cannot use, and sends none of t
   await page.locator("#zhop").selectOption("smart");
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
   await expect(page.locator("#slice")).toBeEnabled();
-  await page.locator("#plateAdd").click();
+  await page.locator("#plateDuplicate").click();
   await expect(page.locator("#printOrder")).toBeVisible();
   await page.locator("#printOrder").selectOption("sequential");
 

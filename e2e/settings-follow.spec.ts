@@ -175,7 +175,7 @@ test("Blend compare estimates the selected object of a plate", async ({ page }) 
   });
   await page.goto("/");
   await loadCube(page);
-  await page.locator("#plateAdd").click();
+  await page.locator("#plateDuplicate").click();
   await expect(page.locator("[data-plate-id]")).toHaveCount(2);
   await page.locator("#printOrder").selectOption("sequential");
   await page.locator(".panel-collapse-right").click();
@@ -219,7 +219,7 @@ test("one at a time: Arrange keeps the toolhead clearance, and the request print
   await page.goto("/");
   await autoSliceOff(page);
   await loadCube(page);
-  await page.locator("#plateAdd").click();
+  await page.locator("#plateDuplicate").click();
   await expect(page.locator("[data-plate-id]")).toHaveCount(2);
   await page.locator("#partScale").fill("50");
   await page.waitForTimeout(400);

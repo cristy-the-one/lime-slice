@@ -120,6 +120,8 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
       }
       state.plate = loaded;
       applySelectedToState(loaded);
+      // An Add that started while these meshes were loading was aimed at the plate this replaced.
+      session.meshEpoch += 1;
     }
     session.slicedEdits = [];
     session.slicedPaint = [];

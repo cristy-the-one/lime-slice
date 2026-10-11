@@ -14,11 +14,11 @@ import { type SplitSync } from "../split-at";
 import { confirmDiscard, markProjectDirty } from "../project-dirty";
 import { pushToast } from "../ui/toasts";
 import { clearEdits } from "../support-edit-list";
-import { clearEditHistory } from "./history";
+import { clearEditHistory, flushEdit, noteEdit } from "./history";
 import { foreign3mfMessage, foreignSlicer3mf } from "../foreign-3mf";
 import { emptyOverrides } from "../overrides";
-import { boundEntries, emptyPlate, oneObjectPlate, placeObject, resetHeldGeometry, withLivePose, type PlateObject } from "../plate";
-import { syncPlateFromState } from "./plate-sync";
+import { addedMesh, boundEntries, emptyPlate, oneObjectPlate, placeObject, platePlacedPositions, resetHeldGeometry, withLivePose, type PlateObject } from "../plate";
+import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 
 export async function loadNamed(name: string) {
   state.error = "";
@@ -84,10 +84,12 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
   }
   place("load");
   fx.setStage("prepare");
+  // An Add that started during this read was aimed at the plate it replaced.
+  session.meshEpoch += 1;
 }
 
-export async function previewRemote(name: string, bytes: ArrayBuffer): Promise<Float32Array | null> {
-  const payload = { filename: name, dataB64: bytesToBase64(new Uint8Array(bytes)), stepToleranceMm: state.stepTolerance };
+export async function previewRemote(name: string, bytes: ArrayBuffer, stepToleranceMm = state.stepTolerance): Promise<Float32Array | null> {
+  const payload = { filename: name, dataB64: bytesToBase64(new Uint8Array(bytes)), stepToleranceMm };
   const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   try {
     let body: { positions?: number[]; error?: string };
@@ -113,11 +115,16 @@ export async function previewRemote(name: string, bytes: ArrayBuffer): Promise<F
 
 export async function refreshStepPreview() {
   if (!state.mesh || !isStepName(state.mesh.name)) return;
-  const positions = await previewRemote(state.mesh.name, state.mesh.bytes);
+  const name = state.mesh.name;
+  const bytes = state.mesh.bytes;
+  const epoch = session.meshEpoch;
+  const positions = await previewRemote(name, bytes);
   if (!positions) {
     renderChrome();
     return;
   }
+  // Open, or Add selecting another file, moved on while this preview was in flight.
+  if (session.meshEpoch !== epoch || state.mesh?.name !== name || state.mesh.bytes !== bytes) return;
   state.error = "";
   state.sourcePos = positions;
   place("transform");
@@ -372,7 +379,12 @@ export async function exportGcode() {
 
 export async function export3mf() {
   if (!state.placed) return;
-  const bytes = encode3mf(state.placed.positions);
+  syncPlateFromState();
+  const objects = livePlate();
+  const positions = objects.length > 1
+    ? platePlacedPositions(objects, state.profile.bedX, state.profile.bedY)
+    : state.placed.positions;
+  const bytes = encode3mf(positions);
   const name = `${(state.mesh?.name ?? "part").replace(/\.(stl|3mf|step|stp)$/i, "")}.3mf`;
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -397,6 +409,64 @@ export function download(text: string, name: string) {
 
 function openMeshPicker() {
   document.querySelector<HTMLInputElement>("#file")?.click();
+}
+
+/** The Add object picker. Cancel leaves the plate alone: the change handler returns when no file was chosen. */
+export function pickAddedMesh() {
+  const input = document.querySelector<HTMLInputElement>("#plateAddFile");
+  if (!input || !state.mesh || state.plate.objects.length === 0) return;
+  input.value = "";
+  input.click();
+}
+
+let meshAdds: Promise<void> = Promise.resolve();
+
+/** Read `bytes` the way Open does, then add that part. One undo step once the mesh is in hand. */
+export function addMeshBytes(name: string, bytes: ArrayBuffer): Promise<void> {
+  const run = meshAdds.then(() => addMeshNow(name, bytes));
+  meshAdds = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+async function meshPositions(name: string, bytes: ArrayBuffer, stepTolerance: number): Promise<Float32Array | null> {
+  if (!needsEngine(name)) return parseStl(bytes);
+  return previewRemote(name, bytes, stepTolerance);
+}
+
+async function addMeshNow(name: string, bytes: ArrayBuffer) {
+  if (!state.mesh || !state.sourcePos || state.plate.objects.length === 0) return;
+  if (/\.lime$/i.test(name)) {
+    pushToast("Open a project from the File menu.", "info");
+    return;
+  }
+  const stepTolerance = state.stepTolerance;
+  const epoch = session.meshEpoch;
+  const sourcePos = await meshPositions(name, bytes, stepTolerance);
+  if (session.meshEpoch !== epoch || !state.mesh || state.plate.objects.length === 0) return;
+  if (!sourcePos || sourcePos.length < 9) {
+    if (!needsEngine(name) || !state.error) state.error = `Could not read ${name}.`;
+    pushToast(state.error, "error", { label: "Retry", run: pickAddedMesh });
+    renderChrome();
+    return;
+  }
+  // Close anything still open so this add is its own undo step.
+  flushEdit();
+  noteEdit();
+  syncPlateFromState();
+  const next = addedMesh(state.plate, { name, fileName: name, bytes, sourcePos, stepTolerance }, state.profile.bedX, state.profile.bedY);
+  if (!next) {
+    flushEdit();
+    return;
+  }
+  state.error = "";
+  state.plate = next;
+  applySelectedToState(state.plate);
+  if (/\.3mf$/i.test(name)) {
+    const vendor = foreignSlicer3mf(new Uint8Array(bytes));
+    if (vendor) pushToast(foreign3mfMessage(vendor), "info");
+  }
+  place();
+  flushEdit();
 }
 
 export function fail(err: unknown) {

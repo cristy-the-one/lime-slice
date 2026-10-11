@@ -74,7 +74,7 @@ test("Frame shows the named solid and does not become an undo step", async ({ pa
   await page.mouse.click(box.x + box.width * 0.62, box.y + box.height * 0.45);
   expect(await cam(page)).toBe(still);
 
-  await page.locator("#plateAdd").click();
+  await page.locator("#plateDuplicate").click();
   await expect(page.locator("[data-plate-id]")).toHaveCount(2);
   const afterAdd = await cam(page);
   await page.locator("[data-plate-select=part]").click();

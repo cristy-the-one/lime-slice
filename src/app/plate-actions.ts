@@ -1,4 +1,4 @@
-/** Add, select, remove, and arrange plate objects. Pose tools keep editing the selection. */
+/** Select, duplicate, remove, and arrange plate objects. Adding a file is `addMeshBytes`. Pose tools keep editing the selection. */
 import { arrangedObjects, addedCopy, placeObject, plateUnionBounds, withoutObject } from "../plate.ts";
 import { fx } from "./fx.ts";
 import { place } from "./files.ts";
@@ -9,8 +9,9 @@ import { currentRules } from "./rules.ts";
 import { sequentialClearance } from "../settings-rules.ts";
 import type { Bounds } from "../mesh-place.ts";
 
-export function addPlateObject() {
-  if (!state.mesh || !state.sourcePos) return;
+/** An exact copy of the selected object: same mesh, pose, paint, and overrides. */
+export function duplicatePlateObject() {
+  if (!state.mesh || !state.sourcePos || !state.plate.selectedId) return;
   noteEdit();
   syncPlateFromState();
   const next = addedCopy(state.plate);

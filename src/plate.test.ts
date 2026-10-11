@@ -1,7 +1,8 @@
-import { ID_MATRIX, offBed } from "./mesh-place.ts";
+import { encode3mf, ID_MATRIX, offBed } from "./mesh-place.ts";
 import { nextSplitAt } from "./split-at.ts";
 import {
   addedCopy,
+  addedMesh,
   objectMarks,
   arrangeBoxes,
   arrangedObjects,
@@ -12,10 +13,12 @@ import {
   placeObject,
   plateFileIsVersion2,
   plateListed,
+  platePlacedPositions,
   plateUnionBounds,
   revivePlate,
   slicePlateFields,
   snapPlate,
+  type IncomingMesh,
   type PlateObject,
 } from "./plate.ts";
 
@@ -170,6 +173,78 @@ check("a copy keeps the marks", objectMarks(addedCopy({ objects: [marked], selec
 check("clearing the facts clears the line", objectMarks({ ...marked, supportPaint: [], seamPaint: [], settings: {} }) === "");
 check("a whole-millimeter size drops its decimal", boundsSize({ min: [0, 0, 0], max: [20, 20.04, 20] }) === "20 × 20 × 20", boundsSize({ min: [0, 0, 0], max: [20, 20.04, 20] }));
 check("a fractional size keeps one decimal", boundsSize({ min: [1, 2, 0], max: [31.5, 12, 7.25] }) === "30.5 × 10 × 7.3", boundsSize({ min: [1, 2, 0], max: [31.5, 12, 7.25] }));
+
+const firstMesh = object(20, "part", true);
+firstMesh.fileName = "cube.stl";
+firstMesh.name = "cube.stl";
+const secondMesh = object(10, "ledge", false, { x: 40, y: 0, z: 0 });
+secondMesh.fileName = "ledge.stl";
+secondMesh.name = "ledge.stl";
+secondMesh.partScale = 0.5;
+secondMesh.settings = { walls: 3 };
+const picked = addedCopy({ objects: [firstMesh, secondMesh], selectedId: "ledge" });
+check(
+  "duplicate copies the selected mesh, not the first",
+  picked?.objects[2]?.fileName === "ledge.stl" && picked.objects[2].sourcePos === secondMesh.sourcePos && picked.objects[2].partScale === 0.5 && picked.objects[2].settings.walls === 3,
+);
+check("duplicate leaves the other object", picked?.objects[0]?.fileName === "cube.stl" && picked.objects[0].sourcePos === firstMesh.sourcePos);
+check("duplicate selects the copy", picked?.selectedId === picked?.objects[2]?.id);
+check("nothing selected copies nothing", addedCopy({ objects: [firstMesh, secondMesh], selectedId: null }) === null);
+const painted = {
+  ...secondMesh,
+  supportPaint: [{ kind: "block" as const, p: [0, 0, 0] as [number, number, number], n: [0, 0, 1] as [number, number, number], r: 1 }],
+};
+const copiedPaint = addedCopy({ objects: [painted], selectedId: painted.id })!;
+copiedPaint.objects[1]!.supportPaint[0]!.r = 9;
+check("a copy's paint is its own", painted.supportPaint[0]!.r === 1);
+
+const incoming = (name: string, source: Float32Array, stepTolerance = 0.1): IncomingMesh => ({
+  name,
+  fileName: name,
+  bytes: new ArrayBuffer(4),
+  sourcePos: source,
+  stepTolerance,
+});
+const atOrigin = object(20, "a", false, { x: 0, y: 0, z: 0 });
+atOrigin.name = "cube.stl";
+const parked = addedMesh({ objects: [atOrigin], selectedId: "a" }, incoming("cube.stl", cube(20), 0.05), bed, bed);
+const parkedBounds = placeObject(parked!.objects[1]!, bed, bed).bounds;
+check("a new part sits one gap to the right of a part at the origin", near(parkedBounds.min[0], 22) && near(parkedBounds.min[1], 0) && near(parkedBounds.min[2], 0));
+check("the part already on the bed stays put", parked!.objects[0] === atOrigin);
+check("the new part is selected", parked!.selectedId === parked!.objects[1]!.id && parked!.selectedId !== "a");
+check("a repeated file name is numbered and the file name stays the file's", parked!.objects[1]!.name === "cube.stl 2" && parked!.objects[1]!.fileName === "cube.stl");
+check("a new part is unscaled, unturned, and has no overrides", parked!.objects[1]!.partScale === 1 && parked!.objects[1]!.orient.every((value, index) => value === ID_MATRIX[index]) && Object.keys(parked!.objects[1]!.settings).length === 0);
+check("the new part keeps the tolerance it was read with", parked!.objects[1]!.stepTolerance === 0.05);
+check("the new part's mesh is not the one already there", parked!.objects[1]!.sourcePos !== atOrigin.sourcePos);
+const revivedNew = revivePlate(snapPlate(parked!));
+check("undo keeps the new part's own mesh", revivedNew?.objects[1]?.fileName === "cube.stl" && revivedNew.objects[1].sourcePos === parked!.objects[1]!.sourcePos);
+
+const corner = addedMesh({ objects: [firstMesh], selectedId: "part" }, incoming("off.stl", cube(20)), bed, bed);
+const cornerBounds = placeObject(corner!.objects[1]!, bed, bed).bounds;
+check("a centered part leaves the corner free", near(cornerBounds.min[0], 0) && near(cornerBounds.min[1], 0));
+check("the centered part is not moved", corner!.objects[0]!.centered && corner!.objects[0]!.offset.x === 0);
+check("the new part clears the one already there", !boxesOverlapXY(placeObject(corner!.objects[0]!, bed, bed).bounds, cornerBounds));
+
+const lifted = cube(10);
+for (let i = 2; i < lifted.length; i += 3) lifted[i] += 5;
+for (let i = 0; i < lifted.length; i += 3) lifted[i] -= 50;
+const laid = addedMesh({ objects: [firstMesh], selectedId: "part" }, incoming("lifted.stl", lifted), bed, bed);
+const laidBounds = placeObject(laid!.objects[1]!, bed, bed).bounds;
+check("a mesh that loads off the bed is laid on it", near(laidBounds.min[0], 0) && near(laidBounds.min[2], 0), JSON.stringify(laidBounds));
+
+const crowded = addedMesh({ objects: [atOrigin], selectedId: "a" }, incoming("wide.stl", cube(20)), 30, 30);
+const crowdedBounds = placeObject(crowded!.objects[1]!, 30, 30).bounds;
+check("a crowded bed still gets the part, past the edge", near(crowdedBounds.min[0], 22) && near(crowdedBounds.min[1], 0));
+const row2 = object(20, "b", false, { x: 22, y: 0, z: 0 });
+const wrapped = addedMesh({ objects: [atOrigin, row2], selectedId: "a" }, incoming("third.stl", cube(20)), 50, 50);
+const wrappedBounds = placeObject(wrapped!.objects[2]!, 50, 50).bounds;
+check("the next part wraps to a new row when the first row is full", near(wrappedBounds.min[0], 0) && near(wrappedBounds.min[1], 22));
+check("an empty plate cannot gain a part this way", addedMesh({ objects: [], selectedId: null }, incoming("nope.stl", cube(10)), bed, bed) === null);
+
+const joined = platePlacedPositions([atOrigin, object(10, "shift", false, { x: 40, y: 0, z: 0 })], bed, bed);
+const model = new TextDecoder().decode(encode3mf(joined));
+check("a plate 3mf has every part's triangles", (model.match(/<triangle /g) ?? []).length === joined.length / 9 && joined.length / 9 === 4);
+check("a plate 3mf keeps the second part's place", model.includes('x="40"'));
 
 if (failed) {
   console.error(`${failed} failed`);

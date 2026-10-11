@@ -39,7 +39,7 @@ test("sequential is omitted until the plate prints one object at a time", async 
   expect(bodies[0]).not.toHaveProperty("printOrder");
   expect(bodies[0]).not.toHaveProperty("objects");
 
-  await page.locator("#plateAdd").click();
+  await page.locator("#plateDuplicate").click();
   await expect(page.locator("#printOrder")).toBeVisible();
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(2);
@@ -83,7 +83,7 @@ for (const { id, field, typed } of [
     await autoSliceOff(page);
     await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
     await expect(page.locator("#objectList .obj").first()).toBeVisible();
-    await page.locator("#plateAdd").click();
+    await page.locator("#plateDuplicate").click();
     await page.locator("#printOrder").selectOption("sequential");
     await expect(page.locator(id)).toBeVisible();
 
@@ -114,7 +114,7 @@ test.describe("sequential controls stay in the sheet", () => {
     await expect(page.locator("#objectList .obj").first()).toBeVisible();
     await expect(page.locator("#compactSheet")).toHaveAttribute("data-detent", "peek");
     await page.locator("#compactTabs [data-tab=settings]").click();
-    await page.locator("#plateAdd").click();
+    await page.locator("#plateDuplicate").click();
     await page.locator("#printOrder").selectOption("sequential");
     await expect(page.locator("#seqclear")).toBeVisible();
     await page.locator("#compactTabs [data-tab=prepare]").click();
