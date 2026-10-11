@@ -4,7 +4,7 @@ import { ViewHelper } from "three/addons/helpers/ViewHelper.js";
 import { syncBedGrid } from "./bed-grid";
 import { poseAffine, type Bounds, type PlacedPart } from "./mesh-place";
 import { buildCutPlane, disposeTree, prepareFrame, splitDragAt, type PrintFrame } from "./cut-plane";
-import { GIZMO_NUDGE_DEG, GIZMO_NUDGE_MM, GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep, wheelNotch } from "./gizmo-math";
+import { GIZMO_NUDGE_DEG, GIZMO_NUDGE_MM, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep, wheelNotch } from "./gizmo-math";
 import { clampSplit, roundSplit, type SplitAxis } from "./split-at";
 import { createModifierScene } from "./modifier-scene";
 import type { OverrideDocument } from "./overrides";
@@ -13,7 +13,7 @@ import type { SeamDisk } from "./seam-paint";
 import type { PaintDisk, PaintKind, Vec3 } from "./support-paint";
 import { beltStripLength, tiltPose, type BeltSettings } from "./belt";
 import { hexToThree, themeColors } from "./theme";
-import { frameFactor } from "./frame-fit";
+import { frameFactor, frameGizmoPx, frameLookShift, framePanPx } from "./frame-fit";
 
 type Axis = "x" | "y" | "z";
 type HandleHit = { kind: "ring" | "move"; axis: Axis };
@@ -500,8 +500,9 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     if (rect.height < 2 || rect.width < 2) return;
     camera.updateMatrixWorld();
     const distance = Math.max(8, camera.position.distanceTo(controls.target));
-    gizmo.scale.setScalar(gizmoRadiusForPixels(distance, camera.fov, rect.height, GIZMO_SCREEN_PX, camera.zoom));
-    const [x, y, z] = parkLeftCameraSpace(rect.width, distance, camera.fov, camera.aspect, camera.zoom);
+    const gizmoPx = frameGizmoPx(rect.width);
+    gizmo.scale.setScalar(gizmoRadiusForPixels(distance, camera.fov, rect.height, gizmoPx, camera.zoom));
+    const [x, y, z] = parkLeftCameraSpace(rect.width, distance, camera.fov, camera.aspect, camera.zoom, gizmoPx + 18);
     park.set(x, y, z);
     park.applyMatrix4(camera.matrixWorld);
     gizmo.position.copy(park);
@@ -1009,6 +1010,11 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
 
   function stampCamera() {
     canvas.dataset.cam = `${camera.position.x.toFixed(2)} ${camera.position.y.toFixed(2)} ${camera.position.z.toFixed(2)}`;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width >= 2) {
+      canvas.dataset.gizmoPx = String(frameGizmoPx(rect.width));
+      canvas.dataset.framePan = String(framePanPx(rect.width));
+    }
   }
 
   function frameBox(min: [number, number, number], max: [number, number, number]) {
@@ -1016,8 +1022,9 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     const span = Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2], 28);
     const rect = canvas.getBoundingClientRect();
     const dist = span * frameFactor(span, camera.fov, { width: rect.width, height: rect.height });
-    camera.position.set(mid.x + dist * 0.85, mid.y + dist * 0.62, mid.z + dist * 0.9);
-    controls.target.copy(mid);
+    const [sx, sy, sz] = frameLookShift(framePanPx(rect.width), dist, camera.fov, rect.height);
+    camera.position.set(mid.x + sx + dist * 0.85, mid.y + sy + dist * 0.62, mid.z + sz + dist * 0.9);
+    controls.target.set(mid.x + sx, mid.y + sy, mid.z + sz);
     controls.update();
     stampCamera();
     canvas.dataset.framed = `${((min[0] + max[0]) / 2).toFixed(1)} ${((min[1] + max[1]) / 2).toFixed(1)} ${((min[2] + max[2]) / 2).toFixed(1)}`;
