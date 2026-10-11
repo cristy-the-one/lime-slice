@@ -26,7 +26,7 @@ async function dragVolumeName(page: Page, dx: number, shift = false) {
   if (shift) await page.keyboard.up("Shift");
 }
 
-test("dragging a volume name scales the part, once, and does not open the row", async ({ page }) => {
+test("dragging a volume name scales the part once and does not toggle the row", async ({ page }) => {
   await quiet(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
@@ -36,14 +36,14 @@ test("dragging a volume name scales the part, once, and does not open the row", 
   const name = page.locator("[data-volume] [data-scrub=scale]");
   await expect(name).toHaveText("Box");
   await expect(page.locator("#partScale")).toHaveValue("100");
-  await expect(page.locator("[data-volume]")).not.toHaveAttribute("open");
+  await expect(page.locator("[data-volume]")).toHaveAttribute("open", "");
   await expect(page.locator("[data-volume] .mod-val")).toContainText("30 × 30 × 20");
 
   await dragVolumeName(page, scrubTravel(10));
   await expect(page.locator("#partScale")).toHaveValue("110");
   await expect(page.locator("[data-selected='true'] span").first()).toContainText("22 × 22 × 22");
   await expect(page.locator("[data-volume] .mod-val")).toContainText("30 × 30 × 20");
-  await expect(page.locator("[data-volume]")).not.toHaveAttribute("open");
+  await expect(page.locator("[data-volume]")).toHaveAttribute("open", "");
   await page.screenshot({ path: path.join(shots, "after-volume.png") });
   await page.keyboard.press("Control+z");
   await expect(page.locator("#partScale")).toHaveValue("100");
