@@ -66,7 +66,7 @@ function volumeItem(volume: ModifierVolume, selectedId: string | null): string {
   const label = volumeLabel(volume.kind);
   return `
     <details class="mod-item${selected ? " is-selected" : ""}" data-override-card data-volume="${esc(volume.id)}" data-mod="${esc(volume.id)}"${openItems.has(volume.id) ? " open" : ""}>
-      <summary data-override-select="${esc(volume.id)}" aria-current="${selected ? "true" : "false"}"><span class="mod-name">${label}</span><span class="mod-val">${mm(volume.sx)} × ${mm(volume.sy)} × ${mm(volume.sz)} mm</span>${removeButton("volume", label.toLowerCase())}</summary>
+      <summary data-override-select="${esc(volume.id)}" aria-current="${selected ? "true" : "false"}"><span class="mod-name scrub-label" data-scrub="scale">${label}</span><span class="mod-val">${mm(volume.sx)} × ${mm(volume.sy)} × ${mm(volume.sz)} mm</span>${removeButton("volume", label.toLowerCase())}</summary>
       <div class="mod-fields">
         ${num("x", "X mm", String(volume.x), -500, 1500, 0.1, 2)}
         ${num("y", "Y mm", String(volume.y), -500, 1500, 0.1, 2)}

@@ -38,9 +38,11 @@ X and Y show an absolute centre that stays on the field. The only honest Z contr
 
 The order stops here.
 
-### Volumes, Solo, and Lock — not built
+### Volume name — built afterwards
 
-Volume and height-range scrub would be the same label drag on fields that already step 0.1 mm. It is not built, because the order stopped at the Z turn. It would not have required the Z field.
+The owner approved one drag after that stop. The volume's name (Box, Cylinder, Sphere) is the scale scrub: the same gesture, the same `partScale` write, one undo step. It does not change the volume's own size. A click still opens the row. A scrub does not, because that click is swallowed. Height-range labels stay as they are. They already step 0.1 mm, and this approval was the name that scales the part.
+
+### Solo and Lock — not built
 
 Solo is rejected on its own as well. The prepare view has one mesh. The gizmo and the move-on-mesh drag hit that mesh only. Dimming the other wire boxes would not change what can be grabbed, and the note says not to ship a half-dim. After Frame and the marks, a crowded plate is still not hard to grab, which is the gate for Solo and for Lock.
 
@@ -50,7 +52,7 @@ Lock's pack can be defined without rotating or scaling: a locked box keeps its r
 
 The drag math lives in `src/ui/scrub.ts`. Five pixels is still a scroll. Past that, a mostly horizontal drag is a scrub and a mostly vertical drag is left to the sheet. One step is four pixels. Shift changes the quantum, not the pixel size. `beginEdit` runs before the first write, `flushEdit` on pointer-up, and a result equal to the start stores nothing. The HUD is `#gizmoReadout`, the string the move gizmo already builds, painted for the duration of the scrub and cleared on release. While that string is set, `scheduleAuto` waits, which is how a gizmo move re-emits once at the end.
 
-X and Y call `setPlaceCenter`. The typed `change` path is untouched apart from `step="0.1"`.
+X and Y call `setPlaceCenter`. The typed `change` path is untouched apart from `step="0.1"`. A volume name calls the same scale write as the Scale label. The pointer is captured on the label that started the drag, so a second `data-scrub="scale"` does not grab the Scale field. Pointer-down on that name does not cancel the click. A scrub does.
 
 Frame calls the same camera placement as `framePart`, on the bounds of the named solid (`placeObject`) or, after Arrange, on `plateUnionBounds`. The distance is the largest side times `frameFactor`. That factor stays at 2.4 when the solid already fits beside the parked gizmo, and it only increases on a narrow canvas. Marks are `objectMarks`: paint disks, seam disks, and the per-object settings that already exist, rendered only when the string is non-empty. The row does not add a span when it is empty.
 
@@ -71,6 +73,6 @@ No engine type, request field, or G-code path changes. A move remains an offset.
 
 1. Is the relative Z field confusing enough beside the absolute centres that the order should stop there, with X, Y, and scale only?
 2. Is Frame on the row the right fallback, with Arrange and remove-to-one still framing, and with selection itself leaving the camera alone?
-3. Should volume and height-range labels gain the same scrub in a later change, now that X and Y exist, or does the stop hold?
+3. The volume name now scrubs `partScale`, and height-range labels stay put. Is that the right split?
 4. Solo and Lock stay out because the gizmo only hits the selected mesh. Is that the right reading of "hard to grab"?
 5. Is 0.1 mm, and a spinner step of 0.1, acceptable on the fields that used to step 1 mm?
