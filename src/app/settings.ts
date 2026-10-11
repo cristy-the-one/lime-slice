@@ -574,7 +574,7 @@ function objectToolsHtml(): string {
   const spin = (axis: "X" | "Y" | "Z") =>
     `<button class="tool-btn" id="rot${axis}" type="button" data-tip="Rotate 90° around ${axis}" aria-label="Rotate 90 degrees around ${axis}">${icon(RotateCw)}<sub>${axis.toLowerCase()}</sub></button>`;
   return `<div class="obj-tools" role="toolbar" aria-label="Object tools">
-    ${tool("plateAdd", Plus, "Add object")}
+    ${tool("plateAdd", Plus, "Add object from a file")}
     ${tool("plateDuplicate", Copy, "Duplicate")}
     ${tool("plateArrange", LayoutGrid, "Arrange", many ? "" : " disabled")}
     ${tool("center", Crosshair, "Center on bed")}

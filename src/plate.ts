@@ -9,6 +9,8 @@
  * part frame (`docs/multi-object-and-support-painting.md`).
  * A one-object project with no per-object settings is written as version 1
  * and omits `objects`.
+ * Adding a file builds a new object and parks it clear of the others.
+ * Duplicate copies the selected object only.
  */
 import type { EditEntry } from "./support-edit-list.ts";
 import { seamRequestFields, type SeamDisk, type SeamWireDisk } from "./seam-paint.ts";
@@ -16,6 +18,7 @@ import { paintRequestFields, type PaintDisk, type WireDisk } from "./support-pai
 import {
   boundsOf,
   centeringShift,
+  ID_MATRIX,
   placeMesh,
   type Bounds,
   type Mat3,
@@ -318,8 +321,9 @@ export function oneObjectPlate(input: {
   return { objects: [obj], selectedId: obj.id };
 }
 
+/** A second object with the selected object's mesh, pose, paint, and overrides. Nothing is copied when nothing is selected. */
 export function addedCopy(plate: PlateState): PlateState | null {
-  const source = selectedObject(plate);
+  const source = plate.objects.find((obj) => obj.id === plate.selectedId);
   if (!source) return null;
   const copy: PlateObject = {
     ...source,
@@ -328,10 +332,62 @@ export function addedCopy(plate: PlateState): PlateState | null {
     orient: [...source.orient] as Mat3,
     offset: { ...source.offset },
     supportEdits: source.supportEdits.map((entry) => structuredClone(entry)),
+    supportPaint: source.supportPaint.map((disk) => structuredClone(disk)),
+    seamPaint: source.seamPaint.map((disk) => structuredClone(disk)),
     settings: { ...source.settings },
   };
   hold(copy);
   return { objects: [...plate.objects, copy], selectedId: copy.id };
+}
+
+/** A mesh read from a file, not yet placed. */
+export interface IncomingMesh {
+  name: string;
+  fileName: string;
+  bytes: ArrayBuffer;
+  sourcePos: Float32Array;
+  stepTolerance: number;
+}
+
+/**
+ * A new object from `mesh`, in the first clear shelf slot.
+ * Objects already on the plate stay where they are. Null when the plate is empty.
+ */
+export function addedMesh(plate: PlateState, mesh: IncomingMesh, bedX: number, bedY: number): PlateState | null {
+  if (plate.objects.length === 0) return null;
+  const draft: PlateObject = {
+    id: freshPlateId(),
+    name: nextObjectName(plate.objects, mesh.name),
+    fileName: mesh.fileName,
+    bytes: mesh.bytes,
+    sourcePos: mesh.sourcePos,
+    orient: [...ID_MATRIX],
+    partScale: 1,
+    centered: false,
+    offset: { x: 0, y: 0, z: 0 },
+    stepTolerance: mesh.stepTolerance,
+    supportEdits: [],
+    supportPaint: [],
+    seamPaint: [],
+    settings: {},
+  };
+  const placed = parkClear(draft, plate.objects, bedX, bedY);
+  hold(placed);
+  return { objects: [...plate.objects, placed], selectedId: placed.id };
+}
+
+/** Every object's placed triangles, in plate order, so one 3MF mesh can carry the whole plate. */
+export function platePlacedPositions(objects: readonly PlateObject[], bedX: number, bedY: number): Float32Array {
+  const parts = objects.map((obj) => placeObject(obj, bedX, bedY).positions);
+  let count = 0;
+  for (const part of parts) count += part.length;
+  const out = new Float32Array(count);
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
 }
 
 export function withoutObject(plate: PlateState, id: string): PlateState {
@@ -642,6 +698,79 @@ export function objectMarks(obj: {
 
 export function boundsSize(bounds: Bounds): string {
   return bounds.max.map((value, index) => String(Number((value - bounds.min[index]).toFixed(1)))).join(" × ");
+}
+
+function parkClear(incoming: PlateObject, existing: readonly PlateObject[], bedX: number, bedY: number): PlateObject {
+  const parked = placeObject({ ...incoming, centered: false, offset: { x: 0, y: 0, z: 0 } }, bedX, bedY).bounds;
+  const width = parked.max[0] - parked.min[0];
+  const height = parked.max[1] - parked.min[1];
+  const obstacles = existing.map((obj) => placeObject(obj, bedX, bedY).bounds);
+  const spot = clearSpot(obstacles, width, height, bedX, bedY);
+  return {
+    ...incoming,
+    centered: false,
+    offset: {
+      x: round3(spot.minX - parked.min[0]),
+      y: round3(spot.minY - parked.min[1]),
+      z: 0,
+    },
+  };
+}
+
+/** First shelf slot that clears `obstacles` by the arrange gap, preferring a spot that stays on the bed. */
+function clearSpot(
+  obstacles: readonly Bounds[],
+  width: number,
+  height: number,
+  bedX: number,
+  bedY: number,
+  gap = ARRANGE_GAP_MM,
+): { minX: number; minY: number } {
+  const candidates: { minX: number; minY: number }[] = [{ minX: 0, minY: 0 }];
+  for (const box of obstacles) {
+    candidates.push({ minX: round3(box.max[0] + gap), minY: round3(box.min[1]) });
+    candidates.push({ minX: round3(box.min[0]), minY: round3(box.max[1] + gap) });
+  }
+  candidates.sort((a, b) => a.minY - b.minY || a.minX - b.minX);
+  const onBed = candidates.filter((spot) => fitsBed(spot, width, height, bedX, bedY) && spotClears(spot, width, height, obstacles, gap));
+  if (onBed[0]) return onBed[0];
+  const anywhere = candidates.filter((spot) => spotClears(spot, width, height, obstacles, gap));
+  if (anywhere[0]) return anywhere[0];
+  let maxX = 0;
+  for (const box of obstacles) maxX = Math.max(maxX, box.max[0]);
+  return { minX: round3(maxX + gap), minY: 0 };
+}
+
+function fitsBed(spot: { minX: number; minY: number }, width: number, height: number, bedX: number, bedY: number): boolean {
+  return spot.minX >= -OVERLAP_EPS_MM
+    && spot.minY >= -OVERLAP_EPS_MM
+    && spot.minX + width <= bedX + OVERLAP_EPS_MM
+    && spot.minY + height <= bedY + OVERLAP_EPS_MM;
+}
+
+function spotClears(
+  spot: { minX: number; minY: number },
+  width: number,
+  height: number,
+  obstacles: readonly Bounds[],
+  gap: number,
+): boolean {
+  const next: Bounds = {
+    min: [spot.minX, spot.minY, 0],
+    max: [spot.minX + width, spot.minY + height, 1],
+  };
+  return obstacles.every((box) => separatedBy(next, box, gap));
+}
+
+function separatedBy(a: Bounds, b: Bounds, gap: number): boolean {
+  return axisGap(a.min[0], a.max[0], b.min[0], b.max[0]) >= gap - 1e-6
+    || axisGap(a.min[1], a.max[1], b.min[1], b.max[1]) >= gap - 1e-6;
+}
+
+function axisGap(a0: number, a1: number, b0: number, b1: number): number {
+  if (a1 <= b0) return b0 - a1;
+  if (b1 <= a0) return a0 - b1;
+  return -1;
 }
 
 function hold(obj: PlateObject) {

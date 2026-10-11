@@ -62,7 +62,7 @@ test("add, select, place, overlap, arrange, undo, and save a plate", async ({ pa
   expect(singleDoc.objects).toBeUndefined();
   expect(singleDoc.mesh?.name).toContain("cube");
 
-  await page.locator("#plateAdd").click();
+  await page.locator("#plateDuplicate").click();
   await expect(page.locator("[data-plate-id]")).toHaveCount(2);
   await expect(page.locator("[data-selected='true']")).toContainText("2");
   await expect(page.locator("#plateOverlap")).toContainText("overlaps");
@@ -175,7 +175,7 @@ test.describe("compact plate list", () => {
     await expect(page.locator("#compactSheet #plateAdd")).toBeVisible();
     await expect(page.locator("#compactSheet #plateDuplicate")).toBeVisible();
     await expect(page.locator("#compactSheet #objectList")).toBeVisible();
-    await page.locator("#plateAdd").click();
+    await page.locator("#plateDuplicate").click();
     await expect(page.locator("#compactSheet [data-plate-id]")).toHaveCount(2);
     await expect(page.locator("#compactSheet #plateOverlap")).toBeVisible();
 

@@ -29,6 +29,7 @@ export function mountMarkup(root: HTMLElement) {
         </nav>
       </details>
       <input id="file" type="file" accept=".stl,.3mf,.step,.stp,.lime,.STL,.3MF,.STEP,.STP,.LIME" hidden />
+      <input id="plateAddFile" type="file" accept=".stl,.3mf,.step,.stp,.STL,.3MF,.STEP,.STP" hidden />
       <input id="projectFile" type="file" accept=".lime,application/json" hidden />
       <details class="menu" id="printerChip">
         <summary class="btn chip" aria-label="Printer, filament and nozzle" data-tip="Printer, filament and nozzle"><span id="printerChipLabel"></span><span class="caret" aria-hidden="true"></span></summary>
