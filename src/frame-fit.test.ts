@@ -1,4 +1,4 @@
-import { FRAME_FACTOR, frameFactor } from "./frame-fit.ts";
+import { FRAME_FACTOR, frameFactor, frameGizmoPx, frameLookShift, framePanPx } from "./frame-fit.ts";
 
 let failed = 0;
 
@@ -17,6 +17,11 @@ check("a narrow canvas backs up", narrow > FRAME_FACTOR, String(narrow));
 const phone = frameFactor(40, 40, { width: 390, height: 720 });
 check("a phone-width canvas backs up past the gizmo", phone > FRAME_FACTOR, String(phone));
 check("the distance never gets closer than the existing flight", frameFactor(8, 40, { width: 2000, height: 1200 }) === FRAME_FACTOR);
+check("a desktop canvas keeps the 88px gizmo and does not pan", frameGizmoPx(1440) === 88 && framePanPx(1440) === 0);
+check("a phone canvas uses the smaller gizmo and pans", frameGizmoPx(390) === 56 && framePanPx(390) === 51);
+check("a zero pan does not move the look-at", frameLookShift(0, 40, 40, 720).every((v) => v === 0));
+const shift = frameLookShift(51, 80, 40, 720);
+check("a narrow frame shifts the look-at to the camera's left", shift[0] !== 0 && shift[1] === 0 && shift[2] !== 0, shift.join(","));
 
 if (failed) {
   console.error(`${failed} failed`);
