@@ -22,6 +22,7 @@ type Axis = "x" | "y" | "scale";
 type Drag = {
   id: number;
   axis: Axis;
+  label: HTMLElement;
   startX: number;
   startY: number;
   origin: number;
@@ -65,12 +66,23 @@ function endDrag() {
   const ended = drag;
   drag = null;
   stopTracking();
+  if (ended?.mode === "scrub" && !ended.label.closest("label.setting")) swallowNextClick();
   if (!ended?.opened) return;
   flushEdit();
   state.poseHud = "";
   fx.paintGizmoReadout?.();
   renderChrome();
   fx.scheduleAuto?.();
+}
+
+/** A scrub is not a click. The volume name sits on a summary, and that click would open the row. */
+function swallowNextClick() {
+  const stop = (ev: Event) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  };
+  document.addEventListener("click", stop, { capture: true, once: true });
+  window.setTimeout(() => document.removeEventListener("click", stop, { capture: true }), 0);
 }
 
 function onMove(ev: PointerEvent) {
@@ -82,7 +94,7 @@ function onMove(ev: PointerEvent) {
     current.mode = scrubIntent(dx, dy);
     if (current.mode !== "scrub") return;
     blurPlaceField();
-    document.querySelector<HTMLElement>(`[data-scrub="${current.axis}"]`)?.setPointerCapture(ev.pointerId);
+    current.label.setPointerCapture(ev.pointerId);
   }
   if (current.mode !== "scrub") return;
   ev.preventDefault();
@@ -119,11 +131,14 @@ export function bindPlaceScrub(root: HTMLElement) {
     const axis = label?.dataset.scrub;
     if (axis !== "x" && axis !== "y" && axis !== "scale") return;
     const origin = axis === "scale" ? Math.round(state.partScale * 100) : centerOf(axis);
-    if (origin == null) return;
-    if (ev.pointerType !== "touch") ev.preventDefault();
+    if (origin == null || !label) return;
+    // Placement labels sit on the number. Cancelling the click keeps it from focusing.
+    // A volume name is the summary's label: a click must still open the row.
+    if (ev.pointerType !== "touch" && label.closest("label.setting")) ev.preventDefault();
     drag = {
       id: ev.pointerId,
       axis,
+      label,
       startX: ev.clientX,
       startY: ev.clientY,
       origin,
