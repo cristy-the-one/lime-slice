@@ -23,6 +23,7 @@ import { orderFields, sequentialClearance, tallestLast } from "../settings-rules
 import { flowSliceField } from "../flow";
 import { engineDownMessage, authHeaders } from "../ui/api-base";
 import { topLayerIndex } from "../ui/preview-ux";
+import { openResultsAfterSlice } from "../ui/splitters";
 import { pushToast, type ToastAction } from "../ui/toasts";
 import { setBeltLength } from "./machine-actions";
 import {
@@ -425,6 +426,7 @@ export async function runSlice(force = false) {
       state.busy = false;
       state.progress = 0;
       renderChrome();
+      if (landed) openResultsAfterSlice();
       fx.draw();
       session.supportUi?.landed(landed);
       if (landed && stale()) scheduleAuto(0);

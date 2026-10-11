@@ -186,10 +186,11 @@ test("Ctrl+B and Ctrl+Alt+B fold the side panels", async ({ page }) => {
   await expect(workspace).toHaveClass(/is-left-collapsed/);
   await page.keyboard.press("Control+b");
   await expect(workspace).not.toHaveClass(/is-left-collapsed/);
-  await page.keyboard.press("Control+Alt+b");
   await expect(workspace).toHaveClass(/is-right-collapsed/);
   await page.keyboard.press("Control+Alt+b");
   await expect(workspace).not.toHaveClass(/is-right-collapsed/);
+  await page.keyboard.press("Control+Alt+b");
+  await expect(workspace).toHaveClass(/is-right-collapsed/);
 });
 
 test("a tool key toggles its tool; Esc leaves it", async ({ page }) => {
