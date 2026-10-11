@@ -36,6 +36,7 @@ test("an object's walls are omitted until they are set", async ({ page }) => {
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(1);
+  await expect(page.locator("#slice")).toBeEnabled();
   expect(bodies[0]?.objects).toBeUndefined();
 
   await page.locator("#objWalls").fill("3");
