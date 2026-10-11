@@ -2,6 +2,7 @@ import { ID_MATRIX, offBed } from "./mesh-place.ts";
 import { nextSplitAt } from "./split-at.ts";
 import {
   addedCopy,
+  objectMarks,
   arrangeBoxes,
   arrangedObjects,
   boundsSize,
@@ -151,6 +152,22 @@ check("no objects have no union", plateUnionBounds([], bed, bed) === null);
 check("a custom split between two objects survives a move", nextSplitAt("transform", 56.8, union, "x", true) === 56.8);
 check("one object's bounds would pull that split to its own midpoint", nextSplitAt("transform", 56.8, placeObject(apart[0]!, bed, bed).bounds, "x", true) === 36.9);
 
+check("a plain solid has no mark line", objectMarks(left) === "");
+check("support angle is not a mark", objectMarks({ ...left, settings: { supportAngle: 40 } }) === "");
+const marked = {
+  ...left,
+  supportPaint: [{ kind: "block" as const, p: [0, 0, 0] as [number, number, number], n: [0, 0, 1] as [number, number, number], r: 3 }],
+  seamPaint: [{ p: [1, 0, 0] as [number, number, number], n: [0, 1, 0] as [number, number, number], r: 2 }],
+  settings: { supports: false, infill: 0.2, walls: 4, speed: 80 },
+};
+check(
+  "marks name paint, seam, supports, infill, walls, and speed",
+  objectMarks(marked) === "paint · seam · supports off · infill 20% · walls 4 · speed 80",
+  objectMarks(marked),
+);
+check("supports on is not a mark", objectMarks({ ...left, settings: { supports: true, walls: 4 } }) === "walls 4");
+check("a copy keeps the marks", objectMarks(addedCopy({ objects: [marked], selectedId: marked.id })!.objects[1]!) === objectMarks(marked));
+check("clearing the facts clears the line", objectMarks({ ...marked, supportPaint: [], seamPaint: [], settings: {} }) === "");
 check("a whole-millimeter size drops its decimal", boundsSize({ min: [0, 0, 0], max: [20, 20.04, 20] }) === "20 × 20 × 20", boundsSize({ min: [0, 0, 0], max: [20, 20.04, 20] }));
 check("a fractional size keeps one decimal", boundsSize({ min: [1, 2, 0], max: [31.5, 12, 7.25] }) === "30.5 × 10 × 7.3", boundsSize({ min: [1, 2, 0], max: [31.5, 12, 7.25] }));
 
