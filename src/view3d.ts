@@ -8,6 +8,7 @@ import { clampSplit, roundSplit, type AxisBounds } from "./split-at";
 import { fillHiddenKindMask, INNER_HALF_SCALE, KIND_SHIFT, MARGIN_SHADE, MAX_KINDS, meshCenter, ODD_LAYER_BIT, scenePoint, STYLE_WORDS, WEIGHT_STEPS, type PointRun, type PreviewChunk, type PreviewGeometry } from "./preview-geom";
 import { aimSection, anchor, clampOffset, normalize, sectionReach, threeClip, type SectionSpec, type Vec3 } from "./section-plane";
 import { beltStripLength, tiltPose, type BeltSettings } from "./belt";
+import { planeLean } from "./belt-scene";
 import { hexToThree, themeColors, type ThemeColors } from "./theme";
 import { poseAffine, type PlacedPart } from "./mesh-place";
 import type { CoverageGap, TiltedGap } from "./support-edits";
@@ -332,14 +333,16 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     volume.scale.set(plate.x, bedZ, plate.y);
     volume.position.set(plate.x / 2 - centerX, bedZ / 2, -(plate.y / 2 - centerY));
     if (belt) {
-      const pose = tiltPose(plate.x, bedZ, belt.angleDeg);
+      const pose = tiltPose(plate.x, bedZ, belt.angleDeg, Math.min(plate.y, bedY));
       tilt.visible = true;
       tilt.scale.set(plate.x, pose.slopeMm, 1);
       tilt.rotation.set(pose.rotationX, 0, 0);
       tilt.position.set(pose.x - centerX, pose.y, pose.z + centerY);
       canvas.dataset.belt = "1";
       canvas.dataset.beltPlane = "1";
+      canvas.dataset.beltPlaneLean = planeLean(tilt);
     } else {
+      canvas.dataset.beltPlaneLean = "";
       tilt.visible = false;
       canvas.dataset.belt = "0";
       canvas.dataset.beltPlane = "0";
