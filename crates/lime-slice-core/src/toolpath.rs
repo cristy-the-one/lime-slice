@@ -161,6 +161,9 @@ pub enum TravelIn {
     Inside,
     /// Leaves the part or crosses a hole. Always retract.
     Blocked,
+    /// Runs wholly in open air: it starts and ends clear of the part and
+    /// touches none of its walls. Retract past the strategy's minimum travel.
+    Open,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4702,6 +4705,7 @@ impl Extrusion {
         self.lead_in.clear();
         self.travel_in = match comb {
             Comb::Clear => TravelIn::Inside,
+            Comb::Open => TravelIn::Open,
             Comb::Routed(via) => {
                 self.lead_in = via;
                 TravelIn::Inside
@@ -4716,7 +4720,7 @@ impl Extrusion {
     pub fn travel_retract(&self, length: Option<f64>) -> (f64, f64) {
         let mm = length.unwrap_or(self.retract_mm);
         match self.travel_in {
-            TravelIn::Unchecked => (mm, self.retract_min_travel),
+            TravelIn::Unchecked | TravelIn::Open => (mm, self.retract_min_travel),
             TravelIn::Inside => (0.0, self.retract_min_travel),
             TravelIn::Blocked => (mm, 0.0),
         }
@@ -4725,6 +4729,7 @@ impl Extrusion {
 
 enum Comb {
     Clear,
+    Open,
     Routed(Vec<[f64; 2]>),
     Blocked,
 }
@@ -4736,6 +4741,10 @@ struct Combing<'a> {
     solid: Outline<'a>,
     enabled: bool,
     islands: Vec<CombIsland>,
+    /// The solid grown by the combing inset. A travel that stays out of it
+    /// is in open air; empty when combing is off.
+    grown: Outline<'static>,
+    open_air: bool,
 }
 
 struct CombIsland {
@@ -4773,11 +4782,24 @@ impl<'a> Combing<'a> {
                 island.inset = Outline::owned(inset);
             }
         }
+        let grown = if combing {
+            Outline::owned(offset_loops(solid, inset.abs()))
+        } else {
+            Outline::owned(Vec::new())
+        };
         Self {
             solid: Outline::new(solid),
             enabled,
             islands,
+            grown,
+            open_air: combing,
         }
+    }
+
+    /// Both ends and every point between lie clear of the part by the combing
+    /// inset, so the nozzle passes no wall on the way.
+    fn open_air(&self, a: [f64; 2], b: [f64; 2]) -> bool {
+        self.open_air && !self.grown.contains(a) && !self.grown.contains(b) && !self.grown.meets(a, b)
     }
 
     fn island_of(&self, p: [f64; 2]) -> Option<usize> {
@@ -4914,6 +4936,9 @@ fn comb_between(comb: &Combing, from: [f64; 2], to: [f64; 2]) -> Comb {
     }
     if comb.solid.route_inside(from, to) {
         return Comb::Clear;
+    }
+    if comb.open_air(from, to) {
+        return Comb::Open;
     }
     if !comb.enabled {
         return Comb::Blocked;
@@ -5056,7 +5081,7 @@ pub fn apply_z_hop(
                 true
             } else {
                 let blocked = path.travel_in != TravelIn::Inside && path.retract_mm > 0.0;
-                blocked && chain_crosses(&chain, &solid, &printed)
+                blocked && chain_crosses(&chain, &solid, &printed, path.travel_in == TravelIn::Open)
             };
             if hop {
                 path.z_hop = height;
@@ -5075,8 +5100,16 @@ pub fn apply_z_hop(
     }
 }
 
-fn chain_crosses(chain: &[[f64; 2]], solid: &Outline, printed: &[([f64; 2], [f64; 2])]) -> bool {
-    let leaves = chain.windows(2).any(|w| !solid.segment_inside(w[0], w[1]));
+/// Whether a travel would drag across the part or a wall printed this layer.
+/// A travel known to run in open air leaves the part by definition, so it
+/// counts only when it passes close to a printed wall.
+fn chain_crosses(
+    chain: &[[f64; 2]],
+    solid: &Outline,
+    printed: &[([f64; 2], [f64; 2])],
+    open_air: bool,
+) -> bool {
+    let leaves = !open_air && chain.windows(2).any(|w| !solid.segment_inside(w[0], w[1]));
     if leaves {
         return true;
     }
@@ -5209,6 +5242,20 @@ impl<'a> Outline<'a> {
             n >= 2 && (0..n).any(|i| segment_meets(a, b, l[i], l[(i + 1) % n]))
         });
         !meets && self.contains([(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5])
+    }
+
+    /// `a..b` shares a point with the boundary other than its own ends.
+    fn meets(&self, a: [f64; 2], b: [f64; 2]) -> bool {
+        if let Some(cells) = self.cells() {
+            return cells.near(a, b).any(|(l, k)| {
+                let (c, d) = self.edge(l, k);
+                self.loop_meets(l, a, b) && segment_meets(a, b, c, d)
+            });
+        }
+        self.touching(a, b).any(|l| {
+            let n = l.len();
+            n >= 2 && (0..n).any(|i| segment_meets(a, b, l[i], l[(i + 1) % n]))
+        })
     }
 
     /// A link that crosses no boundary and whose midpoint is inside, or just
@@ -5777,6 +5824,76 @@ mod travel_tests {
 
     fn square_at(x: f64, y: f64, size: f64) -> Loop {
         vec![[x, y], [x + size, y], [x + size, y + size], [x, y + size]]
+    }
+
+    fn support(pts: Vec<[f64; 2]>) -> Extrusion {
+        path(PathKind::Support, pts)
+    }
+
+    /// A 10 mm square of part with supports around it.
+    fn combed_supports(paths: Vec<Extrusion>) -> Vec<Extrusion> {
+        let mut paths = paths;
+        comb_layer(&mut paths, &[square_at(0.0, 0.0, 10.0)], true, 0.36, None);
+        paths
+    }
+
+    #[test]
+    fn a_support_travel_in_open_air_retracts_only_past_the_minimum() {
+        let paths = combed_supports(vec![
+            support(vec![[20.0, 0.0], [20.4, 0.0]]),
+            support(vec![[20.8, 0.0], [21.2, 0.0]]),
+            support(vec![[30.0, 0.0], [30.4, 0.0]]),
+        ]);
+        assert_eq!(paths[1].travel_in, TravelIn::Open);
+        assert_eq!(paths[2].travel_in, TravelIn::Open);
+        assert_eq!(paths[1].travel_retract(None), (0.35, 4.0));
+        assert_eq!(paths[2].travel_retract(None), (0.35, 4.0));
+    }
+
+    #[test]
+    fn a_support_travel_across_the_part_still_retracts_every_time() {
+        let paths = combed_supports(vec![
+            support(vec![[-5.0, 5.0], [-4.6, 5.0]]),
+            support(vec![[15.0, 5.0], [15.4, 5.0]]),
+        ]);
+        assert_eq!(paths[1].travel_in, TravelIn::Blocked);
+        assert_eq!(paths[1].travel_retract(None), (0.35, 0.0));
+    }
+
+    #[test]
+    fn a_support_travel_that_ends_against_a_wall_retracts() {
+        let paths = combed_supports(vec![
+            support(vec![[20.0, 5.0], [20.4, 5.0]]),
+            support(vec![[10.2, 5.0], [10.6, 5.0]]),
+        ]);
+        assert_eq!(paths[1].travel_in, TravelIn::Blocked);
+    }
+
+    #[test]
+    fn a_travel_in_open_air_does_not_hop_unless_it_passes_a_printed_wall() {
+        use crate::strategy::ZHopMode;
+        let solid = vec![square_at(0.0, 0.0, 10.0)];
+        let mut paths = vec![
+            support(vec![[20.0, 0.0], [20.4, 0.0]]),
+            support(vec![[26.0, 0.0], [26.4, 0.0]]),
+        ];
+        for p in &mut paths {
+            p.strategy = StrategyId::Toughness;
+        }
+        comb_layer(&mut paths, &solid, true, 0.36, None);
+        apply_z_hop(&mut paths, &solid, &[], ZHopMode::Smart, 0.4, 2.0, false);
+        assert_eq!(paths[1].z_hop, 0.0);
+        // The same travel, blocked by the part, hops.
+        let mut across = vec![
+            support(vec![[-5.0, 5.0], [-4.6, 5.0]]),
+            support(vec![[15.0, 5.0], [15.4, 5.0]]),
+        ];
+        for p in &mut across {
+            p.strategy = StrategyId::Toughness;
+        }
+        comb_layer(&mut across, &solid, true, 0.36, None);
+        apply_z_hop(&mut across, &solid, &[], ZHopMode::Smart, 0.4, 2.0, false);
+        assert_eq!(across[1].z_hop, 0.4);
     }
 
     #[test]
