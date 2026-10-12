@@ -7,6 +7,7 @@ import { paintSettingMarks, syncEmptyState } from "../ui/shell";
 import { pushToast } from "../ui/toasts";
 import { markProjectDirty } from "../project-dirty";
 import { coverageWarning, inAirWarning } from "../slice-action";
+import { supportModeOf, type SupportMode } from "../support-source";
 import { applySliceProgress, currentSliceProgress } from "../ui/slice-progress";
 import { filamentCost, filamentGrams, groupFeatures } from "../estimate";
 import { durationTile, formatCount, formatDuration, formatLength, formatMass, formatMetres, formatMoney, formatMs } from "../format";
@@ -15,7 +16,7 @@ import { offBed } from "../mesh-place";
 import { boundsSize, objectMarks, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty } from "../plate";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys } from "../presets";
 import { saveProfile } from "../profiles";
-import { noteAdvance, noteFirmware, noteFlow, noteGcode, noteHeatLimits, noteRetract, setSmartSupports } from "./machine-actions";
+import { noteAdvance, noteFirmware, noteFlow, noteGcode, noteHeatLimits, noteRetract, setSupportMode } from "./machine-actions";
 import { currentRules } from "./rules";
 import { ADVANCE, orderFields, type Rules } from "../settings-rules";
 import { activeHeat, loadMachineLibrary } from "./machine-library";
@@ -456,10 +457,12 @@ export function paintBanner() {
   const unheld = coverageWarning(objects ? objects.flatMap((o) => o.coverage) : (state.result?.coverage ?? []));
   if (unheld) bits.push(bannerLine(unheld, "warn"));
   const air = objects?.map((o) => o.inAir).filter((a) => !!a);
+  const paintedOnly = supportModeOf(state) === "paint";
   const floating = inAirWarning(
     air?.length ? { islands: air.reduce((n, a) => n + a!.islands, 0), overhangs: air.reduce((n, a) => n + a!.overhangs, 0) } : state.result?.inAir,
+    paintedOnly,
   );
-  if (floating) bits.push(bannerLine(floating, "warn", false, { id: "supports", label: "Turn on supports" }));
+  if (floating) bits.push(bannerLine(floating, "warn", false, paintedOnly ? { id: "paint", label: "Paint supports" } : { id: "supports", label: "Turn on supports" }));
   if (state.busy) {
     const sample = sliceSample();
     const indeterminate = !(sample.fraction > 0 && sample.fraction < 1);
@@ -492,6 +495,9 @@ function groupCardHtml(group: GroupSpec, rules: Rules, ctx: SchemaContext): stri
   </details>`;
 }
 
+const PAINT_SUPPORTS = { id: "paintSupportsBtn", tool: "paint", label: "Paint", command: "paint-supports" };
+const EDIT_TREES = { id: "editTreesBtn", tool: "supports", label: "Edit trees", command: "edit-supports" };
+
 const CUSTOM: Record<string, () => string> = {
   strategyRows: strategyRowsHtml,
   objectTools: objectToolsHtml,
@@ -504,10 +510,9 @@ const CUSTOM: Record<string, () => string> = {
   printOrderFields: () => printOrderFields(currentRules()),
   modifiers: () => `<div class="subhead" data-tip="${escapeHtml(OVERRIDES_TIP)}">Modifiers</div>${overrideSectionHtml(state.overrides, state.selectedVolumeId, state.modifierTool)}`,
   seamTools: () => toolRow([{ id: "seamPaintBtn", tool: "seam", label: "Paint seam", command: "paint-seam" }]),
-  supportTools: () => toolRow([
-    { id: "paintSupportsBtn", tool: "paint", label: "Paint", command: "paint-supports" },
-    { id: "editTreesBtn", tool: "supports", label: "Edit trees", command: "edit-supports" },
-  ]),
+  // Painted only has nothing to edit until paint asks for it, so Paint leads, right under the choice.
+  supportPaintTools: () => toolRow([{ ...PAINT_SUPPORTS, tip: "Supports grow only where you paint Enforce. Block stops them inside it." }]),
+  supportTools: () => toolRow(supportModeOf(state) === "paint" ? [EDIT_TREES] : [PAINT_SUPPORTS, EDIT_TREES]),
   machine: machineHtml,
 };
 
@@ -524,6 +529,10 @@ function controlHtml(spec: ControlSpec, rules: Rules, ctx: SchemaContext): strin
   const label = `<span class="row-label">${escapeHtml(spec.label)}</span>`;
   if (spec.kind.type === "check") {
     return `<label class="${cls}" ${attrs}>${label}<input id="${spec.id}" type="checkbox" class="switch" role="switch" ${value ? "checked" : ""}/></label>`;
+  }
+  if (spec.kind.type === "segmented") {
+    const choices = spec.kind.options.map(([v, l]) => `<label class="seg-opt"><input id="${spec.id}-${v}" type="radio" name="${spec.id}" value="${v}"${v === value ? " checked" : ""}/><span>${escapeHtml(l)}</span></label>`).join("");
+    return `<div class="${cls} seg-row" ${attrs}><div class="seg" id="${spec.id}" role="radiogroup" aria-label="${escapeHtml(spec.label)}" data-segmented="${spec.id}">${choices}</div></div>`;
   }
   if (spec.kind.type === "select") {
     const options = resolveOptions(spec.kind, ctx).map(([v, l]) => `<option value="${v}" ${v === value ? "selected" : ""}>${l}</option>`).join("");
@@ -567,8 +576,8 @@ function icon(node: IconNode): string {
   return createElement(node, { width: 16, height: 16, "aria-hidden": "true", class: "ico" }).outerHTML;
 }
 
-function toolRow(buttons: { id: string; tool: string; label: string; command: string }[]): string {
-  return `<div class="row-tools">${buttons.map((b) => `<button class="btn" id="${b.id}" type="button" data-rail-tool="${b.tool}">${escapeHtml(b.label)} ${kbdHtml(b.command)}</button>`).join("")}</div>`;
+function toolRow(buttons: { id: string; tool: string; label: string; command: string; tip?: string }[]): string {
+  return `<div class="row-tools">${buttons.map((b) => `<button class="btn" id="${b.id}" type="button" data-rail-tool="${b.tool}"${b.tip ? ` data-tip="${escapeHtml(b.tip)}"` : ""}>${escapeHtml(b.label)} ${kbdHtml(b.command)}</button>`).join("")}</div>`;
 }
 
 function objectToolsHtml(): string {
@@ -1177,8 +1186,8 @@ function readNumber(spec: ControlSpec, raw: string): number {
 /** What follows a stored value besides a stale mark: printer profile writes, the retract store, and estimate repaints. */
 function afterSet(spec: ControlSpec, value: number | boolean | string): "stale" | "done" {
   switch (spec.id) {
-    case "supports":
-      setSmartSupports(value as boolean);
+    case "supportMode":
+      setSupportMode(value as SupportMode);
       return "stale";
     case "retractset":
       if (value) noteRetract(state.retractLength, Math.abs(state.retractSpeed - 30) < 1e-6 ? null : state.retractSpeed);
@@ -1295,7 +1304,7 @@ export function onSettings(ev: Event) {
     markStale();
     return;
   }
-  const spec = controlById(t.id);
+  const spec = controlById(t.id) ?? controlById(t.closest<HTMLElement>("[data-segmented]")?.dataset.segmented ?? "");
   if (!spec?.set) return;
   if (spec.group === "strategy") {
     onBlend(ev);
@@ -1309,12 +1318,12 @@ export function onSettings(ev: Event) {
   }
   noteEdit();
   markProjectDirty();
-  const value = spec.kind.type === "check" ? t.checked : spec.kind.type === "select" ? t.value : readNumber(spec, t.value);
+  const value = spec.kind.type === "check" ? t.checked : spec.kind.type === "select" || spec.kind.type === "segmented" ? t.value : readNumber(spec, t.value);
   spec.set(state, value);
   if (t.id === "ironspace") state.ironingSpacing = Math.min(state.ironingSpacing, ironingSpacingMax(fx.lineWidth()));
   const next = afterSet(spec, value);
   if (next === "done") return;
-  if (isStructural(t.id)) renderChrome();
+  if (isStructural(spec.id)) renderChrome();
   markStale();
 }
 

@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { autoSliceOff } from "./auto-slice";
+import { expectSupports, setSupports } from "./supports";
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 const beltLedge = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/ledge-belt-skeleton.json"), "utf8"));
@@ -85,7 +86,7 @@ test("Send slices first too, and still needs a host", async ({ page }) => {
   expect(bodies).toHaveLength(1);
 });
 
-test("Turn on supports in the in-air banner ticks Smart supports and slices, in one undo step", async ({ page }) => {
+test("Turn on supports in the in-air banner turns on Automatic supports and slices, in one undo step", async ({ page }) => {
   await quiet(page);
   const bodies: Record<string, unknown>[] = [];
   await page.route("**/api/slice", (route) => {
@@ -103,13 +104,13 @@ test("Turn on supports in the in-air banner ticks Smart supports and slices, in 
   await page.locator("#banner").getByRole("button", { name: "Turn on supports" }).click();
   await expect.poll(() => bodies.length).toBe(2);
   expect(bodies[1].supports).toBe(true);
-  await expect(page.locator("#supports")).toBeChecked();
+  await expectSupports(page, "auto");
   await expect(page.locator("#banner")).not.toContainText("would print in the air");
   await page.keyboard.press("Control+z");
-  await expect(page.locator("#supports")).not.toBeChecked();
+  await expectSupports(page, "off");
 });
 
-test("an Enforce disk turns Smart supports on; a Block disk does not", async ({ page }) => {
+test("an Enforce disk turns on Painted only supports; a Block disk changes nothing", async ({ page }) => {
   await quiet(page);
   const bodies: Record<string, unknown>[] = [];
   await page.route("**/api/slice", (route) => {
@@ -128,17 +129,17 @@ test("an Enforce disk turns Smart supports on; a Block disk does not", async ({ 
   await page.locator('#paintBar [data-kind="block"]').click();
   await page.mouse.click(at.x, at.y);
   await expect(canvas).toHaveAttribute("data-paint-disks", "1");
-  await expect(page.locator("#supports")).not.toBeChecked();
+  await expectSupports(page, "off");
 
   await page.waitForTimeout(400);
   await page.locator('#paintBar [data-kind="enforce"]').click();
   await page.mouse.click(at.x + 6, at.y);
   await expect(canvas).toHaveAttribute("data-paint-disks", "2");
-  await expect(page.locator("#supports")).toBeChecked();
+  await expectSupports(page, "paint");
   await page.waitForTimeout(400);
   await page.keyboard.press("Control+z");
   await expect(canvas).toHaveAttribute("data-paint-disks", "1");
-  await expect(page.locator("#supports")).not.toBeChecked();
+  await expectSupports(page, "off");
 });
 
 test("the Edit supports tool turns on tree supports, slices, and opens when the skeleton arrives", async ({ page }) => {
@@ -153,7 +154,7 @@ test("the Edit supports tool turns on tree supports, slices, and opens when the 
   await autoSliceOff(page);
   await page.locator("#machineKind").selectOption("belt");
   await loadCube(page, "overhang_ledge.stl");
-  await expect(page.locator("#supports")).not.toBeChecked();
+  await expectSupports(page, "off");
   await expect(page.locator("#supportEditbar")).toBeHidden();
   await page.locator("#tabPreview").click();
   await page.keyboard.press("e");
@@ -162,7 +163,7 @@ test("the Edit supports tool turns on tree supports, slices, and opens when the 
   expect(bodies[0].supportStyle).toBe("tree");
   expect(bodies[0].includeSkeleton).toBe(true);
   await expect(page.locator("#supportEditbar")).toBeVisible();
-  await expect(page.locator("#supports")).toBeChecked();
+  await expectSupports(page, "auto");
 });
 
 test("Blend compare estimates the selected object of a plate", async ({ page }) => {

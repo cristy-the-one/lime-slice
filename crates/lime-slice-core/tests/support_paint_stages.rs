@@ -50,8 +50,12 @@ fn a_stroke_regrows_only_supports_and_a_move_reuses_every_stage() {
     keep_support_bases(true);
     let first = slice(&request(100.0, 120.0, json!([])));
     let painted = slice(&request(100.0, 120.0, stroke.clone()));
+    let mut only = request(100.0, 120.0, stroke.clone());
+    only["supportSource"] = json!("paint");
     let moved = slice(&request(123.5, 102.75, stroke.clone()));
+    let painted_only = slice(&only);
     keep_support_bases(false);
+    let cold_only = slice(&only);
     let cold = slice(&request(123.5, 102.75, stroke));
 
     assert_eq!(reused(&first), Vec::<&str>::new());
@@ -68,6 +72,13 @@ fn a_stroke_regrows_only_supports_and_a_move_reuses_every_stage() {
         ]
     );
     assert_ne!(painted["gcode"], first["gcode"]);
+    // Painted only regrows the supports from the same part stages.
+    assert_eq!(
+        reused(&painted_only),
+        ["contours", "toolpaths", "order", "comb"]
+    );
+    assert_ne!(painted_only["gcode"], painted["gcode"]);
+    assert_eq!(painted_only["gcode"], cold_only["gcode"]);
     assert_eq!(moved["gcode"], cold["gcode"]);
     assert_eq!(moved["supportPaint"], cold["supportPaint"]);
 }

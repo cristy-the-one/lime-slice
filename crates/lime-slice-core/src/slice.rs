@@ -44,7 +44,8 @@ use crate::support::edit::{EditOutcome, SupportEdit};
 use crate::support::paint::{self, PaintDisk, PaintTally};
 use crate::support::skeleton::{skeleton, tilt_gaps, SupportSkeleton, Tilt as SkeletonTilt};
 use crate::support::{
-    CoverageGap, Disk, FloorPlane, InAir, SupportLayer, SupportOpts, SupportStyle, Supports,
+    CoverageGap, Disk, FloorPlane, InAir, SupportLayer, SupportOpts, SupportSource, SupportStyle,
+    Supports,
 };
 use crate::toolpath::{
     apply_overhang, apply_scarf, apply_z_hop, comb_layer, island_loops, lightning_pitch,
@@ -142,6 +143,11 @@ pub struct SliceRequest {
     /// Left out when off, so a request that does not ask keeps its cache key.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub support_avoidance: bool,
+    /// `auto` (the default) asks for supports from the overhang angle and
+    /// the islands. `paint` asks only where enforce paint does. Omitted
+    /// when absent, so a request that does not ask keeps its cache key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support_source: Option<String>,
     /// `0` keeps model layer height. Values above 1 thicken sparse support shafts.
     #[serde(default)]
     pub support_height_mult: f64,
@@ -341,6 +347,7 @@ pub struct SliceSettings {
     pub trunk_diameter: f64,
     /// Per-layer avoidance for tree supports. Off leaves the walk unchanged.
     pub support_avoidance: bool,
+    pub support_source: SupportSource,
     pub support_height_mult: f64,
     pub infill_combine: bool,
     pub combing: bool,
@@ -426,6 +433,7 @@ impl Default for SliceSettings {
             tip_diameter: 0.8,
             trunk_diameter: 4.2,
             support_avoidance: false,
+            support_source: SupportSource::Auto,
             support_height_mult: 1.0,
             infill_combine: true,
             combing: true,
@@ -522,6 +530,9 @@ impl SliceSettings {
                 4.2
             },
             support_avoidance: req.support_avoidance && !req.classic,
+            // `load_object` has already refused a name it does not know.
+            support_source: wire::parse_support_source(req.support_source.as_deref())
+                .unwrap_or_default(),
             support_height_mult: if req.classic {
                 1.0
             } else {
@@ -643,9 +654,12 @@ impl SliceSettings {
                 }
                 SupportStyle::Grid => String::new(),
             };
+            let angle = match self.support_source {
+                SupportSource::Auto => format!("angle {:.0}°, ", self.support_angle),
+                SupportSource::Paint => "painted only, ".into(),
+            };
             format!(
-                "supports {style} (angle {:.0}°, shaft ×{:.1}{organic})",
-                self.support_angle,
+                "supports {style} ({angle}shaft ×{:.1}{organic})",
                 self.support_height_mult.max(1.0)
             )
         } else {
@@ -1167,6 +1181,7 @@ fn load_object(
         req.pose.is_some(),
         req.step_tolerance_mm,
     )?;
+    wire::parse_support_source(req.support_source.as_deref())?;
     let settings = SliceSettings {
         job,
         support_edits: wire::parse_support_edits(&req.support_edits)?,
@@ -3966,12 +3981,16 @@ impl Contours {
         self.bands.get(i).filter(|b| b.z - b.height <= z).map(|_| i)
     }
 
-    fn in_air(&self, angle_deg: f64) -> InAir {
+    /// What prints over air without supports, less what `paint` holds up.
+    fn in_air(&self, angle_deg: f64, paint: &[PaintDisk]) -> InAir {
+        if !paint.is_empty() {
+            return crate::support::in_air(&self.bands, &self.contours, angle_deg, paint);
+        }
         let bits = angle_deg.to_bits();
         if let Some(&(_, found)) = self.in_air.get().filter(|(at, _)| *at == bits) {
             return found;
         }
-        let found = crate::support::in_air(&self.bands, &self.contours, angle_deg);
+        let found = crate::support::in_air(&self.bands, &self.contours, angle_deg, &[]);
         let _ = self.in_air.set((bits, found));
         found
     }
@@ -4638,12 +4657,13 @@ fn plan_supports(
     };
     opts.floor = floor;
     opts.avoidance = settings.support_avoidance && settings.support_style == SupportStyle::Tree;
+    opts.source = settings.support_source;
     watch.begin(Stage::Supports, cut.bands.len().max(1) as u32);
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
     }
     if !settings.supports {
-        let in_air = cut.in_air(opts.angle_deg);
+        let in_air = cut.in_air(opts.angle_deg, &[]);
         if watch.stopped(settings.job) {
             return Err("cancelled".into());
         }
@@ -4690,6 +4710,9 @@ fn plan_supports(
     .map(Arc::new)
     .collect();
     let toolpath_ms = elapsed_ms(toolpath_started);
+    // Painted only leaves the rest of the part to print over air, so say so.
+    let in_air = (opts.source == SupportSource::Paint)
+        .then(|| cut.in_air(opts.angle_deg, &settings.support_paint));
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
     }
@@ -4697,7 +4720,7 @@ fn plan_supports(
     Ok(SupportPlan {
         supports: Arc::new(supports),
         coverage,
-        in_air: None,
+        in_air,
         shaft,
         paths,
         solid,

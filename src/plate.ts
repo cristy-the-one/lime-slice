@@ -40,6 +40,8 @@ export interface PlateObjectSettings {
   supports?: boolean;
   supportAngle?: number;
   supportStyle?: string;
+  /** "paint" asks for supports only where Enforce paint does. Absent follows the plate. */
+  supportSource?: "auto" | "paint";
   infillCombine?: boolean;
   variableWidth?: boolean;
   scarfSeam?: string;
@@ -149,6 +151,7 @@ const ALLOWED_SETTINGS = new Set([
   "supports",
   "supportAngle",
   "supportStyle",
+  "supportSource",
   "infillCombine",
   "variableWidth",
   "scarfSeam",
@@ -644,6 +647,11 @@ export function readPlateSettings(value: unknown): PlateObjectSettings | undefin
     if (key === "supportStyle") {
       if (got !== "grid" && got !== "tree") return "This project file is incomplete.";
       settings.supportStyle = got;
+      continue;
+    }
+    if (key === "supportSource") {
+      if (got !== "auto" && got !== "paint") return "This project file is incomplete.";
+      settings.supportSource = got;
       continue;
     }
     if (key === "scarfSeam" || key === "gyroid3d") {

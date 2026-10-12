@@ -323,7 +323,17 @@ Support painting landed as Decisions 7 to 12 describe. The engine change and the
 
 - `enforce` and `block` count disks whose ball reaches at least one layer.
 - `enforceUnhit` and `blockUnhit` count disks whose point and normal miss the mesh: no triangle crosses the segment from 0.5 mm out along the normal to 0.5 mm in. A miss does not fail the slice. The disk still applies wherever its ball reaches.
-- `supportsOff` is present, and true, only when Smart supports is off. The paint is kept and counted, nothing prints, and the reply carries `inAir` as before. Enforce paint never turns supports on.
+- `supportsOff` is present, and true, only when supports are off. The paint is kept and counted, nothing prints, and the reply carries `inAir` as before. The engine never turns supports on for paint. The interface does that dependency: an Enforce stroke with Supports Off switches it to Painted only (see [UI](#ui)).
+
+### Painted only: `supportSource`
+
+**Request.** `supportSource` is `"auto"` or `"paint"`. Absent means `auto`, today's demand, so every existing request and fixture keeps its bytes and its cache key. Any other value is refused with `supportSource "everywhere" is not auto or paint`. It is an object setting, so `objects[i].settings.supportSource` may choose it for one object of a plate. It only matters while `supports` is true.
+
+- `"paint"` makes step 1 of the demand below empty: the overhang angle and the islands ask for nothing. Demand is what Enforce paint adds, with Block paint still removing, in paint order. A part with supports on, `"paint"`, and no paint grows no supports at all.
+- Everything after demand is unchanged: the tree or grid walk, `supportEdits`, interface layers, and belt floor supports. A belt slice with `floorSupports` grows painted supports down to the belt.
+- Islands are not supported automatically in this mode. The reply keeps `inAir` (while supports are on, only in this mode): the islands and unbridged overhangs the part still prints over air, less what Enforce paint holds up. The app's in-air banner reads it.
+- The G-code header's features line says `supports tree (painted only, ...)`.
+- The field is in the `grow` and support-paths keys with paint, so changing it regrows the supports from the part stages already in memory (`tests/support_paint_stages.rs`).
 
 ### Engine
 
@@ -331,7 +341,7 @@ A disk reaches every surface inside its ball. On a layer it covers the circle wh
 
 The slicer moves every disk by the object's pose into the part frame before anything reads it, then builds demand per layer in `Demand::new` (`crates/lime-slice-core/src/support/paint.rs`):
 
-1. Demand from the overhang angle and islands, as before.
+1. Demand from the overhang angle and islands, as before. With `supportSource: "paint"` this step is empty.
 2. Each run of disks of one kind, in paint order. Enforce adds the layer's underside inside the run's circles: the part of the layer with nothing of the part under it, at any angle. A vertical wall and a top surface have no underside, so enforce there adds nothing. Block removes the run's circles.
 3. The walk, then `supportEdits`, as before.
 
@@ -339,7 +349,7 @@ Tree and grid both build demand there, so grid honors paint (Decision 11). A reg
 
 ### Kept stages
 
-Paint is in the `grow` key and the support-paths key in `crates/lime-slice-core/src/slice/kept.rs`, and blanked from the `comb` key down, so it never reaches the contours, toolpaths, order, or comb keys. A stroke takes `contours`, `toolpaths`, `order`, and `comb` from memory and regrows only the supports and their paths. Paint is moved into the part frame before the keys are built, and the part frame has no X/Y translation, so a pure X/Y move of a painted part reuses all six stages. `tests/support_paint_stages.rs` checks both, and also that the moved slice writes the same G-code as a cold slice at the new place.
+Paint and `supportSource` are in the `grow` key and the support-paths key in `crates/lime-slice-core/src/slice/kept.rs`, and blanked from the `comb` key down, so it never reaches the contours, toolpaths, order, or comb keys. A stroke takes `contours`, `toolpaths`, `order`, and `comb` from memory and regrows only the supports and their paths. Paint is moved into the part frame before the keys are built, and the part frame has no X/Y translation, so a pure X/Y move of a painted part reuses all six stages. `tests/support_paint_stages.rs` checks both, and also that the moved slice writes the same G-code as a cold slice at the new place.
 
 ### UI
 
@@ -351,7 +361,11 @@ Paint is a tool in the Prepare rail, **Paint supports** (`B`), not a mode of the
 - Each dab draws as a translucent ball, green for enforce and red for block (`--paint-enforce`, `--paint-block`), because the engine applies paint to everything inside the ball. A ring under the pointer shows the radius. The preview does not draw paint yet.
 - One drag is one undo step, through `beginEdit` and `flushEdit` in `src/app/history.ts`. Paint lives on each plate object, so the plate snapshot carries it.
 - A stroke slices as a support edit does: when a result is shown, it slices at once; before the first slice it marks the settings changed. It is not an X/Y move, so it never takes the quiet refresh.
-- After a slice the status line reports the engine's counts. It warns, and a toast says once, when disks missed the part or when supports are off. With supports off the bar says so before any slice.
+- After a slice the status line reports the engine's counts. It warns, and a toast says once, when disks missed the part or when supports are off. With supports off the bar says so before any slice, and that an Enforce stroke turns on Painted only.
+- **Supports** is one control, the first row of the Supports group in the Simple tier: **Off**, **Automatic**, **Painted only**, drawn as a segmented control (`#supportMode`, one radio per choice). The group header reads `Off`, `Auto`, or `Painted`. It replaces the Smart supports checkbox and sets two preset keys together (`src/support-source.ts`): `supports`, and `supportSource` (`auto` or `paint`; Off keeps `auto`). `supportSource` is in the profile and project settings, and a file without it reads `auto` (`LATER_KEYS` in `src/presets.ts`). The slice sends `supportSource: "paint"` only in Painted only, so Off and Automatic keep their request, recipe key, and bytes. It is part of the settings hash.
+- Painted only hides the overhang angle (`settingsRules` drops `supportAngle` from the request and the hash, as it does for any hidden control) and keeps the style and the tree sizes. The **Paint** button moves to the row right under the control, with a one-line hint, and Edit trees stays at the foot of the group. `B` still opens the brush. The in-air banner then reads `Only painted areas get supports. N overhangs would print in the air.` and offers Paint supports.
+- An Enforce stroke with Supports Off switches Supports to Painted only, inside the stroke's undo step: one Ctrl+Z restores Off and removes the stroke. This replaces "Enforce paint never turns supports on", which stays true of the engine alone. A Block stroke never switches anything, and an Enforce stroke under Automatic or Painted only changes nothing. A belt raft and supports replace each other (#206), and Painted only counts as supports.
+- A plate object may store `supportSource` in its own `settings`, beside `supports`. The interface has no per-object row for it yet.
 - Projects keep paint as an optional `supportPaint` on each version 2 object. A one-object project with paint is version 2, as Decision 6 says. Files without paint open as before. A damaged paint entry fails the open with `The support paint in this project is damaged.`
 
 ### Measured cost
@@ -405,7 +419,7 @@ The goal is the part-frame rule from `docs/part-frame.md`, per object. Moving on
 
 | Scope | Keys | Error |
 | --- | --- | --- |
-| Object | `blend`, `supports`, `supportAngle`, `supportStyle`, `tipDiameter`, `trunkDiameter`, `branchAngle`, `supportHeightMult`, `scarfSeam`, `scarfLength`, `scarfSteps`, `scarfStartHeight`, `scarfStartFlow`, `gyroid3d`, `infillCombine`, `variableWidth` | none |
+| Object | `blend`, `supports`, `supportAngle`, `supportStyle`, `supportSource`, `tipDiameter`, `trunkDiameter`, `branchAngle`, `supportHeightMult`, `scarfSeam`, `scarfLength`, `scarfSteps`, `scarfStartHeight`, `scarfStartFlow`, `gyroid3d`, `infillCombine`, `variableWidth` | none |
 | Plate | `layerHeight`, `adaptive`, `adaptiveMin`, `adaptiveMax`, `lineWidth`, `printer`, `simplify`, `simplifyErrorMm`, `zHop`, `zHopHeight`, `zHopMinTravel`, `combing`, `arcFit`, `travelOpt`, and every other request key | `objects[1].settings.layerHeight is a plate setting` |
 | Not yet | `infill`, `walls`, `speed` | `objects[1].settings.walls is not supported yet` |
 

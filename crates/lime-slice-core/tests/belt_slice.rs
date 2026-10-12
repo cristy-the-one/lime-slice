@@ -788,20 +788,25 @@ fn supports_in(beads: &[Bead], x: Range<f64>, y: Range<f64>, z: f64) -> usize {
 
 /// `arm_with_wedge(width)` with floor supports and `paint`, on the mesh.
 fn painted_wedge(width: f64, support_angle: f64, paint: Value) -> Vec<Bead> {
+    painted_wedge_with(width, support_angle, paint, json!({}))
+}
+
+/// `painted_wedge` with more request fields.
+fn painted_wedge_with(width: f64, support_angle: f64, paint: Value, extra: Value) -> Vec<Bead> {
     let mut spec = belt(45.0, "z", 1, 5.0);
     spec["floorSupports"] = json!(true);
-    let req = request(
-        &arm_with_wedge(width),
-        "wedge.stl",
-        json!({
-            "belt": spec,
-            "supports": true,
-            "supportStyle": "tree",
-            "supportAngle": support_angle,
-            "includePreview": false,
-            "supportPaint": paint,
-        }),
-    );
+    let mut body = json!({
+        "belt": spec,
+        "supports": true,
+        "supportStyle": "tree",
+        "supportAngle": support_angle,
+        "includePreview": false,
+        "supportPaint": paint,
+    });
+    for (key, value) in extra.as_object().unwrap() {
+        body[key] = value.clone();
+    }
+    let req = request(&arm_with_wedge(width), "wedge.stl", body);
     let sliced = slice_request(&req, Job::default()).unwrap();
     assert!(sliced.sanity.ok, "{:?}", sliced.sanity.notes);
     on_mesh(lab_beads(&sliced.gcode, 45.0), [0.0, -12.0], [width, 4.0])
@@ -842,6 +847,32 @@ fn an_enforce_disk_adds_belt_supports_under_its_patch() {
     assert_eq!(supports_in(&bare, patch.clone(), under.clone(), 16.5), 0);
     let held = supports_in(&enforced, patch, under, 16.5);
     assert!(held > 0, "the enforce disk grew no supports");
+}
+
+#[test]
+fn painted_only_belt_supports_reach_the_belt_under_the_paint_alone() {
+    let enforce = json!([{ "kind": "enforce", "p": [6.0, -3.0, 17.0], "n": [0.0, 0.0, -1.0], "r": 2.5 }]);
+    let paint_only = json!({ "supportSource": "paint" });
+    let (patch, under) = (3.5..8.5, -5.0..-1.0);
+    let bare = painted_wedge_with(12.0, 40.0, json!([]), paint_only.clone());
+    assert_eq!(
+        bare.iter().filter(|b| b.kind.starts_with("SUPPORT")).count(),
+        0
+    );
+    let held = painted_wedge_with(12.0, 40.0, enforce, paint_only);
+    assert!(
+        supports_in(&held, patch.clone(), under.clone(), 16.5) > 0,
+        "the enforce disk grew no supports"
+    );
+    // The trunk runs down to the belt, not only under the paint.
+    let lowest = held
+        .iter()
+        .filter(|b| b.kind.starts_with("SUPPORT"))
+        .flat_map(|b| [b.from, b.to])
+        .filter(|p| patch.contains(&p[0]) && under.contains(&p[1]))
+        .map(|p| p[2])
+        .fold(f64::INFINITY, f64::min);
+    assert!(lowest < 0.6, "supports stop {lowest:.2} mm over the belt");
 }
 
 /// How far each layer's first outer start is from `p`, on the layers whose

@@ -29,7 +29,7 @@ export interface BeltSettings {
 /**
  * The `belt` object on a slice request, or nothing for a cartesian printer.
  * `maxLengthMm` is omitted when the belt is unlimited, so a missing cap is
- * the same bytes as an unlimited belt. Smart supports grow to the belt, so
+ * the same bytes as an unlimited belt. Supports grow to the belt, so
  * `floorSupports` is sent with them and never beside a raft. The seam needs no
  * belt flag: a blend seam is the belt edge on a belt.
  */

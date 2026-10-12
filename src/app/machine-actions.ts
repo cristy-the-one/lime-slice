@@ -6,6 +6,7 @@ import { fx } from "./fx.ts";
 import { currentRules } from "./rules.ts";
 import { saveProfile, defaultProfile, type PrinterProfile } from "../profiles.ts";
 import { state } from "./state.ts";
+import { supportModeState, type SupportMode } from "../support-source.ts";
 import { pushToast } from "../ui/toasts.ts";
 import {
   adoptProfile,
@@ -194,24 +195,24 @@ export function setBeltLength(maxLengthMm: number | null) {
 }
 
 /**
- * Smart supports on or off. The engine refuses supports under a belt raft, so
- * on a belt that has one, ticking supports clears the raft. The caller has
+ * Supports off, automatic, or painted only. The engine refuses supports under a belt raft,
+ * so on a belt that has one, supports of either kind clear the raft. The caller has
  * already opened the undo step.
  */
-export function setSmartSupports(on: boolean) {
-  state.supports = on;
+export function setSupportMode(mode: SupportMode) {
+  Object.assign(state, supportModeState(mode));
   const library = loadMachineLibrary();
   const belt = beltStamp(library);
-  if (!on || !belt || belt.raftLayers === 0) return;
+  if (mode === "off" || !belt || belt.raftLayers === 0) return;
   const next = setActiveBelt(library, "belt", { ...belt, raftLayers: 0 });
   storeMachineLibrary(next);
   syncBeltViews(next);
 }
 
-/** A belt raft that was just ticked, or a printer picked with one, holds the part, so Smart supports go off. */
+/** A belt raft that was just ticked, or a printer picked with one, holds the part, so supports go off. */
 function reconcileSupports(library: MachineLibrary): boolean {
   if (!state.supports || (beltStamp(library)?.raftLayers ?? 0) === 0) return false;
-  state.supports = false;
+  Object.assign(state, supportModeState("off"));
   return true;
 }
 

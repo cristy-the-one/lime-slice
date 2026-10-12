@@ -54,11 +54,11 @@ check("no seam flag is ever sent: a blend seam is the belt edge", !("seamOnEdge"
 const rafted = beltSliceField({ ...defaultBelt(200), raftLayers: 3 }, false);
 check("raft layers are sent only when the pad is on", rafted.belt?.raftLayers === 3 && !("raftLayers" in (beltSliceField(defaultBelt(200), false).belt ?? {})));
 const floored = beltSliceField(defaultBelt(200), true);
-check("floor supports are sent only when Smart supports is on", floored.belt?.floorSupports === true && !("floorSupports" in (beltSliceField(defaultBelt(200), false).belt ?? {})));
+check("floor supports are sent only when supports are on", floored.belt?.floorSupports === true && !("floorSupports" in (beltSliceField(defaultBelt(200), false).belt ?? {})));
 const stored = beltSliceField(coerceBelt({ floorSupports: true, seamOnEdge: true }, 200), false);
 check("an old save's floor supports and seam flags are not read", !("floorSupports" in (stored.belt ?? {})) && !("seamOnEdge" in (stored.belt ?? {})));
 const raftedSupports = beltSliceField({ ...defaultBelt(200), raftLayers: 3 }, true);
-check("a raft and Smart supports are never sent together", !("floorSupports" in (raftedSupports.belt ?? {})) && raftedSupports.belt?.raftLayers === 3);
+check("a raft and supports are never sent together", !("floorSupports" in (raftedSupports.belt ?? {})) && raftedSupports.belt?.raftLayers === 3);
 check("a belt changes the recipe", recipeKey({ ...cartesian, ...sent }, "mesh") !== plain);
 const sentCap = beltSliceField({ ...defaultBelt(180), maxLengthMm: 300, copies: 2, gapMm: 8, direction: -1, axis: "y" }, false);
 check(

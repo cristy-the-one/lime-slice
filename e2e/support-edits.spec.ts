@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import { autoSliceOff } from "./auto-slice";
+import { expectSupports, setSupports } from "./supports";
 
 /**
  * Edit tree supports against a real engine:
@@ -61,7 +62,7 @@ test("delete a tree, regrow its gap, undo, and clear", async ({ page }) => {
   await page.locator('[data-sample="overhang_ledge.stl"]').click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 30_000 });
   await page.locator("#levelPick").selectOption("advanced");
-  await page.locator("#supports").check();
+  await setSupports(page, "auto");
   await page.locator("#sstyle").selectOption("tree");
   await page.locator("#slice").click();
   await sliced(page);
@@ -121,7 +122,7 @@ test("delete a tree, regrow its gap, undo, and clear", async ({ page }) => {
   expect((await supportSeconds(page)).text).toBe(before.text);
 });
 
-test("Smart supports off prints no support, and on lets trees be edited", async ({ page }) => {
+test("Supports off prints no support, and on lets trees be edited", async ({ page }) => {
   await page.addInitScript(() => {
     delete (window as unknown as { showSaveFilePicker?: unknown }).showSaveFilePicker;
   });
@@ -137,7 +138,7 @@ test("Smart supports off prints no support, and on lets trees be edited", async 
   await page.locator("#samples > summary").click();
   await page.locator('[data-sample="overhang_ledge.stl"]').click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 30_000 });
-  await expect(page.locator("#supports")).not.toBeChecked();
+  await expectSupports(page, "off");
   await page.locator("#slice").click();
   await sliced(page);
   await page.getByRole("tab", { name: "Preview", exact: true }).click();
@@ -147,7 +148,7 @@ test("Smart supports off prints no support, and on lets trees be edited", async 
   await expect(toggle).toHaveAttribute("aria-disabled", "true");
 
   await page.locator("#levelPick").selectOption("advanced");
-  await page.locator("#supports").check();
+  await setSupports(page, "auto");
   await page.locator("#sstyle").selectOption("tree");
   await page.locator("#slice").click();
   await sliced(page);

@@ -1594,6 +1594,10 @@ fn request_for(
         tip_diameter: settings.tip_diameter,
         trunk_diameter: settings.trunk_diameter,
         support_avoidance: settings.support_avoidance,
+        support_source: match settings.support_source {
+            lime_slice_core::SupportSource::Auto => None,
+            lime_slice_core::SupportSource::Paint => Some("paint".into()),
+        },
         support_height_mult: settings.support_height_mult,
         infill_combine: settings.infill_combine,
         combing: settings.combing,

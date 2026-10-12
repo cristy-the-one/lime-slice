@@ -4,6 +4,7 @@ import { state } from "./state.ts";
 import { selection, type MachineLibrary } from "../ui/machine-library.ts";
 import { defaultBelt } from "../belt.ts";
 import { settingsRules, type Rules } from "../settings-rules.ts";
+import { supportModeOf } from "../support-source.ts";
 
 export function currentRules(library: MachineLibrary = loadMachineLibrary()): Rules {
   const printer = selection(library)?.printer;
@@ -13,5 +14,6 @@ export function currentRules(library: MachineLibrary = loadMachineLibrary()): Ru
     belt: { raftLayers: belt.raftLayers, maxLengthMm: belt.maxLengthMm },
     firmware: printer?.firmware ?? "klipper",
     objects: state.plate.objects.length,
+    supportMode: supportModeOf(state),
   });
 }

@@ -93,8 +93,29 @@ check("infill summary names the lattice and the combine", summaryOf("infill", { 
 check("walls summary counts extra surface effects", summaryOf("walls", { seam: "blend", ironing: true, fuzzySkin: true }) === "blend seam · +2");
 check("walls summary names one effect", summaryOf("walls", { seam: "rear", ironing: false, fuzzySkin: true }) === "rear seam · fuzzy");
 check("speed summary is one or two values", summaryOf("speed", { featureSpeeds: true, zHop: "smart" }) === "per feature · z-hop");
+check("supports summary reads Off", summaryOf("supports", { supports: false, supportSource: "auto" }) === "Off");
+check("supports summary reads Auto", summaryOf("supports", { supports: true, supportSource: "auto" }) === "Auto");
+check("supports summary reads Painted", summaryOf("supports", { supports: true, supportSource: "paint" }) === "Painted");
+
+// One Simple control picks Off, Automatic or Painted only, and sets the two keys behind it together.
+const mode = controlById("supportMode")!;
+check("the supports mode is a Simple segmented control", mode?.group === "supports" && mode.tier === "simple" && mode.kind.type === "segmented" && mode.preset === "supports");
+check("the supports mode offers Off, Automatic, Painted only in that order", mode?.kind.type === "segmented" && mode.kind.options.map(([v, l]) => `${v}:${l}`).join(",") === "off:Off,auto:Automatic,paint:Painted only");
+check("the supports mode is the first row of its group", CONTROLS.find((spec) => spec.group === "supports")?.id === "supportMode");
+const modeState = { ...sample };
+mode.set!(modeState, "paint");
+check("picking Painted only turns supports on from paint", modeState.supports === true && modeState.supportSource === "paint" && mode.get!(modeState) === "paint");
+mode.set!(modeState, "auto");
+check("picking Automatic turns supports on from the angle", modeState.supports === true && modeState.supportSource === "auto" && mode.get!(modeState) === "auto");
+mode.set!(modeState, "off");
+check("picking Off turns supports off", modeState.supports === false && mode.get!(modeState) === "off");
+const angle = controlById("sangle")!;
+check("the overhang angle shows while supports are on, and the rules hide it for Painted only", angle.when!({ ...sample, supports: true }) === true && angle.when!({ ...sample, supports: false }) === false && angle.rule === "supportAngle");
+check("the style stays for Painted only", controlById("sstyle")!.when!({ ...sample, supports: true, supportSource: "paint" }) === true);
+check("supportSource has no control of its own", UNFIELDED_PRESET_KEYS.has("supportSource"));
+
 for (const group of GROUPS) {
-  const worst = summaryOf(group.id, { layerHeight: 0.28, adaptive: true, seam: "aligned", ironing: true, fuzzySkin: true, gyroid3d: "on", infillCombine: true, featureSpeeds: true, zHop: "always", supports: true, supportStyle: "tree", supportAngle: 45, placed: {}, plate: { objects: [1] }, blendKind: "single", strategy: "speed", profile: { bedX: 220, bedY: 220, maxVolumetricMm3S: 15 } });
+  const worst =summaryOf(group.id, { layerHeight: 0.28, adaptive: true, seam: "aligned", ironing: true, fuzzySkin: true, gyroid3d: "on", infillCombine: true, featureSpeeds: true, zHop: "always", supports: true, supportStyle: "tree", supportAngle: 45, placed: {}, plate: { objects: [1] }, blendKind: "single", strategy: "speed", profile: { bedX: 220, bedY: 220, maxVolumetricMm3S: 15 } });
   check(`${group.id}: summary fits the header (${worst})`, worst.length <= 24);
 }
 

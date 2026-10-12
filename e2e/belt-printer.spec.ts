@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { canvasShare } from "../src/ui/compact/viewport-share.ts";
 import { autoSliceOff } from "./auto-slice";
+import { expectSupports, setSupports } from "./supports";
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 // The engine's reply for the same cube on a 45° belt: layer z is the belt
@@ -49,9 +50,9 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await expect(page.locator("#beltRaftLayers")).toHaveCount(0);
   await expect(page.locator("#beltLength")).toHaveCount(0);
   // Before any slice, so a toggle back to a sliced recipe cannot refresh it by itself.
-  await page.locator("#supports").check();
+  await setSupports(page, "auto");
   await expect(page.locator("#beltRaft")).toBeEnabled();
-  await page.locator("#supports").uncheck();
+  await setSupports(page, "off");
   await expect(page.getByText("Mock only")).toHaveCount(0);
   await page.locator("#beltCopies").fill("3");
   await page.locator("#beltCopies").blur();
@@ -80,16 +81,16 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await expect(page.locator("#readHigh")).toHaveText("Z 40.00");
 
   await page.locator("#tabPrepare").click();
-  await page.locator("#supports").check();
+  await setSupports(page, "auto");
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(2);
   expect((bodies[1].belt as Record<string, unknown>).floorSupports).toBe(true);
-  await page.locator("#supports").uncheck();
+  await setSupports(page, "off");
   await expect.poll(() => bodies.length).toBe(3);
   expect(bodies[2].belt).not.toHaveProperty("floorSupports");
   await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   await page.locator("#beltRaft").check();
-  await expect(page.locator("#supports")).not.toBeChecked();
+  await expectSupports(page, "off");
   await expect(page.locator("#beltRaftLayers")).toBeVisible();
   await page.locator("#beltRaftLayers").fill("2");
   await page.locator("#beltRaftLayers").blur();
@@ -101,36 +102,36 @@ test("a belt printer sends belt settings and a cartesian printer does not", asyn
   await page.locator("#machineKind").selectOption("cartesian");
   await expect(page.locator("#beltFields")).toBeHidden();
   await expect(page.locator("#prepare")).toHaveAttribute("data-belt", "0");
-  await expect(page.locator("#supports")).toBeEnabled();
+  await expect(page.locator("#supportMode-auto")).toBeEnabled();
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(5);
   expect(bodies[4]).not.toHaveProperty("belt");
   await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
 });
 
-test("a belt raft and Smart supports replace each other, one undo step each", async ({ page }) => {
+test("a belt raft and supports replace each other, one undo step each", async ({ page }) => {
   await quiet(page);
   await page.goto("/");
   await page.locator("#machineKind").selectOption("belt");
   await page.locator("#beltRaft").check();
-  await expect(page.locator("#supports")).toBeEnabled();
+  await expect(page.locator("#supportMode-auto")).toBeEnabled();
   await page.waitForTimeout(400);
-  await page.locator("#supports").check();
+  await setSupports(page, "auto");
   await expect(page.locator("#beltRaft")).not.toBeChecked();
   await expect(page.locator("#beltRaftLayers")).toHaveCount(0);
   await page.waitForTimeout(400);
   await page.keyboard.press("Control+z");
-  await expect(page.locator("#supports")).not.toBeChecked();
+  await expectSupports(page, "off");
   await expect(page.locator("#beltRaft")).toBeChecked();
   await page.keyboard.press("Control+Shift+Z");
-  await expect(page.locator("#supports")).toBeChecked();
+  await expectSupports(page, "auto");
   await expect(page.locator("#beltRaft")).not.toBeChecked();
   await page.waitForTimeout(400);
   await page.locator("#beltRaft").check();
-  await expect(page.locator("#supports")).not.toBeChecked();
+  await expectSupports(page, "off");
   await page.waitForTimeout(400);
   await page.keyboard.press("Control+z");
-  await expect(page.locator("#supports")).toBeChecked();
+  await expectSupports(page, "auto");
   await expect(page.locator("#beltRaft")).not.toBeChecked();
 });
 
@@ -330,7 +331,7 @@ test("a belt printer's supports can be picked and pruned", async ({ page }) => {
   await page.locator("#machineKind").selectOption("belt");
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="overhang_ledge.stl"]')?.click());
   await expect(page.locator("#slice")).toBeEnabled();
-  await page.locator("#supports").check();
+  await setSupports(page, "auto");
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(1);
   expect((bodies[0].belt as Record<string, unknown>).floorSupports).toBe(true);
@@ -411,7 +412,7 @@ test("a belt printer draws the gap a prune left and regrows it by the slice-fram
   await page.locator("#machineKind").selectOption("belt");
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="overhang_ledge.stl"]')?.click());
   await expect(page.locator("#slice")).toBeEnabled();
-  await page.locator("#supports").check();
+  await setSupports(page, "auto");
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(1);
   await page.locator("#tabPreview").click();
@@ -530,7 +531,7 @@ async function openTwoCopies(page: Page, replies: (edits: { kind: string }[]) =>
   await page.locator("#beltCopies").blur();
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="overhang_ledge.stl"]')?.click());
   await expect(page.locator("#slice")).toBeEnabled();
-  await page.locator("#supports").check();
+  await setSupports(page, "auto");
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(1);
   expect((bodies[0].belt as Record<string, unknown>).copies).toBe(2);
