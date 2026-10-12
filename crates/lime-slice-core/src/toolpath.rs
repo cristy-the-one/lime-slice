@@ -152,6 +152,11 @@ impl Default for PathFeatures {
     }
 }
 
+/// A travel in open air, between supports and clear of the part, only strings
+/// the ooze across the gap, so it retracts from this length. A strategy's own
+/// minimum travel still applies when it is longer.
+const OPEN_AIR_RETRACT_MIN_MM: f64 = 15.0;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TravelIn {
     /// Not checked against the part. Retract past the strategy's minimum travel.
@@ -162,7 +167,7 @@ pub enum TravelIn {
     /// Leaves the part or crosses a hole. Always retract.
     Blocked,
     /// Runs wholly in open air: it starts and ends clear of the part and
-    /// touches none of its walls. Retract past the strategy's minimum travel.
+    /// touches none of its walls. Retract past `OPEN_AIR_RETRACT_MIN_MM`.
     Open,
 }
 
@@ -4843,7 +4848,8 @@ impl Extrusion {
     pub fn travel_retract(&self, length: Option<f64>) -> (f64, f64) {
         let mm = length.unwrap_or(self.retract_mm);
         match self.travel_in {
-            TravelIn::Unchecked | TravelIn::Open => (mm, self.retract_min_travel),
+            TravelIn::Unchecked => (mm, self.retract_min_travel),
+            TravelIn::Open => (mm, self.retract_min_travel.max(OPEN_AIR_RETRACT_MIN_MM)),
             TravelIn::Inside => (0.0, self.retract_min_travel),
             TravelIn::Blocked => (mm, 0.0),
         }
@@ -5961,7 +5967,7 @@ mod travel_tests {
     }
 
     #[test]
-    fn a_support_travel_in_open_air_retracts_only_past_the_minimum() {
+    fn a_support_travel_in_open_air_retracts_only_past_fifteen_millimetres() {
         let paths = combed_supports(vec![
             support(vec![[20.0, 0.0], [20.4, 0.0]]),
             support(vec![[20.8, 0.0], [21.2, 0.0]]),
@@ -5969,8 +5975,8 @@ mod travel_tests {
         ]);
         assert_eq!(paths[1].travel_in, TravelIn::Open);
         assert_eq!(paths[2].travel_in, TravelIn::Open);
-        assert_eq!(paths[1].travel_retract(None), (0.35, 4.0));
-        assert_eq!(paths[2].travel_retract(None), (0.35, 4.0));
+        assert_eq!(paths[1].travel_retract(None), (0.35, 15.0));
+        assert_eq!(paths[2].travel_retract(None), (0.35, 15.0));
     }
 
     #[test]
