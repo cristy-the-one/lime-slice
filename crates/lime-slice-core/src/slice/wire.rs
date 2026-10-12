@@ -62,6 +62,7 @@ const SETTING_SCOPES: &[(&str, Scope)] = &[
     ("tipDiameter", Scope::Object),
     ("trunkDiameter", Scope::Object),
     ("branchAngle", Scope::Object),
+    ("supportAvoidance", Scope::Object),
     ("supportHeightMult", Scope::Object),
     ("scarfSeam", Scope::Object),
     ("scarfLength", Scope::Object),

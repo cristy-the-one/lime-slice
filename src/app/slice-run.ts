@@ -21,6 +21,7 @@ import { beltRunTooLong, beltSliceField } from "../belt";
 import { currentRules } from "./rules";
 import { orderFields, sequentialClearance, tallestLast } from "../settings-rules";
 import { flowSliceField } from "../flow";
+import { avoidanceSliceField } from "../support-avoidance";
 import { engineDownMessage, authHeaders } from "../ui/api-base";
 import { topLayerIndex } from "../ui/preview-ux";
 import { openResultsAfterSlice } from "../ui/splitters";
@@ -189,6 +190,7 @@ export function payload() {
     tipDiameter: state.tipDiameter,
     trunkDiameter: state.trunkDiameter,
     supportHeightMult: state.supportHeightMult,
+    ...avoidanceSliceField(state.supports && state.supportStyle === "tree" && state.supportAvoidance),
     infillCombine: state.infillCombine,
     combing: state.combing,
     featureSpeeds: state.featureSpeeds,

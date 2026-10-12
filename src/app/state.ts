@@ -183,6 +183,7 @@ export const state = {
   branchAngle: 40,
   tipDiameter: 0.8,
   trunkDiameter: 4.2,
+  supportAvoidance: false,
   supportHeightMult: 1,
   infillCombine: true,
   combing: true,

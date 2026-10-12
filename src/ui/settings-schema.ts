@@ -374,6 +374,7 @@ export const CONTROLS: ControlSpec[] = [
   // Supports
   bound("supports", { id: "supports", label: "Smart supports", group: "supports", tier: "simple", kind: check, structural: true, keywords: "overhang brace tree" }),
   bound("supportStyle", { id: "sstyle", label: "Style", group: "supports", tier: "advanced", kind: select([["grid", "Sparse grid"], ["tree", "Organic tree"]]), parent: "supports", when: (s) => s.supports, structural: true, keywords: "tree grid organic" }),
+  bound("supportAvoidance", { id: "pockets", label: "Avoid pockets", group: "supports", tier: "advanced", kind: check, parent: "sstyle", when: (s) => s.supports && s.supportStyle === "tree", tip: "Keeps a thickening branch out of a gap it cannot leave. Off prints today's trees.", keywords: "pocket avoidance tree" }),
   bound("supportAngle", { id: "sangle", label: "Overhang angle °", group: "supports", tier: "advanced", kind: num(20, 70, 5), parent: "supports", when: (s) => s.supports, keywords: "overhang" }),
   bound("supportHeightMult", { id: "shmult", label: "Shaft height ×", group: "supports", tier: "advanced", kind: num(1, 4, 1), parent: "supports", when: (s) => s.supports, keywords: "support column" }),
   bound("branchAngle", { id: "bangle", label: "Branch angle °", group: "supports", tier: "expert", kind: num(15, 60, 5), parent: "sstyle", when: (s) => s.supports && s.supportStyle === "tree", keywords: "tree" }),

@@ -2,7 +2,7 @@
 
 The brief asks for a second support style: a voxel distance field, an A* route, and a belt-specific re-slice. That pipeline is not what Cura, PrusaSlicer, Orca, Bambu, or Qidi run, and it is not a gap in this tree. The tree in `crates/lime-slice-core/src/support.rs` already seeds overhangs, merges branches, tapers by load, prints an interface, and on a belt lands on the belt or the model. One piece of Thomas Rahm's rewrite is worth folding into that walk. A parallel mode is not.
 
-This note changes no engine behaviour.
+The judgement below is unchanged. Avoidance, as specified here, is now a request field, off unless the slice asks.
 
 ## The lineage
 
@@ -50,7 +50,7 @@ Fold Rahm's per-layer areas into the walk we have. Leave the style list as grid 
 
 **Merge where the areas overlap.** Two branches join when their downward regions overlap and the existing tests still pass (`can_carry`, `holds_both`). Greedy pairing inside `PAIR_REACH_MM` (22 mm) stays the way a layer chooses which pair moves. The polygon says whether that meeting point is still a place a thickening trunk can stand.
 
-Both stay off unless a later change adds a request field that is omitted when off. An omitted field keeps the cache key and the G-code. `tools/golden_ab.sh` against the current tree is the check. Turning the field on changes every tree and needs its own golden update. This note does not add the field.
+Both are the `supportAvoidance` field. It is omitted when off, so the cache key and the G-code of a tree that does not ask stay the bytes they were. `tools/golden_ab.sh` against main, with the field omitted, is the check. Turning the field on changes the trees that meet a pocket.
 
 Leave the rest.
 
@@ -63,6 +63,16 @@ Leave the rest.
 
 Avoidance is a bottom-up offset per radius bucket, stored with the part, consulted from the walk. Medium, and local to `support.rs`. Influence-area merge is a second top-down polygon pass in front of `merge_nodes`. Larger, same flag. A voxel grid, an A* router, and a support mesh are a second slicer: new memory, a new edit model, and a belt path that fights the rotation. That is the cost of shipping the brief as an alternative style.
 
+## Shipped
+
+`supportAvoidance` is left out of the request when it is off. The switch is Avoid pockets, under Organic tree, on the advanced row with Style.
+
+The bed foot is stored at the trunk radius. `arrive` widens a branch that reaches the bed to `trunk_r * 0.95`, and one lean step cannot walk that trunk out of a pocket, so the forbidden region starts at the trunk and is eroded by one lean step per layer. A branch that must reach the ground reads the bed map. A branch that may stop on a roof reads the model map, which drops the part on a roof layer.
+
+`pair_steps` will not walk toward a meeting point the merged radius cannot occupy. `merge_nodes` refuses that point when `holds_both` would otherwise pass. `push_out` treats the polygon as blocked. A step that would enter it is not taken, so the lean is spent leaving.
+
+`tools/golden_ab.sh origin/main`, with the field omitted: 48 same, 0 different.
+
 ## Review questions
 
 1. Is refusing a second style right, because prune and regrow address disks and limbs?
@@ -70,3 +80,6 @@ Avoidance is a bottom-up offset per radius bucket, stored with the part, consult
 3. Should thickness stay on carried load, with `flare_per_mm` as the diameter angle?
 4. Is the belt overhang test correctly left as `overhang_at` after the X rotation, with `FloorPlane::fall` as the only gravity term?
 5. Does a gantry wedge stay out until the toolhead is measured?
+6. Is widening the bed foot to the trunk, then eroding it upward, the right reading of a branch that only becomes a trunk on the last layer?
+7. Should a meeting point the merged section cannot occupy be refused even when `holds_both` would pass?
+8. Is Avoid pockets in the right place: advanced, under Style, off unless the slice asks?
