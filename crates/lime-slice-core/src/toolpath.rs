@@ -152,6 +152,11 @@ impl Default for PathFeatures {
     }
 }
 
+/// A travel in open air, between supports and clear of the part, only strings
+/// the ooze across the gap, so it retracts from this length. A strategy's own
+/// minimum travel still applies when it is longer.
+const OPEN_AIR_RETRACT_MIN_MM: f64 = 15.0;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TravelIn {
     /// Not checked against the part. Retract past the strategy's minimum travel.
@@ -161,6 +166,9 @@ pub enum TravelIn {
     Inside,
     /// Leaves the part or crosses a hole. Always retract.
     Blocked,
+    /// Runs wholly in open air: it starts and ends clear of the part and
+    /// touches none of its walls. Retract past `OPEN_AIR_RETRACT_MIN_MM`.
+    Open,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2954,11 +2962,168 @@ impl PartLayout {
         let mut slots: Vec<Option<Vec<Run>>> = self.blocks.into_iter().map(Some).collect();
         for i in tour {
             if let Some(block) = slots[i].take() {
-                cursor = order_runs(block, cursor, &mut out, scarf);
+                cursor = order_block(block, cursor, &mut out, scarf);
             }
         }
         (out, cursor)
     }
+}
+
+/// Travel time a stacked island must save over the plan order to be used.
+const STACK_WIN_S: f64 = 0.15;
+
+/// An island's walls in plan order, outer loops then inner, hold one stack of
+/// loops for each piece of wall: a pocket in the web of a cover has its own.
+/// Printed in plan order the nozzle crosses to every outer wall and then back
+/// to every inner one. With two or more stacks each can print whole, outer then
+/// inner, taking next the stack whose entry lies nearest where the last one
+/// ended. The island is ordered both ways and takes the stacks only when its
+/// travel, infill after the walls included, takes `STACK_WIN_S` less.
+fn order_block(
+    block: Vec<Run>,
+    cursor: Option<[f64; 2]>,
+    out: &mut Vec<Extrusion>,
+    scarf: Option<&ScarfParams>,
+) -> Option<[f64; 2]> {
+    let walls = block
+        .iter()
+        .take_while(|r| r.paths.first().is_some_and(|p| p.kind.is_wall()))
+        .count();
+    let plain_walls = block[..walls]
+        .iter()
+        .flat_map(|r| &r.paths)
+        .all(|p| matches!(p.kind, PathKind::Outer | PathKind::Inner));
+    let stacks = if plain_walls {
+        wall_stacks(block[..walls].iter().flat_map(|r| &r.paths))
+    } else {
+        Vec::new()
+    };
+    if stacks.len() < 2 {
+        return order_runs(block, cursor, None, out, scarf);
+    }
+    let nwalls: usize = block[..walls].iter().map(|r| r.paths.len()).sum();
+    let all: Vec<Extrusion> = block.iter().flat_map(|r| r.paths.iter().cloned()).collect();
+    let mut plain = Vec::new();
+    let plain_end = order_runs(block, cursor, None, &mut plain, scarf);
+    let (wall_paths, rest_paths) = all.split_at(nwalls);
+    let mut slots: Vec<Option<Extrusion>> = wall_paths.iter().cloned().map(Some).collect();
+    let mut left: Vec<Option<Vec<Run>>> = stacks
+        .iter()
+        .map(|stack| {
+            let pile: Vec<Extrusion> = stack.iter().map(|&k| slots[k].take().unwrap()).collect();
+            Some(runs_of(pile))
+        })
+        .collect();
+    let mut stacked = Vec::new();
+    let mut at = cursor;
+    for _ in 0..left.len() {
+        let entry = |stack: &Vec<Run>| at.map_or(0.0, |c| block_entry(&stack[0].paths, c));
+        let next = (0..left.len())
+            .filter(|&k| left[k].is_some())
+            .min_by(|&a, &b| {
+                entry(left[a].as_ref().unwrap())
+                    .total_cmp(&entry(left[b].as_ref().unwrap()))
+                    .then(a.cmp(&b))
+            })
+            .unwrap();
+        at = order_runs(left[next].take().unwrap(), at, None, &mut stacked, scarf);
+    }
+    let stacked_end = order_runs(runs_of(rest_paths.to_vec()), at, None, &mut stacked, scarf);
+    let wins = walk_seconds(&stacked, cursor) + STACK_WIN_S < walk_seconds(&plain, cursor);
+    let (paths, end) = if wins {
+        (stacked, stacked_end)
+    } else {
+        (plain, plain_end)
+    };
+    out.extend(paths);
+    end
+}
+
+/// Seconds a travel of `d` mm takes at the planner's travel feed and accel,
+/// from rest to rest: short hops are all acceleration, long ones cruise.
+fn hop_seconds(d: f64) -> f64 {
+    const FEED: f64 = 300.0;
+    const ACCEL: f64 = 5500.0;
+    if d < FEED * FEED / ACCEL {
+        2.0 * (d / ACCEL).sqrt()
+    } else {
+        d / FEED + FEED / ACCEL
+    }
+}
+
+/// Seconds of travel between the paths as ordered, from `cursor`.
+fn walk_seconds(paths: &[Extrusion], cursor: Option<[f64; 2]>) -> f64 {
+    let mut at = cursor;
+    let mut total = 0.0;
+    for path in paths {
+        let (Some(first), Some(last)) = (path.points.first(), path.points.last()) else {
+            continue;
+        };
+        if let Some(at) = at {
+            total += hop_seconds(dist_mm(at, *first));
+        }
+        at = Some(*last);
+    }
+    total
+}
+
+/// The wall loops split into stacks, each a list of indexes into `walls` in
+/// plan order: an outer loop, and the inner loops that follow it. An inner
+/// loop is an offset of the loop it follows, so it keeps the same distance from
+/// it all the way round; it joins the stack whose loop lies nearest it on
+/// average, which a loop that only passes close by does not.
+fn wall_stacks<'a>(walls: impl Iterator<Item = &'a Extrusion>) -> Vec<Vec<usize>> {
+    let walls: Vec<&Extrusion> = walls.collect();
+    let boxes: Vec<([f64; 2], [f64; 2])> = walls.iter().map(|w| path_bounds(w)).collect();
+    let box_gap = |a: usize, b: usize| {
+        let dx = (boxes[a].0[0] - boxes[b].1[0])
+            .max(boxes[b].0[0] - boxes[a].1[0])
+            .max(0.0);
+        let dy = (boxes[a].0[1] - boxes[b].1[1])
+            .max(boxes[b].0[1] - boxes[a].1[1])
+            .max(0.0);
+        dx.hypot(dy)
+    };
+    let mut stacks: Vec<Vec<usize>> = Vec::new();
+    for (k, wall) in walls.iter().enumerate() {
+        if wall.kind != PathKind::Inner {
+            stacks.push(vec![k]);
+            continue;
+        }
+        let (mut best, mut at) = (f64::MAX, None);
+        for (s, stack) in stacks.iter().enumerate() {
+            for &m in stack {
+                if box_gap(k, m) > 3.0 * wall.width.max(walls[m].width) {
+                    continue;
+                }
+                let gap = mean_gap(&wall.points, &walls[m].points);
+                if gap < best {
+                    (best, at) = (gap, Some(s));
+                }
+            }
+        }
+        match at {
+            Some(s) => stacks[s].push(k),
+            None => stacks.push(vec![k]),
+        }
+    }
+    stacks
+}
+
+/// The mean distance from the points of `a` to the polyline `b`.
+fn mean_gap(a: &[[f64; 2]], b: &[[f64; 2]]) -> f64 {
+    if a.is_empty() {
+        return f64::MAX;
+    }
+    let total: f64 = a
+        .iter()
+        .map(|&p| {
+            b.windows(2)
+                .map(|w| point_seg_dist(p, w[0], w[1]))
+                .fold(f64::MAX, f64::min)
+        })
+        .sum();
+    total / a.len() as f64
 }
 
 /// Print order for a layer's skirt and supports, starting where the nozzle
@@ -2967,10 +3132,11 @@ impl PartLayout {
 pub fn order_supports(
     paths: &mut Vec<Extrusion>,
     from: Option<[f64; 2]>,
+    to: Option<[f64; 2]>,
     scarf: Option<&ScarfParams>,
 ) -> Option<[f64; 2]> {
     let mut out = Vec::with_capacity(paths.len());
-    let end = order_runs(runs_of(std::mem::take(paths)), from, &mut out, scarf);
+    let end = order_runs(runs_of(std::mem::take(paths)), from, to, &mut out, scarf);
     *paths = out;
     end
 }
@@ -3180,14 +3346,18 @@ impl Run {
 }
 
 /// Order each run of a block from the cursor, in turn.
+///
+/// `to` is where the nozzle goes next: the last run ends near it.
 fn order_runs(
     block: Vec<Run>,
     mut cursor: Option<[f64; 2]>,
+    to: Option<[f64; 2]>,
     out: &mut Vec<Extrusion>,
     scarf: Option<&ScarfParams>,
 ) -> Option<[f64; 2]> {
-    for run in block {
-        cursor = order_run(run, cursor, out, scarf);
+    let last = block.len().saturating_sub(1);
+    for (k, run) in block.into_iter().enumerate() {
+        cursor = order_run(run, cursor, if k == last { to } else { None }, out, scarf);
     }
     cursor
 }
@@ -3195,6 +3365,7 @@ fn order_runs(
 fn order_run(
     run: Run,
     cursor: Option<[f64; 2]>,
+    to: Option<[f64; 2]>,
     out: &mut Vec<Extrusion>,
     scarf: Option<&ScarfParams>,
 ) -> Option<[f64; 2]> {
@@ -3208,7 +3379,7 @@ fn order_run(
     let ordered = match infill.filter(|_| !LEGACY_TRAVEL.load(Ordering::SeqCst)) {
         Some(layout) => {
             let sample = crate::inner_prof::Sample::start();
-            let ordered = order_infill(paths, layout, grid, at, has);
+            let ordered = order_infill(paths, layout, grid, at, has, to);
             sample.order_infill(n);
             ordered
         }
@@ -3250,6 +3421,7 @@ fn order_infill(
     grid: Option<ApproachGrid>,
     cursor: [f64; 2],
     has: bool,
+    to: Option<[f64; 2]>,
 ) -> Vec<Extrusion> {
     let n = paths.len();
     let InfillLayout {
@@ -3261,9 +3433,9 @@ fn order_infill(
     let legacy_sample = crate::inner_prof::Sample::start();
     let legacy = legacy_nn_indices(&paths, grid.as_ref(), cursor, has);
     legacy_sample.order_legacy(n as u64);
-    let off = walk_cost(&paths, &legacy, cursor, has, false);
+    let off = walk_cost(&paths, &legacy, cursor, has, false, to);
     let on = if closed {
-        walk_cost(&paths, &legacy, cursor, has, true)
+        walk_cost(&paths, &legacy, cursor, has, true, to)
     } else {
         off
     };
@@ -3295,15 +3467,15 @@ fn order_infill(
     let rest_sample = crate::inner_prof::Sample::start();
     candidates.extend(stripes);
     for order in candidates {
-        consider(&paths, order, cursor, has, closed, &mut best);
+        consider(&paths, order, cursor, has, closed, to, &mut best);
     }
-    let polished = polish_order(&paths, &best.order, cursor, has, best.rotate);
+    let polished = polish_order(&paths, &best.order, cursor, has, best.rotate, to);
     if polished != best.order {
         for rotate in [best.rotate, !best.rotate] {
             if rotate && !closed {
                 continue;
             }
-            let cost = walk_cost(&paths, &polished, cursor, has, rotate);
+            let cost = walk_cost(&paths, &polished, cursor, has, rotate, to);
             if cost + 1e-6 < best.cost {
                 best.cost = cost;
                 best.order = polished.clone();
@@ -3311,8 +3483,21 @@ fn order_infill(
             }
         }
     }
-    if !closed {
-        let (order, flips) = untangle(&paths, &best.order, cursor, has);
+    if closed {
+        // Seams move with the visit order, so a reorder proposed on the ends as
+        // they stand is kept only when the walk, seams moved, really is shorter.
+        if has && paths.iter().all(geom_closed) {
+            let proposed = reorder_rings(&paths, &best.order, cursor, best.rotate, to);
+            if proposed != best.order {
+                let cost = walk_cost(&paths, &proposed, cursor, has, best.rotate, to);
+                if cost + TRAVEL_WIN_MM < best.cost {
+                    best.cost = cost;
+                    best.order = proposed;
+                }
+            }
+        }
+    } else {
+        let (order, flips) = untangle(&paths, &best.order, cursor, has, to);
         if order != best.order || flips.iter().any(|f| *f) {
             rest_sample.order_rest(n as u64);
             return apply_flips(paths, &order, &flips);
@@ -3326,6 +3511,102 @@ fn order_infill(
     rest_sample.order_rest(n as u64);
     ordered
 }
+
+/// A run of closed paths is a visit order over points, each path entered and
+/// left at one seam. Improves `order` from the cursor by 2-opt and by moving
+/// one to three paths elsewhere, until neither shortens it. The seams are those
+/// the order has now; the caller checks the result with the seams moved.
+fn reorder_rings(
+    paths: &[Extrusion],
+    order: &[usize],
+    cursor: [f64; 2],
+    rotate: bool,
+    to: Option<[f64; 2]>,
+) -> Vec<usize> {
+    let n = order.len();
+    if !(3..=RING_REORDER_MAX).contains(&n) {
+        return order.to_vec();
+    }
+    let dirs = build_dirs(paths, order, cursor, true, rotate);
+    // Node 0 is the cursor and stays first; node k + 1 is `order[k]`; a target,
+    // when there is one, is node n + 1 and stays last.
+    let mut at: Vec<[f64; 2]> = vec![cursor];
+    at.extend(dirs.iter().map(|d| d.start));
+    at.extend(to);
+    let fixed_end = usize::from(to.is_some());
+    let mut tour: Vec<usize> = (0..at.len()).collect();
+    let d = |a: usize, b: usize| dist_mm(at[a], at[b]);
+    for _ in 0..RING_REORDER_PASSES {
+        let mut improved = false;
+        for i in 1..n {
+            for j in i + 1..=n {
+                let (before, first, last) = (tour[i - 1], tour[i], tour[j]);
+                let mut delta = d(before, last) - d(before, first);
+                if let Some(&after) = tour.get(j + 1) {
+                    delta += d(first, after) - d(last, after);
+                }
+                if delta < -1e-6 {
+                    tour[i..=j].reverse();
+                    improved = true;
+                }
+            }
+        }
+        for len in 1..=3usize {
+            let mut i = 1;
+            while i + len <= n {
+                let seg: Vec<usize> = tour[i..i + len].to_vec();
+                let (before, after) = (tour[i - 1], tour.get(i + len).copied());
+                let mut gain = d(before, seg[0]);
+                if let Some(after) = after {
+                    gain += d(seg[len - 1], after) - d(before, after);
+                }
+                let mut rest = tour.clone();
+                rest.drain(i..i + len);
+                let mut best: Option<(f64, usize, bool)> = None;
+                for pos in 1..=rest.len() - fixed_end {
+                    if pos == i {
+                        continue;
+                    }
+                    let (p, q) = (rest[pos - 1], rest.get(pos).copied());
+                    for reversed in [false, true] {
+                        let (head, tail) = if reversed {
+                            (seg[len - 1], seg[0])
+                        } else {
+                            (seg[0], seg[len - 1])
+                        };
+                        let mut cost = d(p, head);
+                        if let Some(q) = q {
+                            cost += d(tail, q) - d(p, q);
+                        }
+                        if cost + 1e-6 < gain && best.is_none_or(|b| cost < b.0) {
+                            best = Some((cost, pos, reversed));
+                        }
+                    }
+                }
+                if let Some((_, pos, reversed)) = best {
+                    let mut moved = seg;
+                    if reversed {
+                        moved.reverse();
+                    }
+                    for (k, node) in moved.into_iter().enumerate() {
+                        rest.insert(pos + k, node);
+                    }
+                    tour = rest;
+                    improved = true;
+                }
+                i += 1;
+            }
+        }
+        if !improved {
+            break;
+        }
+    }
+    tour[1..=n].iter().map(|&node| order[node - 1]).collect()
+}
+
+/// Longest run `reorder_rings` takes, and how many passes it makes.
+const RING_REORDER_MAX: usize = 160;
+const RING_REORDER_PASSES: usize = 6;
 
 /// Positions a 2-opt move may reach past `i`. Crossings sit between nearby
 /// paths, and the cap keeps a big skin group linear.
@@ -3342,6 +3623,7 @@ fn untangle(
     order: &[usize],
     cursor: [f64; 2],
     has: bool,
+    to: Option<[f64; 2]>,
 ) -> (Vec<usize>, Vec<bool>) {
     let n = order.len();
     let mut order = order.to_vec();
@@ -3372,7 +3654,7 @@ fn untangle(
                 Some(outs[i - 1])
             };
             for j in i + 1..n.min(i + UNTANGLE_WINDOW) {
-                let after = ins.get(j + 1).copied();
+                let after = ins.get(j + 1).copied().or(to);
                 let old = link(before, ins[i]) + after.map_or(0.0, |a| dist_mm(outs[j], a));
                 let new = link(before, outs[j]) + after.map_or(0.0, |a| dist_mm(ins[i], a));
                 if new + 1e-6 < old {
@@ -3422,6 +3704,7 @@ fn consider(
     cursor: [f64; 2],
     has: bool,
     closed: bool,
+    to: Option<[f64; 2]>,
     best: &mut Choice,
 ) {
     if !is_perm(&order, paths.len()) {
@@ -3431,7 +3714,7 @@ fn consider(
         if rotate && !closed {
             continue;
         }
-        let cost = walk_cost(paths, &order, cursor, has, rotate);
+        let cost = walk_cost(paths, &order, cursor, has, rotate, to);
         if cost + TRAVEL_WIN_MM < best.cost {
             best.cost = cost;
             best.order = order.clone();
@@ -3626,8 +3909,8 @@ fn hilbert_order(
     for k in 0..n {
         rev.push(order[(start + n - k) % n]);
     }
-    let cf = walk_cost(paths, &fwd, cursor, has, true);
-    let cr = walk_cost(paths, &rev, cursor, has, true);
+    let cf = walk_cost(paths, &fwd, cursor, has, true, None);
+    let cr = walk_cost(paths, &rev, cursor, has, true, None);
     if cr + 1e-6 < cf {
         rev
     } else {
@@ -3816,6 +4099,7 @@ fn polish_order(
     cursor: [f64; 2],
     has: bool,
     rotate: bool,
+    to: Option<[f64; 2]>,
 ) -> Vec<usize> {
     let n = order.len();
     // Large groups already have a spatial candidate. The relocation search is
@@ -3825,7 +4109,7 @@ fn polish_order(
     }
     let neighbors = k_nearest(paths, 8);
     let mut order = order.to_vec();
-    let mut cost = walk_cost(paths, &order, cursor, has, rotate);
+    let mut cost = walk_cost(paths, &order, cursor, has, rotate, to);
     for _ in 0..24 {
         let dirs = build_dirs(paths, &order, cursor, has, rotate);
         let mut hot: Vec<(f64, usize)> = Vec::new();
@@ -3865,7 +4149,7 @@ fn polish_order(
                         continue;
                     }
                     trial.insert(at, item);
-                    let next = walk_cost(paths, &trial, cursor, has, rotate);
+                    let next = walk_cost(paths, &trial, cursor, has, rotate, to);
                     if next + TRAVEL_WIN_MM < cost {
                         order = trial;
                         cost = next;
@@ -4033,8 +4317,14 @@ fn walk_cost(
     cursor: [f64; 2],
     has: bool,
     rotate: bool,
+    to: Option<[f64; 2]>,
 ) -> f64 {
-    tour_cost(&build_dirs(paths, order, cursor, has, rotate), cursor, has)
+    tour_cost(
+        &build_dirs(paths, order, cursor, has, rotate),
+        cursor,
+        has,
+        to,
+    )
 }
 
 fn build_dirs(
@@ -4060,7 +4350,7 @@ fn build_dirs(
     dirs
 }
 
-fn tour_cost(dirs: &[TourStop], cursor: [f64; 2], has: bool) -> f64 {
+fn tour_cost(dirs: &[TourStop], cursor: [f64; 2], has: bool, to: Option<[f64; 2]>) -> f64 {
     if dirs.is_empty() {
         return 0.0;
     }
@@ -4071,6 +4361,9 @@ fn tour_cost(dirs: &[TourStop], cursor: [f64; 2], has: bool) -> f64 {
     };
     for w in dirs.windows(2) {
         cost += dist_mm(w[0].end, w[1].start);
+    }
+    if let (Some(to), Some(last)) = (to, dirs.last()) {
+        cost += dist_mm(last.end, to);
     }
     cost
 }
@@ -4702,6 +4995,7 @@ impl Extrusion {
         self.lead_in.clear();
         self.travel_in = match comb {
             Comb::Clear => TravelIn::Inside,
+            Comb::Open => TravelIn::Open,
             Comb::Routed(via) => {
                 self.lead_in = via;
                 TravelIn::Inside
@@ -4717,6 +5011,7 @@ impl Extrusion {
         let mm = length.unwrap_or(self.retract_mm);
         match self.travel_in {
             TravelIn::Unchecked => (mm, self.retract_min_travel),
+            TravelIn::Open => (mm, self.retract_min_travel.max(OPEN_AIR_RETRACT_MIN_MM)),
             TravelIn::Inside => (0.0, self.retract_min_travel),
             TravelIn::Blocked => (mm, 0.0),
         }
@@ -4725,6 +5020,7 @@ impl Extrusion {
 
 enum Comb {
     Clear,
+    Open,
     Routed(Vec<[f64; 2]>),
     Blocked,
 }
@@ -4736,6 +5032,10 @@ struct Combing<'a> {
     solid: Outline<'a>,
     enabled: bool,
     islands: Vec<CombIsland>,
+    /// The solid grown by the combing inset. A travel that stays out of it
+    /// is in open air; empty when combing is off.
+    grown: Outline<'static>,
+    open_air: bool,
 }
 
 struct CombIsland {
@@ -4773,11 +5073,27 @@ impl<'a> Combing<'a> {
                 island.inset = Outline::owned(inset);
             }
         }
+        let grown = if combing {
+            Outline::owned(offset_loops(solid, inset.abs()))
+        } else {
+            Outline::owned(Vec::new())
+        };
         Self {
             solid: Outline::new(solid),
             enabled,
             islands,
+            grown,
+            open_air: combing,
         }
+    }
+
+    /// Both ends and every point between lie clear of the part by the combing
+    /// inset, so the nozzle passes no wall on the way.
+    fn open_air(&self, a: [f64; 2], b: [f64; 2]) -> bool {
+        self.open_air
+            && !self.grown.contains(a)
+            && !self.grown.contains(b)
+            && !self.grown.meets(a, b)
     }
 
     fn island_of(&self, p: [f64; 2]) -> Option<usize> {
@@ -4914,6 +5230,9 @@ fn comb_between(comb: &Combing, from: [f64; 2], to: [f64; 2]) -> Comb {
     }
     if comb.solid.route_inside(from, to) {
         return Comb::Clear;
+    }
+    if comb.open_air(from, to) {
+        return Comb::Open;
     }
     if !comb.enabled {
         return Comb::Blocked;
@@ -5056,7 +5375,7 @@ pub fn apply_z_hop(
                 true
             } else {
                 let blocked = path.travel_in != TravelIn::Inside && path.retract_mm > 0.0;
-                blocked && chain_crosses(&chain, &solid, &printed)
+                blocked && chain_crosses(&chain, &solid, &printed, path.travel_in == TravelIn::Open)
             };
             if hop {
                 path.z_hop = height;
@@ -5075,8 +5394,16 @@ pub fn apply_z_hop(
     }
 }
 
-fn chain_crosses(chain: &[[f64; 2]], solid: &Outline, printed: &[([f64; 2], [f64; 2])]) -> bool {
-    let leaves = chain.windows(2).any(|w| !solid.segment_inside(w[0], w[1]));
+/// Whether a travel would drag across the part or a wall printed this layer.
+/// A travel known to run in open air leaves the part by definition, so it
+/// counts only when it passes close to a printed wall.
+fn chain_crosses(
+    chain: &[[f64; 2]],
+    solid: &Outline,
+    printed: &[([f64; 2], [f64; 2])],
+    open_air: bool,
+) -> bool {
+    let leaves = !open_air && chain.windows(2).any(|w| !solid.segment_inside(w[0], w[1]));
     if leaves {
         return true;
     }
@@ -5209,6 +5536,20 @@ impl<'a> Outline<'a> {
             n >= 2 && (0..n).any(|i| segment_meets(a, b, l[i], l[(i + 1) % n]))
         });
         !meets && self.contains([(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5])
+    }
+
+    /// `a..b` shares a point with the boundary other than its own ends.
+    fn meets(&self, a: [f64; 2], b: [f64; 2]) -> bool {
+        if let Some(cells) = self.cells() {
+            return cells.near(a, b).any(|(l, k)| {
+                let (c, d) = self.edge(l, k);
+                self.loop_meets(l, a, b) && segment_meets(a, b, c, d)
+            });
+        }
+        self.touching(a, b).any(|l| {
+            let n = l.len();
+            n >= 2 && (0..n).any(|i| segment_meets(a, b, l[i], l[(i + 1) % n]))
+        })
     }
 
     /// A link that crosses no boundary and whose midpoint is inside, or just
@@ -5777,6 +6118,184 @@ mod travel_tests {
 
     fn square_at(x: f64, y: f64, size: f64) -> Loop {
         vec![[x, y], [x + size, y], [x + size, y + size], [x, y + size]]
+    }
+
+    fn support(pts: Vec<[f64; 2]>) -> Extrusion {
+        path(PathKind::Support, pts)
+    }
+
+    /// A 10 mm square of part with supports around it.
+    fn combed_supports(paths: Vec<Extrusion>) -> Vec<Extrusion> {
+        let mut paths = paths;
+        comb_layer(&mut paths, &[square_at(0.0, 0.0, 10.0)], true, 0.36, None);
+        paths
+    }
+
+    #[test]
+    fn a_support_travel_in_open_air_retracts_only_past_fifteen_millimetres() {
+        let paths = combed_supports(vec![
+            support(vec![[20.0, 0.0], [20.4, 0.0]]),
+            support(vec![[20.8, 0.0], [21.2, 0.0]]),
+            support(vec![[30.0, 0.0], [30.4, 0.0]]),
+        ]);
+        assert_eq!(paths[1].travel_in, TravelIn::Open);
+        assert_eq!(paths[2].travel_in, TravelIn::Open);
+        assert_eq!(paths[1].travel_retract(None), (0.35, 15.0));
+        assert_eq!(paths[2].travel_retract(None), (0.35, 15.0));
+    }
+
+    #[test]
+    fn a_support_travel_across_the_part_still_retracts_every_time() {
+        let paths = combed_supports(vec![
+            support(vec![[-5.0, 5.0], [-4.6, 5.0]]),
+            support(vec![[15.0, 5.0], [15.4, 5.0]]),
+        ]);
+        assert_eq!(paths[1].travel_in, TravelIn::Blocked);
+        assert_eq!(paths[1].travel_retract(None), (0.35, 0.0));
+    }
+
+    #[test]
+    fn a_support_travel_that_ends_against_a_wall_retracts() {
+        let paths = combed_supports(vec![
+            support(vec![[20.0, 5.0], [20.4, 5.0]]),
+            support(vec![[10.2, 5.0], [10.6, 5.0]]),
+        ]);
+        assert_eq!(paths[1].travel_in, TravelIn::Blocked);
+    }
+
+    #[test]
+    fn a_travel_in_open_air_does_not_hop_unless_it_passes_a_printed_wall() {
+        use crate::strategy::ZHopMode;
+        let solid = vec![square_at(0.0, 0.0, 10.0)];
+        let mut paths = vec![
+            support(vec![[20.0, 0.0], [20.4, 0.0]]),
+            support(vec![[26.0, 0.0], [26.4, 0.0]]),
+        ];
+        for p in &mut paths {
+            p.strategy = StrategyId::Toughness;
+        }
+        comb_layer(&mut paths, &solid, true, 0.36, None);
+        apply_z_hop(&mut paths, &solid, &[], ZHopMode::Smart, 0.4, 2.0, false);
+        assert_eq!(paths[1].z_hop, 0.0);
+        // The same travel, blocked by the part, hops.
+        let mut across = vec![
+            support(vec![[-5.0, 5.0], [-4.6, 5.0]]),
+            support(vec![[15.0, 5.0], [15.4, 5.0]]),
+        ];
+        for p in &mut across {
+            p.strategy = StrategyId::Toughness;
+        }
+        comb_layer(&mut across, &solid, true, 0.36, None);
+        apply_z_hop(&mut across, &solid, &[], ZHopMode::Smart, 0.4, 2.0, false);
+        assert_eq!(across[1].z_hop, 0.4);
+    }
+
+    /// Travel between loops of 0.4 mm radius, as `order_supports` orders them from
+    /// the middle of a 40 mm square.
+    fn walked_over_loops(count: usize, seed: u64) -> f64 {
+        let mut state = seed;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as f64 / (1u64 << 31) as f64 * 40.0
+        };
+        let mut paths: Vec<Extrusion> = (0..count)
+            .map(|_| support(circle_pts([next(), next()], 0.4)))
+            .collect();
+        let mut at = [20.0, 20.0];
+        order_supports(&mut paths, Some(at), None, None);
+        let mut walked = 0.0;
+        for path in &paths {
+            walked += dist_mm(at, path.points[0]);
+            at = *path.points.last().unwrap();
+        }
+        walked
+    }
+
+    #[test]
+    fn support_loops_are_visited_in_a_short_order() {
+        let walked: f64 = (1..=6).map(|seed| walked_over_loops(60, seed)).sum();
+        // Nearest-neighbour with relocations walks 1490 mm here; 2-opt and
+        // moving short runs of loops brings it to 1410.
+        assert!(walked < 1450.0, "walked {walked:.1} mm");
+    }
+
+    #[test]
+    fn supports_end_nearest_the_path_that_prints_after_them() {
+        let loops = |at: [f64; 2], to: Option<[f64; 2]>| {
+            let mut paths: Vec<Extrusion> = [10.0, 20.0, 30.0]
+                .iter()
+                .map(|&x| support(circle_pts([x, 0.0], 0.4)))
+                .collect();
+            order_supports(&mut paths, Some(at), to, None);
+            paths
+                .iter()
+                .map(|p| p.points[0][0].round())
+                .collect::<Vec<_>>()
+        };
+        // From the right of the middle one, the shortest walk takes the far
+        // end first and finishes at the left.
+        assert_eq!(loops([24.0, 5.0], None), vec![30.0, 20.0, 10.0]);
+        // With the part starting 30 mm further right it finishes there instead.
+        assert_eq!(
+            loops([24.0, 5.0], Some([60.0, 0.0])),
+            vec![10.0, 20.0, 30.0]
+        );
+    }
+
+    /// A square wall loop of `size` mm at (`x`, 0), outer or inner.
+    fn wall(kind: PathKind, x: f64, size: f64) -> Extrusion {
+        path(kind, ring(x, 0.0, size))
+    }
+
+    fn kinds_in_order(paths: &[Extrusion]) -> Vec<(PathKind, i64)> {
+        paths
+            .iter()
+            .map(|p| (p.kind, p.points[0][0].round() as i64 / 10 * 10))
+            .collect()
+    }
+
+    #[test]
+    fn two_wall_stacks_far_apart_print_one_after_the_other() {
+        // One island: both squares sit in one 72 mm slab. Plan order is every
+        // outer wall, then every inner wall.
+        let solid = vec![vec![[-1.0, -1.0], [71.0, -1.0], [71.0, 11.0], [-1.0, 11.0]]];
+        let paths = vec![
+            wall(PathKind::Outer, 0.0, 10.0),
+            wall(PathKind::Outer, 60.0, 10.0),
+            wall(PathKind::Inner, 0.45, 9.1),
+            wall(PathKind::Inner, 60.45, 9.1),
+        ];
+        let (out, _) = PartLayout::new(paths, &solid).tour(Some([0.0, 0.0]), None);
+        assert_eq!(
+            kinds_in_order(&out),
+            vec![
+                (PathKind::Outer, 0),
+                (PathKind::Inner, 0),
+                (PathKind::Outer, 60),
+                (PathKind::Inner, 60),
+            ]
+        );
+    }
+
+    #[test]
+    fn one_wall_stack_keeps_the_plan_order() {
+        let solid = vec![vec![[-1.0, -1.0], [12.0, -1.0], [12.0, 11.0], [-1.0, 11.0]]];
+        let paths = vec![
+            wall(PathKind::Outer, 0.0, 10.0),
+            wall(PathKind::Inner, 0.45, 9.1),
+            wall(PathKind::Inner, 0.9, 8.2),
+        ];
+        let (out, _) = PartLayout::new(paths, &solid).tour(Some([0.0, 0.0]), None);
+        assert_eq!(
+            kinds_in_order(&out),
+            vec![
+                (PathKind::Outer, 0),
+                (PathKind::Inner, 0),
+                (PathKind::Inner, 0)
+            ]
+        );
     }
 
     #[test]
