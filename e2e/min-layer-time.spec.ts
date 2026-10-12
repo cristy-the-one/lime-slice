@@ -30,23 +30,24 @@ test("the minimum layer time sits in Speed & travel, is always sent, and stales 
   await page.locator("#levelPick").selectOption("advanced");
   await loadCube(page);
 
+  // Off by default: slowing every short layer can turn a long belt print into days.
   const group = page.locator('#left .group[data-group="speed"]');
-  await expect(group.locator("#minlayer")).toHaveValue("8");
-  await expect(group.locator("#minlayerspd")).toBeHidden();
+  await expect(group.locator("#minlayer")).toHaveValue("0");
   await expect(group.locator('[data-tip*="plastic can cool"]')).toHaveCount(1);
   await page.locator("#levelPick").selectOption("expert");
-  await expect(group.locator("#minlayerspd")).toBeVisible();
-  await expect(group.locator("#minlayerspd")).toHaveValue("15");
+  await expect(group.locator("#minlayerspd")).toHaveCount(0);
 
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(1);
   await expect(page.locator("#slice")).toBeEnabled();
-  expect(bodies[0]).toMatchObject({ minLayerTimeS: 8, minLayerSpeedMmS: 15 });
+  expect(bodies[0]).toMatchObject({ minLayerTimeS: 0 });
   await expect(page.locator("#stage")).not.toHaveClass(/stale/);
 
   await page.locator("#minlayer").fill("12");
   await page.locator("#minlayer").blur();
   await expect(page.locator("#stage")).toHaveClass(/stale/);
+  await expect(group.locator("#minlayerspd")).toBeVisible();
+  await expect(group.locator("#minlayerspd")).toHaveValue("15");
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(2);
   expect(bodies[1]).toMatchObject({ minLayerTimeS: 12, minLayerSpeedMmS: 15 });

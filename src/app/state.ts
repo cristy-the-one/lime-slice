@@ -211,7 +211,7 @@ export const state = {
   zHop: "blend" as "off" | "blend" | "always" | "smart",
   zHopHeight: 0.4,
   zHopMinTravel: 2,
-  minLayerTimeS: 8,
+  minLayerTimeS: 0,
   minLayerSpeedMmS: 15,
   paStart: 0,
   paEnd: 0.08,
