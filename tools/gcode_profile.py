@@ -11,7 +11,9 @@ firmware smoothing, and dwell. Arcs (G2/G3 with I/J) are timed by their length.
 
 The feature is the last `;TYPE:` (Orca, Prusa, Cura) or `; TYPE:` (Lime Slice)
 comment. A move with E > 0 counts to that feature, E == 0 is travel, E < 0 is a
-retract or wipe. Relative (M83) and absolute (M82) E both work.
+retract or wipe. A retract or prime stops the toolhead on both sides, as Klipper does
+for an extruder-only move, and is timed at its own feed; with --travel-by-feature it
+is listed as "Retract in <feature>". Relative (M83) and absolute (M82) E both work.
 
 Options:
   --max-speed X=500,Y=500,Z=12   per-axis speed caps, mm/s (default: none)
@@ -126,6 +128,18 @@ def profile(path, caps, max_accel, jd, fil_d, travel_by_feature):
                 if length < 1e-9:
                     if e < 0:
                         retracts += 1
+                    if e != 0:
+                        # Klipper does not blend an extruder-only move into the moves
+                        # around it: the toolhead stops before it and starts after it.
+                        if pending:
+                            pk, plen, pv, pa, pd, pin = pending
+                            stats[pk][2] += trapezoid(plen, pv, pa, pin, 0.0)
+                            pending = None
+                        k = f"Retract in {kind}" if travel_by_feature else "Retract"
+                        st = stats[k]
+                        st[2] += abs(e) / (feed / 60)
+                        st[1] += abs(e) / (feed / 60)
+                        st[3] += 1
                     pos = target
                     continue
                 d = [c / chord for c in delta] if chord > 1e-9 else [0.0, 0.0, 1.0]
