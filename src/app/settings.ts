@@ -811,7 +811,9 @@ export function layerReadout() {
     ["Layer", `${layer.index + 1} / ${state.result?.layers.length}`],
     ["Z", `${layer.z.toFixed(2)} mm`],
     ["Height", `${layer.height.toFixed(3)} mm`],
-    ["Layer time", `${formatDuration(layer.seconds ?? 0)}${layer.slow !== undefined && layer.slow < 1 ? " (slowed for cooling)" : ""}`],
+    ["Layer time", formatDuration(layer.seconds ?? 0)],
+    // Its own short row, so the readout fits a narrow results panel.
+    ...(layer.slow !== undefined && layer.slow < 1 ? [["Cooling", `slowed ×${layer.slow.toFixed(2)}`] as [string, string]] : []),
     ["Cumulative", formatDuration(below + (layer.seconds ?? 0))],
   ])}${layer.note ? `<p class="layer-note" data-level="advanced">${escapeHtml(layer.note)}</p>` : ""}`;
 }
