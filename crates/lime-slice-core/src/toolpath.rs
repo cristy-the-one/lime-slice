@@ -4162,7 +4162,12 @@ fn walk_cost(
     rotate: bool,
     to: Option<[f64; 2]>,
 ) -> f64 {
-    tour_cost(&build_dirs(paths, order, cursor, has, rotate), cursor, has, to)
+    tour_cost(
+        &build_dirs(paths, order, cursor, has, rotate),
+        cursor,
+        has,
+        to,
+    )
 }
 
 fn build_dirs(
@@ -4928,7 +4933,10 @@ impl<'a> Combing<'a> {
     /// Both ends and every point between lie clear of the part by the combing
     /// inset, so the nozzle passes no wall on the way.
     fn open_air(&self, a: [f64; 2], b: [f64; 2]) -> bool {
-        self.open_air && !self.grown.contains(a) && !self.grown.contains(b) && !self.grown.meets(a, b)
+        self.open_air
+            && !self.grown.contains(a)
+            && !self.grown.contains(b)
+            && !self.grown.meets(a, b)
     }
 
     fn island_of(&self, p: [f64; 2]) -> Option<usize> {
@@ -6064,13 +6072,19 @@ mod travel_tests {
                 .map(|&x| support(circle_pts([x, 0.0], 0.4)))
                 .collect();
             order_supports(&mut paths, Some(at), to, None);
-            paths.iter().map(|p| p.points[0][0].round()).collect::<Vec<_>>()
+            paths
+                .iter()
+                .map(|p| p.points[0][0].round())
+                .collect::<Vec<_>>()
         };
         // From the right of the middle one, the shortest walk takes the far
         // end first and finishes at the left.
         assert_eq!(loops([24.0, 5.0], None), vec![30.0, 20.0, 10.0]);
         // With the part starting 30 mm further right it finishes there instead.
-        assert_eq!(loops([24.0, 5.0], Some([60.0, 0.0])), vec![10.0, 20.0, 30.0]);
+        assert_eq!(
+            loops([24.0, 5.0], Some([60.0, 0.0])),
+            vec![10.0, 20.0, 30.0]
+        );
     }
 
     #[test]

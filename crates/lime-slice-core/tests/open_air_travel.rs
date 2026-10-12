@@ -9,7 +9,10 @@ use serde_json::{json, Value};
 const MIN_TRAVEL_MM: f64 = 15.0;
 
 fn ledge_gcode(combing: bool) -> String {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../samples/overhang_ledge.stl");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../samples/overhang_ledge.stl"
+    );
     let data = base64::engine::general_purpose::STANDARD.encode(std::fs::read(path).unwrap());
     let req = json!({
         "filename": "overhang_ledge.stl",
