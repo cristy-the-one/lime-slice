@@ -192,7 +192,6 @@ input.switch:checked::after { transform: translateX(13px); background: var(--on-
 .seg-opt:hover { color: var(--text); }
 .seg-opt:has(input:checked) { background: color-mix(in srgb, var(--accent) 80%, #000); color: var(--on-accent); }
 .seg-opt:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
-.row-hint { margin: 0 0 var(--space-1); font-size: var(--fs-2); color: var(--text-faint); line-height: 1.4; }
 
 /* Strategy rows */
 .strat-list { display: grid; gap: 3px; padding-top: var(--space-2); }

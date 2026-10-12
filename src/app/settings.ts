@@ -511,7 +511,7 @@ const CUSTOM: Record<string, () => string> = {
   modifiers: () => `<div class="subhead" data-tip="${escapeHtml(OVERRIDES_TIP)}">Modifiers</div>${overrideSectionHtml(state.overrides, state.selectedVolumeId, state.modifierTool)}`,
   seamTools: () => toolRow([{ id: "seamPaintBtn", tool: "seam", label: "Paint seam", command: "paint-seam" }]),
   // Painted only has nothing to edit until paint asks for it, so Paint leads, right under the choice.
-  supportPaintTools: () => `${toolRow([PAINT_SUPPORTS])}<p class="row-hint">Supports grow only where you paint Enforce. Block stops them inside it.</p>`,
+  supportPaintTools: () => toolRow([{ ...PAINT_SUPPORTS, tip: "Supports grow only where you paint Enforce. Block stops them inside it." }]),
   supportTools: () => toolRow(supportModeOf(state) === "paint" ? [EDIT_TREES] : [PAINT_SUPPORTS, EDIT_TREES]),
   machine: machineHtml,
 };
@@ -576,8 +576,8 @@ function icon(node: IconNode): string {
   return createElement(node, { width: 16, height: 16, "aria-hidden": "true", class: "ico" }).outerHTML;
 }
 
-function toolRow(buttons: { id: string; tool: string; label: string; command: string }[]): string {
-  return `<div class="row-tools">${buttons.map((b) => `<button class="btn" id="${b.id}" type="button" data-rail-tool="${b.tool}">${escapeHtml(b.label)} ${kbdHtml(b.command)}</button>`).join("")}</div>`;
+function toolRow(buttons: { id: string; tool: string; label: string; command: string; tip?: string }[]): string {
+  return `<div class="row-tools">${buttons.map((b) => `<button class="btn" id="${b.id}" type="button" data-rail-tool="${b.tool}"${b.tip ? ` data-tip="${escapeHtml(b.tip)}"` : ""}>${escapeHtml(b.label)} ${kbdHtml(b.command)}</button>`).join("")}</div>`;
 }
 
 function objectToolsHtml(): string {

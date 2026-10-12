@@ -105,6 +105,9 @@ test("in Painted only the Paint button sits right under the control and opens th
     return row.nextElementSibling?.querySelector("#paintSupportsBtn") != null;
   });
   expect(under, "Paint is the next row after the control").toBe(true);
+  // How painting works is in the button's tooltip, not in prose under it.
+  await expect(group(page).locator("#paintSupportsBtn")).toHaveAttribute("data-tip", /only where you paint Enforce/);
+  await expect(group(page).locator(".row-hint")).toHaveCount(0);
   await expect(group(page).locator("#editTreesBtn")).toHaveCount(1);
   await group(page).locator("#paintSupportsBtn").click();
   await expect(page.locator("#paintBar")).toBeVisible();
