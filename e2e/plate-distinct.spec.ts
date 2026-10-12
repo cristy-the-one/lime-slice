@@ -183,6 +183,190 @@ test("add reads a STEP at the chord on screen", async ({ page }) => {
   await expect.poll(() => meshCalls.some((call) => call.filename === "clip.step" && call.stepToleranceMm === 0.25)).toBe(true);
 });
 
+async function dropFiles(page: Page, files: { name: string; buffer: Buffer }[], shift: boolean) {
+  const payload = files.map((file) => ({ name: file.name, b64: file.buffer.toString("base64") }));
+  await page.evaluate(({ payload, shift }) => {
+    const transfer = new DataTransfer();
+    for (const item of payload) {
+      const bytes = Uint8Array.from(atob(item.b64), (c) => c.charCodeAt(0));
+      transfer.items.add(new File([bytes], item.name));
+    }
+    document.querySelector(".app")!.dispatchEvent(new DragEvent("drop", {
+      bubbles: true,
+      cancelable: true,
+      shiftKey: shift,
+      dataTransfer: transfer,
+    }));
+  }, { payload, shift });
+}
+
+function stl(name: string) {
+  return { name, buffer: fs.readFileSync(path.resolve("samples", name)) };
+}
+
+async function artifact(page: Page, name: string) {
+  try {
+    fs.mkdirSync("/opt/cursor/artifacts", { recursive: true });
+    await page.screenshot({ path: path.join("/opt/cursor/artifacts", name) });
+  } catch {
+    // Review shots are local to this machine.
+  }
+}
+
+test("Shift+drop adds a second mesh and one undo removes it", async ({ page }) => {
+  await quiet(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await loadCube(page);
+  const placeX = await page.locator("#placeX").inputValue();
+  const placeY = await page.locator("#placeY").inputValue();
+
+  await dropFiles(page, [stl("overhang_ledge.stl")], true);
+  await expect(page.locator("[data-plate-id]")).toHaveCount(2);
+  await expect(page.locator("[data-selected='true']")).toContainText("overhang_ledge.stl");
+  await expect(page.locator("[data-selected='true'] span").first()).toHaveText("48 × 24 × 16 mm");
+  await expect(page.locator("[data-plate-id='part'] span").first()).toHaveText("20 × 20 × 20 mm");
+  await expect(page.locator("#plateOverlap")).toHaveCount(0);
+  await artifact(page, "shift_drop_second_mesh.png");
+
+  // Selecting the original part is its own undo, and shows that the add left it where it was.
+  await page.locator("[data-plate-select='part']").click();
+  await expect(page.locator("#placeX")).toHaveValue(placeX);
+  await expect(page.locator("#placeY")).toHaveValue(placeY);
+  await page.keyboard.press("Control+z");
+  await expect(page.locator("[data-plate-id]")).toHaveCount(2);
+  await expect(page.locator("[data-selected='true']")).toContainText("overhang_ledge.stl");
+
+  await page.keyboard.press("Control+z");
+  await expect(page.locator("[data-plate-id]")).toHaveCount(1);
+  await expect(page.locator("[data-plate-id='part']")).toContainText("calibration_cube_20mm.stl");
+  await expect(page.locator("#placeX")).toHaveValue(placeX);
+  await expect(page.locator("#placeY")).toHaveValue(placeY);
+});
+
+test("two Shift+dropped meshes undo one at a time", async ({ page }) => {
+  await quiet(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await loadCube(page);
+  await dropFiles(page, [stl("overhang_ledge.stl"), stl("bridge_span.stl")], true);
+  await expect(page.locator("[data-plate-id]")).toHaveCount(3);
+  await expect(page.locator("[data-selected='true']")).toContainText("bridge_span.stl");
+  await expect(page.locator("[data-selected='true'] span").first()).toHaveText("30 × 16 × 10 mm");
+  await expect(page.locator("[data-plate-id]").filter({ hasText: "overhang_ledge.stl" })).toHaveCount(1);
+  await expect(page.locator("#plateOverlap")).toHaveCount(0);
+
+  await page.keyboard.press("Control+z");
+  await expect(page.locator("[data-plate-id]")).toHaveCount(2);
+  await expect(page.locator("#objectList")).not.toContainText("bridge_span.stl");
+  await expect(page.locator("[data-selected='true']")).toContainText("overhang_ledge.stl");
+  await expect(page.locator("[data-plate-id='part'] span").first()).toHaveText("20 × 20 × 20 mm");
+
+  await page.keyboard.press("Control+z");
+  await expect(page.locator("[data-plate-id]")).toHaveCount(1);
+  await expect(page.locator("[data-plate-id='part']")).toContainText("calibration_cube_20mm.stl");
+});
+
+test("a plain drop still replaces the plate", async ({ page }) => {
+  await quiet(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await loadCube(page);
+  await page.locator("#plateAddFile").setInputFiles("samples/overhang_ledge.stl");
+  await expect(page.locator("[data-plate-id]")).toHaveCount(2);
+  page.once("dialog", (dialog) => void dialog.accept());
+  await dropFiles(page, [stl("bridge_span.stl"), stl("overhang_ledge.stl")], false);
+  await expect(page.locator("[data-plate-id]")).toHaveCount(1);
+  await expect(page.locator("[data-plate-id='part']")).toContainText("bridge_span.stl");
+  await expect(page.locator("[data-plate-id='part'] span").first()).toHaveText("30 × 16 × 10 mm");
+  await expect(page.locator("#objectList")).not.toContainText("overhang_ledge.stl");
+  await expect(page.locator("#objectList")).not.toContainText("calibration_cube_20mm.stl");
+  await artifact(page, "plain_drop_replaces.png");
+});
+
+test("an empty scene ignores Shift and opens the file", async ({ page }) => {
+  await quiet(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await expect(page.locator("#previewBody .empty-drop")).toBeVisible();
+  await dropFiles(page, [stl("calibration_cube_20mm.stl"), stl("overhang_ledge.stl")], true);
+  await expect(page.locator("[data-plate-id]")).toHaveCount(1);
+  await expect(page.locator("[data-plate-id='part']")).toContainText("calibration_cube_20mm.stl");
+  await expect(page.locator("[data-plate-id='part'] span").first()).toHaveText("20 × 20 × 20 mm");
+  await expect(page.locator("#objectList")).not.toContainText("overhang_ledge.stl");
+  await expect(page.locator(".toast")).toHaveCount(0);
+  await artifact(page, "empty_shift_drop_opens.png");
+});
+
+test("a dropped project is not an object, and a failed read adds nothing", async ({ page }) => {
+  await quiet(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await loadCube(page);
+  await dropFiles(page, [{ name: "job.lime", buffer: Buffer.from("{\"version\":2}") }], true);
+  await expect(page.locator(".toast")).toContainText("Open a project from the File menu.");
+  await expect(page.locator("[data-plate-id]")).toHaveCount(1);
+  await expect(page.locator("[data-plate-id='part']")).toContainText("calibration_cube_20mm.stl");
+
+  await dropFiles(page, [{ name: "notes.stl", buffer: Buffer.from("this is not a mesh") }], true);
+  await expect(page.locator(".toast-error")).toContainText("Could not read notes.stl");
+  await expect(page.locator("[data-plate-id]")).toHaveCount(1);
+  await page.keyboard.press("Control+z");
+  await expect(page.locator("[data-plate-id]")).toHaveCount(1);
+  await expect(page.locator("[data-plate-id='part']")).toContainText("calibration_cube_20mm.stl");
+});
+
+test("Shift+drop reads STEP at the chord on screen, and a late preview after replace is dropped", async ({ page }) => {
+  const meshCalls: { filename?: string; stepToleranceMm?: number }[] = [];
+  let releaseMesh = () => {};
+  const lateHeld = new Promise<void>((resolve) => {
+    releaseMesh = resolve;
+  });
+  await quiet(page);
+  await page.route("**/api/mesh", async (route) => {
+    const body = route.request().postDataJSON() as { filename?: string; stepToleranceMm?: number };
+    meshCalls.push(body);
+    if (body.filename === "late.step") await lateHeld;
+    await route.fulfill({ json: { positions: [0, 0, 0, 30, 0, 0, 0, 12, 8] } });
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await loadCube(page);
+
+  await dropFiles(page, [{ name: "bracket.step", buffer: Buffer.from("ISO-10303-21;") }], true);
+  await expect(page.locator("[data-plate-id]")).toHaveCount(2);
+  await expect(page.locator("[data-selected='true']")).toContainText("bracket.step");
+  expect(meshCalls[0]).toMatchObject({ filename: "bracket.step", stepToleranceMm: 0.1 });
+
+  await page.locator("#stepTol").fill("0.25");
+  await page.locator("#stepTol").blur();
+  await expect.poll(() => meshCalls.filter((call) => call.filename === "bracket.step" && call.stepToleranceMm === 0.25).length).toBeGreaterThan(0);
+  await dropFiles(page, [{ name: "clip.step", buffer: Buffer.from("ISO-10303-21;") }], true);
+  await expect(page.locator("[data-plate-id]")).toHaveCount(3);
+  await expect.poll(() => meshCalls.some((call) => call.filename === "clip.step" && call.stepToleranceMm === 0.25)).toBe(true);
+
+  const late = page.waitForRequest("**/api/mesh");
+  await dropFiles(page, [{ name: "late.step", buffer: Buffer.from("ISO-10303-21;") }], true);
+  await late;
+  page.once("dialog", (dialog) => void dialog.accept());
+  await dropFiles(page, [stl("bridge_span.stl")], false);
+  await expect(page.locator("[data-plate-id]")).toHaveCount(1);
+  await expect(page.locator("[data-plate-id='part']")).toContainText("bridge_span.stl");
+  const replied = page.waitForResponse((response) => response.url().includes("/api/mesh") && response.request().postDataJSON()?.filename === "late.step");
+  releaseMesh();
+  await replied;
+  await page.waitForTimeout(100);
+  await expect(page.locator("[data-plate-id]")).toHaveCount(1);
+  await expect(page.locator("#objectList")).toContainText("bridge_span.stl");
+  await expect(page.locator("#objectList")).not.toContainText("late.step");
+});
+
 test("File > Open still replaces the plate", async ({ page }) => {
   await quiet(page);
   await page.setViewportSize({ width: 1440, height: 900 });
