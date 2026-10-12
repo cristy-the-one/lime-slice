@@ -6,6 +6,7 @@ import { bytesToBase64 } from "../base64";
 import { needsEngine, apiBase, apiToken, markEngineDown, isStepName, renderChrome, markStale, stale, card, shownGrams } from "./settings";
 import { withFooterGrams } from "../estimate";
 import { legacyStockEnd, legacyStockStart, spliceText, withMachineGcode } from "../machine-gcode";
+import { withPrintMeta } from "../print-meta";
 import { activeHeat, loadMachineLibrary } from "./machine-library";
 import { heatNotes, selection } from "../ui/machine-library";
 import type { SliceResponse } from "./state";
@@ -300,6 +301,8 @@ export function withMeshData(req: Record<string, unknown>): Record<string, unkno
   return { ...req, objects: objects.map((o) => ({ ...o, dataB64: objectBase64(live.get(o.id)!) })) };
 }
 
+const APP_VERSION: string = __APP_VERSION__;
+
 export function isTauri() {
   return !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
 }
@@ -335,22 +338,38 @@ export async function fetchStoredGcode(token: string) {
   return res.text();
 }
 
-/** The G-code to print: the engine's, with the footer's grams at the profile's density, then the printer's start and end text. */
+/** The G-code to print: the engine's, with the footer's grams at the profile's density, then progress and estimates, then the printer's start and end text. */
 export async function printableGcode(result: SliceResponse) {
   const text = await fx.loadGcode(result);
   if (!text) return text;
-  return withPrinterGcode(withFooterGrams(text, shownGrams(result)));
+  const seconds = result.layers.map((layer) => layer.seconds);
+  const known = seconds.length > 0 && seconds.every((s): s is number => s !== undefined);
+  return withPrinterGcode(withFooterGrams(text, shownGrams(result)), { layerSeconds: known ? seconds : [], layerHeight: state.layerHeight });
 }
 
-/** `gcode` with the selected printer's start and end text, as Export and Send write it. */
-export function withPrinterGcode(gcode: string) {
+/** What a slice knows that a calibration file does not: its layer times and height. */
+interface RunMeta {
+  layerSeconds: readonly number[];
+  layerHeight: number;
+}
+
+/** `gcode` with the print metadata printers read and the selected printer's start and end text, as Export and Send write it. */
+export function withPrinterGcode(gcode: string, run?: RunMeta) {
   const library = loadMachineLibrary();
   const picked = selection(library);
-  if (!picked) return gcode;
+  const stamped = withPrintMeta(gcode, {
+    now: new Date(),
+    version: APP_VERSION,
+    layerSeconds: run?.layerSeconds ?? [],
+    layerHeight: run?.layerHeight,
+    nozzleDiameter: picked ? library.nozzleMm : undefined,
+    filamentType: picked && picked.filament.material !== "Saved" ? picked.filament.material : undefined,
+  });
+  if (!picked) return stamped;
   // The engine was sent the capped temperatures, so the file already carries them.
   const heat = activeHeat(library);
   return withMachineGcode(
-    gcode,
+    stamped,
     spliceText(picked.printer.startGcode, legacyStockStart(picked.printer.name)),
     spliceText(picked.printer.endGcode, legacyStockEnd(picked.printer.name)),
     { startOwnsHoming: picked.printer.startOwnsHoming, heat, notes: heatNotes(heat) },

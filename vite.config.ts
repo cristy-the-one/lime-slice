@@ -29,6 +29,7 @@ function serveSamples(): Plugin {
   };
 }
 
+const appVersion: string = JSON.parse(fs.readFileSync(path.resolve(__dirname, "package.json"), "utf8")).version;
 const devHost = process.env.LIME_DEV_HOST || "127.0.0.1";
 
 export default defineConfig({
@@ -44,6 +45,7 @@ export default defineConfig({
     port: 43117,
     strictPort: true,
   },
+  define: { __APP_VERSION__: JSON.stringify(appVersion) },
   envPrefix: ["VITE_", "TAURI_"],
   build: {
     target: "es2022",
