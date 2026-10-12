@@ -2498,6 +2498,7 @@ struct KeptPlate {
 /// request's `previewBase` is the preview the engine last drew from the same
 /// cuts under the same blends and flow cap, only the layers that differ go
 /// back, as a patch.
+#[allow(clippy::too_many_arguments)]
 fn preview(
     planned: &Arc<Vec<PlateLayer>>,
     kept: Option<KeptPlate>,

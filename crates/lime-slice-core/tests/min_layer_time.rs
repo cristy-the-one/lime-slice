@@ -97,7 +97,11 @@ fn a_small_cube_takes_at_least_the_minimum_on_every_layer() {
     let mut slowed = 0;
     for (layer, was) in response.layers.iter().zip(&plain.layers) {
         if was.seconds >= 4.0 {
-            assert_eq!(layer.seconds, was.seconds, "layer {} was already slow enough", layer.index);
+            assert_eq!(
+                layer.seconds, was.seconds,
+                "layer {} was already slow enough",
+                layer.index
+            );
             continue;
         }
         slowed += 1;
@@ -131,9 +135,14 @@ fn no_extrusion_goes_below_the_floor_and_travel_keeps_its_feed() {
         "something prints at the floor"
     );
     // The floor never speeds a path up: the first layer's 30 mm/s paths stay at or under 30.
-    assert!(printing.iter().all(|f| *f <= plain_printing.iter().cloned().fold(0.0, f64::max) + 1e-6));
+    assert!(printing
+        .iter()
+        .all(|f| *f <= plain_printing.iter().cloned().fold(0.0, f64::max) + 1e-6));
     let mut travel_set: Vec<i64> = travelling.iter().map(|f| (f * 1000.0) as i64).collect();
-    let mut plain_set: Vec<i64> = plain_travelling.iter().map(|f| (f * 1000.0) as i64).collect();
+    let mut plain_set: Vec<i64> = plain_travelling
+        .iter()
+        .map(|f| (f * 1000.0) as i64)
+        .collect();
     travel_set.sort_unstable();
     travel_set.dedup();
     plain_set.sort_unstable();
@@ -155,7 +164,11 @@ fn a_slowed_layer_says_so_and_a_free_layer_does_not() {
     for (line, layer) in tagged.iter().zip(&response.layers) {
         if layer.slow < 1.0 {
             slowed += 1;
-            assert!(layer.slow > 0.0 && line.contains(" slow ×0."), "{line} {}", layer.slow);
+            assert!(
+                layer.slow > 0.0 && line.contains(" slow ×0."),
+                "{line} {}",
+                layer.slow
+            );
         } else {
             assert!(!line.contains(" slow "), "{line}");
         }
@@ -237,8 +250,8 @@ fn the_fields_are_plate_settings_and_are_checked() {
         json!({ "minLayerTimeS": 8.0, "minLayerSpeedMmS": 0.5 }),
         json!({ "minLayerTimeS": 8.0, "minLayerSpeedMmS": 400.0 }),
     ] {
-        let err = slice_request(&request([10.0, 10.0, 1.0], extra.clone()), Job::default())
-            .unwrap_err();
+        let err =
+            slice_request(&request([10.0, 10.0, 1.0], extra.clone()), Job::default()).unwrap_err();
         assert!(err.contains("minLayer"), "{extra}: {err}");
     }
 
