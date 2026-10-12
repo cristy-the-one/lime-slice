@@ -2111,7 +2111,7 @@ dependencies = [
 
 [[package]]
 name = "lime-slice"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -2122,7 +2122,7 @@ dependencies = [
 
 [[package]]
 name = "lime-slice-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "clipper2",
@@ -2140,7 +2140,7 @@ dependencies = [
 
 [[package]]
 name = "lime-slice-desktop"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "lime-slice-core",
