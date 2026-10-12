@@ -365,7 +365,7 @@ export const CONTROLS: ControlSpec[] = [
     tier: "advanced",
     kind: num(0, 120, 1),
     structural: true,
-    tip: "A layer that would print faster than this is slowed down so the plastic can cool before the next one lands on it. Small parts and belt slices have the shortest layers. 0 turns it off.",
+    tip: "A layer that would print faster than this is slowed down so the plastic can cool before the next one lands on it. Small parts and belt slices have the shortest layers, and on a long part every slowed layer adds up, so it is off (0) until you set it; 3 to 8 s is typical.",
     keywords: "cooling slow small layer",
   }),
   bound("minLayerSpeedMmS", {

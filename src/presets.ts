@@ -115,7 +115,7 @@ export const DEFAULT_PRESET: PresetSettings = {
   zHop: "blend",
   zHopHeight: 0.4,
   zHopMinTravel: 2,
-  minLayerTimeS: 8,
+  minLayerTimeS: 0,
   minLayerSpeedMmS: 15,
   pricePerKg: 20,
   simplify: true,
