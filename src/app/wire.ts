@@ -7,7 +7,8 @@ import { wheelNotch } from "../gizmo-math";
 import { state, type CardId } from "./state";
 import { commitSplit, draw, layerGcode, paintPlayback, paintSectionChrome, prepare, scrub, sectionLimit, setHelp, setStage, setView, stepGizmo, stopPlay, syncGcodeHighlight, togglePlay, view3d } from "./viewer";
 import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCal, runSlice, runTempCal } from "./slice-run";
-import { addMeshBytes, adoptBytes, export3mf, exportGcode, fail, loadNamed, pickAddedMesh, place, saveText, setPlaceCenter, withPrinterGcode } from "./files";
+import { planFileDrop } from "../file-drop";
+import { addDroppedFiles, addMeshBytes, adoptBytes, export3mf, exportGcode, fail, loadNamed, pickAddedMesh, place, plateHasMesh, saveText, setPlaceCenter, withPrinterGcode } from "./files";
 import { mountProjectFiles, openProjectFile, saveCurrentProject } from "./project-io";
 import { pickModelFile } from "../platform";
 import { noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, revealPrinterDetails, revealResults, setCalibrate, syncFindStuck, touch } from "./settings";
@@ -519,9 +520,22 @@ export function wireApp() {
     const drop = ev as DragEvent;
     drop.preventDefault();
     document.querySelector(".app")!.classList.remove("dropping");
-    const file = drop.dataTransfer?.files?.[0];
-    if (!file) return;
-    void file.arrayBuffer().then((bytes: ArrayBuffer) => adoptBytes(file.name, bytes)).catch(fail);
+    const files = [...(drop.dataTransfer?.files ?? [])];
+    // Plain drop replaces. Shift adds through Add when a mesh is already on the plate. docs/plate-distinct-objects.md
+    const plan = planFileDrop(drop.shiftKey, plateHasMesh(), files.map((file) => file.name));
+    if (!plan) return;
+    if (plan.kind === "replace") {
+      const file = files[plan.index];
+      if (!file) return;
+      void file.arrayBuffer().then((bytes) => adoptBytes(file.name, bytes)).catch(fail);
+      return;
+    }
+    const adding: File[] = [];
+    for (const index of plan.indexes) {
+      const file = files[index];
+      if (file) adding.push(file);
+    }
+    void addDroppedFiles(adding).catch(fail);
   });
 }
 

@@ -17,6 +17,7 @@ import { clearEdits } from "../support-edit-list";
 import { clearEditHistory, flushEdit, noteEdit } from "./history";
 import { foreign3mfMessage, foreignSlicer3mf } from "../foreign-3mf";
 import { emptyOverrides } from "../overrides";
+import { isLimeProject } from "../file-drop";
 import { addedMesh, boundEntries, emptyPlate, oneObjectPlate, placeObject, platePlacedPositions, resetHeldGeometry, withLivePose, type PlateObject } from "../plate";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 
@@ -421,11 +422,24 @@ export function pickAddedMesh() {
 
 let meshAdds: Promise<void> = Promise.resolve();
 
+/** True when Add can park another part: a mesh is already on the plate. */
+export function plateHasMesh(): boolean {
+  return state.mesh != null && state.sourcePos != null && state.plate.objects.length > 0;
+}
+
 /** Read `bytes` the way Open does, then add that part. One undo step once the mesh is in hand. */
 export function addMeshBytes(name: string, bytes: ArrayBuffer): Promise<void> {
   const run = meshAdds.then(() => addMeshNow(name, bytes));
   meshAdds = run.then(() => undefined, () => undefined);
   return run;
+}
+
+/** Shift+drop. Each file goes through Add, in drop order. One undo step per mesh that lands. */
+export async function addDroppedFiles(files: readonly File[]): Promise<void> {
+  for (const file of files) {
+    const bytes = await file.arrayBuffer();
+    await addMeshBytes(file.name, bytes);
+  }
 }
 
 async function meshPositions(name: string, bytes: ArrayBuffer, stepTolerance: number): Promise<Float32Array | null> {
@@ -434,8 +448,8 @@ async function meshPositions(name: string, bytes: ArrayBuffer, stepTolerance: nu
 }
 
 async function addMeshNow(name: string, bytes: ArrayBuffer) {
-  if (!state.mesh || !state.sourcePos || state.plate.objects.length === 0) return;
-  if (/\.lime$/i.test(name)) {
+  if (!plateHasMesh()) return;
+  if (isLimeProject(name)) {
     pushToast("Open a project from the File menu.", "info");
     return;
   }
