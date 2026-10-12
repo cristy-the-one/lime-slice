@@ -283,6 +283,10 @@ export function wireApp() {
   document.querySelector("#banner")!.addEventListener("click", (ev) => {
     const action = (ev.target as HTMLElement).closest<HTMLElement>("[data-banner-action]")?.dataset.bannerAction;
     if (action === "supports") turnOnSupports();
+    else if (action === "paint") {
+      const tool = document.querySelector<HTMLButtonElement>('#toolRail [data-tool="paint"]');
+      if (tool?.getAttribute("aria-pressed") !== "true") tool?.click();
+    }
   });
 
   const fileMenu = document.querySelector<HTMLDetailsElement>("#fileMenu")!;

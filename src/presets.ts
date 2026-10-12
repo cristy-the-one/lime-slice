@@ -15,6 +15,8 @@ export interface PresetSettings {
   supports: boolean;
   supportAngle: number;
   supportStyle: string;
+  /** What asks for supports while they are on: the overhang angle ("auto") or paint alone ("paint"). */
+  supportSource: string;
   branchAngle: number;
   tipDiameter: number;
   trunkDiameter: number;
@@ -82,6 +84,7 @@ export const DEFAULT_PRESET: PresetSettings = {
   supports: false,
   supportAngle: 45,
   supportStyle: "tree",
+  supportSource: "auto",
   branchAngle: 40,
   tipDiameter: 0.8,
   trunkDiameter: 4.2,
@@ -127,7 +130,7 @@ export function presetKeys(): (keyof PresetSettings)[] {
 }
 
 /** Keys added after project and profile files were versioned. A file written before one reads its default. */
-const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow", "retractOn", "retractLength", "retractSpeed", "supportAvoidance", "minLayerTimeS", "minLayerSpeedMmS"]);
+const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow", "retractOn", "retractLength", "retractSpeed", "supportAvoidance", "supportSource", "minLayerTimeS", "minLayerSpeedMmS"]);
 
 /** The preset a project or profile file stores, or null when a key is missing or has the wrong type. */
 export function readPresetSettings(value: unknown): PresetSettings | null {

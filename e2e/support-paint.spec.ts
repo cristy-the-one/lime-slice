@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { autoSliceOff } from "./auto-slice";
+import { expectSupports, setSupports } from "./supports";
 
 /**
  * Paint support blockers on the prepare mesh against a real engine, which serves stored
@@ -52,7 +53,7 @@ test("block paint on the ledge drops its supports, and undo brings them back", a
   await page.locator('[data-sample="overhang_ledge.stl"]').click();
   await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 30_000 });
   await page.locator("#levelPick").selectOption("advanced");
-  await page.locator("#supports").check();
+  await setSupports(page, "auto");
   await page.locator("#sstyle").selectOption("tree");
   await page.locator("#slice").click();
   await sliced(page);

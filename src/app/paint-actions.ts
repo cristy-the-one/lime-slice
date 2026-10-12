@@ -3,8 +3,8 @@ import { fx } from "./fx";
 import { session, state, type SliceResponse } from "./state";
 import { beginEdit, flushEdit } from "./history";
 import { syncPlateFromState } from "./plate-sync";
-import { touch } from "./settings";
-import { setSmartSupports } from "./machine-actions";
+import { renderChrome, touch } from "./settings";
+import { setSupportMode } from "./machine-actions";
 import { sourceFrame } from "../plate";
 import { markProjectDirty } from "../project-dirty";
 import { addDisk, diskFromHit, inMeshFrame, MAX_PAINT_DISKS, strokeTakes, tallyText, type PaintDisk, type PaintKind, type PaintTally } from "../support-paint";
@@ -51,8 +51,12 @@ export function paintStroke(kind: PaintKind, radius: number): BrushHooks {
       drawPaint();
     },
     end() {
-      // An enforce disk asks for supports, so it turns them on inside the stroke's undo step. Block paint leaves them be.
-      if (kind === "enforce" && state.supportPaint !== before && !state.supports) setSmartSupports(true);
+      // An enforce disk asks for supports where it lands, so with supports off it switches them to Painted only
+      // inside the stroke's undo step. Automatic already grows them, and block paint never changes the choice.
+      if (kind === "enforce" && state.supportPaint !== before && !state.supports) {
+        setSupportMode("paint");
+        renderChrome();
+      }
       flushEdit();
       if (state.supportPaint !== before) painted();
     },

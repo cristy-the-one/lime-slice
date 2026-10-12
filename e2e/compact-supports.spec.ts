@@ -114,7 +114,7 @@ test.describe("compact support editing", () => {
     const prepare = await share(page, "#prepare");
     expect(prepare, `prepare share ${prepare}`).toBeGreaterThanOrEqual(0.7);
 
-    await page.locator("#supports").evaluate((el: HTMLInputElement) => {
+    await page.locator("#supportMode-auto").evaluate((el: HTMLInputElement) => {
       el.checked = true;
       el.dispatchEvent(new Event("input", { bubbles: true }));
     });

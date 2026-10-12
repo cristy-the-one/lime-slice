@@ -79,7 +79,7 @@ export function mountSupportPaint(prepare: PrepareView, hooks: SupportPaintHooks
     status.dataset.warn = "";
     const line = view.tally ? tallyText(view.tally) : null;
     if (!view.supportsOn) {
-      status.textContent = "Supports are off.";
+      status.textContent = "Supports are off. Enforce paint turns on Painted only.";
       status.dataset.warn = "1";
     } else if (line?.warn) {
       status.textContent = line.text;

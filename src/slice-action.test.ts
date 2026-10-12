@@ -143,6 +143,12 @@ eq(
   "Supports are off. 1 island and 2 overhangs would print in the air.",
 );
 eq("supports off, overhangs only", inAirWarning({ islands: 0, overhangs: 1 }), "Supports are off. 1 overhang would print in the air.");
+eq(
+  "painted only, what is left unpainted",
+  inAirWarning({ islands: 1, overhangs: 2 }, true),
+  "Only painted areas get supports. 1 island and 2 overhangs would print in the air.",
+);
+eq("painted only, nothing left in the air", inAirWarning({ islands: 0, overhangs: 0 }, true), null);
 
 eq("a 19 s slice stays automatic", autoSliceAllowed({ lastSliceMs: 19_000, triangles: 5_000_000 }), true);
 eq("a 20 s slice stays automatic", autoSliceAllowed({ lastSliceMs: 20_000, triangles: 5_000_000 }), true);

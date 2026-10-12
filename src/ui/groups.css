@@ -184,6 +184,16 @@ input.switch::after {
 input.switch:checked { background: color-mix(in srgb, var(--accent) 80%, #000); border-color: color-mix(in srgb, var(--accent) 80%, #000); }
 input.switch:checked::after { transform: translateX(13px); background: var(--on-accent); }
 
+/* Segmented choice: every option in view, one tap. The radios fill their segment and are invisible, so the keyboard and screen readers still get a radio group. */
+.row.seg-row { display: block; padding: var(--space-1) 0; }
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-0); }
+.seg-opt { position: relative; display: grid; place-items: center; min-height: 28px; padding: 0 var(--space-2); border-radius: 6px; color: var(--text-dim); font-size: var(--fs-2); white-space: nowrap; cursor: pointer; transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); }
+.seg-opt input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.seg-opt:hover { color: var(--text); }
+.seg-opt:has(input:checked) { background: color-mix(in srgb, var(--accent) 80%, #000); color: var(--on-accent); }
+.seg-opt:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
+.row-hint { margin: 0 0 var(--space-1); font-size: var(--fs-2); color: var(--text-faint); line-height: 1.4; }
+
 /* Strategy rows */
 .strat-list { display: grid; gap: 3px; padding-top: var(--space-2); }
 .strat {

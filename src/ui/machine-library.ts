@@ -579,7 +579,7 @@ const LIMIT_TIP = "The hottest bed and nozzle this printer accepts. Any temperat
 
 const BELT_DIRECTION_TIP = "Which way the belt axis counts in the printer's firmware; it does not turn the plate around. The part's front end (nearest the arrow head in Prepare) prints first and leaves the printer first.";
 
-const BELT_TIP = "The engine slices this belt. Export follows the slice. Send follows the printer connection. Seam on the belt edge and the belt raft stay off until those boxes are checked. A raft is a pad on the belt under the part and 1 mm past it, raft layers times the layer height thick; the part stands on it. Smart supports on a belt printer grow down to the tilted belt. They are not available together with a raft. The part's front end (nearest the arrow head in Prepare) prints first and leaves the printer first.";
+const BELT_TIP = "The engine slices this belt. Export follows the slice. Send follows the printer connection. Seam on the belt edge and the belt raft stay off until those boxes are checked. A raft is a pad on the belt under the part and 1 mm past it, raft layers times the layer height thick; the part stands on it. Supports on a belt printer grow down to the tilted belt. They are not available together with a raft. The part's front end (nearest the arrow head in Prepare) prints first and leaves the printer first.";
 
 /** The printer chip's label: "Lime 220 · PLA · 0.4 mm". */
 export function machineChipLabel(library: MachineLibrary): string {
@@ -1055,7 +1055,7 @@ function beltFieldsHtml(printer: PrinterRecord | undefined, rules: Rules): strin
         <label class="field setting" data-label="belt gap" data-keywords="copy spacing">Gap mm
           <input id="beltGap" type="number" min="0" max="500" step="1" value="${belt.gapMm}" aria-label="Gap between copies" />
         </label>
-        <label class="check setting belt-wide" data-label="belt raft" data-keywords="raft pad adhesion first layers" data-tip="A pad on the belt under the part, 1 mm past it. A raft and Smart supports replace each other."><input id="beltRaft" type="checkbox"${belt.raftLayers > 0 ? " checked" : ""}/> Belt raft</label>
+        <label class="check setting belt-wide" data-label="belt raft" data-keywords="raft pad adhesion first layers" data-tip="A pad on the belt under the part, 1 mm past it. A raft and supports replace each other."><input id="beltRaft" type="checkbox"${belt.raftLayers > 0 ? " checked" : ""}/> Belt raft</label>
         ${rules.hidden.has("beltRaftLayers") ? "" : `<label class="field setting" data-label="belt raft layers" data-keywords="raft layers pad">Raft layers
           <input id="beltRaftLayers" type="number" min="1" max="8" step="1" value="${belt.raftLayers}" aria-label="Belt raft layers" />
         </label>`}

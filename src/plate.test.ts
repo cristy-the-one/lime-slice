@@ -15,6 +15,7 @@ import {
   plateListed,
   platePlacedPositions,
   plateUnionBounds,
+  readPlateSettings,
   revivePlate,
   slicePlateFields,
   snapPlate,
@@ -245,6 +246,9 @@ const joined = platePlacedPositions([atOrigin, object(10, "shift", false, { x: 4
 const model = new TextDecoder().decode(encode3mf(joined));
 check("a plate 3mf has every part's triangles", (model.match(/<triangle /g) ?? []).length === joined.length / 9 && joined.length / 9 === 4);
 check("a plate 3mf keeps the second part's place", model.includes('x="40"'));
+
+check("an object may store painted-only supports", JSON.stringify(readPlateSettings({ supports: true, supportSource: "paint" })) === JSON.stringify({ supports: true, supportSource: "paint" }));
+check("an object's support source must be auto or paint", readPlateSettings({ supportSource: "everywhere" }) === "This project file is incomplete.");
 
 if (failed) {
   console.error(`${failed} failed`);

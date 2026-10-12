@@ -8,6 +8,8 @@
  * all three.
  */
 
+import type { SupportMode } from "./support-source.ts";
+
 export type Firmware = "klipper" | "marlin";
 
 export interface RuleInput {
@@ -17,9 +19,12 @@ export interface RuleInput {
   firmware: Firmware;
   /** Objects on the plate. */
   objects: number;
+  /** The Supports choice. Left out, it is Automatic. */
+  supportMode?: SupportMode;
 }
 
 export type ControlId =
+  | "supportAngle"
   | "adaptive"
   | "printOrder"
   | "zHop"
@@ -31,6 +36,7 @@ export type ControlId =
 /** Keys a hidden control leaves out. A control with none only changes what the page shows. */
 const OWNED: Record<ControlId, readonly string[]> = {
   adaptive: ["adaptive", "adaptiveMin", "adaptiveMax"],
+  supportAngle: ["supportAngle"],
   printOrder: ["printOrder", "sequentialClearance", "sequentialGantry", "sequentialClearanceMm", "sequentialGantryMm"],
   zHop: ["zHop", "zHopHeight", "zHopMinTravel"],
   scarf: ["scarfSeam", "scarfLength", "scarfSteps", "scarfStartHeight", "scarfStartFlow"],
@@ -63,6 +69,7 @@ export function settingsRules(input: RuleInput): Rules {
   const belt = input.kind === "belt";
   const hidden = new Set<ControlId>();
   if (belt && input.belt.raftLayers > 0) hidden.add("adaptive");
+  if (input.supportMode === "paint") hidden.add("supportAngle");
   if (belt || input.objects < 2) hidden.add("printOrder");
   if (belt) hidden.add("zHop").add("scarf");
   if (!belt) hidden.add("beltFields");

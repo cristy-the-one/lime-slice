@@ -15,6 +15,7 @@ import { seamOptions } from "../seam.ts";
 import { ironingFlowPercent, ironingSpacingMax, readIroningFlowPercent, readIroningSpacing, readIroningSpeed } from "../ironing.ts";
 import { readFuzzyPointDistance, readFuzzyThickness } from "../fuzzy-skin.ts";
 import { saveAutoSlice } from "../auto-slice-pref.ts";
+import { SUPPORT_MODES, supportModeOf, supportModeState, type SupportMode } from "../support-source.ts";
 
 export type Settings = typeof state;
 export type Tier = SettingsLevel;
@@ -33,6 +34,8 @@ export type ControlKind =
   | { type: "range"; min: number; max: number; step: number }
   | { type: "check" }
   | { type: "select"; options: Options | ((ctx: SchemaContext) => Options) }
+  /** One choice of several, all in view: radios drawn as a segmented control. */
+  | { type: "segmented"; options: Options }
   | { type: "custom" };
 
 export interface ControlSpec {
@@ -82,6 +85,7 @@ const num = (min: number, max: number | ((ctx: SchemaContext) => number), step: 
 const check: ControlKind = { type: "check" };
 const select = (options: Options | ((ctx: SchemaContext) => Options)): ControlKind => ({ type: "select", options });
 const custom: ControlKind = { type: "custom" };
+const segmented = (options: Options): ControlKind => ({ type: "segmented", options });
 
 /** A control bound to one preset key of the state. */
 function bound<K extends keyof PresetSettings>(key: K, spec: Omit<ControlSpec, "preset" | "get" | "set">): ControlSpec {
@@ -159,7 +163,7 @@ export const GROUPS: GroupSpec[] = [
     title: "Supports",
     tier: "simple",
     accent: "--group-supports",
-    summary: (s) => (s.supports ? `${s.supportStyle} · ${s.supportAngle}°` : "off"),
+    summary: (s) => ({ off: "Off", auto: "Auto", paint: "Painted" })[supportModeOf(s)],
   },
   {
     id: "printer",
@@ -393,11 +397,24 @@ export const CONTROLS: ControlSpec[] = [
   bound("retractSpeed", { id: "retractspd", label: "Retract speed mm/s", group: "speed", tier: "expert", kind: num(5, 80, 1), parent: "retractset", when: (s) => s.retractOn, keywords: "retraction" }),
 
   // Supports
-  bound("supports", { id: "supports", label: "Smart supports", group: "supports", tier: "simple", kind: check, structural: true, keywords: "overhang brace tree" }),
-  bound("supportStyle", { id: "sstyle", label: "Style", group: "supports", tier: "advanced", kind: select([["grid", "Sparse grid"], ["tree", "Organic tree"]]), parent: "supports", when: (s) => s.supports, structural: true, keywords: "tree grid organic" }),
+  {
+    id: "supportMode",
+    label: "Supports",
+    group: "supports",
+    tier: "simple",
+    kind: segmented(SUPPORT_MODES),
+    structural: true,
+    tip: "Automatic grows supports under every overhang. Painted only grows them where you paint with Enforce, and nowhere else.",
+    keywords: "smart overhang brace tree paint painted automatic off",
+    preset: "supports",
+    get: supportModeOf,
+    set: (s, value) => Object.assign(s, supportModeState(value as SupportMode)),
+  },
+  { id: "supportPaintTools", label: "Paint supports", group: "supports", tier: "simple", kind: custom, when: (s) => supportModeOf(s) === "paint" },
+  bound("supportStyle", { id: "sstyle", label: "Style", group: "supports", tier: "advanced", kind: select([["grid", "Sparse grid"], ["tree", "Organic tree"]]), parent: "supportMode", when: (s) => s.supports, structural: true, keywords: "tree grid organic" }),
   bound("supportAvoidance", { id: "pockets", label: "Avoid pockets", group: "supports", tier: "advanced", kind: check, parent: "sstyle", when: (s) => s.supports && s.supportStyle === "tree", tip: "Keeps a thickening branch out of a gap it cannot leave. Off prints today's trees.", keywords: "pocket avoidance tree" }),
-  bound("supportAngle", { id: "sangle", label: "Overhang angle °", group: "supports", tier: "advanced", kind: num(20, 70, 5), parent: "supports", when: (s) => s.supports, keywords: "overhang" }),
-  bound("supportHeightMult", { id: "shmult", label: "Shaft height ×", group: "supports", tier: "advanced", kind: num(1, 4, 1), parent: "supports", when: (s) => s.supports, keywords: "support column" }),
+  bound("supportAngle", { id: "sangle", label: "Overhang angle °", group: "supports", tier: "advanced", kind: num(20, 70, 5), parent: "supportMode", when: (s) => s.supports, rule: "supportAngle", keywords: "overhang" }),
+  bound("supportHeightMult", { id: "shmult", label: "Shaft height ×", group: "supports", tier: "advanced", kind: num(1, 4, 1), parent: "supportMode", when: (s) => s.supports, keywords: "support column" }),
   bound("branchAngle", { id: "bangle", label: "Branch angle °", group: "supports", tier: "expert", kind: num(15, 60, 5), parent: "sstyle", when: (s) => s.supports && s.supportStyle === "tree", keywords: "tree" }),
   bound("tipDiameter", { id: "tipd", label: "Tip diameter mm", group: "supports", tier: "expert", kind: num(0.4, 2, 0.1), parent: "sstyle", when: (s) => s.supports && s.supportStyle === "tree", keywords: "tree" }),
   bound("trunkDiameter", { id: "trunkd", label: "Trunk diameter mm", group: "supports", tier: "expert", kind: num(1.5, 12, 0.2), parent: "sstyle", when: (s) => s.supports && s.supportStyle === "tree", keywords: "tree" }),
@@ -445,10 +462,11 @@ export const CONTROLS: ControlSpec[] = [
 
 /**
  * Preset keys no single field edits: the strategy rows set `blendKind` and `strategy`,
- * the machine section's one advance field writes the key the firmware uses, and
- * `pricePerKg` stays in files from before the filament carried its own price.
+ * the Supports control sets `supports` and `supportSource` together, the machine section's one
+ * advance field writes the key the firmware uses, and `pricePerKg` stays in files from before
+ * the filament carried its own price.
  */
-export const UNFIELDED_PRESET_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["blendKind", "strategy", "pressureAdvance", "linearAdvance", "flow", "pricePerKg"]);
+export const UNFIELDED_PRESET_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["blendKind", "strategy", "supportSource", "pressureAdvance", "linearAdvance", "flow", "pricePerKg"]);
 
 const BY_ID = new Map(CONTROLS.map((spec) => [spec.id, spec]));
 

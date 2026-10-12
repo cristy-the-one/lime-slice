@@ -68,6 +68,14 @@ check("Raft layers is hidden while the raft is off", settingsRules(belt).hidden.
 check("Raft layers shows once the raft is on", !settingsRules({ ...belt, belt: { raftLayers: 3, maxLengthMm: null } }).hidden.has("beltRaftLayers"));
 check("the belt block shows on a belt and hides on a flat printer", !settingsRules(belt).hidden.has("beltFields") && settingsRules(flat).hidden.has("beltFields"));
 
+// Painted only has no overhang angle: the control hides and the request leaves it out.
+const angles = { supports: true, supportAngle: 45, supportStyle: "tree" };
+check("Automatic shows the overhang angle", !settingsRules(flat).hidden.has("supportAngle"));
+check("Off keeps the overhang angle row for the next Automatic", !settingsRules({ ...flat, supportMode: "off" }).hidden.has("supportAngle"));
+check("Painted only hides the overhang angle", settingsRules({ ...flat, supportMode: "paint" }).hidden.has("supportAngle"));
+eq("Painted only does not send the angle", settingsRules({ ...flat, supportMode: "paint" }).coerce(angles), { supports: true, supportStyle: "tree" });
+eq("Automatic sends the angle", settingsRules({ ...flat, supportMode: "auto" }).coerce(angles), angles);
+
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);

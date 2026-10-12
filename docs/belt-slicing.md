@@ -7,7 +7,7 @@ A belt printer (Creality CR-30, iFactory3D One, BlackBelt, PowerBelt3D) lays eac
 - Slice with the planar pipeline. Rotate the mesh so the nozzle plane is horizontal, plan, then map toolpaths back. A shear is what BeltEngine feeds Cura, and it is the wrong frame for this planner.
 - Belt advance per layer is `layer_height / sin(α)`. `α` is the angle between the belt and the nozzle plane. 45° is the default. At 45° the step is `layer_height * √2`.
 - Belt fields live on the machine profile (`.limemachine.json`). The slice request carries `belt` only for a belt printer. A request without that object keeps its cache key and its G-code bytes. `enginePrinter` still returns only `PrinterProfile` fields; `belt` sits beside `printer` on the request.
-- Supports on a belt grow in the rotated frame down to the belt, straight down along gravity (`docs/belt-floor-supports.md`). The app sends them when Smart supports is ticked on a belt printer.
+- Supports on a belt grow in the rotated frame down to the belt, straight down along gravity (`docs/belt-floor-supports.md`). The app sends them when supports are on on a belt printer.
 - Copies are one planned part, emitted again with a belt shift. They do not enter the contour key.
 - With no belt field, G-code is byte-identical. `crates/lime-slice-core/tests/cartesian_lock.rs` hashes a small box sliced with no belt object. `tools/golden_ab.sh` is the same check against a base revision.
 

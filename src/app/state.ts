@@ -182,6 +182,7 @@ export const state = {
   supports: false,
   supportAngle: 45,
   supportStyle: "tree" as "grid" | "tree",
+  supportSource: "auto" as "auto" | "paint",
   branchAngle: 40,
   tipDiameter: 0.8,
   trunkDiameter: 4.2,
