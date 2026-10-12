@@ -32,6 +32,9 @@ pub struct GcodeStats {
     pub by_feature: Vec<FeatureStat>,
     /// Estimator seconds for each emitted layer, in layer order.
     pub layer_seconds: Vec<f64>,
+    /// The factor each emitted layer's extrusion feeds were scaled by to reach
+    /// the minimum layer time, in layer order. Empty when no layer was slowed.
+    pub layer_slow: Vec<f64>,
     pub cancelled: bool,
 }
 
@@ -123,6 +126,9 @@ pub(crate) struct PlateLayer {
     pub runs: Vec<Run>,
     /// Added to the belt position before the direction sign. Zero on a cartesian layer.
     pub belt_shift: f64,
+    /// Scales the feed of every extrusion on the layer, down to the minimum-layer
+    /// floor. `1` leaves the planned feeds. Set at emit, never by the planner.
+    pub slow: f64,
 }
 
 /// A stretch of one object's joined layer: its head (skirt and supports) or
@@ -172,6 +178,7 @@ impl PlateLayer {
             note: layer.note.clone(),
             runs,
             belt_shift: 0.0,
+            slow: 1.0,
         }
     }
 
@@ -301,6 +308,19 @@ pub(crate) struct RetractEmit {
     pub speed_mm_s: Option<f64>,
 }
 
+/// No layer prints in less than `time_s`: a layer that would is slowed, all its
+/// extrusion feeds scaled by one factor, none taken below `floor_mm_s`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct MinLayer {
+    pub time_s: f64,
+    pub floor_mm_s: f64,
+}
+
+impl MinLayer {
+    /// The slowest a slowed layer prints when the request names none.
+    pub(crate) const DEFAULT_FLOOR_MM_S: f64 = 15.0;
+}
+
 /// When the G-code text is formatted.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Text {
@@ -327,6 +347,7 @@ pub(crate) fn emit_gcode(
     belt: Option<&crate::belt::Belt>,
     flow: f64,
     retract: RetractEmit,
+    min_layer: Option<MinLayer>,
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> GcodeStats {
@@ -344,6 +365,7 @@ pub(crate) fn emit_gcode(
         belt,
         flow,
         retract,
+        min_layer,
         job,
         watch,
         true,
@@ -369,6 +391,7 @@ pub(crate) fn emit_estimates(
     belt: Option<&crate::belt::Belt>,
     flow: f64,
     retract: RetractEmit,
+    min_layer: Option<MinLayer>,
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> GcodeStats {
@@ -386,6 +409,7 @@ pub(crate) fn emit_estimates(
         belt,
         flow,
         retract,
+        min_layer,
         job,
         watch,
         true,
@@ -411,6 +435,7 @@ pub(crate) fn emit_later(
     belt: Option<&crate::belt::Belt>,
     flow: f64,
     retract: RetractEmit,
+    min_layer: Option<MinLayer>,
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> (GcodeStats, GcodeText) {
@@ -428,6 +453,7 @@ pub(crate) fn emit_later(
         belt,
         flow,
         retract,
+        min_layer,
         job,
         watch,
         true,
@@ -456,6 +482,7 @@ pub(crate) fn emit_gcode_linear(
     belt: Option<&crate::belt::Belt>,
     flow: f64,
     retract: RetractEmit,
+    min_layer: Option<MinLayer>,
     job: crate::cancel::Job,
     watch: &Watch,
 ) -> GcodeStats {
@@ -473,6 +500,7 @@ pub(crate) fn emit_gcode_linear(
         belt,
         flow,
         retract,
+        min_layer,
         job,
         watch,
         false,
@@ -496,6 +524,7 @@ fn emit_gcode_inner(
     belt: Option<&crate::belt::Belt>,
     flow: f64,
     retract: RetractEmit,
+    min_layer: Option<MinLayer>,
     job: crate::cancel::Job,
     watch: &Watch,
     parallel: bool,
@@ -510,8 +539,18 @@ fn emit_gcode_inner(
         belt,
         flow,
         retract,
+        min_layer,
     );
     let junction_deviation = cfg.junction_deviation;
+    let slowed;
+    let layers = match cfg.min_layer {
+        Some(min) => {
+            slowed = slowed_layers(&cfg, layers, min);
+            slowed.as_slice()
+        }
+        None => layers,
+    };
+    let layer_slow = emitted_slow(layers);
     let emit_total = layers
         .iter()
         .filter(|layer| !layer.is_empty())
@@ -548,7 +587,9 @@ fn emit_gcode_inner(
             watch.fill();
         }
         w.finish(profile);
-        return (w.stats(emitted_layers, profile), None);
+        let mut stats = w.stats(emitted_layers, profile);
+        stats.layer_slow = layer_slow;
+        return (stats, None);
     }
 
     // Arc choices do not depend on machine state, so they are planned once per
@@ -612,7 +653,9 @@ fn emit_gcode_inner(
     }
     if text == Text::Never {
         w.finish(profile);
-        return (w.stats(emitted_layers, profile), None);
+        let mut stats = w.stats(emitted_layers, profile);
+        stats.layer_slow = layer_slow;
+        return (stats, None);
     }
     w.quiet = false;
     w.out.clear();
@@ -620,6 +663,7 @@ fn emit_gcode_inner(
     let epilogue = std::mem::take(&mut w.out);
     let cancelled = w.cancelled;
     let mut stats = w.stats(emitted_layers, profile);
+    stats.layer_slow = layer_slow;
     let mut preamble = String::new();
     write_preamble(
         &mut preamble,
@@ -649,6 +693,133 @@ fn emit_gcode_inner(
     (stats, Some(later))
 }
 
+/// Every emitted layer's slowdown factor, or none when the plate has no slowed layer.
+fn emitted_slow(layers: &[PlateLayer]) -> Vec<f64> {
+    if layers.iter().all(|l| l.slow >= 1.0) {
+        return Vec::new();
+    }
+    layers
+        .iter()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.slow)
+        .collect()
+}
+
+/// The feed a path prints at before any slowdown: the first layer never goes over 30 mm/s.
+fn planned_feed(layer: &PlateLayer, path: &Extrusion) -> f64 {
+    if layer.own == 0 {
+        path.speed.min(30.0)
+    } else {
+        path.speed
+    }
+}
+
+/// `layers` with the slowdown each needs so that none prints in less than
+/// `min.time_s`. A layer is timed the way its scan times it, from where the
+/// layer below leaves the machine; the factor does not move that state, so a
+/// layer that clearly takes long enough is not timed at all.
+fn slowed_layers(cfg: &EmitCfg, layers: &[PlateLayer], min: MinLayer) -> Vec<PlateLayer> {
+    let order: Vec<usize> = (0..layers.len())
+        .filter(|&i| !layers[i].is_empty())
+        .collect();
+    let initial = Carry::initial(cfg);
+    let factors: Vec<f64> = order
+        .par_iter()
+        .enumerate()
+        .map(|(k, &i)| {
+            let layer = &layers[i];
+            // Even at full feed along its paths alone, a layer this long is done.
+            let at_feed: f64 = layer
+                .paths()
+                .filter(|(_, p)| p.points.len() >= 2)
+                .map(|(_, p)| path_length(&p.points) / planned_feed(layer, p).max(1.0))
+                .sum();
+            if at_feed >= min.time_s {
+                return 1.0;
+            }
+            let entry = if k == 0 {
+                initial
+            } else {
+                let below = scan_layer(cfg, initial, &layers[order[k - 1]], false).carry();
+                Carry { e: 0.0, ..below }
+            };
+            slow_factor(cfg, entry, layer, min)
+        })
+        .collect();
+    let mut slowed = layers.to_vec();
+    for (&i, &factor) in order.iter().zip(&factors) {
+        slowed[i].slow = factor;
+    }
+    slowed
+}
+
+fn path_length(points: &[[f64; 2]]) -> f64 {
+    points
+        .windows(2)
+        .map(|w| hypot(w[1][0] - w[0][0], w[1][1] - w[0][1]))
+        .sum()
+}
+
+/// The largest factor in `(0, 1]` at which the layer, entered from `entry`,
+/// takes `min.time_s`, or the one that prints everything at the floor when
+/// even that is short. The layer's time only grows as the factor falls, and
+/// is close to a line in its inverse, so a false-position search lands within
+/// 1% in a few timings.
+fn slow_factor(cfg: &EmitCfg, entry: Carry, layer: &PlateLayer, min: MinLayer) -> f64 {
+    let fastest = layer
+        .paths()
+        .filter(|(_, p)| p.points.len() >= 2)
+        .map(|(_, p)| planned_feed(layer, p))
+        .fold(0.0, f64::max);
+    if fastest <= min.floor_mm_s {
+        return 1.0;
+    }
+    let time_at = |factor: f64| {
+        let mut trial = layer.clone();
+        trial.slow = factor;
+        let mut w = Writer::blank(cfg, entry, false);
+        w.quiet = true;
+        w.scripted = true;
+        w.write_layer(&trial);
+        w.layer_seconds.last().copied().unwrap_or(0.0)
+    };
+    let target = min.time_s;
+    let full = time_at(1.0);
+    if full >= target {
+        return 1.0;
+    }
+    let floor_factor = min.floor_mm_s / fastest;
+    let floored = time_at(floor_factor);
+    if floored <= target {
+        return floor_factor;
+    }
+    // Illinois false position on x = 1 / factor, bracketing the target.
+    let (mut x_lo, mut g_lo) = (1.0, full - target);
+    let (mut x_hi, mut g_hi) = (1.0 / floor_factor, floored - target);
+    let mut last_hi = None;
+    for _ in 0..16 {
+        let x = x_hi - g_hi * (x_hi - x_lo) / (g_hi - g_lo);
+        let g = time_at(1.0 / x) - target;
+        if g >= 0.0 {
+            (x_hi, g_hi) = (x, g);
+            if last_hi == Some(true) {
+                g_lo *= 0.5;
+            }
+            last_hi = Some(true);
+            if g <= target * 0.01 {
+                break;
+            }
+        } else {
+            (x_lo, g_lo) = (x, g);
+            if last_hi == Some(false) {
+                g_hi *= 0.5;
+            }
+            last_hi = Some(false);
+        }
+    }
+    1.0 / x_hi
+}
+
 #[derive(Clone)]
 struct EmitCfg {
     classic_estimator: bool,
@@ -672,6 +843,8 @@ struct EmitCfg {
     retract_length: Option<f64>,
     /// Retract feed. 30 mm/s is `F1800`, the feed a slice had before this existed.
     retract_speed: f64,
+    /// `None` keeps every layer at its planned feeds.
+    min_layer: Option<MinLayer>,
 }
 
 impl EmitCfg {
@@ -685,6 +858,7 @@ impl EmitCfg {
         belt: Option<&crate::belt::Belt>,
         flow: f64,
         retract: RetractEmit,
+        min_layer: Option<MinLayer>,
     ) -> Self {
         let offsets = if offsets.is_empty() {
             Arc::from([[0.0, 0.0]])
@@ -722,6 +896,7 @@ impl EmitCfg {
                 .speed_mm_s
                 .filter(|n| n.is_finite() && *n > 0.0)
                 .unwrap_or(30.0),
+            min_layer: min_layer.filter(|m| m.time_s.is_finite() && m.time_s > 0.0),
         }
     }
 }
@@ -918,6 +1093,7 @@ pub(crate) fn scans_in_parallel(
         None,
         1.0,
         RetractEmit::default(),
+        None,
     );
     scan_layers(&cfg, layers, crate::cancel::Job::default(), &Watch::idle()).is_some()
 }
@@ -1053,6 +1229,9 @@ struct Writer {
     retract_length: Option<f64>,
     retract_speed: f64,
     retract_feed: i32,
+    /// The layer being written: its slowdown factor and the feed it never goes under.
+    slow: f64,
+    slow_floor: f64,
 }
 
 struct KinMove {
@@ -1125,6 +1304,8 @@ impl Writer {
             retract_length: cfg.retract_length,
             retract_speed: cfg.retract_speed,
             retract_feed: (cfg.retract_speed * 60.0).round() as i32,
+            slow: 1.0,
+            slow_floor: cfg.min_layer.map_or(0.0, |m| m.floor_mm_s),
         }
     }
 
@@ -1222,6 +1403,7 @@ impl Writer {
     /// Header, runs, then flush. The flush used to run at the next layer's
     /// header, before that layer's Z time, which is the same moment.
     fn write_layer(&mut self, layer: &PlateLayer) {
+        self.slow = layer.slow;
         if let Some(clear) = layer.clear_z {
             self.clear_to(layer, clear);
         }
@@ -1290,10 +1472,12 @@ impl Writer {
         } else {
             self.set_fan(0);
         }
-        let speed = if layer.own == 0 {
-            path.speed.min(30.0)
+        let speed = planned_feed(layer, path);
+        // A path already slower than the floor stays where it was planned.
+        let speed = if self.slow < 1.0 {
+            (speed * self.slow).max(self.slow_floor).min(speed)
         } else {
-            path.speed
+            speed
         };
         let layer_flow = if layer.own == 0 { 1.06 } else { 1.0 };
         // `1.0` times the layer flow is the same float, so an unused multiplier
@@ -1535,10 +1719,19 @@ impl Writer {
     fn layer_header(&mut self, layer: &PlateLayer) {
         self.slice_z = layer.z;
         let z = self.written_z(layer);
-        self.put(format_args!(
-            ";LAYER:{} Z:{:.3} H:{:.3} {}\n",
-            layer.index, z, layer.height, layer.note
-        ));
+        if self.slow < 1.0 {
+            let gap = if layer.note.is_empty() { "" } else { " " };
+            let slow = self.slow;
+            self.put(format_args!(
+                ";LAYER:{} Z:{:.3} H:{:.3} {}{gap}slow ×{slow:.2}\n",
+                layer.index, z, layer.height, layer.note
+            ));
+        } else {
+            self.put(format_args!(
+                ";LAYER:{} Z:{:.3} H:{:.3} {}\n",
+                layer.index, z, layer.height, layer.note
+            ));
+        }
         let dz = (z - self.z).abs();
         let f = (120.0_f64 * 60.0) as i32;
         if self.permutes() {
@@ -2165,6 +2358,7 @@ impl Writer {
             layer_count,
             by_feature: feature_rows(&self.feature_s, &self.feature_mm),
             layer_seconds: self.layer_seconds,
+            layer_slow: Vec::new(),
             cancelled: self.cancelled,
         }
     }

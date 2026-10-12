@@ -367,6 +367,9 @@ pub(super) fn keys(
         // Retract length and speed change the emitted retract move, not the cut.
         retract_length: blank.retract_length,
         retract_speed: blank.retract_speed,
+        // A minimum layer time scales the emitted feeds, not the cut.
+        min_layer_time_s: blank.min_layer_time_s,
+        min_layer_speed_mm_s: blank.min_layer_speed_mm_s,
         ..settings.clone()
     };
     let no_emit = SliceSettings {

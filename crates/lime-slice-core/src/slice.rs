@@ -177,6 +177,14 @@ pub struct SliceRequest {
     /// Retract and unretract speed in mm/s. Left out to keep 30 mm/s.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retract_speed: Option<f64>,
+    /// A layer that would print in fewer seconds is slowed to take this many, its
+    /// extrusion feeds scaled together. Left out, or `0`, keeps every layer's feeds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_layer_time_s: Option<f64>,
+    /// The slowest feed in mm/s a slowed layer prints at. Left out keeps 15 mm/s.
+    /// A path planned slower than this stays at its own feed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_layer_speed_mm_s: Option<f64>,
     /// Sparse infill for this object, 0 to 1. Left out to keep the strategy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub infill: Option<f64>,
@@ -346,6 +354,10 @@ pub struct SliceSettings {
     pub retract_length: Option<f64>,
     /// `None` keeps the 30 mm/s retract feed.
     pub retract_speed: Option<f64>,
+    /// `None` keeps every layer at its planned feeds.
+    pub min_layer_time_s: Option<f64>,
+    /// `None` keeps 15 mm/s as the slowest a slowed layer prints.
+    pub min_layer_speed_mm_s: Option<f64>,
     /// Off on a belt, where an outward loop around the first layer crosses the belt line.
     pub skirt: bool,
     pub scarf_seam: ScarfSeam,
@@ -424,6 +436,8 @@ impl Default for SliceSettings {
             flow: 1.0,
             retract_length: None,
             retract_speed: None,
+            min_layer_time_s: None,
+            min_layer_speed_mm_s: None,
             skirt: true,
             scarf_seam: ScarfSeam::Blend,
             scarf_length: default_scarf_length(),
@@ -522,6 +536,8 @@ impl SliceSettings {
             flow: req.flow,
             retract_length: req.retract_length,
             retract_speed: req.retract_speed,
+            min_layer_time_s: req.min_layer_time_s,
+            min_layer_speed_mm_s: req.min_layer_speed_mm_s,
             skirt: true,
             scarf_seam: if req.classic {
                 ScarfSeam::Off
@@ -686,7 +702,21 @@ impl SliceSettings {
                 format!("; retract {len} at {spd}")
             }
         };
-        format!("{layers}; {supports}; {combine}; {scarf}; {gyroid}; {hop}{seam}{ironing}{fuzzy}{flow}{retract}")
+        let cooling = self.min_layer().map_or(String::new(), |m| {
+            format!("; min layer {} s, floor {} mm/s", m.time_s, m.floor_mm_s)
+        });
+        format!("{layers}; {supports}; {combine}; {scarf}; {gyroid}; {hop}{seam}{ironing}{fuzzy}{flow}{retract}{cooling}")
+    }
+
+    /// The minimum layer time the request asks for. `0` is off, like leaving it out.
+    pub(crate) fn min_layer(&self) -> Option<crate::gcode::MinLayer> {
+        let time_s = self.min_layer_time_s.filter(|n| *n > 0.0)?;
+        Some(crate::gcode::MinLayer {
+            time_s,
+            floor_mm_s: self
+                .min_layer_speed_mm_s
+                .unwrap_or(crate::gcode::MinLayer::DEFAULT_FLOOR_MM_S),
+        })
     }
 }
 
@@ -980,6 +1010,10 @@ pub struct PreviewLayer {
     /// Estimator seconds for this layer.
     #[serde(default)]
     pub seconds: f64,
+    /// What the layer's feeds were scaled by to reach the minimum layer time.
+    /// Left out when the layer kept its feeds.
+    #[serde(default = "default_one", skip_serializing_if = "is_one")]
+    pub slow: f64,
     /// Sent as columns (see `path_columns`), not one object per path.
     #[serde(serialize_with = "path_columns")]
     pub paths: Vec<PreviewPath>,
@@ -1718,6 +1752,16 @@ fn slice_plate(
             return Err(format!("retractSpeed {n} must be from 5 to 80"));
         }
     }
+    if let Some(n) = settings.min_layer_time_s {
+        if !n.is_finite() || !(0.0..=600.0).contains(&n) {
+            return Err(format!("minLayerTimeS {n} must be from 0 to 600"));
+        }
+    }
+    if let Some(n) = settings.min_layer_speed_mm_s {
+        if !n.is_finite() || !(1.0..=300.0).contains(&n) {
+            return Err(format!("minLayerSpeedMmS {n} must be from 1 to 300"));
+        }
+    }
     let listed = sources.iter().any(|s| s.id.is_some());
     let mut settings = resolved(settings);
     let (layer_height, line_width) = (settings.layer_height, settings.line_width);
@@ -2006,6 +2050,7 @@ fn slice_plate(
                 length_mm: settings.retract_length,
                 speed_mm_s: settings.retract_speed,
             },
+            settings.min_layer(),
             settings.job,
             watch,
         );
@@ -2028,6 +2073,7 @@ fn slice_plate(
                 length_mm: settings.retract_length,
                 speed_mm_s: settings.retract_speed,
             },
+            settings.min_layer(),
             settings.job,
             watch,
         );
@@ -2180,6 +2226,7 @@ fn slice_plate(
                     length_mm: settings.retract_length,
                     speed_mm_s: settings.retract_speed,
                 },
+                settings.min_layer(),
                 settings.job,
                 &quiet,
             )
@@ -2201,6 +2248,7 @@ fn slice_plate(
                     length_mm: settings.retract_length,
                     speed_mm_s: settings.retract_speed,
                 },
+                settings.min_layer(),
                 settings.job,
                 &quiet,
             )
@@ -2290,6 +2338,7 @@ fn slice_plate(
             &blends,
             settings.preview_base.as_deref(),
             &gcode.layer_seconds,
+            &gcode.layer_slow,
             belt_tilt.as_ref(),
         )
     };
@@ -2456,19 +2505,29 @@ fn preview(
     blends: &[&BlendMode],
     preview_base: Option<&str>,
     layer_seconds: &[f64],
+    layer_slow: &[f64],
     tilt: Option<&patch::BeltTilt>,
 ) -> (Vec<PreviewLayer>, Option<String>, Option<PreviewPatch>) {
     let Some(kept) = kept else {
-        let mut layers = preview_of(planned, profile, blends, layer_seconds);
+        let mut layers = preview_of(planned, profile, blends, layer_seconds, layer_slow);
         if let Some(tilt) = tilt {
             tilt_preview(&mut layers, planned, tilt);
         }
         return (layers, None, None);
     };
-    let mut emitted = layer_seconds.iter();
+    let mut emitted = 0;
+    let mut slow = Vec::with_capacity(planned.len());
     let seconds: Vec<Option<f64>> = planned
         .iter()
-        .map(|l| (!l.is_empty()).then(|| emitted.next().copied().unwrap_or(0.0)))
+        .map(|l| {
+            if l.is_empty() {
+                slow.push(1.0);
+                return None;
+            }
+            slow.push(layer_slow.get(emitted).copied().unwrap_or(1.0));
+            emitted += 1;
+            Some(layer_seconds.get(emitted - 1).copied().unwrap_or(0.0))
+        })
         .collect();
     // A different belt stamp is a different drawing. The planned paths can
     // match while the tilt does not, so that reply is the whole plate.
@@ -2501,9 +2560,9 @@ fn preview(
                     if held && same {
                         return None;
                     }
-                    let layer = preview_layer(layer, profile, blends, now);
+                    let layer = preview_layer(layer, profile, blends, now, slow[i]);
                     let was = match was.filter(|_| held) {
-                        Some(was) => preview_layer(was, profile, &shown_blends, 0.0).paths,
+                        Some(was) => preview_layer(was, profile, &shown_blends, 0.0, 1.0).paths,
                         None => Vec::new(),
                     };
                     Some(patch::diff_layer(&was, layer))
@@ -2518,17 +2577,27 @@ fn preview(
                     .collect(),
                 changed,
                 seconds: seconds.iter().flatten().copied().collect(),
+                slow: planned
+                    .iter()
+                    .zip(&slow)
+                    .filter(|(l, _)| !l.is_empty())
+                    .map(|(_, s)| *s)
+                    .collect(),
                 whole: WholePreview {
                     layers: Arc::clone(planned),
                     profile: profile.clone(),
                     blends: blends.iter().map(|&b| b.clone()).collect(),
                     layer_seconds: layer_seconds.to_vec(),
+                    layer_slow: layer_slow.to_vec(),
                     tilt: tilt.cloned(),
                 },
             };
             (Vec::new(), Some(patch))
         }
-        None => (preview_of(planned, profile, blends, layer_seconds), None),
+        None => (
+            preview_of(planned, profile, blends, layer_seconds, layer_slow),
+            None,
+        ),
     };
     if let Some(tilt) = tilt {
         if let Some(patch) = patched.as_mut() {
@@ -2857,6 +2926,7 @@ fn preview_of(
     profile: &PrinterProfile,
     blends: &[&BlendMode],
     layer_seconds: &[f64],
+    layer_slow: &[f64],
 ) -> Vec<PreviewLayer> {
     layers
         .iter()
@@ -2864,7 +2934,8 @@ fn preview_of(
         .enumerate()
         .map(|(emitted, layer)| {
             let seconds = layer_seconds.get(emitted).copied().unwrap_or(0.0);
-            preview_layer(layer, profile, blends, seconds)
+            let slow = layer_slow.get(emitted).copied().unwrap_or(1.0);
+            preview_layer(layer, profile, blends, seconds, slow)
         })
         .collect()
 }
@@ -2877,6 +2948,7 @@ fn preview_layer(
     profile: &PrinterProfile,
     blends: &[&BlendMode],
     seconds: f64,
+    slow: f64,
 ) -> PreviewLayer {
     let mut paths = Vec::new();
     let mut cursor: Option<[f64; 2]> = None;
@@ -2913,6 +2985,7 @@ fn preview_layer(
         toughness_walls,
         support_paths,
         seconds,
+        slow,
         paths,
     }
 }
@@ -6358,6 +6431,7 @@ mod tests {
                     length_mm: settings.retract_length,
                     speed_mm_s: settings.retract_speed,
                 },
+                settings.min_layer(),
                 settings.job,
                 &Watch::idle(),
             );
@@ -6378,6 +6452,7 @@ mod tests {
                     length_mm: settings.retract_length,
                     speed_mm_s: settings.retract_speed,
                 },
+                settings.min_layer(),
                 settings.job,
                 &Watch::idle(),
             );
@@ -6438,6 +6513,7 @@ mod tests {
                 length_mm: settings.retract_length,
                 speed_mm_s: settings.retract_speed,
             },
+            settings.min_layer(),
             settings.job,
             &Watch::idle(),
         );
@@ -6458,6 +6534,7 @@ mod tests {
                 length_mm: settings.retract_length,
                 speed_mm_s: settings.retract_speed,
             },
+            settings.min_layer(),
             settings.job,
             &Watch::idle(),
         );
@@ -6699,6 +6776,91 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_minimum_layer_time_is_the_same_in_the_parallel_and_the_linear_emit() {
+        let bytes = std::fs::read(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../samples/calibration_cube_20mm.stl"),
+        )
+        .unwrap();
+        let mesh = crate::load::load_mesh("calibration_cube_20mm.stl", &bytes).unwrap();
+        let settings = SliceSettings {
+            baseline: false,
+            include_preview: false,
+            compare: false,
+            min_layer_time_s: Some(12.0),
+            ..SliceSettings::default()
+        };
+        let profile = PrinterProfile::default();
+        let blend = BlendMode::Single {
+            strategy: StrategyId::Speed,
+        };
+        let planned = plan(&mesh, &blend, &settings, profile.nozzle_diameter)
+            .unwrap()
+            .layers
+            .into_iter()
+            .map(PlateLayer::single)
+            .collect::<Vec<_>>();
+        let features = settings.feature_note();
+        let emit = |linear: bool| {
+            let run = if linear {
+                crate::gcode::emit_gcode_linear
+            } else {
+                crate::gcode::emit_gcode
+            };
+            run(
+                &planned,
+                &profile,
+                &blend,
+                settings.layer_height,
+                settings.line_width,
+                &features,
+                settings.arc_fit,
+                settings.classic_estimator,
+                settings.junction_deviation_mm,
+                &[[0.0, 0.0]],
+                None,
+                settings.flow,
+                crate::gcode::RetractEmit::default(),
+                settings.min_layer(),
+                settings.job,
+                &Watch::idle(),
+            )
+        };
+        let (parallel, linear) = (emit(false), emit(true));
+        assert!(!parallel.layer_slow.is_empty(), "a 20 mm cube layer takes under 12 s");
+        assert!(parallel.text.contains(" slow ×"));
+        assert_eq!(parallel.text, linear.text);
+        assert_eq!(parallel.layer_seconds, linear.layer_seconds);
+        assert_eq!(parallel.layer_slow, linear.layer_slow);
+        assert_eq!(parallel.print_time_s, linear.print_time_s);
+    }
+
+    #[test]
+    fn estimates_without_gcode_text_match_the_full_emit_under_a_minimum_layer_time() {
+        let mesh = wedge_wing();
+        let blend = BlendMode::Single {
+            strategy: StrategyId::Speed,
+        };
+        let profile = PrinterProfile::default();
+        let with = SliceSettings {
+            include_gcode: true,
+            include_preview: false,
+            baseline: false,
+            min_layer_time_s: Some(10.0),
+            ..SliceSettings::default()
+        };
+        let without = SliceSettings {
+            include_gcode: false,
+            ..with.clone()
+        };
+        let full = slice_configured(&mesh, &blend, &profile, &with).expect("gcode");
+        let quiet = slice_configured(&mesh, &blend, &profile, &without).expect("estimates");
+        assert!(full.gcode.contains(" slow ×"));
+        assert!(quiet.gcode_text.as_ref().unwrap().text() == full.gcode);
+        assert!((full.estimate.seconds - quiet.estimate.seconds).abs() < 1e-6);
     }
 
     #[test]

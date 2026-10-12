@@ -78,6 +78,8 @@ const SETTING_SCOPES: &[(&str, Scope)] = &[
     ("flow", Scope::Plate),
     ("retractLength", Scope::Plate),
     ("retractSpeed", Scope::Plate),
+    ("minLayerTimeS", Scope::Plate),
+    ("minLayerSpeedMmS", Scope::Plate),
     ("heightRanges", Scope::Plate),
     ("modifierVolumes", Scope::Plate),
     ("infill", Scope::Object),
