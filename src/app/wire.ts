@@ -47,6 +47,7 @@ import {
   noteAdvance,
   noteBeltForm,
   noteFlow,
+  noteHeatLimits,
   noteNozzleTemp,
   noteRetract,
   chooseMachine,
@@ -79,6 +80,10 @@ export function wireApp() {
     const target = ev.target as HTMLElement;
     if (isBeltField(target)) {
       noteBeltForm(target.id);
+      return;
+    }
+    if (target.id === "machineMaxBed" || target.id === "machineMaxNozzle") {
+      noteHeatLimits();
       return;
     }
     if (target.id === "placeX" || target.id === "placeY") {

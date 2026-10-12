@@ -1,6 +1,6 @@
 /** Apply, save, and move printer and filament profiles. A switch is one undo step. */
 import { flushEdit, noteEdit } from "./history.ts";
-import { loadMachineLibrary, machineLibraryStored, storeMachineLibrary } from "./machine-library.ts";
+import { activeHeat, loadMachineLibrary, machineLibraryStored, storeMachineLibrary } from "./machine-library.ts";
 import { markProjectDirty } from "../project-dirty.ts";
 import { fx } from "./fx.ts";
 import { currentRules } from "./rules.ts";
@@ -30,10 +30,16 @@ import {
   setAdvance,
   setFlow,
   setGcode,
+  setHeatLimits,
+  heatReadout,
+  heatWarnings,
+  DEFAULT_MAX_BED_C,
+  DEFAULT_MAX_NOZZLE_C,
   setNozzleTemp,
   setRetract,
   type MachineLibrary,
   type MachineNumbers,
+  type PrinterRecord,
 } from "../ui/machine-library.ts";
 import { coerceBelt, type PrinterKind } from "../belt.ts";
 import { LEGACY_PRUSA_LINK_KEY, parseLegacyPrusaLink } from "../ui/prusa-link.ts";
@@ -93,8 +99,7 @@ export function noteNozzleTemp(temp: number) {
   const next = selection(library)?.filament.nozzleTemp ?? 200;
   state.profile.nozzleTemp = next;
   saveProfile(state.profile);
-  const readout = document.querySelector("#machineTemps");
-  if (readout) readout.textContent = `Nozzle ${Math.round(next)} °C · bed ${Math.round(state.profile.bedTemp)} °C`;
+  paintHeat(library);
 }
 
 export function noteAdvance(pressure: number, linear: number) {
@@ -214,6 +219,43 @@ export function noteGcode(startGcode: string, endGcode: string) {
   storeMachineLibrary(setGcode(loadMachineLibrary(), startGcode, endGcode));
 }
 
+/** The active printer's temperature limits and start-block flag, read from the printer details. */
+export function noteHeatLimits() {
+  const picked = selection(loadMachineLibrary())?.printer;
+  if (!picked) return;
+  noteEdit();
+  storeMachineLibrary(setHeatLimits(loadMachineLibrary(), ...heatLimitFields(picked)));
+  markProjectDirty();
+  fx.renderChrome?.();
+  fx.markStale?.();
+}
+
+function heatLimitFields(picked: PrinterRecord): [number, number, boolean] {
+  const bed = document.querySelector<HTMLInputElement>("#machineMaxBed");
+  const nozzle = document.querySelector<HTMLInputElement>("#machineMaxNozzle");
+  const owns = document.querySelector<HTMLInputElement>("#machineOwnsHoming");
+  return [
+    bed ? Number(bed.value) : picked.maxBedC,
+    nozzle ? Number(nozzle.value) : picked.maxNozzleC,
+    owns ? owns.checked : picked.startOwnsHoming,
+  ];
+}
+
+/** Repaint the temperature readout and the cap warnings after the nozzle temperature moves. */
+function paintHeat(library: MachineLibrary) {
+  const filament = selection(library)?.filament;
+  const heat = activeHeat(library);
+  const readout = document.querySelector("#machineTemps");
+  if (readout) readout.textContent = heatReadout(heat);
+  for (const id of ["machineHeatNote", "printerHeatNote"]) {
+    const note = document.querySelector<HTMLElement>(`#${id}`);
+    if (!note) continue;
+    const lines = heatWarnings(heat, filament?.name ?? "");
+    note.hidden = lines.length === 0;
+    note.replaceChildren(...lines.flatMap((line, at) => (at === 0 ? [line] : [document.createElement("br"), line])));
+  }
+}
+
 export function saveMachine(name: string): boolean {
   const numbers = currentNumbers();
   const library = loadMachineLibrary();
@@ -317,6 +359,9 @@ function syncBeltViews(library: MachineLibrary) {
 
 function currentNumbers(): MachineNumbers {
   const picked = selection(loadMachineLibrary())?.printer;
+  const heatLimits: [number, number, boolean] = picked
+    ? heatLimitFields(picked)
+    : [DEFAULT_MAX_BED_C, DEFAULT_MAX_NOZZLE_C, false];
   const startGcode = document.querySelector<HTMLTextAreaElement>("#machineStart")?.value ?? picked?.startGcode ?? "";
   const endGcode = document.querySelector<HTMLTextAreaElement>("#machineEnd")?.value ?? picked?.endGcode ?? "";
   const hostField = document.querySelector<HTMLInputElement>("#machineHost");
@@ -339,6 +384,9 @@ function currentNumbers(): MachineNumbers {
     flow: state.flow,
     startGcode,
     endGcode,
+    maxBedC: heatLimits[0],
+    maxNozzleC: heatLimits[1],
+    startOwnsHoming: heatLimits[2],
     host: hostField?.value.trim() ?? picked?.host ?? "",
     apiKey: keyField?.value ?? picked?.apiKey ?? "",
     startPrint: startField ? startField.checked : picked?.startPrint === true,

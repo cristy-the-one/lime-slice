@@ -15,10 +15,10 @@ import { offBed } from "../mesh-place";
 import { boundsSize, objectMarks, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty } from "../plate";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys } from "../presets";
 import { saveProfile } from "../profiles";
-import { noteAdvance, noteFirmware, noteFlow, noteGcode, noteRetract, setSmartSupports } from "./machine-actions";
+import { noteAdvance, noteFirmware, noteFlow, noteGcode, noteHeatLimits, noteRetract, setSmartSupports } from "./machine-actions";
 import { currentRules } from "./rules";
 import { ADVANCE, orderFields, type Rules } from "../settings-rules";
-import { loadMachineLibrary } from "./machine-library";
+import { activeHeat, loadMachineLibrary } from "./machine-library";
 import { beltStamp, machineChipLabel, machinePickHtml, machineSectionHtml } from "../ui/machine-library";
 import { prusaSummary, rememberPrusaForm, syncSendButtons } from "./prusa-actions";
 import { noteEdit } from "./history";
@@ -91,6 +91,10 @@ export function settingsHash() {
   // A cartesian printer leaves this off, so its hash is the one it had before belt profiles.
   const library = loadMachineLibrary();
   const belt = beltStamp(library);
+  // The engine only sees the temperatures the printer accepts, so a filament change above its limit stales nothing.
+  const heat = activeHeat(library);
+  profile.nozzleTemp = heat.nozzleC;
+  profile.bedTemp = heat.bedC;
   // Hidden controls and the advance the firmware does not use are not part of the recipe.
   const rules = currentRules(library);
   const retract = state.retractOn ? { retractLength: state.retractLength, retractSpeed: state.retractSpeed } : {};
@@ -1233,6 +1237,12 @@ export function onSettings(ev: Event) {
     const start = document.querySelector<HTMLTextAreaElement>("#machineStart")?.value ?? "";
     const end = document.querySelector<HTMLTextAreaElement>("#machineEnd")?.value ?? "";
     noteGcode(start, end);
+    return;
+  }
+  // The limits are numbers typed over several keystrokes, so they commit on `change`; the checkbox commits at once.
+  if (t.id === "machineMaxBed" || t.id === "machineMaxNozzle") return;
+  if (t.id === "machineOwnsHoming") {
+    noteHeatLimits();
     return;
   }
   if (t.id === "machineHost" || t.id === "machineKey" || t.id === "machineStartPrint") {

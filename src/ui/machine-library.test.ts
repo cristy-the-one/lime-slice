@@ -26,6 +26,9 @@ import {
   setLink,
   adoptLegacyLink,
   beltStamp,
+  heatFor,
+  heatNotes,
+  heatWarnings,
   type MachineNumbers,
 } from "./machine-library.ts";
 import { defaultBelt } from "../belt.ts";
@@ -70,7 +73,7 @@ const onBelt = selectIn(library, "generic-belt-45", "lime-pla", 0.4);
 check("picking the generic belt slices on the belt", typeof onBelt !== "string" && beltStamp(onBelt)?.angleDeg === 45, String(onBelt));
 check("the default printer slices without a belt", beltStamp(library) === null);
 check("built-in printers leave the host empty", library.printers.every((printer) => printer.host === "" && printer.apiKey === "" && printer.startPrint === false));
-check("built-in printers leave start and end G-code empty", library.printers.every((printer) => printer.startGcode === "" && printer.endGcode === ""));
+check("built-in printers other than the IR3 V2 leave start and end G-code empty", library.printers.filter((printer) => printer.id !== "ideaformer-ir3-v2").every((printer) => printer.startGcode === "" && printer.endGcode === ""));
 check("built-in filaments", library.filaments.map((filament) => filament.material).join(",") === "PLA,PETG,ABS,TPU");
 
 const pla = library.filaments.find((filament) => filament.id === "lime-pla");
@@ -126,6 +129,9 @@ const numbers: MachineNumbers = {
   host: "http://shop.local",
   apiKey: "shop-key",
   startPrint: true,
+  maxBedC: 110,
+  maxNozzleC: 280,
+  startOwnsHoming: true,
 };
 const named = savePrinterName(library, "Shop", numbers, "shop");
 check("save as adds a printer", typeof named !== "string" && named.printers.some((printer) => printer.name === "Shop" && printer.bedX === 250 && !printer.builtin));
@@ -240,6 +246,74 @@ const oldBelt = JSON.parse(serializeLibrary(library)) as { printers: { belt: Rec
 for (const printer of oldBelt.printers) Object.assign(printer.belt, { seamOnEdge: true, floorSupports: true });
 check("an old belt block's seam and floor supports flags are dropped on load", parseLibrary(JSON.stringify(oldBelt)).printers.every((printer) => !("seamOnEdge" in printer.belt) && !("floorSupports" in printer.belt)));
 check("an old machine file that put its seam on the belt edge is noticed", legacySeamOnEdge(JSON.stringify({ printer: { kind: "belt", belt: { seamOnEdge: true } } })) && !legacySeamOnEdge(JSON.stringify({ printer: { kind: "belt", belt: { seamOnEdge: false } } })) && !legacySeamOnEdge(JSON.stringify({ printer: { kind: "cartesian", belt: { seamOnEdge: true } } })) && !legacySeamOnEdge("nope"));
+
+
+// Temperature limits and a start block that owns heating and homing.
+check("the IR3 V2 stops at 90 C on the bed and 300 C at the nozzle", ir3?.maxBedC === 90 && ir3.maxNozzleC === 300, JSON.stringify(ir3));
+check("other built-in printers allow 120 C bed and 300 C nozzle", library.printers.filter((printer) => printer.id !== "ideaformer-ir3-v2").every((printer) => printer.maxBedC === 120 && printer.maxNozzleC === 300));
+check("only the IR3 V2 owns heating and homing", library.printers.every((printer) => printer.startOwnsHoming === (printer.id === "ideaformer-ir3-v2")));
+check(
+  "the IR3 V2 start block is the maker's sequence with placeholders",
+  ir3 !== undefined &&
+    ir3.startGcode.startsWith("PRINT_START\nM140 S{bed}\nM104 S{nozzle}\nM109 S{nozzle}\nG90\nM83\nG92 E0\nG1 Y0.1 F6000\n") &&
+    ir3.startGcode.includes("\nG28 Y\n") && !/^G28$/m.test(ir3.startGcode) &&
+    ir3.startGcode.trimEnd().endsWith("G92 E0 Z0\nM82") && ir3.endGcode === "PRINT_END",
+  JSON.stringify(ir3?.startGcode),
+);
+
+const absAt100 = heatFor({ maxBedC: 90, maxNozzleC: 300 }, 250, 100);
+check("a bed above the printer limit is held at it", absAt100.bedC === 90 && absAt100.nozzleC === 250 && absAt100.bedAskC === 100 && absAt100.nozzleAskC === 250, JSON.stringify(absAt100));
+check("a temperature inside the limits is untouched", JSON.stringify(heatFor({ maxBedC: 90, maxNozzleC: 300 }, 200, 60)) === JSON.stringify({ nozzleC: 200, bedC: 60, nozzleAskC: 200, bedAskC: 60 }));
+check("a nozzle above the limit is held too", heatFor({ maxBedC: 120, maxNozzleC: 260 }, 280, 60).nozzleC === 260);
+check("no printer means no cap", heatFor(undefined, 250, 100).bedC === 100);
+check("a cap writes a comment line", JSON.stringify(heatNotes(absAt100)) === JSON.stringify(["; bed capped at 90 C (filament 100 C)"]), JSON.stringify(heatNotes(absAt100)));
+check("both caps write two comment lines", JSON.stringify(heatNotes(heatFor({ maxBedC: 90, maxNozzleC: 240 }, 250, 100))) === JSON.stringify(["; bed capped at 90 C (filament 100 C)", "; nozzle capped at 240 C (filament 250 C)"]));
+check("no cap writes no comment", heatNotes(heatFor({ maxBedC: 90, maxNozzleC: 300 }, 200, 60)).length === 0);
+check(
+  "the warning names the filament, the ask, and the limit",
+  JSON.stringify(heatWarnings(absAt100, "ABS")) === JSON.stringify(["Bed 90 °C (ABS asks 100 °C, this printer stops at 90 °C)"]),
+  JSON.stringify(heatWarnings(absAt100, "ABS")),
+);
+check("no cap, no warning", heatWarnings(heatFor({ maxBedC: 90, maxNozzleC: 300 }, 200, 60), "PLA").length === 0);
+
+const limited = fileFromSelection(selectIn(library, "ideaformer-ir3-v2", "lime-abs", 0.4) as typeof library);
+const limitedRound = limited ? parseMachineFile(serializeMachineFile(limited)) : null;
+check("the limits and the flag round-trip through a machine file", limitedRound?.ok === true && limitedRound.file.printer.maxBedC === 90 && limitedRound.file.printer.maxNozzleC === 300 && limitedRound.file.printer.startOwnsHoming === true);
+const limitedLibrary = parseLibrary(serializeLibrary(library));
+check("the limits and the flag round-trip through the library", limitedLibrary.printers.find((printer) => printer.id === "ideaformer-ir3-v2")?.maxBedC === 90 && limitedLibrary.printers.find((printer) => printer.id === "ideaformer-ir3-v2")?.startOwnsHoming === true);
+const named2 = savePrinterName(library, "Shop", numbers, "shop");
+check("Save writes the limits and the flag", typeof named2 !== "string" && selection(named2)?.printer.maxBedC === 110 && selection(named2)?.printer.maxNozzleC === 280 && selection(named2)?.printer.startOwnsHoming === true);
+
+// A library saved before these fields existed.
+const before = JSON.parse(serializeLibrary(library)) as { printers: Record<string, unknown>[] };
+for (const printer of before.printers) {
+  delete printer.maxBedC;
+  delete printer.maxNozzleC;
+  delete printer.startOwnsHoming;
+  printer.startGcode = "";
+  printer.endGcode = "";
+}
+const beforeRead = parseLibrary(JSON.stringify(before));
+check("a printer saved before the limits reads as 120 C bed, 300 C nozzle, no owning start", beforeRead.printers.every((printer) => printer.maxBedC === 120 && printer.maxNozzleC === 300 && printer.startOwnsHoming === false));
+const beforeFile = JSON.parse(serializeMachineFile(fileFromSelection(library)!)) as { printer: Record<string, unknown> };
+delete beforeFile.printer.maxBedC;
+delete beforeFile.printer.maxNozzleC;
+delete beforeFile.printer.startOwnsHoming;
+const beforeFileRead = parseMachineFile(JSON.stringify(beforeFile));
+check("a machine file saved before the limits reads the same defaults", beforeFileRead.ok && beforeFileRead.file.printer.maxBedC === 120 && beforeFileRead.file.printer.maxNozzleC === 300 && beforeFileRead.file.printer.startOwnsHoming === false);
+const refreshed = ensureBuiltins(beforeRead).printers.find((printer) => printer.id === "ideaformer-ir3-v2");
+check(
+  "an untouched stored IR3 V2 takes the catalog's limits, start block, and flag",
+  refreshed?.maxBedC === 90 && refreshed.maxNozzleC === 300 && refreshed.startOwnsHoming === true && refreshed.startGcode.startsWith("PRINT_START\n") && refreshed.endGcode === "PRINT_END",
+  JSON.stringify(refreshed),
+);
+const edited = parseLibrary(JSON.stringify({ ...before, printers: before.printers.map((printer) => printer.id === "ideaformer-ir3-v2" ? { ...printer, startGcode: "G28 ; mine" } : printer) }));
+const editedKept = ensureBuiltins(edited).printers.find((printer) => printer.id === "ideaformer-ir3-v2");
+check("a stored IR3 V2 whose start text was edited keeps its text and flag", editedKept?.startGcode === "G28 ; mine" && editedKept.startOwnsHoming === false);
+const userCopy = parseLibrary(JSON.stringify({ ...before, printers: before.printers.map((printer) => printer.id === "ideaformer-ir3-v2" ? { ...printer, id: "copy", name: "IR3 mine", builtin: false } : printer) }));
+const copyKept = ensureBuiltins(userCopy).printers.find((printer) => printer.id === "copy");
+check("a user copy of the IR3 V2 is left alone", copyKept?.maxBedC === 120 && copyKept.startGcode === "" && copyKept.startOwnsHoming === false);
+check("refreshing twice changes nothing", JSON.stringify(ensureBuiltins(ensureBuiltins(beforeRead))) === JSON.stringify(ensureBuiltins(beforeRead)));
 
 const restored = ensureBuiltins(parseLibrary("nope"));
 check("a corrupt library grows the built-ins back", restored.printers.some((printer) => printer.id === "lime-220") && restored.filaments.some((filament) => filament.id === "lime-tpu"));
