@@ -31,6 +31,12 @@ export interface PrinterRecord {
   startGcode: string;
   /** Stored with the printer. Not sent on the slice request. */
   endGcode: string;
+  /** Hottest bed this printer accepts, in °C. Every bed temperature sent or written is held at it. */
+  maxBedC: number;
+  /** Hottest nozzle this printer accepts, in °C. */
+  maxNozzleC: number;
+  /** The start G-code heats and homes itself, so Export drops the engine's heat and `G28` lines. */
+  startOwnsHoming: boolean;
   /** Prusa Link origin, such as http://192.168.1.50. Empty on a built-in printer. Not sent on the slice request. */
   host: string;
   /** Prusa Link API key or password. Stored with the printer. Not sent on the slice request. */
@@ -114,9 +120,64 @@ export interface MachineNumbers {
   flow: number;
   startGcode: string;
   endGcode: string;
+  maxBedC: number;
+  maxNozzleC: number;
+  startOwnsHoming: boolean;
   host: string;
   apiKey: string;
   startPrint: boolean;
+}
+
+export const DEFAULT_MAX_BED_C = 120;
+export const DEFAULT_MAX_NOZZLE_C = 300;
+
+/** What a filament asks for, and what the printer is asked for after its limits. */
+export interface Heat {
+  nozzleC: number;
+  bedC: number;
+  nozzleAskC: number;
+  bedAskC: number;
+}
+
+/** The temperatures to send: each ask held at the printer's limit. No printer means no limit. */
+export function heatFor(
+  printer: Pick<PrinterRecord, "maxBedC" | "maxNozzleC"> | undefined,
+  nozzleAskC: number,
+  bedAskC: number,
+): Heat {
+  return {
+    nozzleC: Math.min(nozzleAskC, printer?.maxNozzleC ?? Infinity),
+    bedC: Math.min(bedAskC, printer?.maxBedC ?? Infinity),
+    nozzleAskC,
+    bedAskC,
+  };
+}
+
+/** Comment lines for the exported file, one per temperature the printer's limit held down. */
+export function heatNotes(heat: Heat): string[] {
+  const notes: string[] = [];
+  if (heat.bedC < heat.bedAskC) notes.push(`; bed capped at ${heat.bedC} C (filament ${heat.bedAskC} C)`);
+  if (heat.nozzleC < heat.nozzleAskC) notes.push(`; nozzle capped at ${heat.nozzleC} C (filament ${heat.nozzleAskC} C)`);
+  return notes;
+}
+
+/** The same caps as sentences for the person at the printer panel. */
+export function heatWarnings(heat: Heat, filamentName: string): string[] {
+  const out: string[] = [];
+  if (heat.bedC < heat.bedAskC) out.push(`Bed ${heat.bedC} °C (${filamentName} asks ${heat.bedAskC} °C, this printer stops at ${heat.bedC} °C)`);
+  if (heat.nozzleC < heat.nozzleAskC) out.push(`Nozzle ${heat.nozzleC} °C (${filamentName} asks ${heat.nozzleAskC} °C, this printer stops at ${heat.nozzleC} °C)`);
+  return out;
+}
+
+/** "Nozzle 250 °C · bed 90 °C", the temperatures that are sent. */
+export function heatReadout(heat: Heat): string {
+  return `Nozzle ${Math.round(heat.nozzleC)} °C · bed ${Math.round(heat.bedC)} °C`;
+}
+
+/** The cap warning, always in the markup so a temperature edit can fill or hide it in place. */
+export function heatNoteHtml(heat: Heat, filamentName: string, id: string): string {
+  const lines = heatWarnings(heat, filamentName);
+  return `<div class="meta heat-note" id="${id}" role="status"${lines.length > 0 ? "" : " hidden"}>${lines.map(escapeHtml).join("<br>")}</div>`;
 }
 
 export function nozzleKey(mm: number): string {
@@ -145,10 +206,15 @@ export function builtinLibrary(): MachineLibrary {
   };
 }
 
-/** Put any missing built-in profile back. Stored copies of those ids are left as they are. */
+/**
+ * Put any missing built-in profile back. A stored built-in whose start and end
+ * G-code are both blank has not been edited there, so it takes the catalog's
+ * G-code, limits, and flag. One with text of its own, and every user copy, is left as it is.
+ */
 export function ensureBuiltins(library: MachineLibrary): MachineLibrary {
-  const printers = [...library.printers];
-  for (const printer of builtinPrinters()) {
+  const catalog = builtinPrinters();
+  const printers = library.printers.map((row) => refreshBuiltin(row, catalog.find((printer) => printer.id === row.id)));
+  for (const printer of catalog) {
     if (!printers.some((row) => row.id === printer.id)) printers.push(printer);
   }
   const filaments = [...library.filaments];
@@ -159,6 +225,12 @@ export function ensureBuiltins(library: MachineLibrary): MachineLibrary {
   const filamentId = filaments.some((row) => row.id === library.filamentId) ? library.filamentId : filaments[0]!.id;
   const nozzleMm = Number.isFinite(library.nozzleMm) && library.nozzleMm > 0 ? library.nozzleMm : 0.4;
   return { version: MACHINE_FILE_VERSION, printers, filaments, printerId, filamentId, nozzleMm };
+}
+
+function refreshBuiltin(stored: PrinterRecord, catalog: PrinterRecord | undefined): PrinterRecord {
+  if (!stored.builtin || !catalog || stored.startGcode.trim() !== "" || stored.endGcode.trim() !== "") return stored;
+  const { startGcode, endGcode, startOwnsHoming, maxBedC, maxNozzleC } = catalog;
+  return { ...stored, startGcode, endGcode, startOwnsHoming, maxBedC, maxNozzleC };
 }
 
 export function selection(library: MachineLibrary): { printer: PrinterRecord; filament: FilamentRecord } | null {
@@ -334,6 +406,16 @@ export function setGcode(library: MachineLibrary, startGcode: string, endGcode: 
   };
 }
 
+/** Store the temperature limits and the start-block flag on the active printer. */
+export function setHeatLimits(library: MachineLibrary, maxBedC: number, maxNozzleC: number, startOwnsHoming: boolean): MachineLibrary {
+  const bed = Number.isFinite(maxBedC) ? Math.min(200, Math.max(30, Math.round(maxBedC))) : DEFAULT_MAX_BED_C;
+  const nozzle = Number.isFinite(maxNozzleC) ? Math.min(500, Math.max(150, Math.round(maxNozzleC))) : DEFAULT_MAX_NOZZLE_C;
+  return {
+    ...library,
+    printers: library.printers.map((printer) => printer.id === library.printerId ? { ...printer, maxBedC: bed, maxNozzleC: nozzle, startOwnsHoming } : printer),
+  };
+}
+
 /** The active printer's belt, or null when the printer is cartesian. */
 export function beltStamp(library: MachineLibrary): BeltSettings | null {
   const printer = selection(library)?.printer;
@@ -455,6 +537,9 @@ export function adoptProfile(library: MachineLibrary, profile: PrinterProfile, p
     maxAccel: profile.maxAccel,
     startGcode: "",
     endGcode: "",
+    maxBedC: DEFAULT_MAX_BED_C,
+    maxNozzleC: DEFAULT_MAX_NOZZLE_C,
+    startOwnsHoming: false,
     host: "",
     apiKey: "",
     startPrint: false,
@@ -486,7 +571,11 @@ export function adoptProfile(library: MachineLibrary, profile: PrinterProfile, p
   };
 }
 
-const GCODE_TIP = "Start and end G-code are inserted into Export and Send. They are not sent to the slicer. The engine still writes temperatures, homing, and the park. Leave both blank and the file stays the engine's bytes.";
+const GCODE_TIP = "Start and end G-code are inserted into Export and Send. They are not sent to the slicer. Unless Start G-code heats and homes is on, the engine still writes temperatures and homing first. {bed} and {nozzle} become the temperatures after the printer's limits. Leave both blank and the file stays the engine's bytes.";
+
+const OWNS_HOMING_TIP = "Turn on when the start G-code heats and homes by itself, such as a Klipper PRINT_START macro. Export then drops the engine's own heat and G28 lines and writes the start G-code first.";
+
+const LIMIT_TIP = "The hottest bed and nozzle this printer accepts. Any temperature above it is held at the limit in the slice and in the exported file, with a comment line that says so.";
 
 const BELT_TIP = "The engine slices this belt. Export follows the slice. Send follows the printer connection. Seam on the belt edge and the belt raft stay off until those boxes are checked. A raft is a pad on the belt under the part and 1 mm past it, raft layers times the layer height thick; the part stands on it. Smart supports on a belt printer grow down to the tilted belt. They are not available together with a raft.";
 
@@ -499,6 +588,7 @@ export function machineChipLabel(library: MachineLibrary): string {
 
 /** The printer, filament, and nozzle pickers of the printer chip. */
 export function machinePickHtml(library: MachineLibrary): string {
+  const picked = selection(library);
   const nozzles: number[] = [...NOZZLE_MM];
   if (!nozzles.some((size) => nozzleKey(size) === nozzleKey(library.nozzleMm))) nozzles.push(library.nozzleMm);
   const printerOptions = library.printers
@@ -520,6 +610,7 @@ export function machinePickHtml(library: MachineLibrary): string {
     <label class="field">Nozzle
       <select id="machineNozzle" aria-label="Nozzle size">${nozzleOptions}</select>
     </label>
+    ${picked ? heatNoteHtml(heatFor(picked.printer, picked.filament.nozzleTemp, picked.filament.bedTemp), picked.filament.name, "printerHeatNote") : ""}
     <button class="btn" id="editPrinter" type="button">Edit printer…</button>`;
 }
 
@@ -531,6 +622,7 @@ export function machineSectionHtml(
 ): string {
   const picked = selection(library);
   const advance = ADVANCE[rules.firmware];
+  const heat = heatFor(picked?.printer, live.nozzleTemp, live.bedTemp);
   return `
     <div class="machine-block">
       ${beltFieldsHtml(picked?.printer, rules)}
@@ -546,7 +638,8 @@ export function machineSectionHtml(
       <label class="field setting" data-label="flow" data-keywords="extrusion multiplier flow ratio">Flow
         <input id="machineFlow" type="number" min="0.5" max="1.5" step="0.01" value="${live.flow}" aria-label="Flow multiplier for this filament" />
       </label>
-      <div class="meta" id="machineTemps">Nozzle ${Math.round(live.nozzleTemp)} °C · bed ${Math.round(live.bedTemp)} °C</div>
+      <div class="meta" id="machineTemps">${heatReadout(heat)}</div>
+      ${heatNoteHtml(heat, picked?.filament.name ?? "", "machineHeatNote")}
       <div class="row">
         <button class="btn" id="machineSave" type="button">Save</button>
         <details class="machine-more" id="machineMore">
@@ -562,6 +655,13 @@ export function machineSectionHtml(
             </label>
             <label class="field setting" data-label="end g-code" data-keywords="end gcode footer" data-tip="${GCODE_TIP}">End G-code
               <textarea id="machineEnd" class="machine-gcode" rows="3" aria-label="End G-code">${escapeHtml(picked?.printer.endGcode ?? "")}</textarea>
+            </label>
+            <label class="check setting" data-label="start g-code heats and homes" data-keywords="print_start macro klipper homing owns" data-tip="${OWNS_HOMING_TIP}"><input id="machineOwnsHoming" type="checkbox" ${picked?.printer.startOwnsHoming ? "checked" : ""}/> Start G-code heats and homes</label>
+            <label class="field setting" data-label="max bed temperature" data-keywords="bed limit cap heated belt" data-tip="${LIMIT_TIP}">Max bed °C
+              <input id="machineMaxBed" type="number" min="30" max="200" step="1" value="${picked?.printer.maxBedC ?? DEFAULT_MAX_BED_C}" aria-label="Hottest bed this printer accepts" />
+            </label>
+            <label class="field setting" data-label="max nozzle temperature" data-keywords="nozzle limit cap hotend" data-tip="${LIMIT_TIP}">Max nozzle °C
+              <input id="machineMaxNozzle" type="number" min="150" max="500" step="1" value="${picked?.printer.maxNozzleC ?? DEFAULT_MAX_NOZZLE_C}" aria-label="Hottest nozzle this printer accepts" />
             </label>
             <label class="field setting machine-link" data-label="prusa link host" data-keywords="printer host url send" data-tip="Host and API key are stored on this printer and in an exported machine file. Built-in printers start with an empty host. Send uploads the current G-code to Prusa Link. The slicer does not talk to the printer.">Prusa Link host
               <input id="machineHost" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://192.168.1.50" value="${escapeHtml(picked?.printer.host ?? "")}" aria-label="Prusa Link host" />
@@ -598,6 +698,9 @@ function writeNumbers(library: MachineLibrary, printerId: string, filamentId: st
           maxAccel: numbers.maxAccel,
           startGcode: numbers.startGcode,
           endGcode: numbers.endGcode,
+          maxBedC: numbers.maxBedC,
+          maxNozzleC: numbers.maxNozzleC,
+          startOwnsHoming: numbers.startOwnsHoming,
           host: numbers.host,
           apiKey: numbers.apiKey,
           startPrint: numbers.startPrint,
@@ -631,6 +734,9 @@ function blankPrinter(id: string, name: string): PrinterRecord {
     maxAccel: 10000,
     startGcode: "",
     endGcode: "",
+    maxBedC: DEFAULT_MAX_BED_C,
+    maxNozzleC: DEFAULT_MAX_NOZZLE_C,
+    startOwnsHoming: false,
     host: "",
     apiKey: "",
     startPrint: false,
@@ -650,6 +756,9 @@ function stripPrinter(printer: PrinterRecord): MachineFile["printer"] {
     maxAccel: printer.maxAccel,
     startGcode: printer.startGcode,
     endGcode: printer.endGcode,
+    maxBedC: printer.maxBedC,
+    maxNozzleC: printer.maxNozzleC,
+    startOwnsHoming: printer.startOwnsHoming,
     host: printer.host,
     apiKey: printer.apiKey,
     startPrint: printer.startPrint,
@@ -682,6 +791,43 @@ function uniqueName(rows: { name: string }[], name: string): string {
   return `${name} ${n}`;
 }
 
+/**
+ * The IR3 V2's start sequence. PRINT_START is the printer's own macro. The belt has no Z endstop,
+ * so only Y homes. The purge draws a Z-shaped line up the belt, then Z is zeroed at the nozzle.
+ * It ends in absolute extrusion because the engine's body is absolute.
+ */
+const IR3_V2_START = [
+  "PRINT_START",
+  "M140 S{bed}",
+  "M104 S{nozzle}",
+  "M109 S{nozzle}",
+  "G90",
+  "M83",
+  "G92 E0",
+  "G1 Y0.1 F6000",
+  "G1 E10",
+  "G1 Z20 E23 F800",
+  "G28 Y",
+  "FMS_on",
+  "G92 Z0",
+  "G1 Z0.4 F900",
+  "G1 X0 Z0.4 F6000",
+  "G1 Z5.4 E1. F1200",
+  "; 8-fold Z-shaped purge line: 6.67 mm wide, 2 mm per segment",
+  "G1 X6.67 Z7.4 E1.85",
+  "G1 X0 Z9.4 E1.85",
+  "G1 X6.67 Z11.4 E1.85",
+  "G1 X0 Z13.4 E1.85",
+  "G1 X6.67 Z15.4 E1.85",
+  "G1 X0 Z17.4 E1.85",
+  "G1 X6.67 Z19.4 E1.85",
+  "G1 X0 Z21.4 E1.85",
+  "G1 X6.67 Z23.4 E1.85",
+  "G1 Z28.4 E0.50",
+  "G92 E0 Z0",
+  "M82",
+].join("\n");
+
 function builtinPrinters(): PrinterRecord[] {
   return [
     printer("lime-220", "Lime 220", 220, 220, 250, 12, 10000),
@@ -689,7 +835,14 @@ function builtinPrinters(): PrinterRecord[] {
     printer("lime-180", "Lime 180", 180, 180, 180, 8, 2000),
     { ...printer("generic-belt-45", "Generic belt 45°", 200, 200, 200, 12, 5000), kind: "belt" },
     // Klipper, 45° gantry, 250 mm belt and gantry, X/Y limited to 20000 mm/s².
-    { ...printer("ideaformer-ir3-v2", "Ideaformer IR3 V2", 250, 250, 250, 12, 20000), kind: "belt" },
+    {
+      ...printer("ideaformer-ir3-v2", "Ideaformer IR3 V2", 250, 250, 250, 12, 20000),
+      kind: "belt",
+      maxBedC: 90,
+      startOwnsHoming: true,
+      startGcode: IR3_V2_START,
+      endGcode: "PRINT_END",
+    },
   ];
 }
 
@@ -705,6 +858,9 @@ function printer(id: string, name: string, bedX: number, bedY: number, bedZ: num
     maxAccel: accel,
     startGcode: "",
     endGcode: "",
+    maxBedC: DEFAULT_MAX_BED_C,
+    maxNozzleC: DEFAULT_MAX_NOZZLE_C,
+    startOwnsHoming: false,
     host: "",
     apiKey: "",
     startPrint: false,
@@ -828,6 +984,9 @@ function readPrinterBody(value: unknown): Omit<PrinterRecord, "id" | "builtin"> 
     maxAccel: row.maxAccel,
     startGcode: row.startGcode,
     endGcode: row.endGcode,
+    maxBedC: limit(row.maxBedC, DEFAULT_MAX_BED_C),
+    maxNozzleC: limit(row.maxNozzleC, DEFAULT_MAX_NOZZLE_C),
+    startOwnsHoming: row.startOwnsHoming === true,
     host: row.host.trim(),
     apiKey: row.apiKey,
     startPrint: row.startPrint,
@@ -978,6 +1137,10 @@ function readAdvance(value: unknown): Record<string, number> | null {
     out[key] = item;
   }
   return out;
+}
+
+function limit(value: unknown, fallback: number): number {
+  return positive(value) ? Math.min(1000, value) : fallback;
 }
 
 function finite(value: unknown): value is number {
