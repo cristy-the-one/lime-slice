@@ -3314,7 +3314,20 @@ fn order_infill(
             }
         }
     }
-    if !closed {
+    if closed {
+        // Seams move with the visit order, so a reorder proposed on the ends as
+        // they stand is kept only when the walk, seams moved, really is shorter.
+        if has && paths.iter().all(geom_closed) {
+            let proposed = reorder_rings(&paths, &best.order, cursor, best.rotate);
+            if proposed != best.order {
+                let cost = walk_cost(&paths, &proposed, cursor, has, best.rotate);
+                if cost + TRAVEL_WIN_MM < best.cost {
+                    best.cost = cost;
+                    best.order = proposed;
+                }
+            }
+        }
+    } else {
         let (order, flips) = untangle(&paths, &best.order, cursor, has);
         if order != best.order || flips.iter().any(|f| *f) {
             rest_sample.order_rest(n as u64);
@@ -3329,6 +3342,93 @@ fn order_infill(
     rest_sample.order_rest(n as u64);
     ordered
 }
+
+/// A run of closed paths is a visit order over points, each path entered and
+/// left at one seam. Improves `order` from the cursor by 2-opt and by moving
+/// one to three paths elsewhere, until neither shortens it. The seams are those
+/// the order has now; the caller checks the result with the seams moved.
+fn reorder_rings(paths: &[Extrusion], order: &[usize], cursor: [f64; 2], rotate: bool) -> Vec<usize> {
+    let n = order.len();
+    if !(3..=RING_REORDER_MAX).contains(&n) {
+        return order.to_vec();
+    }
+    let dirs = build_dirs(paths, order, cursor, true, rotate);
+    // Node 0 is the cursor and stays first; node k + 1 is `order[k]`.
+    let mut at: Vec<[f64; 2]> = vec![cursor];
+    at.extend(dirs.iter().map(|d| d.start));
+    let mut tour: Vec<usize> = (0..=n).collect();
+    let d = |a: usize, b: usize| dist_mm(at[a], at[b]);
+    for _ in 0..RING_REORDER_PASSES {
+        let mut improved = false;
+        for i in 1..n {
+            for j in i + 1..=n {
+                let (before, first, last) = (tour[i - 1], tour[i], tour[j]);
+                let mut delta = d(before, last) - d(before, first);
+                if let Some(&after) = tour.get(j + 1) {
+                    delta += d(first, after) - d(last, after);
+                }
+                if delta < -1e-6 {
+                    tour[i..=j].reverse();
+                    improved = true;
+                }
+            }
+        }
+        for len in 1..=3usize {
+            let mut i = 1;
+            while i + len <= n {
+                let seg: Vec<usize> = tour[i..i + len].to_vec();
+                let (before, after) = (tour[i - 1], tour.get(i + len).copied());
+                let mut gain = d(before, seg[0]);
+                if let Some(after) = after {
+                    gain += d(seg[len - 1], after) - d(before, after);
+                }
+                let mut rest = tour.clone();
+                rest.drain(i..i + len);
+                let mut best: Option<(f64, usize, bool)> = None;
+                for pos in 1..=rest.len() {
+                    if pos == i {
+                        continue;
+                    }
+                    let (p, q) = (rest[pos - 1], rest.get(pos).copied());
+                    for reversed in [false, true] {
+                        let (head, tail) = if reversed {
+                            (seg[len - 1], seg[0])
+                        } else {
+                            (seg[0], seg[len - 1])
+                        };
+                        let mut cost = d(p, head);
+                        if let Some(q) = q {
+                            cost += d(tail, q) - d(p, q);
+                        }
+                        if cost + 1e-6 < gain && best.is_none_or(|b| cost < b.0) {
+                            best = Some((cost, pos, reversed));
+                        }
+                    }
+                }
+                if let Some((_, pos, reversed)) = best {
+                    let mut moved = seg;
+                    if reversed {
+                        moved.reverse();
+                    }
+                    for (k, node) in moved.into_iter().enumerate() {
+                        rest.insert(pos + k, node);
+                    }
+                    tour = rest;
+                    improved = true;
+                }
+                i += 1;
+            }
+        }
+        if !improved {
+            break;
+        }
+    }
+    tour[1..].iter().map(|&node| order[node - 1]).collect()
+}
+
+/// Longest run `reorder_rings` takes, and how many passes it makes.
+const RING_REORDER_MAX: usize = 160;
+const RING_REORDER_PASSES: usize = 6;
 
 /// Positions a 2-opt move may reach past `i`. Crossings sit between nearby
 /// paths, and the cap keeps a big skin group linear.
@@ -5894,6 +5994,37 @@ mod travel_tests {
         comb_layer(&mut across, &solid, true, 0.36, None);
         apply_z_hop(&mut across, &solid, &[], ZHopMode::Smart, 0.4, 2.0, false);
         assert_eq!(across[1].z_hop, 0.4);
+    }
+
+    /// Travel between loops of 0.4 mm radius, as `order_supports` orders them from
+    /// the middle of a 40 mm square.
+    fn walked_over_loops(count: usize, seed: u64) -> f64 {
+        let mut state = seed;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as f64 / (1u64 << 31) as f64 * 40.0
+        };
+        let mut paths: Vec<Extrusion> = (0..count)
+            .map(|_| support(circle_pts([next(), next()], 0.4)))
+            .collect();
+        let mut at = [20.0, 20.0];
+        order_supports(&mut paths, Some(at), None);
+        let mut walked = 0.0;
+        for path in &paths {
+            walked += dist_mm(at, path.points[0]);
+            at = *path.points.last().unwrap();
+        }
+        walked
+    }
+
+    #[test]
+    fn support_loops_are_visited_in_a_short_order() {
+        let walked: f64 = (1..=6).map(|seed| walked_over_loops(60, seed)).sum();
+        // Nearest-neighbour with relocations walks 1490 mm here; 2-opt and
+        // moving short runs of loops brings it to 1410.
+        assert!(walked < 1450.0, "walked {walked:.1} mm");
     }
 
     #[test]
