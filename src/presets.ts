@@ -58,6 +58,10 @@ export interface PresetSettings {
   zHop: string;
   zHopHeight: number;
   zHopMinTravel: number;
+  /** A layer that would print faster than this many seconds is slowed to take it. 0 is off. */
+  minLayerTimeS: number;
+  /** The slowest feed, mm/s, a slowed layer prints at. */
+  minLayerSpeedMmS: number;
   pricePerKg: number;
   simplify: boolean;
   simplifyError: number;
@@ -111,6 +115,8 @@ export const DEFAULT_PRESET: PresetSettings = {
   zHop: "blend",
   zHopHeight: 0.4,
   zHopMinTravel: 2,
+  minLayerTimeS: 8,
+  minLayerSpeedMmS: 15,
   pricePerKg: 20,
   simplify: true,
   simplifyError: 0,
@@ -121,7 +127,7 @@ export function presetKeys(): (keyof PresetSettings)[] {
 }
 
 /** Keys added after project and profile files were versioned. A file written before one reads its default. */
-const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow", "retractOn", "retractLength", "retractSpeed", "supportAvoidance"]);
+const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow", "retractOn", "retractLength", "retractSpeed", "supportAvoidance", "minLayerTimeS", "minLayerSpeedMmS"]);
 
 /** The preset a project or profile file stores, or null when a key is missing or has the wrong type. */
 export function readPresetSettings(value: unknown): PresetSettings | null {

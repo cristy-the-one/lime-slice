@@ -61,6 +61,14 @@ const bedx = controlById("bedx")!;
 bedx.set!(sample, 300);
 check("bed X edits the profile", sample.profile.bedX === 300);
 
+const minTime = controlById("minlayer");
+const minSpeed = controlById("minlayerspd");
+check("minimum layer time is an Advanced speed setting", minTime?.group === "speed" && minTime.tier === "advanced" && minTime.preset === "minLayerTimeS");
+check("the slowest speed is an Expert setting under it", minSpeed?.group === "speed" && minSpeed.tier === "expert" && minSpeed.parent === "minlayer" && minSpeed.preset === "minLayerSpeedMmS");
+check("both read 8 s and 15 mm/s by default", minTime?.get!(sample) === 8 && minSpeed?.get!(sample) === 15 && DEFAULT_PRESET.minLayerTimeS === 8 && DEFAULT_PRESET.minLayerSpeedMmS === 15);
+check("the slowest speed hides while the minimum is 0", minSpeed?.when!(sample) === true && minSpeed?.when!({ ...sample, minLayerTimeS: 0 }) === false);
+check("both explain themselves", !!minTime?.tip && !!minSpeed?.tip);
+
 check("strategy rows cover the five cards", STRATEGY_ROWS.map((row) => row.id).join(",") === "speed,efficiency,toughness,layer,region");
 check("single speed is the speed card", strategyCard({ blendKind: "single", strategy: "speed" }) === "speed");
 check("weight is the efficiency card", strategyCard({ blendKind: "weight", strategy: "speed" }) === "efficiency");

@@ -28,12 +28,15 @@ export interface PreviewPatch {
   changed: PatchLayer[];
   /** Every listed layer's estimator seconds, in the order of `layers`. */
   seconds?: number[];
+  /** Every listed layer's cooling slowdown, in the order of `layers`. Absent when no layer is slowed. */
+  slow?: number[];
 }
 
 interface HeldLayer {
   index: number;
   paths: PathColumns;
   seconds?: number;
+  slow?: number;
 }
 
 /**
@@ -50,7 +53,13 @@ export function patchLayers<L extends HeldLayer>(held: readonly L[], patch: Prev
     if (!fresh) {
       if (!was) return null;
       const seconds = patch.seconds?.[k];
-      out.push(seconds === undefined || seconds === was.seconds ? was : { ...was, seconds });
+      const slow = patch.slow?.[k] ?? 1;
+      if ((seconds === undefined || seconds === was.seconds) && slow === (was.slow ?? 1)) {
+        out.push(was);
+        continue;
+      }
+      const { slow: _was, ...rest } = was;
+      out.push({ ...(rest as unknown as L), seconds: seconds ?? was.seconds, ...(slow < 1 ? { slow } : {}) });
       continue;
     }
     const paths = mergeColumns(was?.paths ?? null, fresh.paths, fresh.order);
