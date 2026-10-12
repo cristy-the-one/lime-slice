@@ -1,4 +1,4 @@
-import { beltAdvanceMm, beltRunTooLong, beltSliceField, beltStripLength, coerceBelt, defaultBelt, tiltPose } from "./belt.ts";
+import { beltAdvanceMm, beltArrowRun, beltRunTooLong, beltSliceField, beltStripLength, coerceBelt, defaultBelt, tiltPose } from "./belt.ts";
 import { recipeKey } from "./slice-action.ts";
 
 let failed = 0;
@@ -18,9 +18,27 @@ near("30° advance is layer height over sin 30°", beltAdvanceMm(0.2, 30), 0.4);
 near("a 35° step is not the cosine form", beltAdvanceMm(0.2, 35), 0.2 / Math.sin((35 * Math.PI) / 180));
 check("35° sine and cosine disagree", Math.abs(Math.sin((35 * Math.PI) / 180) - Math.cos((35 * Math.PI) / 180)) > 0.05);
 
-const pose = tiltPose(200, 250, 45);
+// Print Y runs along the belt and the belt carries the part toward Y = 0, so the plane's foot is at the back (high Y) and it leans toward the front.
+const pose = tiltPose(200, 250, 45, 250);
 near("the tilted plane reaches the printable height", pose.y * 2, 250, 1e-6);
-check("the plane leans off horizontal", pose.rotationX > -Math.PI / 2 && pose.rotationX < 0);
+near("the plane's slope is height over sin 45°", pose.slopeMm, 250 * Math.SQRT2, 1e-6);
+near("the plane's tilt is a quarter turn less 45°, leaning toward the camera side", pose.rotationX, Math.PI / 4, 1e-9);
+near("the plane is centered across the belt", pose.x, 100, 1e-9);
+near("the plane's middle is half the height up", pose.y, 125, 1e-9);
+near("the plane's middle is half the run in front of its foot at the back", pose.z, -125, 1e-9);
+// Scene z is print −Y. The top edge is the middle plus half the slope along (0, sin, cos) in (y, z).
+const topY = pose.y + (pose.slopeMm / 2) * Math.sin(pose.rotationX);
+const topZ = pose.z + (pose.slopeMm / 2) * Math.cos(pose.rotationX);
+near("the top edge is at the printable height", topY, 250, 1e-9);
+near("the top edge is at print Y 0, over the exit side", -topZ, 0, 1e-9);
+check("a flatter plane leans further toward the front", tiltPose(200, 250, 30, 250).z > pose.z);
+
+const arrow = beltArrowRun(100, 124);
+near("the belt arrow's tail is just behind the part's back end", arrow.tailY, 134);
+near("the belt arrow's head is past the part's front end, where it leaves", arrow.headY, 86);
+near("the barbs sit behind the head by a quarter of the arrow", arrow.barbY, 98);
+check("the head is at lower print Y than the tail", arrow.headY < arrow.tailY && arrow.headY < arrow.barbY);
+near("a long part caps the barbs at 18 mm", beltArrowRun(0, 400).barbY - beltArrowRun(0, 400).headY, 18);
 
 const open = beltStripLength(defaultBelt(200), 20);
 check("an unlimited belt is a finite strip", open.unlimited && open.lengthMm >= 200 * 3);

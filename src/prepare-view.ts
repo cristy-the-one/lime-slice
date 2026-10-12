@@ -11,7 +11,8 @@ import type { OverrideDocument } from "./overrides";
 import type { PlateBound } from "./plate";
 import type { SeamDisk } from "./seam-paint";
 import type { PaintDisk, PaintKind, Vec3 } from "./support-paint";
-import { beltStripLength, tiltPose, type BeltSettings } from "./belt";
+import { beltArrowRun, beltStripLength, tiltPose, type BeltSettings } from "./belt";
+import { arrowHeading, beltArrowGeometry, planeLean } from "./belt-scene";
 import { hexToThree, themeColors } from "./theme";
 import { frameFactor, frameGizmoPx, frameLookShift, framePanPx } from "./frame-fit";
 
@@ -140,6 +141,9 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   beltArrow.visible = false;
   beltArrow.raycast = () => undefined;
   scene.add(beltArrow);
+  const beltOutLabel = labelSprite("Belt out", colors.amber);
+  beltOutLabel.sprite.visible = false;
+  scene.add(beltOutLabel.sprite);
   const copyMat = new THREE.MeshStandardMaterial({
     color: hexToThree(colors.mesh),
     transparent: true,
@@ -391,14 +395,22 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     ]);
     triad.position.set(0, 0.2, 0);
     if (belt && strip) {
-      const pose = tiltPose(spanX, bedZ, belt.angleDeg);
+      const runY = Math.min(spanY, bedY);
+      const pose = tiltPose(spanX, bedZ, belt.angleDeg, runY);
       tilt.visible = true;
       tilt.scale.set(spanX, pose.slopeMm, 1);
       tilt.rotation.set(pose.rotationX, 0, 0);
       tilt.position.set(pose.x, pose.y, pose.z);
+      tilt.updateMatrixWorld(true);
       beltArrow.visible = true;
       beltArrow.geometry.dispose();
-      beltArrow.geometry = beltArrowGeometry(spanX, spanY, belt.direction);
+      const span = partSpan() ?? { minX: 0, maxX: spanX, minY: 0, maxY: runY };
+      const arrowX = Math.min(Math.max(span.maxX + 16, 8), spanX - 8);
+      beltArrow.geometry = beltArrowGeometry(arrowX, span.minY, span.maxY);
+      beltOutLabel.sprite.visible = true;
+      beltOutLabel.sprite.position.set(arrowX + 6, 14, -beltArrowRun(span.minY, span.maxY).headY);
+      canvas.dataset.beltOut = arrowHeading(beltArrow.geometry);
+      canvas.dataset.beltPlaneLean = planeLean(tilt);
       canvas.dataset.belt = "1";
       canvas.dataset.beltPlane = "1";
       canvas.dataset.beltCopies = String(belt.copies);
@@ -408,6 +420,9 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     } else {
       tilt.visible = false;
       beltArrow.visible = false;
+      beltOutLabel.sprite.visible = false;
+      canvas.dataset.beltOut = "";
+      canvas.dataset.beltPlaneLean = "";
       canvas.dataset.belt = "0";
       canvas.dataset.beltPlane = "0";
       canvas.dataset.beltCopies = "0";
@@ -418,6 +433,18 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     syncGhosts();
     syncModifiers();
     requestRender();
+  }
+
+  /** Print X and Y extent of everything on the plate, or of the one mesh before a plate exists. */
+  function partSpan() {
+    const boxes = plateEntries.length > 0 ? plateEntries : meshBounds ? [meshBounds] : [];
+    if (boxes.length === 0) return null;
+    return {
+      minX: Math.min(...boxes.map((b) => b.min[0])),
+      maxX: Math.max(...boxes.map((b) => b.max[0])),
+      minY: Math.min(...boxes.map((b) => b.min[1])),
+      maxY: Math.max(...boxes.map((b) => b.max[1])),
+    };
   }
 
   function clearGhosts() {
@@ -1157,6 +1184,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     },
     setPlateBounds(entries) {
       plateEntries = entries;
+      if (belt) layoutBed();
       syncPlateBounds();
     },
     onModifierSelect(cb) { selectModCb = cb; },
@@ -1181,6 +1209,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       tiltMat.color.setHex(hexToThree(colors.amber));
       (tiltEdge.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.amber));
       (beltArrow.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.amber));
+      beltOutLabel.paint(colors.amber);
       copyMat.color.setHex(hexToThree(colors.mesh));
       for (const [axis, { ringMat, moveMats }] of handles) {
         ringMat.color.setHex(axisHex(axis));
@@ -1270,21 +1299,31 @@ function ghostMat() {
   return new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
 }
 
-function beltArrowGeometry(width: number, length: number, direction: 1 | -1): THREE.BufferGeometry {
-  const sign = direction >= 0 ? 1 : -1;
-  const tail = sign > 0 ? length * 0.12 : length * 0.88;
-  const head = sign > 0 ? length * 0.88 : length * 0.12;
-  const back = head - sign * Math.min(18, length * 0.08);
-  const x = width / 2;
-  const z = (printY: number) => -printY;
-  const y = 0.35;
-  return new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(x, y, z(tail)),
-    new THREE.Vector3(x, y, z(head)),
-    new THREE.Vector3(x - 8, y, z(back)),
-    new THREE.Vector3(x, y, z(head)),
-    new THREE.Vector3(x + 8, y, z(back)),
-  ]);
+/** A scene label in `color`. `paint` redraws it for a new theme. */
+function labelSprite(text: string, color: string) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 64;
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  // Screen-sized, so it reads at any zoom. It starts at its position and runs away from it.
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, sizeAttenuation: false }));
+  sprite.scale.set(0.16, 0.04, 1);
+  sprite.center.set(0, 0.5);
+  sprite.renderOrder = 7;
+  sprite.raycast = () => undefined;
+  const paint = (fill: string) => {
+    const ctx = canvas.getContext("2d")!;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = fill;
+    ctx.font = "700 40px IBM Plex Sans, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, canvas.width / 2, canvas.height / 2 + 2);
+    tex.needsUpdate = true;
+  };
+  paint(color);
+  return { sprite, paint };
 }
 
 function tagHandle(mesh: THREE.Object3D, kind: HandleHit["kind"], axis: Axis) {

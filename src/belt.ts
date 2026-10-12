@@ -90,9 +90,12 @@ export function beltStripLength(belt: BeltSettings, partDepthMm: number): { leng
 
 /**
  * Pose of a unit plane that shows the nozzle plane. Scale Y by `slopeMm`.
- * The low edge sits on the belt at print Y = 0. Print X, Y, Z is scene X, −Z, Y.
+ * Print X, Y, Z is scene X, −Z, Y. Print Y runs along the belt and the belt
+ * carries the part toward Y = 0, which is how the engine lays the plate flat:
+ * each layer plane leans with its top toward low Y. The foot is on the belt at
+ * print Y = `footYMm`, the upstream edge, and the plane rises toward the front.
  */
-export function tiltPose(widthMm: number, heightMm: number, angleDeg: number): {
+export function tiltPose(widthMm: number, heightMm: number, angleDeg: number, footYMm: number): {
   rotationX: number;
   x: number;
   y: number;
@@ -103,12 +106,25 @@ export function tiltPose(widthMm: number, heightMm: number, angleDeg: number): {
   const slope = Math.max(heightMm, 10) / Math.sin(angle);
   const half = slope / 2;
   return {
-    rotationX: -Math.PI / 2 + angle,
+    rotationX: Math.PI / 2 - angle,
     x: widthMm / 2,
     y: half * Math.sin(angle),
-    z: -half * Math.cos(angle),
+    z: -footYMm + half * Math.cos(angle),
     slopeMm: slope,
   };
+}
+
+/**
+ * The belt arrow beside a part that spans print Y `minY` to `maxY`: print Y of
+ * the tail, of the head, and of the barbs. The head is toward Y = 0, past the
+ * part's front end, where the belt carries the part out, so the end nearest
+ * the head prints first and leaves first. The firmware direction only signs
+ * the belt axis; it does not mirror the plate, so it is not an input.
+ */
+export function beltArrowRun(minY: number, maxY: number): { tailY: number; headY: number; barbY: number } {
+  const tailY = maxY + 10;
+  const headY = minY - 14;
+  return { tailY, headY, barbY: headY + Math.min(18, (tailY - headY) * 0.25) };
 }
 
 /**
