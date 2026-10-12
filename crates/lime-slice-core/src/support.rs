@@ -24,6 +24,16 @@ pub enum SupportStyle {
     Tree,
 }
 
+/// Where the demand for supports comes from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SupportSource {
+    /// The overhang angle and the islands, then paint on top.
+    #[default]
+    Auto,
+    /// Only what enforce paint asks for. The angle and the islands ask for nothing.
+    Paint,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SupportLayer {
     pub sparse: Vec<Loop>,
@@ -76,6 +86,7 @@ pub struct SupportOpts {
     /// Per-layer regions a thickening branch must not enter. Off, the walk
     /// pairs, merges, and pushes exactly as it did without them.
     pub avoidance: bool,
+    pub source: SupportSource,
 }
 
 /// The belt in the slice frame. Printable material is `y <= y_max(z)`.
@@ -200,6 +211,7 @@ impl Default for SupportOpts {
             job: crate::cancel::Job::default(),
             floor: None,
             avoidance: false,
+            source: SupportSource::Auto,
         }
     }
 }
@@ -748,7 +760,13 @@ impl Demand {
         // parallel. The pass below carries each overhang down to its contact.
         let overhangs: Vec<Vec<Loop>> = (0..n)
             .into_par_iter()
-            .map(|i| paint::paint_layer(paint, bands, own, i, overhang_at(bands, own, i, angle)))
+            .map(|i| {
+                let asked = match opts.source {
+                    SupportSource::Auto => overhang_at(bands, own, i, angle),
+                    SupportSource::Paint => Vec::new(),
+                };
+                paint::paint_layer(paint, bands, own, i, asked)
+            })
             .collect();
         let gaps: Vec<Vec<Loop>> = contours
             .par_iter()
@@ -1231,8 +1249,13 @@ pub struct InAir {
 }
 
 /// The islands and unbridged overhangs a part would print over air without
-/// supports, for a warning.
-pub(crate) fn in_air(bands: &[LayerBand], contours: &[Vec<Loop>], angle_deg: f64) -> InAir {
+/// supports, for a warning. What `paint` asks supports for is not counted.
+pub(crate) fn in_air(
+    bands: &[LayerBand],
+    contours: &[Vec<Loop>],
+    angle_deg: f64,
+    paint: &[PaintDisk],
+) -> InAir {
     let slope = slope_of(angle_deg);
     let (islands, overhangs): (Vec<Vec<Unheld>>, Vec<Vec<Unheld>>) = (0..bands.len())
         .into_par_iter()
@@ -1240,8 +1263,20 @@ pub(crate) fn in_air(bands: &[LayerBand], contours: &[Vec<Loop>], angle_deg: f64
             let Some((upper, lower, dx)) = layer_pair(bands, contours, i, slope) else {
                 return (Vec::new(), Vec::new());
             };
-            let islands = unsupported_islands(upper, lower, dx);
-            let wings = past_angle(upper, lower, dx);
+            let held = if paint.is_empty() {
+                Vec::new()
+            } else {
+                paint::paint_layer(paint, bands, contours, i, Vec::new())
+            };
+            let without_held = |loops: Vec<Loop>| {
+                if held.is_empty() || loops.is_empty() {
+                    loops
+                } else {
+                    drop_slivers(boolean_diff(&loops, &held), 0.05)
+                }
+            };
+            let islands = without_held(unsupported_islands(upper, lower, dx));
+            let wings = without_held(past_angle(upper, lower, dx));
             let wings = if islands.is_empty() {
                 wings
             } else {

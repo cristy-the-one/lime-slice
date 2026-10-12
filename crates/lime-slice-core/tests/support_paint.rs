@@ -451,3 +451,232 @@ fn a_block_disk_inside_a_sloped_overhang_adds_no_tips() {
         "unpainted {before} limbs, {before_mm:.0} mm; blocked (r, limbs, mm): {grown:.0?}"
     );
 }
+
+/// A 10 mm stem with a 20 mm ledge out of each side of its top, from z = 10
+/// to z = 14 and y = 0 to y = 10. The left ledge spans x -10 to 10 and the
+/// right one x 20 to 40, so each underside needs support on its own.
+fn two_ledges_b64() -> String {
+    let xz: [[f64; 2]; 10] = [
+        [10.0, 0.0],
+        [20.0, 0.0],
+        [20.0, 10.0],
+        [40.0, 10.0],
+        [40.0, 14.0],
+        [20.0, 14.0],
+        [10.0, 14.0],
+        [-10.0, 14.0],
+        [-10.0, 10.0],
+        [10.0, 10.0],
+    ];
+    let caps = [
+        [0, 1, 2],
+        [0, 2, 9],
+        [9, 2, 5],
+        [9, 5, 6],
+        [2, 3, 4],
+        [2, 4, 5],
+        [9, 6, 7],
+        [9, 7, 8],
+    ];
+    let depth = 10.0;
+    let at = |p: [f64; 2], y: f64| [p[0], y, p[1]];
+    let mut tris: Vec<[[f64; 3]; 3]> = Vec::new();
+    for [a, b, c] in caps {
+        tris.push([at(xz[a], 0.0), at(xz[b], 0.0), at(xz[c], 0.0)]);
+        tris.push([at(xz[a], depth), at(xz[c], depth), at(xz[b], depth)]);
+    }
+    for k in 0..xz.len() {
+        let (a, b) = (xz[k], xz[(k + 1) % xz.len()]);
+        tris.push([at(a, 0.0), at(b, depth), at(b, 0.0)]);
+        tris.push([at(a, 0.0), at(a, depth), at(b, depth)]);
+    }
+    let mut out = String::from("solid ledges\n");
+    for t in tris {
+        out.push_str(" facet normal 0 0 0\n  outer loop\n");
+        for v in t {
+            out.push_str(&format!("   vertex {} {} {}\n", v[0], v[1], v[2]));
+        }
+        out.push_str("  endloop\n endfacet\n");
+    }
+    out.push_str("endsolid ledges\n");
+    b64(out.as_bytes())
+}
+
+fn ledges(extra: Value) -> Value {
+    request("ledges.stl", two_ledges_b64(), extra)
+}
+
+/// A disk on the underside of the left ledge, `r` mm wide.
+fn under_left(kind: &str, x: f64, r: f64) -> Value {
+    disk(kind, [x, 5.0, 10.0], [0.0, 0.0, -1.0], r)
+}
+
+fn in_air(reply: &Value) -> [u64; 2] {
+    let air = &reply["inAir"];
+    [
+        air["islands"].as_u64().unwrap(),
+        air["overhangs"].as_u64().unwrap(),
+    ]
+}
+
+#[test]
+fn support_source_left_out_or_auto_keeps_every_byte() {
+    let plain = sliced(&ledges(json!({})));
+    let auto = sliced(&ledges(json!({"supportSource": "auto"})));
+    let painted_auto = sliced(&ledges(json!({
+        "supportSource": "auto",
+        "supportPaint": [under_left("enforce", 0.0, 6.0)],
+    })));
+    let painted_plain = sliced(&ledges(json!({
+        "supportPaint": [under_left("enforce", 0.0, 6.0)],
+    })));
+    let both = sites(&plain);
+    assert!(both.iter().any(|s| s[0] < 10.0) && both.iter().any(|s| s[0] > 20.0));
+    assert_eq!(auto["gcode"], plain["gcode"]);
+    assert_eq!(painted_auto["gcode"], painted_plain["gcode"]);
+    assert!(plain.get("inAir").is_none());
+}
+
+#[test]
+fn painted_only_with_nothing_painted_prints_no_support() {
+    for style in ["tree", "grid"] {
+        let reply = sliced(&ledges(json!({
+            "supportSource": "paint",
+            "supportStyle": style,
+        })));
+        assert_eq!(support_mm(&reply), 0.0, "{style}");
+        // Both ledges are still reported as printing over air.
+        assert_eq!(in_air(&reply), [0, 2], "{style}");
+        assert!(reply.get("supportPaint").is_none());
+    }
+}
+
+#[test]
+fn painted_only_supports_the_painted_ledge_and_not_the_other() {
+    let reply = sliced(&ledges(json!({
+        "supportSource": "paint",
+        "supportPaint": [under_left("enforce", 0.0, 15.0)],
+    })));
+    let grown = sites(&reply);
+    assert!(!grown.is_empty(), "no tips grew under the enforce disk");
+    for s in &grown {
+        assert!(
+            (-16.0..16.0).contains(&s[0]) && (-1.0..11.0).contains(&s[1]),
+            "tip at {s:?} is outside the painted circle"
+        );
+    }
+    let auto = sliced(&ledges(json!({})));
+    assert!(support_mm(&reply) > 0.0 && support_mm(&reply) < support_mm(&auto));
+    // The painted ledge is held, so only the other one is still in the air.
+    assert_eq!(in_air(&reply), [0, 1]);
+    assert_eq!(
+        reply["supportPaint"],
+        json!({"enforce": 1, "block": 0, "enforceUnhit": 0, "blockUnhit": 0})
+    );
+}
+
+#[test]
+fn painted_only_grid_supports_stand_only_under_the_paint() {
+    let none = sliced(&ledges(json!({"supportSource": "paint", "supportStyle": "grid"})));
+    let some = sliced(&ledges(json!({
+        "supportSource": "paint",
+        "supportStyle": "grid",
+        "supportPaint": [under_left("enforce", 0.0, 6.0)],
+    })));
+    let auto = sliced(&ledges(json!({"supportStyle": "grid"})));
+    assert_eq!(support_mm(&none), 0.0);
+    assert!(support_mm(&some) > 0.0 && support_mm(&some) < support_mm(&auto) * 0.75);
+}
+
+#[test]
+fn a_block_disk_inside_the_enforced_area_leaves_that_spot_bare() {
+    let enforced = under_left("enforce", 0.0, 12.0);
+    let all = sliced(&ledges(json!({
+        "supportSource": "paint",
+        "supportPaint": [enforced.clone()],
+    })));
+    let holed = sliced(&ledges(json!({
+        "supportSource": "paint",
+        "supportPaint": [enforced.clone(), under_left("block", -3.0, 3.0)],
+    })));
+    assert!(sites(&all)
+        .iter()
+        .any(|s| (s[0] + 3.0).hypot(s[1] - 5.0) < 2.5));
+    let left = sites(&holed);
+    assert!(!left.is_empty(), "the block disk took the whole ledge");
+    assert!(left.iter().all(|s| s[0] < 13.0), "tips off the painted ledge");
+    for s in &left {
+        assert!(
+            (s[0] + 3.0).hypot(s[1] - 5.0) > 3.0 - 0.5,
+            "tip at {s:?} under the block"
+        );
+    }
+    // A block painted before the enforce disk is overpainted, as in auto mode.
+    let overpainted = sliced(&ledges(json!({
+        "supportSource": "paint",
+        "supportPaint": [under_left("block", -3.0, 3.0), enforced],
+    })));
+    assert_eq!(sites(&overpainted), sites(&all));
+}
+
+#[test]
+fn block_paint_alone_in_painted_only_mode_adds_nothing() {
+    let reply = sliced(&ledges(json!({
+        "supportSource": "paint",
+        "supportPaint": [under_left("block", 0.0, 6.0)],
+    })));
+    assert_eq!(support_mm(&reply), 0.0);
+    assert_eq!(in_air(&reply), [0, 2]);
+}
+
+#[test]
+fn painted_only_with_supports_off_prints_nothing_and_says_so() {
+    let reply = sliced(&ledges(json!({
+        "supports": false,
+        "supportSource": "paint",
+        "supportPaint": [under_left("enforce", 0.0, 6.0)],
+    })));
+    assert_eq!(support_mm(&reply), 0.0);
+    assert_eq!(reply["supportPaint"]["supportsOff"], true);
+}
+
+#[test]
+fn a_plate_object_may_choose_painted_only_for_itself() {
+    let object = |id: &str, x: f64, settings: Value| {
+        json!({
+            "id": id,
+            "filename": "ledges.stl",
+            "dataB64": two_ledges_b64(),
+            "pose": {"rotation": [1, 0, 0, 0, 1, 0, 0, 0, 1], "pivot": [0, 0, 0],
+                     "translation": [x, 50.0, 0.0]},
+            "settings": settings,
+        })
+    };
+    let mut req = ledges(json!({}));
+    for key in ["filename", "dataB64"] {
+        req.as_object_mut().unwrap().remove(key);
+    }
+    req["objects"] = json!([
+        object("a", 60.0, json!({"supportSource": "paint"})),
+        object("b", 140.0, json!({})),
+    ]);
+    let mixed = sliced(&req);
+    req["objects"][0]["settings"] = json!({});
+    let both_auto = sliced(&req);
+    // The first object grows nothing of its own, so the plate prints less.
+    assert!(support_mm(&mixed) > 0.0 && support_mm(&mixed) < support_mm(&both_auto));
+    assert_eq!(in_air(&mixed["objects"][0]), [0, 2]);
+    assert!(mixed["objects"][1].get("inAir").is_none());
+}
+
+#[test]
+fn an_unknown_support_source_is_refused_by_name() {
+    assert_eq!(
+        slice(&ledges(json!({"supportSource": "everywhere"}))).unwrap_err(),
+        "supportSource \"everywhere\" is not auto or paint"
+    );
+    assert_eq!(
+        slice(&ledges(json!({"supportSource": ""}))).unwrap_err(),
+        "supportSource \"\" is not auto or paint"
+    );
+}

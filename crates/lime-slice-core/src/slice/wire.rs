@@ -11,7 +11,7 @@ use crate::support::edit::{EditOutcome, EditStatus, SupportEdit, TipSite};
 use crate::support::paint::PaintTally;
 use crate::support::paint::{PaintDisk, PaintKind, SeamDisk};
 use crate::support::skeleton::{tilt_gaps, SupportSkeleton, Tilt as SkeletonTilt};
-use crate::support::{CoverageGap, InAir};
+use crate::support::{CoverageGap, InAir, SupportSource};
 
 /// One object of a plate on the wire.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -63,6 +63,7 @@ const SETTING_SCOPES: &[(&str, Scope)] = &[
     ("trunkDiameter", Scope::Object),
     ("branchAngle", Scope::Object),
     ("supportAvoidance", Scope::Object),
+    ("supportSource", Scope::Object),
     ("supportHeightMult", Scope::Object),
     ("scarfSeam", Scope::Object),
     ("scarfLength", Scope::Object),
@@ -245,6 +246,15 @@ pub struct PaintDiskSpec {
     pub p: [f64; 3],
     pub n: [f64; 3],
     pub r: f64,
+}
+
+/// `supportSource` as the engine reads it. Absent is `auto`.
+pub(crate) fn parse_support_source(name: Option<&str>) -> Result<SupportSource, String> {
+    match name {
+        None | Some("auto") => Ok(SupportSource::Auto),
+        Some("paint") => Ok(SupportSource::Paint),
+        Some(other) => Err(format!("supportSource \"{other}\" is not auto or paint")),
+    }
 }
 
 const MAX_PAINT_DISKS: usize = 20_000;
