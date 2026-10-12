@@ -4462,7 +4462,7 @@ fn tour_part(
             .collect();
         let mut end = bands.first().filter(|b| b.index == 0).and_then(|b| {
             let mut skirt = skirt_paths(&contours[0], None, b.z, blend, settings);
-            order_supports(&mut skirt, None, scarf_params(settings, 0).as_ref())
+            order_supports(&mut skirt, None, None, scarf_params(settings, 0).as_ref())
         });
         let mut layers = Vec::with_capacity(bands.len());
         for (i, source) in part.layers.iter().enumerate() {
@@ -5013,7 +5013,10 @@ fn join_supports(
         head.extend(under.iter().cloned());
         let scarf = scarf_params(settings, band.index);
         if settings.travel_opt {
-            end = order_supports(&mut head, from, scarf.as_ref());
+            let to = (part.prints(i))
+                .then(|| own.tour.paths.iter().find_map(|p| p.points.first().copied()))
+                .flatten();
+            end = order_supports(&mut head, from, to, scarf.as_ref());
         } else if let Some(params) = scarf {
             apply_scarf(&mut head, &params);
         }

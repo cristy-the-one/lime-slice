@@ -2957,7 +2957,7 @@ impl PartLayout {
         let mut slots: Vec<Option<Vec<Run>>> = self.blocks.into_iter().map(Some).collect();
         for i in tour {
             if let Some(block) = slots[i].take() {
-                cursor = order_runs(block, cursor, &mut out, scarf);
+                cursor = order_runs(block, cursor, None, &mut out, scarf);
             }
         }
         (out, cursor)
@@ -2970,10 +2970,11 @@ impl PartLayout {
 pub fn order_supports(
     paths: &mut Vec<Extrusion>,
     from: Option<[f64; 2]>,
+    to: Option<[f64; 2]>,
     scarf: Option<&ScarfParams>,
 ) -> Option<[f64; 2]> {
     let mut out = Vec::with_capacity(paths.len());
-    let end = order_runs(runs_of(std::mem::take(paths)), from, &mut out, scarf);
+    let end = order_runs(runs_of(std::mem::take(paths)), from, to, &mut out, scarf);
     *paths = out;
     end
 }
@@ -3183,14 +3184,18 @@ impl Run {
 }
 
 /// Order each run of a block from the cursor, in turn.
+///
+/// `to` is where the nozzle goes next: the last run ends near it.
 fn order_runs(
     block: Vec<Run>,
     mut cursor: Option<[f64; 2]>,
+    to: Option<[f64; 2]>,
     out: &mut Vec<Extrusion>,
     scarf: Option<&ScarfParams>,
 ) -> Option<[f64; 2]> {
-    for run in block {
-        cursor = order_run(run, cursor, out, scarf);
+    let last = block.len().saturating_sub(1);
+    for (k, run) in block.into_iter().enumerate() {
+        cursor = order_run(run, cursor, if k == last { to } else { None }, out, scarf);
     }
     cursor
 }
@@ -3198,6 +3203,7 @@ fn order_runs(
 fn order_run(
     run: Run,
     cursor: Option<[f64; 2]>,
+    to: Option<[f64; 2]>,
     out: &mut Vec<Extrusion>,
     scarf: Option<&ScarfParams>,
 ) -> Option<[f64; 2]> {
@@ -3211,7 +3217,7 @@ fn order_run(
     let ordered = match infill.filter(|_| !LEGACY_TRAVEL.load(Ordering::SeqCst)) {
         Some(layout) => {
             let sample = crate::inner_prof::Sample::start();
-            let ordered = order_infill(paths, layout, grid, at, has);
+            let ordered = order_infill(paths, layout, grid, at, has, to);
             sample.order_infill(n);
             ordered
         }
@@ -3253,6 +3259,7 @@ fn order_infill(
     grid: Option<ApproachGrid>,
     cursor: [f64; 2],
     has: bool,
+    to: Option<[f64; 2]>,
 ) -> Vec<Extrusion> {
     let n = paths.len();
     let InfillLayout {
@@ -3264,9 +3271,9 @@ fn order_infill(
     let legacy_sample = crate::inner_prof::Sample::start();
     let legacy = legacy_nn_indices(&paths, grid.as_ref(), cursor, has);
     legacy_sample.order_legacy(n as u64);
-    let off = walk_cost(&paths, &legacy, cursor, has, false);
+    let off = walk_cost(&paths, &legacy, cursor, has, false, to);
     let on = if closed {
-        walk_cost(&paths, &legacy, cursor, has, true)
+        walk_cost(&paths, &legacy, cursor, has, true, to)
     } else {
         off
     };
@@ -3298,15 +3305,15 @@ fn order_infill(
     let rest_sample = crate::inner_prof::Sample::start();
     candidates.extend(stripes);
     for order in candidates {
-        consider(&paths, order, cursor, has, closed, &mut best);
+        consider(&paths, order, cursor, has, closed, to, &mut best);
     }
-    let polished = polish_order(&paths, &best.order, cursor, has, best.rotate);
+    let polished = polish_order(&paths, &best.order, cursor, has, best.rotate, to);
     if polished != best.order {
         for rotate in [best.rotate, !best.rotate] {
             if rotate && !closed {
                 continue;
             }
-            let cost = walk_cost(&paths, &polished, cursor, has, rotate);
+            let cost = walk_cost(&paths, &polished, cursor, has, rotate, to);
             if cost + 1e-6 < best.cost {
                 best.cost = cost;
                 best.order = polished.clone();
@@ -3318,9 +3325,9 @@ fn order_infill(
         // Seams move with the visit order, so a reorder proposed on the ends as
         // they stand is kept only when the walk, seams moved, really is shorter.
         if has && paths.iter().all(geom_closed) {
-            let proposed = reorder_rings(&paths, &best.order, cursor, best.rotate);
+            let proposed = reorder_rings(&paths, &best.order, cursor, best.rotate, to);
             if proposed != best.order {
-                let cost = walk_cost(&paths, &proposed, cursor, has, best.rotate);
+                let cost = walk_cost(&paths, &proposed, cursor, has, best.rotate, to);
                 if cost + TRAVEL_WIN_MM < best.cost {
                     best.cost = cost;
                     best.order = proposed;
@@ -3328,7 +3335,7 @@ fn order_infill(
             }
         }
     } else {
-        let (order, flips) = untangle(&paths, &best.order, cursor, has);
+        let (order, flips) = untangle(&paths, &best.order, cursor, has, to);
         if order != best.order || flips.iter().any(|f| *f) {
             rest_sample.order_rest(n as u64);
             return apply_flips(paths, &order, &flips);
@@ -3347,16 +3354,25 @@ fn order_infill(
 /// left at one seam. Improves `order` from the cursor by 2-opt and by moving
 /// one to three paths elsewhere, until neither shortens it. The seams are those
 /// the order has now; the caller checks the result with the seams moved.
-fn reorder_rings(paths: &[Extrusion], order: &[usize], cursor: [f64; 2], rotate: bool) -> Vec<usize> {
+fn reorder_rings(
+    paths: &[Extrusion],
+    order: &[usize],
+    cursor: [f64; 2],
+    rotate: bool,
+    to: Option<[f64; 2]>,
+) -> Vec<usize> {
     let n = order.len();
     if !(3..=RING_REORDER_MAX).contains(&n) {
         return order.to_vec();
     }
     let dirs = build_dirs(paths, order, cursor, true, rotate);
-    // Node 0 is the cursor and stays first; node k + 1 is `order[k]`.
+    // Node 0 is the cursor and stays first; node k + 1 is `order[k]`; a target,
+    // when there is one, is node n + 1 and stays last.
     let mut at: Vec<[f64; 2]> = vec![cursor];
     at.extend(dirs.iter().map(|d| d.start));
-    let mut tour: Vec<usize> = (0..=n).collect();
+    at.extend(to);
+    let fixed_end = usize::from(to.is_some());
+    let mut tour: Vec<usize> = (0..at.len()).collect();
     let d = |a: usize, b: usize| dist_mm(at[a], at[b]);
     for _ in 0..RING_REORDER_PASSES {
         let mut improved = false;
@@ -3385,7 +3401,7 @@ fn reorder_rings(paths: &[Extrusion], order: &[usize], cursor: [f64; 2], rotate:
                 let mut rest = tour.clone();
                 rest.drain(i..i + len);
                 let mut best: Option<(f64, usize, bool)> = None;
-                for pos in 1..=rest.len() {
+                for pos in 1..=rest.len() - fixed_end {
                     if pos == i {
                         continue;
                     }
@@ -3423,7 +3439,7 @@ fn reorder_rings(paths: &[Extrusion], order: &[usize], cursor: [f64; 2], rotate:
             break;
         }
     }
-    tour[1..].iter().map(|&node| order[node - 1]).collect()
+    tour[1..=n].iter().map(|&node| order[node - 1]).collect()
 }
 
 /// Longest run `reorder_rings` takes, and how many passes it makes.
@@ -3445,6 +3461,7 @@ fn untangle(
     order: &[usize],
     cursor: [f64; 2],
     has: bool,
+    to: Option<[f64; 2]>,
 ) -> (Vec<usize>, Vec<bool>) {
     let n = order.len();
     let mut order = order.to_vec();
@@ -3475,7 +3492,7 @@ fn untangle(
                 Some(outs[i - 1])
             };
             for j in i + 1..n.min(i + UNTANGLE_WINDOW) {
-                let after = ins.get(j + 1).copied();
+                let after = ins.get(j + 1).copied().or(to);
                 let old = link(before, ins[i]) + after.map_or(0.0, |a| dist_mm(outs[j], a));
                 let new = link(before, outs[j]) + after.map_or(0.0, |a| dist_mm(ins[i], a));
                 if new + 1e-6 < old {
@@ -3525,6 +3542,7 @@ fn consider(
     cursor: [f64; 2],
     has: bool,
     closed: bool,
+    to: Option<[f64; 2]>,
     best: &mut Choice,
 ) {
     if !is_perm(&order, paths.len()) {
@@ -3534,7 +3552,7 @@ fn consider(
         if rotate && !closed {
             continue;
         }
-        let cost = walk_cost(paths, &order, cursor, has, rotate);
+        let cost = walk_cost(paths, &order, cursor, has, rotate, to);
         if cost + TRAVEL_WIN_MM < best.cost {
             best.cost = cost;
             best.order = order.clone();
@@ -3729,8 +3747,8 @@ fn hilbert_order(
     for k in 0..n {
         rev.push(order[(start + n - k) % n]);
     }
-    let cf = walk_cost(paths, &fwd, cursor, has, true);
-    let cr = walk_cost(paths, &rev, cursor, has, true);
+    let cf = walk_cost(paths, &fwd, cursor, has, true, None);
+    let cr = walk_cost(paths, &rev, cursor, has, true, None);
     if cr + 1e-6 < cf {
         rev
     } else {
@@ -3919,6 +3937,7 @@ fn polish_order(
     cursor: [f64; 2],
     has: bool,
     rotate: bool,
+    to: Option<[f64; 2]>,
 ) -> Vec<usize> {
     let n = order.len();
     // Large groups already have a spatial candidate. The relocation search is
@@ -3928,7 +3947,7 @@ fn polish_order(
     }
     let neighbors = k_nearest(paths, 8);
     let mut order = order.to_vec();
-    let mut cost = walk_cost(paths, &order, cursor, has, rotate);
+    let mut cost = walk_cost(paths, &order, cursor, has, rotate, to);
     for _ in 0..24 {
         let dirs = build_dirs(paths, &order, cursor, has, rotate);
         let mut hot: Vec<(f64, usize)> = Vec::new();
@@ -3968,7 +3987,7 @@ fn polish_order(
                         continue;
                     }
                     trial.insert(at, item);
-                    let next = walk_cost(paths, &trial, cursor, has, rotate);
+                    let next = walk_cost(paths, &trial, cursor, has, rotate, to);
                     if next + TRAVEL_WIN_MM < cost {
                         order = trial;
                         cost = next;
@@ -4136,8 +4155,9 @@ fn walk_cost(
     cursor: [f64; 2],
     has: bool,
     rotate: bool,
+    to: Option<[f64; 2]>,
 ) -> f64 {
-    tour_cost(&build_dirs(paths, order, cursor, has, rotate), cursor, has)
+    tour_cost(&build_dirs(paths, order, cursor, has, rotate), cursor, has, to)
 }
 
 fn build_dirs(
@@ -4163,7 +4183,7 @@ fn build_dirs(
     dirs
 }
 
-fn tour_cost(dirs: &[TourStop], cursor: [f64; 2], has: bool) -> f64 {
+fn tour_cost(dirs: &[TourStop], cursor: [f64; 2], has: bool, to: Option<[f64; 2]>) -> f64 {
     if dirs.is_empty() {
         return 0.0;
     }
@@ -4174,6 +4194,9 @@ fn tour_cost(dirs: &[TourStop], cursor: [f64; 2], has: bool) -> f64 {
     };
     for w in dirs.windows(2) {
         cost += dist_mm(w[0].end, w[1].start);
+    }
+    if let (Some(to), Some(last)) = (to, dirs.last()) {
+        cost += dist_mm(last.end, to);
     }
     cost
 }
@@ -6010,7 +6033,7 @@ mod travel_tests {
             .map(|_| support(circle_pts([next(), next()], 0.4)))
             .collect();
         let mut at = [20.0, 20.0];
-        order_supports(&mut paths, Some(at), None);
+        order_supports(&mut paths, Some(at), None, None);
         let mut walked = 0.0;
         for path in &paths {
             walked += dist_mm(at, path.points[0]);
@@ -6025,6 +6048,23 @@ mod travel_tests {
         // Nearest-neighbour with relocations walks 1490 mm here; 2-opt and
         // moving short runs of loops brings it to 1410.
         assert!(walked < 1450.0, "walked {walked:.1} mm");
+    }
+
+    #[test]
+    fn supports_end_nearest_the_path_that_prints_after_them() {
+        let loops = |at: [f64; 2], to: Option<[f64; 2]>| {
+            let mut paths: Vec<Extrusion> = [10.0, 20.0, 30.0]
+                .iter()
+                .map(|&x| support(circle_pts([x, 0.0], 0.4)))
+                .collect();
+            order_supports(&mut paths, Some(at), to, None);
+            paths.iter().map(|p| p.points[0][0].round()).collect::<Vec<_>>()
+        };
+        // From the right of the middle one, the shortest walk takes the far
+        // end first and finishes at the left.
+        assert_eq!(loops([24.0, 5.0], None), vec![30.0, 20.0, 10.0]);
+        // With the part starting 30 mm further right it finishes there instead.
+        assert_eq!(loops([24.0, 5.0], Some([60.0, 0.0])), vec![10.0, 20.0, 30.0]);
     }
 
     #[test]
