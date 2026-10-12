@@ -811,7 +811,7 @@ export function layerReadout() {
     ["Layer", `${layer.index + 1} / ${state.result?.layers.length}`],
     ["Z", `${layer.z.toFixed(2)} mm`],
     ["Height", `${layer.height.toFixed(3)} mm`],
-    ["Layer time", formatDuration(layer.seconds ?? 0)],
+    ["Layer time", `${formatDuration(layer.seconds ?? 0)}${layer.slow !== undefined && layer.slow < 1 ? " (slowed for cooling)" : ""}`],
     ["Cumulative", formatDuration(below + (layer.seconds ?? 0))],
   ])}${layer.note ? `<p class="layer-note" data-level="advanced">${escapeHtml(layer.note)}</p>` : ""}`;
 }

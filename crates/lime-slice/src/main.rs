@@ -1604,6 +1604,8 @@ fn request_for(
         flow: settings.flow,
         retract_length: settings.retract_length,
         retract_speed: settings.retract_speed,
+        min_layer_time_s: settings.min_layer_time_s,
+        min_layer_speed_mm_s: settings.min_layer_speed_mm_s,
         infill: None,
         walls: None,
         speed: None,

@@ -203,6 +203,7 @@ pub(super) fn join(
                 note: layer_note(objects, band),
                 runs,
                 belt_shift: 0.0,
+                slow: 1.0,
             }
         })
         .collect()

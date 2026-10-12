@@ -26,6 +26,8 @@ export interface PreviewLayer {
   height: number;
   note: string;
   seconds?: number;
+  /** What the engine scaled this layer's feeds by to reach the minimum layer time. Absent when it kept them. */
+  slow?: number;
   speedWalls: number;
   toughnessWalls: number;
   supportPaths: number;
@@ -209,6 +211,8 @@ export const state = {
   zHop: "blend" as "off" | "blend" | "always" | "smart",
   zHopHeight: 0.4,
   zHopMinTravel: 2,
+  minLayerTimeS: 8,
+  minLayerSpeedMmS: 15,
   paStart: 0,
   paEnd: 0.08,
   paStep: 0.005,

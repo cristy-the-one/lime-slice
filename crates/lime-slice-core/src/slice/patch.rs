@@ -137,6 +137,9 @@ pub struct PreviewPatch {
     pub changed: Vec<PatchLayer>,
     /// Every listed layer's estimator seconds, in the order of `layers`.
     pub seconds: Vec<f64>,
+    /// Every listed layer's slowdown factor, in the order of `layers`.
+    #[serde(skip_serializing_if = "all_one")]
+    pub slow: Vec<f64>,
     /// The preview this patch stands for, whole, for the disk cache.
     #[serde(skip)]
     pub(crate) whole: WholePreview,
@@ -150,6 +153,7 @@ pub(crate) struct WholePreview {
     pub(super) profile: PrinterProfile,
     pub(super) blends: Vec<BlendMode>,
     pub(super) layer_seconds: Vec<f64>,
+    pub(super) layer_slow: Vec<f64>,
     /// Set for a belt plate, so the stored reply is the tilted preview.
     pub(super) tilt: Option<BeltTilt>,
 }
@@ -157,12 +161,22 @@ pub(crate) struct WholePreview {
 impl WholePreview {
     pub(crate) fn layers(&self) -> Vec<PreviewLayer> {
         let blends: Vec<&BlendMode> = self.blends.iter().collect();
-        let mut layers = preview_of(&self.layers, &self.profile, &blends, &self.layer_seconds);
+        let mut layers = preview_of(
+            &self.layers,
+            &self.profile,
+            &blends,
+            &self.layer_seconds,
+            &self.layer_slow,
+        );
         if let Some(tilt) = &self.tilt {
             super::tilt_held(&mut layers, &self.layers, tilt);
         }
         layers
     }
+}
+
+fn all_one(slow: &[f64]) -> bool {
+    slow.iter().all(|s| *s == 1.0)
 }
 
 impl std::fmt::Debug for WholePreview {

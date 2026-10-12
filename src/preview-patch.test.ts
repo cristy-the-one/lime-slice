@@ -70,6 +70,10 @@ eq("a chunk draws only its object's points", drawn.chunks.map((c) => Array.from(
 const moved: PreviewPatch = { base: "p", layers: [0, 1, 2], changed: [], seconds: [4, 5, 6] };
 const relaid = patchLayers(plate, moved)!;
 eq("a move's patch keeps the paths and takes the new times", relaid.map((l) => [l.paths === plate[l.index].paths, (l as { seconds?: number }).seconds]), [[true, 4], [true, 5], [true, 6]]);
+const cooled: PreviewPatch = { base: "p", layers: [0, 1, 2], changed: [], seconds: [4, 5, 6], slow: [1, 0.5, 1] };
+eq("a patch carries each layer's cooling slowdown, and none means kept", patchLayers(plate, cooled)!.map((l) => (l as { slow?: number }).slow), [undefined, 0.5, undefined]);
+const uncooled = patchLayers(patchLayers(plate, cooled)!, { ...moved, slow: [1, 1, 1] })!;
+eq("a layer that stops being slowed loses the mark", uncooled.map((l) => (l as { slow?: number }).slow), [undefined, undefined, undefined]);
 const kept = patchGeometry(drawn, moved, buildWirePreview({ layers: [], ...bounds, kinds: drawn.kinds, objects: 2 }));
 check("a move's patch reuses every object's buffers", kept.chunks.length === 2 && kept.chunks.every((c, i) => c === drawn.chunks[i]));
 const reshaped: PreviewPatch = { base: "p", layers: [0, 1, 2], changed: [{ ...layer(1, [ofB(bead("support", 31))]), order: [0, -1, 2] }] };

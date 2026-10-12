@@ -198,6 +198,9 @@ export function payload() {
     // Omitted at 1, so a filament that does not scale extrusion keeps its recipe key.
     ...flowSliceField(state.flow),
     ...retractSliceFields(),
+    // Always sent: the engine reads a missing field as no minimum, and 0 as off.
+    minLayerTimeS: Math.min(600, Math.max(0, state.minLayerTimeS)),
+    minLayerSpeedMmS: Math.min(300, Math.max(1, state.minLayerSpeedMmS)),
     // Beside `printer`, and omitted for a cartesian machine, so that recipe stays the same bytes.
     ...beltSliceField(beltStamp(library), state.supports),
     variableWidth: state.variableWidth,
