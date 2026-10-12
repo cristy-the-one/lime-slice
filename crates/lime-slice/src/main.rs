@@ -93,6 +93,9 @@ enum Cmd {
         /// Organic trunk diameter, millimetres.
         #[arg(long, default_value_t = 4.2)]
         trunk_diameter: f64,
+        /// Keep a thickening tree branch out of a pocket it cannot leave.
+        #[arg(long, default_value_t = false)]
+        support_avoidance: bool,
         /// Sparse support shaft height multiplier. `1` keeps the model layer height.
         #[arg(long, default_value_t = 1.0)]
         support_height_mult: f64,
@@ -314,6 +317,7 @@ fn run() -> Result<(), String> {
             branch_angle,
             tip_diameter,
             trunk_diameter,
+            support_avoidance,
             support_height_mult,
             infill_combine,
             combing,
@@ -384,6 +388,7 @@ fn run() -> Result<(), String> {
                 branch_angle,
                 tip_diameter,
                 trunk_diameter,
+                support_avoidance,
                 support_height_mult,
                 infill_combine,
                 combing,
@@ -1588,6 +1593,7 @@ fn request_for(
         branch_angle: settings.branch_angle,
         tip_diameter: settings.tip_diameter,
         trunk_diameter: settings.trunk_diameter,
+        support_avoidance: settings.support_avoidance,
         support_height_mult: settings.support_height_mult,
         infill_combine: settings.infill_combine,
         combing: settings.combing,

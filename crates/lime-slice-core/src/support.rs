@@ -10,6 +10,7 @@ use crate::poly::{
     signed_area, simplify_loops, Loop, LoopIndex,
 };
 
+pub(crate) mod avoidance;
 pub(crate) mod edit;
 pub(crate) mod paint;
 pub(crate) mod skeleton;
@@ -72,6 +73,9 @@ pub struct SupportOpts {
     /// The tilted belt, when supports land on it instead of on Z 0.
     /// `None` on a cartesian plate, and on a belt that did not ask.
     pub floor: Option<FloorPlane>,
+    /// Per-layer regions a thickening branch must not enter. Off, the walk
+    /// pairs, merges, and pushes exactly as it did without them.
+    pub avoidance: bool,
 }
 
 /// The belt in the slice frame. Printable material is `y <= y_max(z)`.
@@ -98,7 +102,7 @@ impl FloorPlane {
     }
 
     /// Largest printable Y on a layer whose top is `z`.
-    fn y_max(self, z: f64) -> f64 {
+    pub(crate) fn y_max(self, z: f64) -> f64 {
         (z + self.z_drop) / self.tan_a - self.y_shift
     }
 
@@ -143,7 +147,7 @@ fn clip_printed(layers: &mut [SupportLayer], bands: &[LayerBand], floor: Option<
 
 /// The half-plane `y <= y_max`. A region already inside is returned as it is,
 /// so Clipper does not rewrite a loop that never crossed the belt.
-fn clip_half(loops: &[Loop], y_max: f64) -> Vec<Loop> {
+pub(crate) fn clip_half(loops: &[Loop], y_max: f64) -> Vec<Loop> {
     if loops.is_empty() {
         return Vec::new();
     }
@@ -195,6 +199,7 @@ impl Default for SupportOpts {
             max_tip_spacing: 0.0,
             job: crate::cancel::Job::default(),
             floor: None,
+            avoidance: false,
         }
     }
 }
@@ -907,6 +912,9 @@ struct Walk<'a> {
     part_bb: Vec<Option<Bounds>>,
     /// The belt, when trunks land on it instead of walking to layer 0.
     floor: Option<FloorPlane>,
+    /// Forbidden centers. `None` unless the request asked, so a walk that
+    /// does not ask never builds them and never reads them.
+    avoidance: Option<avoidance::Avoidance>,
     nodes: Vec<Node>,
     next_id: u32,
     ended: Vec<(NodeId, End)>,
@@ -922,19 +930,37 @@ impl<'a> Walk<'a> {
         next_id: u32,
     ) -> Self {
         let tip_r = tip_radius(opts);
+        let trunk_r = (opts.trunk_diameter * 0.5).max(tip_r + 0.3).clamp(0.6, 8.0);
+        let load_factor = load_factor_of(opts);
+        let lean = lean_of(opts);
+        let avoidance = opts.avoidance.then(|| {
+            avoidance::Avoidance::build(
+                bands,
+                contours,
+                &avoidance::AvoidanceSpec {
+                    xy_gap: opts.xy_gap,
+                    lean,
+                    tip_r,
+                    trunk_r,
+                    flare: flare_per_mm(load_factor),
+                    floor: opts.floor,
+                },
+            )
+        });
         Self {
             bands,
             contours,
             demanded,
             xy_gap: opts.xy_gap,
             iface_n: opts.interface_layers.max(1),
-            load_factor: load_factor_of(opts),
+            load_factor,
             tip_r,
-            trunk_r: (opts.trunk_diameter * 0.5).max(tip_r + 0.3).clamp(0.6, 8.0),
-            lean: lean_of(opts),
+            trunk_r,
+            lean,
             pitch: Pitch::of(opts),
             part_bb: contours.iter().map(|c| loop_bounds(c)).collect(),
             floor: opts.floor,
+            avoidance,
             nodes: Vec::new(),
             next_id,
             ended: Vec::new(),
@@ -1061,6 +1087,7 @@ impl<'a> Walk<'a> {
                 .map_or(0.0, |floor| floor.fall(self.bands[i].height)),
         };
         let nodes = std::mem::take(&mut self.nodes);
+        let avoid = self.avoidance.as_ref().map(|areas| (areas, i - 1));
         self.nodes = propagate_nodes(
             nodes,
             self.part(i - 1),
@@ -1068,6 +1095,7 @@ impl<'a> Walk<'a> {
             &grow,
             fixed,
             &mut self.ended,
+            avoid,
         );
         for (id, end) in self.ended.drain(..) {
             forest.limbs[id.0 as usize - 1].end = end;
@@ -1497,6 +1525,7 @@ fn propagate_nodes(
     grow: &Grow,
     fixed: &mut Fixed,
     ended: &mut Vec<(NodeId, End)>,
+    avoid: Option<(&avoidance::Avoidance, usize)>,
 ) -> Vec<Node> {
     let max_step = (grow.height * grow.lean).clamp(0.05, 4.0);
     let (below, below2) = (LoopIndex::new(below), LoopIndex::new(below2));
@@ -1530,12 +1559,25 @@ fn propagate_nodes(
             n.xy[1] += grow.drift;
         }
     }
-    let steps = pair_steps(&next, &fixed.knots, grow, max_step);
-    for (n, xy) in next.iter_mut().zip(steps) {
-        n.above = n.xy;
-        n.xy = xy;
-    }
+    let steps = pair_steps(&next, &fixed.knots, grow, max_step, avoid);
     let flare = flare_per_mm(grow.load_factor) * grow.height;
+    for (n, xy) in next.iter_mut().zip(steps) {
+        let from = n.xy;
+        n.above = from;
+        // A step into a pocket the thickened branch cannot leave is refused,
+        // so `push_out` can spend this layer's lean walking out instead.
+        n.xy = if n.freeze == 0
+            && avoid.is_some_and(|(areas, layer)| {
+                let soon = (n.radius + flare)
+                    .max(section_radius(n.load, grow.tip_r, grow.load_factor))
+                    .min(grow.trunk_r);
+                areas.blocks(layer, xy, soon, n.to_bed)
+            }) {
+            from
+        } else {
+            xy
+        };
+    }
     let mut kept = Vec::with_capacity(next.len());
     for mut n in next {
         if n.freeze > 0 {
@@ -1552,9 +1594,12 @@ fn propagate_nodes(
             continue;
         }
         let clearance = grow.xy_gap + n.radius;
+        let radius = n.radius;
+        let to_bed = n.to_bed;
         let blocked = |p: [f64; 2]| {
             (!below.is_empty() && (below.contains(p) || below.within(p, clearance)))
                 || fixed.blocks(p, &n, grow)
+                || avoid.is_some_and(|(areas, layer)| areas.blocks(layer, p, radius, to_bed))
         };
         // A node the part blocks may also undo its fall, so on a belt it can
         // lean away from a wall that gravity runs along.
@@ -1573,7 +1618,7 @@ fn propagate_nodes(
         }
         kept.push(n);
     }
-    merge_nodes(&mut kept, grow, max_step, ended);
+    merge_nodes(&mut kept, grow, max_step, ended, avoid);
     if grow.next_is_bed {
         for n in &mut kept {
             if n.freeze == 0 {
@@ -1593,7 +1638,13 @@ fn propagate_nodes(
 /// parallel columns. A node whose neighbours are all taken leans toward the
 /// nearest one and joins that branch after it merges. A `fixed` knot is
 /// matched like a node but never moves: its partner walks all the way to it.
-fn pair_steps(nodes: &[Node], fixed: &[Node], grow: &Grow, max_step: f64) -> Vec<[f64; 2]> {
+fn pair_steps(
+    nodes: &[Node],
+    fixed: &[Node],
+    grow: &Grow,
+    max_step: f64,
+    avoid: Option<(&avoidance::Avoidance, usize)>,
+) -> Vec<[f64; 2]> {
     // A fixed knot past the pair reach of every node pairs with none, and
     // leaving it out keeps the order of the rest.
     let bounds = if fixed.is_empty() {
@@ -1645,7 +1696,18 @@ fn pair_steps(nodes: &[Node], fixed: &[Node], grow: &Grow, max_step: f64) -> Vec
             (false, true) => meet_fixed(node(b), node(a), grow),
             (false, false) => None,
         };
-        met.map(|(d, at)| Pair { d, a, b, at })
+        let (d, at) = met?;
+        // The merged section has to be able to stand where the two would meet.
+        if let Some((areas, layer)) = avoid {
+            let (left, right) = (node(a), node(b));
+            let merged = (left.radius.powi(2) + right.radius.powi(2))
+                .sqrt()
+                .min(grow.trunk_r);
+            if areas.blocks(layer, at, merged, left.to_bed) {
+                return None;
+            }
+        }
+        Some(Pair { d, a, b, at })
     };
     // The best pair for `u` among nodes not in `taken`. Ring `r` of cells is
     // at least (r - 1) cells away, so the search stops once that passes the
@@ -1845,7 +1907,13 @@ fn push_out(xy: [f64; 2], blocked: impl Fn([f64; 2]) -> bool, max_step: f64) -> 
 /// and the merged trunk still holds both parent disks. The merged section is
 /// the sum of both, up to the trunk cap. Nodes are scanned by id, so the host
 /// keeps the smaller id. `max_step` is one lean step.
-fn merge_nodes(nodes: &mut Vec<Node>, grow: &Grow, max_step: f64, ended: &mut Vec<(NodeId, End)>) {
+fn merge_nodes(
+    nodes: &mut Vec<Node>,
+    grow: &Grow,
+    max_step: f64,
+    ended: &mut Vec<(NodeId, End)>,
+    avoid: Option<(&avoidance::Avoidance, usize)>,
+) {
     if nodes.len() < 2 {
         return;
     }
@@ -1884,6 +1952,13 @@ fn merge_nodes(nodes: &mut Vec<Node>, grow: &Grow, max_step: f64, ended: &mut Ve
                 return false;
             }
             holds_both(k, &n, grow.trunk_r, max_step)
+                && avoid.is_none_or(|(areas, layer)| {
+                    let at = merge_point(k, &n, max_step);
+                    let merged = (k.radius.powi(2) + n.radius.powi(2))
+                        .sqrt()
+                        .min(grow.trunk_r);
+                    !areas.blocks(layer, at, merged, k.to_bed)
+                })
         });
         if let Some(at) = found {
             let host = &mut kept[at];
@@ -2922,7 +2997,7 @@ mod tests {
                     floor_y_max: None,
                     drift: 0.0,
                 };
-                let got = pair_steps(&nodes, &[], &grow, 0.17);
+                let got = pair_steps(&nodes, &[], &grow, 0.17, None);
                 let want = pair_steps_by_scan(&nodes, &grow, 0.17);
                 assert_eq!(got, want, "case {case} load factor {load_factor}");
             }
@@ -3691,7 +3766,7 @@ mod tests {
 
         let mut ended = Vec::new();
         let mut over = pair(60.0);
-        merge_nodes(&mut over, &grow(5.2), 0.17, &mut ended);
+        merge_nodes(&mut over, &grow(5.2), 0.17, &mut ended, None);
         assert_eq!(
             loads(&over),
             vec![60.0, 60.0],
@@ -3700,7 +3775,7 @@ mod tests {
         assert_eq!(ended, vec![]);
 
         let mut under = pair(30.0);
-        merge_nodes(&mut under, &grow(5.2), 0.17, &mut ended);
+        merge_nodes(&mut under, &grow(5.2), 0.17, &mut ended, None);
         assert_eq!(loads(&under), vec![60.0]);
         let joined = (NodeId(2), End::Merged { into: NodeId(1) });
         assert_eq!(ended, vec![joined]);
@@ -3708,7 +3783,7 @@ mod tests {
         // Toughness has no load rating, so its cone merge stands.
         ended.clear();
         let mut tough = pair(60.0);
-        merge_nodes(&mut tough, &grow(1.5), 0.17, &mut ended);
+        merge_nodes(&mut tough, &grow(1.5), 0.17, &mut ended, None);
         assert_eq!(loads(&tough), vec![120.0]);
         assert_eq!(ended, vec![joined]);
     }
@@ -3836,6 +3911,116 @@ mod tests {
         assert!(
             travel <= lean * fall + 1.0,
             "limb {id} travelled {travel:.1} mm over a {fall:.1} mm fall"
+        );
+    }
+
+    #[test]
+    fn avoidance_left_off_matches_a_second_build_of_the_plate() {
+        let (bands, contours) = plate();
+        let opts = plate_opts();
+        assert!(!opts.avoidance);
+        let first = Supports::build(&bands, &contours, &opts).unwrap();
+        let mut again = opts;
+        again.avoidance = false;
+        let second = Supports::build(&bands, &contours, &again).unwrap();
+        assert_eq!(first.layers.len(), second.layers.len());
+        for (i, (a, b)) in first.layers.iter().zip(&second.layers).enumerate() {
+            assert_eq!(a.disks.len(), b.disks.len(), "layer {i}");
+            for (da, db) in a.disks.iter().zip(&b.disks) {
+                assert_eq!(da.xy, db.xy, "layer {i}");
+                assert_eq!(da.r, db.r, "layer {i}");
+            }
+        }
+    }
+
+    /// A U opening toward +X. The channel is narrower than a trunk plus the
+    /// XY gap, and the arms are thick enough that the mouth is the way out.
+    fn channel() -> Loop {
+        vec![
+            [0.0, 0.0],
+            [16.0, 0.0],
+            [16.0, 8.0],
+            [2.0, 8.0],
+            [2.0, 12.5],
+            [16.0, 12.5],
+            [16.0, 20.5],
+            [0.0, 20.5],
+        ]
+    }
+
+    #[test]
+    fn a_thickening_branch_leaves_a_channel_the_trunk_cannot_stand_in() {
+        let bands = layers(50);
+        let wall = channel();
+        let mut contours = vec![vec![wall]; bands.len()];
+        let roof = rect(12.0, 8.4, 15.0, 12.1);
+        for contour in contours.iter_mut().skip(46) {
+            contour.push(roof.clone());
+        }
+        let opts = plate_opts();
+        let areas = avoidance::Avoidance::build(
+            &bands,
+            &contours,
+            &avoidance::AvoidanceSpec {
+                xy_gap: opts.xy_gap,
+                lean: lean_of(&opts),
+                tip_r: tip_radius(&opts),
+                trunk_r: (opts.trunk_diameter * 0.5)
+                    .max(tip_radius(&opts) + 0.3)
+                    .clamp(0.6, 8.0),
+                flare: flare_per_mm(load_factor_of(&opts)),
+                floor: None,
+            },
+        );
+        assert!(
+            areas.blocks(0, [8.0, 10.25], 2.1, true),
+            "a trunk center in the channel should be forbidden on the bed"
+        );
+        assert!(
+            !areas.blocks(0, [22.0, 10.25], 2.1, true),
+            "past the mouth the bed is open"
+        );
+        let off = Supports::build(&bands, &contours, &opts).unwrap();
+        let mut on_opts = opts;
+        on_opts.avoidance = true;
+        let on = Supports::build(&bands, &contours, &on_opts).unwrap();
+        let feet = |layers: &[SupportLayer]| -> Vec<String> {
+            layers
+                .iter()
+                .take(4)
+                .enumerate()
+                .map(|(i, layer)| {
+                    let xs: Vec<String> = layer
+                        .disks
+                        .iter()
+                        .map(|d| format!("{:.2},{:.2}/r{:.2}", d.xy[0], d.xy[1], d.r))
+                        .collect();
+                    format!("L{i}[{}]", xs.join(" "))
+                })
+                .collect()
+        };
+        let max_x = |layers: &[SupportLayer]| -> f64 {
+            layers
+                .first()
+                .into_iter()
+                .flat_map(|layer| layer.disks.iter())
+                .map(|d| d.xy[0])
+                .fold(f64::MIN, f64::max)
+        };
+        let (off_x, on_x) = (max_x(&off.layers), max_x(&on.layers));
+        assert!(
+            off_x < 15.0,
+            "without avoidance the foot should stay under the roof, x {off_x:.2}, {}",
+            feet(&off.layers).join(" ")
+        );
+        assert!(
+            on_x > off_x + 2.0 && on_x > 15.0,
+            "avoidance should walk the foot out of the mouth, off {off_x:.2} on {on_x:.2}, {}",
+            feet(&on.layers).join(" ")
+        );
+        assert!(
+            !on.layers.iter().all(|layer| layer.disks.is_empty()),
+            "avoidance dropped every disk"
         );
     }
 }

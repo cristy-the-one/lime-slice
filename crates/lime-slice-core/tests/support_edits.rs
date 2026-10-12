@@ -1,7 +1,7 @@
 //! Support edits through the JSON request, with the kept bases off.
 
 use base64::Engine;
-use lime_slice_core::{slice_payload, Job, SliceRequest};
+use lime_slice_core::{slice_payload, Job, SliceRequest, SliceSettings};
 use serde_json::{json, Value};
 
 fn ledge_b64() -> String {
@@ -136,6 +136,48 @@ fn a_request_without_edits_serializes_without_the_edit_keys() {
     let edited = serde_json::to_value(&edited).unwrap();
     assert_eq!(edited["supportEdits"], edits);
     assert_eq!(edited["includeSkeleton"], json!(true));
+}
+
+#[test]
+fn support_avoidance_is_omitted_until_it_is_on() {
+    let plain: SliceRequest =
+        serde_json::from_value(json!({"filename": "a.stl", "dataB64": ""})).unwrap();
+    assert!(!plain.support_avoidance);
+    assert!(serde_json::to_value(&plain)
+        .unwrap()
+        .get("supportAvoidance")
+        .is_none());
+
+    let off: SliceRequest = serde_json::from_value(json!({
+        "filename": "a.stl",
+        "dataB64": "",
+        "supportAvoidance": false
+    }))
+    .unwrap();
+    assert!(!off.support_avoidance);
+    assert!(serde_json::to_value(&off)
+        .unwrap()
+        .get("supportAvoidance")
+        .is_none());
+
+    let on: SliceRequest = serde_json::from_value(json!({
+        "filename": "a.stl",
+        "dataB64": "",
+        "supportAvoidance": true
+    }))
+    .unwrap();
+    assert!(on.support_avoidance);
+    assert_eq!(
+        serde_json::to_value(&on).unwrap()["supportAvoidance"],
+        json!(true)
+    );
+
+    let classic = SliceSettings::from_request(&on);
+    let mut classic_req = on.clone();
+    classic_req.classic = true;
+    let cleared = SliceSettings::from_request(&classic_req);
+    assert!(classic.support_avoidance);
+    assert!(!cleared.support_avoidance);
 }
 
 #[test]

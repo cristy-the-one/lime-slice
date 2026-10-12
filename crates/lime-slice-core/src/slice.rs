@@ -138,6 +138,10 @@ pub struct SliceRequest {
     /// Organic trunk diameter, millimetres. `0` means 4.2.
     #[serde(default)]
     pub trunk_diameter: f64,
+    /// Keep a thickening tree branch out of a pocket it cannot leave.
+    /// Left out when off, so a request that does not ask keeps its cache key.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub support_avoidance: bool,
     /// `0` keeps model layer height. Values above 1 thicken sparse support shafts.
     #[serde(default)]
     pub support_height_mult: f64,
@@ -327,6 +331,8 @@ pub struct SliceSettings {
     pub branch_angle: f64,
     pub tip_diameter: f64,
     pub trunk_diameter: f64,
+    /// Per-layer avoidance for tree supports. Off leaves the walk unchanged.
+    pub support_avoidance: bool,
     pub support_height_mult: f64,
     pub infill_combine: bool,
     pub combing: bool,
@@ -407,6 +413,7 @@ impl Default for SliceSettings {
             branch_angle: 40.0,
             tip_diameter: 0.8,
             trunk_diameter: 4.2,
+            support_avoidance: false,
             support_height_mult: 1.0,
             infill_combine: true,
             combing: true,
@@ -500,6 +507,7 @@ impl SliceSettings {
             } else {
                 4.2
             },
+            support_avoidance: req.support_avoidance && !req.classic,
             support_height_mult: if req.classic {
                 1.0
             } else {
@@ -606,10 +614,17 @@ impl SliceSettings {
                 SupportStyle::Tree => "tree",
             };
             let organic = match self.support_style {
-                SupportStyle::Tree => format!(
-                    ", branch {:.0}°, tip {:.1} mm, trunk {:.1} mm",
-                    self.branch_angle, self.tip_diameter, self.trunk_diameter
-                ),
+                SupportStyle::Tree => {
+                    let pockets = if self.support_avoidance {
+                        ", avoiding pockets"
+                    } else {
+                        ""
+                    };
+                    format!(
+                        ", branch {:.0}°, tip {:.1} mm, trunk {:.1} mm{pockets}",
+                        self.branch_angle, self.tip_diameter, self.trunk_diameter
+                    )
+                }
                 SupportStyle::Grid => String::new(),
             };
             format!(
@@ -1315,6 +1330,7 @@ fn resolved(settings: &SliceSettings) -> SliceSettings {
         settings.z_hop = ZHopMode::Off;
         settings.support_style = SupportStyle::Grid;
         settings.support_height_mult = 1.0;
+        settings.support_avoidance = false;
     }
     settings
 }
@@ -2604,6 +2620,7 @@ fn compare_estimates(
             one.scarf_seam = ScarfSeam::Off;
             one.support_style = SupportStyle::Grid;
             one.support_height_mult = 1.0;
+            one.support_avoidance = false;
         }
         let response = slice_sharing(mesh, &blend, profile, &one, cut, watch)?;
         out.push(CompareEstimate {
@@ -4546,6 +4563,7 @@ fn plan_supports(
         ..SupportOpts::default()
     };
     opts.floor = floor;
+    opts.avoidance = settings.support_avoidance && settings.support_style == SupportStyle::Tree;
     watch.begin(Stage::Supports, cut.bands.len().max(1) as u32);
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
