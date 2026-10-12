@@ -437,6 +437,7 @@ textarea.machine-gcode {
 .menu nav button:hover { background: var(--surface-2); }
 .meta { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: var(--fs-2); line-height: 1.5; color: var(--muted); }
 .meta b { color: var(--text); font-weight: 500; }
+.heat-note { color: var(--warn); }
 .stages { margin-top: var(--space-2); }
 table.stages { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: var(--fs-2); color: var(--muted); }
 table.stages td { padding: 1px 0; white-space: nowrap; }

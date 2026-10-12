@@ -15,7 +15,7 @@ import { plateListed, slicePlateFields, sourceFrame, type PlateObject, type Plat
 import { seamRequestFields } from "../seam-paint";
 import { paintRequestFields } from "../support-paint";
 import { noteTally } from "./paint-actions";
-import { loadMachineLibrary } from "./machine-library";
+import { activeHeat, loadMachineLibrary } from "./machine-library";
 import { beltStamp } from "../ui/machine-library";
 import { beltRunTooLong, beltSliceField } from "../belt";
 import { currentRules } from "./rules";
@@ -274,8 +274,11 @@ function retractSliceFields(): { retractLength?: number; retractSpeed?: number }
 
 export function printer() {
   const { filamentDensityGCm3: _density, filamentCostPerKg: _cost, ...profile } = state.profile;
+  const heat = activeHeat();
   return {
     ...profile,
+    nozzleTemp: heat.nozzleC,
+    bedTemp: heat.bedC,
     pressureAdvance: state.pressureAdvance,
     linearAdvance: state.linearAdvance,
   };

@@ -6,8 +6,8 @@ import { bytesToBase64 } from "../base64";
 import { needsEngine, apiBase, apiToken, markEngineDown, isStepName, renderChrome, markStale, stale, card, shownGrams } from "./settings";
 import { withFooterGrams } from "../estimate";
 import { legacyStockEnd, legacyStockStart, spliceText, withMachineGcode } from "../machine-gcode";
-import { loadMachineLibrary } from "./machine-library";
-import { selection } from "../ui/machine-library";
+import { activeHeat, loadMachineLibrary } from "./machine-library";
+import { heatNotes, selection } from "../ui/machine-library";
 import type { SliceResponse } from "./state";
 import { authHeaders, engineDownMessage } from "../ui/api-base";
 import { type SplitSync } from "../split-at";
@@ -344,12 +344,16 @@ export async function printableGcode(result: SliceResponse) {
 
 /** `gcode` with the selected printer's start and end text, as Export and Send write it. */
 export function withPrinterGcode(gcode: string) {
-  const picked = selection(loadMachineLibrary());
+  const library = loadMachineLibrary();
+  const picked = selection(library);
   if (!picked) return gcode;
+  // The engine was sent the capped temperatures, so the file already carries them.
+  const heat = activeHeat(library);
   return withMachineGcode(
     gcode,
     spliceText(picked.printer.startGcode, legacyStockStart(picked.printer.name)),
     spliceText(picked.printer.endGcode, legacyStockEnd(picked.printer.name)),
+    { startOwnsHoming: picked.printer.startOwnsHoming, heat, notes: heatNotes(heat) },
   );
 }
 
