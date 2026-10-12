@@ -67,7 +67,7 @@ test("the minimum layer time sits in Speed & travel, is always sent, and stales 
   expect(bodies[3]).toMatchObject({ minLayerTimeS: 0 });
 });
 
-test("the active layer says when it was slowed for cooling", async ({ page }) => {
+test("the active layer says when it was slowed for cooling, in a row that fits", async ({ page }) => {
   const bodies = await quiet(page, cooled);
   await page.goto("/");
   await autoSliceOff(page);
@@ -84,8 +84,17 @@ test("the active layer says when it was slowed for cooling", async ({ page }) =>
       el.dispatchEvent(new Event("change", { bubbles: true }));
     }, layer);
   await goTo(1);
-  await expect(readout).toContainText("Layer time 8.0 s (slowed for cooling)");
+  await expect(readout).toContainText("Layer time 8.0 s");
+  await expect(readout).toContainText("Cooling slowed ×0.40");
+  // Every value stays inside the narrowest results panel (as fit.spec.ts sets it) instead of running past its edge.
+  await page.evaluate(() => {
+    document.querySelector<HTMLElement>(".workspace")!.style.setProperty("--panel-right", "240px");
+    window.dispatchEvent(new Event("resize"));
+  });
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+  const clipped = await readout.locator("dd").evaluateAll((cells) => cells.filter((cell) => cell.scrollWidth > cell.clientWidth + 1).length);
+  expect(clipped).toBe(0);
   await goTo(2);
   await expect(readout).toContainText("Layer time");
-  await expect(readout).not.toContainText("slowed for cooling");
+  await expect(readout).not.toContainText("Cooling");
 });
