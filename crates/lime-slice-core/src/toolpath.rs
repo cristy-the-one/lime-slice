@@ -2962,11 +2962,168 @@ impl PartLayout {
         let mut slots: Vec<Option<Vec<Run>>> = self.blocks.into_iter().map(Some).collect();
         for i in tour {
             if let Some(block) = slots[i].take() {
-                cursor = order_runs(block, cursor, None, &mut out, scarf);
+                cursor = order_block(block, cursor, &mut out, scarf);
             }
         }
         (out, cursor)
     }
+}
+
+/// Travel time a stacked island must save over the plan order to be used.
+const STACK_WIN_S: f64 = 0.15;
+
+/// An island's walls in plan order, outer loops then inner, hold one stack of
+/// loops for each piece of wall: a pocket in the web of a cover has its own.
+/// Printed in plan order the nozzle crosses to every outer wall and then back
+/// to every inner one. With two or more stacks each can print whole, outer then
+/// inner, taking next the stack whose entry lies nearest where the last one
+/// ended. The island is ordered both ways and takes the stacks only when its
+/// travel, infill after the walls included, takes `STACK_WIN_S` less.
+fn order_block(
+    block: Vec<Run>,
+    cursor: Option<[f64; 2]>,
+    out: &mut Vec<Extrusion>,
+    scarf: Option<&ScarfParams>,
+) -> Option<[f64; 2]> {
+    let walls = block
+        .iter()
+        .take_while(|r| r.paths.first().is_some_and(|p| p.kind.is_wall()))
+        .count();
+    let plain_walls = block[..walls]
+        .iter()
+        .flat_map(|r| &r.paths)
+        .all(|p| matches!(p.kind, PathKind::Outer | PathKind::Inner));
+    let stacks = if plain_walls {
+        wall_stacks(block[..walls].iter().flat_map(|r| &r.paths))
+    } else {
+        Vec::new()
+    };
+    if stacks.len() < 2 {
+        return order_runs(block, cursor, None, out, scarf);
+    }
+    let nwalls: usize = block[..walls].iter().map(|r| r.paths.len()).sum();
+    let all: Vec<Extrusion> = block.iter().flat_map(|r| r.paths.iter().cloned()).collect();
+    let mut plain = Vec::new();
+    let plain_end = order_runs(block, cursor, None, &mut plain, scarf);
+    let (wall_paths, rest_paths) = all.split_at(nwalls);
+    let mut slots: Vec<Option<Extrusion>> = wall_paths.iter().cloned().map(Some).collect();
+    let mut left: Vec<Option<Vec<Run>>> = stacks
+        .iter()
+        .map(|stack| {
+            let pile: Vec<Extrusion> = stack.iter().map(|&k| slots[k].take().unwrap()).collect();
+            Some(runs_of(pile))
+        })
+        .collect();
+    let mut stacked = Vec::new();
+    let mut at = cursor;
+    for _ in 0..left.len() {
+        let entry = |stack: &Vec<Run>| at.map_or(0.0, |c| block_entry(&stack[0].paths, c));
+        let next = (0..left.len())
+            .filter(|&k| left[k].is_some())
+            .min_by(|&a, &b| {
+                entry(left[a].as_ref().unwrap())
+                    .total_cmp(&entry(left[b].as_ref().unwrap()))
+                    .then(a.cmp(&b))
+            })
+            .unwrap();
+        at = order_runs(left[next].take().unwrap(), at, None, &mut stacked, scarf);
+    }
+    let stacked_end = order_runs(runs_of(rest_paths.to_vec()), at, None, &mut stacked, scarf);
+    let wins = walk_seconds(&stacked, cursor) + STACK_WIN_S < walk_seconds(&plain, cursor);
+    let (paths, end) = if wins {
+        (stacked, stacked_end)
+    } else {
+        (plain, plain_end)
+    };
+    out.extend(paths);
+    end
+}
+
+/// Seconds a travel of `d` mm takes at the planner's travel feed and accel,
+/// from rest to rest: short hops are all acceleration, long ones cruise.
+fn hop_seconds(d: f64) -> f64 {
+    const FEED: f64 = 300.0;
+    const ACCEL: f64 = 5500.0;
+    if d < FEED * FEED / ACCEL {
+        2.0 * (d / ACCEL).sqrt()
+    } else {
+        d / FEED + FEED / ACCEL
+    }
+}
+
+/// Seconds of travel between the paths as ordered, from `cursor`.
+fn walk_seconds(paths: &[Extrusion], cursor: Option<[f64; 2]>) -> f64 {
+    let mut at = cursor;
+    let mut total = 0.0;
+    for path in paths {
+        let (Some(first), Some(last)) = (path.points.first(), path.points.last()) else {
+            continue;
+        };
+        if let Some(at) = at {
+            total += hop_seconds(dist_mm(at, *first));
+        }
+        at = Some(*last);
+    }
+    total
+}
+
+/// The wall loops split into stacks, each a list of indexes into `walls` in
+/// plan order: an outer loop, and the inner loops that follow it. An inner
+/// loop is an offset of the loop it follows, so it keeps the same distance from
+/// it all the way round; it joins the stack whose loop lies nearest it on
+/// average, which a loop that only passes close by does not.
+fn wall_stacks<'a>(walls: impl Iterator<Item = &'a Extrusion>) -> Vec<Vec<usize>> {
+    let walls: Vec<&Extrusion> = walls.collect();
+    let boxes: Vec<([f64; 2], [f64; 2])> = walls.iter().map(|w| path_bounds(w)).collect();
+    let box_gap = |a: usize, b: usize| {
+        let dx = (boxes[a].0[0] - boxes[b].1[0])
+            .max(boxes[b].0[0] - boxes[a].1[0])
+            .max(0.0);
+        let dy = (boxes[a].0[1] - boxes[b].1[1])
+            .max(boxes[b].0[1] - boxes[a].1[1])
+            .max(0.0);
+        dx.hypot(dy)
+    };
+    let mut stacks: Vec<Vec<usize>> = Vec::new();
+    for (k, wall) in walls.iter().enumerate() {
+        if wall.kind != PathKind::Inner {
+            stacks.push(vec![k]);
+            continue;
+        }
+        let (mut best, mut at) = (f64::MAX, None);
+        for (s, stack) in stacks.iter().enumerate() {
+            for &m in stack {
+                if box_gap(k, m) > 3.0 * wall.width.max(walls[m].width) {
+                    continue;
+                }
+                let gap = mean_gap(&wall.points, &walls[m].points);
+                if gap < best {
+                    (best, at) = (gap, Some(s));
+                }
+            }
+        }
+        match at {
+            Some(s) => stacks[s].push(k),
+            None => stacks.push(vec![k]),
+        }
+    }
+    stacks
+}
+
+/// The mean distance from the points of `a` to the polyline `b`.
+fn mean_gap(a: &[[f64; 2]], b: &[[f64; 2]]) -> f64 {
+    if a.is_empty() {
+        return f64::MAX;
+    }
+    let total: f64 = a
+        .iter()
+        .map(|&p| {
+            b.windows(2)
+                .map(|w| point_seg_dist(p, w[0], w[1]))
+                .fold(f64::MAX, f64::min)
+        })
+        .sum();
+    total / a.len() as f64
 }
 
 /// Print order for a layer's skirt and supports, starting where the nozzle
@@ -6084,6 +6241,60 @@ mod travel_tests {
         assert_eq!(
             loops([24.0, 5.0], Some([60.0, 0.0])),
             vec![10.0, 20.0, 30.0]
+        );
+    }
+
+    /// A square wall loop of `size` mm at (`x`, 0), outer or inner.
+    fn wall(kind: PathKind, x: f64, size: f64) -> Extrusion {
+        path(kind, ring(x, 0.0, size))
+    }
+
+    fn kinds_in_order(paths: &[Extrusion]) -> Vec<(PathKind, i64)> {
+        paths
+            .iter()
+            .map(|p| (p.kind, p.points[0][0].round() as i64 / 10 * 10))
+            .collect()
+    }
+
+    #[test]
+    fn two_wall_stacks_far_apart_print_one_after_the_other() {
+        // One island: both squares sit in one 72 mm slab. Plan order is every
+        // outer wall, then every inner wall.
+        let solid = vec![vec![[-1.0, -1.0], [71.0, -1.0], [71.0, 11.0], [-1.0, 11.0]]];
+        let paths = vec![
+            wall(PathKind::Outer, 0.0, 10.0),
+            wall(PathKind::Outer, 60.0, 10.0),
+            wall(PathKind::Inner, 0.45, 9.1),
+            wall(PathKind::Inner, 60.45, 9.1),
+        ];
+        let (out, _) = PartLayout::new(paths, &solid).tour(Some([0.0, 0.0]), None);
+        assert_eq!(
+            kinds_in_order(&out),
+            vec![
+                (PathKind::Outer, 0),
+                (PathKind::Inner, 0),
+                (PathKind::Outer, 60),
+                (PathKind::Inner, 60),
+            ]
+        );
+    }
+
+    #[test]
+    fn one_wall_stack_keeps_the_plan_order() {
+        let solid = vec![vec![[-1.0, -1.0], [12.0, -1.0], [12.0, 11.0], [-1.0, 11.0]]];
+        let paths = vec![
+            wall(PathKind::Outer, 0.0, 10.0),
+            wall(PathKind::Inner, 0.45, 9.1),
+            wall(PathKind::Inner, 0.9, 8.2),
+        ];
+        let (out, _) = PartLayout::new(paths, &solid).tour(Some([0.0, 0.0]), None);
+        assert_eq!(
+            kinds_in_order(&out),
+            vec![
+                (PathKind::Outer, 0),
+                (PathKind::Inner, 0),
+                (PathKind::Inner, 0)
+            ]
         );
     }
 
