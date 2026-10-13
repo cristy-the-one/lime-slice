@@ -88,6 +88,17 @@ def download(dest: Path) -> None:
         raise SystemExit(f"OCCT archive hash is {digest}, expected {SHA256}")
 
 
+def windows_generator() -> list[str]:
+    # windows-latest is Visual Studio 2026. An older image still lists 2022.
+    listed = subprocess.run(
+        ["cmake", "--help"], check=True, capture_output=True, text=True
+    ).stdout
+    for name in ("Visual Studio 18 2026", "Visual Studio 17 2022"):
+        if name in listed:
+            return ["-G", name, "-A", "x64"]
+    raise SystemExit("cmake lists neither Visual Studio 18 2026 nor Visual Studio 17 2022")
+
+
 def cmake_configure(source: Path, build: Path, prefix: Path) -> None:
     system = platform.system()
     cmd = [
@@ -129,7 +140,7 @@ def cmake_configure(source: Path, build: Path, prefix: Path) -> None:
     if arch:
         cmd.append(f"-DCMAKE_OSX_ARCHITECTURES={arch}")
     if system == "Windows":
-        cmd[1:1] = ["-G", "Visual Studio 17 2022", "-A", "x64"]
+        cmd[1:1] = windows_generator()
     else:
         cmd.append("-DCMAKE_BUILD_TYPE=Release")
         if system == "Linux":
