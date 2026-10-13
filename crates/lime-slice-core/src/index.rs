@@ -7,6 +7,10 @@ use crate::poly::{loop_bounds, orient_loops, resolve_nonzero, signed_area, Loop}
 /// A 1.5 mm opening is left alone, so an articulation gap does not become a wall.
 const CLOSE_GAP_MM: f64 = 1.25;
 
+/// Bin size for the last welding pass. Used only when exact welding still leaves
+/// an edge that belongs to one face. A watertight mesh never reaches it.
+const WELD_MM: f64 = 1e-5;
+
 /// A mesh edge `(lo, hi)` by welded vertex id. Two faces that share an edge cut
 /// the plane at the same key, so stitching follows topology, not rounded coordinates.
 type EdgeKey = u64;
@@ -39,22 +43,7 @@ pub struct CutStats {
 
 impl ZIndex {
     pub fn build(mesh: &Mesh) -> Self {
-        let mut ids: HashMap<[u64; 3], u32> = HashMap::with_capacity(mesh.triangles.len());
-        let mut verts = Vec::with_capacity(mesh.triangles.len() / 2 + 3);
-        let mut faces = Vec::with_capacity(mesh.triangles.len());
-        for tri in &mesh.triangles {
-            let mut f = [0u32; 3];
-            for (slot, v) in f.iter_mut().zip(tri.iter()) {
-                let bits = [v[0].to_bits(), v[1].to_bits(), v[2].to_bits()];
-                *slot = *ids.entry(bits).or_insert_with(|| {
-                    verts.push(*v);
-                    (verts.len() - 1) as u32
-                });
-            }
-            if f[0] != f[1] && f[1] != f[2] && f[0] != f[2] {
-                faces.push(f);
-            }
-        }
+        let (verts, faces) = weld_mesh(mesh);
         let (mut z_min, mut z_max) = (f64::MAX, f64::MIN);
         for v in &verts {
             z_min = z_min.min(v[2]);
@@ -327,4 +316,183 @@ fn polyline_len(pts: &[[f64; 2]]) -> f64 {
 fn bucket_of(z: f64, z0: f64, h: f64, n: usize) -> usize {
     let i = ((z - z0) / h).floor() as isize;
     i.clamp(0, n as isize - 1) as usize
+}
+
+#[derive(Clone, Copy)]
+enum Weld {
+    /// Identical bits share a vertex, including the sign of zero.
+    Exact,
+    /// `+0.0` and `-0.0` share a vertex. Every other bit stays exact.
+    SignedZero,
+    /// Vertices that fall in the same `WELD_MM` bin share a vertex.
+    Quantized,
+}
+
+/// Exact welding first. A closed mesh returns that pass unchanged, so its
+/// coordinates stay bit for bit. An open edge retries with signed zero folded
+/// in, then with the fine bin, and each retry still keeps the first real
+/// coordinate rather than moving it onto the bin.
+fn weld_mesh(mesh: &Mesh) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+    let (verts, faces) = weld(mesh, Weld::Exact);
+    if boundary_edges(&faces) == 0 {
+        return (verts, faces);
+    }
+    let (verts, faces) = weld(mesh, Weld::SignedZero);
+    if boundary_edges(&faces) == 0 {
+        return (verts, faces);
+    }
+    weld(mesh, Weld::Quantized)
+}
+
+fn weld(mesh: &Mesh, mode: Weld) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+    let mut ids: HashMap<[u64; 3], u32> = HashMap::with_capacity(mesh.triangles.len());
+    let mut verts = Vec::with_capacity(mesh.triangles.len() / 2 + 3);
+    let mut faces = Vec::with_capacity(mesh.triangles.len());
+    for tri in &mesh.triangles {
+        let mut face = [0u32; 3];
+        for (slot, v) in face.iter_mut().zip(tri.iter()) {
+            let bits = weld_key(*v, mode);
+            *slot = *ids.entry(bits).or_insert_with(|| {
+                verts.push(*v);
+                (verts.len() - 1) as u32
+            });
+        }
+        if face[0] != face[1] && face[1] != face[2] && face[0] != face[2] {
+            faces.push(face);
+        }
+    }
+    (verts, faces)
+}
+
+fn weld_key(v: [f64; 3], mode: Weld) -> [u64; 3] {
+    let axis = |x: f64| match mode {
+        Weld::Exact => x.to_bits(),
+        Weld::SignedZero => {
+            let x = if x == 0.0 { 0.0 } else { x };
+            x.to_bits()
+        }
+        Weld::Quantized => {
+            let q = (x / WELD_MM).round() * WELD_MM;
+            let q = if q == 0.0 { 0.0 } else { q };
+            q.to_bits()
+        }
+    };
+    [axis(v[0]), axis(v[1]), axis(v[2])]
+}
+
+/// Edges owned by one welded face. A closed shell has none. An edge shared by
+/// three or four faces is left alone, so an internal wall does not turn welding on.
+fn boundary_edges(faces: &[[u32; 3]]) -> usize {
+    let mut uses: HashMap<EdgeKey, u32> = HashMap::new();
+    for face in faces {
+        for (a, b) in [(face[0], face[1]), (face[1], face[2]), (face[2], face[0])] {
+            *uses.entry(edge_key(a, b)).or_default() += 1;
+        }
+    }
+    uses.values().filter(|count| **count == 1).count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cube() -> Mesh {
+        let p = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0],
+        ];
+        let quads = [
+            [0, 1, 2, 3],
+            [4, 7, 6, 5],
+            [0, 4, 5, 1],
+            [1, 5, 6, 2],
+            [2, 6, 7, 3],
+            [3, 7, 4, 0],
+        ];
+        let mut triangles = Vec::new();
+        for q in quads {
+            triangles.push([p[q[0]], p[q[1]], p[q[2]]]);
+            triangles.push([p[q[0]], p[q[2]], p[q[3]]]);
+        }
+        Mesh { triangles }
+    }
+
+    fn exact_weld(mesh: &Mesh) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+        weld(mesh, Weld::Exact)
+    }
+
+    #[test]
+    fn a_closed_cube_keeps_exact_vertices() {
+        let mesh = cube();
+        let index = ZIndex::build(&mesh);
+        let (verts, faces) = exact_weld(&mesh);
+        assert_eq!(index.verts.len(), 8);
+        assert_eq!(index.faces, faces);
+        for (got, want) in index.verts.iter().zip(&verts) {
+            assert_eq!(got.map(f64::to_bits), want.map(f64::to_bits));
+        }
+        assert_eq!(index.slice(0.5).len(), 1);
+    }
+
+    #[test]
+    fn signed_zero_welds_only_when_an_edge_is_open() {
+        let mut mesh = cube();
+        let crack = [-0.0, -0.0, -0.0];
+        let mut rewritten = 0;
+        for tri in &mut mesh.triangles {
+            for v in tri.iter_mut() {
+                if v.map(f64::to_bits) == [0.0, 0.0, 0.0].map(f64::to_bits) && rewritten == 0 {
+                    *v = crack;
+                    rewritten += 1;
+                }
+            }
+        }
+        assert_eq!(rewritten, 1);
+        let (exact_verts, exact_faces) = exact_weld(&mesh);
+        assert_eq!(exact_verts.len(), 9);
+        assert!(boundary_edges(&exact_faces) > 0);
+        let index = ZIndex::build(&mesh);
+        assert_eq!(index.verts.len(), 8);
+        assert_eq!(boundary_edges(&index.faces), 0);
+        assert_eq!(index.slice(0.5).len(), 1);
+        assert!(
+            index
+                .verts
+                .iter()
+                .any(|v| v.map(f64::to_bits) == crack.map(f64::to_bits)),
+            "the first copy of the corner is kept, not snapped"
+        );
+    }
+
+    #[test]
+    fn a_millionth_of_a_millimetre_welds_and_a_tenth_does_not() {
+        let mut near = cube();
+        let mut far = cube();
+        let mut patched_near = false;
+        let mut patched_far = false;
+        for (mesh, shift, patched) in [
+            (&mut near, 1e-6, &mut patched_near),
+            (&mut far, 1e-4, &mut patched_far),
+        ] {
+            for tri in &mut mesh.triangles {
+                for v in tri.iter_mut() {
+                    if !*patched && v[0] == 1.0 && v[1] == 0.0 && v[2] == 0.0 {
+                        v[0] += shift;
+                        *patched = true;
+                    }
+                }
+            }
+        }
+        assert!(patched_near && patched_far);
+        assert_eq!(ZIndex::build(&near).verts.len(), 8);
+        assert_eq!(boundary_edges(&ZIndex::build(&near).faces), 0);
+        assert_eq!(ZIndex::build(&far).verts.len(), 9);
+        assert!(boundary_edges(&ZIndex::build(&far).faces) > 0);
+    }
 }
