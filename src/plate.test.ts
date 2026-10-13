@@ -13,6 +13,7 @@ import {
   placeObject,
   plateFileIsVersion2,
   plateListed,
+  plateObjectPositions,
   platePlacedPositions,
   plateUnionBounds,
   readPlateSettings,
@@ -253,7 +254,11 @@ check("an empty plate cannot gain a part this way", addedMesh({ objects: [], sel
 const joined = platePlacedPositions([atOrigin, object(10, "shift", false, { x: 40, y: 0, z: 0 })], bed, bed);
 const model = new TextDecoder().decode(encode3mf(joined));
 check("a plate 3mf has every part's triangles", (model.match(/<triangle /g) ?? []).length === joined.length / 9 && joined.length / 9 === 4);
+check("a plate 3mf deduplicates shared vertices", (model.match(/<vertex /g) ?? []).length < (joined.length / 3));
 check("a plate 3mf keeps the second part's place", model.includes('x="40"'));
+const separate = plateObjectPositions([atOrigin, object(10, "shift", false, { x: 40, y: 0, z: 0 })], bed, bed);
+const multiModel = new TextDecoder().decode(encode3mf(separate));
+check("a multi-object 3mf stores one object and build item per part", (multiModel.match(/<object /g) ?? []).length === 2 && (multiModel.match(/<item /g) ?? []).length === 2);
 
 check("an object may store painted-only supports", JSON.stringify(readPlateSettings({ supports: true, supportSource: "paint" })) === JSON.stringify({ supports: true, supportSource: "paint" }));
 check("an object's support source must be auto or paint", readPlateSettings({ supportSource: "everywhere" }) === "This project file is incomplete.");
