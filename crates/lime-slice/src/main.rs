@@ -165,7 +165,7 @@ enum Cmd {
         #[arg(long, default_value_t = 0.0)]
         simplify_error: f64,
         /// Chord tolerance in millimetres when the input is STEP. STL and 3MF ignore it.
-        #[arg(long, default_value_t = 0.1)]
+        #[arg(long, default_value_t = lime_slice_core::STEP_TOLERANCE_DEFAULT_MM)]
         step_tolerance: f64,
         /// Also check contour coverage and support placement, and print the report.
         #[arg(long, default_value_t = false)]

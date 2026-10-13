@@ -154,6 +154,9 @@ export interface ParetoPoint {
   score: number;
 }
 
+/** Largest gap, mm, between a STEP surface and the triangles that stand in for it. */
+export const STEP_TOLERANCE_DEFAULT = 0.05;
+
 export const state = {
   mesh: null as { name: string; bytes: ArrayBuffer } | null,
   result: null as SliceResponse | null,
@@ -257,7 +260,7 @@ export const state = {
   placed: null as PlacedPart | null,
   orient: ID_MATRIX as Mat3,
   partScale: 1,
-  stepTolerance: 0.1,
+  stepTolerance: STEP_TOLERANCE_DEFAULT,
   centered: true,
   offset: { x: 0, y: 0, z: 0 } as MeshShift,
   pareto: [] as ParetoPoint[],

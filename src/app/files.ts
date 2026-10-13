@@ -1,5 +1,5 @@
 import { fx } from "./fx";
-import { state, session } from "./state";
+import { state, session, STEP_TOLERANCE_DEFAULT } from "./state";
 import { centeringShift, ID_MATRIX, parseStl, placeMesh, encodeStl, scaledCanonical, encode3mf, type PlacedPart, type Placement } from "../mesh-place";
 import { meshKeyHex } from "../slice-action";
 import { bytesToBase64 } from "../base64";
@@ -37,7 +37,7 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
   state.error = "";
   state.orient = ID_MATRIX;
   state.partScale = 1;
-  state.stepTolerance = 0.1;
+  state.stepTolerance = STEP_TOLERANCE_DEFAULT;
   state.centered = true;
   state.offset = { x: 0, y: 0, z: 0 };
   state.supportEdits = clearEdits();

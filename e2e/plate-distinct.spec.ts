@@ -169,7 +169,7 @@ test("add reads a STEP at the chord on screen", async ({ page }) => {
   });
   await expect(page.locator("[data-plate-id]")).toHaveCount(2);
   await expect(page.locator("[data-selected='true']")).toContainText("bracket.step");
-  expect(meshCalls[0]).toMatchObject({ filename: "bracket.step", stepToleranceMm: 0.1 });
+  expect(meshCalls[0]).toMatchObject({ filename: "bracket.step", stepToleranceMm: 0.05 });
 
   await page.locator("#stepTol").fill("0.25");
   await page.locator("#stepTol").blur();
@@ -342,7 +342,7 @@ test("Shift+drop reads STEP at the chord on screen, and a late preview after rep
   await dropFiles(page, [{ name: "bracket.step", buffer: Buffer.from("ISO-10303-21;") }], true);
   await expect(page.locator("[data-plate-id]")).toHaveCount(2);
   await expect(page.locator("[data-selected='true']")).toContainText("bracket.step");
-  expect(meshCalls[0]).toMatchObject({ filename: "bracket.step", stepToleranceMm: 0.1 });
+  expect(meshCalls[0]).toMatchObject({ filename: "bracket.step", stepToleranceMm: 0.05 });
 
   await page.locator("#stepTol").fill("0.25");
   await page.locator("#stepTol").blur();
