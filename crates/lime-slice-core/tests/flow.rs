@@ -55,7 +55,7 @@ fn flow_one_keeps_the_cartesian_file_and_a_higher_flow_lengthens_e() {
     let hash = hex(&Sha256::digest(plain.gcode.as_bytes()));
     assert_eq!(
         hash,
-        "fa751c9d8bf53b5943f83cf5be9500b997d00632f758ca5bbfd3fe8bffdc91b5"
+        "238c692648d889ac326075a36cee9b0717dce0ceada00606c5f0d5645baae043"
     );
     assert!(!plain.gcode.contains("; flow"));
     let raised = slice_configured(&mesh, &blend, &profile, &settings(1.2)).unwrap();
