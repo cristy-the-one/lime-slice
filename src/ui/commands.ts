@@ -11,7 +11,8 @@ export type KeyScope =
   | "running"
   | "searching"
   | "brush"
-  | "find";
+  | "find"
+  | "model";
 
 export interface CommandSpec {
   id: string;
@@ -61,6 +62,16 @@ export const COMMANDS: CommandSpec[] = [
   { id: "view-front", label: "Front view", group: "View", keys: ["Y"], target: "#viewPresets button:nth-child(2)", keywords: "camera prepare" },
   { id: "view-iso", label: "Iso view", group: "View", keys: ["I"], target: "#viewPresets button:nth-child(3)", keywords: "camera prepare isometric" },
   { id: "measure", label: "Measure", group: "View", keys: ["Shift+M"], target: "#measureField", keywords: "ruler size dimensions scale bar millimetres" },
+  { id: "model-face", label: "Pick faces", group: "Model", keys: ["Q"], when: "model", target: "#modelPickFace", keywords: "select face" },
+  { id: "model-edge", label: "Pick edges", group: "Model", keys: ["W"], when: "model", target: "#modelPickEdge", keywords: "select edge" },
+  { id: "model-boolean", label: "Boolean", group: "Model", keys: ["G"], when: "model", target: "#modelToolBoolean", keywords: "fuse cut intersect box" },
+  { id: "model-split", label: "Split with a plane", group: "Model", keys: ["P"], when: "model", target: "#modelToolSplit", keywords: "plane" },
+  { id: "model-fillet", label: "Fillet", group: "Model", keys: ["L"], when: "model", target: "#modelToolFillet", keywords: "round edge" },
+  { id: "model-chamfer", label: "Chamfer", group: "Model", keys: ["Shift+L"], when: "model", target: "#modelToolChamfer", keywords: "bevel edge" },
+  { id: "model-hole", label: "Hole", group: "Model", keys: ["H"], when: "model", target: "#modelToolHole", keywords: "drill" },
+  { id: "model-scale", label: "Scale solid", group: "Model", keys: ["X"], when: "model", target: "#modelToolScale", keywords: "factor" },
+  { id: "model-apply", label: "Apply model edit", group: "Model", keys: ["Enter"], when: "model", target: "#modelApply", keywords: "confirm" },
+  { id: "model-escape", label: "Cancel model tool or clear selection", group: "Model", keys: ["Esc"], when: "model", typing: true, keywords: "clear deselect" },
   { id: "layer-up", label: "Layer up", group: "Layers", keys: ["↑", "]"], when: "preview", repeat: true, show: "help" },
   { id: "layer-down", label: "Layer down", group: "Layers", keys: ["↓", "["], when: "preview", repeat: true, show: "help" },
   { id: "layer-up-10", label: "Ten layers up", group: "Layers", keys: ["PgUp"], when: "preview", repeat: true, show: "help" },
@@ -105,6 +116,8 @@ export const COMMANDS: CommandSpec[] = [
 
 /** Gestures the sheet lists beside the keys. The pointer code lives in the views. */
 export const MOUSE_HINTS: { gesture: string; label: string }[] = [
+  { gesture: "Shift+click", label: "Add or remove a face or edge in Model" },
+  { gesture: "Click empty", label: "Clear the Model selection" },
   { gesture: "Shift + drag", label: "Snap a move to 1 mm, a rotation to 15°" },
   { gesture: "Scroll a handle", label: "Nudge 0.1 mm, or 1° on a ring" },
   { gesture: "Drag the plane", label: "Move the By region split" },
@@ -139,6 +152,7 @@ const SCOPES: Record<KeyScope, (c: KeyContext) => boolean> = {
   searching: (c) => !c.helpOpen && c.searching,
   brush: (c) => !c.helpOpen && c.stage === "prepare" && c.brushOn,
   find: (c) => !c.helpOpen && !c.inGcode,
+  model: (c) => !c.helpOpen && c.stage === "model" && !c.running && !c.searching,
 };
 
 export type KeyEventLike = Pick<KeyboardEvent, "key" | "code" | "ctrlKey" | "metaKey" | "shiftKey" | "altKey" | "repeat">;

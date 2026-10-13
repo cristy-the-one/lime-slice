@@ -70,7 +70,7 @@ const bools = [false, true];
 const contexts: KeyContext[] = [];
 for (const helpOpen of bools) for (const typing of bools) for (const hasResult of bools) for (const running of bools)
   for (const searching of bools) for (const brushOn of bools) for (const editingSupports of bools) for (const inGcode of bools)
-    for (const stage of ["prepare", "preview", "gcode"] as const)
+    for (const stage of ["prepare", "preview", "gcode", "model"] as const)
       contexts.push({ helpOpen, typing, stage, hasResult, running, searching, brushOn, editingSupports, inGcode });
 const chords = [...new Set(COMMANDS.flatMap((command) => command.keys ?? []))];
 for (const chord of chords) {
@@ -104,6 +104,11 @@ eq("Delete leaves the object while a tool is on", [press("Del", { brushOn: true 
 eq("Delete does not remove in Preview", press("Del", { stage: "preview", hasResult: true }), null);
 eq("Esc cancels a running slice", press("Esc", { running: true }), "cancel-slice");
 eq("Esc does nothing when idle", press("Esc"), null);
+eq("Esc clears a Model selection", press("Esc", { stage: "model" }), "model-escape");
+eq("Esc still cancels a running slice on Model", press("Esc", { stage: "model", running: true }), "cancel-slice");
+eq("Q and W pick in Model", [press("Q"), press("Q", { stage: "model" }), press("W", { stage: "model" })], [null, "model-face", "model-edge"]);
+eq("Enter applies a model edit, not from Prepare", [press("Enter"), press("Enter", { stage: "model" })], [null, "model-apply"]);
+eq("a model letter does nothing in a field", press("Q", { stage: "model", typing: true }), null);
 eq("Esc clears a search before it cancels", press("Esc", { running: true, searching: true }), "search-clear");
 eq("Esc closes the sheet", press("Esc", { helpOpen: true, running: true }), "help-close");
 eq("? opens, then closes, the sheet", [press("?"), press("?", { helpOpen: true })], ["help", "help-close"]);
