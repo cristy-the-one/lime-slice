@@ -495,3 +495,15 @@ mod native {
         take(unsafe { lime_model_occt_undo(id, chord_mm) })
     }
 }
+
+#[cfg(test)]
+mod session_contract {
+    #[test]
+    fn step_writer_goes_to_a_log_and_a_face_cut_is_refused() {
+        let src = include_str!("../cpp/session.cpp");
+        assert!(src.contains("Message_PrinterOStream"), "{src}");
+        assert!(src.contains("lime-slice/occt.log"));
+        assert!(src.contains("The plane is too close to a face. Move it into the part."));
+        assert!(src.contains("This solid is too thin to split"));
+    }
+}

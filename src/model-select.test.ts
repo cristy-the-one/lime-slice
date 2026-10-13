@@ -36,6 +36,8 @@ check("fillet applies to the last edge", modelApplyReady("fillet", [edge(3)], 2)
 check("scale of 1 is not an edit", modelApplyReady("scale", [], 1) === false);
 check("scale of 2 is an edit", modelApplyReady("scale", [], 2));
 check("a boolean can apply with nothing picked", modelApplyReady("boolean", [], 1));
+check("split applies when the plane is inside the part", modelApplyReady("split", [], 1, true));
+check("split waits when the plane would shave a face", modelApplyReady("split", [], 1, false) === false);
 
 const accent = 0xa3e635;
 eq("a selected face is the accent", faceColor(2, true, true, accent), accent);

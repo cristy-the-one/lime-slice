@@ -4,6 +4,7 @@
  */
 import { Box, CircleDot, Download, Scaling, Spline, SquareSplitHorizontal, Triangle, Undo2, createElement, type IconNode } from "lucide";
 import type { ModelGhost } from "../model-view";
+import { formatMm, splitPlaneInside, splitPlaneRange, type AxisExtent } from "../model-plane";
 import { lastEdge, modelApplyReady, selectionCountLabel, type ModelPickRef } from "../model-select";
 import { scrubIntent, scrubTarget, type ScrubIntent } from "./scrub";
 import { fx } from "../app/fx";
@@ -13,6 +14,8 @@ export type ModelTool = "boolean" | "split" | "fillet" | "chamfer" | "hole" | "s
 
 interface ModelChromeHooks {
   clearSelection(): void;
+  /** Z extent of the open solid, in the solid's own frame. */
+  solidZ(): AxisExtent | null;
 }
 
 const TOOLS: { id: ModelTool; icon: IconNode; label: string }[] = [
@@ -116,6 +119,11 @@ export function refreshModelGhost() {
   refreshGhost();
 }
 
+/** The open solid changed. A split plane goes back to the new middle. */
+export function syncModelSolid() {
+  if (tool === "split") applySplitDefaults();
+}
+
 function toggleTool(next: ModelTool) {
   if (tool === next) {
     closeTool();
@@ -131,6 +139,7 @@ function toggleTool(next: ModelTool) {
   if ((next === "fillet" || next === "chamfer") && document.querySelector("#modelPickEdge")?.getAttribute("aria-pressed") !== "true") {
     document.querySelector<HTMLButtonElement>("#modelPickEdge")?.click();
   }
+  if (next === "split") applySplitDefaults();
   syncFields();
   refreshApply();
   refreshNote();
@@ -169,20 +178,48 @@ function syncFields() {
   });
 }
 
+function applySplitDefaults() {
+  const input = document.querySelector<HTMLInputElement>("#modelPlaneZ");
+  const range = splitPlaneRange(hooks?.solidZ() ?? null);
+  if (!input) return;
+  if (!range) {
+    input.removeAttribute("min");
+    input.removeAttribute("max");
+    return;
+  }
+  input.min = String(range.min);
+  input.max = String(range.max);
+  input.value = formatMm(range.mid);
+}
+
 function refreshApply() {
   const button = document.querySelector<HTMLButtonElement>("#modelApply");
   if (!button) return;
-  button.disabled = !tool || !modelApplyReady(tool, picks, num("#modelFactor"));
+  const range = splitPlaneRange(hooks?.solidZ() ?? null);
+  button.disabled = !tool || !modelApplyReady(tool, picks, num("#modelFactor"), splitPlaneInside(num("#modelPlaneZ"), range));
 }
 
 function refreshNote() {
   const note = document.querySelector("#modelNote");
   if (!note) return;
   let text = "";
-  if (tool === "fillet" || tool === "chamfer") text = lastEdge(picks) == null ? "Pick an edge." : "Uses the last selected edge.";
+  let bad = false;
+  if (tool === "split") {
+    const range = splitPlaneRange(hooks?.solidZ() ?? null);
+    if (!range) {
+      text = "This solid is too thin to split.";
+      bad = true;
+    } else if (!splitPlaneInside(num("#modelPlaneZ"), range)) {
+      text = `Move the plane into the part, between ${formatMm(range.min)} and ${formatMm(range.max)} mm.`;
+      bad = true;
+    } else {
+      text = `From ${formatMm(range.min)} to ${formatMm(range.max)} mm. The middle is ${formatMm(range.mid)}.`;
+    }
+  } else if (tool === "fillet" || tool === "chamfer") text = lastEdge(picks) == null ? "Pick an edge." : "Uses the last selected edge.";
   else if (tool === "hole") text = "Straight down from the origin.";
   else if (tool === "scale") text = "About the centre. Placement scale becomes 100%.";
   note.textContent = text;
+  note.classList.toggle("is-bad", bad);
   note.toggleAttribute("hidden", text.length === 0);
 }
 

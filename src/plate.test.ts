@@ -3,6 +3,7 @@ import { nextSplitAt } from "./split-at.ts";
 import {
   addedCopy,
   addedMesh,
+  addedSplit,
   objectMarks,
   arrangeBoxes,
   arrangedObjects,
@@ -249,6 +250,34 @@ const wrapped = addedMesh({ objects: [atOrigin, row2], selectedId: "a" }, incomi
 const wrappedBounds = placeObject(wrapped!.objects[2]!, 50, 50).bounds;
 check("the next part wraps to a new row when the first row is full", near(wrappedBounds.min[0], 0) && near(wrappedBounds.min[1], 22));
 check("an empty plate cannot gain a part this way", addedMesh({ objects: [], selectedId: null }, incoming("nope.stl", cube(10)), bed, bed) === null);
+
+// A 220 mm plate on a 250 mm belt, cut on the top face. Parking the 0.1 mm
+// sliver beside the plate is the ~440 mm span the belt width check reported.
+const skadis = object(220, "part", true);
+skadis.name = "Skadis_Raster";
+skadis.fileName = "Skadis_Raster.stl";
+skadis.sourcePos = new Float32Array([0, 0, 0, 220, 0, 0, 0, 220, 5]);
+const sliver = incoming("Skadis_Raster split", new Float32Array([0.55, 0.55, 0, 219.45, 0.55, 0, 0.55, 219.45, 0.1]));
+const belt = 250;
+const skadisPlate = { objects: [skadis], selectedId: "part" };
+const parkedSliver = addedMesh(skadisPlate, sliver, belt, belt)!;
+const parkedWidth = plateUnionBounds(parkedSliver.objects, belt, belt)!;
+check(
+  "parking the sliver beside the plate spans about 440 mm",
+  parkedWidth.max[0] - parkedWidth.min[0] > 400,
+  String(parkedWidth.max[0] - parkedWidth.min[0]),
+);
+const splitPlate = addedSplit(skadisPlate, sliver)!;
+const splitWidth = plateUnionBounds(splitPlate.objects, belt, belt)!;
+check(
+  "a split half stays on the plate instead of doubling the span",
+  splitWidth.max[0] - splitWidth.min[0] < 250 && splitWidth.max[0] - splitWidth.min[0] > 200,
+  String(splitWidth.max[0] - splitWidth.min[0]),
+);
+check("the split keeps its name when that name is free", splitPlate.objects[1]?.name === "Skadis_Raster split");
+check("the kept piece stays selected", splitPlate.selectedId === "part");
+check("the half uses the parent's centering", splitPlate.objects[1]?.centered === true);
+check("nothing selected cannot gain a split half", addedSplit({ objects: [skadis], selectedId: null }, sliver) === null);
 
 const joined = platePlacedPositions([atOrigin, object(10, "shift", false, { x: 40, y: 0, z: 0 })], bed, bed);
 const model = new TextDecoder().decode(encode3mf(joined));
