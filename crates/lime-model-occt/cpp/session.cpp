@@ -1,6 +1,7 @@
 // Open CASCADE session for Model mode. This file is Lime Slice (MIT).
 // It calls the LGPL library; the notice is third_party/occt/NOTICE.md.
 
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -10,25 +11,41 @@
 #include <vector>
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepAlgoAPI_Common.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
+#include <BRepAlgoAPI_Fuse.hxx>
+#include <BRepAlgoAPI_Splitter.hxx>
+#include <BRepBndLib.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepGProp.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRep_Tool.hxx>
+#include <Bnd_Box.hxx>
 #include <GCPnts_QuasiUniformDeflection.hxx>
 #include <GProp_GProps.hxx>
 #include <Poly_Triangulation.hxx>
+#include <ShapeFix_Shape.hxx>
 #include <Standard_Failure.hxx>
 #include <Standard_VersionInfo.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopExp.hxx>
+#include <TopExp_Explorer.hxx>
 #include <TopLoc_Location.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
+#include <TopTools_ListOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
+#include <gp_Ax2.hxx>
+#include <gp_Dir.hxx>
+#include <gp_Pln.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Vec.hxx>
 
 #ifdef LIME_OCCT_STEP
 #include <IFSelect_ReturnStatus.hxx>
@@ -45,6 +62,7 @@ struct Held {
 
 std::mutex g_mu;
 std::vector<Held> g_held;
+std::vector<TopoDS_Shape> g_undo;
 
 char* alloc(const std::string& text) {
     char* out = static_cast<char*>(std::malloc(text.size() + 1));
@@ -93,14 +111,81 @@ double chord_of(double chord) {
     return chord;
 }
 
-int store(const TopoDS_Shape& shape) {
+Held hold_of(const TopoDS_Shape& shape) {
     Held held;
     held.shape = shape;
     TopExp::MapShapes(shape, TopAbs_FACE, held.faces);
     TopExp::MapShapes(shape, TopAbs_EDGE, held.edges);
+    return held;
+}
+
+TopoDS_Shape as_solid(const TopoDS_Shape& shape) {
+    if (shape.IsNull() || shape.ShapeType() == TopAbs_SOLID || shape.ShapeType() == TopAbs_COMPSOLID) {
+        return shape;
+    }
+    TopoDS_Shape found;
+    int count = 0;
+    for (TopExp_Explorer explorer(shape, TopAbs_SOLID); explorer.More(); explorer.Next()) {
+        found = explorer.Current();
+        count += 1;
+        if (count > 1) {
+            return shape;
+        }
+    }
+    return count == 1 ? found : shape;
+}
+
+int store(const TopoDS_Shape& shape) {
     g_held.clear();
-    g_held.push_back(std::move(held));
+    g_undo.clear();
+    g_held.push_back(hold_of(as_solid(shape)));
     return 1;
+}
+
+bool held_at(int id, Held& out) {
+    if (id < 1 || static_cast<size_t>(id) > g_held.size()) {
+        return false;
+    }
+    out = g_held.at(static_cast<size_t>(id - 1));
+    return true;
+}
+
+void checkpoint(const TopoDS_Shape& shape) {
+    g_undo.push_back(shape);
+    if (g_undo.size() > 32) {
+        g_undo.erase(g_undo.begin());
+    }
+}
+
+void replace_held(int id, const TopoDS_Shape& shape) {
+    g_held.at(static_cast<size_t>(id - 1)) = hold_of(shape);
+}
+
+double volume_of(const TopoDS_Shape& shape) {
+    if (shape.IsNull()) {
+        return 0;
+    }
+    if (shape.ShapeType() == TopAbs_COMPOUND || shape.ShapeType() == TopAbs_COMPSOLID) {
+        double total = 0;
+        int count = 0;
+        for (TopExp_Explorer explorer(shape, TopAbs_SOLID); explorer.More(); explorer.Next()) {
+            GProp_GProps props;
+            BRepGProp::VolumeProperties(explorer.Current(), props);
+            total += props.Mass();
+            count += 1;
+        }
+        if (count > 0) {
+            return total;
+        }
+    }
+    GProp_GProps props;
+    BRepGProp::VolumeProperties(shape, props);
+    return props.Mass();
+}
+
+bool has_solid(const TopoDS_Shape& shape) {
+    TopExp_Explorer explorer(shape, TopAbs_SOLID);
+    return explorer.More();
 }
 
 void append_point(std::string& out, bool& first, const gp_Pnt& point) {
@@ -115,12 +200,11 @@ void append_point(std::string& out, bool& first, const gp_Pnt& point) {
     append_num(out, point.Z());
 }
 
-std::string tessellate(int id, const TopoDS_Shape& shape, double chord) {
+std::string tessellate(int id, const Held& held, double chord) {
     chord = chord_of(chord);
+    const TopoDS_Shape& shape = held.shape;
     BRepMesh_IncrementalMesh mesh(shape, chord, Standard_False, 0.5, Standard_False);
     mesh.Perform();
-
-    const Held& held = g_held.at(static_cast<size_t>(id - 1));
 
     GProp_GProps volume_props;
     BRepGProp::VolumeProperties(shape, volume_props);
@@ -235,8 +319,106 @@ bool pick(const Held& held, const char* kind, int index, TopoDS_Shape& out) {
     return false;
 }
 
-char* finish(int id, const TopoDS_Shape& shape, double chord) {
-    return alloc(tessellate(id, shape, chord));
+char* finish(int id, double chord) {
+    return alloc(tessellate(id, g_held.at(static_cast<size_t>(id - 1)), chord));
+}
+
+TopoDS_Shape make_primitive(
+    const char* kind,
+    double x,
+    double y,
+    double z,
+    double dx,
+    double dy,
+    double dz,
+    double radius,
+    double height,
+    std::string& error) {
+    const std::string which = kind == nullptr ? "" : kind;
+    if (which == "box") {
+        if (!(dx > 0.0) || !(dy > 0.0) || !(dz > 0.0)) {
+            error = "A box needs a positive length on each side";
+            return {};
+        }
+        BRepPrimAPI_MakeBox box(gp_Pnt(x, y, z), dx, dy, dz);
+        box.Build();
+        if (!box.IsDone()) {
+            error = "Open CASCADE did not build the box";
+            return {};
+        }
+        return box.Shape();
+    }
+    if (which == "cylinder") {
+        if (!(radius > 0.0) || !(height > 0.0)) {
+            error = "A cylinder needs a positive radius and height";
+            return {};
+        }
+        BRepPrimAPI_MakeCylinder cylinder(gp_Ax2(gp_Pnt(x, y, z), gp_Dir(0, 0, 1)), radius, height);
+        cylinder.Build();
+        if (!cylinder.IsDone()) {
+            error = "Open CASCADE did not build the cylinder";
+            return {};
+        }
+        return cylinder.Shape();
+    }
+    if (which == "sphere") {
+        if (!(radius > 0.0)) {
+            error = "A sphere needs a positive radius";
+            return {};
+        }
+        BRepPrimAPI_MakeSphere sphere(gp_Pnt(x, y, z), radius);
+        sphere.Build();
+        if (!sphere.IsDone()) {
+            error = "Open CASCADE did not build the sphere";
+            return {};
+        }
+        return sphere.Shape();
+    }
+    error = "The primitive is box, cylinder, or sphere";
+    return {};
+}
+
+TopoDS_Shape boolean_op(const std::string& op, const TopoDS_Shape& solid, const TopoDS_Shape& tool, std::string& error) {
+    if (op == "fuse") {
+        BRepAlgoAPI_Fuse algo(solid, tool);
+        algo.SetFuzzyValue(1.0e-7);
+        algo.Build();
+        if (!algo.IsDone() || algo.HasErrors() || algo.Shape().IsNull()) {
+            error = "Open CASCADE did not complete the boolean";
+            return {};
+        }
+        return algo.Shape();
+    }
+    if (op == "cut") {
+        BRepAlgoAPI_Cut algo(solid, tool);
+        algo.SetFuzzyValue(1.0e-7);
+        algo.Build();
+        if (!algo.IsDone() || algo.HasErrors() || algo.Shape().IsNull()) {
+            error = "Open CASCADE did not complete the boolean";
+            return {};
+        }
+        return algo.Shape();
+    }
+    if (op == "common") {
+        BRepAlgoAPI_Common algo(solid, tool);
+        algo.SetFuzzyValue(1.0e-7);
+        algo.Build();
+        if (!algo.IsDone() || algo.HasErrors() || algo.Shape().IsNull()) {
+            error = "Open CASCADE did not complete the boolean";
+            return {};
+        }
+        return algo.Shape();
+    }
+    error = "The boolean is fuse, cut, or common";
+    return {};
+}
+
+bool accepted_result(const TopoDS_Shape& shape, std::string& error) {
+    if (shape.IsNull() || !has_solid(shape) || !(volume_of(shape) > 1e-6)) {
+        error = "The boolean removed the solid";
+        return false;
+    }
+    return true;
 }
 
 }  // namespace
@@ -254,7 +436,7 @@ extern "C" char* lime_model_occt_open_box(double x_mm, double y_mm, double z_mm)
         const TopoDS_Shape shape = box.Shape();
         std::lock_guard<std::mutex> lock(g_mu);
         const int id = store(shape);
-        return finish(id, shape, 0.1);
+        return finish(id, 0.1);
     } catch (const Standard_Failure& failure) {
         const char* message = failure.GetMessageString();
         return error_json(message != nullptr ? message : "Open CASCADE failed");
@@ -280,13 +462,18 @@ extern "C" char* lime_model_occt_open_step(const char* path, double chord) {
         if (reader.TransferRoots() < 1) {
             return error_json("This STEP file has no solid to measure");
         }
-        const TopoDS_Shape shape = reader.OneShape();
+        TopoDS_Shape shape = reader.OneShape();
         if (shape.IsNull()) {
             return error_json("This STEP file has no solid to measure");
         }
+        Handle(ShapeFix_Shape) fixer = new ShapeFix_Shape(shape);
+        fixer->Perform();
+        if (!fixer->Shape().IsNull()) {
+            shape = fixer->Shape();
+        }
         std::lock_guard<std::mutex> lock(g_mu);
         const int id = store(shape);
-        return finish(id, shape, chord);
+        return finish(id, chord);
 #endif
     } catch (const Standard_Failure& failure) {
         const char* message = failure.GetMessageString();
@@ -328,6 +515,205 @@ extern "C" char* lime_model_occt_distance(
         append_num(out, dist.Value());
         out += '}';
         return alloc(out);
+    } catch (const Standard_Failure& failure) {
+        const char* message = failure.GetMessageString();
+        return error_json(message != nullptr ? message : "Open CASCADE failed");
+    } catch (...) {
+        return error_json("Open CASCADE failed");
+    }
+}
+
+extern "C" char* lime_model_occt_boolean(
+    int id,
+    const char* op,
+    const char* primitive,
+    double x,
+    double y,
+    double z,
+    double dx,
+    double dy,
+    double dz,
+    double radius,
+    double height,
+    double chord) {
+    try {
+        const std::string which = op == nullptr ? "" : op;
+        TopoDS_Shape current;
+        {
+            std::lock_guard<std::mutex> lock(g_mu);
+            Held held;
+            if (!held_at(id, held)) {
+                return error_json("That solid is no longer open");
+            }
+            current = held.shape;
+        }
+        std::string error;
+        const TopoDS_Shape tool = make_primitive(primitive, x, y, z, dx, dy, dz, radius, height, error);
+        if (tool.IsNull()) {
+            return error_json(error.empty() ? "Open CASCADE did not build the primitive" : error);
+        }
+        const TopoDS_Shape result = boolean_op(which, current, tool, error);
+        if (!error.empty()) {
+            return error_json(error);
+        }
+        if (!accepted_result(result, error)) {
+            if (which == "common") {
+                error = "The solids do not overlap";
+            }
+            return error_json(error);
+        }
+        std::lock_guard<std::mutex> lock(g_mu);
+        Held held;
+        if (!held_at(id, held) || !held.shape.IsSame(current)) {
+            return error_json("That solid is no longer open");
+        }
+        checkpoint(current);
+        replace_held(id, as_solid(result));
+        return finish(id, chord);
+    } catch (const Standard_Failure& failure) {
+        const char* message = failure.GetMessageString();
+        return error_json(message != nullptr ? message : "Open CASCADE failed");
+    } catch (...) {
+        return error_json("Open CASCADE failed");
+    }
+}
+
+extern "C" char* lime_model_occt_split(
+    int id,
+    double x,
+    double y,
+    double z,
+    double nx,
+    double ny,
+    double nz,
+    double chord) {
+    try {
+        const double length = std::sqrt(nx * nx + ny * ny + nz * nz);
+        if (!(length > 1e-12)) {
+            return error_json("The plane needs a direction");
+        }
+        const gp_Dir normal(nx / length, ny / length, nz / length);
+        TopoDS_Shape current;
+        {
+            std::lock_guard<std::mutex> lock(g_mu);
+            Held held;
+            if (!held_at(id, held)) {
+                return error_json("That solid is no longer open");
+            }
+            current = held.shape;
+        }
+        Bnd_Box bounds;
+        BRepBndLib::Add(current, bounds, Standard_False);
+        if (bounds.IsVoid()) {
+            return error_json("This solid has no extent");
+        }
+        double xmin = 0;
+        double ymin = 0;
+        double zmin = 0;
+        double xmax = 0;
+        double ymax = 0;
+        double zmax = 0;
+        bounds.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+        const gp_Pnt origin(x, y, z);
+        const gp_Pnt center((xmin + xmax) * 0.5, (ymin + ymax) * 0.5, (zmin + zmax) * 0.5);
+        const gp_Vec toward(origin, center);
+        const gp_Pnt face_center = center.Translated(gp_Vec(normal).Multiplied(-toward.Dot(gp_Vec(normal))));
+        const double span = std::sqrt(
+                                (xmax - xmin) * (xmax - xmin) + (ymax - ymin) * (ymax - ymin) + (zmax - zmin) * (zmax - zmin)) +
+                            1.0;
+        BRepBuilderAPI_MakeFace face(gp_Pln(face_center, normal), -span, span, -span, span);
+        face.Build();
+        if (!face.IsDone()) {
+            return error_json("Open CASCADE did not build the plane");
+        }
+        TopTools_ListOfShape arguments;
+        arguments.Append(current);
+        TopTools_ListOfShape tools;
+        tools.Append(face.Shape());
+        BRepAlgoAPI_Splitter splitter;
+        splitter.SetArguments(arguments);
+        splitter.SetTools(tools);
+        splitter.Build();
+        if (!splitter.IsDone() || splitter.HasErrors() || splitter.Shape().IsNull()) {
+            return error_json("Open CASCADE did not split this solid");
+        }
+        std::vector<TopoDS_Shape> negative;
+        std::vector<TopoDS_Shape> positive;
+        for (TopExp_Explorer explorer(splitter.Shape(), TopAbs_SOLID); explorer.More(); explorer.Next()) {
+            const TopoDS_Shape piece = explorer.Current();
+            GProp_GProps props;
+            BRepGProp::VolumeProperties(piece, props);
+            const double side = gp_Vec(origin, props.CentreOfMass()).Dot(gp_Vec(normal));
+            if (side < 0.0) {
+                negative.push_back(piece);
+            } else {
+                positive.push_back(piece);
+            }
+        }
+        std::string join_error;
+        auto unite = [&join_error](const std::vector<TopoDS_Shape>& pieces) -> TopoDS_Shape {
+            if (pieces.empty()) {
+                return {};
+            }
+            TopoDS_Shape acc = pieces.front();
+            for (size_t index = 1; index < pieces.size(); ++index) {
+                BRepAlgoAPI_Fuse fuse(acc, pieces[index]);
+                fuse.Build();
+                if (!fuse.IsDone() || fuse.HasErrors() || fuse.Shape().IsNull()) {
+                    join_error = "Open CASCADE did not join the split pieces";
+                    return {};
+                }
+                acc = fuse.Shape();
+            }
+            return acc;
+        };
+        const TopoDS_Shape kept = as_solid(unite(negative));
+        const TopoDS_Shape other = as_solid(unite(positive));
+        if (!join_error.empty()) {
+            return error_json(join_error);
+        }
+        if (kept.IsNull() || other.IsNull() || !(volume_of(kept) > 1e-6) || !(volume_of(other) > 1e-6)) {
+            return error_json("The plane did not split this solid");
+        }
+        const Held other_held = hold_of(other);
+        std::lock_guard<std::mutex> lock(g_mu);
+        Held held;
+        if (!held_at(id, held) || !held.shape.IsSame(current)) {
+            return error_json("That solid is no longer open");
+        }
+        checkpoint(current);
+        replace_held(id, kept);
+        std::string text = tessellate(id, g_held.at(static_cast<size_t>(id - 1)), chord);
+        const std::string other_json = tessellate(0, other_held, chord);
+        if (!text.empty() && text.back() == '}') {
+            text.pop_back();
+            text += ",\"other\":";
+            text += other_json;
+            text += '}';
+        }
+        return alloc(text);
+    } catch (const Standard_Failure& failure) {
+        const char* message = failure.GetMessageString();
+        return error_json(message != nullptr ? message : "Open CASCADE failed");
+    } catch (...) {
+        return error_json("Open CASCADE failed");
+    }
+}
+
+extern "C" char* lime_model_occt_undo(int id, double chord) {
+    try {
+        std::lock_guard<std::mutex> lock(g_mu);
+        Held held;
+        if (!held_at(id, held)) {
+            return error_json("That solid is no longer open");
+        }
+        if (g_undo.empty()) {
+            return error_json("There is no edit to undo");
+        }
+        const TopoDS_Shape previous = g_undo.back();
+        g_undo.pop_back();
+        replace_held(id, previous);
+        return finish(id, chord);
     } catch (const Standard_Failure& failure) {
         const char* message = failure.GetMessageString();
         return error_json(message != nullptr ? message : "Open CASCADE failed");

@@ -1290,6 +1290,12 @@ fn handle(mut request: tiny_http::Request, token: Option<&str>) {
             }
         } else if method == "POST" && path.starts_with("/api/model/distance") {
             model_reply(model_distance_request(&body))
+        } else if method == "POST" && path.starts_with("/api/model/boolean") {
+            model_reply(model_boolean_request(&body))
+        } else if method == "POST" && path.starts_with("/api/model/split") {
+            model_reply(model_split_request(&body))
+        } else if method == "POST" && path.starts_with("/api/model/undo") {
+            model_reply(model_undo_request(&body))
         } else if method == "POST" && path.starts_with("/api/model") {
             model_reply(model_open_request(&body))
         } else if method == "POST" && path.starts_with("/api/mesh") {
@@ -1396,7 +1402,11 @@ fn model_reply(result: Result<String, String>) -> (u16, String) {
                         .map(|text| !text.is_empty())
                 })
                 .unwrap_or(false);
-            if failed { (400, json) } else { (200, json) }
+            if failed {
+                (400, json)
+            } else {
+                (200, json)
+            }
         }
         Err(err) => (400, err_json(&err)),
     }
@@ -1426,6 +1436,63 @@ fn model_distance_request(body: &str) -> Result<String, String> {
     lime_model_load::distance(id, a_kind, a_index, b_kind, b_index)
 }
 
+fn model_boolean_request(body: &str) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|err| err.to_string())?;
+    lime_model_load::boolean(
+        json_i32(&value, "id")?,
+        json_str(&value, "op")?,
+        json_str(&value, "primitive")?,
+        lime_model_load::Tool {
+            origin: [
+                json_f64(&value, "x"),
+                json_f64(&value, "y"),
+                json_f64(&value, "z"),
+            ],
+            size: [
+                json_f64(&value, "dx"),
+                json_f64(&value, "dy"),
+                json_f64(&value, "dz"),
+            ],
+            radius: json_f64(&value, "radius"),
+            height: json_f64(&value, "height"),
+        },
+        model_chord(&value),
+    )
+}
+
+fn model_split_request(body: &str) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|err| err.to_string())?;
+    lime_model_load::split(
+        json_i32(&value, "id")?,
+        lime_model_load::Plane {
+            origin: [
+                json_f64(&value, "x"),
+                json_f64(&value, "y"),
+                json_f64(&value, "z"),
+            ],
+            normal: [
+                json_f64(&value, "nx"),
+                json_f64(&value, "ny"),
+                json_f64(&value, "nz"),
+            ],
+        },
+        model_chord(&value),
+    )
+}
+
+fn model_undo_request(body: &str) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|err| err.to_string())?;
+    lime_model_load::undo(json_i32(&value, "id")?, model_chord(&value))
+}
+
+fn model_chord(value: &serde_json::Value) -> f64 {
+    value
+        .get("chordMm")
+        .or_else(|| value.get("stepToleranceMm"))
+        .and_then(|item| item.as_f64())
+        .unwrap_or(0.1)
+}
+
 fn json_str<'a>(value: &'a serde_json::Value, key: &str) -> Result<&'a str, String> {
     value
         .get(key)
@@ -1439,6 +1506,10 @@ fn json_i32(value: &serde_json::Value, key: &str) -> Result<i32, String> {
         .and_then(|item| item.as_i64())
         .map(|number| number as i32)
         .ok_or_else(|| format!("missing {key}"))
+}
+
+fn json_f64(value: &serde_json::Value, key: &str) -> f64 {
+    value.get(key).and_then(|item| item.as_f64()).unwrap_or(0.0)
 }
 
 fn print_audit(a: &lime_slice_core::SliceAudit) {

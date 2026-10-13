@@ -511,7 +511,33 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   gap: 8px;
   pointer-events: none;
 }
-.model-bar .modes, .model-bar .btn { pointer-events: auto; }
+.model-bar .modes, .model-bar .btn, .model-bar select, .model-bar input, .model-bar label { pointer-events: auto; }
+.model-edit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+.model-edit[hidden] { display: none !important; }
+.model-edit select, .model-edit input {
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  font: 500 var(--fs-1) / 1 var(--font-mono);
+}
+.model-edit select { width: auto; padding: 0 4px; }
+.model-edit input { width: 3.6rem; padding: 0 4px; }
+.model-edit label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-dim);
+  font: 500 var(--fs-1) / 1 var(--font-mono);
+}
+.model-edit label[hidden] { display: none !important; }
 .model-readout {
   min-width: 0;
   padding: var(--space-1) var(--space-2);

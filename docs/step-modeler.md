@@ -38,9 +38,15 @@ Model mode sends the open STEP file to `POST /api/model` (or the `model_solid` c
 
 The release workflow builds the cdylib after staging the Open CASCADE libraries and copies it into `src-tauri/resources/occt/lib`, next to those libraries. The cdylib's rpath is `$ORIGIN` on Linux and `@loader_path` on macOS.
 
+## Booleans and a plane split
+
+Model mode can fuse, cut, or intersect the open solid with a box, cylinder, or sphere, and it can split the solid with a horizontal plane. The numbers are millimetres in the solid's own frame. A kernel failure is the readout, and the solid is left as it was. There is no mesh boolean behind it.
+
+A successful edit replaces `sourcePos` with the settled tessellation, writes that mesh with `encodeStl`, and renames the file to `.stl`, so truck is not asked to read the edited solid. The pose stays. Support paint, seam paint, and support edits on that object are cleared, because they named the old surface. Undo restores the solid, that mesh, and the paint. A split keeps the piece on the negative side of the plane and adds the other piece through the plate's add path. The second piece is a mesh until a later change can store its B-rep.
+
 ## What this change is not
 
-- No boolean, plane split, fillet, chamfer, hole, or scale.
+- No fillet, chamfer, hole, or scale.
 - No STEP writer, and no `.lime` brep field.
 - No change to `tools/golden_ab.sh` or to slicer output.
 - The slicer core does not link Open CASCADE. Truck still reads an unedited STEP file for slicing.
