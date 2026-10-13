@@ -1,5 +1,10 @@
 //! Find and call the Open CASCADE bridge. This crate does not link Open CASCADE,
 //! so the slicer and the desktop shell still start when the bridge is absent.
+//!
+//! On Windows the bridge is loaded with `LoadLibraryExW` and
+//! `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`. The default search does not look in the
+//! loaded DLL's own folder, so the Open CASCADE DLLs beside the bridge would
+//! otherwise be missed unless that folder is on `PATH`.
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -244,12 +249,7 @@ fn load() -> Result<Api, String> {
         .map_err(|_| "Open CASCADE bridge lock is poisoned".to_string())?;
     if slot.is_none() {
         let path = find_bridge()?;
-        let lib = unsafe { Library::new(&path) }.map_err(|err| {
-            format!(
-                "Could not load the Open CASCADE bridge at {}: {err}",
-                path.display()
-            )
-        })?;
+        let lib = open_library(&path)?;
         let bridge = unsafe {
             Bridge {
                 open_box: *lib
@@ -308,6 +308,77 @@ fn load() -> Result<Api, String> {
         undo: bridge.undo,
         free: bridge.free,
     })
+}
+
+fn open_library(path: &Path) -> Result<Library, String> {
+    #[cfg(windows)]
+    {
+        open_library_windows(path)
+    }
+    #[cfg(not(windows))]
+    {
+        unsafe { Library::new(path) }.map_err(|err| load_failure(path, err))
+    }
+}
+
+/// Windows does not search the loaded DLL's directory for its dependencies.
+/// `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR` adds that directory, and it requires an
+/// absolute path. `LOAD_LIBRARY_SEARCH_DEFAULT_DIRS` still finds System32.
+#[cfg(windows)]
+fn open_library_windows(path: &Path) -> Result<Library, String> {
+    use libloading::os::windows::{
+        LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+    };
+
+    let absolute = absolute_dll_path(path)?;
+    let flags = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
+    let lib = unsafe { libloading::os::windows::Library::load_with_flags(&absolute, flags) }
+        .map_err(|err| load_failure(&absolute, err))?;
+    Ok(Library::from(lib))
+}
+
+#[cfg(windows)]
+fn absolute_dll_path(path: &Path) -> Result<PathBuf, String> {
+    let absolute = std::path::absolute(path).map_err(|err| {
+        format!(
+            "Could not make the Open CASCADE bridge path absolute ({}): {err}",
+            path.display()
+        )
+    })?;
+    let plain = plain_windows_path(&absolute);
+    if !plain.is_absolute() {
+        return Err(format!(
+            "Open CASCADE bridge path is not absolute: {}",
+            plain.display()
+        ));
+    }
+    Ok(plain)
+}
+
+/// `LoadLibraryExW` rejects the `\\?\` prefix when the DLL-directory flag is set.
+#[cfg(windows)]
+fn plain_windows_path(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest.to_owned());
+    }
+    path.to_path_buf()
+}
+
+fn load_failure(path: &Path, err: libloading::Error) -> String {
+    match std::error::Error::source(&err) {
+        Some(source) => format!(
+            "Could not load the Open CASCADE bridge at {}: {err}: {source}",
+            path.display()
+        ),
+        None => format!(
+            "Could not load the Open CASCADE bridge at {}: {err}",
+            path.display()
+        ),
+    }
 }
 
 fn find_bridge() -> Result<PathBuf, String> {

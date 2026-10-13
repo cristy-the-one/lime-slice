@@ -7,6 +7,7 @@ import { base64ToBytes } from "../project";
 import { authHeaders } from "../ui/api-base";
 import { place } from "./files";
 import { fx } from "./fx";
+import { modelerFailure } from "./model-error";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { apiBase, apiToken, isStepName } from "./settings";
 import { state } from "./state";
@@ -635,10 +636,12 @@ async function post(path: string, payload: unknown): Promise<Record<string, unkn
       body: JSON.stringify(payload),
     });
     const body = await res.json() as Record<string, unknown>;
-    if (!res.ok && typeof body.error !== "string") return { error: "The modeler returned an error." };
+    if (!res.ok && typeof body.error !== "string") {
+      return { error: modelerFailure(body.error ?? body.message) };
+    }
     return body;
   } catch (err) {
-    const message = err instanceof Error ? err.message : "The modeler returned an error.";
+    const message = modelerFailure(err);
     if (message === "Failed to fetch") {
       return { error: `Model measure needs the slicer engine at ${apiBase()}. Start it with cargo run -p lime-slice --release -- serve.` };
     }
