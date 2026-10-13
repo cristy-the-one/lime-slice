@@ -16,6 +16,7 @@ mod meshes;
 mod modifiers;
 mod poly;
 mod progress;
+mod reinforcement;
 mod slice;
 mod slice_cache;
 mod step;
@@ -42,6 +43,7 @@ pub use load::{
 pub use mesh::Mesh;
 pub use meshes::{mesh_id, PayloadError, HELD_BYTES};
 pub use progress::{fraction, Progress, Stage, Status, Watch};
+pub use reinforcement::Region;
 pub use slice::{
     contour_times, keep_support_bases, outline_tolerance_mm, pareto_estimates, pareto_request,
     slice_configured,
