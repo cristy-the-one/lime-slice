@@ -855,8 +855,10 @@ pub struct SliceResponse {
 }
 
 /// A belt's copies are one planned part, printed again after a shift along the
-/// belt. Copy `c` is the first copy's preview geometry with `c * shift_mm` added
-/// to Y, and to every layer `z` and skeleton `ls`, which are belt positions.
+/// belt. Copy `c` is the first copy's preview geometry with `c * shift_mm`
+/// added to every layer `z` and skeleton `ls`, which are belt positions, and
+/// subtracted from Y: the belt carries the part toward +Y, so a copy that
+/// prints later stands upstream of the first.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BeltCopies {
@@ -1518,11 +1520,12 @@ fn prepare_belt(
     settings.skirt = false;
     let extra = f64::from(belt.copies - 1) * belt.stride(extent);
     if extra > 0.0 {
+        // Later copies print later, so they stand upstream of the first: toward -Y.
         for (min, max) in &mut lab_bounds {
             if belt.direction >= 0.0 {
-                max[1] += extra;
-            } else {
                 min[1] -= extra;
+            } else {
+                max[1] += extra;
             }
         }
     }
@@ -1720,7 +1723,7 @@ fn tilt_layer(view: &mut PreviewLayer, layer: &PlateLayer, tilt: &patch::BeltTil
             .copied()
             .flatten()
             .unwrap_or([0.0, 0.0]);
-        let shift = tilt.belt.direction * layer.belt_shift;
+        let shift = -tilt.belt.direction * layer.belt_shift;
         let mut pts = Vec::with_capacity(path.pts.len());
         let mut zs = Vec::with_capacity(path.pts.len());
         for (i, pt) in path.pts.iter().enumerate() {

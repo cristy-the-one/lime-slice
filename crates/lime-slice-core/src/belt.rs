@@ -8,6 +8,16 @@
 //!
 //! Belt advance per layer is `layer_height / sin(angle)`. `angle` is the
 //! angle between the belt and the nozzle plane, so 35° uses sine, not cosine.
+//!
+//! The belt carries the part toward the design's +Y, so its high-Y end prints
+//! first and leaves first, and the nozzle plane leans toward +Y over it. A
+//! file written the other way has the right shape and the wrong hand: the
+//! maker's own slicer, whose files print right on the IR3 V2, reads as the
+//! design's X across, `v = Z - Y cos(angle)` along the belt, and Y running
+//! against `v`. Every point is therefore laid flat after a mirror in Y. The
+//! mirror keeps the slice frame, and with it the floor, the belt edge and the
+//! gantry, as they were; `Frame::lab` and `Frame::pose` undo it, so the
+//! preview and the paint stay in the design's frame.
 
 use serde::{Deserialize, Serialize};
 
@@ -265,22 +275,24 @@ impl Belt {
 }
 
 impl Frame {
-    /// Lab point of a slice-frame point. X is across the belt and is unchanged.
+    /// Design point of a slice-frame point: the part's own X across the belt
+    /// and Y along it, and the height over the belt. The slice frame is the
+    /// mesh mirrored in Y, so Y is negated on the way back.
     pub(crate) fn lab(&self, x: f64, y: f64, z: f64) -> [f64; 3] {
         let y_rot = y + self.y_shift;
         let z_rot = z + self.z_drop;
-        let y_lab = y_rot * self.cos_a + z_rot * self.sin_a;
+        let y_lab = -(y_rot * self.cos_a + z_rot * self.sin_a);
         let z_lab = -y_rot * self.sin_a + z_rot * self.cos_a;
         [x, y_lab, z_lab]
     }
 
     /// The move a part at `to_bed`, lifted by `lift`, took to lie flat, as the
-    /// rotation (row-major), pivot and translation of a pose. A paint disk
-    /// posed with it lands where the mesh vertex under it did.
+    /// rotation (row-major, a reflection), pivot and translation of a pose. A
+    /// paint disk posed with it lands where the mesh vertex under it did.
     pub(crate) fn pose(&self, to_bed: [f64; 2], lift: f64) -> ([f64; 9], [f64; 3], [f64; 3]) {
         let (c, s) = (self.cos_a, self.sin_a);
         (
-            [1.0, 0.0, 0.0, 0.0, c, -s, 0.0, s, c],
+            [1.0, 0.0, 0.0, 0.0, -c, -s, 0.0, -s, c],
             [-to_bed[0], -to_bed[1], -lift],
             [0.0, -self.y_shift, -self.z_drop],
         )
@@ -308,11 +320,11 @@ pub(crate) fn translate_xy(mesh: &Mesh, offset: [f64; 2]) -> Mesh {
     Mesh { triangles }
 }
 
-/// Rotate each mesh about X by the belt angle, then drop the plate onto Z = 0
-/// and shift Y so the rail starts at 0. One frame for the whole plate and its
-/// raft, so the first layer is where the plane first meets either.
-/// Floor supports lower the plate by whole `layer_height` steps, so the part
-/// is cut on the same planes.
+/// Mirror each mesh in Y and rotate it about X by the belt angle, then drop
+/// the plate onto Z = 0 and shift Y so the rail starts at 0. One frame for the
+/// whole plate and its raft, so the first layer is where the plane first
+/// meets either. Floor supports lower the plate by whole `layer_height`
+/// steps, so the part is cut on the same planes.
 pub(crate) fn lay_flat(
     meshes: &[Mesh],
     belt: &Belt,
@@ -321,7 +333,7 @@ pub(crate) fn lay_flat(
 ) -> Result<(Vec<Mesh>, Frame), String> {
     let rotated: Vec<Mesh> = meshes
         .iter()
-        .map(|m| rotate_x(m, belt.cos_a, belt.sin_a))
+        .map(|m| mirror_rotate_x(m, belt.cos_a, belt.sin_a))
         .collect();
     let mut min_y = f64::INFINITY;
     let mut min_z = f64::INFINITY;
@@ -335,8 +347,8 @@ pub(crate) fn lay_flat(
         min_z = min_z.min(min[2]);
     }
     for [_, y, z] in raft.map(Raft::corners).into_iter().flatten() {
-        min_y = min_y.min(y * belt.cos_a - z * belt.sin_a);
-        min_z = min_z.min(y * belt.sin_a + z * belt.cos_a);
+        min_y = min_y.min(-y * belt.cos_a - z * belt.sin_a);
+        min_z = min_z.min(-y * belt.sin_a + z * belt.cos_a);
     }
     if !any || !min_z.is_finite() {
         return Err("empty mesh".into());
@@ -395,16 +407,20 @@ pub(crate) fn check_fit(belt: &Belt, span_x: f64, extent: f64) -> Result<(), Str
     Ok(())
 }
 
-/// Rotate about X so the nozzle plane, which climbed by `angle` from the belt, lies flat.
-fn rotate_x(mesh: &Mesh, cos_a: f64, sin_a: f64) -> Mesh {
+/// Mirror in Y, then rotate about X so the nozzle plane, which climbed by
+/// `angle` from the belt, lies flat. The plane leans toward the design's +Y,
+/// so the layers stack toward low Y and the high-Y end prints first. A mirror
+/// turns a triangle inside out, so two corners swap to keep it facing outward.
+fn mirror_rotate_x(mesh: &Mesh, cos_a: f64, sin_a: f64) -> Mesh {
     let mut triangles = Vec::with_capacity(mesh.triangles.len());
     for tri in &mesh.triangles {
         let mut out = [[0.0; 3]; 3];
         for (slot, v) in out.iter_mut().zip(tri.iter()) {
             slot[0] = v[0];
-            slot[1] = v[1] * cos_a - v[2] * sin_a;
-            slot[2] = v[1] * sin_a + v[2] * cos_a;
+            slot[1] = -v[1] * cos_a - v[2] * sin_a;
+            slot[2] = -v[1] * sin_a + v[2] * cos_a;
         }
+        out.swap(1, 2);
         triangles.push(out);
     }
     Mesh { triangles }
@@ -598,23 +614,60 @@ mod tests {
     #[test]
     fn rotation_keeps_nozzle_plane_lengths() {
         let belt = belt_at(45.0);
-        // A unit segment lying in the nozzle plane: direction (0, cos α, -sin α).
+        // A unit segment lying in the nozzle plane: direction (0, cos α, sin α),
+        // which climbs toward +Y.
         let (c, s) = (belt.cos_a, belt.sin_a);
         let mesh = Mesh {
-            triangles: vec![[[0.0, 0.0, 0.0], [0.0, c, -s], [1.0, 0.0, 0.0]]],
+            triangles: vec![[[0.0, 0.0, 0.0], [0.0, c, s], [1.0, 0.0, 0.0]]],
         };
         let (laid, frame) = lay_flat(&[mesh], &belt, None, 0.2).unwrap();
+        // The mirror swaps the second and third corners: the segment's end is [2].
         let tri = laid[0].triangles[0];
-        let dy = tri[1][1] - tri[0][1];
-        let dz = tri[1][2] - tri[0][2];
+        let dy = tri[2][1] - tri[0][1];
+        let dz = tri[2][2] - tri[0][2];
         assert!(
             dz.abs() < 1e-9,
             "nozzle-plane segment should be horizontal, dz={dz}"
         );
         assert!((dy.abs() - 1.0).abs() < 1e-9, "length {dy}");
-        let back = frame.lab(tri[1][0], tri[1][1], tri[1][2]);
+        let back = frame.lab(tri[2][0], tri[2][1], tri[2][2]);
         assert!((back[1] - c).abs() < 1e-9);
-        assert!((back[2] - (-s)).abs() < 1e-9);
+        assert!((back[2] - s).abs() < 1e-9);
+    }
+
+    #[test]
+    fn laying_flat_keeps_the_part_outward_and_puts_the_high_y_end_first() {
+        // A mirror turns a mesh inside out unless two corners swap: the signed
+        // volume keeps its sign.
+        fn volume(mesh: &Mesh) -> f64 {
+            mesh.triangles
+                .iter()
+                .map(|[a, b, c]| {
+                    a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                        + a[2] * (b[0] * c[1] - b[1] * c[0])
+                })
+                .sum::<f64>()
+                / 6.0
+        }
+        let belt = belt_at(45.0);
+        let part = box20();
+        let (laid, frame) = lay_flat(&[part.clone()], &belt, None, 0.2).unwrap();
+        let (before, after) = (volume(&part), volume(&laid[0]));
+        assert!(before.abs() > 1000.0, "{before}");
+        assert!(
+            (after - before).abs() < 1e-6 * before.abs(),
+            "volume {before} laid flat is {after}"
+        );
+        // The design's high-Y face, 20 mm out, is cut by the lowest plane.
+        let low_end = laid[0]
+            .triangles
+            .iter()
+            .flatten()
+            .min_by(|a, b| a[2].total_cmp(&b[2]))
+            .unwrap();
+        let lab = frame.lab(low_end[0], low_end[1], low_end[2]);
+        assert!((lab[1] - 20.0).abs() < 1e-9, "the first layer meets Y {}", lab[1]);
+        assert!(lab[2].abs() < 1e-9, "at the belt, not {} mm over it", lab[2]);
     }
 
     #[test]
@@ -648,6 +701,8 @@ mod tests {
         let (laid, frame) = lay_flat(&[placed], &belt, None, 0.2).unwrap();
         let (rotation, pivot, translation) = frame.pose(to_bed, lift);
         for (tri, flat) in box20().triangles.iter().zip(&laid[0].triangles) {
+            // The mirror swapped the second and third corners.
+            let flat = [flat[0], flat[2], flat[1]];
             for (v, want) in tri.iter().zip(flat) {
                 let disk = SeamDisk {
                     p: *v,
@@ -655,7 +710,7 @@ mod tests {
                     r: 1.5,
                 }
                 .posed(&rotation, pivot, translation);
-                assert_eq!(disk.p, *want);
+                assert_eq!(disk.p, want);
                 assert_eq!(disk.n, [0.0, belt.sin_a, -belt.cos_a]);
                 assert_eq!(disk.r, 1.5);
             }

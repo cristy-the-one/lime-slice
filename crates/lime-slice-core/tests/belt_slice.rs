@@ -410,7 +410,7 @@ fn tower_with_arm() -> String {
         [-15.0, 12.0],
         [0.0, 12.0],
     ];
-    let at = |x: f64, [y, z]: [f64; 2]| [x, y, z];
+    let at = |x: f64, [y, z]: [f64; 2]| [x, -y, z];
     let mut faces = Vec::new();
     for k in 0..outline.len() {
         let (p, q) = (outline[k], outline[(k + 1) % outline.len()]);
@@ -602,7 +602,7 @@ fn arm_with_wedge(width: f64) -> String {
         [6, 3, 4],
         [4, 5, 6],
     ];
-    let at = |x: f64, [y, z]: [f64; 2]| [x, y, z];
+    let at = |x: f64, [y, z]: [f64; 2]| [x, -y, z];
     let mut faces = Vec::new();
     for k in 0..outline.len() {
         let (p, q) = (outline[k], outline[(k + 1) % outline.len()]);
@@ -715,9 +715,23 @@ struct Bead {
     to: [f64; 3],
 }
 
-/// Every bead of a Z-axis, +1 belt file. Travels move the cursor, so the
-/// first bead after one starts where the nozzle landed.
+/// Every bead of a Z-axis, +1 belt file, on the part as designed: X across
+/// and Y as the mesh has it. The belt file runs along the belt against the
+/// design's Y (`machine_beads`), so Y is its negative, up to a shift.
 fn lab_beads(gcode: &str, angle: f64) -> Vec<Bead> {
+    let mut beads = machine_beads(gcode, angle);
+    for bead in &mut beads {
+        bead.from[1] = -bead.from[1];
+        bead.to[1] = -bead.to[1];
+    }
+    beads
+}
+
+/// Every bead of a Z-axis, +1 belt file read the way the maker's slicer
+/// writes one: X across, `v = Z - Y cos α` along the belt, `u = Y sin α` over
+/// it. Travels move the cursor, so the first bead after one starts where the
+/// nozzle landed.
+fn machine_beads(gcode: &str, angle: f64) -> Vec<Bead> {
     let (s, c) = (angle.to_radians().sin(), angle.to_radians().cos());
     let (mut b, mut u, mut x) = (0.0, 0.0, 0.0);
     let (mut layer, mut kind) = (0, String::new());
@@ -809,12 +823,12 @@ fn painted_wedge_with(width: f64, support_angle: f64, paint: Value, extra: Value
     let req = request(&arm_with_wedge(width), "wedge.stl", body);
     let sliced = slice_request(&req, Job::default()).unwrap();
     assert!(sliced.sanity.ok, "{:?}", sliced.sanity.notes);
-    on_mesh(lab_beads(&sliced.gcode, 45.0), [0.0, -12.0], [width, 4.0])
+    on_mesh(lab_beads(&sliced.gcode, 45.0), [0.0, -4.0], [width, 12.0])
 }
 
 #[test]
 fn a_block_disk_keeps_belt_supports_off_its_patch() {
-    // The wedge's ceiling runs from (y -12, z 17) down to (y -9, z 14), 30 mm
+    // The wedge's ceiling runs from (y 12, z 17) down to (y 9, z 14), 30 mm
     // across. At 40° it is the only surface that needs support. The disk
     // sits on its middle near one end and covers it from x 0 to 9.5.
     let s = std::f64::consts::FRAC_1_SQRT_2;
@@ -822,10 +836,10 @@ fn a_block_disk_keeps_belt_supports_off_its_patch() {
     let blocked = painted_wedge(
         30.0,
         40.0,
-        json!([{ "kind": "block", "p": [4.0, -10.5, 15.5], "n": [0.0, -s, -s], "r": 6.0 }]),
+        json!([{ "kind": "block", "p": [4.0, 10.5, 15.5], "n": [0.0, s, -s], "r": 6.0 }]),
     );
     // Under the ceiling, below its lowest edge.
-    let (patch, rest, under) = (-1.0..6.0, 15.0..31.0, -12.5..-8.5);
+    let (patch, rest, under) = (-1.0..6.0, 15.0..31.0, 8.5..12.5);
     let before = supports_in(&bare, patch.clone(), under.clone(), 13.5);
     assert!(before > 0, "nothing held the patch before it was painted");
     assert_eq!(supports_in(&blocked, patch, under.clone(), 13.5), 0);
@@ -835,15 +849,15 @@ fn a_block_disk_keeps_belt_supports_off_its_patch() {
 
 #[test]
 fn an_enforce_disk_adds_belt_supports_under_its_patch() {
-    // The arm's underside at z 17, from y -6 to the tower, is a 45° slope in
+    // The arm's underside at z 17, from y 6 to the tower, is a 45° slope in
     // the nozzle frame, which a 40° support angle prints unheld.
     let bare = painted_wedge(12.0, 40.0, json!([]));
     let enforced = painted_wedge(
         12.0,
         40.0,
-        json!([{ "kind": "enforce", "p": [6.0, -3.0, 17.0], "n": [0.0, 0.0, -1.0], "r": 2.5 }]),
+        json!([{ "kind": "enforce", "p": [6.0, 3.0, 17.0], "n": [0.0, 0.0, -1.0], "r": 2.5 }]),
     );
-    let (patch, under) = (3.5..8.5, -5.0..-1.0);
+    let (patch, under) = (3.5..8.5, 1.0..5.0);
     assert_eq!(supports_in(&bare, patch.clone(), under.clone(), 16.5), 0);
     let held = supports_in(&enforced, patch, under, 16.5);
     assert!(held > 0, "the enforce disk grew no supports");
@@ -851,9 +865,9 @@ fn an_enforce_disk_adds_belt_supports_under_its_patch() {
 
 #[test]
 fn painted_only_belt_supports_reach_the_belt_under_the_paint_alone() {
-    let enforce = json!([{ "kind": "enforce", "p": [6.0, -3.0, 17.0], "n": [0.0, 0.0, -1.0], "r": 2.5 }]);
+    let enforce = json!([{ "kind": "enforce", "p": [6.0, 3.0, 17.0], "n": [0.0, 0.0, -1.0], "r": 2.5 }]);
     let paint_only = json!({ "supportSource": "paint" });
-    let (patch, under) = (3.5..8.5, -5.0..-1.0);
+    let (patch, under) = (3.5..8.5, 1.0..5.0);
     let bare = painted_wedge_with(12.0, 40.0, json!([]), paint_only.clone());
     assert_eq!(
         bare.iter().filter(|b| b.kind.starts_with("SUPPORT")).count(),
@@ -1208,10 +1222,11 @@ fn a_belt_cube_prints_as_a_cube() {
     }
 }
 
-/// A cylinder whose axis is the nozzle-plane normal at 45°, so every layer is a circle.
+/// A cylinder whose axis is the nozzle-plane normal at 45°, so every layer is
+/// a circle. The plane climbs toward +Y, so its normal leans toward -Y.
 fn tilted_cylinder(r: f64, len: f64, n: usize) -> String {
     let (s, c) = (45f64.to_radians().sin(), 45f64.to_radians().cos());
-    let tilt = |p: [f64; 3]| [p[0], p[1] * c + p[2] * s, -p[1] * s + p[2] * c];
+    let tilt = |p: [f64; 3]| [p[0], p[1] * c - p[2] * s, p[1] * s + p[2] * c];
     let ring = |z: f64| -> Vec<[f64; 3]> {
         (0..n)
             .map(|i| {
@@ -1378,5 +1393,167 @@ fn blend_compare_on_a_belt_estimates_the_belt_print() {
         "a belt and a flat bed print the same box in {} s and {} s",
         points[0].seconds,
         flat[0].seconds
+    );
+}
+
+/// Axis-aligned boxes in one STL: `(x0, y0, x1, y1, height)`, each standing on Z = 0.
+fn posts_stl(posts: &[(f64, f64, f64, f64, f64)]) -> String {
+    let mut out = String::from("solid posts\n");
+    for &(x0, y0, x1, y1, h) in posts {
+        let (lo, hi) = ([x0, y0, 0.0], [x1, y1, h]);
+        let corner = |bits: [bool; 3]| -> [f64; 3] {
+            [0, 1, 2].map(|k| if bits[k] { hi[k] } else { lo[k] })
+        };
+        // The six quads of a box, wound outward.
+        let quads = [
+            [[false, false, false], [false, true, false], [true, true, false], [true, false, false]],
+            [[false, false, true], [true, false, true], [true, true, true], [false, true, true]],
+            [[false, false, false], [true, false, false], [true, false, true], [false, false, true]],
+            [[false, true, false], [false, true, true], [true, true, true], [true, true, false]],
+            [[false, false, false], [false, false, true], [false, true, true], [false, true, false]],
+            [[true, false, false], [true, true, false], [true, true, true], [true, false, true]],
+        ];
+        for q in quads {
+            for tri in [[q[0], q[1], q[2]], [q[0], q[2], q[3]]] {
+                out.push_str("facet normal 0 0 0\nouter loop\n");
+                for bits in tri {
+                    let v = corner(bits);
+                    out.push_str(&format!("vertex {} {} {}\n", v[0], v[1], v[2]));
+                }
+                out.push_str("endloop\nendfacet\n");
+            }
+        }
+    }
+    out.push_str("endsolid posts\n");
+    out
+}
+
+/// Three posts of different heights at spots no symmetry maps onto each other.
+/// Seen from above (X right, Y up) the posts A, B, C in order of height turn
+/// counter-clockwise; a mirror image of this part turns clockwise.
+const POSTS: [(f64, f64, f64, f64, f64); 3] = [
+    (10.0, 0.0, 15.0, 5.0, 4.0),
+    (40.0, 20.0, 45.0, 25.0, 8.0),
+    (25.0, 40.0, 30.0, 45.0, 12.0),
+];
+
+fn design_centres() -> [[f64; 2]; 3] {
+    POSTS.map(|p| [(p.0 + p.2) / 2.0, (p.1 + p.3) / 2.0])
+}
+
+/// Where one post's beads sit in a belt file, read as the maker's slicer
+/// writes one. Posts are told apart by their X span.
+struct Post {
+    across: f64,
+    along: f64,
+    top: f64,
+    first_layer: usize,
+}
+
+fn read_posts(gcode: &str) -> Vec<Post> {
+    let beads = machine_beads(gcode, 45.0);
+    POSTS
+        .iter()
+        .map(|&(x0, _, x1, _, _)| {
+            let own: Vec<&Bead> = beads
+                .iter()
+                .filter(|bead| (x0 - 0.5..=x1 + 0.5).contains(&bead.to[0]))
+                .collect();
+            assert!(!own.is_empty(), "no beads over X {x0}..{x1}");
+            let n = own.len() as f64;
+            Post {
+                across: own.iter().map(|b| b.to[0]).sum::<f64>() / n,
+                along: own.iter().map(|b| b.to[1]).sum::<f64>() / n,
+                top: own.iter().map(|b| b.to[2]).fold(f64::NEG_INFINITY, f64::max),
+                first_layer: own.iter().map(|b| b.layer).min().unwrap(),
+            }
+        })
+        .collect()
+}
+
+/// Twice the signed area of A, B, C seen from above: positive is counter-clockwise.
+fn turn(p: [[f64; 2]; 3]) -> f64 {
+    (p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[1][1] - p[0][1]) * (p[2][0] - p[0][0])
+}
+
+fn ir3_slice(stl: &str) -> lime_slice_core::SliceResponse {
+    // The IR3 V2: a 45° belt on Z, 250 mm across.
+    let spec = json!({ "angleDeg": 45.0, "axis": "z", "direction": 1, "widthMm": 250.0, "copies": 1, "gapMm": 5.0 });
+    let req = request(stl, "posts.stl", json!({ "belt": spec, "includePreview": true }));
+    let response = slice_request(&req, Job::default()).unwrap();
+    assert!(response.sanity.ok, "{:?}", response.sanity.notes);
+    response
+}
+
+/// IdeaFormer's file for a long cover, which prints right on the IR3 V2, is
+/// the part's X as designed and its Y running against `v`, so the high-Y end
+/// of the part prints first. Slicing the same cover in Lime Slice put every
+/// feature the other way along the belt: a mirror image on the belt.
+#[test]
+fn a_belt_file_has_the_handedness_of_the_part() {
+    let response = ir3_slice(&posts_stl(&POSTS));
+    let posts = read_posts(&response.gcode);
+    for (post, spec) in posts.iter().zip(POSTS) {
+        assert!(
+            (post.top - spec.4).abs() < 0.5,
+            "the post {} mm tall prints {:.2} mm tall",
+            spec.4,
+            post.top
+        );
+    }
+    let want = turn(design_centres());
+    let got = turn([0, 1, 2].map(|k| [posts[k].across, -posts[k].along]));
+    assert!(want > 0.0);
+    assert!(
+        got * want > 0.0,
+        "the part turns {want:+.0} seen from above, its belt file {got:+.0}: a mirror image"
+    );
+    assert!(
+        posts[2].first_layer < posts[1].first_layer && posts[1].first_layer < posts[0].first_layer,
+        "the high-Y post prints first: first layers {:?}",
+        posts.iter().map(|p| p.first_layer).collect::<Vec<_>>()
+    );
+    // Nothing else moved: X is as designed and the posts are spaced as designed.
+    for (post, spec) in posts.iter().zip(POSTS) {
+        assert!((post.across - (spec.0 + spec.2) / 2.0).abs() < 0.6, "X {}", post.across);
+    }
+    let gap = |a: usize, b: usize| posts[a].along - posts[b].along;
+    assert!((gap(1, 0) + 20.0).abs() < 0.8, "A to B along the belt: {}", gap(1, 0));
+    assert!((gap(2, 1) + 20.0).abs() < 0.8, "B to C along the belt: {}", gap(2, 1));
+}
+
+#[test]
+fn the_preview_shows_the_part_the_way_the_belt_file_prints_it() {
+    let response = ir3_slice(&posts_stl(&POSTS));
+    // Preview points are the part in the lab: X across, Y along, and the
+    // tilted layer's own height. Each post's top skin is where it stands.
+    let mut tops = Vec::new();
+    for spec in POSTS {
+        let mut ys = Vec::new();
+        for layer in &response.layers {
+            for path in &layer.paths {
+                for (pt, z) in path.pts.iter().zip(&path.zs) {
+                    if (spec.0 - 0.5..=spec.2 + 0.5).contains(&pt[0]) && *z > spec.4 - 0.5 {
+                        ys.push(pt[1]);
+                    }
+                }
+            }
+        }
+        assert!(!ys.is_empty(), "the preview has no top of the post at X {}", spec.0);
+        let top_y = ys.iter().sum::<f64>() / ys.len() as f64;
+        let design_y = (spec.1 + spec.3) / 2.0;
+        assert!(
+            (top_y - design_y).abs() < 1.5,
+            "preview shows the post at Y {top_y:.1}, designed at {design_y}"
+        );
+        tops.push([(spec.0 + spec.2) / 2.0, top_y]);
+    }
+    // The belt file, read the same way, turns the same way as the preview.
+    let posts = read_posts(&response.gcode);
+    let in_file = turn([0, 1, 2].map(|k| [posts[k].across, -posts[k].along]));
+    let in_preview = turn([tops[0], tops[1], tops[2]]);
+    assert!(
+        in_file * in_preview > 0.0,
+        "the preview turns {in_preview:+.0} and the belt file {in_file:+.0}"
     );
 }
