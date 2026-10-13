@@ -15,6 +15,7 @@ import { fnv1aHex } from "./slice-action.ts";
 import { bytesToBase64 } from "./base64.ts";
 import { parseOverrides, type OverrideDocument } from "./overrides.ts";
 import { plateFileIsVersion2, readPlateSettings, settingsEmpty, type PlateFileObject } from "./plate.ts";
+import { dropEmptyReinforce, readReinforcement } from "./reinforcement.ts";
 import type { EditEntry } from "./support-edit-list.ts";
 import { readSeamPaint } from "./seam-paint.ts";
 import { readPaint } from "./support-paint.ts";
@@ -158,11 +159,13 @@ function migrateVersion1(doc: Record<string, unknown>): Record<string, unknown> 
 }
 
 function stripEmptySettings(object: PlateFileObject): PlateFileObject {
-  if (settingsEmpty(object.settings)) {
-    const { settings: _settings, ...rest } = object;
-    return rest;
-  }
-  return object;
+  const nonEmptyReinforce = dropEmptyReinforce(object.reinforcement ?? []);
+  const { settings, reinforcement: _reinforce, ...rest } = object;
+  return {
+    ...rest,
+    ...(settingsEmpty(settings) ? {} : { settings }),
+    ...(nonEmptyReinforce.length > 0 ? { reinforcement: nonEmptyReinforce } : {}),
+  };
 }
 
 /**
@@ -323,10 +326,13 @@ function readPlateObject(value: unknown): PlateFileObject | string {
   if (typeof paint === "string") return paint;
   const seam = readSeamPaint(row.seamPaint);
   if (typeof seam === "string") return seam;
+  const reinforcement = readReinforcement(row.reinforcement);
+  if (typeof reinforcement === "string") return reinforcement;
   const object: PlateFileObject = { id: row.id, name: row.name, mesh, placement, supportEdits: edits };
   if (settings) object.settings = settings;
   if (paint.length > 0) object.supportPaint = paint;
   if (seam.length > 0) object.seamPaint = seam;
+  if (reinforcement.length > 0) object.reinforcement = reinforcement;
   if (row.brep !== undefined && row.brep !== null) {
     const brep = readMesh(row.brep);
     if (typeof brep === "string") {

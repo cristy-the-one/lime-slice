@@ -9,6 +9,7 @@ import { clampSplit, roundSplit, type SplitAxis } from "./split-at";
 import { createModifierScene } from "./modifier-scene";
 import type { OverrideDocument } from "./overrides";
 import type { PlateBound } from "./plate";
+import type { ReinforceDisk } from "./reinforcement";
 import type { SeamDisk } from "./seam-paint";
 import type { PaintDisk, PaintKind, Vec3 } from "./support-paint";
 import { beltArrowRun, beltStripLength, tiltPose, type BeltSettings } from "./belt";
@@ -66,11 +67,13 @@ export interface PrepareView {
   setPaint(disks: readonly PaintDisk[]): void;
   /** Seam paint drawn on the part, in the same frame as support paint. */
   setSeamPaint(disks: readonly SeamDisk[]): void;
+  /** Reinforce paint drawn on the part, in the same frame as support paint. */
+  setReinforcePaint(disks: readonly ReinforceDisk[]): void;
   /**
-   * The support or seam brush, or null for none. While it is on, a press on the part paints: the left
+   * The support, seam, or reinforce brush, or null for none. While it is on, a press on the part paints: the left
    * button or one finger. Off the part the left button orbits, and two fingers always orbit.
    */
-  setBrush(brush: { kind: PaintKind | "seam"; radius: number } | null): void;
+  setBrush(brush: { kind: PaintKind | "seam" | "reinforce"; radius: number } | null): void;
   onBrush(hooks: BrushHooks | null): void;
   resize(): void;
 }
@@ -285,7 +288,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let editModEndCb: (() => void) | null = null;
   let modDrag: { id: string; kind: "move" | "scale"; axis: Axis; last: number } | null = null;
 
-  let brush: { kind: PaintKind | "seam"; radius: number } | null = null;
+  let brush: { kind: PaintKind | "seam" | "reinforce"; radius: number } | null = null;
   let brushHooks: BrushHooks | null = null;
   let stroke: number | null = null;
   // Each dab draws as the ball it reaches: the engine applies paint to every surface inside it.
@@ -303,6 +306,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   scene.add(paintSpots);
   let paintDisks: readonly PaintDisk[] = [];
   let seamDisks: readonly SeamDisk[] = [];
+  let reinforceDisks: readonly ReinforceDisk[] = [];
   const cursorMat = new THREE.MeshBasicMaterial({ depthTest: false, transparent: true, opacity: 0.9, side: THREE.DoubleSide, toneMapped: false });
   const cursor = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 48), cursorMat);
   cursor.renderOrder = 8;
@@ -664,8 +668,9 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     return { point: frame.fromScene(hit.point) as Vec3, normal: [nx, ny, nz], scene: hit.point.clone() };
   }
 
-  function paintColor(kind: PaintKind | "seam") {
+  function paintColor(kind: PaintKind | "seam" | "reinforce") {
     if (kind === "seam") return hexToThree(colors.paintSeam);
+    if (kind === "reinforce") return hexToThree(colors.paintReinforce);
     return hexToThree(kind === "enforce" ? colors.paintEnforce : colors.paintBlock);
   }
 
@@ -688,7 +693,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   const tint = new THREE.Color();
 
   function drawPaint() {
-    const drawn = paintDisks.length + seamDisks.length;
+    const drawn = paintDisks.length + seamDisks.length + reinforceDisks.length;
     if (paintSpots.instanceMatrix.count < drawn) {
       scene.remove(paintSpots);
       paintSpots.dispose();
@@ -700,8 +705,9 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     if (mesh) paintSpots.matrix.copy(mesh.matrix);
     paintSpots.count = drawn;
     const spots = [
-      ...paintDisks.map((d) => ({ p: d.p, r: d.r, kind: d.kind as PaintKind | "seam" })),
+      ...paintDisks.map((d) => ({ p: d.p, r: d.r, kind: d.kind as PaintKind | "seam" | "reinforce" })),
       ...seamDisks.map((d) => ({ p: d.p, r: d.r, kind: "seam" as const })),
+      ...reinforceDisks.map((d) => ({ p: d.p, r: d.r, kind: "reinforce" as const })),
     ];
     spots.forEach((d, k) => {
       spot.makeScale(d.r, d.r, d.r).setPosition(d.p[0], d.p[1], d.p[2]);
@@ -713,6 +719,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     paintSpots.visible = !!mesh && drawn > 0;
     canvas.dataset.paintDisks = String(paintDisks.length);
     canvas.dataset.seamDisks = String(seamDisks.length);
+    canvas.dataset.reinforceDisks = String(reinforceDisks.length);
     requestRender();
   }
 
@@ -1188,6 +1195,10 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     },
     setSeamPaint(disks) {
       seamDisks = disks;
+      drawPaint();
+    },
+    setReinforcePaint(disks) {
+      reinforceDisks = disks;
       drawPaint();
     },
     setBrush(next) {

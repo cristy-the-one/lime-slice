@@ -422,6 +422,7 @@ export function setStage(stage: "prepare" | "preview" | "gcode" | "model") {
   if (stage !== "prepare") {
     session.paintUi?.stop();
     session.seamUi?.stop();
+    session.reinforceUi?.stop();
   }
   if (stage === "preview" && session.previewViewChosen == null) {
     const mode = freshPreviewMode(session.previewViewChosen);

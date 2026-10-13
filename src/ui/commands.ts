@@ -94,6 +94,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "edit-supports", label: "Edit supports", group: "Tools", keys: ["E"], target: '#toolRail [data-tool="supports"]', keywords: "tree branch delete prune regrow" },
   { id: "paint-supports", label: "Paint supports", group: "Tools", keys: ["B"], target: '#toolRail [data-tool="paint"]', keywords: "brush enforce block" },
   { id: "paint-seam", label: "Paint seam", group: "Tools", keys: ["K"], target: '#toolRail [data-tool="seam"]', keywords: "brush" },
+  { id: "paint-reinforce", label: "Reinforce", group: "Tools", keys: ["N"], target: '#toolRail [data-tool="reinforce"]', keywords: "brush infill solid density depth" },
   { id: "brush-smaller", label: "Smaller brush", group: "Tools", keys: ["["], when: "brush", repeat: true, show: "help" },
   { id: "brush-larger", label: "Larger brush", group: "Tools", keys: ["]"], when: "brush", repeat: true, show: "help" },
   { id: "undo", label: "Undo", group: "Edit", keys: ["Ctrl+Z"], typing: true, keywords: "placement settings revert" },

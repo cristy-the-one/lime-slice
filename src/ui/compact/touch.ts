@@ -17,9 +17,10 @@ function compact() {
   return document.documentElement.classList.contains("layout-compact");
 }
 
-/** The support brush is on: a tap paints, so it neither hides the chrome nor opens the menu. */
+/** A brush is on: a tap paints, so it neither hides the chrome nor opens the menu. */
 function painting() {
-  return document.documentElement.dataset.supportPaint === "1";
+  const d = document.documentElement.dataset;
+  return d.supportPaint === "1" || d.seamPaint === "1" || d.reinforcePaint === "1";
 }
 
 function wire(

@@ -1,0 +1,344 @@
+/**
+ * The Reinforce tool in Prepare: a rail tool and a bar with brush radius, depth,
+ * fill-through, `New region`, and the per-region density list (`docs/reinforcement.md`).
+ */
+import { createElement, Shield } from "lucide";
+import type { BrushHooks, PrepareView } from "../prepare-view";
+import {
+  BRUSH_R_DEFAULT_MM,
+  BRUSH_R_MAX_MM,
+  BRUSH_R_MIN_MM,
+  REINFORCE_DENSITY_STEP,
+  REINFORCE_DEPTH_DEFAULT_MM,
+  REINFORCE_DEPTH_MAX_MM,
+  totalReinforceDisks,
+  type ReinforceRegion,
+} from "../reinforcement";
+import { haptic } from "./haptics";
+import "./support-paint.css";
+
+export interface ReinforcePaintHooks {
+  view(): {
+    regions: readonly ReinforceRegion[];
+    activeIndex: number;
+    normalDensity: number;
+    hasMesh: boolean;
+  };
+  stroke(radius: number, defaults: { depthMm: number; fillThrough: boolean }): BrushHooks;
+  selectRegion(index: number): void;
+  newRegion(): void;
+  setDepth(depthMm: number, commit: boolean): void;
+  setFillThrough(fillThrough: boolean): void;
+  setDensity(index: number, density: number, commit: boolean): void;
+  deleteRegion(index: number): void;
+  clear(): void;
+  onDone(): void;
+  reveal(): void;
+  yieldBrush?(): void;
+  restoreBrush?(): void;
+}
+
+export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintHooks) {
+  const rail = document.querySelector<HTMLElement>("#toolRail");
+  const tool = document.createElement("button");
+  tool.type = "button";
+  tool.className = "tool";
+  tool.dataset.tool = "reinforce";
+  tool.dataset.tip = "Paint or adjust regions that print denser infill up to 100% solid.";
+  tool.setAttribute("aria-label", "Reinforce");
+  tool.setAttribute("aria-pressed", "false");
+  tool.append(createElement(Shield, { width: 16, height: 16, "aria-hidden": "true", class: "ico" }));
+  rail?.querySelector('[data-tool="paint"]')?.before(tool);
+
+  const bar = document.createElement("div");
+  bar.className = "paint-bar reinforce-bar";
+  bar.id = "reinforceBar";
+  bar.setAttribute("role", "toolbar");
+  bar.setAttribute("aria-label", "Reinforce");
+  bar.hidden = true;
+  bar.innerHTML = `
+    <label class="pb-radius">Radius
+      <input id="reinforceRadius" type="range" min="${BRUSH_R_MIN_MM}" max="${BRUSH_R_MAX_MM}" step="0.5" value="${BRUSH_R_DEFAULT_MM}" aria-label="Reinforce brush radius" />
+      <output id="reinforceRadiusOut" for="reinforceRadius"></output>
+    </label>
+    <label class="pb-radius" id="reinforceDepthField">Depth
+      <input id="reinforceDepth" type="range" min="0.5" max="${REINFORCE_DEPTH_MAX_MM}" step="0.5" value="${REINFORCE_DEPTH_DEFAULT_MM}" aria-label="Reinforce depth" />
+      <output id="reinforceDepthOut" for="reinforceDepth"></output>
+    </label>
+    <label class="pb-check" id="reinforceFillThroughField">
+      <input id="reinforceFillThrough" type="checkbox" aria-label="Fill through" />
+      Fill through
+    </label>
+    <button type="button" class="btn" id="reinforceNewRegion">New region</button>
+    <button type="button" class="btn" id="reinforceClear">Clear</button>
+    <button type="button" class="btn" id="reinforceDone">Done</button>
+    <div class="pb-regions" id="reinforceRegions" role="list" aria-label="Reinforcement regions"></div>
+    <span class="pb-status" id="reinforceStatus" role="status"></span>`;
+  document.querySelector("#prepareBody")?.append(bar);
+
+  const radiusInput = bar.querySelector<HTMLInputElement>("#reinforceRadius")!;
+  const radiusOut = bar.querySelector<HTMLOutputElement>("#reinforceRadiusOut")!;
+  const depthField = bar.querySelector<HTMLElement>("#reinforceDepthField")!;
+  const depthInput = bar.querySelector<HTMLInputElement>("#reinforceDepth")!;
+  const depthOut = bar.querySelector<HTMLOutputElement>("#reinforceDepthOut")!;
+  const fillThroughInput = bar.querySelector<HTMLInputElement>("#reinforceFillThrough")!;
+  const newRegionBtn = bar.querySelector<HTMLButtonElement>("#reinforceNewRegion")!;
+  const clearBtn = bar.querySelector<HTMLButtonElement>("#reinforceClear")!;
+  const regionsList = bar.querySelector<HTMLElement>("#reinforceRegions")!;
+  const status = bar.querySelector<HTMLElement>("#reinforceStatus")!;
+
+  let on = false;
+  let pendingDepthMm = REINFORCE_DEPTH_DEFAULT_MM;
+  let pendingFillThrough = false;
+
+  const radius = () => Number(radiusInput.value);
+
+  function activePaintRegion(regions: readonly ReinforceRegion[], activeIndex: number) {
+    const r = regions[activeIndex];
+    return r && r.kind === "paint" ? r : null;
+  }
+
+  function regionLabel(reg: ReinforceRegion, index: number): string {
+    if (reg.kind === "paint") {
+      const detail = reg.fillThrough ? "through" : `${Number(reg.depthMm.toFixed(1))} mm`;
+      return `Paint ${index + 1} (${detail})`;
+    }
+    const kind = reg.kind === "box" ? "Box" : "Cylinder";
+    return `${kind} ${index + 1}`;
+  }
+
+  function densityReadout(density: number, normalDensity: number): string {
+    if (density <= normalDensity + 1e-6) return "Normal";
+    return `${Math.round(density * 100)}%`;
+  }
+
+  function syncRegionsList(
+    regions: readonly ReinforceRegion[],
+    activeIndex: number,
+    normalDensity: number,
+  ) {
+    regionsList.hidden = regions.length === 0;
+    const minDensity = Math.min(
+      1,
+      Math.max(0, Math.round(Math.floor((normalDensity + 1e-9) / REINFORCE_DENSITY_STEP) * REINFORCE_DENSITY_STEP * 100) / 100),
+    );
+
+    while (regionsList.children.length > regions.length) {
+      regionsList.lastElementChild?.remove();
+    }
+    while (regionsList.children.length < regions.length) {
+      const row = document.createElement("div");
+      row.className = "pb-region-row";
+      row.setAttribute("role", "listitem");
+      row.innerHTML = `
+        <button type="button" class="pb-region-select"></button>
+        <span class="pb-region-end">Normal</span>
+        <input type="range" class="pb-region-density" max="1" step="${REINFORCE_DENSITY_STEP}" aria-label="Region density" />
+        <output class="pb-region-out"></output>
+        <button type="button" class="btn pb-region-del" aria-label="Delete region">Delete</button>`;
+      regionsList.append(row);
+    }
+
+    regions.forEach((reg, idx) => {
+      const row = regionsList.children[idx] as HTMLElement;
+      const isSelected = idx === activeIndex;
+      row.dataset.regionIndex = String(idx);
+      row.dataset.active = isSelected ? "1" : "0";
+      const selectBtn = row.querySelector<HTMLButtonElement>(".pb-region-select")!;
+      selectBtn.textContent = regionLabel(reg, idx);
+      selectBtn.setAttribute("aria-pressed", isSelected ? "true" : "false");
+
+      const slider = row.querySelector<HTMLInputElement>(".pb-region-density")!;
+      slider.min = String(minDensity);
+      const effectiveVal = Math.max(minDensity, reg.density);
+      if (document.activeElement !== slider) {
+        slider.value = String(effectiveVal);
+      }
+
+      const out = row.querySelector<HTMLOutputElement>(".pb-region-out")!;
+      out.textContent = densityReadout(reg.density, normalDensity);
+    });
+  }
+
+  function sync() {
+    const view = hooks.view();
+    tool.setAttribute("aria-pressed", on ? "true" : "false");
+    tool.classList.toggle("is-disabled", !view.hasMesh);
+    bar.hidden = !on;
+    document.documentElement.dataset.reinforcePaint = on ? "1" : "";
+    radiusOut.textContent = `${radius().toFixed(1)} mm`;
+
+    const paintReg = activePaintRegion(view.regions, view.activeIndex);
+    const depthMm = paintReg ? paintReg.depthMm : pendingDepthMm;
+    const fillThrough = paintReg ? Boolean(paintReg.fillThrough) : pendingFillThrough;
+
+    if (document.activeElement !== depthInput) {
+      depthInput.value = String(depthMm);
+    }
+    depthOut.textContent = `${Number(depthInput.value).toFixed(1)} mm`;
+    fillThroughInput.checked = fillThrough;
+    depthField.hidden = fillThrough;
+
+    const diskCount = totalReinforceDisks(view.regions);
+    clearBtn.disabled = view.regions.length === 0;
+    syncRegionsList(view.regions, view.activeIndex, view.normalDensity);
+
+    if (view.regions.length === 0) {
+      status.textContent = "";
+    } else {
+      status.textContent = `${view.regions.length} region${view.regions.length === 1 ? "" : "s"}, ${diskCount} disk${diskCount === 1 ? "" : "s"}.`;
+    }
+
+    if (on) {
+      prepare.setBrush({ kind: "reinforce", radius: radius() });
+    }
+  }
+
+  function bind() {
+    prepare.onBrush({
+      start: () => {
+        current = hooks.stroke(radius(), { depthMm: pendingDepthMm, fillThrough: pendingFillThrough });
+        current.start();
+        haptic("tap");
+      },
+      hit: (point, normal) => current?.hit(point, normal),
+      end: () => {
+        current?.end();
+        current = null;
+        sync();
+      },
+      cancel: () => {
+        current?.cancel();
+        current = null;
+        sync();
+      },
+    });
+  }
+
+  function setOn(next: boolean) {
+    if (next && !hooks.view().hasMesh) return;
+    if (next) hooks.yieldBrush?.();
+    on = next;
+    if (on) {
+      hooks.reveal();
+      bind();
+    } else {
+      prepare.setBrush(null);
+      hooks.onDone();
+      hooks.restoreBrush?.();
+    }
+    sync();
+  }
+
+  let current: BrushHooks | null = null;
+
+  tool.addEventListener("click", () => setOn(!on));
+  radiusInput.addEventListener("input", sync);
+
+  depthInput.addEventListener("input", () => {
+    const val = Number(depthInput.value);
+    pendingDepthMm = val;
+    const view = hooks.view();
+    if (activePaintRegion(view.regions, view.activeIndex)) {
+      hooks.setDepth(val, false);
+    } else {
+      sync();
+    }
+  });
+  depthInput.addEventListener("change", () => {
+    const val = Number(depthInput.value);
+    pendingDepthMm = val;
+    const view = hooks.view();
+    if (activePaintRegion(view.regions, view.activeIndex)) {
+      hooks.setDepth(val, true);
+    } else {
+      sync();
+    }
+  });
+
+  fillThroughInput.addEventListener("change", () => {
+    const checked = fillThroughInput.checked;
+    pendingFillThrough = checked;
+    const view = hooks.view();
+    if (activePaintRegion(view.regions, view.activeIndex)) {
+      hooks.setFillThrough(checked);
+    } else {
+      sync();
+    }
+  });
+
+  newRegionBtn.addEventListener("click", () => {
+    pendingDepthMm = REINFORCE_DEPTH_DEFAULT_MM;
+    pendingFillThrough = false;
+    hooks.newRegion();
+    sync();
+  });
+
+  clearBtn.addEventListener("click", () => {
+    hooks.clear();
+    sync();
+  });
+
+  bar.querySelector("#reinforceDone")?.addEventListener("click", () => setOn(false));
+
+  regionsList.addEventListener("click", (ev) => {
+    const target = ev.target as Element;
+    const row = target.closest<HTMLElement>(".pb-region-row");
+    if (!row) return;
+    const idx = Number(row.dataset.regionIndex);
+    if (!Number.isInteger(idx)) return;
+    if (target.closest(".pb-region-del")) {
+      hooks.deleteRegion(idx);
+      sync();
+      return;
+    }
+    if (target.closest(".pb-region-select")) {
+      hooks.selectRegion(idx);
+      sync();
+    }
+  });
+
+  regionsList.addEventListener("input", (ev) => {
+    const target = ev.target as HTMLElement;
+    if (!target.classList.contains("pb-region-density")) return;
+    const row = target.closest<HTMLElement>(".pb-region-row");
+    if (!row) return;
+    const idx = Number(row.dataset.regionIndex);
+    if (!Number.isInteger(idx)) return;
+    hooks.selectRegion(idx);
+    hooks.setDensity(idx, Number((target as HTMLInputElement).value), false);
+    sync();
+  });
+
+  regionsList.addEventListener("change", (ev) => {
+    const target = ev.target as HTMLElement;
+    if (!target.classList.contains("pb-region-density")) return;
+    const row = target.closest<HTMLElement>(".pb-region-row");
+    if (!row) return;
+    const idx = Number(row.dataset.regionIndex);
+    if (!Number.isInteger(idx)) return;
+    hooks.setDensity(idx, Number((target as HTMLInputElement).value), true);
+    sync();
+  });
+
+  window.addEventListener("keydown", (ev) => {
+    if (document.documentElement.dataset.overlay) return;
+    if (ev.metaKey || ev.ctrlKey || ev.altKey || ev.repeat) return;
+    const target = ev.target as HTMLElement | null;
+    const tag = target?.tagName;
+    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || target?.isContentEditable) return;
+    if (!document.querySelector("#help")?.hasAttribute("hidden")) return;
+    if (on && ev.key === "Escape") {
+      setOn(false);
+      ev.preventDefault();
+    }
+  });
+
+  sync();
+  return {
+    refresh: sync,
+    stop() {
+      if (on) setOn(false);
+    },
+  };
+}

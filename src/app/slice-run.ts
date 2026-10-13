@@ -12,6 +12,7 @@ import { sliceFuzzyFields } from "../fuzzy-skin";
 import { ironingSpacingMax, sliceIroningFields } from "../ironing";
 import { seamSliceField } from "../seam";
 import { plateListed, slicePlateFields, sourceFrame, type PlateObject, type PlateRequestObject } from "../plate";
+import { normalInfillDensity, reinforcementRequestFields } from "../reinforcement";
 import { seamRequestFields } from "../seam-paint";
 import { paintRequestFields } from "../support-paint";
 import { noteTally } from "./paint-actions";
@@ -169,10 +170,27 @@ export function payload() {
         ...editRequestFields(state.supportEdits, treeSupports()),
         ...(state.sourcePos ? paintRequestFields(state.supportPaint, sourceFrame(state.sourcePos, state.partScale)) : {}),
         ...(state.sourcePos ? seamRequestFields(state.seamPaint, sourceFrame(state.sourcePos, state.partScale)) : {}),
+        ...(state.sourcePos
+          ? reinforcementRequestFields(
+              state.reinforcement,
+              sourceFrame(state.sourcePos, state.partScale),
+              normalInfillDensity({
+                blendKind: state.blendKind,
+                strategy: state.strategy,
+                toughness: state.toughness,
+              }),
+            )
+          : {}),
       };
   const plate = listed
     ? {
-        ...slicePlateFields(objects, (obj) => objectPlacement(obj).pose, { supports: state.supports, supportStyle: state.supportStyle }),
+        ...slicePlateFields(objects, (obj) => objectPlacement(obj).pose, {
+          supports: state.supports,
+          supportStyle: state.supportStyle,
+          blendKind: state.blendKind,
+          strategy: state.strategy,
+          toughness: state.toughness,
+        }),
         ...(objects.some((obj) => objectTree(obj)) ? { includeSkeleton: true } : {}),
       }
     : {};
