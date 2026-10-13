@@ -26,6 +26,7 @@
   background: var(--surface-0);
   border: 1px solid var(--border);
 }
+.pb-kind[hidden] { display: none; }
 .pb-kind button {
   display: inline-flex;
   align-items: center;

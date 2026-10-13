@@ -9,6 +9,7 @@ import { clampSplit, roundSplit, type SplitAxis } from "./split-at";
 import { createModifierScene } from "./modifier-scene";
 import type { OverrideDocument } from "./overrides";
 import type { PlateBound } from "./plate";
+import { createReinforceVolumeScene, type ShownReinforceVolume } from "./reinforce-scene";
 import type { ReinforceDisk } from "./reinforcement";
 import type { SeamDisk } from "./seam-paint";
 import type { PaintDisk, PaintKind, Vec3 } from "./support-paint";
@@ -69,6 +70,16 @@ export interface PrepareView {
   setSeamPaint(disks: readonly SeamDisk[]): void;
   /** Reinforce paint drawn on the part, in the same frame as support paint. */
   setReinforcePaint(disks: readonly ReinforceDisk[]): void;
+  /** Translucent reinforcement volumes (box/cylinder) in the mesh frame, with move/scale gizmo on the selected one. */
+  setReinforceVolumes(
+    volumes: readonly ShownReinforceVolume[],
+    selectedIndex: number | null,
+    tool: "move" | "scale",
+  ): void;
+  onReinforceVolumeSelect(cb: ((index: number) => void) | null): void;
+  onReinforceVolumeEditStart(cb: (() => void) | null): void;
+  onReinforceVolumeEdit(cb: ((index: number, kind: "move" | "scale", axis: Axis, deltaMm: number) => void) | null): void;
+  onReinforceVolumeEditEnd(cb: (() => void) | null): void;
   /**
    * The support, seam, or reinforce brush, or null for none. While it is on, a press on the part paints: the left
    * button or one finger. Off the part the left button orbits, and two fingers always orbit.
@@ -288,6 +299,17 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let editModEndCb: (() => void) | null = null;
   let modDrag: { id: string; kind: "move" | "scale"; axis: Axis; last: number } | null = null;
 
+  const reinforceVols = createReinforceVolumeScene();
+  scene.add(reinforceVols.group);
+  let reinforceVolList: readonly ShownReinforceVolume[] = [];
+  let reinforceVolSelected: number | null = null;
+  let reinforceVolTool: "move" | "scale" = "move";
+  let selectReinforceVolCb: ((index: number) => void) | null = null;
+  let editReinforceVolStartCb: (() => void) | null = null;
+  let editReinforceVolCb: ((index: number, kind: "move" | "scale", axis: Axis, deltaMm: number) => void) | null = null;
+  let editReinforceVolEndCb: (() => void) | null = null;
+  let reinforceVolDrag: { index: number; kind: "move" | "scale"; axis: Axis; last: number } | null = null;
+
   let brush: { kind: PaintKind | "seam" | "reinforce"; radius: number } | null = null;
   let brushHooks: BrushHooks | null = null;
   let stroke: number | null = null;
@@ -372,6 +394,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     renderer.setViewport(0, 0, drawSize.x, drawSize.y);
     renderer.render(scene, camera);
     publishModifierMarker();
+    publishReinforceVolMarker();
     drawMeasure();
     // ViewHelper.render clears color for its corner viewport. With scissor off,
     // that clear wipes the whole canvas and the next frame stays in the corner.
@@ -546,6 +569,54 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     return frame.toScene(volume.x, volume.y, volume.z);
   }
 
+  function syncReinforceVols() {
+    if (mesh) {
+      reinforceVols.group.matrix.copy(mesh.matrix);
+      reinforceVols.group.matrixWorldNeedsUpdate = true;
+    }
+    reinforceVols.group.visible = !!mesh && reinforceVolList.length > 0;
+    const hasSelected = reinforceVolList.some((v) => v.index === reinforceVolSelected);
+    reinforceVols.sync(
+      reinforceVolList,
+      hasSelected ? reinforceVolSelected : null,
+      reinforceVolTool,
+      hexToThree(colors.paintReinforce),
+    );
+    canvas.dataset.reinforceVolumes = String(reinforceVolList.length);
+    canvas.dataset.reinforceGizmo = hasSelected ? reinforceVolTool : "";
+    canvas.dataset.reinforceSelected = hasSelected && reinforceVolSelected !== null ? String(reinforceVolSelected) : "";
+    publishReinforceVolMarker();
+    requestRender();
+  }
+
+  function reinforceVolOrigin(): THREE.Vector3 | null {
+    if (!mesh || reinforceVolSelected === null) return null;
+    const vol = reinforceVolList.find((v) => v.index === reinforceVolSelected);
+    if (!vol) return null;
+    return new THREE.Vector3(vol.center[0], vol.center[1], vol.center[2]).applyMatrix4(mesh.matrix);
+  }
+
+  function reinforceSceneAxis(axis: Axis): THREE.Vector3 {
+    const dir = axis === "x" ? new THREE.Vector3(1, 0, 0) : axis === "y" ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1);
+    if (mesh) dir.transformDirection(mesh.matrix);
+    return dir;
+  }
+
+  function publishReinforceVolMarker() {
+    const origin = reinforceVolOrigin();
+    const vol = reinforceVolList.find((v) => v.index === reinforceVolSelected);
+    if (!origin || !vol) {
+      canvas.dataset.reinforceNx = "";
+      canvas.dataset.reinforceNy = "";
+      return;
+    }
+    const dist = reinforceVolTool === "scale" ? vol.size[0] / 2 : 12;
+    const tip = origin.clone().add(reinforceSceneAxis("x").multiplyScalar(dist));
+    const p = tip.project(camera);
+    canvas.dataset.reinforceNx = (p.x * 0.5 + 0.5).toFixed(4);
+    canvas.dataset.reinforceNy = (-p.y * 0.5 + 0.5).toFixed(4);
+  }
+
   layoutBed();
   frameBed();
 
@@ -627,8 +698,22 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     return null;
   }
 
-  function axisCoordAt(origin: THREE.Vector3, axis: Axis): number | null {
-    const dir = sceneAxis(axis);
+  function hitReinforceVol(ev: PointerEvent): { index: number; kind: "move" | "scale"; axis: Axis } | { volumeIndex: number } | null {
+    if (!mesh || reinforceVolList.length === 0) return null;
+    ndc(ev);
+    const handle = raycaster.intersectObjects(reinforceVols.handlePicks(), false)[0];
+    const kind = handle?.object.userData.reinforceHandle as "move" | "scale" | undefined;
+    const axis = handle?.object.userData.axis as Axis | undefined;
+    if ((kind === "move" || kind === "scale") && (axis === "x" || axis === "y" || axis === "z") && reinforceVolSelected !== null) {
+      return { index: reinforceVolSelected, kind, axis };
+    }
+    const body = raycaster.intersectObjects(reinforceVols.volumePicks(), false)[0];
+    const volumeIndex = body?.object.userData.reinforceIndex;
+    if (typeof volumeIndex === "number") return { volumeIndex };
+    return null;
+  }
+
+  function axisCoordAtDir(origin: THREE.Vector3, dir: THREE.Vector3): number | null {
     const camDir = camera.position.clone().sub(origin);
     if (camDir.lengthSq() < 1e-8) return null;
     camDir.normalize();
@@ -641,6 +726,10 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, origin);
     if (!raycaster.ray.intersectPlane(plane, dragHit)) return null;
     return dragHit.sub(origin).dot(dir);
+  }
+
+  function axisCoordAt(origin: THREE.Vector3, axis: Axis): number | null {
+    return axisCoordAtDir(origin, sceneAxis(axis));
   }
 
   const bedPoint = new THREE.Vector3();
@@ -800,6 +889,29 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       return;
     }
     const handle = hitHandle(ev);
+    const rVol = !handle ? hitReinforceVol(ev) : null;
+    if (rVol && "kind" in rVol) {
+      const origin = reinforceVolOrigin();
+      const dir = reinforceSceneAxis(rVol.axis);
+      reinforceVolDrag = {
+        index: rVol.index,
+        kind: rVol.kind,
+        axis: rVol.axis,
+        last: origin ? axisCoordAtDir(origin, dir) ?? 0 : 0,
+      };
+      controls.enabled = false;
+      canvas.setPointerCapture(ev.pointerId);
+      editReinforceVolStartCb?.();
+      ev.preventDefault();
+      ev.stopPropagation();
+      return;
+    }
+    if (rVol && "volumeIndex" in rVol && !brush) {
+      selectReinforceVolCb?.(rVol.volumeIndex);
+      ev.preventDefault();
+      ev.stopPropagation();
+      return;
+    }
     if (!handle && brush && mesh) {
       if (ev.pointerType === "touch" && !ev.isPrimary) {
         // A second finger orbits, so the first finger's stroke was not paint.
@@ -815,6 +927,12 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
         showCursor(hit);
         brushHooks?.start();
         brushHooks?.hit(hit.point, hit.normal);
+        ev.preventDefault();
+        ev.stopPropagation();
+        return;
+      }
+      if (rVol && "volumeIndex" in rVol) {
+        selectReinforceVolCb?.(rVol.volumeIndex);
         ev.preventDefault();
         ev.stopPropagation();
         return;
@@ -878,6 +996,26 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   }, { capture: true });
 
   canvas.addEventListener("pointermove", (ev) => {
+    if (reinforceVolDrag) {
+      canvas.style.cursor = "grabbing";
+      ndc(ev);
+      const origin = reinforceVolOrigin();
+      if (!origin) return;
+      const dir = reinforceSceneAxis(reinforceVolDrag.axis);
+      const coord = axisCoordAtDir(origin, dir);
+      if (coord == null) return;
+      const step = coord - reinforceVolDrag.last;
+      reinforceVolDrag.last = coord;
+      if (Math.abs(step) < 0.02) return;
+      const delta = reinforceVolDrag.kind === "scale" ? step * 2 : step;
+      editReinforceVolCb?.(reinforceVolDrag.index, reinforceVolDrag.kind, reinforceVolDrag.axis, delta);
+      const moved = reinforceVolOrigin();
+      if (moved) {
+        const rebased = axisCoordAtDir(moved, dir);
+        if (rebased != null) reinforceVolDrag.last = rebased;
+      }
+      return;
+    }
     if (modDrag) {
       canvas.style.cursor = "grabbing";
       ndc(ev);
@@ -907,16 +1045,23 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     }
     if (!drag && brush) {
       ndc(ev);
+      const rVol = hitReinforceVol(ev);
+      if (rVol && "kind" in rVol) {
+        showCursor(null);
+        canvas.style.cursor = "grab";
+        return;
+      }
       const hit = ev.pointerType === "touch" ? null : brushHit();
       showCursor(hit);
-      canvas.style.cursor = hit ? "crosshair" : "";
+      canvas.style.cursor = hit ? "crosshair" : rVol ? "grab" : "";
       return;
     }
     if (!drag) {
       const handle = hitHandle(ev);
       const overPart = !handle && gizmoTool === "move" && hitPart();
-      const overMod = !handle && !overPart && hitModifier(ev);
-      canvas.style.cursor = handle || overPart || overMod || hitCut(ev) ? "grab" : "";
+      const overReinforce = !handle && !overPart && hitReinforceVol(ev);
+      const overMod = !handle && !overPart && !overReinforce && hitModifier(ev);
+      canvas.style.cursor = handle || overPart || overReinforce || overMod || hitCut(ev) ? "grab" : "";
       if (!sameHit(handle, hover)) {
         hover = handle;
         paintHandles(null, handle);
@@ -1006,13 +1151,16 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     if (stroke !== null && ev.pointerId === stroke) endStroke(ev.type === "pointerup");
     const kind = drag?.kind;
     const edited = modDrag;
+    const editedReinforce = reinforceVolDrag;
     drag = null;
     modDrag = null;
+    reinforceVolDrag = null;
     hover = null;
     controls.enabled = true;
     canvas.style.cursor = "";
     paintHandles(null, null);
     if (edited) editModEndCb?.();
+    if (editedReinforce) editReinforceVolEndCb?.();
     if (kind === "ring") rotateEndCb?.();
     if (kind === "move" || kind === "xy") moveEndCb?.();
   };
@@ -1173,6 +1321,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       if (belt) layoutBed();
       else clearGhosts();
       drawPaint();
+      syncReinforceVols();
       placeGizmo();
       cutKey = "";
       rebuildCut();
@@ -1201,6 +1350,16 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       reinforceDisks = disks;
       drawPaint();
     },
+    setReinforceVolumes(volumes, selectedIndex, tool) {
+      reinforceVolList = volumes;
+      reinforceVolSelected = selectedIndex;
+      reinforceVolTool = tool;
+      syncReinforceVols();
+    },
+    onReinforceVolumeSelect(cb) { selectReinforceVolCb = cb; },
+    onReinforceVolumeEditStart(cb) { editReinforceVolStartCb = cb; },
+    onReinforceVolumeEdit(cb) { editReinforceVolCb = cb; },
+    onReinforceVolumeEditEnd(cb) { editReinforceVolEndCb = cb; },
     setBrush(next) {
       brush = next;
       if (!brush) endStroke(true);
@@ -1260,6 +1419,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       layoutBed();
       syncPlateBounds();
       drawPaint();
+      syncReinforceVols();
       requestRender();
     },
   };
