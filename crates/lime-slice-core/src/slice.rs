@@ -49,7 +49,7 @@ use crate::support::{
 };
 use crate::toolpath::{
     apply_overhang, apply_scarf, apply_z_hop, comb_layer, island_loops, lightning_pitch,
-    belt_raft_paths, order_supports, plan_ironing, plan_region_split, plan_skirt, plan_support,
+    belt_raft_paths, order_supports, plan_brim, plan_ironing, plan_mouse_ears, plan_region_split, plan_skirt, plan_support,
     plan_tree_support,
     CapFeed, Extrusion, PartLayout, PathFeatures, PathKind, ScarfParams, Seam, ShellBand, Skin,
     Slowdown, TravelIn,
@@ -124,6 +124,18 @@ pub struct SliceRequest {
     /// Overhang slowdown, extra fan, and bridge detection. Default on.
     #[serde(default = "default_true")]
     pub overhang_control: bool,
+    /// Bed adhesion. Omitted means the existing one-loop (or toughness two-loop) skirt.
+    #[serde(default, skip_serializing_if = "AdhesionType::is_skirt")]
+    pub adhesion: AdhesionType,
+    /// Brim width, or mouse-ear radius, in millimetres. Omitted keeps 5 mm when a brim or ears are on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brim_width_mm: Option<f64>,
+    /// Gap between the part and a brim or mouse ear. Omitted keeps 0.1 mm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brim_gap_mm: Option<f64>,
+    /// Skirt loops. Omitted keeps the strategy count: 1 on speed, 2 on toughness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skirt_loops: Option<u32>,
     /// Replay the pre-feature planner (lines, no arcs, no index) for benches.
     #[serde(default)]
     pub classic: bool,
@@ -372,6 +384,14 @@ pub struct SliceSettings {
     pub min_layer_speed_mm_s: Option<f64>,
     /// Off on a belt, where an outward loop around the first layer crosses the belt line.
     pub skirt: bool,
+    /// `Skirt` runs `plan_skirt` unchanged. Brim and mouse ears replace that loop.
+    pub adhesion: AdhesionType,
+    /// Used when `adhesion` is a brim or mouse ears. `0` is not a brim.
+    pub brim_width_mm: f64,
+    /// Peel gap outside the part. `0` lays the first brim bead against the wall.
+    pub brim_gap_mm: f64,
+    /// `None` keeps `ResolvedStrategy::skirt_loops`.
+    pub skirt_loops: Option<u32>,
     pub scarf_seam: ScarfSeam,
     pub scarf_length: f64,
     pub scarf_steps: u32,
@@ -456,6 +476,10 @@ impl Default for SliceSettings {
             min_layer_time_s: None,
             min_layer_speed_mm_s: None,
             skirt: true,
+            adhesion: AdhesionType::Skirt,
+            brim_width_mm: 0.0,
+            brim_gap_mm: 0.0,
+            skirt_loops: None,
             scarf_seam: ScarfSeam::Blend,
             scarf_length: default_scarf_length(),
             scarf_steps: default_scarf_steps(),
@@ -560,6 +584,22 @@ impl SliceSettings {
             min_layer_time_s: req.min_layer_time_s,
             min_layer_speed_mm_s: req.min_layer_speed_mm_s,
             skirt: true,
+            adhesion: req.adhesion,
+            brim_width_mm: if req.adhesion.uses_brim() {
+                req.brim_width_mm.unwrap_or(5.0).clamp(0.4, 30.0)
+            } else {
+                0.0
+            },
+            brim_gap_mm: if req.adhesion.uses_brim() {
+                req.brim_gap_mm.unwrap_or(0.1).clamp(0.0, 2.0)
+            } else {
+                0.0
+            },
+            skirt_loops: if req.adhesion == AdhesionType::Skirt {
+                req.skirt_loops.map(|loops| loops.clamp(1, 20))
+            } else {
+                None
+            },
             scarf_seam: if req.classic {
                 ScarfSeam::Off
             } else {
@@ -5984,10 +6024,10 @@ fn skirt_paths(
         .map(|s| (s.sparse.as_slice(), s.interface.as_slice()))
         .unwrap_or((&[], &[]));
     let outline = boolean_union(contours, &boolean_union(sparse, interface));
-    if outline.is_empty() || !settings.skirt {
+    if outline.is_empty() || !settings.skirt || settings.adhesion == AdhesionType::None {
         return Vec::new();
     }
-    let strategy = match blend {
+    let mut strategy = match blend {
         BlendMode::ByRegion { .. } => {
             let mut tough = resolve(pure(StrategyId::Toughness), settings);
             tough.skirt_loops = 1;
@@ -5995,7 +6035,45 @@ fn skirt_paths(
         }
         other => layer_strategy(other, z, settings),
     };
-    plan_skirt(&outline, &strategy, settings.line_width)
+    if settings.adhesion == AdhesionType::Skirt {
+        if let Some(loops) = settings.skirt_loops {
+            strategy.skirt_loops = loops;
+        }
+        return plan_skirt(&outline, &strategy, settings.line_width);
+    }
+    let kind = if settings.adhesion == AdhesionType::MouseEars {
+        plan_mouse_ears
+    } else {
+        plan_brim
+    };
+    kind(
+        &outline,
+        &strategy,
+        settings.line_width,
+        settings.brim_width_mm,
+        settings.brim_gap_mm,
+    )
+}
+
+/// How the first layer holds to the bed. Omitted is the existing skirt.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AdhesionType {
+    #[default]
+    Skirt,
+    Brim,
+    MouseEars,
+    None,
+}
+
+impl AdhesionType {
+    pub fn is_skirt(&self) -> bool {
+        *self == Self::Skirt
+    }
+
+    pub fn uses_brim(self) -> bool {
+        matches!(self, Self::Brim | Self::MouseEars)
+    }
 }
 
 type XyRect = ([f64; 2], [f64; 2]);
