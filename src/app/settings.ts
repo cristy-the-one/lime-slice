@@ -1,6 +1,6 @@
 import { ArrowDownToLine, Copy, Crosshair, LayoutGrid, Plus, RotateCw, createElement, type IconNode } from "lucide";
 import { fx } from "./fx";
-import { state, session, type CardId, type SliceResponse } from "./state";
+import { state, session, STEP_TOLERANCE_DEFAULT, type CardId, type SliceResponse } from "./state";
 import { currentApiTarget, authHeaders, engineDownMessage } from "../ui/api-base";
 import { layerWeight, resolved, type ResolvedCard } from "../strategy";
 import { paintSettingMarks, syncEmptyState } from "../ui/shell";
@@ -1291,7 +1291,7 @@ export function onSettings(ev: Event) {
     noteEdit();
     markProjectDirty();
     const value = Number(t.value);
-    state.stepTolerance = Number.isFinite(value) ? value : 0.1;
+    state.stepTolerance = Number.isFinite(value) ? value : STEP_TOLERANCE_DEFAULT;
     window.clearTimeout(session.stepTimer);
     session.stepTimer = window.setTimeout(() => { void fx.refreshStepPreview(); }, 250);
     return;

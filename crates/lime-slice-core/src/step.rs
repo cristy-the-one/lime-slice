@@ -31,7 +31,7 @@ use truck_topology::compress::{CompressedFace, CompressedShell};
 
 use crate::mesh::Mesh;
 
-pub const STEP_TOLERANCE_DEFAULT_MM: f64 = 0.1;
+pub const STEP_TOLERANCE_DEFAULT_MM: f64 = 0.05;
 pub const STEP_TOLERANCE_MIN_MM: f64 = 0.01;
 pub const STEP_TOLERANCE_MAX_MM: f64 = 2.0;
 

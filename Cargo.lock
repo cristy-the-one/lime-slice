@@ -2128,14 +2128,14 @@ dependencies = [
 
 [[package]]
 name = "lime-model-load"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "libloading 0.8.9",
 ]
 
 [[package]]
 name = "lime-model-occt"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "cc",
  "lime-model-load",
