@@ -133,7 +133,7 @@ export const GROUPS: GroupSpec[] = [
     title: "Quality",
     tier: "simple",
     accent: "--group-quality",
-    summary: (s) => `${s.layerHeight.toFixed(2)} mm${s.adaptive ? " · adaptive" : ""}${s.adhesion === "brim" ? " · brim" : s.adhesion === "mouseEars" ? " · ears" : s.adhesion === "none" ? " · no skirt" : ""}`,
+    summary: (s) => `${s.layerHeight.toFixed(2)} mm${s.adaptive ? " · adaptive" : ""}${s.adhesion === "brim" ? " · brim" : s.adhesion === "mouseEars" ? " · ears" : s.adhesion === "none" ? " · no skirt" : ""}${s.topSurfacePattern === "monotonic" ? " · mono" : s.topSurfacePattern === "concentric" ? " · rings" : ""}`,
   },
   {
     id: "walls",
@@ -275,6 +275,21 @@ export const CONTROLS: ControlSpec[] = [
     rule: "adhesion",
     tip: "Space between the part and the brim or ears, so they peel off. 0 welds them to the wall.",
     keywords: "brim gap peel",
+  }),
+  bound("topSurfacePattern", {
+    id: "toppattern",
+    label: "Top surface",
+    group: "quality",
+    tier: "advanced",
+    kind: select([
+      ["auto", "Auto"],
+      ["rectilinear", "Rectilinear"],
+      ["monotonic", "Monotonic"],
+      ["concentric", "Concentric"],
+    ]),
+    structural: true,
+    tip: "Auto uses monotonic lines on the Toughness strategy and rectilinear lines otherwise. Rectilinear is the engine default, so a default slice stays byte-identical. Monotonic lays every top bead the same way, which hides the scar a hole leaves. Concentric fills the top with inset rings.",
+    keywords: "monotonic concentric top skin pattern surface",
   }),
   bound("skirtLoops", {
     id: "skirtloops",

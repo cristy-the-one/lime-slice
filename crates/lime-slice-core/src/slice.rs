@@ -54,6 +54,7 @@ use crate::toolpath::{
     CapFeed, Extrusion, PartLayout, PathFeatures, PathKind, ScarfParams, Seam, ShellBand, Skin,
     Slowdown, TravelIn,
 };
+pub use crate::toolpath::SurfacePattern;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -136,6 +137,10 @@ pub struct SliceRequest {
     /// Skirt loops. Omitted keeps the strategy count: 1 on speed, 2 on toughness.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skirt_loops: Option<u32>,
+    /// Top-skin fill. Omitted keeps rectilinear scanlines, so a default request
+    /// stays byte-identical. Monotonic and concentric are opt-in.
+    #[serde(default, skip_serializing_if = "SurfacePattern::is_rectilinear")]
+    pub top_surface_pattern: SurfacePattern,
     /// Replay the pre-feature planner (lines, no arcs, no index) for benches.
     #[serde(default)]
     pub classic: bool,
@@ -392,6 +397,8 @@ pub struct SliceSettings {
     pub brim_gap_mm: f64,
     /// `None` keeps `ResolvedStrategy::skirt_loops`.
     pub skirt_loops: Option<u32>,
+    /// Rectilinear unless the request asks for monotonic or concentric top skin.
+    pub top_surface_pattern: SurfacePattern,
     pub scarf_seam: ScarfSeam,
     pub scarf_length: f64,
     pub scarf_steps: u32,
@@ -480,6 +487,7 @@ impl Default for SliceSettings {
             brim_width_mm: 0.0,
             brim_gap_mm: 0.0,
             skirt_loops: None,
+            top_surface_pattern: SurfacePattern::Rectilinear,
             scarf_seam: ScarfSeam::Blend,
             scarf_length: default_scarf_length(),
             scarf_steps: default_scarf_steps(),
@@ -599,6 +607,11 @@ impl SliceSettings {
                 req.skirt_loops.map(|loops| loops.clamp(1, 20))
             } else {
                 None
+            },
+            top_surface_pattern: if req.classic {
+                SurfacePattern::Rectilinear
+            } else {
+                req.top_surface_pattern
             },
             scarf_seam: if req.classic {
                 ScarfSeam::Off
@@ -5787,6 +5800,7 @@ fn object_layer(
         nozzle_diameter,
         interior_remaining: remain_low.0,
         interior_run: remain_low.1,
+        top_pattern: settings.top_surface_pattern,
     };
     // The blend's plan of `region`, with `tweak` over every strategy it
     // prints, and the print speed the note names when the object's cap

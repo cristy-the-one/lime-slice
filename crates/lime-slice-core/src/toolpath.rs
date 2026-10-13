@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::cmp::{Ordering as CmpOrdering, Reverse};
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, BTreeSet, HashMap};
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -16,6 +17,26 @@ use crate::strategy::{
 use crate::support::paint::SeamDisk;
 use crate::support::Disk;
 use clipper2::{EndType, FillRule, JoinType, Milli, Paths};
+
+/// How a top skin is filled. Omitted on a request means rectilinear, the
+/// scanlines the planner already lays.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SurfacePattern {
+    #[default]
+    Rectilinear,
+    /// Every bead in a connected region steps the same way, from the low side
+    /// of the scan to the high side, so a hole does not leave a scar.
+    Monotonic,
+    /// Closed inset rings, one line width apart.
+    Concentric,
+}
+
+impl SurfacePattern {
+    pub fn is_rectilinear(&self) -> bool {
+        *self == Self::Rectilinear
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PathKind {
@@ -130,6 +151,8 @@ pub struct PathFeatures {
     pub interior_remaining: u32,
     /// Length of the interior run this layer belongs to.
     pub interior_run: u32,
+    /// Top-skin fill. Rectilinear is the existing diagonal scan.
+    pub top_pattern: SurfacePattern,
 }
 
 impl Default for PathFeatures {
@@ -148,6 +171,7 @@ impl Default for PathFeatures {
             nozzle_diameter: 0.4,
             interior_remaining: 1,
             interior_run: 1,
+            top_pattern: SurfacePattern::Rectilinear,
         }
     }
 }
@@ -425,10 +449,22 @@ pub(crate) fn plan_region_split(
                 })
                 .collect()
         } else {
-            clip_infill(
-                solid_fill(area, line_width, std::f64::consts::FRAC_PI_4, None),
-                area,
-            )
+            let angle = std::f64::consts::FRAC_PI_4;
+            match features.top_pattern {
+                SurfacePattern::Rectilinear => {
+                    clip_infill(solid_fill(area, line_width, angle, None), area)
+                }
+                SurfacePattern::Monotonic => island_loops(area)
+                    .iter()
+                    .flat_map(|island| {
+                        clip_infill(monotonic_fill(island, line_width, angle, None), island)
+                    })
+                    .collect(),
+                SurfacePattern::Concentric => island_loops(area)
+                    .iter()
+                    .flat_map(|island| clip_infill(concentric_fill(island, line_width), island))
+                    .collect(),
+            }
         };
         for pts in fill {
             if pts.len() >= 2 {
@@ -2647,6 +2683,169 @@ fn solid_fill(
             }
         }
         flip = !flip;
+    }
+    sample.solid();
+    paths
+}
+
+/// Ordered bits of a finite `f64`, so a `BTreeSet` sorts them numerically.
+fn ord_f64(v: f64) -> u64 {
+    let bits = v.to_bits();
+    if bits & (1 << 63) != 0 {
+        !bits
+    } else {
+        bits | (1 << 63)
+    }
+}
+
+/// Append `seg` to the open path when the short join stays inside `outline`.
+fn append_linked(paths: &mut Vec<Vec<[f64; 2]>>, seg: Vec<[f64; 2]>, outline: &Outline, spacing: f64) {
+    let link = paths.last().and_then(|path| {
+        let end = *path.last().unwrap();
+        let gap = dist2(end, seg[0]).sqrt();
+        if gap <= spacing * 1.75 && (gap < 1e-4 || outline.link_stays(end, seg[0])) {
+            Some(gap)
+        } else {
+            None
+        }
+    });
+    if let Some(gap) = link {
+        let path = paths.last_mut().unwrap();
+        if gap >= 1e-4 {
+            path.push(seg[0]);
+        }
+        path.extend(seg.into_iter().skip(1));
+    } else {
+        paths.push(seg);
+    }
+}
+
+/// The same chords as [`solid_fill`], every one running from low X to high X
+/// in the rotated frame. A chord waits until each overlapping chord on the
+/// previous scanline is done, so the fill only steps from -Y to +Y.
+fn monotonic_fill(
+    loops: &[Loop],
+    spacing: f64,
+    angle: f64,
+    through: Option<[f64; 2]>,
+) -> Vec<Vec<[f64; 2]>> {
+    let sample = crate::inner_prof::Sample::start();
+    let outline = Outline::new(loops);
+    let rotated = rotate_loops(loops, -angle);
+    let anchor = through.map(|p| rot(p, -angle)[1]);
+    let chords = horizontal_chords(&rotated, spacing, anchor);
+    struct Seg {
+        y: f64,
+        x0: f64,
+        x1: f64,
+    }
+    let mut segs: Vec<Seg> = Vec::new();
+    let mut rows: Vec<std::ops::Range<usize>> = Vec::new();
+    for (y, spans) in &chords {
+        let start = segs.len();
+        for &(x0, x1) in spans {
+            segs.push(Seg { y: *y, x0, x1 });
+        }
+        if segs.len() > start {
+            rows.push(start..segs.len());
+        }
+    }
+    if segs.is_empty() {
+        sample.solid();
+        return Vec::new();
+    }
+    let mut next: Vec<Vec<usize>> = vec![Vec::new(); segs.len()];
+    let mut incoming = vec![0u32; segs.len()];
+    let mut row_of = vec![0usize; segs.len()];
+    for (r, span) in rows.iter().enumerate() {
+        for slot in &mut row_of[span.start..span.end] {
+            *slot = r;
+        }
+    }
+    for r in 1..rows.len() {
+        let prev = rows[r - 1].start..rows[r - 1].end;
+        let here = rows[r].start..rows[r].end;
+        for i in here {
+            for j in prev.clone() {
+                let overlap = segs[i].x0.max(segs[j].x0);
+                let end = segs[i].x1.min(segs[j].x1);
+                if end - overlap > 1e-3 {
+                    next[j].push(i);
+                    incoming[i] += 1;
+                }
+            }
+        }
+    }
+    let key = |i: usize| (row_of[i], ord_f64(segs[i].x0), i);
+    let mut ready: BTreeSet<(usize, u64, usize)> = BTreeSet::new();
+    for (i, count) in incoming.iter().enumerate() {
+        if *count == 0 {
+            ready.insert(key(i));
+        }
+    }
+    let mut order = Vec::with_capacity(segs.len());
+    let mut taken = vec![false; segs.len()];
+    while let Some((_, _, i)) = ready.pop_first() {
+        order.push(i);
+        taken[i] = true;
+        for &k in &next[i] {
+            incoming[k] -= 1;
+            if incoming[k] == 0 {
+                ready.insert(key(k));
+            }
+        }
+    }
+    if order.len() != segs.len() {
+        for (i, seen) in taken.iter().enumerate() {
+            if !seen {
+                order.push(i);
+            }
+        }
+    }
+    let mut paths = Vec::new();
+    for i in order {
+        let seg = &segs[i];
+        let chord = vec![rot([seg.x0, seg.y], angle), rot([seg.x1, seg.y], angle)];
+        append_linked(&mut paths, chord, &outline, spacing);
+    }
+    sample.solid();
+    paths
+}
+
+/// Inset the region by half a line, then by one line each ring, and extrude
+/// each closed centerline.
+fn concentric_fill(loops: &[Loop], spacing: f64) -> Vec<Vec<[f64; 2]>> {
+    let sample = crate::inner_prof::Sample::start();
+    let mut paths = Vec::new();
+    if spacing < 1e-4 || loops.is_empty() {
+        sample.solid();
+        return paths;
+    }
+    let mut inset = spacing * 0.5;
+    let mut prev_area = f64::MAX;
+    for _ in 0..2048 {
+        let rings = offset_loops(loops, -inset);
+        if rings.is_empty() {
+            break;
+        }
+        let area: f64 = rings.iter().map(|ring| signed_area(ring).abs()).sum();
+        if area < 1e-3 || area >= prev_area - 1e-4 {
+            break;
+        }
+        prev_area = area;
+        for ring in rings {
+            if ring.len() < 3 {
+                continue;
+            }
+            let mut path = ring;
+            if dist2(path[0], *path.last().unwrap()) > 1e-8 {
+                path.push(path[0]);
+            }
+            if polyline_len(&path) >= spacing {
+                paths.push(path);
+            }
+        }
+        inset += spacing;
     }
     sample.solid();
     paths
@@ -7538,5 +7737,97 @@ mod solid_row_tests {
         let along_y = skin_rows(1);
         assert!(along_y.iter().any(|s| (s[0][1] - s[1][1]).abs() > 6.0));
         assert!(along_y.iter().all(|s| (s[0][0] - s[1][0]).abs() < 1.0));
+    }
+
+    fn annulus() -> Vec<Loop> {
+        vec![
+            vec![[0.0, 0.0], [30.0, 0.0], [30.0, 30.0], [0.0, 30.0]],
+            vec![[10.0, 10.0], [10.0, 20.0], [20.0, 20.0], [20.0, 10.0]],
+        ]
+    }
+
+    /// Long chords in scan order, as (start, end, emission index).
+    fn scan_chords(paths: &[Vec<[f64; 2]>], angle: f64) -> Vec<([f64; 2], [f64; 2], usize)> {
+        let (s, c) = angle.sin_cos();
+        let along = |p: [f64; 2]| p[0] * c + p[1] * s;
+        let mut out = Vec::new();
+        let mut n = 0usize;
+        for path in paths {
+            for w in path.windows(2) {
+                if (along(w[1]) - along(w[0])).abs() > 2.0 {
+                    out.push((w[0], w[1], n));
+                    n += 1;
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn monotonic_chords_share_a_direction_and_step_across_the_scan() {
+        let angle = FRAC_PI_4;
+        let region = annulus();
+        let mono = monotonic_fill(&region, 0.45, angle, None);
+        let plain = solid_fill(&region, 0.45, angle, None);
+        let (s, c) = angle.sin_cos();
+        let along = |p: [f64; 2]| p[0] * c + p[1] * s;
+        let across = |p: [f64; 2]| -p[0] * s + p[1] * c;
+        let chords = scan_chords(&mono, angle);
+        assert!(chords.len() > 8, "expected several chords, got {}", chords.len());
+        assert!(
+            chords.iter().all(|(a, b, _)| along(*b) > along(*a)),
+            "a monotonic chord ran backwards"
+        );
+        let plain_chords = scan_chords(&plain, angle);
+        assert!(
+            plain_chords.iter().any(|(a, b, _)| along(*b) < along(*a)),
+            "rectilinear should still reverse alternate rows"
+        );
+        let projected: Vec<(f64, f64, f64, usize)> = chords
+            .iter()
+            .map(|(a, b, i)| {
+                let (x0, x1) = (along(*a), along(*b));
+                let y = (across(*a) + across(*b)) * 0.5;
+                (x0.min(x1), x0.max(x1), y, *i)
+            })
+            .collect();
+        for (i, a) in projected.iter().enumerate() {
+            for b in projected.iter().skip(i + 1) {
+                let dy = (a.2 - b.2).abs();
+                if !(0.2..0.8).contains(&dy) {
+                    continue;
+                }
+                if a.1.min(b.1) - a.0.max(b.0) < 0.5 {
+                    continue;
+                }
+                if a.2 < b.2 {
+                    assert!(a.3 < b.3, "lower scanline {} printed after {}", a.3, b.3);
+                } else {
+                    assert!(b.3 < a.3, "lower scanline {} printed after {}", b.3, a.3);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn concentric_rings_stay_inside_and_step_inward() {
+        let region = rectangle(20.0, 20.0);
+        let rings = concentric_fill(&region, 0.5);
+        assert!(rings.len() >= 4, "got {} rings", rings.len());
+        for ring in &rings {
+            assert!(dist2(ring[0], *ring.last().unwrap()) < 1e-6, "ring is open");
+            for p in ring {
+                assert!((0.0..=20.0).contains(&p[0]) && (0.0..=20.0).contains(&p[1]), "{p:?}");
+            }
+        }
+        let span = |ring: &[[f64; 2]]| {
+            let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+            for p in ring {
+                lo = lo.min(p[0]);
+                hi = hi.max(p[0]);
+            }
+            hi - lo
+        };
+        assert!(span(&rings[0]) > span(rings.last().unwrap()));
     }
 }

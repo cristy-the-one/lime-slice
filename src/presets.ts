@@ -13,6 +13,8 @@ export interface PresetSettings {
   brimWidthMm: number;
   brimGapMm: number;
   skirtLoops: number;
+  /** `auto` is monotonic on Toughness and rectilinear otherwise. Omitted from a rectilinear slice. */
+  topSurfacePattern: "auto" | "rectilinear" | "monotonic" | "concentric";
   adaptive: boolean;
   adaptiveMin: number;
   adaptiveMax: number;
@@ -86,6 +88,7 @@ export const DEFAULT_PRESET: PresetSettings = {
   brimWidthMm: 5,
   brimGapMm: 0.1,
   skirtLoops: 0,
+  topSurfacePattern: "auto",
   adaptive: false,
   adaptiveMin: 0.08,
   adaptiveMax: 0.2,
@@ -138,7 +141,7 @@ export function presetKeys(): (keyof PresetSettings)[] {
 }
 
 /** Keys added after project and profile files were versioned. A file written before one reads its default. */
-const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow", "retractOn", "retractLength", "retractSpeed", "supportAvoidance", "supportSource", "minLayerTimeS", "minLayerSpeedMmS", "adhesion", "brimWidthMm", "brimGapMm", "skirtLoops"]);
+const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow", "retractOn", "retractLength", "retractSpeed", "supportAvoidance", "supportSource", "minLayerTimeS", "minLayerSpeedMmS", "adhesion", "brimWidthMm", "brimGapMm", "skirtLoops", "topSurfacePattern"]);
 
 /** The preset a project or profile file stores, or null when a key is missing or has the wrong type. */
 export function readPresetSettings(value: unknown): PresetSettings | null {
