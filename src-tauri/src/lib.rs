@@ -4,11 +4,10 @@ use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use lime_slice_core::{
-    cancel_all, keep_support_bases, mesh_preview_tol, pareto_request,
-    flow_from_request, pressure_advance_from_request, retract_from_request,
-    slice_payload_watched, strategy_card, temperature_from_request, FlowCalibRequest, GcodeText,
-    Job, PaCalibRequest, PayloadError, Progress, RetractCalibRequest, SliceCache, SliceRequest,
-    Status, TempCalibRequest, Watch,
+    cancel_all, flow_from_request, keep_support_bases, mesh_preview_tol, pareto_request,
+    pressure_advance_from_request, retract_from_request, slice_payload_watched, strategy_card,
+    temperature_from_request, FlowCalibRequest, GcodeText, Job, PaCalibRequest, PayloadError,
+    Progress, RetractCalibRequest, SliceCache, SliceRequest, Status, TempCalibRequest, Watch,
 };
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -258,6 +257,77 @@ fn model_distance(payload: String) -> Result<String, String> {
     lime_model_load::distance(id, a_kind, a_index, b_kind, b_index)
 }
 
+#[tauri::command]
+fn model_boolean(payload: String) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+    let id = value
+        .get("id")
+        .and_then(|item| item.as_i64())
+        .ok_or_else(|| "missing id".to_string())? as i32;
+    let op = value
+        .get("op")
+        .and_then(|item| item.as_str())
+        .ok_or_else(|| "missing op".to_string())?;
+    let primitive = value
+        .get("primitive")
+        .and_then(|item| item.as_str())
+        .ok_or_else(|| "missing primitive".to_string())?;
+    let number = |key: &str| value.get(key).and_then(|item| item.as_f64()).unwrap_or(0.0);
+    let chord = value
+        .get("chordMm")
+        .or_else(|| value.get("stepToleranceMm"))
+        .and_then(|item| item.as_f64())
+        .unwrap_or(0.1);
+    lime_model_load::boolean(
+        id,
+        op,
+        primitive,
+        lime_model_load::Tool {
+            origin: [number("x"), number("y"), number("z")],
+            size: [number("dx"), number("dy"), number("dz")],
+            radius: number("radius"),
+            height: number("height"),
+        },
+        chord,
+    )
+}
+
+#[tauri::command]
+fn model_split(payload: String) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+    let id = value
+        .get("id")
+        .and_then(|item| item.as_i64())
+        .ok_or_else(|| "missing id".to_string())? as i32;
+    let number = |key: &str| value.get(key).and_then(|item| item.as_f64()).unwrap_or(0.0);
+    let chord = value
+        .get("chordMm")
+        .and_then(|item| item.as_f64())
+        .unwrap_or(0.1);
+    lime_model_load::split(
+        id,
+        lime_model_load::Plane {
+            origin: [number("x"), number("y"), number("z")],
+            normal: [number("nx"), number("ny"), number("nz")],
+        },
+        chord,
+    )
+}
+
+#[tauri::command]
+fn model_undo(payload: String) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+    let id = value
+        .get("id")
+        .and_then(|item| item.as_i64())
+        .ok_or_else(|| "missing id".to_string())? as i32;
+    let chord = value
+        .get("chordMm")
+        .and_then(|item| item.as_f64())
+        .unwrap_or(0.1);
+    lime_model_load::undo(id, chord)
+}
+
 fn base64_decode(data: &str) -> Result<Vec<u8>, String> {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD
@@ -353,6 +423,9 @@ pub fn run() {
             preview_mesh,
             model_solid,
             model_distance,
+            model_boolean,
+            model_split,
+            model_undo,
             prusa_link_http
         ])
         .run(tauri::generate_context!())

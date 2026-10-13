@@ -50,6 +50,61 @@ pub fn distance(id: i32, a_kind: &str, a: i32, b_kind: &str, b: i32) -> String {
     }
 }
 
+/// A box, cylinder, or sphere in millimetres. `origin` is the box corner, the cylinder base, or the sphere center.
+#[derive(Clone, Copy)]
+pub struct Tool {
+    pub origin: [f64; 3],
+    pub size: [f64; 3],
+    pub radius: f64,
+    pub height: f64,
+}
+
+/// A plane through `origin` with `normal`, in millimetres.
+#[derive(Clone, Copy)]
+pub struct Plane {
+    pub origin: [f64; 3],
+    pub normal: [f64; 3],
+}
+
+/// Fuse, cut, or common the open solid with a box, cylinder, or sphere. A failure leaves the solid unchanged.
+pub fn boolean(id: i32, op: &str, primitive: &str, tool: Tool, chord_mm: f64) -> String {
+    #[cfg(lime_occt)]
+    {
+        native::boolean(id, op, primitive, tool, chord_mm)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = (id, op, primitive, tool, chord_mm);
+        MISSING.into()
+    }
+}
+
+/// Split the open solid with a plane. The negative side stays; `other` is the positive side.
+pub fn split(id: i32, plane: Plane, chord_mm: f64) -> String {
+    #[cfg(lime_occt)]
+    {
+        native::split(id, plane, chord_mm)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = (id, plane, chord_mm);
+        MISSING.into()
+    }
+}
+
+/// Restore the solid from before the last boolean or split.
+pub fn undo(id: i32, chord_mm: f64) -> String {
+    #[cfg(lime_occt)]
+    {
+        native::undo(id, chord_mm)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = (id, chord_mm);
+        MISSING.into()
+    }
+}
+
 fn export_json(text: String) -> *mut c_char {
     CString::new(text)
         .unwrap_or_else(|_| CString::new("{\"error\":\"bridge text was not a C string\"}").unwrap())
@@ -88,7 +143,68 @@ pub unsafe extern "C" fn lime_occt_distance(
 }
 
 /// # Safety
-/// `text` is null or a pointer returned by `lime_occt_open_box`, `lime_occt_open_step`, or `lime_occt_distance`.
+/// `op` and `primitive` are null or valid null-terminated strings. The returned pointer is freed with `lime_occt_string_free`.
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub unsafe extern "C" fn lime_occt_boolean(
+    id: i32,
+    op: *const c_char,
+    primitive: *const c_char,
+    x: f64,
+    y: f64,
+    z: f64,
+    dx: f64,
+    dy: f64,
+    dz: f64,
+    radius: f64,
+    height: f64,
+    chord_mm: f64,
+) -> *mut c_char {
+    export_json(boolean(
+        id,
+        &cstr(op),
+        &cstr(primitive),
+        Tool {
+            origin: [x, y, z],
+            size: [dx, dy, dz],
+            radius,
+            height,
+        },
+        chord_mm,
+    ))
+}
+
+/// The returned pointer is freed with `lime_occt_string_free`.
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub extern "C" fn lime_occt_split(
+    id: i32,
+    x: f64,
+    y: f64,
+    z: f64,
+    nx: f64,
+    ny: f64,
+    nz: f64,
+    chord_mm: f64,
+) -> *mut c_char {
+    export_json(split(
+        id,
+        Plane {
+            origin: [x, y, z],
+            normal: [nx, ny, nz],
+        },
+        chord_mm,
+    ))
+}
+
+/// The returned pointer is freed with `lime_occt_string_free`.
+#[no_mangle]
+pub extern "C" fn lime_occt_undo(id: i32, chord_mm: f64) -> *mut c_char {
+    export_json(undo(id, chord_mm))
+}
+
+/// # Safety
+/// `text` is null or a pointer returned by one of the `lime_occt_*` JSON functions.
 #[no_mangle]
 pub unsafe extern "C" fn lime_occt_string_free(text: *mut c_char) {
     if !text.is_null() {
@@ -100,7 +216,9 @@ fn cstr(ptr: *const c_char) -> String {
     if ptr.is_null() {
         return String::new();
     }
-    unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned()
+    unsafe { CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[cfg(lime_occt)]
@@ -119,6 +237,31 @@ mod native {
             b_kind: *const c_char,
             b: i32,
         ) -> *mut c_char;
+        fn lime_model_occt_boolean(
+            id: i32,
+            op: *const c_char,
+            primitive: *const c_char,
+            x: f64,
+            y: f64,
+            z: f64,
+            dx: f64,
+            dy: f64,
+            dz: f64,
+            radius: f64,
+            height: f64,
+            chord: f64,
+        ) -> *mut c_char;
+        fn lime_model_occt_split(
+            id: i32,
+            x: f64,
+            y: f64,
+            z: f64,
+            nx: f64,
+            ny: f64,
+            nz: f64,
+            chord: f64,
+        ) -> *mut c_char;
+        fn lime_model_occt_undo(id: i32, chord: f64) -> *mut c_char;
         fn lime_model_occt_string_free(text: *mut c_char);
     }
 
@@ -126,7 +269,9 @@ mod native {
         if ptr.is_null() {
             return "{\"error\":\"Open CASCADE returned nothing\"}".into();
         }
-        let text = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+        let text = unsafe { CStr::from_ptr(ptr) }
+            .to_string_lossy()
+            .into_owned();
         unsafe { lime_model_occt_string_free(ptr) };
         text
     }
@@ -153,5 +298,42 @@ mod native {
             return "{\"error\":\"pick kind is not a C string\"}".into();
         };
         take(unsafe { lime_model_occt_distance(id, a_kind.as_ptr(), a, b_kind.as_ptr(), b) })
+    }
+
+    pub fn boolean(id: i32, op: &str, primitive: &str, tool: super::Tool, chord_mm: f64) -> String {
+        let Ok(op) = CString::new(op) else {
+            return "{\"error\":\"boolean op is not a C string\"}".into();
+        };
+        let Ok(primitive) = CString::new(primitive) else {
+            return "{\"error\":\"primitive name is not a C string\"}".into();
+        };
+        let [x, y, z] = tool.origin;
+        let [dx, dy, dz] = tool.size;
+        take(unsafe {
+            lime_model_occt_boolean(
+                id,
+                op.as_ptr(),
+                primitive.as_ptr(),
+                x,
+                y,
+                z,
+                dx,
+                dy,
+                dz,
+                tool.radius,
+                tool.height,
+                chord_mm,
+            )
+        })
+    }
+
+    pub fn split(id: i32, plane: super::Plane, chord_mm: f64) -> String {
+        let [x, y, z] = plane.origin;
+        let [nx, ny, nz] = plane.normal;
+        take(unsafe { lime_model_occt_split(id, x, y, z, nx, ny, nz, chord_mm) })
+    }
+
+    pub fn undo(id: i32, chord_mm: f64) -> String {
+        take(unsafe { lime_model_occt_undo(id, chord_mm) })
     }
 }
