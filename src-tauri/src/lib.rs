@@ -217,6 +217,47 @@ fn preview_mesh(payload: String) -> Result<String, String> {
     serde_json::to_string(&preview).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn model_solid(payload: String) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+    let data_b64 = value
+        .get("dataB64")
+        .and_then(|item| item.as_str())
+        .ok_or_else(|| "missing dataB64".to_string())?;
+    let chord = value
+        .get("stepToleranceMm")
+        .and_then(|item| item.as_f64())
+        .unwrap_or(0.1);
+    let bytes = base64_decode(data_b64)?;
+    lime_model_load::open_step_bytes(&bytes, chord)
+}
+
+#[tauri::command]
+fn model_distance(payload: String) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+    let id = value
+        .get("id")
+        .and_then(|item| item.as_i64())
+        .ok_or_else(|| "missing id".to_string())? as i32;
+    let a_kind = value
+        .get("aKind")
+        .and_then(|item| item.as_str())
+        .ok_or_else(|| "missing aKind".to_string())?;
+    let a_index = value
+        .get("aIndex")
+        .and_then(|item| item.as_i64())
+        .ok_or_else(|| "missing aIndex".to_string())? as i32;
+    let b_kind = value
+        .get("bKind")
+        .and_then(|item| item.as_str())
+        .ok_or_else(|| "missing bKind".to_string())?;
+    let b_index = value
+        .get("bIndex")
+        .and_then(|item| item.as_i64())
+        .ok_or_else(|| "missing bIndex".to_string())? as i32;
+    lime_model_load::distance(id, a_kind, a_index, b_kind, b_index)
+}
+
 fn base64_decode(data: &str) -> Result<Vec<u8>, String> {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD
@@ -288,6 +329,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(window_state())
         .setup(|app| {
+            if let Ok(dir) = app.path().resource_dir() {
+                lime_model_load::add_search_dir(dir.join("occt").join("lib"));
+            }
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_decorations(native_window_decorations());
                 let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/128x128.png"))?;
@@ -307,6 +351,8 @@ pub fn run() {
             save_text_file,
             pareto_model,
             preview_mesh,
+            model_solid,
+            model_distance,
             prusa_link_http
         ])
         .run(tauri::generate_context!())

@@ -254,7 +254,7 @@ select option, select optgroup { background: var(--surface-1); color: var(--text
 .viewbar .btn:not(.mode), .stage-tools .btn, .legend .btn { background: var(--stage-chip); border-color: var(--stage-chip-line); color: var(--on-stage-dim); }
 .viewbar .btn:not(.mode):hover:not(:disabled), .stage-tools .btn:hover:not(:disabled), .legend .btn:hover:not(:disabled) { background: var(--stage-chip-on); color: var(--on-stage); border-color: var(--stage-chip-line); }
 .stage-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(72px, 72px) minmax(0, 1fr); }
-#prepareBody, #previewBody { min-height: 0; }
+#prepareBody, #previewBody, #modelBody { min-height: 0; }
 .previews { min-height: 0; display: grid; grid-template-columns: 1fr 1fr; }
 .pane { min-width: 0; min-height: 0; position: relative; }
 .belt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2) var(--space-2); }
@@ -496,9 +496,33 @@ canvas { width: 100%; height: 100%; display: block; touch-action: none; }
 .help-keys { display: flex; flex-wrap: wrap; gap: var(--space-1); }
 .help-group kbd { white-space: nowrap; }
 kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text-dim); font: 500 var(--fs-1) / 1.35 var(--font-mono); }
-#prepareBody, #previewBody { position: relative; }
-#prepareBody { display: block; flex: 1 1 auto; min-height: 0; height: auto; }
-#prepare { width: 100%; height: 100%; }
+#prepareBody, #previewBody, #modelBody { position: relative; }
+#prepareBody, #modelBody { display: block; flex: 1 1 auto; min-height: 0; height: auto; }
+#prepare, #model { width: 100%; height: 100%; display: block; }
+.model-bar {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+.model-bar .modes, .model-bar .btn { pointer-events: auto; }
+.model-readout {
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-2);
+}
 .gizmo-readout {
   position: absolute;
   left: 12px;

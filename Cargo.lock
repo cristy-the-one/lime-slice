@@ -2071,7 +2071,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e9ec52138abedcc58dc17a7c6c0c00a2bdb4f3427c7f63fa97fd0d859155caf"
 dependencies = [
  "gtk-sys",
- "libloading",
+ "libloading 0.7.4",
  "once_cell",
 ]
 
@@ -2101,6 +2101,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "libloading"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link 0.2.1",
+]
+
+[[package]]
 name = "libredox"
 version = "0.1.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2111,17 +2121,34 @@ dependencies = [
 
 [[package]]
 name = "lime-model"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "cc",
 ]
 
 [[package]]
-name = "lime-slice"
+name = "lime-model-load"
 version = "1.1.0"
+dependencies = [
+ "libloading 0.8.9",
+]
+
+[[package]]
+name = "lime-model-occt"
+version = "1.1.0"
+dependencies = [
+ "cc",
+ "lime-model-load",
+ "serde_json",
+]
+
+[[package]]
+name = "lime-slice"
+version = "1.1.1"
 dependencies = [
  "base64 0.22.1",
  "clap",
+ "lime-model-load",
  "lime-slice-core",
  "serde_json",
  "tiny_http",
@@ -2129,7 +2156,7 @@ dependencies = [
 
 [[package]]
 name = "lime-slice-core"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "base64 0.22.1",
  "clipper2",
@@ -2147,9 +2174,10 @@ dependencies = [
 
 [[package]]
 name = "lime-slice-desktop"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "base64 0.22.1",
+ "lime-model-load",
  "lime-slice-core",
  "serde",
  "serde_json",

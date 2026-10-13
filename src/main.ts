@@ -10,7 +10,7 @@ import { mountConnection } from "./ui/connection";
 import { mountPlatform } from "./platform";
 import { mountToasts } from "./ui/toasts";
 import { session, state } from "./app/state";
-import { activeSection, draw, fitNarrow, mountViews, paintGizmoReadout, prepare, previewCenter, resize, selectedObjectIndex, setHelp, setStage, setView, view3d } from "./app/viewer";
+import { activeSection, draw, fitNarrow, model, mountViews, paintGizmoReadout, prepare, previewCenter, resize, selectedObjectIndex, setHelp, setStage, setView, view3d } from "./app/viewer";
 import { probe, renderChrome } from "./app/settings";
 import { runSlice, treeSupports } from "./app/slice-run";
 import { turnOnSupports } from "./app/support-actions";
@@ -35,6 +35,7 @@ applyTheme(loadTheme());
 onSchemeChange(() => {
   view3d.setTheme();
   prepare.setTheme();
+  model.setTheme();
   draw();
 });
 renderChrome();
@@ -42,6 +43,7 @@ fitNarrow();
 resize();
 view3d.setTheme();
 prepare.setTheme();
+model.setTheme();
 mountChrome({
   setGizmoTool: (tool) => prepare.setGizmoTool(tool),
   onToolReadout: () => paintGizmoReadout(),

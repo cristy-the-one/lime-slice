@@ -1288,6 +1288,10 @@ fn handle(mut request: tiny_http::Request, token: Option<&str>) {
                 Some(text) => (200, text.text()),
                 None => (404, err_json("g-code expired")),
             }
+        } else if method == "POST" && path.starts_with("/api/model/distance") {
+            model_reply(model_distance_request(&body))
+        } else if method == "POST" && path.starts_with("/api/model") {
+            model_reply(model_open_request(&body))
         } else if method == "POST" && path.starts_with("/api/mesh") {
             match serde_json::from_str::<SliceRequest>(&body) {
                 Ok(req) => match decode_mesh(&req) {
@@ -1378,6 +1382,63 @@ fn decode_mesh(req: &SliceRequest) -> Result<Vec<u8>, String> {
 
 fn err_json(message: &str) -> String {
     serde_json::json!({ "error": message }).to_string()
+}
+
+fn model_reply(result: Result<String, String>) -> (u16, String) {
+    match result {
+        Ok(json) => {
+            let failed = serde_json::from_str::<serde_json::Value>(&json)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("error")
+                        .and_then(|err| err.as_str())
+                        .map(|text| !text.is_empty())
+                })
+                .unwrap_or(false);
+            if failed { (400, json) } else { (200, json) }
+        }
+        Err(err) => (400, err_json(&err)),
+    }
+}
+
+fn model_open_request(body: &str) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|err| err.to_string())?;
+    let data_b64 = json_str(&value, "dataB64").or_else(|_| json_str(&value, "data_b64"))?;
+    let chord = value
+        .get("stepToleranceMm")
+        .or_else(|| value.get("step_tolerance_mm"))
+        .and_then(|item| item.as_f64())
+        .unwrap_or(0.1);
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_b64.trim())
+        .map_err(|err| err.to_string())?;
+    lime_model_load::open_step_bytes(&bytes, chord)
+}
+
+fn model_distance_request(body: &str) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|err| err.to_string())?;
+    let id = json_i32(&value, "id")?;
+    let a_kind = json_str(&value, "aKind")?;
+    let a_index = json_i32(&value, "aIndex")?;
+    let b_kind = json_str(&value, "bKind")?;
+    let b_index = json_i32(&value, "bIndex")?;
+    lime_model_load::distance(id, a_kind, a_index, b_kind, b_index)
+}
+
+fn json_str<'a>(value: &'a serde_json::Value, key: &str) -> Result<&'a str, String> {
+    value
+        .get(key)
+        .and_then(|item| item.as_str())
+        .ok_or_else(|| format!("missing {key}"))
+}
+
+fn json_i32(value: &serde_json::Value, key: &str) -> Result<i32, String> {
+    value
+        .get(key)
+        .and_then(|item| item.as_i64())
+        .map(|number| number as i32)
+        .ok_or_else(|| format!("missing {key}"))
 }
 
 fn print_audit(a: &lime_slice_core::SliceAudit) {

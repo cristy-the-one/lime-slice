@@ -4,11 +4,13 @@ members = [
     "crates/lime-slice-core",
     "crates/lime-slice",
     "crates/lime-model",
+    "crates/lime-model-occt",
+    "crates/lime-model-load",
     "src-tauri",
 ]
 
 [workspace.package]
-version = "1.1.0"
+version = "1.1.1"
 edition = "2021"
 license = "MIT"
 publish = false

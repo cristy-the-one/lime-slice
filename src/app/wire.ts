@@ -5,7 +5,7 @@ import { applyTheme, type ThemeChoice } from "../theme";
 import { clampOffset, flipSection } from "../section-plane";
 import { wheelNotch } from "../gizmo-math";
 import { state, type CardId } from "./state";
-import { commitSplit, draw, layerGcode, paintPlayback, paintSectionChrome, prepare, scrub, sectionLimit, setHelp, setStage, setView, stepGizmo, stopPlay, syncGcodeHighlight, togglePlay, view3d } from "./viewer";
+import { commitSplit, draw, layerGcode, model, paintPlayback, paintSectionChrome, prepare, scrub, sectionLimit, setHelp, setStage, setView, stepGizmo, stopPlay, syncGcodeHighlight, togglePlay, view3d } from "./viewer";
 import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCal, runSlice, runTempCal } from "./slice-run";
 import { planFileDrop } from "../file-drop";
 import { addDroppedFiles, addMeshBytes, adoptBytes, export3mf, exportGcode, fail, loadNamed, pickAddedMesh, place, plateHasMesh, saveText, setPlaceCenter, withPrinterGcode } from "./files";
@@ -398,18 +398,20 @@ export function wireApp() {
   });
   document.querySelector(".top")!.addEventListener("input", onSettings);
   document.querySelectorAll<HTMLButtonElement>(".mode:not(.tab)").forEach((button) => {
+    if (!button.dataset.mode) return;
     button.addEventListener("click", () => setView(button.dataset.mode as typeof state.viewMode, "user"));
   });
   document.querySelector("#theme")!.addEventListener("change", (ev) => {
     applyTheme((ev.target as HTMLSelectElement).value as ThemeChoice);
     view3d.setTheme();
     prepare.setTheme();
+    model.setTheme();
     draw();
   });
   document.querySelectorAll<HTMLButtonElement>(".tab").forEach((button) => {
     button.addEventListener("click", () => {
       const tab = button.dataset.tab;
-      setStage(tab === "prepare" || tab === "gcode" ? tab : "preview");
+      setStage(tab === "prepare" || tab === "gcode" || tab === "model" ? tab : "preview");
     });
   });
   document.querySelector("#play")!.addEventListener("click", () => togglePlay());
