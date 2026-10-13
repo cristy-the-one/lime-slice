@@ -1,6 +1,7 @@
 import { mountSettingsPanel } from "./settings-panel";
 import { mountSplitters } from "./splitters";
 import { mountTitlebar } from "./titlebar";
+import { mountMeasureToggle } from "./measure-toggle";
 import { mountViewport, type ViewPreset } from "./viewport";
 import "./shell.css";
 
@@ -13,4 +14,5 @@ export function mountShell(hooks: { setViewPreset(preset: ViewPreset): void }) {
   mountSplitters();
   mountSettingsPanel();
   mountViewport(hooks);
+  mountMeasureToggle();
 }

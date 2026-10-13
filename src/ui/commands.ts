@@ -59,6 +59,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "view-top", label: "Top view", group: "View", keys: ["T"], target: "#viewPresets button:nth-child(1)", keywords: "camera prepare" },
   { id: "view-front", label: "Front view", group: "View", keys: ["Y"], target: "#viewPresets button:nth-child(2)", keywords: "camera prepare" },
   { id: "view-iso", label: "Iso view", group: "View", keys: ["I"], target: "#viewPresets button:nth-child(3)", keywords: "camera prepare isometric" },
+  { id: "measure", label: "Measure", group: "View", keys: ["Shift+M"], target: "#measureField", keywords: "ruler size dimensions scale bar millimetres" },
   { id: "layer-up", label: "Layer up", group: "Layers", keys: ["↑", "]"], when: "preview", repeat: true, show: "help" },
   { id: "layer-down", label: "Layer down", group: "Layers", keys: ["↓", "["], when: "preview", repeat: true, show: "help" },
   { id: "layer-up-10", label: "Ten layers up", group: "Layers", keys: ["PgUp"], when: "preview", repeat: true, show: "help" },

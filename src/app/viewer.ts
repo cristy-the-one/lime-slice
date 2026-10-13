@@ -24,6 +24,9 @@ import { FLAT_PAD_CSS, fitFlatView, frameFlatView, mapFlat, panFlat, unmapFlat, 
 import { type AxisBounds, type SplitSync, splitOutside, nextSplitAt, roundSplit, clampSplit } from "../split-at";
 import { plateUnionBounds } from "../plate";
 import { matMul, rotX, rotY, rotZ } from "../mesh-place";
+import { type Box, unionBox } from "../measure";
+import { mountMeasureOverlay, type MeasureOverlay } from "../measure-overlay";
+import { measureOn, onMeasureChange } from "../measure-pref";
 import { type Vec3, sectionReach, type SectionSpec, keepsPoint, clipPolyline, layerCut } from "../section-plane";
 
 export function paintLegend() {
@@ -727,6 +730,21 @@ function shownOffset(): [number, number] {
   });
 }
 
+/**
+ * The printed part's box in bed millimetres: the reply's mesh where it is drawn, or every plate object's
+ * box at its own shown offset. Supports and the skirt are not in the mesh, so they are not in the size.
+ */
+export function printedBox(): Box | null {
+  const result = state.result;
+  if (!result) return null;
+  const parts = result.objects ?? [result.mesh];
+  const offsets = result.objects ? objectShownOffsets() : [shownOffset()];
+  return unionBox(parts.map((part, i) => {
+    const [dx, dy] = offsets[i] ?? [0, 0];
+    return { min: [part.min[0] + dx, part.min[1] + dy, part.min[2]], max: [part.max[0] + dx, part.max[1] + dy, part.max[2]] };
+  }));
+}
+
 /** `state.atMm` is a bed coordinate. The preview draws the reply frame, where the plane sits at minus the shown offset. */
 function splitInReply(): number {
   const [dx, dy] = shownOffset();
@@ -837,6 +855,7 @@ export function draw() {
   const layer = state.result?.layers[state.layer];
   const mesh = state.result?.mesh;
   if (!layer || !mesh) {
+    flatMeasure?.render(null);
     sync3d();
     return;
   }
@@ -915,7 +934,34 @@ export function draw() {
     fx.ctx.fill();
   }
   if (state.blendKind === "byRegion") paintRegionOverlay(mesh, map, window.devicePixelRatio || 1);
+  paintFlatMeasure(map, scale);
   sync3d();
+}
+
+let flatMeasure: MeasureOverlay | null = null;
+let flatPane: HTMLElement | null = null;
+
+/**
+ * The 2D view's size callouts and scale bar: straight down, so one pixel is exactly `1 / scale` canvas pixels of
+ * millimetres. The overlay is the pane, which is taller than the canvas by the band the scale bar sits in.
+ */
+function paintFlatMeasure(map: (x: number, y: number) => [number, number], scale: number) {
+  const [dx, dy] = shownOffset();
+  const w = fx.canvas.clientWidth;
+  const h = flatPane?.clientHeight ?? fx.canvas.clientHeight;
+  const css = w / Math.max(1, fx.canvas.width);
+  flatMeasure?.render({
+    w,
+    h,
+    box: printedBox(),
+    cam: null,
+    project: (p) => {
+      const [x, y] = map(p[0] - dx, p[1] - dy);
+      return [x * css, y * css];
+    },
+    mmPerPx: 1 / (scale * css),
+    bed: null,
+  });
 }
 
 export function segmentStart(paths: PreviewPath[], point: PlayPoint): [number, number] {
@@ -996,6 +1042,7 @@ export function sync3d() {
   fx.view3d.setColorMode(state.colorMode);
   fx.view3d.setShowTravel(state.showTravel && !state.hidden.has("travel"));
   fx.view3d.setRange(state.rangeLow, state.layer);
+  fx.view3d.setMeasureBox(printedBox());
   fx.view3d.setSection(state.sectionOn ? { normal: state.sectionNormal, offset: state.sectionOffset } : null);
   const moves = movesNow();
   const point = moves[state.move];
@@ -1021,6 +1068,14 @@ export function mountViews() {
   const ctx = canvas.getContext("2d")!;
   view3d = createSliceView(document.querySelector<HTMLCanvasElement>("#view3d")!);
   prepare = createPrepareView(document.querySelector<HTMLCanvasElement>("#prepare")!);
+  flatPane = document.querySelector<HTMLElement>("#pane2d")!;
+  flatMeasure = mountMeasureOverlay(flatPane);
+  // The scale bar has a band under the layer, so a layer fitted to the canvas never reaches it.
+  flatPane.classList.toggle("has-measure", measureOn());
+  onMeasureChange(() => {
+    flatPane!.classList.toggle("has-measure", measureOn());
+    resize();
+  });
   const sparkCanvas = document.querySelector<HTMLCanvasElement>("#spark");
   if (sparkCanvas) new ResizeObserver(() => paintSpark()).observe(sparkCanvas);
   prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);

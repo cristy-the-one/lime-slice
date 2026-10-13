@@ -15,6 +15,10 @@ import { beltArrowRun, beltStripLength, tiltPose, type BeltSettings } from "./be
 import { arrowHeading, beltArrowGeometry, planeLean } from "./belt-scene";
 import { hexToThree, themeColors } from "./theme";
 import { frameFactor, frameGizmoPx, frameLookShift, framePanPx } from "./frame-fit";
+import { unionBox } from "./measure";
+import { perspectiveMeasure } from "./measure-camera";
+import { mountMeasureOverlay } from "./measure-overlay";
+import { onMeasureChange } from "./measure-pref";
 
 type Axis = "x" | "y" | "z";
 type HandleHit = { kind: "ring" | "move"; axis: Axis };
@@ -263,6 +267,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let bedY = 220;
   let bedZ = 250;
   let belt: BeltSettings | null = null;
+  /** The drawn plate: the bed, or the belt strip. */
+  let bedSpan = { x: bedX, y: bedY };
   let splitCb: ((at: number) => void) | null = null;
   let rotateCb: ((axis: Axis, deltaDeg: number, totalDeg: number) => void) | null = null;
   let rotateEndCb: (() => void) | null = null;
@@ -362,6 +368,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     renderer.setViewport(0, 0, drawSize.x, drawSize.y);
     renderer.render(scene, camera);
     publishModifierMarker();
+    drawMeasure();
     // ViewHelper.render clears color for its corner viewport. With scissor off,
     // that clear wipes the whole canvas and the next frame stays in the corner.
     if (canvas.clientWidth > 2 && canvas.clientHeight > 2) {
@@ -373,12 +380,34 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     if (viewHelper.animating) requestRender();
   }
   controls.addEventListener("change", requestRender);
+  onMeasureChange(requestRender);
+
+  /** The axis triad takes the bottom right corner, so the scale bar sits left of it. */
+  const measure = mountMeasureOverlay(canvas.parentElement ?? document.body, { scaleRight: 140 });
+  /** The selected objects' box, or the one placed part before a plate exists. Nothing selected measures nothing. */
+  function measuredBox() {
+    const boxes = plateEntries.length > 0 ? plateEntries.filter((entry) => entry.selected) : meshBounds ? [meshBounds] : [];
+    return unionBox(boxes);
+  }
+  function drawMeasure() {
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    measure.render({
+      w,
+      h,
+      box: measuredBox(),
+      cam: frame.fromScene(camera.position),
+      bed: { x0: 0, y0: 0, x1: bedSpan.x, y1: bedSpan.y },
+      ...perspectiveMeasure(camera, controls.target, w, h, (p, out) => out.set(p[0], p[2], -p[1])),
+    });
+  }
 
   function layoutBed() {
     const depth = meshBounds ? Math.max(1, meshBounds.max[1] - meshBounds.min[1]) : 30;
     const strip = belt ? beltStripLength(belt, depth) : null;
     const spanX = strip ? belt!.widthMm : bedX;
     const spanY = strip ? strip.lengthMm : bedY;
+    bedSpan = { x: spanX, y: spanY };
     syncBedGrid(bed, spanX, spanY, hexToThree(colors.line), hexToThree(colors.bedMinor));
     plate.scale.set(spanX, spanY, 1);
     plate.position.set(spanX / 2, -0.04, -spanY / 2);
