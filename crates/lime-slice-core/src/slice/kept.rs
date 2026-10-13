@@ -418,6 +418,7 @@ pub(super) fn keys(
         ironing: blank.ironing,
         fuzzy_skin: blank.fuzzy_skin,
         seam_paint: Vec::new(),
+        reinforcement: Vec::new(),
         variable_width: blank.variable_width,
         overhang_control: blank.overhang_control,
         classic: blank.classic,
@@ -457,6 +458,7 @@ pub(super) fn keys(
         ironing: blank.ironing,
         fuzzy_skin: blank.fuzzy_skin,
         seam_paint: Vec::new(),
+        reinforcement: Vec::new(),
         // Supports stay global: ranges, volumes, and an object's infill,
         // walls, and speed change only the part.
         overrides: blank.overrides.clone(),
@@ -472,6 +474,7 @@ pub(super) fn keys(
         let s = SliceSettings {
             overrides: blank.overrides.clone(),
             ironing: blank.ironing,
+            reinforcement: Vec::new(),
             ..s.clone()
         };
         key(&s, Some(blend))
