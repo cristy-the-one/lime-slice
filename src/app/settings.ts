@@ -1256,7 +1256,7 @@ export function onSettings(ev: Event) {
     noteHeatLimits();
     return;
   }
-  if (t.id === "machineHost" || t.id === "machineKey" || t.id === "machineStartPrint") {
+  if (t.id === "machineHost" || t.id === "machineKey" || t.id === "machineStartPrint" || t.id === "machineHostType") {
     rememberPrusaForm();
     return;
   }

@@ -58,7 +58,7 @@ import {
   saveMachine,
   typedMachineName,
 } from "./machine-actions";
-import { refreshPrusaJob, rememberPrusaForm, testPrusaLink, uploadToPrusaLink } from "./prusa-actions";
+import { importMoonrakerConfig, refreshPrusaJob, rememberPrusaForm, testPrusaLink, uploadToPrusaLink } from "./prusa-actions";
 
 export function wireApp() {
   bootMachines();
@@ -111,7 +111,7 @@ export function wireApp() {
       if (id) applyNamedProfile(id);
       return;
     }
-    if (target.id === "machineHost" || target.id === "machineKey" || target.id === "machineStartPrint") {
+    if (target.id === "machineHost" || target.id === "machineKey" || target.id === "machineStartPrint" || target.id === "machineHostType") {
       rememberPrusaForm();
       return;
     }
@@ -266,6 +266,10 @@ export function wireApp() {
     }
     if (t.id === "prusaJob") {
       refreshPrusaJob();
+      return;
+    }
+    if (t.id === "moonrakerImport") {
+      void importMoonrakerConfig();
       return;
     }
   });
