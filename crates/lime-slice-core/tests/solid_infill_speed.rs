@@ -449,7 +449,7 @@ fn gap_fill_of_a_rounded_cover_prints_beside_its_solid() {
     // corner beads, 96 m of travel on the flat cover.
     let tilted = travels(true);
     let flat = travels(false);
-    let gap_fill_m = |t: &Travels| t.by_kind["GAP-FILL"].1 / 1000.0;
+    let gap_fill_m = |t: &Travels| t.by_kind.get("GAP-FILL").map_or(0.0, |k| k.1) / 1000.0;
     assert!(
         gap_fill_m(&flat) <= 20.0 && gap_fill_m(&tilted) <= 25.0,
         "gap fill travels {:.1} m flat, {:.1} m on the belt",

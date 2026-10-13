@@ -53,7 +53,7 @@ fn cartesian_gcode_hash_is_locked() {
     // request still takes that path, so the bytes do not move.
     assert_eq!(
         hash,
-        "fa751c9d8bf53b5943f83cf5be9500b997d00632f758ca5bbfd3fe8bffdc91b5"
+        "238c692648d889ac326075a36cee9b0717dce0ceada00606c5f0d5645baae043"
     );
     let debug = format!("{:?}", SliceSettings::default());
     assert!(!debug.contains("belt"), "{debug}");

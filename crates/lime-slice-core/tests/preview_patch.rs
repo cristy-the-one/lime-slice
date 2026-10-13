@@ -174,7 +174,7 @@ fn a_named_preview_gets_only_its_changed_layers() {
             patch["layers"].as_array().unwrap().len(),
             sent
         ),
-        (59, 80, 709),
+        (59, 80, 848),
         "changed layers, layers, paths sent"
     );
     // The part's own path count differs slightly between platforms (7564 on
@@ -250,7 +250,7 @@ fn settings_tweaks_are_patches_too() {
     }
     assert_eq!(
         seen,
-        [(0, 0), (0, 0), (56, 2165)],
+        [(0, 0), (0, 0), (56, 2163)],
         "changed layers and paths sent: a temperature and an acceleration change \
          nothing drawn, a support angle the supported layers"
     );

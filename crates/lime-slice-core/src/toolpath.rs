@@ -413,8 +413,24 @@ pub(crate) fn plan_region_split(
             continue;
         }
         let kind = infill_kind(strategy, shell);
-        let fill = solid_fill(area, line_width, std::f64::consts::FRAC_PI_4, None);
-        for pts in clip_infill(fill, area) {
+        // The top surface keeps its diagonal lines; the bottom skin runs as the
+        // interior's solid rows do.
+        let fill = if shell == ShellBand::Bottom {
+            island_loops(area)
+                .iter()
+                .flat_map(|island| {
+                    let angle = solid_row_angle(island, line_width, features.layer_index);
+                    let (pitch, through) = fit_bounds(island, angle, line_width);
+                    clip_infill(solid_fill(island, pitch, angle, through), island)
+                })
+                .collect()
+        } else {
+            clip_infill(
+                solid_fill(area, line_width, std::f64::consts::FRAC_PI_4, None),
+                area,
+            )
+        };
+        for pts in fill {
             if pts.len() >= 2 {
                 *seam_hint = *pts.last().unwrap();
                 let mut path = extrusion(kind, strategy, pts, line_width);
@@ -1785,10 +1801,13 @@ fn build_infill(
     features: &PathFeatures,
 ) -> Vec<Vec<[f64; 2]>> {
     if solid_infill(strategy) {
-        // Rows turn a quarter each layer, so no layer's lines cross.
-        let quarters = if features.layer_index % 2 == 0 { 1.0 } else { 3.0 };
-        let angle = std::f64::consts::FRAC_PI_4 * quarters;
-        return solid_rows(loops, line_width, angle);
+        return island_loops(loops)
+            .iter()
+            .flat_map(|island| {
+                let angle = solid_row_angle(island, line_width, features.layer_index);
+                solid_rows(island, line_width, angle)
+            })
+            .collect();
     }
     let sample = crate::inner_prof::Sample::start();
     let mut density = strategy.infill_density;
@@ -2027,6 +2046,56 @@ fn lightning(loops: &[Loop], spacing: f64) -> Vec<Vec<[f64; 2]>> {
     chained
 }
 
+/// The direction rows run in a solid island on a layer. Every row ends in a
+/// turn, and Klipper takes a turn at the speed its junction deviation allows,
+/// about 5 mm/s for a corner, so the fewest rows is the fastest fill. The
+/// island is tried along the X axis, at 45 degrees, and along its longest
+/// extent, and takes the pair of directions (a layer and the next, a quarter
+/// turn apart) with the fewest rows: another direction must beat an axis by
+/// a twentieth to be used. Layers alternate between the two, so no layer's
+/// lines run along the last one's.
+fn solid_row_angle(island: &[Loop], spacing: f64, layer_index: usize) -> f64 {
+    use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
+    let rows = |angle: f64| -> usize {
+        [angle, angle + FRAC_PI_2]
+            .into_iter()
+            .map(|a| {
+                horizontal_chords(&rotate_loops(island, -a), spacing, None)
+                    .iter()
+                    .map(|(_, spans)| spans.len())
+                    .sum::<usize>()
+            })
+            .sum()
+    };
+    let (mut angle, mut fewest) = (0.0, rows(0.0));
+    for candidate in [FRAC_PI_4, long_axis(island)] {
+        let count = rows(candidate);
+        if (count as f64) < fewest as f64 * 0.95 {
+            (angle, fewest) = (candidate, count);
+        }
+    }
+    if layer_index % 2 == 0 {
+        angle
+    } else {
+        angle + FRAC_PI_2
+    }
+}
+
+/// The direction of the island's longest extent: the turn of its bounding
+/// box that is narrowest across, in steps of three degrees.
+fn long_axis(island: &[Loop]) -> f64 {
+    let mut best = (f64::MAX, 0.0);
+    for k in 0..60 {
+        let angle = std::f64::consts::PI * k as f64 / 60.0;
+        if let Some((lo, hi)) = loop_bounds(&rotate_loops(island, -angle)) {
+            if hi[1] - lo[1] < best.0 - 1e-9 {
+                best = (hi[1] - lo[1], angle);
+            }
+        }
+    }
+    best.1
+}
+
 /// Rows shorter than this end before the head reaches its feed, and each
 /// turn costs about as much as the row.
 const SOLID_ROW_MM: f64 = 10.0;
@@ -2054,7 +2123,8 @@ fn solid_rows(loops: &[Loop], spacing: f64, base: f64) -> Vec<Vec<[f64; 2]>> {
             continue;
         }
         if short == 0.0 {
-            paths.extend(clip_infill(solid_fill(&rest, spacing, angle, None), &rest));
+            let (pitch, through) = fit_bounds(&rest, angle, spacing);
+            paths.extend(clip_infill(solid_fill(&rest, pitch, angle, through), &rest));
             return paths;
         }
         let half = spacing * 0.5;
@@ -2086,9 +2156,24 @@ fn solid_rows(loops: &[Loop], spacing: f64, base: f64) -> Vec<Vec<[f64; 2]>> {
         }
     }
     if !rest.is_empty() {
-        paths.extend(clip_infill(solid_fill(&rest, spacing, base, None), &rest));
+        let (pitch, through) = fit_bounds(&rest, base, spacing);
+        paths.extend(clip_infill(solid_fill(&rest, pitch, base, through), &rest));
     }
     paths
+}
+
+/// Row pitch and grid for rows at `angle` over `loops`: a whole number of rows
+/// laid edge to edge across the region's extent, so the far edge is not left
+/// bare by the part of a row that did not fit. The pitch stays within a half row
+/// of `spacing` over the rows' count.
+fn fit_bounds(loops: &[Loop], angle: f64, spacing: f64) -> (f64, Option<[f64; 2]>) {
+    let Some((lo, hi)) = loop_bounds(&rotate_loops(loops, -angle)) else {
+        return (spacing, None);
+    };
+    let height = hi[1] - lo[1];
+    let rows = (height / spacing).round().max(1.0);
+    let pitch = height / rows;
+    (pitch, Some(rot([lo[0], lo[1] + pitch * 0.5], angle)))
 }
 
 /// A solid island nowhere farther than this many beads from its edge is a
@@ -2856,8 +2941,12 @@ fn emit_support_loops(
     }
 }
 
+/// A circle as a closed polyline. Klipper takes each vertex of a loop at a
+/// speed that falls with the angle the path turns there, so a 0.78 mm tip of 12
+/// sides (30 degrees a turn) crawls at 17 mm/s; 24 sides take it at about
+/// 35 mm/s and cut a tree's support time by a tenth.
 fn circle_pts(c: [f64; 2], r: f64) -> Vec<[f64; 2]> {
-    let n = if r > 2.2 { 20 } else { 12 };
+    let n = if r > 2.2 { 20 } else { 24 };
     let mut pts: Vec<[f64; 2]> = (0..n)
         .map(|i| {
             let a = i as f64 * std::f64::consts::TAU / n as f64;
@@ -3507,7 +3596,21 @@ fn order_infill(
         rest_sample.order_rest(n as u64);
         return order_nearest(paths, grid.as_ref(), cursor, has, None);
     }
-    let ordered = apply_order(paths, &best.order, cursor, has, best.rotate);
+    let mut ordered = apply_order(paths, &best.order, cursor, has, best.rotate);
+    // Closed and open paths in one run: the seams are settled now, so 2-opt reads
+    // each loop as a stop at its start, and a loop is never reversed.
+    if closed && !ordered.iter().all(geom_closed) {
+        let ident: Vec<usize> = (0..ordered.len()).collect();
+        let (order, mut flips) = untangle(&ordered, &ident, cursor, has, to);
+        for (flip, &i) in flips.iter_mut().zip(&order) {
+            if geom_closed(&ordered[i]) {
+                *flip = false;
+            }
+        }
+        if order != ident || flips.iter().any(|f| *f) {
+            ordered = apply_flips(ordered, &order, &flips);
+        }
+    }
     rest_sample.order_rest(n as u64);
     ordered
 }
@@ -3670,11 +3773,121 @@ fn untangle(
                 }
             }
         }
+        let mut tour = Tour {
+            order: &mut order,
+            ins: &mut ins,
+            outs: &mut outs,
+            flips: &mut flips,
+        };
+        improved |= tour.relocate(cursor, has, to);
         if !improved {
             break;
         }
     }
     (order, flips)
+}
+
+/// The tour `untangle` improves: the path at each position, where it is entered
+/// and left, and whether it runs from its last point.
+struct Tour<'a> {
+    order: &'a mut Vec<usize>,
+    ins: &'a mut Vec<[f64; 2]>,
+    outs: &'a mut Vec<[f64; 2]>,
+    flips: &'a mut Vec<bool>,
+}
+
+/// Shortest saving, in mm of travel, that moves a short run of paths.
+const RELOCATE_MIN_MM: f64 = 0.5;
+
+impl Tour<'_> {
+    /// Or-opt: takes one to three paths in a row out and puts them back between
+    /// two other stops, either way round, when that shortens the travel by at
+    /// least `RELOCATE_MIN_MM`. 2-opt cannot make this move, since it only
+    /// reverses a stretch of two paths or more. Returns whether anything moved.
+    fn relocate(&mut self, cursor: [f64; 2], has: bool, to: Option<[f64; 2]>) -> bool {
+        let n = self.order.len();
+        let link = |from: Option<[f64; 2]>, to: [f64; 2]| from.map_or(0.0, |f| dist_mm(f, to));
+        let mut moved = false;
+        for len in 1..=3usize {
+            let mut i = 0;
+            while i + len <= n {
+                let before = if i == 0 {
+                    has.then_some(cursor)
+                } else {
+                    Some(self.outs[i - 1])
+                };
+                let after = self.ins.get(i + len).copied().or(to);
+                let mut saved = link(before, self.ins[i]);
+                if let Some(a) = after {
+                    saved += dist_mm(self.outs[i + len - 1], a);
+                    if let Some(b) = before {
+                        saved -= dist_mm(b, a);
+                    }
+                }
+                // `rest` is the tour without the run; a run goes back before
+                // `rest[pos]`, or after the last stop when `pos` is `rest.len()`.
+                let rest: Vec<usize> = (0..n).filter(|k| *k < i || *k >= i + len).collect();
+                let mut best: Option<(f64, usize, bool)> = None;
+                for pos in i.saturating_sub(UNTANGLE_WINDOW)..=(i + UNTANGLE_WINDOW).min(rest.len()) {
+                    let prev = if pos == 0 {
+                        has.then_some(cursor)
+                    } else {
+                        Some(self.outs[rest[pos - 1]])
+                    };
+                    let next = rest.get(pos).map(|&k| self.ins[k]).or(to);
+                    for reversed in [false, true] {
+                        // Back where it was, the same way round, is no move.
+                        if pos == i && !reversed {
+                            continue;
+                        }
+                        let (head, tail) = if reversed {
+                            (self.outs[i + len - 1], self.ins[i])
+                        } else {
+                            (self.ins[i], self.outs[i + len - 1])
+                        };
+                        let mut cost = link(prev, head);
+                        if let Some(q) = next {
+                            cost += dist_mm(tail, q);
+                            if let Some(p) = prev {
+                                cost -= dist_mm(p, q);
+                            }
+                        }
+                        if cost + RELOCATE_MIN_MM < saved && best.is_none_or(|b| cost < b.0) {
+                            best = Some((cost, pos, reversed));
+                        }
+                    }
+                }
+                if let Some((_, pos, reversed)) = best {
+                    let mut run: Vec<usize> = (i..i + len).collect();
+                    if reversed {
+                        run.reverse();
+                    }
+                    let mut stops: Vec<(usize, bool)> = rest.iter().map(|&k| (k, false)).collect();
+                    for (offset, &k) in run.iter().enumerate() {
+                        stops.insert(pos + offset, (k, reversed));
+                    }
+                    let take = |v: &Vec<[f64; 2]>, flip_it: bool, k: usize, w: &Vec<[f64; 2]>| {
+                        if flip_it {
+                            w[k]
+                        } else {
+                            v[k]
+                        }
+                    };
+                    let ins = stops.iter().map(|&(k, f)| take(self.ins, f, k, self.outs)).collect();
+                    let outs = stops.iter().map(|&(k, f)| take(self.outs, f, k, self.ins)).collect();
+                    let flips = stops.iter().map(|&(k, f)| self.flips[k] != f).collect();
+                    let order = stops.iter().map(|&(k, _)| self.order[k]).collect();
+                    *self.ins = ins;
+                    *self.outs = outs;
+                    *self.flips = flips;
+                    *self.order = order;
+                    moved = true;
+                }
+                i += 1;
+            }
+        }
+        moved
+    }
 }
 
 fn apply_flips(paths: Vec<Extrusion>, order: &[usize], flips: &[bool]) -> Vec<Extrusion> {
@@ -6214,11 +6427,81 @@ mod travel_tests {
     }
 
     #[test]
+    fn a_support_tip_is_a_loop_of_24_sides() {
+        let strategy = crate::strategy::pure(StrategyId::Speed);
+        let disk = |r: f64| crate::support::Disk {
+            xy: [5.0, 5.0],
+            r,
+            node: crate::support::NodeId(0),
+        };
+        let tip = plan_tree_support(&[disk(0.39)], &strategy, 0.45);
+        assert_eq!(tip.len(), 1);
+        assert_eq!(tip[0].points.len(), 25);
+        assert_eq!(tip[0].points[0], tip[0].points[24]);
+        // A trunk is the outline of its disks pulled in by half a bead, and
+        // then a second loop inside it.
+        let trunk = plan_tree_support(&[disk(1.5)], &strategy, 0.45);
+        assert_eq!(trunk.len(), 2);
+        assert!(trunk.iter().all(|p| p.points.len() == 25));
+    }
+
+    #[test]
     fn support_loops_are_visited_in_a_short_order() {
         let walked: f64 = (1..=6).map(|seed| walked_over_loops(60, seed)).sum();
         // Nearest-neighbour with relocations walks 1490 mm here; 2-opt and
         // moving short runs of loops brings it to 1410.
         assert!(walked < 1450.0, "walked {walked:.1} mm");
+    }
+
+    /// Travel over 60 supports, loops of 0.4 mm radius and 1.5 mm strokes by turns,
+    /// ordered from the middle of a 40 mm square.
+    fn walked_over_mixed(seed: u64) -> f64 {
+        let mut state = seed;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as f64 / (1u64 << 31) as f64 * 40.0
+        };
+        let mut paths: Vec<Extrusion> = (0..60)
+            .map(|k| {
+                let (x, y) = (next(), next());
+                if k % 2 == 0 {
+                    support(circle_pts([x, y], 0.4))
+                } else {
+                    support(vec![[x, y], [x + 1.5, y]])
+                }
+            })
+            .collect();
+        let mut at = [20.0, 20.0];
+        order_supports(&mut paths, Some(at), None, None);
+        let mut walked = 0.0;
+        for path in &paths {
+            walked += dist_mm(at, path.points[0]);
+            at = *path.points.last().unwrap();
+        }
+        walked
+    }
+
+    #[test]
+    fn a_run_of_loops_and_strokes_is_visited_in_a_short_order() {
+        let walked: f64 = (1..=6).map(walked_over_mixed).sum();
+        // Nearest-neighbour with 2-opt on the strokes alone walks 1451 mm here;
+        // 2-opt over the loops and strokes together brings it to 1361.
+        assert!(walked < 1400.0, "walked {walked:.1} mm");
+    }
+
+    #[test]
+    fn a_stroke_printed_too_early_is_moved_past_its_neighbours() {
+        // Strokes along a line, the second one far ahead of its place: reversing
+        // a stretch cannot bring it back, moving it can.
+        let paths: Vec<Extrusion> = [1.0, 10.0, 3.0, 5.0]
+            .iter()
+            .map(|&x| support(vec![[x, 0.0], [x + 1.0, 0.0]]))
+            .collect();
+        let (order, flips) = untangle(&paths, &[0, 1, 2, 3], [0.0, 0.0], true, None);
+        assert_eq!(order, vec![0, 2, 3, 1]);
+        assert_eq!(flips, vec![false; 4]);
     }
 
     #[test]
@@ -6987,5 +7270,93 @@ mod density_tests {
                 );
             }
         }
+    }
+}
+#[cfg(test)]
+mod solid_row_tests {
+    use super::*;
+    use crate::strategy::{pure, StrategyId};
+    use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
+
+    fn rectangle(w: f64, h: f64) -> Vec<Loop> {
+        vec![vec![[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]]]
+    }
+
+    #[test]
+    fn an_axis_aligned_island_alternates_between_the_axes() {
+        // The two directions cost the same rows whichever layer has which, so
+        // even layers take the X axis.
+        for island in [rectangle(30.0, 10.0), rectangle(10.0, 30.0)] {
+            assert_eq!(solid_row_angle(&island, 0.45, 0), 0.0);
+            assert_eq!(solid_row_angle(&island, 0.45, 1), FRAC_PI_2);
+        }
+    }
+
+    #[test]
+    fn a_diagonal_island_keeps_the_diagonal() {
+        let diagonal: Vec<Loop> = rectangle(30.0, 10.0)
+            .iter()
+            .map(|l| l.iter().map(|&p| rot(p, FRAC_PI_4)).collect())
+            .collect();
+        assert_eq!(solid_row_angle(&diagonal, 0.45, 0), FRAC_PI_4);
+        assert_eq!(solid_row_angle(&diagonal, 0.45, 1), FRAC_PI_4 + FRAC_PI_2);
+    }
+
+    #[test]
+    fn a_solid_square_has_no_bare_edge_and_the_plastic_of_its_area() {
+        let (lw, side) = (0.45, 18.2);
+        let mut strategy = pure(StrategyId::Toughness);
+        strategy.infill_density = 1.0;
+        let features = PathFeatures {
+            z: 0.1,
+            layer_index: 0,
+            ..PathFeatures::default()
+        };
+        let paths = build_infill(&rectangle(side, side), &strategy, lw, &features);
+        // Rows run along X, 40 of them at a pitch of 18.2 / 40 = 0.455.
+        let rows: Vec<f64> = paths
+            .iter()
+            .flat_map(|p| p.windows(2))
+            .filter(|w| (w[0][1] - w[1][1]).abs() < 1e-9 && (w[0][0] - w[1][0]).abs() > 1.0)
+            .map(|w| w[0][1])
+            .collect();
+        assert_eq!(rows.len(), 40);
+        let (lowest, highest) = rows
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(lo, hi), &y| (lo.min(y), hi.max(y)));
+        assert!((lowest - 0.2275).abs() < 1e-9, "first row at {lowest}");
+        assert!((highest - 17.9725).abs() < 1e-9, "last row at {highest}");
+        let length: f64 = paths.iter().map(|p| polyline_len(p)).sum();
+        let share = length * lw / (side * side);
+        assert!((0.99..1.03).contains(&share), "covers {share:.3} of the square");
+    }
+
+    #[test]
+    fn a_bottom_skin_runs_its_rows_along_the_island_and_the_next_layer_across() {
+        let region = rectangle(30.0, 10.0);
+        let strategy = pure(StrategyId::Speed);
+        let skin_rows = |layer_index: usize| -> Vec<[[f64; 2]; 2]> {
+            let features = PathFeatures {
+                z: 0.1 + 0.2 * layer_index as f64,
+                layer_index,
+                skin: std::sync::Arc::new(Skin {
+                    bottom: vec![vec![[-5.0, -5.0], [35.0, -5.0], [35.0, 15.0], [-5.0, 15.0]]],
+                    top: Vec::new(),
+                }),
+                ..PathFeatures::default()
+            };
+            let mut hint = [0.0, 0.0];
+            plan_region(&region, &strategy, 0.45, &mut hint, &features)
+                .iter()
+                .filter(|p| p.kind == PathKind::Solid)
+                .flat_map(|p| p.points.windows(2).map(|w| [w[0], w[1]]))
+                .collect()
+        };
+        let along_x = skin_rows(0);
+        assert!(along_x.iter().any(|s| (s[0][0] - s[1][0]).abs() > 20.0));
+        assert!(along_x.iter().all(|s| (s[0][1] - s[1][1]).abs() < 1.0));
+        let along_y = skin_rows(1);
+        assert!(along_y.iter().any(|s| (s[0][1] - s[1][1]).abs() > 6.0));
+        assert!(along_y.iter().all(|s| (s[0][0] - s[1][0]).abs() < 1.0));
     }
 }

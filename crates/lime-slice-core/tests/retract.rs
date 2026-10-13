@@ -70,7 +70,7 @@ fn omitted_retract_keeps_the_cartesian_file() {
     let hash = hex(&Sha256::digest(response.gcode.as_bytes()));
     assert_eq!(
         hash,
-        "fa751c9d8bf53b5943f83cf5be9500b997d00632f758ca5bbfd3fe8bffdc91b5"
+        "238c692648d889ac326075a36cee9b0717dce0ceada00606c5f0d5645baae043"
     );
     assert!(!response.gcode.contains("; retract"));
     let pulls = pull_mm(&response.gcode);
