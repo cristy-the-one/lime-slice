@@ -1294,6 +1294,14 @@ fn handle(mut request: tiny_http::Request, token: Option<&str>) {
             model_reply(model_boolean_request(&body))
         } else if method == "POST" && path.starts_with("/api/model/split") {
             model_reply(model_split_request(&body))
+        } else if method == "POST" && path.starts_with("/api/model/fillet") {
+            model_reply(model_fillet_request(&body))
+        } else if method == "POST" && path.starts_with("/api/model/chamfer") {
+            model_reply(model_chamfer_request(&body))
+        } else if method == "POST" && path.starts_with("/api/model/hole") {
+            model_reply(model_hole_request(&body))
+        } else if method == "POST" && path.starts_with("/api/model/scale") {
+            model_reply(model_scale_request(&body))
         } else if method == "POST" && path.starts_with("/api/model/undo") {
             model_reply(model_undo_request(&body))
         } else if method == "POST" && path.starts_with("/api/model") {
@@ -1476,6 +1484,50 @@ fn model_split_request(body: &str) -> Result<String, String> {
                 json_f64(&value, "nz"),
             ],
         },
+        model_chord(&value),
+    )
+}
+
+fn model_fillet_request(body: &str) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|err| err.to_string())?;
+    lime_model_load::fillet(
+        json_i32(&value, "id")?,
+        json_i32(&value, "edge")?,
+        json_f64(&value, "radius"),
+        model_chord(&value),
+    )
+}
+
+fn model_chamfer_request(body: &str) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|err| err.to_string())?;
+    lime_model_load::chamfer(
+        json_i32(&value, "id")?,
+        json_i32(&value, "edge")?,
+        json_f64(&value, "distance"),
+        model_chord(&value),
+    )
+}
+
+fn model_hole_request(body: &str) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|err| err.to_string())?;
+    lime_model_load::hole(
+        json_i32(&value, "id")?,
+        [
+            json_f64(&value, "x"),
+            json_f64(&value, "y"),
+            json_f64(&value, "z"),
+        ],
+        json_f64(&value, "radius"),
+        json_f64(&value, "depth"),
+        model_chord(&value),
+    )
+}
+
+fn model_scale_request(body: &str) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|err| err.to_string())?;
+    lime_model_load::scale(
+        json_i32(&value, "id")?,
+        json_f64(&value, "factor"),
         model_chord(&value),
     )
 }

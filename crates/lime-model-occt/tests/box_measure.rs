@@ -243,6 +243,97 @@ fn booleans_and_split() {
     ));
     assert!(step_fuse.get("error").is_none(), "{step_fuse}");
     near(step_fuse["volumeMm3"].as_f64().expect("step fuse"), 2000.0);
+    blends_hole_and_scale();
+}
+
+fn blends_hole_and_scale() {
+    let opened = parse(&lime_model_occt::open_box(10.0, 10.0, 10.0));
+    let id = opened["id"].as_i64().expect("id") as i32;
+    near(opened["volumeMm3"].as_f64().expect("volume"), 1000.0);
+
+    let unpicked = parse(&lime_model_occt::fillet(id, -1, 2.0, 0.1));
+    assert_eq!(unpicked["error"].as_str(), Some("Pick an edge to fillet."));
+    let flat = parse(&lime_model_occt::fillet(id, 0, 0.0, 0.1));
+    assert_eq!(
+        flat["error"].as_str(),
+        Some("A fillet needs a positive radius")
+    );
+    let tight = parse(&lime_model_occt::fillet(id, 0, 11.0, 0.1));
+    assert_eq!(
+        tight["error"].as_str(),
+        Some("The fillet did not fit this edge")
+    );
+
+    let removed = 10.0 * 4.0 * (1.0 - std::f64::consts::PI / 4.0);
+    let filleted = parse(&lime_model_occt::fillet(id, 0, 2.0, 0.1));
+    assert!(filleted.get("error").is_none(), "{filleted}");
+    near(
+        filleted["volumeMm3"].as_f64().expect("fillet"),
+        1000.0 - removed,
+    );
+    let undone = parse(&lime_model_occt::undo(id, 0.1));
+    near(undone["volumeMm3"].as_f64().expect("undo fillet"), 1000.0);
+
+    let missing = parse(&lime_model_occt::chamfer(id, 99, 1.0, 0.1));
+    assert_eq!(
+        missing["error"].as_str(),
+        Some("That edge is not on this solid")
+    );
+    let no_chamfer = parse(&lime_model_occt::chamfer(id, 0, 0.0, 0.1));
+    assert_eq!(
+        no_chamfer["error"].as_str(),
+        Some("A chamfer needs a positive distance")
+    );
+    let chamfered = parse(&lime_model_occt::chamfer(id, 0, 1.0, 0.1));
+    assert!(chamfered.get("error").is_none(), "{chamfered}");
+    near(chamfered["volumeMm3"].as_f64().expect("chamfer"), 995.0);
+    let _ = lime_model_occt::undo(id, 0.1);
+
+    let no_hole = parse(&lime_model_occt::hole(id, [5.0, 5.0, 10.0], 0.0, 12.0, 0.1));
+    assert_eq!(
+        no_hole["error"].as_str(),
+        Some("A hole needs a positive radius and depth")
+    );
+    let missed = parse(&lime_model_occt::hole(
+        id,
+        [100.0, 0.0, 10.0],
+        2.0,
+        12.0,
+        0.1,
+    ));
+    assert_eq!(missed["error"].as_str(), Some("The hole missed this solid"));
+    let gone = parse(&lime_model_occt::hole(
+        id,
+        [5.0, 5.0, 11.0],
+        20.0,
+        12.0,
+        0.1,
+    ));
+    assert_eq!(gone["error"].as_str(), Some("The hole removed the solid"));
+    let drilled = parse(&lime_model_occt::hole(id, [5.0, 5.0, 10.0], 2.0, 12.0, 0.1));
+    assert!(drilled.get("error").is_none(), "{drilled}");
+    near(
+        drilled["volumeMm3"].as_f64().expect("hole"),
+        1000.0 - std::f64::consts::PI * 4.0 * 10.0,
+    );
+    let _ = lime_model_occt::undo(id, 0.1);
+
+    let zero = parse(&lime_model_occt::scale(id, 0.0, 0.1));
+    assert_eq!(
+        zero["error"].as_str(),
+        Some("Scale needs a positive factor")
+    );
+    let same = parse(&lime_model_occt::scale(id, 1.0, 0.1));
+    assert_eq!(
+        same["error"].as_str(),
+        Some("Scale needs a factor other than 1")
+    );
+    let grown = parse(&lime_model_occt::scale(id, 2.0, 0.1));
+    assert!(grown.get("error").is_none(), "{grown}");
+    near(grown["volumeMm3"].as_f64().expect("scale"), 8000.0);
+    let restored = parse(&lime_model_occt::undo(id, 0.1));
+    near(restored["volumeMm3"].as_f64().expect("undo scale"), 1000.0);
+    assert_shared("TKFillet");
 }
 
 fn bridge_exports(measured: bool) {
@@ -278,6 +369,9 @@ fn bridge_exports(measured: bool) {
         );
         assert!(fused.get("error").is_none(), "{fused}");
         near(fused["volumeMm3"].as_f64().expect("fused"), 7000.0);
+        let grown = parse(&lime_model_load::scale(id, 2.0, 0.1).expect("dlopen scale"));
+        assert!(grown.get("error").is_none(), "{grown}");
+        near(grown["volumeMm3"].as_f64().expect("scale"), 56000.0);
     }
 }
 

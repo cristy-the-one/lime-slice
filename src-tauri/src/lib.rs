@@ -315,6 +315,89 @@ fn model_split(payload: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn model_fillet(payload: String) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+    let id = value
+        .get("id")
+        .and_then(|item| item.as_i64())
+        .ok_or_else(|| "missing id".to_string())? as i32;
+    let edge = value
+        .get("edge")
+        .and_then(|item| item.as_i64())
+        .ok_or_else(|| "missing edge".to_string())? as i32;
+    let radius = value
+        .get("radius")
+        .and_then(|item| item.as_f64())
+        .unwrap_or(0.0);
+    let chord = value
+        .get("chordMm")
+        .and_then(|item| item.as_f64())
+        .unwrap_or(0.1);
+    lime_model_load::fillet(id, edge, radius, chord)
+}
+
+#[tauri::command]
+fn model_chamfer(payload: String) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+    let id = value
+        .get("id")
+        .and_then(|item| item.as_i64())
+        .ok_or_else(|| "missing id".to_string())? as i32;
+    let edge = value
+        .get("edge")
+        .and_then(|item| item.as_i64())
+        .ok_or_else(|| "missing edge".to_string())? as i32;
+    let distance = value
+        .get("distance")
+        .and_then(|item| item.as_f64())
+        .unwrap_or(0.0);
+    let chord = value
+        .get("chordMm")
+        .and_then(|item| item.as_f64())
+        .unwrap_or(0.1);
+    lime_model_load::chamfer(id, edge, distance, chord)
+}
+
+#[tauri::command]
+fn model_hole(payload: String) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+    let id = value
+        .get("id")
+        .and_then(|item| item.as_i64())
+        .ok_or_else(|| "missing id".to_string())? as i32;
+    let number = |key: &str| value.get(key).and_then(|item| item.as_f64()).unwrap_or(0.0);
+    let chord = value
+        .get("chordMm")
+        .and_then(|item| item.as_f64())
+        .unwrap_or(0.1);
+    lime_model_load::hole(
+        id,
+        [number("x"), number("y"), number("z")],
+        number("radius"),
+        number("depth"),
+        chord,
+    )
+}
+
+#[tauri::command]
+fn model_scale(payload: String) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+    let id = value
+        .get("id")
+        .and_then(|item| item.as_i64())
+        .ok_or_else(|| "missing id".to_string())? as i32;
+    let factor = value
+        .get("factor")
+        .and_then(|item| item.as_f64())
+        .unwrap_or(0.0);
+    let chord = value
+        .get("chordMm")
+        .and_then(|item| item.as_f64())
+        .unwrap_or(0.1);
+    lime_model_load::scale(id, factor, chord)
+}
+
+#[tauri::command]
 fn model_undo(payload: String) -> Result<String, String> {
     let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
     let id = value
@@ -425,6 +508,10 @@ pub fn run() {
             model_distance,
             model_boolean,
             model_split,
+            model_fillet,
+            model_chamfer,
+            model_hole,
+            model_scale,
             model_undo,
             prusa_link_http
         ])

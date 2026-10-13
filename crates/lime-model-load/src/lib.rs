@@ -26,6 +26,10 @@ type Boolean = unsafe extern "C" fn(
     f64,
 ) -> *mut c_char;
 type Split = unsafe extern "C" fn(i32, f64, f64, f64, f64, f64, f64, f64) -> *mut c_char;
+type Fillet = unsafe extern "C" fn(i32, i32, f64, f64) -> *mut c_char;
+type Chamfer = unsafe extern "C" fn(i32, i32, f64, f64) -> *mut c_char;
+type Hole = unsafe extern "C" fn(i32, f64, f64, f64, f64, f64, f64) -> *mut c_char;
+type Scale = unsafe extern "C" fn(i32, f64, f64) -> *mut c_char;
 type Undo = unsafe extern "C" fn(i32, f64) -> *mut c_char;
 type FreeStr = unsafe extern "C" fn(*mut c_char);
 
@@ -36,6 +40,10 @@ struct Bridge {
     distance: Distance,
     boolean: Boolean,
     split: Split,
+    fillet: Fillet,
+    chamfer: Chamfer,
+    hole: Hole,
+    scale: Scale,
     undo: Undo,
     free: FreeStr,
 }
@@ -151,7 +159,42 @@ pub fn split(id: i32, plane: Plane, chord_mm: f64) -> Result<String, String> {
     take(ptr, api.free)
 }
 
-/// Restore the solid from before the last boolean or split.
+/// Round one edge. `edge` is the zero-based index from the solid document.
+pub fn fillet(id: i32, edge: i32, radius_mm: f64, chord_mm: f64) -> Result<String, String> {
+    let api = load()?;
+    let ptr = unsafe { (api.fillet)(id, edge, radius_mm, chord_mm) };
+    take(ptr, api.free)
+}
+
+/// Chamfer one edge. `distance_mm` is the setback on each face.
+pub fn chamfer(id: i32, edge: i32, distance_mm: f64, chord_mm: f64) -> Result<String, String> {
+    let api = load()?;
+    let ptr = unsafe { (api.chamfer)(id, edge, distance_mm, chord_mm) };
+    take(ptr, api.free)
+}
+
+/// Cut a cylinder that starts at `origin` and runs toward −Z by `depth_mm`.
+pub fn hole(
+    id: i32,
+    origin: [f64; 3],
+    radius_mm: f64,
+    depth_mm: f64,
+    chord_mm: f64,
+) -> Result<String, String> {
+    let api = load()?;
+    let [x, y, z] = origin;
+    let ptr = unsafe { (api.hole)(id, x, y, z, radius_mm, depth_mm, chord_mm) };
+    take(ptr, api.free)
+}
+
+/// Uniform scale about the solid's centre. `factor` must be positive and not 1.
+pub fn scale(id: i32, factor: f64, chord_mm: f64) -> Result<String, String> {
+    let api = load()?;
+    let ptr = unsafe { (api.scale)(id, factor, chord_mm) };
+    take(ptr, api.free)
+}
+
+/// Restore the solid from before the last edit.
 pub fn undo(id: i32, chord_mm: f64) -> Result<String, String> {
     let api = load()?;
     let ptr = unsafe { (api.undo)(id, chord_mm) };
@@ -164,6 +207,10 @@ struct Api {
     distance: Distance,
     boolean: Boolean,
     split: Split,
+    fillet: Fillet,
+    chamfer: Chamfer,
+    hole: Hole,
+    scale: Scale,
     undo: Undo,
     free: FreeStr,
 }
@@ -208,6 +255,18 @@ fn load() -> Result<Api, String> {
                 split: *lib
                     .get::<Split>(b"lime_occt_split\0")
                     .map_err(|err| format!("bridge is missing lime_occt_split: {err}"))?,
+                fillet: *lib
+                    .get::<Fillet>(b"lime_occt_fillet\0")
+                    .map_err(|err| format!("bridge is missing lime_occt_fillet: {err}"))?,
+                chamfer: *lib
+                    .get::<Chamfer>(b"lime_occt_chamfer\0")
+                    .map_err(|err| format!("bridge is missing lime_occt_chamfer: {err}"))?,
+                hole: *lib
+                    .get::<Hole>(b"lime_occt_hole\0")
+                    .map_err(|err| format!("bridge is missing lime_occt_hole: {err}"))?,
+                scale: *lib
+                    .get::<Scale>(b"lime_occt_scale\0")
+                    .map_err(|err| format!("bridge is missing lime_occt_scale: {err}"))?,
                 undo: *lib
                     .get::<Undo>(b"lime_occt_undo\0")
                     .map_err(|err| format!("bridge is missing lime_occt_undo: {err}"))?,
@@ -226,6 +285,10 @@ fn load() -> Result<Api, String> {
         distance: bridge.distance,
         boolean: bridge.boolean,
         split: bridge.split,
+        fillet: bridge.fillet,
+        chamfer: bridge.chamfer,
+        hole: bridge.hole,
+        scale: bridge.scale,
         undo: bridge.undo,
         free: bridge.free,
     })

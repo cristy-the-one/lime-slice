@@ -44,9 +44,14 @@ Model mode can fuse, cut, or intersect the open solid with a box, cylinder, or s
 
 A successful edit replaces `sourcePos` with the settled tessellation, writes that mesh with `encodeStl`, and renames the file to `.stl`, so truck is not asked to read the edited solid. The pose stays. Support paint, seam paint, and support edits on that object are cleared, because they named the old surface. Undo restores the solid, that mesh, and the paint. A split keeps the piece on the negative side of the plane and adds the other piece through the plate's add path. The second piece is a mesh until a later change can store its B-rep.
 
+## Fillet, chamfer, hole, and scale
+
+Model mode can fillet or chamfer the picked edge, cut a cylindrical hole, and scale the solid by one factor. The blend size, the hole radius, and the hole depth are millimetres. The hole starts at the origin fields and runs straight down. Scale is about the solid's centre. A kernel failure is the readout, and the solid is left as it was. There is no mesh fallback.
+
+A successful edit uses the same commit as a boolean: settled tessellation, `encodeStl`, and a `.stl` name. Pose stays, except that a scale sets the plate's `partScale` back to 1 so the part is not scaled twice. Undo restores the solid, the mesh, the paint, and that placement scale.
+
 ## What this change is not
 
-- No fillet, chamfer, hole, or scale.
 - No STEP writer, and no `.lime` brep field.
 - No change to `tools/golden_ab.sh` or to slicer output.
 - The slicer core does not link Open CASCADE. Truck still reads an unedited STEP file for slicing.
