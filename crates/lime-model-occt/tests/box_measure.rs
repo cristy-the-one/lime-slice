@@ -143,6 +143,24 @@ fn booleans_and_split() {
         0.1,
     ));
     assert_eq!(apart["error"].as_str(), Some("The solids do not overlap"));
+    let apart_probe = parse(&lime_model_occt::boolean_probe(
+        id,
+        "common",
+        "box",
+        tool([100.0, 0.0, 0.0], [10.0, 10.0, 10.0], 0.0, 0.0),
+    ));
+    assert_eq!(apart_probe["ok"].as_bool(), Some(false), "{apart_probe}");
+    assert_eq!(
+        apart_probe["error"].as_str(),
+        Some("The solids do not overlap")
+    );
+    let fuse_probe = parse(&lime_model_occt::boolean_probe(
+        id,
+        "fuse",
+        "box",
+        tool([10.0, 0.0, 0.0], [10.0, 10.0, 10.0], 0.0, 0.0),
+    ));
+    assert_eq!(fuse_probe["ok"].as_bool(), Some(true), "{fuse_probe}");
 
     let fused = parse(&lime_model_occt::boolean(
         id,
@@ -371,6 +389,24 @@ fn blends_hole_and_scale() {
         0.1,
     ));
     assert_eq!(gone["error"].as_str(), Some("The hole removed the solid"));
+    let miss_probe = parse(&lime_model_occt::hole_probe(
+        id,
+        [100.0, 0.0, 10.0],
+        2.0,
+        12.0,
+    ));
+    assert_eq!(miss_probe["ok"].as_bool(), Some(false), "{miss_probe}");
+    assert_eq!(
+        miss_probe["error"].as_str(),
+        Some("The hole missed this solid")
+    );
+    let hole_ok = parse(&lime_model_occt::hole_probe(
+        id,
+        [5.0, 5.0, 10.0],
+        2.0,
+        12.0,
+    ));
+    assert_eq!(hole_ok["ok"].as_bool(), Some(true), "{hole_ok}");
     let drilled = parse(&lime_model_occt::hole(id, [5.0, 5.0, 10.0], 2.0, 12.0, 0.1));
     assert!(drilled.get("error").is_none(), "{drilled}");
     near(

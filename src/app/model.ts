@@ -2,7 +2,7 @@ import { bytesToBase64 } from "../base64";
 import { encodeStl, settle } from "../mesh-place";
 import type { ModelPick, ModelSolid } from "../model-view";
 import { lastEdge, nextModelPicks, selectionCountLabel } from "../model-select";
-import { PROBE_WAIT_MS, probeFromBody } from "../model-feasibility";
+import { PROBE_WAIT_MS, isProbed, probeFromBody } from "../model-feasibility";
 import { formatMm, splitPlaneInside, splitPlaneRange, zExtent } from "../model-plane";
 import { closeModelTool, mountModelChrome, openModelTool, refreshModelGhost, setModelProbe, syncModelChrome, syncModelSolid } from "../ui/model-chrome";
 import { addedSplit, withoutObject } from "../plate";
@@ -70,37 +70,61 @@ export function bindModelView() {
 }
 
 /**
- * Fillet and chamfer ask the kernel whether the size fits before Apply.
- * The request is debounced and does not run on the UI thread. A newer edit cancels the previous one.
+ * Fillet, chamfer, hole, and boolean ask the kernel whether the edit works before Apply.
+ * The request is debounced and runs off the UI thread. A newer edit discards the older answer.
  */
 function scheduleProbe() {
   window.clearTimeout(probeTimer);
   probeSerial += 1;
   const serial = probeSerial;
-  const current = openModelTool();
-  const edge = lastEdge(picks);
-  if ((current !== "fillet" && current !== "chamfer") || !solid || edge == null) {
+  const payload = solid ? probePayload(solid.id) : null;
+  if (!payload) {
     setModelProbe(null);
     return;
   }
-  const size = num("#modelBlend");
   setModelProbe({ phase: "checking" });
   probeTimer = window.setTimeout(() => {
-    void sendProbe(serial, current, edge, size);
+    void sendProbe(serial, payload);
   }, PROBE_WAIT_MS);
 }
 
-async function sendProbe(serial: number, kind: "fillet" | "chamfer", edge: number, size: number) {
-  if (!solid) return;
-  const body = await post("/api/model/probe", {
-    id: solid.id,
-    edge,
-    kind,
-    radius: size,
-    distance: size,
-  });
+function probePayload(id: number): Record<string, unknown> | null {
+  const current = openModelTool();
+  if (!isProbed(current)) return null;
+  if (current === "fillet" || current === "chamfer") {
+    const edge = lastEdge(picks);
+    if (edge == null) return null;
+    const size = num("#modelBlend");
+    return { id, kind: current, edge, radius: size, distance: size };
+  }
+  const origin = { x: num("#modelX"), y: num("#modelY"), z: num("#modelZ") };
+  if (current === "hole") {
+    return { id, kind: "hole", ...origin, radius: num("#modelHoleR"), depth: num("#modelHoleD") };
+  }
+  return {
+    id,
+    kind: "boolean",
+    op: boolOp(),
+    primitive: prim(),
+    ...origin,
+    dx: num("#modelDx"),
+    dy: num("#modelDy"),
+    dz: num("#modelDz"),
+    radius: num("#modelRadius"),
+    height: num("#modelHeight"),
+  };
+}
+
+async function sendProbe(serial: number, payload: Record<string, unknown>) {
+  const body = await post("/api/model/probe", payload);
   if (serial !== probeSerial || state.stage !== "model") return;
   setModelProbe(probeFromBody(body));
+}
+
+function boolOp(): "fuse" | "cut" | "common" {
+  if (document.querySelector("#modelCut")?.getAttribute("aria-pressed") === "true") return "cut";
+  if (document.querySelector("#modelCommon")?.getAttribute("aria-pressed") === "true") return "common";
+  return "fuse";
 }
 
 /** Write the open solid onto the selected object when that session is still current. */
@@ -167,12 +191,7 @@ async function applyTool() {
   if (!button || button.disabled) return;
   const current = document.querySelector<HTMLElement>("#modelBar")?.dataset.tool;
   if (current === "boolean") {
-    const op = document.querySelector("#modelCut")?.getAttribute("aria-pressed") === "true"
-      ? "cut"
-      : document.querySelector("#modelCommon")?.getAttribute("aria-pressed") === "true"
-        ? "common"
-        : "fuse";
-    await runBoolean(op);
+    await runBoolean(boolOp());
     return;
   }
   if (current === "split") await runSplit();

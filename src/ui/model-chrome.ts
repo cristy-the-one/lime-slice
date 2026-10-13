@@ -4,7 +4,7 @@
  */
 import { Box, CircleDot, Download, Scaling, Spline, SquareSplitHorizontal, Triangle, Undo2, createElement, type IconNode } from "lucide";
 import type { ModelGhost } from "../model-view";
-import { blendNote, probeAllowsApply, toolAvailable, type ProbeView } from "../model-feasibility";
+import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
 import { formatMm, splitPlaneInside, splitPlaneRange, type AxisExtent } from "../model-plane";
 import { lastEdge, modelApplyReady, selectionCountLabel, type ModelPickRef } from "../model-select";
 import { scrubIntent, scrubTarget, type ScrubIntent } from "./scrub";
@@ -88,6 +88,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
   document.querySelector("#modelPrim")?.addEventListener("change", () => {
     syncFields();
     refreshGhost();
+    hooks?.paramsChanged();
   });
   bindScrub();
   window.addEventListener("keydown", onEnter, true);
@@ -139,7 +140,7 @@ export function openModelTool(): ModelTool | null {
   return tool;
 }
 
-/** The latest fillet or chamfer dry-run. Null clears it. */
+/** The latest kernel dry-run for the open tool. Null clears it. */
 export function setModelProbe(next: ProbeView) {
   probe = next;
   refreshApply();
@@ -193,6 +194,7 @@ function setBoolOp(id: string) {
     button?.setAttribute("aria-pressed", on ? "true" : "false");
     button?.classList.toggle("on", on);
   }
+  hooks?.paramsChanged();
 }
 
 function syncFields() {
@@ -223,9 +225,13 @@ function splitLegal() {
 }
 
 function refreshTools() {
+  const legal = splitLegal();
   document.querySelectorAll<HTMLButtonElement>(".model-tool[data-tool]").forEach((button) => {
     const id = button.dataset.tool ?? "";
-    button.disabled = !toolAvailable(id, picks, splitLegal());
+    button.dataset.tipIdle ??= button.dataset.tip ?? "";
+    const blocked = toolBlockedTip(id, picks, legal);
+    button.disabled = !toolAvailable(id, picks, legal);
+    button.dataset.tip = blocked || button.dataset.tipIdle;
   });
 }
 
@@ -258,15 +264,16 @@ function refreshNote() {
     } else {
       text = `From ${formatMm(range.min)} to ${formatMm(range.max)} mm. The middle is ${formatMm(range.mid)}.`;
     }
-  } else if (tool === "fillet" || tool === "chamfer") {
-    if (lastEdge(picks) == null) text = "Pick an edge.";
-    else {
-      const note = blendNote(tool, probe);
-      text = note.text;
-      bad = note.bad;
-    }
-  } else if (tool === "hole") text = "Straight down from the origin.";
-  else if (tool === "scale") text = "About the centre. Placement scale becomes 100%.";
+  } else if ((tool === "fillet" || tool === "chamfer") && lastEdge(picks) == null) {
+    text = "Pick an edge.";
+  } else if (tool === "scale") {
+    text = "About the centre. Placement scale becomes 100%.";
+  } else if (isProbed(tool)) {
+    const lead = tool === "hole" ? "Straight down from the origin. " : "";
+    const status = probeNote(tool, probe);
+    text = `${lead}${status?.text ?? ""}`.trim();
+    bad = status?.bad ?? false;
+  }
   note.textContent = text;
   note.classList.toggle("is-bad", bad);
   note.toggleAttribute("hidden", text.length === 0);

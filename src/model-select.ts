@@ -53,7 +53,7 @@ export function modelApplyReady(
   if (tool === "fillet" || tool === "chamfer") return lastEdge(picks) != null && probeOk;
   if (tool === "scale") return scale > 0 && Math.abs(scale - 1) > 1e-9;
   if (tool === "split") return splitOk;
-  return tool === "boolean" || tool === "hole";
+  return (tool === "boolean" || tool === "hole") && probeOk;
 }
 
 export function mixHex(from: number, to: number, t: number): number {

@@ -131,6 +131,32 @@ pub fn blend_probe(id: i32, edge: i32, size_mm: f64, chamfer: bool) -> String {
     }
 }
 
+/// Try a hole on a copy. The open solid is not replaced.
+pub fn hole_probe(id: i32, origin: [f64; 3], radius_mm: f64, depth_mm: f64) -> String {
+    #[cfg(lime_occt)]
+    {
+        native::hole_probe(id, origin, radius_mm, depth_mm)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = (id, origin, radius_mm, depth_mm);
+        MISSING.into()
+    }
+}
+
+/// Try a boolean on a copy. The open solid is not replaced.
+pub fn boolean_probe(id: i32, op: &str, primitive: &str, tool: Tool) -> String {
+    #[cfg(lime_occt)]
+    {
+        native::boolean_probe(id, op, primitive, tool)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = (id, op, primitive, tool);
+        MISSING.into()
+    }
+}
+
 /// Cut a cylinder that starts at `origin` and runs toward −Z by `depth_mm`. A miss or a total cut leaves the solid unchanged.
 pub fn hole(id: i32, origin: [f64; 3], radius_mm: f64, depth_mm: f64, chord_mm: f64) -> String {
     #[cfg(lime_occt)]
@@ -250,6 +276,50 @@ pub unsafe extern "C" fn lime_occt_boolean(
         },
         chord_mm,
     ))
+}
+
+/// # Safety
+/// `op` and `primitive` are null or valid null-terminated strings. The returned pointer is freed with `lime_occt_string_free`.
+/// The solid is not edited.
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub unsafe extern "C" fn lime_occt_boolean_probe(
+    id: i32,
+    op: *const c_char,
+    primitive: *const c_char,
+    x: f64,
+    y: f64,
+    z: f64,
+    dx: f64,
+    dy: f64,
+    dz: f64,
+    radius: f64,
+    height: f64,
+) -> *mut c_char {
+    export_json(boolean_probe(
+        id,
+        &cstr(op),
+        &cstr(primitive),
+        Tool {
+            origin: [x, y, z],
+            size: [dx, dy, dz],
+            radius,
+            height,
+        },
+    ))
+}
+
+/// The returned pointer is freed with `lime_occt_string_free`. The solid is not edited.
+#[no_mangle]
+pub extern "C" fn lime_occt_hole_probe(
+    id: i32,
+    x: f64,
+    y: f64,
+    z: f64,
+    radius_mm: f64,
+    depth_mm: f64,
+) -> *mut c_char {
+    export_json(hole_probe(id, [x, y, z], radius_mm, depth_mm))
 }
 
 /// The returned pointer is freed with `lime_occt_string_free`.
@@ -407,6 +477,27 @@ mod native {
         fn lime_model_occt_fillet(id: i32, edge: i32, radius: f64, chord: f64) -> *mut c_char;
         fn lime_model_occt_chamfer(id: i32, edge: i32, distance: f64, chord: f64) -> *mut c_char;
         fn lime_model_occt_blend_probe(id: i32, edge: i32, size: f64, chamfer: i32) -> *mut c_char;
+        fn lime_model_occt_hole_probe(
+            id: i32,
+            x: f64,
+            y: f64,
+            z: f64,
+            radius: f64,
+            depth: f64,
+        ) -> *mut c_char;
+        fn lime_model_occt_boolean_probe(
+            id: i32,
+            op: *const c_char,
+            primitive: *const c_char,
+            x: f64,
+            y: f64,
+            z: f64,
+            dx: f64,
+            dy: f64,
+            dz: f64,
+            radius: f64,
+            height: f64,
+        ) -> *mut c_char;
         fn lime_model_occt_hole(
             id: i32,
             x: f64,
@@ -502,6 +593,37 @@ mod native {
         take(unsafe { lime_model_occt_blend_probe(id, edge, size_mm, i32::from(chamfer)) })
     }
 
+    pub fn hole_probe(id: i32, origin: [f64; 3], radius_mm: f64, depth_mm: f64) -> String {
+        let [x, y, z] = origin;
+        take(unsafe { lime_model_occt_hole_probe(id, x, y, z, radius_mm, depth_mm) })
+    }
+
+    pub fn boolean_probe(id: i32, op: &str, primitive: &str, tool: super::Tool) -> String {
+        let Ok(op) = CString::new(op) else {
+            return "{\"error\":\"boolean op is not a C string\"}".into();
+        };
+        let Ok(primitive) = CString::new(primitive) else {
+            return "{\"error\":\"primitive name is not a C string\"}".into();
+        };
+        let [x, y, z] = tool.origin;
+        let [dx, dy, dz] = tool.size;
+        take(unsafe {
+            lime_model_occt_boolean_probe(
+                id,
+                op.as_ptr(),
+                primitive.as_ptr(),
+                x,
+                y,
+                z,
+                dx,
+                dy,
+                dz,
+                tool.radius,
+                tool.height,
+            )
+        })
+    }
+
     pub fn hole(id: i32, origin: [f64; 3], radius_mm: f64, depth_mm: f64, chord_mm: f64) -> String {
         let [x, y, z] = origin;
         take(unsafe { lime_model_occt_hole(id, x, y, z, radius_mm, depth_mm, chord_mm) })
@@ -546,6 +668,21 @@ mod session_contract {
         assert!(src.contains("maxMm"));
         assert!(!body.contains("checkpoint"), "{body}");
         assert!(!body.contains("replace_held"), "{body}");
+        for name in [
+            "lime_model_occt_hole_probe",
+            "lime_model_occt_boolean_probe",
+        ] {
+            let start = src.find(name).expect(name);
+            let end = src[start..]
+                .find("\n}\n")
+                .map(|at| start + at)
+                .expect("probe body ends");
+            let body = &src[start..end];
+            assert!(body.contains("probe_json"), "{body}");
+            assert!(!body.contains("checkpoint"), "{body}");
+            assert!(!body.contains("replace_held"), "{body}");
+            assert!(!body.contains("commit_edit"), "{body}");
+        }
     }
 
     #[cfg(not(lime_occt))]

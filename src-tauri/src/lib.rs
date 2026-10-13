@@ -217,7 +217,7 @@ fn preview_mesh(payload: String) -> Result<String, String> {
     serde_json::to_string(&preview).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn model_solid(payload: String) -> Result<String, String> {
     let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
     let data_b64 = value
@@ -232,7 +232,7 @@ fn model_solid(payload: String) -> Result<String, String> {
     lime_model_load::open_step_bytes(&bytes, chord)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn model_distance(payload: String) -> Result<String, String> {
     let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
     let id = value
@@ -258,7 +258,7 @@ fn model_distance(payload: String) -> Result<String, String> {
     lime_model_load::distance(id, a_kind, a_index, b_kind, b_index)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn model_boolean(payload: String) -> Result<String, String> {
     let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
     let id = value
@@ -293,7 +293,7 @@ fn model_boolean(payload: String) -> Result<String, String> {
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn model_split(payload: String) -> Result<String, String> {
     let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
     let id = value
@@ -315,30 +315,50 @@ fn model_split(payload: String) -> Result<String, String> {
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn model_probe(payload: String) -> Result<String, String> {
     let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
     let id = value
         .get("id")
         .and_then(|item| item.as_i64())
         .ok_or_else(|| "missing id".to_string())? as i32;
-    let edge = value
-        .get("edge")
-        .and_then(|item| item.as_i64())
-        .ok_or_else(|| "missing edge".to_string())? as i32;
+    let number = |key: &str| value.get(key).and_then(|item| item.as_f64()).unwrap_or(0.0);
+    let text = |key: &str| value.get(key).and_then(|item| item.as_str()).unwrap_or("");
     let kind = value
         .get("kind")
         .and_then(|item| item.as_str())
         .unwrap_or("fillet");
+    if kind == "hole" {
+        return lime_model_load::hole_probe(
+            id,
+            [number("x"), number("y"), number("z")],
+            number("radius"),
+            number("depth"),
+        );
+    }
+    if kind == "boolean" {
+        return lime_model_load::boolean_probe(
+            id,
+            text("op"),
+            text("primitive"),
+            lime_model_load::Tool {
+                origin: [number("x"), number("y"), number("z")],
+                size: [number("dx"), number("dy"), number("dz")],
+                radius: number("radius"),
+                height: number("height"),
+            },
+        );
+    }
+    let edge = value
+        .get("edge")
+        .and_then(|item| item.as_i64())
+        .ok_or_else(|| "missing edge".to_string())? as i32;
     let chamfer = kind == "chamfer";
-    let size = value
-        .get(if chamfer { "distance" } else { "radius" })
-        .and_then(|item| item.as_f64())
-        .unwrap_or(0.0);
+    let size = number(if chamfer { "distance" } else { "radius" });
     lime_model_load::blend_probe(id, edge, size, chamfer)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn model_fillet(payload: String) -> Result<String, String> {
     let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
     let id = value
@@ -360,7 +380,7 @@ fn model_fillet(payload: String) -> Result<String, String> {
     lime_model_load::fillet(id, edge, radius, chord)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn model_chamfer(payload: String) -> Result<String, String> {
     let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
     let id = value
@@ -382,7 +402,7 @@ fn model_chamfer(payload: String) -> Result<String, String> {
     lime_model_load::chamfer(id, edge, distance, chord)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn model_hole(payload: String) -> Result<String, String> {
     let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
     let id = value
@@ -403,7 +423,7 @@ fn model_hole(payload: String) -> Result<String, String> {
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn model_scale(payload: String) -> Result<String, String> {
     let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
     let id = value
@@ -421,7 +441,7 @@ fn model_scale(payload: String) -> Result<String, String> {
     lime_model_load::scale(id, factor, chord)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn model_export(payload: String) -> Result<String, String> {
     use base64::Engine;
     let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
@@ -463,7 +483,7 @@ fn model_export(payload: String) -> Result<String, String> {
     ))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn model_undo(payload: String) -> Result<String, String> {
     let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
     let id = value

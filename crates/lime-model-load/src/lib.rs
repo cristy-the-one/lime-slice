@@ -34,6 +34,20 @@ type Split = unsafe extern "C" fn(i32, f64, f64, f64, f64, f64, f64, f64) -> *mu
 type Fillet = unsafe extern "C" fn(i32, i32, f64, f64) -> *mut c_char;
 type Chamfer = unsafe extern "C" fn(i32, i32, f64, f64) -> *mut c_char;
 type BlendProbe = unsafe extern "C" fn(i32, i32, f64, i32) -> *mut c_char;
+type HoleProbe = unsafe extern "C" fn(i32, f64, f64, f64, f64, f64) -> *mut c_char;
+type BooleanProbe = unsafe extern "C" fn(
+    i32,
+    *const c_char,
+    *const c_char,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+) -> *mut c_char;
 type Hole = unsafe extern "C" fn(i32, f64, f64, f64, f64, f64, f64) -> *mut c_char;
 type Scale = unsafe extern "C" fn(i32, f64, f64) -> *mut c_char;
 type WriteStep = unsafe extern "C" fn(i32, *const c_char) -> *mut c_char;
@@ -50,6 +64,8 @@ struct Bridge {
     fillet: Fillet,
     chamfer: Chamfer,
     blend_probe: BlendProbe,
+    hole_probe: HoleProbe,
+    boolean_probe: BooleanProbe,
     hole: Hole,
     scale: Scale,
     write_step: WriteStep,
@@ -189,6 +205,45 @@ pub fn blend_probe(id: i32, edge: i32, size_mm: f64, chamfer: bool) -> Result<St
     take(ptr, api.free)
 }
 
+/// Try a hole on a copy. The open solid is not replaced.
+pub fn hole_probe(
+    id: i32,
+    origin: [f64; 3],
+    radius_mm: f64,
+    depth_mm: f64,
+) -> Result<String, String> {
+    let api = load()?;
+    let [x, y, z] = origin;
+    let ptr = unsafe { (api.hole_probe)(id, x, y, z, radius_mm, depth_mm) };
+    take(ptr, api.free)
+}
+
+/// Try a boolean on a copy. The open solid is not replaced.
+pub fn boolean_probe(id: i32, op: &str, primitive: &str, tool: Tool) -> Result<String, String> {
+    let api = load()?;
+    let op = CString::new(op).map_err(|_| "boolean op is not a C string".to_string())?;
+    let primitive =
+        CString::new(primitive).map_err(|_| "primitive name is not a C string".to_string())?;
+    let [x, y, z] = tool.origin;
+    let [dx, dy, dz] = tool.size;
+    let ptr = unsafe {
+        (api.boolean_probe)(
+            id,
+            op.as_ptr(),
+            primitive.as_ptr(),
+            x,
+            y,
+            z,
+            dx,
+            dy,
+            dz,
+            tool.radius,
+            tool.height,
+        )
+    };
+    take(ptr, api.free)
+}
+
 /// Cut a cylinder that starts at `origin` and runs toward −Z by `depth_mm`.
 pub fn hole(
     id: i32,
@@ -235,6 +290,8 @@ struct Api {
     fillet: Fillet,
     chamfer: Chamfer,
     blend_probe: BlendProbe,
+    hole_probe: HoleProbe,
+    boolean_probe: BooleanProbe,
     hole: Hole,
     scale: Scale,
     write_step: WriteStep,
@@ -286,6 +343,12 @@ fn load() -> Result<Api, String> {
                 blend_probe: *lib
                     .get::<BlendProbe>(b"lime_occt_blend_probe\0")
                     .map_err(|err| format!("bridge is missing lime_occt_blend_probe: {err}"))?,
+                hole_probe: *lib
+                    .get::<HoleProbe>(b"lime_occt_hole_probe\0")
+                    .map_err(|err| format!("bridge is missing lime_occt_hole_probe: {err}"))?,
+                boolean_probe: *lib
+                    .get::<BooleanProbe>(b"lime_occt_boolean_probe\0")
+                    .map_err(|err| format!("bridge is missing lime_occt_boolean_probe: {err}"))?,
                 hole: *lib
                     .get::<Hole>(b"lime_occt_hole\0")
                     .map_err(|err| format!("bridge is missing lime_occt_hole: {err}"))?,
@@ -316,6 +379,8 @@ fn load() -> Result<Api, String> {
         fillet: bridge.fillet,
         chamfer: bridge.chamfer,
         blend_probe: bridge.blend_probe,
+        hole_probe: bridge.hole_probe,
+        boolean_probe: bridge.boolean_probe,
         hole: bridge.hole,
         scale: bridge.scale,
         write_step: bridge.write_step,

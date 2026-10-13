@@ -1494,22 +1494,57 @@ fn model_split_request(body: &str) -> Result<String, String> {
 
 fn model_probe_request(body: &str) -> Result<String, String> {
     let value: serde_json::Value = serde_json::from_str(body).map_err(|err| err.to_string())?;
+    let id = json_i32(&value, "id")?;
     let kind = value
         .get("kind")
         .and_then(|item| item.as_str())
         .unwrap_or("fillet");
-    let chamfer = kind == "chamfer";
-    let size = if chamfer {
-        json_f64(&value, "distance")
-    } else {
-        json_f64(&value, "radius")
-    };
-    lime_model_load::blend_probe(
-        json_i32(&value, "id")?,
-        json_i32(&value, "edge")?,
-        size,
-        chamfer,
-    )
+    match kind {
+        "hole" => lime_model_load::hole_probe(
+            id,
+            [
+                json_f64(&value, "x"),
+                json_f64(&value, "y"),
+                json_f64(&value, "z"),
+            ],
+            json_f64(&value, "radius"),
+            json_f64(&value, "depth"),
+        ),
+        "boolean" => lime_model_load::boolean_probe(
+            id,
+            value.get("op").and_then(|item| item.as_str()).unwrap_or(""),
+            value
+                .get("primitive")
+                .and_then(|item| item.as_str())
+                .unwrap_or(""),
+            lime_model_load::Tool {
+                origin: [
+                    json_f64(&value, "x"),
+                    json_f64(&value, "y"),
+                    json_f64(&value, "z"),
+                ],
+                size: [
+                    json_f64(&value, "dx"),
+                    json_f64(&value, "dy"),
+                    json_f64(&value, "dz"),
+                ],
+                radius: json_f64(&value, "radius"),
+                height: json_f64(&value, "height"),
+            },
+        ),
+        "chamfer" => lime_model_load::blend_probe(
+            id,
+            json_i32(&value, "edge")?,
+            json_f64(&value, "distance"),
+            true,
+        ),
+        _ => lime_model_load::blend_probe(
+            id,
+            json_i32(&value, "edge")?,
+            json_f64(&value, "radius"),
+            false,
+        ),
+    }
 }
 
 fn model_fillet_request(body: &str) -> Result<String, String> {
