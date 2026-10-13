@@ -1308,6 +1308,8 @@ fn handle(mut request: tiny_http::Request, token: Option<&str>) {
             model_reply(model_export_request(&body))
         } else if method == "POST" && path.starts_with("/api/model/undo") {
             model_reply(model_undo_request(&body))
+        } else if method == "POST" && path.starts_with("/api/model/redo") {
+            model_reply(model_redo_request(&body))
         } else if method == "POST" && path.starts_with("/api/model") {
             model_reply(model_open_request(&body))
         } else if method == "POST" && path.starts_with("/api/mesh") {
@@ -1646,6 +1648,11 @@ fn model_undo_request(body: &str) -> Result<String, String> {
     lime_model_load::undo(json_i32(&value, "id")?, model_chord(&value))
 }
 
+fn model_redo_request(body: &str) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|err| err.to_string())?;
+    lime_model_load::redo(json_i32(&value, "id")?, model_chord(&value))
+}
+
 fn model_chord(value: &serde_json::Value) -> f64 {
     value
         .get("chordMm")
@@ -1894,8 +1901,14 @@ fn request_for(
         travel_opt: settings.travel_opt,
         overhang_control: settings.overhang_control,
         adhesion: settings.adhesion,
-        brim_width_mm: settings.adhesion.uses_brim().then_some(settings.brim_width_mm),
-        brim_gap_mm: settings.adhesion.uses_brim().then_some(settings.brim_gap_mm),
+        brim_width_mm: settings
+            .adhesion
+            .uses_brim()
+            .then_some(settings.brim_width_mm),
+        brim_gap_mm: settings
+            .adhesion
+            .uses_brim()
+            .then_some(settings.brim_gap_mm),
         skirt_loops: settings.skirt_loops,
         top_surface_pattern: settings.top_surface_pattern,
         classic: settings.classic,

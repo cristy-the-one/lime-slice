@@ -98,7 +98,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "brush-smaller", label: "Smaller brush", group: "Tools", keys: ["["], when: "brush", repeat: true, show: "help" },
   { id: "brush-larger", label: "Larger brush", group: "Tools", keys: ["]"], when: "brush", repeat: true, show: "help" },
   { id: "undo", label: "Undo", group: "Edit", keys: ["Ctrl+Z"], typing: true, keywords: "placement settings revert" },
-  { id: "redo", label: "Redo", group: "Edit", keys: ["Ctrl+Shift+Z"], typing: true, keywords: "placement settings again" },
+  { id: "redo", label: "Redo", group: "Edit", keys: ["Ctrl+Shift+Z", "Ctrl+Y"], typing: true, keywords: "placement settings model again" },
   { id: "search", label: "Search settings", group: "Edit", keys: ["/", "Ctrl+F"], when: "find", keywords: "find filter" },
   { id: "search-clear", label: "Clear settings search", group: "Edit", keys: ["Esc"], when: "searching", typing: true, show: "none" },
   { id: "theme-system", label: "Theme: System", group: "Settings", keywords: "theme appearance" },

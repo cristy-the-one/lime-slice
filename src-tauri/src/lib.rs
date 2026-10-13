@@ -217,131 +217,88 @@ fn preview_mesh(payload: String) -> Result<String, String> {
     serde_json::to_string(&preview).map_err(|e| e.to_string())
 }
 
-#[tauri::command(async)]
-fn model_solid(payload: String) -> Result<String, String> {
-    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-    let data_b64 = value
-        .get("dataB64")
-        .and_then(|item| item.as_str())
-        .ok_or_else(|| "missing dataB64".to_string())?;
-    let chord = value
-        .get("stepToleranceMm")
-        .and_then(|item| item.as_f64())
-        .unwrap_or(0.1);
-    let bytes = base64_decode(data_b64)?;
-    lime_model_load::open_step_bytes(&bytes, chord)
+/// Open CASCADE work is synchronous. Run it off the UI thread.
+async fn block_model(
+    work: impl FnOnce() -> Result<String, String> + Send + 'static,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|err| err.to_string())?
 }
 
 #[tauri::command(async)]
-fn model_distance(payload: String) -> Result<String, String> {
-    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-    let id = value
-        .get("id")
-        .and_then(|item| item.as_i64())
-        .ok_or_else(|| "missing id".to_string())? as i32;
-    let a_kind = value
-        .get("aKind")
-        .and_then(|item| item.as_str())
-        .ok_or_else(|| "missing aKind".to_string())?;
-    let a_index = value
-        .get("aIndex")
-        .and_then(|item| item.as_i64())
-        .ok_or_else(|| "missing aIndex".to_string())? as i32;
-    let b_kind = value
-        .get("bKind")
-        .and_then(|item| item.as_str())
-        .ok_or_else(|| "missing bKind".to_string())?;
-    let b_index = value
-        .get("bIndex")
-        .and_then(|item| item.as_i64())
-        .ok_or_else(|| "missing bIndex".to_string())? as i32;
-    lime_model_load::distance(id, a_kind, a_index, b_kind, b_index)
+async fn model_solid(payload: String) -> Result<String, String> {
+    block_model(move || {
+        let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+        let data_b64 = value
+            .get("dataB64")
+            .and_then(|item| item.as_str())
+            .ok_or_else(|| "missing dataB64".to_string())?;
+        let chord = value
+            .get("stepToleranceMm")
+            .and_then(|item| item.as_f64())
+            .unwrap_or(0.1);
+        let bytes = base64_decode(data_b64)?;
+        lime_model_load::open_step_bytes(&bytes, chord)
+    })
+    .await
 }
 
 #[tauri::command(async)]
-fn model_boolean(payload: String) -> Result<String, String> {
-    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-    let id = value
-        .get("id")
-        .and_then(|item| item.as_i64())
-        .ok_or_else(|| "missing id".to_string())? as i32;
-    let op = value
-        .get("op")
-        .and_then(|item| item.as_str())
-        .ok_or_else(|| "missing op".to_string())?;
-    let primitive = value
-        .get("primitive")
-        .and_then(|item| item.as_str())
-        .ok_or_else(|| "missing primitive".to_string())?;
-    let number = |key: &str| value.get(key).and_then(|item| item.as_f64()).unwrap_or(0.0);
-    let chord = value
-        .get("chordMm")
-        .or_else(|| value.get("stepToleranceMm"))
-        .and_then(|item| item.as_f64())
-        .unwrap_or(0.1);
-    lime_model_load::boolean(
-        id,
-        op,
-        primitive,
-        lime_model_load::Tool {
-            origin: [number("x"), number("y"), number("z")],
-            size: [number("dx"), number("dy"), number("dz")],
-            radius: number("radius"),
-            height: number("height"),
-            turn: [number("rx"), number("ry"), number("rz")],
-        },
-        chord,
-    )
+async fn model_distance(payload: String) -> Result<String, String> {
+    block_model(move || {
+        let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+        let id = value
+            .get("id")
+            .and_then(|item| item.as_i64())
+            .ok_or_else(|| "missing id".to_string())? as i32;
+        let a_kind = value
+            .get("aKind")
+            .and_then(|item| item.as_str())
+            .ok_or_else(|| "missing aKind".to_string())?;
+        let a_index = value
+            .get("aIndex")
+            .and_then(|item| item.as_i64())
+            .ok_or_else(|| "missing aIndex".to_string())? as i32;
+        let b_kind = value
+            .get("bKind")
+            .and_then(|item| item.as_str())
+            .ok_or_else(|| "missing bKind".to_string())?;
+        let b_index = value
+            .get("bIndex")
+            .and_then(|item| item.as_i64())
+            .ok_or_else(|| "missing bIndex".to_string())? as i32;
+        lime_model_load::distance(id, a_kind, a_index, b_kind, b_index)
+    })
+    .await
 }
 
 #[tauri::command(async)]
-fn model_split(payload: String) -> Result<String, String> {
-    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-    let id = value
-        .get("id")
-        .and_then(|item| item.as_i64())
-        .ok_or_else(|| "missing id".to_string())? as i32;
-    let number = |key: &str| value.get(key).and_then(|item| item.as_f64()).unwrap_or(0.0);
-    let chord = value
-        .get("chordMm")
-        .and_then(|item| item.as_f64())
-        .unwrap_or(0.1);
-    lime_model_load::split(
-        id,
-        lime_model_load::Plane {
-            origin: [number("x"), number("y"), number("z")],
-            normal: [number("nx"), number("ny"), number("nz")],
-        },
-        chord,
-    )
-}
-
-#[tauri::command(async)]
-fn model_probe(payload: String) -> Result<String, String> {
-    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-    let id = value
-        .get("id")
-        .and_then(|item| item.as_i64())
-        .ok_or_else(|| "missing id".to_string())? as i32;
-    let number = |key: &str| value.get(key).and_then(|item| item.as_f64()).unwrap_or(0.0);
-    let text = |key: &str| value.get(key).and_then(|item| item.as_str()).unwrap_or("");
-    let kind = value
-        .get("kind")
-        .and_then(|item| item.as_str())
-        .unwrap_or("fillet");
-    if kind == "hole" {
-        return lime_model_load::hole_probe(
+async fn model_boolean(payload: String) -> Result<String, String> {
+    block_model(move || {
+        let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+        let id = value
+            .get("id")
+            .and_then(|item| item.as_i64())
+            .ok_or_else(|| "missing id".to_string())? as i32;
+        let op = value
+            .get("op")
+            .and_then(|item| item.as_str())
+            .ok_or_else(|| "missing op".to_string())?;
+        let primitive = value
+            .get("primitive")
+            .and_then(|item| item.as_str())
+            .ok_or_else(|| "missing primitive".to_string())?;
+        let number = |key: &str| value.get(key).and_then(|item| item.as_f64()).unwrap_or(0.0);
+        let chord = value
+            .get("chordMm")
+            .or_else(|| value.get("stepToleranceMm"))
+            .and_then(|item| item.as_f64())
+            .unwrap_or(0.1);
+        lime_model_load::boolean(
             id,
-            [number("x"), number("y"), number("z")],
-            number("radius"),
-            number("depth"),
-        );
-    }
-    if kind == "boolean" {
-        return lime_model_load::boolean_probe(
-            id,
-            text("op"),
-            text("primitive"),
+            op,
+            primitive,
             lime_model_load::Tool {
                 origin: [number("x"), number("y"), number("z")],
                 size: [number("dx"), number("dy"), number("dz")],
@@ -349,154 +306,256 @@ fn model_probe(payload: String) -> Result<String, String> {
                 height: number("height"),
                 turn: [number("rx"), number("ry"), number("rz")],
             },
-        );
-    }
-    let edge = value
-        .get("edge")
-        .and_then(|item| item.as_i64())
-        .ok_or_else(|| "missing edge".to_string())? as i32;
-    let chamfer = kind == "chamfer";
-    let size = number(if chamfer { "distance" } else { "radius" });
-    lime_model_load::blend_probe(id, edge, size, chamfer)
+            chord,
+        )
+    })
+    .await
 }
 
 #[tauri::command(async)]
-fn model_fillet(payload: String) -> Result<String, String> {
-    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-    let id = value
-        .get("id")
-        .and_then(|item| item.as_i64())
-        .ok_or_else(|| "missing id".to_string())? as i32;
-    let edge = value
-        .get("edge")
-        .and_then(|item| item.as_i64())
-        .ok_or_else(|| "missing edge".to_string())? as i32;
-    let radius = value
-        .get("radius")
-        .and_then(|item| item.as_f64())
-        .unwrap_or(0.0);
-    let chord = value
-        .get("chordMm")
-        .and_then(|item| item.as_f64())
-        .unwrap_or(0.1);
-    lime_model_load::fillet(id, edge, radius, chord)
+async fn model_split(payload: String) -> Result<String, String> {
+    block_model(move || {
+        let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+        let id = value
+            .get("id")
+            .and_then(|item| item.as_i64())
+            .ok_or_else(|| "missing id".to_string())? as i32;
+        let number = |key: &str| value.get(key).and_then(|item| item.as_f64()).unwrap_or(0.0);
+        let chord = value
+            .get("chordMm")
+            .and_then(|item| item.as_f64())
+            .unwrap_or(0.1);
+        lime_model_load::split(
+            id,
+            lime_model_load::Plane {
+                origin: [number("x"), number("y"), number("z")],
+                normal: [number("nx"), number("ny"), number("nz")],
+            },
+            chord,
+        )
+    })
+    .await
 }
 
 #[tauri::command(async)]
-fn model_chamfer(payload: String) -> Result<String, String> {
-    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-    let id = value
-        .get("id")
-        .and_then(|item| item.as_i64())
-        .ok_or_else(|| "missing id".to_string())? as i32;
-    let edge = value
-        .get("edge")
-        .and_then(|item| item.as_i64())
-        .ok_or_else(|| "missing edge".to_string())? as i32;
-    let distance = value
-        .get("distance")
-        .and_then(|item| item.as_f64())
-        .unwrap_or(0.0);
-    let chord = value
-        .get("chordMm")
-        .and_then(|item| item.as_f64())
-        .unwrap_or(0.1);
-    lime_model_load::chamfer(id, edge, distance, chord)
+async fn model_probe(payload: String) -> Result<String, String> {
+    block_model(move || {
+        let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+        let id = value
+            .get("id")
+            .and_then(|item| item.as_i64())
+            .ok_or_else(|| "missing id".to_string())? as i32;
+        let number = |key: &str| value.get(key).and_then(|item| item.as_f64()).unwrap_or(0.0);
+        let text = |key: &str| value.get(key).and_then(|item| item.as_str()).unwrap_or("");
+        let kind = value
+            .get("kind")
+            .and_then(|item| item.as_str())
+            .unwrap_or("fillet");
+        if kind == "hole" {
+            return lime_model_load::hole_probe(
+                id,
+                [number("x"), number("y"), number("z")],
+                number("radius"),
+                number("depth"),
+            );
+        }
+        if kind == "boolean" {
+            return lime_model_load::boolean_probe(
+                id,
+                text("op"),
+                text("primitive"),
+                lime_model_load::Tool {
+                    origin: [number("x"), number("y"), number("z")],
+                    size: [number("dx"), number("dy"), number("dz")],
+                    radius: number("radius"),
+                    height: number("height"),
+                    turn: [number("rx"), number("ry"), number("rz")],
+                },
+            );
+        }
+        let edge = value
+            .get("edge")
+            .and_then(|item| item.as_i64())
+            .ok_or_else(|| "missing edge".to_string())? as i32;
+        let chamfer = kind == "chamfer";
+        let size = number(if chamfer { "distance" } else { "radius" });
+        lime_model_load::blend_probe(id, edge, size, chamfer)
+    })
+    .await
 }
 
 #[tauri::command(async)]
-fn model_hole(payload: String) -> Result<String, String> {
-    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-    let id = value
-        .get("id")
-        .and_then(|item| item.as_i64())
-        .ok_or_else(|| "missing id".to_string())? as i32;
-    let number = |key: &str| value.get(key).and_then(|item| item.as_f64()).unwrap_or(0.0);
-    let chord = value
-        .get("chordMm")
-        .and_then(|item| item.as_f64())
-        .unwrap_or(0.1);
-    lime_model_load::hole(
-        id,
-        [number("x"), number("y"), number("z")],
-        number("radius"),
-        number("depth"),
-        chord,
-    )
+async fn model_fillet(payload: String) -> Result<String, String> {
+    block_model(move || {
+        let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+        let id = value
+            .get("id")
+            .and_then(|item| item.as_i64())
+            .ok_or_else(|| "missing id".to_string())? as i32;
+        let edge = value
+            .get("edge")
+            .and_then(|item| item.as_i64())
+            .ok_or_else(|| "missing edge".to_string())? as i32;
+        let radius = value
+            .get("radius")
+            .and_then(|item| item.as_f64())
+            .unwrap_or(0.0);
+        let chord = value
+            .get("chordMm")
+            .and_then(|item| item.as_f64())
+            .unwrap_or(0.1);
+        lime_model_load::fillet(id, edge, radius, chord)
+    })
+    .await
 }
 
 #[tauri::command(async)]
-fn model_scale(payload: String) -> Result<String, String> {
-    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-    let id = value
-        .get("id")
-        .and_then(|item| item.as_i64())
-        .ok_or_else(|| "missing id".to_string())? as i32;
-    let factor = value
-        .get("factor")
-        .and_then(|item| item.as_f64())
-        .unwrap_or(0.0);
-    let chord = value
-        .get("chordMm")
-        .and_then(|item| item.as_f64())
-        .unwrap_or(0.1);
-    lime_model_load::scale(id, factor, chord)
+async fn model_chamfer(payload: String) -> Result<String, String> {
+    block_model(move || {
+        let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+        let id = value
+            .get("id")
+            .and_then(|item| item.as_i64())
+            .ok_or_else(|| "missing id".to_string())? as i32;
+        let edge = value
+            .get("edge")
+            .and_then(|item| item.as_i64())
+            .ok_or_else(|| "missing edge".to_string())? as i32;
+        let distance = value
+            .get("distance")
+            .and_then(|item| item.as_f64())
+            .unwrap_or(0.0);
+        let chord = value
+            .get("chordMm")
+            .and_then(|item| item.as_f64())
+            .unwrap_or(0.1);
+        lime_model_load::chamfer(id, edge, distance, chord)
+    })
+    .await
 }
 
 #[tauri::command(async)]
-fn model_export(payload: String) -> Result<String, String> {
-    use base64::Engine;
-    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-    let id = value
-        .get("id")
-        .and_then(|item| item.as_i64())
-        .ok_or_else(|| "missing id".to_string())? as i32;
-    let path = std::env::temp_dir().join(format!(
-        "lime-model-export-{}-{}.step",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_nanos())
-            .unwrap_or(0)
-    ));
-    let wrote = lime_model_load::write_step(id, &path)?;
-    let failed = serde_json::from_str::<serde_json::Value>(&wrote)
-        .ok()
-        .and_then(|parsed| {
-            parsed
-                .get("error")
-                .and_then(|err| err.as_str())
-                .map(|text| !text.is_empty())
-        })
-        .unwrap_or(false);
-    if failed {
+async fn model_hole(payload: String) -> Result<String, String> {
+    block_model(move || {
+        let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+        let id = value
+            .get("id")
+            .and_then(|item| item.as_i64())
+            .ok_or_else(|| "missing id".to_string())? as i32;
+        let number = |key: &str| value.get(key).and_then(|item| item.as_f64()).unwrap_or(0.0);
+        let chord = value
+            .get("chordMm")
+            .and_then(|item| item.as_f64())
+            .unwrap_or(0.1);
+        lime_model_load::hole(
+            id,
+            [number("x"), number("y"), number("z")],
+            number("radius"),
+            number("depth"),
+            chord,
+        )
+    })
+    .await
+}
+
+#[tauri::command(async)]
+async fn model_scale(payload: String) -> Result<String, String> {
+    block_model(move || {
+        let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+        let id = value
+            .get("id")
+            .and_then(|item| item.as_i64())
+            .ok_or_else(|| "missing id".to_string())? as i32;
+        let factor = value
+            .get("factor")
+            .and_then(|item| item.as_f64())
+            .unwrap_or(0.0);
+        let chord = value
+            .get("chordMm")
+            .and_then(|item| item.as_f64())
+            .unwrap_or(0.1);
+        lime_model_load::scale(id, factor, chord)
+    })
+    .await
+}
+
+#[tauri::command(async)]
+async fn model_export(payload: String) -> Result<String, String> {
+    block_model(move || {
+        use base64::Engine;
+        let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+        let id = value
+            .get("id")
+            .and_then(|item| item.as_i64())
+            .ok_or_else(|| "missing id".to_string())? as i32;
+        let path = std::env::temp_dir().join(format!(
+            "lime-model-export-{}-{}.step",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or(0)
+        ));
+        let wrote = lime_model_load::write_step(id, &path)?;
+        let failed = serde_json::from_str::<serde_json::Value>(&wrote)
+            .ok()
+            .and_then(|parsed| {
+                parsed
+                    .get("error")
+                    .and_then(|err| err.as_str())
+                    .map(|text| !text.is_empty())
+            })
+            .unwrap_or(false);
+        if failed {
+            let _ = std::fs::remove_file(&path);
+            return Ok(wrote);
+        }
+        let bytes = std::fs::read(&path).map_err(|err| {
+            let _ = std::fs::remove_file(&path);
+            err.to_string()
+        })?;
         let _ = std::fs::remove_file(&path);
-        return Ok(wrote);
-    }
-    let bytes = std::fs::read(&path).map_err(|err| {
-        let _ = std::fs::remove_file(&path);
-        err.to_string()
-    })?;
-    let _ = std::fs::remove_file(&path);
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    Ok(format!(
-        "{{\"bytesBase64\":\"{encoded}\",\"byteLength\":{}}}",
-        bytes.len()
-    ))
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        Ok(format!(
+            "{{\"bytesBase64\":\"{encoded}\",\"byteLength\":{}}}",
+            bytes.len()
+        ))
+    })
+    .await
 }
 
 #[tauri::command(async)]
-fn model_undo(payload: String) -> Result<String, String> {
-    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-    let id = value
-        .get("id")
-        .and_then(|item| item.as_i64())
-        .ok_or_else(|| "missing id".to_string())? as i32;
-    let chord = value
-        .get("chordMm")
-        .and_then(|item| item.as_f64())
-        .unwrap_or(0.1);
-    lime_model_load::undo(id, chord)
+async fn model_undo(payload: String) -> Result<String, String> {
+    block_model(move || {
+        let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+        let id = value
+            .get("id")
+            .and_then(|item| item.as_i64())
+            .ok_or_else(|| "missing id".to_string())? as i32;
+        let chord = value
+            .get("chordMm")
+            .and_then(|item| item.as_f64())
+            .unwrap_or(0.1);
+        lime_model_load::undo(id, chord)
+    })
+    .await
+}
+
+#[tauri::command(async)]
+async fn model_redo(payload: String) -> Result<String, String> {
+    block_model(move || {
+        let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+        let id = value
+            .get("id")
+            .and_then(|item| item.as_i64())
+            .ok_or_else(|| "missing id".to_string())? as i32;
+        let chord = value
+            .get("chordMm")
+            .and_then(|item| item.as_f64())
+            .unwrap_or(0.1);
+        lime_model_load::redo(id, chord)
+    })
+    .await
 }
 
 fn base64_decode(data: &str) -> Result<Vec<u8>, String> {
@@ -603,6 +662,7 @@ pub fn run() {
             model_scale,
             model_export,
             model_undo,
+            model_redo,
             prusa_link_http
         ])
         .run(tauri::generate_context!())

@@ -58,6 +58,7 @@ type Hole = unsafe extern "C" fn(i32, f64, f64, f64, f64, f64, f64) -> *mut c_ch
 type Scale = unsafe extern "C" fn(i32, f64, f64) -> *mut c_char;
 type WriteStep = unsafe extern "C" fn(i32, *const c_char) -> *mut c_char;
 type Undo = unsafe extern "C" fn(i32, f64) -> *mut c_char;
+type Redo = unsafe extern "C" fn(i32, f64) -> *mut c_char;
 type FreeStr = unsafe extern "C" fn(*mut c_char);
 
 struct Bridge {
@@ -76,6 +77,7 @@ struct Bridge {
     scale: Scale,
     write_step: WriteStep,
     undo: Undo,
+    redo: Redo,
     free: FreeStr,
 }
 
@@ -295,6 +297,13 @@ pub fn undo(id: i32, chord_mm: f64) -> Result<String, String> {
     take(ptr, api.free)
 }
 
+/// Put back the solid that undo just replaced.
+pub fn redo(id: i32, chord_mm: f64) -> Result<String, String> {
+    let api = load()?;
+    let ptr = unsafe { (api.redo)(id, chord_mm) };
+    take(ptr, api.free)
+}
+
 struct Api {
     open_box: OpenBox,
     open_step: OpenStep,
@@ -310,6 +319,7 @@ struct Api {
     scale: Scale,
     write_step: WriteStep,
     undo: Undo,
+    redo: Redo,
     free: FreeStr,
 }
 
@@ -375,6 +385,9 @@ fn load() -> Result<Api, String> {
                 undo: *lib
                     .get::<Undo>(b"lime_occt_undo\0")
                     .map_err(|err| format!("bridge is missing lime_occt_undo: {err}"))?,
+                redo: *lib
+                    .get::<Redo>(b"lime_occt_redo\0")
+                    .map_err(|err| format!("bridge is missing lime_occt_redo: {err}"))?,
                 free: *lib
                     .get::<FreeStr>(b"lime_occt_string_free\0")
                     .map_err(|err| format!("bridge is missing lime_occt_string_free: {err}"))?,
@@ -399,6 +412,7 @@ fn load() -> Result<Api, String> {
         scale: bridge.scale,
         write_step: bridge.write_step,
         undo: bridge.undo,
+        redo: bridge.redo,
         free: bridge.free,
     })
 }

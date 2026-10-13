@@ -408,6 +408,7 @@ export function setView(mode: typeof state.viewMode, source: "user" | "auto" = "
 }
 
 export function setStage(stage: "prepare" | "preview" | "gcode" | "model") {
+  if (state.stage === "model" && stage !== "model") flushEdit();
   state.stage = stage;
   document.querySelector<HTMLElement>("#prepareBody")!.hidden = stage !== "prepare";
   document.querySelector<HTMLElement>("#modelBody")!.hidden = stage !== "model";
