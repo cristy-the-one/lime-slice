@@ -3596,7 +3596,21 @@ fn order_infill(
         rest_sample.order_rest(n as u64);
         return order_nearest(paths, grid.as_ref(), cursor, has, None);
     }
-    let ordered = apply_order(paths, &best.order, cursor, has, best.rotate);
+    let mut ordered = apply_order(paths, &best.order, cursor, has, best.rotate);
+    // Closed and open paths in one run: the seams are settled now, so 2-opt reads
+    // each loop as a stop at its start, and a loop is never reversed.
+    if closed && !ordered.iter().all(geom_closed) {
+        let ident: Vec<usize> = (0..ordered.len()).collect();
+        let (order, mut flips) = untangle(&ordered, &ident, cursor, has, to);
+        for (flip, &i) in flips.iter_mut().zip(&order) {
+            if geom_closed(&ordered[i]) {
+                *flip = false;
+            }
+        }
+        if order != ident || flips.iter().any(|f| *f) {
+            ordered = apply_flips(ordered, &order, &flips);
+        }
+    }
     rest_sample.order_rest(n as u64);
     ordered
 }
@@ -6327,6 +6341,44 @@ mod travel_tests {
         // Nearest-neighbour with relocations walks 1490 mm here; 2-opt and
         // moving short runs of loops brings it to 1410.
         assert!(walked < 1450.0, "walked {walked:.1} mm");
+    }
+
+    /// Travel over 60 supports, loops of 0.4 mm radius and 1.5 mm strokes by turns,
+    /// ordered from the middle of a 40 mm square.
+    fn walked_over_mixed(seed: u64) -> f64 {
+        let mut state = seed;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as f64 / (1u64 << 31) as f64 * 40.0
+        };
+        let mut paths: Vec<Extrusion> = (0..60)
+            .map(|k| {
+                let (x, y) = (next(), next());
+                if k % 2 == 0 {
+                    support(circle_pts([x, y], 0.4))
+                } else {
+                    support(vec![[x, y], [x + 1.5, y]])
+                }
+            })
+            .collect();
+        let mut at = [20.0, 20.0];
+        order_supports(&mut paths, Some(at), None, None);
+        let mut walked = 0.0;
+        for path in &paths {
+            walked += dist_mm(at, path.points[0]);
+            at = *path.points.last().unwrap();
+        }
+        walked
+    }
+
+    #[test]
+    fn a_run_of_loops_and_strokes_is_visited_in_a_short_order() {
+        let walked: f64 = (1..=6).map(walked_over_mixed).sum();
+        // Nearest-neighbour with 2-opt on the strokes alone walks 1451 mm here;
+        // 2-opt over the loops and strokes together brings it to 1361.
+        assert!(walked < 1400.0, "walked {walked:.1} mm");
     }
 
     #[test]
