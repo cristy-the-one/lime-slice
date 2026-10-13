@@ -236,7 +236,7 @@ async function runSplit() {
     await rollback(snap);
     return;
   }
-  await commitView(parsed, `Split. Volume ${mm(parsed.volumeMm3)} mm³. The other solid is on the plate.${note}`);
+  await commitView(parsed, `Split. Volume ${mm(parsed.volumeMm3)} mm³. The other piece sits in the same spot. Use Arrange to lay them side by side.${note}`);
 }
 
 async function runBlend(kind: "fillet" | "chamfer") {
