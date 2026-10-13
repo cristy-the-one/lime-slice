@@ -368,6 +368,7 @@ function currentNumbers(): MachineNumbers {
   const hostField = document.querySelector<HTMLInputElement>("#machineHost");
   const keyField = document.querySelector<HTMLInputElement>("#machineKey");
   const startField = document.querySelector<HTMLInputElement>("#machineStartPrint");
+  const hostTypeField = document.querySelector<HTMLSelectElement>("#machineHostType");
   return {
     nozzleDiameter: state.profile.nozzleDiameter,
     filamentDiameter: state.profile.filamentDiameter,
@@ -395,6 +396,7 @@ function currentNumbers(): MachineNumbers {
     maxNozzleC: heatLimits[1],
     startOwnsHoming: heatLimits[2],
     host: hostField?.value.trim() ?? picked?.host ?? "",
+    hostType: (hostTypeField?.value as MachineNumbers["hostType"]) ?? picked?.hostType,
     apiKey: keyField?.value ?? picked?.apiKey ?? "",
     startPrint: startField ? startField.checked : picked?.startPrint === true,
   };

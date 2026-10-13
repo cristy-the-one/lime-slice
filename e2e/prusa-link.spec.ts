@@ -91,6 +91,74 @@ test("a printer answers, an unreachable host can be retried, and upload can star
   await expect(page.locator("#prusaStatus")).toHaveText("PRINTING · 10% · 1 min left");
 });
 
+test("Moonraker printer.cfg import updates Klipper limits and offers to update bed and nozzle", async ({ page }) => {
+  await quiet(page);
+  await page.route("http://voron.local:7125/**", (route) => {
+    const url = route.request().url();
+    if (url.includes("/printer/objects/query?configfile=settings")) {
+      return route.fulfill({
+        json: {
+          result: {
+            status: {
+              configfile: {
+                settings: {
+                  printer: {
+                    max_velocity: 450,
+                    max_accel: 15000,
+                    square_corner_velocity: 9,
+                    minimum_cruise_ratio: 0.35,
+                    max_z_velocity: 30,
+                    max_z_accel: 400,
+                  },
+                  extruder: {
+                    instantaneous_corner_velocity: 2,
+                    nozzle_diameter: 0.6,
+                    filament_diameter: 1.75,
+                    max_temp: 290,
+                  },
+                  heater_bed: {
+                    max_temp: 110,
+                  },
+                  stepper_x: { position_max: 300 },
+                  stepper_y: { position_max: 300 },
+                  stepper_z: { position_max: 280 },
+                },
+              },
+            },
+          },
+        },
+      });
+    }
+    return route.fulfill({ status: 404, body: "" });
+  });
+
+  await page.goto("/");
+  await autoSliceOff(page);
+  await page.locator("#levelPick").selectOption("expert");
+  await page.locator("#machineMore").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
+  await page.locator("#machineHostType").selectOption("moonraker");
+  await page.locator("#machineHost").fill("http://voron.local:7125");
+  await page.locator("#moonrakerImport").click();
+
+  await expect(page.locator("#prusaStatus")).toContainText("Imported printer.cfg");
+  await expect(page.locator("#vmax")).toHaveValue("450");
+  await expect(page.locator("#accel")).toHaveValue("15000");
+  await expect(page.locator("#scv")).toHaveValue("9");
+  await expect(page.locator("#mcr")).toHaveValue("0.35");
+  await expect(page.locator("#ecv")).toHaveValue("2");
+  await expect(page.locator("#zvmax")).toHaveValue("30");
+  await expect(page.locator("#zamax")).toHaveValue("400");
+
+  // Bed and nozzle are offered via toast action ("3) offer to update the rest")
+  const toast = page.locator("#toasts").getByRole("status").filter({ hasText: "300×300×280 mm bed" });
+  await expect(toast).toBeVisible();
+  await toast.getByRole("button", { name: "Update bed & nozzle" }).click();
+  await expect(page.locator("#bedx")).toHaveValue("300");
+  await expect(page.locator("#bedy")).toHaveValue("300");
+  await expect(page.locator("#bedz")).toHaveValue("280");
+  await expect(page.locator("#machineNozzle")).toHaveValue("0.6");
+});
+
 test.describe("compact Prusa Link", () => {
   test.use({
     viewport: { width: 390, height: 844 },

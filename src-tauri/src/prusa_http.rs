@@ -1,8 +1,8 @@
-//! Desktop helper for Prusa Link.
+//! Desktop helper for Prusa Link, Moonraker, and OctoPrint.
 //!
 //! The webview's `fetch` is blocked when the printer does not send CORS headers.
 //! This speaks HTTP/1.1 to the host stored on the printer profile. It only calls
-//! `GET /api/version`, `GET /api/v1/status`, and `PUT /api/v1/files/local/<name>`.
+//! the status, version, config query, and upload routes for those three hosts.
 //! `https://` stays on the page `fetch` path: printer certificates are not in this helper.
 //! CI does not open a socket. The tests below only check request text and response parsing.
 
@@ -82,16 +82,25 @@ fn exchange(
 }
 
 fn allowed(method: &str, path: &str) -> bool {
+    let raw_path = path;
     let path = path.split('?').next().unwrap_or(path);
     if path.contains("..") || path.contains('\\') {
         return false;
     }
     match method {
-        "GET" => path == "/api/version" || path == "/api/v1/status",
+        "GET" => {
+            path == "/api/version"
+                || path == "/api/v1/status"
+                || path == "/api/job"
+                || path == "/api/printer"
+                || path == "/printer/info"
+                || (path == "/printer/objects/query" && raw_path.contains('?'))
+        }
         "PUT" => {
             let prefix = "/api/v1/files/local/";
             path.starts_with(prefix) && path.len() > prefix.len()
         }
+        "POST" => path == "/server/files/upload" || path == "/api/files/local",
         _ => false,
     }
 }
@@ -123,12 +132,9 @@ fn request_bytes(
         head.push_str(value);
         head.push_str("\r\n");
     }
-    let payload = if method == "PUT" {
-        body.unwrap_or("")
-    } else {
-        ""
-    };
-    if method == "PUT" {
+    let has_body = matches!(method, "PUT" | "POST");
+    let payload = if has_body { body.unwrap_or("") } else { "" };
+    if has_body {
         head.push_str(&format!("Content-Length: {}\r\n", payload.len()));
     }
     head.push_str("\r\n");
@@ -381,5 +387,30 @@ mod tests {
         let (status, text) = parse_response(raw).unwrap();
         assert_eq!(status, 200);
         assert_eq!(text, "hello");
+    }
+
+    #[test]
+    fn moonraker_and_octoprint_routes_are_allowed() {
+        assert!(allowed("GET", "/printer/info"));
+        assert!(allowed("GET", "/printer/objects/query?configfile=settings"));
+        assert!(allowed("GET", "/printer/objects/query?print_stats&virtual_sdcard"));
+        assert!(!allowed("GET", "/printer/objects/query"));
+        assert!(allowed("POST", "/server/files/upload"));
+        assert!(allowed("GET", "/api/job"));
+        assert!(allowed("POST", "/api/files/local"));
+        let url = Url::parse("http://voron.local:7125/server/files/upload").unwrap();
+        let bytes = request_bytes(
+            "POST",
+            &url,
+            "/server/files/upload",
+            &headers(&[("Content-Type", "multipart/form-data; boundary=lime")]),
+            Some("--lime--\r\n"),
+        )
+        .unwrap();
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(text.starts_with("POST /server/files/upload HTTP/1.1\r\n"));
+        assert!(text.contains("Host: voron.local:7125\r\n"));
+        assert!(text.contains("Content-Length: 10\r\n"));
+        assert!(text.ends_with("\r\n\r\n--lime--\r\n"));
     }
 }

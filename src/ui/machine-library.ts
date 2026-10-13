@@ -13,6 +13,7 @@
 import { coerceBelt, defaultBelt, type BeltSettings, type PrinterKind } from "../belt.ts";
 import { KLIPPER_NUMBERS, type KlipperLimits, type PrinterProfile } from "../profiles.ts";
 import { ADVANCE, type Firmware, type Rules } from "../settings-rules.ts";
+import { coerceHostKind, type MoonrakerConfigImport, type PrinterHostKind } from "./prusa-link.ts";
 
 export const MACHINE_FILE_VERSION = 3;
 
@@ -37,9 +38,11 @@ export interface PrinterRecord extends KlipperLimits {
   maxNozzleC: number;
   /** The start G-code heats and homes itself, so Export drops the engine's heat and `G28` lines. */
   startOwnsHoming: boolean;
-  /** Prusa Link origin, such as http://192.168.1.50. Empty on a built-in printer. Not sent on the slice request. */
+  /** Prusa Link / Moonraker / OctoPrint origin, such as http://192.168.1.50. Empty on a built-in printer. Not sent on the slice request. */
   host: string;
-  /** Prusa Link API key or password. Stored with the printer. Not sent on the slice request. */
+  /** Host protocol when not Prusa Link (`"moonraker"` or `"octoprint"`). Omitted for `"prusalink"`. */
+  hostType?: PrinterHostKind;
+  /** Prusa Link / Moonraker / OctoPrint API key. Stored with the printer. Not sent on the slice request. */
   apiKey: string;
   /** When set, Send asks Prusa Link to start the job after the upload. */
   startPrint: boolean;
@@ -124,6 +127,7 @@ export interface MachineNumbers extends KlipperLimits {
   maxNozzleC: number;
   startOwnsHoming: boolean;
   host: string;
+  hostType?: PrinterHostKind;
   apiKey: string;
   startPrint: boolean;
 }
@@ -451,11 +455,77 @@ export function setActiveBelt(library: MachineLibrary, kind: PrinterKind, belt: 
   };
 }
 
-/** Store the Prusa Link host on the active printer. An empty host means Send stays off. */
-export function setLink(library: MachineLibrary, host: string, apiKey: string, startPrint: boolean): MachineLibrary {
+/** Store the printer host connection on the active printer. An empty host means Send stays off. */
+export function setLink(
+  library: MachineLibrary,
+  host: string,
+  apiKey: string,
+  startPrint: boolean,
+  hostType?: PrinterHostKind,
+): MachineLibrary {
+  const kind = coerceHostKind(hostType);
   return {
     ...library,
-    printers: library.printers.map((printer) => printer.id === library.printerId ? { ...printer, host, apiKey, startPrint } : printer),
+    printers: library.printers.map((printer) => {
+      if (printer.id !== library.printerId) return printer;
+      const next: PrinterRecord = { ...printer, host, apiKey, startPrint };
+      if (kind === "prusalink") delete next.hostType;
+      else next.hostType = kind;
+      return next;
+    }),
+  };
+}
+
+/** Apply kinematic limits imported from Moonraker's `printer.cfg` onto the active printer. */
+export function applyMoonrakerLimits(
+  library: MachineLibrary,
+  limits: MoonrakerConfigImport["limits"],
+): MachineLibrary {
+  return {
+    ...library,
+    printers: library.printers.map((printer) => {
+      if (printer.id !== library.printerId) return printer;
+      return {
+        ...printer,
+        maxAccel: limits.maxAccel ?? printer.maxAccel,
+        maxVelocity: limits.maxVelocity ?? printer.maxVelocity,
+        squareCornerVelocity: limits.squareCornerVelocity ?? printer.squareCornerVelocity,
+        minimumCruiseRatio: limits.minimumCruiseRatio ?? printer.minimumCruiseRatio,
+        extruderCornerVelocity: limits.extruderCornerVelocity ?? printer.extruderCornerVelocity,
+        maxZVelocity: limits.maxZVelocity ?? printer.maxZVelocity,
+        maxZAccel: limits.maxZAccel ?? printer.maxZAccel,
+      };
+    }),
+  };
+}
+
+/** Apply bed volume, nozzle size, filament diameter, and temperature caps from Moonraker's `printer.cfg`. */
+export function applyMoonrakerGeometry(
+  library: MachineLibrary,
+  geometry: MoonrakerConfigImport["geometry"],
+): MachineLibrary {
+  const nozzleMm = geometry.nozzleDiameter && geometry.nozzleDiameter > 0 ? geometry.nozzleDiameter : library.nozzleMm;
+  return {
+    ...library,
+    nozzleMm,
+    printers: library.printers.map((printer) => {
+      if (printer.id !== library.printerId) return printer;
+      return {
+        ...printer,
+        bedX: geometry.bedX ?? printer.bedX,
+        bedY: geometry.bedY ?? printer.bedY,
+        bedZ: geometry.bedZ ?? printer.bedZ,
+        maxBedC: geometry.maxBedC ?? printer.maxBedC,
+        maxNozzleC: geometry.maxNozzleC ?? printer.maxNozzleC,
+      };
+    }),
+    filaments: library.filaments.map((filament) => {
+      if (filament.id !== library.filamentId) return filament;
+      return {
+        ...filament,
+        diameterMm: geometry.filamentDiameter ?? filament.diameterMm,
+      };
+    }),
   };
 }
 
@@ -678,16 +748,24 @@ export function machineSectionHtml(
             <label class="field setting" data-label="max nozzle temperature" data-keywords="nozzle limit cap hotend" data-tip="${LIMIT_TIP}">Max nozzle °C
               <input id="machineMaxNozzle" type="number" min="150" max="500" step="1" value="${picked?.printer.maxNozzleC ?? DEFAULT_MAX_NOZZLE_C}" aria-label="Hottest nozzle this printer accepts" />
             </label>
-            <label class="field setting machine-link" data-label="prusa link host" data-keywords="printer host url send" data-tip="Host and API key are stored on this printer and in an exported machine file. Built-in printers start with an empty host. Send uploads the current G-code to Prusa Link. The slicer does not talk to the printer.">Prusa Link host
+            <label class="field setting machine-link" data-label="printer host type" data-keywords="prusa link moonraker klipper octoprint host send">Host type
+              <select id="machineHostType" aria-label="Printer host type">
+                <option value="prusalink"${coerceHostKind(picked?.printer.hostType) === "prusalink" ? " selected" : ""}>Prusa Link</option>
+                <option value="moonraker"${coerceHostKind(picked?.printer.hostType) === "moonraker" ? " selected" : ""}>Moonraker (Klipper)</option>
+                <option value="octoprint"${coerceHostKind(picked?.printer.hostType) === "octoprint" ? " selected" : ""}>OctoPrint</option>
+              </select>
+            </label>
+            <label class="field setting machine-link" data-label="prusa link host" data-keywords="printer host url send moonraker octoprint" data-tip="Host and API key are stored on this printer and in an exported machine file. Built-in printers start with an empty host. Send uploads the current G-code to Prusa Link, Moonraker, or OctoPrint. The slicer does not talk to the printer.">Prusa Link host
               <input id="machineHost" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="http://192.168.1.50" value="${escapeHtml(picked?.printer.host ?? "")}" aria-label="Prusa Link host" />
             </label>
-            <label class="field setting machine-link" data-label="prusa link api key" data-keywords="printer key password send">Prusa Link API key
+            <label class="field setting machine-link" data-label="prusa link api key" data-keywords="printer key password send moonraker octoprint">Prusa Link API key
               <input id="machineKey" type="password" autocomplete="off" spellcheck="false" value="${escapeHtml(picked?.printer.apiKey ?? "")}" aria-label="Prusa Link API key" />
             </label>
-            <label class="check setting machine-link" data-label="start print after upload" data-keywords="prusa link send"><input id="machineStartPrint" type="checkbox" ${picked?.printer.startPrint ? "checked" : ""}/> Start print after upload</label>
+            <label class="check setting machine-link" data-label="start print after upload" data-keywords="prusa link send moonraker octoprint"><input id="machineStartPrint" type="checkbox" ${picked?.printer.startPrint ? "checked" : ""}/> Start print after upload</label>
             <div class="row machine-link">
               <button class="btn" id="prusaTest" type="button">Test connection</button>
               <button class="btn" id="prusaJob" type="button">Job status</button>
+              <button class="btn" id="moonrakerImport" type="button" data-tip="Read velocity, acceleration, bed size, and nozzle from Moonraker printer.cfg">Read printer.cfg</button>
             </div>
             <div class="meta machine-link" id="prusaStatus">${escapeHtml(linkSummary)}</div>
           </div>
@@ -703,25 +781,30 @@ function writeNumbers(library: MachineLibrary, printerId: string, filamentId: st
     printerId,
     filamentId,
     nozzleMm: numbers.nozzleDiameter,
-    printers: library.printers.map((printer) => printer.id === printerId
-      ? {
-          ...printer,
-          bedX: numbers.bedX,
-          bedY: numbers.bedY,
-          bedZ: numbers.bedZ,
-          maxVolumetricMm3S: numbers.maxVolumetricMm3S,
-          maxAccel: numbers.maxAccel,
-          startGcode: numbers.startGcode,
-          endGcode: numbers.endGcode,
-          maxBedC: numbers.maxBedC,
-          maxNozzleC: numbers.maxNozzleC,
-          startOwnsHoming: numbers.startOwnsHoming,
-          host: numbers.host,
-          apiKey: numbers.apiKey,
-          startPrint: numbers.startPrint,
-          ...klipperLimits(numbers),
-        }
-      : printer),
+    printers: library.printers.map((printer) => {
+      if (printer.id !== printerId) return printer;
+      const hostType = coerceHostKind(numbers.hostType ?? printer.hostType);
+      const next: PrinterRecord = {
+        ...printer,
+        bedX: numbers.bedX,
+        bedY: numbers.bedY,
+        bedZ: numbers.bedZ,
+        maxVolumetricMm3S: numbers.maxVolumetricMm3S,
+        maxAccel: numbers.maxAccel,
+        startGcode: numbers.startGcode,
+        endGcode: numbers.endGcode,
+        maxBedC: numbers.maxBedC,
+        maxNozzleC: numbers.maxNozzleC,
+        startOwnsHoming: numbers.startOwnsHoming,
+        host: numbers.host,
+        apiKey: numbers.apiKey,
+        startPrint: numbers.startPrint,
+        ...klipperLimits(numbers),
+      };
+      if (hostType === "prusalink") delete next.hostType;
+      else next.hostType = hostType;
+      return next;
+    }),
     filaments: library.filaments.map((filament) => filament.id === filamentId
       ? {
           ...filament,
@@ -764,6 +847,7 @@ function blankPrinter(id: string, name: string): PrinterRecord {
 }
 
 function stripPrinter(printer: PrinterRecord): MachineFile["printer"] {
+  const hostType = coerceHostKind(printer.hostType);
   return {
     name: printer.name,
     bedX: printer.bedX,
@@ -777,6 +861,7 @@ function stripPrinter(printer: PrinterRecord): MachineFile["printer"] {
     maxNozzleC: printer.maxNozzleC,
     startOwnsHoming: printer.startOwnsHoming,
     host: printer.host,
+    ...(hostType !== "prusalink" ? { hostType } : {}),
     apiKey: printer.apiKey,
     startPrint: printer.startPrint,
     firmware: printer.firmware,
@@ -1006,6 +1091,7 @@ function readPrinterBody(value: unknown, missing: KlipperLimits = KLIPPER_NUMBER
   if (row.host.length > 500 || row.apiKey.length > 500) return null;
   if (row.kind !== "cartesian" && row.kind !== "belt") return null;
   if (!row.belt || typeof row.belt !== "object" || Array.isArray(row.belt)) return null;
+  const hostType = coerceHostKind(row.hostType);
   return {
     name: row.name.trim(),
     bedX: row.bedX,
@@ -1019,6 +1105,7 @@ function readPrinterBody(value: unknown, missing: KlipperLimits = KLIPPER_NUMBER
     maxNozzleC: limit(row.maxNozzleC, DEFAULT_MAX_NOZZLE_C),
     startOwnsHoming: row.startOwnsHoming === true,
     host: row.host.trim(),
+    ...(hostType !== "prusalink" ? { hostType } : {}),
     apiKey: row.apiKey,
     startPrint: row.startPrint,
     firmware: row.firmware === "marlin" ? "marlin" : "klipper",

@@ -4,7 +4,10 @@ import {
   gcodeFileName,
   hostProblem,
   isPrinterBusy,
+  keyProblem,
+  moonrakerConfigRequest,
   parsePrusaOrigin,
+  readMoonrakerConfig,
   readStatus,
   readUpload,
   readVersion,
@@ -93,6 +96,129 @@ check("a thrown fetch is a network failure", !down.ok && down.message.startsWith
 
 const missing = await sendGcode({ url: "", apiKey: "", startPrint: false }, "part.gcode", "G1", async () => ({ status: 201, text: "" }));
 check("a missing host is refused before fetch", !missing.ok && missing.message === "Add a Prusa Link host on this printer first.");
+
+// Moonraker (Klipper) tests
+check("Moonraker allows an empty API key", keyProblem("", "moonraker") === null);
+check("OctoPrint requires an API key", keyProblem("", "octoprint") === "Add the OctoPrint API key for this printer.");
+const moonVersionReq = versionRequest("http://voron.local:7125", "", "moonraker");
+check(
+  "Moonraker version queries /printer/info without an empty key header",
+  moonVersionReq.method === "GET" && moonVersionReq.url === "http://voron.local:7125/printer/info" && !("X-Api-Key" in moonVersionReq.headers),
+);
+const moonVersion = readVersion(200, JSON.stringify({ result: { state: "ready", software_version: "v0.12.0-114" } }), "moonraker");
+check("Moonraker version summary names Klipper and state", moonVersion.ok && moonVersion.summary === "Klipper v0.12.0-114 · ready");
+
+const moonUpload = uploadRequest("http://voron.local:7125", "", "cube.gcode", "G28\nG1 X10\n", true, "moonraker");
+check(
+  "Moonraker upload is a multipart POST to /server/files/upload",
+  moonUpload.method === "POST" &&
+    moonUpload.url === "http://voron.local:7125/server/files/upload" &&
+    moonUpload.headers["Content-Type"]?.startsWith("multipart/form-data; boundary=") === true &&
+    moonUpload.body?.includes('name="root"\r\n\r\ngcodes\r\n') === true &&
+    moonUpload.body?.includes('name="print"\r\n\r\ntrue\r\n') === true &&
+    moonUpload.body?.includes('filename="cube.gcode"') === true &&
+    moonUpload.body?.includes("G28\nG1 X10\n") === true,
+);
+
+const moonSeen: PrusaLinkRequest[] = [];
+const moonSent = await sendGcode(
+  { url: "http://voron.local:7125", apiKey: "", startPrint: true, hostType: "moonraker" },
+  "cube.gcode",
+  "G28\n",
+  async (req) => {
+    moonSeen.push(req);
+    if (req.url.includes("/printer/objects/query")) {
+      const first = moonSeen.filter((r) => r.url.includes("/printer/objects/query")).length === 1;
+      return {
+        status: 200,
+        text: JSON.stringify({
+          result: {
+            status: {
+              print_stats: { state: first ? "standby" : "printing", print_duration: 120 },
+              virtual_sdcard: { progress: first ? 0 : 0.25 },
+            },
+          },
+        }),
+      };
+    }
+    if (req.method === "POST" && req.url.endsWith("/server/files/upload")) {
+      return { status: 201, text: JSON.stringify({ item: { path: "cube.gcode" } }) };
+    }
+    return { status: 500, text: "" };
+  },
+);
+check("Moonraker sendGcode checks standby, uploads multipart, and reports printing status", moonSent.ok && moonSent.summary === "Uploaded. PRINTING · 25% · 6 min left");
+
+// Moonraker printer.cfg import
+const cfgReq = moonrakerConfigRequest("http://voron.local:7125", "");
+check("Moonraker config request queries configfile=settings", cfgReq.url === "http://voron.local:7125/printer/objects/query?configfile=settings");
+const parsedCfg = readMoonrakerConfig(
+  200,
+  JSON.stringify({
+    result: {
+      status: {
+        configfile: {
+          settings: {
+            printer: {
+              max_velocity: 500,
+              max_accel: 12000,
+              square_corner_velocity: 8,
+              minimum_cruise_ratio: 0.4,
+              max_z_velocity: 25,
+              max_z_accel: 350,
+            },
+            extruder: {
+              instantaneous_corner_velocity: 1.5,
+              nozzle_diameter: 0.6,
+              filament_diameter: 1.75,
+              max_temp: 310,
+            },
+            heater_bed: {
+              max_temp: 115,
+            },
+            stepper_x: { position_max: 350 },
+            stepper_y: { position_max: 350 },
+            stepper_z: { position_max: 330 },
+          },
+        },
+      },
+    },
+  }),
+);
+check(
+  "Moonraker printer.cfg parses kinematic limits, bed size, nozzle, and temperature caps",
+  parsedCfg.ok &&
+    parsedCfg.config.limits.maxVelocity === 500 &&
+    parsedCfg.config.limits.maxAccel === 12000 &&
+    parsedCfg.config.limits.squareCornerVelocity === 8 &&
+    parsedCfg.config.limits.minimumCruiseRatio === 0.4 &&
+    parsedCfg.config.limits.extruderCornerVelocity === 1.5 &&
+    parsedCfg.config.limits.maxZVelocity === 25 &&
+    parsedCfg.config.limits.maxZAccel === 350 &&
+    parsedCfg.config.geometry.bedX === 350 &&
+    parsedCfg.config.geometry.bedY === 350 &&
+    parsedCfg.config.geometry.bedZ === 330 &&
+    parsedCfg.config.geometry.nozzleDiameter === 0.6 &&
+    parsedCfg.config.geometry.maxNozzleC === 310 &&
+    parsedCfg.config.geometry.maxBedC === 115,
+);
+
+// OctoPrint tests
+const octoJob = readStatus(
+  200,
+  JSON.stringify({ state: "Printing", progress: { completion: 50.4, printTimeLeft: 300 } }),
+  "octoprint",
+);
+check("OctoPrint job status parses state, completion, and remaining time", octoJob.ok && octoJob.summary === "PRINTING · 50% · 5 min left");
+const octoUpload = uploadRequest("http://octopi.local", "octo-key", "benchy.gcode", "G28\n", true, "octoprint");
+check(
+  "OctoPrint upload is a multipart POST to /api/files/local",
+  octoUpload.method === "POST" &&
+    octoUpload.url === "http://octopi.local/api/files/local" &&
+    octoUpload.headers["X-Api-Key"] === "octo-key" &&
+    octoUpload.body?.includes('name="select"\r\n\r\ntrue\r\n') === true &&
+    octoUpload.body?.includes('name="print"\r\n\r\ntrue\r\n') === true,
+);
 
 if (failed) {
   console.error(`${failed} failed`);
