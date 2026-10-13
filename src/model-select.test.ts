@@ -33,9 +33,11 @@ eq("no edge", lastEdge([face(2)]), null);
 
 check("fillet waits for an edge", modelApplyReady("fillet", [face(1)], 2) === false);
 check("fillet applies to the last edge", modelApplyReady("fillet", [edge(3)], 2));
+check("fillet waits while the dry-run says it will not fit", modelApplyReady("fillet", [edge(3)], 2, true, false) === false);
 check("scale of 1 is not an edit", modelApplyReady("scale", [], 1) === false);
 check("scale of 2 is an edit", modelApplyReady("scale", [], 2));
 check("a boolean can apply with nothing picked", modelApplyReady("boolean", [], 1));
+check("a hole waits while the dry-run says it misses", modelApplyReady("hole", [], 1, true, false) === false);
 check("split applies when the plane is inside the part", modelApplyReady("split", [], 1, true));
 check("split waits when the plane would shave a face", modelApplyReady("split", [], 1, false) === false);
 

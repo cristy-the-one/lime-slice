@@ -598,6 +598,154 @@ bool copy_shape(int id, TopoDS_Shape& current, std::string& error) {
     return true;
 }
 
+/// Build a fillet or chamfer on a copy. The caller commits, or throws the shape away.
+bool blend_build(
+    const TopoDS_Shape& current,
+    const TopoDS_Edge& edge,
+    double size,
+    bool chamfer,
+    TopoDS_Shape& built,
+    std::string& error) {
+    const char* failed = chamfer ? "The chamfer did not fit this edge" : "The fillet did not fit this edge";
+    try {
+        TopoDS_Shape shape;
+        if (chamfer) {
+            BRepFilletAPI_MakeChamfer builder(current);
+            builder.Add(size, edge);
+            builder.Build();
+            if (!builder.IsDone() || builder.Shape().IsNull()) {
+                error = failed;
+                return false;
+            }
+            shape = builder.Shape();
+        } else {
+            BRepFilletAPI_MakeFillet builder(current);
+            builder.Add(size, edge);
+            builder.Build();
+            if (!builder.IsDone() || builder.Shape().IsNull()) {
+                error = failed;
+                return false;
+            }
+            shape = builder.Shape();
+        }
+        const TopoDS_Shape solid = as_solid(shape);
+        if (solid.IsNull() || !has_solid(solid) || !(volume_of(solid) > 1e-6)) {
+            error = failed;
+            return false;
+        }
+        built = shape;
+        return true;
+    } catch (const Standard_Failure&) {
+        error = failed;
+        return false;
+    }
+}
+
+char* probe_json(bool ok, const std::string& error, double max_mm) {
+    if (ok) {
+        return alloc("{\"ok\":true}");
+    }
+    std::string text = std::string("{\"ok\":false,\"error\":\"") + escape(error) + "\"";
+    if (max_mm > 0.05) {
+        text += ",\"maxMm\":";
+        append_num(text, max_mm);
+    }
+    text += "}";
+    return alloc(text);
+}
+
+/// Largest size at or under `hi` that still builds, from a handful of trials.
+double largest_blend(const TopoDS_Shape& current, const TopoDS_Edge& edge, double hi, bool chamfer) {
+    double lo = 0.0;
+    double best = 0.0;
+    for (int step = 0; step < 6; ++step) {
+        const double mid = (lo + hi) * 0.5;
+        if (!(mid > 0.05)) {
+            break;
+        }
+        TopoDS_Shape trial;
+        std::string ignored;
+        if (blend_build(current, edge, mid, chamfer, trial, ignored)) {
+            (void)trial;
+            best = mid;
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return best;
+}
+
+/// The boolean Apply runs, on a copy. Empty `error` means `built` is the result.
+TopoDS_Shape build_boolean(
+    const TopoDS_Shape& current,
+    const std::string& which,
+    const char* primitive,
+    double x,
+    double y,
+    double z,
+    double dx,
+    double dy,
+    double dz,
+    double radius,
+    double height,
+    std::string& error) {
+    const TopoDS_Shape tool = make_primitive(primitive, x, y, z, dx, dy, dz, radius, height, error);
+    if (tool.IsNull()) {
+        if (error.empty()) {
+            error = "Open CASCADE did not build the primitive";
+        }
+        return {};
+    }
+    const TopoDS_Shape result = boolean_op(which, current, tool, error);
+    if (!error.empty()) {
+        return {};
+    }
+    if (!accepted_result(result, error)) {
+        if (which == "common") {
+            error = "The solids do not overlap";
+        }
+        return {};
+    }
+    return result;
+}
+
+/// The hole Apply cuts, on a copy. Empty `error` means the result removed some material and left a solid.
+TopoDS_Shape build_hole(
+    const TopoDS_Shape& current,
+    double x,
+    double y,
+    double z,
+    double radius,
+    double depth,
+    std::string& error) {
+    if (!(radius > 0.0) || !(depth > 0.0)) {
+        error = "A hole needs a positive radius and depth";
+        return {};
+    }
+    BRepPrimAPI_MakeCylinder cylinder(gp_Ax2(gp_Pnt(x, y, z - depth), gp_Dir(0, 0, 1)), radius, depth);
+    cylinder.Build();
+    if (!cylinder.IsDone()) {
+        error = "Open CASCADE did not build the hole";
+        return {};
+    }
+    const TopoDS_Shape cut = boolean_op("cut", current, cylinder.Shape(), error);
+    if (!error.empty()) {
+        return {};
+    }
+    const double before = volume_of(current);
+    const double after = volume_of(as_solid(cut));
+    if (!(after > 1e-6)) {
+        error = "The hole removed the solid";
+        return {};
+    }
+    if (std::abs(after - before) < 1e-4) {
+        error = "The hole missed this solid";
+        return {};
+    }
+    return cut;
+}
+
 }  // namespace
 
 extern "C" char* lime_model_occt_open_box(double x_mm, double y_mm, double z_mm) {
@@ -726,18 +874,9 @@ extern "C" char* lime_model_occt_boolean(
             current = held.shape;
         }
         std::string error;
-        const TopoDS_Shape tool = make_primitive(primitive, x, y, z, dx, dy, dz, radius, height, error);
-        if (tool.IsNull()) {
-            return error_json(error.empty() ? "Open CASCADE did not build the primitive" : error);
-        }
-        const TopoDS_Shape result = boolean_op(which, current, tool, error);
+        const TopoDS_Shape result =
+            build_boolean(current, which, primitive, x, y, z, dx, dy, dz, radius, height, error);
         if (!error.empty()) {
-            return error_json(error);
-        }
-        if (!accepted_result(result, error)) {
-            if (which == "common") {
-                error = "The solids do not overlap";
-            }
             return error_json(error);
         }
         std::lock_guard<std::mutex> lock(g_mu);
@@ -918,16 +1057,8 @@ extern "C" char* lime_model_occt_fillet(int id, int edge, double radius, double 
             return error_json(error);
         }
         TopoDS_Shape built;
-        try {
-            BRepFilletAPI_MakeFillet fillet(current);
-            fillet.Add(radius, found);
-            fillet.Build();
-            if (!fillet.IsDone() || fillet.Shape().IsNull()) {
-                return error_json("The fillet did not fit this edge");
-            }
-            built = fillet.Shape();
-        } catch (const Standard_Failure&) {
-            return error_json("The fillet did not fit this edge");
+        if (!blend_build(current, found, radius, false, built, error)) {
+            return error_json(error);
         }
         return commit_edit(id, current, built, chord, "The fillet did not fit this edge");
     } catch (const Standard_Failure& failure) {
@@ -950,16 +1081,8 @@ extern "C" char* lime_model_occt_chamfer(int id, int edge, double distance, doub
             return error_json(error);
         }
         TopoDS_Shape built;
-        try {
-            BRepFilletAPI_MakeChamfer chamfer(current);
-            chamfer.Add(distance, found);
-            chamfer.Build();
-            if (!chamfer.IsDone() || chamfer.Shape().IsNull()) {
-                return error_json("The chamfer did not fit this edge");
-            }
-            built = chamfer.Shape();
-        } catch (const Standard_Failure&) {
-            return error_json("The chamfer did not fit this edge");
+        if (!blend_build(current, found, distance, true, built, error)) {
+            return error_json(error);
         }
         return commit_edit(id, current, built, chord, "The chamfer did not fit this edge");
     } catch (const Standard_Failure& failure) {
@@ -967,6 +1090,40 @@ extern "C" char* lime_model_occt_chamfer(int id, int edge, double distance, doub
         return error_json(message != nullptr ? message : "Open CASCADE failed");
     } catch (...) {
         return error_json("Open CASCADE failed");
+    }
+}
+
+/// Try a fillet or chamfer on a copy. The open solid stays as it was.
+extern "C" char* lime_model_occt_blend_probe(int id, int edge, double size, int chamfer) {
+    try {
+        const bool is_chamfer = chamfer != 0;
+        if (!(size > 0.0)) {
+            return probe_json(
+                false,
+                is_chamfer ? "A chamfer needs a positive distance" : "A fillet needs a positive radius",
+                0.0);
+        }
+        TopoDS_Shape current;
+        TopoDS_Edge found;
+        std::string error;
+        if (!copy_edge(id, edge, is_chamfer ? "chamfer" : "fillet", current, found, error)) {
+            return probe_json(false, error, 0.0);
+        }
+        TopoDS_Shape built;
+        if (blend_build(current, found, size, is_chamfer, built, error)) {
+            (void)built;
+            return probe_json(true, "", 0.0);
+        }
+        double max_mm = 0.0;
+        if (error.find("did not fit") != std::string::npos) {
+            max_mm = largest_blend(current, found, size, is_chamfer);
+        }
+        return probe_json(false, error, max_mm);
+    } catch (const Standard_Failure& failure) {
+        const char* message = failure.GetMessageString();
+        return probe_json(false, message != nullptr ? message : "Open CASCADE failed", 0.0);
+    } catch (...) {
+        return probe_json(false, "Open CASCADE failed", 0.0);
     }
 }
 
@@ -987,22 +1144,9 @@ extern "C" char* lime_model_occt_hole(
         if (!copy_shape(id, current, error)) {
             return error_json(error);
         }
-        BRepPrimAPI_MakeCylinder cylinder(gp_Ax2(gp_Pnt(x, y, z - depth), gp_Dir(0, 0, 1)), radius, depth);
-        cylinder.Build();
-        if (!cylinder.IsDone()) {
-            return error_json("Open CASCADE did not build the hole");
-        }
-        const TopoDS_Shape cut = boolean_op("cut", current, cylinder.Shape(), error);
+        const TopoDS_Shape cut = build_hole(current, x, y, z, radius, depth, error);
         if (!error.empty()) {
             return error_json(error);
-        }
-        const double before = volume_of(current);
-        const double after = volume_of(as_solid(cut));
-        if (!(after > 1e-6)) {
-            return error_json("The hole removed the solid");
-        }
-        if (std::abs(after - before) < 1e-4) {
-            return error_json("The hole missed this solid");
         }
         return commit_edit(id, current, cut, chord, "The hole removed the solid");
     } catch (const Standard_Failure& failure) {
@@ -1010,6 +1154,57 @@ extern "C" char* lime_model_occt_hole(
         return error_json(message != nullptr ? message : "Open CASCADE failed");
     } catch (...) {
         return error_json("Open CASCADE failed");
+    }
+}
+
+/// Try a hole on a copy. The open solid stays as it was.
+extern "C" char* lime_model_occt_hole_probe(int id, double x, double y, double z, double radius, double depth) {
+    try {
+        TopoDS_Shape current;
+        std::string error;
+        if (!copy_shape(id, current, error)) {
+            return probe_json(false, error, 0.0);
+        }
+        const TopoDS_Shape cut = build_hole(current, x, y, z, radius, depth, error);
+        (void)cut;
+        return probe_json(error.empty(), error, 0.0);
+    } catch (const Standard_Failure& failure) {
+        const char* message = failure.GetMessageString();
+        return probe_json(false, message != nullptr ? message : "Open CASCADE failed", 0.0);
+    } catch (...) {
+        return probe_json(false, "Open CASCADE failed", 0.0);
+    }
+}
+
+/// Try a boolean on a copy. The open solid stays as it was.
+extern "C" char* lime_model_occt_boolean_probe(
+    int id,
+    const char* op,
+    const char* primitive,
+    double x,
+    double y,
+    double z,
+    double dx,
+    double dy,
+    double dz,
+    double radius,
+    double height) {
+    try {
+        TopoDS_Shape current;
+        std::string error;
+        if (!copy_shape(id, current, error)) {
+            return probe_json(false, error, 0.0);
+        }
+        const std::string which = op == nullptr ? "" : op;
+        const TopoDS_Shape result =
+            build_boolean(current, which, primitive, x, y, z, dx, dy, dz, radius, height, error);
+        (void)result;
+        return probe_json(error.empty(), error, 0.0);
+    } catch (const Standard_Failure& failure) {
+        const char* message = failure.GetMessageString();
+        return probe_json(false, message != nullptr ? message : "Open CASCADE failed", 0.0);
+    } catch (...) {
+        return probe_json(false, "Open CASCADE failed", 0.0);
     }
 }
 

@@ -535,6 +535,7 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   white-space: nowrap;
 }
 .model-tool .ico { flex: 0 0 auto; }
+.model-tool:disabled { opacity: 0.4; }
 .model-tool:hover:not(:disabled):not([aria-pressed="true"]) { background: var(--surface-3); color: var(--text); }
 .model-tool[aria-pressed="true"] {
   background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));

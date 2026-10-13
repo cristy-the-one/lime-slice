@@ -46,7 +46,7 @@ A successful edit replaces `sourcePos` with the settled tessellation, writes tha
 
 ## Fillet, chamfer, hole, and scale
 
-Model mode can fillet or chamfer the picked edge, cut a cylindrical hole, and scale the solid by one factor. The blend size, the hole radius, and the hole depth are millimetres. The hole starts at the origin fields and runs straight down. Scale is about the solid's centre. A kernel failure is the readout, and the solid is left as it was. There is no mesh fallback.
+Model mode can fillet or chamfer the picked edge, cut a cylindrical hole, and scale the solid by one factor. The blend size, the hole radius, and the hole depth are millimetres. The hole starts at the origin fields and runs straight down. Scale is about the solid's centre. Fillet and chamfer stay disabled until an edge is picked, and the button's tip says how to pick one. While the numbers change, a debounced dry-run builds the fillet, chamfer, hole, or boolean on a copy and leaves the solid alone. The note says it works, or why not, and for a blend the largest size that did. Apply stays off until that check passes. Split and scale are judged from their numbers. The desktop shell runs every Model command off the UI thread. A kernel failure is the readout, and the solid is left as it was. There is no mesh fallback.
 
 A successful edit uses the same commit as a boolean: settled tessellation, `encodeStl`, and a `.stl` name. Pose stays, except that a scale sets the plate's `partScale` back to 1 so the part is not scaled twice. Undo restores the solid, the mesh, the paint, and that placement scale.
 
