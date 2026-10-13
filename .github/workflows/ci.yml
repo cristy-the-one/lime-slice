@@ -14,11 +14,15 @@ jobs:
     name: test, clippy, and Tauri
     runs-on: ubuntu-24.04
     env:
-      OCCT_ROOT: ${{ runner.temp }}/occt-7.9.2
       LIME_REQUIRE_OCCT: "1"
-      LD_LIBRARY_PATH: ${{ runner.temp }}/occt-7.9.2/lib
     steps:
       - uses: actions/checkout@v4
+
+      # runner.temp is not available in a job-level env block.
+      - name: Point at the OCCT install
+        run: |
+          echo "OCCT_ROOT=${{ runner.temp }}/occt-7.9.2" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${{ runner.temp }}/occt-7.9.2/lib" >> "$GITHUB_ENV"
 
       - name: Install GTK and WebKitGTK
         run: |
@@ -211,10 +215,12 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 180
     env:
-      OCCT_ROOT: ${{ runner.temp }}/occt-7.9.2
       LIME_REQUIRE_OCCT: "1"
     steps:
       - uses: actions/checkout@v4
+
+      - name: Point at the OCCT install
+        run: Add-Content -Path $env:GITHUB_ENV -Value "OCCT_ROOT=${{ runner.temp }}\occt-7.9.2"
 
       - uses: actions/setup-python@v5
         with:
@@ -252,11 +258,14 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 180
     env:
-      OCCT_ROOT: ${{ runner.temp }}/occt-7.9.2
       LIME_REQUIRE_OCCT: "1"
-      DYLD_LIBRARY_PATH: ${{ runner.temp }}/occt-7.9.2/lib
     steps:
       - uses: actions/checkout@v4
+
+      - name: Point at the OCCT install
+        run: |
+          echo "OCCT_ROOT=${{ runner.temp }}/occt-7.9.2" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=${{ runner.temp }}/occt-7.9.2/lib" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
 
