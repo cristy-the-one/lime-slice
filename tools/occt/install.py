@@ -2,8 +2,8 @@
 """Build Open CASCADE Technology 7.9.2 as shared libraries.
 
 The build type is Shared. A static archive for TKernel is a failed install.
-TKDESTEP is not in this set: it pulls the visualization toolkits, and those
-join when STEP save is wired. See docs/step-modeler.md.
+TKDESTEP is in the toolkit list so Model mode can read a solid. CMake pulls
+TKV3d and TKService for it. FreeType and OpenGL stay off. See docs/step-modeler.md.
 """
 
 from __future__ import annotations
@@ -24,9 +24,9 @@ TAG = "V7_9_2"
 URL = f"https://github.com/Open-Cascade-SAS/OCCT/archive/refs/tags/{TAG}.tar.gz"
 SHA256 = "3cd080d3fc33ba0c6c157e110afe3e015859524c4694dbb09812ec9d61595639"
 
-# Modeling toolkits used by later edits. Dependencies are pulled by CMake.
-# Draw, visualization, and data exchange stay off so this build does not need
-# FreeType, Tcl, or OpenGL.
+# Modeling toolkits used by later edits, plus TKDESTEP for Model mode.
+# Dependencies are pulled by CMake. Draw stays off. FreeType, Tcl, and OpenGL
+# stay off; TKV3d and TKService still build.
 TOOLKITS = [
     "TKernel",
     "TKMath",
@@ -45,6 +45,9 @@ TOOLKITS = [
     "TKFeat",
     "TKMesh",
     "TKShHealing",
+    # STEP read. CMake pulls TKXCAF, TKV3d and TKService. FreeType and OpenGL
+    # stay off; those toolkits build without them.
+    "TKDESTEP",
 ]
 
 MODULES_OFF = [
@@ -182,12 +185,30 @@ def refuse_static(prefix: Path) -> None:
     print(f"OCCT {VERSION} {kind}: {marker}", flush=True)
 
 
+def step_reader(prefix: Path) -> bool:
+    lib = prefix / "lib"
+    bin_dir = prefix / "bin"
+    return any(
+        path.exists()
+        for path in (
+            lib / "libTKDESTEP.so",
+            lib / "libTKDESTEP.dylib",
+            bin_dir / "TKDESTEP.dll",
+            lib / "TKDESTEP.dll",
+        )
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prefix", type=Path, required=True)
     args = parser.parse_args()
     prefix = args.prefix.resolve()
-    if shared_marker(prefix) is not None and not list(prefix.glob("lib/libTKernel.a")):
+    if (
+        shared_marker(prefix) is not None
+        and step_reader(prefix)
+        and not list(prefix.glob("lib/libTKernel.a"))
+    ):
         print(f"OCCT {VERSION} already installed at {prefix}", flush=True)
         return
     if shutil.which("cmake") is None:

@@ -21,17 +21,25 @@ jobs:
         include:
           - label: linux
             platform: ubuntu-24.04
+            target: ""
+            bridge: liblime_model_occt.so
             # deb is the local Linux default; the release also builds an AppImage.
             args: --bundles deb,appimage --config src-tauri/tauri.occt.json
           - label: macos-arm
             platform: macos-latest
+            target: aarch64-apple-darwin
+            bridge: liblime_model_occt.dylib
             args: --target aarch64-apple-darwin --bundles dmg --config src-tauri/tauri.occt.json
           - label: macos-intel
             platform: macos-latest
+            target: x86_64-apple-darwin
+            bridge: liblime_model_occt.dylib
             # Cross-compiled on the Apple Silicon runner. Two dmgs, not one universal binary.
             args: --target x86_64-apple-darwin --bundles dmg --config src-tauri/tauri.occt.json
           - label: windows
             platform: windows-latest
+            target: ""
+            bridge: lime_model_occt.dll
             args: --bundles nsis --config src-tauri/tauri.occt.json
     env:
       # linuxdeploy on GitHub runners has no FUSE device.
@@ -112,6 +120,38 @@ jobs:
 
       - name: Stage OCCT libraries and notices
         run: python tools/occt/stage_bundle.py --prefix "${{ runner.temp }}/occt-7.9.2" --dest src-tauri/resources/occt
+
+      - name: Build the Open CASCADE bridge
+        if: matrix.platform != 'windows-latest'
+        env:
+          OCCT_ROOT: ${{ runner.temp }}/occt-7.9.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_dir="target/release"
+          args=(--release)
+          if [ -n "${{ matrix.target }}" ]; then
+            args+=(--target "${{ matrix.target }}")
+            target_dir="target/${{ matrix.target }}/release"
+          fi
+          if [ "${{ matrix.label }}" = "macos-intel" ]; then
+            export CC_x86_64_apple_darwin="clang -arch x86_64"
+            export CXX_x86_64_apple_darwin="clang++ -arch x86_64"
+            export CFLAGS_x86_64_apple_darwin="-arch x86_64"
+            export CXXFLAGS_x86_64_apple_darwin="-arch x86_64"
+          fi
+          cargo build -p lime-model-occt "${args[@]}"
+          mkdir -p src-tauri/resources/occt/lib
+          cp "$target_dir/${{ matrix.bridge }}" src-tauri/resources/occt/lib/
+
+      - name: Build the Open CASCADE bridge (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $env:OCCT_ROOT = "${{ runner.temp }}\occt-7.9.2"
+          cargo build -p lime-model-occt --release
+          New-Item -ItemType Directory -Force -Path src-tauri/resources/occt/lib | Out-Null
+          Copy-Item target\release\lime_model_occt.dll src-tauri/resources/occt/lib/
 
       - name: Build unsigned installers and upload the draft release
         uses: tauri-apps/tauri-action@v1

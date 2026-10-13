@@ -434,8 +434,10 @@ html.layout-compact #playReadout { display: none; }
 html.layout-compact[data-compact-tab="device"] .workspace { visibility: hidden; }
 html.layout-compact[data-compact-tab="device"] #compactDevice { display: block; }
 html.layout-compact[data-compact-tab="preview"] #toolRail,
+html.layout-compact[data-compact-tab="model"] #toolRail,
 html.layout-compact[data-compact-tab="device"] #toolRail,
 html.layout-compact[data-compact-tab="preview"] #compactIso,
+html.layout-compact[data-compact-tab="model"] #compactIso,
 html.layout-compact[data-compact-tab="device"] #slice,
 html.layout-compact:not([data-compact-tab="preview"]) .stage-tools,
 html.layout-compact[data-compact-tab="prepare"] #compactLayerTip,

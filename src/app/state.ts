@@ -250,7 +250,7 @@ export const state = {
   viewMode: "solid" as "flat" | "split" | "solid",
   query: "",
   move: 0,
-  stage: "preview" as "prepare" | "preview" | "gcode",
+  stage: "preview" as "prepare" | "preview" | "gcode" | "model",
   playing: false,
   profile: loadProfile(),
   sourcePos: null as Float32Array | null,

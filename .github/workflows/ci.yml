@@ -55,7 +55,7 @@ jobs:
 
       - name: Build OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
-        timeout-minutes: 120
+        timeout-minutes: 180
         run: python3 tools/occt/install.py --prefix "$OCCT_ROOT"
 
       - name: Save the OCCT shared libraries
@@ -213,7 +213,7 @@ jobs:
   occt-windows:
     name: OCCT dynamic link (Windows)
     runs-on: windows-latest
-    timeout-minutes: 180
+    timeout-minutes: 360
     env:
       LIME_REQUIRE_OCCT: "1"
     steps:
@@ -239,6 +239,7 @@ jobs:
 
       - name: Build OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 300
         run: python tools/occt/install.py --prefix "$env:OCCT_ROOT"
 
       - name: Save the OCCT shared libraries
@@ -251,12 +252,12 @@ jobs:
       - name: Test the dynamic link
         run: |
           $env:PATH = "$env:OCCT_ROOT\bin;$env:OCCT_ROOT\lib;" + $env:PATH
-          cargo test -p lime-model --locked -- --nocapture
+          cargo test -p lime-model -p lime-model-occt --locked -- --nocapture
 
   occt-macos:
     name: OCCT dynamic link (macOS)
     runs-on: macos-latest
-    timeout-minutes: 180
+    timeout-minutes: 360
     env:
       LIME_REQUIRE_OCCT: "1"
     steps:
@@ -287,6 +288,7 @@ jobs:
 
       - name: Build OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 300
         run: python3 tools/occt/install.py --prefix "$OCCT_ROOT"
 
       - name: Save the OCCT shared libraries
@@ -297,4 +299,4 @@ jobs:
           key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
 
       - name: Test the dynamic link
-        run: cargo test -p lime-model --locked -- --nocapture
+        run: cargo test -p lime-model -p lime-model-occt --locked -- --nocapture

@@ -1,0 +1,11 @@
+[package]
+name = "lime-model-load"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Loads the Open CASCADE bridge when Model mode asks. Does not link Open CASCADE."
+
+[dependencies]
+libloading = "0.8"
