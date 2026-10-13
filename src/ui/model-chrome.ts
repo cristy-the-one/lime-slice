@@ -4,6 +4,7 @@
  */
 import { Box, CircleDot, Download, Scaling, Spline, SquareSplitHorizontal, Triangle, Undo2, createElement, type IconNode } from "lucide";
 import type { ModelGhost } from "../model-view";
+import { blendNote, probeAllowsApply, toolAvailable, type ProbeView } from "../model-feasibility";
 import { formatMm, splitPlaneInside, splitPlaneRange, type AxisExtent } from "../model-plane";
 import { lastEdge, modelApplyReady, selectionCountLabel, type ModelPickRef } from "../model-select";
 import { scrubIntent, scrubTarget, type ScrubIntent } from "./scrub";
@@ -16,6 +17,8 @@ interface ModelChromeHooks {
   clearSelection(): void;
   /** Z extent of the open solid, in the solid's own frame. */
   solidZ(): AxisExtent | null;
+  /** A tool opened, the selection changed, or a number changed. */
+  paramsChanged(): void;
 }
 
 const TOOLS: { id: ModelTool; icon: IconNode; label: string }[] = [
@@ -30,6 +33,7 @@ const TOOLS: { id: ModelTool; icon: IconNode; label: string }[] = [
 let hooks: ModelChromeHooks | null = null;
 let tool: ModelTool | null = null;
 let picks: ModelPickRef[] = [];
+let probe: ProbeView = null;
 
 type Scrub = {
   id: number;
@@ -79,6 +83,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
   document.querySelector("#modelPanel")?.addEventListener("input", () => {
     refreshApply();
     refreshGhost();
+    hooks?.paramsChanged();
   });
   document.querySelector("#modelPrim")?.addEventListener("change", () => {
     syncFields();
@@ -87,6 +92,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
   bindScrub();
   window.addEventListener("keydown", onEnter, true);
   syncFields();
+  refreshTools();
 }
 
 /** Esc cancels the open tool first, and clears the selection when no tool is open. */
@@ -110,9 +116,11 @@ export function syncModelChrome(next: readonly ModelPickRef[]) {
     chip.textContent = label;
     chip.toggleAttribute("hidden", label.length === 0);
   }
+  refreshTools();
   refreshApply();
   refreshNote();
   refreshGhost();
+  hooks?.paramsChanged();
 }
 
 export function refreshModelGhost() {
@@ -122,6 +130,20 @@ export function refreshModelGhost() {
 /** The open solid changed. A split plane goes back to the new middle. */
 export function syncModelSolid() {
   if (tool === "split") applySplitDefaults();
+  refreshTools();
+  refreshApply();
+  refreshNote();
+}
+
+export function openModelTool(): ModelTool | null {
+  return tool;
+}
+
+/** The latest fillet or chamfer dry-run. Null clears it. */
+export function setModelProbe(next: ProbeView) {
+  probe = next;
+  refreshApply();
+  refreshNote();
 }
 
 function toggleTool(next: ModelTool) {
@@ -141,9 +163,11 @@ function toggleTool(next: ModelTool) {
   }
   if (next === "split") applySplitDefaults();
   syncFields();
+  refreshTools();
   refreshApply();
   refreshNote();
   refreshGhost();
+  hooks?.paramsChanged();
 }
 
 function closeTool() {
@@ -156,8 +180,10 @@ function closeTool() {
     button.setAttribute("aria-pressed", "false");
   });
   document.querySelector("#modelPanel")?.toggleAttribute("hidden", true);
+  probe = null;
   refreshNote();
   fx.model?.setGhost(null);
+  hooks?.paramsChanged();
 }
 
 function setBoolOp(id: string) {
@@ -192,11 +218,28 @@ function applySplitDefaults() {
   input.value = formatMm(range.mid);
 }
 
+function splitLegal() {
+  return splitPlaneRange(hooks?.solidZ() ?? null) != null;
+}
+
+function refreshTools() {
+  document.querySelectorAll<HTMLButtonElement>(".model-tool[data-tool]").forEach((button) => {
+    const id = button.dataset.tool ?? "";
+    button.disabled = !toolAvailable(id, picks, splitLegal());
+  });
+}
+
 function refreshApply() {
   const button = document.querySelector<HTMLButtonElement>("#modelApply");
   if (!button) return;
   const range = splitPlaneRange(hooks?.solidZ() ?? null);
-  button.disabled = !tool || !modelApplyReady(tool, picks, num("#modelFactor"), splitPlaneInside(num("#modelPlaneZ"), range));
+  button.disabled = !tool || !modelApplyReady(
+    tool,
+    picks,
+    num("#modelFactor"),
+    splitPlaneInside(num("#modelPlaneZ"), range),
+    probeAllowsApply(tool, probe),
+  );
 }
 
 function refreshNote() {
@@ -215,8 +258,14 @@ function refreshNote() {
     } else {
       text = `From ${formatMm(range.min)} to ${formatMm(range.max)} mm. The middle is ${formatMm(range.mid)}.`;
     }
-  } else if (tool === "fillet" || tool === "chamfer") text = lastEdge(picks) == null ? "Pick an edge." : "Uses the last selected edge.";
-  else if (tool === "hole") text = "Straight down from the origin.";
+  } else if (tool === "fillet" || tool === "chamfer") {
+    if (lastEdge(picks) == null) text = "Pick an edge.";
+    else {
+      const note = blendNote(tool, probe);
+      text = note.text;
+      bad = note.bad;
+    }
+  } else if (tool === "hole") text = "Straight down from the origin.";
   else if (tool === "scale") text = "About the centre. Placement scale becomes 100%.";
   note.textContent = text;
   note.classList.toggle("is-bad", bad);

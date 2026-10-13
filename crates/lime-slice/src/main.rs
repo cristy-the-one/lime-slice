@@ -1294,6 +1294,8 @@ fn handle(mut request: tiny_http::Request, token: Option<&str>) {
             model_reply(model_boolean_request(&body))
         } else if method == "POST" && path.starts_with("/api/model/split") {
             model_reply(model_split_request(&body))
+        } else if method == "POST" && path.starts_with("/api/model/probe") {
+            model_reply(model_probe_request(&body))
         } else if method == "POST" && path.starts_with("/api/model/fillet") {
             model_reply(model_fillet_request(&body))
         } else if method == "POST" && path.starts_with("/api/model/chamfer") {
@@ -1487,6 +1489,26 @@ fn model_split_request(body: &str) -> Result<String, String> {
             ],
         },
         model_chord(&value),
+    )
+}
+
+fn model_probe_request(body: &str) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|err| err.to_string())?;
+    let kind = value
+        .get("kind")
+        .and_then(|item| item.as_str())
+        .unwrap_or("fillet");
+    let chamfer = kind == "chamfer";
+    let size = if chamfer {
+        json_f64(&value, "distance")
+    } else {
+        json_f64(&value, "radius")
+    };
+    lime_model_load::blend_probe(
+        json_i32(&value, "id")?,
+        json_i32(&value, "edge")?,
+        size,
+        chamfer,
     )
 }
 

@@ -316,6 +316,29 @@ fn model_split(payload: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn model_probe(payload: String) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+    let id = value
+        .get("id")
+        .and_then(|item| item.as_i64())
+        .ok_or_else(|| "missing id".to_string())? as i32;
+    let edge = value
+        .get("edge")
+        .and_then(|item| item.as_i64())
+        .ok_or_else(|| "missing edge".to_string())? as i32;
+    let kind = value
+        .get("kind")
+        .and_then(|item| item.as_str())
+        .unwrap_or("fillet");
+    let chamfer = kind == "chamfer";
+    let size = value
+        .get(if chamfer { "distance" } else { "radius" })
+        .and_then(|item| item.as_f64())
+        .unwrap_or(0.0);
+    lime_model_load::blend_probe(id, edge, size, chamfer)
+}
+
+#[tauri::command]
 fn model_fillet(payload: String) -> Result<String, String> {
     let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
     let id = value
@@ -551,6 +574,7 @@ pub fn run() {
             model_distance,
             model_boolean,
             model_split,
+            model_probe,
             model_fillet,
             model_chamfer,
             model_hole,

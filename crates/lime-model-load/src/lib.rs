@@ -33,6 +33,7 @@ type Boolean = unsafe extern "C" fn(
 type Split = unsafe extern "C" fn(i32, f64, f64, f64, f64, f64, f64, f64) -> *mut c_char;
 type Fillet = unsafe extern "C" fn(i32, i32, f64, f64) -> *mut c_char;
 type Chamfer = unsafe extern "C" fn(i32, i32, f64, f64) -> *mut c_char;
+type BlendProbe = unsafe extern "C" fn(i32, i32, f64, i32) -> *mut c_char;
 type Hole = unsafe extern "C" fn(i32, f64, f64, f64, f64, f64, f64) -> *mut c_char;
 type Scale = unsafe extern "C" fn(i32, f64, f64) -> *mut c_char;
 type WriteStep = unsafe extern "C" fn(i32, *const c_char) -> *mut c_char;
@@ -48,6 +49,7 @@ struct Bridge {
     split: Split,
     fillet: Fillet,
     chamfer: Chamfer,
+    blend_probe: BlendProbe,
     hole: Hole,
     scale: Scale,
     write_step: WriteStep,
@@ -180,6 +182,13 @@ pub fn chamfer(id: i32, edge: i32, distance_mm: f64, chord_mm: f64) -> Result<St
     take(ptr, api.free)
 }
 
+/// Try a fillet or chamfer on a copy. The open solid is not replaced.
+pub fn blend_probe(id: i32, edge: i32, size_mm: f64, chamfer: bool) -> Result<String, String> {
+    let api = load()?;
+    let ptr = unsafe { (api.blend_probe)(id, edge, size_mm, i32::from(chamfer)) };
+    take(ptr, api.free)
+}
+
 /// Cut a cylinder that starts at `origin` and runs toward −Z by `depth_mm`.
 pub fn hole(
     id: i32,
@@ -225,6 +234,7 @@ struct Api {
     split: Split,
     fillet: Fillet,
     chamfer: Chamfer,
+    blend_probe: BlendProbe,
     hole: Hole,
     scale: Scale,
     write_step: WriteStep,
@@ -273,6 +283,9 @@ fn load() -> Result<Api, String> {
                 chamfer: *lib
                     .get::<Chamfer>(b"lime_occt_chamfer\0")
                     .map_err(|err| format!("bridge is missing lime_occt_chamfer: {err}"))?,
+                blend_probe: *lib
+                    .get::<BlendProbe>(b"lime_occt_blend_probe\0")
+                    .map_err(|err| format!("bridge is missing lime_occt_blend_probe: {err}"))?,
                 hole: *lib
                     .get::<Hole>(b"lime_occt_hole\0")
                     .map_err(|err| format!("bridge is missing lime_occt_hole: {err}"))?,
@@ -302,6 +315,7 @@ fn load() -> Result<Api, String> {
         split: bridge.split,
         fillet: bridge.fillet,
         chamfer: bridge.chamfer,
+        blend_probe: bridge.blend_probe,
         hole: bridge.hole,
         scale: bridge.scale,
         write_step: bridge.write_step,

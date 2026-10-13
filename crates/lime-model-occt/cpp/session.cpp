@@ -598,6 +598,84 @@ bool copy_shape(int id, TopoDS_Shape& current, std::string& error) {
     return true;
 }
 
+/// Build a fillet or chamfer on a copy. The caller commits, or throws the shape away.
+bool blend_build(
+    const TopoDS_Shape& current,
+    const TopoDS_Edge& edge,
+    double size,
+    bool chamfer,
+    TopoDS_Shape& built,
+    std::string& error) {
+    const char* failed = chamfer ? "The chamfer did not fit this edge" : "The fillet did not fit this edge";
+    try {
+        TopoDS_Shape shape;
+        if (chamfer) {
+            BRepFilletAPI_MakeChamfer builder(current);
+            builder.Add(size, edge);
+            builder.Build();
+            if (!builder.IsDone() || builder.Shape().IsNull()) {
+                error = failed;
+                return false;
+            }
+            shape = builder.Shape();
+        } else {
+            BRepFilletAPI_MakeFillet builder(current);
+            builder.Add(size, edge);
+            builder.Build();
+            if (!builder.IsDone() || builder.Shape().IsNull()) {
+                error = failed;
+                return false;
+            }
+            shape = builder.Shape();
+        }
+        const TopoDS_Shape solid = as_solid(shape);
+        if (solid.IsNull() || !has_solid(solid) || !(volume_of(solid) > 1e-6)) {
+            error = failed;
+            return false;
+        }
+        built = shape;
+        return true;
+    } catch (const Standard_Failure&) {
+        error = failed;
+        return false;
+    }
+}
+
+char* probe_json(bool ok, const std::string& error, double max_mm) {
+    if (ok) {
+        return alloc("{\"ok\":true}");
+    }
+    std::string text = std::string("{\"ok\":false,\"error\":\"") + escape(error) + "\"";
+    if (max_mm > 0.05) {
+        text += ",\"maxMm\":";
+        append_num(text, max_mm);
+    }
+    text += "}";
+    return alloc(text);
+}
+
+/// Largest size at or under `hi` that still builds, from a handful of trials.
+double largest_blend(const TopoDS_Shape& current, const TopoDS_Edge& edge, double hi, bool chamfer) {
+    double lo = 0.0;
+    double best = 0.0;
+    for (int step = 0; step < 6; ++step) {
+        const double mid = (lo + hi) * 0.5;
+        if (!(mid > 0.05)) {
+            break;
+        }
+        TopoDS_Shape trial;
+        std::string ignored;
+        if (blend_build(current, edge, mid, chamfer, trial, ignored)) {
+            (void)trial;
+            best = mid;
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return best;
+}
+
 }  // namespace
 
 extern "C" char* lime_model_occt_open_box(double x_mm, double y_mm, double z_mm) {
@@ -918,16 +996,8 @@ extern "C" char* lime_model_occt_fillet(int id, int edge, double radius, double 
             return error_json(error);
         }
         TopoDS_Shape built;
-        try {
-            BRepFilletAPI_MakeFillet fillet(current);
-            fillet.Add(radius, found);
-            fillet.Build();
-            if (!fillet.IsDone() || fillet.Shape().IsNull()) {
-                return error_json("The fillet did not fit this edge");
-            }
-            built = fillet.Shape();
-        } catch (const Standard_Failure&) {
-            return error_json("The fillet did not fit this edge");
+        if (!blend_build(current, found, radius, false, built, error)) {
+            return error_json(error);
         }
         return commit_edit(id, current, built, chord, "The fillet did not fit this edge");
     } catch (const Standard_Failure& failure) {
@@ -950,16 +1020,8 @@ extern "C" char* lime_model_occt_chamfer(int id, int edge, double distance, doub
             return error_json(error);
         }
         TopoDS_Shape built;
-        try {
-            BRepFilletAPI_MakeChamfer chamfer(current);
-            chamfer.Add(distance, found);
-            chamfer.Build();
-            if (!chamfer.IsDone() || chamfer.Shape().IsNull()) {
-                return error_json("The chamfer did not fit this edge");
-            }
-            built = chamfer.Shape();
-        } catch (const Standard_Failure&) {
-            return error_json("The chamfer did not fit this edge");
+        if (!blend_build(current, found, distance, true, built, error)) {
+            return error_json(error);
         }
         return commit_edit(id, current, built, chord, "The chamfer did not fit this edge");
     } catch (const Standard_Failure& failure) {
@@ -967,6 +1029,40 @@ extern "C" char* lime_model_occt_chamfer(int id, int edge, double distance, doub
         return error_json(message != nullptr ? message : "Open CASCADE failed");
     } catch (...) {
         return error_json("Open CASCADE failed");
+    }
+}
+
+/// Try a fillet or chamfer on a copy. The open solid stays as it was.
+extern "C" char* lime_model_occt_blend_probe(int id, int edge, double size, int chamfer) {
+    try {
+        const bool is_chamfer = chamfer != 0;
+        if (!(size > 0.0)) {
+            return probe_json(
+                false,
+                is_chamfer ? "A chamfer needs a positive distance" : "A fillet needs a positive radius",
+                0.0);
+        }
+        TopoDS_Shape current;
+        TopoDS_Edge found;
+        std::string error;
+        if (!copy_edge(id, edge, is_chamfer ? "chamfer" : "fillet", current, found, error)) {
+            return probe_json(false, error, 0.0);
+        }
+        TopoDS_Shape built;
+        if (blend_build(current, found, size, is_chamfer, built, error)) {
+            (void)built;
+            return probe_json(true, "", 0.0);
+        }
+        double max_mm = 0.0;
+        if (error.find("did not fit") != std::string::npos) {
+            max_mm = largest_blend(current, found, size, is_chamfer);
+        }
+        return probe_json(false, error, max_mm);
+    } catch (const Standard_Failure& failure) {
+        const char* message = failure.GetMessageString();
+        return probe_json(false, message != nullptr ? message : "Open CASCADE failed", 0.0);
+    } catch (...) {
+        return probe_json(false, "Open CASCADE failed", 0.0);
     }
 }
 

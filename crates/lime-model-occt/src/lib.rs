@@ -118,6 +118,19 @@ pub fn chamfer(id: i32, edge: i32, distance_mm: f64, chord_mm: f64) -> String {
     }
 }
 
+/// Try a fillet (`chamfer` false) or chamfer on a copy. The open solid is not replaced.
+pub fn blend_probe(id: i32, edge: i32, size_mm: f64, chamfer: bool) -> String {
+    #[cfg(lime_occt)]
+    {
+        native::blend_probe(id, edge, size_mm, chamfer)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = (id, edge, size_mm, chamfer);
+        MISSING.into()
+    }
+}
+
 /// Cut a cylinder that starts at `origin` and runs toward −Z by `depth_mm`. A miss or a total cut leaves the solid unchanged.
 pub fn hole(id: i32, origin: [f64; 3], radius_mm: f64, depth_mm: f64, chord_mm: f64) -> String {
     #[cfg(lime_occt)]
@@ -285,6 +298,18 @@ pub extern "C" fn lime_occt_chamfer(
 }
 
 /// The returned pointer is freed with `lime_occt_string_free`.
+/// `chamfer` is 0 for a fillet and anything else for a chamfer. The solid is not edited.
+#[no_mangle]
+pub extern "C" fn lime_occt_blend_probe(
+    id: i32,
+    edge: i32,
+    size_mm: f64,
+    chamfer: i32,
+) -> *mut c_char {
+    export_json(blend_probe(id, edge, size_mm, chamfer != 0))
+}
+
+/// The returned pointer is freed with `lime_occt_string_free`.
 #[no_mangle]
 pub extern "C" fn lime_occt_hole(
     id: i32,
@@ -381,6 +406,7 @@ mod native {
         ) -> *mut c_char;
         fn lime_model_occt_fillet(id: i32, edge: i32, radius: f64, chord: f64) -> *mut c_char;
         fn lime_model_occt_chamfer(id: i32, edge: i32, distance: f64, chord: f64) -> *mut c_char;
+        fn lime_model_occt_blend_probe(id: i32, edge: i32, size: f64, chamfer: i32) -> *mut c_char;
         fn lime_model_occt_hole(
             id: i32,
             x: f64,
@@ -472,6 +498,10 @@ mod native {
         take(unsafe { lime_model_occt_chamfer(id, edge, distance_mm, chord_mm) })
     }
 
+    pub fn blend_probe(id: i32, edge: i32, size_mm: f64, chamfer: bool) -> String {
+        take(unsafe { lime_model_occt_blend_probe(id, edge, size_mm, i32::from(chamfer)) })
+    }
+
     pub fn hole(id: i32, origin: [f64; 3], radius_mm: f64, depth_mm: f64, chord_mm: f64) -> String {
         let [x, y, z] = origin;
         take(unsafe { lime_model_occt_hole(id, x, y, z, radius_mm, depth_mm, chord_mm) })
@@ -505,5 +535,24 @@ mod session_contract {
         assert!(src.contains("lime-slice/occt.log"));
         assert!(src.contains("The plane is too close to a face. Move it into the part."));
         assert!(src.contains("This solid is too thin to split"));
+        let probe = src
+            .find("lime_model_occt_blend_probe")
+            .expect("blend probe");
+        let hole = src[probe..]
+            .find("lime_model_occt_hole")
+            .map(|at| probe + at)
+            .expect("hole follows the probe");
+        let body = &src[probe..hole];
+        assert!(src.contains("maxMm"));
+        assert!(!body.contains("checkpoint"), "{body}");
+        assert!(!body.contains("replace_held"), "{body}");
+    }
+
+    #[cfg(not(lime_occt))]
+    #[test]
+    fn missing_kernel_probe_does_not_claim_success() {
+        let text = super::blend_probe(1, 0, 2.0, false);
+        assert!(text.contains("OCCT_ROOT"), "{text}");
+        assert!(!text.contains("\"ok\":true"), "{text}");
     }
 }

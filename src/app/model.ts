@@ -2,8 +2,9 @@ import { bytesToBase64 } from "../base64";
 import { encodeStl, settle } from "../mesh-place";
 import type { ModelPick, ModelSolid } from "../model-view";
 import { lastEdge, nextModelPicks, selectionCountLabel } from "../model-select";
+import { PROBE_WAIT_MS, probeFromBody } from "../model-feasibility";
 import { formatMm, splitPlaneInside, splitPlaneRange, zExtent } from "../model-plane";
-import { closeModelTool, mountModelChrome, refreshModelGhost, syncModelChrome, syncModelSolid } from "../ui/model-chrome";
+import { closeModelTool, mountModelChrome, openModelTool, refreshModelGhost, setModelProbe, syncModelChrome, syncModelSolid } from "../ui/model-chrome";
 import { addedSplit, withoutObject } from "../plate";
 import { markProjectDirty } from "../project-dirty";
 import { base64ToBytes } from "../project";
@@ -19,6 +20,8 @@ let ticket = 0;
 let solid: ParsedSolid | null = null;
 let picks: ModelPick[] = [];
 let busy = false;
+let probeSerial = 0;
+let probeTimer = 0;
 let keptToken = "";
 let keptSolid: ParsedSolid | null = null;
 const undos: ModelUndo[] = [];
@@ -60,7 +63,44 @@ export function bindModelView() {
     solidZ() {
       return zExtent(solid?.positions ?? null);
     },
+    paramsChanged() {
+      scheduleProbe();
+    },
   });
+}
+
+/**
+ * Fillet and chamfer ask the kernel whether the size fits before Apply.
+ * The request is debounced and does not run on the UI thread. A newer edit cancels the previous one.
+ */
+function scheduleProbe() {
+  window.clearTimeout(probeTimer);
+  probeSerial += 1;
+  const serial = probeSerial;
+  const current = openModelTool();
+  const edge = lastEdge(picks);
+  if ((current !== "fillet" && current !== "chamfer") || !solid || edge == null) {
+    setModelProbe(null);
+    return;
+  }
+  const size = num("#modelBlend");
+  setModelProbe({ phase: "checking" });
+  probeTimer = window.setTimeout(() => {
+    void sendProbe(serial, current, edge, size);
+  }, PROBE_WAIT_MS);
+}
+
+async function sendProbe(serial: number, kind: "fillet" | "chamfer", edge: number, size: number) {
+  if (!solid) return;
+  const body = await post("/api/model/probe", {
+    id: solid.id,
+    edge,
+    kind,
+    radius: size,
+    distance: size,
+  });
+  if (serial !== probeSerial || state.stage !== "model") return;
+  setModelProbe(probeFromBody(body));
 }
 
 /** Write the open solid onto the selected object when that session is still current. */
@@ -654,6 +694,7 @@ function commandFor(path: string) {
   if (path.endsWith("/distance")) return "model_distance";
   if (path.endsWith("/boolean")) return "model_boolean";
   if (path.endsWith("/split")) return "model_split";
+  if (path.endsWith("/probe")) return "model_probe";
   if (path.endsWith("/fillet")) return "model_fillet";
   if (path.endsWith("/chamfer")) return "model_chamfer";
   if (path.endsWith("/hole")) return "model_hole";

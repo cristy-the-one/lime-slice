@@ -43,8 +43,14 @@ export function lastEdge(picks: readonly ModelPickRef[]): number | null {
   return null;
 }
 
-export function modelApplyReady(tool: string, picks: readonly ModelPickRef[], scale: number, splitOk = true): boolean {
-  if (tool === "fillet" || tool === "chamfer") return lastEdge(picks) != null;
+export function modelApplyReady(
+  tool: string,
+  picks: readonly ModelPickRef[],
+  scale: number,
+  splitOk = true,
+  probeOk = true,
+): boolean {
+  if (tool === "fillet" || tool === "chamfer") return lastEdge(picks) != null && probeOk;
   if (tool === "scale") return scale > 0 && Math.abs(scale - 1) > 1e-9;
   if (tool === "split") return splitOk;
   return tool === "boolean" || tool === "hole";
