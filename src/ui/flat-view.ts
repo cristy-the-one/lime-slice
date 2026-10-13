@@ -21,8 +21,8 @@ export interface FlatView {
   scale: number;
 }
 
-/** CSS pixels of air around a fitted layer. Device pixels are this times the pixel ratio. */
-export const FLAT_PAD_CSS = 28;
+/** CSS pixels of air around a fitted layer, enough for a size callout and its label. Device pixels are this times the pixel ratio. */
+export const FLAT_PAD_CSS = 36;
 
 const MIN_SPAN = 1e-4;
 const MIN_SCALE = 0.02;

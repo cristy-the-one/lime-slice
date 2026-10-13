@@ -212,7 +212,8 @@ select option, select optgroup { background: var(--surface-1); color: var(--text
   color: var(--on-stage-dim);
   font-size: var(--fs-2);
 }
-.view-toggle:has(input:checked) .view-toggle-face { background: color-mix(in srgb, var(--accent) 22%, var(--surface-2)); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); }
+/* On the dark stage in both themes, so the tint is the accent over the stage, not over a light panel. */
+.view-toggle:has(input:checked) .view-toggle-face { background: color-mix(in srgb, var(--accent) 22%, var(--stage-chip)); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--stage-chip-line)); }
 .view-toggle:has(input:focus-visible) .view-toggle-face { outline: 2px solid var(--accent); outline-offset: 2px; }
 #sectionField[hidden], #sectionOffsetField[hidden], #sectionFlip[hidden] { display: none; }
 .viewbar .btn { height: 26px; font-size: var(--fs-2); }

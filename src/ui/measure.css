@@ -1,0 +1,35 @@
+/* Size indications over a viewport: part callouts, a scale bar, bed numbers. Drawn in pixels, so zoom and scale never change them. */
+.measure {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+}
+.measure svg { display: block; }
+.measure text {
+  font: 400 var(--fs-1) / 1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  fill: var(--on-stage-dim);
+  /* A halo instead of a plate: the label stays readable on the orange part without a box behind it. */
+  paint-order: stroke;
+  stroke: color-mix(in srgb, var(--stage) 82%, transparent);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+.measure .m-line {
+  fill: none;
+  stroke: color-mix(in srgb, var(--accent) 62%, transparent);
+  stroke-width: 1px;
+}
+.measure .m-bed { opacity: 0.6; }
+.measure .m-scale {
+  fill: none;
+  stroke: var(--on-stage-dim);
+  stroke-width: 1px;
+  opacity: 0.85;
+}
+
+/* The view bar's switch: the same face as Section, with the ruler icon in front. */
+#measureField .view-toggle-face { gap: var(--space-1); }
+#measureField .ico { flex: 0 0 auto; }

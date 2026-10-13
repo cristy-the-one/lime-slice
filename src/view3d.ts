@@ -14,6 +14,10 @@ import { poseAffine, type PlacedPart } from "./mesh-place";
 import type { CoverageGap, TiltedGap } from "./support-edits";
 import { replyFrameRay, sceneShift } from "./bed-offset";
 import type { Ray } from "./support-pick";
+import { sameBox, type Box } from "./measure";
+import { perspectiveMeasure } from "./measure-camera";
+import { mountMeasureOverlay } from "./measure-overlay";
+import { onMeasureChange } from "./measure-pref";
 
 export interface PreviewBuffers extends PreviewGeometry {
   span: number;
@@ -71,6 +75,8 @@ export interface SliceView3d {
    */
   setObjectOffsets(offsets: readonly (readonly [number, number])[], support: number): void;
   setSupportOverlay(overlay: SupportOverlay | null): void;
+  /** The printed part's box in bed millimetres, which the size callouts measure. Null for none. */
+  setMeasureBox(box: Box | null): void;
   /** Edit-mode pointer: `move` on hover, `click` on a press-release that moved under 5 px (a drag still orbits). Rays are print space. */
   onPick(cb: ((ev: PickEvent) => void) | null): void;
   /** Crosshair cursor, and only then `onPick` fires. */
@@ -98,6 +104,7 @@ const noopView: SliceView3d = {
   setBedOffset() {},
   setObjectOffsets() {},
   setSupportOverlay() {},
+  setMeasureBox() {},
   onPick() {},
   setPicking() {},
   resize() {},
@@ -277,8 +284,28 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     }
     fitSection();
     renderer.render(scene, camera);
+    drawMeasure();
   }
   controls.addEventListener("change", requestRender);
+  onMeasureChange(requestRender);
+
+  const measure = mountMeasureOverlay(canvas.parentElement ?? document.body, { scalePhone: { right: 76, bottom: 68 } });
+  let measureBox: Box | null = null;
+  /** Print X, Y, Z is scene X - cx, Z, -(Y - cy), centred on the model like the toolpaths. */
+  function drawMeasure() {
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    const eye = camera.position;
+    const plate = plateSpan();
+    measure.render({
+      w,
+      h,
+      box: measureBox,
+      cam: [eye.x + origin.cx, -eye.z + origin.cy, eye.y],
+      bed: { x0: 0, y0: 0, x1: plate.x, y1: plate.y },
+      ...perspectiveMeasure(camera, controls.target, w, h, (p, out) => out.set(p[0] - origin.cx, p[2], -(p[1] - origin.cy))),
+    });
+  }
   let userAimed = false;
   controls.addEventListener("start", () => {
     held = true;
@@ -833,6 +860,11 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     },
     setSupportOverlay(next) {
       if (support.set(next, origin)) requestRender();
+    },
+    setMeasureBox(box) {
+      if (sameBox(box, measureBox)) return;
+      measureBox = box;
+      requestRender();
     },
     onPick(cb) {
       pickCb = cb;

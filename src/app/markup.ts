@@ -87,6 +87,9 @@ export function mountMarkup(root: HTMLElement) {
             Bed
             <input id="bedOpacity" type="range" min="0" max="100" value="40" aria-label="Bed opacity" />
           </label>
+          <label class="view-toggle" id="measureField" data-tip="Sizes: the part's length, width and height, a scale bar, and numbers along the bed. The scale bar is measured at the view centre.">
+            <input id="measureOn" type="checkbox" aria-label="Measure" checked /><span class="view-toggle-face">Measure</span>
+          </label>
           <label class="view-toggle" id="sectionField" data-tip="Section: clip the preview on the arrow side of a free plane. Cut slides the plane, the rings aim it. Does not change the slice.">
             <input id="sectionOn" type="checkbox" aria-label="Section" /><span class="view-toggle-face">Section</span>
           </label>

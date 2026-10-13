@@ -309,6 +309,7 @@ function menu() {
     ["Fit view", () => document.querySelector<HTMLButtonElement>("#viewPresets button:last-child")?.click()],
     ["Lay flat", () => document.querySelector<HTMLButtonElement>("#layflat")?.click()],
     ["Section", () => document.querySelector<HTMLButtonElement>("#toolRail [data-tool=section]")?.click()],
+    ["Measure", () => document.querySelector<HTMLInputElement>("#measureOn")?.click()],
   ] as const) {
     const button = document.createElement("button");
     button.type = "button";
