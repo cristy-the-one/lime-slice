@@ -5,7 +5,7 @@
 //! an earlier one. Inside a volume, the volume wins on each field it sets
 //! and the range fills the fields it leaves empty.
 
-use crate::poly::{point_in_loop, Loop};
+use crate::poly::{in_solid, loop_bounds, Loop};
 use crate::strategy::{InfillPattern, ResolvedStrategy};
 
 /// Layer z values are sums of layer heights, so a layer at 2 mm can sit a
@@ -234,8 +234,9 @@ pub enum Footprint {
         c: [f64; 2],
         r: [f64; 2],
     },
-    /// A counter-clockwise outline. Reinforcement columns and tilted volumes.
-    Polygon(Loop),
+    /// Counter-clockwise outlines and clockwise holes. Reinforcement columns
+    /// and tilted volumes.
+    Polygon(Vec<Loop>),
 }
 
 impl Footprint {
@@ -246,7 +247,7 @@ impl Footprint {
                 let (u, v) = ((p[0] - c[0]) / r[0], (p[1] - c[1]) / r[1]);
                 u * u + v * v <= 1.0
             }
-            Footprint::Polygon(loop_) => point_in_loop(loop_, p[0], p[1]),
+            Footprint::Polygon(loops) => in_solid(loops, p[0], p[1]),
         }
     }
 
@@ -254,17 +255,7 @@ impl Footprint {
         match self {
             Footprint::Rect { c, h } => ([c[0] - h[0], c[1] - h[1]], [c[0] + h[0], c[1] + h[1]]),
             Footprint::Ellipse { c, r } => ([c[0] - r[0], c[1] - r[1]], [c[0] + r[0], c[1] + r[1]]),
-            Footprint::Polygon(loop_) => {
-                let mut min = loop_.first().copied().unwrap_or([0.0, 0.0]);
-                let mut max = min;
-                for p in loop_ {
-                    min[0] = min[0].min(p[0]);
-                    min[1] = min[1].min(p[1]);
-                    max[0] = max[0].max(p[0]);
-                    max[1] = max[1].max(p[1]);
-                }
-                (min, max)
-            }
+            Footprint::Polygon(loops) => loop_bounds(loops).unwrap_or(([0.0, 0.0], [0.0, 0.0])),
         }
     }
 
@@ -295,7 +286,7 @@ impl Footprint {
             }
             Footprint::Ellipse { c, r } => {
                 let (px, py) = ((a[0] - c[0]) / r[0], (a[1] - c[1]) / r[1]);
-                let (dx, dy) = (d[0] / r[0], d[1] / r[1]);
+                let (dx, dy) = (d[0] / r[0], (d[1] / r[1]));
                 let qa = dx * dx + dy * dy;
                 if qa < 1e-30 {
                     return;
@@ -310,38 +301,40 @@ impl Footprint {
                 push((-qb - s) / (2.0 * qa));
                 push((-qb + s) / (2.0 * qa));
             }
-            Footprint::Polygon(loop_) => {
-                let n = loop_.len();
-                for i in 0..n {
-                    let c = loop_[i];
-                    let d0 = loop_[(i + 1) % n];
-                    if let Some(t) = segment_cross(a, b, c, d0) {
-                        push(t);
+            Footprint::Polygon(loops) => {
+                for loop_ in loops {
+                    let n = loop_.len();
+                    for i in 0..n {
+                        let c = loop_[i];
+                        let d0 = loop_[(i + 1) % n];
+                        if let Some(t) = segment_cross(a, b, c, d0) {
+                            push(t);
+                        }
                     }
                 }
             }
         }
     }
 
-    /// The outline as a counter-clockwise polygon.
-    pub fn polygon(&self) -> Loop {
+    /// The outline as counter-clockwise polygons and clockwise holes.
+    pub fn polygons(&self) -> Vec<Loop> {
         match self {
-            Footprint::Rect { c, h } => vec![
+            Footprint::Rect { c, h } => vec![vec![
                 [c[0] - h[0], c[1] - h[1]],
                 [c[0] + h[0], c[1] - h[1]],
                 [c[0] + h[0], c[1] + h[1]],
                 [c[0] - h[0], c[1] + h[1]],
-            ],
+            ]],
             Footprint::Ellipse { c, r } => {
                 let n = 96;
-                (0..n)
+                vec![(0..n)
                     .map(|i| {
                         let a = std::f64::consts::TAU * i as f64 / n as f64;
                         [c[0] + r[0] * a.cos(), c[1] + r[1] * a.sin()]
                     })
-                    .collect()
+                    .collect()]
             }
-            Footprint::Polygon(loop_) => loop_.clone(),
+            Footprint::Polygon(loops) => loops.clone(),
         }
     }
 }

@@ -9,7 +9,7 @@
 use serde_json::{Map, Value};
 
 use crate::mesh::Mesh;
-use crate::poly::{boolean_union, drop_slivers, signed_area, Loop};
+use crate::poly::{drop_slivers, resolve_nonzero, signed_area, Loop};
 
 const MAX_REGIONS: usize = 64;
 const MAX_DISKS: usize = 20_000;
@@ -97,15 +97,12 @@ impl Region {
     /// The outlines of this region on the plane `z`, in request order.
     pub(crate) fn sections(&self, z: f64) -> Vec<Loop> {
         let loops = match &self.kind {
-            Kind::Paint { disks } => {
-                let mut acc: Vec<Loop> = Vec::new();
-                for disk in disks {
-                    if let Some(loop_) = disk_section(disk, z) {
-                        acc = boolean_union(&acc, &[loop_]);
-                    }
-                }
-                acc
-            }
+            Kind::Paint { disks } => resolve_nonzero(
+                disks
+                    .iter()
+                    .filter_map(|disk| disk_section(disk, z))
+                    .collect(),
+            ),
             Kind::Box { center, axes, half } => {
                 box_section(*center, *axes, *half, z).into_iter().collect()
             }
@@ -121,10 +118,12 @@ impl Region {
                 .into_iter()
                 .collect(),
         };
-        drop_slivers(loops, 0.05)
-            .into_iter()
-            .filter(|loop_| signed_area(loop_) > 0.05)
-            .collect()
+        let loops = drop_slivers(loops, 0.05);
+        if loops.iter().map(|loop_| signed_area(loop_)).sum::<f64>() > 0.05 {
+            loops
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -335,13 +334,68 @@ fn box_section(center: [f64; 3], axes: [[f64; 3]; 3], half: [f64; 3], z: f64) ->
             [center[0] - half[0], center[1] + half[1]],
         ]);
     }
-    let inside = |p: [f64; 2]| in_box([p[0], p[1], z], center, axes, half);
-    let seed = if inside([center[0], center[1]]) {
-        [center[0], center[1]]
-    } else {
-        return None;
+    let mut corners = [[0.0; 3]; 8];
+    for (i, slot) in corners.iter_mut().enumerate() {
+        let sx = if i & 1 == 0 { -half[0] } else { half[0] };
+        let sy = if i & 2 == 0 { -half[1] } else { half[1] };
+        let sz = if i & 4 == 0 { -half[2] } else { half[2] };
+        *slot = add(
+            center,
+            add(
+                scale(axes[0], sx),
+                add(scale(axes[1], sy), scale(axes[2], sz)),
+            ),
+        );
+    }
+    const EDGES: [(usize, usize); 12] = [
+        (0, 1),
+        (2, 3),
+        (4, 5),
+        (6, 7),
+        (0, 2),
+        (1, 3),
+        (4, 6),
+        (5, 7),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ];
+    let mut pts: Vec<[f64; 2]> = Vec::new();
+    let mut push = |p: [f64; 2]| {
+        if !pts
+            .iter()
+            .any(|q| (p[0] - q[0]).hypot(p[1] - q[1]) < 1e-5)
+        {
+            pts.push(p);
+        }
     };
-    convex_loop(&inside, seed)
+    for (i, j) in EDGES {
+        let (a, b) = (corners[i], corners[j]);
+        let (da, db) = (a[2] - z, b[2] - z);
+        if da.abs() <= 1e-6 {
+            push([a[0], a[1]]);
+        }
+        if db.abs() <= 1e-6 {
+            push([b[0], b[1]]);
+        }
+        if (da > 1e-6 && db < -1e-6) || (da < -1e-6 && db > 1e-6) {
+            let t = da / (da - db);
+            push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+        }
+    }
+    if pts.len() < 3 {
+        return None;
+    }
+    let n = pts.len() as f64;
+    let cx = pts.iter().map(|p| p[0]).sum::<f64>() / n;
+    let cy = pts.iter().map(|p| p[1]).sum::<f64>() / n;
+    pts.sort_by(|a, b| {
+        (a[1] - cy)
+            .atan2(a[0] - cx)
+            .total_cmp(&(b[1] - cy).atan2(b[0] - cx))
+    });
+    clean(pts)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -366,7 +420,8 @@ fn cylinder_section(
     let seed = if inside([center[0], center[1]]) {
         [center[0], center[1]]
     } else {
-        cylinder_seed(center, axis, half_h * 2.0, rx.max(ry), z, &|p| {
+        let start = sub(center, scale(axis, half_h));
+        cylinder_seed(start, axis, half_h * 2.0, rx.max(ry), z, &|p| {
             in_elliptic([p[0], p[1], z], center, axis, e1, e2, rx, ry, half_h)
         })?
     };
@@ -390,11 +445,18 @@ fn cylinder_seed(
             }
         }
     }
+    let up = sub([0.0, 0.0, 1.0], scale(dir, dir[2]));
     for i in 0..=16 {
         let t = len * i as f64 / 16.0;
         let p = add(origin, scale(dir, t));
         if (p[2] - z).abs() <= radius && inside([p[0], p[1]]) {
             return Some([p[0], p[1]]);
+        }
+        if up[2] > 1e-9 {
+            let q = add(p, scale(up, (z - p[2]) / up[2]));
+            if inside([q[0], q[1]]) {
+                return Some([q[0], q[1]]);
+            }
         }
     }
     None
@@ -442,11 +504,6 @@ fn in_cylinder(q: [f64; 3], origin: [f64; 3], dir: [f64; 3], len: f64, radius: f
     }
     let radial = sub(v, scale(dir, t));
     dot(radial, radial) <= radius * radius + 1e-4
-}
-
-fn in_box(q: [f64; 3], center: [f64; 3], axes: [[f64; 3]; 3], half: [f64; 3]) -> bool {
-    let d = sub(q, center);
-    (0..3).all(|i| dot(d, axes[i]).abs() <= half[i] + 1e-4)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -667,7 +724,7 @@ fn unit2(v: [f64; 2]) -> [f64; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::poly::point_in_loop;
+    use crate::poly::{in_solid, point_in_loop};
 
     fn box_mesh(z1: f64) -> Mesh {
         let v = [
@@ -777,5 +834,68 @@ mod tests {
         assert!(holds(cut, [4.0, 5.0]));
         assert!(!holds(cut, [7.0, 5.0]));
         assert!(region.sections(7.0).is_empty());
+    }
+
+    #[test]
+    fn tilted_volumes_slice_past_their_center_xy_and_in_their_lower_half() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let rot = [1.0, 0.0, 0.0, 0.0, s, -s, 0.0, s, s];
+        let mut boxed = Region {
+            index: 0,
+            density: 1.0,
+            kind: Kind::Box {
+                center: [0.0, 0.0, 10.0],
+                axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                half: [1.5, 1.5, 8.0],
+            },
+        };
+        boxed.pose(&rot, [0.0, 0.0, 10.0], [0.0, 0.0, 10.0]);
+        // At z = 6 (4 mm below center), the 45° bar is near y = 4, well outside y = 0.
+        let low_box = boxed.sections(6.0);
+        assert!(in_solid(&low_box, 0.0, 4.0), "{low_box:?}");
+        assert!(!in_solid(&low_box, 0.0, 0.0));
+
+        let mut cyl = Region {
+            index: 1,
+            density: 1.0,
+            kind: Kind::Cylinder {
+                center: [0.0, 0.0, 10.0],
+                axis: [0.0, 0.0, 1.0],
+                e1: [1.0, 0.0, 0.0],
+                e2: [0.0, 1.0, 0.0],
+                rx: 1.5,
+                ry: 1.5,
+                half_h: 8.0,
+            },
+        };
+        cyl.pose(&rot, [0.0, 0.0, 10.0], [0.0, 0.0, 10.0]);
+        let low_cyl = cyl.sections(6.0);
+        assert!(in_solid(&low_cyl, 0.0, 4.0), "{low_cyl:?}");
+        assert!(!in_solid(&low_cyl, 0.0, 0.0));
+    }
+
+    #[test]
+    fn a_painted_ring_keeps_its_unpainted_hole() {
+        let disks = (0..12)
+            .map(|i| {
+                let a = std::f64::consts::TAU * i as f64 / 12.0;
+                Disk {
+                    origin: [10.0 + 4.0 * a.cos(), 10.0 + 4.0 * a.sin(), 10.0],
+                    dir: [0.0, 0.0, -1.0],
+                    radius: 1.5,
+                    depth: 5.0,
+                    fill_through: false,
+                    length: 5.0,
+                }
+            })
+            .collect();
+        let region = Region {
+            index: 0,
+            density: 1.0,
+            kind: Kind::Paint { disks },
+        };
+        let loops = region.sections(8.0);
+        assert!(in_solid(&loops, 14.0, 10.0), "on the ring");
+        assert!(!in_solid(&loops, 10.0, 10.0), "unpainted center stays open");
     }
 }
