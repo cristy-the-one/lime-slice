@@ -17,7 +17,7 @@ async function chooseIr3(page: Page) {
   await page.locator("#machinePrinter").selectOption("ideaformer-ir3-v2");
 }
 
-test("the IR3 V2 scene says the belt carries the part toward -Y, in Prepare and in Preview", async ({ page }) => {
+test("the IR3 V2 scene says the belt carries the part toward +Y, in Prepare and in Preview", async ({ page }) => {
   await quiet(page);
   await page.goto("/");
   await autoSliceOff(page);
@@ -28,14 +28,14 @@ test("the IR3 V2 scene says the belt carries the part toward -Y, in Prepare and 
   await page.locator("#tabPrepare").click();
   const prepare = page.locator("#prepare");
   await expect(prepare).toHaveAttribute("data-belt", "1");
-  await expect(prepare).toHaveAttribute("data-belt-out", "-y");
-  await expect(prepare).toHaveAttribute("data-belt-plane-lean", "-y");
+  await expect(prepare).toHaveAttribute("data-belt-out", "+y");
+  await expect(prepare).toHaveAttribute("data-belt-plane-lean", "+y");
 
   await page.locator("#slice").click();
   await page.locator("#tabPreview").click();
   const preview = page.locator("#view3d");
   await expect(preview).toHaveAttribute("data-belt", "1");
-  await expect(preview).toHaveAttribute("data-belt-plane-lean", "-y");
+  await expect(preview).toHaveAttribute("data-belt-plane-lean", "+y");
 });
 
 test("a reversed firmware axis does not turn the belt around in the scene", async ({ page }) => {
@@ -45,8 +45,8 @@ test("a reversed firmware axis does not turn the belt around in the scene", asyn
   await chooseIr3(page);
   await page.locator("#beltDirection").selectOption("-1");
   await page.locator("#tabPrepare").click();
-  await expect(page.locator("#prepare")).toHaveAttribute("data-belt-out", "-y");
-  await expect(page.locator("#prepare")).toHaveAttribute("data-belt-plane-lean", "-y");
+  await expect(page.locator("#prepare")).toHaveAttribute("data-belt-out", "+y");
+  await expect(page.locator("#prepare")).toHaveAttribute("data-belt-plane-lean", "+y");
 });
 
 test("a cartesian printer draws no belt direction", async ({ page }) => {
@@ -63,7 +63,7 @@ test("the belt direction tips say which end prints first and leaves first", asyn
   await page.goto("/");
   await autoSliceOff(page);
   await chooseIr3(page);
-  const sentence = "The part's front end (nearest the arrow head in Prepare) prints first and leaves the printer first.";
+  const sentence = "The end of the part nearest the arrow head in Prepare prints first and leaves the printer first.";
   await expect(page.locator("label.setting", { has: page.locator("#beltDirection") })).toHaveAttribute("data-tip", new RegExp(sentence.replace(/[()]/g, "\\$&")));
   await expect(page.locator("label.setting", { has: page.locator("#machineKind") })).toHaveAttribute("data-tip", new RegExp(sentence.replace(/[()]/g, "\\$&")));
 });

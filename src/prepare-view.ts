@@ -425,7 +425,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     triad.position.set(0, 0.2, 0);
     if (belt && strip) {
       const runY = Math.min(spanY, bedY);
-      const pose = tiltPose(spanX, bedZ, belt.angleDeg, runY);
+      const pose = tiltPose(spanX, bedZ, belt.angleDeg);
       tilt.visible = true;
       tilt.scale.set(spanX, pose.slopeMm, 1);
       tilt.rotation.set(pose.rotationX, 0, 0);
@@ -492,7 +492,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       const copy = new THREE.Mesh(mesh.geometry, copyMat);
       copy.matrixAutoUpdate = false;
       copy.matrix.copy(mesh.matrix);
-      copy.matrix.elements[14] -= sign * i * stride;
+      // A copy prints later, so it stands upstream of the first: toward print -Y, which is scene +Z.
+      copy.matrix.elements[14] += sign * i * stride;
       copy.matrixWorldNeedsUpdate = true;
       copy.raycast = () => undefined;
       const outline = mesh.children[0] as THREE.LineSegments | undefined;

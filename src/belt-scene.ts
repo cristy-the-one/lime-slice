@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { beltArrowRun } from "./belt";
 
-/** Print Y is scene −Z. The belt carries the part toward print Y = 0, which is scene +Z. */
+/** Print Y is scene −Z. The belt carries the part toward print +Y, which is scene −Z. */
 export type BeltHeading = "-y" | "+y";
 
 export function beltArrowGeometry(x: number, minY: number, maxY: number): THREE.BufferGeometry {
@@ -20,7 +20,7 @@ export function beltArrowGeometry(x: number, minY: number, maxY: number): THREE.
 /** Which way the arrow points along the belt, read from its drawn points: tail first, head second. */
 export function arrowHeading(arrow: THREE.BufferGeometry): BeltHeading {
   const pos = arrow.getAttribute("position");
-  return pos.getZ(1) > pos.getZ(0) ? "-y" : "+y";
+  return pos.getZ(1) < pos.getZ(0) ? "+y" : "-y";
 }
 
 /** Which way the plane leans along the belt, read from its drawn pose: the end its top edge is on. */

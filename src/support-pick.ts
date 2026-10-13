@@ -76,25 +76,28 @@ export interface Ray {
 /** Matches the overlay's clip planes, so what draws is what picks. */
 const SLAB_EPS = 1e-3;
 
-/** How far each copy sits from the first along y and the belt position, in copy order. One copy, or none, sits at 0. */
+/**
+ * How far each copy sits from the first in belt position, in copy order. One copy, or none, sits at 0. The belt
+ * carries the part toward +Y, so a copy that prints later stands that far upstream: its y is lower by the same amount.
+ */
 export function copyOffsets(copies?: BeltCopies | null): number[] {
   return Array.from({ length: Math.max(1, copies?.count ?? 1) }, (_, c) => c * (copies?.shiftMm ?? 0));
 }
 
-/** What the first copy shows when a copy `by` along the belt shows `visible`: the layers and the section, moved back by `by`. */
+/** What the first copy shows when a copy `by` along the belt shows `visible`: the layers moved back by `by`, and the section by `by` along +y. */
 function backVisible(by: number, visible: Visible): Visible {
   if (by === 0) return visible;
   const section = visible.section;
   return {
     zLow: visible.zLow - by,
     zHigh: visible.zHigh - by,
-    section: section && { ...section, center: [section.center[0], section.center[1] - by, section.center[2]] },
+    section: section && { ...section, center: [section.center[0], section.center[1] + by, section.center[2]] },
   };
 }
 
-/** A belt copy moved `by` along the belt is the first copy under `ray` moved back by `by`. A distance along the ray is the same. */
+/** A belt copy moved `by` along the belt is the first copy under `ray` moved back by `by`, which is toward +y. A distance along the ray is the same. */
 function backRay(by: number, ray: Ray): Ray {
-  return by === 0 ? ray : { origin: [ray.origin[0], ray.origin[1] - by, ray.origin[2]], dir: ray.dir };
+  return by === 0 ? ray : { origin: [ray.origin[0], ray.origin[1] + by, ray.origin[2]], dir: ray.dir };
 }
 
 /**
@@ -156,7 +159,7 @@ export function pickGap(gaps: readonly CoverageGap[], ray: Ray, visible: Visible
   return best;
 }
 
-/** A belt gap on a copy `by` along the belt: where the preview draws it there. A flat gap, or the first copy, is as it is. */
+/** A belt gap on a copy `by` along the belt, `by` upstream in y: where the preview draws it there. A flat gap, or the first copy, is as it is. */
 export function placedGap(gap: CoverageGap, by: number): CoverageGap {
   const tilted = gap.tilted;
   if (!tilted || by === 0) return gap;
@@ -164,7 +167,7 @@ export function placedGap(gap: CoverageGap, by: number): CoverageGap {
     ...gap,
     tilted: {
       ls: [tilted.ls[0] + by, tilted.ls[1] + by],
-      outline: tilted.outline.map((loop) => loop.map(([x, y, z]): [number, number, number] => [x, y + by, z])),
+      outline: tilted.outline.map((loop) => loop.map(([x, y, z]): [number, number, number] => [x, y - by, z])),
     },
   };
 }
@@ -231,7 +234,7 @@ export function regrowFor(gap: CoverageGap): RegrowEdit {
 /**
  * Capsules of `limbs` for drawing: `[ax, ay, az, ar, bx, by, bz, br]` per knot pair. Single-knot limbs give one zero-length capsule.
  * The overlay clips a cartesian reply to the layer slab itself. A belt reply has no such plane, so `visible` cuts the capsules by `ls` here.
- * On a belt, `copies` repeat the capsules, each moved along y and cut by its own layers.
+ * On a belt, `copies` repeat the capsules, each moved upstream along y and cut by its own layers.
  */
 export function capsulesOf(index: LimbIndex, limbs: readonly number[], visible?: Visible, copies?: BeltCopies | null): Float32Array {
   const s = index.skel;
@@ -254,8 +257,8 @@ export function capsulesOf(index: LimbIndex, limbs: readonly number[], visible?:
           [from, to] = span;
         }
         out.push(
-          at(s.xs[i], s.xs[j], from), at(s.ys[i], s.ys[j], from) + by, at(s.zs[i], s.zs[j], from), at(s.rs[i], s.rs[j], from),
-          at(s.xs[i], s.xs[j], to), at(s.ys[i], s.ys[j], to) + by, at(s.zs[i], s.zs[j], to), at(s.rs[i], s.rs[j], to),
+          at(s.xs[i], s.xs[j], from), at(s.ys[i], s.ys[j], from) - by, at(s.zs[i], s.zs[j], from), at(s.rs[i], s.rs[j], from),
+          at(s.xs[i], s.xs[j], to), at(s.ys[i], s.ys[j], to) - by, at(s.zs[i], s.zs[j], to), at(s.rs[i], s.rs[j], to),
         );
       }
     }
