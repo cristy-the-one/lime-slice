@@ -652,7 +652,8 @@ mod native {
 mod session_contract {
     #[test]
     fn step_writer_goes_to_a_log_and_a_face_cut_is_refused() {
-        let src = include_str!("../cpp/session.cpp");
+        let src = include_str!("../cpp/session.cpp").replace("\r\n", "\n");
+        let src = src.as_str();
         assert!(src.contains("Message_PrinterOStream"), "{src}");
         assert!(src.contains("lime-slice/occt.log"));
         assert!(src.contains("The plane is too close to a face. Move it into the part."));
