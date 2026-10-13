@@ -2,7 +2,12 @@
 """Copy OCCT shared libraries and the LGPL notices into a bundle directory.
 
 Static archives are not copied. On macOS, install names are rewritten to
-@rpath so a library next to its neighbours can be replaced.
+@rpath so a library next to its neighbours can be replaced. On Linux, each
+shared library's runpath is set to $ORIGIN. The libraries depend on each
+other by soname, and a runpath is not searched for a dependency's own
+dependencies. linuxdeploy runs ldd on every shared object under usr/lib;
+without $ORIGIN it reports the sibling soname as missing and the AppImage
+build stops. The libraries stay shared objects so they can be replaced.
 """
 
 from __future__ import annotations
@@ -36,6 +41,37 @@ def collect(prefix: Path) -> list[Path]:
             if is_shared(path):
                 found.append(path)
     return found
+
+
+def is_elf(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            return handle.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
+
+def rewrite_linux(lib_dir: Path) -> None:
+    patchelf = shutil.which("patchelf")
+    if patchelf is None:
+        raise SystemExit("patchelf is required to set $ORIGIN on Linux OCCT libraries")
+    patched = 0
+    for path in sorted(lib_dir.iterdir()):
+        if path.is_symlink() or not is_elf(path):
+            continue
+        subprocess.run([patchelf, "--set-rpath", "$ORIGIN", str(path)], check=True)
+        printed = subprocess.run(
+            [patchelf, "--print-rpath", str(path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        runpath = printed.stdout.strip()
+        if runpath != "$ORIGIN":
+            raise SystemExit(f"{path.name} runpath is {runpath!r}, expected $ORIGIN")
+        patched += 1
+    if patched == 0:
+        raise SystemExit(f"no ELF shared libraries to patch in {lib_dir}")
 
 
 def rewrite_macho(lib_dir: Path) -> None:
@@ -75,6 +111,8 @@ def main() -> None:
             shutil.copy2(path, target)
     if platform.system() == "Darwin":
         rewrite_macho(lib_dir)
+    elif platform.system() == "Linux":
+        rewrite_linux(lib_dir)
     for name in NOTICES:
         shutil.copy2(NOTICE_DIR / name, dest / name)
     copied = sorted(path.name for path in lib_dir.iterdir())

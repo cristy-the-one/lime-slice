@@ -118,6 +118,9 @@ jobs:
           path: ${{ runner.temp }}/occt-7.9.2
           key: occt-7.9.2-model-${{ runner.os }}-${{ matrix.label == 'macos-intel' && 'X64' || runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
 
+      # stage_bundle.py gives the Linux libraries runpath $ORIGIN. They depend
+      # on each other by soname, and linuxdeploy's ldd does not search a
+      # neighbour that has an empty runpath, so the AppImage step fails.
       - name: Stage OCCT libraries and notices
         run: python tools/occt/stage_bundle.py --prefix "${{ runner.temp }}/occt-7.9.2" --dest src-tauri/resources/occt
 
