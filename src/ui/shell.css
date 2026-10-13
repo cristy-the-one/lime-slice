@@ -111,7 +111,7 @@ html[data-chrome="custom"] .win-controls { display: flex; }
 .splitter:hover::after,
 .splitter.is-drag::after { background: var(--accent); }
 .splitter-left { left: calc(var(--panel-left, 300px) - 4px); }
-.splitter-right { right: calc(var(--panel-right, 320px) - 4px); }
+.splitter-right { right: calc(var(--panel-right, 240px) - 4px); }
 .panel-collapse {
   position: absolute;
   z-index: 6;
@@ -121,9 +121,26 @@ html[data-chrome="custom"] .win-controls { display: flex; }
   padding: 0;
 }
 .panel-collapse-left { left: calc(var(--panel-left, 300px) - 22px); }
-.panel-collapse-right { right: calc(var(--panel-right, 320px) - 22px); }
+.panel-collapse-right { right: calc(var(--panel-right, 240px) - 22px); }
 .workspace.is-left-collapsed #leftBody { display: none; }
 .workspace.is-right-collapsed #right { display: none; }
+/* A results rail under 240px: the collapse button still needs a clear edge, and the tiles stack. */
+.workspace.is-slim-results #right.panel { padding: var(--space-1) 8px var(--space-3) 22px; }
+/* Floors that cannot share the 30% budget: results float and the stage keeps the column. */
+.workspace.is-right-hud #right {
+  display: block;
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  bottom: 8px;
+  width: 240px;
+  z-index: 7;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop);
+}
+.workspace.is-right-hud .splitter-right { display: none; }
+.workspace.is-right-hud .panel-collapse-right { right: calc(240px + 8px); }
 
 .empty-drop {
   position: absolute;
