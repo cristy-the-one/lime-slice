@@ -96,22 +96,32 @@ export function objectCount(layers: readonly WireLayer[]): number {
 /**
  * `kinds` seeds the kind slots, so the result can be spliced into geometry built with that table.
  * `objects` is the plate's object count; every object gets a chunk for every layer range, empty or not.
+ *
+ * Each path is counted once and copied once. Kind slots stay in the old order: every range of
+ * object 0 before object 1, so an earlier object's later layer still claims a name first.
  */
 export function buildWirePreview(msg: { layers: WireLayer[]; min: number[]; max: number[]; kinds?: readonly string[]; objects?: number }): PreviewGeometry {
   const kinds = [...(msg.kinds ?? [])];
   const { cx, cy } = meshCenter(msg.min, msg.max);
-  const chunks: PreviewChunk[] = [];
   const layers = msg.layers;
   const objects = Math.max(msg.objects ?? 1, objectCount(layers));
-  for (let object = 0; object < objects; object++) {
-    for (let i = 0; i < layers.length;) {
-      const key = chunkKey(layers[i].index);
-      let j = i + 1;
-      while (j < layers.length && chunkKey(layers[j].index) === key) j++;
-      chunks.push(buildChunk(layers.slice(i, j), kinds, cx, cy, object));
-      i = j;
-    }
+  const slots = objectSlots(objects);
+  if (slots === 0) return { kinds, chunks: [] };
+  const ranges: WireLayer[][] = [];
+  for (let i = 0; i < layers.length;) {
+    const key = chunkKey(layers[i].index);
+    let j = i + 1;
+    while (j < layers.length && chunkKey(layers[j].index) === key) j++;
+    ranges.push(layers.slice(i, j));
+    i = j;
   }
+  const introduced: string[][] = Array.from({ length: slots }, () => []);
+  const seen: Array<Set<string>> = Array.from({ length: slots }, () => new Set());
+  const counted = ranges.map((range) => countLayerRange(range, objects, introduced, seen));
+  for (const names of introduced) for (const name of names) assignSlot(kinds, name);
+  const built = counted.map((range) => buildChunksForLayerRange(range, kinds, cx, cy));
+  const chunks: PreviewChunk[] = [];
+  for (let object = 0; object < slots; object++) for (const group of built) chunks.push(group[object]);
   return { kinds, chunks };
 }
 
@@ -121,40 +131,91 @@ function assignSlot(kinds: string[], kind: string): number {
   return i < 0 ? MAX_KINDS - 1 : i;
 }
 
-function buildChunk(layers: WireLayer[], kinds: string[], cx: number, cy: number, object: number): PreviewChunk {
-  const travelSlot = layers.map((layer) => layer.paths.kinds.indexOf("travel"));
-  const mine = (cols: WireLayer["paths"], i: number) => (cols.object?.[i] ?? 0) === object;
-  const beadAt = new Int32Array(layers.length + 1);
-  const travelAt = new Int32Array(layers.length + 1);
+/** How many integer object slots `for (object = 0; object < objects; object++)` visits. */
+function objectSlots(objects: number): number {
+  return objects > 0 ? Math.ceil(objects) : 0;
+}
+
+/** Index the per-object scan would draw, or -1 when that path matched no slot. */
+function objectSlot(raw: number | undefined, objects: number): number {
+  const obj = raw ?? 0;
+  if (obj < 0 || obj >= objects || !Number.isInteger(obj)) return -1;
+  return obj;
+}
+
+interface RangeCounts {
+  layers: WireLayer[];
+  objects: number;
+  travelSlot: Int32Array;
+  beadAt: Int32Array[];
+  travelAt: Int32Array[];
+}
+
+/** One pass over the range: point counts per object, and the kind names each object introduces. */
+function countLayerRange(layers: WireLayer[], objects: number, introduced: string[][], seen: Array<Set<string>>): RangeCounts {
+  const slots = introduced.length;
+  const travelSlot = new Int32Array(layers.length);
+  const beadAt = Array.from({ length: slots }, () => new Int32Array(layers.length + 1));
+  const travelAt = Array.from({ length: slots }, () => new Int32Array(layers.length + 1));
   for (let l = 0; l < layers.length; l++) {
     const cols = layers[l].paths;
-    let beads = 0;
-    let travel = 0;
+    travelSlot[l] = cols.kinds.indexOf("travel");
     for (let i = 0; i < cols.kind.length; i++) {
       const points = cols.start[i + 1] - cols.start[i];
-      if (points < 2 || !mine(cols, i)) continue;
-      if (cols.kind[i] === travelSlot[l]) travel += points;
-      else beads += points;
+      if (points < 2) continue;
+      const object = objectSlot(cols.object?.[i], objects);
+      if (object < 0) continue;
+      const name = cols.kinds[cols.kind[i]];
+      if (!seen[object].has(name)) {
+        seen[object].add(name);
+        introduced[object].push(name);
+      }
+      if (cols.kind[i] === travelSlot[l]) travelAt[object][l + 1] += points;
+      else beadAt[object][l + 1] += points;
     }
-    beadAt[l + 1] = beadAt[l] + beads;
-    travelAt[l + 1] = travelAt[l] + travel;
+    for (let object = 0; object < slots; object++) {
+      beadAt[object][l + 1] += beadAt[object][l];
+      travelAt[object][l + 1] += travelAt[object][l];
+    }
   }
-  const beads = emptyRun(beadAt);
-  const travel = emptyRun(travelAt);
+  return { layers, objects, travelSlot, beadAt, travelAt };
+}
+
+/**
+ * One pass over the range writes every object's chunk. Buffers are already sized, including
+ * empty objects, and kind slots are already claimed in object order.
+ */
+function buildChunksForLayerRange(range: RangeCounts, kinds: string[], cx: number, cy: number): PreviewChunk[] {
+  const { layers, objects, travelSlot, beadAt, travelAt } = range;
+  const slots = beadAt.length;
+  const chunks: PreviewChunk[] = new Array(slots);
+  for (let object = 0; object < slots; object++) {
+    chunks[object] = {
+      object,
+      indices: layers.map((layer) => layer.index),
+      beads: emptyRun(beadAt[object]),
+      travel: emptyRun(travelAt[object]),
+    };
+  }
+  const beadCur = new Int32Array(slots);
+  const travelCur = new Int32Array(slots);
   for (let l = 0; l < layers.length; l++) {
     const layer = layers[l];
     const cols = layer.paths;
-    // Slots go to kinds in the order their first drawn path appears, so names no path draws take none.
-    const slots = new Int16Array(cols.kinds.length).fill(-1);
-    let b = beadAt[l];
-    let t = travelAt[l];
+    const slotOf = new Int16Array(cols.kinds.length).fill(-1);
+    for (let object = 0; object < slots; object++) {
+      beadCur[object] = beadAt[object][l];
+      travelCur[object] = travelAt[object][l];
+    }
     for (let i = 0; i < cols.kind.length; i++) {
       const start = cols.start[i];
       const end = cols.start[i + 1];
-      if (end - start < 2 || !mine(cols, i)) continue;
+      if (end - start < 2) continue;
+      const object = objectSlot(cols.object?.[i], objects);
+      if (object < 0) continue;
       const isTravel = cols.kind[i] === travelSlot[l];
-      const run = isTravel ? travel : beads;
-      const at = isTravel ? t : b;
+      const run = isTravel ? chunks[object].travel : chunks[object].beads;
+      const at = isTravel ? travelCur[object] : beadCur[object];
       const z = cols.z.length >= end ? cols.z : null;
       for (let k = start; k < end; k++) {
         const o = (at + k - start) * 3;
@@ -162,22 +223,22 @@ function buildChunk(layers: WireLayer[], kinds: string[], cx: number, cy: number
         run.xyz[o + 1] = z ? (z[k] ?? layer.z) : layer.z;
         run.xyz[o + 2] = -(cols.xy[2 * k + 1] - cy);
       }
-      if (slots[cols.kind[i]] < 0) slots[cols.kind[i]] = assignSlot(kinds, cols.kinds[cols.kind[i]]);
-      const word = slots[cols.kind[i]] * KIND_SHIFT + Math.round(clamp01(cols.toughness[i] ?? 0) * WEIGHT_STEPS);
+      if (slotOf[cols.kind[i]] < 0) slotOf[cols.kind[i]] = assignSlot(kinds, cols.kinds[cols.kind[i]]);
+      const word = slotOf[cols.kind[i]] * KIND_SHIFT + Math.round(clamp01(cols.toughness[i] ?? 0) * WEIGHT_STEPS);
       const speed = Math.min(ODD_LAYER_BIT - 1, u16((cols.effectiveSpeed[i] ?? cols.speed[i] ?? 0) * 10)) | (layer.index & 1 ? ODD_LAYER_BIT : 0);
       const half = u16(halfWidth(cols.width[i]) * 1000);
       const height = u16(beadHeight(cols.beadHeight[i], layer.height) * 1000);
-      for (let s = (at * STYLE_WORDS), last = (at + end - start - 1) * STYLE_WORDS; s < last; s += STYLE_WORDS) {
+      for (let s = at * STYLE_WORDS, last = (at + end - start - 1) * STYLE_WORDS; s < last; s += STYLE_WORDS) {
         run.style[s] = word;
         run.style[s + 1] = speed;
         run.style[s + 2] = half;
         run.style[s + 3] = height;
       }
-      if (isTravel) t += end - start;
-      else b += end - start;
+      if (isTravel) travelCur[object] = at + end - start;
+      else beadCur[object] = at + end - start;
     }
   }
-  return { object, indices: layers.map((layer) => layer.index), beads, travel };
+  return chunks;
 }
 
 function emptyRun(at: Int32Array): PointRun {
