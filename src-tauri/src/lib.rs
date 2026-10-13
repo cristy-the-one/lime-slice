@@ -288,6 +288,7 @@ fn model_boolean(payload: String) -> Result<String, String> {
             size: [number("dx"), number("dy"), number("dz")],
             radius: number("radius"),
             height: number("height"),
+            turn: [number("rx"), number("ry"), number("rz")],
         },
         chord,
     )
@@ -346,6 +347,7 @@ fn model_probe(payload: String) -> Result<String, String> {
                 size: [number("dx"), number("dy"), number("dz")],
                 radius: number("radius"),
                 height: number("height"),
+                turn: [number("rx"), number("ry"), number("rz")],
             },
         );
     }
