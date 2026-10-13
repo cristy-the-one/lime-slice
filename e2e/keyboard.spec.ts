@@ -151,7 +151,8 @@ test("Esc cancels a running slice", async ({ page }) => {
   await expect(page.locator("#cancel")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.locator("#cancel")).toBeHidden();
-  expect(calls.cancels).toBe(1);
+  // The button hides before the cancel request is sent.
+  await expect.poll(() => calls.cancels).toBe(1);
 });
 
 test("Ctrl+Enter slices from inside a settings field and keeps what was typed", async ({ page }) => {
