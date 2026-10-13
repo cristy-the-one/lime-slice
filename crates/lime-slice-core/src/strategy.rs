@@ -713,6 +713,48 @@ pub struct PrinterProfile {
     /// Build volume height, millimetres.
     #[serde(default = "default_bed_z")]
     pub bed_z: f64,
+    /// `klipper` times the print the way Klipper's toolhead runs it. Left out, the
+    /// generic estimator runs and none of the fields below is read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware: Option<Firmware>,
+    /// Klipper `square_corner_velocity`, mm/s. A 90° corner is taken at this speed.
+    #[serde(default = "default_square_corner_velocity")]
+    pub square_corner_velocity: f64,
+    /// Klipper `minimum_cruise_ratio`: the share of a short move that must cruise.
+    #[serde(default = "default_minimum_cruise_ratio")]
+    pub minimum_cruise_ratio: f64,
+    /// Klipper extruder `instantaneous_corner_velocity`, mm/s of filament-ratio change.
+    #[serde(default = "default_extruder_corner_velocity")]
+    pub extruder_corner_velocity: f64,
+    /// Klipper `max_velocity`, mm/s. `0` leaves the feeds uncapped.
+    #[serde(default)]
+    pub max_velocity: f64,
+    /// Klipper `max_z_velocity`, mm/s. On a belt printer this is the belt. `0` adds no limit.
+    #[serde(default)]
+    pub max_z_velocity: f64,
+    /// Klipper `max_z_accel`, mm/s². `0` adds no limit.
+    #[serde(default)]
+    pub max_z_accel: f64,
+}
+
+/// Which firmware runs the printer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Firmware {
+    Klipper,
+    Marlin,
+}
+
+fn default_square_corner_velocity() -> f64 {
+    5.0
+}
+
+fn default_minimum_cruise_ratio() -> f64 {
+    0.5
+}
+
+fn default_extruder_corner_velocity() -> f64 {
+    1.0
 }
 
 fn default_flow() -> f64 {
@@ -752,6 +794,13 @@ impl Default for PrinterProfile {
             max_accel: default_accel(),
             filament_cost_per_kg: default_cost(),
             bed_z: default_bed_z(),
+            firmware: None,
+            square_corner_velocity: default_square_corner_velocity(),
+            minimum_cruise_ratio: default_minimum_cruise_ratio(),
+            extruder_corner_velocity: default_extruder_corner_velocity(),
+            max_velocity: 0.0,
+            max_z_velocity: 0.0,
+            max_z_accel: 0.0,
         }
     }
 }

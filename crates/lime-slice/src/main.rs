@@ -154,6 +154,10 @@ enum Cmd {
         /// Klipper junction deviation in millimetres.
         #[arg(long, default_value_t = 0.02)]
         junction_deviation: f64,
+        /// `klipper` times the print with Klipper's toolhead model at its default limits.
+        /// Left out, the generic estimator runs.
+        #[arg(long)]
+        firmware: Option<String>,
         /// Drop outline vertices the nozzle cannot trace, on every layer's cut.
         #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
         simplify: bool,
@@ -336,6 +340,7 @@ fn run() -> Result<(), String> {
             z_hop_min_travel,
             classic_estimator,
             junction_deviation,
+            firmware,
             simplify,
             simplify_error,
             step_tolerance,
@@ -414,6 +419,16 @@ fn run() -> Result<(), String> {
             };
             let source = read_input(&input, scale / 100.0, step_tolerance)?;
             let mut request = request_for(&source, &blend, &settings, nozzle);
+            if let Some(name) = firmware.as_deref() {
+                let firmware = match name {
+                    "klipper" => lime_slice_core::Firmware::Klipper,
+                    "marlin" => lime_slice_core::Firmware::Marlin,
+                    other => return Err(format!("--firmware {other}: use klipper or marlin")),
+                };
+                if let Some(printer) = request.printer.as_mut() {
+                    printer.firmware = Some(firmware);
+                }
+            }
             request.step_tolerance_mm = step_tolerance;
             if !rotate.is_empty() {
                 request.pose = Some(turned_pose(&source, &rotate, step_tolerance)?);

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use rayon::prelude::*;
 
 use crate::progress::{Stage, Watch};
-use crate::strategy::{BlendMode, PrinterProfile};
+use crate::strategy::{BlendMode, Firmware, PrinterProfile};
 use crate::toolpath::Extrusion;
 
 #[derive(Clone, Debug)]
@@ -568,6 +568,7 @@ fn emit_gcode_inner(
             features,
             classic_estimator,
             junction_deviation,
+            cfg.klipper.as_ref(),
             belt,
         );
         let mut emitted_layers = 0usize;
@@ -674,6 +675,7 @@ fn emit_gcode_inner(
         features,
         classic_estimator,
         junction_deviation,
+        cfg.klipper.as_ref(),
         belt,
     );
     let formatter = Formatter {
@@ -845,6 +847,8 @@ struct EmitCfg {
     retract_speed: f64,
     /// `None` keeps every layer at its planned feeds.
     min_layer: Option<MinLayer>,
+    /// Set for a Klipper printer: the toolhead model times the print.
+    klipper: Option<KlipperCfg>,
 }
 
 impl EmitCfg {
@@ -897,6 +901,8 @@ impl EmitCfg {
                 .filter(|n| n.is_finite() && *n > 0.0)
                 .unwrap_or(30.0),
             min_layer: min_layer.filter(|m| m.time_s.is_finite() && m.time_s > 0.0),
+            klipper: (profile.firmware == Some(Firmware::Klipper) && !classic_estimator)
+                .then(|| KlipperCfg::new(profile)),
         }
     }
 }
@@ -1108,6 +1114,7 @@ fn write_preamble(
     features: &str,
     classic_estimator: bool,
     junction_deviation: f64,
+    klipper: Option<&KlipperCfg>,
     belt: Option<&crate::belt::Belt>,
 ) {
     let filament = profile.filament_diameter;
@@ -1127,6 +1134,12 @@ fn write_preamble(
     let _ = writeln!(out, "M109 S{nozzle:.0}");
     if classic_estimator {
         out.push_str("; estimator: classic (stop at each segment end)\n");
+    } else if let Some(k) = klipper {
+        let _ = writeln!(
+            out,
+            "; estimator: klipper square_corner_velocity={:.1} minimum_cruise_ratio={:.2} extruder_corner_velocity={:.1}",
+            k.square_corner_velocity, k.min_cruise_ratio, k.extruder_corner_v
+        );
     } else {
         let _ = writeln!(
             out,
@@ -1232,6 +1245,7 @@ struct Writer {
     /// The layer being written: its slowdown factor and the feed it never goes under.
     slow: f64,
     slow_floor: f64,
+    klipper: Option<KlipperCfg>,
 }
 
 struct KinMove {
@@ -1241,6 +1255,13 @@ struct KinMove {
     entry_dir: [f64; 2],
     exit_dir: [f64; 2],
     kind: &'static str,
+    /// The Klipper model reads the next three. The generic estimator leaves them 0.
+    /// Signed Z travel of the move, so a hop's slope is a 3D direction.
+    dz: f64,
+    /// Filament millimetres per millimetre of path.
+    e_per_mm: f64,
+    /// The `M204` acceleration in force, before any axis limit cut `accel`.
+    m204: f64,
 }
 
 impl Writer {
@@ -1306,6 +1327,7 @@ impl Writer {
             retract_feed: (cfg.retract_speed * 60.0).round() as i32,
             slow: 1.0,
             slow_floor: cfg.min_layer.map_or(0.0, |m| m.floor_mm_s),
+            klipper: cfg.klipper,
         }
     }
 
@@ -1454,7 +1476,7 @@ impl Writer {
             let e_now = self.e;
             let retract_feed = self.retract_feed;
             self.put(format_args!("G1 E{e_now:.5} F{retract_feed}\n"));
-            self.add_time(retract / self.retract_speed);
+            self.add_time(self.extruder_move_s(retract));
         }
         self.set_z(clear.max(self.z));
         self.enter_frame(object);
@@ -1550,7 +1572,10 @@ impl Writer {
             return;
         }
         let pending = std::mem::take(&mut self.pending);
-        let times = plan_lookahead(&pending, self.junction_deviation);
+        let times = match &self.klipper {
+            Some(klipper) => plan_klipper(&pending, klipper),
+            None => plan_lookahead(&pending, self.junction_deviation),
+        };
         let saved = self.kind;
         for (mv, dt) in pending.iter().zip(times) {
             self.kind = mv.kind;
@@ -1559,6 +1584,7 @@ impl Writer {
         self.kind = saved;
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn queue_kin(
         &mut self,
         dist: f64,
@@ -1566,18 +1592,78 @@ impl Writer {
         accel: f64,
         entry_dir: [f64; 2],
         exit_dir: [f64; 2],
+        dz: f64,
+        e_per_mm: f64,
     ) {
         if self.strings_only || dist < 1e-6 {
             return;
         }
+        let mut cruise = cruise.max(1.0);
+        let mut accel = accel.max(50.0);
+        let mut m204 = 0.0;
+        if let Some(k) = &self.klipper {
+            // The M204 in force, as Klipper holds it, not the rounded request.
+            m204 = self.accel.max(50.0);
+            accel = m204;
+            if k.max_velocity > 0.0 {
+                cruise = cruise.min(k.max_velocity);
+            }
+            if dz.abs() > 1e-9 {
+                let ratio = dist / dz.abs();
+                if k.z_velocity > 0.0 {
+                    cruise = cruise.min(k.z_velocity * ratio);
+                }
+                if k.z_accel > 0.0 {
+                    accel = accel.min(k.z_accel * ratio);
+                }
+            }
+        }
         self.pending.push(KinMove {
             dist,
-            cruise: cruise.max(1.0),
-            accel: accel.max(50.0),
+            cruise,
+            accel,
             entry_dir,
             exit_dir,
             kind: self.kind,
+            dz,
+            e_per_mm,
+            m204,
         });
+    }
+
+    /// Seconds an extruder-only move of `mm` of filament takes at the retract feed.
+    /// Klipper accelerates it at `max_extrude_only_accel`; the generic estimator does not.
+    fn extruder_move_s(&self, mm: f64) -> f64 {
+        match &self.klipper {
+            Some(k) => move_time(
+                mm,
+                0.0,
+                0.0,
+                self.retract_speed.min(k.e_velocity),
+                k.e_accel,
+            ),
+            None => mm / self.retract_speed,
+        }
+    }
+
+    /// Seconds of a Z-only move of `dz` at the layer-change feed, 120 mm/s.
+    /// Klipper holds it to its Z limits, which on a belt printer are the belt's.
+    fn z_move_s(&self, dz: f64) -> f64 {
+        let Some(k) = &self.klipper else {
+            return dz / 120.0;
+        };
+        let mut v: f64 = 120.0;
+        let mut a = self.accel;
+        if k.max_velocity > 0.0 {
+            v = v.min(k.max_velocity);
+        }
+        if k.z_velocity > 0.0 {
+            v = v.min(k.z_velocity);
+        }
+        if k.z_accel > 0.0 {
+            a = a.min(k.z_accel);
+        }
+        move_time(dz, 0.0, 0.0, v, a)
     }
 
     fn add_time(&mut self, dt: f64) {
@@ -1703,6 +1789,10 @@ impl Writer {
         if self.pa_base > 0.0 && (pa - self.pa_cur).abs() > 1e-4 {
             self.put(format_args!("SET_PRESSURE_ADVANCE ADVANCE={pa:.4}\n"));
             self.pa_cur = pa;
+            // Klipper re-times step generation here, which empties its lookahead queue.
+            if self.klipper.is_some() {
+                self.flush_motion();
+            }
         }
         if self.la_base > 0.0 && (la - self.la_cur).abs() > 1e-4 {
             self.put(format_args!("M900 K{la:.3}\n"));
@@ -1746,7 +1836,7 @@ impl Writer {
         self.close_layer();
         self.kind = "travel";
         if dz > 1e-6 {
-            self.add_time(dz / 120.0);
+            self.add_time(self.z_move_s(dz));
         }
         self.layer_mark = self.time_s;
         if let Some(log) = &mut self.log {
@@ -1786,7 +1876,7 @@ impl Writer {
             self.put(format_args!("G1 E{e_now:.5} F{retract_feed}\n"));
             let prev = self.kind;
             self.kind = "travel";
-            self.add_time(feed / self.retract_speed);
+            self.add_time(self.extruder_move_s(feed));
             self.kind = prev;
         }
     }
@@ -1842,7 +1932,7 @@ impl Writer {
             let e_now = self.e;
             let retract_feed = self.retract_feed;
             self.put(format_args!("G1 E{e_now:.5} F{retract_feed}\n"));
-            self.add_time(retract_mm / self.retract_speed);
+            self.add_time(self.extruder_move_s(retract_mm));
         }
         self.z_hops += 1;
         let ramp = (z_hop * 4.0).clamp(0.6, 2.5).min(total * 0.45);
@@ -1922,6 +2012,7 @@ impl Writer {
         }
         self.add_travelled(d);
         let cruise = speed.max(10.0);
+        let dz_signed = z - self.z;
         let dist = (d * d + dz * dz).sqrt();
         if self.classic_estimator || d < 0.02 {
             if !self.classic_estimator {
@@ -1936,6 +2027,8 @@ impl Writer {
                 accel,
                 [x - self.x, y - self.y],
                 [x - self.x, y - self.y],
+                dz_signed,
+                0.0,
             );
         }
         let f = (speed.max(10.0) * 60.0).round() as i32;
@@ -1976,7 +2069,7 @@ impl Writer {
                 let e_now = self.e;
                 let retract_feed = self.retract_feed;
                 self.put(format_args!("G1 E{e_now:.5} F{retract_feed}\n"));
-                self.add_time(retract_mm / self.retract_speed);
+                self.add_time(self.extruder_move_s(retract_mm));
             }
             self.add_travelled(d);
             let cruise = speed.max(10.0);
@@ -1985,7 +2078,7 @@ impl Writer {
                 self.has_dir = false;
             } else {
                 let dir = [x - self.x, y - self.y];
-                self.queue_kin(d, cruise, accel, dir, dir);
+                self.queue_kin(d, cruise, accel, dir, dir, 0.0, 0.0);
             }
         }
         let f = (speed.max(10.0) * 60.0).round() as i32;
@@ -2156,7 +2249,7 @@ impl Writer {
         let f = (120.0_f64 * 60.0) as i32;
         self.put(format_args!("G1 Z{z:.3} F{f}\n"));
         self.flush_motion();
-        self.add_time(dz / 120.0);
+        self.add_time(self.z_move_s(dz));
         self.z = z;
     }
 
@@ -2190,7 +2283,20 @@ impl Writer {
         self.put(format_args!(
             "{cmd} X{x:.3} Y{y:.3} I{i:.4} J{j:.4} E{e_now:.5} F{f}\n"
         ));
-        self.note_motion(arc.end, arc.dir, arc.exit_dir, speed, accel, arc.length);
+        if self.klipper.is_some() {
+            self.queue_arc_chords(arc, speed, de);
+            self.land(arc.end);
+        } else {
+            self.note_motion(
+                arc.end,
+                arc.dir,
+                arc.exit_dir,
+                speed,
+                accel,
+                arc.length,
+                0.0,
+            );
+        }
         self.arc_moves += 1;
         self.extrusion_moves += 1;
         self.add_extruded(arc.length);
@@ -2240,11 +2346,12 @@ impl Writer {
             self.put(format_args!("G1 X{bx:.3} Y{by:.3} E{e_now:.5} F{f}\n"));
         }
         let dir = [x - self.x, y - self.y];
-        self.note_motion([x, y], dir, dir, speed, accel, d);
+        self.note_motion([x, y], dir, dir, speed, accel, d, bead / fil);
         self.extrusion_moves += 1;
         self.add_extruded(d);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn note_motion(
         &mut self,
         end: [f64; 2],
@@ -2253,6 +2360,7 @@ impl Writer {
         speed: f64,
         accel: f64,
         dist: f64,
+        e_per_mm: f64,
     ) {
         let cruise = speed.max(5.0);
         if self.classic_estimator {
@@ -2268,12 +2376,52 @@ impl Writer {
             self.dir = entry_dir;
             self.has_dir = true;
         } else {
-            self.queue_kin(dist, cruise, accel, entry_dir, exit_dir);
+            self.queue_kin(dist, cruise, accel, entry_dir, exit_dir, 0.0, e_per_mm);
         }
+        self.land(end);
+    }
+
+    /// The nozzle is at `end` once the move is queued.
+    fn land(&mut self, end: [f64; 2]) {
         self.note_bounds(end[0], end[1]);
         self.x = end[0];
         self.y = end[1];
         self.has_pos = true;
+    }
+
+    /// Klipper's `gcode_arcs` runs an arc as straight chords about a millimetre long, and
+    /// each corner between them is a junction. `de` is the arc's filament, shared evenly.
+    fn queue_arc_chords(&mut self, arc: &ArcFit, speed: f64, de: f64) {
+        let radius = hypot(arc.ij[0], arc.ij[1]).max(1e-9);
+        let chords = (arc.length.floor() as usize).max(1);
+        let start = [self.x, self.y];
+        let center = [start[0] + arc.ij[0], start[1] + arc.ij[1]];
+        let a0 = (start[1] - center[1]).atan2(start[0] - center[0]);
+        let step = (arc.length / radius) / chords as f64 * if arc.cw { -1.0 } else { 1.0 };
+        let cruise = speed.max(5.0);
+        let mut from = start;
+        for k in 1..=chords {
+            let to = if k == chords {
+                arc.end
+            } else {
+                let a = a0 + step * k as f64;
+                [center[0] + radius * a.cos(), center[1] + radius * a.sin()]
+            };
+            let dir = [to[0] - from[0], to[1] - from[1]];
+            let dist = hypot(dir[0], dir[1]);
+            if dist > 1e-9 {
+                self.queue_kin(
+                    dist,
+                    cruise,
+                    self.accel,
+                    dir,
+                    dir,
+                    0.0,
+                    de / chords as f64 / dist,
+                );
+            }
+            from = to;
+        }
     }
 
     fn note_bounds(&mut self, x: f64, y: f64) {
@@ -2532,6 +2680,184 @@ fn plan_lookahead(moves: &[KinMove], junction_deviation: f64) -> Vec<f64> {
     times
 }
 
+/// What Klipper's toolhead needs to time a move, from the printer profile.
+#[derive(Clone, Copy)]
+struct KlipperCfg {
+    square_corner_velocity: f64,
+    /// `scv² (√2 − 1)`. Klipper's junction deviation is this over the `M204` acceleration, so a
+    /// move's deviation times its own acceleration is this over the ratio of the two.
+    corner_k: f64,
+    min_cruise_ratio: f64,
+    extruder_corner_v: f64,
+    /// `0` leaves the feeds uncapped.
+    max_velocity: f64,
+    /// `0` adds no limit.
+    z_velocity: f64,
+    z_accel: f64,
+    /// Extruder-only moves: `max_extrude_only_velocity` and `max_extrude_only_accel`.
+    e_velocity: f64,
+    e_accel: f64,
+}
+
+impl KlipperCfg {
+    fn new(profile: &PrinterProfile) -> Self {
+        let or = |v: f64, fallback: f64| {
+            if v.is_finite() && v >= 0.0 {
+                v
+            } else {
+                fallback
+            }
+        };
+        let scv = or(profile.square_corner_velocity, 5.0);
+        // Klipper's default extruder cross-section, 4 nozzle², over the filament's area.
+        let ratio = 4.0 * profile.nozzle_diameter.powi(2)
+            / (std::f64::consts::PI * (profile.filament_diameter * 0.5).powi(2));
+        let max_velocity = or(profile.max_velocity, 0.0);
+        Self {
+            square_corner_velocity: scv,
+            corner_k: scv * scv * (std::f64::consts::SQRT_2 - 1.0),
+            min_cruise_ratio: or(profile.minimum_cruise_ratio, 0.5).min(0.999),
+            extruder_corner_v: or(profile.extruder_corner_velocity, 1.0),
+            max_velocity,
+            z_velocity: or(profile.max_z_velocity, 0.0),
+            z_accel: or(profile.max_z_accel, 0.0),
+            e_velocity: if max_velocity > 0.0 {
+                max_velocity * ratio
+            } else {
+                f64::INFINITY
+            },
+            e_accel: if profile.max_accel.is_finite() && profile.max_accel > 0.0 {
+                profile.max_accel * ratio
+            } else {
+                f64::INFINITY
+            },
+        }
+    }
+}
+
+/// Each move's seconds under Klipper's lookahead, for a chain that starts and ends at rest.
+fn plan_klipper(moves: &[KinMove], k: &KlipperCfg) -> Vec<f64> {
+    moves
+        .iter()
+        .zip(klipper_speeds(moves, k))
+        .map(|(m, [start_v2, cruise_v2, end_v2])| {
+            // `Move.set_junction`.
+            let half_inv_accel = 0.5 / m.accel;
+            let accel_d = (cruise_v2 - start_v2) * half_inv_accel;
+            let decel_d = (cruise_v2 - end_v2) * half_inv_accel;
+            let cruise_d = m.dist - accel_d - decel_d;
+            let (start_v, cruise_v, end_v) = (start_v2.sqrt(), cruise_v2.sqrt(), end_v2.sqrt());
+            accel_d / ((start_v + cruise_v) * 0.5)
+                + cruise_d / cruise_v
+                + decel_d / ((end_v + cruise_v) * 0.5)
+        })
+        .collect()
+}
+
+/// Klipper's lookahead (`LookAheadQueue.flush` in `klippy/toolhead.py`, with
+/// `minimum_cruise_ratio`) over a chain of moves that starts and ends at rest.
+/// Returns each move's squared start, cruise and end speeds.
+fn klipper_speeds(moves: &[KinMove], k: &KlipperCfg) -> Vec<[f64; 3]> {
+    let n = moves.len();
+    let axes = |m: &KinMove| -> [f64; 4] {
+        let planar = hypot(m.entry_dir[0], m.entry_dir[1]);
+        let xy = (m.dist * m.dist - m.dz * m.dz).max(0.0).sqrt();
+        let scale = if planar > 1e-12 {
+            xy / (planar * m.dist)
+        } else {
+            0.0
+        };
+        [
+            m.entry_dir[0] * scale,
+            m.entry_dir[1] * scale,
+            m.dz / m.dist,
+            m.e_per_mm,
+        ]
+    };
+    let mut cruise_v2 = Vec::with_capacity(n);
+    let mut delta_v2 = Vec::with_capacity(n);
+    let mut smooth_delta_v2 = Vec::with_capacity(n);
+    let mut max_start_v2 = vec![0.0; n];
+    let mut max_smoothed_v2 = vec![0.0; n];
+    let mut prev_axes = [0.0; 4];
+    for (i, m) in moves.iter().enumerate() {
+        cruise_v2.push(m.cruise * m.cruise);
+        delta_v2.push(2.0 * m.dist * m.accel);
+        smooth_delta_v2.push((2.0 * m.dist * m.m204 * (1.0 - k.min_cruise_ratio)).min(delta_v2[i]));
+        let a = axes(m);
+        if i > 0 {
+            let p = &moves[i - 1];
+            let cos_theta = -(a[0] * prev_axes[0] + a[1] * prev_axes[1] + a[2] * prev_axes[2]);
+            if cos_theta <= 0.999999 {
+                let cos_theta = cos_theta.max(-0.999999);
+                let sin_d2 = (0.5 * (1.0 - cos_theta)).max(0.0).sqrt();
+                let cos_d2 = (0.5 * (1.0 + cos_theta)).max(0.0).sqrt();
+                let one_minus_sin_d2 = 1.0 - sin_d2;
+                if one_minus_sin_d2 > 0.0 && cos_d2 > 0.0 {
+                    let r_jd = sin_d2 / one_minus_sin_d2;
+                    let tan_d2 = sin_d2 / cos_d2;
+                    let diff_r = a[3] - prev_axes[3];
+                    let extruder_v2 = if diff_r != 0.0 {
+                        (k.extruder_corner_v / diff_r.abs()).powi(2)
+                    } else {
+                        cruise_v2[i]
+                    };
+                    // `junction_deviation * accel` is `corner_k` for a move that no axis limit slowed.
+                    let jd_accel = |m: &KinMove| k.corner_k / m.m204 * m.accel;
+                    max_start_v2[i] = (r_jd * jd_accel(m))
+                        .min(r_jd * jd_accel(p))
+                        .min(0.5 * m.dist * tan_d2 * m.accel)
+                        .min(0.5 * p.dist * tan_d2 * p.accel)
+                        .min(extruder_v2)
+                        .min(cruise_v2[i])
+                        .min(cruise_v2[i - 1])
+                        .min(max_start_v2[i - 1] + delta_v2[i - 1]);
+                    max_smoothed_v2[i] =
+                        max_start_v2[i].min(max_smoothed_v2[i - 1] + smooth_delta_v2[i - 1]);
+                }
+            }
+        }
+        prev_axes = a;
+    }
+
+    let mut speeds = vec![[0.0; 3]; n];
+    let mut set_junction = |i: usize, start_v2: f64, cruise_v2: f64, end_v2: f64| {
+        speeds[i] = [start_v2, cruise_v2, end_v2];
+    };
+    // Backward from the last move, which stops: each move's start, and the peak speed
+    // that the smoothed (minimum cruise ratio) acceleration lets it reach.
+    let mut delayed: Vec<(usize, f64, f64)> = Vec::new();
+    let (mut next_end_v2, mut next_smoothed_v2, mut peak_cruise_v2) = (0.0_f64, 0.0_f64, 0.0_f64);
+    for i in (0..n).rev() {
+        let reachable_start_v2 = next_end_v2 + delta_v2[i];
+        let start_v2 = max_start_v2[i].min(reachable_start_v2);
+        let reachable_smoothed_v2 = next_smoothed_v2 + smooth_delta_v2[i];
+        let smoothed_v2 = max_smoothed_v2[i].min(reachable_smoothed_v2);
+        if smoothed_v2 < reachable_smoothed_v2 {
+            if smoothed_v2 + smooth_delta_v2[i] > next_smoothed_v2 || !delayed.is_empty() {
+                peak_cruise_v2 = cruise_v2[i].min((smoothed_v2 + reachable_smoothed_v2) * 0.5);
+                if !delayed.is_empty() {
+                    let mut mc_v2 = peak_cruise_v2;
+                    for &(j, ms_v2, me_v2) in delayed.iter().rev() {
+                        mc_v2 = mc_v2.min(ms_v2);
+                        set_junction(j, ms_v2.min(mc_v2), mc_v2, me_v2.min(mc_v2));
+                    }
+                    delayed.clear();
+                }
+            }
+            let cruise = ((start_v2 + reachable_start_v2) * 0.5)
+                .min(cruise_v2[i])
+                .min(peak_cruise_v2);
+            set_junction(i, start_v2.min(cruise), cruise, next_end_v2.min(cruise));
+        } else {
+            delayed.push((i, start_v2, next_end_v2));
+        }
+        next_end_v2 = start_v2;
+        next_smoothed_v2 = smoothed_v2;
+    }
+    speeds
+}
+
 #[derive(Clone)]
 struct ArcFit {
     end: [f64; 2],
@@ -2746,11 +3072,94 @@ mod tests {
             entry_dir: dir,
             exit_dir: dir,
             kind: "wall",
+            dz: 0.0,
+            e_per_mm: 0.0,
+            m204: accel,
         }
     }
 
     fn chain_time(moves: &[KinMove], jd: f64) -> f64 {
         plan_lookahead(moves, jd).iter().sum()
+    }
+
+    fn klipper_with(edit: impl FnOnce(&mut PrinterProfile)) -> KlipperCfg {
+        let mut profile = PrinterProfile {
+            firmware: Some(Firmware::Klipper),
+            ..PrinterProfile::default()
+        };
+        edit(&mut profile);
+        KlipperCfg::new(&profile)
+    }
+
+    /// A move at accel 3500 and feed 100, `e_per_mm` of filament per millimetre.
+    fn km(dist: f64, dir: [f64; 2], e_per_mm: f64) -> KinMove {
+        KinMove {
+            e_per_mm,
+            ..kin(dist, 100.0, 3500.0, dir)
+        }
+    }
+
+    #[test]
+    fn a_right_angle_corner_is_taken_at_the_square_corner_velocity() {
+        let corner = [km(50.0, [1.0, 0.0], 0.0), km(50.0, [0.0, 1.0], 0.0)];
+        for scv in [5.0, 8.0] {
+            let k = klipper_with(|p| p.square_corner_velocity = scv);
+            let speeds = klipper_speeds(&corner, &k);
+            assert!(
+                (speeds[1][0].sqrt() - scv).abs() < 1e-9,
+                "scv {scv}: junction {}",
+                speeds[1][0].sqrt()
+            );
+            assert_eq!(speeds[0][0], 0.0, "the chain starts at rest");
+            assert_eq!(speeds[1][2], 0.0, "and ends at rest");
+        }
+    }
+
+    #[test]
+    fn a_short_staircase_peaks_at_half_the_acceleration() {
+        // Four 1 mm moves turning 90° each time. A move between two 5 mm/s corners
+        // could reach v² = (25 + 25 + 2·3500·1) / 2 = 3525; the minimum cruise ratio
+        // of 0.5 smooths it to (25 + 25 + 2·1750·1) / 2 = 1775.
+        let stairs: Vec<_> = (0..4)
+            .map(|i| km(1.0, if i % 2 == 0 { [1.0, 0.0] } else { [0.0, 1.0] }, 0.0))
+            .collect();
+        let half = klipper_speeds(&stairs, &klipper_with(|_| {}));
+        assert!((half[1][1] - 1775.0).abs() < 1e-6, "peak v² {}", half[1][1]);
+        assert!((half[2][1] - 1775.0).abs() < 1e-6, "peak v² {}", half[2][1]);
+        let full = klipper_speeds(&stairs, &klipper_with(|p| p.minimum_cruise_ratio = 0.0));
+        assert!((full[1][1] - 3525.0).abs() < 1e-6, "peak v² {}", full[1][1]);
+        let t = |k: &KlipperCfg| plan_klipper(&stairs, k).iter().sum::<f64>();
+        assert!(
+            t(&klipper_with(|_| {})) > t(&klipper_with(|p| p.minimum_cruise_ratio = 0.0)),
+            "a lower peak takes longer"
+        );
+    }
+
+    #[test]
+    fn an_extrusion_meeting_a_travel_is_held_to_the_extruder_corner_velocity() {
+        // 0.04 mm of filament per mm: the junction may be 1.0 / 0.04 = 25 mm/s,
+        // though the line is straight and both feeds are 100.
+        let line = [km(50.0, [1.0, 0.0], 0.04), km(50.0, [1.0, 0.0], 0.0)];
+        let speeds = klipper_speeds(&line, &klipper_with(|_| {}));
+        assert!(
+            (speeds[1][0] - 625.0).abs() < 1e-9,
+            "junction {} mm/s",
+            speeds[1][0].sqrt()
+        );
+        let free = klipper_speeds(
+            &line,
+            &klipper_with(|p| p.extruder_corner_velocity = 1000.0),
+        );
+        assert!(
+            (free[1][0] - 10_000.0).abs() < 1e-9,
+            "a loose limit leaves the feed alone"
+        );
+        let same = [km(50.0, [1.0, 0.0], 0.04), km(50.0, [1.0, 0.0], 0.04)];
+        let kept = klipper_speeds(&same, &klipper_with(|_| {}));
+        assert!(
+            (kept[1][0] - 10_000.0).abs() < 1e-9,
+            "equal extrusion is not a corner"
+        );
     }
 
     #[test]

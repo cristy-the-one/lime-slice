@@ -1,7 +1,7 @@
 import { fx } from "./fx";
 import { session, state } from "./state";
 import { presetKeys } from "../presets";
-import { saveProfile } from "../profiles";
+import { KLIPPER_NUMBERS, saveProfile } from "../profiles";
 import { emptyOverrides } from "../overrides";
 import { revivePlate, snapPlate } from "../plate";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
@@ -50,6 +50,12 @@ function capture(): EditSnap {
       filamentDiameter: profile.filamentDiameter,
       nozzleTemp: profile.nozzleTemp,
       bedTemp: profile.bedTemp,
+      squareCornerVelocity: profile.squareCornerVelocity,
+      minimumCruiseRatio: profile.minimumCruiseRatio,
+      extruderCornerVelocity: profile.extruderCornerVelocity,
+      maxVelocity: profile.maxVelocity,
+      maxZVelocity: profile.maxZVelocity,
+      maxZAccel: profile.maxZAccel,
     },
     level: loadSettingsLevel(),
     machine: machineSnap(),
@@ -96,6 +102,10 @@ function applySnap(snap: EditSnap) {
   if (typeof snap.profile.filamentDiameter === "number") state.profile.filamentDiameter = snap.profile.filamentDiameter;
   if (typeof snap.profile.nozzleTemp === "number") state.profile.nozzleTemp = snap.profile.nozzleTemp;
   if (typeof snap.profile.bedTemp === "number") state.profile.bedTemp = snap.profile.bedTemp;
+  for (const key of Object.keys(KLIPPER_NUMBERS) as (keyof typeof KLIPPER_NUMBERS)[]) {
+    const value = snap.profile[key];
+    if (typeof value === "number") state.profile[key] = value;
+  }
   if (snap.level === "simple" || snap.level === "advanced" || snap.level === "expert") setSettingsLevel(snap.level);
   state.profile.pressureAdvance = state.pressureAdvance;
   state.profile.linearAdvance = state.linearAdvance;

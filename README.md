@@ -244,6 +244,8 @@ python tools/gcode_profile.py --max-speed X=500,Y=500,Z=12 --travel-by-feature o
 
 `--max-speed` caps each axis (a belt printer's belt axis is slow), `--max-accel` caps acceleration, `--junction-deviation` defaults to 0.02 mm, and `--travel-by-feature` splits travel by the feature it occurs in.
 
+`tools/klipper_time.py` times a file the way a Klipper printer runs it: a port of the toolhead lookahead with junction deviation from `square_corner_velocity`, `minimum_cruise_ratio`, the extruder's corner velocity, extrude-only moves, the Z limits, and the stop at each `SET_PRESSURE_ADVANCE`. Its defaults are the Ideaformer IR3 V2's `printer.cfg`. `--at-layer N` and `--at-fraction 0.76` print the elapsed time at a layer or at that share of the file, for comparing with a print in progress. The engine uses the same model for a printer whose firmware is Klipper (`--firmware klipper` on the CLI); on a Telo cover it agreed with the tool within 0.1%.
+
 ## Scarf seams
 
 A scarf replaces a butt seam on a closed wall when the seam is not already on a sharp convex corner. The loop starts at 15% of the layer height and 0.55 flow, rises to a full bead over 10 mm in 8 steps, then retraces that 10 mm at full Z while flow ramps back down. The second pass does not dip below plastic the start ramp already laid down. The seam metric is that overlap length, plus the largest Z step along the ramp. A butt seam has overlap 0. With the defaults the start-ramp step is `(1 − 0.15) × 0.2 / 8 = 0.021` mm, against a 0.20 mm layer. Nozzle Z stays inside the layer slab. The constant-Z body and the full-Z retrace can still be a G2/G3; the start ramp itself is linear.

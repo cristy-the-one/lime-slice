@@ -100,9 +100,13 @@ function bound<K extends keyof PresetSettings>(key: K, spec: Omit<ControlSpec, "
 }
 
 /** A control bound to one number of the printer profile. */
-function profile(key: "bedX" | "bedY" | "bedZ" | "maxVolumetricMm3S" | "maxAccel" | "filamentDensityGCm3" | "filamentCostPerKg", spec: Omit<ControlSpec, "get" | "set">): ControlSpec {
+function profile(key: "bedX" | "bedY" | "bedZ" | "maxVolumetricMm3S" | "maxAccel" | "filamentDensityGCm3" | "filamentCostPerKg" | KlipperKey, spec: Omit<ControlSpec, "get" | "set">): ControlSpec {
   return { ...spec, get: (s) => s.profile[key], set: (s, value) => { s.profile[key] = value as number; } };
 }
+
+type KlipperKey = "squareCornerVelocity" | "minimumCruiseRatio" | "extruderCornerVelocity" | "maxVelocity" | "maxZVelocity" | "maxZAccel";
+
+const CFG_TIP = "Read it from the printer: Moonraker /printer/objects/query?configfile=settings, or printer.cfg.";
 
 const blendOptions: Options = [["blend", "Blend default"], ["off", "Off"], ["outer", "Outer walls"], ["all", "Outer and inner"]];
 
@@ -427,6 +431,12 @@ export const CONTROLS: ControlSpec[] = [
   profile("bedZ", { id: "bedz", label: "Bed Z mm", group: "printer", tier: "advanced", kind: num(20, 1000, 1), keywords: "printer volume height" }),
   profile("maxVolumetricMm3S", { id: "vol", label: "Max flow mm³/s", group: "printer", tier: "advanced", kind: num(1, 60, 0.5), keywords: "volumetric hotend" }),
   profile("maxAccel", { id: "accel", label: "Max accel mm/s²", group: "printer", tier: "advanced", kind: num(100, 20000, 100), keywords: "acceleration" }),
+  profile("maxVelocity", { id: "vmax", label: "Max velocity mm/s", group: "printer", tier: "expert", kind: num(0, 1000, 10), rule: "klipperLimits", tip: `printer.cfg [printer] max_velocity. 0 leaves the feeds uncapped. ${CFG_TIP}`, keywords: "klipper speed limit" }),
+  profile("squareCornerVelocity", { id: "scv", label: "Square corner velocity mm/s", group: "printer", tier: "expert", kind: num(0, 50, 0.5), rule: "klipperLimits", tip: `printer.cfg [printer] square_corner_velocity. A 90° corner is taken at this speed, which sets the print time estimate. ${CFG_TIP}`, keywords: "klipper junction deviation corner" }),
+  profile("minimumCruiseRatio", { id: "mcr", label: "Minimum cruise ratio", group: "printer", tier: "expert", kind: num(0, 0.95, 0.05), rule: "klipperLimits", tip: `printer.cfg [printer] minimum_cruise_ratio. The share of a short move that must cruise; it caps the peak speed of short moves. ${CFG_TIP}`, keywords: "klipper accel to decel" }),
+  profile("extruderCornerVelocity", { id: "ecv", label: "Extruder corner velocity mm/s", group: "printer", tier: "expert", kind: num(0, 20, 0.1), rule: "klipperLimits", tip: `printer.cfg [extruder] instantaneous_corner_velocity. Limits a corner where the filament per millimetre changes, such as an extrusion meeting a travel. ${CFG_TIP}`, keywords: "klipper instantaneous" }),
+  profile("maxZVelocity", { id: "zvmax", label: "Max Z / belt speed mm/s", group: "printer", tier: "expert", kind: num(0, 500, 1), rule: "klipperLimits", tip: `printer.cfg [printer] max_z_velocity. On a belt printer this is the belt. 0 adds no limit. ${CFG_TIP}`, keywords: "klipper belt layer change" }),
+  profile("maxZAccel", { id: "zamax", label: "Max Z / belt accel mm/s²", group: "printer", tier: "expert", kind: num(0, 20000, 50), rule: "klipperLimits", tip: `printer.cfg [printer] max_z_accel. On a belt printer this is the belt. 0 adds no limit. ${CFG_TIP}`, keywords: "klipper belt layer change" }),
   profile("filamentDensityGCm3", { id: "density", label: "Density g/cm³", group: "printer", tier: "advanced", kind: num(0.8, 2.5, 0.01), keywords: "filament weight grams" }),
   profile("filamentCostPerKg", { id: "cost", label: "Filament €/kg", group: "printer", tier: "advanced", kind: num(0, 200, 1), keywords: "price estimate" }),
 

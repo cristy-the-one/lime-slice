@@ -6407,6 +6407,126 @@ mod tests {
         );
     }
 
+    /// The cube, planned once and emitted for `profile` the way a slice does:
+    /// in parallel, then on one thread. Both must agree to the last byte.
+    fn emit_cube_both_ways(
+        profile: &PrinterProfile,
+    ) -> (crate::gcode::GcodeStats, crate::gcode::GcodeStats) {
+        let bytes = std::fs::read(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../samples/calibration_cube_20mm.stl"),
+        )
+        .unwrap();
+        let mesh = crate::load::load_mesh("calibration_cube_20mm.stl", &bytes).unwrap();
+        let settings = SliceSettings {
+            baseline: false,
+            include_preview: false,
+            compare: false,
+            ..SliceSettings::default()
+        };
+        let blend = BlendMode::Single {
+            strategy: StrategyId::Speed,
+        };
+        let planned = plan(&mesh, &blend, &settings, profile.nozzle_diameter)
+            .unwrap()
+            .layers
+            .into_iter()
+            .map(PlateLayer::single)
+            .collect::<Vec<_>>();
+        let features = settings.feature_note();
+        let retract = || crate::gcode::RetractEmit {
+            length_mm: settings.retract_length,
+            speed_mm_s: settings.retract_speed,
+        };
+        let parallel = crate::gcode::emit_gcode(
+            &planned,
+            profile,
+            &blend,
+            settings.layer_height,
+            settings.line_width,
+            &features,
+            settings.arc_fit,
+            settings.classic_estimator,
+            settings.junction_deviation_mm,
+            &[[0.0, 0.0]],
+            None,
+            settings.flow,
+            retract(),
+            settings.min_layer(),
+            settings.job,
+            &Watch::idle(),
+        );
+        let linear = crate::gcode::emit_gcode_linear(
+            &planned,
+            profile,
+            &blend,
+            settings.layer_height,
+            settings.line_width,
+            &features,
+            settings.arc_fit,
+            settings.classic_estimator,
+            settings.junction_deviation_mm,
+            &[[0.0, 0.0]],
+            None,
+            settings.flow,
+            retract(),
+            settings.min_layer(),
+            settings.job,
+            &Watch::idle(),
+        );
+        (parallel, linear)
+    }
+
+    #[test]
+    fn a_klipper_printer_gets_klipper_time_and_the_same_toolpath() {
+        let generic = PrinterProfile {
+            pressure_advance: 0.05,
+            max_accel: 20_000.0,
+            ..PrinterProfile::default()
+        };
+        // Klipper numbers on a printer that does not name its firmware are not read.
+        let unread = PrinterProfile {
+            square_corner_velocity: 8.0,
+            minimum_cruise_ratio: 0.9,
+            extruder_corner_velocity: 0.1,
+            max_z_velocity: 20.0,
+            max_z_accel: 500.0,
+            ..generic.clone()
+        };
+        let klipper = PrinterProfile {
+            firmware: Some(crate::Firmware::Klipper),
+            ..generic.clone()
+        };
+        let (base, base_linear) = emit_cube_both_ways(&generic);
+        let (same, _) = emit_cube_both_ways(&unread);
+        let (k, k_linear) = emit_cube_both_ways(&klipper);
+
+        assert_eq!(base.text, base_linear.text);
+        assert_eq!(same.text, base.text, "unread fields change no byte");
+        assert_eq!(same.print_time_s, base.print_time_s);
+        assert_eq!(same.layer_seconds, base.layer_seconds);
+
+        assert_eq!(k.text, k_linear.text, "klipper g-code bytes");
+        assert_eq!(k.print_time_s, k_linear.print_time_s);
+        assert_eq!(k.layer_seconds, k_linear.layer_seconds);
+        assert_eq!(k.by_feature.len(), k_linear.by_feature.len());
+
+        let body = |text: &str| {
+            text.lines()
+                .filter(|l| !l.starts_with("; estimator:") && !l.starts_with("; TIME:"))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(body(&k.text), body(&base.text), "only the estimator lines differ");
+        assert!(k.text.contains("; estimator: klipper square_corner_velocity=5.0"));
+        assert!(
+            k.print_time_s > base.print_time_s * 1.05,
+            "klipper {} s against generic {} s",
+            k.print_time_s,
+            base.print_time_s
+        );
+    }
+
     #[test]
     fn parallel_gcode_matches_linear_on_the_cube() {
         let bytes = std::fs::read(

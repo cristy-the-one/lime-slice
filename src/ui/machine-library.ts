@@ -11,14 +11,14 @@
  * into the exported file by the UI, and stay off the slice request.
  */
 import { coerceBelt, defaultBelt, type BeltSettings, type PrinterKind } from "../belt.ts";
-import type { PrinterProfile } from "../profiles.ts";
+import { KLIPPER_NUMBERS, type KlipperLimits, type PrinterProfile } from "../profiles.ts";
 import { ADVANCE, type Firmware, type Rules } from "../settings-rules.ts";
 
 export const MACHINE_FILE_VERSION = 3;
 
 export const NOZZLE_MM = [0.4, 0.6, 0.8] as const;
 
-export interface PrinterRecord {
+export interface PrinterRecord extends KlipperLimits {
   id: string;
   name: string;
   builtin: boolean;
@@ -103,7 +103,7 @@ machineMigrationSteps[1] = migrateMachineVersion1;
 machineMigrationSteps[2] = migrateMachineVersion2;
 export const machineMigrations: readonly MachineMigration[] = machineMigrationSteps;
 
-export interface MachineNumbers {
+export interface MachineNumbers extends KlipperLimits {
   nozzleDiameter: number;
   filamentDiameter: number;
   nozzleTemp: number;
@@ -230,7 +230,7 @@ export function ensureBuiltins(library: MachineLibrary): MachineLibrary {
 function refreshBuiltin(stored: PrinterRecord, catalog: PrinterRecord | undefined): PrinterRecord {
   if (!stored.builtin || !catalog || stored.startGcode.trim() !== "" || stored.endGcode.trim() !== "") return stored;
   const { startGcode, endGcode, startOwnsHoming, maxBedC, maxNozzleC } = catalog;
-  return { ...stored, startGcode, endGcode, startOwnsHoming, maxBedC, maxNozzleC };
+  return { ...stored, startGcode, endGcode, startOwnsHoming, maxBedC, maxNozzleC, ...klipperLimits(catalog) };
 }
 
 export function selection(library: MachineLibrary): { printer: PrinterRecord; filament: FilamentRecord } | null {
@@ -257,6 +257,18 @@ export function enginePrinter(printer: PrinterRecord, filament: FilamentRecord, 
     filamentCostPerKg: filament.costPerKg,
     pressureAdvance: advanceFor(filament.pressureAdvance, nozzleMm),
     linearAdvance: advanceFor(filament.linearAdvance, nozzleMm),
+    ...klipperLimits(printer),
+  };
+}
+
+function klipperLimits(printer: KlipperLimits): KlipperLimits {
+  return {
+    squareCornerVelocity: printer.squareCornerVelocity,
+    minimumCruiseRatio: printer.minimumCruiseRatio,
+    extruderCornerVelocity: printer.extruderCornerVelocity,
+    maxVelocity: printer.maxVelocity,
+    maxZVelocity: printer.maxZVelocity,
+    maxZAccel: printer.maxZAccel,
   };
 }
 
@@ -546,6 +558,7 @@ export function adoptProfile(library: MachineLibrary, profile: PrinterProfile, p
     firmware: "klipper",
     kind: "cartesian",
     belt: defaultBelt(profile.bedX),
+    ...klipperLimits(profile),
   };
   const filament: FilamentRecord = {
     id: filamentId,
@@ -706,6 +719,7 @@ function writeNumbers(library: MachineLibrary, printerId: string, filamentId: st
           host: numbers.host,
           apiKey: numbers.apiKey,
           startPrint: numbers.startPrint,
+          ...klipperLimits(numbers),
         }
       : printer),
     filaments: library.filaments.map((filament) => filament.id === filamentId
@@ -745,6 +759,7 @@ function blankPrinter(id: string, name: string): PrinterRecord {
     firmware: "klipper",
     kind: "cartesian",
     belt: defaultBelt(220),
+    ...KLIPPER_NUMBERS,
   };
 }
 
@@ -767,6 +782,7 @@ function stripPrinter(printer: PrinterRecord): MachineFile["printer"] {
     firmware: printer.firmware,
     kind: printer.kind,
     belt: { ...printer.belt },
+    ...klipperLimits(printer),
   };
 }
 
@@ -830,15 +846,26 @@ const IR3_V2_START = [
   "M82",
 ].join("\n");
 
+const IR3_V2_LIMITS: KlipperLimits = {
+  squareCornerVelocity: 5,
+  minimumCruiseRatio: 0.5,
+  extruderCornerVelocity: 1,
+  maxVelocity: 400,
+  maxZVelocity: 20,
+  maxZAccel: 500,
+};
+
 function builtinPrinters(): PrinterRecord[] {
   return [
     printer("lime-220", "Lime 220", 220, 220, 250, 12, 10000),
     printer("lime-300", "Lime 300", 300, 300, 320, 15, 5000),
     printer("lime-180", "Lime 180", 180, 180, 180, 8, 2000),
     { ...printer("generic-belt-45", "Generic belt 45°", 200, 200, 200, 12, 5000), kind: "belt" },
-    // Klipper, 45° gantry, 250 mm belt and gantry, X/Y limited to 20000 mm/s².
+    // Klipper, 45° gantry, 250 mm belt and gantry. The limits are the printer's own
+    // printer.cfg, read from Moonraker on 2026-10-13.
     {
       ...printer("ideaformer-ir3-v2", "Ideaformer IR3 V2", 250, 250, 250, 12, 20000),
+      ...IR3_V2_LIMITS,
       kind: "belt",
       maxBedC: 90,
       startOwnsHoming: true,
@@ -869,6 +896,7 @@ function printer(id: string, name: string, bedX: number, bedY: number, bedZ: num
     firmware: "klipper",
     kind: "cartesian",
     belt: defaultBelt(bedX),
+    ...KLIPPER_NUMBERS,
   };
 }
 
@@ -952,7 +980,8 @@ function readFile(doc: Record<string, unknown>): MachineFileResult {
 function readPrinter(value: unknown): PrinterRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
-  const body = readPrinterBody(row);
+  // A library stored before these limits existed gets the built-in printer's own, not Klipper's blanks.
+  const body = readPrinterBody(row, row.id === "ideaformer-ir3-v2" ? IR3_V2_LIMITS : KLIPPER_NUMBERS);
   if (!body || typeof row.id !== "string" || !row.id) return null;
   return { ...body, id: row.id, builtin: row.builtin === true };
 }
@@ -965,7 +994,7 @@ function readFilament(value: unknown): FilamentRecord | null {
   return { ...body, id: row.id, builtin: row.builtin === true };
 }
 
-function readPrinterBody(value: unknown): Omit<PrinterRecord, "id" | "builtin"> | null {
+function readPrinterBody(value: unknown, missing: KlipperLimits = KLIPPER_NUMBERS): Omit<PrinterRecord, "id" | "builtin"> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
   if (typeof row.name !== "string" || !row.name.trim()) return null;
@@ -995,7 +1024,18 @@ function readPrinterBody(value: unknown): Omit<PrinterRecord, "id" | "builtin"> 
     firmware: row.firmware === "marlin" ? "marlin" : "klipper",
     kind: row.kind,
     belt: coerceBelt(row.belt, row.bedX),
+    squareCornerVelocity: atLeast(row.squareCornerVelocity, missing.squareCornerVelocity),
+    minimumCruiseRatio: Math.min(0.95, atLeast(row.minimumCruiseRatio, missing.minimumCruiseRatio)),
+    extruderCornerVelocity: atLeast(row.extruderCornerVelocity, missing.extruderCornerVelocity),
+    maxVelocity: atLeast(row.maxVelocity, missing.maxVelocity),
+    maxZVelocity: atLeast(row.maxZVelocity, missing.maxZVelocity),
+    maxZAccel: atLeast(row.maxZAccel, missing.maxZAccel),
   };
+}
+
+/** A stored limit that is a number from zero up, else `fallback`. Zero is a real value: no cap. */
+function atLeast(value: unknown, fallback: number): number {
+  return finite(value) && value >= 0 ? value : fallback;
 }
 
 /** Version 2 printers have no belt. Version 3 adds a cartesian kind and a default belt block. */

@@ -26,6 +26,13 @@ export interface ProfileSnap {
   filamentDiameter?: number;
   nozzleTemp?: number;
   bedTemp?: number;
+  /** Absent on snaps from before the Klipper limits. */
+  squareCornerVelocity?: number;
+  minimumCruiseRatio?: number;
+  extruderCornerVelocity?: number;
+  maxVelocity?: number;
+  maxZVelocity?: number;
+  maxZAccel?: number;
 }
 
 export interface MachineSnap {
