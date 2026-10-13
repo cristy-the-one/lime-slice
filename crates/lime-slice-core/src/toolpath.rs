@@ -413,8 +413,24 @@ pub(crate) fn plan_region_split(
             continue;
         }
         let kind = infill_kind(strategy, shell);
-        let fill = solid_fill(area, line_width, std::f64::consts::FRAC_PI_4, None);
-        for pts in clip_infill(fill, area) {
+        // The top surface keeps its diagonal lines; the bottom skin runs as the
+        // interior's solid rows do.
+        let fill = if shell == ShellBand::Bottom {
+            island_loops(area)
+                .iter()
+                .flat_map(|island| {
+                    let angle = solid_row_angle(island, line_width, features.layer_index);
+                    let (pitch, through) = fit_bounds(island, angle, line_width);
+                    clip_infill(solid_fill(island, pitch, angle, through), island)
+                })
+                .collect()
+        } else {
+            clip_infill(
+                solid_fill(area, line_width, std::f64::consts::FRAC_PI_4, None),
+                area,
+            )
+        };
+        for pts in fill {
             if pts.len() >= 2 {
                 *seam_hint = *pts.last().unwrap();
                 let mut path = extrusion(kind, strategy, pts, line_width);
@@ -7138,5 +7154,34 @@ mod solid_row_tests {
         let length: f64 = paths.iter().map(|p| polyline_len(p)).sum();
         let share = length * lw / (side * side);
         assert!((0.99..1.03).contains(&share), "covers {share:.3} of the square");
+    }
+
+    #[test]
+    fn a_bottom_skin_runs_its_rows_along_the_island_and_the_next_layer_across() {
+        let region = rectangle(30.0, 10.0);
+        let strategy = pure(StrategyId::Speed);
+        let skin_rows = |layer_index: usize| -> Vec<[[f64; 2]; 2]> {
+            let features = PathFeatures {
+                z: 0.1 + 0.2 * layer_index as f64,
+                layer_index,
+                skin: std::sync::Arc::new(Skin {
+                    bottom: vec![vec![[-5.0, -5.0], [35.0, -5.0], [35.0, 15.0], [-5.0, 15.0]]],
+                    top: Vec::new(),
+                }),
+                ..PathFeatures::default()
+            };
+            let mut hint = [0.0, 0.0];
+            plan_region(&region, &strategy, 0.45, &mut hint, &features)
+                .iter()
+                .filter(|p| p.kind == PathKind::Solid)
+                .flat_map(|p| p.points.windows(2).map(|w| [w[0], w[1]]))
+                .collect()
+        };
+        let along_x = skin_rows(0);
+        assert!(along_x.iter().any(|s| (s[0][0] - s[1][0]).abs() > 20.0));
+        assert!(along_x.iter().all(|s| (s[0][1] - s[1][1]).abs() < 1.0));
+        let along_y = skin_rows(1);
+        assert!(along_y.iter().any(|s| (s[0][1] - s[1][1]).abs() > 6.0));
+        assert!(along_y.iter().all(|s| (s[0][0] - s[1][0]).abs() < 1.0));
     }
 }
