@@ -1785,10 +1785,13 @@ fn build_infill(
     features: &PathFeatures,
 ) -> Vec<Vec<[f64; 2]>> {
     if solid_infill(strategy) {
-        // Rows turn a quarter each layer, so no layer's lines cross.
-        let quarters = if features.layer_index % 2 == 0 { 1.0 } else { 3.0 };
-        let angle = std::f64::consts::FRAC_PI_4 * quarters;
-        return solid_rows(loops, line_width, angle);
+        return island_loops(loops)
+            .iter()
+            .flat_map(|island| {
+                let angle = solid_row_angle(island, line_width, features.layer_index);
+                solid_rows(island, line_width, angle)
+            })
+            .collect();
     }
     let sample = crate::inner_prof::Sample::start();
     let mut density = strategy.infill_density;
@@ -2027,6 +2030,56 @@ fn lightning(loops: &[Loop], spacing: f64) -> Vec<Vec<[f64; 2]>> {
     chained
 }
 
+/// The direction rows run in a solid island on a layer. Every row ends in a
+/// turn, and Klipper takes a turn at the speed its junction deviation allows,
+/// about 5 mm/s for a corner, so the fewest rows is the fastest fill. The
+/// island is tried along the X axis, at 45 degrees, and along its longest
+/// extent, and takes the pair of directions (a layer and the next, a quarter
+/// turn apart) with the fewest rows: another direction must beat an axis by
+/// a twentieth to be used. Layers alternate between the two, so no layer's
+/// lines run along the last one's.
+fn solid_row_angle(island: &[Loop], spacing: f64, layer_index: usize) -> f64 {
+    use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
+    let rows = |angle: f64| -> usize {
+        [angle, angle + FRAC_PI_2]
+            .into_iter()
+            .map(|a| {
+                horizontal_chords(&rotate_loops(island, -a), spacing, None)
+                    .iter()
+                    .map(|(_, spans)| spans.len())
+                    .sum::<usize>()
+            })
+            .sum()
+    };
+    let (mut angle, mut fewest) = (0.0, rows(0.0));
+    for candidate in [FRAC_PI_4, long_axis(island)] {
+        let count = rows(candidate);
+        if (count as f64) < fewest as f64 * 0.95 {
+            (angle, fewest) = (candidate, count);
+        }
+    }
+    if layer_index % 2 == 0 {
+        angle
+    } else {
+        angle + FRAC_PI_2
+    }
+}
+
+/// The direction of the island's longest extent: the turn of its bounding
+/// box that is narrowest across, in steps of three degrees.
+fn long_axis(island: &[Loop]) -> f64 {
+    let mut best = (f64::MAX, 0.0);
+    for k in 0..60 {
+        let angle = std::f64::consts::PI * k as f64 / 60.0;
+        if let Some((lo, hi)) = loop_bounds(&rotate_loops(island, -angle)) {
+            if hi[1] - lo[1] < best.0 - 1e-9 {
+                best = (hi[1] - lo[1], angle);
+            }
+        }
+    }
+    best.1
+}
+
 /// Rows shorter than this end before the head reaches its feed, and each
 /// turn costs about as much as the row.
 const SOLID_ROW_MM: f64 = 10.0;
@@ -2054,7 +2107,8 @@ fn solid_rows(loops: &[Loop], spacing: f64, base: f64) -> Vec<Vec<[f64; 2]>> {
             continue;
         }
         if short == 0.0 {
-            paths.extend(clip_infill(solid_fill(&rest, spacing, angle, None), &rest));
+            let (pitch, through) = fit_bounds(&rest, angle, spacing);
+            paths.extend(clip_infill(solid_fill(&rest, pitch, angle, through), &rest));
             return paths;
         }
         let half = spacing * 0.5;
@@ -2086,9 +2140,24 @@ fn solid_rows(loops: &[Loop], spacing: f64, base: f64) -> Vec<Vec<[f64; 2]>> {
         }
     }
     if !rest.is_empty() {
-        paths.extend(clip_infill(solid_fill(&rest, spacing, base, None), &rest));
+        let (pitch, through) = fit_bounds(&rest, base, spacing);
+        paths.extend(clip_infill(solid_fill(&rest, pitch, base, through), &rest));
     }
     paths
+}
+
+/// Row pitch and grid for rows at `angle` over `loops`: a whole number of rows
+/// laid edge to edge across the region's extent, so the far edge is not left
+/// bare by the part of a row that did not fit. The pitch stays within a half row
+/// of `spacing` over the rows' count.
+fn fit_bounds(loops: &[Loop], angle: f64, spacing: f64) -> (f64, Option<[f64; 2]>) {
+    let Some((lo, hi)) = loop_bounds(&rotate_loops(loops, -angle)) else {
+        return (spacing, None);
+    };
+    let height = hi[1] - lo[1];
+    let rows = (height / spacing).round().max(1.0);
+    let pitch = height / rows;
+    (pitch, Some(rot([lo[0], lo[1] + pitch * 0.5], angle)))
 }
 
 /// A solid island nowhere farther than this many beads from its edge is a
@@ -7010,5 +7079,64 @@ mod density_tests {
                 );
             }
         }
+    }
+}
+#[cfg(test)]
+mod solid_row_tests {
+    use super::*;
+    use crate::strategy::{pure, StrategyId};
+    use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
+
+    fn rectangle(w: f64, h: f64) -> Vec<Loop> {
+        vec![vec![[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]]]
+    }
+
+    #[test]
+    fn an_axis_aligned_island_alternates_between_the_axes() {
+        // The two directions cost the same rows whichever layer has which, so
+        // even layers take the X axis.
+        for island in [rectangle(30.0, 10.0), rectangle(10.0, 30.0)] {
+            assert_eq!(solid_row_angle(&island, 0.45, 0), 0.0);
+            assert_eq!(solid_row_angle(&island, 0.45, 1), FRAC_PI_2);
+        }
+    }
+
+    #[test]
+    fn a_diagonal_island_keeps_the_diagonal() {
+        let diagonal: Vec<Loop> = rectangle(30.0, 10.0)
+            .iter()
+            .map(|l| l.iter().map(|&p| rot(p, FRAC_PI_4)).collect())
+            .collect();
+        assert_eq!(solid_row_angle(&diagonal, 0.45, 0), FRAC_PI_4);
+        assert_eq!(solid_row_angle(&diagonal, 0.45, 1), FRAC_PI_4 + FRAC_PI_2);
+    }
+
+    #[test]
+    fn a_solid_square_has_no_bare_edge_and_the_plastic_of_its_area() {
+        let (lw, side) = (0.45, 18.2);
+        let mut strategy = pure(StrategyId::Toughness);
+        strategy.infill_density = 1.0;
+        let features = PathFeatures {
+            z: 0.1,
+            layer_index: 0,
+            ..PathFeatures::default()
+        };
+        let paths = build_infill(&rectangle(side, side), &strategy, lw, &features);
+        // Rows run along X, 40 of them at a pitch of 18.2 / 40 = 0.455.
+        let rows: Vec<f64> = paths
+            .iter()
+            .flat_map(|p| p.windows(2))
+            .filter(|w| (w[0][1] - w[1][1]).abs() < 1e-9 && (w[0][0] - w[1][0]).abs() > 1.0)
+            .map(|w| w[0][1])
+            .collect();
+        assert_eq!(rows.len(), 40);
+        let (lowest, highest) = rows
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(lo, hi), &y| (lo.min(y), hi.max(y)));
+        assert!((lowest - 0.2275).abs() < 1e-9, "first row at {lowest}");
+        assert!((highest - 17.9725).abs() < 1e-9, "last row at {highest}");
+        let length: f64 = paths.iter().map(|p| polyline_len(p)).sum();
+        let share = length * lw / (side * side);
+        assert!((0.99..1.03).contains(&share), "covers {share:.3} of the square");
     }
 }
