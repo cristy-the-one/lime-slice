@@ -77,6 +77,16 @@ export interface PlateFileObject {
   seamPaint?: SeamDisk[];
   /** Omitted when empty. Not sent on the slice request. */
   settings?: PlateObjectSettings;
+  /**
+   * Optional STEP B-rep, the same shape as `mesh`. Omitted when Model has no session.
+   * An older app ignores the key, slices the mesh, and drops it on the next save.
+   */
+  brep?: {
+    name: string;
+    bytesBase64: string;
+    byteLength: number;
+    hash: string;
+  };
 }
 
 /** One solid on the plate. Geometry stays in the session, not in the undo JSON. */
@@ -97,6 +107,8 @@ export interface PlateObject {
   /** Seam disks in this object's source frame. */
   seamPaint: readonly SeamDisk[];
   settings: PlateObjectSettings;
+  /** STEP bytes for Model mode. Absent when this object was never opened there. */
+  brep?: ArrayBuffer;
 }
 
 export interface PlateState {
@@ -118,6 +130,7 @@ export interface PlateSnapObject {
   supportPaint: PaintDisk[];
   seamPaint: SeamDisk[];
   settings: PlateObjectSettings;
+  brep?: ArrayBuffer;
 }
 
 export interface PlateSnap {
@@ -176,11 +189,11 @@ export function settingsEmpty(settings: PlateObjectSettings | undefined): boolea
   return !settings || Object.keys(settings).length === 0;
 }
 
-/** Version 2 is a plate with more than one object, or one object that has its own settings or support paint. */
-export function plateFileIsVersion2(objects: { settings?: PlateObjectSettings; supportPaint?: readonly PaintDisk[]; seamPaint?: readonly SeamDisk[] }[]): boolean {
+/** Version 2 is a plate with more than one object, or one object that has its own settings, paint, or a B-rep. */
+export function plateFileIsVersion2(objects: { settings?: PlateObjectSettings; supportPaint?: readonly PaintDisk[]; seamPaint?: readonly SeamDisk[]; brep?: unknown }[]): boolean {
   if (objects.length !== 1) return objects.length > 1;
   const one = objects[0];
-  return !settingsEmpty(one?.settings) || (one?.supportPaint?.length ?? 0) > 0 || (one?.seamPaint?.length ?? 0) > 0;
+  return !settingsEmpty(one?.settings) || (one?.supportPaint?.length ?? 0) > 0 || (one?.seamPaint?.length ?? 0) > 0 || one?.brep != null;
 }
 
 /** One object of the slice request's `objects`, less its mesh bytes, which go on when it is sent. */
@@ -324,7 +337,7 @@ export function oneObjectPlate(input: {
   return { objects: [obj], selectedId: obj.id };
 }
 
-/** A second object with the selected object's mesh, pose, paint, and overrides. Nothing is copied when nothing is selected. */
+/** A second object with the selected object's mesh, pose, paint, overrides, and B-rep. Nothing is copied when nothing is selected. */
 export function addedCopy(plate: PlateState): PlateState | null {
   const source = plate.objects.find((obj) => obj.id === plate.selectedId);
   if (!source) return null;
@@ -338,6 +351,7 @@ export function addedCopy(plate: PlateState): PlateState | null {
     supportPaint: source.supportPaint.map((disk) => structuredClone(disk)),
     seamPaint: source.seamPaint.map((disk) => structuredClone(disk)),
     settings: { ...source.settings },
+    brep: source.brep ? source.brep.slice(0) : undefined,
   };
   hold(copy);
   return { objects: [...plate.objects, copy], selectedId: copy.id };
@@ -459,6 +473,7 @@ export function snapPlate(plate: PlateState): PlateSnap {
       supportPaint: obj.supportPaint.map((disk) => structuredClone(disk)),
       seamPaint: obj.seamPaint.map((disk) => structuredClone(disk)),
       settings: { ...obj.settings },
+      brep: obj.brep ? obj.brep.slice(0) : undefined,
     })),
   };
 }
@@ -484,13 +499,14 @@ export function revivePlate(snap: PlateSnap): PlateState | null {
       supportPaint: (row.supportPaint ?? []).map((disk) => structuredClone(disk)),
       seamPaint: (row.seamPaint ?? []).map((disk) => structuredClone(disk)),
       settings: { ...row.settings },
+      brep: row.brep ? row.brep.slice(0) : undefined,
     });
   }
   const selectedId = objects.some((obj) => obj.id === snap.selectedId) ? snap.selectedId : objects[0]?.id ?? null;
   return { objects, selectedId };
 }
 
-export function assemblePlate(rows: Array<PlateFileObject & { bytes: ArrayBuffer; sourcePos: Float32Array }>): PlateState {
+export function assemblePlate(rows: Array<PlateFileObject & { bytes: ArrayBuffer; sourcePos: Float32Array; brepBytes?: ArrayBuffer }>): PlateState {
   resetHeldGeometry();
   const objects: PlateObject[] = rows.map((row) => {
     const obj: PlateObject = {
@@ -508,6 +524,7 @@ export function assemblePlate(rows: Array<PlateFileObject & { bytes: ArrayBuffer
       supportPaint: (row.supportPaint ?? []).map((disk) => structuredClone(disk)),
       seamPaint: (row.seamPaint ?? []).map((disk) => structuredClone(disk)),
       settings: { ...(row.settings ?? {}) },
+      brep: row.brepBytes,
     };
     hold(obj);
     return obj;

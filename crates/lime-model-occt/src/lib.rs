@@ -144,6 +144,19 @@ pub fn scale(id: i32, factor: f64, chord_mm: f64) -> String {
     }
 }
 
+/// Write the open solid as AP214 IS STEP. The file is manifold solid B-rep.
+pub fn write_step(id: i32, path: &Path) -> String {
+    #[cfg(lime_occt)]
+    {
+        native::write_step(id, path)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = (id, path);
+        MISSING.into()
+    }
+}
+
 /// Restore the solid from before the last edit.
 pub fn undo(id: i32, chord_mm: f64) -> String {
     #[cfg(lime_occt)]
@@ -291,6 +304,17 @@ pub extern "C" fn lime_occt_scale(id: i32, factor: f64, chord_mm: f64) -> *mut c
     export_json(scale(id, factor, chord_mm))
 }
 
+/// # Safety
+/// `path` is null or a valid null-terminated string. The returned pointer is freed with `lime_occt_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn lime_occt_write_step(id: i32, path: *const c_char) -> *mut c_char {
+    if path.is_null() {
+        return export_json("{\"error\":\"STEP path is empty\"}".into());
+    }
+    let text = unsafe { CStr::from_ptr(path) }.to_string_lossy();
+    export_json(write_step(id, Path::new(text.as_ref())))
+}
+
 /// The returned pointer is freed with `lime_occt_string_free`.
 #[no_mangle]
 pub extern "C" fn lime_occt_undo(id: i32, chord_mm: f64) -> *mut c_char {
@@ -367,6 +391,7 @@ mod native {
             chord: f64,
         ) -> *mut c_char;
         fn lime_model_occt_scale(id: i32, factor: f64, chord: f64) -> *mut c_char;
+        fn lime_model_occt_write_step(id: i32, path: *const c_char) -> *mut c_char;
         fn lime_model_occt_undo(id: i32, chord: f64) -> *mut c_char;
         fn lime_model_occt_string_free(text: *mut c_char);
     }
@@ -454,6 +479,16 @@ mod native {
 
     pub fn scale(id: i32, factor: f64, chord_mm: f64) -> String {
         take(unsafe { lime_model_occt_scale(id, factor, chord_mm) })
+    }
+
+    pub fn write_step(id: i32, path: &Path) -> String {
+        let Some(text) = path.to_str() else {
+            return "{\"error\":\"STEP path is not UTF-8\"}".into();
+        };
+        let Ok(c) = CString::new(text) else {
+            return "{\"error\":\"STEP path is not a C string\"}".into();
+        };
+        take(unsafe { lime_model_occt_write_step(id, c.as_ptr()) })
     }
 
     pub fn undo(id: i32, chord_mm: f64) -> String {

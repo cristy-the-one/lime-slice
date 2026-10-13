@@ -4,6 +4,7 @@
  * that plate. A plate that is still one object with no per-object settings and no
  * support paint is written back as version 1 and omits `objects`. Support paint is
  * an optional field on each version 2 object, so a version 2 file without it still opens.
+ * `brep` is that same kind of field: base64 STEP, present only after Model has a session.
  * A later version adds a function to `migrations` at index `n` that rewrites version `n`
  * into version `n + 1`. `applyMigrations` is that hook.
  */
@@ -326,6 +327,13 @@ function readPlateObject(value: unknown): PlateFileObject | string {
   if (settings) object.settings = settings;
   if (paint.length > 0) object.supportPaint = paint;
   if (seam.length > 0) object.seamPaint = seam;
+  if (row.brep !== undefined && row.brep !== null) {
+    const brep = readMesh(row.brep);
+    if (typeof brep === "string") {
+      return brep.includes("missing") ? "This project is missing its solid." : "The solid in this project is damaged.";
+    }
+    object.brep = brep;
+  }
   return object;
 }
 

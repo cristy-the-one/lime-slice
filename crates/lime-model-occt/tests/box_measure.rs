@@ -334,6 +334,46 @@ fn blends_hole_and_scale() {
     let restored = parse(&lime_model_occt::undo(id, 0.1));
     near(restored["volumeMm3"].as_f64().expect("undo scale"), 1000.0);
     assert_shared("TKFillet");
+    write_step_round_trip();
+}
+
+fn write_step_round_trip() {
+    let opened = parse(&lime_model_occt::open_box(10.0, 10.0, 10.0));
+    let id = opened["id"].as_i64().expect("id") as i32;
+    let path = std::env::temp_dir().join(format!("lime-model-write-{}.step", std::process::id()));
+    let wrote = parse(&lime_model_occt::write_step(id, &path));
+    assert!(wrote.get("error").is_none(), "{wrote}");
+    let text = std::fs::read_to_string(&path).expect("step file");
+    assert!(
+        text.contains("AUTOMOTIVE_DESIGN"),
+        "schema is not AP214: {text}"
+    );
+    assert!(
+        text.contains("MANIFOLD_SOLID_BREP"),
+        "not a manifold solid: {text}"
+    );
+    let reread = parse(&lime_model_occt::open_step(&path, 0.1));
+    let _ = std::fs::remove_file(&path);
+    assert!(reread.get("error").is_none(), "{reread}");
+    near(reread["volumeMm3"].as_f64().expect("reread"), 1000.0);
+
+    let step_id = reread["id"].as_i64().expect("id") as i32;
+    let fused = parse(&lime_model_occt::boolean(
+        step_id,
+        "fuse",
+        "box",
+        tool([10.0, 0.0, 0.0], [10.0, 10.0, 10.0], 0.0, 0.0),
+        0.1,
+    ));
+    assert!(fused.get("error").is_none(), "{fused}");
+    let edited =
+        std::env::temp_dir().join(format!("lime-model-edited-{}.step", std::process::id()));
+    let wrote_edit = parse(&lime_model_occt::write_step(step_id, &edited));
+    assert!(wrote_edit.get("error").is_none(), "{wrote_edit}");
+    let again = parse(&lime_model_occt::open_step(&edited, 0.1));
+    let _ = std::fs::remove_file(&edited);
+    assert!(again.get("error").is_none(), "{again}");
+    near(again["volumeMm3"].as_f64().expect("edited"), 2000.0);
 }
 
 fn bridge_exports(measured: bool) {
@@ -372,6 +412,13 @@ fn bridge_exports(measured: bool) {
         let grown = parse(&lime_model_load::scale(id, 2.0, 0.1).expect("dlopen scale"));
         assert!(grown.get("error").is_none(), "{grown}");
         near(grown["volumeMm3"].as_f64().expect("scale"), 56000.0);
+        let path =
+            std::env::temp_dir().join(format!("lime-model-bridge-{}.step", std::process::id()));
+        let wrote = parse(&lime_model_load::write_step(id, &path).expect("dlopen write"));
+        assert!(wrote.get("error").is_none(), "{wrote}");
+        let text = std::fs::read_to_string(&path).expect("bridge step");
+        let _ = std::fs::remove_file(&path);
+        assert!(text.contains("MANIFOLD_SOLID_BREP"), "{text}");
     }
 }
 

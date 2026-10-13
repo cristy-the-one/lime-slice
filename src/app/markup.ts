@@ -139,6 +139,7 @@ export function mountMarkup(root: HTMLElement) {
               <button class="btn" id="modelHole" type="button" title="Cylinder from x, y, z straight down">Hole</button>
               <label class="dim">scale <input id="modelFactor" type="number" step="0.1" value="2" aria-label="Uniform scale"></label>
               <button class="btn" id="modelScaleApply" type="button" title="Scales the solid and sets placement scale to 100%">Scale</button>
+              <button class="btn" id="modelStep" type="button" title="Write this solid as AP214 STEP">STEP</button>
               <button class="btn" id="modelUndo" type="button" disabled>Undo</button>
             </div>
           </div>

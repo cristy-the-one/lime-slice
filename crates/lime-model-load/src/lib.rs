@@ -30,6 +30,7 @@ type Fillet = unsafe extern "C" fn(i32, i32, f64, f64) -> *mut c_char;
 type Chamfer = unsafe extern "C" fn(i32, i32, f64, f64) -> *mut c_char;
 type Hole = unsafe extern "C" fn(i32, f64, f64, f64, f64, f64, f64) -> *mut c_char;
 type Scale = unsafe extern "C" fn(i32, f64, f64) -> *mut c_char;
+type WriteStep = unsafe extern "C" fn(i32, *const c_char) -> *mut c_char;
 type Undo = unsafe extern "C" fn(i32, f64) -> *mut c_char;
 type FreeStr = unsafe extern "C" fn(*mut c_char);
 
@@ -44,6 +45,7 @@ struct Bridge {
     chamfer: Chamfer,
     hole: Hole,
     scale: Scale,
+    write_step: WriteStep,
     undo: Undo,
     free: FreeStr,
 }
@@ -187,6 +189,15 @@ pub fn hole(
     take(ptr, api.free)
 }
 
+/// Write the open solid as AP214 IS STEP at `path`.
+pub fn write_step(id: i32, path: &Path) -> Result<String, String> {
+    let api = load()?;
+    let text = path.to_string_lossy();
+    let c = CString::new(text.as_ref()).map_err(|_| "STEP path is not a C string".to_string())?;
+    let ptr = unsafe { (api.write_step)(id, c.as_ptr()) };
+    take(ptr, api.free)
+}
+
 /// Uniform scale about the solid's centre. `factor` must be positive and not 1.
 pub fn scale(id: i32, factor: f64, chord_mm: f64) -> Result<String, String> {
     let api = load()?;
@@ -211,6 +222,7 @@ struct Api {
     chamfer: Chamfer,
     hole: Hole,
     scale: Scale,
+    write_step: WriteStep,
     undo: Undo,
     free: FreeStr,
 }
@@ -267,6 +279,9 @@ fn load() -> Result<Api, String> {
                 scale: *lib
                     .get::<Scale>(b"lime_occt_scale\0")
                     .map_err(|err| format!("bridge is missing lime_occt_scale: {err}"))?,
+                write_step: *lib
+                    .get::<WriteStep>(b"lime_occt_write_step\0")
+                    .map_err(|err| format!("bridge is missing lime_occt_write_step: {err}"))?,
                 undo: *lib
                     .get::<Undo>(b"lime_occt_undo\0")
                     .map_err(|err| format!("bridge is missing lime_occt_undo: {err}"))?,
@@ -289,6 +304,7 @@ fn load() -> Result<Api, String> {
         chamfer: bridge.chamfer,
         hole: bridge.hole,
         scale: bridge.scale,
+        write_step: bridge.write_step,
         undo: bridge.undo,
         free: bridge.free,
     })

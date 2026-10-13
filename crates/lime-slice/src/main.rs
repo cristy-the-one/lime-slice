@@ -1302,6 +1302,8 @@ fn handle(mut request: tiny_http::Request, token: Option<&str>) {
             model_reply(model_hole_request(&body))
         } else if method == "POST" && path.starts_with("/api/model/scale") {
             model_reply(model_scale_request(&body))
+        } else if method == "POST" && path.starts_with("/api/model/export") {
+            model_reply(model_export_request(&body))
         } else if method == "POST" && path.starts_with("/api/model/undo") {
             model_reply(model_undo_request(&body))
         } else if method == "POST" && path.starts_with("/api/model") {
@@ -1530,6 +1532,46 @@ fn model_scale_request(body: &str) -> Result<String, String> {
         json_f64(&value, "factor"),
         model_chord(&value),
     )
+}
+
+fn model_export_request(body: &str) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|err| err.to_string())?;
+    let id = json_i32(&value, "id")?;
+    let path = std::env::temp_dir().join(format!(
+        "lime-model-export-{}-{}.step",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0)
+    ));
+    let wrote = lime_model_load::write_step(id, &path)?;
+    let failed = serde_json::from_str::<serde_json::Value>(&wrote)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(|err| err.as_str())
+                .map(|text| !text.is_empty())
+        })
+        .unwrap_or(false);
+    if failed {
+        let _ = std::fs::remove_file(&path);
+        return Ok(wrote);
+    }
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            let _ = std::fs::remove_file(&path);
+            return Err(err.to_string());
+        }
+    };
+    let _ = std::fs::remove_file(&path);
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!(
+        "{{\"bytesBase64\":\"{encoded}\",\"byteLength\":{}}}",
+        bytes.len()
+    ))
 }
 
 fn model_undo_request(body: &str) -> Result<String, String> {

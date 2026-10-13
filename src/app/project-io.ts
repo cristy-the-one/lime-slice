@@ -14,6 +14,7 @@ import { saveProfile } from "../profiles.ts";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel.ts";
 import { pushToast } from "../ui/toasts.ts";
 import { adoptBytes, place, previewRemote } from "./files.ts";
+import { captureOpenSolid } from "./model.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { applyPreset, currentPreset, needsEngine, renderChrome } from "./settings.ts";
 import { session, state } from "./state.ts";
@@ -23,6 +24,7 @@ export async function saveCurrentProject() {
     pushToast("Load a mesh before saving a project.", "info");
     return;
   }
+  await captureOpenSolid();
   syncPlateFromState();
   const project: LimeProject = {
     version: 1,
@@ -153,8 +155,14 @@ function fileObjects(): PlateFileObject[] {
     if (!settingsEmpty(obj.settings)) record.settings = { ...obj.settings };
     if (obj.supportPaint.length > 0) record.supportPaint = obj.supportPaint.map((disk) => structuredClone(disk));
     if (obj.seamPaint.length > 0) record.seamPaint = obj.seamPaint.map((disk) => structuredClone(disk));
+    if (obj.brep) record.brep = meshRecord(stepFileName(obj.fileName), new Uint8Array(obj.brep));
     return record;
   });
+}
+
+function stepFileName(name: string) {
+  const stem = name.replace(/\.(step|stp|stl|3mf)$/i, "");
+  return `${stem || "solid"}.step`;
 }
 
 async function loadPlateObjects(objects: PlateFileObject[]) {
@@ -169,7 +177,13 @@ async function loadPlateObjects(objects: PlateFileObject[]) {
     }
     if (!sourcePos) sourcePos = await previewRemote(row.mesh.name, copy);
     if (!sourcePos) return `Could not read ${row.name}.`;
-    rows.push({ ...row, bytes: copy, sourcePos });
+    let brepBytes: ArrayBuffer | undefined;
+    if (row.brep) {
+      const solid = base64ToBytes(row.brep.bytesBase64);
+      if (!solid) return "The solid in this project is damaged.";
+      brepBytes = solid.buffer.slice(solid.byteOffset, solid.byteOffset + solid.byteLength) as ArrayBuffer;
+    }
+    rows.push({ ...row, bytes: copy, sourcePos, brepBytes });
   }
   return assemblePlate(rows);
 }

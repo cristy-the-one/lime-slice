@@ -253,6 +253,21 @@ eq("a plate saved before support paint opens with none", unpaintedOpened.ok ? un
 paintedWire.objects[0]!.supportPaint = [{ kind: "paint", p: [0, 0, 0], n: [0, 0, 1], r: 1 }];
 eq("damaged paint fails the open", parseProject(JSON.stringify(paintedWire)), { ok: false, message: "The support paint in this project is damaged." });
 
+const brepMesh = { ...project.mesh, name: "bracket.step" };
+const withBrep: LimeProject = {
+  ...project,
+  version: 2,
+  objects: [{ id: "part", name: "bracket.stl", mesh: project.mesh, placement: project.placement, supportEdits: [], brep: brepMesh }],
+};
+const brepWire = JSON.parse(serializeProject(withBrep)) as { version: number; objects: { brep?: { name: string; hash: string } }[] };
+eq("one object with a solid writes version 2 and keeps the brep", [brepWire.version, brepWire.objects[0]?.brep], [2, brepMesh]);
+const brepOpened = parseProject(JSON.stringify(brepWire));
+eq("brep round-trips", brepOpened.ok ? brepOpened.project.objects?.[0]?.brep : null, brepMesh);
+const plainOpened = parseProject(multiText);
+eq("a plate saved before brep opens with none", plainOpened.ok ? plainOpened.project.objects?.map((obj) => obj.brep ?? null) : null, [null, null]);
+brepWire.objects[0]!.brep = { ...brepMesh, hash: "nope" };
+eq("a damaged solid fails the open", parseProject(JSON.stringify(brepWire)), { ok: false, message: "The solid in this project is damaged." });
+
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);

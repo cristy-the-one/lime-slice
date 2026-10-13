@@ -398,6 +398,48 @@ fn model_scale(payload: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn model_export(payload: String) -> Result<String, String> {
+    use base64::Engine;
+    let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+    let id = value
+        .get("id")
+        .and_then(|item| item.as_i64())
+        .ok_or_else(|| "missing id".to_string())? as i32;
+    let path = std::env::temp_dir().join(format!(
+        "lime-model-export-{}-{}.step",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0)
+    ));
+    let wrote = lime_model_load::write_step(id, &path)?;
+    let failed = serde_json::from_str::<serde_json::Value>(&wrote)
+        .ok()
+        .and_then(|parsed| {
+            parsed
+                .get("error")
+                .and_then(|err| err.as_str())
+                .map(|text| !text.is_empty())
+        })
+        .unwrap_or(false);
+    if failed {
+        let _ = std::fs::remove_file(&path);
+        return Ok(wrote);
+    }
+    let bytes = std::fs::read(&path).map_err(|err| {
+        let _ = std::fs::remove_file(&path);
+        err.to_string()
+    })?;
+    let _ = std::fs::remove_file(&path);
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!(
+        "{{\"bytesBase64\":\"{encoded}\",\"byteLength\":{}}}",
+        bytes.len()
+    ))
+}
+
+#[tauri::command]
 fn model_undo(payload: String) -> Result<String, String> {
     let value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
     let id = value
@@ -512,6 +554,7 @@ pub fn run() {
             model_chamfer,
             model_hole,
             model_scale,
+            model_export,
             model_undo,
             prusa_link_http
         ])
