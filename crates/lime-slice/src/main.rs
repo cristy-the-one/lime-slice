@@ -1943,6 +1943,7 @@ fn request_for(
         support_edits: Vec::new(),
         support_paint: Vec::new(),
         seam_paint: Vec::new(),
+        reinforcement: Vec::new(),
         height_ranges: Vec::new(),
         modifier_volumes: Vec::new(),
         include_skeleton: false,

@@ -41,6 +41,9 @@ pub struct ObjectSpec {
     /// Seam disks in this object's mesh frame. Omitted when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub seam_paint: Vec<SeamDiskSpec>,
+    /// Reinforcement regions in this object's mesh frame. Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reinforcement: Vec<serde_json::Value>,
 }
 
 /// Who may set a request key.
@@ -114,6 +117,7 @@ pub(crate) fn object_requests(req: &SliceRequest) -> Result<Vec<SliceRequest>, S
         ("supportEdits", !req.support_edits.is_empty()),
         ("supportPaint", !req.support_paint.is_empty()),
         ("seamPaint", !req.seam_paint.is_empty()),
+        ("reinforcement", !req.reinforcement.is_empty()),
     ] {
         if sent {
             return Err(format!(
@@ -168,6 +172,7 @@ pub(crate) fn object_requests(req: &SliceRequest) -> Result<Vec<SliceRequest>, S
             one.support_edits = spec.support_edits.clone();
             one.support_paint = spec.support_paint.clone();
             one.seam_paint = spec.seam_paint.clone();
+            one.reinforcement = spec.reinforcement.clone();
             if let Some(tol) = spec.step_tolerance_mm {
                 one.step_tolerance_mm = tol;
             }
@@ -637,6 +642,7 @@ pub(crate) fn tweak(
         infill,
         walls,
         speed,
+        infill_floor: None,
     })
 }
 

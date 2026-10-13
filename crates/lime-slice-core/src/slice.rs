@@ -29,7 +29,7 @@ use crate::lightning::{Branches, Lightning};
 use crate::load::load_slice_mesh_tol;
 use crate::mesh::Mesh;
 use crate::meshes::{self, PayloadError};
-use crate::modifiers::{zone_runs, Overrides, Print, Tweak};
+use crate::modifiers::{zone_runs, Footprint, Overrides, Print, Tweak};
 use crate::poly::{
     boolean_diff, boolean_intersect, boolean_union, clip_to_rect, loop_bounds, offset_loops,
     resolve_nonzero, signed_area, simplify_loops, Loop,
@@ -273,6 +273,11 @@ pub struct SliceRequest {
     /// seam paint keeps its cache key and its G-code.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub seam_paint: Vec<crate::slice::wire::SeamDiskSpec>,
+    /// Painted columns and box or cylinder volumes that raise infill.
+    /// Omitted when empty, so a slice without them keeps its cache key and
+    /// its G-code. On an object when `objects` is sent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reinforcement: Vec<serde_json::Value>,
     /// Z spans that print with their own infill, walls, or speed cap.
     /// Omitted when empty, so a slice without them keeps its cache key.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -399,6 +404,10 @@ pub struct SliceSettings {
     /// Seam disks. Empty leaves the picker's seam. In the mesh frame while
     /// `pose` is set, then in the part frame.
     pub seam_paint: Vec<crate::support::paint::SeamDisk>,
+    /// Columns and volumes that raise infill. Empty leaves the strategy.
+    /// In the mesh frame while `pose` is set, then in the part frame, and
+    /// on a belt after the lay-flat.
+    pub reinforcement: Vec<crate::reinforcement::Region>,
     /// Height ranges and modifier volumes. Volumes are in bed coordinates
     /// until the plate moves them into each part frame.
     pub overrides: Overrides,
@@ -468,6 +477,7 @@ impl Default for SliceSettings {
             support_edits: Vec::new(),
             support_paint: Vec::new(),
             seam_paint: Vec::new(),
+            reinforcement: Vec::new(),
             overrides: Overrides::default(),
             object_tweak: Tweak::default(),
             include_skeleton: false,
@@ -601,11 +611,13 @@ impl SliceSettings {
             support_edits: Vec::new(),
             support_paint: Vec::new(),
             seam_paint: Vec::new(),
+            reinforcement: Vec::new(),
             overrides: Overrides::default(),
             object_tweak: Tweak {
                 infill: req.infill,
                 walls: req.walls,
                 speed: req.speed,
+                infill_floor: None,
             },
             include_skeleton: req.include_skeleton,
             preview_base: req.preview_base.clone(),
@@ -1189,6 +1201,7 @@ fn load_object(
         support_edits: wire::parse_support_edits(&req.support_edits)?,
         support_paint: wire::parse_support_paint(&req.support_paint)?,
         seam_paint: wire::parse_seam_paint(&req.seam_paint)?,
+        reinforcement: crate::reinforcement::parse(&req.reinforcement)?,
         overrides: overrides.clone(),
         ..SliceSettings::from_request(req)
     };
@@ -1489,6 +1502,9 @@ fn prepare_belt(
         }
         for disk in &mut object.settings.seam_paint {
             *disk = disk.posed(&rotation, pivot, translation);
+        }
+        for region in &mut object.settings.reinforcement {
+            region.pose(&rotation, pivot, translation);
         }
         object.mesh = Cow::Owned(mesh);
         object.offset = None;
@@ -1806,6 +1822,9 @@ fn slice_plate(
                     for disk in &mut settings.seam_paint {
                         *disk = disk.posed(&frame.rotation, frame.pivot, frame.translation);
                     }
+                    for region in &mut settings.reinforcement {
+                        region.pose(&frame.rotation, frame.pivot, frame.translation);
+                    }
                     (Cow::Owned(frame.apply(s.mesh)), Some(offset))
                 }
                 None => (Cow::Borrowed(s.mesh), None),
@@ -1850,6 +1869,13 @@ fn slice_plate(
         Some(spec) => Some(prepare_belt(&mut objects, &mut settings, spec)?),
         None => None,
     };
+    // Lengths are measured on the mesh the planner cuts: after the pose and,
+    // on a belt, after the lay-flat. An empty list does not walk the mesh.
+    for object in &mut objects {
+        if !object.settings.reinforcement.is_empty() {
+            crate::reinforcement::resolve(&mut object.settings.reinforcement, &object.mesh);
+        }
+    }
     let bounds: Vec<([f64; 3], [f64; 3])> = if let Some(job) = &belt_job {
         job.lab_bounds.clone()
     } else {
@@ -4305,7 +4331,13 @@ fn part_paths(
         .enumerate()
         .map(|(i, band)| {
             let ironing = settings.ironing.filter(|_| cut.roofs[i] == 0.0);
-            let inputs = layer_inputs(&settings.overrides, band.z, &contours[i], ironing);
+            let inputs = layer_inputs(
+                &settings.overrides,
+                band.z,
+                &contours[i],
+                ironing,
+                &settings.reinforcement,
+            );
             if let Some(kept) = kept.filter(|k| k.inputs.get(i) == Some(&inputs)) {
                 watch.tick();
                 return (inputs, Arc::clone(&kept.layers[i]), true);
@@ -4379,10 +4411,33 @@ fn layer_inputs(
     z: f64,
     contours: &[Loop],
     ironing: Option<Ironing>,
+    reinforcement: &[crate::reinforcement::Region],
 ) -> [u8; 32] {
     let range = overrides.range_at(z);
     let prints = layer_footprints(overrides, z, contours);
-    Sha256::digest(format!("{range:?}|{prints:?}|{ironing:?}")).into()
+    // The text with an empty reinforcement list is the one a slice without
+    // the field hashed. A layer the columns miss keeps that text, so it can
+    // be reused. A layer they meet appends the sections.
+    let mut text = format!("{range:?}|{prints:?}|{ironing:?}");
+    if !reinforcement.is_empty() {
+        if let Some((lo, hi)) = loop_bounds(contours) {
+            let stamp = reinforcement
+                .iter()
+                .filter_map(|region| {
+                    let sections = region.sections(z);
+                    let meets = loop_bounds(&sections).is_some_and(|(a, b)| {
+                        a[0] <= hi[0] && b[0] >= lo[0] && a[1] <= hi[1] && b[1] >= lo[1]
+                    });
+                    meets.then(|| format!("{}:{:.6}:{sections:?}", region.index, region.density))
+                })
+                .collect::<Vec<_>>();
+            if !stamp.is_empty() {
+                text.push('|');
+                text.push_str(&stamp.join(";"));
+            }
+        }
+    }
+    Sha256::digest(text).into()
 }
 
 /// Ironing over layer `i`'s top surface: what the layer above leaves open,
@@ -5421,6 +5476,117 @@ fn layer_footprints(overrides: &Overrides, z: f64, contours: &[Loop]) -> Vec<Pri
         .collect()
 }
 
+/// Reinforcement sections at `z`, split by the modifier footprints so a
+/// modifier keeps its walls and speed and the region only raises infill.
+/// A piece whose floor does not exceed the density that piece would print
+/// is left out, so a region at the strategy density adds no footprint.
+fn reinforcement_prints(
+    regions: &[crate::reinforcement::Region],
+    modifiers: &[Print],
+    contours: &[Loop],
+    blend: &BlendMode,
+    z: f64,
+    settings: &SliceSettings,
+    range: Option<Tweak>,
+) -> Vec<Print> {
+    let Some((lo, hi)) = loop_bounds(contours) else {
+        return Vec::new();
+    };
+    let touches = |loops: &[Loop]| {
+        loop_bounds(loops)
+            .is_some_and(|(a, b)| a[0] <= hi[0] && b[0] >= lo[0] && a[1] <= hi[1] && b[1] >= lo[1])
+    };
+    let raw: Vec<Vec<Loop>> = regions.iter().map(|r| r.sections(z)).collect();
+    let mut out = Vec::new();
+    for (i, region) in regions.iter().enumerate() {
+        let mut remainder = raw[i].clone();
+        if !touches(&remainder) {
+            continue;
+        }
+        // Later regions win the overlap even when their floor does not rise
+        // above the layer's strategy and emits no footprint of its own.
+        for later in &raw[i + 1..] {
+            if !later.is_empty() && !remainder.is_empty() {
+                remainder = solid_loops(boolean_diff(&remainder, later));
+            }
+        }
+        if !touches(&remainder) {
+            continue;
+        }
+        let floor = Tweak {
+            infill_floor: Some(region.density),
+            ..Tweak::default()
+        };
+        // The later modifier wins the overlap, the same as the volume list.
+        for modifier in modifiers.iter().rev() {
+            let clip = modifier.outline.polygons();
+            let hit = solid_loops(boolean_intersect(&remainder, &clip));
+            remainder = solid_loops(boolean_diff(&remainder, &clip));
+            if !touches(&hit) {
+                continue;
+            }
+            let tweak = modifier.tweak.under(Some(floor)).unwrap_or(floor);
+            if floor_rises(blend, z, settings, range, tweak, region.density) {
+                out.push(Print {
+                    outline: Footprint::Polygon(hit),
+                    tweak,
+                    volume: region.index,
+                });
+            }
+        }
+        if touches(&remainder) && floor_rises(blend, z, settings, range, floor, region.density) {
+            out.push(Print {
+                outline: Footprint::Polygon(remainder),
+                tweak: floor,
+                volume: region.index,
+            });
+        }
+    }
+    out
+}
+
+fn solid_loops(loops: Vec<Loop>) -> Vec<Loop> {
+    let loops: Vec<Loop> = loops
+        .into_iter()
+        .filter(|loop_| loop_.len() >= 3 && signed_area(loop_).abs() > 0.05)
+        .collect();
+    if loops.iter().map(|loop_| signed_area(loop_)).sum::<f64>() > 0.05 {
+        loops
+    } else {
+        Vec::new()
+    }
+}
+
+/// Whether `floor` prints denser than `tweak` would without it. A region
+/// blend emits the piece when either side rises.
+fn floor_rises(
+    blend: &BlendMode,
+    z: f64,
+    settings: &SliceSettings,
+    range: Option<Tweak>,
+    tweak: Tweak,
+    floor: f64,
+) -> bool {
+    let stacked = range
+        .unwrap_or_default()
+        .under(Some(tweak))
+        .unwrap_or(tweak);
+    let above = |strategy: ResolvedStrategy| {
+        let cleared = Tweak {
+            infill_floor: None,
+            ..stacked
+        };
+        floor > cleared.apply(strategy).infill_density
+    };
+    match blend {
+        BlendMode::ByRegion { .. } => {
+            above(resolve(pure(StrategyId::Toughness), settings))
+                || above(resolve(pure(StrategyId::Speed), settings))
+        }
+        other => above(layer_strategy(other, z, settings)),
+    }
+}
+
 /// The most walls a zone with `tweak` prints at `z`.
 fn zone_walls(blend: &BlendMode, z: f64, settings: &SliceSettings, tweak: &Tweak) -> u32 {
     match blend {
@@ -5674,7 +5840,21 @@ fn object_layer(
         ..settings.object_tweak
     };
     let range = object.under(settings.overrides.range_at(z));
-    let prints = layer_footprints(&settings.overrides, z, contours);
+    let mut prints = layer_footprints(&settings.overrides, z, contours);
+    // An empty list does not build a footprint and does not enter any zone
+    // the modifiers would not have entered on their own.
+    if !settings.reinforcement.is_empty() {
+        let modifiers = prints.clone();
+        prints.extend(reinforcement_prints(
+            &settings.reinforcement,
+            &modifiers,
+            contours,
+            blend,
+            z,
+            settings,
+            range,
+        ));
+    }
     let (paths, wall_ms, infill_ms, mut note, shown) = if prints.is_empty() {
         plan(contours, range.as_ref())
     } else {
@@ -5694,7 +5874,7 @@ fn object_layer(
                 .under(Some(print.tweak))
                 .unwrap_or(print.tweak);
             let walls = zone_walls(blend, z, settings, &stacked);
-            let reach = offset_loops(&[print.outline.polygon()], (walls + 2) as f64 * line_width);
+            let reach = offset_loops(&print.outline.polygons(), (walls + 2) as f64 * line_width);
             let region = boolean_intersect(contours, &reach);
             if region.is_empty() {
                 continue;
@@ -5704,7 +5884,20 @@ fn object_layer(
             infill_ms += own_infill;
             let own = keep_zone(own, &prints, Some(k));
             if !own.is_empty() {
-                note.push_str(&format!(" · volume {}", print.volume));
+                if print.tweak.infill_floor.is_some() {
+                    let tag = format!(" · reinforce {}", print.volume);
+                    let already = note.match_indices(&tag).any(|(at, _)| {
+                        !note[at + tag.len()..]
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_digit())
+                    });
+                    if !already {
+                        note.push_str(&tag);
+                    }
+                } else {
+                    note.push_str(&format!(" · volume {}", print.volume));
+                }
             }
             paths = pair_sides(paths, own);
         }

@@ -5,7 +5,7 @@
 //! an earlier one. Inside a volume, the volume wins on each field it sets
 //! and the range fills the fields it leaves empty.
 
-use crate::poly::Loop;
+use crate::poly::{in_solid, loop_bounds, Loop};
 use crate::strategy::{InfillPattern, ResolvedStrategy};
 
 /// Layer z values are sums of layer heights, so a layer at 2 mm can sit a
@@ -15,17 +15,23 @@ const Z_SLACK: f64 = 1e-6;
 /// What a range or a volume changes. `None` keeps the strategy's value.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Tweak {
-    /// Sparse infill, 0 to 1.
+    /// Sparse infill, 0 to 1. Replaces the strategy density.
     pub infill: Option<f64>,
     /// Wall count, 1 to 12.
     pub walls: Option<u32>,
     /// A cap on every feature speed, mm/s.
     pub speed: Option<f64>,
+    /// A floor on sparse infill. The region prints `max(strategy, floor)`.
+    /// Reinforcement sets this. A modifier volume does not.
+    pub infill_floor: Option<f64>,
 }
 
 impl Tweak {
     pub fn is_set(&self) -> bool {
-        self.infill.is_some() || self.walls.is_some() || self.speed.is_some()
+        self.infill.is_some()
+            || self.walls.is_some()
+            || self.speed.is_some()
+            || self.infill_floor.is_some()
     }
 
     /// `over` wins on each field it sets. `None` when neither sets a field,
@@ -42,6 +48,7 @@ impl Tweak {
             infill: top.infill.or(self.infill),
             walls: top.walls.or(self.walls),
             speed: top.speed.or(self.speed),
+            infill_floor: top.infill_floor.or(self.infill_floor),
         })
     }
 
@@ -50,13 +57,14 @@ impl Tweak {
             s.walls = walls;
         }
         if let Some(density) = self.infill {
-            s.infill_density = density;
             // A density the user asks for fills the whole region. Lightning
             // and the pruned lines only hold up roofs, so a dense volume deep
             // inside the part would print nothing.
-            s.lightning_range_mm = 0.0;
-            if s.pattern == InfillPattern::Lightning {
-                s.pattern = InfillPattern::Grid;
+            commit_density(&mut s, density);
+        }
+        if let Some(floor) = self.infill_floor {
+            if floor > s.infill_density {
+                commit_density(&mut s, floor);
             }
         }
         if let Some(cap) = self.speed {
@@ -73,6 +81,15 @@ impl Tweak {
             }
         }
         s
+    }
+}
+
+/// `density` fills the region, so lightning, which only holds roofs, becomes grid.
+fn commit_density(s: &mut ResolvedStrategy, density: f64) {
+    s.infill_density = density;
+    s.lightning_range_mm = 0.0;
+    if s.pattern == InfillPattern::Lightning {
+        s.pattern = InfillPattern::Grid;
     }
 }
 
@@ -176,7 +193,7 @@ impl Overrides {
 }
 
 /// One volume on one layer.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Print {
     pub outline: Footprint,
     pub tweak: Tweak,
@@ -207,29 +224,39 @@ impl Volume {
 }
 
 /// A volume's cross-section on one layer.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Footprint {
-    Rect { c: [f64; 2], h: [f64; 2] },
-    Ellipse { c: [f64; 2], r: [f64; 2] },
+    Rect {
+        c: [f64; 2],
+        h: [f64; 2],
+    },
+    Ellipse {
+        c: [f64; 2],
+        r: [f64; 2],
+    },
+    /// Counter-clockwise outlines and clockwise holes. Reinforcement columns
+    /// and tilted volumes.
+    Polygon(Vec<Loop>),
 }
 
 impl Footprint {
     pub fn contains(&self, p: [f64; 2]) -> bool {
-        match *self {
+        match self {
             Footprint::Rect { c, h } => (p[0] - c[0]).abs() <= h[0] && (p[1] - c[1]).abs() <= h[1],
             Footprint::Ellipse { c, r } => {
                 let (u, v) = ((p[0] - c[0]) / r[0], (p[1] - c[1]) / r[1]);
                 u * u + v * v <= 1.0
             }
+            Footprint::Polygon(loops) => in_solid(loops, p[0], p[1]),
         }
     }
 
     pub fn bounds(&self) -> ([f64; 2], [f64; 2]) {
-        let (c, h) = match *self {
-            Footprint::Rect { c, h } => (c, h),
-            Footprint::Ellipse { c, r } => (c, r),
-        };
-        ([c[0] - h[0], c[1] - h[1]], [c[0] + h[0], c[1] + h[1]])
+        match self {
+            Footprint::Rect { c, h } => ([c[0] - h[0], c[1] - h[1]], [c[0] + h[0], c[1] + h[1]]),
+            Footprint::Ellipse { c, r } => ([c[0] - r[0], c[1] - r[1]], [c[0] + r[0], c[1] + r[1]]),
+            Footprint::Polygon(loops) => loop_bounds(loops).unwrap_or(([0.0, 0.0], [0.0, 0.0])),
+        }
     }
 
     /// Where the segment `a`→`b` crosses this outline, as fractions strictly
@@ -241,7 +268,7 @@ impl Footprint {
                 out.push(t);
             }
         };
-        match *self {
+        match self {
             Footprint::Rect { c, h } => {
                 for k in 0..2 {
                     if d[k].abs() < 1e-15 {
@@ -259,7 +286,7 @@ impl Footprint {
             }
             Footprint::Ellipse { c, r } => {
                 let (px, py) = ((a[0] - c[0]) / r[0], (a[1] - c[1]) / r[1]);
-                let (dx, dy) = (d[0] / r[0], d[1] / r[1]);
+                let (dx, dy) = (d[0] / r[0], (d[1] / r[1]));
                 let qa = dx * dx + dy * dy;
                 if qa < 1e-30 {
                     return;
@@ -274,29 +301,58 @@ impl Footprint {
                 push((-qb - s) / (2.0 * qa));
                 push((-qb + s) / (2.0 * qa));
             }
+            Footprint::Polygon(loops) => {
+                for loop_ in loops {
+                    let n = loop_.len();
+                    for i in 0..n {
+                        let c = loop_[i];
+                        let d0 = loop_[(i + 1) % n];
+                        if let Some(t) = segment_cross(a, b, c, d0) {
+                            push(t);
+                        }
+                    }
+                }
+            }
         }
     }
 
-    /// The outline as a counter-clockwise polygon.
-    pub fn polygon(&self) -> Loop {
-        match *self {
-            Footprint::Rect { c, h } => vec![
+    /// The outline as counter-clockwise polygons and clockwise holes.
+    pub fn polygons(&self) -> Vec<Loop> {
+        match self {
+            Footprint::Rect { c, h } => vec![vec![
                 [c[0] - h[0], c[1] - h[1]],
                 [c[0] + h[0], c[1] - h[1]],
                 [c[0] + h[0], c[1] + h[1]],
                 [c[0] - h[0], c[1] + h[1]],
-            ],
+            ]],
             Footprint::Ellipse { c, r } => {
                 let n = 96;
-                (0..n)
+                vec![(0..n)
                     .map(|i| {
                         let a = std::f64::consts::TAU * i as f64 / n as f64;
                         [c[0] + r[0] * a.cos(), c[1] + r[1] * a.sin()]
                     })
-                    .collect()
+                    .collect()]
             }
+            Footprint::Polygon(loops) => loops.clone(),
         }
     }
+}
+
+/// `t` along `a`→`b` where it crosses `c`→`d`. A hit on a vertex counts, so a
+/// line through a corner still splits; the two edges report the same `t` and
+/// the run collapses them.
+fn segment_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> Option<f64> {
+    let (rx, ry) = (b[0] - a[0], b[1] - a[1]);
+    let (sx, sy) = (d[0] - c[0], d[1] - c[1]);
+    let denom = rx * sy - ry * sx;
+    if denom.abs() < 1e-14 {
+        return None;
+    }
+    let (qpx, qpy) = (c[0] - a[0], c[1] - a[1]);
+    let t = (qpx * sy - qpy * sx) / denom;
+    let u = (qpx * ry - qpy * rx) / denom;
+    ((1e-12..1.0 - 1e-12).contains(&t) && (-1e-9..=1.0 + 1e-9).contains(&u)).then_some(t)
 }
 
 /// The index of the footprint that owns `p`: the last one holding it.
