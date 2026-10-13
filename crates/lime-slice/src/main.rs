@@ -1897,6 +1897,7 @@ fn request_for(
         brim_width_mm: settings.adhesion.uses_brim().then_some(settings.brim_width_mm),
         brim_gap_mm: settings.adhesion.uses_brim().then_some(settings.brim_gap_mm),
         skirt_loops: settings.skirt_loops,
+        top_surface_pattern: settings.top_surface_pattern,
         classic: settings.classic,
         support_style: match settings.support_style {
             lime_slice_core::SupportStyle::Tree => "tree".into(),
