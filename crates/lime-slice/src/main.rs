@@ -1893,6 +1893,10 @@ fn request_for(
         arc_fit: settings.arc_fit,
         travel_opt: settings.travel_opt,
         overhang_control: settings.overhang_control,
+        adhesion: settings.adhesion,
+        brim_width_mm: settings.adhesion.uses_brim().then_some(settings.brim_width_mm),
+        brim_gap_mm: settings.adhesion.uses_brim().then_some(settings.brim_gap_mm),
+        skirt_loops: settings.skirt_loops,
         classic: settings.classic,
         support_style: match settings.support_style {
             lime_slice_core::SupportStyle::Tree => "tree".into(),
