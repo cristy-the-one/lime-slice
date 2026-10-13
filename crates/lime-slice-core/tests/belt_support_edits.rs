@@ -121,7 +121,8 @@ fn printed(gcode: &str) -> Printed {
         if !["G0", "G1", "G2", "G3"].contains(&first) {
             continue;
         }
-        let from = [x, b - u * c, u * s];
+        // The file runs along the belt against the design's Y.
+        let from = [x, u * c - b, u * s];
         b = word(line, 'Z').unwrap_or(b);
         u = word(line, 'Y').unwrap_or(u);
         x = word(line, 'X').unwrap_or(x);
@@ -129,7 +130,7 @@ fn printed(gcode: &str) -> Printed {
         if first == "G0" || !moved || word(line, 'E').is_none() {
             continue;
         }
-        let to = [x, b - u * c, u * s];
+        let to = [x, u * c - b, u * s];
         if kind.starts_with("SUPPORT") {
             out.support.last_mut().unwrap().1.push([from, to]);
         } else {
@@ -251,7 +252,7 @@ fn tower_with_arm() -> String {
         [-15.0, 12.0],
         [0.0, 12.0],
     ];
-    let at = |x: f64, [y, z]: [f64; 2]| [x, y, z];
+    let at = |x: f64, [y, z]: [f64; 2]| [x, -y, z];
     let mut faces = Vec::new();
     for k in 0..outline.len() {
         let (p, q) = (outline[k], outline[(k + 1) % outline.len()]);
@@ -528,15 +529,15 @@ fn regrow_a_gap_on_a_belt() {
     }
     assert!(tilted.ls[0] < tilted.ls[1]);
     assert_eq!(tilted.outline.len(), gaps[0].outline.len());
-    // On its highest layer the preview is one plane, `z + tan(angle) * y` the
-    // same everywhere, and the outline lies in it.
+    // On its highest layer the preview is one plane, `z - tan(angle) * y` the
+    // same everywhere, since the plane climbs toward +Y, and the outline lies in it.
     let tan = ANGLE.to_radians().tan();
     let top = pruned.layers.iter().find(|l| l.z == tilted.ls[1]).unwrap();
     let on_plane: Vec<f64> = top
         .paths
         .iter()
         .flat_map(|path| path.pts.iter().zip(&path.zs))
-        .map(|(pt, z)| z + tan * pt[1])
+        .map(|(pt, z)| z - tan * pt[1])
         .collect();
     assert!(on_plane.len() > 10);
     let plane = on_plane[0];
@@ -550,7 +551,7 @@ fn regrow_a_gap_on_a_belt() {
     assert!(!points.is_empty());
     for (p, flat) in points.iter().zip(gaps[0].outline.iter().flatten()) {
         assert!(
-            (p[2] + tan * p[1] - plane).abs() < 0.02,
+            (p[2] - tan * p[1] - plane).abs() < 0.02,
             "{p:?} off the plane"
         );
         assert!(
@@ -644,8 +645,9 @@ fn regrow_a_gap_on_a_belt() {
 
 /// A belt's copies are one planned part, emitted again with a belt shift. The
 /// skeleton and the gaps are the first copy's; the reply's `beltCopies` is how
-/// far each later copy sits from it, in the reply frame's Y and in the belt
-/// position a layer's `z` and a knot's `ls` carry. It is the same number.
+/// far each later copy sits from it in the belt position a layer's `z` and a
+/// knot's `ls` carry. In the reply frame's Y it is the same distance the other
+/// way, since the belt carries the part toward +Y.
 fn copies_are_the_planned_part_moved_along_the_belt() {
     let with_copies = |copies: u32, direction: i32| {
         let mut req = belt(json!({"includeSkeleton": true}));
@@ -685,7 +687,7 @@ fn copies_are_the_planned_part_moved_along_the_belt() {
                 assert_eq!(p.zs, q.zs, "a copy is the same height in the lab");
                 for (u, v) in p.pts.iter().zip(&q.pts) {
                     assert!((v[0] - u[0]).abs() < 1e-6, "x is across the belt");
-                    assert!((v[1] - u[1] - shift).abs() < 1e-6, "{u:?} then {v:?}");
+                    assert!((v[1] - u[1] + shift).abs() < 1e-6, "{u:?} then {v:?}");
                 }
             }
         }

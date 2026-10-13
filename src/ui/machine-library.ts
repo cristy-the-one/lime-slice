@@ -590,9 +590,9 @@ const OWNS_HOMING_TIP = "Turn on when the start G-code heats and homes by itself
 
 const LIMIT_TIP = "The hottest bed and nozzle this printer accepts. Any temperature above it is held at the limit in the slice and in the exported file, with a comment line that says so.";
 
-const BELT_DIRECTION_TIP = "Which way the belt axis counts in the printer's firmware; it does not turn the plate around. The part's front end (nearest the arrow head in Prepare) prints first and leaves the printer first.";
+const BELT_DIRECTION_TIP = "Which way the belt axis counts in the printer's firmware; it does not turn the plate around. The end of the part nearest the arrow head in Prepare prints first and leaves the printer first.";
 
-const BELT_TIP = "The engine slices this belt. Export follows the slice. Send follows the printer connection. Seam on the belt edge and the belt raft stay off until those boxes are checked. A raft is a pad on the belt under the part and 1 mm past it, raft layers times the layer height thick; the part stands on it. Supports on a belt printer grow down to the tilted belt. They are not available together with a raft. The part's front end (nearest the arrow head in Prepare) prints first and leaves the printer first.";
+const BELT_TIP = "The engine slices this belt. Export follows the slice. Send follows the printer connection. Seam on the belt edge and the belt raft stay off until those boxes are checked. A raft is a pad on the belt under the part and 1 mm past it, raft layers times the layer height thick; the part stands on it. Supports on a belt printer grow down to the tilted belt. They are not available together with a raft. The end of the part nearest the arrow head in Prepare prints first and leaves the printer first.";
 
 /** The printer chip's label: "Lime 220 · PLA · 0.4 mm". */
 export function machineChipLabel(library: MachineLibrary): string {

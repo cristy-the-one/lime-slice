@@ -360,7 +360,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     volume.scale.set(plate.x, bedZ, plate.y);
     volume.position.set(plate.x / 2 - centerX, bedZ / 2, -(plate.y / 2 - centerY));
     if (belt) {
-      const pose = tiltPose(plate.x, bedZ, belt.angleDeg, Math.min(plate.y, bedY));
+      const pose = tiltPose(plate.x, bedZ, belt.angleDeg);
       tilt.visible = true;
       tilt.scale.set(plate.x, pose.slopeMm, 1);
       tilt.rotation.set(pose.rotationX, 0, 0);

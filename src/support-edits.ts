@@ -33,8 +33,9 @@ export interface TiltedGap {
 
 /**
  * A belt's copies are one planned part, printed again after a shift along the belt. The skeleton and the gaps
- * are the first copy's. Copy `c` is the same geometry with `c * shiftMm` added to y and to every belt position
- * (`PreviewLayer.z`, `skeleton.ls`, `tilted.ls`). Only on a belt reply with more than one copy.
+ * are the first copy's. Copy `c` is the same geometry with `c * shiftMm` added to every belt position
+ * (`PreviewLayer.z`, `skeleton.ls`, `tilted.ls`) and subtracted from y: the belt carries the part toward +Y, so a
+ * copy that prints later stands upstream. Only on a belt reply with more than one copy.
  */
 export interface BeltCopies {
   count: number;
