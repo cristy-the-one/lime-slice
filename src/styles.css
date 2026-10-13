@@ -133,7 +133,7 @@ input[type="checkbox"], input[type="range"] { accent-color: var(--accent); }
   overflow: hidden;
   position: relative;
   display: grid;
-  grid-template-columns: var(--panel-left, 300px) 40px minmax(0, 1fr) var(--panel-right, 320px);
+  grid-template-columns: var(--panel-left, 300px) 40px minmax(0, 1fr) var(--panel-right, 240px);
   grid-template-rows: minmax(0, 1fr);
 }
 .panel {

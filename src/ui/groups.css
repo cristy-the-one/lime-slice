@@ -352,6 +352,13 @@ input.switch:checked::after { transform: translateX(13px); background: var(--on-
   .est .bar { grid-area: 2 / 1; }
   .est-mass { grid-area: 2 / 2; }
 }
+/* A docked rail near the 140px floor cannot put the feature name beside its time. */
+@container right (max-width: 180px) {
+  .est-label { grid-area: 1 / 1 / 1 / -1; }
+  .est-time { grid-area: 2 / 2; }
+  .est .bar { grid-area: 2 / 1; }
+  .est-mass { grid-area: 3 / 2; }
+}
 @container right (max-width: 239px) {
   .big { grid-template-columns: minmax(0, 1fr); }
   .big b { font-size: var(--fs-5); }
