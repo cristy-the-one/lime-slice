@@ -126,6 +126,10 @@ fn speed_and_toughness_differ_and_gcode_is_printable() {
     assert_eq!(speed.mesh.triangles, 12);
     assert_eq!(speed.mesh.repaired_layers, 0);
     assert_eq!(speed.mesh.dropped_chains, 0);
+    assert!(speed.warnings.is_empty());
+    let clean = serde_json::to_value(&speed).unwrap();
+    assert!(clean.get("warnings").is_none(), "a clean mesh must omit warnings");
+    assert!(clean.get("gcode").is_some());
     assert_eq!(speed.sanity.layers, 100, "20 mm / 0.2 mm");
     assert!(speed.sanity.ok, "{:?}", speed.sanity.notes);
     assert!(tough.sanity.ok, "{:?}", tough.sanity.notes);
@@ -2926,6 +2930,17 @@ fn a_hole_in_the_mesh_does_not_drop_the_layer() {
     .unwrap();
     assert_eq!(reply.mesh.repaired_layers, report.repaired_layers);
     assert_eq!(reply.mesh.dropped_chains, report.dropped_chains);
+    assert_eq!(reply.warnings.len(), 1);
+    assert_eq!(reply.warnings[0].code, "mesh-repair");
+    assert_eq!(reply.warnings[0].repaired_layers, report.repaired_layers);
+    assert_eq!(reply.warnings[0].dropped_chains, report.dropped_chains);
+    assert!(
+        (reply.warnings[0].bridged_mm - report.bridged_mm).abs() < 1e-6,
+        "warning bridged {:.3} mm, audit bridged {:.3} mm",
+        reply.warnings[0].bridged_mm,
+        report.bridged_mm
+    );
+    assert!(!reply.gcode.contains("mesh-repair"));
     // One chord of a 64-gon, r = 10: 2·10·sin(π/64) ≈ 0.981 mm, every layer.
     let per_layer = report.bridged_mm / report.layers as f64;
     assert!(
@@ -2977,6 +2992,12 @@ fn open_chains_1_5mm_apart_stay_open() {
     .unwrap();
     assert_eq!(reply.mesh.repaired_layers, 0);
     assert!(reply.mesh.dropped_chains > 0);
+    assert_eq!(reply.warnings.len(), 1);
+    assert_eq!(reply.warnings[0].code, "mesh-repair");
+    assert_eq!(reply.warnings[0].repaired_layers, 0);
+    assert_eq!(reply.warnings[0].bridged_mm, 0.0);
+    assert_eq!(reply.warnings[0].dropped_chains, reply.mesh.dropped_chains);
+    assert!(!reply.gcode.contains("mesh-repair"));
 }
 
 fn open_sheet(tris: &mut Vec<[[f64; 3]; 3]>, x0: f64, x1: f64, y: f64, z0: f64, z1: f64) {

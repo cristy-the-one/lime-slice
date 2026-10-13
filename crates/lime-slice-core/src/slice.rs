@@ -917,6 +917,35 @@ pub struct SliceResponse {
     /// request sent `objects`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub collisions: Option<Vec<Collision>>,
+    /// Mesh repair the cut already performed. Absent when every contour
+    /// closed on its own. Response metadata only: G-code is unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<SliceWarning>,
+}
+
+/// One plain-language notice for the results summary.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SliceWarning {
+    pub code: &'static str,
+    /// Layers whose contour closed a mesh gap.
+    pub repaired_layers: usize,
+    /// Length of the gap links those layers added, in millimetres.
+    pub bridged_mm: f64,
+    /// Open chains the cut could not close.
+    pub dropped_chains: usize,
+}
+
+fn mesh_warnings(repaired_layers: usize, bridged_mm: f64, dropped_chains: usize) -> Vec<SliceWarning> {
+    if repaired_layers == 0 && bridged_mm == 0.0 && dropped_chains == 0 {
+        return Vec::new();
+    }
+    vec![SliceWarning {
+        code: "mesh-repair",
+        repaired_layers,
+        bridged_mm,
+        dropped_chains,
+    }]
 }
 
 /// A belt's copies are one planned part, printed again after a shift along the
@@ -2440,6 +2469,7 @@ fn slice_plate(
         )
     };
     let repaired_layers = plans.iter().map(|plan| plan.cut.repaired_layers).sum();
+    let bridged_mm: f64 = plans.iter().map(|plan| plan.cut.bridged_mm).sum();
     let dropped_chains = plans.iter().map(|plan| plan.cut.dropped_chains).sum();
     let mesh = if listed {
         MeshInfo {
@@ -2577,6 +2607,7 @@ fn slice_plate(
         preview_patch,
         objects: objects_view,
         collisions,
+        warnings: mesh_warnings(repaired_layers, bridged_mm, dropped_chains),
     })
 }
 
@@ -3944,11 +3975,11 @@ fn cut_mesh(
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
     }
-    let cut: Vec<(Vec<Loop>, f64, f64, usize, usize)> = bands
+    let cut: Vec<(Vec<Loop>, f64, f64, usize, usize, f64)> = bands
         .par_iter()
         .map(|band| {
             if watch.stopped(settings.job) {
-                return (Vec::new(), 0.0, 0.0, 0, 0);
+                return (Vec::new(), 0.0, 0.0, 0, 0, 0.0);
             }
             let cut_started = Instant::now();
             let (raw, stats) = index.slice_with_stats(band.cut_z());
@@ -3962,6 +3993,7 @@ fn cut_mesh(
                 elapsed_ms(simplify_started),
                 usize::from(stats.bridged > 0),
                 stats.dropped,
+                stats.bridged_mm,
             )
         })
         .collect();
@@ -3970,6 +4002,7 @@ fn cut_mesh(
     let simplify_cpu_ms = cut.iter().map(|row| row.2).sum();
     let repaired_layers = cut.iter().map(|row| row.3).sum();
     let dropped_chains = cut.iter().map(|row| row.4).sum();
+    let bridged_mm: f64 = cut.iter().map(|row| row.5).sum();
     let contours = cut.into_iter().map(|row| row.0).collect();
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
@@ -3981,6 +4014,7 @@ fn cut_mesh(
     cut.clocks.cut_cpu_ms = cut_cpu_ms;
     cut.clocks.simplify_cpu_ms = simplify_cpu_ms;
     cut.repaired_layers = repaired_layers;
+    cut.bridged_mm = bridged_mm;
     cut.dropped_chains = dropped_chains;
     Ok(cut)
 }
@@ -4002,8 +4036,9 @@ pub(crate) struct Contours {
     /// Each layer's XY box, `None` on an empty layer, found when first asked.
     boxes: std::sync::OnceLock<Vec<Option<XyRect>>>,
     clocks: CutClocks,
-    /// Layers that closed a mesh gap, and chains that stayed open.
+    /// Layers that closed a mesh gap, the length of those links, and chains that stayed open.
     repaired_layers: usize,
+    bridged_mm: f64,
     dropped_chains: usize,
 }
 
@@ -4041,6 +4076,7 @@ impl Contours {
             in_air: std::sync::OnceLock::new(),
             boxes: std::sync::OnceLock::new(),
             repaired_layers: 0,
+            bridged_mm: 0.0,
             dropped_chains: 0,
             clocks: CutClocks {
                 roof_ms: elapsed_ms(roof_started),

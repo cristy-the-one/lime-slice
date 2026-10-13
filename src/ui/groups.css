@@ -324,6 +324,31 @@ input.switch:checked::after { transform: translateX(13px); background: var(--on-
   color: var(--text-faint);
 }
 .res h4.sub { margin-top: var(--space-3); }
+.mesh-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--warn) 14%, var(--surface-1));
+  color: var(--text);
+  font-size: var(--fs-2);
+  line-height: 1.35;
+}
+.mesh-warn span { flex: 1 1 auto; min-width: 0; }
+.mesh-warn-dismiss {
+  flex: 0 0 auto;
+  height: var(--control-h-sm);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: var(--fs-1);
+  line-height: 1;
+  white-space: nowrap;
+}
 /*
  * The panels answer to their own width, since the splitters resize them: wide, two tiles side by side and one-line
  * feature rows; narrow, tiles stacked and each feature row on two lines. A number is never cut.
