@@ -254,6 +254,23 @@ jobs:
           $env:PATH = "$env:OCCT_ROOT\bin;$env:OCCT_ROOT\lib;" + $env:PATH
           cargo test -p lime-model -p lime-model-occt --locked -- --nocapture
 
+      # The step above puts the Open CASCADE DLLs on PATH, which is why a
+      # LoadLibrary that ignores the bridge's own folder still passed. This
+      # step must not add that folder to PATH. The test copies the install
+      # layout and strips PATH itself before loading.
+      - name: Load the bridge from the bundled layout without PATH
+        run: |
+          cargo build -p lime-model-occt --locked
+          $root = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $PWD "target" }
+          $dll = $null
+          foreach ($rel in @("debug\lime_model_occt.dll", "debug\deps\lime_model_occt.dll")) {
+            $candidate = Join-Path $root $rel
+            if (Test-Path -LiteralPath $candidate) { $dll = $candidate; break }
+          }
+          if (-not $dll) { throw "bridge dll missing under $root" }
+          $env:LIME_OCCT_BRIDGE_DLL = (Resolve-Path -LiteralPath $dll).Path
+          cargo test -p lime-model-load --test bundled_layout --locked -- --nocapture
+
   occt-macos:
     name: OCCT dynamic link (macOS)
     runs-on: macos-latest
