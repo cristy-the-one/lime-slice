@@ -34,7 +34,7 @@ The fourth workspace tab is Model. It is not selected when the app opens. Shortc
 
 `crates/lime-model-occt` is a cdylib. It links the modeling toolkits and, when `libTKDESTEP` is present, the STEP reader. `crates/lime-model-load` dlopens that library. The CLI and the Tauri shell depend on the loader only, so a missing bridge cannot stop the app from starting. The shell looks beside the executable and in `occt/lib` under the resource directory. `LIME_OCCT_BRIDGE` overrides the path.
 
-Model mode sends the open STEP file to `POST /api/model` (or the `model_solid` command). The reply is the solid's tessellation, volume, face areas, and edge polylines. A face pick reports area. An edge pick reports length. A second pick reports the distance. A mesh file says that measure reads a STEP solid. Nothing is invented when the bridge is missing.
+Model mode sends the open STEP file to `POST /api/model` (or the `model_solid` command). The reply is the solid's tessellation, volume, face areas, and edge polylines. A click selects one face or edge and reports its area or length. Shift-click adds or removes a pick. Exactly two picks report the distance. Escape, or a click on empty space, clears the selection. Edits open from the toolbar and run on Apply. The ghost in the view is a local preview, not a kernel result. A mesh file says that measure reads a STEP solid. Nothing is invented when the bridge is missing.
 
 The release workflow builds the cdylib after staging the Open CASCADE libraries and copies it into `src-tauri/resources/occt/lib`, next to those libraries. The cdylib's rpath is `$ORIGIN` on Linux and `@loader_path` on macOS.
 

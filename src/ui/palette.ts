@@ -1,4 +1,5 @@
 import { redoUserEdit, undoUserEdit } from "../app/history";
+import { escapeModel } from "./model-chrome";
 import {
   askProfileName,
   deleteSettingsProfile,
@@ -358,7 +359,17 @@ export function runCommand(id: string) {
       stepBrush(0.5);
       return;
     case "undo":
+      if (state.stage === "model") {
+        const button = document.querySelector<HTMLButtonElement>("#modelUndo");
+        if (button && !button.disabled) {
+          button.click();
+          return;
+        }
+      }
       undoUserEdit();
+      return;
+    case "model-escape":
+      escapeModel();
       return;
     case "redo":
       redoUserEdit();

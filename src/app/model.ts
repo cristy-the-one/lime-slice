@@ -1,6 +1,8 @@
 import { bytesToBase64 } from "../base64";
 import { encodeStl, settle } from "../mesh-place";
 import type { ModelPick, ModelSolid } from "../model-view";
+import { lastEdge, nextModelPicks, selectionCountLabel } from "../model-select";
+import { closeModelTool, mountModelChrome, refreshModelGhost, syncModelChrome } from "../ui/model-chrome";
 import { addedMesh, withoutObject } from "../plate";
 import { markProjectDirty } from "../project-dirty";
 import { base64ToBytes } from "../project";
@@ -41,21 +43,20 @@ interface ModelUndo {
 }
 
 export function bindModelView() {
-  fx.model?.onPick((pick: ModelPick) => void onPick(pick));
+  fx.model?.onPick((pick: ModelPick | null, shift: boolean) => void onPick(pick, shift));
   document.querySelector("#modelPickFace")?.addEventListener("click", () => setMode("face"));
   document.querySelector("#modelPickEdge")?.addEventListener("click", () => setMode("edge"));
-  document.querySelector("#modelPrim")?.addEventListener("change", syncPrim);
-  document.querySelector("#modelFuse")?.addEventListener("click", () => void runBoolean("fuse"));
-  document.querySelector("#modelCut")?.addEventListener("click", () => void runBoolean("cut"));
-  document.querySelector("#modelCommon")?.addEventListener("click", () => void runBoolean("common"));
-  document.querySelector("#modelSplit")?.addEventListener("click", () => void runSplit());
-  document.querySelector("#modelFillet")?.addEventListener("click", () => void runBlend("fillet"));
-  document.querySelector("#modelChamfer")?.addEventListener("click", () => void runBlend("chamfer"));
-  document.querySelector("#modelHole")?.addEventListener("click", () => void runHole());
-  document.querySelector("#modelScaleApply")?.addEventListener("click", () => void runScale());
+  document.querySelector("#modelApply")?.addEventListener("click", () => void applyTool());
   document.querySelector("#modelStep")?.addEventListener("click", () => void runExport());
   document.querySelector("#modelUndo")?.addEventListener("click", () => void runUndo());
-  syncPrim();
+  mountModelChrome({
+    clearSelection() {
+      picks = [];
+      fx.model?.highlight([]);
+      syncModelChrome([]);
+      if (solid) readout(`Volume ${mm(solid.volumeMm3)} mm³. Pick a face or an edge.`);
+    },
+  });
 }
 
 /** Write the open solid onto the selected object when that session is still current. */
@@ -72,13 +73,16 @@ export function showModel() {
     solid = keptSolid;
     fx.model?.setSolid(solid);
     fx.model?.highlight([]);
+    syncModelChrome([]);
     showEdits(true);
+    refreshModelGhost();
     readout(`Volume ${mm(solid.volumeMm3)} mm³. Pick a face or an edge.`);
     return;
   }
   solid = null;
   fx.model?.setSolid(null);
   fx.model?.highlight([]);
+  syncModelChrome([]);
   showEdits(false);
   if (!mesh) {
     readout("Open a STEP file to measure a solid.");
@@ -105,11 +109,32 @@ function setMode(mode: "face" | "edge") {
   fx.model?.setPickMode(mode);
   picks = [];
   fx.model?.highlight([]);
+  syncModelChrome([]);
   document.querySelector("#modelPickFace")?.setAttribute("aria-pressed", mode === "face" ? "true" : "false");
   document.querySelector("#modelPickFace")?.classList.toggle("on", mode === "face");
   document.querySelector("#modelPickEdge")?.setAttribute("aria-pressed", mode === "edge" ? "true" : "false");
   document.querySelector("#modelPickEdge")?.classList.toggle("on", mode === "edge");
   if (solid) readout(`Volume ${mm(solid.volumeMm3)} mm³. Pick ${mode === "face" ? "a face" : "an edge"}.`);
+}
+
+async function applyTool() {
+  const button = document.querySelector<HTMLButtonElement>("#modelApply");
+  if (!button || button.disabled) return;
+  const current = document.querySelector<HTMLElement>("#modelBar")?.dataset.tool;
+  if (current === "boolean") {
+    const op = document.querySelector("#modelCut")?.getAttribute("aria-pressed") === "true"
+      ? "cut"
+      : document.querySelector("#modelCommon")?.getAttribute("aria-pressed") === "true"
+        ? "common"
+        : "fuse";
+    await runBoolean(op);
+    return;
+  }
+  if (current === "split") await runSplit();
+  else if (current === "fillet") await runBlend("fillet");
+  else if (current === "chamfer") await runBlend("chamfer");
+  else if (current === "hole") await runHole();
+  else if (current === "scale") await runScale();
 }
 
 async function load(mine: number, name: string, bytes: ArrayBuffer, chord: number) {
@@ -489,13 +514,16 @@ function present(parsed: ParsedSolid, message: string) {
   picks = [];
   fx.model?.setSolid(parsed);
   fx.model?.highlight([]);
+  syncModelChrome([]);
   fx.model?.resize();
   showEdits(true);
+  refreshModelGhost();
   readout(message);
 }
 
 function showEdits(on: boolean) {
   document.querySelector("#modelEdit")?.toggleAttribute("hidden", !on);
+  if (!on) closeModelTool();
 }
 
 function syncUndo() {
@@ -503,21 +531,12 @@ function syncUndo() {
   if (button) button.disabled = undos.length === 0;
 }
 
-function syncPrim() {
-  const primName = prim();
-  document.querySelectorAll<HTMLElement>("#modelEdit [data-prim]").forEach((node) => {
-    const ok = (node.dataset.prim ?? "").split(" ").includes(primName);
-    node.toggleAttribute("hidden", !ok);
-  });
-}
-
 function prim() {
   return document.querySelector<HTMLSelectElement>("#modelPrim")?.value ?? "box";
 }
 
 function edgeIndex() {
-  const pick = [...picks].reverse().find((item) => item.kind === "edge");
-  return pick ? pick.index : null;
+  return lastEdge(picks);
 }
 
 function num(id: string) {
@@ -534,18 +553,28 @@ function stlName(name: string) {
   return `${stem || "solid"}.stl`;
 }
 
-async function onPick(pick: ModelPick) {
+let measureSeq = 0;
+
+async function onPick(pick: ModelPick | null, shift: boolean) {
   if (!solid) return;
-  const previous = picks[0];
-  const same = previous && previous.kind === pick.kind && previous.index === pick.index;
-  picks = previous && !same && picks.length === 1 ? [previous, pick] : [pick];
+  picks = nextModelPicks(picks, pick, shift);
   fx.model?.highlight(picks);
+  syncModelChrome(picks);
+  const seq = ++measureSeq;
+  if (picks.length === 0) {
+    readout(`Volume ${mm(solid.volumeMm3)} mm³. Pick a face or an edge.`);
+    return;
+  }
   if (picks.length === 1) {
-    readout(`${describe(solid, pick)} Volume ${mm(solid.volumeMm3)} mm³.`);
+    readout(`${describe(solid, picks[0]!)} Volume ${mm(solid.volumeMm3)} mm³.`);
+    return;
+  }
+  if (picks.length !== 2) {
+    readout(`${selectionCountLabel(picks)}. Volume ${mm(solid.volumeMm3)} mm³.`);
     return;
   }
   readout("Measuring distance…");
-  const mine = ticket;
+  const generation = ticket;
   const body = await post("/api/model/distance", {
     id: solid.id,
     aKind: picks[0]!.kind,
@@ -553,7 +582,7 @@ async function onPick(pick: ModelPick) {
     bKind: picks[1]!.kind,
     bIndex: picks[1]!.index,
   });
-  if (mine !== ticket || state.stage !== "model") return;
+  if (seq !== measureSeq || generation !== ticket || state.stage !== "model") return;
   const distance = typeof body.distanceMm === "number" ? body.distanceMm : null;
   if (distance == null) {
     readout(text(body.error) || "Could not measure that distance.");

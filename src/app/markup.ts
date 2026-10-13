@@ -107,41 +107,60 @@ export function mountMarkup(root: HTMLElement) {
         <div class="stage-body" id="modelBody" role="tabpanel" aria-labelledby="tabModel" hidden>
           <canvas id="model" aria-label="Solid faces and edges"></canvas>
           <div class="model-bar" id="modelBar">
-            <div class="modes" role="group" aria-label="Pick">
-              <button class="btn mode on" id="modelPickFace" type="button" aria-pressed="true">Face</button>
-              <button class="btn mode" id="modelPickEdge" type="button" aria-pressed="false">Edge</button>
+            <div class="model-tools" role="toolbar" aria-label="Model">
+              <div class="modes" role="group" aria-label="Pick">
+                <button class="btn mode on" id="modelPickFace" type="button" aria-pressed="true" data-tip="Pick faces. Shift-click adds or removes.">Face</button>
+                <button class="btn mode" id="modelPickEdge" type="button" aria-pressed="false" data-tip="Pick edges. Shift-click adds or removes.">Edge</button>
+              </div>
+              <span class="model-count" id="modelCount" hidden></span>
+              <div class="model-edit" id="modelEdit" hidden>
+                <span class="model-sep"></span>
+                <button class="model-tool" id="modelToolBoolean" type="button" data-tool="boolean" aria-pressed="false" data-tip="Fuse, cut, or intersect a box, cylinder, or sphere">Boolean</button>
+                <button class="model-tool" id="modelToolSplit" type="button" data-tool="split" aria-pressed="false" data-tip="Split on a horizontal plane">Split</button>
+                <button class="model-tool" id="modelToolFillet" type="button" data-tool="fillet" aria-pressed="false" data-tip="Round the last selected edge">Fillet</button>
+                <button class="model-tool" id="modelToolChamfer" type="button" data-tool="chamfer" aria-pressed="false" data-tip="Chamfer the last selected edge">Chamfer</button>
+                <button class="model-tool" id="modelToolHole" type="button" data-tool="hole" aria-pressed="false" data-tip="Cut a cylinder straight down">Hole</button>
+                <button class="model-tool" id="modelToolScale" type="button" data-tool="scale" aria-pressed="false" data-tip="Scale the solid about its centre">Scale</button>
+                <span class="model-sep"></span>
+                <button class="model-tool" id="modelStep" type="button" data-tip="Write this solid as AP214 STEP">STEP</button>
+                <button class="model-tool" id="modelUndo" type="button" disabled data-tip="Undo the last solid edit">Undo</button>
+              </div>
+            </div>
+            <div class="model-panel" id="modelPanel" hidden>
+              <div class="model-fields">
+                <label data-for="boolean" data-wide><span>Primitive</span>
+                  <select id="modelPrim" aria-label="Primitive">
+                    <option value="box">Box</option>
+                    <option value="cylinder">Cylinder</option>
+                    <option value="sphere">Sphere</option>
+                  </select>
+                </label>
+                <label data-for="boolean" data-prim="box" data-shift="1"><span class="scrub-label" data-scrub>Size X</span><input id="modelDx" type="number" step="0.1" value="10" aria-label="Box size x"></label>
+                <label data-for="boolean" data-prim="box" data-shift="1"><span class="scrub-label" data-scrub>Size Y</span><input id="modelDy" type="number" step="0.1" value="10" aria-label="Box size y"></label>
+                <label data-for="boolean" data-prim="box" data-shift="1"><span class="scrub-label" data-scrub>Size Z</span><input id="modelDz" type="number" step="0.1" value="10" aria-label="Box size z"></label>
+                <label data-for="boolean" data-prim="cylinder sphere" data-shift="1"><span class="scrub-label" data-scrub>Radius</span><input id="modelRadius" type="number" step="0.1" min="0" value="5" aria-label="Radius"></label>
+                <label data-for="boolean" data-prim="cylinder" data-shift="1"><span class="scrub-label" data-scrub>Height</span><input id="modelHeight" type="number" step="0.1" min="0" value="10" aria-label="Height"></label>
+                <label data-for="boolean hole" data-shift="1"><span class="scrub-label" data-scrub>X</span><input id="modelX" type="number" step="0.1" value="10" aria-label="Origin x"></label>
+                <label data-for="boolean hole" data-shift="1"><span class="scrub-label" data-scrub>Y</span><input id="modelY" type="number" step="0.1" value="0" aria-label="Origin y"></label>
+                <label data-for="boolean hole" data-shift="1"><span class="scrub-label" data-scrub>Z</span><input id="modelZ" type="number" step="0.1" value="0" aria-label="Origin z"></label>
+                <label data-for="split" data-shift="1"><span class="scrub-label" data-scrub>Plane Z</span><input id="modelPlaneZ" type="number" step="0.1" value="5" aria-label="Split plane z"></label>
+                <label data-for="fillet chamfer" data-shift="1"><span class="scrub-label" data-scrub>Size</span><input id="modelBlend" type="number" step="0.1" min="0" value="1" aria-label="Fillet or chamfer size"></label>
+                <label data-for="hole" data-shift="1"><span class="scrub-label" data-scrub>Radius</span><input id="modelHoleR" type="number" step="0.1" min="0" value="2" aria-label="Hole radius"></label>
+                <label data-for="hole" data-shift="1"><span class="scrub-label" data-scrub>Depth</span><input id="modelHoleD" type="number" step="0.1" min="0" value="12" aria-label="Hole depth"></label>
+                <label data-for="scale" data-shift="0.5"><span class="scrub-label" data-scrub>Factor</span><input id="modelFactor" type="number" step="0.1" min="0.1" max="20" value="2" aria-label="Uniform scale"></label>
+              </div>
+              <div class="modes" data-for="boolean" role="group" aria-label="Boolean">
+                <button class="btn mode on" id="modelFuse" type="button" aria-pressed="true">Fuse</button>
+                <button class="btn mode" id="modelCut" type="button" aria-pressed="false">Cut</button>
+                <button class="btn mode" id="modelCommon" type="button" aria-pressed="false">Common</button>
+              </div>
+              <p class="model-note" id="modelNote" hidden></p>
+              <div class="model-actions">
+                <button class="btn" id="modelCancel" type="button">Cancel</button>
+                <button class="btn primary" id="modelApply" type="button">Apply</button>
+              </div>
             </div>
             <div id="modelReadout" class="model-readout">Open a STEP file to measure a solid.</div>
-            <div class="model-edit" id="modelEdit" hidden>
-              <select id="modelPrim" aria-label="Primitive">
-                <option value="box">Box</option>
-                <option value="cylinder">Cylinder</option>
-                <option value="sphere">Sphere</option>
-              </select>
-              <label class="dim" data-prim="box">dx <input id="modelDx" type="number" step="0.1" value="10" aria-label="Box size x"></label>
-              <label class="dim" data-prim="box">dy <input id="modelDy" type="number" step="0.1" value="10" aria-label="Box size y"></label>
-              <label class="dim" data-prim="box">dz <input id="modelDz" type="number" step="0.1" value="10" aria-label="Box size z"></label>
-              <label class="dim" data-prim="cylinder sphere">r <input id="modelRadius" type="number" step="0.1" value="5" aria-label="Radius"></label>
-              <label class="dim" data-prim="cylinder">h <input id="modelHeight" type="number" step="0.1" value="10" aria-label="Height"></label>
-              <label class="dim">x <input id="modelX" type="number" step="0.1" value="10" aria-label="Origin x"></label>
-              <label class="dim">y <input id="modelY" type="number" step="0.1" value="0" aria-label="Origin y"></label>
-              <label class="dim">z <input id="modelZ" type="number" step="0.1" value="0" aria-label="Origin z"></label>
-              <button class="btn" id="modelFuse" type="button">Fuse</button>
-              <button class="btn" id="modelCut" type="button">Cut</button>
-              <button class="btn" id="modelCommon" type="button">Common</button>
-              <label class="dim">plane z <input id="modelPlaneZ" type="number" step="0.1" value="5" aria-label="Split plane z"></label>
-              <button class="btn" id="modelSplit" type="button">Split</button>
-              <label class="dim">blend <input id="modelBlend" type="number" step="0.1" value="1" aria-label="Fillet or chamfer size"></label>
-              <button class="btn" id="modelFillet" type="button">Fillet</button>
-              <button class="btn" id="modelChamfer" type="button">Chamfer</button>
-              <label class="dim">hole r <input id="modelHoleR" type="number" step="0.1" value="2" aria-label="Hole radius"></label>
-              <label class="dim">depth <input id="modelHoleD" type="number" step="0.1" value="12" aria-label="Hole depth"></label>
-              <button class="btn" id="modelHole" type="button" title="Cylinder from x, y, z straight down">Hole</button>
-              <label class="dim">scale <input id="modelFactor" type="number" step="0.1" value="2" aria-label="Uniform scale"></label>
-              <button class="btn" id="modelScaleApply" type="button" title="Scales the solid and sets placement scale to 100%">Scale</button>
-              <button class="btn" id="modelStep" type="button" title="Write this solid as AP214 STEP">STEP</button>
-              <button class="btn" id="modelUndo" type="button" disabled>Undo</button>
-            </div>
           </div>
         </div>
         <div class="stage-body" id="previewBody" role="tabpanel" aria-labelledby="tabPreview">
