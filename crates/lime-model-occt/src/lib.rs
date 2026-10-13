@@ -92,7 +92,72 @@ pub fn split(id: i32, plane: Plane, chord_mm: f64) -> String {
     }
 }
 
-/// Restore the solid from before the last boolean or split.
+/// Round one edge. `edge` is the zero-based index from the solid document. A failure leaves the solid unchanged.
+pub fn fillet(id: i32, edge: i32, radius_mm: f64, chord_mm: f64) -> String {
+    #[cfg(lime_occt)]
+    {
+        native::fillet(id, edge, radius_mm, chord_mm)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = (id, edge, radius_mm, chord_mm);
+        MISSING.into()
+    }
+}
+
+/// Chamfer one edge. `distance_mm` is the setback on each face. A failure leaves the solid unchanged.
+pub fn chamfer(id: i32, edge: i32, distance_mm: f64, chord_mm: f64) -> String {
+    #[cfg(lime_occt)]
+    {
+        native::chamfer(id, edge, distance_mm, chord_mm)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = (id, edge, distance_mm, chord_mm);
+        MISSING.into()
+    }
+}
+
+/// Cut a cylinder that starts at `origin` and runs toward −Z by `depth_mm`. A miss or a total cut leaves the solid unchanged.
+pub fn hole(id: i32, origin: [f64; 3], radius_mm: f64, depth_mm: f64, chord_mm: f64) -> String {
+    #[cfg(lime_occt)]
+    {
+        native::hole(id, origin, radius_mm, depth_mm, chord_mm)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = (id, origin, radius_mm, depth_mm, chord_mm);
+        MISSING.into()
+    }
+}
+
+/// Uniform scale about the solid's centre. `factor` must be positive and not 1.
+pub fn scale(id: i32, factor: f64, chord_mm: f64) -> String {
+    #[cfg(lime_occt)]
+    {
+        native::scale(id, factor, chord_mm)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = (id, factor, chord_mm);
+        MISSING.into()
+    }
+}
+
+/// Write the open solid as AP214 IS STEP. The file is manifold solid B-rep.
+pub fn write_step(id: i32, path: &Path) -> String {
+    #[cfg(lime_occt)]
+    {
+        native::write_step(id, path)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = (id, path);
+        MISSING.into()
+    }
+}
+
+/// Restore the solid from before the last edit.
 pub fn undo(id: i32, chord_mm: f64) -> String {
     #[cfg(lime_occt)]
     {
@@ -199,6 +264,59 @@ pub extern "C" fn lime_occt_split(
 
 /// The returned pointer is freed with `lime_occt_string_free`.
 #[no_mangle]
+pub extern "C" fn lime_occt_fillet(
+    id: i32,
+    edge: i32,
+    radius_mm: f64,
+    chord_mm: f64,
+) -> *mut c_char {
+    export_json(fillet(id, edge, radius_mm, chord_mm))
+}
+
+/// The returned pointer is freed with `lime_occt_string_free`.
+#[no_mangle]
+pub extern "C" fn lime_occt_chamfer(
+    id: i32,
+    edge: i32,
+    distance_mm: f64,
+    chord_mm: f64,
+) -> *mut c_char {
+    export_json(chamfer(id, edge, distance_mm, chord_mm))
+}
+
+/// The returned pointer is freed with `lime_occt_string_free`.
+#[no_mangle]
+pub extern "C" fn lime_occt_hole(
+    id: i32,
+    x: f64,
+    y: f64,
+    z: f64,
+    radius_mm: f64,
+    depth_mm: f64,
+    chord_mm: f64,
+) -> *mut c_char {
+    export_json(hole(id, [x, y, z], radius_mm, depth_mm, chord_mm))
+}
+
+/// The returned pointer is freed with `lime_occt_string_free`.
+#[no_mangle]
+pub extern "C" fn lime_occt_scale(id: i32, factor: f64, chord_mm: f64) -> *mut c_char {
+    export_json(scale(id, factor, chord_mm))
+}
+
+/// # Safety
+/// `path` is null or a valid null-terminated string. The returned pointer is freed with `lime_occt_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn lime_occt_write_step(id: i32, path: *const c_char) -> *mut c_char {
+    if path.is_null() {
+        return export_json("{\"error\":\"STEP path is empty\"}".into());
+    }
+    let text = unsafe { CStr::from_ptr(path) }.to_string_lossy();
+    export_json(write_step(id, Path::new(text.as_ref())))
+}
+
+/// The returned pointer is freed with `lime_occt_string_free`.
+#[no_mangle]
 pub extern "C" fn lime_occt_undo(id: i32, chord_mm: f64) -> *mut c_char {
     export_json(undo(id, chord_mm))
 }
@@ -261,6 +379,19 @@ mod native {
             nz: f64,
             chord: f64,
         ) -> *mut c_char;
+        fn lime_model_occt_fillet(id: i32, edge: i32, radius: f64, chord: f64) -> *mut c_char;
+        fn lime_model_occt_chamfer(id: i32, edge: i32, distance: f64, chord: f64) -> *mut c_char;
+        fn lime_model_occt_hole(
+            id: i32,
+            x: f64,
+            y: f64,
+            z: f64,
+            radius: f64,
+            depth: f64,
+            chord: f64,
+        ) -> *mut c_char;
+        fn lime_model_occt_scale(id: i32, factor: f64, chord: f64) -> *mut c_char;
+        fn lime_model_occt_write_step(id: i32, path: *const c_char) -> *mut c_char;
         fn lime_model_occt_undo(id: i32, chord: f64) -> *mut c_char;
         fn lime_model_occt_string_free(text: *mut c_char);
     }
@@ -331,6 +462,33 @@ mod native {
         let [x, y, z] = plane.origin;
         let [nx, ny, nz] = plane.normal;
         take(unsafe { lime_model_occt_split(id, x, y, z, nx, ny, nz, chord_mm) })
+    }
+
+    pub fn fillet(id: i32, edge: i32, radius_mm: f64, chord_mm: f64) -> String {
+        take(unsafe { lime_model_occt_fillet(id, edge, radius_mm, chord_mm) })
+    }
+
+    pub fn chamfer(id: i32, edge: i32, distance_mm: f64, chord_mm: f64) -> String {
+        take(unsafe { lime_model_occt_chamfer(id, edge, distance_mm, chord_mm) })
+    }
+
+    pub fn hole(id: i32, origin: [f64; 3], radius_mm: f64, depth_mm: f64, chord_mm: f64) -> String {
+        let [x, y, z] = origin;
+        take(unsafe { lime_model_occt_hole(id, x, y, z, radius_mm, depth_mm, chord_mm) })
+    }
+
+    pub fn scale(id: i32, factor: f64, chord_mm: f64) -> String {
+        take(unsafe { lime_model_occt_scale(id, factor, chord_mm) })
+    }
+
+    pub fn write_step(id: i32, path: &Path) -> String {
+        let Some(text) = path.to_str() else {
+            return "{\"error\":\"STEP path is not UTF-8\"}".into();
+        };
+        let Ok(c) = CString::new(text) else {
+            return "{\"error\":\"STEP path is not a C string\"}".into();
+        };
+        take(unsafe { lime_model_occt_write_step(id, c.as_ptr()) })
     }
 
     pub fn undo(id: i32, chord_mm: f64) -> String {

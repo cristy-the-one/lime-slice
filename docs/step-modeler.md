@@ -44,10 +44,22 @@ Model mode can fuse, cut, or intersect the open solid with a box, cylinder, or s
 
 A successful edit replaces `sourcePos` with the settled tessellation, writes that mesh with `encodeStl`, and renames the file to `.stl`, so truck is not asked to read the edited solid. The pose stays. Support paint, seam paint, and support edits on that object are cleared, because they named the old surface. Undo restores the solid, that mesh, and the paint. A split keeps the piece on the negative side of the plane and adds the other piece through the plate's add path. The second piece is a mesh until a later change can store its B-rep.
 
+## Fillet, chamfer, hole, and scale
+
+Model mode can fillet or chamfer the picked edge, cut a cylindrical hole, and scale the solid by one factor. The blend size, the hole radius, and the hole depth are millimetres. The hole starts at the origin fields and runs straight down. Scale is about the solid's centre. A kernel failure is the readout, and the solid is left as it was. There is no mesh fallback.
+
+A successful edit uses the same commit as a boolean: settled tessellation, `encodeStl`, and a `.stl` name. Pose stays, except that a scale sets the plate's `partScale` back to 1 so the part is not scaled twice. Undo restores the solid, the mesh, the paint, and that placement scale.
+
+## STEP save
+
+Model mode writes the open solid as AP214 IS, a manifold solid B-rep, through `STEPControl_Writer`. The STEP button downloads that file. The same bytes are kept on the plate object as optional `brep`, in the same shape as `mesh`: name, base64, length, and hash.
+
+`.lime` stays version 2. A one-object file with `brep` is version 2 so the field is not dropped. A file without it still opens, including one saved before this field existed. A damaged `brep` fails the open. An older app ignores the key, slices the mesh, and drops `brep` on the next save. Duplicate copies the bytes. The second piece of a split stays a mesh.
+
+Opening Model reloads `brep` when the object has one, so an edited solid is not stuck as a mesh. The STL is what the slicer reads. Opening Model still does not replace `sourcePos`.
+
 ## What this change is not
 
-- No fillet, chamfer, hole, or scale.
-- No STEP writer, and no `.lime` brep field.
 - No change to `tools/golden_ab.sh` or to slicer output.
 - The slicer core does not link Open CASCADE. Truck still reads an unedited STEP file for slicing.
 

@@ -17,7 +17,10 @@
 #include <BRepAlgoAPI_Splitter.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
+#include <BRepFilletAPI_MakeChamfer.hxx>
+#include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
@@ -45,11 +48,15 @@
 #include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
 
 #ifdef LIME_OCCT_STEP
 #include <IFSelect_ReturnStatus.hxx>
+#include <Interface_Static.hxx>
 #include <STEPControl_Reader.hxx>
+#include <STEPControl_StepModelType.hxx>
+#include <STEPControl_Writer.hxx>
 #endif
 
 namespace {
@@ -421,6 +428,63 @@ bool accepted_result(const TopoDS_Shape& shape, std::string& error) {
     return true;
 }
 
+char* commit_edit(
+    int id,
+    const TopoDS_Shape& current,
+    const TopoDS_Shape& result,
+    double chord,
+    const std::string& empty_message) {
+    const TopoDS_Shape solid = as_solid(result);
+    if (solid.IsNull() || !has_solid(solid) || !(volume_of(solid) > 1e-6)) {
+        return error_json(empty_message);
+    }
+    std::lock_guard<std::mutex> lock(g_mu);
+    Held held;
+    if (!held_at(id, held) || !held.shape.IsSame(current)) {
+        return error_json("That solid is no longer open");
+    }
+    checkpoint(current);
+    replace_held(id, solid);
+    return finish(id, chord);
+}
+
+bool copy_edge(
+    int id,
+    int edge,
+    const char* verb,
+    TopoDS_Shape& current,
+    TopoDS_Edge& found,
+    std::string& error) {
+    std::lock_guard<std::mutex> lock(g_mu);
+    Held held;
+    if (!held_at(id, held)) {
+        error = "That solid is no longer open";
+        return false;
+    }
+    if (edge < 0) {
+        error = std::string("Pick an edge to ") + verb + ".";
+        return false;
+    }
+    if (edge >= held.edges.Extent()) {
+        error = "That edge is not on this solid";
+        return false;
+    }
+    current = held.shape;
+    found = TopoDS::Edge(held.edges(edge + 1));
+    return true;
+}
+
+bool copy_shape(int id, TopoDS_Shape& current, std::string& error) {
+    std::lock_guard<std::mutex> lock(g_mu);
+    Held held;
+    if (!held_at(id, held)) {
+        error = "That solid is no longer open";
+        return false;
+    }
+    current = held.shape;
+    return true;
+}
+
 }  // namespace
 
 extern "C" char* lime_model_occt_open_box(double x_mm, double y_mm, double z_mm) {
@@ -714,6 +778,187 @@ extern "C" char* lime_model_occt_undo(int id, double chord) {
         g_undo.pop_back();
         replace_held(id, previous);
         return finish(id, chord);
+    } catch (const Standard_Failure& failure) {
+        const char* message = failure.GetMessageString();
+        return error_json(message != nullptr ? message : "Open CASCADE failed");
+    } catch (...) {
+        return error_json("Open CASCADE failed");
+    }
+}
+
+extern "C" char* lime_model_occt_fillet(int id, int edge, double radius, double chord) {
+    try {
+        if (!(radius > 0.0)) {
+            return error_json("A fillet needs a positive radius");
+        }
+        TopoDS_Shape current;
+        TopoDS_Edge found;
+        std::string error;
+        if (!copy_edge(id, edge, "fillet", current, found, error)) {
+            return error_json(error);
+        }
+        TopoDS_Shape built;
+        try {
+            BRepFilletAPI_MakeFillet fillet(current);
+            fillet.Add(radius, found);
+            fillet.Build();
+            if (!fillet.IsDone() || fillet.Shape().IsNull()) {
+                return error_json("The fillet did not fit this edge");
+            }
+            built = fillet.Shape();
+        } catch (const Standard_Failure&) {
+            return error_json("The fillet did not fit this edge");
+        }
+        return commit_edit(id, current, built, chord, "The fillet did not fit this edge");
+    } catch (const Standard_Failure& failure) {
+        const char* message = failure.GetMessageString();
+        return error_json(message != nullptr ? message : "Open CASCADE failed");
+    } catch (...) {
+        return error_json("Open CASCADE failed");
+    }
+}
+
+extern "C" char* lime_model_occt_chamfer(int id, int edge, double distance, double chord) {
+    try {
+        if (!(distance > 0.0)) {
+            return error_json("A chamfer needs a positive distance");
+        }
+        TopoDS_Shape current;
+        TopoDS_Edge found;
+        std::string error;
+        if (!copy_edge(id, edge, "chamfer", current, found, error)) {
+            return error_json(error);
+        }
+        TopoDS_Shape built;
+        try {
+            BRepFilletAPI_MakeChamfer chamfer(current);
+            chamfer.Add(distance, found);
+            chamfer.Build();
+            if (!chamfer.IsDone() || chamfer.Shape().IsNull()) {
+                return error_json("The chamfer did not fit this edge");
+            }
+            built = chamfer.Shape();
+        } catch (const Standard_Failure&) {
+            return error_json("The chamfer did not fit this edge");
+        }
+        return commit_edit(id, current, built, chord, "The chamfer did not fit this edge");
+    } catch (const Standard_Failure& failure) {
+        const char* message = failure.GetMessageString();
+        return error_json(message != nullptr ? message : "Open CASCADE failed");
+    } catch (...) {
+        return error_json("Open CASCADE failed");
+    }
+}
+
+extern "C" char* lime_model_occt_hole(
+    int id,
+    double x,
+    double y,
+    double z,
+    double radius,
+    double depth,
+    double chord) {
+    try {
+        if (!(radius > 0.0) || !(depth > 0.0)) {
+            return error_json("A hole needs a positive radius and depth");
+        }
+        TopoDS_Shape current;
+        std::string error;
+        if (!copy_shape(id, current, error)) {
+            return error_json(error);
+        }
+        BRepPrimAPI_MakeCylinder cylinder(gp_Ax2(gp_Pnt(x, y, z - depth), gp_Dir(0, 0, 1)), radius, depth);
+        cylinder.Build();
+        if (!cylinder.IsDone()) {
+            return error_json("Open CASCADE did not build the hole");
+        }
+        const TopoDS_Shape cut = boolean_op("cut", current, cylinder.Shape(), error);
+        if (!error.empty()) {
+            return error_json(error);
+        }
+        const double before = volume_of(current);
+        const double after = volume_of(as_solid(cut));
+        if (!(after > 1e-6)) {
+            return error_json("The hole removed the solid");
+        }
+        if (std::abs(after - before) < 1e-4) {
+            return error_json("The hole missed this solid");
+        }
+        return commit_edit(id, current, cut, chord, "The hole removed the solid");
+    } catch (const Standard_Failure& failure) {
+        const char* message = failure.GetMessageString();
+        return error_json(message != nullptr ? message : "Open CASCADE failed");
+    } catch (...) {
+        return error_json("Open CASCADE failed");
+    }
+}
+
+extern "C" char* lime_model_occt_scale(int id, double factor, double chord) {
+    try {
+        if (!(factor > 0.0)) {
+            return error_json("Scale needs a positive factor");
+        }
+        if (std::abs(factor - 1.0) < 1e-9) {
+            return error_json("Scale needs a factor other than 1");
+        }
+        TopoDS_Shape current;
+        std::string error;
+        if (!copy_shape(id, current, error)) {
+            return error_json(error);
+        }
+        Bnd_Box bounds;
+        BRepBndLib::Add(current, bounds, Standard_False);
+        if (bounds.IsVoid()) {
+            return error_json("This solid has no extent");
+        }
+        double xmin = 0;
+        double ymin = 0;
+        double zmin = 0;
+        double xmax = 0;
+        double ymax = 0;
+        double zmax = 0;
+        bounds.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+        gp_Trsf trsf;
+        trsf.SetScale(gp_Pnt((xmin + xmax) * 0.5, (ymin + ymax) * 0.5, (zmin + zmax) * 0.5), factor);
+        BRepBuilderAPI_Transform builder(current, trsf, Standard_True, Standard_False);
+        builder.Build();
+        if (!builder.IsDone() || builder.Shape().IsNull()) {
+            return error_json("Open CASCADE did not scale this solid");
+        }
+        return commit_edit(id, current, builder.Shape(), chord, "Open CASCADE did not scale this solid");
+    } catch (const Standard_Failure& failure) {
+        const char* message = failure.GetMessageString();
+        return error_json(message != nullptr ? message : "Open CASCADE failed");
+    } catch (...) {
+        return error_json("Open CASCADE failed");
+    }
+}
+
+extern "C" char* lime_model_occt_write_step(int id, const char* path) {
+    try {
+#ifndef LIME_OCCT_STEP
+        (void)id;
+        (void)path;
+        return error_json("STEP writer is not linked");
+#else
+        if (path == nullptr || path[0] == '\0') {
+            return error_json("STEP path is empty");
+        }
+        TopoDS_Shape current;
+        std::string error;
+        if (!copy_shape(id, current, error)) {
+            return error_json(error);
+        }
+        Interface_Static::SetCVal("write.step.schema", "AP214IS");
+        STEPControl_Writer writer;
+        if (writer.Transfer(current, STEPControl_ManifoldSolidBrep) != IFSelect_RetDone) {
+            return error_json("Open CASCADE did not write this solid");
+        }
+        if (writer.Write(path) != IFSelect_RetDone) {
+            return error_json("Open CASCADE did not write this solid");
+        }
+        return alloc("{\"ok\":true}");
+#endif
     } catch (const Standard_Failure& failure) {
         const char* message = failure.GetMessageString();
         return error_json(message != nullptr ? message : "Open CASCADE failed");
