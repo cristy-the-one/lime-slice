@@ -19,6 +19,21 @@ import { clearSeam, drawSeam, seamStroke } from "./app/seam-actions";
 import { mountSeamPaint } from "./ui/seam-paint-ui";
 import { mountSupportPaint } from "./ui/support-paint-ui";
 import { clearPaint, drawPaint, paintStroke, tallyOf } from "./app/paint-actions";
+import {
+  addNewPaintRegion,
+  clearReinforce,
+  currentNormalDensity,
+  currentReinforceIndex,
+  drawReinforce,
+  dropEmptyReinforceOnDone,
+  reinforceStroke,
+  removeReinforceRegion,
+  selectReinforceRegion,
+  setReinforceDensity,
+  setReinforceDepth,
+  setReinforceFillThrough,
+} from "./app/reinforce-actions";
+import { mountReinforcePaint } from "./ui/reinforce-ui";
 import { fx } from "./app/fx";
 import { plateListed } from "./plate";
 import { mountMarkup } from "./app/markup";
@@ -93,6 +108,7 @@ session.supportUi = mountSupportEdits(view3d, {
 session.paintUi = mountSupportPaint(prepare, {
   yieldBrush() {
     session.seamUi?.stop();
+    session.reinforceUi?.stop();
   },
   view() {
     const listed = plateListed(state.plate);
@@ -122,6 +138,36 @@ session.seamUi = mountSeamPaint(prepare, {
   },
   yieldBrush() {
     session.paintUi?.stop();
+    session.reinforceUi?.stop();
+  },
+  restoreBrush() {
+    session.paintUi?.bind();
+  },
+});
+session.reinforceUi = mountReinforcePaint(prepare, {
+  view() {
+    return {
+      regions: state.reinforcement,
+      activeIndex: currentReinforceIndex(),
+      normalDensity: currentNormalDensity(),
+      hasMesh: !!state.placed,
+    };
+  },
+  stroke: reinforceStroke,
+  selectRegion: selectReinforceRegion,
+  newRegion: addNewPaintRegion,
+  setDepth: setReinforceDepth,
+  setFillThrough: setReinforceFillThrough,
+  setDensity: setReinforceDensity,
+  deleteRegion: removeReinforceRegion,
+  clear: clearReinforce,
+  onDone: dropEmptyReinforceOnDone,
+  reveal() {
+    if (state.stage !== "prepare") setStage("prepare");
+  },
+  yieldBrush() {
+    session.paintUi?.stop();
+    session.seamUi?.stop();
   },
   restoreBrush() {
     session.paintUi?.bind();
@@ -130,9 +176,11 @@ session.seamUi = mountSeamPaint(prepare, {
 fx.drawPaint = () => {
   drawPaint();
   drawSeam();
+  drawReinforce();
 };
 drawPaint();
 drawSeam();
+drawReinforce();
 mountConnection(() => {
   void probe();
 });

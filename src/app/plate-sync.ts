@@ -14,6 +14,7 @@ export function syncPlateFromState() {
     supportEdits: state.supportEdits,
     supportPaint: state.supportPaint,
     seamPaint: state.seamPaint,
+    reinforcement: state.reinforcement,
     fileName: state.mesh.name,
     bytes: state.mesh.bytes,
     sourcePos: state.sourcePos,
@@ -33,4 +34,5 @@ export function applySelectedToState(plate: PlateState) {
   state.supportEdits = obj.supportEdits.map((entry) => structuredClone(entry));
   state.supportPaint = obj.supportPaint;
   state.seamPaint = obj.seamPaint;
+  state.reinforcement = obj.reinforcement ?? [];
 }

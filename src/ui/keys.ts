@@ -18,7 +18,7 @@ function keyContext(ev: KeyboardEvent): KeyContext {
     hasResult: !!state.result,
     running: state.busy,
     searching: target?.id === "find" || (!!state.query && !typing),
-    brushOn: root.supportPaint === "1" || root.seamPaint === "1",
+    brushOn: root.supportPaint === "1" || root.seamPaint === "1" || root.reinforcePaint === "1",
     editingSupports: document.querySelector('#toolRail [data-tool="supports"]')?.getAttribute("aria-pressed") === "true",
     inGcode: !!target && !!document.querySelector("#gcodePane")?.contains(target),
   };
