@@ -197,6 +197,67 @@ export function volumeInMeshFrame(v: ReinforceVolumeRegion, frame: SourceFrame):
   };
 }
 
+/**
+ * Default box or cylinder reinforcement volume in the source frame, placed at the source
+ * bounds centre with size `min(10 mm, 60% of source bounds)` on each axis (`[0.2..10000]`).
+ */
+export function defaultReinforceVolume(
+  kind: "box" | "cylinder",
+  bounds: { min: Vec3; max: Vec3 },
+  density = REINFORCE_DENSITY_DEFAULT,
+): ReinforceVolumeRegion {
+  const c: Vec3 = [
+    round((bounds.min[0] + bounds.max[0]) / 2, 3),
+    round((bounds.min[1] + bounds.max[1]) / 2, 3),
+    round((bounds.min[2] + bounds.max[2]) / 2, 3),
+  ];
+  const spanX = Math.max(REINFORCE_VOL_MIN_MM, (bounds.max[0] - bounds.min[0]) * 0.6);
+  const spanY = Math.max(REINFORCE_VOL_MIN_MM, (bounds.max[1] - bounds.min[1]) * 0.6);
+  const spanZ = Math.max(REINFORCE_VOL_MIN_MM, (bounds.max[2] - bounds.min[2]) * 0.6);
+  const size: Vec3 = [
+    round(Math.min(10, spanX), 3),
+    round(Math.min(10, spanY), 3),
+    round(Math.min(10, spanZ), 3),
+  ];
+  return {
+    kind,
+    density: Math.min(1, Math.max(0, density)),
+    center: c,
+    size,
+  };
+}
+
+/** Move a reinforcement volume along `axis` in the source frame (`deltaMeshMm` is divided by `scale`). */
+export function moveReinforceVolume(
+  v: ReinforceVolumeRegion,
+  axis: "x" | "y" | "z",
+  deltaMeshMm: number,
+  scale = 1,
+): ReinforceVolumeRegion {
+  const d = deltaMeshMm / Math.max(1e-6, scale);
+  const idx = axis === "x" ? 0 : axis === "y" ? 1 : 2;
+  const center: Vec3 = [...v.center];
+  center[idx] = round(center[idx] + d, 3);
+  return { ...v, center };
+}
+
+/** Scale a reinforcement volume along `axis` (`deltaMeshMm` is the change in full mesh size). */
+export function scaleReinforceVolume(
+  v: ReinforceVolumeRegion,
+  axis: "x" | "y" | "z",
+  deltaMeshMm: number,
+  scale = 1,
+): ReinforceVolumeRegion {
+  const s = Math.max(1e-6, scale);
+  const d = deltaMeshMm / s;
+  const minSource = REINFORCE_VOL_MIN_MM / s;
+  const maxSource = REINFORCE_VOL_MAX_MM / s;
+  const idx = axis === "x" ? 0 : axis === "y" ? 1 : 2;
+  const size: Vec3 = [...v.size];
+  size[idx] = round(Math.min(maxSource, Math.max(minSource, size[idx] + d)), 3);
+  return { ...v, size };
+}
+
 export type WireReinforceRegion =
   | {
       kind: "paint";

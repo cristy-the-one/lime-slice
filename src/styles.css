@@ -561,9 +561,10 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .model-panel {
   position: absolute;
   top: 48px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(420px, calc(100% - 20px));
+  left: 10px;
+  width: min(340px, calc(100% - 20px));
+  max-height: calc(100% - 96px);
+  overflow-y: auto;
   padding: var(--space-2) var(--space-3);
   background: color-mix(in srgb, var(--panel) 94%, transparent);
   border: 1px solid var(--line);
@@ -603,6 +604,22 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .model-note.is-bad { color: var(--danger); }
 .model-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); }
 .model-actions .btn { height: var(--control-h-sm); }
+.model-bar[data-tool="measure"] #modelApply { display: none; }
+.model-drag-tip {
+  position: absolute;
+  z-index: 3;
+  padding: 2px var(--space-1);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-2);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.model-drag-tip[hidden] { display: none; }
 .model-readout {
   position: absolute;
   left: 10px;

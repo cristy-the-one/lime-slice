@@ -29,6 +29,9 @@ type Boolean = unsafe extern "C" fn(
     f64,
     f64,
     f64,
+    f64,
+    f64,
+    f64,
 ) -> *mut c_char;
 type Split = unsafe extern "C" fn(i32, f64, f64, f64, f64, f64, f64, f64) -> *mut c_char;
 type Fillet = unsafe extern "C" fn(i32, i32, f64, f64) -> *mut c_char;
@@ -39,6 +42,9 @@ type BooleanProbe = unsafe extern "C" fn(
     i32,
     *const c_char,
     *const c_char,
+    f64,
+    f64,
+    f64,
     f64,
     f64,
     f64,
@@ -133,6 +139,8 @@ pub struct Tool {
     pub size: [f64; 3],
     pub radius: f64,
     pub height: f64,
+    /// Degrees about X, then Y, then Z, through the primitive's centre.
+    pub turn: [f64; 3],
 }
 
 /// A plane through `origin` with `normal`, in millimetres.
@@ -169,6 +177,9 @@ pub fn boolean(
             dz,
             tool.radius,
             tool.height,
+            tool.turn[0],
+            tool.turn[1],
+            tool.turn[2],
             chord_mm,
         )
     };
@@ -239,6 +250,9 @@ pub fn boolean_probe(id: i32, op: &str, primitive: &str, tool: Tool) -> Result<S
             dz,
             tool.radius,
             tool.height,
+            tool.turn[0],
+            tool.turn[1],
+            tool.turn[2],
         )
     };
     take(ptr, api.free)

@@ -51,12 +51,14 @@ pub fn distance(id: i32, a_kind: &str, a: i32, b_kind: &str, b: i32) -> String {
 }
 
 /// A box, cylinder, or sphere in millimetres. `origin` is the box corner, the cylinder base, or the sphere center.
+/// `turn` is degrees about X, then Y, then Z, through the primitive's centre.
 #[derive(Clone, Copy)]
 pub struct Tool {
     pub origin: [f64; 3],
     pub size: [f64; 3],
     pub radius: f64,
     pub height: f64,
+    pub turn: [f64; 3],
 }
 
 /// A plane through `origin` with `normal`, in millimetres.
@@ -262,6 +264,9 @@ pub unsafe extern "C" fn lime_occt_boolean(
     dz: f64,
     radius: f64,
     height: f64,
+    rx: f64,
+    ry: f64,
+    rz: f64,
     chord_mm: f64,
 ) -> *mut c_char {
     export_json(boolean(
@@ -273,6 +278,7 @@ pub unsafe extern "C" fn lime_occt_boolean(
             size: [dx, dy, dz],
             radius,
             height,
+            turn: [rx, ry, rz],
         },
         chord_mm,
     ))
@@ -295,6 +301,9 @@ pub unsafe extern "C" fn lime_occt_boolean_probe(
     dz: f64,
     radius: f64,
     height: f64,
+    rx: f64,
+    ry: f64,
+    rz: f64,
 ) -> *mut c_char {
     export_json(boolean_probe(
         id,
@@ -305,6 +314,7 @@ pub unsafe extern "C" fn lime_occt_boolean_probe(
             size: [dx, dy, dz],
             radius,
             height,
+            turn: [rx, ry, rz],
         },
     ))
 }
@@ -462,6 +472,9 @@ mod native {
             dz: f64,
             radius: f64,
             height: f64,
+            rx: f64,
+            ry: f64,
+            rz: f64,
             chord: f64,
         ) -> *mut c_char;
         fn lime_model_occt_split(
@@ -497,6 +510,9 @@ mod native {
             dz: f64,
             radius: f64,
             height: f64,
+            rx: f64,
+            ry: f64,
+            rz: f64,
         ) -> *mut c_char;
         fn lime_model_occt_hole(
             id: i32,
@@ -557,6 +573,7 @@ mod native {
         };
         let [x, y, z] = tool.origin;
         let [dx, dy, dz] = tool.size;
+        let [rx, ry, rz] = tool.turn;
         take(unsafe {
             lime_model_occt_boolean(
                 id,
@@ -570,6 +587,9 @@ mod native {
                 dz,
                 tool.radius,
                 tool.height,
+                rx,
+                ry,
+                rz,
                 chord_mm,
             )
         })
@@ -607,6 +627,7 @@ mod native {
         };
         let [x, y, z] = tool.origin;
         let [dx, dy, dz] = tool.size;
+        let [rx, ry, rz] = tool.turn;
         take(unsafe {
             lime_model_occt_boolean_probe(
                 id,
@@ -620,6 +641,9 @@ mod native {
                 dz,
                 tool.radius,
                 tool.height,
+                rx,
+                ry,
+                rz,
             )
         })
     }

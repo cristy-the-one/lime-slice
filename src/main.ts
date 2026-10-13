@@ -21,17 +21,23 @@ import { mountSupportPaint } from "./ui/support-paint-ui";
 import { clearPaint, drawPaint, paintStroke, tallyOf } from "./app/paint-actions";
 import {
   addNewPaintRegion,
+  addReinforceVolume,
+  beginReinforceVolumeEdit,
   clearReinforce,
   currentNormalDensity,
   currentReinforceIndex,
+  currentReinforceTool,
   drawReinforce,
   dropEmptyReinforceOnDone,
+  endReinforceVolumeEdit,
+  nudgeReinforceVolume,
   reinforceStroke,
   removeReinforceRegion,
   selectReinforceRegion,
   setReinforceDensity,
   setReinforceDepth,
   setReinforceFillThrough,
+  setReinforceVolumeTool,
 } from "./app/reinforce-actions";
 import { mountReinforcePaint } from "./ui/reinforce-ui";
 import { fx } from "./app/fx";
@@ -149,6 +155,7 @@ session.reinforceUi = mountReinforcePaint(prepare, {
     return {
       regions: state.reinforcement,
       activeIndex: currentReinforceIndex(),
+      volumeTool: currentReinforceTool(),
       normalDensity: currentNormalDensity(),
       hasMesh: !!state.placed,
     };
@@ -156,6 +163,8 @@ session.reinforceUi = mountReinforcePaint(prepare, {
   stroke: reinforceStroke,
   selectRegion: selectReinforceRegion,
   newRegion: addNewPaintRegion,
+  addVolume: addReinforceVolume,
+  setVolumeTool: setReinforceVolumeTool,
   setDepth: setReinforceDepth,
   setFillThrough: setReinforceFillThrough,
   setDensity: setReinforceDensity,
@@ -173,6 +182,10 @@ session.reinforceUi = mountReinforcePaint(prepare, {
     session.paintUi?.bind();
   },
 });
+prepare.onReinforceVolumeSelect((idx) => selectReinforceRegion(idx));
+prepare.onReinforceVolumeEditStart(() => beginReinforceVolumeEdit());
+prepare.onReinforceVolumeEdit((idx, kind, axis, deltaMm) => nudgeReinforceVolume(idx, kind, axis, deltaMm));
+prepare.onReinforceVolumeEditEnd(() => endReinforceVolumeEdit());
 fx.drawPaint = () => {
   drawPaint();
   drawSeam();

@@ -103,6 +103,7 @@ fn tool(origin: [f64; 3], size: [f64; 3], radius: f64, height: f64) -> lime_mode
         size,
         radius,
         height,
+        turn: [0.0; 3],
     }
 }
 
@@ -195,6 +196,16 @@ fn booleans_and_split() {
     ));
     assert!(common.get("error").is_none(), "{common}");
     near(common["volumeMm3"].as_f64().expect("common"), 500.0);
+    let _ = lime_model_occt::undo(id, 0.1);
+
+    let mut turned = tool([0.0, 0.0, 0.0], [10.0, 10.0, 10.0], 0.0, 0.0);
+    turned.turn = [0.0, 0.0, 45.0];
+    let octagon = parse(&lime_model_occt::boolean(id, "common", "box", turned, 0.1));
+    assert!(octagon.get("error").is_none(), "{octagon}");
+    near(
+        octagon["volumeMm3"].as_f64().expect("turned common"),
+        1000.0 * (2.0 * std::f64::consts::SQRT_2 - 2.0),
+    );
     let _ = lime_model_occt::undo(id, 0.1);
 
     let cylinder = std::f64::consts::PI * 25.0 * 10.0;
@@ -499,6 +510,7 @@ fn bridge_exports(measured: bool) {
                     size: [10.0, 10.0, 10.0],
                     radius: 0.0,
                     height: 0.0,
+                    turn: [0.0; 3],
                 },
                 0.1,
             )

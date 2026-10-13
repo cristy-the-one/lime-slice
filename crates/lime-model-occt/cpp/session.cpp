@@ -53,6 +53,7 @@
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
+#include <gp_Ax1.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
@@ -498,6 +499,40 @@ TopoDS_Shape make_primitive(
     return {};
 }
 
+/// Turn a primitive about its own centre by X, then Y, then Z degrees. A sphere is left alone.
+TopoDS_Shape turn_primitive(
+    const TopoDS_Shape& shape,
+    const char* kind,
+    double x,
+    double y,
+    double z,
+    double dx,
+    double dy,
+    double dz,
+    double height,
+    double rx,
+    double ry,
+    double rz) {
+    const std::string which = kind == nullptr ? "" : kind;
+    if (which == "sphere" || (rx == 0.0 && ry == 0.0 && rz == 0.0)) {
+        return shape;
+    }
+    const gp_Pnt centre = which == "box" ? gp_Pnt(x + dx / 2.0, y + dy / 2.0, z + dz / 2.0)
+                                         : gp_Pnt(x, y, z + height / 2.0);
+    const double rad = 3.14159265358979323846 / 180.0;
+    gp_Trsf tx;
+    gp_Trsf ty;
+    gp_Trsf tz;
+    tx.SetRotation(gp_Ax1(centre, gp_Dir(1, 0, 0)), rx * rad);
+    ty.SetRotation(gp_Ax1(centre, gp_Dir(0, 1, 0)), ry * rad);
+    tz.SetRotation(gp_Ax1(centre, gp_Dir(0, 0, 1)), rz * rad);
+    gp_Trsf total = tz;
+    total.Multiply(ty);
+    total.Multiply(tx);
+    BRepBuilderAPI_Transform builder(shape, total, Standard_True);
+    return builder.Shape();
+}
+
 TopoDS_Shape boolean_op(const std::string& op, const TopoDS_Shape& solid, const TopoDS_Shape& tool, std::string& error) {
     if (op == "fuse") {
         BRepAlgoAPI_Fuse algo(solid, tool);
@@ -689,14 +724,18 @@ TopoDS_Shape build_boolean(
     double dz,
     double radius,
     double height,
+    double rx,
+    double ry,
+    double rz,
     std::string& error) {
-    const TopoDS_Shape tool = make_primitive(primitive, x, y, z, dx, dy, dz, radius, height, error);
-    if (tool.IsNull()) {
+    const TopoDS_Shape made = make_primitive(primitive, x, y, z, dx, dy, dz, radius, height, error);
+    if (made.IsNull()) {
         if (error.empty()) {
             error = "Open CASCADE did not build the primitive";
         }
         return {};
     }
+    const TopoDS_Shape tool = turn_primitive(made, primitive, x, y, z, dx, dy, dz, height, rx, ry, rz);
     const TopoDS_Shape result = boolean_op(which, current, tool, error);
     if (!error.empty()) {
         return {};
@@ -861,6 +900,9 @@ extern "C" char* lime_model_occt_boolean(
     double dz,
     double radius,
     double height,
+    double rx,
+    double ry,
+    double rz,
     double chord) {
     try {
         const std::string which = op == nullptr ? "" : op;
@@ -875,7 +917,7 @@ extern "C" char* lime_model_occt_boolean(
         }
         std::string error;
         const TopoDS_Shape result =
-            build_boolean(current, which, primitive, x, y, z, dx, dy, dz, radius, height, error);
+            build_boolean(current, which, primitive, x, y, z, dx, dy, dz, radius, height, rx, ry, rz, error);
         if (!error.empty()) {
             return error_json(error);
         }
@@ -1188,7 +1230,10 @@ extern "C" char* lime_model_occt_boolean_probe(
     double dy,
     double dz,
     double radius,
-    double height) {
+    double height,
+    double rx,
+    double ry,
+    double rz) {
     try {
         TopoDS_Shape current;
         std::string error;
@@ -1197,7 +1242,7 @@ extern "C" char* lime_model_occt_boolean_probe(
         }
         const std::string which = op == nullptr ? "" : op;
         const TopoDS_Shape result =
-            build_boolean(current, which, primitive, x, y, z, dx, dy, dz, radius, height, error);
+            build_boolean(current, which, primitive, x, y, z, dx, dy, dz, radius, height, rx, ry, rz, error);
         (void)result;
         return probe_json(error.empty(), error, 0.0);
     } catch (const Standard_Failure& failure) {

@@ -1467,6 +1467,11 @@ fn model_boolean_request(body: &str) -> Result<String, String> {
             ],
             radius: json_f64(&value, "radius"),
             height: json_f64(&value, "height"),
+            turn: [
+                json_f64(&value, "rx"),
+                json_f64(&value, "ry"),
+                json_f64(&value, "rz"),
+            ],
         },
         model_chord(&value),
     )
@@ -1530,6 +1535,11 @@ fn model_probe_request(body: &str) -> Result<String, String> {
                 ],
                 radius: json_f64(&value, "radius"),
                 height: json_f64(&value, "height"),
+                turn: [
+                    json_f64(&value, "rx"),
+                    json_f64(&value, "ry"),
+                    json_f64(&value, "rz"),
+                ],
             },
         ),
         "chamfer" => lime_model_load::blend_probe(

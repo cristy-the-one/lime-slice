@@ -3,6 +3,8 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
+import { gizmoRadiusForPixels } from "./gizmo-math";
+import { dragLabel, dragValue, lineParam, moveFine, startFine, wrapDegrees, type DragHandle, type FinePointer, type Vec3 } from "./model-drag";
 import { faceBoundarySegments, faceColor } from "./model-select";
 import { hexToThree, themeColors } from "./theme";
 
@@ -21,15 +23,25 @@ export interface ModelSolid {
 
 /** A local stand-in for the tool. The kernel runs on Apply, not while the numbers move. */
 export type ModelGhost =
-  | { kind: "box"; x: number; y: number; z: number; dx: number; dy: number; dz: number }
-  | { kind: "cylinder"; x: number; y: number; z: number; radius: number; height: number }
+  | { kind: "box"; x: number; y: number; z: number; dx: number; dy: number; dz: number; turn?: Vec3 }
+  | { kind: "cylinder"; x: number; y: number; z: number; radius: number; height: number; turn?: Vec3 }
   | { kind: "sphere"; x: number; y: number; z: number; radius: number }
   | { kind: "plane"; z: number }
   | { kind: "hole"; x: number; y: number; z: number; radius: number; depth: number }
   | { kind: "scale"; factor: number }
-  | { kind: "blend"; edge: number; radius: number };
+  | { kind: "blend"; edge: number; radius: number }
+  | { kind: "measure"; a: Vec3; b: Vec3 };
+
+/** A handle moved. `values` go into the handle's fields in order. */
+export interface HandleDrag {
+  handle: DragHandle;
+  values: number[];
+  phase: "move" | "end";
+}
 
 const EDGE_PX = 16;
+/** On-screen length of one handle unit. An arrow is about this long. */
+const HANDLE_PX = 92;
 const IDLE_EDGE = 0x8d9780;
 
 export interface ModelView {
@@ -40,6 +52,8 @@ export interface ModelView {
   setTheme(): void;
   resize(): void;
   onPick(cb: (pick: ModelPick | null, shift: boolean) => void): void;
+  setHandles(handles: DragHandle[]): void;
+  onHandleDrag(cb: (drag: HandleDrag) => void): void;
 }
 
 export function createModelView(canvas: HTMLCanvasElement): ModelView {
@@ -67,7 +81,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
 
   const body = new THREE.Group();
   const ghosts = new THREE.Group();
-  scene.add(body, ghosts);
+  const handleGroup = new THREE.Group();
+  scene.add(body, ghosts, handleGroup);
 
   let solid: ModelSolid | null = null;
   let boundaries = new Map<number, number[]>();
@@ -86,6 +101,14 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let pickCb: (pick: ModelPick | null, shift: boolean) => void = () => {};
   let down: { x: number; y: number } | null = null;
   let running = false;
+  let handleParts: HandlePart[] = [];
+  let overHandle: string | null = null;
+  let drag: ActiveDrag | null = null;
+  let handleCb: (drag: HandleDrag) => void = () => {};
+  const tip = document.createElement("div");
+  tip.className = "model-drag-tip";
+  tip.hidden = true;
+  canvas.parentElement?.append(tip);
 
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
@@ -252,6 +275,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const geometry = new THREE.CylinderGeometry(radius, radius, height, 32);
     const meshGhost = addGhostMesh(geometry, new THREE.Vector3(x, y, z));
     meshGhost.quaternion.setFromUnitVectors(yAxis, zAxis);
+    return meshGhost;
   }
 
   function rebuildGhost() {
@@ -261,15 +285,28 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (!current || !solid) return;
     if (current.kind === "box") {
       if (current.dx > 0 && current.dy > 0 && current.dz > 0) {
-        addGhostMesh(
+        const box = addGhostMesh(
           new THREE.BoxGeometry(current.dx, current.dy, current.dz),
           new THREE.Vector3(current.x + current.dx / 2, current.y + current.dy / 2, current.z + current.dz / 2),
         );
+        box.quaternion.copy(turnQuaternion(current.turn));
       }
       return;
     }
     if (current.kind === "cylinder") {
-      pointCylinder(current.x, current.y, current.z + current.height / 2, current.radius, current.height);
+      const cylinder = pointCylinder(current.x, current.y, current.z + current.height / 2, current.radius, current.height);
+      cylinder?.quaternion.premultiply(turnQuaternion(current.turn));
+      return;
+    }
+    if (current.kind === "measure") {
+      const line = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...current.a), new THREE.Vector3(...current.b)]),
+        new THREE.LineDashedMaterial({ color: accent, dashSize: Math.max(extent / 60, 0.3), gapSize: Math.max(extent / 90, 0.2), depthTest: false, transparent: true }),
+      );
+      line.computeLineDistances();
+      line.renderOrder = 5;
+      line.raycast = () => undefined;
+      ghosts.add(line);
       return;
     }
     if (current.kind === "sphere") {
@@ -339,6 +376,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         return;
       }
       controls.update();
+      sizeHandles();
       renderer.render(scene, camera);
       requestAnimationFrame(frameLoop);
     };
@@ -417,14 +455,45 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   canvas.addEventListener("pointerdown", (ev) => {
-    if (ev.button !== 0) return;
-    down = { x: ev.clientX, y: ev.clientY };
-  });
+    if (ev.button !== 0 || drag) return;
+    const part = handleAt(ev.clientX, ev.clientY);
+    if (!part) return;
+    ev.stopImmediatePropagation();
+    ev.preventDefault();
+    controls.enabled = false;
+    canvas.setPointerCapture(ev.pointerId);
+    beginDrag(part.handle, ev);
+  }, { capture: true });
   canvas.addEventListener("pointermove", (ev) => {
+    if (drag) {
+      if (ev.pointerId === drag.pointerId) moveDrag(ev);
+      return;
+    }
     if (down) return;
+    const over = handleAt(ev.clientX, ev.clientY);
+    setOverHandle(over?.handle.id ?? null);
+    if (over) {
+      setHover(null);
+      return;
+    }
     setHover(pickAt(ev));
   });
-  canvas.addEventListener("pointerleave", () => setHover(null));
+  const finishDrag = (ev: PointerEvent) => {
+    if (!drag || ev.pointerId !== drag.pointerId) return;
+    const done = drag;
+    drag = null;
+    controls.enabled = true;
+    if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId);
+    tip.hidden = true;
+    handleCb({ handle: done.handle, values: done.values, phase: "end" });
+    paintHandles();
+  };
+  canvas.addEventListener("pointerup", finishDrag, { capture: true });
+  canvas.addEventListener("pointercancel", finishDrag, { capture: true });
+  canvas.addEventListener("pointerleave", () => {
+    setHover(null);
+    if (!drag) setOverHandle(null);
+  });
   canvas.addEventListener("pointerup", (ev) => {
     if (!down || ev.button !== 0) return;
     const moved = (ev.clientX - down.x) ** 2 + (ev.clientY - down.y) ** 2;
@@ -515,7 +584,268 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     onPick(cb) {
       pickCb = cb;
     },
+    setHandles(next) {
+      buildHandles(next);
+      kick();
+    },
+    onHandleDrag(cb) {
+      handleCb = cb;
+    },
   };
+
+  function handleColor(color: DragHandle["color"]): number {
+    if (color === "x") return hexToThree(colors.axisX);
+    if (color === "y") return hexToThree(colors.axisY);
+    if (color === "z") return hexToThree(colors.axisZ);
+    return accent;
+  }
+
+  function buildHandles(next: DragHandle[]) {
+    for (const part of handleParts) {
+      handleGroup.remove(part.root);
+      disposeObject(part.root);
+    }
+    handleParts = next.map((handle) => handlePart(handle));
+    for (const part of handleParts) handleGroup.add(part.root);
+    if (overHandle && !next.some((handle) => handle.id === overHandle)) overHandle = null;
+    paintHandles();
+  }
+
+  function handlePart(handle: DragHandle): HandlePart {
+    const root = new THREE.Group();
+    root.position.set(...handle.origin);
+    const dir = new THREE.Vector3(...handle.dir).normalize();
+    const material = new THREE.MeshBasicMaterial({ color: handleColor(handle.color), depthTest: false, transparent: true, opacity: 0.95, toneMapped: false });
+    const hidden = new THREE.MeshBasicMaterial({ visible: false });
+    const shown: THREE.Mesh[] = [];
+    const picks: THREE.Mesh[] = [];
+    const place = (mesh: THREE.Mesh, from: THREE.Vector3, offset: number) => {
+      mesh.quaternion.setFromUnitVectors(from, dir);
+      mesh.position.copy(dir).multiplyScalar(offset);
+      root.add(mesh);
+    };
+    if (handle.look === "arrow") {
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.042, 0.042, 0.55, 10), material);
+      const head = new THREE.Mesh(new THREE.ConeGeometry(0.098, 0.3, 14), material);
+      const pick = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.85, 8), hidden);
+      place(shaft, yAxis, 0.4);
+      place(head, yAxis, 0.82);
+      place(pick, yAxis, 0.55);
+      shown.push(shaft, head);
+      picks.push(pick);
+    } else if (handle.look === "knob") {
+      const knob = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.13, 0.13), material);
+      const pick = new THREE.Mesh(new THREE.SphereGeometry(0.17, 10, 8), hidden);
+      place(knob, yAxis, 0);
+      place(pick, yAxis, 0);
+      shown.push(knob);
+      picks.push(pick);
+    } else if (handle.look === "ring") {
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.7, 0.03, 10, 64), material);
+      const pick = new THREE.Mesh(new THREE.TorusGeometry(0.7, 0.09, 8, 32), hidden);
+      place(ring, zAxis, 0);
+      place(pick, zAxis, 0);
+      shown.push(ring);
+      picks.push(pick);
+    } else {
+      const dot = new THREE.Mesh(new THREE.SphereGeometry(0.075, 14, 10), material);
+      const pick = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), hidden);
+      place(dot, yAxis, 0);
+      place(pick, yAxis, 0);
+      shown.push(dot);
+      picks.push(pick);
+    }
+    for (const mesh of [...shown, ...picks]) {
+      mesh.renderOrder = handle.look === "ring" ? 6 : 7;
+      mesh.frustumCulled = false;
+    }
+    return { handle, root, material, picks };
+  }
+
+  function paintHandles() {
+    const hot = hexToThree(colors.gizmoHot);
+    for (const part of handleParts) {
+      const on = drag?.handle.id === part.handle.id || (!drag && overHandle === part.handle.id);
+      part.material.color.setHex(on ? hot : handleColor(part.handle.color));
+    }
+    canvas.style.cursor = drag ? "grabbing" : overHandle ? "grab" : "";
+    kick();
+  }
+
+  function setOverHandle(next: string | null) {
+    if (overHandle === next) return;
+    overHandle = next;
+    paintHandles();
+  }
+
+  function sizeHandles() {
+    const height = canvas.clientHeight;
+    const grips: string[] = [];
+    for (const part of handleParts) {
+      const distance = camera.position.distanceTo(part.root.position);
+      const size = gizmoRadiusForPixels(distance, camera.fov, height, HANDLE_PX, camera.zoom);
+      part.root.scale.setScalar(size);
+      const at = gripPoint(part.handle, size).project(camera);
+      grips.push(`${part.handle.id}:${Math.round((at.x * 0.5 + 0.5) * canvas.clientWidth)},${Math.round((-at.y * 0.5 + 0.5) * height)}`);
+    }
+    const text = grips.join(" ");
+    if (canvas.dataset.handles !== text) canvas.dataset.handles = text;
+  }
+
+  /** Where a pointer grabs a handle: an arrow's head, a ring's rim, or a knob or dot itself. */
+  function gripPoint(handle: DragHandle, size: number): THREE.Vector3 {
+    const origin = new THREE.Vector3(...handle.origin);
+    const dir = new THREE.Vector3(...handle.dir).normalize();
+    if (handle.look === "arrow") return origin.addScaledVector(dir, 0.82 * size);
+    if (handle.look !== "ring") return origin;
+    const toCamera = camera.position.clone().sub(origin);
+    let rim = toCamera.sub(dir.clone().multiplyScalar(toCamera.dot(dir)));
+    if (rim.lengthSq() < 1e-9) rim = Math.abs(dir.z) < 0.9 ? new THREE.Vector3(0, 0, 1).cross(dir) : new THREE.Vector3(1, 0, 0).cross(dir);
+    const side = rim.normalize().cross(dir);
+    return origin.addScaledVector(side, 0.7 * size);
+  }
+
+  function rayAt(x: number, y: number) {
+    const rect = canvas.getBoundingClientRect();
+    pointer.x = ((x - rect.left) / Math.max(1, rect.width)) * 2 - 1;
+    pointer.y = -((y - rect.top) / Math.max(1, rect.height)) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    return raycaster.ray;
+  }
+
+  function handleAt(x: number, y: number): HandlePart | null {
+    if (handleParts.length === 0) return null;
+    sizeHandles();
+    handleGroup.updateMatrixWorld(true);
+    rayAt(x, y);
+    let best: { part: HandlePart; rank: number; distance: number } | null = null;
+    for (const part of handleParts) {
+      const hit = raycaster.intersectObjects(part.picks, false)[0];
+      if (!hit) continue;
+      // Knobs and dots sit on arrows, and arrows inside rings, so the smaller target wins an overlap.
+      const rank = part.handle.look === "ring" ? 2 : part.handle.look === "arrow" ? 1 : 0;
+      if (!best || rank < best.rank || (rank === best.rank && hit.distance < best.distance)) best = { part, rank, distance: hit.distance };
+    }
+    return best?.part ?? null;
+  }
+
+  function ringAngle(handle: DragHandle, x: number, y: number): number | null {
+    const ray = rayAt(x, y);
+    const normal = new THREE.Vector3(...handle.dir).normalize();
+    const origin = new THREE.Vector3(...handle.origin);
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, origin);
+    if (Math.abs(ray.direction.dot(normal)) < 0.05) return null;
+    const hit = ray.intersectPlane(plane, new THREE.Vector3());
+    if (!hit) return null;
+    const u = Math.abs(normal.z) < 0.9 ? new THREE.Vector3(0, 0, 1).cross(normal).normalize() : new THREE.Vector3(1, 0, 0).cross(normal).normalize();
+    const v = normal.clone().cross(u);
+    const offset = hit.sub(origin);
+    return (Math.atan2(offset.dot(v), offset.dot(u)) * 180) / Math.PI;
+  }
+
+  function axisParam(handle: DragHandle, x: number, y: number): number | null {
+    const ray = rayAt(x, y);
+    const dir = new THREE.Vector3(...handle.dir).normalize();
+    return lineParam(handle.origin, [dir.x, dir.y, dir.z], [ray.origin.x, ray.origin.y, ray.origin.z], [ray.direction.x, ray.direction.y, ray.direction.z]);
+  }
+
+  function surfacePoint(x: number, y: number, snap: boolean): Vec3 | null {
+    if (!mesh) return null;
+    rayAt(x, y);
+    const hit = raycaster.intersectObject(mesh, false)[0];
+    if (!hit) return null;
+    const point = body.worldToLocal(hit.point.clone());
+    if (snap && hit.faceIndex != null) {
+      const positions = mesh.geometry.getAttribute("position");
+      let best: THREE.Vector3 | null = null;
+      for (let corner = 0; corner < 3; corner += 1) {
+        const vertex = new THREE.Vector3().fromBufferAttribute(positions, hit.faceIndex * 3 + corner);
+        if (!best || vertex.distanceToSquared(point) < best.distanceToSquared(point)) best = vertex;
+      }
+      if (best) point.copy(best);
+    }
+    return [point.x, point.y, point.z];
+  }
+
+  function beginDrag(handle: DragHandle, ev: PointerEvent) {
+    const fine = startFine(ev.clientX, ev.clientY, ev.shiftKey);
+    drag = {
+      handle,
+      pointerId: ev.pointerId,
+      fine,
+      values: [...handle.values],
+      startParam: handle.kind === "axis" ? axisParam(handle, ev.clientX, ev.clientY) : null,
+      lastAngle: handle.kind === "ring" ? ringAngle(handle, ev.clientX, ev.clientY) : null,
+      turned: 0,
+    };
+    paintHandles();
+    showTip(ev);
+  }
+
+  function moveDrag(ev: PointerEvent) {
+    const current = drag;
+    if (!current) return;
+    const fine = ev.shiftKey;
+    const snap = ev.ctrlKey || ev.metaKey;
+    current.fine = moveFine(current.fine, ev.clientX, ev.clientY, fine);
+    const { x, y } = current.fine;
+    const handle = current.handle;
+    let next: number[] | null = null;
+    if (handle.kind === "axis") {
+      const param = axisParam(handle, x, y);
+      if (param != null && current.startParam != null) next = [dragValue(handle, handle.values[0] ?? 0, param - current.startParam, snap, fine)];
+    } else if (handle.kind === "ring") {
+      const angle = ringAngle(handle, x, y);
+      if (angle != null) {
+        if (current.lastAngle != null) current.turned += wrapDegrees(angle - current.lastAngle);
+        current.lastAngle = angle;
+        next = [wrapDegrees(dragValue(handle, handle.values[0] ?? 0, current.turned, snap, fine))];
+      }
+    } else {
+      const point = surfacePoint(x, y, snap);
+      const places = fine ? 100 : 10;
+      if (point) next = point.map((value) => Math.round(value * places) / places);
+    }
+    if (next && next.some((value, i) => value !== current.values[i])) {
+      current.values = next;
+      handleCb({ handle, values: next, phase: "move" });
+    }
+    showTip(ev);
+  }
+
+  function showTip(ev: PointerEvent) {
+    if (!drag) return;
+    const parent = canvas.parentElement?.getBoundingClientRect();
+    if (!parent) return;
+    tip.textContent = dragLabel(drag.handle, drag.values);
+    tip.style.left = `${ev.clientX - parent.left + 14}px`;
+    tip.style.top = `${ev.clientY - parent.top + 14}px`;
+    tip.hidden = false;
+  }
+}
+
+interface HandlePart {
+  handle: DragHandle;
+  root: THREE.Group;
+  material: THREE.MeshBasicMaterial;
+  picks: THREE.Mesh[];
+}
+
+interface ActiveDrag {
+  handle: DragHandle;
+  pointerId: number;
+  fine: FinePointer;
+  values: number[];
+  startParam: number | null;
+  lastAngle: number | null;
+  turned: number;
+}
+
+/** R = Rz·Ry·Rx for degrees, the order the kernel turns a primitive. */
+function turnQuaternion(turn: Vec3 | undefined): THREE.Quaternion {
+  if (!turn) return new THREE.Quaternion();
+  const rad = Math.PI / 180;
+  return new THREE.Quaternion().setFromEuler(new THREE.Euler(turn[0] * rad, turn[1] * rad, turn[2] * rad, "ZYX"));
 }
 
 function segmentDistance(px: number, py: number, ax: number, ay: number, bx: number, by: number) {
