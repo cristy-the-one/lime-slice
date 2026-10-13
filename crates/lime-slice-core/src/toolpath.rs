@@ -153,6 +153,12 @@ pub struct PathFeatures {
     pub interior_run: u32,
     /// Top-skin fill. Rectilinear is the existing diagonal scan.
     pub top_pattern: SurfacePattern,
+    /// Widen holes by this many millimetres. `0` leaves them.
+    pub xy_hole_mm: f64,
+    /// Grow outer contours by this many millimetres. Negative shrinks them.
+    pub xy_contour_mm: f64,
+    /// Extra inset of outer contours on layer 0, millimetres.
+    pub elephants_foot_mm: f64,
 }
 
 impl Default for PathFeatures {
@@ -172,6 +178,9 @@ impl Default for PathFeatures {
             interior_remaining: 1,
             interior_run: 1,
             top_pattern: SurfacePattern::Rectilinear,
+            xy_hole_mm: 0.0,
+            xy_contour_mm: 0.0,
+            elephants_foot_mm: 0.0,
         }
     }
 }
@@ -315,6 +324,46 @@ pub fn plan_region(
     plan_region_split(contours, strategy, line_width, seam_hint, features).0
 }
 
+/// `None` when every compensation is zero, so the caller keeps the original loops.
+fn compensate_contours(contours: &[Loop], features: &PathFeatures) -> Option<Vec<Loop>> {
+    let hole = features.xy_hole_mm;
+    let contour = features.xy_contour_mm;
+    let foot = if features.layer_index == 0 {
+        features.elephants_foot_mm.max(0.0)
+    } else {
+        0.0
+    };
+    if hole.abs() < 1e-9 && contour.abs() < 1e-9 && foot < 1e-9 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(contours.len());
+    for loop_ in contours {
+        let area = signed_area(loop_);
+        if area.abs() < 1e-6 {
+            continue;
+        }
+        // A lone loop is offset as an outer. Growing it and reversing puts a
+        // wider hole back; a positive hole compensation is that growth.
+        let (delta, want_hole) = if area > 0.0 {
+            (contour - foot, false)
+        } else {
+            (hole, true)
+        };
+        if delta.abs() < 1e-9 {
+            out.push(loop_.clone());
+            continue;
+        }
+        for mut ring in offset_loops(std::slice::from_ref(loop_), delta) {
+            // A loop offset on its own is oriented as an outer. Put holes back.
+            if want_hole == (signed_area(&ring) > 0.0) {
+                ring.reverse();
+            }
+            out.push(ring);
+        }
+    }
+    Some(out)
+}
+
 /// Walls and infill of [`plan_region`], with CPU milliseconds for each half.
 pub(crate) fn plan_region_split(
     contours: &[Loop],
@@ -326,6 +375,11 @@ pub(crate) fn plan_region_split(
     if contours.is_empty() {
         return (Vec::new(), 0.0, 0.0);
     }
+    let adjusted = compensate_contours(contours, features);
+    if adjusted.as_ref().is_some_and(Vec::is_empty) {
+        return (Vec::new(), 0.0, 0.0);
+    }
+    let contours = adjusted.as_deref().unwrap_or(contours);
     let wall_started = Instant::now();
     let mut paths = Vec::new();
     let min_w = min_bead(line_width);
@@ -7829,5 +7883,70 @@ mod solid_row_tests {
             hi - lo
         };
         assert!(span(&rings[0]) > span(rings.last().unwrap()));
+    }
+
+    fn plate() -> Vec<Loop> {
+        vec![
+            vec![[0.0, 0.0], [30.0, 0.0], [30.0, 30.0], [0.0, 30.0]],
+            vec![[12.0, 12.0], [12.0, 18.0], [18.0, 18.0], [18.0, 12.0]],
+        ]
+    }
+
+    fn wall_x(paths: &[Extrusion], band: impl Fn(f64) -> bool) -> f64 {
+        paths
+            .iter()
+            .filter(|p| matches!(p.kind, PathKind::Outer | PathKind::Wall | PathKind::Inner))
+            .flat_map(|p| p.points.iter().map(|q| q[0]))
+            .filter(|x| band(*x))
+            .fold(f64::MAX, f64::min)
+    }
+
+    fn planned(features: PathFeatures) -> Vec<Extrusion> {
+        let mut hint = [0.0, 0.0];
+        plan_region(&plate(), &pure(StrategyId::Speed), 0.45, &mut hint, &features)
+    }
+
+    #[test]
+    fn hole_compensation_widens_the_hole_and_contour_compensation_grows_the_part() {
+        let plain = planned(PathFeatures::default());
+        let hole = planned(PathFeatures {
+            xy_hole_mm: 0.4,
+            layer_index: 3,
+            ..PathFeatures::default()
+        });
+        let grown = planned(PathFeatures {
+            xy_contour_mm: 0.4,
+            layer_index: 3,
+            ..PathFeatures::default()
+        });
+        let plain_hole = wall_x(&plain, |x| (8.0..12.0).contains(&x));
+        let wide_hole = wall_x(&hole, |x| (8.0..12.0).contains(&x));
+        assert!(wide_hole < plain_hole - 0.2, "hole wall {wide_hole} vs {plain_hole}");
+        let plain_outer = wall_x(&plain, |x| x < 2.0);
+        let grown_outer = wall_x(&grown, |x| x < 2.0);
+        assert!(grown_outer < plain_outer - 0.2, "outer wall {grown_outer} vs {plain_outer}");
+    }
+
+    #[test]
+    fn elephants_foot_insets_only_the_first_layer() {
+        let plain = wall_x(&planned(PathFeatures::default()), |x| x < 2.0);
+        let first = wall_x(
+            &planned(PathFeatures {
+                elephants_foot_mm: 0.3,
+                layer_index: 0,
+                ..PathFeatures::default()
+            }),
+            |x| x < 2.0,
+        );
+        let later = wall_x(
+            &planned(PathFeatures {
+                elephants_foot_mm: 0.3,
+                layer_index: 2,
+                ..PathFeatures::default()
+            }),
+            |x| x < 2.0,
+        );
+        assert!(first > plain + 0.15, "first layer {first} vs {plain}");
+        assert!((later - plain).abs() < 1e-6, "later layer {later} vs {plain}");
     }
 }
