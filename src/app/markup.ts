@@ -39,6 +39,7 @@ export function mountMarkup(root: HTMLElement) {
         <button class="btn mode tab" id="tabPrepare" type="button" role="tab" data-tab="prepare" aria-label="Prepare" aria-selected="false" aria-pressed="false" aria-controls="prepareBody" data-key="1">Prepare</button>
         <button class="btn mode tab on" id="tabPreview" type="button" role="tab" data-tab="preview" aria-label="Preview" aria-selected="true" aria-pressed="true" aria-controls="previewBody" data-key="2">Preview</button>
         <button class="btn mode tab" id="tabGcode" type="button" role="tab" data-tab="gcode" aria-label="G-code" aria-selected="false" aria-pressed="false" aria-controls="gcodePane" data-key="3">G-code</button>
+        <button class="btn mode tab" id="tabModel" type="button" role="tab" data-tab="model" aria-label="Model" aria-selected="false" aria-pressed="false" aria-controls="modelBody" data-key="4">Model</button>
       </div>
       <button class="btn panel-toggle" id="toggleLeft" type="button">Settings</button>
       <button class="btn panel-toggle" id="toggleRight" type="button">Results</button>
@@ -102,6 +103,16 @@ export function mountMarkup(root: HTMLElement) {
         <div class="stage-body" id="prepareBody" role="tabpanel" aria-labelledby="tabPrepare" hidden>
           <canvas id="prepare" aria-label="Model on the build plate"></canvas>
           <div class="gizmo-readout" id="gizmoReadout" hidden></div>
+        </div>
+        <div class="stage-body" id="modelBody" role="tabpanel" aria-labelledby="tabModel" hidden>
+          <canvas id="model" aria-label="Solid faces and edges"></canvas>
+          <div class="model-bar" id="modelBar">
+            <div class="modes" role="group" aria-label="Pick">
+              <button class="btn mode on" id="modelPickFace" type="button" aria-pressed="true">Face</button>
+              <button class="btn mode" id="modelPickEdge" type="button" aria-pressed="false">Edge</button>
+            </div>
+            <div id="modelReadout" class="model-readout">Open a STEP file to measure a solid.</div>
+          </div>
         </div>
         <div class="stage-body" id="previewBody" role="tabpanel" aria-labelledby="tabPreview">
           <div class="stale-chip" id="staleChip" role="status" hidden>

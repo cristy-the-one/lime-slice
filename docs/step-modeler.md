@@ -10,7 +10,7 @@
 
 The core, the `lime-slice` CLI, and the Tauri shell do not depend on this crate. Opening the app and slicing a file stay on the path they have today. Truck remains the reader of an unedited STEP file. An edited solid, when that exists, will tessellate into the existing `sourcePos` / `encodeStl` path.
 
-`tools/occt/install.py` compiles tag `V7_9_2` as shared libraries. The pin, the archive URL, and the SHA-256 are in `third_party/occt/NOTICE.md`. The toolkit list is the modeling set through `TKMesh` and `TKShHealing`. Draw, visualization, and data exchange are off, so this build does not need FreeType or OpenGL. `TKDESTEP` waits for STEP save: its dependency list pulls `TKV3d` and `TKService`.
+`tools/occt/install.py` compiles tag `V7_9_2` as shared libraries. The pin, the archive URL, and the SHA-256 are in `third_party/occt/NOTICE.md`. The toolkit list is the modeling set through `TKMesh` and `TKShHealing`, plus `TKDESTEP` so Model mode can read a solid. CMake pulls `TKXCAF`, `TKV3d`, and `TKService` for that reader. FreeType and OpenGL stay off, and those toolkits build without them. STEP write is still a later change.
 
 `tools/occt/stage_bundle.py` copies those shared libraries and the three notice files. The release workflow stages them at `src-tauri/resources/occt` and passes `src-tauri/tauri.occt.json`, which bundles that directory as `occt/`. A local `tauri build` does not pass that overlay and does not need OCCT. The staged directory is gitignored.
 
@@ -28,16 +28,25 @@ The notices shipped beside the libraries are `third_party/occt/LICENSE_LGPL_21.t
 
 The Intel macOS installer is the existing cross compile from the Apple silicon runner. That job builds the OCCT dylibs with `CMAKE_OSX_ARCHITECTURES=x86_64` and stages them. The native macOS CI job is arm64. The shell still does not link OCCT, so a missing dylib cannot stop the app from starting.
 
+## Model mode
+
+The fourth workspace tab is Model. It is not selected when the app opens. Shortcut `4`. Shift+4 stays the By layer strategy.
+
+`crates/lime-model-occt` is a cdylib. It links the modeling toolkits and, when `libTKDESTEP` is present, the STEP reader. `crates/lime-model-load` dlopens that library. The CLI and the Tauri shell depend on the loader only, so a missing bridge cannot stop the app from starting. The shell looks beside the executable and in `occt/lib` under the resource directory. `LIME_OCCT_BRIDGE` overrides the path.
+
+Model mode sends the open STEP file to `POST /api/model` (or the `model_solid` command). The reply is the solid's tessellation, volume, face areas, and edge polylines. A face pick reports area. An edge pick reports length. A second pick reports the distance. A mesh file says that measure reads a STEP solid. Nothing is invented when the bridge is missing.
+
+The release workflow builds the cdylib after staging the Open CASCADE libraries and copies it into `src-tauri/resources/occt/lib`, next to those libraries. The cdylib's rpath is `$ORIGIN` on Linux and `@loader_path` on macOS.
+
 ## What this change is not
 
-- No Model mode, and no face or edge picking.
-- No measure, boolean, plane split, fillet, chamfer, hole, or scale.
+- No boolean, plane split, fillet, chamfer, hole, or scale.
 - No STEP writer, and no `.lime` brep field.
 - No change to `tools/golden_ab.sh` or to slicer output.
-- The desktop shell does not load the libraries. They are staged for a later switch.
+- The slicer core does not link Open CASCADE. Truck still reads an unedited STEP file for slicing.
 
 ## Review questions
 
-1. Is the shell staying unloaded, with the dynamic link proved only by `lime-model`'s test, the right split until Model mode exists?
-2. Is deferring `TKDESTEP` until STEP save right, given the visualization libraries it pulls?
+1. Is dlopen of `lime-model-occt`, with the shell depending only on `lime-model-load`, the right way to keep startup free of the libraries?
+2. Is reading STEP in Model mode, while FreeType and OpenGL stay off, acceptable given that `TKDESTEP` pulls `TKV3d` and `TKService`?
 3. Is a stub compile when `OCCT_ROOT` is unset the right default for a local slicer build?

@@ -1,6 +1,8 @@
 import { fx } from "./fx";
 import { geomWorker, state, session, type PreviewLayer, type SliceResponse } from "./state";
 import { createPrepareView } from "../prepare-view";
+import { createModelView, type ModelView } from "../model-view";
+import { bindModelView, showModel } from "./model";
 import { createSliceView, type SliceView3d } from "../view3d";
 import { FEATURE_LABEL, FEATURE_COLOR, colorForPath } from "../colors";
 import { legendMarkup } from "../ui/legend";
@@ -397,6 +399,7 @@ export function setView(mode: typeof state.viewMode, source: "user" | "auto" = "
   stage.classList.remove("mode-flat", "mode-split", "mode-solid");
   stage.classList.add(`mode-${mode}`);
   document.querySelectorAll<HTMLButtonElement>(".mode:not(.tab)").forEach((el) => {
+    if (!el.dataset.mode) return;
     const on = el.dataset.mode === mode;
     el.classList.toggle("on", on);
     el.setAttribute("aria-pressed", on ? "true" : "false");
@@ -404,13 +407,17 @@ export function setView(mode: typeof state.viewMode, source: "user" | "auto" = "
   resize();
 }
 
-export function setStage(stage: "prepare" | "preview" | "gcode") {
+export function setStage(stage: "prepare" | "preview" | "gcode" | "model") {
   state.stage = stage;
   document.querySelector<HTMLElement>("#prepareBody")!.hidden = stage !== "prepare";
+  document.querySelector<HTMLElement>("#modelBody")!.hidden = stage !== "model";
   document.querySelector<HTMLElement>("#previewBody")!.hidden = stage !== "preview";
   document.querySelector("#legend")?.toggleAttribute("hidden", stage !== "preview");
   document.querySelector("#viewModes")?.toggleAttribute("hidden", stage !== "preview");
-  document.querySelector(".stage-tools")?.toggleAttribute("hidden", stage === "prepare");
+  document.querySelector(".stage-tools")?.toggleAttribute("hidden", stage === "prepare" || stage === "model");
+  document.querySelector("#colorBy")?.closest("label")?.toggleAttribute("hidden", stage === "model");
+  document.querySelector("#bedOpacity")?.closest("label")?.toggleAttribute("hidden", stage === "model");
+  document.querySelector("#measureField")?.toggleAttribute("hidden", stage === "model");
   document.querySelector<HTMLElement>("#viewPresets")?.toggleAttribute("hidden", stage !== "prepare");
   if (stage !== "prepare") {
     session.paintUi?.stop();
@@ -425,6 +432,7 @@ export function setStage(stage: "prepare" | "preview" | "gcode") {
   paintGcode();
   resize();
   paintSpark();
+  if (stage === "model") showModel();
 }
 
 export function setHelp(open: boolean) {
@@ -775,6 +783,7 @@ export function resize() {
   }
   fx.view3d.resize();
   fx.prepare.resize();
+  fx.model?.resize();
   if (window.innerWidth < 1200 && state.viewMode === "split") setView("solid");
   draw();
 }
@@ -1062,12 +1071,16 @@ export function fitNarrow() {
 
 export let view3d: SliceView3d;
 export let prepare: ReturnType<typeof createPrepareView>;
+export let model: ModelView;
 
 export function mountViews() {
   const canvas = document.querySelector<HTMLCanvasElement>("#view")!;
   const ctx = canvas.getContext("2d")!;
   view3d = createSliceView(document.querySelector<HTMLCanvasElement>("#view3d")!);
   prepare = createPrepareView(document.querySelector<HTMLCanvasElement>("#prepare")!);
+  model = createModelView(document.querySelector<HTMLCanvasElement>("#model")!);
+  fx.model = model;
+  bindModelView();
   flatPane = document.querySelector<HTMLElement>("#pane2d")!;
   flatMeasure = mountMeasureOverlay(flatPane);
   // The scale bar has a band under the layer, so a layer fitted to the canvas never reaches it.

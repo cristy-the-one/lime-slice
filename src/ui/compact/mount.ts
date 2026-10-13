@@ -1,4 +1,4 @@
-import { Box, createElement, Layers, MoreHorizontal, Printer, Search, SlidersHorizontal, type IconNode } from "lucide";
+import { Box, createElement, Layers, MoreHorizontal, Printer, Ruler, Search, SlidersHorizontal, type IconNode } from "lucide";
 import { syncSendButtons, uploadToPrusaLink } from "../../app/prusa-actions";
 import { saveCurrentProject } from "../../app/project-io";
 import { engineMode, pickModelFile, pickProjectFile, saveGcode, saveLayoutChoice, type LayoutChoice } from "../../platform";
@@ -8,7 +8,7 @@ import { moveDetent, sheetHeight, snapDetent, type Detent } from "./sheet";
 import { mountCompactTouch } from "./touch";
 import "./compact.css";
 
-type CompactTab = "prepare" | "settings" | "preview" | "device";
+type CompactTab = "prepare" | "settings" | "model" | "preview" | "device";
 
 let active = false;
 let tab: CompactTab = "prepare";
@@ -200,6 +200,7 @@ function tabs() {
   const specs: [CompactTab, string, IconNode][] = [
     ["prepare", "Prepare", Box],
     ["settings", "Settings", SlidersHorizontal],
+    ["model", "Model", Ruler],
     ["preview", "Preview", Layers],
     ["device", "Device", Printer],
   ];
@@ -210,7 +211,7 @@ function tabs() {
     button.dataset.tab = id;
     button.setAttribute("role", "tab");
     button.setAttribute("aria-selected", id === "prepare" ? "true" : "false");
-    button.setAttribute("aria-controls", id === "device" ? "compactDevice" : id === "preview" ? "stage" : "compactSheet");
+    button.setAttribute("aria-controls", id === "device" ? "compactDevice" : id === "preview" || id === "model" ? "stage" : "compactSheet");
     button.tabIndex = id === "prepare" ? 0 : -1;
     button.append(icon(node), document.createTextNode(label));
     button.addEventListener("click", () => selectTab(id));
@@ -361,11 +362,14 @@ function selectTab(next: CompactTab) {
   } else if (next === "preview") {
     document.querySelector<HTMLButtonElement>("#tabPreview")?.click();
     document.querySelector<HTMLButtonElement>('[data-mode="solid"]')?.click();
+  } else if (next === "model") {
+    detent = "peek";
+    document.querySelector<HTMLButtonElement>("#tabModel")?.click();
   }
   const sheetEl = document.querySelector<HTMLElement>("#compactSheet");
   if (sheetEl) {
     const keepSheet = next === "preview" && supportEditing;
-    sheetEl.dataset.detent = keepSheet ? detent : next === "preview" || next === "device" ? "closed" : detent;
+    sheetEl.dataset.detent = keepSheet ? detent : next === "preview" || next === "device" || next === "model" ? "closed" : detent;
   }
   applyHeights(sheetHeight(detent, window.innerHeight), true);
   if (next === "settings") document.querySelector<HTMLInputElement>("#find")?.focus();

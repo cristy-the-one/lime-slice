@@ -94,6 +94,7 @@ eq("exactly one Ctrl+K", ctrlK.map((command) => command.id), ["palette"]);
 eq("1 is Prepare", press("1"), "tab-prepare");
 eq("2 is Preview", press("2"), "tab-preview");
 eq("3 is G-code", press("3"), "tab-gcode");
+eq("4 is Model", press("4"), "tab-model");
 eq("V cycles the preview mode only in preview", [press("V"), press("V", { stage: "preview", hasResult: true })], [null, "view-cycle"]);
 eq("Shift+1..5 pick strategies", ["Shift+1", "Shift+2", "Shift+3", "Shift+4", "Shift+5"].map((chord) => press(chord)), ["strategy-speed", "strategy-efficiency", "strategy-toughness", "strategy-layer", "strategy-region"]);
 eq("A arranges in Prepare only", [press("A"), press("A", { stage: "preview" })], ["plate-arrange", null]);

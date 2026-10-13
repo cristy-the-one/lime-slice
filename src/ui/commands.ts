@@ -52,6 +52,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "tab-prepare", label: "Prepare", group: "View", keys: ["1"], target: "#tabPrepare", keywords: "tab mesh stage" },
   { id: "tab-preview", label: "Preview", group: "View", keys: ["2"], target: "#tabPreview", keywords: "tab toolpath stage" },
   { id: "tab-gcode", label: "G-code", group: "View", keys: ["3"], target: "#tabGcode", keywords: "tab gcode stage" },
+  { id: "tab-model", label: "Model", group: "View", keys: ["4"], target: "#tabModel", keywords: "tab solid face edge measure" },
   { id: "view-cycle", label: "Cycle 2D, split, 3D", group: "View", keys: ["V"], when: "preview", keywords: "preview mode flat solid" },
   { id: "view-2d", label: "2D preview", group: "View", target: '[data-mode="flat"]', keywords: "flat" },
   { id: "view-split", label: "Split preview", group: "View", target: '[data-mode="split"]' },
@@ -115,7 +116,7 @@ export const MOUSE_HINTS: { gesture: string; label: string }[] = [
 export interface KeyContext {
   helpOpen: boolean;
   typing: boolean;
-  stage: "prepare" | "preview" | "gcode";
+  stage: "prepare" | "preview" | "gcode" | "model";
   hasResult: boolean;
   running: boolean;
   /** Focus is in the settings search, or a query is active and no other field has focus. */

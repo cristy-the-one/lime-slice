@@ -4,6 +4,8 @@ members = [
     "crates/lime-slice-core",
     "crates/lime-slice",
     "crates/lime-model",
+    "crates/lime-model-occt",
+    "crates/lime-model-load",
     "src-tauri",
 ]
 
