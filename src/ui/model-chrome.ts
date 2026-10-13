@@ -2,7 +2,7 @@
  * Model mode's toolbar, the tool that is open, and the ghost that follows its numbers.
  * Apply still lives in `app/model.ts`. This file only decides what is on screen.
  */
-import { Box, CircleDot, Download, Ruler, Scaling, Spline, SquareSplitHorizontal, Triangle, Undo2, createElement, type IconNode } from "lucide";
+import { Box, CircleDot, Download, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Triangle, Undo2, createElement, type IconNode } from "lucide";
 import type { HandleDrag, ModelGhost } from "../model-view";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type ModelTool, type Vec3 } from "../model-drag";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
@@ -80,6 +80,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
   for (const entry of TOOLS) iconize(`#modelTool${entry.label}`, entry.icon);
   iconize("#modelStep", Download);
   iconize("#modelUndo", Undo2);
+  iconize("#modelRedo", Redo2);
 
   document.querySelector("#modelBar")?.addEventListener("click", (ev) => {
     const target = ev.target instanceof Element ? ev.target : null;

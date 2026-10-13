@@ -187,8 +187,24 @@ const ALLOWED_SETTINGS = new Set([
   "speed",
 ]);
 
-const held = new Map<string, { fileName: string; bytes: ArrayBuffer; sourcePos: Float32Array }>();
+interface HeldGeo {
+  fileName: string;
+  bytes: ArrayBuffer;
+  sourcePos: Float32Array;
+}
+
+const held = new Map<string, HeldGeo>();
+/** Mesh buffer identity. A copied undo buffer shares the token of the live one. */
+const tokenOf = new WeakMap<ArrayBuffer, string>();
+/** Bytes captured for undo. Not cleared with the live session, so a step can still restore them. */
+const pinned = new Map<string, HeldGeo>();
+let pinSeq = 0;
 let seq = 0;
+
+export interface MeshPin {
+  id: string;
+  token: string;
+}
 
 export function emptyPlate(): PlateState {
   return { objects: [], selectedId: null };
@@ -196,6 +212,51 @@ export function emptyPlate(): PlateState {
 
 export function resetHeldGeometry() {
   held.clear();
+}
+
+function copyHeld(geo: HeldGeo): HeldGeo {
+  return {
+    fileName: geo.fileName,
+    bytes: geo.bytes.slice(0),
+    sourcePos: new Float32Array(geo.sourcePos),
+  };
+}
+
+/** Give `copy` the same mesh identity as `source`, so a sliced undo buffer stays one step. */
+export function shareMeshToken(source: ArrayBuffer, copy: ArrayBuffer) {
+  if (source === copy) return;
+  const token = tokenOf.get(source) ?? tokenOf.get(copy) ?? `m${(pinSeq += 1)}`;
+  tokenOf.set(source, token);
+  tokenOf.set(copy, token);
+}
+
+/** Remember each object's mesh so a later undo can put those bytes back. */
+export function pinPlateMeshes(plate: PlateState): MeshPin[] {
+  const pins: MeshPin[] = [];
+  for (const obj of plate.objects) {
+    let token = tokenOf.get(obj.bytes);
+    if (!token) {
+      token = `m${(pinSeq += 1)}`;
+      tokenOf.set(obj.bytes, token);
+    }
+    if (!pinned.has(token)) {
+      pinned.set(token, copyHeld({ fileName: obj.fileName, bytes: obj.bytes, sourcePos: obj.sourcePos }));
+    }
+    pins.push({ id: obj.id, token });
+  }
+  return pins;
+}
+
+/** Put pinned meshes into the live session before a snap is revived. */
+export function recallPlateMeshes(pins: readonly MeshPin[] | undefined) {
+  if (!pins) return;
+  for (const pin of pins) {
+    const geo = pinned.get(pin.token);
+    if (!geo) continue;
+    const copy = copyHeld(geo);
+    tokenOf.set(copy.bytes, pin.token);
+    held.set(pin.id, copy);
+  }
 }
 
 export function settingsEmpty(settings: PlateObjectSettings | undefined): boolean {

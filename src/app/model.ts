@@ -5,11 +5,12 @@ import { lastEdge, nextModelPicks, selectionCountLabel } from "../model-select";
 import { PROBE_WAIT_MS, isProbed, probeFromBody } from "../model-feasibility";
 import { formatMm, splitPlaneInside, splitPlaneRange, zExtent } from "../model-plane";
 import { closeModelTool, mountModelChrome, openModelTool, refreshModelGhost, setModelProbe, syncModelChrome, syncModelSolid } from "../ui/model-chrome";
-import { addedSplit, withoutObject } from "../plate";
+import { addedSplit, shareMeshToken, withoutObject } from "../plate";
 import { markProjectDirty } from "../project-dirty";
 import { base64ToBytes } from "../project";
 import { authHeaders } from "../ui/api-base";
 import { place } from "./files";
+import { cancelEdit, editUndoCount, flushEdit, noteEdit, redoUserEdit, undoUserEdit } from "./history";
 import { fx } from "./fx";
 import { modelerFailure } from "./model-error";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
@@ -25,6 +26,13 @@ let probeTimer = 0;
 let keptToken = "";
 let keptSolid: ParsedSolid | null = null;
 const undos: ModelUndo[] = [];
+const redos: ModelUndo[] = [];
+/** The pre-edit snap that redo pushes back onto `undos`. */
+const redoBefore: ModelUndo[] = [];
+/** True when that undo also stepped the Prepare history. */
+const redoBacked: boolean[] = [];
+/** Prepare undo-stack length after each solid edit, so undo can tell if that step is still on top. */
+const modelMarks: number[] = [];
 
 interface ParsedSolid extends ModelSolid {
   faces: { id: number; areaMm2: number }[];
@@ -55,6 +63,7 @@ export function bindModelView() {
   document.querySelector("#modelApply")?.addEventListener("click", () => void applyTool());
   document.querySelector("#modelStep")?.addEventListener("click", () => void runExport());
   document.querySelector("#modelUndo")?.addEventListener("click", () => void runUndo());
+  document.querySelector("#modelRedo")?.addEventListener("click", () => void runRedo());
   mountModelChrome({
     clearSelection() {
       picks = [];
@@ -145,6 +154,8 @@ export async function captureOpenSolid() {
 export function showModel() {
   const mine = ++ticket;
   picks = [];
+  flushEdit();
+  noteEdit();
   const mesh = state.mesh;
   if (keptSolid && mesh && meshToken() === keptToken) {
     solid = keptSolid;
@@ -174,6 +185,8 @@ export function showModel() {
   keptSolid = null;
   keptToken = "";
   undos.length = 0;
+  clearModelFuture();
+  modelMarks.length = 0;
   syncUndo();
   readout("Reading the solid…");
   if (brep) {
@@ -441,15 +454,73 @@ async function runUndo() {
     readout(text(body.error) || "Could not undo that edit.");
     return;
   }
-  restore(snap);
-  if (snap.addedId && state.plate.objects.length > 1) {
-    syncPlateFromState();
-    state.plate = withoutObject(state.plate, snap.addedId);
-    applySelectedToState(state.plate);
+  flushEdit();
+  const forward = snapshot();
+  const backed = modelMarks.at(-1) === editUndoCount();
+  let took = false;
+  if (backed) {
+    took = undoUserEdit();
+    if (took) modelMarks.pop();
   }
-  place();
+  if (!took) {
+    restore(snap);
+    if (snap.addedId && state.plate.objects.length > 1) {
+      syncPlateFromState();
+      state.plate = withoutObject(state.plate, snap.addedId);
+      applySelectedToState(state.plate);
+    }
+    place();
+  }
+  redos.push(forward);
+  redoBefore.push(snap);
+  redoBacked.push(took);
   syncUndo();
   present(parsed, `Volume ${mm(parsed.volumeMm3)} mm³. Edit undone.`);
+}
+
+async function runRedo() {
+  const forward = redos.pop();
+  const before = redoBefore.pop();
+  const backed = redoBacked.pop();
+  if (!forward || !before || backed == null || !solid || busy) {
+    if (forward) redos.push(forward);
+    if (before) redoBefore.push(before);
+    if (backed != null) redoBacked.push(backed);
+    syncUndo();
+    return;
+  }
+  busy = true;
+  const mine = ticket;
+  const body = await post("/api/model/redo", { id: solid.id, chordMm: state.stepTolerance });
+  busy = false;
+  if (mine !== ticket || state.stage !== "model") {
+    redos.push(forward);
+    redoBefore.push(before);
+    redoBacked.push(backed);
+    return;
+  }
+  const parsed = asSolid(body);
+  if (text(body.error) || !parsed) {
+    redos.push(forward);
+    redoBefore.push(before);
+    redoBacked.push(backed);
+    syncUndo();
+    readout(text(body.error) || "Could not redo that edit.");
+    return;
+  }
+  flushEdit();
+  let took = false;
+  if (backed) {
+    took = redoUserEdit();
+    if (took) modelMarks.push(editUndoCount());
+  }
+  if (!took) {
+    restore(forward);
+    place();
+  }
+  undos.push(before);
+  syncUndo();
+  present(parsed, `Volume ${mm(parsed.volumeMm3)} mm³. Edit redone.`);
 }
 
 function land(snap: ModelUndo, parsed: ParsedSolid, other: ParsedSolid | null, resetScale: boolean): string | null {
@@ -457,6 +528,7 @@ function land(snap: ModelUndo, parsed: ParsedSolid, other: ParsedSolid | null, r
     readout("Open a solid before editing it.");
     return null;
   }
+  noteEdit();
   const paint = state.supportPaint.length + state.seamPaint.length + state.reinforcement.length + state.supportEdits.length > 0;
   const scaled = resetScale && state.partScale !== 1;
   if (resetScale) state.partScale = 1;
@@ -484,13 +556,19 @@ function land(snap: ModelUndo, parsed: ParsedSolid, other: ParsedSolid | null, r
         })
       : null;
     const addedId = next?.objects.find((obj) => !prev.has(obj.id))?.id ?? null;
-    if (!next || !selected || !addedId) return null;
+    if (!next || !selected || !addedId) {
+      cancelEdit();
+      return null;
+    }
     state.plate = { ...next, selectedId: selected };
     applySelectedToState(state.plate);
     snap.addedId = addedId;
   }
   place();
   undos.push(snap);
+  clearModelFuture();
+  flushEdit();
+  modelMarks.push(editUndoCount());
   syncUndo();
   return `${paint ? " Support paint was cleared." : ""}${scaled ? " Placement scale is 100%." : ""}`;
 }
@@ -514,9 +592,12 @@ function restore(snap: ModelUndo) {
 }
 
 function snapshot(): ModelUndo {
+  const live = state.mesh?.bytes;
+  const bytes = live?.slice(0) ?? new ArrayBuffer(0);
+  if (live) shareMeshToken(live, bytes);
   return {
     meshName: state.mesh?.name ?? "solid.stl",
-    bytes: state.mesh?.bytes.slice(0) ?? new ArrayBuffer(0),
+    bytes,
     sourcePos: new Float32Array(state.sourcePos ?? []),
     supportEdits: structuredClone(state.supportEdits) as SupportEdits,
     supportPaint: structuredClone(state.supportPaint) as unknown as SupportPaint,
@@ -609,9 +690,17 @@ function showEdits(on: boolean) {
   if (!on) closeModelTool();
 }
 
+function clearModelFuture() {
+  redos.length = 0;
+  redoBefore.length = 0;
+  redoBacked.length = 0;
+}
+
 function syncUndo() {
-  const button = document.querySelector<HTMLButtonElement>("#modelUndo");
-  if (button) button.disabled = undos.length === 0;
+  const undo = document.querySelector<HTMLButtonElement>("#modelUndo");
+  const redo = document.querySelector<HTMLButtonElement>("#modelRedo");
+  if (undo) undo.disabled = undos.length === 0;
+  if (redo) redo.disabled = redos.length === 0;
 }
 
 /** Turn degrees for a box or cylinder. A sphere does not turn. */
@@ -753,6 +842,7 @@ function commandFor(path: string) {
   if (path.endsWith("/scale")) return "model_scale";
   if (path.endsWith("/export")) return "model_export";
   if (path.endsWith("/undo")) return "model_undo";
+  if (path.endsWith("/redo")) return "model_redo";
   return "model_solid";
 }
 

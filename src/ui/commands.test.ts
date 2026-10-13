@@ -119,6 +119,7 @@ eq("Ctrl+Shift+Enter forces a re-slice", [press("Ctrl+Shift+Enter"), press("Ctrl
 eq("Ctrl+B and Ctrl+Alt+B fold the panels", [press("Ctrl+B"), press("Ctrl+Alt+B")], ["panel-left", "panel-right"]);
 eq("Ctrl+K opens the palette, even from a field", [press("Ctrl+K"), press("Ctrl+K", { typing: true })], ["palette", "palette"]);
 eq("undo and redo work in a field", [press("Ctrl+Z", { typing: true }), press("Ctrl+Shift+Z", { typing: true })], ["undo", "redo"]);
+eq("Ctrl+Y redoes and Y is still the front view", [press("Ctrl+Y"), press("Y"), press("Ctrl+Y", { typing: true })], ["redo", "view-front", "redo"]);
 eq("Ctrl+O and Ctrl+S work in a field", [press("Ctrl+O", { typing: true }), press("Ctrl+S", { typing: true })], ["open", "save-project"]);
 eq("/ and Ctrl+F search, but not from a field", [press("/"), press("Ctrl+F"), press("/", { typing: true }), press("Ctrl+F", { typing: true })], ["search", "search", null, null]);
 eq("Ctrl+F stays the browser's in the G-code pane", press("Ctrl+F", { stage: "gcode", inGcode: true }), null);
