@@ -354,6 +354,7 @@ export const CONTROLS: ControlSpec[] = [
   },
 
   // Infill
+  { id: "reinforceTools", label: "Reinforce", group: "infill", tier: "advanced", kind: custom },
   bound("infillCombine", { id: "combine", label: "Combine sparse infill", group: "infill", tier: "advanced", kind: check, keywords: "sparse thick layers" }),
   bound("gyroid3d", { id: "gyroid3d", label: "3D gyroid", group: "infill", tier: "expert", kind: select([["blend", "Blend default"], ["off", "2D sine"], ["on", "Force 3D"]]), structural: true, keywords: "infill lattice" }),
 

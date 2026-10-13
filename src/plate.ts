@@ -13,6 +13,13 @@
  * Duplicate copies the selected object only.
  */
 import type { EditEntry } from "./support-edit-list.ts";
+import {
+  dropEmptyReinforce,
+  normalInfillDensity,
+  reinforcementRequestFields,
+  type ReinforceRegion,
+  type WireReinforceRegion,
+} from "./reinforcement.ts";
 import { seamRequestFields, type SeamDisk, type SeamWireDisk } from "./seam-paint.ts";
 import { paintRequestFields, type PaintDisk, type WireDisk } from "./support-paint.ts";
 import {
@@ -75,6 +82,8 @@ export interface PlateFileObject {
   supportPaint?: PaintDisk[];
   /** Omitted when empty. In the source frame, as `PlateObject.seamPaint`. */
   seamPaint?: SeamDisk[];
+  /** Omitted when empty. In the source frame, as `PlateObject.reinforcement`. */
+  reinforcement?: ReinforceRegion[];
   /** Omitted when empty. Not sent on the slice request. */
   settings?: PlateObjectSettings;
   /**
@@ -106,6 +115,8 @@ export interface PlateObject {
   supportPaint: readonly PaintDisk[];
   /** Seam disks in this object's source frame. */
   seamPaint: readonly SeamDisk[];
+  /** Reinforcement regions (paint or volumes) in this object's source frame. */
+  reinforcement?: readonly ReinforceRegion[];
   settings: PlateObjectSettings;
   /** STEP bytes for Model mode. Absent when this object was never opened there. */
   brep?: ArrayBuffer;
@@ -129,6 +140,7 @@ export interface PlateSnapObject {
   supportEdits: EditEntry[];
   supportPaint: PaintDisk[];
   seamPaint: SeamDisk[];
+  reinforcement?: ReinforceRegion[];
   settings: PlateObjectSettings;
   brep?: ArrayBuffer;
 }
@@ -189,11 +201,23 @@ export function settingsEmpty(settings: PlateObjectSettings | undefined): boolea
   return !settings || Object.keys(settings).length === 0;
 }
 
-/** Version 2 is a plate with more than one object, or one object that has its own settings, paint, or a B-rep. */
-export function plateFileIsVersion2(objects: { settings?: PlateObjectSettings; supportPaint?: readonly PaintDisk[]; seamPaint?: readonly SeamDisk[]; brep?: unknown }[]): boolean {
+/** Version 2 is a plate with more than one object, or one object that has its own settings, paint, reinforcement, or a B-rep. */
+export function plateFileIsVersion2(objects: {
+  settings?: PlateObjectSettings;
+  supportPaint?: readonly PaintDisk[];
+  seamPaint?: readonly SeamDisk[];
+  reinforcement?: readonly ReinforceRegion[];
+  brep?: unknown;
+}[]): boolean {
   if (objects.length !== 1) return objects.length > 1;
   const one = objects[0];
-  return !settingsEmpty(one?.settings) || (one?.supportPaint?.length ?? 0) > 0 || (one?.seamPaint?.length ?? 0) > 0 || one?.brep != null;
+  return (
+    !settingsEmpty(one?.settings) ||
+    (one?.supportPaint?.length ?? 0) > 0 ||
+    (one?.seamPaint?.length ?? 0) > 0 ||
+    dropEmptyReinforce(one?.reinforcement ?? []).length > 0 ||
+    one?.brep != null
+  );
 }
 
 /** One object of the slice request's `objects`, less its mesh bytes, which go on when it is sent. */
@@ -206,6 +230,7 @@ export interface PlateRequestObject {
   supportEdits?: EditEntry["edit"][];
   supportPaint?: WireDisk[];
   seamPaint?: SeamWireDisk[];
+  reinforcement?: WireReinforceRegion[];
 }
 
 /** The slice request sends `objects`: two or more objects, or one with its own settings. */
@@ -221,11 +246,24 @@ export function plateListed(plate: PlateState): boolean {
 export function slicePlateFields(
   objects: readonly PlateObject[],
   poseOf: (obj: PlateObject) => RigidPose,
-  plateTree: { supports: boolean; supportStyle: string },
+  plateTree: {
+    supports: boolean;
+    supportStyle: string;
+    blendKind?: "single" | "weight" | "byLayer" | "byRegion";
+    strategy?: "speed" | "toughness";
+    toughness?: number;
+  },
 ): { objects: PlateRequestObject[] } {
   return {
     objects: objects.map((obj) => {
       const tree = (obj.settings.supports ?? plateTree.supports) && (obj.settings.supportStyle ?? plateTree.supportStyle) === "tree";
+      const frame = sourceFrame(obj.sourcePos, obj.partScale);
+      const normalDensity = normalInfillDensity({
+        blendKind: plateTree.blendKind ?? "single",
+        strategy: plateTree.strategy ?? "speed",
+        toughness: plateTree.toughness ?? 0.5,
+        objectInfill: obj.settings.infill,
+      });
       return {
         id: obj.id,
         filename: obj.fileName.replace(/\.(3mf|step|stp)$/i, ".stl"),
@@ -233,8 +271,9 @@ export function slicePlateFields(
         stepToleranceMm: obj.stepTolerance,
         ...(settingsEmpty(obj.settings) ? {} : { settings: { ...obj.settings } }),
         ...(tree && obj.supportEdits.length > 0 ? { supportEdits: obj.supportEdits.map((entry) => entry.edit) } : {}),
-        ...paintRequestFields(obj.supportPaint, sourceFrame(obj.sourcePos, obj.partScale)),
-        ...seamRequestFields(obj.seamPaint, sourceFrame(obj.sourcePos, obj.partScale)),
+        ...paintRequestFields(obj.supportPaint, frame),
+        ...seamRequestFields(obj.seamPaint, frame),
+        ...reinforcementRequestFields(obj.reinforcement ?? [], frame, normalDensity),
       };
     }),
   };
@@ -257,6 +296,7 @@ export function withLivePose(plate: PlateState, live: SelectedPose & { fileName:
           supportEdits: live.supportEdits,
           supportPaint: live.supportPaint,
           seamPaint: live.seamPaint,
+          reinforcement: live.reinforcement ?? obj.reinforcement ?? [],
         },
   );
 }
@@ -315,6 +355,7 @@ export function oneObjectPlate(input: {
   supportEdits: EditEntry[];
   supportPaint: readonly PaintDisk[];
   seamPaint: readonly SeamDisk[];
+  reinforcement?: readonly ReinforceRegion[];
 }): PlateState {
   resetHeldGeometry();
   const obj: PlateObject = {
@@ -331,6 +372,7 @@ export function oneObjectPlate(input: {
     supportEdits: input.supportEdits,
     supportPaint: input.supportPaint,
     seamPaint: input.seamPaint,
+    reinforcement: input.reinforcement ?? [],
     settings: {},
   };
   hold(obj);
@@ -350,6 +392,7 @@ export function addedCopy(plate: PlateState): PlateState | null {
     supportEdits: source.supportEdits.map((entry) => structuredClone(entry)),
     supportPaint: source.supportPaint.map((disk) => structuredClone(disk)),
     seamPaint: source.seamPaint.map((disk) => structuredClone(disk)),
+    reinforcement: (source.reinforcement ?? []).map((reg) => structuredClone(reg)),
     settings: { ...source.settings },
     brep: source.brep ? source.brep.slice(0) : undefined,
   };
@@ -386,6 +429,7 @@ export function addedMesh(plate: PlateState, mesh: IncomingMesh, bedX: number, b
     supportEdits: [],
     supportPaint: [],
     seamPaint: [],
+    reinforcement: [],
     settings: {},
   };
   const placed = parkClear(draft, plate.objects, bedX, bedY);
@@ -423,6 +467,7 @@ export interface SelectedPose {
   supportEdits: EditEntry[];
   supportPaint: readonly PaintDisk[];
   seamPaint: readonly SeamDisk[];
+  reinforcement?: readonly ReinforceRegion[];
   fileName?: string;
   bytes?: ArrayBuffer;
   sourcePos?: Float32Array | null;
@@ -445,6 +490,7 @@ export function withSelectedPose(plate: PlateState, pose: SelectedPose): PlateSt
       supportEdits: pose.supportEdits,
       supportPaint: pose.supportPaint,
       seamPaint: pose.seamPaint,
+      reinforcement: pose.reinforcement ?? obj.reinforcement ?? [],
       settings: obj.settings,
     };
     if (pose.fileName) next.fileName = pose.fileName;
@@ -472,6 +518,7 @@ export function snapPlate(plate: PlateState): PlateSnap {
       supportEdits: obj.supportEdits.map((entry) => structuredClone(entry)),
       supportPaint: obj.supportPaint.map((disk) => structuredClone(disk)),
       seamPaint: obj.seamPaint.map((disk) => structuredClone(disk)),
+      reinforcement: dropEmptyReinforce(obj.reinforcement ?? []).map((reg) => structuredClone(reg)),
       settings: { ...obj.settings },
       brep: obj.brep ? obj.brep.slice(0) : undefined,
     })),
@@ -498,6 +545,7 @@ export function revivePlate(snap: PlateSnap): PlateState | null {
       supportEdits: row.supportEdits.map((entry) => structuredClone(entry)),
       supportPaint: (row.supportPaint ?? []).map((disk) => structuredClone(disk)),
       seamPaint: (row.seamPaint ?? []).map((disk) => structuredClone(disk)),
+      reinforcement: (row.reinforcement ?? []).map((reg) => structuredClone(reg)),
       settings: { ...row.settings },
       brep: row.brep ? row.brep.slice(0) : undefined,
     });
@@ -523,6 +571,7 @@ export function assemblePlate(rows: Array<PlateFileObject & { bytes: ArrayBuffer
       supportEdits: row.supportEdits.map((entry) => structuredClone(entry)),
       supportPaint: (row.supportPaint ?? []).map((disk) => structuredClone(disk)),
       seamPaint: (row.seamPaint ?? []).map((disk) => structuredClone(disk)),
+      reinforcement: (row.reinforcement ?? []).map((reg) => structuredClone(reg)),
       settings: { ...(row.settings ?? {}) },
       brep: row.brepBytes,
     };
@@ -708,11 +757,13 @@ export function readPlateSettings(value: unknown): PlateObjectSettings | undefin
 export function objectMarks(obj: {
   supportPaint?: readonly unknown[];
   seamPaint?: readonly unknown[];
+  reinforcement?: readonly ReinforceRegion[];
   settings?: PlateObjectSettings;
 }): string {
   const marks: string[] = [];
   if ((obj.supportPaint?.length ?? 0) > 0) marks.push("paint");
   if ((obj.seamPaint?.length ?? 0) > 0) marks.push("seam");
+  if (dropEmptyReinforce(obj.reinforcement ?? []).length > 0) marks.push("reinforce");
   const settings = obj.settings;
   if (settings?.supports === false) marks.push("supports off");
   if (settings?.infill !== undefined) marks.push(`infill ${Math.round(settings.infill * 100)}%`);

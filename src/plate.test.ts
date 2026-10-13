@@ -58,6 +58,7 @@ function object(size: number, id: string, centered: boolean, offset = { x: 0, y:
     supportEdits: [],
     supportPaint: [],
     seamPaint: [],
+    reinforcement: [],
     settings: {},
   };
 }
@@ -169,6 +170,12 @@ check(
   objectMarks(marked) === "paint · seam · supports off · infill 20% · walls 4 · speed 80",
   objectMarks(marked),
 );
+const reinforcedMark = {
+  ...left,
+  reinforcement: [{ kind: "paint" as const, density: 1, depthMm: 5, disks: [{ p: [0, 0, 0] as [number, number, number], n: [0, 0, 1] as [number, number, number], r: 3 }] }],
+};
+check("marks include reinforce when non-empty", objectMarks(reinforcedMark) === "reinforce", objectMarks(reinforcedMark));
+check("one object with reinforcement is version 2", plateFileIsVersion2([{ reinforcement: reinforcedMark.reinforcement }]));
 check("supports on is not a mark", objectMarks({ ...left, settings: { supports: true, walls: 4 } }) === "walls 4");
 check("a copy keeps the marks", objectMarks(addedCopy({ objects: [marked], selectedId: marked.id })!.objects[1]!) === objectMarks(marked));
 check("clearing the facts clears the line", objectMarks({ ...marked, supportPaint: [], seamPaint: [], settings: {} }) === "");

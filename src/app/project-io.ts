@@ -9,6 +9,7 @@ import {
   settingsEmpty,
   type PlateFileObject,
 } from "../plate.ts";
+import { dropEmptyReinforce } from "../reinforcement.ts";
 import { base64ToBytes, meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement } from "../project.ts";
 import { saveProfile } from "../profiles.ts";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel.ts";
@@ -155,6 +156,8 @@ function fileObjects(): PlateFileObject[] {
     if (!settingsEmpty(obj.settings)) record.settings = { ...obj.settings };
     if (obj.supportPaint.length > 0) record.supportPaint = obj.supportPaint.map((disk) => structuredClone(disk));
     if (obj.seamPaint.length > 0) record.seamPaint = obj.seamPaint.map((disk) => structuredClone(disk));
+    const reinforce = dropEmptyReinforce(obj.reinforcement ?? []);
+    if (reinforce.length > 0) record.reinforcement = reinforce.map((reg) => structuredClone(reg));
     if (obj.brep) record.brep = meshRecord(stepFileName(obj.fileName), new Uint8Array(obj.brep));
     return record;
   });

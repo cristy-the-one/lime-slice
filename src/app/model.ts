@@ -29,6 +29,7 @@ interface ParsedSolid extends ModelSolid {
 type SupportEdits = typeof state.supportEdits;
 type SupportPaint = typeof state.supportPaint;
 type SeamPaint = typeof state.seamPaint;
+type Reinforcement = typeof state.reinforcement;
 
 interface ModelUndo {
   meshName: string;
@@ -37,6 +38,7 @@ interface ModelUndo {
   supportEdits: SupportEdits;
   supportPaint: SupportPaint;
   seamPaint: SeamPaint;
+  reinforcement: Reinforcement;
   partScale: number;
   brep: ArrayBuffer | null;
   addedId: string | null;
@@ -373,7 +375,7 @@ function land(snap: ModelUndo, parsed: ParsedSolid, other: ParsedSolid | null, r
     readout("Open a solid before editing it.");
     return null;
   }
-  const paint = state.supportPaint.length + state.seamPaint.length + state.supportEdits.length > 0;
+  const paint = state.supportPaint.length + state.seamPaint.length + state.reinforcement.length + state.supportEdits.length > 0;
   const scaled = resetScale && state.partScale !== 1;
   if (resetScale) state.partScale = 1;
   const positions = settle(new Float32Array(parsed.positions));
@@ -383,6 +385,7 @@ function land(snap: ModelUndo, parsed: ParsedSolid, other: ParsedSolid | null, r
   state.supportEdits = [];
   state.supportPaint = [];
   state.seamPaint = [];
+  state.reinforcement = [];
   if (other) {
     syncPlateFromState();
     const selected = state.plate.selectedId;
@@ -428,6 +431,7 @@ function restore(snap: ModelUndo) {
   state.supportEdits = snap.supportEdits;
   state.supportPaint = snap.supportPaint;
   state.seamPaint = snap.seamPaint;
+  state.reinforcement = snap.reinforcement;
   state.partScale = snap.partScale;
   setBrep(snap.brep);
 }
@@ -440,6 +444,7 @@ function snapshot(): ModelUndo {
     supportEdits: structuredClone(state.supportEdits) as SupportEdits,
     supportPaint: structuredClone(state.supportPaint) as unknown as SupportPaint,
     seamPaint: structuredClone(state.seamPaint) as unknown as SeamPaint,
+    reinforcement: structuredClone(state.reinforcement) as unknown as Reinforcement,
     partScale: state.partScale,
     brep: selectedBrep()?.slice(0) ?? null,
     addedId: null,

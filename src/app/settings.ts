@@ -13,7 +13,7 @@ import { filamentCost, filamentGrams, groupFeatures } from "../estimate";
 import { durationTile, formatCount, formatDuration, formatLength, formatMass, formatMetres, formatMoney, formatMs } from "../format";
 import { OTHER_COLOR, featureColor } from "../colors";
 import { offBed } from "../mesh-place";
-import { boundsSize, objectMarks, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty } from "../plate";
+import { boundsSize, objectMarks, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty, sourceFrame } from "../plate";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys } from "../presets";
 import { saveProfile } from "../profiles";
 import { noteAdvance, noteFirmware, noteFlow, noteGcode, noteHeatLimits, noteRetract, setSupportMode } from "./machine-actions";
@@ -29,6 +29,7 @@ import { displayId } from "../ui/settings-profiles";
 import { OVERRIDES_TIP, overrideSectionHtml } from "../ui/overrides-panel";
 import { fuzzyRequest } from "../fuzzy-skin";
 import { ironingRequest, ironingSpacingMax } from "../ironing";
+import { normalInfillDensity, reinforcementRequestFields } from "../reinforcement";
 import { levelSelectHtml, loadClosedGroups, loadSettingsLevel, saveClosedGroups, setSettingsLevel } from "../ui/settings-panel";
 import {
   GROUPS,
@@ -82,13 +83,26 @@ export function staleWarning() {
 export function settingsHash() {
   const shift = state.offset;
   const mesh = state.mesh ? `${state.mesh.name}:${state.mesh.bytes.byteLength}:${state.partScale}:${state.centered}:${shift.x.toFixed(3)},${shift.y.toFixed(3)},${shift.z.toFixed(3)}:${state.orient.join(",")}` : "";
-  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, flowBands: _fb, flowGcode: _fg, tempBands: _tb, tempGcode: _tg, retractBands: _rb, retractGcode: _rg, retractStart: _rs, retractEnd: _re, retractStep: _rp, retractOn: _ron, retractLength: _rl, retractSpeed: _rsp, printOrder: _printOrder, sequentialClearance: _sequentialClearance, sequentialGantry: _sequentialGantry, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, selectedVolumeId: _sel, modifierTool: _mt, plate: _plate, profile: _profile, ironing: _ironing, ironingFlow: _ironingFlow, ironingSpeed: _ironingSpeed, ironingSpacing: _ironingSpacing, fuzzySkin: _fuzzy, fuzzyThickness: _fuzzyThickness, fuzzyPointDistance: _fuzzyDistance, ...rest } = state;
+  const { result: _r, slicedHash: _h, busy: _b, progress: _p, error: _e, notice: _n, engine: _g, hidden: _hid, layer: _l, rangeLow: _lo, viewMode: _v, query: _q, showTravel: _t, colorMode: _c, paBands: _pb, paGcode: _pg, flowBands: _fb, flowGcode: _fg, tempBands: _tb, tempGcode: _tg, retractBands: _rb, retractGcode: _rg, retractStart: _rs, retractEnd: _re, retractStep: _rp, retractOn: _ron, retractLength: _rl, retractSpeed: _rsp, printOrder: _printOrder, sequentialClearance: _sequentialClearance, sequentialGantry: _sequentialGantry, pricePerKg: _price, move: _mv, stage: _st, playing: _play, sourcePos: _sp, placed: _pl, pareto: _pa, help: _hp, splitCustom: _sc, poseHud: _ph, offset: _off, bedOpacity: _bo, sectionOn: _so, sectionNormal: _sn, sectionOffset: _sf, sectionHud: _sh, selectedVolumeId: _sel, modifierTool: _mt, plate: _plate, profile: _profile, ironing: _ironing, ironingFlow: _ironingFlow, ironingSpeed: _ironingSpeed, ironingSpacing: _ironingSpacing, fuzzySkin: _fuzzy, fuzzyThickness: _fuzzyThickness, fuzzyPointDistance: _fuzzyDistance, reinforcement: _reinforcement, ...rest } = state;
   // Price and density only weigh the estimate, which the UI computes from the reply.
   const { filamentDensityGCm3: _density, filamentCostPerKg: _cost, ...profile } = state.profile;
   // Ironing counts as it is sent, so a number changed while it is off stales nothing.
   const ironing = ironingRequest({ on: state.ironing, flow: state.ironingFlow, speed: state.ironingSpeed, spacing: state.ironingSpacing });
   // Fuzzy skin counts as it is sent, so a number changed while it is off stales nothing.
   const fuzzy = fuzzyRequest({ on: state.fuzzySkin, thickness: state.fuzzyThickness, pointDistance: state.fuzzyPointDistance });
+  // Reinforcement counts as it is sent, so regions at or below the normal density stale nothing.
+  const reinforcement = state.sourcePos
+    ? reinforcementRequestFields(
+        state.reinforcement,
+        sourceFrame(state.sourcePos, state.partScale),
+        normalInfillDensity({
+          blendKind: state.blendKind,
+          strategy: state.strategy,
+          toughness: state.toughness,
+          objectInfill: selectedObject(state.plate)?.settings.infill,
+        }),
+      )
+    : {};
   // A cartesian printer leaves this off, so its hash is the one it had before belt profiles.
   const library = loadMachineLibrary();
   const belt = beltStamp(library);
@@ -104,11 +118,29 @@ export function settingsHash() {
     .filter((obj) => !settingsEmpty(obj.settings))
     .map((obj) => `${obj.id}:${JSON.stringify(obj.settings)}`)
     .join("|");
-  const hashed = { mesh, profile: rules.coerce(profile), rest: rules.coerce(rest), ...ironing, ...fuzzy, ...retract, ...order, ...(belt ? { belt } : {}), ...(objectSettings ? { objectSettings } : {}) };
+  const hashed = { mesh, profile: rules.coerce(profile), rest: rules.coerce(rest), ...ironing, ...fuzzy, ...reinforcement, ...retract, ...order, ...(belt ? { belt } : {}), ...(objectSettings ? { objectSettings } : {}) };
   if (state.plate.objects.length > 1) {
+    const objectReinforce = state.plate.objects
+      .map((obj) => {
+        if (!obj.reinforcement?.length) return "";
+        const rf = reinforcementRequestFields(
+          obj.reinforcement,
+          sourceFrame(obj.sourcePos, obj.partScale),
+          normalInfillDensity({
+            blendKind: state.blendKind,
+            strategy: state.strategy,
+            toughness: state.toughness,
+            objectInfill: obj.settings.infill,
+          }),
+        );
+        return rf.reinforcement ? `${obj.id}:${JSON.stringify(rf.reinforcement)}` : "";
+      })
+      .filter(Boolean)
+      .join("|");
     return JSON.stringify({
       ...hashed,
       plate: state.plate.objects.map((obj) => `${obj.id}:${obj.partScale}:${obj.offset.x.toFixed(3)},${obj.offset.y.toFixed(3)},${obj.offset.z.toFixed(3)}:${obj.orient.join(",")}:${obj.sourcePos.length}`).join("|"),
+      ...(objectReinforce ? { objectReinforce } : {}),
     });
   }
   return JSON.stringify(hashed);
@@ -510,6 +542,7 @@ const CUSTOM: Record<string, () => string> = {
   printOrderFields: () => printOrderFields(currentRules()),
   modifiers: () => `<div class="subhead" data-tip="${escapeHtml(OVERRIDES_TIP)}">Modifiers</div>${overrideSectionHtml(state.overrides, state.selectedVolumeId, state.modifierTool)}`,
   seamTools: () => toolRow([{ id: "seamPaintBtn", tool: "seam", label: "Paint seam", command: "paint-seam" }]),
+  reinforceTools: () => toolRow([{ id: "reinforcePaintBtn", tool: "reinforce", label: "Reinforce", command: "paint-reinforce" }]),
   // Painted only has nothing to edit until paint asks for it, so Paint leads, right under the choice.
   supportPaintTools: () => toolRow([{ ...PAINT_SUPPORTS, tip: "Supports grow only where you paint Enforce. Block stops them inside it." }]),
   supportTools: () => toolRow(supportModeOf(state) === "paint" ? [EDIT_TREES] : [PAINT_SUPPORTS, EDIT_TREES]),

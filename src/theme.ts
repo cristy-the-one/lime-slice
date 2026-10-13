@@ -24,6 +24,7 @@ export interface ThemeColors {
   paintEnforce: string;
   paintBlock: string;
   paintSeam: string;
+  paintReinforce: string;
 }
 
 export function loadTheme(): ThemeChoice {
@@ -63,6 +64,7 @@ export function themeColors(): ThemeColors {
     paintEnforce: pick("--paint-enforce", "#1e6fd9"),
     paintBlock: pick("--paint-block", "#e5484d"),
     paintSeam: pick("--paint-seam", "#f5a524"),
+    paintReinforce: pick("--paint-reinforce", "#9333ea"),
   };
 }
 

@@ -253,6 +253,22 @@ eq("a plate saved before support paint opens with none", unpaintedOpened.ok ? un
 paintedWire.objects[0]!.supportPaint = [{ kind: "paint", p: [0, 0, 0], n: [0, 0, 1], r: 1 }];
 eq("damaged paint fails the open", parseProject(JSON.stringify(paintedWire)), { ok: false, message: "The support paint in this project is damaged." });
 
+const reinforceRegions = [
+  { kind: "paint" as const, density: 1, depthMm: 5, fillThrough: true, disks: [{ p: [10, 10, 10] as [number, number, number], n: [0, 0, 1] as [number, number, number], r: 3 }] },
+  { kind: "box" as const, density: 0.6, center: [5, 5, 5] as [number, number, number], size: [10, 10, 10] as [number, number, number] },
+];
+const reinforced: LimeProject = {
+  ...project,
+  version: 2,
+  objects: [{ id: "part", name: "bracket.stl", mesh: project.mesh, placement: project.placement, supportEdits: [], reinforcement: reinforceRegions }],
+};
+const reinforcedWire = JSON.parse(serializeProject(reinforced)) as { version: number; objects: { reinforcement?: unknown }[] };
+eq("one object with reinforcement writes version 2 and keeps its regions", [reinforcedWire.version, reinforcedWire.objects[0]?.reinforcement], [2, reinforceRegions]);
+const reinforcedOpened = parseProject(JSON.stringify(reinforcedWire));
+eq("reinforcement round-trips", reinforcedOpened.ok ? reinforcedOpened.project.objects?.[0]?.reinforcement : null, reinforceRegions);
+reinforcedWire.objects[0]!.reinforcement = [{ kind: "paint", density: 5, depthMm: 5, disks: [] }];
+eq("damaged reinforcement fails the open", parseProject(JSON.stringify(reinforcedWire)), { ok: false, message: "The reinforcement in this project is damaged." });
+
 const brepMesh = { ...project.mesh, name: "bracket.step" };
 const withBrep: LimeProject = {
   ...project,
