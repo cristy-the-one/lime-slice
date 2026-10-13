@@ -3773,11 +3773,121 @@ fn untangle(
                 }
             }
         }
+        let mut tour = Tour {
+            order: &mut order,
+            ins: &mut ins,
+            outs: &mut outs,
+            flips: &mut flips,
+        };
+        improved |= tour.relocate(cursor, has, to);
         if !improved {
             break;
         }
     }
     (order, flips)
+}
+
+/// The tour `untangle` improves: the path at each position, where it is entered
+/// and left, and whether it runs from its last point.
+struct Tour<'a> {
+    order: &'a mut Vec<usize>,
+    ins: &'a mut Vec<[f64; 2]>,
+    outs: &'a mut Vec<[f64; 2]>,
+    flips: &'a mut Vec<bool>,
+}
+
+/// Shortest saving, in mm of travel, that moves a short run of paths.
+const RELOCATE_MIN_MM: f64 = 0.5;
+
+impl Tour<'_> {
+    /// Or-opt: takes one to three paths in a row out and puts them back between
+    /// two other stops, either way round, when that shortens the travel by at
+    /// least `RELOCATE_MIN_MM`. 2-opt cannot make this move, since it only
+    /// reverses a stretch of two paths or more. Returns whether anything moved.
+    fn relocate(&mut self, cursor: [f64; 2], has: bool, to: Option<[f64; 2]>) -> bool {
+        let n = self.order.len();
+        let link = |from: Option<[f64; 2]>, to: [f64; 2]| from.map_or(0.0, |f| dist_mm(f, to));
+        let mut moved = false;
+        for len in 1..=3usize {
+            let mut i = 0;
+            while i + len <= n {
+                let before = if i == 0 {
+                    has.then_some(cursor)
+                } else {
+                    Some(self.outs[i - 1])
+                };
+                let after = self.ins.get(i + len).copied().or(to);
+                let mut saved = link(before, self.ins[i]);
+                if let Some(a) = after {
+                    saved += dist_mm(self.outs[i + len - 1], a);
+                    if let Some(b) = before {
+                        saved -= dist_mm(b, a);
+                    }
+                }
+                // `rest` is the tour without the run; a run goes back before
+                // `rest[pos]`, or after the last stop when `pos` is `rest.len()`.
+                let rest: Vec<usize> = (0..n).filter(|k| *k < i || *k >= i + len).collect();
+                let mut best: Option<(f64, usize, bool)> = None;
+                for pos in i.saturating_sub(UNTANGLE_WINDOW)..=(i + UNTANGLE_WINDOW).min(rest.len()) {
+                    let prev = if pos == 0 {
+                        has.then_some(cursor)
+                    } else {
+                        Some(self.outs[rest[pos - 1]])
+                    };
+                    let next = rest.get(pos).map(|&k| self.ins[k]).or(to);
+                    for reversed in [false, true] {
+                        // Back where it was, the same way round, is no move.
+                        if pos == i && !reversed {
+                            continue;
+                        }
+                        let (head, tail) = if reversed {
+                            (self.outs[i + len - 1], self.ins[i])
+                        } else {
+                            (self.ins[i], self.outs[i + len - 1])
+                        };
+                        let mut cost = link(prev, head);
+                        if let Some(q) = next {
+                            cost += dist_mm(tail, q);
+                            if let Some(p) = prev {
+                                cost -= dist_mm(p, q);
+                            }
+                        }
+                        if cost + RELOCATE_MIN_MM < saved && best.is_none_or(|b| cost < b.0) {
+                            best = Some((cost, pos, reversed));
+                        }
+                    }
+                }
+                if let Some((_, pos, reversed)) = best {
+                    let mut run: Vec<usize> = (i..i + len).collect();
+                    if reversed {
+                        run.reverse();
+                    }
+                    let mut stops: Vec<(usize, bool)> = rest.iter().map(|&k| (k, false)).collect();
+                    for (offset, &k) in run.iter().enumerate() {
+                        stops.insert(pos + offset, (k, reversed));
+                    }
+                    let take = |v: &Vec<[f64; 2]>, flip_it: bool, k: usize, w: &Vec<[f64; 2]>| {
+                        if flip_it {
+                            w[k]
+                        } else {
+                            v[k]
+                        }
+                    };
+                    let ins = stops.iter().map(|&(k, f)| take(self.ins, f, k, self.outs)).collect();
+                    let outs = stops.iter().map(|&(k, f)| take(self.outs, f, k, self.ins)).collect();
+                    let flips = stops.iter().map(|&(k, f)| self.flips[k] != f).collect();
+                    let order = stops.iter().map(|&(k, _)| self.order[k]).collect();
+                    *self.ins = ins;
+                    *self.outs = outs;
+                    *self.flips = flips;
+                    *self.order = order;
+                    moved = true;
+                }
+                i += 1;
+            }
+        }
+        moved
+    }
 }
 
 fn apply_flips(paths: Vec<Extrusion>, order: &[usize], flips: &[bool]) -> Vec<Extrusion> {
@@ -6379,6 +6489,19 @@ mod travel_tests {
         // Nearest-neighbour with 2-opt on the strokes alone walks 1451 mm here;
         // 2-opt over the loops and strokes together brings it to 1361.
         assert!(walked < 1400.0, "walked {walked:.1} mm");
+    }
+
+    #[test]
+    fn a_stroke_printed_too_early_is_moved_past_its_neighbours() {
+        // Strokes along a line, the second one far ahead of its place: reversing
+        // a stretch cannot bring it back, moving it can.
+        let paths: Vec<Extrusion> = [1.0, 10.0, 3.0, 5.0]
+            .iter()
+            .map(|&x| support(vec![[x, 0.0], [x + 1.0, 0.0]]))
+            .collect();
+        let (order, flips) = untangle(&paths, &[0, 1, 2, 3], [0.0, 0.0], true, None);
+        assert_eq!(order, vec![0, 2, 3, 1]);
+        assert_eq!(flips, vec![false; 4]);
     }
 
     #[test]
