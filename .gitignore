@@ -4,6 +4,7 @@
 /node_modules
 /dist
 /artifacts
+/src-tauri/resources/occt/
 /test-results
 /playwright-report
 .DS_Store

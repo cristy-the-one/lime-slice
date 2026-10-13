@@ -22,17 +22,17 @@ jobs:
           - label: linux
             platform: ubuntu-24.04
             # deb is the local Linux default; the release also builds an AppImage.
-            args: --bundles deb,appimage
+            args: --bundles deb,appimage --config src-tauri/tauri.occt.json
           - label: macos-arm
             platform: macos-latest
-            args: --target aarch64-apple-darwin --bundles dmg
+            args: --target aarch64-apple-darwin --bundles dmg --config src-tauri/tauri.occt.json
           - label: macos-intel
             platform: macos-latest
             # Cross-compiled on the Apple Silicon runner. Two dmgs, not one universal binary.
-            args: --target x86_64-apple-darwin --bundles dmg
+            args: --target x86_64-apple-darwin --bundles dmg --config src-tauri/tauri.occt.json
           - label: windows
             platform: windows-latest
-            args: --bundles nsis
+            args: --bundles nsis --config src-tauri/tauri.occt.json
     env:
       # linuxdeploy on GitHub runners has no FUSE device.
       APPIMAGE_EXTRACT_AND_RUN: "1"
@@ -58,7 +58,9 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            libsoup-3.0-dev
+            libsoup-3.0-dev \
+            cmake \
+            ninja-build
 
       - uses: actions/setup-node@v4
         with:
@@ -76,12 +78,40 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       # dtolnay/rust-toolchain@stable installs its targets input on the stable
       # channel. rust-toolchain.toml pins 1.88.0, and that is the toolchain
       # Tauri invokes, so the Intel cross target has to be added there.
       - name: Install the Intel macOS Rust target
         if: matrix.label == 'macos-intel'
         run: rustup target add x86_64-apple-darwin
+
+      - name: Restore the OCCT shared libraries
+        id: occt-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2
+          key: occt-7.9.2-model-${{ runner.os }}-${{ matrix.label == 'macos-intel' && 'X64' || runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+
+      - name: Build OCCT shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 120
+        env:
+          CMAKE_OSX_ARCHITECTURES: ${{ matrix.label == 'macos-intel' && 'x86_64' || '' }}
+        run: python tools/occt/install.py --prefix "${{ runner.temp }}/occt-7.9.2"
+
+      - name: Save the OCCT shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2
+          key: occt-7.9.2-model-${{ runner.os }}-${{ matrix.label == 'macos-intel' && 'X64' || runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+
+      - name: Stage OCCT libraries and notices
+        run: python tools/occt/stage_bundle.py --prefix "${{ runner.temp }}/occt-7.9.2" --dest src-tauri/resources/occt
 
       - name: Build unsigned installers and upload the draft release
         uses: tauri-apps/tauri-action@v1

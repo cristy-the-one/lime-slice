@@ -13,8 +13,16 @@ jobs:
   rust:
     name: test, clippy, and Tauri
     runs-on: ubuntu-24.04
+    env:
+      LIME_REQUIRE_OCCT: "1"
     steps:
       - uses: actions/checkout@v4
+
+      # runner.temp is not available in a job-level env block.
+      - name: Point at the OCCT install
+        run: |
+          echo "OCCT_ROOT=${{ runner.temp }}/occt-7.9.2" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${{ runner.temp }}/occt-7.9.2/lib" >> "$GITHUB_ENV"
 
       - name: Install GTK and WebKitGTK
         run: |
@@ -28,13 +36,34 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            libsoup-3.0-dev
+            libsoup-3.0-dev \
+            cmake \
+            ninja-build
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Restore the OCCT shared libraries
+        id: occt-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2
+          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+
+      - name: Build OCCT shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 120
+        run: python3 tools/occt/install.py --prefix "$OCCT_ROOT"
+
+      - name: Save the OCCT shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2
+          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
 
       - name: Test
         run: cargo test --workspace --locked
@@ -180,3 +209,92 @@ jobs:
           target/release/lime-slice serve --port 43218 --cache-dir "$RUNNER_TEMP/slicecache" &
           for _ in $(seq 1 30); do curl -sf http://127.0.0.1:43218/api/health && break; sleep 1; done
           LIME_EDIT_API=http://127.0.0.1:43218 npm run test:engine
+
+  occt-windows:
+    name: OCCT dynamic link (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 180
+    env:
+      LIME_REQUIRE_OCCT: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Point at the OCCT install
+        run: Add-Content -Path $env:GITHUB_ENV -Value "OCCT_ROOT=${{ runner.temp }}\occt-7.9.2"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Restore the OCCT shared libraries
+        id: occt-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2
+          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+
+      - name: Build OCCT shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        run: python tools/occt/install.py --prefix "$env:OCCT_ROOT"
+
+      - name: Save the OCCT shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2
+          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+
+      - name: Test the dynamic link
+        run: |
+          $env:PATH = "$env:OCCT_ROOT\bin;$env:OCCT_ROOT\lib;" + $env:PATH
+          cargo test -p lime-model --locked -- --nocapture
+
+  occt-macos:
+    name: OCCT dynamic link (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 180
+    env:
+      LIME_REQUIRE_OCCT: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Point at the OCCT install
+        run: |
+          echo "OCCT_ROOT=${{ runner.temp }}/occt-7.9.2" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=${{ runner.temp }}/occt-7.9.2/lib" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install CMake
+        run: |
+          if ! command -v cmake >/dev/null 2>&1; then
+            brew install cmake
+          fi
+          cmake --version
+
+      - name: Restore the OCCT shared libraries
+        id: occt-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2
+          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+
+      - name: Build OCCT shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        run: python3 tools/occt/install.py --prefix "$OCCT_ROOT"
+
+      - name: Save the OCCT shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2
+          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+
+      - name: Test the dynamic link
+        run: cargo test -p lime-model --locked -- --nocapture
