@@ -43,6 +43,7 @@ import {
   type PrinterRecord,
 } from "../ui/machine-library.ts";
 import { coerceBelt, type PrinterKind } from "../belt.ts";
+import { warps } from "../adhesion.ts";
 import { LEGACY_PRUSA_LINK_KEY, parseLegacyPrusaLink } from "../ui/prusa-link.ts";
 
 export function newMachineId(): string {
@@ -64,12 +65,35 @@ export function bootMachines() {
 }
 
 export function chooseMachine(printerId: string, filamentId: string, nozzleMm: number) {
+  const previous = selection(loadMachineLibrary())?.filament.material ?? "";
   const next = selectIn(loadMachineLibrary(), printerId, filamentId, nozzleMm);
   if (typeof next === "string") {
     pushToast(next, "info");
     return;
   }
   commitSwitch(next);
+  const material = selection(next)?.filament.material ?? "";
+  if (material !== previous) suggestAdhesion(next, material);
+}
+
+/** ABS, ASA, and PC lift. The engine default stays a skirt until the toast is taken. */
+function suggestAdhesion(library: MachineLibrary, material: string) {
+  if (!warps(material) || state.adhesion !== "skirt" || beltStamp(library)) return;
+  pushToast(`${material} lifts at the corners. Mouse ears or a 5 mm brim hold it down.`, "info", [
+    { label: "Mouse ears", run: () => applySuggestedAdhesion("mouseEars") },
+    { label: "5 mm brim", run: () => applySuggestedAdhesion("brim") },
+  ]);
+}
+
+function applySuggestedAdhesion(adhesion: "brim" | "mouseEars") {
+  noteEdit();
+  state.adhesion = adhesion;
+  state.brimWidthMm = 5;
+  state.brimGapMm = 0.1;
+  markProjectDirty();
+  fx.renderChrome?.();
+  fx.markStale?.();
+  fx.scheduleAuto?.();
 }
 
 export function noteFlow(flow: number) {

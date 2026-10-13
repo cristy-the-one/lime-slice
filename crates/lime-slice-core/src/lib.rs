@@ -50,7 +50,7 @@ pub use slice::{
     slice_configured_watched, slice_request, slice_request_watched, slice_with_baseline,
     BeltCopies, BlendScore, CompareEstimate, EditOutcomeView, FeatureEstimate, HeightRangeSpec,
     ModifierVolumeSpec, PaintDiskSpec, ParetoPoint, PreviewLayer, PrintEstimate, RigidPose,
-    SiteSpec, SliceRequest, SliceResponse, SliceSettings, SupportEditSpec, VolumeKind,
+    SiteSpec,     AdhesionType, SliceRequest, SliceResponse, SliceSettings, SupportEditSpec, VolumeKind,
 };
 pub use slice_cache::{slice_payload, slice_payload_watched, SliceCache};
 pub use step::{
