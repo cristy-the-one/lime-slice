@@ -1,13 +1,16 @@
 import {
   addDiskToRegion,
   allReinforceDisks,
+  defaultReinforceVolume,
   dropEmptyReinforce,
   emptyPaintRegion,
+  moveReinforceVolume,
   normalInfillDensity,
   readReinforcement,
   reinforceDiskFromHit,
   reinforcementRequestFields,
   reinforceStrokeTakes,
+  scaleReinforceVolume,
   totalReinforceDisks,
   type ReinforceDisk,
   type ReinforceRegion,
@@ -117,6 +120,28 @@ check(
     sentBox.reinforcement[0].center[0] === 20 &&
     sentBox.reinforcement[0].size[0] === 20,
   JSON.stringify(sentBox),
+);
+
+const defCyl = defaultReinforceVolume("cylinder", { min: [0, 0, 0], max: [20, 20, 20] });
+check(
+  "defaultReinforceVolume places volume at bounds centre with 10 mm size",
+  defCyl.kind === "cylinder" &&
+    defCyl.density === 1 &&
+    defCyl.center[0] === 10 &&
+    defCyl.center[1] === 10 &&
+    defCyl.center[2] === 10 &&
+    defCyl.size[0] === 10 &&
+    defCyl.size[1] === 10 &&
+    defCyl.size[2] === 10,
+  JSON.stringify(defCyl),
+);
+
+const movedCyl = moveReinforceVolume(defCyl, "x", 6, 2);
+const scaledCyl = scaleReinforceVolume(movedCyl, "x", 4, 2);
+check(
+  "moveReinforceVolume and scaleReinforceVolume divide mesh delta by part scale",
+  movedCyl.center[0] === 13 && scaledCyl.size[0] === 12,
+  JSON.stringify({ movedCyl, scaledCyl }),
 );
 
 check(

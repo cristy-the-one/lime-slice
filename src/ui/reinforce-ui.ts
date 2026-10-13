@@ -1,6 +1,7 @@
 /**
  * The Reinforce tool in Prepare: a rail tool and a bar with brush radius, depth,
- * fill-through, `New region`, and the per-region density list (`docs/reinforcement.md`).
+ * fill-through, `New region`, `Box`, `Cylinder`, volume gizmo mode (`Move` / `Scale`),
+ * and the per-region density list (`docs/reinforcement.md`).
  */
 import { createElement, Shield } from "lucide";
 import type { BrushHooks, PrepareView } from "../prepare-view";
@@ -21,12 +22,15 @@ export interface ReinforcePaintHooks {
   view(): {
     regions: readonly ReinforceRegion[];
     activeIndex: number;
+    volumeTool: "move" | "scale";
     normalDensity: number;
     hasMesh: boolean;
   };
   stroke(radius: number, defaults: { depthMm: number; fillThrough: boolean }): BrushHooks;
   selectRegion(index: number): void;
   newRegion(): void;
+  addVolume(kind: "box" | "cylinder"): void;
+  setVolumeTool(tool: "move" | "scale"): void;
   setDepth(depthMm: number, commit: boolean): void;
   setFillThrough(fillThrough: boolean): void;
   setDensity(index: number, density: number, commit: boolean): void;
@@ -70,6 +74,12 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
       Fill through
     </label>
     <button type="button" class="btn" id="reinforceNewRegion">New region</button>
+    <button type="button" class="btn" id="reinforceAddBox">Box</button>
+    <button type="button" class="btn" id="reinforceAddCylinder">Cylinder</button>
+    <div class="pb-kind" id="reinforceVolGizmo" role="group" aria-label="Volume gizmo" hidden>
+      <button type="button" id="reinforceToolMove" aria-pressed="true">Move</button>
+      <button type="button" id="reinforceToolScale" aria-pressed="false">Scale</button>
+    </div>
     <button type="button" class="btn" id="reinforceClear">Clear</button>
     <button type="button" class="btn" id="reinforceDone">Done</button>
     <div class="pb-regions" id="reinforceRegions" role="list" aria-label="Reinforcement regions"></div>
@@ -83,6 +93,11 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
   const depthOut = bar.querySelector<HTMLOutputElement>("#reinforceDepthOut")!;
   const fillThroughInput = bar.querySelector<HTMLInputElement>("#reinforceFillThrough")!;
   const newRegionBtn = bar.querySelector<HTMLButtonElement>("#reinforceNewRegion")!;
+  const addBoxBtn = bar.querySelector<HTMLButtonElement>("#reinforceAddBox")!;
+  const addCylinderBtn = bar.querySelector<HTMLButtonElement>("#reinforceAddCylinder")!;
+  const volGizmo = bar.querySelector<HTMLElement>("#reinforceVolGizmo")!;
+  const moveToolBtn = bar.querySelector<HTMLButtonElement>("#reinforceToolMove")!;
+  const scaleToolBtn = bar.querySelector<HTMLButtonElement>("#reinforceToolScale")!;
   const clearBtn = bar.querySelector<HTMLButtonElement>("#reinforceClear")!;
   const regionsList = bar.querySelector<HTMLElement>("#reinforceRegions")!;
   const status = bar.querySelector<HTMLElement>("#reinforceStatus")!;
@@ -96,6 +111,11 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
   function activePaintRegion(regions: readonly ReinforceRegion[], activeIndex: number) {
     const r = regions[activeIndex];
     return r && r.kind === "paint" ? r : null;
+  }
+
+  function activeVolumeRegion(regions: readonly ReinforceRegion[], activeIndex: number) {
+    const r = regions[activeIndex];
+    return r && (r.kind === "box" || r.kind === "cylinder") ? r : null;
   }
 
   function regionLabel(reg: ReinforceRegion, index: number): string {
@@ -143,6 +163,7 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
       const row = regionsList.children[idx] as HTMLElement;
       const isSelected = idx === activeIndex;
       row.dataset.regionIndex = String(idx);
+      row.dataset.regionKind = reg.kind;
       row.dataset.active = isSelected ? "1" : "0";
       const selectBtn = row.querySelector<HTMLButtonElement>(".pb-region-select")!;
       selectBtn.textContent = regionLabel(reg, idx);
@@ -169,6 +190,7 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
     radiusOut.textContent = `${radius().toFixed(1)} mm`;
 
     const paintReg = activePaintRegion(view.regions, view.activeIndex);
+    const volReg = activeVolumeRegion(view.regions, view.activeIndex);
     const depthMm = paintReg ? paintReg.depthMm : pendingDepthMm;
     const fillThrough = paintReg ? Boolean(paintReg.fillThrough) : pendingFillThrough;
 
@@ -178,6 +200,10 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
     depthOut.textContent = `${Number(depthInput.value).toFixed(1)} mm`;
     fillThroughInput.checked = fillThrough;
     depthField.hidden = fillThrough;
+
+    volGizmo.hidden = !volReg;
+    moveToolBtn.setAttribute("aria-pressed", view.volumeTool === "move" ? "true" : "false");
+    scaleToolBtn.setAttribute("aria-pressed", view.volumeTool === "scale" ? "true" : "false");
 
     const diskCount = totalReinforceDisks(view.regions);
     clearBtn.disabled = view.regions.length === 0;
@@ -271,6 +297,26 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
     pendingDepthMm = REINFORCE_DEPTH_DEFAULT_MM;
     pendingFillThrough = false;
     hooks.newRegion();
+    sync();
+  });
+
+  addBoxBtn.addEventListener("click", () => {
+    hooks.addVolume("box");
+    sync();
+  });
+
+  addCylinderBtn.addEventListener("click", () => {
+    hooks.addVolume("cylinder");
+    sync();
+  });
+
+  moveToolBtn.addEventListener("click", () => {
+    hooks.setVolumeTool("move");
+    sync();
+  });
+
+  scaleToolBtn.addEventListener("click", () => {
+    hooks.setVolumeTool("scale");
     sync();
   });
 
