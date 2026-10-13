@@ -184,6 +184,14 @@ secondMesh.name = "ledge.stl";
 secondMesh.partScale = 0.5;
 secondMesh.settings = { walls: 3 };
 const picked = addedCopy({ objects: [firstMesh, secondMesh], selectedId: "ledge" });
+const solid = new ArrayBuffer(4);
+new Uint8Array(solid).set([1, 2, 3, 4]);
+firstMesh.brep = solid;
+const copiedSolid = addedCopy({ objects: [firstMesh], selectedId: firstMesh.id });
+check(
+  "duplicate copies the solid and does not share its bytes",
+  copiedSolid?.objects[1]?.brep?.byteLength === 4 && copiedSolid.objects[1].brep !== solid && new Uint8Array(copiedSolid.objects[1].brep!)[0] === 1,
+);
 check(
   "duplicate copies the selected mesh, not the first",
   picked?.objects[2]?.fileName === "ledge.stl" && picked.objects[2].sourcePos === secondMesh.sourcePos && picked.objects[2].partScale === 0.5 && picked.objects[2].settings.walls === 3,

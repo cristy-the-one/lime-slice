@@ -2,6 +2,8 @@ import { bytesToBase64 } from "../base64";
 import { encodeStl, settle } from "../mesh-place";
 import type { ModelPick, ModelSolid } from "../model-view";
 import { addedMesh, withoutObject } from "../plate";
+import { markProjectDirty } from "../project-dirty";
+import { base64ToBytes } from "../project";
 import { authHeaders } from "../ui/api-base";
 import { place } from "./files";
 import { fx } from "./fx";
@@ -33,6 +35,7 @@ interface ModelUndo {
   supportPaint: SupportPaint;
   seamPaint: SeamPaint;
   partScale: number;
+  brep: ArrayBuffer | null;
   addedId: string | null;
 }
 
@@ -49,8 +52,15 @@ export function bindModelView() {
   document.querySelector("#modelChamfer")?.addEventListener("click", () => void runBlend("chamfer"));
   document.querySelector("#modelHole")?.addEventListener("click", () => void runHole());
   document.querySelector("#modelScaleApply")?.addEventListener("click", () => void runScale());
+  document.querySelector("#modelStep")?.addEventListener("click", () => void runExport());
   document.querySelector("#modelUndo")?.addEventListener("click", () => void runUndo());
   syncPrim();
+}
+
+/** Write the open solid onto the selected object when that session is still current. */
+export async function captureOpenSolid() {
+  if (!solid || !state.mesh || meshToken() !== keptToken) return;
+  await rememberBrep();
 }
 
 export function showModel() {
@@ -73,7 +83,8 @@ export function showModel() {
     readout("Open a STEP file to measure a solid.");
     return;
   }
-  if (!isStepName(mesh.name)) {
+  const brep = selectedBrep();
+  if (!brep && !isStepName(mesh.name)) {
     readout("Model measure reads a STEP solid. This file is a mesh.");
     return;
   }
@@ -82,6 +93,10 @@ export function showModel() {
   undos.length = 0;
   syncUndo();
   readout("Reading the solid…");
+  if (brep) {
+    void load(mine, stepFileName(mesh.name), brep, state.stepTolerance);
+    return;
+  }
   void load(mine, mesh.name, mesh.bytes, state.stepTolerance);
 }
 
@@ -144,7 +159,7 @@ async function runBoolean(op: "fuse" | "cut" | "common") {
   }
   const note = land(snap, parsed, null, false);
   if (note === null) return;
-  present(parsed, `Volume ${mm(parsed.volumeMm3)} mm³.${note}`);
+  await commitView(parsed, `Volume ${mm(parsed.volumeMm3)} mm³.${note}`);
 }
 
 async function runSplit() {
@@ -180,7 +195,7 @@ async function runSplit() {
     await rollback(snap);
     return;
   }
-  present(parsed, `Split. Volume ${mm(parsed.volumeMm3)} mm³. The other solid is on the plate.${note}`);
+  await commitView(parsed, `Split. Volume ${mm(parsed.volumeMm3)} mm³. The other solid is on the plate.${note}`);
 }
 
 async function runBlend(kind: "fillet" | "chamfer") {
@@ -215,7 +230,7 @@ async function runBlend(kind: "fillet" | "chamfer") {
   const note = land(snap, parsed, null, false);
   if (note === null) return;
   const label = kind === "fillet" ? "Fillet" : "Chamfer";
-  present(parsed, `${label}. Volume ${mm(parsed.volumeMm3)} mm³.${note}`);
+  await commitView(parsed, `${label}. Volume ${mm(parsed.volumeMm3)} mm³.${note}`);
 }
 
 async function runHole() {
@@ -246,7 +261,7 @@ async function runHole() {
   }
   const note = land(snap, parsed, null, false);
   if (note === null) return;
-  present(parsed, `Hole. Volume ${mm(parsed.volumeMm3)} mm³.${note}`);
+  await commitView(parsed, `Hole. Volume ${mm(parsed.volumeMm3)} mm³.${note}`);
 }
 
 async function runScale() {
@@ -273,7 +288,25 @@ async function runScale() {
   }
   const note = land(snap, parsed, null, true);
   if (note === null) return;
-  present(parsed, `Volume ${mm(parsed.volumeMm3)} mm³.${note}`);
+  await commitView(parsed, `Volume ${mm(parsed.volumeMm3)} mm³.${note}`);
+}
+
+async function runExport() {
+  if (!solid || busy || !state.mesh) return;
+  busy = true;
+  readout("Writing STEP…");
+  const mine = ticket;
+  const problem = await rememberBrep();
+  busy = false;
+  if (mine !== ticket || state.stage !== "model" || !solid) return;
+  if (problem) {
+    readout(problem);
+    return;
+  }
+  const brep = selectedBrep();
+  if (!brep || !state.mesh) return;
+  await saveStepFile(brep, stepFileName(state.mesh.name));
+  readout(`Saved STEP. Volume ${mm(solid.volumeMm3)} mm³.`);
 }
 
 async function runUndo() {
@@ -370,6 +403,7 @@ function restore(snap: ModelUndo) {
   state.supportPaint = snap.supportPaint;
   state.seamPaint = snap.seamPaint;
   state.partScale = snap.partScale;
+  setBrep(snap.brep);
 }
 
 function snapshot(): ModelUndo {
@@ -381,8 +415,70 @@ function snapshot(): ModelUndo {
     supportPaint: structuredClone(state.supportPaint) as unknown as SupportPaint,
     seamPaint: structuredClone(state.seamPaint) as unknown as SeamPaint,
     partScale: state.partScale,
+    brep: selectedBrep()?.slice(0) ?? null,
     addedId: null,
   };
+}
+
+async function commitView(parsed: ParsedSolid, message: string) {
+  const problem = await rememberBrep();
+  present(parsed, problem ? `${message} ${problem}` : message);
+}
+
+async function rememberBrep(): Promise<string | null> {
+  if (!solid) return "Open a solid before saving it.";
+  const body = await post("/api/model/export", { id: solid.id });
+  const problem = text(body.error);
+  if (problem) return problem;
+  if (typeof body.bytesBase64 !== "string") return "Open CASCADE did not write this solid.";
+  const bytes = base64ToBytes(body.bytesBase64);
+  if (!bytes || (typeof body.byteLength === "number" && bytes.byteLength !== body.byteLength)) {
+    return "Open CASCADE did not write this solid.";
+  }
+  const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  setBrep(copy);
+  markProjectDirty();
+  return null;
+}
+
+function setBrep(bytes: ArrayBuffer | null) {
+  const id = state.plate.selectedId;
+  if (!id) return;
+  state.plate = {
+    ...state.plate,
+    objects: state.plate.objects.map((obj) => {
+      if (obj.id !== id) return obj;
+      const next = { ...obj };
+      if (bytes && bytes.byteLength > 0) next.brep = bytes.slice(0);
+      else delete next.brep;
+      return next;
+    }),
+  };
+}
+
+function selectedBrep() {
+  const id = state.plate.selectedId;
+  return state.plate.objects.find((obj) => obj.id === id)?.brep ?? null;
+}
+
+function stepFileName(name: string) {
+  const stem = name.replace(/\.(step|stp|stl|3mf)$/i, "");
+  return `${stem || "solid"}.step`;
+}
+
+async function saveStepFile(bytes: ArrayBuffer, name: string) {
+  const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  if (tauri) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("save_text_file", { text: "", defaultName: name, extension: "step", bytesB64: bytesToBase64(new Uint8Array(bytes)) });
+    return;
+  }
+  const blob = new Blob([bytes], { type: "application/step" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = name;
+  link.click();
+  URL.revokeObjectURL(link.href);
 }
 
 function present(parsed: ParsedSolid, message: string) {
@@ -521,6 +617,7 @@ function commandFor(path: string) {
   if (path.endsWith("/chamfer")) return "model_chamfer";
   if (path.endsWith("/hole")) return "model_hole";
   if (path.endsWith("/scale")) return "model_scale";
+  if (path.endsWith("/export")) return "model_export";
   if (path.endsWith("/undo")) return "model_undo";
   return "model_solid";
 }

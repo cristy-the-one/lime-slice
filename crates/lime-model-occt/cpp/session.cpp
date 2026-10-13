@@ -53,7 +53,10 @@
 
 #ifdef LIME_OCCT_STEP
 #include <IFSelect_ReturnStatus.hxx>
+#include <Interface_Static.hxx>
 #include <STEPControl_Reader.hxx>
+#include <STEPControl_StepModelType.hxx>
+#include <STEPControl_Writer.hxx>
 #endif
 
 namespace {
@@ -923,6 +926,39 @@ extern "C" char* lime_model_occt_scale(int id, double factor, double chord) {
             return error_json("Open CASCADE did not scale this solid");
         }
         return commit_edit(id, current, builder.Shape(), chord, "Open CASCADE did not scale this solid");
+    } catch (const Standard_Failure& failure) {
+        const char* message = failure.GetMessageString();
+        return error_json(message != nullptr ? message : "Open CASCADE failed");
+    } catch (...) {
+        return error_json("Open CASCADE failed");
+    }
+}
+
+extern "C" char* lime_model_occt_write_step(int id, const char* path) {
+    try {
+#ifndef LIME_OCCT_STEP
+        (void)id;
+        (void)path;
+        return error_json("STEP writer is not linked");
+#else
+        if (path == nullptr || path[0] == '\0') {
+            return error_json("STEP path is empty");
+        }
+        TopoDS_Shape current;
+        std::string error;
+        if (!copy_shape(id, current, error)) {
+            return error_json(error);
+        }
+        Interface_Static::SetCVal("write.step.schema", "AP214IS");
+        STEPControl_Writer writer;
+        if (writer.Transfer(current, STEPControl_ManifoldSolidBrep) != IFSelect_RetDone) {
+            return error_json("Open CASCADE did not write this solid");
+        }
+        if (writer.Write(path) != IFSelect_RetDone) {
+            return error_json("Open CASCADE did not write this solid");
+        }
+        return alloc("{\"ok\":true}");
+#endif
     } catch (const Standard_Failure& failure) {
         const char* message = failure.GetMessageString();
         return error_json(message != nullptr ? message : "Open CASCADE failed");
