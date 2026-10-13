@@ -184,6 +184,7 @@ export const state = {
   brimWidthMm: 5,
   brimGapMm: 0.1,
   skirtLoops: 0,
+  topSurfacePattern: "auto" as "auto" | "rectilinear" | "monotonic" | "concentric",
   adaptive: false,
   adaptiveMin: 0.08,
   adaptiveMax: 0.2,
