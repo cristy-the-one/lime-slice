@@ -1,0 +1,11 @@
+[package]
+name = "lime-model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "STEP editing kernel. Open CASCADE is dynamically linked when OCCT_ROOT is set."
+
+[build-dependencies]
+cc = "1"

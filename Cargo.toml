@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/lime-slice-core", "crates/lime-slice", "src-tauri"]
+members = [
+    "crates/lime-slice-core",
+    "crates/lime-slice",
+    "crates/lime-model",
+    "src-tauri",
+]
 
 [workspace.package]
 version = "1.1.0"

@@ -2110,6 +2110,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lime-model"
+version = "1.1.0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "lime-slice"
 version = "1.1.0"
 dependencies = [
