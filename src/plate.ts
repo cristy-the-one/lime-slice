@@ -10,6 +10,7 @@
  * A one-object project with no per-object settings is written as version 1
  * and omits `objects`.
  * Adding a file builds a new object and parks it clear of the others.
+ * A split half stays in the selected object's place instead.
  * Duplicate copies the selected object only.
  */
 import type { EditEntry } from "./support-edit-list.ts";
@@ -391,6 +392,35 @@ export function addedMesh(plate: PlateState, mesh: IncomingMesh, bedX: number, b
   const placed = parkClear(draft, plate.objects, bedX, bedY);
   hold(placed);
   return { objects: [...plate.objects, placed], selectedId: placed.id };
+}
+
+/**
+ * The other half of a split. It keeps the selected object's pose, so a cut
+ * through a plate does not park the second piece beside the first.
+ * Selection stays on the piece that was already on the plate.
+ */
+export function addedSplit(plate: PlateState, mesh: IncomingMesh): PlateState | null {
+  const parent = plate.objects.find((obj) => obj.id === plate.selectedId);
+  if (!parent) return null;
+  const names = new Set(plate.objects.map((obj) => obj.name));
+  const draft: PlateObject = {
+    id: freshPlateId(),
+    name: names.has(mesh.name) ? nextObjectName(plate.objects, mesh.name) : mesh.name,
+    fileName: mesh.fileName,
+    bytes: mesh.bytes,
+    sourcePos: mesh.sourcePos,
+    orient: [...parent.orient] as Mat3,
+    partScale: parent.partScale,
+    centered: parent.centered,
+    offset: { ...parent.offset },
+    stepTolerance: mesh.stepTolerance,
+    supportEdits: [],
+    supportPaint: [],
+    seamPaint: [],
+    settings: {},
+  };
+  hold(draft);
+  return { objects: [...plate.objects, draft], selectedId: parent.id };
 }
 
 /** Every object's placed triangles, in plate order, so one 3MF mesh can carry the whole plate. */

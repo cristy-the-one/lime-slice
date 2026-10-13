@@ -52,7 +52,7 @@ export function beltSliceField(belt: BeltSettings | null, supports: boolean): { 
  * `belt.maxLengthMm {cap} is shorter than the belt run of {run} mm`.
  */
 export function beltRunTooLong(message: string): number | null {
-  const match = /belt\.maxLengthMm \S+ is shorter than the belt run of (\d+(?:\.\d+)?) mm/.exec(message);
+  const match = /(?:belt\.maxLengthMm \S+ is shorter than the belt run of |The belt's max length is \S+ mm, shorter than this run of )(\d+(?:\.\d+)?) mm/.exec(message);
   return match ? Number(match[1]) : null;
 }
 

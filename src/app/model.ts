@@ -2,8 +2,9 @@ import { bytesToBase64 } from "../base64";
 import { encodeStl, settle } from "../mesh-place";
 import type { ModelPick, ModelSolid } from "../model-view";
 import { lastEdge, nextModelPicks, selectionCountLabel } from "../model-select";
-import { closeModelTool, mountModelChrome, refreshModelGhost, syncModelChrome } from "../ui/model-chrome";
-import { addedMesh, withoutObject } from "../plate";
+import { formatMm, splitPlaneInside, splitPlaneRange, zExtent } from "../model-plane";
+import { closeModelTool, mountModelChrome, refreshModelGhost, syncModelChrome, syncModelSolid } from "../ui/model-chrome";
+import { addedSplit, withoutObject } from "../plate";
 import { markProjectDirty } from "../project-dirty";
 import { base64ToBytes } from "../project";
 import { authHeaders } from "../ui/api-base";
@@ -56,6 +57,9 @@ export function bindModelView() {
       syncModelChrome([]);
       if (solid) readout(`Volume ${mm(solid.volumeMm3)} mm³. Pick a face or an edge.`);
     },
+    solidZ() {
+      return zExtent(solid?.positions ?? null);
+    },
   });
 }
 
@@ -75,6 +79,7 @@ export function showModel() {
     fx.model?.highlight([]);
     syncModelChrome([]);
     showEdits(true);
+    syncModelSolid();
     refreshModelGhost();
     readout(`Volume ${mm(solid.volumeMm3)} mm³. Pick a face or an edge.`);
     return;
@@ -190,6 +195,16 @@ async function runBoolean(op: "fuse" | "cut" | "common") {
 
 async function runSplit() {
   if (!solid || busy || !state.mesh) return;
+  const range = splitPlaneRange(zExtent(solid.positions));
+  const z = num("#modelPlaneZ");
+  if (!range) {
+    readout("This solid is too thin to split.");
+    return;
+  }
+  if (!splitPlaneInside(z, range)) {
+    readout(`Move the plane into the part, between ${formatMm(range.min)} and ${formatMm(range.max)} mm.`);
+    return;
+  }
   busy = true;
   const snap = snapshot();
   const mine = ticket;
@@ -198,7 +213,7 @@ async function runSplit() {
     id: solid.id,
     x: 0,
     y: 0,
-    z: num("#modelPlaneZ"),
+    z,
     nx: 0,
     ny: 0,
     nz: 1,
@@ -221,7 +236,7 @@ async function runSplit() {
     await rollback(snap);
     return;
   }
-  await commitView(parsed, `Split. Volume ${mm(parsed.volumeMm3)} mm³. The other solid is on the plate.${note}`);
+  await commitView(parsed, `Split. Volume ${mm(parsed.volumeMm3)} mm³. The other piece sits in the same spot. Use Arrange to lay them side by side.${note}`);
 }
 
 async function runBlend(kind: "fillet" | "chamfer") {
@@ -390,18 +405,13 @@ function land(snap: ModelUndo, parsed: ParsedSolid, other: ParsedSolid | null, r
     const otherPos = settle(new Float32Array(other.positions));
     const otherName = name.replace(/\.stl$/i, "") + " split.stl";
     const next = selected
-      ? addedMesh(
-          state.plate,
-          {
-            name: otherName.replace(/\.stl$/i, ""),
-            fileName: otherName,
-            bytes: encodeStl(otherPos, otherName),
-            sourcePos: otherPos,
-            stepTolerance: state.stepTolerance,
-          },
-          state.profile.bedX,
-          state.profile.bedY,
-        )
+      ? addedSplit(state.plate, {
+          name: otherName.replace(/\.stl$/i, ""),
+          fileName: otherName,
+          bytes: encodeStl(otherPos, otherName),
+          sourcePos: otherPos,
+          stepTolerance: state.stepTolerance,
+        })
       : null;
     const addedId = next?.objects.find((obj) => !prev.has(obj.id))?.id ?? null;
     if (!next || !selected || !addedId) return null;
@@ -514,6 +524,7 @@ function present(parsed: ParsedSolid, message: string) {
   picks = [];
   fx.model?.setSolid(parsed);
   fx.model?.highlight([]);
+  syncModelSolid();
   syncModelChrome([]);
   fx.model?.resize();
   showEdits(true);

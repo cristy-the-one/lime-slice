@@ -16,6 +16,7 @@ use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
 mod prusa_http;
+mod quiet_process;
 use prusa_http::prusa_link_http;
 
 fn gcode_store() -> &'static Mutex<HashMap<String, GcodeText>> {

@@ -229,6 +229,8 @@ fn booleans_and_split() {
     near(restored["volumeMm3"].as_f64().expect("restored"), 1000.0);
     assert!(restored.get("other").is_none());
 
+    thin_plate_split();
+
     let step_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples/step_cube.step");
     let step = parse(&lime_model_occt::open_step(&step_path, 0.1));
     assert!(step.get("error").is_none(), "{step}");
@@ -244,6 +246,56 @@ fn booleans_and_split() {
     assert!(step_fuse.get("error").is_none(), "{step_fuse}");
     near(step_fuse["volumeMm3"].as_f64().expect("step fuse"), 2000.0);
     blends_hole_and_scale();
+}
+
+fn span_x(positions: &Value) -> f64 {
+    let values = positions.as_array().expect("positions");
+    let mut min_x = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    for (index, value) in values.iter().enumerate() {
+        if index % 3 != 0 {
+            continue;
+        }
+        let x = value.as_f64().expect("x");
+        min_x = min_x.min(x);
+        max_x = max_x.max(x);
+    }
+    max_x - min_x
+}
+
+/// A 220×220×5 plate cut on its top face must not become a 0.1 mm sliver.
+fn thin_plate_split() {
+    let opened = parse(&lime_model_occt::open_box(220.0, 220.0, 5.0));
+    assert!(opened.get("error").is_none(), "{opened}");
+    let id = opened["id"].as_i64().expect("id") as i32;
+    near(opened["volumeMm3"].as_f64().expect("volume"), 242_000.0);
+    let face = parse(&lime_model_occt::split(
+        id,
+        plane([0.0, 0.0, 5.0], [0.0, 0.0, 1.0]),
+        0.1,
+    ));
+    assert_eq!(
+        face["error"].as_str(),
+        Some("The plane is too close to a face. Move it into the part.")
+    );
+    let mid = parse(&lime_model_occt::split(
+        id,
+        plane([0.0, 0.0, 2.5], [0.0, 0.0, 1.0]),
+        0.1,
+    ));
+    assert!(mid.get("error").is_none(), "{mid}");
+    near(mid["volumeMm3"].as_f64().expect("kept"), 121_000.0);
+    near(
+        mid["other"]["volumeMm3"].as_f64().expect("other"),
+        121_000.0,
+    );
+    let kept_span = span_x(&mid["positions"]);
+    let other_span = span_x(&mid["other"]["positions"]);
+    assert!((200.0..230.0).contains(&kept_span), "kept span {kept_span}");
+    assert!(
+        (200.0..230.0).contains(&other_span),
+        "other span {other_span}"
+    );
 }
 
 fn blends_hole_and_scale() {

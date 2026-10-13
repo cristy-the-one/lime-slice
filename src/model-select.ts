@@ -43,10 +43,11 @@ export function lastEdge(picks: readonly ModelPickRef[]): number | null {
   return null;
 }
 
-export function modelApplyReady(tool: string, picks: readonly ModelPickRef[], scale: number): boolean {
+export function modelApplyReady(tool: string, picks: readonly ModelPickRef[], scale: number, splitOk = true): boolean {
   if (tool === "fillet" || tool === "chamfer") return lastEdge(picks) != null;
   if (tool === "scale") return scale > 0 && Math.abs(scale - 1) > 1e-9;
-  return tool === "boolean" || tool === "split" || tool === "hole";
+  if (tool === "split") return splitOk;
+  return tool === "boolean" || tool === "hole";
 }
 
 export function mixHex(from: number, to: number, t: number): number {
