@@ -184,6 +184,7 @@ struct Held {
 std::mutex g_mu;
 std::vector<Held> g_held;
 std::vector<TopoDS_Shape> g_undo;
+std::vector<TopoDS_Shape> g_redo;
 
 char* alloc(const std::string& text) {
     char* out = static_cast<char*>(std::malloc(text.size() + 1));
@@ -259,6 +260,7 @@ TopoDS_Shape as_solid(const TopoDS_Shape& shape) {
 int store(const TopoDS_Shape& shape) {
     g_held.clear();
     g_undo.clear();
+    g_redo.clear();
     g_held.push_back(hold_of(as_solid(shape)));
     return 1;
 }
@@ -271,11 +273,16 @@ bool held_at(int id, Held& out) {
     return true;
 }
 
-void checkpoint(const TopoDS_Shape& shape) {
-    g_undo.push_back(shape);
-    if (g_undo.size() > 32) {
-        g_undo.erase(g_undo.begin());
+void push_capped(std::vector<TopoDS_Shape>& stack, const TopoDS_Shape& shape) {
+    stack.push_back(shape);
+    if (stack.size() > 32) {
+        stack.erase(stack.begin());
     }
+}
+
+void checkpoint(const TopoDS_Shape& shape) {
+    g_redo.clear();
+    push_capped(g_undo, shape);
 }
 
 void replace_held(int id, const TopoDS_Shape& shape) {
@@ -1075,9 +1082,35 @@ extern "C" char* lime_model_occt_undo(int id, double chord) {
         if (g_undo.empty()) {
             return error_json("There is no edit to undo");
         }
+        const TopoDS_Shape current = held.shape;
         const TopoDS_Shape previous = g_undo.back();
         g_undo.pop_back();
+        push_capped(g_redo, current);
         replace_held(id, previous);
+        return finish(id, chord);
+    } catch (const Standard_Failure& failure) {
+        const char* message = failure.GetMessageString();
+        return error_json(message != nullptr ? message : "Open CASCADE failed");
+    } catch (...) {
+        return error_json("Open CASCADE failed");
+    }
+}
+
+extern "C" char* lime_model_occt_redo(int id, double chord) {
+    try {
+        std::lock_guard<std::mutex> lock(g_mu);
+        Held held;
+        if (!held_at(id, held)) {
+            return error_json("That solid is no longer open");
+        }
+        if (g_redo.empty()) {
+            return error_json("There is no edit to redo");
+        }
+        const TopoDS_Shape current = held.shape;
+        const TopoDS_Shape next = g_redo.back();
+        g_redo.pop_back();
+        push_capped(g_undo, current);
+        replace_held(id, next);
         return finish(id, chord);
     } catch (const Standard_Failure& failure) {
         const char* message = failure.GetMessageString();

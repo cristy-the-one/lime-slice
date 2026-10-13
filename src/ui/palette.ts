@@ -372,6 +372,13 @@ export function runCommand(id: string) {
       escapeModel();
       return;
     case "redo":
+      if (state.stage === "model") {
+        const button = document.querySelector<HTMLButtonElement>("#modelRedo");
+        if (button && !button.disabled) {
+          button.click();
+          return;
+        }
+      }
       redoUserEdit();
       return;
     case "search":

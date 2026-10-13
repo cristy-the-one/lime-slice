@@ -211,6 +211,19 @@ pub fn undo(id: i32, chord_mm: f64) -> String {
     }
 }
 
+/// Put back the solid that undo just replaced.
+pub fn redo(id: i32, chord_mm: f64) -> String {
+    #[cfg(lime_occt)]
+    {
+        native::redo(id, chord_mm)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = (id, chord_mm);
+        MISSING.into()
+    }
+}
+
 fn export_json(text: String) -> *mut c_char {
     CString::new(text)
         .unwrap_or_else(|_| CString::new("{\"error\":\"bridge text was not a C string\"}").unwrap())
@@ -426,6 +439,12 @@ pub extern "C" fn lime_occt_undo(id: i32, chord_mm: f64) -> *mut c_char {
     export_json(undo(id, chord_mm))
 }
 
+/// The returned pointer is freed with `lime_occt_string_free`.
+#[no_mangle]
+pub extern "C" fn lime_occt_redo(id: i32, chord_mm: f64) -> *mut c_char {
+    export_json(redo(id, chord_mm))
+}
+
 /// # Safety
 /// `text` is null or a pointer returned by one of the `lime_occt_*` JSON functions.
 #[no_mangle]
@@ -526,6 +545,7 @@ mod native {
         fn lime_model_occt_scale(id: i32, factor: f64, chord: f64) -> *mut c_char;
         fn lime_model_occt_write_step(id: i32, path: *const c_char) -> *mut c_char;
         fn lime_model_occt_undo(id: i32, chord: f64) -> *mut c_char;
+        fn lime_model_occt_redo(id: i32, chord: f64) -> *mut c_char;
         fn lime_model_occt_string_free(text: *mut c_char);
     }
 
@@ -670,6 +690,10 @@ mod native {
     pub fn undo(id: i32, chord_mm: f64) -> String {
         take(unsafe { lime_model_occt_undo(id, chord_mm) })
     }
+
+    pub fn redo(id: i32, chord_mm: f64) -> String {
+        take(unsafe { lime_model_occt_redo(id, chord_mm) })
+    }
 }
 
 #[cfg(test)]
@@ -682,6 +706,20 @@ mod session_contract {
         assert!(src.contains("lime-slice/occt.log"));
         assert!(src.contains("The plane is too close to a face. Move it into the part."));
         assert!(src.contains("This solid is too thin to split"));
+        assert!(src.contains("std::vector<TopoDS_Shape> g_redo"));
+        assert!(src.contains("lime_model_occt_redo"));
+        assert!(src.contains("There is no edit to redo"));
+        let checkpoint = src.find("void checkpoint(").expect("checkpoint");
+        let after_checkpoint = src[checkpoint..]
+            .find("\nvoid ")
+            .map(|at| checkpoint + at)
+            .expect("checkpoint ends");
+        let checkpoint_body = &src[checkpoint..after_checkpoint];
+        assert!(
+            checkpoint_body.contains("g_redo.clear()"),
+            "{checkpoint_body}"
+        );
+        assert!(src.contains("g_redo.clear()"));
         let probe = src
             .find("lime_model_occt_blend_probe")
             .expect("blend probe");

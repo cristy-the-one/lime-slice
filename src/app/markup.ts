@@ -125,6 +125,7 @@ export function mountMarkup(root: HTMLElement) {
                 <span class="model-sep"></span>
                 <button class="model-tool" id="modelStep" type="button" data-tip="Write this solid as AP214 STEP">STEP</button>
                 <button class="model-tool" id="modelUndo" type="button" disabled data-tip="Undo the last solid edit">Undo</button>
+                <button class="model-tool" id="modelRedo" type="button" disabled data-tip="Redo the last solid edit">Redo</button>
               </div>
             </div>
             <div class="model-panel" id="modelPanel" hidden>

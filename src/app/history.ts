@@ -3,7 +3,7 @@ import { session, state } from "./state";
 import { presetKeys } from "../presets";
 import { KLIPPER_NUMBERS, saveProfile } from "../profiles";
 import { emptyOverrides } from "../overrides";
-import { revivePlate, snapPlate } from "../plate";
+import { pinPlateMeshes, recallPlateMeshes, revivePlate, snapPlate } from "../plate";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library";
 import { beltStamp, selectIn, selection, setActiveBelt, setActiveFirmware, setAdvance, setNozzleTemp, setRetract } from "../ui/machine-library";
@@ -62,6 +62,7 @@ function capture(): EditSnap {
     overrides: structuredClone(state.overrides),
     selectedVolumeId: state.selectedVolumeId,
     plate: snapPlate(state.plate),
+    meshPins: pinPlateMeshes(state.plate),
     printOrder: state.printOrder,
     sequentialClearanceMm: state.sequentialClearance,
     sequentialGantryMm: state.sequentialGantry,
@@ -136,6 +137,7 @@ function applySnap(snap: EditSnap) {
   state.printOrder = snap.printOrder === "sequential" ? "sequential" : "all-at-once";
   state.sequentialClearance = snap.sequentialClearanceMm ?? 0;
   state.sequentialGantry = snap.sequentialGantryMm ?? 0;
+  recallPlateMeshes(snap.meshPins);
   if (snap.plate && snap.plate.objects.length > 0) {
     const revived = revivePlate(snap.plate);
     if (revived) {
@@ -169,27 +171,36 @@ export function flushEdit() {
   history = commitGesture(history, capture());
 }
 
+/** Drop an open gesture. A solid edit that did not land uses this. */
+export function cancelEdit() {
+  window.clearTimeout(timer);
+  history = { ...history, pending: null };
+}
+
+/** How many committed undo steps exist. Model mode uses this to see if its edit is still on top. */
+export function editUndoCount(): number {
+  return history.undo.length;
+}
+
 export function clearEditHistory() {
   window.clearTimeout(timer);
   history = emptyHistory();
 }
 
-export function undoUserEdit() {
+export function undoUserEdit(): boolean {
   window.clearTimeout(timer);
   const step = undoSnap(history, capture());
-  if (!step) {
-      return;
-  }
+  if (!step) return false;
   history = step.history;
   applySnap(step.restore);
+  return true;
 }
 
-export function redoUserEdit() {
+export function redoUserEdit(): boolean {
   window.clearTimeout(timer);
   const step = redoSnap(history, capture());
-  if (!step) {
-      return;
-  }
+  if (!step) return false;
   history = step.history;
   applySnap(step.restore);
+  return true;
 }

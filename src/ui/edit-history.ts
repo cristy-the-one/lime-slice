@@ -2,7 +2,7 @@
 import type { BeltSettings, PrinterKind } from "../belt.ts";
 import type { Firmware } from "../settings-rules.ts";
 import type { OverrideDocument } from "../overrides.ts";
-import type { PlateSnap } from "../plate.ts";
+import type { MeshPin, PlateSnap } from "../plate.ts";
 import type { SettingsLevel } from "../project.ts";
 
 export interface PlacementSnap {
@@ -65,6 +65,8 @@ export interface EditSnap {
   printOrder?: "all-at-once" | "sequential";
   sequentialClearanceMm?: number;
   sequentialGantryMm?: number;
+  /** Which mesh bytes each object had. Absent on snaps from before Model edits joined this history. */
+  meshPins?: MeshPin[];
 }
 
 export interface EditHistory {
@@ -81,7 +83,7 @@ export function emptyHistory(): EditHistory {
 }
 
 export function cloneSnap(snap: EditSnap): EditSnap {
-  return JSON.parse(JSON.stringify(snap)) as EditSnap;
+  return structuredClone(snap);
 }
 
 export function sameSnap(a: EditSnap, b: EditSnap): boolean {
