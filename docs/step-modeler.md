@@ -50,6 +50,21 @@ Model mode can fillet or chamfer the picked edge, cut a cylindrical hole, and sc
 
 A successful edit uses the same commit as a boolean: settled tessellation, `encodeStl`, and a `.stl` name. Pose stays, except that a scale sets the plate's `partScale` back to 1 so the part is not scaled twice. Undo restores the solid, the mesh, the paint, and that placement scale.
 
+## Viewport handles
+
+Every Model tool is both typed and dragged. Each number in the open tool's panel has a handle in the viewport, drawn in Prepare's gizmo style, and a drag writes the field as if it were typed. The ghost, the dry-run, and Apply follow, and a typed number moves the handle. Shift slows the pointer to a tenth for fine control, and Ctrl (Cmd on a Mac) snaps to the handle's step: 1 mm, 0.5 mm for a blend or hole radius, 0.1 for a scale factor, and 15° for a turn. A label by the pointer shows the value. The panel's scrub labels use the same keys.
+
+| Tool | Handles |
+| --- | --- |
+| Boolean | X, Y, Z arrows on the primitive's origin, size knobs on a box's faces, radius and height knobs on a cylinder, a radius knob on a sphere, and three turn rings on a box or cylinder |
+| Split | a Z arrow on the plane, held between the face margins |
+| Fillet, Chamfer | a size knob out from the picked edge's middle |
+| Hole | a dot that slides the origin over the solid, plus radius and depth knobs |
+| Scale | a factor knob on the diagonal from the centre |
+| Measure | two dots, A and B, that slide over the solid; the note reads the distance and ΔX, ΔY, ΔZ |
+
+A box or cylinder turns about its centre by Turn X, then Y, then Z, in degrees; the kernel builds the primitive and applies the same rotation before the boolean. A sphere does not turn. Measure has no Apply. A hole that would miss the solid starts on the middle of its top. `src/model-drag.test.ts` fails if a toolbar tool has no handle, or if a number in its panel cannot be dragged.
+
 ## STEP save
 
 Model mode writes the open solid as AP214 IS, a manifold solid B-rep, through `STEPControl_Writer`. The STEP button downloads that file. The same bytes are kept on the plate object as optional `brep`, in the same shape as `mesh`: name, base64, length, and hash.
