@@ -154,7 +154,9 @@ test("an Enforce stroke while Supports is Off switches to Painted only, and one 
   await page.getByRole("tab", { name: "Prepare", exact: true }).click();
   if (await page.locator("#paintBar").isHidden()) await page.locator('#toolRail [data-tool="paint"]').click();
   await page.locator('#paintBar [data-kind="enforce"]').click();
-  await page.mouse.click(at.x - 6, at.y);
+  // Opening results after the slice resizes the stage, so the earlier canvas point is stale.
+  const again = (await canvas.boundingBox())!;
+  await page.mouse.click(again.x + again.width / 2 - 6, again.y + again.height * 0.45);
   await expect(canvas).toHaveAttribute("data-paint-disks", "2");
   await expectSupports(page, "auto");
 });

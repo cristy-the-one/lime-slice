@@ -71,18 +71,38 @@ test("block paint on the ledge drops its supports, and undo brings them back", a
 
   // The ledge's front face, low, near its free end: a 20 mm ball there reaches most of its
   // underside. Hits are bed millimetres, so the face is found from the hits themselves: the
-  // ledge spans z 12 to 16 and its front is the lowest y there.
+  // ledge spans z 12 to 16 and its front is the lowest y there. A wide stage leaves that 1 mm
+  // face only a few pixels tall, so a coarse pass finds the mesh and a tight pass covers it.
   const canvas = page.locator("#prepare");
   const box = (await canvas.boundingBox())!;
-  const hits: { x: number; y: number; at: number[] }[] = [];
-  for (let row = 1; row < 40; row++) {
-    for (let col = 1; col < 48; col++) {
-      const x = box.x + (box.width * col) / 48;
-      const y = box.y + (box.height * row) / 40;
-      await page.mouse.move(x, y);
-      const hit = (await canvas.getAttribute("data-brush-hit")) ?? "";
-      if (hit) hits.push({ x, y, at: hit.split(",").map(Number) });
+  const sweep = async (x0: number, y0: number, x1: number, y1: number, cols: number, rows: number) => {
+    const found: { x: number; y: number; at: number[] }[] = [];
+    for (let row = 0; row <= rows; row++) {
+      for (let col = 0; col <= cols; col++) {
+        const x = x0 + ((x1 - x0) * col) / cols;
+        const y = y0 + ((y1 - y0) * row) / rows;
+        await page.mouse.move(x, y);
+        const hit = (await canvas.getAttribute("data-brush-hit")) ?? "";
+        if (hit) found.push({ x, y, at: hit.split(",").map(Number) });
+      }
     }
+    return found;
+  };
+  const coarse = await sweep(box.x + 8, box.y + 8, box.x + box.width - 8, box.y + box.height - 8, 48, 36);
+  const onLedge = (list: { at: number[] }[]) => list.filter((h) => h.at[2]! > 12.2 && h.at[2]! < 13.2);
+  let hits = coarse;
+  if (onLedge(hits).length === 0 && coarse.length > 0) {
+    const xs = coarse.map((h) => h.x);
+    const ys = coarse.map((h) => h.y);
+    const pad = 28;
+    hits = await sweep(
+      Math.max(box.x, Math.min(...xs) - pad),
+      Math.max(box.y, Math.min(...ys) - pad),
+      Math.min(box.x + box.width, Math.max(...xs) + pad),
+      Math.min(box.y + box.height, Math.max(...ys) + pad),
+      64,
+      48,
+    );
   }
   const ledge = hits.filter((h) => h.at[2]! > 12.2 && h.at[2]! < 13.2);
   const front = Math.min(...ledge.map((h) => h.at[1]!));

@@ -19,11 +19,15 @@ async function loadCube(page: Page) {
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
 }
 
-async function prepareRatio(page: Page) {
-  return page.evaluate(() => {
-    const rect = document.querySelector("#prepare")!.getBoundingClientRect();
+async function widthRatio(page: Page, selector: string) {
+  return page.evaluate((sel) => {
+    const rect = document.querySelector(sel)!.getBoundingClientRect();
     return rect.width / window.innerWidth;
-  });
+  }, selector);
+}
+
+async function prepareRatio(page: Page) {
+  return widthRatio(page, "#prepare");
 }
 
 test("the default prepare viewport is at least 70% of a 1440 window", async ({ page }) => {
@@ -68,8 +72,41 @@ test("a slice opens the results panel when the user has not collapsed it", async
   await expect(page.locator(".workspace")).not.toHaveClass(/is-right-collapsed/);
   await expect(page.locator("#right")).toBeVisible();
   await expect(page.locator("#right")).toContainText("Triangles");
+  const openRatio = await prepareRatio(page);
+  expect(openRatio, `prepare width ratio after results open ${openRatio}`).toBeGreaterThanOrEqual(0.7);
+  await page.locator("#tabPreview").click();
+  const previewRatio = await widthRatio(page, "#previewBody");
+  expect(previewRatio, `preview viewport ratio ${previewRatio}`).toBeGreaterThanOrEqual(0.7);
+  const canvasGap = await page.evaluate(() => {
+    const body = document.querySelector("#previewBody")!.getBoundingClientRect().width;
+    const canvas = document.querySelector("#view3d")!.getBoundingClientRect().width;
+    return body - canvas;
+  });
+  expect(canvasGap, "the 3D canvas keeps the preview viewport aside from the layer slider").toBeLessThanOrEqual(80);
+  await page.locator("#tabPrepare").click();
   expect(await page.evaluate((key) => localStorage.getItem(key), RIGHT_COLLAPSE)).toBeNull();
   await page.reload();
   await expect(page.locator(".workspace")).toHaveClass(/is-right-collapsed/);
   expect(await page.evaluate((key) => localStorage.getItem(key), RIGHT_COLLAPSE)).toBeNull();
 });
+
+for (const width of [1280, 1600]) {
+  test(`prepare and preview stay at least 70% of a ${width} window after slicing`, async ({ page }) => {
+    await quiet(page);
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/");
+    await autoSliceOff(page);
+    await loadCube(page);
+    const before = await prepareRatio(page);
+    expect(before, `prepare width ratio before slice ${before}`).toBeGreaterThanOrEqual(0.7);
+    await page.locator("#slice").click();
+    await expect(page.locator("#estimate")).toContainText("g");
+    await expect(page.locator(".workspace")).not.toHaveClass(/is-right-collapsed/);
+    const prepare = await prepareRatio(page);
+    expect(prepare, `prepare width ratio ${prepare}`).toBeGreaterThanOrEqual(0.7);
+    await page.locator("#tabPreview").click();
+    const preview = await widthRatio(page, "#previewBody");
+    expect(preview, `preview viewport ratio ${preview}`).toBeGreaterThanOrEqual(0.7);
+    await page.screenshot({ path: path.join(shots, `after-slice-${width}.png`) });
+  });
+}
