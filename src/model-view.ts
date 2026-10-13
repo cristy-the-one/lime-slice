@@ -137,7 +137,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const size = Math.max(maxX - minX, maxY - minY, maxZ - minZ, 1);
     const radius = size * Math.sqrt(3) / 2;
     const fov = (camera.fov * Math.PI) / 180;
-    const dist = (radius / Math.sin(fov / 2)) * 1.35;
+    const narrow = canvas.clientWidth < 720;
+    // The phone overlay sits on the top of the canvas, so the solid is framed under it.
+    if (narrow) center.z += size * 0.55;
+    const dist = (radius / Math.sin(fov / 2)) * (narrow ? 1.85 : 1.35);
     camera.near = Math.max(0.01, dist / 200);
     camera.far = dist * 20;
     camera.position.copy(center).add(new THREE.Vector3(1, -1.15, 0.72).normalize().multiplyScalar(dist));

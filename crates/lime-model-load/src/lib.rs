@@ -11,6 +11,22 @@ use libloading::Library;
 type OpenBox = unsafe extern "C" fn(f64, f64, f64) -> *mut c_char;
 type OpenStep = unsafe extern "C" fn(*const c_char, f64) -> *mut c_char;
 type Distance = unsafe extern "C" fn(i32, *const c_char, i32, *const c_char, i32) -> *mut c_char;
+type Boolean = unsafe extern "C" fn(
+    i32,
+    *const c_char,
+    *const c_char,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+) -> *mut c_char;
+type Split = unsafe extern "C" fn(i32, f64, f64, f64, f64, f64, f64, f64) -> *mut c_char;
+type Undo = unsafe extern "C" fn(i32, f64) -> *mut c_char;
 type FreeStr = unsafe extern "C" fn(*mut c_char);
 
 struct Bridge {
@@ -18,6 +34,9 @@ struct Bridge {
     open_box: OpenBox,
     open_step: OpenStep,
     distance: Distance,
+    boolean: Boolean,
+    split: Split,
+    undo: Undo,
     free: FreeStr,
 }
 
@@ -74,10 +93,78 @@ pub fn distance(id: i32, a_kind: &str, a: i32, b_kind: &str, b: i32) -> Result<S
     take(ptr, api.free)
 }
 
+/// A box, cylinder, or sphere in millimetres. `origin` is the box corner, the cylinder base, or the sphere center.
+#[derive(Clone, Copy)]
+pub struct Tool {
+    pub origin: [f64; 3],
+    pub size: [f64; 3],
+    pub radius: f64,
+    pub height: f64,
+}
+
+/// A plane through `origin` with `normal`, in millimetres.
+#[derive(Clone, Copy)]
+pub struct Plane {
+    pub origin: [f64; 3],
+    pub normal: [f64; 3],
+}
+
+/// Fuse, cut, or common the open solid with a box, cylinder, or sphere.
+pub fn boolean(
+    id: i32,
+    op: &str,
+    primitive: &str,
+    tool: Tool,
+    chord_mm: f64,
+) -> Result<String, String> {
+    let api = load()?;
+    let op = CString::new(op).map_err(|_| "boolean op is not a C string".to_string())?;
+    let primitive =
+        CString::new(primitive).map_err(|_| "primitive name is not a C string".to_string())?;
+    let [x, y, z] = tool.origin;
+    let [dx, dy, dz] = tool.size;
+    let ptr = unsafe {
+        (api.boolean)(
+            id,
+            op.as_ptr(),
+            primitive.as_ptr(),
+            x,
+            y,
+            z,
+            dx,
+            dy,
+            dz,
+            tool.radius,
+            tool.height,
+            chord_mm,
+        )
+    };
+    take(ptr, api.free)
+}
+
+/// Split the open solid with a plane through `origin` and along `normal`.
+pub fn split(id: i32, plane: Plane, chord_mm: f64) -> Result<String, String> {
+    let api = load()?;
+    let [x, y, z] = plane.origin;
+    let [nx, ny, nz] = plane.normal;
+    let ptr = unsafe { (api.split)(id, x, y, z, nx, ny, nz, chord_mm) };
+    take(ptr, api.free)
+}
+
+/// Restore the solid from before the last boolean or split.
+pub fn undo(id: i32, chord_mm: f64) -> Result<String, String> {
+    let api = load()?;
+    let ptr = unsafe { (api.undo)(id, chord_mm) };
+    take(ptr, api.free)
+}
+
 struct Api {
     open_box: OpenBox,
     open_step: OpenStep,
     distance: Distance,
+    boolean: Boolean,
+    split: Split,
+    undo: Undo,
     free: FreeStr,
 }
 
@@ -93,7 +180,9 @@ fn take(ptr: *mut c_char, free: FreeStr) -> Result<String, String> {
 }
 
 fn load() -> Result<Api, String> {
-    let mut slot = BRIDGE.lock().map_err(|_| "Open CASCADE bridge lock is poisoned".to_string())?;
+    let mut slot = BRIDGE
+        .lock()
+        .map_err(|_| "Open CASCADE bridge lock is poisoned".to_string())?;
     if slot.is_none() {
         let path = find_bridge()?;
         let lib = unsafe { Library::new(&path) }.map_err(|err| {
@@ -113,6 +202,15 @@ fn load() -> Result<Api, String> {
                 distance: *lib
                     .get::<Distance>(b"lime_occt_distance\0")
                     .map_err(|err| format!("bridge is missing lime_occt_distance: {err}"))?,
+                boolean: *lib
+                    .get::<Boolean>(b"lime_occt_boolean\0")
+                    .map_err(|err| format!("bridge is missing lime_occt_boolean: {err}"))?,
+                split: *lib
+                    .get::<Split>(b"lime_occt_split\0")
+                    .map_err(|err| format!("bridge is missing lime_occt_split: {err}"))?,
+                undo: *lib
+                    .get::<Undo>(b"lime_occt_undo\0")
+                    .map_err(|err| format!("bridge is missing lime_occt_undo: {err}"))?,
                 free: *lib
                     .get::<FreeStr>(b"lime_occt_string_free\0")
                     .map_err(|err| format!("bridge is missing lime_occt_string_free: {err}"))?,
@@ -126,6 +224,9 @@ fn load() -> Result<Api, String> {
         open_box: bridge.open_box,
         open_step: bridge.open_step,
         distance: bridge.distance,
+        boolean: bridge.boolean,
+        split: bridge.split,
+        undo: bridge.undo,
         free: bridge.free,
     })
 }

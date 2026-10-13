@@ -112,6 +112,27 @@ export function mountMarkup(root: HTMLElement) {
               <button class="btn mode" id="modelPickEdge" type="button" aria-pressed="false">Edge</button>
             </div>
             <div id="modelReadout" class="model-readout">Open a STEP file to measure a solid.</div>
+            <div class="model-edit" id="modelEdit" hidden>
+              <select id="modelPrim" aria-label="Primitive">
+                <option value="box">Box</option>
+                <option value="cylinder">Cylinder</option>
+                <option value="sphere">Sphere</option>
+              </select>
+              <label class="dim" data-prim="box">dx <input id="modelDx" type="number" step="0.1" value="10" aria-label="Box size x"></label>
+              <label class="dim" data-prim="box">dy <input id="modelDy" type="number" step="0.1" value="10" aria-label="Box size y"></label>
+              <label class="dim" data-prim="box">dz <input id="modelDz" type="number" step="0.1" value="10" aria-label="Box size z"></label>
+              <label class="dim" data-prim="cylinder sphere">r <input id="modelRadius" type="number" step="0.1" value="5" aria-label="Radius"></label>
+              <label class="dim" data-prim="cylinder">h <input id="modelHeight" type="number" step="0.1" value="10" aria-label="Height"></label>
+              <label class="dim">x <input id="modelX" type="number" step="0.1" value="10" aria-label="Origin x"></label>
+              <label class="dim">y <input id="modelY" type="number" step="0.1" value="0" aria-label="Origin y"></label>
+              <label class="dim">z <input id="modelZ" type="number" step="0.1" value="0" aria-label="Origin z"></label>
+              <button class="btn" id="modelFuse" type="button">Fuse</button>
+              <button class="btn" id="modelCut" type="button">Cut</button>
+              <button class="btn" id="modelCommon" type="button">Common</button>
+              <label class="dim">plane z <input id="modelPlaneZ" type="number" step="0.1" value="5" aria-label="Split plane z"></label>
+              <button class="btn" id="modelSplit" type="button">Split</button>
+              <button class="btn" id="modelUndo" type="button" disabled>Undo</button>
+            </div>
           </div>
         </div>
         <div class="stage-body" id="previewBody" role="tabpanel" aria-labelledby="tabPreview">
