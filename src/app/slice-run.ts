@@ -499,6 +499,11 @@ async function runHttpSlice(uiId: number, bytes: ArrayBuffer, req: Record<string
   const base = apiBase();
   const token = apiToken();
   const started = await beginSliceJob((text) => postJson(base, token, "/api/jobs", text), body);
+  // Esc (or a newer slice) can land before this POST returns. Cancel the job it started, or the engine keeps slicing after the button is gone.
+  if (uiId !== session.job) {
+    if (!("unsupported" in started)) void cancelJob(base, token, started.id).catch(() => undefined);
+    throw new Error("cancelled");
+  }
   if ("unsupported" in started) return req.objects ? postSlice(uiId, new ArrayBuffer(0), withMeshData(req), "") : postSlice(uiId, bytes, req, meshKey);
   let stopped = false;
   activeHttp = { uiId, jobId: started.id, stop: () => { stopped = true; } };

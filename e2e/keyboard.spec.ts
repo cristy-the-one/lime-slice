@@ -149,9 +149,12 @@ test("Esc cancels a running slice", async ({ page }) => {
   await openCube(page);
   await page.locator("#slice").click();
   await expect(page.locator("#cancel")).toBeVisible();
+  // The button is shown as soon as the slice is marked busy, before POST /api/jobs
+  // returns. Escape in that gap posts /api/cancel and does not cancel the job.
+  await expect(page.locator("#sliceMeter")).toContainText("Walls and infill");
   await page.keyboard.press("Escape");
   await expect(page.locator("#cancel")).toBeHidden();
-  expect(calls.cancels).toBe(1);
+  await expect.poll(() => calls.cancels).toBe(1);
 });
 
 test("Ctrl+Enter slices from inside a settings field and keeps what was typed", async ({ page }) => {
