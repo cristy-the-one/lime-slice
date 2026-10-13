@@ -33,3 +33,6 @@
 /* The view bar's switch: the same face as Section, with the ruler icon in front. */
 #measureField .view-toggle-face { gap: var(--space-1); }
 #measureField .ico { flex: 0 0 auto; }
+
+/* The 2D pane keeps a band under the canvas for the scale bar, so a fitted layer and its callouts never reach it. */
+#pane2d.has-measure { padding-bottom: 28px; }

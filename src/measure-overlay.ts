@@ -1,6 +1,6 @@
 import {
-  type BedRect, type Box, type DimEdge, type Rect, type ScaleBar, type Vec3,
-  MIN_TICK_GAP_PX, chooseEdges, cullByDistance, cullLabels, flatEdges, formatMm, labelBeside, majorTicks, nearBedEdges, scaleBar, tickPriority,
+  type BedRect, type Box, type DimEdge, type Point, type Rect, type ScaleBar, type Vec3,
+  MIN_TICK_GAP_PX, chooseEdges, cullByDistance, cullLabels, flatEdges, formatMm, labelBeside, majorTicks, nearBedEdges, overlaps, scaleBar, segmentHitsRect, tickPriority,
 } from "./measure";
 import { measureOn } from "./measure-pref";
 import "./ui/measure.css";
@@ -47,16 +47,16 @@ const STAND_OFF_PX = 8;
 const EXTEND_PX = 3;
 const LABEL_GAP_PX = 3;
 const SCALE_BOTTOM_PX = 8;
+/** Air kept round the scale bar. */
+const BAR_CLEAR_PX = 4;
 
 const textWidth = (text: string) => Math.ceil(text.length * CHAR_PX);
 const n = (value: number) => value.toFixed(1);
 
-/** One callout: its line from `a` to `b` on screen, and its label's rectangle. */
+/** One callout: the segments of its line and extensions on screen, and its label's rectangle. */
 interface Callout extends Rect {
   edge: DimEdge;
-  a: [number, number];
-  b: [number, number];
-  perp: [number, number];
+  segments: [Point, Point][];
   label: string;
   /** Text turned to read along the line: the 2D view's Y, which has no room beside the layer for it to lie flat. */
   turned: boolean;
@@ -88,15 +88,15 @@ function callouts(frame: MeasureFrame, box: Box, edges: DimEdge[]): Callout[] {
     const at: [number, number] = [mid[0] + perp[0] * STAND_OFF_PX, mid[1] + perp[1] * STAND_OFF_PX];
     const turned = !frame.cam && edge.axis === "y";
     const [w, h] = turned ? [LABEL_H, textWidth(label)] : [textWidth(label), LABEL_H];
-    out.push({ edge, a, b, perp, label, turned, ...labelBeside(at, perp, w, h, LABEL_GAP_PX) });
+    const off = (p: [number, number], d: number): Point => [p[0] + perp[0] * d, p[1] + perp[1] * d];
+    const segments: [Point, Point][] = [[a, off(a, STAND_OFF_PX + EXTEND_PX)], [b, off(b, STAND_OFF_PX + EXTEND_PX)], [off(a, STAND_OFF_PX), off(b, STAND_OFF_PX)]];
+    out.push({ edge, segments, label, turned, ...labelBeside(at, perp, w, h, LABEL_GAP_PX) });
   }
   return out;
 }
 
 function calloutMarkup(c: Callout): string {
-  const reach = STAND_OFF_PX + EXTEND_PX;
-  const at = (p: [number, number], d: number) => `${n(p[0] + c.perp[0] * d)} ${n(p[1] + c.perp[1] * d)}`;
-  const path = `M${at(c.a, 0)}L${at(c.a, reach)}M${at(c.b, 0)}L${at(c.b, reach)}M${at(c.a, STAND_OFF_PX)}L${at(c.b, STAND_OFF_PX)}`;
+  const path = c.segments.map(([p, q]) => `M${n(p[0])} ${n(p[1])}L${n(q[0])} ${n(q[1])}`).join("");
   const cx = n(c.x + c.w / 2);
   const cy = n(c.y + c.h / 2);
   const turn = c.turned ? ` transform="rotate(-90 ${cx} ${cy})"` : "";
@@ -133,22 +133,35 @@ function bedLabels(frame: MeasureFrame, bed: BedRect, cam: Vec3, taken: Rect[]):
   return cullByDistance(fits.map((l) => ({ mm: l.mm, x: l.x + l.w / 2, y: l.y + l.h / 2 })), MIN_TICK_GAP_PX);
 }
 
+/** Does any part of the callout, its label or its line, reach the rectangle? */
+function blocks(c: Callout, rect: Rect): boolean {
+  return overlaps(c, rect, BAR_CLEAR_PX) || c.segments.some(([p, q]) => segmentHitsRect(p, q, rect, BAR_CLEAR_PX));
+}
+
 function bedMarkup(label: BedLabel): string {
   return `<text class="m-bed" x="${n(label.x)}" y="${n(label.y)}" dy="0.35em" text-anchor="middle">${label.mm}</text>`;
 }
 
-/** The scale bar in the bottom right corner: its parts, and the rectangle it takes. Null when the view is too small for one. */
-function scaleLayout(frame: MeasureFrame, right: number, bottom: number): { bar: ScaleBar; x0: number; x1: number; y: number; rect: Rect } | null {
+interface ScaleLayout {
+  bar: ScaleBar;
+  x0: number;
+  x1: number;
+  y: number;
+  rect: Rect;
+}
+
+/** The scale bar along the bottom, `edge` px in from the right or the left: its parts, and the rectangle it takes. Null when the view is too small for one. */
+function scaleLayout(frame: MeasureFrame, side: "right" | "left", edge: number, bottom: number): ScaleLayout | null {
   const bar = scaleBar(frame.mmPerPx);
   if (!bar) return null;
-  const x1 = frame.w - right;
+  const x1 = side === "right" ? frame.w - edge : edge + bar.px;
   const x0 = x1 - bar.px;
   const y = frame.h - bottom;
   if (x0 < 8 || y < 24) return null;
   return { bar, x0, x1, y, rect: { x: x0, y: y - 11 - LABEL_H / 2, w: bar.px, h: 11 + LABEL_H / 2 } };
 }
 
-function scaleMarkup(s: NonNullable<ReturnType<typeof scaleLayout>>): string {
+function scaleMarkup(s: ScaleLayout): string {
   return `<path class="m-scale" d="M${n(s.x0)} ${n(s.y - 5)}L${n(s.x0)} ${n(s.y)}L${n(s.x1)} ${n(s.y)}L${n(s.x1)} ${n(s.y - 5)}"/>`
     + `<text class="m-scale-label" x="${n((s.x0 + s.x1) / 2)}" y="${n(s.y - 11)}" text-anchor="middle">${s.bar.label}</text>`;
 }
@@ -171,9 +184,15 @@ export function mountMeasureOverlay(host: HTMLElement, options: MeasureOptions =
         return;
       }
       const phone = options.scalePhone && document.documentElement.classList.contains("layout-compact") ? options.scalePhone : null;
-      const scale = scaleLayout(frame, phone?.right ?? options.scaleRight ?? 14, phone?.bottom ?? SCALE_BOTTOM_PX);
       const edges = !frame.box ? [] : frame.cam ? chooseEdges(frame.cam, frame.box) : flatEdges(frame.box);
-      const kept = frame.box ? cullLabels(callouts(frame, frame.box, edges), frame.w, frame.h, scale ? [scale.rect] : []) : [];
+      const shown = frame.box ? cullLabels(callouts(frame, frame.box, edges), frame.w, frame.h) : [];
+      const bottom = phone?.bottom ?? SCALE_BOTTOM_PX;
+      const right = scaleLayout(frame, "right", phone?.right ?? options.scaleRight ?? 14, bottom);
+      // The bar takes the right corner, or the left one when a callout reaches the right; nothing draws over it.
+      const clear = (s: ScaleLayout | null) => !!s && !shown.some((c) => blocks(c, s.rect));
+      const left = phone || clear(right) ? null : scaleLayout(frame, "left", 14, bottom);
+      const scale = clear(right) ? right : clear(left) ? left : right;
+      const kept = scale ? shown.filter((c) => !blocks(c, scale.rect)) : shown;
       let body = kept.map(calloutMarkup).join("");
       if (frame.bed && frame.cam) body += bedLabels(frame, frame.bed, frame.cam, scale ? [...kept, scale.rect] : kept).map(bedMarkup).join("");
       if (scale) body += scaleMarkup(scale);

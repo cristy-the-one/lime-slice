@@ -30,6 +30,35 @@ async function look(host: Locator) {
   });
 }
 
+/** How many callout labels and line segments touch the scale bar's rectangle. -1 when the view draws no bar. */
+async function barCollisions(host: Locator) {
+  return host.locator(".measure svg").evaluate((svg) => {
+    const origin = svg.getBoundingClientRect();
+    const bar = [...svg.querySelectorAll(".m-scale, .m-scale-label")].map((el) => el.getBoundingClientRect());
+    if (bar.length < 2) return -1;
+    const rect = { l: Math.min(...bar.map((r) => r.left)), t: Math.min(...bar.map((r) => r.top)), r: Math.max(...bar.map((r) => r.right)), b: Math.max(...bar.map((r) => r.bottom)) };
+    const inside = (x: number, y: number) => x >= rect.l && x <= rect.r && y >= rect.t && y <= rect.b;
+    const cross = (ax: number, ay: number, bx: number, by: number, cx: number, cy: number, dx: number, dy: number) => {
+      const side = (px: number, py: number, qx: number, qy: number, rx: number, ry: number) => (qx - px) * (ry - py) - (qy - py) * (rx - px);
+      return side(ax, ay, bx, by, cx, cy) * side(ax, ay, bx, by, dx, dy) <= 0 && side(cx, cy, dx, dy, ax, ay) * side(cx, cy, dx, dy, bx, by) <= 0;
+    };
+    let hits = 0;
+    for (const label of svg.querySelectorAll(".m-dim, .m-bed")) {
+      const r = label.getBoundingClientRect();
+      if (r.left < rect.r && r.right > rect.l && r.top < rect.b && r.bottom > rect.t) hits++;
+    }
+    for (const line of svg.querySelectorAll(".m-line")) {
+      const nums = line.getAttribute("d")!.match(/-?[\d.]+/g)!.map(Number);
+      for (let i = 0; i + 3 < nums.length; i += 4) {
+        const [ax, ay, bx, by] = [nums[i]! + origin.left, nums[i + 1]! + origin.top, nums[i + 2]! + origin.left, nums[i + 3]! + origin.top];
+        const edges: [number, number, number, number][] = [[rect.l, rect.t, rect.r, rect.t], [rect.r, rect.t, rect.r, rect.b], [rect.r, rect.b, rect.l, rect.b], [rect.l, rect.b, rect.l, rect.t]];
+        if (inside(ax, ay) || inside(bx, by) || edges.some(([cx, cy, dx, dy]) => cross(ax, ay, bx, by, cx, cy, dx, dy))) hits++;
+      }
+    }
+    return hits;
+  });
+}
+
 const dims = (host: Locator) => host.locator(".measure text.m-dim");
 
 test("Prepare measures the selected part and keeps its look when the part is scaled", async ({ page }) => {
@@ -112,6 +141,7 @@ test("Preview 3D and the 2D layer view show the callouts and an honest scale bar
   expect(await dims(solid).allTextContents()).toEqual(["20.0 mm", "20.0 mm", "20.0 mm"]);
   const bar = solid.locator(".measure .m-scale-label");
   await expect(bar).toHaveText(/^\d+(\.\d+)? (mm|m)$/);
+  expect(await barCollisions(solid)).toBe(0);
 
   const zoomIn = async () => {
     await page.locator("#view3d").evaluate((el) => {
@@ -133,6 +163,7 @@ test("Preview 3D and the 2D layer view show the callouts and an honest scale bar
   const flat = page.locator("#pane2d");
   await expect(dims(flat)).toHaveCount(2);
   expect(await dims(flat).allTextContents()).toEqual(["20.0 mm", "20.0 mm"]);
+  expect(await barCollisions(flat)).toBe(0);
   const mm = Number((await flat.locator(".measure .m-scale-label").textContent())!.replace(/\D+$/, ""));
   const cssPerMm = await page.locator("#view").evaluate((el) => Number((el as HTMLCanvasElement).dataset.flatScale) * el.clientWidth / (el as HTMLCanvasElement).width);
   expect(Math.abs((await barPx(flat)) / mm - cssPerMm)).toBeLessThan(0.02);
@@ -142,6 +173,8 @@ test("Preview 3D and the 2D layer view show the callouts and an honest scale bar
   await expect.poll(async () => dims(solid).count()).toBeGreaterThan(0);
   await expect(solid.locator(".measure .m-scale-label")).toHaveCount(1);
   await expect(flat.locator(".measure .m-scale-label")).toHaveCount(1);
+  expect(await barCollisions(flat)).toBe(0);
+  expect(await barCollisions(solid)).toBe(0);
 });
 
 test("the belt printer measures the part it prints and numbers its bed in 50 mm steps", async ({ page }) => {

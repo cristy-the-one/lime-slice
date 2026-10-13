@@ -1,5 +1,5 @@
 import {
-  chooseEdges, cullByDistance, cullLabels, flatEdges, formatMm, labelBeside, majorTicks, nearBedEdges, niceLengthMm, overlaps, sameBox, scaleBar, tickPriority, unionBox,
+  chooseEdges, cullByDistance, cullLabels, flatEdges, formatMm, labelBeside, majorTicks, nearBedEdges, niceLengthMm, overlaps, sameBox, scaleBar, segmentHitsRect, tickPriority, unionBox,
   type Box, type Rect,
 } from "./measure.ts";
 
@@ -98,6 +98,18 @@ eq("a short bed has none", majorTicks(40), []);
 eq("round numbers first", [200, 100, 150, 50, 400].map(tickPriority), [0, 1, 2, 2, 0]);
 eq("camera over +X and -Y: numbers on the y=0 front and the x=max side", nearBedEdges([300, -80, 200], { x0: 0, y0: 0, x1: 220, y1: 220 }), { frontY: 0, sideX: 220, outY: -1, outX: 1 });
 eq("camera over -X and +Y", nearBedEdges([-50, 400, 100], { x0: 0, y0: 0, x1: 250, y1: 800 }), { frontY: 800, sideX: 0, outY: 1, outX: -1 });
+
+// Segments against a rectangle ------------------------------------------------------------------------------------
+
+const target = rect(100, 100, 50, 20);
+check("a segment through the rectangle hits it", segmentHitsRect([90, 110], [160, 110], target));
+check("a diagonal across a corner hits it", segmentHitsRect([90, 90], [110, 105], target));
+check("a segment ending inside hits it", segmentHitsRect([0, 0], [120, 110], target));
+check("a segment inside hits it", segmentHitsRect([110, 105], [140, 115], target));
+check("a segment past a corner misses it", !segmentHitsRect([90, 100], [100, 90], target));
+check("a long diagonal that passes beside it misses it", !segmentHitsRect([0, 200], [200, 130], target));
+check("a parallel segment above misses it", !segmentHitsRect([90, 90], [160, 90], target));
+check("padding reaches a near miss", segmentHitsRect([90, 90], [160, 90], target, 12) && !segmentHitsRect([90, 90], [160, 90], target, 5));
 
 // Boxes ---------------------------------------------------------------------------------------------------------
 

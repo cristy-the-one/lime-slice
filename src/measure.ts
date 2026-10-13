@@ -207,3 +207,26 @@ export function sameBox(a: Box | null, b: Box | null): boolean {
   if (!a || !b) return a === b;
   return a.min.every((v, i) => v === b.min[i]) && a.max.every((v, i) => v === b.max[i]);
 }
+
+export type Point = readonly [number, number];
+
+function crosses(a: Point, b: Point, c: Point, d: Point): boolean {
+  const side = (p: Point, q: Point, r: Point) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  const s1 = side(a, b, c);
+  const s2 = side(a, b, d);
+  const s3 = side(c, d, a);
+  const s4 = side(c, d, b);
+  return s1 * s2 <= 0 && s3 * s4 <= 0 && !(s1 === 0 && s2 === 0);
+}
+
+/** Does the segment p-q touch `rect` grown by `pad`? Inside counts. */
+export function segmentHitsRect(p: Point, q: Point, rect: Rect, pad = 0): boolean {
+  const x0 = rect.x - pad;
+  const y0 = rect.y - pad;
+  const x1 = rect.x + rect.w + pad;
+  const y1 = rect.y + rect.h + pad;
+  const inside = (pt: Point) => pt[0] >= x0 && pt[0] <= x1 && pt[1] >= y0 && pt[1] <= y1;
+  if (inside(p) || inside(q)) return true;
+  const corners: Point[] = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+  return corners.some((c, i) => crosses(p, q, c, corners[(i + 1) % 4]!));
+}

@@ -26,7 +26,7 @@ import { plateUnionBounds } from "../plate";
 import { matMul, rotX, rotY, rotZ } from "../mesh-place";
 import { type Box, unionBox } from "../measure";
 import { mountMeasureOverlay, type MeasureOverlay } from "../measure-overlay";
-import { onMeasureChange } from "../measure-pref";
+import { measureOn, onMeasureChange } from "../measure-pref";
 import { type Vec3, sectionReach, type SectionSpec, keepsPoint, clipPolyline, layerCut } from "../section-plane";
 
 export function paintLegend() {
@@ -939,12 +939,16 @@ export function draw() {
 }
 
 let flatMeasure: MeasureOverlay | null = null;
+let flatPane: HTMLElement | null = null;
 
-/** The 2D view's size callouts and scale bar: straight down, so one pixel is exactly `1 / scale` canvas pixels of millimetres. */
+/**
+ * The 2D view's size callouts and scale bar: straight down, so one pixel is exactly `1 / scale` canvas pixels of
+ * millimetres. The overlay is the pane, which is taller than the canvas by the band the scale bar sits in.
+ */
 function paintFlatMeasure(map: (x: number, y: number) => [number, number], scale: number) {
   const [dx, dy] = shownOffset();
   const w = fx.canvas.clientWidth;
-  const h = fx.canvas.clientHeight;
+  const h = flatPane?.clientHeight ?? fx.canvas.clientHeight;
   const css = w / Math.max(1, fx.canvas.width);
   flatMeasure?.render({
     w,
@@ -1064,8 +1068,14 @@ export function mountViews() {
   const ctx = canvas.getContext("2d")!;
   view3d = createSliceView(document.querySelector<HTMLCanvasElement>("#view3d")!);
   prepare = createPrepareView(document.querySelector<HTMLCanvasElement>("#prepare")!);
-  flatMeasure = mountMeasureOverlay(document.querySelector<HTMLElement>("#pane2d")!);
-  onMeasureChange(() => draw());
+  flatPane = document.querySelector<HTMLElement>("#pane2d")!;
+  flatMeasure = mountMeasureOverlay(flatPane);
+  // The scale bar has a band under the layer, so a layer fitted to the canvas never reaches it.
+  flatPane.classList.toggle("has-measure", measureOn());
+  onMeasureChange(() => {
+    flatPane!.classList.toggle("has-measure", measureOn());
+    resize();
+  });
   const sparkCanvas = document.querySelector<HTMLCanvasElement>("#spark");
   if (sparkCanvas) new ResizeObserver(() => paintSpark()).observe(sparkCanvas);
   prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
