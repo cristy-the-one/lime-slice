@@ -515,7 +515,7 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             sparse_accel: 5000.0,
             solid_accel: 3500.0,
             top_accel: 3000.0,
-            travel_accel: 5500.0,
+            travel_accel: 7000.0,
             scarf: ScarfSeam::Off,
             gyroid_3d: false,
             gyroid_speed: 220.0,
