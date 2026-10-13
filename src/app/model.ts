@@ -66,6 +66,12 @@ export function bindModelView() {
     paramsChanged() {
       scheduleProbe();
     },
+    solidBox() {
+      return solid ? boxOf(solid.positions) : null;
+    },
+    edgePoints(edge) {
+      return solid?.edges.find((item) => item.id === edge)?.points ?? null;
+    },
   });
 }
 
@@ -112,6 +118,7 @@ function probePayload(id: number): Record<string, unknown> | null {
     dz: num("#modelDz"),
     radius: num("#modelRadius"),
     height: num("#modelHeight"),
+    ...turn(),
   };
 }
 
@@ -234,6 +241,7 @@ async function runBoolean(op: "fuse" | "cut" | "common") {
     dz: num("#modelDz"),
     radius: num("#modelRadius"),
     height: num("#modelHeight"),
+    ...turn(),
     chordMm: state.stepTolerance,
   });
   busy = false;
@@ -599,6 +607,26 @@ function showEdits(on: boolean) {
 function syncUndo() {
   const button = document.querySelector<HTMLButtonElement>("#modelUndo");
   if (button) button.disabled = undos.length === 0;
+}
+
+/** Turn degrees for a box or cylinder. A sphere does not turn. */
+function turn() {
+  if (prim() === "sphere") return { rx: 0, ry: 0, rz: 0 };
+  return { rx: num("#modelRx"), ry: num("#modelRy"), rz: num("#modelRz") };
+}
+
+function boxOf(positions: Float32Array): { min: [number, number, number]; max: [number, number, number] } | null {
+  if (positions.length < 3) return null;
+  const min: [number, number, number] = [Infinity, Infinity, Infinity];
+  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i + 2 < positions.length; i += 3) {
+    for (let axis = 0; axis < 3; axis += 1) {
+      const value = positions[i + axis]!;
+      if (value < min[axis]!) min[axis] = value;
+      if (value > max[axis]!) max[axis] = value;
+    }
+  }
+  return { min, max };
 }
 
 function prim() {

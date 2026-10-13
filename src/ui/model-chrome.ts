@@ -2,16 +2,23 @@
  * Model mode's toolbar, the tool that is open, and the ghost that follows its numbers.
  * Apply still lives in `app/model.ts`. This file only decides what is on screen.
  */
-import { Box, CircleDot, Download, Scaling, Spline, SquareSplitHorizontal, Triangle, Undo2, createElement, type IconNode } from "lucide";
-import type { ModelGhost } from "../model-view";
+import { Box, CircleDot, Download, Ruler, Scaling, Spline, SquareSplitHorizontal, Triangle, Undo2, createElement, type IconNode } from "lucide";
+import type { HandleDrag, ModelGhost } from "../model-view";
+import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type ModelTool, type Vec3 } from "../model-drag";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
 import { formatMm, splitPlaneInside, splitPlaneRange, type AxisExtent } from "../model-plane";
 import { lastEdge, modelApplyReady, selectionCountLabel, type ModelPickRef } from "../model-select";
 import { scrubIntent, scrubTarget, type ScrubIntent } from "./scrub";
+import { snapStep } from "../gizmo-math";
 import { fx } from "../app/fx";
 import { state } from "../app/state";
 
-export type ModelTool = "boolean" | "split" | "fillet" | "chamfer" | "hole" | "scale";
+export type { ModelTool } from "../model-drag";
+
+export interface SolidBox {
+  min: Vec3;
+  max: Vec3;
+}
 
 interface ModelChromeHooks {
   clearSelection(): void;
@@ -19,6 +26,10 @@ interface ModelChromeHooks {
   solidZ(): AxisExtent | null;
   /** A tool opened, the selection changed, or a number changed. */
   paramsChanged(): void;
+  /** Bounds of the open solid, in the solid's own frame. */
+  solidBox(): SolidBox | null;
+  /** Polyline points of one edge of the open solid. */
+  edgePoints(edge: number): ArrayLike<number> | null;
 }
 
 const TOOLS: { id: ModelTool; icon: IconNode; label: string }[] = [
@@ -28,6 +39,7 @@ const TOOLS: { id: ModelTool; icon: IconNode; label: string }[] = [
   { id: "chamfer", icon: Triangle, label: "Chamfer" },
   { id: "hole", icon: CircleDot, label: "Hole" },
   { id: "scale", icon: Scaling, label: "Scale" },
+  { id: "measure", icon: Ruler, label: "Measure" },
 ];
 
 let hooks: ModelChromeHooks | null = null;
@@ -42,7 +54,7 @@ type Scrub = {
   startY: number;
   origin: number;
   step: number;
-  shiftStep: number;
+  snap: number;
   mode: ScrubIntent;
 };
 
@@ -91,6 +103,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
     hooks?.paramsChanged();
   });
   bindScrub();
+  fx.model?.onHandleDrag(onHandleDrag);
   window.addEventListener("keydown", onEnter, true);
   syncFields();
   refreshTools();
@@ -163,6 +176,8 @@ function toggleTool(next: ModelTool) {
     document.querySelector<HTMLButtonElement>("#modelPickEdge")?.click();
   }
   if (next === "split") applySplitDefaults();
+  if (next === "hole") applyHoleDefaults();
+  if (next === "measure") applyMeasureDefaults();
   syncFields();
   refreshTools();
   refreshApply();
@@ -184,6 +199,7 @@ function closeTool() {
   probe = null;
   refreshNote();
   fx.model?.setGhost(null);
+  fx.model?.setHandles([]);
   hooks?.paramsChanged();
 }
 
@@ -218,6 +234,33 @@ function applySplitDefaults() {
   input.min = String(range.min);
   input.max = String(range.max);
   input.value = formatMm(range.mid);
+}
+
+/** A hole that would miss the solid starts on the middle of its top. */
+function applyHoleDefaults() {
+  const box = hooks?.solidBox();
+  if (!box) return;
+  const x = num("#modelX");
+  const y = num("#modelY");
+  const inside = x > box.min[0] && x < box.max[0] && y > box.min[1] && y < box.max[1];
+  if (inside && num("#modelZ") > box.min[2]) return;
+  writeFields(["modelX", "modelY", "modelZ"], [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, box.max[2]]);
+}
+
+/** Two points that are still on top of each other start on opposite corners of the solid. */
+function applyMeasureDefaults() {
+  const box = hooks?.solidBox();
+  if (!box) return;
+  const same = ["x", "y", "z"].every((axis) => num(`#modelA${axis}`) === num(`#modelB${axis}`));
+  if (!same) return;
+  writeFields(["modelAx", "modelAy", "modelAz", "modelBx", "modelBy", "modelBz"], [...box.min, ...box.max]);
+}
+
+function writeFields(fields: readonly string[], values: readonly number[]) {
+  fields.forEach((field, i) => {
+    const input = document.querySelector<HTMLInputElement>(`#${field}`);
+    if (input) input.value = fieldText(values[i] ?? 0);
+  });
 }
 
 function splitLegal() {
@@ -268,6 +311,8 @@ function refreshNote() {
     text = "Pick an edge.";
   } else if (tool === "scale") {
     text = "About the centre. Placement scale becomes 100%.";
+  } else if (tool === "measure") {
+    text = measureNote(point("A"), point("B"));
   } else if (isProbed(tool)) {
     const lead = tool === "hole" ? "Straight down from the origin. " : "";
     const status = probeNote(tool, probe);
@@ -284,19 +329,51 @@ function refreshGhost() {
   if (!view) return;
   if (state.stage !== "model" || !tool) {
     view.setGhost(null);
+    view.setHandles([]);
     return;
   }
   view.setGhost(ghostFor(tool));
+  view.setHandles(handlesFor(tool, dragContext()));
+}
+
+function dragContext(): DragContext {
+  const box = hooks?.solidBox() ?? null;
+  const center: Vec3 = box ? [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2] : [0, 0, 0];
+  const extent = box ? Math.max(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2], 1) : 1;
+  const edge = lastEdge(picks);
+  const points = edge == null ? null : hooks?.edgePoints(edge) ?? null;
+  const prim = document.querySelector<HTMLSelectElement>("#modelPrim")?.value;
+  return {
+    read: (field) => num(`#${field}`),
+    primitive: prim === "cylinder" || prim === "sphere" ? prim : "box",
+    center,
+    extent,
+    split: splitPlaneRange(hooks?.solidZ() ?? null),
+    edge: points ? edgeAnchor(points, center) : null,
+  };
+}
+
+/** A viewport handle moved. Its fields change as if typed, so the ghost, the dry-run, and Apply follow. */
+function onHandleDrag(drag: HandleDrag) {
+  if (!tool) return;
+  writeFields(drag.handle.fields, drag.values);
+  document.querySelector("#modelPanel")?.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function point(which: "A" | "B"): Vec3 {
+  return [num(`#model${which}x`), num(`#model${which}y`), num(`#model${which}z`)];
 }
 
 function ghostFor(current: ModelTool): ModelGhost | null {
   if (current === "boolean") {
     const prim = document.querySelector<HTMLSelectElement>("#modelPrim")?.value ?? "box";
     const origin = { x: num("#modelX"), y: num("#modelY"), z: num("#modelZ") };
-    if (prim === "cylinder") return { kind: "cylinder", ...origin, radius: num("#modelRadius"), height: num("#modelHeight") };
+    const turn: Vec3 = [num("#modelRx"), num("#modelRy"), num("#modelRz")];
+    if (prim === "cylinder") return { kind: "cylinder", ...origin, radius: num("#modelRadius"), height: num("#modelHeight"), turn };
     if (prim === "sphere") return { kind: "sphere", ...origin, radius: num("#modelRadius") };
-    return { kind: "box", ...origin, dx: num("#modelDx"), dy: num("#modelDy"), dz: num("#modelDz") };
+    return { kind: "box", ...origin, dx: num("#modelDx"), dy: num("#modelDy"), dz: num("#modelDz"), turn };
   }
+  if (current === "measure") return { kind: "measure", a: point("A"), b: point("B") };
   if (current === "split") return { kind: "plane", z: num("#modelPlaneZ") };
   if (current === "hole") return { kind: "hole", x: num("#modelX"), y: num("#modelY"), z: num("#modelZ"), radius: num("#modelHoleR"), depth: num("#modelHoleD") };
   if (current === "scale") return { kind: "scale", factor: num("#modelFactor") };
@@ -332,8 +409,8 @@ function bindScrub() {
     if (!Number.isFinite(origin)) return;
     if (ev.pointerType !== "touch") ev.preventDefault();
     const step = Number(input.step) > 0 ? Number(input.step) : 0.1;
-    const shiftStep = Number(handle.parentElement?.dataset.shift) > 0 ? Number(handle.parentElement?.dataset.shift) : step * 10;
-    scrub = { id: ev.pointerId, input, startX: ev.clientX, startY: ev.clientY, origin, step, shiftStep, mode: "pending" };
+    const snap = Number(handle.parentElement?.dataset.snap) > 0 ? Number(handle.parentElement?.dataset.snap) : step * 10;
+    scrub = { id: ev.pointerId, input, startX: ev.clientX, startY: ev.clientY, origin, step, snap, mode: "pending" };
     window.addEventListener("pointermove", onScrubMove, { passive: false });
     window.addEventListener("pointerup", onScrubUp);
     window.addEventListener("pointercancel", onScrubUp);
@@ -351,8 +428,12 @@ function onScrubMove(ev: PointerEvent) {
   }
   if (current.mode !== "scrub") return;
   ev.preventDefault();
-  const total = scrubTarget(dx, ev.shiftKey, current.step, current.shiftStep);
+  // Shift is fine, a tenth of a step. Ctrl (Cmd) snaps to the field's increment.
+  const fine = ev.shiftKey;
+  const quantum = fine ? current.step / 10 : current.step;
+  const total = scrubTarget(dx, false, quantum, quantum);
   let next = current.origin + total;
+  if (ev.ctrlKey || ev.metaKey) next = snapStep(next, true, current.snap);
   if (current.input.min !== "") {
     const min = Number(current.input.min);
     if (Number.isFinite(min)) next = Math.max(min, next);
@@ -361,7 +442,7 @@ function onScrubMove(ev: PointerEvent) {
     const max = Number(current.input.max);
     if (Number.isFinite(max)) next = Math.min(max, next);
   }
-  const places = (current.step.toString().split(".")[1] ?? "").length;
+  const places = (quantum.toString().split(".")[1] ?? "").length;
   const text = places > 0 ? next.toFixed(places) : String(Math.round(next));
   if (current.input.value === text) return;
   current.input.value = text;
