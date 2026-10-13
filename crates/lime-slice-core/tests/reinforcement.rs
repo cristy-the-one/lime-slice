@@ -302,6 +302,21 @@ fn a_later_region_wins_the_overlap_and_leaves_the_rest() {
         "the first region stays solid {ring_solid}"
     );
     assert!(outside < 1.0, "outside both {outside}");
+
+    // A later region at the strategy density emits no footprint of its own and
+    // still carves its overlap out of the earlier solid region.
+    let normal = paint([10.0, 10.0, 10.0], [0.0, 0.0, 1.0], 2.5, 5.0, 0.12, false);
+    let carved = slice(
+        speed(),
+        json!({"reinforcement": [
+            paint([10.0, 10.0, 10.0], [0.0, 0.0, 1.0], 6.0, 5.0, 1.0, false),
+            normal,
+        ]}),
+    );
+    let (carved_mid, _) = infill_split(&carved, 6.0, &["solid"], centre);
+    let (carved_ring, _) = infill_split(&carved, 6.0, &["solid"], ring);
+    assert!(carved_mid < 1.0, "later normal region is not solid {carved_mid}");
+    assert!(carved_ring > 8.0, "outer ring stays solid {carved_ring}");
 }
 
 #[test]
@@ -399,10 +414,19 @@ fn a_modifier_keeps_its_wall_count_inside_an_overlapping_reinforcement() {
         assert!(response.sanity.ok, "{:?}", response.sanity.notes);
         response
     };
-    let walls = body(json!({"modifierVolumes": [volume]}));
-    let both = body(json!({"modifierVolumes": [volume], "reinforcement": [region]}));
+    let walls = body(json!({"modifierVolumes": [volume.clone()]}));
+    let both = body(json!({"modifierVolumes": [volume.clone()], "reinforcement": [region]}));
+    // Also when the reinforcement is larger than the modifier and surrounds it.
+    let wider = json!({
+        "kind": "box",
+        "density": 1,
+        "center": [84, 100, 5],
+        "size": [28, 28, 20],
+    });
+    let surrounded = body(json!({"modifierVolumes": [volume], "reinforcement": [wider]}));
     assert_eq!(wall_crossings(&walls, 5.0, 100.0, 95.0), 6);
     assert_eq!(wall_crossings(&both, 5.0, 100.0, 95.0), 6);
+    assert_eq!(wall_crossings(&surrounded, 5.0, 100.0, 95.0), 6);
     assert!(
         note_at(&both, 5.0).contains(" · reinforce 0"),
         "{}",

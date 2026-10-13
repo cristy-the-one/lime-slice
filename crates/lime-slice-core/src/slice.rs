@@ -4420,17 +4420,21 @@ fn layer_inputs(
     // be reused. A layer they meet appends the sections.
     let mut text = format!("{range:?}|{prints:?}|{ironing:?}");
     if !reinforcement.is_empty() {
-        let stamp = reinforcement
-            .iter()
-            .filter_map(|region| {
-                let sections = region.sections(z);
-                (!sections.is_empty())
-                    .then(|| format!("{}:{:.6}:{sections:?}", region.index, region.density))
-            })
-            .collect::<Vec<_>>();
-        if !stamp.is_empty() {
-            text.push('|');
-            text.push_str(&stamp.join(";"));
+        if let Some((lo, hi)) = loop_bounds(contours) {
+            let stamp = reinforcement
+                .iter()
+                .filter_map(|region| {
+                    let sections = region.sections(z);
+                    let meets = loop_bounds(&sections).is_some_and(|(a, b)| {
+                        a[0] <= hi[0] && b[0] >= lo[0] && a[1] <= hi[1] && b[1] >= lo[1]
+                    });
+                    meets.then(|| format!("{}:{:.6}:{sections:?}", region.index, region.density))
+                })
+                .collect::<Vec<_>>();
+            if !stamp.is_empty() {
+                text.push('|');
+                text.push_str(&stamp.join(";"));
+            }
         }
     }
     Sha256::digest(text).into()
@@ -5479,15 +5483,34 @@ fn layer_footprints(overrides: &Overrides, z: f64, contours: &[Loop]) -> Vec<Pri
 fn reinforcement_prints(
     regions: &[crate::reinforcement::Region],
     modifiers: &[Print],
+    contours: &[Loop],
     blend: &BlendMode,
     z: f64,
     settings: &SliceSettings,
     range: Option<Tweak>,
 ) -> Vec<Print> {
+    let Some((lo, hi)) = loop_bounds(contours) else {
+        return Vec::new();
+    };
+    let touches = |loops: &[Loop]| {
+        loop_bounds(loops)
+            .is_some_and(|(a, b)| a[0] <= hi[0] && b[0] >= lo[0] && a[1] <= hi[1] && b[1] >= lo[1])
+    };
+    let raw: Vec<Vec<Loop>> = regions.iter().map(|r| r.sections(z)).collect();
     let mut out = Vec::new();
-    for region in regions {
-        let mut remainder = region.sections(z);
-        if remainder.is_empty() {
+    for (i, region) in regions.iter().enumerate() {
+        let mut remainder = raw[i].clone();
+        if !touches(&remainder) {
+            continue;
+        }
+        // Later regions win the overlap even when their floor does not rise
+        // above the layer's strategy and emits no footprint of its own.
+        for later in &raw[i + 1..] {
+            if !later.is_empty() && !remainder.is_empty() {
+                remainder = solid_loops(boolean_diff(&remainder, later));
+            }
+        }
+        if !touches(&remainder) {
             continue;
         }
         let floor = Tweak {
@@ -5496,38 +5519,41 @@ fn reinforcement_prints(
         };
         // The later modifier wins the overlap, the same as the volume list.
         for modifier in modifiers.iter().rev() {
-            let clip = [modifier.outline.polygon()];
+            let clip = modifier.outline.polygons();
             let hit = solid_loops(boolean_intersect(&remainder, &clip));
             remainder = solid_loops(boolean_diff(&remainder, &clip));
-            if hit.is_empty() {
+            if !touches(&hit) {
                 continue;
             }
             let tweak = modifier.tweak.under(Some(floor)).unwrap_or(floor);
             if floor_rises(blend, z, settings, range, tweak, region.density) {
-                push_prints(&mut out, hit, tweak, region.index);
+                out.push(Print {
+                    outline: Footprint::Polygon(hit),
+                    tweak,
+                    volume: region.index,
+                });
             }
         }
-        if !remainder.is_empty() && floor_rises(blend, z, settings, range, floor, region.density) {
-            push_prints(&mut out, remainder, floor, region.index);
+        if touches(&remainder) && floor_rises(blend, z, settings, range, floor, region.density) {
+            out.push(Print {
+                outline: Footprint::Polygon(remainder),
+                tweak: floor,
+                volume: region.index,
+            });
         }
     }
     out
 }
 
 fn solid_loops(loops: Vec<Loop>) -> Vec<Loop> {
-    loops
+    let loops: Vec<Loop> = loops
         .into_iter()
-        .filter(|loop_| loop_.len() >= 3 && signed_area(loop_) > 0.05)
-        .collect()
-}
-
-fn push_prints(out: &mut Vec<Print>, loops: Vec<Loop>, tweak: Tweak, index: usize) {
-    for loop_ in loops {
-        out.push(Print {
-            outline: Footprint::Polygon(loop_),
-            tweak,
-            volume: index,
-        });
+        .filter(|loop_| loop_.len() >= 3 && signed_area(loop_).abs() > 0.05)
+        .collect();
+    if loops.iter().map(|loop_| signed_area(loop_)).sum::<f64>() > 0.05 {
+        loops
+    } else {
+        Vec::new()
     }
 }
 
@@ -5822,6 +5848,7 @@ fn object_layer(
         prints.extend(reinforcement_prints(
             &settings.reinforcement,
             &modifiers,
+            contours,
             blend,
             z,
             settings,
@@ -5847,7 +5874,7 @@ fn object_layer(
                 .under(Some(print.tweak))
                 .unwrap_or(print.tweak);
             let walls = zone_walls(blend, z, settings, &stacked);
-            let reach = offset_loops(&[print.outline.polygon()], (walls + 2) as f64 * line_width);
+            let reach = offset_loops(&print.outline.polygons(), (walls + 2) as f64 * line_width);
             let region = boolean_intersect(contours, &reach);
             if region.is_empty() {
                 continue;
