@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use crate::poly::{
-    boolean_diff, boolean_intersect, drop_slivers, in_solid, loop_bounds, loops_from_paths,
+    boolean_diff, boolean_intersect, boolean_union, drop_slivers, in_solid, loop_bounds, loops_from_paths,
     offset_loops, offset_paths, paths_from_loops, point_in_loop, principal_axis, resolve_nonzero,
     signed_area, Loop,
 };
@@ -1461,6 +1461,186 @@ pub fn plan_skirt(
         );
     }
     acc
+}
+
+/// Concentric brim loops outside the part and inside its holes.
+/// `width_mm` is how far the brim reaches. `gap_mm` is the peel gap.
+pub fn plan_brim(
+    contours: &[Loop],
+    strategy: &ResolvedStrategy,
+    line_width: f64,
+    width_mm: f64,
+    gap_mm: f64,
+) -> Vec<Extrusion> {
+    if width_mm <= 0.0 || line_width <= 0.0 {
+        return Vec::new();
+    }
+    let outers: Vec<Loop> = contours
+        .iter()
+        .filter(|l| signed_area(l) > 0.0)
+        .cloned()
+        .collect();
+    let holes: Vec<Loop> = contours
+        .iter()
+        .filter(|l| signed_area(l) < 0.0)
+        .cloned()
+        .collect();
+    if outers.is_empty() && holes.is_empty() {
+        return Vec::new();
+    }
+    let loops = ((width_mm / line_width).ceil() as u32).clamp(1, 40);
+    let mut acc = Vec::new();
+    let mut hint = [0.0, 0.0];
+    for i in 0..loops {
+        let delta = gap_mm.max(0.0) + line_width * (i as f64 + 0.5);
+        if !outers.is_empty() {
+            let grown = offset_paths(&paths_from_loops(&outers), delta);
+            emit_loops(
+                &mut acc,
+                &loops_from_paths(grown),
+                PathKind::Skirt,
+                strategy,
+                line_width,
+                &mut hint,
+            );
+        }
+        if !holes.is_empty() {
+            let inner = offset_loops(&as_outers(&holes), -delta);
+            let rings: Vec<Loop> = inner.into_iter().filter(|l| signed_area(l) > 0.4).collect();
+            emit_loops(
+                &mut acc,
+                &rings,
+                PathKind::Skirt,
+                strategy,
+                line_width,
+                &mut hint,
+            );
+        }
+    }
+    acc
+}
+
+/// Discs on sharp exterior corners, filled with concentric rings outside the part.
+/// `width_mm` is the ear radius, so the disc diameter is twice that.
+pub fn plan_mouse_ears(
+    contours: &[Loop],
+    strategy: &ResolvedStrategy,
+    line_width: f64,
+    width_mm: f64,
+    gap_mm: f64,
+) -> Vec<Extrusion> {
+    if width_mm <= line_width || line_width <= 0.0 {
+        return Vec::new();
+    }
+    let outers: Vec<Loop> = contours
+        .iter()
+        .filter(|l| signed_area(l) > 0.0)
+        .cloned()
+        .collect();
+    if outers.is_empty() {
+        return Vec::new();
+    }
+    let corners: Vec<[f64; 2]> = outers.iter().flat_map(sharp_corners).collect();
+    if corners.is_empty() {
+        return Vec::new();
+    }
+    let discs: Vec<Loop> = corners
+        .iter()
+        .map(|center| circle(*center, width_mm, 28))
+        .collect();
+    let unioned = union_all(&discs);
+    let keep_out = offset_loops(&outers, gap_mm.max(0.0));
+    let ears = boolean_diff(&unioned, &keep_out);
+    let mut acc = Vec::new();
+    let mut hint = corners[0];
+    let mut region = ears;
+    for _ in 0..48 {
+        let solid: Vec<Loop> = region.into_iter().filter(|l| signed_area(l) > 0.4).collect();
+        if solid.is_empty() {
+            break;
+        }
+        let bead = offset_loops(&solid, -line_width * 0.5);
+        let rings: Vec<Loop> = bead.into_iter().filter(|l| signed_area(l) > 0.4).collect();
+        if rings.is_empty() {
+            break;
+        }
+        emit_loops(
+            &mut acc,
+            &rings,
+            PathKind::Skirt,
+            strategy,
+            line_width,
+            &mut hint,
+        );
+        region = offset_loops(&solid, -line_width);
+    }
+    acc
+}
+
+fn as_outers(loops: &[Loop]) -> Vec<Loop> {
+    loops
+        .iter()
+        .map(|loop_| {
+            let mut next = loop_.clone();
+            if signed_area(&next) < 0.0 {
+                next.reverse();
+            }
+            next
+        })
+        .collect()
+}
+
+fn union_all(loops: &[Loop]) -> Vec<Loop> {
+    let mut acc = Vec::new();
+    for loop_ in loops {
+        acc = boolean_union(&acc, std::slice::from_ref(loop_));
+    }
+    acc
+}
+
+/// Exterior corners whose interior angle is under 125°.
+fn sharp_corners(loop_: &Loop) -> Vec<[f64; 2]> {
+    let n = loop_.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    let closed = dist2(loop_[0], loop_[n - 1]) < 1e-8;
+    let count = if closed { n - 1 } else { n };
+    if count < 3 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for i in 0..count {
+        let a = loop_[(i + count - 1) % count];
+        let b = loop_[i];
+        let c = loop_[(i + 1) % count];
+        let ab = [b[0] - a[0], b[1] - a[1]];
+        let bc = [c[0] - b[0], c[1] - b[1]];
+        let cross = ab[0] * bc[1] - ab[1] * bc[0];
+        let dot = ab[0] * bc[0] + ab[1] * bc[1];
+        let turn = cross.atan2(dot);
+        if turn <= 0.0 {
+            continue;
+        }
+        let interior = std::f64::consts::PI - turn;
+        if interior < 125.0_f64.to_radians() {
+            out.push(b);
+        }
+    }
+    out
+}
+
+fn circle(center: [f64; 2], radius: f64, steps: usize) -> Loop {
+    let steps = steps.max(8);
+    (0..steps)
+        .map(|i| {
+            let angle = i as f64 / steps as f64 * std::f64::consts::TAU;
+            [
+                center[0] + radius * angle.cos(),
+                center[1] + radius * angle.sin(),
+            ]
+        })
+        .collect()
 }
 
 fn extrusion(

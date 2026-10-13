@@ -32,7 +32,8 @@ export type ControlId =
   | "beltFields"
   | "beltMaxLength"
   | "beltRaftLayers"
-  | "klipperLimits";
+  | "klipperLimits"
+  | "adhesion";
 
 /** Keys a hidden control leaves out. A control with none only changes what the page shows. */
 const OWNED: Record<ControlId, readonly string[]> = {
@@ -46,6 +47,7 @@ const OWNED: Record<ControlId, readonly string[]> = {
   beltRaftLayers: [],
   // The firmware name and the limits only Klipper's toolhead reads.
   klipperLimits: ["firmware", "squareCornerVelocity", "minimumCruiseRatio", "extruderCornerVelocity", "maxVelocity", "maxZVelocity", "maxZAccel"],
+  adhesion: ["adhesion", "brimWidthMm", "brimGapMm", "skirtLoops"],
 };
 
 /** The one advance control a printer shows, and the state key it edits. */
@@ -76,6 +78,7 @@ export function settingsRules(input: RuleInput): Rules {
   if (belt || input.objects < 2) hidden.add("printOrder");
   if (belt) hidden.add("zHop").add("scarf");
   if (!belt) hidden.add("beltFields");
+  if (belt) hidden.add("adhesion");
   if (input.belt.maxLengthMm == null) hidden.add("beltMaxLength");
   if (input.belt.raftLayers <= 0) hidden.add("beltRaftLayers");
   if (input.firmware !== "klipper") hidden.add("klipperLimits");
