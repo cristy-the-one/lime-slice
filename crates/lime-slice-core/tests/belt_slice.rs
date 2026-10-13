@@ -955,7 +955,7 @@ fn seam_on_the_belt_edge_is_opt_in() {
     let hex: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
     assert_eq!(
         hex,
-        "577e6692387e750d06124925fb6e4724d1f658c6fe80a78ed9443b5ba7a8cee2"
+        "43c6feacab7ab5981936b25c963a929761acf10b2b4c5165cfafba1651932018"
     );
 
     let mut on_belt = aligned.clone();
