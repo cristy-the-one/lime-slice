@@ -361,21 +361,47 @@ export function offBed(b: Bounds, bedX: number, bedY: number, bedZ: number, belt
   return notes;
 }
 
-export function encode3mf(pos: Float32Array) {
-  const verts: string[] = [];
-  const tris: string[] = [];
-  for (let i = 0; i < pos.length; i += 3) {
-    const index = i / 3;
-    verts.push(`<vertex x="${pos[i]}" y="${pos[i + 1]}" z="${pos[i + 2]}" />`);
-    if (index % 3 === 2) {
-      const a = index - 2;
-      tris.push(`<triangle v1="${a}" v2="${a + 1}" v3="${a + 2}" />`);
+export function encode3mf(pos: Float32Array | readonly Float32Array[]) {
+  const parts = Array.isArray(pos) ? pos : [pos as Float32Array];
+  const objectsXml: string[] = [];
+  const itemsXml: string[] = [];
+  let nextId = 1;
+  for (const part of parts) {
+    if (part.length < 9) continue;
+    const verts: string[] = [];
+    const tris: string[] = [];
+    const vertIndex = new Map<string, number>();
+    const addVert = (x: number, y: number, z: number) => {
+      const key = `${x},${y},${z}`;
+      const existing = vertIndex.get(key);
+      if (existing !== undefined) return existing;
+      const idx = verts.length;
+      vertIndex.set(key, idx);
+      verts.push(`<vertex x="${x}" y="${y}" z="${z}" />`);
+      return idx;
+    };
+    for (let i = 0; i + 8 < part.length; i += 9) {
+      const a = addVert(part[i], part[i + 1], part[i + 2]);
+      const b = addVert(part[i + 3], part[i + 4], part[i + 5]);
+      const c = addVert(part[i + 6], part[i + 7], part[i + 8]);
+      if (a === b || b === c || a === c) continue;
+      tris.push(`<triangle v1="${a}" v2="${b}" v3="${c}" />`);
     }
+    if (tris.length === 0) continue;
+    const id = nextId++;
+    objectsXml.push(
+      `<object id="${id}" type="model"><mesh><vertices>${verts.join("")}</vertices><triangles>${tris.join("")}</triangles></mesh></object>`,
+    );
+    itemsXml.push(`<item objectid="${id}" />`);
+  }
+  if (objectsXml.length === 0) {
+    objectsXml.push(`<object id="1" type="model"><mesh><vertices></vertices><triangles></triangles></mesh></object>`);
+    itemsXml.push(`<item objectid="1" />`);
   }
   const model = `<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
-  <resources><object id="1" type="model"><mesh><vertices>${verts.join("")}</vertices><triangles>${tris.join("")}</triangles></mesh></object></resources>
-  <build><item objectid="1" /></build>
+  <resources>${objectsXml.join("")}</resources>
+  <build>${itemsXml.join("")}</build>
 </model>`;
   const rels = `<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>`;

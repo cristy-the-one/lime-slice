@@ -228,7 +228,7 @@ test("a belt too short for the part offers the length that fits", async ({ page 
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
   await expect(page.locator("#slice")).toBeEnabled();
   await page.locator("#slice").click();
-  const toast = page.locator("#toasts").getByRole("alert").filter({ hasText: "shorter than the belt run" });
+  const toast = page.locator("#toasts").getByRole("alert").filter({ hasText: "shorter than this run of 56.57 mm" });
   await expect(toast).toBeVisible();
   await expect(toast.getByRole("button", { name: "Retry" })).toHaveCount(0);
   await expect(toast.getByRole("button", { name: "Unlimited" })).toBeVisible();

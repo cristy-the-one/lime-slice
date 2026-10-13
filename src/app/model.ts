@@ -2,8 +2,10 @@ import { bytesToBase64 } from "../base64";
 import { encodeStl, settle } from "../mesh-place";
 import type { ModelPick, ModelSolid } from "../model-view";
 import { lastEdge, nextModelPicks, selectionCountLabel } from "../model-select";
-import { closeModelTool, mountModelChrome, refreshModelGhost, syncModelChrome } from "../ui/model-chrome";
-import { addedMesh, withoutObject } from "../plate";
+import { PROBE_WAIT_MS, isProbed, probeFromBody } from "../model-feasibility";
+import { formatMm, splitPlaneInside, splitPlaneRange, zExtent } from "../model-plane";
+import { closeModelTool, mountModelChrome, openModelTool, refreshModelGhost, setModelProbe, syncModelChrome, syncModelSolid } from "../ui/model-chrome";
+import { addedSplit, withoutObject } from "../plate";
 import { markProjectDirty } from "../project-dirty";
 import { base64ToBytes } from "../project";
 import { authHeaders } from "../ui/api-base";
@@ -18,6 +20,8 @@ let ticket = 0;
 let solid: ParsedSolid | null = null;
 let picks: ModelPick[] = [];
 let busy = false;
+let probeSerial = 0;
+let probeTimer = 0;
 let keptToken = "";
 let keptSolid: ParsedSolid | null = null;
 const undos: ModelUndo[] = [];
@@ -58,7 +62,71 @@ export function bindModelView() {
       syncModelChrome([]);
       if (solid) readout(`Volume ${mm(solid.volumeMm3)} mm³. Pick a face or an edge.`);
     },
+    solidZ() {
+      return zExtent(solid?.positions ?? null);
+    },
+    paramsChanged() {
+      scheduleProbe();
+    },
   });
+}
+
+/**
+ * Fillet, chamfer, hole, and boolean ask the kernel whether the edit works before Apply.
+ * The request is debounced and runs off the UI thread. A newer edit discards the older answer.
+ */
+function scheduleProbe() {
+  window.clearTimeout(probeTimer);
+  probeSerial += 1;
+  const serial = probeSerial;
+  const payload = solid ? probePayload(solid.id) : null;
+  if (!payload) {
+    setModelProbe(null);
+    return;
+  }
+  setModelProbe({ phase: "checking" });
+  probeTimer = window.setTimeout(() => {
+    void sendProbe(serial, payload);
+  }, PROBE_WAIT_MS);
+}
+
+function probePayload(id: number): Record<string, unknown> | null {
+  const current = openModelTool();
+  if (!isProbed(current)) return null;
+  if (current === "fillet" || current === "chamfer") {
+    const edge = lastEdge(picks);
+    if (edge == null) return null;
+    const size = num("#modelBlend");
+    return { id, kind: current, edge, radius: size, distance: size };
+  }
+  const origin = { x: num("#modelX"), y: num("#modelY"), z: num("#modelZ") };
+  if (current === "hole") {
+    return { id, kind: "hole", ...origin, radius: num("#modelHoleR"), depth: num("#modelHoleD") };
+  }
+  return {
+    id,
+    kind: "boolean",
+    op: boolOp(),
+    primitive: prim(),
+    ...origin,
+    dx: num("#modelDx"),
+    dy: num("#modelDy"),
+    dz: num("#modelDz"),
+    radius: num("#modelRadius"),
+    height: num("#modelHeight"),
+  };
+}
+
+async function sendProbe(serial: number, payload: Record<string, unknown>) {
+  const body = await post("/api/model/probe", payload);
+  if (serial !== probeSerial || state.stage !== "model") return;
+  setModelProbe(probeFromBody(body));
+}
+
+function boolOp(): "fuse" | "cut" | "common" {
+  if (document.querySelector("#modelCut")?.getAttribute("aria-pressed") === "true") return "cut";
+  if (document.querySelector("#modelCommon")?.getAttribute("aria-pressed") === "true") return "common";
+  return "fuse";
 }
 
 /** Write the open solid onto the selected object when that session is still current. */
@@ -77,6 +145,7 @@ export function showModel() {
     fx.model?.highlight([]);
     syncModelChrome([]);
     showEdits(true);
+    syncModelSolid();
     refreshModelGhost();
     readout(`Volume ${mm(solid.volumeMm3)} mm³. Pick a face or an edge.`);
     return;
@@ -124,12 +193,7 @@ async function applyTool() {
   if (!button || button.disabled) return;
   const current = document.querySelector<HTMLElement>("#modelBar")?.dataset.tool;
   if (current === "boolean") {
-    const op = document.querySelector("#modelCut")?.getAttribute("aria-pressed") === "true"
-      ? "cut"
-      : document.querySelector("#modelCommon")?.getAttribute("aria-pressed") === "true"
-        ? "common"
-        : "fuse";
-    await runBoolean(op);
+    await runBoolean(boolOp());
     return;
   }
   if (current === "split") await runSplit();
@@ -192,6 +256,16 @@ async function runBoolean(op: "fuse" | "cut" | "common") {
 
 async function runSplit() {
   if (!solid || busy || !state.mesh) return;
+  const range = splitPlaneRange(zExtent(solid.positions));
+  const z = num("#modelPlaneZ");
+  if (!range) {
+    readout("This solid is too thin to split.");
+    return;
+  }
+  if (!splitPlaneInside(z, range)) {
+    readout(`Move the plane into the part, between ${formatMm(range.min)} and ${formatMm(range.max)} mm.`);
+    return;
+  }
   busy = true;
   const snap = snapshot();
   const mine = ticket;
@@ -200,7 +274,7 @@ async function runSplit() {
     id: solid.id,
     x: 0,
     y: 0,
-    z: num("#modelPlaneZ"),
+    z,
     nx: 0,
     ny: 0,
     nz: 1,
@@ -223,7 +297,7 @@ async function runSplit() {
     await rollback(snap);
     return;
   }
-  await commitView(parsed, `Split. Volume ${mm(parsed.volumeMm3)} mm³. The other solid is on the plate.${note}`);
+  await commitView(parsed, `Split. Volume ${mm(parsed.volumeMm3)} mm³. The other piece sits in the same spot. Use Arrange to lay them side by side.${note}`);
 }
 
 async function runBlend(kind: "fillet" | "chamfer") {
@@ -393,18 +467,13 @@ function land(snap: ModelUndo, parsed: ParsedSolid, other: ParsedSolid | null, r
     const otherPos = settle(new Float32Array(other.positions));
     const otherName = name.replace(/\.stl$/i, "") + " split.stl";
     const next = selected
-      ? addedMesh(
-          state.plate,
-          {
-            name: otherName.replace(/\.stl$/i, ""),
-            fileName: otherName,
-            bytes: encodeStl(otherPos, otherName),
-            sourcePos: otherPos,
-            stepTolerance: state.stepTolerance,
-          },
-          state.profile.bedX,
-          state.profile.bedY,
-        )
+      ? addedSplit(state.plate, {
+          name: otherName.replace(/\.stl$/i, ""),
+          fileName: otherName,
+          bytes: encodeStl(otherPos, otherName),
+          sourcePos: otherPos,
+          stepTolerance: state.stepTolerance,
+        })
       : null;
     const addedId = next?.objects.find((obj) => !prev.has(obj.id))?.id ?? null;
     if (!next || !selected || !addedId) return null;
@@ -519,6 +588,7 @@ function present(parsed: ParsedSolid, message: string) {
   picks = [];
   fx.model?.setSolid(parsed);
   fx.model?.highlight([]);
+  syncModelSolid();
   syncModelChrome([]);
   fx.model?.resize();
   showEdits(true);
@@ -648,6 +718,7 @@ function commandFor(path: string) {
   if (path.endsWith("/distance")) return "model_distance";
   if (path.endsWith("/boolean")) return "model_boolean";
   if (path.endsWith("/split")) return "model_split";
+  if (path.endsWith("/probe")) return "model_probe";
   if (path.endsWith("/fillet")) return "model_fillet";
   if (path.endsWith("/chamfer")) return "model_chamfer";
   if (path.endsWith("/hole")) return "model_hole";

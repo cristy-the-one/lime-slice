@@ -75,6 +75,7 @@ const rafty = coerceBelt({ raftLayers: 9.2 }, 220);
 check("raft layers clamp to 1 through 8", rafty.raftLayers === 8 && coerceBelt({ raftLayers: 0 }, 220).raftLayers === 0 && coerceBelt({}, 220).raftLayers === 0);
 
 check("the run an engine fit error reports is read", beltRunTooLong("belt.maxLengthMm 30 is shorter than the belt run of 56.57 mm") === 56.57);
+check("the same run is read from the sentence the banner shows", beltRunTooLong("The belt's max length is 30 mm, shorter than this run of 56.57 mm") === 56.57);
 check("an error about the width is not a length fix", beltRunTooLong("belt.widthMm 10 is narrower than the part, which is 20.00 mm across the belt") === null);
 check("another message is not a length fix", beltRunTooLong("walls 0 is outside 1 to 12") === null);
 

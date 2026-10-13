@@ -535,6 +535,7 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   white-space: nowrap;
 }
 .model-tool .ico { flex: 0 0 auto; }
+.model-tool:disabled { opacity: 0.4; }
 .model-tool:hover:not(:disabled):not([aria-pressed="true"]) { background: var(--surface-3); color: var(--text); }
 .model-tool[aria-pressed="true"] {
   background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
@@ -599,6 +600,7 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .model-fields .scrub-label { width: fit-content; color: var(--text-dim); }
 .model-panel .modes { margin-top: var(--space-2); }
 .model-note { margin: var(--space-2) 0 0; color: var(--text-dim); font-size: var(--fs-2); }
+.model-note.is-bad { color: var(--danger); }
 .model-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); }
 .model-actions .btn { height: var(--control-h-sm); }
 .model-readout {

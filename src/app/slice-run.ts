@@ -19,6 +19,7 @@ import { noteTally } from "./paint-actions";
 import { activeHeat, loadMachineLibrary } from "./machine-library";
 import { beltStamp } from "../ui/machine-library";
 import { beltRunTooLong, beltSliceField } from "../belt";
+import { humanEngineError } from "../engine-wording";
 import { currentRules } from "./rules";
 import { orderFields, sequentialClearance, tallestLast } from "../settings-rules";
 import { flowSliceField } from "../flow";
@@ -448,8 +449,9 @@ export async function runSlice(force = false) {
     if (message === "cancelled") return;
     if (message === "Failed to fetch") markEngineDown(engineDownMessage(apiBase()));
     else {
-      state.error = message;
-      pushToast(message, "error", sliceErrorActions(message));
+      const shown = humanEngineError(message);
+      state.error = shown;
+      pushToast(shown, "error", sliceErrorActions(message));
     }
   } finally {
     unlisten?.();

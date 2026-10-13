@@ -19,7 +19,7 @@ import { clearEditHistory, flushEdit, noteEdit } from "./history";
 import { foreign3mfMessage, foreignSlicer3mf } from "../foreign-3mf";
 import { emptyOverrides } from "../overrides";
 import { isLimeProject } from "../file-drop";
-import { addedMesh, boundEntries, emptyPlate, oneObjectPlate, placeObject, platePlacedPositions, resetHeldGeometry, withLivePose, type PlateObject } from "../plate";
+import { addedMesh, boundEntries, emptyPlate, oneObjectPlate, placeObject, plateObjectPositions, resetHeldGeometry, withLivePose, type PlateObject } from "../plate";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 
 export async function loadNamed(name: string) {
@@ -409,7 +409,7 @@ export async function export3mf() {
   syncPlateFromState();
   const objects = livePlate();
   const positions = objects.length > 1
-    ? platePlacedPositions(objects, state.profile.bedX, state.profile.bedY)
+    ? plateObjectPositions(objects, state.profile.bedX, state.profile.bedY)
     : state.placed.positions;
   const bytes = encode3mf(positions);
   const name = `${(state.mesh?.name ?? "part").replace(/\.(stl|3mf|step|stp)$/i, "")}.3mf`;
