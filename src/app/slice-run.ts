@@ -10,6 +10,7 @@ import { replyOffset, type SlicedBed } from "../bed-offset";
 import { sliceOverrideFields } from "../overrides";
 import { sliceFuzzyFields } from "../fuzzy-skin";
 import { adhesionSliceFields } from "../adhesion";
+import { surfaceSliceField } from "../surface-pattern";
 import { ironingSpacingMax, sliceIroningFields } from "../ironing";
 import { seamSliceField } from "../seam";
 import { plateListed, slicePlateFields, sourceFrame, type PlateObject, type PlateRequestObject } from "../plate";
@@ -203,6 +204,7 @@ export function payload() {
       { adhesion: state.adhesion, brimWidthMm: state.brimWidthMm, brimGapMm: state.brimGapMm, skirtLoops: state.skirtLoops },
       beltStamp(library) !== null,
     ),
+    ...surfaceSliceField(state.topSurfacePattern, state.blendKind, state.strategy),
     lineWidth: lineWidth(),
     blend: blend(),
     adaptive: state.adaptive,
