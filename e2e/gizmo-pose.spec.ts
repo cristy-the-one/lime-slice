@@ -170,7 +170,10 @@ test("zoom keeps the gizmo the same size and an arrow move is what gets sliced",
   expect(orbited.meshMidX - orbited.midX).toBeGreaterThan(orbited.cssW * 0.1);
 
   const before = parsePlace(await placeText(page));
-  const arrow = await arrowHandle(page);
+  // Rings cover the arrow heads once the stage is wide enough to change the orbit. Move hides them.
+  // The hub is the ring center from the orbit shot; hiding the rings would pull that center onto an arrow.
+  await page.locator('#toolRail [data-tool="move"]').click();
+  const arrow = await arrowHandle(page, { x: orbited.midX, y: orbited.midY });
   await drag(page, arrow.x, arrow.y, arrow.x + arrow.dx, arrow.y + arrow.dy);
   await page.locator("#prepare").screenshot({ path: path.join(out, "translated.png") });
   const after = parsePlace(await placeText(page));
@@ -195,7 +198,7 @@ test("zoom keeps the gizmo the same size and an arrow move is what gets sliced",
   await page.locator("#center").click();
   await expect.poll(() => placeText(page)).toBe(home);
 
-  const again = await arrowHandle(page);
+  const again = await arrowHandle(page, { x: orbited.midX, y: orbited.midY });
   await page.keyboard.down("Shift");
   await drag(page, again.x, again.y, again.x + again.dx, again.y + again.dy);
   await page.keyboard.up("Shift");
@@ -257,15 +260,15 @@ async function shotBox(page: Page, name: string) {
   };
 }
 
-async function arrowHandle(page: Page): Promise<{ axis: "x" | "y" | "z"; x: number; y: number; dx: number; dy: number }> {
+async function arrowHandle(page: Page, hub?: { x: number; y: number }): Promise<{ axis: "x" | "y" | "z"; x: number; y: number; dx: number; dy: number }> {
   const png = await page.locator("#prepare").screenshot();
   const box = (await page.locator("#prepare").boundingBox())!;
   const img = decodePng(png);
   const scale = img.width / box.width;
   const sampled = samplePrepare(img);
   const focus = gizmoFocus(sampled.gizmo, 1.6 * GIZMO_SCREEN_PX * scale);
-  const aimed = aimArrow(focus.kept, focus.cx, focus.cy);
-  expect(aimed.margin, "no translate arrow stood out from its ring").toBeGreaterThan(18);
+  const aimed = aimArrow(focus.kept, hub ? hub.x * scale : focus.cx, hub ? hub.y * scale : focus.cy, GIZMO_SCREEN_PX * scale);
+  expect(aimed.margin, "no translate arrow stood out from its ring").toBeGreaterThan(8);
   const len = Math.hypot(aimed.ox, aimed.oy) || 1;
   return {
     axis: aimed.axis,
@@ -277,63 +280,66 @@ async function arrowHandle(page: Page): Promise<{ axis: "x" | "y" | "z"; x: numb
 }
 
 /**
- * An edge-on ring is a diameter, so its centroid sits on the gizmo center.
- * The arrow is only the positive ray: the angular bin that beats the opposite bin.
+ * Translate arrows sit inside the ring and stop before it. An edge-on rotate ring
+ * is a diameter that reaches the torus, so a wedge with pixels on the torus is a ring.
  */
-function aimArrow(pts: { x: number; y: number; family: "x" | "y" | "z" }[], cx: number, cy: number) {
+function aimArrow(pts: { x: number; y: number; family: "x" | "y" | "z" }[], cx: number, cy: number, radius: number) {
   const bins = 36;
-  const hist = new Array(40).fill(0);
-  for (const p of pts) hist[Math.min(39, Math.floor(Math.hypot(p.x - cx, p.y - cy) / 4))]++;
-  let mode = 12;
-  let modeN = 0;
-  for (let i = 8; i < 28; i++) {
-    if (hist[i] > modeN) {
-      modeN = hist[i];
-      mode = i;
-    }
-  }
-  const radius = (mode + 0.5) * 4;
-  const inner = 0.28 * radius;
-  const outer = 0.85 * radius;
+  const inner = radius * 0.28;
+  const outer = radius * 0.82;
+  const ringInner = radius * 0.92;
+  const ringOuter = radius * 1.12;
   let axis: "x" | "y" | "z" = "x";
   let margin = -1;
-  let bestBin = 0;
-  for (const key of ["x", "y", "z"] as const) {
-    const counts = new Array(bins).fill(0);
-    for (const p of pts) {
-      if (p.family !== key) continue;
-      const d = Math.hypot(p.x - cx, p.y - cy);
-      if (d < inner || d > outer) continue;
-      const ang = Math.atan2(p.y - cy, p.x - cx);
-      const bin = Math.floor(((ang + Math.PI) / (2 * Math.PI)) * bins) % bins;
-      counts[bin] += 1;
-    }
-    for (let bin = 0; bin < bins; bin++) {
-      const score = counts[bin] - counts[(bin + bins / 2) % bins];
-      if (score > margin) {
-        margin = score;
-        axis = key;
-        bestBin = bin;
-      }
-    }
-  }
+  let reach = 0;
   let sx = 0;
   let sy = 0;
   let n = 0;
-  for (const p of pts) {
-    if (p.family !== axis) continue;
-    const d = Math.hypot(p.x - cx, p.y - cy);
-    if (d < inner || d > outer) continue;
-    const ang = Math.atan2(p.y - cy, p.x - cx);
-    const bin = Math.floor(((ang + Math.PI) / (2 * Math.PI)) * bins) % bins;
-    const delta = Math.min(Math.abs(bin - bestBin), bins - Math.abs(bin - bestBin));
-    if (delta > 1) continue;
-    sx += p.x;
-    sy += p.y;
-    n += 1;
+  for (const key of ["x", "y", "z"] as const) {
+    const near = Array.from({ length: bins }, () => ({ n: 0, sx: 0, sy: 0 }));
+    const onRing = new Array(bins).fill(0);
+    for (const p of pts) {
+      if (p.family !== key) continue;
+      const d = Math.hypot(p.x - cx, p.y - cy);
+      const ang = Math.atan2(p.y - cy, p.x - cx);
+      const bin = Math.floor(((ang + Math.PI) / (2 * Math.PI)) * bins) % bins;
+      if (d >= inner && d <= outer) {
+        near[bin].n += 1;
+        near[bin].sx += p.x;
+        near[bin].sy += p.y;
+      } else if (d >= ringInner && d <= ringOuter) onRing[bin] += 1;
+    }
+    for (let bin = 0; bin < bins; bin++) {
+      let count = 0;
+      let px = 0;
+      let py = 0;
+      let ring = 0;
+      for (const delta of [-2, -1, 0, 1, 2]) {
+        const i = (bin + delta + bins) % bins;
+        count += near[i].n;
+        px += near[i].sx;
+        py += near[i].sy;
+        ring += onRing[i];
+      }
+      if (ring > 0) continue;
+      const opposite = (bin + bins / 2) % bins;
+      let opp = 0;
+      for (const delta of [-2, -1, 0, 1, 2]) opp += near[(opposite + delta + bins) % bins].n;
+      const score = count - opp;
+      if (count === 0 || score < 8) continue;
+      const dist = Math.hypot(px / count - cx, py / count - cy);
+      // The axis pointing at the camera collapses onto the hub. Prefer the arrow that stands out on screen.
+      if (dist < radius * 0.3 || dist < reach) continue;
+      reach = dist;
+      margin = score;
+      axis = key;
+      sx = px;
+      sy = py;
+      n = count;
+    }
   }
-  const hitX = n ? sx / n : cx + Math.cos((bestBin + 0.5) / bins * Math.PI * 2 - Math.PI) * radius * 0.55;
-  const hitY = n ? sy / n : cy + Math.sin((bestBin + 0.5) / bins * Math.PI * 2 - Math.PI) * radius * 0.55;
+  const hitX = n ? sx / n : cx + radius * 0.55;
+  const hitY = n ? sy / n : cy;
   return { axis, margin, ox: hitX - cx, oy: hitY - cy, hitX, hitY };
 }
 

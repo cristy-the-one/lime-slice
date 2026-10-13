@@ -245,7 +245,12 @@ input.switch:checked::after { transform: translateX(13px); background: var(--on-
 .tool-sep { width: 1px; height: 16px; margin: 0 3px; background: var(--border); }
 .object-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-1); margin-top: var(--space-2); }
 .obj { display: grid; gap: 2px; min-width: 0; padding: var(--space-2) var(--space-2); border: 1px solid transparent; border-radius: 6px; background: var(--surface-3); font-size: var(--fs-3); }
-.obj-row { grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); padding: 0 var(--space-2) 0 0; }
+.obj-row { grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); padding: 0 var(--space-2) 0 0; scroll-margin-top: 9rem; }
+/* Frame and Remove are wider than a slim settings column, so they drop under the name instead of covering it. */
+@container left (max-width: 220px) {
+  .obj-row { grid-template-columns: minmax(0, 1fr); }
+  .obj-actions { grid-column: 1; justify-content: flex-end; padding: 0 var(--space-2) var(--space-1); }
+}
 .obj-row[data-selected="true"] { border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
 .obj-select { display: grid; gap: 1px; min-width: 0; padding: var(--space-2) var(--space-2); text-align: left; background: transparent; border: 0; border-radius: 5px; color: inherit; cursor: pointer; }
 .obj-select b, .obj > b { min-width: 0; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
