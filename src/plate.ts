@@ -437,6 +437,11 @@ export function platePlacedPositions(objects: readonly PlateObject[], bedX: numb
   return out;
 }
 
+/** Each object's placed triangles as a separate array, so a 3MF can store one `<object>` per part. */
+export function plateObjectPositions(objects: readonly PlateObject[], bedX: number, bedY: number): Float32Array[] {
+  return objects.map((obj) => placeObject(obj, bedX, bedY).positions);
+}
+
 export function withoutObject(plate: PlateState, id: string): PlateState {
   if (plate.objects.length <= 1) return plate;
   const objects = plate.objects.filter((obj) => obj.id !== id);
