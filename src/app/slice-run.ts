@@ -287,6 +287,8 @@ export function printer() {
     bedTemp: heat.bedC,
     pressureAdvance: state.pressureAdvance,
     linearAdvance: state.linearAdvance,
+    // A Marlin printer's rules drop this and the limits beside it, so its request is today's.
+    firmware: currentRules().firmware,
   };
 }
 

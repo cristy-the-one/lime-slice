@@ -61,6 +61,12 @@ eq("a Klipper request sends pressure advance only", settingsRules(flat).coerce(p
 eq("a Marlin request sends linear advance only", settingsRules({ ...flat, firmware: "marlin" }).coerce(printed), { layerHeight: 0.2, printer: { name: "p", linearAdvance: 0.8 } });
 eq("a state record drops the unused advance too", settingsRules({ ...flat, firmware: "marlin" }).coerce({ pressureAdvance: 0.05, linearAdvance: 0.8 }), { linearAdvance: 0.8 });
 
+// The Klipper limits and the firmware name go to the engine only for a Klipper printer.
+const klipperPrinter = { firmware: "klipper", squareCornerVelocity: 5, minimumCruiseRatio: 0.5, extruderCornerVelocity: 1, maxVelocity: 400, maxZVelocity: 20, maxZAccel: 500, maxAccel: 20000 };
+eq("a Klipper request keeps firmware and the limits", settingsRules(flat).coerce({ printer: klipperPrinter }), { printer: klipperPrinter });
+eq("a Marlin request drops firmware and the limits", settingsRules({ ...flat, firmware: "marlin" }).coerce({ printer: klipperPrinter }), { printer: { maxAccel: 20000 } });
+eq("the limit rows show for Klipper and hide for Marlin", [settingsRules(flat).hidden.has("klipperLimits"), settingsRules({ ...flat, firmware: "marlin" }).hidden.has("klipperLimits")], [false, true]);
+
 // Ruling 15: dependent sub-fields are hidden, not disabled.
 check("Max length is hidden while the belt is unlimited", settingsRules(belt).hidden.has("beltMaxLength"));
 check("Max length shows once the belt has a cap", !settingsRules({ ...belt, belt: { raftLayers: 0, maxLengthMm: 300 } }).hidden.has("beltMaxLength"));

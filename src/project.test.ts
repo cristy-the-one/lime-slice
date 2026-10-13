@@ -95,6 +95,13 @@ delete fuzzed.settings.fuzzyPointDistance;
 const beforeFuzzy = parseProject(JSON.stringify(fuzzed));
 check("a file from before fuzzy skin opens off, at the defaults", beforeFuzzy.ok && beforeFuzzy.project.settings.fuzzySkin === false && beforeFuzzy.project.settings.fuzzyThickness === 0.3 && beforeFuzzy.project.settings.fuzzyPointDistance === 0.8);
 
+const klipped = JSON.parse(serializeProject({ ...project, profile: { ...project.profile, squareCornerVelocity: 8, maxVelocity: 400, maxZAccel: 500 } })) as { profile: Record<string, unknown> };
+const klipOpened = parseProject(JSON.stringify(klipped));
+check("the Klipper limits round-trip", klipOpened.ok && klipOpened.project.profile.squareCornerVelocity === 8 && klipOpened.project.profile.maxVelocity === 400 && klipOpened.project.profile.maxZAccel === 500);
+for (const key of ["squareCornerVelocity", "minimumCruiseRatio", "extruderCornerVelocity", "maxVelocity", "maxZVelocity", "maxZAccel"]) delete klipped.profile[key];
+const beforeKlipper = parseProject(JSON.stringify(klipped));
+check("a file from before the Klipper limits opens at Klipper's defaults and no caps", beforeKlipper.ok && beforeKlipper.project.profile.squareCornerVelocity === 5 && beforeKlipper.project.profile.minimumCruiseRatio === 0.5 && beforeKlipper.project.profile.extruderCornerVelocity === 1 && beforeKlipper.project.profile.maxVelocity === 0 && beforeKlipper.project.profile.maxZVelocity === 0 && beforeKlipper.project.profile.maxZAccel === 0);
+
 const wire = JSON.parse(text) as { supportEdits: { edit: Record<string, unknown> }[] };
 eq("a prune stores sites, not a walk id", wire.supportEdits[0].edit, {
   kind: "prune",

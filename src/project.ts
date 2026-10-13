@@ -7,7 +7,7 @@
  * A later version adds a function to `migrations` at index `n` that rewrites version `n`
  * into version `n + 1`. `applyMigrations` is that hook.
  */
-import type { PrinterProfile } from "./profiles.ts";
+import { KLIPPER_NUMBERS, type PrinterProfile } from "./profiles.ts";
 import type { PresetSettings } from "./presets.ts";
 import { readPresetSettings } from "./presets.ts";
 import { fnv1aHex } from "./slice-action.ts";
@@ -395,6 +395,10 @@ function readProfile(value: unknown): PrinterProfile | string {
   for (const key of PROFILE_NUMBERS) {
     if (!finite(row[key])) return "This project file is incomplete.";
     profile[key] = row[key] as number;
+  }
+  // Projects saved before the Klipper limits existed have none; a stored 0 is a real value.
+  for (const key of Object.keys(KLIPPER_NUMBERS) as (keyof typeof KLIPPER_NUMBERS)[]) {
+    profile[key] = finite(row[key]) && (row[key] as number) >= 0 ? (row[key] as number) : KLIPPER_NUMBERS[key];
   }
   return profile;
 }

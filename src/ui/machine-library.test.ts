@@ -69,6 +69,23 @@ check(
     JSON.stringify(ir3.belt) === JSON.stringify({ angleDeg: 45, axis: "z", direction: 1, widthMm: 250, maxLengthMm: null, copies: 1, gapMm: 5, raftLayers: 0 }),
   JSON.stringify(ir3),
 );
+check(
+  "the IR3 V2 carries its printer.cfg limits: 400 mm/s, scv 5, cruise ratio 0.5, extruder corner 1, belt 20 mm/s at 500 mm/s²",
+  ir3 !== undefined &&
+    JSON.stringify([ir3.maxVelocity, ir3.squareCornerVelocity, ir3.minimumCruiseRatio, ir3.extruderCornerVelocity, ir3.maxZVelocity, ir3.maxZAccel]) === JSON.stringify([400, 5, 0.5, 1, 20, 500]),
+  JSON.stringify(ir3),
+);
+check(
+  "a library stored before the limits gets the IR3 V2's own, and Klipper's defaults for any other printer",
+  (() => {
+    const stored = JSON.parse(serializeLibrary(library)) as { printers: Record<string, unknown>[] };
+    for (const row of stored.printers) for (const key of ["maxVelocity", "squareCornerVelocity", "minimumCruiseRatio", "extruderCornerVelocity", "maxZVelocity", "maxZAccel"]) delete row[key];
+    const read = parseLibrary(JSON.stringify(stored));
+    const old = read.printers.find((printer) => printer.id === "ideaformer-ir3-v2");
+    const lime = read.printers.find((printer) => printer.id === "lime-220");
+    return old?.maxVelocity === 400 && old.maxZAccel === 500 && lime?.maxVelocity === 0 && lime.squareCornerVelocity === 5 && lime.minimumCruiseRatio === 0.5 && lime.extruderCornerVelocity === 1;
+  })(),
+);
 const onBelt = selectIn(library, "generic-belt-45", "lime-pla", 0.4);
 check("picking the generic belt slices on the belt", typeof onBelt !== "string" && beltStamp(onBelt)?.angleDeg === 45, String(onBelt));
 check("the default printer slices without a belt", beltStamp(library) === null);
@@ -96,7 +113,7 @@ const sentKeys = sent ? Object.keys(sent).sort() : [];
 check("the slice printer has no start g-code, end g-code, or host", sent !== null && !("startGcode" in sent) && !("endGcode" in sent) && !("host" in sent) && !("apiKey" in sent));
 check(
   "the slice printer is the existing fields",
-  sentKeys.join(",") === ["bedTemp", "bedX", "bedY", "bedZ", "filamentCostPerKg", "filamentDensityGCm3", "filamentDiameter", "linearAdvance", "maxAccel", "maxVolumetricMm3S", "name", "nozzleDiameter", "nozzleTemp", "pressureAdvance"].join(","),
+  sentKeys.join(",") === ["bedTemp", "bedX", "bedY", "bedZ", "extruderCornerVelocity", "filamentCostPerKg", "filamentDensityGCm3", "filamentDiameter", "linearAdvance", "maxAccel", "maxVelocity", "maxVolumetricMm3S", "maxZAccel", "maxZVelocity", "minimumCruiseRatio", "name", "nozzleDiameter", "nozzleTemp", "pressureAdvance", "squareCornerVelocity"].join(","),
 );
 check("petg at 0.6 mm is sent as pressure advance", (() => {
   const next = selectIn(library, "lime-220", "lime-petg", 0.6);
@@ -119,6 +136,12 @@ const numbers: MachineNumbers = {
   bedZ: 200,
   maxVolumetricMm3S: 11,
   maxAccel: 3000,
+  squareCornerVelocity: 8,
+  minimumCruiseRatio: 0.25,
+  extruderCornerVelocity: 2,
+  maxVelocity: 300,
+  maxZVelocity: 10,
+  maxZAccel: 250,
   filamentDensityGCm3: 1.24,
   filamentCostPerKg: 18,
   pressureAdvance: 0.03,
@@ -138,6 +161,14 @@ check("save as adds a printer", typeof named !== "string" && named.printers.some
 check("save as keeps the g-code off the slice printer", typeof named !== "string" && selection(named) !== null && !("startGcode" in enginePrinter(selection(named)!.printer, selection(named)!.filament, named.nozzleMm)) && selection(named)!.printer.startGcode === "; shop");
 check("save as keeps the host on the printer", typeof named !== "string" && selection(named)?.printer.host === "http://shop.local" && selection(named)?.printer.apiKey === "shop-key" && selection(named)?.printer.startPrint === true);
 
+check(
+  "save as keeps the Klipper limits and sends them on the slice printer",
+  typeof named !== "string" &&
+    (() => {
+      const sent = enginePrinter(selection(named)!.printer, selection(named)!.filament, named.nozzleMm);
+      return JSON.stringify([sent.squareCornerVelocity, sent.minimumCruiseRatio, sent.extruderCornerVelocity, sent.maxVelocity, sent.maxZVelocity, sent.maxZAccel]) === JSON.stringify([8, 0.25, 2, 300, 10, 250]);
+    })(),
+);
 const saved = typeof named === "string" ? library : saveActive(named, { ...numbers, bedX: 260 });
 check("save writes the active printer", typeof saved !== "string" && selection(saved)?.printer.bedX === 260);
 
