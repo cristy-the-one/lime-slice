@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { isProbed, probeAllowsApply, probeFromBody, probeNote, toolAvailable, toolBlockedTip, PROBE_WAIT_MS } from "./model-feasibility.ts";
+import { isProbed, probeAllowsApply, probeFromBody, probeKey, probeNote, toolAvailable, toolBlockedTip, PROBE_WAIT_MS } from "./model-feasibility.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -89,6 +89,15 @@ check("apply runs when the fillet fits", probeAllowsApply("fillet", { phase: "do
 check("apply waits for the hole check", probeAllowsApply("hole", null) === false);
 check("apply waits when the boolean would fail", probeAllowsApply("boolean", { phase: "done", ok: false }) === false);
 check("split is not gated by a kernel dry-run", probeAllowsApply("split", null));
+check("numbers just applied cannot be applied again", !probeAllowsApply("hole", { phase: "applied" }));
+eq("numbers just applied say nothing about fit", probeNote("boolean", { phase: "applied" }), null);
+
+const hole = { id: 1, kind: "hole", x: 5, y: 5, z: 10, dx: 0, dy: 0, dz: -1, radius: 2, depth: 12 };
+const key = probeKey(1, "m3", hole);
+check("the same solid, shape, and numbers share an answer", probeKey(1, "m3", { ...hole }) === key);
+check("another shape of the solid asks again", probeKey(1, "m4", hole) !== key);
+check("another solid asks again", probeKey(2, "m3", hole) !== key);
+check("another number asks again", probeKey(1, "m3", { ...hole, radius: 2.0000001 }) !== key);
 
 const desktop = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
 const commands = [...desktop.matchAll(/#\[tauri::command(\(async\))?\]\s*(?:async\s+)?fn (model_\w+)/g)];

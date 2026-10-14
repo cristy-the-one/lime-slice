@@ -12,6 +12,8 @@ import {
   beginGesture,
   commitGesture,
   emptyHistory,
+  foldSince,
+  putBrepFor,
   redoSnap,
   undoSnap,
   type EditHistory,
@@ -21,6 +23,9 @@ import {
 let history: EditHistory = emptyHistory();
 let timer = 0;
 let applying = false;
+/** Steps that existed when Model opened. Null outside Model. */
+let preVisit: WeakSet<EditSnap> | null = null;
+let visitEdited = false;
 
 function capture(): EditSnap {
   syncPlateFromState();
@@ -185,6 +190,33 @@ export function editUndoCount(): number {
 export function clearEditHistory() {
   window.clearTimeout(timer);
   history = emptyHistory();
+}
+
+/** Model opened. The steps taken from here on are one visit, until `endModelVisit`. */
+export function beginModelVisit() {
+  preVisit = new WeakSet([...history.undo, ...history.redo]);
+  visitEdited = false;
+}
+
+/** A Model edit landed in this visit. */
+export function markModelEdit() {
+  visitEdited = true;
+}
+
+/**
+ * Fold a visit with Model edits into one step. A Model edit does not write its solid's STEP, so the
+ * states between the first edit and the last have none. Only the state before the visit and the one
+ * after it stay reachable; the after state gets its STEP by `patchEditBrep` once it is written.
+ */
+export function endModelVisit() {
+  const before = preVisit;
+  preVisit = null;
+  if (before && visitEdited) history = foldSince(history, before);
+}
+
+/** Give every step whose object has mesh `token` that mesh's solid STEP. Undefined removes it. */
+export function patchEditBrep(token: string, brep: ArrayBuffer | undefined) {
+  putBrepFor(history, token, brep);
 }
 
 export function undoUserEdit(): boolean {

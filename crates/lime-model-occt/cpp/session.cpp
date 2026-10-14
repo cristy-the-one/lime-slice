@@ -386,7 +386,9 @@ void commit_held(Solid& solid, Held&& next, int spawned = 0) {
     solid.held = std::move(next);
 }
 
-/// The open solid and its volume, read under the lock so an op can run outside it.
+bool editable(const TopoDS_Shape& shape, std::string& error);
+
+/// The open solid and its volume, read under the lock so an op can run outside it. A shape with no solid is refused.
 bool copy_shape(int id, TopoDS_Shape& current, double& volume, std::string& error) {
     std::lock_guard<std::mutex> lock(g_mu);
     const Held* held = held_at(id);

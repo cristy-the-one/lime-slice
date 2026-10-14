@@ -4,15 +4,25 @@ import type { ModelPick, ModelSolid } from "../model-view";
 import { holeAxis, lastFace, outwardFromMesh, selectedEdges } from "../model-blend";
 import { nextModelPicks, selectionCountLabel } from "../model-select";
 import { contextParts } from "../model-context";
-import { PROBE_WAIT_MS, isProbed, probeFromBody } from "../model-feasibility";
+import { PROBE_WAIT_MS, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
 import { formatMm, splitPlaneInside, splitPlaneRange, zExtent } from "../model-plane";
 import { closeModelTool, mountModelChrome, openModelTool, refreshModelGhost, setModelProbe, syncModelChrome, syncModelSolid } from "../ui/model-chrome";
-import { addedSplit, shareMeshToken, withoutObject } from "../plate";
-import { markProjectDirty } from "../project-dirty";
+import { addedSplit, meshTokenOf, shareMeshToken, withBrepFor, withoutObject } from "../plate";
 import { base64ToBytes } from "../project";
 import { authHeaders } from "../ui/api-base";
 import { livePlate, place } from "./files";
-import { cancelEdit, editUndoCount, flushEdit, noteEdit, redoUserEdit, undoUserEdit } from "./history";
+import {
+  beginModelVisit,
+  cancelEdit,
+  editUndoCount,
+  endModelVisit,
+  flushEdit,
+  markModelEdit,
+  noteEdit,
+  patchEditBrep,
+  redoUserEdit,
+  undoUserEdit,
+} from "./history";
 import { fx } from "./fx";
 import { modelerFailure, plainModelError } from "./model-error";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
@@ -20,26 +30,40 @@ import { apiBase, apiToken, isStepName } from "./settings";
 import { state } from "./state";
 
 let ticket = 0;
-let solid: ParsedSolid | null = null;
 let picks: ModelPick[] = [];
 let busy = false;
 let probeSerial = 0;
 let probeTimer = 0;
-let keptToken = "";
-/** The plate object the open solid belongs to. Selecting another object in the list leaves the solid as it was. */
-let openedId: string | null = null;
-let keptSolid: ParsedSolid | null = null;
-const undos: ModelUndo[] = [];
-const redos: ModelUndo[] = [];
-/** The pre-edit snap that redo pushes back onto `undos`. */
-const redoBefore: ModelUndo[] = [];
-/** True when that undo also stepped the Prepare history. */
-const redoBacked: boolean[] = [];
-/** Prepare undo-stack length after each solid edit, so undo can tell if that step is still on top. */
-const modelMarks: number[] = [];
+let pendingProbe: (() => void) | null = null;
+/** The solid in the view. */
+let open: Opened | null = null;
+/** Every solid the engine session holds, by plate object: the opened file's object and each piece a split added. */
+const opened = new Map<string, Opened>();
+/** Mesh tokens whose plate objects already carry that solid's STEP, so nothing has to be written for them. */
+const stepKnown = new Set<string>();
+/** Kernel answers by `probeKey`. */
+const answers = new Map<string, ProbeView>();
+/** Engine calls that read or replace a held shape run one at a time, so an answer or a STEP always names the shape it came from. */
+let engineQueue: Promise<unknown> = Promise.resolve();
 
 interface ParsedSolid extends ModelSolid {
   faces: { id: number; areaMm2: number; normal?: [number, number, number] }[];
+}
+
+/** One solid the engine session holds for a plate object, and its Model undo history. */
+interface Opened {
+  objectId: string;
+  solid: ParsedSolid;
+  /** `meshTokenOf` the plate mesh that is this solid's current shape. */
+  mesh: string;
+  undos: ModelUndo[];
+  redos: ModelUndo[];
+  /** The pre-edit snap that redo pushes back onto `undos`. */
+  redoBefore: ModelUndo[];
+  /** True when that undo also stepped the Prepare history. */
+  redoBacked: boolean[];
+  /** Prepare undo-stack length after each solid edit, so undo can tell if that step is still on top. */
+  modelMarks: number[];
 }
 
 type SupportEdits = typeof state.supportEdits;
@@ -73,19 +97,24 @@ export function bindModelView() {
       picks = [];
       fx.model?.highlight([]);
       syncModelChrome([]);
-      if (solid) readout(`Volume ${mm(solid.volumeMm3)} mm³. Pick a face or an edge.`);
+      if (open) readout(`Volume ${mm(open.solid.volumeMm3)} mm³. Pick a face or an edge.`);
     },
     solidZ() {
-      return zExtent(solid?.positions ?? null);
+      return zExtent(open?.solid.positions ?? null);
     },
-    paramsChanged() {
-      scheduleProbe();
+    paramsChanged(typed) {
+      scheduleProbe(typed ? PROBE_WAIT_MS : 0);
+    },
+    probeNow() {
+      if (!pendingProbe) return;
+      window.clearTimeout(probeTimer);
+      sendPending();
     },
     solidBox() {
-      return solid ? boxOf(solid.positions) : null;
+      return open ? boxOf(open.solid.positions) : null;
     },
     edgePoints(edge) {
-      return solid?.edges.find((item) => item.id === edge)?.points ?? null;
+      return open?.solid.edges.find((item) => item.id === edge)?.points ?? null;
     },
     holeAxis() {
       return drillAxis();
@@ -93,23 +122,44 @@ export function bindModelView() {
   });
 }
 
+function inOrder<T>(call: () => Promise<T>): Promise<T> {
+  const run = engineQueue.then(call, call);
+  engineQueue = run.catch(() => undefined);
+  return run;
+}
+
 /**
  * Fillet, chamfer, hole, and boolean ask the kernel whether the edit works before Apply.
- * The request is debounced and runs off the UI thread. A newer edit discards the older answer.
+ * A number still being typed waits `wait` ms; a newer edit discards the older answer.
+ * An answer already known for this solid, shape, and numbers is used without asking.
  */
-function scheduleProbe() {
+function scheduleProbe(wait: number) {
   window.clearTimeout(probeTimer);
+  pendingProbe = null;
   probeSerial += 1;
   const serial = probeSerial;
-  const payload = solid ? probePayload(solid.id) : null;
-  if (!payload) {
+  const at = open;
+  const payload = at ? probePayload(at.solid.id) : null;
+  if (!at || !payload) {
     setModelProbe(null);
     return;
   }
+  const key = probeKey(at.solid.id, at.mesh, payload);
+  const known = answers.get(key);
+  if (known) {
+    setModelProbe(known);
+    return;
+  }
   setModelProbe({ phase: "checking" });
-  probeTimer = window.setTimeout(() => {
-    void sendProbe(serial, payload);
-  }, PROBE_WAIT_MS);
+  pendingProbe = () => void sendProbe(serial, key, payload);
+  if (wait > 0) probeTimer = window.setTimeout(sendPending, wait);
+  else sendPending();
+}
+
+function sendPending() {
+  const send = pendingProbe;
+  pendingProbe = null;
+  send?.();
 }
 
 function probePayload(id: number): Record<string, unknown> | null {
@@ -141,10 +191,17 @@ function probePayload(id: number): Record<string, unknown> | null {
   };
 }
 
-async function sendProbe(serial: number, payload: Record<string, unknown>) {
-  const body = await post("/api/model/probe", payload);
+async function sendProbe(serial: number, key: string, payload: Record<string, unknown>) {
+  const body = await inOrder(() => post("/api/model/probe", payload));
+  const view = probeFromBody(body);
+  if (typeof body.ok === "boolean") remember(key, view);
   if (serial !== probeSerial || state.stage !== "model") return;
-  setModelProbe(probeFromBody(body));
+  setModelProbe(view);
+}
+
+function remember(key: string, view: ProbeView) {
+  if (answers.size >= 256) answers.clear();
+  answers.set(key, view);
 }
 
 function boolOp(): "fuse" | "cut" | "common" {
@@ -153,38 +210,55 @@ function boolOp(): "fuse" | "cut" | "common" {
   return "fuse";
 }
 
-/** Write the open solid onto the selected object when that session is still current. */
+/**
+ * Before a project save: every held solid's STEP onto its plate objects. A solid the engine can no
+ * longer write loses its STEP rather than keep one from an older shape.
+ */
 export async function captureOpenSolid() {
-  if (!solid || !state.mesh || meshToken() !== keptToken) return;
-  await rememberBrep();
+  const problem = await inOrder(() => writeHeldSteps([...opened.values()]));
+  if (!problem) return;
+  for (const entry of opened.values()) {
+    if (!stepKnown.has(entry.mesh)) putStep(entry.mesh, undefined);
+  }
+}
+
+/** Leaving Model: fold the visit into one Prepare step and write the STEP of each edited solid, off the UI's path. */
+export function leaveModel() {
+  endModelVisit();
+  for (const entry of opened.values()) entry.modelMarks.length = 0;
+  void inOrder(() => writeHeldSteps([...opened.values()]));
 }
 
 export function showModel() {
   const mine = ++ticket;
   picks = [];
-  openedId = state.plate.selectedId;
   flushEdit();
   noteEdit();
   const mesh = state.mesh;
-  if (keptSolid && mesh && meshToken() === keptToken) {
-    solid = keptSolid;
-    fx.model?.setSolid(solid);
+  const objectId = state.plate.selectedId;
+  const token = mesh ? meshTokenOf(mesh.bytes) : null;
+  const known = objectId ? opened.get(objectId) : undefined;
+  if (known && known.mesh === token) {
+    open = known;
+    fx.model?.setSolid(known.solid);
     refreshModelContext();
     fx.model?.highlight([]);
     syncModelChrome([]);
     showEdits(true);
     syncModelSolid();
     refreshModelGhost();
-    readout(`Volume ${mm(solid.volumeMm3)} mm³. Pick a face or an edge.`);
+    syncUndo();
+    readout(`Volume ${mm(known.solid.volumeMm3)} mm³. Pick a face or an edge.`);
     return;
   }
-  solid = null;
+  open = null;
   fx.model?.setSolid(null);
   refreshModelContext();
   fx.model?.highlight([]);
   syncModelChrome([]);
   showEdits(false);
-  if (!mesh) {
+  syncUndo();
+  if (!mesh || !objectId || !token) {
     readout("Open a STEP file to measure a solid.");
     return;
   }
@@ -193,18 +267,17 @@ export function showModel() {
     readout("Model measure reads a STEP solid. This file is a mesh.");
     return;
   }
-  keptSolid = null;
-  keptToken = "";
-  undos.length = 0;
-  clearModelFuture();
-  modelMarks.length = 0;
-  syncUndo();
   readout("Reading the solid…");
+  if (opened.size > 0) {
+    // The session is about to hold another file. Its solids' in-between shapes go with it.
+    endModelVisit();
+    beginModelVisit();
+  }
   if (brep) {
-    void load(mine, stepFileName(mesh.name), brep, state.stepTolerance);
+    void load(mine, objectId, token, stepFileName(mesh.name), brep, state.stepTolerance);
     return;
   }
-  void load(mine, mesh.name, mesh.bytes, state.stepTolerance);
+  void load(mine, objectId, token, mesh.name, mesh.bytes, state.stepTolerance);
 }
 
 function setMode(mode: "face" | "edge") {
@@ -216,29 +289,34 @@ function setMode(mode: "face" | "edge") {
   document.querySelector("#modelPickFace")?.classList.toggle("on", mode === "face");
   document.querySelector("#modelPickEdge")?.setAttribute("aria-pressed", mode === "edge" ? "true" : "false");
   document.querySelector("#modelPickEdge")?.classList.toggle("on", mode === "edge");
-  if (solid) readout(`Volume ${mm(solid.volumeMm3)} mm³. Pick ${mode === "face" ? "a face" : "an edge"}.`);
+  if (open) readout(`Volume ${mm(open.solid.volumeMm3)} mm³. Pick ${mode === "face" ? "a face" : "an edge"}.`);
 }
 
 async function applyTool() {
   const button = document.querySelector<HTMLButtonElement>("#modelApply");
   if (!button || button.disabled) return;
   const current = document.querySelector<HTMLElement>("#modelBar")?.dataset.tool;
+  const applied = open ? probePayload(open.solid.id) : null;
   if (current === "boolean") {
-    await runBoolean(boolOp());
+    await runBoolean(boolOp(), applied);
     return;
   }
   if (current === "split") await runSplit();
-  else if (current === "fillet") await runBlend("fillet");
-  else if (current === "chamfer") await runBlend("chamfer");
-  else if (current === "hole") await runHole();
+  else if (current === "fillet") await runBlend("fillet", applied);
+  else if (current === "chamfer") await runBlend("chamfer", applied);
+  else if (current === "hole") await runHole(applied);
   else if (current === "scale") await runScale();
 }
 
-async function load(mine: number, name: string, bytes: ArrayBuffer, chord: number) {
-  const body = await post("/api/model", {
-    filename: name,
-    dataB64: bytesToBase64(new Uint8Array(bytes)),
-    stepToleranceMm: chord,
+/** Open the file in a new engine session. The solids of the last one are written first, since the session lets them go. */
+async function load(mine: number, objectId: string, mesh: string, name: string, bytes: ArrayBuffer, chord: number) {
+  const body = await inOrder(async () => {
+    await writeHeldSteps([...opened.values()]);
+    return post("/api/model", {
+      filename: name,
+      dataB64: bytesToBase64(new Uint8Array(bytes)),
+      stepToleranceMm: chord,
+    });
   });
   if (mine !== ticket || state.stage !== "model") return;
   const parsed = asSolid(body);
@@ -246,17 +324,30 @@ async function load(mine: number, name: string, bytes: ArrayBuffer, chord: numbe
     readout(text(body.error) || "Could not read this STEP solid.");
     return;
   }
+  opened.clear();
+  stepKnown.clear();
+  answers.clear();
+  stepKnown.add(mesh);
+  open = openedFor(objectId, parsed, mesh);
+  syncUndo();
   present(parsed, `Volume ${mm(parsed.volumeMm3)} mm³. Pick a face or an edge.`);
 }
 
-async function runBoolean(op: "fuse" | "cut" | "common") {
-  if (!solid || busy || !state.mesh) return;
+function openedFor(objectId: string, solid: ParsedSolid, mesh: string): Opened {
+  const entry: Opened = { objectId, solid, mesh, undos: [], redos: [], redoBefore: [], redoBacked: [], modelMarks: [] };
+  opened.set(objectId, entry);
+  return entry;
+}
+
+async function runBoolean(op: "fuse" | "cut" | "common", applied: Record<string, unknown> | null) {
+  if (!open || busy || !state.mesh) return;
+  const at = open;
   busy = true;
   const snap = snapshot();
   const mine = ticket;
   readout("Editing the solid…");
-  const body = await post("/api/model/boolean", {
-    id: solid.id,
+  const body = await inOrder(() => post("/api/model/boolean", {
+    id: at.solid.id,
     op,
     primitive: prim(),
     x: num("#modelX"),
@@ -269,7 +360,7 @@ async function runBoolean(op: "fuse" | "cut" | "common") {
     height: num("#modelHeight"),
     ...turn(),
     chordMm: state.stepTolerance,
-  });
+  }));
   busy = false;
   if (mine !== ticket || state.stage !== "model") return;
   if (text(body.error)) {
@@ -281,14 +372,15 @@ async function runBoolean(op: "fuse" | "cut" | "common") {
     readout("The boolean returned nothing.");
     return;
   }
-  const note = land(snap, parsed, null, false);
+  const note = land(at, snap, parsed, null, false);
   if (note === null) return;
-  await commitView(parsed, `Volume ${mm(parsed.volumeMm3)} mm³.${note}`);
+  present(parsed, `Volume ${mm(parsed.volumeMm3)} mm³.${note}`, applied);
 }
 
 async function runSplit() {
-  if (!solid || busy || !state.mesh) return;
-  const range = splitPlaneRange(zExtent(solid.positions));
+  if (!open || busy || !state.mesh) return;
+  const at = open;
+  const range = splitPlaneRange(zExtent(at.solid.positions));
   const z = num("#modelPlaneZ");
   if (!range) {
     readout("This solid is too thin to split.");
@@ -302,8 +394,8 @@ async function runSplit() {
   const snap = snapshot();
   const mine = ticket;
   readout("Splitting the solid…");
-  const body = await post("/api/model/split", {
-    id: solid.id,
+  const body = await inOrder(() => post("/api/model/split", {
+    id: at.solid.id,
     x: 0,
     y: 0,
     z,
@@ -311,7 +403,7 @@ async function runSplit() {
     ny: 0,
     nz: 1,
     chordMm: state.stepTolerance,
-  });
+  }));
   busy = false;
   if (mine !== ticket || state.stage !== "model") return;
   if (text(body.error)) {
@@ -324,16 +416,17 @@ async function runSplit() {
     readout("The plane did not split this solid.");
     return;
   }
-  const note = land(snap, parsed, other, false);
+  const note = land(at, snap, parsed, other, false);
   if (note === null) {
-    await rollback(snap);
+    await rollback(at, snap);
     return;
   }
-  await commitView(parsed, `Split. Volume ${mm(parsed.volumeMm3)} mm³. The other piece sits in the same spot. Use Arrange to lay them side by side.${note}`);
+  present(parsed, `Split. Volume ${mm(parsed.volumeMm3)} mm³. The other piece sits in the same spot. Use Arrange to lay them side by side.${note}`);
 }
 
-async function runBlend(kind: "fillet" | "chamfer") {
-  if (!solid || busy || !state.mesh) return;
+async function runBlend(kind: "fillet" | "chamfer", applied: Record<string, unknown> | null) {
+  if (!open || busy || !state.mesh) return;
+  const at = open;
   const edges = selectedEdges(picks);
   if (edges.length === 0) {
     readout(kind === "fillet" ? "Pick an edge to fillet." : "Pick an edge to chamfer.");
@@ -344,14 +437,14 @@ async function runBlend(kind: "fillet" | "chamfer") {
   const mine = ticket;
   const count = edges.length === 1 ? "the edge" : `${edges.length} edges`;
   readout(kind === "fillet" ? `Filleting ${count}…` : `Chamfering ${count}…`);
-  const body = await post(kind === "fillet" ? "/api/model/fillet" : "/api/model/chamfer", {
-    id: solid.id,
+  const body = await inOrder(() => post(kind === "fillet" ? "/api/model/fillet" : "/api/model/chamfer", {
+    id: at.solid.id,
     edge: edges[edges.length - 1],
     edges,
     radius: num("#modelBlend"),
     distance: num("#modelBlend"),
     chordMm: state.stepTolerance,
-  });
+  }));
   busy = false;
   if (mine !== ticket || state.stage !== "model") return;
   if (text(body.error)) {
@@ -363,21 +456,22 @@ async function runBlend(kind: "fillet" | "chamfer") {
     readout(kind === "fillet" ? "The fillet returned nothing." : "The chamfer returned nothing.");
     return;
   }
-  const note = land(snap, parsed, null, false);
+  const note = land(at, snap, parsed, null, false);
   if (note === null) return;
   const label = kind === "fillet" ? "Fillet" : "Chamfer";
-  await commitView(parsed, `${label}. Volume ${mm(parsed.volumeMm3)} mm³.${note}`);
+  present(parsed, `${label}. Volume ${mm(parsed.volumeMm3)} mm³.${note}`, applied);
 }
 
-async function runHole() {
-  if (!solid || busy || !state.mesh) return;
+async function runHole(applied: Record<string, unknown> | null) {
+  if (!open || busy || !state.mesh) return;
+  const at = open;
   busy = true;
   const snap = snapshot();
   const mine = ticket;
   readout("Cutting the hole…");
   const [dx, dy, dz] = drillAxis();
-  const body = await post("/api/model/hole", {
-    id: solid.id,
+  const body = await inOrder(() => post("/api/model/hole", {
+    id: at.solid.id,
     x: num("#modelX"),
     y: num("#modelY"),
     z: num("#modelZ"),
@@ -387,7 +481,7 @@ async function runHole() {
     radius: num("#modelHoleR"),
     depth: num("#modelHoleD"),
     chordMm: state.stepTolerance,
-  });
+  }));
   busy = false;
   if (mine !== ticket || state.stage !== "model") return;
   if (text(body.error)) {
@@ -399,22 +493,23 @@ async function runHole() {
     readout("The hole returned nothing.");
     return;
   }
-  const note = land(snap, parsed, null, false);
+  const note = land(at, snap, parsed, null, false);
   if (note === null) return;
-  await commitView(parsed, `Hole. Volume ${mm(parsed.volumeMm3)} mm³.${note}`);
+  present(parsed, `Hole. Volume ${mm(parsed.volumeMm3)} mm³.${note}`, applied);
 }
 
 async function runScale() {
-  if (!solid || busy || !state.mesh) return;
+  if (!open || busy || !state.mesh) return;
+  const at = open;
   busy = true;
   const snap = snapshot();
   const mine = ticket;
   readout("Scaling the solid…");
-  const body = await post("/api/model/scale", {
-    id: solid.id,
+  const body = await inOrder(() => post("/api/model/scale", {
+    id: at.solid.id,
     factor: num("#modelFactor"),
     chordMm: state.stepTolerance,
-  });
+  }));
   busy = false;
   if (mine !== ticket || state.stage !== "model") return;
   if (text(body.error)) {
@@ -426,19 +521,20 @@ async function runScale() {
     readout("The scale returned nothing.");
     return;
   }
-  const note = land(snap, parsed, null, true);
+  const note = land(at, snap, parsed, null, true);
   if (note === null) return;
-  await commitView(parsed, `Volume ${mm(parsed.volumeMm3)} mm³.${note}`);
+  present(parsed, `Volume ${mm(parsed.volumeMm3)} mm³.${note}`);
 }
 
 async function runExport() {
-  if (!solid || busy || !state.mesh) return;
+  if (!open || busy || !state.mesh) return;
+  const at = open;
   busy = true;
   readout("Writing STEP…");
   const mine = ticket;
-  const problem = await rememberBrep();
+  const problem = await inOrder(() => writeHeldSteps([at], true));
   busy = false;
-  if (mine !== ticket || state.stage !== "model" || !solid) return;
+  if (mine !== ticket || state.stage !== "model" || !open) return;
   if (problem) {
     readout(problem);
     return;
@@ -446,38 +542,39 @@ async function runExport() {
   const brep = selectedBrep();
   if (!brep || !state.mesh) return;
   await saveStepFile(brep, stepFileName(state.mesh.name));
-  readout(`Saved STEP. Volume ${mm(solid.volumeMm3)} mm³.`);
+  readout(`Saved STEP. Volume ${mm(open.solid.volumeMm3)} mm³.`);
 }
 
 async function runUndo() {
-  const snap = undos.pop();
-  if (!snap || !solid || busy) {
-    if (snap) undos.push(snap);
+  const at = open;
+  const snap = at?.undos.pop();
+  if (!at || !snap || busy) {
+    if (snap) at?.undos.push(snap);
     syncUndo();
     return;
   }
   busy = true;
   const mine = ticket;
-  const body = await post("/api/model/undo", { id: solid.id, chordMm: state.stepTolerance });
+  const body = await inOrder(() => post("/api/model/undo", { id: at.solid.id, chordMm: state.stepTolerance }));
   busy = false;
   if (mine !== ticket || state.stage !== "model") {
-    undos.push(snap);
+    at.undos.push(snap);
     return;
   }
   const parsed = asSolid(body);
   if (text(body.error) || !parsed) {
-    undos.push(snap);
+    at.undos.push(snap);
     syncUndo();
     readout(text(body.error) || "Could not undo that edit.");
     return;
   }
   flushEdit();
   const forward = snapshot();
-  const backed = modelMarks.at(-1) === editUndoCount();
+  const backed = at.modelMarks.at(-1) === editUndoCount();
   let took = false;
   if (backed) {
     took = undoUserEdit();
-    if (took) modelMarks.pop();
+    if (took) at.modelMarks.pop();
   }
   if (!took) {
     restore(snap);
@@ -488,39 +585,40 @@ async function runUndo() {
     }
     place();
   }
-  redos.push(forward);
-  redoBefore.push(snap);
-  redoBacked.push(took);
+  at.redos.push(forward);
+  at.redoBefore.push(snap);
+  at.redoBacked.push(took);
   syncUndo();
   present(parsed, `Volume ${mm(parsed.volumeMm3)} mm³. Edit undone.`);
 }
 
 async function runRedo() {
-  const forward = redos.pop();
-  const before = redoBefore.pop();
-  const backed = redoBacked.pop();
-  if (!forward || !before || backed == null || !solid || busy) {
-    if (forward) redos.push(forward);
-    if (before) redoBefore.push(before);
-    if (backed != null) redoBacked.push(backed);
+  const at = open;
+  const forward = at?.redos.pop();
+  const before = at?.redoBefore.pop();
+  const backed = at?.redoBacked.pop();
+  if (!at || !forward || !before || backed == null || busy) {
+    if (forward) at?.redos.push(forward);
+    if (before) at?.redoBefore.push(before);
+    if (backed != null) at?.redoBacked.push(backed);
     syncUndo();
     return;
   }
   busy = true;
   const mine = ticket;
-  const body = await post("/api/model/redo", { id: solid.id, chordMm: state.stepTolerance });
+  const body = await inOrder(() => post("/api/model/redo", { id: at.solid.id, chordMm: state.stepTolerance }));
   busy = false;
   if (mine !== ticket || state.stage !== "model") {
-    redos.push(forward);
-    redoBefore.push(before);
-    redoBacked.push(backed);
+    at.redos.push(forward);
+    at.redoBefore.push(before);
+    at.redoBacked.push(backed);
     return;
   }
   const parsed = asSolid(body);
   if (text(body.error) || !parsed) {
-    redos.push(forward);
-    redoBefore.push(before);
-    redoBacked.push(backed);
+    at.redos.push(forward);
+    at.redoBefore.push(before);
+    at.redoBacked.push(backed);
     syncUndo();
     readout(text(body.error) || "Could not redo that edit.");
     return;
@@ -529,18 +627,18 @@ async function runRedo() {
   let took = false;
   if (backed) {
     took = redoUserEdit();
-    if (took) modelMarks.push(editUndoCount());
+    if (took) at.modelMarks.push(editUndoCount());
   }
   if (!took) {
     restore(forward);
     place();
   }
-  undos.push(before);
+  at.undos.push(before);
   syncUndo();
   present(parsed, `Volume ${mm(parsed.volumeMm3)} mm³. Edit redone.`);
 }
 
-function land(snap: ModelUndo, parsed: ParsedSolid, other: ParsedSolid | null, resetScale: boolean): string | null {
+function land(at: Opened, snap: ModelUndo, parsed: ParsedSolid, other: ParsedSolid | null, resetScale: boolean): string | null {
   if (!state.mesh || !state.sourcePos) {
     readout("Open a solid before editing it.");
     return null;
@@ -572,28 +670,32 @@ function land(snap: ModelUndo, parsed: ParsedSolid, other: ParsedSolid | null, r
           stepTolerance: state.stepTolerance,
         })
       : null;
-    const addedId = next?.objects.find((obj) => !prev.has(obj.id))?.id ?? null;
-    if (!next || !selected || !addedId) {
+    const piece = next?.objects.find((obj) => !prev.has(obj.id));
+    if (!next || !selected || !piece) {
       cancelEdit();
       return null;
     }
     state.plate = { ...next, selectedId: selected };
     applySelectedToState(state.plate);
-    snap.addedId = addedId;
+    snap.addedId = piece.id;
+    // The piece is a held solid of its own: selecting it opens it from the session, with no STEP read.
+    openedFor(piece.id, other, meshTokenOf(piece.bytes));
   }
   place();
-  undos.push(snap);
-  clearModelFuture();
+  at.undos.push(snap);
+  clearModelFuture(at);
   flushEdit();
-  modelMarks.push(editUndoCount());
+  markModelEdit();
+  at.modelMarks.push(editUndoCount());
   syncUndo();
   return `${paint ? " Support paint was cleared." : ""}${scaled ? " Placement scale is 100%." : ""}`;
 }
 
-async function rollback(snap: ModelUndo) {
-  if (solid) await post("/api/model/undo", { id: solid.id, chordMm: state.stepTolerance });
+async function rollback(at: Opened, snap: ModelUndo) {
+  await inOrder(() => post("/api/model/undo", { id: at.solid.id, chordMm: state.stepTolerance }));
   restore(snap);
   place();
+  if (state.mesh) at.mesh = meshTokenOf(state.mesh.bytes);
   readout("The other piece could not be added. The solid is unchanged.");
 }
 
@@ -621,19 +723,31 @@ function snapshot(): ModelUndo {
     seamPaint: structuredClone(state.seamPaint) as unknown as SeamPaint,
     reinforcement: structuredClone(state.reinforcement) as unknown as Reinforcement,
     partScale: state.partScale,
-    brep: selectedBrep()?.slice(0) ?? null,
+    // A STEP buffer is never written in place, so the snap shares it.
+    brep: selectedBrep(),
     addedId: null,
   };
 }
 
-async function commitView(parsed: ParsedSolid, message: string) {
-  const problem = await rememberBrep();
-  present(parsed, problem ? `${message} ${problem}` : message);
+/**
+ * Write the STEP of each solid in `entries` whose plate objects do not carry it yet (`force`: even if
+ * they do), and give it to every plate object, Prepare step, and Model snap with that mesh.
+ * Run inside `inOrder`, so the shape written is the one `entry.mesh` names.
+ */
+async function writeHeldSteps(entries: Opened[], force = false): Promise<string | null> {
+  let problem: string | null = null;
+  for (const entry of entries) {
+    const mesh = entry.mesh;
+    if (!force && stepKnown.has(mesh)) continue;
+    const step = await exportStep(entry.solid.id);
+    if (typeof step === "string") problem = step;
+    else putStep(mesh, step);
+  }
+  return problem;
 }
 
-async function rememberBrep(): Promise<string | null> {
-  if (!solid) return "Open a solid before saving it.";
-  const body = await post("/api/model/export", { id: solid.id });
+async function exportStep(id: number): Promise<ArrayBuffer | string> {
+  const body = await post("/api/model/export", { id });
   const problem = text(body.error);
   if (problem) return problem;
   if (typeof body.bytesBase64 !== "string") return "Open CASCADE did not write this solid.";
@@ -641,10 +755,20 @@ async function rememberBrep(): Promise<string | null> {
   if (!bytes || (typeof body.byteLength === "number" && bytes.byteLength !== body.byteLength)) {
     return "Open CASCADE did not write this solid.";
   }
-  const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-  setBrep(copy);
-  markProjectDirty();
-  return null;
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+/** `step` is the solid whose plate mesh is `mesh`: it goes wherever that mesh is. Undefined removes it. */
+function putStep(mesh: string, step: ArrayBuffer | undefined) {
+  state.plate = withBrepFor(state.plate, mesh, step);
+  patchEditBrep(mesh, step);
+  for (const entry of opened.values()) {
+    for (const snap of [...entry.undos, ...entry.redos, ...entry.redoBefore]) {
+      if (meshTokenOf(snap.bytes) === mesh) snap.brep = step ?? null;
+    }
+  }
+  if (step) stepKnown.add(mesh);
+  else stepKnown.delete(mesh);
 }
 
 function setBrep(bytes: ArrayBuffer | null) {
@@ -655,7 +779,7 @@ function setBrep(bytes: ArrayBuffer | null) {
     objects: state.plate.objects.map((obj) => {
       if (obj.id !== id) return obj;
       const next = { ...obj };
-      if (bytes && bytes.byteLength > 0) next.brep = bytes.slice(0);
+      if (bytes && bytes.byteLength > 0) next.brep = bytes;
       else delete next.brep;
       return next;
     }),
@@ -687,10 +811,16 @@ async function saveStepFile(bytes: ArrayBuffer, name: string) {
   URL.revokeObjectURL(link.href);
 }
 
-function present(parsed: ParsedSolid, message: string) {
-  solid = parsed;
-  keptSolid = parsed;
-  keptToken = meshToken();
+/**
+ * Show `parsed` as the open solid's shape, which is now the plate mesh. `applied` are the numbers the
+ * edit used: applying them again to this shape would change nothing, so Apply stays off for them.
+ */
+function present(parsed: ParsedSolid, message: string, applied: Record<string, unknown> | null = null) {
+  const at = open;
+  if (!at) return;
+  at.solid = parsed;
+  if (state.mesh) at.mesh = meshTokenOf(state.mesh.bytes);
+  if (applied) remember(probeKey(parsed.id, at.mesh, applied), { phase: "applied" });
   picks = [];
   fx.model?.setSolid(parsed);
   refreshModelContext();
@@ -705,8 +835,8 @@ function present(parsed: ParsedSolid, message: string) {
 
 /** The other plate objects, grey, in the open solid's frame. Nothing is drawn without an open solid. */
 export function refreshModelContext() {
-  const box = solid ? boxOf(solid.positions) : null;
-  fx.model?.setContext(box ? contextParts(livePlate(), openedId, box, state.profile.bedX, state.profile.bedY) : []);
+  const box = open ? boxOf(open.solid.positions) : null;
+  fx.model?.setContext(box && open ? contextParts(livePlate(), open.objectId, box, state.profile.bedX, state.profile.bedY) : []);
 }
 
 function showEdits(on: boolean) {
@@ -714,17 +844,17 @@ function showEdits(on: boolean) {
   if (!on) closeModelTool();
 }
 
-function clearModelFuture() {
-  redos.length = 0;
-  redoBefore.length = 0;
-  redoBacked.length = 0;
+function clearModelFuture(at: Opened) {
+  at.redos.length = 0;
+  at.redoBefore.length = 0;
+  at.redoBacked.length = 0;
 }
 
 function syncUndo() {
   const undo = document.querySelector<HTMLButtonElement>("#modelUndo");
   const redo = document.querySelector<HTMLButtonElement>("#modelRedo");
-  if (undo) undo.disabled = undos.length === 0;
-  if (redo) redo.disabled = redos.length === 0;
+  if (undo) undo.disabled = (open?.undos.length ?? 0) === 0;
+  if (redo) redo.disabled = (open?.redos.length ?? 0) === 0;
 }
 
 /** Turn degrees for a box or cylinder. A sphere does not turn. */
@@ -754,18 +884,14 @@ function prim() {
 /** Into the last picked face, or straight down when no face is picked. */
 function drillAxis(): [number, number, number] {
   const face = lastFace(picks);
-  if (!solid || face == null) return [0, 0, -1];
-  const stored = solid.faces.find((item) => item.id === face)?.normal;
-  return holeAxis(stored ?? outwardFromMesh(solid.positions, solid.triangles, face));
+  if (!open || face == null) return [0, 0, -1];
+  const stored = open.solid.faces.find((item) => item.id === face)?.normal;
+  return holeAxis(stored ?? outwardFromMesh(open.solid.positions, open.solid.triangles, face));
 }
 
 function num(id: string) {
   const value = Number(document.querySelector<HTMLInputElement>(id)?.value);
   return Number.isFinite(value) ? value : 0;
-}
-
-function meshToken() {
-  return `${state.plate.selectedId ?? ""}:${state.mesh?.name ?? ""}:${state.mesh?.bytes.byteLength ?? 0}`;
 }
 
 function stlName(name: string) {
@@ -776,6 +902,7 @@ function stlName(name: string) {
 let measureSeq = 0;
 
 async function onPick(pick: ModelPick | null, shift: boolean) {
+  const solid = open?.solid;
   if (!solid) return;
   picks = nextModelPicks(picks, pick, shift);
   fx.model?.highlight(picks);

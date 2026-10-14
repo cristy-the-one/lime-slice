@@ -98,6 +98,10 @@ fn facet_shells_open_as_editable_solids() {
             ),
             lime_model_occt::hole(id, [5.0, 5.0, 10.0], 2.0, 4.0, 0.1),
             lime_model_occt::fillet(id, 0, 1.0, 0.1),
+            lime_model_occt::scale(id, 2.0, 0.1),
+            lime_model_occt::hole_probe(id, [5.0, 5.0, 10.0], 2.0, 4.0),
+            lime_model_occt::boolean_probe(id, "cut", "box", cutter([-1.0, -1.0, -1.0], [6.0, 12.0, 12.0])),
+            lime_model_occt::blend_probe_many(id, &[0], 1.0, false),
         ];
         for refusal in refusals {
             assert_eq!(parse(&refusal)["error"].as_str(), Some(VIEW_ONLY), "{name}");

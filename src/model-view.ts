@@ -157,8 +157,25 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     });
   }
 
+  /** One material each for every solid shown, so a new shape does not compile the shader again. */
+  const solidMaterial = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 0.55,
+    metalness: 0.05,
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
+  });
+  const edgeMaterial = new THREE.LineBasicMaterial({ color: IDLE_EDGE });
+
   function clearBody() {
-    for (const object of [mesh, edgeLines, faceOutline, selectedEdges, hoverEdges]) {
+    for (const object of [mesh, edgeLines]) {
+      if (!object) continue;
+      body.remove(object);
+      object.geometry.dispose();
+    }
+    for (const object of [faceOutline, selectedEdges, hoverEdges]) {
       if (!object) continue;
       body.remove(object);
       disposeObject(object);
@@ -697,16 +714,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       const color = new Float32Array(next.positions.length);
       geometry.setAttribute("color", new THREE.BufferAttribute(color, 3));
       geometry.computeVertexNormals();
-      const material = new THREE.MeshStandardMaterial({
-        vertexColors: true,
-        roughness: 0.55,
-        metalness: 0.05,
-        side: THREE.DoubleSide,
-        polygonOffset: true,
-        polygonOffsetFactor: 1,
-        polygonOffsetUnits: 1,
-      });
-      mesh = new THREE.Mesh(geometry, material);
+      mesh = new THREE.Mesh(geometry, solidMaterial);
       body.add(mesh);
       const segments: number[] = [];
       for (const edge of next.edges) {
@@ -718,7 +726,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       if (segments.length > 0) {
         const lines = new THREE.BufferGeometry();
         lines.setAttribute("position", new THREE.Float32BufferAttribute(segments, 3));
-        edgeLines = new THREE.LineSegments(lines, new THREE.LineBasicMaterial({ color: IDLE_EDGE }));
+        edgeLines = new THREE.LineSegments(lines, edgeMaterial);
         edgeLines.raycast = () => undefined;
         body.add(edgeLines);
       }

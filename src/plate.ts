@@ -231,15 +231,35 @@ export function shareMeshToken(source: ArrayBuffer, copy: ArrayBuffer) {
   tokenOf.set(copy, token);
 }
 
+/** The identity of these mesh bytes. Copies made for undo share it, so it names one shape however often it is copied. */
+export function meshTokenOf(bytes: ArrayBuffer): string {
+  let token = tokenOf.get(bytes);
+  if (!token) {
+    token = `m${(pinSeq += 1)}`;
+    tokenOf.set(bytes, token);
+  }
+  return token;
+}
+
+/** Every object whose mesh is `token` gets `brep`. Undefined removes it. */
+export function withBrepFor(plate: PlateState, token: string, brep: ArrayBuffer | undefined): PlateState {
+  let changed = false;
+  const objects = plate.objects.map((obj) => {
+    if (tokenOf.get(obj.bytes) !== token || obj.brep === brep) return obj;
+    changed = true;
+    const next = { ...obj };
+    if (brep) next.brep = brep;
+    else delete next.brep;
+    return next;
+  });
+  return changed ? { ...plate, objects } : plate;
+}
+
 /** Remember each object's mesh so a later undo can put those bytes back. */
 export function pinPlateMeshes(plate: PlateState): MeshPin[] {
   const pins: MeshPin[] = [];
   for (const obj of plate.objects) {
-    let token = tokenOf.get(obj.bytes);
-    if (!token) {
-      token = `m${(pinSeq += 1)}`;
-      tokenOf.set(obj.bytes, token);
-    }
+    const token = meshTokenOf(obj.bytes);
     if (!pinned.has(token)) {
       pinned.set(token, copyHeld({ fileName: obj.fileName, bytes: obj.bytes, sourcePos: obj.sourcePos }));
     }

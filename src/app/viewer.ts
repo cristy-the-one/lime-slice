@@ -2,7 +2,7 @@ import { fx } from "./fx";
 import { geomWorker, state, session, type PreviewLayer, type SliceResponse } from "./state";
 import { createPrepareView } from "../prepare-view";
 import { createModelView, type ModelView } from "../model-view";
-import { bindModelView, showModel } from "./model";
+import { bindModelView, leaveModel, showModel } from "./model";
 import { createSliceView, type SliceView3d } from "../view3d";
 import { FEATURE_LABEL, FEATURE_COLOR, colorForPath } from "../colors";
 import { legendMarkup } from "../ui/legend";
@@ -13,7 +13,7 @@ import { replyOffset, shownBedOffset } from "../bed-offset";
 import { applyPlace, fetchStoredGcode, livePlate, nudgePlacement, objectPlacement } from "./files";
 import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, markStale, touch, stale } from "./settings";
 import { cycleLayerAction, type LayerActionKind } from "../layer-actions";
-import { flushEdit, noteEdit } from "./history";
+import { beginModelVisit, flushEdit, noteEdit } from "./history";
 import { currentRules } from "./rules";
 import { beginModifierEdit, endModifierEdit, nudgeModifier, selectModifier } from "./override-actions";
 import { bandFractions } from "../overrides";
@@ -458,7 +458,15 @@ export function setView(mode: typeof state.viewMode, source: "user" | "auto" = "
 
 export function setStage(stage: "prepare" | "preview" | "gcode" | "model") {
   const leavingModel = state.stage === "model" && stage !== "model";
-  if (leavingModel) flushEdit();
+  const enteringModel = state.stage !== "model" && stage === "model";
+  if (leavingModel) {
+    flushEdit();
+    leaveModel();
+  }
+  if (enteringModel) {
+    flushEdit();
+    beginModelVisit();
+  }
   state.stage = stage;
   document.querySelector<HTMLElement>("#prepareBody")!.hidden = stage !== "prepare";
   document.querySelector<HTMLElement>("#modelBody")!.hidden = stage !== "model";
