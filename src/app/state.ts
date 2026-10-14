@@ -40,6 +40,14 @@ export interface FeatureRow {
   filamentMm: number;
   filamentG: number;
 }
+/** One plain-language notice. `mesh-repair` is the only code the results pill reads. */
+export interface MeshWarning {
+  code: string;
+  repairedLayers?: number;
+  bridgedMm?: number;
+  droppedChains?: number;
+}
+
 export interface SliceResponse {
   coreMs: number;
   baselineMs: number;
@@ -59,6 +67,8 @@ export interface SliceResponse {
     /** Open chains the cut could not close. Missing on an older reply. */
     droppedChains?: number;
   };
+  /** Mesh repair the cut already performed. Absent on a clean mesh and on an older reply. */
+  warnings?: MeshWarning[];
   sanity: { ok: boolean; notes: string[]; layers: number; finalE: number; extrusionLengthMm: number };
   /** Largest first. Missing from replies an older engine cached. */
   coverage?: CoverageGap[];

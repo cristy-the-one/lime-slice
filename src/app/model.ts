@@ -12,7 +12,7 @@ import { authHeaders } from "../ui/api-base";
 import { place } from "./files";
 import { cancelEdit, editUndoCount, flushEdit, noteEdit, redoUserEdit, undoUserEdit } from "./history";
 import { fx } from "./fx";
-import { modelerFailure } from "./model-error";
+import { modelerFailure, plainModelError } from "./model-error";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { apiBase, apiToken, isStepName } from "./settings";
 import { state } from "./state";
@@ -792,9 +792,13 @@ function describe(current: ParsedSolid, pick: ModelPick) {
   return `Edge ${pick.index + 1} · ${mm(length ?? Number.NaN)} mm.`;
 }
 
+function modelTool(): string | undefined {
+  return document.querySelector<HTMLElement>("#modelBar")?.dataset.tool;
+}
+
 function readout(message: string) {
   const node = document.querySelector("#modelReadout");
-  if (node) node.textContent = message;
+  if (node) node.textContent = plainModelError(message, modelTool());
 }
 
 function mm(value: number) {
@@ -860,11 +864,11 @@ async function post(path: string, payload: unknown): Promise<Record<string, unkn
     });
     const body = await res.json() as Record<string, unknown>;
     if (!res.ok && typeof body.error !== "string") {
-      return { error: modelerFailure(body.error ?? body.message) };
+      return { error: modelerFailure(body.error ?? body.message, modelTool()) };
     }
     return body;
   } catch (err) {
-    const message = modelerFailure(err);
+    const message = modelerFailure(err, modelTool());
     if (message === "Failed to fetch") {
       return { error: `Model measure needs the slicer engine at ${apiBase()}. Start it with cargo run -p lime-slice --release -- serve.` };
     }
