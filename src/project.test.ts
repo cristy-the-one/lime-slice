@@ -10,6 +10,9 @@ import {
 } from "./project.ts";
 import type { EditEntry } from "./support-edit-list.ts";
 import { bytesToBase64 } from "./base64.ts";
+import { dropped, jumped, newTree, opLabel, redoTarget, undoTarget, withChild, withNode, type ModelOp, type ModelTree } from "./model-tree.ts";
+import { loadedTree, savedTree } from "./model-tree-file.ts";
+import { dropRefusal } from "./model-history.ts";
 
 let failed = 0;
 
@@ -283,6 +286,125 @@ const plainOpened = parseProject(multiText);
 eq("a plate saved before brep opens with none", plainOpened.ok ? plainOpened.project.objects?.map((obj) => obj.brep ?? null) : null, [null, null]);
 brepWire.objects[0]!.brep = { ...brepMesh, hash: "nope" };
 eq("a damaged solid fails the open", parseProject(JSON.stringify(brepWire)), { ok: false, message: "The solid in this project is damaged." });
+
+// Model history: a part with a fork, a renamed step, and a split whose piece has a step of its own.
+const rootStep = new Uint8Array([0x49, 0x53, 0x4f, 1, 2, 3]);
+const pieceRoot = new Uint8Array([0x49, 0x53, 0x4f, 7, 7]);
+const plateStep = meshRecord("bracket.step", new Uint8Array([9, 8, 7]));
+const pieceStep = meshRecord("bracket split.step", new Uint8Array([6, 5]));
+const cutOp = (dx: number): ModelOp => ({ kind: "boolean", op: "cut", primitive: "box", origin: [0, 0, 5], size: [dx, 10, 10], radius: 0, height: 0, turn: [0, 0, 0] });
+const splitOp: ModelOp = { kind: "split", origin: [0, 0, 4], normal: [0, 0, 1] };
+const filletOp: ModelOp = { kind: "fillet", edges: [{ index: 3, mid: [10, 0, 2.5], lengthMm: 5 }], size: 0.5 };
+const fpOf = (volumeMm3: number) => ({ volumeMm3, faces: 6, edges: 12 });
+const plateMesh = (token: string) => ({ name: "bracket.stl", bytes: new ArrayBuffer(3), sourcePos: new Float32Array(0), token });
+let part = newTree("part#run1.1", { kind: "step", name: "bracket.step", bytes: rootStep.buffer }, "bracket.stl", fpOf(4000));
+part = withChild(part, 0, { id: 1, op: cutOp(8), label: opLabel(cutOp(8)), fingerprint: fpOf(3200) });
+part = withChild(part, 1, { id: 2, op: cutOp(6), label: opLabel(cutOp(6)), fingerprint: fpOf(2400), name: "Pocket" });
+part = withChild(jumped(part, 1), 1, { id: 3, op: cutOp(4), label: opLabel(cutOp(4)), fingerprint: fpOf(1600) });
+part = withChild(part, 3, { id: 4, op: splitOp, label: opLabel(splitOp), fingerprint: fpOf(640), piece: "part-piece#run1.2" });
+part = { ...withNode(part, 2, { mesh: plateMesh("m-old") }), committed: 3 };
+let piece = newTree("part-piece#run1.2", { kind: "piece", tree: part.key, node: 4 }, "bracket split", fpOf(960));
+piece = { ...withChild(piece, 0, { id: 1, op: filletOp, label: opLabel(filletOp), fingerprint: fpOf(959) }), committed: 1 };
+const owners = new Map([[piece.key, "obj-2"]]);
+const treeWith = (tree: ModelTree, committed: number, step: Uint8Array, name: string) => ({
+  ...savedTree(tree, committed, (key) => owners.get(key)),
+  rootStep: meshRecord(name, step),
+});
+const historied: LimeProject = {
+  ...project,
+  version: 2,
+  objects: [
+    { id: "part", name: "bracket.stl", mesh: project.mesh, placement: project.placement, supportEdits: [], brep: plateStep, modelTree: treeWith(part, 3, rootStep, "bracket.step") },
+    { id: "obj-2", name: "bracket split", mesh: project.mesh, placement: secondPlacement, supportEdits: [], brep: pieceStep, modelTree: treeWith(piece, 1, pieceRoot, "bracket split.step") },
+  ],
+};
+const historyText = serializeProject(historied);
+const historyOpened = parseProject(historyText);
+const historyObjects = historyOpened.ok ? historyOpened.project.objects ?? [] : [];
+eq("a tree round-trips: ops, names, fingerprints, the split's piece, and the root STEP", historyObjects.map((obj) => obj.modelTree), historied.objects!.map((obj) => obj.modelTree));
+eq("the split names its piece by plate object, not by engine key", historyObjects[0]?.modelTree?.nodes.find((node) => node.id === 4)?.piece, "obj-2");
+eq("a fillet keeps its edge as index, midpoint, and length", historyObjects[1]?.modelTree?.nodes[1]?.op, filletOp);
+eq("nothing is unread", historyOpened.ok ? historyOpened.project.unreadHistory : "not opened", undefined);
+
+const reopenedKeys = new Map([["part", "part#run2.1"], ["obj-2", "obj-2#run2.2"]]);
+const reopen = (i: number, label: string, token: string) => {
+  const saved = historyObjects[i]!.modelTree!;
+  const bytes = new Uint8Array([...atob(saved.rootStep.bytesBase64!)].map((c) => c.charCodeAt(0)));
+  return loadedTree(saved, reopenedKeys.get(historyObjects[i]!.id)!, { kind: "step", name: saved.rootStep.name, bytes: bytes.buffer }, label, plateMesh(token), (id) => reopenedKeys.get(id));
+};
+const partAgain = reopen(0, "bracket.stl", "m-part");
+const pieceAgain = reopen(1, "bracket split", "m-piece");
+eq("the reopened tree has every step, oldest first", [...partAgain.nodes.keys()].sort(), [0, 1, 2, 3, 4]);
+eq("labels come from the ops, the root from the part, and names stay", [...partAgain.nodes.values()].sort((a, b) => a.id - b.id).map((node) => node.name ?? node.label), [
+  "bracket.stl",
+  "Cut box 8×10×10",
+  "Pocket",
+  "Cut box 4×10×10",
+  "Split at Z 4",
+]);
+eq("the plate's step is current and committed, with the plate's mesh", [partAgain.current, partAgain.committed, partAgain.nodes.get(3)?.mesh?.token], [3, 3, "m-part"]);
+eq("a step the plate held before the save has no mesh now", partAgain.nodes.get(2)?.mesh, undefined);
+eq("the split names the piece's new tree", partAgain.nodes.get(4)?.piece, "obj-2#run2.2");
+eq("the piece's tree opens from its own root STEP", [pieceAgain.root.kind, pieceAgain.root.kind === "step" ? [...new Uint8Array(pieceAgain.root.bytes)] : []], ["step", [...pieceRoot]]);
+eq("Undo goes up from the plate's step, and Redo to the step shown when saved", [undoTarget(partAgain), redoTarget(partAgain)], [1, 4]);
+for (const id of partAgain.nodes.keys()) {
+  check(`Delete branch and its reason agree on step ${id}`, (dropped(partAgain, id) === null) === (dropRefusal(partAgain, id) !== null));
+}
+eq(
+  "after a reopen, what stays: the root, the plate's path, and the split with a piece on the plate",
+  [...partAgain.nodes.keys()].sort().map((id) => dropRefusal(partAgain, id) !== null),
+  [true, true, false, true, true],
+);
+const pieceGone = { ...savedTree(part, 3, () => undefined), rootStep: null };
+eq("a split whose piece left the plate is saved without it", pieceGone.nodes.find((node) => node.id === 4)?.piece, undefined);
+const pieceGoneAgain = loadedTree(pieceGone, "part#run2.3", partAgain.root, "bracket.stl", plateMesh("m-part"), () => undefined);
+eq("and can be deleted after a reopen", dropRefusal(pieceGoneAgain, 4), null);
+
+const unread = (tamper: (tree: Record<string, unknown>) => void) => {
+  const wire = JSON.parse(historyText) as { objects: { modelTree: Record<string, unknown> }[] };
+  tamper(wire.objects[0]!.modelTree);
+  return parseProject(JSON.stringify(wire));
+};
+for (const [name, tamper] of [
+  ["a step under a parent it does not have", (tree: Record<string, unknown>) => ((tree.nodes as { parent: number }[])[2]!.parent = 9)],
+  ["an op it does not know", (tree: Record<string, unknown>) => ((tree.nodes as { op: unknown }[])[1]!.op = { kind: "loft" })],
+  ["a plate step that is not in it", (tree: Record<string, unknown>) => (tree.committed = 12)],
+  ["a damaged root STEP", (tree: Record<string, unknown>) => ((tree.rootStep as { hash: string }).hash = "nope")],
+  ["a root STEP that names bytes the file does not have", (tree: Record<string, unknown>) => delete (tree.rootStep as { bytesBase64?: string }).bytesBase64],
+  ["a tree that is not one", (tree: Record<string, unknown>) => delete tree.nodes],
+] as const) {
+  const read = unread(tamper);
+  check(`${name}: the project still opens`, read.ok);
+  if (!read.ok) continue;
+  eq(`${name}: the tree is left out and named`, [read.project.objects?.map((obj) => !!obj.modelTree), read.project.unreadHistory], [[false, true], ["bracket.stl"]]);
+  eq(`${name}: the part keeps its mesh and solid`, [read.project.objects?.[0]?.mesh, read.project.objects?.[0]?.brep], [project.mesh, plateStep]);
+}
+const oldPlate = parseProject(multiText);
+eq("a file from before the tree opens with none and no notice", oldPlate.ok ? [oldPlate.project.objects?.map((obj) => obj.modelTree ?? null), oldPlate.project.unreadHistory] : null, [[null, null], undefined]);
+
+// A copy's tree is rooted in the same STEP as its source's step: the bytes are written once.
+const copyRoot = meshRecord("bracket.step", new Uint8Array([9, 8, 7]));
+const copied: LimeProject = {
+  ...project,
+  version: 2,
+  objects: [
+    historied.objects![0]!,
+    { id: "obj-3", name: "bracket.stl 2", mesh: project.mesh, placement: secondPlacement, supportEdits: [], brep: plateStep, modelTree: { ...savedTree(jumped(part, 0), 0, () => undefined), rootStep: copyRoot } },
+    { id: "obj-4", name: "bracket.stl 3", mesh: project.mesh, placement: secondPlacement, supportEdits: [], modelTree: treeWith(part, 3, rootStep, "bracket.step") },
+  ],
+};
+const copiedWire = JSON.parse(serializeProject(copied)) as { objects: { modelTree: { rootStep: { bytesBase64?: string; hash: string } } }[] };
+eq(
+  "a root STEP the file already holds is written by hash alone: another object's solid, or an earlier root",
+  copiedWire.objects.map((obj) => [obj.modelTree.rootStep.bytesBase64 !== undefined, obj.modelTree.rootStep.hash]),
+  [[true, meshRecord("x", rootStep).hash], [false, plateStep.hash], [false, meshRecord("x", rootStep).hash]],
+);
+const copiedOpened = parseProject(JSON.stringify(copiedWire));
+eq(
+  "and each one reads back whole",
+  copiedOpened.ok ? copiedOpened.project.objects?.map((obj) => obj.modelTree?.rootStep.bytesBase64) : null,
+  [bytesToBase64(rootStep), plateStep.bytesBase64, bytesToBase64(rootStep)],
+);
 
 const actions = [
   { zMm: 4.2, kind: "pause" as const },
