@@ -64,6 +64,7 @@ type Scale = unsafe extern "C" fn(i32, f64, f64) -> *mut c_char;
 type WriteStep = unsafe extern "C" fn(i32, *const c_char) -> *mut c_char;
 type Undo = unsafe extern "C" fn(i32, f64) -> *mut c_char;
 type Redo = unsafe extern "C" fn(i32, f64) -> *mut c_char;
+type Tree = unsafe extern "C" fn(*const c_char) -> *mut c_char;
 type FreeStr = unsafe extern "C" fn(*mut c_char);
 
 struct Bridge {
@@ -88,6 +89,8 @@ struct Bridge {
     write_step: WriteStep,
     undo: Undo,
     redo: Redo,
+    /// Absent in bridges older than the history tree. Only tree calls fail on those.
+    tree: Option<Tree>,
     free: FreeStr,
 }
 
@@ -370,6 +373,17 @@ pub fn redo(id: i32, chord_mm: f64) -> Result<String, String> {
     take(ptr, api.free)
 }
 
+/// One call on the Model history tree. The request and the reply are JSON; `docs/step-modeler.md` lists the calls.
+pub fn tree(request: &str) -> Result<String, String> {
+    let api = load()?;
+    let call = api
+        .tree
+        .ok_or_else(|| "This Open CASCADE bridge has no history tree. Install the matching Lime Slice.".to_string())?;
+    let c = CString::new(request).map_err(|_| "tree request is not a C string".to_string())?;
+    let ptr = unsafe { call(c.as_ptr()) };
+    take(ptr, api.free)
+}
+
 struct Api {
     open_box: OpenBox,
     open_step: OpenStep,
@@ -391,6 +405,7 @@ struct Api {
     write_step: WriteStep,
     undo: Undo,
     redo: Redo,
+    tree: Option<Tree>,
     free: FreeStr,
 }
 
@@ -482,6 +497,7 @@ fn load() -> Result<Api, String> {
                 redo: *lib
                     .get::<Redo>(b"lime_occt_redo\0")
                     .map_err(|err| format!("bridge is missing lime_occt_redo: {err}"))?,
+                tree: lib.get::<Tree>(b"lime_occt_tree\0").ok().map(|symbol| *symbol),
                 free: *lib
                     .get::<FreeStr>(b"lime_occt_string_free\0")
                     .map_err(|err| format!("bridge is missing lime_occt_string_free: {err}"))?,
@@ -512,6 +528,7 @@ fn load() -> Result<Api, String> {
         write_step: bridge.write_step,
         undo: bridge.undo,
         redo: bridge.redo,
+        tree: bridge.tree,
         free: bridge.free,
     })
 }

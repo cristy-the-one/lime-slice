@@ -593,6 +593,12 @@ async fn model_redo(payload: String) -> Result<String, String> {
     .await
 }
 
+/// One call on the Model history tree. The payload is passed through as it came.
+#[tauri::command(async)]
+async fn model_tree(payload: String) -> Result<String, String> {
+    block_model(move || lime_model_load::tree(&payload)).await
+}
+
 fn base64_decode(data: &str) -> Result<Vec<u8>, String> {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD
@@ -698,6 +704,7 @@ pub fn run() {
             model_export,
             model_undo,
             model_redo,
+            model_tree,
             prusa_link_http
         ])
         .run(tauri::generate_context!())
