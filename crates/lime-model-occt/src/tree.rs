@@ -1,0 +1,1118 @@
+//! The Model history tree: one document per plate object, one node per edit.
+//!
+//! The client owns the tree (node ids, labels, which branch Redo follows) and can always hand it
+//! back as the root STEP plus the ordered ops. This store keeps what is costly to rebuild: each
+//! node's solid, its fingerprint, and the reply for the nodes the client looked at. A node whose
+//! solid was evicted is rebuilt from its nearest kept ancestor, and every rebuilt step is checked
+//! against the fingerprint it had when it was first built.
+//!
+//! Every call holds the store lock from start to end, so the kernel never sees one solid from two
+//! threads. The one-solid session in `session.cpp` has its own lock and is untouched by this store.
+
+use std::collections::{HashMap, HashSet};
+use std::ffi::{CStr, CString};
+use std::os::raw::{c_char, c_int};
+use std::ptr::NonNull;
+use std::sync::{LazyLock, Mutex};
+
+use base64::Engine;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+pub type NodeId = u32;
+
+/// The root node of every document: the opened solid.
+pub const ROOT: NodeId = 0;
+
+/// Fillet and chamfer name topology, and an index can point at a different edge once the solid is
+/// rebuilt. The midpoint and length let a rebuild find the same edge again.
+const EDGE_MATCH_MM: f64 = 1e-3;
+
+/// One node in eight along the open path keeps its solid whatever the cache holds, so a jump back
+/// never replays more than seven steps.
+const PATH_PIN_EVERY: u32 = 8;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BooleanOp {
+    Fuse,
+    Cut,
+    Common,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Primitive {
+    Box,
+    Cylinder,
+    Sphere,
+}
+
+/// An edge as the kernel numbered it, with where it is and how long it is.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EdgeRef {
+    pub index: i32,
+    pub mid: [f64; 3],
+    pub length_mm: f64,
+}
+
+/// A fresh pick is an index into the parent's reply. A stored op carries the full reference.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum EdgePick {
+    Ref(EdgeRef),
+    Index(i32),
+}
+
+/// One edit. Lengths are millimetres, turns degrees about X, then Y, then Z.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum Op {
+    Boolean {
+        op: BooleanOp,
+        primitive: Primitive,
+        origin: [f64; 3],
+        #[serde(default)]
+        size: [f64; 3],
+        #[serde(default)]
+        radius: f64,
+        #[serde(default)]
+        height: f64,
+        #[serde(default)]
+        turn: [f64; 3],
+    },
+    Hole {
+        origin: [f64; 3],
+        /// Into the material. Zero drills toward −Z.
+        #[serde(default)]
+        axis: [f64; 3],
+        radius: f64,
+        depth: f64,
+    },
+    /// The node keeps the negative side. The positive side goes to the plate once, in the apply reply.
+    Split { origin: [f64; 3], normal: [f64; 3] },
+    Fillet { edges: Vec<EdgePick>, size: f64 },
+    Chamfer { edges: Vec<EdgePick>, size: f64 },
+    Scale { factor: f64 },
+}
+
+/// What a rebuild must reproduce for a node to count as the same solid.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Fingerprint {
+    pub volume_mm3: f64,
+    pub faces: i32,
+    pub edges: i32,
+}
+
+impl Fingerprint {
+    fn matches(&self, other: &Fingerprint) -> bool {
+        let tolerance = 1e-6 * self.volume_mm3.abs().max(1.0);
+        self.faces == other.faces
+            && self.edges == other.edges
+            && (self.volume_mm3 - other.volume_mm3).abs() <= tolerance
+    }
+}
+
+/// How many solids and replies the store keeps before it evicts the least recently used.
+/// Pinned solids (each tree's root, its current node, and every eighth node on the path to it)
+/// do not count against `shapes`.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    pub shapes: usize,
+    pub replies: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits {
+            shapes: 24,
+            replies: 8,
+        }
+    }
+}
+
+pub fn set_limits(limits: Limits) {
+    lock().limits = limits;
+}
+
+/// Answer one JSON request. See `docs/step-modeler.md` for the calls.
+pub fn call(request: &str) -> String {
+    let request: Request = match serde_json::from_str(request) {
+        Ok(request) => request,
+        Err(err) => return Failure::Message(format!("Bad tree request: {err}")).json(),
+    };
+    let mut store = lock();
+    let answer = store.handle(request);
+    store.evict();
+    match answer {
+        Ok(Answer::Plain(text)) => text,
+        Ok(Answer::Held { key, text }) => {
+            let held = store.docs.get(&key).map(Doc::held).unwrap_or_default();
+            with_fields(text, &[("held", json!(held).to_string())])
+        }
+        Err(failure) => failure.json(),
+    }
+}
+
+fn lock() -> std::sync::MutexGuard<'static, Store> {
+    static STORE: LazyLock<Mutex<Store>> = LazyLock::new(|| Mutex::new(Store::default()));
+    STORE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "call", rename_all = "camelCase", rename_all_fields = "camelCase")]
+enum Request {
+    /// Open a tree from its root. With `nodes`, register the saved ops (parents first) without
+    /// building them, then jump to `current`.
+    Open {
+        key: String,
+        data_b64: Option<String>,
+        step_path: Option<String>,
+        #[serde(rename = "box")]
+        box_mm: Option<[f64; 3]>,
+        #[serde(default = "default_chord", alias = "stepToleranceMm")]
+        chord_mm: f64,
+        #[serde(default)]
+        nodes: Vec<SavedNode>,
+        #[serde(default)]
+        current: NodeId,
+    },
+    Apply {
+        key: String,
+        parent: NodeId,
+        node: NodeId,
+        op: Op,
+        #[serde(default = "default_chord")]
+        chord_mm: f64,
+    },
+    Probe {
+        key: String,
+        node: NodeId,
+        op: Op,
+    },
+    Goto {
+        key: String,
+        node: NodeId,
+        #[serde(default = "default_chord")]
+        chord_mm: f64,
+    },
+    Drop {
+        key: String,
+        node: NodeId,
+    },
+    Close {
+        key: String,
+    },
+    Distance {
+        key: String,
+        node: NodeId,
+        a_kind: String,
+        a_index: i32,
+        b_kind: String,
+        b_index: i32,
+    },
+    Export {
+        key: String,
+        node: NodeId,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedNode {
+    id: NodeId,
+    parent: NodeId,
+    op: Op,
+    fingerprint: Option<Fingerprint>,
+}
+
+fn default_chord() -> f64 {
+    0.1
+}
+
+/// The kernel's clamp, so one reply is cached once whatever chord asked for it.
+fn chord_key(chord: f64) -> u64 {
+    let clamped = if chord.is_nan() { 0.01 } else { chord.clamp(0.01, 2.0) };
+    clamped.to_bits()
+}
+
+enum Answer {
+    Plain(String),
+    /// A reply that also lists which nodes of `key` hold a solid, read after eviction.
+    Held { key: String, text: String },
+}
+
+enum Failure {
+    Message(String),
+    /// The engine does not have these nodes (or this tree, as `[0]`). Resend the ops.
+    Missing(Vec<NodeId>),
+    /// `node` did not rebuild. It and everything under it stay unbuilt until it is dropped.
+    Broken { node: NodeId, message: String },
+}
+
+impl Failure {
+    fn json(&self) -> String {
+        match self {
+            Failure::Message(message) => json!({ "error": message }).to_string(),
+            Failure::Missing(nodes) => json!({ "error": "unknown", "missing": nodes }).to_string(),
+            Failure::Broken { node, message } => {
+                json!({ "error": message, "broken": node }).to_string()
+            }
+        }
+    }
+}
+
+/// `text` is a JSON object. Each field is added before its closing brace.
+fn with_fields(mut text: String, fields: &[(&str, String)]) -> String {
+    if !text.ends_with('}') {
+        return text;
+    }
+    text.pop();
+    for (name, value) in fields {
+        text.push_str(",\"");
+        text.push_str(name);
+        text.push_str("\":");
+        text.push_str(value);
+    }
+    text.push('}');
+    text
+}
+
+struct Node {
+    parent: Option<NodeId>,
+    op: Option<Op>,
+    shape: Option<Shape>,
+    fingerprint: Option<Fingerprint>,
+    broken: Option<String>,
+    depth: u32,
+    used: u64,
+}
+
+/// The last successful probe. Apply with the same parent and op takes its solid instead of building again.
+struct Probed {
+    parent: NodeId,
+    op: Op,
+    built: Built,
+}
+
+struct Doc {
+    nodes: HashMap<NodeId, Node>,
+    current: NodeId,
+    probe: Option<Probed>,
+}
+
+struct Reply {
+    key: String,
+    node: NodeId,
+    chord: u64,
+    text: String,
+    used: u64,
+}
+
+#[derive(Default)]
+struct Store {
+    docs: HashMap<String, Doc>,
+    replies: Vec<Reply>,
+    clock: u64,
+    limits: Limits,
+}
+
+impl Doc {
+    fn new(root: Shape, used: u64) -> Doc {
+        let fingerprint = root.fingerprint();
+        let mut nodes = HashMap::new();
+        nodes.insert(
+            ROOT,
+            Node {
+                parent: None,
+                op: None,
+                shape: Some(root),
+                fingerprint: Some(fingerprint),
+                broken: None,
+                depth: 0,
+                used,
+            },
+        );
+        Doc {
+            nodes,
+            current: ROOT,
+            probe: None,
+        }
+    }
+
+    fn node(&self, id: NodeId) -> Result<&Node, Failure> {
+        self.nodes.get(&id).ok_or(Failure::Missing(vec![id]))
+    }
+
+    fn insert(&mut self, id: NodeId, parent: NodeId, op: Op) -> Result<&mut Node, Failure> {
+        let depth = self.node(parent)?.depth + 1;
+        let node = self.nodes.entry(id).or_insert(Node {
+            parent: Some(parent),
+            op: Some(op),
+            shape: None,
+            fingerprint: None,
+            broken: None,
+            depth,
+            used: 0,
+        });
+        Ok(node)
+    }
+
+    fn held(&self) -> Vec<NodeId> {
+        let mut held: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.shape.is_some())
+            .map(|(id, _)| *id)
+            .collect();
+        held.sort_unstable();
+        held
+    }
+
+    /// The root, the current node, and every eighth node on the path between them.
+    fn pinned(&self) -> HashSet<NodeId> {
+        let mut pinned = HashSet::from([ROOT, self.current]);
+        let mut at = Some(self.current);
+        while let Some(id) = at {
+            let Some(node) = self.nodes.get(&id) else {
+                break;
+            };
+            if node.depth % PATH_PIN_EVERY == 0 {
+                pinned.insert(id);
+            }
+            at = node.parent;
+        }
+        pinned
+    }
+
+    fn mark_broken(&mut self, id: NodeId, message: String) -> Failure {
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.broken = Some(message.clone());
+        }
+        Failure::Broken { node: id, message }
+    }
+
+    /// Give `id` a solid, replaying from the nearest ancestor that has one.
+    /// Returns how many steps were replayed. Only solids are built here, never replies.
+    fn ensure_shape(&mut self, id: NodeId, clock: &mut u64) -> Result<usize, Failure> {
+        let mut chain = Vec::new();
+        let mut at = id;
+        loop {
+            let node = self.node(at)?;
+            if let Some(message) = &node.broken {
+                return Err(Failure::Broken {
+                    node: at,
+                    message: message.clone(),
+                });
+            }
+            if node.shape.is_some() {
+                break;
+            }
+            chain.push(at);
+            at = node.parent.expect("the root always holds its solid");
+        }
+        let replayed = chain.len();
+        for step in chain.into_iter().rev() {
+            let (parent, op, expected) = {
+                let node = &self.nodes[&step];
+                (
+                    node.parent.expect("only the root has no parent"),
+                    node.op.clone().expect("only the root has no op"),
+                    node.fingerprint,
+                )
+            };
+            let built = {
+                let from = self
+                    .nodes
+                    .get_mut(&parent)
+                    .and_then(|node| node.shape.as_mut())
+                    .expect("the parent was built first");
+                resolve(from, &op).and_then(|op| build(from, op, false).map_err(|(message, _)| message))
+            };
+            let built = match built {
+                Ok(built) => built,
+                Err(message) => return Err(self.mark_broken(step, message)),
+            };
+            let got = built.kept.fingerprint();
+            if let Some(expected) = expected {
+                if !expected.matches(&got) {
+                    let message = format!(
+                        "This step rebuilt differently: {:.3} mm³, {} faces, {} edges instead of {:.3} mm³, {} faces, {} edges",
+                        got.volume_mm3, got.faces, got.edges, expected.volume_mm3, expected.faces, expected.edges
+                    );
+                    return Err(self.mark_broken(step, message));
+                }
+            }
+            *clock += 1;
+            let node = self.nodes.get_mut(&step).expect("step is in the tree");
+            node.fingerprint = Some(got);
+            node.op = Some(built.op);
+            node.shape = Some(built.kept);
+            node.used = *clock;
+        }
+        *clock += 1;
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.used = *clock;
+        }
+        Ok(replayed)
+    }
+
+    fn shape(&mut self, id: NodeId) -> &mut Shape {
+        self.nodes
+            .get_mut(&id)
+            .and_then(|node| node.shape.as_mut())
+            .expect("ensure_shape ran first")
+    }
+}
+
+impl Store {
+    fn handle(&mut self, request: Request) -> Result<Answer, Failure> {
+        match request {
+            Request::Open {
+                key,
+                data_b64,
+                step_path,
+                box_mm,
+                chord_mm,
+                nodes,
+                current,
+            } => self.open(key, root_shape(data_b64, step_path, box_mm)?, nodes, current, chord_mm),
+            Request::Apply {
+                key,
+                parent,
+                node,
+                op,
+                chord_mm,
+            } => self.apply(key, parent, node, op, chord_mm),
+            Request::Probe { key, node, op } => self.probe(&key, node, op),
+            Request::Goto {
+                key,
+                node,
+                chord_mm,
+            } => self.goto(key, node, chord_mm),
+            Request::Drop { key, node } => self.drop_branch(key, node),
+            Request::Close { key } => {
+                self.docs.remove(&key);
+                self.replies.retain(|reply| reply.key != key);
+                Ok(Answer::Plain(json!({ "ok": true }).to_string()))
+            }
+            Request::Distance {
+                key,
+                node,
+                a_kind,
+                a_index,
+                b_kind,
+                b_index,
+            } => {
+                let doc = doc_in(&mut self.docs, &key)?;
+                doc.ensure_shape(node, &mut self.clock)?;
+                let distance = doc
+                    .shape(node)
+                    .distance(&a_kind, a_index, &b_kind, b_index)
+                    .map_err(Failure::Message)?;
+                Ok(Answer::Plain(
+                    json!({ "id": node, "distanceMm": distance }).to_string(),
+                ))
+            }
+            Request::Export { key, node } => {
+                let doc = doc_in(&mut self.docs, &key)?;
+                doc.ensure_shape(node, &mut self.clock)?;
+                let bytes = doc.shape(node).step_bytes().map_err(Failure::Message)?;
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                Ok(Answer::Plain(format!(
+                    "{{\"bytesBase64\":\"{encoded}\",\"byteLength\":{}}}",
+                    bytes.len()
+                )))
+            }
+        }
+    }
+
+    fn open(
+        &mut self,
+        key: String,
+        root: Shape,
+        saved: Vec<SavedNode>,
+        current: NodeId,
+        chord: f64,
+    ) -> Result<Answer, Failure> {
+        self.clock += 1;
+        let mut doc = Doc::new(root, self.clock);
+        for node in saved {
+            if node.id == ROOT || doc.nodes.contains_key(&node.id) {
+                return Err(Failure::Message(format!(
+                    "Saved node {} is listed twice or replaces the root",
+                    node.id
+                )));
+            }
+            if !doc.nodes.contains_key(&node.parent) {
+                return Err(Failure::Message(format!(
+                    "Saved node {} comes before its parent {}",
+                    node.id, node.parent
+                )));
+            }
+            doc.insert(node.id, node.parent, node.op)?.fingerprint = node.fingerprint;
+        }
+        self.replies.retain(|reply| reply.key != key);
+        self.docs.insert(key.clone(), doc);
+        self.goto(key, current, chord)
+    }
+
+    fn goto(&mut self, key: String, id: NodeId, chord: f64) -> Result<Answer, Failure> {
+        let chord_bits = chord_key(chord);
+        let doc = doc_in(&mut self.docs, &key)?;
+        doc.node(id)?;
+        doc.probe = None;
+        self.clock += 1;
+        let clock = self.clock;
+        if let Some(reply) = self
+            .replies
+            .iter_mut()
+            .find(|reply| reply.key == key && reply.node == id && reply.chord == chord_bits)
+        {
+            reply.used = clock;
+            doc.current = id;
+            if let Some(node) = doc.nodes.get_mut(&id) {
+                node.used = clock;
+            }
+            let text = with_fields(reply.text.clone(), &[("replayed", "0".into())]);
+            return Ok(Answer::Held { key, text });
+        }
+        let replayed = doc.ensure_shape(id, &mut self.clock)?;
+        doc.current = id;
+        let text = self.reply(&key, id, chord)?;
+        let text = with_fields(text, &[("replayed", replayed.to_string())]);
+        Ok(Answer::Held { key, text })
+    }
+
+    /// The node's reply, built and cached on first use. The node must hold its solid.
+    fn reply(&mut self, key: &str, id: NodeId, chord: f64) -> Result<String, Failure> {
+        let chord_bits = chord_key(chord);
+        self.clock += 1;
+        if let Some(reply) = self
+            .replies
+            .iter_mut()
+            .find(|reply| reply.key == key && reply.node == id && reply.chord == chord_bits)
+        {
+            reply.used = self.clock;
+            return Ok(reply.text.clone());
+        }
+        let doc = doc_in(&mut self.docs, key)?;
+        let fingerprint = doc.node(id)?.fingerprint;
+        let text = doc.shape(id).reply(id, chord)?;
+        let text = with_fields(
+            text,
+            &[("fingerprint", json!(fingerprint).to_string())],
+        );
+        self.replies.push(Reply {
+            key: key.to_string(),
+            node: id,
+            chord: chord_bits,
+            text: text.clone(),
+            used: self.clock,
+        });
+        Ok(text)
+    }
+
+    fn apply(
+        &mut self,
+        key: String,
+        parent: NodeId,
+        id: NodeId,
+        op: Op,
+        chord: f64,
+    ) -> Result<Answer, Failure> {
+        let doc = doc_in(&mut self.docs, &key)?;
+        if let Some(existing) = doc.nodes.get(&id) {
+            if existing.parent == Some(parent) {
+                return self.goto(key, id, chord);
+            }
+            return Err(Failure::Message(format!(
+                "Node {id} is already in this tree under another step"
+            )));
+        }
+        let replayed = doc.ensure_shape(parent, &mut self.clock)?;
+        let probed = doc.probe.take();
+        let from = doc.shape(parent);
+        let op = resolve(from, &op).map_err(Failure::Message)?;
+        let built = match probed {
+            Some(probed) if probed.parent == parent && probed.op == op => probed.built,
+            _ => build(from, op, false).map_err(|(message, _)| Failure::Message(message))?,
+        };
+        let fingerprint = built.kept.fingerprint();
+        self.clock += 1;
+        let node = doc.insert(id, parent, built.op.clone())?;
+        node.fingerprint = Some(fingerprint);
+        node.shape = Some(built.kept);
+        node.used = self.clock;
+        doc.current = id;
+        let mut fields = vec![
+            ("op", json!(built.op).to_string()),
+            ("replayed", replayed.to_string()),
+        ];
+        if let Some(other) = &built.other {
+            fields.push(("other", other.reply(0, chord)?));
+        }
+        let text = self.reply(&key, id, chord)?;
+        Ok(Answer::Held {
+            key,
+            text: with_fields(text, &fields),
+        })
+    }
+
+    fn probe(&mut self, key: &str, id: NodeId, op: Op) -> Result<Answer, Failure> {
+        let doc = doc_in(&mut self.docs, key)?;
+        doc.ensure_shape(id, &mut self.clock)?;
+        doc.probe = None;
+        let from = doc.shape(id);
+        let result = resolve(from, &op)
+            .map_err(|message| (message, None))
+            .and_then(|op| build(from, op, true));
+        match result {
+            Ok(built) => {
+                doc.probe = Some(Probed {
+                    parent: id,
+                    op: built.op.clone(),
+                    built,
+                });
+                Ok(Answer::Plain(json!({ "ok": true }).to_string()))
+            }
+            Err((message, max_mm)) => {
+                let mut reply = json!({ "ok": false, "error": message });
+                if let Some(max_mm) = max_mm.filter(|max| max + 1e-6 >= 0.05) {
+                    reply["maxMm"] = json!(max_mm);
+                }
+                Ok(Answer::Plain(reply.to_string()))
+            }
+        }
+    }
+
+    /// Remove `id` and everything under it. The current node moves to `id`'s parent if it was inside.
+    fn drop_branch(&mut self, key: String, id: NodeId) -> Result<Answer, Failure> {
+        if id == ROOT {
+            return Err(Failure::Message(
+                "The root cannot be dropped. Close the tree instead.".into(),
+            ));
+        }
+        let doc = doc_in(&mut self.docs, &key)?;
+        let parent = doc.node(id)?.parent.expect("only the root has no parent");
+        let mut gone = HashSet::from([id]);
+        loop {
+            let before = gone.len();
+            for (child, node) in &doc.nodes {
+                if node.parent.is_some_and(|up| gone.contains(&up)) {
+                    gone.insert(*child);
+                }
+            }
+            if gone.len() == before {
+                break;
+            }
+        }
+        doc.nodes.retain(|node, _| !gone.contains(node));
+        if gone.contains(&doc.current) {
+            doc.current = parent;
+        }
+        if doc.probe.as_ref().is_some_and(|probe| gone.contains(&probe.parent)) {
+            doc.probe = None;
+        }
+        let current = doc.current;
+        self.replies
+            .retain(|reply| reply.key != key || !gone.contains(&reply.node));
+        let mut dropped: Vec<NodeId> = gone.into_iter().collect();
+        dropped.sort_unstable();
+        Ok(Answer::Held {
+            key,
+            text: json!({ "dropped": dropped, "current": current }).to_string(),
+        })
+    }
+
+    fn evict(&mut self) {
+        let mut loose: Vec<(u64, String, NodeId)> = Vec::new();
+        for (key, doc) in &self.docs {
+            let pinned = doc.pinned();
+            for (id, node) in &doc.nodes {
+                if node.shape.is_some() && !pinned.contains(id) {
+                    loose.push((node.used, key.clone(), *id));
+                }
+            }
+        }
+        if loose.len() > self.limits.shapes {
+            loose.sort_unstable_by_key(|(used, _, _)| *used);
+            let excess = loose.len() - self.limits.shapes;
+            for (_, key, id) in loose.into_iter().take(excess) {
+                if let Some(node) = self.docs.get_mut(&key).and_then(|doc| doc.nodes.get_mut(&id)) {
+                    node.shape = None;
+                }
+            }
+        }
+        if self.replies.len() > self.limits.replies {
+            self.replies.sort_unstable_by_key(|reply| std::cmp::Reverse(reply.used));
+            self.replies.truncate(self.limits.replies);
+        }
+    }
+}
+
+/// An unknown tree reads as a missing root: the client resends the root and the ops.
+fn doc_in<'a>(docs: &'a mut HashMap<String, Doc>, key: &str) -> Result<&'a mut Doc, Failure> {
+    docs.get_mut(key).ok_or(Failure::Missing(vec![ROOT]))
+}
+
+fn root_shape(
+    data_b64: Option<String>,
+    step_path: Option<String>,
+    box_mm: Option<[f64; 3]>,
+) -> Result<Shape, Failure> {
+    match (data_b64, step_path, box_mm) {
+        (Some(data), None, None) => {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(data.trim())
+                .map_err(|err| Failure::Message(err.to_string()))?;
+            let path = temp_step("open");
+            std::fs::write(&path, bytes).map_err(|err| Failure::Message(err.to_string()))?;
+            let shape = Shape::read_step(&path);
+            let _ = std::fs::remove_file(&path);
+            shape.map_err(Failure::Message)
+        }
+        (None, Some(path), None) => Shape::read_step(std::path::Path::new(&path)).map_err(Failure::Message),
+        (None, None, Some([x, y, z])) => Shape::cube(x, y, z).map_err(Failure::Message),
+        _ => Err(Failure::Message(
+            "Open a tree from exactly one of dataB64, stepPath, or box".into(),
+        )),
+    }
+}
+
+fn temp_step(tag: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "lime-tree-{tag}-{}-{}.step",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0)
+    ))
+}
+
+/// Turn every edge pick into a reference on `from`: the index when its midpoint and length still
+/// agree, else the one edge that matches them. Other ops pass through.
+fn resolve(from: &mut Shape, op: &Op) -> Result<Op, String> {
+    let (edges, size, chamfer) = match op {
+        Op::Fillet { edges, size } => (edges, *size, false),
+        Op::Chamfer { edges, size } => (edges, *size, true),
+        _ => return Ok(op.clone()),
+    };
+    let verb = if chamfer { "chamfer" } else { "fillet" };
+    let mut refs: Vec<EdgePick> = Vec::with_capacity(edges.len());
+    for pick in edges {
+        let found = match *pick {
+            EdgePick::Index(index) if index < 0 && edges.len() == 1 => {
+                return Err(format!("Pick an edge to {verb}."))
+            }
+            EdgePick::Index(index) => from.edge(index),
+            EdgePick::Ref(want) => match from.edge(want.index) {
+                Some(have) if same_edge(&have, &want) => Some(have),
+                _ => from.find_edge(&want)?,
+            },
+        };
+        let found = found.ok_or_else(|| "That edge is not on this solid".to_string())?;
+        if !refs.iter().any(|have| matches!(have, EdgePick::Ref(have) if have.index == found.index)) {
+            refs.push(EdgePick::Ref(found));
+        }
+    }
+    if refs.is_empty() {
+        return Err(format!("Pick an edge to {verb}."));
+    }
+    Ok(if chamfer {
+        Op::Chamfer { edges: refs, size }
+    } else {
+        Op::Fillet { edges: refs, size }
+    })
+}
+
+fn same_edge(a: &EdgeRef, b: &EdgeRef) -> bool {
+    let d = (0..3).map(|i| (a.mid[i] - b.mid[i]).powi(2)).sum::<f64>().sqrt();
+    d <= EDGE_MATCH_MM && (a.length_mm - b.length_mm).abs() <= EDGE_MATCH_MM
+}
+
+struct Built {
+    op: Op,
+    kept: Shape,
+    other: Option<Shape>,
+}
+
+/// Run a resolved op on `from`. With `probe`, a fillet or chamfer that does not fit also reports
+/// the largest size that does.
+fn build(from: &Shape, op: Op, probe: bool) -> Result<Built, (String, Option<f64>)> {
+    let mut other = None;
+    let kept = match &op {
+        Op::Boolean {
+            op: which,
+            primitive,
+            origin,
+            size,
+            radius,
+            height,
+            turn,
+        } => {
+            let which = match which {
+                BooleanOp::Fuse => c"fuse",
+                BooleanOp::Cut => c"cut",
+                BooleanOp::Common => c"common",
+            };
+            let primitive = match primitive {
+                Primitive::Box => c"box",
+                Primitive::Cylinder => c"cylinder",
+                Primitive::Sphere => c"sphere",
+            };
+            let p = [
+                origin[0], origin[1], origin[2], size[0], size[1], size[2], *radius, *height, turn[0],
+                turn[1], turn[2],
+            ];
+            Shape::made(|error| unsafe {
+                lime_tree_boolean(from.raw(), which.as_ptr(), primitive.as_ptr(), p.as_ptr(), error)
+            })
+        }
+        Op::Hole {
+            origin,
+            axis,
+            radius,
+            depth,
+        } => {
+            let p = [
+                origin[0], origin[1], origin[2], axis[0], axis[1], axis[2], *radius, *depth,
+            ];
+            Shape::made(|error| unsafe { lime_tree_hole(from.raw(), p.as_ptr(), error) })
+        }
+        Op::Split { origin, normal } => {
+            let p = [origin[0], origin[1], origin[2], normal[0], normal[1], normal[2]];
+            let mut piece: *mut RawShape = std::ptr::null_mut();
+            let kept = Shape::made(|error| unsafe {
+                lime_tree_split(from.raw(), p.as_ptr(), &mut piece, error)
+            });
+            other = NonNull::new(piece).map(Shape);
+            kept
+        }
+        Op::Fillet { edges, size } | Op::Chamfer { edges, size } => {
+            let chamfer = matches!(op, Op::Chamfer { .. });
+            let indexes: Vec<c_int> = edges
+                .iter()
+                .map(|pick| match pick {
+                    EdgePick::Ref(edge) => edge.index,
+                    EdgePick::Index(index) => *index,
+                })
+                .collect();
+            let mut max_mm = 0.0;
+            let max_ptr: *mut f64 = if probe { &mut max_mm } else { std::ptr::null_mut() };
+            let built = Shape::made(|error| unsafe {
+                lime_tree_blend(
+                    from.raw(),
+                    indexes.as_ptr(),
+                    indexes.len() as c_int,
+                    *size,
+                    c_int::from(chamfer),
+                    max_ptr,
+                    error,
+                )
+            });
+            return match built {
+                Ok(kept) => Ok(Built {
+                    op,
+                    kept,
+                    other: None,
+                }),
+                Err(message) => Err((message, probe.then_some(max_mm))),
+            };
+        }
+        Op::Scale { factor } => {
+            Shape::made(|error| unsafe { lime_tree_scale(from.raw(), *factor, error) })
+        }
+    };
+    match kept {
+        Ok(kept) => Ok(Built { op, kept, other }),
+        Err(message) => Err((message, None)),
+    }
+}
+
+#[repr(C)]
+struct RawShape {
+    _opaque: [u8; 0],
+}
+
+extern "C" {
+    fn lime_tree_free(shape: *mut RawShape);
+    fn lime_tree_box(x: f64, y: f64, z: f64, error: *mut *mut c_char) -> *mut RawShape;
+    fn lime_tree_read_step(path: *const c_char, error: *mut *mut c_char) -> *mut RawShape;
+    fn lime_tree_boolean(
+        from: *const RawShape,
+        op: *const c_char,
+        primitive: *const c_char,
+        p: *const f64,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    fn lime_tree_hole(from: *const RawShape, p: *const f64, error: *mut *mut c_char) -> *mut RawShape;
+    fn lime_tree_blend(
+        from: *const RawShape,
+        edges: *const c_int,
+        count: c_int,
+        size: f64,
+        chamfer: c_int,
+        max_mm: *mut f64,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    fn lime_tree_split(
+        from: *const RawShape,
+        p: *const f64,
+        other: *mut *mut RawShape,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    fn lime_tree_scale(from: *const RawShape, factor: f64, error: *mut *mut c_char) -> *mut RawShape;
+    fn lime_tree_fingerprint(shape: *const RawShape, volume: *mut f64, faces: *mut c_int, edges: *mut c_int);
+    fn lime_tree_edge(shape: *mut RawShape, index: c_int, mid: *mut f64, length: *mut f64) -> c_int;
+    fn lime_tree_reply(shape: *const RawShape, id: c_int, chord: f64) -> *mut c_char;
+    fn lime_tree_distance(
+        shape: *const RawShape,
+        a_kind: *const c_char,
+        a_index: c_int,
+        b_kind: *const c_char,
+        b_index: c_int,
+        out: *mut f64,
+        error: *mut *mut c_char,
+    ) -> c_int;
+    fn lime_tree_write_step(shape: *const RawShape, path: *const c_char, error: *mut *mut c_char) -> c_int;
+    fn lime_model_occt_string_free(text: *mut c_char);
+}
+
+/// One solid owned by the kernel. Freed when dropped.
+struct Shape(NonNull<RawShape>);
+
+// The store lock serialises every use, and a shape is never shared between nodes.
+unsafe impl Send for Shape {}
+
+impl Drop for Shape {
+    fn drop(&mut self) {
+        unsafe { lime_tree_free(self.0.as_ptr()) };
+    }
+}
+
+fn take_text(ptr: *mut c_char) -> Option<String> {
+    let ptr = NonNull::new(ptr)?;
+    let text = unsafe { CStr::from_ptr(ptr.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+    unsafe { lime_model_occt_string_free(ptr.as_ptr()) };
+    Some(text)
+}
+
+fn c_path(path: &std::path::Path) -> Result<CString, String> {
+    let text = path.to_str().ok_or("STEP path is not UTF-8")?;
+    CString::new(text).map_err(|_| "STEP path is not a C string".to_string())
+}
+
+impl Shape {
+    fn raw(&self) -> *const RawShape {
+        self.0.as_ptr()
+    }
+
+    fn made(run: impl FnOnce(*mut *mut c_char) -> *mut RawShape) -> Result<Shape, String> {
+        let mut error: *mut c_char = std::ptr::null_mut();
+        let shape = run(&mut error);
+        let message = take_text(error);
+        match NonNull::new(shape) {
+            Some(shape) => Ok(Shape(shape)),
+            None => Err(message.unwrap_or_else(|| "Open CASCADE failed".into())),
+        }
+    }
+
+    fn cube(x: f64, y: f64, z: f64) -> Result<Shape, String> {
+        Shape::made(|error| unsafe { lime_tree_box(x, y, z, error) })
+    }
+
+    fn read_step(path: &std::path::Path) -> Result<Shape, String> {
+        let path = c_path(path)?;
+        Shape::made(|error| unsafe { lime_tree_read_step(path.as_ptr(), error) })
+    }
+
+    fn fingerprint(&self) -> Fingerprint {
+        let mut volume = 0.0;
+        let mut faces = 0;
+        let mut edges = 0;
+        unsafe { lime_tree_fingerprint(self.raw(), &mut volume, &mut faces, &mut edges) };
+        Fingerprint {
+            volume_mm3: volume,
+            faces,
+            edges,
+        }
+    }
+
+    fn edge(&mut self, index: i32) -> Option<EdgeRef> {
+        let mut mid = [0.0; 3];
+        let mut length = 0.0;
+        let found = unsafe { lime_tree_edge(self.0.as_ptr(), index, mid.as_mut_ptr(), &mut length) };
+        (found != 0).then_some(EdgeRef {
+            index,
+            mid,
+            length_mm: length,
+        })
+    }
+
+    /// The one edge whose midpoint and length match `want`. None when no edge does; an error when several do.
+    fn find_edge(&mut self, want: &EdgeRef) -> Result<Option<EdgeRef>, String> {
+        let count = self.fingerprint().edges;
+        let mut found = None;
+        for index in 0..count {
+            let Some(have) = self.edge(index) else {
+                continue;
+            };
+            if same_edge(&have, want) {
+                if found.is_some() {
+                    return Err("Two edges match the one this step rounds".into());
+                }
+                found = Some(have);
+            }
+        }
+        Ok(found)
+    }
+
+    fn reply(&self, id: NodeId, chord: f64) -> Result<String, Failure> {
+        let text = take_text(unsafe { lime_tree_reply(self.raw(), id as c_int, chord) })
+            .ok_or_else(|| Failure::Message("Open CASCADE returned nothing".into()))?;
+        if text.starts_with("{\"error\"") {
+            let message = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|value| value["error"].as_str().map(str::to_owned))
+                .unwrap_or(text);
+            return Err(Failure::Message(message));
+        }
+        Ok(text)
+    }
+
+    fn distance(&self, a_kind: &str, a: i32, b_kind: &str, b: i32) -> Result<f64, String> {
+        let a_kind = CString::new(a_kind).map_err(|_| "pick kind is not a C string".to_string())?;
+        let b_kind = CString::new(b_kind).map_err(|_| "pick kind is not a C string".to_string())?;
+        let mut out = 0.0;
+        let mut error: *mut c_char = std::ptr::null_mut();
+        let ok = unsafe {
+            lime_tree_distance(self.raw(), a_kind.as_ptr(), a, b_kind.as_ptr(), b, &mut out, &mut error)
+        };
+        let message = take_text(error);
+        if ok == 0 {
+            return Err(message.unwrap_or_else(|| "Open CASCADE failed".into()));
+        }
+        Ok(out)
+    }
+
+    fn step_bytes(&self) -> Result<Vec<u8>, String> {
+        let path = temp_step("export");
+        let c = c_path(&path)?;
+        let mut error: *mut c_char = std::ptr::null_mut();
+        let ok = unsafe { lime_tree_write_step(self.raw(), c.as_ptr(), &mut error) };
+        let message = take_text(error);
+        let bytes = if ok == 0 {
+            Err(message.unwrap_or_else(|| "Open CASCADE did not write this solid".into()))
+        } else {
+            std::fs::read(&path).map_err(|err| err.to_string())
+        };
+        let _ = std::fs::remove_file(&path);
+        bytes
+    }
+}

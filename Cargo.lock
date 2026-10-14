@@ -2137,8 +2137,10 @@ dependencies = [
 name = "lime-model-occt"
 version = "1.4.0"
 dependencies = [
+ "base64 0.22.1",
  "cc",
  "lime-model-load",
+ "serde",
  "serde_json",
 ]
 

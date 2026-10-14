@@ -11,9 +11,13 @@ description = "Open CASCADE bridge for Model mode. The slicer does not link this
 name = "lime_model_occt"
 crate-type = ["rlib", "cdylib"]
 
+[dependencies]
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
 [build-dependencies]
 cc = "1"
 
 [dev-dependencies]
 lime-model-load = { path = "../lime-model-load" }
-serde_json = "1"
