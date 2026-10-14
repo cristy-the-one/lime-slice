@@ -5,12 +5,13 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <locale>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -195,6 +196,8 @@ struct Stats {
     std::atomic<long> builds{0};
     std::atomic<long> volumes{0};
     std::atomic<long> tessellations{0};
+    std::atomic<long> meshes{0};
+    std::atomic<long> descriptions{0};
 };
 
 Stats g_stats;
@@ -224,12 +227,22 @@ std::string escape(const std::string& text) {
     return out;
 }
 
-void append_num(std::string& out, double value) {
-    char text[64];
-    const int written = std::snprintf(text, sizeof(text), "%.6f", value);
-    if (written > 0) {
-        out.append(text, static_cast<size_t>(std::min(written, static_cast<int>(sizeof(text)) - 1)));
+/// One stream per thread in the classic locale: GTK sets the C locale from the environment in the
+/// desktop shell, and a decimal comma there would break the JSON.
+struct NumberText {
+    std::ostringstream stream;
+    NumberText() {
+        stream.imbue(std::locale::classic());
+        stream.setf(std::ios::fixed);
+        stream.precision(6);
     }
+};
+
+void append_num(std::string& out, double value) {
+    thread_local NumberText text;
+    text.stream.str(std::string());
+    text.stream << value;
+    out += text.stream.str();
 }
 
 double chord_of(double chord) {
@@ -352,6 +365,7 @@ Mesh tessellate(Held& held, double chord) {
     // Open CASCADE keeps a finer mesh it already has, so a face shared with a solid meshed finer
     // since is what meshing again would leave too.
     if (held.meshed != chord) {
+        g_stats.meshes += 1;
         BRepMesh_IncrementalMesh mesher(held.shape, chord, Standard_False, 0.5, Standard_False);
         mesher.Perform();
         held.meshed = chord;
@@ -418,6 +432,7 @@ Mesh tessellate(Held& held, double chord) {
 }
 
 std::string describe(const Held& held) {
+    g_stats.descriptions += 1;
     std::string out = "{\"volumeMm3\":";
     append_num(out, held.volume);
     out += has_solid(held.shape) ? ",\"solid\":true" : ",\"solid\":false";
@@ -1143,6 +1158,10 @@ extern "C" char* lime_model_occt_stats() {
     out += std::to_string(g_stats.volumes.load());
     out += ",\"tessellations\":";
     out += std::to_string(g_stats.tessellations.load());
+    out += ",\"meshes\":";
+    out += std::to_string(g_stats.meshes.load());
+    out += ",\"descriptions\":";
+    out += std::to_string(g_stats.descriptions.load());
     out += '}';
     return alloc(out);
 }

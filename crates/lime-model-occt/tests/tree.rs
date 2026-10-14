@@ -73,6 +73,24 @@ fn counts() -> Work {
     work(read("builds"), read("volumes"), read("tessellations"))
 }
 
+/// Faces meshed and solids described since the library loaded: a reply built again for a held
+/// solid at the same chord does neither.
+fn meshing() -> [i64; 2] {
+    let json: Value = serde_json::from_str(&lime_model_occt::stats()).expect("stats");
+    ["meshes", "descriptions"].map(|key| {
+        json[key]
+            .as_i64()
+            .unwrap_or_else(|| panic!("{key} in {json}"))
+    })
+}
+
+fn meshed<T>(step: impl FnOnce() -> T) -> (T, [i64; 2]) {
+    let before = meshing();
+    let out = step();
+    let after = meshing();
+    (out, [after[0] - before[0], after[1] - before[1]])
+}
+
 /// Run `step` and return what it cost the kernel.
 fn cost<T>(step: impl FnOnce() -> T) -> (T, Work) {
     let before = counts();
@@ -192,16 +210,23 @@ fn history_tree() {
         "the stored op is the same request"
     );
 
-    let (branch, spent) = cost(|| {
-        ok(
-            json!({ "call": "apply", "key": "main", "parent": 1, "node": 3,
-            "op": { "kind": "hole", "origin": [5.0, 5.0, 5.0], "axis": [0.0, 0.0, -1.0], "radius": 2.0, "depth": 10.0 } }),
-        )
+    let ((branch, spent), first) = meshed(|| {
+        cost(|| {
+            ok(
+                json!({ "call": "apply", "key": "main", "parent": 1, "node": 3,
+                "op": { "kind": "hole", "origin": [5.0, 5.0, 5.0], "axis": [0.0, 0.0, -1.0], "radius": 2.0, "depth": 10.0 } }),
+            )
+        })
     });
     assert_eq!(
         spent,
         work(1, 1, 1),
         "an unprobed apply builds and integrates once"
+    );
+    assert_eq!(
+        first,
+        [1, 1],
+        "a new solid's first reply meshes and describes it"
     );
     let drilled = 500.0 - PI * 4.0 * 5.0;
     near(volume(&branch), drilled);
@@ -224,12 +249,14 @@ fn history_tree() {
 
     lime_model_occt::set_tree_limits(24, 0);
     ok(json!({ "call": "goto", "key": "main", "node": 1 }));
-    let (rebuilt, spent) = cost(|| ok(json!({ "call": "goto", "key": "main", "node": 2 })));
+    let ((rebuilt, spent), again) =
+        meshed(|| cost(|| ok(json!({ "call": "goto", "key": "main", "node": 2 }))));
     assert_eq!(
         spent,
         work(0, 0, 1),
         "the reply was built again from the held solid"
     );
+    assert_eq!(again, [0, 0], "without meshing or describing it again");
     for field in [
         "positions",
         "triangles",
