@@ -14,7 +14,7 @@ export function setModifierOpen(id: string, open: boolean) {
 }
 
 function num(field: string, label: string, value: string, min: number, max: number, step: number, span: 2 | 3): string {
-  return `<label class="setting span${span}" data-label="${esc(label.toLowerCase())}">${esc(label)}<input data-field="${field}" type="number" min="${min}" max="${max}" step="${step}" value="${esc(value)}" aria-label="${esc(label)}" /></label>`;
+  return `<label class="setting span${span}" data-label="${esc(label.toLowerCase())}"><span class="scrub-label" data-scrub="field">${esc(label)}</span><input data-field="${field}" type="number" min="${min}" max="${max}" step="${step}" value="${esc(value)}" aria-label="${esc(label)}" /></label>`;
 }
 
 function optional(value: number | undefined, digits = 0): string {

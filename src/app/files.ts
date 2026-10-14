@@ -1,6 +1,6 @@
 import { fx } from "./fx";
 import { state, session, STEP_TOLERANCE_DEFAULT } from "./state";
-import { centeringShift, ID_MATRIX, parseStl, placeMesh, encodeStl, scaledCanonical, encode3mf, type PlacedPart, type Placement } from "../mesh-place";
+import { centeringShift, eulerOrient, formatDeg, ID_MATRIX, orientEuler, parseStl, placeMesh, encodeStl, scaledCanonical, encode3mf, type PlacedPart, type Placement } from "../mesh-place";
 import { meshKeyHex } from "../slice-action";
 import { bytesToBase64 } from "../base64";
 import { needsEngine, apiBase, apiToken, markEngineDown, isStepName, renderChrome, markStale, stale, card, shownGrams } from "./settings";
@@ -183,6 +183,17 @@ export function setPlaceCenter(axis: "x" | "y", mm: number) {
   nudgePlacement(axis, mm - current);
 }
 
+/** Replace one Euler angle and rebuild the pose the rotate rings compose. */
+export function setOrientAngle(axis: "x" | "y" | "z", deg: number) {
+  if (!state.sourcePos || !Number.isFinite(deg)) return;
+  const euler = orientEuler(state.orient);
+  if (axis === "x") euler.rx = deg;
+  else if (axis === "y") euler.ry = deg;
+  else euler.rz = deg;
+  state.orient = eulerOrient(euler.rx, euler.ry, euler.rz);
+  applyPlace(false);
+}
+
 function paintPlaceFields() {
   const bounds = state.placed?.bounds;
   if (!bounds) return;
@@ -193,6 +204,11 @@ function paintPlaceFields() {
   for (const [id, value] of [["placeX", cx], ["placeY", cy]] as const) {
     const input = document.querySelector<HTMLInputElement>(`#${id}`);
     if (input && document.activeElement !== input) input.value = value;
+  }
+  const euler = orientEuler(state.orient);
+  for (const [id, value] of [["placeRx", euler.rx], ["placeRy", euler.ry], ["placeRz", euler.rz]] as const) {
+    const input = document.querySelector<HTMLInputElement>(`#${id}`);
+    if (input && document.activeElement !== input) input.value = formatDeg(value);
   }
 }
 
@@ -514,4 +530,4 @@ export function fail(err: unknown) {
   state.busy = false;
   renderChrome();
 }
-Object.assign(fx, { printableGcode, loadNamed, adoptBytes, previewRemote, refreshStepPreview, place, applyPlace, nudgePlacement, setPlaceCenter, meshBytes, isTauri, saveText, fetchStoredGcode, exportGcode, export3mf, download, fail });
+Object.assign(fx, { printableGcode, loadNamed, adoptBytes, previewRemote, refreshStepPreview, place, applyPlace, nudgePlacement, setPlaceCenter, setOrientAngle, meshBytes, isTauri, saveText, fetchStoredGcode, exportGcode, export3mf, download, fail });

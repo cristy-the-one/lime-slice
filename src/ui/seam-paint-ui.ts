@@ -39,9 +39,9 @@ export function mountSeamPaint(prepare: PrepareView, hooks: SeamPaintHooks) {
   bar.setAttribute("aria-label", "Paint seam");
   bar.hidden = true;
   bar.innerHTML = `
-    <label class="pb-radius">Radius
-      <input id="seamRadius" type="range" min="${BRUSH_R_MIN_MM}" max="${BRUSH_R_MAX_MM}" step="0.5" value="${BRUSH_R_DEFAULT_MM}" aria-label="Seam brush radius" />
-      <output id="seamRadiusOut" for="seamRadius"></output>
+    <label class="pb-radius">
+      <span class="scrub-label" data-scrub="field">Radius</span>
+      <input id="seamRadius" data-brush-radius type="number" min="${BRUSH_R_MIN_MM}" max="${BRUSH_R_MAX_MM}" step="0.5" value="${BRUSH_R_DEFAULT_MM}" aria-label="Seam brush radius" />
     </label>
     <button type="button" class="btn" id="seamClear">Clear</button>
     <button type="button" class="btn" id="seamDone">Done</button>
@@ -49,11 +49,14 @@ export function mountSeamPaint(prepare: PrepareView, hooks: SeamPaintHooks) {
   document.querySelector("#prepareBody")?.append(bar);
 
   const radiusInput = bar.querySelector<HTMLInputElement>("#seamRadius")!;
-  const radiusOut = bar.querySelector<HTMLOutputElement>("#seamRadiusOut")!;
   const status = bar.querySelector<HTMLElement>("#seamStatus")!;
   const clear = bar.querySelector<HTMLButtonElement>("#seamClear")!;
   let on = false;
-  const radius = () => Number(radiusInput.value);
+  const radius = () => {
+    const n = Number(radiusInput.value);
+    if (!Number.isFinite(n)) return BRUSH_R_DEFAULT_MM;
+    return Math.min(BRUSH_R_MAX_MM, Math.max(BRUSH_R_MIN_MM, n));
+  };
 
   function sync() {
     const view = hooks.view();
@@ -61,7 +64,6 @@ export function mountSeamPaint(prepare: PrepareView, hooks: SeamPaintHooks) {
     tool.classList.toggle("is-disabled", !view.hasMesh);
     bar.hidden = !on;
     document.documentElement.dataset.seamPaint = on ? "1" : "";
-    radiusOut.textContent = `${radius().toFixed(1)} mm`;
     clear.disabled = view.disks.length === 0;
     status.textContent = view.disks.length > 0 ? `${view.disks.length} seam disk${view.disks.length === 1 ? "" : "s"}.` : "";
     prepare.setBrush(on ? { kind: "seam", radius: radius() } : null);

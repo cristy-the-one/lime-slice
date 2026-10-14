@@ -61,6 +61,7 @@
 }
 .pb-radius[hidden] { display: none; }
 .pb-radius input { width: 110px; }
+.pb-radius input[type="number"] { width: 4.5rem; }
 .pb-radius output {
   min-width: 52px;
   color: var(--text);

@@ -2,18 +2,19 @@ import { type ColorMode } from "../colors";
 import { layFlatMatrix, matMul, rotX, rotY, rotZ } from "../mesh-place";
 import { arrangePlate, duplicatePlateObject, framePlateObject, removePlateObject, selectPlateObject } from "./plate-actions";
 import { applyTheme, type ThemeChoice } from "../theme";
-import { clampOffset, flipSection } from "../section-plane";
+import { axisNormal, clampOffset, flipSection } from "../section-plane";
 import { wheelNotch } from "../gizmo-math";
 import { state, type CardId } from "./state";
 import { commitSplit, draw, layerGcode, model, paintPlayback, paintSectionChrome, prepare, scrub, sectionLimit, setHelp, setStage, setView, stepGizmo, stopPlay, syncGcodeHighlight, togglePlay, view3d } from "./viewer";
 import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCal, runSlice, runTempCal } from "./slice-run";
 import { planFileDrop } from "../file-drop";
-import { addDroppedFiles, addMeshBytes, adoptBytes, export3mf, exportGcode, fail, loadNamed, pickAddedMesh, place, plateHasMesh, saveText, setPlaceCenter, withPrinterGcode } from "./files";
+import { addDroppedFiles, addMeshBytes, adoptBytes, export3mf, exportGcode, fail, loadNamed, pickAddedMesh, place, plateHasMesh, saveText, setOrientAngle, setPlaceCenter, withPrinterGcode } from "./files";
 import { mountProjectFiles, openProjectFile, saveCurrentProject } from "./project-io";
 import { pickModelFile } from "../platform";
 import { dismissMeshWarning, noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, revealPrinterDetails, revealResults, setCalibrate, syncFindStuck, touch } from "./settings";
 import { noteEdit } from "./history";
 import { bindPlaceScrub } from "./place-scrub";
+import { bindFieldScrub } from "../ui/field-scrub";
 import {
   applyNamedProfile,
   askProfileName,
@@ -63,6 +64,7 @@ import { importMoonrakerConfig, refreshPrusaJob, rememberPrusaForm, testPrusaLin
 export function wireApp() {
   bootMachines();
   bindPlaceScrub(document.querySelector("#left")!);
+  bindFieldScrub(document.body);
   migrateLegacyPresets();
   document.querySelector("#left")!.addEventListener("input", (ev) => {
     const target = ev.target as HTMLInputElement;
@@ -91,6 +93,13 @@ export function wireApp() {
       if (!Number.isFinite(mm)) return;
       noteEdit();
       setPlaceCenter(target.id === "placeX" ? "x" : "y", mm);
+      return;
+    }
+    if (target.id === "placeRx" || target.id === "placeRy" || target.id === "placeRz") {
+      const deg = Number((target as HTMLInputElement).value);
+      if (!Number.isFinite(deg)) return;
+      noteEdit();
+      setOrientAngle(target.id === "placeRx" ? "x" : target.id === "placeRy" ? "y" : "z", deg);
       return;
     }
     if (target.id === "objInfill" || target.id === "objWalls" || target.id === "objSpeed") {
@@ -460,6 +469,14 @@ export function wireApp() {
   });
   document.querySelector("#sectionOffset")!.addEventListener("input", (ev) => {
     state.sectionOffset = clampOffset(Number((ev.target as HTMLInputElement).value), sectionLimit());
+    state.sectionHud = "";
+    paintSectionChrome();
+    draw();
+  });
+  document.querySelector("#sectionAxis")!.addEventListener("change", (ev) => {
+    const value = (ev.target as HTMLSelectElement).value;
+    if (value !== "x" && value !== "y" && value !== "z") return;
+    state.sectionNormal = axisNormal(value, state.sectionNormal);
     state.sectionHud = "";
     paintSectionChrome();
     draw();

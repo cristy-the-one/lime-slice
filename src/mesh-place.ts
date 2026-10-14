@@ -109,6 +109,57 @@ export function rotZ(deg: number): Mat3 {
   return [c, -s, 0, s, c, 0, 0, 0, 1];
 }
 
+export interface EulerDeg {
+  rx: number;
+  ry: number;
+  rz: number;
+}
+
+/** Degrees into −180..180. A half turn is shown as 180. */
+export function wrapDeg(deg: number): number {
+  if (!Number.isFinite(deg)) return 0;
+  let x = ((deg + 180) % 360 + 360) % 360 - 180;
+  if (x === -180) return 180;
+  return x === 0 ? 0 : x;
+}
+
+/** One decimal, the rotation field's step. */
+export function formatDeg(deg: number): string {
+  const rounded = Math.round(wrapDeg(deg) * 10) / 10;
+  return (Object.is(rounded, -0) ? 0 : rounded).toFixed(1);
+}
+
+/**
+ * World-axis pose the rotate rings compose: Z, then Y, then X, applied on the left.
+ * Typing Rx/Ry/Rz rebuilds this product. A ring drag is still one world-axis step;
+ * the fields then show this decomposition of the matrix.
+ */
+export function eulerOrient(rx: number, ry: number, rz: number): Mat3 {
+  return matMul(rotZ(rz), matMul(rotY(ry), rotX(rx)));
+}
+
+/**
+ * Rx, Ry, Rz such that `eulerOrient` rebuilds `orient`.
+ * At ±90° pitch, X and Z share one degree of freedom, so Rz is 0 and Rx holds the rest.
+ */
+export function orientEuler(orient: Mat3): EulerDeg {
+  const sy = -orient[6];
+  const cy = Math.hypot(orient[0], orient[3]);
+  const toDeg = (rad: number) => wrapDeg((rad * 180) / Math.PI);
+  if (cy > 1e-6) {
+    return {
+      rx: toDeg(Math.atan2(orient[7], orient[8])),
+      ry: toDeg(Math.atan2(sy, cy)),
+      rz: toDeg(Math.atan2(orient[3], orient[0])),
+    };
+  }
+  return {
+    rx: toDeg(Math.atan2(-orient[5], orient[4])),
+    ry: toDeg(Math.atan2(sy, cy)),
+    rz: 0,
+  };
+}
+
 /** Rotate `from` onto `to`. Both should be unit vectors. */
 export function align(from: [number, number, number], to: [number, number, number]): Mat3 {
   const dot = from[0] * to[0] + from[1] * to[1] + from[2] * to[2];
