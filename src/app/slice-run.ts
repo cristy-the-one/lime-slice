@@ -11,6 +11,7 @@ import { sliceOverrideFields } from "../overrides";
 import { sliceFuzzyFields } from "../fuzzy-skin";
 import { adhesionSliceFields } from "../adhesion";
 import { surfaceSliceField } from "../surface-pattern";
+import { xySliceFields } from "../xy-comp";
 import { ironingSpacingMax, sliceIroningFields } from "../ironing";
 import { seamSliceField } from "../seam";
 import { plateListed, slicePlateFields, sourceFrame, type PlateObject, type PlateRequestObject } from "../plate";
@@ -205,6 +206,11 @@ export function payload() {
       beltStamp(library) !== null,
     ),
     ...surfaceSliceField(state.topSurfacePattern, state.blendKind, state.strategy),
+    ...xySliceFields({
+      xyHoleCompensationMm: state.xyHoleCompensationMm,
+      xyContourCompensationMm: state.xyContourCompensationMm,
+      elephantsFootCompensationMm: state.elephantsFootCompensationMm,
+    }),
     lineWidth: lineWidth(),
     blend: blend(),
     adaptive: state.adaptive,

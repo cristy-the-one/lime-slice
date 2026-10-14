@@ -1911,6 +1911,9 @@ fn request_for(
             .then_some(settings.brim_gap_mm),
         skirt_loops: settings.skirt_loops,
         top_surface_pattern: settings.top_surface_pattern,
+        xy_hole_compensation_mm: settings.xy_hole_compensation_mm,
+        xy_contour_compensation_mm: settings.xy_contour_compensation_mm,
+        elephants_foot_compensation_mm: settings.elephants_foot_compensation_mm,
         classic: settings.classic,
         support_style: match settings.support_style {
             lime_slice_core::SupportStyle::Tree => "tree".into(),
