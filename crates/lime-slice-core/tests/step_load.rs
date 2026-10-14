@@ -292,3 +292,28 @@ fn bad_files_and_tolerances_are_errors() {
     .unwrap();
     assert!(load_slice_mesh_tol("cube.stl", &stl, false, 9.0).is_ok());
 }
+
+/// Parallel shell tessellation must not depend on which shell finishes first.
+#[test]
+fn the_same_step_file_tessellates_to_the_same_triangles_twice() {
+    for name in [
+        "cube.step",
+        "assembly.step",
+        "cylinder.step",
+        "arc_wall.step",
+        "rect_hole.step",
+        "slot_bar.step",
+        "apex_cone.step",
+        "sliver_face.step",
+        "inch_cube.step",
+        "loose_cylinder.step",
+    ] {
+        let bytes = fixture(name);
+        let first = load_mesh(name, &bytes).unwrap();
+        let second = load_mesh(name, &bytes).unwrap();
+        assert_eq!(
+            first.triangles, second.triangles,
+            "{name} triangle order changed between loads"
+        );
+    }
+}
