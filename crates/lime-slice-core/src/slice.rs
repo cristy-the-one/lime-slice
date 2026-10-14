@@ -141,6 +141,15 @@ pub struct SliceRequest {
     /// stays byte-identical. Monotonic and concentric are opt-in.
     #[serde(default, skip_serializing_if = "SurfacePattern::is_rectilinear")]
     pub top_surface_pattern: SurfacePattern,
+    /// Widen vertical holes, millimetres. `0` is omitted.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub xy_hole_compensation_mm: f64,
+    /// Grow outer contours, millimetres. Negative shrinks them. `0` is omitted.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub xy_contour_compensation_mm: f64,
+    /// Inset the first layer's outer contour, millimetres. `0` is omitted.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub elephants_foot_compensation_mm: f64,
     /// Replay the pre-feature planner (lines, no arcs, no index) for benches.
     #[serde(default)]
     pub classic: bool,
@@ -399,6 +408,9 @@ pub struct SliceSettings {
     pub skirt_loops: Option<u32>,
     /// Rectilinear unless the request asks for monotonic or concentric top skin.
     pub top_surface_pattern: SurfacePattern,
+    pub xy_hole_compensation_mm: f64,
+    pub xy_contour_compensation_mm: f64,
+    pub elephants_foot_compensation_mm: f64,
     pub scarf_seam: ScarfSeam,
     pub scarf_length: f64,
     pub scarf_steps: u32,
@@ -488,6 +500,9 @@ impl Default for SliceSettings {
             brim_gap_mm: 0.0,
             skirt_loops: None,
             top_surface_pattern: SurfacePattern::Rectilinear,
+            xy_hole_compensation_mm: 0.0,
+            xy_contour_compensation_mm: 0.0,
+            elephants_foot_compensation_mm: 0.0,
             scarf_seam: ScarfSeam::Blend,
             scarf_length: default_scarf_length(),
             scarf_steps: default_scarf_steps(),
@@ -612,6 +627,21 @@ impl SliceSettings {
                 SurfacePattern::Rectilinear
             } else {
                 req.top_surface_pattern
+            },
+            xy_hole_compensation_mm: if req.classic {
+                0.0
+            } else {
+                snap_compensation(req.xy_hole_compensation_mm)
+            },
+            xy_contour_compensation_mm: if req.classic {
+                0.0
+            } else {
+                snap_compensation(req.xy_contour_compensation_mm)
+            },
+            elephants_foot_compensation_mm: if req.classic {
+                0.0
+            } else {
+                snap_compensation(req.elephants_foot_compensation_mm).max(0.0)
             },
             scarf_seam: if req.classic {
                 ScarfSeam::Off
@@ -829,6 +859,16 @@ fn default_one() -> f64 {
 
 fn is_one(value: &f64) -> bool {
     (*value - 1.0).abs() < 1e-9
+}
+
+fn is_zero(value: &f64) -> bool {
+    *value == 0.0
+}
+
+/// A compensation of a few nanometres is zero. Anything else stays in ±2 mm.
+fn snap_compensation(value: f64) -> f64 {
+    let value = value.clamp(-2.0, 2.0);
+    if value.abs() < 1e-9 { 0.0 } else { value }
 }
 
 fn default_scarf_length() -> f64 {
@@ -5837,6 +5877,9 @@ fn object_layer(
         interior_remaining: remain_low.0,
         interior_run: remain_low.1,
         top_pattern: settings.top_surface_pattern,
+        xy_hole_mm: settings.xy_hole_compensation_mm,
+        xy_contour_mm: settings.xy_contour_compensation_mm,
+        elephants_foot_mm: settings.elephants_foot_compensation_mm,
     };
     // The blend's plan of `region`, with `tweak` over every strategy it
     // prints, and the print speed the note names when the object's cap

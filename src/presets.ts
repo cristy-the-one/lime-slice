@@ -15,6 +15,12 @@ export interface PresetSettings {
   skirtLoops: number;
   /** `auto` is monotonic on Toughness and rectilinear otherwise. Omitted from a rectilinear slice. */
   topSurfacePattern: "auto" | "rectilinear" | "monotonic" | "concentric";
+  /** Millimetres. `0` is omitted from a slice. Positive widens holes. */
+  xyHoleCompensationMm: number;
+  /** Millimetres. `0` is omitted. Positive grows the outer contour. */
+  xyContourCompensationMm: number;
+  /** Millimetres. `0` is omitted. Insets the first layer. */
+  elephantsFootCompensationMm: number;
   adaptive: boolean;
   adaptiveMin: number;
   adaptiveMax: number;
@@ -89,6 +95,9 @@ export const DEFAULT_PRESET: PresetSettings = {
   brimGapMm: 0.1,
   skirtLoops: 0,
   topSurfacePattern: "auto",
+  xyHoleCompensationMm: 0,
+  xyContourCompensationMm: 0,
+  elephantsFootCompensationMm: 0,
   adaptive: false,
   adaptiveMin: 0.08,
   adaptiveMax: 0.2,
@@ -141,7 +150,7 @@ export function presetKeys(): (keyof PresetSettings)[] {
 }
 
 /** Keys added after project and profile files were versioned. A file written before one reads its default. */
-const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow", "retractOn", "retractLength", "retractSpeed", "supportAvoidance", "supportSource", "minLayerTimeS", "minLayerSpeedMmS", "adhesion", "brimWidthMm", "brimGapMm", "skirtLoops", "topSurfacePattern"]);
+const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow", "retractOn", "retractLength", "retractSpeed", "supportAvoidance", "supportSource", "minLayerTimeS", "minLayerSpeedMmS", "adhesion", "brimWidthMm", "brimGapMm", "skirtLoops", "topSurfacePattern", "xyHoleCompensationMm", "xyContourCompensationMm", "elephantsFootCompensationMm"]);
 
 /** The preset a project or profile file stores, or null when a key is missing or has the wrong type. */
 export function readPresetSettings(value: unknown): PresetSettings | null {
