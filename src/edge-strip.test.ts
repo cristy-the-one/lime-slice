@@ -194,6 +194,13 @@ check("two quads at a 10° bend are 1 region", labelFaceRegions(fold(10)).count 
   const slivers = labelFaceRegions(sliver);
   check("a sliver triangle gets region -1", slivers.region[0] === -1 && slivers.region[1] === 0 && slivers.count === 1);
 
+  const [a, b, c, d] = [[0, 0, 0], [10, 0, 0], [5, 10, 0], [5, 5, 10]];
+  const pinched = soupOf([[a, b, [5, -10, 0]], [b, a, [5, -5, -10]], [a, b, c], [c, b, d], [d, b, a], [d, a, c]]);
+  const pinchedRegions = labelFaceRegions(pinched, 179);
+  const tetra = pinchedRegions.region[2]!;
+  check("a tetrahedron whose edge a fin claims first is one region", [3, 4, 5].every((t) => pinchedRegions.region[t] === tetra) && pinchedRegions.region[0] !== tetra);
+  check("its unpaired a-b edge pair makes no loop", boundaryLoops(pinched, pinchedRegions, tetra).length === 0, boundaryLoops(pinched, pinchedRegions, tetra).map((l) => l.points.length).join());
+
   const flat = soupOf([[[0, 0, 0], [1, 0, 0], [2, 0, 0]], [[0, 0, 0], [2, 0, 0], [0, 1, 0]]]);
   const flats = labelFaceRegions(flat, 179);
   check("a collinear triangle with distinct corners gets region -1", flats.region[0] === -1 && flats.region[1] === 0 && flats.count === 1, `${flats.region.join()}`);

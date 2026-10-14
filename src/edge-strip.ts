@@ -148,7 +148,7 @@ export function boundaryLoops(positions: Float32Array, regions: FaceRegions, reg
       for (let fan = 0; fan < triangles && !isBoundary(out); fan++) out = nextAroundStart(out);
       h = out;
     }
-    if (halfEdges.length >= 2) loops.push(loopOf(positions, halfEdges));
+    if (halfEdges.length >= 3) loops.push(loopOf(positions, halfEdges));
   }
   return loops;
 }
