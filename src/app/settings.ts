@@ -1169,6 +1169,18 @@ export function clearSettingsSearch() {
   scrollSettingsToQuery();
 }
 
+/** A matching parent row keeps the indented rows under it, even when their own labels miss. */
+function revealChildRows(group: HTMLElement) {
+  let open = false;
+  for (const row of group.querySelectorAll<HTMLElement>(":scope .setting")) {
+    if (!row.classList.contains("sub")) open = !row.classList.contains("hidden");
+    else if (open) {
+      row.classList.remove("hidden");
+      row.classList.add("is-match");
+    }
+  }
+}
+
 function rowTier(el: HTMLElement): Tier {
   const tier = el.dataset.level;
   return tier === "advanced" || tier === "expert" ? tier : "simple";
@@ -1192,9 +1204,25 @@ export function applyFilter() {
     el.classList.toggle("hidden", !match);
     el.classList.toggle("is-match", !!q && match);
   });
+  const titleMatched = new Set<HTMLElement>();
+  if (q) {
+    document.querySelectorAll<HTMLElement>("#left .group").forEach((group) => {
+      const title = group.querySelector(".group-title")?.textContent ?? "";
+      if (settingMatches(q, title)) {
+        titleMatched.add(group);
+        group.querySelectorAll<HTMLElement>(":scope .setting").forEach((el) => {
+          el.classList.remove("hidden");
+          el.classList.add("is-match");
+        });
+      }
+      revealChildRows(group);
+    });
+  }
   document.querySelectorAll<HTMLElement>("#left .slot").forEach((slot) => {
     const settings = [...slot.querySelectorAll<HTMLElement>(".setting")];
-    slot.classList.toggle("hidden", !!q && !settings.some((el) => !el.classList.contains("hidden")));
+    const group = slot.closest<HTMLElement>(".group");
+    const keep = !!group && titleMatched.has(group);
+    slot.classList.toggle("hidden", !!q && !keep && !settings.some((el) => !el.classList.contains("hidden")));
   });
   document.querySelectorAll<HTMLDetailsElement>("#left .group").forEach((group) => {
     const rows = [...group.querySelectorAll<HTMLElement>(".setting, .slot")];

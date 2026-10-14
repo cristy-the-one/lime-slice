@@ -21,6 +21,12 @@ check("top skin finds ironing", settingMatches("skin", "Ironing", keywordsOf("ir
 check("noise finds fuzzy skin", settingMatches("noise", "Fuzzy skin", keywordsOf("fuzzy")));
 check("unknown word misses", !settingMatches("nozzleplate", "Layer height mm", keywordsOf("lh")));
 check("an unknown id has no keywords", keywordsOf("nothing") === "");
+check("ampersand matches and", settingMatches("Overhang & bridges", "Overhang and bridges"));
+check("and matches an ampersand heading", settingMatches("Walls and surface", "Walls & surface"));
+check("an escaped ampersand matches and", settingMatches("Speed &amp; travel", "Speed & travel"));
+check("a unit token stays whole", settingMatches("mm/s", "Bridge speed mm/s"));
+check("a percent sign stays", settingMatches("fan %", "Bridge fan %"));
+check("a cubic millimetre stays", settingMatches("mm³", "Max flow mm³/s"));
 
 if (failed) {
   console.error(`${failed} failed`);

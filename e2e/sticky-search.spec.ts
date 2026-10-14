@@ -161,6 +161,28 @@ test("search stays pinned, shortcuts focus it, and a query scrolls to the match"
   expect(caret).toEqual({ focused: true, start: 1, end: 3, value: "seam" });
 });
 
+test("a group or section name shows the controls under it, and & matches and", async ({ page }) => {
+  await openCube(page);
+  const find = page.locator("#find");
+  await find.fill("speed");
+  await expect(page.locator("#feeds")).toBeVisible();
+  await expect(page.locator("#combing")).toBeVisible();
+  await expect(page.locator("#arcs")).toBeVisible();
+  await expect(page.locator("#minlayer")).toBeVisible();
+  if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/after-search-speed.png` });
+
+  await find.fill("Overhang & bridges");
+  await expect(page.locator("#overhang")).toBeVisible();
+  await expect(page.locator("#bflow")).toBeVisible();
+  await expect(page.locator("#bspeed")).toBeVisible();
+  await expect(page.locator("#combing")).toBeHidden();
+
+  await find.fill("Walls and surface");
+  await expect(page.locator("#seam")).toBeVisible();
+  await expect(page.locator("#vwidth")).toBeVisible();
+  await expect(page.locator("#feeds")).toBeHidden();
+});
+
 test.describe("compact sticky search", () => {
   test.use({
     viewport: { width: 390, height: 844 },
