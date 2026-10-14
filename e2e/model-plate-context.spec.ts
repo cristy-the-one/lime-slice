@@ -161,3 +161,15 @@ test("a plate of one object has nothing to draw", async ({ page }) => {
   await expect(page.locator("#modelReadout")).toContainText("Volume");
   await expect(page.locator("#model")).toHaveAttribute("data-context-count", "0");
 });
+
+test("selecting another object while Model is open opens that object's solid", async ({ page }) => {
+  await twoObjects(page);
+  await openModel(page, "small");
+  await expect(page.locator("#modelReadout")).toContainText("Volume 4000");
+
+  await page.locator("[data-plate-select]").nth(0).click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume 24000");
+  const boxes = await contextBoxes(page);
+  expect(Object.keys(boxes)).toHaveLength(1);
+  expect(Object.values(boxes)[0]).toEqual([70, 5, 0, 90, 25, 10]);
+});

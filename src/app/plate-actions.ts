@@ -3,6 +3,7 @@ import { arrangedObjects, addedCopy, placeObject, plateUnionBounds, withoutObjec
 import { fx } from "./fx.ts";
 import { place } from "./files.ts";
 import { flushEdit, noteEdit } from "./history.ts";
+import { showModel } from "./model.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { state } from "./state.ts";
 import { currentRules } from "./rules.ts";
@@ -42,6 +43,8 @@ export function selectPlateObject(id: string) {
   applySelectedToState(state.plate);
   place();
   flushEdit();
+  // Model edits write to the selected object, so the open solid must follow the selection.
+  if (state.stage === "model") showModel();
 }
 
 /** Frame the named solid. Selection, when it changes, is the only undo step. */
