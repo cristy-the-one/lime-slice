@@ -14,6 +14,8 @@ import { clampSplit, roundSplit, type SplitAxis } from "./split-at";
 import { createModifierScene } from "./modifier-scene";
 import type { OverrideDocument } from "./overrides";
 import type { PlateBound } from "./plate";
+import { contextMaterial } from "./context-look";
+import { affineRows, type ContextPart } from "./model-context";
 import { createReinforceVolumeScene, type ShownReinforceVolume } from "./reinforce-scene";
 import type { ReinforceDisk } from "./reinforcement";
 import type { SeamDisk } from "./seam-paint";
@@ -81,8 +83,11 @@ export interface PrepareView {
   setGizmoTool(tool: "all" | "move" | "rotate" | "scale"): void;
   /** Translucent height slabs and modifier volumes. The part gizmo stays parked on the left. */
   setModifiers(doc: OverrideDocument, selectedId: string | null, tool: "move" | "scale"): void;
-  /** Axis-aligned bounds for every object on the plate. The solid mesh stays the selection. */
-  setPlateBounds(entries: PlateBound[]): void;
+  /**
+   * The plate's objects. `entries` are the boxes: the selected object's, and the amber one of every object in an overlap.
+   * `others` are the objects that are not selected, drawn grey and inert in the bed frame. The solid mesh stays the selection.
+   */
+  setPlate(entries: PlateBound[], others: ContextPart[]): void;
   onModifierSelect(cb: ((id: string) => void) | null): void;
   onModifierEditStart(cb: (() => void) | null): void;
   onModifierEdit(cb: ((id: string, kind: "move" | "scale", axis: Axis, deltaMm: number) => void) | null): void;
@@ -236,6 +241,12 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let gizmoTool: "all" | "move" | "rotate" | "scale" = "all";
   let plateEntries: PlateBound[] = [];
   let plateGroup: THREE.Group | null = null;
+  let plateOthers: ContextPart[] = [];
+  const contextMat = contextMaterial(colors.context);
+  const contextGroup = new THREE.Group();
+  scene.add(contextGroup);
+  /** One geometry per source array, so a pose change or a new neighbour never re-uploads a mesh that did not change. */
+  const contextGeometry = new Map<Float32Array, THREE.BufferGeometry>();
   const axisHex = (axis: Axis) => hexToThree(axis === "x" ? colors.axisX : axis === "y" ? colors.axisY : colors.axisZ);
   for (const axis of ["x", "y", "z"] as const) {
     const ringMat = new THREE.MeshBasicMaterial({ color: axisHex(axis), depthTest: false, transparent: true, opacity: 0.95, toneMapped: false });
@@ -474,6 +485,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     renderer.getSize(drawSize);
     renderer.setViewport(0, 0, drawSize.x, drawSize.y);
     renderer.render(scene, camera);
+    publishContextScreen();
     publishModifierMarker();
     publishReinforceVolMarker();
     drawMeasure();
@@ -585,6 +597,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
 
   function syncGhosts() {
     clearGhosts();
+    canvas.dataset.beltGhosts = "0";
     if (!belt || !mesh || !meshBounds || belt.copies < 2) return;
     const depth = Math.max(1, meshBounds.max[1] - meshBounds.min[1]);
     const stride = depth + Math.max(0, belt.gapMm);
@@ -604,7 +617,18 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
         copy.add(line);
       }
       ghosts.add(copy);
+      for (const other of contextGroup.children) {
+        const otherCopy = new THREE.Mesh((other as THREE.Mesh).geometry, contextMat);
+        otherCopy.matrixAutoUpdate = false;
+        otherCopy.matrix.copy(other.matrix);
+        otherCopy.matrix.elements[14] += sign * i * stride;
+        otherCopy.matrixWorldNeedsUpdate = true;
+        otherCopy.renderOrder = 1;
+        otherCopy.raycast = () => undefined;
+        ghosts.add(otherCopy);
+      }
     }
+    canvas.dataset.beltGhosts = String(ghosts.children.length);
   }
 
   function frameBed() {
@@ -620,6 +644,33 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     canvas.dataset.modifierGizmo = modifierSelected ? modifierTool : "";
     canvas.dataset.modifierSelected = modifierSelected ?? "";
     requestRender();
+  }
+
+  const contextBox = new THREE.Box3();
+  const contextCorner = new THREE.Vector3();
+  /** Where each grey object lands on screen, as `id:x,y,w,h` canvas pixels, so a test can click it. */
+  function publishContextScreen() {
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    const rects = contextGroup.children.map((node) => {
+      contextBox.setFromObject(node);
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (let corner = 0; corner < 8; corner += 1) {
+        contextCorner.set(corner & 1 ? contextBox.max.x : contextBox.min.x, corner & 2 ? contextBox.max.y : contextBox.min.y, corner & 4 ? contextBox.max.z : contextBox.min.z).project(camera);
+        const x = (contextCorner.x * 0.5 + 0.5) * width;
+        const y = (-contextCorner.y * 0.5 + 0.5) * height;
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        minY = Math.min(minY, y);
+        maxY = Math.max(maxY, y);
+      }
+      return `${node.userData.plateId}:${[minX, minY, maxX - minX, maxY - minY].map(Math.round).join(",")}`;
+    });
+    const text = rects.join(" ");
+    if (canvas.dataset.plateContextScreen !== text) canvas.dataset.plateContextScreen = text;
   }
 
   function publishModifierMarker() {
@@ -1716,8 +1767,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       meshBounds = canonical && part ? part.bounds : null;
       if (mesh && part) {
         // Print X, Y, Z is scene X, -Z, Y. The rigid pose keeps the normals valid.
-        const [a, b, c, d, e, f, g, h, i, j, k, l] = poseAffine(part.pose);
-        mesh.matrix.set(a, b, c, d, i, j, k, l, -e, -f, -g, -h, 0, 0, 0, 1);
+        setPrintAffine(mesh.matrix, poseAffine(part.pose));
         mesh.matrixWorldNeedsUpdate = true;
       }
       if (belt) layoutBed();
@@ -1801,8 +1851,10 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       modifierTool = tool;
       syncModifiers();
     },
-    setPlateBounds(entries) {
+    setPlate(entries, others) {
       plateEntries = entries;
+      plateOthers = others;
+      syncContext();
       if (belt) layoutBed();
       syncPlateBounds();
     },
@@ -1835,6 +1887,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       (beltArrow.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.amber));
       beltOutLabel.paint(colors.amber);
       copyMat.color.setHex(hexToThree(colors.mesh));
+      contextMat.color.setHex(hexToThree(colors.context));
       for (const [axis, { ringMat, moveMats }] of handles) {
         ringMat.color.setHex(axisHex(axis));
         for (const mat of moveMats) mat.color.setHex(axisHex(axis));
@@ -1865,19 +1918,60 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     canvas.dataset.plateObjects = String(plateEntries.length);
     canvas.dataset.plateOverlap = plateEntries.some((entry) => entry.overlap) ? "1" : "0";
     canvas.dataset.plateSelected = plateEntries.find((entry) => entry.selected)?.id ?? "";
+    canvas.dataset.plateBoxes = "";
     if (plateEntries.length === 0) {
       requestRender();
       return;
     }
     plateGroup = new THREE.Group();
+    const drawn: string[] = [];
     for (const entry of plateEntries) {
-      const color = entry.overlap ? colors.amber : entry.selected ? colors.teal : colors.line;
+      if (!entry.overlap && !entry.selected) continue;
+      drawn.push(`${entry.id}:${entry.overlap ? "overlap" : "selected"}`);
+      const color = entry.overlap ? colors.amber : colors.teal;
       const material = new THREE.LineBasicMaterial({ color: hexToThree(color), transparent: true, opacity: entry.selected ? 1 : 0.75 });
       const lines = new THREE.LineSegments(plateBoxGeometry(entry.min, entry.max), material);
       lines.userData.plateId = entry.id;
       plateGroup.add(lines);
     }
+    canvas.dataset.plateBoxes = drawn.join(" ");
     scene.add(plateGroup);
+    requestRender();
+  }
+
+  function syncContext() {
+    const wanted = new Set(plateOthers.map((part) => part.positions));
+    for (const [positions, geometry] of contextGeometry) {
+      if (wanted.has(positions)) continue;
+      geometry.dispose();
+      contextGeometry.delete(positions);
+    }
+    contextGroup.clear();
+    const published: string[] = [];
+    const box = new THREE.Box3();
+    for (const part of plateOthers) {
+      let geometry = contextGeometry.get(part.positions);
+      if (!geometry) {
+        geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.BufferAttribute(part.positions, 3));
+        contextGeometry.set(part.positions, geometry);
+      }
+      const node = new THREE.Mesh(geometry, contextMat);
+      node.matrixAutoUpdate = false;
+      setPrintAffine(node.matrix, affineRows(part.matrix));
+      node.renderOrder = 1;
+      node.userData.plateId = part.id;
+      node.raycast = () => undefined;
+      contextGroup.add(node);
+      box.setFromObject(node);
+      const [x0, y0, z0] = frame.fromScene(box.min);
+      const [x1, y1, z1] = frame.fromScene(box.max);
+      const world = [Math.min(x0, x1), Math.min(y0, y1), Math.min(z0, z1), Math.max(x0, x1), Math.max(y0, y1), Math.max(z0, z1)];
+      published.push(`${part.id}:${world.map((value) => value.toFixed(2)).join(",")}`);
+    }
+    canvas.dataset.plateContextCount = String(plateOthers.length);
+    if (published.length > 0) canvas.dataset.plateContext = published.join(" ");
+    else delete canvas.dataset.plateContext;
     requestRender();
   }
 
@@ -1906,6 +2000,12 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     geometry.setAttribute("position", new THREE.BufferAttribute(pos, 3));
     return geometry;
   }
+}
+
+/** Print X, Y, Z is scene X, -Z, Y. `rows` is a 3x4 affine in print millimetres, as `poseAffine` lays it out. */
+function setPrintAffine(target: THREE.Matrix4, rows: readonly number[]) {
+  const [a, b, c, d, e, f, g, h, i, j, k, l] = rows;
+  target.set(a!, b!, c!, d!, i!, j!, k!, l!, -e!, -f!, -g!, -h!, 0, 0, 0, 1);
 }
 
 function ghostMat() {
