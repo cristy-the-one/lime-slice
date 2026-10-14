@@ -1978,6 +1978,7 @@ fn request_for(
         bridge_flow_ratio: settings.bridge_flow_ratio,
         bridge_speed_mm_s: settings.bridge_speed_mm_s,
         bridge_fan_percent: settings.bridge_fan_percent,
+        layer_actions: settings.layer_actions.clone(),
         infill_combine: settings.infill_combine,
         combing: settings.combing,
         feature_speeds: settings.feature_speeds,

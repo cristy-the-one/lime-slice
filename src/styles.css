@@ -341,7 +341,36 @@ select option, select optgroup { background: var(--surface-1); color: var(--text
   background: linear-gradient(var(--amber), var(--teal));
   pointer-events: none;
 }
-.range-bands { position: absolute; inset: 0; pointer-events: none; }
+.range-bands, .layer-pins { position: absolute; inset: 0; pointer-events: none; }
+.layer-pin {
+  position: absolute;
+  left: 0;
+  width: 4px;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 2px;
+  background: var(--on-stage);
+}
+.layer-pin.is-filament { background: var(--amber); }
+.layer-action {
+  position: absolute;
+  left: 18px;
+  z-index: 4;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  transform: translateY(-50%);
+  border: 1px solid var(--stage-chip-line);
+  border-radius: 8px;
+  background: var(--stage-chip);
+  color: var(--on-stage);
+  font-size: 12px;
+  line-height: 14px;
+  pointer-events: auto;
+}
+.layer-action.is-pause, .layer-action.is-filament { background: var(--stage-chip-on); }
+.layer-action.is-filament { color: var(--amber); }
 .range-band {
   position: absolute;
   left: 2px;

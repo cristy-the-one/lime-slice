@@ -743,6 +743,9 @@ pub struct PrinterProfile {
 pub enum Firmware {
     Klipper,
     Marlin,
+    /// Bambu and RepRapFirmware both pause with `M400 U1`.
+    Bambu,
+    Rrf,
 }
 
 fn default_square_corner_velocity() -> f64 {
