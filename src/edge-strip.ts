@@ -275,13 +275,13 @@ export function regionSurface(positions: Float32Array, regions: FaceRegions, reg
   for (let k = 0; k < 3; k++) dims[k] = Math.floor((max[k] - min[k]) / cell) + 1;
   const cells = dims[0] * dims[1] * dims[2];
   const cellStart = new Int32Array(cells + 1);
+  const cellOf = (v: number, k: number) => Math.floor((v - min[k]) / cell);
   const range = (t: number, each: (c: number) => void) => {
     bounds(t);
-    const c0 = lo.map((v, k) => Math.floor((v - min[k]!) / cell));
-    const c1 = hi.map((v, k) => Math.floor((v - min[k]!) / cell));
-    for (let z = c0[2]!; z <= c1[2]!; z++)
-      for (let y = c0[1]!; y <= c1[1]!; y++)
-        for (let x = c0[0]!; x <= c1[0]!; x++) each((z * dims[1] + y) * dims[0] + x);
+    const x1 = cellOf(hi[0], 0), y1 = cellOf(hi[1], 1), z1 = cellOf(hi[2], 2);
+    for (let z = cellOf(lo[2], 2); z <= z1; z++)
+      for (let y = cellOf(lo[1], 1); y <= y1; y++)
+        for (let x = cellOf(lo[0], 0); x <= x1; x++) each((z * dims[1] + y) * dims[0] + x);
   };
   for (const t of tris) range(t, (c) => cellStart[c + 1]++);
   for (let c = 0; c < cells; c++) cellStart[c + 1] += cellStart[c]!;
