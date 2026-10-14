@@ -94,6 +94,19 @@ pub fn split(id: i32, plane: Plane, chord_mm: f64) -> String {
     }
 }
 
+/// Round every edge in one fillet, so corners where they meet are blended together. A failure leaves the solid unchanged.
+pub fn fillet_many(id: i32, edges: &[i32], radius_mm: f64, chord_mm: f64) -> String {
+    #[cfg(lime_occt)]
+    {
+        native::fillet_many(id, edges, radius_mm, chord_mm)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = (id, edges, radius_mm, chord_mm);
+        MISSING.into()
+    }
+}
+
 /// Round one edge. `edge` is the zero-based index from the solid document. A failure leaves the solid unchanged.
 pub fn fillet(id: i32, edge: i32, radius_mm: f64, chord_mm: f64) -> String {
     #[cfg(lime_occt)]
@@ -103,6 +116,19 @@ pub fn fillet(id: i32, edge: i32, radius_mm: f64, chord_mm: f64) -> String {
     #[cfg(not(lime_occt))]
     {
         let _ = (id, edge, radius_mm, chord_mm);
+        MISSING.into()
+    }
+}
+
+/// Chamfer every edge in one builder. A failure leaves the solid unchanged.
+pub fn chamfer_many(id: i32, edges: &[i32], distance_mm: f64, chord_mm: f64) -> String {
+    #[cfg(lime_occt)]
+    {
+        native::chamfer_many(id, edges, distance_mm, chord_mm)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = (id, edges, distance_mm, chord_mm);
         MISSING.into()
     }
 }
@@ -120,6 +146,19 @@ pub fn chamfer(id: i32, edge: i32, distance_mm: f64, chord_mm: f64) -> String {
     }
 }
 
+/// Try a fillet (`chamfer` false) or chamfer of every edge on a copy. The open solid is not replaced.
+pub fn blend_probe_many(id: i32, edges: &[i32], size_mm: f64, chamfer: bool) -> String {
+    #[cfg(lime_occt)]
+    {
+        native::blend_probe_many(id, edges, size_mm, chamfer)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = (id, edges, size_mm, chamfer);
+        MISSING.into()
+    }
+}
+
 /// Try a fillet (`chamfer` false) or chamfer on a copy. The open solid is not replaced.
 pub fn blend_probe(id: i32, edge: i32, size_mm: f64, chamfer: bool) -> String {
     #[cfg(lime_occt)]
@@ -129,6 +168,25 @@ pub fn blend_probe(id: i32, edge: i32, size_mm: f64, chamfer: bool) -> String {
     #[cfg(not(lime_occt))]
     {
         let _ = (id, edge, size_mm, chamfer);
+        MISSING.into()
+    }
+}
+
+/// Try a hole along `direction` on a copy. A zero direction drills toward −Z. The open solid is not replaced.
+pub fn hole_axis_probe(
+    id: i32,
+    origin: [f64; 3],
+    direction: [f64; 3],
+    radius_mm: f64,
+    depth_mm: f64,
+) -> String {
+    #[cfg(lime_occt)]
+    {
+        native::hole_axis_probe(id, origin, direction, radius_mm, depth_mm)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = (id, origin, direction, radius_mm, depth_mm);
         MISSING.into()
     }
 }
@@ -155,6 +213,27 @@ pub fn boolean_probe(id: i32, op: &str, primitive: &str, tool: Tool) -> String {
     #[cfg(not(lime_occt))]
     {
         let _ = (id, op, primitive, tool);
+        MISSING.into()
+    }
+}
+
+/// Cut a cylinder that starts at `origin` and runs along `direction` by `depth_mm`.
+/// `direction` points into the material. A zero vector drills toward −Z, the same as [`hole`].
+pub fn hole_axis(
+    id: i32,
+    origin: [f64; 3],
+    direction: [f64; 3],
+    radius_mm: f64,
+    depth_mm: f64,
+    chord_mm: f64,
+) -> String {
+    #[cfg(lime_occt)]
+    {
+        native::hole_axis(id, origin, direction, radius_mm, depth_mm, chord_mm)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = (id, origin, direction, radius_mm, depth_mm, chord_mm);
         MISSING.into()
     }
 }
@@ -334,6 +413,22 @@ pub unsafe extern "C" fn lime_occt_boolean_probe(
 
 /// The returned pointer is freed with `lime_occt_string_free`. The solid is not edited.
 #[no_mangle]
+pub extern "C" fn lime_occt_hole_axis_probe(
+    id: i32,
+    x: f64,
+    y: f64,
+    z: f64,
+    dx: f64,
+    dy: f64,
+    dz: f64,
+    radius_mm: f64,
+    depth_mm: f64,
+) -> *mut c_char {
+    export_json(hole_axis_probe(id, [x, y, z], [dx, dy, dz], radius_mm, depth_mm))
+}
+
+/// The returned pointer is freed with `lime_occt_string_free`. The solid is not edited.
+#[no_mangle]
 pub extern "C" fn lime_occt_hole_probe(
     id: i32,
     x: f64,
@@ -369,6 +464,20 @@ pub extern "C" fn lime_occt_split(
 }
 
 /// The returned pointer is freed with `lime_occt_string_free`.
+/// # Safety
+/// `edges` is null only when `count` is 0. Otherwise it points at `count` indexes.
+#[no_mangle]
+pub unsafe extern "C" fn lime_occt_fillet_many(
+    id: i32,
+    edges: *const i32,
+    count: i32,
+    radius_mm: f64,
+    chord_mm: f64,
+) -> *mut c_char {
+    export_json(fillet_many(id, unsafe { edge_slice(edges, count) }, radius_mm, chord_mm))
+}
+
+/// The returned pointer is freed with `lime_occt_string_free`.
 #[no_mangle]
 pub extern "C" fn lime_occt_fillet(
     id: i32,
@@ -377,6 +486,20 @@ pub extern "C" fn lime_occt_fillet(
     chord_mm: f64,
 ) -> *mut c_char {
     export_json(fillet(id, edge, radius_mm, chord_mm))
+}
+
+/// The returned pointer is freed with `lime_occt_string_free`.
+/// # Safety
+/// `edges` is null only when `count` is 0. Otherwise it points at `count` indexes.
+#[no_mangle]
+pub unsafe extern "C" fn lime_occt_chamfer_many(
+    id: i32,
+    edges: *const i32,
+    count: i32,
+    distance_mm: f64,
+    chord_mm: f64,
+) -> *mut c_char {
+    export_json(chamfer_many(id, unsafe { edge_slice(edges, count) }, distance_mm, chord_mm))
 }
 
 /// The returned pointer is freed with `lime_occt_string_free`.
@@ -392,6 +515,21 @@ pub extern "C" fn lime_occt_chamfer(
 
 /// The returned pointer is freed with `lime_occt_string_free`.
 /// `chamfer` is 0 for a fillet and anything else for a chamfer. The solid is not edited.
+/// # Safety
+/// `edges` is null only when `count` is 0. Otherwise it points at `count` indexes.
+#[no_mangle]
+pub unsafe extern "C" fn lime_occt_blend_probe_many(
+    id: i32,
+    edges: *const i32,
+    count: i32,
+    size_mm: f64,
+    chamfer: i32,
+) -> *mut c_char {
+    export_json(blend_probe_many(id, unsafe { edge_slice(edges, count) }, size_mm, chamfer != 0))
+}
+
+/// The returned pointer is freed with `lime_occt_string_free`.
+/// `chamfer` is 0 for a fillet and anything else for a chamfer. The solid is not edited.
 #[no_mangle]
 pub extern "C" fn lime_occt_blend_probe(
     id: i32,
@@ -400,6 +538,31 @@ pub extern "C" fn lime_occt_blend_probe(
     chamfer: i32,
 ) -> *mut c_char {
     export_json(blend_probe(id, edge, size_mm, chamfer != 0))
+}
+
+/// The returned pointer is freed with `lime_occt_string_free`.
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub extern "C" fn lime_occt_hole_axis(
+    id: i32,
+    x: f64,
+    y: f64,
+    z: f64,
+    dx: f64,
+    dy: f64,
+    dz: f64,
+    radius_mm: f64,
+    depth_mm: f64,
+    chord_mm: f64,
+) -> *mut c_char {
+    export_json(hole_axis(
+        id,
+        [x, y, z],
+        [dx, dy, dz],
+        radius_mm,
+        depth_mm,
+        chord_mm,
+    ))
 }
 
 /// The returned pointer is freed with `lime_occt_string_free`.
@@ -414,6 +577,15 @@ pub extern "C" fn lime_occt_hole(
     chord_mm: f64,
 ) -> *mut c_char {
     export_json(hole(id, [x, y, z], radius_mm, depth_mm, chord_mm))
+}
+
+/// # Safety
+/// `edges` is null only when `count` is not positive. Otherwise it points at `count` indexes that outlive the call.
+unsafe fn edge_slice<'a>(edges: *const i32, count: i32) -> &'a [i32] {
+    if edges.is_null() || count <= 0 {
+        return &[];
+    }
+    unsafe { std::slice::from_raw_parts(edges, count as usize) }
 }
 
 /// The returned pointer is freed with `lime_occt_string_free`.
@@ -507,8 +679,29 @@ mod native {
             chord: f64,
         ) -> *mut c_char;
         fn lime_model_occt_fillet(id: i32, edge: i32, radius: f64, chord: f64) -> *mut c_char;
+        fn lime_model_occt_fillet_many(
+            id: i32,
+            edges: *const i32,
+            count: i32,
+            radius: f64,
+            chord: f64,
+        ) -> *mut c_char;
         fn lime_model_occt_chamfer(id: i32, edge: i32, distance: f64, chord: f64) -> *mut c_char;
+        fn lime_model_occt_chamfer_many(
+            id: i32,
+            edges: *const i32,
+            count: i32,
+            distance: f64,
+            chord: f64,
+        ) -> *mut c_char;
         fn lime_model_occt_blend_probe(id: i32, edge: i32, size: f64, chamfer: i32) -> *mut c_char;
+        fn lime_model_occt_blend_probe_many(
+            id: i32,
+            edges: *const i32,
+            count: i32,
+            size: f64,
+            chamfer: i32,
+        ) -> *mut c_char;
         fn lime_model_occt_hole_probe(
             id: i32,
             x: f64,
@@ -541,6 +734,29 @@ mod native {
             radius: f64,
             depth: f64,
             chord: f64,
+        ) -> *mut c_char;
+        fn lime_model_occt_hole_axis(
+            id: i32,
+            x: f64,
+            y: f64,
+            z: f64,
+            dx: f64,
+            dy: f64,
+            dz: f64,
+            radius: f64,
+            depth: f64,
+            chord: f64,
+        ) -> *mut c_char;
+        fn lime_model_occt_hole_axis_probe(
+            id: i32,
+            x: f64,
+            y: f64,
+            z: f64,
+            dx: f64,
+            dy: f64,
+            dz: f64,
+            radius: f64,
+            depth: f64,
         ) -> *mut c_char;
         fn lime_model_occt_scale(id: i32, factor: f64, chord: f64) -> *mut c_char;
         fn lime_model_occt_write_step(id: i32, path: *const c_char) -> *mut c_char;
@@ -625,12 +841,27 @@ mod native {
         take(unsafe { lime_model_occt_fillet(id, edge, radius_mm, chord_mm) })
     }
 
+    pub fn fillet_many(id: i32, edges: &[i32], radius_mm: f64, chord_mm: f64) -> String {
+        let (ptr, count) = edge_ptr(edges);
+        take(unsafe { lime_model_occt_fillet_many(id, ptr, count, radius_mm, chord_mm) })
+    }
+
     pub fn chamfer(id: i32, edge: i32, distance_mm: f64, chord_mm: f64) -> String {
         take(unsafe { lime_model_occt_chamfer(id, edge, distance_mm, chord_mm) })
     }
 
+    pub fn chamfer_many(id: i32, edges: &[i32], distance_mm: f64, chord_mm: f64) -> String {
+        let (ptr, count) = edge_ptr(edges);
+        take(unsafe { lime_model_occt_chamfer_many(id, ptr, count, distance_mm, chord_mm) })
+    }
+
     pub fn blend_probe(id: i32, edge: i32, size_mm: f64, chamfer: bool) -> String {
         take(unsafe { lime_model_occt_blend_probe(id, edge, size_mm, i32::from(chamfer)) })
+    }
+
+    pub fn blend_probe_many(id: i32, edges: &[i32], size_mm: f64, chamfer: bool) -> String {
+        let (ptr, count) = edge_ptr(edges);
+        take(unsafe { lime_model_occt_blend_probe_many(id, ptr, count, size_mm, i32::from(chamfer)) })
     }
 
     pub fn hole_probe(id: i32, origin: [f64; 3], radius_mm: f64, depth_mm: f64) -> String {
@@ -671,6 +902,41 @@ mod native {
     pub fn hole(id: i32, origin: [f64; 3], radius_mm: f64, depth_mm: f64, chord_mm: f64) -> String {
         let [x, y, z] = origin;
         take(unsafe { lime_model_occt_hole(id, x, y, z, radius_mm, depth_mm, chord_mm) })
+    }
+
+    pub fn hole_axis(
+        id: i32,
+        origin: [f64; 3],
+        direction: [f64; 3],
+        radius_mm: f64,
+        depth_mm: f64,
+        chord_mm: f64,
+    ) -> String {
+        let [x, y, z] = origin;
+        let [dx, dy, dz] = direction;
+        take(unsafe {
+            lime_model_occt_hole_axis(id, x, y, z, dx, dy, dz, radius_mm, depth_mm, chord_mm)
+        })
+    }
+
+    pub fn hole_axis_probe(
+        id: i32,
+        origin: [f64; 3],
+        direction: [f64; 3],
+        radius_mm: f64,
+        depth_mm: f64,
+    ) -> String {
+        let [x, y, z] = origin;
+        let [dx, dy, dz] = direction;
+        take(unsafe { lime_model_occt_hole_axis_probe(id, x, y, z, dx, dy, dz, radius_mm, depth_mm) })
+    }
+
+    fn edge_ptr(edges: &[i32]) -> (*const i32, i32) {
+        if edges.is_empty() {
+            (std::ptr::null(), 0)
+        } else {
+            (edges.as_ptr(), edges.len() as i32)
+        }
     }
 
     pub fn scale(id: i32, factor: f64, chord_mm: f64) -> String {

@@ -7,6 +7,7 @@ import type { HandleDrag, ModelGhost } from "../model-view";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type ModelTool, type Vec3 } from "../model-drag";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
 import { formatMm, splitPlaneInside, splitPlaneRange, type AxisExtent } from "../model-plane";
+import { selectedEdges } from "../model-blend";
 import { lastEdge, modelApplyReady, selectionCountLabel, type ModelPickRef } from "../model-select";
 import { scrubIntent, scrubTarget, type ScrubIntent } from "./scrub";
 import { snapStep } from "../gizmo-math";
@@ -30,6 +31,8 @@ interface ModelChromeHooks {
   solidBox(): SolidBox | null;
   /** Polyline points of one edge of the open solid. */
   edgePoints(edge: number): ArrayLike<number> | null;
+  /** Unit direction a hole drills. Straight down when no face is picked. */
+  holeAxis(): Vec3;
 }
 
 const TOOLS: { id: ModelTool; icon: IconNode; label: string }[] = [
@@ -308,14 +311,16 @@ function refreshNote() {
     } else {
       text = `From ${formatMm(range.min)} to ${formatMm(range.max)} mm. The middle is ${formatMm(range.mid)}.`;
     }
-  } else if ((tool === "fillet" || tool === "chamfer") && lastEdge(picks) == null) {
+  } else if ((tool === "fillet" || tool === "chamfer") && selectedEdges(picks).length === 0) {
     text = "Pick an edge.";
   } else if (tool === "scale") {
     text = "About the centre. Placement scale becomes 100%.";
   } else if (tool === "measure") {
     text = measureNote(point("A"), point("B"));
   } else if (isProbed(tool)) {
-    const lead = tool === "hole" ? "Straight down from the origin. " : "";
+    const axis = tool === "hole" ? (hooks?.holeAxis() ?? [0, 0, -1]) : null;
+    const down = axis != null && Math.abs(axis[0]) < 1e-6 && Math.abs(axis[1]) < 1e-6 && axis[2] < -0.9;
+    const lead = axis == null ? "" : down ? "Straight down from the origin. " : "Into the picked face. ";
     const status = probeNote(tool, probe);
     text = `${lead}${status?.text ?? ""}`.trim();
     bad = status?.bad ?? false;
@@ -351,6 +356,7 @@ function dragContext(): DragContext {
     extent,
     split: splitPlaneRange(hooks?.solidZ() ?? null),
     edge: points ? edgeAnchor(points, center) : null,
+    holeAxis: hooks?.holeAxis() ?? [0, 0, -1],
   };
 }
 
@@ -376,11 +382,21 @@ function ghostFor(current: ModelTool): ModelGhost | null {
   }
   if (current === "measure") return { kind: "measure", a: point("A"), b: point("B") };
   if (current === "split") return { kind: "plane", z: num("#modelPlaneZ") };
-  if (current === "hole") return { kind: "hole", x: num("#modelX"), y: num("#modelY"), z: num("#modelZ"), radius: num("#modelHoleR"), depth: num("#modelHoleD") };
+  if (current === "hole") {
+    return {
+      kind: "hole",
+      x: num("#modelX"),
+      y: num("#modelY"),
+      z: num("#modelZ"),
+      radius: num("#modelHoleR"),
+      depth: num("#modelHoleD"),
+      dir: hooks?.holeAxis() ?? [0, 0, -1],
+    };
+  }
   if (current === "scale") return { kind: "scale", factor: num("#modelFactor") };
-  const edge = lastEdge(picks);
-  if (edge == null) return null;
-  return { kind: "blend", edge, radius: num("#modelBlend") };
+  const edges = selectedEdges(picks);
+  if (edges.length === 0) return null;
+  return { kind: "blend", edges, radius: num("#modelBlend") };
 }
 
 function num(id: string) {

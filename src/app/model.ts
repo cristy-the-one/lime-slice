@@ -1,7 +1,8 @@
 import { bytesToBase64 } from "../base64";
 import { encodeStl, settle } from "../mesh-place";
 import type { ModelPick, ModelSolid } from "../model-view";
-import { lastEdge, nextModelPicks, selectionCountLabel } from "../model-select";
+import { holeAxis, lastFace, outwardFromMesh, selectedEdges } from "../model-blend";
+import { nextModelPicks, selectionCountLabel } from "../model-select";
 import { PROBE_WAIT_MS, isProbed, probeFromBody } from "../model-feasibility";
 import { formatMm, splitPlaneInside, splitPlaneRange, zExtent } from "../model-plane";
 import { closeModelTool, mountModelChrome, openModelTool, refreshModelGhost, setModelProbe, syncModelChrome, syncModelSolid } from "../ui/model-chrome";
@@ -35,7 +36,7 @@ const redoBacked: boolean[] = [];
 const modelMarks: number[] = [];
 
 interface ParsedSolid extends ModelSolid {
-  faces: { id: number; areaMm2: number }[];
+  faces: { id: number; areaMm2: number; normal?: [number, number, number] }[];
 }
 
 type SupportEdits = typeof state.supportEdits;
@@ -83,6 +84,9 @@ export function bindModelView() {
     edgePoints(edge) {
       return solid?.edges.find((item) => item.id === edge)?.points ?? null;
     },
+    holeAxis() {
+      return drillAxis();
+    },
   });
 }
 
@@ -109,14 +113,15 @@ function probePayload(id: number): Record<string, unknown> | null {
   const current = openModelTool();
   if (!isProbed(current)) return null;
   if (current === "fillet" || current === "chamfer") {
-    const edge = lastEdge(picks);
-    if (edge == null) return null;
+    const edges = selectedEdges(picks);
+    if (edges.length === 0) return null;
     const size = num("#modelBlend");
-    return { id, kind: current, edge, radius: size, distance: size };
+    return { id, kind: current, edge: edges[edges.length - 1], edges, radius: size, distance: size };
   }
   const origin = { x: num("#modelX"), y: num("#modelY"), z: num("#modelZ") };
   if (current === "hole") {
-    return { id, kind: "hole", ...origin, radius: num("#modelHoleR"), depth: num("#modelHoleD") };
+    const [dx, dy, dz] = drillAxis();
+    return { id, kind: "hole", ...origin, dx, dy, dz, radius: num("#modelHoleR"), depth: num("#modelHoleD") };
   }
   return {
     id,
@@ -323,18 +328,20 @@ async function runSplit() {
 
 async function runBlend(kind: "fillet" | "chamfer") {
   if (!solid || busy || !state.mesh) return;
-  const edge = edgeIndex();
-  if (edge == null) {
+  const edges = selectedEdges(picks);
+  if (edges.length === 0) {
     readout(kind === "fillet" ? "Pick an edge to fillet." : "Pick an edge to chamfer.");
     return;
   }
   busy = true;
   const snap = snapshot();
   const mine = ticket;
-  readout(kind === "fillet" ? "Filleting the edge…" : "Chamfering the edge…");
+  const count = edges.length === 1 ? "the edge" : `${edges.length} edges`;
+  readout(kind === "fillet" ? `Filleting ${count}…` : `Chamfering ${count}…`);
   const body = await post(kind === "fillet" ? "/api/model/fillet" : "/api/model/chamfer", {
     id: solid.id,
-    edge,
+    edge: edges[edges.length - 1],
+    edges,
     radius: num("#modelBlend"),
     distance: num("#modelBlend"),
     chordMm: state.stepTolerance,
@@ -362,11 +369,15 @@ async function runHole() {
   const snap = snapshot();
   const mine = ticket;
   readout("Cutting the hole…");
+  const [dx, dy, dz] = drillAxis();
   const body = await post("/api/model/hole", {
     id: solid.id,
     x: num("#modelX"),
     y: num("#modelY"),
     z: num("#modelZ"),
+    dx,
+    dy,
+    dz,
     radius: num("#modelHoleR"),
     depth: num("#modelHoleD"),
     chordMm: state.stepTolerance,
@@ -727,8 +738,12 @@ function prim() {
   return document.querySelector<HTMLSelectElement>("#modelPrim")?.value ?? "box";
 }
 
-function edgeIndex() {
-  return lastEdge(picks);
+/** Into the last picked face, or straight down when no face is picked. */
+function drillAxis(): [number, number, number] {
+  const face = lastFace(picks);
+  if (!solid || face == null) return [0, 0, -1];
+  const stored = solid.faces.find((item) => item.id === face)?.normal;
+  return holeAxis(stored ?? outwardFromMesh(solid.positions, solid.triangles, face));
 }
 
 function num(id: string) {
@@ -811,13 +826,21 @@ function text(value: unknown) {
   return typeof value === "string" ? value : "";
 }
 
+function readNormal(value: unknown): [number, number, number] | null {
+  if (!Array.isArray(value) || value.length < 3) return null;
+  const normal = value.slice(0, 3).map((item) => (typeof item === "number" ? item : Number.NaN));
+  if (normal.some((item) => !Number.isFinite(item))) return null;
+  return [normal[0]!, normal[1]!, normal[2]!];
+}
+
 function asSolid(body: Record<string, unknown>): ParsedSolid | null {
   if (typeof body.volumeMm3 !== "number" || !Array.isArray(body.positions) || !Array.isArray(body.triangles)) return null;
   const faces = Array.isArray(body.faces) ? body.faces.flatMap((face) => {
     if (!face || typeof face !== "object") return [];
-    const row = face as { id?: unknown; areaMm2?: unknown };
+    const row = face as { id?: unknown; areaMm2?: unknown; normal?: unknown };
     if (typeof row.id !== "number" || typeof row.areaMm2 !== "number") return [];
-    return [{ id: row.id, areaMm2: row.areaMm2 }];
+    const normal = readNormal(row.normal);
+    return [{ id: row.id, areaMm2: row.areaMm2, ...(normal ? { normal } : {}) }];
   }) : [];
   const edges = Array.isArray(body.edges) ? body.edges.flatMap((edge) => {
     if (!edge || typeof edge !== "object") return [];

@@ -35,6 +35,41 @@ fn box_faces_edges_and_distance() {
 
     let faces = json["faces"].as_array().expect("faces");
     assert_eq!(faces.len(), 6);
+    let mut axes = Vec::new();
+    for face in faces {
+        let normal = face["normal"].as_array().expect("face normal");
+        assert_eq!(normal.len(), 3);
+        let n: Vec<f64> = normal.iter().map(|value| value.as_f64().expect("component")).collect();
+        let length = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        near(length, 1.0);
+        let dominant = n
+            .iter()
+            .enumerate()
+            .max_by(|left, right| left.1.abs().partial_cmp(&right.1.abs()).unwrap())
+            .expect("component")
+            .0;
+        for (index, value) in n.iter().enumerate() {
+            if index != dominant {
+                assert!(value.abs() < 0.05, "face normal {n:?}");
+            }
+        }
+        let mut rounded = [0.0, 0.0, 0.0];
+        rounded[dominant] = if n[dominant] > 0.0 { 1.0 } else { -1.0 };
+        axes.push(rounded);
+    }
+    axes.sort_by(|left, right| left.partial_cmp(right).unwrap());
+    axes.dedup();
+    assert_eq!(
+        axes,
+        vec![
+            [-1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+        ]
+    );
     let mut areas: Vec<f64> = faces
         .iter()
         .map(|face| face["areaMm2"].as_f64().expect("area"))
@@ -422,6 +457,51 @@ fn blends_hole_and_scale() {
     assert!(drilled.get("error").is_none(), "{drilled}");
     near(
         drilled["volumeMm3"].as_f64().expect("hole"),
+        1000.0 - std::f64::consts::PI * 4.0 * 10.0,
+    );
+    let _ = lime_model_occt::undo(id, 0.1);
+
+    let none = parse(&lime_model_occt::fillet_many(id, &[], 2.0, 0.1));
+    assert_eq!(none["error"].as_str(), Some("Pick an edge to fillet."));
+    let together = parse(&lime_model_occt::blend_probe_many(id, &[0, 1], 1.0, false));
+    assert_eq!(together["ok"].as_bool(), Some(true), "{together}");
+    let one = parse(&lime_model_occt::fillet_many(id, &[0], 2.0, 0.1));
+    assert!(one.get("error").is_none(), "{one}");
+    near(one["volumeMm3"].as_f64().expect("one edge"), 1000.0 - removed);
+    let _ = lime_model_occt::undo(id, 0.1);
+    let two = parse(&lime_model_occt::fillet_many(id, &[0, 1], 1.0, 0.1));
+    assert!(two.get("error").is_none(), "{two}");
+    let two_vol = two["volumeMm3"].as_f64().expect("two edges");
+    let one_mm = 10.0 * (1.0 - std::f64::consts::PI / 4.0);
+    assert!(two_vol < 1000.0 - one_mm - 0.5, "two edges should remove more than one: {two_vol}");
+    assert!(two_vol > 900.0, "two edges still leave a solid: {two_vol}");
+    let _ = lime_model_occt::undo(id, 0.1);
+
+    let side = parse(&lime_model_occt::hole_axis(
+        id,
+        [10.0, 5.0, 5.0],
+        [-1.0, 0.0, 0.0],
+        2.0,
+        12.0,
+        0.1,
+    ));
+    assert!(side.get("error").is_none(), "{side}");
+    near(
+        side["volumeMm3"].as_f64().expect("side hole"),
+        1000.0 - std::f64::consts::PI * 4.0 * 10.0,
+    );
+    let _ = lime_model_occt::undo(id, 0.1);
+    let zero_dir = parse(&lime_model_occt::hole_axis(
+        id,
+        [5.0, 5.0, 10.0],
+        [0.0, 0.0, 0.0],
+        2.0,
+        12.0,
+        0.1,
+    ));
+    assert!(zero_dir.get("error").is_none(), "{zero_dir}");
+    near(
+        zero_dir["volumeMm3"].as_f64().expect("default axis"),
         1000.0 - std::f64::consts::PI * 4.0 * 10.0,
     );
     let _ = lime_model_occt::undo(id, 0.1);

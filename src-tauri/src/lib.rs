@@ -218,6 +218,36 @@ fn preview_mesh(payload: String) -> Result<String, String> {
 }
 
 /// Open CASCADE work is synchronous. Run it off the UI thread.
+fn model_edges(value: &serde_json::Value) -> Result<Vec<i32>, String> {
+    if let Some(list) = value.get("edges").and_then(|item| item.as_array()) {
+        let mut edges = Vec::with_capacity(list.len());
+        for item in list {
+            let number = item.as_i64().ok_or_else(|| "missing edge".to_string())?;
+            edges.push(number as i32);
+        }
+        if edges.is_empty() {
+            return Err("missing edge".into());
+        }
+        return Ok(edges);
+    }
+    let edge = value
+        .get("edge")
+        .and_then(|item| item.as_i64())
+        .ok_or_else(|| "missing edge".to_string())? as i32;
+    Ok(vec![edge])
+}
+
+fn model_direction(value: &serde_json::Value) -> [f64; 3] {
+    let present = ["dx", "dy", "dz"]
+        .iter()
+        .any(|key| value.get(*key).and_then(|item| item.as_f64()).is_some());
+    if !present {
+        return [0.0, 0.0, -1.0];
+    }
+    let number = |key: &str| value.get(key).and_then(|item| item.as_f64()).unwrap_or(0.0);
+    [number("dx"), number("dy"), number("dz")]
+}
+
 async fn block_model(
     work: impl FnOnce() -> Result<String, String> + Send + 'static,
 ) -> Result<String, String> {
@@ -352,9 +382,10 @@ async fn model_probe(payload: String) -> Result<String, String> {
             .and_then(|item| item.as_str())
             .unwrap_or("fillet");
         if kind == "hole" {
-            return lime_model_load::hole_probe(
+            return lime_model_load::hole_axis_probe(
                 id,
                 [number("x"), number("y"), number("z")],
+                model_direction(&value),
                 number("radius"),
                 number("depth"),
             );
@@ -373,13 +404,14 @@ async fn model_probe(payload: String) -> Result<String, String> {
                 },
             );
         }
-        let edge = value
-            .get("edge")
-            .and_then(|item| item.as_i64())
-            .ok_or_else(|| "missing edge".to_string())? as i32;
+        let edges = model_edges(&value)?;
         let chamfer = kind == "chamfer";
         let size = number(if chamfer { "distance" } else { "radius" });
-        lime_model_load::blend_probe(id, edge, size, chamfer)
+        if edges.len() == 1 {
+            lime_model_load::blend_probe(id, edges[0], size, chamfer)
+        } else {
+            lime_model_load::blend_probe_many(id, &edges, size, chamfer)
+        }
     })
     .await
 }
@@ -392,10 +424,7 @@ async fn model_fillet(payload: String) -> Result<String, String> {
             .get("id")
             .and_then(|item| item.as_i64())
             .ok_or_else(|| "missing id".to_string())? as i32;
-        let edge = value
-            .get("edge")
-            .and_then(|item| item.as_i64())
-            .ok_or_else(|| "missing edge".to_string())? as i32;
+        let edges = model_edges(&value)?;
         let radius = value
             .get("radius")
             .and_then(|item| item.as_f64())
@@ -404,7 +433,11 @@ async fn model_fillet(payload: String) -> Result<String, String> {
             .get("chordMm")
             .and_then(|item| item.as_f64())
             .unwrap_or(0.1);
-        lime_model_load::fillet(id, edge, radius, chord)
+        if edges.len() == 1 {
+            lime_model_load::fillet(id, edges[0], radius, chord)
+        } else {
+            lime_model_load::fillet_many(id, &edges, radius, chord)
+        }
     })
     .await
 }
@@ -417,10 +450,7 @@ async fn model_chamfer(payload: String) -> Result<String, String> {
             .get("id")
             .and_then(|item| item.as_i64())
             .ok_or_else(|| "missing id".to_string())? as i32;
-        let edge = value
-            .get("edge")
-            .and_then(|item| item.as_i64())
-            .ok_or_else(|| "missing edge".to_string())? as i32;
+        let edges = model_edges(&value)?;
         let distance = value
             .get("distance")
             .and_then(|item| item.as_f64())
@@ -429,7 +459,11 @@ async fn model_chamfer(payload: String) -> Result<String, String> {
             .get("chordMm")
             .and_then(|item| item.as_f64())
             .unwrap_or(0.1);
-        lime_model_load::chamfer(id, edge, distance, chord)
+        if edges.len() == 1 {
+            lime_model_load::chamfer(id, edges[0], distance, chord)
+        } else {
+            lime_model_load::chamfer_many(id, &edges, distance, chord)
+        }
     })
     .await
 }
@@ -447,9 +481,10 @@ async fn model_hole(payload: String) -> Result<String, String> {
             .get("chordMm")
             .and_then(|item| item.as_f64())
             .unwrap_or(0.1);
-        lime_model_load::hole(
+        lime_model_load::hole_axis(
             id,
             [number("x"), number("y"), number("z")],
+            model_direction(&value),
             number("radius"),
             number("depth"),
             chord,

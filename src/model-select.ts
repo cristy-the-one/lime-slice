@@ -34,7 +34,7 @@ export function selectionCountLabel(picks: readonly ModelPickRef[]): string {
   return parts.join(" · ");
 }
 
-/** Fillet and chamfer take one edge. The last one selected is that edge. */
+/** The last selected edge. The blend size handle sits on this one; Apply still uses every edge. */
 export function lastEdge(picks: readonly ModelPickRef[]): number | null {
   for (let i = picks.length - 1; i >= 0; i -= 1) {
     const pick = picks[i];
