@@ -89,6 +89,10 @@ Two later changes. The engine accepts both region kinds before either is drawn.
 
 The first stroke creates a region at density 1, depth 5 mm, fill through off, and further strokes append to the active region. New region starts another at those defaults and selects it. The bar lists regions. Each row has a density slider from the sparser strategy infill (the label at that end is Normal) to 100% in steps of 5%, and delete. The brush edits the selected row's depth and fill through. An empty region is dropped on Done and is not saved. Off, or with every region at the strategy density, the slice body does not carry the field.
 
+**Along edge.** The bar switches between Brush and Along edge. Along edge swaps Radius for Offset (0 to 50 mm, the gap from the edge to the near side of the strip) and Width (twice the brush radius limits; it starts at twice the radius). Hovering the part highlights the nearest boundary of the face under the pointer, from corner to corner. Faces are split where the surface bends more than 25°, the angle the Prepare outline uses, and a worker labels them the first time the mode opens for a mesh. A click on a highlighted edge starts a strip, the preview follows the pointer along the same boundary on the shorter side, and a second click on the part lays it. A double click or double tap lays the whole boundary. Esc drops a started strip, and a second Esc leaves the tool. A strip is a run of ordinary paint disks appended to the active region, so the engine, the slice request, the `.lime` file, undo (one step per strip) and the G-code are the same as for a brush stroke.
+
+**Straight line.** With any paint brush (support enforce or block, seam, reinforce Brush), Shift+click paints a straight line of dabs from the last dab to the click, and a drag continues the stroke. The line stops where it leaves the part. A new mesh, another selected object or another brush kind forgets the last dab.
+
 **Volumes.** Place a box or a cylinder on the selected object, move and scale it, and set its density on the same list. The shape is translucent in the prepare view. No rotation handle. The volume is stored in the source frame.
 
 ## Tests
