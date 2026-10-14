@@ -681,6 +681,7 @@ TopoDS_Shape boolean_op(const std::string& op, const TopoDS_Shape& solid, const 
     if (op == "fuse") {
         BRepAlgoAPI_Fuse algo(solid, tool);
         algo.SetFuzzyValue(1.0e-7);
+        algo.SetNonDestructive(Standard_True);
         algo.Build();
         if (!algo.IsDone() || algo.HasErrors() || algo.Shape().IsNull()) {
             error = "Open CASCADE did not complete the boolean";
@@ -691,6 +692,7 @@ TopoDS_Shape boolean_op(const std::string& op, const TopoDS_Shape& solid, const 
     if (op == "cut") {
         BRepAlgoAPI_Cut algo(solid, tool);
         algo.SetFuzzyValue(1.0e-7);
+        algo.SetNonDestructive(Standard_True);
         algo.Build();
         if (!algo.IsDone() || algo.HasErrors() || algo.Shape().IsNull()) {
             error = "Open CASCADE did not complete the boolean";
@@ -701,6 +703,7 @@ TopoDS_Shape boolean_op(const std::string& op, const TopoDS_Shape& solid, const 
     if (op == "common") {
         BRepAlgoAPI_Common algo(solid, tool);
         algo.SetFuzzyValue(1.0e-7);
+        algo.SetNonDestructive(Standard_True);
         algo.Build();
         if (!algo.IsDone() || algo.HasErrors() || algo.Shape().IsNull()) {
             error = "Open CASCADE did not complete the boolean";
@@ -1123,6 +1126,13 @@ bool measure_distance(
     return true;
 }
 
+/// The STEP reader and writer share Open CASCADE's global interface state, so the session and the
+/// tree never run them at once.
+std::mutex& step_mutex() {
+    static std::mutex mu;
+    return mu;
+}
+
 TopoDS_Shape read_step(const char* path, std::string& error) {
 #ifndef LIME_OCCT_STEP
     (void)path;
@@ -1134,6 +1144,7 @@ TopoDS_Shape read_step(const char* path, std::string& error) {
         error = "STEP path is empty";
         return {};
     }
+    std::lock_guard<std::mutex> step_lock(step_mutex());
     STEPControl_Reader reader;
     if (reader.ReadFile(path) != IFSelect_RetDone) {
         error = "Open CASCADE could not read this STEP file";
@@ -1169,6 +1180,7 @@ bool write_step(const TopoDS_Shape& shape, const char* path, std::string& error)
         error = "STEP path is empty";
         return false;
     }
+    std::lock_guard<std::mutex> step_lock(step_mutex());
     Interface_Static::SetCVal("write.step.schema", "AP214IS");
     STEPControl_Writer writer;
     if (writer.Transfer(shape, STEPControl_ManifoldSolidBrep) != IFSelect_RetDone ||
@@ -1236,6 +1248,7 @@ bool build_split(
     BRepAlgoAPI_Splitter splitter;
     splitter.SetArguments(arguments);
     splitter.SetTools(tools);
+    splitter.SetNonDestructive(Standard_True);
     g_stats.builds += 1;
     splitter.Build();
     if (!splitter.IsDone() || splitter.HasErrors() || splitter.Shape().IsNull()) {

@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -47,14 +48,14 @@ void set_failure(char** out, const Standard_Failure& failure) {
 }
 
 /// The accepted result of an edit: one solid with volume. `volume` is what the op integrated.
-/// `empty` is the refusal when there is no solid.
-LimeShape* adopt(const TopoDS_Shape& result, double volume, const std::string& empty, char** error) {
+/// `empty` is the refusal when there is no solid. Released to the caller only once nothing can throw.
+std::unique_ptr<LimeShape> adopt(const TopoDS_Shape& result, double volume, const std::string& empty, char** error) {
     const TopoDS_Shape solid = as_solid(result);
     if (solid.IsNull() || !has_solid(solid) || !(volume > 1e-6)) {
         set_error(error, empty);
         return nullptr;
     }
-    auto* out = new LimeShape();
+    auto out = std::make_unique<LimeShape>();
     out->held = hold_of(solid, volume);
     out->edges.resize(static_cast<size_t>(out->held.edges.Extent()));
     return out;
@@ -85,7 +86,7 @@ LimeShape* lime_tree_box(double x, double y, double z, char** error) {
             set_error(error, "Open CASCADE did not build the box");
             return nullptr;
         }
-        return adopt(box.Shape(), x * y * z, "Open CASCADE did not build the box", error);
+        return adopt(box.Shape(), x * y * z, "Open CASCADE did not build the box", error).release();
     } catch (const Standard_Failure& failure) {
         set_failure(error, failure);
         return nullptr;
@@ -104,7 +105,7 @@ LimeShape* lime_tree_read_step(const char* path, char** error) {
             return nullptr;
         }
         const TopoDS_Shape solid = as_solid(shape);
-        return adopt(solid, volume_of(solid), "This STEP file has no solid to measure", error);
+        return adopt(solid, volume_of(solid), "This STEP file has no solid to measure", error).release();
     } catch (const Standard_Failure& failure) {
         set_failure(error, failure);
         return nullptr;
@@ -127,7 +128,7 @@ LimeShape* lime_tree_boolean(const LimeShape* from, const char* op, const char* 
             set_error(error, message);
             return nullptr;
         }
-        return adopt(result, volume, "The boolean removed the solid", error);
+        return adopt(result, volume, "The boolean removed the solid", error).release();
     } catch (const Standard_Failure& failure) {
         set_failure(error, failure);
         return nullptr;
@@ -148,7 +149,7 @@ LimeShape* lime_tree_hole(const LimeShape* from, const double* p, char** error) 
             set_error(error, message);
             return nullptr;
         }
-        return adopt(cut, volume, "The hole removed the solid", error);
+        return adopt(cut, volume, "The hole removed the solid", error).release();
     } catch (const Standard_Failure& failure) {
         set_failure(error, failure);
         return nullptr;
@@ -196,7 +197,7 @@ LimeShape* lime_tree_blend(
             set_error(error, message);
             return nullptr;
         }
-        return adopt(built, volume, blend_failed(is_chamfer, found.size()), error);
+        return adopt(built, volume, blend_failed(is_chamfer, found.size()), error).release();
     } catch (const Standard_Failure& failure) {
         set_failure(error, failure);
         return nullptr;
@@ -219,17 +220,16 @@ LimeShape* lime_tree_split(const LimeShape* from, const double* p, LimeShape** o
             set_error(error, message);
             return nullptr;
         }
-        LimeShape* out = adopt(kept, kept_volume, "The plane did not split this solid", error);
+        std::unique_ptr<LimeShape> out = adopt(kept, kept_volume, "The plane did not split this solid", error);
         if (out == nullptr) {
             return nullptr;
         }
-        LimeShape* piece = adopt(rest, rest_volume, "The plane did not split this solid", error);
+        std::unique_ptr<LimeShape> piece = adopt(rest, rest_volume, "The plane did not split this solid", error);
         if (piece == nullptr) {
-            delete out;
             return nullptr;
         }
-        *other = piece;
-        return out;
+        *other = piece.release();
+        return out.release();
     } catch (const Standard_Failure& failure) {
         set_failure(error, failure);
         return nullptr;
@@ -248,7 +248,7 @@ LimeShape* lime_tree_scale(const LimeShape* from, double factor, char** error) {
             return nullptr;
         }
         const double volume = from->held.volume * factor * factor * factor;
-        return adopt(scaled, volume, "Open CASCADE did not scale this solid", error);
+        return adopt(scaled, volume, "Open CASCADE did not scale this solid", error).release();
     } catch (const Standard_Failure& failure) {
         set_failure(error, failure);
         return nullptr;
@@ -281,7 +281,7 @@ int lime_tree_edge(LimeShape* shape, int index, double* mid, double* length) {
             info.mid[1] = point.Y();
             info.mid[2] = point.Z();
             info.length = props.Mass();
-        } catch (const Standard_Failure&) {
+        } catch (...) {
             info.mid[0] = info.mid[1] = info.mid[2] = std::nan("");
             info.length = std::nan("");
         }
