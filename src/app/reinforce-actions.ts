@@ -1,5 +1,5 @@
 /**
- * Reinforcement against the live session: brush strokes, box/cylinder volumes,
+ * Reinforcement against the live session: brush strokes, edge strips, box/cylinder volumes,
  * per-region density/depth/fillThrough, region selection/addition/deletion, clear,
  * and the drawn disks and translucent volumes.
  */
@@ -28,9 +28,11 @@ import {
   reinforceInMeshFrame,
   reinforceStrokeTakes,
   scaleReinforceVolume,
+  totalReinforceDisks,
   volumeInMeshFrame,
   type ReinforceDisk,
 } from "../reinforcement";
+import type { Vec3 } from "../support-paint";
 import type { ShownReinforceVolume } from "../reinforce-scene";
 import type { BrushHooks } from "../prepare-view";
 import { pushToast } from "../ui/toasts";
@@ -106,6 +108,17 @@ function changed() {
   else touch();
 }
 
+const DISKS_FULL = `One object holds at most ${MAX_PAINT_DISKS} reinforcement disks. Clear some to add more.`;
+
+/** Why `addDiskToRegion` added nothing: the region cap, else the disk cap. */
+function warnFull() {
+  const msg =
+    state.reinforcement.length >= MAX_REINFORCE_REGIONS
+      ? `One object holds at most ${MAX_REINFORCE_REGIONS} reinforcement regions.`
+      : DISKS_FULL;
+  pushToast(msg, "warn");
+}
+
 /** One drag of the reinforce brush: one undo step, then one slice. */
 export function reinforceStroke(
   radius: number,
@@ -125,13 +138,7 @@ export function reinforceStroke(
       const idx = currentReinforceIndex();
       const added = addDiskToRegion(state.reinforcement, idx, disk, defaults);
       if (added.regions === state.reinforcement) {
-        if (!warned) {
-          const msg =
-            state.reinforcement.length >= MAX_REINFORCE_REGIONS
-              ? `One object holds at most ${MAX_REINFORCE_REGIONS} reinforcement regions.`
-              : `One object holds at most ${MAX_PAINT_DISKS} reinforcement disks. Clear some to add more.`;
-          pushToast(msg, "warn");
-        }
+        if (!warned) warnFull();
         warned = true;
         return;
       }
@@ -151,6 +158,38 @@ export function reinforceStroke(
       drawReinforce();
     },
   };
+}
+
+/**
+ * An Along edge strip: its already spaced disks join the active paint region as one undo step and one slice.
+ * A strip that would pass `MAX_PAINT_DISKS` adds nothing.
+ */
+export function addReinforceStrip(
+  hits: readonly { point: Vec3; normal: Vec3 }[],
+  radius: number,
+  defaults: { depthMm: number; fillThrough: boolean },
+) {
+  const placed = state.placed;
+  if (!placed || !state.sourcePos || hits.length === 0) return;
+  if (totalReinforceDisks(state.reinforcement) + hits.length > MAX_PAINT_DISKS) {
+    pushToast(DISKS_FULL, "warn");
+    return;
+  }
+  const frame = sourceFrame(state.sourcePos, state.partScale);
+  const before = state.reinforcement;
+  beginEdit();
+  for (const hit of hits) {
+    const disk = reinforceDiskFromHit(hit.point, hit.normal, radius, placed.pose, frame);
+    const added = addDiskToRegion(state.reinforcement, currentReinforceIndex(), disk, defaults);
+    if (added.regions === state.reinforcement) {
+      warnFull();
+      break;
+    }
+    state.reinforcement = added.regions;
+    activeRegionIndex = added.activeIndex;
+  }
+  flushEdit();
+  if (state.reinforcement !== before) changed();
 }
 
 /** Start a new paint region at the defaults (`density: 1`, `depthMm: 5`, `fillThrough: false`) and select it. */

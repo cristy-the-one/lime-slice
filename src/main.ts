@@ -21,6 +21,7 @@ import { mountSupportPaint } from "./ui/support-paint-ui";
 import { clearPaint, drawPaint, paintStroke, tallyOf } from "./app/paint-actions";
 import {
   addNewPaintRegion,
+  addReinforceStrip,
   addReinforceVolume,
   beginReinforceVolumeEdit,
   clearReinforce,
@@ -161,6 +162,7 @@ session.reinforceUi = mountReinforcePaint(prepare, {
     };
   },
   stroke: reinforceStroke,
+  strip: addReinforceStrip,
   selectRegion: selectReinforceRegion,
   newRegion: addNewPaintRegion,
   addVolume: addReinforceVolume,

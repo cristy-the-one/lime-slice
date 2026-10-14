@@ -1,10 +1,11 @@
 /**
- * The Reinforce tool in Prepare: a rail tool and a bar with brush radius, depth,
- * fill-through, `New region`, `Box`, `Cylinder`, volume gizmo mode (`Move` / `Scale`),
+ * The Reinforce tool in Prepare: a rail tool and a bar with the `Brush` / `Along edge` mode, brush radius or strip
+ * offset and width, depth, fill-through, `New region`, `Box`, `Cylinder`, volume gizmo mode (`Move` / `Scale`),
  * and the per-region density list (`docs/reinforcement.md`).
  */
 import { createElement, Shield } from "lucide";
 import type { BrushHooks, PrepareView } from "../prepare-view";
+import type { Vec3 } from "../support-paint";
 import {
   BRUSH_R_DEFAULT_MM,
   BRUSH_R_MAX_MM,
@@ -18,6 +19,8 @@ import {
 import { haptic } from "./haptics";
 import "./support-paint.css";
 
+const STRIP_OFFSET_MAX_MM = 50;
+
 export interface ReinforcePaintHooks {
   view(): {
     regions: readonly ReinforceRegion[];
@@ -27,6 +30,7 @@ export interface ReinforcePaintHooks {
     hasMesh: boolean;
   };
   stroke(radius: number, defaults: { depthMm: number; fillThrough: boolean }): BrushHooks;
+  strip(hits: { point: Vec3; normal: Vec3 }[], radius: number, defaults: { depthMm: number; fillThrough: boolean }): void;
   selectRegion(index: number): void;
   newRegion(): void;
   addVolume(kind: "box" | "cylinder"): void;
@@ -61,9 +65,21 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
   bar.setAttribute("aria-label", "Reinforce");
   bar.hidden = true;
   bar.innerHTML = `
-    <label class="pb-radius">
+    <div class="pb-kind" id="reinforceMode" role="group" aria-label="Reinforce mode">
+      <button type="button" data-reinforce-mode="brush" aria-pressed="true">Brush</button>
+      <button type="button" data-reinforce-mode="edge" aria-pressed="false">Along edge</button>
+    </div>
+    <label class="pb-radius" id="reinforceRadiusField">
       <span class="scrub-label" data-scrub="field">Radius</span>
       <input id="reinforceRadius" data-brush-radius type="number" min="${BRUSH_R_MIN_MM}" max="${BRUSH_R_MAX_MM}" step="0.5" value="${BRUSH_R_DEFAULT_MM}" aria-label="Reinforce brush radius" />
+    </label>
+    <label class="pb-radius" id="reinforceOffsetField" hidden>
+      <span class="scrub-label" data-scrub="field">Offset</span>
+      <input id="reinforceOffset" type="number" min="0" max="${STRIP_OFFSET_MAX_MM}" step="0.5" value="0" aria-label="Strip distance from the edge, mm" />
+    </label>
+    <label class="pb-radius" id="reinforceWidthField" hidden>
+      <span class="scrub-label" data-scrub="field">Width</span>
+      <input id="reinforceWidth" type="number" min="${2 * BRUSH_R_MIN_MM}" max="${2 * BRUSH_R_MAX_MM}" step="0.5" value="${2 * BRUSH_R_DEFAULT_MM}" aria-label="Strip width, mm" />
     </label>
     <label class="pb-radius" id="reinforceDepthField">Depth
       <input id="reinforceDepth" type="range" min="0.5" max="${REINFORCE_DEPTH_MAX_MM}" step="0.5" value="${REINFORCE_DEPTH_DEFAULT_MM}" aria-label="Reinforce depth" />
@@ -86,7 +102,13 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
     <span class="pb-status" id="reinforceStatus" role="status"></span>`;
   document.querySelector("#prepareBody")?.append(bar);
 
+  const modeGroup = bar.querySelector<HTMLElement>("#reinforceMode")!;
+  const radiusField = bar.querySelector<HTMLElement>("#reinforceRadiusField")!;
   const radiusInput = bar.querySelector<HTMLInputElement>("#reinforceRadius")!;
+  const offsetField = bar.querySelector<HTMLElement>("#reinforceOffsetField")!;
+  const offsetInput = bar.querySelector<HTMLInputElement>("#reinforceOffset")!;
+  const widthField = bar.querySelector<HTMLElement>("#reinforceWidthField")!;
+  const widthInput = bar.querySelector<HTMLInputElement>("#reinforceWidth")!;
   const depthField = bar.querySelector<HTMLElement>("#reinforceDepthField")!;
   const depthInput = bar.querySelector<HTMLInputElement>("#reinforceDepth")!;
   const depthOut = bar.querySelector<HTMLOutputElement>("#reinforceDepthOut")!;
@@ -104,12 +126,27 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
   let on = false;
   let pendingDepthMm = REINFORCE_DEPTH_DEFAULT_MM;
   let pendingFillThrough = false;
+  let mode: "brush" | "edge" = "brush";
+  /** Width takes 2 x Radius on the first switch to Along edge and keeps the user's value after that. */
+  let widthSeeded = false;
+  let edgesReady = false;
 
   const radius = () => {
     const n = Number(radiusInput.value);
     if (!Number.isFinite(n)) return BRUSH_R_DEFAULT_MM;
     return Math.min(BRUSH_R_MAX_MM, Math.max(BRUSH_R_MIN_MM, n));
   };
+  const stripRadius = () => {
+    const n = Number(widthInput.value) / 2;
+    if (!Number.isFinite(n)) return radius();
+    return Math.min(BRUSH_R_MAX_MM, Math.max(BRUSH_R_MIN_MM, n));
+  };
+  const stripOffset = () => {
+    const n = Number(offsetInput.value);
+    if (!Number.isFinite(n)) return 0;
+    return Math.min(STRIP_OFFSET_MAX_MM, Math.max(0, n));
+  };
+  const defaults = () => ({ depthMm: pendingDepthMm, fillThrough: pendingFillThrough });
 
   function activePaintRegion(regions: readonly ReinforceRegion[], activeIndex: number) {
     const r = regions[activeIndex];
@@ -206,25 +243,50 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
     moveToolBtn.setAttribute("aria-pressed", view.volumeTool === "move" ? "true" : "false");
     scaleToolBtn.setAttribute("aria-pressed", view.volumeTool === "scale" ? "true" : "false");
 
-    const diskCount = totalReinforceDisks(view.regions);
     clearBtn.disabled = view.regions.length === 0;
     syncRegionsList(view.regions, view.activeIndex, view.normalDensity);
 
-    if (view.regions.length === 0) {
-      status.textContent = "";
-    } else {
-      status.textContent = `${view.regions.length} region${view.regions.length === 1 ? "" : "s"}, ${diskCount} disk${diskCount === 1 ? "" : "s"}.`;
+    const edge = mode === "edge";
+    for (const btn of modeGroup.querySelectorAll<HTMLButtonElement>("button")) {
+      btn.setAttribute("aria-pressed", btn.dataset.reinforceMode === mode ? "true" : "false");
     }
+    radiusField.hidden = edge;
+    offsetField.hidden = !edge;
+    widthField.hidden = !edge;
+    radiusInput.toggleAttribute("data-brush-radius", !edge);
+    widthInput.toggleAttribute("data-brush-radius", edge);
+    syncStatus(view.regions);
 
     if (on) {
-      prepare.setBrush({ kind: "reinforce", radius: radius() });
+      prepare.setBrush(edge ? { kind: "reinforce", radius: stripRadius(), edge: { offset: stripOffset() } } : { kind: "reinforce", radius: radius() });
+    }
+  }
+
+  function syncStatus(regions: readonly ReinforceRegion[]) {
+    const diskCount = totalReinforceDisks(regions);
+    if (mode === "edge" && !edgesReady) {
+      status.textContent = "Finding edges…";
+    } else if (regions.length === 0) {
+      status.textContent = "";
+    } else {
+      status.textContent = `${regions.length} region${regions.length === 1 ? "" : "s"}, ${diskCount} disk${diskCount === 1 ? "" : "s"}.`;
     }
   }
 
   function bind() {
+    prepare.onReinforceStrip({
+      ready: (ready) => {
+        edgesReady = ready;
+        syncStatus(hooks.view().regions);
+      },
+      commit: (hits, r) => {
+        hooks.strip(hits, r, defaults());
+        haptic("tap");
+      },
+    });
     prepare.onBrush({
       start: () => {
-        current = hooks.stroke(radius(), { depthMm: pendingDepthMm, fillThrough: pendingFillThrough });
+        current = hooks.stroke(radius(), defaults());
         current.start();
         haptic("tap");
       },
@@ -261,6 +323,18 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
 
   tool.addEventListener("click", () => setOn(!on));
   radiusInput.addEventListener("input", sync);
+  offsetInput.addEventListener("input", sync);
+  widthInput.addEventListener("input", sync);
+  modeGroup.addEventListener("click", (ev) => {
+    const next = (ev.target as Element).closest<HTMLButtonElement>("button")?.dataset.reinforceMode;
+    if (next !== "brush" && next !== "edge") return;
+    if (next === "edge" && !widthSeeded) {
+      widthInput.value = String(2 * radius());
+      widthSeeded = true;
+    }
+    mode = next;
+    sync();
+  });
 
   depthInput.addEventListener("input", () => {
     const val = Number(depthInput.value);
@@ -376,7 +450,7 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
     if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || target?.isContentEditable) return;
     if (!document.querySelector("#help")?.hasAttribute("hidden")) return;
     if (on && ev.key === "Escape") {
-      setOn(false);
+      if (!prepare.cancelStrip()) setOn(false);
       ev.preventDefault();
     }
   });

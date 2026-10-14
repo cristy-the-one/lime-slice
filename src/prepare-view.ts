@@ -1,5 +1,9 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { LineMaterial } from "three/addons/lines/LineMaterial.js";
+import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
+import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
+import { boundaryLoops, edgeRun, nearestOnLoop, regionSurface, stripSamples, type EdgeLoop, type FaceRegions, type LoopPos, type RegionSurface, type StripSpan } from "./edge-strip";
 import { mountStudioLights, mountViewHelper, renderViewHelper, viewHelperHit } from "./viewport-chrome";
 import { syncBedGrid } from "./bed-grid";
 import { poseAffine, type Bounds, type PlacedPart } from "./mesh-place";
@@ -28,6 +32,18 @@ type ScaleAxis = Axis | "u";
 type HandleHit = { kind: "ring" | "move"; axis: Axis } | { kind: "scale"; axis: ScaleAxis };
 type XyDrag = { kind: "xy"; lastX: number; lastY: number; totalX: number; totalY: number; appliedX: number; appliedY: number };
 type Drag = HandleHit | { kind: "cut" } | XyDrag | null;
+type Brush = { kind: PaintKind | "seam" | "reinforce"; radius: number; edge?: { offset: number } };
+/** Face regions of one mesh, labelled off the main thread; loops and surfaces fill in per region on first use. */
+type EdgeCache = { source: Float32Array; regions: FaceRegions | null; loops: Map<number, EdgeLoop[]>; surfaces: Map<number, RegionSurface | null> };
+type EdgeAt = { region: number; loop: EdgeLoop; pos: LoopPos };
+type EdgePick =
+  | { kind: "hover"; at: EdgeAt | null }
+  | { kind: "started"; start: EdgeAt; end: LoopPos | null; press: { x: number; y: number; time: number } };
+
+const EDGE_PICK_PX = 20;
+const CORNER_SNAP_PX = 10;
+const DOUBLE_PRESS_MS = 500;
+const DOUBLE_PRESS_PX = 8;
 
 /** A drag of the support brush, as the app records it. `cancel` drops the stroke for a second finger. */
 export interface BrushHooks {
@@ -35,6 +51,12 @@ export interface BrushHooks {
   hit(point: Vec3, normal: Vec3): void;
   end(): void;
   cancel(): void;
+}
+
+/** The reinforce brush's Along edge strips, as the app records them. */
+export interface StripHooks {
+  ready(ready: boolean): void;
+  commit(hits: { point: Vec3; normal: Vec3 }[], radius: number): void;
 }
 
 export interface PrepareView {
@@ -87,10 +109,20 @@ export interface PrepareView {
   onReinforceVolumeEditEnd(cb: (() => void) | null): void;
   /**
    * The support, seam, or reinforce brush, or null for none. While it is on, a press on the part paints: the left
-   * button or one finger. Off the part the left button orbits, and two fingers always orbit.
+   * button or one finger. Off the part the left button orbits, and two fingers always orbit. Shift+press paints a
+   * straight line from the last dab. In Along edge mode (`edge` set) a press on the part picks edges instead of
+   * painting; `radius` is half the strip width.
    */
-  setBrush(brush: { kind: PaintKind | "seam" | "reinforce"; radius: number } | null): void;
+  setBrush(brush: Brush | null): void;
   onBrush(hooks: BrushHooks | null): void;
+  /**
+   * The reinforce brush's Along edge strips. `ready` reports whether the shown mesh's face regions are labelled (false
+   * while the worker runs); `commit` gets a strip's disk centres and outward normals in print millimetres, in order,
+   * and the disk radius.
+   */
+  onReinforceStrip(hooks: StripHooks | null): void;
+  /** Drop a started strip. True when there was one, so the bar's Esc cancels the strip first and leaves the tool on the next press. */
+  cancelStrip(): boolean;
   resize(): void;
 }
 
@@ -334,9 +366,16 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let editReinforceVolEndCb: (() => void) | null = null;
   let reinforceVolDrag: { index: number; kind: "move" | "scale"; axis: Axis; last: number } | null = null;
 
-  let brush: { kind: PaintKind | "seam" | "reinforce"; radius: number } | null = null;
+  let brush: Brush | null = null;
   let brushHooks: BrushHooks | null = null;
   let stroke: number | null = null;
+  /** The last point fed to `brushHooks.hit`, in the geometry frame: where a Shift+press line starts. */
+  let lastDab: THREE.Vector3 | null = null;
+  let stripHooks: StripHooks | null = null;
+  let edgeCache: EdgeCache | null = null;
+  let edgePick: EdgePick = { kind: "hover", at: null };
+  let regionsWorker: Worker | null = null;
+  let regionsJob = 0;
   // Each dab draws as the ball it reaches: the engine applies paint to every surface inside it.
   const disk = new THREE.SphereGeometry(1, 20, 14);
   const paintMat = new THREE.MeshBasicMaterial({
@@ -359,6 +398,21 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   cursor.visible = false;
   cursor.raycast = () => undefined;
   scene.add(cursor);
+  const edgeLineMat = new LineMaterial({ color: hexToThree(colors.paintReinforce), linewidth: 4, transparent: true, depthTest: false, worldUnits: false, toneMapped: false });
+  const edgeLine = new LineSegments2(new LineSegmentsGeometry(), edgeLineMat);
+  edgeLine.matrixAutoUpdate = false;
+  edgeLine.renderOrder = 9;
+  edgeLine.frustumCulled = false;
+  edgeLine.visible = false;
+  edgeLine.raycast = () => undefined;
+  scene.add(edgeLine);
+  let edgeKey = "";
+  const stripMat = new THREE.MeshBasicMaterial({ color: hexToThree(colors.paintReinforce), transparent: true, opacity: 0.25, depthWrite: false, toneMapped: false });
+  let stripSpots = new THREE.InstancedMesh(disk, stripMat, 64);
+  stripSpots.count = 0;
+  stripSpots.matrixAutoUpdate = false;
+  stripSpots.raycast = () => undefined;
+  scene.add(stripSpots);
 
   const park = new THREE.Vector3();
   let drag: Drag = null;
@@ -879,6 +933,244 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     else brushHooks?.cancel();
   }
 
+  function feedDab(hit: { point: Vec3; normal: Vec3; scene: THREE.Vector3 }) {
+    lastDab = mesh ? mesh.worldToLocal(hit.scene.clone()) : null;
+    brushHooks?.hit(hit.point, hit.normal);
+  }
+
+  /** The part along the screen line from the last dab to the pointer, short of it, stopping at the first gap. */
+  function lineFromLastDab(ev: PointerEvent): NonNullable<ReturnType<typeof brushHit>>[] {
+    if (!lastDab || !mesh || !brush) return [];
+    const rect = canvas.getBoundingClientRect();
+    const toPx = (p: THREE.Vector3) => {
+      const ndcPoint = p.clone().project(camera);
+      return new THREE.Vector2(rect.left + ((ndcPoint.x + 1) / 2) * rect.width, rect.top + ((1 - ndcPoint.y) / 2) * rect.height);
+    };
+    const world = lastDab.clone().applyMatrix4(mesh.matrixWorld);
+    const from = toPx(world);
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion).multiplyScalar(brush.radius);
+    const radiusPx = toPx(world.clone().add(up)).distanceTo(from);
+    // Finer than a quarter radius adds no dab: the stroke keeps one per half radius.
+    const step = Math.max(2, radiusPx / 4);
+    const to = new THREE.Vector2(ev.clientX, ev.clientY);
+    const count = Math.ceil(from.distanceTo(to) / step);
+    const hits: NonNullable<ReturnType<typeof brushHit>>[] = [];
+    for (let i = 1; i < count; i++) {
+      const at = from.clone().lerp(to, i / count);
+      pointer.set(((at.x - rect.left) / rect.width) * 2 - 1, -((at.y - rect.top) / rect.height) * 2 + 1);
+      raycaster.setFromCamera(pointer, camera);
+      const hit = brushHit();
+      if (!hit) break;
+      hits.push(hit);
+    }
+    return hits;
+  }
+
+  /** The shown mesh's face regions, once the worker has labelled them. */
+  function readyRegions(): FaceRegions | null {
+    return edgeCache?.regions ?? null;
+  }
+
+  function reportReady() {
+    const ready = !!readyRegions();
+    canvas.dataset.edgeReady = ready ? "1" : "";
+    stripHooks?.ready(ready);
+  }
+
+  /** Label the shown mesh's face regions once; a later call for the same mesh only reports. */
+  function labelRegions() {
+    if (!meshSource || edgeCache?.source === meshSource) {
+      reportReady();
+      return;
+    }
+    const cache: EdgeCache = { source: meshSource, regions: null, loops: new Map(), surfaces: new Map() };
+    edgeCache = cache;
+    const id = ++regionsJob;
+    regionsWorker ??= new Worker(new URL("./regions-worker.ts", import.meta.url), { type: "module" });
+    regionsWorker.onmessage = (ev: MessageEvent<{ id: number } & FaceRegions>) => {
+      if (ev.data.id !== regionsJob || edgeCache !== cache) return;
+      const { ids, twin, region, count } = ev.data;
+      cache.regions = { ids, twin, region, count };
+      reportReady();
+    };
+    const positions = cache.source.slice();
+    regionsWorker.postMessage({ id, positions }, [positions.buffer]);
+    reportReady();
+  }
+
+  function loopsOf(region: number): EdgeLoop[] {
+    if (!edgeCache?.regions) return [];
+    let loops = edgeCache.loops.get(region);
+    if (!loops) {
+      loops = boundaryLoops(edgeCache.source, edgeCache.regions, region);
+      edgeCache.loops.set(region, loops);
+    }
+    return loops;
+  }
+
+  function surfaceOf(region: number): RegionSurface | null {
+    if (!edgeCache?.regions) return null;
+    if (!edgeCache.surfaces.has(region)) edgeCache.surfaces.set(region, regionSurface(edgeCache.source, edgeCache.regions, region));
+    return edgeCache.surfaces.get(region) ?? null;
+  }
+
+  /** Canvas pixels of a point in the geometry frame. */
+  function screenOf(p: Vec3): THREE.Vector2 {
+    const rect = canvas.getBoundingClientRect();
+    const v = new THREE.Vector3(p[0], p[1], p[2]).applyMatrix4(mesh!.matrixWorld).project(camera);
+    return new THREE.Vector2(((v.x + 1) / 2) * rect.width, ((1 - v.y) / 2) * rect.height);
+  }
+
+  function canvasPx(ev: { clientX: number; clientY: number }): THREE.Vector2 {
+    const rect = canvas.getBoundingClientRect();
+    return new THREE.Vector2(ev.clientX - rect.left, ev.clientY - rect.top);
+  }
+
+  /** The triangle under the ray and the hit in the geometry frame. The mesh is a triangle soup, so `faceIndex` is the triangle. */
+  function partHit(): { triangle: number; local: Vec3 } | null {
+    const hit = mesh ? raycaster.intersectObject(mesh, false)[0] : undefined;
+    if (!hit || hit.faceIndex == null) return null;
+    const local = mesh!.worldToLocal(hit.point.clone());
+    return { triangle: hit.faceIndex, local: [local.x, local.y, local.z] };
+  }
+
+  /** The boundary of the hit's face region nearest the hit, when it lies within `EDGE_PICK_PX` of the pointer. */
+  function edgeAt(hit: { triangle: number; local: Vec3 }, px: THREE.Vector2): EdgeAt | null {
+    const region = readyRegions()?.region[hit.triangle];
+    if (region === undefined || region < 0) return null;
+    let best: (EdgeAt & { point: Vec3; dist: number }) | null = null;
+    for (const loop of loopsOf(region)) {
+      const near = nearestOnLoop(loop, hit.local);
+      if (!best || near.dist < best.dist) best = { region, loop, pos: near.pos, point: near.point, dist: near.dist };
+    }
+    if (!best || screenOf(best.point).distanceTo(px) > EDGE_PICK_PX) return null;
+    return { region, loop: best.loop, pos: best.pos };
+  }
+
+  function snapCorner(loop: EdgeLoop, pos: LoopPos, px: THREE.Vector2): LoopPos {
+    let snapped = pos;
+    let nearest = CORNER_SNAP_PX;
+    for (const corner of loop.corners) {
+      const d = screenOf(loop.points[corner]!).distanceTo(px);
+      if (d <= nearest) {
+        nearest = d;
+        snapped = { seg: corner, t: 0 };
+      }
+    }
+    return snapped;
+  }
+
+  /** The place on `loop` nearest the pointer on screen, for a pointer off the part. */
+  function nearestOnScreen(loop: EdgeLoop, px: THREE.Vector2): LoopPos {
+    const n = loop.points.length;
+    let best: LoopPos = { seg: 0, t: 0 };
+    let bestD = Infinity;
+    let a = screenOf(loop.points[0]!);
+    for (let seg = 0; seg < n; seg++) {
+      const b = screenOf(loop.points[(seg + 1) % n]!);
+      const ab = b.clone().sub(a);
+      const len2 = ab.lengthSq();
+      const t = len2 > 0 ? Math.min(1, Math.max(0, px.clone().sub(a).dot(ab) / len2)) : 0;
+      const d = a.clone().addScaledVector(ab, t).distanceTo(px);
+      if (d < bestD) {
+        bestD = d;
+        best = { seg, t };
+      }
+      a = b;
+    }
+    return best;
+  }
+
+  function stripEnd(start: EdgeAt, hit: { local: Vec3 } | null, px: THREE.Vector2): LoopPos {
+    if (!hit) return nearestOnScreen(start.loop, px);
+    return snapCorner(start.loop, nearestOnLoop(start.loop, hit.local).pos, px);
+  }
+
+  function edgeSamples(start: EdgeAt, span: StripSpan) {
+    if (!brush?.edge) return [];
+    return stripSamples(start.loop, span, brush.edge.offset, brush.radius, surfaceOf(start.region));
+  }
+
+  function commitStrip(start: EdgeAt, span: StripSpan) {
+    if (!mesh || !brush) return;
+    const toWorld = mesh.matrixWorld;
+    const hits = edgeSamples(start, span).map((s) => {
+      const point = new THREE.Vector3(s.point[0], s.point[1], s.point[2]).applyMatrix4(toWorld);
+      const normal = new THREE.Vector3(s.normal[0], s.normal[1], s.normal[2]).transformDirection(toWorld);
+      return { point: frame.fromScene(point) as Vec3, normal: frame.fromScene(normal) as Vec3 };
+    });
+    if (hits.length > 0) stripHooks?.commit(hits, brush.radius);
+  }
+
+  /** A press in Along edge mode. False when it missed the part, so it orbits as usual. */
+  function pressEdge(ev: PointerEvent): boolean {
+    const hit = partHit();
+    if (!hit) return false;
+    if (!readyRegions()) return true;
+    const px = canvasPx(ev);
+    const now = performance.now();
+    if (edgePick.kind === "started") {
+      const { start, press } = edgePick;
+      const again = now - press.time <= DOUBLE_PRESS_MS && px.distanceTo(new THREE.Vector2(press.x, press.y)) <= DOUBLE_PRESS_PX;
+      commitStrip(start, again ? { kind: "loop" } : { kind: "arc", from: start.pos, to: stripEnd(start, hit, px) });
+      edgePick = { kind: "hover", at: edgeAt(hit, px) };
+    } else {
+      const at = edgeAt(hit, px);
+      if (at) edgePick = { kind: "started", start: { ...at, pos: snapCorner(at.loop, at.pos, px) }, end: null, press: { x: px.x, y: px.y, time: now } };
+    }
+    showEdge();
+    return true;
+  }
+
+  function moveEdge(ev: PointerEvent) {
+    const hit = readyRegions() ? partHit() : null;
+    const px = canvasPx(ev);
+    if (edgePick.kind === "started") edgePick = { ...edgePick, end: stripEnd(edgePick.start, hit, px) };
+    else edgePick = { kind: "hover", at: hit ? edgeAt(hit, px) : null };
+    canvas.style.cursor = edgePick.kind === "started" || edgePick.at ? "crosshair" : "";
+    showEdge();
+  }
+
+  /** The hovered edge run, or the whole loop of a started strip, and the strip preview. */
+  function showEdge() {
+    const pick = brush?.edge && mesh ? edgePick : null;
+    const run = !pick ? null : pick.kind === "started" ? { points: pick.start.loop.points, closed: true } : pick.at ? edgeRun(pick.at.loop, pick.at.pos) : null;
+    const key = run ? `${run.points.length}:${run.points[0]?.join()}:${run.closed}` : "";
+    if (run && key !== edgeKey) {
+      const n = run.points.length;
+      const positions: number[] = [];
+      for (let i = 0; i < (run.closed ? n : n - 1); i++) positions.push(...run.points[i]!, ...run.points[(i + 1) % n]!);
+      if (positions.length >= 6) {
+        edgeLine.geometry.dispose();
+        edgeLine.geometry = new LineSegmentsGeometry().setPositions(positions);
+      }
+    }
+    edgeKey = key;
+    edgeLine.visible = !!run && run.points.length >= 2;
+    if (mesh) edgeLine.matrix.copy(mesh.matrix);
+
+    const samples = pick?.kind === "started" && pick.end ? edgeSamples(pick.start, { kind: "arc", from: pick.start.pos, to: pick.end }) : [];
+    if (stripSpots.instanceMatrix.count < samples.length) {
+      scene.remove(stripSpots);
+      stripSpots.dispose();
+      stripSpots = new THREE.InstancedMesh(disk, stripMat, samples.length * 2);
+      stripSpots.matrixAutoUpdate = false;
+      stripSpots.raycast = () => undefined;
+      scene.add(stripSpots);
+    }
+    if (mesh) stripSpots.matrix.copy(mesh.matrix);
+    const r = brush?.radius ?? 1;
+    samples.forEach((s, k) => stripSpots.setMatrixAt(k, spot.makeScale(r, r, r).setPosition(s.point[0], s.point[1], s.point[2])));
+    stripSpots.count = samples.length;
+    stripSpots.instanceMatrix.needsUpdate = true;
+    stripSpots.visible = samples.length > 0;
+
+    canvas.dataset.edgeHover = run ? String(run.points.length) : "";
+    canvas.dataset.edgeStart = pick?.kind === "started" ? "1" : "";
+    canvas.dataset.edgePreview = String(samples.length);
+    requestRender();
+  }
+
   function hitCut(ev: PointerEvent): boolean {
     if (!split || cutPicks.length === 0) return false;
     ndc(ev);
@@ -983,14 +1275,22 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
         return;
       }
       ndc(ev);
-      const hit = brushHit();
+      if (brush.edge && pressEdge(ev)) {
+        if (ev.pointerType !== "touch") controls.enabled = false;
+        ev.preventDefault();
+        ev.stopPropagation();
+        return;
+      }
+      const hit = brush.edge ? null : brushHit();
       if (hit) {
         stroke = ev.pointerId;
         if (ev.pointerType !== "touch") controls.enabled = false;
         canvas.setPointerCapture(ev.pointerId);
         showCursor(hit);
+        const line = ev.shiftKey ? lineFromLastDab(ev) : [];
         brushHooks?.start();
-        brushHooks?.hit(hit.point, hit.normal);
+        for (const dab of line) feedDab(dab);
+        feedDab(hit);
         ev.preventDefault();
         ev.stopPropagation();
         return;
@@ -1108,7 +1408,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       ndc(ev);
       const hit = brushHit();
       showCursor(hit);
-      if (hit) brushHooks?.hit(hit.point, hit.normal);
+      if (hit) feedDab(hit);
       return;
     }
     if (!drag && brush) {
@@ -1117,6 +1417,10 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       if (rVol && "kind" in rVol) {
         showCursor(null);
         canvas.style.cursor = "grab";
+        return;
+      }
+      if (brush.edge) {
+        moveEdge(ev);
         return;
       }
       const hit = ev.pointerType === "touch" ? null : brushHit();
@@ -1350,6 +1654,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       renderer.setSize(rect.width, rect.height, false);
       camera.aspect = rect.width / rect.height;
       camera.updateProjectionMatrix();
+      edgeLineMat.resolution.set(canvas.width, canvas.height);
     },
     setBed(x, y, z) {
       bedX = Math.max(10, x);
@@ -1402,6 +1707,11 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
           scene.add(mesh);
           addOutline(mesh, canonical);
         }
+        edgeCache = null;
+        edgePick = { kind: "hover", at: null };
+        lastDab = null;
+        if (brush?.edge) labelRegions();
+        else reportReady();
       }
       meshBounds = canonical && part ? part.bounds : null;
       if (mesh && part) {
@@ -1413,6 +1723,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       if (belt) layoutBed();
       else clearGhosts();
       drawPaint();
+      showEdge();
       syncReinforceVols();
       placeGizmo();
       cutKey = "";
@@ -1455,21 +1766,35 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     onReinforceVolumeEdit(cb) { editReinforceVolCb = cb; },
     onReinforceVolumeEditEnd(cb) { editReinforceVolEndCb = cb; },
     setBrush(next) {
+      const was = brush;
       brush = next;
       if (!brush) endStroke(true);
+      if (brush?.kind !== was?.kind) lastDab = null;
+      if (!brush?.edge) edgePick = { kind: "hover", at: null };
+      else if (!was?.edge) labelRegions();
       controls.touches.ONE = brush ? (-1 as THREE.TOUCH) : THREE.TOUCH.ROTATE;
       controls.touches.TWO = brush ? THREE.TOUCH.DOLLY_ROTATE : THREE.TOUCH.DOLLY_PAN;
       canvas.dataset.brush = brush ? brush.kind : "";
       if (!brush) {
         canvas.style.cursor = "";
         showCursor(null);
+      } else if (brush.edge) {
+        showCursor(null);
       } else if (cursor.visible) {
         cursor.scale.setScalar(brush.radius);
         cursorMat.color.setHex(paintColor(brush.kind));
         requestRender();
       }
+      showEdge();
     },
     onBrush(hooks) { brushHooks = hooks; },
+    onReinforceStrip(hooks) { stripHooks = hooks; },
+    cancelStrip() {
+      if (edgePick.kind !== "started") return false;
+      edgePick = { kind: "hover", at: null };
+      showEdge();
+      return true;
+    },
     setModifiers(doc, selectedId, tool) {
       modifierDoc = doc;
       modifierSelected = selectedId;
@@ -1515,6 +1840,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
         for (const mat of moveMats) mat.color.setHex(axisHex(axis));
       }
       for (const [axis, mat] of scaleMats) mat.color.setHex(axis === "u" ? hexToThree(colors.teal) : axisHex(axis));
+      edgeLineMat.color.setHex(hexToThree(colors.paintReinforce));
+      stripMat.color.setHex(hexToThree(colors.paintReinforce));
       bed.userData.gridKey = "";
       layoutBed();
       syncPlateBounds();
