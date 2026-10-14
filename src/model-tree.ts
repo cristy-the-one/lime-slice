@@ -50,6 +50,8 @@ export interface PlateMesh {
   sourcePos: Float32Array;
   /** `meshTokenOf(bytes)`. */
   token: string;
+  /** The node's STEP, once written. The plate object carries it as `brep` while it holds this node. */
+  step?: ArrayBuffer;
 }
 
 export interface ModelNode {
@@ -177,6 +179,26 @@ export function dropped(tree: ModelTree, id: NodeId): ModelTree | null {
     else lastChild.delete(node.parent);
   }
   return { ...tree, nodes, lastChild };
+}
+
+/**
+ * The child of `parent` that `op` already built, so an Apply of the same numbers jumps to it instead
+ * of building it again. A stored edge matches a fresh pick by index.
+ */
+export function childWithOp(tree: ModelTree, parent: NodeId, op: ModelOp): NodeId | null {
+  const want = canonical(op);
+  for (const id of childrenOf(tree, parent)) {
+    const node = tree.nodes.get(id);
+    if (node?.op && !node.broken && canonical(node.op) === want) return id;
+  }
+  return null;
+}
+
+function canonical(op: ModelOp): string {
+  const plain = op.kind === "fillet" || op.kind === "chamfer" ? { ...op, edges: op.edges.map((edge) => (typeof edge === "number" ? edge : edge.index)) } : op;
+  return JSON.stringify(plain, (_, value: unknown) =>
+    value && typeof value === "object" && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value,
+  );
 }
 
 /** The node whose plate mesh is `token`: how a plate restored by Prepare undo finds its place in the tree. */

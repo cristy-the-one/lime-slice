@@ -25,12 +25,9 @@ export type ProbeView =
   | { phase: "applied" }
   | { phase: "done"; ok: boolean; error?: string; maxMm?: number };
 
-/**
- * What a kernel answer depends on: the solid, its shape (the plate's mesh token for it), and the
- * tool's numbers. A shape never changes, so an answer stays true for its key.
- */
-export function probeKey(solidId: number, mesh: string, payload: Record<string, unknown>): string {
-  return `${solidId}|${mesh}|${JSON.stringify(payload)}`;
+/** What a kernel answer depends on: the tree node it ran on, whose shape never changes, and the op's numbers. */
+export function probeKey(node: string, op: object): string {
+  return `${node}|${JSON.stringify(op)}`;
 }
 
 export function isProbed(tool: string | null | undefined): tool is ProbedTool {

@@ -51,6 +51,9 @@ let hooks: ModelChromeHooks | null = null;
 let tool: ModelTool | null = null;
 let picks: ModelPickRef[] = [];
 let probe: ProbeView = null;
+/** False for surfaces with no closed solid: only Measure runs on them. */
+let editable = true;
+const VIEW_ONLY_TIP = "This STEP file has surfaces but no closed solid, so it can be measured but not edited.";
 
 type Scrub = {
   id: number;
@@ -156,6 +159,13 @@ export function syncModelSolid() {
 
 export function openModelTool(): ModelTool | null {
   return tool;
+}
+
+/** Whether the open shape can be edited. Surfaces only can be measured, so the edit tools turn off. */
+export function setModelEditable(next: boolean) {
+  editable = next;
+  if (!editable && tool && tool !== "measure") closeTool();
+  refreshTools();
 }
 
 /** The latest kernel dry-run for the open tool. Null clears it. */
@@ -277,8 +287,9 @@ function refreshTools() {
   document.querySelectorAll<HTMLButtonElement>(".model-tool[data-tool]").forEach((button) => {
     const id = button.dataset.tool ?? "";
     button.dataset.tipIdle ??= button.dataset.tip ?? "";
-    const blocked = toolBlockedTip(id, picks, legal);
-    button.disabled = !toolAvailable(id, picks, legal);
+    const viewOnly = !editable && id !== "measure";
+    const blocked = viewOnly ? VIEW_ONLY_TIP : toolBlockedTip(id, picks, legal);
+    button.disabled = viewOnly || !toolAvailable(id, picks, legal);
     button.dataset.tip = blocked || button.dataset.tipIdle;
   });
 }

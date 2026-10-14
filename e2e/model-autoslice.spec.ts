@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import { autoSliceOff } from "./auto-slice";
+import { mockModelTree } from "./model-tree-mock";
 import path from "node:path";
 
 type V = [number, number, number];
@@ -33,20 +34,17 @@ function boxSolid(sx: number, sy = 20, sz = 10) {
     const pb = corners[b!]!;
     return { id, lengthMm: Math.hypot(pa[0] - pb[0], pa[1] - pb[1], pa[2] - pb[2]), points: [...pa, ...pb] };
   });
-  return { id: 1, volumeMm3: sx * sy * sz, positions, triangles, faces: quads.map((_, id) => ({ id, areaMm2: 0 })), edges };
+  return { volumeMm3: sx * sy * sz, positions, triangles, faces: quads.map((_, id) => ({ id, areaMm2: 0 })), edges };
 }
 
-/** Each Apply grows the box by 10 mm; Undo returns the starting box. Every slice request is counted. */
+/** Each Apply grows the box by 10 mm. Every slice request is counted. */
 async function mockEngine(page: Page) {
   const slices: unknown[] = [];
   let applied = 0;
   const first = boxSolid(20);
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: first.positions } }));
-  await page.route("**/api/model/probe", (route) => route.fulfill({ json: { ok: true } }));
-  await page.route("**/api/model", (route) => route.fulfill({ json: first }));
-  await page.route("**/api/model/boolean", (route) => route.fulfill({ json: boxSolid(20 + 10 * ++applied) }));
-  await page.route("**/api/model/undo", (route) => route.fulfill({ json: first }));
+  await mockModelTree(page, { open: () => first, apply: () => boxSolid(20 + 10 * ++applied) });
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   await page.route("**/api/slice", (route) => {
     slices.push(route.request().postDataJSON());

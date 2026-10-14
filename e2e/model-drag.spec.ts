@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { autoSliceOff } from "./auto-slice";
+import { mockModelTree } from "./model-tree-mock";
 
 const out = path.resolve("artifacts/model-drag");
 fs.mkdirSync(out, { recursive: true });
@@ -37,17 +38,23 @@ function boxSolid(min: V = [0, 0, 0], size: V = [20, 20, 10]) {
     return { id, lengthMm: Math.hypot(pa[0] - pb[0], pa[1] - pb[1], pa[2] - pb[2]), points: [...pa, ...pb] };
   });
   const faces = quads.map((_, id) => ({ id, areaMm2: 0 }));
-  return { id: 1, volumeMm3: sx * sy * sz, positions, triangles, faces, edges };
+  return { volumeMm3: sx * sy * sz, positions, triangles, faces, edges };
 }
 
-async function openSolid(page: Page, probes: Record<string, unknown>[], solid = boxSolid()) {
+async function openSolid(page: Page, probes: Record<string, unknown>[], solid = boxSolid(), built = solid, applied: Record<string, unknown>[] = []) {
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: solid.positions } }));
-  await page.route("**/api/model/probe", (route) => {
-    probes.push(route.request().postDataJSON() as Record<string, unknown>);
-    return route.fulfill({ json: { ok: true } });
+  await mockModelTree(page, {
+    open: () => solid,
+    apply: (request) => {
+      applied.push(request.op as Record<string, unknown>);
+      return built;
+    },
+    probe: (request) => {
+      probes.push(request.op as Record<string, unknown>);
+      return { ok: true };
+    },
   });
-  await page.route("**/api/model", (route) => route.fulfill({ json: solid }));
   await page.goto("/");
   await autoSliceOff(page);
   await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
@@ -206,7 +213,7 @@ test("a boolean primitive moves, resizes, and turns from the dock, in sync with 
   const rz = await value(page, "modelRz");
   expect(rz).not.toBe(0);
   expect(Math.abs(rz % 15)).toBe(0);
-  await expect.poll(() => probes.at(-1)?.rz).toBe(rz);
+  await expect.poll(() => (probes.at(-1)?.turn as number[] | undefined)?.[2]).toBe(rz);
   await page.screenshot({ path: path.join(out, "boolean-turned.png") });
 });
 
@@ -284,7 +291,7 @@ test("a hole slides in its face plane from two docked arrows, and its origin dot
   expect(await value(page, "modelY")).not.toBe(first.y);
   expect(await value(page, "modelX")).toBe(moved.x);
   expect(await value(page, "modelZ")).toBe(10);
-  await expect.poll(() => probes.at(-1)?.z).toBe(10);
+  await expect.poll(() => (probes.at(-1)?.origin as number[] | undefined)?.[2]).toBe(10);
   await page.screenshot({ path: path.join(out, "hole-handles.png") });
 
   const x1 = await value(page, "modelX");
@@ -306,14 +313,9 @@ test("a hole slides in its face plane from two docked arrows, and its origin dot
 
 test("a docked drag is one undo step: nothing until Apply, then one", async ({ page }) => {
   const solid = boxSolid();
-  const cut = { ...boxSolid([0, 0, 0], [20, 20, 9]), id: 2 };
+  const cut = boxSolid([0, 0, 0], [20, 20, 9]);
   const hole: Record<string, unknown>[] = [];
-  await page.route("**/api/model/hole", (route) => {
-    hole.push(route.request().postDataJSON() as Record<string, unknown>);
-    return route.fulfill({ json: cut });
-  });
-  await page.route("**/api/model/undo", (route) => route.fulfill({ json: solid }));
-  await openSolid(page, [], solid);
+  await openSolid(page, [], solid, cut, hole);
   await page.locator("#modelToolHole").click();
   await expect(page.locator("#modelUndo")).toBeDisabled();
   const from = await grip(page, "hole-move-u");
@@ -329,8 +331,8 @@ test("a docked drag is one undo step: nothing until Apply, then one", async ({ p
   await page.locator("#modelApply").click();
   await expect(page.locator("#modelUndo")).toBeEnabled();
   expect(hole).toHaveLength(1);
-  expect(hole[0]!.x).toBe(x1);
-  expect(hole[0]!.z).toBe(10);
+  expect((hole[0]!.origin as number[])[0]).toBe(x1);
+  expect((hole[0]!.origin as number[])[2]).toBe(10);
   await page.locator("#modelUndo").click();
   await expect(page.locator("#modelUndo")).toBeDisabled();
 });

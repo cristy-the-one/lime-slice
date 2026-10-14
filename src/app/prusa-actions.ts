@@ -220,6 +220,7 @@ function syncImportedState(library: MachineLibrary) {
 
 export async function uploadToPrusaLink() {
   rememberPrusaForm();
+  fx.commitModel?.();
   if (sendBlock()) return;
   // A missing or stale slice is made first, as Export does.
   if (!state.result || fx.stale?.()) await fx.runSlice?.(false);

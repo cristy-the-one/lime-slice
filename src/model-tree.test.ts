@@ -1,4 +1,5 @@
 import {
+  childWithOp,
   childrenOf,
   dropped,
   jumped,
@@ -66,6 +67,16 @@ eq("the old branch keeps its steps", pathTo(branched, 2), [0, 1, 2]);
 eq("Redo from the parent follows the newest branch", redoTarget(jumped(branched, 0)), 3);
 eq("jumping into the old branch makes Redo follow it again", redoTarget(jumped(jumped(branched, 2), 0)), 1);
 eq("ids are never reused, even for a failed Apply", reserveId(reserveId(branched)[0])[1], 5);
+
+// The same numbers from the same node are the step already built.
+eq("an Apply of numbers already applied here finds that step", childWithOp(branched, 0, { ...cut, origin: [0, 0, 5] }), 1);
+eq("other numbers find none", childWithOp(branched, 0, { ...cut, size: [10, 10, 11] }), null);
+eq("the same numbers from another node find none", childWithOp(branched, 1, cut), null);
+const blended = apply(root, { kind: "fillet", edges: [3], size: 1 }, 3990);
+const stored = withNode(blended, 1, { op: { kind: "fillet", edges: [{ index: 3, mid: [0, 0, 5], lengthMm: 10 }], size: 1 } });
+eq("a stored edge matches a fresh pick by index", childWithOp(stored, 0, { kind: "fillet", edges: [3], size: 1 }), 1);
+eq("but not a chamfer of it", childWithOp(stored, 0, { kind: "chamfer", edges: [3], size: 1 }), null);
+eq("a broken step is built again", childWithOp(withNode(branched, 1, { broken: "no" }), 0, cut), null);
 
 // Saved nodes, parents first, for the engine's open.
 eq(

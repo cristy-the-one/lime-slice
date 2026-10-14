@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { holeAxis, outwardFromMesh } from "../src/model-blend.ts";
 import { autoSliceOff } from "./auto-slice";
+import { mockModelTree } from "./model-tree-mock";
 
 const out = "/opt/cursor/artifacts/multi-edge";
 fs.mkdirSync(out, { recursive: true });
@@ -36,7 +37,7 @@ function boxSolid() {
     const pb = corners[b!]!;
     return { id, lengthMm: Math.hypot(pa[0] - pb[0], pa[1] - pb[1], pa[2] - pb[2]), points: [...pa, ...pb] };
   });
-  return { id: 1, volumeMm3: sx * sy * sz, positions, triangles, faces: quads.map((_, id) => ({ id, areaMm2: 0 })), edges };
+  return { volumeMm3: sx * sy * sz, positions, triangles, faces: quads.map((_, id) => ({ id, areaMm2: 0 })), edges };
 }
 
 const solid = boxSolid();
@@ -44,16 +45,17 @@ const solid = boxSolid();
 async function openModel(page: Page, probes: Record<string, unknown>[]) {
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: solid.positions } }));
-  await page.route("**/api/model/probe", (route) => {
-    probes.push(route.request().postDataJSON() as Record<string, unknown>);
-    return route.fulfill({ json: { ok: true } });
+  await mockModelTree(page, {
+    open: () => solid,
+    apply: (request) => {
+      probes.push(request.op as Record<string, unknown>);
+      return solid;
+    },
+    probe: (request) => {
+      probes.push(request.op as Record<string, unknown>);
+      return { ok: true };
+    },
   });
-  await page.route("**/api/model/fillet", (route) => {
-    probes.push(route.request().postDataJSON() as Record<string, unknown>);
-    return route.fulfill({ json: solid });
-  });
-  await page.route("**/api/model/distance", (route) => route.fulfill({ json: { distanceMm: 20 } }));
-  await page.route("**/api/model", (route) => route.fulfill({ json: solid }));
   await page.goto("/");
   await autoSliceOff(page);
   await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
@@ -76,8 +78,8 @@ test("a hole follows the picked face, and a fillet sends every selected edge", a
   await expect(page.locator("#modelToolHole")).toHaveAttribute("data-tip", "Cut a cylinder into the picked face, or straight down");
 
   await page.locator("#modelToolHole").click();
-  await expect.poll(() => probes.at(-1)?.dz).toBe(-1);
-  expect(probes.at(-1)).toMatchObject({ kind: "hole", dx: 0, dy: 0, dz: -1 });
+  await expect.poll(() => (probes.at(-1)?.axis as number[] | undefined)?.[2]).toBe(-1);
+  expect(probes.at(-1)).toMatchObject({ kind: "hole", axis: [0, 0, -1] });
   await expect(page.locator("#modelNote")).toContainText("Straight down from the origin.");
   await page.locator("#modelToolHole").click();
 
@@ -106,10 +108,11 @@ test("a hole follows the picked face, and a fillet sends every selected edge", a
   const before = probes.length;
   await page.locator("#modelToolHole").click();
   await expect.poll(() => probes.length).toBeGreaterThan(before);
-  await expect.poll(() => probes.at(-1)?.dx).toBeCloseTo(dx, 5);
+  await expect.poll(() => (probes.at(-1)?.axis as number[] | undefined)?.[0]).toBeCloseTo(dx, 5);
   expect(probes.at(-1)).toMatchObject({ kind: "hole" });
-  expect(probes.at(-1)?.dy).toBeCloseTo(dy, 5);
-  expect(probes.at(-1)?.dz).toBeCloseTo(dz, 5);
+  const axis = probes.at(-1)?.axis as number[];
+  expect(axis[1]).toBeCloseTo(dy, 5);
+  expect(axis[2]).toBeCloseTo(dz, 5);
   const down = Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6 && dz < -0.9;
   await expect(page.locator("#modelNote")).toContainText(down ? "Straight down from the origin." : "Into the picked face.");
   await page.screenshot({ path: path.join(out, "hole-face.png") });

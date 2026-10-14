@@ -378,6 +378,8 @@ function attachMeshes(req: Record<string, unknown>, named: MeshRefs | null): { b
 
 /** `force` plans again even when this recipe is already cached. */
 export async function runSlice(force = false) {
+  // A slice asked for inside Model slices the solid on screen.
+  fx.commitModel?.();
   if (!state.mesh) {
     state.error = "Load a mesh first.";
     renderChrome();

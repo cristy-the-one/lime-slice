@@ -346,12 +346,11 @@ export function runCommand(id: string) {
       stepBrush(0.5);
       return;
     case "undo":
+      // In Model this steps the solid's history only, never Prepare's, even with nothing left to undo.
       if (state.stage === "model") {
         const button = document.querySelector<HTMLButtonElement>("#modelUndo");
-        if (button && !button.disabled) {
-          button.click();
-          return;
-        }
+        if (button && !button.disabled) button.click();
+        return;
       }
       undoUserEdit();
       return;
@@ -359,12 +358,11 @@ export function runCommand(id: string) {
       escapeModel();
       return;
     case "redo":
+      // In Model this steps the solid's history only, never Prepare's, even with nothing left to redo.
       if (state.stage === "model") {
         const button = document.querySelector<HTMLButtonElement>("#modelRedo");
-        if (button && !button.disabled) {
-          button.click();
-          return;
-        }
+        if (button && !button.disabled) button.click();
+        return;
       }
       redoUserEdit();
       return;

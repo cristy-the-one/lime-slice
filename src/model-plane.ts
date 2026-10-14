@@ -1,6 +1,6 @@
 /**
  * Where a horizontal split is allowed to sit.
- * The Open CASCADE session uses the same floor and fraction, so a plane the
+ * The Open CASCADE kernel uses the same floor and fraction, so a plane the
  * panel accepts is one the kernel will cut.
  */
 
