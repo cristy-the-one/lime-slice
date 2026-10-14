@@ -195,5 +195,20 @@ check("two quads at a 10° bend are 1 region", labelFaceRegions(fold(10)).count 
   check("a sliver triangle gets region -1", slivers.region[0] === -1 && slivers.region[1] === 0 && slivers.count === 1);
 }
 
+{
+  const ring = Array.from({ length: 12 }, (_, k) => [10 * Math.cos((Math.PI * k) / 6), 10 * Math.sin((Math.PI * k) / 6), 0]);
+  const tris: number[][][] = [];
+  for (let k = 0; k < 12; k++) {
+    const n = (k + 1) % 12;
+    if (k > 0) tris.push([ring[k]!, ring[n]!, [0, 0, 10]]);
+    tris.push([ring[n]!, ring[k]!, [0, 0, -10]]);
+  }
+  const soup = soupOf(tris);
+  const regions = labelFaceRegions(soup, 179);
+  check("a bipyramid missing one top face is one region of 23 triangles", regions.count === 1 && regions.region.length === 23);
+  const loops = boundaryLoops(soup, regions, 0);
+  check("the hole at the apex is one loop of 3 points", loops.length === 1 && loops[0]!.points.length === 3, loops.map((l) => l.points.length).join());
+}
+
 if (failed) throw new Error(`${failed} edge-strip checks failed`);
 console.log("edge-strip: ok");

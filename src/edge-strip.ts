@@ -127,9 +127,12 @@ export function boundaryLoops(positions: Float32Array, regions: FaceRegions, reg
   const owned = (h: number) => regions.region[Math.floor(h / 3)] === region;
   const isBoundary = (h: number) => twin[h] === -1 || !owned(twin[h]!);
   const next = (h: number) => h - (h % 3) + ((h % 3) + 1) % 3;
+  const nextAroundStart = (h: number) => next(twin[h]!);
   const unvisited = new Set<number>();
+  let triangles = 0;
   for (let t = 0; t < regions.region.length; t++) {
     if (regions.region[t] !== region) continue;
+    triangles++;
     for (let h = t * 3; h < t * 3 + 3; h++) if (isBoundary(h)) unvisited.add(h);
   }
   const cap = unvisited.size * 3;
@@ -140,9 +143,8 @@ export function boundaryLoops(positions: Float32Array, regions: FaceRegions, reg
     let h = start;
     for (let steps = 0; steps < cap && unvisited.delete(h); steps++) {
       halfEdges.push(h);
-      // Around the end vertex, turn through this region's own triangles until a boundary half-edge leaves it.
       let out = next(h);
-      for (let fan = 0; fan < cap && !isBoundary(out); fan++) out = next(twin[out]!);
+      for (let fan = 0; fan < triangles && !isBoundary(out); fan++) out = nextAroundStart(out);
       h = out;
     }
     if (halfEdges.length >= 2) loops.push(loopOf(positions, halfEdges));
