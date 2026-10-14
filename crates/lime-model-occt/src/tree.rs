@@ -29,7 +29,7 @@ pub const ROOT: NodeId = 0;
 const EDGE_MATCH_MM: f64 = 1e-3;
 
 /// One node in eight along the open path keeps its solid whatever the cache holds, so a jump back
-/// never replays more than seven steps.
+/// along that path never replays more than seven steps.
 const PATH_PIN_EVERY: u32 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -602,43 +602,42 @@ impl Store {
     }
 
     fn goto(&mut self, key: String, id: NodeId, chord: f64) -> Result<Answer, Failure> {
-        let chord_bits = chord_key(chord);
         let doc = doc_in(&mut self.docs, &key)?;
         doc.node(id)?;
         doc.probe = None;
-        self.clock += 1;
-        let clock = self.clock;
-        if let Some(reply) = self
-            .replies
-            .iter_mut()
-            .find(|reply| reply.key == key && reply.node == id && reply.chord == chord_bits)
-        {
-            reply.used = clock;
-            doc.current = id;
-            if let Some(node) = doc.nodes.get_mut(&id) {
-                node.used = clock;
+        let (text, replayed) = match self.cached_reply(&key, id, chord) {
+            Some(text) => {
+                let doc = doc_in(&mut self.docs, &key)?;
+                if let Some(node) = doc.nodes.get_mut(&id) {
+                    node.used = self.clock;
+                }
+                (text, 0)
             }
-            let text = with_fields(reply.text.clone(), &[("replayed", "0".into())]);
-            return Ok(Answer::Held { key, text });
-        }
-        let replayed = doc.ensure_shape(id, &mut self.clock)?;
-        doc.current = id;
-        let text = self.reply(&key, id, chord)?;
+            None => {
+                let replayed = doc_in(&mut self.docs, &key)?.ensure_shape(id, &mut self.clock)?;
+                (self.reply(&key, id, chord)?, replayed)
+            }
+        };
+        doc_in(&mut self.docs, &key)?.current = id;
         let text = with_fields(text, &[("replayed", replayed.to_string())]);
         Ok(Answer::Held { key, text })
     }
 
-    /// The node's reply, built and cached on first use. The node must hold its solid.
-    fn reply(&mut self, key: &str, id: NodeId, chord: f64) -> Result<String, Failure> {
-        let chord_bits = chord_key(chord);
+    fn cached_reply(&mut self, key: &str, id: NodeId, chord: f64) -> Option<String> {
+        let chord = chord_key(chord);
         self.clock += 1;
-        if let Some(reply) = self
+        let reply = self
             .replies
             .iter_mut()
-            .find(|reply| reply.key == key && reply.node == id && reply.chord == chord_bits)
-        {
-            reply.used = self.clock;
-            return Ok(reply.text.clone());
+            .find(|reply| reply.key == key && reply.node == id && reply.chord == chord)?;
+        reply.used = self.clock;
+        Some(reply.text.clone())
+    }
+
+    /// The node's reply, built and cached on first use. The node must hold its solid.
+    fn reply(&mut self, key: &str, id: NodeId, chord: f64) -> Result<String, Failure> {
+        if let Some(text) = self.cached_reply(key, id, chord) {
+            return Ok(text);
         }
         let doc = doc_in(&mut self.docs, key)?;
         let fingerprint = doc.node(id)?.fingerprint;
@@ -647,7 +646,7 @@ impl Store {
         self.replies.push(Reply {
             key: key.to_string(),
             node: id,
-            chord: chord_bits,
+            chord: chord_key(chord),
             text: text.clone(),
             used: self.clock,
         });
