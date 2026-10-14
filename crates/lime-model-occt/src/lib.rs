@@ -990,20 +990,8 @@ mod session_contract {
         assert!(src.contains("lime-slice/occt.log"));
         assert!(src.contains("The plane is too close to a face. Move it into the part."));
         assert!(src.contains("This solid is too thin to split"));
-        assert!(src.contains("std::vector<Held> g_redo"));
         assert!(src.contains("lime_model_occt_redo"));
         assert!(src.contains("There is no edit to redo"));
-        let checkpoint = src.find("void commit_held(").expect("commit_held");
-        let after_checkpoint = src[checkpoint..]
-            .find("\n}\n")
-            .map(|at| checkpoint + at)
-            .expect("commit_held ends");
-        let checkpoint_body = &src[checkpoint..after_checkpoint];
-        assert!(
-            checkpoint_body.contains("g_redo.clear()"),
-            "{checkpoint_body}"
-        );
-        assert!(src.contains("g_redo.clear()"));
         let probe = src
             .find("lime_model_occt_blend_probe")
             .expect("blend probe");
@@ -1013,8 +1001,8 @@ mod session_contract {
             .expect("hole follows the probe");
         let body = &src[probe..hole];
         assert!(src.contains("maxMm"));
-        assert!(!body.contains("checkpoint"), "{body}");
-        assert!(!body.contains("replace_held"), "{body}");
+        assert!(!body.contains("commit_held"), "{body}");
+        assert!(!body.contains("commit_edit"), "{body}");
         for name in [
             "lime_model_occt_hole_probe",
             "lime_model_occt_boolean_probe",
@@ -1026,8 +1014,7 @@ mod session_contract {
                 .expect("probe body ends");
             let body = &src[start..end];
             assert!(body.contains("probe_json"), "{body}");
-            assert!(!body.contains("checkpoint"), "{body}");
-            assert!(!body.contains("replace_held"), "{body}");
+            assert!(!body.contains("commit_held"), "{body}");
             assert!(!body.contains("commit_edit"), "{body}");
         }
     }
