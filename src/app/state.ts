@@ -321,6 +321,8 @@ export const state = {
 export const session = {
   job: 0,
   autoTimer: 0,
+  /** A change was made in the Model tab, where automatic slices wait for the user to leave. */
+  autoDeferred: false,
   stepTimer: 0,
   /** Slice currently drawn. Geometry buffers carry the same id as `resultJob`. */
   shown: null as SliceResponse | null,

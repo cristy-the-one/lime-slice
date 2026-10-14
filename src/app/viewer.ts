@@ -11,7 +11,7 @@ import { syncLayerTip } from "../ui/layer-tip";
 import { type LayerGcode, indexLayerGcode, type PlayPoint, layerMoves, matchGcodeLine, layerClasses } from "../playback";
 import { replyOffset, shownBedOffset } from "../bed-offset";
 import { applyPlace, fetchStoredGcode, livePlate, nudgePlacement, objectPlacement } from "./files";
-import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, markStale, touch } from "./settings";
+import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, markStale, touch, stale } from "./settings";
 import { cycleLayerAction, type LayerActionKind } from "../layer-actions";
 import { flushEdit, noteEdit } from "./history";
 import { currentRules } from "./rules";
@@ -457,7 +457,8 @@ export function setView(mode: typeof state.viewMode, source: "user" | "auto" = "
 }
 
 export function setStage(stage: "prepare" | "preview" | "gcode" | "model") {
-  if (state.stage === "model" && stage !== "model") flushEdit();
+  const leavingModel = state.stage === "model" && stage !== "model";
+  if (leavingModel) flushEdit();
   state.stage = stage;
   document.querySelector<HTMLElement>("#prepareBody")!.hidden = stage !== "prepare";
   document.querySelector<HTMLElement>("#modelBody")!.hidden = stage !== "model";
@@ -484,6 +485,14 @@ export function setStage(stage: "prepare" | "preview" | "gcode" | "model") {
   resize();
   paintSpark();
   if (stage === "model") showModel();
+  if (leavingModel) resumeAuto();
+}
+
+/** Leaving the Model tab: the change made there slices once, as if it had just happened. */
+function resumeAuto() {
+  if (!session.autoDeferred) return;
+  session.autoDeferred = false;
+  if (stale() || !state.result) fx.scheduleAuto();
 }
 
 export function setHelp(open: boolean) {
