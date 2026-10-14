@@ -170,7 +170,10 @@ test("after a reload, Delete branch refuses the plate's path and a split whose p
   await row(page, "plate.step").click();
   await expect(readout(page)).toContainText(volume(10));
   await cut(page, 6);
-  await page.locator("#modelCancel").click();
+  await page.locator("#tabPrepare").click();
+  await page.locator("[data-plate-select]").first().click();
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText(volume(6));
   await row(page, "Cut box 8").focus();
   await page.keyboard.press("Delete");
   await expect(readout(page), "before the save, Prepare undo can bring the cut back").toHaveText("The plate held a step on this branch, and Prepare undo can bring it back.");
