@@ -25,8 +25,10 @@ interface ModelChromeHooks {
   clearSelection(): void;
   /** Z extent of the open solid, in the solid's own frame. */
   solidZ(): AxisExtent | null;
-  /** A tool opened, the selection changed, or a number changed. */
-  paramsChanged(): void;
+  /** A tool opened, the selection changed, or a number changed. `typed` while a number is still being typed or dragged. */
+  paramsChanged(typed?: boolean): void;
+  /** A typed or dragged number settled: ask the kernel now instead of after the typing wait. */
+  probeNow(): void;
   /** Bounds of the open solid, in the solid's own frame. */
   solidBox(): SolidBox | null;
   /** Polyline points of one edge of the open solid. */
@@ -97,10 +99,8 @@ export function mountModelChrome(next: ModelChromeHooks) {
   });
   document.querySelector("#modelCancel")?.addEventListener("click", () => closeTool());
   document.querySelector("#modelPanel")?.addEventListener("input", () => {
-    markChecking();
-    refreshApply();
     refreshGhost();
-    hooks?.paramsChanged();
+    hooks?.paramsChanged(true);
   });
   document.querySelector("#modelPrim")?.addEventListener("change", () => {
     syncFields();
@@ -136,7 +136,6 @@ export function syncModelChrome(next: readonly ModelPickRef[]) {
     chip.toggleAttribute("hidden", label.length === 0);
   }
   refreshTools();
-  markChecking();
   refreshApply();
   refreshNote();
   refreshGhost();
@@ -186,17 +185,10 @@ function toggleTool(next: ModelTool) {
   if (next === "measure") applyMeasureDefaults();
   syncFields();
   refreshTools();
-  markChecking();
   refreshApply();
   refreshNote();
   refreshGhost();
   hooks?.paramsChanged();
-}
-
-/** A probed tool is unchecked until the kernel answers, so Apply cannot stay on from the previous result. */
-function markChecking() {
-  if (!isProbed(tool)) return;
-  probe = { phase: "checking" };
 }
 
 function closeTool() {
@@ -374,6 +366,7 @@ function onHandleDrag(drag: HandleDrag) {
   if (!tool) return;
   writeFields(drag.handle.fields, drag.values);
   document.querySelector("#modelPanel")?.dispatchEvent(new Event("input", { bubbles: true }));
+  if (drag.phase === "end") hooks?.probeNow();
 }
 
 function point(which: "A" | "B"): Vec3 {
@@ -477,8 +470,10 @@ function onScrubMove(ev: PointerEvent) {
 
 function onScrubUp(ev: PointerEvent) {
   if (!scrub || ev.pointerId !== scrub.id) return;
+  const moved = scrub.mode === "scrub";
   scrub = null;
   window.removeEventListener("pointermove", onScrubMove);
   window.removeEventListener("pointerup", onScrubUp);
   window.removeEventListener("pointercancel", onScrubUp);
+  if (moved) hooks?.probeNow();
 }

@@ -2,11 +2,17 @@
 // It calls the LGPL library; the notice is third_party/occt/NOTICE.md.
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -186,16 +192,66 @@ double depth_along(const TopoDS_Shape& shape, const gp_Dir& normal) {
     return any ? hi - lo : 0.0;
 }
 
+/// A probe's result, kept so an Apply with the same key commits it instead of building it again.
+/// `key` is the op and its numbers; `parent` is the shape it was built on. `seq` orders probes, newest wins.
+struct Probed {
+    std::string key;
+    TopoDS_Shape parent;
+    TopoDS_Shape result;
+    double volume = 0;
+    uint64_t seq = 0;
+};
+
+/// The serialised tessellation of one shape at one chord. Empty until first asked for.
+struct Reply {
+    std::string json;
+    double chord = 0;
+};
+
+/// One shape the session holds, with what was computed from it once. A shape never changes,
+/// so its volume and reply stay valid while it is held, undone, or redone.
 struct Held {
     TopoDS_Shape shape;
     TopTools_IndexedMapOfShape faces;
     TopTools_IndexedMapOfShape edges;
+    double volume = 0;
+    Reply reply;
+    Probed probed;
+};
+
+struct Solid;
+
+/// One edit on an undo or redo stack: the shape it returns to. A split also names the piece it added,
+/// which undo takes off the session (kept in `piece` on the redo side) and redo puts back under the same id.
+struct Step {
+    Held held;
+    int spawned = 0;
+    std::shared_ptr<Solid> piece;
+};
+
+/// One open solid: the shape it is now, and the edits undo and redo walk through.
+struct Solid {
+    Held held;
+    std::vector<Step> undo;
+    std::vector<Step> redo;
+};
+
+/// Kernel work done since load. Tests read it to prove a probe's result was reused.
+struct Stats {
+    std::atomic<long> builds{0};
+    std::atomic<long> volumes{0};
+    std::atomic<long> tessellations{0};
 };
 
 std::mutex g_mu;
-std::vector<Held> g_held;
-std::vector<TopoDS_Shape> g_undo;
-std::vector<TopoDS_Shape> g_redo;
+/// Every solid of the open file, by id: the file's own and each piece a split added. Ids are never reused.
+std::map<int, Solid> g_solids;
+int g_next_id = 1;
+std::atomic<uint64_t> g_probe_seq{0};
+Stats g_stats;
+
+/// Cached replies kept across the undo and redo stacks, nearest first. Small parts keep every step.
+constexpr size_t kReplyBudget = size_t(64) << 20;
 
 char* alloc(const std::string& text) {
     char* out = static_cast<char*>(std::malloc(text.size() + 1));
@@ -244,9 +300,10 @@ double chord_of(double chord) {
     return chord;
 }
 
-Held hold_of(const TopoDS_Shape& shape) {
+Held hold_of(const TopoDS_Shape& shape, double volume) {
     Held held;
     held.shape = shape;
+    held.volume = volume;
     TopExp::MapShapes(shape, TopAbs_FACE, held.faces);
     TopExp::MapShapes(shape, TopAbs_EDGE, held.edges);
     return held;
@@ -268,36 +325,9 @@ TopoDS_Shape as_solid(const TopoDS_Shape& shape) {
     return count == 1 ? found : shape;
 }
 
-int store(const TopoDS_Shape& shape) {
-    g_held.clear();
-    g_undo.clear();
-    g_redo.clear();
-    g_held.push_back(hold_of(as_solid(shape)));
-    return 1;
-}
-
-bool held_at(int id, Held& out) {
-    if (id < 1 || static_cast<size_t>(id) > g_held.size()) {
-        return false;
-    }
-    out = g_held.at(static_cast<size_t>(id - 1));
-    return true;
-}
-
-void push_capped(std::vector<TopoDS_Shape>& stack, const TopoDS_Shape& shape) {
-    stack.push_back(shape);
-    if (stack.size() > 32) {
-        stack.erase(stack.begin());
-    }
-}
-
-void checkpoint(const TopoDS_Shape& shape) {
-    g_redo.clear();
-    push_capped(g_undo, shape);
-}
-
-void replace_held(int id, const TopoDS_Shape& shape) {
-    g_held.at(static_cast<size_t>(id - 1)) = hold_of(shape);
+void integrate(const TopoDS_Shape& shape, GProp_GProps& props) {
+    g_stats.volumes += 1;
+    BRepGProp::VolumeProperties(shape, props);
 }
 
 double volume_of(const TopoDS_Shape& shape) {
@@ -309,7 +339,7 @@ double volume_of(const TopoDS_Shape& shape) {
         int count = 0;
         for (TopExp_Explorer explorer(shape, TopAbs_SOLID); explorer.More(); explorer.Next()) {
             GProp_GProps props;
-            BRepGProp::VolumeProperties(explorer.Current(), props);
+            integrate(explorer.Current(), props);
             total += props.Mass();
             count += 1;
         }
@@ -318,8 +348,125 @@ double volume_of(const TopoDS_Shape& shape) {
         }
     }
     GProp_GProps props;
-    BRepGProp::VolumeProperties(shape, props);
+    integrate(shape, props);
     return props.Mass();
+}
+
+/// Open a file's solid. Every solid of the previous file is released.
+int store(const TopoDS_Shape& shape) {
+    g_solids.clear();
+    const TopoDS_Shape solid = as_solid(shape);
+    const int id = g_next_id++;
+    g_solids[id].held = hold_of(solid, volume_of(solid));
+    return id;
+}
+
+/// The open solid, or null. Call under `g_mu`; the pointer is valid until the lock is released.
+Solid* solid_at(int id) {
+    const auto found = g_solids.find(id);
+    return found == g_solids.end() ? nullptr : &found->second;
+}
+
+Held* held_at(int id) {
+    Solid* solid = solid_at(id);
+    return solid == nullptr ? nullptr : &solid->held;
+}
+
+/// Keep cached replies within `kReplyBudget`, nearest to each open shape first. A dropped reply is rebuilt on demand.
+void trim_replies() {
+    size_t used = 0;
+    size_t deepest = 0;
+    for (const auto& entry : g_solids) {
+        used += entry.second.held.reply.json.size();
+        deepest = std::max({deepest, entry.second.undo.size(), entry.second.redo.size()});
+    }
+    for (size_t depth = 0; depth < deepest; ++depth) {
+        for (auto& entry : g_solids) {
+            for (std::vector<Step>* stack : {&entry.second.undo, &entry.second.redo}) {
+                if (depth >= stack->size()) {
+                    continue;
+                }
+                Reply& reply = (*stack)[stack->size() - 1 - depth].held.reply;
+                if (used + reply.json.size() > kReplyBudget) {
+                    reply = Reply{};
+                }
+                used += reply.json.size();
+            }
+        }
+    }
+}
+
+void push_capped(std::vector<Step>& stack, Step&& step) {
+    step.held.probed = Probed{};
+    stack.push_back(std::move(step));
+    if (stack.size() > 32) {
+        stack.erase(stack.begin());
+    }
+}
+
+/// Make `next` the solid's shape and keep the old one for undo. `spawned` is a piece the edit added. Call under `g_mu`.
+void commit_held(Solid& solid, Held&& next, int spawned = 0) {
+    solid.redo.clear();
+    push_capped(solid.undo, Step{std::move(solid.held), spawned, nullptr});
+    solid.held = std::move(next);
+}
+
+bool editable(const TopoDS_Shape& shape, std::string& error);
+
+/// The open solid and its volume, read under the lock so an op can run outside it. A shape with no solid is refused.
+bool copy_shape(int id, TopoDS_Shape& current, double& volume, std::string& error) {
+    std::lock_guard<std::mutex> lock(g_mu);
+    const Held* held = held_at(id);
+    if (held == nullptr) {
+        error = "That solid is no longer open";
+        return false;
+    }
+    current = held->shape;
+    volume = held->volume;
+    return editable(current, error);
+}
+
+std::string key_of(const char* op, std::initializer_list<double> values, const std::vector<int>& indices = {}) {
+    std::string key = op;
+    char buffer[40];
+    for (const double value : values) {
+        std::snprintf(buffer, sizeof buffer, " %.17g", value);
+        key += buffer;
+    }
+    for (const int index : indices) {
+        key += " e";
+        key += std::to_string(index);
+    }
+    return key;
+}
+
+/// Keep a probe's result on the solid it was built on. A newer probe, an edit, or an undo replaces it.
+void remember_probe(
+    int id,
+    const TopoDS_Shape& parent,
+    std::string key,
+    uint64_t seq,
+    const TopoDS_Shape& result,
+    double volume) {
+    std::lock_guard<std::mutex> lock(g_mu);
+    Held* held = held_at(id);
+    if (held == nullptr || !held->shape.IsSame(parent) || seq < held->probed.seq) {
+        return;
+    }
+    held->probed = Probed{std::move(key), parent, result, volume, seq};
+}
+
+/// The probed result for `key` on `current`, when a probe built exactly this edit on this shape.
+bool probed_result(int id, const TopoDS_Shape& current, const std::string& key, TopoDS_Shape& result, double& volume) {
+    std::lock_guard<std::mutex> lock(g_mu);
+    const Held* held = held_at(id);
+    if (held == nullptr || held->probed.result.IsNull() || held->probed.key != key ||
+        !held->probed.parent.IsSame(current)) {
+        return false;
+    }
+    result = held->probed.result;
+    volume = held->probed.volume;
+    return true;
 }
 
 bool has_solid(const TopoDS_Shape& shape) {
@@ -381,20 +528,18 @@ void append_point(std::string& out, bool& first, const gp_Pnt& point) {
 void append_face_normal(std::string& out, const TopoDS_Face& face);
 
 std::string tessellate(int id, const Held& held, double chord) {
+    g_stats.tessellations += 1;
     chord = chord_of(chord);
     const TopoDS_Shape& shape = held.shape;
     BRepMesh_IncrementalMesh mesh(shape, chord, Standard_False, 0.5, Standard_False);
     mesh.Perform();
-
-    GProp_GProps volume_props;
-    BRepGProp::VolumeProperties(shape, volume_props);
 
     std::string out = "{\"id\":";
     out += std::to_string(id);
     out += ",\"kernel\":\"occt\",\"version\":\"";
     out += escape(OCCT_Version_String_Complete());
     out += "\",\"volumeMm3\":";
-    append_num(out, volume_props.Mass());
+    append_num(out, held.volume);
     out += ",\"positions\":[";
 
     bool first_position = true;
@@ -500,8 +645,19 @@ bool pick(const Held& held, const char* kind, int index, TopoDS_Shape& out) {
     return false;
 }
 
+/// The open solid's reply at `chord`, built once per shape and chord. `id` must be open. Call under `g_mu`.
+const std::string& reply_of(int id, double chord) {
+    Held& held = *held_at(id);
+    const double clamped = chord_of(chord);
+    if (held.reply.json.empty() || held.reply.chord != clamped) {
+        held.reply = Reply{tessellate(id, held, clamped), clamped};
+        trim_replies();
+    }
+    return held.reply.json;
+}
+
 char* finish(int id, double chord) {
-    return alloc(tessellate(id, g_held.at(static_cast<size_t>(id - 1)), chord));
+    return alloc(reply_of(id, chord));
 }
 
 TopoDS_Shape make_primitive(
@@ -594,6 +750,7 @@ TopoDS_Shape turn_primitive(
 }
 
 TopoDS_Shape boolean_op(const std::string& op, const TopoDS_Shape& solid, const TopoDS_Shape& tool, std::string& error) {
+    g_stats.builds += 1;
     if (op == "fuse") {
         BRepAlgoAPI_Fuse algo(solid, tool);
         algo.SetFuzzyValue(1.0e-7);
@@ -628,31 +785,34 @@ TopoDS_Shape boolean_op(const std::string& op, const TopoDS_Shape& solid, const 
     return {};
 }
 
-bool accepted_result(const TopoDS_Shape& shape, std::string& error) {
-    if (shape.IsNull() || !has_solid(shape) || !(volume_of(shape) > 1e-6)) {
+bool accepted_result(const TopoDS_Shape& shape, double& volume, std::string& error) {
+    volume = shape.IsNull() || !has_solid(shape) ? 0.0 : volume_of(shape);
+    if (!(volume > 1e-6)) {
         error = "The boolean removed the solid";
         return false;
     }
     return true;
 }
 
+/// Hold `result` in place of `current`, which must still be the open solid. `volume` is the result's, integrated once by the op.
 char* commit_edit(
     int id,
     const TopoDS_Shape& current,
     const TopoDS_Shape& result,
+    double volume,
     double chord,
     const std::string& empty_message) {
     const TopoDS_Shape solid = as_solid(result);
-    if (solid.IsNull() || !has_solid(solid) || !(volume_of(solid) > 1e-6)) {
+    if (solid.IsNull() || !has_solid(solid) || !(volume > 1e-6)) {
         return error_json(empty_message);
     }
+    Held next = hold_of(solid, volume);
     std::lock_guard<std::mutex> lock(g_mu);
-    Held held;
-    if (!held_at(id, held) || !held.shape.IsSame(current)) {
+    Solid* open = solid_at(id);
+    if (open == nullptr || !open->held.shape.IsSame(current)) {
         return error_json("That solid is no longer open");
     }
-    checkpoint(current);
-    replace_held(id, solid);
+    commit_held(*open, std::move(next));
     return finish(id, chord);
 }
 
@@ -690,7 +850,7 @@ void append_face_normal(std::string& out, const TopoDS_Face& face) {
     }
 }
 
-/// Every index, once, in the order given. An empty list is the same refusal as an unpicked edge.
+/// Every index, once, in the order given, as edges and as the indices kept. An empty list is the same refusal as an unpicked edge.
 bool copy_edges(
     int id,
     const int* edges,
@@ -698,29 +858,31 @@ bool copy_edges(
     const char* verb,
     TopoDS_Shape& current,
     std::vector<TopoDS_Edge>& found,
+    std::vector<int>& kept,
     std::string& error) {
     std::lock_guard<std::mutex> lock(g_mu);
-    Held held;
-    if (!held_at(id, held)) {
+    const Held* held = held_at(id);
+    if (held == nullptr) {
         error = "That solid is no longer open";
         return false;
     }
-    if (!editable(held.shape, error)) {
+    if (!editable(held->shape, error)) {
         return false;
     }
     if (edges == nullptr || count <= 0) {
         error = std::string("Pick an edge to ") + verb + ".";
         return false;
     }
-    current = held.shape;
+    current = held->shape;
     found.clear();
+    kept.clear();
     for (int i = 0; i < count; ++i) {
         const int edge = edges[i];
         if (edge < 0) {
             error = count == 1 ? std::string("Pick an edge to ") + verb + "." : "That edge is not on this solid";
             return false;
         }
-        if (edge >= held.edges.Extent()) {
+        if (edge >= held->edges.Extent()) {
             error = "That edge is not on this solid";
             return false;
         }
@@ -734,24 +896,14 @@ bool copy_edges(
         if (duplicate) {
             continue;
         }
-        found.push_back(TopoDS::Edge(held.edges(edge + 1)));
+        found.push_back(TopoDS::Edge(held->edges(edge + 1)));
+        kept.push_back(edge);
     }
     if (found.empty()) {
         error = std::string("Pick an edge to ") + verb + ".";
         return false;
     }
     return true;
-}
-
-bool copy_shape(int id, TopoDS_Shape& current, std::string& error) {
-    std::lock_guard<std::mutex> lock(g_mu);
-    Held held;
-    if (!held_at(id, held)) {
-        error = "That solid is no longer open";
-        return false;
-    }
-    current = held.shape;
-    return editable(current, error);
 }
 
 /// An edge Open CASCADE will refuse at every size: already tangent-continuous, or a seam on one face.
@@ -825,6 +977,7 @@ bool blend_build(
     double size,
     bool chamfer,
     TopoDS_Shape& built,
+    double& volume,
     std::string& error) {
     const bool many = edges.size() > 1;
     const char* failed = chamfer
@@ -839,6 +992,7 @@ bool blend_build(
         error = refused;
         return false;
     }
+    g_stats.builds += 1;
     try {
         TopoDS_Shape shape;
         if (chamfer) {
@@ -865,11 +1019,13 @@ bool blend_build(
             shape = builder.Shape();
         }
         const TopoDS_Shape solid = as_solid(shape);
-        if (solid.IsNull() || !has_solid(solid) || !(volume_of(solid) > 1e-6)) {
+        const double solid_volume = solid.IsNull() || !has_solid(solid) ? 0.0 : volume_of(solid);
+        if (!(solid_volume > 1e-6)) {
             error = failed;
             return false;
         }
         built = shape;
+        volume = solid_volume;
         return true;
     } catch (const Standard_Failure&) {
         error = failed;
@@ -900,9 +1056,9 @@ double largest_blend(const TopoDS_Shape& current, const std::vector<TopoDS_Edge>
             break;
         }
         TopoDS_Shape trial;
+        double trial_volume = 0.0;
         std::string ignored;
-        if (blend_build(current, edges, mid, chamfer, trial, ignored)) {
-            (void)trial;
+        if (blend_build(current, edges, mid, chamfer, trial, trial_volume, ignored)) {
             best = mid;
             lo = mid;
         } else {
@@ -928,6 +1084,7 @@ TopoDS_Shape build_boolean(
     double rx,
     double ry,
     double rz,
+    double& volume,
     std::string& error) {
     const TopoDS_Shape made = make_primitive(primitive, x, y, z, dx, dy, dz, radius, height, error);
     if (made.IsNull()) {
@@ -941,7 +1098,7 @@ TopoDS_Shape build_boolean(
     if (!error.empty()) {
         return {};
     }
-    if (!accepted_result(result, error)) {
+    if (!accepted_result(result, volume, error)) {
         if (which == "common") {
             error = "The solids do not overlap";
         }
@@ -952,8 +1109,10 @@ TopoDS_Shape build_boolean(
 
 /// The hole Apply cuts, on a copy. `direction` points into the material. Empty means straight down, toward −Z.
 /// The cylinder stands `depth` along that direction and ends at the origin, matching a −Z drill from `(x, y, z)`.
+/// `before` is the open solid's volume; `volume` gets the result's.
 TopoDS_Shape build_hole(
     const TopoDS_Shape& current,
+    double before,
     double x,
     double y,
     double z,
@@ -962,6 +1121,7 @@ TopoDS_Shape build_hole(
     double dz,
     double radius,
     double depth,
+    double& volume,
     std::string& error) {
     if (!(radius > 0.0) || !(depth > 0.0)) {
         error = "A hole needs a positive radius and depth";
@@ -989,7 +1149,6 @@ TopoDS_Shape build_hole(
     if (!error.empty()) {
         return {};
     }
-    const double before = volume_of(current);
     const double after = volume_of(as_solid(cut));
     if (!(after > 1e-6)) {
         error = "The hole removed the solid";
@@ -999,7 +1158,19 @@ TopoDS_Shape build_hole(
         error = "The hole missed this solid";
         return {};
     }
+    volume = after;
     return cut;
+}
+
+std::string boolean_key(
+    const std::string& which,
+    const char* primitive,
+    std::initializer_list<double> numbers) {
+    return key_of(("boolean " + which + " " + (primitive == nullptr ? "" : primitive)).c_str(), numbers);
+}
+
+std::string blend_key(bool chamfer, const std::vector<int>& edges, double size) {
+    return key_of(chamfer ? "chamfer" : "fillet", {size}, edges);
 }
 
 }  // namespace
@@ -1083,11 +1254,11 @@ extern "C" char* lime_model_occt_distance(
         TopoDS_Shape b;
         {
             std::lock_guard<std::mutex> lock(g_mu);
-            if (id < 1 || static_cast<size_t>(id) > g_held.size()) {
+            const Held* held = held_at(id);
+            if (held == nullptr) {
                 return error_json("That solid is no longer open");
             }
-            const Held& held = g_held.at(static_cast<size_t>(id - 1));
-            if (!pick(held, a_kind, a_index, a) || !pick(held, b_kind, b_index, b)) {
+            if (!pick(*held, a_kind, a_index, a) || !pick(*held, b_kind, b_index, b)) {
                 return error_json("That face or edge is not on this solid");
             }
         }
@@ -1131,31 +1302,21 @@ extern "C" char* lime_model_occt_boolean(
     try {
         const std::string which = op == nullptr ? "" : op;
         TopoDS_Shape current;
-        {
-            std::lock_guard<std::mutex> lock(g_mu);
-            Held held;
-            if (!held_at(id, held)) {
-                return error_json("That solid is no longer open");
-            }
-            current = held.shape;
-        }
+        double before = 0.0;
         std::string error;
-        if (!editable(current, error)) {
+        if (!copy_shape(id, current, before, error)) {
             return error_json(error);
         }
-        const TopoDS_Shape result =
-            build_boolean(current, which, primitive, x, y, z, dx, dy, dz, radius, height, rx, ry, rz, error);
-        if (!error.empty()) {
-            return error_json(error);
+        const std::string key = boolean_key(which, primitive, {x, y, z, dx, dy, dz, radius, height, rx, ry, rz});
+        TopoDS_Shape result;
+        double volume = 0.0;
+        if (!probed_result(id, current, key, result, volume)) {
+            result = build_boolean(current, which, primitive, x, y, z, dx, dy, dz, radius, height, rx, ry, rz, volume, error);
+            if (!error.empty()) {
+                return error_json(error);
+            }
         }
-        std::lock_guard<std::mutex> lock(g_mu);
-        Held held;
-        if (!held_at(id, held) || !held.shape.IsSame(current)) {
-            return error_json("That solid is no longer open");
-        }
-        checkpoint(current);
-        replace_held(id, as_solid(result));
-        return finish(id, chord);
+        return commit_edit(id, current, result, volume, chord, "The boolean removed the solid");
     } catch (const Standard_Failure& failure) {
         const char* message = failure.GetMessageString();
         return error_json(message != nullptr ? message : "Open CASCADE failed");
@@ -1180,17 +1341,10 @@ extern "C" char* lime_model_occt_split(
         }
         const gp_Dir normal(nx / length, ny / length, nz / length);
         TopoDS_Shape current;
-        {
-            std::lock_guard<std::mutex> lock(g_mu);
-            Held held;
-            if (!held_at(id, held)) {
-                return error_json("That solid is no longer open");
-            }
-            current = held.shape;
-        }
-        std::string refusal;
-        if (!editable(current, refusal)) {
-            return error_json(refusal);
+        double before = 0.0;
+        std::string error;
+        if (!copy_shape(id, current, before, error)) {
+            return error_json(error);
         }
         Bnd_Box bounds;
         BRepBndLib::Add(current, bounds, Standard_False);
@@ -1226,21 +1380,26 @@ extern "C" char* lime_model_occt_split(
         BRepAlgoAPI_Splitter splitter;
         splitter.SetArguments(arguments);
         splitter.SetTools(tools);
+        g_stats.builds += 1;
         splitter.Build();
         if (!splitter.IsDone() || splitter.HasErrors() || splitter.Shape().IsNull()) {
             return error_json("Open CASCADE did not split this solid");
         }
         std::vector<TopoDS_Shape> negative;
         std::vector<TopoDS_Shape> positive;
+        double negative_volume = 0.0;
+        double positive_volume = 0.0;
         for (TopExp_Explorer explorer(splitter.Shape(), TopAbs_SOLID); explorer.More(); explorer.Next()) {
             const TopoDS_Shape piece = explorer.Current();
             GProp_GProps props;
-            BRepGProp::VolumeProperties(piece, props);
+            integrate(piece, props);
             const double side = gp_Vec(origin, props.CentreOfMass()).Dot(gp_Vec(normal));
             if (side < 0.0) {
                 negative.push_back(piece);
+                negative_volume += props.Mass();
             } else {
                 positive.push_back(piece);
+                positive_volume += props.Mass();
             }
         }
         std::string join_error;
@@ -1265,26 +1424,28 @@ extern "C" char* lime_model_occt_split(
         if (!join_error.empty()) {
             return error_json(join_error);
         }
-        if (kept.IsNull() || other.IsNull() || !(volume_of(kept) > 1e-6) || !(volume_of(other) > 1e-6)) {
+        // The pieces on one side are disjoint, so the joined piece holds their summed volume.
+        if (kept.IsNull() || other.IsNull() || !(negative_volume > 1e-6) || !(positive_volume > 1e-6)) {
             return error_json("The plane did not split this solid");
         }
         if (depth_along(kept, normal) < 0.25 || depth_along(other, normal) < 0.25) {
             return error_json("The plane is too close to a face. Move it into the part.");
         }
-        const Held other_held = hold_of(other);
+        Held other_held = hold_of(other, positive_volume);
+        Held next = hold_of(kept, negative_volume);
         std::lock_guard<std::mutex> lock(g_mu);
-        Held held;
-        if (!held_at(id, held) || !held.shape.IsSame(current)) {
+        Solid* open = solid_at(id);
+        if (open == nullptr || !open->held.shape.IsSame(current)) {
             return error_json("That solid is no longer open");
         }
-        checkpoint(current);
-        replace_held(id, kept);
-        std::string text = tessellate(id, g_held.at(static_cast<size_t>(id - 1)), chord);
-        const std::string other_json = tessellate(0, other_held, chord);
+        const int piece = g_next_id++;
+        g_solids[piece].held = std::move(other_held);
+        commit_held(*open, std::move(next), piece);
+        std::string text = reply_of(id, chord);
         if (!text.empty() && text.back() == '}') {
             text.pop_back();
             text += ",\"other\":";
-            text += other_json;
+            text += reply_of(piece, chord);
             text += '}';
         }
         return alloc(text);
@@ -1299,18 +1460,23 @@ extern "C" char* lime_model_occt_split(
 extern "C" char* lime_model_occt_undo(int id, double chord) {
     try {
         std::lock_guard<std::mutex> lock(g_mu);
-        Held held;
-        if (!held_at(id, held)) {
+        Solid* open = solid_at(id);
+        if (open == nullptr) {
             return error_json("That solid is no longer open");
         }
-        if (g_undo.empty()) {
+        if (open->undo.empty()) {
             return error_json("There is no edit to undo");
         }
-        const TopoDS_Shape current = held.shape;
-        const TopoDS_Shape previous = g_undo.back();
-        g_undo.pop_back();
-        push_capped(g_redo, current);
-        replace_held(id, previous);
+        Step back = std::move(open->undo.back());
+        open->undo.pop_back();
+        Step forward{std::move(open->held), back.spawned, nullptr};
+        const auto piece = g_solids.find(back.spawned);
+        if (back.spawned != 0 && piece != g_solids.end()) {
+            forward.piece = std::make_shared<Solid>(std::move(piece->second));
+            g_solids.erase(piece);
+        }
+        push_capped(open->redo, std::move(forward));
+        open->held = std::move(back.held);
         return finish(id, chord);
     } catch (const Standard_Failure& failure) {
         const char* message = failure.GetMessageString();
@@ -1323,18 +1489,20 @@ extern "C" char* lime_model_occt_undo(int id, double chord) {
 extern "C" char* lime_model_occt_redo(int id, double chord) {
     try {
         std::lock_guard<std::mutex> lock(g_mu);
-        Held held;
-        if (!held_at(id, held)) {
+        Solid* open = solid_at(id);
+        if (open == nullptr) {
             return error_json("That solid is no longer open");
         }
-        if (g_redo.empty()) {
+        if (open->redo.empty()) {
             return error_json("There is no edit to redo");
         }
-        const TopoDS_Shape current = held.shape;
-        const TopoDS_Shape next = g_redo.back();
-        g_redo.pop_back();
-        push_capped(g_undo, current);
-        replace_held(id, next);
+        Step forward = std::move(open->redo.back());
+        open->redo.pop_back();
+        push_capped(open->undo, Step{std::move(open->held), forward.spawned, nullptr});
+        open->held = std::move(forward.held);
+        if (forward.piece) {
+            g_solids[forward.spawned] = std::move(*forward.piece);
+        }
         return finish(id, chord);
     } catch (const Standard_Failure& failure) {
         const char* message = failure.GetMessageString();
@@ -1342,6 +1510,63 @@ extern "C" char* lime_model_occt_redo(int id, double chord) {
     } catch (...) {
         return error_json("Open CASCADE failed");
     }
+}
+
+char* hole_commit(
+    int id,
+    double x,
+    double y,
+    double z,
+    double dx,
+    double dy,
+    double dz,
+    double radius,
+    double depth,
+    double chord) {
+    TopoDS_Shape current;
+    double before = 0.0;
+    std::string error;
+    if (!copy_shape(id, current, before, error)) {
+        return error_json(error);
+    }
+    TopoDS_Shape cut;
+    double volume = 0.0;
+    if (!probed_result(id, current, key_of("hole", {x, y, z, dx, dy, dz, radius, depth}), cut, volume)) {
+        cut = build_hole(current, before, x, y, z, dx, dy, dz, radius, depth, volume, error);
+        if (!error.empty()) {
+            return error_json(error);
+        }
+    }
+    return commit_edit(id, current, cut, volume, chord, "The hole removed the solid");
+}
+
+/// Try a hole on a copy. The open solid stays as it was; a cut that works is kept for Apply.
+char* hole_probe(int id, double x, double y, double z, double dx, double dy, double dz, double radius, double depth) {
+    const uint64_t seq = ++g_probe_seq;
+    TopoDS_Shape current;
+    double before = 0.0;
+    std::string error;
+    if (!copy_shape(id, current, before, error)) {
+        return probe_json(false, error, 0.0);
+    }
+    double volume = 0.0;
+    const TopoDS_Shape cut = build_hole(current, before, x, y, z, dx, dy, dz, radius, depth, volume, error);
+    if (error.empty()) {
+        remember_probe(id, current, key_of("hole", {x, y, z, dx, dy, dz, radius, depth}), seq, cut, volume);
+    }
+    return probe_json(error.empty(), error, 0.0);
+}
+
+/// Kernel work counted since the library loaded, for tests.
+extern "C" char* lime_model_occt_stats() {
+    std::string out = "{\"builds\":";
+    out += std::to_string(g_stats.builds.load());
+    out += ",\"volumes\":";
+    out += std::to_string(g_stats.volumes.load());
+    out += ",\"tessellations\":";
+    out += std::to_string(g_stats.tessellations.load());
+    out += '}';
+    return alloc(out);
 }
 
 char* blend_commit(int id, const int* edges, int count, double size, double chord, bool chamfer) {
@@ -1352,18 +1577,21 @@ char* blend_commit(int id, const int* edges, int count, double size, double chor
     }
     TopoDS_Shape current;
     std::vector<TopoDS_Edge> found;
+    std::vector<int> kept;
     std::string error;
-    if (!copy_edges(id, edges, count, verb, current, found, error)) {
+    if (!copy_edges(id, edges, count, verb, current, found, kept, error)) {
         return error_json(error);
     }
     TopoDS_Shape built;
-    if (!blend_build(current, found, size, chamfer, built, error)) {
+    double volume = 0.0;
+    if (!probed_result(id, current, blend_key(chamfer, kept, size), built, volume) &&
+        !blend_build(current, found, size, chamfer, built, volume, error)) {
         return error_json(error);
     }
     const char* empty = chamfer
         ? (found.size() > 1 ? "The chamfer did not fit these edges" : "The chamfer did not fit this edge")
         : (found.size() > 1 ? "The fillet did not fit these edges" : "The fillet did not fit this edge");
-    return commit_edit(id, current, built, chord, empty);
+    return commit_edit(id, current, built, volume, chord, empty);
 }
 
 extern "C" char* lime_model_occt_fillet(int id, int edge, double radius, double chord) {
@@ -1390,8 +1618,9 @@ extern "C" char* lime_model_occt_chamfer(int id, int edge, double distance, doub
     }
 }
 
-/// Try a fillet or chamfer on a copy. The open solid stays as it was.
+/// Try a fillet or chamfer on a copy. The open solid stays as it was; a fitting result is kept for Apply.
 char* blend_probe_edges(int id, const int* edges, int count, double size, int chamfer) {
+    const uint64_t seq = ++g_probe_seq;
     const bool is_chamfer = chamfer != 0;
     if (!(size > 0.0)) {
         return probe_json(
@@ -1401,13 +1630,15 @@ char* blend_probe_edges(int id, const int* edges, int count, double size, int ch
     }
     TopoDS_Shape current;
     std::vector<TopoDS_Edge> found;
+    std::vector<int> kept;
     std::string error;
-    if (!copy_edges(id, edges, count, is_chamfer ? "chamfer" : "fillet", current, found, error)) {
+    if (!copy_edges(id, edges, count, is_chamfer ? "chamfer" : "fillet", current, found, kept, error)) {
         return probe_json(false, error, 0.0);
     }
     TopoDS_Shape built;
-    if (blend_build(current, found, size, is_chamfer, built, error)) {
-        (void)built;
+    double volume = 0.0;
+    if (blend_build(current, found, size, is_chamfer, built, volume, error)) {
+        remember_probe(id, current, blend_key(is_chamfer, kept, size), seq, built, volume);
         return probe_json(true, "", 0.0);
     }
     double max_mm = 0.0;
@@ -1441,16 +1672,7 @@ extern "C" char* lime_model_occt_hole(
         if (!(radius > 0.0) || !(depth > 0.0)) {
             return error_json("A hole needs a positive radius and depth");
         }
-        TopoDS_Shape current;
-        std::string error;
-        if (!copy_shape(id, current, error)) {
-            return error_json(error);
-        }
-        const TopoDS_Shape cut = build_hole(current, x, y, z, 0.0, 0.0, -1.0, radius, depth, error);
-        if (!error.empty()) {
-            return error_json(error);
-        }
-        return commit_edit(id, current, cut, chord, "The hole removed the solid");
+        return hole_commit(id, x, y, z, 0.0, 0.0, -1.0, radius, depth, chord);
     } catch (const Standard_Failure& failure) {
         const char* message = failure.GetMessageString();
         return error_json(message != nullptr ? message : "Open CASCADE failed");
@@ -1462,14 +1684,7 @@ extern "C" char* lime_model_occt_hole(
 /// Try a hole on a copy. The open solid stays as it was.
 extern "C" char* lime_model_occt_hole_probe(int id, double x, double y, double z, double radius, double depth) {
     try {
-        TopoDS_Shape current;
-        std::string error;
-        if (!copy_shape(id, current, error)) {
-            return probe_json(false, error, 0.0);
-        }
-        const TopoDS_Shape cut = build_hole(current, x, y, z, 0.0, 0.0, -1.0, radius, depth, error);
-        (void)cut;
-        return probe_json(error.empty(), error, 0.0);
+        return hole_probe(id, x, y, z, 0.0, 0.0, -1.0, radius, depth);
     } catch (const Standard_Failure& failure) {
         const char* message = failure.GetMessageString();
         return probe_json(false, message != nullptr ? message : "Open CASCADE failed", 0.0);
@@ -1495,15 +1710,21 @@ extern "C" char* lime_model_occt_boolean_probe(
     double ry,
     double rz) {
     try {
+        const uint64_t seq = ++g_probe_seq;
         TopoDS_Shape current;
+        double before = 0.0;
         std::string error;
-        if (!copy_shape(id, current, error)) {
+        if (!copy_shape(id, current, before, error)) {
             return probe_json(false, error, 0.0);
         }
         const std::string which = op == nullptr ? "" : op;
+        double volume = 0.0;
         const TopoDS_Shape result =
-            build_boolean(current, which, primitive, x, y, z, dx, dy, dz, radius, height, rx, ry, rz, error);
-        (void)result;
+            build_boolean(current, which, primitive, x, y, z, dx, dy, dz, radius, height, rx, ry, rz, volume, error);
+        if (error.empty()) {
+            const std::string key = boolean_key(which, primitive, {x, y, z, dx, dy, dz, radius, height, rx, ry, rz});
+            remember_probe(id, current, key, seq, result, volume);
+        }
         return probe_json(error.empty(), error, 0.0);
     } catch (const Standard_Failure& failure) {
         const char* message = failure.GetMessageString();
@@ -1561,16 +1782,7 @@ extern "C" char* lime_model_occt_hole_axis(
         if (!(radius > 0.0) || !(depth > 0.0)) {
             return error_json("A hole needs a positive radius and depth");
         }
-        TopoDS_Shape current;
-        std::string error;
-        if (!copy_shape(id, current, error)) {
-            return error_json(error);
-        }
-        const TopoDS_Shape cut = build_hole(current, x, y, z, dx, dy, dz, radius, depth, error);
-        if (!error.empty()) {
-            return error_json(error);
-        }
-        return commit_edit(id, current, cut, chord, "The hole removed the solid");
+        return hole_commit(id, x, y, z, dx, dy, dz, radius, depth, chord);
     } catch (const Standard_Failure& failure) {
         const char* message = failure.GetMessageString();
         return error_json(message != nullptr ? message : "Open CASCADE failed");
@@ -1591,14 +1803,7 @@ extern "C" char* lime_model_occt_hole_axis_probe(
     double radius,
     double depth) {
     try {
-        TopoDS_Shape current;
-        std::string error;
-        if (!copy_shape(id, current, error)) {
-            return probe_json(false, error, 0.0);
-        }
-        const TopoDS_Shape cut = build_hole(current, x, y, z, dx, dy, dz, radius, depth, error);
-        (void)cut;
-        return probe_json(error.empty(), error, 0.0);
+        return hole_probe(id, x, y, z, dx, dy, dz, radius, depth);
     } catch (const Standard_Failure& failure) {
         const char* message = failure.GetMessageString();
         return probe_json(false, message != nullptr ? message : "Open CASCADE failed", 0.0);
@@ -1616,8 +1821,9 @@ extern "C" char* lime_model_occt_scale(int id, double factor, double chord) {
             return error_json("Scale needs a factor other than 1");
         }
         TopoDS_Shape current;
+        double before = 0.0;
         std::string error;
-        if (!copy_shape(id, current, error)) {
+        if (!copy_shape(id, current, before, error)) {
             return error_json(error);
         }
         Bnd_Box bounds;
@@ -1639,7 +1845,9 @@ extern "C" char* lime_model_occt_scale(int id, double factor, double chord) {
         if (!builder.IsDone() || builder.Shape().IsNull()) {
             return error_json("Open CASCADE did not scale this solid");
         }
-        return commit_edit(id, current, builder.Shape(), chord, "Open CASCADE did not scale this solid");
+        // A uniform scale multiplies the volume by the cube of the factor, so nothing is integrated again.
+        const double volume = before * factor * factor * factor;
+        return commit_edit(id, current, builder.Shape(), volume, chord, "Open CASCADE did not scale this solid");
     } catch (const Standard_Failure& failure) {
         const char* message = failure.GetMessageString();
         return error_json(message != nullptr ? message : "Open CASCADE failed");
@@ -1660,8 +1868,9 @@ extern "C" char* lime_model_occt_write_step(int id, const char* path) {
             return error_json("STEP path is empty");
         }
         TopoDS_Shape current;
+        double volume = 0.0;
         std::string error;
-        if (!copy_shape(id, current, error)) {
+        if (!copy_shape(id, current, volume, error)) {
             return error_json(error);
         }
         Interface_Static::SetCVal("write.step.schema", "AP214IS");

@@ -143,3 +143,27 @@ export function redoSnap(history: EditHistory, current: EditSnap): { history: Ed
     restore: cloneSnap(restore),
   };
 }
+
+/**
+ * Fold the steps taken since `before` was recorded into one: the first of them stays, the later ones
+ * and the redo stack go. The states in between can no longer be restored.
+ */
+export function foldSince(history: EditHistory, before: WeakSet<EditSnap>): EditHistory {
+  const first = history.undo.findIndex((snap) => !before.has(snap));
+  return { undo: first < 0 ? history.undo : history.undo.slice(0, first + 1), redo: [], pending: history.pending };
+}
+
+/**
+ * Every step whose object has mesh `token` gets `brep` for that object. Undefined removes it.
+ * Steps are changed in place, so a step stays the same step (`foldSince` tells them apart by identity).
+ */
+export function putBrepFor(history: EditHistory, token: string, brep: ArrayBuffer | undefined) {
+  for (const snap of [...history.undo, ...history.redo, ...(history.pending ? [history.pending] : [])]) {
+    const ids = new Set((snap.meshPins ?? []).filter((pin) => pin.token === token).map((pin) => pin.id));
+    for (const row of snap.plate?.objects ?? []) {
+      if (!ids.has(row.id)) continue;
+      if (brep) row.brep = brep;
+      else delete row.brep;
+    }
+  }
+}

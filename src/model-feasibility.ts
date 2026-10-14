@@ -6,17 +6,32 @@ import { plainModelError } from "./app/model-error.ts";
 import { formatMm } from "./model-plane.ts";
 import { lastEdge, type ModelPickRef } from "./model-select.ts";
 
-/** Wait after a number changes before asking the kernel. Typing stays on the UI thread. */
+/**
+ * Wait after a typed or dragged number before asking the kernel, so typing "12.5" asks once.
+ * Typists average 239 ms between keys, and the slowest tenth 481 ms (Dhakal et al., CHI 2018,
+ * 168 000 typists), so a shorter wait asks once per key for most people. Opening a tool, picking,
+ * the end of a drag, and every other one-off change ask at once.
+ */
 export const PROBE_WAIT_MS = 300;
 
 /** Tools whose result only the kernel can judge. Split and scale are checked from numbers alone. */
 export const PROBED_TOOLS = ["fillet", "chamfer", "hole", "boolean"] as const;
 export type ProbedTool = (typeof PROBED_TOOLS)[number];
 
+/** `applied`: these numbers were just applied to this solid, so applying them again would change nothing. */
 export type ProbeView =
   | null
   | { phase: "checking" }
+  | { phase: "applied" }
   | { phase: "done"; ok: boolean; error?: string; maxMm?: number };
+
+/**
+ * What a kernel answer depends on: the solid, its shape (the plate's mesh token for it), and the
+ * tool's numbers. A shape never changes, so an answer stays true for its key.
+ */
+export function probeKey(solidId: number, mesh: string, payload: Record<string, unknown>): string {
+  return `${solidId}|${mesh}|${JSON.stringify(payload)}`;
+}
 
 export function isProbed(tool: string | null | undefined): tool is ProbedTool {
   return !!tool && (PROBED_TOOLS as readonly string[]).includes(tool);
