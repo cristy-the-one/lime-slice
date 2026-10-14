@@ -539,16 +539,24 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 #prepareBody, #modelBody { display: block; flex: 1 1 auto; min-height: 0; height: auto; }
 #prepare, #model { width: 100%; height: 100%; display: block; }
 .model-bar { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
-.model-tools {
+.model-top {
   position: absolute;
   top: 10px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   width: max-content;
   max-width: calc(100% - 20px);
+  pointer-events: none;
+}
+.model-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
   padding: 4px;
   overflow-x: auto;
   background: color-mix(in srgb, var(--panel) 88%, transparent);
@@ -597,6 +605,18 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   white-space: nowrap;
 }
 .model-count[hidden] { display: none !important; }
+.model-paused {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  color: var(--text-dim);
+  font-size: var(--fs-1);
+  white-space: nowrap;
+}
 .model-panel {
   position: absolute;
   top: 54px;
