@@ -1051,23 +1051,30 @@ fn action_line(action: &LayerAction, firmware: Option<Firmware>) -> Option<Strin
 }
 
 /// Copy `layers` and attach each action to the closest layer within half a height.
+/// An action's z is the reply's layer z, which on a belt is the belt position of
+/// that layer and its copy, not the slice height.
 fn apply_layer_actions(
     layers: &[PlateLayer],
     actions: &[LayerAction],
     firmware: Option<Firmware>,
+    belt: Option<&crate::belt::Belt>,
 ) -> Vec<PlateLayer> {
+    let shown_z =
+        |layer: &PlateLayer| belt.map_or(layer.z, |b| b.position(layer.z, layer.belt_shift));
     let mut owned = layers.to_vec();
     for action in actions {
         let Some(line) = action_line(action, firmware) else {
             continue;
         };
         let closest = owned.iter().enumerate().min_by(|(_, a), (_, b)| {
-            (a.z - action.z_mm)
+            (shown_z(a) - action.z_mm)
                 .abs()
-                .partial_cmp(&(b.z - action.z_mm).abs())
+                .partial_cmp(&(shown_z(b) - action.z_mm).abs())
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        let Some((idx, z, height)) = closest.map(|(idx, layer)| (idx, layer.z, layer.height)) else {
+        let Some((idx, z, height)) =
+            closest.map(|(idx, layer)| (idx, shown_z(layer), layer.height))
+        else {
             continue;
         };
         let tol = (height * 0.5).max(0.02);
@@ -2449,6 +2456,7 @@ fn slice_plate(
             emit_held.as_slice(),
             &settings.layer_actions,
             profile.firmware,
+            belt_job.as_ref().map(|job| &job.belt),
         ))
     };
     let emit_layers: &[PlateLayer] = stamped.as_deref().unwrap_or(emit_held.as_slice());

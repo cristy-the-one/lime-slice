@@ -158,7 +158,7 @@ fn a_pause_json_round_trips_and_classic_keeps_it() {
     assert!(text.contains("\"layerActions\""), "{text}");
 }
 
-fn belt_request(actions: Vec<LayerAction>) -> SliceRequest {
+fn belt_request(copies: u32, actions: Vec<LayerAction>) -> SliceRequest {
     let mut stl = String::from("solid cube\n");
     for tri in cube().triangles {
         stl.push_str("facet normal 0 0 0\nouter loop\n");
@@ -177,7 +177,7 @@ fn belt_request(actions: Vec<LayerAction>) -> SliceRequest {
         "compare": false,
         "includePreview": true,
         "includeGcode": true,
-        "belt": { "angleDeg": 45.0, "axis": "z", "direction": 1, "widthMm": 250.0, "copies": 1, "gapMm": 5.0 },
+        "belt": { "angleDeg": 45.0, "axis": "z", "direction": 1, "widthMm": 250.0, "copies": copies, "gapMm": 5.0 },
     }))
     .unwrap();
     req.printer = Some(PrinterProfile {
@@ -188,21 +188,34 @@ fn belt_request(actions: Vec<LayerAction>) -> SliceRequest {
     req
 }
 
-#[test]
-fn a_belt_pause_follows_the_belt_move_of_its_layer() {
-    let plain = slice_request(&belt_request(Vec::new()), Job::default()).unwrap();
+/// The app sends the `z` of the preview layer the slider is on, so the pause
+/// must land after that same layer's belt move, in whichever copy it is.
+fn assert_belt_pause_on_preview_layer(copies: u32, pick: impl Fn(usize) -> usize) {
+    let plain = slice_request(&belt_request(copies, Vec::new()), Job::default()).unwrap();
     assert!(!plain.gcode.contains("PAUSE"));
-    let layer = &plain.layers[plain.layers.len() / 2];
+    let layer = &plain.layers[pick(plain.layers.len())];
 
-    let paused = slice_request(&belt_request(vec![pause(layer.z)]), Job::default()).unwrap();
+    let paused =
+        slice_request(&belt_request(copies, vec![pause(layer.z)]), Job::default()).unwrap();
     let lines: Vec<&str> = paused.gcode.lines().collect();
     let at: Vec<usize> = (0..lines.len()).filter(|&i| lines[i] == "PAUSE").collect();
     assert_eq!(at.len(), 1, "one pause");
     let header = lines[at[0] - 2];
-    let z = header
-        .strip_prefix(";LAYER:")
-        .and_then(|rest| rest.split_whitespace().nth(1))
-        .and_then(|field| field.strip_prefix("Z:"))
-        .unwrap_or_else(|| panic!("a layer header two lines up: {header}"));
-    assert_eq!(lines[at[0] - 1], format!("G1 Z{z} F7200"));
+    assert!(
+        header.starts_with(&format!(";LAYER:{} Z:{:.3} ", layer.index, layer.z)),
+        "preview layer {} at z {:.3}, pause after {header}",
+        layer.index,
+        layer.z
+    );
+    assert_eq!(lines[at[0] - 1], format!("G1 Z{:.3} F7200", layer.z));
+}
+
+#[test]
+fn a_belt_pause_follows_the_belt_move_of_the_preview_layer() {
+    assert_belt_pause_on_preview_layer(1, |n| n / 2);
+}
+
+#[test]
+fn a_belt_pause_lands_in_the_copy_whose_layer_was_picked() {
+    assert_belt_pause_on_preview_layer(2, |n| n * 3 / 4);
 }
