@@ -13,6 +13,7 @@
  * A split half stays in the selected object's place instead.
  * Duplicate copies the selected object only.
  */
+import type { SavedTree } from "./model-tree-file.ts";
 import type { EditEntry } from "./support-edit-list.ts";
 import {
   dropEmptyReinforce,
@@ -98,6 +99,11 @@ export interface PlateFileObject {
     byteLength: number;
     hash: string;
   };
+  /**
+   * Optional Model history tree. A root STEP without `bytesBase64` has the bytes of another record
+   * in the file with the same hash and length. An older app ignores the key and drops it on the next save.
+   */
+  modelTree?: SavedTree<{ name: string; bytesBase64?: string; byteLength: number; hash: string }>;
 }
 
 /** One solid on the plate. Geometry stays in the session, not in the undo JSON. */
@@ -279,13 +285,14 @@ export function settingsEmpty(settings: PlateObjectSettings | undefined): boolea
   return !settings || Object.keys(settings).length === 0;
 }
 
-/** Version 2 is a plate with more than one object, or one object that has its own settings, paint, reinforcement, or a B-rep. */
+/** Version 2 is a plate with more than one object, or one object that has its own settings, paint, reinforcement, a B-rep, or a Model history. */
 export function plateFileIsVersion2(objects: {
   settings?: PlateObjectSettings;
   supportPaint?: readonly PaintDisk[];
   seamPaint?: readonly SeamDisk[];
   reinforcement?: readonly ReinforceRegion[];
   brep?: unknown;
+  modelTree?: unknown;
 }[]): boolean {
   if (objects.length !== 1) return objects.length > 1;
   const one = objects[0];
@@ -294,7 +301,8 @@ export function plateFileIsVersion2(objects: {
     (one?.supportPaint?.length ?? 0) > 0 ||
     (one?.seamPaint?.length ?? 0) > 0 ||
     dropEmptyReinforce(one?.reinforcement ?? []).length > 0 ||
-    one?.brep != null
+    one?.brep != null ||
+    one?.modelTree != null
   );
 }
 

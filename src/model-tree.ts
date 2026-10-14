@@ -212,6 +212,40 @@ export function nodeWithMesh(tree: ModelTree, token: string): NodeId | null {
   return null;
 }
 
+/** A plate object as the plate or a Prepare step holds it: its id, its tree's key if it has one, and its mesh. */
+export interface TreeRef {
+  id: string;
+  key?: string;
+  token?: string;
+}
+
+/**
+ * The trees still in use, found as Model finds them: the tree an object names; a tree of that object
+ * with a step whose plate mesh it holds (after a Prepare undo to before it had a key); for an object
+ * that names no tree, any tree with its mesh (a copy finding the step it copies); and from each, the
+ * tree its piece was split from and the trees of the pieces its splits made.
+ */
+export function reachableTrees(trees: ReadonlyMap<string, ModelTree>, refs: Iterable<TreeRef>): Set<string> {
+  const queue: string[] = [];
+  const holds = (tree: ModelTree, token: string) => [...tree.nodes.values()].some((node) => node.mesh?.token === token);
+  for (const ref of refs) {
+    if (ref.key) queue.push(ref.key);
+    if (!ref.token) continue;
+    for (const tree of trees.values()) {
+      if ((!ref.key || tree.key.startsWith(`${ref.id}#`)) && holds(tree, ref.token)) queue.push(tree.key);
+    }
+  }
+  const keep = new Set<string>();
+  for (let key = queue.pop(); key !== undefined; key = queue.pop()) {
+    const tree = trees.get(key);
+    if (!tree || keep.has(key)) continue;
+    keep.add(key);
+    if (tree.root.kind === "piece") queue.push(tree.root.tree);
+    for (const node of tree.nodes.values()) if (node.piece) queue.push(node.piece);
+  }
+  return keep;
+}
+
 /** Every node but the root, parents first, as the engine's `open` registers them. */
 export function savedNodes(tree: ModelTree): { id: NodeId; parent: NodeId; op: ModelOp; fingerprint: Fingerprint | null }[] {
   return [...tree.nodes.values()]

@@ -50,6 +50,8 @@ interface MockNode {
 export async function mockModelTree(page: Page, handlers: Handlers): Promise<TreeMock> {
   const calls: Body[] = [];
   const docs = new Map<string, Map<number, MockNode>>();
+  /** Each STEP the mock wrote, and the solid it holds, so opening that STEP again opens that solid. */
+  const exported = new Map<string, MockSolid>();
   let exports = 0;
   const reply = (solid: MockSolid, id: number) => ({
     ...solid,
@@ -66,7 +68,10 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
     const key = String(request.key);
     const doc = docs.get(key);
     if (request.call === "open") {
-      const nodes = new Map<number, MockNode>([[0, { solid: handlers.open(request), parent: null, step: "" }]]);
+      const data = typeof request.dataB64 === "string" ? Buffer.from(request.dataB64, "base64").toString() : "";
+      // The handler hears every open, and a STEP this mock wrote opens as the solid it was written from.
+      const read = handlers.open(request);
+      const nodes = new Map<number, MockNode>([[0, { solid: exported.get(data) ?? read, parent: null, step: "" }]]);
       // Saved nodes come back as the ops that built them.
       for (const saved of (request.nodes ?? []) as { id: number; parent: number; op: Body }[]) {
         const built = handlers.apply?.({ ...request, call: "apply", op: saved.op, parent: saved.parent, node: saved.id }, nodes.get(saved.parent)!.solid);
@@ -99,6 +104,7 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
       case "export": {
         exports += 1;
         const bytes = Buffer.from(`EDITED-STEP-${exports}`);
+        exported.set(bytes.toString(), base.solid);
         if (handlers.exportMs) await new Promise((resolve) => setTimeout(resolve, handlers.exportMs));
         return { bytesBase64: bytes.toString("base64"), byteLength: bytes.length };
       }

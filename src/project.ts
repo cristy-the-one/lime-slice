@@ -5,6 +5,7 @@
  * support paint is written back as version 1 and omits `objects`. Support paint is
  * an optional field on each version 2 object, so a version 2 file without it still opens.
  * `brep` is that same kind of field: base64 STEP, present only after Model has a session.
+ * `modelTree` is another: the object's Model history. A damaged one is left out and the part opens.
  * A later version adds a function to `migrations` at index `n` that rewrites version `n`
  * into version `n + 1`. `applyMigrations` is that hook.
  */
@@ -18,6 +19,7 @@ import { parseOverrides, type OverrideDocument } from "./overrides.ts";
 import { plateFileIsVersion2, readPlateSettings, settingsEmpty, type PlateFileObject } from "./plate.ts";
 import { dropEmptyReinforce, readReinforcement } from "./reinforcement.ts";
 import type { EditEntry } from "./support-edit-list.ts";
+import { readSavedTree } from "./model-tree-file.ts";
 import { readSeamPaint } from "./seam-paint.ts";
 import { readPaint } from "./support-paint.ts";
 import type { SiteSpec } from "./support-edits.ts";
@@ -72,6 +74,8 @@ export interface LimeProject {
   sequentialGantryMm?: number;
   /** Pauses and filament changes from the layer slider. Omitted when there are none. */
   layerActions?: LayerAction[];
+  /** Read only: the names of objects whose Model history was damaged and left out. */
+  unreadHistory?: string[];
 }
 
 export type ProjectResult = { ok: true; project: LimeProject } | { ok: false; message: string };
@@ -111,7 +115,7 @@ export function serializeProject(project: LimeProject): string {
       preset: project.preset,
       profile: project.profile,
       level: project.level,
-      objects: project.objects.map(stripEmptySettings),
+      objects: shareRootSteps(project.objects.map(stripEmptySettings)),
     };
     if (overrides) wire.overrides = overrides;
     if (project.layerActions?.length) wire.layerActions = project.layerActions;
@@ -171,6 +175,38 @@ function stripEmptySettings(object: PlateFileObject): PlateFileObject {
     ...(settingsEmpty(settings) ? {} : { settings }),
     ...(nonEmptyReinforce.length > 0 ? { reinforcement: nonEmptyReinforce } : {}),
   };
+}
+
+type StepRecord = { name: string; bytesBase64?: string; byteLength: number; hash: string };
+
+const recordId = (record: StepRecord) => `${record.hash}:${record.byteLength}`;
+
+/**
+ * Bytes the file holds in full, by hash and length: every mesh and solid. Root STEPs written in
+ * full join after them, in object order. The first of each wins, on write and on read alike.
+ */
+function bytesPool(objects: readonly PlateFileObject[]): Map<string, string> {
+  const pool = new Map<string, string>();
+  for (const obj of objects) {
+    for (const record of [obj.mesh, obj.brep]) if (record && !pool.has(recordId(record))) pool.set(recordId(record), record.bytesBase64);
+  }
+  return pool;
+}
+
+/**
+ * A root STEP whose bytes the file already holds (a copy's root, or a tree on its root step) is
+ * written as its name, hash, and length alone. Telo's root is 17 MB of base64.
+ */
+function shareRootSteps(objects: PlateFileObject[]): PlateFileObject[] {
+  const pool = bytesPool(objects);
+  return objects.map((obj) => {
+    const root = obj.modelTree?.rootStep;
+    if (!obj.modelTree || !root?.bytesBase64) return obj;
+    const known = pool.get(recordId(root));
+    if (known === undefined) pool.set(recordId(root), root.bytesBase64);
+    if (known !== root.bytesBase64) return obj;
+    return { ...obj, modelTree: { ...obj.modelTree, rootStep: { name: root.name, byteLength: root.byteLength, hash: root.hash } } };
+  });
 }
 
 /**
@@ -271,8 +307,9 @@ function readVersion2(doc: Record<string, unknown>): ProjectResult {
   }
   const preset = doc.preset === null ? null : typeof doc.preset === "string" ? doc.preset : undefined;
   if (preset === undefined) return { ok: false, message: "This project file is incomplete." };
-  const objects = readPlateObjects(doc.objects);
-  if (typeof objects === "string") return { ok: false, message: objects };
+  const read = readPlateObjects(doc.objects);
+  if (typeof read === "string") return { ok: false, message: read };
+  const { objects, unreadHistory } = read;
   const primary = objects[0];
   if (!primary) return { ok: false, message: "This project file is incomplete." };
   const project: LimeProject = {
@@ -286,6 +323,7 @@ function readVersion2(doc: Record<string, unknown>): ProjectResult {
     supportEdits: primary.supportEdits,
   };
   if (project.version === 2) project.objects = objects;
+  if (unreadHistory.length > 0) project.unreadHistory = unreadHistory;
   if (doc.overrides !== undefined) {
     const overrides = parseOverrides(doc.overrides);
     if (!overrides.ok) return overrides;
@@ -306,7 +344,7 @@ function readVersion2(doc: Record<string, unknown>): ProjectResult {
   return { ok: true, project };
 }
 
-function readPlateObjects(value: unknown): PlateFileObject[] | string {
+function readPlateObjects(value: unknown): { objects: PlateFileObject[]; unreadHistory: string[] } | string {
   if (!Array.isArray(value) || value.length === 0) return "This project file is incomplete.";
   const out: PlateFileObject[] = [];
   const seen = new Set<string>();
@@ -317,7 +355,35 @@ function readPlateObjects(value: unknown): PlateFileObject[] | string {
     seen.add(read.id);
     out.push(read);
   }
-  return out;
+  const pool = bytesPool(out);
+  const trees = value.map((item: Record<string, unknown>) => {
+    const raw = item.modelTree;
+    // Every whole root STEP joins the bytes, as the writer counted it, even in a tree too damaged to read.
+    const root = raw && typeof raw === "object" ? readRootStep((raw as Record<string, unknown>).rootStep) : null;
+    if (root?.bytesBase64 !== undefined && !pool.has(recordId(root))) pool.set(recordId(root), root.bytesBase64);
+    const tree = raw == null ? null : readSavedTree(raw);
+    return tree && root ? { tree, root } : null;
+  });
+  const unreadHistory: string[] = [];
+  value.forEach((item: Record<string, unknown>, i) => {
+    const saved = trees[i];
+    const bytesBase64 = saved ? saved.root.bytesBase64 ?? pool.get(recordId(saved.root)) : undefined;
+    if (saved && bytesBase64 !== undefined) out[i]!.modelTree = { ...saved.tree, rootStep: { ...saved.root, bytesBase64 } };
+    else if (item.modelTree != null) unreadHistory.push(out[i]!.name);
+  });
+  return { objects: out, unreadHistory };
+}
+
+/** A root STEP: whole, or its name, hash, and length alone when the file holds those bytes elsewhere. */
+function readRootStep(value: unknown): StepRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (row.bytesBase64 !== undefined) {
+    const whole = readMesh(row);
+    return typeof whole === "string" ? null : whole;
+  }
+  if (typeof row.name !== "string" || !row.name.trim() || typeof row.hash !== "string" || !Number.isInteger(row.byteLength)) return null;
+  return { name: row.name, byteLength: row.byteLength as number, hash: row.hash };
 }
 
 function readPlateObject(value: unknown): PlateFileObject | string {

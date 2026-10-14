@@ -13,6 +13,7 @@ import {
   commitGesture,
   emptyHistory,
   foldSince,
+  historyRefs,
   putBrepFor,
   redoSnap,
   undoSnap,
@@ -161,6 +162,7 @@ export function noteEdit() {
   window.clearTimeout(timer);
   timer = window.setTimeout(() => {
     history = commitGesture(history, capture());
+    fx.releaseModelTrees?.();
     }, 280);
 }
 
@@ -174,6 +176,13 @@ export function beginEdit() {
 export function flushEdit() {
   window.clearTimeout(timer);
   history = commitGesture(history, capture());
+  // A step that lands can push the oldest one out or clear the redo steps, and their trees with them.
+  fx.releaseModelTrees?.();
+}
+
+/** What Model must keep for the steps here. */
+export function editHistoryRefs() {
+  return historyRefs(history);
 }
 
 export function clearEditHistory() {
