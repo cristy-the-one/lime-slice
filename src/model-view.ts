@@ -9,6 +9,7 @@ import type { Box } from "./measure";
 import { perspectiveMeasure } from "./measure-camera";
 import { mountMeasureOverlay } from "./measure-overlay";
 import { axisValues, dragLabel, dragValue, lineParam, moveFine, startFine, wrapDegrees, type DragHandle, type FinePointer, type Vec3 } from "./model-drag";
+import { contextMaterial } from "./context-look";
 import { partBox, type ContextPart } from "./model-context";
 import { faceBoundarySegments, faceColor } from "./model-select";
 import { hexToThree, themeColors } from "./theme";
@@ -53,8 +54,6 @@ const IDLE_EDGE = 0x8d9780;
 const ARROW_HEAD = HANDLE_ARROW_TIP - 0.15;
 /** How much more solid the ghost of the object being edited gets while a docked handle is in use. */
 const EMPHASIS_OPACITY = 0.45;
-/** How solid the other plate objects look next to the open solid. */
-const CONTEXT_OPACITY = 0.4;
 
 export interface ModelView {
   setSolid(solid: ModelSolid | null): void;
@@ -285,15 +284,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     });
   }
 
-  const contextMaterial = new THREE.MeshStandardMaterial({
-    color: colors.context,
-    roughness: 1,
-    metalness: 0,
-    flatShading: true,
-    transparent: true,
-    opacity: CONTEXT_OPACITY,
-    depthWrite: false,
-  });
+  const contextMat = contextMaterial(colors.context);
   /** One geometry per source array, so a pose change or a new neighbour never re-uploads a mesh that did not change. */
   const contextGeometry = new Map<Float32Array, { geometry: THREE.BufferGeometry; box: Bounds }>();
 
@@ -314,7 +305,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         held = { geometry, box: boundsOf(part.positions) };
         contextGeometry.set(part.positions, held);
       }
-      const mesh = new THREE.Mesh(held.geometry, contextMaterial);
+      const mesh = new THREE.Mesh(held.geometry, contextMat);
       const { m, t } = part.matrix;
       mesh.matrixAutoUpdate = false;
       mesh.matrix.set(m[0], m[1], m[2], t[0], m[3], m[4], m[5], t[1], m[6], m[7], m[8], t[2], 0, 0, 0, 1);
@@ -767,7 +758,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       colors = themeColors();
       accent = readAccent();
       paintBedColors();
-      contextMaterial.color.setHex(hexToThree(colors.context));
+      contextMat.color.setHex(hexToThree(colors.context));
       renderer.setClearColor(hexToThree(colors.stage), 1);
       paintFaces();
       paintLines();
