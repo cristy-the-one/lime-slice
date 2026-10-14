@@ -418,7 +418,7 @@ export function setStage(stage: "prepare" | "preview" | "gcode" | "model") {
   document.querySelector(".stage-tools")?.toggleAttribute("hidden", stage === "prepare" || stage === "model");
   document.querySelector("#colorBy")?.closest("label")?.toggleAttribute("hidden", stage === "model");
   document.querySelector("#bedOpacity")?.closest("label")?.toggleAttribute("hidden", stage === "model");
-  document.querySelector("#measureField")?.toggleAttribute("hidden", stage === "model");
+  document.querySelector("#measureField")?.toggleAttribute("hidden", false);
   document.querySelector<HTMLElement>("#viewPresets")?.toggleAttribute("hidden", stage !== "prepare");
   if (stage !== "prepare") {
     session.paintUi?.stop();
@@ -1094,6 +1094,7 @@ export function mountViews() {
   const sparkCanvas = document.querySelector<HTMLCanvasElement>("#spark");
   if (sparkCanvas) new ResizeObserver(() => paintSpark()).observe(sparkCanvas);
   prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
+  model.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
   view3d.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
   prepare.setBedOpacity(state.bedOpacity);
   view3d.setBedOpacity(state.bedOpacity);
