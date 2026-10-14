@@ -1,5 +1,5 @@
 import { defaultProfile } from "./profiles.ts";
-import { DEFAULT_PRESET } from "./presets.ts";
+import { DEFAULT_PRESET, LATER_KEYS, type PresetSettings } from "./presets.ts";
 import {
   applyMigrations,
   meshRecord,
@@ -283,6 +283,69 @@ const plainOpened = parseProject(multiText);
 eq("a plate saved before brep opens with none", plainOpened.ok ? plainOpened.project.objects?.map((obj) => obj.brep ?? null) : null, [null, null]);
 brepWire.objects[0]!.brep = { ...brepMesh, hash: "nope" };
 eq("a damaged solid fails the open", parseProject(JSON.stringify(brepWire)), { ok: false, message: "The solid in this project is damaged." });
+
+const actions = [
+  { zMm: 4.2, kind: "pause" as const },
+  { zMm: 10, kind: "filamentChange" as const, note: "white" },
+];
+eq("a project without layer actions omits them", [JSON.parse(text).layerActions, JSON.parse(multiText).layerActions], [undefined, undefined]);
+eq("an empty list is omitted too", JSON.parse(serializeProject({ ...project, layerActions: [] })).layerActions, undefined);
+const paused: LimeProject = { ...project, layerActions: actions };
+const pausedWire = JSON.parse(serializeProject(paused)) as { version: number; layerActions?: unknown[] };
+eq("layer actions stay on a version 1 project", [pausedWire.version, pausedWire.layerActions], [1, actions]);
+const pausedOpened = parseProject(JSON.stringify(pausedWire));
+eq("a one-object project keeps its layer actions", pausedOpened.ok ? pausedOpened.project : null, paused);
+const pausedPlate: LimeProject = { ...multi, layerActions: actions };
+const pausedPlateOpened = parseProject(serializeProject(pausedPlate));
+eq("a plate keeps its layer actions", pausedPlateOpened.ok ? pausedPlateOpened.project.layerActions : null, actions);
+const damagedActions = "The pauses and filament changes in this project are damaged.";
+for (const [name, bad] of [
+  ["not a list", { zMm: 1, kind: "pause" }],
+  ["a negative height", [{ zMm: -1, kind: "pause" }]],
+  ["an unknown kind", [{ zMm: 1, kind: "custom" }]],
+  ["a note that is not text", [{ zMm: 1, kind: "pause", note: 3 }]],
+] as const) {
+  eq(`layer actions with ${name} fail the open`, parseProject(JSON.stringify({ ...pausedWire, layerActions: bad })), { ok: false, message: damagedActions });
+}
+
+const later: Partial<PresetSettings> = {
+  seam: "rear",
+  ironing: true,
+  ironingFlow: 0.15,
+  ironingSpeed: 30,
+  ironingSpacing: 0.15,
+  fuzzySkin: true,
+  fuzzyThickness: 0.4,
+  fuzzyPointDistance: 1,
+  flow: 0.95,
+  retractOn: true,
+  retractLength: 0.8,
+  retractSpeed: 40,
+  supportAvoidance: true,
+  supportSource: "paint",
+  minLayerTimeS: 6,
+  minLayerSpeedMmS: 10,
+  adhesion: "brim",
+  brimWidthMm: 8,
+  brimGapMm: 0.2,
+  skirtLoops: 3,
+  topSurfacePattern: "monotonic",
+  xyHoleCompensationMm: 0.1,
+  xyContourCompensationMm: -0.05,
+  elephantsFootCompensationMm: 0.2,
+  supportZGapMm: 0.25,
+  supportXyGapMm: 0.7,
+  supportInterfaceLayers: 2,
+  supportTreeBrimMm: 4,
+  bridgeFlowRatio: 0.9,
+  bridgeSpeedMmS: 25,
+  bridgeFanPercent: 80,
+};
+eq("the later settings below cover every later key", Object.keys(later).sort(), [...LATER_KEYS].sort());
+eq("each one differs from its default", Object.entries(later).filter(([key, value]) => DEFAULT_PRESET[key as keyof PresetSettings] === value).map(([key]) => key), []);
+const laterSettings = { ...project.settings, ...later };
+const laterOpened = parseProject(serializeProject({ ...project, settings: laterSettings }));
+eq("every later setting survives a save and reopen", laterOpened.ok ? laterOpened.project.settings : null, laterSettings);
 
 if (failed) {
   console.error(`${failed} failed`);

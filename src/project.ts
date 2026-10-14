@@ -9,6 +9,7 @@
  * into version `n + 1`. `applyMigrations` is that hook.
  */
 import { KLIPPER_NUMBERS, type PrinterProfile } from "./profiles.ts";
+import type { LayerAction } from "./layer-actions.ts";
 import type { PresetSettings } from "./presets.ts";
 import { readPresetSettings } from "./presets.ts";
 import { fnv1aHex } from "./slice-action.ts";
@@ -69,6 +70,8 @@ export interface LimeProject {
   /** Omitted at 0, which means the nozzle radius plus one line width. */
   sequentialClearanceMm?: number;
   sequentialGantryMm?: number;
+  /** Pauses and filament changes from the layer slider. Omitted when there are none. */
+  layerActions?: LayerAction[];
 }
 
 export type ProjectResult = { ok: true; project: LimeProject } | { ok: false; message: string };
@@ -111,6 +114,7 @@ export function serializeProject(project: LimeProject): string {
       objects: project.objects.map(stripEmptySettings),
     };
     if (overrides) wire.overrides = overrides;
+    if (project.layerActions?.length) wire.layerActions = project.layerActions;
     if (project.printOrder === "sequential") {
       wire.printOrder = "sequential";
       if (project.sequentialClearanceMm !== undefined && project.sequentialClearanceMm > 0) {
@@ -133,6 +137,7 @@ export function serializeProject(project: LimeProject): string {
     supportEdits: project.supportEdits,
   };
   if (overrides) wire.overrides = overrides;
+  if (project.layerActions?.length) wire.layerActions = project.layerActions;
   return JSON.stringify(wire, null, 2);
 }
 
@@ -249,6 +254,9 @@ function readVersion1(doc: Record<string, unknown>): ProjectResult {
     if (!overrides.ok) return overrides;
     project.overrides = overrides.doc;
   }
+  const actions = readLayerActions(doc.layerActions);
+  if (typeof actions === "string") return { ok: false, message: actions };
+  if (actions.length > 0) project.layerActions = actions;
   return { ok: true, project };
 }
 
@@ -283,6 +291,9 @@ function readVersion2(doc: Record<string, unknown>): ProjectResult {
     if (!overrides.ok) return overrides;
     project.overrides = overrides.doc;
   }
+  const actions = readLayerActions(doc.layerActions);
+  if (typeof actions === "string") return { ok: false, message: actions };
+  if (actions.length > 0) project.layerActions = actions;
   if (project.version === 2 && doc.printOrder === "sequential") {
     project.printOrder = "sequential";
     if (finite(doc.sequentialClearanceMm) && (doc.sequentialClearanceMm as number) > 0 && (doc.sequentialClearanceMm as number) <= 100) {
@@ -480,6 +491,22 @@ function readRegion(value: unknown): [number, number][][] | string {
     loops.push(points);
   }
   return loops;
+}
+
+function readLayerActions(value: unknown): LayerAction[] | string {
+  if (value === undefined) return [];
+  const damaged = "The pauses and filament changes in this project are damaged.";
+  if (!Array.isArray(value)) return damaged;
+  const out: LayerAction[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return damaged;
+    const row = item as Record<string, unknown>;
+    if (!finite(row.zMm) || row.zMm < 0) return damaged;
+    if (row.kind !== "pause" && row.kind !== "filamentChange") return damaged;
+    if (row.note !== undefined && typeof row.note !== "string") return damaged;
+    out.push({ zMm: row.zMm, kind: row.kind, ...(row.note ? { note: row.note } : {}) });
+  }
+  return out;
 }
 
 function readPair(value: unknown): [number, number] | null {

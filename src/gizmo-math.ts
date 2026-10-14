@@ -1,4 +1,4 @@
-/** Screen-constant gizmo sizing, left-edge parking, and drag snapping. Pure math, no Three.js. */
+/** Screen-constant gizmo sizing, edge parking, the Model dock, and drag snapping. Pure math, no Three.js. */
 
 /** Vertical pixels the rotate ring should occupy, regardless of camera distance. */
 export const GIZMO_SCREEN_PX = 88;
@@ -42,68 +42,28 @@ export function parkLeftCameraSpace(
   return [ndcX * halfW, 0, -depth];
 }
 
-export interface PxRect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
+/**
+ * The Model dock: one fixed seat on the right edge for every handle that edits the tool's object.
+ * Lengths are in handle units, where one unit is the handle's on-screen pixel size.
+ */
+export const HANDLE_ARROW_TIP = 0.97;
+export const HANDLE_RING_RADIUS = 0.7;
+export const HANDLE_KNOB_PICK = 0.17;
+/** A size knob sits this far out on its axis, past the arrow heads and outside the rings. */
+export const DOCK_KNOB_REACH = 1.3;
+const DOCK_EDGE_GAP_PX = 18;
 
-export interface GizmoSeat {
-  ndcX: number;
-  ndcY: number;
-  parked: boolean;
+/** Pixels from the dock's centre to the far side of its farthest knob. */
+export function dockSpanPx(handlePx: number): number {
+  return (DOCK_KNOB_REACH + HANDLE_KNOB_PICK) * handlePx;
 }
-
-const SEAT_GAP_PX = 18;
 
 /**
- * Where a gizmo sits so it does not cover the solid.
- * The first choice is a short gap to one side of the solid's screen box.
- * A seat that would leave the canvas, still cover the solid, or sit on top of
- * the edge park uses that park instead. `stickPark` keeps the park until
- * the offset seat is clearly on canvas, so the widget does not hop between them.
+ * Where the dock sits, in NDC. It depends on the canvas width and the handle size and on nothing else,
+ * so it does not follow the solid and does not change when the view orbits, zooms, or pans.
  */
-export function placeClearGizmo(
-  viewW: number,
-  viewH: number,
-  object: PxRect | null,
-  spanPx: number,
-  stickPark = false,
-  side: "left" | "right" = "left",
-): GizmoSeat {
-  const span = Math.max(32, spanPx);
-  const radius = span / 2;
-  const margin = radius + SEAT_GAP_PX;
-  const parkNdc = side === "right" ? parkRightNdcX(viewW, margin) : parkLeftNdcX(viewW, margin);
-  const park: GizmoSeat = { ndcX: parkNdc, ndcY: 0, parked: true };
-  if (!object || !(object.w > 1) || !(object.h > 1) || !(viewW > 1) || !(viewH > 1)) return park;
-  const cx = side === "right" ? object.x + object.w + SEAT_GAP_PX + radius : object.x - SEAT_GAP_PX - radius;
-  const cy = object.y + object.h / 2;
-  const inset = stickPark ? 28 : 8;
-  const left = cx - radius;
-  const top = cy - radius;
-  const onCanvas = left >= inset && top >= inset && left + span <= viewW - inset && top + span <= viewH - inset;
-  const overlaps = left < object.x + object.w && left + span > object.x && top < object.y + object.h && top + span > object.y;
-  const parkX = (parkNdc * 0.5 + 0.5) * viewW;
-  const nearPark = Math.hypot(cx - parkX, cy - viewH / 2) < radius;
-  if (!onCanvas || overlaps || nearPark) return park;
-  return { ndcX: (cx / viewW) * 2 - 1, ndcY: -((cy / viewH) * 2 - 1), parked: false };
-}
-
-/** Camera-space point for an NDC seat on the plane `distance` in front of the camera. */
-export function gizmoAtNdc(
-  ndcX: number,
-  ndcY: number,
-  distance: number,
-  fovDeg: number,
-  aspect: number,
-  zoom = 1,
-): readonly [number, number, number] {
-  const depth = Math.max(1e-4, distance);
-  const halfH = Math.tan((fovDeg * Math.PI) / 360) * depth / Math.max(zoom, 1e-4);
-  const halfW = halfH * Math.max(aspect, 1e-4);
-  return [ndcX * halfW, ndcY * halfH, -depth];
+export function dockNdc(viewportWidthPx: number, handlePx: number): { ndcX: number; ndcY: number } {
+  return { ndcX: parkRightNdcX(viewportWidthPx, dockSpanPx(handlePx) + DOCK_EDGE_GAP_PX), ndcY: 0 };
 }
 
 /**
