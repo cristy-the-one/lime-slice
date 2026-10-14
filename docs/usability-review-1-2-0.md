@@ -58,6 +58,7 @@ This review audits the UI and ergonomics of the 1.2.0 build across the recent Mo
 - In Model mode the tool panel covers the left of the canvas, so the offset and the park sit on the right. Prepare already parks Move and Rotate on the left, clear of the mesh panel, and the scale gizmo stays on that same widget.
 - When that offset would leave the canvas, still cover the solid, or swap with the park as the view moves, park the gizmo on that edge and leave it there until the offset seat is clearly clear.
 - Freeze the seat for the duration of a drag. Arrows, rings, and the scale knob stay draggable, and they keep writing the same numeric fields.
+- Superseded after 1.3.0: the offset seat jumped between the gap and the park as the view moved. Model now uses a fixed dock on the right edge, like Prepare's left-edge park. The dock never follows the solid, and it carries the move arrows, turn rings, size knobs, and the hole's move arrows. Only handles that edit a picked feature stay on the solid.
 
 ---
 
