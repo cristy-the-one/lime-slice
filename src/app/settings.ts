@@ -7,6 +7,7 @@ import { paintSettingMarks, syncEmptyState } from "../ui/shell";
 import { pushToast } from "../ui/toasts";
 import { markProjectDirty } from "../project-dirty";
 import { coverageWarning, inAirWarning } from "../slice-action";
+import { meshRepairOf, meshWarningKey, meshWarningText } from "./mesh-warning";
 import { supportModeOf, type SupportMode } from "../support-source";
 import { applySliceProgress, currentSliceProgress } from "../ui/slice-progress";
 import { filamentCost, filamentGrams, groupFeatures } from "../estimate";
@@ -208,9 +209,9 @@ export function renderChrome() {
   syncFindStuck();
 
   const live = resolved(currentWeight(), state.layerHeight);
-  const section = (title: string, body: string, tier?: Tier) => `<section class="res"${tier ? ` data-level="${tier}"` : ""}><h4>${title}</h4>${body}</section>`;
+  const section = (title: string, body: string, tier?: Tier, id?: string) => `<section class="res"${id ? ` id="${id}"` : ""}${tier ? ` data-level="${tier}"` : ""}><h4>${title}</h4>${body}</section>`;
   document.querySelector("#right")!.innerHTML = `
-    ${result ? section("Estimate", `<div id="estimate">${estimateHtml()}</div>`) : ""}
+    ${result ? section("Estimate", `${meshWarningHtml()}<div id="estimate">${estimateHtml()}</div>`, undefined, "summaryCard") : ""}
     ${result ? section("Active layer", `<div id="layerReadout">${layerReadout()}</div>`) : ""}
     ${section("Compare blends", `<div id="pareto"${state.mesh ? "" : ' class="is-off"'}>${paretoHtml()}</div>`)}
     ${state.mesh ? section("Resolved parameters", `<div class="meta" id="resolved">${paramTable(live)}</div>`, "advanced") : ""}
@@ -918,6 +919,23 @@ export function stageHtml(result: SliceResponse | null) {
     })
     .join("");
   return `<div class="stages"><h4 class="sub">Slice stages</h4><table class="stages">${body}</table></div>`;
+}
+
+/** Dismissed repair pill. A later slice with different counts shows a new one. */
+let dismissedMeshWarning: string | null = null;
+
+function meshWarningHtml() {
+  const counts = meshRepairOf(state.result);
+  if (!counts) return "";
+  const key = meshWarningKey(counts);
+  if (key === dismissedMeshWarning) return "";
+  return `<p class="mesh-warn" id="meshWarn" role="status"><span>${escapeHtml(meshWarningText(counts))}</span><button class="mesh-warn-dismiss" id="dismissMeshWarn" type="button" aria-label="Dismiss mesh warning">Dismiss</button></p>`;
+}
+
+/** Hide the current repair pill until the counts change. */
+export function dismissMeshWarning() {
+  const counts = meshRepairOf(state.result);
+  dismissedMeshWarning = counts ? meshWarningKey(counts) : dismissedMeshWarning;
 }
 
 /** The feature each estimate row is colored as. */
