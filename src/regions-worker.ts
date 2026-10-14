@@ -1,5 +1,3 @@
-/// Label the face regions of a mesh off the main thread, for the Reinforce "Along edge" mode.
-
 import { labelFaceRegions, REGION_THRESHOLD_DEG } from "./edge-strip";
 
 self.onmessage = (event: MessageEvent<{ id: number; positions: Float32Array }>) => {

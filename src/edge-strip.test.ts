@@ -40,7 +40,6 @@ function cylinder(facets: number): Float32Array {
   return soupOf(tris);
 }
 
-/** A flat L in z = 0, fanned from the origin; its concave corner is (10, 10). */
 const lShape = soupOf([
   [[0, 0, 0], [20, 0, 0], [20, 10, 0]],
   [[0, 0, 0], [20, 10, 0], [10, 10, 0]],
@@ -48,7 +47,6 @@ const lShape = soupOf([
   [[0, 0, 0], [10, 20, 0], [0, 20, 0]],
 ]);
 
-/** A 10 mm square in z = 0 and a second square folded up from its x = 10 edge by `deg`. */
 function fold(deg: number): Float32Array {
   const a = (Math.PI / 180) * deg;
   return quads([
@@ -57,7 +55,6 @@ function fold(deg: number): Float32Array {
   ]);
 }
 
-/** An open half-cylinder sheet of radius 10 about the y axis, y in [0, 20], wound so its normals point outward. */
 function halfCylinder(facets: number): Float32Array {
   const rim = (y: number) => Array.from({ length: facets + 1 }, (_, k) => [10 * Math.cos((Math.PI * k) / facets), y, 10 * Math.sin((Math.PI * k) / facets)]);
   const lo = rim(0), hi = rim(20);
@@ -77,7 +74,6 @@ function boundaryDistance(p: Vec3, loop: EdgeLoop): number {
   return Math.min(...loop.points.map((a, i) => segmentDistance(p, a, loop.points[(i + 1) % n]!)));
 }
 
-/** The region of the triangle whose first corner is `corner`. */
 function regionAt(positions: Float32Array, region: Int32Array, corner: Vec3): number {
   for (let t = 0; t < region.length; t++) if (near([positions[t * 9]!, positions[t * 9 + 1]!, positions[t * 9 + 2]!], corner)) return region[t]!;
   throw new Error(`no triangle starts at ${corner}`);

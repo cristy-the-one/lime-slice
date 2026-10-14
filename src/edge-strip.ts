@@ -1,8 +1,3 @@
-/**
- * Reinforce strips along a face edge: face regions of a triangle soup, their boundary loops,
- * and disk centres inset from a loop. Pure: no three.js, no DOM. Everything is in the
- * geometry frame of the positions it is given.
- */
 import { faceNormal, tableSize, vertexIds } from "./mesh-edges.ts";
 import { STROKE_STEP_R, type Vec3 } from "./support-paint.ts";
 
@@ -250,7 +245,7 @@ export function regionSurface(positions: Float32Array, regions: FaceRegions, reg
 
   const min: Vec3 = [Infinity, Infinity, Infinity];
   const max: Vec3 = [-Infinity, -Infinity, -Infinity];
-  let triExtent = 0;
+  let largestTriExtent = 0;
   const lo: Vec3 = [0, 0, 0];
   const hi: Vec3 = [0, 0, 0];
   const bounds = (t: number) => {
@@ -264,13 +259,12 @@ export function regionSurface(positions: Float32Array, regions: FaceRegions, reg
     for (let k = 0; k < 3; k++) {
       min[k] = Math.min(min[k], lo[k]);
       max[k] = Math.max(max[k], hi[k]);
-      triExtent = Math.max(triExtent, hi[k] - lo[k]);
+      largestTriExtent = Math.max(largestTriExtent, hi[k] - lo[k]);
     }
   }
   const extent = Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2], 1e-6);
   const perAxis = Math.min(256, Math.max(1, Math.round(Math.cbrt(tris.length) * 1.5)));
-  // Cells no smaller than the largest triangle keep each triangle in a handful of buckets.
-  const cell = Math.max(extent / perAxis, triExtent, 1e-6);
+  const cell = Math.max(extent / perAxis, largestTriExtent, 1e-6);
   const dims: [number, number, number] = [0, 0, 0];
   for (let k = 0; k < 3; k++) dims[k] = Math.floor((max[k] - min[k]) / cell) + 1;
   const cells = dims[0] * dims[1] * dims[2];
@@ -291,7 +285,6 @@ export function regionSurface(positions: Float32Array, regions: FaceRegions, reg
   return { positions, min, cell, dims, cellStart, cellTris };
 }
 
-/** Möller–Trumbore, both facings: the ray parameter of the hit on triangle t, or -1. */
 function rayTriangle(p: Float32Array, t: number, o: Vec3, d: Vec3): number {
   const v = t * 9;
   const a: Vec3 = [p[v]!, p[v + 1]!, p[v + 2]!];
@@ -310,7 +303,6 @@ function rayTriangle(p: Float32Array, t: number, o: Vec3, d: Vec3): number {
   return dot(e2, q) * inv;
 }
 
-/** The nearest triangle the ray `o + s * d`, s in [0, maxLen], hits, walking the grid cell by cell (3D DDA). */
 function castRay(surface: RegionSurface, o: Vec3, d: Vec3, maxLen: number): { s: number; tri: number } | null {
   const { min, cell, dims, cellStart, cellTris, positions } = surface;
   let s0 = 0;
@@ -355,14 +347,12 @@ function castRay(surface: RegionSurface, o: Vec3, d: Vec3, maxLen: number): { s:
   return best.tri === -1 ? null : best;
 }
 
-/** The inset polyline the strip runs along; piece i joins `points[i]` to `points[i + 1]` (or back to 0 when closed) and lies on loop segment `owners[i]`. */
 interface InsetPath {
   points: Vec3[];
-  owners: number[];
+  loopSegment: number[];
   closed: boolean;
 }
 
-/** Loop vertex i moved into the region along the bisector of its two segments' inward vectors, mitred to `d`. */
 function mitredVertex(loop: EdgeLoop, i: number, d: number): Vec3 {
   const n = loop.points.length;
   const before = loop.inward[(i + n - 1) % n]!;
@@ -395,14 +385,14 @@ function arcLength(loop: EdgeLoop, from: LoopPos, to: LoopPos): number {
 
 function insetPath(loop: EdgeLoop, span: StripSpan, d: number): InsetPath {
   if (span.kind === "loop") {
-    return { points: loop.points.map((_, i) => mitredVertex(loop, i, d)), owners: loop.points.map((_, i) => i), closed: true };
+    return { points: loop.points.map((_, i) => mitredVertex(loop, i, d)), loopSegment: loop.points.map((_, i) => i), closed: true };
   }
   const { from, to } = span;
   const segs = arcSegments(loop, from, to);
   const points = [add(pointAt(loop, from), scale(loop.inward[from.seg]!, d))];
   for (const seg of segs.slice(1)) points.push(mitredVertex(loop, seg, d));
   points.push(add(pointAt(loop, to), scale(loop.inward[to.seg]!, d)));
-  return { points, owners: segs, closed: false };
+  return { points, loopSegment: segs, closed: false };
 }
 
 /**
@@ -437,8 +427,8 @@ export function stripSamples(loop: EdgeLoop, span: StripSpan, offset: number, r:
     const a = path.points[piece]!;
     const b = path.points[(piece + 1) % path.points.length]!;
     const t = lengths[piece]! > 0 ? (s - start) / lengths[piece]! : 0;
-    const owner = path.owners[piece]!;
-    samples.push(snap(lerp(a, b, t), loop.normals[owner]!, d, surface));
+    const seg = path.loopSegment[piece]!;
+    samples.push(snap(lerp(a, b, t), loop.normals[seg]!, d, surface));
   }
   return reversed ? samples.reverse() : samples;
 }
