@@ -15,7 +15,8 @@ import { saveProfile } from "../profiles.ts";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel.ts";
 import { pushToast } from "../ui/toasts.ts";
 import { adoptBytes, place, previewRemote } from "./files.ts";
-import { captureOpenSolid } from "./model.ts";
+import { adoptSavedTrees, captureOpenSolid, treesToSave } from "./model.ts";
+import type { SavedTree } from "../model-tree-file.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { applyPreset, currentPreset, needsEngine, renderChrome } from "./settings.ts";
 import { session, state } from "./state.ts";
@@ -123,8 +124,9 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
         pushToast(loaded, "error", { label: "Retry", run: openProjectPicker });
         return false;
       }
-      state.plate = loaded;
-      applySelectedToState(loaded);
+      state.plate = loaded.plate;
+      applySelectedToState(loaded.plate);
+      adoptSavedTrees(loaded.trees);
       // An Add that started while these meshes were loading was aimed at the plate this replaced.
       session.meshEpoch += 1;
     }
@@ -134,6 +136,9 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
     session.supportUi?.refresh();
     renderChrome();
     markProjectClean();
+    if (project.unreadHistory?.length) {
+      pushToast(`The Model history of ${project.unreadHistory.join(", ")} could not be read, so it starts again from the saved part.`, "info");
+    }
     return true;
   } finally {
     session.projectRestoring = false;
@@ -141,6 +146,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
 }
 
 function fileObjects(): PlateFileObject[] {
+  const trees = treesToSave();
   return state.plate.objects.map((obj) => {
     const record: PlateFileObject = {
       id: obj.id,
@@ -161,6 +167,8 @@ function fileObjects(): PlateFileObject[] {
     const reinforce = dropEmptyReinforce(obj.reinforcement ?? []);
     if (reinforce.length > 0) record.reinforcement = reinforce.map((reg) => structuredClone(reg));
     if (obj.brep) record.brep = meshRecord(stepFileName(obj.fileName), new Uint8Array(obj.brep));
+    const saved = trees.get(obj.id);
+    if (saved) record.modelTree = { ...saved.tree, rootStep: meshRecord(saved.rootStep.name, new Uint8Array(saved.rootStep.bytes)) };
     return record;
   });
 }
@@ -172,6 +180,19 @@ function stepFileName(name: string) {
 
 async function loadPlateObjects(objects: PlateFileObject[]) {
   const rows = [];
+  const trees = new Map<string, SavedTree<{ name: string; bytes: ArrayBuffer }>>();
+  // A root STEP with the bytes of a mesh or a solid read before it shares that buffer.
+  const decoded = new Map<string, ArrayBuffer>();
+  const decode = (record: { bytesBase64: string; byteLength: number; hash: string }) => {
+    const id = `${record.hash}:${record.byteLength}`;
+    const known = decoded.get(id);
+    if (known) return known;
+    const bytes = base64ToBytes(record.bytesBase64);
+    if (!bytes) return null;
+    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+    decoded.set(id, buffer);
+    return buffer;
+  };
   for (const row of objects) {
     const bytes = base64ToBytes(row.mesh.bytesBase64);
     if (!bytes) return "The mesh in this project is damaged.";
@@ -182,15 +203,19 @@ async function loadPlateObjects(objects: PlateFileObject[]) {
     }
     if (!sourcePos) sourcePos = await previewRemote(row.mesh.name, copy);
     if (!sourcePos) return `Could not read ${row.name}.`;
+    if (!decoded.has(`${row.mesh.hash}:${row.mesh.byteLength}`)) decoded.set(`${row.mesh.hash}:${row.mesh.byteLength}`, copy);
     let brepBytes: ArrayBuffer | undefined;
     if (row.brep) {
-      const solid = base64ToBytes(row.brep.bytesBase64);
+      const solid = decode(row.brep);
       if (!solid) return "The solid in this project is damaged.";
-      brepBytes = solid.buffer.slice(solid.byteOffset, solid.byteOffset + solid.byteLength) as ArrayBuffer;
+      brepBytes = solid;
     }
+    const root = row.modelTree?.rootStep;
+    const rootBytes = root?.bytesBase64 === undefined ? null : decode({ ...root, bytesBase64: root.bytesBase64 });
+    if (row.modelTree && root && rootBytes) trees.set(row.id, { ...row.modelTree, rootStep: { name: root.name, bytes: rootBytes } });
     rows.push({ ...row, bytes: copy, sourcePos, brepBytes });
   }
-  return assemblePlate(rows);
+  return { plate: assemblePlate(rows), trees };
 }
 
 function hashOf(bytes: ArrayBuffer): string {

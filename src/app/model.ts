@@ -15,6 +15,7 @@ import {
   nodeWithMesh,
   opLabel,
   pathTo,
+  reachableTrees,
   redoTarget,
   reserveId,
   savedNodes,
@@ -31,6 +32,7 @@ import {
   type PrepareKeep,
   type Vec3,
 } from "../model-tree";
+import { loadedTree, savedTree, type SavedTree } from "../model-tree-file";
 import {
   closeModelTool,
   mountModelChrome,
@@ -48,7 +50,7 @@ import { addedSplit, meshTokenOf, withBrepFor } from "../plate";
 import { base64ToBytes } from "../project";
 import { authHeaders } from "../ui/api-base";
 import { livePlate, place } from "./files";
-import { endModelVisit, flushEdit, markModelEdit, noteEdit, patchEditBrep } from "./history";
+import { editHistoryRefs, endModelVisit, flushEdit, markModelEdit, noteEdit, patchEditBrep } from "./history";
 import { fx } from "./fx";
 import { modelerFailure, plainModelError } from "./model-error";
 import { freshTreeKey, modelTrees } from "./model-trees";
@@ -99,6 +101,18 @@ const stepKnown = new Set<string>();
 const answers = new Map<string, ProbeView>();
 /** Restores in flight, by tree key. */
 const restoring = new Map<string, Promise<string | null>>();
+
+/**
+ * A tree from a saved project, until the engine has the whole of it. Once `live`, the engine holds
+ * the plate's step (`node`), read from that step's STEP, as its root, plus the steps applied on it
+ * since (`known`). A call on any other step first opens the whole tree from its root STEP and ops.
+ */
+interface Seed {
+  node: NodeId;
+  live: boolean;
+  known: Set<NodeId>;
+}
+const seeds = new Map<string, Seed>();
 
 export function bindModelView() {
   fx.model?.onPick((pick: ModelPick | null, shift: boolean) => void onPick(pick, shift));
@@ -310,6 +324,94 @@ export async function captureOpenSolid() {
   commitModel();
   const failed = await writeSteps();
   for (const token of failed) putStep(token, undefined);
+  await writePieceRoots();
+}
+
+/** A split piece's tree is saved from the STEP of its own root, so it opens without the part it was cut from. */
+async function writePieceRoots() {
+  for (const obj of state.plate.objects) {
+    const tree = obj.modelTree ? modelTrees.get(obj.modelTree) : undefined;
+    const root = tree?.nodes.get(ROOT)?.mesh;
+    if (!tree || tree.root.kind !== "piece" || !root || root.step) continue;
+    const step = await exportStep(tree.key, ROOT);
+    if (typeof step !== "string") putStep(root.token, step);
+  }
+}
+
+/** The root STEP a saved tree reopens from. A piece's is its root's STEP, once written. */
+function rootStepOf(tree: ModelTree): { name: string; bytes: ArrayBuffer } | null {
+  if (tree.root.kind === "step") return { name: tree.root.name, bytes: tree.root.bytes };
+  const root = tree.nodes.get(ROOT)?.mesh;
+  return root?.step ? { name: stepFileName(root.name), bytes: root.step } : null;
+}
+
+export type TreeToSave = { tree: Omit<SavedTree<never>, "rootStep">; rootStep: { name: string; bytes: ArrayBuffer } };
+
+/**
+ * What `.lime` keeps of each plate object's tree, by object id: the tree that holds the object's
+ * mesh, when it has a step, a name, or a piece a saved split names. Trees of objects no longer on
+ * the plate are not saved. Run after `captureOpenSolid`.
+ */
+export function treesToSave(): Map<string, TreeToSave> {
+  const held = new Map<string, { tree: ModelTree; node: NodeId; rootStep: { name: string; bytes: ArrayBuffer } }>();
+  for (const obj of state.plate.objects) {
+    const tree = obj.modelTree ? modelTrees.get(obj.modelTree) : undefined;
+    const node = tree ? nodeWithMesh(tree, meshTokenOf(obj.bytes)) : null;
+    const rootStep = tree ? rootStepOf(tree) : null;
+    if (tree && node != null && rootStep) held.set(obj.id, { tree, node, rootStep });
+  }
+  const owner = new Map([...held].map(([id, { tree }]) => [tree.key, id]));
+  const named = new Set([...held.values()].flatMap(({ tree }) => [...tree.nodes.values()].flatMap((node) => (node.piece ? [node.piece] : []))));
+  const out = new Map<string, TreeToSave>();
+  for (const [id, { tree, node, rootStep }] of held) {
+    if (tree.nodes.size === 1 && !tree.nodes.get(ROOT)?.name && !named.has(tree.key)) continue;
+    out.set(id, { tree: savedTree(tree, node, (key) => owner.get(key)), rootStep });
+  }
+  return out;
+}
+
+/**
+ * A project opened: each saved tree joins its plate object under a fresh key, so a file opened
+ * twice never meets its own trees in the engine. The engine hears of it when Model needs a step:
+ * the plate's step then opens from the object's `brep`, as a STEP file does, and the rest of the
+ * tree from its root STEP and ops once another step is asked for.
+ */
+export function adoptSavedTrees(saved: ReadonlyMap<string, SavedTree<{ name: string; bytes: ArrayBuffer }>>) {
+  const keys = new Map([...saved.keys()].map((id) => [id, freshTreeKey(id)]));
+  for (const obj of state.plate.objects) {
+    const tree = saved.get(obj.id);
+    const key = keys.get(obj.id);
+    if (!tree || !key) continue;
+    const token = meshTokenOf(obj.bytes);
+    const mesh: PlateMesh = { name: obj.fileName, bytes: obj.bytes, sourcePos: obj.sourcePos, token, ...(obj.brep ? { step: obj.brep } : {}) };
+    const loaded = loadedTree(tree, key, { kind: "step", ...tree.rootStep }, obj.name, mesh, (id) => keys.get(id));
+    modelTrees.set(key, loaded);
+    if (obj.brep || (loaded.committed === ROOT && isStepName(obj.fileName))) stepKnown.add(token);
+    if (obj.brep && loaded.committed !== ROOT) seeds.set(key, { node: loaded.committed, live: false, known: new Set([loaded.committed]) });
+  }
+  state.plate = { ...state.plate, objects: state.plate.objects.map((obj) => (keys.has(obj.id) ? { ...obj, modelTree: keys.get(obj.id) } : obj)) };
+}
+
+/**
+ * Close the trees that no plate object and no Prepare step can reach any more, here and in the
+ * engine. A removed object's tree stays while a Prepare step holds it, since undo can bring it back.
+ */
+export function releaseModelTrees() {
+  const { keys, tokens } = editHistoryRefs();
+  for (const obj of state.plate.objects) {
+    if (obj.modelTree) keys.add(obj.modelTree);
+    tokens.add(meshTokenOf(obj.bytes));
+  }
+  if (open) keys.add(open.key);
+  const keep = reachableTrees(modelTrees, keys, tokens);
+  for (const key of [...modelTrees.keys()]) {
+    if (keep.has(key)) continue;
+    modelTrees.delete(key);
+    seeds.delete(key);
+    for (const name of solids.keys()) if (name.startsWith(`${key}#`)) solids.delete(name);
+    for (const name of answers.keys()) if (name.startsWith(`${key}#`)) answers.delete(name);
+    void post({ call: "close", key });
+  }
 }
 
 /** Leaving Model: the plate takes the shown node, the visit is one Prepare step, and the STEP is written off the UI's path. */
@@ -323,6 +425,7 @@ export function leaveModel() {
 export function forgetModelTrees() {
   for (const key of modelTrees.keys()) void post({ call: "close", key });
   modelTrees.clear();
+  seeds.clear();
   solids.clear();
   answers.clear();
   stepKnown.clear();
@@ -1088,7 +1191,7 @@ function missingOf(body: Body): NodeId[] | null {
  * runs one of its own.
  */
 async function treeCall(key: string, node: NodeId, request: Body): Promise<Body> {
-  let body = await post(request);
+  let body = await seededCall(key, node, request);
   for (let round = 0; round < 2; round += 1) {
     const missing = missingOf(body);
     if (!missing) return body;
@@ -1099,28 +1202,67 @@ async function treeCall(key: string, node: NodeId, request: Body): Promise<Body>
     if (!running) restoring.set(key, restored);
     const problem = await restored;
     if (problem) return { error: problem };
-    body = await post(request);
+    body = await seededCall(key, node, request);
   }
   return missingOf(body) ? { error: "The modeler no longer has this solid. Open Model again to reload it." } : body;
+}
+
+/**
+ * One call as the engine numbers the tree. While a seed is live, the plate's step is the engine's
+ * root, and a step the engine was never given needs the whole tree first.
+ */
+async function seededCall(key: string, node: NodeId, request: Body): Promise<Body> {
+  const waiting = seeds.get(key);
+  if (waiting?.live && !waiting.known.has(node)) {
+    const problem = await openWhole(key, node);
+    if (problem) return { error: problem };
+  }
+  const seed = seeds.get(key);
+  if (!seed?.live) return post(request);
+  const local = (id: unknown) => (id === seed.node ? ROOT : id);
+  const body = await post({ ...request, node: local(request.node), ...("parent" in request ? { parent: local(request.parent) } : {}) });
+  if (request.call === "apply" && !body.error && typeof request.node === "number") seed.known.add(request.node);
+  return { ...body, ...(body.id === ROOT ? { id: seed.node } : {}), ...(body.broken === ROOT ? { broken: seed.node } : {}) };
+}
+
+/**
+ * The tree's root STEP and every op to the engine, which builds each step when it is asked for.
+ * `node` is the step wanted next; a step that no longer rebuilds is marked when it is asked again.
+ */
+async function openWhole(key: string, node: NodeId): Promise<string | null> {
+  const tree = modelTrees.get(key);
+  if (!tree || tree.root.kind !== "step") return "This solid is no longer open.";
+  const body = await post({
+    call: "open",
+    key,
+    filename: tree.root.name,
+    dataB64: bytesToBase64(new Uint8Array(tree.root.bytes)),
+    chordMm: state.stepTolerance,
+    nodes: savedNodes(tree),
+    current: node,
+  });
+  const problem = typeof body.broken === "number" ? "" : text(body.error);
+  if (!problem) seeds.delete(key);
+  return problem || null;
 }
 
 async function restore(key: string, node: NodeId, missing: NodeId[]): Promise<string | null> {
   const tree = modelTrees.get(key);
   if (!tree) return "This solid is no longer open.";
   const chord = state.stepTolerance;
-  if (missing.includes(ROOT)) {
-    if (tree.root.kind === "step") {
-      const body = await post({
-        call: "open",
-        key,
-        filename: tree.root.name,
-        dataB64: bytesToBase64(new Uint8Array(tree.root.bytes)),
-        chordMm: chord,
-        nodes: savedNodes(tree),
-      });
-      // `open` registers every saved node, so nothing else is missing.
-      return text(body.error) || null;
+  const seed = seeds.get(key);
+  const step = seed && !seed.live && node === seed.node ? tree.nodes.get(node)?.mesh : undefined;
+  if (step?.step) {
+    // The plate's step of a reopened project: its own STEP, as fast as opening the file.
+    const body = await post({ call: "open", key, filename: stepFileName(step.name), dataB64: bytesToBase64(new Uint8Array(step.step)), chordMm: chord });
+    if (!text(body.error)) {
+      seed!.live = true;
+      return null;
     }
+  }
+  if (seed || missing.includes(ROOT)) {
+    // `open` registers every saved node, so nothing else is missing.
+    if (tree.root.kind === "step") return openWhole(key, node);
     const problem = await rebuildPiece(tree.root.tree, tree.root.node, key);
     if (problem) return problem;
   }
@@ -1190,4 +1332,4 @@ async function post(payload: Body): Promise<Body> {
   }
 }
 
-Object.assign(fx, { refreshModelContext, commitModel, forgetModelTrees, followSelection });
+Object.assign(fx, { refreshModelContext, commitModel, forgetModelTrees, followSelection, releaseModelTrees });
