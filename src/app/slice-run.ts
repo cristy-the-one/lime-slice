@@ -28,6 +28,7 @@ import { orderFields, sequentialClearance, tallestLast } from "../settings-rules
 import { flowSliceField } from "../flow";
 import { avoidanceSliceField } from "../support-avoidance";
 import { bridgeSliceFields } from "../bridge-tune";
+import { layerActionFields } from "../layer-actions";
 import { supportSliceFields } from "../support-interface";
 import { supportSourceSliceField } from "../support-source";
 import { engineDownMessage, authHeaders } from "../ui/api-base";
@@ -258,6 +259,7 @@ export function payload() {
       bridgeSpeedMmS: state.bridgeSpeedMmS,
       bridgeFanPercent: state.bridgeFanPercent,
     }),
+    ...layerActionFields(state.layerActions),
     // Blend is left out, so a default slice keeps its bytes and its recipe key.
     ...seamSliceField(state.seam),
     // Off is left out, so a slice that does not iron keeps its bytes and its recipe key.

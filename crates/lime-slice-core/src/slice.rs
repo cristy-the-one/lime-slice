@@ -22,7 +22,7 @@ pub use wire::{
 use crate::adaptive::{plan_bands, plan_plate_bands, HeightOpts, LayerBand};
 use crate::cancel::Job;
 use crate::gcode::{
-    emit_gcode, emit_later, Entry, GcodeText, LayerPaths, PlateLayer, PrintLayer, Run,
+    emit_gcode, emit_later, Entry, GcodeText, LayerCue, LayerPaths, PlateLayer, PrintLayer, Run,
 };
 use crate::index::ZIndex;
 use crate::lightning::{Branches, Lightning};
@@ -37,8 +37,8 @@ use crate::poly::{
 use crate::progress::{Stage, Status, Watch};
 use crate::strategy::{
     classicize, layer_weight, mix, pure, support_density, support_interface_density, support_speed,
-    Axis, BlendMode, FuzzySkin, Gyroid3d, Ironing, PrinterProfile, ResolvedStrategy, ScarfSeam, SeamPlacement,
-    StrategyId, ZHopMode,
+    Axis, BlendMode, Firmware, FuzzySkin, Gyroid3d, Ironing, PrinterProfile, ResolvedStrategy, ScarfSeam,
+    SeamPlacement, StrategyId, ZHopMode,
 };
 use crate::support::edit::{EditOutcome, SupportEdit};
 use crate::support::paint::{self, PaintDisk, PaintTally};
@@ -56,6 +56,29 @@ use crate::toolpath::{
     Slowdown, TravelIn,
 };
 pub use crate::toolpath::SurfacePattern;
+
+/// What to inject at one layer. `customGcode` also carries `gcode`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LayerActionKind {
+    Pause,
+    FilamentChange,
+    CustomGcode,
+}
+
+/// A pause, filament change, or custom line at `z_mm`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayerAction {
+    pub z_mm: f64,
+    pub kind: LayerActionKind,
+    /// Written as a comment on the line before the command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// The line to emit when `kind` is `customGcode`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gcode: Option<String>,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -201,6 +224,10 @@ pub struct SliceRequest {
     /// full fan on layers that use the path fan.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_fan_percent: Option<u8>,
+    /// Pauses and filament changes. Omitted when empty, so a default request
+    /// stays byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layer_actions: Vec<LayerAction>,
     /// Combine sparse infill on speed and low-weight blends. Default on.
     #[serde(default = "default_true")]
     pub infill_combine: bool,
@@ -449,6 +476,8 @@ pub struct SliceSettings {
     pub bridge_speed_mm_s: Option<f64>,
     /// `None` keeps the layer fan. A percent holds that PWM on the bridge.
     pub bridge_fan_percent: Option<u8>,
+    /// Empty injects nothing at layer changes.
+    pub layer_actions: Vec<LayerAction>,
     pub scarf_seam: ScarfSeam,
     pub scarf_length: f64,
     pub scarf_steps: u32,
@@ -548,6 +577,7 @@ impl Default for SliceSettings {
             bridge_flow_ratio: None,
             bridge_speed_mm_s: None,
             bridge_fan_percent: None,
+            layer_actions: Vec::new(),
             scarf_seam: ScarfSeam::Blend,
             scarf_length: default_scarf_length(),
             scarf_steps: default_scarf_steps(),
@@ -702,6 +732,7 @@ impl SliceSettings {
             bridge_flow_ratio: bridge_flow(req.classic, req.bridge_flow_ratio),
             bridge_speed_mm_s: bridge_speed(req.classic, req.bridge_speed_mm_s),
             bridge_fan_percent: bridge_fan(req.classic, req.bridge_fan_percent),
+            layer_actions: clean_layer_actions(&req.layer_actions),
             scarf_seam: if req.classic {
                 ScarfSeam::Off
             } else {
@@ -964,6 +995,91 @@ fn bridge_fan(classic: bool, value: Option<u8>) -> Option<u8> {
         return None;
     }
     value.filter(|pct| *pct > 0).map(|pct| pct.min(100))
+}
+
+/// Drop a pause that has no height, and a custom line that is empty.
+fn clean_layer_actions(actions: &[LayerAction]) -> Vec<LayerAction> {
+    let mut out = Vec::new();
+    for action in actions {
+        if !action.z_mm.is_finite() {
+            continue;
+        }
+        let z_mm = (action.z_mm.clamp(0.0, 2000.0) * 1000.0).round() / 1000.0;
+        let note = action.note.as_deref().and_then(|note| {
+            let note = note.trim();
+            if note.is_empty() {
+                None
+            } else {
+                Some(note.chars().take(80).collect())
+            }
+        });
+        let gcode = match action.kind {
+            LayerActionKind::CustomGcode => {
+                let text = action.gcode.as_deref().unwrap_or("").trim();
+                if text.is_empty() || text.contains('\0') || text.len() > 400 {
+                    continue;
+                }
+                Some(text.to_string())
+            }
+            _ => None,
+        };
+        out.push(LayerAction {
+            z_mm,
+            kind: action.kind,
+            note,
+            gcode,
+        });
+    }
+    out.sort_by(|a, b| a.z_mm.partial_cmp(&b.z_mm).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+/// The firmware line for one layer action. Marlin and Prusa use `M601` / `M600`.
+/// Klipper uses `PAUSE` / `M600`. Bambu and RepRapFirmware use `M400 U1`.
+fn action_line(action: &LayerAction, firmware: Option<Firmware>) -> Option<String> {
+    let bambu = matches!(firmware, Some(Firmware::Bambu | Firmware::Rrf));
+    let klipper = matches!(firmware, Some(Firmware::Klipper));
+    let line = match action.kind {
+        LayerActionKind::Pause if bambu => "M400 U1".to_string(),
+        LayerActionKind::Pause if klipper => "PAUSE".to_string(),
+        LayerActionKind::Pause => "M601".to_string(),
+        LayerActionKind::FilamentChange if bambu => "M400 U1".to_string(),
+        LayerActionKind::FilamentChange => "M600".to_string(),
+        LayerActionKind::CustomGcode => action.gcode.clone()?,
+    };
+    Some(line)
+}
+
+/// Copy `layers` and attach each action to the closest layer within half a height.
+fn apply_layer_actions(
+    layers: &[PlateLayer],
+    actions: &[LayerAction],
+    firmware: Option<Firmware>,
+) -> Vec<PlateLayer> {
+    let mut owned = layers.to_vec();
+    for action in actions {
+        let Some(line) = action_line(action, firmware) else {
+            continue;
+        };
+        let closest = owned.iter().enumerate().min_by(|(_, a), (_, b)| {
+            (a.z - action.z_mm)
+                .abs()
+                .partial_cmp(&(b.z - action.z_mm).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let Some((idx, z, height)) = closest.map(|(idx, layer)| (idx, layer.z, layer.height)) else {
+            continue;
+        };
+        let tol = (height * 0.5).max(0.02);
+        if (z - action.z_mm).abs() > tol + 1e-6 {
+            continue;
+        }
+        owned[idx].actions.push(LayerCue {
+            line,
+            note: action.note.clone(),
+        });
+    }
+    owned
 }
 
 /// `None` when every bridge field is off, so overhang splitting is unchanged.
@@ -2326,7 +2442,16 @@ fn slice_plate(
     } else {
         Arc::clone(&planned)
     };
-    let emit_layers: &[PlateLayer] = emit_held.as_slice();
+    let stamped = if settings.layer_actions.is_empty() {
+        None
+    } else {
+        Some(apply_layer_actions(
+            emit_held.as_slice(),
+            &settings.layer_actions,
+            profile.firmware,
+        ))
+    };
+    let emit_layers: &[PlateLayer] = stamped.as_deref().unwrap_or(emit_held.as_slice());
     let emit_started = Instant::now();
     let (gcode, gcode_text) = if settings.include_gcode {
         let gcode = emit_gcode(

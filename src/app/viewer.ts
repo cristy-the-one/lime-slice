@@ -11,7 +11,8 @@ import { syncLayerTip } from "../ui/layer-tip";
 import { type LayerGcode, indexLayerGcode, type PlayPoint, layerMoves, matchGcodeLine, layerClasses } from "../playback";
 import { replyOffset, shownBedOffset } from "../bed-offset";
 import { applyPlace, fetchStoredGcode, livePlate, nudgePlacement, objectPlacement } from "./files";
-import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, markStale } from "./settings";
+import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, markStale, touch } from "./settings";
+import { cycleLayerAction, type LayerActionKind } from "../layer-actions";
 import { flushEdit, noteEdit } from "./history";
 import { beginModifierEdit, endModifierEdit, nudgeModifier, selectModifier } from "./override-actions";
 import { bandFractions } from "../overrides";
@@ -84,9 +85,53 @@ export function paintSlider() {
     band.style.top = "35%";
     band.style.height = "25%";
   }
+  paintLayerActions(max);
   paintRangeBands();
   prepare?.setModifiers(state.overrides, state.selectedVolumeId, state.modifierTool);
   syncLayerTip();
+}
+
+function paintLayerActions(max: number) {
+  const button = document.querySelector<HTMLButtonElement>("#layerAction");
+  const pins = document.querySelector<HTMLElement>("#layerPins");
+  const layers = state.result?.layers ?? [];
+  const current = layers[state.layer];
+  const here = current ? state.layerActions.find((action) => Math.abs(action.zMm - current.z) <= 0.02) : undefined;
+  if (button) {
+    const show = layers.length > 0 && !!current;
+    button.hidden = !show;
+    if (show) {
+      const frac = max === 0 ? 1 : 1 - state.layer / max;
+      button.style.top = `${frac * 100}%`;
+      button.classList.toggle("is-pause", here?.kind === "pause");
+      button.classList.toggle("is-filament", here?.kind === "filamentChange");
+      button.textContent = here ? (here.kind === "pause" ? "P" : "F") : "+";
+      button.setAttribute("aria-label", actionLabel(here?.kind));
+    }
+  }
+  if (pins) {
+    const z0 = layers[0]?.z ?? 0;
+    const z1 = layers.length > 1 ? layers[layers.length - 1].z : z0 + 1;
+    const span = Math.max(0.2, z1 - z0);
+    pins.innerHTML = state.layerActions.map((action) => {
+      const frac = 1 - Math.min(1, Math.max(0, (action.zMm - z0) / span));
+      const kind = action.kind === "filamentChange" ? "is-filament" : "is-pause";
+      return `<i class="layer-pin ${kind}" style="top:${(frac * 100).toFixed(2)}%"></i>`;
+    }).join("");
+  }
+}
+
+function actionLabel(kind: LayerActionKind | undefined): string {
+  if (kind === "pause") return "Filament change at this layer";
+  if (kind === "filamentChange") return "Clear the layer marker";
+  return "Pause at this layer";
+}
+
+export function toggleLayerAction() {
+  const layer = state.result?.layers[state.layer];
+  if (!layer) return;
+  state.layerActions = cycleLayerAction(state.layerActions, layer.z);
+  touch();
 }
 
 function paintRangeBands() {

@@ -226,6 +226,7 @@ export const state = {
   bridgeFlowRatio: 0,
   bridgeSpeedMmS: 0,
   bridgeFanPercent: 0,
+  layerActions: [] as { zMm: number; kind: "pause" | "filamentChange"; note?: string }[],
   seam: "blend" as "blend" | "nearest" | "aligned" | "rear",
   ironing: false,
   ironingFlow: 0.1,

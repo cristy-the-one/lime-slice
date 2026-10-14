@@ -204,6 +204,7 @@ pub(super) fn join(
                 runs,
                 belt_shift: 0.0,
                 slow: 1.0,
+                actions: Vec::new(),
             }
         })
         .collect()

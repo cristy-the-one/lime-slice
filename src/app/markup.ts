@@ -193,7 +193,9 @@ export function mountMarkup(root: HTMLElement) {
             <button class="layer-step" id="layerNext" type="button" aria-label="Next layer" disabled></button>
             <div class="track">
               <div class="range-bands" id="rangeBands"></div>
+              <div class="layer-pins" id="layerPins"></div>
               <div class="band" id="layerBand" hidden></div>
+              <button class="layer-action" id="layerAction" type="button" hidden aria-label="Pause at this layer">+</button>
               <input id="rangeLow" type="range" min="0" max="0" value="0" aria-label="Lowest visible layer" />
               <input id="rangeHigh" type="range" min="0" max="0" value="0" aria-label="Current layer" />
             </div>

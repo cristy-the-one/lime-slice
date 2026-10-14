@@ -6,7 +6,7 @@ import { applyTheme, type ThemeChoice } from "../theme";
 import { axisNormal, clampOffset, flipSection } from "../section-plane";
 import { wheelNotch } from "../gizmo-math";
 import { state, type CardId } from "./state";
-import { commitSplit, draw, layerGcode, model, paintPlayback, paintSectionChrome, prepare, scrub, sectionLimit, setHelp, setStage, setView, stepGizmo, stopPlay, syncGcodeHighlight, togglePlay, view3d } from "./viewer";
+import { commitSplit, draw, layerGcode, model, paintPlayback, paintSectionChrome, prepare, scrub, sectionLimit, setHelp, setStage, setView, stepGizmo, stopPlay, syncGcodeHighlight, toggleLayerAction, togglePlay, view3d } from "./viewer";
 import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCal, runSlice, runTempCal } from "./slice-run";
 import { planFileDrop } from "../file-drop";
 import { addDroppedFiles, addMeshBytes, adoptBytes, export3mf, exportGcode, fail, loadNamed, pickAddedMesh, place, plateHasMesh, saveText, setOrientAngle, setPlaceCenter, withPrinterGcode } from "./files";
@@ -502,6 +502,7 @@ export function wireApp() {
     draw();
   });
   document.querySelector("#layerNext")!.addEventListener("click", () => scrub(state.layer + 1));
+  document.querySelector("#layerAction")!.addEventListener("click", () => toggleLayerAction());
   document.querySelector("#layerPrev")!.addEventListener("click", () => scrub(state.layer - 1));
   let layerWheel = 0;
   document.querySelector<HTMLElement>("#vslider")!.addEventListener("wheel", (ev) => {

@@ -129,6 +129,16 @@ pub(crate) struct PlateLayer {
     /// Scales the feed of every extrusion on the layer, down to the minimum-layer
     /// floor. `1` leaves the planned feeds. Set at emit, never by the planner.
     pub slow: f64,
+    /// Pause, filament change, or custom lines emitted after this layer's Z move.
+    /// Empty on every planned layer, so a slice that asks for none is unchanged.
+    pub actions: Vec<LayerCue>,
+}
+
+/// One line written at a layer transition, with an optional comment before it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LayerCue {
+    pub line: String,
+    pub note: Option<String>,
 }
 
 /// A stretch of one object's joined layer: its head (skirt and supports) or
@@ -179,6 +189,7 @@ impl PlateLayer {
             runs,
             belt_shift: 0.0,
             slow: 1.0,
+            actions: Vec::new(),
         }
     }
 
@@ -1848,6 +1859,12 @@ impl Writer {
         self.layer_open = true;
         self.z = z;
         self.has_dir = false;
+        for cue in &layer.actions {
+            if let Some(note) = &cue.note {
+                self.comment(note);
+            }
+            self.put(format_args!("{}\n", cue.line));
+        }
     }
 
     fn set_accel(&mut self, accel: f64) {
