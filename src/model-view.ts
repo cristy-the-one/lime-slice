@@ -10,7 +10,7 @@ import { mountMeasureOverlay } from "./measure-overlay";
 import { dragLabel, dragValue, lineParam, moveFine, startFine, wrapDegrees, type DragHandle, type FinePointer, type Vec3 } from "./model-drag";
 import { faceBoundarySegments, faceColor } from "./model-select";
 import { hexToThree, themeColors } from "./theme";
-import { fitSentence, liveBox, mountBedReference, mountStudioLights, mountViewHelper, outerMm, renderViewHelper, viewHelperHit, type BuildVolume } from "./viewport-chrome";
+import { bedForBox, fitSentence, liveBox, mountBedReference, mountStudioLights, mountViewHelper, outerMm, renderViewHelper, viewHelperHit, type BuildVolume } from "./viewport-chrome";
 
 export interface ModelPick {
   kind: "face" | "edge";
@@ -297,6 +297,14 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     fit.hidden = false;
   }
 
+  function syncBedOrigin() {
+    const rect = bedForBox(bed, shownBox());
+    bedRef.setOrigin(rect.x0, rect.y0, rect.z0);
+    const text = `${rect.x0.toFixed(1)},${rect.y0.toFixed(1)},${rect.z0.toFixed(1)}`;
+    if (canvas.dataset.bedOrigin !== text) canvas.dataset.bedOrigin = text;
+    return rect;
+  }
+
   function drawMeasure() {
     const box = shownBox();
     const w = canvas.clientWidth;
@@ -306,7 +314,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       h,
       box,
       cam: [camera.position.x, camera.position.y, camera.position.z],
-      bed: { x0: 0, y0: 0, x1: bed.x, y1: bed.y },
+      bed: syncBedOrigin(),
       ...perspectiveMeasure(camera, controls.target, w, h, (p, out) => out.set(p[0], p[1], p[2])),
     });
   }
@@ -673,6 +681,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       bed = { x, y, z };
       bedRef.setSize(x, y, z);
       canvas.dataset.bed = `${x}x${y}x${z}`;
+      syncBedOrigin();
       paintFit();
       kick();
     },

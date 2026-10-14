@@ -113,6 +113,7 @@ interface BedLabel {
 /** The numbers at the bed's 50 mm lines along its front and near side, thinned to what the screen can hold. */
 function bedLabels(frame: MeasureFrame, bed: BedRect, cam: Vec3, taken: Rect[]): BedLabel[] {
   const edges = nearBedEdges(cam, bed);
+  const z = bed.z0 ?? 0;
   const found: (Rect & { mm: number })[] = [];
   const lay = (mm: number, at: Vec3, out: Vec3) => {
     const p = frame.project(at);
@@ -122,11 +123,13 @@ function bedLabels(frame: MeasureFrame, bed: BedRect, cam: Vec3, taken: Rect[]):
     const dir: [number, number] = len > 1e-6 ? [(q[0] - p[0]) / len, (q[1] - p[1]) / len] : [0, 1];
     found.push({ mm, ...labelBeside(p, dir, textWidth(String(mm)), LABEL_H, 5) });
   };
-  for (const mm of majorTicks(bed.x1)) {
-    if (mm >= bed.x0) lay(mm, [mm, edges.frontY, 0], [mm, edges.frontY + edges.outY, 0]);
+  for (const mm of majorTicks(bed.x1 - bed.x0)) {
+    const x = bed.x0 + mm;
+    lay(mm, [x, edges.frontY, z], [x, edges.frontY + edges.outY, z]);
   }
-  for (const mm of majorTicks(bed.y1)) {
-    if (mm >= bed.y0) lay(mm, [edges.sideX, mm, 0], [edges.sideX + edges.outX, mm, 0]);
+  for (const mm of majorTicks(bed.y1 - bed.y0)) {
+    const y = bed.y0 + mm;
+    lay(mm, [edges.sideX, y, z], [edges.sideX + edges.outX, y, z]);
   }
   found.sort((p, q) => tickPriority(p.mm) - tickPriority(q.mm) || p.mm - q.mm);
   const fits = cullLabels(found, frame.w, frame.h, taken);
