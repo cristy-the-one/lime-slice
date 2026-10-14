@@ -579,6 +579,8 @@ async function openTree(mine: number, objectId: string, label: string, name: str
   const body = await post({ call: "open", key, filename: name, dataB64: bytesToBase64(new Uint8Array(bytes)), chordMm: chord });
   const parsed = decodeSolid(body);
   if (typeof parsed === "string") {
+    // An open the engine answered but this app cannot read still left a tree there.
+    if (typeof body.error !== "string") void post({ call: "close", key });
     if (mine === ticket && state.stage === "model") readout(parsed);
     return;
   }
@@ -839,18 +841,13 @@ async function applyOp(op: ModelOp, working: string) {
   if (mine !== ticket || state.stage !== "model" || !latest) return;
   if (failed(at.key, body)) return;
   const parsed = decodeSolid(body);
-  if (typeof parsed === "string") {
-    readout(parsed);
+  const other = !pieceKey ? null : body.other && typeof body.other === "object" ? decodeSolid(body.other as Body) : "The plane did not split this solid.";
+  if (typeof parsed === "string" || typeof other === "string") {
+    // The engine holds the step, and a split's piece tree, that this reply failed to describe.
+    void dropInEngine(at.key, node);
+    if (pieceKey) void post({ call: "close", key: pieceKey });
+    readout(typeof parsed === "string" ? parsed : (other as string));
     return;
-  }
-  let other: ParsedSolid | null = null;
-  if (pieceKey) {
-    const piece = body.other && typeof body.other === "object" ? decodeSolid(body.other as Body) : "The plane did not split this solid.";
-    if (typeof piece === "string") {
-      readout(piece);
-      return;
-    }
-    other = piece;
   }
   const stored = isOp(body.op) ? body.op : op;
   if (pieceKey && other && !addPiece(at, other, pieceKey, node)) {

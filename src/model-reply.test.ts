@@ -77,7 +77,7 @@ const words = (values: number[], kind: "f32" | "u32") => {
 eq("a short positions buffer", decodeSolid({ ...body, positions: words(sent.positions.slice(0, 17), "f32") }), DAMAGED);
 eq("positions for a third triangle", decodeSolid({ ...body, positions: words([...sent.positions, 0, 0, 0, 0, 0, 0, 0, 0, 0], "f32") }), DAMAGED);
 eq("a face id past the faces", decodeSolid({ ...body, triangles: words([2, 0], "u32") }), DAMAGED);
-eq("an odd byte count", decodeSolid({ ...body, triangles: bytesToBase64(new Uint8Array([1, 0, 0, 0, 0, 0])) }), DAMAGED);
+eq("an odd byte count", decodeSolid({ ...body, triangles: bytesToBase64(new Uint8Array([1, 0, 0, 0, 0, 0, 0, 0, 0, 0])) }), DAMAGED);
 eq("not base64", decodeSolid({ ...body, positions: "@@@@" }), DAMAGED);
 eq("a missing array", decodeSolid({ ...body, edgePoints: undefined }), DAMAGED);
 eq("an edge past the points", decodeSolid({ ...body, edgeOffsets: words([0, 2, 6], "u32") }), DAMAGED);

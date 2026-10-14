@@ -118,7 +118,10 @@ function wordsBase64(words: Float32Array | Uint32Array): string {
   return bytesToBase64(new Uint8Array(words.buffer, words.byteOffset, words.byteLength));
 }
 
-/** The words in base64 `text`, viewed in place. Null when it is not base64 of whole words. */
+/**
+ * The words in base64 `text`, viewed in place: the decoded bytes are a fresh buffer, so they start
+ * on a word. Null when it is not base64 of whole words.
+ */
 function words<T extends Float32Array | Uint32Array>(
   text: unknown,
   kind: { new (buffer: ArrayBuffer, offset: number, length: number): T },
@@ -126,8 +129,7 @@ function words<T extends Float32Array | Uint32Array>(
   if (typeof text !== "string") return null;
   const bytes = base64ToBytes(text);
   if (!bytes || bytes.byteLength % 4 !== 0) return null;
-  const aligned = bytes.byteOffset % 4 === 0 ? bytes : bytes.slice();
-  return new kind(aligned.buffer as ArrayBuffer, aligned.byteOffset, aligned.byteLength / 4);
+  return new kind(bytes.buffer as ArrayBuffer, bytes.byteOffset, bytes.byteLength / 4);
 }
 
 function readNormal(value: unknown): Vec3 | null {
