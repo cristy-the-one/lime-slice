@@ -305,25 +305,58 @@ fn step_round_trip_keeps_the_fillet_edge(fillet: &Value, fillet_op: &Value) {
     ok(json!({ "call": "close", "key": "step" }));
 }
 
-/// Split answers the other piece once. Jumping back above it removes nothing from the tree.
+/// Split answers the other piece once and, with `otherKey`, opens it as its own tree. Jumping
+/// above the split, evicting it, replaying it, or dropping it leaves that tree alone.
 fn split_keeps_both_pieces() {
     ok(json!({ "call": "open", "key": "split", "box": [10.0, 10.0, 10.0] }));
+    let split_op = json!({ "kind": "split", "origin": [0.0, 0.0, 4.0], "normal": [0.0, 0.0, 1.0] });
+    let mesh_only =
+        ok(json!({ "call": "apply", "key": "split", "parent": 0, "node": 2, "op": split_op }));
+    near(volume(&mesh_only["other"]), 600.0);
+    assert!(mesh_only["other"].get("key").is_none());
+    let crossed = call(
+        json!({ "call": "apply", "key": "split", "parent": 0, "node": 3,
+        "op": { "kind": "scale", "factor": 2.0 }, "otherKey": "piece" }),
+    );
+    assert_eq!(crossed, json!({ "error": "otherKey is only for a split" }));
+
     let split = ok(
         json!({ "call": "apply", "key": "split", "parent": 0, "node": 1,
-        "op": { "kind": "split", "origin": [0.0, 0.0, 4.0], "normal": [0.0, 0.0, 1.0] } }),
+        "op": split_op, "otherKey": "piece" }),
     );
     near(volume(&split), 400.0);
     near(volume(&split["other"]), 600.0);
+    assert_eq!(split["other"]["key"], "piece");
+    assert_eq!(split["other"]["id"], 0);
+    let piece = ok(json!({ "call": "goto", "key": "piece", "node": 0 }));
+    assert_eq!(piece["fingerprint"], split["other"]["fingerprint"]);
+
     let above = ok(json!({ "call": "goto", "key": "split", "node": 0 }));
     near(volume(&above), 1000.0);
-    assert_eq!(held(&above), [0, 1]);
+    assert_eq!(held(&above), [0, 1, 2]);
     let below = ok(json!({ "call": "goto", "key": "split", "node": 1 }));
     near(volume(&below), 400.0);
     assert!(
         below.get("other").is_none(),
         "a jump does not send the other piece again"
     );
+
+    lime_model_occt::set_tree_limits(0, 0);
+    ok(json!({ "call": "goto", "key": "split", "node": 0 }));
+    let replayed = ok(json!({ "call": "goto", "key": "split", "node": 1 }));
+    assert_eq!(replayed["replayed"], 1);
+    lime_model_occt::set_tree_limits(24, 8);
+    ok(json!({ "call": "drop", "key": "split", "node": 1 }));
     ok(json!({ "call": "close", "key": "split" }));
+
+    let piece_again = ok(json!({ "call": "goto", "key": "piece", "node": 0 }));
+    assert_eq!(piece_again["fingerprint"], split["other"]["fingerprint"]);
+    let drilled = ok(
+        json!({ "call": "apply", "key": "piece", "parent": 0, "node": 1,
+        "op": { "kind": "hole", "origin": [5.0, 5.0, 10.0], "radius": 1.0, "depth": 20.0 } }),
+    );
+    near(volume(&drilled), 600.0 - PI * 6.0);
+    ok(json!({ "call": "close", "key": "piece" }));
 }
 
 fn unknown_and_broken() {

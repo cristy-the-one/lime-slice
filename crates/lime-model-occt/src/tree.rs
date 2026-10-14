@@ -94,7 +94,8 @@ pub enum Op {
         radius: f64,
         depth: f64,
     },
-    /// The node keeps the negative side. The positive side goes to the plate once, in the apply reply.
+    /// The node keeps the negative side. The positive side is answered once, in the apply reply,
+    /// and with `otherKey` it becomes the root of its own tree. Replaying the split never touches that tree.
     Split {
         origin: [f64; 3],
         normal: [f64; 3],
@@ -207,6 +208,8 @@ enum Request {
         op: Op,
         #[serde(default = "default_chord")]
         chord_mm: f64,
+        /// Split only: the piece cut off opens as the root of its own tree under this key.
+        other_key: Option<String>,
     },
     Probe {
         key: String,
@@ -523,7 +526,8 @@ impl Store {
                 node,
                 op,
                 chord_mm,
-            } => self.apply(key, parent, node, op, chord_mm),
+                other_key,
+            } => self.apply(key, parent, node, op, chord_mm, other_key),
             Request::Probe { key, node, op } => self.probe(&key, node, op),
             Request::Goto {
                 key,
@@ -657,7 +661,16 @@ impl Store {
         id: NodeId,
         op: Op,
         chord: f64,
+        other_key: Option<String>,
     ) -> Result<Answer, Failure> {
+        if other_key.is_some() && !matches!(op, Op::Split { .. }) {
+            return Err(Failure::Message("otherKey is only for a split".into()));
+        }
+        if other_key.as_deref() == Some(key.as_str()) {
+            return Err(Failure::Message(
+                "The split piece needs a key of its own".into(),
+            ));
+        }
         let doc = doc_in(&mut self.docs, &key)?;
         if let Some(existing) = doc.nodes.get(&id) {
             if existing.parent == Some(parent) {
@@ -686,10 +699,20 @@ impl Store {
             ("op", json!(built.op).to_string()),
             ("replayed", replayed.to_string()),
         ];
-        if let Some(other) = &built.other {
-            fields.push(("other", other.reply(0, chord)?));
-        }
         let text = self.reply(&key, id, chord)?;
+        match (built.other, other_key) {
+            (Some(other), Some(other_key)) => {
+                self.clock += 1;
+                let piece = Doc::new(other, self.clock);
+                self.replies.retain(|reply| reply.key != other_key);
+                self.docs.insert(other_key.clone(), piece);
+                let piece = self.reply(&other_key, ROOT, chord)?;
+                let piece = with_fields(piece, &[("key", json!(other_key).to_string())]);
+                fields.push(("other", piece));
+            }
+            (Some(other), None) => fields.push(("other", other.reply(0, chord)?)),
+            (None, _) => {}
+        }
         Ok(Answer::Held {
             key,
             text: with_fields(text, &fields),
