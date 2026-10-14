@@ -620,6 +620,29 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   pointer-events: none;
 }
 .model-drag-tip[hidden] { display: none; }
+.model-fit {
+  position: absolute;
+  top: 58px;
+  left: 10px;
+  z-index: 2;
+  max-width: min(280px, calc(100% - 20px));
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-2);
+  line-height: 1.35;
+  pointer-events: none;
+}
+.model-fit[data-over="1"] {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--border));
+}
+.model-fit[hidden] { display: none; }
 .model-readout {
   position: absolute;
   left: 10px;
