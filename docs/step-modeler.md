@@ -63,7 +63,7 @@ Every call is one JSON request through `lime_occt_tree` (`POST /api/model/tree`,
 | `call` | Fields | Answer |
 |---|---|---|
 | `open` | `key`, one of `dataB64`, `stepPath`, or `box: [x, y, z]`; `chordMm`; optional `nodes: [{id, parent, op, fingerprint}]` (parents first) and `current` | The reply for `current` (default 0). Saved nodes are registered, not built. Opening an existing key replaces that tree. |
-| `apply` | `key`, `parent`, `node`, `op`, `chordMm`; `otherKey` for a split | The new node's reply, plus `op` as stored (edge picks resolved) and, for a split, `other`. With `otherKey`, `other` is the root reply of a new tree under that key. Applying an existing node with the same parent, op, and `otherKey` is a jump to it; anything else on an existing id is refused. |
+| `apply` | `key`, `parent`, `node`, `op`, `chordMm`; `otherKey` for a split | The new node's reply, plus `op` as stored (edge picks resolved) and, for a split with `otherKey`, `other`: the root reply of a new tree under that key. A split without `otherKey` (a replay) sends no piece and does not tessellate it. Applying an existing node with the same parent, op, and `otherKey` is a jump to it; anything else on an existing id is refused. |
 | `probe` | `key`, `node`, `op` | `{ok: true}`, or `{ok: false, error, maxMm?}`: the edit was built on a copy, or why not and, for a blend, the largest size that fits. A probe that works is kept, and an Apply of the same op on the same node commits it. |
 | `goto` | `key`, `node`, `chordMm` | That node's reply. |
 | `drop` | `key`, `node` | `{dropped, current}`. The node and everything under it go; the current node moves to the parent if it was inside. The root cannot be dropped. |
@@ -75,13 +75,22 @@ Every call is one JSON request through `lime_occt_tree` (`POST /api/model/tree`,
 
 `op` is one of `{kind: "boolean", op, primitive, origin, size, radius, height, turn}`, `{kind: "hole", origin, axis, radius, depth}`, `{kind: "split", origin, normal}`, `{kind: "fillet" | "chamfer", edges, size}`, or `{kind: "scale", factor}`. A fresh fillet or chamfer may name edges by index. The stored op names each as `{index, mid, lengthMm}`, where `mid` is the point at the middle of the edge's parameter range. A rebuild takes the index when its midpoint and length still agree within 0.001 mm, else the one edge that matches them, else the node is broken.
 
-A reply is the node's tessellation with `id` set to the node, plus `solid` (false for surfaces with no closed solid), `fingerprint: {volumeMm3, faces, edges}`, `replayed` (how many steps were rebuilt to answer it), and `held` (the nodes of this tree that keep a solid). A missing tree answers `{error: "unknown", missing: [0]}` and a missing node `{error: "unknown", missing: [id]}`, so the client sends the root and the ops again. A step that fails to rebuild, or rebuilds to a different fingerprint, answers `{error, broken: id}`; that node and everything under it lose their solids and stay unbuilt until it is dropped.
+A reply is the node's tessellation with `id` set to the node and `format: "lime-solid-2"`. The client reads no array from a reply without that format and says the modeler does not match the app (`src/model-reply.ts`). The bulk arrays are base64 of little-endian words, decoded straight into typed arrays that view the bytes in place:
+
+| Field | Words | What |
+|---|---|---|
+| `positions` | f32 | Nine per triangle: a triangle soup, wound outward. |
+| `triangles` | u32 | The face index of each triangle. |
+| `edgePoints` | f32 | Every edge's polyline, one after another, three per point. |
+| `edgeOffsets` | u32 | One more than the edges: edge `i` is points `edgeOffsets[i]` up to `edgeOffsets[i + 1]`. |
+
+The client keeps all four as f32 and u32, so the words lose nothing it reads. The rest is JSON, since it is small and kept as f64: `volumeMm3`, `solid` (false for surfaces with no closed solid), `faces` (`{areaMm2, normal?}` by face index; `normal` is the outward unit normal at the face's middle), `edgeLengths` (by edge index), `fingerprint: {volumeMm3, faces, edges}`, `replayed` (how many steps were rebuilt to answer it), and `held` (the nodes of this tree that keep a solid). The Open CASCADE version is in `lime_model_occt::stats()`, not in a reply. A missing tree answers `{error: "unknown", missing: [0]}` and a missing node `{error: "unknown", missing: [id]}`, so the client sends the root and the ops again. A step that fails to rebuild, or rebuilds to a different fingerprint, answers `{error, broken: id}`; that node and everything under it lose their solids and stay unbuilt until it is dropped.
 
 What is kept, per node:
 
 - The solid, with its face and edge maps and the volume the op integrated. Each tree pins its root, its current node, and every eighth node on the path between them. The 24 most recently used other solids stay; older ones are evicted and rebuilt on demand from the nearest kept ancestor.
 - The fingerprint, for as long as the node exists. Every rebuilt step is checked against it.
-- The reply, per chord, for the 8 most recently viewed nodes across all trees. A jump to one of those does no kernel work.
+- The reply, per chord, as it is sent, for the 8 most recently viewed nodes across all trees. A jump to one of those does no kernel work and copies the reply once, into the answer.
 - An edge's midpoint and length, computed the first time a fillet or chamfer asks.
 
 What is skipped: a rebuild tessellates only the node asked for, never the steps on the way. A split's other piece is tessellated once, for the apply that made it. Jumps never send it again, and replaying the split never touches the piece's own tree. Jumping above a split leaves both pieces in place.
