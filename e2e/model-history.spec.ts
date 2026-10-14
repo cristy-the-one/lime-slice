@@ -1,0 +1,306 @@
+import { expect, test, type Page } from "@playwright/test";
+import { autoSliceOff } from "./auto-slice";
+import { mockModelTree, type Body, type MockSolid, type TreeMock } from "./model-tree-mock";
+
+type V = [number, number, number];
+
+/** A box the modeler reports as a solid, in its own CAD frame. */
+function boxSolid(size: V): MockSolid {
+  const [sx, sy, sz] = size;
+  const c = (x: number, y: number, z: number): V => [x * sx, y * sy, z * sz];
+  const quads: V[][] = [
+    [c(0, 0, 0), c(0, 1, 0), c(1, 1, 0), c(1, 0, 0)],
+    [c(0, 0, 1), c(1, 0, 1), c(1, 1, 1), c(0, 1, 1)],
+    [c(0, 0, 0), c(1, 0, 0), c(1, 0, 1), c(0, 0, 1)],
+    [c(0, 1, 0), c(0, 1, 1), c(1, 1, 1), c(1, 1, 0)],
+    [c(0, 0, 0), c(0, 0, 1), c(0, 1, 1), c(0, 1, 0)],
+    [c(1, 0, 0), c(1, 1, 0), c(1, 1, 1), c(1, 0, 1)],
+  ];
+  const positions: number[] = [];
+  const triangles: number[] = [];
+  quads.forEach((q, face) => {
+    for (const tri of [[0, 1, 2], [0, 2, 3]]) {
+      for (const i of tri) positions.push(...q[i]!);
+      triangles.push(face);
+    }
+  });
+  return { volumeMm3: sx * sy * sz, positions, triangles, faces: quads.map((_, id) => ({ id, areaMm2: 0 })), edges: [] };
+}
+
+const ROOT = boxSolid([20, 20, 10]);
+
+/** A box cut leaves a 20 × 20 slab as tall as the box's Size X, so each step's volume names its numbers. */
+async function openModel(page: Page, url = "/"): Promise<TreeMock> {
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: ROOT.positions } }));
+  await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
+  const tree = await mockModelTree(page, { open: () => ROOT, apply: (request: Body) => boxSolid([20, 20, (request.op as { size: number[] }).size[0]!]) });
+  await page.goto(url);
+  await autoSliceOff(page);
+  await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
+  if (url.includes("compact")) await page.locator("#compactTabs [data-tab=model]").click();
+  else await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText("Volume 4000 mm³");
+  return tree;
+}
+
+const readout = (page: Page) => page.locator("#modelReadout");
+const rows = (page: Page) => page.locator("#modelHistoryTree [role=treeitem]");
+const row = (page: Page, label: string) => page.getByRole("treeitem", { name: new RegExp(`^${label}`) });
+const volume = (dx: number) => `Volume ${400 * dx} mm³`;
+
+async function cut(page: Page, dx: number) {
+  if ((await page.locator("#modelToolBoolean").getAttribute("aria-pressed")) !== "true") await page.locator("#modelToolBoolean").click();
+  if ((await page.locator("#modelCut").getAttribute("aria-pressed")) !== "true") await page.locator("#modelCut").click();
+  await page.locator("#modelDx").fill(String(dx));
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+  await expect(readout(page)).toContainText(volume(dx));
+}
+
+/** 0 → 8 → 6, back to 8, then 8 → 4: a fork at "Cut box 8", with "Cut box 4" shown. */
+async function fork(page: Page) {
+  await cut(page, 8);
+  await cut(page, 6);
+  await page.locator("#modelUndo").click();
+  await expect(readout(page)).toContainText(`${volume(8)}. Edit undone.`);
+  await cut(page, 4);
+  await page.locator("#modelCancel").click();
+}
+
+test("clicking a row shows that step, and the rows follow the history oldest first", async ({ page }) => {
+  await openModel(page);
+  await expect(page.locator("#modelHistory")).toBeVisible();
+  await expect(rows(page)).toHaveCount(1);
+  for (const dx of [8, 6, 4]) await cut(page, dx);
+  await expect(rows(page)).toHaveText(["plate.step", "Cut box 8×10×10", "Cut box 6×10×10", "Cut box 4×10×10"].map((label) => new RegExp(`^${label}`)));
+  await expect(page.locator("#modelHistoryToggle")).toHaveText("History · 4");
+  await expect(row(page, "Cut box 4"), "the shown step is selected").toHaveAttribute("aria-selected", "true");
+
+  await row(page, "Cut box 8").click();
+  await expect(readout(page)).toContainText(volume(8));
+  await expect(row(page, "Cut box 8")).toHaveAttribute("aria-selected", "true");
+  await expect(row(page, "Cut box 4")).toHaveAttribute("aria-selected", "false");
+  await expect(row(page, "Cut box 6"), "steps after the shown one are redo").toHaveAttribute("data-state", "redo");
+  await expect(row(page, "plate.step"), "the plate still holds the file until Model closes").toContainText("Plate");
+
+  await row(page, "plate.step").click();
+  await expect(readout(page)).toContainText(volume(10));
+  await expect(page.locator("#modelUndo")).toBeDisabled();
+});
+
+test("Up and Down move and show; fast presses show only the last target, and a late reply for an older one is dropped", async ({ page }) => {
+  const tree = await openModel(page);
+  for (const dx of [9, 8, 7, 6, 5]) await cut(page, dx);
+  await page.locator("#modelCancel").click();
+  await row(page, "Cut box 5").focus();
+
+  await page.keyboard.press("ArrowUp");
+  await expect(row(page, "Cut box 6")).toBeFocused();
+  await expect(readout(page)).toContainText(volume(6));
+  await expect(row(page, "Cut box 6")).toHaveAttribute("aria-selected", "true");
+
+  for (let i = 0; i < 3; i += 1) await page.keyboard.press("ArrowUp");
+  await expect(row(page, "Cut box 9")).toBeFocused();
+  await expect(readout(page)).toContainText(volume(9));
+  expect(tree.of("goto").map((request) => request.node), "only the last of the fast presses asks the engine").toEqual([1]);
+
+  await page.keyboard.press("ArrowDown");
+  await expect(readout(page)).toContainText(volume(8));
+
+  // The root left the client's recent solids: its reply is slow. A press after it wins.
+  let rootAsked = false;
+  await page.route("**/api/model/tree", async (route) => {
+    const body = route.request().postDataJSON() as Body;
+    if (body.call === "goto" && body.node === 0) {
+      rootAsked = true;
+      await new Promise((resolve) => setTimeout(resolve, 900));
+    }
+    await route.fallback();
+  });
+  await page.keyboard.press("Home");
+  await expect.poll(() => rootAsked).toBe(true);
+  await page.keyboard.press("End");
+  await expect(readout(page)).toContainText(volume(5));
+  await page.waitForTimeout(1200);
+  await expect(readout(page), "the root's late reply is not shown").toContainText(volume(5));
+  await expect(row(page, "Cut box 5")).toHaveAttribute("aria-selected", "true");
+  await expect(row(page, "Cut box 5")).toBeFocused();
+});
+
+test("a fork draws two rails, and Left and Right switch branches", async ({ page }) => {
+  await openModel(page);
+  await fork(page);
+  await expect(rows(page)).toHaveText([/^plate\.step/, /^Cut box 8/, /^Cut box 6/, /^Cut box 4/]);
+  await expect(page.locator("#modelHistoryTree .mh-rail").first(), "two columns of rails").toHaveAttribute("width", "24");
+  await expect(row(page, "Cut box 8"), "the fork").toHaveAttribute("aria-expanded", "true");
+  await expect(row(page, "Cut box 6"), "the side branch is one level in").toHaveAttribute("aria-level", "2");
+  await expect(row(page, "Cut box 4")).toHaveAttribute("aria-level", "1");
+  await expect(row(page, "Cut box 6")).toHaveAttribute("data-state", "other");
+
+  await row(page, "Cut box 4").focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(row(page, "Cut box 6")).toBeFocused();
+  await expect(readout(page)).toContainText(volume(6));
+  await expect(row(page, "Cut box 6")).toHaveAttribute("aria-selected", "true");
+  await expect(rows(page), "rows stay put while the keys are in the list").toHaveText([/^plate\.step/, /^Cut box 8/, /^Cut box 6/, /^Cut box 4/]);
+  await page.keyboard.press("ArrowLeft");
+  await expect(row(page, "Cut box 4")).toBeFocused();
+  await expect(readout(page)).toContainText(volume(4));
+  await page.keyboard.press("ArrowRight");
+  await expect(readout(page)).toContainText(volume(6));
+
+  await page.keyboard.press("Escape");
+  await expect(rows(page), "then the shown branch takes the main rail").toHaveText([/^plate\.step/, /^Cut box 8/, /^Cut box 4/, /^Cut box 6/]);
+  await expect(row(page, "Cut box 4")).toHaveAttribute("aria-level", "2");
+  await expect(row(page, "Cut box 6")).toHaveAttribute("aria-level", "1");
+
+  await page.keyboard.press("Shift+H");
+  await expect(row(page, "Cut box 6")).toBeFocused();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowLeft");
+  await page.waitForTimeout(400);
+  await expect(readout(page), "Right then Left inside the pause lands where it started").toContainText(volume(6));
+});
+
+test("a step can be renamed, and keeps its op in the tip", async ({ page }) => {
+  await openModel(page);
+  await fork(page);
+  await row(page, "Cut box 6").locator(".mh-label").dblclick();
+  const field = page.getByRole("textbox", { name: "Step name" });
+  await expect(field).toBeFocused();
+  await field.fill("Slot for the clip");
+  await field.press("Enter");
+  await expect(row(page, "Slot for the clip")).toBeFocused();
+  await expect(row(page, "Slot for the clip")).toHaveAttribute("data-tip", "Cut box 6×10×10");
+  await expect(readout(page), "the first click of the double-click showed the step").toContainText(volume(6));
+
+  await page.keyboard.press("F2");
+  await page.getByRole("textbox", { name: "Step name" }).fill("Ignored");
+  await page.keyboard.press("Escape");
+  await expect(row(page, "Slot for the clip")).toBeVisible();
+
+  await page.keyboard.press("F2");
+  await page.getByRole("textbox", { name: "Step name" }).fill("");
+  await page.keyboard.press("Enter");
+  await expect(row(page, "Cut box 6")).not.toHaveAttribute("data-tip");
+});
+
+test("deleting a branch drops it here and in the engine; the shown branch stays with a plain reason", async ({ page }) => {
+  const tree = await openModel(page);
+  await fork(page);
+  await row(page, "Cut box 8").focus();
+  await page.keyboard.press("Delete");
+  await expect(readout(page)).toHaveText("The step on screen is on this branch. Go to another branch first.");
+  await expect(rows(page)).toHaveCount(4);
+
+  await row(page, "Cut box 8").locator(".mh-more").click();
+  const remove = page.getByRole("menuitem", { name: /Delete branch/ });
+  await expect(remove).toHaveAttribute("aria-disabled", "true");
+  await expect(remove).toContainText("The step on screen is on this branch.");
+  await page.keyboard.press("Escape");
+  await expect(row(page, "Cut box 8")).toBeFocused();
+
+  await row(page, "Cut box 6").locator(".mh-more").click();
+  await expect(remove).toHaveAttribute("aria-disabled", "false");
+  await remove.click();
+  await expect(rows(page)).toHaveText([/^plate\.step/, /^Cut box 8/, /^Cut box 4/]);
+  expect(tree.of("drop").map((request) => request.node), "the engine drops the branch").toEqual([2]);
+  await expect(page.locator("#modelHistoryTree .mh-rail").first(), "one rail again").toHaveAttribute("width", "12");
+  await expect(readout(page)).toContainText(volume(4));
+
+  await page.locator("#modelUndo").click();
+  await expect(readout(page)).toContainText(volume(8));
+  await row(page, "Cut box 4").focus();
+  await page.keyboard.press("Delete");
+  await expect(rows(page)).toHaveCount(2);
+  await expect(page.locator("#modelRedo"), "nothing left to redo").toBeDisabled();
+});
+
+test("the panel collapses to one row, stays collapsed, and catches up when opened", async ({ page }) => {
+  await openModel(page);
+  await cut(page, 8);
+  const toggle = page.locator("#modelHistoryToggle");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("#modelHistoryTree")).toBeHidden();
+  await expect(toggle).toHaveText("History · 2");
+  expect(await page.evaluate(() => localStorage.getItem("lime-slice-model-history-collapsed"))).toBe("1");
+
+  await cut(page, 6);
+  await expect(toggle, "the count follows").toHaveText("History · 3");
+  await expect(rows(page), "no rows are built while collapsed").toHaveCount(2);
+
+  await page.locator("#tabPrepare").click();
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText("Volume");
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await toggle.click();
+  await expect(rows(page)).toHaveCount(3);
+  await expect(row(page, "Cut box 6")).toHaveAttribute("aria-selected", "true");
+  expect(await page.evaluate(() => localStorage.getItem("lime-slice-model-history-collapsed"))).toBeNull();
+});
+
+test("Shift+H reaches the panel from the canvas, roles and names are in place, and Esc leaves", async ({ page }) => {
+  const mock = await openModel(page);
+  await fork(page);
+  await page.locator("#modelHistoryToggle").click();
+  await page.locator("#model").click({ position: { x: 5, y: 5 } });
+  await page.keyboard.press("Shift+H");
+  const tree = page.getByRole("tree", { name: "Model history" });
+  await expect(tree).toBeVisible();
+  await expect(row(page, "Cut box 4")).toBeFocused();
+  await expect(tree.getByRole("treeitem")).toHaveCount(4);
+  await expect(tree.locator('[role=treeitem][aria-selected="true"]')).toHaveCount(1);
+  await expect(tree.locator('[role=treeitem][tabindex="0"]'), "one row in the tab order").toHaveCount(1);
+  for (const item of await tree.getByRole("treeitem").all()) {
+    await expect(item).toHaveAttribute("aria-level", /^[12]$/);
+    await expect(item).toHaveAttribute("aria-label", /\S/);
+  }
+  await expect(page.getByRole("button", { name: /^History/ })).toHaveAttribute("aria-expanded", "true");
+
+  await page.keyboard.press("ArrowUp");
+  await expect(row(page, "Cut box 6")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(row(page, "Cut box 6")).not.toBeFocused();
+  await expect(readout(page), "Esc shows the step the keys were on").toContainText(volume(6));
+  await expect(page.locator("#modelPanel"), "and leaves the tool alone").toBeHidden();
+  await page.locator("#modelToolBoolean").click();
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.keyboard.press("Shift+H");
+  await expect(row(page, "Cut box 6")).toBeFocused();
+  const applies = mock.of("apply").length;
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(300);
+  expect(mock.of("apply"), "Enter in the panel is not Apply").toHaveLength(applies);
+});
+
+test.describe("phone", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test("History is a sheet opened from the Model toolbar", async ({ page }) => {
+    await openModel(page, "/?layout=compact");
+    await expect(page.locator("html")).toHaveClass(/layout-compact/);
+    await cut(page, 8);
+    await cut(page, 6);
+    await page.locator("#modelCancel").click();
+    const open = page.locator("#modelHistoryOpen");
+    await expect(open).toBeVisible();
+    await expect(page.locator("#modelHistory")).toBeHidden();
+    await open.click();
+    await expect(open).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator("#modelHistory")).toBeVisible();
+    await expect(rows(page)).toHaveCount(3);
+    await expect(page.locator("#slice"), "the sheet covers Slice's corner").toBeHidden();
+    const box = (await page.locator("#modelHistory").boundingBox())!;
+    expect(box.width, "full width").toBeGreaterThan(380);
+
+    await row(page, "Cut box 8").tap();
+    await expect(readout(page)).toContainText(volume(8));
+    await page.locator("#modelHistoryToggle").tap();
+    await expect(page.locator("#modelHistory")).toBeHidden();
+    await expect(open).toBeFocused();
+    await expect(page.locator("#slice")).toBeVisible();
+  });
+});
