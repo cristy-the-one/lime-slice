@@ -3,7 +3,7 @@ import { arrangedObjects, addedCopy, placeObject, plateUnionBounds, withoutObjec
 import { fx } from "./fx.ts";
 import { place } from "./files.ts";
 import { flushEdit, noteEdit } from "./history.ts";
-import { commitModel, showModel } from "./model.ts";
+import { commitModel, followSelection } from "./model.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { state } from "./state.ts";
 import { currentRules } from "./rules.ts";
@@ -22,16 +22,19 @@ export function duplicatePlateObject() {
   applySelectedToState(state.plate);
   place();
   flushEdit();
+  followSelection();
 }
 
 export function removePlateObject(id: string) {
   if (state.plate.objects.length <= 1) return;
+  commitModel();
   noteEdit();
   syncPlateFromState();
   state.plate = withoutObject(state.plate, id);
   applySelectedToState(state.plate);
   place();
   flushEdit();
+  followSelection();
   if (state.plate.objects.length === 1) frameSelection();
 }
 
@@ -46,8 +49,7 @@ export function selectPlateObject(id: string) {
   applySelectedToState(state.plate);
   place();
   flushEdit();
-  // Model edits write to the selected object, so the open solid must follow the selection.
-  if (state.stage === "model") showModel();
+  followSelection();
 }
 
 /** Frame the named solid. Selection, when it changes, is the only undo step. */

@@ -728,6 +728,7 @@ export function applyPareto(index: number) {
 }
 
 export async function runPareto() {
+  fx.commitModel?.();
   if (!state.mesh) {
     state.error = "Load a mesh before comparing blends.";
     renderChrome();

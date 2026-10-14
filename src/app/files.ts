@@ -513,6 +513,7 @@ async function addMeshNow(name: string, bytes: ArrayBuffer) {
     return;
   }
   // Close anything still open so this add is its own undo step.
+  fx.commitModel?.();
   flushEdit();
   noteEdit();
   syncPlateFromState();
@@ -527,6 +528,7 @@ async function addMeshNow(name: string, bytes: ArrayBuffer) {
   offerAssemblySplit(name, sourcePos, state.plate.selectedId);
   place();
   flushEdit();
+  fx.followSelection?.();
   await offerForeignRecipe(name, bytes);
 }
 

@@ -225,3 +225,62 @@ test("a step that no longer rebuilds is marked, says so in plain words, and is n
   await expect(readout(page)).toHaveText(plain);
   expect(tree.of("goto"), "the marked step is not asked for again").toHaveLength(1);
 });
+
+test("a split taken back by Prepare undo comes back with its piece when Model returns to it", async ({ page }) => {
+  const tree = await openModel(page);
+  await page.locator("#modelToolSplit").click();
+  await page.locator("#modelPlaneZ").fill("4");
+  await page.locator("#modelApply").click();
+  await expect(readout(page)).toContainText("Split. Volume 1600 mm³");
+  await page.locator("#tabPrepare").click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(2);
+  await page.keyboard.press("Control+z");
+  await expect(page.locator("#objectList .obj"), "Prepare undo takes back the split and its piece").toHaveCount(1);
+
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText("Volume 4000 mm³");
+  await redo(page, 1600);
+  await page.locator("#tabPrepare").click();
+  await expect(page.locator("#objectList .obj"), "the plate takes the split with its piece").toHaveCount(2);
+  await expect(page.locator("#objectList .obj").nth(1)).toContainText("20 × 20 × 6");
+  expect(tree.of("apply"), "nothing was built again").toHaveLength(1);
+});
+
+test("Duplicate in Model opens the copy, and a Slice in Model slices the step on screen", async ({ page }) => {
+  const slices: Body[] = [];
+  await page.route("**/api/slice", (route) => {
+    slices.push(route.request().postDataJSON() as Body);
+    return route.fulfill({ status: 500, json: { error: "not sliced in this test" } });
+  });
+  const tree = await openModel(page);
+  await cut(page, 5);
+  await page.locator("#slice").click();
+  await expect.poll(() => slices.length).toBe(1);
+  expect(slices[0]!.filename, "the plate took the cut before slicing").toBe("plate.stl");
+
+  await page.locator("#plateDuplicate").click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(2);
+  await expect.poll(() => tree.of("open").length, { message: "the copy is a tree of its own" }).toBe(2);
+  expect(tree.of("export").map((request) => request.node), "rooted in the STEP of the step it copies").toEqual([1]);
+  expect(tree.of("open")[1]!.dataB64).toBe(Buffer.from("EDITED-STEP-1").toString("base64"));
+  await expect(readout(page)).toContainText("Pick a face or an edge.");
+  await cut(page, 3);
+  expect(tree.of("apply").at(-1)!.key, "the edit goes to the copy's tree").toBe(tree.of("open")[1]!.key);
+});
+
+test("an engine that forgot a split piece gets it back from its parent's split", async ({ page }) => {
+  const tree = await openModel(page);
+  await page.locator("#modelToolSplit").click();
+  await page.locator("#modelPlaneZ").fill("4");
+  await page.locator("#modelApply").click();
+  await expect(readout(page)).toContainText("Split. Volume 1600 mm³");
+  const split = tree.of("apply")[0]!;
+  await page.locator("[data-plate-select]").nth(1).click();
+  await expect(readout(page)).toContainText("Volume 2400 mm³");
+  tree.forget();
+  await cut(page, 2);
+  const spare = tree.of("apply").find((request) => request.otherKey === split.otherKey && request.node !== split.node);
+  expect(spare, "the split runs again on a spare node of the parent tree, for the piece's key").toBeTruthy();
+  expect(tree.of("drop").map((request) => [request.key, request.node]), "and the spare node goes").toEqual([[split.key, spare!.node]]);
+  expect(tree.of("apply").at(-1), "then the piece's edit goes through").toMatchObject({ key: split.otherKey, parent: 0 });
+});

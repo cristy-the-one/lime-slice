@@ -79,11 +79,15 @@ let probeSerial = 0;
 let probeTimer = 0;
 let pendingProbe: (() => void) | null = null;
 let open: Opened | null = null;
+/** The plate object Model last opened, so a selection change elsewhere can tell it moved. */
+let shownFor: string | null = null;
 const solids = new Map<string, ParsedSolid>();
 /** Mesh tokens whose plate objects already carry that shape's STEP, or whose mesh is the STEP file itself. */
 const stepKnown = new Set<string>();
 /** Kernel answers by `probeKey`. */
 const answers = new Map<string, ProbeView>();
+/** Restores in flight, by tree key. */
+const restoring = new Map<string, Promise<string | null>>();
 
 export function bindModelView() {
   fx.model?.onPick((pick: ModelPick | null, shift: boolean) => void onPick(pick, shift));
@@ -245,6 +249,13 @@ export function commitModel() {
   else if (plan.resetScale) state.partScale = 1;
   setBrep(at.objectId, mesh.step);
   modelTrees.set(at.key, { ...withNode(tree, plan.to, { mesh }), committed: plan.to });
+  // A Prepare undo can have taken off a piece that a split on this path cut off: the plate gets it back.
+  for (const id of pathTo(tree, plan.to)) {
+    const key = tree.nodes.get(id)?.piece;
+    const piece = key ? modelTrees.get(key) : undefined;
+    const pieceMesh = piece?.nodes.get(piece.committed)?.mesh;
+    if (key && pieceMesh && !state.plate.objects.some((obj) => obj.modelTree === key)) placePiece(key, pieceMesh);
+  }
   place();
   flushEdit();
   markModelEdit();
@@ -292,41 +303,109 @@ export function forgetModelTrees() {
   answers.clear();
   stepKnown.clear();
   open = null;
+  shownFor = null;
+  ticket += 1;
+  busy = false;
+}
+
+/** A plate action changed the selection while Model is open: the view opens the selected object's solid. */
+export function followSelection() {
+  if (state.stage === "model" && state.plate.selectedId !== shownFor) showModel();
 }
 
 export function showModel() {
   const mine = ++ticket;
   picks = [];
+  busy = false;
   flushEdit();
   open = null;
   syncUndo();
   const mesh = state.mesh;
   const objectId = state.plate.selectedId;
+  shownFor = objectId;
   const obj = state.plate.objects.find((item) => item.id === objectId);
-  const known = obj?.modelTree ? modelTrees.get(obj.modelTree) : undefined;
-  const node = known && mesh ? nodeWithMesh(known, meshTokenOf(mesh.bytes)) : null;
+  const token = mesh ? meshTokenOf(mesh.bytes) : null;
+  const known = objectId && token ? treeFor(objectId, obj?.modelTree, token) : null;
+  const node = known && token ? nodeWithMesh(known, token) : null;
   if (objectId && known && node != null) {
     // The plate holds this node: Model resumes there, with the other branches kept and the open tool still open.
     modelTrees.set(known.key, { ...jumped(known, node), committed: node });
-    void showNode(mine, objectId, known.key, node, (solid) => `${about(solid)} Pick a face or an edge.`).then((shown) => {
-      if (!shown && mine === ticket) clearView();
-    });
+    if (obj?.modelTree !== known.key) setTreeKey(objectId, known.key);
+    void resume(mine, objectId, known.key, node);
     return;
   }
   clearView();
-  if (!mesh || !objectId || !obj) {
+  if (!mesh || !objectId || !obj || !token) {
     readout("Open a STEP file to measure a solid.");
     return;
   }
-  const token = meshTokenOf(mesh.bytes);
-  if (known) closeTree(known.key);
+  const stale = obj.modelTree ? modelTrees.get(obj.modelTree) : undefined;
+  if (stale) closeTree(stale.key);
+  const sourcePos = state.sourcePos ?? new Float32Array(0);
   const brep = obj.brep ?? null;
-  if (!brep && !isStepName(mesh.name)) {
+  if (brep || isStepName(mesh.name)) {
+    const root: PlateMesh = { name: mesh.name, bytes: mesh.bytes, sourcePos, token, ...(brep ? { step: brep } : {}) };
+    void openTree(mine, objectId, obj.name, brep ? stepFileName(mesh.name) : mesh.name, brep ?? mesh.bytes, root);
+    return;
+  }
+  const source = [...modelTrees.values()].find((tree) => nodeWithMesh(tree, token) != null);
+  if (!source) {
     readout("Model measure reads a STEP solid. This file is a mesh.");
     return;
   }
-  const root: PlateMesh = { name: mesh.name, bytes: mesh.bytes, sourcePos: state.sourcePos ?? new Float32Array(0), token, ...(brep ? { step: brep } : {}) };
-  void openTree(mine, objectId, obj.name, brep ? stepFileName(mesh.name) : mesh.name, brep ?? mesh.bytes, root);
+  // A copy of an edited object whose STEP is not written yet: its own tree starts from that step's STEP.
+  void (async () => {
+    readout("Reading the solid…");
+    const step = await exportStep(source.key, nodeWithMesh(source, token)!);
+    if (typeof step === "string") {
+      if (mine === ticket) readout(step);
+      return;
+    }
+    putStep(token, step);
+    if (mine !== ticket) return;
+    void openTree(mine, objectId, obj.name, stepFileName(mesh.name), step, { name: mesh.name, bytes: mesh.bytes, sourcePos, token, step });
+  })();
+}
+
+/**
+ * The object's tree that holds a node with the plate's mesh. A Prepare undo to before the object's
+ * first Model visit restores a plate without the key, so the object's other trees are searched too.
+ */
+function treeFor(objectId: string, key: string | undefined, token: string): ModelTree | null {
+  const named = key ? modelTrees.get(key) : undefined;
+  if (named && nodeWithMesh(named, token) != null) return named;
+  for (const tree of modelTrees.values()) {
+    if (tree.key.startsWith(`${objectId}#`) && nodeWithMesh(tree, token) != null) return tree;
+  }
+  return null;
+}
+
+function setTreeKey(objectId: string, key: string) {
+  state.plate = {
+    ...state.plate,
+    objects: state.plate.objects.map((obj) => (obj.id === objectId ? { ...obj, modelTree: key } : obj)),
+  };
+}
+
+/** Back into Model on the node the plate holds. If it no longer rebuilds, on the last step above it that does. */
+async function resume(mine: number, objectId: string, key: string, node: NodeId) {
+  const greeting = (solid: ParsedSolid) => `${about(solid)} Pick a face or an edge.`;
+  if (await showNode(mine, objectId, key, node, greeting) || mine !== ticket) return;
+  const tree = modelTrees.get(key);
+  const good = tree ? lastGood(tree, node) : null;
+  if (good == null || good === node || !(await showNode(mine, objectId, key, good, (solid) => `${BROKEN} ${greeting(solid)}`))) {
+    if (mine === ticket) clearView();
+  }
+}
+
+/** The deepest node on the way to `node` that is not marked broken. */
+function lastGood(tree: ModelTree, node: NodeId): NodeId | null {
+  let good: NodeId | null = null;
+  for (const id of pathTo(tree, node)) {
+    if (tree.nodes.get(id)?.broken) break;
+    good = id;
+  }
+  return good;
 }
 
 function clearView() {
@@ -369,10 +448,7 @@ async function openTree(mine: number, objectId: string, label: string, name: str
   modelTrees.set(key, withNode(newTree(key, { kind: "step", name, bytes }, label, parsed.fingerprint), ROOT, { mesh: root }));
   stepKnown.add(root.token);
   keepSolid(key, ROOT, chord, parsed);
-  state.plate = {
-    ...state.plate,
-    objects: state.plate.objects.map((obj) => (obj.id === objectId ? { ...obj, modelTree: key } : obj)),
-  };
+  setTreeKey(objectId, key);
   if (mine !== ticket || state.stage !== "model") return;
   open = { objectId, key, solid: parsed };
   present(parsed, `${about(parsed)} Pick a face or an edge.`);
@@ -392,7 +468,7 @@ async function showNode(mine: number, objectId: string, key: string, node: NodeI
     busy = true;
     syncUndo();
     const body = await treeCall(key, node, { call: "goto", key, node, chordMm: chord });
-    busy = false;
+    if (mine === ticket) busy = false;
     syncUndo();
     if (mine !== ticket || state.stage !== "model") return false;
     if (failed(key, body)) return false;
@@ -493,6 +569,10 @@ async function applyOp(op: ModelOp, working: string) {
   const at = open;
   const tree = treeOf(at);
   if (!at || !tree || busy || !state.mesh) return;
+  if (at.objectId !== state.plate.selectedId) {
+    followSelection();
+    return;
+  }
   const parent = tree.current;
   const twin = childWithOp(tree, parent, op);
   if (twin != null) {
@@ -517,9 +597,10 @@ async function applyOp(op: ModelOp, working: string) {
     chordMm: chord,
     ...(pieceKey ? { otherKey: pieceKey } : {}),
   });
-  busy = false;
+  if (mine === ticket) busy = false;
   syncUndo();
-  if (mine !== ticket || state.stage !== "model") return;
+  const latest = modelTrees.get(at.key);
+  if (mine !== ticket || state.stage !== "model" || !latest) return;
   if (failed(at.key, body)) return;
   const parsed = asSolid(body);
   const other = pieceKey && body.other && typeof body.other === "object" ? asSolid(body.other as Body) : null;
@@ -534,7 +615,7 @@ async function applyOp(op: ModelOp, working: string) {
     readout("The other piece could not be added. The solid is unchanged.");
     return;
   }
-  const grown = withChild(modelTrees.get(at.key) ?? reserved, parent, {
+  const grown = withChild(modelTrees.get(at.key) ?? latest, parent, {
     id: node,
     op: stored,
     label: opLabel(stored),
@@ -564,28 +645,36 @@ function addPiece(at: Opened, other: ParsedSolid, key: string, split: NodeId): b
   if (!state.mesh) return false;
   noteEdit();
   syncPlateFromState();
-  const selected = state.plate.selectedId;
-  const prev = new Set(state.plate.objects.map((obj) => obj.id));
   const positions = settle(new Float32Array(other.positions));
   const fileName = `${stlName(state.mesh.name).replace(/\.stl$/i, "")} split.stl`;
   const bytes = encodeStl(positions, fileName);
-  const next = selected
-    ? addedSplit(state.plate, { name: fileName.replace(/\.stl$/i, ""), fileName, bytes, sourcePos: positions, stepTolerance: state.stepTolerance })
-    : null;
-  const piece = next?.objects.find((obj) => !prev.has(obj.id));
-  if (!next || !selected || !piece) {
+  const mesh: PlateMesh = { name: fileName, bytes, sourcePos: positions, token: meshTokenOf(bytes) };
+  const name = placePiece(key, mesh);
+  if (!name) {
     flushEdit();
     return false;
   }
-  state.plate = { objects: next.objects.map((obj) => (obj.id === piece.id ? { ...obj, modelTree: key } : obj)), selectedId: selected };
-  applySelectedToState(state.plate);
-  const mesh: PlateMesh = { name: fileName, bytes, sourcePos: positions, token: meshTokenOf(bytes) };
-  modelTrees.set(key, withNode(newTree(key, { kind: "piece", tree: at.key, node: split }, piece.name, other.fingerprint), ROOT, { mesh }));
+  modelTrees.set(key, withNode(newTree(key, { kind: "piece", tree: at.key, node: split }, name, other.fingerprint), ROOT, { mesh }));
   keepSolid(key, ROOT, state.stepTolerance, other);
   place();
   flushEdit();
   markModelEdit();
   return true;
+}
+
+/** A split piece with `mesh` joins the plate in the selected object's place, carrying its tree's key. Its plate name, or null. */
+function placePiece(key: string, mesh: PlateMesh): string | null {
+  const selected = state.plate.selectedId;
+  const prev = new Set(state.plate.objects.map((obj) => obj.id));
+  const next = selected
+    ? addedSplit(state.plate, { name: mesh.name.replace(/\.stl$/i, ""), fileName: mesh.name, bytes: mesh.bytes, sourcePos: new Float32Array(mesh.sourcePos), stepTolerance: state.stepTolerance })
+    : null;
+  const piece = next?.objects.find((obj) => !prev.has(obj.id));
+  if (!next || !selected || !piece) return null;
+  const step = mesh.step ? { brep: mesh.step } : {};
+  state.plate = { objects: next.objects.map((obj) => (obj.id === piece.id ? { ...obj, ...step, modelTree: key } : obj)), selectedId: selected };
+  applySelectedToState(state.plate);
+  return piece.name;
 }
 
 async function runExport() {
@@ -597,7 +686,7 @@ async function runExport() {
   readout("Writing STEP…");
   const mine = ticket;
   const step = await exportStep(at.key, node);
-  busy = false;
+  if (mine === ticket) busy = false;
   if (mine !== ticket || state.stage !== "model" || !open) return;
   if (typeof step === "string") {
     readout(step);
@@ -898,15 +987,23 @@ function missingOf(body: Body): NodeId[] | null {
 
 /**
  * One call on tree `key` that needs `node`. When the engine has forgotten the tree or the node (a
- * restarted engine), it gets the root and the ops again, and the call is asked once more.
+ * restarted engine), it gets the root and the ops again, and the call is asked once more. Calls that
+ * find the same tree missing share one restore; a call whose node that restore did not bring back
+ * runs one of its own.
  */
 async function treeCall(key: string, node: NodeId, request: Body): Promise<Body> {
-  const body = await post(request);
-  const missing = missingOf(body);
-  if (!missing) return body;
-  const problem = await restore(key, node, missing);
-  if (problem) return { error: problem };
-  return post(request);
+  let body = await post(request);
+  for (let round = 0; round < 2; round += 1) {
+    const missing = missingOf(body);
+    if (!missing) return body;
+    const running = round === 0 ? restoring.get(key) : undefined;
+    const restored = running ?? restore(key, node, missing).finally(() => restoring.delete(key));
+    if (!running) restoring.set(key, restored);
+    const problem = await restored;
+    if (problem) return { error: problem };
+    body = await post(request);
+  }
+  return missingOf(body) ? { error: "The modeler no longer has this solid. Open Model again to reload it." } : body;
 }
 
 async function restore(key: string, node: NodeId, missing: NodeId[]): Promise<string | null> {
@@ -929,7 +1026,8 @@ async function restore(key: string, node: NodeId, missing: NodeId[]): Promise<st
     const problem = await rebuildPiece(tree.root.tree, tree.root.node, key);
     if (problem) return problem;
   }
-  // A piece's tree comes back as its root only: its steps are applied again down to `node`.
+  // A piece's tree comes back as its root only: its steps are applied again down to `node`. A split
+  // among them goes without its `otherKey`, which would start that piece's tree over.
   for (const id of pathTo(tree, node).slice(1)) {
     const step = tree.nodes.get(id);
     if (!step?.op || step.parent === null) continue;
@@ -940,7 +1038,6 @@ async function restore(key: string, node: NodeId, missing: NodeId[]): Promise<st
       node: id,
       op: step.op,
       chordMm: chord,
-      ...(step.piece ? { otherKey: step.piece } : {}),
     });
     if (failed(key, body)) return text(body.error);
   }
@@ -993,4 +1090,4 @@ async function post(payload: Body): Promise<Body> {
   }
 }
 
-Object.assign(fx, { refreshModelContext, commitModel, forgetModelTrees });
+Object.assign(fx, { refreshModelContext, commitModel, forgetModelTrees, followSelection });
