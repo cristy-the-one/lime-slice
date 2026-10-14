@@ -115,7 +115,7 @@ eq("an unknown token finds none", nodeWithMesh(meshed, "m8"), null);
 
 eq("labels", [cut, hole, scale, { kind: "split", origin: [0, 0, 4.5], normal: [0, 0, 1] }, { kind: "fillet", edges: [1, 2, 3], size: 1 }].map((op) => opLabel(op as ModelOp)), [
   "Cut box 10×10×10",
-  "Hole r 2 depth 5",
+  "Hole ⌀4 depth 5",
   "Scale 200 %",
   "Split at Z 4.5",
   "Fillet 3 edges r 1",

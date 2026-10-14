@@ -60,6 +60,8 @@ export interface ModelNode {
   /** Null on the root. */
   op: ModelOp | null;
   label: string;
+  /** The user's name for the step, shown instead of `label`. */
+  name?: string;
   fingerprint: Fingerprint | null;
   /** Why the engine could not rebuild this node. Nothing under it rebuilds either. */
   broken?: string;
@@ -253,12 +255,12 @@ export function opLabel(op: ModelOp): string {
         op.primitive === "box"
           ? `box ${n(op.size[0])}×${n(op.size[1])}×${n(op.size[2])}`
           : op.primitive === "cylinder"
-            ? `cylinder r ${n(op.radius)} h ${n(op.height)}`
-            : `sphere r ${n(op.radius)}`;
+            ? `cylinder ⌀${n(op.radius * 2)} h ${n(op.height)}`
+            : `sphere ⌀${n(op.radius * 2)}`;
       return `${BOOLEAN_VERB[op.op]} ${shape}`;
     }
     case "hole":
-      return `Hole r ${n(op.radius)} depth ${n(op.depth)}`;
+      return `Hole ⌀${n(op.radius * 2)} depth ${n(op.depth)}`;
     case "split":
       return `Split at Z ${n(op.origin[2])}`;
     case "fillet":
