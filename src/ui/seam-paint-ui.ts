@@ -66,7 +66,7 @@ export function mountSeamPaint(prepare: PrepareView, hooks: SeamPaintHooks) {
     document.documentElement.dataset.seamPaint = on ? "1" : "";
     clear.disabled = view.disks.length === 0;
     status.textContent = view.disks.length > 0 ? `${view.disks.length} seam disk${view.disks.length === 1 ? "" : "s"}.` : "";
-    prepare.setBrush(on ? { kind: "seam", radius: radius() } : null);
+    if (on) prepare.setBrush({ kind: "seam", radius: radius() });
   }
 
   function bind() {
@@ -97,7 +97,10 @@ export function mountSeamPaint(prepare: PrepareView, hooks: SeamPaintHooks) {
     if (on) {
       hooks.reveal();
       bind();
-    } else hooks.restoreBrush?.();
+    } else {
+      prepare.setBrush(null);
+      hooks.restoreBrush?.();
+    }
     sync();
   }
 

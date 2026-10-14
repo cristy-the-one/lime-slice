@@ -89,7 +89,7 @@ export function mountSupportPaint(prepare: PrepareView, hooks: SupportPaintHooks
     } else {
       status.textContent = view.disks.length > 0 ? `${counts.enforce} enforce, ${counts.block} block.` : "";
     }
-    prepare.setBrush(on ? { kind, radius: radius() } : null);
+    if (on) prepare.setBrush({ kind, radius: radius() });
   }
 
   function setOn(next: boolean) {
@@ -97,6 +97,7 @@ export function mountSupportPaint(prepare: PrepareView, hooks: SupportPaintHooks
     if (next) hooks.yieldBrush?.();
     on = next;
     if (on) hooks.reveal();
+    else prepare.setBrush(null);
     sync();
     if (on) bind();
   }
