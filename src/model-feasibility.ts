@@ -2,6 +2,7 @@
  * Which Model tools the current selection can run, and how a kernel dry-run reads.
  * The kernel probe itself stays off this module.
  */
+import { plainModelError } from "./app/model-error.ts";
 import { formatMm } from "./model-plane.ts";
 import { lastEdge, type ModelPickRef } from "./model-select.ts";
 
@@ -60,7 +61,7 @@ export function probeNote(tool: ProbedTool, probe: ProbeView): { text: string; b
   if (probe?.phase === "checking") return { text: CHECKING[tool], bad: false };
   if (probe?.phase === "done" && probe.ok) return { text: FITS[tool], bad: false };
   if (probe?.phase === "done" && !probe.ok) {
-    const reason = probe.error ?? "This does not fit.";
+    const reason = plainModelError(probe.error ?? "This does not fit.", tool);
     const sentence = reason.endsWith(".") ? reason : `${reason}.`;
     const max = probe.maxMm != null ? ` The largest that fits is ${formatMm(probe.maxMm)} mm.` : "";
     return { text: `${sentence}${max}`, bad: true };

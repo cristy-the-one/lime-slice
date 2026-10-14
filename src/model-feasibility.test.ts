@@ -64,6 +64,24 @@ eq(
   probeNote("boolean", { phase: "done", ok: false, error: "The solids do not overlap" }),
   { text: "The solids do not overlap.", bad: true },
 );
+eq(
+  "a kernel class name is rewritten",
+  probeNote("fillet", { phase: "done", ok: false, error: "StdFail_NotDone" }),
+  {
+    text: "Could not complete this fillet operation on the selected geometry. Try a smaller dimension or a different face or edge.",
+    bad: true,
+  },
+);
+eq(
+  "a smooth edge stays a plain sentence",
+  probeNote("fillet", { phase: "done", ok: false, error: "This edge is already smooth and cannot be filleted." }),
+  { text: "This edge is already smooth and cannot be filleted.", bad: true },
+);
+eq(
+  "a seam edge stays a plain sentence",
+  probeNote("chamfer", { phase: "done", ok: false, error: "This seam edge cannot be chamfered." }),
+  { text: "This seam edge cannot be chamfered.", bad: true },
+);
 
 check("apply waits while the check is in flight", probeAllowsApply("fillet", { phase: "checking" }) === false);
 check("apply waits when the fillet does not fit", probeAllowsApply("fillet", { phase: "done", ok: false }) === false);
