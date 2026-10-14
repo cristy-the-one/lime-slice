@@ -24,7 +24,14 @@ function boxSolid(size: V, z0 = 0): MockSolid {
       triangles.push(face);
     }
   });
-  return { volumeMm3: sx * sy * sz, positions, triangles, faces: quads.map((_, id) => ({ id, areaMm2: 0 })), edges: [] };
+  const corners: V[] = [c(0, 0, 0), c(1, 0, 0), c(1, 1, 0), c(0, 1, 0), c(0, 0, 1), c(1, 0, 1), c(1, 1, 1), c(0, 1, 1)];
+  const pairs = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
+  const edges = pairs.map(([a, b], id) => {
+    const pa = corners[a!]!;
+    const pb = corners[b!]!;
+    return { id, lengthMm: Math.hypot(pa[0] - pb[0], pa[1] - pb[1], pa[2] - pb[2]), points: [...pa, ...pb] };
+  });
+  return { volumeMm3: sx * sy * sz, positions, triangles, faces: quads.map((_, id) => ({ id, areaMm2: 0 })), edges };
 }
 
 const ROOT = boxSolid([20, 20, 10]);
@@ -37,15 +44,16 @@ function built(request: Body): Built {
     const z = op.origin![2]!;
     return { kept: boxSolid([20, 20, z]), other: boxSolid([20, 20, 10 - z], z) };
   }
+  if (op.kind === "fillet" || op.kind === "chamfer") return { ...boxSolid([20, 20, 4]), volumeMm3: 1590 };
   return boxSolid([20, 20, op.size![0]!]);
 }
 
 /** The engine is mocked once for the page, so it outlives a reload as `serve` does. */
-async function openModel(page: Page, model = true): Promise<TreeMock> {
+async function openModel(page: Page, model = true, more: Pick<Parameters<typeof mockModelTree>[1], "goto" | "probe"> = {}): Promise<TreeMock> {
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: ROOT.positions } }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
-  const tree = await mockModelTree(page, { open: () => ROOT, apply: built });
+  const tree = await mockModelTree(page, { open: () => ROOT, apply: built, ...more });
   await page.goto("/");
   await autoSliceOff(page);
   await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: FILE });
@@ -77,6 +85,53 @@ async function split(page: Page, z: number) {
   await page.locator("#modelApply").click();
   await expect(readout(page)).toContainText(`Split. ${volume(z)}`);
   await page.locator("#modelCancel").click();
+}
+
+/** Pick one edge of the shown solid by scanning the canvas in Edge mode. */
+async function pickEdge(page: Page) {
+  await page.locator("#modelPickEdge").click();
+  const box = (await page.locator("#model").boundingBox())!;
+  for (let r = 0; r < 9; r += 1) {
+    for (let col = 0; col < 9; col += 1) {
+      await page.mouse.click(box.x + box.width * (0.18 + col * 0.08), box.y + box.height * (0.18 + r * 0.08));
+      if (/Edge \d+/.test(await readout(page).innerText())) return;
+    }
+  }
+  throw new Error("no edge under the scan");
+}
+
+/** Fillet the picked edge: the tool opens, its check passes, and Apply is clicked. */
+async function filletPicked(page: Page) {
+  await page.locator("#modelToolFillet").click();
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+}
+
+/** Hold every whole-tree open (an `open` with saved steps) until `release`. */
+async function holdWholeOpens(page: Page) {
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const seen = { holding: 0, release: () => release() };
+  await page.route("**/api/model/tree", async (route) => {
+    const body = route.request().postDataJSON() as Body;
+    if (body.call === "open" && body.nodes) {
+      seen.holding += 1;
+      await held;
+    }
+    await route.fallback();
+  });
+  return seen;
+}
+
+/** Cut 8, 6, 4 in a row, save, reopen, and open Model on the plate's step, read from its STEP. */
+async function reopenedChain(page: Page, more: Parameters<typeof openModel>[2] = {}) {
+  const tree = await openModel(page, true, more);
+  for (const dx of [8, 6, 4]) await cut(page, dx);
+  await page.locator("#modelCancel").click();
+  await saveAndReopen(page);
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText(volume(4));
+  return tree;
 }
 
 /** Save from Prepare, open a fresh page, and open the saved file there. */
@@ -186,6 +241,109 @@ test("calls made while a reopened tree opens whole wait for it, and two jumps sh
   expect(probes.slice(asked)[0], "a check asked meanwhile waits, and names the step as the whole tree does").toBe(3);
   expect(probes.slice(asked)).not.toContain(0);
   expect(tree.of("goto").at(-1)?.node).toBe(2);
+});
+
+test("a jump back to the plate's step while the whole tree opens shows the step as rebuilt, and a fillet builds on that", async ({ page }) => {
+  const tree = await reopenedChain(page);
+  const hold = await holdWholeOpens(page);
+  await row(page, "Cut box 8").click();
+  await expect.poll(() => hold.holding).toBe(1);
+  const gotos = tree.of("goto").length;
+  await row(page, "Cut box 4").click();
+  hold.release();
+  await expect(readout(page)).toContainText(volume(4));
+  await expect.poll(() => tree.of("goto").slice(gotos).map((request) => request.node), { message: "the step comes from the whole tree, not from the solid read from its STEP" }).toContain(3);
+  await pickEdge(page);
+  await filletPicked(page);
+  await expect(readout(page)).toContainText("Volume 1590 mm³");
+  expect(tree.of("apply").at(-1), "the fillet builds on the rebuilt step at once").toMatchObject({ parent: 3, node: 4, op: { kind: "fillet" } });
+});
+
+test("a fillet on a reopened step rebuilds the step first and asks for its edges again", async ({ page }) => {
+  const tree = await reopenedChain(page);
+  const applies = tree.of("apply").length;
+  await pickEdge(page);
+  await filletPicked(page);
+  await expect(readout(page)).toContainText("The step was rebuilt from its history: pick the edges again.");
+  expect(tree.of("open").at(-1)?.nodes, "the whole tree opened").toHaveLength(3);
+  expect(tree.of("apply"), "and nothing was built on edges the read solid numbered").toHaveLength(applies);
+  await expect(page.locator("#modelApply")).toBeDisabled();
+});
+
+test("an edit on a reopened step whose rebuild breaks builds nothing and shows the last step that rebuilds", async ({ page }) => {
+  const why = "This step rebuilt differently: 1 mm³, 6 faces, 12 edges instead of 1600 mm³, 6 faces, 12 edges";
+  let reopened = false;
+  const tree = await reopenedChain(page, { goto: (request) => (reopened && request.node === 3 ? { error: why, broken: 3 } : null) });
+  reopened = true;
+  const applies = tree.of("apply").length;
+  if ((await page.locator("#modelToolBoolean").getAttribute("aria-pressed")) !== "true") await page.locator("#modelToolBoolean").click();
+  await page.locator("#modelDx").fill("2");
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+  await expect(readout(page)).toContainText("This step could not be rebuilt");
+  await expect(readout(page), "the last step that rebuilds is shown").toContainText(volume(6));
+  expect(tree.of("apply"), "nothing is built").toHaveLength(applies);
+  await expect(row(page, "Cut box 4")).toHaveAttribute("data-broken", "");
+});
+
+test("a check sent before the whole tree opened, answered after, is asked again under the step's own number", async ({ page }) => {
+  let whole = false;
+  const tree = await reopenedChain(page, { probe: (request) => (whole && request.node === 0 ? { ok: false, error: "Asked of the root" } : { ok: true }) });
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  let holding = 0;
+  await page.route("**/api/model/tree", async (route) => {
+    const body = route.request().postDataJSON() as Body;
+    if (body.call === "probe" && body.node === 0 && holding === 0) {
+      holding += 1;
+      await held;
+    }
+    if (body.call === "open" && body.nodes) whole = true;
+    await route.fallback();
+  });
+  await page.locator("#modelToolBoolean").click();
+  await expect.poll(() => holding).toBe(1);
+  await row(page, "Cut box 8").click();
+  await expect(readout(page)).toContainText(volume(8));
+  release();
+  await expect.poll(() => tree.calls.filter((request) => request.call === "probe" && request.node === 3).length, { message: "the late check is asked again" }).toBeGreaterThan(0);
+  await row(page, "Cut box 4").click();
+  await expect(readout(page)).toContainText(volume(4));
+  await expect(page.locator("#modelNote")).not.toContainText("Asked of the root");
+  await expect(page.locator("#modelApply")).toBeEnabled();
+});
+
+test("a save survives the plate being replaced while a piece's root STEP is still being written", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (err) => errors.push(err.message));
+  const tree = await openModel(page);
+  await split(page, 4);
+  await page.locator("[data-plate-select]").nth(1).click();
+  await expect(readout(page)).toContainText(volume(6));
+  await cut(page, 2);
+  await page.locator("#tabPrepare").click();
+  await expect.poll(() => tree.of("export").length).toBe(2);
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  let holding = 0;
+  await page.route("**/api/model/tree", async (route) => {
+    const body = route.request().postDataJSON() as Body;
+    if (body.call === "export" && body.node === 0) {
+      holding += 1;
+      await held;
+    }
+    await route.fallback();
+  });
+  const download = page.waitForEvent("download");
+  await page.keyboard.press("Control+s");
+  await expect.poll(() => holding).toBe(1);
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.locator("#file").setInputFiles({ name: "other.step", mimeType: "model/step", buffer: FILE });
+  await expect(page.locator("#objectList .obj")).toHaveCount(1);
+  release();
+  const saved = JSON.parse((await (await import("node:fs/promises")).readFile((await (await download).path())!)).toString("utf8")) as { objects?: { modelTree?: unknown }[] };
+  expect(errors, "the save does not throw").toEqual([]);
+  expect((saved.objects ?? []).filter((obj) => obj.modelTree), "no tree of the replaced plate goes into the file").toHaveLength(0);
 });
 
 test("a part Prepare undo took back to before its first Model visit still saves its history", async ({ page }) => {

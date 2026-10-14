@@ -27,6 +27,8 @@ export async function saveCurrentProject() {
     return;
   }
   await captureOpenSolid();
+  // The trees are matched to the plate's meshes as written below.
+  syncPlateFromState();
   const history = await historyToSave();
   syncPlateFromState();
   const project: LimeProject = {

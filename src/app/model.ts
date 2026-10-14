@@ -108,14 +108,18 @@ const restoring = new Map<string, Promise<string | null>>();
  * A tree from a saved project, until the engine has the whole of it. Once `live`, the engine holds
  * the plate's step (`node`), read from that step's STEP, as its root: enough to look and measure.
  * An edit, or a call on any other step, first opens the whole tree from its root STEP and ops
- * (`whole`, while that is on its way); every call meanwhile waits for it.
+ * (`whole`, while that is on its way). Every call waits for that, and for a read of the step's STEP
+ * (`reading`) after an engine restart.
  */
 interface Seed {
   node: NodeId;
   live: boolean;
   whole: Promise<string | null> | null;
+  reading: Promise<void> | null;
 }
 const seeds = new Map<string, Seed>();
+/** Solids the engine answered from a seed's STEP-read step: shown only while that seed stands alone. */
+const readSolids = new WeakSet<ParsedSolid>();
 
 export function bindModelView() {
   fx.model?.onPick((pick: ModelPick | null, shift: boolean) => void onPick(pick, shift));
@@ -359,6 +363,8 @@ export async function historyToSave(): Promise<{ trees: Map<string, TreeToSave>;
   const roots = new Map<string, { name: string; bytes: ArrayBuffer }>();
   const unsaved: string[] = [];
   for (const [id, { name, key }] of held) {
+    // A root STEP written below can outlast the tree: a new file can replace the plate meanwhile.
+    if (!modelTrees.has(key)) continue;
     const tree = treeOfKey(key);
     if (tree.nodes.size === 1 && !tree.nodes.get(ROOT)?.name && !named.has(key)) continue;
     const root = tree.nodes.get(ROOT)?.mesh;
@@ -371,7 +377,7 @@ export async function historyToSave(): Promise<{ trees: Map<string, TreeToSave>;
   const trees = new Map<string, TreeToSave>();
   for (const [id, rootStep] of roots) {
     const { key, node } = held.get(id)!;
-    trees.set(id, { tree: savedTree(treeOfKey(key), node, (piece) => owner.get(piece)), rootStep });
+    if (modelTrees.has(key)) trees.set(id, { tree: savedTree(treeOfKey(key), node, (piece) => owner.get(piece)), rootStep });
   }
   return { trees, unsaved };
 }
@@ -393,7 +399,7 @@ export function adoptSavedTrees(saved: ReadonlyMap<string, SavedTree<{ name: str
     const loaded = loadedTree(tree, key, { kind: "step", ...tree.rootStep }, obj.name, mesh, (id) => keys.get(id));
     modelTrees.set(key, loaded);
     if (obj.brep || (loaded.committed === ROOT && isStepName(obj.fileName))) stepKnown.add(token);
-    if (obj.brep && loaded.committed !== ROOT) seeds.set(key, { node: loaded.committed, live: false, whole: null });
+    if (obj.brep && loaded.committed !== ROOT) seeds.set(key, { node: loaded.committed, live: false, whole: null, reading: null });
   }
   state.plate = { ...state.plate, objects: state.plate.objects.map((obj) => (keys.has(obj.id) ? { ...obj, modelTree: keys.get(obj.id) } : obj)) };
 }
@@ -609,6 +615,8 @@ async function showNode(mine: number, objectId: string, key: string, node: NodeI
   }
   const chord = state.stepTolerance;
   let solid: ParsedSolid | null = recentSolid(key, node, chord) ?? null;
+  const seed = seeds.get(key);
+  if (solid && readSolids.has(solid) && !(seed?.live && !seed.whole)) solid = null;
   if (!solid) {
     jumping = true;
     jumpTarget = node;
@@ -620,6 +628,7 @@ async function showNode(mine: number, objectId: string, key: string, node: NodeI
     if (mine !== ticket || state.stage !== "model") return false;
     if (!newest) {
       const late = text(body.error) || !modelTrees.get(key)?.nodes.has(node) ? null : asSolid(body);
+      if (late && body.seeded) readSolids.add(late);
       if (late) keepSolid(key, node, chord, late);
       return false;
     }
@@ -629,6 +638,7 @@ async function showNode(mine: number, objectId: string, key: string, node: NodeI
       readout("The modeler returned no solid for this step.");
       return false;
     }
+    if (body.seeded) readSolids.add(solid);
     keepSolid(key, node, chord, solid);
   }
   jumping = false;
@@ -782,7 +792,7 @@ async function applyOp(op: ModelOp, working: string) {
     await showNode(ticket, at.objectId, at.key, twin, (solid) => appliedMessage(op, solid));
     return;
   }
-  if (seeds.has(at.key)) {
+  if (seeds.has(at.key) || readSolids.has(at.solid)) {
     // A reopened project's step was read from its STEP, which can sit apart from the step its history
     // builds: on Telo, a hole on the read solid removed 483 mm³ more than the same hole after a rebuild.
     // So an edit builds on the history: the whole tree opens, and the step is shown as rebuilt.
@@ -790,7 +800,7 @@ async function applyOp(op: ModelOp, working: string) {
     busy = true;
     syncUndo();
     readout("Rebuilding the steps…");
-    const problem = await openWhole(at.key, parent);
+    const problem = seeds.has(at.key) ? await openWhole(at.key, parent) : null;
     if (mine === ticket) busy = false;
     syncUndo();
     if (mine !== ticket || state.stage !== "model") return;
@@ -798,7 +808,11 @@ async function applyOp(op: ModelOp, working: string) {
       readout(problem);
       return;
     }
-    if (!(await showNode(mine, at.objectId, at.key, parent, about))) return;
+    if (!(await showNode(mine, at.objectId, at.key, parent, about))) {
+      // The step no longer rebuilds: the view goes to the last one that does, and nothing is built.
+      if (mine === ticket && state.stage === "model") await resume(mine, at.objectId, at.key, parent);
+      return;
+    }
     // Edge numbers of the read solid may not be the rebuilt one's.
     if (op.kind === "fillet" || op.kind === "chamfer") {
       readout(`${about(open!.solid)} The step was rebuilt from its history: pick the edges again.`);
@@ -1259,15 +1273,22 @@ async function treeCall(key: string, node: NodeId, request: Body): Promise<Body>
  * on its way, a call waits for it: the engine runs it after the open, on the whole tree.
  */
 async function seededCall(key: string, node: NodeId, request: Body): Promise<Body> {
-  const needsWhole = (seed: Seed) => seed.live && (node !== seed.node || request.call === "apply");
-  for (let seed = seeds.get(key); seed?.whole || (seed && needsWhole(seed)); seed = seeds.get(key)) {
-    const problem = await (seed.whole ?? openWhole(key, node));
-    if (problem) return { error: problem };
+  for (;;) {
+    let seed = seeds.get(key);
+    for (; seed?.whole || seed?.reading; seed = seeds.get(key)) await (seed.whole ?? seed.reading);
+    if (seed && (node !== seed.node || request.call === "apply")) {
+      const problem = await openWhole(key, node);
+      if (problem) return { error: problem };
+      continue;
+    }
+    if (!seed?.live) return post(request);
+    const body = await post(engineNumbered(seed, request));
+    // The engine does not run calls in the order they were sent: an open that started after this one
+    // may have run first, and then its node 0 is the root. Such an answer is asked for again.
+    if (seeds.get(key) !== seed || seed.whole || seed.reading || !seed.live) continue;
+    // `seeded`: the answer is about the STEP-read step.
+    return { ...body, seeded: true, ...(body.id === ROOT ? { id: seed.node } : {}), ...(body.broken === ROOT ? { broken: seed.node } : {}) };
   }
-  const seed = seeds.get(key);
-  if (!seed?.live) return post(request);
-  const body = await post(engineNumbered(seed, request));
-  return { ...body, ...(body.id === ROOT ? { id: seed.node } : {}), ...(body.broken === ROOT ? { broken: seed.node } : {}) };
 }
 
 /** `request` with the plate's step of a live seed as the engine's root. */
@@ -1295,6 +1316,7 @@ function openWhole(key: string, node: NodeId): Promise<string | null> {
   const seed = seeds.get(key);
   if (seed?.whole) return seed.whole;
   const run = (async () => {
+    if (seed?.reading) await seed.reading;
     const tree = modelTrees.get(key);
     if (!tree || tree.root.kind !== "step") return "This solid is no longer open.";
     const body = await post({
@@ -1310,7 +1332,7 @@ function openWhole(key: string, node: NodeId): Promise<string | null> {
     if (!modelTrees.has(key)) return closeLate(key);
     const problem = typeof body.broken === "number" ? "" : text(body.error);
     if (problem) return problem;
-    if (seed?.live) forgetShown(key);
+    if (seed) forgetShown(key);
     seeds.delete(key);
     return null;
   })();
@@ -1329,13 +1351,20 @@ async function restore(key: string, node: NodeId, missing: NodeId[]): Promise<st
   if (!tree) return "This solid is no longer open.";
   const chord = state.stepTolerance;
   const seed = seeds.get(key);
+  if (seed?.whole) return seed.whole;
   // The plate's step opens from its own STEP, as fast as the file: at first, and again after an engine restart.
   const step = seed && node === seed.node ? tree.nodes.get(node)?.mesh : undefined;
   if (seed && step?.step) {
     if (state.stage === "model") readout("Reading the solid…");
     seed.live = false;
-    const body = await post({ call: "open", key, filename: stepFileName(step.name), dataB64: bytesToBase64(new Uint8Array(step.step)), chordMm: chord });
+    let read = () => {};
+    seed.reading = new Promise<void>((resolve) => (read = resolve));
+    const body = await post({ call: "open", key, filename: stepFileName(step.name), dataB64: bytesToBase64(new Uint8Array(step.step)), chordMm: chord }).finally(() => {
+      seed.reading = null;
+      read();
+    });
     if (!modelTrees.has(key)) return closeLate(key);
+    if (seeds.get(key) !== seed) return openWhole(key, node);
     if (!text(body.error)) {
       seed.live = true;
       return null;
