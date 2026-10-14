@@ -1,4 +1,4 @@
-import { fitSentence, formatOuter, liveBox, outerMm, printToScene, sceneToPrint } from "./viewport-chrome.ts";
+import { bedForBox, fitSentence, formatOuter, liveBox, outerMm, printToScene, sceneToPrint } from "./viewport-chrome.ts";
 
 let failed = 0;
 
@@ -28,6 +28,15 @@ eq("a tall solid names the build volume", fitSentence({ w: 20, d: 20, h: 260 }, 
 });
 eq("two oversize axes are both named", fitSentence({ w: 300, d: 20, h: 260 }, bed).text, "300.0 × 20.0 × 260.0 mm. Past the 220 × 220 × 250 mm build volume in width and height.");
 eq("the callout format keeps one decimal", formatOuter({ w: 20, d: 20.04, h: 10 }), "20.0 × 20.0 × 10.0 mm");
+eq("no solid keeps the edit base at the origin", bedForBox(bed, null), { x0: 0, y0: 0, x1: 220, y1: 220, z0: 0 });
+eq("a corner box is centred on the edit base", bedForBox(bed, box), { x0: -100, y0: -100, x1: 120, y1: 120, z0: 0 });
+eq("an origin-centred plate sits on its own base", bedForBox(bed, { min: [-110, -110, -2.55], max: [110, 110, 2.55] }), {
+  x0: -110,
+  y0: -110,
+  x1: 110,
+  y1: 110,
+  z0: -2.55,
+});
 
 if (failed) {
   console.error(`${failed} failed`);
