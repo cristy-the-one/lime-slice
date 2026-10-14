@@ -2,6 +2,7 @@
 import type { BeltSettings, PrinterKind } from "../belt.ts";
 import type { Firmware } from "../settings-rules.ts";
 import type { OverrideDocument } from "../overrides.ts";
+import type { TreeRef } from "../model-tree.ts";
 import type { MeshPin, PlateSnap } from "../plate.ts";
 import type { SettingsLevel } from "../project.ts";
 
@@ -159,6 +160,19 @@ export function redoSnap(history: EditHistory, current: EditSnap): { history: Ed
 export function foldSince(history: EditHistory, before: WeakSet<EditSnap>): EditHistory {
   const first = history.undo.findIndex((snap) => !before.has(snap));
   return { undo: first < 0 ? history.undo : history.undo.slice(0, first + 1), redo: [], pending: history.pending };
+}
+
+/** Each object of every step, by id, Model tree key, and mesh: what an undo or redo can bring back to the plate. */
+export function historyRefs(history: EditHistory): TreeRef[] {
+  const refs: TreeRef[] = [];
+  for (const snap of [...history.undo, ...history.redo, ...(history.pending ? [history.pending] : [])]) {
+    const tokens = new Map((snap.meshPins ?? []).map((pin) => [pin.id, pin.token]));
+    for (const row of snap.plate?.objects ?? []) {
+      const token = tokens.get(row.id);
+      refs.push({ id: row.id, ...(row.modelTree ? { key: row.modelTree } : {}), ...(token ? { token } : {}) });
+    }
+  }
+  return refs;
 }
 
 /**

@@ -6,6 +6,7 @@ import {
   commitGesture,
   emptyHistory,
   foldSince,
+  historyRefs,
   putBrepFor,
   redoSnap,
   sameSnap,
@@ -125,6 +126,18 @@ check("another object keeps none", stale.undo[0]!.plate!.objects[1]!.brep === un
 check("a patched step is still the same step", stale.undo[0] === kept);
 putBrepFor(stale, "m7", undefined);
 check("an unwritable solid loses its STEP", !("brep" in stale.undo[0]!.plate!.objects[0]!));
+
+const keyed: EditSnap = { ...pinned("m3"), plate: { selectedId: "a", objects: [{ ...plateRow("a"), modelTree: "a#1" }, plateRow("b")] } };
+const refs = historyRefs({ undo: [pinned("m1")], redo: [pinned("m2")], pending: keyed });
+const expected = [
+  { id: "a", token: "m1" },
+  { id: "b", token: "other" },
+  { id: "a", token: "m2" },
+  { id: "b", token: "other" },
+  { id: "a", key: "a#1", token: "m3" },
+  { id: "b", token: "other" },
+];
+check("each object of every step, the open gesture too, by id, tree key, and mesh", JSON.stringify(refs) === JSON.stringify(expected), JSON.stringify(refs));
 
 const solid = pinned("m9");
 const cloned = cloneSnap(solid);
