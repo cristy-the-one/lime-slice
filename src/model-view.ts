@@ -4,9 +4,13 @@ import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 import { gizmoRadiusForPixels } from "./gizmo-math";
+import type { Box } from "./measure";
+import { perspectiveMeasure } from "./measure-camera";
+import { mountMeasureOverlay } from "./measure-overlay";
 import { dragLabel, dragValue, lineParam, moveFine, startFine, wrapDegrees, type DragHandle, type FinePointer, type Vec3 } from "./model-drag";
 import { faceBoundarySegments, faceColor } from "./model-select";
 import { hexToThree, themeColors } from "./theme";
+import { fitSentence, liveBox, mountBedReference, mountStudioLights, mountViewHelper, outerMm, renderViewHelper, viewHelperHit, type BuildVolume } from "./viewport-chrome";
 
 export interface ModelPick {
   kind: "face" | "edge";
@@ -49,6 +53,8 @@ export interface ModelView {
   setPickMode(mode: "face" | "edge"): void;
   highlight(picks: ModelPick[]): void;
   setGhost(ghost: ModelGhost | null): void;
+  /** The active printer's build volume, in millimetres. The bed plane is Z = 0. */
+  setBed(x: number, y: number, z: number): void;
   setTheme(): void;
   resize(): void;
   onPick(cb: (pick: ModelPick | null, shift: boolean) => void): void;
@@ -70,14 +76,21 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   controls.touches.ONE = THREE.TOUCH.ROTATE;
   controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
 
-  scene.add(new THREE.AmbientLight(0xffffff, 0.72));
-  const key = new THREE.DirectionalLight(0xffffff, 0.85);
-  key.position.set(1, -1.4, 2);
-  scene.add(key);
-
+  mountStudioLights(scene, "z-up");
+  const viewHelper = mountViewHelper(camera, canvas);
   let colors = themeColors();
+  const bedRef = mountBedReference(scene, "z-up");
+  let bed: BuildVolume = { x: 220, y: 220, z: 250 };
+  paintBedColors();
+
   let accent = readAccent();
   renderer.setClearColor(hexToThree(colors.stage), 1);
+  const measure = mountMeasureOverlay(canvas.parentElement ?? document.body, { scaleRight: 140 });
+  const fit = document.createElement("p");
+  fit.id = "modelFit";
+  fit.className = "model-fit";
+  fit.hidden = true;
+  canvas.parentElement?.append(fit);
 
   const body = new THREE.Group();
   const ghosts = new THREE.Group();
@@ -85,6 +98,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   scene.add(body, ghosts, handleGroup);
 
   let solid: ModelSolid | null = null;
+  let solidBox: Box | null = null;
   let boundaries = new Map<number, number[]>();
   let center = new THREE.Vector3();
   let extent = 1;
@@ -247,12 +261,50 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   function ghostMaterial(opacity: number) {
-    return new THREE.MeshLambertMaterial({
+    return new THREE.MeshStandardMaterial({
       color: accent,
+      roughness: 0.55,
+      metalness: 0.05,
       transparent: true,
       opacity,
       depthWrite: false,
       side: THREE.DoubleSide,
+    });
+  }
+
+  function paintBedColors() {
+    bedRef.setColors(hexToThree(colors.bed), hexToThree(colors.bedMinor), hexToThree(colors.line), hexToThree(colors.teal));
+  }
+
+  function shownBox(): Box | null {
+    if (!solidBox) return null;
+    const factor = ghost?.kind === "scale" && ghost.factor > 0 ? ghost.factor : 1;
+    return liveBox(solidBox, factor);
+  }
+
+  function paintFit() {
+    const box = shownBox();
+    if (!box) {
+      if (!fit.hidden) fit.hidden = true;
+      return;
+    }
+    const sentence = fitSentence(outerMm(box), bed);
+    if (fit.textContent !== sentence.text) fit.textContent = sentence.text;
+    fit.dataset.over = sentence.over ? "1" : "0";
+    fit.hidden = false;
+  }
+
+  function drawMeasure() {
+    const box = shownBox();
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    measure.render({
+      w,
+      h,
+      box,
+      cam: [camera.position.x, camera.position.y, camera.position.z],
+      bed: { x0: 0, y0: 0, x1: bed.x, y1: bed.y },
+      ...perspectiveMeasure(camera, controls.target, w, h, (p, out) => out.set(p[0], p[1], p[2])),
     });
   }
 
@@ -348,6 +400,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       minY = Math.min(minY, y); maxY = Math.max(maxY, y);
       minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
     }
+    solidBox = { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
     center = new THREE.Vector3((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
     const size = Math.max(maxX - minX, maxY - minY, maxZ - minZ, 1);
     extent = size;
@@ -369,15 +422,28 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   function kick() {
     if (running) return;
     running = true;
+    let lastPaint = performance.now();
     const frameLoop = () => {
       const hidden = canvas.closest("[hidden]") != null;
       if (hidden) {
         running = false;
         return;
       }
+      const now = performance.now();
+      const dt = Math.min(0.05, (now - lastPaint) / 1000);
+      lastPaint = now;
+      if (viewHelper.animating) {
+        controls.enabled = false;
+        viewHelper.update(dt);
+        if (!viewHelper.animating) controls.enabled = true;
+      }
       controls.update();
       sizeHandles();
+      viewHelper.center.copy(controls.target);
       renderer.render(scene, camera);
+      renderViewHelper(renderer, viewHelper);
+      drawMeasure();
+      paintFit();
       requestAnimationFrame(frameLoop);
     };
     requestAnimationFrame(frameLoop);
@@ -456,6 +522,12 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
 
   canvas.addEventListener("pointerdown", (ev) => {
     if (ev.button !== 0 || drag) return;
+    if (viewHelperHit(viewHelper, canvas, ev)) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      kick();
+      return;
+    }
     const part = handleAt(ev.clientX, ev.clientY);
     if (!part) return;
     ev.stopImmediatePropagation();
@@ -515,7 +587,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       if (!next || next.positions.length < 9) {
         clearGhosts();
         ghost = null;
+        solidBox = null;
         applyScale();
+        paintFit();
         kick();
         return;
       }
@@ -525,8 +599,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       const color = new Float32Array(next.positions.length);
       geometry.setAttribute("color", new THREE.BufferAttribute(color, 3));
       geometry.computeVertexNormals();
-      const material = new THREE.MeshLambertMaterial({
+      const material = new THREE.MeshStandardMaterial({
         vertexColors: true,
+        roughness: 0.55,
+        metalness: 0.05,
         side: THREE.DoubleSide,
         polygonOffset: true,
         polygonOffsetFactor: 1,
@@ -571,9 +647,17 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       rebuildGhost();
       kick();
     },
+    setBed(x, y, z) {
+      bed = { x, y, z };
+      bedRef.setSize(x, y, z);
+      canvas.dataset.bed = `${x}x${y}x${z}`;
+      paintFit();
+      kick();
+    },
     setTheme() {
       colors = themeColors();
       accent = readAccent();
+      paintBedColors();
       renderer.setClearColor(hexToThree(colors.stage), 1);
       paintFaces();
       paintLines();

@@ -1255,6 +1255,7 @@ function afterSet(spec: ControlSpec, value: number | boolean | string): "stale" 
     case "bedz":
       saveProfileFromState();
       fx.prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
+      fx.model.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
       fx.view3d.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
       fx.applyPlace(false);
       return "done";
