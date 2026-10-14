@@ -50,6 +50,19 @@ const rows = (page: Page) => page.locator("#modelHistoryTree [role=treeitem]");
 const row = (page: Page, label: string) => page.getByRole("treeitem", { name: new RegExp(`^${label}`) });
 const volume = (dx: number) => `Volume ${400 * dx} mm³`;
 
+/** Hold the engine's answer to a jump to `node` for `ms`, counting the asks and the answers. */
+async function slowGoto(page: Page, node: number, ms = 900) {
+  const seen = { asked: 0, answered: 0 };
+  await page.route("**/api/model/tree", async (route) => {
+    const body = route.request().postDataJSON() as Body;
+    if (body.call !== "goto" || body.node !== node) return route.fallback();
+    seen.asked += 1;
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    await route.fallback();
+    seen.answered += 1;
+  });
+  return seen;
+}
 async function cut(page: Page, dx: number) {
   if ((await page.locator("#modelToolBoolean").getAttribute("aria-pressed")) !== "true") await page.locator("#modelToolBoolean").click();
   if ((await page.locator("#modelCut").getAttribute("aria-pressed")) !== "true") await page.locator("#modelCut").click();
@@ -110,20 +123,12 @@ test("Up and Down move and show; fast presses show only the last target, and a l
   await expect(readout(page)).toContainText(volume(8));
 
   // The root left the client's recent solids: its reply is slow. A press after it wins.
-  let rootAsked = false;
-  await page.route("**/api/model/tree", async (route) => {
-    const body = route.request().postDataJSON() as Body;
-    if (body.call === "goto" && body.node === 0) {
-      rootAsked = true;
-      await new Promise((resolve) => setTimeout(resolve, 900));
-    }
-    await route.fallback();
-  });
+  const root = await slowGoto(page, 0);
   await page.keyboard.press("Home");
-  await expect.poll(() => rootAsked).toBe(true);
+  await expect.poll(() => root.asked).toBe(1);
   await page.keyboard.press("End");
   await expect(readout(page)).toContainText(volume(5));
-  await page.waitForTimeout(1200);
+  await expect.poll(() => root.answered).toBe(1);
   await expect(readout(page), "the root's late reply is not shown").toContainText(volume(5));
   await expect(row(page, "Cut box 5")).toHaveAttribute("aria-selected", "true");
   await expect(row(page, "Cut box 5")).toBeFocused();
@@ -160,7 +165,7 @@ test("a fork draws two rails, and Left and Right switch branches", async ({ page
   await expect(row(page, "Cut box 6")).toBeFocused();
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("ArrowLeft");
-  await page.waitForTimeout(400);
+  await expect(page.locator("#modelHistoryTree"), "the pause ran out").not.toHaveAttribute("aria-busy", "true");
   await expect(readout(page), "Right then Left inside the pause lands where it started").toContainText(volume(6));
 });
 
@@ -270,10 +275,90 @@ test("Shift+H reaches the panel from the canvas, roles and names are in place, a
   await expect(page.locator("#modelApply")).toBeEnabled();
   await page.keyboard.press("Shift+H");
   await expect(row(page, "Cut box 6")).toBeFocused();
-  const applies = mock.of("apply").length;
+  const before = await readout(page).textContent();
   await page.keyboard.press("Enter");
-  await page.waitForTimeout(300);
-  expect(mock.of("apply"), "Enter in the panel is not Apply").toHaveLength(applies);
+  expect(await readout(page).textContent(), "Enter in the panel is not Apply, which would say it is editing at once").toBe(before);
+  expect(mock.of("apply"), "the three cuts only").toHaveLength(3);
+});
+
+test("a branch the plate held stays, so Prepare undo can still find its step and the tree keeps its other branches", async ({ page }) => {
+  const tree = await openModel(page);
+  await cut(page, 8);
+  await page.locator("#tabPrepare").click();
+  await expect(page.locator("#objectList .obj").first()).toContainText("20 × 20 × 8");
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText(volume(8));
+  await row(page, "plate.step").click();
+  await expect(readout(page)).toContainText(volume(10));
+  await cut(page, 6);
+  await page.locator("#tabPrepare").click();
+  await expect(page.locator("#objectList .obj").first()).toContainText("20 × 20 × 6");
+
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText(volume(6));
+  await row(page, "Cut box 8").focus();
+  await page.keyboard.press("Delete");
+  await expect(readout(page)).toHaveText("The plate held a step on this branch, and Prepare undo can bring it back.");
+  await expect(rows(page)).toHaveCount(3);
+  expect(tree.of("drop")).toHaveLength(0);
+
+  await page.locator("#tabPrepare").click();
+  await page.keyboard.press("Control+z");
+  await expect(page.locator("#objectList .obj").first()).toContainText("20 × 20 × 8");
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText(volume(8));
+  await expect(rows(page), "both branches are still there").toHaveCount(3);
+  expect(tree.of("close"), "no tree was closed").toHaveLength(0);
+  expect(tree.of("open"), "and none read again").toHaveLength(1);
+});
+
+test("a step already on its way is not asked for again, and Apply and STEP wait for it", async ({ page }) => {
+  const tree = await openModel(page);
+  for (const dx of [9, 8, 7, 6, 5]) await cut(page, dx);
+  await page.locator("#modelCancel").click();
+  await page.locator("#modelToolBoolean").click();
+  await page.locator("#modelDx").fill("3");
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  const slow = await slowGoto(page, 1);
+  await row(page, "Cut box 9").click();
+  await expect.poll(() => slow.asked).toBe(1);
+  await expect(page.locator("#modelApply"), "Apply waits for the step on its way").toBeDisabled();
+  await expect(page.locator("#modelStep"), "so does STEP").toBeDisabled();
+  await row(page, "Cut box 9").click();
+  await page.keyboard.press("Escape");
+  await expect(readout(page)).toContainText(volume(9));
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await expect(page.locator("#modelStep")).toBeEnabled();
+  expect(tree.of("goto").filter((request) => request.node === 1), "one ask for the step").toHaveLength(1);
+});
+
+test("an arrow press just before leaving Model does not move the step the plate took", async ({ page }) => {
+  await openModel(page);
+  await cut(page, 8);
+  await cut(page, 6);
+  await page.locator("#modelCancel").click();
+  await row(page, "Cut box 6").focus();
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("1");
+  await expect(page.locator("#prepareBody")).toBeVisible();
+  await expect(page.locator("#objectList .obj").first()).toContainText("20 × 20 × 6");
+  await expect(page.locator("#modelHistoryTree"), "the arrow's pause ran out").not.toHaveAttribute("aria-busy", "true");
+  await page.locator("#plateDuplicate").click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(2);
+  await expect(page.locator("#objectList .obj").first(), "the plate keeps the step it took on leaving").toContainText("20 × 20 × 6");
+});
+
+test("the row menu closes when Model closes", async ({ page }) => {
+  await openModel(page);
+  await fork(page);
+  await row(page, "Cut box 6").locator(".mh-more").click();
+  const menu = page.getByRole("menu", { name: "Step" });
+  await expect(menu).toBeVisible();
+  await page.keyboard.press("1");
+  await expect(page.locator("#prepareBody")).toBeVisible();
+  await page.keyboard.press("4");
+  await expect(readout(page)).toContainText(volume(4));
+  await expect(menu).toBeHidden();
 });
 
 test.describe("phone", () => {
