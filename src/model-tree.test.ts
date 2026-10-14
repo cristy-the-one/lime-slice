@@ -7,6 +7,7 @@ import {
   nodeWithMesh,
   opLabel,
   pathTo,
+  reachableTrees,
   redoTarget,
   reserveId,
   savedNodes,
@@ -115,6 +116,19 @@ eq("but not one on another branch", visitStep({ ...jumped(branched, 2), committe
 const meshed = withNode(two, 1, { mesh: { name: "plate.stl", bytes: new ArrayBuffer(1), sourcePos: new Float32Array(0), token: "m7" } });
 eq("a mesh token finds its node", nodeWithMesh(meshed, "m7"), 1);
 eq("an unknown token finds none", nodeWithMesh(meshed, "m8"), null);
+
+// Which trees stay: what the plate or a Prepare step names, by key or by a mesh, and their split relatives.
+const mesh = (token: string) => ({ name: "plate.stl", bytes: new ArrayBuffer(1), sourcePos: new Float32Array(0), token });
+const trees = new Map<string, ModelTree>([
+  ["a#1", withNode(withNode(two, 1, { piece: "a-piece#2" }), 2, { mesh: mesh("m-a") })],
+  ["a-piece#2", { ...newTree("a-piece#2", { kind: "piece", tree: "a#1", node: 1 }, "piece", fp(10)), key: "a-piece#2" }],
+  ["b#3", withNode({ ...two, key: "b#3" }, 1, { mesh: mesh("m-b") })],
+  ["c#4", { ...two, key: "c#4" }],
+]);
+eq("a key keeps its tree and the piece its split made", [...reachableTrees(trees, ["a#1"], new Set())].sort(), ["a#1", "a-piece#2"]);
+eq("a piece keeps the tree it was split from", [...reachableTrees(trees, ["a-piece#2"], new Set())].sort(), ["a#1", "a-piece#2"]);
+eq("a mesh on the plate or in a Prepare step keeps the tree with that step", [...reachableTrees(trees, [], new Set(["m-b"]))], ["b#3"]);
+eq("nothing names the rest", [...reachableTrees(trees, ["gone#9"], new Set(["m-x"]))], []);
 
 eq("labels", [cut, hole, scale, { kind: "split", origin: [0, 0, 4.5], normal: [0, 0, 1] }, { kind: "fillet", edges: [1, 2, 3], size: 1 }].map((op) => opLabel(op as ModelOp)), [
   "Cut box 10×10×10",

@@ -161,6 +161,17 @@ export function foldSince(history: EditHistory, before: WeakSet<EditSnap>): Edit
   return { undo: first < 0 ? history.undo : history.undo.slice(0, first + 1), redo: [], pending: history.pending };
 }
 
+/** The Model tree keys and mesh tokens the steps hold: what an undo or redo can bring back to the plate. */
+export function historyRefs(history: EditHistory): { keys: Set<string>; tokens: Set<string> } {
+  const keys = new Set<string>();
+  const tokens = new Set<string>();
+  for (const snap of [...history.undo, ...history.redo, ...(history.pending ? [history.pending] : [])]) {
+    for (const row of snap.plate?.objects ?? []) if (row.modelTree) keys.add(row.modelTree);
+    for (const pin of snap.meshPins ?? []) tokens.add(pin.token);
+  }
+  return { keys, tokens };
+}
+
 /**
  * Every step whose object has mesh `token` gets `brep` for that object. Undefined removes it.
  * Steps are changed in place, so a step stays the same step (`foldSince` tells them apart by identity).

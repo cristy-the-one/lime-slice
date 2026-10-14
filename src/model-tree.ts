@@ -212,6 +212,27 @@ export function nodeWithMesh(tree: ModelTree, token: string): NodeId | null {
   return null;
 }
 
+/**
+ * The trees still in use: those `keys` name, those with a step whose plate mesh is one of `tokens`
+ * (how Model finds a tree again after a Prepare undo, and how a copy finds the step it copies), the
+ * trees their pieces were split from, and the trees of the pieces their splits made.
+ */
+export function reachableTrees(trees: ReadonlyMap<string, ModelTree>, keys: Iterable<string>, tokens: ReadonlySet<string>): Set<string> {
+  const queue = [...keys];
+  for (const tree of trees.values()) {
+    if ([...tree.nodes.values()].some((node) => node.mesh && tokens.has(node.mesh.token))) queue.push(tree.key);
+  }
+  const keep = new Set<string>();
+  for (let key = queue.pop(); key !== undefined; key = queue.pop()) {
+    const tree = trees.get(key);
+    if (!tree || keep.has(key)) continue;
+    keep.add(key);
+    if (tree.root.kind === "piece") queue.push(tree.root.tree);
+    for (const node of tree.nodes.values()) if (node.piece) queue.push(node.piece);
+  }
+  return keep;
+}
+
 /** Every node but the root, parents first, as the engine's `open` registers them. */
 export function savedNodes(tree: ModelTree): { id: NodeId; parent: NodeId; op: ModelOp; fingerprint: Fingerprint | null }[] {
   return [...tree.nodes.values()]
