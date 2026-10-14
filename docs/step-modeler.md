@@ -63,7 +63,7 @@ Every call is one JSON request through `lime_occt_tree` (`POST /api/model/tree`,
 | `call` | Fields | Answer |
 |---|---|---|
 | `open` | `key`, one of `dataB64`, `stepPath`, or `box: [x, y, z]`; `chordMm`; optional `nodes: [{id, parent, op, fingerprint}]` (parents first) and `current` | The reply for `current` (default 0). Saved nodes are registered, not built. Opening an existing key replaces that tree. |
-| `apply` | `key`, `parent`, `node`, `op`, `chordMm`; `otherKey` for a split | The new node's reply, plus `op` as stored (edge picks resolved) and, for a split, `other`. With `otherKey`, `other` is the root reply of a new tree under that key. Applying an existing node with the same parent is a jump to it. |
+| `apply` | `key`, `parent`, `node`, `op`, `chordMm`; `otherKey` for a split | The new node's reply, plus `op` as stored (edge picks resolved) and, for a split, `other`. With `otherKey`, `other` is the root reply of a new tree under that key. Applying an existing node with the same parent, op, and `otherKey` is a jump to it; anything else on an existing id is refused. |
 | `probe` | `key`, `node`, `op` | `{ok: true}`, or `{ok: false, error, maxMm?}` as the session's dry-run. A probe that works is kept, and an Apply of the same op on the same node commits it. |
 | `goto` | `key`, `node`, `chordMm` | That node's reply. |
 | `drop` | `key`, `node` | `{dropped, current}`. The node and everything under it go; the current node moves to the parent if it was inside. The root cannot be dropped. |
@@ -73,7 +73,7 @@ Every call is one JSON request through `lime_occt_tree` (`POST /api/model/tree`,
 
 `op` is one of `{kind: "boolean", op, primitive, origin, size, radius, height, turn}`, `{kind: "hole", origin, axis, radius, depth}`, `{kind: "split", origin, normal}`, `{kind: "fillet" | "chamfer", edges, size}`, or `{kind: "scale", factor}`. A fresh fillet or chamfer may name edges by index. The stored op names each as `{index, mid, lengthMm}`, where `mid` is the point at the middle of the edge's parameter range. A rebuild takes the index when its midpoint and length still agree within 0.001 mm, else the one edge that matches them, else the node is broken.
 
-A reply is the session's tessellation with `id` set to the node, plus `fingerprint: {volumeMm3, faces, edges}`, `replayed` (how many steps were rebuilt to answer it), and `held` (the nodes of this tree that keep a solid). A missing tree answers `{error: "unknown", missing: [0]}` and a missing node `{error: "unknown", missing: [id]}`, so the client sends the root and the ops again. A step that fails to rebuild, or rebuilds to a different fingerprint, answers `{error, broken: id}`; that node and everything under it stay unbuilt until it is dropped.
+A reply is the session's tessellation with `id` set to the node, plus `fingerprint: {volumeMm3, faces, edges}`, `replayed` (how many steps were rebuilt to answer it), and `held` (the nodes of this tree that keep a solid). A missing tree answers `{error: "unknown", missing: [0]}` and a missing node `{error: "unknown", missing: [id]}`, so the client sends the root and the ops again. A step that fails to rebuild, or rebuilds to a different fingerprint, answers `{error, broken: id}`; that node and everything under it lose their solids and stay unbuilt until it is dropped.
 
 What is kept, per node:
 
@@ -84,7 +84,7 @@ What is kept, per node:
 
 What is skipped: a rebuild tessellates only the node asked for, never the steps on the way. A split's other piece is tessellated once, for the apply that made it. Jumps never send it again, and replaying the split never touches the piece's own tree. Jumping above a split leaves both pieces in place.
 
-Every call holds the tree's lock for its whole run, so tree calls run one at a time; session calls do not wait for them.
+Every call holds the tree's lock for its whole run, so tree calls run one at a time; session calls do not wait for them. Booleans and the split run non-destructively, so building a child or a probe never changes its parent's tolerances. STEP reads and writes take one lock shared with the session, because Open CASCADE keeps their settings globally.
 
 ## Viewport handles
 

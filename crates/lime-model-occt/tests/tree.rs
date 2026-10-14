@@ -174,6 +174,23 @@ fn history_tree() {
         clash["error"].as_str().unwrap_or("").contains("already"),
         "{clash}"
     );
+    let other_size = call(
+        json!({ "call": "apply", "key": "main", "parent": 1, "node": 2,
+        "op": { "kind": "fillet", "edges": [edge], "size": 2.0 } }),
+    );
+    assert!(
+        other_size["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("already"),
+        "a different op on an existing node is refused: {other_size}"
+    );
+    let as_ref =
+        ok(json!({ "call": "apply", "key": "main", "parent": 1, "node": 2, "op": fillet_op }));
+    assert_eq!(
+        as_ref["fingerprint"], fillet["fingerprint"],
+        "the stored op is the same request"
+    );
 
     let (branch, spent) = cost(|| {
         ok(
@@ -389,6 +406,22 @@ fn split_keeps_both_pieces() {
     near(volume(&split["other"]), 600.0);
     assert_eq!(split["other"]["key"], "piece");
     assert_eq!(split["other"]["id"], 0);
+    let elsewhere = call(
+        json!({ "call": "apply", "key": "split", "parent": 0, "node": 1,
+        "op": split_op, "otherKey": "elsewhere" }),
+    );
+    assert!(
+        elsewhere["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("already"),
+        "the piece went to another key: {elsewhere}"
+    );
+    let retried = ok(
+        json!({ "call": "apply", "key": "split", "parent": 0, "node": 1,
+        "op": split_op, "otherKey": "piece" }),
+    );
+    assert_eq!(retried["fingerprint"], split["fingerprint"]);
     let piece = ok(json!({ "call": "goto", "key": "piece", "node": 0 }));
     assert_eq!(piece["fingerprint"], split["other"]["fingerprint"]);
 

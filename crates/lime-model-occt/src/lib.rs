@@ -662,7 +662,10 @@ pub extern "C" fn lime_occt_redo(id: i32, chord_mm: f64) -> *mut c_char {
 /// `request` is null or a valid null-terminated string. The returned pointer is freed with `lime_occt_string_free`.
 #[no_mangle]
 pub unsafe extern "C" fn lime_occt_tree(request: *const c_char) -> *mut c_char {
-    export_json(tree(&cstr(request)))
+    let request = cstr(request);
+    let answer = std::panic::catch_unwind(|| tree(&request))
+        .unwrap_or_else(|_| "{\"error\":\"The history tree failed inside the bridge\"}".into());
+    export_json(answer)
 }
 
 /// # Safety

@@ -320,6 +320,8 @@ struct Node {
     shape: Option<Shape>,
     fingerprint: Option<Fingerprint>,
     broken: Option<String>,
+    /// A split's `otherKey`, so a retried apply can be told from a different one.
+    piece: Option<String>,
     depth: u32,
     used: u64,
 }
@@ -365,6 +367,7 @@ impl Doc {
                 shape: Some(root),
                 fingerprint: Some(fingerprint),
                 broken: None,
+                piece: None,
                 depth: 0,
                 used,
             },
@@ -388,6 +391,7 @@ impl Doc {
             shape: None,
             fingerprint: None,
             broken: None,
+            piece: None,
             depth,
             used: 0,
         });
@@ -421,11 +425,58 @@ impl Doc {
         pinned
     }
 
+    /// `id` and every node under it.
+    fn subtree(&self, id: NodeId) -> HashSet<NodeId> {
+        let mut found = HashSet::from([id]);
+        loop {
+            let before = found.len();
+            for (child, node) in &self.nodes {
+                if node.parent.is_some_and(|up| found.contains(&up)) {
+                    found.insert(*child);
+                }
+            }
+            if found.len() == before {
+                return found;
+            }
+        }
+    }
+
+    /// No solid under a broken node stays usable: each would have been built from a solid that
+    /// no longer rebuilds the same.
     fn mark_broken(&mut self, id: NodeId, message: String) -> Failure {
+        let under = self.subtree(id);
+        for node in &under {
+            if let Some(node) = self.nodes.get_mut(node) {
+                node.shape = None;
+            }
+        }
         if let Some(node) = self.nodes.get_mut(&id) {
             node.broken = Some(message.clone());
         }
+        if self
+            .probe
+            .as_ref()
+            .is_some_and(|probe| under.contains(&probe.parent))
+        {
+            self.probe = None;
+        }
         Failure::Broken { node: id, message }
+    }
+
+    /// The first broken node from `id` up to the root, as the failure a call on `id` answers.
+    fn broken_above(&self, id: NodeId) -> Result<(), Failure> {
+        let mut at = Some(id);
+        while let Some(step) = at {
+            let node = self.node(step)?;
+            if let Some(message) = &node.broken {
+                return Err(Failure::Broken {
+                    node: step,
+                    message: message.clone(),
+                });
+            }
+            at = node.parent;
+        }
+        Ok(())
     }
 
     /// Give `id` a solid, replaying from the nearest ancestor that has one.
@@ -603,7 +654,7 @@ impl Store {
 
     fn goto(&mut self, key: String, id: NodeId, chord: f64) -> Result<Answer, Failure> {
         let doc = doc_in(&mut self.docs, &key)?;
-        doc.node(id)?;
+        doc.broken_above(id)?;
         doc.probe = None;
         let (text, replayed) = match self.cached_reply(&key, id, chord) {
             Some(text) => {
@@ -640,17 +691,19 @@ impl Store {
             return Ok(text);
         }
         let doc = doc_in(&mut self.docs, key)?;
-        let fingerprint = doc.node(id)?.fingerprint;
-        let text = doc.shape(id).reply(id, chord)?;
-        let text = with_fields(text, &[("fingerprint", json!(fingerprint).to_string())]);
+        let text = render(doc.shape(id), id, chord)?;
+        self.remember(key, id, chord, &text);
+        Ok(text)
+    }
+
+    fn remember(&mut self, key: &str, id: NodeId, chord: f64, text: &str) {
         self.replies.push(Reply {
             key: key.to_string(),
             node: id,
             chord: chord_key(chord),
-            text: text.clone(),
+            text: text.to_string(),
             used: self.clock,
         });
-        Ok(text)
     }
 
     fn apply(
@@ -672,11 +725,17 @@ impl Store {
         }
         let doc = doc_in(&mut self.docs, &key)?;
         if let Some(existing) = doc.nodes.get(&id) {
-            if existing.parent == Some(parent) {
+            let same = existing.parent == Some(parent)
+                && existing.piece == other_key
+                && existing
+                    .op
+                    .as_ref()
+                    .is_some_and(|stored| same_request(stored, &op));
+            if same {
                 return self.goto(key, id, chord);
             }
             return Err(Failure::Message(format!(
-                "Node {id} is already in this tree under another step"
+                "Node {id} is already in this tree for another step"
             )));
         }
         let replayed = doc.ensure_shape(parent, &mut self.clock)?;
@@ -689,28 +748,49 @@ impl Store {
         };
         let fingerprint = built.kept.fingerprint();
         self.clock += 1;
+        let previous = doc.current;
         let node = doc.insert(id, parent, built.op.clone())?;
         node.fingerprint = Some(fingerprint);
         node.shape = Some(built.kept);
+        node.piece = other_key.clone();
         node.used = self.clock;
         doc.current = id;
+        let rendered = self.reply(&key, id, chord).and_then(|text| {
+            let other = match &built.other {
+                Some(other) if other_key.is_some() => Some(render(other, ROOT, chord)?),
+                Some(other) => Some(other.reply(0, chord)?),
+                None => None,
+            };
+            Ok((text, other))
+        });
+        let (text, other) = match rendered {
+            Ok(rendered) => rendered,
+            Err(failure) => {
+                if let Some(doc) = self.docs.get_mut(&key) {
+                    doc.nodes.remove(&id);
+                    doc.current = previous;
+                }
+                self.replies
+                    .retain(|reply| reply.key != key || reply.node != id);
+                return Err(failure);
+            }
+        };
         let mut fields = vec![
             ("op", json!(built.op).to_string()),
             ("replayed", replayed.to_string()),
         ];
-        let text = self.reply(&key, id, chord)?;
-        match (built.other, other_key) {
-            (Some(other), Some(other_key)) => {
+        match (built.other, other_key, other) {
+            (Some(piece), Some(other_key), Some(other)) => {
                 self.clock += 1;
-                let piece = Doc::new(other, self.clock);
                 self.replies.retain(|reply| reply.key != other_key);
-                self.docs.insert(other_key.clone(), piece);
-                let piece = self.reply(&other_key, ROOT, chord)?;
-                let piece = with_fields(piece, &[("key", json!(other_key).to_string())]);
-                fields.push(("other", piece));
+                self.docs
+                    .insert(other_key.clone(), Doc::new(piece, self.clock));
+                self.remember(&other_key, ROOT, chord, &other);
+                let other = with_fields(other, &[("key", json!(other_key).to_string())]);
+                fields.push(("other", other));
             }
-            (Some(other), None) => fields.push(("other", other.reply(0, chord)?)),
-            (None, _) => {}
+            (_, _, Some(other)) => fields.push(("other", other)),
+            _ => {}
         }
         Ok(Answer::Held {
             key,
@@ -754,18 +834,7 @@ impl Store {
         }
         let doc = doc_in(&mut self.docs, &key)?;
         let parent = doc.node(id)?.parent.expect("only the root has no parent");
-        let mut gone = HashSet::from([id]);
-        loop {
-            let before = gone.len();
-            for (child, node) in &doc.nodes {
-                if node.parent.is_some_and(|up| gone.contains(&up)) {
-                    gone.insert(*child);
-                }
-            }
-            if gone.len() == before {
-                break;
-            }
-        }
+        let gone = doc.subtree(id);
         doc.nodes.retain(|node, _| !gone.contains(node));
         if gone.contains(&doc.current) {
             doc.current = parent;
@@ -883,6 +952,9 @@ fn resolve(from: &mut Shape, op: &Op) -> Result<Op, String> {
             },
         };
         let found = found.ok_or_else(|| "That edge is not on this solid".to_string())?;
+        if !found.mid.iter().all(|value| value.is_finite()) || !found.length_mm.is_finite() {
+            return Err("Open CASCADE could not measure that edge".into());
+        }
         if !refs
             .iter()
             .any(|have| matches!(have, EdgePick::Ref(have) if have.index == found.index))
@@ -898,6 +970,38 @@ fn resolve(from: &mut Shape, op: &Op) -> Result<Op, String> {
     } else {
         Op::Fillet { edges: refs, size }
     })
+}
+
+/// Whether `incoming` asks for the op `stored` already is. A stored edge matches an index pick by
+/// index and a reference by midpoint and length, since a rebuild may have renumbered it.
+fn same_request(stored: &Op, incoming: &Op) -> bool {
+    let (stored_edges, incoming_edges) = match (stored, incoming) {
+        (Op::Fillet { edges: a, size: x }, Op::Fillet { edges: b, size: y })
+        | (Op::Chamfer { edges: a, size: x }, Op::Chamfer { edges: b, size: y })
+            if x == y && a.len() == b.len() =>
+        {
+            (a, b)
+        }
+        (Op::Fillet { .. } | Op::Chamfer { .. }, _) => return false,
+        _ => return stored == incoming,
+    };
+    stored_edges
+        .iter()
+        .zip(incoming_edges)
+        .all(|pair| match pair {
+            (EdgePick::Ref(have), EdgePick::Index(index)) => have.index == *index,
+            (EdgePick::Ref(have), EdgePick::Ref(want)) => same_edge(have, want),
+            (have, want) => have == want,
+        })
+}
+
+/// The tessellation with the node's fingerprint, as a reply is cached and sent.
+fn render(shape: &Shape, id: NodeId, chord: f64) -> Result<String, Failure> {
+    let text = shape.reply(id, chord)?;
+    Ok(with_fields(
+        text,
+        &[("fingerprint", json!(shape.fingerprint()).to_string())],
+    ))
 }
 
 fn same_edge(a: &EdgeRef, b: &EdgeRef) -> bool {
