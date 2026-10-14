@@ -18,6 +18,8 @@ use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::Instant;
 
+use rayon::prelude::*;
+
 use truck_meshalgo::prelude::{
     MetricSpace, ParameterDivision2D, ParameterRange, ParametricSurface, ParametricSurface3D,
     Point3, PolygonMesh, SPHint2D, SearchNearestParameter, SearchParameter, Vector3, D2,
@@ -115,9 +117,27 @@ pub fn load_step_timed(bytes: &[u8], tolerance_mm: f64) -> Result<(Mesh, StepTim
     let emits = collect_emits(&entities)?;
     timings.topology_ms = ms_since(topo);
     timings.shells = emits.len();
+    // Each shell is independent. Truck already threads the faces of one shell;
+    // this spreads whole shells across the same pool. `collect` keeps shell
+    // order, and the merge below walks that order, so the triangle list matches
+    // tessellating one shell at a time.
+    let shells: Vec<Result<TessellatedShell, String>> = emits
+        .par_iter()
+        .map(|emit| tessellate_shell(&table, emit.shell, tol_mm, emit.scale))
+        .collect();
     let mut triangles = Vec::new();
-    for emit in &emits {
-        let raw = tessellate_shell(&table, emit.shell, tol_mm, emit.scale, &mut timings)?;
+    for (emit, shell) in emits.iter().zip(shells) {
+        let TessellatedShell {
+            triangles: raw,
+            clock,
+        } = shell?;
+        timings.compress_ms += clock.compress_ms;
+        timings.tessellate_ms += clock.tessellate_ms;
+        timings.faces += clock.faces;
+        timings.snap_ms += clock.snap_ms;
+        timings.ear_faces += clock.ear_faces;
+        timings.ear_ms += clock.ear_ms;
+        timings.sliver_ms += clock.sliver_ms;
         let assemble = Instant::now();
         let flip = emit.flip ^ (emit.xform.det() < 0.0);
         for tri in raw {
@@ -918,13 +938,37 @@ fn mesh_surfaces(
     }
 }
 
+/// Per-shell clocks, folded into [`StepTimings`] in shell order.
+struct ShellClock {
+    compress_ms: f64,
+    tessellate_ms: f64,
+    faces: usize,
+    snap_ms: f64,
+    ear_faces: usize,
+    ear_ms: f64,
+    sliver_ms: f64,
+}
+
+struct TessellatedShell {
+    triangles: Vec<[[f64; 3]; 3]>,
+    clock: ShellClock,
+}
+
 fn tessellate_shell(
     table: &Table,
     shell_id: u64,
     tol_mm: f64,
     scale: f64,
-    timings: &mut StepTimings,
-) -> Result<Vec<[[f64; 3]; 3]>, String> {
+) -> Result<TessellatedShell, String> {
+    let mut clock = ShellClock {
+        compress_ms: 0.0,
+        tessellate_ms: 0.0,
+        faces: 0,
+        snap_ms: 0.0,
+        ear_faces: 0,
+        ear_ms: 0.0,
+        sliver_ms: 0.0,
+    };
     let shell = table.shell.get(&shell_id).ok_or_else(|| {
         format!("STEP solid references shell #{shell_id}, which is not a tessellatable shell")
     })?;
@@ -939,7 +983,7 @@ fn tessellate_shell(
                 brief(&err.to_string())
             )
         })?;
-    timings.compress_ms += ms_since(compress);
+    clock.compress_ms += ms_since(compress);
     let kept = compressed.faces.len();
     if step_faces > 0 && kept < step_faces {
         return Err(format!(
@@ -955,8 +999,8 @@ fn tessellate_shell(
         "STEP tessellation failed on this solid. Try a larger chord tolerance, or export the part as STL."
             .to_string()
     })?;
-    timings.tessellate_ms += ms_since(tess);
-    timings.faces += meshed.faces.len();
+    clock.tessellate_ms += ms_since(tess);
+    clock.faces += meshed.faces.len();
     // Each wire is a closed loop in the surface's own orientation. Polyline
     // ends are pinned to the shared vertex: each curve evaluates its own end
     // a few nanometres off, and edges meeting at a corner would not join.
@@ -993,7 +1037,7 @@ fn tessellate_shell(
             Some(mesh) => {
                 let snap = Instant::now();
                 let tris = snapped_triangles(mesh, &loops, tol_file);
-                timings.snap_ms += ms_since(snap);
+                clock.snap_ms += ms_since(snap);
                 tris
             }
             // Truck returns no mesh where a surface parameterization degenerates,
@@ -1001,10 +1045,10 @@ fn tessellate_shell(
             // the same edge polylines its neighbours use, so it closes from them.
             None => match loops.as_slice() {
                 [outline] => {
-                    timings.ear_faces += 1;
+                    clock.ear_faces += 1;
                     let ear = Instant::now();
                     let tris = ear_clip(outline);
-                    timings.ear_ms += ms_since(ear);
+                    clock.ear_ms += ms_since(ear);
                     tris
                 }
                 _ => Vec::new(),
@@ -1019,11 +1063,11 @@ fn tessellate_shell(
     }
     let sliver = Instant::now();
     turn_flipped_slivers(&mut triangles);
-    timings.sliver_ms += ms_since(sliver);
+    clock.sliver_ms += ms_since(sliver);
     if triangles.is_empty() && step_faces > 0 {
         return Err("STEP solid tessellated to an empty mesh at this chord tolerance".into());
     }
-    Ok(triangles)
+    Ok(TessellatedShell { triangles, clock })
 }
 
 /// A loop of fewer than three distinct points encloses nothing.
