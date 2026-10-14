@@ -1,5 +1,5 @@
 import { defaultProfile } from "./profiles.ts";
-import { DEFAULT_PRESET } from "./presets.ts";
+import { DEFAULT_PRESET, LATER_KEYS, type PresetSettings } from "./presets.ts";
 import {
   applyMigrations,
   meshRecord,
@@ -307,6 +307,45 @@ for (const [name, bad] of [
 ] as const) {
   eq(`layer actions with ${name} fail the open`, parseProject(JSON.stringify({ ...pausedWire, layerActions: bad })), { ok: false, message: damagedActions });
 }
+
+const later: Partial<PresetSettings> = {
+  seam: "rear",
+  ironing: true,
+  ironingFlow: 0.15,
+  ironingSpeed: 30,
+  ironingSpacing: 0.15,
+  fuzzySkin: true,
+  fuzzyThickness: 0.4,
+  fuzzyPointDistance: 1,
+  flow: 0.95,
+  retractOn: true,
+  retractLength: 0.8,
+  retractSpeed: 40,
+  supportAvoidance: true,
+  supportSource: "paint",
+  minLayerTimeS: 6,
+  minLayerSpeedMmS: 10,
+  adhesion: "brim",
+  brimWidthMm: 8,
+  brimGapMm: 0.2,
+  skirtLoops: 3,
+  topSurfacePattern: "monotonic",
+  xyHoleCompensationMm: 0.1,
+  xyContourCompensationMm: -0.05,
+  elephantsFootCompensationMm: 0.2,
+  supportZGapMm: 0.25,
+  supportXyGapMm: 0.7,
+  supportInterfaceLayers: 2,
+  supportTreeBrimMm: 4,
+  bridgeFlowRatio: 0.9,
+  bridgeSpeedMmS: 25,
+  bridgeFanPercent: 80,
+};
+eq("the later settings below cover every later key", Object.keys(later).sort(), [...LATER_KEYS].sort());
+eq("each one differs from its default", Object.entries(later).filter(([key, value]) => DEFAULT_PRESET[key as keyof PresetSettings] === value).map(([key]) => key), []);
+const laterSettings = { ...project.settings, ...later };
+const laterOpened = parseProject(serializeProject({ ...project, settings: laterSettings }));
+eq("every later setting survives a save and reopen", laterOpened.ok ? laterOpened.project.settings : null, laterSettings);
 
 if (failed) {
   console.error(`${failed} failed`);
