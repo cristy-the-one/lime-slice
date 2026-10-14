@@ -178,7 +178,7 @@ pub fn call(request: &str) -> String {
             mut fields,
         }) => {
             let held = store.docs.get(&key).map(Doc::held).unwrap_or_default();
-            fields.push(("held", json!(held).to_string()));
+            fields.push(("held", Part::Json(json!(held).to_string())));
             with_fields(&text, &fields)
         }
         Err(failure) => failure.json(),
@@ -282,12 +282,35 @@ fn chord_key(chord: f64) -> u64 {
 enum Answer {
     Plain(String),
     /// `text` with `fields` added, and the list of which nodes of `key` hold a solid, read after
-    /// eviction. `text` may be a cached reply, so it is copied once, when the answer is written.
+    /// eviction. `text` and an `other` piece may be cached replies, so each is copied once, when
+    /// the answer is written.
     Held {
         key: String,
         text: Arc<String>,
-        fields: Vec<(&'static str, String)>,
+        fields: Vec<(&'static str, Part)>,
     },
+}
+
+/// A field's value: JSON as it is, or a JSON object, such as a cached reply, with fields added.
+enum Part {
+    Json(String),
+    Object(Arc<String>, Vec<(&'static str, Part)>),
+}
+
+impl Part {
+    fn len(&self) -> usize {
+        match self {
+            Part::Json(text) => text.len(),
+            Part::Object(text, fields) => text.len() + fields_len(fields),
+        }
+    }
+
+    fn write(&self, out: &mut String) {
+        match self {
+            Part::Json(text) => out.push_str(text),
+            Part::Object(text, fields) => write_object(out, text, fields),
+        }
+    }
 }
 
 enum Failure {
@@ -315,24 +338,32 @@ impl Failure {
 
 /// `text` is a JSON object. Each field is added before its closing brace, in one allocation with
 /// room for the terminator the C string adds, since a solid reply is megabytes.
-fn with_fields(text: &str, fields: &[(&str, String)]) -> String {
-    let Some(body) = text.strip_suffix('}') else {
-        return text.to_string();
-    };
-    let extra: usize = fields
+fn with_fields(text: &str, fields: &[(&str, Part)]) -> String {
+    let mut out = String::with_capacity(text.len() + fields_len(fields) + 2);
+    write_object(&mut out, text, fields);
+    out
+}
+
+fn fields_len(fields: &[(&str, Part)]) -> usize {
+    fields
         .iter()
         .map(|(name, value)| name.len() + value.len() + 4)
-        .sum();
-    let mut out = String::with_capacity(body.len() + extra + 2);
+        .sum()
+}
+
+fn write_object(out: &mut String, text: &str, fields: &[(&str, Part)]) {
+    let Some(body) = text.strip_suffix('}') else {
+        out.push_str(text);
+        return;
+    };
     out.push_str(body);
     for (name, value) in fields {
         out.push_str(",\"");
         out.push_str(name);
         out.push_str("\":");
-        out.push_str(value);
+        value.write(out);
     }
     out.push('}');
-    out
 }
 
 struct Node {
@@ -694,7 +725,7 @@ impl Store {
         Ok(Answer::Held {
             key,
             text,
-            fields: vec![("replayed", replayed.to_string())],
+            fields: vec![("replayed", Part::Json(replayed.to_string()))],
         })
     }
 
@@ -802,17 +833,18 @@ impl Store {
             }
         };
         let mut fields = vec![
-            ("op", json!(built.op).to_string()),
-            ("replayed", replayed.to_string()),
+            ("op", Part::Json(json!(built.op).to_string())),
+            ("replayed", Part::Json(replayed.to_string())),
         ];
         if let (Some(piece), Some(other_key), Some(other)) = (built.other, other_key, other) {
             self.clock += 1;
             self.replies.retain(|reply| reply.key != other_key);
             self.docs
                 .insert(other_key.clone(), Doc::new(piece, self.clock));
-            let sent = with_fields(&other, &[("key", json!(other_key).to_string())]);
-            self.remember(&other_key, ROOT, chord, Arc::new(other));
-            fields.push(("other", sent));
+            let other = Arc::new(other);
+            self.remember(&other_key, ROOT, chord, Arc::clone(&other));
+            let key_field = ("key", Part::Json(json!(other_key).to_string()));
+            fields.push(("other", Part::Object(other, vec![key_field])));
         }
         Ok(Answer::Held { key, text, fields })
     }
@@ -1237,8 +1269,11 @@ struct Shape(NonNull<RawShape>);
 struct Mesh(NonNull<RawMesh>);
 
 impl Mesh {
-    /// Bytes the mesh's view points at. They live as long as the mesh.
-    fn bytes(&self, ptr: *const u8, len: usize) -> &[u8] {
+    /// Bytes the mesh's view points at, borrowed for as long as the mesh lives.
+    ///
+    /// # Safety
+    /// `ptr` and `len` are one array of the `MeshView` that `lime_tree_mesh` filled with this mesh.
+    unsafe fn bytes(&self, ptr: *const u8, len: usize) -> &[u8] {
         if len == 0 {
             return &[];
         }
@@ -1376,24 +1411,27 @@ impl Shape {
             .ok()
             .and_then(|meta| meta.strip_prefix('{')?.strip_suffix('}'))
             .ok_or_else(|| Failure::Message("Open CASCADE returned a damaged mesh".into()))?;
-        let arrays = [
-            (
-                "positions",
-                mesh.bytes(view.positions, view.positions_bytes),
-            ),
-            (
-                "triangles",
-                mesh.bytes(view.triangles, view.triangles_bytes),
-            ),
-            (
-                "edgePoints",
-                mesh.bytes(view.edge_points, view.edge_points_bytes),
-            ),
-            (
-                "edgeOffsets",
-                mesh.bytes(view.edge_offsets, view.edge_offsets_bytes),
-            ),
-        ];
+        // SAFETY: `lime_tree_mesh` filled `view` with `mesh`'s own arrays, which live until it drops.
+        let arrays = unsafe {
+            [
+                (
+                    "positions",
+                    mesh.bytes(view.positions, view.positions_bytes),
+                ),
+                (
+                    "triangles",
+                    mesh.bytes(view.triangles, view.triangles_bytes),
+                ),
+                (
+                    "edgePoints",
+                    mesh.bytes(view.edge_points, view.edge_points_bytes),
+                ),
+                (
+                    "edgeOffsets",
+                    mesh.bytes(view.edge_offsets, view.edge_offsets_bytes),
+                ),
+            ]
+        };
         let fingerprint = json!(self.fingerprint()).to_string();
         let size = arrays
             .iter()
