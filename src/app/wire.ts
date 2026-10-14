@@ -11,7 +11,7 @@ import { planFileDrop } from "../file-drop";
 import { addDroppedFiles, addMeshBytes, adoptBytes, export3mf, exportGcode, fail, loadNamed, pickAddedMesh, place, plateHasMesh, saveText, setPlaceCenter, withPrinterGcode } from "./files";
 import { mountProjectFiles, openProjectFile, saveCurrentProject } from "./project-io";
 import { pickModelFile } from "../platform";
-import { noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, revealPrinterDetails, revealResults, setCalibrate, syncFindStuck, touch } from "./settings";
+import { dismissMeshWarning, noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, revealPrinterDetails, revealResults, setCalibrate, syncFindStuck, touch } from "./settings";
 import { noteEdit } from "./history";
 import { bindPlaceScrub } from "./place-scrub";
 import {
@@ -274,6 +274,11 @@ export function wireApp() {
     }
   });
   document.querySelector("#right")!.addEventListener("click", (ev) => {
+    if ((ev.target as HTMLElement).closest("#dismissMeshWarn")) {
+      dismissMeshWarning();
+      document.querySelector("#meshWarn")?.remove();
+      return;
+    }
     const dot = (ev.target as HTMLElement).closest<SVGElement>("[data-pareto]");
     if (dot) {
       applyPareto(Number(dot.dataset.pareto));
