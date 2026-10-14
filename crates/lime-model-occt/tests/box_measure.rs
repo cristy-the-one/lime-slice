@@ -608,6 +608,12 @@ fn bridge_exports(measured: bool) {
         let text = std::fs::read_to_string(&path).expect("bridge step");
         let _ = std::fs::remove_file(&path);
         assert!(text.contains("MANIFOLD_SOLID_BREP"), "{text}");
+        let tree = parse(
+            &lime_model_load::tree(r#"{"call":"open","key":"dlopen","box":[10,20,30]}"#)
+                .expect("dlopen tree"),
+        );
+        assert!(tree.get("error").is_none(), "{tree}");
+        near(tree["volumeMm3"].as_f64().expect("tree volume"), 6000.0);
     }
 }
 

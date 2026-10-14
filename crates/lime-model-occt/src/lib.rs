@@ -8,6 +8,9 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::path::Path;
 
+#[cfg(lime_occt)]
+mod tree;
+
 #[cfg(not(lime_occt))]
 const MISSING: &str = "{\"error\":\"OCCT_ROOT is not set, so Open CASCADE is not linked\"}";
 
@@ -300,6 +303,31 @@ pub fn redo(id: i32, chord_mm: f64) -> String {
     {
         let _ = (id, chord_mm);
         MISSING.into()
+    }
+}
+
+/// One call on the Model history tree, as JSON in and JSON out. `docs/step-modeler.md` lists the calls.
+pub fn tree(request: &str) -> String {
+    #[cfg(lime_occt)]
+    {
+        tree::call(request)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = request;
+        MISSING.into()
+    }
+}
+
+/// How many unpinned solids and cached replies the tree keeps. Without the kernel this does nothing.
+pub fn set_tree_limits(shapes: usize, replies: usize) {
+    #[cfg(lime_occt)]
+    {
+        tree::set_limits(tree::Limits { shapes, replies });
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = (shapes, replies);
     }
 }
 
@@ -628,6 +656,16 @@ pub extern "C" fn lime_occt_undo(id: i32, chord_mm: f64) -> *mut c_char {
 #[no_mangle]
 pub extern "C" fn lime_occt_redo(id: i32, chord_mm: f64) -> *mut c_char {
     export_json(redo(id, chord_mm))
+}
+
+/// # Safety
+/// `request` is null or a valid null-terminated string. The returned pointer is freed with `lime_occt_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn lime_occt_tree(request: *const c_char) -> *mut c_char {
+    let request = cstr(request);
+    let answer = std::panic::catch_unwind(|| tree(&request))
+        .unwrap_or_else(|_| "{\"error\":\"The history tree failed inside the bridge\"}".into());
+    export_json(answer)
 }
 
 /// # Safety

@@ -54,6 +54,40 @@ The session computes each thing once per shape (`Held` in `session.cpp`). A dry-
 
 A successful edit uses the same commit as a boolean: settled tessellation, `encodeStl`, and a `.stl` name. Pose stays, except that a scale sets the plate's `partScale` back to 1 so the part is not scaled twice. Undo restores the solid, the mesh, the paint, and that placement scale.
 
+## History tree (engine)
+
+The bridge also keeps Model history as a tree: one tree per plate object, one node per edit, and a new edit from an older node starts a branch instead of dropping the newer steps. The client owns node ids, labels, and which branch Redo follows. The engine keeps what is costly to rebuild. The client still uses the one-solid session and its linear undo until it moves to the tree; both run side by side and share the kernel code in `cpp/kernel.h`.
+
+Every call is one JSON request through `lime_occt_tree` (`POST /api/model/tree`, or the `model_tree` command). `call` picks the operation. `key` names the tree, and node 0 is its root.
+
+| `call` | Fields | Answer |
+|---|---|---|
+| `open` | `key`, one of `dataB64`, `stepPath`, or `box: [x, y, z]`; `chordMm`; optional `nodes: [{id, parent, op, fingerprint}]` (parents first) and `current` | The reply for `current` (default 0). Saved nodes are registered, not built. Opening an existing key replaces that tree. |
+| `apply` | `key`, `parent`, `node`, `op`, `chordMm`; `otherKey` for a split | The new node's reply, plus `op` as stored (edge picks resolved) and, for a split, `other`. With `otherKey`, `other` is the root reply of a new tree under that key. Applying an existing node with the same parent, op, and `otherKey` is a jump to it; anything else on an existing id is refused. |
+| `probe` | `key`, `node`, `op` | `{ok: true}`, or `{ok: false, error, maxMm?}` as the session's dry-run. A probe that works is kept, and an Apply of the same op on the same node commits it. |
+| `goto` | `key`, `node`, `chordMm` | That node's reply. |
+| `drop` | `key`, `node` | `{dropped, current}`. The node and everything under it go; the current node moves to the parent if it was inside. The root cannot be dropped. |
+| `close` | `key` | `{ok: true}`. |
+| `distance` | `key`, `node`, `aKind`, `aIndex`, `bKind`, `bIndex` | `{id, distanceMm}`. |
+| `export` | `key`, `node` | `{bytesBase64, byteLength}`: AP214 STEP of that node. |
+
+`open` reads STEP the way the session does: facet shells that sew into closed solids open as solids, and surfaces that do not open for measuring only. On such a root every `apply` and `probe` answers the session's refusal ("This STEP file has surfaces but no closed solid, so it can be measured but not edited.") before anything is built.
+
+`op` is one of `{kind: "boolean", op, primitive, origin, size, radius, height, turn}`, `{kind: "hole", origin, axis, radius, depth}`, `{kind: "split", origin, normal}`, `{kind: "fillet" | "chamfer", edges, size}`, or `{kind: "scale", factor}`. A fresh fillet or chamfer may name edges by index. The stored op names each as `{index, mid, lengthMm}`, where `mid` is the point at the middle of the edge's parameter range. A rebuild takes the index when its midpoint and length still agree within 0.001 mm, else the one edge that matches them, else the node is broken.
+
+A reply is the session's tessellation with `id` set to the node, plus `fingerprint: {volumeMm3, faces, edges}`, `replayed` (how many steps were rebuilt to answer it), and `held` (the nodes of this tree that keep a solid). A missing tree answers `{error: "unknown", missing: [0]}` and a missing node `{error: "unknown", missing: [id]}`, so the client sends the root and the ops again. A step that fails to rebuild, or rebuilds to a different fingerprint, answers `{error, broken: id}`; that node and everything under it lose their solids and stay unbuilt until it is dropped.
+
+What is kept, per node:
+
+- The solid, with its face and edge maps and the volume the op integrated. Each tree pins its root, its current node, and every eighth node on the path between them. The 24 most recently used other solids stay; older ones are evicted and rebuilt on demand from the nearest kept ancestor.
+- The fingerprint, for as long as the node exists. Every rebuilt step is checked against it.
+- The reply, per chord, for the 8 most recently viewed nodes across all trees. A jump to one of those does no kernel work.
+- An edge's midpoint and length, computed the first time a fillet or chamfer asks.
+
+What is skipped: a rebuild tessellates only the node asked for, never the steps on the way. A split's other piece is tessellated once, for the apply that made it. Jumps never send it again, and replaying the split never touches the piece's own tree. Jumping above a split leaves both pieces in place.
+
+Every call holds the tree's lock for its whole run, so tree calls run one at a time; session calls do not wait for them. Booleans and the split run non-destructively, so building a child or a probe never changes its parent's tolerances. STEP reads and writes take one lock shared with the session, because Open CASCADE keeps their settings globally.
+
 ## Viewport handles
 
 Every Model tool is both typed and dragged. Each number in the open tool's panel has a handle in the viewport, drawn in Prepare's gizmo style, and a drag writes the field as if it were typed. The ghost, the dry-run, and Apply follow, and a typed number moves the handle. Shift slows the pointer to a tenth for fine control, and Ctrl (Cmd on a Mac) snaps to the handle's step: 1 mm, 0.5 mm for a blend or hole radius, 0.1 for a scale factor, and 15° for a turn. A label by the pointer shows the value. The panel's scrub labels use the same keys.

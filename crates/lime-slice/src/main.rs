@@ -1310,6 +1310,8 @@ fn handle(mut request: tiny_http::Request, token: Option<&str>) {
             model_reply(model_undo_request(&body))
         } else if method == "POST" && path.starts_with("/api/model/redo") {
             model_reply(model_redo_request(&body))
+        } else if method == "POST" && path.starts_with("/api/model/tree") {
+            model_reply(lime_model_load::tree(&body))
         } else if method == "POST" && path.starts_with("/api/model") {
             model_reply(model_open_request(&body))
         } else if method == "POST" && path.starts_with("/api/mesh") {

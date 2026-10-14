@@ -38,6 +38,8 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(lime_occt_step)");
     println!("cargo:rerun-if-env-changed=OCCT_ROOT");
     println!("cargo:rerun-if-changed=cpp/session.cpp");
+    println!("cargo:rerun-if-changed=cpp/tree.cpp");
+    println!("cargo:rerun-if-changed=cpp/kernel.h");
     let Ok(root) = env::var("OCCT_ROOT") else {
         return;
     };
@@ -76,6 +78,7 @@ fn main() {
         .cpp(true)
         .std("c++17")
         .file("cpp/session.cpp")
+        .file("cpp/tree.cpp")
         .include(&include);
     if env::var("CARGO_CFG_TARGET_ENV").ok().as_deref() == Some("msvc") {
         build.flag("/EHsc");
