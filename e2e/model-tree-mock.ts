@@ -1,12 +1,13 @@
 import type { Page, Route } from "@playwright/test";
+import { encodeSolid } from "../src/model-reply";
 
-/** A solid as the modeler reports it, before the engine stamps the node id on it. */
+/** A solid with plain number arrays. The mock sends it in the engine's binary reply format. */
 export interface MockSolid {
   volumeMm3: number;
   positions: number[];
   triangles: number[];
   faces: { id: number; areaMm2: number }[];
-  edges: unknown[];
+  edges: { id: number; lengthMm: number; points: number[] }[];
   solid?: boolean;
 }
 
@@ -54,8 +55,8 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
   const exported = new Map<string, MockSolid>();
   let exports = 0;
   const reply = (solid: MockSolid, id: number) => ({
-    ...solid,
     id,
+    ...encodeSolid(solid),
     fingerprint: { volumeMm3: solid.volumeMm3, faces: solid.faces.length, edges: solid.edges.length },
   });
   const stepOf = (request: Body) => JSON.stringify([request.op, request.otherKey ?? null]);
@@ -123,7 +124,8 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
     if ("error" in built) return built;
     if ("kept" in built) {
       doc.set(id, { solid: built.kept, parent: node, step: stepOf(request) });
-      if (!request.otherKey) return { ...reply(built.kept, id), op: request.op, other: reply(built.other, 0) };
+      // As the engine: the piece goes out only to start its own tree.
+      if (!request.otherKey) return { ...reply(built.kept, id), op: request.op };
       const otherKey = String(request.otherKey);
       docs.set(otherKey, new Map([[0, { solid: built.other, parent: null, step: "" }]]));
       return { ...reply(built.kept, id), op: request.op, other: { ...reply(built.other, 0), key: otherKey } };

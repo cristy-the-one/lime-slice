@@ -1,6 +1,7 @@
 import { base64ToBytes, bytesToBase64 } from "../base64";
 import { encodeStl, settle } from "../mesh-place";
-import type { ModelPick, ModelSolid } from "../model-view";
+import type { ModelPick } from "../model-view";
+import { decodeSolid, type ParsedSolid } from "../model-reply";
 import { holeAxis, lastFace, outwardFromMesh, selectedEdges } from "../model-blend";
 import { nextModelPicks, selectionCountLabel } from "../model-select";
 import { contextParts } from "../model-context";
@@ -24,7 +25,6 @@ import {
   visitStep,
   withChild,
   withNode,
-  type Fingerprint,
   type ModelOp,
   type ModelTree,
   type NodeId,
@@ -58,13 +58,6 @@ import { apiBase, apiToken, isStepName } from "./settings";
 import { state } from "./state";
 
 type Body = Record<string, unknown>;
-
-interface ParsedSolid extends ModelSolid {
-  faces: { id: number; areaMm2: number; normal?: [number, number, number] }[];
-  fingerprint: Fingerprint | null;
-  /** False for surfaces with no closed solid: measured, never edited, and its volume means nothing. */
-  editable: boolean;
-}
 
 /** The tree in the view, the plate object it belongs to, and the solid of its current node. */
 interface Opened {
@@ -584,9 +577,9 @@ async function openTree(mine: number, objectId: string, label: string, name: str
   const key = freshTreeKey(objectId);
   const chord = state.stepTolerance;
   const body = await post({ call: "open", key, filename: name, dataB64: bytesToBase64(new Uint8Array(bytes)), chordMm: chord });
-  const parsed = asSolid(body);
-  if (!parsed) {
-    if (mine === ticket && state.stage === "model") readout(text(body.error) || "Could not read this STEP solid.");
+  const parsed = decodeSolid(body);
+  if (typeof parsed === "string") {
+    if (mine === ticket && state.stage === "model") readout(parsed);
     return;
   }
   modelTrees.set(key, withNode(newTree(key, { kind: "step", name, bytes }, label, parsed.fingerprint), ROOT, { mesh: root }));
@@ -626,17 +619,20 @@ async function showNode(mine: number, objectId: string, key: string, node: NodeI
     syncUndo();
     if (mine !== ticket || state.stage !== "model") return false;
     if (!newest) {
-      const late = text(body.error) || !modelTrees.get(key)?.nodes.has(node) ? null : asSolid(body);
-      if (late && body.seeded) readSolids.add(late);
-      if (late) keepSolid(key, node, chord, late);
+      const late = modelTrees.get(key)?.nodes.has(node) ? decodeSolid(body) : null;
+      if (late && typeof late !== "string") {
+        if (body.seeded) readSolids.add(late);
+        keepSolid(key, node, chord, late);
+      }
       return false;
     }
     if (failed(key, body)) return false;
-    solid = asSolid(body);
-    if (!solid) {
-      readout("The modeler returned no solid for this step.");
+    const decoded = decodeSolid(body);
+    if (typeof decoded === "string") {
+      readout(decoded);
       return false;
     }
+    solid = decoded;
     if (body.seeded) readSolids.add(solid);
     keepSolid(key, node, chord, solid);
   }
@@ -842,11 +838,19 @@ async function applyOp(op: ModelOp, working: string) {
   const latest = modelTrees.get(at.key);
   if (mine !== ticket || state.stage !== "model" || !latest) return;
   if (failed(at.key, body)) return;
-  const parsed = asSolid(body);
-  const other = pieceKey && body.other && typeof body.other === "object" ? asSolid(body.other as Body) : null;
-  if (!parsed || (pieceKey && !other)) {
-    readout(pieceKey ? "The plane did not split this solid." : "The modeler returned no solid.");
+  const parsed = decodeSolid(body);
+  if (typeof parsed === "string") {
+    readout(parsed);
     return;
+  }
+  let other: ParsedSolid | null = null;
+  if (pieceKey) {
+    const piece = body.other && typeof body.other === "object" ? decodeSolid(body.other as Body) : "The plane did not split this solid.";
+    if (typeof piece === "string") {
+      readout(piece);
+      return;
+    }
+    other = piece;
   }
   const stored = isOp(body.op) ? body.op : op;
   if (pieceKey && other && !addPiece(at, other, pieceKey, node)) {
@@ -1195,47 +1199,6 @@ function text(value: unknown) {
 
 function isOp(value: unknown): value is ModelOp {
   return !!value && typeof value === "object" && typeof (value as { kind?: unknown }).kind === "string";
-}
-
-function readNormal(value: unknown): [number, number, number] | null {
-  if (!Array.isArray(value) || value.length < 3) return null;
-  const normal = value.slice(0, 3).map((item) => (typeof item === "number" ? item : Number.NaN));
-  if (normal.some((item) => !Number.isFinite(item))) return null;
-  return [normal[0]!, normal[1]!, normal[2]!];
-}
-
-function readFingerprint(value: unknown): Fingerprint | null {
-  if (!value || typeof value !== "object") return null;
-  const row = value as { volumeMm3?: unknown; faces?: unknown; edges?: unknown };
-  if (typeof row.volumeMm3 !== "number" || typeof row.faces !== "number" || typeof row.edges !== "number") return null;
-  return { volumeMm3: row.volumeMm3, faces: row.faces, edges: row.edges };
-}
-
-function asSolid(body: Body): ParsedSolid | null {
-  if (typeof body.volumeMm3 !== "number" || !Array.isArray(body.positions) || !Array.isArray(body.triangles)) return null;
-  const faces = Array.isArray(body.faces) ? body.faces.flatMap((face) => {
-    if (!face || typeof face !== "object") return [];
-    const row = face as { id?: unknown; areaMm2?: unknown; normal?: unknown };
-    if (typeof row.id !== "number" || typeof row.areaMm2 !== "number") return [];
-    const normal = readNormal(row.normal);
-    return [{ id: row.id, areaMm2: row.areaMm2, ...(normal ? { normal } : {}) }];
-  }) : [];
-  const edges = Array.isArray(body.edges) ? body.edges.flatMap((edge) => {
-    if (!edge || typeof edge !== "object") return [];
-    const row = edge as { id?: unknown; lengthMm?: unknown; points?: unknown };
-    if (typeof row.id !== "number" || typeof row.lengthMm !== "number" || !Array.isArray(row.points)) return [];
-    return [{ id: row.id, lengthMm: row.lengthMm, points: Float32Array.from(row.points.filter((item) => typeof item === "number")) }];
-  }) : [];
-  return {
-    id: typeof body.id === "number" ? body.id : ROOT,
-    volumeMm3: body.volumeMm3,
-    positions: Float32Array.from(body.positions.filter((item) => typeof item === "number")),
-    triangles: body.triangles.filter((item) => typeof item === "number"),
-    faces,
-    edges,
-    fingerprint: readFingerprint(body.fingerprint),
-    editable: body.solid !== false,
-  };
 }
 
 function missingOf(body: Body): NodeId[] | null {
