@@ -166,6 +166,8 @@ export interface BedRect {
   y0: number;
   x1: number;
   y1: number;
+  /** Height of the plate the numbers sit on. Omitted beds stay at Z = 0. */
+  z0?: number;
 }
 
 /** The two bed edges nearest the camera. Their numbers sit outside the bed, where nothing else is drawn. */
