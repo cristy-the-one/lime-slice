@@ -16,11 +16,12 @@ import { confirmDiscard, markProjectDirty } from "../project-dirty";
 import { pushToast } from "../ui/toasts";
 import { clearEdits } from "../support-edit-list";
 import { clearEditHistory, flushEdit, noteEdit } from "./history";
-import { foreign3mfMessage, foreignSlicer3mf } from "../foreign-3mf";
+import { extractForeign3mfRecipe, foreign3mfMessage, foreignRecipeOffer, foreignSlicer3mf, type ForeignRecipe } from "../foreign-3mf";
 import { assemblyNotice, shellCount } from "../mesh-shells";
 import { emptyOverrides } from "../overrides";
 import { isLimeProject } from "../file-drop";
-import { addedMesh, boundEntries, emptyPlate, oneObjectPlate, placeObject, plateObjectPositions, resetHeldGeometry, withLivePose, type PlateObject } from "../plate";
+import { addedMesh, boundEntries, emptyPlate, oneObjectPlate, placeObject, plateObjectPositions, resetHeldGeometry, setSelectedOverride, withLivePose, type PlateObject } from "../plate";
+import { supportModeState } from "../support-source";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 
 export async function loadNamed(name: string) {
@@ -83,12 +84,9 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
     seamPaint: state.seamPaint,
     reinforcement: state.reinforcement,
   });
-  if (/\.3mf$/i.test(name)) {
-    const vendor = foreignSlicer3mf(new Uint8Array(bytes));
-    if (vendor) pushToast(foreign3mfMessage(vendor), "info");
-  }
   offerAssemblySplit(name, state.sourcePos, state.plate.selectedId);
   place("load");
+  await offerForeignRecipe(name, bytes);
   fx.setStage("prepare");
   // An Add that started during this read was aimed at the plate it replaced.
   session.meshEpoch += 1;
@@ -519,12 +517,40 @@ async function addMeshNow(name: string, bytes: ArrayBuffer) {
   state.error = "";
   state.plate = next;
   applySelectedToState(state.plate);
-  if (/\.3mf$/i.test(name)) {
-    const vendor = foreignSlicer3mf(new Uint8Array(bytes));
-    if (vendor) pushToast(foreign3mfMessage(vendor), "info");
-  }
   offerAssemblySplit(name, sourcePos, state.plate.selectedId);
   place();
+  flushEdit();
+  await offerForeignRecipe(name, bytes);
+}
+
+async function offerForeignRecipe(name: string, bytes: ArrayBuffer) {
+  if (!/\.3mf$/i.test(name)) return;
+  const raw = new Uint8Array(bytes);
+  const vendor = foreignSlicer3mf(raw);
+  if (!vendor) return;
+  const epoch = session.meshEpoch;
+  const recipe = session.projectRestoring ? null : await extractForeign3mfRecipe(raw).catch(() => null);
+  if (session.meshEpoch !== epoch) return;
+  const offer = recipe ? foreignRecipeOffer(recipe) : null;
+  if (!offer || !recipe) {
+    pushToast(foreign3mfMessage(vendor), "info");
+    return;
+  }
+  pushToast(offer, "info", [
+    { label: "Apply to Recipe", run: () => applyForeignRecipe(recipe) },
+    { label: "Keep Current", run: () => {} },
+  ]);
+}
+
+function applyForeignRecipe(recipe: ForeignRecipe) {
+  noteEdit();
+  if (recipe.layerHeightMm !== undefined) state.layerHeight = recipe.layerHeightMm;
+  if (recipe.supports !== undefined) Object.assign(state, supportModeState(recipe.supports ? "auto" : "off"));
+  if (recipe.walls !== undefined) state.plate = setSelectedOverride(state.plate, "walls", recipe.walls);
+  if (recipe.infill !== undefined) state.plate = setSelectedOverride(state.plate, "infill", recipe.infill);
+  markProjectDirty();
+  renderChrome();
+  markStale();
   flushEdit();
 }
 
