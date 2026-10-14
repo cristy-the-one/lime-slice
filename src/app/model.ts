@@ -106,14 +106,13 @@ const restoring = new Map<string, Promise<string | null>>();
 
 /**
  * A tree from a saved project, until the engine has the whole of it. Once `live`, the engine holds
- * the plate's step (`node`), read from that step's STEP, as its root, plus the steps applied on it
- * since (`known`). A call on any other step first opens the whole tree from its root STEP and ops
+ * the plate's step (`node`), read from that step's STEP, as its root: enough to look and measure.
+ * An edit, or a call on any other step, first opens the whole tree from its root STEP and ops
  * (`whole`, while that is on its way); every call meanwhile waits for it.
  */
 interface Seed {
   node: NodeId;
   live: boolean;
-  known: Set<NodeId>;
   whole: Promise<string | null> | null;
 }
 const seeds = new Map<string, Seed>();
@@ -394,7 +393,7 @@ export function adoptSavedTrees(saved: ReadonlyMap<string, SavedTree<{ name: str
     const loaded = loadedTree(tree, key, { kind: "step", ...tree.rootStep }, obj.name, mesh, (id) => keys.get(id));
     modelTrees.set(key, loaded);
     if (obj.brep || (loaded.committed === ROOT && isStepName(obj.fileName))) stepKnown.add(token);
-    if (obj.brep && loaded.committed !== ROOT) seeds.set(key, { node: loaded.committed, live: false, known: new Set([loaded.committed]), whole: null });
+    if (obj.brep && loaded.committed !== ROOT) seeds.set(key, { node: loaded.committed, live: false, whole: null });
   }
   state.plate = { ...state.plate, objects: state.plate.objects.map((obj) => (keys.has(obj.id) ? { ...obj, modelTree: keys.get(obj.id) } : obj)) };
 }
@@ -633,10 +632,8 @@ async function showNode(mine: number, objectId: string, key: string, node: NodeI
     keepSolid(key, node, chord, solid);
   }
   jumping = false;
-  let latest = modelTrees.get(key);
+  const latest = modelTrees.get(key);
   if (!latest) return false;
-  // A step built on a seed gets the numbers it rebuilds to from the root, the first time it does.
-  if (!latest.nodes.get(node)?.fingerprint && solid.fingerprint && !seeds.get(key)?.live) latest = withNode(latest, node, { fingerprint: solid.fingerprint });
   modelTrees.set(key, jumped(latest, node));
   open = { objectId, key, solid };
   present(solid, message(solid));
@@ -785,6 +782,31 @@ async function applyOp(op: ModelOp, working: string) {
     await showNode(ticket, at.objectId, at.key, twin, (solid) => appliedMessage(op, solid));
     return;
   }
+  if (seeds.has(at.key)) {
+    // A reopened project's step was read from its STEP, which can sit apart from the step its history
+    // builds: on Telo, a hole on the read solid removed 483 mm³ more than the same hole after a rebuild.
+    // So an edit builds on the history: the whole tree opens, and the step is shown as rebuilt.
+    const mine = ticket;
+    busy = true;
+    syncUndo();
+    readout("Rebuilding the steps…");
+    const problem = await openWhole(at.key, parent);
+    if (mine === ticket) busy = false;
+    syncUndo();
+    if (mine !== ticket || state.stage !== "model") return;
+    if (problem) {
+      readout(problem);
+      return;
+    }
+    if (!(await showNode(mine, at.objectId, at.key, parent, about))) return;
+    // Edge numbers of the read solid may not be the rebuilt one's.
+    if (op.kind === "fillet" || op.kind === "chamfer") {
+      readout(`${about(open!.solid)} The step was rebuilt from its history: pick the edges again.`);
+      return;
+    }
+    await applyOp(op, working);
+    return;
+  }
   const [reserved, node] = reserveId(tree);
   modelTrees.set(at.key, reserved);
   const pieceKey = op.kind === "split" ? freshTreeKey(`${at.objectId}-piece`) : null;
@@ -824,9 +846,7 @@ async function applyOp(op: ModelOp, working: string) {
     id: node,
     op: stored,
     label: opLabel(stored),
-    // A step built on a reopened project's STEP-read solid can rebuild from the root a little apart
-    // from it (an STEP round trip moves the volume), so it is not held to those numbers.
-    fingerprint: body.onSeed ? null : parsed.fingerprint,
+    fingerprint: parsed.fingerprint,
     ...(pieceKey ? { piece: pieceKey } : {}),
   });
   modelTrees.set(at.key, grown);
@@ -1239,16 +1259,15 @@ async function treeCall(key: string, node: NodeId, request: Body): Promise<Body>
  * on its way, a call waits for it: the engine runs it after the open, on the whole tree.
  */
 async function seededCall(key: string, node: NodeId, request: Body): Promise<Body> {
-  for (let seed = seeds.get(key); seed?.whole || (seed?.live && !seed.known.has(node)); seed = seeds.get(key)) {
+  const needsWhole = (seed: Seed) => seed.live && (node !== seed.node || request.call === "apply");
+  for (let seed = seeds.get(key); seed?.whole || (seed && needsWhole(seed)); seed = seeds.get(key)) {
     const problem = await (seed.whole ?? openWhole(key, node));
     if (problem) return { error: problem };
   }
   const seed = seeds.get(key);
   if (!seed?.live) return post(request);
   const body = await post(engineNumbered(seed, request));
-  if (request.call === "apply" && !body.error && typeof request.node === "number") seed.known.add(request.node);
-  // `onSeed`: what the reply describes was built on the STEP-read solid, not rebuilt from the root.
-  return { ...body, onSeed: true, ...(body.id === ROOT ? { id: seed.node } : {}), ...(body.broken === ROOT ? { broken: seed.node } : {}) };
+  return { ...body, ...(body.id === ROOT ? { id: seed.node } : {}), ...(body.broken === ROOT ? { broken: seed.node } : {}) };
 }
 
 /** `request` with the plate's step of a live seed as the engine's root. */
@@ -1257,16 +1276,13 @@ function engineNumbered(seed: Seed, request: Body): Body {
   return { ...request, node: local(request.node), ...("parent" in request ? { parent: local(request.parent) } : {}) };
 }
 
-/** Drop the branch from `node` in the engine. A seeded tree's engine has only the steps it was given. */
+/** Drop the branch from `node` in the engine, once it has one: a seeded tree's engine holds no branch. */
 async function dropInEngine(key: string, node: NodeId) {
-  let seed = seeds.get(key);
-  while (seed?.whole) {
+  for (let seed = seeds.get(key); seed; seed = seeds.get(key)) {
+    if (!seed.whole) return;
     await seed.whole;
-    seed = seeds.get(key);
   }
-  if (seed && !(seed.live && seed.known.has(node))) return;
-  const request = { call: "drop", key, node };
-  await post(seed ? engineNumbered(seed, request) : request);
+  await post({ call: "drop", key, node });
 }
 
 /**
@@ -1313,9 +1329,8 @@ async function restore(key: string, node: NodeId, missing: NodeId[]): Promise<st
   if (!tree) return "This solid is no longer open.";
   const chord = state.stepTolerance;
   const seed = seeds.get(key);
-  // The plate's step opens from its own STEP, as fast as the file: at first, and again after an
-  // engine restart while no step has been built on it.
-  const step = seed && node === seed.node && seed.known.size === 1 ? tree.nodes.get(node)?.mesh : undefined;
+  // The plate's step opens from its own STEP, as fast as the file: at first, and again after an engine restart.
+  const step = seed && node === seed.node ? tree.nodes.get(node)?.mesh : undefined;
   if (seed && step?.step) {
     if (state.stage === "model") readout("Reading the solid…");
     seed.live = false;

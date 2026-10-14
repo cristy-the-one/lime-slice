@@ -125,27 +125,24 @@ test("a saved project brings back its Model history: the same steps and names, a
   expect(seed.nodes).toBeUndefined();
   expect(tree.of("goto").slice(gotos).map((request) => request.node), "asked for, then asked again as the engine's root once its STEP is open").toEqual([3, 0]);
 
+  // An edit builds on the history: the whole tree opens first, and the step is shown as rebuilt.
+  const gotosBefore = tree.of("goto").length;
   await cut(page, 2);
-  expect(tree.of("apply").at(-1), "an edit on the plate's step builds on it at once").toMatchObject({ key: seed.key, parent: 0, node: 4 });
+  expect(tree.of("open").slice(opens), "one more open, for the whole tree").toHaveLength(2);
+  const whole = tree.of("open").at(-1)!;
+  expect(whole.dataB64, "from the root STEP").toBe(FILE.toString("base64"));
+  expect((whole.nodes as { id: number; parent: number }[]).map((node) => [node.id, node.parent]), "with every step").toEqual([[1, 0], [2, 1], [3, 1]]);
+  expect(whole.current).toBe(3);
+  expect(tree.of("goto").slice(gotosBefore).map((request) => request.node), "the step is shown as the whole tree rebuilds it").toEqual([3]);
+  expect(tree.of("apply").at(-1), "and the edit builds on that step").toMatchObject({ key: seed.key, parent: 3, node: 4 });
+  expect(tree.of("apply").filter((request) => request.key === seed.key && request.parent === 0), "never on the read solid").toHaveLength(0);
   await page.locator("#modelUndo").click();
   await expect(readout(page)).toContainText(`${volume(4)}. Edit undone.`);
   await page.locator("#modelRedo").click();
   await expect(readout(page)).toContainText(`${volume(2)}. Edit redone.`);
-  expect(tree.of("open").slice(opens), "and nothing is opened again").toHaveLength(1);
-
   await row(page, "Cut box 8").click();
   await expect(readout(page)).toContainText(volume(8));
-  const whole = tree.of("open").at(-1)!;
-  expect(whole.dataB64, "a step the engine was not given rebuilds from the root STEP").toBe(FILE.toString("base64"));
-  const sent = whole.nodes as { id: number; parent: number; fingerprint: unknown }[];
-  expect(sent.map((node) => [node.id, node.parent]), "with every step").toEqual([[1, 0], [2, 1], [3, 1], [4, 3]]);
-  expect(sent.map((node) => node.fingerprint === null), "a step built on the STEP-read solid is not held to that solid's numbers").toEqual([false, false, false, true]);
-  expect(whole.current).toBe(1);
-
-  const after = tree.of("goto").length;
-  await row(page, "Cut box 4").click();
-  await expect(readout(page)).toContainText(volume(4));
-  expect(tree.of("goto").slice(after).map((request) => request.node), "the plate's step comes from the whole tree now, not from the solid read from its STEP").toEqual([3]);
+  expect(tree.of("open").slice(opens), "and nothing is opened again").toHaveLength(2);
   await row(page, "Pocket").click();
   await expect(readout(page)).toContainText(volume(6));
   await cut(page, 3);
