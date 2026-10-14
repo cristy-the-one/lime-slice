@@ -7,7 +7,7 @@
 //! against the fingerprint it had when it was first built.
 //!
 //! Every call holds the store lock from start to end, so the kernel never sees one solid from two
-//! threads. The one-solid session in `session.cpp` has its own lock and is untouched by this store.
+//! threads.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};

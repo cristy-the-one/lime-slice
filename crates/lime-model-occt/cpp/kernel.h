@@ -1,9 +1,8 @@
-// Open CASCADE operations shared by the one-solid session (session.cpp) and the history tree (tree.cpp).
+// Open CASCADE operations (kernel.cpp) that the history tree (tree.cpp) builds its nodes with.
 // This file is Lime Slice (MIT). It calls the LGPL library; the notice is third_party/occt/NOTICE.md.
 
 #pragma once
 
-#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -13,32 +12,13 @@
 
 namespace lime_occt {
 
-/// A probe's result, kept so an Apply with the same key commits it instead of building it again.
-/// `key` is the op and its numbers; `parent` is the shape it was built on. `seq` orders probes, newest wins.
-struct Probed {
-    std::string key;
-    TopoDS_Shape parent;
-    TopoDS_Shape result;
-    double volume = 0;
-    uint64_t seq = 0;
-};
-
-/// The serialised tessellation of one shape at one chord. Empty until first asked for.
-struct Reply {
-    std::string json;
-    double chord = 0;
-};
-
-/// One shape the session holds, with what was computed from it once. A shape never changes,
-/// so its volume and reply stay valid while it is held, undone, or redone. A tree node holds one
-/// too and uses its maps and volume; the tree caches replies and probes per node itself.
+/// One shape with what was computed from it once. A shape never changes, so its volume and its
+/// face and edge numbering stay valid for as long as a tree node holds it.
 struct Held {
     TopoDS_Shape shape;
     TopTools_IndexedMapOfShape faces;
     TopTools_IndexedMapOfShape edges;
     double volume = 0;
-    Reply reply;
-    Probed probed;
 };
 
 char* alloc(const std::string& text);

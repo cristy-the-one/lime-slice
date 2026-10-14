@@ -13,84 +13,12 @@ use std::sync::Mutex;
 
 use libloading::Library;
 
-type OpenBox = unsafe extern "C" fn(f64, f64, f64) -> *mut c_char;
-type OpenStep = unsafe extern "C" fn(*const c_char, f64) -> *mut c_char;
-type Distance = unsafe extern "C" fn(i32, *const c_char, i32, *const c_char, i32) -> *mut c_char;
-type Boolean = unsafe extern "C" fn(
-    i32,
-    *const c_char,
-    *const c_char,
-    f64,
-    f64,
-    f64,
-    f64,
-    f64,
-    f64,
-    f64,
-    f64,
-    f64,
-    f64,
-    f64,
-    f64,
-) -> *mut c_char;
-type Split = unsafe extern "C" fn(i32, f64, f64, f64, f64, f64, f64, f64) -> *mut c_char;
-type Fillet = unsafe extern "C" fn(i32, i32, f64, f64) -> *mut c_char;
-type FilletMany = unsafe extern "C" fn(i32, *const i32, i32, f64, f64) -> *mut c_char;
-type Chamfer = unsafe extern "C" fn(i32, i32, f64, f64) -> *mut c_char;
-type ChamferMany = unsafe extern "C" fn(i32, *const i32, i32, f64, f64) -> *mut c_char;
-type BlendProbe = unsafe extern "C" fn(i32, i32, f64, i32) -> *mut c_char;
-type BlendProbeMany = unsafe extern "C" fn(i32, *const i32, i32, f64, i32) -> *mut c_char;
-type HoleProbe = unsafe extern "C" fn(i32, f64, f64, f64, f64, f64) -> *mut c_char;
-type HoleAxisProbe = unsafe extern "C" fn(i32, f64, f64, f64, f64, f64, f64, f64, f64) -> *mut c_char;
-type BooleanProbe = unsafe extern "C" fn(
-    i32,
-    *const c_char,
-    *const c_char,
-    f64,
-    f64,
-    f64,
-    f64,
-    f64,
-    f64,
-    f64,
-    f64,
-    f64,
-    f64,
-    f64,
-) -> *mut c_char;
-type Hole = unsafe extern "C" fn(i32, f64, f64, f64, f64, f64, f64) -> *mut c_char;
-type HoleAxis = unsafe extern "C" fn(i32, f64, f64, f64, f64, f64, f64, f64, f64, f64) -> *mut c_char;
-type Scale = unsafe extern "C" fn(i32, f64, f64) -> *mut c_char;
-type WriteStep = unsafe extern "C" fn(i32, *const c_char) -> *mut c_char;
-type Undo = unsafe extern "C" fn(i32, f64) -> *mut c_char;
-type Redo = unsafe extern "C" fn(i32, f64) -> *mut c_char;
 type Tree = unsafe extern "C" fn(*const c_char) -> *mut c_char;
 type FreeStr = unsafe extern "C" fn(*mut c_char);
 
 struct Bridge {
     _lib: Library,
-    open_box: OpenBox,
-    open_step: OpenStep,
-    distance: Distance,
-    boolean: Boolean,
-    split: Split,
-    fillet: Fillet,
-    fillet_many: FilletMany,
-    chamfer: Chamfer,
-    chamfer_many: ChamferMany,
-    blend_probe: BlendProbe,
-    blend_probe_many: BlendProbeMany,
-    hole_probe: HoleProbe,
-    hole_axis_probe: HoleAxisProbe,
-    boolean_probe: BooleanProbe,
-    hole: Hole,
-    hole_axis: HoleAxis,
-    scale: Scale,
-    write_step: WriteStep,
-    undo: Undo,
-    redo: Redo,
-    /// Absent in bridges older than the history tree. Only tree calls fail on those.
-    tree: Option<Tree>,
+    tree: Tree,
     free: FreeStr,
 }
 
@@ -106,315 +34,12 @@ pub fn add_search_dir(dir: PathBuf) {
     }
 }
 
-/// Write STEP bytes to a temporary file and read them. The file is removed before this returns.
-pub fn open_step_bytes(bytes: &[u8], chord_mm: f64) -> Result<String, String> {
-    let path = std::env::temp_dir().join(format!(
-        "lime-model-{}-{}.step",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_nanos())
-            .unwrap_or(0)
-    ));
-    std::fs::write(&path, bytes).map_err(|err| err.to_string())?;
-    let result = open_step(&path, chord_mm);
-    let _ = std::fs::remove_file(&path);
-    result
-}
-
-/// A box solid, as JSON. The string is the bridge's document, including `error` when it failed.
-pub fn open_box(x_mm: f64, y_mm: f64, z_mm: f64) -> Result<String, String> {
-    let api = load()?;
-    let ptr = unsafe { (api.open_box)(x_mm, y_mm, z_mm) };
-    take(ptr, api.free)
-}
-
-/// Read a STEP file into a solid. `chord_mm` is the tessellation chord.
-pub fn open_step(path: &Path, chord_mm: f64) -> Result<String, String> {
-    let api = load()?;
-    let text = path.to_string_lossy();
-    let c = CString::new(text.as_ref()).map_err(|_| "STEP path is not a C string".to_string())?;
-    let ptr = unsafe { (api.open_step)(c.as_ptr(), chord_mm) };
-    take(ptr, api.free)
-}
-
-/// Distance in millimetres between two picks. `kind` is `face` or `edge`. Indexes are zero-based.
-pub fn distance(id: i32, a_kind: &str, a: i32, b_kind: &str, b: i32) -> Result<String, String> {
-    let api = load()?;
-    let a_kind = CString::new(a_kind).map_err(|_| "pick kind is not a C string".to_string())?;
-    let b_kind = CString::new(b_kind).map_err(|_| "pick kind is not a C string".to_string())?;
-    let ptr = unsafe { (api.distance)(id, a_kind.as_ptr(), a, b_kind.as_ptr(), b) };
-    take(ptr, api.free)
-}
-
-/// A box, cylinder, or sphere in millimetres. `origin` is the box corner, the cylinder base, or the sphere center.
-#[derive(Clone, Copy)]
-pub struct Tool {
-    pub origin: [f64; 3],
-    pub size: [f64; 3],
-    pub radius: f64,
-    pub height: f64,
-    /// Degrees about X, then Y, then Z, through the primitive's centre.
-    pub turn: [f64; 3],
-}
-
-/// A plane through `origin` with `normal`, in millimetres.
-#[derive(Clone, Copy)]
-pub struct Plane {
-    pub origin: [f64; 3],
-    pub normal: [f64; 3],
-}
-
-/// Fuse, cut, or common the open solid with a box, cylinder, or sphere.
-pub fn boolean(
-    id: i32,
-    op: &str,
-    primitive: &str,
-    tool: Tool,
-    chord_mm: f64,
-) -> Result<String, String> {
-    let api = load()?;
-    let op = CString::new(op).map_err(|_| "boolean op is not a C string".to_string())?;
-    let primitive =
-        CString::new(primitive).map_err(|_| "primitive name is not a C string".to_string())?;
-    let [x, y, z] = tool.origin;
-    let [dx, dy, dz] = tool.size;
-    let ptr = unsafe {
-        (api.boolean)(
-            id,
-            op.as_ptr(),
-            primitive.as_ptr(),
-            x,
-            y,
-            z,
-            dx,
-            dy,
-            dz,
-            tool.radius,
-            tool.height,
-            tool.turn[0],
-            tool.turn[1],
-            tool.turn[2],
-            chord_mm,
-        )
-    };
-    take(ptr, api.free)
-}
-
-/// Split the open solid with a plane through `origin` and along `normal`.
-pub fn split(id: i32, plane: Plane, chord_mm: f64) -> Result<String, String> {
-    let api = load()?;
-    let [x, y, z] = plane.origin;
-    let [nx, ny, nz] = plane.normal;
-    let ptr = unsafe { (api.split)(id, x, y, z, nx, ny, nz, chord_mm) };
-    take(ptr, api.free)
-}
-
-/// Round one edge. `edge` is the zero-based index from the solid document.
-pub fn fillet(id: i32, edge: i32, radius_mm: f64, chord_mm: f64) -> Result<String, String> {
-    let api = load()?;
-    let ptr = unsafe { (api.fillet)(id, edge, radius_mm, chord_mm) };
-    take(ptr, api.free)
-}
-
-/// Round every edge in one fillet. Indexes are zero-based and applied together.
-pub fn fillet_many(id: i32, edges: &[i32], radius_mm: f64, chord_mm: f64) -> Result<String, String> {
-    let api = load()?;
-    let (ptr_edges, count) = edge_ptr(edges);
-    let ptr = unsafe { (api.fillet_many)(id, ptr_edges, count, radius_mm, chord_mm) };
-    take(ptr, api.free)
-}
-
-/// Chamfer one edge. `distance_mm` is the setback on each face.
-pub fn chamfer(id: i32, edge: i32, distance_mm: f64, chord_mm: f64) -> Result<String, String> {
-    let api = load()?;
-    let ptr = unsafe { (api.chamfer)(id, edge, distance_mm, chord_mm) };
-    take(ptr, api.free)
-}
-
-/// Chamfer every edge in one builder.
-pub fn chamfer_many(id: i32, edges: &[i32], distance_mm: f64, chord_mm: f64) -> Result<String, String> {
-    let api = load()?;
-    let (ptr_edges, count) = edge_ptr(edges);
-    let ptr = unsafe { (api.chamfer_many)(id, ptr_edges, count, distance_mm, chord_mm) };
-    take(ptr, api.free)
-}
-
-/// Try a fillet or chamfer on a copy. The open solid is not replaced.
-pub fn blend_probe(id: i32, edge: i32, size_mm: f64, chamfer: bool) -> Result<String, String> {
-    let api = load()?;
-    let ptr = unsafe { (api.blend_probe)(id, edge, size_mm, i32::from(chamfer)) };
-    take(ptr, api.free)
-}
-
-/// Try a fillet or chamfer of every edge on a copy. The open solid is not replaced.
-pub fn blend_probe_many(id: i32, edges: &[i32], size_mm: f64, chamfer: bool) -> Result<String, String> {
-    let api = load()?;
-    let (ptr_edges, count) = edge_ptr(edges);
-    let ptr = unsafe { (api.blend_probe_many)(id, ptr_edges, count, size_mm, i32::from(chamfer)) };
-    take(ptr, api.free)
-}
-
-/// Try a hole along `direction` on a copy. A zero direction drills toward −Z. The open solid is not replaced.
-pub fn hole_axis_probe(
-    id: i32,
-    origin: [f64; 3],
-    direction: [f64; 3],
-    radius_mm: f64,
-    depth_mm: f64,
-) -> Result<String, String> {
-    let api = load()?;
-    let [x, y, z] = origin;
-    let [dx, dy, dz] = direction;
-    let ptr = unsafe { (api.hole_axis_probe)(id, x, y, z, dx, dy, dz, radius_mm, depth_mm) };
-    take(ptr, api.free)
-}
-
-/// Try a hole on a copy. The open solid is not replaced.
-pub fn hole_probe(
-    id: i32,
-    origin: [f64; 3],
-    radius_mm: f64,
-    depth_mm: f64,
-) -> Result<String, String> {
-    let api = load()?;
-    let [x, y, z] = origin;
-    let ptr = unsafe { (api.hole_probe)(id, x, y, z, radius_mm, depth_mm) };
-    take(ptr, api.free)
-}
-
-/// Try a boolean on a copy. The open solid is not replaced.
-pub fn boolean_probe(id: i32, op: &str, primitive: &str, tool: Tool) -> Result<String, String> {
-    let api = load()?;
-    let op = CString::new(op).map_err(|_| "boolean op is not a C string".to_string())?;
-    let primitive =
-        CString::new(primitive).map_err(|_| "primitive name is not a C string".to_string())?;
-    let [x, y, z] = tool.origin;
-    let [dx, dy, dz] = tool.size;
-    let ptr = unsafe {
-        (api.boolean_probe)(
-            id,
-            op.as_ptr(),
-            primitive.as_ptr(),
-            x,
-            y,
-            z,
-            dx,
-            dy,
-            dz,
-            tool.radius,
-            tool.height,
-            tool.turn[0],
-            tool.turn[1],
-            tool.turn[2],
-        )
-    };
-    take(ptr, api.free)
-}
-
-/// Cut a cylinder that starts at `origin` and runs along `direction` by `depth_mm`.
-/// `direction` points into the material. A zero vector drills toward −Z.
-pub fn hole_axis(
-    id: i32,
-    origin: [f64; 3],
-    direction: [f64; 3],
-    radius_mm: f64,
-    depth_mm: f64,
-    chord_mm: f64,
-) -> Result<String, String> {
-    let api = load()?;
-    let [x, y, z] = origin;
-    let [dx, dy, dz] = direction;
-    let ptr = unsafe { (api.hole_axis)(id, x, y, z, dx, dy, dz, radius_mm, depth_mm, chord_mm) };
-    take(ptr, api.free)
-}
-
-/// Cut a cylinder that starts at `origin` and runs toward −Z by `depth_mm`.
-pub fn hole(
-    id: i32,
-    origin: [f64; 3],
-    radius_mm: f64,
-    depth_mm: f64,
-    chord_mm: f64,
-) -> Result<String, String> {
-    let api = load()?;
-    let [x, y, z] = origin;
-    let ptr = unsafe { (api.hole)(id, x, y, z, radius_mm, depth_mm, chord_mm) };
-    take(ptr, api.free)
-}
-
-/// Write the open solid as AP214 IS STEP at `path`.
-pub fn write_step(id: i32, path: &Path) -> Result<String, String> {
-    let api = load()?;
-    let text = path.to_string_lossy();
-    let c = CString::new(text.as_ref()).map_err(|_| "STEP path is not a C string".to_string())?;
-    let ptr = unsafe { (api.write_step)(id, c.as_ptr()) };
-    take(ptr, api.free)
-}
-
-/// Uniform scale about the solid's centre. `factor` must be positive and not 1.
-pub fn scale(id: i32, factor: f64, chord_mm: f64) -> Result<String, String> {
-    let api = load()?;
-    let ptr = unsafe { (api.scale)(id, factor, chord_mm) };
-    take(ptr, api.free)
-}
-
-/// Restore the solid from before the last edit.
-pub fn undo(id: i32, chord_mm: f64) -> Result<String, String> {
-    let api = load()?;
-    let ptr = unsafe { (api.undo)(id, chord_mm) };
-    take(ptr, api.free)
-}
-
-/// Put back the solid that undo just replaced.
-pub fn redo(id: i32, chord_mm: f64) -> Result<String, String> {
-    let api = load()?;
-    let ptr = unsafe { (api.redo)(id, chord_mm) };
-    take(ptr, api.free)
-}
-
 /// One call on the Model history tree. The request and the reply are JSON; `docs/step-modeler.md` lists the calls.
 pub fn tree(request: &str) -> Result<String, String> {
-    let api = load()?;
-    let call = api
-        .tree
-        .ok_or_else(|| "This Open CASCADE bridge has no history tree. Install the matching Lime Slice.".to_string())?;
+    let (call, free) = load()?;
     let c = CString::new(request).map_err(|_| "tree request is not a C string".to_string())?;
     let ptr = unsafe { call(c.as_ptr()) };
-    take(ptr, api.free)
-}
-
-struct Api {
-    open_box: OpenBox,
-    open_step: OpenStep,
-    distance: Distance,
-    boolean: Boolean,
-    split: Split,
-    fillet: Fillet,
-    fillet_many: FilletMany,
-    chamfer: Chamfer,
-    chamfer_many: ChamferMany,
-    blend_probe: BlendProbe,
-    blend_probe_many: BlendProbeMany,
-    hole_probe: HoleProbe,
-    hole_axis_probe: HoleAxisProbe,
-    boolean_probe: BooleanProbe,
-    hole: Hole,
-    hole_axis: HoleAxis,
-    scale: Scale,
-    write_step: WriteStep,
-    undo: Undo,
-    redo: Redo,
-    tree: Option<Tree>,
-    free: FreeStr,
-}
-
-fn edge_ptr(edges: &[i32]) -> (*const i32, i32) {
-    if edges.is_empty() {
-        (std::ptr::null(), 0)
-    } else {
-        (edges.as_ptr(), edges.len() as i32)
-    }
+    take(ptr, free)
 }
 
 fn take(ptr: *mut c_char, free: FreeStr) -> Result<String, String> {
@@ -428,7 +53,7 @@ fn take(ptr: *mut c_char, free: FreeStr) -> Result<String, String> {
     Ok(text)
 }
 
-fn load() -> Result<Api, String> {
+fn load() -> Result<(Tree, FreeStr), String> {
     let mut slot = BRIDGE
         .lock()
         .map_err(|_| "Open CASCADE bridge lock is poisoned".to_string())?;
@@ -437,67 +62,10 @@ fn load() -> Result<Api, String> {
         let lib = open_library(&path)?;
         let bridge = unsafe {
             Bridge {
-                open_box: *lib
-                    .get::<OpenBox>(b"lime_occt_open_box\0")
-                    .map_err(|err| format!("bridge is missing lime_occt_open_box: {err}"))?,
-                open_step: *lib
-                    .get::<OpenStep>(b"lime_occt_open_step\0")
-                    .map_err(|err| format!("bridge is missing lime_occt_open_step: {err}"))?,
-                distance: *lib
-                    .get::<Distance>(b"lime_occt_distance\0")
-                    .map_err(|err| format!("bridge is missing lime_occt_distance: {err}"))?,
-                boolean: *lib
-                    .get::<Boolean>(b"lime_occt_boolean\0")
-                    .map_err(|err| format!("bridge is missing lime_occt_boolean: {err}"))?,
-                split: *lib
-                    .get::<Split>(b"lime_occt_split\0")
-                    .map_err(|err| format!("bridge is missing lime_occt_split: {err}"))?,
-                fillet: *lib
-                    .get::<Fillet>(b"lime_occt_fillet\0")
-                    .map_err(|err| format!("bridge is missing lime_occt_fillet: {err}"))?,
-                fillet_many: *lib
-                    .get::<FilletMany>(b"lime_occt_fillet_many\0")
-                    .map_err(|err| format!("bridge is missing lime_occt_fillet_many: {err}"))?,
-                chamfer: *lib
-                    .get::<Chamfer>(b"lime_occt_chamfer\0")
-                    .map_err(|err| format!("bridge is missing lime_occt_chamfer: {err}"))?,
-                chamfer_many: *lib
-                    .get::<ChamferMany>(b"lime_occt_chamfer_many\0")
-                    .map_err(|err| format!("bridge is missing lime_occt_chamfer_many: {err}"))?,
-                blend_probe: *lib
-                    .get::<BlendProbe>(b"lime_occt_blend_probe\0")
-                    .map_err(|err| format!("bridge is missing lime_occt_blend_probe: {err}"))?,
-                blend_probe_many: *lib
-                    .get::<BlendProbeMany>(b"lime_occt_blend_probe_many\0")
-                    .map_err(|err| format!("bridge is missing lime_occt_blend_probe_many: {err}"))?,
-                hole_probe: *lib
-                    .get::<HoleProbe>(b"lime_occt_hole_probe\0")
-                    .map_err(|err| format!("bridge is missing lime_occt_hole_probe: {err}"))?,
-                hole_axis_probe: *lib
-                    .get::<HoleAxisProbe>(b"lime_occt_hole_axis_probe\0")
-                    .map_err(|err| format!("bridge is missing lime_occt_hole_axis_probe: {err}"))?,
-                boolean_probe: *lib
-                    .get::<BooleanProbe>(b"lime_occt_boolean_probe\0")
-                    .map_err(|err| format!("bridge is missing lime_occt_boolean_probe: {err}"))?,
-                hole: *lib
-                    .get::<Hole>(b"lime_occt_hole\0")
-                    .map_err(|err| format!("bridge is missing lime_occt_hole: {err}"))?,
-                hole_axis: *lib
-                    .get::<HoleAxis>(b"lime_occt_hole_axis\0")
-                    .map_err(|err| format!("bridge is missing lime_occt_hole_axis: {err}"))?,
-                scale: *lib
-                    .get::<Scale>(b"lime_occt_scale\0")
-                    .map_err(|err| format!("bridge is missing lime_occt_scale: {err}"))?,
-                write_step: *lib
-                    .get::<WriteStep>(b"lime_occt_write_step\0")
-                    .map_err(|err| format!("bridge is missing lime_occt_write_step: {err}"))?,
-                undo: *lib
-                    .get::<Undo>(b"lime_occt_undo\0")
-                    .map_err(|err| format!("bridge is missing lime_occt_undo: {err}"))?,
-                redo: *lib
-                    .get::<Redo>(b"lime_occt_redo\0")
-                    .map_err(|err| format!("bridge is missing lime_occt_redo: {err}"))?,
-                tree: lib.get::<Tree>(b"lime_occt_tree\0").ok().map(|symbol| *symbol),
+                tree: *lib.get::<Tree>(b"lime_occt_tree\0").map_err(|_| {
+                    "This Open CASCADE bridge has no history tree. Install the matching Lime Slice."
+                        .to_string()
+                })?,
                 free: *lib
                     .get::<FreeStr>(b"lime_occt_string_free\0")
                     .map_err(|err| format!("bridge is missing lime_occt_string_free: {err}"))?,
@@ -507,30 +75,7 @@ fn load() -> Result<Api, String> {
         *slot = Some(bridge);
     }
     let bridge = slot.as_ref().expect("bridge was just stored");
-    Ok(Api {
-        open_box: bridge.open_box,
-        open_step: bridge.open_step,
-        distance: bridge.distance,
-        boolean: bridge.boolean,
-        split: bridge.split,
-        fillet: bridge.fillet,
-        fillet_many: bridge.fillet_many,
-        chamfer: bridge.chamfer,
-        chamfer_many: bridge.chamfer_many,
-        blend_probe: bridge.blend_probe,
-        blend_probe_many: bridge.blend_probe_many,
-        hole_probe: bridge.hole_probe,
-        hole_axis_probe: bridge.hole_axis_probe,
-        boolean_probe: bridge.boolean_probe,
-        hole: bridge.hole,
-        hole_axis: bridge.hole_axis,
-        scale: bridge.scale,
-        write_step: bridge.write_step,
-        undo: bridge.undo,
-        redo: bridge.redo,
-        tree: bridge.tree,
-        free: bridge.free,
-    })
+    Ok((bridge.tree, bridge.free))
 }
 
 fn open_library(path: &Path) -> Result<Library, String> {
