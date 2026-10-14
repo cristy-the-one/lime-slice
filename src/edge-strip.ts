@@ -372,32 +372,36 @@ function mitredVertex(loop: EdgeLoop, i: number, d: number): Vec3 {
   return add(loop.points[i]!, scale(bisector, move));
 }
 
-/** Forward along the loop from one place to another on a different segment. */
+function arcSegments(loop: EdgeLoop, from: LoopPos, to: LoopPos): number[] {
+  const n = loop.points.length;
+  const segs = [from.seg];
+  if (from.seg === to.seg && to.t >= from.t) return segs;
+  for (let seg = (from.seg + 1) % n; ; seg = (seg + 1) % n) {
+    segs.push(seg);
+    if (seg === to.seg) return segs;
+  }
+}
+
 function arcLength(loop: EdgeLoop, from: LoopPos, to: LoopPos): number {
   const n = loop.points.length;
   const segLength = (seg: number) => distance(loop.points[seg]!, loop.points[(seg + 1) % n]!);
+  const segs = arcSegments(loop, from, to);
+  if (segs.length === 1) return (to.t - from.t) * segLength(from.seg);
   let total = (1 - from.t) * segLength(from.seg) + to.t * segLength(to.seg);
-  for (let seg = (from.seg + 1) % n; seg !== to.seg; seg = (seg + 1) % n) total += segLength(seg);
+  for (let i = 1; i < segs.length - 1; i++) total += segLength(segs[i]!);
   return total;
 }
 
 function insetPath(loop: EdgeLoop, span: StripSpan, d: number): InsetPath {
-  const n = loop.points.length;
   if (span.kind === "loop") {
     return { points: loop.points.map((_, i) => mitredVertex(loop, i, d)), owners: loop.points.map((_, i) => i), closed: true };
   }
   const { from, to } = span;
+  const segs = arcSegments(loop, from, to);
   const points = [add(pointAt(loop, from), scale(loop.inward[from.seg]!, d))];
-  const owners = [from.seg];
-  if (from.seg !== to.seg) {
-    for (let seg = (from.seg + 1) % n; ; seg = (seg + 1) % n) {
-      points.push(mitredVertex(loop, seg, d));
-      owners.push(seg);
-      if (seg === to.seg) break;
-    }
-  }
+  for (const seg of segs.slice(1)) points.push(mitredVertex(loop, seg, d));
   points.push(add(pointAt(loop, to), scale(loop.inward[to.seg]!, d)));
-  return { points, owners, closed: false };
+  return { points, owners: segs, closed: false };
 }
 
 /**
@@ -411,8 +415,7 @@ export function stripSamples(loop: EdgeLoop, span: StripSpan, offset: number, r:
   let reversed = false;
   if (span.kind === "arc") {
     const { from, to } = span;
-    const backwards = from.seg === to.seg ? to.t < from.t : arcLength(loop, from, to) > arcLength(loop, to, from);
-    if (backwards) {
+    if (arcLength(loop, from, to) > arcLength(loop, to, from)) {
       span = { kind: "arc", from: to, to: from };
       reversed = true;
     }
