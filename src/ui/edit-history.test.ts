@@ -2,6 +2,7 @@ import {
   beginGesture,
   canRedo,
   canUndo,
+  cloneSnap,
   commitGesture,
   emptyHistory,
   foldSince,
@@ -124,6 +125,12 @@ check("another object keeps none", stale.undo[0]!.plate!.objects[1]!.brep === un
 check("a patched step is still the same step", stale.undo[0] === kept);
 putBrepFor(stale, "m7", undefined);
 check("an unwritable solid loses its STEP", !("brep" in stale.undo[0]!.plate!.objects[0]!));
+
+const solid = pinned("m9");
+const cloned = cloneSnap(solid);
+check("a copied step shares the STEP buffer", cloned.plate!.objects[0]!.brep === solid.plate!.objects[0]!.brep);
+check("an object without a STEP stays without one", !("brep" in cloned.plate!.objects[1]!));
+check("the rest is a copy", cloned.plate!.objects[0] !== solid.plate!.objects[0] && cloned.meshPins !== solid.meshPins && sameSnap(cloned, solid));
 
 if (failed) {
   console.error(`${failed} failed`);

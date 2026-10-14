@@ -82,8 +82,16 @@ export function emptyHistory(): EditHistory {
   return { undo: [], redo: [], pending: null };
 }
 
+/** A deep copy, except each object's STEP buffer: it is never written in place, so every step shares it. */
 export function cloneSnap(snap: EditSnap): EditSnap {
-  return structuredClone(snap);
+  if (!snap.plate) return structuredClone(snap);
+  const breps = snap.plate.objects.map((row) => row.brep);
+  const copy: EditSnap & { plate: PlateSnap } = structuredClone({ ...snap, plate: { ...snap.plate, objects: snap.plate.objects.map(({ brep: _, ...row }) => row) } });
+  copy.plate.objects.forEach((row, i) => {
+    if (breps[i]) row.brep = breps[i];
+    else delete row.brep;
+  });
+  return copy;
 }
 
 export function sameSnap(a: EditSnap, b: EditSnap): boolean {
