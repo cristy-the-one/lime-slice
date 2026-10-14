@@ -58,6 +58,12 @@ export interface PresetSettings {
   arcFit: boolean;
   travelOpt: boolean;
   overhangControl: boolean;
+  /** `0` is omitted and the engine keeps bridge flow at 1. */
+  bridgeFlowRatio: number;
+  /** Millimetres per second. `0` is omitted and the engine keeps the 18–36 mm/s slowdown. */
+  bridgeSpeedMmS: number;
+  /** Percent. `0` is omitted and the engine keeps the layer fan. */
+  bridgeFanPercent: number;
   seam: string;
   /** Off until the user asks. The slice body does not carry this yet. */
   ironing: boolean;
@@ -135,6 +141,9 @@ export const DEFAULT_PRESET: PresetSettings = {
   arcFit: true,
   travelOpt: true,
   overhangControl: true,
+  bridgeFlowRatio: 0,
+  bridgeSpeedMmS: 0,
+  bridgeFanPercent: 0,
   seam: "blend",
   ironing: false,
   ironingFlow: 0.1,
@@ -162,7 +171,7 @@ export function presetKeys(): (keyof PresetSettings)[] {
 }
 
 /** Keys added after project and profile files were versioned. A file written before one reads its default. */
-const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow", "retractOn", "retractLength", "retractSpeed", "supportAvoidance", "supportSource", "minLayerTimeS", "minLayerSpeedMmS", "adhesion", "brimWidthMm", "brimGapMm", "skirtLoops", "topSurfacePattern", "xyHoleCompensationMm", "xyContourCompensationMm", "elephantsFootCompensationMm", "supportZGapMm", "supportXyGapMm", "supportInterfaceLayers", "supportTreeBrimMm"]);
+const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow", "retractOn", "retractLength", "retractSpeed", "supportAvoidance", "supportSource", "minLayerTimeS", "minLayerSpeedMmS", "adhesion", "brimWidthMm", "brimGapMm", "skirtLoops", "topSurfacePattern", "xyHoleCompensationMm", "xyContourCompensationMm", "elephantsFootCompensationMm", "supportZGapMm", "supportXyGapMm", "supportInterfaceLayers", "supportTreeBrimMm", "bridgeFlowRatio", "bridgeSpeedMmS", "bridgeFanPercent"]);
 
 /** The preset a project or profile file stores, or null when a key is missing or has the wrong type. */
 export function readPresetSettings(value: unknown): PresetSettings | null {
