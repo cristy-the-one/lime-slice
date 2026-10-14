@@ -38,6 +38,7 @@ import {
   refreshModelGhost,
   setModelEditable,
   setModelProbe,
+  setModelWaiting,
   syncModelChrome,
   syncModelSolid,
 } from "../ui/model-chrome";
@@ -79,9 +80,10 @@ const SOLID_CACHE = 4;
 let ticket = 0;
 let picks: ModelPick[] = [];
 let busy = false;
-/** A `goto` is on its way. A newer jump takes over from it (`jumpSerial`); edits and Undo wait for it. */
+/** A `goto` for `jumpTarget` is on its way. A newer jump takes over from it (`jumpSerial`); edits, Undo, and STEP are off until it lands. */
 let jumping = false;
 let jumpSerial = 0;
+let jumpTarget: NodeId | null = null;
 let probeSerial = 0;
 let probeTimer = 0;
 let pendingProbe: (() => void) | null = null;
@@ -368,8 +370,7 @@ export function showModel() {
     readout("Open a STEP file to measure a solid.");
     return;
   }
-  const stale = obj.modelTree ? modelTrees.get(obj.modelTree) : undefined;
-  if (stale) closeTree(stale.key);
+  // A tree that has no node with this mesh stays open: a Prepare undo or redo can bring one of its meshes back.
   const sourcePos = state.sourcePos ?? new Float32Array(0);
   const brep = obj.brep ?? null;
   if (brep || isStepName(mesh.name)) {
@@ -448,12 +449,6 @@ function clearView() {
   showEdits(false);
 }
 
-function closeTree(key: string) {
-  modelTrees.delete(key);
-  for (const name of solids.keys()) if (name.startsWith(`${key}#`)) solids.delete(name);
-  void post({ call: "close", key });
-}
-
 function setMode(mode: "face" | "edge") {
   fx.model?.setPickMode(mode);
   picks = [];
@@ -504,6 +499,7 @@ async function showNode(mine: number, objectId: string, key: string, node: NodeI
   let solid: ParsedSolid | null = recentSolid(key, node, chord) ?? null;
   if (!solid) {
     jumping = true;
+    jumpTarget = node;
     syncUndo();
     const body = await treeCall(key, node, { call: "goto", key, node, chordMm: chord });
     const newest = mine === ticket && serial === jumpSerial;
@@ -511,7 +507,7 @@ async function showNode(mine: number, objectId: string, key: string, node: NodeI
     syncUndo();
     if (mine !== ticket || state.stage !== "model") return false;
     if (!newest) {
-      const late = text(body.error) ? null : asSolid(body);
+      const late = text(body.error) || !modelTrees.get(key)?.nodes.has(node) ? null : asSolid(body);
       if (late) keepSolid(key, node, chord, late);
       return false;
     }
@@ -542,11 +538,12 @@ async function step(target: (tree: ModelTree) => NodeId | null, done: string) {
   await showNode(ticket, at.objectId, at.key, node, (solid) => `${about(solid)} ${done}`);
 }
 
-/** A row of the History panel: show that step. A jump still on its way gives way to this one. */
+/** A row of the History panel: show that step. A jump still on its way to another step gives way to this one. */
 async function jumpTo(node: NodeId) {
   const at = open;
   const tree = treeOf(at);
-  if (!at || !tree || busy || !tree.nodes.has(node) || (node === tree.current && !jumping)) return;
+  if (!at || !tree || busy || state.stage !== "model" || !tree.nodes.has(node)) return;
+  if (jumping ? node === jumpTarget : node === tree.current) return;
   parked = null;
   await showNode(ticket, at.objectId, at.key, node, about);
 }
@@ -559,18 +556,12 @@ function renameStep(node: NodeId, name: string) {
   syncUndo();
 }
 
-/** Why the branch from `node` stays, or null. A split piece on the plate keeps the split that made it. */
+/** Why the branch from `node` stays, or null. */
 function whyKeepBranch(node: NodeId): string | null {
   const tree = treeOf(open);
   if (!tree) return "This solid is no longer open.";
   if (busy || jumping) return "The modeler is still working. Try again in a moment.";
-  const refusal = dropRefusal(tree, node);
-  if (refusal) return refusal;
-  for (const id of subtree(tree, node)) {
-    const piece = tree.nodes.get(id)?.piece;
-    if (piece && state.plate.objects.some((obj) => obj.modelTree === piece)) return "A split on this branch made a part that is on the plate.";
-  }
-  return null;
+  return dropRefusal(tree, node);
 }
 
 /** Delete the branch from `node` down, here and in the engine. A refusal goes to the readout. */
@@ -782,10 +773,12 @@ async function runExport() {
   if (!at || !tree || busy || jumping || !state.mesh) return;
   const node = tree.current;
   busy = true;
+  syncUndo();
   readout("Writing STEP…");
   const mine = ticket;
   const step = await exportStep(at.key, node);
   if (mine === ticket) busy = false;
+  syncUndo();
   if (mine !== ticket || state.stage !== "model" || !open) return;
   if (typeof step === "string") {
     readout(step);
@@ -912,6 +905,9 @@ function syncUndo() {
   const redo = document.querySelector<HTMLButtonElement>("#modelRedo");
   if (undo) undo.disabled = busy || jumping || !tree || undoTarget(tree) == null;
   if (redo) redo.disabled = busy || jumping || !tree || redoTarget(tree) == null;
+  const stepButton = document.querySelector<HTMLButtonElement>("#modelStep");
+  if (stepButton) stepButton.disabled = busy || jumping || !tree;
+  setModelWaiting(busy || jumping);
   syncModelHistory(tree);
 }
 

@@ -699,6 +699,8 @@ html.layout-compact .model-history[data-sheet="closed"] { display: none; }
 /* The sheet covers the bottom of the canvas, where Slice floats. */
 html.layout-compact:has(#modelBody:not([hidden]) #modelHistory[data-sheet="open"]:not([hidden])) #slice { display: none !important; }
 html.layout-compact .model-history-toggle { height: 40px; font-size: var(--fs-2); }
+html.layout-compact .model-history .model-history-toggle .ico { transform: none; }
+html.layout-compact .mh-note:not([hidden]) { display: block; margin: 4px 6px 0; color: var(--warn); font-size: var(--fs-2); }
 html.layout-compact .mh-row { height: 40px; font-size: var(--fs-3); }
 html.layout-compact .mh-more { width: 36px; height: 36px; opacity: 1; }
 html.layout-compact .mh-rename { height: 32px; }

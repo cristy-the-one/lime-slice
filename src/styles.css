@@ -578,7 +578,9 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-dim);
-  font: 500 var(--fs-2) / 1 inherit;
+  font-weight: 500;
+  font-size: var(--fs-2);
+  line-height: 1;
   white-space: nowrap;
 }
 .model-tool .ico { flex: 0 0 auto; }
@@ -700,7 +702,9 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-dim);
-  font: 600 var(--fs-1) / 1 inherit;
+  font-weight: 600;
+  font-size: var(--fs-1);
+  line-height: 1;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   text-align: left;
@@ -808,6 +812,9 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .mh-menu [role="menuitem"][aria-disabled="true"] { color: var(--text-faint); }
 .mh-why { grid-column: 1 / -1; color: var(--text-dim); font-size: var(--fs-1); white-space: normal; }
 .mh-why:empty { display: none; }
+/* The readout says why on a desktop; the phone sheet covers it, so there the panel says it. */
+.mh-note { display: none; }
+#model:focus { outline: none; }
 .model-drag-tip {
   position: absolute;
   z-index: 3;

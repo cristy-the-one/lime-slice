@@ -21,7 +21,7 @@ interface ModelHistoryHooks {
 }
 
 /** Arrow keys show their step after this pause, so a run of presses asks for the last one only. */
-export const JUMP_WAIT_MS = 200;
+const JUMP_WAIT_MS = 200;
 const COLLAPSED_KEY = "lime-slice-model-history-collapsed";
 const LANE_PX = 12;
 
@@ -38,6 +38,9 @@ let jumpTimer = 0;
 let collapsed = readCollapsed();
 let sheetOpen = false;
 let renaming: NodeId | null = null;
+/** Where Shift+H came from, so leaving the panel goes back there. */
+let returnFocus: HTMLElement | null = null;
+let note: HTMLElement | null = null;
 /** The pointer is over the panel. With focus in it, that freezes the rows' order (historyLayout's `keep`). */
 let pointerIn = false;
 const rowEls = new Map<NodeId, HTMLElement>();
@@ -80,7 +83,13 @@ export function mountModelHistory(next: ModelHistoryHooks) {
     open.replaceChildren(icon(History), text);
   }
   menu = buildMenu();
-  panel.append(menu);
+  note = document.createElement("p");
+  note.className = "mh-note";
+  note.setAttribute("role", "status");
+  note.hidden = true;
+  panel.append(note, menu);
+  const canvas = document.querySelector<HTMLElement>("#model");
+  if (canvas && !canvas.hasAttribute("tabindex")) canvas.tabIndex = -1;
 
   // At phone width the panel is a sheet, and its header closes it.
   toggle.addEventListener("click", () => (isMobileLayout() ? setSheet(false, true) : setCollapsed(!collapsed)));
@@ -113,7 +122,11 @@ export function syncModelHistory(next: ModelTree | null) {
   if (next?.key !== tree?.key) {
     focusId = null;
     layout = null;
-    window.clearTimeout(jumpTimer);
+    cancelJump();
+    closeMenu(false);
+    showNote("");
+    if (renaming != null) rowSigs.delete(renaming);
+    renaming = null;
     if (!next) setSheet(false, false);
   }
   tree = next;
@@ -127,6 +140,8 @@ export function toggleModelHistoryFocus() {
     leave();
     return;
   }
+  const from = document.activeElement;
+  returnFocus = from instanceof HTMLElement && from !== document.body && !panel.contains(from) ? from : null;
   if (isMobileLayout()) setSheet(true, true);
   else if (collapsed) setCollapsed(false);
   focusRow(focusId ?? tree.current);
@@ -139,7 +154,7 @@ function working(focused: EventTarget | null): boolean {
 
 /** Once nobody is working in the panel, the shown step's path moves onto the main rail. */
 function relayout(focused: EventTarget | null) {
-  if (working(focused) || !layout || !tree) return;
+  if (!visible() || working(focused) || !layout || !tree) return;
   const fresh = historyLayout(tree);
   if (fresh.rows.every((row, i) => layout!.rows[i]?.id === row.id && layout!.rows[i]?.lane === row.lane)) return;
   drawn = null;
@@ -161,7 +176,9 @@ function sync() {
   document.querySelector("#modelHistoryToggle")?.setAttribute("aria-expanded", (isMobileLayout() ? sheetOpen : !collapsed) ? "true" : "false");
   document.querySelector("#modelHistoryOpen")?.setAttribute("aria-expanded", sheetOpen ? "true" : "false");
   list.hidden = collapsed && !isMobileLayout();
-  if (visible() && tree !== drawn) render();
+  if (state.stage !== "model") closeMenu(false);
+  if (!visible()) cancelJump();
+  else if (tree !== drawn) render();
 }
 
 function setCollapsed(on: boolean) {
@@ -253,6 +270,8 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
     more.tabIndex = -1;
     more.setAttribute("aria-label", "Step actions");
     more.setAttribute("aria-haspopup", "menu");
+    more.setAttribute("aria-controls", "modelHistoryMenu");
+    more.setAttribute("aria-expanded", "false");
     more.append(icon(Ellipsis));
     el.replaceChildren(label, more);
   }
@@ -338,18 +357,36 @@ function reveal(el: HTMLElement) {
 }
 
 function jumpNow(id: NodeId) {
-  window.clearTimeout(jumpTimer);
+  cancelJump();
   hooks?.jump(id);
 }
 
+/** The tree is `aria-busy` while a step waits out the typing pause. */
 function jumpSoon(id: NodeId) {
+  cancelJump();
+  list?.setAttribute("aria-busy", "true");
+  jumpTimer = window.setTimeout(() => {
+    list?.removeAttribute("aria-busy");
+    hooks?.jump(id);
+  }, JUMP_WAIT_MS);
+}
+
+function cancelJump() {
   window.clearTimeout(jumpTimer);
-  jumpTimer = window.setTimeout(() => hooks?.jump(id), JUMP_WAIT_MS);
+  list?.removeAttribute("aria-busy");
+}
+
+/** A reason the panel gives itself, for the phone sheet that covers the readout. Empty clears it. */
+function showNote(text: string) {
+  if (!note) return;
+  note.textContent = text;
+  note.hidden = !text;
 }
 
 function onClick(ev: MouseEvent) {
   const id = rowOf(ev.target);
   if (id == null) return;
+  showNote("");
   if ((ev.target as Element).closest(".mh-more")) {
     setFocus(id, true);
     openMenu(id);
@@ -384,6 +421,7 @@ function onKey(ev: KeyboardEvent) {
   }
   ev.preventDefault();
   ev.stopPropagation();
+  showNote("");
   switch (action.kind) {
     case "move":
       setFocus(action.to, true);
@@ -408,20 +446,25 @@ function onKey(ev: KeyboardEvent) {
 }
 
 function leave() {
-  window.clearTimeout(jumpTimer);
+  cancelJump();
   if (focusId != null && tree && focusId !== tree.current) hooks?.jump(focusId);
+  const back = returnFocus?.isConnected ? returnFocus : document.querySelector<HTMLElement>("#model");
+  returnFocus = null;
   if (isMobileLayout()) {
     setSheet(false, true);
     return;
   }
-  (document.activeElement as HTMLElement | null)?.blur();
+  back?.focus({ preventScroll: true });
 }
 
 function dropBranch(id: NodeId) {
   if (!tree || !hooks) return;
   const parent = tree.nodes.get(id)?.parent ?? null;
   const hadFocus = !!panel?.contains(document.activeElement);
-  if (!hooks.drop(id)) return;
+  if (!hooks.drop(id)) {
+    showNote(hooks.dropRefusal(id) ?? "");
+    return;
+  }
   if (hadFocus && parent != null) focusRow(parent);
 }
 
@@ -521,6 +564,7 @@ function openMenu(id: NodeId, at?: { x: number; y: number }) {
   drop.setAttribute("aria-disabled", refusal ? "true" : "false");
   drop.querySelector(".mh-why")!.textContent = refusal ?? "";
   menu.hidden = false;
+  el.querySelector(".mh-more")?.setAttribute("aria-expanded", "true");
   const box = el.getBoundingClientRect();
   const width = menu.offsetWidth;
   const left = Math.min(at?.x ?? box.right - width, window.innerWidth - width - 8);
@@ -534,5 +578,6 @@ function closeMenu(refocus: boolean) {
   if (!menu || menu.hidden) return;
   menu.hidden = true;
   const id = Number(menu.dataset.id);
+  rowEls.get(id)?.querySelector(".mh-more")?.setAttribute("aria-expanded", "false");
   if (refocus && Number.isFinite(id)) focusRow(id);
 }

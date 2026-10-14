@@ -53,6 +53,8 @@ let picks: ModelPickRef[] = [];
 let probe: ProbeView = null;
 /** False for surfaces with no closed solid: only Measure runs on them. */
 let editable = true;
+/** An edit or a jump is on its way: Apply waits for it. */
+let waiting = false;
 const VIEW_ONLY_TIP = "This STEP file has surfaces but no closed solid, so it can be measured but not edited.";
 
 type Scrub = {
@@ -166,6 +168,13 @@ export function setModelEditable(next: boolean) {
   editable = next;
   if (!editable && tool && tool !== "measure") closeTool();
   refreshTools();
+}
+
+/** The modeler is busy with an edit or a jump: Apply is off until it is done. */
+export function setModelWaiting(next: boolean) {
+  if (waiting === next) return;
+  waiting = next;
+  refreshApply();
 }
 
 /** The latest kernel dry-run for the open tool. Null clears it. */
@@ -298,7 +307,7 @@ function refreshApply() {
   const button = document.querySelector<HTMLButtonElement>("#modelApply");
   if (!button) return;
   const range = splitPlaneRange(hooks?.solidZ() ?? null);
-  button.disabled = !tool || !modelApplyReady(
+  button.disabled = waiting || !tool || !modelApplyReady(
     tool,
     picks,
     num("#modelFactor"),
