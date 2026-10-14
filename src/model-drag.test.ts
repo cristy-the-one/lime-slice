@@ -100,6 +100,8 @@ const factor = handlesFor("scale", context("box"))[0]!;
 check("the scale knob moves one factor per half the part", near(factor.rate, 0.2));
 const depth = handlesFor("hole", context("box")).find((handle) => handle.id === "hole-depth")!;
 eq("the depth knob sits at the hole's bottom and pulls down", [depth.origin, depth.dir], [[2, 3, -2], [0, 0, -1]]);
+const side = handlesFor("hole", context("box", { holeAxis: [-1, 0, 0] })).find((handle) => handle.id === "hole-depth")!;
+eq("a side hole's depth knob follows the face", [side.origin, side.dir], [[-10, 3, 10], [-1, 0, 0]]);
 check("measure has two surface points", handlesFor("measure", context("box")).every((handle) => handle.kind === "surface" && handle.fields.length === 3));
 
 // Shift is fine, Ctrl snaps.

@@ -31,9 +31,9 @@ export type ModelGhost =
   | { kind: "cylinder"; x: number; y: number; z: number; radius: number; height: number; turn?: Vec3 }
   | { kind: "sphere"; x: number; y: number; z: number; radius: number }
   | { kind: "plane"; z: number }
-  | { kind: "hole"; x: number; y: number; z: number; radius: number; depth: number }
+  | { kind: "hole"; x: number; y: number; z: number; radius: number; depth: number; dir?: Vec3 }
   | { kind: "scale"; factor: number }
-  | { kind: "blend"; edge: number; radius: number }
+  | { kind: "blend"; edges: number[]; radius: number }
   | { kind: "measure"; a: Vec3; b: Vec3 };
 
 /** A handle moved. `values` go into the handle's fields in order. */
@@ -366,7 +366,20 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       return;
     }
     if (current.kind === "hole") {
-      pointCylinder(current.x, current.y, current.z - current.depth / 2, current.radius, current.depth);
+      const dir = current.dir ?? [0, 0, -1];
+      const length = Math.hypot(dir[0], dir[1], dir[2]);
+      const axis = length > 1e-9 ? [dir[0] / length, dir[1] / length, dir[2] / length] as Vec3 : [0, 0, -1] as Vec3;
+      const cylinder = pointCylinder(
+        current.x + axis[0] * current.depth / 2,
+        current.y + axis[1] * current.depth / 2,
+        current.z + axis[2] * current.depth / 2,
+        current.radius,
+        current.depth,
+      );
+      const straightDown = Math.abs(axis[0]) < 1e-6 && Math.abs(axis[1]) < 1e-6 && axis[2] < 0;
+      if (cylinder && !straightDown) {
+        cylinder.quaternion.premultiply(new THREE.Quaternion().setFromUnitVectors(zAxis, new THREE.Vector3(axis[0], axis[1], axis[2])));
+      }
       return;
     }
     if (current.kind === "plane") {
@@ -376,18 +389,20 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     }
     if (current.kind === "blend") {
       if (!(current.radius > 0)) return;
-      const edge = solid.edges.find((item) => item.id === current.edge);
-      if (!edge) return;
-      const points: THREE.Vector3[] = [];
-      for (let i = 0; i + 2 < edge.points.length; i += 3) {
-        const next = new THREE.Vector3(edge.points[i], edge.points[i + 1], edge.points[i + 2]);
-        const prev = points[points.length - 1];
-        if (!prev || prev.distanceToSquared(next) > 1e-8) points.push(next);
+      for (const edgeId of current.edges) {
+        const edge = solid.edges.find((item) => item.id === edgeId);
+        if (!edge) continue;
+        const points: THREE.Vector3[] = [];
+        for (let i = 0; i + 2 < edge.points.length; i += 3) {
+          const next = new THREE.Vector3(edge.points[i], edge.points[i + 1], edge.points[i + 2]);
+          const prev = points[points.length - 1];
+          if (!prev || prev.distanceToSquared(next) > 1e-8) points.push(next);
+        }
+        if (points.length < 2) continue;
+        const curve = new THREE.CatmullRomCurve3(points);
+        const tube = new THREE.TubeGeometry(curve, Math.max(8, points.length * 3), current.radius, 8, false);
+        addGhostMesh(tube, new THREE.Vector3(), 0.38);
       }
-      if (points.length < 2) return;
-      const curve = new THREE.CatmullRomCurve3(points);
-      const tube = new THREE.TubeGeometry(curve, Math.max(8, points.length * 3), current.radius, 8, false);
-      addGhostMesh(tube, new THREE.Vector3(), 0.38);
     }
   }
 
@@ -522,6 +537,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
 
   canvas.addEventListener("pointerdown", (ev) => {
     if (ev.button !== 0 || drag) return;
+    down = null;
     if (viewHelperHit(viewHelper, canvas, ev)) {
       ev.preventDefault();
       ev.stopPropagation();
@@ -529,12 +545,15 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       return;
     }
     const part = handleAt(ev.clientX, ev.clientY);
-    if (!part) return;
-    ev.stopImmediatePropagation();
-    ev.preventDefault();
-    controls.enabled = false;
-    canvas.setPointerCapture(ev.pointerId);
-    beginDrag(part.handle, ev);
+    if (part) {
+      ev.stopImmediatePropagation();
+      ev.preventDefault();
+      controls.enabled = false;
+      canvas.setPointerCapture(ev.pointerId);
+      beginDrag(part.handle, ev);
+      return;
+    }
+    down = { x: ev.clientX, y: ev.clientY };
   }, { capture: true });
   canvas.addEventListener("pointermove", (ev) => {
     if (drag) {

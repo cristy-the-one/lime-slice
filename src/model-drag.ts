@@ -55,6 +55,8 @@ export interface DragContext {
   split: { min: number; max: number } | null;
   /** Where a blend's size handle sits, or null with no edge picked. */
   edge: { point: Vec3; out: Vec3 } | null;
+  /** Unit direction into the material. Omitted holes drill toward −Z. */
+  holeAxis?: Vec3;
 }
 
 const X: Vec3 = [1, 0, 0];
@@ -152,11 +154,27 @@ function holeHandles(ctx: DragContext): Spec[] {
   const top: Vec3 = [r("modelX"), r("modelY"), r("modelZ")];
   const radius = r("modelHoleR");
   const depth = r("modelHoleD");
+  const axis = drillAxis(ctx.holeAxis);
+  const side = drillSide(axis);
   return [
     { id: "hole-origin", kind: "surface", look: "dot", fields: ["modelX", "modelY", "modelZ"], origin: top, dir: Z, rate: 1, step: 1, color: "accent", label: "Origin", unit: "mm" },
-    axisHandle("hole-radius", "knob", "modelHoleR", add(top, [radius, 0, 0]), X, "accent", "Radius", { min: 0.1, step: 0.5 }),
-    axisHandle("hole-depth", "knob", "modelHoleD", add(top, [0, 0, -depth]), [0, 0, -1], "z", "Depth", { min: 0.1 }),
+    axisHandle("hole-radius", "knob", "modelHoleR", add(top, scale(side, radius)), side, "accent", "Radius", { min: 0.1, step: 0.5 }),
+    axisHandle("hole-depth", "knob", "modelHoleD", add(top, scale(axis, depth)), axis, "z", "Depth", { min: 0.1 }),
   ];
+}
+
+/** Into the part. A missing direction is the old hole, straight down. */
+function drillAxis(axis: Vec3 | undefined): Vec3 {
+  if (!axis) return [0, 0, -1];
+  const length = Math.hypot(axis[0], axis[1], axis[2]);
+  if (!(length > 1e-9)) return [0, 0, -1];
+  return scale(axis, 1 / length);
+}
+
+/** A direction square to the drill, so the radius knob has somewhere to sit. Straight down keeps +X. */
+function drillSide(axis: Vec3): Vec3 {
+  if (Math.abs(axis[0]) < 1e-6 && Math.abs(axis[1]) < 1e-6) return X;
+  return normalize(cross(axis, Z));
 }
 
 function scaleHandles(ctx: DragContext): Spec[] {
