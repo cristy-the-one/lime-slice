@@ -40,7 +40,7 @@ interface Calls {
 }
 
 /** The modeler, mocked. Each export writes different STEP bytes, so a test can tell which one landed. */
-async function modeler(page: Page): Promise<Calls> {
+async function modeler(page: Page, exportMs = 0): Promise<Calls> {
   const calls: Calls = { tree: null as unknown as TreeMock, opens: [], probes: 0, release: null, holdProbes: false };
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: SOLID.positions } }));
@@ -55,6 +55,7 @@ async function modeler(page: Page): Promise<Calls> {
       const z = op.origin[2]!;
       return { kept: boxSolid([20, 20, z]), other: boxSolid([20, 20, 10 - z], z) };
     },
+    exportMs,
     async probe() {
       calls.probes += 1;
       if (calls.holdProbes) await new Promise<void>((resolve) => (calls.release = resolve));
@@ -141,6 +142,22 @@ test("Apply writes no STEP; leaving Model writes the edited solid once, and save
   const reopened = calls.opens.at(-1)!;
   expect(reopened.filename).toMatch(/\.step$/);
   expect(reopened.dataB64, "Model reopens the edited solid, not the file's").toBe(written);
+});
+
+test("a save while the STEP from leaving Model is on its way waits for it instead of exporting again", async ({ page }) => {
+  const calls = await modeler(page, 600);
+  await openModel(page);
+  await page.locator("#modelToolBoolean").click();
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume 2000 mm³");
+
+  await page.locator("#tabPrepare").click();
+  await expect.poll(() => calls.tree.of("export").length).toBe(1);
+  const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
+  const saved = fs.readFileSync((await download.path())!).toString("utf8");
+  expect(saved, "the save carries the STEP leaving Model wrote").toContain(Buffer.from("EDITED-STEP-1").toString("base64"));
+  expect(calls.tree.of("export"), "one export for one solid").toHaveLength(1);
 });
 
 test("the piece a split adds opens as a solid of its own and splits again", async ({ page }) => {
