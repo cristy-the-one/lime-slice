@@ -11,6 +11,8 @@
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -185,6 +187,23 @@ double depth_along(const TopoDS_Shape& shape, const gp_Dir& normal) {
     return any ? hi - lo : 0.0;
 }
 
+struct Solid;
+
+/// One edit on an undo or redo stack: the shape it returns to. A split also names the piece it added,
+/// which undo takes off the session (kept in `piece` on the redo side) and redo puts back under the same id.
+struct Step {
+    Held held;
+    int spawned = 0;
+    std::shared_ptr<Solid> piece;
+};
+
+/// One open solid: the shape it is now, and the edits undo and redo walk through.
+struct Solid {
+    Held held;
+    std::vector<Step> undo;
+    std::vector<Step> redo;
+};
+
 /// Kernel work done since load. Tests read it to prove a probe's result was reused.
 struct Stats {
     std::atomic<long> builds{0};
@@ -193,9 +212,9 @@ struct Stats {
 };
 
 std::mutex g_mu;
-std::vector<Held> g_held;
-std::vector<Held> g_undo;
-std::vector<Held> g_redo;
+/// Every solid of the open file, by id: the file's own and each piece a split added. Ids are never reused.
+std::map<int, Solid> g_solids;
+int g_next_id = 1;
 std::atomic<uint64_t> g_probe_seq{0};
 Stats g_stats;
 
@@ -301,58 +320,63 @@ double volume_of(const TopoDS_Shape& shape) {
     return props.Mass();
 }
 
+/// Open a file's solid. Every solid of the previous file is released.
 int store(const TopoDS_Shape& shape) {
-    g_held.clear();
-    g_undo.clear();
-    g_redo.clear();
+    g_solids.clear();
     const TopoDS_Shape solid = as_solid(shape);
-    g_held.push_back(hold_of(solid, volume_of(solid)));
-    return 1;
+    const int id = g_next_id++;
+    g_solids[id].held = hold_of(solid, volume_of(solid));
+    return id;
 }
 
-/// The held solid, or null. Call under `g_mu`; the pointer is valid until the lock is released.
+/// The open solid, or null. Call under `g_mu`; the pointer is valid until the lock is released.
+Solid* solid_at(int id) {
+    const auto found = g_solids.find(id);
+    return found == g_solids.end() ? nullptr : &found->second;
+}
+
 Held* held_at(int id) {
-    if (id < 1 || static_cast<size_t>(id) > g_held.size()) {
-        return nullptr;
-    }
-    return &g_held[static_cast<size_t>(id - 1)];
+    Solid* solid = solid_at(id);
+    return solid == nullptr ? nullptr : &solid->held;
 }
 
-/// Keep cached replies within `kReplyBudget`, nearest to the open solid first. A dropped reply is rebuilt on demand.
+/// Keep cached replies within `kReplyBudget`, nearest to each open shape first. A dropped reply is rebuilt on demand.
 void trim_replies() {
     size_t used = 0;
-    for (const Held& held : g_held) {
-        used += held.reply.json.size();
+    size_t deepest = 0;
+    for (const auto& entry : g_solids) {
+        used += entry.second.held.reply.json.size();
+        deepest = std::max({deepest, entry.second.undo.size(), entry.second.redo.size()});
     }
-    const size_t deepest = std::max(g_undo.size(), g_redo.size());
     for (size_t depth = 0; depth < deepest; ++depth) {
-        for (std::vector<Held>* stack : {&g_undo, &g_redo}) {
-            if (depth >= stack->size()) {
-                continue;
+        for (auto& entry : g_solids) {
+            for (std::vector<Step>* stack : {&entry.second.undo, &entry.second.redo}) {
+                if (depth >= stack->size()) {
+                    continue;
+                }
+                Reply& reply = (*stack)[stack->size() - 1 - depth].held.reply;
+                if (used + reply.json.size() > kReplyBudget) {
+                    reply = Reply{};
+                }
+                used += reply.json.size();
             }
-            Reply& reply = (*stack)[stack->size() - 1 - depth].reply;
-            if (used + reply.json.size() > kReplyBudget) {
-                reply = Reply{};
-            }
-            used += reply.json.size();
         }
     }
 }
 
-void push_capped(std::vector<Held>& stack, Held&& held) {
-    held.probed = Probed{};
-    stack.push_back(std::move(held));
+void push_capped(std::vector<Step>& stack, Step&& step) {
+    step.held.probed = Probed{};
+    stack.push_back(std::move(step));
     if (stack.size() > 32) {
         stack.erase(stack.begin());
     }
 }
 
-/// Make `next` the held solid and keep the old one for undo. Call under `g_mu`.
-void commit_held(int id, Held&& next) {
-    Held& held = g_held[static_cast<size_t>(id - 1)];
-    g_redo.clear();
-    push_capped(g_undo, std::move(held));
-    held = std::move(next);
+/// Make `next` the solid's shape and keep the old one for undo. `spawned` is a piece the edit added. Call under `g_mu`.
+void commit_held(Solid& solid, Held&& next, int spawned = 0) {
+    solid.redo.clear();
+    push_capped(solid.undo, Step{std::move(solid.held), spawned, nullptr});
+    solid.held = std::move(next);
 }
 
 /// The open solid and its volume, read under the lock so an op can run outside it.
@@ -548,9 +572,9 @@ bool pick(const Held& held, const char* kind, int index, TopoDS_Shape& out) {
     return false;
 }
 
-/// The held solid's reply at `chord`, built once per shape and chord. Call under `g_mu`.
+/// The open solid's reply at `chord`, built once per shape and chord. `id` must be open. Call under `g_mu`.
 const std::string& reply_of(int id, double chord) {
-    Held& held = g_held[static_cast<size_t>(id - 1)];
+    Held& held = *held_at(id);
     const double clamped = chord_of(chord);
     if (held.reply.json.empty() || held.reply.chord != clamped) {
         held.reply = Reply{tessellate(id, held, clamped), clamped};
@@ -711,11 +735,11 @@ char* commit_edit(
     }
     Held next = hold_of(solid, volume);
     std::lock_guard<std::mutex> lock(g_mu);
-    const Held* held = held_at(id);
-    if (held == nullptr || !held->shape.IsSame(current)) {
+    Solid* open = solid_at(id);
+    if (open == nullptr || !open->held.shape.IsSame(current)) {
         return error_json("That solid is no longer open");
     }
-    commit_held(id, std::move(next));
+    commit_held(*open, std::move(next));
     return finish(id, chord);
 }
 
@@ -1354,22 +1378,29 @@ extern "C" char* lime_model_occt_distance(
     const char* b_kind,
     int b_index) {
     try {
-        double distance = 0.0;
-        std::string error;
+        TopoDS_Shape a;
+        TopoDS_Shape b;
         {
             std::lock_guard<std::mutex> lock(g_mu);
             const Held* held = held_at(id);
             if (held == nullptr) {
                 return error_json("That solid is no longer open");
             }
-            if (!measure_distance(*held, a_kind, a_index, b_kind, b_index, distance, error)) {
-                return error_json(error);
+            if (!pick(*held, a_kind, a_index, a) || !pick(*held, b_kind, b_index, b)) {
+                return error_json("That face or edge is not on this solid");
             }
+        }
+        BRepExtrema_DistShapeShape dist(a, b);
+        if (!dist.IsDone()) {
+            dist.Perform();
+        }
+        if (!dist.IsDone()) {
+            return error_json("Open CASCADE could not measure that distance");
         }
         std::string out = "{\"id\":";
         out += std::to_string(id);
         out += ",\"distanceMm\":";
-        append_num(out, distance);
+        append_num(out, dist.Value());
         out += '}';
         return alloc(out);
     } catch (const Standard_Failure& failure) {
@@ -1445,20 +1476,21 @@ extern "C" char* lime_model_occt_split(
         if (!build_split(current, x, y, z, nx, ny, nz, kept, other, negative_volume, positive_volume, error)) {
             return error_json(error);
         }
-        const Held other_held = hold_of(other, positive_volume);
+        Held other_held = hold_of(other, positive_volume);
         Held next = hold_of(kept, negative_volume);
         std::lock_guard<std::mutex> lock(g_mu);
-        const Held* held = held_at(id);
-        if (held == nullptr || !held->shape.IsSame(current)) {
+        Solid* open = solid_at(id);
+        if (open == nullptr || !open->held.shape.IsSame(current)) {
             return error_json("That solid is no longer open");
         }
-        commit_held(id, std::move(next));
+        const int piece = g_next_id++;
+        g_solids[piece].held = std::move(other_held);
+        commit_held(*open, std::move(next), piece);
         std::string text = reply_of(id, chord);
-        const std::string other_json = tessellate(0, other_held, chord);
         if (!text.empty() && text.back() == '}') {
             text.pop_back();
             text += ",\"other\":";
-            text += other_json;
+            text += reply_of(piece, chord);
             text += '}';
         }
         return alloc(text);
@@ -1473,17 +1505,23 @@ extern "C" char* lime_model_occt_split(
 extern "C" char* lime_model_occt_undo(int id, double chord) {
     try {
         std::lock_guard<std::mutex> lock(g_mu);
-        Held* held = held_at(id);
-        if (held == nullptr) {
+        Solid* open = solid_at(id);
+        if (open == nullptr) {
             return error_json("That solid is no longer open");
         }
-        if (g_undo.empty()) {
+        if (open->undo.empty()) {
             return error_json("There is no edit to undo");
         }
-        Held previous = std::move(g_undo.back());
-        g_undo.pop_back();
-        push_capped(g_redo, std::move(*held));
-        *held = std::move(previous);
+        Step back = std::move(open->undo.back());
+        open->undo.pop_back();
+        Step forward{std::move(open->held), back.spawned, nullptr};
+        const auto piece = g_solids.find(back.spawned);
+        if (back.spawned != 0 && piece != g_solids.end()) {
+            forward.piece = std::make_shared<Solid>(std::move(piece->second));
+            g_solids.erase(piece);
+        }
+        push_capped(open->redo, std::move(forward));
+        open->held = std::move(back.held);
         return finish(id, chord);
     } catch (const Standard_Failure& failure) {
         const char* message = failure.GetMessageString();
@@ -1496,17 +1534,20 @@ extern "C" char* lime_model_occt_undo(int id, double chord) {
 extern "C" char* lime_model_occt_redo(int id, double chord) {
     try {
         std::lock_guard<std::mutex> lock(g_mu);
-        Held* held = held_at(id);
-        if (held == nullptr) {
+        Solid* open = solid_at(id);
+        if (open == nullptr) {
             return error_json("That solid is no longer open");
         }
-        if (g_redo.empty()) {
+        if (open->redo.empty()) {
             return error_json("There is no edit to redo");
         }
-        Held next = std::move(g_redo.back());
-        g_redo.pop_back();
-        push_capped(g_undo, std::move(*held));
-        *held = std::move(next);
+        Step forward = std::move(open->redo.back());
+        open->redo.pop_back();
+        push_capped(open->undo, Step{std::move(open->held), forward.spawned, nullptr});
+        open->held = std::move(forward.held);
+        if (forward.piece) {
+            g_solids[forward.spawned] = std::move(*forward.piece);
+        }
         return finish(id, chord);
     } catch (const Standard_Failure& failure) {
         const char* message = failure.GetMessageString();

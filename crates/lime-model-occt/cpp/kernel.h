@@ -29,7 +29,7 @@ struct Reply {
     double chord = 0;
 };
 
-/// One solid the session holds, with what was computed from it once. A shape never changes,
+/// One shape the session holds, with what was computed from it once. A shape never changes,
 /// so its volume and reply stay valid while it is held, undone, or redone. A tree node holds one
 /// too and uses its maps and volume; the tree caches replies and probes per node itself.
 struct Held {
