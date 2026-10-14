@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -21,8 +22,21 @@ struct Held {
     double volume = 0;
 };
 
+/// One tessellation as the reply sends it. The arrays go as binary; `meta` is the rest, a JSON object.
+struct Mesh {
+    /// Nine per triangle: the corners of a triangle soup, wound outward.
+    std::vector<float> positions;
+    /// The face index of each triangle.
+    std::vector<uint32_t> triangles;
+    /// Every edge's polyline, one after another, three per point.
+    std::vector<float> edge_points;
+    /// Edge `i` is points `edge_offsets[i]` up to `edge_offsets[i + 1]`.
+    std::vector<uint32_t> edge_offsets;
+    /// `volumeMm3`, `solid`, `faces` (area and outward normal), and `edgeLengths`.
+    std::string meta;
+};
+
 char* alloc(const std::string& text);
-std::string escape(const std::string& text);
 void route_occt_log();
 
 Held hold_of(const TopoDS_Shape& shape, double volume);
@@ -31,7 +45,7 @@ bool has_solid(const TopoDS_Shape& shape);
 /// False, with the refusal every edit answers, for a shape of surfaces with no closed solid.
 bool editable(const TopoDS_Shape& shape, std::string& error);
 double volume_of(const TopoDS_Shape& shape);
-std::string tessellate(int id, const Held& held, double chord);
+Mesh tessellate(const Held& held, double chord);
 bool measure_distance(
     const Held& held,
     const char* a_kind,

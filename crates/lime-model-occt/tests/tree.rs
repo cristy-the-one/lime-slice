@@ -94,13 +94,12 @@ fn cut_box(origin: [f64; 3], size: [f64; 3]) -> Value {
 
 /// The first edge of `reply` that is `length` long.
 fn edge_of_length(reply: &Value, length: f64) -> i64 {
-    reply["edges"]
+    reply["edgeLengths"]
         .as_array()
-        .expect("edges")
+        .expect("edgeLengths")
         .iter()
-        .find(|edge| (edge["lengthMm"].as_f64().expect("length") - length).abs() < 1e-6)
-        .map(|edge| edge["id"].as_i64().expect("edge id"))
-        .expect("an edge of that length")
+        .position(|edge| (edge.as_f64().expect("length") - length).abs() < 1e-6)
+        .expect("an edge of that length") as i64
 }
 
 #[test]
@@ -211,6 +210,11 @@ fn history_tree() {
     let back = raw(json!({ "call": "goto", "key": "main", "node": 2 }));
     let parsed: Value = serde_json::from_str(&back).expect("goto reply");
     assert_eq!(parsed["fingerprint"], fillet["fingerprint"]);
+    assert_eq!(
+        parsed["format"], "lime-solid-2",
+        "the cache keeps the binary reply"
+    );
+    assert_eq!(parsed["positions"], fillet["positions"]);
     let started = Instant::now();
     let (again, spent) = cost(|| raw(json!({ "call": "goto", "key": "main", "node": 2 })));
     let cached_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -312,7 +316,7 @@ fn rebuilt_from_saved_ops(cut: &Value, fillet: &Value, branch: &Value, fillet_op
     assert_eq!(hole["replayed"], 1);
     assert_eq!(hole["fingerprint"], branch["fingerprint"]);
 
-    let edges = cut["edges"].as_array().expect("edges").len() as i64;
+    let edges = cut["edgeLengths"].as_array().expect("edgeLengths").len() as i64;
     let mut moved = fillet_op.clone();
     let index = moved["edges"][0]["index"].as_i64().expect("index");
     moved["edges"][0]["index"] = json!((index + 1) % edges);
@@ -384,15 +388,16 @@ fn step_round_trip_keeps_the_fillet_edge(fillet: &Value, fillet_op: &Value) {
     ok(json!({ "call": "close", "key": "step" }));
 }
 
-/// Split answers the other piece once and, with `otherKey`, opens it as its own tree. Jumping
-/// above the split, evicting it, replaying it, or dropping it leaves that tree alone.
+/// Split answers the other piece once, as the root of its own tree under `otherKey`; without
+/// one, nobody would read the piece, so none is sent. Jumping above the split, evicting it,
+/// replaying it, or dropping it leaves the piece's tree alone.
 fn split_keeps_both_pieces() {
     ok(json!({ "call": "open", "key": "split", "box": [10.0, 10.0, 10.0] }));
     let split_op = json!({ "kind": "split", "origin": [0.0, 0.0, 4.0], "normal": [0.0, 0.0, 1.0] });
-    let mesh_only =
+    let kept_only =
         ok(json!({ "call": "apply", "key": "split", "parent": 0, "node": 2, "op": split_op }));
-    near(volume(&mesh_only["other"]), 600.0);
-    assert!(mesh_only["other"].get("key").is_none());
+    near(volume(&kept_only), 400.0);
+    assert!(kept_only.get("other").is_none(), "{kept_only}");
     let crossed = call(
         json!({ "call": "apply", "key": "split", "parent": 0, "node": 3,
         "op": { "kind": "scale", "factor": 2.0 }, "otherKey": "piece" }),
