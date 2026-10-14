@@ -54,10 +54,10 @@ This review audits the UI and ergonomics of the 1.2.0 build across the recent Mo
 ![Boolean move and rotate gizmo covering the plate](screenshots/review-1-2-0/before-2-boolean-overlap.png)
 
 **Fix:**
-- Keep the gizmo near the solid, a short gap off its screen box, so the solid stays visible. Prefer the left of the box.
-- When that offset would leave the canvas, still cover the solid, or swap with the other seat as the view moves, park the gizmo on the left edge of the viewport and leave it there until the offset seat is clearly clear.
+- Keep the gizmo near the solid, a short gap off its screen box, so the solid stays visible.
+- In Model mode the tool panel covers the left of the canvas, so the offset and the park sit on the right. Prepare already parks Move and Rotate on the left, clear of the mesh panel, and the scale gizmo stays on that same widget.
+- When that offset would leave the canvas, still cover the solid, or swap with the park as the view moves, park the gizmo on that edge and leave it there until the offset seat is clearly clear.
 - Freeze the seat for the duration of a drag. Arrows, rings, and the scale knob stay draggable, and they keep writing the same numeric fields.
-- The Prepare scale gizmo uses that same rule, on the same widget as Move and Rotate, so it never sits on the part.
 
 ---
 
