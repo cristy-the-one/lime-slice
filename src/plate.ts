@@ -226,15 +226,7 @@ function copyHeld(geo: HeldGeo): HeldGeo {
   };
 }
 
-/** Give `copy` the same mesh identity as `source`, so a sliced undo buffer stays one step. */
-export function shareMeshToken(source: ArrayBuffer, copy: ArrayBuffer) {
-  if (source === copy) return;
-  const token = tokenOf.get(source) ?? tokenOf.get(copy) ?? `m${(pinSeq += 1)}`;
-  tokenOf.set(source, token);
-  tokenOf.set(copy, token);
-}
-
-/** The identity of these mesh bytes. Copies made for undo share it, so it names one shape however often it is copied. */
+/** The identity of these mesh bytes. Copies pinned for undo share it, so it names one shape however often it is copied. */
 export function meshTokenOf(bytes: ArrayBuffer): string {
   let token = tokenOf.get(bytes);
   if (!token) {
