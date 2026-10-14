@@ -1507,13 +1507,14 @@ fn model_probe_request(body: &str) -> Result<String, String> {
         .and_then(|item| item.as_str())
         .unwrap_or("fillet");
     match kind {
-        "hole" => lime_model_load::hole_probe(
+        "hole" => lime_model_load::hole_axis_probe(
             id,
             [
                 json_f64(&value, "x"),
                 json_f64(&value, "y"),
                 json_f64(&value, "z"),
             ],
+            json_direction(&value),
             json_f64(&value, "radius"),
             json_f64(&value, "depth"),
         ),
@@ -1544,50 +1545,63 @@ fn model_probe_request(body: &str) -> Result<String, String> {
                 ],
             },
         ),
-        "chamfer" => lime_model_load::blend_probe(
-            id,
-            json_i32(&value, "edge")?,
-            json_f64(&value, "distance"),
-            true,
-        ),
-        _ => lime_model_load::blend_probe(
-            id,
-            json_i32(&value, "edge")?,
-            json_f64(&value, "radius"),
-            false,
-        ),
+        "chamfer" => {
+            let edges = json_edges(&value)?;
+            let size = json_f64(&value, "distance");
+            if edges.len() == 1 {
+                lime_model_load::blend_probe(id, edges[0], size, true)
+            } else {
+                lime_model_load::blend_probe_many(id, &edges, size, true)
+            }
+        }
+        _ => {
+            let edges = json_edges(&value)?;
+            let size = json_f64(&value, "radius");
+            if edges.len() == 1 {
+                lime_model_load::blend_probe(id, edges[0], size, false)
+            } else {
+                lime_model_load::blend_probe_many(id, &edges, size, false)
+            }
+        }
     }
 }
 
 fn model_fillet_request(body: &str) -> Result<String, String> {
     let value: serde_json::Value = serde_json::from_str(body).map_err(|err| err.to_string())?;
-    lime_model_load::fillet(
-        json_i32(&value, "id")?,
-        json_i32(&value, "edge")?,
-        json_f64(&value, "radius"),
-        model_chord(&value),
-    )
+    let id = json_i32(&value, "id")?;
+    let edges = json_edges(&value)?;
+    let radius = json_f64(&value, "radius");
+    let chord = model_chord(&value);
+    if edges.len() == 1 {
+        lime_model_load::fillet(id, edges[0], radius, chord)
+    } else {
+        lime_model_load::fillet_many(id, &edges, radius, chord)
+    }
 }
 
 fn model_chamfer_request(body: &str) -> Result<String, String> {
     let value: serde_json::Value = serde_json::from_str(body).map_err(|err| err.to_string())?;
-    lime_model_load::chamfer(
-        json_i32(&value, "id")?,
-        json_i32(&value, "edge")?,
-        json_f64(&value, "distance"),
-        model_chord(&value),
-    )
+    let id = json_i32(&value, "id")?;
+    let edges = json_edges(&value)?;
+    let distance = json_f64(&value, "distance");
+    let chord = model_chord(&value);
+    if edges.len() == 1 {
+        lime_model_load::chamfer(id, edges[0], distance, chord)
+    } else {
+        lime_model_load::chamfer_many(id, &edges, distance, chord)
+    }
 }
 
 fn model_hole_request(body: &str) -> Result<String, String> {
     let value: serde_json::Value = serde_json::from_str(body).map_err(|err| err.to_string())?;
-    lime_model_load::hole(
+    lime_model_load::hole_axis(
         json_i32(&value, "id")?,
         [
             json_f64(&value, "x"),
             json_f64(&value, "y"),
             json_f64(&value, "z"),
         ],
+        json_direction(&value),
         json_f64(&value, "radius"),
         json_f64(&value, "depth"),
         model_chord(&value),
@@ -1678,6 +1692,35 @@ fn json_i32(value: &serde_json::Value, key: &str) -> Result<i32, String> {
 
 fn json_f64(value: &serde_json::Value, key: &str) -> f64 {
     value.get(key).and_then(|item| item.as_f64()).unwrap_or(0.0)
+}
+
+/// `edges` when the client sent a list, otherwise the single `edge`. An empty list is a missing pick.
+fn json_edges(value: &serde_json::Value) -> Result<Vec<i32>, String> {
+    if let Some(list) = value.get("edges").and_then(|item| item.as_array()) {
+        let mut edges = Vec::with_capacity(list.len());
+        for item in list {
+            let number = item
+                .as_i64()
+                .ok_or_else(|| "missing edge".to_string())?;
+            edges.push(number as i32);
+        }
+        if edges.is_empty() {
+            return Err("missing edge".into());
+        }
+        return Ok(edges);
+    }
+    Ok(vec![json_i32(value, "edge")?])
+}
+
+/// Drill direction. Omitted fields keep the old straight-down hole, toward −Z.
+fn json_direction(value: &serde_json::Value) -> [f64; 3] {
+    let present = ["dx", "dy", "dz"]
+        .iter()
+        .any(|key| value.get(*key).and_then(|item| item.as_f64()).is_some());
+    if !present {
+        return [0.0, 0.0, -1.0];
+    }
+    [json_f64(value, "dx"), json_f64(value, "dy"), json_f64(value, "dz")]
 }
 
 fn print_audit(a: &lime_slice_core::SliceAudit) {

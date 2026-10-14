@@ -27,7 +27,7 @@ check("split waits on a sheet that is too thin", toolAvailable("split", [], fals
 check("split is available inside a thick solid", toolAvailable("split", [], true));
 check("the dry-run waits out a keystroke", PROBE_WAIT_MS >= 200);
 
-eq("a disabled fillet says how to enable it", toolBlockedTip("fillet", [], true), "Pick an edge to fillet. Switch to Edge, then click one.");
+eq("a disabled fillet says how to enable it", toolBlockedTip("fillet", [], true), "Pick an edge to fillet. Switch to Edge, then click the edges.");
 eq("a disabled split says why", toolBlockedTip("split", [], false), "This solid is too thin to split.");
 eq("an enabled tool has no reason", toolBlockedTip("hole", [], true), "");
 

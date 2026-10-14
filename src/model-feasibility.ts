@@ -32,7 +32,7 @@ export function toolAvailable(tool: string, picks: readonly ModelPickRef[], spli
 export function toolBlockedTip(tool: string, picks: readonly ModelPickRef[], splitLegal: boolean): string {
   if (toolAvailable(tool, picks, splitLegal)) return "";
   if (tool === "split") return "This solid is too thin to split.";
-  return tool === "fillet" ? "Pick an edge to fillet. Switch to Edge, then click one." : "Pick an edge to chamfer. Switch to Edge, then click one.";
+  return tool === "fillet" ? "Pick an edge to fillet. Switch to Edge, then click the edges." : "Pick an edge to chamfer. Switch to Edge, then click the edges.";
 }
 
 export function probeFromBody(body: { ok?: unknown; error?: unknown; maxMm?: unknown }): ProbeView {

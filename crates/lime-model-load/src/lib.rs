@@ -35,9 +35,13 @@ type Boolean = unsafe extern "C" fn(
 ) -> *mut c_char;
 type Split = unsafe extern "C" fn(i32, f64, f64, f64, f64, f64, f64, f64) -> *mut c_char;
 type Fillet = unsafe extern "C" fn(i32, i32, f64, f64) -> *mut c_char;
+type FilletMany = unsafe extern "C" fn(i32, *const i32, i32, f64, f64) -> *mut c_char;
 type Chamfer = unsafe extern "C" fn(i32, i32, f64, f64) -> *mut c_char;
+type ChamferMany = unsafe extern "C" fn(i32, *const i32, i32, f64, f64) -> *mut c_char;
 type BlendProbe = unsafe extern "C" fn(i32, i32, f64, i32) -> *mut c_char;
+type BlendProbeMany = unsafe extern "C" fn(i32, *const i32, i32, f64, i32) -> *mut c_char;
 type HoleProbe = unsafe extern "C" fn(i32, f64, f64, f64, f64, f64) -> *mut c_char;
+type HoleAxisProbe = unsafe extern "C" fn(i32, f64, f64, f64, f64, f64, f64, f64, f64) -> *mut c_char;
 type BooleanProbe = unsafe extern "C" fn(
     i32,
     *const c_char,
@@ -55,6 +59,7 @@ type BooleanProbe = unsafe extern "C" fn(
     f64,
 ) -> *mut c_char;
 type Hole = unsafe extern "C" fn(i32, f64, f64, f64, f64, f64, f64) -> *mut c_char;
+type HoleAxis = unsafe extern "C" fn(i32, f64, f64, f64, f64, f64, f64, f64, f64, f64) -> *mut c_char;
 type Scale = unsafe extern "C" fn(i32, f64, f64) -> *mut c_char;
 type WriteStep = unsafe extern "C" fn(i32, *const c_char) -> *mut c_char;
 type Undo = unsafe extern "C" fn(i32, f64) -> *mut c_char;
@@ -69,11 +74,16 @@ struct Bridge {
     boolean: Boolean,
     split: Split,
     fillet: Fillet,
+    fillet_many: FilletMany,
     chamfer: Chamfer,
+    chamfer_many: ChamferMany,
     blend_probe: BlendProbe,
+    blend_probe_many: BlendProbeMany,
     hole_probe: HoleProbe,
+    hole_axis_probe: HoleAxisProbe,
     boolean_probe: BooleanProbe,
     hole: Hole,
+    hole_axis: HoleAxis,
     scale: Scale,
     write_step: WriteStep,
     undo: Undo,
@@ -204,6 +214,14 @@ pub fn fillet(id: i32, edge: i32, radius_mm: f64, chord_mm: f64) -> Result<Strin
     take(ptr, api.free)
 }
 
+/// Round every edge in one fillet. Indexes are zero-based and applied together.
+pub fn fillet_many(id: i32, edges: &[i32], radius_mm: f64, chord_mm: f64) -> Result<String, String> {
+    let api = load()?;
+    let (ptr_edges, count) = edge_ptr(edges);
+    let ptr = unsafe { (api.fillet_many)(id, ptr_edges, count, radius_mm, chord_mm) };
+    take(ptr, api.free)
+}
+
 /// Chamfer one edge. `distance_mm` is the setback on each face.
 pub fn chamfer(id: i32, edge: i32, distance_mm: f64, chord_mm: f64) -> Result<String, String> {
     let api = load()?;
@@ -211,10 +229,41 @@ pub fn chamfer(id: i32, edge: i32, distance_mm: f64, chord_mm: f64) -> Result<St
     take(ptr, api.free)
 }
 
+/// Chamfer every edge in one builder.
+pub fn chamfer_many(id: i32, edges: &[i32], distance_mm: f64, chord_mm: f64) -> Result<String, String> {
+    let api = load()?;
+    let (ptr_edges, count) = edge_ptr(edges);
+    let ptr = unsafe { (api.chamfer_many)(id, ptr_edges, count, distance_mm, chord_mm) };
+    take(ptr, api.free)
+}
+
 /// Try a fillet or chamfer on a copy. The open solid is not replaced.
 pub fn blend_probe(id: i32, edge: i32, size_mm: f64, chamfer: bool) -> Result<String, String> {
     let api = load()?;
     let ptr = unsafe { (api.blend_probe)(id, edge, size_mm, i32::from(chamfer)) };
+    take(ptr, api.free)
+}
+
+/// Try a fillet or chamfer of every edge on a copy. The open solid is not replaced.
+pub fn blend_probe_many(id: i32, edges: &[i32], size_mm: f64, chamfer: bool) -> Result<String, String> {
+    let api = load()?;
+    let (ptr_edges, count) = edge_ptr(edges);
+    let ptr = unsafe { (api.blend_probe_many)(id, ptr_edges, count, size_mm, i32::from(chamfer)) };
+    take(ptr, api.free)
+}
+
+/// Try a hole along `direction` on a copy. A zero direction drills toward −Z. The open solid is not replaced.
+pub fn hole_axis_probe(
+    id: i32,
+    origin: [f64; 3],
+    direction: [f64; 3],
+    radius_mm: f64,
+    depth_mm: f64,
+) -> Result<String, String> {
+    let api = load()?;
+    let [x, y, z] = origin;
+    let [dx, dy, dz] = direction;
+    let ptr = unsafe { (api.hole_axis_probe)(id, x, y, z, dx, dy, dz, radius_mm, depth_mm) };
     take(ptr, api.free)
 }
 
@@ -257,6 +306,23 @@ pub fn boolean_probe(id: i32, op: &str, primitive: &str, tool: Tool) -> Result<S
             tool.turn[2],
         )
     };
+    take(ptr, api.free)
+}
+
+/// Cut a cylinder that starts at `origin` and runs along `direction` by `depth_mm`.
+/// `direction` points into the material. A zero vector drills toward −Z.
+pub fn hole_axis(
+    id: i32,
+    origin: [f64; 3],
+    direction: [f64; 3],
+    radius_mm: f64,
+    depth_mm: f64,
+    chord_mm: f64,
+) -> Result<String, String> {
+    let api = load()?;
+    let [x, y, z] = origin;
+    let [dx, dy, dz] = direction;
+    let ptr = unsafe { (api.hole_axis)(id, x, y, z, dx, dy, dz, radius_mm, depth_mm, chord_mm) };
     take(ptr, api.free)
 }
 
@@ -311,16 +377,29 @@ struct Api {
     boolean: Boolean,
     split: Split,
     fillet: Fillet,
+    fillet_many: FilletMany,
     chamfer: Chamfer,
+    chamfer_many: ChamferMany,
     blend_probe: BlendProbe,
+    blend_probe_many: BlendProbeMany,
     hole_probe: HoleProbe,
+    hole_axis_probe: HoleAxisProbe,
     boolean_probe: BooleanProbe,
     hole: Hole,
+    hole_axis: HoleAxis,
     scale: Scale,
     write_step: WriteStep,
     undo: Undo,
     redo: Redo,
     free: FreeStr,
+}
+
+fn edge_ptr(edges: &[i32]) -> (*const i32, i32) {
+    if edges.is_empty() {
+        (std::ptr::null(), 0)
+    } else {
+        (edges.as_ptr(), edges.len() as i32)
+    }
 }
 
 fn take(ptr: *mut c_char, free: FreeStr) -> Result<String, String> {
@@ -361,21 +440,36 @@ fn load() -> Result<Api, String> {
                 fillet: *lib
                     .get::<Fillet>(b"lime_occt_fillet\0")
                     .map_err(|err| format!("bridge is missing lime_occt_fillet: {err}"))?,
+                fillet_many: *lib
+                    .get::<FilletMany>(b"lime_occt_fillet_many\0")
+                    .map_err(|err| format!("bridge is missing lime_occt_fillet_many: {err}"))?,
                 chamfer: *lib
                     .get::<Chamfer>(b"lime_occt_chamfer\0")
                     .map_err(|err| format!("bridge is missing lime_occt_chamfer: {err}"))?,
+                chamfer_many: *lib
+                    .get::<ChamferMany>(b"lime_occt_chamfer_many\0")
+                    .map_err(|err| format!("bridge is missing lime_occt_chamfer_many: {err}"))?,
                 blend_probe: *lib
                     .get::<BlendProbe>(b"lime_occt_blend_probe\0")
                     .map_err(|err| format!("bridge is missing lime_occt_blend_probe: {err}"))?,
+                blend_probe_many: *lib
+                    .get::<BlendProbeMany>(b"lime_occt_blend_probe_many\0")
+                    .map_err(|err| format!("bridge is missing lime_occt_blend_probe_many: {err}"))?,
                 hole_probe: *lib
                     .get::<HoleProbe>(b"lime_occt_hole_probe\0")
                     .map_err(|err| format!("bridge is missing lime_occt_hole_probe: {err}"))?,
+                hole_axis_probe: *lib
+                    .get::<HoleAxisProbe>(b"lime_occt_hole_axis_probe\0")
+                    .map_err(|err| format!("bridge is missing lime_occt_hole_axis_probe: {err}"))?,
                 boolean_probe: *lib
                     .get::<BooleanProbe>(b"lime_occt_boolean_probe\0")
                     .map_err(|err| format!("bridge is missing lime_occt_boolean_probe: {err}"))?,
                 hole: *lib
                     .get::<Hole>(b"lime_occt_hole\0")
                     .map_err(|err| format!("bridge is missing lime_occt_hole: {err}"))?,
+                hole_axis: *lib
+                    .get::<HoleAxis>(b"lime_occt_hole_axis\0")
+                    .map_err(|err| format!("bridge is missing lime_occt_hole_axis: {err}"))?,
                 scale: *lib
                     .get::<Scale>(b"lime_occt_scale\0")
                     .map_err(|err| format!("bridge is missing lime_occt_scale: {err}"))?,
@@ -404,11 +498,16 @@ fn load() -> Result<Api, String> {
         boolean: bridge.boolean,
         split: bridge.split,
         fillet: bridge.fillet,
+        fillet_many: bridge.fillet_many,
         chamfer: bridge.chamfer,
+        chamfer_many: bridge.chamfer_many,
         blend_probe: bridge.blend_probe,
+        blend_probe_many: bridge.blend_probe_many,
         hole_probe: bridge.hole_probe,
+        hole_axis_probe: bridge.hole_axis_probe,
         boolean_probe: bridge.boolean_probe,
         hole: bridge.hole,
+        hole_axis: bridge.hole_axis,
         scale: bridge.scale,
         write_step: bridge.write_step,
         undo: bridge.undo,
