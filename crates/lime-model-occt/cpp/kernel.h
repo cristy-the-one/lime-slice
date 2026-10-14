@@ -48,6 +48,8 @@ void route_occt_log();
 Held hold_of(const TopoDS_Shape& shape, double volume);
 TopoDS_Shape as_solid(const TopoDS_Shape& shape);
 bool has_solid(const TopoDS_Shape& shape);
+/// False, with the refusal every edit answers, for a shape of surfaces with no closed solid.
+bool editable(const TopoDS_Shape& shape, std::string& error);
 double volume_of(const TopoDS_Shape& shape);
 std::string tessellate(int id, const Held& held, double chord);
 bool measure_distance(

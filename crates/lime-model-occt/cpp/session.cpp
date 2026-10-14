@@ -27,12 +27,14 @@
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepAlgoAPI_Check.hxx>
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepAlgoAPI_Splitter.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_Sewing.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
@@ -42,6 +44,7 @@
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
+#include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GCPnts_QuasiUniformDeflection.hxx>
@@ -49,6 +52,7 @@
 #include <GProp_GProps.hxx>
 #include <Poly_Triangulation.hxx>
 #include <ShapeFix_Shape.hxx>
+#include <ShapeFix_Solid.hxx>
 #include <Standard_Failure.hxx>
 #include <Standard_VersionInfo.hxx>
 #include <TopAbs_ShapeEnum.hxx>
@@ -60,9 +64,12 @@
 #include <TopTools_ListIteratorOfListOfShape.hxx>
 #include <TopTools_ListOfShape.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Compound.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
+#include <TopoDS_Shell.hxx>
+#include <TopoDS_Solid.hxx>
 #include <gp_Ax1.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Dir.hxx>
@@ -389,7 +396,7 @@ bool copy_shape(int id, TopoDS_Shape& current, double& volume, std::string& erro
     }
     current = held->shape;
     volume = held->volume;
-    return true;
+    return editable(current, error);
 }
 
 std::string key_of(const char* op, std::initializer_list<double> values, const std::vector<int>& indices = {}) {
@@ -438,6 +445,45 @@ bool probed_result(int id, const TopoDS_Shape& current, const std::string& key, 
 bool has_solid(const TopoDS_Shape& shape) {
     TopExp_Explorer explorer(shape, TopAbs_SOLID);
     return explorer.More();
+}
+
+bool editable(const TopoDS_Shape& shape, std::string& error) {
+    if (has_solid(shape)) {
+        return true;
+    }
+    error = "This STEP file has surfaces but no closed solid, so it can be measured but not edited.";
+    return false;
+}
+
+/// Mesh converters write each part as a closed shell of loose facets and no solid.
+/// Each part is sewn alone, so parts that share a wall stay separate solids.
+/// A shell that stays open or crosses itself breaks every edit, so then the
+/// surfaces are kept as they are, for measuring only.
+TopoDS_Shape solids_from_shells(const std::vector<TopoDS_Shape>& parts, const TopoDS_Shape& surfaces) {
+    TopoDS_Compound solids;
+    BRep_Builder builder;
+    builder.MakeCompound(solids);
+    for (const TopoDS_Shape& part : parts) {
+        BRepBuilderAPI_Sewing sewing;
+        sewing.Add(part);
+        sewing.Perform();
+        const TopoDS_Shape sewn = sewing.SewedShape();
+        if (TopExp_Explorer(sewn, TopAbs_FACE, TopAbs_SHELL).More()) {
+            return surfaces;
+        }
+        for (TopExp_Explorer shell(sewn, TopAbs_SHELL); shell.More(); shell.Next()) {
+            if (!BRep_Tool::IsClosed(shell.Current())) {
+                return surfaces;
+            }
+            ShapeFix_Solid fix;
+            const TopoDS_Solid solid = fix.SolidFromShell(TopoDS::Shell(shell.Current()));
+            if (!BRepAlgoAPI_Check(solid, Standard_False, Standard_True).IsValid()) {
+                return surfaces;
+            }
+            builder.Add(solids, solid);
+        }
+    }
+    return has_solid(solids) ? TopoDS_Shape(solids) : surfaces;
 }
 
 void append_point(std::string& out, bool& first, const gp_Pnt& point) {
@@ -794,6 +840,9 @@ bool copy_edges(
     const Held* held = held_at(id);
     if (held == nullptr) {
         error = "That solid is no longer open";
+        return false;
+    }
+    if (!editable(held->shape, error)) {
         return false;
     }
     if (edges == nullptr || count <= 0) {
@@ -1158,6 +1207,13 @@ TopoDS_Shape read_step(const char* path, std::string& error) {
     if (shape.IsNull()) {
         error = "This STEP file has no solid to measure";
         return {};
+    }
+    if (!has_solid(shape)) {
+        std::vector<TopoDS_Shape> parts;
+        for (int index = 1; index <= reader.NbShapes(); ++index) {
+            parts.push_back(reader.Shape(index));
+        }
+        shape = solids_from_shells(parts, shape);
     }
     Handle(ShapeFix_Shape) fixer = new ShapeFix_Shape(shape);
     fixer->Perform();
