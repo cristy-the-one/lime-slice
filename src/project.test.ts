@@ -284,6 +284,30 @@ eq("a plate saved before brep opens with none", plainOpened.ok ? plainOpened.pro
 brepWire.objects[0]!.brep = { ...brepMesh, hash: "nope" };
 eq("a damaged solid fails the open", parseProject(JSON.stringify(brepWire)), { ok: false, message: "The solid in this project is damaged." });
 
+const actions = [
+  { zMm: 4.2, kind: "pause" as const },
+  { zMm: 10, kind: "filamentChange" as const, note: "white" },
+];
+eq("a project without layer actions omits them", [JSON.parse(text).layerActions, JSON.parse(multiText).layerActions], [undefined, undefined]);
+eq("an empty list is omitted too", JSON.parse(serializeProject({ ...project, layerActions: [] })).layerActions, undefined);
+const paused: LimeProject = { ...project, layerActions: actions };
+const pausedWire = JSON.parse(serializeProject(paused)) as { version: number; layerActions?: unknown[] };
+eq("layer actions stay on a version 1 project", [pausedWire.version, pausedWire.layerActions], [1, actions]);
+const pausedOpened = parseProject(JSON.stringify(pausedWire));
+eq("a one-object project keeps its layer actions", pausedOpened.ok ? pausedOpened.project : null, paused);
+const pausedPlate: LimeProject = { ...multi, layerActions: actions };
+const pausedPlateOpened = parseProject(serializeProject(pausedPlate));
+eq("a plate keeps its layer actions", pausedPlateOpened.ok ? pausedPlateOpened.project.layerActions : null, actions);
+const damagedActions = "The pauses and filament changes in this project are damaged.";
+for (const [name, bad] of [
+  ["not a list", { zMm: 1, kind: "pause" }],
+  ["a negative height", [{ zMm: -1, kind: "pause" }]],
+  ["an unknown kind", [{ zMm: 1, kind: "custom" }]],
+  ["a note that is not text", [{ zMm: 1, kind: "pause", note: 3 }]],
+] as const) {
+  eq(`layer actions with ${name} fail the open`, parseProject(JSON.stringify({ ...pausedWire, layerActions: bad })), { ok: false, message: damagedActions });
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);

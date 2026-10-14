@@ -14,6 +14,7 @@ import { applyPlace, fetchStoredGcode, livePlate, nudgePlacement, objectPlacemen
 import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, markStale, touch } from "./settings";
 import { cycleLayerAction, type LayerActionKind } from "../layer-actions";
 import { flushEdit, noteEdit } from "./history";
+import { currentRules } from "./rules";
 import { beginModifierEdit, endModifierEdit, nudgeModifier, selectModifier } from "./override-actions";
 import { bandFractions } from "../overrides";
 import { type PreviewPath, decodePaths } from "../preview-wire";
@@ -107,7 +108,9 @@ function paintLayerActions(max: number) {
       button.classList.toggle("is-pause", here?.kind === "pause");
       button.classList.toggle("is-filament", here?.kind === "filamentChange");
       button.textContent = here ? (here.kind === "pause" ? "P" : "F") : "+";
-      button.setAttribute("aria-label", actionLabel(here?.kind));
+      const label = actionLabel(here?.kind);
+      button.setAttribute("aria-label", label);
+      button.dataset.tip = here && currentRules().firmware === "klipper" ? `${label}. On Klipper, M600 needs a macro in printer.cfg.` : label;
     }
   }
   if (pins) {

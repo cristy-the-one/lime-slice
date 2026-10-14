@@ -1,7 +1,9 @@
+use base64::Engine;
 use lime_slice_core::{
-    slice_configured, BlendMode, Firmware, LayerAction, LayerActionKind, Mesh, PrinterProfile,
-    SliceRequest, SliceSettings, StrategyId,
+    slice_configured, slice_request, BlendMode, Firmware, Job, LayerAction, LayerActionKind, Mesh,
+    PrinterProfile, SliceRequest, SliceSettings, StrategyId,
 };
+use serde_json::json;
 
 fn face(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> [[[f64; 3]; 3]; 2] {
     [[a, b, c], [a, c, d]]
@@ -154,4 +156,53 @@ fn a_pause_json_round_trips_and_classic_keeps_it() {
     })
     .unwrap();
     assert!(text.contains("\"layerActions\""), "{text}");
+}
+
+fn belt_request(actions: Vec<LayerAction>) -> SliceRequest {
+    let mut stl = String::from("solid cube\n");
+    for tri in cube().triangles {
+        stl.push_str("facet normal 0 0 0\nouter loop\n");
+        for v in tri {
+            stl.push_str(&format!("vertex {} {} {}\n", v[0], v[1], v[2]));
+        }
+        stl.push_str("endloop\nendfacet\n");
+    }
+    stl.push_str("endsolid cube\n");
+    let mut req: SliceRequest = serde_json::from_value(json!({
+        "filename": "cube.stl",
+        "dataB64": base64::engine::general_purpose::STANDARD.encode(stl.as_bytes()),
+        "layerHeight": 0.2,
+        "lineWidth": 0.45,
+        "baseline": false,
+        "compare": false,
+        "includePreview": true,
+        "includeGcode": true,
+        "belt": { "angleDeg": 45.0, "axis": "z", "direction": 1, "widthMm": 250.0, "copies": 1, "gapMm": 5.0 },
+    }))
+    .unwrap();
+    req.printer = Some(PrinterProfile {
+        firmware: Some(Firmware::Klipper),
+        ..PrinterProfile::default()
+    });
+    req.layer_actions = actions;
+    req
+}
+
+#[test]
+fn a_belt_pause_follows_the_belt_move_of_its_layer() {
+    let plain = slice_request(&belt_request(Vec::new()), Job::default()).unwrap();
+    assert!(!plain.gcode.contains("PAUSE"));
+    let layer = &plain.layers[plain.layers.len() / 2];
+
+    let paused = slice_request(&belt_request(vec![pause(layer.z)]), Job::default()).unwrap();
+    let lines: Vec<&str> = paused.gcode.lines().collect();
+    let at: Vec<usize> = (0..lines.len()).filter(|&i| lines[i] == "PAUSE").collect();
+    assert_eq!(at.len(), 1, "one pause");
+    let header = lines[at[0] - 2];
+    let z = header
+        .strip_prefix(";LAYER:")
+        .and_then(|rest| rest.split_whitespace().nth(1))
+        .and_then(|field| field.strip_prefix("Z:"))
+        .unwrap_or_else(|| panic!("a layer header two lines up: {header}"));
+    assert_eq!(lines[at[0] - 1], format!("G1 Z{z} F7200"));
 }
