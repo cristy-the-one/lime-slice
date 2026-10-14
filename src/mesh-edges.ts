@@ -73,7 +73,7 @@ export function sharpEdges(positions: Float32Array, thresholdDeg: number): Float
 }
 
 /** One id per position after rounding each coordinate to 1e-4. */
-function vertexIds(positions: Float32Array, verts: number): Int32Array {
+export function vertexIds(positions: Float32Array, verts: number): Int32Array {
   const keys = new Int32Array(verts * 3);
   for (let i = 0; i < verts * 3; i++) keys[i] = Math.round(positions[i]! * 1e4);
   const size = tableSize(verts);
@@ -103,7 +103,7 @@ function vertexIds(positions: Float32Array, verts: number): Int32Array {
 }
 
 /** three.js `Triangle.getNormal`: (c − b) × (a − b), unit length, or zero for a sliver. */
-function faceNormal(p: Float32Array, t: number): [number, number, number] {
+export function faceNormal(p: Float32Array, t: number): [number, number, number] {
   const ax = p[t * 3]!, ay = p[t * 3 + 1]!, az = p[t * 3 + 2]!;
   const bx = p[t * 3 + 3]!, by = p[t * 3 + 4]!, bz = p[t * 3 + 5]!;
   const cx = p[t * 3 + 6]!, cy = p[t * 3 + 7]!, cz = p[t * 3 + 8]!;
@@ -118,7 +118,7 @@ function faceNormal(p: Float32Array, t: number): [number, number, number] {
   return [x * inv, y * inv, z * inv];
 }
 
-function tableSize(entries: number): number {
+export function tableSize(entries: number): number {
   let size = 16;
   while (size < entries * 2) size *= 2;
   return size;
