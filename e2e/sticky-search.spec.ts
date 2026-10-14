@@ -181,6 +181,13 @@ test("a group or section name shows the controls under it, and & matches and", a
   await expect(page.locator("#seam")).toBeVisible();
   await expect(page.locator("#vwidth")).toBeVisible();
   await expect(page.locator("#feeds")).toBeHidden();
+
+  await find.fill("Walls & surface");
+  await expect(page.locator("#seam")).toBeVisible();
+  await expect(page.locator("#vwidth")).toBeVisible();
+  await expect(page.locator("#ironing")).toBeVisible();
+  await expect(page.locator("#feeds")).toBeHidden();
+  await expect(page.locator("#overhang")).toBeHidden();
 });
 
 test.describe("compact sticky search", () => {
