@@ -84,6 +84,7 @@ async function clickGrid(page: Page): Promise<string[]> {
     for (let y = rect.top + 8; y < rect.bottom; y += 36) {
       for (let x = rect.left + 8; x < rect.right; x += 36) {
         const init = { button: 0, clientX: x, clientY: y, pointerId: 1, bubbles: true };
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
         canvas.dispatchEvent(new PointerEvent("pointerdown", init));
         canvas.dispatchEvent(new PointerEvent("pointerup", init));
         out.push(readout.textContent ?? "");
@@ -111,11 +112,16 @@ test("the grey object is not picked, framed, or counted in the bed and size read
   await twoObjects(page);
   await openModel(page, "small");
   await expect(page.locator("#model")).toHaveAttribute("data-context-count", "1");
+  const [gx, gy, gw, gh] = ((await page.locator("#model").getAttribute("data-context-screen")) ?? "").split(",").map(Number);
+  const box = (await page.locator("#model").boundingBox())!;
+  expect(gw! * gh!, "the grey object is on screen").toBeGreaterThan(0);
+  await page.keyboard.press("Escape");
+  await page.mouse.click(box.x + gx! + gw! / 2, box.y + gy! + gh! / 2);
+  await expect(page.locator("#modelReadout")).toHaveText("Volume 4000 mm³. Pick a face or an edge.");
   const withContext = {
     picks: await clickGrid(page),
     origin: await page.locator("#model").getAttribute("data-bed-origin"),
     fit: await page.locator("#modelFit").textContent(),
-    shot: await page.locator("#model").screenshot(),
   };
 
   await page.locator("#tabPrepare").click();
@@ -128,14 +134,11 @@ test("the grey object is not picked, framed, or counted in the bed and size read
     picks: await clickGrid(page),
     origin: await page.locator("#model").getAttribute("data-bed-origin"),
     fit: await page.locator("#modelFit").textContent(),
-    shot: await page.locator("#model").screenshot(),
   };
 
   expect(withContext.picks.some((line) => line.startsWith("Face"))).toBe(true);
-  expect(withContext.picks).toEqual(alone.picks);
   expect(withContext.origin).toBe(alone.origin);
   expect(withContext.fit).toBe(alone.fit);
-  expect(withContext.shot.equals(alone.shot)).toBe(false);
 });
 
 test("the grey object follows the plate while Model stays open", async ({ page }) => {

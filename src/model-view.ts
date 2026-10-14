@@ -881,9 +881,36 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   /** Docked handles share one screen-fixed seat. A feature handle stays on the solid. */
+  /** Where the grey context lands on screen, as `x,y,w,h` canvas pixels, so a test can click it. */
+  function publishContextScreen(width: number, height: number) {
+    if (context.children.length === 0) {
+      delete canvas.dataset.contextScreen;
+      return;
+    }
+    const box = new THREE.Box3().setFromObject(context);
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const x of [box.min.x, box.max.x]) {
+      for (const y of [box.min.y, box.max.y]) {
+        for (const z of [box.min.z, box.max.z]) {
+          const p = new THREE.Vector3(x, y, z).project(camera);
+          minX = Math.min(minX, (p.x * 0.5 + 0.5) * width);
+          maxX = Math.max(maxX, (p.x * 0.5 + 0.5) * width);
+          minY = Math.min(minY, (-p.y * 0.5 + 0.5) * height);
+          maxY = Math.max(maxY, (-p.y * 0.5 + 0.5) * height);
+        }
+      }
+    }
+    const text = [minX, minY, maxX - minX, maxY - minY].map(Math.round).join(",");
+    if (canvas.dataset.contextScreen !== text) canvas.dataset.contextScreen = text;
+  }
+
   function sizeHandles() {
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
+    publishContextScreen(width, height);
     let dockSize = 0;
     if (handleParts.some((part) => part.handle.seat.at === "dock")) {
       camera.updateMatrixWorld();
