@@ -216,7 +216,11 @@ pub struct Extrusion {
     pub retract_mm: f64,
     pub retract_min_travel: f64,
     pub fan: u8,
-    /// Multiplier on the volumetric bead. Bridges stay at 1.
+    /// Emit `fan` on this path even on the first two layers. The next path
+    /// restores the layer fan. Off leaves the layer fan policy alone.
+    pub fan_hold: bool,
+    /// Multiplier on the volumetric bead. Bridges stay at 1 unless a bridge
+    /// flow ratio is set.
     pub flow: f64,
     /// Structural weight used by the toughness score. Not a G-code field.
     pub strength: f64,
@@ -1750,6 +1754,7 @@ fn extrusion(
         retract_mm: strategy.retract_mm,
         retract_min_travel: strategy.retract_min_travel,
         fan: strategy.fan,
+        fan_hold: false,
         flow: 1.0,
         strength: kind_strength(kind, strategy),
         bead_height: 0.0,
@@ -6382,12 +6387,24 @@ fn orient(p: [f64; 2], q: [f64; 2], r: [f64; 2]) -> f64 {
     (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
 }
 
+/// Flow, feed, and fan a bridge uses when the request asks. `None` on a field
+/// keeps that field where overhang splitting already put it.
+#[derive(Clone, Copy, Debug)]
+pub struct BridgeTune {
+    pub flow: Option<f64>,
+    pub speed_mm_s: Option<f64>,
+    /// PWM 0–255, already converted from a percent.
+    pub fan_pwm: Option<u8>,
+}
+
 /// Slow unsupported spans, pin bridges, and raise the fan. The first layer is on the bed.
+/// `tune` of `None` leaves bridge flow, speed, and fan where they are today.
 pub fn apply_overhang(
     paths: &mut Vec<Extrusion>,
     lower: &[Loop],
     layer_height: f64,
     line_width: f64,
+    tune: Option<BridgeTune>,
 ) {
     if lower.is_empty() || paths.is_empty() {
         return;
@@ -6403,7 +6420,7 @@ pub fn apply_overhang(
             next.push(path);
             continue;
         }
-        next.extend(split_overhang(path, lower, layer_height, margin));
+        next.extend(split_overhang(path, lower, layer_height, margin, tune));
     }
     *paths = next;
 }
@@ -6413,6 +6430,7 @@ fn split_overhang(
     lower: &[Loop],
     layer_height: f64,
     margin: f64,
+    tune: Option<BridgeTune>,
 ) -> Vec<Extrusion> {
     let pts = &path.points;
     let mut out = Vec::new();
@@ -6421,14 +6439,14 @@ fn split_overhang(
     for w in pts.windows(2) {
         let class = span_class(w[0], w[1], lower, layer_height, margin);
         if class_tag(class) != class_tag(cur_class) && cur.len() >= 2 {
-            out.push(paint(&path, std::mem::take(&mut cur), cur_class));
+            out.push(paint(&path, std::mem::take(&mut cur), cur_class, tune));
             cur.push(w[0]);
         }
         cur.push(w[1]);
         cur_class = class;
     }
     if cur.len() >= 2 {
-        out.push(paint(&path, cur, cur_class));
+        out.push(paint(&path, cur, cur_class, tune));
     }
     if out.is_empty() {
         vec![path]
@@ -6481,7 +6499,12 @@ fn span_class(
     }
 }
 
-fn paint(src: &Extrusion, points: Vec<[f64; 2]>, class: SpanClass) -> Extrusion {
+fn paint(
+    src: &Extrusion,
+    points: Vec<[f64; 2]>,
+    class: SpanClass,
+    tune: Option<BridgeTune>,
+) -> Extrusion {
     let mut path = src.clone();
     path.points = points;
     let slow = match class {
@@ -6505,6 +6528,25 @@ fn paint(src: &Extrusion, points: Vec<[f64; 2]>, class: SpanClass) -> Extrusion 
     path.speed = slow.speed(path.speed);
     if let Some(cap) = &mut path.cap_feed {
         cap.slow = slow;
+    }
+    if let (SpanClass::Bridge, Some(tune)) = (class, tune) {
+        if let Some(ratio) = tune.flow {
+            path.flow *= ratio;
+        }
+        if let Some(pwm) = tune.fan_pwm {
+            path.fan = pwm;
+            path.fan_hold = true;
+        }
+        if let Some(speed) = tune.speed_mm_s {
+            // An explicit feed replaces the 18–36 mm/s clamp, including a
+            // speed the clamp would have raised. The cap must agree, or a
+            // later object speed cap would put the clamp back.
+            path.speed = speed;
+            if let Some(cap) = &mut path.cap_feed {
+                cap.feed = speed;
+                cap.slow = Slowdown::None;
+            }
+        }
     }
     path
 }
@@ -7967,5 +8009,72 @@ mod solid_row_tests {
         );
         assert!(first > plain + 0.15, "first layer {first} vs {plain}");
         assert!((later - plain).abs() < 1e-6, "later layer {later} vs {plain}");
+    }
+}
+
+#[cfg(test)]
+mod bridge_tests {
+    use super::*;
+    use crate::strategy::{pure, StrategyId};
+
+    fn square(x0: f64, x1: f64) -> Vec<[f64; 2]> {
+        vec![[x0, 0.0], [x1, 0.0], [x1, 10.0], [x0, 10.0]]
+    }
+
+    fn span() -> Extrusion {
+        let mut path = extrusion(
+            PathKind::Solid,
+            &pure(StrategyId::Speed),
+            vec![[2.0, 5.0], [18.0, 5.0]],
+            0.45,
+        );
+        path.speed = 60.0;
+        path.cap_feed = Some(CapFeed {
+            feed: 60.0,
+            slow: Slowdown::None,
+        });
+        path
+    }
+
+    fn bridges(tune: Option<BridgeTune>) -> Vec<Extrusion> {
+        let mut paths = vec![span()];
+        let lower = vec![square(0.0, 6.0), square(14.0, 20.0)];
+        apply_overhang(&mut paths, &lower, 0.2, 0.45, tune);
+        paths
+            .into_iter()
+            .filter(|p| p.kind == PathKind::Bridge)
+            .collect()
+    }
+
+    #[test]
+    fn a_span_between_two_islands_keeps_the_bridge_slowdown() {
+        let found = bridges(None);
+        assert_eq!(found.len(), 1);
+        let path = &found[0];
+        assert!((path.flow - 1.0).abs() < 1e-9);
+        assert_eq!(path.fan, 255);
+        assert!(!path.fan_hold);
+        assert!((path.speed - 36.0).abs() < 1e-9, "speed {}", path.speed);
+        let cap = path.cap_feed.expect("cap");
+        assert_eq!(cap.slow, Slowdown::Bridge);
+        assert!((cap.feed - 60.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_requested_bridge_replaces_flow_speed_and_fan() {
+        let found = bridges(Some(BridgeTune {
+            flow: Some(0.9),
+            speed_mm_s: Some(15.0),
+            fan_pwm: Some(204),
+        }));
+        assert_eq!(found.len(), 1);
+        let path = &found[0];
+        assert!((path.flow - 0.9).abs() < 1e-9);
+        assert!((path.speed - 15.0).abs() < 1e-9, "speed {}", path.speed);
+        assert_eq!(path.fan, 204);
+        assert!(path.fan_hold);
+        let cap = path.cap_feed.expect("cap");
+        assert_eq!(cap.slow, Slowdown::None);
+        assert!((cap.feed - 15.0).abs() < 1e-9);
     }
 }

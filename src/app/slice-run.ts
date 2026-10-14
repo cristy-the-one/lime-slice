@@ -27,6 +27,7 @@ import { currentRules } from "./rules";
 import { orderFields, sequentialClearance, tallestLast } from "../settings-rules";
 import { flowSliceField } from "../flow";
 import { avoidanceSliceField } from "../support-avoidance";
+import { bridgeSliceFields } from "../bridge-tune";
 import { supportSliceFields } from "../support-interface";
 import { supportSourceSliceField } from "../support-source";
 import { engineDownMessage, authHeaders } from "../ui/api-base";
@@ -251,6 +252,12 @@ export function payload() {
     arcFit: state.arcFit,
     travelOpt: state.travelOpt,
     overhangControl: state.overhangControl,
+    ...bridgeSliceFields({
+      overhangControl: state.overhangControl,
+      bridgeFlowRatio: state.bridgeFlowRatio,
+      bridgeSpeedMmS: state.bridgeSpeedMmS,
+      bridgeFanPercent: state.bridgeFanPercent,
+    }),
     // Blend is left out, so a default slice keeps its bytes and its recipe key.
     ...seamSliceField(state.seam),
     // Off is left out, so a slice that does not iron keeps its bytes and its recipe key.
