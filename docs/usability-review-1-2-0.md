@@ -1,6 +1,6 @@
 # Usability and Ergonomics Review — 1.2.0 (`PR #255`–`#285`)
 
-This review audits the UI and ergonomics of the 1.2.0 build across the recent Model mode, viewport chrome, numeric controls, search, and slicer setting additions (`PR #255`–`#285`), starting with the five issues captured in the owner's 1.2.0 screenshots.
+This review audits the UI and ergonomics of the 1.2.0 build across the recent Model mode, viewport chrome, numeric controls, search, and slicer setting additions (`PR #255`–`#285`), starting with the issues captured in the owner's 1.2.0 screenshots, including a later note that the move and rotate gizmo covers the plate.
 
 ---
 
@@ -43,7 +43,25 @@ This review audits the UI and ergonomics of the 1.2.0 build across the recent Mo
 
 ---
 
-### 3. High — Prepare mode has no 3D Scale gizmo (`Scale` rail button disabled)
+### 3. High — Move, rotate, and scale gizmos cover the solid they edit
+
+**Where:** `src/model-drag.ts` and `src/model-view.ts` (Boolean move arrows and turn rings, and the Model scale knob), `src/prepare-view.ts` (the Prepare manipulator, including the scale gizmo still to be added).
+
+**What happens:**
+- In Model mode the Boolean move arrows and turn rings are drawn on the primitive, which sits on the solid. On the owner's plate the rings and arrows cover the middle of the part, so the solid is hard to see while you edit it. The same would happen to a Prepare scale gizmo built at the part centre.
+- A gizmo that follows the camera, or that flips from one side of the solid to another as the view orbits, jumps. A seat that still overlaps a large plate is not a clearance.
+
+![Boolean move and rotate gizmo covering the plate](screenshots/review-1-2-0/before-2-boolean-overlap.png)
+
+**Fix:**
+- Keep the gizmo near the solid, a short gap off its screen box, so the solid stays visible. Prefer the left of the box.
+- When that offset would leave the canvas, still cover the solid, or swap with the other seat as the view moves, park the gizmo on the left edge of the viewport and leave it there until the offset seat is clearly clear.
+- Freeze the seat for the duration of a drag. Arrows, rings, and the scale knob stay draggable, and they keep writing the same numeric fields.
+- The Prepare scale gizmo uses that same rule, on the same widget as Move and Rotate, so it never sits on the part.
+
+---
+
+### 4. High — Prepare mode has no 3D Scale gizmo (`Scale` rail button disabled)
 
 **Where:** `src/ui/chrome.ts` (`#toolRail [data-tool="scale"]`), `src/prepare-view.ts` (`GizmoTool`, `makeGizmo`, pointer drag handlers), `src/app/viewer.ts`, `src/ui/preview-ux.ts`.
 
@@ -57,7 +75,7 @@ This review audits the UI and ergonomics of the 1.2.0 build across the recent Mo
 
 ---
 
-### 4. Medium — Settings search (`/`) hides group items when matching a group header and misses `&` vs `and`
+### 5. Medium — Settings search (`/`) hides group items when matching a group header and misses `&` vs `and`
 
 **Where:** `src/ui/settings-search.ts` (`settingMatches`), `src/app/settings.ts` (`applyFilter`).
 
@@ -73,7 +91,7 @@ This review audits the UI and ergonomics of the 1.2.0 build across the recent Mo
 
 ---
 
-### 5. Medium — Model mode fillet feasibility at `0.05 mm`, smooth/seam edge messaging, and synchronous `Apply` disabling
+### 6. Medium — Model mode fillet feasibility at `0.05 mm`, smooth/seam edge messaging, and synchronous `Apply` disabling
 
 **Where:** `crates/lime-model-occt/cpp/session.cpp` (`largest_blend`, `probe_json`, `fillet`, `chamfer`), `src/ui/model-chrome.ts` (`toggleTool`, `refreshApply`, `syncModelChrome`, `setModelProbe`).
 
@@ -92,11 +110,11 @@ This review audits the UI and ergonomics of the 1.2.0 build across the recent Mo
 
 | Area | PRs | Status & Notes |
 | --- | --- | --- |
-| **Model toolbar, booleans, split, fillet, chamfer, hole, scale, measure** | `#257`–`#260`, `#269`, `#284` | Every tool supports both numeric inputs and 3D drag handles (`src/model-drag.ts`), verified by `src/model-drag.test.ts`. Multi-edge fillets and face-normal holes (`#284`) work cleanly. Overlay collision and `Apply` state race are tracked in Findings 1 & 5. |
+| **Model toolbar, booleans, split, fillet, chamfer, hole, scale, measure** | `#257`–`#260`, `#269`, `#284` | Every tool supports both numeric inputs and 3D drag handles (`src/model-drag.ts`), verified by `src/model-drag.test.ts`. Multi-edge fillets and face-normal holes (`#284`) work cleanly. Overlay collision and `Apply` state race are tracked in Findings 1 and 6. The gizmo covering the solid is Finding 3. |
 | **Model & Prepare undo / redo** | `#273` | Solid checkpoints and plate snapshots interleave cleanly across Prepare and Model; undoing a Model commit restores `sourcePos`, `hold`, paint strokes, and `partScale`. |
 | **Shared studio viewport & 70% budget** | `#271`, `#277` | `src/ui/splitters.ts` keeps the 3D stage `>= 70%` of the window width on desktop (`MIN_STAGE_SHARE = 0.7`) and auto-folds the right results drawer after slicing when needed. Bed reference alignment in Model mode is tracked in Finding 2. |
 | **Numeric controls for rotation, brush size, and section offset** | `#279` | `#rotX`, `#rotY`, `#rotZ`, `#paintRadius`, `#reinfRadius`, `#seamRadius`, and `#sectionOffsetNum` stay in two-way sync with their gizmo/slider counterparts. |
-| **Plain-language mesh repair & OCCT warnings** | `#276` | `plainRepairNotice()` and `plainModelError()` translate kernel and mesh diagnostics into plain sentences; applying `plainModelError()` to `probeNote()` is included in Finding 5. |
+| **Plain-language mesh repair & OCCT warnings** | `#276` | `plainRepairNotice()` and `plainModelError()` translate kernel and mesh diagnostics into plain sentences; applying `plainModelError()` to `probeNote()` is included in Finding 6. |
 | **Foreign 3MF recipe banner & shell split** | `#280`, `#282` | Foreign 3MF files with embedded slicer settings show a non-blocking banner (`#recipeBanner`) with explicit `Use settings` / `Keep mine` actions. Disconnected shells offer `#splitShells` in the object list. |
 | **Brim, skin patterns, XY compensation, support interface, bridge tuning, layer pauses** | `#262`, `#272`, `#274`, `#281`, `#283`, `#285` | All new engine features are opt-in and off by default (`tools/golden_ab.sh` stays byte-identical). Controls use Prepare's card/disclosure style and plain labels. |
 | **Moonraker & OctoPrint send, no stray console windows** | `#261`, `src-tauri/src/lib.rs` | `send_printer` runs asynchronously off the UI thread with clear HTTP/connection errors, and Windows child processes set `CREATE_NO_WINDOW` (`0x08000000`). |
