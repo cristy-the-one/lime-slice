@@ -21,6 +21,7 @@ import { assemblyNotice, shellCount } from "../mesh-shells";
 import { emptyOverrides } from "../overrides";
 import { isLimeProject } from "../file-drop";
 import { addedMesh, boundEntries, emptyPlate, oneObjectPlate, placeObject, plateObjectPositions, resetHeldGeometry, setSelectedOverride, withLivePose, type PlateObject } from "../plate";
+import { bedParts } from "../model-context";
 import { supportModeState } from "../support-source";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 
@@ -144,7 +145,7 @@ export function applyPlace(rerender: boolean, sync: SplitSync = "transform") {
   state.placed = currentPlacement();
   if (!state.placed) {
     fx.prepare.setMesh(null);
-    fx.prepare.setPlateBounds?.([]);
+    fx.prepare.setPlate?.([], []);
     if (rerender) renderChrome();
     return;
   }
@@ -153,7 +154,8 @@ export function applyPlace(rerender: boolean, sync: SplitSync = "transform") {
   fx.syncCut();
   fx.drawPaint?.();
   fx.prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
-  fx.prepare.setPlateBounds(boundEntries(state.plate, state.profile.bedX, state.profile.bedY));
+  const { bedX, bedY } = state.profile;
+  fx.prepare.setPlate(boundEntries(state.plate, bedX, bedY), bedParts(state.plate.objects, state.plate.selectedId, bedX, bedY));
   if (state.stage === "model") fx.refreshModelContext?.();
   paintPlaceFields();
   markProjectDirty();

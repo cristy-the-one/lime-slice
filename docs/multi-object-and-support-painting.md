@@ -112,6 +112,7 @@ A mock plate lives in the session, beside `state.mesh`. The adapter is marked mo
 
 - Add, select, duplicate, and delete objects. Selection is one id. The gizmo and the object list edit that id. Undo and redo (`src/app/history.ts`) record the selected object's placement, the same way they record the one pose today.
 - Collision and bed warnings use `boundsOf` and `offBed` on each object. Overlap of two boxes is a warning line, same tone as `offBed`.
+- Prepare draws the selected object as the editable mesh and every other object as a grey, see-through mesh at its plate pose. The grey meshes take no brush, gizmo, or click. An object in an overlap also keeps its amber box, because the overlap check is on boxes.
 - Arrange packs those boxes in rows on the bed, left to right, then a new row. It does not call the engine.
 - Slice, while the engine has no `objects` field, concatenates the placed meshes into one STL and sends today's body. The toast says the engine sliced one mesh. Per-object settings are not sent. `sequential` is refused in the UI until the engine accepts it.
 - The compact sheet lists objects in the existing object list. The prepare canvas at the peek detent stays at least 70% of a 390×844 screen.
