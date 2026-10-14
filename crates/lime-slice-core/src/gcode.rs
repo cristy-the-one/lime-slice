@@ -1487,7 +1487,10 @@ impl Writer {
 
     fn write_path(&mut self, layer: &PlateLayer, path: &Extrusion, entry: Entry) {
         self.set_advance(path.kind.as_str());
-        if layer.own >= 2 {
+        // A held fan (a requested bridge boost) is emitted on every layer.
+        // The next path does not hold it, so the layer fan comes back.
+        // Without a hold, the first layer stays off and the second stays at half.
+        if path.fan_hold || layer.own >= 2 {
             self.set_fan(path.fan);
         } else if layer.own == 1 {
             self.set_fan(128);

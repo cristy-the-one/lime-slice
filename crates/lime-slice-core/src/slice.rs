@@ -49,6 +49,7 @@ use crate::support::{
 };
 use crate::toolpath::{
     apply_overhang, apply_scarf, apply_z_hop, comb_layer, island_loops, lightning_pitch,
+    BridgeTune,
     belt_raft_paths, order_supports, plan_brim, plan_ironing, plan_mouse_ears, plan_region_split, plan_skirt, plan_support,
     plan_tree_brim, plan_tree_support,
     CapFeed, Extrusion, PartLayout, PathFeatures, PathKind, ScarfParams, Seam, ShellBand, Skin,
@@ -190,6 +191,16 @@ pub struct SliceRequest {
     /// Concentric brim around tree trunks on the first layer. Omitted prints none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub support_tree_brim_mm: Option<f64>,
+    /// Multiplier on a bridge bead. Omitted keeps 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_flow_ratio: Option<f64>,
+    /// Bridge feed, millimetres per second. Omitted keeps the 18–36 mm/s slowdown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_speed_mm_s: Option<f64>,
+    /// Bridge fan, percent of full. Omitted keeps the layer fan, with bridges at
+    /// full fan on layers that use the path fan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_fan_percent: Option<u8>,
     /// Combine sparse infill on speed and low-weight blends. Default on.
     #[serde(default = "default_true")]
     pub infill_combine: bool,
@@ -432,6 +443,12 @@ pub struct SliceSettings {
     pub support_interface_layers: Option<u32>,
     /// `None` prints tree trunks on layer 0 with no extra brim.
     pub support_tree_brim_mm: Option<f64>,
+    /// `None` keeps bridge flow at 1.
+    pub bridge_flow_ratio: Option<f64>,
+    /// `None` keeps the 18–36 mm/s bridge slowdown.
+    pub bridge_speed_mm_s: Option<f64>,
+    /// `None` keeps the layer fan. A percent holds that PWM on the bridge.
+    pub bridge_fan_percent: Option<u8>,
     pub scarf_seam: ScarfSeam,
     pub scarf_length: f64,
     pub scarf_steps: u32,
@@ -528,6 +545,9 @@ impl Default for SliceSettings {
             support_xy_gap_mm: None,
             support_interface_layers: None,
             support_tree_brim_mm: None,
+            bridge_flow_ratio: None,
+            bridge_speed_mm_s: None,
+            bridge_fan_percent: None,
             scarf_seam: ScarfSeam::Blend,
             scarf_length: default_scarf_length(),
             scarf_steps: default_scarf_steps(),
@@ -679,6 +699,9 @@ impl SliceSettings {
             },
             support_tree_brim_mm: support_gap(req.classic, req.support_tree_brim_mm, 20.0)
                 .filter(|mm| *mm > 1e-6),
+            bridge_flow_ratio: bridge_flow(req.classic, req.bridge_flow_ratio),
+            bridge_speed_mm_s: bridge_speed(req.classic, req.bridge_speed_mm_s),
+            bridge_fan_percent: bridge_fan(req.classic, req.bridge_fan_percent),
             scarf_seam: if req.classic {
                 ScarfSeam::Off
             } else {
@@ -914,6 +937,59 @@ fn support_gap(classic: bool, value: Option<f64>, max: f64) -> Option<f64> {
         return None;
     }
     value.map(|mm| mm.clamp(0.0, max))
+}
+
+/// A bridge flow the request actually set. `1` is the bead bridges already use.
+fn bridge_flow(classic: bool, value: Option<f64>) -> Option<f64> {
+    if classic {
+        return None;
+    }
+    value.and_then(|ratio| {
+        let ratio = ratio.clamp(0.2, 2.0);
+        ((ratio - 1.0).abs() >= 1e-9).then_some(ratio)
+    })
+}
+
+/// A bridge feed the request actually set. Tiny values stay on the 18–36 mm/s clamp.
+fn bridge_speed(classic: bool, value: Option<f64>) -> Option<f64> {
+    if classic {
+        return None;
+    }
+    value.and_then(|mm| (mm > 1e-6).then_some(mm.clamp(5.0, 200.0)))
+}
+
+/// A bridge fan percent the request actually set. `0` keeps the layer fan.
+fn bridge_fan(classic: bool, value: Option<u8>) -> Option<u8> {
+    if classic {
+        return None;
+    }
+    value.filter(|pct| *pct > 0).map(|pct| pct.min(100))
+}
+
+/// `None` when every bridge field is off, so overhang splitting is unchanged.
+fn bridge_tune(settings: &SliceSettings) -> Option<BridgeTune> {
+    let flow = settings.bridge_flow_ratio.and_then(|ratio| {
+        let ratio = ratio.clamp(0.2, 2.0);
+        ((ratio - 1.0).abs() >= 1e-9).then_some(ratio)
+    });
+    let speed_mm_s = settings
+        .bridge_speed_mm_s
+        .and_then(|mm| (mm > 1e-6).then_some(mm.clamp(5.0, 200.0)));
+    let fan_pwm = settings.bridge_fan_percent.and_then(|pct| {
+        (pct > 0).then_some({
+            let pct = u16::from(pct.min(100));
+            ((pct * 255) / 100) as u8
+        })
+    });
+    if flow.is_none() && speed_mm_s.is_none() && fan_pwm.is_none() {
+        None
+    } else {
+        Some(BridgeTune {
+            flow,
+            speed_mm_s,
+            fan_pwm,
+        })
+    }
 }
 
 fn default_scarf_length() -> f64 {
@@ -1566,6 +1642,9 @@ fn resolved(settings: &SliceSettings) -> SliceSettings {
         settings.support_xy_gap_mm = None;
         settings.support_interface_layers = None;
         settings.support_tree_brim_mm = None;
+        settings.bridge_flow_ratio = None;
+        settings.bridge_speed_mm_s = None;
+        settings.bridge_fan_percent = None;
     }
     settings
 }
@@ -4554,6 +4633,7 @@ fn part_paths(
                     &contours[i - 1],
                     band.height,
                     settings.line_width,
+                    bridge_tune(settings),
                 );
             }
             if let Some(ironing) = ironing {
