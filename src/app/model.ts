@@ -1,4 +1,4 @@
-import { bytesToBase64 } from "../base64";
+import { base64ToBytes, bytesToBase64 } from "../base64";
 import { encodeStl, settle } from "../mesh-place";
 import type { ModelPick, ModelSolid } from "../model-view";
 import { holeAxis, lastFace, outwardFromMesh, selectedEdges } from "../model-blend";
@@ -47,7 +47,6 @@ import {
 import { mountModelHistory, syncModelHistory } from "../ui/model-history";
 import { dropRefusal } from "../model-history";
 import { addedSplit, meshTokenOf, withBrepFor } from "../plate";
-import { base64ToBytes } from "../project";
 import { authHeaders } from "../ui/api-base";
 import { livePlate, place } from "./files";
 import { editHistoryRefs, endModelVisit, flushEdit, markModelEdit, noteEdit, patchEditBrep } from "./history";

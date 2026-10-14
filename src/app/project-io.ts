@@ -10,7 +10,8 @@ import {
   type PlateFileObject,
 } from "../plate.ts";
 import { dropEmptyReinforce } from "../reinforcement.ts";
-import { base64ToBytes, meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement } from "../project.ts";
+import { base64ToBytes } from "../base64.ts";
+import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement } from "../project.ts";
 import { saveProfile } from "../profiles.ts";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel.ts";
 import { pushToast } from "../ui/toasts.ts";
