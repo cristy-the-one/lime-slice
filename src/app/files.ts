@@ -17,6 +17,7 @@ import { pushToast } from "../ui/toasts";
 import { clearEdits } from "../support-edit-list";
 import { clearEditHistory, flushEdit, noteEdit } from "./history";
 import { foreign3mfMessage, foreignSlicer3mf } from "../foreign-3mf";
+import { assemblyNotice, shellCount } from "../mesh-shells";
 import { emptyOverrides } from "../overrides";
 import { isLimeProject } from "../file-drop";
 import { addedMesh, boundEntries, emptyPlate, oneObjectPlate, placeObject, plateObjectPositions, resetHeldGeometry, withLivePose, type PlateObject } from "../plate";
@@ -86,6 +87,7 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
     const vendor = foreignSlicer3mf(new Uint8Array(bytes));
     if (vendor) pushToast(foreign3mfMessage(vendor), "info");
   }
+  offerAssemblySplit(name, state.sourcePos, state.plate.selectedId);
   place("load");
   fx.setStage("prepare");
   // An Add that started during this read was aimed at the plate it replaced.
@@ -521,8 +523,16 @@ async function addMeshNow(name: string, bytes: ArrayBuffer) {
     const vendor = foreignSlicer3mf(new Uint8Array(bytes));
     if (vendor) pushToast(foreign3mfMessage(vendor), "info");
   }
+  offerAssemblySplit(name, sourcePos, state.plate.selectedId);
   place();
   flushEdit();
+}
+
+function offerAssemblySplit(name: string, positions: Float32Array | null, id: string | null) {
+  if (session.projectRestoring || !positions || !id) return;
+  const notice = assemblyNotice(name, shellCount(positions));
+  if (!notice) return;
+  pushToast(notice.message, "info", { label: notice.label, run: () => { fx.separateShells?.(id); } });
 }
 
 export function fail(err: unknown) {

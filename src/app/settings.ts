@@ -13,6 +13,7 @@ import { applySliceProgress, currentSliceProgress } from "../ui/slice-progress";
 import { filamentCost, filamentGrams, groupFeatures } from "../estimate";
 import { durationTile, formatCount, formatDuration, formatLength, formatMass, formatMetres, formatMoney, formatMs } from "../format";
 import { OTHER_COLOR, featureColor } from "../colors";
+import { shellCount } from "../mesh-shells";
 import { formatDeg, offBed, orientEuler } from "../mesh-place";
 import { boundsSize, objectMarks, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty, sourceFrame } from "../plate";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys } from "../presets";
@@ -631,6 +632,16 @@ function objectToolsHtml(): string {
   </div>`;
 }
 
+function separateShellsHtml(): string {
+  const shells = state.sourcePos ? shellCount(state.sourcePos) : 0;
+  const ready = shells >= 2;
+  const tip = ready
+    ? `Make ${shells} objects from the separate shells. They stay where they are. Cut faces are not laid on the bed.`
+    : "This object is one connected solid.";
+  const label = ready ? `Separate into ${shells} objects` : "Separate into plate objects";
+  return `<div class="separate-row" data-tip="${escapeHtml(tip)}"><button class="btn" id="separateShells" type="button"${ready ? "" : " disabled"} aria-label="${escapeHtml(label)}">${escapeHtml(label)}</button></div>`;
+}
+
 export function isStepName(name: string) {
   return /\.(step|stp)$/i.test(name);
 }
@@ -703,6 +714,7 @@ function objectPlaceHtml(): string {
       <label class="setting" data-label="rotation y" data-keywords="turn angle degrees gizmo"><span class="scrub-label" data-scrub="ry">Ry °</span><input id="placeRy" type="number" step="0.1" value="${formatDeg(euler.ry)}" aria-label="Rotation Y" /></label>
       <label class="setting" data-label="rotation z" data-keywords="turn angle degrees gizmo"><span class="scrub-label" data-scrub="rz">Rz °</span><input id="placeRz" type="number" step="0.1" value="${formatDeg(euler.rz)}" aria-label="Rotation Z" /></label>
     </div>
+    ${separateShellsHtml()}
     ${isStepName(state.mesh?.name ?? "") ? `<label class="row setting" data-label="step chord mm" data-keywords="tessellation tolerance"><span class="row-label" data-tip="Largest gap between a curved STEP surface and its triangles, in mm">STEP chord</span><input id="stepTol" type="number" min="0.01" max="2" step="0.01" value="${state.stepTolerance}" /></label>` : ""}
   `;
 }
