@@ -1,8 +1,10 @@
 /**
  * Drag a placement label. One gesture, one undo step.
  * X and Y call `setPlaceCenter`. Scale writes the one `partScale` multiplier.
+ * Rx, Ry, and Rz write that one Euler angle of the same pose the rings compose.
  * A short or vertical drag does not capture, so the sheet can scroll.
  */
+import { orientEuler } from "../mesh-place";
 import { scrubIntent, scrubTarget, type ScrubIntent } from "../ui/scrub";
 import { fx } from "./fx";
 import { setPlaceCenter } from "./files";
@@ -16,8 +18,10 @@ const SCALE_STEP = 1;
 const SCALE_SHIFT = 5;
 const SCALE_MIN = 10;
 const SCALE_MAX = 400;
+const ROT_STEP = 0.1;
+const ROT_SHIFT = 15;
 
-type Axis = "x" | "y" | "scale";
+type Axis = "x" | "y" | "scale" | "rx" | "ry" | "rz";
 
 type Drag = {
   id: number;
@@ -46,7 +50,21 @@ function hud(axis: Axis, total: number): string {
 
 function blurPlaceField() {
   const active = document.activeElement;
-  if (active instanceof HTMLInputElement && (active.id === "placeX" || active.id === "placeY" || active.id === "partScale")) active.blur();
+  if (active instanceof HTMLInputElement && (active.id === "placeX" || active.id === "placeY" || active.id === "partScale" || active.id === "placeRx" || active.id === "placeRy" || active.id === "placeRz")) active.blur();
+}
+
+function rotAxis(axis: Axis): "x" | "y" | "z" | null {
+  if (axis === "rx") return "x";
+  if (axis === "ry") return "y";
+  if (axis === "rz") return "z";
+  return null;
+}
+
+function eulerComponent(axis: "rx" | "ry" | "rz"): number {
+  const euler = orientEuler(state.orient);
+  if (axis === "rx") return euler.rx;
+  if (axis === "ry") return euler.ry;
+  return euler.rz;
 }
 
 function writeScale(percent: number) {
@@ -98,11 +116,19 @@ function onMove(ev: PointerEvent) {
   }
   if (current.mode !== "scrub") return;
   ev.preventDefault();
-  const move = current.axis !== "scale";
-  const total = scrubTarget(dx, ev.shiftKey, move ? MOVE_STEP_MM : SCALE_STEP, move ? MOVE_SHIFT_MM : SCALE_SHIFT);
-  const next = move
-    ? Math.round((current.origin + total) * 1000) / 1000
-    : Math.min(SCALE_MAX, Math.max(SCALE_MIN, Math.round(current.origin + total)));
+  const rotate = rotAxis(current.axis);
+  const move = current.axis === "x" || current.axis === "y";
+  const total = scrubTarget(
+    dx,
+    ev.shiftKey,
+    rotate ? ROT_STEP : move ? MOVE_STEP_MM : SCALE_STEP,
+    rotate ? ROT_SHIFT : move ? MOVE_SHIFT_MM : SCALE_SHIFT,
+  );
+  const next = rotate
+    ? Math.round((current.origin + total) * 10) / 10
+    : move
+      ? Math.round((current.origin + total) * 1000) / 1000
+      : Math.min(SCALE_MAX, Math.max(SCALE_MIN, Math.round(current.origin + total)));
   if (!current.opened) {
     if (next === current.origin) return;
     beginEdit();
@@ -111,11 +137,15 @@ function onMove(ev: PointerEvent) {
   if (current.axis === "x" || current.axis === "y") {
     state.poseHud = hud(current.axis, total);
     fx.paintGizmoReadout?.();
+  } else if (rotate) {
+    state.poseHud = `R${rotate.toUpperCase()} ${total >= 0 ? "+" : ""}${total.toFixed(1)}°`;
+    fx.paintGizmoReadout?.();
   }
   if (next === current.written) return;
   current.written = next;
   if (current.axis === "scale") writeScale(next);
-  else setPlaceCenter(current.axis, next);
+  else if (rotate) fx.setOrientAngle(rotate, next);
+  else if (current.axis === "x" || current.axis === "y") setPlaceCenter(current.axis, next);
 }
 
 function onUp(ev: PointerEvent) {
@@ -129,8 +159,8 @@ export function bindPlaceScrub(root: HTMLElement) {
     if (ev.button !== 0 || drag) return;
     const label = (ev.target as HTMLElement).closest<HTMLElement>("[data-scrub]");
     const axis = label?.dataset.scrub;
-    if (axis !== "x" && axis !== "y" && axis !== "scale") return;
-    const origin = axis === "scale" ? Math.round(state.partScale * 100) : centerOf(axis);
+    if (axis !== "x" && axis !== "y" && axis !== "scale" && axis !== "rx" && axis !== "ry" && axis !== "rz") return;
+    const origin = axis === "scale" ? Math.round(state.partScale * 100) : axis === "rx" || axis === "ry" || axis === "rz" ? eulerComponent(axis) : centerOf(axis);
     if (origin == null || !label) return;
     // Placement labels sit on the number. Cancelling the click keeps it from focusing.
     // A volume name is the summary's label: a click must still open the row.

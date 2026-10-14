@@ -44,9 +44,9 @@ export function mountSupportPaint(prepare: PrepareView, hooks: SupportPaintHooks
     <div class="pb-kind" role="group" aria-label="Brush">
       <button type="button" data-kind="enforce"><span class="pb-swatch" aria-hidden="true"></span>${KIND_LABEL.enforce}</button><button type="button" data-kind="block"><span class="pb-swatch" aria-hidden="true"></span>${KIND_LABEL.block}</button>
     </div>
-    <label class="pb-radius">Radius
-      <input id="brushRadius" type="range" min="${BRUSH_R_MIN_MM}" max="${BRUSH_R_MAX_MM}" step="0.5" value="${BRUSH_R_DEFAULT_MM}" aria-label="Brush radius" />
-      <output id="brushRadiusOut" for="brushRadius"></output>
+    <label class="pb-radius">
+      <span class="scrub-label" data-scrub="field">Radius</span>
+      <input id="brushRadius" data-brush-radius type="number" min="${BRUSH_R_MIN_MM}" max="${BRUSH_R_MAX_MM}" step="0.5" value="${BRUSH_R_DEFAULT_MM}" aria-label="Brush radius" />
     </label>
     <button type="button" class="btn" id="paintClear">Clear</button>
     <button type="button" class="btn" id="paintDone">Done</button>
@@ -54,13 +54,16 @@ export function mountSupportPaint(prepare: PrepareView, hooks: SupportPaintHooks
   document.querySelector("#prepareBody")?.append(bar);
 
   const radiusInput = bar.querySelector<HTMLInputElement>("#brushRadius")!;
-  const radiusOut = bar.querySelector<HTMLOutputElement>("#brushRadiusOut")!;
   const status = bar.querySelector<HTMLElement>("#paintStatus")!;
   const clear = bar.querySelector<HTMLButtonElement>("#paintClear")!;
   let on = false;
   let kind: PaintKind = "block";
 
-  const radius = () => Number(radiusInput.value);
+  const radius = () => {
+    const n = Number(radiusInput.value);
+    if (!Number.isFinite(n)) return BRUSH_R_DEFAULT_MM;
+    return Math.min(BRUSH_R_MAX_MM, Math.max(BRUSH_R_MIN_MM, n));
+  };
 
   function sync() {
     const view = hooks.view();
@@ -71,7 +74,6 @@ export function mountSupportPaint(prepare: PrepareView, hooks: SupportPaintHooks
     for (const button of bar.querySelectorAll<HTMLButtonElement>("[data-kind]")) {
       button.setAttribute("aria-pressed", button.dataset.kind === kind ? "true" : "false");
     }
-    radiusOut.textContent = `${radius().toFixed(1)} mm`;
     const counts = paintCounts(view.disks);
     clear.disabled = view.disks.length === 0;
     bar.dataset.enforce = String(counts.enforce);

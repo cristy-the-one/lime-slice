@@ -67,7 +67,7 @@ test("block paint on the ledge drops its supports, and undo brings them back", a
   await bar.getByRole("button", { name: "Block" }).click();
   await expect(bar.getByRole("button", { name: "Block" })).toHaveAttribute("aria-pressed", "true");
   await page.locator("#brushRadius").fill("20");
-  await expect(page.locator("#brushRadiusOut")).toHaveText("20.0 mm");
+  await expect(page.locator("#brushRadius")).toHaveValue("20");
 
   // The ledge's front face, low, near its free end: a 20 mm ball there reaches most of its
   // underside. Hits are bed millimetres, so the face is found from the hits themselves: the

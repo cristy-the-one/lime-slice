@@ -1,5 +1,5 @@
 import { fnv1aHex } from "./slice-action.ts";
-import { boundsOf, encodeStl, layFlatMatrix, matMul, placeMesh, poseAffine, settle, rotX, rotY, rotZ, scaledCanonical, transformPositions, type Mat3, type MeshShift } from "./mesh-place.ts";
+import { boundsOf, encodeStl, eulerOrient, layFlatMatrix, matMul, orientEuler, placeMesh, poseAffine, settle, rotX, rotY, rotZ, scaledCanonical, transformPositions, type Mat3, type MeshShift } from "./mesh-place.ts";
 
 let failed = 0;
 
@@ -78,6 +78,39 @@ for (const c of cases) {
   }
   eq(`${c.name}: the Prepare view's pose matrix draws the placed mesh within 1 µm`, worst < 1e-3, true);
 }
+
+function matricesClose(a: Mat3, b: Mat3): boolean {
+  return a.every((value, index) => Math.abs(value - b[index]) < 1e-6);
+}
+
+const angles: [number, number, number][] = [
+  [0, 0, 0],
+  [22.5, 0, 0],
+  [0, -15, 40],
+  [90, 0, 0],
+  [10, 20, 30],
+  [-170, 5, 5],
+  [30, 90, 10],
+  [12, -90, 40],
+];
+for (const [rx, ry, rz] of angles) {
+  const built = eulerOrient(rx, ry, rz);
+  const back = orientEuler(built);
+  eq(`euler ${rx},${ry},${rz} rebuilds the same pose`, matricesClose(built, eulerOrient(back.rx, back.ry, back.rz)), true);
+}
+
+const worldX = orientEuler(matMul(rotX(22.5), [1, 0, 0, 0, 1, 0, 0, 0, 1]));
+eq(
+  "a world X ring is Rx",
+  Math.abs(worldX.rx - 22.5) < 1e-6 && Math.abs(worldX.ry) < 1e-6 && Math.abs(worldX.rz) < 1e-6,
+  true,
+);
+const composed = orientEuler(matMul(rotZ(90), rotX(22.5)));
+eq(
+  "Z then X is Rz and Rx",
+  Math.abs(composed.rx - 22.5) < 1e-4 && Math.abs(composed.ry) < 1e-4 && Math.abs(composed.rz - 90) < 1e-4,
+  true,
+);
 
 if (failed) throw new Error(`${failed} mesh-place check(s) failed`);
 console.log("mesh-place: ok");

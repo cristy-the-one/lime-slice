@@ -29,7 +29,7 @@ import { matMul, rotX, rotY, rotZ } from "../mesh-place";
 import { type Box, unionBox } from "../measure";
 import { mountMeasureOverlay, type MeasureOverlay } from "../measure-overlay";
 import { measureOn, onMeasureChange } from "../measure-pref";
-import { type Vec3, sectionReach, type SectionSpec, keepsPoint, clipPolyline, layerCut } from "../section-plane";
+import { type Vec3, sectionAxis, sectionReach, type SectionSpec, keepsPoint, clipPolyline, layerCut } from "../section-plane";
 
 export function paintLegend() {
   const kinds = new Set<string>();
@@ -834,9 +834,12 @@ export function paintSectionChrome() {
   const preview = state.stage === "preview";
   const on = state.sectionOn;
   document.querySelector<HTMLElement>("#sectionField")!.hidden = !preview;
+  document.querySelector<HTMLElement>("#sectionAxisField")!.hidden = !(preview && on);
   document.querySelector<HTMLElement>("#sectionOffsetField")!.hidden = !(preview && on);
   document.querySelector<HTMLElement>("#sectionFlip")!.hidden = !(preview && on);
   document.querySelector<HTMLInputElement>("#sectionOn")!.checked = on;
+  const axis = document.querySelector<HTMLSelectElement>("#sectionAxis")!;
+  if (document.activeElement !== axis) axis.value = sectionAxis(state.sectionNormal);
   const slider = document.querySelector<HTMLInputElement>("#sectionOffset")!;
   const reach = sectionLimit();
   slider.min = (-reach).toFixed(2);
