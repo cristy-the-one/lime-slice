@@ -17,6 +17,7 @@ import { clearSettingsSearch, commitTypedFields, focusSettingsSearch, revealPrin
 import { state } from "../app/state";
 import { scrub, setView } from "../app/viewer";
 import { pickModelFile } from "../platform";
+import { nudgeBrushRadius } from "./brush-radius";
 import { chordMatches, COMMANDS, helpGroups, MOUSE_HINTS, paletteCommands, rankCommands, shortcutOf, type CommandSpec } from "./commands";
 import { pushToast } from "./toasts";
 import "./phase2.css";
@@ -259,10 +260,7 @@ function focusScale() {
 const VIEW_CYCLE = ["flat", "split", "solid"] as const;
 
 function stepBrush(by: number) {
-  const radius = document.querySelector<HTMLInputElement>('.paint-bar:not([hidden]) input[type="range"]');
-  if (!radius) return;
-  radius.value = String(Math.min(Number(radius.max), Math.max(Number(radius.min), Number(radius.value) + by)));
-  radius.dispatchEvent(new Event("input", { bubbles: true }));
+  nudgeBrushRadius(by);
 }
 
 /** Slice from a key: a field still holding typed text stores it first, as clicking Slice would. */

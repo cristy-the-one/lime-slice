@@ -29,6 +29,35 @@ export function clampOffset(offset: number, reach: number): number {
   return Math.min(reach, Math.max(-reach, offset));
 }
 
+export type SectionAxis = "x" | "y" | "z" | "custom";
+
+/** Which bed axis the normal lies on. A tilted plane is Custom. Sign does not matter. */
+export function sectionAxis(normal: Vec3): SectionAxis {
+  const n = normalize(normal);
+  const axes: [Exclude<SectionAxis, "custom">, Vec3][] = [
+    ["x", [1, 0, 0]],
+    ["y", [0, 1, 0]],
+    ["z", [0, 0, 1]],
+  ];
+  for (const [name, axis] of axes) {
+    const dot = Math.abs(n[0] * axis[0] + n[1] * axis[1] + n[2] * axis[2]);
+    if (dot > 0.999) return name;
+  }
+  return "custom";
+}
+
+/**
+ * Unit normal for an axis choice. The opposite of the current normal is kept,
+ * so choosing the axis the plane already uses does not flip the hidden side.
+ */
+export function axisNormal(axis: Exclude<SectionAxis, "custom">, current: Vec3): Vec3 {
+  const unit: Vec3 = axis === "x" ? [1, 0, 0] : axis === "y" ? [0, 1, 0] : [0, 0, 1];
+  const n = normalize(current);
+  const dot = n[0] * unit[0] + n[1] * unit[1] + n[2] * unit[2];
+  if (dot < -0.999) return [-unit[0], -unit[1], -unit[2]];
+  return unit;
+}
+
 /** Point on the plane closest to the part center. */
 export function anchor(center: Vec3, spec: SectionSpec): Vec3 {
   return [

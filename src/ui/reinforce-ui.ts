@@ -61,9 +61,9 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
   bar.setAttribute("aria-label", "Reinforce");
   bar.hidden = true;
   bar.innerHTML = `
-    <label class="pb-radius">Radius
-      <input id="reinforceRadius" type="range" min="${BRUSH_R_MIN_MM}" max="${BRUSH_R_MAX_MM}" step="0.5" value="${BRUSH_R_DEFAULT_MM}" aria-label="Reinforce brush radius" />
-      <output id="reinforceRadiusOut" for="reinforceRadius"></output>
+    <label class="pb-radius">
+      <span class="scrub-label" data-scrub="field">Radius</span>
+      <input id="reinforceRadius" data-brush-radius type="number" min="${BRUSH_R_MIN_MM}" max="${BRUSH_R_MAX_MM}" step="0.5" value="${BRUSH_R_DEFAULT_MM}" aria-label="Reinforce brush radius" />
     </label>
     <label class="pb-radius" id="reinforceDepthField">Depth
       <input id="reinforceDepth" type="range" min="0.5" max="${REINFORCE_DEPTH_MAX_MM}" step="0.5" value="${REINFORCE_DEPTH_DEFAULT_MM}" aria-label="Reinforce depth" />
@@ -87,7 +87,6 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
   document.querySelector("#prepareBody")?.append(bar);
 
   const radiusInput = bar.querySelector<HTMLInputElement>("#reinforceRadius")!;
-  const radiusOut = bar.querySelector<HTMLOutputElement>("#reinforceRadiusOut")!;
   const depthField = bar.querySelector<HTMLElement>("#reinforceDepthField")!;
   const depthInput = bar.querySelector<HTMLInputElement>("#reinforceDepth")!;
   const depthOut = bar.querySelector<HTMLOutputElement>("#reinforceDepthOut")!;
@@ -106,7 +105,11 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
   let pendingDepthMm = REINFORCE_DEPTH_DEFAULT_MM;
   let pendingFillThrough = false;
 
-  const radius = () => Number(radiusInput.value);
+  const radius = () => {
+    const n = Number(radiusInput.value);
+    if (!Number.isFinite(n)) return BRUSH_R_DEFAULT_MM;
+    return Math.min(BRUSH_R_MAX_MM, Math.max(BRUSH_R_MIN_MM, n));
+  };
 
   function activePaintRegion(regions: readonly ReinforceRegion[], activeIndex: number) {
     const r = regions[activeIndex];
@@ -187,8 +190,6 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
     tool.classList.toggle("is-disabled", !view.hasMesh);
     bar.hidden = !on;
     document.documentElement.dataset.reinforcePaint = on ? "1" : "";
-    radiusOut.textContent = `${radius().toFixed(1)} mm`;
-
     const paintReg = activePaintRegion(view.regions, view.activeIndex);
     const volReg = activeVolumeRegion(view.regions, view.activeIndex);
     const depthMm = paintReg ? paintReg.depthMm : pendingDepthMm;

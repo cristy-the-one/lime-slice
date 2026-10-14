@@ -13,7 +13,7 @@ import { applySliceProgress, currentSliceProgress } from "../ui/slice-progress";
 import { filamentCost, filamentGrams, groupFeatures } from "../estimate";
 import { durationTile, formatCount, formatDuration, formatLength, formatMass, formatMetres, formatMoney, formatMs } from "../format";
 import { OTHER_COLOR, featureColor } from "../colors";
-import { offBed } from "../mesh-place";
+import { formatDeg, offBed, orientEuler } from "../mesh-place";
 import { boundsSize, objectMarks, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty, sourceFrame } from "../plate";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys } from "../presets";
 import { saveProfile } from "../profiles";
@@ -690,12 +690,18 @@ function objectPlaceHtml(): string {
   const cy = ((b.min[1] + b.max[1]) / 2).toFixed(1);
   const z0 = b.min[2].toFixed(1);
   const selectedNotes = limit(b);
+  const euler = orientEuler(state.orient);
   return `
     ${selectedNotes.length ? `<div class="meta warn-text">${selectedNotes.join("; ")}</div>` : ""}
     <div class="grid3" id="placeXY" data-bed-z="${z0}">
       <label class="setting" data-label="position x" data-keywords="placement move bed offset"><span class="scrub-label" data-scrub="x">X mm</span><input id="placeX" type="number" step="0.1" value="${cx}" aria-label="Position X" /></label>
       <label class="setting" data-label="position y" data-keywords="placement move bed offset"><span class="scrub-label" data-scrub="y">Y mm</span><input id="placeY" type="number" step="0.1" value="${cy}" aria-label="Position Y" /></label>
       <label class="setting" data-label="scale %" data-keywords="placement size percent"><span class="scrub-label" data-scrub="scale">Scale %</span><input id="partScale" type="number" min="10" max="400" step="5" value="${Math.round(state.partScale * 100)}" /></label>
+    </div>
+    <div class="grid3" id="placeRot">
+      <label class="setting" data-label="rotation x" data-keywords="turn angle degrees gizmo"><span class="scrub-label" data-scrub="rx">Rx °</span><input id="placeRx" type="number" step="0.1" value="${formatDeg(euler.rx)}" aria-label="Rotation X" /></label>
+      <label class="setting" data-label="rotation y" data-keywords="turn angle degrees gizmo"><span class="scrub-label" data-scrub="ry">Ry °</span><input id="placeRy" type="number" step="0.1" value="${formatDeg(euler.ry)}" aria-label="Rotation Y" /></label>
+      <label class="setting" data-label="rotation z" data-keywords="turn angle degrees gizmo"><span class="scrub-label" data-scrub="rz">Rz °</span><input id="placeRz" type="number" step="0.1" value="${formatDeg(euler.rz)}" aria-label="Rotation Z" /></label>
     </div>
     ${isStepName(state.mesh?.name ?? "") ? `<label class="row setting" data-label="step chord mm" data-keywords="tessellation tolerance"><span class="row-label" data-tip="Largest gap between a curved STEP surface and its triangles, in mm">STEP chord</span><input id="stepTol" type="number" min="0.01" max="2" step="0.01" value="${state.stepTolerance}" /></label>` : ""}
   `;
@@ -707,7 +713,7 @@ const SEQUENTIAL = {
 } as const;
 type SequentialId = keyof typeof SEQUENTIAL;
 
-const TYPED_FIELDS = ["seqclear", "seqgantry", "placeX", "placeY", "objInfill", "objWalls", "objSpeed"];
+const TYPED_FIELDS = ["seqclear", "seqgantry", "placeX", "placeY", "placeRx", "placeRy", "placeRz", "objInfill", "objWalls", "objSpeed"];
 
 /** These commit on `change`, so a re-render while one holds typed text must commit it first and give focus back. */
 function typedField(): HTMLInputElement | null {
@@ -728,6 +734,15 @@ function commitTypedField(el: HTMLInputElement): boolean {
       if (!Number.isFinite(mm)) return false;
       noteEdit();
       fx.setPlaceCenter(el.id === "placeX" ? "x" : "y", mm);
+      return true;
+    }
+    case "placeRx":
+    case "placeRy":
+    case "placeRz": {
+      const deg = Number(el.value);
+      if (!Number.isFinite(deg)) return false;
+      noteEdit();
+      fx.setOrientAngle(el.id === "placeRx" ? "x" : el.id === "placeRy" ? "y" : "z", deg);
       return true;
     }
     case "objInfill":

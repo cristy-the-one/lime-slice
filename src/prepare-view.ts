@@ -5,6 +5,7 @@ import { syncBedGrid } from "./bed-grid";
 import { poseAffine, type Bounds, type PlacedPart } from "./mesh-place";
 import { buildCutPlane, disposeTree, prepareFrame, splitDragAt, type PrintFrame } from "./cut-plane";
 import { GIZMO_NUDGE_DEG, GIZMO_NUDGE_MM, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep, wheelNotch } from "./gizmo-math";
+import { nudgeBrushRadius } from "./ui/brush-radius";
 import { clampSplit, roundSplit, type SplitAxis } from "./split-at";
 import { createModifierScene } from "./modifier-scene";
 import type { OverrideDocument } from "./overrides";
@@ -1154,7 +1155,17 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let gizmoWheel = 0;
   let gizmoWheelKind: "ring" | "move" | null = null;
   let gizmoWheelTimer = 0;
+  let brushWheel = 0;
   canvas.addEventListener("wheel", (ev) => {
+    // Plain wheel still orbits. Alt or Shift sizes the open brush, in step with its number.
+    if (brush && (ev.altKey || ev.shiftKey) && !drag && stroke === null) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const turned = wheelNotch(ev.deltaY, ev.deltaMode, brushWheel);
+      brushWheel = turned.accum;
+      if (turned.notches !== 0) nudgeBrushRadius(turned.notches * 0.5);
+      return;
+    }
     if (!meshBounds || brush || drag || stroke !== null) return;
     const handle = hitHandle(ev);
     if (!handle) return;

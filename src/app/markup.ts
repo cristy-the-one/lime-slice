@@ -91,12 +91,21 @@ export function mountMarkup(root: HTMLElement) {
           <label class="view-toggle" id="measureField" data-tip="Sizes: the part's length, width and height, a scale bar, and numbers along the bed. The scale bar is measured at the view centre.">
             <input id="measureOn" type="checkbox" aria-label="Measure" checked /><span class="view-toggle-face">Measure</span>
           </label>
-          <label class="view-toggle" id="sectionField" data-tip="Section: clip the preview on the arrow side of a free plane. Cut slides the plane, the rings aim it. Does not change the slice.">
+          <label class="view-toggle" id="sectionField" data-tip="Section: clip the preview on the arrow side of a free plane. Offset slides the plane, the rings aim it, and the axis keeps it square to the bed. Does not change the slice.">
             <input id="sectionOn" type="checkbox" aria-label="Section" /><span class="view-toggle-face">Section</span>
           </label>
-          <label class="view-inline" id="sectionOffsetField" hidden data-tip="Distance from the part center along the section normal.">
-            Cut
-            <input id="sectionOffset" type="range" min="-100" max="100" step="0.1" value="0" aria-label="Section offset" />
+          <label class="view-inline" id="sectionAxisField" hidden data-tip="Align the section plane with a bed axis. Custom means the rings have tilted it.">
+            Axis
+            <select id="sectionAxis" aria-label="Section axis">
+              <option value="x">X</option>
+              <option value="y">Y</option>
+              <option value="z">Z</option>
+              <option value="custom" disabled>Custom</option>
+            </select>
+          </label>
+          <label class="view-inline" id="sectionOffsetField" hidden data-tip="Distance from the part center along the section normal, in millimetres.">
+            <span class="scrub-label" data-scrub="field">Offset mm</span>
+            <input id="sectionOffset" type="number" min="-100" max="100" step="0.1" value="0" aria-label="Section offset" />
           </label>
           <button class="btn" id="sectionFlip" type="button" hidden data-tip="Hide the other side of the section plane">Flip</button>
         </div>
