@@ -112,6 +112,7 @@ test("the grey object is not picked, framed, or counted in the bed and size read
   await twoObjects(page);
   await openModel(page, "small");
   await expect(page.locator("#model")).toHaveAttribute("data-context-count", "1");
+  await expect(page.locator("#model")).toHaveAttribute("data-context-screen", /^-?\d+,-?\d+,\d+,\d+$/);
   const [gx, gy, gw, gh] = ((await page.locator("#model").getAttribute("data-context-screen")) ?? "").split(",").map(Number);
   const box = (await page.locator("#model").boundingBox())!;
   expect(gw! * gh!, "the grey object is on screen").toBeGreaterThan(0);

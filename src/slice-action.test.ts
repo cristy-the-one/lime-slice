@@ -1,4 +1,4 @@
-import { autoSliceAllowed, coverageWarning, feed, fnv1aHex, inAirWarning, meshKeyHex, partFrameKey, quietRefresh, recipeKey, sliceAction, sliceBusyLabel, sliceErrorRetryable, storesReply } from "./slice-action.ts";
+import { autoSliceAllowed, autoSliceDeferred, coverageWarning, feed, fnv1aHex, inAirWarning, meshKeyHex, partFrameKey, quietRefresh, recipeKey, sliceAction, sliceBusyLabel, sliceErrorRetryable, storesReply } from "./slice-action.ts";
 
 let failed = 0;
 
@@ -105,6 +105,9 @@ eq("the first reply is stored", storesReply(null, before), true);
 eq("a pure move is not stored", storesReply(before, { frame: "frame-a", recipe: "recipe-a2" }), false);
 eq("a tweak is stored", storesReply(before, { frame: "frame-b", recipe: "recipe-b1" }), true);
 eq("the same recipe again is stored", storesReply(before, before), true);
+
+eq("the Model tab defers automatic slices", autoSliceDeferred("model"), true);
+eq("the other tabs slice as they change", ["prepare", "preview", "gcode"].map(autoSliceDeferred), [false, false, false]);
 
 eq("a fresh result needs no refresh", quietRefresh({ stale: false, cached: true, sameFrame: true }), false);
 eq("an X/Y move refreshes on its own, after a disk-cache load too", quietRefresh({ stale: true, cached: false, sameFrame: true }), true);
