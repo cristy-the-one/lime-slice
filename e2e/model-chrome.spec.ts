@@ -64,3 +64,42 @@ test("model mode shows the bed, the outer size, and measure callouts", async ({ 
   await expect(page.locator("#modelBody .measure svg")).toHaveCount(0);
   await expect(fit).toHaveText("40.0 × 40.0 × 20.0 mm");
 });
+
+function overlaps(a: { x: number; y: number; width: number; height: number }, b: { x: number; y: number; width: number; height: number }): boolean {
+  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+}
+
+test("model tool panels stay clear of the size chip, the measure control, and rail tips", async ({ page }) => {
+  await openModel(page);
+  const fit = page.locator("#modelFit");
+  const measure = page.locator("#measureField");
+  const tools = page.locator("#modelBar .model-tools");
+  const rail = page.locator("#toolRail");
+  const measureBox = await measure.boundingBox();
+  const toolsBox = await tools.boundingBox();
+  const railBox = await rail.boundingBox();
+  expect(measureBox && toolsBox && railBox).toBeTruthy();
+  expect(overlaps(measureBox!, toolsBox!)).toBe(false);
+  expect(overlaps(measureBox!, railBox!)).toBe(false);
+  expect(measureBox!.x).toBeGreaterThan(toolsBox!.x);
+
+  await page.locator("#modelToolBoolean").click();
+  await expect(page.locator("#modelPanel")).toBeVisible();
+  await expect(page.locator("#modelPrim")).toBeVisible();
+  const panel = page.locator("#modelPanel");
+  const prim = page.locator("#modelPrim");
+  expect(overlaps((await fit.boundingBox())!, (await panel.boundingBox())!)).toBe(false);
+  expect(overlaps((await fit.boundingBox())!, (await prim.boundingBox())!)).toBe(false);
+  if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/after-boolean-panel.png` });
+
+  await page.locator("#modelToolFillet").evaluate((button) => button.removeAttribute("disabled"));
+  await page.locator("#modelToolFillet").click();
+  await expect(page.locator("#modelBlend")).toBeVisible();
+  expect(overlaps((await fit.boundingBox())!, (await page.locator("#modelBlend").boundingBox())!)).toBe(false);
+  if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/after-fillet-panel.png` });
+  await page.locator('#toolRail [data-tool="scale"]').hover();
+  const tip = page.locator(".lime-tip");
+  await expect(tip).toBeVisible();
+  expect(overlaps((await tip.boundingBox())!, (await panel.boundingBox())!)).toBe(false);
+  if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/after-rail-tip.png` });
+});

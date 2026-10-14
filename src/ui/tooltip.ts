@@ -46,10 +46,15 @@ export function mountTooltips(root: ParentNode = document) {
       tip.append(kbd);
     }
     tip.dataset.open = "true";
+    const inRail = el.closest("#toolRail") != null;
     void computePosition(el, tip, {
       strategy: "fixed",
-      placement: "bottom",
-      middleware: [offset(8), flip({ padding: 8 }), shift({ padding: 8 })],
+      placement: inRail ? "left" : "bottom",
+      middleware: [
+        offset(8),
+        flip({ padding: 8, fallbackPlacements: inRail ? ["top", "right"] : undefined }),
+        shift({ padding: 8 }),
+      ],
     }).then(({ x, y }) => {
       if (host !== el) return;
       tip.style.left = `${x}px`;
