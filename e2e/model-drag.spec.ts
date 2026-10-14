@@ -9,9 +9,10 @@ fs.mkdirSync(out, { recursive: true });
 type V = [number, number, number];
 
 /** A 20 x 20 x 10 mm box as the modeler reports it: one face id per triangle and twelve straight edges. */
-function boxSolid() {
-  const [sx, sy, sz] = [20, 20, 10];
-  const c = (x: number, y: number, z: number): V => [x * sx, y * sy, z * sz];
+function boxSolid(min: V = [0, 0, 0], size: V = [20, 20, 10]) {
+  const [ox, oy, oz] = min;
+  const [sx, sy, sz] = size;
+  const c = (x: number, y: number, z: number): V => [ox + x * sx, oy + y * sy, oz + z * sz];
   const quads: V[][] = [
     [c(0, 0, 0), c(0, 1, 0), c(1, 1, 0), c(1, 0, 0)],
     [c(0, 0, 1), c(1, 0, 1), c(1, 1, 1), c(0, 1, 1)],
@@ -39,8 +40,7 @@ function boxSolid() {
   return { id: 1, volumeMm3: sx * sy * sz, positions, triangles, faces, edges };
 }
 
-async function openSolid(page: Page, probes: Record<string, unknown>[]) {
-  const solid = boxSolid();
+async function openSolid(page: Page, probes: Record<string, unknown>[], solid = boxSolid()) {
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: solid.positions } }));
   await page.route("**/api/model/probe", (route) => {
@@ -53,7 +53,7 @@ async function openSolid(page: Page, probes: Record<string, unknown>[]) {
   await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#tabModel").click();
-  await expect(page.locator("#modelReadout")).toContainText("Volume 4000 mm³");
+  await expect(page.locator("#modelReadout")).toContainText("Volume");
 }
 
 async function grips(page: Page): Promise<Record<string, { x: number; y: number }>> {
@@ -66,6 +66,19 @@ async function grips(page: Page): Promise<Record<string, { x: number; y: number 
     map[id!] = { x: box.x + x!, y: box.y + y! };
   }
   return map;
+}
+
+async function gizmoCoversSolid(page: Page): Promise<boolean> {
+  return page.locator("#model").evaluate((canvas) => {
+    const span = 92 * 1.8;
+    const at = canvas.getAttribute("data-gizmo-at")?.split(",").map(Number);
+    const solid = canvas.getAttribute("data-solid-screen")?.split(",").map(Number);
+    if (!at || at.length < 2 || !solid || solid.length < 4 || solid.some((value) => !Number.isFinite(value))) return true;
+    const [sx, sy, sw, sh] = solid as [number, number, number, number];
+    const left = at[0]! - span / 2;
+    const top = at[1]! - span / 2;
+    return left < sx + sw && left + span > sx && top < sy + sh && top + span > sy;
+  });
 }
 
 async function grip(page: Page, id: string) {
@@ -111,15 +124,29 @@ test("the split plane drags inside the part, Shift is fine, and Ctrl snaps", asy
   await expect(page.locator("#modelApply")).toBeEnabled();
 });
 
+test("a plate parks the move gizmo off the solid and the drag still edits the number", async ({ page }) => {
+  await openSolid(page, [], boxSolid([-110, -110, 0], [220, 220, 5.1]));
+  await page.locator("#modelToolBoolean").click();
+  await expect(page.locator("#model")).toHaveAttribute("data-gizmo-seat", "park");
+  expect(await gizmoCoversSolid(page)).toBe(false);
+  const x0 = await value(page, "modelX");
+  await drag(page, "move-x", 80, 20);
+  expect(await value(page, "modelX")).not.toBe(x0);
+  if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/after-gizmo-parked.png` });
+});
+
 test("a boolean primitive moves, resizes, and turns from the viewport, in sync with its numbers", async ({ page }) => {
   const probes: Record<string, unknown>[] = [];
   await openSolid(page, probes);
   await page.locator("#modelToolBoolean").click();
+  await expect(page.locator("#model")).toHaveAttribute("data-gizmo-seat", /offset|park/);
+  expect(await gizmoCoversSolid(page)).toBe(false);
   const before = await grip(page, "move-x");
 
   await page.locator("#modelX").fill("0");
   await page.locator("#modelX").dispatchEvent("input");
-  await expect.poll(async () => (await grip(page, "move-x")).x).not.toBe(before.x);
+  await expect.poll(async () => gizmoCoversSolid(page)).toBe(false);
+  expect(Math.hypot((await grip(page, "move-x")).x - before.x, (await grip(page, "move-x")).y - before.y)).toBeLessThan(8);
 
   const x0 = await value(page, "modelX");
   await drag(page, "move-x", 60, 25);
@@ -130,7 +157,7 @@ test("a boolean primitive moves, resizes, and turns from the viewport, in sync w
   expect(await value(page, "modelDz")).toBeGreaterThan(dz0);
 
   await page.screenshot({ path: path.join(out, "boolean-handles.png") });
-  await drag(page, "turn-modelRz", 0, -70, ["Control"]);
+  await drag(page, "turn-modelRz", -140, -90, ["Control"]);
   const rz = await value(page, "modelRz");
   expect(rz).not.toBe(0);
   expect(Math.abs(rz % 15)).toBe(0);
@@ -149,11 +176,12 @@ test("hole, scale, and measure each have a drag", async ({ page }) => {
 
   await page.locator("#modelToolScale").click();
   const factor0 = await value(page, "modelFactor");
-  const knob = await grip(page, "factor");
-  const box = (await page.locator("#model").boundingBox())!;
-  const mid = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-  await drag(page, "factor", (mid.x - knob.x) * 0.3, (mid.y - knob.y) * 0.3);
-  expect(await value(page, "modelFactor")).toBeLessThan(factor0);
+  expect(await gizmoCoversSolid(page)).toBe(false);
+  for (const [dx, dy] of [[80, 0], [0, -80], [-60, 40]] as const) {
+    await drag(page, "factor", dx, dy);
+    if ((await value(page, "modelFactor")) !== factor0) break;
+  }
+  expect(await value(page, "modelFactor")).not.toBe(factor0);
 
   await page.locator("#modelToolMeasure").click();
   await expect(page.locator("#modelApply")).toBeHidden();

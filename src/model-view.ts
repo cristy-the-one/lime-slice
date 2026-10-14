@@ -3,7 +3,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
-import { gizmoRadiusForPixels } from "./gizmo-math";
+import { gizmoRadiusForPixels, placeClearGizmo, type PxRect } from "./gizmo-math";
 import type { Box } from "./measure";
 import { perspectiveMeasure } from "./measure-camera";
 import { mountMeasureOverlay } from "./measure-overlay";
@@ -116,6 +116,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let down: { x: number; y: number } | null = null;
   let running = false;
   let handleParts: HandlePart[] = [];
+  const seat = new THREE.Vector3();
+  let seatReady = false;
+  let stickPark = false;
   let overHandle: string | null = null;
   let drag: ActiveDrag | null = null;
   let handleCb: (drag: HandleDrag) => void = () => {};
@@ -781,14 +784,72 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     paintHandles();
   }
 
+  /** Move and turn (and the scale knob) share one seat, off the solid. Face knobs stay on the feature they edit. */
+  function sharesSeat(handle: DragHandle): boolean {
+    return handle.id.startsWith("move-") || handle.id.startsWith("turn-") || handle.id === "factor";
+  }
+
+  function screenBox(box: Box | null, width: number, height: number): PxRect | null {
+    if (!box || width < 2 || height < 2) return null;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let seen = false;
+    for (const x of [box.min[0], box.max[0]]) {
+      for (const y of [box.min[1], box.max[1]]) {
+        for (const z of [box.min[2], box.max[2]]) {
+          const p = new THREE.Vector3(x, y, z).project(camera);
+          if (p.z < -1 || p.z > 1) continue;
+          seen = true;
+          minX = Math.min(minX, (p.x * 0.5 + 0.5) * width);
+          maxX = Math.max(maxX, (p.x * 0.5 + 0.5) * width);
+          minY = Math.min(minY, (-p.y * 0.5 + 0.5) * height);
+          maxY = Math.max(maxY, (-p.y * 0.5 + 0.5) * height);
+        }
+      }
+    }
+    if (!seen) return null;
+    return { x: minX, y: minY, w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY) };
+  }
+
+  function refreshSeat() {
+    const seated = handleParts.some((part) => sharesSeat(part.handle));
+    if (!seated) {
+      delete canvas.dataset.gizmoSeat;
+      delete canvas.dataset.gizmoAt;
+      delete canvas.dataset.solidScreen;
+      return;
+    }
+    if (drag && seatReady) return;
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    camera.updateMatrixWorld();
+    const object = screenBox(solidBox, width, height);
+    const span = HANDLE_PX * 1.8;
+    // The tool panel occupies the left of Model mode, so the clear seat is on the right.
+    const place = placeClearGizmo(width, height, object, span, stickPark, "right");
+    stickPark = place.parked;
+    const depth = controls.target.clone().project(camera).z;
+    seat.set(place.ndcX, place.ndcY, depth).unproject(camera);
+    seatReady = true;
+    canvas.dataset.gizmoSeat = place.parked ? "park" : "offset";
+    const projected = seat.clone().project(camera);
+    canvas.dataset.gizmoAt = `${Math.round((projected.x * 0.5 + 0.5) * width)},${Math.round((-projected.y * 0.5 + 0.5) * height)}`;
+    canvas.dataset.solidScreen = object ? `${Math.round(object.x)},${Math.round(object.y)},${Math.round(object.w)},${Math.round(object.h)}` : "";
+  }
+
   function sizeHandles() {
+    refreshSeat();
     const height = canvas.clientHeight;
     const grips: string[] = [];
     for (const part of handleParts) {
+      if (sharesSeat(part.handle) && seatReady) part.root.position.copy(seat);
+      else part.root.position.set(...part.handle.origin);
       const distance = camera.position.distanceTo(part.root.position);
       const size = gizmoRadiusForPixels(distance, camera.fov, height, HANDLE_PX, camera.zoom);
       part.root.scale.setScalar(size);
-      const at = gripPoint(part.handle, size).project(camera);
+      const at = gripPoint(part.handle, part.root.position, size).project(camera);
       grips.push(`${part.handle.id}:${Math.round((at.x * 0.5 + 0.5) * canvas.clientWidth)},${Math.round((-at.y * 0.5 + 0.5) * height)}`);
     }
     const text = grips.join(" ");
@@ -796,8 +857,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   /** Where a pointer grabs a handle: an arrow's head, a ring's rim, or a knob or dot itself. */
-  function gripPoint(handle: DragHandle, size: number): THREE.Vector3 {
-    const origin = new THREE.Vector3(...handle.origin);
+  function gripPoint(handle: DragHandle, at: THREE.Vector3, size: number): THREE.Vector3 {
+    const origin = at.clone();
     const dir = new THREE.Vector3(...handle.dir).normalize();
     if (handle.look === "arrow") return origin.addScaledVector(dir, 0.82 * size);
     if (handle.look !== "ring") return origin;
@@ -806,6 +867,12 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (rim.lengthSq() < 1e-9) rim = Math.abs(dir.z) < 0.9 ? new THREE.Vector3(0, 0, 1).cross(dir) : new THREE.Vector3(1, 0, 0).cross(dir);
     const side = rim.normalize().cross(dir);
     return origin.addScaledVector(side, 0.7 * size);
+  }
+
+  function shownOrigin(handle: DragHandle): THREE.Vector3 {
+    const part = handleParts.find((item) => item.handle.id === handle.id);
+    if (part && sharesSeat(handle) && seatReady) return part.root.position.clone();
+    return new THREE.Vector3(...handle.origin);
   }
 
   function rayAt(x: number, y: number) {
@@ -835,7 +902,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   function ringAngle(handle: DragHandle, x: number, y: number): number | null {
     const ray = rayAt(x, y);
     const normal = new THREE.Vector3(...handle.dir).normalize();
-    const origin = new THREE.Vector3(...handle.origin);
+    const origin = shownOrigin(handle);
     const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, origin);
     if (Math.abs(ray.direction.dot(normal)) < 0.05) return null;
     const hit = ray.intersectPlane(plane, new THREE.Vector3());
@@ -849,7 +916,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   function axisParam(handle: DragHandle, x: number, y: number): number | null {
     const ray = rayAt(x, y);
     const dir = new THREE.Vector3(...handle.dir).normalize();
-    return lineParam(handle.origin, [dir.x, dir.y, dir.z], [ray.origin.x, ray.origin.y, ray.origin.z], [ray.direction.x, ray.direction.y, ray.direction.z]);
+    const origin = shownOrigin(handle);
+    return lineParam([origin.x, origin.y, origin.z], [dir.x, dir.y, dir.z], [ray.origin.x, ray.origin.y, ray.origin.z], [ray.direction.x, ray.direction.y, ray.direction.z]);
   }
 
   function surfacePoint(x: number, y: number, snap: boolean): Vec3 | null {
