@@ -91,6 +91,7 @@ What is kept, per node:
 - The solid, with its face and edge maps and the volume the op integrated. Each tree pins its root, its current node, and every eighth node on the path between them. The 24 most recently used other solids stay; older ones are evicted and rebuilt on demand from the nearest kept ancestor.
 - The fingerprint, for as long as the node exists. Every rebuilt step is checked against it.
 - The reply, per chord, as it is sent, for the 8 most recently viewed nodes across all trees. A jump to one of those does no kernel work and copies the reply once, into the answer.
+- With the solid, from its first reply: its face areas and normals and its edge lengths, and the chord its faces were meshed at. A reply built again at that chord, for a jump to a node whose reply left the cache, neither integrates a face nor meshes again: 1 ms instead of 84 ms on Telo test.
 - An edge's midpoint and length, computed the first time a fillet or chamfer asks.
 
 What is skipped: a rebuild tessellates only the node asked for, never the steps on the way. A split's other piece is tessellated once, for the apply that made it. Jumps never send it again, and replaying the split never touches the piece's own tree. Jumping above a split leaves both pieces in place.
