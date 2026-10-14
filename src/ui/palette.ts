@@ -1,5 +1,6 @@
 import { redoUserEdit, undoUserEdit } from "../app/history";
 import { escapeModel } from "./model-chrome";
+import { toggleModelHistoryFocus } from "./model-history";
 import {
   askProfileName,
   deleteSettingsProfile,
@@ -356,6 +357,9 @@ export function runCommand(id: string) {
       return;
     case "model-escape":
       escapeModel();
+      return;
+    case "model-history":
+      toggleModelHistoryFocus();
       return;
     case "redo":
       // In Model this steps the solid's history only, never Prepare's, even with nothing left to redo.

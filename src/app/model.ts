@@ -9,6 +9,7 @@ import { formatMm, splitPlaneInside, splitPlaneRange, zExtent } from "../model-p
 import {
   ROOT,
   childWithOp,
+  dropped,
   jumped,
   newTree,
   nodeWithMesh,
@@ -17,6 +18,7 @@ import {
   redoTarget,
   reserveId,
   savedNodes,
+  subtree,
   undoTarget,
   visitStep,
   withChild,
@@ -39,6 +41,8 @@ import {
   syncModelChrome,
   syncModelSolid,
 } from "../ui/model-chrome";
+import { mountModelHistory, syncModelHistory } from "../ui/model-history";
+import { dropRefusal } from "../model-history";
 import { addedSplit, meshTokenOf, withBrepFor } from "../plate";
 import { base64ToBytes } from "../project";
 import { authHeaders } from "../ui/api-base";
@@ -75,6 +79,9 @@ const SOLID_CACHE = 4;
 let ticket = 0;
 let picks: ModelPick[] = [];
 let busy = false;
+/** A `goto` is on its way. A newer jump takes over from it (`jumpSerial`); edits and Undo wait for it. */
+let jumping = false;
+let jumpSerial = 0;
 let probeSerial = 0;
 let probeTimer = 0;
 let pendingProbe: (() => void) | null = null;
@@ -126,6 +133,14 @@ export function bindModelView() {
     holeAxis() {
       return drillAxis();
     },
+  });
+  mountModelHistory({
+    jump(node) {
+      void jumpTo(node);
+    },
+    rename: renameStep,
+    dropRefusal: whyKeepBranch,
+    drop: dropBranch,
   });
 }
 
@@ -265,6 +280,7 @@ export function commitModel() {
   place();
   flushEdit();
   markModelEdit();
+  syncUndo();
 }
 
 function liveKeep(): PrepareKeep {
@@ -312,6 +328,8 @@ export function forgetModelTrees() {
   shownFor = null;
   ticket += 1;
   busy = false;
+  jumping = false;
+  syncUndo();
 }
 
 /** A plate action changed the selection while Model is open: the view opens the selected object's solid. */
@@ -326,6 +344,7 @@ export function showModel() {
   const mine = ++ticket;
   picks = [];
   busy = false;
+  jumping = false;
   parked = null;
   flushEdit();
   open = null;
@@ -467,23 +486,35 @@ async function openTree(mine: number, objectId: string, label: string, name: str
   present(parsed, `${about(parsed)} Pick a face or an edge.`);
 }
 
-/** Show `node` of the open tree: from the recent solids when it is there, else from the engine. */
+/**
+ * Show `node` of the open tree: from the recent solids when it is there, else from the engine. The
+ * latest jump wins: an older one's late reply is kept for later and not shown.
+ */
 async function showNode(mine: number, objectId: string, key: string, node: NodeId, message: (solid: ParsedSolid) => string): Promise<boolean> {
   const tree = modelTrees.get(key);
   if (!tree) return false;
+  const serial = ++jumpSerial;
   if (brokenOnPath(tree, node)) {
+    jumping = false;
+    syncUndo();
     readout(BROKEN);
     return false;
   }
   const chord = state.stepTolerance;
   let solid: ParsedSolid | null = recentSolid(key, node, chord) ?? null;
   if (!solid) {
-    busy = true;
+    jumping = true;
     syncUndo();
     const body = await treeCall(key, node, { call: "goto", key, node, chordMm: chord });
-    if (mine === ticket) busy = false;
+    const newest = mine === ticket && serial === jumpSerial;
+    if (newest) jumping = false;
     syncUndo();
     if (mine !== ticket || state.stage !== "model") return false;
+    if (!newest) {
+      const late = text(body.error) ? null : asSolid(body);
+      if (late) keepSolid(key, node, chord, late);
+      return false;
+    }
     if (failed(key, body)) return false;
     solid = asSolid(body);
     if (!solid) {
@@ -492,6 +523,7 @@ async function showNode(mine: number, objectId: string, key: string, node: NodeI
     }
     keepSolid(key, node, chord, solid);
   }
+  jumping = false;
   const latest = modelTrees.get(key);
   if (!latest) return false;
   modelTrees.set(key, jumped(latest, node));
@@ -505,9 +537,60 @@ async function step(target: (tree: ModelTree) => NodeId | null, done: string) {
   const at = open;
   const tree = treeOf(at);
   const node = tree ? target(tree) : null;
-  if (!at || node == null || busy) return;
+  if (!at || node == null || busy || jumping) return;
   parked = null;
   await showNode(ticket, at.objectId, at.key, node, (solid) => `${about(solid)} ${done}`);
+}
+
+/** A row of the History panel: show that step. A jump still on its way gives way to this one. */
+async function jumpTo(node: NodeId) {
+  const at = open;
+  const tree = treeOf(at);
+  if (!at || !tree || busy || !tree.nodes.has(node) || (node === tree.current && !jumping)) return;
+  parked = null;
+  await showNode(ticket, at.objectId, at.key, node, about);
+}
+
+function renameStep(node: NodeId, name: string) {
+  const tree = treeOf(open);
+  const step = tree?.nodes.get(node);
+  if (!open || !tree || !step || (step.name ?? "") === name) return;
+  modelTrees.set(open.key, withNode(tree, node, { name: name || undefined }));
+  syncUndo();
+}
+
+/** Why the branch from `node` stays, or null. A split piece on the plate keeps the split that made it. */
+function whyKeepBranch(node: NodeId): string | null {
+  const tree = treeOf(open);
+  if (!tree) return "This solid is no longer open.";
+  if (busy || jumping) return "The modeler is still working. Try again in a moment.";
+  const refusal = dropRefusal(tree, node);
+  if (refusal) return refusal;
+  for (const id of subtree(tree, node)) {
+    const piece = tree.nodes.get(id)?.piece;
+    if (piece && state.plate.objects.some((obj) => obj.modelTree === piece)) return "A split on this branch made a part that is on the plate.";
+  }
+  return null;
+}
+
+/** Delete the branch from `node` down, here and in the engine. A refusal goes to the readout. */
+function dropBranch(node: NodeId): boolean {
+  const at = open;
+  const tree = treeOf(at);
+  const refusal = whyKeepBranch(node);
+  const next = tree && !refusal ? dropped(tree, node) : null;
+  if (!at || !tree || !next) {
+    readout(refusal ?? "This branch cannot be deleted.");
+    return false;
+  }
+  for (const id of subtree(tree, node)) {
+    for (const name of solids.keys()) if (name.startsWith(`${nodeName(at.key, id)}@`)) solids.delete(name);
+  }
+  modelTrees.set(at.key, next);
+  void post({ call: "drop", key: at.key, node });
+  syncUndo();
+  readout(about(at.solid));
+  return true;
 }
 
 function brokenOnPath(tree: ModelTree, node: NodeId) {
@@ -526,6 +609,7 @@ function failed(key: string, body: Body): boolean {
   } else {
     readout(error);
   }
+  syncUndo();
   return true;
 }
 
@@ -582,7 +666,7 @@ async function applyTool() {
 async function applyOp(op: ModelOp, working: string) {
   const at = open;
   const tree = treeOf(at);
-  if (!at || !tree || busy || !state.mesh) return;
+  if (!at || !tree || busy || jumping || !state.mesh) return;
   if (at.objectId !== state.plate.selectedId) {
     followSelection();
     return;
@@ -695,7 +779,7 @@ function placePiece(key: string, mesh: PlateMesh): string | null {
 async function runExport() {
   const at = open;
   const tree = treeOf(at);
-  if (!at || !tree || busy || !state.mesh) return;
+  if (!at || !tree || busy || jumping || !state.mesh) return;
   const node = tree.current;
   busy = true;
   readout("Writing STEP…");
@@ -826,8 +910,9 @@ function syncUndo() {
   const tree = treeOf(open);
   const undo = document.querySelector<HTMLButtonElement>("#modelUndo");
   const redo = document.querySelector<HTMLButtonElement>("#modelRedo");
-  if (undo) undo.disabled = busy || !tree || undoTarget(tree) == null;
-  if (redo) redo.disabled = busy || !tree || redoTarget(tree) == null;
+  if (undo) undo.disabled = busy || jumping || !tree || undoTarget(tree) == null;
+  if (redo) redo.disabled = busy || jumping || !tree || redoTarget(tree) == null;
+  syncModelHistory(tree);
 }
 
 /** Turn degrees for a box or cylinder. A sphere does not turn. */
