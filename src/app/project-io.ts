@@ -15,7 +15,7 @@ import { saveProfile } from "../profiles.ts";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel.ts";
 import { pushToast } from "../ui/toasts.ts";
 import { adoptBytes, place, previewRemote } from "./files.ts";
-import { adoptSavedTrees, captureOpenSolid, treesToSave } from "./model.ts";
+import { adoptSavedTrees, captureOpenSolid, historyToSave } from "./model.ts";
 import type { SavedTree } from "../model-tree-file.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { applyPreset, currentPreset, needsEngine, renderChrome } from "./settings.ts";
@@ -27,6 +27,7 @@ export async function saveCurrentProject() {
     return;
   }
   await captureOpenSolid();
+  const history = await historyToSave();
   syncPlateFromState();
   const project: LimeProject = {
     version: 1,
@@ -44,7 +45,7 @@ export async function saveCurrentProject() {
     level: loadSettingsLevel(),
     supportEdits: state.supportEdits.map((entry) => structuredClone(entry)),
   };
-  const objects = fileObjects();
+  const objects = fileObjects(history.trees);
   if (plateFileIsVersion2(objects)) {
     project.version = 2;
     project.objects = objects;
@@ -61,6 +62,9 @@ export async function saveCurrentProject() {
   const wrote = await saveProjectText(serializeProject(project), name);
   if (!wrote) return;
   markProjectClean();
+  if (history.unsaved.length > 0) {
+    pushToast(`The Model history of ${history.unsaved.join(", ")} could not be saved, so the part is saved without it.`, "info");
+  }
 }
 
 export async function openProjectFile(file: File) {
@@ -99,6 +103,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
     return false;
   }
   session.projectRestoring = true;
+  const unread = [...(project.unreadHistory ?? [])];
   try {
     const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
     await adoptBytes(project.mesh.name, copy);
@@ -127,6 +132,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
       state.plate = loaded.plate;
       applySelectedToState(loaded.plate);
       adoptSavedTrees(loaded.trees);
+      unread.push(...loaded.unread);
       // An Add that started while these meshes were loading was aimed at the plate this replaced.
       session.meshEpoch += 1;
     }
@@ -136,8 +142,8 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
     session.supportUi?.refresh();
     renderChrome();
     markProjectClean();
-    if (project.unreadHistory?.length) {
-      pushToast(`The Model history of ${project.unreadHistory.join(", ")} could not be read, so it starts again from the saved part.`, "info");
+    if (unread.length > 0) {
+      pushToast(`The Model history of ${unread.join(", ")} could not be read, so it starts again from the saved part.`, "info");
     }
     return true;
   } finally {
@@ -145,13 +151,22 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
   }
 }
 
-function fileObjects(): PlateFileObject[] {
-  const trees = treesToSave();
+function fileObjects(trees: Awaited<ReturnType<typeof historyToSave>>["trees"]): PlateFileObject[] {
+  // Bytes held twice (a root STEP that is the part's own solid or mesh) are encoded and hashed once.
+  const records = new Map<ArrayBuffer, ReturnType<typeof meshRecord>>();
+  const record = (name: string, bytes: ArrayBuffer) => {
+    let made = records.get(bytes);
+    if (!made) {
+      made = meshRecord(name, new Uint8Array(bytes));
+      records.set(bytes, made);
+    }
+    return { ...made, name };
+  };
   return state.plate.objects.map((obj) => {
-    const record: PlateFileObject = {
+    const row: PlateFileObject = {
       id: obj.id,
       name: obj.name,
-      mesh: meshRecord(obj.fileName, new Uint8Array(obj.bytes)),
+      mesh: record(obj.fileName, obj.bytes),
       placement: {
         orient: [...obj.orient] as ProjectPlacement["orient"],
         scale: obj.partScale,
@@ -161,15 +176,15 @@ function fileObjects(): PlateFileObject[] {
       },
       supportEdits: obj.supportEdits.map((entry) => structuredClone(entry)),
     };
-    if (!settingsEmpty(obj.settings)) record.settings = { ...obj.settings };
-    if (obj.supportPaint.length > 0) record.supportPaint = obj.supportPaint.map((disk) => structuredClone(disk));
-    if (obj.seamPaint.length > 0) record.seamPaint = obj.seamPaint.map((disk) => structuredClone(disk));
+    if (!settingsEmpty(obj.settings)) row.settings = { ...obj.settings };
+    if (obj.supportPaint.length > 0) row.supportPaint = obj.supportPaint.map((disk) => structuredClone(disk));
+    if (obj.seamPaint.length > 0) row.seamPaint = obj.seamPaint.map((disk) => structuredClone(disk));
     const reinforce = dropEmptyReinforce(obj.reinforcement ?? []);
-    if (reinforce.length > 0) record.reinforcement = reinforce.map((reg) => structuredClone(reg));
-    if (obj.brep) record.brep = meshRecord(stepFileName(obj.fileName), new Uint8Array(obj.brep));
+    if (reinforce.length > 0) row.reinforcement = reinforce.map((reg) => structuredClone(reg));
+    if (obj.brep) row.brep = record(stepFileName(obj.fileName), obj.brep);
     const saved = trees.get(obj.id);
-    if (saved) record.modelTree = { ...saved.tree, rootStep: meshRecord(saved.rootStep.name, new Uint8Array(saved.rootStep.bytes)) };
-    return record;
+    if (saved) row.modelTree = { ...saved.tree, rootStep: record(saved.rootStep.name, saved.rootStep.bytes) };
+    return row;
   });
 }
 
@@ -181,6 +196,7 @@ function stepFileName(name: string) {
 async function loadPlateObjects(objects: PlateFileObject[]) {
   const rows = [];
   const trees = new Map<string, SavedTree<{ name: string; bytes: ArrayBuffer }>>();
+  const unread: string[] = [];
   // A root STEP with the bytes of a mesh or a solid read before it shares that buffer.
   const decoded = new Map<string, ArrayBuffer>();
   const decode = (record: { bytesBase64: string; byteLength: number; hash: string }) => {
@@ -213,9 +229,10 @@ async function loadPlateObjects(objects: PlateFileObject[]) {
     const root = row.modelTree?.rootStep;
     const rootBytes = root?.bytesBase64 === undefined ? null : decode({ ...root, bytesBase64: root.bytesBase64 });
     if (row.modelTree && root && rootBytes) trees.set(row.id, { ...row.modelTree, rootStep: { name: root.name, bytes: rootBytes } });
+    else if (row.modelTree) unread.push(row.name);
     rows.push({ ...row, bytes: copy, sourcePos, brepBytes });
   }
-  return { plate: assemblePlate(rows), trees };
+  return { plate: assemblePlate(rows), trees, unread };
 }
 
 function hashOf(bytes: ArrayBuffer): string {
