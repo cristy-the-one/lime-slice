@@ -1,5 +1,34 @@
 import { expect, test, type Page } from "@playwright/test";
+import fs from "node:fs";
+import path from "node:path";
 import { canvasShare } from "../src/ui/compact/viewport-share.ts";
+import { autoSliceOff } from "./auto-slice";
+
+const shots = "/opt/cursor/artifacts/foreign-recipe";
+
+function storedZip(name: string, body: string): Buffer {
+  const named = Buffer.from(name);
+  const data = Buffer.from(body);
+  const local = Buffer.alloc(30 + named.length + data.length);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt32LE(data.length, 18);
+  local.writeUInt32LE(data.length, 22);
+  local.writeUInt16LE(named.length, 26);
+  named.copy(local, 30);
+  data.copy(local, 30 + named.length);
+  return local;
+}
+
+const prusaIni = [
+  "layer_height = 0.28",
+  "perimeters = 4",
+  "top_solid_layers = 6",
+  "bottom_solid_layers = 5",
+  "fill_density = 25%",
+  "support_material = 1",
+  "nozzle_temperature = 210",
+  "perimeter_speed = 45",
+].join("\n");
 
 function zipNamed(name: string): Buffer {
   const named = Buffer.from(name);
@@ -48,6 +77,41 @@ test("a slicer 3MF opens as a mesh and says its settings were not imported", asy
     buffer: zipNamed("Metadata/OrcaSlicer_model.config"),
   });
   await expect(page.locator("#toasts").getByRole("status").filter({ hasText: "OrcaSlicer settings in this 3MF were not imported." })).toBeVisible();
+});
+
+test("Apply to Recipe copies geometry and leaves temperatures alone", async ({ page }) => {
+  await quiet(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await page.locator("#file").setInputFiles({
+    name: "bench.3mf",
+    mimeType: "model/3mf",
+    buffer: storedZip("Metadata/Slic3r_PE.config", prusaIni),
+  });
+  const toast = page.locator("#toasts").getByRole("status");
+  await expect(toast).toContainText("Found PrusaSlicer print settings (0.28 mm layers, 4 walls, 25% infill, supports on).");
+  await expect(toast).not.toContainText("210");
+  await expect(toast.getByRole("button", { name: "Apply to Recipe" })).toBeVisible();
+  await expect(toast.getByRole("button", { name: "Keep Current" })).toBeVisible();
+  fs.mkdirSync(shots, { recursive: true });
+  await page.screenshot({ path: path.join(shots, "offer.png") });
+
+  await toast.getByRole("button", { name: "Keep Current" }).click();
+  await expect(page.locator("#lh")).toHaveValue("0.2");
+  await expect(page.locator("#supportMode-auto")).not.toBeChecked();
+
+  await page.locator("#file").setInputFiles({
+    name: "bench.3mf",
+    mimeType: "model/3mf",
+    buffer: storedZip("Metadata/Slic3r_PE.config", prusaIni),
+  });
+  await page.locator("#toasts").getByRole("button", { name: "Apply to Recipe" }).click();
+  await expect(page.locator("#lh")).toHaveValue("0.28");
+  await expect(page.locator("#supportMode-auto")).toBeChecked();
+  await expect(page.locator(".obj-marks")).toHaveText("infill 25% · walls 4");
+  await page.locator("#lh").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: path.join(shots, "applied.png") });
 });
 
 test.describe("compact foreign 3MF", () => {
