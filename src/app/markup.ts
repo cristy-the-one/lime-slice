@@ -116,26 +116,29 @@ export function mountMarkup(root: HTMLElement) {
         <div class="stage-body" id="modelBody" role="tabpanel" aria-labelledby="tabModel" hidden>
           <canvas id="model" aria-label="Solid faces and edges"></canvas>
           <div class="model-bar" id="modelBar">
-            <div class="model-tools" role="toolbar" aria-label="Model">
-              <div class="modes" role="group" aria-label="Pick">
-                <button class="btn mode on" id="modelPickFace" type="button" aria-pressed="true" data-tip="Pick faces. Shift-click adds or removes.">Face</button>
-                <button class="btn mode" id="modelPickEdge" type="button" aria-pressed="false" data-tip="Pick edges. Shift-click adds or removes.">Edge</button>
+            <div class="model-top">
+              <div class="model-tools" role="toolbar" aria-label="Model">
+                <div class="modes" role="group" aria-label="Pick">
+                  <button class="btn mode on" id="modelPickFace" type="button" aria-pressed="true" data-tip="Pick faces. Shift-click adds or removes.">Face</button>
+                  <button class="btn mode" id="modelPickEdge" type="button" aria-pressed="false" data-tip="Pick edges. Shift-click adds or removes.">Edge</button>
+                </div>
+                <span class="model-count" id="modelCount" hidden></span>
+                <div class="model-edit" id="modelEdit" hidden>
+                  <span class="model-sep"></span>
+                  <button class="model-tool" id="modelToolBoolean" type="button" data-tool="boolean" aria-pressed="false" data-tip="Fuse, cut, or intersect a box, cylinder, or sphere">Boolean</button>
+                  <button class="model-tool" id="modelToolSplit" type="button" data-tool="split" aria-pressed="false" data-tip="Split on a horizontal plane">Split</button>
+                  <button class="model-tool" id="modelToolFillet" type="button" data-tool="fillet" aria-pressed="false" data-tip="Round every selected edge in one step">Fillet</button>
+                  <button class="model-tool" id="modelToolChamfer" type="button" data-tool="chamfer" aria-pressed="false" data-tip="Chamfer every selected edge in one step">Chamfer</button>
+                  <button class="model-tool" id="modelToolHole" type="button" data-tool="hole" aria-pressed="false" data-tip="Cut a cylinder into the picked face, or straight down">Hole</button>
+                  <button class="model-tool" id="modelToolScale" type="button" data-tool="scale" aria-pressed="false" data-tip="Scale the solid about its centre">Scale</button>
+                  <button class="model-tool" id="modelToolMeasure" type="button" data-tool="measure" aria-pressed="false" data-tip="Drag two points on the solid and read the distance">Measure</button>
+                  <span class="model-sep"></span>
+                  <button class="model-tool" id="modelStep" type="button" data-tip="Write this solid as AP214 STEP">STEP</button>
+                  <button class="model-tool" id="modelUndo" type="button" disabled data-tip="Undo the last solid edit">Undo</button>
+                  <button class="model-tool" id="modelRedo" type="button" disabled data-tip="Redo the last solid edit">Redo</button>
+                </div>
               </div>
-              <span class="model-count" id="modelCount" hidden></span>
-              <div class="model-edit" id="modelEdit" hidden>
-                <span class="model-sep"></span>
-                <button class="model-tool" id="modelToolBoolean" type="button" data-tool="boolean" aria-pressed="false" data-tip="Fuse, cut, or intersect a box, cylinder, or sphere">Boolean</button>
-                <button class="model-tool" id="modelToolSplit" type="button" data-tool="split" aria-pressed="false" data-tip="Split on a horizontal plane">Split</button>
-                <button class="model-tool" id="modelToolFillet" type="button" data-tool="fillet" aria-pressed="false" data-tip="Round every selected edge in one step">Fillet</button>
-                <button class="model-tool" id="modelToolChamfer" type="button" data-tool="chamfer" aria-pressed="false" data-tip="Chamfer every selected edge in one step">Chamfer</button>
-                <button class="model-tool" id="modelToolHole" type="button" data-tool="hole" aria-pressed="false" data-tip="Cut a cylinder into the picked face, or straight down">Hole</button>
-                <button class="model-tool" id="modelToolScale" type="button" data-tool="scale" aria-pressed="false" data-tip="Scale the solid about its centre">Scale</button>
-                <button class="model-tool" id="modelToolMeasure" type="button" data-tool="measure" aria-pressed="false" data-tip="Drag two points on the solid and read the distance">Measure</button>
-                <span class="model-sep"></span>
-                <button class="model-tool" id="modelStep" type="button" data-tip="Write this solid as AP214 STEP">STEP</button>
-                <button class="model-tool" id="modelUndo" type="button" disabled data-tip="Undo the last solid edit">Undo</button>
-                <button class="model-tool" id="modelRedo" type="button" disabled data-tip="Redo the last solid edit">Redo</button>
-              </div>
+              <span class="model-paused" id="modelPaused">Slicing paused while modeling</span>
             </div>
             <div class="model-panel" id="modelPanel" hidden>
               <div class="model-fields">
