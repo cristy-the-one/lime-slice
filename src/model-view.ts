@@ -50,7 +50,7 @@ const IDLE_EDGE = 0x8d9780;
 /** Where an arrow's head is centred, in handle units. */
 const ARROW_HEAD = HANDLE_ARROW_TIP - 0.15;
 /** How much more solid the ghost of the object being edited gets while a docked handle is in use. */
-const EMPHASIS_OPACITY = 0.3;
+const EMPHASIS_OPACITY = 0.45;
 
 export interface ModelView {
   setSolid(solid: ModelSolid | null): void;
@@ -272,7 +272,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       roughness: 0.55,
       metalness: 0.05,
       transparent: true,
-      opacity: emphasis ? Math.min(0.6, opacity + EMPHASIS_OPACITY) : opacity,
+      opacity: emphasis ? Math.min(0.7, opacity + EMPHASIS_OPACITY) : opacity,
       depthWrite: false,
       side: THREE.DoubleSide,
     });
@@ -993,9 +993,12 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const parent = canvas.parentElement?.getBoundingClientRect();
     if (!parent) return;
     tip.textContent = dragLabel(handle, values);
-    tip.style.left = `${ev.clientX - parent.left + 14}px`;
-    tip.style.top = `${ev.clientY - parent.top + 14}px`;
     tip.hidden = false;
+    // The dock sits at the right edge, so the tip flips to the pointer's left rather than run off the canvas.
+    const right = ev.clientX - parent.left + 14;
+    const left = right + tip.offsetWidth > parent.width - 4 ? ev.clientX - parent.left - 14 - tip.offsetWidth : right;
+    tip.style.left = `${Math.max(4, left)}px`;
+    tip.style.top = `${ev.clientY - parent.top + 14}px`;
   }
 }
 
