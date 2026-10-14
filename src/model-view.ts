@@ -4,10 +4,12 @@ import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 import { HANDLE_ARROW_TIP, HANDLE_KNOB_PICK, HANDLE_RING_RADIUS, dockNdc, gizmoRadiusForPixels } from "./gizmo-math";
+import { boundsOf, type Bounds } from "./mesh-place";
 import type { Box } from "./measure";
 import { perspectiveMeasure } from "./measure-camera";
 import { mountMeasureOverlay } from "./measure-overlay";
 import { axisValues, dragLabel, dragValue, lineParam, moveFine, startFine, wrapDegrees, type DragHandle, type FinePointer, type Vec3 } from "./model-drag";
+import { partBox, type ContextPart } from "./model-context";
 import { faceBoundarySegments, faceColor } from "./model-select";
 import { hexToThree, themeColors } from "./theme";
 import { bedForBox, fitSentence, liveBox, mountBedReference, mountStudioLights, mountViewHelper, outerMm, renderViewHelper, viewHelperHit, type BuildVolume } from "./viewport-chrome";
@@ -51,12 +53,16 @@ const IDLE_EDGE = 0x8d9780;
 const ARROW_HEAD = HANDLE_ARROW_TIP - 0.15;
 /** How much more solid the ghost of the object being edited gets while a docked handle is in use. */
 const EMPHASIS_OPACITY = 0.45;
+/** How solid the other plate objects look next to the open solid. */
+const CONTEXT_OPACITY = 0.4;
 
 export interface ModelView {
   setSolid(solid: ModelSolid | null): void;
   setPickMode(mode: "face" | "edge"): void;
   highlight(picks: ModelPick[]): void;
   setGhost(ghost: ModelGhost | null): void;
+  /** The other plate objects, drawn grey behind the open solid. They are never picked, framed, or measured. */
+  setContext(parts: ContextPart[]): void;
   /** The active printer's build volume, in millimetres. The bed plane is Z = 0. */
   setBed(x: number, y: number, z: number): void;
   setTheme(): void;
@@ -96,10 +102,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   fit.hidden = true;
   canvas.parentElement?.append(fit);
 
+  const context = new THREE.Group();
   const body = new THREE.Group();
   const ghosts = new THREE.Group();
   const handleGroup = new THREE.Group();
-  scene.add(body, ghosts, handleGroup);
+  scene.add(context, body, ghosts, handleGroup);
 
   let solid: ModelSolid | null = null;
   let solidBox: Box | null = null;
@@ -276,6 +283,51 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       depthWrite: false,
       side: THREE.DoubleSide,
     });
+  }
+
+  const contextMaterial = new THREE.MeshStandardMaterial({
+    color: colors.context,
+    roughness: 1,
+    metalness: 0,
+    flatShading: true,
+    transparent: true,
+    opacity: CONTEXT_OPACITY,
+    depthWrite: false,
+  });
+  /** One geometry per source array, so a pose change or a new neighbour never re-uploads a mesh that did not change. */
+  const contextGeometry = new Map<Float32Array, { geometry: THREE.BufferGeometry; box: Bounds }>();
+
+  function setContext(parts: ContextPart[]) {
+    const wanted = new Set(parts.map((part) => part.positions));
+    for (const [positions, held] of contextGeometry) {
+      if (wanted.has(positions)) continue;
+      held.geometry.dispose();
+      contextGeometry.delete(positions);
+    }
+    context.clear();
+    const published: string[] = [];
+    for (const part of parts) {
+      let held = contextGeometry.get(part.positions);
+      if (!held) {
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.BufferAttribute(part.positions, 3));
+        held = { geometry, box: boundsOf(part.positions) };
+        contextGeometry.set(part.positions, held);
+      }
+      const mesh = new THREE.Mesh(held.geometry, contextMaterial);
+      const { m, t } = part.matrix;
+      mesh.matrixAutoUpdate = false;
+      mesh.matrix.set(m[0], m[1], m[2], t[0], m[3], m[4], m[5], t[1], m[6], m[7], m[8], t[2], 0, 0, 0, 1);
+      mesh.renderOrder = 1;
+      mesh.raycast = () => undefined;
+      context.add(mesh);
+      const box = partBox(held.box, part.matrix);
+      published.push(`${part.id}:${[...box.min, ...box.max].map((value) => value.toFixed(2)).join(",")}`);
+    }
+    canvas.dataset.contextCount = String(parts.length);
+    if (published.length > 0) canvas.dataset.context = published.join(" ");
+    else delete canvas.dataset.context;
+    kick();
   }
 
   function paintBedColors() {
@@ -702,6 +754,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       rebuildGhost();
       kick();
     },
+    setContext,
     setBed(x, y, z) {
       bed = { x, y, z };
       bedRef.setSize(x, y, z);
@@ -714,6 +767,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       colors = themeColors();
       accent = readAccent();
       paintBedColors();
+      contextMaterial.color.setHex(hexToThree(colors.context));
       renderer.setClearColor(hexToThree(colors.stage), 1);
       paintFaces();
       paintLines();
