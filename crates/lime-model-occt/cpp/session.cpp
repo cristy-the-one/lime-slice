@@ -39,6 +39,7 @@
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GCPnts_QuasiUniformDeflection.hxx>
+#include <GeomAbs_Shape.hxx>
 #include <GProp_GProps.hxx>
 #include <Poly_Triangulation.hxx>
 #include <ShapeFix_Shape.hxx>
@@ -48,7 +49,9 @@
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopLoc_Location.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
+#include <TopTools_ListIteratorOfListOfShape.hxx>
 #include <TopTools_ListOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
@@ -702,6 +705,70 @@ bool copy_shape(int id, TopoDS_Shape& current, std::string& error) {
     return true;
 }
 
+/// An edge Open CASCADE will refuse at every size: already tangent-continuous, or a seam on one face.
+std::string blend_refusal(const TopoDS_Shape& shape, const std::vector<TopoDS_Edge>& edges, bool chamfer) {
+    const char* verb = chamfer ? "chamfered" : "filleted";
+    bool smooth = false;
+    bool seam = false;
+    try {
+        TopTools_IndexedDataMapOfShapeListOfShape ancestors;
+        TopExp::MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, ancestors);
+        for (const TopoDS_Edge& edge : edges) {
+            const TopTools_ListOfShape* faces = ancestors.Seek(edge);
+            if (faces == nullptr) {
+                continue;
+            }
+            std::vector<TopoDS_Face> unique;
+            for (TopTools_ListIteratorOfListOfShape it(*faces); it.More(); it.Next()) {
+                const TopoDS_Face face = TopoDS::Face(it.Value());
+                bool seen = false;
+                for (const TopoDS_Face& have : unique) {
+                    if (face.IsSame(have)) {
+                        seen = true;
+                        break;
+                    }
+                }
+                if (!seen) {
+                    unique.push_back(face);
+                }
+            }
+            if (unique.size() == 1) {
+                try {
+                    if (BRep_Tool::IsClosed(edge, unique[0])) {
+                        seam = true;
+                    }
+                } catch (const Standard_Failure&) {
+                }
+            }
+            for (size_t a = 0; a < unique.size(); ++a) {
+                for (size_t b = a + 1; b < unique.size(); ++b) {
+                    try {
+                        if (BRep_Tool::Continuity(edge, unique[a], unique[b]) >= GeomAbs_G1) {
+                            smooth = true;
+                        }
+                    } catch (const Standard_Failure&) {
+                    }
+                }
+            }
+        }
+    } catch (const Standard_Failure&) {
+        return "";
+    }
+    const bool many = edges.size() > 1;
+    if (smooth && seam) {
+        return std::string("These edges are already smooth or are seams and cannot be ") + verb + ".";
+    }
+    if (smooth) {
+        return many ? std::string("These edges are already smooth and cannot be ") + verb + "."
+                    : std::string("This edge is already smooth and cannot be ") + verb + ".";
+    }
+    if (seam) {
+        return many ? std::string("These seam edges cannot be ") + verb + "."
+                    : std::string("This seam edge cannot be ") + verb + ".";
+    }
+    return "";
+}
+
 /// Build a fillet or chamfer on a copy. Every edge is added before the one Build, so corners blend together.
 bool blend_build(
     const TopoDS_Shape& current,
@@ -716,6 +783,11 @@ bool blend_build(
         : (many ? "The fillet did not fit these edges" : "The fillet did not fit this edge");
     if (edges.empty()) {
         error = failed;
+        return false;
+    }
+    const std::string refused = blend_refusal(current, edges, chamfer);
+    if (!refused.empty()) {
+        error = refused;
         return false;
     }
     try {
@@ -761,7 +833,7 @@ char* probe_json(bool ok, const std::string& error, double max_mm) {
         return alloc("{\"ok\":true}");
     }
     std::string text = std::string("{\"ok\":false,\"error\":\"") + escape(error) + "\"";
-    if (max_mm > 0.05) {
+    if (max_mm + 1e-6 >= 0.05) {
         text += ",\"maxMm\":";
         append_num(text, max_mm);
     }
@@ -775,7 +847,7 @@ double largest_blend(const TopoDS_Shape& current, const std::vector<TopoDS_Edge>
     double best = 0.0;
     for (int step = 0; step < 6; ++step) {
         const double mid = (lo + hi) * 0.5;
-        if (!(mid > 0.05)) {
+        if (mid + 1e-6 < 0.05) {
             break;
         }
         TopoDS_Shape trial;

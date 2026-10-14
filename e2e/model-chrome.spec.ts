@@ -103,3 +103,57 @@ test("model tool panels stay clear of the size chip, the measure control, and ra
   expect(overlaps((await tip.boundingBox())!, (await panel.boundingBox())!)).toBe(false);
   if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/after-rail-tip.png` });
 });
+
+test("Apply turns off before the next feasibility check returns", async ({ page }) => {
+  let held = false;
+  let pending: ((body: { ok: boolean; error?: string }) => void) | null = null;
+  const solid = boxSolid();
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: solid.positions } }));
+  await page.route("**/api/model/probe", async (route) => {
+    if (!held) {
+      await route.fulfill({ json: { ok: true } });
+      return;
+    }
+    const body = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
+      pending = resolve;
+    });
+    await route.fulfill({ json: body });
+  });
+  await page.route("**/api/model", (route) => route.fulfill({ json: solid }));
+  await page.goto("/");
+  await autoSliceOff(page);
+  await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
+  await page.locator("#tabModel").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume 4000 mm³");
+
+  await page.locator("#modelToolBoolean").click();
+  await expect(page.locator("#modelApply")).toBeEnabled();
+
+  held = true;
+  pending = null;
+  await page.locator("#modelToolHole").click();
+  await expect(page.locator("#modelApply")).toBeDisabled();
+  await expect(page.locator("#modelNote")).toContainText("Checking this hole");
+  await expect.poll(() => pending !== null).toBe(true);
+  pending?.({ ok: false, error: "StdFail_NotDone" });
+  await expect(page.locator("#modelNote")).toContainText(
+    "Could not complete this hole operation on the selected geometry. Try a smaller dimension or a different face or edge.",
+  );
+  await expect(page.locator("#modelApply")).toBeDisabled();
+  if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/after-plain-probe-note.png` });
+
+  held = false;
+  pending = null;
+  await page.locator("#modelToolBoolean").click();
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  held = true;
+  pending = null;
+  await page.locator("#modelDx").fill("12");
+  await expect(page.locator("#modelApply")).toBeDisabled();
+  await expect(page.locator("#modelNote")).toContainText("Checking this boolean");
+  await expect.poll(() => pending !== null).toBe(true);
+  pending?.({ ok: true });
+  await expect(page.locator("#modelApply")).toBeEnabled();
+});

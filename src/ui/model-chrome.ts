@@ -97,6 +97,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
   });
   document.querySelector("#modelCancel")?.addEventListener("click", () => closeTool());
   document.querySelector("#modelPanel")?.addEventListener("input", () => {
+    markChecking();
     refreshApply();
     refreshGhost();
     hooks?.paramsChanged();
@@ -135,6 +136,7 @@ export function syncModelChrome(next: readonly ModelPickRef[]) {
     chip.toggleAttribute("hidden", label.length === 0);
   }
   refreshTools();
+  markChecking();
   refreshApply();
   refreshNote();
   refreshGhost();
@@ -184,10 +186,17 @@ function toggleTool(next: ModelTool) {
   if (next === "measure") applyMeasureDefaults();
   syncFields();
   refreshTools();
+  markChecking();
   refreshApply();
   refreshNote();
   refreshGhost();
   hooks?.paramsChanged();
+}
+
+/** A probed tool is unchecked until the kernel answers, so Apply cannot stay on from the previous result. */
+function markChecking() {
+  if (!isProbed(tool)) return;
+  probe = { phase: "checking" };
 }
 
 function closeTool() {
