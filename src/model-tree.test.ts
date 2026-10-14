@@ -96,6 +96,9 @@ eq("a node that loses its only child has no Redo", bare && redoTarget(bare), nul
 eq("the root cannot be dropped", dropped(branched, 0), null);
 eq("the branch the view shows cannot be dropped", dropped(jumped(branched, 2), 1), null);
 eq("the branch the plate holds cannot be dropped", dropped({ ...jumped(branched, 3), committed: 2 }, 1), null);
+const held = withNode(jumped(branched, 3), 2, { mesh: { name: "plate.stl", bytes: new ArrayBuffer(1), sourcePos: new Float32Array(0), token: "m2" } });
+eq("nor one with a step the plate held, which a Prepare undo can bring back", dropped(held, 1), null);
+eq("nor one with a split whose piece roots its own tree", dropped(withNode(jumped(branched, 3), 2, { piece: "part-piece#1" }), 1), null);
 
 // The visit step: what the plate does when it takes the shown node.
 const keep: PrepareKeep = { supportEdits: [], supportPaint: [{ x: 1 } as never], seamPaint: [], reinforcement: [], partScale: 1.5 };

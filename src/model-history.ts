@@ -157,6 +157,8 @@ export function dropRefusal(tree: ModelTree, id: NodeId): string | null {
   const gone = subtree(tree, id);
   if (gone.has(tree.current)) return "The step on screen is on this branch. Go to another branch first.";
   if (gone.has(tree.committed)) return "The plate still holds a step on this branch.";
+  if ([...gone].some((at) => tree.nodes.get(at)?.mesh)) return "The plate held a step on this branch, and Prepare undo can bring it back.";
+  if ([...gone].some((at) => tree.nodes.get(at)?.piece)) return "A split on this branch made a part of its own.";
   return null;
 }
 

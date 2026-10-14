@@ -166,13 +166,16 @@ export function subtree(tree: ModelTree, id: NodeId): Set<NodeId> {
 
 /**
  * The tree without `id` and everything under it. Null for the root, or for a branch that holds the
- * node the view shows or the plate holds. Redo from the parent falls back to its newest other child.
+ * node the view shows or the plate holds, a node the plate held (a Prepare undo can put its mesh
+ * back), or a split whose piece roots a tree of its own. Redo from the parent falls back to its
+ * newest other child.
  */
 export function dropped(tree: ModelTree, id: NodeId): ModelTree | null {
   const node = tree.nodes.get(id);
   if (!node || node.parent === null) return null;
   const gone = subtree(tree, id);
   if (gone.has(tree.current) || gone.has(tree.committed)) return null;
+  if ([...gone].some((at) => tree.nodes.get(at)?.mesh || tree.nodes.get(at)?.piece)) return null;
   const nodes = new Map([...tree.nodes].filter(([key]) => !gone.has(key)));
   const lastChild = new Map([...tree.lastChild].filter(([from]) => !gone.has(from)));
   if (gone.has(lastChild.get(node.parent) ?? -1)) {

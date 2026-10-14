@@ -152,8 +152,12 @@ eq("not the branch on screen", dropRefusal(forked, 3), "The step on screen is on
 eq("not a step above the one on screen", dropRefusal(forked, 1), "The step on screen is on this branch. Go to another branch first.");
 eq("not the branch the plate holds", dropRefusal({ ...forked, committed: 2 }, 2), "The plate still holds a step on this branch.");
 eq("another branch can go", dropRefusal(forked, 2), null);
+const plateHeld = withNode(forked, 2, { mesh: { name: "plate.stl", bytes: new ArrayBuffer(1), sourcePos: new Float32Array(0), token: "m2" } });
+eq("not a branch the plate held", dropRefusal(plateHeld, 2), "The plate held a step on this branch, and Prepare undo can bring it back.");
+const splitOff = withNode(forked, 2, { piece: "part-piece#1" });
+eq("not a split whose piece has its own tree", dropRefusal(splitOff, 2), "A split on this branch made a part of its own.");
 for (const id of [0, 1, 2, 3, 4]) {
-  for (const tree of [forked, { ...forked, committed: 2 }]) {
+  for (const tree of [forked, { ...forked, committed: 2 }, plateHeld, splitOff]) {
     eq(`a refusal is exactly where dropped refuses (${id}, plate ${tree.committed})`, dropRefusal(tree, id) === null, dropped(tree, id) !== null);
   }
 }
