@@ -1,4 +1,4 @@
-import { GIZMO_NUDGE_DEG, GIZMO_NUDGE_MM } from "../gizmo-math.ts";
+import { GIZMO_NUDGE_DEG, GIZMO_NUDGE_MM, SCALE_NUDGE_PERCENT } from "../gizmo-math.ts";
 
 export type PreviewMode = "flat" | "split" | "solid";
 
@@ -18,11 +18,12 @@ export function topLayerIndex(layerCount: number): number {
 }
 
 /**
- * Move by 0.1 mm, or rotate by 1° when the rotate tool is selected.
+ * Move by 0.1 mm, rotate by 1°, or scale by 1% when that tool is selected.
  * `sign` is -1 or +1. A zero sign nudges nothing.
  */
-export function gizmoNudge(tool: string | undefined, sign: number): { kind: "move" | "rotate"; amount: number } {
+export function gizmoNudge(tool: string | undefined, sign: number): { kind: "move" | "rotate" | "scale"; amount: number } {
   const dir = sign < 0 ? -1 : sign > 0 ? 1 : 0;
   if (tool === "rotate") return { kind: "rotate", amount: dir * GIZMO_NUDGE_DEG };
+  if (tool === "scale") return { kind: "scale", amount: dir * SCALE_NUDGE_PERCENT };
   return { kind: "move", amount: dir * GIZMO_NUDGE_MM };
 }

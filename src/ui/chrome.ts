@@ -20,7 +20,7 @@ import {
 import { mountTooltips } from "./tooltip";
 import "./chrome.css";
 
-export type GizmoTool = "all" | "move" | "rotate";
+export type GizmoTool = "all" | "move" | "rotate" | "scale";
 
 export interface ChromeHooks {
   setGizmoTool(tool: GizmoTool): void;
@@ -87,10 +87,8 @@ function mountToolRail(hooks: ChromeHooks) {
 
   const move = toolButton("move", Move3d, "Move", "Drag the part on the bed, or an arrow. Shift snaps 1 mm.");
   const rotate = toolButton("rotate", Rotate3d, "Rotate", "Drag a ring. Shift snaps 15°.");
-  const scale = toolButton("scale", Scaling, "Scale", "No scale gizmo yet. Use Scale % in the mesh panel.");
-  scale.classList.add("is-disabled");
-  scale.setAttribute("aria-disabled", "true");
-  scale.tabIndex = -1;
+  const scale = toolButton("scale", Scaling, "Scale", "Drag the scale handle or an axis knob. Shift snaps 5%.");
+  scale.setAttribute("aria-pressed", "false");
   const lay = toolButton("layflat", ArrowDownToLine, "Lay flat", "Drop the flattest face onto the bed.");
   lay.classList.add("is-disabled");
   lay.setAttribute("aria-disabled", "true");
@@ -115,7 +113,7 @@ function mountToolRail(hooks: ChromeHooks) {
     const button = (ev.target as Element | null)?.closest<HTMLButtonElement>("button");
     if (!button || button.classList.contains("is-disabled")) return;
     const id = button.dataset.tool;
-    if (id === "move" || id === "rotate") selectManipulator(id, buttons, hooks);
+    if (id === "move" || id === "rotate" || id === "scale") selectManipulator(id, buttons, hooks);
     if (id === "layflat") document.querySelector<HTMLButtonElement>("#layflat")?.click();
     if (id === "section") toggleSection();
   });
@@ -161,8 +159,8 @@ function toolButton(id: string, node: IconNode, label: string, tip: string) {
 }
 
 function selectManipulator(
-  next: "move" | "rotate",
-  buttons: { move: HTMLButtonElement; rotate: HTMLButtonElement },
+  next: "move" | "rotate" | "scale",
+  buttons: { move: HTMLButtonElement; rotate: HTMLButtonElement; scale: HTMLButtonElement },
   hooks: ChromeHooks,
 ) {
   const rail = document.querySelector<HTMLElement>("#toolRail");
@@ -171,6 +169,7 @@ function selectManipulator(
   if (rail) rail.dataset.tool = tool;
   buttons.move.setAttribute("aria-pressed", tool === "move" ? "true" : "false");
   buttons.rotate.setAttribute("aria-pressed", tool === "rotate" ? "true" : "false");
+  buttons.scale.setAttribute("aria-pressed", tool === "scale" ? "true" : "false");
   hooks.setGizmoTool(tool);
   hooks.onToolReadout();
   if (tool !== "all") document.querySelector<HTMLButtonElement>("#tabPrepare")?.click();

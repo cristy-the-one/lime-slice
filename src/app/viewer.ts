@@ -22,6 +22,7 @@ import type { PreviewGeometry } from "../preview-geom";
 import { themeColors } from "../theme";
 import { resolved } from "../strategy";
 import { syncEmptyState } from "../ui/shell";
+import { clampPartPercent } from "../gizmo-math";
 import { freshPreviewMode, gizmoNudge, viewportPending } from "../ui/preview-ux";
 import { FLAT_PAD_CSS, fitFlatView, frameFlatView, mapFlat, panFlat, unmapFlat, wheelKind, wheelZoomFactor, zoomFlat, type FlatView, type XyBounds } from "../ui/flat-view";
 import { type AxisBounds, type SplitSync, splitOutside, nextSplitAt, roundSplit, clampSplit } from "../split-at";
@@ -527,7 +528,8 @@ export function syncSplitField(force = false) {
 export function paintGizmoReadout() {
   const tool = document.querySelector<HTMLElement>("#toolRail")?.dataset.tool;
   const rotate = tool === "rotate";
-  paintGizmoNudge(rotate, tool === "move" || rotate);
+  const scale = tool === "scale";
+  paintGizmoNudge(rotate, scale, tool === "move" || rotate || scale);
   const el = document.querySelector<HTMLElement>("#gizmoReadout");
   if (!el) return;
   const hud = state.stage === "prepare" && state.placed ? state.poseHud : "";
@@ -535,19 +537,36 @@ export function paintGizmoReadout() {
   el.textContent = hud;
 }
 
-/** The fine nudge row belongs to the Move and Rotate tools; with neither on, the rail stays icons only. */
-function paintGizmoNudge(rotate: boolean, toolOn: boolean) {
+/** The fine nudge row belongs to Move, Rotate, and Scale; with none of them on, the rail stays icons only. */
+function paintGizmoNudge(rotate: boolean, scale: boolean, toolOn: boolean) {
   const nudgeEl = document.querySelector<HTMLElement>("#gizmoNudge");
   if (!nudgeEl) return;
   const show = state.stage === "prepare" && !!state.placed && toolOn;
   nudgeEl.hidden = !show;
-  const unit = rotate ? "1°" : "0.1 mm";
+  const unit = scale ? "1%" : rotate ? "1°" : "0.1 mm";
   for (const button of nudgeEl.querySelectorAll<HTMLButtonElement>("button")) {
     const axis = (button.dataset.axis ?? "").toUpperCase();
     const dir = button.dataset.sign === "-1" ? "−" : "+";
-    button.dataset.tip = `Nudge ${axis} ${dir}${unit}`;
-    button.setAttribute("aria-label", `Nudge ${axis} ${dir}${unit}`);
+    const what = scale ? "scale" : axis;
+    button.dataset.tip = `Nudge ${what} ${dir}${unit}`;
+    button.setAttribute("aria-label", `Nudge ${what} ${dir}${unit}`);
   }
+}
+
+/** Write one step of the uniform part scale and return how many percent actually landed. */
+function applyScaleDelta(deltaPercent: number): number {
+  const before = Math.round(state.partScale * 100);
+  const next = clampPartPercent(before + deltaPercent);
+  const accepted = next - before;
+  if (accepted !== 0) {
+    state.partScale = next / 100;
+    const input = document.querySelector<HTMLInputElement>("#partScale");
+    if (input && document.activeElement !== input) input.value = String(next);
+    applyPlace(false);
+  }
+  state.poseHud = `Scale ${next}%`;
+  paintGizmoReadout();
+  return accepted;
 }
 
 /** One fine gizmo step. Move is 0.1 mm; Rotate is 1°. Hit targets stay as they are. */
@@ -556,11 +575,18 @@ export function stepGizmo(axis: "x" | "y" | "z", sign: number) {
   const tool = document.querySelector<HTMLElement>("#toolRail")?.dataset.tool;
   const nudge = gizmoNudge(tool, sign);
   if (nudge.amount === 0) return;
+  if (nudge.kind === "scale") {
+    const before = Math.round(state.partScale * 100);
+    if (clampPartPercent(before + nudge.amount) === before) return;
+  }
   noteEdit();
   if (nudge.kind === "rotate") {
     const spin = axis === "x" ? rotX : axis === "y" ? rotY : rotZ;
     state.orient = matMul(spin(nudge.amount), state.orient);
     applyPlace(false);
+  } else if (nudge.kind === "scale") {
+    applyScaleDelta(nudge.amount);
+    state.poseHud = "";
   } else {
     nudgePlacement(axis, nudge.amount);
   }
@@ -1267,6 +1293,18 @@ export function mountViews() {
     nudgePlacement(axis, deltaMm);
   });
   prepare.onMoveEnd(() => {
+    flushEdit();
+    state.poseHud = "";
+    paintGizmoReadout();
+    renderChrome();
+    fx.scheduleAuto();
+  });
+  prepare.onScale((deltaPercent) => {
+    if (!state.sourcePos) return 0;
+    noteEdit();
+    return applyScaleDelta(deltaPercent);
+  });
+  prepare.onScaleEnd(() => {
     flushEdit();
     state.poseHud = "";
     paintGizmoReadout();

@@ -4,7 +4,7 @@ import { mountStudioLights, mountViewHelper, renderViewHelper, viewHelperHit } f
 import { syncBedGrid } from "./bed-grid";
 import { poseAffine, type Bounds, type PlacedPart } from "./mesh-place";
 import { buildCutPlane, disposeTree, prepareFrame, splitDragAt, type PrintFrame } from "./cut-plane";
-import { GIZMO_NUDGE_DEG, GIZMO_NUDGE_MM, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep, wheelNotch } from "./gizmo-math";
+import { GIZMO_NUDGE_DEG, GIZMO_NUDGE_MM, SCALE_NUDGE_PERCENT, SCALE_PERCENT_PER_MM, SCALE_SNAP_PERCENT, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep, wheelNotch } from "./gizmo-math";
 import { nudgeBrushRadius } from "./ui/brush-radius";
 import { clampSplit, roundSplit, type SplitAxis } from "./split-at";
 import { createModifierScene } from "./modifier-scene";
@@ -24,7 +24,8 @@ import { mountMeasureOverlay } from "./measure-overlay";
 import { onMeasureChange } from "./measure-pref";
 
 type Axis = "x" | "y" | "z";
-type HandleHit = { kind: "ring" | "move"; axis: Axis };
+type ScaleAxis = Axis | "u";
+type HandleHit = { kind: "ring" | "move"; axis: Axis } | { kind: "scale"; axis: ScaleAxis };
 type XyDrag = { kind: "xy"; lastX: number; lastY: number; totalX: number; totalY: number; appliedX: number; appliedY: number };
 type Drag = HandleHit | { kind: "cut" } | XyDrag | null;
 
@@ -50,9 +51,12 @@ export interface PrepareView {
   onRotateEnd(cb: (() => void) | null): void;
   onMove(cb: ((axis: Axis, deltaMm: number, totalMm: number) => void) | null): void;
   onMoveEnd(cb: (() => void) | null): void;
+  /** Uniform part scale, in percentage points. Returns how many of `deltaPercent` landed after the 10–400 clamp. */
+  onScale(cb: ((deltaPercent: number) => number) | null): void;
+  onScaleEnd(cb: (() => void) | null): void;
   setTheme(): void;
-  /** Show move arrows, rotate rings, or both. Does not add a new manipulator. */
-  setGizmoTool(tool: "all" | "move" | "rotate"): void;
+  /** Show move arrows, rotate rings, the scale knobs, or move and rotate together. The widget stays parked on the left. */
+  setGizmoTool(tool: "all" | "move" | "rotate" | "scale"): void;
   /** Translucent height slabs and modifier volumes. The part gizmo stays parked on the left. */
   setModifiers(doc: OverrideDocument, selectedId: string | null, tool: "move" | "scale"): void;
   /** Axis-aligned bounds for every object on the plate. The solid mesh stays the selection. */
@@ -194,9 +198,10 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   const headGeo = new THREE.ConeGeometry(0.098, 0.3, 14);
   const movePickGeo = new THREE.CylinderGeometry(0.12, 0.12, 0.68, 8);
   const handles = new Map<Axis, { ringMat: THREE.MeshBasicMaterial; moveMats: THREE.MeshBasicMaterial[] }>();
+  const scaleMats = new Map<ScaleAxis, THREE.MeshBasicMaterial>();
   const handlePicks: THREE.Object3D[] = [];
   const handleNodes: { kind: HandleHit["kind"]; nodes: THREE.Object3D[] }[] = [];
-  let gizmoTool: "all" | "move" | "rotate" = "all";
+  let gizmoTool: "all" | "move" | "rotate" | "scale" = "all";
   let plateEntries: PlateBound[] = [];
   let plateGroup: THREE.Group | null = null;
   const axisHex = (axis: Axis) => hexToThree(axis === "x" ? colors.axisX : axis === "y" ? colors.axisY : colors.axisZ);
@@ -231,6 +236,33 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     handleNodes.push({ kind: "move", nodes: [shaft, head, movePick] });
     handles.set(axis, { ringMat, moveMats: [moveMat] });
   }
+  const scaleBox = new THREE.BoxGeometry(0.16, 0.16, 0.16);
+  const scalePickGeo = new THREE.SphereGeometry(0.22, 10, 8);
+  const uniformBox = new THREE.BoxGeometry(0.26, 0.26, 0.26);
+  const uniformPickGeo = new THREE.SphereGeometry(0.34, 10, 8);
+  const addScaleHandle = (axis: ScaleAxis, color: string) => {
+    const mat = new THREE.MeshBasicMaterial({ color: hexToThree(color), depthTest: false, toneMapped: false });
+    const show = new THREE.Mesh(axis === "u" ? uniformBox : scaleBox, mat);
+    const pick = new THREE.Mesh(axis === "u" ? uniformPickGeo : scalePickGeo, ghostMat());
+    if (axis !== "u") {
+      along(show, axis, 0.78);
+      along(pick, axis, 0.78);
+    }
+    for (const part of [show, pick]) {
+      part.renderOrder = 8;
+      part.frustumCulled = false;
+      part.visible = false;
+      gizmo.add(part);
+    }
+    tagHandle(pick, "scale", axis);
+    handlePicks.push(pick);
+    handleNodes.push({ kind: "scale", nodes: [show, pick] });
+    scaleMats.set(axis, mat);
+  };
+  addScaleHandle("x", colors.axisX);
+  addScaleHandle("y", colors.axisY);
+  addScaleHandle("z", colors.axisZ);
+  addScaleHandle("u", colors.teal);
   const axisLine = new Float32Array([
     -1.12, 0, 0, 1.12, 0, 0,
     0, 0, 1.12, 0, 0, -1.12,
@@ -278,6 +310,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let rotateEndCb: (() => void) | null = null;
   let moveCb: ((axis: Axis, deltaMm: number, totalMm: number) => void) | null = null;
   let moveEndCb: (() => void) | null = null;
+  let scaleCb: ((deltaPercent: number) => number) | null = null;
+  let scaleEndCb: (() => void) | null = null;
   const modifiers = createModifierScene(frame);
   scene.add(modifiers.group);
   let modifierDoc: OverrideDocument = { version: 1, ranges: [], volumes: [] };
@@ -335,6 +369,9 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let lastCoord = 0;
   let totalMm = 0;
   let appliedMm = 0;
+  let lastScaleCoord = 0;
+  let scaleTotal = 0;
+  let scaleApplied = 0;
   const dragHit = new THREE.Vector3();
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
@@ -610,7 +647,10 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
 
   /** Screen-anchored, same left-edge park as the section aim rings. Pose deltas stay on the mesh. */
   function fitGizmoScreen() {
-    if (!gizmo.visible) return;
+    if (!gizmo.visible) {
+      delete canvas.dataset.scaleGrips;
+      return;
+    }
     const rect = canvas.getBoundingClientRect();
     if (rect.height < 2 || rect.width < 2) return;
     camera.updateMatrixWorld();
@@ -622,6 +662,29 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     park.applyMatrix4(camera.matrixWorld);
     gizmo.position.copy(park);
     gizmo.updateMatrixWorld(true);
+    publishScaleGrips();
+  }
+
+  /** Screen position of each scale knob, so a drag can grab the parked widget instead of the part. */
+  function publishScaleGrips() {
+    if (gizmoTool !== "scale" || !gizmo.visible) {
+      delete canvas.dataset.scaleGrips;
+      return;
+    }
+    const rect = canvas.getBoundingClientRect();
+    const bits: string[] = [];
+    const at = new THREE.Vector3();
+    for (const entry of handleNodes) {
+      if (entry.kind !== "scale") continue;
+      const pick = entry.nodes.find((node) => node.userData.kind === "scale");
+      if (!pick) continue;
+      pick.getWorldPosition(at);
+      const p = at.project(camera);
+      const x = Math.round((p.x * 0.5 + 0.5) * rect.width);
+      const y = Math.round((-p.y * 0.5 + 0.5) * rect.height);
+      bits.push(`${String(pick.userData.axis)}:${x},${y}`);
+    }
+    canvas.dataset.scaleGrips = bits.join(" ");
   }
 
   function rebuildCut() {
@@ -659,12 +722,25 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     ndc(ev);
     const hit = raycaster.intersectObjects(handlePicks, false)[0];
     const kind = hit?.object.userData.kind as HandleHit["kind"] | undefined;
-    const axis = hit?.object.userData.axis as Axis | undefined;
-    if (kind !== "ring" && kind !== "move") return null;
-    if (axis !== "x" && axis !== "y" && axis !== "z") return null;
+    const axis = hit?.object.userData.axis as ScaleAxis | undefined;
+    if (kind !== "ring" && kind !== "move" && kind !== "scale") return null;
+    if (axis !== "x" && axis !== "y" && axis !== "z" && axis !== "u") return null;
     if (gizmoTool === "move" && kind !== "move") return null;
     if (gizmoTool === "rotate" && kind !== "ring") return null;
+    if (gizmoTool === "scale" && kind !== "scale") return null;
+    if (gizmoTool !== "scale" && kind === "scale") return null;
+    if (kind === "scale") return { kind, axis };
+    if (axis === "u") return null;
     return { kind, axis };
+  }
+
+  /** Millimetres along a scale handle. The uniform knob uses camera-up, so dragging up grows the part. */
+  function scaleCoord(axis: ScaleAxis): number | null {
+    if (axis === "u") {
+      const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+      return axisCoordAtDir(gizmo.position, up);
+    }
+    return axisCoord(axis);
   }
 
   function hitModifier(ev: PointerEvent): { id: string; kind: "move" | "scale"; axis: Axis } | { volumeId: string } | null {
@@ -860,6 +936,11 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       ringMat.opacity = active?.kind === "ring" && active.axis === axis ? 1 : 0.92;
       for (const mat of moveMats) mat.color.setHex(moveHot ? hot : axisHex(axis));
     }
+    for (const [axis, mat] of scaleMats) {
+      const hot = (active?.kind === "scale" && active.axis === axis) || (over?.kind === "scale" && over.axis === axis);
+      const base = axis === "u" ? hexToThree(colors.teal) : axisHex(axis);
+      mat.color.setHex(hot ? hexToThree(colors.gizmoHot) : base);
+    }
     requestRender();
   }
 
@@ -929,6 +1010,10 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
         lastAngle = printAngle(handle.axis) ?? 0;
         totalDeg = 0;
         appliedDeg = 0;
+      } else if (handle.kind === "scale") {
+        lastScaleCoord = scaleCoord(handle.axis) ?? 0;
+        scaleTotal = 0;
+        scaleApplied = 0;
       } else {
         lastCoord = axisCoord(handle.axis) ?? 0;
         totalMm = 0;
@@ -1113,6 +1198,20 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       if (rebased != null) lastCoord = rebased;
       return;
     }
+    if (drag.kind === "scale") {
+      const axis = drag.axis;
+      const coord = scaleCoord(axis);
+      if (coord == null) return;
+      scaleTotal += (coord - lastScaleCoord) * SCALE_PERCENT_PER_MM;
+      lastScaleCoord = coord;
+      const target = Math.round(snapStep(scaleTotal, ev.shiftKey, SCALE_SNAP_PERCENT));
+      const send = target - scaleApplied;
+      if (send === 0) return;
+      scaleApplied += scaleCb?.(send) ?? 0;
+      const rebased = scaleCoord(axis);
+      if (rebased != null) lastScaleCoord = rebased;
+      return;
+    }
     const axis = drag.axis;
     const angle = printAngle(axis);
     if (angle == null) return;
@@ -1146,6 +1245,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     if (editedReinforce) editReinforceVolEndCb?.();
     if (kind === "ring") rotateEndCb?.();
     if (kind === "move" || kind === "xy") moveEndCb?.();
+    if (kind === "scale") scaleEndCb?.();
   };
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
@@ -1153,7 +1253,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   // Touchpad scroll on the handle the pointer is already over steps 0.1 mm or 1°.
   // The pick size is unchanged; a miss still zooms the camera.
   let gizmoWheel = 0;
-  let gizmoWheelKind: "ring" | "move" | null = null;
+  let gizmoWheelKind: "ring" | "move" | "scale" | null = null;
   let gizmoWheelTimer = 0;
   let brushWheel = 0;
   canvas.addEventListener("wheel", (ev) => {
@@ -1176,6 +1276,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     if (turned.notches === 0) return;
     gizmoWheelKind = handle.kind;
     if (handle.kind === "ring") rotateCb?.(handle.axis, turned.notches * GIZMO_NUDGE_DEG, turned.notches * GIZMO_NUDGE_DEG);
+    else if (handle.kind === "scale") scaleCb?.(turned.notches * SCALE_NUDGE_PERCENT);
     else moveCb?.(handle.axis, turned.notches * GIZMO_NUDGE_MM, turned.notches * GIZMO_NUDGE_MM);
     window.clearTimeout(gizmoWheelTimer);
     gizmoWheelTimer = window.setTimeout(() => {
@@ -1183,6 +1284,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       gizmoWheelKind = null;
       gizmoWheel = 0;
       if (kind === "ring") rotateEndCb?.();
+      else if (kind === "scale") scaleEndCb?.();
       else if (kind === "move") moveEndCb?.();
     }, 280);
   }, { passive: false, capture: true });
@@ -1326,6 +1428,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     onRotateEnd(cb) { rotateEndCb = cb; },
     onMove(cb) { moveCb = cb; },
     onMoveEnd(cb) { moveEndCb = cb; },
+    onScale(cb) { scaleCb = cb; },
+    onScaleEnd(cb) { scaleEndCb = cb; },
     setViewPreset(preset) { applyViewPreset(preset); },
     frameBounds(bounds) { frameBox(bounds.min, bounds.max); },
     setPaint(disks) {
@@ -1384,9 +1488,14 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     setGizmoTool(tool) {
       gizmoTool = tool;
       for (const entry of handleNodes) {
-        const show = tool === "all" || entry.kind === tool || (tool === "rotate" && entry.kind === "ring");
+        const show = tool === "scale"
+          ? entry.kind === "scale"
+          : tool === "all"
+            ? entry.kind !== "scale"
+            : entry.kind === tool || (tool === "rotate" && entry.kind === "ring");
         for (const node of entry.nodes) node.visible = show;
       }
+      fitGizmoScreen();
       requestRender();
     },
     setTheme() {
@@ -1405,6 +1514,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
         ringMat.color.setHex(axisHex(axis));
         for (const mat of moveMats) mat.color.setHex(axisHex(axis));
       }
+      for (const [axis, mat] of scaleMats) mat.color.setHex(axis === "u" ? hexToThree(colors.teal) : axisHex(axis));
       bed.userData.gridKey = "";
       layoutBed();
       syncPlateBounds();
@@ -1502,7 +1612,7 @@ function labelSprite(text: string, color: string) {
   return { sprite, paint };
 }
 
-function tagHandle(mesh: THREE.Object3D, kind: HandleHit["kind"], axis: Axis) {
+function tagHandle(mesh: THREE.Object3D, kind: HandleHit["kind"], axis: ScaleAxis) {
   mesh.userData.kind = kind;
   mesh.userData.axis = axis;
 }

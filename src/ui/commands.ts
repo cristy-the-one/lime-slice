@@ -88,7 +88,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "plate-remove", label: "Remove object", group: "Plate", keys: ["Del", "Backspace"], when: "objects", keywords: "delete" },
   { id: "tool-move", label: "Move", group: "Tools", keys: ["M"], target: '#toolRail [data-tool="move"]', keywords: "translate gizmo" },
   { id: "tool-rotate", label: "Rotate", group: "Tools", keys: ["R"], target: '#toolRail [data-tool="rotate"]', keywords: "gizmo" },
-  { id: "tool-scale", label: "Scale", group: "Tools", keys: ["S"], target: '#toolRail [data-tool="scale"]', keywords: "percent field" },
+  { id: "tool-scale", label: "Scale", group: "Tools", keys: ["S"], target: '#toolRail [data-tool="scale"]', keywords: "percent gizmo" },
   { id: "tool-layflat", label: "Lay flat", group: "Tools", keys: ["F"], target: '#layflat, #toolRail [data-tool="layflat"]', keywords: "bed face" },
   { id: "tool-section", label: "Section", group: "Tools", keys: ["C"], target: '#toolRail [data-tool="section"]', keywords: "clip cut" },
   { id: "edit-supports", label: "Edit supports", group: "Tools", keys: ["E"], target: '#toolRail [data-tool="supports"]', keywords: "tree branch delete prune regrow" },

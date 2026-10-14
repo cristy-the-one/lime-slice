@@ -1,4 +1,4 @@
-import { GIZMO_NUDGE_DEG, GIZMO_NUDGE_MM, wheelNotch } from "../gizmo-math.ts";
+import { GIZMO_NUDGE_DEG, GIZMO_NUDGE_MM, SCALE_NUDGE_PERCENT, clampPartPercent, wheelNotch } from "../gizmo-math.ts";
 import { freshPreviewMode, gizmoNudge, topLayerIndex, viewportPending } from "./preview-ux.ts";
 
 let failed = 0;
@@ -29,8 +29,13 @@ eq("top layer of none", topLayerIndex(0), 0);
 eq("move nudge is a tenth of a millimetre", gizmoNudge("move", 1), { kind: "move", amount: GIZMO_NUDGE_MM });
 eq("all-tools nudge still moves", gizmoNudge("all", -1), { kind: "move", amount: -GIZMO_NUDGE_MM });
 eq("rotate nudge is one degree", gizmoNudge("rotate", 1), { kind: "rotate", amount: GIZMO_NUDGE_DEG });
+eq("scale nudge is one percent", gizmoNudge("scale", 1), { kind: "scale", amount: SCALE_NUDGE_PERCENT });
+eq("scale nudge follows the sign", gizmoNudge("scale", -1), { kind: "scale", amount: -SCALE_NUDGE_PERCENT });
 eq("zero sign does nothing", gizmoNudge("rotate", 0), { kind: "rotate", amount: 0 });
-check("nudge is finer than the shift snap", GIZMO_NUDGE_MM < 1 && GIZMO_NUDGE_DEG < 15);
+eq("a zero scale sign does nothing", gizmoNudge("scale", 0), { kind: "scale", amount: 0 });
+check("nudge is finer than the shift snap", GIZMO_NUDGE_MM < 1 && GIZMO_NUDGE_DEG < 15 && SCALE_NUDGE_PERCENT < 5);
+eq("scale percent stays inside 10 to 400", [clampPartPercent(9), clampPartPercent(100.4), clampPartPercent(401)], [10, 100, 400]);
+eq("a blank scale percent falls back to 100", clampPartPercent(Number.NaN), 100);
 
 eq("small touchpad deltas wait", wheelNotch(20, 0, 0), { notches: 0, accum: 20 });
 eq("accumulated pixels step once", wheelNotch(30, 0, 20), { notches: -1, accum: 0 });
