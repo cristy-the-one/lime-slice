@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { ViewHelper } from "three/addons/helpers/ViewHelper.js";
+import { mountStudioLights, mountViewHelper, renderViewHelper, viewHelperHit } from "./viewport-chrome";
 import { syncBedGrid } from "./bed-grid";
 import { poseAffine, type Bounds, type PlacedPart } from "./mesh-place";
 import { buildCutPlane, disposeTree, prepareFrame, splitDragAt, type PrintFrame } from "./cut-plane";
@@ -181,19 +181,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let meshSource: Float32Array | null = null;
   // Dark olive creases: a pale line on the mid-tone body would melt into its lit faces.
   const outlineMat = new THREE.LineBasicMaterial({ color: 0x1b2608, transparent: true, opacity: 0.9 });
-  // Little sky light and a strong key, so a face turned away from the key drops well below a lit one.
-  const hemi = new THREE.HemisphereLight(0xf4f6f8, 0x1c2230, 0.9);
-  scene.add(hemi);
-  const key = new THREE.DirectionalLight(0xffffff, 2.4);
-  key.position.set(80, 160, 40);
-  scene.add(key);
-  const fill = new THREE.DirectionalLight(0xd5dde8, 0.3);
-  fill.position.set(-70, 50, -40);
-  scene.add(fill);
-  const viewHelper = new ViewHelper(camera, canvas);
-  viewHelper.setLabels("X", "Y", "Z");
-  viewHelper.setLabelStyle("600 22px sans-serif", "#10140c", 13);
-  muteViewHelper(viewHelper);
+  mountStudioLights(scene, "y-up");
+  const viewHelper = mountViewHelper(camera, canvas);
 
   const gizmo = new THREE.Group();
   gizmo.visible = false;
@@ -396,14 +385,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     publishModifierMarker();
     publishReinforceVolMarker();
     drawMeasure();
-    // ViewHelper.render clears color for its corner viewport. With scissor off,
-    // that clear wipes the whole canvas and the next frame stays in the corner.
-    if (canvas.clientWidth > 2 && canvas.clientHeight > 2) {
-      renderer.autoClear = false;
-      viewHelper.render(renderer);
-      renderer.autoClear = true;
-      renderer.setViewport(0, 0, drawSize.x, drawSize.y);
-    }
+    if (canvas.clientWidth > 2 && canvas.clientHeight > 2) renderViewHelper(renderer, viewHelper);
     if (viewHelper.animating) requestRender();
   }
   controls.addEventListener("change", requestRender);
@@ -1195,10 +1177,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   }, { passive: false, capture: true });
 
   function hitViewHelper(ev: PointerEvent) {
-    const rect = canvas.getBoundingClientRect();
-    if (rect.width < 2 || rect.height < 2) return false;
-    if (ev.clientX < rect.right - 128 || ev.clientY < rect.bottom - 128) return false;
-    return viewHelper.handleClick(ev);
+    return viewHelperHit(viewHelper, canvas, ev);
   }
 
   function applyViewPreset(preset: "top" | "front" | "iso") {
@@ -1479,21 +1458,6 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     geometry.setAttribute("position", new THREE.BufferAttribute(pos, 3));
     return geometry;
   }
-}
-
-function muteViewHelper(helper: THREE.Object3D) {
-  const shaft = [0xb85a52, 0x6eae78, 0x6a92c4];
-  let meshN = 0;
-  helper.traverse((obj) => {
-    const mesh = obj as THREE.Mesh;
-    if (mesh.isMesh) {
-      const mat = mesh.material as THREE.MeshBasicMaterial;
-      mat.color?.setHex(shaft[meshN % shaft.length]!);
-      meshN += 1;
-    }
-    const sprite = obj as THREE.Sprite;
-    if (sprite.isSprite) sprite.material.color.setRGB(0.55, 0.55, 0.55);
-  });
 }
 
 function ghostMat() {
