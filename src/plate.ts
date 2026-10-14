@@ -26,6 +26,7 @@ import { paintRequestFields, type PaintDisk, type WireDisk } from "./support-pai
 import {
   boundsOf,
   centeringShift,
+  encodeStl,
   ID_MATRIX,
   placeMesh,
   type Bounds,
@@ -943,6 +944,63 @@ function axisGap(a0: number, a1: number, b0: number, b1: number): number {
   if (a1 <= b0) return b0 - a1;
   if (b1 <= a0) return a0 - b1;
   return -1;
+}
+
+/**
+ * Replace `id` with one object per shell. `worlds` are that object's placed
+ * triangles, largest shell first. Each piece keeps that bed position: identity
+ * pose, scale 1, and a Z shift so settle does not drop a floating shell.
+ * Paint and the B-rep stay behind. The largest piece keeps the id.
+ */
+export function replaceWithShells(plate: PlateState, id: string, worlds: readonly Float32Array[]): PlateState | null {
+  if (worlds.length < 2) return null;
+  const index = plate.objects.findIndex((obj) => obj.id === id);
+  const parent = plate.objects[index];
+  if (!parent) return null;
+  const stem = parent.name.replace(/\.(stl|3mf|step|stp)$/i, "");
+  const taken = new Set(plate.objects.filter((obj) => obj.id !== id).map((obj) => obj.name));
+  const pieces: PlateObject[] = worlds.map((world, nth) => {
+    let minZ = Infinity;
+    for (let i = 2; i < world.length; i += 3) if (world[i]! < minZ) minZ = world[i]!;
+    const lift = Number.isFinite(minZ) && minZ > 1e-4 ? minZ : 0;
+    const name = unusedName(taken, stem, nth + 1);
+    taken.add(name);
+    const fileName = `${name}.stl`;
+    const sourcePos = new Float32Array(world);
+    const piece: PlateObject = {
+      id: nth === 0 ? parent.id : freshPlateId(),
+      name,
+      fileName,
+      bytes: encodeStl(sourcePos, fileName),
+      sourcePos,
+      orient: [...ID_MATRIX],
+      partScale: 1,
+      centered: false,
+      offset: { x: 0, y: 0, z: lift },
+      stepTolerance: parent.stepTolerance,
+      supportEdits: [],
+      supportPaint: [],
+      seamPaint: [],
+      reinforcement: [],
+      settings: { ...parent.settings },
+    };
+    hold(piece);
+    return piece;
+  });
+  return {
+    objects: [...plate.objects.slice(0, index), ...pieces, ...plate.objects.slice(index + 1)],
+    selectedId: pieces[0]!.id,
+  };
+}
+
+function unusedName(taken: Set<string>, stem: string, start: number): string {
+  let n = start;
+  let candidate = `${stem} ${n}`;
+  while (taken.has(candidate)) {
+    n += 1;
+    candidate = `${stem} ${n}`;
+  }
+  return candidate;
 }
 
 function hold(obj: PlateObject) {

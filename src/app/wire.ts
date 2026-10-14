@@ -1,6 +1,7 @@
 import { type ColorMode } from "../colors";
 import { layFlatMatrix, matMul, rotX, rotY, rotZ } from "../mesh-place";
 import { arrangePlate, duplicatePlateObject, framePlateObject, removePlateObject, selectPlateObject } from "./plate-actions";
+import { separateShells } from "./shell-actions";
 import { applyTheme, type ThemeChoice } from "../theme";
 import { axisNormal, clampOffset, flipSection } from "../section-plane";
 import { wheelNotch } from "../gizmo-math";
@@ -225,6 +226,7 @@ export function wireApp() {
       return;
     }
     if (t.id === "center") { noteEdit(); state.centered = true; state.offset = { x: 0, y: 0, z: 0 }; place(); }
+    if (t.id === "separateShells") { separateShells(); return; }
     if (t.id === "layflat" && state.sourcePos) { noteEdit(); state.orient = layFlatMatrix(state.sourcePos); place(); }
     if (t.id === "rotX") { noteEdit(); state.orient = matMul(rotX(90), state.orient); place(); }
     if (t.id === "rotY") { noteEdit(); state.orient = matMul(rotY(90), state.orient); place(); }
