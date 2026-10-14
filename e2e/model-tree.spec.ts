@@ -242,8 +242,18 @@ test("a split taken back by Prepare undo comes back with its piece when Model re
   await redo(page, 1600);
   await page.locator("#tabPrepare").click();
   await expect(page.locator("#objectList .obj"), "the plate takes the split with its piece").toHaveCount(2);
+  await expect(page.locator("#objectList .obj").first(), "the part is the kept half").toContainText("20 × 20 × 4");
   await expect(page.locator("#objectList .obj").nth(1)).toContainText("20 × 20 × 6");
   expect(tree.of("apply"), "nothing was built again").toHaveLength(1);
+
+  await page.locator("[data-plate-remove]").nth(1).click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(1);
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText("Volume 1600 mm³");
+  await cut(page, 3);
+  await page.locator("#tabPrepare").click();
+  await expect(page.locator("#objectList .obj").first()).toContainText("20 × 20 × 3");
+  await expect(page.locator("#objectList .obj"), "a piece removed by hand stays removed").toHaveCount(1);
 });
 
 test("Duplicate in Model opens the copy, and a Slice in Model slices the step on screen", async ({ page }) => {

@@ -81,6 +81,8 @@ let pendingProbe: (() => void) | null = null;
 let open: Opened | null = null;
 /** The plate object Model last opened, so a selection change elsewhere can tell it moved. */
 let shownFor: string | null = null;
+/** A tree resumed above its broken committed step: the plate keeps that step's mesh until the user moves. */
+let parked: string | null = null;
 const solids = new Map<string, ParsedSolid>();
 /** Mesh tokens whose plate objects already carry that shape's STEP, or whose mesh is the STEP file itself. */
 const stepKnown = new Set<string>();
@@ -232,7 +234,7 @@ export function commitModel() {
   const at = open;
   let tree = treeOf(at);
   const plan = tree ? visitStep(tree) : null;
-  if (!at || !tree || !plan || !state.mesh || at.objectId !== state.plate.selectedId) return;
+  if (!at || !tree || !plan || !state.mesh || at.objectId !== state.plate.selectedId || parked === at.key) return;
   const node = tree.nodes.get(plan.to);
   if (!node || at.solid.id !== plan.to) return;
   noteEdit();
@@ -249,8 +251,12 @@ export function commitModel() {
   else if (plan.resetScale) state.partScale = 1;
   setBrep(at.objectId, mesh.step);
   modelTrees.set(at.key, { ...withNode(tree, plan.to, { mesh }), committed: plan.to });
-  // A Prepare undo can have taken off a piece that a split on this path cut off: the plate gets it back.
+  // A Prepare undo can have taken off the piece of a split this commit crosses on its way down: the
+  // plate gets it back. A piece removed by hand stays removed while the plate stays below its split.
+  syncPlateFromState();
+  const above = new Set(pathTo(tree, plan.from));
   for (const id of pathTo(tree, plan.to)) {
+    if (above.has(id)) continue;
     const key = tree.nodes.get(id)?.piece;
     const piece = key ? modelTrees.get(key) : undefined;
     const pieceMesh = piece?.nodes.get(piece.committed)?.mesh;
@@ -310,13 +316,17 @@ export function forgetModelTrees() {
 
 /** A plate action changed the selection while Model is open: the view opens the selected object's solid. */
 export function followSelection() {
-  if (state.stage === "model" && state.plate.selectedId !== shownFor) showModel();
+  if (state.stage !== "model") return;
+  const tree = treeOf(open);
+  const foreign = !!tree && !!state.mesh && nodeWithMesh(tree, meshTokenOf(state.mesh.bytes)) == null;
+  if (state.plate.selectedId !== shownFor || foreign) showModel();
 }
 
 export function showModel() {
   const mine = ++ticket;
   picks = [];
   busy = false;
+  parked = null;
   flushEdit();
   open = null;
   syncUndo();
@@ -393,9 +403,12 @@ async function resume(mine: number, objectId: string, key: string, node: NodeId)
   if (await showNode(mine, objectId, key, node, greeting) || mine !== ticket) return;
   const tree = modelTrees.get(key);
   const good = tree ? lastGood(tree, node) : null;
-  if (good == null || good === node || !(await showNode(mine, objectId, key, good, (solid) => `${BROKEN} ${greeting(solid)}`))) {
-    if (mine === ticket) clearView();
+  if (good != null && good !== node && (await showNode(mine, objectId, key, good, (solid) => `${BROKEN} ${greeting(solid)}`))) {
+    // The plate's mesh of the broken step is still good: it stays until an edit or a jump here.
+    parked = key;
+    return;
   }
+  if (mine === ticket) clearView();
 }
 
 /** The deepest node on the way to `node` that is not marked broken. */
@@ -493,6 +506,7 @@ async function step(target: (tree: ModelTree) => NodeId | null, done: string) {
   const tree = treeOf(at);
   const node = tree ? target(tree) : null;
   if (!at || node == null || busy) return;
+  parked = null;
   await showNode(ticket, at.objectId, at.key, node, (solid) => `${about(solid)} ${done}`);
 }
 
@@ -573,6 +587,7 @@ async function applyOp(op: ModelOp, working: string) {
     followSelection();
     return;
   }
+  parked = null;
   const parent = tree.current;
   const twin = childWithOp(tree, parent, op);
   if (twin != null) {
@@ -997,7 +1012,9 @@ async function treeCall(key: string, node: NodeId, request: Body): Promise<Body>
     const missing = missingOf(body);
     if (!missing) return body;
     const running = round === 0 ? restoring.get(key) : undefined;
-    const restored = running ?? restore(key, node, missing).finally(() => restoring.delete(key));
+    const restored: Promise<string | null> = running ?? restore(key, node, missing).finally(() => {
+      if (restoring.get(key) === restored) restoring.delete(key);
+    });
     if (!running) restoring.set(key, restored);
     const problem = await restored;
     if (problem) return { error: problem };
@@ -1039,6 +1056,8 @@ async function restore(key: string, node: NodeId, missing: NodeId[]): Promise<st
       op: step.op,
       chordMm: chord,
     });
+    // A node the engine still has, made by a split with its piece's key, refuses a resend without it.
+    if (text(body.error).includes("already in this tree")) continue;
     if (failed(key, body)) return text(body.error);
   }
   return null;
