@@ -1,11 +1,13 @@
 import { ID_MATRIX } from "./mesh-place.ts";
 import {
+  meshTokenOf,
   pinPlateMeshes,
   recallPlateMeshes,
   resetHeldGeometry,
   revivePlate,
   shareMeshToken,
   snapPlate,
+  withBrepFor,
   withSelectedPose,
   type PlateObject,
   type PlateState,
@@ -130,6 +132,21 @@ function historySnap(token: string): EditSnap {
 const kept = cloneSnap(historySnap(pins[0]!.token));
 check("undo keeps the B-rep bytes", kept.plate?.objects[0]?.brep instanceof ArrayBuffer && sameBytes(kept.plate.objects[0].brep, [4, 5, 6]));
 check("a mesh pin change is a different step", !sameSnap(historySnap("m1"), historySnap("m2")));
+
+{
+  const mesh = bytesOf([9, 9, 9]);
+  const copy = mesh.slice(0);
+  shareMeshToken(mesh, copy);
+  const other = bytesOf([8]);
+  const plate = { selectedId: "p", objects: [{ ...object("p", []), bytes: mesh }, { ...object("q", []), bytes: copy }, { ...object("r", []), bytes: other }] };
+  const step = bytesOf([7]);
+  const written = withBrepFor(plate, meshTokenOf(mesh), step);
+  check("a solid's STEP lands on each object with its mesh", written.objects[0]!.brep === step && written.objects[1]!.brep === step);
+  check("an object with another mesh keeps its own", written.objects[2]!.brep === plate.objects[2]!.brep);
+  check("a mesh token survives a copy", meshTokenOf(copy) === meshTokenOf(mesh) && meshTokenOf(other) !== meshTokenOf(mesh));
+  check("nothing to write keeps the plate", withBrepFor(written, meshTokenOf(mesh), step) === written);
+  check("undefined removes the STEP", !("brep" in withBrepFor(written, meshTokenOf(mesh), undefined).objects[0]!));
+}
 
 if (failed) {
   console.error(`plate-mesh-pin: ${failed} failed`);

@@ -4,11 +4,14 @@ import {
   canUndo,
   commitGesture,
   emptyHistory,
+  foldSince,
+  putBrepFor,
   redoSnap,
   sameSnap,
   undoSnap,
   type EditSnap,
 } from "./edit-history.ts";
+import type { PlateSnapObject } from "../plate.ts";
 
 let failed = 0;
 
@@ -43,6 +46,23 @@ function snap(scale: number, layer = 0.2, level: "simple" | "advanced" | "expert
   };
 }
 
+function plateRow(id: string): PlateSnapObject {
+  return {
+    id,
+    name: id,
+    fileName: `${id}.stl`,
+    orient: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+    partScale: 1,
+    centered: true,
+    offset: { x: 0, y: 0, z: 0 },
+    stepTolerance: 0.1,
+    supportEdits: [],
+    supportPaint: [],
+    seamPaint: [],
+    settings: {},
+  };
+}
+
 const before = snap(1, 0.2, "expert");
 const after = snap(1.5, 0.28, "simple");
 let history = beginGesture(emptyHistory(), before);
@@ -74,6 +94,36 @@ check("undo closes the open gesture", cancelled?.restore.placement.partScale ===
 
 const identical = commitGesture(beginGesture(emptyHistory(), before), before);
 check("an unchanged gesture does not stack", identical.undo.length === 0 && identical.pending == null);
+
+let visit = commitGesture(beginGesture(emptyHistory(), snap(1)), snap(2));
+const earlier = new WeakSet(visit.undo);
+for (const scale of [3, 4, 5]) visit = commitGesture(beginGesture(visit, snap(scale - 1)), snap(scale));
+const visited = undoSnap(visit, snap(5))!.history;
+const folded = foldSince(visited, earlier);
+check(
+  "a Model visit folds to its first step",
+  folded.undo.length === 2 && folded.undo[0]!.placement.partScale === 1 && folded.undo[1]!.placement.partScale === 2,
+  JSON.stringify(folded.undo.map((step) => step.placement.partScale)),
+);
+check("a folded visit has no redo", folded.redo.length === 0);
+const untouched = foldSince(visit, new WeakSet([...visit.undo]));
+check("a visit with no new step keeps every step", untouched.undo.length === visit.undo.length);
+
+const pinned = (token: string): EditSnap => ({
+  ...snap(1),
+  plate: { selectedId: "a", objects: [{ ...plateRow("a"), brep: new ArrayBuffer(1) }, plateRow("b")] },
+  meshPins: [{ id: "a", token }, { id: "b", token: "other" }],
+});
+const stale = { undo: [pinned("m7"), pinned("m8")], redo: [pinned("m7")], pending: null };
+const kept = stale.undo[0]!;
+const step = new ArrayBuffer(9);
+putBrepFor(stale, "m7", step);
+check("the STEP lands on every step with that mesh", stale.undo[0]!.plate!.objects[0]!.brep === step && stale.redo[0]!.plate!.objects[0]!.brep === step);
+check("a step with another mesh keeps its STEP", stale.undo[1]!.plate!.objects[0]!.brep?.byteLength === 1);
+check("another object keeps none", stale.undo[0]!.plate!.objects[1]!.brep === undefined);
+check("a patched step is still the same step", stale.undo[0] === kept);
+putBrepFor(stale, "m7", undefined);
+check("an unwritable solid loses its STEP", !("brep" in stale.undo[0]!.plate!.objects[0]!));
 
 if (failed) {
   console.error(`${failed} failed`);
