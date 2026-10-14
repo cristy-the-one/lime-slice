@@ -741,6 +741,7 @@ impl Store {
         let replayed = doc.ensure_shape(parent, &mut self.clock)?;
         let probed = doc.probe.take();
         let from = doc.shape(parent);
+        from.editable().map_err(Failure::Message)?;
         let op = resolve(from, &op).map_err(Failure::Message)?;
         let built = match probed {
             Some(probed) if probed.parent == parent && probed.op == op => probed.built,
@@ -803,7 +804,9 @@ impl Store {
         doc.ensure_shape(id, &mut self.clock)?;
         doc.probe = None;
         let from = doc.shape(id);
-        let result = resolve(from, &op)
+        let result = from
+            .editable()
+            .and_then(|()| resolve(from, &op))
             .map_err(|message| (message, None))
             .and_then(|op| build(from, op, true));
         match result {
@@ -1164,6 +1167,7 @@ extern "C" {
         factor: f64,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
+    fn lime_tree_editable(shape: *const RawShape, error: *mut *mut c_char) -> c_int;
     fn lime_tree_fingerprint(
         shape: *const RawShape,
         volume: *mut f64,
@@ -1238,6 +1242,16 @@ impl Shape {
     fn read_step(path: &std::path::Path) -> Result<Shape, String> {
         let path = c_path(path)?;
         Shape::made(|error| unsafe { lime_tree_read_step(path.as_ptr(), error) })
+    }
+
+    fn editable(&self) -> Result<(), String> {
+        let mut error: *mut c_char = std::ptr::null_mut();
+        let ok = unsafe { lime_tree_editable(self.raw(), &mut error) };
+        let message = take_text(error);
+        if ok == 0 {
+            return Err(message.unwrap_or_else(|| "This shape cannot be edited".into()));
+        }
+        Ok(())
     }
 
     fn fingerprint(&self) -> Fingerprint {

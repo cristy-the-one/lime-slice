@@ -71,6 +71,8 @@ Every call is one JSON request through `lime_occt_tree` (`POST /api/model/tree`,
 | `distance` | `key`, `node`, `aKind`, `aIndex`, `bKind`, `bIndex` | `{id, distanceMm}`. |
 | `export` | `key`, `node` | `{bytesBase64, byteLength}`: AP214 STEP of that node. |
 
+`open` reads STEP the way the session does: facet shells that sew into closed solids open as solids, and surfaces that do not open for measuring only. On such a root every `apply` and `probe` answers the session's refusal ("This STEP file has surfaces but no closed solid, so it can be measured but not edited.") before anything is built.
+
 `op` is one of `{kind: "boolean", op, primitive, origin, size, radius, height, turn}`, `{kind: "hole", origin, axis, radius, depth}`, `{kind: "split", origin, normal}`, `{kind: "fillet" | "chamfer", edges, size}`, or `{kind: "scale", factor}`. A fresh fillet or chamfer may name edges by index. The stored op names each as `{index, mid, lengthMm}`, where `mid` is the point at the middle of the edge's parameter range. A rebuild takes the index when its midpoint and length still agree within 0.001 mm, else the one edge that matches them, else the node is broken.
 
 A reply is the session's tessellation with `id` set to the node, plus `fingerprint: {volumeMm3, faces, edges}`, `replayed` (how many steps were rebuilt to answer it), and `held` (the nodes of this tree that keep a solid). A missing tree answers `{error: "unknown", missing: [0]}` and a missing node `{error: "unknown", missing: [id]}`, so the client sends the root and the ops again. A step that fails to rebuild, or rebuilds to a different fingerprint, answers `{error, broken: id}`; that node and everything under it lose their solids and stay unbuilt until it is dropped.

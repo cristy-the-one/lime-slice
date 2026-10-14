@@ -47,6 +47,13 @@ void set_failure(char** out, const Standard_Failure& failure) {
     set_error(out, message != nullptr && message[0] != '\0' ? message : "Open CASCADE failed");
 }
 
+std::unique_ptr<LimeShape> hold(const TopoDS_Shape& shape, double volume) {
+    auto out = std::make_unique<LimeShape>();
+    out->held = hold_of(shape, volume);
+    out->edges.resize(static_cast<size_t>(out->held.edges.Extent()));
+    return out;
+}
+
 /// The accepted result of an edit: one solid with volume. `volume` is what the op integrated.
 /// `empty` is the refusal when there is no solid. Released to the caller only once nothing can throw.
 std::unique_ptr<LimeShape> adopt(const TopoDS_Shape& result, double volume, const std::string& empty, char** error) {
@@ -55,10 +62,7 @@ std::unique_ptr<LimeShape> adopt(const TopoDS_Shape& result, double volume, cons
         set_error(error, empty);
         return nullptr;
     }
-    auto out = std::make_unique<LimeShape>();
-    out->held = hold_of(solid, volume);
-    out->edges.resize(static_cast<size_t>(out->held.edges.Extent()));
-    return out;
+    return hold(solid, volume);
 }
 
 const char* blend_failed(bool chamfer, size_t count) {
@@ -104,8 +108,9 @@ LimeShape* lime_tree_read_step(const char* path, char** error) {
             set_error(error, message);
             return nullptr;
         }
+        // Surfaces with no closed solid still open, to be measured; every edit on them is refused.
         const TopoDS_Shape solid = as_solid(shape);
-        return adopt(solid, volume_of(solid), "This STEP file has no solid to measure", error).release();
+        return hold(solid, volume_of(solid)).release();
     } catch (const Standard_Failure& failure) {
         set_failure(error, failure);
         return nullptr;
@@ -256,6 +261,16 @@ LimeShape* lime_tree_scale(const LimeShape* from, double factor, char** error) {
         set_error(error, "Open CASCADE failed");
         return nullptr;
     }
+}
+
+/// 1 when the shape can be edited, else 0 and the refusal every edit answers.
+int lime_tree_editable(const LimeShape* shape, char** error) {
+    std::string message;
+    if (editable(shape->held.shape, message)) {
+        return 1;
+    }
+    set_error(error, message);
+    return 0;
 }
 
 void lime_tree_fingerprint(const LimeShape* shape, double* volume, int* faces, int* edges) {
