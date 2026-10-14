@@ -249,14 +249,6 @@ function setLevel(level: string) {
   document.querySelector<HTMLButtonElement>(`[data-level-choice="${level}"]`)?.click();
 }
 
-function focusScale() {
-  if (window.innerWidth <= 960) document.querySelector(".workspace")?.classList.add("show-left");
-  const field = document.querySelector<HTMLInputElement>("#partScale");
-  if (!field) return;
-  field.focus();
-  field.select();
-}
-
 const VIEW_CYCLE = ["flat", "split", "solid"] as const;
 
 function stepBrush(by: number) {
@@ -346,9 +338,6 @@ export function runCommand(id: string) {
       return;
     case "plate-remove":
       if (state.plate.selectedId) removePlateObject(state.plate.selectedId);
-      return;
-    case "tool-scale":
-      focusScale();
       return;
     case "brush-smaller":
       stepBrush(-0.5);

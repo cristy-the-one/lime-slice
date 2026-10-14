@@ -69,6 +69,21 @@ export function snapStep(total: number, shift: boolean, step: number): number {
 export const GIZMO_NUDGE_MM = 0.1;
 export const GIZMO_NUDGE_DEG = 1;
 
+/** One percentage point of part scale per millimetre of travel along a parked scale handle. */
+export const SCALE_PERCENT_PER_MM = 2;
+/** Shift snap for a scale drag, matching the Scale % field step. */
+export const SCALE_SNAP_PERCENT = 5;
+/** Wheel and nudge step for the scale tool. */
+export const SCALE_NUDGE_PERCENT = 1;
+export const SCALE_MIN_PERCENT = 10;
+export const SCALE_MAX_PERCENT = 400;
+
+/** The Scale % field's range, rounded to a whole percent. */
+export function clampPartPercent(percent: number): number {
+  if (!Number.isFinite(percent)) return 100;
+  return Math.min(SCALE_MAX_PERCENT, Math.max(SCALE_MIN_PERCENT, Math.round(percent)));
+}
+
 /**
  * One discrete step from a mouse wheel or touchpad scroll.
  * Pixel deltas accumulate until `threshold`; a line or page delta is one step.
