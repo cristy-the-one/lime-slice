@@ -5,7 +5,7 @@
  */
 import { jumped, opLabel, type EdgeRef, type Fingerprint, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type Vec3 } from "./model-tree.ts";
 
-export interface SavedNode {
+interface SavedNode {
   id: NodeId;
   parent: NodeId | null;
   op: ModelOp | null;
@@ -79,7 +79,7 @@ export function readSavedTree(value: unknown): SavedTree<unknown> | null {
   for (const node of nodes) {
     // Parents come first, so a parent always has the smaller id; only the root has none.
     if (ids.has(node.id) || (node.parent === null) !== (node.id === 0) || (node.parent !== null && !ids.has(node.parent))) return null;
-    if ((node.op === null) !== (node.parent === null)) return null;
+    if ((node.op === null) !== (node.parent === null) || (node.piece !== undefined && node.op?.kind !== "split")) return null;
     ids.add(node.id);
   }
   const { current, committed, nextId } = value;
@@ -137,11 +137,16 @@ function readOp(value: unknown): ModelOp | undefined {
     case "fillet":
     case "chamfer": {
       if (!Array.isArray(value.edges) || value.edges.length === 0 || !finite(value.size)) return undefined;
-      const edges: EdgeRef[] = [];
+      // The engine stores each edge as a reference; an op it did not echo back keeps the picked indices.
+      const edges: (number | EdgeRef)[] = [];
       for (const raw of value.edges) {
+        if (isId(raw)) {
+          edges.push(raw);
+          continue;
+        }
         const mid = isRecord(raw) ? vec(raw.mid) : null;
-        if (!isRecord(raw) || !Number.isInteger(raw.index) || (raw.index as number) < 0 || !mid || !finite(raw.lengthMm)) return undefined;
-        edges.push({ index: raw.index as number, mid, lengthMm: raw.lengthMm });
+        if (!isRecord(raw) || !isId(raw.index) || !mid || !finite(raw.lengthMm)) return undefined;
+        edges.push({ index: raw.index, mid, lengthMm: raw.lengthMm });
       }
       return { kind: value.kind, edges, size: value.size };
     }
@@ -153,7 +158,7 @@ function readOp(value: unknown): ModelOp | undefined {
 }
 
 function readFingerprint(value: unknown): Fingerprint | undefined {
-  if (!isRecord(value) || !finite(value.volumeMm3) || !Number.isInteger(value.faces) || !Number.isInteger(value.edges)) return undefined;
+  if (!isRecord(value) || !finite(value.volumeMm3) || !isId(value.faces) || !isId(value.edges)) return undefined;
   return { volumeMm3: value.volumeMm3, faces: value.faces as number, edges: value.edges as number };
 }
 

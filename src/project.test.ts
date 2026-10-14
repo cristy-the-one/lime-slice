@@ -372,6 +372,8 @@ for (const [name, tamper] of [
   ["a damaged root STEP", (tree: Record<string, unknown>) => ((tree.rootStep as { hash: string }).hash = "nope")],
   ["a root STEP that names bytes the file does not have", (tree: Record<string, unknown>) => delete (tree.rootStep as { bytesBase64?: string }).bytesBase64],
   ["a tree that is not one", (tree: Record<string, unknown>) => delete tree.nodes],
+  ["a negative face count", (tree: Record<string, unknown>) => ((tree.nodes as { fingerprint: { faces: number } }[])[1]!.fingerprint.faces = -6)],
+  ["a piece on a step that is no split", (tree: Record<string, unknown>) => ((tree.nodes as { piece?: string }[])[1]!.piece = "obj-2")],
 ] as const) {
   const read = unread(tamper);
   check(`${name}: the project still opens`, read.ok);
@@ -379,6 +381,28 @@ for (const [name, tamper] of [
   eq(`${name}: the tree is left out and named`, [read.project.objects?.map((obj) => !!obj.modelTree), read.project.unreadHistory], [[false, true], ["bracket.stl"]]);
   eq(`${name}: the part keeps its mesh and solid`, [read.project.objects?.[0]?.mesh, read.project.objects?.[0]?.brep], [project.mesh, plateStep]);
 }
+// A root STEP stays in the file's bytes even when the tree around it is damaged: a later copy names it.
+const sharedRoot: LimeProject = {
+  ...historied,
+  objects: [historied.objects![0]!, { ...historied.objects![0]!, id: "obj-5", name: "bracket.stl 5", placement: secondPlacement }],
+};
+const sharedWire = JSON.parse(serializeProject(sharedRoot)) as { objects: { modelTree: { nodes: { parent: number }[]; rootStep: { bytesBase64?: string } } }[] };
+eq("the copy's root is written by hash alone", sharedWire.objects.map((obj) => obj.modelTree.rootStep.bytesBase64 !== undefined), [true, false]);
+sharedWire.objects[0]!.modelTree.nodes[2]!.parent = 9;
+const sharedRead = parseProject(JSON.stringify(sharedWire));
+eq(
+  "a damaged tree loses only itself: the copy still finds the root STEP the damaged one carried",
+  sharedRead.ok ? [sharedRead.project.objects?.map((obj) => obj.modelTree?.rootStep.bytesBase64 ?? null), sharedRead.project.unreadHistory] : null,
+  [[null, bytesToBase64(rootStep)], ["bracket.stl"]],
+);
+
+// A fillet the engine stored without edge references (its reply named no op) keeps the indices.
+const bareFillet: ModelOp = { kind: "fillet", edges: [3, 5], size: 0.5 };
+let bare = newTree("part#run1.9", { kind: "step", name: "bracket.step", bytes: rootStep.buffer }, "bracket.stl", fpOf(4000));
+bare = withChild(bare, 0, { id: 1, op: bareFillet, label: opLabel(bareFillet), fingerprint: fpOf(3990) });
+const bareRead = parseProject(serializeProject({ ...historied, objects: [{ ...historied.objects![0]!, modelTree: treeWith(bare, 1, rootStep, "bracket.step") }, historied.objects![1]!] }));
+eq("a fillet by bare edge indices round-trips", bareRead.ok ? bareRead.project.objects?.[0]?.modelTree?.nodes[1]?.op : null, bareFillet);
+
 const oldPlate = parseProject(multiText);
 eq("a file from before the tree opens with none and no notice", oldPlate.ok ? [oldPlate.project.objects?.map((obj) => obj.modelTree ?? null), oldPlate.project.unreadHistory] : null, [[null, null], undefined]);
 

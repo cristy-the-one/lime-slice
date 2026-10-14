@@ -357,9 +357,11 @@ function readPlateObjects(value: unknown): { objects: PlateFileObject[]; unreadH
   }
   const pool = bytesPool(out);
   const trees = value.map((item: Record<string, unknown>) => {
-    const tree = item.modelTree == null ? null : readSavedTree(item.modelTree);
-    const root = tree ? readRootStep(tree.rootStep) : null;
+    const raw = item.modelTree;
+    // Every whole root STEP joins the bytes, as the writer counted it, even in a tree too damaged to read.
+    const root = raw && typeof raw === "object" ? readRootStep((raw as Record<string, unknown>).rootStep) : null;
     if (root?.bytesBase64 !== undefined && !pool.has(recordId(root))) pool.set(recordId(root), root.bytesBase64);
+    const tree = raw == null ? null : readSavedTree(raw);
     return tree && root ? { tree, root } : null;
   });
   const unreadHistory: string[] = [];
