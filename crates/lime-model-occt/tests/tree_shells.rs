@@ -53,10 +53,12 @@ fn facet_shells_in_the_tree() {
     assert_eq!(by_path["solid"], true, "sewn shells are an editable solid");
     let split = ok(
         json!({ "call": "apply", "key": "cubes", "parent": 0, "node": 1,
-        "op": { "kind": "split", "origin": [25.0, 5.0, 5.0], "normal": [0.0, 0.0, 1.0] } }),
+        "op": { "kind": "split", "origin": [25.0, 5.0, 5.0], "normal": [0.0, 0.0, 1.0] },
+        "otherKey": "cubes-piece" }),
     );
     near(volume(&split), 1500.0);
     near(volume(&split["other"]), 1500.0);
+    ok(json!({ "call": "close", "key": "cubes-piece" }));
     let cut = ok(
         json!({ "call": "apply", "key": "cubes", "parent": 0, "node": 2,
         "op": { "kind": "boolean", "op": "cut", "primitive": "box", "origin": [5.0, -1.0, -1.0], "size": [10.0, 12.0, 12.0] } }),

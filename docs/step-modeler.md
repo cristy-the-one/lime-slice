@@ -50,7 +50,7 @@ An edit is a new node in the object's tree; the plate takes it when it commits (
 
 Model mode can fillet or chamfer the picked edge, cut a cylindrical hole, and scale the solid by one factor. The blend size, the hole radius, and the hole depth are millimetres. The hole starts at the origin fields and runs straight down. Scale is about the solid's centre. Fillet and chamfer stay disabled until an edge is picked, and the button's tip says how to pick one. While the numbers change, a dry-run builds the fillet, chamfer, hole, or boolean on a copy and leaves the solid alone. A number being typed or dragged waits 300 ms (`PROBE_WAIT_MS`, sized to typing speed so one number asks once); opening a tool, a pick, the end of a drag, and every other one-off change ask at once. Answers are kept by tree node and numbers (`probeKey`), since a node's shape never changes: undo back to a checked node enables Apply at once. Apply, undo, and redo ask nothing. The numbers just applied leave Apply off, since applying them again would change nothing. The note says it works, or why not, and for a blend the largest size that did. Apply stays off until that check passes. Split and scale are judged from their numbers. The desktop shell runs every Model command off the UI thread. A kernel failure is the readout, and the solid is left as it was. There is no mesh fallback.
 
-A dry-run that works keeps the shape it built; an Apply of the same op on the same node commits that shape instead of building it again. Each resulting shape's volume is integrated once, by the op that made it, and reused for the reply; a scale multiplies the volume by the factor cubed. `lime_model_occt::stats()` counts builds, volume integrations, and tessellations for `tests/kernel.rs` and `tests/tree.rs`.
+A dry-run that works keeps the shape it built; an Apply of the same op on the same node commits that shape instead of building it again. Each resulting shape's volume is integrated once, by the op that made it, and reused for the reply; a scale multiplies the volume by the factor cubed. `lime_model_occt::stats()` gives the linked Open CASCADE `version` and counts builds, volume integrations, `tessellations` (replies built rather than taken from the reply cache), `meshes` (shapes meshed), and `descriptions` (shapes whose faces and edges were measured for a reply) for `tests/kernel.rs` and `tests/tree.rs`.
 
 These edits commit as a boolean does. Pose stays, except that a scale sets the plate's `partScale` back to 1 so the part is not scaled twice; going back to a node the plate held puts its placement scale back.
 
@@ -63,7 +63,7 @@ Every call is one JSON request through `lime_occt_tree` (`POST /api/model/tree`,
 | `call` | Fields | Answer |
 |---|---|---|
 | `open` | `key`, one of `dataB64`, `stepPath`, or `box: [x, y, z]`; `chordMm`; optional `nodes: [{id, parent, op, fingerprint}]` (parents first) and `current` | The reply for `current` (default 0). Saved nodes are registered, not built. Opening an existing key replaces that tree. |
-| `apply` | `key`, `parent`, `node`, `op`, `chordMm`; `otherKey` for a split | The new node's reply, plus `op` as stored (edge picks resolved) and, for a split, `other`. With `otherKey`, `other` is the root reply of a new tree under that key. Applying an existing node with the same parent, op, and `otherKey` is a jump to it; anything else on an existing id is refused. |
+| `apply` | `key`, `parent`, `node`, `op`, `chordMm`; `otherKey` for a split | The new node's reply, plus `op` as stored (edge picks resolved) and, for a split with `otherKey`, `other`: the root reply of a new tree under that key. A split without `otherKey` (a replay) sends no piece and does not tessellate it. Applying an existing node with the same parent, op, and `otherKey` is a jump to it; anything else on an existing id is refused. |
 | `probe` | `key`, `node`, `op` | `{ok: true}`, or `{ok: false, error, maxMm?}`: the edit was built on a copy, or why not and, for a blend, the largest size that fits. A probe that works is kept, and an Apply of the same op on the same node commits it. |
 | `goto` | `key`, `node`, `chordMm` | That node's reply. |
 | `drop` | `key`, `node` | `{dropped, current}`. The node and everything under it go; the current node moves to the parent if it was inside. The root cannot be dropped. |
@@ -75,13 +75,23 @@ Every call is one JSON request through `lime_occt_tree` (`POST /api/model/tree`,
 
 `op` is one of `{kind: "boolean", op, primitive, origin, size, radius, height, turn}`, `{kind: "hole", origin, axis, radius, depth}`, `{kind: "split", origin, normal}`, `{kind: "fillet" | "chamfer", edges, size}`, or `{kind: "scale", factor}`. A fresh fillet or chamfer may name edges by index. The stored op names each as `{index, mid, lengthMm}`, where `mid` is the point at the middle of the edge's parameter range. A rebuild takes the index when its midpoint and length still agree within 0.001 mm, else the one edge that matches them, else the node is broken.
 
-A reply is the node's tessellation with `id` set to the node, plus `solid` (false for surfaces with no closed solid), `fingerprint: {volumeMm3, faces, edges}`, `replayed` (how many steps were rebuilt to answer it), and `held` (the nodes of this tree that keep a solid). A missing tree answers `{error: "unknown", missing: [0]}` and a missing node `{error: "unknown", missing: [id]}`, so the client sends the root and the ops again. A step that fails to rebuild, or rebuilds to a different fingerprint, answers `{error, broken: id}`; that node and everything under it lose their solids and stay unbuilt until it is dropped.
+A reply is the node's tessellation with `id` set to the node and `format: "lime-solid-2"`. The client reads no array from a reply without that format and says the modeler does not match the app (`src/model-reply.ts`). The bulk arrays are base64 of little-endian words, decoded straight into typed arrays that view the bytes in place:
+
+| Field | Words | What |
+|---|---|---|
+| `positions` | f32 | Nine per triangle: a triangle soup, wound outward. |
+| `triangles` | u32 | The face index of each triangle. |
+| `edgePoints` | f32 | Every edge's polyline, one after another, three per point. |
+| `edgeOffsets` | u32 | One more than the edges: edge `i` is points `edgeOffsets[i]` up to `edgeOffsets[i + 1]`. |
+
+The client keeps all four as f32 and u32, so the words lose nothing it reads. The rest is JSON, since it is small and kept as f64: `volumeMm3`, `solid` (false for surfaces with no closed solid), `faces` (`{areaMm2, normal?}` by face index; `normal` is the outward unit normal at the face's middle), `edgeLengths` (by edge index), `fingerprint: {volumeMm3, faces, edges}`, `replayed` (how many steps were rebuilt to answer it), and `held` (the nodes of this tree that keep a solid). The Open CASCADE version is in `lime_model_occt::stats()`, not in a reply. A missing tree answers `{error: "unknown", missing: [0]}` and a missing node `{error: "unknown", missing: [id]}`, so the client sends the root and the ops again. A step that fails to rebuild, or rebuilds to a different fingerprint, answers `{error, broken: id}`; that node and everything under it lose their solids and stay unbuilt until it is dropped.
 
 What is kept, per node:
 
 - The solid, with its face and edge maps and the volume the op integrated. Each tree pins its root, its current node, and every eighth node on the path between them. The 24 most recently used other solids stay; older ones are evicted and rebuilt on demand from the nearest kept ancestor.
 - The fingerprint, for as long as the node exists. Every rebuilt step is checked against it.
-- The reply, per chord, for the 8 most recently viewed nodes across all trees. A jump to one of those does no kernel work.
+- The reply, per chord, as it is sent, for the 8 most recently viewed nodes across all trees. A jump to one of those does no kernel work; the bridge copies the cached reply once, into its answer, and the loader copies that answer out of the bridge.
+- With the solid, from its first reply: its face areas and normals and its edge lengths, and the chord its faces were meshed at. A reply built again at that chord, for a jump to a node whose reply left the cache, neither integrates a face nor meshes again: 1 ms instead of 84 ms on Telo test.
 - An edge's midpoint and length, computed the first time a fillet or chamfer asks.
 
 What is skipped: a rebuild tessellates only the node asked for, never the steps on the way. A split's other piece is tessellated once, for the apply that made it. Jumps never send it again, and replaying the split never touches the piece's own tree. Jumping above a split leaves both pieces in place.

@@ -38,8 +38,10 @@ pub fn set_tree_limits(shapes: usize, replies: usize) {
     }
 }
 
-/// Kernel work since the library loaded: `builds` (booleans, cuts, blends, splits), `volumes`
-/// (volume integrations), and `tessellations` (replies built rather than reused). For tests.
+/// The linked Open CASCADE `version`, and kernel work since the library loaded: `builds`
+/// (booleans, cuts, blends, splits), `volumes` (volume integrations), `tessellations` (replies
+/// built rather than reused), `meshes` (shapes meshed), and `descriptions` (shapes whose faces and
+/// edges were measured for a reply). For tests.
 pub fn stats() -> String {
     #[cfg(lime_occt)]
     {

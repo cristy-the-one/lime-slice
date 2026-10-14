@@ -14,7 +14,7 @@ import type { LayerAction } from "./layer-actions.ts";
 import type { PresetSettings } from "./presets.ts";
 import { readPresetSettings } from "./presets.ts";
 import { fnv1aHex } from "./slice-action.ts";
-import { bytesToBase64 } from "./base64.ts";
+import { base64ToBytes, bytesToBase64 } from "./base64.ts";
 import { parseOverrides, type OverrideDocument } from "./overrides.ts";
 import { plateFileIsVersion2, readPlateSettings, settingsEmpty, type PlateFileObject } from "./plate.ts";
 import { dropEmptyReinforce, readReinforcement } from "./reinforcement.ts";
@@ -90,17 +90,6 @@ export type Migration = (doc: Record<string, unknown>) => Record<string, unknown
 const migrationSteps: Migration[] = [];
 migrationSteps[1] = migrateVersion1;
 export const migrations: readonly Migration[] = migrationSteps;
-
-export function base64ToBytes(text: string): Uint8Array | null {
-  try {
-    const binary = atob(text);
-    const out = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
-    return out;
-  } catch {
-    return null;
-  }
-}
 
 export function meshRecord(name: string, bytes: Uint8Array): ProjectMesh {
   return { name, bytesBase64: bytesToBase64(bytes), byteLength: bytes.byteLength, hash: fnv1aHex(bytes) };

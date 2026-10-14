@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type Built, type MockSolid, type TreeMock } from "./model-tree-mock";
+import { MISMATCHED, encodeSolid } from "../src/model-reply";
 
 type V = [number, number, number];
 
@@ -293,4 +294,63 @@ test("an engine that forgot a split piece gets it back from its parent's split",
   expect(spare, "the split runs again on a spare node of the parent tree, for the piece's key").toBeTruthy();
   expect(tree.of("drop").map((request) => [request.key, request.node]), "and the spare node goes").toEqual([[split.key, spare!.node]]);
   expect(tree.of("apply").at(-1), "then the piece's edit goes through").toMatchObject({ key: split.otherKey, parent: 0 });
+});
+
+/** Answer every `call` request with `body(request)` instead of the mock's own answer. */
+async function answerWith(page: Page, call: string, body: (request: Body) => Body) {
+  await page.route("**/api/model/tree", async (route) => {
+    const request = route.request().postDataJSON() as Body;
+    if (request.call !== call) return route.fallback();
+    await route.fulfill({ json: body(request) });
+  });
+}
+
+const OLD_FORMAT = { volumeMm3: 1600, positions: [], triangles: [], faces: [], edges: [] };
+
+test("a step the app cannot read is refused in plain words, and the engine drops it", async ({ page }) => {
+  const tree = await openModel(page);
+  await answerWith(page, "apply", (request) => ({ id: request.node, ...OLD_FORMAT }));
+  await page.locator("#modelToolBoolean").click();
+  await page.locator("#modelDx").fill("4");
+  await page.locator("#modelApply").click();
+  await expect(readout(page)).toHaveText(MISMATCHED);
+  await expect.poll(() => tree.of("drop").map((request) => request.node)).toEqual([1]);
+  await expect(page.locator("#modelUndo"), "no step was added").toBeDisabled();
+});
+
+test("a split whose piece the app cannot read drops the step and closes the piece's tree", async ({ page }) => {
+  const tree = await openModel(page);
+  const kept = boxSolid([20, 20, 4]);
+  const fingerprint = { volumeMm3: kept.volumeMm3, faces: 6, edges: 0 };
+  await answerWith(page, "apply", (request) => ({
+    id: request.node,
+    ...encodeSolid(kept),
+    fingerprint,
+    op: request.op,
+    other: { id: 0, key: request.otherKey, ...OLD_FORMAT },
+  }));
+  await page.locator("#modelToolSplit").click();
+  await page.locator("#modelPlaneZ").fill("4");
+  await page.locator("#modelApply").click();
+  await expect(readout(page)).toHaveText(MISMATCHED);
+  await expect(page.locator("#objectList .obj"), "no piece joins the plate").toHaveCount(1);
+  await expect.poll(() => tree.of("drop").map((request) => request.node)).toEqual([1]);
+  const close = tree.of("close").map((request) => request.key);
+  expect(close, "the piece's tree goes").toHaveLength(1);
+  expect(close[0]).toMatch(/piece/);
+});
+
+test("a root the app cannot read is refused in plain words, and its tree is closed", async ({ page }) => {
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: ROOT.positions } }));
+  await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
+  const tree = await mockModelTree(page, { open: () => ROOT, apply: built });
+  await answerWith(page, "open", () => ({ id: 0, ...OLD_FORMAT }));
+  await page.goto("/");
+  await autoSliceOff(page);
+  await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toHaveText(MISMATCHED);
+  await expect.poll(() => tree.of("close").length, { message: "the engine lets go of the tree it opened" }).toBe(1);
 });

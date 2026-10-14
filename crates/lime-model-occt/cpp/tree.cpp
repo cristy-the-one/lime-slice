@@ -34,6 +34,19 @@ struct LimeShape {
     std::vector<EdgeInfo> edges;
 };
 
+/// A Mesh's arrays as bytes in this machine's order, and the shape's description as JSON.
+struct LimeMeshView {
+    const unsigned char* positions;
+    size_t positions_bytes;
+    const unsigned char* triangles;
+    size_t triangles_bytes;
+    const unsigned char* edge_points;
+    size_t edge_points_bytes;
+    const unsigned char* edge_offsets;
+    size_t edge_offsets_bytes;
+    const char* meta;
+};
+
 namespace {
 
 void set_error(char** out, const std::string& message) {
@@ -307,17 +320,34 @@ int lime_tree_edge(LimeShape* shape, int index, double* mid, double* length) {
     return 1;
 }
 
-/// The Model reply for this solid: triangles, faces, and edges. Freed with lime_model_occt_string_free.
-char* lime_tree_reply(const LimeShape* shape, int id, double chord) {
+/// The tessellation for the Model reply, read through `view` until lime_tree_mesh_free, and the
+/// shape's description, which lives as long as the shape. Null, and `error` set, when Open CASCADE fails.
+Mesh* lime_tree_mesh(LimeShape* shape, double chord, LimeMeshView* view, char** error) {
     try {
-        return alloc(tessellate(id, shape->held, chord));
+        auto mesh = std::make_unique<Mesh>(tessellate(shape->held, chord));
+        if (shape->held.about.empty()) {
+            shape->held.about = describe(shape->held);
+        }
+        view->positions = reinterpret_cast<const unsigned char*>(mesh->positions.data());
+        view->positions_bytes = mesh->positions.size() * sizeof(float);
+        view->triangles = reinterpret_cast<const unsigned char*>(mesh->triangles.data());
+        view->triangles_bytes = mesh->triangles.size() * sizeof(uint32_t);
+        view->edge_points = reinterpret_cast<const unsigned char*>(mesh->edge_points.data());
+        view->edge_points_bytes = mesh->edge_points.size() * sizeof(float);
+        view->edge_offsets = reinterpret_cast<const unsigned char*>(mesh->edge_offsets.data());
+        view->edge_offsets_bytes = mesh->edge_offsets.size() * sizeof(uint32_t);
+        view->meta = shape->held.about.c_str();
+        return mesh.release();
     } catch (const Standard_Failure& failure) {
-        const char* message = failure.GetMessageString();
-        return alloc(std::string("{\"error\":\"") + escape(message != nullptr ? message : "Open CASCADE failed") + "\"}");
+        set_failure(error, failure);
+        return nullptr;
     } catch (...) {
-        return alloc("{\"error\":\"Open CASCADE failed\"}");
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
     }
 }
+
+void lime_tree_mesh_free(Mesh* mesh) { delete mesh; }
 
 /// 1 and `out` set, or 0 and `error` set.
 int lime_tree_distance(

@@ -24,7 +24,8 @@ export interface ModelSolid {
   id: number;
   volumeMm3: number;
   positions: Float32Array;
-  triangles: number[];
+  /** The face of each triangle. */
+  triangles: Uint32Array;
   edges: { id: number; lengthMm: number; points: Float32Array }[];
 }
 

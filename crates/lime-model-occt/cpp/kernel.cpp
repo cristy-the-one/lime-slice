@@ -4,10 +4,12 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <locale>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -194,6 +196,8 @@ struct Stats {
     std::atomic<long> builds{0};
     std::atomic<long> volumes{0};
     std::atomic<long> tessellations{0};
+    std::atomic<long> meshes{0};
+    std::atomic<long> descriptions{0};
 };
 
 Stats g_stats;
@@ -223,12 +227,22 @@ std::string escape(const std::string& text) {
     return out;
 }
 
-void append_num(std::string& out, double value) {
+/// One stream per thread in the classic locale: GTK sets the C locale from the environment in the
+/// desktop shell, and a decimal comma there would break the JSON.
+struct NumberText {
     std::ostringstream stream;
-    stream.setf(std::ios::fixed);
-    stream.precision(6);
-    stream << value;
-    out += stream.str();
+    NumberText() {
+        stream.imbue(std::locale::classic());
+        stream.setf(std::ios::fixed);
+        stream.precision(6);
+    }
+};
+
+void append_num(std::string& out, double value) {
+    thread_local NumberText text;
+    text.stream.str(std::string());
+    text.stream << value;
+    out += text.stream.str();
 }
 
 double chord_of(double chord) {
@@ -337,112 +351,111 @@ TopoDS_Shape solids_from_shells(const std::vector<TopoDS_Shape>& parts, const To
     return has_solid(solids) ? TopoDS_Shape(solids) : surfaces;
 }
 
-void append_point(std::string& out, bool& first, const gp_Pnt& point) {
-    if (!first) {
-        out += ',';
-    }
-    first = false;
-    append_num(out, point.X());
-    out += ',';
-    append_num(out, point.Y());
-    out += ',';
-    append_num(out, point.Z());
+void push_point(std::vector<float>& out, const gp_Pnt& point) {
+    out.push_back(static_cast<float>(point.X()));
+    out.push_back(static_cast<float>(point.Y()));
+    out.push_back(static_cast<float>(point.Z()));
 }
 
 void append_face_normal(std::string& out, const TopoDS_Face& face);
 
-std::string tessellate(int id, const Held& held, double chord) {
+Mesh tessellate(Held& held, double chord) {
     g_stats.tessellations += 1;
     chord = chord_of(chord);
-    const TopoDS_Shape& shape = held.shape;
-    BRepMesh_IncrementalMesh mesh(shape, chord, Standard_False, 0.5, Standard_False);
-    mesh.Perform();
+    // Open CASCADE keeps a finer mesh it already has, so a face shared with a solid meshed finer
+    // since is what meshing again would leave too.
+    if (held.meshed != chord) {
+        g_stats.meshes += 1;
+        BRepMesh_IncrementalMesh mesher(held.shape, chord, Standard_False, 0.5, Standard_False);
+        mesher.Perform();
+        held.meshed = chord;
+    }
 
-    std::string out = "{\"id\":";
-    out += std::to_string(id);
-    out += ",\"kernel\":\"occt\",\"version\":\"";
-    out += escape(OCCT_Version_String_Complete());
-    out += "\",\"volumeMm3\":";
-    append_num(out, held.volume);
-    out += has_solid(shape) ? ",\"solid\":true" : ",\"solid\":false";
-    out += ",\"positions\":[";
-
-    bool first_position = true;
-    std::string faces_json = ",\"triangles\":[";
-    bool first_triangle = true;
+    struct Piece {
+        Handle(Poly_Triangulation) tri;
+        gp_Trsf trsf;
+        bool reversed;
+    };
+    std::vector<Piece> pieces(static_cast<size_t>(held.faces.Extent()));
+    size_t count = 0;
     for (int face_index = 1; face_index <= held.faces.Extent(); ++face_index) {
         const TopoDS_Face face = TopoDS::Face(held.faces(face_index));
         TopLoc_Location location;
-        Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, location);
-        if (tri.IsNull()) {
+        Piece& piece = pieces[static_cast<size_t>(face_index - 1)];
+        piece.tri = BRep_Tool::Triangulation(face, location);
+        piece.trsf = location.Transformation();
+        piece.reversed = face.Orientation() == TopAbs_REVERSED;
+        if (!piece.tri.IsNull()) {
+            count += static_cast<size_t>(piece.tri->NbTriangles());
+        }
+    }
+
+    Mesh out;
+    out.positions.reserve(count * 9);
+    out.triangles.reserve(count);
+    for (size_t face = 0; face < pieces.size(); ++face) {
+        const Piece& piece = pieces[face];
+        if (piece.tri.IsNull()) {
             continue;
         }
-        const gp_Trsf trsf = location.Transformation();
-        const bool reversed = face.Orientation() == TopAbs_REVERSED;
-        for (int triangle_index = 1; triangle_index <= tri->NbTriangles(); ++triangle_index) {
+        for (int triangle_index = 1; triangle_index <= piece.tri->NbTriangles(); ++triangle_index) {
             int n1 = 0;
             int n2 = 0;
             int n3 = 0;
-            tri->Triangle(triangle_index).Get(n1, n2, n3);
-            if (reversed) {
+            piece.tri->Triangle(triangle_index).Get(n1, n2, n3);
+            if (piece.reversed) {
                 std::swap(n2, n3);
             }
-            const gp_Pnt points[3] = {
-                tri->Node(n1).Transformed(trsf),
-                tri->Node(n2).Transformed(trsf),
-                tri->Node(n3).Transformed(trsf),
-            };
-            for (const gp_Pnt& point : points) {
-                append_point(out, first_position, point);
-            }
-            if (!first_triangle) {
-                faces_json += ',';
-            }
-            first_triangle = false;
-            faces_json += std::to_string(face_index - 1);
+            push_point(out.positions, piece.tri->Node(n1).Transformed(piece.trsf));
+            push_point(out.positions, piece.tri->Node(n2).Transformed(piece.trsf));
+            push_point(out.positions, piece.tri->Node(n3).Transformed(piece.trsf));
+            out.triangles.push_back(static_cast<uint32_t>(face));
         }
     }
-    out += "]";
-    out += faces_json;
-    out += "],\"faces\":[";
+
+    out.edge_offsets.reserve(static_cast<size_t>(held.edges.Extent()) + 1);
+    out.edge_offsets.push_back(0);
+    for (int edge_index = 1; edge_index <= held.edges.Extent(); ++edge_index) {
+        BRepAdaptor_Curve curve(TopoDS::Edge(held.edges(edge_index)));
+        GCPnts_QuasiUniformDeflection sampler(curve, chord);
+        if (sampler.IsDone() && sampler.NbPoints() >= 2) {
+            for (int point_index = 1; point_index <= sampler.NbPoints(); ++point_index) {
+                push_point(out.edge_points, sampler.Value(point_index));
+            }
+        } else {
+            push_point(out.edge_points, curve.Value(curve.FirstParameter()));
+            push_point(out.edge_points, curve.Value(curve.LastParameter()));
+        }
+        out.edge_offsets.push_back(static_cast<uint32_t>(out.edge_points.size() / 3));
+    }
+    return out;
+}
+
+std::string describe(const Held& held) {
+    g_stats.descriptions += 1;
+    std::string out = "{\"volumeMm3\":";
+    append_num(out, held.volume);
+    out += has_solid(held.shape) ? ",\"solid\":true" : ",\"solid\":false";
+    out += ",\"faces\":[";
     for (int face_index = 1; face_index <= held.faces.Extent(); ++face_index) {
         if (face_index > 1) {
             out += ',';
         }
         GProp_GProps props;
         BRepGProp::SurfaceProperties(held.faces(face_index), props);
-        out += "{\"id\":";
-        out += std::to_string(face_index - 1);
-        out += ",\"areaMm2\":";
+        out += "{\"areaMm2\":";
         append_num(out, props.Mass());
         append_face_normal(out, TopoDS::Face(held.faces(face_index)));
         out += '}';
     }
-    out += "],\"edges\":[";
+    out += "],\"edgeLengths\":[";
     for (int edge_index = 1; edge_index <= held.edges.Extent(); ++edge_index) {
         if (edge_index > 1) {
             out += ',';
         }
-        const TopoDS_Edge edge = TopoDS::Edge(held.edges(edge_index));
         GProp_GProps props;
-        BRepGProp::LinearProperties(edge, props);
-        out += "{\"id\":";
-        out += std::to_string(edge_index - 1);
-        out += ",\"lengthMm\":";
+        BRepGProp::LinearProperties(held.edges(edge_index), props);
         append_num(out, props.Mass());
-        out += ",\"points\":[";
-        BRepAdaptor_Curve curve(edge);
-        GCPnts_QuasiUniformDeflection sampler(curve, chord);
-        bool first_point = true;
-        if (sampler.IsDone() && sampler.NbPoints() >= 2) {
-            for (int point_index = 1; point_index <= sampler.NbPoints(); ++point_index) {
-                append_point(out, first_point, sampler.Value(point_index));
-            }
-        } else {
-            append_point(out, first_point, curve.Value(curve.FirstParameter()));
-            append_point(out, first_point, curve.Value(curve.LastParameter()));
-        }
-        out += "]}";
     }
     out += "]}";
     return out;
@@ -1135,14 +1148,20 @@ TopoDS_Shape build_scale(const TopoDS_Shape& current, double factor, std::string
 
 using namespace lime_occt;
 
-/// Kernel work counted since the library loaded, for tests.
+/// The linked Open CASCADE version and the kernel work counted since the library loaded, for tests.
 extern "C" char* lime_model_occt_stats() {
-    std::string out = "{\"builds\":";
+    std::string out = "{\"version\":\"";
+    out += escape(OCCT_Version_String_Complete());
+    out += "\",\"builds\":";
     out += std::to_string(g_stats.builds.load());
     out += ",\"volumes\":";
     out += std::to_string(g_stats.volumes.load());
     out += ",\"tessellations\":";
     out += std::to_string(g_stats.tessellations.load());
+    out += ",\"meshes\":";
+    out += std::to_string(g_stats.meshes.load());
+    out += ",\"descriptions\":";
+    out += std::to_string(g_stats.descriptions.load());
     out += '}';
     return alloc(out);
 }

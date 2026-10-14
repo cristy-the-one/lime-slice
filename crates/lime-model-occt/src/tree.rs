@@ -11,9 +11,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
+use std::fmt::Write as _;
 use std::os::raw::{c_char, c_int};
 use std::ptr::NonNull;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -31,6 +32,13 @@ const EDGE_MATCH_MM: f64 = 1e-3;
 /// One node in eight along the open path keeps its solid whatever the cache holds, so a jump back
 /// along that path never replays more than seven steps.
 const PATH_PIN_EVERY: u32 = 8;
+
+/// The solid reply's layout. The client reads no array from a reply that names another
+/// (`src/model-reply.ts`), so an engine and an app that do not match fail plainly.
+const SOLID_FORMAT: &str = "lime-solid-2";
+
+// A reply sends the kernel's f32 and u32 arrays byte for byte, and the format says little-endian.
+const _: () = assert!(cfg!(target_endian = "little"));
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -164,9 +172,14 @@ pub fn call(request: &str) -> String {
     store.evict();
     match answer {
         Ok(Answer::Plain(text)) => text,
-        Ok(Answer::Held { key, text }) => {
+        Ok(Answer::Held {
+            key,
+            text,
+            mut fields,
+        }) => {
             let held = store.docs.get(&key).map(Doc::held).unwrap_or_default();
-            with_fields(text, &[("held", json!(held).to_string())])
+            fields.push(("held", Part::Json(json!(held).to_string())));
+            with_fields(&text, &fields)
         }
         Err(failure) => failure.json(),
     }
@@ -268,11 +281,36 @@ fn chord_key(chord: f64) -> u64 {
 
 enum Answer {
     Plain(String),
-    /// A reply that also lists which nodes of `key` hold a solid, read after eviction.
+    /// `text` with `fields` added, and the list of which nodes of `key` hold a solid, read after
+    /// eviction. `text` and an `other` piece may be cached replies, so each is copied once, when
+    /// the answer is written.
     Held {
         key: String,
-        text: String,
+        text: Arc<String>,
+        fields: Vec<(&'static str, Part)>,
     },
+}
+
+/// A field's value: JSON as it is, or a JSON object, such as a cached reply, with fields added.
+enum Part {
+    Json(String),
+    Object(Arc<String>, Vec<(&'static str, Part)>),
+}
+
+impl Part {
+    fn len(&self) -> usize {
+        match self {
+            Part::Json(text) => text.len(),
+            Part::Object(text, fields) => text.len() + fields_len(fields),
+        }
+    }
+
+    fn write(&self, out: &mut String) {
+        match self {
+            Part::Json(text) => out.push_str(text),
+            Part::Object(text, fields) => write_object(out, text, fields),
+        }
+    }
 }
 
 enum Failure {
@@ -298,20 +336,34 @@ impl Failure {
     }
 }
 
-/// `text` is a JSON object. Each field is added before its closing brace.
-fn with_fields(mut text: String, fields: &[(&str, String)]) -> String {
-    if !text.ends_with('}') {
-        return text;
-    }
-    text.pop();
+/// `text` is a JSON object. Each field is added before its closing brace, in one allocation with
+/// room for the terminator the C string adds, since a solid reply is megabytes.
+fn with_fields(text: &str, fields: &[(&str, Part)]) -> String {
+    let mut out = String::with_capacity(text.len() + fields_len(fields) + 2);
+    write_object(&mut out, text, fields);
+    out
+}
+
+fn fields_len(fields: &[(&str, Part)]) -> usize {
+    fields
+        .iter()
+        .map(|(name, value)| name.len() + value.len() + 4)
+        .sum()
+}
+
+fn write_object(out: &mut String, text: &str, fields: &[(&str, Part)]) {
+    let Some(body) = text.strip_suffix('}') else {
+        out.push_str(text);
+        return;
+    };
+    out.push_str(body);
     for (name, value) in fields {
-        text.push_str(",\"");
-        text.push_str(name);
-        text.push_str("\":");
-        text.push_str(value);
+        out.push_str(",\"");
+        out.push_str(name);
+        out.push_str("\":");
+        value.write(out);
     }
-    text.push('}');
-    text
+    out.push('}');
 }
 
 struct Node {
@@ -343,7 +395,7 @@ struct Reply {
     key: String,
     node: NodeId,
     chord: u64,
-    text: String,
+    text: Arc<String>,
     used: u64,
 }
 
@@ -670,11 +722,14 @@ impl Store {
             }
         };
         doc_in(&mut self.docs, &key)?.current = id;
-        let text = with_fields(text, &[("replayed", replayed.to_string())]);
-        Ok(Answer::Held { key, text })
+        Ok(Answer::Held {
+            key,
+            text,
+            fields: vec![("replayed", Part::Json(replayed.to_string()))],
+        })
     }
 
-    fn cached_reply(&mut self, key: &str, id: NodeId, chord: f64) -> Option<String> {
+    fn cached_reply(&mut self, key: &str, id: NodeId, chord: f64) -> Option<Arc<String>> {
         let chord = chord_key(chord);
         self.clock += 1;
         let reply = self
@@ -682,26 +737,26 @@ impl Store {
             .iter_mut()
             .find(|reply| reply.key == key && reply.node == id && reply.chord == chord)?;
         reply.used = self.clock;
-        Some(reply.text.clone())
+        Some(Arc::clone(&reply.text))
     }
 
     /// The node's reply, built and cached on first use. The node must hold its solid.
-    fn reply(&mut self, key: &str, id: NodeId, chord: f64) -> Result<String, Failure> {
+    fn reply(&mut self, key: &str, id: NodeId, chord: f64) -> Result<Arc<String>, Failure> {
         if let Some(text) = self.cached_reply(key, id, chord) {
             return Ok(text);
         }
         let doc = doc_in(&mut self.docs, key)?;
-        let text = render(doc.shape(id), id, chord)?;
-        self.remember(key, id, chord, &text);
+        let text = Arc::new(doc.shape(id).reply(id, chord)?);
+        self.remember(key, id, chord, Arc::clone(&text));
         Ok(text)
     }
 
-    fn remember(&mut self, key: &str, id: NodeId, chord: f64, text: &str) {
+    fn remember(&mut self, key: &str, id: NodeId, chord: f64, text: Arc<String>) {
         self.replies.push(Reply {
             key: key.to_string(),
             node: id,
             chord: chord_key(chord),
-            text: text.to_string(),
+            text,
             used: self.clock,
         });
     }
@@ -743,7 +798,7 @@ impl Store {
         let from = doc.shape(parent);
         from.editable().map_err(Failure::Message)?;
         let op = resolve(from, &op).map_err(Failure::Message)?;
-        let built = match probed {
+        let mut built = match probed {
             Some(probed) if probed.parent == parent && probed.op == op => probed.built,
             _ => build(from, op, false).map_err(|(message, _)| Failure::Message(message))?,
         };
@@ -756,11 +811,12 @@ impl Store {
         node.piece = other_key.clone();
         node.used = self.clock;
         doc.current = id;
+        // The other piece is sent only to start its own tree. A split replayed without `otherKey`
+        // drops it unseen.
         let rendered = self.reply(&key, id, chord).and_then(|text| {
-            let other = match &built.other {
-                Some(other) if other_key.is_some() => Some(render(other, ROOT, chord)?),
-                Some(other) => Some(other.reply(0, chord)?),
-                None => None,
+            let other = match (built.other.as_mut(), &other_key) {
+                (Some(other), Some(_)) => Some(other.reply(ROOT, chord)?),
+                _ => None,
             };
             Ok((text, other))
         });
@@ -777,26 +833,20 @@ impl Store {
             }
         };
         let mut fields = vec![
-            ("op", json!(built.op).to_string()),
-            ("replayed", replayed.to_string()),
+            ("op", Part::Json(json!(built.op).to_string())),
+            ("replayed", Part::Json(replayed.to_string())),
         ];
-        match (built.other, other_key, other) {
-            (Some(piece), Some(other_key), Some(other)) => {
-                self.clock += 1;
-                self.replies.retain(|reply| reply.key != other_key);
-                self.docs
-                    .insert(other_key.clone(), Doc::new(piece, self.clock));
-                self.remember(&other_key, ROOT, chord, &other);
-                let other = with_fields(other, &[("key", json!(other_key).to_string())]);
-                fields.push(("other", other));
-            }
-            (_, _, Some(other)) => fields.push(("other", other)),
-            _ => {}
+        if let (Some(piece), Some(other_key), Some(other)) = (built.other, other_key, other) {
+            self.clock += 1;
+            self.replies.retain(|reply| reply.key != other_key);
+            self.docs
+                .insert(other_key.clone(), Doc::new(piece, self.clock));
+            let other = Arc::new(other);
+            self.remember(&other_key, ROOT, chord, Arc::clone(&other));
+            let key_field = ("key", Part::Json(json!(other_key).to_string()));
+            fields.push(("other", Part::Object(other, vec![key_field])));
         }
-        Ok(Answer::Held {
-            key,
-            text: with_fields(text, &fields),
-        })
+        Ok(Answer::Held { key, text, fields })
     }
 
     fn probe(&mut self, key: &str, id: NodeId, op: Op) -> Result<Answer, Failure> {
@@ -856,7 +906,8 @@ impl Store {
         dropped.sort_unstable();
         Ok(Answer::Held {
             key,
-            text: json!({ "dropped": dropped, "current": current }).to_string(),
+            text: Arc::new(json!({ "dropped": dropped, "current": current }).to_string()),
+            fields: Vec::new(),
         })
     }
 
@@ -998,15 +1049,6 @@ fn same_request(stored: &Op, incoming: &Op) -> bool {
         })
 }
 
-/// The tessellation with the node's fingerprint, as a reply is cached and sent.
-fn render(shape: &Shape, id: NodeId, chord: f64) -> Result<String, Failure> {
-    let text = shape.reply(id, chord)?;
-    Ok(with_fields(
-        text,
-        &[("fingerprint", json!(shape.fingerprint()).to_string())],
-    ))
-}
-
 fn same_edge(a: &EdgeRef, b: &EdgeRef) -> bool {
     let d = (0..3)
         .map(|i| (a.mid[i] - b.mid[i]).powi(2))
@@ -1131,6 +1173,26 @@ struct RawShape {
     _opaque: [u8; 0],
 }
 
+#[repr(C)]
+struct RawMesh {
+    _opaque: [u8; 0],
+}
+
+/// `LimeMeshView` in tree.cpp: a mesh's arrays as bytes, until the mesh is freed, and the shape's
+/// description as JSON, for as long as the shape lives.
+#[repr(C)]
+struct MeshView {
+    positions: *const u8,
+    positions_bytes: usize,
+    triangles: *const u8,
+    triangles_bytes: usize,
+    edge_points: *const u8,
+    edge_points_bytes: usize,
+    edge_offsets: *const u8,
+    edge_offsets_bytes: usize,
+    meta: *const c_char,
+}
+
 extern "C" {
     fn lime_tree_free(shape: *mut RawShape);
     fn lime_tree_box(x: f64, y: f64, z: f64, error: *mut *mut c_char) -> *mut RawShape;
@@ -1176,7 +1238,13 @@ extern "C" {
     );
     fn lime_tree_edge(shape: *mut RawShape, index: c_int, mid: *mut f64, length: *mut f64)
         -> c_int;
-    fn lime_tree_reply(shape: *const RawShape, id: c_int, chord: f64) -> *mut c_char;
+    fn lime_tree_mesh(
+        shape: *mut RawShape,
+        chord: f64,
+        view: *mut MeshView,
+        error: *mut *mut c_char,
+    ) -> *mut RawMesh;
+    fn lime_tree_mesh_free(mesh: *mut RawMesh);
     fn lime_tree_distance(
         shape: *const RawShape,
         a_kind: *const c_char,
@@ -1196,6 +1264,28 @@ extern "C" {
 
 /// One solid owned by the kernel. Freed when dropped.
 struct Shape(NonNull<RawShape>);
+
+/// One tessellation owned by the kernel, while its reply is written.
+struct Mesh(NonNull<RawMesh>);
+
+impl Mesh {
+    /// Bytes the mesh's view points at, borrowed for as long as the mesh lives.
+    ///
+    /// # Safety
+    /// `ptr` and `len` are one array of the `MeshView` that `lime_tree_mesh` filled with this mesh.
+    unsafe fn bytes(&self, ptr: *const u8, len: usize) -> &[u8] {
+        if len == 0 {
+            return &[];
+        }
+        unsafe { std::slice::from_raw_parts(ptr, len) }
+    }
+}
+
+impl Drop for Mesh {
+    fn drop(&mut self) {
+        unsafe { lime_tree_mesh_free(self.0.as_ptr()) };
+    }
+}
 
 // The store lock serialises every use, and a shape is never shared between nodes.
 unsafe impl Send for Shape {}
@@ -1296,17 +1386,72 @@ impl Shape {
         Ok(found)
     }
 
-    fn reply(&self, id: NodeId, chord: f64) -> Result<String, Failure> {
-        let text = take_text(unsafe { lime_tree_reply(self.raw(), id as c_int, chord) })
-            .ok_or_else(|| Failure::Message("Open CASCADE returned nothing".into()))?;
-        if text.starts_with("{\"error\"") {
-            let message = serde_json::from_str::<serde_json::Value>(&text)
-                .ok()
-                .and_then(|value| value["error"].as_str().map(str::to_owned))
-                .unwrap_or(text);
-            return Err(Failure::Message(message));
+    /// The solid reply for node `id`: the tessellation's arrays as base64 of their little-endian
+    /// bytes, its faces and edges as JSON, and the fingerprint. `docs/step-modeler.md` lists the fields.
+    fn reply(&mut self, id: NodeId, chord: f64) -> Result<String, Failure> {
+        let mut view = MeshView {
+            positions: std::ptr::null(),
+            positions_bytes: 0,
+            triangles: std::ptr::null(),
+            triangles_bytes: 0,
+            edge_points: std::ptr::null(),
+            edge_points_bytes: 0,
+            edge_offsets: std::ptr::null(),
+            edge_offsets_bytes: 0,
+            meta: std::ptr::null(),
+        };
+        let mut error: *mut c_char = std::ptr::null_mut();
+        let raw = unsafe { lime_tree_mesh(self.0.as_ptr(), chord, &mut view, &mut error) };
+        let message = take_text(error);
+        let mesh = NonNull::new(raw).map(Mesh).ok_or_else(|| {
+            Failure::Message(message.unwrap_or_else(|| "Open CASCADE failed".into()))
+        })?;
+        let meta = unsafe { CStr::from_ptr(view.meta) }
+            .to_str()
+            .ok()
+            .and_then(|meta| meta.strip_prefix('{')?.strip_suffix('}'))
+            .ok_or_else(|| Failure::Message("Open CASCADE returned a damaged mesh".into()))?;
+        // SAFETY: `lime_tree_mesh` filled `view` with `mesh`'s own arrays, which live until it drops.
+        let arrays = unsafe {
+            [
+                (
+                    "positions",
+                    mesh.bytes(view.positions, view.positions_bytes),
+                ),
+                (
+                    "triangles",
+                    mesh.bytes(view.triangles, view.triangles_bytes),
+                ),
+                (
+                    "edgePoints",
+                    mesh.bytes(view.edge_points, view.edge_points_bytes),
+                ),
+                (
+                    "edgeOffsets",
+                    mesh.bytes(view.edge_offsets, view.edge_offsets_bytes),
+                ),
+            ]
+        };
+        let fingerprint = json!(self.fingerprint()).to_string();
+        let size = arrays
+            .iter()
+            .map(|(name, bytes)| name.len() + bytes.len().div_ceil(3) * 4 + 6)
+            .sum::<usize>()
+            + meta.len()
+            + fingerprint.len()
+            + 64;
+        let mut out = String::with_capacity(size);
+        let _ = write!(
+            out,
+            "{{\"id\":{id},\"format\":\"{SOLID_FORMAT}\",{meta},\"fingerprint\":{fingerprint}"
+        );
+        for (name, bytes) in arrays {
+            let _ = write!(out, ",\"{name}\":\"");
+            base64::engine::general_purpose::STANDARD.encode_string(bytes, &mut out);
+            out.push('"');
         }
-        Ok(text)
+        out.push('}');
+        Ok(out)
     }
 
     fn distance(&self, a_kind: &str, a: i32, b_kind: &str, b: i32) -> Result<f64, String> {
