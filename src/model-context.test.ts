@@ -1,5 +1,5 @@
 import { boundsOf, ID_MATRIX, rotZ, type Mat3 } from "./mesh-place.ts";
-import { contextParts, partBox } from "./model-context.ts";
+import { affineRows, bedParts, contextParts, partBox } from "./model-context.ts";
 import type { PlateObject } from "./plate.ts";
 
 let failed = 0;
@@ -68,6 +68,30 @@ sameBox("a quarter turn of the open object turns the offset with it", boxIn([tur
 
 const doubled = object("part", 10, 50, 60, ID_MATRIX, 2);
 sameBox("a placement scale of 2 halves the neighbour in the solid's frame", boxIn([doubled, b], "part", "obj-2")!, [22.5, 9.5, 3], [27.5, 14.5, 8]);
+
+function slab(): Float32Array {
+  return new Float32Array([
+    0, 0, 0, 20, 0, 0, 0, 10, 0,
+    20, 10, 5, 20, 0, 0, 0, 10, 0,
+  ]);
+}
+
+function bedBox(objects: PlateObject[], selectedId: string | null, id: string) {
+  const part = bedParts(objects, selectedId, 220, 220).find((item) => item.id === id);
+  return part ? partBox(boundsOf(part.positions), part.matrix) : null;
+}
+
+sameBox("the other object sits at its own bed pose", bedBox([a, b], "part", "obj-2")!, [80, 60, 0], [90, 70, 10]);
+sameBox("selecting the second object makes the first the other one", bedBox([a, b], "obj-2", "part")!, [50, 60, 0], [70, 80, 20]);
+check("the selected object is not among the bed parts", bedParts([a, b], "part", 220, 220).map((part) => part.id).join() === "obj-2");
+check("one object on the plate has no bed parts", bedParts([a], "part", 220, 220).length === 0);
+check("with nothing selected every object is a bed part", bedParts([a, b], null, 220, 220).length === 2);
+check("a bed part keeps the source array it was built from", bedParts([a, b], "part", 220, 220)[0]?.positions === b.sourcePos);
+
+const tall = { ...object("obj-3", 10, 100, 30, rotZ(90), 2), sourcePos: slab() };
+sameBox("a quarter turn and a placement scale of 2 swap and double the slab's footprint", bedBox([a, tall], "part", "obj-3")!, [100, 15, 0], [120, 55, 10]);
+
+check("affineRows lays a matrix out row by row with the shift last", affineRows({ m: [1, 2, 3, 4, 5, 6, 7, 8, 9], t: [10, 11, 12] }).join() === "1,2,3,10,4,5,6,11,7,8,9,12");
 
 if (failed) {
   console.error(`${failed} failed`);

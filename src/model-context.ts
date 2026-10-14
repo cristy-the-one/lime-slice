@@ -9,7 +9,7 @@ export interface Affine {
   t: Vec3;
 }
 
-/** A plate object Model mode draws as grey context. `matrix` takes its source vertices into the open solid's frame. */
+/** A plate object drawn as grey context. `matrix` takes its source vertices into the frame of the view that draws it. */
 export interface ContextPart {
   id: string;
   positions: Float32Array;
@@ -62,17 +62,28 @@ function then(first: Affine, second: Affine): Affine {
   return { m: m as Mat3, t };
 }
 
+/** Every plate object except the selected one, with the matrix from its source vertices to the bed. Empty for a one-object plate. */
+export function bedParts(objects: readonly PlateObject[], selectedId: string | null, bedX: number, bedY: number): ContextPart[] {
+  if (objects.length < 2) return [];
+  return objects
+    .filter((obj) => obj.id !== selectedId && obj.sourcePos.length >= 9)
+    .map((obj) => ({ id: obj.id, positions: obj.sourcePos, matrix: sourceToBed(obj, bedX, bedY) }));
+}
+
 /**
  * Every plate object except the open one, placed where it sits relative to the open solid.
  * The solid is drawn in its own CAD frame, so the open object's pose is undone and the others keep theirs.
  */
 export function contextParts(objects: readonly PlateObject[], openId: string | null, solidBox: Bounds, bedX: number, bedY: number): ContextPart[] {
   const open = objects.find((obj) => obj.id === openId);
-  if (!open || objects.length < 2) return [];
+  if (!open) return [];
   const back = bedToSolid(open, solidBox, bedX, bedY);
-  return objects
-    .filter((obj) => obj.id !== open.id && obj.sourcePos.length >= 9)
-    .map((obj) => ({ id: obj.id, positions: obj.sourcePos, matrix: then(sourceToBed(obj, bedX, bedY), back) }));
+  return bedParts(objects, open.id, bedX, bedY).map((part) => ({ ...part, matrix: then(part.matrix, back) }));
+}
+
+/** The rows of `matrix` as a 3x4 affine, the layout `poseAffine` returns. */
+export function affineRows({ m, t }: Affine): number[] {
+  return [m[0], m[1], m[2], t[0], m[3], m[4], m[5], t[1], m[6], m[7], m[8], t[2]];
 }
 
 /** The box a part's source bounds take once `matrix` is applied. Exact for turns in quarter steps, a bound otherwise. */
