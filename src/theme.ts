@@ -4,6 +4,7 @@ const KEY = "lime-slice-theme";
 
 export interface ThemeColors {
   stage: string;
+  context: string;
   text: string;
   muted: string;
   teal: string;
@@ -44,6 +45,7 @@ export function themeColors(): ThemeColors {
   const pick = (name: string, fallback: string) => css.getPropertyValue(name).trim() || fallback;
   return {
     stage: pick("--stage", "#0b0d11"),
+    context: pick("--context", "#9aa3b0"),
     text: pick("--text", "#e8eaed"),
     muted: pick("--muted", "#a3abb8"),
     teal: pick("--teal", "#2ec4b6"),

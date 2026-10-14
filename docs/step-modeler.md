@@ -36,6 +36,8 @@ The fourth workspace tab is Model. It is not selected when the app opens. Shortc
 
 Model mode sends the open STEP file to `POST /api/model` (or the `model_solid` command). The reply is the solid's tessellation, volume, face areas, and edge polylines. A click selects one face or edge and reports its area or length. Shift-click adds or removes a pick. Exactly two picks report the distance. Escape, or a click on empty space, clears the selection. Edits open from the toolbar and run on Apply. The ghost in the view is a local preview, not a kernel result. A mesh file says that measure reads a STEP solid. Nothing is invented when the bridge is missing.
 
+With more than one object on the plate, the others are drawn grey behind the open solid, where they sit relative to it (`src/model-context.ts`). The open object's pose is undone, because the solid is drawn in its own CAD frame, and the others keep theirs. They are not part of any pick, snap, handle drag, framing, bed centring, or size readout, and no tool targets them. The canvas carries `data-context-count` and `data-context` (each object's id and world box) for tests.
+
 The release workflow builds the cdylib after staging the Open CASCADE libraries and copies it into `src-tauri/resources/occt/lib`, next to those libraries. The cdylib's rpath is `$ORIGIN` on Linux and `@loader_path` on macOS.
 
 ## Booleans and a plane split

@@ -3,6 +3,7 @@ import { encodeStl, settle } from "../mesh-place";
 import type { ModelPick, ModelSolid } from "../model-view";
 import { holeAxis, lastFace, outwardFromMesh, selectedEdges } from "../model-blend";
 import { nextModelPicks, selectionCountLabel } from "../model-select";
+import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, isProbed, probeFromBody } from "../model-feasibility";
 import { formatMm, splitPlaneInside, splitPlaneRange, zExtent } from "../model-plane";
 import { closeModelTool, mountModelChrome, openModelTool, refreshModelGhost, setModelProbe, syncModelChrome, syncModelSolid } from "../ui/model-chrome";
@@ -10,7 +11,7 @@ import { addedSplit, shareMeshToken, withoutObject } from "../plate";
 import { markProjectDirty } from "../project-dirty";
 import { base64ToBytes } from "../project";
 import { authHeaders } from "../ui/api-base";
-import { place } from "./files";
+import { livePlate, place } from "./files";
 import { cancelEdit, editUndoCount, flushEdit, noteEdit, redoUserEdit, undoUserEdit } from "./history";
 import { fx } from "./fx";
 import { modelerFailure, plainModelError } from "./model-error";
@@ -25,6 +26,8 @@ let busy = false;
 let probeSerial = 0;
 let probeTimer = 0;
 let keptToken = "";
+/** The plate object the open solid belongs to. Selecting another object in the list leaves the solid as it was. */
+let openedId: string | null = null;
 let keptSolid: ParsedSolid | null = null;
 const undos: ModelUndo[] = [];
 const redos: ModelUndo[] = [];
@@ -159,12 +162,14 @@ export async function captureOpenSolid() {
 export function showModel() {
   const mine = ++ticket;
   picks = [];
+  openedId = state.plate.selectedId;
   flushEdit();
   noteEdit();
   const mesh = state.mesh;
   if (keptSolid && mesh && meshToken() === keptToken) {
     solid = keptSolid;
     fx.model?.setSolid(solid);
+    refreshModelContext();
     fx.model?.highlight([]);
     syncModelChrome([]);
     showEdits(true);
@@ -175,6 +180,7 @@ export function showModel() {
   }
   solid = null;
   fx.model?.setSolid(null);
+  refreshModelContext();
   fx.model?.highlight([]);
   syncModelChrome([]);
   showEdits(false);
@@ -687,6 +693,7 @@ function present(parsed: ParsedSolid, message: string) {
   keptToken = meshToken();
   picks = [];
   fx.model?.setSolid(parsed);
+  refreshModelContext();
   fx.model?.highlight([]);
   syncModelSolid();
   syncModelChrome([]);
@@ -694,6 +701,12 @@ function present(parsed: ParsedSolid, message: string) {
   showEdits(true);
   refreshModelGhost();
   readout(message);
+}
+
+/** The other plate objects, grey, in the open solid's frame. Nothing is drawn without an open solid. */
+export function refreshModelContext() {
+  const box = solid ? boxOf(solid.positions) : null;
+  fx.model?.setContext(box ? contextParts(livePlate(), openedId, box, state.profile.bedX, state.profile.bedY) : []);
 }
 
 function showEdits(on: boolean) {
@@ -898,3 +911,5 @@ async function post(path: string, payload: unknown): Promise<Record<string, unkn
     return { error: message };
   }
 }
+
+Object.assign(fx, { refreshModelContext });

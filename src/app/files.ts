@@ -154,6 +154,7 @@ export function applyPlace(rerender: boolean, sync: SplitSync = "transform") {
   fx.drawPaint?.();
   fx.prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
   fx.prepare.setPlateBounds(boundEntries(state.plate, state.profile.bedX, state.profile.bedY));
+  if (state.stage === "model") fx.refreshModelContext?.();
   paintPlaceFields();
   markProjectDirty();
   markStale();
