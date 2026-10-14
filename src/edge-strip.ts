@@ -17,7 +17,7 @@ export interface FaceRegions {
   ids: Int32Array;
   /** Per half-edge `t * 3 + j` (corner j to corner (j + 1) % 3 of triangle t): the opposite half-edge it pairs with, or -1. */
   twin: Int32Array;
-  /** Region per triangle, numbered 0..count-1 in order of first triangle; -1 for a triangle whose welded corners coincide. */
+  /** Region per triangle, numbered 0..count-1 in order of first triangle; -1 for a triangle whose welded corners coincide or are collinear. */
   region: Int32Array;
   count: number;
 }
@@ -58,8 +58,9 @@ export function labelFaceRegions(positions: Float32Array, thresholdDeg = REGION_
     const b = ids[v + 1]!;
     const c = ids[v + 2]!;
     if (a === b || b === c || c === a) continue;
-    region[t] = 0;
     const [nx, ny, nz] = faceNormal(positions, v);
+    if (nx === 0 && ny === 0 && nz === 0) continue;
+    region[t] = 0;
     normals[v] = nx;
     normals[v + 1] = ny;
     normals[v + 2] = nz;

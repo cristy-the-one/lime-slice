@@ -193,6 +193,13 @@ check("two quads at a 10° bend are 1 region", labelFaceRegions(fold(10)).count 
   const sliver = soupOf([[[0, 0, 0], [1, 0, 0], [0.00001, 0, 0]], [[0, 0, 0], [1, 0, 0], [0, 1, 0]]]);
   const slivers = labelFaceRegions(sliver);
   check("a sliver triangle gets region -1", slivers.region[0] === -1 && slivers.region[1] === 0 && slivers.count === 1);
+
+  const flat = soupOf([[[0, 0, 0], [1, 0, 0], [2, 0, 0]], [[0, 0, 0], [2, 0, 0], [0, 1, 0]]]);
+  const flats = labelFaceRegions(flat, 179);
+  check("a collinear triangle with distinct corners gets region -1", flats.region[0] === -1 && flats.region[1] === 0 && flats.count === 1, `${flats.region.join()}`);
+  const flatLoops = boundaryLoops(flat, flats, 0);
+  const flatSamples = flatLoops.flatMap((loop) => stripSamples(loop, { kind: "loop" }, 0.05, 0.05));
+  check("its neighbour's strip has only unit normals", flatSamples.length > 0 && flatSamples.every((s) => Math.abs(Math.hypot(...s.normal) - 1) <= 1e-6));
 }
 
 {
