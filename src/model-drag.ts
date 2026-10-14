@@ -3,6 +3,8 @@
  * Shift slows the pointer to a tenth for fine control. Ctrl (Cmd on a Mac) snaps to the handle's step.
  */
 
+import { DOCK_KNOB_REACH } from "./gizmo-math.ts";
+
 export type Vec3 = [number, number, number];
 
 export type ModelTool = "boolean" | "split" | "fillet" | "chamfer" | "hole" | "scale" | "measure";
@@ -22,7 +24,8 @@ export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
 };
 
 /**
- * `axis` slides one field along `dir`; `rate` is the field change per millimetre of travel.
+ * `axis` slides along `dir`. One field changes by `rate` per millimetre of travel; three fields (x, y, z)
+ * are a point that moves along `dir`, so a hole slides in its face plane.
  * `ring` turns one field in degrees about `dir`.
  * `surface` puts three fields (x, y, z) on the solid under the pointer.
  */
@@ -32,7 +35,7 @@ export interface DragHandle {
   /** `arrow` moves a thing; `knob` resizes it. */
   look: "arrow" | "knob" | "ring" | "dot";
   fields: readonly string[];
-  origin: Vec3;
+  seat: HandleSeat;
   dir: Vec3;
   rate: number;
   /** Ctrl snaps to whole multiples of this. */
@@ -45,6 +48,12 @@ export interface DragHandle {
   /** The fields' values when the handle was placed. */
   values: number[];
 }
+
+/**
+ * Where a handle is drawn. A `feature` handle edits a picked feature, so it sits on the solid at `origin`.
+ * A `dock` handle edits the tool's object, so it sits at the fixed dock, `reach` handle units out along `dir`.
+ */
+export type HandleSeat = { at: "feature"; origin: Vec3 } | { at: "dock"; reach: number };
 
 export interface DragContext {
   read(field: string): number;
@@ -83,51 +92,46 @@ function axisHandle(
   id: string,
   look: "arrow" | "knob",
   field: string,
-  origin: Vec3,
+  seat: HandleSeat,
   dir: Vec3,
   color: DragHandle["color"],
   label: string,
   extra: Partial<Spec> = {},
 ): Spec {
-  return { id, kind: "axis", look, fields: [field], origin, dir, rate: 1, step: 1, color, label, unit: "mm", ...extra };
+  return { id, kind: "axis", look, fields: [field], seat, dir, rate: 1, step: 1, color, label, unit: "mm", ...extra };
 }
+
+const onFeature = (origin: Vec3): HandleSeat => ({ at: "feature", origin });
+const onDock = (reach: number): HandleSeat => ({ at: "dock", reach });
+/** A size knob stands out past the arrows and rings. */
+const KNOB = onDock(DOCK_KNOB_REACH);
 
 function booleanHandles(ctx: DragContext): Spec[] {
   const r = ctx.read;
-  const origin: Vec3 = [r("modelX"), r("modelY"), r("modelZ")];
   const turn: Vec3 = ctx.primitive === "sphere" ? [0, 0, 0] : [r("modelRx"), r("modelRy"), r("modelRz")];
   const axes = turnedAxes(turn);
-  const size: Vec3 = [r("modelDx"), r("modelDy"), r("modelDz")];
-  const center = primitiveCenter(ctx.primitive, origin, size, r("modelHeight"));
-  // The arrows sit where X, Y, Z point: the box corner, the cylinder base, or the sphere centre, turned with the primitive.
-  let anchor = origin;
-  if (ctx.primitive === "box") anchor = add(center, add(add(scale(axes[0], -size[0] / 2), scale(axes[1], -size[1] / 2)), scale(axes[2], -size[2] / 2)));
-  else if (ctx.primitive === "cylinder") anchor = add(center, scale(axes[2], -r("modelHeight") / 2));
   const out: Spec[] = [
-    axisHandle("move-x", "arrow", "modelX", anchor, X, "x", "X"),
-    axisHandle("move-y", "arrow", "modelY", anchor, Y, "y", "Y"),
-    axisHandle("move-z", "arrow", "modelZ", anchor, Z, "z", "Z"),
+    axisHandle("move-x", "arrow", "modelX", onDock(0), X, "x", "Move X"),
+    axisHandle("move-y", "arrow", "modelY", onDock(0), Y, "y", "Move Y"),
+    axisHandle("move-z", "arrow", "modelZ", onDock(0), Z, "z", "Move Z"),
   ];
   if (ctx.primitive === "box") {
     const fields = ["modelDx", "modelDy", "modelDz"];
     const colors: DragHandle["color"][] = ["x", "y", "z"];
     for (let i = 0; i < 3; i += 1) {
-      const dir = axes[i]!;
-      out.push(axisHandle(`size-${i}`, "knob", fields[i]!, add(center, scale(dir, size[i]! / 2)), dir, colors[i]!, `Size ${"XYZ"[i]}`, { min: 0.1 }));
+      out.push(axisHandle(`size-${i}`, "knob", fields[i]!, KNOB, axes[i]!, colors[i]!, `Size ${"XYZ"[i]}`, { min: 0.1 }));
     }
   } else if (ctx.primitive === "cylinder") {
-    const radius = r("modelRadius");
-    const height = r("modelHeight");
-    out.push(axisHandle("radius", "knob", "modelRadius", add(center, scale(axes[0], radius)), axes[0], "accent", "Radius", { min: 0.1 }));
-    out.push(axisHandle("height", "knob", "modelHeight", add(center, scale(axes[2], height / 2)), axes[2], "z", "Height", { min: 0.1 }));
+    out.push(axisHandle("radius", "knob", "modelRadius", KNOB, axes[0], "accent", "Radius", { min: 0.1 }));
+    out.push(axisHandle("height", "knob", "modelHeight", KNOB, axes[2], "z", "Height", { min: 0.1 }));
   } else {
-    out.push(axisHandle("radius", "knob", "modelRadius", add(center, [0, -r("modelRadius"), 0]), [0, -1, 0], "accent", "Radius", { min: 0.1 }));
+    out.push(axisHandle("radius", "knob", "modelRadius", KNOB, [0, -1, 0], "accent", "Radius", { min: 0.1 }));
   }
   if (ctx.primitive !== "sphere") {
     const gimbal = turnGimbal(turn);
     const rings: [string, Vec3, DragHandle["color"]][] = [["modelRx", gimbal[0], "x"], ["modelRy", gimbal[1], "y"], ["modelRz", gimbal[2], "z"]];
     for (const [field, dir, color] of rings) {
-      out.push({ id: `turn-${field}`, kind: "ring", look: "ring", fields: [field], origin: center, dir, rate: 1, step: 15, color, label: `Turn ${field.slice(-1).toUpperCase()}`, unit: "°" });
+      out.push({ id: `turn-${field}`, kind: "ring", look: "ring", fields: [field], seat: onDock(0), dir, rate: 1, step: 15, color, label: `Turn ${field.slice(-1).toUpperCase()}`, unit: "°" });
     }
   }
   return out;
@@ -137,7 +141,7 @@ function splitHandles(ctx: DragContext): Spec[] {
   const z = ctx.read("modelPlaneZ");
   const range = ctx.split;
   return [
-    axisHandle("plane", "arrow", "modelPlaneZ", [ctx.center[0], ctx.center[1], z], Z, "z", "Plane Z", range ? { min: range.min, max: range.max } : {}),
+    axisHandle("plane", "arrow", "modelPlaneZ", onFeature([ctx.center[0], ctx.center[1], z]), Z, "z", "Plane Z", range ? { min: range.min, max: range.max } : {}),
   ];
 }
 
@@ -145,22 +149,42 @@ function blendHandles(tool: "fillet" | "chamfer", ctx: DragContext): Spec[] {
   if (!ctx.edge) return [];
   const size = ctx.read("modelBlend");
   return [
-    axisHandle("blend", "knob", "modelBlend", add(ctx.edge.point, scale(ctx.edge.out, size)), ctx.edge.out, "accent", tool === "fillet" ? "Fillet" : "Chamfer", { min: 0.05, step: 0.5 }),
+    axisHandle("blend", "knob", "modelBlend", onFeature(add(ctx.edge.point, scale(ctx.edge.out, size))), ctx.edge.out, "accent", tool === "fillet" ? "Fillet" : "Chamfer", { min: 0.05, step: 0.5 }),
   ];
 }
 
 function holeHandles(ctx: DragContext): Spec[] {
   const r = ctx.read;
   const top: Vec3 = [r("modelX"), r("modelY"), r("modelZ")];
-  const radius = r("modelHoleR");
-  const depth = r("modelHoleD");
   const axis = drillAxis(ctx.holeAxis);
   const side = drillSide(axis);
+  const slide = (id: string, dir: Vec3): Spec => ({
+    id, kind: "axis", look: "arrow", fields: ["modelX", "modelY", "modelZ"], seat: onDock(0), dir, rate: 1, step: 1,
+    color: nearestAxisColor(dir), label: "Move", unit: "mm",
+  });
   return [
-    { id: "hole-origin", kind: "surface", look: "dot", fields: ["modelX", "modelY", "modelZ"], origin: top, dir: Z, rate: 1, step: 1, color: "accent", label: "Origin", unit: "mm" },
-    axisHandle("hole-radius", "knob", "modelHoleR", add(top, scale(side, radius)), side, "accent", "Radius", { min: 0.1, step: 0.5 }),
-    axisHandle("hole-depth", "knob", "modelHoleD", add(top, scale(axis, depth)), axis, "z", "Depth", { min: 0.1 }),
+    { id: "hole-origin", kind: "surface", look: "dot", fields: ["modelX", "modelY", "modelZ"], seat: onFeature(top), dir: Z, rate: 1, step: 1, color: "accent", label: "Origin", unit: "mm" },
+    slide("hole-move-u", facingUp(side)),
+    slide("hole-move-v", facingUp(cross(axis, side))),
+    axisHandle("hole-radius", "knob", "modelHoleR", KNOB, side, "accent", "Radius", { min: 0.1, step: 0.5 }),
+    axisHandle("hole-depth", "knob", "modelHoleD", KNOB, axis, "z", "Depth", { min: 0.1 }),
   ];
+}
+
+/** Index of the largest component of a direction. */
+function dominantAxis(dir: Vec3): number {
+  return dir.map(Math.abs).reduce((best, value, i, all) => (value > all[best]! ? i : best), 0);
+}
+
+/** The world axis a direction lines up with, or the accent colour for a slanted one. */
+function nearestAxisColor(dir: Vec3): DragHandle["color"] {
+  const index = dominantAxis(dir);
+  return Math.abs(dir[index]!) < 0.9 ? "accent" : (["x", "y", "z"] as const)[index]!;
+}
+
+/** The same line, pointing toward the positive side of the axis it lines up with most. */
+function facingUp(dir: Vec3): Vec3 {
+  return dir[dominantAxis(dir)]! < 0 ? scale(dir, -1) : dir;
 }
 
 /** Into the part. A missing direction is the old hole, straight down. */
@@ -178,11 +202,10 @@ function drillSide(axis: Vec3): Vec3 {
 }
 
 function scaleHandles(ctx: DragContext): Spec[] {
-  const factor = ctx.read("modelFactor");
   const reach = Math.max(ctx.extent, 1) * 0.5;
   const dir = normalize([1, -1, 1]);
   return [
-    { id: "factor", kind: "axis", look: "knob", fields: ["modelFactor"], origin: add(ctx.center, scale(dir, reach * factor)), dir, rate: 1 / reach, step: 0.1, min: 0.1, max: 20, color: "accent", label: "Factor", unit: "×" },
+    { id: "factor", kind: "axis", look: "knob", fields: ["modelFactor"], seat: KNOB, dir, rate: 1 / reach, step: 0.1, min: 0.1, max: 20, color: "accent", label: "Factor", unit: "×" },
   ];
 }
 
@@ -191,16 +214,9 @@ function measureHandles(ctx: DragContext): Spec[] {
   const a: Vec3 = [r("modelAx"), r("modelAy"), r("modelAz")];
   const b: Vec3 = [r("modelBx"), r("modelBy"), r("modelBz")];
   return [
-    { id: "measure-a", kind: "surface", look: "dot", fields: ["modelAx", "modelAy", "modelAz"], origin: a, dir: Z, rate: 1, step: 1, color: "accent", label: "A", unit: "mm" },
-    { id: "measure-b", kind: "surface", look: "dot", fields: ["modelBx", "modelBy", "modelBz"], origin: b, dir: Z, rate: 1, step: 1, color: "accent", label: "B", unit: "mm" },
+    { id: "measure-a", kind: "surface", look: "dot", fields: ["modelAx", "modelAy", "modelAz"], seat: onFeature(a), dir: Z, rate: 1, step: 1, color: "accent", label: "A", unit: "mm" },
+    { id: "measure-b", kind: "surface", look: "dot", fields: ["modelBx", "modelBy", "modelBz"], seat: onFeature(b), dir: Z, rate: 1, step: 1, color: "accent", label: "B", unit: "mm" },
   ];
-}
-
-/** The point a primitive turns about: the box middle, the cylinder's mid-height, or the sphere centre. */
-export function primitiveCenter(primitive: DragContext["primitive"], origin: Vec3, size: Vec3, height: number): Vec3 {
-  if (primitive === "box") return [origin[0] + size[0] / 2, origin[1] + size[1] / 2, origin[2] + size[2] / 2];
-  if (primitive === "cylinder") return [origin[0], origin[1], origin[2] + height / 2];
-  return origin;
 }
 
 /** Columns of R = Rz·Ry·Rx for degrees. The kernel turns primitives the same way. */
@@ -301,6 +317,23 @@ export function dragValue(handle: Pick<DragHandle, "rate" | "step" | "min" | "ma
   if (handle.min != null) value = Math.max(handle.min, value);
   if (handle.max != null) value = Math.min(handle.max, value);
   return value;
+}
+
+/**
+ * The field values after sliding `travel` millimetres along an axis handle. One field follows `dragValue`.
+ * A point (three fields) moves `rate` times the travel along `dir`, so the travel is the part that is
+ * snapped and rounded, and a direction square to a coordinate leaves that coordinate exactly where it was.
+ */
+export function axisValues(
+  handle: Pick<DragHandle, "fields" | "dir" | "rate" | "step" | "min" | "max">,
+  start: readonly number[],
+  travel: number,
+  snap: boolean,
+  fine: boolean,
+): number[] {
+  if (handle.fields.length !== 3) return [dragValue(handle, start[0] ?? 0, travel, snap, fine)];
+  const slide = dragValue({ rate: handle.rate, step: handle.step }, 0, travel, snap, fine);
+  return handle.dir.map((component, i) => Math.round(((start[i] ?? 0) + slide * component) * 1e4) / 1e4);
 }
 
 /** Degrees wrapped into (-180, 180]. */
