@@ -47,6 +47,47 @@ fn held(reply: &Value) -> Vec<u64> {
         .collect()
 }
 
+/// Kernel work, from the counters `lime_model_occt::stats()` reads.
+#[derive(Debug, PartialEq)]
+struct Work {
+    builds: i64,
+    volumes: i64,
+    tessellations: i64,
+}
+
+fn work(builds: i64, volumes: i64, tessellations: i64) -> Work {
+    Work {
+        builds,
+        volumes,
+        tessellations,
+    }
+}
+
+fn counts() -> Work {
+    let json: Value = serde_json::from_str(&lime_model_occt::stats()).expect("stats");
+    let read = |key: &str| {
+        json[key]
+            .as_i64()
+            .unwrap_or_else(|| panic!("{key} in {json}"))
+    };
+    work(read("builds"), read("volumes"), read("tessellations"))
+}
+
+/// Run `step` and return what it cost the kernel.
+fn cost<T>(step: impl FnOnce() -> T) -> (T, Work) {
+    let before = counts();
+    let out = step();
+    let after = counts();
+    (
+        out,
+        work(
+            after.builds - before.builds,
+            after.volumes - before.volumes,
+            after.tessellations - before.tessellations,
+        ),
+    )
+}
+
 fn cut_box(origin: [f64; 3], size: [f64; 3]) -> Value {
     json!({ "kind": "boolean", "op": "cut", "primitive": "box", "origin": origin, "size": size })
 }
@@ -98,9 +139,16 @@ fn history_tree() {
     let probe = ok(json!({ "call": "probe", "key": "main", "node": 1,
         "op": { "kind": "fillet", "edges": [edge], "size": 1.0 } }));
     assert_eq!(probe, json!({ "ok": true }));
-    let fillet = ok(
-        json!({ "call": "apply", "key": "main", "parent": 1, "node": 2,
-        "op": { "kind": "fillet", "edges": [edge], "size": 1.0 } }),
+    let (fillet, spent) = cost(|| {
+        ok(
+            json!({ "call": "apply", "key": "main", "parent": 1, "node": 2,
+            "op": { "kind": "fillet", "edges": [edge], "size": 1.0 } }),
+        )
+    });
+    assert_eq!(
+        spent,
+        work(0, 0, 1),
+        "the apply took the probe's solid and its volume"
     );
     let rounded = 500.0 - 10.0 * (1.0 - PI / 4.0);
     near(volume(&fillet), rounded);
@@ -127,9 +175,16 @@ fn history_tree() {
         "{clash}"
     );
 
-    let branch = ok(
-        json!({ "call": "apply", "key": "main", "parent": 1, "node": 3,
-        "op": { "kind": "hole", "origin": [5.0, 5.0, 5.0], "axis": [0.0, 0.0, -1.0], "radius": 2.0, "depth": 10.0 } }),
+    let (branch, spent) = cost(|| {
+        ok(
+            json!({ "call": "apply", "key": "main", "parent": 1, "node": 3,
+            "op": { "kind": "hole", "origin": [5.0, 5.0, 5.0], "axis": [0.0, 0.0, -1.0], "radius": 2.0, "depth": 10.0 } }),
+        )
+    });
+    assert_eq!(
+        spent,
+        work(1, 1, 1),
+        "an unprobed apply builds and integrates once"
     );
     let drilled = 500.0 - PI * 4.0 * 5.0;
     near(volume(&branch), drilled);
@@ -139,8 +194,9 @@ fn history_tree() {
     let parsed: Value = serde_json::from_str(&back).expect("goto reply");
     assert_eq!(parsed["fingerprint"], fillet["fingerprint"]);
     let started = Instant::now();
-    let again = raw(json!({ "call": "goto", "key": "main", "node": 2 }));
+    let (again, spent) = cost(|| raw(json!({ "call": "goto", "key": "main", "node": 2 })));
     let cached_ms = started.elapsed().as_secs_f64() * 1000.0;
+    assert_eq!(spent, work(0, 0, 0));
     assert_eq!(again, back, "a cached jump answers the same bytes");
     assert!(cached_ms < 5.0, "a cached jump took {cached_ms} ms");
 
@@ -181,10 +237,15 @@ fn evicted_nodes_replay(fillet: &Value, branch: &Value) {
     assert_eq!(held(&at_hole), [0, 3]);
     assert_eq!(at_hole["fingerprint"], branch["fingerprint"]);
 
-    let replayed = ok(json!({ "call": "goto", "key": "main", "node": 2 }));
+    let (replayed, spent) = cost(|| ok(json!({ "call": "goto", "key": "main", "node": 2 })));
     assert_eq!(
         replayed["replayed"], 2,
         "the cut and the fillet were rebuilt"
+    );
+    assert_eq!(
+        spent,
+        work(2, 2, 1),
+        "each replayed step builds and integrates once; only the target is tessellated"
     );
     assert_eq!(replayed["fingerprint"], fillet["fingerprint"]);
     assert_eq!(held(&replayed), [0, 2]);
