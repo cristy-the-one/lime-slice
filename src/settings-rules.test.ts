@@ -53,6 +53,13 @@ const hopAndScarf = { zHop: "smart", zHopHeight: 0.4, zHopMinTravel: 2, scarfSea
 eq("a belt request carries neither", settingsRules(belt).coerce(hopAndScarf), { gyroid3d: "blend" });
 eq("a flat request carries both", settingsRules(flat).coerce(hopAndScarf), hopAndScarf);
 
+// A belt's layer 0 is the leading slice, not the face on the belt: no elephant's foot, and no trunk brim.
+eq("a belt hides elephant's foot and the tree brim", [settingsRules(belt).hidden.has("elephantsFoot"), settingsRules(belt).hidden.has("supportTreeBrim")], [true, true]);
+eq("a flat printer shows both", [settingsRules(flat).hidden.has("elephantsFoot"), settingsRules(flat).hidden.has("supportTreeBrim")], [false, false]);
+const firstLayer = { elephantsFootCompensationMm: 0.2, xyHoleCompensationMm: 0.1, supportTreeBrimMm: 4, supportZGapMm: 0.3 };
+eq("a belt request carries neither", settingsRules(belt).coerce(firstLayer), { xyHoleCompensationMm: 0.1, supportZGapMm: 0.3 });
+eq("a flat request carries both", settingsRules(flat).coerce(firstLayer), firstLayer);
+
 // Ruling 10: one advance control, and only the matching field is sent.
 eq("Klipper edits pressure advance", [ADVANCE.klipper.label, ADVANCE.klipper.key], ["Pressure advance", "pressureAdvance"]);
 eq("Marlin edits linear advance K", [ADVANCE.marlin.label, ADVANCE.marlin.key], ["Linear advance K", "linearAdvance"]);

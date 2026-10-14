@@ -50,6 +50,7 @@ export async function saveCurrentProject() {
   }
   const overrides = projectOverrides(state.overrides);
   if (overrides) project.overrides = structuredClone(overrides);
+  if (state.layerActions.length > 0) project.layerActions = state.layerActions.map((action) => ({ ...action }));
   if (project.version === 2 && state.printOrder === "sequential") {
     project.printOrder = "sequential";
     if (state.sequentialClearance > 0) project.sequentialClearanceMm = state.sequentialClearance;
@@ -111,6 +112,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
     setSettingsLevel(project.level);
     state.supportEdits = project.supportEdits;
     state.overrides = project.overrides ? structuredClone(project.overrides) : emptyOverrides();
+    state.layerActions = project.layerActions?.map((action) => ({ ...action })) ?? [];
     state.printOrder = project.printOrder === "sequential" ? "sequential" : "all-at-once";
     state.sequentialClearance = project.sequentialClearanceMm ?? 0;
     state.sequentialGantry = project.sequentialGantryMm ?? 0;

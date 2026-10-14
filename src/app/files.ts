@@ -48,6 +48,7 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
   state.reinforcement = [];
   state.overrides = emptyOverrides();
   state.selectedVolumeId = null;
+  state.layerActions = [];
   clearEditHistory();
   session.supportUi?.reset();
   const parsed = needsEngine(name) ? null : parseStl(bytes);

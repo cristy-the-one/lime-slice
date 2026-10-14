@@ -194,6 +194,46 @@ test("a belt hides the settings it forces off or cannot use, and sends none of t
   await expect(page.locator("#printOrder")).toHaveValue("sequential");
 });
 
+test("a belt hides elephant's foot and the tree brim, and a flat printer sends them again", async ({ page }) => {
+  await quiet(page);
+  const bodies: Record<string, unknown>[] = [];
+  await page.route("**/api/slice", async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    bodies.push(body);
+    await route.fulfill({ json: body.belt ? beltCube : cube });
+  });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await page.locator("#levelPick").selectOption("advanced");
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
+  await expect(page.locator("#slice")).toBeEnabled();
+  await setSupports(page, "auto");
+  await page.locator("#efoot").fill("0.3");
+  await page.locator("#stbrim").fill("4");
+  await page.locator("#slice").click();
+  await expect.poll(() => bodies.length).toBe(1);
+  expect(bodies[0].elephantsFootCompensationMm).toBe(0.3);
+  expect(bodies[0].supportTreeBrimMm).toBe(4);
+
+  await page.locator("#machineKind").selectOption("belt");
+  await expect(page.locator("#efoot")).toHaveCount(0);
+  await expect(page.locator("#stbrim")).toHaveCount(0);
+  await expect(page.locator("#xyhole")).toBeVisible();
+  await page.locator("#slice").click();
+  await expect.poll(() => bodies.length).toBe(2);
+  expect(bodies[1].belt).toBeTruthy();
+  expect(bodies[1]).not.toHaveProperty("elephantsFootCompensationMm");
+  expect(bodies[1]).not.toHaveProperty("supportTreeBrimMm");
+
+  await page.locator("#machineKind").selectOption("cartesian");
+  await expect(page.locator("#efoot")).toHaveValue("0.3");
+  await expect(page.locator("#stbrim")).toHaveValue("4");
+  await page.locator("#slice").click();
+  await expect.poll(() => bodies.length).toBe(3);
+  expect(bodies[2].elephantsFootCompensationMm).toBe(0.3);
+  expect(bodies[2].supportTreeBrimMm).toBe(4);
+});
+
 test("Max length shows only for a capped belt", async ({ page }) => {
   await quiet(page);
   await page.goto("/");
