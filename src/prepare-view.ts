@@ -87,7 +87,8 @@ export interface PrepareView {
   onReinforceVolumeEditEnd(cb: (() => void) | null): void;
   /**
    * The support, seam, or reinforce brush, or null for none. While it is on, a press on the part paints: the left
-   * button or one finger. Off the part the left button orbits, and two fingers always orbit.
+   * button or one finger. Off the part the left button orbits, and two fingers always orbit. Shift+press paints a
+   * straight line from the last dab.
    */
   setBrush(brush: { kind: PaintKind | "seam" | "reinforce"; radius: number } | null): void;
   onBrush(hooks: BrushHooks | null): void;
@@ -337,6 +338,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let brush: { kind: PaintKind | "seam" | "reinforce"; radius: number } | null = null;
   let brushHooks: BrushHooks | null = null;
   let stroke: number | null = null;
+  /** The last point fed to `brushHooks.hit`, in the geometry frame: where a Shift+press line starts. */
+  let lastDab: THREE.Vector3 | null = null;
   // Each dab draws as the ball it reaches: the engine applies paint to every surface inside it.
   const disk = new THREE.SphereGeometry(1, 20, 14);
   const paintMat = new THREE.MeshBasicMaterial({
@@ -879,6 +882,39 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     else brushHooks?.cancel();
   }
 
+  function feedDab(hit: { point: Vec3; normal: Vec3; scene: THREE.Vector3 }) {
+    lastDab = mesh ? mesh.worldToLocal(hit.scene.clone()) : null;
+    brushHooks?.hit(hit.point, hit.normal);
+  }
+
+  /** The part along the screen line from the last dab to the pointer, short of it, stopping at the first gap. */
+  function lineFromLastDab(ev: PointerEvent): NonNullable<ReturnType<typeof brushHit>>[] {
+    if (!lastDab || !mesh || !brush) return [];
+    const rect = canvas.getBoundingClientRect();
+    const toPx = (p: THREE.Vector3) => {
+      const ndcPoint = p.clone().project(camera);
+      return new THREE.Vector2(rect.left + ((ndcPoint.x + 1) / 2) * rect.width, rect.top + ((1 - ndcPoint.y) / 2) * rect.height);
+    };
+    const world = lastDab.clone().applyMatrix4(mesh.matrixWorld);
+    const from = toPx(world);
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion).multiplyScalar(brush.radius);
+    const radiusPx = toPx(world.clone().add(up)).distanceTo(from);
+    // Finer than a quarter radius adds no dab: the stroke keeps one per half radius.
+    const step = Math.max(2, radiusPx / 4);
+    const to = new THREE.Vector2(ev.clientX, ev.clientY);
+    const count = Math.ceil(from.distanceTo(to) / step);
+    const hits: NonNullable<ReturnType<typeof brushHit>>[] = [];
+    for (let i = 1; i < count; i++) {
+      const at = from.clone().lerp(to, i / count);
+      pointer.set(((at.x - rect.left) / rect.width) * 2 - 1, -((at.y - rect.top) / rect.height) * 2 + 1);
+      raycaster.setFromCamera(pointer, camera);
+      const hit = brushHit();
+      if (!hit) break;
+      hits.push(hit);
+    }
+    return hits;
+  }
+
   function hitCut(ev: PointerEvent): boolean {
     if (!split || cutPicks.length === 0) return false;
     ndc(ev);
@@ -989,8 +1025,10 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
         if (ev.pointerType !== "touch") controls.enabled = false;
         canvas.setPointerCapture(ev.pointerId);
         showCursor(hit);
+        const line = ev.shiftKey ? lineFromLastDab(ev) : [];
         brushHooks?.start();
-        brushHooks?.hit(hit.point, hit.normal);
+        for (const dab of line) feedDab(dab);
+        feedDab(hit);
         ev.preventDefault();
         ev.stopPropagation();
         return;
@@ -1108,7 +1146,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       ndc(ev);
       const hit = brushHit();
       showCursor(hit);
-      if (hit) brushHooks?.hit(hit.point, hit.normal);
+      if (hit) feedDab(hit);
       return;
     }
     if (!drag && brush) {
@@ -1402,6 +1440,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
           scene.add(mesh);
           addOutline(mesh, canonical);
         }
+        lastDab = null;
       }
       meshBounds = canonical && part ? part.bounds : null;
       if (mesh && part) {
@@ -1455,8 +1494,10 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     onReinforceVolumeEdit(cb) { editReinforceVolCb = cb; },
     onReinforceVolumeEditEnd(cb) { editReinforceVolEndCb = cb; },
     setBrush(next) {
+      const was = brush;
       brush = next;
       if (!brush) endStroke(true);
+      if (brush?.kind !== was?.kind) lastDab = null;
       controls.touches.ONE = brush ? (-1 as THREE.TOUCH) : THREE.TOUCH.ROTATE;
       controls.touches.TWO = brush ? THREE.TOUCH.DOLLY_ROTATE : THREE.TOUCH.DOLLY_PAN;
       canvas.dataset.brush = brush ? brush.kind : "";

@@ -122,6 +122,7 @@ export const MOUSE_HINTS: { gesture: string; label: string }[] = [
   { gesture: "Shift + drag", label: "Snap a move to 1 mm, a rotation to 15°" },
   { gesture: "Scroll a handle", label: "Nudge 0.1 mm, or 1° on a ring" },
   { gesture: "Alt/Shift + wheel", label: "Resize the paint brush" },
+  { gesture: "Shift+click", label: "Paint a straight line from the last dab" },
   { gesture: "Drag the plane", label: "Move the By region split" },
   { gesture: "2D: drag", label: "Pan the layer" },
   { gesture: "2D: wheel", label: "Zoom at the cursor" },
