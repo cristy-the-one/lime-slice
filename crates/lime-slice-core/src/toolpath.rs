@@ -3349,6 +3349,25 @@ pub fn plan_tree_support(
     paths
 }
 
+/// Concentric loops outside layer-0 trunks that stand on the bed.
+/// `brim_mm` of 0 prints nothing, and the caller skips this entirely then.
+pub fn plan_tree_brim(
+    disks: &[Disk],
+    part: &[Loop],
+    strategy: &ResolvedStrategy,
+    line_width: f64,
+    brim_mm: f64,
+) -> Vec<Extrusion> {
+    let loops = crate::support::tree::on_bed_brim(disks, part, line_width, brim_mm);
+    if loops.is_empty() {
+        return Vec::new();
+    }
+    let speed = crate::strategy::support_speed(strategy, false);
+    let mut paths = Vec::new();
+    emit_support_loops(&mut paths, &loops, strategy, line_width, speed);
+    paths
+}
+
 fn emit_support_loops(
     out: &mut Vec<Extrusion>,
     loops: &[Loop],

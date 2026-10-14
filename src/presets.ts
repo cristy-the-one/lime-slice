@@ -35,6 +35,14 @@ export interface PresetSettings {
   /** Off unless the slice asks. Omitted from the request while off. */
   supportAvoidance: boolean;
   supportHeightMult: number;
+  /** Millimetres. `0` is omitted and the engine keeps the layer height, at least 0.12 mm. */
+  supportZGapMm: number;
+  /** Millimetres. `0` is omitted and the engine keeps 0.55 mm. */
+  supportXyGapMm: number;
+  /** `0` is omitted and the engine keeps 3 dense layers. */
+  supportInterfaceLayers: number;
+  /** Millimetres of concentric brim around bed trunks. `0` is omitted. */
+  supportTreeBrimMm: number;
   infillCombine: boolean;
   combing: boolean;
   featureSpeeds: boolean;
@@ -110,6 +118,10 @@ export const DEFAULT_PRESET: PresetSettings = {
   trunkDiameter: 4.2,
   supportAvoidance: false,
   supportHeightMult: 1,
+  supportZGapMm: 0,
+  supportXyGapMm: 0,
+  supportInterfaceLayers: 0,
+  supportTreeBrimMm: 0,
   infillCombine: true,
   combing: true,
   featureSpeeds: true,
@@ -150,7 +162,7 @@ export function presetKeys(): (keyof PresetSettings)[] {
 }
 
 /** Keys added after project and profile files were versioned. A file written before one reads its default. */
-const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow", "retractOn", "retractLength", "retractSpeed", "supportAvoidance", "supportSource", "minLayerTimeS", "minLayerSpeedMmS", "adhesion", "brimWidthMm", "brimGapMm", "skirtLoops", "topSurfacePattern", "xyHoleCompensationMm", "xyContourCompensationMm", "elephantsFootCompensationMm"]);
+const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow", "retractOn", "retractLength", "retractSpeed", "supportAvoidance", "supportSource", "minLayerTimeS", "minLayerSpeedMmS", "adhesion", "brimWidthMm", "brimGapMm", "skirtLoops", "topSurfacePattern", "xyHoleCompensationMm", "xyContourCompensationMm", "elephantsFootCompensationMm", "supportZGapMm", "supportXyGapMm", "supportInterfaceLayers", "supportTreeBrimMm"]);
 
 /** The preset a project or profile file stores, or null when a key is missing or has the wrong type. */
 export function readPresetSettings(value: unknown): PresetSettings | null {

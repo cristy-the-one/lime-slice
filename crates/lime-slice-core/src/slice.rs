@@ -50,7 +50,7 @@ use crate::support::{
 use crate::toolpath::{
     apply_overhang, apply_scarf, apply_z_hop, comb_layer, island_loops, lightning_pitch,
     belt_raft_paths, order_supports, plan_brim, plan_ironing, plan_mouse_ears, plan_region_split, plan_skirt, plan_support,
-    plan_tree_support,
+    plan_tree_brim, plan_tree_support,
     CapFeed, Extrusion, PartLayout, PathFeatures, PathKind, ScarfParams, Seam, ShellBand, Skin,
     Slowdown, TravelIn,
 };
@@ -177,6 +177,19 @@ pub struct SliceRequest {
     /// `0` keeps model layer height. Values above 1 thicken sparse support shafts.
     #[serde(default)]
     pub support_height_mult: f64,
+    /// Vertical gap between the support interface and the part. Omitted keeps
+    /// `layer_height` (at least 0.12 mm), which is what a default slice uses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support_z_gap_mm: Option<f64>,
+    /// Horizontal gap between supports and the part. Omitted keeps 0.55 mm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support_xy_gap_mm: Option<f64>,
+    /// Dense interface layers under the part. Omitted keeps 3. `0` is omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support_interface_layers: Option<u32>,
+    /// Concentric brim around tree trunks on the first layer. Omitted prints none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support_tree_brim_mm: Option<f64>,
     /// Combine sparse infill on speed and low-weight blends. Default on.
     #[serde(default = "default_true")]
     pub infill_combine: bool,
@@ -411,6 +424,14 @@ pub struct SliceSettings {
     pub xy_hole_compensation_mm: f64,
     pub xy_contour_compensation_mm: f64,
     pub elephants_foot_compensation_mm: f64,
+    /// `None` keeps `layer_height.max(0.12)`.
+    pub support_z_gap_mm: Option<f64>,
+    /// `None` keeps 0.55 mm.
+    pub support_xy_gap_mm: Option<f64>,
+    /// `None` keeps 3.
+    pub support_interface_layers: Option<u32>,
+    /// `None` prints tree trunks on layer 0 with no extra brim.
+    pub support_tree_brim_mm: Option<f64>,
     pub scarf_seam: ScarfSeam,
     pub scarf_length: f64,
     pub scarf_steps: u32,
@@ -503,6 +524,10 @@ impl Default for SliceSettings {
             xy_hole_compensation_mm: 0.0,
             xy_contour_compensation_mm: 0.0,
             elephants_foot_compensation_mm: 0.0,
+            support_z_gap_mm: None,
+            support_xy_gap_mm: None,
+            support_interface_layers: None,
+            support_tree_brim_mm: None,
             scarf_seam: ScarfSeam::Blend,
             scarf_length: default_scarf_length(),
             scarf_steps: default_scarf_steps(),
@@ -643,6 +668,17 @@ impl SliceSettings {
             } else {
                 snap_compensation(req.elephants_foot_compensation_mm).max(0.0)
             },
+            support_z_gap_mm: support_gap(req.classic, req.support_z_gap_mm, 2.0),
+            support_xy_gap_mm: support_gap(req.classic, req.support_xy_gap_mm, 3.0),
+            support_interface_layers: if req.classic {
+                None
+            } else {
+                req.support_interface_layers
+                    .filter(|n| *n > 0)
+                    .map(|n| n.clamp(1, 8))
+            },
+            support_tree_brim_mm: support_gap(req.classic, req.support_tree_brim_mm, 20.0)
+                .filter(|mm| *mm > 1e-6),
             scarf_seam: if req.classic {
                 ScarfSeam::Off
             } else {
@@ -869,6 +905,15 @@ fn is_zero(value: &f64) -> bool {
 fn snap_compensation(value: f64) -> f64 {
     let value = value.clamp(-2.0, 2.0);
     if value.abs() < 1e-9 { 0.0 } else { value }
+}
+
+/// A support gap the request actually set. Classic, and a missing field, keep
+/// the value the planner already uses.
+fn support_gap(classic: bool, value: Option<f64>, max: f64) -> Option<f64> {
+    if classic {
+        return None;
+    }
+    value.map(|mm| mm.clamp(0.0, max))
 }
 
 fn default_scarf_length() -> f64 {
@@ -1517,6 +1562,10 @@ fn resolved(settings: &SliceSettings) -> SliceSettings {
         settings.support_style = SupportStyle::Grid;
         settings.support_height_mult = 1.0;
         settings.support_avoidance = false;
+        settings.support_z_gap_mm = None;
+        settings.support_xy_gap_mm = None;
+        settings.support_interface_layers = None;
+        settings.support_tree_brim_mm = None;
     }
     settings
 }
@@ -1640,6 +1689,7 @@ fn prepare_belt(
         object.settings.z_hop = ZHopMode::Off;
         object.settings.scarf_seam = ScarfSeam::Off;
         object.settings.skirt = false;
+        object.settings.support_tree_brim_mm = None;
         // Blend would hide the seam wherever the strategy likes. The belt edge
         // is the back of the nozzle plane, which is Rear after the rotation.
         // An explicit seam stays unless the printer asks for the belt edge.
@@ -1656,6 +1706,7 @@ fn prepare_belt(
     settings.z_hop = ZHopMode::Off;
     settings.scarf_seam = ScarfSeam::Off;
     settings.skirt = false;
+    settings.support_tree_brim_mm = None;
     let extra = f64::from(belt.copies - 1) * belt.stride(extent);
     if extra > 0.0 {
         // Later copies print later, so they stand upstream of the first: toward -Y.
@@ -4831,7 +4882,9 @@ fn plan_supports(
     let support_started = Instant::now();
     let mut opts = SupportOpts {
         angle_deg: settings.support_angle,
-        z_gap: settings.layer_height.max(0.12),
+        z_gap: settings
+            .support_z_gap_mm
+            .unwrap_or_else(|| settings.layer_height.max(0.12)),
         style: settings.support_style,
         branch_angle_deg: settings.branch_angle,
         tip_diameter: settings.tip_diameter,
@@ -4845,6 +4898,12 @@ fn plan_supports(
     opts.floor = floor;
     opts.avoidance = settings.support_avoidance && settings.support_style == SupportStyle::Tree;
     opts.source = settings.support_source;
+    if let Some(xy) = settings.support_xy_gap_mm {
+        opts.xy_gap = xy;
+    }
+    if let Some(layers) = settings.support_interface_layers {
+        opts.interface_layers = layers;
+    }
     watch.begin(Stage::Supports, cut.bands.len().max(1) as u32);
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
@@ -4946,6 +5005,7 @@ fn paint(
                 settings,
                 min,
                 max,
+                i,
             );
             if count {
                 watch.tick();
@@ -6065,8 +6125,19 @@ fn support_paths(
     settings: &SliceSettings,
     min: [f64; 3],
     max: [f64; 3],
+    layer_index: usize,
 ) -> Vec<Extrusion> {
     let line_width = settings.line_width;
+    // Only trunks still standing on layer 0 are on the bed. A belt has no
+    // flat bed there (`skirt` is off), so it keeps the trunk as it grew.
+    let brim_mm = if layer_index == 0
+        && settings.skirt
+        && settings.support_style == SupportStyle::Tree
+    {
+        settings.support_tree_brim_mm.unwrap_or(0.0)
+    } else {
+        0.0
+    };
     let mut paths = Vec::new();
     match blend {
         BlendMode::ByRegion { axis, at_mm } => {
@@ -6084,6 +6155,8 @@ fn support_paths(
                 &speed,
                 Some(split),
                 line_width,
+                contours,
+                brim_mm,
             );
         }
         other => {
@@ -6099,8 +6172,26 @@ fn support_paths(
                 &resolved,
                 None,
                 line_width,
+                contours,
+                brim_mm,
             );
         }
+    }
+    paths
+}
+
+/// Tree trunks, plus a brim when this layer asked for one. `brim_mm` of 0
+/// is `plan_tree_support` alone.
+fn tree_beads(
+    disks: &[Disk],
+    strategy: &ResolvedStrategy,
+    line_width: f64,
+    contours: &[Loop],
+    brim_mm: f64,
+) -> Vec<Extrusion> {
+    let mut paths = plan_tree_support(disks, strategy, line_width);
+    if brim_mm > 1e-6 {
+        paths.extend(plan_tree_brim(disks, contours, strategy, line_width, brim_mm));
     }
     paths
 }
@@ -6224,6 +6315,8 @@ fn emit_supports(
     high: &ResolvedStrategy,
     split: Option<RegionSplit>,
     line_width: f64,
+    contours: &[Loop],
+    brim_mm: f64,
 ) {
     if support.is_empty() && interface.is_empty() && disks.is_empty() {
         return;
@@ -6243,7 +6336,7 @@ fn emit_supports(
                     false,
                 )
             } else {
-                plan_tree_support(disks, strategy, line_width)
+                tree_beads(disks, strategy, line_width, contours, brim_mm)
             };
             if shaft_scale > 1.01 {
                 for path in &mut sparse {
@@ -6266,7 +6359,7 @@ fn emit_supports(
         // beads on the plane, so a trunk that leans across the cut is not
         // drawn twice and a trunk outside the outline is not dropped.
         if !disks.is_empty() && shaft_scale > 0.0 {
-            let mut trunks = plan_tree_support(disks, low, line_width);
+            let mut trunks = tree_beads(disks, low, line_width, contours, brim_mm);
             if shaft_scale > 1.01 {
                 for path in &mut trunks {
                     path.bead_height = layer_height * shaft_scale;

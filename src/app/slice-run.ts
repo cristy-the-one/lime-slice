@@ -27,6 +27,7 @@ import { currentRules } from "./rules";
 import { orderFields, sequentialClearance, tallestLast } from "../settings-rules";
 import { flowSliceField } from "../flow";
 import { avoidanceSliceField } from "../support-avoidance";
+import { supportSliceFields } from "../support-interface";
 import { supportSourceSliceField } from "../support-source";
 import { engineDownMessage, authHeaders } from "../ui/api-base";
 import { topLayerIndex } from "../ui/preview-ux";
@@ -224,6 +225,14 @@ export function payload() {
     trunkDiameter: state.trunkDiameter,
     supportHeightMult: state.supportHeightMult,
     ...avoidanceSliceField(state.supports && state.supportStyle === "tree" && state.supportAvoidance),
+    ...supportSliceFields({
+      supports: state.supports,
+      supportStyle: state.supportStyle,
+      supportZGapMm: state.supportZGapMm,
+      supportXyGapMm: state.supportXyGapMm,
+      supportInterfaceLayers: state.supportInterfaceLayers,
+      supportTreeBrimMm: state.supportTreeBrimMm,
+    }),
     // Only Painted only is sent, so Automatic and Off keep their recipe key and their bytes.
     ...supportSourceSliceField(state.supports, state.supportSource),
     infillCombine: state.infillCombine,

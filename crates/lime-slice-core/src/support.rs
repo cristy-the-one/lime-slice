@@ -14,6 +14,7 @@ pub(crate) mod avoidance;
 pub(crate) mod edit;
 pub(crate) mod paint;
 pub(crate) mod skeleton;
+pub(crate) mod tree;
 
 use paint::PaintDisk;
 
