@@ -1267,6 +1267,7 @@ async function restore(key: string, node: NodeId, missing: NodeId[]): Promise<st
   const step = seed && !seed.live && node === seed.node ? tree.nodes.get(node)?.mesh : undefined;
   if (step?.step) {
     // The plate's step of a reopened project: its own STEP, as fast as opening the file.
+    if (state.stage === "model") readout("Reading the solid…");
     const body = await post({ call: "open", key, filename: stepFileName(step.name), dataB64: bytesToBase64(new Uint8Array(step.step)), chordMm: chord });
     if (!text(body.error)) {
       seed!.live = true;

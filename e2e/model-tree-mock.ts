@@ -69,7 +69,9 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
     const doc = docs.get(key);
     if (request.call === "open") {
       const data = typeof request.dataB64 === "string" ? Buffer.from(request.dataB64, "base64").toString() : "";
-      const nodes = new Map<number, MockNode>([[0, { solid: exported.get(data) ?? handlers.open(request), parent: null, step: "" }]]);
+      // The handler hears every open, and a STEP this mock wrote opens as the solid it was written from.
+      const read = handlers.open(request);
+      const nodes = new Map<number, MockNode>([[0, { solid: exported.get(data) ?? read, parent: null, step: "" }]]);
       // Saved nodes come back as the ops that built them.
       for (const saved of (request.nodes ?? []) as { id: number; parent: number; op: Body }[]) {
         const built = handlers.apply?.({ ...request, call: "apply", op: saved.op, parent: saved.parent, node: saved.id }, nodes.get(saved.parent)!.solid);
