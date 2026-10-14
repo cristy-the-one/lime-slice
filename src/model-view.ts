@@ -3,11 +3,11 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
-import { gizmoRadiusForPixels, placeClearGizmo, type PxRect } from "./gizmo-math";
+import { HANDLE_ARROW_TIP, HANDLE_KNOB_PICK, HANDLE_RING_RADIUS, dockNdc, gizmoRadiusForPixels } from "./gizmo-math";
 import type { Box } from "./measure";
 import { perspectiveMeasure } from "./measure-camera";
 import { mountMeasureOverlay } from "./measure-overlay";
-import { dragLabel, dragValue, lineParam, moveFine, startFine, wrapDegrees, type DragHandle, type FinePointer, type Vec3 } from "./model-drag";
+import { axisValues, dragLabel, dragValue, lineParam, moveFine, startFine, wrapDegrees, type DragHandle, type FinePointer, type Vec3 } from "./model-drag";
 import { faceBoundarySegments, faceColor } from "./model-select";
 import { hexToThree, themeColors } from "./theme";
 import { bedForBox, fitSentence, liveBox, mountBedReference, mountStudioLights, mountViewHelper, outerMm, renderViewHelper, viewHelperHit, type BuildVolume } from "./viewport-chrome";
@@ -47,6 +47,10 @@ const EDGE_PX = 16;
 /** On-screen length of one handle unit. An arrow is about this long. */
 const HANDLE_PX = 92;
 const IDLE_EDGE = 0x8d9780;
+/** Where an arrow's head is centred, in handle units. */
+const ARROW_HEAD = HANDLE_ARROW_TIP - 0.15;
+/** How much more solid the ghost of the object being edited gets while a docked handle is in use. */
+const EMPHASIS_OPACITY = 0.3;
 
 export interface ModelView {
   setSolid(solid: ModelSolid | null): void;
@@ -116,9 +120,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let down: { x: number; y: number } | null = null;
   let running = false;
   let handleParts: HandlePart[] = [];
-  const seat = new THREE.Vector3();
-  let seatReady = false;
-  let stickPark = false;
+  const dockAt = new THREE.Vector3();
+  let emphasis = false;
   let overHandle: string | null = null;
   let drag: ActiveDrag | null = null;
   let handleCb: (drag: HandleDrag) => void = () => {};
@@ -269,7 +272,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       roughness: 0.55,
       metalness: 0.05,
       transparent: true,
-      opacity,
+      opacity: emphasis ? Math.min(0.6, opacity + EMPHASIS_OPACITY) : opacity,
       depthWrite: false,
       side: THREE.DoubleSide,
     });
@@ -344,6 +347,24 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   function rebuildGhost() {
     clearGhosts();
     applyScale();
+    buildGhost();
+    publishGhostBox();
+  }
+
+  /** The ghost's world box, for tests: centre then size, in millimetres. */
+  function publishGhostBox() {
+    if (ghosts.children.length === 0) {
+      delete canvas.dataset.ghost;
+      return;
+    }
+    ghosts.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(ghosts);
+    const at = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    canvas.dataset.ghost = [at.x, at.y, at.z, size.x, size.y, size.z].map((value) => value.toFixed(2)).join(" ");
+  }
+
+  function buildGhost() {
     const current = ghost;
     if (!current || !solid) return;
     if (current.kind === "box") {
@@ -561,7 +582,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       ev.preventDefault();
       controls.enabled = false;
       canvas.setPointerCapture(ev.pointerId);
-      beginDrag(part.handle, ev);
+      beginDrag(part, ev);
       return;
     }
     down = { x: ev.clientX, y: ev.clientY };
@@ -576,8 +597,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     setOverHandle(over?.handle.id ?? null);
     if (over) {
       setHover(null);
+      showTip(ev, over.handle, over.handle.values);
       return;
     }
+    tip.hidden = true;
     setHover(pickAt(ev));
   });
   const finishDrag = (ev: PointerEvent) => {
@@ -594,7 +617,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   canvas.addEventListener("pointercancel", finishDrag, { capture: true });
   canvas.addEventListener("pointerleave", () => {
     setHover(null);
-    if (!drag) setOverHandle(null);
+    if (drag) return;
+    setOverHandle(null);
+    tip.hidden = true;
   });
   canvas.addEventListener("pointerup", (ev) => {
     if (!down || ev.button !== 0) return;
@@ -728,7 +753,6 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
 
   function handlePart(handle: DragHandle): HandlePart {
     const root = new THREE.Group();
-    root.position.set(...handle.origin);
     const dir = new THREE.Vector3(...handle.dir).normalize();
     const material = new THREE.MeshBasicMaterial({ color: handleColor(handle.color), depthTest: false, transparent: true, opacity: 0.95, toneMapped: false });
     const hidden = new THREE.MeshBasicMaterial({ visible: false });
@@ -744,27 +768,27 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       const head = new THREE.Mesh(new THREE.ConeGeometry(0.098, 0.3, 14), material);
       const pick = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.85, 8), hidden);
       place(shaft, yAxis, 0.4);
-      place(head, yAxis, 0.82);
+      place(head, yAxis, ARROW_HEAD);
       place(pick, yAxis, 0.55);
       shown.push(shaft, head);
       picks.push(pick);
     } else if (handle.look === "knob") {
       const knob = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.13, 0.13), material);
-      const pick = new THREE.Mesh(new THREE.SphereGeometry(0.17, 10, 8), hidden);
+      const pick = new THREE.Mesh(new THREE.SphereGeometry(HANDLE_KNOB_PICK, 10, 8), hidden);
       place(knob, yAxis, 0);
       place(pick, yAxis, 0);
       shown.push(knob);
       picks.push(pick);
     } else if (handle.look === "ring") {
-      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.7, 0.03, 10, 64), material);
-      const pick = new THREE.Mesh(new THREE.TorusGeometry(0.7, 0.09, 8, 32), hidden);
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(HANDLE_RING_RADIUS, 0.03, 10, 64), material);
+      const pick = new THREE.Mesh(new THREE.TorusGeometry(HANDLE_RING_RADIUS, 0.09, 8, 32), hidden);
       place(ring, zAxis, 0);
       place(pick, zAxis, 0);
       shown.push(ring);
       picks.push(pick);
     } else {
-      const dot = new THREE.Mesh(new THREE.SphereGeometry(0.075, 14, 10), material);
-      const pick = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), hidden);
+      const dot = new THREE.Mesh(new THREE.SphereGeometry(0.1, 14, 10), material);
+      const pick = new THREE.Mesh(new THREE.SphereGeometry(0.26, 10, 8), hidden);
       place(dot, yAxis, 0);
       place(pick, yAxis, 0);
       shown.push(dot);
@@ -784,7 +808,16 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       part.material.color.setHex(on ? hot : handleColor(part.handle.color));
     }
     canvas.style.cursor = drag ? "grabbing" : overHandle ? "grab" : "";
+    setEmphasis(handleParts.some((part) => part.handle.seat.at === "dock" && part.handle.id === (drag?.handle.id ?? overHandle)));
     kick();
+  }
+
+  /** A docked handle edits the tool's object, which is the ghost, so the ghost stands out while the handle is in use. */
+  function setEmphasis(next: boolean) {
+    if (emphasis === next) return;
+    emphasis = next;
+    canvas.dataset.ghostLit = next ? "1" : "0";
+    rebuildGhost();
   }
 
   function setOverHandle(next: string | null) {
@@ -793,73 +826,35 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     paintHandles();
   }
 
-  /** Move and turn (and the scale knob) share one seat, off the solid. Face knobs stay on the feature they edit. */
-  function sharesSeat(handle: DragHandle): boolean {
-    return handle.id.startsWith("move-") || handle.id.startsWith("turn-") || handle.id === "factor";
-  }
-
-  function screenBox(box: Box | null, width: number, height: number): PxRect | null {
-    if (!box || width < 2 || height < 2) return null;
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    let seen = false;
-    for (const x of [box.min[0], box.max[0]]) {
-      for (const y of [box.min[1], box.max[1]]) {
-        for (const z of [box.min[2], box.max[2]]) {
-          const p = new THREE.Vector3(x, y, z).project(camera);
-          if (p.z < -1 || p.z > 1) continue;
-          seen = true;
-          minX = Math.min(minX, (p.x * 0.5 + 0.5) * width);
-          maxX = Math.max(maxX, (p.x * 0.5 + 0.5) * width);
-          minY = Math.min(minY, (-p.y * 0.5 + 0.5) * height);
-          maxY = Math.max(maxY, (-p.y * 0.5 + 0.5) * height);
-        }
-      }
-    }
-    if (!seen) return null;
-    return { x: minX, y: minY, w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY) };
-  }
-
-  function refreshSeat() {
-    const seated = handleParts.some((part) => sharesSeat(part.handle));
-    if (!seated) {
-      delete canvas.dataset.gizmoSeat;
-      delete canvas.dataset.gizmoAt;
-      delete canvas.dataset.solidScreen;
-      return;
-    }
-    if (drag && seatReady) return;
+  /** Docked handles share one screen-fixed seat. A feature handle stays on the solid. */
+  function sizeHandles() {
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
-    camera.updateMatrixWorld();
-    const object = screenBox(solidBox, width, height);
-    const span = HANDLE_PX * 1.8;
-    // The tool panel occupies the left of Model mode, so the clear seat is on the right.
-    const place = placeClearGizmo(width, height, object, span, stickPark, "right");
-    stickPark = place.parked;
-    const depth = controls.target.clone().project(camera).z;
-    seat.set(place.ndcX, place.ndcY, depth).unproject(camera);
-    seatReady = true;
-    canvas.dataset.gizmoSeat = place.parked ? "park" : "offset";
-    const projected = seat.clone().project(camera);
-    canvas.dataset.gizmoAt = `${Math.round((projected.x * 0.5 + 0.5) * width)},${Math.round((-projected.y * 0.5 + 0.5) * height)}`;
-    canvas.dataset.solidScreen = object ? `${Math.round(object.x)},${Math.round(object.y)},${Math.round(object.w)},${Math.round(object.h)}` : "";
-  }
-
-  function sizeHandles() {
-    refreshSeat();
-    const height = canvas.clientHeight;
+    let dockSize = 0;
+    if (handleParts.some((part) => part.handle.seat.at === "dock")) {
+      camera.updateMatrixWorld();
+      const { ndcX, ndcY } = dockNdc(width, HANDLE_PX);
+      dockAt.set(ndcX, ndcY, controls.target.clone().project(camera).z).unproject(camera);
+      dockSize = gizmoRadiusForPixels(camera.position.distanceTo(dockAt), camera.fov, height, HANDLE_PX, camera.zoom);
+      const mark = dockAt.clone().project(camera);
+      const text = `${Math.round((mark.x * 0.5 + 0.5) * width)},${Math.round((-mark.y * 0.5 + 0.5) * height)}`;
+      if (canvas.dataset.gizmoAt !== text) canvas.dataset.gizmoAt = text;
+    } else {
+      delete canvas.dataset.gizmoAt;
+    }
     const grips: string[] = [];
     for (const part of handleParts) {
-      if (sharesSeat(part.handle) && seatReady) part.root.position.copy(seat);
-      else part.root.position.set(...part.handle.origin);
-      const distance = camera.position.distanceTo(part.root.position);
-      const size = gizmoRadiusForPixels(distance, camera.fov, height, HANDLE_PX, camera.zoom);
+      const seat = part.handle.seat;
+      let size = dockSize;
+      if (seat.at === "dock") {
+        part.root.position.copy(dockAt).addScaledVector(new THREE.Vector3(...part.handle.dir).normalize(), seat.reach * dockSize);
+      } else {
+        part.root.position.set(...seat.origin);
+        size = gizmoRadiusForPixels(camera.position.distanceTo(part.root.position), camera.fov, height, HANDLE_PX, camera.zoom);
+      }
       part.root.scale.setScalar(size);
       const at = gripPoint(part.handle, part.root.position, size).project(camera);
-      grips.push(`${part.handle.id}:${Math.round((at.x * 0.5 + 0.5) * canvas.clientWidth)},${Math.round((-at.y * 0.5 + 0.5) * height)}`);
+      grips.push(`${part.handle.id}:${Math.round((at.x * 0.5 + 0.5) * width)},${Math.round((-at.y * 0.5 + 0.5) * height)}`);
     }
     const text = grips.join(" ");
     if (canvas.dataset.handles !== text) canvas.dataset.handles = text;
@@ -869,19 +864,15 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   function gripPoint(handle: DragHandle, at: THREE.Vector3, size: number): THREE.Vector3 {
     const origin = at.clone();
     const dir = new THREE.Vector3(...handle.dir).normalize();
-    if (handle.look === "arrow") return origin.addScaledVector(dir, 0.82 * size);
+    if (handle.look === "arrow") return origin.addScaledVector(dir, ARROW_HEAD * size);
     if (handle.look !== "ring") return origin;
     const toCamera = camera.position.clone().sub(origin);
     let rim = toCamera.sub(dir.clone().multiplyScalar(toCamera.dot(dir)));
     if (rim.lengthSq() < 1e-9) rim = Math.abs(dir.z) < 0.9 ? new THREE.Vector3(0, 0, 1).cross(dir) : new THREE.Vector3(1, 0, 0).cross(dir);
     const side = rim.normalize().cross(dir);
-    return origin.addScaledVector(side, 0.7 * size);
-  }
-
-  function shownOrigin(handle: DragHandle): THREE.Vector3 {
-    const part = handleParts.find((item) => item.handle.id === handle.id);
-    if (part && sharesSeat(handle) && seatReady) return part.root.position.clone();
-    return new THREE.Vector3(...handle.origin);
+    // Arrows point to +X, +Y and +Z, so the rim's grip is on the other side of the ring from them.
+    if (side.x + side.y + side.z > 0) side.negate();
+    return origin.addScaledVector(side, HANDLE_RING_RADIUS * size);
   }
 
   function rayAt(x: number, y: number) {
@@ -908,10 +899,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return best?.part ?? null;
   }
 
-  function ringAngle(handle: DragHandle, x: number, y: number): number | null {
+  function ringAngle(active: ActiveDrag, x: number, y: number): number | null {
     const ray = rayAt(x, y);
-    const normal = new THREE.Vector3(...handle.dir).normalize();
-    const origin = shownOrigin(handle);
+    const normal = new THREE.Vector3(...active.handle.dir).normalize();
+    const origin = active.anchor;
     const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, origin);
     if (Math.abs(ray.direction.dot(normal)) < 0.05) return null;
     const hit = ray.intersectPlane(plane, new THREE.Vector3());
@@ -922,10 +913,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return (Math.atan2(offset.dot(v), offset.dot(u)) * 180) / Math.PI;
   }
 
-  function axisParam(handle: DragHandle, x: number, y: number): number | null {
+  function axisParam(active: ActiveDrag, x: number, y: number): number | null {
     const ray = rayAt(x, y);
-    const dir = new THREE.Vector3(...handle.dir).normalize();
-    const origin = shownOrigin(handle);
+    const dir = new THREE.Vector3(...active.handle.dir).normalize();
+    const origin = active.anchor;
     return lineParam([origin.x, origin.y, origin.z], [dir.x, dir.y, dir.z], [ray.origin.x, ray.origin.y, ray.origin.z], [ray.direction.x, ray.direction.y, ray.direction.z]);
   }
 
@@ -947,19 +938,24 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return [point.x, point.y, point.z];
   }
 
-  function beginDrag(handle: DragHandle, ev: PointerEvent) {
-    const fine = startFine(ev.clientX, ev.clientY, ev.shiftKey);
-    drag = {
+  /** The line or plane a drag measures against is fixed where the handle stood when it was grabbed. */
+  function beginDrag(part: HandlePart, ev: PointerEvent) {
+    const handle = part.handle;
+    const active: ActiveDrag = {
       handle,
+      anchor: part.root.position.clone(),
       pointerId: ev.pointerId,
-      fine,
+      fine: startFine(ev.clientX, ev.clientY, ev.shiftKey),
       values: [...handle.values],
-      startParam: handle.kind === "axis" ? axisParam(handle, ev.clientX, ev.clientY) : null,
-      lastAngle: handle.kind === "ring" ? ringAngle(handle, ev.clientX, ev.clientY) : null,
+      startParam: null,
+      lastAngle: null,
       turned: 0,
     };
+    if (handle.kind === "axis") active.startParam = axisParam(active, ev.clientX, ev.clientY);
+    if (handle.kind === "ring") active.lastAngle = ringAngle(active, ev.clientX, ev.clientY);
+    drag = active;
     paintHandles();
-    showTip(ev);
+    showTip(ev, handle, active.values);
   }
 
   function moveDrag(ev: PointerEvent) {
@@ -972,10 +968,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const handle = current.handle;
     let next: number[] | null = null;
     if (handle.kind === "axis") {
-      const param = axisParam(handle, x, y);
-      if (param != null && current.startParam != null) next = [dragValue(handle, handle.values[0] ?? 0, param - current.startParam, snap, fine)];
+      const param = axisParam(current, x, y);
+      if (param != null && current.startParam != null) next = axisValues(handle, handle.values, param - current.startParam, snap, fine);
     } else if (handle.kind === "ring") {
-      const angle = ringAngle(handle, x, y);
+      const angle = ringAngle(current, x, y);
       if (angle != null) {
         if (current.lastAngle != null) current.turned += wrapDegrees(angle - current.lastAngle);
         current.lastAngle = angle;
@@ -990,14 +986,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       current.values = next;
       handleCb({ handle, values: next, phase: "move" });
     }
-    showTip(ev);
+    showTip(ev, handle, current.values);
   }
 
-  function showTip(ev: PointerEvent) {
-    if (!drag) return;
+  function showTip(ev: PointerEvent, handle: DragHandle, values: readonly number[]) {
     const parent = canvas.parentElement?.getBoundingClientRect();
     if (!parent) return;
-    tip.textContent = dragLabel(drag.handle, drag.values);
+    tip.textContent = dragLabel(handle, values);
     tip.style.left = `${ev.clientX - parent.left + 14}px`;
     tip.style.top = `${ev.clientY - parent.top + 14}px`;
     tip.hidden = false;
@@ -1013,6 +1008,8 @@ interface HandlePart {
 
 interface ActiveDrag {
   handle: DragHandle;
+  /** Where the handle stood at pointer-down, in the world. */
+  anchor: THREE.Vector3;
   pointerId: number;
   fine: FinePointer;
   values: number[];
