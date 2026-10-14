@@ -67,7 +67,11 @@ pub enum EdgePick {
 
 /// One edit. Lengths are millimetres, turns degrees about X, then Y, then Z.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Op {
     Boolean {
         op: BooleanOp,
@@ -91,10 +95,21 @@ pub enum Op {
         depth: f64,
     },
     /// The node keeps the negative side. The positive side goes to the plate once, in the apply reply.
-    Split { origin: [f64; 3], normal: [f64; 3] },
-    Fillet { edges: Vec<EdgePick>, size: f64 },
-    Chamfer { edges: Vec<EdgePick>, size: f64 },
-    Scale { factor: f64 },
+    Split {
+        origin: [f64; 3],
+        normal: [f64; 3],
+    },
+    Fillet {
+        edges: Vec<EdgePick>,
+        size: f64,
+    },
+    Chamfer {
+        edges: Vec<EdgePick>,
+        size: f64,
+    },
+    Scale {
+        factor: f64,
+    },
 }
 
 /// What a rebuild must reproduce for a node to count as the same solid.
@@ -158,11 +173,17 @@ pub fn call(request: &str) -> String {
 
 fn lock() -> std::sync::MutexGuard<'static, Store> {
     static STORE: LazyLock<Mutex<Store>> = LazyLock::new(|| Mutex::new(Store::default()));
-    STORE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    STORE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[derive(Deserialize)]
-#[serde(tag = "call", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "call",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 enum Request {
     /// Open a tree from its root. With `nodes`, register the saved ops (parents first) without
     /// building them, then jump to `current`.
@@ -234,14 +255,21 @@ fn default_chord() -> f64 {
 
 /// The kernel's clamp, so one reply is cached once whatever chord asked for it.
 fn chord_key(chord: f64) -> u64 {
-    let clamped = if chord.is_nan() { 0.01 } else { chord.clamp(0.01, 2.0) };
+    let clamped = if chord.is_nan() {
+        0.01
+    } else {
+        chord.clamp(0.01, 2.0)
+    };
     clamped.to_bits()
 }
 
 enum Answer {
     Plain(String),
     /// A reply that also lists which nodes of `key` hold a solid, read after eviction.
-    Held { key: String, text: String },
+    Held {
+        key: String,
+        text: String,
+    },
 }
 
 enum Failure {
@@ -249,7 +277,10 @@ enum Failure {
     /// The engine does not have these nodes (or this tree, as `[0]`). Resend the ops.
     Missing(Vec<NodeId>),
     /// `node` did not rebuild. It and everything under it stay unbuilt until it is dropped.
-    Broken { node: NodeId, message: String },
+    Broken {
+        node: NodeId,
+        message: String,
+    },
 }
 
 impl Failure {
@@ -429,7 +460,8 @@ impl Doc {
                     .get_mut(&parent)
                     .and_then(|node| node.shape.as_mut())
                     .expect("the parent was built first");
-                resolve(from, &op).and_then(|op| build(from, op, false).map_err(|(message, _)| message))
+                resolve(from, &op)
+                    .and_then(|op| build(from, op, false).map_err(|(message, _)| message))
             };
             let built = match built {
                 Ok(built) => built,
@@ -478,7 +510,13 @@ impl Store {
                 chord_mm,
                 nodes,
                 current,
-            } => self.open(key, root_shape(data_b64, step_path, box_mm)?, nodes, current, chord_mm),
+            } => self.open(
+                key,
+                root_shape(data_b64, step_path, box_mm)?,
+                nodes,
+                current,
+                chord_mm,
+            ),
             Request::Apply {
                 key,
                 parent,
@@ -601,10 +639,7 @@ impl Store {
         let doc = doc_in(&mut self.docs, key)?;
         let fingerprint = doc.node(id)?.fingerprint;
         let text = doc.shape(id).reply(id, chord)?;
-        let text = with_fields(
-            text,
-            &[("fingerprint", json!(fingerprint).to_string())],
-        );
+        let text = with_fields(text, &[("fingerprint", json!(fingerprint).to_string())]);
         self.replies.push(Reply {
             key: key.to_string(),
             node: id,
@@ -713,7 +748,11 @@ impl Store {
         if gone.contains(&doc.current) {
             doc.current = parent;
         }
-        if doc.probe.as_ref().is_some_and(|probe| gone.contains(&probe.parent)) {
+        if doc
+            .probe
+            .as_ref()
+            .is_some_and(|probe| gone.contains(&probe.parent))
+        {
             doc.probe = None;
         }
         let current = doc.current;
@@ -741,13 +780,18 @@ impl Store {
             loose.sort_unstable_by_key(|(used, _, _)| *used);
             let excess = loose.len() - self.limits.shapes;
             for (_, key, id) in loose.into_iter().take(excess) {
-                if let Some(node) = self.docs.get_mut(&key).and_then(|doc| doc.nodes.get_mut(&id)) {
+                if let Some(node) = self
+                    .docs
+                    .get_mut(&key)
+                    .and_then(|doc| doc.nodes.get_mut(&id))
+                {
                     node.shape = None;
                 }
             }
         }
         if self.replies.len() > self.limits.replies {
-            self.replies.sort_unstable_by_key(|reply| std::cmp::Reverse(reply.used));
+            self.replies
+                .sort_unstable_by_key(|reply| std::cmp::Reverse(reply.used));
             self.replies.truncate(self.limits.replies);
         }
     }
@@ -774,7 +818,9 @@ fn root_shape(
             let _ = std::fs::remove_file(&path);
             shape.map_err(Failure::Message)
         }
-        (None, Some(path), None) => Shape::read_step(std::path::Path::new(&path)).map_err(Failure::Message),
+        (None, Some(path), None) => {
+            Shape::read_step(std::path::Path::new(&path)).map_err(Failure::Message)
+        }
         (None, None, Some([x, y, z])) => Shape::cube(x, y, z).map_err(Failure::Message),
         _ => Err(Failure::Message(
             "Open a tree from exactly one of dataB64, stepPath, or box".into(),
@@ -815,7 +861,10 @@ fn resolve(from: &mut Shape, op: &Op) -> Result<Op, String> {
             },
         };
         let found = found.ok_or_else(|| "That edge is not on this solid".to_string())?;
-        if !refs.iter().any(|have| matches!(have, EdgePick::Ref(have) if have.index == found.index)) {
+        if !refs
+            .iter()
+            .any(|have| matches!(have, EdgePick::Ref(have) if have.index == found.index))
+        {
             refs.push(EdgePick::Ref(found));
         }
     }
@@ -830,7 +879,10 @@ fn resolve(from: &mut Shape, op: &Op) -> Result<Op, String> {
 }
 
 fn same_edge(a: &EdgeRef, b: &EdgeRef) -> bool {
-    let d = (0..3).map(|i| (a.mid[i] - b.mid[i]).powi(2)).sum::<f64>().sqrt();
+    let d = (0..3)
+        .map(|i| (a.mid[i] - b.mid[i]).powi(2))
+        .sum::<f64>()
+        .sqrt();
     d <= EDGE_MATCH_MM && (a.length_mm - b.length_mm).abs() <= EDGE_MATCH_MM
 }
 
@@ -865,11 +917,17 @@ fn build(from: &Shape, op: Op, probe: bool) -> Result<Built, (String, Option<f64
                 Primitive::Sphere => c"sphere",
             };
             let p = [
-                origin[0], origin[1], origin[2], size[0], size[1], size[2], *radius, *height, turn[0],
-                turn[1], turn[2],
+                origin[0], origin[1], origin[2], size[0], size[1], size[2], *radius, *height,
+                turn[0], turn[1], turn[2],
             ];
             Shape::made(|error| unsafe {
-                lime_tree_boolean(from.raw(), which.as_ptr(), primitive.as_ptr(), p.as_ptr(), error)
+                lime_tree_boolean(
+                    from.raw(),
+                    which.as_ptr(),
+                    primitive.as_ptr(),
+                    p.as_ptr(),
+                    error,
+                )
             })
         }
         Op::Hole {
@@ -884,7 +942,9 @@ fn build(from: &Shape, op: Op, probe: bool) -> Result<Built, (String, Option<f64
             Shape::made(|error| unsafe { lime_tree_hole(from.raw(), p.as_ptr(), error) })
         }
         Op::Split { origin, normal } => {
-            let p = [origin[0], origin[1], origin[2], normal[0], normal[1], normal[2]];
+            let p = [
+                origin[0], origin[1], origin[2], normal[0], normal[1], normal[2],
+            ];
             let mut piece: *mut RawShape = std::ptr::null_mut();
             let kept = Shape::made(|error| unsafe {
                 lime_tree_split(from.raw(), p.as_ptr(), &mut piece, error)
@@ -902,7 +962,11 @@ fn build(from: &Shape, op: Op, probe: bool) -> Result<Built, (String, Option<f64
                 })
                 .collect();
             let mut max_mm = 0.0;
-            let max_ptr: *mut f64 = if probe { &mut max_mm } else { std::ptr::null_mut() };
+            let max_ptr: *mut f64 = if probe {
+                &mut max_mm
+            } else {
+                std::ptr::null_mut()
+            };
             let built = Shape::made(|error| unsafe {
                 lime_tree_blend(
                     from.raw(),
@@ -949,7 +1013,11 @@ extern "C" {
         p: *const f64,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
-    fn lime_tree_hole(from: *const RawShape, p: *const f64, error: *mut *mut c_char) -> *mut RawShape;
+    fn lime_tree_hole(
+        from: *const RawShape,
+        p: *const f64,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
     fn lime_tree_blend(
         from: *const RawShape,
         edges: *const c_int,
@@ -965,9 +1033,19 @@ extern "C" {
         other: *mut *mut RawShape,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
-    fn lime_tree_scale(from: *const RawShape, factor: f64, error: *mut *mut c_char) -> *mut RawShape;
-    fn lime_tree_fingerprint(shape: *const RawShape, volume: *mut f64, faces: *mut c_int, edges: *mut c_int);
-    fn lime_tree_edge(shape: *mut RawShape, index: c_int, mid: *mut f64, length: *mut f64) -> c_int;
+    fn lime_tree_scale(
+        from: *const RawShape,
+        factor: f64,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    fn lime_tree_fingerprint(
+        shape: *const RawShape,
+        volume: *mut f64,
+        faces: *mut c_int,
+        edges: *mut c_int,
+    );
+    fn lime_tree_edge(shape: *mut RawShape, index: c_int, mid: *mut f64, length: *mut f64)
+        -> c_int;
     fn lime_tree_reply(shape: *const RawShape, id: c_int, chord: f64) -> *mut c_char;
     fn lime_tree_distance(
         shape: *const RawShape,
@@ -978,7 +1056,11 @@ extern "C" {
         out: *mut f64,
         error: *mut *mut c_char,
     ) -> c_int;
-    fn lime_tree_write_step(shape: *const RawShape, path: *const c_char, error: *mut *mut c_char) -> c_int;
+    fn lime_tree_write_step(
+        shape: *const RawShape,
+        path: *const c_char,
+        error: *mut *mut c_char,
+    ) -> c_int;
     fn lime_model_occt_string_free(text: *mut c_char);
 }
 
@@ -1047,7 +1129,8 @@ impl Shape {
     fn edge(&mut self, index: i32) -> Option<EdgeRef> {
         let mut mid = [0.0; 3];
         let mut length = 0.0;
-        let found = unsafe { lime_tree_edge(self.0.as_ptr(), index, mid.as_mut_ptr(), &mut length) };
+        let found =
+            unsafe { lime_tree_edge(self.0.as_ptr(), index, mid.as_mut_ptr(), &mut length) };
         (found != 0).then_some(EdgeRef {
             index,
             mid,
@@ -1092,7 +1175,15 @@ impl Shape {
         let mut out = 0.0;
         let mut error: *mut c_char = std::ptr::null_mut();
         let ok = unsafe {
-            lime_tree_distance(self.raw(), a_kind.as_ptr(), a, b_kind.as_ptr(), b, &mut out, &mut error)
+            lime_tree_distance(
+                self.raw(),
+                a_kind.as_ptr(),
+                a,
+                b_kind.as_ptr(),
+                b,
+                &mut out,
+                &mut error,
+            )
         };
         let message = take_text(error);
         if ok == 0 {

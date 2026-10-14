@@ -73,11 +73,18 @@ fn history_tree() {
     assert_eq!(opened["id"], 0);
     assert_eq!(opened["fingerprint"]["faces"], 6);
     assert_eq!(opened["fingerprint"]["edges"], 12);
-    near(opened["fingerprint"]["volumeMm3"].as_f64().expect("root volume"), 1000.0);
+    near(
+        opened["fingerprint"]["volumeMm3"]
+            .as_f64()
+            .expect("root volume"),
+        1000.0,
+    );
     assert_eq!(held(&opened), [0]);
 
-    let cut = ok(json!({ "call": "apply", "key": "main", "parent": 0, "node": 1,
-        "op": cut_box([0.0, 0.0, 5.0], [10.0, 10.0, 5.0]) }));
+    let cut = ok(
+        json!({ "call": "apply", "key": "main", "parent": 0, "node": 1,
+        "op": cut_box([0.0, 0.0, 5.0], [10.0, 10.0, 5.0]) }),
+    );
     near(volume(&cut), 500.0);
     assert_eq!(cut["replayed"], 0);
     assert_eq!(held(&cut), [0, 1]);
@@ -91,8 +98,10 @@ fn history_tree() {
     let probe = ok(json!({ "call": "probe", "key": "main", "node": 1,
         "op": { "kind": "fillet", "edges": [edge], "size": 1.0 } }));
     assert_eq!(probe, json!({ "ok": true }));
-    let fillet = ok(json!({ "call": "apply", "key": "main", "parent": 1, "node": 2,
-        "op": { "kind": "fillet", "edges": [edge], "size": 1.0 } }));
+    let fillet = ok(
+        json!({ "call": "apply", "key": "main", "parent": 1, "node": 2,
+        "op": { "kind": "fillet", "edges": [edge], "size": 1.0 } }),
+    );
     let rounded = 500.0 - 10.0 * (1.0 - PI / 4.0);
     near(volume(&fillet), rounded);
     let fillet_op = fillet["op"].clone();
@@ -101,15 +110,27 @@ fn history_tree() {
     near(picked["lengthMm"].as_f64().expect("edge length"), 10.0);
     assert_eq!(picked["mid"].as_array().expect("edge midpoint").len(), 3);
 
-    let retried = ok(json!({ "call": "apply", "key": "main", "parent": 1, "node": 2,
-        "op": { "kind": "fillet", "edges": [edge], "size": 1.0 } }));
-    assert_eq!(retried["fingerprint"], fillet["fingerprint"], "a retried apply lands on the same node");
-    let clash = call(json!({ "call": "apply", "key": "main", "parent": 0, "node": 2,
-        "op": cut_box([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]) }));
-    assert!(clash["error"].as_str().unwrap_or("").contains("already"), "{clash}");
+    let retried = ok(
+        json!({ "call": "apply", "key": "main", "parent": 1, "node": 2,
+        "op": { "kind": "fillet", "edges": [edge], "size": 1.0 } }),
+    );
+    assert_eq!(
+        retried["fingerprint"], fillet["fingerprint"],
+        "a retried apply lands on the same node"
+    );
+    let clash = call(
+        json!({ "call": "apply", "key": "main", "parent": 0, "node": 2,
+        "op": cut_box([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]) }),
+    );
+    assert!(
+        clash["error"].as_str().unwrap_or("").contains("already"),
+        "{clash}"
+    );
 
-    let branch = ok(json!({ "call": "apply", "key": "main", "parent": 1, "node": 3,
-        "op": { "kind": "hole", "origin": [5.0, 5.0, 5.0], "axis": [0.0, 0.0, -1.0], "radius": 2.0, "depth": 10.0 } }));
+    let branch = ok(
+        json!({ "call": "apply", "key": "main", "parent": 1, "node": 3,
+        "op": { "kind": "hole", "origin": [5.0, 5.0, 5.0], "axis": [0.0, 0.0, -1.0], "radius": 2.0, "depth": 10.0 } }),
+    );
     let drilled = 500.0 - PI * 4.0 * 5.0;
     near(volume(&branch), drilled);
     assert_eq!(held(&branch), [0, 1, 2, 3], "the fillet branch stays");
@@ -135,12 +156,18 @@ fn history_tree() {
 
     let dropped = ok(json!({ "call": "drop", "key": "main", "node": 1 }));
     assert_eq!(dropped["dropped"], json!([1, 2, 3]));
-    assert_eq!(dropped["current"], 0, "the current node was inside the dropped branch");
+    assert_eq!(
+        dropped["current"], 0,
+        "the current node was inside the dropped branch"
+    );
     assert_eq!(held(&dropped), [0]);
     let gone = call(json!({ "call": "goto", "key": "main", "node": 2 }));
     assert_eq!(gone, json!({ "error": "unknown", "missing": [2] }));
     let root = call(json!({ "call": "drop", "key": "main", "node": 0 }));
-    assert!(root["error"].as_str().unwrap_or("").contains("root"), "{root}");
+    assert!(
+        root["error"].as_str().unwrap_or("").contains("root"),
+        "{root}"
+    );
     ok(json!({ "call": "close", "key": "main" }));
     let closed = call(json!({ "call": "goto", "key": "main", "node": 0 }));
     assert_eq!(closed, json!({ "error": "unknown", "missing": [0] }));
@@ -155,17 +182,28 @@ fn evicted_nodes_replay(fillet: &Value, branch: &Value) {
     assert_eq!(at_hole["fingerprint"], branch["fingerprint"]);
 
     let replayed = ok(json!({ "call": "goto", "key": "main", "node": 2 }));
-    assert_eq!(replayed["replayed"], 2, "the cut and the fillet were rebuilt");
+    assert_eq!(
+        replayed["replayed"], 2,
+        "the cut and the fillet were rebuilt"
+    );
     assert_eq!(replayed["fingerprint"], fillet["fingerprint"]);
     assert_eq!(held(&replayed), [0, 2]);
 
     lime_model_occt::set_tree_limits(1, 1);
     let hole = ok(json!({ "call": "goto", "key": "main", "node": 3 }));
     assert_eq!(hole["replayed"], 2, "the cut and the hole were rebuilt");
-    assert_eq!(held(&hole), [0, 1, 3], "one loose solid stays: the most recent, the cut");
+    assert_eq!(
+        held(&hole),
+        [0, 1, 3],
+        "one loose solid stays: the most recent, the cut"
+    );
     let fillet_again = ok(json!({ "call": "goto", "key": "main", "node": 2 }));
     assert_eq!(fillet_again["replayed"], 1, "only the fillet was rebuilt");
-    assert_eq!(held(&fillet_again), [0, 2, 3], "the hole was used after the cut");
+    assert_eq!(
+        held(&fillet_again),
+        [0, 2, 3],
+        "the hole was used after the cut"
+    );
 
     lime_model_occt::set_tree_limits(24, 8);
 }
@@ -180,11 +218,17 @@ fn rebuilt_from_saved_ops(cut: &Value, fillet: &Value, branch: &Value, fillet_op
             { "id": 3, "parent": 1, "op": branch["op"], "fingerprint": branch["fingerprint"] },
         ])
     };
-    let reopened = ok(json!({ "call": "open", "key": "saved", "box": [10.0, 10.0, 10.0],
-        "nodes": saved(fillet_op, &fillet["fingerprint"]), "current": 2 }));
+    let reopened = ok(
+        json!({ "call": "open", "key": "saved", "box": [10.0, 10.0, 10.0],
+        "nodes": saved(fillet_op, &fillet["fingerprint"]), "current": 2 }),
+    );
     assert_eq!(reopened["replayed"], 2);
     assert_eq!(reopened["fingerprint"], fillet["fingerprint"]);
-    assert_eq!(held(&reopened), [0, 1, 2], "node 3 is registered, not built");
+    assert_eq!(
+        held(&reopened),
+        [0, 1, 2],
+        "node 3 is registered, not built"
+    );
     let hole = ok(json!({ "call": "goto", "key": "saved", "node": 3 }));
     assert_eq!(hole["replayed"], 1);
     assert_eq!(hole["fingerprint"], branch["fingerprint"]);
@@ -193,27 +237,46 @@ fn rebuilt_from_saved_ops(cut: &Value, fillet: &Value, branch: &Value, fillet_op
     let mut moved = fillet_op.clone();
     let index = moved["edges"][0]["index"].as_i64().expect("index");
     moved["edges"][0]["index"] = json!((index + 1) % edges);
-    let matched = ok(json!({ "call": "open", "key": "saved", "box": [10.0, 10.0, 10.0],
-        "nodes": saved(&moved, &fillet["fingerprint"]), "current": 2 }));
-    assert_eq!(matched["fingerprint"], fillet["fingerprint"], "the edge was found by its midpoint and length");
+    let matched = ok(
+        json!({ "call": "open", "key": "saved", "box": [10.0, 10.0, 10.0],
+        "nodes": saved(&moved, &fillet["fingerprint"]), "current": 2 }),
+    );
+    assert_eq!(
+        matched["fingerprint"], fillet["fingerprint"],
+        "the edge was found by its midpoint and length"
+    );
 
     let mut lost = fillet_op.clone();
     lost["edges"][0]["mid"] = json!([50.0, 50.0, 50.0]);
-    let broken = call(json!({ "call": "open", "key": "saved", "box": [10.0, 10.0, 10.0],
-        "nodes": saved(&lost, &fillet["fingerprint"]), "current": 2 }));
+    let broken = call(
+        json!({ "call": "open", "key": "saved", "box": [10.0, 10.0, 10.0],
+        "nodes": saved(&lost, &fillet["fingerprint"]), "current": 2 }),
+    );
     assert_eq!(broken["broken"], 2, "{broken}");
 
     let wrong = json!({ "volumeMm3": 123.0, "faces": 6, "edges": 12 });
-    let mismatch = call(json!({ "call": "open", "key": "saved", "box": [10.0, 10.0, 10.0],
-        "nodes": saved(fillet_op, &wrong), "current": 2 }));
+    let mismatch = call(
+        json!({ "call": "open", "key": "saved", "box": [10.0, 10.0, 10.0],
+        "nodes": saved(fillet_op, &wrong), "current": 2 }),
+    );
     assert_eq!(mismatch["broken"], 2, "{mismatch}");
-    assert!(mismatch["error"].as_str().unwrap_or("").contains("rebuilt differently"), "{mismatch}");
+    assert!(
+        mismatch["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("rebuilt differently"),
+        "{mismatch}"
+    );
     let parent = ok(json!({ "call": "goto", "key": "saved", "node": 1 }));
-    assert_eq!(parent["fingerprint"], cut["fingerprint"], "the steps above a broken one still open");
+    assert_eq!(
+        parent["fingerprint"], cut["fingerprint"],
+        "the steps above a broken one still open"
+    );
     let still = call(json!({ "call": "goto", "key": "saved", "node": 2 }));
     assert_eq!(still["broken"], 2);
     ok(json!({ "call": "drop", "key": "saved", "node": 2 }));
-    let redone = ok(json!({ "call": "apply", "key": "saved", "parent": 1, "node": 2, "op": fillet_op }));
+    let redone =
+        ok(json!({ "call": "apply", "key": "saved", "parent": 1, "node": 2, "op": fillet_op }));
     assert_eq!(redone["fingerprint"], fillet["fingerprint"]);
     ok(json!({ "call": "close", "key": "saved" }));
 }
@@ -224,12 +287,20 @@ fn step_round_trip_keeps_the_fillet_edge(fillet: &Value, fillet_op: &Value) {
     if exported["error"] == "STEP writer is not linked" && !require() {
         return;
     }
-    let data = exported["bytesBase64"].as_str().unwrap_or_else(|| panic!("{exported}"));
+    let data = exported["bytesBase64"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{exported}"));
     assert!(exported["byteLength"].as_u64().expect("byteLength") > 0);
     let reread = ok(json!({ "call": "open", "key": "step", "dataB64": data,
         "nodes": [{ "id": 1, "parent": 0, "op": fillet_op, "fingerprint": fillet["fingerprint"] }], "current": 1 }));
-    assert_eq!(reread["fingerprint"]["faces"], fillet["fingerprint"]["faces"]);
-    assert_eq!(reread["fingerprint"]["edges"], fillet["fingerprint"]["edges"]);
+    assert_eq!(
+        reread["fingerprint"]["faces"],
+        fillet["fingerprint"]["faces"]
+    );
+    assert_eq!(
+        reread["fingerprint"]["edges"],
+        fillet["fingerprint"]["edges"]
+    );
     near(volume(&reread), volume(fillet));
     ok(json!({ "call": "close", "key": "step" }));
 }
@@ -237,8 +308,10 @@ fn step_round_trip_keeps_the_fillet_edge(fillet: &Value, fillet_op: &Value) {
 /// Split answers the other piece once. Jumping back above it removes nothing from the tree.
 fn split_keeps_both_pieces() {
     ok(json!({ "call": "open", "key": "split", "box": [10.0, 10.0, 10.0] }));
-    let split = ok(json!({ "call": "apply", "key": "split", "parent": 0, "node": 1,
-        "op": { "kind": "split", "origin": [0.0, 0.0, 4.0], "normal": [0.0, 0.0, 1.0] } }));
+    let split = ok(
+        json!({ "call": "apply", "key": "split", "parent": 0, "node": 1,
+        "op": { "kind": "split", "origin": [0.0, 0.0, 4.0], "normal": [0.0, 0.0, 1.0] } }),
+    );
     near(volume(&split), 400.0);
     near(volume(&split["other"]), 600.0);
     let above = ok(json!({ "call": "goto", "key": "split", "node": 0 }));
@@ -246,7 +319,10 @@ fn split_keeps_both_pieces() {
     assert_eq!(held(&above), [0, 1]);
     let below = ok(json!({ "call": "goto", "key": "split", "node": 1 }));
     near(volume(&below), 400.0);
-    assert!(below.get("other").is_none(), "a jump does not send the other piece again");
+    assert!(
+        below.get("other").is_none(),
+        "a jump does not send the other piece again"
+    );
     ok(json!({ "call": "close", "key": "split" }));
 }
 
@@ -255,12 +331,25 @@ fn unknown_and_broken() {
     assert_eq!(unknown, json!({ "error": "unknown", "missing": [0] }));
     let missing = call(json!({ "call": "goto", "key": "main", "node": 99 }));
     assert_eq!(missing, json!({ "error": "unknown", "missing": [99] }));
-    let orphan = call(json!({ "call": "apply", "key": "main", "parent": 98, "node": 99,
-        "op": { "kind": "scale", "factor": 2.0 } }));
+    let orphan = call(
+        json!({ "call": "apply", "key": "main", "parent": 98, "node": 99,
+        "op": { "kind": "scale", "factor": 2.0 } }),
+    );
     assert_eq!(orphan, json!({ "error": "unknown", "missing": [98] }));
-    let refused = call(json!({ "call": "apply", "key": "main", "parent": 0, "node": 99,
-        "op": { "kind": "scale", "factor": 1.0 } }));
-    assert_eq!(refused, json!({ "error": "Scale needs a factor other than 1" }));
+    let refused = call(
+        json!({ "call": "apply", "key": "main", "parent": 0, "node": 99,
+        "op": { "kind": "scale", "factor": 1.0 } }),
+    );
+    assert_eq!(
+        refused,
+        json!({ "error": "Scale needs a factor other than 1" })
+    );
     let bad = call(json!({ "call": "goto", "key": "main" }));
-    assert!(bad["error"].as_str().unwrap_or("").starts_with("Bad tree request"), "{bad}");
+    assert!(
+        bad["error"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("Bad tree request"),
+        "{bad}"
+    );
 }
