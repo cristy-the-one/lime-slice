@@ -1,5 +1,5 @@
 //! STEP files as mesh converters write them: each part a closed shell of loose facets, no solid.
-//! Shared by the session's and the tree's shell tests.
+//! Written by the tree's shell tests.
 
 use std::fmt::Write as _;
 use std::path::PathBuf;

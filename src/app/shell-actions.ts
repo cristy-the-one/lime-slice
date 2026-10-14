@@ -10,6 +10,7 @@ import { state } from "./state.ts";
 
 /** Split `id`, or the selection. False when that object is one solid. */
 export function separateShells(id?: string | null): boolean {
+  fx.commitModel?.();
   noteEdit();
   syncPlateFromState();
   const target = id ?? state.plate.selectedId;
@@ -30,6 +31,7 @@ export function separateShells(id?: string | null): boolean {
   applySelectedToState(state.plate);
   place();
   flushEdit();
+  fx.followSelection?.();
   if (painted) pushToast("Paint on this object was cleared.", "info");
   return true;
 }

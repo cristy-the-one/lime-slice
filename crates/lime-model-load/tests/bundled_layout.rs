@@ -88,8 +88,8 @@ mod windows {
             copied.len()
         );
 
-        let json =
-            lime_model_load::open_box(10.0, 20.0, 30.0).expect("dlopen from the bundled layout");
+        let json = lime_model_load::tree(r#"{"call":"open","key":"bundled","box":[10,20,30]}"#)
+            .expect("dlopen from the bundled layout");
         assert!(!json.contains("\"error\""), "{json}");
         let volume = volume_of(&json);
         assert!((volume - 6000.0).abs() < 0.05, "{volume} from {json}");

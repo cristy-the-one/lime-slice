@@ -1,11 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import { autoSliceOff } from "./auto-slice";
+import { mockModelTree, type Body, type TreeMock } from "./model-tree-mock";
 
 type V = [number, number, number];
 
 /** A box the modeler reports as a solid, in its own CAD frame, from `z0` up. */
-function boxSolid(id: number, size: V, z0 = 0) {
+function boxSolid(size: V, z0 = 0) {
   const [sx, sy, sz] = size;
   const c = (x: number, y: number, z: number): V => [x * sx, y * sy, z0 + z * sz];
   const quads: V[][] = [
@@ -24,49 +25,41 @@ function boxSolid(id: number, size: V, z0 = 0) {
       triangles.push(face);
     }
   });
-  return { id, volumeMm3: sx * sy * sz, positions, triangles, faces: quads.map((_, face) => ({ id: face, areaMm2: 0 })), edges: [] };
+  return { volumeMm3: sx * sy * sz, positions, triangles, faces: quads.map((_, face) => ({ id: face, areaMm2: 0 })), edges: [] };
 }
 
-const SOLID = boxSolid(1, [20, 20, 10]);
-const CUT = boxSolid(1, [20, 20, 5]);
+const SOLID = boxSolid([20, 20, 10]);
+const CUT = boxSolid([20, 20, 5]);
 
 interface Calls {
-  opens: { filename: string; dataB64: string }[];
+  tree: TreeMock;
+  opens: Body[];
   probes: number;
-  exports: number;
-  splits: number[];
   release: (() => void) | null;
   holdProbes: boolean;
 }
 
 /** The modeler, mocked. Each export writes different STEP bytes, so a test can tell which one landed. */
 async function modeler(page: Page): Promise<Calls> {
-  const calls: Calls = { opens: [], probes: 0, exports: 0, splits: [], release: null, holdProbes: false };
+  const calls: Calls = { tree: null as unknown as TreeMock, opens: [], probes: 0, release: null, holdProbes: false };
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: SOLID.positions } }));
-  await page.route("**/api/model/probe", async (route) => {
-    calls.probes += 1;
-    if (calls.holdProbes) await new Promise<void>((resolve) => (calls.release = resolve));
-    await route.fulfill({ json: { ok: true } });
-  });
-  await page.route("**/api/model/boolean", (route) => route.fulfill({ json: CUT }));
-  await page.route("**/api/model/undo", (route) => route.fulfill({ json: SOLID }));
-  await page.route("**/api/model/redo", (route) => route.fulfill({ json: CUT }));
-  await page.route("**/api/model/export", (route) => {
-    calls.exports += 1;
-    const bytes = Buffer.from(`EDITED-STEP-${calls.exports}`);
-    return route.fulfill({ json: { bytesBase64: bytes.toString("base64"), byteLength: bytes.length } });
-  });
-  await page.route("**/api/model/split", (route) => {
-    const { id, z } = route.request().postDataJSON() as { id: number; z: number };
-    calls.splits.push(id);
-    const kept = boxSolid(id, [20, 20, z]);
-    const other = boxSolid(id + 1, [20, 20, 10 - z], z);
-    return route.fulfill({ json: { ...kept, other } });
-  });
-  await page.route("**/api/model", (route) => {
-    calls.opens.push(route.request().postDataJSON() as { filename: string; dataB64: string });
-    return route.fulfill({ json: SOLID });
+  calls.tree = await mockModelTree(page, {
+    open(request) {
+      calls.opens.push(request);
+      return SOLID;
+    },
+    apply(request) {
+      const op = request.op as { kind: string; origin: number[] };
+      if (op.kind !== "split") return CUT;
+      const z = op.origin[2]!;
+      return { kept: boxSolid([20, 20, z]), other: boxSolid([20, 20, 10 - z], z) };
+    },
+    async probe() {
+      calls.probes += 1;
+      if (calls.holdProbes) await new Promise<void>((resolve) => (calls.release = resolve));
+      return { ok: true };
+    },
   });
   return calls;
 }
@@ -80,7 +73,7 @@ async function openModel(page: Page) {
   await expect(page.locator("#modelReadout")).toContainText("Volume 4000 mm³");
 }
 
-test("Apply, undo, and redo ask the kernel nothing, and a typed number asks once", async ({ page }) => {
+test("Apply asks no second check, undo and redo ask the engine nothing, and a typed number asks once", async ({ page }) => {
   const calls = await modeler(page);
   await openModel(page);
   const apply = page.locator("#modelApply");
@@ -110,6 +103,7 @@ test("Apply, undo, and redo ask the kernel nothing, and a typed number asks once
   await expect(apply).toBeDisabled();
   await page.waitForTimeout(700);
   expect(calls.probes, "undo and redo ask nothing").toBe(1);
+  expect(calls.tree.of("goto"), "both steps were just shown, so the client draws them itself").toHaveLength(0);
 
   await page.locator("#modelDx").selectText();
   await page.keyboard.type("12.5", { delay: 120 });
@@ -129,15 +123,15 @@ test("Apply writes no STEP; leaving Model writes the edited solid once, and save
   await expect(page.locator("#modelApply")).toBeEnabled();
   await page.locator("#modelApply").click();
   await expect(page.locator("#modelApply")).toBeDisabled();
-  expect(calls.exports, "no STEP per Apply").toBe(0);
+  expect(calls.tree.of("export"), "no STEP per Apply").toHaveLength(0);
 
   await page.locator("#tabPrepare").click();
-  await expect.poll(() => calls.exports, { message: "leaving Model writes the solid" }).toBe(1);
+  await expect.poll(() => calls.tree.of("export").length, { message: "leaving Model writes the solid" }).toBe(1);
   const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
   const saved = fs.readFileSync((await download.path())!);
   const written = Buffer.from("EDITED-STEP-1").toString("base64");
   expect(saved.toString("utf8"), "the project keeps the edited solid").toContain(written);
-  expect(calls.exports, "a save after leaving writes nothing new").toBe(1);
+  expect(calls.tree.of("export"), "a save after leaving writes nothing new").toHaveLength(1);
 
   page.once("dialog", (dialog) => void dialog.accept());
   await page.locator("#projectFile").setInputFiles({ name: "edited.lime", mimeType: "application/json", buffer: saved });
@@ -161,11 +155,12 @@ test("the piece a split adds opens as a solid of its own and splits again", asyn
   await page.locator("[data-plate-select]").nth(1).click();
   await expect(page.locator("#modelReadout")).toContainText("Volume 2400 mm³");
   await expect(page.locator("#modelReadout")).not.toContainText("This file is a mesh");
-  expect(calls.opens, "the piece opens from the session, with no STEP read").toHaveLength(1);
+  expect(calls.opens, "the piece is a tree of its own already, with no STEP read").toHaveLength(1);
 
   await expect(page.locator("#modelToolSplit"), "Split stays open on the piece").toHaveAttribute("aria-pressed", "true");
   await page.locator("#modelPlaneZ").fill("7");
   await page.locator("#modelApply").click();
   await expect(page.locator("#objectList .obj")).toHaveCount(3);
-  expect(calls.splits).toEqual([1, 2]);
+  const splits = calls.tree.of("apply");
+  expect(splits.map((request) => request.key)).toEqual([splits[0]!.key, splits[0]!.otherKey]);
 });

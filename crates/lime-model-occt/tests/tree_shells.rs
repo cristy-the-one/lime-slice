@@ -1,6 +1,8 @@
-//! The history tree opens facet-shell STEP files the way the session does: shells that sew into
-//! solids are edited as solids, and surfaces that do not are opened for measuring only, with every
-//! edit and probe refused before a node is built.
+//! STEP files from mesh converters carry closed shells of loose facets and no solid. Three 10 mm
+//! cubes written that way, two sharing a wall and one wound inside out, open in the history tree
+//! as 3000 mm³ that splits, cuts, and drills. A shell with a gap, or one that crosses itself,
+//! opens for measuring only (`solid` false), with every edit and probe refused before a node is
+//! built.
 
 mod facets;
 
@@ -48,12 +50,23 @@ fn facet_shells_in_the_tree() {
     let path = write_step("tree-cubes", &three_cubes());
     let by_path = ok(json!({ "call": "open", "key": "cubes", "stepPath": path }));
     near(volume(&by_path), 3000.0);
+    assert_eq!(by_path["solid"], true, "sewn shells are an editable solid");
     let split = ok(
         json!({ "call": "apply", "key": "cubes", "parent": 0, "node": 1,
         "op": { "kind": "split", "origin": [25.0, 5.0, 5.0], "normal": [0.0, 0.0, 1.0] } }),
     );
     near(volume(&split), 1500.0);
     near(volume(&split["other"]), 1500.0);
+    let cut = ok(
+        json!({ "call": "apply", "key": "cubes", "parent": 0, "node": 2,
+        "op": { "kind": "boolean", "op": "cut", "primitive": "box", "origin": [5.0, -1.0, -1.0], "size": [10.0, 12.0, 12.0] } }),
+    );
+    near(volume(&cut), 2000.0);
+    let drilled = ok(
+        json!({ "call": "apply", "key": "cubes", "parent": 0, "node": 3,
+        "op": { "kind": "hole", "origin": [45.0, 5.0, 10.0], "radius": 2.0, "depth": 4.0 } }),
+    );
+    near(volume(&drilled), 3000.0 - std::f64::consts::PI * 16.0);
 
     let bytes = std::fs::read(&path).expect("facet step");
     let _ = std::fs::remove_file(&path);
@@ -75,6 +88,7 @@ fn facet_shells_in_the_tree() {
         let opened = ok(json!({ "call": "open", "key": name, "stepPath": path }));
         let _ = std::fs::remove_file(&path);
         assert_eq!(opened["held"], json!([0]), "{name}");
+        assert_eq!(opened["solid"], false, "{name} is view-only");
         for op in &ops {
             let applied =
                 call(json!({ "call": "apply", "key": name, "parent": 0, "node": 1, "op": op }));

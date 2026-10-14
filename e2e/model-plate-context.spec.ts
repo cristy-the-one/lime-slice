@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
+import { mockModelTree } from "./model-tree-mock";
 
 type V = [number, number, number];
 
@@ -23,7 +24,7 @@ function boxSolid(size: V) {
       triangles.push(face);
     }
   });
-  return { id: 1, volumeMm3: sx * sy * sz, positions, triangles, faces: quads.map((_, id) => ({ id, areaMm2: 0 })), edges: [] };
+  return { volumeMm3: sx * sy * sz, positions, triangles, faces: quads.map((_, id) => ({ id, areaMm2: 0 })), edges: [] };
 }
 
 const SOLIDS: Record<string, ReturnType<typeof boxSolid>> = {
@@ -40,9 +41,8 @@ async function commit(page: Page, id: "#placeX" | "#placeY", value: number) {
 async function twoObjects(page: Page) {
   const named = (route: { request(): { postDataJSON(): { filename?: string } } }) => SOLIDS[route.request().postDataJSON().filename ?? ""]!;
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
-  await page.route("**/api/model/probe", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: named(route).positions } }));
-  await page.route("**/api/model", (route) => route.fulfill({ json: named(route) }));
+  await mockModelTree(page, { open: (request) => SOLIDS[String(request.filename)]! });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
   await autoSliceOff(page);

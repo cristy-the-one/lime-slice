@@ -51,6 +51,7 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
   state.selectedVolumeId = null;
   state.layerActions = [];
   clearEditHistory();
+  fx.forgetModelTrees?.();
   session.supportUi?.reset();
   const parsed = needsEngine(name) ? null : parseStl(bytes);
   if (!needsEngine(name) && !parsed) {
@@ -401,6 +402,7 @@ export function withPrinterGcode(gcode: string, run?: RunMeta) {
 
 /** Save the G-code. A missing or stale slice is made first, so Export needs only a mesh. */
 export async function exportGcode() {
+  fx.commitModel?.();
   if (!state.mesh || state.busy) return;
   if (!state.result || stale()) await fx.runSlice(false);
   const result = state.result;
@@ -425,6 +427,7 @@ export async function exportGcode() {
 }
 
 export async function export3mf() {
+  fx.commitModel?.();
   if (!state.placed) return;
   syncPlateFromState();
   const objects = livePlate();
@@ -510,6 +513,7 @@ async function addMeshNow(name: string, bytes: ArrayBuffer) {
     return;
   }
   // Close anything still open so this add is its own undo step.
+  fx.commitModel?.();
   flushEdit();
   noteEdit();
   syncPlateFromState();
@@ -524,6 +528,7 @@ async function addMeshNow(name: string, bytes: ArrayBuffer) {
   offerAssemblySplit(name, sourcePos, state.plate.selectedId);
   place();
   flushEdit();
+  fx.followSelection?.();
   await offerForeignRecipe(name, bytes);
 }
 

@@ -176,17 +176,6 @@ export function flushEdit() {
   history = commitGesture(history, capture());
 }
 
-/** Drop an open gesture. A solid edit that did not land uses this. */
-export function cancelEdit() {
-  window.clearTimeout(timer);
-  history = { ...history, pending: null };
-}
-
-/** How many committed undo steps exist. Model mode uses this to see if its edit is still on top. */
-export function editUndoCount(): number {
-  return history.undo.length;
-}
-
 export function clearEditHistory() {
   window.clearTimeout(timer);
   history = emptyHistory();
@@ -198,15 +187,15 @@ export function beginModelVisit() {
   visitEdited = false;
 }
 
-/** A Model edit landed in this visit. */
+/** The plate took a Model node, or a split piece, in this visit. */
 export function markModelEdit() {
   visitEdited = true;
 }
 
 /**
- * Fold a visit with Model edits into one step. A Model edit does not write its solid's STEP, so the
- * states between the first edit and the last have none. Only the state before the visit and the one
- * after it stay reachable; the after state gets its STEP by `patchEditBrep` once it is written.
+ * Fold a visit that changed the plate into one step: only the state before the visit and the one
+ * after it stay reachable. The Model tree keeps the steps in between, and the after state gets its
+ * STEP by `patchEditBrep` once it is written.
  */
 export function endModelVisit() {
   const before = preVisit;

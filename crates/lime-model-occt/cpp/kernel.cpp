@@ -1,18 +1,13 @@
-// Open CASCADE session for Model mode. This file is Lime Slice (MIT).
+// Open CASCADE operations for the Model history tree (tree.cpp). This file is Lime Slice (MIT).
 // It calls the LGPL library; the notice is third_party/occt/NOTICE.md.
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
-#include <cstdint>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <initializer_list>
-#include <map>
-#include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -194,23 +189,6 @@ double depth_along(const TopoDS_Shape& shape, const gp_Dir& normal) {
     return any ? hi - lo : 0.0;
 }
 
-struct Solid;
-
-/// One edit on an undo or redo stack: the shape it returns to. A split also names the piece it added,
-/// which undo takes off the session (kept in `piece` on the redo side) and redo puts back under the same id.
-struct Step {
-    Held held;
-    int spawned = 0;
-    std::shared_ptr<Solid> piece;
-};
-
-/// One open solid: the shape it is now, and the edits undo and redo walk through.
-struct Solid {
-    Held held;
-    std::vector<Step> undo;
-    std::vector<Step> redo;
-};
-
 /// Kernel work done since load. Tests read it to prove a probe's result was reused.
 struct Stats {
     std::atomic<long> builds{0};
@@ -218,15 +196,7 @@ struct Stats {
     std::atomic<long> tessellations{0};
 };
 
-std::mutex g_mu;
-/// Every solid of the open file, by id: the file's own and each piece a split added. Ids are never reused.
-std::map<int, Solid> g_solids;
-int g_next_id = 1;
-std::atomic<uint64_t> g_probe_seq{0};
 Stats g_stats;
-
-/// Cached replies kept across the undo and redo stacks, nearest first. Small parts keep every step.
-constexpr size_t kReplyBudget = size_t(64) << 20;
 
 char* alloc(const std::string& text) {
     char* out = static_cast<char*>(std::malloc(text.size() + 1));
@@ -251,10 +221,6 @@ std::string escape(const std::string& text) {
         out.push_back(c);
     }
     return out;
-}
-
-char* error_json(const std::string& message) {
-    return alloc(std::string("{\"error\":\"") + escape(message) + "\"}");
 }
 
 void append_num(std::string& out, double value) {
@@ -325,123 +291,6 @@ double volume_of(const TopoDS_Shape& shape) {
     GProp_GProps props;
     integrate(shape, props);
     return props.Mass();
-}
-
-/// Open a file's solid. Every solid of the previous file is released.
-int store(const TopoDS_Shape& shape) {
-    g_solids.clear();
-    const TopoDS_Shape solid = as_solid(shape);
-    const int id = g_next_id++;
-    g_solids[id].held = hold_of(solid, volume_of(solid));
-    return id;
-}
-
-/// The open solid, or null. Call under `g_mu`; the pointer is valid until the lock is released.
-Solid* solid_at(int id) {
-    const auto found = g_solids.find(id);
-    return found == g_solids.end() ? nullptr : &found->second;
-}
-
-Held* held_at(int id) {
-    Solid* solid = solid_at(id);
-    return solid == nullptr ? nullptr : &solid->held;
-}
-
-/// Keep cached replies within `kReplyBudget`, nearest to each open shape first. A dropped reply is rebuilt on demand.
-void trim_replies() {
-    size_t used = 0;
-    size_t deepest = 0;
-    for (const auto& entry : g_solids) {
-        used += entry.second.held.reply.json.size();
-        deepest = std::max({deepest, entry.second.undo.size(), entry.second.redo.size()});
-    }
-    for (size_t depth = 0; depth < deepest; ++depth) {
-        for (auto& entry : g_solids) {
-            for (std::vector<Step>* stack : {&entry.second.undo, &entry.second.redo}) {
-                if (depth >= stack->size()) {
-                    continue;
-                }
-                Reply& reply = (*stack)[stack->size() - 1 - depth].held.reply;
-                if (used + reply.json.size() > kReplyBudget) {
-                    reply = Reply{};
-                }
-                used += reply.json.size();
-            }
-        }
-    }
-}
-
-void push_capped(std::vector<Step>& stack, Step&& step) {
-    step.held.probed = Probed{};
-    stack.push_back(std::move(step));
-    if (stack.size() > 32) {
-        stack.erase(stack.begin());
-    }
-}
-
-/// Make `next` the solid's shape and keep the old one for undo. `spawned` is a piece the edit added. Call under `g_mu`.
-void commit_held(Solid& solid, Held&& next, int spawned = 0) {
-    solid.redo.clear();
-    push_capped(solid.undo, Step{std::move(solid.held), spawned, nullptr});
-    solid.held = std::move(next);
-}
-
-bool editable(const TopoDS_Shape& shape, std::string& error);
-
-/// The open solid and its volume, read under the lock so an op can run outside it. A shape with no solid is refused.
-bool copy_shape(int id, TopoDS_Shape& current, double& volume, std::string& error) {
-    std::lock_guard<std::mutex> lock(g_mu);
-    const Held* held = held_at(id);
-    if (held == nullptr) {
-        error = "That solid is no longer open";
-        return false;
-    }
-    current = held->shape;
-    volume = held->volume;
-    return editable(current, error);
-}
-
-std::string key_of(const char* op, std::initializer_list<double> values, const std::vector<int>& indices = {}) {
-    std::string key = op;
-    char buffer[40];
-    for (const double value : values) {
-        std::snprintf(buffer, sizeof buffer, " %.17g", value);
-        key += buffer;
-    }
-    for (const int index : indices) {
-        key += " e";
-        key += std::to_string(index);
-    }
-    return key;
-}
-
-/// Keep a probe's result on the solid it was built on. A newer probe, an edit, or an undo replaces it.
-void remember_probe(
-    int id,
-    const TopoDS_Shape& parent,
-    std::string key,
-    uint64_t seq,
-    const TopoDS_Shape& result,
-    double volume) {
-    std::lock_guard<std::mutex> lock(g_mu);
-    Held* held = held_at(id);
-    if (held == nullptr || !held->shape.IsSame(parent) || seq < held->probed.seq) {
-        return;
-    }
-    held->probed = Probed{std::move(key), parent, result, volume, seq};
-}
-
-/// The probed result for `key` on `current`, when a probe built exactly this edit on this shape.
-bool probed_result(int id, const TopoDS_Shape& current, const std::string& key, TopoDS_Shape& result, double& volume) {
-    std::lock_guard<std::mutex> lock(g_mu);
-    const Held* held = held_at(id);
-    if (held == nullptr || held->probed.result.IsNull() || held->probed.key != key ||
-        !held->probed.parent.IsSame(current)) {
-        return false;
-    }
-    result = held->probed.result;
-    volume = held->probed.volume;
-    return true;
 }
 
 bool has_solid(const TopoDS_Shape& shape) {
@@ -515,6 +364,7 @@ std::string tessellate(int id, const Held& held, double chord) {
     out += escape(OCCT_Version_String_Complete());
     out += "\",\"volumeMm3\":";
     append_num(out, held.volume);
+    out += has_solid(shape) ? ",\"solid\":true" : ",\"solid\":false";
     out += ",\"positions\":[";
 
     bool first_position = true;
@@ -618,21 +468,6 @@ bool pick(const Held& held, const char* kind, int index, TopoDS_Shape& out) {
         return true;
     }
     return false;
-}
-
-/// The open solid's reply at `chord`, built once per shape and chord. `id` must be open. Call under `g_mu`.
-const std::string& reply_of(int id, double chord) {
-    Held& held = *held_at(id);
-    const double clamped = chord_of(chord);
-    if (held.reply.json.empty() || held.reply.chord != clamped) {
-        held.reply = Reply{tessellate(id, held, clamped), clamped};
-        trim_replies();
-    }
-    return held.reply.json;
-}
-
-char* finish(int id, double chord) {
-    return alloc(reply_of(id, chord));
 }
 
 TopoDS_Shape make_primitive(
@@ -772,28 +607,6 @@ bool accepted_result(const TopoDS_Shape& shape, double& volume, std::string& err
     return true;
 }
 
-/// Hold `result` in place of `current`, which must still be the open solid. `volume` is the result's, integrated once by the op.
-char* commit_edit(
-    int id,
-    const TopoDS_Shape& current,
-    const TopoDS_Shape& result,
-    double volume,
-    double chord,
-    const std::string& empty_message) {
-    const TopoDS_Shape solid = as_solid(result);
-    if (solid.IsNull() || !has_solid(solid) || !(volume > 1e-6)) {
-        return error_json(empty_message);
-    }
-    Held next = hold_of(solid, volume);
-    std::lock_guard<std::mutex> lock(g_mu);
-    Solid* open = solid_at(id);
-    if (open == nullptr || !open->held.shape.IsSame(current)) {
-        return error_json("That solid is no longer open");
-    }
-    commit_held(*open, std::move(next));
-    return finish(id, chord);
-}
-
 /// Outward unit normal at the face midpoint. A reversed face is flipped so the solid's outside stays positive.
 void append_face_normal(std::string& out, const TopoDS_Face& face) {
     try {
@@ -826,62 +639,6 @@ void append_face_normal(std::string& out, const TopoDS_Face& face) {
         out += ']';
     } catch (const Standard_Failure&) {
     }
-}
-
-/// Every index, once, in the order given, as edges and as the indices kept. An empty list is the same refusal as an unpicked edge.
-bool copy_edges(
-    int id,
-    const int* edges,
-    int count,
-    const char* verb,
-    TopoDS_Shape& current,
-    std::vector<TopoDS_Edge>& found,
-    std::vector<int>& kept,
-    std::string& error) {
-    std::lock_guard<std::mutex> lock(g_mu);
-    const Held* held = held_at(id);
-    if (held == nullptr) {
-        error = "That solid is no longer open";
-        return false;
-    }
-    if (!editable(held->shape, error)) {
-        return false;
-    }
-    if (edges == nullptr || count <= 0) {
-        error = std::string("Pick an edge to ") + verb + ".";
-        return false;
-    }
-    current = held->shape;
-    found.clear();
-    kept.clear();
-    for (int i = 0; i < count; ++i) {
-        const int edge = edges[i];
-        if (edge < 0) {
-            error = count == 1 ? std::string("Pick an edge to ") + verb + "." : "That edge is not on this solid";
-            return false;
-        }
-        if (edge >= held->edges.Extent()) {
-            error = "That edge is not on this solid";
-            return false;
-        }
-        bool duplicate = false;
-        for (int earlier = 0; earlier < i; ++earlier) {
-            if (edges[earlier] == edge) {
-                duplicate = true;
-                break;
-            }
-        }
-        if (duplicate) {
-            continue;
-        }
-        found.push_back(TopoDS::Edge(held->edges(edge + 1)));
-        kept.push_back(edge);
-    }
-    if (found.empty()) {
-        error = std::string("Pick an edge to ") + verb + ".";
-        return false;
-    }
-    return true;
 }
 
 /// An edge Open CASCADE will refuse at every size: already tangent-continuous, or a seam on one face.
@@ -1011,19 +768,6 @@ bool blend_build(
     }
 }
 
-char* probe_json(bool ok, const std::string& error, double max_mm) {
-    if (ok) {
-        return alloc("{\"ok\":true}");
-    }
-    std::string text = std::string("{\"ok\":false,\"error\":\"") + escape(error) + "\"";
-    if (max_mm + 1e-6 >= 0.05) {
-        text += ",\"maxMm\":";
-        append_num(text, max_mm);
-    }
-    text += "}";
-    return alloc(text);
-}
-
 /// Largest size at or under `hi` that still builds, from a handful of trials.
 double largest_blend(const TopoDS_Shape& current, const std::vector<TopoDS_Edge>& edges, double hi, bool chamfer) {
     double lo = 0.0;
@@ -1140,17 +884,6 @@ TopoDS_Shape build_hole(
     return cut;
 }
 
-std::string boolean_key(
-    const std::string& which,
-    const char* primitive,
-    std::initializer_list<double> numbers) {
-    return key_of(("boolean " + which + " " + (primitive == nullptr ? "" : primitive)).c_str(), numbers);
-}
-
-std::string blend_key(bool chamfer, const std::vector<int>& edges, double size) {
-    return key_of(chamfer ? "chamfer" : "fillet", {size}, edges);
-}
-
 bool measure_distance(
     const Held& held,
     const char* a_kind,
@@ -1177,8 +910,8 @@ bool measure_distance(
     return true;
 }
 
-/// The STEP reader and writer share Open CASCADE's global interface state, so the session and the
-/// tree never run them at once.
+/// The STEP reader and writer share Open CASCADE's global interface state, so no two calls run
+/// them at once, whatever lock their caller holds.
 std::mutex& step_mutex() {
     static std::mutex mu;
     return mu;
@@ -1402,277 +1135,6 @@ TopoDS_Shape build_scale(const TopoDS_Shape& current, double factor, std::string
 
 using namespace lime_occt;
 
-extern "C" char* lime_model_occt_open_box(double x_mm, double y_mm, double z_mm) {
-    try {
-        if (!(x_mm > 0.0) || !(y_mm > 0.0) || !(z_mm > 0.0)) {
-            return error_json("A box needs a positive length on each side");
-        }
-        BRepPrimAPI_MakeBox box(x_mm, y_mm, z_mm);
-        box.Build();
-        if (!box.IsDone()) {
-            return error_json("Open CASCADE did not build the box");
-        }
-        const TopoDS_Shape shape = box.Shape();
-        std::lock_guard<std::mutex> lock(g_mu);
-        const int id = store(shape);
-        return finish(id, 0.1);
-    } catch (const Standard_Failure& failure) {
-        const char* message = failure.GetMessageString();
-        return error_json(message != nullptr ? message : "Open CASCADE failed");
-    } catch (...) {
-        return error_json("Open CASCADE failed");
-    }
-}
-
-extern "C" char* lime_model_occt_open_step(const char* path, double chord) {
-    try {
-        std::string error;
-        const TopoDS_Shape shape = read_step(path, error);
-        if (shape.IsNull()) {
-            return error_json(error);
-        }
-        std::lock_guard<std::mutex> lock(g_mu);
-        const int id = store(shape);
-        return finish(id, chord);
-    } catch (const Standard_Failure& failure) {
-        const char* message = failure.GetMessageString();
-        return error_json(message != nullptr ? message : "Open CASCADE failed");
-    } catch (...) {
-        return error_json("Open CASCADE failed");
-    }
-}
-
-extern "C" char* lime_model_occt_distance(
-    int id,
-    const char* a_kind,
-    int a_index,
-    const char* b_kind,
-    int b_index) {
-    try {
-        TopoDS_Shape a;
-        TopoDS_Shape b;
-        {
-            std::lock_guard<std::mutex> lock(g_mu);
-            const Held* held = held_at(id);
-            if (held == nullptr) {
-                return error_json("That solid is no longer open");
-            }
-            if (!pick(*held, a_kind, a_index, a) || !pick(*held, b_kind, b_index, b)) {
-                return error_json("That face or edge is not on this solid");
-            }
-        }
-        BRepExtrema_DistShapeShape dist(a, b);
-        if (!dist.IsDone()) {
-            dist.Perform();
-        }
-        if (!dist.IsDone()) {
-            return error_json("Open CASCADE could not measure that distance");
-        }
-        std::string out = "{\"id\":";
-        out += std::to_string(id);
-        out += ",\"distanceMm\":";
-        append_num(out, dist.Value());
-        out += '}';
-        return alloc(out);
-    } catch (const Standard_Failure& failure) {
-        const char* message = failure.GetMessageString();
-        return error_json(message != nullptr ? message : "Open CASCADE failed");
-    } catch (...) {
-        return error_json("Open CASCADE failed");
-    }
-}
-
-extern "C" char* lime_model_occt_boolean(
-    int id,
-    const char* op,
-    const char* primitive,
-    double x,
-    double y,
-    double z,
-    double dx,
-    double dy,
-    double dz,
-    double radius,
-    double height,
-    double rx,
-    double ry,
-    double rz,
-    double chord) {
-    try {
-        const std::string which = op == nullptr ? "" : op;
-        TopoDS_Shape current;
-        double before = 0.0;
-        std::string error;
-        if (!copy_shape(id, current, before, error)) {
-            return error_json(error);
-        }
-        const std::string key = boolean_key(which, primitive, {x, y, z, dx, dy, dz, radius, height, rx, ry, rz});
-        TopoDS_Shape result;
-        double volume = 0.0;
-        if (!probed_result(id, current, key, result, volume)) {
-            result = build_boolean(current, which, primitive, x, y, z, dx, dy, dz, radius, height, rx, ry, rz, volume, error);
-            if (!error.empty()) {
-                return error_json(error);
-            }
-        }
-        return commit_edit(id, current, result, volume, chord, "The boolean removed the solid");
-    } catch (const Standard_Failure& failure) {
-        const char* message = failure.GetMessageString();
-        return error_json(message != nullptr ? message : "Open CASCADE failed");
-    } catch (...) {
-        return error_json("Open CASCADE failed");
-    }
-}
-
-extern "C" char* lime_model_occt_split(
-    int id,
-    double x,
-    double y,
-    double z,
-    double nx,
-    double ny,
-    double nz,
-    double chord) {
-    try {
-        TopoDS_Shape current;
-        double before = 0.0;
-        std::string error;
-        if (!copy_shape(id, current, before, error)) {
-            return error_json(error);
-        }
-        TopoDS_Shape kept;
-        TopoDS_Shape other;
-        double negative_volume = 0.0;
-        double positive_volume = 0.0;
-        if (!build_split(current, x, y, z, nx, ny, nz, kept, other, negative_volume, positive_volume, error)) {
-            return error_json(error);
-        }
-        Held other_held = hold_of(other, positive_volume);
-        Held next = hold_of(kept, negative_volume);
-        std::lock_guard<std::mutex> lock(g_mu);
-        Solid* open = solid_at(id);
-        if (open == nullptr || !open->held.shape.IsSame(current)) {
-            return error_json("That solid is no longer open");
-        }
-        const int piece = g_next_id++;
-        g_solids[piece].held = std::move(other_held);
-        commit_held(*open, std::move(next), piece);
-        std::string text = reply_of(id, chord);
-        if (!text.empty() && text.back() == '}') {
-            text.pop_back();
-            text += ",\"other\":";
-            text += reply_of(piece, chord);
-            text += '}';
-        }
-        return alloc(text);
-    } catch (const Standard_Failure& failure) {
-        const char* message = failure.GetMessageString();
-        return error_json(message != nullptr ? message : "Open CASCADE failed");
-    } catch (...) {
-        return error_json("Open CASCADE failed");
-    }
-}
-
-extern "C" char* lime_model_occt_undo(int id, double chord) {
-    try {
-        std::lock_guard<std::mutex> lock(g_mu);
-        Solid* open = solid_at(id);
-        if (open == nullptr) {
-            return error_json("That solid is no longer open");
-        }
-        if (open->undo.empty()) {
-            return error_json("There is no edit to undo");
-        }
-        Step back = std::move(open->undo.back());
-        open->undo.pop_back();
-        Step forward{std::move(open->held), back.spawned, nullptr};
-        const auto piece = g_solids.find(back.spawned);
-        if (back.spawned != 0 && piece != g_solids.end()) {
-            forward.piece = std::make_shared<Solid>(std::move(piece->second));
-            g_solids.erase(piece);
-        }
-        push_capped(open->redo, std::move(forward));
-        open->held = std::move(back.held);
-        return finish(id, chord);
-    } catch (const Standard_Failure& failure) {
-        const char* message = failure.GetMessageString();
-        return error_json(message != nullptr ? message : "Open CASCADE failed");
-    } catch (...) {
-        return error_json("Open CASCADE failed");
-    }
-}
-
-extern "C" char* lime_model_occt_redo(int id, double chord) {
-    try {
-        std::lock_guard<std::mutex> lock(g_mu);
-        Solid* open = solid_at(id);
-        if (open == nullptr) {
-            return error_json("That solid is no longer open");
-        }
-        if (open->redo.empty()) {
-            return error_json("There is no edit to redo");
-        }
-        Step forward = std::move(open->redo.back());
-        open->redo.pop_back();
-        push_capped(open->undo, Step{std::move(open->held), forward.spawned, nullptr});
-        open->held = std::move(forward.held);
-        if (forward.piece) {
-            g_solids[forward.spawned] = std::move(*forward.piece);
-        }
-        return finish(id, chord);
-    } catch (const Standard_Failure& failure) {
-        const char* message = failure.GetMessageString();
-        return error_json(message != nullptr ? message : "Open CASCADE failed");
-    } catch (...) {
-        return error_json("Open CASCADE failed");
-    }
-}
-
-char* hole_commit(
-    int id,
-    double x,
-    double y,
-    double z,
-    double dx,
-    double dy,
-    double dz,
-    double radius,
-    double depth,
-    double chord) {
-    TopoDS_Shape current;
-    double before = 0.0;
-    std::string error;
-    if (!copy_shape(id, current, before, error)) {
-        return error_json(error);
-    }
-    TopoDS_Shape cut;
-    double volume = 0.0;
-    if (!probed_result(id, current, key_of("hole", {x, y, z, dx, dy, dz, radius, depth}), cut, volume)) {
-        cut = build_hole(current, before, x, y, z, dx, dy, dz, radius, depth, volume, error);
-        if (!error.empty()) {
-            return error_json(error);
-        }
-    }
-    return commit_edit(id, current, cut, volume, chord, "The hole removed the solid");
-}
-
-/// Try a hole on a copy. The open solid stays as it was; a cut that works is kept for Apply.
-char* hole_probe(int id, double x, double y, double z, double dx, double dy, double dz, double radius, double depth) {
-    const uint64_t seq = ++g_probe_seq;
-    TopoDS_Shape current;
-    double before = 0.0;
-    std::string error;
-    if (!copy_shape(id, current, before, error)) {
-        return probe_json(false, error, 0.0);
-    }
-    double volume = 0.0;
-    const TopoDS_Shape cut = build_hole(current, before, x, y, z, dx, dy, dz, radius, depth, volume, error);
-    if (error.empty()) {
-        remember_probe(id, current, key_of("hole", {x, y, z, dx, dy, dz, radius, depth}), seq, cut, volume);
-    }
-    return probe_json(error.empty(), error, 0.0);
-}
-
 /// Kernel work counted since the library loaded, for tests.
 extern "C" char* lime_model_occt_stats() {
     std::string out = "{\"builds\":";
@@ -1683,292 +1145,6 @@ extern "C" char* lime_model_occt_stats() {
     out += std::to_string(g_stats.tessellations.load());
     out += '}';
     return alloc(out);
-}
-
-char* blend_commit(int id, const int* edges, int count, double size, double chord, bool chamfer) {
-    const char* verb = chamfer ? "chamfer" : "fillet";
-    const char* need = chamfer ? "A chamfer needs a positive distance" : "A fillet needs a positive radius";
-    if (!(size > 0.0)) {
-        return error_json(need);
-    }
-    TopoDS_Shape current;
-    std::vector<TopoDS_Edge> found;
-    std::vector<int> kept;
-    std::string error;
-    if (!copy_edges(id, edges, count, verb, current, found, kept, error)) {
-        return error_json(error);
-    }
-    TopoDS_Shape built;
-    double volume = 0.0;
-    if (!probed_result(id, current, blend_key(chamfer, kept, size), built, volume) &&
-        !blend_build(current, found, size, chamfer, built, volume, error)) {
-        return error_json(error);
-    }
-    const char* empty = chamfer
-        ? (found.size() > 1 ? "The chamfer did not fit these edges" : "The chamfer did not fit this edge")
-        : (found.size() > 1 ? "The fillet did not fit these edges" : "The fillet did not fit this edge");
-    return commit_edit(id, current, built, volume, chord, empty);
-}
-
-extern "C" char* lime_model_occt_fillet(int id, int edge, double radius, double chord) {
-    try {
-        const int edges[1] = {edge};
-        return blend_commit(id, edges, 1, radius, chord, false);
-    } catch (const Standard_Failure& failure) {
-        const char* message = failure.GetMessageString();
-        return error_json(message != nullptr ? message : "Open CASCADE failed");
-    } catch (...) {
-        return error_json("Open CASCADE failed");
-    }
-}
-
-extern "C" char* lime_model_occt_chamfer(int id, int edge, double distance, double chord) {
-    try {
-        const int edges[1] = {edge};
-        return blend_commit(id, edges, 1, distance, chord, true);
-    } catch (const Standard_Failure& failure) {
-        const char* message = failure.GetMessageString();
-        return error_json(message != nullptr ? message : "Open CASCADE failed");
-    } catch (...) {
-        return error_json("Open CASCADE failed");
-    }
-}
-
-/// Try a fillet or chamfer on a copy. The open solid stays as it was; a fitting result is kept for Apply.
-char* blend_probe_edges(int id, const int* edges, int count, double size, int chamfer) {
-    const uint64_t seq = ++g_probe_seq;
-    const bool is_chamfer = chamfer != 0;
-    if (!(size > 0.0)) {
-        return probe_json(
-            false,
-            is_chamfer ? "A chamfer needs a positive distance" : "A fillet needs a positive radius",
-            0.0);
-    }
-    TopoDS_Shape current;
-    std::vector<TopoDS_Edge> found;
-    std::vector<int> kept;
-    std::string error;
-    if (!copy_edges(id, edges, count, is_chamfer ? "chamfer" : "fillet", current, found, kept, error)) {
-        return probe_json(false, error, 0.0);
-    }
-    TopoDS_Shape built;
-    double volume = 0.0;
-    if (blend_build(current, found, size, is_chamfer, built, volume, error)) {
-        remember_probe(id, current, blend_key(is_chamfer, kept, size), seq, built, volume);
-        return probe_json(true, "", 0.0);
-    }
-    double max_mm = 0.0;
-    if (error.find("did not fit") != std::string::npos) {
-        max_mm = largest_blend(current, found, size, is_chamfer);
-    }
-    return probe_json(false, error, max_mm);
-}
-
-extern "C" char* lime_model_occt_blend_probe(int id, int edge, double size, int chamfer) {
-    try {
-        const int edges[1] = {edge};
-        return blend_probe_edges(id, edges, 1, size, chamfer);
-    } catch (const Standard_Failure& failure) {
-        const char* message = failure.GetMessageString();
-        return probe_json(false, message != nullptr ? message : "Open CASCADE failed", 0.0);
-    } catch (...) {
-        return probe_json(false, "Open CASCADE failed", 0.0);
-    }
-}
-
-extern "C" char* lime_model_occt_hole(
-    int id,
-    double x,
-    double y,
-    double z,
-    double radius,
-    double depth,
-    double chord) {
-    try {
-        if (!(radius > 0.0) || !(depth > 0.0)) {
-            return error_json("A hole needs a positive radius and depth");
-        }
-        return hole_commit(id, x, y, z, 0.0, 0.0, -1.0, radius, depth, chord);
-    } catch (const Standard_Failure& failure) {
-        const char* message = failure.GetMessageString();
-        return error_json(message != nullptr ? message : "Open CASCADE failed");
-    } catch (...) {
-        return error_json("Open CASCADE failed");
-    }
-}
-
-/// Try a hole on a copy. The open solid stays as it was.
-extern "C" char* lime_model_occt_hole_probe(int id, double x, double y, double z, double radius, double depth) {
-    try {
-        return hole_probe(id, x, y, z, 0.0, 0.0, -1.0, radius, depth);
-    } catch (const Standard_Failure& failure) {
-        const char* message = failure.GetMessageString();
-        return probe_json(false, message != nullptr ? message : "Open CASCADE failed", 0.0);
-    } catch (...) {
-        return probe_json(false, "Open CASCADE failed", 0.0);
-    }
-}
-
-/// Try a boolean on a copy. The open solid stays as it was.
-extern "C" char* lime_model_occt_boolean_probe(
-    int id,
-    const char* op,
-    const char* primitive,
-    double x,
-    double y,
-    double z,
-    double dx,
-    double dy,
-    double dz,
-    double radius,
-    double height,
-    double rx,
-    double ry,
-    double rz) {
-    try {
-        const uint64_t seq = ++g_probe_seq;
-        TopoDS_Shape current;
-        double before = 0.0;
-        std::string error;
-        if (!copy_shape(id, current, before, error)) {
-            return probe_json(false, error, 0.0);
-        }
-        const std::string which = op == nullptr ? "" : op;
-        double volume = 0.0;
-        const TopoDS_Shape result =
-            build_boolean(current, which, primitive, x, y, z, dx, dy, dz, radius, height, rx, ry, rz, volume, error);
-        if (error.empty()) {
-            const std::string key = boolean_key(which, primitive, {x, y, z, dx, dy, dz, radius, height, rx, ry, rz});
-            remember_probe(id, current, key, seq, result, volume);
-        }
-        return probe_json(error.empty(), error, 0.0);
-    } catch (const Standard_Failure& failure) {
-        const char* message = failure.GetMessageString();
-        return probe_json(false, message != nullptr ? message : "Open CASCADE failed", 0.0);
-    } catch (...) {
-        return probe_json(false, "Open CASCADE failed", 0.0);
-    }
-}
-
-extern "C" char* lime_model_occt_fillet_many(int id, const int* edges, int count, double radius, double chord) {
-    try {
-        return blend_commit(id, edges, count, radius, chord, false);
-    } catch (const Standard_Failure& failure) {
-        const char* message = failure.GetMessageString();
-        return error_json(message != nullptr ? message : "Open CASCADE failed");
-    } catch (...) {
-        return error_json("Open CASCADE failed");
-    }
-}
-
-extern "C" char* lime_model_occt_chamfer_many(int id, const int* edges, int count, double distance, double chord) {
-    try {
-        return blend_commit(id, edges, count, distance, chord, true);
-    } catch (const Standard_Failure& failure) {
-        const char* message = failure.GetMessageString();
-        return error_json(message != nullptr ? message : "Open CASCADE failed");
-    } catch (...) {
-        return error_json("Open CASCADE failed");
-    }
-}
-
-extern "C" char* lime_model_occt_blend_probe_many(int id, const int* edges, int count, double size, int chamfer) {
-    try {
-        return blend_probe_edges(id, edges, count, size, chamfer);
-    } catch (const Standard_Failure& failure) {
-        const char* message = failure.GetMessageString();
-        return probe_json(false, message != nullptr ? message : "Open CASCADE failed", 0.0);
-    } catch (...) {
-        return probe_json(false, "Open CASCADE failed", 0.0);
-    }
-}
-
-extern "C" char* lime_model_occt_hole_axis(
-    int id,
-    double x,
-    double y,
-    double z,
-    double dx,
-    double dy,
-    double dz,
-    double radius,
-    double depth,
-    double chord) {
-    try {
-        if (!(radius > 0.0) || !(depth > 0.0)) {
-            return error_json("A hole needs a positive radius and depth");
-        }
-        return hole_commit(id, x, y, z, dx, dy, dz, radius, depth, chord);
-    } catch (const Standard_Failure& failure) {
-        const char* message = failure.GetMessageString();
-        return error_json(message != nullptr ? message : "Open CASCADE failed");
-    } catch (...) {
-        return error_json("Open CASCADE failed");
-    }
-}
-
-/// Try a hole along `direction` on a copy. The open solid stays as it was.
-extern "C" char* lime_model_occt_hole_axis_probe(
-    int id,
-    double x,
-    double y,
-    double z,
-    double dx,
-    double dy,
-    double dz,
-    double radius,
-    double depth) {
-    try {
-        return hole_probe(id, x, y, z, dx, dy, dz, radius, depth);
-    } catch (const Standard_Failure& failure) {
-        const char* message = failure.GetMessageString();
-        return probe_json(false, message != nullptr ? message : "Open CASCADE failed", 0.0);
-    } catch (...) {
-        return probe_json(false, "Open CASCADE failed", 0.0);
-    }
-}
-
-extern "C" char* lime_model_occt_scale(int id, double factor, double chord) {
-    try {
-        TopoDS_Shape current;
-        double before = 0.0;
-        std::string error;
-        if (!copy_shape(id, current, before, error)) {
-            return error_json(error);
-        }
-        const TopoDS_Shape scaled = build_scale(current, factor, error);
-        if (scaled.IsNull()) {
-            return error_json(error);
-        }
-        // A uniform scale multiplies the volume by the cube of the factor, so nothing is integrated again.
-        const double volume = before * factor * factor * factor;
-        return commit_edit(id, current, scaled, volume, chord, "Open CASCADE did not scale this solid");
-    } catch (const Standard_Failure& failure) {
-        const char* message = failure.GetMessageString();
-        return error_json(message != nullptr ? message : "Open CASCADE failed");
-    } catch (...) {
-        return error_json("Open CASCADE failed");
-    }
-}
-
-extern "C" char* lime_model_occt_write_step(int id, const char* path) {
-    try {
-        TopoDS_Shape current;
-        double volume = 0.0;
-        std::string error;
-        if (!copy_shape(id, current, volume, error)) {
-            return error_json(error);
-        }
-        if (!write_step(current, path, error)) {
-            return error_json(error);
-        }
-        return alloc("{\"ok\":true}");
-    } catch (const Standard_Failure& failure) {
-        const char* message = failure.GetMessageString();
-        return error_json(message != nullptr ? message : "Open CASCADE failed");
-    } catch (...) {
-        return error_json("Open CASCADE failed");
-    }
 }
 
 extern "C" void lime_model_occt_string_free(char* text) { std::free(text); }

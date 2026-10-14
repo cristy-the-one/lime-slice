@@ -37,7 +37,7 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(lime_occt)");
     println!("cargo::rustc-check-cfg=cfg(lime_occt_step)");
     println!("cargo:rerun-if-env-changed=OCCT_ROOT");
-    println!("cargo:rerun-if-changed=cpp/session.cpp");
+    println!("cargo:rerun-if-changed=cpp/kernel.cpp");
     println!("cargo:rerun-if-changed=cpp/tree.cpp");
     println!("cargo:rerun-if-changed=cpp/kernel.h");
     let Ok(root) = env::var("OCCT_ROOT") else {
@@ -77,7 +77,7 @@ fn main() {
     build
         .cpp(true)
         .std("c++17")
-        .file("cpp/session.cpp")
+        .file("cpp/kernel.cpp")
         .file("cpp/tree.cpp")
         .include(&include);
     if env::var("CARGO_CFG_TARGET_ENV").ok().as_deref() == Some("msvc") {
@@ -86,7 +86,7 @@ fn main() {
     if step_reader(&root) {
         build.define("LIME_OCCT_STEP", None);
     }
-    build.compile("lime_occt_session");
+    build.compile("lime_occt_kernel");
 }
 
 fn include_dir(root: &Path) -> PathBuf {

@@ -111,6 +111,7 @@ fn history_tree() {
         return;
     }
     near(volume(&opened), 1000.0);
+    assert_eq!(opened["solid"], true);
     assert_eq!(opened["id"], 0);
     assert_eq!(opened["fingerprint"]["faces"], 6);
     assert_eq!(opened["fingerprint"]["edges"], 12);

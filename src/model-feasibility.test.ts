@@ -92,16 +92,16 @@ check("split is not gated by a kernel dry-run", probeAllowsApply("split", null))
 check("numbers just applied cannot be applied again", !probeAllowsApply("hole", { phase: "applied" }));
 eq("numbers just applied say nothing about fit", probeNote("boolean", { phase: "applied" }), null);
 
-const hole = { id: 1, kind: "hole", x: 5, y: 5, z: 10, dx: 0, dy: 0, dz: -1, radius: 2, depth: 12 };
-const key = probeKey(1, "m3", hole);
-check("the same solid, shape, and numbers share an answer", probeKey(1, "m3", { ...hole }) === key);
-check("another shape of the solid asks again", probeKey(1, "m4", hole) !== key);
-check("another solid asks again", probeKey(2, "m3", hole) !== key);
-check("another number asks again", probeKey(1, "m3", { ...hole, radius: 2.0000001 }) !== key);
+const hole = { kind: "hole", origin: [5, 5, 10], axis: [0, 0, -1], radius: 2, depth: 12 };
+const key = probeKey("part#a.1#2", hole);
+check("the same node and numbers share an answer", probeKey("part#a.1#2", { ...hole }) === key);
+check("another node of the tree asks again", probeKey("part#a.1#3", hole) !== key);
+check("another tree asks again", probeKey("part#a.2#2", hole) !== key);
+check("another number asks again", probeKey("part#a.1#2", { ...hole, radius: 2.0000001 }) !== key);
 
 const desktop = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
 const commands = [...desktop.matchAll(/#\[tauri::command(\(async\))?\]\s*(?:async\s+)?fn (model_\w+)/g)];
-check("the desktop shell has Model commands", commands.length >= 10);
+check("the desktop shell has the Model tree command", commands.some((match) => match[2] === "model_tree"));
 for (const match of commands) check(`${match[2]} runs off the UI thread`, match[1] === "(async)");
 
 if (failed) {

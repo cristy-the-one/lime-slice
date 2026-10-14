@@ -122,6 +122,8 @@ export interface PlateObject {
   settings: PlateObjectSettings;
   /** STEP bytes for Model mode. Absent when this object was never opened there. */
   brep?: ArrayBuffer;
+  /** Key of this object's Model history tree. Absent until Model opens it. */
+  modelTree?: string;
 }
 
 export interface PlateState {
@@ -145,6 +147,7 @@ export interface PlateSnapObject {
   reinforcement?: ReinforceRegion[];
   settings: PlateObjectSettings;
   brep?: ArrayBuffer;
+  modelTree?: string;
 }
 
 export interface PlateSnap {
@@ -223,15 +226,7 @@ function copyHeld(geo: HeldGeo): HeldGeo {
   };
 }
 
-/** Give `copy` the same mesh identity as `source`, so a sliced undo buffer stays one step. */
-export function shareMeshToken(source: ArrayBuffer, copy: ArrayBuffer) {
-  if (source === copy) return;
-  const token = tokenOf.get(source) ?? tokenOf.get(copy) ?? `m${(pinSeq += 1)}`;
-  tokenOf.set(source, token);
-  tokenOf.set(copy, token);
-}
-
-/** The identity of these mesh bytes. Copies made for undo share it, so it names one shape however often it is copied. */
+/** The identity of these mesh bytes. Copies pinned for undo share it, so it names one shape however often it is copied. */
 export function meshTokenOf(bytes: ArrayBuffer): string {
   let token = tokenOf.get(bytes);
   if (!token) {
@@ -479,6 +474,8 @@ export function addedCopy(plate: PlateState): PlateState | null {
     settings: { ...source.settings },
     brep: source.brep ? source.brep.slice(0) : undefined,
   };
+  // The copy's edits are its own, so Model opens a tree of its own for it.
+  delete copy.modelTree;
   hold(copy);
   return { objects: [...plate.objects, copy], selectedId: copy.id };
 }
@@ -637,7 +634,9 @@ export function snapPlate(plate: PlateState): PlateSnap {
       seamPaint: obj.seamPaint.map((disk) => structuredClone(disk)),
       reinforcement: dropEmptyReinforce(obj.reinforcement ?? []).map((reg) => structuredClone(reg)),
       settings: { ...obj.settings },
-      brep: obj.brep ? obj.brep.slice(0) : undefined,
+      // A STEP buffer is never written in place, so every step shares it.
+      brep: obj.brep,
+      modelTree: obj.modelTree,
     })),
   };
 }
@@ -664,7 +663,8 @@ export function revivePlate(snap: PlateSnap): PlateState | null {
       seamPaint: (row.seamPaint ?? []).map((disk) => structuredClone(disk)),
       reinforcement: (row.reinforcement ?? []).map((reg) => structuredClone(reg)),
       settings: { ...row.settings },
-      brep: row.brep ? row.brep.slice(0) : undefined,
+      brep: row.brep,
+      modelTree: row.modelTree,
     });
   }
   const selectedId = objects.some((obj) => obj.id === snap.selectedId) ? snap.selectedId : objects[0]?.id ?? null;

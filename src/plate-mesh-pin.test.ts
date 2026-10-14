@@ -5,7 +5,6 @@ import {
   recallPlateMeshes,
   resetHeldGeometry,
   revivePlate,
-  shareMeshToken,
   snapPlate,
   withBrepFor,
   withSelectedPose,
@@ -64,10 +63,6 @@ const again = pinPlateMeshes(plate);
 check("pinning the same mesh keeps the token", pins[0]?.token === again[0]?.token && pins.length === 1);
 
 const snap = snapPlate(plate);
-const copy = original.bytes.slice(0);
-shareMeshToken(original.bytes, copy);
-const shared = pinPlateMeshes(plateOf({ ...original, bytes: copy }));
-check("a sliced copy shares the live mesh token", shared[0]?.token === pins[0]?.token);
 
 const replaced = bytesOf([7, 7, 7]);
 const edited = withSelectedPose(plate, {
@@ -135,15 +130,13 @@ check("a mesh pin change is a different step", !sameSnap(historySnap("m1"), hist
 
 {
   const mesh = bytesOf([9, 9, 9]);
-  const copy = mesh.slice(0);
-  shareMeshToken(mesh, copy);
   const other = bytesOf([8]);
-  const plate = { selectedId: "p", objects: [{ ...object("p", []), bytes: mesh }, { ...object("q", []), bytes: copy }, { ...object("r", []), bytes: other }] };
+  const plate = { selectedId: "p", objects: [{ ...object("p", []), bytes: mesh }, { ...object("q", []), bytes: mesh }, { ...object("r", []), bytes: other }] };
   const step = bytesOf([7]);
   const written = withBrepFor(plate, meshTokenOf(mesh), step);
   check("a solid's STEP lands on each object with its mesh", written.objects[0]!.brep === step && written.objects[1]!.brep === step);
   check("an object with another mesh keeps its own", written.objects[2]!.brep === plate.objects[2]!.brep);
-  check("a mesh token survives a copy", meshTokenOf(copy) === meshTokenOf(mesh) && meshTokenOf(other) !== meshTokenOf(mesh));
+  check("another mesh has another token", meshTokenOf(other) !== meshTokenOf(mesh));
   check("nothing to write keeps the plate", withBrepFor(written, meshTokenOf(mesh), step) === written);
   check("undefined removes the STEP", !("brep" in withBrepFor(written, meshTokenOf(mesh), undefined).objects[0]!));
 }

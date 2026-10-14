@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
+import { mockModelTree } from "./model-tree-mock";
 
 type V = [number, number, number];
 
@@ -31,14 +32,13 @@ function boxSolid(min: V, size: V) {
     const pb = corners[b!]!;
     return { id, lengthMm: Math.hypot(pa[0] - pb[0], pa[1] - pb[1], pa[2] - pb[2]), points: [...pa, ...pb] };
   });
-  return { id: 1, volumeMm3: sx * sy * sz, positions, triangles, faces: quads.map((_, id) => ({ id, areaMm2: 0 })), edges };
+  return { volumeMm3: sx * sy * sz, positions, triangles, faces: quads.map((_, id) => ({ id, areaMm2: 0 })), edges };
 }
 
 async function openModel(page: Page, solid: ReturnType<typeof boxSolid>) {
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: solid.positions } }));
-  await page.route("**/api/model/probe", (route) => route.fulfill({ json: { ok: true } }));
-  await page.route("**/api/model", (route) => route.fulfill({ json: solid }));
+  await mockModelTree(page, { open: () => solid });
   await page.goto("/");
   await autoSliceOff(page);
   await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });

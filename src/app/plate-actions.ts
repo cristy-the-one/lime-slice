@@ -3,7 +3,7 @@ import { arrangedObjects, addedCopy, placeObject, plateUnionBounds, withoutObjec
 import { fx } from "./fx.ts";
 import { place } from "./files.ts";
 import { flushEdit, noteEdit } from "./history.ts";
-import { showModel } from "./model.ts";
+import { commitModel, followSelection } from "./model.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { state } from "./state.ts";
 import { currentRules } from "./rules.ts";
@@ -13,6 +13,7 @@ import type { Bounds } from "../mesh-place.ts";
 /** An exact copy of the selected object: same mesh, pose, paint, and overrides. */
 export function duplicatePlateObject() {
   if (!state.mesh || !state.sourcePos || !state.plate.selectedId) return;
+  commitModel();
   noteEdit();
   syncPlateFromState();
   const next = addedCopy(state.plate);
@@ -21,30 +22,34 @@ export function duplicatePlateObject() {
   applySelectedToState(state.plate);
   place();
   flushEdit();
+  followSelection();
 }
 
 export function removePlateObject(id: string) {
   if (state.plate.objects.length <= 1) return;
+  commitModel();
   noteEdit();
   syncPlateFromState();
   state.plate = withoutObject(state.plate, id);
   applySelectedToState(state.plate);
   place();
   flushEdit();
+  followSelection();
   if (state.plate.objects.length === 1) frameSelection();
 }
 
 export function selectPlateObject(id: string) {
   if (state.plate.selectedId === id) return;
   if (!state.plate.objects.some((obj) => obj.id === id)) return;
+  // The live state is about to become the other object's, so the open solid's shown step lands first.
+  commitModel();
   noteEdit();
   syncPlateFromState();
   state.plate = { ...state.plate, selectedId: id };
   applySelectedToState(state.plate);
   place();
   flushEdit();
-  // Model edits write to the selected object, so the open solid must follow the selection.
-  if (state.stage === "model") showModel();
+  followSelection();
 }
 
 /** Frame the named solid. Selection, when it changes, is the only undo step. */
@@ -69,6 +74,7 @@ const CLEARANCE_SLACK_MM = 0.01;
 
 export function arrangePlate() {
   if (state.plate.objects.length < 2) return;
+  commitModel();
   noteEdit();
   syncPlateFromState();
   const prior = state.plate.objects.map((obj) => ({ id: obj.id, x: obj.offset.x, y: obj.offset.y, centered: obj.centered }));
