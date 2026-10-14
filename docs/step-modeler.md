@@ -99,12 +99,34 @@ Every call holds the tree's lock for its whole run, so tree calls run one at a t
 - **A copy** of an edited object (Duplicate) gets a tree of its own, rooted in the STEP of the step it copies.
 - **A forgetful engine** (a restarted `serve`) answers `{error: "unknown"}`. The client opens the tree again with the root STEP and every saved op, then asks once more. A split piece's tree comes back by running its split again on a spare node of its parent tree, which is then dropped.
 - **A broken node** (`{error, broken}`) is marked with everything under it; the readout says the step cannot be rebuilt, and the client does not ask for it again.
+- **Release.** A tree stays while a plate object or a Prepare step can reach it: by its key, or by a step whose plate mesh one of them holds, plus the tree a piece was split from and the pieces a split made. Each time a Prepare step lands (which can push the oldest step out or clear the redo steps), the other trees are dropped here and closed in the engine. So a removed object's tree stays exactly as long as Prepare undo can bring the object back.
+
+### Saved with the project
+
+A project saves each plate object's tree as `modelTree`, next to its `brep` ("STEP save"):
+
+```
+modelTree: {
+  nodes: [{ id, parent, op, name?, fingerprint, piece? }],   // root first, parents before children
+  current, committed, nextId,
+  rootStep: { name, bytesBase64?, byteLength, hash }
+}
+```
+
+- `op` is the op as the engine stored it, so a fillet or chamfer keeps each edge as `{index, mid, lengthMm}`. Labels are not saved; they come from the ops, and the root's from the object's name.
+- `rootStep` is written once per tree. When the file already holds those bytes (the object's own mesh or `brep`, another object's, or an earlier root, as for a copy), it is written without `bytesBase64` and read from the record with the same hash and length.
+- A split piece's tree is saved with the STEP of its own root (written at save if Model has not written it), so it opens without the part it was cut from. A split names its piece by the piece's plate object id, and only while that object is on the plate.
+- Saved: the tree that holds the object's mesh, when it has a step, a name, or a piece that a saved split names. Not saved: engine keys, shapes, replies, broken marks, which child Redo follows, and the paint and meshes of steps the plate does not hold. Trees of objects that are no longer on the plate are not saved.
+
+On open, each tree gets a fresh key (`freshTreeKey`), so a file opened twice, or two files one after another, never meet in the engine. Nothing is sent until Model needs a step. The plate's step opens from the object's `brep` alone, as a STEP file does, and the engine numbers it as its root (node 0) while the client keeps its own id; edits build on it. A call on any other step first opens the whole tree: `open` with the root STEP, every saved op, and `current` set to that step, which the engine rebuilds from the root and checks against its fingerprint. A tree the file has without a `brep` (the engine could not write the plate's step) opens whole at once.
+
+After a reopen no Prepare step from before the save exists, so Delete branch keeps the root, the branch with the plate's step or the shown step, and a split whose piece is on the plate. A tree the file cannot read (a missing parent, an unknown op, a plate step not in it, a damaged or missing root STEP) is left out: the part opens from its mesh and `brep`, and one notice names it.
 
 ## History panel
 
 The open solid's tree is a panel at the bottom left of the Model canvas, under the open tool and above the size chip and the readout (`src/ui/model-history.ts`). `src/model-history.ts` is its layout as data: one row per node, oldest first, drawn as a git graph. The shown step's path runs down the main rail; a fork lists its side branches right under it, each in a column of its own. The shown step has a filled dot and a bold label, the steps Redo would walk are dimmed, a broken step has a warning icon with its message on hover or focus, and the root is the file name. While the view shows a step other than the one the plate holds, the plate's row has a "Plate" chip.
 
-- **Labels** come from the op with the panel's number format: "Cut box 10×10×10", "Hole ⌀5 depth 8", "Fillet 3 edges r 1", "Split at Z 42", "Scale 200 %". A renamed step (double-click the label, or F2) shows its name, and the op stays in the tip. Saving names in `.lime` comes with the tree's persistence.
+- **Labels** come from the op with the panel's number format: "Cut box 10×10×10", "Hole ⌀5 depth 8", "Fillet 3 edges r 1", "Split at Z 42", "Scale 200 %". A renamed step (double-click the label, or F2) shows its name, and the op stays in the tip. The name is saved with the project.
 - **Moving.** A click or Enter shows that step. Up, Down, Home, and End move and show the step after a 200 ms pause (`JUMP_WAIT_MS`), so a run of presses asks the engine for the last one only. Left and Right switch to the next branch at the nearest fork, at the same depth or that branch's last step. A newer jump wins over one still on its way: the late reply is kept in the client's recent solids and not shown. A step already on its way is not asked for again. While a jump is on its way, Apply, Undo, Redo, and STEP are off. A press still in its pause when Model closes does nothing.
 - **Rows do not move under the pointer or the keys.** While the pointer is over the panel or focus is in it, each fork keeps the branch it followed; when both leave, the shown step's path moves onto the main rail.
 - **Delete branch** (the row's menu, or Delete) drops the step and everything under it, here and with the engine's `drop`. It is refused, with the reason in the menu and the readout (in the sheet at phone width), for the root, a branch that holds the shown step or the plate's step, a branch with a step the plate held before (a Prepare undo can put its mesh back), and a branch whose split made a part of its own. There is no undo for it, so it asks for no confirmation. Model never closes a tree because the plate's mesh is not in it: a Prepare undo or redo can bring one of its meshes back.
@@ -131,7 +153,7 @@ A box or cylinder turns about its centre by Turn X, then Y, then Z, in degrees; 
 
 Model mode writes the open solid as AP214 IS, a manifold solid B-rep, through `STEPControl_Writer`. The STEP button downloads that file. The same bytes are kept on the plate object as optional `brep`, in the same shape as `mesh`: name, base64, length, and hash. An edit does not write them. The STEP of the node each plate object holds is written when it is needed: leaving Model (in the background), a project save, and the STEP button (which writes the shown node). A written STEP goes to every plate object and Prepare step whose mesh token (`meshTokenOf`) is that node's mesh, so a step captured before the write gets it too, and to the node, so the plate gets it back when it returns there. Prepare steps share each STEP buffer rather than copy it. A solid the engine can no longer write loses its `brep` at save rather than keep one from an older shape. Prepare history folds a Model visit that changed the plate into one step on leaving Model; the tree keeps the steps in between.
 
-`.lime` stays version 2. A one-object file with `brep` is version 2 so the field is not dropped. A file without it still opens, including one saved before this field existed. A damaged `brep` fails the open. An older app ignores the key, slices the mesh, and drops `brep` on the next save. Duplicate copies the bytes. The second piece of a split gets its own `brep` when its STEP is written.
+`.lime` stays version 2. A one-object file with `brep` or `modelTree` is version 2 so the field is not dropped. The tree's format is under "Saved with the project". A file without it still opens, including one saved before this field existed. A damaged `brep` fails the open. An older app ignores the key, slices the mesh, and drops `brep` on the next save. Duplicate copies the bytes. The second piece of a split gets its own `brep` when its STEP is written.
 
 Opening Model reloads `brep` when the object has one, so an edited solid is not stuck as a mesh. The STL is what the slicer reads. Opening Model still does not replace `sourcePos`.
 
