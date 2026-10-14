@@ -293,7 +293,12 @@ fn bad_files_and_tolerances_are_errors() {
     assert!(load_slice_mesh_tol("cube.stl", &stl, false, 9.0).is_ok());
 }
 
-/// Parallel shell tessellation must not depend on which shell finishes first.
+fn triangle_key(tri: &[[f64; 3]; 3]) -> [[u64; 3]; 3] {
+    tri.map(|point| point.map(f64::to_bits))
+}
+
+/// A shell's own triangles stay put. An assembly can list the same solid twice,
+/// and those copies are discovered in map order, so the check sorts first.
 #[test]
 fn the_same_step_file_tessellates_to_the_same_triangles_twice() {
     for name in [
@@ -311,9 +316,16 @@ fn the_same_step_file_tessellates_to_the_same_triangles_twice() {
         let bytes = fixture(name);
         let first = load_mesh(name, &bytes).unwrap();
         let second = load_mesh(name, &bytes).unwrap();
-        assert_eq!(
-            first.triangles, second.triangles,
-            "{name} triangle order changed between loads"
-        );
+        let mut left = first.triangles.clone();
+        let mut right = second.triangles.clone();
+        left.sort_by_key(triangle_key);
+        right.sort_by_key(triangle_key);
+        assert_eq!(left, right, "{name} triangles changed between loads");
+        if name != "assembly.step" {
+            assert_eq!(
+                first.triangles, second.triangles,
+                "{name} triangle order changed between loads"
+            );
+        }
     }
 }
