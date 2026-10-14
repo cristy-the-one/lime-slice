@@ -136,52 +136,59 @@ export function mountMarkup(root: HTMLElement) {
                   <button class="model-tool" id="modelStep" type="button" data-tip="Write this solid as AP214 STEP">STEP</button>
                   <button class="model-tool" id="modelUndo" type="button" disabled data-tip="Undo the last solid edit">Undo</button>
                   <button class="model-tool" id="modelRedo" type="button" disabled data-tip="Redo the last solid edit">Redo</button>
+                  <button class="model-tool" id="modelHistoryOpen" type="button" aria-controls="modelHistory" aria-expanded="false">History</button>
                 </div>
               </div>
               <span class="model-paused" id="modelPaused">Slicing paused while modeling</span>
             </div>
-            <div class="model-panel" id="modelPanel" hidden>
-              <div class="model-fields">
-                <label data-for="boolean" data-wide><span>Primitive</span>
-                  <select id="modelPrim" aria-label="Primitive">
-                    <option value="box">Box</option>
-                    <option value="cylinder">Cylinder</option>
-                    <option value="sphere">Sphere</option>
-                  </select>
-                </label>
-                <label data-for="boolean" data-prim="box" data-snap="1"><span class="scrub-label" data-scrub>Size X</span><input id="modelDx" type="number" step="0.1" value="10" aria-label="Box size x"></label>
-                <label data-for="boolean" data-prim="box" data-snap="1"><span class="scrub-label" data-scrub>Size Y</span><input id="modelDy" type="number" step="0.1" value="10" aria-label="Box size y"></label>
-                <label data-for="boolean" data-prim="box" data-snap="1"><span class="scrub-label" data-scrub>Size Z</span><input id="modelDz" type="number" step="0.1" value="10" aria-label="Box size z"></label>
-                <label data-for="boolean" data-prim="cylinder sphere" data-snap="1"><span class="scrub-label" data-scrub>Radius</span><input id="modelRadius" type="number" step="0.1" min="0" value="5" aria-label="Radius"></label>
-                <label data-for="boolean" data-prim="cylinder" data-snap="1"><span class="scrub-label" data-scrub>Height</span><input id="modelHeight" type="number" step="0.1" min="0" value="10" aria-label="Height"></label>
-                <label data-for="boolean hole" data-snap="1"><span class="scrub-label" data-scrub>X</span><input id="modelX" type="number" step="0.1" value="10" aria-label="Origin x"></label>
-                <label data-for="boolean hole" data-snap="1"><span class="scrub-label" data-scrub>Y</span><input id="modelY" type="number" step="0.1" value="0" aria-label="Origin y"></label>
-                <label data-for="boolean hole" data-snap="1"><span class="scrub-label" data-scrub>Z</span><input id="modelZ" type="number" step="0.1" value="0" aria-label="Origin z"></label>
-                <label data-for="boolean" data-prim="box cylinder" data-snap="15"><span class="scrub-label" data-scrub>Turn X</span><input id="modelRx" type="number" step="1" value="0" aria-label="Turn about x, degrees"></label>
-                <label data-for="boolean" data-prim="box cylinder" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelRy" type="number" step="1" value="0" aria-label="Turn about y, degrees"></label>
-                <label data-for="boolean" data-prim="box cylinder" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelRz" type="number" step="1" value="0" aria-label="Turn about z, degrees"></label>
-                <label data-for="split" data-snap="1"><span class="scrub-label" data-scrub>Plane Z</span><input id="modelPlaneZ" type="number" step="0.1" value="5" aria-label="Split plane z"></label>
-                <label data-for="fillet chamfer" data-snap="1"><span class="scrub-label" data-scrub>Size</span><input id="modelBlend" type="number" step="0.1" min="0" value="1" aria-label="Fillet or chamfer size"></label>
-                <label data-for="hole" data-snap="1"><span class="scrub-label" data-scrub>Radius</span><input id="modelHoleR" type="number" step="0.1" min="0" value="2" aria-label="Hole radius"></label>
-                <label data-for="hole" data-snap="1"><span class="scrub-label" data-scrub>Depth</span><input id="modelHoleD" type="number" step="0.1" min="0" value="12" aria-label="Hole depth"></label>
-                <label data-for="scale" data-snap="0.5"><span class="scrub-label" data-scrub>Factor</span><input id="modelFactor" type="number" step="0.1" min="0.1" max="20" value="2" aria-label="Uniform scale"></label>
-                <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>A X</span><input id="modelAx" type="number" step="0.1" value="0" aria-label="Point A x"></label>
-                <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>A Y</span><input id="modelAy" type="number" step="0.1" value="0" aria-label="Point A y"></label>
-                <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>A Z</span><input id="modelAz" type="number" step="0.1" value="0" aria-label="Point A z"></label>
-                <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>B X</span><input id="modelBx" type="number" step="0.1" value="0" aria-label="Point B x"></label>
-                <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>B Y</span><input id="modelBy" type="number" step="0.1" value="0" aria-label="Point B y"></label>
-                <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>B Z</span><input id="modelBz" type="number" step="0.1" value="0" aria-label="Point B z"></label>
+            <div class="model-side">
+              <div class="model-panel" id="modelPanel" hidden>
+                <div class="model-fields">
+                  <label data-for="boolean" data-wide><span>Primitive</span>
+                    <select id="modelPrim" aria-label="Primitive">
+                      <option value="box">Box</option>
+                      <option value="cylinder">Cylinder</option>
+                      <option value="sphere">Sphere</option>
+                    </select>
+                  </label>
+                  <label data-for="boolean" data-prim="box" data-snap="1"><span class="scrub-label" data-scrub>Size X</span><input id="modelDx" type="number" step="0.1" value="10" aria-label="Box size x"></label>
+                  <label data-for="boolean" data-prim="box" data-snap="1"><span class="scrub-label" data-scrub>Size Y</span><input id="modelDy" type="number" step="0.1" value="10" aria-label="Box size y"></label>
+                  <label data-for="boolean" data-prim="box" data-snap="1"><span class="scrub-label" data-scrub>Size Z</span><input id="modelDz" type="number" step="0.1" value="10" aria-label="Box size z"></label>
+                  <label data-for="boolean" data-prim="cylinder sphere" data-snap="1"><span class="scrub-label" data-scrub>Radius</span><input id="modelRadius" type="number" step="0.1" min="0" value="5" aria-label="Radius"></label>
+                  <label data-for="boolean" data-prim="cylinder" data-snap="1"><span class="scrub-label" data-scrub>Height</span><input id="modelHeight" type="number" step="0.1" min="0" value="10" aria-label="Height"></label>
+                  <label data-for="boolean hole" data-snap="1"><span class="scrub-label" data-scrub>X</span><input id="modelX" type="number" step="0.1" value="10" aria-label="Origin x"></label>
+                  <label data-for="boolean hole" data-snap="1"><span class="scrub-label" data-scrub>Y</span><input id="modelY" type="number" step="0.1" value="0" aria-label="Origin y"></label>
+                  <label data-for="boolean hole" data-snap="1"><span class="scrub-label" data-scrub>Z</span><input id="modelZ" type="number" step="0.1" value="0" aria-label="Origin z"></label>
+                  <label data-for="boolean" data-prim="box cylinder" data-snap="15"><span class="scrub-label" data-scrub>Turn X</span><input id="modelRx" type="number" step="1" value="0" aria-label="Turn about x, degrees"></label>
+                  <label data-for="boolean" data-prim="box cylinder" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelRy" type="number" step="1" value="0" aria-label="Turn about y, degrees"></label>
+                  <label data-for="boolean" data-prim="box cylinder" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelRz" type="number" step="1" value="0" aria-label="Turn about z, degrees"></label>
+                  <label data-for="split" data-snap="1"><span class="scrub-label" data-scrub>Plane Z</span><input id="modelPlaneZ" type="number" step="0.1" value="5" aria-label="Split plane z"></label>
+                  <label data-for="fillet chamfer" data-snap="1"><span class="scrub-label" data-scrub>Size</span><input id="modelBlend" type="number" step="0.1" min="0" value="1" aria-label="Fillet or chamfer size"></label>
+                  <label data-for="hole" data-snap="1"><span class="scrub-label" data-scrub>Radius</span><input id="modelHoleR" type="number" step="0.1" min="0" value="2" aria-label="Hole radius"></label>
+                  <label data-for="hole" data-snap="1"><span class="scrub-label" data-scrub>Depth</span><input id="modelHoleD" type="number" step="0.1" min="0" value="12" aria-label="Hole depth"></label>
+                  <label data-for="scale" data-snap="0.5"><span class="scrub-label" data-scrub>Factor</span><input id="modelFactor" type="number" step="0.1" min="0.1" max="20" value="2" aria-label="Uniform scale"></label>
+                  <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>A X</span><input id="modelAx" type="number" step="0.1" value="0" aria-label="Point A x"></label>
+                  <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>A Y</span><input id="modelAy" type="number" step="0.1" value="0" aria-label="Point A y"></label>
+                  <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>A Z</span><input id="modelAz" type="number" step="0.1" value="0" aria-label="Point A z"></label>
+                  <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>B X</span><input id="modelBx" type="number" step="0.1" value="0" aria-label="Point B x"></label>
+                  <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>B Y</span><input id="modelBy" type="number" step="0.1" value="0" aria-label="Point B y"></label>
+                  <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>B Z</span><input id="modelBz" type="number" step="0.1" value="0" aria-label="Point B z"></label>
+                </div>
+                <div class="modes" data-for="boolean" role="group" aria-label="Boolean">
+                  <button class="btn mode on" id="modelFuse" type="button" aria-pressed="true">Fuse</button>
+                  <button class="btn mode" id="modelCut" type="button" aria-pressed="false">Cut</button>
+                  <button class="btn mode" id="modelCommon" type="button" aria-pressed="false">Common</button>
+                </div>
+                <p class="model-note" id="modelNote" hidden></p>
+                <div class="model-actions">
+                  <button class="btn" id="modelCancel" type="button">Cancel</button>
+                  <button class="btn primary" id="modelApply" type="button">Apply</button>
+                </div>
               </div>
-              <div class="modes" data-for="boolean" role="group" aria-label="Boolean">
-                <button class="btn mode on" id="modelFuse" type="button" aria-pressed="true">Fuse</button>
-                <button class="btn mode" id="modelCut" type="button" aria-pressed="false">Cut</button>
-                <button class="btn mode" id="modelCommon" type="button" aria-pressed="false">Common</button>
-              </div>
-              <p class="model-note" id="modelNote" hidden></p>
-              <div class="model-actions">
-                <button class="btn" id="modelCancel" type="button">Cancel</button>
-                <button class="btn primary" id="modelApply" type="button">Apply</button>
-              </div>
+              <section class="model-history" id="modelHistory" aria-label="History" hidden>
+                <button class="model-history-toggle" id="modelHistoryToggle" type="button" aria-controls="modelHistoryTree" aria-expanded="true"><span>History</span> <span class="model-history-count" id="modelHistoryCount"></span></button>
+                <div class="model-history-tree" id="modelHistoryTree" role="tree" aria-label="Model history"></div>
+              </section>
             </div>
             <div id="modelReadout" class="model-readout">Open a STEP file to measure a solid.</div>
           </div>

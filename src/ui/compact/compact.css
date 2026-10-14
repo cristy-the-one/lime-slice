@@ -656,7 +656,9 @@ html.layout-compact .model-tools {
 html.layout-compact .model-tool-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 html.layout-compact .model-tool { position: relative; width: 36px; height: 36px; padding: 0; justify-content: center; }
 html.layout-compact .model-tools .modes .btn { min-height: 36px; }
+html.layout-compact .model-side { display: contents; }
 html.layout-compact .model-panel {
+  position: absolute;
   top: auto;
   bottom: 8px;
   left: 8px;
@@ -673,3 +675,33 @@ html.layout-compact .model-actions { margin-right: 116px; }
 html.layout-compact .model-actions .btn { min-height: 36px; min-width: 72px; }
 html.layout-compact .model-fit { top: 128px; bottom: auto; left: 8px; }
 html.layout-compact #modelBar[data-tool] .model-readout { bottom: auto; top: 164px; }
+/* History is a sheet over the canvas, opened from the toolbar. */
+html.layout-compact #modelHistoryOpen { display: inline-flex; }
+html.layout-compact #modelHistoryOpen[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
+  color: var(--accent-text);
+}
+html.layout-compact .model-history {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+  width: auto;
+  max-height: 55%;
+  margin: 0;
+  padding: 4px 6px 8px;
+  background: var(--panel);
+  border-radius: 12px 12px 0 0;
+  border-bottom: 0;
+}
+html.layout-compact .model-history[data-sheet="closed"] { display: none; }
+/* The sheet covers the bottom of the canvas, where Slice floats. */
+html.layout-compact:has(#modelBody:not([hidden]) #modelHistory[data-sheet="open"]:not([hidden])) #slice { display: none !important; }
+html.layout-compact .model-history-toggle { height: 40px; font-size: var(--fs-2); }
+html.layout-compact .model-history .model-history-toggle .ico { transform: none; }
+html.layout-compact .mh-note:not([hidden]) { display: block; margin: 4px 6px 0; color: var(--warn); font-size: var(--fs-2); }
+html.layout-compact .mh-row { height: 40px; font-size: var(--fs-3); }
+html.layout-compact .mh-more { width: 36px; height: 36px; opacity: 1; }
+html.layout-compact .mh-rename { height: 32px; }
+html.layout-compact .mh-menu [role="menuitem"] { min-height: 40px; }

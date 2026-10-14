@@ -70,6 +70,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "model-chamfer", label: "Chamfer", group: "Model", keys: ["Shift+L"], when: "model", target: "#modelToolChamfer", keywords: "bevel edge" },
   { id: "model-hole", label: "Hole", group: "Model", keys: ["H"], when: "model", target: "#modelToolHole", keywords: "drill" },
   { id: "model-scale", label: "Scale solid", group: "Model", keys: ["X"], when: "model", target: "#modelToolScale", keywords: "factor" },
+  { id: "model-history", label: "Model history", group: "Model", keys: ["Shift+H"], when: "model", target: "#modelHistoryOpen", keywords: "steps tree branch undo jump rename" },
   { id: "model-apply", label: "Apply model edit", group: "Model", keys: ["Enter"], when: "model", target: "#modelApply", keywords: "confirm" },
   { id: "model-escape", label: "Cancel model tool or clear selection", group: "Model", keys: ["Esc"], when: "model", typing: true, keywords: "clear deselect" },
   { id: "layer-up", label: "Layer up", group: "Layers", keys: ["↑", "]"], when: "preview", repeat: true, show: "help" },

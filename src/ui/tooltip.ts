@@ -47,9 +47,11 @@ export function mountTooltips(root: ParentNode = document) {
     }
     tip.dataset.open = "true";
     const inRail = el.closest("#toolRail") != null;
+    // A History row's tip sits beside it, off the rows below.
+    const inHistory = el.closest("#modelHistoryTree") != null;
     void computePosition(el, tip, {
       strategy: "fixed",
-      placement: inRail ? "left" : "bottom",
+      placement: inRail ? "left" : inHistory ? "right" : "bottom",
       middleware: [
         offset(8),
         flip({ padding: 8, fallbackPlacements: inRail ? ["top", "right"] : undefined }),

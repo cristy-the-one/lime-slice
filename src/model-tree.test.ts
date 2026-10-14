@@ -96,6 +96,9 @@ eq("a node that loses its only child has no Redo", bare && redoTarget(bare), nul
 eq("the root cannot be dropped", dropped(branched, 0), null);
 eq("the branch the view shows cannot be dropped", dropped(jumped(branched, 2), 1), null);
 eq("the branch the plate holds cannot be dropped", dropped({ ...jumped(branched, 3), committed: 2 }, 1), null);
+const held = withNode(jumped(branched, 3), 2, { mesh: { name: "plate.stl", bytes: new ArrayBuffer(1), sourcePos: new Float32Array(0), token: "m2" } });
+eq("nor one with a step the plate held, which a Prepare undo can bring back", dropped(held, 1), null);
+eq("nor one with a split whose piece roots its own tree", dropped(withNode(jumped(branched, 3), 2, { piece: "part-piece#1" }), 1), null);
 
 // The visit step: what the plate does when it takes the shown node.
 const keep: PrepareKeep = { supportEdits: [], supportPaint: [{ x: 1 } as never], seamPaint: [], reinforcement: [], partScale: 1.5 };
@@ -115,7 +118,7 @@ eq("an unknown token finds none", nodeWithMesh(meshed, "m8"), null);
 
 eq("labels", [cut, hole, scale, { kind: "split", origin: [0, 0, 4.5], normal: [0, 0, 1] }, { kind: "fillet", edges: [1, 2, 3], size: 1 }].map((op) => opLabel(op as ModelOp)), [
   "Cut box 10×10×10",
-  "Hole r 2 depth 5",
+  "Hole ⌀4 depth 5",
   "Scale 200 %",
   "Split at Z 4.5",
   "Fillet 3 edges r 1",
