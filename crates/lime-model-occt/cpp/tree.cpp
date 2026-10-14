@@ -34,7 +34,7 @@ struct LimeShape {
     std::vector<EdgeInfo> edges;
 };
 
-/// A Mesh's arrays as bytes in this machine's order, and its JSON. Valid until the Mesh is freed.
+/// A Mesh's arrays as bytes in this machine's order, and the shape's description as JSON.
 struct LimeMeshView {
     const unsigned char* positions;
     size_t positions_bytes;
@@ -320,11 +320,14 @@ int lime_tree_edge(LimeShape* shape, int index, double* mid, double* length) {
     return 1;
 }
 
-/// The tessellation for the Model reply, read through `view` until lime_tree_mesh_free. Null, and
-/// `error` set, when Open CASCADE fails.
-Mesh* lime_tree_mesh(const LimeShape* shape, double chord, LimeMeshView* view, char** error) {
+/// The tessellation for the Model reply, read through `view` until lime_tree_mesh_free, and the
+/// shape's description, which lives as long as the shape. Null, and `error` set, when Open CASCADE fails.
+Mesh* lime_tree_mesh(LimeShape* shape, double chord, LimeMeshView* view, char** error) {
     try {
         auto mesh = std::make_unique<Mesh>(tessellate(shape->held, chord));
+        if (shape->held.about.empty()) {
+            shape->held.about = describe(shape->held);
+        }
         view->positions = reinterpret_cast<const unsigned char*>(mesh->positions.data());
         view->positions_bytes = mesh->positions.size() * sizeof(float);
         view->triangles = reinterpret_cast<const unsigned char*>(mesh->triangles.data());
@@ -333,7 +336,7 @@ Mesh* lime_tree_mesh(const LimeShape* shape, double chord, LimeMeshView* view, c
         view->edge_points_bytes = mesh->edge_points.size() * sizeof(float);
         view->edge_offsets = reinterpret_cast<const unsigned char*>(mesh->edge_offsets.data());
         view->edge_offsets_bytes = mesh->edge_offsets.size() * sizeof(uint32_t);
-        view->meta = mesh->meta.c_str();
+        view->meta = shape->held.about.c_str();
         return mesh.release();
     } catch (const Standard_Failure& failure) {
         set_failure(error, failure);

@@ -13,16 +13,20 @@
 
 namespace lime_occt {
 
-/// One shape with what was computed from it once. A shape never changes, so its volume and its
-/// face and edge numbering stay valid for as long as a tree node holds it.
+/// One shape with what was computed from it once. A shape never changes, so its volume, its face
+/// and edge numbering, and its description stay valid for as long as a tree node holds it.
 struct Held {
     TopoDS_Shape shape;
     TopTools_IndexedMapOfShape faces;
     TopTools_IndexedMapOfShape edges;
     double volume = 0;
+    /// The chord the faces were last meshed at. A reply at that chord meshes nothing again.
+    double meshed = 0;
+    /// `describe`'s JSON, written by the first reply.
+    std::string about;
 };
 
-/// One tessellation as the reply sends it. The arrays go as binary; `meta` is the rest, a JSON object.
+/// One tessellation as the reply sends it, as binary arrays.
 struct Mesh {
     /// Nine per triangle: the corners of a triangle soup, wound outward.
     std::vector<float> positions;
@@ -32,8 +36,6 @@ struct Mesh {
     std::vector<float> edge_points;
     /// Edge `i` is points `edge_offsets[i]` up to `edge_offsets[i + 1]`.
     std::vector<uint32_t> edge_offsets;
-    /// `volumeMm3`, `solid`, `faces` (area and outward normal), and `edgeLengths`.
-    std::string meta;
 };
 
 char* alloc(const std::string& text);
@@ -45,7 +47,11 @@ bool has_solid(const TopoDS_Shape& shape);
 /// False, with the refusal every edit answers, for a shape of surfaces with no closed solid.
 bool editable(const TopoDS_Shape& shape, std::string& error);
 double volume_of(const TopoDS_Shape& shape);
-Mesh tessellate(const Held& held, double chord);
+/// Mesh the faces unless they are meshed at this chord already, and read the mesh out.
+Mesh tessellate(Held& held, double chord);
+/// What a reply says of the shape whatever the chord, as a JSON object: `volumeMm3`, `solid`,
+/// `faces` (area and outward normal), and `edgeLengths`.
+std::string describe(const Held& held);
 bool measure_distance(
     const Held& held,
     const char* a_kind,

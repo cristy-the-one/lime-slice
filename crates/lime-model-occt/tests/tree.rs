@@ -222,6 +222,26 @@ fn history_tree() {
     assert_eq!(again, back, "a cached jump answers the same bytes");
     assert!(cached_ms < 5.0, "a cached jump took {cached_ms} ms");
 
+    lime_model_occt::set_tree_limits(24, 0);
+    ok(json!({ "call": "goto", "key": "main", "node": 1 }));
+    let (rebuilt, spent) = cost(|| ok(json!({ "call": "goto", "key": "main", "node": 2 })));
+    assert_eq!(
+        spent,
+        work(0, 0, 1),
+        "the reply was built again from the held solid"
+    );
+    for field in [
+        "positions",
+        "triangles",
+        "edgePoints",
+        "edgeOffsets",
+        "faces",
+        "edgeLengths",
+    ] {
+        assert_eq!(rebuilt[field], fillet[field], "{field} of a rebuilt reply");
+    }
+    lime_model_occt::set_tree_limits(24, 8);
+
     let distance = ok(json!({ "call": "distance", "key": "main", "node": 0,
         "aKind": "face", "aIndex": 0, "bKind": "face", "bIndex": 1 }));
     near(distance["distanceMm"].as_f64().expect("distance"), 10.0);

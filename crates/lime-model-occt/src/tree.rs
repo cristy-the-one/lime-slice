@@ -767,7 +767,7 @@ impl Store {
         let from = doc.shape(parent);
         from.editable().map_err(Failure::Message)?;
         let op = resolve(from, &op).map_err(Failure::Message)?;
-        let built = match probed {
+        let mut built = match probed {
             Some(probed) if probed.parent == parent && probed.op == op => probed.built,
             _ => build(from, op, false).map_err(|(message, _)| Failure::Message(message))?,
         };
@@ -783,7 +783,7 @@ impl Store {
         // The other piece is sent only to start its own tree. A split replayed without `otherKey`
         // drops it unseen.
         let rendered = self.reply(&key, id, chord).and_then(|text| {
-            let other = match (&built.other, &other_key) {
+            let other = match (built.other.as_mut(), &other_key) {
                 (Some(other), Some(_)) => Some(other.reply(ROOT, chord)?),
                 _ => None,
             };
@@ -1146,7 +1146,8 @@ struct RawMesh {
     _opaque: [u8; 0],
 }
 
-/// `LimeMeshView` in tree.cpp: a mesh's arrays as bytes, and its JSON, until the mesh is freed.
+/// `LimeMeshView` in tree.cpp: a mesh's arrays as bytes, until the mesh is freed, and the shape's
+/// description as JSON, for as long as the shape lives.
 #[repr(C)]
 struct MeshView {
     positions: *const u8,
@@ -1206,7 +1207,7 @@ extern "C" {
     fn lime_tree_edge(shape: *mut RawShape, index: c_int, mid: *mut f64, length: *mut f64)
         -> c_int;
     fn lime_tree_mesh(
-        shape: *const RawShape,
+        shape: *mut RawShape,
         chord: f64,
         view: *mut MeshView,
         error: *mut *mut c_char,
@@ -1352,7 +1353,7 @@ impl Shape {
 
     /// The solid reply for node `id`: the tessellation's arrays as base64 of their little-endian
     /// bytes, its faces and edges as JSON, and the fingerprint. `docs/step-modeler.md` lists the fields.
-    fn reply(&self, id: NodeId, chord: f64) -> Result<String, Failure> {
+    fn reply(&mut self, id: NodeId, chord: f64) -> Result<String, Failure> {
         let mut view = MeshView {
             positions: std::ptr::null(),
             positions_bytes: 0,
@@ -1365,7 +1366,7 @@ impl Shape {
             meta: std::ptr::null(),
         };
         let mut error: *mut c_char = std::ptr::null_mut();
-        let raw = unsafe { lime_tree_mesh(self.raw(), chord, &mut view, &mut error) };
+        let raw = unsafe { lime_tree_mesh(self.0.as_ptr(), chord, &mut view, &mut error) };
         let message = take_text(error);
         let mesh = NonNull::new(raw).map(Mesh).ok_or_else(|| {
             Failure::Message(message.unwrap_or_else(|| "Open CASCADE failed".into()))

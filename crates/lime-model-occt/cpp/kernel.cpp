@@ -346,12 +346,16 @@ void push_point(std::vector<float>& out, const gp_Pnt& point) {
 
 void append_face_normal(std::string& out, const TopoDS_Face& face);
 
-Mesh tessellate(const Held& held, double chord) {
+Mesh tessellate(Held& held, double chord) {
     g_stats.tessellations += 1;
     chord = chord_of(chord);
-    const TopoDS_Shape& shape = held.shape;
-    BRepMesh_IncrementalMesh mesher(shape, chord, Standard_False, 0.5, Standard_False);
-    mesher.Perform();
+    // Open CASCADE keeps a finer mesh it already has, so a face shared with a solid meshed finer
+    // since is what meshing again would leave too.
+    if (held.meshed != chord) {
+        BRepMesh_IncrementalMesh mesher(held.shape, chord, Standard_False, 0.5, Standard_False);
+        mesher.Perform();
+        held.meshed = chord;
+    }
 
     struct Piece {
         Handle(Poly_Triangulation) tri;
@@ -395,34 +399,10 @@ Mesh tessellate(const Held& held, double chord) {
         }
     }
 
-    std::string& meta = out.meta;
-    meta = "{\"volumeMm3\":";
-    append_num(meta, held.volume);
-    meta += has_solid(shape) ? ",\"solid\":true" : ",\"solid\":false";
-    meta += ",\"faces\":[";
-    for (int face_index = 1; face_index <= held.faces.Extent(); ++face_index) {
-        if (face_index > 1) {
-            meta += ',';
-        }
-        GProp_GProps props;
-        BRepGProp::SurfaceProperties(held.faces(face_index), props);
-        meta += "{\"areaMm2\":";
-        append_num(meta, props.Mass());
-        append_face_normal(meta, TopoDS::Face(held.faces(face_index)));
-        meta += '}';
-    }
-    meta += "],\"edgeLengths\":[";
     out.edge_offsets.reserve(static_cast<size_t>(held.edges.Extent()) + 1);
     out.edge_offsets.push_back(0);
     for (int edge_index = 1; edge_index <= held.edges.Extent(); ++edge_index) {
-        if (edge_index > 1) {
-            meta += ',';
-        }
-        const TopoDS_Edge edge = TopoDS::Edge(held.edges(edge_index));
-        GProp_GProps props;
-        BRepGProp::LinearProperties(edge, props);
-        append_num(meta, props.Mass());
-        BRepAdaptor_Curve curve(edge);
+        BRepAdaptor_Curve curve(TopoDS::Edge(held.edges(edge_index)));
         GCPnts_QuasiUniformDeflection sampler(curve, chord);
         if (sampler.IsDone() && sampler.NbPoints() >= 2) {
             for (int point_index = 1; point_index <= sampler.NbPoints(); ++point_index) {
@@ -434,7 +414,35 @@ Mesh tessellate(const Held& held, double chord) {
         }
         out.edge_offsets.push_back(static_cast<uint32_t>(out.edge_points.size() / 3));
     }
-    meta += "]}";
+    return out;
+}
+
+std::string describe(const Held& held) {
+    std::string out = "{\"volumeMm3\":";
+    append_num(out, held.volume);
+    out += has_solid(held.shape) ? ",\"solid\":true" : ",\"solid\":false";
+    out += ",\"faces\":[";
+    for (int face_index = 1; face_index <= held.faces.Extent(); ++face_index) {
+        if (face_index > 1) {
+            out += ',';
+        }
+        GProp_GProps props;
+        BRepGProp::SurfaceProperties(held.faces(face_index), props);
+        out += "{\"areaMm2\":";
+        append_num(out, props.Mass());
+        append_face_normal(out, TopoDS::Face(held.faces(face_index)));
+        out += '}';
+    }
+    out += "],\"edgeLengths\":[";
+    for (int edge_index = 1; edge_index <= held.edges.Extent(); ++edge_index) {
+        if (edge_index > 1) {
+            out += ',';
+        }
+        GProp_GProps props;
+        BRepGProp::LinearProperties(held.edges(edge_index), props);
+        append_num(out, props.Mass());
+    }
+    out += "]}";
     return out;
 }
 
