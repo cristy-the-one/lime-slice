@@ -125,10 +125,12 @@ const trees = new Map<string, ModelTree>([
   ["b#3", withNode({ ...two, key: "b#3" }, 1, { mesh: mesh("m-b") })],
   ["c#4", { ...two, key: "c#4" }],
 ]);
-eq("a key keeps its tree and the piece its split made", [...reachableTrees(trees, ["a#1"], new Set())].sort(), ["a#1", "a-piece#2"]);
-eq("a piece keeps the tree it was split from", [...reachableTrees(trees, ["a-piece#2"], new Set())].sort(), ["a#1", "a-piece#2"]);
-eq("a mesh on the plate or in a Prepare step keeps the tree with that step", [...reachableTrees(trees, [], new Set(["m-b"]))], ["b#3"]);
-eq("nothing names the rest", [...reachableTrees(trees, ["gone#9"], new Set(["m-x"]))], []);
+eq("a key keeps its tree and the piece its split made", [...reachableTrees(trees, [{ id: "a", key: "a#1" }])].sort(), ["a#1", "a-piece#2"]);
+eq("a piece keeps the tree it was split from", [...reachableTrees(trees, [{ id: "p", key: "a-piece#2" }])].sort(), ["a#1", "a-piece#2"]);
+eq("an object without a key keeps a tree of its own with its mesh", [...reachableTrees(trees, [{ id: "b", token: "m-b" }])], ["b#3"]);
+eq("and, as a copy, any tree with its mesh", [...reachableTrees(trees, [{ id: "copy", token: "m-b" }])], ["b#3"]);
+eq("an object with a key keeps another tree only if that tree is its own", [...reachableTrees(trees, [{ id: "c", key: "c#4", token: "m-b" }])], ["c#4"]);
+eq("nothing names the rest", [...reachableTrees(trees, [{ id: "gone", key: "gone#9", token: "m-x" }])], []);
 
 eq("labels", [cut, hole, scale, { kind: "split", origin: [0, 0, 4.5], normal: [0, 0, 1] }, { kind: "fillet", edges: [1, 2, 3], size: 1 }].map((op) => opLabel(op as ModelOp)), [
   "Cut box 10×10×10",

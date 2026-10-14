@@ -129,11 +129,15 @@ check("an unwritable solid loses its STEP", !("brep" in stale.undo[0]!.plate!.ob
 
 const keyed: EditSnap = { ...pinned("m3"), plate: { selectedId: "a", objects: [{ ...plateRow("a"), modelTree: "a#1" }, plateRow("b")] } };
 const refs = historyRefs({ undo: [pinned("m1")], redo: [pinned("m2")], pending: keyed });
-check(
-  "the steps name the trees and meshes an undo or redo can bring back, the open gesture too",
-  JSON.stringify([[...refs.keys], [...refs.tokens].sort()]) === JSON.stringify([["a#1"], ["m1", "m2", "m3", "other"]]),
-  JSON.stringify([[...refs.keys], [...refs.tokens]]),
-);
+const expected = [
+  { id: "a", token: "m1" },
+  { id: "b", token: "other" },
+  { id: "a", token: "m2" },
+  { id: "b", token: "other" },
+  { id: "a", key: "a#1", token: "m3" },
+  { id: "b", token: "other" },
+];
+check("each object of every step, the open gesture too, by id, tree key, and mesh", JSON.stringify(refs) === JSON.stringify(expected), JSON.stringify(refs));
 
 const solid = pinned("m9");
 const cloned = cloneSnap(solid);

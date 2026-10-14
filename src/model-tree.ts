@@ -212,15 +212,28 @@ export function nodeWithMesh(tree: ModelTree, token: string): NodeId | null {
   return null;
 }
 
+/** A plate object as the plate or a Prepare step holds it: its id, its tree's key if it has one, and its mesh. */
+export interface TreeRef {
+  id: string;
+  key?: string;
+  token?: string;
+}
+
 /**
- * The trees still in use: those `keys` name, those with a step whose plate mesh is one of `tokens`
- * (how Model finds a tree again after a Prepare undo, and how a copy finds the step it copies), the
- * trees their pieces were split from, and the trees of the pieces their splits made.
+ * The trees still in use, found as Model finds them: the tree an object names; a tree of that object
+ * with a step whose plate mesh it holds (after a Prepare undo to before it had a key); for an object
+ * that names no tree, any tree with its mesh (a copy finding the step it copies); and from each, the
+ * tree its piece was split from and the trees of the pieces its splits made.
  */
-export function reachableTrees(trees: ReadonlyMap<string, ModelTree>, keys: Iterable<string>, tokens: ReadonlySet<string>): Set<string> {
-  const queue = [...keys];
-  for (const tree of trees.values()) {
-    if ([...tree.nodes.values()].some((node) => node.mesh && tokens.has(node.mesh.token))) queue.push(tree.key);
+export function reachableTrees(trees: ReadonlyMap<string, ModelTree>, refs: Iterable<TreeRef>): Set<string> {
+  const queue: string[] = [];
+  const holds = (tree: ModelTree, token: string) => [...tree.nodes.values()].some((node) => node.mesh?.token === token);
+  for (const ref of refs) {
+    if (ref.key) queue.push(ref.key);
+    if (!ref.token) continue;
+    for (const tree of trees.values()) {
+      if ((!ref.key || tree.key.startsWith(`${ref.id}#`)) && holds(tree, ref.token)) queue.push(tree.key);
+    }
   }
   const keep = new Set<string>();
   for (let key = queue.pop(); key !== undefined; key = queue.pop()) {
