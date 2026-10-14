@@ -599,10 +599,10 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .model-count[hidden] { display: none !important; }
 .model-panel {
   position: absolute;
-  top: 48px;
+  top: 54px;
   left: 10px;
   width: min(340px, calc(100% - 20px));
-  max-height: calc(100% - 96px);
+  max-height: calc(100% - 140px);
   overflow-y: auto;
   padding: var(--space-2) var(--space-3);
   background: color-mix(in srgb, var(--panel) 94%, transparent);
@@ -659,11 +659,13 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   pointer-events: none;
 }
 .model-drag-tip[hidden] { display: none; }
+.stage:has(#modelBody:not([hidden])) .viewbar { justify-content: flex-end; }
 .model-fit {
   position: absolute;
-  top: 58px;
+  top: auto;
+  bottom: 42px;
   left: 10px;
-  z-index: 2;
+  z-index: 1;
   max-width: min(280px, calc(100% - 20px));
   margin: 0;
   padding: var(--space-1) var(--space-2);
