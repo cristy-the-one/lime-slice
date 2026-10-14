@@ -97,6 +97,8 @@ let parked: string | null = null;
 const solids = new Map<string, ParsedSolid>();
 /** Mesh tokens whose plate objects already carry that shape's STEP, or whose mesh is the STEP file itself. */
 const stepKnown = new Set<string>();
+/** STEP exports on their way, by mesh token, so a save during the write after leaving Model waits for it. */
+const writing = new Map<string, Promise<ArrayBuffer | string>>();
 /** Kernel answers by `probeKey`. */
 const answers = new Map<string, ProbeView>();
 /** Restores in flight, by tree key. */
@@ -332,9 +334,7 @@ async function writePieceRoots() {
   for (const obj of state.plate.objects) {
     const tree = obj.modelTree ? modelTrees.get(obj.modelTree) : undefined;
     const root = tree?.nodes.get(ROOT)?.mesh;
-    if (!tree || tree.root.kind !== "piece" || !root || root.step) continue;
-    const step = await exportStep(tree.key, ROOT);
-    if (typeof step !== "string") putStep(root.token, step);
+    if (tree && tree.root.kind === "piece" && root && !root.step) await writeStep(root.token, tree.key, ROOT);
   }
 }
 
@@ -429,6 +429,7 @@ export function forgetModelTrees() {
   solids.clear();
   answers.clear();
   stepKnown.clear();
+  writing.clear();
   open = null;
   shownFor = null;
   ticket += 1;
@@ -906,11 +907,23 @@ async function writeSteps(): Promise<string[]> {
     const node = tree ? nodeWithMesh(tree, token) : null;
     if (!tree || node == null || stepKnown.has(token) || asked.has(token)) continue;
     asked.add(token);
-    const step = await exportStep(tree.key, node);
-    if (typeof step === "string") failedTokens.push(token);
-    else putStep(token, step);
+    if (typeof (await writeStep(token, tree.key, node)) === "string") failedTokens.push(token);
   }
   return failedTokens;
+}
+
+/** The STEP of the node whose plate mesh is `token`, given wherever that mesh is. One export per token at a time. */
+function writeStep(token: string, key: string, node: NodeId): Promise<ArrayBuffer | string> {
+  let pending = writing.get(token);
+  if (!pending) {
+    pending = exportStep(key, node).then((step) => {
+      writing.delete(token);
+      if (typeof step !== "string") putStep(token, step);
+      return step;
+    });
+    writing.set(token, pending);
+  }
+  return pending;
 }
 
 async function exportStep(key: string, node: NodeId): Promise<ArrayBuffer | string> {

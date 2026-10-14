@@ -31,6 +31,8 @@ interface Handlers {
   /** An answer of its own for a jump, such as a step that no longer rebuilds. Null answers as usual. */
   goto?(request: Body): Body | null;
   distanceMm?: number;
+  /** How long an export takes, so a test can act while one is still on its way. */
+  exportMs?: number;
 }
 
 interface MockNode {
@@ -101,6 +103,7 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
         exports += 1;
         const bytes = Buffer.from(`EDITED-STEP-${exports}`);
         exported.set(bytes.toString(), base.solid);
+        if (handlers.exportMs) await new Promise((resolve) => setTimeout(resolve, handlers.exportMs));
         return { bytesBase64: bytes.toString("base64"), byteLength: bytes.length };
       }
       case "apply":
