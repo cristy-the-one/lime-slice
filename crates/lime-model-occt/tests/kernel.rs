@@ -464,10 +464,7 @@ fn booleans_and_split() {
         "The plane did not split this solid",
     );
     let apart = cube("common", [100.0, 0.0, 0.0], [10.0; 3]);
-    refused(
-        &apply("bool", 1, apart.clone()),
-        "The solids do not overlap",
-    );
+    refused(&apply("bool", 1, apart.clone()), "The solids do not overlap");
     assert_eq!(
         probe("bool", apart),
         json!({ "ok": false, "error": "The solids do not overlap" })
@@ -476,18 +473,10 @@ fn booleans_and_split() {
     let beside = cube("fuse", [10.0, 0.0, 0.0], [10.0; 3]);
     let (probed, probing) = cost(|| probe("bool", beside.clone()));
     assert_eq!(probed, json!({ "ok": true }));
-    assert_eq!(
-        probing,
-        work(1, 1, 0),
-        "a probe builds once and integrates its result once"
-    );
+    assert_eq!(probing, work(1, 1, 0), "a probe builds once and integrates its result once");
     let (fused, applying) = cost(|| apply("bool", 1, beside.clone()));
     near(volume(&fused), 2000.0);
-    assert_eq!(
-        applying,
-        work(0, 0, 1),
-        "Apply after an equal probe commits the probed shape"
-    );
+    assert_eq!(applying, work(0, 0, 1), "Apply after an equal probe commits the probed shape");
 
     probe("bool", beside.clone());
     probe("bool", cube("fuse", [5.0, 0.0, 0.0], [10.0; 3]));
@@ -495,42 +484,19 @@ fn booleans_and_split() {
     near(volume(&again), 2000.0);
     assert_eq!(superseded, work(1, 1, 1), "only the newest probe is kept");
 
-    near(
-        volume(&apply(
-            "bool",
-            3,
-            cube("cut", [0.0, 0.0, 5.0], [10.0, 10.0, 5.0]),
-        )),
-        500.0,
-    );
-    near(
-        volume(&apply(
-            "bool",
-            4,
-            cube("common", [0.0; 3], [10.0, 10.0, 5.0]),
-        )),
-        500.0,
-    );
+    near(volume(&apply("bool", 3, cube("cut", [0.0, 0.0, 5.0], [10.0, 10.0, 5.0]))), 500.0);
+    near(volume(&apply("bool", 4, cube("common", [0.0; 3], [10.0, 10.0, 5.0]))), 500.0);
     let mut turned = cube("common", [0.0; 3], [10.0; 3]);
     turned["turn"] = json!([0.0, 0.0, 45.0]);
-    near(
-        volume(&apply("bool", 5, turned)),
-        1000.0 * (2.0 * SQRT_2 - 2.0),
-    );
+    near(volume(&apply("bool", 5, turned)), 1000.0 * (2.0 * SQRT_2 - 2.0));
 
     let mut cylinder = boolean("fuse", "cylinder", [0.0; 3]);
     cylinder["radius"] = json!(5.0);
     cylinder["height"] = json!(10.0);
-    near(
-        volume(&apply("bool", 6, cylinder)),
-        1000.0 + PI * 25.0 * 10.0 * 0.75,
-    );
+    near(volume(&apply("bool", 6, cylinder)), 1000.0 + PI * 25.0 * 10.0 * 0.75);
     let mut sphere = boolean("cut", "sphere", [5.0; 3]);
     sphere["radius"] = json!(5.0);
-    near(
-        volume(&apply("bool", 7, sphere)),
-        1000.0 - 4.0 / 3.0 * PI * 125.0,
-    );
+    near(volume(&apply("bool", 7, sphere)), 1000.0 - 4.0 / 3.0 * PI * 125.0);
 
     let (split, splitting) = cost(|| split_off("bool", 8, [0.0, 0.0, 5.0], "bool-piece"));
     near(volume(&split), 500.0);
@@ -581,10 +547,7 @@ fn thin_plate_split() {
     let kept_span = span_x(&mid);
     let other_span = span_x(&mid["other"]);
     assert!((200.0..230.0).contains(&kept_span), "kept span {kept_span}");
-    assert!(
-        (200.0..230.0).contains(&other_span),
-        "other span {other_span}"
-    );
+    assert!((200.0..230.0).contains(&other_span), "other span {other_span}");
     ok(json!({ "call": "close", "key": "plate" }));
     ok(json!({ "call": "close", "key": "plate-piece" }));
 }
@@ -592,14 +555,8 @@ fn thin_plate_split() {
 fn blends_holes_and_scale() {
     ok(json!({ "call": "open", "key": "edit", "box": [10.0, 10.0, 10.0] }));
 
-    refused(
-        &apply("edit", 1, blend("fillet", json!([-1]), 2.0)),
-        "Pick an edge to fillet.",
-    );
-    refused(
-        &apply("edit", 1, blend("fillet", json!([]), 2.0)),
-        "Pick an edge to fillet.",
-    );
+    refused(&apply("edit", 1, blend("fillet", json!([-1]), 2.0)), "Pick an edge to fillet.");
+    refused(&apply("edit", 1, blend("fillet", json!([]), 2.0)), "Pick an edge to fillet.");
     refused(
         &apply("edit", 1, blend("fillet", json!([0]), 0.0)),
         "A fillet needs a positive radius",
@@ -609,20 +566,14 @@ fn blends_holes_and_scale() {
         "The fillet did not fit this edge",
     );
     let unpicked = probe("edit", blend("fillet", json!([-1]), 2.0));
-    assert_eq!(
-        unpicked,
-        json!({ "ok": false, "error": "Pick an edge to fillet." })
-    );
+    assert_eq!(unpicked, json!({ "ok": false, "error": "Pick an edge to fillet." }));
     let tight = probe("edit", blend("fillet", json!([0]), 11.0));
     assert_eq!(tight["ok"], false, "{tight}");
     let max = tight["maxMm"].as_f64().expect("max fillet");
     assert!(max > 1.0 && max < 11.0, "max fillet {max}");
 
     let removed = 10.0 * 4.0 * (1.0 - PI / 4.0);
-    assert_eq!(
-        probe("edit", blend("fillet", json!([0]), 2.0)),
-        json!({ "ok": true })
-    );
+    assert_eq!(probe("edit", blend("fillet", json!([0]), 2.0)), json!({ "ok": true }));
     let (filleted, filleting) = cost(|| apply("edit", 1, blend("fillet", json!([0]), 2.0)));
     near(volume(&filleted), 1000.0 - removed);
     assert_eq!(filleting, work(0, 0, 1), "the apply took the probe's solid");
@@ -635,25 +586,16 @@ fn blends_holes_and_scale() {
         &apply("edit", 2, blend("chamfer", json!([0]), 0.0)),
         "A chamfer needs a positive distance",
     );
-    near(
-        volume(&apply("edit", 2, blend("chamfer", json!([0]), 1.0))),
-        995.0,
-    );
+    near(volume(&apply("edit", 2, blend("chamfer", json!([0]), 1.0))), 995.0);
     probe("edit", blend("fillet", json!([0]), 2.0));
     let (chamfered, other_kind) = cost(|| apply("edit", 3, blend("chamfer", json!([0]), 2.0)));
     near(volume(&chamfered), 980.0);
     assert_eq!(other_kind, work(1, 1, 1), "a fillet probe is not a chamfer");
 
-    assert_eq!(
-        probe("edit", blend("fillet", json!([0, 1]), 1.0)),
-        json!({ "ok": true })
-    );
+    assert_eq!(probe("edit", blend("fillet", json!([0, 1]), 1.0)), json!({ "ok": true }));
     let two = volume(&apply("edit", 4, blend("fillet", json!([0, 1]), 1.0)));
     let one_mm = 10.0 * (1.0 - PI / 4.0);
-    assert!(
-        two < 1000.0 - one_mm - 0.5,
-        "two edges should remove more than one: {two}"
-    );
+    assert!(two < 1000.0 - one_mm - 0.5, "two edges should remove more than one: {two}");
     assert!(two > 900.0, "two edges still leave a solid: {two}");
 
     refused(
@@ -661,10 +603,7 @@ fn blends_holes_and_scale() {
         "A hole needs a positive radius and depth",
     );
     let miss = hole([100.0, 0.0, 10.0], 2.0, 12.0);
-    refused(
-        &apply("edit", 5, miss.clone()),
-        "The hole missed this solid",
-    );
+    refused(&apply("edit", 5, miss.clone()), "The hole missed this solid");
     assert_eq!(
         probe("edit", miss),
         json!({ "ok": false, "error": "The hole missed this solid" })
@@ -706,28 +645,15 @@ fn step_export_round_trip() {
     ok(json!({ "call": "open", "key": "export", "box": [10.0, 10.0, 10.0] }));
     let bytes = exported("export", 0);
     let text = String::from_utf8_lossy(&bytes);
-    assert!(
-        text.contains("AUTOMOTIVE_DESIGN"),
-        "schema is not AP214: {text}"
-    );
-    assert!(
-        text.contains("MANIFOLD_SOLID_BREP"),
-        "not a manifold solid: {text}"
-    );
+    assert!(text.contains("AUTOMOTIVE_DESIGN"), "schema is not AP214: {text}");
+    assert!(text.contains("MANIFOLD_SOLID_BREP"), "not a manifold solid: {text}");
     ok(json!({ "call": "close", "key": "export" }));
 
     let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
     let reread = ok(json!({ "call": "open", "key": "reread", "dataB64": data }));
     near(volume(&reread), 1000.0);
     assert_eq!(reread["solid"], true);
-    near(
-        volume(&apply(
-            "reread",
-            1,
-            cube("fuse", [10.0, 0.0, 0.0], [10.0; 3]),
-        )),
-        2000.0,
-    );
+    near(volume(&apply("reread", 1, cube("fuse", [10.0, 0.0, 0.0], [10.0; 3]))), 2000.0);
     let edited = base64::engine::general_purpose::STANDARD.encode(exported("reread", 1));
     ok(json!({ "call": "close", "key": "reread" }));
     let again = ok(json!({ "call": "open", "key": "again", "dataB64": edited }));
@@ -743,22 +669,17 @@ fn bridge_exports(measured: bool) {
     }
     // The loader looks at LIME_OCCT_BRIDGE before the executable directory.
     unsafe { std::env::set_var("LIME_OCCT_BRIDGE", &path) };
-    let loaded =
-        |request: Value| parse(&lime_model_load::tree(&request.to_string()).expect("dlopen"));
+    let loaded = |request: Value| parse(&lime_model_load::tree(&request.to_string()).expect("dlopen"));
     let opened = loaded(json!({ "call": "open", "key": "dlopen", "box": [10.0, 20.0, 30.0] }));
     if !measured {
         return;
     }
     near(volume(&opened), 6000.0);
-    let fused = loaded(
-        json!({ "call": "apply", "key": "dlopen", "parent": 0, "node": 1,
-        "op": cube("fuse", [20.0, 0.0, 0.0], [10.0; 3]) }),
-    );
+    let fused = loaded(json!({ "call": "apply", "key": "dlopen", "parent": 0, "node": 1,
+        "op": cube("fuse", [20.0, 0.0, 0.0], [10.0; 3]) }));
     near(volume(&fused), 7000.0);
-    let grown = loaded(
-        json!({ "call": "apply", "key": "dlopen", "parent": 1, "node": 2,
-        "op": { "kind": "scale", "factor": 2.0 } }),
-    );
+    let grown = loaded(json!({ "call": "apply", "key": "dlopen", "parent": 1, "node": 2,
+        "op": { "kind": "scale", "factor": 2.0 } }));
     near(volume(&grown), 56000.0);
     let export = loaded(json!({ "call": "export", "key": "dlopen", "node": 2 }));
     if export["error"] == "STEP writer is not linked" && !require() {
