@@ -227,6 +227,9 @@ input.switch:checked::after { transform: translateX(13px); background: var(--on-
 }
 
 /* Object toolbar, list, and placement grid */
+.separate-row { padding-top: var(--space-2); }
+.separate-row .btn { width: 100%; }
+.separate-row .btn:disabled { pointer-events: none; }
 .obj-tools { display: flex; gap: 2px; align-items: center; padding-top: var(--space-2); flex-wrap: wrap; }
 .tool-btn {
   position: relative;

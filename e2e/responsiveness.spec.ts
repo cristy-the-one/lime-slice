@@ -385,6 +385,9 @@ test("the slice button names a cache hit, a real recompute, and a forced recompu
   await force.click();
   await expect.poll(() => slices.length).toBe(3);
   expect(slices[2]!.reslice).toBe(true);
+  // The request is counted before the reply repaints the panel. Filling during that paint drops the edit.
+  await expect(slice).toHaveText("Slice");
+  await expect(slice).toHaveAttribute("data-slice-action", "current");
   await page.locator("#lh").fill("0.28");
   await expect(slice).toHaveText("Re-slice");
   await expect(slice).toHaveAttribute("data-slice-action", "changed");
