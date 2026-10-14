@@ -145,6 +145,11 @@ export function autoSliceAllowed(input: { lastSliceMs: number | null; triangles:
   return input.lastSliceMs === null ? input.triangles < AUTO_SLICE_FIRST_TRIANGLES : input.lastSliceMs <= AUTO_SLICE_MAX_MS;
 }
 
+/** The Model tab edits the solid in steps: a change there waits to slice until the user leaves the tab. */
+export function autoSliceDeferred(stage: string): boolean {
+  return stage === "model";
+}
+
 /**
  * A stale result the engine refreshes without planning: a stored recipe, or a
  * move in X/Y only. Those run by themselves after a pause, even with auto-slice off.

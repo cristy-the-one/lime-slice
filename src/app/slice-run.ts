@@ -1,6 +1,6 @@
 import { fx } from "./fx";
 import { state, session, worker, cachedRecipes, type ParetoPoint, type SliceResponse } from "./state";
-import { autoSliceAllowed, meshKeyHex, partFrameKey, quietRefresh, recipeKey, type SliceAction, sliceAction, sliceBusyLabel, sliceErrorRetryable, storesReply, FORCE_LABEL } from "../slice-action";
+import { autoSliceAllowed, autoSliceDeferred, meshKeyHex, partFrameKey, quietRefresh, recipeKey, type SliceAction, sliceAction, sliceBusyLabel, sliceErrorRetryable, storesReply, FORCE_LABEL } from "../slice-action";
 import { currentPlacement, livePlate, meshBase64, meshBytes, fail, isTauri, objectBase64, objectFingerprint, objectPlacement, withMeshData } from "./files";
 import { MeshRefs, sendWithMeshes, unknownMeshRef, type MeshFields, type SentMesh } from "../mesh-refs";
 import { adoptPatch, previewBase } from "./viewer";
@@ -147,18 +147,30 @@ function autoSliceApplies(): boolean {
   return autoSliceAllowed({ lastSliceMs: state.result?.coreMs ?? null, triangles: Math.max(0, (state.mesh.bytes.byteLength - 84) / 50) });
 }
 
+/** A pause that ends inside the Model tab leaves its slice for the moment the user leaves the tab. */
+function unlessModeling(run: () => void): () => void {
+  return () => {
+    if (autoSliceDeferred(state.stage)) session.autoDeferred = true;
+    else run();
+  };
+}
+
 /** `waitMs` is the pause before an automatic slice; a change made during a slice passes 0. */
 export function scheduleAuto(waitMs = 300) {
   window.clearTimeout(session.autoTimer);
+  if (autoSliceDeferred(state.stage)) {
+    session.autoDeferred = true;
+    return;
+  }
   if (!state.mesh || state.busy) return;
   if (quietEligible() && session.quietTried !== settingsHash()) {
     // A gizmo drag refreshes once, at drag end.
-    if (!state.poseHud) session.autoTimer = window.setTimeout(runQuiet, 200);
+    if (!state.poseHud) session.autoTimer = window.setTimeout(unlessModeling(runQuiet), 200);
     return;
   }
   if (!autoSliceApplies()) return;
   if (waitMs === 0) void runSlice();
-  else session.autoTimer = window.setTimeout(() => void runSlice(), waitMs);
+  else session.autoTimer = window.setTimeout(unlessModeling(() => void runSlice()), waitMs);
 }
 
 export function payload() {
