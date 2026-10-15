@@ -88,7 +88,7 @@ test("Support fan % follows Fan % until set, an edit is one undo step, and the o
   await expect(page.locator("#supfanpct")).toHaveCount(0);
   await setSupports(page, "auto");
   await expect(page.locator("#supfanpct")).toHaveValue("");
-  await expect(page.locator("#supfanpct")).toHaveAttribute("placeholder", "20 (Fan %)");
+  await expect(page.locator("#supfanpct")).toHaveAttribute("placeholder", "20");
 
   await page.locator("#supfanpct").fill("10");
   expect((await sentFan(page, bodies)).supportFanPercent).toBe(10);
@@ -96,7 +96,7 @@ test("Support fan % follows Fan % until set, an edit is one undo step, and the o
   expect(await sentFan(page, bodies)).toEqual({ fanPercent: 20, overhangFanPercent: 100, fanOffLayers: 3, supportFanPercent: undefined });
 
   await page.locator("#fanpct").fill("45");
-  await expect(page.locator("#supfanpct")).toHaveAttribute("placeholder", "45 (Fan %)");
+  await expect(page.locator("#supfanpct")).toHaveAttribute("placeholder", "45");
   await page.locator("#fanpct").blur();
   await page.waitForTimeout(400);
   await page.keyboard.press("Control+z");

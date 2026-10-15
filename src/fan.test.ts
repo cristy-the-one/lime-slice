@@ -118,7 +118,7 @@ controlById("fanoff")!.set!(state, -2);
 controlById("supfanpct")!.set!(state, 7);
 eq("typed values are held to whole numbers in range", fanOfRow(state.profile), { fanPercent: 23, overhangFanPercent: 100, fanOffLayers: 0, supportFanPercent: 7 });
 controlById("supfanpct")!.set!(state, "");
-eq("an emptied Support fan % follows", [controlById("supfanpct")!.get!(state), controlById("supfanpct")!.placeholder!(state)], ["", "23 (Fan %)"]);
+eq("an emptied Support fan % follows", [controlById("supfanpct")!.get!(state), controlById("supfanpct")!.placeholder!(state)], ["", "23"]);
 eq("Cooling sits between Speed and Supports", GROUPS.map((group) => group.id).slice(5, 8), ["speed", "cooling", "supports"]);
 eq("the overhang fan hides with overhang control, the support fan with supports", [controlById("ovfanpct")!.when!({ ...state, overhangControl: false }), controlById("supfanpct")!.when!({ ...state, supports: false })], [false, false]);
 

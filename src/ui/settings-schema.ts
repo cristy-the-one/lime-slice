@@ -565,14 +565,14 @@ export const CONTROLS: ControlSpec[] = [
     tier: "simple",
     kind: num(0, 100, 1),
     when: (s) => s.supports,
-    tip: "The fan on supports: tree branches, tips, and interface. Empty follows Fan %. Strong air on a belt printer can push thin tree branches over before they bond, so lower this for fragile trees.",
+    tip: "The fan on supports: tree branches, tips, and interface. Empty follows Fan %, whose value shows greyed in the box. Strong air on a belt printer can push thin tree branches over before they bond, so lower this for fragile trees.",
     keywords: "cooling support tree fan fragile",
     get: (s) => s.profile.supportFanPercent ?? "",
     set: (s, value) => {
       if (value === "") delete s.profile.supportFanPercent;
       else s.profile.supportFanPercent = fanPercentValue(value as number);
     },
-    placeholder: (s) => `${s.profile.fanPercent} (Fan %)`,
+    placeholder: (s) => String(s.profile.fanPercent),
   },
   {
     id: "fanoff",
