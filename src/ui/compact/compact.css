@@ -682,9 +682,10 @@ html.layout-compact .model-fields label[data-wide] { flex-basis: 120px; }
 html.layout-compact .model-actions {
   position: sticky;
   bottom: calc(-1 * var(--space-2));
-  margin: var(--space-2) 116px calc(-1 * var(--space-2)) 0;
-  padding: var(--space-1) 0 var(--space-2);
-  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  /* Out over the sheet's side and bottom padding, so nothing scrolling under it shows at an edge. The buttons keep clear of the floating Slice button. */
+  margin: var(--space-2) calc(-1 * var(--space-3)) calc(-1 * var(--space-2));
+  padding: var(--space-1) calc(116px + var(--space-3)) var(--space-2) var(--space-3);
+  background: var(--panel);
 }
 html.layout-compact .model-actions .btn { min-height: 36px; min-width: 72px; }
 /* The dock sits right of the middle at any phone size, so half the width keeps the chip and the readout clear of it. */
