@@ -19,6 +19,12 @@ export function boundsOf(pos: Float32Array): Bounds {
 }
 
 export function parseStl(bytes: ArrayBuffer): Float32Array | null {
+  const pos = readStl(bytes);
+  return pos && settle(pos);
+}
+
+/** The vertices of an STL as written, before `settle` lowers them onto Z = 0. */
+export function readStl(bytes: ArrayBuffer): Float32Array | null {
   const view = new DataView(bytes);
   if (bytes.byteLength >= 84) {
     const count = view.getUint32(80, true);
@@ -28,7 +34,7 @@ export function parseStl(bytes: ArrayBuffer): Float32Array | null {
         const base = 84 + i * 50 + 12;
         for (let v = 0; v < 9; v++) pos[i * 9 + v] = view.getFloat32(base + v * 4, true);
       }
-      return settle(pos);
+      return pos;
     }
   }
   const head = new TextDecoder().decode(bytes.slice(0, 64)).trim().toLowerCase();
@@ -42,16 +48,21 @@ export function parseStl(bytes: ArrayBuffer): Float32Array | null {
     if (nums.length >= 3 && nums.every((n) => Number.isFinite(n))) verts.push(nums[0], nums[1], nums[2]);
   }
   if (verts.length < 9 || verts.length % 9 !== 0) return null;
-  return settle(new Float32Array(verts));
+  return new Float32Array(verts);
 }
 
 export function settle(pos: Float32Array) {
+  settleBy(pos);
+  return pos;
+}
+
+/** Lower `pos` in place so its lowest vertex sits on Z = 0. Returns how far it went down: its seat. */
+export function settleBy(pos: Float32Array): number {
   let minZ = Infinity;
   for (let i = 2; i < pos.length; i += 3) if (pos[i] < minZ) minZ = pos[i];
-  if (Number.isFinite(minZ) && Math.abs(minZ) > 1e-6) {
-    for (let i = 2; i < pos.length; i += 3) pos[i] -= minZ;
-  }
-  return pos;
+  if (!Number.isFinite(minZ) || Math.abs(minZ) <= 1e-6) return 0;
+  for (let i = 2; i < pos.length; i += 3) pos[i] -= minZ;
+  return minZ;
 }
 
 export function encodeStl(pos: Float32Array, name: string) {

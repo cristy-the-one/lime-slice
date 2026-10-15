@@ -6,6 +6,7 @@
  * an optional field on each version 2 object, so a version 2 file without it still opens.
  * `brep` is that same kind of field: base64 STEP, present only after Model has a session.
  * `modelTree` is another: the object's Model history. A damaged one is left out and the part opens.
+ * `modelPose` and `meshSeatMm` place the object in Model's shared space; without them it sits where its file put it.
  * A later version adds a function to `migrations` at index `n` that rewrites version `n`
  * into version `n + 1`. `applyMigrations` is that hook.
  */
@@ -20,6 +21,7 @@ import { plateFileIsVersion2, readPlateSettings, settingsEmpty, type PlateFileOb
 import { dropEmptyReinforce, readReinforcement } from "./reinforcement.ts";
 import type { EditEntry } from "./support-edit-list.ts";
 import { readSavedTree } from "./model-tree-file.ts";
+import type { Affine } from "./model-space.ts";
 import { readSeamPaint } from "./seam-paint.ts";
 import { readPaint } from "./support-paint.ts";
 import type { SiteSpec } from "./support-edits.ts";
@@ -399,6 +401,15 @@ function readPlateObject(value: unknown): PlateFileObject | string {
   if (paint.length > 0) object.supportPaint = paint;
   if (seam.length > 0) object.seamPaint = seam;
   if (reinforcement.length > 0) object.reinforcement = reinforcement;
+  if (row.modelPose !== undefined) {
+    const pose = readPose(row.modelPose);
+    if (!pose) return "This project's model space position is damaged.";
+    object.modelPose = pose;
+  }
+  if (row.meshSeatMm !== undefined) {
+    if (!finite(row.meshSeatMm)) return "This project's model space position is damaged.";
+    object.meshSeatMm = row.meshSeatMm;
+  }
   if (row.brep !== undefined && row.brep !== null) {
     const brep = readMesh(row.brep);
     if (typeof brep === "string") {
@@ -407,6 +418,15 @@ function readPlateObject(value: unknown): PlateFileObject | string {
     object.brep = brep;
   }
   return object;
+}
+
+/** `{m, t}`: nine numbers for the matrix and three for the move, all finite. */
+function readPose(value: unknown): Affine | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const { m, t } = value as Record<string, unknown>;
+  if (!Array.isArray(m) || m.length !== 9 || !m.every(finite)) return null;
+  if (!Array.isArray(t) || t.length !== 3 || !t.every(finite)) return null;
+  return { m: [...m] as Affine["m"], t: [t[0], t[1], t[2]] };
 }
 
 function readMesh(value: unknown): ProjectMesh | string {

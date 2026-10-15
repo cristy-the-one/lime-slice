@@ -1,6 +1,7 @@
 import { ID_MATRIX, placeMesh, type Bounds } from "./mesh-place.ts";
 import { assemblyNotice, shellCount, shellGroups, takeGroups } from "./mesh-shells.ts";
-import { oneObjectPlate, placeObject, replaceWithShells } from "./plate.ts";
+import { boxUnder } from "./model-space.ts";
+import { meshToModel, oneObjectPlate, placeObject, replaceWithShells } from "./plate.ts";
 
 let failed = 0;
 
@@ -84,7 +85,7 @@ const plate = oneObjectPlate({
 });
 plate.objects[0]!.settings = { walls: 4 };
 plate.objects[0]!.brep = new ArrayBuffer(2);
-const next = replaceWithShells(plate, "part", worlds);
+const next = replaceWithShells(plate, "part", worlds, 220, 220);
 check("the plate gains one object per shell", next?.objects.length === 2);
 if (next) {
   check("the largest piece keeps the id", next.objects[0]?.id === "part" && next.selectedId === "part");
@@ -103,6 +104,13 @@ if (next) {
   }
   const zs = next.objects.map((obj) => placeObject(obj, 220, 220).bounds.min[2]);
   check("the raised shell is not dropped onto the bed", Math.max(...zs) > 4);
+  const inModel = next.objects.map((obj) => boxUnder(bounds(obj.sourcePos), meshToModel(obj)));
+  const wantModel = [bounds(box(0, 0, 0, 10, 10, 10)), bounds(box(40, 0, 5, 50, 10, 15))];
+  check(
+    "in model space each piece stays where it was in the part",
+    inModel.every((got, i) => got.min.every((value, a) => near(value, wantModel[i]!.min[a]!)) && got.max.every((value, a) => near(value, wantModel[i]!.max[a]!))),
+    JSON.stringify(inModel),
+  );
 }
 
 check("an STL does not get the assembly offer", assemblyNotice("pair.stl", 2) === null);

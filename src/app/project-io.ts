@@ -1,10 +1,10 @@
 /** Save and open a `.lime` project against the live session. */
-import { parseStl } from "../mesh-place.ts";
 import { saveProjectText } from "../platform.ts";
 import { confirmDiscard, markProjectClean } from "../project-dirty.ts";
 import { emptyOverrides, projectOverrides } from "../overrides.ts";
 import {
   assemblePlate,
+  meshSeat,
   plateFileIsVersion2,
   settingsEmpty,
   type PlateFileObject,
@@ -15,7 +15,7 @@ import { meshRecord, parseProject, serializeProject, type LimeProject, type Proj
 import { saveProfile } from "../profiles.ts";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel.ts";
 import { pushToast } from "../ui/toasts.ts";
-import { adoptBytes, place, previewRemote } from "./files.ts";
+import { adoptBytes, place, previewRemote, stlPositions } from "./files.ts";
 import { adoptSavedTrees, captureOpenSolid, historyToSave } from "./model.ts";
 import type { SavedTree } from "../model-tree-file.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
@@ -185,6 +185,9 @@ function fileObjects(trees: Awaited<ReturnType<typeof historyToSave>>["trees"]):
     const reinforce = dropEmptyReinforce(obj.reinforcement ?? []);
     if (reinforce.length > 0) row.reinforcement = reinforce.map((reg) => structuredClone(reg));
     if (obj.brep) row.brep = record(stepFileName(obj.fileName), obj.brep);
+    if (obj.modelPose) row.modelPose = { m: [...obj.modelPose.m], t: [...obj.modelPose.t] };
+    const seat = meshSeat(obj.bytes);
+    if (seat) row.meshSeatMm = seat;
     const saved = trees.get(obj.id);
     if (saved) row.modelTree = { ...saved.tree, rootStep: record(saved.rootStep.name, saved.rootStep.bytes) };
     return row;
@@ -216,7 +219,7 @@ async function loadPlateObjects(objects: PlateFileObject[]) {
     const bytes = base64ToBytes(row.mesh.bytesBase64);
     if (!bytes) return "The mesh in this project is damaged.";
     const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-    let sourcePos = needsEngine(row.mesh.name) ? null : parseStl(copy);
+    let sourcePos = needsEngine(row.mesh.name) ? null : stlPositions(copy);
     if (!sourcePos && state.sourcePos && state.mesh && row.mesh.hash === hashOf(state.mesh.bytes) && row.mesh.name === state.mesh.name) {
       sourcePos = state.sourcePos;
     }

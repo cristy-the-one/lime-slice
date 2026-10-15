@@ -1,4 +1,4 @@
-import { encode3mf, ID_MATRIX, offBed } from "./mesh-place.ts";
+import { encode3mf, ID_MATRIX, offBed, rotZ } from "./mesh-place.ts";
 import { nextSplitAt } from "./split-at.ts";
 import {
   addedCopy,
@@ -9,6 +9,7 @@ import {
   arrangedObjects,
   boundsSize,
   boxesOverlapXY,
+  meshToModel,
   oneObjectPlate,
   overlapPairs,
   placeObject,
@@ -19,8 +20,10 @@ import {
   plateUnionBounds,
   readPlateSettings,
   revivePlate,
+  setMeshSeat,
   slicePlateFields,
   snapPlate,
+  withModelPose,
   type IncomingMesh,
   type PlateObject,
 } from "./plate.ts";
@@ -298,6 +301,28 @@ check("a multi-object 3mf stores one object and build item per part", (multiMode
 
 check("an object may store painted-only supports", JSON.stringify(readPlateSettings({ supports: true, supportSource: "paint" })) === JSON.stringify({ supports: true, supportSource: "paint" }));
 check("an object's support source must be auto or paint", readPlateSettings({ supportSource: "everywhere" }) === "This project file is incomplete.");
+
+// Model space: a pose of its own, apart from the plate.
+const turnedPose = { m: rotZ(90), t: [100, 0, 5] as [number, number, number] };
+const posedParent = { ...object(20, "part", false, { x: 30, y: 40, z: 0 }), modelPose: turnedPose };
+const posedSplit = addedSplit({ objects: [posedParent], selectedId: "part" }, incoming("part split", cube(10)))!;
+check("a split piece inherits its parent's model pose", posedSplit.objects[1]?.modelPose === turnedPose);
+check("a split piece of a part with no pose has none", addedSplit({ objects: [object(20, "part", false)], selectedId: "part" }, incoming("p", cube(10)))!.objects[1]?.modelPose === undefined);
+const plainCopy = addedCopy({ objects: [object(20, "part", false)], selectedId: "part" })!.objects[1]!;
+check("a copy sits its own width plus 10 mm along model X", JSON.stringify(plainCopy.modelPose) === JSON.stringify({ m: [...ID_MATRIX], t: [30, 0, 0] }));
+const turnedCopy = addedCopy({ objects: [posedParent], selectedId: "part" })!.objects[1]!;
+check("a copy of a turned part keeps the turn and steps along model X", JSON.stringify(turnedCopy.modelPose?.m) === JSON.stringify(turnedPose.m) && near(turnedCopy.modelPose!.t[0], 130, 1e-6) && turnedCopy.modelPose!.t[1] === 0);
+check("a copy keeps its plate pose", JSON.stringify([turnedCopy.offset, turnedCopy.orient]) === JSON.stringify([posedParent.offset, posedParent.orient]));
+const movedPlate = withModelPose({ objects: [object(20, "part", false)], selectedId: "part" }, "part", { m: [...ID_MATRIX], t: [10, 0, 0] });
+const movedObj = movedPlate.objects[0]!;
+check("a model-space move leaves the plate pose and the mesh alone", movedObj.offset.x === 0 && movedObj.bytes.byteLength === 8 && JSON.stringify(placeObject(movedObj, bed, bed).bounds) === JSON.stringify(placeObject(object(20, "part", false), bed, bed).bounds));
+check("identity drops the key", !("modelPose" in withModelPose(movedPlate, "part", { m: [...ID_MATRIX], t: [0, 0, 0] }).objects[0]!));
+const posedSnap = snapPlate({ objects: [posedParent], selectedId: "part" });
+check("a Prepare step keeps the model pose", revivePlate(posedSnap)?.objects[0]?.modelPose === turnedPose);
+check("one object with a model pose is a version 2 file", plateFileIsVersion2([{ modelPose: turnedPose }]) && !plateFileIsVersion2([{}]));
+const raisedObj = object(20, "part", false);
+setMeshSeat(raisedObj.bytes, 712);
+check("an object's mesh goes up by its seat before its pose", JSON.stringify(meshToModel(raisedObj).t) === JSON.stringify([0, 0, 712]));
 
 if (failed) {
   console.error(`${failed} failed`);

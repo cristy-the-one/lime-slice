@@ -287,6 +287,21 @@ eq("a plate saved before brep opens with none", plainOpened.ok ? plainOpened.pro
 brepWire.objects[0]!.brep = { ...brepMesh, hash: "nope" };
 eq("a damaged solid fails the open", parseProject(JSON.stringify(brepWire)), { ok: false, message: "The solid in this project is damaged." });
 
+// Model space: an optional pose and mesh seat per object.
+const spacePose = { m: [0, -1, 0, 1, 0, 0, 0, 0, 1] as [number, number, number, number, number, number, number, number, number], t: [100, -20.5, 7] as [number, number, number] };
+const placedInSpace: LimeProject = {
+  ...project,
+  version: 2,
+  objects: [{ id: "part", name: "bracket.stl", mesh: project.mesh, placement: project.placement, supportEdits: [], modelPose: spacePose, meshSeatMm: 712.5 }],
+};
+const spaceWire = JSON.parse(serializeProject(placedInSpace)) as { version: number; objects: Record<string, unknown>[] };
+eq("one object with a model pose writes version 2 and keeps it", [spaceWire.version, spaceWire.objects[0]?.modelPose, spaceWire.objects[0]?.meshSeatMm], [2, spacePose, 712.5]);
+const spaceOpened = parseProject(JSON.stringify(spaceWire));
+eq("the model pose and seat round-trip", spaceOpened.ok ? [spaceOpened.project.objects?.[0]?.modelPose, spaceOpened.project.objects?.[0]?.meshSeatMm] : null, [spacePose, 712.5]);
+eq("a plate saved before model space opens with no pose: identity", plainOpened.ok ? plainOpened.project.objects?.map((obj) => [obj.modelPose ?? null, obj.meshSeatMm ?? null]) : null, [[null, null], [null, null]]);
+spaceWire.objects[0]!.modelPose = { m: [1, 0, 0], t: [0, 0, 0] };
+eq("a damaged model pose fails the open", parseProject(JSON.stringify(spaceWire)), { ok: false, message: "This project's model space position is damaged." });
+
 // Model history: a part with a fork, a renamed step, and a split whose piece has a step of its own.
 const rootStep = new Uint8Array([0x49, 0x53, 0x4f, 1, 2, 3]);
 const pieceRoot = new Uint8Array([0x49, 0x53, 0x4f, 7, 7]);

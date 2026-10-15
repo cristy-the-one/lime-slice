@@ -1,0 +1,120 @@
+import { eulerOrient } from "./mesh-place.ts";
+import {
+  IDENTITY_POSE,
+  applyPose,
+  boxUnder,
+  duplicatePose,
+  inversePose,
+  isIdentity,
+  placeFields,
+  poseFromPlace,
+  posedBounds,
+  thenPose,
+  toSolidOp,
+  turnDir,
+  type Affine,
+} from "./model-space.ts";
+import { opLabel, type ModelOp, type Vec3 } from "./model-tree.ts";
+
+let failed = 0;
+
+function check(name: string, cond: boolean, detail = ""): void {
+  if (cond) return;
+  failed += 1;
+  console.error(`FAIL ${name}${detail ? `: ${detail}` : ""}`);
+}
+
+function eq(name: string, actual: unknown, expected: unknown): void {
+  const same = JSON.stringify(actual) === JSON.stringify(expected);
+  check(name, same, same ? "" : `got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
+}
+
+function nearVec(a: readonly number[], b: readonly number[], tol = 1e-9): boolean {
+  return a.length === b.length && a.every((value, i) => Math.abs(value - b[i]!) < tol);
+}
+
+/** Turned 90° about Z and moved: what a user gets from Place with Rz 90 and a move. */
+const turned: Affine = { m: eulerOrient(0, 0, 90), t: [100, -20, 7] };
+/** A turn about every axis, so no coordinate maps onto another. */
+const skew: Affine = { m: eulerOrient(30, -50, 115), t: [12.5, 3, -40] };
+
+// Identity is a no-op.
+const box: ModelOp = { kind: "boolean", op: "cut", primitive: "box", origin: [0.1, 0.2, 0.3], size: [10, 0.7, 3], radius: 0, height: 0, turn: [15, 0, 30] };
+const hole: ModelOp = { kind: "hole", origin: [1.1, 2.2, 3.3], axis: [0, 0, -1], radius: 2, depth: 8 };
+const split: ModelOp = { kind: "split", origin: [0, 0, 42.42], normal: [0, 0, 1] };
+for (const op of [box, hole, split]) check(`identity sends the ${op.kind} exactly as typed`, toSolidOp(op, IDENTITY_POSE) === op);
+check("a pose of zeros and ones is identity", isIdentity({ m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] }) && isIdentity(undefined));
+check("a move is not identity", !isIdentity({ m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 1e-9] }));
+
+// Composition and inverse.
+const p: Vec3 = [3, -4, 5];
+check("inverse undoes a turned and moved pose", nearVec(applyPose(inversePose(skew), applyPose(skew, p)), p));
+check("then applies the first pose first", nearVec(applyPose(thenPose(turned, skew), p), applyPose(skew, applyPose(turned, p))));
+check("a quarter turn about Z puts X on Y", nearVec(turnDir(turned, [1, 0, 0]), [0, 1, 0]));
+
+// A tool converted through a turned and moved pose names the same place on the solid.
+const movedOnly: Affine = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [10, 0, -5] };
+eq("a move shifts a hole by the move back", toSolidOp(hole, movedOnly), { ...hole, origin: [1.1 - 10, 2.2, 3.3 + 5] });
+const solidHole = toSolidOp(hole, turned) as Extract<ModelOp, { kind: "hole" }>;
+check("a hole's origin goes back through the pose", nearVec(applyPose(turned, solidHole.origin), hole.origin));
+check("a hole typed straight down in model space drills straight down when the turn is about Z", nearVec(solidHole.axis, [0, 0, -1]));
+const solidSplit = toSolidOp(split, skew) as Extract<ModelOp, { kind: "split" }>;
+check("a split plane comes back to model Z", nearVec(turnDir(skew, solidSplit.normal), [0, 0, 1]) && Math.abs(applyPose(skew, solidSplit.origin)[2] - 42.42) < 1e-9);
+
+/** The eight corners of a turned box primitive, as the kernel builds it: axis-aligned at `origin`, turned about its centre. */
+function corners(op: Extract<ModelOp, { kind: "boolean" }>): Vec3[] {
+  const half: Vec3 = [op.size[0] / 2, op.size[1] / 2, op.size[2] / 2];
+  const centre: Vec3 = [op.origin[0] + half[0], op.origin[1] + half[1], op.origin[2] + half[2]];
+  const turn = { m: eulerOrient(op.turn[0], op.turn[1], op.turn[2]), t: centre };
+  const out: Vec3[] = [];
+  for (let c = 0; c < 8; c += 1) out.push(applyPose(turn, [c & 1 ? half[0] : -half[0], c & 2 ? half[1] : -half[1], c & 4 ? half[2] : -half[2]]));
+  return out;
+}
+const solidBox = toSolidOp(box, skew) as Extract<ModelOp, { kind: "boolean" }>;
+const back = corners(solidBox).map((corner) => applyPose(skew, corner));
+check("a turned box converts to the same eight corners", corners(box as Extract<ModelOp, { kind: "boolean" }>).every((corner, i) => nearVec(corner, back[i]!, 1e-9)));
+eq("the box keeps its size", solidBox.size, [10, 0.7, 3]);
+const cylinder: ModelOp = { kind: "boolean", op: "fuse", primitive: "cylinder", origin: [5, 5, 2], size: [0, 0, 0], radius: 3, height: 12, turn: [0, 20, 0] };
+const solidCylinder = toSolidOp(cylinder, skew) as Extract<ModelOp, { kind: "boolean" }>;
+const centreOf = (op: Extract<ModelOp, { kind: "boolean" }>) => applyPose({ m: eulerOrient(op.turn[0], op.turn[1], op.turn[2]), t: [op.origin[0], op.origin[1], op.origin[2] + op.height / 2] }, [0, 0, 0]);
+check("a cylinder turns about its middle, which goes back through the pose", nearVec(applyPose(skew, centreOf(solidCylinder)), centreOf(cylinder as Extract<ModelOp, { kind: "boolean" }>)));
+const axisOf = (op: Extract<ModelOp, { kind: "boolean" }>) => turnDir({ m: eulerOrient(op.turn[0], op.turn[1], op.turn[2]), t: [0, 0, 0] }, [0, 0, 1]);
+check("a cylinder's axis comes back to the axis typed", nearVec(turnDir(skew, axisOf(solidCylinder)), axisOf(cylinder as Extract<ModelOp, { kind: "boolean" }>)));
+const sphere: ModelOp = { kind: "boolean", op: "cut", primitive: "sphere", origin: [1, 2, 3], size: [0, 0, 0], radius: 4, height: 0, turn: [0, 0, 0] };
+eq("a sphere only moves its centre", (toSolidOp(sphere, skew) as Extract<ModelOp, { kind: "boolean" }>).turn, [0, 0, 0]);
+const fillet: ModelOp = { kind: "fillet", edges: [3], size: 1 };
+check("a fillet names edges, which no pose moves", toSolidOp(fillet, skew) === fillet);
+
+// History labels name the step in the part's own frame, so moving the part later never renames it.
+const raisedTen: Affine = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 10] };
+eq("a split typed at model Z 15 on a part raised 10 is labelled at Z 5", opLabel(toSolidOp({ kind: "split", origin: [0, 0, 15], normal: [0, 0, 1] }, raisedTen)), "Split at Z 5");
+eq("with no pose the label is the number typed", opLabel(toSolidOp(split, IDENTITY_POSE)), "Split at Z 42.42");
+eq("a part lying on its side takes a model Z plane on its own Y", opLabel(toSolidOp({ kind: "split", origin: [0, 0, 15], normal: [0, 0, 1] }, { m: eulerOrient(90, 0, 0), t: [0, 0, 0] })), "Split at Y 15");
+eq("a plane at a slant to the part says so", opLabel(toSolidOp(split, skew)), "Split on a tilted plane");
+
+// Place fields.
+const pivot: Vec3 = [10, 20, 30];
+eq("identity shows zeros", placeFields(IDENTITY_POSE, pivot), { x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0 });
+const moved = poseFromPlace({ x: 10, y: 0, z: 0, rx: 0, ry: 0, rz: 0 }, pivot, IDENTITY_POSE, "move");
+eq("moving X by 10 moves the pose by 10", moved, { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [10, 0, 0] });
+const spun = poseFromPlace({ x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 90 }, pivot, IDENTITY_POSE, "turn");
+check("a turn keeps the centre where it is", nearVec(applyPose(spun, pivot), pivot));
+const fields = placeFields(spun, pivot);
+check("the fields of a turn read back", nearVec([fields.x, fields.y, fields.z, fields.rx, fields.ry, fields.rz], [0, 0, 0, 0, 0, 90], 1e-9));
+const thenMoved = poseFromPlace({ ...fields, y: 5 }, pivot, spun, "move");
+eq("a move keeps the turn it had, bit for bit", thenMoved.m, spun.m);
+
+// Duplicate.
+eq("a duplicate sits its own width plus 10 mm along X", duplicatePose(IDENTITY_POSE, { min: [0, 0, 0], max: [40, 30, 20] }).t, [50, 0, 0]);
+
+// Boxes.
+const cube = new Float32Array([0, 0, 0, 10, 0, 0, 0, 20, 0, 0, 0, 5]);
+eq("posed bounds of a box turned a quarter", posedBounds(cube, turned), { min: [80, -20, 7], max: [100, -10, 12] });
+check("posed bounds are kept for the same solid and pose", posedBounds(cube, turned) === posedBounds(cube, turned));
+eq("a box under a move", boxUnder({ min: [0, 0, 0], max: [1, 2, 3] }, movedOnly), { min: [10, 0, -5], max: [11, 2, -2] });
+
+if (failed) {
+  console.error(`${failed} failed`);
+  throw new Error(`${failed} failed`);
+}
+console.log("model space: poses, tool conversion, place fields ok");

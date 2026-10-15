@@ -1,6 +1,6 @@
 import { fx } from "./fx";
 import { state, session, STEP_TOLERANCE_DEFAULT } from "./state";
-import { centeringShift, eulerOrient, formatDeg, ID_MATRIX, orientEuler, parseStl, placeMesh, encodeStl, scaledCanonical, encode3mf, type PlacedPart, type Placement } from "../mesh-place";
+import { centeringShift, eulerOrient, formatDeg, ID_MATRIX, orientEuler, readStl, settleBy, placeMesh, encodeStl, scaledCanonical, encode3mf, type PlacedPart, type Placement } from "../mesh-place";
 import { meshKeyHex } from "../slice-action";
 import { bytesToBase64 } from "../base64";
 import { needsEngine, apiBase, apiToken, markEngineDown, isStepName, renderChrome, markStale, stale, card, shownGrams } from "./settings";
@@ -20,7 +20,7 @@ import { extractForeign3mfRecipe, foreign3mfMessage, foreignRecipeOffer, foreign
 import { assemblyNotice, shellCount } from "../mesh-shells";
 import { emptyOverrides } from "../overrides";
 import { isLimeProject } from "../file-drop";
-import { addedMesh, boundEntries, emptyPlate, oneObjectPlate, placeObject, plateObjectPositions, resetHeldGeometry, setSelectedOverride, withLivePose, type PlateObject } from "../plate";
+import { addedMesh, boundEntries, emptyPlate, oneObjectPlate, placeObject, plateObjectPositions, resetHeldGeometry, setMeshSeat, setSelectedOverride, withLivePose, type PlateObject } from "../plate";
 import { bedParts } from "../model-context";
 import { supportModeState } from "../support-source";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
@@ -53,7 +53,7 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
   clearEditHistory();
   fx.forgetModelTrees?.();
   session.supportUi?.reset();
-  const parsed = needsEngine(name) ? null : parseStl(bytes);
+  const parsed = needsEngine(name) ? null : stlPositions(bytes);
   if (!needsEngine(name) && !parsed) {
     state.mesh = null;
     state.sourcePos = null;
@@ -491,8 +491,15 @@ export async function addDroppedFiles(files: readonly File[]): Promise<void> {
   }
 }
 
+/** An STL's vertices on Z = 0. The bytes keep how far they went down, so model space puts them back where the file has them. */
+export function stlPositions(bytes: ArrayBuffer): Float32Array | null {
+  const pos = readStl(bytes);
+  if (pos) setMeshSeat(bytes, settleBy(pos));
+  return pos;
+}
+
 async function meshPositions(name: string, bytes: ArrayBuffer, stepTolerance: number): Promise<Float32Array | null> {
-  if (!needsEngine(name)) return parseStl(bytes);
+  if (!needsEngine(name)) return stlPositions(bytes);
   return previewRemote(name, bytes, stepTolerance);
 }
 
