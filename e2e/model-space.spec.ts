@@ -255,6 +255,26 @@ test("Reset view and Home go back to the view Model opened with, and an Apply ke
   expect(await restingCamera(page), "an Apply leaves the camera where the user put it").toBe(moved);
 });
 
+for (const [width, height] of [[960, 640], [1280, 800], [1440, 900]] as const) {
+  test(`Reset view sits clear of the chip, the readout, History, the dock and the view cube at ${width}×${height}`, async ({ page }) => {
+    await openFiles(page, { "box.step": boxSolid([20, 20, 10]) });
+    await page.setViewportSize({ width, height });
+    await page.locator("#modelToolBoolean").click();
+    await expect(canvas(page)).toHaveAttribute("data-handles", /.+/);
+    const reset = (await page.locator("#modelResetView").boundingBox())!;
+    const view = (await canvas(page).boundingBox())!;
+    const meets = (a: { x: number; y: number; width: number; height: number }, b: typeof a) =>
+      a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+    for (const id of ["#modelFit", "#modelReadout", "#modelHistory", "#modelPanel", ".model-tools"]) {
+      const box = await page.locator(id).boundingBox();
+      if (box) expect(meets(reset, box), `clear of ${id}`).toBe(false);
+    }
+    const grips = ((await canvas(page).getAttribute("data-handles")) ?? "").split(" ").map((item) => Number(item.split(":")[1]!.split(",")[0]) + view.x);
+    expect(reset.x + reset.width, "left of the dock").toBeLessThan(Math.min(...grips) - 8);
+    expect(reset.x + reset.width, "left of the view cube").toBeLessThan(view.x + view.width - 128);
+  });
+}
+
 test("Frame in the Objects list frames that object in Model and stays in Model", async ({ page }) => {
   await openFiles(page, { "left.step": boxSolid([40, 30, 20]), "right.step": boxSolid([40, 30, 20], [200, 0, 0]) });
   const opening = await restingCamera(page);

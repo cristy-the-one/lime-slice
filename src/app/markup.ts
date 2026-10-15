@@ -117,7 +117,6 @@ export function mountMarkup(root: HTMLElement) {
         </div>
         <div class="stage-body" id="modelBody" role="tabpanel" aria-labelledby="tabModel" hidden>
           <canvas id="model" aria-label="Solid faces and edges"></canvas>
-          <button class="model-view-reset" id="modelResetView" type="button" aria-label="Reset view" data-tip="Reset view. Shift: every object"></button>
           <div class="model-bar" id="modelBar">
             <div class="model-top">
               <div class="model-tools" role="toolbar" aria-label="Model">
@@ -210,7 +209,10 @@ export function mountMarkup(root: HTMLElement) {
                 <div class="model-history-tree" id="modelHistoryTree" role="tree" aria-label="Model history"></div>
               </section>
               <div class="model-foot" id="modelFoot">
-                <div id="modelReadout" class="model-readout">Open a STEP file to measure a solid.</div>
+                <div class="model-foot-row">
+                  <button class="model-view-reset" id="modelResetView" type="button" aria-label="Reset view" data-tip="Reset view. Shift: every object"></button>
+                  <div id="modelReadout" class="model-readout">Open a STEP file to measure a solid.</div>
+                </div>
               </div>
             </div>
           </div>

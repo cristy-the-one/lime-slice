@@ -486,7 +486,9 @@ function onHandleDrag(drag: HandleDrag) {
 /** A Place field changed by typing, a scrub, or a drag. Only that field moves the object. */
 function placeChanged(id: string, phase: PlacePhase) {
   const field = PLACE_KEYS[PLACE_FIELDS.indexOf(id as (typeof PLACE_FIELDS)[number])];
-  if (!field) return;
+  const input = document.querySelector<HTMLInputElement>(`#${id}`);
+  // A field cleared, or half typed ("-"), is no number yet: the part stays where it is.
+  if (!field || !input || input.value.trim() === "" || !input.validity.valid) return;
   hooks?.placeMoved(field, num(`#${id}`), phase);
   refreshGhost();
 }

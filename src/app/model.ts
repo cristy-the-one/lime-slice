@@ -22,7 +22,7 @@ import { holeAxis, lastFace, outwardFromMesh, selectedEdges } from "../model-ble
 import { nextModelPicks, selectionCountLabel } from "../model-select";
 import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
-import { extentAlong, extentMemo, facePlane, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
+import { boxExtentAlong, extentAlong, extentMemo, facePlane, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
 import {
   ROOT,
   childWithOp,
@@ -142,8 +142,8 @@ let placeBefore: Affine | null = null;
 let placeTimer = 0;
 /** A typed or scrubbed Place number is one step once it rests this long. A drag ends its own step. */
 const PLACE_SETTLE_MS = 400;
-/** The centre each solid turns about in Place, in its own frame. */
-const pivots = new WeakMap<Float32Array, Vec3>();
+/** Each solid's box in its own frame. */
+const ownBoxes = new WeakMap<Float32Array, Bounds>();
 
 export function bindModelView() {
   fx.model?.onPick((pick: ModelPick | null, shift: boolean) => void onPick(pick, shift));
@@ -175,6 +175,8 @@ export function bindModelView() {
       return splitLegal();
     },
     paramsChanged(typed) {
+      // Place closed while a typed move was settling: that move is its step now, before Undo means the solid again.
+      if (placeBefore && openModelTool() !== "place") endPlace();
       scheduleProbe(typed ? PROBE_WAIT_MS : 0);
       syncUndo();
     },
@@ -1147,14 +1149,16 @@ function openBox(): Bounds | null {
   return open ? posedBounds(open.solid.positions, openPose()) : null;
 }
 
+/** The solid's box in its own frame, kept per solid: Place turns about its centre, and the kernel cuts against it. */
+function ownBox(solid: ParsedSolid): Bounds {
+  let box = ownBoxes.get(solid.positions);
+  if (!box) ownBoxes.set(solid.positions, (box = boundsOf(solid.positions)));
+  return box;
+}
+
 function pivotOf(solid: ParsedSolid): Vec3 {
-  let pivot = pivots.get(solid.positions);
-  if (!pivot) {
-    const own = boundsOf(solid.positions);
-    pivot = [(own.min[0] + own.max[0]) / 2, (own.min[1] + own.max[1]) / 2, (own.min[2] + own.max[2]) / 2];
-    pivots.set(solid.positions, pivot);
-  }
-  return pivot;
+  const own = ownBox(solid);
+  return [(own.min[0] + own.max[0]) / 2, (own.min[1] + own.max[1]) / 2, (own.min[2] + own.max[2]) / 2];
 }
 
 /**
@@ -1190,11 +1194,17 @@ function placeMoved(field: keyof PlaceFields, value: number, phase: PlacePhase) 
   const at = open;
   if (!at || busy || jumping) return;
   const from = openPose();
+  const next = poseFromPlace(from, pivotOf(at.solid), field, value);
+  if (samePose(next, from)) {
+    // A grab with no move, or a number retyped as it was, changes nothing and opens no step.
+    if (phase === "end") endPlace();
+    return;
+  }
   if (!placeBefore) {
     placeBefore = from;
     beginEdit();
   }
-  putPose(at.objectId, poseFromPlace(from, pivotOf(at.solid), field, value));
+  putPose(at.objectId, next);
   window.clearTimeout(placeTimer);
   if (phase === "end") endPlace();
   else if (phase === "typed") placeTimer = window.setTimeout(endPlace, PLACE_SETTLE_MS);
@@ -1215,13 +1225,18 @@ function endPlace() {
   placeBefore = null;
   if (!before) return;
   flushEdit();
-  const now = openPose();
-  if (before.t.some((value, i) => value !== now.t[i]) || before.m.some((value, i) => value !== now.m[i])) {
+  if (!samePose(before, openPose())) {
     placeUndo.push(before);
     placeRedo = [];
     markModelEdit();
   }
   syncUndo();
+  // A turn changes the solid's model-space box, and with it which tools are on offer.
+  syncModelSolid();
+}
+
+function samePose(a: Affine, b: Affine): boolean {
+  return a.t.every((value, i) => value === b.t[i]) && a.m.every((value, i) => value === b.m[i]);
 }
 
 /** Undo or Redo one Place step. A gesture still settling becomes a step first, so Undo takes it back. */
@@ -1295,10 +1310,24 @@ function modelExtent(solid: ParsedSolid, pose: Affine, normal: Vec3): AxisExtent
 }
 
 /**
+ * The box the kernel measures a cut against, the solid's own, as `planeFor` takes it: the box itself on an
+ * identity pose, else its corners' extent along a model-space normal turned back into the solid's frame.
+ */
+function kernelBox(solid: ParsedSolid, pose: Affine): { min: Vec3; max: Vec3 } | ((normal: Vec3) => AxisExtent) {
+  const own = ownBox(solid);
+  if (isIdentity(pose)) return own;
+  const back = inversePose(pose);
+  return (normal) => {
+    const extent = boxExtentAlong(own, turnDir(back, normal));
+    const shift = normal[0] * pose.t[0] + normal[1] * pose.t[1] + normal[2] * pose.t[2];
+    return { min: extent.min + shift, max: extent.max + shift };
+  };
+}
+
+/**
  * The split plane from the panel, in model space: the one place a split request is built, and `toolOp` takes
  * it into the solid's frame. X, Y, and Z cut square to that axis of the view, which is model space; Face cuts
- * parallel to the last picked flat face. The kernel's margin is checked against the solid's model-space box,
- * the same as its own box on an identity pose or a quarter turn.
+ * parallel to the last picked flat face.
  */
 function splitState(): SplitState {
   const at = open;
@@ -1321,7 +1350,7 @@ function splitState(): SplitState {
     const center: Vec3 = [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2];
     const base = splitBase(mode, center, face);
     state = base
-      ? { plan: planeFor(base, value, tilt, (normal) => modelExtent(at.solid, pose, normal), box) }
+      ? { plan: planeFor(base, value, tilt, (normal) => modelExtent(at.solid, pose, normal), kernelBox(at.solid, pose)) }
       : { why: "Pick a flat face. This one is curved.", wait: false };
   }
   splitKept = { solid: at.solid, pose, key, state };
@@ -1334,7 +1363,8 @@ function splitLegal(): boolean {
   const pose = openPose();
   const box = openBox();
   if (!at || !box) return false;
-  return (["x", "y", "z"] as const).some((mode) => planeFor(splitBase(mode, [0, 0, 0], null)!, 0, [0, 0], (normal) => modelExtent(at.solid, pose, normal), box).range != null);
+  const kernel = kernelBox(at.solid, pose);
+  return (["x", "y", "z"] as const).some((mode) => planeFor(splitBase(mode, [0, 0, 0], null)!, 0, [0, 0], (normal) => modelExtent(at.solid, pose, normal), kernel).range != null);
 }
 
 function flatFace(solid: ParsedSolid, face: number): FacePlane | null {
