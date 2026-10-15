@@ -17,7 +17,7 @@ A row is **done** when a user can do the thing and the engine honors it. **In pr
 - Printer, filament, and nozzle library. Our own profiles. Pressure advance is per filament and nozzle. [#110](https://github.com/cristy-the-one/lime-slice/pull/110)
 - Seam picker: blend, nearest, aligned, rear. [#127](https://github.com/cristy-the-one/lime-slice/pull/127)
 - Ironing, off unless the request carries `ironing`. [#136](https://github.com/cristy-the-one/lime-slice/pull/136), controls in [#131](https://github.com/cristy-the-one/lime-slice/pull/131)
-- Arc fitting and Arachne-style variable-width walls. Both default on. They are not a gap.
+- Arc fitting and Arachne-style variable-width walls. Both default on; arcs are written only for a firmware that takes them. They are not a gap.
 - Prusa Link send from the desktop app. [#140](https://github.com/cristy-the-one/lime-slice/pull/140), earlier UI in [#111](https://github.com/cristy-the-one/lime-slice/pull/111)
 - Multi-object plates, all-at-once, each object in its own part frame. [#126](https://github.com/cristy-the-one/lime-slice/pull/126), UI plate in [#121](https://github.com/cristy-the-one/lime-slice/pull/121)
 - Support painting, enforce and block disks, sliced. [#139](https://github.com/cristy-the-one/lime-slice/pull/139)
@@ -138,9 +138,9 @@ Scarfed seams, aligned seams on a sharp corner, and nearest seams are in the pla
 
 **Status.** Exists.
 
-G2/G3 fitting is default on (`arcFit` in `src/app/settings.ts`, `SliceRequest::arc_fit` in `crates/lime-slice-core/src/slice.rs`). The estimate counts `arcMoves`.
+The user's Arc fit choice (`arcFit` in `src/app/settings.ts`, `SliceRequest::arc_fit` in `crates/lime-slice-core/src/slice.rs`) is on by default. Arcs are written only when the printer's firmware also takes them, so a default slice has arcs only from the CLI with no firmware named and on a Marlin printer. The estimate counts `arcMoves`.
 
-Arcs are written only when the printer's firmware takes them: `printer.firmwareArcs` on the request (`PrinterProfile::accepts_arcs`), checked once in `EmitCfg::new` in `gcode.rs`. In the app it is the printer's "Firmware accepts arcs (G2/G3)" box beside Firmware. Klipper skips G2/G3 unless `printer.cfg` has `[gcode_arcs]`, and the next G1 then carries the skipped filament, which stopped a 1.5.0 print on the IR3 V2 with "Move exceeds maximum extrusion". So the defaults follow the firmware:
+The firmware's answer is `printer.firmwareArcs` on the request (`PrinterProfile::accepts_arcs`), checked once in `EmitCfg::new` in `gcode.rs`. In the app it is the printer's "Firmware accepts arcs (G2/G3)" box beside Firmware; while it is off, the Arc fit row is locked off and its tip says why. Klipper skips G2/G3 unless `printer.cfg` has `[gcode_arcs]`, and the next G1 then carries the skipped filament, which stopped a 1.5.0 print on the IR3 V2 with "Move exceeds maximum extrusion". So the defaults follow the firmware:
 
 | Printer | Firmware | Arcs | Why |
 | --- | --- | --- | --- |
@@ -149,9 +149,13 @@ Arcs are written only when the printer's firmware takes them: `printer.firmwareA
 | A custom or imported printer | Klipper | off until the box is ticked | the same |
 | A custom or imported printer | Marlin | on until the box is cleared | Marlin builds usually have `ARC_SUPPORT` |
 
-A stored printer, machine file, or project without the key gets its firmware's default. A request without `firmwareArcs` gets the same rule in the engine, and no firmware named (the CLI default) keeps arcs. The header's `; features:` line ends in `; arcs on` or `; arcs off (…)` whenever the request names the key, as the app always does.
+Read printer.cfg (Moonraker) sets the box from whether the config has `[gcode_arcs]`. A stored printer or machine file without the key gets its firmware's default; a stored IR3 V2 gets the preset's off. Projects never carry the key: the printer decides. In the engine a request without `firmwareArcs` follows the same rule, and no firmware named (the CLI default) keeps arcs.
 
-**User value.** Already captured. Leave it on.
+The header's `; features:` line ends in `; arcs on` or `; arcs off (…)` whenever the request names the key, as the app always does. A Klipper request without the key also gets `; arcs off (firmware takes no G2/G3)`, since its arcs are dropped. A request that names neither keeps the header it had before.
+
+Release note: Klipper printers now slice without arcs unless their firmware takes them. If your printer.cfg has `[gcode_arcs]`, tick "Firmware accepts arcs (G2/G3)" under Printer, or use Read printer.cfg.
+
+**User value.** Prints that Klipper without `[gcode_arcs]` used to stop now run. Keep Arc fit on; the printer setting decides.
 
 **Effort.** None.
 
