@@ -5,12 +5,14 @@ import {
   boxUnder,
   duplicatePose,
   inversePose,
+  isRigid,
   isIdentity,
   movedPose,
   newSolidPose,
   placeFields,
   poseFromPlace,
   posedBounds,
+  relativePose,
   thenPose,
   toSolidOp,
   turnDir,
@@ -145,6 +147,26 @@ const fresh = posedBounds(new Float32Array(cube), movedPose(skew, [5, -2, 1]))!;
 check("a pose that only moved shifts the kept box", nearVec([...shiftedBox.min, ...shiftedBox.max], [skewBox.min[0] + 5, skewBox.min[1] - 2, skewBox.min[2] + 1, skewBox.max[0] + 5, skewBox.max[1] - 2, skewBox.max[2] + 1], 1e-9));
 check("and the shifted box is the one every vertex gives", nearVec([...shiftedBox.min, ...shiftedBox.max], [...fresh.min, ...fresh.max], 1e-9));
 eq("a box under a move", boxUnder({ min: [0, 0, 0], max: [1, 2, 3] }, movedOnly), { min: [10, 0, -5], max: [11, 2, -2] });
+
+// A join's tool in the target's own frame ---------------------------------------------------------------------------
+
+const target: Affine = { m: eulerOrient(20, 0, 30), t: [5, -3, 12] };
+const toolPose: Affine = { m: eulerOrient(0, 45, 90), t: [40, 2, 0] };
+const relative = relativePose(target, toolPose);
+for (const p of [[0, 0, 0], [10, 4, -2], [-7, 3, 9]] as Vec3[]) {
+  check(`the tool's point ${p} lands where the target's frame puts it`, nearVec(applyPose(target, applyPose(relative, p)), applyPose(toolPose, p), 1e-9));
+}
+check("and back: the target's inverse undoes it", nearVec(applyPose(thenPose(relative, target), [1, 2, 3]), applyPose(toolPose, [1, 2, 3]), 1e-9));
+eq("on an untouched target it is the tool's own pose", relativePose(IDENTITY_POSE, toolPose), toolPose);
+eq("two objects moved alike leave it alone", relativePose(movedPose(target, [8, 8, 8]), movedPose(toolPose, [8, 8, 8])).t.map((v) => Math.round(v * 1e9) / 1e9), relative.t.map((v) => Math.round(v * 1e9) / 1e9));
+eq("a quarter turn about Z of the target moves a model −Y into its own −X", relativePose({ m: eulerOrient(0, 0, 90), t: [5, 7, 0] }, { m: eulerOrient(0, 0, 90), t: [5, -3, 0] }).t.map((v) => Math.round(v * 1e9) / 1e9), [-10, 0, 0]);
+eq("rigid: a turn and a move are; a scale, a mirror and a shear are not", [
+  isRigid(relative),
+  isRigid({ m: [2, 0, 0, 0, 2, 0, 0, 0, 2], t: [0, 0, 0] }),
+  isRigid({ m: [-1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] }),
+  isRigid({ m: [1, 0.5, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] }),
+  isRigid({ m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, Number.NaN, 0] }),
+], [true, false, false, false, false]);
 
 if (failed) {
   console.error(`${failed} failed`);

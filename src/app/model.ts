@@ -10,7 +10,6 @@ import {
   placeFields,
   poseFromPlace,
   posedBounds,
-  relativePose,
   toSolidOp,
   turnDir,
   type Affine,
@@ -56,7 +55,7 @@ import {
   type Vec3,
 } from "../model-tree";
 import { loadedTree, savedTree, toolFirst, type SavedTree } from "../model-tree-file";
-import { applyRequest, exportRequest, gotoRequest, newSolidRequest, openRequest, probeRequest, wholeTreeRequest } from "../model-request";
+import { applyRequest, exportRequest, gotoRequest, joinOp, newSolidRequest, openRequest, probeRequest, wholeTreeRequest } from "../model-request";
 import {
   closeModelTool,
   fieldPrimitive,
@@ -365,7 +364,7 @@ function solidObject(obj: PlateObject): boolean {
  * the solid's frame, worked out here, once, so moving either object later moves no cut already made. Null until a tool
  * is picked and has a tree.
  */
-function joinOp(): ModelOp | null {
+function panelJoin(): ModelOp | null {
   const id = joinPick();
   const obj = id ? livePlate().find((item) => item.id === id) : undefined;
   if (!open || !obj) return null;
@@ -374,7 +373,7 @@ function joinOp(): ModelOp | null {
   const node = tree ? nodeWithMesh(tree, token) : null;
   if (!tree || node == null) return null;
   const keepTool = document.querySelector<HTMLInputElement>("#modelKeepTool")?.checked ?? false;
-  return { kind: "join", op: boolOp(), tool: { object: obj.id, key: tree.key, node, name: obj.name }, relative: relativePose(openPose(), modelPoseOf(obj)), keepTool };
+  return joinOp(boolOp(), { object: obj.id, key: tree.key, node, name: obj.name }, openPose(), modelPoseOf(obj), keepTool);
 }
 
 /** The readout says what the join will do, each time that changes: "Cut telo split from telo.stp; telo split leaves the plate." */
@@ -431,7 +430,7 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
     case "hole":
       return { kind: "hole", origin, axis: drillAxis(), radius: num("#modelHoleR"), depth: num("#modelHoleD") };
     case "boolean":
-      return joinOpen() ? joinOp() : { kind: "boolean", op: boolOp(), ...fieldPrimitive() };
+      return joinOpen() ? panelJoin() : { kind: "boolean", op: boolOp(), ...fieldPrimitive() };
     case "split": {
       const split = splitState();
       return "plan" in split ? { kind: "split", origin: split.plan.origin, normal: split.plan.normal } : null;

@@ -64,8 +64,8 @@ export function savedTree(tree: ModelTree, committed: NodeId, owner: (key: strin
   return { nodes, current: tree.current, committed, nextId: tree.nextId };
 }
 
-function savedJoin({ tool, ...op }: JoinOp, owner: (key: string) => string | undefined): SavedJoin {
-  return { ...op, tool: { object: owner(tool.key) ?? tool.object, node: tool.node, name: tool.name } };
+function savedJoin({ op, tool, relative, keepTool }: JoinOp, owner: (key: string) => string | undefined): SavedJoin {
+  return { kind: "join", op, tool: { object: owner(tool.key) ?? tool.object, node: tool.node, name: tool.name }, relative, keepTool };
 }
 
 /** The objects whose trees a saved tree's joins take a tool from. */
@@ -98,7 +98,7 @@ export function loadedTree(saved: SavedTreeBody, key: string, root: ModelRoot, f
   const nodes = new Map<NodeId, ModelNode>();
   for (const node of saved.nodes) {
     const piece = node.piece ? objectKey(node.piece) : undefined;
-    const op: ModelOp | null = node.op?.kind === "join" ? { ...node.op, tool: { ...node.op.tool, key: objectKey(node.op.tool.object) ?? "" } } : node.op;
+    const op: ModelOp | null = node.op?.kind === "join" ? { ...node.op, tool: { object: node.op.tool.object, key: objectKey(node.op.tool.object) ?? "", node: node.op.tool.node, name: node.op.tool.name } } : node.op;
     nodes.set(node.id, {
       id: node.id,
       parent: node.parent,

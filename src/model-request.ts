@@ -4,7 +4,8 @@
  */
 import { bytesToBase64 } from "./base64.ts";
 import { rootSpec, type PrimitiveSpec } from "./model-primitive.ts";
-import { savedNodes, type Fingerprint, type ModelOp, type ModelRoot, type ModelTree, type NodeId } from "./model-tree.ts";
+import { relativePose, type Affine } from "./model-space.ts";
+import { savedNodes, type BooleanKind, type Fingerprint, type JoinTool, type ModelOp, type ModelRoot, type ModelTree, type NodeId } from "./model-tree.ts";
 
 export type TreeRequest = Record<string, unknown>;
 
@@ -35,6 +36,14 @@ export function wholeTreeRequest(tree: ModelTree, root: Exclude<ModelRoot, { kin
 /** Build `op` on `parent` as `node`. `otherKey` starts the tree of a split's other piece. */
 export function applyRequest(key: string, parent: NodeId, node: NodeId, op: ModelOp, chordMm: number, otherKey?: string | null): TreeRequest {
   return { call: "apply", key, parent, node, op, chordMm, ...(otherKey ? { otherKey } : {}) };
+}
+
+/**
+ * A join of the solid posed at `target` with the tool's step, its object posed at `tool` in model space. The tool's pose in
+ * the solid's own frame is worked out here, once, and stored, so moving either object later never moves the cut.
+ */
+export function joinOp(op: BooleanKind, toolRef: JoinTool, target: Affine, tool: Affine, keepTool: boolean): Extract<ModelOp, { kind: "join" }> {
+  return { kind: "join", op, tool: toolRef, relative: relativePose(target, tool), keepTool };
 }
 
 export function probeRequest(key: string, node: NodeId, op: ModelOp): TreeRequest {
