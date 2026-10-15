@@ -178,6 +178,20 @@ test("Prepare undo of a new solid on an empty plate empties the plate again", as
   await expect(page.locator("#modelEmpty")).toBeVisible();
 });
 
+test("a copy of a new solid that has no step yet starts from the same primitive, with no STEP written or read", async ({ page }) => {
+  const tree = await start(page);
+  await create(page, "tube", { modelRadius: 10, modelInnerR: 6, modelHeight: 5 });
+  await expect(readout(page)).toContainText("Tube 1.");
+  await page.locator("#plateDuplicate").click();
+  await expect(objects(page)).toHaveCount(2);
+  await expect.poll(() => tree.of("open").length, { message: "the copy is a tree of its own" }).toBe(2);
+  const [first, copy] = tree.of("open");
+  expect(copy!.primitive, "rooted in the same primitive").toEqual(first!.primitive);
+  expect(copy!.key).not.toBe(first!.key);
+  expect(tree.of("export"), "no STEP is written for it").toHaveLength(0);
+  await expect(rows(page).first()).toContainText("Tube ⌀20 inside ⌀12 h 5");
+});
+
 test("the Boolean tool sends a torus's ring and tube", async ({ page }) => {
   const tree = await start(page, true);
   await page.locator("#modelToolBoolean").click();
