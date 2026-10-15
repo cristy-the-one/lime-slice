@@ -28,7 +28,8 @@ interface Handlers {
   /** The root solid of a file (`request.filename` names it) or of a primitive (`request.primitive`), or why there is none. */
   open(request: Body): MockSolid | { error: string };
   apply?(request: Body, parent: MockSolid): Built;
-  probe?(request: Body): Body | Promise<Body>;
+  /** A dry-run of `request.op` on `on`, the solid of the node it names. */
+  probe?(request: Body, on: MockSolid): Body | Promise<Body>;
   /** An answer of its own for a jump, such as a step that no longer rebuilds. Null answers as usual. */
   goto?(request: Body): Body | null;
   distanceMm?: number;
@@ -167,7 +168,7 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
       case "goto":
         return handlers.goto?.(request) ?? reply(base.solid, node);
       case "probe":
-        return (await handlers.probe?.(request)) ?? { ok: true };
+        return (await handlers.probe?.(request, base.solid)) ?? { ok: true };
       case "distance":
         return { id: node, distanceMm: handlers.distanceMm ?? 20 };
       case "drop": {
