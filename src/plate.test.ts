@@ -2,6 +2,8 @@ import { encode3mf, ID_MATRIX, offBed, rotZ } from "./mesh-place.ts";
 import { nextSplitAt } from "./split-at.ts";
 import {
   addedCopy,
+  assemblePlate,
+  meshSeat,
   addedMesh,
   addedSplit,
   objectMarks,
@@ -313,13 +315,31 @@ check("a copy sits its own width plus 10 mm along model X", JSON.stringify(plain
 const turnedCopy = addedCopy({ objects: [posedParent], selectedId: "part" })!.objects[1]!;
 check("a copy of a turned part keeps the turn and steps along model X", JSON.stringify(turnedCopy.modelPose?.m) === JSON.stringify(turnedPose.m) && near(turnedCopy.modelPose!.t[0], 130, 1e-6) && turnedCopy.modelPose!.t[1] === 0);
 check("a copy keeps its plate pose", JSON.stringify([turnedCopy.offset, turnedCopy.orient]) === JSON.stringify([posedParent.offset, posedParent.orient]));
-const movedPlate = withModelPose({ objects: [object(20, "part", false)], selectedId: "part" }, "part", { m: [...ID_MATRIX], t: [10, 0, 0] });
+const unmoved = object(20, "part", false);
+const movedPlate = withModelPose({ objects: [unmoved], selectedId: "part" }, "part", { m: [...ID_MATRIX], t: [10, 0, 0] });
 const movedObj = movedPlate.objects[0]!;
-check("a model-space move leaves the plate pose and the mesh alone", movedObj.offset.x === 0 && movedObj.bytes.byteLength === 8 && JSON.stringify(placeObject(movedObj, bed, bed).bounds) === JSON.stringify(placeObject(object(20, "part", false), bed, bed).bounds));
+check("a model-space move leaves the plate pose and the mesh alone", movedObj.offset === unmoved.offset && movedObj.orient === unmoved.orient && movedObj.bytes === unmoved.bytes && movedObj.sourcePos === unmoved.sourcePos);
 check("identity drops the key", !("modelPose" in withModelPose(movedPlate, "part", { m: [...ID_MATRIX], t: [0, 0, 0] }).objects[0]!));
 const posedSnap = snapPlate({ objects: [posedParent], selectedId: "part" });
 check("a Prepare step keeps the model pose", revivePlate(posedSnap)?.objects[0]?.modelPose === turnedPose);
 check("one object with a model pose is a version 2 file", plateFileIsVersion2([{ modelPose: turnedPose }]) && !plateFileIsVersion2([{}]));
+const record = { name: "p.step", bytesBase64: "", byteLength: 0, hash: "" };
+const fileRow = (bytes: ArrayBuffer, extra: object) => ({
+  id: "part", name: "p", mesh: { ...record, name: "p.stl" }, supportEdits: [], bytes, sourcePos: cube(10),
+  placement: { orient: [...ID_MATRIX] as typeof ID_MATRIX, scale: 1, centered: false, offset: { x: 0, y: 0, z: 0 }, stepTolerance: 0.1 }, ...extra,
+});
+const oldSolid = new ArrayBuffer(4);
+setMeshSeat(oldSolid, 0);
+assemblePlate([fileRow(oldSolid, { brep: record })]);
+check("a solid's mesh from a file saved before seats has an unknown seat, for Model to learn", meshSeat(oldSolid) === undefined);
+const newSolid = new ArrayBuffer(4);
+setMeshSeat(newSolid, 0);
+assemblePlate([fileRow(newSolid, { brep: record, meshSeatMm: 712.5 })]);
+check("a saved seat is the seat", meshSeat(newSolid) === 712.5);
+const plainStl = new ArrayBuffer(4);
+setMeshSeat(plainStl, -3);
+assemblePlate([fileRow(plainStl, {})]);
+check("a plain mesh keeps the seat it was read with", meshSeat(plainStl) === -3);
 const raisedObj = object(20, "part", false);
 setMeshSeat(raisedObj.bytes, 712);
 check("an object's mesh goes up by its seat before its pose", JSON.stringify(meshToModel(raisedObj).t) === JSON.stringify([0, 0, 712]));

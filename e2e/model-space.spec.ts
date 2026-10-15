@@ -43,7 +43,12 @@ async function openFiles(page: Page, files: Record<string, MockSolid>): Promise<
   const named = (name: unknown) => files[String(name)]!;
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
-  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: named(route.request().postDataJSON().filename).positions } }));
+  // As the slicer does, the mesh it reads from a STEP sits on Z = 0.
+  const seated = (positions: number[]) => {
+    const minZ = Math.min(...positions.filter((_, i) => i % 3 === 2));
+    return positions.map((value, i) => (i % 3 === 2 ? value - minZ : value));
+  };
+  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: seated(named(route.request().postDataJSON().filename).positions) } }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   const tree = await mockModelTree(page, { open: (request) => named(request.filename), apply: built });
   await page.goto("/");
@@ -131,6 +136,17 @@ test("two STEP files 100 mm apart in their own coordinates show 100 mm apart", a
   await openFiles(page, { "left.step": boxSolid([40, 30, 20]), "right.step": boxSolid([40, 30, 20], [100, 0, 0]) });
   await expect(canvas(page)).toHaveAttribute("data-solid", "0.00,0.00,0.00,40.00,30.00,20.00");
   expect(Object.values(await contextBoxes(page))).toEqual([[100, 0, 0, 140, 30, 20]]);
+});
+
+test("a STEP the slicer lowered onto the bed goes back to its own Z once Model has opened it", async ({ page }) => {
+  await openFiles(page, { "low.step": boxSolid([40, 30, 20]), "high.step": boxSolid([40, 30, 20], [100, 0, 50]) });
+  // The slicer's read of the file does not say how far it lowered it, so until Model opens it, it sits on Z = 0.
+  expect(Object.values(await contextBoxes(page))).toEqual([[100, 0, 0, 140, 30, 20]]);
+  await page.locator("[data-plate-select]").nth(1).click();
+  await expect(canvas(page)).toHaveAttribute("data-solid", "100.00,0.00,50.00,140.00,30.00,70.00");
+  await page.locator("[data-plate-select]").nth(0).click();
+  await expect(canvas(page)).toHaveAttribute("data-solid", "0.00,0.00,0.00,40.00,30.00,20.00");
+  expect(Object.values(await contextBoxes(page))).toEqual([[100, 0, 50, 140, 30, 70]]);
 });
 
 test("Place moves the open object in model space and leaves the plate and its mesh alone", async ({ page }) => {

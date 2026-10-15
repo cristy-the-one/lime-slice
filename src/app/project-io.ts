@@ -187,7 +187,7 @@ function fileObjects(trees: Awaited<ReturnType<typeof historyToSave>>["trees"]):
     if (obj.brep) row.brep = record(stepFileName(obj.fileName), obj.brep);
     if (obj.modelPose) row.modelPose = { m: [...obj.modelPose.m], t: [...obj.modelPose.t] };
     const seat = meshSeat(obj.bytes);
-    if (seat) row.meshSeatMm = seat;
+    if (seat !== undefined) row.meshSeatMm = seat;
     const saved = trees.get(obj.id);
     if (saved) row.modelTree = { ...saved.tree, rootStep: record(saved.rootStep.name, saved.rootStep.bytes) };
     return row;

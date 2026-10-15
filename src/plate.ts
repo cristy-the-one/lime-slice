@@ -107,7 +107,7 @@ export interface PlateFileObject {
   modelTree?: SavedTree<{ name: string; bytesBase64?: string; byteLength: number; hash: string }>;
   /** Optional pose from the object's CAD frame into Model's shared space. Omitted for identity, which is how an older file reads. */
   modelPose?: Affine;
-  /** Optional: how far the mesh was lowered onto Z = 0 when it was read. Omitted when unknown or 0. */
+  /** Optional: how far the mesh was lowered onto Z = 0 when it was read. Omitted while unknown. */
   meshSeatMm?: number;
 }
 
@@ -752,6 +752,8 @@ export function assemblePlate(rows: Array<PlateFileObject & { bytes: ArrayBuffer
       ...(row.modelPose && !isIdentity(row.modelPose) ? { modelPose: row.modelPose } : {}),
     };
     if (row.meshSeatMm !== undefined) setMeshSeat(row.bytes, row.meshSeatMm);
+    // A solid's mesh was saved already lowered, so reading it says 0; a file from before seats lets Model learn it again.
+    else if (row.brep || row.modelTree) seats.delete(meshTokenOf(row.bytes));
     hold(obj);
     return obj;
   });

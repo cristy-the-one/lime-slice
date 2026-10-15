@@ -299,8 +299,17 @@ eq("one object with a model pose writes version 2 and keeps it", [spaceWire.vers
 const spaceOpened = parseProject(JSON.stringify(spaceWire));
 eq("the model pose and seat round-trip", spaceOpened.ok ? [spaceOpened.project.objects?.[0]?.modelPose, spaceOpened.project.objects?.[0]?.meshSeatMm] : null, [spacePose, 712.5]);
 eq("a plate saved before model space opens with no pose: identity", plainOpened.ok ? plainOpened.project.objects?.map((obj) => [obj.modelPose ?? null, obj.meshSeatMm ?? null]) : null, [[null, null], [null, null]]);
-spaceWire.objects[0]!.modelPose = { m: [1, 0, 0], t: [0, 0, 0] };
-eq("a damaged model pose fails the open", parseProject(JSON.stringify(spaceWire)), { ok: false, message: "This project's model space position is damaged." });
+for (const [name, m] of [
+  ["a short matrix", [1, 0, 0]],
+  ["a collapsed matrix", [0, 0, 0, 0, 0, 0, 0, 0, 0]],
+  ["a mirror", [-1, 0, 0, 0, 1, 0, 0, 0, 1]],
+  ["a shear", [1, 0.5, 0, 0, 1, 0, 0, 0, 1]],
+] as const) {
+  spaceWire.objects[0]!.modelPose = { m, t: [0, 0, 0] };
+  eq(`${name} as a model pose fails the open`, parseProject(JSON.stringify(spaceWire)), { ok: false, message: "This project's model space position is damaged." });
+}
+spaceWire.objects[0]!.modelPose = { m: [0, -2, 0, 2, 0, 0, 0, 0, 2], t: [0, 0, 0] };
+check("a turn with one uniform scale reads", parseProject(JSON.stringify(spaceWire)).ok);
 
 // Model history: a part with a fork, a renamed step, and a split whose piece has a step of its own.
 const rootStep = new Uint8Array([0x49, 0x53, 0x4f, 1, 2, 3]);

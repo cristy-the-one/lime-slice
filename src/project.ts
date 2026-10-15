@@ -420,12 +420,21 @@ function readPlateObject(value: unknown): PlateFileObject | string {
   return object;
 }
 
-/** `{m, t}`: nine numbers for the matrix and three for the move, all finite. */
+/** `{m, t}`: a turn, times at most one uniform scale, and a move. A shear, a mirror, or a collapse is damage. */
 function readPose(value: unknown): Affine | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const { m, t } = value as Record<string, unknown>;
   if (!Array.isArray(m) || m.length !== 9 || !m.every(finite)) return null;
   if (!Array.isArray(t) || t.length !== 3 || !t.every(finite)) return null;
+  const col = (c: number) => [m[c] as number, m[c + 3] as number, m[c + 6] as number];
+  const dot = (a: number[], b: number[]) => a[0]! * b[0]! + a[1]! * b[1]! + a[2]! * b[2]!;
+  const [x, y, z] = [col(0), col(1), col(2)];
+  const s2 = dot(x, x);
+  const tol = 1e-6 * Math.max(s2, 1e-12);
+  if (!(s2 > 1e-12) || Math.abs(dot(y, y) - s2) > tol || Math.abs(dot(z, z) - s2) > tol) return null;
+  if (Math.abs(dot(x, y)) > tol || Math.abs(dot(y, z)) > tol || Math.abs(dot(x, z)) > tol) return null;
+  const det = x[0]! * (y[1]! * z[2]! - y[2]! * z[1]!) - y[0]! * (x[1]! * z[2]! - x[2]! * z[1]!) + z[0]! * (x[1]! * y[2]! - x[2]! * y[1]!);
+  if (!(det > 0)) return null;
   return { m: [...m] as Affine["m"], t: [t[0], t[1], t[2]] };
 }
 

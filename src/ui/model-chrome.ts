@@ -39,8 +39,11 @@ interface ModelChromeHooks {
   /** Where the open object sits in model space, as the Place fields show it. Null with nothing open. */
   placeFields(): PlaceFields | null;
   /** A Place field changed: the object moves, or turns, in model space. */
-  placeMoved(fields: PlaceFields, changed: "move" | "turn", done: boolean): void;
+  placeMoved(field: keyof PlaceFields, value: number, phase: PlacePhase): void;
 }
+
+/** A typed or scrubbed number ends its step once it rests; a drag holds its step open until the pointer lets go. */
+export type PlacePhase = "typed" | "drag" | "end";
 
 const TOOLS: { id: ModelTool; icon: IconNode; label: string }[] = [
   { id: "boolean", icon: Box, label: "Boolean" },
@@ -54,7 +57,10 @@ const TOOLS: { id: ModelTool; icon: IconNode; label: string }[] = [
 ];
 
 const PLACE_FIELDS = ["modelPlaceX", "modelPlaceY", "modelPlaceZ", "modelPlaceRx", "modelPlaceRy", "modelPlaceRz"] as const;
+const PLACE_KEYS = ["x", "y", "z", "rx", "ry", "rz"] as const satisfies readonly (keyof PlaceFields)[];
 const BED_KEY = "lime-slice-model-bed";
+/** Tools that leave the solid as it is, so they run on surfaces with no closed solid too. They have no Apply. */
+const KEEPS_SOLID: ReadonlySet<string> = new Set(["measure", "place"]);
 
 let hooks: ModelChromeHooks | null = null;
 let tool: ModelTool | null = null;
@@ -126,8 +132,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
   document.querySelector("#modelCancel")?.addEventListener("click", () => closeTool());
   document.querySelector("#modelPanel")?.addEventListener("input", (ev) => {
     if (tool === "place") {
-      const id = ev.target instanceof HTMLElement ? ev.target.id : "";
-      placeChanged(/Rx|Ry|Rz/.test(id) ? "turn" : "move", false);
+      placeChanged(ev.target instanceof HTMLElement ? ev.target.id : "", "typed");
       return;
     }
     refreshGhost();
@@ -189,10 +194,10 @@ export function openModelTool(): ModelTool | null {
   return tool;
 }
 
-/** Whether the open shape can be edited. Surfaces only can be measured, so the edit tools turn off. */
+/** Whether the open shape can be edited. Surfaces only can be measured and placed, so the edit tools turn off. */
 export function setModelEditable(next: boolean) {
   editable = next;
-  if (!editable && tool && tool !== "measure") closeTool();
+  if (!editable && tool && !KEEPS_SOLID.has(tool)) closeTool();
   refreshTools();
 }
 
@@ -228,6 +233,9 @@ function toggleTool(next: ModelTool) {
   if (next === "split") applySplitDefaults();
   if (next === "hole") applyHoleDefaults();
   if (next === "measure") applyMeasureDefaults();
+  // Place moves as it goes, so its button only closes the tool.
+  const cancel = document.querySelector("#modelCancel");
+  if (cancel) cancel.textContent = next === "place" ? "Done" : "Cancel";
   syncFields();
   syncPlaceFields();
   refreshTools();
@@ -323,7 +331,7 @@ function refreshTools() {
   document.querySelectorAll<HTMLButtonElement>(".model-tool[data-tool]").forEach((button) => {
     const id = button.dataset.tool ?? "";
     button.dataset.tipIdle ??= button.dataset.tip ?? "";
-    const viewOnly = !editable && id !== "measure";
+    const viewOnly = !editable && !KEEPS_SOLID.has(id);
     const blocked = viewOnly ? VIEW_ONLY_TIP : toolBlockedTip(id, picks, legal);
     button.disabled = viewOnly || !toolAvailable(id, picks, legal);
     button.dataset.tip = blocked || button.dataset.tipIdle;
@@ -415,29 +423,33 @@ function onHandleDrag(drag: HandleDrag) {
   if (!tool) return;
   writeFields(drag.handle.fields, drag.values);
   if (tool === "place") {
-    placeChanged(drag.handle.kind === "ring" ? "turn" : "move", drag.phase === "end");
+    placeChanged(drag.handle.fields[0]!, drag.phase === "end" ? "end" : "drag");
     return;
   }
   document.querySelector("#modelPanel")?.dispatchEvent(new Event("input", { bubbles: true }));
   if (drag.phase === "end") hooks?.probeNow();
 }
 
-function placeChanged(changed: "move" | "turn", done: boolean) {
-  const [x, y, z, rx, ry, rz] = PLACE_FIELDS.map((field) => num(`#${field}`));
-  hooks?.placeMoved({ x: x!, y: y!, z: z!, rx: rx!, ry: ry!, rz: rz! }, changed, done);
+/** A Place field changed by typing, a scrub, or a drag. Only that field moves the object. */
+function placeChanged(id: string, phase: PlacePhase) {
+  const field = PLACE_KEYS[PLACE_FIELDS.indexOf(id as (typeof PLACE_FIELDS)[number])];
+  if (!field) return;
+  hooks?.placeMoved(field, num(`#${id}`), phase);
   refreshGhost();
 }
 
-/** The Place fields follow the open object's pose: on opening the tool, and after an undo or another object opens. */
-export function syncPlaceFields() {
+/**
+ * The Place fields follow the open object's pose: on opening the tool, and after another object opens. The field
+ * being typed in keeps its text, unless `all`: an undo or redo moves every field, the focused one too.
+ */
+export function syncPlaceFields(all = false) {
   if (tool !== "place") return;
   const fields = hooks?.placeFields();
   if (!fields) return;
   const active = document.activeElement;
   PLACE_FIELDS.forEach((field, i) => {
     const input = document.querySelector<HTMLInputElement>(`#${field}`);
-    const value = [fields.x, fields.y, fields.z, fields.rx, fields.ry, fields.rz][i]!;
-    if (input && input !== active) input.value = fieldText(value);
+    if (input && (all || input !== active)) input.value = fieldText(fields[PLACE_KEYS[i]!]);
   });
   refreshGhost();
 }

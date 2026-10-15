@@ -1,5 +1,5 @@
 import { fnv1aHex } from "./slice-action.ts";
-import { boundsOf, encodeStl, eulerOrient, layFlatMatrix, matMul, orientEuler, placeMesh, poseAffine, settle, rotX, rotY, rotZ, scaledCanonical, transformPositions, type Mat3, type MeshShift } from "./mesh-place.ts";
+import { boundsOf, encodeStl, eulerOrient, layFlatMatrix, matMul, orientEuler, parseStl, placeMesh, poseAffine, readStl, settle, settleBy, rotX, rotY, rotZ, scaledCanonical, transformPositions, type Mat3, type MeshShift } from "./mesh-place.ts";
 
 let failed = 0;
 
@@ -111,6 +111,14 @@ eq(
   Math.abs(composed.rx - 22.5) < 1e-4 && Math.abs(composed.ry) < 1e-4 && Math.abs(composed.rz - 90) < 1e-4,
   true,
 );
+
+const sunk = new Float32Array([0, 0, -3, 1, 0, -2, 0, 1, 5]);
+eq("a part below the bed goes up by 3: its seat is −3", [settleBy(sunk), Array.from(sunk)], [-3, [0, 0, 0, 1, 0, 1, 0, 1, 8]]);
+const lifted = new Float32Array([0, 0, 712.5, 1, 0, 713, 0, 1, 720]);
+eq("a part above the bed comes down by its seat", [settleBy(lifted), lifted[2], lifted[8]], [712.5, 0, 7.5]);
+eq("a part on the bed stays and has seat 0", settleBy(new Float32Array([0, 0, 0, 1, 0, 2, 0, 1, 3])), 0);
+const ascii = new TextEncoder().encode("solid t\nvertex 0 0 712.5\nvertex 1 0 713\nvertex 0 1 720\nendsolid t\n").buffer;
+eq("readStl keeps the file's own Z, parseStl lowers it", [readStl(ascii)?.[2], parseStl(ascii)?.[2]], [712.5, 0]);
 
 if (failed) throw new Error(`${failed} mesh-place check(s) failed`);
 console.log("mesh-place: ok");

@@ -6,6 +6,7 @@ import {
   duplicatePose,
   inversePose,
   isIdentity,
+  movedPose,
   placeFields,
   poseFromPlace,
   posedBounds,
@@ -95,14 +96,19 @@ eq("a plane at a slant to the part says so", opLabel(toSolidOp(split, skew)), "S
 // Place fields.
 const pivot: Vec3 = [10, 20, 30];
 eq("identity shows zeros", placeFields(IDENTITY_POSE, pivot), { x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0 });
-const moved = poseFromPlace({ x: 10, y: 0, z: 0, rx: 0, ry: 0, rz: 0 }, pivot, IDENTITY_POSE, "move");
+const moved = poseFromPlace(IDENTITY_POSE, pivot, "x", 10);
 eq("moving X by 10 moves the pose by 10", moved, { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [10, 0, 0] });
-const spun = poseFromPlace({ x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 90 }, pivot, IDENTITY_POSE, "turn");
+const spun = poseFromPlace(IDENTITY_POSE, pivot, "rz", 90);
 check("a turn keeps the centre where it is", nearVec(applyPose(spun, pivot), pivot));
 const fields = placeFields(spun, pivot);
 check("the fields of a turn read back", nearVec([fields.x, fields.y, fields.z, fields.rx, fields.ry, fields.rz], [0, 0, 0, 0, 0, 90], 1e-9));
-const thenMoved = poseFromPlace({ ...fields, y: 5 }, pivot, spun, "move");
-eq("a move keeps the turn it had, bit for bit", thenMoved.m, spun.m);
+const odd: Affine = { m: eulerOrient(12.345678, -3.2, 71.11), t: [0.123456789, -7.000001, 3] };
+const thenMoved = poseFromPlace(odd, pivot, "y", placeFields(odd, pivot).y + 5);
+eq("a move keeps the turn it had, bit for bit", thenMoved.m, odd.m);
+eq("a move along Y leaves X and Z exactly where they were", [thenMoved.t[0], thenMoved.t[2]], [odd.t[0], odd.t[2]]);
+check("and moves Y by the amount typed", Math.abs(thenMoved.t[1] - (odd.t[1] + 5)) < 1e-12);
+const retilted = placeFields(poseFromPlace(odd, pivot, "rx", 30), pivot);
+check("a turn field changes only its own angle and keeps the centre", nearVec([retilted.rx, retilted.ry, retilted.rz], [30, -3.2, 71.11], 1e-9) && nearVec([retilted.x, retilted.y, retilted.z], [placeFields(odd, pivot).x, placeFields(odd, pivot).y, placeFields(odd, pivot).z], 1e-9));
 
 // Duplicate.
 eq("a duplicate sits its own width plus 10 mm along X", duplicatePose(IDENTITY_POSE, { min: [0, 0, 0], max: [40, 30, 20] }).t, [50, 0, 0]);
@@ -111,6 +117,11 @@ eq("a duplicate sits its own width plus 10 mm along X", duplicatePose(IDENTITY_P
 const cube = new Float32Array([0, 0, 0, 10, 0, 0, 0, 20, 0, 0, 0, 5]);
 eq("posed bounds of a box turned a quarter", posedBounds(cube, turned), { min: [80, -20, 7], max: [100, -10, 12] });
 check("posed bounds are kept for the same solid and pose", posedBounds(cube, turned) === posedBounds(cube, turned));
+const skewBox = posedBounds(cube, skew)!;
+const shiftedBox = posedBounds(cube, movedPose(skew, [5, -2, 1]))!;
+const fresh = posedBounds(new Float32Array(cube), movedPose(skew, [5, -2, 1]))!;
+check("a pose that only moved shifts the kept box", nearVec([...shiftedBox.min, ...shiftedBox.max], [skewBox.min[0] + 5, skewBox.min[1] - 2, skewBox.min[2] + 1, skewBox.max[0] + 5, skewBox.max[1] - 2, skewBox.max[2] + 1], 1e-9));
+check("and the shifted box is the one every vertex gives", nearVec([...shiftedBox.min, ...shiftedBox.max], [...fresh.min, ...fresh.max], 1e-9));
 eq("a box under a move", boxUnder({ min: [0, 0, 0], max: [1, 2, 3] }, movedOnly), { min: [10, 0, -5], max: [11, 2, -2] });
 
 if (failed) {

@@ -1,7 +1,7 @@
-import { ID_MATRIX, placeMesh, type Bounds } from "./mesh-place.ts";
+import { ID_MATRIX, placeMesh, rotX, rotZ, type Bounds } from "./mesh-place.ts";
 import { assemblyNotice, shellCount, shellGroups, takeGroups } from "./mesh-shells.ts";
 import { boxUnder } from "./model-space.ts";
-import { meshToModel, oneObjectPlate, placeObject, replaceWithShells } from "./plate.ts";
+import { meshToModel, oneObjectPlate, placeObject, replaceWithShells, setMeshSeat } from "./plate.ts";
 
 let failed = 0;
 
@@ -110,6 +110,27 @@ if (next) {
     "in model space each piece stays where it was in the part",
     inModel.every((got, i) => got.min.every((value, a) => near(value, wantModel[i]!.min[a]!)) && got.max.every((value, a) => near(value, wantModel[i]!.max[a]!))),
     JSON.stringify(inModel),
+  );
+}
+
+// A parent turned, scaled, and moved on the plate, sitting turned and raised in model space, with a seat.
+{
+  const parent = {
+    ...oneObjectPlate({
+      name: "asm.step", fileName: "asm.step", bytes: new ArrayBuffer(3), sourcePos: apart, orient: rotZ(90), partScale: 2, centered: false,
+      offset: { x: 30, y: 40, z: 0 }, stepTolerance: 0.1, supportEdits: [], supportPaint: [], seamPaint: [], reinforcement: [],
+    }).objects[0]!,
+    modelPose: { m: rotX(90), t: [100, -20, 7] as [number, number, number] },
+  };
+  setMeshSeat(parent.bytes, 12.5);
+  const shellWorlds = takeGroups(placeObject(parent, 220, 220).positions, shellGroups(apart)!.groups);
+  const pieces = replaceWithShells({ objects: [parent], selectedId: parent.id }, parent.id, shellWorlds, 220, 220)!.objects;
+  const want = [box(0, 0, 0, 10, 10, 10), box(40, 0, 5, 50, 10, 15)].map((shell) => boxUnder(bounds(shell), meshToModel(parent)));
+  const got = pieces.map((obj) => boxUnder(bounds(obj.sourcePos), meshToModel(obj)));
+  check(
+    "a shell of a turned, scaled, raised part keeps its place in model space",
+    got.every((g, i) => g.min.every((value, a) => near(value, want[i]!.min[a]!)) && g.max.every((value, a) => near(value, want[i]!.max[a]!))),
+    JSON.stringify({ got, want }),
   );
 }
 

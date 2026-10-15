@@ -123,6 +123,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let solid: ModelSolid | null = null;
   /** The open solid's box in model space. */
   let solidBox: Box | null = null;
+  /** The open solid's box in its own frame. */
+  let ownBox: Box | null = null;
   let bedOn = true;
   let boundaries = new Map<number, number[]>();
   let center = new THREE.Vector3();
@@ -363,8 +365,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return liveBox(solidBox, factor);
   }
 
+  /** Whether the part fits the build volume is about the part, not where it sits or turns in model space. */
   function paintFit() {
-    const box = shownBox();
+    const factor = ghost?.kind === "scale" && ghost.factor > 0 ? ghost.factor : 1;
+    const box = ownBox ? liveBox(ownBox, factor) : null;
     if (!box) {
       if (!fit.hidden) fit.hidden = true;
       return;
@@ -521,11 +525,12 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   /** The solid's centre in its own frame, which a scale preview grows about, and its largest side. */
   function measureSolid(positions: Float32Array) {
     const own = boundsOf(positions);
+    ownBox = own;
     center = new THREE.Vector3((own.min[0] + own.max[0]) / 2, (own.min[1] + own.max[1]) / 2, (own.min[2] + own.max[2]) / 2);
     extent = Math.max(own.max[0] - own.min[0], own.max[1] - own.min[1], own.max[2] - own.min[2], 1);
   }
 
-  function applyPose(next: Affine) {
+  function setPosedMatrix(next: Affine) {
     const { m, t } = next;
     posed.matrix.set(m[0], m[1], m[2], t[0], m[3], m[4], m[5], t[1], m[6], m[7], m[8], t[2], 0, 0, 0, 1);
     posed.updateMatrixWorld(true);
@@ -740,7 +745,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       boundaries = new Map();
       center.set(0, 0, 0);
       extent = 1;
-      applyPose(at);
+      ownBox = null;
+      setPosedMatrix(at);
       if (!next || next.positions.length < 9) {
         clearGhosts();
         ghost = null;
@@ -777,7 +783,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       resize();
     },
     setPose(next) {
-      applyPose(next);
+      setPosedMatrix(next);
       rebuildGhost();
       kick();
     },

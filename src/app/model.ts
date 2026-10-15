@@ -10,11 +10,11 @@ import {
   posedBounds,
   toSolidOp,
   turnDir,
-  unionBox,
   type Affine,
   type PlaceFields,
 } from "../model-space";
 import { markProjectDirty } from "../project-dirty";
+import { unionBox } from "../measure";
 import type { ModelPick } from "../model-view";
 import { decodeSolid, type ParsedSolid } from "../model-reply";
 import { holeAxis, lastFace, outwardFromMesh, selectedEdges } from "../model-blend";
@@ -59,6 +59,7 @@ import {
   syncModelChrome,
   syncModelSolid,
   syncPlaceFields,
+  type PlacePhase,
 } from "../ui/model-chrome";
 import { mountModelHistory, syncModelHistory } from "../ui/model-history";
 import { dropRefusal } from "../model-history";
@@ -150,11 +151,11 @@ export function bindModelView() {
   document.querySelector("#modelStep")?.addEventListener("click", () => void runExport());
   // While Place is open, Undo and Redo step its moves; the solid's history waits until it closes.
   document.querySelector("#modelUndo")?.addEventListener("click", () => {
-    if (openModelTool() === "place") placeStep(placeUndo, placeRedo);
+    if (openModelTool() === "place") placeStep("undo");
     else void step(undoTarget, "Edit undone.");
   });
   document.querySelector("#modelRedo")?.addEventListener("click", () => {
-    if (openModelTool() === "place") placeStep(placeRedo, placeUndo);
+    if (openModelTool() === "place") placeStep("redo");
     else void step(redoTarget, "Edit redone.");
   });
   document.querySelector("#modelResetView")?.addEventListener("click", (ev) => frameModel((ev as MouseEvent).shiftKey));
@@ -183,8 +184,8 @@ export function bindModelView() {
     },
     edgePoints(edge) {
       const points = open?.solid.edges.find((item) => item.id === edge)?.points;
-      if (!points) return null;
       const pose = openPose();
+      if (!points || isIdentity(pose)) return points ?? null;
       const out = new Float32Array(points.length);
       for (let i = 0; i + 2 < points.length; i += 3) out.set(applyPose(pose, [points[i]!, points[i + 1]!, points[i + 2]!]), i);
       return out;
@@ -496,6 +497,9 @@ export function forgetModelTrees() {
   open = null;
   shownFor = null;
   framedFor = null;
+  // The edit history went with the old plate, so a move still under way is dropped, not kept as a step.
+  window.clearTimeout(placeTimer);
+  placeBefore = null;
   forgetPlaceSteps();
   ticket += 1;
   busy = false;
@@ -517,12 +521,12 @@ export function showModel() {
   busy = false;
   jumping = false;
   parked = null;
+  const objectId = state.plate.selectedId;
+  if (objectId !== shownFor) forgetPlaceSteps();
   flushEdit();
   open = null;
   syncUndo();
   const mesh = state.mesh;
-  const objectId = state.plate.selectedId;
-  if (objectId !== shownFor) forgetPlaceSteps();
   shownFor = objectId;
   const obj = state.plate.objects.find((item) => item.id === objectId);
   const token = mesh ? meshTokenOf(mesh.bytes) : null;
@@ -1166,10 +1170,10 @@ function learnSeat(solid: ParsedSolid) {
  * button, Home, the Objects list's Frame, and the first look at an object all come here.
  */
 export function frameModel(all: boolean) {
-  let box = openBox();
+  const box = openBox();
   if (!box || !open) return;
-  if (all) for (const part of contextParts(livePlate(), open.objectId)) box = unionBox(box, boxUnder(boundsOf(part.positions), part.matrix));
-  fx.model?.frame(box);
+  const others = all ? contextParts(livePlate(), open.objectId).map((part) => boxUnder(boundsOf(part.positions), part.matrix)) : [];
+  fx.model?.frame(unionBox([box, ...others])!);
 }
 
 /** The Objects list's Frame in Model: that object, opened if it is not the open one. */
@@ -1179,7 +1183,7 @@ export function frameInModel(id: string) {
 }
 
 /** A Place field moved the open object in model space. Its plate pose, mesh, and slice stay as they are. */
-function placeMoved(fields: PlaceFields, changed: "move" | "turn", done: boolean) {
+function placeMoved(field: keyof PlaceFields, value: number, phase: PlacePhase) {
   const at = open;
   if (!at || busy || jumping) return;
   const from = openPose();
@@ -1187,10 +1191,11 @@ function placeMoved(fields: PlaceFields, changed: "move" | "turn", done: boolean
     placeBefore = from;
     beginEdit();
   }
-  putPose(at.objectId, poseFromPlace(fields, pivotOf(at.solid), from, changed));
+  putPose(at.objectId, poseFromPlace(from, pivotOf(at.solid), field, value));
   window.clearTimeout(placeTimer);
-  if (done) endPlace();
-  else placeTimer = window.setTimeout(endPlace, PLACE_SETTLE_MS);
+  if (phase === "end") endPlace();
+  else if (phase === "typed") placeTimer = window.setTimeout(endPlace, PLACE_SETTLE_MS);
+  syncUndo();
 }
 
 function putPose(objectId: string, pose: Affine) {
@@ -1207,7 +1212,8 @@ function endPlace() {
   placeBefore = null;
   if (!before) return;
   flushEdit();
-  if (before !== openPose()) {
+  const now = openPose();
+  if (before.t.some((value, i) => value !== now.t[i]) || before.m.some((value, i) => value !== now.m[i])) {
     placeUndo.push(before);
     placeRedo = [];
     markModelEdit();
@@ -1215,9 +1221,10 @@ function endPlace() {
   syncUndo();
 }
 
-/** Undo or Redo one Place step. */
-function placeStep(from: Affine[], to: Affine[]) {
+/** Undo or Redo one Place step. A gesture still settling becomes a step first, so Undo takes it back. */
+function placeStep(way: "undo" | "redo") {
   endPlace();
+  const [from, to] = way === "undo" ? [placeUndo, placeRedo] : [placeRedo, placeUndo];
   const at = open;
   const pose = from.pop();
   if (!at || !pose) return;
@@ -1226,7 +1233,7 @@ function placeStep(from: Affine[], to: Affine[]) {
   putPose(at.objectId, pose);
   flushEdit();
   markModelEdit();
-  syncPlaceFields();
+  syncPlaceFields(true);
   syncUndo();
 }
 
@@ -1248,7 +1255,7 @@ function syncUndo() {
   const redo = document.querySelector<HTMLButtonElement>("#modelRedo");
   const placing = openModelTool() === "place";
   if (undo) {
-    undo.disabled = busy || jumping || !tree || (placing ? placeUndo.length === 0 : undoTarget(tree) == null);
+    undo.disabled = busy || jumping || !tree || (placing ? placeUndo.length === 0 && !placeBefore : undoTarget(tree) == null);
     undo.dataset.tip = placing ? "Undo the last move" : "Undo the last solid edit";
   }
   if (redo) {

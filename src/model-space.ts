@@ -92,22 +92,24 @@ export function boxUnder(source: Bounds, pose: Affine): Bounds {
   return { min, max };
 }
 
-/** The box of two boxes. */
-export function unionBox(a: Bounds, b: Bounds): Bounds {
-  return {
-    min: [Math.min(a.min[0], b.min[0]), Math.min(a.min[1], b.min[1]), Math.min(a.min[2], b.min[2])],
-    max: [Math.max(a.max[0], b.max[0]), Math.max(a.max[1], b.max[1]), Math.max(a.max[2], b.max[2])],
-  };
-}
-
 let lastBounds: { positions: ArrayLike<number>; pose: Affine; box: Bounds | null } | null = null;
 
 /**
  * The exact box of `positions` once posed. Kept for the last solid and pose, since every tool, handle and
- * note reads it while the numbers move and only a new solid or a new pose changes it.
+ * note reads it while the numbers move and only a new solid or a new pose changes it. A pose that only
+ * moved shifts the kept box instead of reading every vertex again, as Place does on each pointer move.
  */
 export function posedBounds(positions: ArrayLike<number>, pose: Affine): Bounds | null {
-  if (lastBounds && lastBounds.positions === positions && lastBounds.pose === pose) return lastBounds.box;
+  const held = lastBounds;
+  if (held && held.positions === positions) {
+    if (held.pose === pose) return held.box;
+    if (held.box && pose.m.every((value, i) => value === held.pose.m[i])) {
+      const d = [pose.t[0] - held.pose.t[0], pose.t[1] - held.pose.t[1], pose.t[2] - held.pose.t[2]];
+      const box: Bounds = { min: [held.box.min[0] + d[0]!, held.box.min[1] + d[1]!, held.box.min[2] + d[2]!], max: [held.box.max[0] + d[0]!, held.box.max[1] + d[1]!, held.box.max[2] + d[2]!] };
+      lastBounds = { positions, pose, box };
+      return box;
+    }
+  }
   let box: Bounds | null = null;
   if (positions.length >= 3) {
     const min: Vec3 = [Infinity, Infinity, Infinity];
@@ -131,6 +133,7 @@ export function posedBounds(positions: ArrayLike<number>, pose: Affine): Bounds 
  * A tool's op, typed in model space, in the open solid's own frame: what the engine builds and the tree stores.
  * A box or cylinder turns about its centre, so that centre goes through the pose and the turn takes the pose's
  * turn. Identity returns `op` itself, so every file without a pose sends exactly the numbers typed.
+ * The pose is rigid: only a Separate-shells piece of a scaled part carries a scale, and Model never opens one.
  */
 export function toSolidOp(op: ModelOp, pose: Affine): ModelOp {
   if (isIdentity(pose)) return op;
@@ -173,12 +176,21 @@ export function placeFields(pose: Affine, pivot: Vec3): PlaceFields {
 }
 
 /**
- * The pose the Place fields describe: turned by Rx, then Ry, then Rz about the centre, which then moves by X, Y, Z.
- * `from` keeps its scale, and its turn when only the move changed, so a move never re-rounds a turn.
+ * `from` with one Place field set to `value`: turned by Rx, then Ry, then Rz about the centre, which then moves
+ * by X, Y, Z. Every other field keeps the value `from` has, not the rounded one a field shows, so a move never
+ * nudges the other axes or the turn, and the scale stays.
  */
-export function poseFromPlace(fields: PlaceFields, pivot: Vec3, from: Affine, changed: "move" | "turn"): Affine {
+export function poseFromPlace(from: Affine, pivot: Vec3, field: keyof PlaceFields, value: number): Affine {
+  const now = placeFields(from, pivot);
+  const axis = ["x", "y", "z"].indexOf(field);
+  if (axis >= 0) {
+    const t: Vec3 = [...from.t];
+    t[axis] += value - now[field];
+    return { m: [...from.m] as Mat3, t };
+  }
+  const fields = { ...now, [field]: value };
   const s = poseScale(from);
-  const m = changed === "move" ? ([...from.m] as Mat3) : (eulerOrient(fields.rx, fields.ry, fields.rz).map((value) => value * s) as Mat3);
+  const m = eulerOrient(fields.rx, fields.ry, fields.rz).map((entry) => entry * s) as Mat3;
   const turned = applyPose({ m, t: [0, 0, 0] }, pivot);
   return { m, t: [pivot[0] + fields.x - turned[0], pivot[1] + fields.y - turned[1], pivot[2] + fields.z - turned[2]] };
 }
