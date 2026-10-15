@@ -180,7 +180,7 @@ test("a step can be renamed, and keeps its op in the tip", async ({ page }) => {
   await field.fill("Slot for the clip");
   await field.press("Enter");
   await expect(row(page, "Slot for the clip")).toBeFocused();
-  await expect(row(page, "Slot for the clip")).toHaveAttribute("data-tip", "Cut box 6×10×10");
+  await expect(row(page, "Slot for the clip")).toHaveAttribute("data-tip", "Slot for the clip. Cut box 6×10×10");
   await expect(readout(page), "the first click of the double-click showed the step").toContainText(volume(6));
 
   await page.keyboard.press("F2");
@@ -191,7 +191,7 @@ test("a step can be renamed, and keeps its op in the tip", async ({ page }) => {
   await page.keyboard.press("F2");
   await page.getByRole("textbox", { name: "Step name" }).fill("");
   await page.keyboard.press("Enter");
-  await expect(row(page, "Cut box 6")).not.toHaveAttribute("data-tip");
+  await expect(row(page, "Cut box 6"), "an unnamed step has its whole label in the tip").toHaveAttribute("data-tip", "Cut box 6×10×10");
 });
 
 test("deleting a branch drops it here and in the engine; the shown branch stays with a plain reason", async ({ page }) => {
@@ -479,5 +479,24 @@ test.describe("phone", () => {
     expect(meets(sheet, fit), "the sheet leaves the size warning").toBe(false);
     expect(meets(sheet, text), "and the readout").toBe(false);
     expect(meets(fit, text), "which do not overlap each other").toBe(false);
+  });
+
+  test("on a short landscape phone the sheet shrinks below the warning, and the readout stays short of the dock", async ({ page }) => {
+    await page.setViewportSize({ width: 844, height: 390 });
+    await openBig(page, "/?layout=compact");
+    await longStack(page);
+    const canvas = (await page.locator("#model").boundingBox())!;
+    const fit = (await page.locator("#modelFit").boundingBox())!;
+    const text = (await readout(page).boundingBox())!;
+    const grips = ((await page.locator("#model").getAttribute("data-handles")) ?? "").split(" ").filter(Boolean).map((item) => canvas.x + Number(item.split(":")[1]!.split(",")[0]));
+    expect(grips.length, "the Boolean tool's dock is up").toBeGreaterThan(0);
+    for (const box of [fit, text]) expect(box.x + box.width, "the chip and the readout end left of the dock").toBeLessThan(Math.min(...grips) - 8);
+    await page.locator("#modelCancel").click();
+    await page.locator("#modelHistoryOpen").click();
+    await expect(rows(page)).toHaveCount(4);
+    const sheet = (await page.locator("#modelHistory").boundingBox())!;
+    expect(meets(sheet, fit), "the sheet leaves the size warning").toBe(false);
+    expect(meets(sheet, text), "and the readout").toBe(false);
+    expect(sheet.height, "and keeps room for a row").toBeGreaterThan(60);
   });
 });

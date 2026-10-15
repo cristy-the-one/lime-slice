@@ -249,15 +249,12 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
   else el.removeAttribute("aria-expanded");
   const notes = [row.broken ? "cannot be rebuilt" : "", row.blocked ? "after a step that cannot be rebuilt" : "", row.plate ? "on the plate" : ""].filter(Boolean);
   el.setAttribute("aria-label", [row.label, ...notes].join(", "));
-  // The root's file name can be longer than the row, which ellipsizes it: the tip has it whole.
-  const tip = [row.up === null ? row.label : null, row.opLabel, row.broken].filter(Boolean).join(". ");
-  if (tip) {
-    el.dataset.tip = tip;
-    el.setAttribute("aria-description", tip);
-  } else {
-    delete el.dataset.tip;
-    el.removeAttribute("aria-description");
-  }
+  // A label can be longer than the row, which ellipsizes it: the tip has it whole. The description adds
+  // only what the name does not say: a renamed step's op and why a step is broken.
+  const extra = [row.opLabel, row.broken].filter(Boolean).join(". ");
+  el.dataset.tip = [row.label, extra].filter(Boolean).join(". ");
+  if (extra) el.setAttribute("aria-description", extra);
+  else el.removeAttribute("aria-description");
 
   // The label and the menu button stay in place, so a double-click across a repaint still lands on one label.
   let label = el.querySelector<HTMLElement>(":scope > .mh-label");

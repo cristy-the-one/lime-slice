@@ -687,7 +687,6 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   margin-top: auto;
   flex: 0 8 auto;
   min-height: 32px;
-  max-height: 50%;
   width: min(280px, 100%);
   display: flex;
   flex-direction: column;
@@ -699,6 +698,8 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   pointer-events: auto;
 }
 .model-history[hidden] { display: none !important; }
+/* With a tool open, History keeps to half the column so the tool's panel has room. */
+#modelBar[data-tool] .model-history { max-height: 50%; }
 .model-history-toggle {
   display: flex;
   align-items: center;
