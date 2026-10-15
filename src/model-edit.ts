@@ -39,12 +39,17 @@ export interface ForkStep {
   broken?: string;
 }
 
-/** The tree with `steps` as a new branch from `parent`, each under the one before, showing `shown`; Redo follows the branch. */
+/**
+ * The tree with `steps` as a new branch from `parent`, each under the one before, showing `shown`. Redo follows the
+ * branch down to `shown`, and no further when the step after it is broken, since Redo could not show it.
+ */
 export function forked(tree: ModelTree, parent: NodeId, steps: readonly ForkStep[], shown: NodeId): ModelTree {
   const nodes = new Map(tree.nodes);
   const lastChild = new Map(tree.lastChild);
   let up = parent;
+  let blocked = false;
   for (const step of steps) {
+    blocked ||= !!step.broken;
     nodes.set(step.id, {
       id: step.id,
       parent: up,
@@ -54,7 +59,7 @@ export function forked(tree: ModelTree, parent: NodeId, steps: readonly ForkStep
       ...(step.name ? { name: step.name } : {}),
       ...(step.broken ? { broken: step.broken } : {}),
     });
-    lastChild.set(up, step.id);
+    if (!blocked) lastChild.set(up, step.id);
     up = step.id;
   }
   const nextId = Math.max(tree.nextId, ...steps.map((step) => step.id + 1));

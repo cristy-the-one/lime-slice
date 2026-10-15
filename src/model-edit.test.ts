@@ -5,7 +5,7 @@ import { planeFor, splitBase } from "./model-plane.ts";
 import { primitiveSpec, type PrimitiveSpec } from "./model-primitive.ts";
 import { fromSolidOp, toSolidOp, type Affine } from "./model-space.ts";
 import { loadedTree, readSavedTree, savedTree } from "./model-tree-file.ts";
-import { childrenOf, jumped, newTree, opLabel, pathTo, reserveId, withChild, withNode, type ModelOp, type ModelTree, type Vec3 } from "./model-tree.ts";
+import { childrenOf, jumped, newTree, opLabel, pathTo, redoTarget, reserveId, withChild, withNode, type ModelOp, type ModelTree, type Vec3 } from "./model-tree.ts";
 
 let failed = 0;
 
@@ -77,6 +77,7 @@ eq("the history draws the edit as the main rail and the old branch beside it", r
 // A replay that breaks: the fillet did not build. It is kept, broken, with the scale under it unbuilt.
 const broke = forked(line, 1, [{ id: 6, op: hole(3), fingerprint: fp(7900) }, { id: 7, op: fillet, fingerprint: null, broken: "That edge is not on this solid" }, { id: 8, op: scale, fingerprint: null }], 6);
 eq("the view shows the last step that built", broke.current, 6);
+eq("Redo stops there, since it could not show the broken step", redoTarget(broke), null);
 const brokeRows = historyLayout(broke).rows;
 eq("the broken step carries the engine's message, the step after it is blocked", brokeRows.filter((row) => row.id >= 6).map((row) => [row.id, row.broken, row.blocked]), [[6, null, false], [7, "That edge is not on this solid", false], [8, null, true]]);
 
