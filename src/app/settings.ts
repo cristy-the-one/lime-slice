@@ -180,9 +180,9 @@ function schemaContext(rules: Rules = currentRules()): SchemaContext {
 }
 
 export function renderChrome() {
-  const typing = typedField();
+  const focused = focusedTypedField();
   // The change that would have queued the auto slice does nothing now, so it is queued here, as `touch` would.
-  if (commitTypedFields(typing)) fx.scheduleAuto();
+  if (commitTypedFields(uncommittedTyped(focused))) fx.scheduleAuto();
   const result = state.result;
   const rules = currentRules();
   const ctx = schemaContext(rules);
@@ -205,7 +205,7 @@ export function renderChrome() {
     ${GROUPS.map((group) => groupCardHtml(group, rules, ctx)).join("")}
   `;
   restoreFindCaret(findFocused, selStart, selEnd);
-  if (typing) document.querySelector<HTMLInputElement>(`#${typing.id}`)?.focus({ preventScroll: true });
+  if (focused) document.querySelector<HTMLInputElement>(`#${focused.id}`)?.focus({ preventScroll: true });
   applyFilter();
   syncFindStuck();
 
@@ -727,11 +727,22 @@ type SequentialId = keyof typeof SEQUENTIAL;
 
 const TYPED_FIELDS = ["seqclear", "seqgantry", "placeX", "placeY", "placeRx", "placeRy", "placeRz", "objInfill", "objWalls", "objSpeed"];
 
-/** These commit on `change`, so a re-render while one holds typed text must commit it first and give focus back. */
-function typedField(): HTMLInputElement | null {
+/** The typed field the user is in, including one whose text was already stored. A rebuild replaces the input, so focus has to be put back or the caret is gone. */
+function focusedTypedField(): HTMLInputElement | null {
   const el = document.activeElement;
   if (!(el instanceof HTMLInputElement) || !TYPED_FIELDS.includes(el.id)) return null;
-  return el.value === el.defaultValue ? null : el;
+  return el;
+}
+
+/** Unstored text only. A field that already matches what it shows must not be committed again. */
+function uncommittedTyped(el: HTMLInputElement | null): HTMLInputElement | null {
+  if (!el || el.value === el.defaultValue) return null;
+  return el;
+}
+
+/** These commit on `change`, so a re-render while one holds typed text must commit it first and give focus back. */
+function typedField(): HTMLInputElement | null {
+  return uncommittedTyped(focusedTypedField());
 }
 
 /** Commits a typed field the way its change handler does. False when nothing was stored. */
