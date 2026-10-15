@@ -9,23 +9,34 @@ import { stepLabel } from "./model-history.ts";
 import { tiltOf } from "./model-plane.ts";
 import type { PrimitiveKind, PrimitiveSpec } from "./model-primitive.ts";
 import { fromSolidOp, type Affine } from "./model-space.ts";
-import { opLabel, pathTo, toolUser, type BooleanKind, type EdgeRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
+import { childWithOp, childrenOf, opLabel, pathTo, toolUser, type BooleanKind, type EdgeRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
 
 /**
  * The steps that replay under an edit of `node`, oldest first: the shown branch below it. That is the path down to the
- * step shown when that is below `node`, then on as Redo walks to the branch's tip; else the branch Redo walks from `node`.
- * A step Redo would walk is part of what the user sees as the branch, so it comes along rather than stay behind.
+ * step shown when that is below `node`, then on to the branch's tip; else the branch from `node`. A branch goes on as the
+ * History panel draws it: the child Redo follows, else the newest. A step Redo would walk is part of what the user sees as
+ * the branch, so it comes along rather than stay behind. A `root` step on the way is left out: the edit's own new root
+ * stands in for it, and the engine takes a `root` step only right under the root.
  */
 export function replayChain(tree: ModelTree, node: NodeId, shown: NodeId): NodeId[] {
   const down = pathTo(tree, shown);
   const at = down.indexOf(node);
   const chain = at >= 0 ? down.slice(at + 1) : [];
   for (let from = chain.at(-1) ?? node; ; ) {
-    const next = tree.lastChild.get(from);
-    if (next == null || tree.nodes.get(next)?.parent !== from || chain.includes(next)) return chain;
+    const next = followed(tree, from);
+    if (next == null || chain.includes(next)) break;
     chain.push(next);
     from = next;
   }
+  return chain.filter((id) => tree.nodes.get(id)?.op?.kind !== "root");
+}
+
+/** The child a branch goes on with: the one Redo follows, else the newest, as `historyLayout` draws it. */
+function followed(tree: ModelTree, id: NodeId): NodeId | null {
+  const last = tree.lastChild.get(id);
+  if (last != null && tree.nodes.get(last)?.parent === id) return last;
+  const kids = childrenOf(tree, id);
+  return kids.at(-1) ?? null;
 }
 
 /** One step of an edit's new branch: built, with its op as the engine stored it and its fingerprint; or never built. */
@@ -41,15 +52,14 @@ export interface ForkStep {
 
 /**
  * The tree with `steps` as a new branch from `parent`, each under the one before, showing `shown`. Redo follows the
- * branch down to `shown`, and no further when the step after it is broken, since Redo could not show it.
+ * branch, but not into a broken step, which it could not show; the steps under a broken one still follow it, so an edit
+ * of the broken step replays them.
  */
 export function forked(tree: ModelTree, parent: NodeId, steps: readonly ForkStep[], shown: NodeId): ModelTree {
   const nodes = new Map(tree.nodes);
   const lastChild = new Map(tree.lastChild);
   let up = parent;
-  let blocked = false;
   for (const step of steps) {
-    blocked ||= !!step.broken;
     nodes.set(step.id, {
       id: step.id,
       parent: up,
@@ -59,7 +69,7 @@ export function forked(tree: ModelTree, parent: NodeId, steps: readonly ForkStep
       ...(step.name ? { name: step.name } : {}),
       ...(step.broken ? { broken: step.broken } : {}),
     });
-    if (!blocked) lastChild.set(up, step.id);
+    if (!step.broken) lastChild.set(up, step.id);
     up = step.id;
   }
   const nextId = Math.max(tree.nextId, ...steps.map((step) => step.id + 1));
@@ -86,12 +96,28 @@ export function editedOp(tree: ModelTree, id: NodeId): ModelOp | null {
   return node && tree.root.kind === "primitive" ? { kind: "root", ...tree.root.solid } : null;
 }
 
-/** The panel's header: "Editing step 3: Hole ⌀5 depth 8", or "Editing the new solid: Box 20×20×20" for its root. */
+/**
+ * The panel's header: "Editing step 3: Hole ⌀5 depth 8", or "Editing the new solid: Box 20×20×20" for its root and for
+ * a `root` step, which is that root edited before.
+ */
 export function editHead(tree: ModelTree, id: NodeId): string {
   const node = tree.nodes.get(id);
   if (!node) return "";
-  const depth = pathTo(tree, id).length - 1;
-  return depth === 0 ? `Editing the new solid: ${stepLabel(node)}` : `Editing step ${depth}: ${stepLabel(node)}`;
+  if (node.parent === null || node.op?.kind === "root") return `Editing the new solid: ${stepLabel(node)}`;
+  return `Editing step ${pathTo(tree, id).length - 1}: ${stepLabel(node)}`;
+}
+
+/**
+ * The tip of a branch an edit already built: under `parent`, a step with `op`, then a step with each of `replay` in
+ * turn, none broken. An Update with the same numbers shows it rather than build it again. Null when there is none.
+ */
+export function builtBranch(tree: ModelTree, parent: NodeId, op: ModelOp, replay: readonly ModelOp[]): NodeId | null {
+  let at = childWithOp(tree, parent, op);
+  for (const next of replay) {
+    if (at == null) return null;
+    at = childWithOp(tree, at, next);
+  }
+  return at;
 }
 
 /** What an edited step's tool panel opens with, in model space: the inverse of what its Apply would send. */
@@ -209,11 +235,12 @@ const EDGE_LENGTH_MM = 1e-3;
 export function matchEdges(edges: readonly { id: number; lengthMm: number; points: ArrayLike<number> }[], refs: readonly (number | EdgeRef)[], slack: number): { picked: number[]; missing: number } {
   const picked: number[] = [];
   let missing = 0;
+  const byId = new Map(edges.map((edge) => [edge.id, edge]));
   const fits = (edge: (typeof edges)[number] | undefined, ref: EdgeRef) => !!edge && Math.abs(edge.lengthMm - ref.lengthMm) <= EDGE_LENGTH_MM && nearPolyline(edge.points, ref.mid) <= slack + EDGE_LENGTH_MM;
   for (const ref of refs) {
     let found: number | null = null;
-    if (typeof ref === "number") found = edges[ref] ? ref : null;
-    else if (fits(edges[ref.index], ref)) found = ref.index;
+    if (typeof ref === "number") found = byId.has(ref) ? ref : null;
+    else if (fits(byId.get(ref.index), ref)) found = ref.index;
     else {
       const all = edges.filter((edge) => fits(edge, ref));
       found = all.length === 1 ? all[0]!.id : null;
@@ -238,6 +265,17 @@ function nearPolyline(points: ArrayLike<number>, p: Vec3): number {
     best = Math.min(best, Math.hypot(a[0] + ab[0] * t - p[0], a[1] + ab[1] * t - p[1], a[2] + ab[2] * t - p[2]));
   }
   return best;
+}
+
+/**
+ * A split piece's note when the step its part's plate holds is not under the split that cut it, as after an edit of
+ * that split or of a step above it: the piece is still the older split's. Null otherwise.
+ */
+export function olderSplitNote(trees: ReadonlyMap<string, ModelTree>, tree: ModelTree): string | null {
+  if (tree.root.kind !== "piece") return null;
+  const part = trees.get(tree.root.tree);
+  if (!part?.nodes.has(tree.root.node) || pathTo(part, part.committed).includes(tree.root.node)) return null;
+  return "This piece was cut by a split that its part's steps on the plate no longer have.";
 }
 
 /**

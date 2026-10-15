@@ -20,8 +20,8 @@ interface ModelHistoryHooks {
   drop(node: NodeId): boolean;
   /** Why this step cannot be edited, or null. */
   editRefusal(node: NodeId): string | null;
-  /** Open this step's tool with its numbers, to change them. A refusal goes to the readout. */
-  edit(node: NodeId): void;
+  /** Open this step's tool with its numbers, to change them; null is the step shown. A refusal goes to the readout. */
+  edit(node: NodeId | null): void;
 }
 
 /** Arrow keys show their step after this pause, so a run of presses asks for the last one only. */
@@ -271,7 +271,6 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
     edit.type = "button";
     edit.className = "mh-edit";
     edit.tabIndex = -1;
-    edit.setAttribute("aria-label", "Edit step");
     edit.dataset.tip = "Edit step";
     edit.append(icon(Pencil, 12));
     more = document.createElement("button");
@@ -288,6 +287,7 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
   label.textContent = row.label;
   // A step that cannot be edited (the opened file, a step under a broken one) shows no pencil; its menu says why.
   edit.hidden = !!hooks?.editRefusal(row.id);
+  edit.setAttribute("aria-label", `Edit step: ${row.label}`);
   el.querySelectorAll(":scope > .mh-rail, :scope > .mh-warn, :scope > .mh-plate").forEach((node) => node.remove());
   label.before(railSvg(row, lanes));
   if (row.broken) {
@@ -477,7 +477,8 @@ function leave() {
 /** Shift+E: edit the step focused in the panel, else the step shown. */
 export function editModelStep() {
   if (!tree) return;
-  editStep(list?.contains(document.activeElement) ? focusId ?? tree.current : tree.current);
+  if (list?.contains(document.activeElement)) editStep(focusId ?? tree.current);
+  else hooks?.edit(null);
 }
 
 /** Edit `id`: its tool opens in the panel above, prefilled; a refusal is said in the readout, and in the sheet at phone width. */

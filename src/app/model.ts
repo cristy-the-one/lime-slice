@@ -18,7 +18,7 @@ import {
   type Affine,
   type PlaceFields,
 } from "../model-space";
-import { editHead, editNotes, editPanel, editRefusal, editedOp, forked, matchEdges, replayChain, type EditPanel, type ForkStep } from "../model-edit";
+import { builtBranch, editHead, editNotes, editPanel, editRefusal, editedOp, forked, matchEdges, olderSplitNote, replayChain, type EditPanel, type ForkStep } from "../model-edit";
 import { primitiveBounds, primitiveName, rootSpec, type PrimitiveSpec } from "../model-primitive";
 import { markProjectDirty } from "../project-dirty";
 import { unionBox } from "../measure";
@@ -286,10 +286,7 @@ export function bindModelView() {
     },
     editClosed: cancelEdit,
     editJoinGhost,
-    editUnchanged() {
-      const run = editing;
-      return !!run && (run.opened == null || JSON.stringify(editOp(run)) === run.opened);
-    },
+    editUnchanged: editUntouched,
   });
   mountModelHistory({
     jump(node) {
@@ -303,9 +300,18 @@ export function bindModelView() {
       return tree ? editRefusal(tree, node) : "This solid is no longer open.";
     },
     edit(node) {
-      void startEdit(node);
+      // Shift+E away from History edits the step shown; while an edit is open that is its parent, so the key waits.
+      const tree = treeOf(open);
+      if (node != null) void startEdit(node);
+      else if (tree && !editing) void startEdit(tree.current);
     },
   });
+}
+
+/** While a step is edited: its panel still says the step as it is, so Update would change nothing and no check is needed. */
+function editUntouched(): boolean {
+  const run = editing;
+  return !!run && (run.opened == null || JSON.stringify(editOp(run)) === run.opened);
 }
 
 function treeOf(at: Opened | null): ModelTree | null {
@@ -330,10 +336,7 @@ function scheduleProbe(wait: number) {
   const at = open;
   const tree = treeOf(at);
   const tool = openModelTool();
-  // An edited step's panel left as it opened would build the step it already is: nothing to check.
-  const run = editing;
-  const untouched = !!run && (run.opened == null || JSON.stringify(editOp(run)) === run.opened);
-  const op = at?.solid.editable && isProbed(tool) && !untouched ? panelOp() : null;
+  const op = at?.solid.editable && isProbed(tool) && !editUntouched() ? panelOp() : null;
   const picked = at?.solid.editable ? joinPick() : null;
   if (at && tree && !op && picked) {
     // A tool Model never opened gets its tree first: the engine builds the join from it.
@@ -528,16 +531,17 @@ function boolOp(): "fuse" | "cut" | "common" {
 export function commitModel() {
   const at = open;
   let tree = treeOf(at);
-  // While a step is edited the view shows its parent: the plate takes the step shown before the edit, from the recent solids.
+  // While a step is edited the view shows its parent: the plate takes the step shown before the edit, by its plate
+  // mesh when the plate held it, else from the recent solids.
   const held = at && tree && editing?.key === at.key ? editing.from : null;
   const solid = held == null || held === at?.solid.id ? at?.solid : recentSolid(at!.key, held, state.stepTolerance);
   const plan = tree ? visitStep(held == null ? tree : { ...tree, current: held }) : null;
-  if (!at || !tree || !plan || !solid || !state.mesh || at.objectId !== state.plate.selectedId || parked === at.key) return;
+  if (!at || !tree || !plan || !state.mesh || at.objectId !== state.plate.selectedId || parked === at.key) return;
   const node = tree.nodes.get(plan.to);
-  if (!node || solid.id !== plan.to) return;
+  const mesh = solid?.id === plan.to ? node?.mesh ?? meshOf(solid) : held != null ? node?.mesh : null;
+  if (!node || !mesh) return;
   noteEdit();
   tree = withNode(tree, plan.from, { keep: liveKeep() });
-  const mesh = node.mesh ?? meshOf(solid);
   state.mesh = { name: mesh.name, bytes: mesh.bytes };
   state.sourcePos = new Float32Array(mesh.sourcePos);
   const keep = plan.keep;
@@ -684,7 +688,10 @@ export async function historyToSave(): Promise<{ trees: Map<string, TreeToSave>;
   for (const [id, root] of roots) {
     const { name, key, node } = all.get(id)!;
     if (!modelTrees.has(key)) continue;
-    const tree = { ...savedTree(treeOfKey(key), node, (other) => owner.get(other)), ...root };
+    // While a step is edited the view shows its parent; the file reopens on the step shown before the edit.
+    const live = treeOfKey(key);
+    const shown = editing?.key === key && live.nodes.has(editing.from) ? { ...live, current: editing.from } : live;
+    const tree = { ...savedTree(shown, node, (other) => owner.get(other)), ...root };
     if (held.has(id)) trees.set(id, tree);
     else tools.push({ id, name, tree });
   }
@@ -913,7 +920,10 @@ function setTreeKey(objectId: string, key: string) {
 
 /** Back into Model on the node the plate holds. If it no longer rebuilds, on the last step above it that does. */
 async function resume(mine: number, objectId: string, key: string, node: NodeId) {
-  const greeting = (solid: ParsedSolid) => `${about(solid)} Pick a face or an edge.`;
+  // A split piece whose part was edited past its split keeps a note of it: the piece is the older split's.
+  const known = modelTrees.get(key);
+  const older = known ? olderSplitNote(modelTrees, known) : null;
+  const greeting = (solid: ParsedSolid) => `${about(solid)} ${older ? `${older} ` : ""}Pick a face or an edge.`;
   if (await showNode(mine, objectId, key, node, greeting) || mine !== ticket) return;
   const tree = modelTrees.get(key);
   const good = tree ? lastGood(tree, node) : null;
@@ -1101,7 +1111,10 @@ function renameStep(node: NodeId, name: string) {
 function whyKeepBranch(node: NodeId): string | null {
   const tree = treeOf(open);
   if (!tree) return "This solid is no longer open.";
-  if (busy || jumping) return "The modeler is still working. Try again in a moment.";
+  if (busy || jumping) return STILL_WORKING;
+  // The step being edited and the step Cancel goes back to count as on screen.
+  const gone = editing?.key === tree.key ? subtree(tree, node) : null;
+  if (gone && editing && (gone.has(editing.node) || gone.has(editing.from))) return "The step being edited, or the one Cancel goes back to, is on this branch. Update or cancel the edit first.";
   return dropRefusal(tree, node, modelTrees);
 }
 
@@ -1306,9 +1319,14 @@ function takeOffPlate(id: string) {
   markModelEdit();
 }
 
-function appliedMessage(op: ModelOp, solid: ParsedSolid) {
+/** What the plate loses when it takes a new step: the part's paint, and its placement scale after a scale. */
+function leavingNotes(scaled: boolean): string {
   const paint = state.supportPaint.length + state.seamPaint.length + state.reinforcement.length + state.supportEdits.length > 0;
-  const notes = `${paint ? " Leaving Model clears this part's support paint." : ""}${op.kind === "scale" && state.partScale !== 1 ? " Placement scale becomes 100%." : ""}`;
+  return `${paint ? " Leaving Model clears this part's support paint." : ""}${scaled && state.partScale !== 1 ? " Placement scale becomes 100%." : ""}`;
+}
+
+function appliedMessage(op: ModelOp, solid: ParsedSolid) {
+  const notes = leavingNotes(op.kind === "scale");
   const volume = about(solid);
   if (op.kind === "split") return `Split. ${volume} On the plate both pieces share one spot: Arrange lays them side by side.${notes}`;
   if (op.kind === "fillet") return `Fillet. ${volume}${notes}`;
@@ -1337,8 +1355,9 @@ async function startEdit(node: NodeId) {
   const from = editing?.key === at.key ? editing.from : tree.current;
   editing = null;
   if (openModelTool()) closeModelTool();
-  editBack = null;
   parked = null;
+  // The step shown stays among the recent solids, so Cancel goes back to it without the engine, even mid-rebuild.
+  if (at.solid.id === from) keepSolid(at.key, from, state.stepTolerance, at.solid);
   const parent = tree.nodes.get(node)?.parent ?? ROOT;
   const mine = ticket;
   if (seeds.has(at.key)) {
@@ -1437,6 +1456,19 @@ async function runEdit(run: Editing) {
     readout("This step is no longer in the history.");
     return;
   }
+  const replayOps = run.replay.map((id) => tree.nodes.get(id)!.op!);
+  const twin = builtBranch(tree, run.parent, op, replayOps);
+  if (twin != null) {
+    // These numbers already built this branch, in an earlier edit: show it rather than build it again.
+    editing = null;
+    closeModelTool();
+    const shown = await showNode(ticket, at.objectId, at.key, twin, (solid) => `These numbers built this branch before. ${about(solid)}`);
+    if (!shown) return;
+    editBack = { key: at.key, tip: twin, back: run.from, undone: false };
+    syncUndo();
+    if (op.kind === "join" && !op.keepTool) takeOffPlate(op.tool.object);
+    return;
+  }
   let reserved = tree;
   const ids: NodeId[] = [];
   while (ids.length < olds.length) {
@@ -1445,7 +1477,7 @@ async function runEdit(run: Editing) {
     ids.push(id);
   }
   modelTrees.set(at.key, reserved);
-  const replay = run.replay.map((id, i) => ({ id: ids[i + 1]!, op: tree.nodes.get(id)!.op! }));
+  const replay = replayOps.map((step, i) => ({ id: ids[i + 1]!, op: step }));
   const chord = state.stepTolerance;
   const mine = ticket;
   busy = true;
@@ -1489,10 +1521,12 @@ async function runEdit(run: Editing) {
   closeModelTool();
   if (op.kind === "join" && !op.keepTool) takeOffPlate(op.tool.object);
   const label = (id: NodeId) => stepLabel(next.nodes.get(id)!);
-  const after = run.replay.length === 0 ? "" : broken ? "" : run.replay.length === 1 ? " and rebuilt the step after it" : ` and rebuilt the ${run.replay.length} steps after it`;
+  const rebuilt = built.size - 1;
+  const after = rebuilt === 0 ? "" : rebuilt === 1 ? " and rebuilt the step after it" : ` and rebuilt ${rebuilt} steps after it`;
   const failure = broken ? ` Step ${pathTo(next, broken.id).length - 1}, “${label(broken.id)}”, could not be rebuilt: ${sentence(broken.error)} The view shows the last step that built. Edit that step or delete its branch.` : "";
   const notes = editNotes(modelTrees, latest, [run.node, ...run.replay], (key) => state.plate.objects.find((obj) => obj.modelTree === key)?.name ?? null);
-  present(parsed, [`Updated “${label(ids[0]!)}”${after}. ${about(parsed)}${failure}`, ...notes].join(" "));
+  const plate = leavingNotes([op, ...replayOps].some((step) => step.kind === "scale"));
+  present(parsed, [`Updated “${label(ids[0]!)}”${after}. ${about(parsed)}${failure}${plate}`, ...notes].join(" "));
 }
 
 /** An edit's `built`: each step the engine kept with its solid, by id, with its op as stored and its fingerprint. Null when damaged. */

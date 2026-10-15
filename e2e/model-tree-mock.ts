@@ -99,6 +99,7 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
     const replay = (request.replay ?? []) as { id: number; op: Body }[];
     const ids = [Number(request.node), ...replay.map((step) => step.id)];
     if (ids.some((id) => doc.has(id))) return { error: `Node ${ids.find((id) => doc.has(id))} is already in this tree for another step` };
+    if (replay.some((step) => step.op.kind === "root")) return { error: "A new solid's primitive can only be built again right under its root" };
     const build = (op: Body, under: number, id: number, solid: MockSolid) => {
       const built = handlers.apply?.({ call: "apply", key, op, parent: under, node: id }, solid) ?? { error: "no apply" };
       return "error" in built ? built : "kept" in built ? built.kept : built;

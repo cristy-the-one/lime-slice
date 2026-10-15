@@ -159,7 +159,7 @@ export function mountMarkup(root: HTMLElement) {
             </div>
             <div class="model-side">
               <div class="model-panel" id="modelPanel" hidden>
-                <p class="model-edit-head" id="modelEditHead" role="status" hidden></p>
+                <h2 class="model-edit-head" id="modelEditHead" hidden></h2>
                 <div class="modes model-plane-modes" id="modelPlaneModes" data-for="split" role="group" aria-label="Plane">
                   <button class="btn mode" id="modelSplitX" type="button" data-plane="x" aria-pressed="false" data-tip="Cut square to X">X</button>
                   <button class="btn mode" id="modelSplitY" type="button" data-plane="y" aria-pressed="false" data-tip="Cut square to Y">Y</button>

@@ -116,8 +116,11 @@ let probe: ProbeView = null;
 let editable = true;
 /** An edit or a jump is on its way: Apply waits for it. */
 let waiting = false;
-/** The step being edited, while its tool's panel is open: what it opened with, and its header. */
-let edit: { panel: EditPanel; head: string } | null = null;
+/**
+ * The step being edited, while its tool's panel is open: what it opened with, its header, and what Boolean and New
+ * solid had picked before, which they get back when the edit closes.
+ */
+let edit: { panel: EditPanel; head: string; before: { primKind: PrimitiveKind; withObject: boolean; joinTool: string | null } } | null = null;
 const VIEW_ONLY_TIP = "This STEP file has surfaces but no closed solid, so it can be measured but not edited.";
 
 type Scrub = {
@@ -346,7 +349,7 @@ function toggleTool(next: ModelTool, editing = false) {
  */
 export function openEditTool(panel: EditPanel, head: string) {
   if (tool) closeTool();
-  edit = { panel, head };
+  edit = { panel, head, before: { primKind, withObject, joinTool } };
   if (panel.primitive) primKind = panel.primitive;
   withObject = !!panel.join;
   joinTool = null;
@@ -373,7 +376,10 @@ function fillEdit() {
   const head = document.querySelector<HTMLElement>("#modelEditHead");
   if (head) {
     head.textContent = edit!.head;
+    // A long label ellipsizes: the tip has it whole.
+    head.dataset.tip = edit!.head;
     head.hidden = false;
+    document.querySelector("#modelPanel")?.setAttribute("aria-labelledby", head.id);
   }
 }
 
@@ -394,7 +400,9 @@ function closeTool() {
   edit = null;
   exact.clear();
   if (ended) {
+    ({ primKind, withObject, joinTool } = ended.before);
     document.querySelector<HTMLElement>("#modelEditHead")?.toggleAttribute("hidden", true);
+    document.querySelector("#modelPanel")?.removeAttribute("aria-labelledby");
     paintPrimRow();
   }
   tool = null;

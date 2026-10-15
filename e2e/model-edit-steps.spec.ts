@@ -48,6 +48,7 @@ function build(request: Body, parent: MockSolid): Built {
     if ((op.size as number) >= h / 4) return { error: FILLET_MISFIT };
     return { ...boxSolid(h), volumeMm3: parent.volumeMm3 - 10 * (op.size as number) };
   }
+  if (op.kind === "scale") return { ...parent, volumeMm3: parent.volumeMm3 * (request.op as { factor: number }).factor ** 3 };
   return { error: `unexpected ${op.kind}` };
 }
 
@@ -170,7 +171,7 @@ test("the pencil and Shift+E open an edit; Cancel and Esc put the view back wher
   await page.locator("#modelCancel").click();
 
   const pencil = row(page, "Cut box 8").locator(".mh-edit");
-  await expect(pencil).toHaveAttribute("aria-label", "Edit step");
+  await expect(pencil).toHaveAttribute("aria-label", "Edit step: Cut box 8×10×10");
   await row(page, "Cut box 8").hover();
   await expect(pencil).toBeVisible();
   await pencil.click();
@@ -204,32 +205,39 @@ test("the pencil and Shift+E open an edit; Cancel and Esc put the view back wher
 test("a step under the edit that no longer builds is kept broken with the engine's reason, and editing it mends the branch", async ({ page }) => {
   const tree = await openModel(page);
   await cutThenFillet(page);
+  await page.locator("#modelToolScale").click();
+  await apply(page).click();
+  await expect(readout(page)).toContainText("Volume 25520 mm³");
+  await page.locator("#modelCancel").click();
   await row(page, "Cut box 8").locator(".mh-edit").click();
   await page.locator("#modelDx").fill("4");
   await expect(apply(page)).toBeEnabled();
   await apply(page).click();
   await expect(readout(page)).toContainText(`Updated “Cut box 4×10×10”. Volume 1600 mm³. Step 2, “Fillet 1 edge r 1”, could not be rebuilt: ${FILLET_MISFIT}. The view shows the last step that built.`);
-  await expect(byId(page, 3), "the view is on the last step that built").toHaveAttribute("aria-selected", "true");
-  await expect(byId(page, 4)).toHaveAttribute("data-broken", "");
-  await expect(byId(page, 4)).toHaveAttribute("aria-description", FILLET_MISFIT);
+  await expect(byId(page, 4), "the view is on the last step that built").toHaveAttribute("aria-selected", "true");
+  await expect(byId(page, 5)).toHaveAttribute("data-broken", "");
+  await expect(byId(page, 5)).toHaveAttribute("aria-description", FILLET_MISFIT);
+  await expect(byId(page, 6), "the scale is kept under it, blocked").toHaveAttribute("data-blocked", "");
   await expect(byId(page, 2), "the old branch is not broken").not.toHaveAttribute("data-broken", "");
+  await expect(page.locator("#modelRedo"), "Redo cannot step into the broken step").toBeDisabled();
 
-  // The broken fillet can itself be edited: its edge is picked again, and a smaller size fits.
-  await byId(page, 4).hover();
-  await byId(page, 4).locator(".mh-edit").click();
+  // The broken fillet can itself be edited: its edge is picked again, a smaller size fits, and the scale replays.
+  await byId(page, 5).hover();
+  await byId(page, 5).locator(".mh-edit").click();
   await expect(head(page)).toHaveText("Editing step 2: Fillet 1 edge r 1");
   await expect(page.locator("#modelCount"), "its edge is picked again").toHaveText("1 edge");
   await expect(page.locator("#modelBlend")).toHaveValue("1");
   await page.locator("#modelBlend").fill("0.5");
   await expect(apply(page)).toBeEnabled();
   await apply(page).click();
-  await expect(readout(page)).toContainText("Updated “Fillet 1 edge r 0.5”. Volume 1595 mm³.");
-  expect(tree.of("edit").at(-1), "the broken step forks under its parent").toMatchObject({ parent: 3, node: 5, op: { kind: "fillet", size: 0.5 }, replay: [] });
-  await expect(byId(page, 5)).toHaveAttribute("aria-selected", "true");
-  await expect(byId(page, 4), "the broken step stays, so it can be deleted").toHaveAttribute("data-broken", "");
-  await byId(page, 4).locator(".mh-more").click();
+  await expect(readout(page)).toContainText("Updated “Fillet 1 edge r 0.5” and rebuilt the step after it. Volume 12760 mm³.");
+  expect(tree.of("edit").at(-1), "the broken step forks under its parent, and what was under it replays").toMatchObject({ parent: 4, node: 7, op: { kind: "fillet", size: 0.5 }, replay: [{ id: 8, op: { kind: "scale" } }] });
+  await expect(byId(page, 8)).toHaveAttribute("aria-selected", "true");
+  await expect(byId(page, 5), "the broken step stays, so it can be deleted").toHaveAttribute("data-broken", "");
+  await byId(page, 5).locator(".mh-more").click();
   await page.getByRole("menuitem", { name: /Delete branch/ }).click();
-  await expect(byId(page, 4)).toHaveCount(0);
+  await expect(byId(page, 5)).toHaveCount(0);
+  await expect(byId(page, 6)).toHaveCount(0);
 });
 
 test("Model Undo takes an edit back to the old branch, and Redo brings it back", async ({ page }) => {

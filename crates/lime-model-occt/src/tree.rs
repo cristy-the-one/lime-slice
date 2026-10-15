@@ -444,6 +444,9 @@ struct ReplayStep {
     op: Op,
 }
 
+/// An edit's new branch: the last step that built, each built step as `{id, op, fingerprint}`, and the broken step with why.
+type Forked = (NodeId, Vec<serde_json::Value>, Option<(NodeId, String)>);
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SavedNode {
@@ -1728,9 +1731,6 @@ fn same_edge(a: &EdgeRef, b: &EdgeRef) -> bool {
         .sqrt();
     d <= EDGE_MATCH_MM && (a.length_mm - b.length_mm).abs() <= EDGE_MATCH_MM
 }
-
-/// An edit's new branch: the last step that built, each built step as `{id, op, fingerprint}`, and the broken step with why.
-type Forked = (NodeId, Vec<serde_json::Value>, Option<(NodeId, String)>);
 
 struct Built {
     op: Op,

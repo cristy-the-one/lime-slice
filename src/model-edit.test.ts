@@ -1,5 +1,5 @@
 import { eulerOrient } from "./mesh-place.ts";
-import { editHead, editNotes, editPanel, editRefusal, editedOp, forked, matchEdges, replayChain, type EditPanel } from "./model-edit.ts";
+import { builtBranch, editHead, editNotes, editPanel, editRefusal, editedOp, forked, matchEdges, olderSplitNote, replayChain, type EditPanel } from "./model-edit.ts";
 import { historyLayout } from "./model-history.ts";
 import { planeFor, splitBase } from "./model-plane.ts";
 import { primitiveSpec, type PrimitiveSpec } from "./model-primitive.ts";
@@ -80,6 +80,19 @@ eq("the view shows the last step that built", broke.current, 6);
 eq("Redo stops there, since it could not show the broken step", redoTarget(broke), null);
 const brokeRows = historyLayout(broke).rows;
 eq("the broken step carries the engine's message, the step after it is blocked", brokeRows.filter((row) => row.id >= 6).map((row) => [row.id, row.broken, row.blocked]), [[6, null, false], [7, "That edge is not on this solid", false], [8, null, true]]);
+
+// Editing the broken fillet replays the scale under it, though Redo stops before the broken step.
+eq("the steps under a broken step follow it", replayChain(broke, 7, broke.current), [8]);
+// A reopened tree knows only the path to its shown step; elsewhere a branch goes on with its newest step.
+const reopenedFork = { ...jumped({ ...edited, lastChild: new Map() }, 2), current: 2 };
+eq("off the shown path, a branch goes on with its newest child", replayChain(reopenedFork, 6, 2), [7, 8]);
+// A root edited twice: the first edit's root step is not replayed, since the new root stands in for it.
+const rootEdited = forked(line, 0, [{ id: 6, op: { kind: "root", ...boxSpec, size: [30, 30, 20] }, fingerprint: fp(18000) }, { id: 7, op: cut, fingerprint: fp(17000) }], 7);
+eq("editing the root again replays the steps after the earlier root step, not that step", replayChain(rootEdited, 0, 7), [7]);
+eq("a root step heads its panel as the new solid", editHead(rootEdited, 6), "Editing the new solid: Box 30×30×20");
+eq("the same numbers find the branch an edit already built", builtBranch(edited, 1, hole(3), [fillet, scale]), 8);
+eq("other numbers find none", [builtBranch(edited, 1, hole(2.5), [fillet, scale]), builtBranch(edited, 1, hole(3), [fillet, cut])], [null, null]);
+eq("a broken step is not a branch to show", builtBranch(broke, 1, hole(3), [fillet]), null);
 
 // Why a step cannot be edited.
 const stepTree = apply(newTree("plate#1", { kind: "step", name: "plate.step", bytes: new ArrayBuffer(4) }, "plate.step", fp(4000)), cut, 3900);
@@ -163,7 +176,12 @@ eq(
   editNotes(trees, cutUp, [1, 2], (key) => (key === "box-piece#1" ? "Box 1 split" : null)),
   ["Box 1 split stays as the older split cut it.", "“Cut Box 1” in another part still uses this part as it was before the edit."],
 );
-eq("a piece no longer on the plate, and no join, say nothing", editNotes(new Map([[cutUp.key, cutUp]]), cutUp, [1, 2], () => null), []);
+// The piece keeps a note once its part's plate step is no longer under the split that cut it.
+const piece = newTree("box-piece#1", { kind: "piece", tree: cutUp.key, node: 1 }, "Box 1 split", fp(4000));
+eq("a piece whose split is on its part's plate step has no note", olderSplitNote(new Map([[cutUp.key, { ...cutUp, committed: 2 }]]), piece), null);
+const resplit = { ...forked(cutUp, 0, [{ id: 9, op: split, fingerprint: fp(4100) }], 9), committed: 9 };
+eq("once the plate takes an edit of that split, it says so", olderSplitNote(new Map([[cutUp.key, resplit]]), piece), "This piece was cut by a split that its part's steps on the plate no longer have.");
+eq("a piece no longer on the plate, and no join, say nothing",editNotes(new Map([[cutUp.key, cutUp]]), cutUp, [1, 2], () => null), []);
 
 if (failed) {
   console.error(`${failed} failed`);

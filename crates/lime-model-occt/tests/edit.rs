@@ -42,9 +42,10 @@ fn near(actual: f64, expected: f64) {
     );
 }
 
-fn tessellations() -> i64 {
+/// Shapes built and replies tessellated since the library loaded.
+fn counts() -> [i64; 2] {
     let json: Value = serde_json::from_str(&lime_model_occt::stats()).expect("stats");
-    json["tessellations"].as_i64().expect("tessellations")
+    ["builds", "tessellations"].map(|key| json[key].as_i64().unwrap_or_else(|| panic!("{key}")))
 }
 
 /// The first edge of `reply` that is `length` long.
@@ -109,15 +110,21 @@ fn edit_steps() {
     // ran on the root is the edited step's solid; only the replayed tip is tessellated.
     let probe = ok(json!({ "call": "probe", "key": "e", "node": 0, "op": hole(3.0) }));
     assert_eq!(probe, json!({ "ok": true }));
-    let before = tessellations();
+    let before = counts();
     let started = Instant::now();
     let edited = ok(
         json!({ "call": "edit", "key": "e", "parent": 0, "node": 3, "op": hole(3.0),
         "replay": [{ "id": 4, "op": fillet_op }], "chordMm": 0.1 }),
     );
     let took = started.elapsed();
+    let after = counts();
     assert_eq!(
-        tessellations() - before,
+        after[0] - before[0],
+        1,
+        "the hole is the probe's solid: only the fillet is built"
+    );
+    assert_eq!(
+        after[1] - before[1],
         1,
         "only the replayed tip is tessellated"
     );
