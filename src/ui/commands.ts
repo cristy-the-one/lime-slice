@@ -73,6 +73,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "model-hole", label: "Hole", group: "Model", keys: ["H"], when: "model", target: "#modelToolHole", keywords: "drill" },
   { id: "model-scale", label: "Scale solid", group: "Model", keys: ["X"], when: "model", target: "#modelToolScale", keywords: "factor" },
   { id: "model-place", label: "Place in model space", group: "Model", keys: ["Shift+P"], when: "model", target: "#modelToolPlace", keywords: "move turn position assembly align" },
+  { id: "model-workplane", label: "Workplane", group: "Model", keys: ["Shift+U"], when: "model", target: "#modelToolPlane", keywords: "uvw local frame datum face bed origin" },
   { id: "model-reset-view", label: "Reset view", group: "Model", keys: ["Home"], when: "model", target: "#modelResetView", keywords: "frame zoom fit camera" },
   { id: "model-frame-all", label: "Frame every object", group: "Model", keys: ["Shift+Home"], when: "model", keywords: "reset view zoom fit camera all" },
   { id: "model-history", label: "Model history", group: "Model", keys: ["Shift+H"], when: "model", target: "#modelHistoryOpen", keywords: "steps tree branch undo jump rename" },

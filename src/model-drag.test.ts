@@ -21,6 +21,7 @@ import {
 } from "./model-drag.ts";
 import { extentAlong, planeFor, splitBase } from "./model-plane.ts";
 import { PRIMITIVES } from "./model-primitive.ts";
+import { GLOBAL_WORKPLANE, axesOf, workplaneOnFace } from "./workplane.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -233,6 +234,26 @@ eq("a factor label", dragLabel({ label: "Factor", unit: "×" }, [1.5]), "Factor 
 eq("a point label", dragLabel({ label: "A", unit: "mm" }, [1, 2, 3]), "A 1, 2, 3 mm");
 const a: Vec3 = [0, 0, 0];
 eq("the measure note", measureNote(a, [3, 4, 0]), "Distance 5 mm. ΔX 3, ΔY 4, ΔZ 0 mm.");
+
+const wp = handlesFor("plane", context("box"));
+eq("the workplane drags from the dock", wp.map(docked), [true, true, true, true, true, true]);
+eq("its origin arrows slide the point along X, Y, Z", wp.filter((handle) => handle.id.startsWith("wp-")).map((handle) => [handle.fields, handle.dir]), [
+  [["modelWpU", "modelWpV", "modelWpW"], [1, 0, 0]],
+  [["modelWpU", "modelWpV", "modelWpW"], [0, 1, 0]],
+  [["modelWpU", "modelWpV", "modelWpW"], [0, 0, 1]],
+]);
+eq("its rings turn U, V, W", wp.filter((handle) => handle.kind === "ring").map((handle) => handle.fields[0]), ["modelWpRu", "modelWpRv", "modelWpRw"]);
+const idAxes = axesOf(GLOBAL_WORKPLANE);
+eq("identity axes keep the box move on world X", handlesFor("boolean", context("box", { frame: idAxes, frameOrigin: [0, 0, 0] })).find((handle) => handle.id === "move-x")!.dir, [1, 0, 0]);
+const idHole = handlesFor("hole", context("box", { frame: idAxes, frameOrigin: [0, 0, 0] })).filter((handle) => handle.id.startsWith("hole-move-"));
+eq("an identity frame still slides a hole on three fields along +X and +Y", [idHole.map((handle) => handle.fields[0] === undefined ? handle.fields.length : handle.fields.length), idHole.map((handle) => handle.dir)], [[3, 3], [[1, 0, 0], [0, 1, 0]]]);
+const shiftedHole = handlesFor("hole", context("box", { frame: idAxes, frameOrigin: [10, 0, 0] })).find((handle) => handle.id === "hole-origin")!;
+eq("a moved frame puts the hole dot on the model-space point", originOf(shiftedHole), [12, 3, 10]);
+const sideAxes = axesOf(workplaneOnFace({ point: [20, 5, 4], normal: [1, 0, 0] }));
+const sideMoves = handlesFor("boolean", context("box", { frame: sideAxes })).filter((handle) => handle.id.startsWith("move-"));
+eq("a turned frame moves a box along U, V, W", sideMoves.map((handle) => [handle.fields[0], handle.dir]), [["modelX", sideAxes[0]], ["modelY", sideAxes[1]], ["modelZ", sideAxes[2]]]);
+const sideSlides = handlesFor("hole", context("box", { frame: sideAxes, frameOrigin: [20, 5, 4] })).filter((handle) => handle.id.startsWith("hole-move-"));
+eq("a turned frame slides a hole along U and V, one field each", sideSlides.map((handle) => [handle.fields, handle.dir]), [[["modelX"], sideAxes[0]], [["modelY"], sideAxes[1]]]);
 
 if (failed) {
   console.error(`model-drag: ${failed} failed`);
