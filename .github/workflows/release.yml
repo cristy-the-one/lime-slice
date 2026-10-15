@@ -40,7 +40,8 @@ jobs:
             platform: windows-latest
             target: ""
             bridge: lime_model_occt.dll
-            args: --bundles nsis --config src-tauri/tauri.occt.json
+            # tauri.crt.json ships the Visual C++ runtime beside the exe.
+            args: --bundles nsis --config src-tauri/tauri.occt.json --config src-tauri/tauri.crt.json
     env:
       # linuxdeploy on GitHub runners has no FUSE device.
       APPIMAGE_EXTRACT_AND_RUN: "1"
@@ -155,6 +156,13 @@ jobs:
           cargo build -p lime-model-occt --release
           New-Item -ItemType Directory -Force -Path src-tauri/resources/occt/lib | Out-Null
           Copy-Item target\release\lime_model_occt.dll src-tauri/resources/occt/lib/
+
+      # Without these a Windows install that lacks the VC++ Redistributable
+      # stops at start with "MSVCP140.dll was not found".
+      - name: Stage the Visual C++ runtime (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: ./tools/windows/stage_crt.ps1 -Dest src-tauri/resources/crt
 
       - name: Build unsigned installers and upload the draft release
         uses: tauri-apps/tauri-action@v1
