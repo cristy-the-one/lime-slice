@@ -94,7 +94,9 @@ export function dockSeat(widthPx: number, heightPx: number, fovDeg: number, hand
       if (dockOutline(width, height, fovDeg, px, mid, ndcY).right <= right) lo = mid;
       else hi = mid;
     }
-    seat = { ndcX: lo, ndcY, handlePx: px };
+    // At the smallest size the dock still stays on the right side: on a canvas that small it may run
+    // past the margin there, but it never jumps across onto the solid.
+    seat = { ndcX: px === DOCK_MIN_PX ? Math.max(lo, DOCK_MIN_NDC_X) : lo, ndcY, handlePx: px };
     const outline = dockOutline(width, height, fovDeg, px, lo, ndcY);
     if ((lo >= DOCK_MIN_NDC_X && outline.top <= top && outline.bottom >= bottom) || px === DOCK_MIN_PX) break;
   }

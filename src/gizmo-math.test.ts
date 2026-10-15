@@ -33,6 +33,8 @@ for (const [width, height] of [[1100, 820], [940, 650], [700, 680], [1500, 900],
   check(`${width}×${height}: and the view cube (${px.bottom.toFixed(1)})`, seat.handlePx === DOCK_MIN_PX || px.bottom >= MODEL_DOCK_CLEAR.bottom - 0.5);
   check(`${width}×${height}: on the right side of the canvas`, seat.ndcX >= 0.42 || seat.handlePx === DOCK_MIN_PX);
 }
+const tiny = dockSeat(180, 160, 40, 92);
+check(`a canvas too small even for the smallest dock keeps it on the right side (${tiny.ndcX.toFixed(3)})`, tiny.handlePx === DOCK_MIN_PX && tiny.ndcX >= 0.42);
 const tight = dockSeat(560, 520, 40, 92);
 check("a small canvas shrinks the dock instead of cutting it", tight.handlePx < 92 && tight.handlePx >= DOCK_MIN_PX);
 // Perspective: the ball's near side stands out, so the dock sits further in than its flat radius alone would put it.

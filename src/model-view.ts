@@ -929,8 +929,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       const mark = dockAt.clone().project(camera);
       const text = `${Math.round((mark.x * 0.5 + 0.5) * width)},${Math.round((-mark.y * 0.5 + 0.5) * height)}`;
       if (canvas.dataset.gizmoAt !== text) canvas.dataset.gizmoAt = text;
+      if (canvas.dataset.dockPx !== String(handlePx)) canvas.dataset.dockPx = String(handlePx);
     } else {
       delete canvas.dataset.gizmoAt;
+      delete canvas.dataset.dockPx;
     }
     const grips: string[] = [];
     for (const part of handleParts) {

@@ -201,6 +201,12 @@ for (const [width, height] of [[1440, 900], [1280, 720], [1024, 768]] as const) 
         const room = Math.min(at.x - canvas.x, canvas.x + canvas.width - at.x, at.y - canvas.y, canvas.y + canvas.height - at.y);
         expect(room, `${what}: ${id} is ${Math.round(room)} px from the canvas edge`).toBeGreaterThanOrEqual(16);
       }
+      // The dock's whole reach, out to a knob's grab sphere (1.47 handles) in any direction, keeps 24 px off every edge.
+      const centre = await dock(page);
+      await expect(page.locator("#model")).toHaveAttribute("data-dock-px", /^\d+$/);
+      const reach = 1.47 * Number(await page.locator("#model").getAttribute("data-dock-px"));
+      const room = Math.min(centre.x - reach - canvas.x, canvas.x + canvas.width - centre.x - reach, centre.y - reach - canvas.y, canvas.y + canvas.height - centre.y - reach);
+      expect(room, `${what}: the dock's reach is ${Math.round(room)} px from the canvas edge`).toBeGreaterThanOrEqual(24);
     };
     await page.locator("#modelToolBoolean").click();
     await expect.poll(async () => Object.keys(await grips(page))).toContain("size-0");
