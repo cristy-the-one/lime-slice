@@ -20,6 +20,7 @@ function boxSolid(size: V, at: V = [0, 0, 0]): MockSolid {
 /** A join adds 500 mm³, cuts 500, or keeps 300; any other edit takes 100 off. */
 function built(request: Body, parent: MockSolid): Built {
   const op = request.op as { kind: string; op?: "fuse" | "cut" | "common" };
+  if (op.kind === "split") return { kept: { ...boxSolid([20, 20, 5]), volumeMm3: 2000 }, other: { ...boxSolid([20, 20, 5], [0, 0, 5]), volumeMm3: 2000 } };
   if (op.kind === "join") return { ...parent, volumeMm3: op.op === "fuse" ? parent.volumeMm3 + 500 : op.op === "cut" ? parent.volumeMm3 - 500 : 300 };
   return { ...parent, volumeMm3: parent.volumeMm3 - 100 };
 }
@@ -78,8 +79,9 @@ async function newBox(page: Page) {
   await expect(readout(page)).toContainText("Volume 1000 mm³");
 }
 
+/** Boolean on an object, from closed or already open. */
 async function openJoin(page: Page) {
-  await page.locator("#modelToolBoolean").click();
+  if ((await page.locator("#modelToolBoolean").getAttribute("aria-pressed")) !== "true") await page.locator("#modelToolBoolean").click();
   await page.locator("#modelWithObject").click();
   await expect(page.locator("#modelObjects")).toBeVisible();
 }
@@ -129,9 +131,16 @@ test("Boolean on an object: the other solid is picked by a click in the view, dr
   await expect(page.locator("#modelDx")).toBeVisible();
 });
 
+/** Each grey object's model-space box, by id, from the canvas. */
+async function greyBoxes(page: Page): Promise<Record<string, string>> {
+  const raw = (await canvas(page).getAttribute("data-context")) ?? "";
+  return Object.fromEntries(raw.split(" ").filter(Boolean).map((entry) => entry.split(":") as [string, string]));
+}
+
 test("Keep off: Apply takes the tool off the plate in the same Prepare step, and Prepare undo puts it back", async ({ page }) => {
   const tree = await start(page);
   await newBox(page);
+  const before = await greyBoxes(page);
   await openJoin(page);
   await choices(page).first().click();
   await expect(choices(page).first(), "a pick from the list").toHaveAttribute("aria-checked", "true");
@@ -152,6 +161,67 @@ test("Keep off: Apply takes the tool off the plate in the same Prepare step, and
   await page.locator("#tabModel").click();
   await expect(readout(page), "and the box is as it was").toContainText("Volume 1000 mm³");
   await expect(rows(page), "its history keeps the join").toHaveCount(2);
+  expect(await greyBoxes(page), "the tool is back where it sat in model space").toEqual(before);
+
+  // The same join applied again shows the step it built, and takes the tool off again.
+  await openJoin(page);
+  await choices(page).first().click();
+  await page.locator("#modelCut").click();
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  const applies = tree.of("apply").length;
+  await page.locator("#modelApply").click();
+  await expect(readout(page)).toHaveText("Cut plate.step. Volume 500 mm³. plate.step left the plate.");
+  await expect(objects(page)).toHaveCount(1);
+  expect(tree.of("apply").length, "nothing was built again").toBe(applies);
+});
+
+test("a tool Model never opened gets its tree when picked, and a tool whose history uses the open solid is refused", async ({ page }) => {
+  const tree = await start(page);
+  await newBox(page);
+  await page.locator("#tabPrepare").click();
+  await page.locator("#plateAddFile").setInputFiles({ name: "rod.step", mimeType: "model/step", buffer: STEP });
+  await expect(objects(page)).toHaveCount(3);
+  await page.locator("[data-plate-select]").nth(1).click();
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText("Volume 1000 mm³");
+  await openJoin(page);
+  await expect(choices(page)).toHaveText(["plate.step", /^rod\.step/]);
+  const opens = tree.of("open").length;
+  await choices(page).nth(1).click();
+  await expect(page.locator("#modelNote")).toHaveText("This boolean changes the solid.");
+  expect(tree.of("open").slice(opens).map((call) => call.filename), "the rod's tree opened from its file, for the join").toEqual(["rod.step"]);
+  expect(tree.of("open").at(-1)!.nodes, "its root alone").toBeUndefined();
+
+  await page.locator("#modelKeepTool").check();
+  await page.locator("#modelApply").click();
+  await expect(readout(page)).toHaveText(/^Fuse rod\.step( \d+)?\. Volume 1500 mm³\.$/);
+  await expect(page.locator("#modelKeepTool"), "Keep goes back off after the join").not.toBeChecked();
+
+  await page.locator("#tabPrepare").click();
+  await page.locator("[data-plate-select]").nth(2).click();
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText("Volume 4000 mm³");
+  await openJoin(page);
+  await choices(page).filter({ hasText: "Box 1" }).click();
+  await expect(page.locator("#modelNote")).toHaveText("The tool object's history already uses this part, so the two cannot be joined.");
+  await expect(page.locator("#modelApply")).toBeDisabled();
+});
+
+test("a split piece fused back into its part stays off the plate when Model closes", async ({ page }) => {
+  await start(page);
+  await page.locator("#modelToolSplit").click();
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+  await expect(objects(page)).toHaveCount(2);
+  await openJoin(page);
+  await expect(choices(page)).toHaveText(["plate split"]);
+  await choices(page).first().click();
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+  await expect(readout(page)).toHaveText("Fuse plate split. Volume 2500 mm³. plate split left the plate.");
+  await expect(objects(page)).toHaveCount(1);
+  await page.locator("#tabPrepare").click();
+  await expect(objects(page), "the plate takes the join, and the piece it crossed stays fused").toHaveCount(1);
 });
 
 test("Keep on: the tool stays on the plate", async ({ page }) => {

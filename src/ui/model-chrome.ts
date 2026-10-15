@@ -52,9 +52,11 @@ interface ModelChromeHooks {
   joinChoices(): JoinChoice[];
   /** Object `id`'s plate mesh where it sits in model space, for its ghost. */
   joinGhost(id: string): ContextPart | null;
+  /** A grey object was clicked that cannot be the tool: say why. */
+  notATool(id: string): void;
 }
 
-export interface JoinChoice {
+interface JoinChoice {
   id: string;
   name: string;
 }
@@ -204,7 +206,9 @@ export function mountModelChrome(next: ModelChromeHooks) {
   document.querySelector("#modelObjects")?.addEventListener("keydown", (ev) => onObjectKey(ev as KeyboardEvent));
   bindScrub();
   fx.model?.onHandleDrag(onHandleDrag);
-  fx.model?.onObjectPick((id: string) => pickJoinTool(id));
+  fx.model?.onObjectPick((id: string) => {
+    if (!pickJoinTool(id)) hooks?.notATool(id);
+  });
   window.addEventListener("keydown", onEnter, true);
   syncFields();
   refreshTools();
@@ -301,6 +305,8 @@ function toggleTool(next: ModelTool) {
     applySplitDefaults();
   }
   if (next === "hole") applyHoleDefaults();
+  // Keep the tool object is asked per op: it opens off.
+  if (next === "boolean") resetKeepTool();
   if (next === "measure") applyMeasureDefaults();
   // Place moves as it goes, so its button only closes the tool.
   const cancel = document.querySelector("#modelCancel");
@@ -358,6 +364,7 @@ export function openJoinTool() {
 /** The primitive row's choice: a primitive, or Object, last in the row and Boolean's only, so the panel gains no row. */
 function paintPrimRow() {
   const object = joinOpen();
+  document.querySelector("#modelPrim")?.setAttribute("aria-label", tool === "boolean" ? "Combine with" : "Primitive");
   document.querySelectorAll<HTMLButtonElement>("#modelPrim [data-kind]").forEach((button) => {
     const on = button.dataset.kind === "object" ? object : !object && button.dataset.kind === primKind;
     button.setAttribute("aria-checked", on ? "true" : "false");
@@ -378,15 +385,22 @@ function setWithObject(on: boolean) {
   hooks?.paramsChanged();
 }
 
-/** Take object `id` as the tool: from the list, or a click on it in the view. */
-export function pickJoinTool(id: string) {
-  if (!joinOpen() || !hooks?.joinChoices().some((choice) => choice.id === id)) return;
+/** Keep the tool object goes back off. */
+export function resetKeepTool() {
+  const keep = document.querySelector<HTMLInputElement>("#modelKeepTool");
+  if (keep) keep.checked = false;
+}
+
+/** Take object `id` as the tool: from the list, or a click on it in the view. False when it is not on offer. */
+function pickJoinTool(id: string): boolean {
+  if (!joinOpen() || !hooks?.joinChoices().some((choice) => choice.id === id)) return false;
   joinTool = id;
   renderJoinChoices();
   refreshApply();
   refreshNote();
   refreshGhost();
   hooks?.paramsChanged();
+  return true;
 }
 
 /** The plate changed: the list follows it, and a tool no longer on offer is no longer picked. */
@@ -406,6 +420,9 @@ function renderJoinChoices() {
   if (!list || !joinOpen()) return;
   const choices = hooks?.joinChoices() ?? [];
   if (joinTool && !choices.some((choice) => choice.id === joinTool)) joinTool = null;
+  // An empty list is a sentence, not a group of choices.
+  if (choices.length > 0) list.setAttribute("role", "radiogroup");
+  else list.removeAttribute("role");
   if (choices.length === 0) {
     const empty = document.createElement("p");
     empty.className = "model-objects-empty";
@@ -462,7 +479,7 @@ function syncFields() {
   document.querySelectorAll<HTMLElement>("#modelPanel [data-for]").forEach((node) => {
     const forOk = !!tool && (node.dataset.for ?? "").split(" ").includes(tool);
     const primOk = !node.dataset.prim || node.dataset.prim.split(" ").includes(kind);
-    // Only Boolean asks what it combines with: New solid's and Hole's fields stay whatever Boolean shows.
+    // Only Boolean asks what it combines with: New solid and Hole show their fields whatever Boolean has picked.
     const withOk = !node.dataset.with || tool !== "boolean" || node.dataset.with === withMode;
     node.toggleAttribute("hidden", !(forOk && primOk && withOk));
   });

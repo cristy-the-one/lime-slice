@@ -279,7 +279,7 @@ export function toolKeys(tree: ModelTree): Set<string> {
 
 /**
  * Whether tree `from`, or a tree its joins take a tool from, at any depth, is tree `key`. Such a tool would tie two
- * histories that each need the other, so neither could open first: it is refused.
+ * histories that each name the other, so neither could ever be closed, nor its join's branch deleted: it is refused.
  */
 export function usesTree(trees: ReadonlyMap<string, ModelTree>, from: string, key: string): boolean {
   const queue = [from];

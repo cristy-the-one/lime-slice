@@ -61,6 +61,8 @@ const IDLE_EDGE = 0x8d9780;
 const ARROW_HEAD = HANDLE_ARROW_TIP - 0.15;
 /** Facets of a round primitive's ghost meet at up to 22.5 degrees; its real edges at more. Below this they shade smooth and draw no line. */
 const PRIMITIVE_CREASE_DEG = 25;
+/** A join's tool past this many triangles is drawn without its outline, which would take a noticeable while to find. */
+const OBJECT_OUTLINE_MAX_TRIANGLES = 150_000;
 /** How much more solid the ghost of the object being edited gets while a docked handle is in use. */
 const EMPHASIS_OPACITY = 0.45;
 
@@ -347,11 +349,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     body.position.set(center.x * (1 - factor), center.y * (1 - factor), center.z * (1 - factor));
   }
 
-  function ghostMaterial(opacity: number) {
+  /** `flat` for a mesh that carries no normals, as a grey object's buffers do. */
+  function ghostMaterial(opacity: number, flat = false) {
     return new THREE.MeshStandardMaterial({
       color: accent,
       roughness: 0.55,
       metalness: 0.05,
+      flatShading: flat,
       transparent: true,
       opacity: emphasis ? Math.min(0.7, opacity + EMPHASIS_OPACITY) : opacity,
       depthWrite: false,
@@ -523,17 +527,22 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (current.kind === "object") {
       // The grey object's own buffers, moved by its matrix: nothing is copied.
       const held = contextHeld(current.positions);
-      held.edges ??= new THREE.EdgesGeometry(held.geometry, PRIMITIVE_CREASE_DEG);
-      borrowed.add(held.edges);
-      const shape = new THREE.Mesh(held.geometry, ghostMaterial(0.22));
+      // Its outline is built once, and not at all for a mesh so dense that would hold up the pick.
+      if (!held.edges && current.positions.length <= OBJECT_OUTLINE_MAX_TRIANGLES * 9) {
+        held.edges = new THREE.EdgesGeometry(held.geometry, PRIMITIVE_CREASE_DEG);
+        borrowed.add(held.edges);
+      }
+      const shape = new THREE.Mesh(held.geometry, ghostMaterial(0.22, true));
       const { m, t } = current.matrix;
       shape.matrixAutoUpdate = false;
       shape.matrix.set(m[0], m[1], m[2], t[0], m[3], m[4], m[5], t[1], m[6], m[7], m[8], t[2], 0, 0, 0, 1);
       shape.renderOrder = 2;
       shape.raycast = () => undefined;
-      const outline = new THREE.LineSegments(held.edges, new THREE.LineBasicMaterial({ color: accent, transparent: true, opacity: 0.95 }));
-      outline.raycast = () => undefined;
-      shape.add(outline);
+      if (held.edges) {
+        const outline = new THREE.LineSegments(held.edges, new THREE.LineBasicMaterial({ color: accent, transparent: true, opacity: 0.95 }));
+        outline.raycast = () => undefined;
+        shape.add(outline);
+      }
       ghosts.add(shape);
       return;
     }

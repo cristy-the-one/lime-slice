@@ -63,6 +63,7 @@ import {
   joinPick,
   mountModelChrome,
   refreshJoinChoices,
+  resetKeepTool,
   openModelTool,
   refreshModelGhost,
   setModelEditable,
@@ -163,7 +164,10 @@ const toolOpens = new Map<string, Promise<{ key: string; node: NodeId } | string
 /** The object drawn as the join's ghost rather than grey, and the readout's last account of the join. */
 let ghosted: string | null = null;
 let joinSaid = "";
-const CYCLE = "The tool object's history already uses this part, so the two cannot be joined.";
+let refreshingContext = false;
+/** Counts the plates Model has forgotten, so a tree opened for an earlier one is let go. */
+let plateEra = 0;
+const CYCLE = "The tool object's history already uses this part, so the two cannot be joined";
 
 export function bindModelView() {
   fx.model?.onPick((pick: ModelPick | null, shift: boolean) => void onPick(pick, shift));
@@ -244,6 +248,12 @@ export function bindModelView() {
       const obj = livePlate().find((item) => item.id === id);
       return obj ? { id, positions: obj.sourcePos, matrix: meshToModel(obj) } : null;
     },
+    notATool(id) {
+      const obj = state.plate.objects.find((item) => item.id === id);
+      if (!obj) return;
+      readout(surfacesOnly.has(meshTokenOf(obj.bytes)) ? `${obj.name} has surfaces but no closed solid, so it cannot be a tool.` : `${obj.name} is a mesh, so it cannot be a tool.`);
+      joinSaid = "";
+    },
   });
   mountModelHistory({
     jump(node) {
@@ -316,11 +326,11 @@ async function readyTool(serial: number, id: string) {
   const obj = state.plate.objects.find((item) => item.id === id);
   const ready = obj ? await toolTreeOf(obj) : "That object is no longer on the plate.";
   if (serial !== probeSerial || state.stage !== "model") return;
-  if (typeof ready !== "string") {
+  if (typeof ready !== "string" && panelJoin()) {
     scheduleProbe(0);
     return;
   }
-  setModelProbe({ phase: "done", ok: false, error: ready });
+  setModelProbe({ phase: "done", ok: false, error: typeof ready === "string" ? ready : "That object is no longer on the plate." });
   // Surfaces with no closed solid leave the list.
   refreshJoinChoices();
 }
@@ -386,7 +396,7 @@ function sayJoin() {
     return;
   }
   const keep = document.querySelector<HTMLInputElement>("#modelKeepTool")?.checked ?? false;
-  const what = { fuse: `Fuse ${tool} into ${target}`, cut: `Cut ${tool} from ${target}`, common: `Keep only where ${target} and ${tool} overlap` }[boolOp()];
+  const what = { fuse: `Fuse ${tool} into ${target}`, cut: `Cut ${tool} from ${target}`, common: `Intersect ${target} with ${tool}` }[boolOp()];
   const said = `${what}; ${tool} ${keep ? "stays on" : "leaves"} the plate.`;
   if (said === joinSaid) return;
   joinSaid = said;
@@ -478,12 +488,17 @@ export function commitModel() {
   // plate gets it back. A piece removed by hand stays removed while the plate stays below its split.
   syncPlateFromState();
   const above = new Set(pathTo(tree, plan.from));
-  for (const id of pathTo(tree, plan.to)) {
-    if (above.has(id)) continue;
+  const down = pathTo(tree, plan.to).filter((id) => !above.has(id));
+  // A piece a join on the way down took off the plate stays off: fused back into its part, it is no part of its own.
+  const joined = new Set(down.flatMap((id) => {
+    const op = tree!.nodes.get(id)?.op;
+    return op?.kind === "join" && !op.keepTool ? [op.tool.key] : [];
+  }));
+  for (const id of down) {
     const key = tree.nodes.get(id)?.piece;
     const piece = key ? modelTrees.get(key) : undefined;
     const pieceMesh = piece?.nodes.get(piece.committed)?.mesh;
-    if (key && pieceMesh && !state.plate.objects.some((obj) => obj.modelTree === key)) placePiece(key, pieceMesh);
+    if (key && pieceMesh && !joined.has(key) && !state.plate.objects.some((obj) => obj.modelTree === key)) placePiece(key, pieceMesh);
   }
   place();
   flushEdit();
@@ -616,10 +631,12 @@ export async function historyToSave(): Promise<{ trees: Map<string, TreeToSave>;
  * twice never meets its own trees in the engine. The engine hears of it when Model needs a step:
  * the plate's step then opens from the object's `brep`, as a STEP file does, and the rest of the
  * tree from its root STEP and ops once another step is asked for. The trees of tools that left the
- * plate (`tools`) are adopted too, and every tree after the trees its joins take a tool from.
+ * plate (`tools`) are adopted too, each tree after the trees its joins take a tool from; the engine
+ * still opens each when a call first needs it.
  */
 export function adoptSavedTrees(saved: ReadonlyMap<string, SavedTree<{ name: string; bytes: ArrayBuffer }>>, tools: readonly { id: string; name: string }[] = []) {
   const keys = new Map([...saved.keys()].map((id) => [id, freshTreeKey(id)]));
+  const toolNames = new Map(tools.map((tool) => [tool.id, tool.name]));
   for (const id of toolFirst(saved)) {
     const tree = saved.get(id)!;
     const key = keys.get(id)!;
@@ -627,8 +644,8 @@ export function adoptSavedTrees(saved: ReadonlyMap<string, SavedTree<{ name: str
     const root: ModelRoot = tree.rootPrimitive ? { kind: "primitive", solid: tree.rootPrimitive } : { kind: "step", ...tree.rootStep };
     if (!obj) {
       // A tool that left the plate: its tree stays for the joins that name it, and opens whole when one is built.
-      const tool = tools.find((item) => item.id === id);
-      if (tool) modelTrees.set(key, loadedTree(tree, key, root, tool.name, null, (other) => keys.get(other)));
+      const name = toolNames.get(id);
+      if (name !== undefined) modelTrees.set(key, loadedTree(tree, key, root, name, null, (other) => keys.get(other)));
       continue;
     }
     const token = meshTokenOf(obj.bytes);
@@ -660,9 +677,24 @@ export function releaseModelTrees() {
   void closeInEngine(gone);
 }
 
-/** The engine keeps a tree a join takes its tool from, so trees close one at a time, each before its tools. */
-async function closeInEngine(keys: readonly string[]) {
-  for (const key of keys) await post({ call: "close", key });
+/** Closes in flight, one at a time, and those the engine refused because a join still named the tree. */
+let closing: Promise<void> = Promise.resolve();
+const refusedCloses = new Set<string>();
+
+/**
+ * The engine keeps a tree a join takes its tool from, so trees close one at a time, each before its tools, in one
+ * queue for every release. A close the engine refused, because a tree closing in a later release named it, goes again
+ * after each later batch.
+ */
+function closeInEngine(keys: readonly string[]): Promise<void> {
+  closing = closing.then(async () => {
+    for (const key of [...keys, ...refusedCloses]) {
+      const body = await post({ call: "close", key });
+      if (typeof body.error === "string" && body.error !== "unknown") refusedCloses.add(key);
+      else refusedCloses.delete(key);
+    }
+  });
+  return closing;
 }
 
 /** The solids and kernel answers kept for tree `key`. */
@@ -682,8 +714,12 @@ export function leaveModel() {
 /** The file's plate is gone: so are its trees. */
 export function forgetModelTrees() {
   void closeInEngine(closeOrder(modelTrees, modelTrees.keys()));
+  plateEra += 1;
   modelTrees.clear();
   surfacesOnly.clear();
+  toolOpens.clear();
+  ghosted = null;
+  joinSaid = "";
   seeds.clear();
   solids.clear();
   answers.clear();
@@ -859,26 +895,29 @@ async function openTree(mine: number, objectId: string, label: string, from: Exc
     if (mine === ticket && state.stage === "model") readout(started);
     return;
   }
+  keepSolid(started.key, ROOT, state.stepTolerance, started.parsed);
   if (mine !== ticket || state.stage !== "model") return;
   open = { objectId, key: started.key, solid: started.parsed };
   present(started.parsed, `${about(started.parsed)} Pick a face or an edge.`);
 }
 
-/** A new tree for the plate object, rooted in `from`: the object then carries its key. A shown object and a join's tool both start here. */
+/**
+ * A new tree for the plate object, rooted in `from`: the object then carries its key. A shown object and a join's tool
+ * both start here. An open that lands after the plate was replaced leaves nothing behind.
+ */
 async function startTree(objectId: string, label: string, from: Exclude<ModelRoot, { kind: "piece" }>, root: PlateMesh): Promise<{ key: string; parsed: ParsedSolid } | string> {
   const key = freshTreeKey(objectId);
-  const chord = state.stepTolerance;
-  const body = await post(openRequest(key, from, chord));
+  const era = plateEra;
+  const body = await post(openRequest(key, from, state.stepTolerance));
   const parsed = decodeSolid(body);
-  if (typeof parsed === "string") {
-    // An open the engine answered but this app cannot read still left a tree there.
+  if (typeof parsed === "string" || era !== plateEra) {
+    // An open the engine answered but this app cannot read, or no longer wants, still left a tree there.
     if (typeof body.error !== "string") void post({ call: "close", key });
-    return parsed;
+    return typeof parsed === "string" ? parsed : "This solid is no longer open.";
   }
   modelTrees.set(key, withNode(newTree(key, from, rootLabel(from, label), parsed.fingerprint), ROOT, { mesh: root }));
   if (from.kind === "step" || root.step) stepKnown.add(root.token);
   if (!parsed.editable) surfacesOnly.add(root.token);
-  keepSolid(key, ROOT, chord, parsed);
   setTreeKey(objectId, key);
   return { key, parsed };
 }
@@ -1002,7 +1041,8 @@ function failed(key: string, body: Body): boolean {
   const error = text(body.error);
   if (!error) return false;
   const tree = modelTrees.get(key);
-  if (typeof body.broken === "number" && tree) {
+  // A tool tree the engine could not get back marks nothing: the step builds once that tree opens.
+  if (typeof body.broken === "number" && tree && !missingToolOf(body)) {
     console.warn(error);
     modelTrees.set(key, withNode(tree, body.broken, { broken: error }));
     readout(body.broken === ROOT ? ROOT_BROKEN : BROKEN);
@@ -1078,7 +1118,8 @@ async function applyOp(op: ModelOp, working: string) {
   const twin = childWithOp(tree, parent, op);
   if (twin != null) {
     // These numbers already built a step from here: show it rather than build it again.
-    await showNode(ticket, at.objectId, at.key, twin, (solid) => appliedMessage(op, solid));
+    const shown = await showNode(ticket, at.objectId, at.key, twin, (solid) => appliedMessage(op, solid));
+    if (shown && op.kind === "join" && !op.keepTool) takeOffPlate(op.tool.object);
     return;
   }
   if (seeds.has(at.key) || readSolids.has(at.solid)) {
@@ -1150,9 +1191,10 @@ async function applyOp(op: ModelOp, working: string) {
   modelTrees.set(at.key, grown);
   keepSolid(at.key, node, chord, parsed);
   open = { ...at, solid: parsed };
-  if (op.kind === "join" || isProbed(op.kind)) remember(probeName(at.key, node, op), { phase: "applied" });
+  remember(probeName(at.key, node, op), { phase: "applied" });
   // The tree that names the tool is in place first, so the tool's tree stays for it once the object leaves.
   if (stored.kind === "join" && !stored.keepTool) takeOffPlate(stored.tool.object);
+  if (stored.kind === "join") resetKeepTool();
   present(parsed, appliedMessage(stored, parsed));
 }
 
@@ -1457,8 +1499,14 @@ function present(parsed: ParsedSolid, message: string) {
 
 /** The other plate objects, grey, where they sit in model space, but for a join's tool, which is the ghost. */
 export function refreshModelContext() {
-  // The plate changed: a join's list follows it, and loses a tool that left.
-  refreshJoinChoices();
+  if (refreshingContext) return;
+  // The plate changed: a join's list follows it, and loses a tool that left. The refresh that loss asks for is this one.
+  refreshingContext = true;
+  try {
+    refreshJoinChoices();
+  } finally {
+    refreshingContext = false;
+  }
   ghosted = joinPick();
   fx.model?.setContext(contextParts(livePlate(), open?.objectId ?? null).filter((part) => part.id !== ghosted));
   const canvas = document.querySelector<HTMLElement>("#model");
@@ -1815,7 +1863,7 @@ function missingOf(body: Body): NodeId[] | null {
  * runs one of its own.
  */
 async function treeCall(key: string, node: NodeId, request: Body): Promise<Body> {
-  const problem = await wholeTools(key, request);
+  const problem = await wholeTools(key, node, request);
   if (problem) return { error: problem };
   let body = await seededCall(key, node, request);
   // A join's tool tree the engine lacks (a restarted engine, or a tree opened from a project) opens, and the call goes again.
@@ -1847,32 +1895,41 @@ async function treeCall(key: string, node: NodeId, request: Body): Promise<Body>
 const TOOL_ROUNDS = 8;
 
 /**
- * Every tree a call on `key` can build a join from (its joins' tools, theirs, and the tool of a join the call sends)
- * is whole in the engine first. A tree from a project that sits on its STEP-read step numbers that step 0 there, so a
- * join naming its step 0 would take the read solid instead of the root.
+ * A tree from a project that sits on its STEP-read step numbers that step 0 in the engine, so a join that names its root
+ * would take the read solid instead. Every such tree a call on `node` of `key` can build from (by the joins on the way
+ * to `node`, the join the call sends, and theirs in turn) opens whole first. A join naming any other step of it gets
+ * `missingTool` and opens it then.
  */
-async function wholeTools(key: string, request: Body): Promise<string | null> {
-  const op = isOp(request.op) && request.op.kind === "join" ? request.op : null;
-  const tree = modelTrees.get(key);
-  const queue = [...(tree ? toolKeys(tree) : []), ...(op ? [op.tool.key] : [])];
-  const seen = new Set<string>([key]);
-  for (let at = queue.pop(); at !== undefined; at = queue.pop()) {
-    if (seen.has(at)) continue;
-    seen.add(at);
-    const tool = modelTrees.get(at);
-    if (tool) queue.push(...toolKeys(tool));
-    const seed = seeds.get(at);
-    const problem = seed ? await openWhole(at, seed.node) : null;
+async function wholeTools(key: string, node: NodeId, request: Body): Promise<string | null> {
+  const joinsTo = (tree: ModelTree | undefined, at: NodeId) =>
+    tree ? pathTo(tree, at).flatMap((id) => { const op = tree.nodes.get(id)?.op; return op?.kind === "join" ? [op.tool] : []; }) : [];
+  const queue = [...joinsTo(modelTrees.get(key), node), ...(isOp(request.op) && request.op.kind === "join" ? [request.op.tool] : [])];
+  const seen = new Set<string>();
+  for (let tool = queue.pop(); tool !== undefined; tool = queue.pop()) {
+    if (seen.has(`${tool.key}#${tool.node}`)) continue;
+    seen.add(`${tool.key}#${tool.node}`);
+    const seed = seeds.get(tool.key);
+    const problem = seed && tool.node === ROOT ? await openWhole(tool.key, seed.node) : null;
     if (problem) return problem;
+    queue.push(...joinsTo(modelTrees.get(tool.key), tool.node));
   }
   return null;
 }
 
-/** A join's tool the engine does not hold: its tree comes back from its root and ops, as a tree after a restart does, down to `node`. */
-async function restoreTool(key: string, node: NodeId): Promise<string | null> {
-  if (!modelTrees.get(key)?.nodes.has(node)) return "The tool object's history is no longer open.";
+/**
+ * A join's tool the engine does not hold: its tree comes back from its root and ops, as a tree after a restart does,
+ * down to `node`. Calls that find it missing at once share one restore.
+ */
+function restoreTool(key: string, node: NodeId): Promise<string | null> {
+  if (!modelTrees.get(key)?.nodes.has(node)) return Promise.resolve("The tool object's history is no longer open.");
+  const running = restoring.get(key);
+  if (running) return running;
   const seed = seeds.get(key);
-  return seed ? openWhole(key, seed.node) : restore(key, node, [ROOT]);
+  const restored: Promise<string | null> = (seed ? openWhole(key, seed.node) : restore(key, node, [ROOT])).finally(() => {
+    if (restoring.get(key) === restored) restoring.delete(key);
+  });
+  restoring.set(key, restored);
+  return restored;
 }
 
 function missingToolOf(body: Body): { key: string; node: NodeId } | null {
@@ -1991,7 +2048,14 @@ async function restore(key: string, node: NodeId, missing: NodeId[]): Promise<st
   for (const id of pathTo(tree, node).slice(1)) {
     const step = tree.nodes.get(id);
     if (!step?.op || step.parent === null) continue;
-    const body = await post(applyRequest(key, step.parent, id, step.op, chord));
+    const request = applyRequest(key, step.parent, id, step.op, chord);
+    let body = await post(request);
+    for (let tools = 0; missingToolOf(body) && tools < TOOL_ROUNDS; tools += 1) {
+      const tool = missingToolOf(body)!;
+      const problem = await restoreTool(tool.key, tool.node);
+      if (problem) return problem;
+      body = await post(request);
+    }
     // A node the engine still has, made by a split with its piece's key, refuses a resend without it.
     if (text(body.error).includes("already in this tree")) continue;
     if (failed(key, body)) return text(body.error);

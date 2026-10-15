@@ -18,7 +18,7 @@ import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel.ts";
 import { pushToast } from "../ui/toasts.ts";
 import { adoptBytes, place, previewRemote, seatedPositions, stlPositions } from "./files.ts";
 import { adoptSavedTrees, captureOpenSolid, historyToSave } from "./model.ts";
-import { treeBody, type SavedTree } from "../model-tree-file.ts";
+import { savedToolObjects, treeBody, type SavedTree } from "../model-tree-file.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { applyPreset, currentPreset, needsEngine, renderChrome } from "./settings.ts";
 import { session, state } from "./state.ts";
@@ -255,8 +255,19 @@ async function loadPlateObjects(objects: PlateFileObject[], tools: readonly Tool
     if (!adopt(row)) unread.push(row.name);
     rows.push({ ...row, bytes: copy, sourcePos, brepBytes });
   }
-  // A tool's tree after the plate's, so its root STEP finds the bytes they hold.
+  // A kept tool's tree after the plate's, so a root STEP it shares with them is decoded once.
   for (const tool of tools) if (!adopt(tool)) unread.push(tool.name);
+  // A join whose tool's tree did not read could not rebuild: its tree is left out too, at any depth, as the file's reader does.
+  const names = new Map([...objects, ...tools].map((row) => [row.id, row.name]));
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const [id, tree] of trees) {
+      if ([...savedToolObjects(tree)].every((tool) => trees.has(tool))) continue;
+      trees.delete(id);
+      unread.push(names.get(id) ?? id);
+      changed = true;
+    }
+  }
   return { plate: assemblePlate(rows), trees, unread };
 }
 
