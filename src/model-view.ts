@@ -3,6 +3,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
+import { toCreasedNormals } from "three/addons/utils/BufferGeometryUtils.js";
 import { HANDLE_ARROW_TIP, HANDLE_KNOB_PICK, HANDLE_RING_RADIUS, dockSeat, gizmoRadiusForPixels, type DockSeat } from "./gizmo-math";
 import { boundsOf, type Bounds } from "./mesh-place";
 import type { Box } from "./measure";
@@ -56,7 +57,7 @@ const HANDLE_PX = 92;
 const IDLE_EDGE = 0x8d9780;
 /** Where an arrow's head is centred, in handle units. */
 const ARROW_HEAD = HANDLE_ARROW_TIP - 0.15;
-/** Facets of a round primitive's ghost meet at up to 22.5 degrees; its real edges at more. */
+/** Facets of a round primitive's ghost meet at up to 22.5 degrees; its real edges at more. Below this they shade smooth and draw no line. */
 const PRIMITIVE_CREASE_DEG = 25;
 /** How much more solid the ghost of the object being edited gets while a docked handle is in use. */
 const EMPHASIS_OPACITY = 0.45;
@@ -68,6 +69,8 @@ export interface ModelView {
   setPose(pose: Affine): void;
   /** Look at `box`, a model-space box, from the direction Model opens with. */
   frame(box: Bounds): void;
+  /** Whether every corner of `box`, a model-space box, is on screen. */
+  inView(box: Bounds): boolean;
   /** The faint bed and build volume, a size reference only. */
   setBedVisible(on: boolean): void;
   setPickMode(mode: "face" | "edge"): void;
@@ -460,9 +463,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (current.kind === "primitive") {
       // A new solid's ghost needs no open solid.
       if (current.mesh.length < 9) return;
-      const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute("position", new THREE.BufferAttribute(current.mesh, 3));
-      geometry.computeVertexNormals();
+      const soup = new THREE.BufferGeometry();
+      soup.setAttribute("position", new THREE.BufferAttribute(current.mesh, 3));
+      // Round sides shade smooth, and a box's or a wedge's faces stay flat.
+      const geometry = toCreasedNormals(soup, (PRIMITIVE_CREASE_DEG * Math.PI) / 180);
+      soup.dispose();
       const centre = turnCentre(current.spec);
       const [x, y, z] = current.spec.origin;
       const turned = new THREE.Group();
@@ -803,6 +808,14 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       kick();
     },
     frame: frameBox,
+    inView(box) {
+      camera.updateMatrixWorld();
+      for (let corner = 0; corner < 8; corner += 1) {
+        const p = new THREE.Vector3(corner & 1 ? box.max[0] : box.min[0], corner & 2 ? box.max[1] : box.min[1], corner & 4 ? box.max[2] : box.min[2]).project(camera);
+        if (Math.abs(p.x) > 1 || Math.abs(p.y) > 1 || p.z > 1) return false;
+      }
+      return true;
+    },
     setBedVisible(on) {
       bedOn = on;
       bedRef.setVisible(on);

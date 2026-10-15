@@ -584,6 +584,8 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   white-space: nowrap;
 }
 .model-tool .ico { flex: 0 0 auto; }
+/* With a solid's tools on the bar, New solid keeps its icon and gives its name to the tip. */
+.model-tool.is-icon .model-tool-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .model-tool:disabled { opacity: 0.4; }
 .model-tool:hover:not(:disabled):not([aria-pressed="true"]) { background: var(--surface-3); color: var(--text); }
 .model-tool[aria-pressed="true"] {
@@ -769,6 +771,8 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   pointer-events: auto;
 }
 .model-history[hidden] { display: none !important; }
+/* With no History, the size chip and the readout still sit at the bottom of the column. */
+.model-history[hidden] + .model-foot { margin-top: auto; }
 /* With a tool open, History keeps to half the column so the tool's panel has room. */
 #modelBar[data-tool] .model-history { max-height: 50%; }
 .model-history-toggle {

@@ -1380,6 +1380,7 @@ function forgetPlaceSteps() {
 
 function showEdits(on: boolean) {
   document.querySelector("#modelEdit")?.toggleAttribute("hidden", !on);
+  document.querySelector("#modelToolNew")?.classList.toggle("is-icon", on);
   if (!on) closeModelTool();
 }
 

@@ -9,7 +9,7 @@ import type { PlaceFields } from "../model-space";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
 import { clampTilt, splitNote, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
 import { lastFace, selectedEdges } from "../model-blend";
-import { isPrimitiveKind, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
+import { isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
 import { lastEdge, modelApplyReady, selectionCountLabel, type ModelPickRef } from "../model-select";
 import { scrubIntent, scrubTarget, type ScrubIntent } from "./scrub";
 import { snapStep } from "../gizmo-math";
@@ -45,7 +45,7 @@ interface ModelChromeHooks {
   placeMoved(field: keyof PlaceFields, value: number, phase: PlacePhase): void;
   /** `spec` where New solid would put it in model space: its root, moved to the origin or beside the other objects. */
   newSolidAt(spec: PrimitiveSpec): PrimitiveSpec;
-  /** New solid opened with no solid open: the view looks at where the new one lands. */
+  /** New solid opened with no solid open, or its ghost outgrew the view: the view looks at where the new one lands. */
   frameNewSolid(spec: PrimitiveSpec): void;
 }
 
@@ -164,6 +164,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (plane) setPlaneMode(plane.dataset.plane as PlaneMode);
   });
   document.querySelector("#modelCancel")?.addEventListener("click", () => closeTool());
+  document.querySelector("#modelPanel")?.addEventListener("change", () => keepNewSolidInView());
   document.querySelector("#modelPanel")?.addEventListener("change", (ev) => {
     // A typed tilt past the limit shows the limit the plane already uses.
     const input = ev.target instanceof HTMLInputElement && (ev.target.id === "modelTiltA" || ev.target.id === "modelTiltB") ? ev.target : null;
@@ -383,6 +384,7 @@ function setPrimitive(kind: PrimitiveKind, focus: boolean) {
   });
   syncFields();
   refreshGhost();
+  keepNewSolidInView();
   hooks?.paramsChanged();
 }
 
@@ -587,7 +589,21 @@ function onHandleDrag(drag: HandleDrag) {
     return;
   }
   document.querySelector("#modelPanel")?.dispatchEvent(new Event("input", { bubbles: true }));
-  if (drag.phase === "end") hooks?.probeNow();
+  if (drag.phase === "end") {
+    hooks?.probeNow();
+    keepNewSolidInView();
+  }
+}
+
+/**
+ * With no solid open, a new solid that a settled number or a picked primitive grew out of the view is framed again.
+ * While a number is still being typed or dragged the view stays put, and a ghost still on screen never moves it.
+ */
+function keepNewSolidInView() {
+  if (tool !== "create" || hooks?.solidBox()) return;
+  const spec = fieldPrimitive();
+  const placed = hooks?.newSolidAt(spec);
+  if (placed && fx.model && !fx.model.inView(primitiveBounds(placed))) hooks?.frameNewSolid(spec);
 }
 
 /** A Place field changed by typing, a scrub, or a drag. Only that field moves the object. */
