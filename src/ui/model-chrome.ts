@@ -2,7 +2,7 @@
  * Model mode's toolbar, the tool that is open, and the ghost that follows its numbers.
  * Apply still lives in `app/model.ts`. This file only decides what is on screen.
  */
-import { Box, CircleDot, Cone, Cylinder, Disc, Download, Focus, Globe, Grid3x3, Hexagon, Move3d, Plus, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Torus, Triangle, TriangleRight, Undo2, createElement, type IconNode } from "lucide";
+import { Box, Boxes, CircleDot, Cone, Cylinder, Disc, Download, Focus, Globe, Grid3x3, Hexagon, Move3d, Plus, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Torus, Triangle, TriangleRight, Undo2, createElement, type IconNode } from "lucide";
 import type { HandleDrag, ModelGhost } from "../model-view";
 import type { ContextPart } from "../model-context";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type ModelTool, type Vec3 } from "../model-drag";
@@ -96,6 +96,9 @@ const RADIUS_LABELS: Partial<Record<PrimitiveKind, string>> = { cone: "Bottom ra
 
 let hooks: ModelChromeHooks | null = null;
 let tool: ModelTool | null = null;
+/** The primitive picked last, for Boolean and New solid alike, and whether Boolean is on another object instead. */
+let primKind: PrimitiveKind = "box";
+let withObject = false;
 /** The plate object a Boolean with an object takes as its tool, once one is picked. */
 let joinTool: string | null = null;
 let picks: ModelPickRef[] = [];
@@ -139,10 +142,11 @@ export function mountModelChrome(next: ModelChromeHooks) {
   for (const entry of TOOLS) iconize(`#modelTool${entry.label}`, entry.icon);
   document.querySelectorAll<HTMLButtonElement>("#modelPrim [data-kind]").forEach((button) => {
     const kind = button.dataset.kind;
-    if (!isPrimitiveKind(kind) || button.querySelector(".ico")) return;
+    if (button.querySelector(".ico") || !(isPrimitiveKind(kind) || kind === "object")) return;
     // The name is the button's label and tip; the row shows the icons.
-    button.replaceChildren(createElement(PRIMITIVE_ICONS[kind], { width: 18, height: 18, "aria-hidden": "true", class: "ico" }));
+    button.replaceChildren(createElement(kind === "object" ? Boxes : PRIMITIVE_ICONS[kind], { width: 18, height: 18, "aria-hidden": "true", class: "ico" }));
   });
+  primKind = primitiveFromRow();
   iconize("#modelStep", Download);
   iconize("#modelUndo", Undo2);
   iconize("#modelRedo", Redo2);
@@ -168,12 +172,11 @@ export function mountModelChrome(next: ModelChromeHooks) {
     }
     const op = target?.closest<HTMLButtonElement>("#modelFuse, #modelCut, #modelCommon");
     if (op) setBoolOp(op.id);
-    const mode = target?.closest<HTMLButtonElement>("#modelWith [data-with-mode]")?.dataset.withMode;
-    if (mode === "primitive" || mode === "object") setWith(mode);
     const object = target?.closest<HTMLButtonElement>("#modelObjects [data-object]")?.dataset.object;
     if (object) pickJoinTool(object);
     const kind = target?.closest<HTMLButtonElement>("#modelPrim [data-kind]")?.dataset.kind;
     if (isPrimitiveKind(kind)) setPrimitive(kind, false);
+    if (kind === "object") setWithObject(true);
     const across = target?.closest<HTMLButtonElement>("#modelCorners, #modelFlats");
     if (across) setAcross(across.id === "modelFlats");
     const plane = target?.closest<HTMLButtonElement>("#modelPlaneModes [data-plane]");
@@ -304,6 +307,7 @@ function toggleTool(next: ModelTool) {
   if (cancel) cancel.textContent = next === "place" ? "Done" : "Cancel";
   const apply = document.querySelector("#modelApply");
   if (apply) apply.textContent = next === "create" ? "Create" : "Apply";
+  paintPrimRow();
   syncFields();
   renderJoinChoices();
   fx.model?.setObjectPicking(joinOpen());
@@ -335,13 +339,9 @@ function closeTool() {
   hooks?.paramsChanged();
 }
 
-function withObject(): boolean {
-  return document.querySelector("#modelWithObject")?.getAttribute("aria-pressed") === "true";
-}
-
 /** Boolean is open on another object rather than a primitive. */
 export function joinOpen(): boolean {
-  return tool === "boolean" && withObject();
+  return tool === "boolean" && withObject;
 }
 
 /** The object Boolean takes as its tool, while it is open on an object and one is picked. */
@@ -352,16 +352,23 @@ export function joinPick(): string | null {
 /** Shift+G: Boolean, on another object. */
 export function openJoinTool() {
   if (tool !== "boolean") document.querySelector<HTMLButtonElement>("#modelToolBoolean:not(:disabled)")?.click();
-  if (tool === "boolean") setWith("object");
+  if (tool === "boolean") setWithObject(true);
 }
 
-/** Primitive or Object: what Boolean combines the solid with. The other's fields hide. */
-function setWith(mode: "primitive" | "object") {
-  for (const button of document.querySelectorAll<HTMLButtonElement>("#modelWith [data-with-mode]")) {
-    const on = button.dataset.withMode === mode;
-    button.setAttribute("aria-pressed", on ? "true" : "false");
-    button.classList.toggle("on", on);
-  }
+/** The primitive row's choice: a primitive, or Object, last in the row and Boolean's only, so the panel gains no row. */
+function paintPrimRow() {
+  const object = joinOpen();
+  document.querySelectorAll<HTMLButtonElement>("#modelPrim [data-kind]").forEach((button) => {
+    const on = button.dataset.kind === "object" ? object : !object && button.dataset.kind === primKind;
+    button.setAttribute("aria-checked", on ? "true" : "false");
+    button.tabIndex = on ? 0 : -1;
+  });
+}
+
+/** What Boolean combines the solid with: another object, or the primitive picked last. The other's fields hide. */
+function setWithObject(on: boolean) {
+  withObject = on;
+  paintPrimRow();
   syncFields();
   renderJoinChoices();
   fx.model?.setObjectPicking(joinOpen());
@@ -451,7 +458,7 @@ function setBoolOp(id: string) {
 
 function syncFields() {
   const kind = primitiveKind();
-  const withMode = withObject() ? "object" : "primitive";
+  const withMode = withObject ? "object" : "primitive";
   document.querySelectorAll<HTMLElement>("#modelPanel [data-for]").forEach((node) => {
     const forOk = !!tool && (node.dataset.for ?? "").split(" ").includes(tool);
     const primOk = !node.dataset.prim || node.dataset.prim.split(" ").includes(kind);
@@ -471,8 +478,13 @@ function setLabel(labelId: string, inputId: string, text: string, aria = text) {
   document.querySelector(inputId)?.setAttribute("aria-label", aria);
 }
 
-/** The primitive the picker has on, for Boolean and New solid alike. */
+/** The primitive picked last, for Boolean and New solid alike. */
 function primitiveKind(): PrimitiveKind {
+  return primKind;
+}
+
+/** The primitive the row starts with checked. */
+function primitiveFromRow(): PrimitiveKind {
   const kind = document.querySelector<HTMLElement>('#modelPrim [aria-checked="true"]')?.dataset.kind;
   return isPrimitiveKind(kind) ? kind : "box";
 }
@@ -502,14 +514,19 @@ export function fieldPrimitive(): PrimitiveSpec {
   );
 }
 
-/** Pick a primitive. From the keyboard, focus follows, as in any radio group. */
+/** Pick a primitive, which is also what Boolean combines with from then on. From the keyboard, focus follows, as in any radio group. */
 function setPrimitive(kind: PrimitiveKind, focus: boolean) {
-  document.querySelectorAll<HTMLButtonElement>("#modelPrim [data-kind]").forEach((button) => {
-    const on = button.dataset.kind === kind;
-    button.setAttribute("aria-checked", on ? "true" : "false");
-    button.tabIndex = on ? 0 : -1;
-    if (on && focus) button.focus();
-  });
+  const wasObject = joinOpen();
+  primKind = kind;
+  withObject = false;
+  paintPrimRow();
+  if (focus) document.querySelector<HTMLElement>(`#modelPrim [data-kind="${kind}"]`)?.focus();
+  if (wasObject) {
+    renderJoinChoices();
+    fx.model?.setObjectPicking(false);
+    refreshApply();
+    refreshNote();
+  }
   syncFields();
   refreshGhost();
   keepNewSolidInView();
@@ -517,14 +534,19 @@ function setPrimitive(kind: PrimitiveKind, focus: boolean) {
 }
 
 function onPrimKey(ev: KeyboardEvent) {
-  const kinds = [...document.querySelectorAll<HTMLElement>("#modelPrim [data-kind]")].map((button) => button.dataset.kind);
-  const at = kinds.indexOf(primitiveKind());
+  const kinds = [...document.querySelectorAll<HTMLElement>("#modelPrim [data-kind]:not([hidden])")].map((button) => button.dataset.kind);
+  const at = kinds.indexOf(joinOpen() ? "object" : primitiveKind());
   const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1, Home: -at, End: kinds.length - 1 - at }[ev.key];
   if (step === undefined) return;
   const next = kinds[(at + step + kinds.length) % kinds.length];
-  if (!isPrimitiveKind(next)) return;
+  if (next !== "object" && !isPrimitiveKind(next)) return;
   ev.preventDefault();
-  setPrimitive(next, true);
+  if (isPrimitiveKind(next)) {
+    setPrimitive(next, true);
+    return;
+  }
+  setWithObject(true);
+  document.querySelector<HTMLElement>("#modelWithObject")?.focus();
 }
 
 function setAcross(flats: boolean) {

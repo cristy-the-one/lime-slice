@@ -159,20 +159,16 @@ export function mountMarkup(root: HTMLElement) {
             </div>
             <div class="model-side">
               <div class="model-panel" id="modelPanel" hidden>
-                <div class="modes" id="modelWith" data-for="boolean" role="group" aria-label="Combine with">
-                  <button class="btn mode on" id="modelWithPrimitive" type="button" data-with-mode="primitive" aria-pressed="true" data-tip="A box, cylinder, or another primitive">Primitive</button>
-                  <button class="btn mode" id="modelWithObject" type="button" data-with-mode="object" aria-pressed="false" data-tip="Another solid on the plate: a split piece, an import, or a new solid">Object</button>
-                </div>
-                <div class="model-objects" id="modelObjects" data-for="boolean" data-with="object" role="radiogroup" aria-label="Tool object"></div>
                 <div class="modes model-plane-modes" id="modelPlaneModes" data-for="split" role="group" aria-label="Plane">
                   <button class="btn mode" id="modelSplitX" type="button" data-plane="x" aria-pressed="false" data-tip="Cut square to X">X</button>
                   <button class="btn mode" id="modelSplitY" type="button" data-plane="y" aria-pressed="false" data-tip="Cut square to Y">Y</button>
                   <button class="btn mode on" id="modelSplitZ" type="button" data-plane="z" aria-pressed="true" data-tip="Cut square to Z">Z</button>
                   <button class="btn mode" id="modelSplitFace" type="button" data-plane="face" aria-pressed="false" data-tip="Cut parallel to a picked flat face">Face</button>
                 </div>
-                <div class="model-prims" id="modelPrim" data-for="boolean create" data-with="primitive" role="radiogroup" aria-label="Primitive">${PRIMITIVES.map(
+                <div class="model-prims" id="modelPrim" data-for="boolean create" role="radiogroup" aria-label="Primitive">${PRIMITIVES.map(
                   (entry, i) => `<button class="model-prim" type="button" role="radio" data-kind="${entry.kind}" aria-label="${entry.label}" data-tip="${entry.label}" aria-checked="${i === 0}" tabindex="${i === 0 ? 0 : -1}">${entry.label}</button>`,
-                ).join("")}</div>
+                ).join("")}<button class="model-prim" id="modelWithObject" type="button" role="radio" data-kind="object" data-for="boolean" aria-label="Another object" data-tip="Another object on the plate: a split piece, an import, or a new solid" aria-checked="false" tabindex="-1">Object</button></div>
+                <div class="model-objects" id="modelObjects" data-for="boolean" data-with="object" role="radiogroup" aria-label="Tool object"></div>
                 <div class="model-fields">
                   <label data-for="boolean create" data-with="primitive" data-prim="box wedge" data-snap="1"><span class="scrub-label" data-scrub>Size X</span><input id="modelDx" type="number" step="0.1" value="10" aria-label="Size x"></label>
                   <label data-for="boolean create" data-with="primitive" data-prim="box wedge" data-snap="1"><span class="scrub-label" data-scrub>Size Y</span><input id="modelDy" type="number" step="0.1" value="10" aria-label="Size y"></label>

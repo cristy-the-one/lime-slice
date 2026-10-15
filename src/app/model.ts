@@ -1166,7 +1166,6 @@ function takeOffPlate(id: string) {
   place();
   flushEdit();
   markModelEdit();
-  refreshJoinChoices();
 }
 
 function appliedMessage(op: ModelOp, solid: ParsedSolid) {
@@ -1458,6 +1457,8 @@ function present(parsed: ParsedSolid, message: string) {
 
 /** The other plate objects, grey, where they sit in model space, but for a join's tool, which is the ghost. */
 export function refreshModelContext() {
+  // The plate changed: a join's list follows it, and loses a tool that left.
+  refreshJoinChoices();
   ghosted = joinPick();
   fx.model?.setContext(contextParts(livePlate(), open?.objectId ?? null).filter((part) => part.id !== ghosted));
   const canvas = document.querySelector<HTMLElement>("#model");

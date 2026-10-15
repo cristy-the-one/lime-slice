@@ -88,8 +88,9 @@ test("Boolean on an object: the other solid is picked by a click in the view, dr
   const tree = await start(page);
   await newBox(page);
   await page.keyboard.press("Shift+G");
-  await expect(page.locator("#modelWithObject"), "Shift+G opens Boolean on an object").toHaveAttribute("aria-pressed", "true");
-  await expect(page.locator("#modelPrim"), "the primitive's fields give way").toBeHidden();
+  await expect(page.locator("#modelWithObject"), "Shift+G opens Boolean on an object: Object, last in the primitive row").toHaveAttribute("aria-checked", "true");
+  await expect(page.locator(`#modelPrim [aria-checked="true"]`), "and only Object is checked there").toHaveCount(1);
+  await expect(page.locator("#modelDx"), "the primitive's fields give way").toBeHidden();
   await expect(page.locator("#modelX")).toBeHidden();
   await expect(choices(page), "the list offers the other solid, never the open one").toHaveText(["plate.step"]);
   await expect(page.locator("#modelNote")).toHaveText("Pick the tool: click a grey object, or one in the list.");
@@ -123,9 +124,9 @@ test("Boolean on an object: the other solid is picked by a click in the view, dr
   await page.waitForTimeout(400);
   expect(tree.of("probe").length, "Keep changes no solid, so it asks the engine nothing").toBe(asked);
 
-  await page.locator("#modelWithPrimitive").click();
+  await page.locator(`#modelPrim [data-kind="box"]`).click();
   await expect(canvas(page), "back to a primitive, the object is grey again").toHaveAttribute("data-context-count", "1");
-  await expect(page.locator("#modelPrim")).toBeVisible();
+  await expect(page.locator("#modelDx")).toBeVisible();
 });
 
 test("Keep off: Apply takes the tool off the plate in the same Prepare step, and Prepare undo puts it back", async ({ page }) => {

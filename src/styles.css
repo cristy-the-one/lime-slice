@@ -692,7 +692,7 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   grid-auto-columns: minmax(0, 1fr);
   gap: 4px;
 }
-.model-prims[hidden] { display: none !important; }
+.model-prims[hidden], .model-prim[hidden] { display: none !important; }
 .model-prim {
   display: flex;
   align-items: center;
@@ -712,8 +712,7 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   color: var(--accent-text);
 }
 .model-prim:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-/* Boolean with another object: what it combines with, the plate's other solids as a short list, and Keep. */
-.model-panel #modelWith { margin: 0 0 var(--space-2); }
+/* Boolean with another object: the plate's other solids as a short list, and Keep. */
 .model-objects { display: grid; gap: 4px; margin-bottom: var(--space-2); max-height: 148px; overflow-y: auto; }
 .model-objects[hidden], .model-keep[hidden] { display: none !important; }
 .model-object {
