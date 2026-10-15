@@ -680,6 +680,7 @@ html.layout-compact .model-panel {
   scroll-padding-bottom: calc(var(--model-bar-btn) + 3 * var(--model-bar-pad));
 }
 html.layout-compact .model-fields { display: flex; flex-wrap: nowrap; overflow-x: auto; }
+html.layout-compact .model-prim { height: 44px; }
 html.layout-compact .model-fields label { flex: 0 0 84px; }
 html.layout-compact .model-fields label[data-wide] { flex-basis: 120px; }
 /* The sheet scrolls its fields and note, and keeps Cancel, Done, and Apply on its bottom edge in reach. */
@@ -705,6 +706,13 @@ html.layout-compact .model-foot { order: -1; margin: 128px 8px 8px; max-width: c
   html.layout-compact .model-bar[data-tool="split"] #modelPlaneModes { flex: 0 0 auto; margin-top: 0; }
   html.layout-compact .model-bar[data-tool="split"] .model-fields { flex: 1 1 0; min-width: 0; }
   html.layout-compact .model-bar[data-tool="split"] .model-actions { flex-basis: calc(100% + 2 * var(--space-3)); }
+  /* So do the primitive's buttons, as a strip that scrolls on its own. */
+  html.layout-compact .model-bar:is([data-tool="boolean"], [data-tool="create"]) .model-panel { display: flex; flex-wrap: wrap; align-items: flex-end; column-gap: var(--space-2); }
+  html.layout-compact .model-bar:is([data-tool="boolean"], [data-tool="create"]) .model-panel > * { flex: 0 0 100%; }
+  html.layout-compact .model-bar:is([data-tool="boolean"], [data-tool="create"]) #modelPrim { display: flex; flex: 0 1 auto; min-width: 0; margin: 0; overflow-x: auto; }
+  html.layout-compact .model-bar:is([data-tool="boolean"], [data-tool="create"]) .model-prim { flex: 0 0 36px; height: var(--control-h); }
+  html.layout-compact .model-bar:is([data-tool="boolean"], [data-tool="create"]) .model-fields { flex: 1 1 0; min-width: 0; }
+  html.layout-compact .model-bar:is([data-tool="boolean"], [data-tool="create"]) .model-actions { flex-basis: calc(100% + 2 * var(--space-3)); }
 }
 /* History is a sheet over the canvas, opened from the toolbar. */
 html.layout-compact #modelHistoryOpen { display: inline-flex; }

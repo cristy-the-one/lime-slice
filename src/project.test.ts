@@ -353,8 +353,8 @@ eq("nothing is unread", historyOpened.ok ? historyOpened.project.unreadHistory :
 const reopenedKeys = new Map([["part", "part#run2.1"], ["obj-2", "obj-2#run2.2"]]);
 const reopen = (i: number, label: string, token: string) => {
   const saved = historyObjects[i]!.modelTree!;
-  const bytes = new Uint8Array([...atob(saved.rootStep.bytesBase64!)].map((c) => c.charCodeAt(0)));
-  return loadedTree(saved, reopenedKeys.get(historyObjects[i]!.id)!, { kind: "step", name: saved.rootStep.name, bytes: bytes.buffer }, label, plateMesh(token), (id) => reopenedKeys.get(id));
+  const bytes = new Uint8Array([...atob(saved.rootStep!.bytesBase64!)].map((c) => c.charCodeAt(0)));
+  return loadedTree(saved, reopenedKeys.get(historyObjects[i]!.id)!, { kind: "step", name: saved.rootStep!.name, bytes: bytes.buffer }, label, plateMesh(token), (id) => reopenedKeys.get(id));
 };
 const partAgain = reopen(0, "bracket.stl", "m-part");
 const pieceAgain = reopen(1, "bracket split", "m-piece");
@@ -416,7 +416,7 @@ sharedWire.objects[0]!.modelTree.nodes[2]!.parent = 9;
 const sharedRead = parseProject(JSON.stringify(sharedWire));
 eq(
   "a damaged tree loses only itself: the copy still finds the root STEP the damaged one carried",
-  sharedRead.ok ? [sharedRead.project.objects?.map((obj) => obj.modelTree?.rootStep.bytesBase64 ?? null), sharedRead.project.unreadHistory] : null,
+  sharedRead.ok ? [sharedRead.project.objects?.map((obj) => obj.modelTree?.rootStep?.bytesBase64 ?? null), sharedRead.project.unreadHistory] : null,
   [[null, bytesToBase64(rootStep)], ["bracket.stl"]],
 );
 
@@ -450,9 +450,45 @@ eq(
 const copiedOpened = parseProject(JSON.stringify(copiedWire));
 eq(
   "and each one reads back whole",
-  copiedOpened.ok ? copiedOpened.project.objects?.map((obj) => obj.modelTree?.rootStep.bytesBase64) : null,
+  copiedOpened.ok ? copiedOpened.project.objects?.map((obj) => obj.modelTree?.rootStep?.bytesBase64) : null,
   [bytesToBase64(rootStep), plateStep.bytesBase64, bytesToBase64(rootStep)],
 );
+
+// A new solid's tree is rooted in its primitive: a few numbers instead of a STEP.
+const conePrimitive = { primitive: "cone" as const, origin: [0, 0, 0] as [number, number, number], size: [10, 10, 10] as [number, number, number], radius: 10, height: 30, turn: [0, 0, 0] as [number, number, number], topRadius: 4 };
+let cone = newTree("obj-7#run1.3", { kind: "primitive", solid: conePrimitive }, "Cone 1", fpOf(4900.88));
+cone = { ...withChild(cone, 0, { id: 1, op: cutOp(8), label: opLabel(cutOp(8)), fingerprint: fpOf(4100) }), committed: 1 };
+const withCone: LimeProject = {
+  ...historied,
+  objects: [historied.objects![0]!, { id: "obj-7", name: "Cone 1", mesh: project.mesh, placement: secondPlacement, supportEdits: [], modelTree: { ...savedTree(cone, 1, () => undefined), rootPrimitive: conePrimitive } }],
+};
+const coneWire = JSON.parse(serializeProject(withCone)) as { objects: { modelTree: Record<string, unknown> }[] };
+eq("a primitive root is written as its numbers, with no root STEP", [coneWire.objects[1]!.modelTree.rootPrimitive, coneWire.objects[1]!.modelTree.rootStep], [conePrimitive, undefined]);
+const coneOpened = parseProject(JSON.stringify(coneWire));
+eq(
+  "and reads back whole, beside a STEP-rooted tree that still loads",
+  coneOpened.ok ? [coneOpened.project.objects?.map((obj) => obj.modelTree), coneOpened.project.unreadHistory] : null,
+  [withCone.objects!.map((obj) => obj.modelTree), undefined],
+);
+const coneAgain = coneOpened.ok ? loadedTree(coneOpened.project.objects![1]!.modelTree!, "obj-7#run2.1", { kind: "primitive", solid: conePrimitive }, "Cone 1", plateMesh("m-cone"), () => undefined) : null;
+eq("its root reads as the primitive, and the plate holds its step", coneAgain ? [coneAgain.nodes.get(0)?.label, coneAgain.committed, coneAgain.nodes.get(1)?.mesh?.token] : null, ["Cone ⌀20 to ⌀8 h 30", 1, "m-cone"]);
+for (const [name, damage] of [
+  ["an unknown primitive", { ...conePrimitive, primitive: "helix" }],
+  ["a primitive with a word for a size", { ...conePrimitive, topRadius: "four" }],
+  ["a primitive with no origin", { ...conePrimitive, origin: undefined }],
+  ["a primitive the app would not build", { ...conePrimitive, height: 0 }],
+] as const) {
+  const wire = structuredClone(coneWire);
+  wire.objects[1]!.modelTree.rootPrimitive = damage;
+  const read = parseProject(JSON.stringify(wire));
+  eq(`${name} leaves only that tree out, with a notice`, read.ok ? [read.project.objects?.map((obj) => obj.modelTree === undefined), read.project.unreadHistory] : null, [[false, true], ["Cone 1"]]);
+}
+const both = structuredClone(coneWire);
+both.objects[1]!.modelTree.rootStep = { name: "x.step", byteLength: 1, hash: "h", bytesBase64: "AA==" };
+eq("a tree with both a STEP and a primitive root is damaged", (() => {
+  const read = parseProject(JSON.stringify(both));
+  return read.ok ? read.project.unreadHistory : null;
+})(), ["Cone 1"]);
 
 const actions = [
   { zMm: 4.2, kind: "pause" as const },

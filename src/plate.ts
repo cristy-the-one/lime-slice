@@ -549,9 +549,27 @@ export interface IncomingMesh {
  */
 export function addedMesh(plate: PlateState, mesh: IncomingMesh, bedX: number, bedY: number): PlateState | null {
   if (plate.objects.length === 0) return null;
-  const draft: PlateObject = {
-    id: freshPlateId(),
-    name: nextObjectName(plate.objects, mesh.name),
+  const placed = parkClear(freshObject(freshPlateId(), nextObjectName(plate.objects, mesh.name), mesh), plate.objects, bedX, bedY);
+  hold(placed);
+  return { objects: [...plate.objects, placed], selectedId: placed.id };
+}
+
+/**
+ * A new solid from Model, selected: centred on the bed when the plate is empty, else in the first clear shelf slot
+ * as an added file is. It carries its history tree's key and its place in model space from the start.
+ */
+export function addedSolid(plate: PlateState, mesh: IncomingMesh, id: string, modelTree: string, modelPose: Affine, bedX: number, bedY: number): PlateState {
+  const draft: PlateObject = { ...freshObject(id, mesh.name, mesh), modelTree, ...(isIdentity(modelPose) ? {} : { modelPose }) };
+  const placed = plate.objects.length === 0 ? { ...draft, centered: true } : parkClear(draft, plate.objects, bedX, bedY);
+  hold(placed);
+  return { objects: [...plate.objects, placed], selectedId: placed.id };
+}
+
+/** An object as a mesh arrives: unturned, unscaled, unpainted. */
+function freshObject(id: string, name: string, mesh: IncomingMesh): PlateObject {
+  return {
+    id,
+    name,
     fileName: mesh.fileName,
     bytes: mesh.bytes,
     sourcePos: mesh.sourcePos,
@@ -566,9 +584,6 @@ export function addedMesh(plate: PlateState, mesh: IncomingMesh, bedX: number, b
     reinforcement: [],
     settings: {},
   };
-  const placed = parkClear(draft, plate.objects, bedX, bedY);
-  hold(placed);
-  return { objects: [...plate.objects, placed], selectedId: placed.id };
 }
 
 /**

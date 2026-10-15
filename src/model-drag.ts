@@ -5,17 +5,22 @@
 
 import { DOCK_KNOB_REACH } from "./gizmo-math.ts";
 import { SPLIT_TILT_MAX_DEG, type SplitPlan } from "./model-plane.ts";
+import type { PrimitiveKind } from "./model-primitive.ts";
 
 export type Vec3 = [number, number, number];
 
-export type ModelTool = "boolean" | "split" | "fillet" | "chamfer" | "hole" | "scale" | "measure" | "place";
+export type ModelTool = "create" | "boolean" | "split" | "fillet" | "chamfer" | "hole" | "scale" | "measure" | "place";
 
 /** Every tool on the Model toolbar. A tool that is not here has no drag, and the checklist test fails. */
-export const MODEL_TOOLS: readonly ModelTool[] = ["boolean", "split", "fillet", "chamfer", "hole", "scale", "measure", "place"];
+export const MODEL_TOOLS: readonly ModelTool[] = ["create", "boolean", "split", "fillet", "chamfer", "hole", "scale", "measure", "place"];
+
+/** A primitive's size fields, whichever kind shows them. New solid and Boolean share them. */
+const SIZE_FIELDS = ["modelDx", "modelDy", "modelDz", "modelTopX", "modelRadius", "modelTopR", "modelTube", "modelInnerR", "modelSides", "modelAcross", "modelHeight"];
 
 /** The fields a mouse can drag, per tool. The panel shows each of them as a number too. */
 export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
-  boolean: ["modelX", "modelY", "modelZ", "modelDx", "modelDy", "modelDz", "modelRadius", "modelHeight", "modelRx", "modelRy", "modelRz"],
+  create: SIZE_FIELDS,
+  boolean: ["modelX", "modelY", "modelZ", ...SIZE_FIELDS, "modelRx", "modelRy", "modelRz"],
   split: ["modelPlane", "modelTiltA", "modelTiltB"],
   fillet: ["modelBlend"],
   chamfer: ["modelBlend"],
@@ -42,11 +47,13 @@ export interface DragHandle {
   rate: number;
   /** Ctrl snaps to whole multiples of this. */
   step: number;
+  /** The field holds whole numbers only, such as a polygon's sides. */
+  whole?: boolean;
   min?: number;
   max?: number;
   color: "x" | "y" | "z" | "accent";
   label: string;
-  unit: "mm" | "°" | "×";
+  unit: "mm" | "°" | "×" | "count";
   /** The fields' values when the handle was placed. */
   values: number[];
 }
@@ -59,7 +66,7 @@ export type HandleSeat = { at: "feature"; origin: Vec3 } | { at: "dock"; reach: 
 
 export interface DragContext {
   read(field: string): number;
-  primitive: "box" | "cylinder" | "sphere";
+  primitive: PrimitiveKind;
   /** Centre and largest side of the open solid. */
   center: Vec3;
   extent: number;
@@ -82,6 +89,7 @@ export function handlesFor(tool: ModelTool | null, ctx: DragContext): DragHandle
 }
 
 function specsFor(tool: ModelTool | null, ctx: DragContext): Spec[] {
+  if (tool === "create") return sizeKnobs(ctx, turnedAxes([0, 0, 0]));
   if (tool === "boolean") return booleanHandles(ctx);
   if (tool === "split") return splitHandles(ctx);
   if (tool === "fillet" || tool === "chamfer") return blendHandles(tool, ctx);
@@ -132,22 +140,46 @@ function turnRings(fields: readonly [string, string, string], turn: Vec3): Spec[
 function booleanHandles(ctx: DragContext): Spec[] {
   const r = ctx.read;
   const turn: Vec3 = ctx.primitive === "sphere" ? [0, 0, 0] : [r("modelRx"), r("modelRy"), r("modelRz")];
-  const axes = turnedAxes(turn);
-  const out: Spec[] = moveArrows(["modelX", "modelY", "modelZ"], "move");
-  if (ctx.primitive === "box") {
-    const fields = ["modelDx", "modelDy", "modelDz"];
-    const colors: DragHandle["color"][] = ["x", "y", "z"];
-    for (let i = 0; i < 3; i += 1) {
-      out.push(axisHandle(`size-${i}`, "knob", fields[i]!, KNOB, axes[i]!, colors[i]!, `Size ${"XYZ"[i]}`, { min: 0.1 }));
-    }
-  } else if (ctx.primitive === "cylinder") {
-    out.push(axisHandle("radius", "knob", "modelRadius", KNOB, axes[0], "accent", "Radius", { min: 0.1 }));
-    out.push(axisHandle("height", "knob", "modelHeight", KNOB, axes[2], "z", "Height", { min: 0.1 }));
-  } else {
-    out.push(axisHandle("radius", "knob", "modelRadius", KNOB, [0, -1, 0], "accent", "Radius", { min: 0.1 }));
-  }
+  const out: Spec[] = [...moveArrows(["modelX", "modelY", "modelZ"], "move"), ...sizeKnobs(ctx, turnedAxes(turn))];
   if (ctx.primitive !== "sphere") out.push(...turnRings(["modelRx", "modelRy", "modelRz"], turn));
   return out;
+}
+
+/**
+ * The primitive's size knobs on the dock, each out along the primitive's own axis it grows along (`axes`, after its
+ * turn), so a knob pulls the way the size goes. Two sizes on one axis take the next axis, so no two knobs meet.
+ */
+function sizeKnobs(ctx: DragContext, axes: [Vec3, Vec3, Vec3]): Spec[] {
+  const knob = (id: string, field: string, dir: Vec3, color: DragHandle["color"], label: string, extra: Partial<Spec> = {}) =>
+    axisHandle(id, "knob", field, KNOB, dir, color, label, { min: 0.1, ...extra });
+  const height = knob("height", "modelHeight", axes[2], "z", "Height");
+  switch (ctx.primitive) {
+    case "box":
+    case "wedge": {
+      const sizes = (["modelDx", "modelDy", "modelDz"] as const).map((field, i) =>
+        knob(`size-${i}`, field, axes[i]!, (["x", "y", "z"] as const)[i]!, `Size ${"XYZ"[i]}`),
+      );
+      // The wedge's top runs along X at the top: its knob leans up from the Size X one.
+      return ctx.primitive === "box" ? sizes : [...sizes, knob("top-x", "modelTopX", normalize(add(axes[0], axes[2])), "accent", "Top X", { min: 0 })];
+    }
+    case "cylinder":
+      return [knob("radius", "modelRadius", axes[0], "accent", "Radius"), height];
+    case "sphere":
+      return [knob("radius", "modelRadius", [0, -1, 0], "accent", "Radius")];
+    case "cone":
+      return [knob("radius", "modelRadius", axes[0], "accent", "Bottom radius"), knob("top-radius", "modelTopR", axes[1], "accent", "Top radius", { min: 0 }), height];
+    case "torus":
+      return [knob("radius", "modelRadius", axes[0], "accent", "Ring radius"), knob("tube-radius", "modelTube", axes[1], "accent", "Tube radius")];
+    case "tube":
+      return [knob("radius", "modelRadius", axes[0], "accent", "Outer radius"), knob("inner-radius", "modelInnerR", axes[1], "accent", "Inner radius", { min: 0 }), height];
+    case "polygon":
+      return [
+        knob("across", "modelAcross", axes[0], "accent", "Across"),
+        // A side per four millimetres of travel, so a short drag picks a count without skipping.
+        knob("sides", "modelSides", axes[1], "accent", "Sides", { rate: 0.25, min: 3, max: 64, whole: true, unit: "count" }),
+        height,
+      ];
+  }
 }
 
 /** Place moves and turns the open object in model space, from the dock like a primitive. */
@@ -346,10 +378,10 @@ export function moveFine(prev: FinePointer, x: number, y: number, fine: boolean)
  * The field value for a drag: start plus travel times rate, Ctrl-snapped to the handle's step,
  * rounded to a tenth (a hundredth while fine), then clamped so a limit like 9.75 holds exactly.
  */
-export function dragValue(handle: Pick<DragHandle, "rate" | "step" | "min" | "max">, start: number, travel: number, snap: boolean, fine: boolean): number {
+export function dragValue(handle: Pick<DragHandle, "rate" | "step" | "min" | "max" | "whole">, start: number, travel: number, snap: boolean, fine: boolean): number {
   let value = start + travel * handle.rate;
   if (snap && handle.step > 0) value = Math.round(value / handle.step) * handle.step;
-  const places = fine ? 100 : 10;
+  const places = handle.whole ? 1 : fine ? 100 : 10;
   value = Math.round(value * places) / places;
   if (handle.min != null) value = Math.max(handle.min, value);
   if (handle.max != null) value = Math.min(handle.max, value);
@@ -362,7 +394,7 @@ export function dragValue(handle: Pick<DragHandle, "rate" | "step" | "min" | "ma
  * snapped and rounded, and a direction square to a coordinate leaves that coordinate exactly where it was.
  */
 export function axisValues(
-  handle: Pick<DragHandle, "fields" | "dir" | "rate" | "step" | "min" | "max">,
+  handle: Pick<DragHandle, "fields" | "dir" | "rate" | "step" | "min" | "max" | "whole">,
   start: readonly number[],
   travel: number,
   snap: boolean,
@@ -391,6 +423,7 @@ export function dragLabel(handle: Pick<DragHandle, "label" | "unit">, values: re
   if (values.length === 3) return `${handle.label} ${values.map((value) => fieldText(value)).join(", ")} mm`;
   const value = fieldText(values[0] ?? 0);
   if (handle.unit === "×") return `${handle.label} ${value}×`;
+  if (handle.unit === "count") return `${handle.label} ${value}`;
   if (handle.unit === "°") return `${handle.label} ${value}°`;
   return `${handle.label} ${value} mm`;
 }

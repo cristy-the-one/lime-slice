@@ -18,10 +18,11 @@ export function bedParts(objects: readonly PlateObject[], selectedId: string | n
 
 /**
  * Every plate object except the open one, where it sits in model space. The plate layout plays no part:
- * Model draws the open solid at its own pose, so the two meet in one frame.
+ * Model draws the open solid at its own pose, so the two meet in one frame. With no solid open (`openId`
+ * null), every object is context: the empty view still shows what model space holds.
  */
 export function contextParts(objects: readonly PlateObject[], openId: string | null): ContextPart[] {
-  if (!objects.some((obj) => obj.id === openId)) return [];
+  if (openId !== null && !objects.some((obj) => obj.id === openId)) return [];
   return objects
     .filter((obj) => obj.id !== openId && obj.sourcePos.length >= 9)
     .map((obj) => ({ id: obj.id, positions: obj.sourcePos, matrix: meshToModel(obj) }));

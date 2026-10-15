@@ -148,6 +148,7 @@ eq("chords stay with the app", [key("ArrowDown", 1, { ctrlKey: true }), key("z",
 // Delete branch --------------------------------------------------------------------------------------------------
 
 eq("the root stays", dropRefusal(forked, 0), "The opened file starts the history and stays.");
+eq("a new solid's root stays too", dropRefusal({ ...forked, root: { kind: "primitive", solid: { primitive: "box", origin: [0, 0, 0], size: [1, 1, 1], radius: 0, height: 0, turn: [0, 0, 0] } } }, 0), "The primitive this solid started as begins the history and stays.");
 eq("not the branch on screen", dropRefusal(forked, 3), "The step on screen is on this branch. Go to another branch first.");
 eq("not a step above the one on screen", dropRefusal(forked, 1), "The step on screen is on this branch. Go to another branch first.");
 eq("not the branch the plate holds", dropRefusal({ ...forked, committed: 2 }, 2), "The plate still holds a step on this branch.");

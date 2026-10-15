@@ -20,6 +20,7 @@ import {
   type Vec3,
 } from "./model-drag.ts";
 import { extentAlong, planeFor, splitBase } from "./model-plane.ts";
+import { PRIMITIVES } from "./model-primitive.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -82,7 +83,7 @@ function context(primitive: DragContext["primitive"], extra: Partial<DragContext
 }
 for (const tool of MODEL_TOOLS) {
   const dragged = new Set<string>();
-  for (const primitive of ["box", "cylinder", "sphere"] as const) {
+  for (const { kind: primitive } of PRIMITIVES) {
     for (const handle of handlesFor(tool, context(primitive))) handle.fields.forEach((field) => dragged.add(field));
   }
   for (const field of DRAG_FIELDS[tool]) check(`${tool} has a handle for ${field}`, dragged.has(field));
@@ -110,6 +111,23 @@ const ball = handlesFor("boolean", context("sphere"));
 eq("the sphere radius knob is docked", ball.find((handle) => handle.id === "radius")!.seat, { at: "dock", reach: DOCK_KNOB_REACH });
 check("a sphere does not turn", !ball.some((handle) => handle.kind === "ring"));
 eq("box and cylinder turn on three rings", cylinder.filter((handle) => handle.kind === "ring").map((handle) => handle.fields[0]), ["modelRx", "modelRy", "modelRz"]);
+// The newer primitives: every size has a knob of its own on the dock, and no two knobs share a spot.
+for (const { kind } of PRIMITIVES) {
+  const knobs = handlesFor("boolean", context(kind)).filter((handle) => handle.look === "knob");
+  const spots = new Set(knobs.map((handle) => handle.dir.map((value) => value.toFixed(3)).join(",")));
+  eq(`a ${kind}'s size knobs each have a spot of their own`, spots.size, knobs.length);
+  check(`a ${kind}'s size knobs are docked`, knobs.every(docked));
+}
+eq("a cone's knobs name its two radii", handlesFor("boolean", context("cone")).filter((handle) => handle.look === "knob").map((handle) => handle.label), ["Bottom radius", "Top radius", "Height"]);
+eq("a torus turns, on three rings", handlesFor("boolean", context("torus")).filter((handle) => handle.kind === "ring").length, 3);
+const sides = handlesFor("boolean", context("polygon")).find((handle) => handle.id === "sides")!;
+eq("a polygon's sides drag in whole numbers from 3 to 64", [sides.whole, sides.min, sides.max], [true, 3, 64]);
+eq("a side per four millimetres", dragValue(sides, 6, 10.4, false, false), 9);
+eq("never past 64", dragValue(sides, 60, 100, false, false), 64);
+eq("the sides label is a count", dragLabel(sides, [7]), "Sides 7");
+eq("New solid has the size knobs alone: it places itself, unturned", handlesFor("create", context("cone")).map((handle) => handle.id), ["radius", "top-radius", "height"]);
+eq("its knobs sit along the world axes", handlesFor("create", context("box", { read: (field) => (field === "modelRz" ? 90 : values[field] ?? 0) })).map((handle) => handle.dir), [[1, 0, 0], [0, 1, 0], [0, 0, 1]]);
+
 const plane = handlesFor("split", context("box"))[0]!;
 eq("the split arrow keeps the plane inside the part", [plane.min!, plane.max!, originOf(plane)![2]].map((value) => Math.round(value * 1e4) / 1e4), [0.251, 9.749, 5]);
 eq("it points up Z and moves the plane one for one", [plane.dir, plane.rate, plane.label], [[0, 0, 1], 1, "Plane Z"]);

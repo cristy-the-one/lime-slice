@@ -23,6 +23,8 @@ eq("a BRep failure names the tool", plainModelError("BRepAlgoAPI_BooleanOperatio
 eq("StdFail names the fillet tool", plainModelError("StdFail_NotDone", "fillet"), plain.replace("boolean", "fillet"));
 eq("gp_ names the hole tool", plainModelError("gp_Dir::gp_Dir", "hole"), plain.replace("boolean", "hole"));
 eq("an unknown tool says model", modelerFailure("BRepCheck_UnorientableShape", "not-a-tool"), plain.replace("boolean", "model"));
+eq("New solid speaks of the solid, not of a face or an edge", plainModelError("StdFail_NotDone", "create"), "Could not build this solid. Try other sizes.");
+eq("a size New solid's engine refuses stays as it is", plainModelError("A cone needs a height above 0", "create"), "A cone needs a height above 0");
 eq("the same technical string is translated again", plainModelError("StdFail_NotDone", "fillet"), plain.replace("boolean", "fillet"));
 
 if (failed) {

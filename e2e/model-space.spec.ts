@@ -345,7 +345,7 @@ test.describe("phone", () => {
       await expect(page.locator("#objectList .obj").first()).toBeVisible();
       await page.locator("#compactTabs [data-tab=model]").click();
       await expect(page.locator("#modelReadout")).toContainText("Volume");
-      for (const tool of ["Boolean", "Split", "Hole", "Scale", "Measure", "Place"]) {
+      for (const tool of ["New", "Boolean", "Split", "Hole", "Scale", "Measure", "Place"]) {
         await page.locator(`#modelTool${tool}`).click();
         const sheet = (await page.locator("#modelPanel").boundingBox())!;
         const bar = (await page.locator("#modelPanel .model-actions").boundingBox())!;

@@ -5,6 +5,7 @@ import {
   assemblePlate,
   meshSeat,
   addedMesh,
+  addedSolid,
   addedSplit,
   objectMarks,
   arrangeBoxes,
@@ -264,8 +265,18 @@ const wrappedBounds = placeObject(wrapped!.objects[2]!, 50, 50).bounds;
 check("the next part wraps to a new row when the first row is full", near(wrappedBounds.min[0], 0) && near(wrappedBounds.min[1], 22));
 check("an empty plate cannot gain a part this way", addedMesh({ objects: [], selectedId: null }, incoming("nope.stl", cube(10)), bed, bed) === null);
 
+// Model's New solid: its own id, tree, and model-space pose from the start.
+const lone = addedSolid({ objects: [], selectedId: null }, incoming("Box 1.stl", cube(20)), "obj-9", "obj-9#k.1", { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] }, bed, bed);
+check("a new solid on an empty plate is centred and selected", lone.objects.length === 1 && lone.objects[0]!.centered && lone.selectedId === "obj-9");
+check("it carries its tree's key, and no pose for the origin", lone.objects[0]!.modelTree === "obj-9#k.1" && lone.objects[0]!.modelPose === undefined);
+const created = addedSolid({ objects: [atOrigin], selectedId: "a" }, incoming("Cone 1.stl", cube(20)), "obj-10", "obj-10#k.2", { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [30, 0, 0] }, bed, bed);
+const besideBounds = placeObject(created.objects[1]!, bed, bed).bounds;
+check("beside another, it takes the first clear slot on the plate", near(besideBounds.min[0], 22) && !created.objects[1]!.centered);
+check("and keeps its pose in model space", created.objects[1]!.modelPose?.t[0] === 30 && created.selectedId === "obj-10" && created.objects[1]!.name === "Cone 1.stl");
+check("undo can bring it back", revivePlate(snapPlate(created))?.objects[1]?.modelTree === "obj-10#k.2");
+
 // A 220 mm plate on a 250 mm belt, cut on the top face. Parking the 0.1 mm
-// sliver beside the plate is the ~440 mm span the belt width check reported.
+// sliver created the plate is the ~440 mm span the belt width check reported.
 const skadis = object(220, "part", true);
 skadis.name = "Skadis_Raster";
 skadis.fileName = "Skadis_Raster.stl";

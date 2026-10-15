@@ -25,8 +25,8 @@ export interface TreeMock {
 }
 
 interface Handlers {
-  /** The root solid of a file. `request.filename` names it. */
-  open(request: Body): MockSolid;
+  /** The root solid of a file (`request.filename` names it) or of a primitive (`request.primitive`), or why there is none. */
+  open(request: Body): MockSolid | { error: string };
   apply?(request: Body, parent: MockSolid): Built;
   probe?(request: Body): Body | Promise<Body>;
   /** An answer of its own for a jump, such as a step that no longer rebuilds. Null answers as usual. */
@@ -72,6 +72,7 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
       const data = typeof request.dataB64 === "string" ? Buffer.from(request.dataB64, "base64").toString() : "";
       // The handler hears every open, and a STEP this mock wrote opens as the solid it was written from.
       const read = handlers.open(request);
+      if ("error" in read) return read;
       const nodes = new Map<number, MockNode>([[0, { solid: exported.get(data) ?? read, parent: null, step: "" }]]);
       // Saved nodes come back as the ops that built them.
       for (const saved of (request.nodes ?? []) as { id: number; parent: number; op: Body }[]) {

@@ -7,6 +7,7 @@ import {
   inversePose,
   isIdentity,
   movedPose,
+  newSolidPose,
   placeFields,
   poseFromPlace,
   posedBounds,
@@ -83,6 +84,27 @@ const axisOf = (op: Extract<ModelOp, { kind: "boolean" }>) => turnDir({ m: euler
 check("a cylinder's axis comes back to the axis typed", nearVec(turnDir(skew, axisOf(solidCylinder)), axisOf(cylinder as Extract<ModelOp, { kind: "boolean" }>)));
 const sphere: ModelOp = { kind: "boolean", op: "cut", primitive: "sphere", origin: [1, 2, 3], size: [0, 0, 0], radius: 4, height: 0, turn: [0, 0, 0] };
 eq("a sphere only moves its centre", (toSolidOp(sphere, skew) as Extract<ModelOp, { kind: "boolean" }>).turn, [0, 0, 0]);
+// The new primitives turn about the centre the kernel turns them about: a torus about its own centre, a wedge about its box's.
+const torus: ModelOp = { kind: "boolean", op: "cut", primitive: "torus", origin: [4, 5, 6], size: [0, 0, 0], radius: 8, height: 0, turn: [90, 0, 0], tubeRadius: 2 };
+const solidTorus = toSolidOp(torus, skew) as Extract<ModelOp, { kind: "boolean" }>;
+check("a torus's centre goes back through the pose", nearVec(applyPose(skew, solidTorus.origin), torus.origin));
+check("and its axis comes back to the axis typed", nearVec(turnDir(skew, axisOf(solidTorus)), axisOf(torus as Extract<ModelOp, { kind: "boolean" }>)));
+eq("a torus keeps its tube", solidTorus.tubeRadius, 2);
+const wedge: ModelOp = { kind: "boolean", op: "fuse", primitive: "wedge", origin: [0.1, 0.2, 0.3], size: [10, 0.7, 3], radius: 0, height: 0, turn: [15, 0, 30], topX: 4 };
+const solidWedge = toSolidOp(wedge, skew) as Extract<ModelOp, { kind: "boolean" }>;
+const wedgeBack = corners(solidWedge).map((corner) => applyPose(skew, corner));
+check("a turned wedge converts to the same eight box corners", corners(wedge as Extract<ModelOp, { kind: "boolean" }>).every((corner, i) => nearVec(corner, wedgeBack[i]!, 1e-9)));
+const cone: ModelOp = { kind: "boolean", op: "cut", primitive: "cone", origin: [5, 5, 2], size: [0, 0, 0], radius: 3, height: 12, turn: [0, 20, 0], topRadius: 1 };
+check("a cone turns about the middle of its axis, as a cylinder", nearVec(applyPose(skew, centreOf(toSolidOp(cone, skew) as Extract<ModelOp, { kind: "boolean" }>)), centreOf(cone as Extract<ModelOp, { kind: "boolean" }>)));
+
+// New solid: at the origin of an empty model space, else past everything along X.
+eq("a new solid in an empty model space stands where it was built", newSolidPose([], { min: [-5, -5, 0], max: [5, 5, 10] }), IDENTITY_POSE);
+eq(
+  "beside two objects: 10 mm past the farthest, centred on their Y, on their floor",
+  newSolidPose([{ min: [0, 0, 2], max: [20, 20, 12] }, { min: [-40, 30, 5], max: [-30, 40, 9] }], { min: [-5, -5, 0], max: [5, 5, 10] }).t,
+  [35, 20, 2],
+);
+
 const fillet: ModelOp = { kind: "fillet", edges: [3], size: 1 };
 check("a fillet names edges, which no pose moves", toSolidOp(fillet, skew) === fillet);
 
