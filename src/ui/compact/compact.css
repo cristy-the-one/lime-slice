@@ -659,21 +659,25 @@ html.layout-compact .model-tools .modes .btn { min-height: 36px; }
 /*
  * The column spans the canvas: the size chip and the readout at its top, under the toolbar and short of
  * the dock on the right, and the History sheet at its bottom, which shrinks and scrolls rather than run
- * over them. The tool panel floats on the bottom as before.
+ * over them. The tool panel closes the column at the bottom, after the chip and the readout, so on a short
+ * canvas it too shrinks and scrolls rather than run over them.
  */
 html.layout-compact .model-side { top: 0; left: 0; bottom: 0; width: 100%; gap: 0; }
 html.layout-compact .model-panel {
-  position: absolute;
-  top: auto;
-  bottom: 8px;
-  left: 8px;
-  right: 8px;
+  /* The button bar: its buttons' height, and its padding above them (twice that below). */
+  --model-bar-btn: 36px;
+  --model-bar-pad: var(--space-1);
+  align-self: stretch;
+  margin: auto 8px 8px;
   transform: none;
   width: auto;
+  min-height: 0;
   max-height: 28%;
   overflow: auto;
+  /* Opaque like its button bar, so the two read as one sheet. */
+  background: var(--panel);
   /* A field reached by Tab scrolls to above the buttons, not under them. */
-  scroll-padding-bottom: 48px;
+  scroll-padding-bottom: calc(var(--model-bar-btn) + 3 * var(--model-bar-pad));
 }
 html.layout-compact .model-fields { display: flex; flex-wrap: nowrap; overflow-x: auto; }
 html.layout-compact .model-fields label { flex: 0 0 84px; }
@@ -684,19 +688,23 @@ html.layout-compact .model-actions {
   bottom: calc(-1 * var(--space-2));
   /* Out over the sheet's side and bottom padding, so nothing scrolling under it shows at an edge. The buttons keep clear of the floating Slice button. */
   margin: var(--space-2) calc(-1 * var(--space-3)) calc(-1 * var(--space-2));
-  padding: var(--space-1) calc(116px + var(--space-3)) var(--space-2) var(--space-3);
+  padding: var(--model-bar-pad) calc(116px + var(--space-3)) calc(2 * var(--model-bar-pad)) var(--space-3);
   background: var(--panel);
 }
-html.layout-compact .model-actions .btn { min-height: 36px; min-width: 72px; }
+html.layout-compact .model-actions .btn { min-height: var(--model-bar-btn); min-width: 72px; }
 /* The dock sits right of the middle at any phone size, so half the width keeps the chip and the readout clear of it. */
 html.layout-compact .model-foot { order: -1; margin: 128px 8px 8px; max-width: calc(50% - 16px); }
 /* A landscape phone fits the toolbar on one row: the stack starts right under it and leaves the sheet a row or two. */
 @media (max-height: 500px) {
   html.layout-compact .model-foot { margin-top: 92px; }
-  /* Room for a row of fields above the buttons, which slim down to make it. */
-  html.layout-compact .model-panel { max-height: 40%; }
-  html.layout-compact .model-actions { padding-top: 2px; padding-bottom: var(--space-1); }
-  html.layout-compact .model-actions .btn { min-height: 30px; }
+  /* Room for a row of fields above the buttons, which slim down to make it (still past the 24 px touch minimum). */
+  html.layout-compact .model-panel { max-height: 40%; --model-bar-btn: 30px; --model-bar-pad: calc(var(--space-1) / 2); }
+  /* Split's plane buttons share the fields' row, so that row shows whole above the buttons. */
+  html.layout-compact .model-bar[data-tool="split"] .model-panel { display: flex; flex-wrap: wrap; align-items: flex-end; column-gap: var(--space-2); }
+  html.layout-compact .model-bar[data-tool="split"] .model-panel > * { flex: 0 0 100%; }
+  html.layout-compact .model-bar[data-tool="split"] #modelPlaneModes { flex: 0 0 auto; margin-top: 0; }
+  html.layout-compact .model-bar[data-tool="split"] .model-fields { flex: 1 1 0; min-width: 0; }
+  html.layout-compact .model-bar[data-tool="split"] .model-actions { flex-basis: calc(100% + 2 * var(--space-3)); }
 }
 /* History is a sheet over the canvas, opened from the toolbar. */
 html.layout-compact #modelHistoryOpen { display: inline-flex; }

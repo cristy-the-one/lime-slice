@@ -214,7 +214,7 @@ interface HeldGeo {
 const held = new Map<string, HeldGeo>();
 /** Mesh buffer identity. A copied undo buffer shares the token of the live one. */
 const tokenOf = new WeakMap<ArrayBuffer, string>();
-/** How far each mesh, by token, was lowered onto Z = 0 when it was read. Unknown only from an engine that did not say. */
+/** How far each mesh, by token, was lowered onto Z = 0 when it was read. */
 const seats = new Map<string, number>();
 /** Bytes captured for undo. Not cleared with the live session, so a step can still restore them. */
 const pinned = new Map<string, HeldGeo>();
@@ -258,7 +258,7 @@ export function meshSeat(bytes: ArrayBuffer): number | undefined {
 }
 
 export function setMeshSeat(bytes: ArrayBuffer, seat: number) {
-  if (Number.isFinite(seat)) seats.set(meshTokenOf(bytes), seat);
+  seats.set(meshTokenOf(bytes), seat);
 }
 
 export function modelPoseOf(obj: { modelPose?: Affine }): Affine {
