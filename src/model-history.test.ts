@@ -157,6 +157,16 @@ const plateHeld = withNode(forked, 2, { mesh: { name: "plate.stl", bytes: new Ar
 eq("not a branch the plate held", dropRefusal(plateHeld, 2), "The plate held a step on this branch, and Prepare undo can bring it back.");
 const splitOff = withNode(forked, 2, { piece: "part-piece#1" });
 eq("not a split whose piece has its own tree", dropRefusal(splitOff, 2), "A split on this branch made a part of its own.");
+const user = withChild(newTree("other#1", { kind: "step", name: "o.step", bytes: new ArrayBuffer(1) }, "other", null), 0, {
+  id: 1,
+  op: { kind: "join", op: "cut", tool: { object: "part", key: forked.key, node: 2, name: "part" }, relative: { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] }, keepTool: false },
+  label: "Cut part",
+  fingerprint: null,
+});
+const trees = new Map([[forked.key, forked], [user.key, user]]);
+eq("not a branch with a step another part's join takes as its tool", dropRefusal(forked, 2, trees), "“Cut part” in another part's history uses a step on this branch as its tool.");
+const below = { ...withChild(forked, 2, { id: 9, op: { kind: "scale", factor: 2 }, label: "Scale 200 %", fingerprint: null }), current: forked.current };
+eq("a branch below that step can go", dropRefusal(below, 9, new Map([[below.key, below], [user.key, user]])), null);
 for (const id of [0, 1, 2, 3, 4]) {
   for (const tree of [forked, { ...forked, committed: 2 }, plateHeld, splitOff]) {
     eq(`a refusal is exactly where dropped refuses (${id}, plate ${tree.committed})`, dropRefusal(tree, id) === null, dropped(tree, id) !== null);

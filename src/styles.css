@@ -692,7 +692,7 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   grid-auto-columns: minmax(0, 1fr);
   gap: 4px;
 }
-.model-prims[hidden] { display: none !important; }
+.model-prims[hidden], .model-prim[hidden] { display: none !important; }
 .model-prim {
   display: flex;
   align-items: center;
@@ -712,6 +712,32 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   color: var(--accent-text);
 }
 .model-prim:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Boolean with another object: the plate's other solids as a short list, and Keep. */
+.model-objects { display: grid; gap: 4px; margin-bottom: var(--space-2); max-height: 148px; overflow-y: auto; }
+.model-objects[hidden], .model-keep[hidden] { display: none !important; }
+.model-object {
+  min-width: 0;
+  height: 28px;
+  padding: 0 var(--space-2);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+  color: var(--text-dim);
+  font-size: var(--fs-2);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-object:hover:not([aria-checked="true"]) { background: var(--surface-3); color: var(--text); }
+.model-object[aria-checked="true"] {
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  color: var(--accent-text);
+}
+.model-object:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.model-objects-empty { margin: 0; color: var(--text-dim); font-size: var(--fs-2); }
+.model-keep { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-2); color: var(--text-dim); font-size: var(--fs-2); }
 /* No solid to show: a plain card in the middle of the view. An open tool, New solid's included, takes its place. */
 .model-empty {
   position: absolute;

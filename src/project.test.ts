@@ -11,7 +11,7 @@ import {
 import type { EditEntry } from "./support-edit-list.ts";
 import { bytesToBase64 } from "./base64.ts";
 import { dropped, jumped, newTree, opLabel, redoTarget, undoTarget, withChild, withNode, type ModelOp, type ModelTree } from "./model-tree.ts";
-import { loadedTree, savedTree } from "./model-tree-file.ts";
+import { loadedTree, savedTree, toolFirst, type SavedJoin, type SavedTreeBody } from "./model-tree-file.ts";
 import { dropRefusal } from "./model-history.ts";
 
 let failed = 0;
@@ -499,6 +499,57 @@ eq("a tree with both a STEP and a primitive root is damaged", (() => {
   const read = parseProject(JSON.stringify(both));
   return read.ok ? read.project.unreadHistory : null;
 })(), ["Cone 1"]);
+
+// A join: the target's tree names its tool by object and step, and the tool's tree, its object off the plate, is kept.
+const rodRoot = new Uint8Array([0x49, 0x53, 0x4f, 4, 4, 4]);
+const turnedZ = { m: [0, -1, 0, 1, 0, 0, 0, 0, 1] as [number, number, number, number, number, number, number, number, number], t: [2, 15, 19] as [number, number, number] };
+const joinCut: ModelOp = { kind: "join", op: "cut", tool: { object: "obj-8", key: "obj-8#run1.4", node: 1, name: "rod" }, relative: turnedZ, keepTool: false };
+let rod = newTree("obj-8#run1.4", { kind: "step", name: "rod.step", bytes: rodRoot.buffer }, "rod", fpOf(80));
+rod = { ...withChild(rod, 0, { id: 1, op: cutOp(2), label: opLabel(cutOp(2)), fingerprint: fpOf(70) }), committed: 1 };
+let target = newTree("obj-9#run1.5", { kind: "step", name: "bracket.step", bytes: rootStep.buffer }, "bracket.stl", fpOf(4000));
+target = { ...withChild(target, 0, { id: 1, op: joinCut, label: opLabel(joinCut), fingerprint: fpOf(3990) }), committed: 1 };
+const joinOwners = new Map([["obj-8#run1.4", "obj-8"], ["obj-9#run1.5", "obj-9"]]);
+const joined: LimeProject = {
+  ...project,
+  version: 2,
+  objects: [
+    { id: "obj-9", name: "bracket.stl", mesh: project.mesh, placement: project.placement, supportEdits: [], modelTree: { ...savedTree(target, 1, (key) => joinOwners.get(key)), rootStep: meshRecord("bracket.step", rootStep) } },
+    { id: "obj-10", name: "plain", mesh: project.mesh, placement: secondPlacement, supportEdits: [] },
+  ],
+  modelTools: [{ id: "obj-8", name: "rod", modelTree: { ...savedTree(rod, 1, (key) => joinOwners.get(key)), rootStep: meshRecord("rod.step", rodRoot) } }],
+};
+const joinWire = JSON.parse(serializeProject(joined)) as { version: number; objects: { modelTree: { nodes: { op: Record<string, unknown> | null }[]; current: number; committed: number } }[]; modelTools?: { id: string; modelTree: Record<string, unknown> }[] };
+eq("a join names its tool by object and step, with the name it had, and no engine key", joinWire.objects[0]!.modelTree.nodes[1]!.op, { kind: "join", op: "cut", tool: { object: "obj-8", node: 1, name: "rod" }, relative: turnedZ, keepTool: false });
+eq("the tool's tree is kept after its object left the plate", [joinWire.version, joinWire.modelTools?.map((tool) => tool.id)], [2, ["obj-8"]]);
+const joinOpened = parseProject(JSON.stringify(joinWire));
+eq("a join and its tool's tree round-trip", joinOpened.ok ? [joinOpened.project.objects?.map((obj) => obj.modelTree), joinOpened.project.modelTools, joinOpened.project.unreadHistory] : null, [joined.objects!.map((obj) => obj.modelTree), joined.modelTools, undefined]);
+const joinSaved = new Map<string, SavedTreeBody>(joinOpened.ok ? [["obj-9", joinOpened.project.objects![0]!.modelTree!], ["obj-8", joinOpened.project.modelTools![0]!.modelTree]] : []);
+eq("on load the tool's tree opens before the target's", toolFirst(joinSaved), ["obj-8", "obj-9"]);
+eq("and a chain opens from its far end", toolFirst(new Map([["c", { ...joinSaved.get("obj-9")!, nodes: [joinSaved.get("obj-9")!.nodes[0]!, { ...joinSaved.get("obj-9")!.nodes[1]!, op: { ...(joinSaved.get("obj-9")!.nodes[1]!.op as SavedJoin), tool: { object: "obj-9", node: 1, name: "bracket.stl" } } }] }], ...joinSaved])), ["obj-8", "obj-9", "c"]);
+const joinKeys = new Map([["obj-8", "obj-8#run2.1"], ["obj-9", "obj-9#run2.2"]]);
+const rodAgain = loadedTree(joinSaved.get("obj-8")!, "obj-8#run2.1", rod.root, "rod", null, (id) => joinKeys.get(id));
+const targetAgain = loadedTree(joinSaved.get("obj-9")!, "obj-9#run2.2", target.root, "bracket.stl", plateMesh("m-target"), (id) => joinKeys.get(id));
+eq("the reopened join takes the tool tree's new key and labels as it did", [targetAgain.nodes.get(1)?.op, targetAgain.nodes.get(1)?.label], [{ ...joinCut, tool: { ...joinCut.tool, key: "obj-8#run2.1" } }, "Cut rod"]);
+eq("the kept tool's tree has no plate mesh", [rodAgain.committed, [...rodAgain.nodes.values()].some((node) => node.mesh)], [1, false]);
+const missingTool = structuredClone(joinWire);
+delete missingTool.modelTools;
+const missingRead = parseProject(JSON.stringify(missingTool));
+eq("a join whose tool's tree is missing leaves its tree out, with the notice a damaged tree gets", missingRead.ok ? [missingRead.project.objects?.map((obj) => !!obj.modelTree), missingRead.project.unreadHistory] : null, [[false, false], ["bracket.stl"]]);
+const damagedTool = structuredClone(joinWire);
+(damagedTool.modelTools![0]!.modelTree.rootStep as { hash: string }).hash = "nope";
+const damagedRead = parseProject(JSON.stringify(damagedTool));
+eq("so does one whose tool's tree is damaged, and the tool's tree goes", damagedRead.ok ? [damagedRead.project.objects?.map((obj) => !!obj.modelTree), damagedRead.project.modelTools, damagedRead.project.unreadHistory] : null, [[false, false], undefined, ["bracket.stl"]]);
+const skewed = structuredClone(joinWire);
+skewed.objects[0]!.modelTree.nodes[1]!.op!.relative = { m: [2, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
+const skewedRead = parseProject(JSON.stringify(skewed));
+eq("a join placed by a matrix that is no turn and move is a damaged tree", skewedRead.ok ? skewedRead.project.unreadHistory : null, ["bracket.stl"]);
+const orphan = structuredClone(joinWire);
+orphan.objects[0]!.modelTree.nodes.splice(1, 1);
+orphan.objects[0]!.modelTree.current = 0;
+orphan.objects[0]!.modelTree.committed = 0;
+const orphanRead = parseProject(JSON.stringify(orphan));
+eq("a kept tool no join names any more goes quietly", orphanRead.ok ? [orphanRead.project.modelTools, orphanRead.project.unreadHistory] : null, [undefined, undefined]);
+eq("files without joins write no kept tools", [JSON.parse(historyText).modelTools, JSON.parse(multiText).modelTools], [undefined, undefined]);
 
 const actions = [
   { zMm: 4.2, kind: "pause" as const },

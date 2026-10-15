@@ -28,6 +28,7 @@ import { boxExtentAlong, extentAlong, extentMemo, facePlane, planeFor, splitBase
 import {
   ROOT,
   childWithOp,
+  closeOrder,
   dropped,
   jumped,
   newTree,
@@ -39,7 +40,9 @@ import {
   reserveId,
   rootLabel,
   subtree,
+  toolKeys,
   undoTarget,
+  usesTree,
   visitStep,
   withChild,
   withNode,
@@ -51,12 +54,16 @@ import {
   type PrepareKeep,
   type Vec3,
 } from "../model-tree";
-import { loadedTree, savedTree, type SavedTree } from "../model-tree-file";
-import { applyRequest, exportRequest, gotoRequest, newSolidRequest, openRequest, probeRequest, wholeTreeRequest } from "../model-request";
+import { loadedTree, savedTree, toolFirst, type SavedTree } from "../model-tree-file";
+import { applyRequest, exportRequest, gotoRequest, joinOp, newSolidRequest, openRequest, probeRequest, wholeTreeRequest } from "../model-request";
 import {
   closeModelTool,
   fieldPrimitive,
+  joinOpen,
+  joinPick,
   mountModelChrome,
+  refreshJoinChoices,
+  resetKeepTool,
   openModelTool,
   refreshModelGhost,
   setModelEditable,
@@ -70,7 +77,7 @@ import {
 } from "../ui/model-chrome";
 import { mountModelHistory, syncModelHistory } from "../ui/model-history";
 import { dropRefusal } from "../model-history";
-import { addedSolid, addedSplit, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose } from "../plate";
+import { addedSolid, addedSplit, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose, withoutObject, type PlateObject } from "../plate";
 import { authHeaders } from "../ui/api-base";
 import { livePlate, openMeshPicker, pickAddedMesh, place } from "./files";
 import { beginEdit, editHistoryRefs, endModelVisit, flushEdit, markModelEdit, noteEdit, patchEditBrep } from "./history";
@@ -150,6 +157,17 @@ let placeTimer = 0;
 const PLACE_SETTLE_MS = 400;
 /** Each solid's, and each plate mesh's, box in its own frame. */
 const ownBoxes = new WeakMap<Float32Array, Bounds>();
+/** Mesh tokens of objects whose STEP opened as surfaces with no closed solid: never a join's tool. */
+const surfacesOnly = new Set<string>();
+/** Trees on their way for objects picked as a join's tool before Model ever opened them, by object id. */
+const toolOpens = new Map<string, Promise<{ key: string; node: NodeId } | string>>();
+/** The object drawn as the join's ghost rather than grey, and the readout's last account of the join. */
+let ghosted: string | null = null;
+let joinSaid = "";
+let refreshingContext = false;
+/** Counts the plates Model has forgotten, so a tree opened for an earlier one is let go. */
+let plateEra = 0;
+const CYCLE = "The tool object's history already uses this part, so the two cannot be joined";
 
 export function bindModelView() {
   fx.model?.onPick((pick: ModelPick | null, shift: boolean) => void onPick(pick, shift));
@@ -189,6 +207,8 @@ export function bindModelView() {
     paramsChanged(typed) {
       // Place closed while a typed move was settling: that move is its step now, before Undo means the solid again.
       if (placeBefore && openModelTool() !== "place") endPlace();
+      if (joinPick() !== ghosted) refreshModelContext();
+      sayJoin();
       scheduleProbe(typed ? PROBE_WAIT_MS : 0);
       syncUndo();
     },
@@ -219,6 +239,20 @@ export function bindModelView() {
     frameNewSolid(spec) {
       const others = plateBoxes();
       fx.model?.frame(unionBox([primitiveBounds(newSolidAt(spec, others)), ...others])!);
+    },
+    joinChoices() {
+      const at = open;
+      return at ? livePlate().filter((obj) => obj.id !== at.objectId && solidObject(obj)).map((obj) => ({ id: obj.id, name: obj.name })) : [];
+    },
+    joinGhost(id) {
+      const obj = livePlate().find((item) => item.id === id);
+      return obj ? { id, positions: obj.sourcePos, matrix: meshToModel(obj) } : null;
+    },
+    notATool(id) {
+      const obj = state.plate.objects.find((item) => item.id === id);
+      if (!obj) return;
+      readout(surfacesOnly.has(meshTokenOf(obj.bytes)) ? `${obj.name} has surfaces but no closed solid, so it cannot be a tool.` : `${obj.name} is a mesh, so it cannot be a tool.`);
+      joinSaid = "";
     },
   });
   mountModelHistory({
@@ -254,12 +288,23 @@ function scheduleProbe(wait: number) {
   const tree = treeOf(at);
   const tool = openModelTool();
   const op = at?.solid.editable && isProbed(tool) ? toolOp(tool) : null;
+  const picked = at?.solid.editable ? joinPick() : null;
+  if (at && tree && !op && picked) {
+    // A tool Model never opened gets its tree first: the engine builds the join from it.
+    setModelProbe({ phase: "checking" });
+    void readyTool(serial, picked);
+    return;
+  }
   if (!at || !tree || !op) {
     setModelProbe(null);
     return;
   }
+  if (op.kind === "join" && usesTree(modelTrees, op.tool.key, at.key)) {
+    setModelProbe({ phase: "done", ok: false, error: CYCLE });
+    return;
+  }
   const node = tree.current;
-  const key = probeKey(nodeName(at.key, node), op);
+  const key = probeName(at.key, node, op);
   const known = answers.get(key);
   if (known) {
     setModelProbe(known);
@@ -269,6 +314,93 @@ function scheduleProbe(wait: number) {
   pendingProbe = () => void sendProbe(serial, key, at.key, node, op);
   if (wait > 0) probeTimer = window.setTimeout(sendPending, wait);
   else sendPending();
+}
+
+/** A kernel answer's name: the node and the op. Whether a join keeps its tool on the plate changes no solid, so it is left out. */
+function probeName(key: string, node: NodeId, op: ModelOp): string {
+  return probeKey(nodeName(key, node), op.kind === "join" ? { ...op, keepTool: false } : op);
+}
+
+/** The picked tool's tree is opened; then the dry-run goes ahead, unless the panel moved on meanwhile. */
+async function readyTool(serial: number, id: string) {
+  const obj = state.plate.objects.find((item) => item.id === id);
+  const ready = obj ? await toolTreeOf(obj) : "That object is no longer on the plate.";
+  if (serial !== probeSerial || state.stage !== "model") return;
+  if (typeof ready !== "string" && panelJoin()) {
+    scheduleProbe(0);
+    return;
+  }
+  setModelProbe({ phase: "done", ok: false, error: typeof ready === "string" ? ready : "That object is no longer on the plate." });
+  // Surfaces with no closed solid leave the list.
+  refreshJoinChoices();
+}
+
+/** The step of its tree that `obj` holds on the plate, as a join's tool, opening that tree first if Model never did. */
+function toolTreeOf(obj: PlateObject): Promise<{ key: string; node: NodeId } | string> {
+  const token = meshTokenOf(obj.bytes);
+  const tree = treeFor(obj.id, obj.modelTree, token);
+  const node = tree ? nodeWithMesh(tree, token) : null;
+  if (tree && node != null) return Promise.resolve({ key: tree.key, node });
+  let pending = toolOpens.get(obj.id);
+  if (!pending) {
+    pending = openToolTree(obj).finally(() => toolOpens.delete(obj.id));
+    toolOpens.set(obj.id, pending);
+  }
+  return pending;
+}
+
+async function openToolTree(obj: PlateObject): Promise<{ key: string; node: NodeId } | string> {
+  let source = rootSource(obj);
+  if (!source) return `${obj.name} is a mesh, so it cannot be a tool.`;
+  if ("copies" in source) {
+    const step = await stepOfCopy(source);
+    if (typeof step === "string") return step;
+    source = step;
+  }
+  const started = await startTree(obj.id, obj.name, source.from, source.mesh);
+  if (typeof started === "string") return started;
+  return started.parsed.editable ? { key: started.key, node: ROOT } : `${obj.name} has surfaces but no closed solid, so it cannot be a tool.`;
+}
+
+/** Whether `obj` can be a join's tool: a solid, or a STEP or a copy that opens as one. Never a mesh, nor surfaces. */
+function solidObject(obj: PlateObject): boolean {
+  const token = meshTokenOf(obj.bytes);
+  if (surfacesOnly.has(token)) return false;
+  return treeFor(obj.id, obj.modelTree, token) != null || rootSource(obj) != null;
+}
+
+/**
+ * The join the panel describes, in the open solid's own frame: the tool's step as the plate holds it, and its pose in
+ * the solid's frame, worked out here, once, so moving either object later moves no cut already made. Null until a tool
+ * is picked and has a tree.
+ */
+function panelJoin(): ModelOp | null {
+  const id = joinPick();
+  const obj = id ? livePlate().find((item) => item.id === id) : undefined;
+  if (!open || !obj) return null;
+  const token = meshTokenOf(obj.bytes);
+  const tree = treeFor(obj.id, obj.modelTree, token);
+  const node = tree ? nodeWithMesh(tree, token) : null;
+  if (!tree || node == null) return null;
+  const keepTool = document.querySelector<HTMLInputElement>("#modelKeepTool")?.checked ?? false;
+  return joinOp(boolOp(), { object: obj.id, key: tree.key, node, name: obj.name }, openPose(), modelPoseOf(obj), keepTool);
+}
+
+/** The readout says what the join will do, each time that changes: "Cut telo split from telo.stp; telo split leaves the plate." */
+function sayJoin() {
+  const id = joinPick();
+  const tool = id ? state.plate.objects.find((item) => item.id === id)?.name : undefined;
+  const target = open ? state.plate.objects.find((item) => item.id === open!.objectId)?.name : undefined;
+  if (!tool || !target) {
+    joinSaid = "";
+    return;
+  }
+  const keep = document.querySelector<HTMLInputElement>("#modelKeepTool")?.checked ?? false;
+  const what = { fuse: `Fuse ${tool} into ${target}`, cut: `Cut ${tool} from ${target}`, common: `Intersect ${target} with ${tool}` }[boolOp()];
+  const said = `${what}; ${tool} ${keep ? "stays on" : "leaves"} the plate.`;
+  if (said === joinSaid) return;
+  joinSaid = said;
+  readout(said);
 }
 
 function sendPending() {
@@ -308,7 +440,7 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
     case "hole":
       return { kind: "hole", origin, axis: drillAxis(), radius: num("#modelHoleR"), depth: num("#modelHoleD") };
     case "boolean":
-      return { kind: "boolean", op: boolOp(), ...fieldPrimitive() };
+      return joinOpen() ? panelJoin() : { kind: "boolean", op: boolOp(), ...fieldPrimitive() };
     case "split": {
       const split = splitState();
       return "plan" in split ? { kind: "split", origin: split.plan.origin, normal: split.plan.normal } : null;
@@ -356,12 +488,17 @@ export function commitModel() {
   // plate gets it back. A piece removed by hand stays removed while the plate stays below its split.
   syncPlateFromState();
   const above = new Set(pathTo(tree, plan.from));
-  for (const id of pathTo(tree, plan.to)) {
-    if (above.has(id)) continue;
+  const down = pathTo(tree, plan.to).filter((id) => !above.has(id));
+  // A piece a join on the way down took off the plate stays off: fused back into its part, it is no part of its own.
+  const joined = new Set(down.flatMap((id) => {
+    const op = tree!.nodes.get(id)?.op;
+    return op?.kind === "join" && !op.keepTool ? [op.tool.key] : [];
+  }));
+  for (const id of down) {
     const key = tree.nodes.get(id)?.piece;
     const piece = key ? modelTrees.get(key) : undefined;
     const pieceMesh = piece?.nodes.get(piece.committed)?.mesh;
-    if (key && pieceMesh && !state.plate.objects.some((obj) => obj.modelTree === key)) placePiece(key, pieceMesh);
+    if (key && pieceMesh && !joined.has(key) && !state.plate.objects.some((obj) => obj.modelTree === key)) placePiece(key, pieceMesh);
   }
   place();
   flushEdit();
@@ -416,9 +553,10 @@ type TreeToSave = SavedTree<{ name: string; bytes: ArrayBuffer }>;
  * solid has no file to open again). A split piece's tree is kept from the STEP of its own root,
  * written here if Model has not, so it opens without the part it was cut from; `unsaved` names the
  * objects whose root the engine could not write. Trees of objects no longer on the plate are not
- * saved. Run after `captureOpenSolid`.
+ * saved, except a tool's that a saved join names (`tools`), under the object id the join gives, and
+ * a tree whose join's tool tree could not be saved is left out too. Run after `captureOpenSolid`.
  */
-export async function historyToSave(): Promise<{ trees: Map<string, TreeToSave>; unsaved: string[] }> {
+export async function historyToSave(): Promise<{ trees: Map<string, TreeToSave>; tools: { id: string; name: string; tree: TreeToSave }[]; unsaved: string[] }> {
   const held = new Map<string, { name: string; key: string; node: NodeId }>();
   for (const obj of state.plate.objects) {
     const token = meshTokenOf(obj.bytes);
@@ -427,11 +565,32 @@ export async function historyToSave(): Promise<{ trees: Map<string, TreeToSave>;
     if (tree && node != null) held.set(obj.id, { name: obj.name, key: tree.key, node });
   }
   const treeOfKey = (key: string) => modelTrees.get(key)!;
-  const linked = (keys: Iterable<string>) => new Set([...keys].flatMap((key) => [...treeOfKey(key).nodes.values()].flatMap((node) => (node.piece ? [node.piece] : []))));
-  const named = linked([...held.values()].map(({ key }) => key));
+  const heldKeys = new Set([...held.values()].map(({ key }) => key));
+  // Every tree a held tree's joins take a tool from, at any depth, with the object and the name the first join gives it.
+  const toolOf = new Map<string, { id: string; name: string }>();
+  for (const queue = [...heldKeys]; queue.length > 0; ) {
+    for (const node of modelTrees.get(queue.pop()!)?.nodes.values() ?? []) {
+      if (node.op?.kind !== "join" || toolOf.has(node.op.tool.key)) continue;
+      toolOf.set(node.op.tool.key, { id: node.op.tool.object, name: node.op.tool.name });
+      queue.push(node.op.tool.key);
+    }
+  }
+  const named = new Set([...heldKeys].flatMap((key) => [...treeOfKey(key).nodes.values()].flatMap((node) => (node.piece ? [node.piece] : []))));
+  for (const key of toolOf.keys()) named.add(key);
+  // A tool no plate object holds goes under the id its join names, or one of its own when a plate object has that id.
+  const ids = new Set(state.plate.objects.map((obj) => obj.id));
+  const off = new Map<string, { name: string; key: string; node: NodeId }>();
+  for (const [key, tool] of toolOf) {
+    if (heldKeys.has(key) || !modelTrees.has(key)) continue;
+    let id = tool.id;
+    for (let n = 2; ids.has(id); n += 1) id = `${tool.id}-${n}`;
+    ids.add(id);
+    off.set(id, { name: tool.name, key, node: treeOfKey(key).committed });
+  }
+  const all = new Map([...held, ...off]);
   const roots = new Map<string, SavedRoot>();
   const unsaved: string[] = [];
-  for (const [id, { name, key }] of held) {
+  for (const [id, { name, key }] of all) {
     // A root STEP written below can outlast the tree: a new file can replace the plate meanwhile.
     if (!modelTrees.has(key)) continue;
     const tree = treeOfKey(key);
@@ -442,31 +601,56 @@ export async function historyToSave(): Promise<{ trees: Map<string, TreeToSave>;
     if (saved) roots.set(id, saved);
     else unsaved.push(name);
   }
-  const owner = new Map([...roots.keys()].map((id) => [held.get(id)!.key, id]));
-  const trees = new Map<string, TreeToSave>();
-  for (const [id, root] of roots) {
-    const { key, node } = held.get(id)!;
-    if (modelTrees.has(key)) trees.set(id, { ...savedTree(treeOfKey(key), node, (piece) => owner.get(piece)), ...root });
+  const owner = new Map([...roots.keys()].map((id) => [all.get(id)!.key, id]));
+  // A join whose tool's tree is not saved could not rebuild after a reopen: its tree stays out too, at any depth.
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const id of roots.keys()) {
+      const { name, key } = all.get(id)!;
+      if (!modelTrees.has(key) || [...toolKeys(treeOfKey(key))].every((tool) => owner.has(tool))) continue;
+      roots.delete(id);
+      owner.delete(key);
+      unsaved.push(name);
+      changed = true;
+    }
   }
-  return { trees, unsaved };
+  const trees = new Map<string, TreeToSave>();
+  const tools: { id: string; name: string; tree: TreeToSave }[] = [];
+  for (const [id, root] of roots) {
+    const { name, key, node } = all.get(id)!;
+    if (!modelTrees.has(key)) continue;
+    const tree = { ...savedTree(treeOfKey(key), node, (other) => owner.get(other)), ...root };
+    if (held.has(id)) trees.set(id, tree);
+    else tools.push({ id, name, tree });
+  }
+  return { trees, tools, unsaved };
 }
 
 /**
  * A project opened: each saved tree joins its plate object under a fresh key, so a file opened
  * twice never meets its own trees in the engine. The engine hears of it when Model needs a step:
  * the plate's step then opens from the object's `brep`, as a STEP file does, and the rest of the
- * tree from its root STEP and ops once another step is asked for.
+ * tree from its root STEP and ops once another step is asked for. The trees of tools that left the
+ * plate (`tools`) are adopted too, each tree after the trees its joins take a tool from; the engine
+ * still opens each when a call first needs it.
  */
-export function adoptSavedTrees(saved: ReadonlyMap<string, SavedTree<{ name: string; bytes: ArrayBuffer }>>) {
+export function adoptSavedTrees(saved: ReadonlyMap<string, SavedTree<{ name: string; bytes: ArrayBuffer }>>, tools: readonly { id: string; name: string }[] = []) {
   const keys = new Map([...saved.keys()].map((id) => [id, freshTreeKey(id)]));
-  for (const obj of state.plate.objects) {
-    const tree = saved.get(obj.id);
-    const key = keys.get(obj.id);
-    if (!tree || !key) continue;
+  const toolNames = new Map(tools.map((tool) => [tool.id, tool.name]));
+  for (const id of toolFirst(saved)) {
+    const tree = saved.get(id)!;
+    const key = keys.get(id)!;
+    const obj = state.plate.objects.find((item) => item.id === id);
+    const root: ModelRoot = tree.rootPrimitive ? { kind: "primitive", solid: tree.rootPrimitive } : { kind: "step", ...tree.rootStep };
+    if (!obj) {
+      // A tool that left the plate: its tree stays for the joins that name it, and opens whole when one is built.
+      const name = toolNames.get(id);
+      if (name !== undefined) modelTrees.set(key, loadedTree(tree, key, root, name, null, (other) => keys.get(other)));
+      continue;
+    }
     const token = meshTokenOf(obj.bytes);
     const mesh: PlateMesh = { name: obj.fileName, bytes: obj.bytes, sourcePos: obj.sourcePos, token, ...(obj.brep ? { step: obj.brep } : {}) };
-    const root: ModelRoot = tree.rootPrimitive ? { kind: "primitive", solid: tree.rootPrimitive } : { kind: "step", ...tree.rootStep };
-    const loaded = loadedTree(tree, key, root, obj.name, mesh, (id) => keys.get(id));
+    const loaded = loadedTree(tree, key, root, obj.name, mesh, (other) => keys.get(other));
     modelTrees.set(key, loaded);
     if (obj.brep || (loaded.committed === ROOT && isStepName(obj.fileName))) stepKnown.add(token);
     // A primitive root is a few numbers, so its tree opens whole from them and no STEP is read; the first edit would rebuild it anyway.
@@ -484,13 +668,33 @@ export function releaseModelTrees() {
   for (const obj of state.plate.objects) refs.push({ id: obj.id, ...(obj.modelTree ? { key: obj.modelTree } : {}), token: meshTokenOf(obj.bytes) });
   if (open) refs.push({ id: open.objectId, key: open.key });
   const keep = reachableTrees(modelTrees, refs);
-  for (const key of [...modelTrees.keys()]) {
-    if (keep.has(key)) continue;
+  const gone = closeOrder(modelTrees, [...modelTrees.keys()].filter((key) => !keep.has(key)));
+  for (const key of gone) {
     modelTrees.delete(key);
     seeds.delete(key);
     forgetShown(key);
-    void post({ call: "close", key });
   }
+  void closeInEngine(gone);
+}
+
+/** Closes in flight, one at a time, and those the engine refused because a join still named the tree. */
+let closing: Promise<void> = Promise.resolve();
+const refusedCloses = new Set<string>();
+
+/**
+ * The engine keeps a tree a join takes its tool from, so trees close one at a time, each before its tools, in one
+ * queue for every release. A close the engine refused, because a tree closing in a later release named it, goes again
+ * after each later batch.
+ */
+function closeInEngine(keys: readonly string[]): Promise<void> {
+  closing = closing.then(async () => {
+    for (const key of [...keys, ...refusedCloses]) {
+      const body = await post({ call: "close", key });
+      if (typeof body.error === "string" && body.error !== "unknown") refusedCloses.add(key);
+      else refusedCloses.delete(key);
+    }
+  });
+  return closing;
 }
 
 /** The solids and kernel answers kept for tree `key`. */
@@ -509,8 +713,13 @@ export function leaveModel() {
 
 /** The file's plate is gone: so are its trees. */
 export function forgetModelTrees() {
-  for (const key of modelTrees.keys()) void post({ call: "close", key });
+  void closeInEngine(closeOrder(modelTrees, modelTrees.keys()));
+  plateEra += 1;
   modelTrees.clear();
+  surfacesOnly.clear();
+  toolOpens.clear();
+  ghosted = null;
+  joinSaid = "";
   seeds.clear();
   solids.clear();
   answers.clear();
@@ -567,35 +776,49 @@ export function showModel() {
     return;
   }
   // A tree that has no node with this mesh stays open: a Prepare undo or redo can bring one of its meshes back.
-  const sourcePos = state.sourcePos ?? new Float32Array(0);
-  const brep = obj.brep ?? null;
-  const source = [...modelTrees.values()].find((tree) => nodeWithMesh(tree, token) != null);
-  if (source?.root.kind === "primitive" && nodeWithMesh(source, token) === ROOT) {
-    // A copy of a new solid's root starts from the same primitive, even once that root has a STEP: none is read.
-    void openTree(mine, objectId, obj.name, source.root, { name: mesh.name, bytes: mesh.bytes, sourcePos, token, ...(brep ? { step: brep } : {}) });
-    return;
-  }
-  if (brep || isStepName(mesh.name)) {
-    const root: PlateMesh = { name: mesh.name, bytes: mesh.bytes, sourcePos, token, ...(brep ? { step: brep } : {}) };
-    void openTree(mine, objectId, obj.name, { kind: "step", name: brep ? stepFileName(mesh.name) : mesh.name, bytes: brep ?? mesh.bytes }, root);
-    return;
-  }
+  const source = rootSource({ fileName: mesh.name, bytes: mesh.bytes, sourcePos: state.sourcePos ?? new Float32Array(0), ...(obj.brep ? { brep: obj.brep } : {}) });
   if (!source) {
     showEmpty(true);
     return;
   }
-  // A copy of an edited object whose STEP is not written yet: its own tree starts from that step's STEP.
+  if ("from" in source) {
+    void openTree(mine, objectId, obj.name, source.from, source.mesh);
+    return;
+  }
   void (async () => {
     readout("Reading the solid…");
-    const step = await exportStep(source.key, nodeWithMesh(source, token)!);
+    const step = await stepOfCopy(source);
     if (typeof step === "string") {
       if (mine === ticket) readout(step);
       return;
     }
-    putStep(token, step);
     if (mine !== ticket) return;
-    void openTree(mine, objectId, obj.name, { kind: "step", name: stepFileName(mesh.name), bytes: step }, { name: mesh.name, bytes: mesh.bytes, sourcePos, token, step });
+    void openTree(mine, objectId, obj.name, step.from, step.mesh);
   })();
+}
+
+type OpenFrom = { from: Exclude<ModelRoot, { kind: "piece" }>; mesh: PlateMesh };
+
+/**
+ * What a new tree for a plate mesh opens from: a copy of a new solid's root from the same primitive, even once that root
+ * has a STEP; a STEP, the object's own or the file; or, for a copy of an edited object whose STEP is not written yet,
+ * the step it copies, whose STEP `stepOfCopy` writes first. Null for a mesh, which Model does not edit.
+ */
+function rootSource(of: { fileName: string; bytes: ArrayBuffer; sourcePos: Float32Array; brep?: ArrayBuffer }): OpenFrom | { copies: { key: string; node: NodeId }; mesh: PlateMesh } | null {
+  const token = meshTokenOf(of.bytes);
+  const mesh: PlateMesh = { name: of.fileName, bytes: of.bytes, sourcePos: of.sourcePos, token, ...(of.brep ? { step: of.brep } : {}) };
+  const source = [...modelTrees.values()].find((tree) => nodeWithMesh(tree, token) != null);
+  if (source?.root.kind === "primitive" && nodeWithMesh(source, token) === ROOT) return { from: source.root, mesh };
+  if (of.brep || isStepName(of.fileName)) return { from: { kind: "step", name: of.brep ? stepFileName(of.fileName) : of.fileName, bytes: of.brep ?? of.bytes }, mesh };
+  return source ? { copies: { key: source.key, node: nodeWithMesh(source, token)! }, mesh } : null;
+}
+
+/** A copy's root: the STEP of the step it copies, written now and given to every object with that mesh. */
+async function stepOfCopy({ copies, mesh }: { copies: { key: string; node: NodeId }; mesh: PlateMesh }): Promise<OpenFrom | string> {
+  const step = await exportStep(copies.key, copies.node);
+  if (typeof step === "string") return step;
+  putStep(mesh.token, step);
+  return { from: { kind: "step", name: stepFileName(mesh.name), bytes: step }, mesh: { ...mesh, step } };
 }
 
 /**
@@ -664,26 +887,39 @@ function setMode(mode: "face" | "edge") {
   if (open) readout(`${about(open.solid)} Pick ${mode === "face" ? "a face" : "an edge"}.`);
 }
 
-/** Open the file's solid, or a copied new solid's primitive, as the root of a new tree for the plate object. */
+/** Open the file's solid, or a copied new solid's primitive, as the root of a new tree for the plate object, and show it. */
 async function openTree(mine: number, objectId: string, label: string, from: Exclude<ModelRoot, { kind: "piece" }>, root: PlateMesh) {
   readout("Reading the solid…");
-  const key = freshTreeKey(objectId);
-  const chord = state.stepTolerance;
-  const body = await post(openRequest(key, from, chord));
-  const parsed = decodeSolid(body);
-  if (typeof parsed === "string") {
-    // An open the engine answered but this app cannot read still left a tree there.
-    if (typeof body.error !== "string") void post({ call: "close", key });
-    if (mine === ticket && state.stage === "model") readout(parsed);
+  const started = await startTree(objectId, label, from, root);
+  if (typeof started === "string") {
+    if (mine === ticket && state.stage === "model") readout(started);
     return;
+  }
+  keepSolid(started.key, ROOT, state.stepTolerance, started.parsed);
+  if (mine !== ticket || state.stage !== "model") return;
+  open = { objectId, key: started.key, solid: started.parsed };
+  present(started.parsed, `${about(started.parsed)} Pick a face or an edge.`);
+}
+
+/**
+ * A new tree for the plate object, rooted in `from`: the object then carries its key. A shown object and a join's tool
+ * both start here. An open that lands after the plate was replaced leaves nothing behind.
+ */
+async function startTree(objectId: string, label: string, from: Exclude<ModelRoot, { kind: "piece" }>, root: PlateMesh): Promise<{ key: string; parsed: ParsedSolid } | string> {
+  const key = freshTreeKey(objectId);
+  const era = plateEra;
+  const body = await post(openRequest(key, from, state.stepTolerance));
+  const parsed = decodeSolid(body);
+  if (typeof parsed === "string" || era !== plateEra) {
+    // An open the engine answered but this app cannot read, or no longer wants, still left a tree there.
+    if (typeof body.error !== "string") void post({ call: "close", key });
+    return typeof parsed === "string" ? parsed : "This solid is no longer open.";
   }
   modelTrees.set(key, withNode(newTree(key, from, rootLabel(from, label), parsed.fingerprint), ROOT, { mesh: root }));
   if (from.kind === "step" || root.step) stepKnown.add(root.token);
-  keepSolid(key, ROOT, chord, parsed);
+  if (!parsed.editable) surfacesOnly.add(root.token);
   setTreeKey(objectId, key);
-  if (mine !== ticket || state.stage !== "model") return;
-  open = { objectId, key, solid: parsed };
-  present(parsed, `${about(parsed)} Pick a face or an edge.`);
+  return { key, parsed };
 }
 
 /**
@@ -773,7 +1009,7 @@ function whyKeepBranch(node: NodeId): string | null {
   const tree = treeOf(open);
   if (!tree) return "This solid is no longer open.";
   if (busy || jumping) return "The modeler is still working. Try again in a moment.";
-  return dropRefusal(tree, node);
+  return dropRefusal(tree, node, modelTrees);
 }
 
 /** Delete the branch from `node` down, here and in the engine. A refusal goes to the readout. */
@@ -805,7 +1041,8 @@ function failed(key: string, body: Body): boolean {
   const error = text(body.error);
   if (!error) return false;
   const tree = modelTrees.get(key);
-  if (typeof body.broken === "number" && tree) {
+  // A tool tree the engine could not get back marks nothing: the step builds once that tree opens.
+  if (typeof body.broken === "number" && tree && !missingToolOf(body)) {
     console.warn(error);
     modelTrees.set(key, withNode(tree, body.broken, { broken: error }));
     readout(body.broken === ROOT ? ROOT_BROKEN : BROKEN);
@@ -857,6 +1094,7 @@ async function applyTool() {
   const count = op.kind === "fillet" || op.kind === "chamfer" ? (op.edges.length === 1 ? "the edge" : `${op.edges.length} edges`) : "";
   const working = {
     boolean: "Editing the solid…",
+    join: "Editing the solid…",
     split: "Splitting the solid…",
     fillet: `Filleting ${count}…`,
     chamfer: `Chamfering ${count}…`,
@@ -880,7 +1118,8 @@ async function applyOp(op: ModelOp, working: string) {
   const twin = childWithOp(tree, parent, op);
   if (twin != null) {
     // These numbers already built a step from here: show it rather than build it again.
-    await showNode(ticket, at.objectId, at.key, twin, (solid) => appliedMessage(op, solid));
+    const shown = await showNode(ticket, at.objectId, at.key, twin, (solid) => appliedMessage(op, solid));
+    if (shown && op.kind === "join" && !op.keepTool) takeOffPlate(op.tool.object);
     return;
   }
   if (seeds.has(at.key) || readSolids.has(at.solid)) {
@@ -952,8 +1191,23 @@ async function applyOp(op: ModelOp, working: string) {
   modelTrees.set(at.key, grown);
   keepSolid(at.key, node, chord, parsed);
   open = { ...at, solid: parsed };
-  if (isProbed(op.kind)) remember(probeKey(nodeName(at.key, node), op), { phase: "applied" });
-  present(parsed, appliedMessage(op, parsed));
+  remember(probeName(at.key, node, op), { phase: "applied" });
+  // The tree that names the tool is in place first, so the tool's tree stays for it once the object leaves.
+  if (stored.kind === "join" && !stored.keepTool) takeOffPlate(stored.tool.object);
+  if (stored.kind === "join") resetKeepTool();
+  present(parsed, appliedMessage(stored, parsed));
+}
+
+/** A join's tool leaves the plate, in the visit's one Prepare step, so Prepare undo puts it back with the edit. */
+function takeOffPlate(id: string) {
+  if (!state.plate.objects.some((obj) => obj.id === id)) return;
+  noteEdit();
+  syncPlateFromState();
+  state.plate = withoutObject(state.plate, id);
+  applySelectedToState(state.plate);
+  place();
+  flushEdit();
+  markModelEdit();
 }
 
 function appliedMessage(op: ModelOp, solid: ParsedSolid) {
@@ -964,6 +1218,7 @@ function appliedMessage(op: ModelOp, solid: ParsedSolid) {
   if (op.kind === "fillet") return `Fillet. ${volume}${notes}`;
   if (op.kind === "chamfer") return `Chamfer. ${volume}${notes}`;
   if (op.kind === "hole") return `Hole. ${volume}${notes}`;
+  if (op.kind === "join") return `${opLabel(op)}. ${volume}${op.keepTool ? "" : ` ${op.tool.name} left the plate.`}${notes}`;
   return `${volume}${notes}`;
 }
 
@@ -1242,9 +1497,18 @@ function present(parsed: ParsedSolid, message: string) {
   readout(message);
 }
 
-/** The other plate objects, grey, where they sit in model space. Nothing is drawn without an open solid. */
+/** The other plate objects, grey, where they sit in model space, but for a join's tool, which is the ghost. */
 export function refreshModelContext() {
-  fx.model?.setContext(contextParts(livePlate(), open?.objectId ?? null));
+  if (refreshingContext) return;
+  // The plate changed: a join's list follows it, and loses a tool that left. The refresh that loss asks for is this one.
+  refreshingContext = true;
+  try {
+    refreshJoinChoices();
+  } finally {
+    refreshingContext = false;
+  }
+  ghosted = joinPick();
+  fx.model?.setContext(contextParts(livePlate(), open?.objectId ?? null).filter((part) => part.id !== ghosted));
   const canvas = document.querySelector<HTMLElement>("#model");
   const obj = open ? state.plate.objects.find((item) => item.id === open!.objectId) : undefined;
   // The open object's plate mesh, so a test can tell a model-space move left it alone.
@@ -1599,11 +1863,23 @@ function missingOf(body: Body): NodeId[] | null {
  * runs one of its own.
  */
 async function treeCall(key: string, node: NodeId, request: Body): Promise<Body> {
+  const problem = await wholeTools(key, node, request);
+  if (problem) return { error: problem };
   let body = await seededCall(key, node, request);
-  for (let round = 0; round < 2; round += 1) {
+  // A join's tool tree the engine lacks (a restarted engine, or a tree opened from a project) opens, and the call goes again.
+  for (let tools = 0, round = 0; round < 2; ) {
+    const tool = missingToolOf(body);
+    if (tool && tools < TOOL_ROUNDS) {
+      tools += 1;
+      const problem = await restoreTool(tool.key, tool.node);
+      if (problem) return { error: problem };
+      body = await seededCall(key, node, request);
+      continue;
+    }
     const missing = missingOf(body);
     if (!missing) return body;
     const running = round === 0 ? restoring.get(key) : undefined;
+    round += 1;
     const restored: Promise<string | null> = running ?? restore(key, node, missing).finally(() => {
       if (restoring.get(key) === restored) restoring.delete(key);
     });
@@ -1613,6 +1889,52 @@ async function treeCall(key: string, node: NodeId, request: Body): Promise<Body>
     body = await seededCall(key, node, request);
   }
   return missingOf(body) ? { error: "The modeler no longer has this solid. Open Model again to reload it." } : body;
+}
+
+/** How many tool trees one call may open again: one per tree in the deepest chain of joins anyone builds. */
+const TOOL_ROUNDS = 8;
+
+/**
+ * A tree from a project that sits on its STEP-read step numbers that step 0 in the engine, so a join that names its root
+ * would take the read solid instead. Every such tree a call on `node` of `key` can build from (by the joins on the way
+ * to `node`, the join the call sends, and theirs in turn) opens whole first. A join naming any other step of it gets
+ * `missingTool` and opens it then.
+ */
+async function wholeTools(key: string, node: NodeId, request: Body): Promise<string | null> {
+  const joinsTo = (tree: ModelTree | undefined, at: NodeId) =>
+    tree ? pathTo(tree, at).flatMap((id) => { const op = tree.nodes.get(id)?.op; return op?.kind === "join" ? [op.tool] : []; }) : [];
+  const queue = [...joinsTo(modelTrees.get(key), node), ...(isOp(request.op) && request.op.kind === "join" ? [request.op.tool] : [])];
+  const seen = new Set<string>();
+  for (let tool = queue.pop(); tool !== undefined; tool = queue.pop()) {
+    if (seen.has(`${tool.key}#${tool.node}`)) continue;
+    seen.add(`${tool.key}#${tool.node}`);
+    const seed = seeds.get(tool.key);
+    const problem = seed && tool.node === ROOT ? await openWhole(tool.key, seed.node) : null;
+    if (problem) return problem;
+    queue.push(...joinsTo(modelTrees.get(tool.key), tool.node));
+  }
+  return null;
+}
+
+/**
+ * A join's tool the engine does not hold: its tree comes back from its root and ops, as a tree after a restart does,
+ * down to `node`. Calls that find it missing at once share one restore.
+ */
+function restoreTool(key: string, node: NodeId): Promise<string | null> {
+  if (!modelTrees.get(key)?.nodes.has(node)) return Promise.resolve("The tool object's history is no longer open.");
+  const running = restoring.get(key);
+  if (running) return running;
+  const seed = seeds.get(key);
+  const restored: Promise<string | null> = (seed ? openWhole(key, seed.node) : restore(key, node, [ROOT])).finally(() => {
+    if (restoring.get(key) === restored) restoring.delete(key);
+  });
+  restoring.set(key, restored);
+  return restored;
+}
+
+function missingToolOf(body: Body): { key: string; node: NodeId } | null {
+  const tool = body.missingTool as { key?: unknown; node?: unknown } | undefined;
+  return tool && typeof tool.key === "string" && typeof tool.node === "number" ? { key: tool.key, node: tool.node } : null;
 }
 
 /**
@@ -1726,7 +2048,14 @@ async function restore(key: string, node: NodeId, missing: NodeId[]): Promise<st
   for (const id of pathTo(tree, node).slice(1)) {
     const step = tree.nodes.get(id);
     if (!step?.op || step.parent === null) continue;
-    const body = await post(applyRequest(key, step.parent, id, step.op, chord));
+    const request = applyRequest(key, step.parent, id, step.op, chord);
+    let body = await post(request);
+    for (let tools = 0; missingToolOf(body) && tools < TOOL_ROUNDS; tools += 1) {
+      const tool = missingToolOf(body)!;
+      const problem = await restoreTool(tool.key, tool.node);
+      if (problem) return problem;
+      body = await post(request);
+    }
     // A node the engine still has, made by a split with its piece's key, refuses a resend without it.
     if (text(body.error).includes("already in this tree")) continue;
     if (failed(key, body)) return text(body.error);

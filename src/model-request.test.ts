@@ -1,4 +1,4 @@
-import { applyRequest, newSolidRequest, openRequest, wholeTreeRequest } from "./model-request.ts";
+import { applyRequest, joinOp, newSolidRequest, openRequest, wholeTreeRequest } from "./model-request.ts";
 import { newTree, withChild, type ModelOp } from "./model-tree.ts";
 import type { PrimitiveSpec } from "./model-primitive.ts";
 
@@ -35,6 +35,19 @@ eq("a whole primitive tree sends the root's fingerprint and every op", wholeTree
   current: 1,
 });
 eq("an apply names the split piece's key only when there is one", [applyRequest("k", 0, 1, hole, 0.1), applyRequest("k", 0, 2, hole, 0.1, "piece#1").otherKey], [{ call: "apply", key: "k", parent: 0, node: 1, op: hole, chordMm: 0.1 }, "piece#1"]);
+
+const tool = { object: "obj-2", key: "obj-2#a.3", node: 4, name: "telo split" };
+const turned = { m: [0, -1, 0, 1, 0, 0, 0, 0, 1] as [number, number, number, number, number, number, number, number, number], t: [5, 7, 0] as [number, number, number] };
+const moved = { m: turned.m, t: [5, -3, 0] as [number, number, number] };
+const joined = joinOp("cut", tool, turned, moved, false);
+eq("a join keeps the tool's step and its pose in the target's own frame: model −Y 10 is the target's own −X 10", { ...joined, relative: { ...joined.relative, t: joined.relative.t.map((v) => Math.round(v * 1e9) / 1e9 + 0) } }, {
+  kind: "join",
+  op: "cut",
+  tool,
+  relative: { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [-10, 0, 0] },
+  keepTool: false,
+});
+eq("and is applied as any op is", applyRequest("obj-1#a.1", 2, 3, joined, 0.1).op, joined);
 
 if (failed) {
   console.error(`model-request: ${failed} failed`);

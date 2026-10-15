@@ -77,7 +77,9 @@
 #include <gp_Ax2.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
+#include <gp_Mat.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Quaternion.hxx>
 #include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
 
@@ -946,17 +948,8 @@ double largest_blend(const TopoDS_Shape& current, const std::vector<TopoDS_Edge>
     return best;
 }
 
-/// The boolean Apply runs, on a copy. Empty `error` means `built` is the result.
-TopoDS_Shape build_boolean(
-    const TopoDS_Shape& current,
-    const std::string& which,
-    const PrimitiveSpec& spec,
-    double& volume,
-    std::string& error) {
-    const TopoDS_Shape tool = make_solid(spec, error);
-    if (tool.IsNull()) {
-        return {};
-    }
+/// `current` and `tool` combined, on a copy, with the result's volume. Empty `error` means the result is good.
+TopoDS_Shape combine(const TopoDS_Shape& current, const std::string& which, const TopoDS_Shape& tool, double& volume, std::string& error) {
     const TopoDS_Shape result = boolean_op(which, current, tool, error);
     if (!error.empty()) {
         return {};
@@ -968,6 +961,37 @@ TopoDS_Shape build_boolean(
         return {};
     }
     return result;
+}
+
+/// The boolean Apply runs, on a copy. Empty `error` means `built` is the result.
+TopoDS_Shape build_boolean(
+    const TopoDS_Shape& current,
+    const std::string& which,
+    const PrimitiveSpec& spec,
+    double& volume,
+    std::string& error) {
+    const TopoDS_Shape tool = make_solid(spec, error);
+    if (tool.IsNull()) {
+        return {};
+    }
+    return combine(current, which, tool, volume, error);
+}
+
+/// The other solid moves by a location, so nothing is copied, and the turn is built as a unit quaternion so the
+/// location carries no scale at all: Open CASCADE refuses a location with one.
+TopoDS_Shape build_join(
+    const TopoDS_Shape& current,
+    const TopoDS_Shape& tool,
+    const std::string& which,
+    const double* place,
+    double& volume,
+    std::string& error) {
+    gp_Quaternion turn(gp_Mat(place[0], place[1], place[2], place[3], place[4], place[5], place[6], place[7], place[8]));
+    turn.Normalize();
+    gp_Trsf trsf;
+    trsf.SetRotation(turn);
+    trsf.SetTranslationPart(gp_Vec(place[9], place[10], place[11]));
+    return combine(current, which, tool.Moved(TopLoc_Location(trsf)), volume, error);
 }
 
 /// The hole Apply cuts, on a copy. `direction` points into the material. Empty means straight down, toward −Z.

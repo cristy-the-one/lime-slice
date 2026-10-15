@@ -42,7 +42,9 @@ export type ModelGhost =
   | { kind: "hole"; x: number; y: number; z: number; radius: number; depth: number; dir?: Vec3 }
   | { kind: "scale"; factor: number }
   | { kind: "blend"; edges: number[]; radius: number }
-  | { kind: "measure"; a: Vec3; b: Vec3 };
+  | { kind: "measure"; a: Vec3; b: Vec3 }
+  /** Another plate object, a join's tool: its plate mesh where it sits in model space, drawn from the grey object's own geometry. */
+  | { kind: "object"; id: string; positions: Float32Array; matrix: Affine };
 
 /** A handle moved. `values` go into the handle's fields in order. */
 export interface HandleDrag {
@@ -59,6 +61,8 @@ const IDLE_EDGE = 0x8d9780;
 const ARROW_HEAD = HANDLE_ARROW_TIP - 0.15;
 /** Facets of a round primitive's ghost meet at up to 22.5 degrees; its real edges at more. Below this they shade smooth and draw no line. */
 const PRIMITIVE_CREASE_DEG = 25;
+/** A join's tool past this many triangles is drawn without its outline, which would take a noticeable while to find. */
+const OBJECT_OUTLINE_MAX_TRIANGLES = 150_000;
 /** How much more solid the ghost of the object being edited gets while a docked handle is in use. */
 const EMPHASIS_OPACITY = 0.45;
 
@@ -83,6 +87,9 @@ export interface ModelView {
   setTheme(): void;
   resize(): void;
   onPick(cb: (pick: ModelPick | null, shift: boolean) => void): void;
+  /** While on, a click on a grey object picks that object (`onObjectPick`) instead of a face or an edge of the solid in front. */
+  setObjectPicking(on: boolean): void;
+  onObjectPick(cb: (id: string) => void): void;
   setHandles(handles: DragHandle[]): void;
   onHandleDrag(cb: (drag: HandleDrag) => void): void;
 }
@@ -182,10 +189,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
    */
   let primitiveGeometry: { mesh: Float32Array; shaded: THREE.BufferGeometry; edges: THREE.EdgesGeometry } | null = null;
 
+  /** Geometry a ghost borrows from the grey objects; `setContext` frees it once no object uses it. */
+  const borrowed = new WeakSet<THREE.BufferGeometry>();
+
   function disposeObject(object: THREE.Object3D) {
     object.traverse((child) => {
       const geometry = (child as THREE.Mesh).geometry;
-      if (geometry !== primitiveGeometry?.shaded && geometry !== primitiveGeometry?.edges) geometry?.dispose();
+      if (geometry !== primitiveGeometry?.shaded && geometry !== primitiveGeometry?.edges && !borrowed.has(geometry)) geometry?.dispose();
       const material = (child as THREE.Mesh).material;
       if (Array.isArray(material)) material.forEach((item) => item.dispose());
       else material?.dispose();
@@ -339,11 +349,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     body.position.set(center.x * (1 - factor), center.y * (1 - factor), center.z * (1 - factor));
   }
 
-  function ghostMaterial(opacity: number) {
+  /** `flat` for a mesh that carries no normals, as a grey object's buffers do. */
+  function ghostMaterial(opacity: number, flat = false) {
     return new THREE.MeshStandardMaterial({
       color: accent,
       roughness: 0.55,
       metalness: 0.05,
+      flatShading: flat,
       transparent: true,
       opacity: emphasis ? Math.min(0.7, opacity + EMPHASIS_OPACITY) : opacity,
       depthWrite: false,
@@ -352,32 +364,45 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   const contextMat = contextMaterial(colors.context);
-  /** One geometry per source array, so a pose change or a new neighbour never re-uploads a mesh that did not change. */
-  const contextGeometry = new Map<Float32Array, { geometry: THREE.BufferGeometry; box: Bounds }>();
+  /**
+   * One geometry per source array, so a pose change or a new neighbour never re-uploads a mesh that did not change. A
+   * join's ghost draws its tool from the same geometry, and its outline, built the first time, stays with it.
+   */
+  const contextGeometry = new Map<Float32Array, { geometry: THREE.BufferGeometry; box: Bounds; edges?: THREE.EdgesGeometry }>();
+  let objectPicking = false;
+  let objectPickCb: (id: string) => void = () => {};
+
+  function contextHeld(positions: Float32Array) {
+    let held = contextGeometry.get(positions);
+    if (!held) {
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+      borrowed.add(geometry);
+      held = { geometry, box: boundsOf(positions) };
+      contextGeometry.set(positions, held);
+    }
+    return held;
+  }
 
   function setContext(parts: ContextPart[]) {
     const wanted = new Set(parts.map((part) => part.positions));
+    if (ghost?.kind === "object") wanted.add(ghost.positions);
     for (const [positions, held] of contextGeometry) {
       if (wanted.has(positions)) continue;
       held.geometry.dispose();
+      held.edges?.dispose();
       contextGeometry.delete(positions);
     }
     context.clear();
     const published: string[] = [];
     for (const part of parts) {
-      let held = contextGeometry.get(part.positions);
-      if (!held) {
-        const geometry = new THREE.BufferGeometry();
-        geometry.setAttribute("position", new THREE.BufferAttribute(part.positions, 3));
-        held = { geometry, box: boundsOf(part.positions) };
-        contextGeometry.set(part.positions, held);
-      }
+      const held = contextHeld(part.positions);
       const mesh = new THREE.Mesh(held.geometry, contextMat);
       const { m, t } = part.matrix;
       mesh.matrixAutoUpdate = false;
       mesh.matrix.set(m[0], m[1], m[2], t[0], m[3], m[4], m[5], t[1], m[6], m[7], m[8], t[2], 0, 0, 0, 1);
       mesh.renderOrder = 1;
-      mesh.raycast = () => undefined;
+      mesh.userData.id = part.id;
       context.add(mesh);
       const box = boxUnder(held.box, part.matrix);
       published.push(`${part.id}:${[...box.min, ...box.max].map((value) => value.toFixed(2)).join(",")}`);
@@ -497,6 +522,28 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       shape.add(outline);
       turned.add(shape);
       ghosts.add(turned);
+      return;
+    }
+    if (current.kind === "object") {
+      // The grey object's own buffers, moved by its matrix: nothing is copied.
+      const held = contextHeld(current.positions);
+      // Its outline is built once, and not at all for a mesh so dense that would hold up the pick.
+      if (!held.edges && current.positions.length <= OBJECT_OUTLINE_MAX_TRIANGLES * 9) {
+        held.edges = new THREE.EdgesGeometry(held.geometry, PRIMITIVE_CREASE_DEG);
+        borrowed.add(held.edges);
+      }
+      const shape = new THREE.Mesh(held.geometry, ghostMaterial(0.22, true));
+      const { m, t } = current.matrix;
+      shape.matrixAutoUpdate = false;
+      shape.matrix.set(m[0], m[1], m[2], t[0], m[3], m[4], m[5], t[1], m[6], m[7], m[8], t[2], 0, 0, 0, 1);
+      shape.renderOrder = 2;
+      shape.raycast = () => undefined;
+      if (held.edges) {
+        const outline = new THREE.LineSegments(held.edges, new THREE.LineBasicMaterial({ color: accent, transparent: true, opacity: 0.95 }));
+        outline.raycast = () => undefined;
+        shape.add(outline);
+      }
+      ghosts.add(shape);
       return;
     }
     if (!solid) return;
@@ -771,9 +818,25 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const moved = (ev.clientX - down.x) ** 2 + (ev.clientY - down.y) ** 2;
     down = null;
     if (moved > 16) return;
+    const object = objectPicking ? objectAt(ev) : null;
+    if (object) {
+      objectPickCb(object);
+      return;
+    }
     pickCb(pickAt(ev), ev.shiftKey);
     setHover(pickAt(ev));
   });
+
+  /** The grey object under the pointer, unless the open solid is in front of it. */
+  function objectAt(ev: PointerEvent): string | null {
+    const rect = canvas.getBoundingClientRect();
+    pointer.x = ((ev.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
+    pointer.y = -((ev.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    const hit = raycaster.intersectObjects(mesh ? [...context.children, mesh] : context.children, false)[0];
+    const id = hit?.object.userData.id;
+    return typeof id === "string" ? id : null;
+  }
 
   return {
     setSolid(next, at) {
@@ -882,6 +945,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     resize,
     onPick(cb) {
       pickCb = cb;
+    },
+    setObjectPicking(on) {
+      objectPicking = on;
+      canvas.dataset.objectPicking = on ? "1" : "0";
+    },
+    onObjectPick(cb) {
+      objectPickCb = cb;
     },
     setHandles(next) {
       buildHandles(next);

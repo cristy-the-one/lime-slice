@@ -6,6 +6,7 @@
  * an optional field on each version 2 object, so a version 2 file without it still opens.
  * `brep` is that same kind of field: base64 STEP, present only after Model has a session.
  * `modelTree` is another: the object's Model history. A damaged one is left out and the part opens.
+ * `modelTools` keeps the trees of tools that left the plate while a saved join names them.
  * `modelPose` and `meshSeatMm` place the object in Model's shared space; without them it sits where its file put it.
  * A later version adds a function to `migrations` at index `n` that rewrites version `n`
  * into version `n + 1`. `applyMigrations` is that hook.
@@ -20,7 +21,7 @@ import { parseOverrides, type OverrideDocument } from "./overrides.ts";
 import { plateFileIsVersion2, readPlateSettings, settingsEmpty, type PlateFileObject } from "./plate.ts";
 import { dropEmptyReinforce, readReinforcement } from "./reinforcement.ts";
 import type { EditEntry } from "./support-edit-list.ts";
-import { readSavedTree, treeBody } from "./model-tree-file.ts";
+import { readSavedTree, savedToolObjects, treeBody } from "./model-tree-file.ts";
 import type { Affine } from "./model-space.ts";
 import { readSeamPaint } from "./seam-paint.ts";
 import { readPaint } from "./support-paint.ts";
@@ -76,8 +77,20 @@ export interface LimeProject {
   sequentialGantryMm?: number;
   /** Pauses and filament changes from the layer slider. Omitted when there are none. */
   layerActions?: LayerAction[];
+  /**
+   * The Model trees of tools that left the plate, kept because a saved join takes its tool from them. A join names its
+   * tool by `id`. Omitted when there are none.
+   */
+  modelTools?: ToolTree[];
   /** Read only: the names of objects whose Model history was damaged and left out. */
   unreadHistory?: string[];
+}
+
+/** A tool's tree kept for a join after its object left the plate: the object's id and name, and its tree as an object keeps one. */
+export interface ToolTree {
+  id: string;
+  name: string;
+  modelTree: NonNullable<PlateFileObject["modelTree"]>;
 }
 
 export type ProjectResult = { ok: true; project: LimeProject } | { ok: false; message: string };
@@ -100,14 +113,17 @@ export function meshRecord(name: string, bytes: Uint8Array): ProjectMesh {
 export function serializeProject(project: LimeProject): string {
   const overrides = project.overrides;
   if (project.version === 2 && project.objects && plateFileIsVersion2(project.objects)) {
+    const objects = project.objects.map(stripEmptySettings);
+    const shared = shareRootSteps([...objects, ...(project.modelTools ?? [])]);
     const wire: Record<string, unknown> = {
       version: 2,
       settings: project.settings,
       preset: project.preset,
       profile: project.profile,
       level: project.level,
-      objects: shareRootSteps(project.objects.map(stripEmptySettings)),
+      objects: shared.slice(0, objects.length),
     };
+    if (project.modelTools?.length) wire.modelTools = shared.slice(objects.length);
     if (overrides) wire.overrides = overrides;
     if (project.layerActions?.length) wire.layerActions = project.layerActions;
     if (project.printOrder === "sequential") {
@@ -172,11 +188,15 @@ type StepRecord = { name: string; bytesBase64?: string; byteLength: number; hash
 
 const recordId = (record: StepRecord) => `${record.hash}:${record.byteLength}`;
 
+/** A plate object, or a tool's tree kept for a join: what holds bytes and a tree. */
+type TreeHolder = Pick<PlateFileObject, "modelTree"> & { mesh?: ProjectMesh; brep?: ProjectMesh };
+
 /**
  * Bytes the file holds in full, by hash and length: every mesh and solid. Root STEPs written in
- * full join after them, in object order. The first of each wins, on write and on read alike.
+ * full join after them, in object order, then the kept tools' in theirs. The first of each wins,
+ * on write and on read alike.
  */
-function bytesPool(objects: readonly PlateFileObject[]): Map<string, string> {
+function bytesPool(objects: readonly TreeHolder[]): Map<string, string> {
   const pool = new Map<string, string>();
   for (const obj of objects) {
     for (const record of [obj.mesh, obj.brep]) if (record && !pool.has(recordId(record))) pool.set(recordId(record), record.bytesBase64);
@@ -188,7 +208,7 @@ function bytesPool(objects: readonly PlateFileObject[]): Map<string, string> {
  * A root STEP whose bytes the file already holds (a copy's root, or a tree on its root step) is
  * written as its name, hash, and length alone. Telo's root is 17 MB of base64.
  */
-function shareRootSteps(objects: PlateFileObject[]): PlateFileObject[] {
+function shareRootSteps<T extends TreeHolder>(objects: T[]): T[] {
   const pool = bytesPool(objects);
   return objects.map((obj) => {
     const root = obj.modelTree?.rootStep;
@@ -298,9 +318,9 @@ function readVersion2(doc: Record<string, unknown>): ProjectResult {
   }
   const preset = doc.preset === null ? null : typeof doc.preset === "string" ? doc.preset : undefined;
   if (preset === undefined) return { ok: false, message: "This project file is incomplete." };
-  const read = readPlateObjects(doc.objects);
+  const read = readPlateObjects(doc.objects, doc.modelTools);
   if (typeof read === "string") return { ok: false, message: read };
-  const { objects, unreadHistory } = read;
+  const { objects, modelTools, unreadHistory } = read;
   const primary = objects[0];
   if (!primary) return { ok: false, message: "This project file is incomplete." };
   const project: LimeProject = {
@@ -314,6 +334,7 @@ function readVersion2(doc: Record<string, unknown>): ProjectResult {
     supportEdits: primary.supportEdits,
   };
   if (project.version === 2) project.objects = objects;
+  if (modelTools.length > 0) project.modelTools = modelTools;
   if (unreadHistory.length > 0) project.unreadHistory = unreadHistory;
   if (doc.overrides !== undefined) {
     const overrides = parseOverrides(doc.overrides);
@@ -335,7 +356,7 @@ function readVersion2(doc: Record<string, unknown>): ProjectResult {
   return { ok: true, project };
 }
 
-function readPlateObjects(value: unknown): { objects: PlateFileObject[]; unreadHistory: string[] } | string {
+function readPlateObjects(value: unknown, tools: unknown): { objects: PlateFileObject[]; modelTools: ToolTree[]; unreadHistory: string[] } | string {
   if (!Array.isArray(value) || value.length === 0) return "This project file is incomplete.";
   const out: PlateFileObject[] = [];
   const seen = new Set<string>();
@@ -346,28 +367,61 @@ function readPlateObjects(value: unknown): { objects: PlateFileObject[]; unreadH
     seen.add(read.id);
     out.push(read);
   }
+  // A kept tool is a plate object no more: its id and name, and its tree. One that is not even that is left out, named if it can be.
+  const keptRows = Array.isArray(tools) ? tools : [];
+  const unreadHistory: string[] = [];
+  const kept: { id: string; name: string; raw: unknown }[] = [];
+  for (const row of keptRows) {
+    const item = row && typeof row === "object" && !Array.isArray(row) ? (row as Record<string, unknown>) : {};
+    const name = typeof item.name === "string" && item.name.trim() ? item.name : "";
+    if (typeof item.id === "string" && item.id && name && !seen.has(item.id)) {
+      seen.add(item.id);
+      kept.push({ id: item.id, name, raw: item.modelTree });
+    } else {
+      unreadHistory.push(name || "a removed tool");
+    }
+  }
+  const holders = [...out.map((obj, i) => ({ id: obj.id, name: obj.name, raw: (value[i] as Record<string, unknown>).modelTree })), ...kept];
   const pool = bytesPool(out);
-  const trees = value.map((item: Record<string, unknown>) => {
-    const raw = item.modelTree;
+  const trees = holders.map(({ raw }) => {
     // Every whole root STEP joins the bytes, as the writer counted it, even in a tree too damaged to read.
     const root = raw && typeof raw === "object" ? readRootStep((raw as Record<string, unknown>).rootStep) : null;
     if (root?.bytesBase64 !== undefined && !pool.has(recordId(root))) pool.set(recordId(root), root.bytesBase64);
     const tree = raw == null ? null : readSavedTree(raw);
     return tree && (root || tree.rootPrimitive) ? { tree, root } : null;
   });
-  const unreadHistory: string[] = [];
-  value.forEach((item: Record<string, unknown>, i) => {
+  const read = holders.map(({ raw }, i): PlateFileObject["modelTree"] | null => {
     const saved = trees[i];
     // A new solid's root is its primitive: there are no bytes to find.
-    if (saved?.tree.rootPrimitive) {
-      out[i]!.modelTree = { ...treeBody(saved.tree), rootPrimitive: saved.tree.rootPrimitive };
+    if (saved?.tree.rootPrimitive) return { ...treeBody(saved.tree), rootPrimitive: saved.tree.rootPrimitive };
+    const bytesBase64 = saved?.root ? saved.root.bytesBase64 ?? pool.get(recordId(saved.root)) : undefined;
+    if (saved?.root && bytesBase64 !== undefined) return { ...treeBody(saved.tree), rootStep: { ...saved.root, bytesBase64 } };
+    return raw != null ? null : undefined;
+  });
+  // A join whose tool's tree is not in the file cannot rebuild: its tree is left out as a damaged one is, and then any
+  // tree that took a tool from that one, and so on. A kept tool no tree names any more goes quietly.
+  for (let changed = true; changed; ) {
+    changed = false;
+    const readable = new Set(holders.filter((_, i) => read[i]).map(({ id }) => id));
+    read.forEach((tree, i) => {
+      if (tree && [...savedToolObjects(tree)].some((id) => !readable.has(id))) {
+        read[i] = null;
+        changed = true;
+      }
+    });
+  }
+  const named = new Set(read.flatMap((tree) => (tree ? [...savedToolObjects(tree)] : [])));
+  const modelTools: ToolTree[] = [];
+  holders.forEach(({ id, name }, i) => {
+    const tree = read[i];
+    if (i >= out.length) {
+      if (tree && named.has(id)) modelTools.push({ id, name, modelTree: tree });
       return;
     }
-    const bytesBase64 = saved?.root ? saved.root.bytesBase64 ?? pool.get(recordId(saved.root)) : undefined;
-    if (saved?.root && bytesBase64 !== undefined) out[i]!.modelTree = { ...treeBody(saved.tree), rootStep: { ...saved.root, bytesBase64 } };
-    else if (item.modelTree != null) unreadHistory.push(out[i]!.name);
+    if (tree) out[i]!.modelTree = tree;
+    else if (tree === null) unreadHistory.push(name);
   });
-  return { objects: out, unreadHistory };
+  return { objects: out, modelTools, unreadHistory };
 }
 
 /** A root STEP: whole, or its name, hash, and length alone when the file holds those bytes elsewhere. */

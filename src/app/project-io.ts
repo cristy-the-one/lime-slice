@@ -12,13 +12,13 @@ import {
 } from "../plate.ts";
 import { dropEmptyReinforce } from "../reinforcement.ts";
 import { base64ToBytes } from "../base64.ts";
-import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement } from "../project.ts";
+import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement, type ToolTree } from "../project.ts";
 import { saveProfile } from "../profiles.ts";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel.ts";
 import { pushToast } from "../ui/toasts.ts";
 import { adoptBytes, place, previewRemote, seatedPositions, stlPositions } from "./files.ts";
 import { adoptSavedTrees, captureOpenSolid, historyToSave } from "./model.ts";
-import { treeBody, type SavedTree } from "../model-tree-file.ts";
+import { savedToolObjects, treeBody, type SavedTree } from "../model-tree-file.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { applyPreset, currentPreset, needsEngine, renderChrome } from "./settings.ts";
 import { session, state } from "./state.ts";
@@ -49,10 +49,11 @@ export async function saveCurrentProject() {
     level: loadSettingsLevel(),
     supportEdits: state.supportEdits.map((entry) => structuredClone(entry)),
   };
-  const objects = fileObjects(history.trees);
+  const { objects, tools } = fileObjects(history);
   if (plateFileIsVersion2(objects)) {
     project.version = 2;
     project.objects = objects;
+    if (tools.length > 0) project.modelTools = tools;
   }
   const overrides = projectOverrides(state.overrides);
   if (overrides) project.overrides = structuredClone(overrides);
@@ -128,14 +129,14 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
     state.sequentialGantry = project.sequentialGantryMm ?? 0;
     state.selectedVolumeId = state.overrides.volumes[0]?.id ?? null;
     if (project.objects && project.objects.length > 0) {
-      const loaded = await loadPlateObjects(project.objects);
+      const loaded = await loadPlateObjects(project.objects, project.modelTools ?? []);
       if (typeof loaded === "string") {
         pushToast(loaded, "error", { label: "Retry", run: openProjectPicker });
         return false;
       }
       state.plate = loaded.plate;
       applySelectedToState(loaded.plate);
-      adoptSavedTrees(loaded.trees);
+      adoptSavedTrees(loaded.trees, project.modelTools ?? []);
       unread.push(...loaded.unread);
       // An Add that started while these meshes were loading was aimed at the plate this replaced.
       session.meshEpoch += 1;
@@ -155,7 +156,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
   }
 }
 
-function fileObjects(trees: Awaited<ReturnType<typeof historyToSave>>["trees"]): PlateFileObject[] {
+function fileObjects({ trees, tools }: Awaited<ReturnType<typeof historyToSave>>): { objects: PlateFileObject[]; tools: ToolTree[] } {
   // Bytes held twice (a root STEP that is the part's own solid or mesh) are encoded and hashed once.
   const records = new Map<ArrayBuffer, ReturnType<typeof meshRecord>>();
   const record = (name: string, bytes: ArrayBuffer) => {
@@ -166,7 +167,9 @@ function fileObjects(trees: Awaited<ReturnType<typeof historyToSave>>["trees"]):
     }
     return { ...made, name };
   };
-  return state.plate.objects.map((obj) => {
+  const fileTree = (saved: SavedTree<{ name: string; bytes: ArrayBuffer }>): NonNullable<PlateFileObject["modelTree"]> =>
+    saved.rootPrimitive ? { ...treeBody(saved), rootPrimitive: saved.rootPrimitive } : { ...treeBody(saved), rootStep: record(saved.rootStep.name, saved.rootStep.bytes) };
+  const objects = state.plate.objects.map((obj) => {
     const row: PlateFileObject = {
       id: obj.id,
       name: obj.name,
@@ -190,10 +193,10 @@ function fileObjects(trees: Awaited<ReturnType<typeof historyToSave>>["trees"]):
     const seat = meshSeat(obj.bytes);
     if (seat !== undefined) row.meshSeatMm = seat;
     const saved = trees.get(obj.id);
-    if (saved?.rootPrimitive) row.modelTree = { ...treeBody(saved), rootPrimitive: saved.rootPrimitive };
-    else if (saved?.rootStep) row.modelTree = { ...treeBody(saved), rootStep: record(saved.rootStep.name, saved.rootStep.bytes) };
+    if (saved) row.modelTree = fileTree(saved);
     return row;
   });
+  return { objects, tools: tools.map(({ id, name, tree }) => ({ id, name, modelTree: fileTree(tree) })) };
 }
 
 function stepFileName(name: string) {
@@ -201,7 +204,7 @@ function stepFileName(name: string) {
   return `${stem || "solid"}.step`;
 }
 
-async function loadPlateObjects(objects: PlateFileObject[]) {
+async function loadPlateObjects(objects: PlateFileObject[], tools: readonly ToolTree[]) {
   const rows = [];
   const trees = new Map<string, SavedTree<{ name: string; bytes: ArrayBuffer }>>();
   const unread: string[] = [];
@@ -216,6 +219,19 @@ async function loadPlateObjects(objects: PlateFileObject[]) {
     const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
     decoded.set(id, buffer);
     return buffer;
+  };
+  /** A plate object's or a kept tool's tree into `trees`, with its root STEP's bytes. False when it has one that does not read. */
+  const adopt = ({ id, modelTree }: { id: string; modelTree?: PlateFileObject["modelTree"] }) => {
+    if (!modelTree) return true;
+    if (modelTree.rootPrimitive) {
+      trees.set(id, { ...treeBody(modelTree), rootPrimitive: modelTree.rootPrimitive });
+      return true;
+    }
+    const root = modelTree.rootStep;
+    const bytes = root?.bytesBase64 === undefined ? null : decode({ ...root, bytesBase64: root.bytesBase64 });
+    if (!root || !bytes) return false;
+    trees.set(id, { ...treeBody(modelTree), rootStep: { name: root.name, bytes } });
+    return true;
   };
   for (const row of objects) {
     const bytes = base64ToBytes(row.mesh.bytesBase64);
@@ -236,12 +252,21 @@ async function loadPlateObjects(objects: PlateFileObject[]) {
       if (!solid) return "The solid in this project is damaged.";
       brepBytes = solid;
     }
-    const root = row.modelTree?.rootStep;
-    const rootBytes = root?.bytesBase64 === undefined ? null : decode({ ...root, bytesBase64: root.bytesBase64 });
-    if (row.modelTree?.rootPrimitive) trees.set(row.id, { ...treeBody(row.modelTree), rootPrimitive: row.modelTree.rootPrimitive });
-    else if (row.modelTree && root && rootBytes) trees.set(row.id, { ...treeBody(row.modelTree), rootStep: { name: root.name, bytes: rootBytes } });
-    else if (row.modelTree) unread.push(row.name);
+    if (!adopt(row)) unread.push(row.name);
     rows.push({ ...row, bytes: copy, sourcePos, brepBytes });
+  }
+  // A kept tool's tree after the plate's, so a root STEP it shares with them is decoded once.
+  for (const tool of tools) if (!adopt(tool)) unread.push(tool.name);
+  // A join whose tool's tree did not read could not rebuild: its tree is left out too, at any depth, as the file's reader does.
+  const names = new Map([...objects, ...tools].map((row) => [row.id, row.name]));
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const [id, tree] of trees) {
+      if ([...savedToolObjects(tree)].every((tool) => trees.has(tool))) continue;
+      trees.delete(id);
+      unread.push(names.get(id) ?? id);
+      changed = true;
+    }
   }
   return { plate: assemblePlate(rows), trees, unread };
 }

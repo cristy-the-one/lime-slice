@@ -1,6 +1,7 @@
 import {
   childWithOp,
   childrenOf,
+  closeOrder,
   dropped,
   jumped,
   newTree,
@@ -11,7 +12,9 @@ import {
   redoTarget,
   reserveId,
   savedNodes,
+  toolUser,
   undoTarget,
+  usesTree,
   visitStep,
   withChild,
   withNode,
@@ -141,8 +144,26 @@ eq("labels", [cut, hole, scale, { kind: "split", origin: [0, 0, 4.5], normal: [0
   "Fillet 3 edges r 1",
 ]);
 
+// Joins between trees ------------------------------------------------------------------------------------------------
+
+const place = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1] as [number, number, number, number, number, number, number, number, number], t: [0, 0, 0] as [number, number, number] };
+const join = (op: "fuse" | "cut" | "common", key: string, node: number, name: string): ModelOp => ({ kind: "join", op, tool: { object: key.split("#")[0]!, key, node, name }, relative: place, keepTool: false });
+eq("joins label by the tool's name as it was at Apply", [opLabel(join("cut", "split#1", 0, "telo split")), opLabel(join("fuse", "box#1", 2, "Box 1")), opLabel(join("common", "s#1", 0, "Sphere 1"))], ["Cut telo split", "Fuse Box 1", "Intersect Sphere 1"]);
+const stepRoot = { kind: "step" as const, name: "a.step", bytes: new ArrayBuffer(1) };
+const toolTree = withChild(newTree("b#1", stepRoot, "b", fp(80)), 0, { id: 1, op: hole, label: "Hole", fingerprint: fp(70) });
+const targetTree = withChild(newTree("a#1", stepRoot, "a", fp(8000)), 0, { id: 1, op: join("cut", "b#1", 1, "b"), label: "Cut b", fingerprint: fp(7990) });
+const chainTree = withChild(newTree("c#1", stepRoot, "c", fp(900)), 0, { id: 1, op: join("fuse", "a#1", 1, "a"), label: "Fuse a", fingerprint: fp(9000) });
+const all = new Map([toolTree, targetTree, chainTree].map((tree) => [tree.key, tree]));
+eq("a tool off the plate stays while a join names it, at any depth", [...reachableTrees(all, [{ id: "c", key: "c#1" }])].sort(), ["a#1", "b#1", "c#1"]);
+eq("and goes with the last join that names it", [...reachableTrees(all, [{ id: "b", key: "b#1" }])], ["b#1"]);
+eq("a history uses its tools' trees, at any depth, and its own", [usesTree(all, "c#1", "b#1"), usesTree(all, "a#1", "b#1"), usesTree(all, "b#1", "a#1"), usesTree(all, "a#1", "a#1")], [true, true, false, true]);
+eq("the join that keeps a tool's step", [toolUser(all, "b#1", new Set([1]))?.label, toolUser(all, "b#1", new Set([0])), toolUser(all, "a#1", new Set([0, 1]))?.label], ["Cut b", null, "Fuse a"]);
+eq("trees close each before its tools", closeOrder(all, ["b#1", "a#1", "c#1"]), ["c#1", "a#1", "b#1"]);
+eq("a tree not closing changes nothing", closeOrder(all, ["b#1", "a#1"]), ["a#1", "b#1"]);
+eq("a join is saved as its op, ready to replay", savedNodes(targetTree).map((node) => node.op.kind), ["join"]);
+
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);
 }
-console.log("model tree: path, branch, redo, drop, visit step ok");
+console.log("model tree: path, branch, redo, drop, visit step, joins ok");

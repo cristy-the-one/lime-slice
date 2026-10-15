@@ -2,8 +2,9 @@
  * Model mode's toolbar, the tool that is open, and the ghost that follows its numbers.
  * Apply still lives in `app/model.ts`. This file only decides what is on screen.
  */
-import { Box, CircleDot, Cone, Cylinder, Disc, Download, Focus, Globe, Grid3x3, Hexagon, Move3d, Plus, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Torus, Triangle, TriangleRight, Undo2, createElement, type IconNode } from "lucide";
+import { Box, Boxes, CircleDot, Cone, Cylinder, Disc, Download, Focus, Globe, Grid3x3, Hexagon, Move3d, Plus, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Torus, Triangle, TriangleRight, Undo2, createElement, type IconNode } from "lucide";
 import type { HandleDrag, ModelGhost } from "../model-view";
+import type { ContextPart } from "../model-context";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type ModelTool, type Vec3 } from "../model-drag";
 import type { PlaceFields } from "../model-space";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
@@ -47,6 +48,17 @@ interface ModelChromeHooks {
   newSolidAt(spec: PrimitiveSpec): PrimitiveSpec;
   /** New solid opened with no solid open, or its ghost outgrew the view: the view looks at where the new one lands. */
   frameNewSolid(spec: PrimitiveSpec): void;
+  /** The plate objects a Boolean with an object can take as its tool: the other solids, never a mesh or surfaces. */
+  joinChoices(): JoinChoice[];
+  /** Object `id`'s plate mesh where it sits in model space, for its ghost. */
+  joinGhost(id: string): ContextPart | null;
+  /** A grey object was clicked that cannot be the tool: say why. */
+  notATool(id: string): void;
+}
+
+interface JoinChoice {
+  id: string;
+  name: string;
 }
 
 /** A typed or scrubbed number ends its step once it rests; a drag holds its step open until the pointer lets go. */
@@ -86,6 +98,11 @@ const RADIUS_LABELS: Partial<Record<PrimitiveKind, string>> = { cone: "Bottom ra
 
 let hooks: ModelChromeHooks | null = null;
 let tool: ModelTool | null = null;
+/** The primitive picked last, for Boolean and New solid alike, and whether Boolean is on another object instead. */
+let primKind: PrimitiveKind = "box";
+let withObject = false;
+/** The plate object a Boolean with an object takes as its tool, once one is picked. */
+let joinTool: string | null = null;
 let picks: ModelPickRef[] = [];
 let probe: ProbeView = null;
 /** False for surfaces with no closed solid: only Measure runs on them. */
@@ -127,10 +144,11 @@ export function mountModelChrome(next: ModelChromeHooks) {
   for (const entry of TOOLS) iconize(`#modelTool${entry.label}`, entry.icon);
   document.querySelectorAll<HTMLButtonElement>("#modelPrim [data-kind]").forEach((button) => {
     const kind = button.dataset.kind;
-    if (!isPrimitiveKind(kind) || button.querySelector(".ico")) return;
+    if (button.querySelector(".ico") || !(isPrimitiveKind(kind) || kind === "object")) return;
     // The name is the button's label and tip; the row shows the icons.
-    button.replaceChildren(createElement(PRIMITIVE_ICONS[kind], { width: 18, height: 18, "aria-hidden": "true", class: "ico" }));
+    button.replaceChildren(createElement(kind === "object" ? Boxes : PRIMITIVE_ICONS[kind], { width: 18, height: 18, "aria-hidden": "true", class: "ico" }));
   });
+  primKind = primitiveFromRow();
   iconize("#modelStep", Download);
   iconize("#modelUndo", Undo2);
   iconize("#modelRedo", Redo2);
@@ -156,8 +174,11 @@ export function mountModelChrome(next: ModelChromeHooks) {
     }
     const op = target?.closest<HTMLButtonElement>("#modelFuse, #modelCut, #modelCommon");
     if (op) setBoolOp(op.id);
+    const object = target?.closest<HTMLButtonElement>("#modelObjects [data-object]")?.dataset.object;
+    if (object) pickJoinTool(object);
     const kind = target?.closest<HTMLButtonElement>("#modelPrim [data-kind]")?.dataset.kind;
     if (isPrimitiveKind(kind)) setPrimitive(kind, false);
+    if (kind === "object") setWithObject(true);
     const across = target?.closest<HTMLButtonElement>("#modelCorners, #modelFlats");
     if (across) setAcross(across.id === "modelFlats");
     const plane = target?.closest<HTMLButtonElement>("#modelPlaneModes [data-plane]");
@@ -182,8 +203,12 @@ export function mountModelChrome(next: ModelChromeHooks) {
     hooks?.paramsChanged(true);
   });
   document.querySelector("#modelPrim")?.addEventListener("keydown", (ev) => onPrimKey(ev as KeyboardEvent));
+  document.querySelector("#modelObjects")?.addEventListener("keydown", (ev) => onObjectKey(ev as KeyboardEvent));
   bindScrub();
   fx.model?.onHandleDrag(onHandleDrag);
+  fx.model?.onObjectPick((id: string) => {
+    if (!pickJoinTool(id)) hooks?.notATool(id);
+  });
   window.addEventListener("keydown", onEnter, true);
   syncFields();
   refreshTools();
@@ -280,13 +305,18 @@ function toggleTool(next: ModelTool) {
     applySplitDefaults();
   }
   if (next === "hole") applyHoleDefaults();
+  // Keep the tool object is asked per op: it opens off.
+  if (next === "boolean") resetKeepTool();
   if (next === "measure") applyMeasureDefaults();
   // Place moves as it goes, so its button only closes the tool.
   const cancel = document.querySelector("#modelCancel");
   if (cancel) cancel.textContent = next === "place" ? "Done" : "Cancel";
   const apply = document.querySelector("#modelApply");
   if (apply) apply.textContent = next === "create" ? "Create" : "Apply";
+  paintPrimRow();
   syncFields();
+  renderJoinChoices();
+  fx.model?.setObjectPicking(joinOpen());
   syncPlaceFields();
   refreshTools();
   refreshApply();
@@ -309,9 +339,128 @@ function closeTool() {
   document.querySelector("#modelPanel")?.toggleAttribute("hidden", true);
   probe = null;
   refreshNote();
+  fx.model?.setObjectPicking(false);
   fx.model?.setGhost(null);
   fx.model?.setHandles([]);
   hooks?.paramsChanged();
+}
+
+/** Boolean is open on another object rather than a primitive. */
+export function joinOpen(): boolean {
+  return tool === "boolean" && withObject;
+}
+
+/** The object Boolean takes as its tool, while it is open on an object and one is picked. */
+export function joinPick(): string | null {
+  return joinOpen() ? joinTool : null;
+}
+
+/** Shift+G: Boolean, on another object. */
+export function openJoinTool() {
+  if (tool !== "boolean") document.querySelector<HTMLButtonElement>("#modelToolBoolean:not(:disabled)")?.click();
+  if (tool === "boolean") setWithObject(true);
+}
+
+/** The primitive row's choice: a primitive, or Object, last in the row and Boolean's only, so the panel gains no row. */
+function paintPrimRow() {
+  const object = joinOpen();
+  document.querySelector("#modelPrim")?.setAttribute("aria-label", tool === "boolean" ? "Combine with" : "Primitive");
+  document.querySelectorAll<HTMLButtonElement>("#modelPrim [data-kind]").forEach((button) => {
+    const on = button.dataset.kind === "object" ? object : !object && button.dataset.kind === primKind;
+    button.setAttribute("aria-checked", on ? "true" : "false");
+    button.tabIndex = on ? 0 : -1;
+  });
+}
+
+/** What Boolean combines the solid with: another object, or the primitive picked last. The other's fields hide. */
+function setWithObject(on: boolean) {
+  withObject = on;
+  paintPrimRow();
+  syncFields();
+  renderJoinChoices();
+  fx.model?.setObjectPicking(joinOpen());
+  refreshApply();
+  refreshNote();
+  refreshGhost();
+  hooks?.paramsChanged();
+}
+
+/** Keep the tool object goes back off. */
+export function resetKeepTool() {
+  const keep = document.querySelector<HTMLInputElement>("#modelKeepTool");
+  if (keep) keep.checked = false;
+}
+
+/** Take object `id` as the tool: from the list, or a click on it in the view. False when it is not on offer. */
+function pickJoinTool(id: string): boolean {
+  if (!joinOpen() || !hooks?.joinChoices().some((choice) => choice.id === id)) return false;
+  joinTool = id;
+  renderJoinChoices();
+  refreshApply();
+  refreshNote();
+  refreshGhost();
+  hooks?.paramsChanged();
+  return true;
+}
+
+/** The plate changed: the list follows it, and a tool no longer on offer is no longer picked. */
+export function refreshJoinChoices() {
+  if (!joinOpen()) return;
+  const before = joinTool;
+  renderJoinChoices();
+  if (before === joinTool) return;
+  refreshApply();
+  refreshNote();
+  refreshGhost();
+  hooks?.paramsChanged();
+}
+
+function renderJoinChoices() {
+  const list = document.querySelector<HTMLElement>("#modelObjects");
+  if (!list || !joinOpen()) return;
+  const choices = hooks?.joinChoices() ?? [];
+  if (joinTool && !choices.some((choice) => choice.id === joinTool)) joinTool = null;
+  // An empty list is a sentence, not a group of choices.
+  if (choices.length > 0) list.setAttribute("role", "radiogroup");
+  else list.removeAttribute("role");
+  if (choices.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "model-objects-empty";
+    empty.textContent = "No other solid on the plate.";
+    list.replaceChildren(empty);
+    return;
+  }
+  const focused = document.activeElement instanceof HTMLElement && list.contains(document.activeElement) ? document.activeElement.dataset.object : undefined;
+  const first = joinTool ?? choices[0]!.id;
+  list.replaceChildren(
+    ...choices.map((choice) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "model-object";
+      button.setAttribute("role", "radio");
+      button.dataset.object = choice.id;
+      button.dataset.tip = choice.name;
+      button.setAttribute("aria-checked", choice.id === joinTool ? "true" : "false");
+      button.tabIndex = choice.id === first ? 0 : -1;
+      button.textContent = choice.name;
+      return button;
+    }),
+  );
+  if (focused) list.querySelector<HTMLElement>(`[data-object="${CSS.escape(focused)}"]`)?.focus();
+}
+
+/** Arrow keys move along the list and pick, as in any radio group. */
+function onObjectKey(ev: KeyboardEvent) {
+  const buttons = [...document.querySelectorAll<HTMLButtonElement>("#modelObjects [data-object]")];
+  const at = buttons.findIndex((button) => button === document.activeElement);
+  const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1, Home: -at, End: buttons.length - 1 - at }[ev.key];
+  if (step === undefined || at < 0) return;
+  ev.preventDefault();
+  const next = buttons[(at + step + buttons.length) % buttons.length];
+  const id = next?.dataset.object;
+  if (!id) return;
+  pickJoinTool(id);
+  document.querySelector<HTMLElement>(`#modelObjects [data-object="${CSS.escape(id)}"]`)?.focus();
 }
 
 function setBoolOp(id: string) {
@@ -326,10 +475,13 @@ function setBoolOp(id: string) {
 
 function syncFields() {
   const kind = primitiveKind();
+  const withMode = withObject ? "object" : "primitive";
   document.querySelectorAll<HTMLElement>("#modelPanel [data-for]").forEach((node) => {
     const forOk = !!tool && (node.dataset.for ?? "").split(" ").includes(tool);
     const primOk = !node.dataset.prim || node.dataset.prim.split(" ").includes(kind);
-    node.toggleAttribute("hidden", !(forOk && primOk));
+    // Only Boolean asks what it combines with: New solid and Hole show their fields whatever Boolean has picked.
+    const withOk = !node.dataset.with || tool !== "boolean" || node.dataset.with === withMode;
+    node.toggleAttribute("hidden", !(forOk && primOk && withOk));
   });
   const radius = RADIUS_LABELS[kind] ?? "Radius";
   setLabel("#modelRadiusLabel", "#modelRadius", radius);
@@ -343,8 +495,13 @@ function setLabel(labelId: string, inputId: string, text: string, aria = text) {
   document.querySelector(inputId)?.setAttribute("aria-label", aria);
 }
 
-/** The primitive the picker has on, for Boolean and New solid alike. */
+/** The primitive picked last, for Boolean and New solid alike. */
 function primitiveKind(): PrimitiveKind {
+  return primKind;
+}
+
+/** The primitive the row starts with checked. */
+function primitiveFromRow(): PrimitiveKind {
   const kind = document.querySelector<HTMLElement>('#modelPrim [aria-checked="true"]')?.dataset.kind;
   return isPrimitiveKind(kind) ? kind : "box";
 }
@@ -374,14 +531,19 @@ export function fieldPrimitive(): PrimitiveSpec {
   );
 }
 
-/** Pick a primitive. From the keyboard, focus follows, as in any radio group. */
+/** Pick a primitive, which is also what Boolean combines with from then on. From the keyboard, focus follows, as in any radio group. */
 function setPrimitive(kind: PrimitiveKind, focus: boolean) {
-  document.querySelectorAll<HTMLButtonElement>("#modelPrim [data-kind]").forEach((button) => {
-    const on = button.dataset.kind === kind;
-    button.setAttribute("aria-checked", on ? "true" : "false");
-    button.tabIndex = on ? 0 : -1;
-    if (on && focus) button.focus();
-  });
+  const wasObject = joinOpen();
+  primKind = kind;
+  withObject = false;
+  paintPrimRow();
+  if (focus) document.querySelector<HTMLElement>(`#modelPrim [data-kind="${kind}"]`)?.focus();
+  if (wasObject) {
+    renderJoinChoices();
+    fx.model?.setObjectPicking(false);
+    refreshApply();
+    refreshNote();
+  }
   syncFields();
   refreshGhost();
   keepNewSolidInView();
@@ -389,14 +551,19 @@ function setPrimitive(kind: PrimitiveKind, focus: boolean) {
 }
 
 function onPrimKey(ev: KeyboardEvent) {
-  const kinds = [...document.querySelectorAll<HTMLElement>("#modelPrim [data-kind]")].map((button) => button.dataset.kind);
-  const at = kinds.indexOf(primitiveKind());
+  const kinds = [...document.querySelectorAll<HTMLElement>("#modelPrim [data-kind]:not([hidden])")].map((button) => button.dataset.kind);
+  const at = kinds.indexOf(joinOpen() ? "object" : primitiveKind());
   const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1, Home: -at, End: kinds.length - 1 - at }[ev.key];
   if (step === undefined) return;
   const next = kinds[(at + step + kinds.length) % kinds.length];
-  if (!isPrimitiveKind(next)) return;
+  if (next !== "object" && !isPrimitiveKind(next)) return;
   ev.preventDefault();
-  setPrimitive(next, true);
+  if (isPrimitiveKind(next)) {
+    setPrimitive(next, true);
+    return;
+  }
+  setWithObject(true);
+  document.querySelector<HTMLElement>("#modelWithObject")?.focus();
 }
 
 function setAcross(flats: boolean) {
@@ -512,7 +679,7 @@ function refreshTools() {
 function refreshApply() {
   const button = document.querySelector<HTMLButtonElement>("#modelApply");
   if (!button) return;
-  button.disabled = waiting || !tool || !modelApplyReady(
+  button.disabled = waiting || !tool || (joinOpen() && !joinTool) || !modelApplyReady(
     tool,
     picks,
     num("#modelFactor"),
@@ -539,6 +706,8 @@ function refreshNote() {
     text = "From where it started, turning about its centre. The plate does not move.";
   } else if (tool === "create") {
     text = state.plate.objects.length === 0 ? "Lands at the origin, on Z 0." : "Lands beside the other objects, as a new object.";
+  } else if (joinOpen() && !joinTool) {
+    text = (hooks?.joinChoices().length ?? 0) > 0 ? "Pick the tool: click a grey object, or one in the list." : "";
   } else if (isProbed(tool)) {
     const axis = tool === "hole" ? (hooks?.holeAxis() ?? [0, 0, -1]) : null;
     const down = axis != null && Math.abs(axis[0]) < 1e-6 && Math.abs(axis[1]) < 1e-6 && axis[2] < -0.9;
@@ -561,7 +730,8 @@ function refreshGhost() {
     return;
   }
   view.setGhost(ghostFor(tool));
-  view.setHandles(handlesFor(tool, dragContext()));
+  // The tool object is moved by Place, on its own; nothing here drags it.
+  view.setHandles(joinOpen() ? [] : handlesFor(tool, dragContext()));
 }
 
 function dragContext(): DragContext {
@@ -662,6 +832,10 @@ function meshFor(spec: PrimitiveSpec): Float32Array {
 }
 
 function ghostFor(current: ModelTool): ModelGhost | null {
+  if (joinOpen()) {
+    const part = joinTool ? hooks?.joinGhost(joinTool) : null;
+    return part ? { kind: "object", ...part } : null;
+  }
   if (current === "boolean" || current === "create") {
     const typed = fieldPrimitive();
     const spec = current === "create" ? hooks?.newSolidAt(typed) ?? typed : typed;

@@ -2,7 +2,7 @@
  * The History panel as data: one row per node of a Model history tree, laid out as a git graph,
  * and what each key does in it. No DOM here; `ui/model-history.ts` draws the rows.
  */
-import { ROOT, childrenOf, pathTo, subtree, type ModelNode, type ModelTree, type NodeId } from "./model-tree.ts";
+import { ROOT, childrenOf, pathTo, subtree, toolUser, type ModelNode, type ModelTree, type NodeId } from "./model-tree.ts";
 
 /** Where a row sits against the shown node: before it on its path, it, after it on the branch Redo follows, or elsewhere. */
 export type RowState = "past" | "current" | "redo" | "other";
@@ -149,8 +149,11 @@ export function historyLayout(tree: ModelTree, keep?: ReadonlyMap<NodeId, NodeId
   return { rows, lanes, main };
 }
 
-/** Why a branch cannot be deleted, in plain words, or null when it can. Mirrors `dropped`. */
-export function dropRefusal(tree: ModelTree, id: NodeId): string | null {
+/**
+ * Why a branch cannot be deleted, in plain words, or null when it can. Mirrors `dropped`, and with every tree in
+ * `trees` also keeps a step that another tree's join takes as its tool, as the engine's `drop` does.
+ */
+export function dropRefusal(tree: ModelTree, id: NodeId, trees: ReadonlyMap<string, ModelTree> = new Map()): string | null {
   const node = tree.nodes.get(id);
   if (!node) return "This step is no longer in the history.";
   if (node.parent === null) return tree.root.kind === "primitive" ? "The primitive this solid started as begins the history and stays." : "The opened file starts the history and stays.";
@@ -159,6 +162,8 @@ export function dropRefusal(tree: ModelTree, id: NodeId): string | null {
   if (gone.has(tree.committed)) return "The plate still holds a step on this branch.";
   if ([...gone].some((at) => tree.nodes.get(at)?.mesh)) return "The plate held a step on this branch, and Prepare undo can bring it back.";
   if ([...gone].some((at) => tree.nodes.get(at)?.piece)) return "A split on this branch made a part of its own.";
+  const user = toolUser(trees, tree.key, gone);
+  if (user) return `“${user.name ?? user.label}” in another part's history uses a step on this branch as its tool.`;
   return null;
 }
 

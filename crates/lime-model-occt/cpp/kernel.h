@@ -90,6 +90,15 @@ TopoDS_Shape build_boolean(
     const PrimitiveSpec& tool,
     double& volume,
     std::string& error);
+/// Another solid, placed by a rigid matrix, fused with, cut from, or intersected with `current`.
+/// `place` is the 3×3 turn row by row, then the move: twelve numbers.
+TopoDS_Shape build_join(
+    const TopoDS_Shape& current,
+    const TopoDS_Shape& tool,
+    const std::string& which,
+    const double* place,
+    double& volume,
+    std::string& error);
 /// `before` is the volume of `current`; `volume` gets the result's.
 TopoDS_Shape build_hole(
     const TopoDS_Shape& current,
