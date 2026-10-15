@@ -15,6 +15,7 @@ import { KLIPPER_NUMBERS, type PrinterProfile } from "./profiles.ts";
 import type { LayerAction } from "./layer-actions.ts";
 import type { PresetSettings } from "./presets.ts";
 import { readPresetSettings } from "./presets.ts";
+import { fanDefaults, readFan, type FanSettings } from "./fan.ts";
 import { fnv1aHex } from "./slice-action.ts";
 import { base64ToBytes, bytesToBase64 } from "./base64.ts";
 import { parseOverrides, type OverrideDocument } from "./overrides.ts";
@@ -53,6 +54,9 @@ export interface ProjectPlacement {
  * Version 1 is one mesh. Version 2 keeps that mesh as the first object and adds `objects`.
  * Support edits keep birth sites, not walk ids.
  */
+/** A project's printer. One saved before fan settings has no fan, and opens with the active filament's. */
+export type ProjectProfile = Omit<PrinterProfile, keyof FanSettings> & Partial<FanSettings>;
+
 export interface LimeProject {
   version: 1 | 2;
   mesh: ProjectMesh;
@@ -60,7 +64,7 @@ export interface LimeProject {
   settings: PresetSettings;
   /** Written as null since presets became profiles. Kept so older files still read. */
   preset: string | null;
-  profile: PrinterProfile;
+  profile: ProjectProfile;
   level: SettingsLevel;
   supportEdits: EditEntry[];
   /** Present only when the user added a height range or a modifier volume. */
@@ -555,11 +559,11 @@ const PROFILE_NUMBERS = [
   "linearAdvance",
 ] as const;
 
-function readProfile(value: unknown): PrinterProfile | string {
+function readProfile(value: unknown): ProjectProfile | string {
   if (!value || typeof value !== "object" || Array.isArray(value)) return "This project file is incomplete.";
   const row = value as Record<string, unknown>;
   if (typeof row.name !== "string" || !row.name.trim()) return "This project file is incomplete.";
-  const profile = { name: row.name } as PrinterProfile;
+  const profile = { name: row.name } as ProjectProfile;
   for (const key of PROFILE_NUMBERS) {
     if (!finite(row[key])) return "This project file is incomplete.";
     profile[key] = row[key] as number;
@@ -568,6 +572,8 @@ function readProfile(value: unknown): PrinterProfile | string {
   for (const key of Object.keys(KLIPPER_NUMBERS) as (keyof typeof KLIPPER_NUMBERS)[]) {
     profile[key] = finite(row[key]) && (row[key] as number) >= 0 ? (row[key] as number) : KLIPPER_NUMBERS[key];
   }
+  // A project that saved a fan saved all of it; a support fan it left out follows the fan.
+  if (finite(row.fanPercent)) Object.assign(profile, readFan(row, fanDefaults("")));
   return profile;
 }
 

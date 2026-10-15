@@ -323,3 +323,35 @@ fn belt_contact_walls_stay_off() {
     );
     assert!(walls.contains(&51), "the free wall is at 20%: {walls:?}");
 }
+
+#[test]
+fn the_speed_toughness_slider_no_longer_moves_a_set_fan() {
+    let weighed = |toughness: f64, profile: &PrinterProfile| {
+        let gcode = slice_configured(
+            &ledge(),
+            &BlendMode::Weight { toughness },
+            profile,
+            &SliceSettings {
+                include_preview: false,
+                ..trees()
+            },
+        )
+        .expect("slice")
+        .gcode;
+        fans_of(&beads(&gcode), |b| b.layer >= 2)
+    };
+    let unset = PrinterProfile::default();
+    assert_ne!(
+        weighed(0.0, &unset),
+        weighed(1.0, &unset),
+        "without a set fan the slider sets it"
+    );
+    let set = fans(Some(20), Some(100), None, Some(1));
+    for toughness in [0.0, 0.5, 1.0] {
+        assert_eq!(
+            weighed(toughness, &set),
+            vec![51, 255],
+            "toughness {toughness}"
+        );
+    }
+}

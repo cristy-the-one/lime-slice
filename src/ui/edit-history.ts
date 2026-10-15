@@ -34,6 +34,12 @@ export interface ProfileSnap {
   maxVelocity?: number;
   maxZVelocity?: number;
   maxZAccel?: number;
+  /** The filament fan. Absent on snaps from before fan settings. */
+  fanPercent?: number;
+  overhangFanPercent?: number;
+  fanOffLayers?: number;
+  /** `null` while supports follow the fan. */
+  supportFanPercent?: number | null;
 }
 
 export interface MachineSnap {

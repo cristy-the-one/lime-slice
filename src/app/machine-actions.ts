@@ -30,6 +30,7 @@ import {
   setActiveFirmware,
   setActiveFirmwareArcs,
   setAdvance,
+  setFan,
   setFlow,
   setGcode,
   setHeatLimits,
@@ -126,6 +127,12 @@ export function noteNozzleTemp(temp: number) {
   state.profile.nozzleTemp = next;
   saveProfile(state.profile);
   paintHeat(library);
+}
+
+/** A fan field changed `state.profile`: the active filament keeps it, as it keeps a temperature edit. */
+export function noteFan() {
+  storeMachineLibrary(setFan(loadMachineLibrary(), state.profile));
+  saveProfile(state.profile);
 }
 
 export function noteAdvance(pressure: number, linear: number) {

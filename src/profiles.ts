@@ -1,4 +1,7 @@
-export interface PrinterProfile {
+import { fanDefaults, type FanSettings } from "./fan.ts";
+
+/** What a slice sends as `printer`. The fan comes from the filament, as the temperatures do. */
+export interface PrinterProfile extends FanSettings {
   name: string;
   nozzleDiameter: number;
   filamentDiameter: number;
@@ -55,6 +58,7 @@ export function defaultProfile(): PrinterProfile {
     pressureAdvance: 0,
     linearAdvance: 0,
     ...KLIPPER_NUMBERS,
+    ...fanDefaults("PLA"),
   };
 }
 

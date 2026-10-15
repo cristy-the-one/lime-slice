@@ -14,6 +14,7 @@ import { coerceBelt, defaultBelt, type BeltSettings, type PrinterKind } from "..
 import { KLIPPER_NUMBERS, type KlipperLimits, type PrinterProfile } from "../profiles.ts";
 import { ADVANCE, firmwareTakesArcs, type Firmware, type Rules } from "../settings-rules.ts";
 import { coerceHostKind, type MoonrakerConfigImport, type PrinterHostKind } from "./prusa-link.ts";
+import { fanDefaults, fanOf, readFan, type FanSettings } from "../fan.ts";
 
 export const MACHINE_FILE_VERSION = 3;
 
@@ -59,7 +60,8 @@ export interface PrinterRecord extends KlipperLimits {
   belt: BeltSettings;
 }
 
-export interface FilamentRecord {
+/** A filament's fan travels with it the way its temperatures do. A file without the keys reads its material's. */
+export interface FilamentRecord extends FanSettings {
   id: string;
   name: string;
   builtin: boolean;
@@ -267,6 +269,7 @@ export function enginePrinter(printer: PrinterRecord, filament: FilamentRecord, 
     pressureAdvance: advanceFor(filament.pressureAdvance, nozzleMm),
     linearAdvance: advanceFor(filament.linearAdvance, nozzleMm),
     ...klipperLimits(printer),
+    ...fanOf(filament),
   };
 }
 
@@ -403,6 +406,19 @@ export function setNozzleTemp(library: MachineLibrary, temp: number): MachineLib
   return {
     ...library,
     filaments: library.filaments.map((filament) => filament.id === library.filamentId ? { ...filament, nozzleTemp: safe } : filament),
+  };
+}
+
+/** The active filament's fan, as a per-print change saves it, the way `setNozzleTemp` saves a temperature. */
+export function setFan(library: MachineLibrary, fan: FanSettings): MachineLibrary {
+  const next = fanOf(fan);
+  return {
+    ...library,
+    filaments: library.filaments.map((filament) => {
+      if (filament.id !== library.filamentId) return filament;
+      const { supportFanPercent: _support, ...rest } = filament;
+      return { ...rest, ...next };
+    }),
   };
 }
 
@@ -678,6 +694,7 @@ export function adoptProfile(library: MachineLibrary, profile: PrinterProfile, p
     pressureAdvance: { [key]: profile.pressureAdvance },
     linearAdvance: { [key]: profile.linearAdvance },
     flow: 1,
+    ...fanOf(profile),
   };
   return {
     ...library,
@@ -922,6 +939,7 @@ function stripFilament(filament: FilamentRecord): MachineFile["filament"] {
     pressureAdvance: { ...filament.pressureAdvance },
     linearAdvance: { ...filament.linearAdvance },
     flow: filament.flow,
+    ...fanOf(filament),
   };
 }
 
@@ -1059,6 +1077,7 @@ function filament(
     pressureAdvance,
     linearAdvance: { "0.4": 0, "0.6": 0, "0.8": 0 },
     flow: 1,
+    ...fanDefaults(material),
   };
 }
 
@@ -1278,6 +1297,7 @@ function readFilamentBody(value: unknown): Omit<FilamentRecord, "id" | "builtin"
     linearAdvance,
     flow: readFlow(row.flow),
     ...retract,
+    ...readFan(row, fanDefaults(row.material)),
   };
 }
 

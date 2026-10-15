@@ -16,10 +16,11 @@ import { ironingFlowPercent, ironingSpacingMax, readIroningFlowPercent, readIron
 import { readFuzzyPointDistance, readFuzzyThickness } from "../fuzzy-skin.ts";
 import { saveAutoSlice } from "../auto-slice-pref.ts";
 import { SUPPORT_MODES, supportModeOf, supportModeState, type SupportMode } from "../support-source.ts";
+import { fanLayersValue, fanPercentValue, MAX_FAN_OFF_LAYERS } from "../fan.ts";
 
 export type Settings = typeof state;
 export type Tier = SettingsLevel;
-export type GroupId = "strategy" | "objects" | "quality" | "walls" | "infill" | "speed" | "supports" | "printer" | "calibrate" | "gear";
+export type GroupId = "strategy" | "objects" | "quality" | "walls" | "infill" | "speed" | "cooling" | "supports" | "printer" | "calibrate" | "gear";
 
 /** What a control's options or limits may depend on. */
 export interface SchemaContext {
@@ -58,6 +59,8 @@ export interface ControlSpec {
   preset?: keyof PresetSettings;
   get?: (s: Settings) => number | boolean | string;
   set?: (s: Settings, value: number | boolean | string) => void;
+  /** A number field that may be left empty: `get` returns "" and the box shows this. An emptied box sets "". */
+  placeholder?: (s: Settings) => string;
   /** A change shows or hides other controls, so the panel is rendered again. */
   structural?: boolean;
 }
@@ -161,6 +164,13 @@ export const GROUPS: GroupSpec[] = [
     tier: "simple",
     accent: "--group-speed",
     summary: (s) => `${s.featureSpeeds ? "per feature" : "one speed"}${s.zHop !== "blend" && s.zHop !== "off" ? " · z-hop" : ""}`,
+  },
+  {
+    id: "cooling",
+    title: "Cooling",
+    tier: "simple",
+    accent: "--group-cooling",
+    summary: (s) => `fan ${s.profile.fanPercent}% · overhang ${s.profile.overhangFanPercent}%`,
   },
   {
     id: "supports",
@@ -481,7 +491,7 @@ export const CONTROLS: ControlSpec[] = [
     kind: num(0, 100, 1),
     parent: "overhang",
     when: (s) => s.overhangControl,
-    tip: "0 keeps the layer fan, with bridges at full fan on layers that use the path fan. A percent holds that fan on the bridge, then the next path restores the layer fan.",
+    tip: "0 keeps Overhang fan % on bridges. A percent holds that fan on the bridge, even on a layer whose fan is off, then the next path restores the layer fan.",
     keywords: "bridge fan cooling",
   }),
   bound("arcFit", { id: "arcs", label: "Arc fit (G2/G3)", group: "speed", tier: "advanced", kind: check, rule: "arcFit", keywords: "curves gcode arcs g2 g3" }),
@@ -523,6 +533,58 @@ export const CONTROLS: ControlSpec[] = [
   }),
   bound("retractLength", { id: "retractlen", label: "Retract length mm", group: "speed", tier: "expert", kind: num(0, 5, 0.05), parent: "retractset", when: (s) => s.retractOn, keywords: "retraction" }),
   bound("retractSpeed", { id: "retractspd", label: "Retract speed mm/s", group: "speed", tier: "expert", kind: num(5, 80, 1), parent: "retractset", when: (s) => s.retractOn, keywords: "retraction" }),
+
+  // Cooling: the filament's fan, edited per print the way its temperature is.
+  {
+    id: "fanpct",
+    label: "Fan %",
+    group: "cooling",
+    tier: "simple",
+    kind: num(0, 100, 1),
+    tip: "The part-cooling fan from the first layer it is on. On a belt printer M106 drives the side blowers, and they blow across the fresh bead on the belt. PETG wants little air; PLA takes full fan. Each filament keeps its own value, and a change here is saved to the filament.",
+    keywords: "cooling part fan m106 blower",
+    get: (s) => s.profile.fanPercent,
+    set: (s, value) => { s.profile.fanPercent = fanPercentValue(value as number); },
+  },
+  {
+    id: "ovfanpct",
+    label: "Overhang fan %",
+    group: "cooling",
+    tier: "simple",
+    kind: num(0, 100, 1),
+    when: (s) => s.overhangControl,
+    tip: "The fan on overhanging walls and on bridges, so they set before they sag. On a belt printer most of a part's layers lean, so this runs wherever a wall hangs past the one below it. Bridge fan %, when set, still wins on bridges. Support paths never get it.",
+    keywords: "cooling overhang bridge fan",
+    get: (s) => s.profile.overhangFanPercent,
+    set: (s, value) => { s.profile.overhangFanPercent = fanPercentValue(value as number); },
+  },
+  {
+    id: "supfanpct",
+    label: "Support fan %",
+    group: "cooling",
+    tier: "simple",
+    kind: num(0, 100, 1),
+    when: (s) => s.supports,
+    tip: "The fan on supports: tree branches, tips, and interface. Empty follows Fan %. Strong air on a belt printer can push thin tree branches over before they bond, so lower this for fragile trees.",
+    keywords: "cooling support tree fan fragile",
+    get: (s) => s.profile.supportFanPercent ?? "",
+    set: (s, value) => {
+      if (value === "") delete s.profile.supportFanPercent;
+      else s.profile.supportFanPercent = fanPercentValue(value as number);
+    },
+    placeholder: (s) => `${s.profile.fanPercent} (Fan %)`,
+  },
+  {
+    id: "fanoff",
+    label: "Fan off for first layers",
+    group: "cooling",
+    tier: "advanced",
+    kind: num(0, MAX_FAN_OFF_LAYERS, 1),
+    tip: "Layers printed with the fan off, so they stay warm and stick. On a belt printer these are the first layers laid on the belt, the ones that hold the part in place.",
+    keywords: "cooling first layer fan off adhesion",
+    get: (s) => s.profile.fanOffLayers,
+    set: (s, value) => { s.profile.fanOffLayers = fanLayersValue(value as number); },
+  },
 
   // Supports
   {
