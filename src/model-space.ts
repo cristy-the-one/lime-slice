@@ -9,6 +9,7 @@
  * sees them, so stored ops, replay, and saved trees never depend on where an object sits in model space.
  */
 import { eulerOrient, matMul, orientEuler, type Bounds, type Mat3 } from "./mesh-place.ts";
+import { turnCentre } from "./model-primitive.ts";
 import type { ModelOp, Vec3 } from "./model-tree.ts";
 
 /** `q = m·p + t`. A rigid pose, or a rigid pose times one uniform scale folded into `m`. */
@@ -131,7 +132,7 @@ export function posedBounds(positions: ArrayLike<number>, pose: Affine): Bounds 
 
 /**
  * A tool's op, typed in model space, in the open solid's own frame: what the engine builds and the tree stores.
- * A box or cylinder turns about its centre, so that centre goes through the pose and the turn takes the pose's
+ * A primitive turns about its centre (`turnCentre`), so that centre goes through the pose and the turn takes the pose's
  * turn. Identity returns `op` itself, so every file without a pose sends exactly the numbers typed.
  * The pose is rigid: only a Separate-shells piece of a scaled part carries a scale, and Model never opens one.
  */
@@ -142,7 +143,7 @@ export function toSolidOp(op: ModelOp, pose: Affine): ModelOp {
   switch (op.kind) {
     case "boolean": {
       if (op.primitive === "sphere" || moveOnly(back)) return { ...op, origin: point(op.origin) };
-      const half: Vec3 = op.primitive === "box" ? [op.size[0] / 2, op.size[1] / 2, op.size[2] / 2] : [0, 0, op.height / 2];
+      const half = turnCentre(op);
       const centre = point([op.origin[0] + half[0], op.origin[1] + half[1], op.origin[2] + half[2]]);
       const s = poseScale(back);
       const turned = orientEuler(matMul(back.m.map((value) => value / s) as Mat3, eulerOrient(op.turn[0], op.turn[1], op.turn[2])));
@@ -193,6 +194,24 @@ export function poseFromPlace(from: Affine, pivot: Vec3, field: keyof PlaceField
   const m = eulerOrient(fields.rx, fields.ry, fields.rz).map((entry) => entry * s) as Mat3;
   const turned = applyPose({ m, t: [0, 0, 0] }, pivot);
   return { m, t: [pivot[0] + fields.x - turned[0], pivot[1] + fields.y - turned[1], pivot[2] + fields.z - turned[2]] };
+}
+
+/**
+ * Where a new solid whose own box is `own` goes in model space: where it stands, at the origin, when model space is
+ * empty; else beside everything along +X, a gap past the last object, centred on their Y and sitting on their floor.
+ */
+export function newSolidPose(others: readonly Bounds[], own: Bounds): Affine {
+  if (others.length === 0) return IDENTITY_POSE;
+  const min: Vec3 = [Infinity, Infinity, Infinity];
+  const max: Vec3 = [-Infinity, -Infinity, -Infinity];
+  for (const box of others) {
+    for (let axis = 0; axis < 3; axis += 1) {
+      min[axis] = Math.min(min[axis]!, box.min[axis]!);
+      max[axis] = Math.max(max[axis]!, box.max[axis]!);
+    }
+  }
+  const t: Vec3 = [max[0] + DUPLICATE_GAP_MM - own.min[0], (min[1] + max[1]) / 2 - (own.min[1] + own.max[1]) / 2, min[2] - own.min[2]];
+  return { m: [...IDENTITY_POSE.m] as Mat3, t };
 }
 
 /** Where a copy of an object whose model-space box is `box` goes: beside it along X. */

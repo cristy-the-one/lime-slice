@@ -474,7 +474,7 @@ export function download(text: string, name: string) {
   URL.revokeObjectURL(a.href);
 }
 
-function openMeshPicker() {
+export function openMeshPicker() {
   document.querySelector<HTMLInputElement>("#file")?.click();
 }
 

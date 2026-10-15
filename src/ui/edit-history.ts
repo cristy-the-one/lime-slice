@@ -62,6 +62,8 @@ export interface EditSnap {
   selectedVolumeId?: string | null;
   /** Plate list and which object is selected. Absent on snaps from before the plate. */
   plate?: PlateSnap;
+  /** No mesh was loaded: the plate was empty before any file, as before Model's New solid on an empty plate. */
+  meshless?: boolean;
   /** Absent on snaps from before sequential printing, which means all-at-once. */
   printOrder?: "all-at-once" | "sequential";
   sequentialClearanceMm?: number;

@@ -3,7 +3,7 @@ import { session, state } from "./state";
 import { presetKeys } from "../presets";
 import { KLIPPER_NUMBERS, saveProfile } from "../profiles";
 import { emptyOverrides } from "../overrides";
-import { pinPlateMeshes, recallPlateMeshes, revivePlate, snapPlate } from "../plate";
+import { emptyPlate, pinPlateMeshes, recallPlateMeshes, revivePlate, snapPlate } from "../plate";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library";
 import { beltStamp, selectIn, selection, setActiveBelt, setActiveFirmware, setAdvance, setNozzleTemp, setRetract } from "../ui/machine-library";
@@ -68,6 +68,7 @@ function capture(): EditSnap {
     overrides: structuredClone(state.overrides),
     selectedVolumeId: state.selectedVolumeId,
     plate: snapPlate(state.plate),
+    ...(state.mesh ? {} : { meshless: true }),
     meshPins: pinPlateMeshes(state.plate),
     printOrder: state.printOrder,
     sequentialClearanceMm: state.sequentialClearance,
@@ -150,6 +151,12 @@ function applySnap(snap: EditSnap) {
       state.plate = revived;
       applySelectedToState(revived);
     }
+  } else if (snap.meshless) {
+    // Before Model's New solid on an empty plate: the plate is empty again. A file still being read has its mesh
+    // already, so a step taken meanwhile never empties the plate it lands on.
+    state.plate = emptyPlate();
+    state.mesh = null;
+    state.sourcePos = null;
   }
   applying = false;
   fx.applyPlace?.(true);

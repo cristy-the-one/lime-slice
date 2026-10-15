@@ -18,7 +18,7 @@ import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel.ts";
 import { pushToast } from "../ui/toasts.ts";
 import { adoptBytes, place, previewRemote, seatedPositions, stlPositions } from "./files.ts";
 import { adoptSavedTrees, captureOpenSolid, historyToSave } from "./model.ts";
-import type { SavedTree } from "../model-tree-file.ts";
+import { treeBody, type SavedTree } from "../model-tree-file.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { applyPreset, currentPreset, needsEngine, renderChrome } from "./settings.ts";
 import { session, state } from "./state.ts";
@@ -190,7 +190,8 @@ function fileObjects(trees: Awaited<ReturnType<typeof historyToSave>>["trees"]):
     const seat = meshSeat(obj.bytes);
     if (seat !== undefined) row.meshSeatMm = seat;
     const saved = trees.get(obj.id);
-    if (saved) row.modelTree = { ...saved.tree, rootStep: record(saved.rootStep.name, saved.rootStep.bytes) };
+    if (saved?.rootPrimitive) row.modelTree = { ...treeBody(saved), rootPrimitive: saved.rootPrimitive };
+    else if (saved?.rootStep) row.modelTree = { ...treeBody(saved), rootStep: record(saved.rootStep.name, saved.rootStep.bytes) };
     return row;
   });
 }
@@ -237,7 +238,8 @@ async function loadPlateObjects(objects: PlateFileObject[]) {
     }
     const root = row.modelTree?.rootStep;
     const rootBytes = root?.bytesBase64 === undefined ? null : decode({ ...root, bytesBase64: root.bytesBase64 });
-    if (row.modelTree && root && rootBytes) trees.set(row.id, { ...row.modelTree, rootStep: { name: root.name, bytes: rootBytes } });
+    if (row.modelTree?.rootPrimitive) trees.set(row.id, { ...treeBody(row.modelTree), rootPrimitive: row.modelTree.rootPrimitive });
+    else if (row.modelTree && root && rootBytes) trees.set(row.id, { ...treeBody(row.modelTree), rootStep: { name: root.name, bytes: rootBytes } });
     else if (row.modelTree) unread.push(row.name);
     rows.push({ ...row, bytes: copy, sourcePos, brepBytes });
   }

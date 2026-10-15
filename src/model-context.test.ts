@@ -68,6 +68,7 @@ sameBox("the seat comes first, then the pose", boxIn([a, placedRaised], "part", 
 
 check("the open object is never its own context", contextParts([a, b], "part").every((part) => part.id !== "part"));
 check("one object on the plate has no context", contextParts([a], "part").length === 0);
+check("with no solid open, every object is context", contextParts([a, b], null).map((part) => part.id).join() === [a, b].map((obj) => obj.id).join());
 check("an unknown open object has no context", contextParts([a, b], "missing").length === 0);
 check("a part keeps the source array it was built from", contextParts([a, b], "part")[0]?.positions === b.sourcePos);
 

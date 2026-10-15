@@ -53,6 +53,7 @@ export function modelApplyReady(
   if (tool === "fillet" || tool === "chamfer") return lastEdge(picks) != null && probeOk;
   if (tool === "scale") return scale > 0 && Math.abs(scale - 1) > 1e-9;
   if (tool === "split") return splitOk;
+  if (tool === "create") return true;
   return (tool === "boolean" || tool === "hole") && probeOk;
 }
 

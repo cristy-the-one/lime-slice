@@ -12,7 +12,6 @@
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepGProp.hxx>
-#include <BRepPrimAPI_MakeBox.hxx>
 #include <GProp_GProps.hxx>
 #include <Standard_Failure.hxx>
 #include <TopoDS.hxx>
@@ -78,6 +77,32 @@ std::unique_ptr<LimeShape> adopt(const TopoDS_Shape& result, double volume, cons
     return hold(solid, volume);
 }
 
+/// `p` is x, y, z, dx, dy, dz, radius, height, rx, ry, rz, top radius, tube radius, inner radius, top X,
+/// sides, across, and flats (non-zero for across flats), in the order `Solid::numbers` in src/tree.rs writes them.
+PrimitiveSpec spec_of(const char* kind, const double* p) {
+    PrimitiveSpec spec;
+    spec.kind = kind == nullptr ? "" : kind;
+    spec.x = p[0];
+    spec.y = p[1];
+    spec.z = p[2];
+    spec.dx = p[3];
+    spec.dy = p[4];
+    spec.dz = p[5];
+    spec.radius = p[6];
+    spec.height = p[7];
+    spec.rx = p[8];
+    spec.ry = p[9];
+    spec.rz = p[10];
+    spec.top_radius = p[11];
+    spec.tube_radius = p[12];
+    spec.inner_radius = p[13];
+    spec.top_x = p[14];
+    spec.sides = p[15];
+    spec.across = p[16];
+    spec.flats = p[17] != 0.0;
+    return spec;
+}
+
 const char* blend_failed(bool chamfer, size_t count) {
     if (chamfer) {
         return count > 1 ? "The chamfer did not fit these edges" : "The chamfer did not fit this edge";
@@ -91,19 +116,16 @@ extern "C" {
 
 void lime_tree_free(LimeShape* shape) { delete shape; }
 
-LimeShape* lime_tree_box(double x, double y, double z, char** error) {
+/// A primitive root: the solid built from its numbers, with its volume integrated once.
+LimeShape* lime_tree_primitive(const char* kind, const double* p, char** error) {
     try {
-        if (!(x > 0.0) || !(y > 0.0) || !(z > 0.0)) {
-            set_error(error, "A box needs a positive length on each side");
+        std::string message;
+        const TopoDS_Shape made = make_solid(spec_of(kind, p), message);
+        if (made.IsNull()) {
+            set_error(error, message);
             return nullptr;
         }
-        BRepPrimAPI_MakeBox box(x, y, z);
-        box.Build();
-        if (!box.IsDone()) {
-            set_error(error, "Open CASCADE did not build the box");
-            return nullptr;
-        }
-        return adopt(box.Shape(), x * y * z, "Open CASCADE did not build the box", error).release();
+        return adopt(made, volume_of(made), "Open CASCADE did not build the primitive", error).release();
     } catch (const Standard_Failure& failure) {
         set_failure(error, failure);
         return nullptr;
@@ -133,15 +155,12 @@ LimeShape* lime_tree_read_step(const char* path, char** error) {
     }
 }
 
-/// `p` is x, y, z, dx, dy, dz, radius, height, rx, ry, rz.
 LimeShape* lime_tree_boolean(const LimeShape* from, const char* op, const char* primitive, const double* p, char** error) {
     try {
         std::string message;
         const std::string which = op == nullptr ? "" : op;
         double volume = 0.0;
-        const TopoDS_Shape result = build_boolean(
-            from->held.shape, which, primitive, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], volume,
-            message);
+        const TopoDS_Shape result = build_boolean(from->held.shape, which, spec_of(primitive, p), volume, message);
         if (!message.empty()) {
             set_error(error, message);
             return nullptr;

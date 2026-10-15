@@ -26,6 +26,7 @@ export function plainModelError(message: string, tool?: string): string {
     warnedTechnical = trimmed;
     console.warn(trimmed);
   }
+  if (tool === "create") return "Could not build this solid. Try other sizes.";
   const name = tool && (MODEL_TOOLS as readonly string[]).includes(tool) ? tool : "model";
   return `Could not complete this ${name} operation on the selected geometry. Try a smaller dimension or a different face or edge.`;
 }
