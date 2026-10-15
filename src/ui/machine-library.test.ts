@@ -1,4 +1,6 @@
 import {
+  acceptsArcs,
+  setActiveFirmwareArcs,
   advanceFor,
   builtinLibrary,
   deleteActive,
@@ -348,6 +350,41 @@ check("refreshing twice changes nothing", JSON.stringify(ensureBuiltins(ensureBu
 
 const restored = ensureBuiltins(parseLibrary("nope"));
 check("a corrupt library grows the built-ins back", restored.printers.some((printer) => printer.id === "lime-220") && restored.filaments.some((filament) => filament.id === "lime-tpu"));
+
+// Firmware arcs: the IR3 V2 preset says no; the other built-ins are Klipper, so no; Marlin yes.
+{
+  const lib = builtinLibrary();
+  const byId = (l: typeof lib, id: string) => l.printers.find((p) => p.id === id)!;
+  check("the IR3 V2 preset turns firmware arcs off", byId(lib, "ideaformer-ir3-v2").firmwareArcs === false && !acceptsArcs(byId(lib, "ideaformer-ir3-v2")));
+  for (const id of ["lime-220", "lime-300", "lime-180", "generic-belt-45"]) {
+    check(`${id} is Klipper with no arcs answer, so no arcs`, byId(lib, id).firmwareArcs === undefined && !acceptsArcs(byId(lib, id)));
+  }
+  check("a Marlin printer that does not say takes arcs", acceptsArcs({ firmware: "marlin" }));
+  check("no printer is a Klipper one", !acceptsArcs(undefined));
+
+  // A library stored before the answer existed: no key on any printer.
+  const old = JSON.parse(serializeLibrary(lib)) as { printers: Record<string, unknown>[] };
+  for (const row of old.printers) delete row.firmwareArcs;
+  old.printers.push({ ...old.printers[0], id: "custom-marlin", name: "Shop Marlin", builtin: false, firmware: "marlin" });
+  const reread = parseLibrary(JSON.stringify(old));
+  check("an old stored IR3 V2 reads as no arcs", byId(reread, "ideaformer-ir3-v2").firmwareArcs === false);
+  check("an old stored Lime 220 keeps its firmware's default", byId(reread, "lime-220").firmwareArcs === undefined && !acceptsArcs(byId(reread, "lime-220")));
+  check("an old stored Marlin printer takes arcs", acceptsArcs(byId(reread, "custom-marlin")));
+
+  const ticked = setActiveFirmwareArcs(selectIn(lib, "lime-220", lib.filamentId, 0.4) as typeof lib, true);
+  check("ticking the box stores it on the active printer only", byId(ticked, "lime-220").firmwareArcs === true && byId(ticked, "lime-300").firmwareArcs === undefined);
+  check("a stored answer survives a save and a read", byId(parseLibrary(serializeLibrary(ticked)), "lime-220").firmwareArcs === true);
+
+  // Machine files: the answer travels; a file without it gets the firmware's default.
+  const ir3File = fileFromSelection(selectIn(lib, "ideaformer-ir3-v2", lib.filamentId, 0.4) as typeof lib)!;
+  const ir3Parsed = parseMachineFile(serializeMachineFile(ir3File));
+  check("an exported IR3 V2 file keeps arcs off", ir3Parsed.ok && ir3Parsed.file.printer.firmwareArcs === false);
+  const oldFile = JSON.parse(serializeMachineFile(ir3File)) as { printer: Record<string, unknown> };
+  delete oldFile.printer.firmwareArcs;
+  const oldParsed = parseMachineFile(JSON.stringify(oldFile));
+  check("an old machine file without the key loads", oldParsed.ok && oldParsed.file.printer.firmwareArcs === undefined);
+  check("and its Klipper printer gets no arcs", oldParsed.ok && !acceptsArcs(oldParsed.file.printer));
+}
 
 if (failed) {
   console.error(`${failed} failed`);

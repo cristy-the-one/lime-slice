@@ -28,6 +28,7 @@ import {
   legacySeamOnEdge,
   setActiveBelt,
   setActiveFirmware,
+  setActiveFirmwareArcs,
   setAdvance,
   setFlow,
   setGcode,
@@ -142,6 +143,14 @@ export function noteAdvance(pressure: number, linear: number) {
 export function noteFirmware(value: string) {
   noteEdit();
   storeMachineLibrary(setActiveFirmware(loadMachineLibrary(), value === "marlin" ? "marlin" : "klipper"));
+  fx.renderChrome?.();
+  fx.markStale?.();
+}
+
+/** Whether the active printer's firmware runs G2/G3. Off locks Arc fit and the slice writes no arcs. */
+export function noteFirmwareArcs(on: boolean) {
+  noteEdit();
+  storeMachineLibrary(setActiveFirmwareArcs(loadMachineLibrary(), on));
   fx.renderChrome?.();
   fx.markStale?.();
 }

@@ -10,7 +10,7 @@
 import type { state } from "../app/state.ts";
 import type { PresetSettings } from "../presets.ts";
 import type { SettingsLevel } from "../project.ts";
-import type { ControlId } from "../settings-rules.ts";
+import type { ControlId, Rules } from "../settings-rules.ts";
 import { seamOptions } from "../seam.ts";
 import { ironingFlowPercent, ironingSpacingMax, readIroningFlowPercent, readIroningSpacing, readIroningSpeed } from "../ironing.ts";
 import { readFuzzyPointDistance, readFuzzyThickness } from "../fuzzy-skin.ts";
@@ -49,7 +49,7 @@ export interface ControlSpec {
   parent?: string;
   /** Rendered only while this holds. A parent that is off hides its children. */
   when?: (s: Settings) => boolean;
-  /** Hidden when `settingsRules(...).hidden` has it. */
+  /** Hidden when `settingsRules(...).hidden` has it. Shown off and locked, with the reason as its tip, when `disabled` has it. */
   rule?: ControlId;
   tip?: string;
   /** Extra search words. The label matches on its own. */
@@ -484,7 +484,7 @@ export const CONTROLS: ControlSpec[] = [
     tip: "0 keeps the layer fan, with bridges at full fan on layers that use the path fan. A percent holds that fan on the bridge, then the next path restores the layer fan.",
     keywords: "bridge fan cooling",
   }),
-  bound("arcFit", { id: "arcs", label: "Arc fit (G2/G3)", group: "speed", tier: "advanced", kind: check, keywords: "curves gcode" }),
+  bound("arcFit", { id: "arcs", label: "Arc fit (G2/G3)", group: "speed", tier: "advanced", kind: check, rule: "arcFit", keywords: "curves gcode arcs g2 g3" }),
   bound("travelOpt", { id: "travelopt", label: "Travel and seam", group: "speed", tier: "advanced", kind: check, keywords: "order route" }),
   bound("combing", { id: "combing", label: "Hole-aware combing", group: "speed", tier: "advanced", kind: check, keywords: "travel inside walls" }),
   bound("zHop", { id: "zhop", label: "Z-hop", group: "speed", tier: "advanced", kind: select([["blend", "Blend default"], ["off", "Off"], ["smart", "Smart"], ["always", "Always"]]), rule: "zHop", structural: true, keywords: "travel lift" }),
@@ -669,6 +669,11 @@ export function keywordsOf(id: string): string {
 /** Fields of a group that render as rows (not custom slots). */
 export function fieldControls(): ControlSpec[] {
   return CONTROLS.filter((spec) => spec.kind.type !== "custom");
+}
+
+/** Why a shown control is locked off right now, or undefined when it can be edited. */
+export function lockedReason(spec: ControlSpec, rules: Pick<Rules, "disabled">): string | undefined {
+  return spec.rule ? rules.disabled.get(spec.rule) : undefined;
 }
 
 /** Controls whose change rebuilds the panel. */

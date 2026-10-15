@@ -13,6 +13,7 @@ export function currentRules(library: MachineLibrary = loadMachineLibrary()): Ru
     kind: printer?.kind ?? "cartesian",
     belt: { raftLayers: belt.raftLayers, maxLengthMm: belt.maxLengthMm },
     firmware: printer?.firmware ?? "klipper",
+    firmwareArcs: printer?.firmwareArcs,
     objects: state.plate.objects.length,
     supportMode: supportModeOf(state),
   });

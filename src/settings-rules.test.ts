@@ -1,4 +1,4 @@
-import { ADVANCE, orderFields, sequentialClearance, settingsRules, tallestLast, type PrintOrder, type RuleInput } from "./settings-rules.ts";
+import { ADVANCE, ARCS_OFF_REASON, orderFields, sequentialClearance, settingsRules, tallestLast, type PrintOrder, type RuleInput } from "./settings-rules.ts";
 
 let failed = 0;
 
@@ -88,6 +88,19 @@ check("Off keeps the overhang angle row for the next Automatic", !settingsRules(
 check("Painted only hides the overhang angle", settingsRules({ ...flat, supportMode: "paint" }).hidden.has("supportAngle"));
 eq("Painted only does not send the angle", settingsRules({ ...flat, supportMode: "paint" }).coerce(angles), { supports: true, supportStyle: "tree" });
 eq("Automatic sends the angle", settingsRules({ ...flat, supportMode: "auto" }).coerce(angles), angles);
+
+// A firmware that takes no G2/G3 locks Arc fit off and says why; the request keeps the user's choice.
+const ir3: RuleInput = { ...belt, firmwareArcs: false };
+const ir3Rules = settingsRules(ir3);
+check("the IR3 V2's firmware takes no arcs", ir3Rules.firmwareArcs === false);
+eq("Arc fit is locked with the reason", ir3Rules.disabled.get("arcFit"), "This printer's firmware doesn't accept G2/G3 arcs, so the slice writes none. Klipper needs a [gcode_arcs] section in printer.cfg; then turn on Firmware accepts arcs under Printer.");
+check("Arc fit stays shown", !ir3Rules.hidden.has("arcFit"));
+eq("the request keeps arcFit for a printer that allows it", ir3Rules.coerce({ arcFit: true, printer: { firmwareArcs: false } }), { arcFit: true, printer: { firmwareArcs: false } });
+check("Klipper that does not say takes no arcs", settingsRules(flat).firmwareArcs === false && settingsRules(flat).disabled.has("arcFit"));
+check("Klipper with [gcode_arcs] takes them", settingsRules({ ...flat, firmwareArcs: true }).firmwareArcs && settingsRules({ ...flat, firmwareArcs: true }).disabled.size === 0);
+check("Marlin that does not say takes arcs", settingsRules({ ...flat, firmware: "marlin" }).firmwareArcs && !settingsRules({ ...flat, firmware: "marlin" }).disabled.has("arcFit"));
+eq("Marlin without ARC_SUPPORT is told what to build", settingsRules({ ...flat, firmware: "marlin", firmwareArcs: false }).disabled.get("arcFit"), ARCS_OFF_REASON.marlin);
+check("the reason names [gcode_arcs] on Klipper", ARCS_OFF_REASON.klipper.includes("[gcode_arcs]"));
 
 if (failed) {
   console.error(`${failed} failed`);

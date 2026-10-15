@@ -18,7 +18,7 @@ import { formatDeg, offBed, orientEuler } from "../mesh-place";
 import { boundsSize, objectMarks, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty, sourceFrame } from "../plate";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys } from "../presets";
 import { saveProfile } from "../profiles";
-import { noteAdvance, noteFirmware, noteFlow, noteGcode, noteHeatLimits, noteRetract, setSupportMode } from "./machine-actions";
+import { noteAdvance, noteFirmware, noteFirmwareArcs, noteFlow, noteGcode, noteHeatLimits, noteRetract, setSupportMode } from "./machine-actions";
 import { currentRules } from "./rules";
 import { ADVANCE, orderFields, type Rules } from "../settings-rules";
 import { activeHeat, loadMachineLibrary } from "./machine-library";
@@ -40,6 +40,7 @@ import {
   controlsOf,
   isStructural,
   keywordsOf,
+  lockedReason,
   resolveMax,
   resolveOptions,
   shownAtLevel,
@@ -120,7 +121,8 @@ export function settingsHash() {
     .filter((obj) => !settingsEmpty(obj.settings))
     .map((obj) => `${obj.id}:${JSON.stringify(obj.settings)}`)
     .join("|");
-  const hashed = { mesh, profile: rules.coerce(profile), rest: rules.coerce(rest), ...ironing, ...fuzzy, ...reinforcement, ...retract, ...order, ...(belt ? { belt } : {}), ...(objectSettings ? { objectSettings } : {}) };
+  // The printer's firmware decides whether arcs are written, so turning it over stales a slice.
+  const hashed = { mesh, profile: rules.coerce(profile), firmwareArcs: rules.firmwareArcs, rest: rules.coerce(rest), ...ironing, ...fuzzy, ...reinforcement, ...retract, ...order, ...(belt ? { belt } : {}), ...(objectSettings ? { objectSettings } : {}) };
   if (state.plate.objects.length > 1) {
     const objectReinforce = state.plate.objects
       .map((obj) => {
@@ -559,10 +561,13 @@ function controlHtml(spec: ControlSpec, rules: Rules, ctx: SchemaContext): strin
     return body ? `<div class="slot" data-slot="${spec.id}" data-level="${spec.tier}">${body}</div>` : "";
   }
   const value = spec.get!(state);
-  const attrs = `data-level="${spec.tier}" data-label="${escapeHtml(spec.label.toLowerCase())}"${spec.keywords ? ` data-keywords="${escapeHtml(spec.keywords)}"` : ""}${tipAttr(spec.tip)}`;
-  const cls = `row setting${spec.parent ? " sub" : ""}`;
+  // A locked control shows what the slice does, not the choice it keeps for a printer that allows it.
+  const locked = lockedReason(spec, rules);
+  const attrs = `data-level="${spec.tier}" data-label="${escapeHtml(spec.label.toLowerCase())}"${spec.keywords ? ` data-keywords="${escapeHtml(spec.keywords)}"` : ""}${tipAttr(locked ?? spec.tip)}`;
+  const cls = `row setting${spec.parent ? " sub" : ""}${locked ? " is-locked" : ""}`;
   const label = `<span class="row-label">${escapeHtml(spec.label)}</span>`;
   if (spec.kind.type === "check") {
+    if (locked) return `<label class="${cls}" ${attrs}>${label}<input id="${spec.id}" type="checkbox" class="switch" role="switch" disabled aria-description="${escapeHtml(locked)}"/></label>`;
     return `<label class="${cls}" ${attrs}>${label}<input id="${spec.id}" type="checkbox" class="switch" role="switch" ${value ? "checked" : ""}/></label>`;
   }
   if (spec.kind.type === "segmented") {
@@ -1388,6 +1393,11 @@ export function onSettings(ev: Event) {
   }
   if (t.id === "machineFirmware") {
     noteFirmware(t.value);
+    markProjectDirty();
+    return;
+  }
+  if (t.id === "machineArcs" && t instanceof HTMLInputElement) {
+    noteFirmwareArcs(t.checked);
     markProjectDirty();
     return;
   }
