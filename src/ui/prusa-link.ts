@@ -56,6 +56,8 @@ export interface MoonrakerConfigImport {
     maxNozzleC?: number;
     maxBedC?: number;
   };
+  /** printer.cfg has a `[gcode_arcs]` section, so this Klipper runs G2/G3. */
+  firmwareArcs: boolean;
   summary: string;
 }
 
@@ -415,13 +417,16 @@ export function readMoonrakerConfig(status: number, text: string): MoonrakerConf
   if (limits.squareCornerVelocity !== undefined) parts.push(`SCV ${limits.squareCornerVelocity}`);
   if (geometry.bedX && geometry.bedY && geometry.bedZ) parts.push(`${geometry.bedX}×${geometry.bedY}×${geometry.bedZ} mm`);
   if (geometry.nozzleDiameter) parts.push(`${geometry.nozzleDiameter} mm nozzle`);
+  const firmwareArcs = asRecord(settings.gcode_arcs) !== null;
+  parts.push(firmwareArcs ? "arcs on ([gcode_arcs])" : "arcs off (no [gcode_arcs])");
 
   return {
     ok: true,
     config: {
       limits,
       geometry,
-      summary: `Imported printer.cfg (${parts.join(" · ") || "limits updated"})`,
+      firmwareArcs,
+      summary: `Imported printer.cfg (${parts.join(" · ")})`,
     },
   };
 }
