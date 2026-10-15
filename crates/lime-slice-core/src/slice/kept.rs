@@ -428,6 +428,10 @@ pub(super) fn keys(
         overrides: blank.overrides.clone(),
         // Walls, infill, and a speed cap change the beads, not the outline.
         object_tweak: blank.object_tweak,
+        // The fan is each bead's `M106`, never the outline or the supports grown.
+        fan_pwm: blank.fan_pwm,
+        overhang_fan_pwm: blank.overhang_fan_pwm,
+        support_fan_pwm: blank.support_fan_pwm,
         ..toolpaths.clone()
     };
     let grow = SliceSettings {

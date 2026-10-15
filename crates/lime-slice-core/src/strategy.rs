@@ -448,6 +448,9 @@ pub struct ResolvedStrategy {
     pub retract_mm: f64,
     pub retract_min_travel: f64,
     pub fan: u8,
+    /// Support, interface, and tree paths. The strategy's own `fan` unless the
+    /// request sets a fan.
+    pub support_fan: u8,
     pub skirt_loops: u32,
     /// 0 = speed, 1 = toughness. Used when a single toolpath is a mix.
     pub toughness: f64,
@@ -500,6 +503,7 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             retract_mm: 0.35,
             retract_min_travel: 4.0,
             fan: 255,
+            support_fan: 255,
             skirt_loops: 1,
             toughness: 0.0,
             lightning_range_mm: 4.0,
@@ -537,6 +541,7 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             retract_mm: 0.9,
             retract_min_travel: 1.2,
             fan: 150,
+            support_fan: 150,
             skirt_loops: 2,
             toughness: 1.0,
             lightning_range_mm: 0.0,
@@ -602,6 +607,7 @@ pub fn mix(toughness: f64) -> ResolvedStrategy {
         retract_mm: lerp(speed.retract_mm, tough.retract_mm),
         retract_min_travel: lerp(speed.retract_min_travel, tough.retract_min_travel),
         fan: lerp(speed.fan as f64, tough.fan as f64).round() as u8,
+        support_fan: lerp(speed.support_fan as f64, tough.support_fan as f64).round() as u8,
         skirt_loops: if t >= 0.5 { 2 } else { 1 },
         toughness: t,
         lightning_range_mm: range,
@@ -739,9 +745,32 @@ pub struct PrinterProfile {
     /// Klipper `max_z_accel`, mm/s². `0` adds no limit.
     #[serde(default)]
     pub max_z_accel: f64,
+    /// Part-cooling fan, percent, from the first layer the fan is on. Left
+    /// out, each strategy keeps its own fan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fan_percent: Option<u8>,
+    /// Fan on overhang spans and bridges, percent. Left out, they keep the
+    /// 86% and full-fan boost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overhang_fan_percent: Option<u8>,
+    /// Fan on support paths, percent. Left out, supports follow `fan_percent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support_fan_percent: Option<u8>,
+    /// Layers printed with the fan off. Left out, the first layer is off and
+    /// the second at half.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fan_off_layers: Option<u32>,
 }
 
 impl PrinterProfile {
+    /// Whether the request sets any of the four fan values.
+    pub fn names_fan(&self) -> bool {
+        self.fan_percent.is_some()
+            || self.overhang_fan_percent.is_some()
+            || self.support_fan_percent.is_some()
+            || self.fan_off_layers.is_some()
+    }
+
     /// Whether arcs may be written. A stock Klipper `printer.cfg` has no
     /// `[gcode_arcs]`, so Klipper skips every G2/G3 and the next G1 takes
     /// its filament at once; a Klipper printer that does not say gets none.
@@ -821,8 +850,17 @@ impl Default for PrinterProfile {
             max_velocity: 0.0,
             max_z_velocity: 0.0,
             max_z_accel: 0.0,
+            fan_percent: None,
+            overhang_fan_percent: None,
+            support_fan_percent: None,
+            fan_off_layers: None,
         }
     }
+}
+
+/// A fan percent as the PWM `M106 S` takes: 20% is 51, 100% is 255.
+pub fn fan_pwm(percent: u8) -> u8 {
+    ((u16::from(percent.min(100)) * 255) / 100) as u8
 }
 
 /// Relative pressure/linear advance by feature. Outer and top keep the full factor.
