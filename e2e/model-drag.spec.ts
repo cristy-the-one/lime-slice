@@ -190,6 +190,40 @@ test("the dock stays put through orbit, zoom, pan, a tool change, and a number t
   await expect(page.locator("#model")).not.toHaveAttribute("data-gizmo-at", /.+/);
 });
 
+for (const [width, height] of [[1440, 900], [1280, 720], [1024, 768]] as const) {
+  test(`every dock grip stays 16 px inside the canvas at ${width}×${height}, through an orbit and a zoom`, async ({ page }) => {
+    await page.setViewportSize({ width, height });
+    await openSolid(page, []);
+    const canvas = (await page.locator("#model").boundingBox())!;
+    const inside = async (what: string) => {
+      await page.waitForTimeout(300);
+      for (const [id, at] of Object.entries(await grips(page))) {
+        const room = Math.min(at.x - canvas.x, canvas.x + canvas.width - at.x, at.y - canvas.y, canvas.y + canvas.height - at.y);
+        expect(room, `${what}: ${id} is ${Math.round(room)} px from the canvas edge`).toBeGreaterThanOrEqual(16);
+      }
+    };
+    await page.locator("#modelToolBoolean").click();
+    await expect.poll(async () => Object.keys(await grips(page))).toContain("size-0");
+    if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/dock-boolean-${width}x${height}.png` });
+    await inside("the box's arrows, rings, and knobs");
+    await page.locator("#modelToolSplit").click();
+    await expect.poll(async () => Object.keys(await grips(page))).toContain("tilt-a");
+    await inside("the split's tilt rings");
+    await page.locator("#modelToolBoolean").click();
+    const start = await dock(page);
+    const empty = { x: canvas.x + canvas.width * 0.4, y: canvas.y + canvas.height * 0.85 };
+    await page.mouse.move(empty.x, empty.y);
+    await page.mouse.down();
+    await page.mouse.move(empty.x - 140, empty.y - 60, { steps: 10 });
+    await page.mouse.up();
+    await page.mouse.wheel(0, -500);
+    await page.waitForTimeout(600);
+    const after = await dock(page);
+    expect(Math.hypot(after.x - start.x, after.y - start.y), "the dock holds still").toBeLessThanOrEqual(1);
+    await inside("after an orbit and a zoom");
+  });
+}
+
 test("a boolean primitive moves, resizes, and turns from the dock, in sync with its numbers", async ({ page }) => {
   const probes: Record<string, unknown>[] = [];
   await openSolid(page, probes);

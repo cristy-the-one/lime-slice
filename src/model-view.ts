@@ -3,7 +3,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
-import { HANDLE_ARROW_TIP, HANDLE_KNOB_PICK, HANDLE_RING_RADIUS, dockNdc, gizmoRadiusForPixels } from "./gizmo-math";
+import { HANDLE_ARROW_TIP, HANDLE_KNOB_PICK, HANDLE_RING_RADIUS, dockSeat, gizmoRadiusForPixels, type DockSeat } from "./gizmo-math";
 import { boundsOf, type Bounds } from "./mesh-place";
 import type { Box } from "./measure";
 import { perspectiveMeasure } from "./measure-camera";
@@ -131,6 +131,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let running = false;
   let handleParts: HandlePart[] = [];
   const dockAt = new THREE.Vector3();
+  /** The dock's seat for the canvas size it was worked out for: it changes only when the canvas does. */
+  let seated: { width: number; height: number; seat: DockSeat } | null = null;
   let emphasis = false;
   let overHandle: string | null = null;
   let drag: ActiveDrag | null = null;
@@ -920,9 +922,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     let dockSize = 0;
     if (handleParts.some((part) => part.handle.seat.at === "dock")) {
       camera.updateMatrixWorld();
-      const { ndcX, ndcY } = dockNdc(width, HANDLE_PX);
+      if (seated?.width !== width || seated.height !== height) seated = { width, height, seat: dockSeat(width, height, camera.fov, HANDLE_PX) };
+      const { ndcX, ndcY, handlePx } = seated.seat;
       dockAt.set(ndcX, ndcY, controls.target.clone().project(camera).z).unproject(camera);
-      dockSize = gizmoRadiusForPixels(camera.position.distanceTo(dockAt), camera.fov, height, HANDLE_PX, camera.zoom);
+      dockSize = gizmoRadiusForPixels(camera.position.distanceTo(dockAt), camera.fov, height, handlePx, camera.zoom);
       const mark = dockAt.clone().project(camera);
       const text = `${Math.round((mark.x * 0.5 + 0.5) * width)},${Math.round((-mark.y * 0.5 + 0.5) * height)}`;
       if (canvas.dataset.gizmoAt !== text) canvas.dataset.gizmoAt = text;
