@@ -15,6 +15,7 @@ import type { ContextPart } from "./model-context";
 import { turnCentre, type PrimitiveSpec } from "./model-primitive";
 import { boxUnder, posedBounds, type Affine } from "./model-space";
 import { faceBoundarySegments, faceColor } from "./model-select";
+import { axesOf, isIdentityFrame, modelToLocal, type Workplane } from "./workplane";
 import { hexToThree, themeColors } from "./theme";
 import { bedForBox, fitSentence, liveBox, mountBedReference, mountStudioLights, mountViewHelper, outerMm, renderViewHelper, viewHelperHit, type BuildVolume } from "./viewport-chrome";
 
@@ -92,6 +93,10 @@ export interface ModelView {
   onObjectPick(cb: (id: string) => void): void;
   setHandles(handles: DragHandle[]): void;
   onHandleDrag(cb: (drag: HandleDrag) => void): void;
+  /** The local frame, drawn in model space. Null hides it. */
+  setWorkplane(plane: Workplane | null): void;
+  /** While on, a picked face is teal, so it is not the ordinary accent selection. */
+  setDatumPick(on: boolean): void;
 }
 
 export function createModelView(canvas: HTMLCanvasElement): ModelView {
@@ -135,7 +140,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   posed.add(body);
   const ghosts = new THREE.Group();
   const handleGroup = new THREE.Group();
-  scene.add(context, posed, ghosts, handleGroup);
+  /** The workplane datum, in model space, beside the posed solid so the solid's pose does not move it. */
+  const datum = new THREE.Group();
+  scene.add(context, posed, datum, ghosts, handleGroup);
 
   let solid: ModelSolid | null = null;
   /** The open solid's box in model space. */
@@ -156,6 +163,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let picks: ModelPick[] = [];
   let hover: ModelPick | null = null;
   let ghost: ModelGhost | null = null;
+  let datumPlane: Workplane | null = null;
+  let datumPick = false;
+  let datumColor = readDatum();
   let pickCb: (pick: ModelPick | null, shift: boolean) => void = () => {};
   let down: { x: number; y: number } | null = null;
   let running = false;
@@ -181,6 +191,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   function readAccent(): number {
     const raw = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
     return hexToThree(raw || "#a3e635");
+  }
+
+  function readDatum(): number {
+    const raw = getComputedStyle(document.documentElement).getPropertyValue("--group-objects").trim();
+    return hexToThree(raw || "#2ec4b6");
   }
 
   /**
@@ -268,19 +283,19 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const attribute = mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
     const array = attribute.array as Float32Array;
     solid.triangles.forEach((face, triangle) => {
-      const hex = faceColor(face, selected.has(face), hoverFace === face, accent);
+      const hex = faceColor(face, selected.has(face), hoverFace === face, datumPick ? datumColor : accent);
       const offset = triangle * 9;
       for (let vertex = 0; vertex < 3; vertex += 1) writeColor(hex, array, offset + vertex * 3);
     });
     attribute.needsUpdate = true;
   }
 
-  function fatLine(positions: number[], width: number, opacity: number): LineSegments2 | null {
+  function fatLine(positions: number[], width: number, opacity: number, color = accent): LineSegments2 | null {
     if (positions.length < 6) return null;
     const geometry = new LineSegmentsGeometry();
     geometry.setPositions(positions);
     const material = new LineMaterial({
-      color: accent,
+      color,
       linewidth: width,
       transparent: opacity < 1,
       opacity,
@@ -295,7 +310,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return lines;
   }
 
-  function replaceLine(current: LineSegments2 | null, positions: number[], width: number, opacity: number): LineSegments2 | null {
+  function replaceLine(current: LineSegments2 | null, positions: number[], width: number, opacity: number, color = accent): LineSegments2 | null {
     if (current) {
       body.remove(current);
       const material = current.material as LineMaterial;
@@ -303,7 +318,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       if (index >= 0) fatLines.splice(index, 1);
       disposeObject(current);
     }
-    const next = fatLine(positions, width, opacity);
+    const next = fatLine(positions, width, opacity, color);
     if (next) body.add(next);
     return next;
   }
@@ -312,7 +327,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const selectedFaces = picks.filter((pick) => pick.kind === "face").map((pick) => pick.index);
     const outline: number[] = [];
     for (const face of selectedFaces) outline.push(...(boundaries.get(face) ?? []));
-    faceOutline = replaceLine(faceOutline, outline, 2.5, 1);
+    faceOutline = replaceLine(faceOutline, outline, 2.5, 1, datumPick ? datumColor : accent);
 
     const wanted = new Set(picks.filter((pick) => pick.kind === "edge").map((pick) => pick.index));
     selectedEdges = replaceLine(selectedEdges, edgePositions(wanted), 4, 1);
@@ -886,6 +901,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       }
       paintFaces();
       measureSolid(next.positions);
+      rebuildDatum();
       rebuildGhost();
       resize();
     },
@@ -942,8 +958,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       paintBedColors();
       contextMat.color.setHex(hexToThree(colors.context));
       renderer.setClearColor(hexToThree(colors.stage), 1);
+      datumColor = readDatum();
       paintFaces();
       paintLines();
+      rebuildDatum();
       rebuildGhost();
       kick();
     },
@@ -965,7 +983,70 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     onHandleDrag(cb) {
       handleCb = cb;
     },
+    setWorkplane(plane) {
+      datumPlane = plane;
+      rebuildDatum();
+      if (plane) canvas.dataset.workplane = `${plane.source}:${plane.origin.map((value) => value.toFixed(2)).join(",")}:${plane.turn.map((value) => value.toFixed(2)).join(",")}`;
+      else delete canvas.dataset.workplane;
+      kick();
+    },
+    setDatumPick(on) {
+      if (datumPick === on && canvas.dataset.datumPick === (on ? "1" : "0")) return;
+      datumPick = on;
+      canvas.dataset.datumPick = on ? "1" : "0";
+      paintFaces();
+      paintLines();
+      kick();
+    },
   };
+
+  function clearDatum() {
+    for (const child of [...datum.children]) {
+      datum.remove(child);
+      disposeObject(child);
+    }
+  }
+
+  /** A wire rectangle in the UV plane, lifted off the surface, and a short U, V, W triad. It does not take picks. */
+  function rebuildDatum() {
+    clearDatum();
+    const plane = datumPlane;
+    if (!plane) return;
+    const [u, v, w] = axesOf(plane);
+    const span = Math.max(extent * 0.85, 18);
+    const lift = 0.35;
+    const c: Vec3 = [
+      plane.origin[0] + w[0] * lift,
+      plane.origin[1] + w[1] * lift,
+      plane.origin[2] + w[2] * lift,
+    ];
+    const corner = (su: number, sv: number) => new THREE.Vector3(
+      c[0] + u[0] * su + v[0] * sv,
+      c[1] + u[1] * su + v[1] * sv,
+      c[2] + u[2] * su + v[2] * sv,
+    );
+    const half = span / 2;
+    const corners = [corner(-half, -half), corner(half, -half), corner(half, half), corner(-half, half)];
+    const rect = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([...corners, corners[0]!]),
+      new THREE.LineBasicMaterial({ color: datumColor, depthTest: true }),
+    );
+    rect.raycast = () => undefined;
+    datum.add(rect);
+    const arm = span * 0.28;
+    const triad: [Vec3, string][] = [[u, colors.axisX], [v, colors.axisY], [w, colors.axisZ]];
+    for (const [dir, color] of triad) {
+      const line = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(c[0], c[1], c[2]),
+          new THREE.Vector3(c[0] + dir[0] * arm, c[1] + dir[1] * arm, c[2] + dir[2] * arm),
+        ]),
+        new THREE.LineBasicMaterial({ color: hexToThree(color), depthTest: true }),
+      );
+      line.raycast = () => undefined;
+      datum.add(line);
+    }
+  }
 
   function handleColor(color: DragHandle["color"]): number {
     if (color === "x") return hexToThree(colors.axisX);
@@ -1246,7 +1327,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         next = [wrapDegrees(dragValue(handle, handle.values[0] ?? 0, current.turned, snap, fine))];
       }
     } else {
-      const point = surfacePoint(x, y, snap);
+      let point = surfacePoint(x, y, snap);
+      // The hole's origin fields are local. A frame that has moved turns the model-space hit into U, V, W. The global frame leaves the hit as the view measured it.
+      if (point && handle.id === "hole-origin" && datumPlane && !isIdentityFrame(datumPlane)) point = modelToLocal(datumPlane, point);
       const places = fine ? 100 : 10;
       if (point) next = point.map((value) => Math.round(value * places) / places);
     }

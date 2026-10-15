@@ -1,5 +1,5 @@
 import { base64ToBytes, bytesToBase64 } from "../base64";
-import { boundsOf, encodeStl, settleBy, type Bounds } from "../mesh-place";
+import { boundsOf, encodeStl, settleBy, type Bounds, type Mat3 } from "../mesh-place";
 import {
   IDENTITY_POSE,
   applyPose,
@@ -84,11 +84,12 @@ import {
   splitMode,
   syncModelSolid,
   syncPlaceFields,
+  syncWorkplaneFields,
   type PlacePhase,
 } from "../ui/model-chrome";
 import { mountModelHistory, syncModelHistory, syncModelPosition } from "../ui/model-history";
 import { dropRefusal, stepLabel } from "../model-history";
-import { addedSolid, addedSplit, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose, withoutObject, type PlateObject } from "../plate";
+import { addedSolid, addedSplit, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose, withWorkplane, withoutObject, workplaneOf, type PlateObject } from "../plate";
 import type { ContextPart } from "../model-context";
 import { authHeaders } from "../ui/api-base";
 import { livePlate, openMeshPicker, pickAddedMesh, place } from "./files";
@@ -99,6 +100,8 @@ import { freshTreeKey, modelTrees } from "./model-trees";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { apiBase, apiToken, isStepName } from "./settings";
 import { state } from "./state";
+import { axesOf, isIdentityFrame, isUntilted, modelDir, modelPoint, placePrimitive, printOrient, sameWorkplane, type Workplane } from "../workplane";
+import { clearOrientBase, keepOrientBase, orientBaseOf, syncOrientBase } from "../workplane-orient";
 
 type Body = Record<string, unknown>;
 
@@ -167,6 +170,15 @@ let placeBefore: Affine | null = null;
 let placeTimer = 0;
 /** A typed or scrubbed Place number is one step once it rests this long. A drag ends its own step. */
 const PLACE_SETTLE_MS = 400;
+/** Workplane moves of the open object in this visit. One gesture is one Prepare step, and Undo here steps the frame. */
+let wpUndo: { plane: Workplane; orient: Mat3 }[] = [];
+let wpRedo: { plane: Workplane; orient: Mat3 }[] = [];
+/** The frame and plate orient a workplane gesture started from, while it is under way. */
+let wpBefore: Workplane | null = null;
+let wpOrientBefore: Mat3 | null = null;
+let wpTimer = 0;
+/** Set when Global is chosen after a reload and there is no remembered plate orient to restore. */
+let orientStay = false;
 /** Each solid's, and each plate mesh's, box in its own frame. */
 const ownBoxes = new WeakMap<Float32Array, Bounds>();
 /** Mesh tokens of objects whose STEP opened as surfaces with no closed solid: never a join's tool. */
@@ -211,10 +223,12 @@ export function bindModelView() {
   // While Place is open, Undo and Redo step its moves; the solid's history waits until it closes.
   document.querySelector("#modelUndo")?.addEventListener("click", () => {
     if (openModelTool() === "place") placeStep("undo");
+    else if (openModelTool() === "plane") workplaneStep("undo");
     else void step("undo");
   });
   document.querySelector("#modelRedo")?.addEventListener("click", () => {
     if (openModelTool() === "place") placeStep("redo");
+    else if (openModelTool() === "plane") workplaneStep("redo");
     else void step("redo");
   });
   document.querySelector("#modelResetView")?.addEventListener("click", (ev) => frameModel((ev as MouseEvent).shiftKey));
@@ -240,6 +254,7 @@ export function bindModelView() {
     paramsChanged(typed) {
       // Place closed while a typed move was settling: that move is its step now, before Undo means the solid again.
       if (placeBefore && openModelTool() !== "place") endPlace();
+      if (wpBefore && openModelTool() !== "plane") endWorkplane();
       if (ghostId() !== ghosted) refreshModelContext();
       sayJoin();
       scheduleProbe(typed ? PROBE_WAIT_MS : 0);
@@ -274,6 +289,16 @@ export function bindModelView() {
       return open ? placeFields(openPose(), pivotOf(open.solid)) : null;
     },
     placeMoved,
+    workplane() {
+      return workplaneOfOpen();
+    },
+    workplaneMoved,
+    faceForWorkplane() {
+      return faceForWorkplane();
+    },
+    orientStays() {
+      return orientStay;
+    },
     newSolidAt,
     frameNewSolid(spec) {
       const others = plateBoxes();
@@ -297,6 +322,12 @@ export function bindModelView() {
     editJoinGhost,
     editUnchanged: editUntouched,
   });
+  fx.syncModelFrame = () => {
+    abandonWorkplaneGesture();
+    orientStay = false;
+    syncWorkplaneFields(true);
+    syncUndo();
+  };
   mountModelHistory({
     jump(node) {
       void jumpTo(node);
@@ -517,7 +548,7 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
       const { through, counterbore } = holeBoxes();
       return {
         kind: "hole",
-        origin,
+        origin: modelPoint(workplaneOfOpen(), origin),
         axis: drillAxis(),
         radius: num("#modelHoleR"),
         depth: num("#modelHoleD"),
@@ -526,7 +557,7 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
       };
     }
     case "boolean":
-      return joinOpen() ? panelJoin() : { kind: "boolean", op: boolOp(), ...fieldPrimitive() };
+      return joinOpen() ? panelJoin() : { kind: "boolean", op: boolOp(), ...placePrimitive(fieldPrimitive(), workplaneOfOpen()) };
     case "split": {
       const split = splitState();
       return "plan" in split ? { kind: "split", origin: split.plan.origin, normal: split.plan.normal } : null;
@@ -799,6 +830,7 @@ function forgetShown(key: string) {
 /** Leaving Model: the plate takes the shown node, the visit is one Prepare step, and the STEP is written off the UI's path. */
 export function leaveModel() {
   forgetPlaceSteps();
+  forgetWorkplaneSteps();
   commitModel();
   dropEdit();
   endModelVisit();
@@ -828,6 +860,10 @@ export function forgetModelTrees() {
   window.clearTimeout(placeTimer);
   placeBefore = null;
   forgetPlaceSteps();
+  window.clearTimeout(wpTimer);
+  wpBefore = null;
+  wpOrientBefore = null;
+  forgetWorkplaneSteps();
   ticket += 1;
   busy = false;
   jumping = false;
@@ -851,7 +887,10 @@ export function showModel() {
   jumping = false;
   parked = null;
   const objectId = state.plate.selectedId;
-  if (objectId !== shownFor) forgetPlaceSteps();
+  if (objectId !== shownFor) {
+    forgetPlaceSteps();
+    forgetWorkplaneSteps();
+  }
   flushEdit();
   open = null;
   syncUndo();
@@ -1610,6 +1649,7 @@ async function createSolid() {
   const others = plateBoxes();
   commitModel();
   forgetPlaceSteps();
+  forgetWorkplaneSteps();
   flushEdit();
   noteEdit();
   syncPlateFromState();
@@ -1848,6 +1888,7 @@ function present(parsed: ParsedSolid, message: string) {
     frameModel(false);
   }
   syncPlaceFields();
+  syncWorkplaneFields();
   refreshModelContext();
   fx.model?.highlight([]);
   setModelEditable(parsed.editable);
@@ -2009,6 +2050,135 @@ function forgetPlaceSteps() {
   placeRedo = [];
 }
 
+function workplaneOfOpen(): Workplane {
+  const obj = open ? state.plate.objects.find((item) => item.id === open!.objectId) : undefined;
+  return obj ? workplaneOf(obj) : { source: "global", origin: [0, 0, 0], turn: [0, 0, 0] };
+}
+
+/** The last picked face in model space. Curved faces are refused; a miss is null. */
+function faceForWorkplane(): FacePlane | "curved" | null {
+  const face = lastFace(picks);
+  const at = open;
+  if (!at || face == null) return null;
+  const own = flatFace(at.solid, face);
+  if (!own) return "curved";
+  const pose = openPose();
+  if (isIdentity(pose)) return own;
+  return { point: applyPose(pose, own.point), normal: turnDir(pose, own.normal) };
+}
+
+function sameMat(a: readonly number[], b: readonly number[]): boolean {
+  return a.length === b.length && a.every((value, i) => value === b[i]);
+}
+
+/** A workplane field moved the open object's frame. The plate orient changes once, when the gesture ends. */
+function workplaneMoved(plane: Workplane, phase: PlacePhase) {
+  const at = open;
+  if (!at || busy || jumping) return;
+  const from = workplaneOfOpen();
+  if (sameWorkplane(plane, from)) {
+    if (phase === "end") endWorkplane();
+    return;
+  }
+  if (!wpBefore) {
+    wpBefore = from;
+    wpOrientBefore = [...state.orient] as Mat3;
+    beginEdit();
+  }
+  putWorkplane(at.objectId, plane);
+  window.clearTimeout(wpTimer);
+  if (phase === "end") endWorkplane();
+  else if (phase === "typed") wpTimer = window.setTimeout(endWorkplane, PLACE_SETTLE_MS);
+  syncUndo();
+}
+
+function putWorkplane(objectId: string, plane: Workplane) {
+  state.plate = withWorkplane(state.plate, objectId, plane);
+  markProjectDirty();
+}
+
+/**
+ * Stand W up when the turn is not zero, or put the plate back when it returns to zero.
+ * Returns true when a tilted frame was opened from a file and Global leaves the part as it sits.
+ */
+function applyPrintOrient(before: Workplane): boolean {
+  const id = open?.objectId;
+  if (!id) return false;
+  const next = printOrient(workplaneOfOpen(), openPose().m);
+  if (next) {
+    keepOrientBase(id, [...state.orient] as Mat3);
+    if (!sameMat(state.orient, next)) {
+      state.orient = next;
+      place();
+    }
+    return false;
+  }
+  const base = orientBaseOf(id);
+  if (base) {
+    clearOrientBase(id);
+    if (!sameMat(state.orient, base)) {
+      state.orient = base;
+      place();
+    }
+    return false;
+  }
+  return !isUntilted(before);
+}
+
+function endWorkplane() {
+  window.clearTimeout(wpTimer);
+  const before = wpBefore;
+  const orientBefore = wpOrientBefore;
+  wpBefore = null;
+  wpOrientBefore = null;
+  if (!before || !orientBefore) return;
+  orientStay = applyPrintOrient(before);
+  flushEdit();
+  if (!sameWorkplane(before, workplaneOfOpen()) || !sameMat(orientBefore, state.orient)) {
+    wpUndo.push({ plane: before, orient: orientBefore });
+    wpRedo = [];
+    markModelEdit();
+  }
+  syncUndo();
+  syncWorkplaneFields();
+}
+
+function workplaneStep(way: "undo" | "redo") {
+  endWorkplane();
+  const [from, to] = way === "undo" ? [wpUndo, wpRedo] : [wpRedo, wpUndo];
+  const at = open;
+  const step = from.pop();
+  if (!at || !step) return;
+  const leaving = workplaneOfOpen();
+  const leavingOrient = [...state.orient] as Mat3;
+  to.push({ plane: leaving, orient: leavingOrient });
+  beginEdit();
+  putWorkplane(at.objectId, step.plane);
+  if (!sameMat(step.orient, state.orient)) {
+    state.orient = [...step.orient] as Mat3;
+    place();
+  }
+  syncOrientBase(at.objectId, isUntilted(leaving), isUntilted(step.plane), leavingOrient);
+  orientStay = false;
+  flushEdit();
+  markModelEdit();
+  syncWorkplaneFields(true);
+  syncUndo();
+}
+
+function abandonWorkplaneGesture() {
+  window.clearTimeout(wpTimer);
+  wpBefore = null;
+  wpOrientBefore = null;
+}
+
+function forgetWorkplaneSteps() {
+  endWorkplane();
+  wpUndo = [];
+  wpRedo = [];
+  orientStay = false;
+}
+
 function showEdits(on: boolean) {
   document.querySelector("#modelEdit")?.toggleAttribute("hidden", !on);
   document.querySelector("#modelToolNew")?.classList.toggle("is-icon", on);
@@ -2020,15 +2190,16 @@ function syncUndo() {
   const undo = document.querySelector<HTMLButtonElement>("#modelUndo");
   const redo = document.querySelector<HTMLButtonElement>("#modelRedo");
   const placing = openModelTool() === "place";
+  const framing = openModelTool() === "plane";
   // While a step is edited, Cancel is the way back.
   const held = busy || jumping || !tree || !!editing;
   if (undo) {
-    undo.disabled = held || (placing ? placeUndo.length === 0 && !placeBefore : undoNode(tree!) == null);
-    undo.dataset.tip = placing ? "Undo the last move" : "Undo the last solid edit";
+    undo.disabled = held || (placing ? placeUndo.length === 0 && !placeBefore : framing ? wpUndo.length === 0 && !wpBefore : undoNode(tree!) == null);
+    undo.dataset.tip = placing ? "Undo the last move" : framing ? "Undo the last workplane move" : "Undo the last solid edit";
   }
   if (redo) {
-    redo.disabled = held || (placing ? placeRedo.length === 0 : redoNode(tree!) == null);
-    redo.dataset.tip = placing ? "Redo the last move" : "Redo the last solid edit";
+    redo.disabled = held || (placing ? placeRedo.length === 0 : framing ? wpRedo.length === 0 : redoNode(tree!) == null);
+    redo.dataset.tip = placing ? "Redo the last move" : framing ? "Redo the last workplane move" : "Redo the last solid edit";
   }
   const stepButton = document.querySelector<HTMLButtonElement>("#modelStep");
   if (stepButton) stepButton.disabled = busy || jumping || !tree;
@@ -2103,14 +2274,15 @@ function splitState(): SplitState {
   const box = openBox();
   if (!at || !box) return { why: "Open a STEP file to measure a solid.", wait: true };
   const mode = splitMode();
+  const frame = workplaneOfOpen();
   const picked = mode === "face" ? lastFace(picks) : null;
   const facePicking = document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") === "true";
   const value = num("#modelPlane");
   const tilt: [number, number] = [num("#modelTiltA"), num("#modelTiltB")];
   // An edited split whose normal points down its axis keeps that side: its base is the axis turned around.
-  const plane = editing?.panel?.plane;
-  const flip = !!plane?.flip && plane.mode === mode;
-  const key = `${mode}|${picked}|${facePicking}|${value}|${tilt}|${flip}`;
+  const edited = editing?.panel?.plane;
+  const flip = !!edited?.flip && edited.mode === mode;
+  const key = `${mode}|${picked}|${facePicking}|${value}|${tilt}|${flip}|${frame.source}|${frame.origin}|${frame.turn}`;
   if (splitKept?.solid === at.solid && splitKept.pose === pose && splitKept.key === key) return splitKept.state;
   let state: SplitState;
   if (mode === "face" && picked == null) {
@@ -2119,8 +2291,14 @@ function splitState(): SplitState {
     const own = picked == null ? null : flatFace(at.solid, picked);
     const face = own && !isIdentity(pose) ? { point: applyPose(pose, own.point), normal: turnDir(pose, own.normal) } : own;
     const center: Vec3 = [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2];
-    const found = splitBase(mode, center, face);
-    const base = found && flip ? { ...found, normal: [-found.normal[0], -found.normal[1], -found.normal[2]] as Vec3 } : found;
+    let base = splitBase(mode, center, face);
+    // X, Y, and Z stay those axes on the global frame. Any other frame reads them as U, V, and W from its origin.
+    if (base && mode !== "face" && !isIdentityFrame(frame)) {
+      const [u, v, w] = axesOf(frame);
+      const axis = mode === "x" ? u : mode === "y" ? v : w;
+      base = { mode, normal: axis, base: [frame.origin[0], frame.origin[1], frame.origin[2]], dir: axis };
+    }
+    if (base && flip) base = { ...base, normal: [-base.normal[0], -base.normal[1], -base.normal[2]] as Vec3 };
     state = base
       ? { plan: planeFor(base, value, tilt, (normal) => modelExtent(at.solid, pose, normal), kernelBox(at.solid, pose)) }
       : { why: "Pick a flat face. This one is curved.", wait: false };
@@ -2152,7 +2330,7 @@ function flatFace(solid: ParsedSolid, face: number): FacePlane | null {
 /** Into the last picked face, or with no face picked, the way an edited hole drilled, else straight down in model space. */
 function drillAxis(): Vec3 {
   const face = lastFace(picks);
-  if (!open || face == null) return editing?.panel?.axis ?? [0, 0, -1];
+  if (!open || face == null) return editing?.panel?.axis ?? modelDir(workplaneOfOpen(), [0, 0, -1]);
   const stored = open.solid.faces.find((item) => item.id === face)?.normal;
   const axis = holeAxis(stored ?? outwardFromMesh(open.solid.positions, open.solid.triangles, face));
   const pose = openPose();

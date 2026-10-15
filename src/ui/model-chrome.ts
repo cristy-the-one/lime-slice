@@ -2,14 +2,15 @@
  * Model mode's toolbar, the tool that is open, and the ghost that follows its numbers.
  * Apply still lives in `app/model.ts`. This file only decides what is on screen.
  */
-import { Box, Boxes, CircleDot, Cone, Cylinder, Disc, Download, Focus, Globe, Grid3x3, Hexagon, Move3d, Plus, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Torus, Triangle, TriangleRight, Undo2, createElement, type IconNode } from "lucide";
+import { Axis3d, Box, Boxes, CircleDot, Cone, Cylinder, Disc, Download, Focus, Globe, Grid3x3, Hexagon, Move3d, Plus, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Torus, Triangle, TriangleRight, Undo2, createElement, type IconNode } from "lucide";
 import type { HandleDrag, ModelGhost } from "../model-view";
 import type { ContextPart } from "../model-context";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type ModelTool, type Vec3 } from "../model-drag";
 import type { PlaceFields } from "../model-space";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
 import type { EditPanel } from "../model-edit";
-import { clampTilt, splitNote, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
+import { clampTilt, splitNote, type FacePlane, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
+import { CURVED_FACE, GLOBAL_WORKPLANE, axesOf, isIdentityFrame, isUntilted, modelPoint, modelToLocal, placePrimitive, workplaneNote, workplaneOnBed, workplaneOnFace, type Workplane, type WorkplaneSource } from "../workplane";
 import { lastFace, selectedEdges } from "../model-blend";
 import { SCREWS, screwOf } from "../model-hole";
 import { isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
@@ -48,6 +49,14 @@ interface ModelChromeHooks {
   placeFields(): PlaceFields | null;
   /** A Place field changed: the object moves, or turns, in model space. */
   placeMoved(field: keyof PlaceFields, value: number, phase: PlacePhase): void;
+  /** The open object's workplane. The global frame when it has none. */
+  workplane(): Workplane;
+  /** The workplane changed. One drag, or a typed number once it rests, is one Prepare step. */
+  workplaneMoved(plane: Workplane, phase: PlacePhase): void;
+  /** The last picked face in model space, or why it cannot be a workplane. */
+  faceForWorkplane(): FacePlane | "curved" | null;
+  /** Choosing Global after a reload left the plate pose, so the note says the part stays as it sits. */
+  orientStays(): boolean;
   /** `spec` where New solid would put it in model space: its root, moved to the origin or beside the other objects. */
   newSolidAt(spec: PrimitiveSpec): PrimitiveSpec;
   /** New solid opened with no solid open, or its ghost outgrew the view: the view looks at where the new one lands. */
@@ -84,13 +93,15 @@ const TOOLS: { id: ModelTool; icon: IconNode; label: string }[] = [
   { id: "scale", icon: Scaling, label: "Scale" },
   { id: "measure", icon: Ruler, label: "Measure" },
   { id: "place", icon: Move3d, label: "Place" },
+  { id: "plane", icon: Axis3d, label: "Plane" },
 ];
 
 const PLACE_FIELDS = ["modelPlaceX", "modelPlaceY", "modelPlaceZ", "modelPlaceRx", "modelPlaceRy", "modelPlaceRz"] as const;
 const PLACE_KEYS = ["x", "y", "z", "rx", "ry", "rz"] as const satisfies readonly (keyof PlaceFields)[];
 const BED_KEY = "lime-slice-model-bed";
 /** Tools that leave the open solid as it is, so they run on surfaces with no closed solid too. */
-const KEEPS_SOLID: ReadonlySet<string> = new Set(["create", "measure", "place"]);
+const KEEPS_SOLID: ReadonlySet<string> = new Set(["create", "measure", "place", "plane"]);
+const WP_FIELDS = ["modelWpU", "modelWpV", "modelWpW", "modelWpRu", "modelWpRv", "modelWpRw"] as const;
 
 const PRIMITIVE_ICONS: Record<PrimitiveKind, IconNode> = {
   box: Box,
@@ -138,6 +149,10 @@ type Scrub = {
 };
 
 let scrub: Scrub | null = null;
+/** Why the workplane refused the last face or bed, until the next successful choice. */
+let wpProblem: string | null = null;
+/** The face the workplane was last put on, so a refresh does not start another step. */
+let seatedWpFace: number | null = null;
 
 function svgIcon(node: IconNode) {
   return createElement(node, { width: 14, height: 14, "aria-hidden": "true", class: "ico" });
@@ -198,6 +213,8 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (across) setAcross(across.id === "modelFlats");
     const plane = target?.closest<HTMLButtonElement>("#modelPlaneModes [data-plane]");
     if (plane) setPlaneMode(plane.dataset.plane as PlaneMode);
+    const wp = target?.closest<HTMLButtonElement>("#modelWpModes [data-wp]")?.dataset.wp;
+    if (wp === "global" || wp === "bed" || wp === "face") setWpSource(wp);
   });
   document.querySelector("#modelCancel")?.addEventListener("click", () => closeTool());
   document.querySelector("#modelPanel")?.addEventListener("change", (ev) => {
@@ -217,6 +234,10 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (ev.target instanceof HTMLElement && HOLE_CHOICES.has(ev.target.id)) return;
     if (tool === "place") {
       placeChanged(ev.target instanceof HTMLElement ? ev.target.id : "", "typed");
+      return;
+    }
+    if (tool === "plane") {
+      workplaneChanged("typed");
       return;
     }
     if (tool === "split") syncSplitField();
@@ -253,6 +274,7 @@ export function syncModelChrome(next: readonly ModelPickRef[]) {
   picks = next.map((pick) => ({ kind: pick.kind, index: pick.index }));
   // A new face to cut from: the plane starts in the middle of the part behind it.
   if (tool === "split" && splitMode() === "face" && lastFace(picks) !== seatedFace) applySplitDefaults();
+  if (tool === "plane" && wpMode() === "face" && lastFace(picks) !== seatedWpFace) applyWpFace();
   const label = selectionCountLabel(picks);
   const chip = document.querySelector("#modelCount");
   if (chip) {
@@ -336,9 +358,13 @@ function toggleTool(next: ModelTool, editing = false) {
   // Keep the tool object is asked per op: it opens off.
   if (next === "boolean") resetKeepTool();
   if (next === "measure") applyMeasureDefaults();
-  // Place moves as it goes, so its button only closes the tool.
+  if (next === "plane") {
+    wpProblem = null;
+    syncWorkplaneFields(true);
+  }
+  // Place and the workplane move as they go, so the button only closes the tool.
   const cancel = document.querySelector("#modelCancel");
-  if (cancel) cancel.textContent = next === "place" ? "Done" : "Cancel";
+  if (cancel) cancel.textContent = next === "place" || next === "plane" ? "Done" : "Cancel";
   const apply = document.querySelector("#modelApply");
   if (apply) apply.textContent = editing ? "Update" : next === "create" ? "Create" : "Apply";
   // The edit's own numbers go in before anything reads the fields.
@@ -434,6 +460,7 @@ function closeTool() {
   fx.model?.setGhost(null);
   fx.model?.setHandles([]);
   if (ended) hooks?.editClosed();
+  refreshDatum();
   hooks?.paramsChanged();
 }
 
@@ -606,6 +633,7 @@ function syncFields() {
   const depth = document.querySelector<HTMLInputElement>("#modelHoleD");
   if (depth) depth.disabled = holeBoxes().through;
   paintScrew();
+  retitleAxes();
   const radius = RADIUS_LABELS[kind] ?? "Radius";
   setLabel("#modelRadiusLabel", "#modelRadius", radius);
   const flats = acrossFlats();
@@ -709,11 +737,12 @@ function paintAcross(flats: boolean) {
 function applyHoleDefaults() {
   const box = hooks?.solidBox();
   if (!box) return;
-  const x = num("#modelX");
-  const y = num("#modelY");
-  const inside = x > box.min[0] && x < box.max[0] && y > box.min[1] && y < box.max[1];
-  if (inside && num("#modelZ") > box.min[2]) return;
-  writeFields(["modelX", "modelY", "modelZ"], [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, box.max[2]]);
+  const plane = openPlane();
+  const at = modelPoint(plane, [num("#modelX"), num("#modelY"), num("#modelZ")]);
+  const inside = at[0] > box.min[0] && at[0] < box.max[0] && at[1] > box.min[1] && at[1] < box.max[1];
+  if (inside && at[2] > box.min[2]) return;
+  const top = modelToLocal(plane, [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, box.max[2]]);
+  writeFields(["modelX", "modelY", "modelZ"], top);
 }
 
 /** The hole's Through all and Counterbore boxes, and the screw list that ticks both. */
@@ -765,7 +794,9 @@ function holeLead(): string {
   if (lastFace(picks) != null) return "Into the picked face.";
   const axis = hooks?.holeAxis() ?? [0, 0, -1];
   const down = Math.abs(axis[0]) < 1e-6 && Math.abs(axis[1]) < 1e-6 && axis[2] < -0.9;
-  return down ? "Straight down; click a face to drill into it." : "As the step drilled; click a face to drill into another.";
+  if (down) return "Straight down; click a face to drill into it.";
+  if (!edit) return "Opposite W from the origin.";
+  return "As the step drilled; click a face to drill into another.";
 }
 
 /** Two points that are still on top of each other start on opposite corners of the solid. */
@@ -832,7 +863,8 @@ function syncSplitField() {
   const mode = splitMode();
   const label = document.querySelector("#modelPlaneLabel");
   const input = document.querySelector<HTMLInputElement>("#modelPlane");
-  const text = mode === "face" ? "Offset into the part" : `Plane ${mode.toUpperCase()}`;
+  const axes = !isUntilted(openPlane()) ? "UVW" : "XYZ";
+  const text = mode === "face" ? "Offset into the part" : `Plane ${axes["xyz".indexOf(mode)] ?? mode.toUpperCase()}`;
   if (label) label.textContent = text;
   if (!input) return;
   input.setAttribute("aria-label", `${text}, mm`);
@@ -891,6 +923,11 @@ function refreshNote() {
     text = measureNote(point("A"), point("B"));
   } else if (tool === "place") {
     text = "From where it started, turning about its centre. The plate does not move.";
+  } else if (tool === "plane") {
+    const said = workplaneNote(openPlane(), wpProblem);
+    text = said.text;
+    bad = said.bad;
+    if (!wpProblem && hooks?.orientStays()) text = `${text} The part stays as it sits on the plate.`;
   } else if (tool === "create") {
     text = state.plate.objects.length === 0 ? "Lands at the origin, on Z 0." : "Lands beside the other objects, as a new object.";
   } else if (picksObject() && !joinTool) {
@@ -912,11 +949,13 @@ function refreshGhost() {
   if (state.stage !== "model" || !tool) {
     view.setGhost(null);
     view.setHandles([]);
+    refreshDatum();
     return;
   }
   view.setGhost(ghostFor(tool));
   // The tool object is moved by Place, on its own; nothing here drags it.
   view.setHandles(joinOpen() ? [] : handlesFor(tool, dragContext()));
+  refreshDatum();
 }
 
 function dragContext(): DragContext {
@@ -934,6 +973,7 @@ function dragContext(): DragContext {
     edge: points ? edgeAnchor(points, center) : null,
     holeAxis: hooks?.holeAxis() ?? [0, 0, -1],
     hole: holeBoxes(),
+    ...(usesFrame() ? { frame: axesOf(openPlane()), frameOrigin: openPlane().origin } : {}),
   };
 }
 
@@ -943,6 +983,10 @@ function onHandleDrag(drag: HandleDrag) {
   writeFields(drag.handle.fields, drag.values);
   if (tool === "place") {
     placeChanged(drag.handle.fields[0]!, drag.phase === "end" ? "end" : "drag");
+    return;
+  }
+  if (tool === "plane") {
+    workplaneChanged(drag.phase === "end" ? "end" : "drag");
     return;
   }
   document.querySelector("#modelPanel")?.dispatchEvent(new Event("input", { bubbles: true }));
@@ -989,6 +1033,149 @@ export function syncPlaceFields(all = false) {
   refreshGhost();
 }
 
+function openPlane(): Workplane {
+  return hooks?.workplane() ?? GLOBAL_WORKPLANE;
+}
+
+/** Boolean, hole, and the workplane itself read the frame. Every other tool keeps world axes. */
+function usesFrame(): boolean {
+  return tool === "boolean" || tool === "hole" || tool === "plane";
+}
+
+function wpMode(): WorkplaneSource {
+  const mode = document.querySelector<HTMLElement>('#modelWpModes [aria-pressed="true"]')?.dataset.wp;
+  return mode === "bed" || mode === "face" ? mode : "global";
+}
+
+function paintWpMode(source: WorkplaneSource) {
+  document.querySelectorAll<HTMLButtonElement>("#modelWpModes [data-wp]").forEach((button) => {
+    const on = button.dataset.wp === source;
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+    button.classList.toggle("on", on);
+  });
+}
+
+/** X, Y, Z while the frame is untilted, so the panel reads as it does today. U, V, W once it turns. */
+function retitleAxes() {
+  const names = !isUntilted(openPlane()) ? ["U", "V", "W"] : ["X", "Y", "Z"];
+  retitle("modelX", names[0]!, `Origin ${names[0]!.toLowerCase()}`);
+  retitle("modelY", names[1]!, `Origin ${names[1]!.toLowerCase()}`);
+  retitle("modelZ", names[2]!, `Origin ${names[2]!.toLowerCase()}`);
+  retitle("modelRx", `Turn ${names[0]}`, `Turn about ${names[0]!.toLowerCase()}, degrees`);
+  retitle("modelRy", `Turn ${names[1]}`, `Turn about ${names[1]!.toLowerCase()}, degrees`);
+  retitle("modelRz", `Turn ${names[2]}`, `Turn about ${names[2]!.toLowerCase()}, degrees`);
+  for (const [id, name] of [["modelSplitX", names[0]], ["modelSplitY", names[1]], ["modelSplitZ", names[2]]] as const) {
+    const button = document.querySelector(`#${id}`);
+    if (button && button.textContent !== name) button.textContent = name;
+  }
+}
+
+function retitle(id: string, text: string, aria: string) {
+  const input = document.querySelector(`#${id}`);
+  const span = input?.parentElement?.querySelector(".scrub-label");
+  if (span && span.textContent !== text) span.textContent = text;
+  if (input && input.getAttribute("aria-label") !== aria) input.setAttribute("aria-label", aria);
+}
+
+/** The datum is on while the tool is open, and whenever the frame is not the untouched global one. */
+function refreshDatum() {
+  const plane = openPlane();
+  const show = state.stage === "model" && (tool === "plane" || !isIdentityFrame(plane) || plane.source !== "global");
+  fx.model?.setWorkplane(show ? plane : null);
+  fx.model?.setDatumPick(tool === "plane");
+}
+
+function setWpSource(source: WorkplaneSource) {
+  wpProblem = null;
+  if (source === "global") {
+    writePlane(GLOBAL_WORKPLANE);
+    return;
+  }
+  if (source === "bed") {
+    const box = hooks?.solidBox();
+    paintWpMode("bed");
+    if (!box) {
+      wpProblem = "Open a solid to put the frame on the bed.";
+      refreshNote();
+      return;
+    }
+    writePlane(workplaneOnBed(box));
+    return;
+  }
+  paintWpMode("face");
+  if (document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") !== "true") {
+    document.querySelector<HTMLButtonElement>("#modelPickFace")?.click();
+  }
+  applyWpFace();
+}
+
+function applyWpFace() {
+  seatedWpFace = lastFace(picks);
+  const face = hooks?.faceForWorkplane() ?? null;
+  if (face === "curved") {
+    wpProblem = CURVED_FACE;
+    refreshNote();
+    refreshDatum();
+    return;
+  }
+  if (!face) {
+    wpProblem = "Pick a flat face.";
+    refreshNote();
+    refreshDatum();
+    return;
+  }
+  wpProblem = null;
+  writePlane(workplaneOnFace(face));
+}
+
+function writePlane(plane: Workplane) {
+  paintWpMode(plane.source);
+  writeFields(WP_FIELDS, [...plane.origin, ...plane.turn]);
+  wpProblem = null;
+  workplaneChanged("end");
+}
+
+function planeFromFields(): Workplane {
+  return {
+    source: wpMode(),
+    origin: [num("#modelWpU"), num("#modelWpV"), num("#modelWpW")],
+    turn: [num("#modelWpRu"), num("#modelWpRv"), num("#modelWpRw")],
+  };
+}
+
+/** A workplane field changed by typing, a scrub, or a drag. */
+function workplaneChanged(phase: PlacePhase) {
+  wpProblem = null;
+  const ids = [...WP_FIELDS];
+  const pending = ids.some((id) => {
+    const input = document.querySelector<HTMLInputElement>(`#${id}`);
+    return !input || input.value.trim() === "" || !input.validity.valid;
+  });
+  if (pending) return;
+  hooks?.workplaneMoved(planeFromFields(), phase);
+  refreshNote();
+  refreshGhost();
+}
+
+/**
+ * The workplane fields follow the open object: on opening the tool, and after another object opens.
+ * The field being typed keeps its text, unless `all`.
+ */
+export function syncWorkplaneFields(all = false) {
+  const plane = openPlane();
+  retitleAxes();
+  refreshDatum();
+  if (tool !== "plane") return;
+  const active = document.activeElement;
+  WP_FIELDS.forEach((field, i) => {
+    const input = document.querySelector<HTMLInputElement>(`#${field}`);
+    const value = i < 3 ? plane.origin[i]! : plane.turn[i - 3]!;
+    if (input && (all || input !== active)) input.value = fieldText(value);
+  });
+  if (all || document.activeElement?.id !== "modelWpU") paintWpMode(plane.source);
+  refreshGhost();
+}
+
 function readBedPref(): boolean {
   try {
     return localStorage.getItem(BED_KEY) !== "0";
@@ -1024,7 +1211,7 @@ function ghostFor(current: ModelTool): ModelGhost | null {
   }
   if (current === "boolean" || current === "create") {
     const typed = fieldPrimitive();
-    const spec = current === "create" ? hooks?.newSolidAt(typed) ?? typed : typed;
+    const spec = current === "create" ? hooks?.newSolidAt(typed) ?? typed : placePrimitive(typed, openPlane());
     return { kind: "primitive", spec, mesh: meshFor(spec) };
   }
   if (current === "measure") return { kind: "measure", a: point("A"), b: point("B") };
@@ -1033,16 +1220,16 @@ function ghostFor(current: ModelTool): ModelGhost | null {
     return plan ? { kind: "plane", origin: plan.origin, normal: plan.normal } : null;
   }
   if (current === "hole") {
-    const origin: Vec3 = [num("#modelX"), num("#modelY"), num("#modelZ")];
+    const at = modelPoint(openPlane(), [num("#modelX"), num("#modelY"), num("#modelZ")]);
     const dir = hooks?.holeAxis() ?? [0, 0, -1];
     const { through, counterbore } = holeBoxes();
     return {
       kind: "hole",
-      x: origin[0],
-      y: origin[1],
-      z: origin[2],
+      x: at[0],
+      y: at[1],
+      z: at[2],
       radius: num("#modelHoleR"),
-      depth: (through ? hooks?.throughLength(origin, dir) : null) ?? num("#modelHoleD"),
+      depth: (through ? hooks?.throughLength(at, dir) : null) ?? num("#modelHoleD"),
       dir,
       ...(counterbore ? { bore: { radius: num("#modelBoreR"), depth: num("#modelBoreD") } } : {}),
     };

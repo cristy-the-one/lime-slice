@@ -1,4 +1,5 @@
 import { rotX, type Mat3 } from "./mesh-place.ts";
+import { clearOrientBase, orientBaseOf, syncOrientBase } from "./workplane-orient.ts";
 import type { PrimitiveSpec } from "./model-primitive.ts";
 import {
   CURVED_FACE,
@@ -107,6 +108,18 @@ eq("an unknown source is refused", readWorkplane({ source: "sketch", origin: [0,
 // A local turn survives a frame whose own turn is zero, number for number.
 const spun = placePrimitive({ ...box, turn: [0, 30, 0] }, shifted);
 eq("an untilted frame keeps the typed turn", spun.turn, [0, 30, 0]);
+
+const flat: Mat3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+const spunOrient: Mat3 = [0, -1, 0, 1, 0, 0, 0, 0, 1];
+syncOrientBase("step-tilt", true, false, flat);
+eq("a tilt from an untilted frame remembers the orient being left", orientBaseOf("step-tilt"), flat);
+syncOrientBase("step-tilt", false, false, spunOrient);
+eq("a later tilt keeps the first remembered orient", orientBaseOf("step-tilt"), flat);
+syncOrientBase("step-tilt", false, true, spunOrient);
+eq("an untilted arrival drops the remembered orient", orientBaseOf("step-tilt"), undefined);
+syncOrientBase("step-none", true, false, null);
+eq("a tilt with no leaving orient remembers nothing", orientBaseOf("step-none"), undefined);
+clearOrientBase("step-tilt");
 
 if (failed > 0) {
   console.error(`${failed} failed`);
