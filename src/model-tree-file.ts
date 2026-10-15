@@ -129,6 +129,8 @@ export function readSavedTree(value: unknown): SavedTree<unknown> | null {
     // Parents come first, so a parent always has the smaller id; only the root has none.
     if (ids.has(node.id) || (node.parent === null) !== (node.id === 0) || (node.parent !== null && !ids.has(node.parent))) return null;
     if ((node.op === null) !== (node.parent === null) || (node.piece !== undefined && node.op?.kind !== "split")) return null;
+    // An edited primitive root is built again right under the root, and only there.
+    if (node.op?.kind === "root" && node.parent !== 0) return null;
     ids.add(node.id);
   }
   const { current, committed, nextId } = value;
@@ -209,6 +211,10 @@ function readOp(value: unknown): SavedOp | undefined {
       if (!isRecord(tool) || typeof tool.object !== "string" || !tool.object || !isId(tool.node) || typeof tool.name !== "string") return undefined;
       if (!relative || !isRigid(relative) || (value.keepTool !== undefined && typeof value.keepTool !== "boolean")) return undefined;
       return { kind: "join", op: value.op, tool: { object: tool.object, node: tool.node, name: tool.name }, relative, keepTool: value.keepTool === true };
+    }
+    case "root": {
+      const solid = readPrimitive(value);
+      return solid && primitiveMesh(solid).length > 0 ? { kind: "root", ...solid } : undefined;
     }
     default:
       return undefined;

@@ -8,6 +8,7 @@ import type { ContextPart } from "../model-context";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type ModelTool, type Vec3 } from "../model-drag";
 import type { PlaceFields } from "../model-space";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
+import type { EditPanel } from "../model-edit";
 import { clampTilt, splitNote, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
 import { lastFace, selectedEdges } from "../model-blend";
 import { isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
@@ -54,6 +55,12 @@ interface ModelChromeHooks {
   joinGhost(id: string): ContextPart | null;
   /** A grey object was clicked that cannot be the tool: say why. */
   notATool(id: string): void;
+  /** An edited step's panel closed without Update: Cancel, Esc, or another tool. The view goes back. */
+  editClosed(): void;
+  /** While a join is edited: its tool where the join placed it, for its ghost. */
+  editJoinGhost(): ContextPart | null;
+  /** While a step is edited: the panel still says the step as it is, so Update would change nothing. */
+  editUnchanged(): boolean;
 }
 
 interface JoinChoice {
@@ -109,6 +116,8 @@ let probe: ProbeView = null;
 let editable = true;
 /** An edit or a jump is on its way: Apply waits for it. */
 let waiting = false;
+/** The step being edited, while its tool's panel is open: what it opened with, and its header. */
+let edit: { panel: EditPanel; head: string } | null = null;
 const VIEW_ONLY_TIP = "This STEP file has surfaces but no closed solid, so it can be measured but not edited.";
 
 type Scrub = {
@@ -284,11 +293,13 @@ export function setModelProbe(next: ProbeView) {
   refreshNote();
 }
 
-function toggleTool(next: ModelTool) {
-  if (tool === next) {
+/** Open `next`, or close it when it is open. Opening another tool ends an edit, which takes the view back. */
+function toggleTool(next: ModelTool, editing = false) {
+  if (tool === next && !editing) {
     closeTool();
     return;
   }
+  if (edit && !editing) closeTool();
   tool = next;
   const bar = document.querySelector<HTMLElement>("#modelBar");
   if (bar) bar.dataset.tool = next;
@@ -312,11 +323,13 @@ function toggleTool(next: ModelTool) {
   const cancel = document.querySelector("#modelCancel");
   if (cancel) cancel.textContent = next === "place" ? "Done" : "Cancel";
   const apply = document.querySelector("#modelApply");
-  if (apply) apply.textContent = next === "create" ? "Create" : "Apply";
+  if (apply) apply.textContent = editing ? "Update" : next === "create" ? "Create" : "Apply";
+  // The edit's own numbers go in before anything reads the fields.
+  if (editing) fillEdit();
   paintPrimRow();
   syncFields();
   renderJoinChoices();
-  fx.model?.setObjectPicking(joinOpen());
+  fx.model?.setObjectPicking(picksObject());
   syncPlaceFields();
   refreshTools();
   refreshApply();
@@ -327,9 +340,63 @@ function toggleTool(next: ModelTool) {
   hooks?.paramsChanged();
 }
 
+/**
+ * Edit a step: its tool opens with the numbers it was applied with, under a header naming it, and Apply reads Update.
+ * A join keeps its tool object, so only its op and Keep the tool object can change.
+ */
+export function openEditTool(panel: EditPanel, head: string) {
+  if (tool) closeTool();
+  edit = { panel, head };
+  if (panel.primitive) primKind = panel.primitive;
+  withObject = !!panel.join;
+  joinTool = null;
+  toggleTool(panel.tool, true);
+}
+
+/** The edited step's numbers into the panel: its op's buttons, then its fields, over the defaults the tool opened with. */
+function fillEdit() {
+  const panel = edit?.panel;
+  if (!panel) return;
+  if (panel.boolOp) paintBoolOp(`model${{ fuse: "Fuse", cut: "Cut", common: "Common" }[panel.boolOp]}`);
+  if (panel.flats !== undefined) paintAcross(panel.flats);
+  if (panel.plane) paintPlaneMode(panel.plane.mode);
+  if (panel.join) {
+    const keep = document.querySelector<HTMLInputElement>("#modelKeepTool");
+    if (keep) keep.checked = panel.join.keepTool;
+  }
+  writeFields(Object.keys(panel.fields), Object.values(panel.fields));
+  for (const [id, value] of Object.entries(panel.fields)) {
+    const input = document.querySelector<HTMLInputElement>(`#${id}`);
+    if (input) exact.set(id, { text: input.value, value });
+  }
+  syncSplitField();
+  const head = document.querySelector<HTMLElement>("#modelEditHead");
+  if (head) {
+    head.textContent = edit!.head;
+    head.hidden = false;
+  }
+}
+
+/** The step being edited, while its panel is open. */
+export function editedPanel(): EditPanel | null {
+  return edit?.panel ?? null;
+}
+
+/** Whether a click on a grey object picks Boolean's tool: never while a join is edited, since its tool stays. */
+function picksObject(): boolean {
+  return joinOpen() && !edit;
+}
+
 function closeTool() {
   const active = document.activeElement;
   if (active instanceof HTMLElement && active.closest("#modelPanel")) active.blur();
+  const ended = edit;
+  edit = null;
+  exact.clear();
+  if (ended) {
+    document.querySelector<HTMLElement>("#modelEditHead")?.toggleAttribute("hidden", true);
+    paintPrimRow();
+  }
   tool = null;
   const bar = document.querySelector<HTMLElement>("#modelBar");
   if (bar) delete bar.dataset.tool;
@@ -342,6 +409,7 @@ function closeTool() {
   fx.model?.setObjectPicking(false);
   fx.model?.setGhost(null);
   fx.model?.setHandles([]);
+  if (ended) hooks?.editClosed();
   hooks?.paramsChanged();
 }
 
@@ -350,18 +418,22 @@ export function joinOpen(): boolean {
   return tool === "boolean" && withObject;
 }
 
-/** The object Boolean takes as its tool, while it is open on an object and one is picked. */
+/** The object Boolean takes as its tool, while it is open on an object and one is picked. An edited join keeps its own. */
 export function joinPick(): string | null {
-  return joinOpen() ? joinTool : null;
+  return picksObject() ? joinTool : null;
 }
 
 /** Shift+G: Boolean, on another object. */
 export function openJoinTool() {
+  if (edit) closeTool();
   if (tool !== "boolean") document.querySelector<HTMLButtonElement>("#modelToolBoolean:not(:disabled)")?.click();
   if (tool === "boolean") setWithObject(true);
 }
 
-/** The primitive row's choice: a primitive, or Object, last in the row and Boolean's only, so the panel gains no row. */
+/**
+ * The primitive row's choice: a primitive, or Object, last in the row and Boolean's only, so the panel gains no row. An
+ * edited boolean stays a boolean with a primitive, and an edited join keeps its object, so the other choices hide.
+ */
 function paintPrimRow() {
   const object = joinOpen();
   document.querySelector("#modelPrim")?.setAttribute("aria-label", tool === "boolean" ? "Combine with" : "Primitive");
@@ -369,6 +441,7 @@ function paintPrimRow() {
     const on = button.dataset.kind === "object" ? object : !object && button.dataset.kind === primKind;
     button.setAttribute("aria-checked", on ? "true" : "false");
     button.tabIndex = on ? 0 : -1;
+    if (button.dataset.kind !== "object") button.hidden = !!edit?.panel.join;
   });
 }
 
@@ -393,7 +466,7 @@ export function resetKeepTool() {
 
 /** Take object `id` as the tool: from the list, or a click on it in the view. False when it is not on offer. */
 function pickJoinTool(id: string): boolean {
-  if (!joinOpen() || !hooks?.joinChoices().some((choice) => choice.id === id)) return false;
+  if (!picksObject() || !hooks?.joinChoices().some((choice) => choice.id === id)) return false;
   joinTool = id;
   renderJoinChoices();
   refreshApply();
@@ -418,6 +491,15 @@ export function refreshJoinChoices() {
 function renderJoinChoices() {
   const list = document.querySelector<HTMLElement>("#modelObjects");
   if (!list || !joinOpen()) return;
+  const fixed = edit?.panel.join;
+  if (fixed) {
+    list.removeAttribute("role");
+    const note = document.createElement("p");
+    note.className = "model-objects-empty";
+    note.textContent = `The tool stays ${fixed.name}. To use another, delete this step and join again.`;
+    list.replaceChildren(note);
+    return;
+  }
   const choices = hooks?.joinChoices() ?? [];
   if (joinTool && !choices.some((choice) => choice.id === joinTool)) joinTool = null;
   // An empty list is a sentence, not a group of choices.
@@ -464,13 +546,17 @@ function onObjectKey(ev: KeyboardEvent) {
 }
 
 function setBoolOp(id: string) {
+  paintBoolOp(id);
+  hooks?.paramsChanged();
+}
+
+function paintBoolOp(id: string) {
   for (const opId of ["modelFuse", "modelCut", "modelCommon"]) {
     const button = document.querySelector<HTMLButtonElement>(`#${opId}`);
     const on = opId === id;
     button?.setAttribute("aria-pressed", on ? "true" : "false");
     button?.classList.toggle("on", on);
   }
-  hooks?.paramsChanged();
 }
 
 function syncFields() {
@@ -481,7 +567,9 @@ function syncFields() {
     const primOk = !node.dataset.prim || node.dataset.prim.split(" ").includes(kind);
     // Only Boolean asks what it combines with: New solid and Hole show their fields whatever Boolean has picked.
     const withOk = !node.dataset.with || tool !== "boolean" || node.dataset.with === withMode;
-    node.toggleAttribute("hidden", !(forOk && primOk && withOk));
+    // An edited boolean cannot become a join, which takes another object's history.
+    const editOk = !edit || node.id !== "modelWithObject" || !!edit.panel.join;
+    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk));
   });
   const radius = RADIUS_LABELS[kind] ?? "Radius";
   setLabel("#modelRadiusLabel", "#modelRadius", radius);
@@ -567,15 +655,19 @@ function onPrimKey(ev: KeyboardEvent) {
 }
 
 function setAcross(flats: boolean) {
+  paintAcross(flats);
+  syncFields();
+  refreshGhost();
+  keepNewSolidInView();
+  hooks?.paramsChanged();
+}
+
+function paintAcross(flats: boolean) {
   for (const [id, on] of [["#modelCorners", !flats], ["#modelFlats", flats]] as const) {
     const button = document.querySelector(id);
     button?.setAttribute("aria-pressed", on ? "true" : "false");
     button?.classList.toggle("on", on);
   }
-  syncFields();
-  refreshGhost();
-  keepNewSolidInView();
-  hooks?.paramsChanged();
 }
 
 /** A hole that would miss the solid starts on the middle of its top. */
@@ -613,16 +705,20 @@ export function splitMode(): PlaneMode {
 
 /** X, Y, Z, or Face. The plane goes to the middle of the part along the new base; the tilts stay. */
 function setPlaneMode(mode: PlaneMode) {
-  document.querySelectorAll<HTMLButtonElement>("#modelPlaneModes [data-plane]").forEach((button) => {
-    const on = button.dataset.plane === mode;
-    button.setAttribute("aria-pressed", on ? "true" : "false");
-    button.classList.toggle("on", on);
-  });
+  paintPlaneMode(mode);
   applySplitDefaults();
   refreshApply();
   refreshNote();
   refreshGhost();
   hooks?.paramsChanged();
+}
+
+function paintPlaneMode(mode: PlaneMode) {
+  document.querySelectorAll<HTMLButtonElement>("#modelPlaneModes [data-plane]").forEach((button) => {
+    const on = button.dataset.plane === mode;
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+    button.classList.toggle("on", on);
+  });
 }
 
 function splitPlan(): SplitPlan | null {
@@ -679,7 +775,7 @@ function refreshTools() {
 function refreshApply() {
   const button = document.querySelector<HTMLButtonElement>("#modelApply");
   if (!button) return;
-  button.disabled = waiting || !tool || (joinOpen() && !joinTool) || !modelApplyReady(
+  button.disabled = waiting || !tool || (picksObject() && !joinTool) || (!!edit && !!hooks?.editUnchanged()) || !modelApplyReady(
     tool,
     picks,
     num("#modelFactor"),
@@ -693,7 +789,11 @@ function refreshNote() {
   if (!note) return;
   let text = "";
   let bad = false;
-  if (tool === "split") {
+  if (edit && hooks?.editUnchanged()) {
+    text = tool === "fillet" || tool === "chamfer" ? "Change the size or the edges to update this step." : "Change a number to update this step.";
+  } else if (edit && tool === "create") {
+    text = "The steps after it are built again on the new solid.";
+  } else if (tool === "split") {
     const split = hooks?.split();
     if (split) ({ text, bad } = splitNote(split));
   } else if ((tool === "fillet" || tool === "chamfer") && selectedEdges(picks).length === 0) {
@@ -706,7 +806,7 @@ function refreshNote() {
     text = "From where it started, turning about its centre. The plate does not move.";
   } else if (tool === "create") {
     text = state.plate.objects.length === 0 ? "Lands at the origin, on Z 0." : "Lands beside the other objects, as a new object.";
-  } else if (joinOpen() && !joinTool) {
+  } else if (picksObject() && !joinTool) {
     text = (hooks?.joinChoices().length ?? 0) > 0 ? "Pick the tool: click a grey object, or one in the list." : "";
   } else if (isProbed(tool)) {
     const axis = tool === "hole" ? (hooks?.holeAxis() ?? [0, 0, -1]) : null;
@@ -833,7 +933,7 @@ function meshFor(spec: PrimitiveSpec): Float32Array {
 
 function ghostFor(current: ModelTool): ModelGhost | null {
   if (joinOpen()) {
-    const part = joinTool ? hooks?.joinGhost(joinTool) : null;
+    const part = edit ? hooks?.editJoinGhost() : joinTool ? hooks?.joinGhost(joinTool) : null;
     return part ? { kind: "object", ...part } : null;
   }
   if (current === "boolean" || current === "create") {
@@ -865,7 +965,21 @@ function ghostFor(current: ModelTool): ModelGhost | null {
 }
 
 function num(id: string) {
-  const value = Number(document.querySelector<HTMLInputElement>(id)?.value);
+  return fieldNumber(id.slice(1));
+}
+
+/**
+ * An edited step's numbers as stored, by field id, while the field still shows the text they were written as: a field
+ * left alone sends its number exactly, though it shows it to the hundredth.
+ */
+const exact = new Map<string, { text: string; value: number }>();
+
+/** The number in field `id` (no `#`): as typed, or an edited step's own while that field is untouched. */
+export function fieldNumber(id: string): number {
+  const input = document.querySelector<HTMLInputElement>(`#${id}`);
+  const kept = exact.get(id);
+  if (kept && input?.value === kept.text) return kept.value;
+  const value = Number(input?.value);
   return Number.isFinite(value) ? value : 0;
 }
 

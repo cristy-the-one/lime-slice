@@ -4,7 +4,7 @@
  * after a typing pause, Left and Right switch branches. Rows are rebuilt only when the tree changes,
  * and only while the panel can be seen. Nothing here asks the engine anything.
  */
-import { ChevronDown, Ellipsis, History, TriangleAlert, createElement, type IconNode } from "lucide";
+import { ChevronDown, Ellipsis, History, Pencil, TriangleAlert, createElement, type IconNode } from "lucide";
 import { historyKey, historyLayout, type HistoryLayout, type HistoryRow } from "../model-history";
 import type { ModelTree, NodeId } from "../model-tree";
 import { isMobileLayout } from "../platform";
@@ -18,6 +18,10 @@ interface ModelHistoryHooks {
   dropRefusal(node: NodeId): string | null;
   /** Delete the branch from `node` down. False when it was refused; the readout says why. */
   drop(node: NodeId): boolean;
+  /** Why this step cannot be edited, or null. */
+  editRefusal(node: NodeId): string | null;
+  /** Open this step's tool with its numbers, to change them. A refusal goes to the readout. */
+  edit(node: NodeId): void;
 }
 
 /** Arrow keys show their step after this pause, so a run of presses asks for the last one only. */
@@ -256,12 +260,20 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
   if (extra) el.setAttribute("aria-description", extra);
   else el.removeAttribute("aria-description");
 
-  // The label and the menu button stay in place, so a double-click across a repaint still lands on one label.
+  // The label and the buttons stay in place, so a double-click across a repaint still lands on one label.
   let label = el.querySelector<HTMLElement>(":scope > .mh-label");
+  let edit = el.querySelector<HTMLButtonElement>(":scope > .mh-edit");
   let more = el.querySelector<HTMLElement>(":scope > .mh-more");
-  if (!label || !more) {
+  if (!label || !edit || !more) {
     label = document.createElement("span");
     label.className = "mh-label";
+    edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "mh-edit";
+    edit.tabIndex = -1;
+    edit.setAttribute("aria-label", "Edit step");
+    edit.dataset.tip = "Edit step";
+    edit.append(icon(Pencil, 12));
     more = document.createElement("button");
     (more as HTMLButtonElement).type = "button";
     more.className = "mh-more";
@@ -271,23 +283,25 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
     more.setAttribute("aria-controls", "modelHistoryMenu");
     more.setAttribute("aria-expanded", "false");
     more.append(icon(Ellipsis));
-    el.replaceChildren(label, more);
+    el.replaceChildren(label, edit, more);
   }
   label.textContent = row.label;
+  // A step that cannot be edited (the opened file, a step under a broken one) shows no pencil; its menu says why.
+  edit.hidden = !!hooks?.editRefusal(row.id);
   el.querySelectorAll(":scope > .mh-rail, :scope > .mh-warn, :scope > .mh-plate").forEach((node) => node.remove());
   label.before(railSvg(row, lanes));
   if (row.broken) {
     const warn = document.createElement("span");
     warn.className = "mh-warn";
     warn.append(icon(TriangleAlert, 12));
-    more.before(warn);
+    edit.before(warn);
   }
   if (row.plate) {
     const chip = document.createElement("span");
     chip.className = "mh-plate";
     chip.textContent = "Plate";
     chip.dataset.tip = "The plate shows this step until you leave Model.";
-    more.before(chip);
+    edit.before(chip);
   }
 }
 
@@ -390,6 +404,11 @@ function onClick(ev: MouseEvent) {
     openMenu(id);
     return;
   }
+  if ((ev.target as Element).closest(".mh-edit")) {
+    setFocus(id, false);
+    editStep(id);
+    return;
+  }
   if ((ev.target as Element).closest(".mh-rename")) return;
   setFocus(id, true);
   jumpNow(id);
@@ -453,6 +472,20 @@ function leave() {
     return;
   }
   back?.focus({ preventScroll: true });
+}
+
+/** Shift+E: edit the step focused in the panel, else the step shown. */
+export function editModelStep() {
+  if (!tree) return;
+  editStep(list?.contains(document.activeElement) ? focusId ?? tree.current : tree.current);
+}
+
+/** Edit `id`: its tool opens in the panel above, prefilled; a refusal is said in the readout, and in the sheet at phone width. */
+function editStep(id: NodeId) {
+  const refusal = hooks?.editRefusal(id) ?? null;
+  if (refusal) showNote(refusal);
+  else if (isMobileLayout()) setSheet(false, false);
+  hooks?.edit(id);
 }
 
 function dropBranch(id: NodeId) {
@@ -519,6 +552,7 @@ function buildMenu(): HTMLElement {
   root.setAttribute("aria-label", "Step");
   root.hidden = true;
   root.innerHTML = `
+    <button type="button" role="menuitem" data-act="edit"><span>Edit step</span><kbd>Shift+E</kbd><small class="mh-why"></small></button>
     <button type="button" role="menuitem" data-act="rename"><span>Rename</span><kbd>F2</kbd></button>
     <button type="button" role="menuitem" data-act="drop"><span>Delete branch</span><kbd>Del</kbd><small class="mh-why"></small></button>`;
   root.addEventListener("click", (ev) => {
@@ -527,7 +561,8 @@ function buildMenu(): HTMLElement {
     if (!item || !Number.isFinite(id)) return;
     if (item.getAttribute("aria-disabled") === "true") return;
     closeMenu(false);
-    if (item.dataset.act === "rename") startRename(id);
+    if (item.dataset.act === "edit") editStep(id);
+    else if (item.dataset.act === "rename") startRename(id);
     else dropBranch(id);
   });
   root.addEventListener("keydown", (ev) => {
@@ -557,10 +592,11 @@ function openMenu(id: NodeId, at?: { x: number; y: number }) {
   const el = rowEls.get(id);
   if (!menu || !el || !hooks) return;
   menu.dataset.id = String(id);
-  const refusal = hooks.dropRefusal(id);
-  const drop = menu.querySelector<HTMLElement>('[data-act="drop"]')!;
-  drop.setAttribute("aria-disabled", refusal ? "true" : "false");
-  drop.querySelector(".mh-why")!.textContent = refusal ?? "";
+  for (const [act, refusal] of [["edit", hooks.editRefusal(id)], ["drop", hooks.dropRefusal(id)]] as const) {
+    const item = menu.querySelector<HTMLElement>(`[data-act="${act}"]`)!;
+    item.setAttribute("aria-disabled", refusal ? "true" : "false");
+    item.querySelector(".mh-why")!.textContent = refusal ?? "";
+  }
   menu.hidden = false;
   el.querySelector(".mh-more")?.setAttribute("aria-expanded", "true");
   const box = el.getBoundingClientRect();
