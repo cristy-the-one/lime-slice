@@ -179,7 +179,20 @@ function readOp(value: unknown): SavedOp | undefined {
     case "hole": {
       const axis = value.axis === undefined ? [0, 0, 0] as Vec3 : vec(value.axis);
       if (!origin || !axis || !finite(value.radius) || !finite(value.depth)) return undefined;
-      return { kind: "hole", origin, axis, radius: value.radius, depth: value.depth };
+      if (value.through !== undefined && typeof value.through !== "boolean") return undefined;
+      // A counterbore is both its numbers or neither.
+      const { counterboreRadius: boreR, counterboreDepth: boreD } = value;
+      const bore = finite(boreR) && finite(boreD);
+      if (!bore && (boreR !== undefined || boreD !== undefined)) return undefined;
+      return {
+        kind: "hole",
+        origin,
+        axis,
+        radius: value.radius,
+        depth: value.depth,
+        ...(value.through === true ? { through: true as const } : {}),
+        ...(bore ? { counterboreRadius: boreR, counterboreDepth: boreD } : {}),
+      };
     }
     case "split": {
       const normal = vec(value.normal);

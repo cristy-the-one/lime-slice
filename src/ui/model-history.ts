@@ -4,8 +4,9 @@
  * after a typing pause, Left and Right switch branches. Rows are rebuilt only when the tree changes,
  * and only while the panel can be seen. Nothing here asks the engine anything.
  */
-import { ChevronDown, Ellipsis, History, Pencil, TriangleAlert, createElement, type IconNode } from "lucide";
-import { historyKey, historyLayout, type HistoryLayout, type HistoryRow } from "../model-history";
+import { ChevronDown, Ellipsis, History, Move3d, Pencil, RotateCcw, TriangleAlert, createElement, type IconNode } from "lucide";
+import { historyKey, historyLayout, positionText, type HistoryLayout, type HistoryRow } from "../model-history";
+import type { PlaceFields } from "../model-space";
 import type { ModelTree, NodeId } from "../model-tree";
 import { isMobileLayout } from "../platform";
 import { state } from "../app/state";
@@ -22,6 +23,10 @@ interface ModelHistoryHooks {
   editRefusal(node: NodeId): string | null;
   /** Open this step's tool with its numbers, to change them; null is the step shown. A refusal goes to the readout. */
   edit(node: NodeId | null): void;
+  /** The Position row was clicked: Place opens. */
+  openPlace(): void;
+  /** The Position row's Reset: the open object goes back to where its file put it, as one Place step. */
+  resetPosition(): void;
 }
 
 /** Arrow keys show their step after this pause, so a run of presses asks for the last one only. */
@@ -86,6 +91,15 @@ export function mountModelHistory(next: ModelHistoryHooks) {
     text.textContent = label;
     open.replaceChildren(icon(History), text);
   }
+  const position = document.querySelector<HTMLButtonElement>("#modelPositionOpen");
+  const reset = document.querySelector<HTMLButtonElement>("#modelPositionReset");
+  if (position && !position.querySelector(".ico")) position.prepend(icon(Move3d));
+  if (reset && !reset.querySelector(".ico")) reset.append(icon(RotateCcw));
+  position?.addEventListener("click", () => {
+    if (isMobileLayout()) setSheet(false, false);
+    hooks?.openPlace();
+  });
+  reset?.addEventListener("click", () => hooks?.resetPosition());
   menu = buildMenu();
   note = document.createElement("p");
   note.className = "mh-note";
@@ -137,6 +151,24 @@ export function syncModelHistory(next: ModelTree | null) {
   sync();
 }
 
+/**
+ * The Position row: the open object's pose as Place reads it, and Reset while it is not where its file put it. Only the
+ * row's own text changes, so a Place drag never repaints the tree. Null with nothing open.
+ */
+export function syncModelPosition(fields: PlaceFields | null, atFile: boolean) {
+  const text = fields ? positionText(fields) : "";
+  const label = document.querySelector("#modelPositionText");
+  if (label && label.textContent !== text) label.textContent = text;
+  const open = document.querySelector<HTMLElement>("#modelPositionOpen");
+  open?.setAttribute("aria-label", `Position: ${text}. Opens Place.`);
+  if (open) open.dataset.tip = `Where this object sits in model space: ${text}. Click to open Place.`;
+  const reset = document.querySelector<HTMLElement>("#modelPositionReset");
+  if (!reset || reset.hidden === atFile) return;
+  // Reset hides once the pose is reset: focus stays in the row rather than drop to the page.
+  if (atFile && document.activeElement === reset) open?.focus({ preventScroll: true });
+  reset.hidden = atFile;
+}
+
 /** Shift+H: into the panel, opening it, or back out of it. */
 export function toggleModelHistoryFocus() {
   if (!panel || !list || !tree) return;
@@ -180,6 +212,7 @@ function sync() {
   document.querySelector("#modelHistoryToggle")?.setAttribute("aria-expanded", (isMobileLayout() ? sheetOpen : !collapsed) ? "true" : "false");
   document.querySelector("#modelHistoryOpen")?.setAttribute("aria-expanded", sheetOpen ? "true" : "false");
   list.hidden = collapsed && !isMobileLayout();
+  document.querySelector("#modelPosition")?.toggleAttribute("hidden", list.hidden);
   if (state.stage !== "model") closeMenu(false);
   if (!visible()) cancelJump();
   else if (tree !== drawn) render();

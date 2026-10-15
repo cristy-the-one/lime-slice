@@ -66,10 +66,12 @@ import {
   editedPanel,
   fieldNumber,
   fieldPrimitive,
+  holeBoxes,
   joinOpen,
   joinPick,
   mountModelChrome,
   openEditTool,
+  openPlaceTool,
   refreshJoinChoices,
   resetKeepTool,
   openModelTool,
@@ -83,7 +85,7 @@ import {
   syncPlaceFields,
   type PlacePhase,
 } from "../ui/model-chrome";
-import { mountModelHistory, syncModelHistory } from "../ui/model-history";
+import { mountModelHistory, syncModelHistory, syncModelPosition } from "../ui/model-history";
 import { dropRefusal, stepLabel } from "../model-history";
 import { addedSolid, addedSplit, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose, withoutObject, type PlateObject } from "../plate";
 import type { ContextPart } from "../model-context";
@@ -305,6 +307,8 @@ export function bindModelView() {
       if (node != null) void startEdit(node);
       else if (tree && !editing) void startEdit(tree.current);
     },
+    openPlace: openPlaceTool,
+    resetPosition: resetPose,
   });
 }
 
@@ -502,8 +506,18 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
       const edges = selectedEdges(picks);
       return edges.length === 0 ? null : { kind: tool, edges, size: num("#modelBlend") };
     }
-    case "hole":
-      return { kind: "hole", origin, axis: drillAxis(), radius: num("#modelHoleR"), depth: num("#modelHoleD") };
+    case "hole": {
+      const { through, counterbore } = holeBoxes();
+      return {
+        kind: "hole",
+        origin,
+        axis: drillAxis(),
+        radius: num("#modelHoleR"),
+        depth: num("#modelHoleD"),
+        ...(through ? { through: true as const } : {}),
+        ...(counterbore ? { counterboreRadius: num("#modelBoreR"), counterboreDepth: num("#modelBoreD") } : {}),
+      };
+    }
     case "boolean":
       return joinOpen() ? panelJoin() : { kind: "boolean", op: boolOp(), ...fieldPrimitive() };
     case "split": {
@@ -2013,6 +2027,25 @@ function syncUndo() {
   if (stepButton) stepButton.disabled = busy || jumping || !tree;
   setModelWaiting(busy || jumping);
   syncModelHistory(tree);
+  syncPosition();
+}
+
+/** The Position row, from the pose the plate object holds and the solid's own box, read once per solid. */
+function syncPosition() {
+  const pose = openPose();
+  syncModelPosition(open ? placeFields(pose, pivotOf(open.solid)) : null, isIdentity(pose));
+}
+
+/** The Position row's Reset: back to where the file put the part, as one Place step, which Prepare undo takes back. */
+function resetPose() {
+  const at = open;
+  if (!at || busy || jumping || isIdentity(openPose())) return;
+  endPlace();
+  placeBefore = openPose();
+  beginEdit();
+  putPose(at.objectId, IDENTITY_POSE);
+  endPlace();
+  syncPlaceFields(true);
 }
 
 const extentOf = extentMemo();

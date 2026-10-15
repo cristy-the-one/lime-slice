@@ -1,3 +1,4 @@
+import { SCREWS } from "../model-hole";
 import { SPLIT_TILT_MAX_DEG } from "../model-plane";
 import { PRIMITIVES } from "../model-primitive";
 
@@ -194,6 +195,9 @@ export function mountMarkup(root: HTMLElement) {
                   <label data-for="fillet chamfer" data-snap="1"><span class="scrub-label" data-scrub>Size</span><input id="modelBlend" type="number" step="0.1" min="0" value="1" aria-label="Fillet or chamfer size"></label>
                   <label data-for="hole" data-snap="1"><span class="scrub-label" data-scrub>Radius</span><input id="modelHoleR" type="number" step="0.1" min="0" value="2" aria-label="Hole radius"></label>
                   <label data-for="hole" data-snap="1"><span class="scrub-label" data-scrub>Depth</span><input id="modelHoleD" type="number" step="0.1" min="0" value="12" aria-label="Hole depth"></label>
+                  <label data-for="hole"><span class="scrub-label">Screw</span><select id="modelScrew" aria-label="Screw size: a clearance hole through, counterbored for a socket head" data-tip="A clearance hole through, counterbored for a socket head cap screw"><option value="">Any</option>${SCREWS.map((screw) => `<option value="${screw.name}">${screw.name}</option>`).join("")}</select></label>
+                  <label data-for="hole" data-bore data-snap="1"><span class="scrub-label" data-scrub>Bore radius</span><input id="modelBoreR" type="number" step="0.1" min="0" value="4" aria-label="Counterbore radius"></label>
+                  <label data-for="hole" data-bore data-snap="1"><span class="scrub-label" data-scrub>Bore depth</span><input id="modelBoreD" type="number" step="0.1" min="0" value="3" aria-label="Counterbore depth"></label>
                   <label data-for="scale" data-snap="0.5"><span class="scrub-label" data-scrub>Factor</span><input id="modelFactor" type="number" step="0.1" min="0.1" max="20" value="2" aria-label="Uniform scale"></label>
                   <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>A X</span><input id="modelAx" type="number" step="0.1" value="0" aria-label="Point A x"></label>
                   <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>A Y</span><input id="modelAy" type="number" step="0.1" value="0" aria-label="Point A y"></label>
@@ -218,6 +222,10 @@ export function mountMarkup(root: HTMLElement) {
                   <button class="btn mode" id="modelCommon" type="button" aria-pressed="false">Common</button>
                 </div>
                 <label class="model-keep" data-for="boolean" data-with="object"><input id="modelKeepTool" type="checkbox"> Keep the tool object</label>
+                <div class="model-hole-opts" data-for="hole">
+                  <label class="model-keep"><input id="modelThrough" type="checkbox"> Through all</label>
+                  <label class="model-keep"><input id="modelCounterbore" type="checkbox"> Counterbore</label>
+                </div>
                 <p class="model-note" id="modelNote" hidden></p>
                 <div class="model-actions">
                   <button class="btn" id="modelCancel" type="button">Cancel</button>
@@ -226,6 +234,10 @@ export function mountMarkup(root: HTMLElement) {
               </div>
               <section class="model-history" id="modelHistory" aria-label="History" hidden>
                 <button class="model-history-toggle" id="modelHistoryToggle" type="button" aria-controls="modelHistoryTree" aria-expanded="true"><span>History</span> <span class="model-history-count" id="modelHistoryCount"></span></button>
+                <div class="mh-position" id="modelPosition" role="group" aria-label="Position">
+                  <button class="mh-position-open" id="modelPositionOpen" type="button" data-tip="Where this object sits in model space. Click to open Place."><span class="mh-position-name">Position</span><span class="mh-position-text" id="modelPositionText"></span></button>
+                  <button class="mh-position-reset" id="modelPositionReset" type="button" aria-label="Reset position" data-tip="Back to where its file put it" hidden></button>
+                </div>
                 <div class="model-history-tree" id="modelHistoryTree" role="tree" aria-label="Model history"></div>
               </section>
               <div class="model-foot" id="modelFoot">

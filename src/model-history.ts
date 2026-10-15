@@ -2,6 +2,8 @@
  * The History panel as data: one row per node of a Model history tree, laid out as a git graph,
  * and what each key does in it. No DOM here; `ui/model-history.ts` draws the rows.
  */
+import { formatMm } from "./model-plane.ts";
+import type { PlaceFields } from "./model-space.ts";
 import { ROOT, childrenOf, pathTo, subtree, toolUser, type ModelNode, type ModelTree, type NodeId } from "./model-tree.ts";
 
 /** Where a row sits against the shown node: before it on its path, it, after it on the branch Redo follows, or elsewhere. */
@@ -246,4 +248,22 @@ export function historyKey(ev: HistoryKey, tree: ModelTree, layout: HistoryLayou
     default:
       return null;
   }
+}
+
+/**
+ * The Position row above the tree: the open object's pose as Place's fields read it, X, Y and Z from where its file put
+ * it and the turns about its centre, each shown only when it is not 0 at the panel's precision. "At file position" for
+ * none. Place moves are not steps (a pose is the plate object's, not a kernel op), so the row is not a node.
+ */
+export function positionText(fields: PlaceFields): string {
+  const parts: string[] = [];
+  for (const [key, name] of [["x", "X"], ["y", "Y"], ["z", "Z"]] as const) {
+    const text = formatMm(fields[key]);
+    if (text !== "0") parts.push(`${name} ${text}`);
+  }
+  for (const [key, name] of [["rx", "X"], ["ry", "Y"], ["rz", "Z"]] as const) {
+    const text = formatMm(fields[key]);
+    if (text !== "0") parts.push(`Turn ${name} ${text}°`);
+  }
+  return parts.length === 0 ? "At file position" : parts.join(" · ");
 }
