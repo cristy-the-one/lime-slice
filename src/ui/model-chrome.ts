@@ -164,8 +164,8 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (plane) setPlaneMode(plane.dataset.plane as PlaneMode);
   });
   document.querySelector("#modelCancel")?.addEventListener("click", () => closeTool());
-  document.querySelector("#modelPanel")?.addEventListener("change", () => keepNewSolidInView());
   document.querySelector("#modelPanel")?.addEventListener("change", (ev) => {
+    keepNewSolidInView();
     // A typed tilt past the limit shows the limit the plane already uses.
     const input = ev.target instanceof HTMLInputElement && (ev.target.id === "modelTiltA" || ev.target.id === "modelTiltB") ? ev.target : null;
     if (!input || clampTilt(Number(input.value)) === Number(input.value)) return;
@@ -407,6 +407,7 @@ function setAcross(flats: boolean) {
   }
   syncFields();
   refreshGhost();
+  keepNewSolidInView();
   hooks?.paramsChanged();
 }
 
