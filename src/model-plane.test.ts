@@ -1,7 +1,4 @@
-import { readFileSync } from "node:fs";
 import {
-  SPLIT_MARGIN_FLOOR_MM,
-  SPLIT_MARGIN_FRACTION,
   boxExtentAlong,
   extentAlong,
   extentMemo,
@@ -86,20 +83,18 @@ eq("a 10 mm box spans 0 to 14.1421 along (1, 0, 1)/√2", r4(extentAlong(cube.po
 eq(
   "and keeps 2 % of that off each side",
   r4(splitWindow(extentAlong(cube.positions, diagonal), boxExtentAlong(cubeBox, diagonal))),
-  { min: 0.2828, max: 13.8593, mid: 7.0711 },
+  { min: 0.2838, max: 13.8583, mid: 7.0711 },
 );
 
-// The margin rule is the kernel's: the same floor and fraction, measured across the box's corners.
-const kernel = readFileSync(new URL("../crates/lime-model-occt/cpp/kernel.cpp", import.meta.url), "utf8");
-check("the kernel's margin is max(floor, thickness × fraction)", kernel.includes(`std::max(${SPLIT_MARGIN_FLOOR_MM}, thickness * ${SPLIT_MARGIN_FRACTION})`));
-check("the kernel measures the thickness across the box corners", /corner\[0\]\[ix\] \* n\[0\]/.test(kernel));
+// The window keeps 0.001 mm more than the kernel's margin, which `tests/kernel.rs` checks at its edge:
+// the kernel measures its box with tolerance, and a piece's 0.25 mm floor on its vertices.
 // A diamond (an octahedron) is narrower along a slant than its box: the kernel's window wins there.
 const diamond = [5, 0, 0, -5, 0, 0, 0, 5, 0, 0, -5, 0, 0, 0, 5, 0, 0, -5];
 const diamondBox = { min: [-5, -5, -5] as Vec3, max: [5, 5, 5] as Vec3 };
 const slant: Vec3 = [Math.SQRT1_2, 0, Math.SQRT1_2];
 eq("the diamond's own extent along the slant", r4(extentAlong(diamond, slant)), { min: -3.5355, max: 3.5355 });
 eq("its box corners reach further", r4(boxExtentAlong(diamondBox, slant)), { min: -7.0711, max: 7.0711 });
-eq("the legal window keeps both rules", r4(splitWindow(extentAlong(diamond, slant), boxExtentAlong(diamondBox, slant))), { min: -3.2855, max: 3.2855, mid: 0 });
+eq("the legal window keeps both rules", r4(splitWindow(extentAlong(diamond, slant), boxExtentAlong(diamondBox, slant))), { min: -3.2845, max: 3.2845, mid: 0 });
 check("a slab too thin along the normal cannot be split", splitWindow({ min: 0, max: 0.4 }, { min: 0, max: 10 }) === null);
 
 // Tilt.
@@ -113,6 +108,25 @@ eq("90° about A turns X onto −Z", r4(tiltedNormal([1, 0, 0], 90, 0)), [0, 0, 
 eq("15° about A", r4(tiltedNormal(Z, 15, 0)), [0, -0.2588, 0.9659]);
 eq("the tilts come back from the normal", r4(tiltOf(Z, tiltedNormal(Z, 20, -35))), [20, -35]);
 eq("the A ring follows B, the B ring stays", r4(tiltRings(Z, 90)), [[0, 0, -1], [0, 1, 0]]);
+const slanted: Vec3 = [0, -0.5, Math.sqrt(3) / 2];
+eq("the tilts come back on an X base", r4(tiltOf([1, 0, 0], tiltedNormal([1, 0, 0], 20, -35))), [20, -35]);
+eq("on a −Y base", r4(tiltOf([0, -1, 0], tiltedNormal([0, -1, 0], 10, 25))), [10, 25]);
+eq("on a slanted face's base", r4(tiltOf(slanted, tiltedNormal(slanted, -12, 40))), [-12, 40]);
+/** `v` turned `deg` degrees about the unit `axis`, right-handed. */
+function turn(v: Vec3, axis: Vec3, deg: number): Vec3 {
+  const a = (deg * Math.PI) / 180;
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+  const d = v[0] * axis[0] + v[1] * axis[1] + v[2] * axis[2];
+  const x: Vec3 = [axis[1] * v[2] - axis[2] * v[1], axis[2] * v[0] - axis[0] * v[2], axis[0] * v[1] - axis[1] * v[0]];
+  return [0, 1, 2].map((i) => v[i]! * c + x[i]! * s + axis[i]! * d * (1 - c)) as Vec3;
+}
+for (const [name, base] of [["X", [1, 0, 0]], ["−Y", [0, -1, 0]], ["a slanted face", slanted]] as [string, Vec3][]) {
+  const [ringA, ringB] = tiltRings(base, -29);
+  const tilted = tiltedNormal(base, 17, -29);
+  eq(`on ${name}, turning about the A ring adds to A only`, r4(turn(tilted, ringA, 6)), r4(tiltedNormal(base, 23, -29)));
+  eq(`on ${name}, turning about the B ring adds to B only`, r4(turn(tilted, ringB, 6)), r4(tiltedNormal(base, 17, -23)));
+}
 
 // A face plane plus an offset.
 const top = facePlane(cube.positions, cube.triangles, 1, Z)!;
@@ -120,7 +134,9 @@ eq("the top face's plane is its middle and its normal", r4(top), { point: [5, 5,
 const fromTop = splitBase("face", [5, 5, 5], top)!;
 const two = planeFor(fromTop, 2, [0, 0], (n) => extentAlong(cube.positions, n), cubeBox);
 eq("2 mm into the part from the top face", r4([two.origin, two.normal]), [[5, 5, 8], [0, 0, 1]]);
-eq("the range is the part's depth from the face", r4(two.range), { min: 0.25, max: 9.75, mid: 5 });
+eq("the range is the part's depth from the face", r4(two.range), { min: 0.251, max: 9.749, mid: 5 });
+const leaningFace = planeFor(fromTop, 2, [20, 0], (n) => extentAlong(cube.positions, n), cubeBox);
+eq("a tilted face plane turns about its pivot, 2 mm under the face", r4([leaningFace.origin, leaningFace.normal, leaningFace.inside]), [[5, 5, 8], r4(tiltedNormal(Z, 20, 0)), true]);
 const bent = [0, 0, 0, 10, 0, 0, 10, 10, 0, 0, 0, 0, 10, 10, 0, 0, 10, 3];
 check("a face whose corners leave its plane is curved", facePlane(bent, [0, 0], 0, Z) === null);
 
@@ -131,17 +147,25 @@ eq("Z at 4 cuts through the centre line", r4([flat.origin, flat.normal, flat.ins
 const turned = planeFor(onZ, 4, [30, 0], (n) => extentAlong(cube.positions, n), cubeBox);
 eq("a tilt turns about the same pivot", r4(turned.origin), [5, 5, 4]);
 // Tilted 30°, the plane still cuts a corner while its pivot is 2.57 mm below the part.
-eq("and the range is where the tilted plane still cuts, on the centre line", r4(turned.range), { min: -2.5713, max: 12.5713, mid: 5 });
+eq("and the range is where the tilted plane still cuts, on the centre line", r4(turned.range), { min: -2.5701, max: 12.5701, mid: 5 });
 const onX = planeFor(splitBase("x", [5, 5, 5], null)!, 7, [0, 0], (n) => extentAlong(cube.positions, n), cubeBox);
 eq("X at 7", r4([onX.origin, onX.normal]), [[7, 5, 5], [1, 0, 0]]);
+const along = (n: Vec3) => extentAlong(cube.positions, n);
+eq("a typed tilt past 85° stops at 85°", r4(planeFor(onZ, 5, [90, 0], along, cubeBox).normal), r4(tiltedNormal(Z, 85, 0)));
+eq("and below −85° at −85°", r4(planeFor(onZ, 5, [0, -120], along, cubeBox).normal), r4(tiltedNormal(Z, 0, -85)));
+check("so a quarter turn still has a range", planeFor(onZ, 5, [90, 0], along, cubeBox).range !== null);
 
 // History labels, from origin and normal alone.
 eq("an X split", splitLabel([10, 5, 5], [1, 0, 0]), "Split at X 10");
 eq("a Y split below zero", splitLabel([5, -4.5, 5], [0, 1, 0]), "Split at Y −4.5");
 eq("a Z split, as saved before", splitLabel([0, 0, 42], [0, 0, 1]), "Split at Z 42");
 eq("a face whose normal is an axis reads as that axis", splitLabel([5, 5, 8], [0, 0, -1]), "Split at Z 8");
-eq("a tilted split", splitLabel([5, 5, 42], tiltedNormal(Z, 15, 0)), "Split at 42 mm, tilt 15° / 0°");
-eq("a slanted face, from the axis it is nearest", splitLabel([5, 5, 42], [0, -0.5, Math.sqrt(3) / 2]), "Split at 42 mm, tilt 30° / 0°");
+eq("a tilted split names where its plane crosses the axis", splitLabel([0, 0, 42], tiltedNormal(Z, 15, 0)), "Split at Z 42, tilt 15° / 0°");
+eq("wherever its pivot is", splitLabel([0, 3, 42.8038], tiltedNormal(Z, 15, 0)), "Split at Z 42, tilt 15° / 0°");
+eq("a slanted face, from the axis it is nearest", splitLabel([0, 0, 42], slanted), "Split at Z 42, tilt 30° / 0°");
+const past45 = [10, 20].map((z) => splitLabel([5, 5, z], tiltedNormal(Z, 50, 0)));
+check(`two planes tilted past 45° on one base read apart: ${past45.join(" | ")}`, past45[0] !== past45[1] && past45.every((label) => label.startsWith("Split at Y ")));
+eq("a float32 normal a hair off its axis still reads as that axis", splitLabel([0, 0, 42], [1e-8, -2e-8, 1]), "Split at Z 42");
 
 // The panel's note.
 eq("a face split names its range as depth into the part", splitNote({ plan: two }), { text: "From 0.25 to 9.75 mm into the part. The middle is 5.", bad: false });

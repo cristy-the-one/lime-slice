@@ -173,7 +173,39 @@ test("the tilt fields turn the request's normal about the pivot, and History nam
   const op = await applySplit(page, tree);
   expect(near(op.normal, [0, -Math.sin(Math.PI / 12), Math.cos(Math.PI / 12)]), `tilted 15° about X, got ${op.normal}`).toBe(true);
   expect(op.origin).toEqual([10, 10, 5]);
-  await expect(labels(page).last()).toHaveText("Split at 5 mm, tilt 15° / 0°");
+  // The plane crosses the world Z axis (x = y = 0) at 5 − 10·tan 15° = 2.32.
+  await expect(labels(page).last()).toHaveText("Split at Z 2.32, tilt 15° / 0°");
+});
+
+test("a typed tilt past ±85° stops there, in the field and in the request", async ({ page }) => {
+  const tree = await openModel(page);
+  await page.locator("#modelToolSplit").click();
+  await page.locator("#modelTiltA").fill("120");
+  await page.locator("#modelTiltA").press("Tab");
+  await expect(page.locator("#modelTiltA")).toHaveValue("85");
+  await expect(note(page)).toHaveText(/^From .* The middle is 5\.$/);
+  const op = await applySplit(page, tree);
+  const a = (85 * Math.PI) / 180;
+  expect(near(op.normal, [0, -Math.sin(a), Math.cos(a)]), `tilted 85° about X, got ${op.normal}`).toBe(true);
+});
+
+test("Split opens untilted, and in Face mode it picks faces again after Edge picking", async ({ page }) => {
+  await openModel(page);
+  const top = await topMiddle(page);
+  await page.locator("#modelToolSplit").click();
+  await page.locator("#modelSplitFace").click();
+  await setField(page, "modelTiltA", "20");
+  await page.locator("#modelCancel").click();
+  await page.locator("#modelPickEdge").click();
+  await page.locator("#modelToolSplit").click();
+  await expect(page.locator("#modelSplitFace")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#modelPickFace"), "Face mode picks faces").toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#modelTiltA"), "a tilt does not carry over").toHaveValue("0");
+  await page.locator("#modelPickEdge").click();
+  await expect(note(page)).toHaveText("Switch to Face picking, then pick a flat face to cut from.");
+  await page.locator("#modelPickFace").click();
+  await page.mouse.click(top.x, top.y);
+  await expect(note(page)).toHaveText("From 0.25 to 9.75 mm into the part. The middle is 5.");
 });
 
 test("a drag on a docked tilt ring changes the tilt, turns the plane ghost, and is one Apply", async ({ page }) => {
@@ -182,17 +214,25 @@ test("a drag on a docked tilt ring changes the tilt, turns the plane ghost, and 
   const ghost = async () => ((await page.locator("#model").getAttribute("data-ghost")) ?? "").split(" ").map(Number);
   const flat = await ghost();
   const ring = await grip(page, "tilt-b");
+  const [cx, cy] = ((await page.locator("#model").getAttribute("data-gizmo-at")) ?? "").split(",").map(Number);
+  const canvas = (await page.locator("#model").boundingBox())!;
+  const off = { x: ring.x - canvas.x - cx!, y: ring.y - canvas.y - cy! };
+  const length = Math.hypot(off.x, off.y);
+  // The default camera looks along +Y from below it, X to the right and Z up, so a right-handed turn
+  // about +Y runs clockwise on screen: at the grip, along (−y, x) in screen pixels.
+  const along = { x: (-off.y / length) * 6, y: (off.x / length) * 6 };
   await page.mouse.move(ring.x, ring.y);
   await expect(page.locator(".model-drag-tip")).toContainText("Tilt B");
   await page.mouse.down();
-  for (let i = 1; i <= 8; i += 1) await page.mouse.move(ring.x + i * 4, ring.y - i * 7);
+  for (let i = 1; i <= 8; i += 1) await page.mouse.move(ring.x + along.x * i, ring.y + along.y * i);
   await page.mouse.up();
   const tilt = Number(await page.locator("#modelTiltB").inputValue());
-  expect(tilt).not.toBe(0);
+  expect(tilt, "dragged clockwise, the B ring turns right-handed about +Y: B grows").toBeGreaterThan(0);
   await expect.poll(async () => (await ghost())[5], "the ghost turns out of the flat").toBeGreaterThan(flat[5]! + 1);
   expect(tree.of("apply")).toHaveLength(0);
   const op = await applySplit(page, tree);
-  expect(Math.abs(op.normal[0]!), "tilted about Y").toBeGreaterThan(0.01);
+  const b = (tilt * Math.PI) / 180;
+  expect(near(op.normal, [Math.sin(b), 0, Math.cos(b)]), `the request has the dragged tilt, got ${op.normal} for ${tilt}°`).toBe(true);
 });
 
 test("a saved project labels its splits the same after a reopen: an old Z split and an X split", async ({ page }) => {

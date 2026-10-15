@@ -6,7 +6,7 @@ import { holeAxis, lastFace, outwardFromMesh, selectedEdges } from "../model-ble
 import { nextModelPicks, selectionCountLabel } from "../model-select";
 import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
-import { extentMemo, facePlane, planeFor, splitBase, splitNote, type FacePlane, type PlaneMode, type SplitState } from "../model-plane";
+import { extentMemo, facePlane, planeFor, splitBase, splitNote, type FacePlane, type SplitState } from "../model-plane";
 import {
   ROOT,
   childWithOp,
@@ -42,6 +42,7 @@ import {
   setModelProbe,
   setModelWaiting,
   syncModelChrome,
+  splitMode,
   syncModelSolid,
 } from "../ui/model-chrome";
 import { mountModelHistory, syncModelHistory } from "../ui/model-history";
@@ -568,11 +569,12 @@ function setMode(mode: "face" | "edge") {
   fx.model?.setPickMode(mode);
   picks = [];
   fx.model?.highlight([]);
-  syncModelChrome([]);
+  // The buttons first: the Split panel's note reads which one is on.
   document.querySelector("#modelPickFace")?.setAttribute("aria-pressed", mode === "face" ? "true" : "false");
   document.querySelector("#modelPickFace")?.classList.toggle("on", mode === "face");
   document.querySelector("#modelPickEdge")?.setAttribute("aria-pressed", mode === "edge" ? "true" : "false");
   document.querySelector("#modelPickEdge")?.classList.toggle("on", mode === "edge");
+  syncModelChrome([]);
   if (open) readout(`${about(open.solid)} Pick ${mode === "face" ? "a face" : "an edge"}.`);
 }
 
@@ -1086,10 +1088,8 @@ const extentOf = extentMemo();
 /** Each solid's flat faces, by face index; null for a curved one. */
 const flatFaces = new WeakMap<ParsedSolid, Map<number, FacePlane | null>>();
 
-function planeMode(): PlaneMode {
-  const mode = document.querySelector<HTMLElement>('#modelPlaneModes [aria-pressed="true"]')?.dataset.plane;
-  return mode === "x" || mode === "y" || mode === "face" ? mode : "z";
-}
+/** The last split worked out, for the solid and panel state it was worked out from: one input asks several times. */
+let splitKept: { solid: ParsedSolid; key: string; state: SplitState } | null = null;
 
 /**
  * The split plane from the panel, in the solid's own frame: the one place a split request is built.
@@ -1099,19 +1099,27 @@ function splitState(): SplitState {
   const at = open;
   const box = at ? boxOf(at.solid.positions) : null;
   if (!at || !box) return { why: "Open a STEP file to measure a solid.", wait: true };
-  const mode = planeMode();
-  let face: FacePlane | null = null;
-  if (mode === "face") {
-    const picked = lastFace(picks);
-    if (picked == null) return { why: "Pick a flat face to cut from.", wait: true };
-    face = flatFace(at.solid, picked);
-    if (!face) return { why: "Pick a flat face. This one is curved.", wait: false };
+  const mode = splitMode();
+  const picked = mode === "face" ? lastFace(picks) : null;
+  const facePicking = document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") === "true";
+  const value = num("#modelPlane");
+  const tilt: [number, number] = [num("#modelTiltA"), num("#modelTiltB")];
+  const key = `${mode}|${picked}|${facePicking}|${value}|${tilt}`;
+  if (splitKept?.solid === at.solid && splitKept.key === key) return splitKept.state;
+  let state: SplitState;
+  if (mode === "face" && picked == null) {
+    state = { why: facePicking ? "Pick a flat face to cut from." : "Switch to Face picking, then pick a flat face to cut from.", wait: true };
+  } else {
+    const face = picked == null ? null : flatFace(at.solid, picked);
+    const center: Vec3 = [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2];
+    const base = splitBase(mode, center, face);
+    state = base
+      ? { plan: planeFor(base, value, tilt, (normal) => extentOf(at.solid.positions, normal), box) }
+      : { why: "Pick a flat face. This one is curved.", wait: false };
   }
-  const center: Vec3 = [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2];
-  const base = splitBase(mode, center, face)!;
-  return { plan: planeFor(base, num("#modelPlane"), [num("#modelTiltA"), num("#modelTiltB")], (normal) => extentOf(at.solid.positions, normal), box) };
+  splitKept = { solid: at.solid, key, state };
+  return state;
 }
-
 
 /** A split is on offer when the solid can be cut square to at least one axis. */
 function splitLegal(): boolean {

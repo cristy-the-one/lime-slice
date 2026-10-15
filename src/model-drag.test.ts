@@ -111,7 +111,7 @@ eq("the sphere radius knob is docked", ball.find((handle) => handle.id === "radi
 check("a sphere does not turn", !ball.some((handle) => handle.kind === "ring"));
 eq("box and cylinder turn on three rings", cylinder.filter((handle) => handle.kind === "ring").map((handle) => handle.fields[0]), ["modelRx", "modelRy", "modelRz"]);
 const plane = handlesFor("split", context("box"))[0]!;
-eq("the split arrow keeps the plane inside the part", [plane.min, plane.max, originOf(plane)![2]], [0.25, 9.75, 5]);
+eq("the split arrow keeps the plane inside the part", [plane.min!, plane.max!, originOf(plane)![2]].map((value) => Math.round(value * 1e4) / 1e4), [0.251, 9.749, 5]);
 eq("it points up Z and moves the plane one for one", [plane.dir, plane.rate, plane.label], [[0, 0, 1], 1, "Plane Z"]);
 const tiltRingsOf = handlesFor("split", context("box")).filter((handle) => handle.kind === "ring");
 eq("the split's two tilt rings are docked, about X and Y for a Z plane", tiltRingsOf.map((handle) => [handle.fields[0], docked(handle), handle.dir]), [["modelTiltA", true, [1, 0, 0]], ["modelTiltB", true, [0, 1, 0]]]);

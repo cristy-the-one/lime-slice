@@ -6,7 +6,7 @@ import { Box, CircleDot, Download, Redo2, Ruler, Scaling, Spline, SquareSplitHor
 import type { HandleDrag, ModelGhost } from "../model-view";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type ModelTool, type Vec3 } from "../model-drag";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
-import { formatMm, splitNote, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
+import { clampTilt, splitNote, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
 import { lastFace, selectedEdges } from "../model-blend";
 import { lastEdge, modelApplyReady, selectionCountLabel, type ModelPickRef } from "../model-select";
 import { scrubIntent, scrubTarget, type ScrubIntent } from "./scrub";
@@ -107,6 +107,13 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (plane) setPlaneMode(plane.dataset.plane as PlaneMode);
   });
   document.querySelector("#modelCancel")?.addEventListener("click", () => closeTool());
+  document.querySelector("#modelPanel")?.addEventListener("change", (ev) => {
+    // A typed tilt past the limit shows the limit the plane already uses.
+    const input = ev.target instanceof HTMLInputElement && (ev.target.id === "modelTiltA" || ev.target.id === "modelTiltB") ? ev.target : null;
+    if (!input || clampTilt(Number(input.value)) === Number(input.value)) return;
+    input.value = String(clampTilt(Number(input.value)));
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
   document.querySelector("#modelPanel")?.addEventListener("input", () => {
     if (tool === "split") syncSplitField();
     refreshGhost();
@@ -140,7 +147,7 @@ export function closeModelTool() {
 export function syncModelChrome(next: readonly ModelPickRef[]) {
   picks = next.map((pick) => ({ kind: pick.kind, index: pick.index }));
   // A new face to cut from: the plane starts in the middle of the part behind it.
-  if (tool === "split" && planeMode() === "face" && lastFace(picks) !== seatedFace) applySplitDefaults();
+  if (tool === "split" && splitMode() === "face" && lastFace(picks) !== seatedFace) applySplitDefaults();
   const label = selectionCountLabel(picks);
   const chip = document.querySelector("#modelCount");
   if (chip) {
@@ -158,9 +165,12 @@ export function refreshModelGhost() {
   refreshGhost();
 }
 
-/** The open solid changed. A split plane goes back to the new middle. */
+/** The open solid changed. A split plane goes back to the new middle, untilted. */
 export function syncModelSolid() {
-  if (tool === "split") applySplitDefaults();
+  if (tool === "split") {
+    writeFields(["modelTiltA", "modelTiltB"], [0, 0]);
+    applySplitDefaults();
+  }
   refreshTools();
   refreshApply();
   refreshNote();
@@ -206,7 +216,11 @@ function toggleTool(next: ModelTool) {
   if ((next === "fillet" || next === "chamfer") && document.querySelector("#modelPickEdge")?.getAttribute("aria-pressed") !== "true") {
     document.querySelector<HTMLButtonElement>("#modelPickEdge")?.click();
   }
-  if (next === "split") applySplitDefaults();
+  if (next === "split") {
+    // A tilt is about the part it was set on, so the tool opens square to its base.
+    writeFields(["modelTiltA", "modelTiltB"], [0, 0]);
+    applySplitDefaults();
+  }
   if (next === "hole") applyHoleDefaults();
   if (next === "measure") applyMeasureDefaults();
   syncFields();
@@ -280,7 +294,8 @@ function writeFields(fields: readonly string[], values: readonly number[]) {
   });
 }
 
-function planeMode(): PlaneMode {
+/** The Split panel's base: X, Y, Z, or Face. */
+export function splitMode(): PlaneMode {
   const mode = document.querySelector<HTMLElement>('#modelPlaneModes [aria-pressed="true"]')?.dataset.plane;
   return mode === "x" || mode === "y" || mode === "face" ? mode : "z";
 }
@@ -292,9 +307,6 @@ function setPlaneMode(mode: PlaneMode) {
     button.setAttribute("aria-pressed", on ? "true" : "false");
     button.classList.toggle("on", on);
   });
-  if (mode === "face" && document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") !== "true") {
-    document.querySelector<HTMLButtonElement>("#modelPickFace")?.click();
-  }
   applySplitDefaults();
   refreshApply();
   refreshNote();
@@ -310,18 +322,20 @@ function splitPlan(): SplitPlan | null {
 /** The face the split's number was last put in the middle for. */
 let seatedFace: number | null = null;
 
-/** The plane's number goes to the middle of the part, and its label and limits follow the mode. */
+/** The plane's number goes to the middle of the part, and its label and limits follow the mode. Face picks faces. */
 function applySplitDefaults() {
+  if (splitMode() === "face" && document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") !== "true") {
+    document.querySelector<HTMLButtonElement>("#modelPickFace")?.click();
+  }
   seatedFace = lastFace(picks);
-  const input = document.querySelector<HTMLInputElement>("#modelPlane");
   const range = splitPlan()?.range;
-  if (input && range) input.value = formatMm(range.mid);
+  if (range) writeFields(["modelPlane"], [range.mid]);
   syncSplitField();
 }
 
 /** "Plane X" or "Offset into the part", and the limits a scrub stops at, which a tilt moves. */
 function syncSplitField() {
-  const mode = planeMode();
+  const mode = splitMode();
   const label = document.querySelector("#modelPlaneLabel");
   const input = document.querySelector<HTMLInputElement>("#modelPlane");
   const text = mode === "face" ? "Offset into the part" : `Plane ${mode.toUpperCase()}`;
@@ -334,8 +348,9 @@ function syncSplitField() {
     input.removeAttribute("max");
     return;
   }
-  input.min = String(range.min);
-  input.max = String(range.max);
+  // Rounded inward, so the limits are values the field can show and a plane on them still cuts.
+  input.min = String(Math.ceil(range.min * 100) / 100);
+  input.max = String(Math.floor(range.max * 100) / 100);
 }
 
 function refreshTools() {

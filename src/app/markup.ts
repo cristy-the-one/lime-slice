@@ -1,3 +1,5 @@
+import { SPLIT_TILT_MAX_DEG } from "../model-plane";
+
 export function mountMarkup(root: HTMLElement) {
   root.innerHTML = `
   <div class="app">
@@ -168,9 +170,9 @@ export function mountMarkup(root: HTMLElement) {
                   <label data-for="boolean" data-prim="box cylinder" data-snap="15"><span class="scrub-label" data-scrub>Turn X</span><input id="modelRx" type="number" step="1" value="0" aria-label="Turn about x, degrees"></label>
                   <label data-for="boolean" data-prim="box cylinder" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelRy" type="number" step="1" value="0" aria-label="Turn about y, degrees"></label>
                   <label data-for="boolean" data-prim="box cylinder" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelRz" type="number" step="1" value="0" aria-label="Turn about z, degrees"></label>
-                  <label data-for="split" data-snap="1"><span class="scrub-label" id="modelPlaneLabel" data-scrub>Plane Z</span><input id="modelPlane" type="number" step="0.1" value="5" aria-label="Split plane Z, mm"></label>
-                  <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt A°</span><input id="modelTiltA" type="number" step="1" min="-85" max="85" value="0" aria-label="Tilt A, degrees"></label>
-                  <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt B°</span><input id="modelTiltB" type="number" step="1" min="-85" max="85" value="0" aria-label="Tilt B, degrees"></label>
+                  <label data-for="split" data-snap="1"><span class="scrub-label" id="modelPlaneLabel" data-scrub>Plane Z</span><input id="modelPlane" type="number" step="any" value="5" aria-label="Split plane Z, mm"></label>
+                  <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt A°</span><input id="modelTiltA" type="number" step="1" min="-${SPLIT_TILT_MAX_DEG}" max="${SPLIT_TILT_MAX_DEG}" value="0" aria-label="Tilt A, degrees"></label>
+                  <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt B°</span><input id="modelTiltB" type="number" step="1" min="-${SPLIT_TILT_MAX_DEG}" max="${SPLIT_TILT_MAX_DEG}" value="0" aria-label="Tilt B, degrees"></label>
                   <label data-for="fillet chamfer" data-snap="1"><span class="scrub-label" data-scrub>Size</span><input id="modelBlend" type="number" step="0.1" min="0" value="1" aria-label="Fillet or chamfer size"></label>
                   <label data-for="hole" data-snap="1"><span class="scrub-label" data-scrub>Radius</span><input id="modelHoleR" type="number" step="0.1" min="0" value="2" aria-label="Hole radius"></label>
                   <label data-for="hole" data-snap="1"><span class="scrub-label" data-scrub>Depth</span><input id="modelHoleD" type="number" step="0.1" min="0" value="12" aria-label="Hole depth"></label>

@@ -584,6 +584,19 @@ fn planes_off_axis() {
     let corner = plane(4, [8.0, 8.0, 8.0], [third, third, third]);
     near(volume(&corner["other"]), 36.0);
     near(volume(&corner), 964.0);
+
+    // The margin on the diagonal is 2 % of 14.142 mm, measured across the box's corners. Model's
+    // window (`splitWindow` in src/model-plane.ts) keeps 0.001 mm inside it: the kernel cuts there,
+    // and refuses 0.001 mm outside it.
+    let margin = 0.02 * 10.0 * 2.0_f64.sqrt();
+    let diagonal = [0.5_f64.sqrt(), 0.0, 0.5_f64.sqrt()];
+    let at =
+        |d: f64| json!({ "kind": "split", "origin": diagonal.map(|n| n * d), "normal": diagonal });
+    assert_eq!(probe("planes", at(margin + 0.001)), json!({ "ok": true }));
+    assert_eq!(
+        probe("planes", at(margin - 0.001)),
+        json!({ "ok": false, "error": "The plane is too close to a face. Move it into the part." })
+    );
     ok(json!({ "call": "close", "key": "planes" }));
 }
 

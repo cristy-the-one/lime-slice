@@ -14,6 +14,12 @@ export const SPLIT_MARGIN_FLOOR_MM = 0.25;
 export const SPLIT_MARGIN_FRACTION = 0.02;
 /** A tilt stops short of a quarter turn, where the plane would stand along its own base line. */
 export const SPLIT_TILT_MAX_DEG = 85;
+/**
+ * The window stays this far inside the kernel's margin. The kernel measures the solid's box from the
+ * B-rep with its tolerance, and a piece's 0.25 mm floor on its vertices, so a plane exactly on the
+ * edge this side computes from the tessellation could be refused there.
+ */
+export const SPLIT_EDGE_SLACK_MM = 0.001;
 
 export type Vec3 = [number, number, number];
 
@@ -146,8 +152,8 @@ export function splitWindow(solid: AxisExtent | null, box: AxisExtent | null): S
   const own = splitPlaneRange(solid);
   const kernel = splitPlaneRange(box);
   if (!own || !kernel) return null;
-  const min = Math.max(own.min, kernel.min);
-  const max = Math.min(own.max, kernel.max);
+  const min = Math.max(own.min, kernel.min) + SPLIT_EDGE_SLACK_MM;
+  const max = Math.min(own.max, kernel.max) - SPLIT_EDGE_SLACK_MM;
   if (!(max > min)) return null;
   return { min, max, mid: Math.min(max, Math.max(min, own.mid)) };
 }
@@ -216,11 +222,17 @@ export function planeFor(
   along: (normal: Vec3) => AxisExtent | null,
   box: { min: Vec3; max: Vec3 } | null,
 ): SplitPlan {
-  const normal = tiltedNormal(base.normal, tilt[0], tilt[1]);
+  const [tiltA, tiltB] = tilt.map(clampTilt) as [number, number];
+  const normal = tiltedNormal(base.normal, tiltA, tiltB);
   const origin = add(base.base, scale(base.dir, value));
   const window = box ? splitWindow(along(normal), boxExtentAlong(box, normal)) : null;
   const range = window ? valueRange(base, normal, window) : null;
-  return { base, value, origin, normal, range, inside: splitPlaneInside(value, range), rings: tiltRings(base.normal, tilt[1]) };
+  return { base, value, origin, normal, range, inside: splitPlaneInside(value, range), rings: tiltRings(base.normal, tiltB) };
+}
+
+/** A typed tilt, held within ±`SPLIT_TILT_MAX_DEG`. */
+export function clampTilt(deg: number): number {
+  return Number.isFinite(deg) ? Math.max(-SPLIT_TILT_MAX_DEG, Math.min(SPLIT_TILT_MAX_DEG, deg)) : 0;
 }
 
 /** The split the panel describes, or why there is none: `wait` while it waits for a pick, else a refusal. */
@@ -280,17 +292,18 @@ export function facePlane(positions: ArrayLike<number>, triangles: ArrayLike<num
 
 /**
  * The History label of a split, from its origin and normal alone, so a saved or replayed split reads
- * the same: "Split at Z 42" on an axis, else the plane's coordinate on the axis its normal is nearest
- * and the tilts from that axis, "Split at 42 mm, tilt 15° / 0°".
+ * the same: the world axis the normal is nearest, where the plane crosses it, and the tilts from it.
+ * "Split at Z 42" on an axis, "Split at Z 42, tilt 15° / 0°" off it.
  */
 export function splitLabel(origin: Vec3, normal: Vec3): string {
   let n = unit(normal);
   const axis = dominant(n);
   if (n[axis]! < 0) n = scale(n, -1);
-  const off = n.some((value, i) => i !== axis && Math.abs(value) > 1e-9);
-  if (!off) return `Split at ${"XYZ"[axis]} ${signed(origin[axis]!)}`;
-  const [a, b] = tiltOf(AXES[axis]!, n);
-  return `Split at ${signed(origin[axis]!)} mm, tilt ${signed(a)}° / ${signed(b)}°`;
+  // Where the plane crosses that world axis: a property of the plane, whatever its pivot.
+  const at = `Split at ${"XYZ"[axis]} ${signed(dot(n, origin) / n[axis]!)}`;
+  const [a, b] = tiltOf(AXES[axis]!, n).map(signed);
+  // Decided on the tilts as shown, so a float32 normal a hair off its axis reads as that axis.
+  return a === "0" && b === "0" ? at : `${at}, tilt ${a}° / ${b}°`;
 }
 
 function signed(value: number): string {
