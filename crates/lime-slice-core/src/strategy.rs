@@ -448,9 +448,6 @@ pub struct ResolvedStrategy {
     pub retract_mm: f64,
     pub retract_min_travel: f64,
     pub fan: u8,
-    /// Support, interface, and tree paths. The strategy's own `fan` unless the
-    /// request sets a fan.
-    pub support_fan: u8,
     pub skirt_loops: u32,
     /// 0 = speed, 1 = toughness. Used when a single toolpath is a mix.
     pub toughness: f64,
@@ -503,7 +500,6 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             retract_mm: 0.35,
             retract_min_travel: 4.0,
             fan: 255,
-            support_fan: 255,
             skirt_loops: 1,
             toughness: 0.0,
             lightning_range_mm: 4.0,
@@ -541,7 +537,6 @@ pub fn pure(id: StrategyId) -> ResolvedStrategy {
             retract_mm: 0.9,
             retract_min_travel: 1.2,
             fan: 150,
-            support_fan: 150,
             skirt_loops: 2,
             toughness: 1.0,
             lightning_range_mm: 0.0,
@@ -607,7 +602,6 @@ pub fn mix(toughness: f64) -> ResolvedStrategy {
         retract_mm: lerp(speed.retract_mm, tough.retract_mm),
         retract_min_travel: lerp(speed.retract_min_travel, tough.retract_min_travel),
         fan: lerp(speed.fan as f64, tough.fan as f64).round() as u8,
-        support_fan: lerp(speed.support_fan as f64, tough.support_fan as f64).round() as u8,
         skirt_loops: if t >= 0.5 { 2 } else { 1 },
         toughness: t,
         lightning_range_mm: range,
@@ -763,14 +757,6 @@ pub struct PrinterProfile {
 }
 
 impl PrinterProfile {
-    /// Whether the request sets any of the four fan values.
-    pub fn names_fan(&self) -> bool {
-        self.fan_percent.is_some()
-            || self.overhang_fan_percent.is_some()
-            || self.support_fan_percent.is_some()
-            || self.fan_off_layers.is_some()
-    }
-
     /// Whether arcs may be written. A stock Klipper `printer.cfg` has no
     /// `[gcode_arcs]`, so Klipper skips every G2/G3 and the next G1 takes
     /// its filament at once; a Klipper printer that does not say gets none.

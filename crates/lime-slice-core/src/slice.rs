@@ -220,8 +220,8 @@ pub struct SliceRequest {
     /// Bridge feed, millimetres per second. Omitted keeps the 18–36 mm/s slowdown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_speed_mm_s: Option<f64>,
-    /// Bridge fan, percent of full. Omitted keeps the layer fan, with bridges at
-    /// full fan on layers that use the path fan.
+    /// Bridge fan, percent of full. Omitted, bridges take the overhang fan:
+    /// the printer's `overhangFanPercent`, else full fan once the layer fan is on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_fan_percent: Option<u8>,
     /// Pauses and filament changes. Omitted when empty, so a default request
@@ -474,15 +474,8 @@ pub struct SliceSettings {
     pub bridge_flow_ratio: Option<f64>,
     /// `None` keeps the 18–36 mm/s bridge slowdown.
     pub bridge_speed_mm_s: Option<f64>,
-    /// `None` keeps the layer fan. A percent holds that PWM on the bridge.
+    /// `None` gives bridges the overhang fan. A percent holds that PWM on the bridge.
     pub bridge_fan_percent: Option<u8>,
-    /// Part fan PWM for every strategy. `None` keeps each strategy's fan.
-    /// Set from the printer's `fan_percent` when a slice starts.
-    pub fan_pwm: Option<u8>,
-    /// Overhang and bridge fan PWM. `None` keeps the 220/255 boost.
-    pub overhang_fan_pwm: Option<u8>,
-    /// Support fan PWM. `None` follows the part fan.
-    pub support_fan_pwm: Option<u8>,
     /// Empty injects nothing at layer changes.
     pub layer_actions: Vec<LayerAction>,
     pub scarf_seam: ScarfSeam,
@@ -584,9 +577,6 @@ impl Default for SliceSettings {
             bridge_flow_ratio: None,
             bridge_speed_mm_s: None,
             bridge_fan_percent: None,
-            fan_pwm: None,
-            overhang_fan_pwm: None,
-            support_fan_pwm: None,
             layer_actions: Vec::new(),
             scarf_seam: ScarfSeam::Blend,
             scarf_length: default_scarf_length(),
@@ -742,9 +732,6 @@ impl SliceSettings {
             bridge_flow_ratio: bridge_flow(req.classic, req.bridge_flow_ratio),
             bridge_speed_mm_s: bridge_speed(req.classic, req.bridge_speed_mm_s),
             bridge_fan_percent: bridge_fan(req.classic, req.bridge_fan_percent),
-            fan_pwm: None,
-            overhang_fan_pwm: None,
-            support_fan_pwm: None,
             layer_actions: clean_layer_actions(&req.layer_actions),
             scarf_seam: if req.classic {
                 ScarfSeam::Off
@@ -1002,7 +989,7 @@ fn bridge_speed(classic: bool, value: Option<f64>) -> Option<f64> {
     value.and_then(|mm| (mm > 1e-6).then_some(mm.clamp(5.0, 200.0)))
 }
 
-/// A bridge fan percent the request actually set. `0` keeps the layer fan.
+/// A bridge fan percent the request actually set. `0` keeps the overhang fan.
 fn bridge_fan(classic: bool, value: Option<u8>) -> Option<u8> {
     if classic {
         return None;
@@ -1111,12 +1098,9 @@ fn bridge_tune(settings: &SliceSettings) -> Option<BridgeTune> {
     let speed_mm_s = settings
         .bridge_speed_mm_s
         .and_then(|mm| (mm > 1e-6).then_some(mm.clamp(5.0, 200.0)));
-    let fan_pwm = settings.bridge_fan_percent.and_then(|pct| {
-        (pct > 0).then_some({
-            let pct = u16::from(pct.min(100));
-            ((pct * 255) / 100) as u8
-        })
-    });
+    let fan_pwm = settings
+        .bridge_fan_percent
+        .and_then(|pct| (pct > 0).then_some(fan_pwm(pct)));
     if flow.is_none() && speed_mm_s.is_none() && fan_pwm.is_none() {
         None
     } else {
@@ -1749,15 +1733,12 @@ fn plate_order(req: &SliceRequest) -> Result<PlateOrder, String> {
     })
 }
 
-/// The settings the stages read: lengths clamped, the printer's fan as
-/// PWM, and every later feature off under `classic`.
-fn resolved(settings: &SliceSettings, profile: &PrinterProfile) -> SliceSettings {
+/// The settings the stages read: lengths clamped, and every later feature
+/// off under `classic`.
+fn resolved(settings: &SliceSettings) -> SliceSettings {
     let mut settings = SliceSettings {
         layer_height: settings.layer_height.clamp(0.05, 0.6),
         line_width: settings.line_width.clamp(0.15, 1.2),
-        fan_pwm: profile.fan_percent.map(fan_pwm),
-        overhang_fan_pwm: profile.overhang_fan_percent.map(fan_pwm),
-        support_fan_pwm: profile.support_fan_percent.map(fan_pwm),
         ..settings.clone()
     };
     if settings.classic {
@@ -2072,6 +2053,7 @@ fn retouch_layer(layer: &mut PlateLayer, frame: &crate::belt::Frame, slow_all: b
                     || pieces[0].speed != path.speed
                     || pieces[0].flow != path.flow
                     || pieces[0].fan != path.fan
+                    || pieces[0].fan_role != path.fan_role
                 {
                     changed = true;
                 }
@@ -2187,8 +2169,17 @@ fn slice_plate(
             return Err(format!("minLayerSpeedMmS {n} must be from 1 to 300"));
         }
     }
+    for (name, pct) in [
+        ("fanPercent", profile.fan_percent),
+        ("overhangFanPercent", profile.overhang_fan_percent),
+        ("supportFanPercent", profile.support_fan_percent),
+    ] {
+        if let Some(pct) = pct.filter(|pct| *pct > 100) {
+            return Err(format!("printer.{name} {pct} must be from 0 to 100"));
+        }
+    }
     let listed = sources.iter().any(|s| s.id.is_some());
-    let mut settings = resolved(settings, profile);
+    let mut settings = resolved(settings);
     let (layer_height, line_width) = (settings.layer_height, settings.line_width);
     let mut features = settings.feature_note();
     let mut profile = profile.clone();
@@ -2203,7 +2194,7 @@ fn slice_plate(
     let mut objects: Vec<PlateObject<'_>> = sources
         .iter()
         .map(|s| {
-            let mut settings = resolved(&s.settings, &profile);
+            let mut settings = resolved(&s.settings);
             let (mesh, offset) = match settings.pose.take() {
                 Some(pose) => {
                     let (frame, offset) = pose.part_frame(centre);
@@ -4783,7 +4774,6 @@ fn part_paths(
                     band.height,
                     settings.line_width,
                     bridge_tune(settings),
-                    settings.overhang_fan_pwm,
                 );
             }
             if let Some(ironing) = ironing {
@@ -5688,13 +5678,6 @@ fn resolve(mut strategy: ResolvedStrategy, settings: &SliceSettings) -> Resolved
     if let Some(mode) = settings.seam.mode() {
         strategy.seam = mode;
         strategy.inner_follows_seam = true;
-    }
-    if let Some(pwm) = settings.fan_pwm {
-        strategy.fan = pwm;
-        strategy.support_fan = pwm;
-    }
-    if let Some(pwm) = settings.support_fan_pwm {
-        strategy.support_fan = pwm;
     }
     if !settings.classic {
         match settings.gyroid_3d {
@@ -6651,7 +6634,7 @@ fn retarget_supports(
         path.accel = strategy.accel;
         path.retract_mm = strategy.retract_mm;
         path.retract_min_travel = strategy.retract_min_travel;
-        path.fan = strategy.support_fan;
+        path.fan = strategy.fan;
         path.travel_accel = if strategy.feature_speeds {
             strategy.travel_accel
         } else {

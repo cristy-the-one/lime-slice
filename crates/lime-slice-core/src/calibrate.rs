@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::strategy::PrinterProfile;
+use crate::strategy::{fan_pwm, PrinterProfile};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaFirmware {
@@ -208,6 +208,8 @@ pub fn pressure_advance_tower(opts: &PaCalib) -> Result<PaCalibOutput, String> {
             height: layer_h,
             fil,
             flow: 1.0,
+            fan: p.fan_percent.map_or(255, fan_pwm),
+            fan_off: p.fan_off_layers.map(|n| n as usize),
         };
         for band in &bands {
         pen.out.push_str(&format!(
@@ -428,6 +430,8 @@ pub fn flow_tower(opts: &FlowCalib) -> Result<FlowCalibOutput, String> {
             height: layer_h,
             fil,
             flow: 1.0,
+            fan: p.fan_percent.map_or(255, fan_pwm),
+            fan_off: p.fan_off_layers.map(|n| n as usize),
         };
         for band in &bands {
             pen.flow = band.flow;
@@ -634,6 +638,8 @@ pub fn temperature_tower(opts: &TempCalib) -> Result<TempCalibOutput, String> {
             height: layer_h,
             fil,
             flow: 1.0,
+            fan: p.fan_percent.map_or(255, fan_pwm),
+            fan_off: p.fan_off_layers.map(|n| n as usize),
         };
         for band in &bands {
             pen.out.push_str(&format!(
@@ -849,6 +855,8 @@ pub fn retract_tower(opts: &RetractCalib) -> Result<RetractCalibOutput, String> 
             height: layer_h,
             fil,
             flow: 1.0,
+            fan: p.fan_percent.map_or(255, fan_pwm),
+            fan_off: p.fan_off_layers.map(|n| n as usize),
         };
         for band in &bands {
             pen.out.push_str(&format!(
@@ -908,6 +916,10 @@ struct Pen<'a> {
     height: f64,
     fil: f64,
     flow: f64,
+    /// The printer's part fan as PWM, full when it names none.
+    fan: u8,
+    /// Layers printed with the fan off. `None` ramps like a slice that names none.
+    fan_off: Option<usize>,
 }
 
 impl Pen<'_> {
@@ -944,14 +956,21 @@ impl Pen<'_> {
         self.known = true;
     }
 
-    /// The fan a slice runs: off on the first layer, half on the second,
-    /// full from the third.
+    /// The fan a slice runs. With no fan named: off on the first layer, half
+    /// on the second, full from the third.
     fn layer_fan(&mut self, layer: usize) {
-        match layer {
-            0 => self.out.push_str("M106 S0\n"),
-            1 => self.out.push_str("M106 S128\n"),
-            2 => self.out.push_str("M106 S255\n"),
-            _ => {}
+        let on = match self.fan_off {
+            None if layer == 1 => {
+                self.out.push_str("M106 S128\n");
+                return;
+            }
+            None => layer == 2,
+            Some(off) => layer == off,
+        };
+        if on {
+            self.out.push_str(&format!("M106 S{}\n", self.fan));
+        } else if layer == 0 {
+            self.out.push_str("M106 S0\n");
         }
     }
 
@@ -986,6 +1005,29 @@ mod tests {
             .skip(1)
             .take_while(|l| !l.starts_with(";LAYER:"))
             .collect()
+    }
+
+    #[test]
+    fn a_tower_runs_the_printers_fan_when_it_names_one() {
+        let calib = TempCalib {
+            profile: PrinterProfile {
+                fan_percent: Some(20),
+                fan_off_layers: Some(3),
+                ..PrinterProfile::default()
+            },
+            ..TempCalib::default()
+        };
+        let gcode = temperature_tower(&calib).unwrap().gcode;
+        let fans = |n| {
+            layer_lines(&gcode, n)
+                .into_iter()
+                .filter(|l| l.starts_with("M106"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(fans(0), vec!["M106 S0"]);
+        assert!(fans(1).is_empty() && fans(2).is_empty());
+        assert_eq!(fans(3), vec!["M106 S51"]);
+        assert!(!gcode.contains("M106 S128") && !gcode.contains("M106 S255"));
     }
 
     #[test]

@@ -164,14 +164,14 @@ enum Cmd {
         firmware_arcs: Option<bool>,
         /// Part-cooling fan percent from the first layer the fan is on. Left
         /// out, each strategy keeps its own fan (100% speed, 59% toughness).
-        #[arg(long)]
+        #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
         fan_percent: Option<u8>,
         /// Fan percent on overhang spans and bridges. Left out, overhangs run
         /// at 86% or full and bridges at full.
-        #[arg(long)]
+        #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
         overhang_fan_percent: Option<u8>,
         /// Fan percent on support paths. Left out, supports follow the part fan.
-        #[arg(long)]
+        #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
         support_fan_percent: Option<u8>,
         /// Layers printed with the fan off. Left out, the first layer is off
         /// and the second at half.

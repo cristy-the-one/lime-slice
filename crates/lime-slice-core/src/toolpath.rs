@@ -216,9 +216,12 @@ pub struct Extrusion {
     pub retract_mm: f64,
     pub retract_min_travel: f64,
     pub fan: u8,
-    /// Emit `fan` on this path even on the first two layers. The next path
+    /// Emit `fan` on this path even on a layer whose fan is off. The next path
     /// restores the layer fan. Off leaves the layer fan policy alone.
     pub fan_hold: bool,
+    /// Which of the printer's fan values the bead takes when the request
+    /// names them. `fan` is what it runs at when none is named.
+    pub fan_role: FanRole,
     /// Multiplier on the volumetric bead. Bridges stay at 1 unless a bridge
     /// flow ratio is set.
     pub flow: f64,
@@ -253,6 +256,24 @@ pub struct Extrusion {
     /// Noise applied once the seam and any scarf ramp are final. `None`
     /// leaves the path as planned.
     pub fuzzy: Option<FuzzyMark>,
+}
+
+/// Which printer fan value a bead takes. Planning leaves `fan` where the
+/// strategy put it, so a fan change re-emits and never re-plans.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FanRole {
+    /// Walls, infill, skin, skirt, and brim: Fan %.
+    Part,
+    /// An overhang span or a bridge: Overhang fan %, or else Fan % raised to
+    /// `boost` as the span was before the printer named a fan.
+    Overhang { boost: u8 },
+    /// A short supported stretch between two overhang spans of one path. It
+    /// shares their fan, so the run changes the fan once.
+    Gap,
+    /// Support, interface, and tree paths: Support fan %, else Fan %.
+    Support,
+    /// Belt-contact walls and the belt raft: always off.
+    Off,
 }
 
 /// The feed a path was planned at and how overhang splitting slowed it, so
@@ -1753,12 +1774,13 @@ fn extrusion(
         width,
         retract_mm: strategy.retract_mm,
         retract_min_travel: strategy.retract_min_travel,
-        fan: if matches!(kind, PathKind::Support | PathKind::SupportInterface) {
-            strategy.support_fan
-        } else {
-            strategy.fan
-        },
+        fan: strategy.fan,
         fan_hold: false,
+        fan_role: if matches!(kind, PathKind::Support | PathKind::SupportInterface) {
+            FanRole::Support
+        } else {
+            FanRole::Part
+        },
         flow: 1.0,
         strength: kind_strength(kind, strategy),
         bead_height: 0.0,
@@ -1815,6 +1837,7 @@ pub(crate) fn belt_raft_paths(
             line.speed = 30.0;
             line.flow = 1.0;
             line.fan = 0;
+            line.fan_role = FanRole::Off;
             line.seam = Seam::Fixed;
             line
         })
@@ -6403,14 +6426,12 @@ pub struct BridgeTune {
 
 /// Slow unsupported spans, pin bridges, and raise the fan. The first layer is on the bed.
 /// `tune` of `None` leaves bridge flow, speed, and fan where they are today.
-/// `overhang_fan` of `None` raises overhangs to 220 or 255 and bridges to 255.
 pub fn apply_overhang(
     paths: &mut Vec<Extrusion>,
     lower: &[Loop],
     layer_height: f64,
     line_width: f64,
     tune: Option<BridgeTune>,
-    overhang_fan: Option<u8>,
 ) {
     if lower.is_empty() || paths.is_empty() {
         return;
@@ -6426,14 +6447,7 @@ pub fn apply_overhang(
             next.push(path);
             continue;
         }
-        next.extend(split_overhang(
-            path,
-            lower,
-            layer_height,
-            margin,
-            tune,
-            overhang_fan,
-        ));
+        next.extend(split_overhang(path, lower, layer_height, margin, tune));
     }
     *paths = next;
 }
@@ -6444,7 +6458,6 @@ fn split_overhang(
     layer_height: f64,
     margin: f64,
     tune: Option<BridgeTune>,
-    overhang_fan: Option<u8>,
 ) -> Vec<Extrusion> {
     let pts = &path.points;
     let mut out = Vec::new();
@@ -6453,24 +6466,16 @@ fn split_overhang(
     for w in pts.windows(2) {
         let class = span_class(w[0], w[1], lower, layer_height, margin);
         if class_tag(class) != class_tag(cur_class) && cur.len() >= 2 {
-            out.push(paint(
-                &path,
-                std::mem::take(&mut cur),
-                cur_class,
-                tune,
-                overhang_fan,
-            ));
+            out.push(paint(&path, std::mem::take(&mut cur), cur_class, tune));
             cur.push(w[0]);
         }
         cur.push(w[1]);
         cur_class = class;
     }
     if cur.len() >= 2 {
-        out.push(paint(&path, cur, cur_class, tune, overhang_fan));
+        out.push(paint(&path, cur, cur_class, tune));
     }
-    if let Some(pwm) = overhang_fan {
-        hold_fan_over_gaps(&mut out, pwm);
-    }
+    mark_fan_gaps(&mut out);
     if out.is_empty() {
         vec![path]
     } else {
@@ -6527,7 +6532,6 @@ fn paint(
     points: Vec<[f64; 2]>,
     class: SpanClass,
     tune: Option<BridgeTune>,
-    overhang_fan: Option<u8>,
 ) -> Extrusion {
     let mut path = src.clone();
     path.points = points;
@@ -6535,13 +6539,15 @@ fn paint(
         SpanClass::Supported => Slowdown::None,
         SpanClass::Bridge => {
             path.kind = PathKind::Bridge;
-            path.fan = overhang_fan.unwrap_or(255);
+            path.fan = 255;
+            path.fan_role = FanRole::Overhang { boost: 255 };
             path.strength = path.strength.min(0.7);
             Slowdown::Bridge
         }
         SpanClass::Overhang(angle) => {
-            path.fan =
-                overhang_fan.unwrap_or_else(|| path.fan.max(if angle >= 68.0 { 255 } else { 220 }));
+            let boost = if angle >= 68.0 { 255 } else { 220 };
+            path.fan = path.fan.max(boost);
+            path.fan_role = FanRole::Overhang { boost };
             path.on_overhang = true;
             if angle >= 68.0 {
                 Slowdown::Steep
@@ -6581,10 +6587,9 @@ fn paint(
 /// each change is one more `M106`.
 const FAN_GAP_MM: f64 = 5.0;
 
-/// Give a short supported piece between two raised pieces the overhang fan,
-/// so a run of overhang spans shares one fan change.
-fn hold_fan_over_gaps(pieces: &mut [Extrusion], pwm: u8) {
-    let raised = |p: &Extrusion| p.on_overhang || p.kind == PathKind::Bridge;
+/// Mark each short supported piece between two overhang pieces of one path.
+fn mark_fan_gaps(pieces: &mut [Extrusion]) {
+    let raised = |p: &Extrusion| matches!(p.fan_role, FanRole::Overhang { .. });
     for i in 1..pieces.len().saturating_sub(1) {
         if raised(&pieces[i]) || !raised(&pieces[i - 1]) || !raised(&pieces[i + 1]) {
             continue;
@@ -6595,7 +6600,7 @@ fn hold_fan_over_gaps(pieces: &mut [Extrusion], pwm: u8) {
             .map(|w| dist2(w[0], w[1]).sqrt())
             .sum();
         if len < FAN_GAP_MM {
-            pieces[i].fan = pwm;
+            pieces[i].fan_role = FanRole::Gap;
         }
     }
 }
@@ -8088,7 +8093,7 @@ mod bridge_tests {
     fn bridges(tune: Option<BridgeTune>) -> Vec<Extrusion> {
         let mut paths = vec![span()];
         let lower = vec![square(0.0, 6.0), square(14.0, 20.0)];
-        apply_overhang(&mut paths, &lower, 0.2, 0.45, tune, None);
+        apply_overhang(&mut paths, &lower, 0.2, 0.45, tune);
         paths
             .into_iter()
             .filter(|p| p.kind == PathKind::Bridge)
@@ -8127,51 +8132,41 @@ mod bridge_tests {
         assert!((cap.feed - 15.0).abs() < 1e-9);
     }
 
-    fn wall(points: Vec<[f64; 2]>, overhang_fan: Option<u8>) -> Vec<Extrusion> {
+    fn wall(points: Vec<[f64; 2]>) -> Vec<Extrusion> {
         let mut paths = vec![extrusion(
             PathKind::Outer,
             &pure(StrategyId::Toughness),
             points,
             0.45,
         )];
-        apply_overhang(
-            &mut paths,
-            &[square(0.0, 10.0)],
-            0.2,
-            0.45,
-            None,
-            overhang_fan,
-        );
+        apply_overhang(&mut paths, &[square(0.0, 10.0)], 0.2, 0.45, None);
         paths
     }
 
     #[test]
-    fn a_set_overhang_fan_replaces_both_angle_bands_and_the_bridge_fan() {
+    fn both_overhang_bands_and_bridges_take_the_overhang_role_and_keep_their_fan() {
         // 0.35 mm out is a 60° overhang, 1 mm out a 79° one.
         for (out, boost) in [(0.35, 220), (1.0, 255)] {
-            let line = vec![[10.0 + out, 1.0], [10.0 + out, 9.0]];
-            let plain = wall(line.clone(), None);
-            assert_eq!(plain.len(), 1);
-            assert!(plain[0].on_overhang);
-            assert_eq!(plain[0].fan, boost, "{out} mm out");
-            let set = wall(line, Some(178));
-            assert_eq!(set[0].fan, 178, "{out} mm out");
+            let found = wall(vec![[10.0 + out, 1.0], [10.0 + out, 9.0]]);
+            assert_eq!(found.len(), 1);
+            assert!(found[0].on_overhang);
+            assert_eq!(found[0].fan, boost, "{out} mm out");
+            assert_eq!(found[0].fan_role, FanRole::Overhang { boost });
         }
-        let mut paths = vec![span()];
-        let lower = vec![square(0.0, 6.0), square(14.0, 20.0)];
-        apply_overhang(&mut paths, &lower, 0.2, 0.45, None, Some(178));
-        let bridge: Vec<_> = paths
-            .iter()
-            .filter(|p| p.kind == PathKind::Bridge)
-            .collect();
-        assert_eq!(bridge.len(), 1);
-        assert_eq!(bridge[0].fan, 178);
-        assert!(!bridge[0].fan_hold);
+        let bridge = &bridges(None)[0];
+        assert_eq!(bridge.fan_role, FanRole::Overhang { boost: 255 });
+        let support = extrusion(
+            PathKind::Support,
+            &pure(StrategyId::Speed),
+            vec![[0.0, 0.0], [1.0, 0.0]],
+            0.45,
+        );
+        assert_eq!(support.fan_role, FanRole::Support);
     }
 
     #[test]
-    fn a_short_supported_gap_between_overhangs_keeps_their_fan() {
-        // Out, 4 mm back over the part, out again.
+    fn a_short_supported_gap_between_overhangs_shares_their_fan() {
+        // Out, back over the part, out again.
         let jog = |back: f64| {
             vec![
                 [10.5, 1.0],
@@ -8182,25 +8177,16 @@ mod bridge_tests {
                 [10.5, 5.0 + back],
             ]
         };
-        let short = wall(jog(2.0), Some(178));
-        assert_eq!(short.len(), 3, "overhang, supported, overhang");
-        assert!(!short[1].on_overhang);
-        assert_eq!(
-            short.iter().map(|p| p.fan).collect::<Vec<_>>(),
-            vec![178; 3]
-        );
-
-        let long = wall(jog(5.0), Some(178));
-        assert_eq!(long.len(), 3);
-        assert_eq!(
-            long.iter().map(|p| p.fan).collect::<Vec<_>>(),
-            vec![178, 150, 178]
-        );
-
-        let unset = wall(jog(2.0), None);
-        assert_eq!(
-            unset[1].fan, 150,
-            "a request without the overhang fan keeps its pieces"
-        );
+        let roles = |back: f64| {
+            wall(jog(back))
+                .iter()
+                .map(|p| p.fan_role)
+                .collect::<Vec<_>>()
+        };
+        let steep = FanRole::Overhang { boost: 255 };
+        assert_eq!(roles(2.0), vec![steep, FanRole::Gap, steep], "4 mm back");
+        assert_eq!(roles(5.0), vec![steep, FanRole::Part, steep], "7 mm back");
+        let short = wall(jog(2.0));
+        assert_eq!(short[1].fan, 150, "the gap keeps its planned fan");
     }
 }

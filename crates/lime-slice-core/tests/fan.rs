@@ -3,10 +3,10 @@
 
 use base64::Engine;
 use lime_slice_core::{
-    slice_configured, slice_request, BlendMode, Job, Mesh, PrinterProfile, SliceRequest,
+    slice_configured, slice_request, Axis, BlendMode, Job, Mesh, PrinterProfile, SliceRequest,
     SliceSettings, StrategyId, SupportStyle,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 
 fn face(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> [[[f64; 3]; 3]; 2] {
     [[a, b, c], [a, c, d]]
@@ -94,6 +94,49 @@ fn trees() -> SliceSettings {
     }
 }
 
+fn stl(mesh: &Mesh) -> String {
+    let mut out = String::from("solid part\n");
+    for t in &mesh.triangles {
+        out.push_str("facet normal 0 0 0\nouter loop\n");
+        for v in t {
+            out.push_str(&format!("vertex {} {} {}\n", v[0], v[1], v[2]));
+        }
+        out.push_str("endloop\nendfacet\n");
+    }
+    out.push_str("endsolid part\n");
+    out
+}
+
+/// A request as the app sends it: the fan on `printer`, the rest beside it.
+fn request(mesh: &Mesh, printer: Value, extra: Value) -> SliceRequest {
+    let mut body = json!({
+        "filename": "part.stl",
+        "dataB64": base64::engine::general_purpose::STANDARD.encode(stl(mesh).as_bytes()),
+        "layerHeight": 0.2,
+        "lineWidth": 0.45,
+        "blend": { "mode": "single", "strategy": "speed" },
+        "baseline": false,
+        "compare": false,
+        "includePreview": false,
+        "includeGcode": true,
+        "printer": {
+            "name": "p", "nozzleDiameter": 0.4, "filamentDiameter": 1.75,
+            "nozzleTemp": 240, "bedTemp": 80, "bedX": 220, "bedY": 220
+        },
+    });
+    for (key, value) in printer.as_object().unwrap() {
+        body["printer"][key] = value.clone();
+    }
+    for (key, value) in extra.as_object().unwrap() {
+        body[key] = value.clone();
+    }
+    serde_json::from_value(body).unwrap()
+}
+
+fn gcode_of(req: &SliceRequest) -> String {
+    slice_request(req, Job::default()).expect("slice").gcode
+}
+
 /// One printing move: its layer, its `; TYPE:`, and the fan it runs under.
 #[derive(Debug)]
 struct Bead {
@@ -138,10 +181,8 @@ fn is_support(kind: &str) -> bool {
 }
 
 #[test]
-fn a_request_that_names_no_fan_keeps_its_bytes_and_its_ramp() {
-    let named_none = fans(None, None, None, None);
+fn a_request_that_names_no_fan_keeps_its_ramp_and_writes_no_fan_keys() {
     let plain = slice(&ledge(), &PrinterProfile::default(), trees());
-    assert_eq!(plain, slice(&ledge(), &named_none, trees()));
     let features = plain
         .lines()
         .find(|l| l.starts_with("; features:"))
@@ -151,16 +192,22 @@ fn a_request_that_names_no_fan_keeps_its_bytes_and_its_ramp() {
     assert_eq!(fans_of(&all, |b| b.layer == 0), vec![0]);
     assert_eq!(fans_of(&all, |b| b.layer == 1), vec![128]);
     assert_eq!(
-        fans_of(&all, |b| b.layer >= 2 && b.kind != "BRIDGE"),
+        fans_of(&all, |b| b.layer >= 2
+            && b.layer < 30
+            && !is_support(&b.kind)),
         vec![255],
         "speed runs the fan full"
     );
 
-    let req: SliceRequest = serde_json::from_str(r#"{"printer":{"name":"p","nozzleDiameter":0.4,"filamentDiameter":1.75,"nozzleTemp":200,"bedTemp":60,"bedX":220,"bedY":220}}"#).unwrap();
-    let printer = req.printer.unwrap();
-    assert!(!printer.names_fan());
-    let text = serde_json::to_string(&printer).unwrap();
+    let absent = request(&ledge(), json!({}), json!({}));
+    let text = serde_json::to_string(absent.printer.as_ref().unwrap()).unwrap();
     assert!(!text.contains("fan") && !text.contains("Fan"), "{text}");
+    let nulls = request(
+        &ledge(),
+        json!({ "fanPercent": null, "overhangFanPercent": null, "supportFanPercent": null, "fanOffLayers": null }),
+        json!({}),
+    );
+    assert_eq!(gcode_of(&absent), gcode_of(&nulls));
 }
 
 #[test]
@@ -241,6 +288,21 @@ fn a_set_bridge_fan_still_wins_on_bridges() {
         vec![51, 255],
         "the deck's overhanging edges keep the overhang fan, everything else is at 20%"
     );
+
+    // The deck bridges on layer 40. A set Bridge fan % holds even on a layer whose fan is off.
+    let held = beads(&slice(
+        &bridge_span(),
+        &fans(Some(20), Some(100), None, Some(45)),
+        SliceSettings {
+            bridge_fan_percent: Some(80),
+            ..SliceSettings::default()
+        },
+    ));
+    assert_eq!(fans_of(&held, |b| b.kind == "BRIDGE"), vec![204]);
+    assert_eq!(
+        fans_of(&held, |b| b.kind != "BRIDGE" && b.layer < 45),
+        vec![0]
+    );
 }
 
 #[test]
@@ -283,45 +345,69 @@ fn supports_take_the_support_fan_and_no_overhang_boost() {
 
 #[test]
 fn belt_contact_walls_stay_off() {
-    let stl = {
-        let mut tris = Vec::new();
-        add_box(&mut tris, [0.0, 0.0, 0.0], [10.0, 10.0, 4.0]);
-        let mut out = String::from("solid box\n");
-        for t in tris {
-            out.push_str("facet normal 0 0 0\nouter loop\n");
-            for v in t {
-                out.push_str(&format!("vertex {} {} {}\n", v[0], v[1], v[2]));
-            }
-            out.push_str("endloop\nendfacet\n");
-        }
-        out.push_str("endsolid box\n");
-        out
-    };
-    let req: SliceRequest = serde_json::from_value(json!({
-        "filename": "box.stl",
-        "dataB64": base64::engine::general_purpose::STANDARD.encode(stl.as_bytes()),
-        "layerHeight": 0.2,
-        "lineWidth": 0.45,
-        "baseline": false,
-        "compare": false,
-        "includePreview": false,
-        "includeGcode": true,
-        "printer": {
-            "name": "belt", "nozzleDiameter": 0.4, "filamentDiameter": 1.75,
-            "nozzleTemp": 240, "bedTemp": 80, "bedX": 220, "bedY": 220,
-            "fanPercent": 20, "overhangFanPercent": 100, "fanOffLayers": 0
-        },
-        "belt": { "angleDeg": 45.0, "axis": "z", "direction": 1, "widthMm": 220.0, "copies": 1, "gapMm": 5.0 },
-    }))
-    .unwrap();
-    let gcode = slice_request(&req, Job::default()).unwrap().gcode;
-    let all = beads(&gcode);
+    let mut triangles = Vec::new();
+    add_box(&mut triangles, [0.0, 0.0, 0.0], [10.0, 10.0, 4.0]);
+    let req = request(
+        &Mesh { triangles },
+        json!({ "fanPercent": 20, "overhangFanPercent": 100, "fanOffLayers": 0 }),
+        json!({ "belt": { "angleDeg": 45.0, "axis": "z", "direction": 1, "widthMm": 220.0, "copies": 1, "gapMm": 5.0 } }),
+    );
+    let all = beads(&gcode_of(&req));
     let walls = fans_of(&all, |b| b.layer >= 1 && b.kind == "OUTER");
     assert!(
         walls.contains(&0),
         "the belt-contact wall is off: {walls:?}"
     );
     assert!(walls.contains(&51), "the free wall is at 20%: {walls:?}");
+}
+
+#[test]
+fn a_fan_change_re_emits_and_a_kept_plan_does_not_hold_the_old_fan() {
+    let at = |pct: u32| {
+        let req = request(
+            &ledge(),
+            json!({ "fanPercent": pct, "fanOffLayers": 1 }),
+            json!({ "supports": true, "supportStyle": "tree" }),
+        );
+        fans_of(&beads(&gcode_of(&req)), |b| b.layer >= 1 && b.layer < 30)
+    };
+    assert_eq!(at(20), vec![51]);
+    assert_eq!(at(60), vec![153]);
+    assert_eq!(at(20), vec![51]);
+}
+
+#[test]
+fn a_fan_percent_over_100_is_refused() {
+    let req = request(&ledge(), json!({ "supportFanPercent": 150 }), json!({}));
+    let err = slice_request(&req, Job::default()).unwrap_err();
+    assert!(
+        err.contains("printer.supportFanPercent 150 must be from 0 to 100"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_region_split_gives_both_sides_supports_the_support_fan() {
+    let gcode = slice_configured(
+        &ledge(),
+        &BlendMode::ByRegion {
+            axis: Axis::X,
+            at_mm: 8.0,
+        },
+        &fans(Some(20), Some(100), Some(10), Some(1)),
+        &SliceSettings {
+            include_preview: false,
+            ..trees()
+        },
+    )
+    .expect("slice")
+    .gcode;
+    let all = beads(&gcode);
+    assert!(all.iter().any(|b| is_support(&b.kind) && b.layer >= 1));
+    assert_eq!(
+        fans_of(&all, |b| is_support(&b.kind) && b.layer >= 1),
+        vec![25]
+    );
 }
 
 #[test]
