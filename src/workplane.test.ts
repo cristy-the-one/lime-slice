@@ -123,7 +123,7 @@ clearOrientBase("step-tilt");
 
 if (failed > 0) {
   console.error(`${failed} failed`);
-  process.exit(1);
+  throw new Error(`workplane: ${failed} failed`);
 }
 console.log("workplane: frame, placement, and plate orient ok");
 

@@ -545,6 +545,8 @@ export function oneObjectPlate(input: {
 export function addedCopy(plate: PlateState): PlateState | null {
   const source = plate.objects.find((obj) => obj.id === plate.selectedId);
   if (!source) return null;
+  const from = modelPoseOf(source);
+  const pose = duplicatePose(from, boxUnder(boundsOf(source.sourcePos), meshToModel(source)));
   const copy: PlateObject = {
     ...source,
     id: freshPlateId(),
@@ -557,11 +559,10 @@ export function addedCopy(plate: PlateState): PlateState | null {
     reinforcement: (source.reinforcement ?? []).map((reg) => structuredClone(reg)),
     settings: { ...source.settings },
     brep: source.brep ? source.brep.slice(0) : undefined,
-    modelPose: duplicatePose(modelPoseOf(source), boxUnder(boundsOf(source.sourcePos), meshToModel(source))),
+    modelPose: pose,
   };
   if (source.workplane) {
-    const from = modelPoseOf(source);
-    copy.workplane = shiftWorkplane(source.workplane, [copy.modelPose.t[0] - from.t[0], copy.modelPose.t[1] - from.t[1], copy.modelPose.t[2] - from.t[2]]);
+    copy.workplane = shiftWorkplane(source.workplane, [pose.t[0] - from.t[0], pose.t[1] - from.t[1], pose.t[2] - from.t[2]]);
   }
   // The copy's edits are its own, so Model opens a tree of its own for it.
   delete copy.modelTree;
