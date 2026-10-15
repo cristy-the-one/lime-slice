@@ -18,7 +18,7 @@ import { formatDeg, offBed, orientEuler } from "../mesh-place";
 import { boundsSize, objectMarks, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty, sourceFrame } from "../plate";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys } from "../presets";
 import { saveProfile } from "../profiles";
-import { noteAdvance, noteFirmware, noteFirmwareArcs, noteFlow, noteGcode, noteHeatLimits, noteRetract, setSupportMode } from "./machine-actions";
+import { noteAdvance, noteFan, noteFirmware, noteFirmwareArcs, noteFlow, noteGcode, noteHeatLimits, noteRetract, setSupportMode } from "./machine-actions";
 import { currentRules } from "./rules";
 import { ADVANCE, orderFields, type Rules } from "../settings-rules";
 import { activeHeat, loadMachineLibrary } from "./machine-library";
@@ -583,7 +583,8 @@ function controlHtml(spec: ControlSpec, rules: Rules, ctx: SchemaContext): strin
   if (spec.kind.type === "range") {
     return `<label class="${cls} range" ${attrs} id="${spec.id}Label">${label}<output class="row-out" for="${spec.id}">${value}%</output><input id="${spec.id}" type="range" min="${spec.kind.min}" max="${max}" step="${spec.kind.step}" value="${value}" /></label>`;
   }
-  return `<label class="${cls}" ${attrs}>${label}<input id="${spec.id}" type="number" min="${spec.kind.min}" max="${max}" step="${spec.kind.step}" value="${value}" /></label>`;
+  const placeholder = spec.placeholder ? ` placeholder="${escapeHtml(spec.placeholder(state))}"` : "";
+  return `<label class="${cls}" ${attrs}>${label}<input id="${spec.id}" type="number" min="${spec.kind.min}" max="${max}" step="${spec.kind.step}" value="${value}"${placeholder} /></label>`;
 }
 
 function tipAttr(tip?: string) {
@@ -1322,6 +1323,21 @@ function afterSet(spec: ControlSpec, value: number | boolean | string): "stale" 
     case "retractspd":
       noteRetract(state.retractLength, state.retractSpeed);
       return "stale";
+    case "fanpct": {
+      const support = document.querySelector<HTMLInputElement>("#supfanpct");
+      if (support) support.placeholder = controlById("supfanpct")!.placeholder!(state);
+      noteFan("fanPercent");
+      return "stale";
+    }
+    case "ovfanpct":
+      noteFan("overhangFanPercent");
+      return "stale";
+    case "supfanpct":
+      noteFan("supportFanPercent");
+      return "stale";
+    case "fanoff":
+      noteFan("fanOffLayers");
+      return "stale";
     case "bedx":
     case "bedy":
     case "bedz":
@@ -1449,7 +1465,7 @@ export function onSettings(ev: Event) {
   }
   noteEdit();
   markProjectDirty();
-  const value = spec.kind.type === "check" ? t.checked : spec.kind.type === "select" || spec.kind.type === "segmented" ? t.value : readNumber(spec, t.value);
+  const value = spec.kind.type === "check" ? t.checked : spec.kind.type === "select" || spec.kind.type === "segmented" ? t.value : spec.placeholder && t.value.trim() === "" ? "" : readNumber(spec, t.value);
   spec.set(state, value);
   if (t.id === "ironspace") state.ironingSpacing = Math.min(state.ironingSpacing, ironingSpacingMax(fx.lineWidth()));
   const next = afterSet(spec, value);

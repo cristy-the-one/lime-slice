@@ -739,6 +739,21 @@ pub struct PrinterProfile {
     /// Klipper `max_z_accel`, mm/s². `0` adds no limit.
     #[serde(default)]
     pub max_z_accel: f64,
+    /// Part-cooling fan, percent, from the first layer the fan is on. Left
+    /// out, each strategy keeps its own fan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fan_percent: Option<u8>,
+    /// Fan on overhang spans and bridges, percent. Left out, they keep the
+    /// 86% and full-fan boost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overhang_fan_percent: Option<u8>,
+    /// Fan on support paths, percent. Left out, supports follow `fan_percent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support_fan_percent: Option<u8>,
+    /// Layers printed with the fan off. Left out, the first layer is off and
+    /// the second at half.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fan_off_layers: Option<u32>,
 }
 
 impl PrinterProfile {
@@ -821,8 +836,17 @@ impl Default for PrinterProfile {
             max_velocity: 0.0,
             max_z_velocity: 0.0,
             max_z_accel: 0.0,
+            fan_percent: None,
+            overhang_fan_percent: None,
+            support_fan_percent: None,
+            fan_off_layers: None,
         }
     }
+}
+
+/// A fan percent as the PWM `M106 S` takes: 20% is 51, 100% is 255.
+pub fn fan_pwm(percent: u8) -> u8 {
+    ((u16::from(percent.min(100)) * 255) / 100) as u8
 }
 
 /// Relative pressure/linear advance by feature. Outer and top keep the full factor.

@@ -30,6 +30,7 @@ import {
   setActiveFirmware,
   setActiveFirmwareArcs,
   setAdvance,
+  setFan,
   setFlow,
   setGcode,
   setHeatLimits,
@@ -44,6 +45,7 @@ import {
   type PrinterRecord,
 } from "../ui/machine-library.ts";
 import { coerceBelt, type PrinterKind } from "../belt.ts";
+import type { FanSettings } from "../fan.ts";
 import { warps } from "../adhesion.ts";
 import { LEGACY_PRUSA_LINK_KEY, parseLegacyPrusaLink } from "../ui/prusa-link.ts";
 
@@ -126,6 +128,12 @@ export function noteNozzleTemp(temp: number) {
   state.profile.nozzleTemp = next;
   saveProfile(state.profile);
   paintHeat(library);
+}
+
+/** A fan field changed `state.profile`: the active filament keeps that value, as it keeps a temperature edit. */
+export function noteFan(key: keyof FanSettings) {
+  storeMachineLibrary(setFan(loadMachineLibrary(), { [key]: state.profile[key] }));
+  saveProfile(state.profile);
 }
 
 export function noteAdvance(pressure: number, linear: number) {

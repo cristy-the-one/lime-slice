@@ -114,8 +114,8 @@ const sent = picked ? enginePrinter(picked.printer, picked.filament, 0.4) : null
 const sentKeys = sent ? Object.keys(sent).sort() : [];
 check("the slice printer has no start g-code, end g-code, or host", sent !== null && !("startGcode" in sent) && !("endGcode" in sent) && !("host" in sent) && !("apiKey" in sent));
 check(
-  "the slice printer is the existing fields",
-  sentKeys.join(",") === ["bedTemp", "bedX", "bedY", "bedZ", "extruderCornerVelocity", "filamentCostPerKg", "filamentDensityGCm3", "filamentDiameter", "linearAdvance", "maxAccel", "maxVelocity", "maxVolumetricMm3S", "maxZAccel", "maxZVelocity", "minimumCruiseRatio", "name", "nozzleDiameter", "nozzleTemp", "pressureAdvance", "squareCornerVelocity"].join(","),
+  "the slice printer is the existing fields and the filament's fan",
+  sentKeys.join(",") === ["bedTemp", "bedX", "bedY", "bedZ", "extruderCornerVelocity", "fanOffLayers", "fanPercent", "filamentCostPerKg", "filamentDensityGCm3", "filamentDiameter", "linearAdvance", "maxAccel", "maxVelocity", "maxVolumetricMm3S", "maxZAccel", "maxZVelocity", "minimumCruiseRatio", "name", "nozzleDiameter", "nozzleTemp", "overhangFanPercent", "pressureAdvance", "squareCornerVelocity"].join(","),
 );
 check("petg at 0.6 mm is sent as pressure advance", (() => {
   const next = selectIn(library, "lime-220", "lime-petg", 0.6);

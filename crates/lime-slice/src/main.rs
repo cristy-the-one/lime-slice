@@ -162,6 +162,21 @@ enum Cmd {
         /// no (a stock printer.cfg has no `[gcode_arcs]`) and anything else yes.
         #[arg(long)]
         firmware_arcs: Option<bool>,
+        /// Part-cooling fan percent from the first layer the fan is on. Left
+        /// out, each strategy keeps its own fan (100% speed, 59% toughness).
+        #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
+        fan_percent: Option<u8>,
+        /// Fan percent on overhang spans and bridges. Left out, overhangs run
+        /// at 86% or full and bridges at full.
+        #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
+        overhang_fan_percent: Option<u8>,
+        /// Fan percent on support paths. Left out, supports follow the part fan.
+        #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
+        support_fan_percent: Option<u8>,
+        /// Layers printed with the fan off. Left out, the first layer is off
+        /// and the second at half.
+        #[arg(long)]
+        fan_off_layers: Option<u32>,
         /// Drop outline vertices the nozzle cannot trace, on every layer's cut.
         #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
         simplify: bool,
@@ -346,6 +361,10 @@ fn run() -> Result<(), String> {
             junction_deviation,
             firmware,
             firmware_arcs,
+            fan_percent,
+            overhang_fan_percent,
+            support_fan_percent,
+            fan_off_layers,
             simplify,
             simplify_error,
             step_tolerance,
@@ -436,6 +455,10 @@ fn run() -> Result<(), String> {
             }
             if let Some(printer) = request.printer.as_mut() {
                 printer.firmware_arcs = firmware_arcs;
+                printer.fan_percent = fan_percent;
+                printer.overhang_fan_percent = overhang_fan_percent;
+                printer.support_fan_percent = support_fan_percent;
+                printer.fan_off_layers = fan_off_layers;
             }
             request.step_tolerance_mm = step_tolerance;
             if !rotate.is_empty() {

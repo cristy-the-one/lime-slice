@@ -102,6 +102,12 @@ One printer profile is stored and edited: nozzle, filament diameter, temperature
 
 **Compact.** Two pickers in the existing Device page (`devicePage` in `src/ui/compact/mount.ts`) and the printer block in the sheet. The bed size they set is what `offBed` already checks (`src/mesh-place.ts`).
 
+## Part-cooling fan
+
+**Status.** Done (2026-10-15). Fan %, Overhang fan %, Support fan %, and Fan off for first layers are print settings in a Cooling group. Each filament carries them, as it carries its temperature; PETG uses IdeaFormer's 20 / 100 % with 3 layers off. The app always sends Fan %, so the Speed ↔ Toughness slider no longer sets the fan. The engine sets the fan at emit, so a fan change re-emits the G-code without planning the toolpaths again. See the README's Cooling paragraph for the sources.
+
+**Possible follow-up: layer-time fan.** IdeaFormer and OrcaSlicer raise the fan toward their maximum on layers that print faster than `fan_cooling_layer_time` (20 s for PETG). Lime Slice does not. Its minimum layer time already slows short layers, and that setting is off by default because it adds print time. A layer-time fan would cool short layers without slowing them. It needs a fan maximum per filament, and a ramp per layer that the emitter writes from the layer's planned time.
+
 ## Print-quality features
 
 ### Seam control

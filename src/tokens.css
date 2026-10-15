@@ -104,6 +104,7 @@
   --group-walls: #e6a23c;
   --group-infill: #3fb68b;
   --group-speed: #c084fc;
+  --group-cooling: #4cc3d9;
   --group-supports: #7aa2f7;
   --group-printer: #8b93a1;
 
@@ -167,6 +168,7 @@
   --group-walls: #b45309;
   --group-infill: #15803d;
   --group-speed: #7c3aed;
+  --group-cooling: #0e7490;
   --group-supports: #4f46e5;
   --group-printer: #64748b;
 }
