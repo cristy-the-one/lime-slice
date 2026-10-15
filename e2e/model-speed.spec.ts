@@ -134,10 +134,16 @@ test("Apply writes no STEP; leaving Model writes the edited solid once, and save
   expect(saved.toString("utf8"), "the project keeps the edited solid").toContain(written);
   expect(calls.tree.of("export"), "a save after leaving writes nothing new").toHaveLength(1);
 
+  // One part is already listed, and the readout still says Volume, so neither marks the
+  // file landing or the solid it opens. The row is replaced when the file is applied.
+  await page.locator("#objectList .obj").evaluate((el) => el.setAttribute("data-seen", "before"));
   page.once("dialog", (dialog) => void dialog.accept());
   await page.locator("#projectFile").setInputFiles({ name: "edited.lime", mimeType: "application/json", buffer: saved });
+  await page.waitForFunction(() => !document.querySelector("#objectList .obj[data-seen=before]"));
   await expect(page.locator("#objectList .obj")).toHaveCount(1);
+  const opens = calls.opens.length;
   await page.locator("#tabModel").click();
+  await expect.poll(() => calls.opens.length).toBe(opens + 1);
   await expect(page.locator("#modelReadout")).toContainText("Volume");
   const reopened = calls.opens.at(-1)!;
   expect(reopened.filename).toMatch(/\.step$/);

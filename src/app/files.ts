@@ -64,7 +64,11 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
     renderChrome();
     return;
   }
-  state.sourcePos = parsed ?? seatedPositions(bytes, await previewRemote(name, bytes));
+  const epoch = session.meshEpoch;
+  const read = parsed ? null : await previewRemote(name, bytes);
+  // A newer Open took over while the slicer read this file: that one owns the plate now.
+  if (session.meshEpoch !== epoch) return;
+  state.sourcePos = parsed ?? seatedPositions(bytes, read);
   if (!state.sourcePos) {
     state.plate = emptyPlate();
     resetHeldGeometry();
@@ -104,7 +108,6 @@ export interface MeshRead {
 /** The vertices of `read`, with its seat given to `bytes`: call it once the read is known to still apply. */
 export function seatedPositions(bytes: ArrayBuffer, read: MeshRead | null): Float32Array | null {
   if (!read) return null;
-  // An engine from before `seatMm` leaves the seat for Model to learn.
   if (read.seatMm !== undefined) setMeshSeat(bytes, read.seatMm);
   return read.positions;
 }
@@ -505,16 +508,18 @@ export async function addDroppedFiles(files: readonly File[]): Promise<void> {
   }
 }
 
-/** An STL's vertices on Z = 0. The bytes keep how far they went down, so model space puts them back where the file has them. */
-export function stlPositions(bytes: ArrayBuffer): Float32Array | null {
-  const pos = readStl(bytes);
-  if (pos) setMeshSeat(bytes, settleBy(pos));
-  return pos;
+/** An STL's vertices on Z = 0, and how far they went down, so model space puts them back where the file has them. */
+function stlRead(bytes: ArrayBuffer): MeshRead | null {
+  const positions = readStl(bytes);
+  return positions && { positions, seatMm: settleBy(positions) };
 }
 
-async function meshPositions(name: string, bytes: ArrayBuffer, stepTolerance: number): Promise<Float32Array | null> {
-  if (!needsEngine(name)) return stlPositions(bytes);
-  return seatedPositions(bytes, await previewRemote(name, bytes, stepTolerance));
+export function stlPositions(bytes: ArrayBuffer): Float32Array | null {
+  return seatedPositions(bytes, stlRead(bytes));
+}
+
+async function meshRead(name: string, bytes: ArrayBuffer, stepTolerance: number): Promise<MeshRead | null> {
+  return needsEngine(name) ? previewRemote(name, bytes, stepTolerance) : stlRead(bytes);
 }
 
 async function addMeshNow(name: string, bytes: ArrayBuffer) {
@@ -525,8 +530,9 @@ async function addMeshNow(name: string, bytes: ArrayBuffer) {
   }
   const stepTolerance = state.stepTolerance;
   const epoch = session.meshEpoch;
-  const sourcePos = await meshPositions(name, bytes, stepTolerance);
+  const read = await meshRead(name, bytes, stepTolerance);
   if (session.meshEpoch !== epoch || !state.mesh || state.plate.objects.length === 0) return;
+  const sourcePos = seatedPositions(bytes, read);
   if (!sourcePos || sourcePos.length < 9) {
     if (!needsEngine(name) || !state.error) state.error = `Could not read ${name}.`;
     pushToast(state.error, "error", { label: "Retry", run: pickAddedMesh });
@@ -596,4 +602,4 @@ export function fail(err: unknown) {
   state.busy = false;
   renderChrome();
 }
-Object.assign(fx, { printableGcode, loadNamed, adoptBytes, previewRemote, refreshStepPreview, place, applyPlace, nudgePlacement, setPlaceCenter, setOrientAngle, meshBytes, isTauri, saveText, fetchStoredGcode, exportGcode, export3mf, download, fail });
+Object.assign(fx, { printableGcode, loadNamed, adoptBytes, refreshStepPreview, place, applyPlace, nudgePlacement, setPlaceCenter, setOrientAngle, meshBytes, isTauri, saveText, fetchStoredGcode, exportGcode, export3mf, download, fail });
