@@ -6,8 +6,8 @@ import { Box, CircleDot, Download, Redo2, Ruler, Scaling, Spline, SquareSplitHor
 import type { HandleDrag, ModelGhost } from "../model-view";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type ModelTool, type Vec3 } from "../model-drag";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
-import { formatMm, splitPlaneInside, splitPlaneRange, type AxisExtent } from "../model-plane";
-import { selectedEdges } from "../model-blend";
+import { formatMm, splitNote, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
+import { lastFace, selectedEdges } from "../model-blend";
 import { lastEdge, modelApplyReady, selectionCountLabel, type ModelPickRef } from "../model-select";
 import { scrubIntent, scrubTarget, type ScrubIntent } from "./scrub";
 import { snapStep } from "../gizmo-math";
@@ -23,8 +23,10 @@ export interface SolidBox {
 
 interface ModelChromeHooks {
   clearSelection(): void;
-  /** Z extent of the open solid, in the solid's own frame. */
-  solidZ(): AxisExtent | null;
+  /** The split plane the panel describes, in the solid's own frame, or why there is none. */
+  split(): SplitState;
+  /** Whether the open solid can be split square to some axis. */
+  splitLegal(): boolean;
   /** A tool opened, the selection changed, or a number changed. `typed` while a number is still being typed or dragged. */
   paramsChanged(typed?: boolean): void;
   /** A typed or dragged number settled: ask the kernel now instead of after the typing wait. */
@@ -101,9 +103,12 @@ export function mountModelChrome(next: ModelChromeHooks) {
     }
     const op = target?.closest<HTMLButtonElement>("#modelFuse, #modelCut, #modelCommon");
     if (op) setBoolOp(op.id);
+    const plane = target?.closest<HTMLButtonElement>("#modelPlaneModes [data-plane]");
+    if (plane) setPlaneMode(plane.dataset.plane as PlaneMode);
   });
   document.querySelector("#modelCancel")?.addEventListener("click", () => closeTool());
   document.querySelector("#modelPanel")?.addEventListener("input", () => {
+    if (tool === "split") syncSplitField();
     refreshGhost();
     hooks?.paramsChanged(true);
   });
@@ -134,6 +139,8 @@ export function closeModelTool() {
 
 export function syncModelChrome(next: readonly ModelPickRef[]) {
   picks = next.map((pick) => ({ kind: pick.kind, index: pick.index }));
+  // A new face to cut from: the plane starts in the middle of the part behind it.
+  if (tool === "split" && planeMode() === "face" && lastFace(picks) !== seatedFace) applySplitDefaults();
   const label = selectionCountLabel(picks);
   const chip = document.querySelector("#modelCount");
   if (chip) {
@@ -246,20 +253,6 @@ function syncFields() {
   });
 }
 
-function applySplitDefaults() {
-  const input = document.querySelector<HTMLInputElement>("#modelPlaneZ");
-  const range = splitPlaneRange(hooks?.solidZ() ?? null);
-  if (!input) return;
-  if (!range) {
-    input.removeAttribute("min");
-    input.removeAttribute("max");
-    return;
-  }
-  input.min = String(range.min);
-  input.max = String(range.max);
-  input.value = formatMm(range.mid);
-}
-
 /** A hole that would miss the solid starts on the middle of its top. */
 function applyHoleDefaults() {
   const box = hooks?.solidBox();
@@ -287,12 +280,66 @@ function writeFields(fields: readonly string[], values: readonly number[]) {
   });
 }
 
-function splitLegal() {
-  return splitPlaneRange(hooks?.solidZ() ?? null) != null;
+function planeMode(): PlaneMode {
+  const mode = document.querySelector<HTMLElement>('#modelPlaneModes [aria-pressed="true"]')?.dataset.plane;
+  return mode === "x" || mode === "y" || mode === "face" ? mode : "z";
+}
+
+/** X, Y, Z, or Face. The plane goes to the middle of the part along the new base; the tilts stay. */
+function setPlaneMode(mode: PlaneMode) {
+  document.querySelectorAll<HTMLButtonElement>("#modelPlaneModes [data-plane]").forEach((button) => {
+    const on = button.dataset.plane === mode;
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+    button.classList.toggle("on", on);
+  });
+  if (mode === "face" && document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") !== "true") {
+    document.querySelector<HTMLButtonElement>("#modelPickFace")?.click();
+  }
+  applySplitDefaults();
+  refreshApply();
+  refreshNote();
+  refreshGhost();
+  hooks?.paramsChanged();
+}
+
+function splitPlan(): SplitPlan | null {
+  const split = hooks?.split();
+  return split && "plan" in split ? split.plan : null;
+}
+
+/** The face the split's number was last put in the middle for. */
+let seatedFace: number | null = null;
+
+/** The plane's number goes to the middle of the part, and its label and limits follow the mode. */
+function applySplitDefaults() {
+  seatedFace = lastFace(picks);
+  const input = document.querySelector<HTMLInputElement>("#modelPlane");
+  const range = splitPlan()?.range;
+  if (input && range) input.value = formatMm(range.mid);
+  syncSplitField();
+}
+
+/** "Plane X" or "Offset into the part", and the limits a scrub stops at, which a tilt moves. */
+function syncSplitField() {
+  const mode = planeMode();
+  const label = document.querySelector("#modelPlaneLabel");
+  const input = document.querySelector<HTMLInputElement>("#modelPlane");
+  const text = mode === "face" ? "Offset into the part" : `Plane ${mode.toUpperCase()}`;
+  if (label) label.textContent = text;
+  if (!input) return;
+  input.setAttribute("aria-label", `${text}, mm`);
+  const range = splitPlan()?.range;
+  if (!range) {
+    input.removeAttribute("min");
+    input.removeAttribute("max");
+    return;
+  }
+  input.min = String(range.min);
+  input.max = String(range.max);
 }
 
 function refreshTools() {
-  const legal = splitLegal();
+  const legal = hooks?.splitLegal() ?? false;
   document.querySelectorAll<HTMLButtonElement>(".model-tool[data-tool]").forEach((button) => {
     const id = button.dataset.tool ?? "";
     button.dataset.tipIdle ??= button.dataset.tip ?? "";
@@ -306,12 +353,11 @@ function refreshTools() {
 function refreshApply() {
   const button = document.querySelector<HTMLButtonElement>("#modelApply");
   if (!button) return;
-  const range = splitPlaneRange(hooks?.solidZ() ?? null);
   button.disabled = waiting || !tool || !modelApplyReady(
     tool,
     picks,
     num("#modelFactor"),
-    splitPlaneInside(num("#modelPlaneZ"), range),
+    tool === "split" && !!splitPlan()?.inside,
     probeAllowsApply(tool, probe),
   );
 }
@@ -322,16 +368,8 @@ function refreshNote() {
   let text = "";
   let bad = false;
   if (tool === "split") {
-    const range = splitPlaneRange(hooks?.solidZ() ?? null);
-    if (!range) {
-      text = "This solid is too thin to split.";
-      bad = true;
-    } else if (!splitPlaneInside(num("#modelPlaneZ"), range)) {
-      text = `Move the plane into the part, between ${formatMm(range.min)} and ${formatMm(range.max)} mm.`;
-      bad = true;
-    } else {
-      text = `From ${formatMm(range.min)} to ${formatMm(range.max)} mm. The middle is ${formatMm(range.mid)}.`;
-    }
+    const split = hooks?.split();
+    if (split) ({ text, bad } = splitNote(split));
   } else if ((tool === "fillet" || tool === "chamfer") && selectedEdges(picks).length === 0) {
     text = "Pick an edge.";
   } else if (tool === "scale") {
@@ -375,7 +413,7 @@ function dragContext(): DragContext {
     primitive: prim === "cylinder" || prim === "sphere" ? prim : "box",
     center,
     extent,
-    split: splitPlaneRange(hooks?.solidZ() ?? null),
+    split: tool === "split" ? splitPlan() : null,
     edge: points ? edgeAnchor(points, center) : null,
     holeAxis: hooks?.holeAxis() ?? [0, 0, -1],
   };
@@ -403,7 +441,10 @@ function ghostFor(current: ModelTool): ModelGhost | null {
     return { kind: "box", ...origin, dx: num("#modelDx"), dy: num("#modelDy"), dz: num("#modelDz"), turn };
   }
   if (current === "measure") return { kind: "measure", a: point("A"), b: point("B") };
-  if (current === "split") return { kind: "plane", z: num("#modelPlaneZ") };
+  if (current === "split") {
+    const plan = splitPlan();
+    return plan ? { kind: "plane", origin: plan.origin, normal: plan.normal } : null;
+  }
   if (current === "hole") {
     return {
       kind: "hole",

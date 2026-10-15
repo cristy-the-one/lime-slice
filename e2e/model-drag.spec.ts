@@ -124,26 +124,26 @@ const value = async (page: Page, id: string) => Number(await page.locator(`#${id
 test("the split plane drags inside the part, Shift is fine, and Ctrl snaps", async ({ page }) => {
   await openSolid(page, []);
   await page.locator("#modelToolSplit").click();
-  await expect(page.locator("#modelPlaneZ")).toHaveValue("5");
+  await expect(page.locator("#modelPlane")).toHaveValue("5");
   await drag(page, "plane", 0, -40);
-  const coarse = (await value(page, "modelPlaneZ")) - 5;
+  const coarse = (await value(page, "modelPlane")) - 5;
   expect(coarse).toBeGreaterThan(0.5);
   await expect(page.locator("#modelNote")).toContainText("From 0.25 to 9.75 mm");
 
-  await page.locator("#modelPlaneZ").fill("5");
-  await page.locator("#modelPlaneZ").dispatchEvent("input");
+  await page.locator("#modelPlane").fill("5");
+  await page.locator("#modelPlane").dispatchEvent("input");
   await drag(page, "plane", 0, -40, ["Shift"]);
-  const fine = (await value(page, "modelPlaneZ")) - 5;
+  const fine = (await value(page, "modelPlane")) - 5;
   expect(fine).toBeGreaterThan(0);
   expect(fine).toBeLessThan(coarse / 3);
 
   await drag(page, "plane", 0, -400);
-  expect(await value(page, "modelPlaneZ")).toBeLessThanOrEqual(9.75);
+  expect(await value(page, "modelPlane")).toBeLessThanOrEqual(9.75);
 
-  await page.locator("#modelPlaneZ").fill("5");
-  await page.locator("#modelPlaneZ").dispatchEvent("input");
+  await page.locator("#modelPlane").fill("5");
+  await page.locator("#modelPlane").dispatchEvent("input");
   await drag(page, "plane", 0, -40, ["Control"]);
-  expect(Number.isInteger(await value(page, "modelPlaneZ"))).toBe(true);
+  expect(Number.isInteger(await value(page, "modelPlane"))).toBe(true);
   await expect(page.locator("#modelApply")).toBeEnabled();
 });
 
@@ -185,6 +185,8 @@ test("the dock stays put through orbit, zoom, pan, a tool change, and a number t
   await page.locator("#modelToolScale").click();
   await still("the Scale tool");
   await page.locator("#modelToolSplit").click();
+  await still("the Split tool's tilt rings");
+  await page.locator("#modelToolMeasure").click();
   await expect(page.locator("#model")).not.toHaveAttribute("data-gizmo-at", /.+/);
 });
 

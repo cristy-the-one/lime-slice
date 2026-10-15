@@ -6,7 +6,7 @@ import { holeAxis, lastFace, outwardFromMesh, selectedEdges } from "../model-ble
 import { nextModelPicks, selectionCountLabel } from "../model-select";
 import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
-import { formatMm, splitPlaneInside, splitPlaneRange, zExtent } from "../model-plane";
+import { extentMemo, facePlane, planeFor, splitBase, splitNote, type FacePlane, type PlaneMode, type SplitState } from "../model-plane";
 import {
   ROOT,
   childWithOp,
@@ -128,8 +128,11 @@ export function bindModelView() {
       syncModelChrome([]);
       if (open) readout(`${about(open.solid)} Pick a face or an edge.`);
     },
-    solidZ() {
-      return zExtent(open?.solid.positions ?? null);
+    split() {
+      return splitState();
+    },
+    splitLegal() {
+      return splitLegal();
     },
     paramsChanged(typed) {
       scheduleProbe(typed ? PROBE_WAIT_MS : 0);
@@ -240,8 +243,10 @@ function toolOp(tool: string | null | undefined): ModelOp | null {
         height: num("#modelHeight"),
         turn: turn(),
       };
-    case "split":
-      return { kind: "split", origin: [0, 0, num("#modelPlaneZ")], normal: [0, 0, 1] };
+    case "split": {
+      const split = splitState();
+      return "plan" in split ? { kind: "split", origin: split.plan.origin, normal: split.plan.normal } : null;
+    }
     case "scale":
       return { kind: "scale", factor: num("#modelFactor") };
     default:
@@ -747,16 +752,13 @@ async function applyTool() {
   const op = toolOp(tool);
   if (!op) {
     if (tool === "fillet" || tool === "chamfer") readout(tool === "fillet" ? "Pick an edge to fillet." : "Pick an edge to chamfer.");
+    if (tool === "split") readout(splitNote(splitState()).text);
     return;
   }
   if (op.kind === "split") {
-    const range = splitPlaneRange(zExtent(open.solid.positions));
-    if (!range) {
-      readout("This solid is too thin to split.");
-      return;
-    }
-    if (!splitPlaneInside(op.origin[2], range)) {
-      readout(`Move the plane into the part, between ${formatMm(range.min)} and ${formatMm(range.max)} mm.`);
+    const note = splitNote(splitState());
+    if (note.bad) {
+      readout(note.text);
       return;
     }
   }
@@ -1080,7 +1082,64 @@ function turn(): Vec3 {
   return [num("#modelRx"), num("#modelRy"), num("#modelRz")];
 }
 
-function boxOf(positions: Float32Array): { min: [number, number, number]; max: [number, number, number] } | null {
+const extentOf = extentMemo();
+/** Each solid's flat faces, by face index; null for a curved one. */
+const flatFaces = new WeakMap<ParsedSolid, Map<number, FacePlane | null>>();
+
+function planeMode(): PlaneMode {
+  const mode = document.querySelector<HTMLElement>('#modelPlaneModes [aria-pressed="true"]')?.dataset.plane;
+  return mode === "x" || mode === "y" || mode === "face" ? mode : "z";
+}
+
+/**
+ * The split plane from the panel, in the solid's own frame: the one place a split request is built.
+ * X, Y, and Z cut square to that axis of the view; Face cuts parallel to the last picked flat face.
+ */
+function splitState(): SplitState {
+  const at = open;
+  const box = at ? boxOf(at.solid.positions) : null;
+  if (!at || !box) return { why: "Open a STEP file to measure a solid.", wait: true };
+  const mode = planeMode();
+  let face: FacePlane | null = null;
+  if (mode === "face") {
+    const picked = lastFace(picks);
+    if (picked == null) return { why: "Pick a flat face to cut from.", wait: true };
+    face = flatFace(at.solid, picked);
+    if (!face) return { why: "Pick a flat face. This one is curved.", wait: false };
+  }
+  const center: Vec3 = [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2];
+  const base = splitBase(mode, center, face)!;
+  return { plan: planeFor(base, num("#modelPlane"), [num("#modelTiltA"), num("#modelTiltB")], (normal) => extentOf(at.solid.positions, normal), box) };
+}
+
+
+/** A split is on offer when the solid can be cut square to at least one axis. */
+function splitLegal(): boolean {
+  const box = open ? boxOf(open.solid.positions) : null;
+  if (!open || !box) return false;
+  const positions = open.solid.positions;
+  return (["x", "y", "z"] as const).some((mode) => planeFor(splitBase(mode, [0, 0, 0], null)!, 0, [0, 0], (normal) => extentOf(positions, normal), box).range != null);
+}
+
+function flatFace(solid: ParsedSolid, face: number): FacePlane | null {
+  let known = flatFaces.get(solid);
+  if (!known) flatFaces.set(solid, (known = new Map()));
+  if (!known.has(face)) {
+    const normal = solid.faces.find((item) => item.id === face)?.normal ?? outwardFromMesh(solid.positions, solid.triangles, face);
+    known.set(face, normal ? facePlane(solid.positions, solid.triangles, face, normal as Vec3) : null);
+  }
+  return known.get(face)!;
+}
+
+const boxes = new WeakMap<Float32Array, { min: Vec3; max: Vec3 } | null>();
+
+/** The tessellation's bounds, kept per solid: every panel number and handle asks for them. */
+function boxOf(positions: Float32Array): { min: Vec3; max: Vec3 } | null {
+  if (!boxes.has(positions)) boxes.set(positions, measureBox(positions));
+  return boxes.get(positions)!;
+}
+
+function measureBox(positions: Float32Array): { min: Vec3; max: Vec3 } | null {
   if (positions.length < 3) return null;
   const min: [number, number, number] = [Infinity, Infinity, Infinity];
   const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];

@@ -126,7 +126,7 @@ export function mountMarkup(root: HTMLElement) {
                 <div class="model-edit" id="modelEdit" hidden>
                   <span class="model-sep"></span>
                   <button class="model-tool" id="modelToolBoolean" type="button" data-tool="boolean" aria-pressed="false" data-tip="Fuse, cut, or intersect a box, cylinder, or sphere">Boolean</button>
-                  <button class="model-tool" id="modelToolSplit" type="button" data-tool="split" aria-pressed="false" data-tip="Split on a horizontal plane">Split</button>
+                  <button class="model-tool" id="modelToolSplit" type="button" data-tool="split" aria-pressed="false" data-tip="Split along X, Y, Z, or a picked flat face, and tilt the plane">Split</button>
                   <button class="model-tool" id="modelToolFillet" type="button" data-tool="fillet" aria-pressed="false" data-tip="Round every selected edge in one step">Fillet</button>
                   <button class="model-tool" id="modelToolChamfer" type="button" data-tool="chamfer" aria-pressed="false" data-tip="Chamfer every selected edge in one step">Chamfer</button>
                   <button class="model-tool" id="modelToolHole" type="button" data-tool="hole" aria-pressed="false" data-tip="Cut a cylinder into the picked face, or straight down">Hole</button>
@@ -143,6 +143,12 @@ export function mountMarkup(root: HTMLElement) {
             </div>
             <div class="model-side">
               <div class="model-panel" id="modelPanel" hidden>
+                <div class="modes model-plane-modes" id="modelPlaneModes" data-for="split" role="group" aria-label="Plane">
+                  <button class="btn mode" id="modelSplitX" type="button" data-plane="x" aria-pressed="false" data-tip="Cut square to X">X</button>
+                  <button class="btn mode" id="modelSplitY" type="button" data-plane="y" aria-pressed="false" data-tip="Cut square to Y">Y</button>
+                  <button class="btn mode on" id="modelSplitZ" type="button" data-plane="z" aria-pressed="true" data-tip="Cut square to Z">Z</button>
+                  <button class="btn mode" id="modelSplitFace" type="button" data-plane="face" aria-pressed="false" data-tip="Cut parallel to a picked flat face">Face</button>
+                </div>
                 <div class="model-fields">
                   <label data-for="boolean" data-wide><span>Primitive</span>
                     <select id="modelPrim" aria-label="Primitive">
@@ -162,7 +168,9 @@ export function mountMarkup(root: HTMLElement) {
                   <label data-for="boolean" data-prim="box cylinder" data-snap="15"><span class="scrub-label" data-scrub>Turn X</span><input id="modelRx" type="number" step="1" value="0" aria-label="Turn about x, degrees"></label>
                   <label data-for="boolean" data-prim="box cylinder" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelRy" type="number" step="1" value="0" aria-label="Turn about y, degrees"></label>
                   <label data-for="boolean" data-prim="box cylinder" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelRz" type="number" step="1" value="0" aria-label="Turn about z, degrees"></label>
-                  <label data-for="split" data-snap="1"><span class="scrub-label" data-scrub>Plane Z</span><input id="modelPlaneZ" type="number" step="0.1" value="5" aria-label="Split plane z"></label>
+                  <label data-for="split" data-snap="1"><span class="scrub-label" id="modelPlaneLabel" data-scrub>Plane Z</span><input id="modelPlane" type="number" step="0.1" value="5" aria-label="Split plane Z, mm"></label>
+                  <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt A°</span><input id="modelTiltA" type="number" step="1" min="-85" max="85" value="0" aria-label="Tilt A, degrees"></label>
+                  <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt B°</span><input id="modelTiltB" type="number" step="1" min="-85" max="85" value="0" aria-label="Tilt B, degrees"></label>
                   <label data-for="fillet chamfer" data-snap="1"><span class="scrub-label" data-scrub>Size</span><input id="modelBlend" type="number" step="0.1" min="0" value="1" aria-label="Fillet or chamfer size"></label>
                   <label data-for="hole" data-snap="1"><span class="scrub-label" data-scrub>Radius</span><input id="modelHoleR" type="number" step="0.1" min="0" value="2" aria-label="Hole radius"></label>
                   <label data-for="hole" data-snap="1"><span class="scrub-label" data-scrub>Depth</span><input id="modelHoleD" type="number" step="0.1" min="0" value="12" aria-label="Hole depth"></label>

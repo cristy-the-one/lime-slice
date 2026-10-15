@@ -132,11 +132,12 @@ eq("and, as a copy, any tree with its mesh", [...reachableTrees(trees, [{ id: "c
 eq("an object with a key keeps another tree only if that tree is its own", [...reachableTrees(trees, [{ id: "c", key: "c#4", token: "m-b" }])], ["c#4"]);
 eq("nothing names the rest", [...reachableTrees(trees, [{ id: "gone", key: "gone#9", token: "m-x" }])], []);
 
-eq("labels", [cut, hole, scale, { kind: "split", origin: [0, 0, 4.5], normal: [0, 0, 1] }, { kind: "fillet", edges: [1, 2, 3], size: 1 }].map((op) => opLabel(op as ModelOp)), [
+eq("labels", [cut, hole, scale, { kind: "split", origin: [0, 0, 4.5], normal: [0, 0, 1] }, { kind: "split", origin: [10, 5, 5], normal: [1, 0, 0] }, { kind: "fillet", edges: [1, 2, 3], size: 1 }].map((op) => opLabel(op as ModelOp)), [
   "Cut box 10×10×10",
   "Hole ⌀4 depth 5",
   "Scale 200 %",
   "Split at Z 4.5",
+  "Split at X 10",
   "Fillet 3 edges r 1",
 ]);
 

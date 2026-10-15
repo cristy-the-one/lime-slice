@@ -34,7 +34,7 @@ export type ModelGhost =
   | { kind: "box"; x: number; y: number; z: number; dx: number; dy: number; dz: number; turn?: Vec3 }
   | { kind: "cylinder"; x: number; y: number; z: number; radius: number; height: number; turn?: Vec3 }
   | { kind: "sphere"; x: number; y: number; z: number; radius: number }
-  | { kind: "plane"; z: number }
+  | { kind: "plane"; origin: Vec3; normal: Vec3 }
   | { kind: "hole"; x: number; y: number; z: number; radius: number; depth: number; dir?: Vec3 }
   | { kind: "scale"; factor: number }
   | { kind: "blend"; edges: number[]; radius: number }
@@ -479,8 +479,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       return;
     }
     if (current.kind === "plane") {
+      // Drawn square around the solid's centre, dropped onto the plane, and turned with its tilt.
       const span = Math.max(extent * 1.45, 30);
-      addGhostMesh(new THREE.PlaneGeometry(span, span), new THREE.Vector3(center.x, center.y, current.z), 0.2);
+      const normal = new THREE.Vector3(...current.normal).normalize();
+      const middle = center.clone().addScaledVector(normal, -normal.dot(center.clone().sub(new THREE.Vector3(...current.origin))));
+      addGhostMesh(new THREE.PlaneGeometry(span, span), middle, 0.2).quaternion.setFromUnitVectors(zAxis, normal);
       return;
     }
     if (current.kind === "blend") {

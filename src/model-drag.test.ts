@@ -19,6 +19,7 @@ import {
   type DragHandle,
   type Vec3,
 } from "./model-drag.ts";
+import { extentAlong, planeFor, splitBase } from "./model-plane.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -60,16 +61,21 @@ for (const tool of MODEL_TOOLS) {
 
 const values: Record<string, number> = {
   modelX: 2, modelY: 3, modelZ: 10, modelDx: 4, modelDy: 6, modelDz: 8, modelRadius: 5, modelHeight: 10,
-  modelRx: 0, modelRy: 0, modelRz: 0, modelPlaneZ: 5, modelBlend: 1, modelHoleR: 2, modelHoleD: 12, modelFactor: 2,
+  modelRx: 0, modelRy: 0, modelRz: 0, modelPlane: 5, modelTiltA: 0, modelTiltB: 0, modelBlend: 1, modelHoleR: 2, modelHoleD: 12, modelFactor: 2,
   modelAx: 0, modelAy: 0, modelAz: 0, modelBx: 10, modelBy: 0, modelBz: 0,
 };
+/** A 10 mm cube's corners as a soup: enough for its extent along any normal. */
+const cubeCorners = [0, 0, 0, 10, 0, 0, 0, 10, 0, 10, 10, 0, 0, 0, 10, 10, 0, 10, 0, 10, 10, 10, 10, 10];
+const cube = { min: [0, 0, 0] as Vec3, max: [10, 10, 10] as Vec3 };
+const splitAt = (mode: "x" | "y" | "z" | "face", value: number, tilt: [number, number] = [0, 0]) =>
+  planeFor(splitBase(mode, [5, 5, 5], { point: [5, 5, 10], normal: [0, 0, 1] })!, value, tilt, (n) => extentAlong(cubeCorners, n), cube);
 function context(primitive: DragContext["primitive"], extra: Partial<DragContext> = {}): DragContext {
   return {
     read: (field) => values[field] ?? 0,
     primitive,
     center: [5, 5, 5],
     extent: 10,
-    split: { min: 0.25, max: 9.75 },
+    split: splitAt("z", 5),
     edge: { point: [5, 0, 10], out: [0, -Math.SQRT1_2, Math.SQRT1_2] },
     ...extra,
   };
@@ -106,6 +112,16 @@ check("a sphere does not turn", !ball.some((handle) => handle.kind === "ring"));
 eq("box and cylinder turn on three rings", cylinder.filter((handle) => handle.kind === "ring").map((handle) => handle.fields[0]), ["modelRx", "modelRy", "modelRz"]);
 const plane = handlesFor("split", context("box"))[0]!;
 eq("the split arrow keeps the plane inside the part", [plane.min, plane.max, originOf(plane)![2]], [0.25, 9.75, 5]);
+eq("it points up Z and moves the plane one for one", [plane.dir, plane.rate, plane.label], [[0, 0, 1], 1, "Plane Z"]);
+const tiltRingsOf = handlesFor("split", context("box")).filter((handle) => handle.kind === "ring");
+eq("the split's two tilt rings are docked, about X and Y for a Z plane", tiltRingsOf.map((handle) => [handle.fields[0], docked(handle), handle.dir]), [["modelTiltA", true, [1, 0, 0]], ["modelTiltB", true, [0, 1, 0]]]);
+const onX = handlesFor("split", context("box", { split: splitAt("x", 7) }))[0]!;
+eq("an X plane's arrow sits on the pivot and points along X", [originOf(onX), onX.dir, onX.color, onX.label], [[7, 5, 5], [1, 0, 0], "x", "Plane X"]);
+const intoFace = handlesFor("split", context("box", { split: splitAt("face", 2) }))[0]!;
+eq("a face's arrow points into the part, where the offset grows", [originOf(intoFace), intoFace.dir, intoFace.rate, intoFace.label], [[5, 5, 8], [0, 0, -1], 1, "Offset"]);
+const leaning = handlesFor("split", context("box", { split: splitAt("z", 5, [60, 0]) }))[0]!;
+check("a plane tilted 60 degrees moves 1 mm for every 2 mm of its pivot", near(leaning.rate, 2));
+check("a split with no plane yet has no handles", handlesFor("split", context("box", { split: null })).length === 0);
 const blend = handlesFor("fillet", context("box"))[0]!;
 check("the fillet knob sits one size out from the edge, on the feature", nearVec(originOf(blend)!, [5, -Math.SQRT1_2, 10 + Math.SQRT1_2]));
 const factor = handlesFor("scale", context("box"))[0]!;
