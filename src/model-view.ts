@@ -11,6 +11,7 @@ import { mountMeasureOverlay } from "./measure-overlay";
 import { axisValues, dragLabel, dragValue, lineParam, moveFine, startFine, wrapDegrees, type DragHandle, type FinePointer, type Vec3 } from "./model-drag";
 import { contextMaterial } from "./context-look";
 import type { ContextPart } from "./model-context";
+import { turnCentre, type PrimitiveSpec } from "./model-primitive";
 import { boxUnder, posedBounds, type Affine } from "./model-space";
 import { faceBoundarySegments, faceColor } from "./model-select";
 import { hexToThree, themeColors } from "./theme";
@@ -30,11 +31,12 @@ export interface ModelSolid {
   edges: { id: number; lengthMm: number; points: Float32Array }[];
 }
 
-/** A local stand-in for the tool. The kernel runs on Apply, not while the numbers move. */
+/**
+ * A local stand-in for the tool. The kernel runs on Apply, not while the numbers move. A primitive's `mesh` is
+ * `primitiveMesh` of its sizes, in its own frame; the view moves it to `spec.origin` and turns it about its centre.
+ */
 export type ModelGhost =
-  | { kind: "box"; x: number; y: number; z: number; dx: number; dy: number; dz: number; turn?: Vec3 }
-  | { kind: "cylinder"; x: number; y: number; z: number; radius: number; height: number; turn?: Vec3 }
-  | { kind: "sphere"; x: number; y: number; z: number; radius: number }
+  | { kind: "primitive"; spec: PrimitiveSpec; mesh: Float32Array }
   | { kind: "plane"; origin: Vec3; normal: Vec3 }
   | { kind: "hole"; x: number; y: number; z: number; radius: number; depth: number; dir?: Vec3 }
   | { kind: "scale"; factor: number }
@@ -54,6 +56,8 @@ const HANDLE_PX = 92;
 const IDLE_EDGE = 0x8d9780;
 /** Where an arrow's head is centred, in handle units. */
 const ARROW_HEAD = HANDLE_ARROW_TIP - 0.15;
+/** Facets of a round primitive's ghost meet at up to 22.5 degrees; its real edges at more. */
+const PRIMITIVE_CREASE_DEG = 25;
 /** How much more solid the ghost of the object being edited gets while a docked handle is in use. */
 const EMPHASIS_OPACITY = 0.45;
 
@@ -407,12 +411,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     });
   }
 
-  function addGhostMesh(geometry: THREE.BufferGeometry, position: THREE.Vector3, opacity = 0.22) {
+  /** `crease`: the least angle, in degrees, between two faces that draws their shared edge. */
+  function addGhostMesh(geometry: THREE.BufferGeometry, position: THREE.Vector3, opacity = 0.22, crease = 1) {
     const meshGhost = new THREE.Mesh(geometry, ghostMaterial(opacity));
     meshGhost.position.copy(position);
     meshGhost.renderOrder = 2;
     const edges = new THREE.LineSegments(
-      new THREE.EdgesGeometry(geometry),
+      new THREE.EdgesGeometry(geometry, crease),
       new THREE.LineBasicMaterial({ color: accent, transparent: true, opacity: 0.95 }),
     );
     edges.raycast = () => undefined;
@@ -451,22 +456,26 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
 
   function buildGhost() {
     const current = ghost;
-    if (!current || !solid) return;
-    if (current.kind === "box") {
-      if (current.dx > 0 && current.dy > 0 && current.dz > 0) {
-        const box = addGhostMesh(
-          new THREE.BoxGeometry(current.dx, current.dy, current.dz),
-          new THREE.Vector3(current.x + current.dx / 2, current.y + current.dy / 2, current.z + current.dz / 2),
-        );
-        box.quaternion.copy(turnQuaternion(current.turn));
-      }
+    if (!current) return;
+    if (current.kind === "primitive") {
+      // A new solid's ghost needs no open solid.
+      if (current.mesh.length < 9) return;
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(current.mesh, 3));
+      geometry.computeVertexNormals();
+      const centre = turnCentre(current.spec);
+      const [x, y, z] = current.spec.origin;
+      const turned = new THREE.Group();
+      turned.position.set(x + centre[0], y + centre[1], z + centre[2]);
+      turned.quaternion.copy(turnQuaternion(current.spec.turn));
+      // A round side's facets meet at a few degrees: only the primitive's real edges are drawn.
+      const shape = addGhostMesh(geometry, new THREE.Vector3(-centre[0], -centre[1], -centre[2]), 0.22, PRIMITIVE_CREASE_DEG);
+      ghosts.remove(shape);
+      turned.add(shape);
+      ghosts.add(turned);
       return;
     }
-    if (current.kind === "cylinder") {
-      const cylinder = pointCylinder(current.x, current.y, current.z + current.height / 2, current.radius, current.height);
-      cylinder?.quaternion.premultiply(turnQuaternion(current.turn));
-      return;
-    }
+    if (!solid) return;
     if (current.kind === "measure") {
       const line = new THREE.Line(
         new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...current.a), new THREE.Vector3(...current.b)]),
@@ -476,10 +485,6 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       line.renderOrder = 5;
       line.raycast = () => undefined;
       ghosts.add(line);
-      return;
-    }
-    if (current.kind === "sphere") {
-      if (current.radius > 0) addGhostMesh(new THREE.SphereGeometry(current.radius, 28, 18), new THREE.Vector3(current.x, current.y, current.z));
       return;
     }
     if (current.kind === "hole") {

@@ -3,7 +3,8 @@
  * node the view and the plate were on, and the root STEP. Engine keys are not saved: they name a
  * tree for one page load. A split names its piece by the piece's plate object id instead.
  */
-import { jumped, opLabel, type EdgeRef, type Fingerprint, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type Vec3 } from "./model-tree.ts";
+import { isPrimitiveKind, type PrimitiveSpec } from "./model-primitive.ts";
+import { jumped, opLabel, rootLabel, type EdgeRef, type Fingerprint, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type Vec3 } from "./model-tree.ts";
 
 interface SavedNode {
   id: NodeId;
@@ -15,17 +16,26 @@ interface SavedNode {
   piece?: string;
 }
 
-/** `Step` is the root STEP: bytes in the app, a base64 record in the file. */
-export interface SavedTree<Step> {
+/**
+ * The root is a STEP, `rootStep` (bytes in the app, a base64 record in the file), or a primitive,
+ * `rootPrimitive`: a new solid's few numbers, built again on open. Exactly one is there.
+ */
+export type SavedTree<Step> = SavedTreeBody & ({ rootStep: Step; rootPrimitive?: undefined } | { rootPrimitive: PrimitiveSpec; rootStep?: undefined });
+
+export interface SavedTreeBody {
   nodes: SavedNode[];
   current: NodeId;
   committed: NodeId;
   nextId: NodeId;
-  rootStep: Step;
 }
 
-/** The tree as it is saved, less its root STEP. `pieceOwner` names the plate object a piece key belongs to, if any. */
-export function savedTree(tree: ModelTree, committed: NodeId, pieceOwner: (key: string) => string | undefined): Omit<SavedTree<never>, "rootStep"> {
+/** The tree without its root, to give it another. */
+export function treeBody({ nodes, current, committed, nextId }: SavedTreeBody): SavedTreeBody {
+  return { nodes, current, committed, nextId };
+}
+
+/** The tree as it is saved, less its root. `pieceOwner` names the plate object a piece key belongs to, if any. */
+export function savedTree(tree: ModelTree, committed: NodeId, pieceOwner: (key: string) => string | undefined): SavedTreeBody {
   const nodes = [...tree.nodes.values()]
     .sort((a, b) => a.id - b.id)
     .map((node) => {
@@ -46,7 +56,7 @@ export function savedTree(tree: ModelTree, committed: NodeId, pieceOwner: (key: 
  * The tree a project saved, under `key`. The plate holds `committed`, with `mesh`; the view opens
  * there too, and Redo from it leads to the step the view was on when saved.
  */
-export function loadedTree(saved: SavedTree<unknown>, key: string, root: ModelRoot, rootLabel: string, mesh: PlateMesh, pieceKey: (objectId: string) => string | undefined): ModelTree {
+export function loadedTree(saved: SavedTreeBody, key: string, root: ModelRoot, fileLabel: string, mesh: PlateMesh, pieceKey: (objectId: string) => string | undefined): ModelTree {
   const nodes = new Map<NodeId, ModelNode>();
   for (const node of saved.nodes) {
     const piece = node.piece ? pieceKey(node.piece) : undefined;
@@ -54,7 +64,7 @@ export function loadedTree(saved: SavedTree<unknown>, key: string, root: ModelRo
       id: node.id,
       parent: node.parent,
       op: node.op,
-      label: node.op ? opLabel(node.op) : rootLabel,
+      label: node.op ? opLabel(node.op) : rootLabel(root, fileLabel),
       fingerprint: node.fingerprint,
       ...(node.name ? { name: node.name } : {}),
       ...(piece ? { piece } : {}),
@@ -84,8 +94,13 @@ export function readSavedTree(value: unknown): SavedTree<unknown> | null {
   }
   const { current, committed, nextId } = value;
   if (!ids.has(0) || !isId(current) || !ids.has(current) || !isId(committed) || !ids.has(committed) || !isId(nextId)) return null;
+  const body = { nodes, current, committed, nextId: Math.max(nextId, Math.max(...ids) + 1) };
+  if (value.rootPrimitive !== undefined) {
+    const solid = value.rootStep === undefined ? readPrimitive(value.rootPrimitive) : undefined;
+    return solid ? { ...body, rootPrimitive: solid } : null;
+  }
   if (value.rootStep === undefined) return null;
-  return { nodes, current, committed, nextId: Math.max(nextId, Math.max(...ids) + 1), rootStep: value.rootStep };
+  return { ...body, rootStep: value.rootStep };
 }
 
 function readNode(value: unknown): SavedNode | null {
@@ -115,14 +130,9 @@ function readOp(value: unknown): ModelOp | undefined {
   const origin = vec(value.origin);
   switch (value.kind) {
     case "boolean": {
-      const size = value.size === undefined ? [0, 0, 0] as Vec3 : vec(value.size);
-      const turn = value.turn === undefined ? [0, 0, 0] as Vec3 : vec(value.turn);
-      const radius = value.radius === undefined ? 0 : value.radius;
-      const height = value.height === undefined ? 0 : value.height;
       if (value.op !== "fuse" && value.op !== "cut" && value.op !== "common") return undefined;
-      if (value.primitive !== "box" && value.primitive !== "cylinder" && value.primitive !== "sphere") return undefined;
-      if (!origin || !size || !turn || !finite(radius) || !finite(height)) return undefined;
-      return { kind: "boolean", op: value.op, primitive: value.primitive, origin, size, radius, height, turn };
+      const tool = readPrimitive(value);
+      return tool ? { kind: "boolean", op: value.op, ...tool } : undefined;
     }
     case "hole": {
       const axis = value.axis === undefined ? [0, 0, 0] as Vec3 : vec(value.axis);
@@ -155,6 +165,29 @@ function readOp(value: unknown): ModelOp | undefined {
     default:
       return undefined;
   }
+}
+
+/** A primitive as the engine stores it. Fields it defaults may be absent; the newer ones are kept only when there. */
+function readPrimitive(value: unknown): PrimitiveSpec | undefined {
+  if (!isRecord(value) || !isPrimitiveKind(value.primitive)) return undefined;
+  const origin = vec(value.origin);
+  const size = value.size === undefined ? [0, 0, 0] as Vec3 : vec(value.size);
+  const turn = value.turn === undefined ? [0, 0, 0] as Vec3 : vec(value.turn);
+  const radius = value.radius === undefined ? 0 : value.radius;
+  const height = value.height === undefined ? 0 : value.height;
+  if (!origin || !size || !turn || !finite(radius) || !finite(height)) return undefined;
+  const spec: PrimitiveSpec = { primitive: value.primitive, origin, size, radius, height, turn };
+  for (const key of ["topRadius", "tubeRadius", "innerRadius", "topX", "sides", "across"] as const) {
+    const raw = value[key];
+    if (raw === undefined) continue;
+    if (!finite(raw)) return undefined;
+    spec[key] = raw;
+  }
+  if (value.flats !== undefined) {
+    if (typeof value.flats !== "boolean") return undefined;
+    spec.flats = value.flats;
+  }
+  return spec;
 }
 
 function readFingerprint(value: unknown): Fingerprint | undefined {

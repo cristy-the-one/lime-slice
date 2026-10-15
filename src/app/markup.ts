@@ -1,4 +1,5 @@
 import { SPLIT_TILT_MAX_DEG } from "../model-plane";
+import { PRIMITIVES } from "../model-primitive";
 
 export function mountMarkup(root: HTMLElement) {
   root.innerHTML = `
@@ -120,6 +121,8 @@ export function mountMarkup(root: HTMLElement) {
           <div class="model-bar" id="modelBar">
             <div class="model-top">
               <div class="model-tools" role="toolbar" aria-label="Model">
+                <button class="model-tool" id="modelToolNew" type="button" data-tool="create" aria-pressed="false" data-tip="Start a new solid from a box, cylinder, cone, or another primitive">New solid</button>
+                <span class="model-sep"></span>
                 <div class="modes" role="group" aria-label="Pick">
                   <button class="btn mode on" id="modelPickFace" type="button" aria-pressed="true" data-tip="Pick faces. Shift-click adds or removes.">Face</button>
                   <button class="btn mode" id="modelPickEdge" type="button" aria-pressed="false" data-tip="Pick edges. Shift-click adds or removes.">Edge</button>
@@ -146,6 +149,14 @@ export function mountMarkup(root: HTMLElement) {
               </div>
               <span class="model-paused" id="modelPaused">Slicing paused while modeling</span>
             </div>
+            <div class="model-empty" id="modelEmpty" hidden>
+              <p class="model-empty-title" id="modelEmptyTitle">No solid open</p>
+              <p class="model-empty-text" id="modelEmptyText">Start a solid from a primitive, or open a STEP file.</p>
+              <div class="model-empty-actions">
+                <button class="btn primary" id="modelEmptyNew" type="button">New solid</button>
+                <button class="btn" id="modelEmptyOpen" type="button">Open a file</button>
+              </div>
+            </div>
             <div class="model-side">
               <div class="model-panel" id="modelPanel" hidden>
                 <div class="modes model-plane-modes" id="modelPlaneModes" data-for="split" role="group" aria-label="Plane">
@@ -154,25 +165,27 @@ export function mountMarkup(root: HTMLElement) {
                   <button class="btn mode on" id="modelSplitZ" type="button" data-plane="z" aria-pressed="true" data-tip="Cut square to Z">Z</button>
                   <button class="btn mode" id="modelSplitFace" type="button" data-plane="face" aria-pressed="false" data-tip="Cut parallel to a picked flat face">Face</button>
                 </div>
+                <div class="model-prims" id="modelPrim" data-for="boolean create" role="radiogroup" aria-label="Primitive">${PRIMITIVES.map(
+                  (entry, i) => `<button class="model-prim" type="button" role="radio" data-kind="${entry.kind}" aria-label="${entry.label}" data-tip="${entry.label}" aria-checked="${i === 0}" tabindex="${i === 0 ? 0 : -1}">${entry.label}</button>`,
+                ).join("")}</div>
                 <div class="model-fields">
-                  <label data-for="boolean" data-wide><span>Primitive</span>
-                    <select id="modelPrim" aria-label="Primitive">
-                      <option value="box">Box</option>
-                      <option value="cylinder">Cylinder</option>
-                      <option value="sphere">Sphere</option>
-                    </select>
-                  </label>
-                  <label data-for="boolean" data-prim="box" data-snap="1"><span class="scrub-label" data-scrub>Size X</span><input id="modelDx" type="number" step="0.1" value="10" aria-label="Box size x"></label>
-                  <label data-for="boolean" data-prim="box" data-snap="1"><span class="scrub-label" data-scrub>Size Y</span><input id="modelDy" type="number" step="0.1" value="10" aria-label="Box size y"></label>
-                  <label data-for="boolean" data-prim="box" data-snap="1"><span class="scrub-label" data-scrub>Size Z</span><input id="modelDz" type="number" step="0.1" value="10" aria-label="Box size z"></label>
-                  <label data-for="boolean" data-prim="cylinder sphere" data-snap="1"><span class="scrub-label" data-scrub>Radius</span><input id="modelRadius" type="number" step="0.1" min="0" value="5" aria-label="Radius"></label>
-                  <label data-for="boolean" data-prim="cylinder" data-snap="1"><span class="scrub-label" data-scrub>Height</span><input id="modelHeight" type="number" step="0.1" min="0" value="10" aria-label="Height"></label>
+                  <label data-for="boolean create" data-prim="box wedge" data-snap="1"><span class="scrub-label" data-scrub>Size X</span><input id="modelDx" type="number" step="0.1" value="10" aria-label="Size x"></label>
+                  <label data-for="boolean create" data-prim="box wedge" data-snap="1"><span class="scrub-label" data-scrub>Size Y</span><input id="modelDy" type="number" step="0.1" value="10" aria-label="Size y"></label>
+                  <label data-for="boolean create" data-prim="box wedge" data-snap="1"><span class="scrub-label" data-scrub>Size Z</span><input id="modelDz" type="number" step="0.1" value="10" aria-label="Size z"></label>
+                  <label data-for="boolean create" data-prim="wedge" data-snap="1"><span class="scrub-label" data-scrub>Top X</span><input id="modelTopX" type="number" step="0.1" min="0" value="3" aria-label="Top face length along x"></label>
+                  <label data-for="boolean create" data-prim="cylinder sphere cone torus tube" data-snap="1"><span class="scrub-label" id="modelRadiusLabel" data-scrub>Radius</span><input id="modelRadius" type="number" step="0.1" min="0" value="5" aria-label="Radius"></label>
+                  <label data-for="boolean create" data-prim="cone" data-snap="1"><span class="scrub-label" data-scrub>Top radius</span><input id="modelTopR" type="number" step="0.1" min="0" value="2" aria-label="Top radius"></label>
+                  <label data-for="boolean create" data-prim="torus" data-snap="1"><span class="scrub-label" data-scrub>Tube radius</span><input id="modelTube" type="number" step="0.1" min="0" value="1.5" aria-label="Tube radius"></label>
+                  <label data-for="boolean create" data-prim="tube" data-snap="1"><span class="scrub-label" data-scrub>Inner radius</span><input id="modelInnerR" type="number" step="0.1" min="0" value="3" aria-label="Inner radius"></label>
+                  <label data-for="boolean create" data-prim="polygon" data-snap="1"><span class="scrub-label" data-scrub>Sides</span><input id="modelSides" type="number" step="1" min="3" max="64" value="6" aria-label="Sides"></label>
+                  <label data-for="boolean create" data-prim="polygon" data-snap="1"><span class="scrub-label" id="modelAcrossLabel" data-scrub>Across flats</span><input id="modelAcross" type="number" step="0.1" min="0" value="10" aria-label="Width across flats"></label>
+                  <label data-for="boolean create" data-prim="cylinder cone polygon tube" data-snap="1"><span class="scrub-label" data-scrub>Height</span><input id="modelHeight" type="number" step="0.1" min="0" value="10" aria-label="Height"></label>
                   <label data-for="boolean hole" data-snap="1"><span class="scrub-label" data-scrub>X</span><input id="modelX" type="number" step="0.1" value="10" aria-label="Origin x"></label>
                   <label data-for="boolean hole" data-snap="1"><span class="scrub-label" data-scrub>Y</span><input id="modelY" type="number" step="0.1" value="0" aria-label="Origin y"></label>
                   <label data-for="boolean hole" data-snap="1"><span class="scrub-label" data-scrub>Z</span><input id="modelZ" type="number" step="0.1" value="0" aria-label="Origin z"></label>
-                  <label data-for="boolean" data-prim="box cylinder" data-snap="15"><span class="scrub-label" data-scrub>Turn X</span><input id="modelRx" type="number" step="1" value="0" aria-label="Turn about x, degrees"></label>
-                  <label data-for="boolean" data-prim="box cylinder" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelRy" type="number" step="1" value="0" aria-label="Turn about y, degrees"></label>
-                  <label data-for="boolean" data-prim="box cylinder" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelRz" type="number" step="1" value="0" aria-label="Turn about z, degrees"></label>
+                  <label data-for="boolean" data-prim="box cylinder cone torus wedge polygon tube" data-snap="15"><span class="scrub-label" data-scrub>Turn X</span><input id="modelRx" type="number" step="1" value="0" aria-label="Turn about x, degrees"></label>
+                  <label data-for="boolean" data-prim="box cylinder cone torus wedge polygon tube" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelRy" type="number" step="1" value="0" aria-label="Turn about y, degrees"></label>
+                  <label data-for="boolean" data-prim="box cylinder cone torus wedge polygon tube" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelRz" type="number" step="1" value="0" aria-label="Turn about z, degrees"></label>
                   <label data-for="split" data-snap="1"><span class="scrub-label" id="modelPlaneLabel" data-scrub>Plane Z</span><input id="modelPlane" type="number" step="any" value="5" aria-label="Split plane Z, mm"></label>
                   <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt A°</span><input id="modelTiltA" type="number" step="1" min="-${SPLIT_TILT_MAX_DEG}" max="${SPLIT_TILT_MAX_DEG}" value="0" aria-label="Tilt A, degrees"></label>
                   <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt B°</span><input id="modelTiltB" type="number" step="1" min="-${SPLIT_TILT_MAX_DEG}" max="${SPLIT_TILT_MAX_DEG}" value="0" aria-label="Tilt B, degrees"></label>
@@ -193,6 +206,10 @@ export function mountMarkup(root: HTMLElement) {
                   <label data-for="place" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelPlaceRy" type="number" step="1" value="0" aria-label="Turn in model space about y, degrees"></label>
                   <label data-for="place" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelPlaceRz" type="number" step="1" value="0" aria-label="Turn in model space about z, degrees"></label>
                 </div>
+                <div class="modes" id="modelAcrossModes" data-for="boolean create" data-prim="polygon" role="group" aria-label="Width across">
+                  <button class="btn mode" id="modelCorners" type="button" aria-pressed="false" data-tip="Size the polygon from corner to corner">Corners</button>
+                  <button class="btn mode on" id="modelFlats" type="button" aria-pressed="true" data-tip="Size the polygon from flat to flat, as a nut is sized">Flats</button>
+                </div>
                 <div class="modes" data-for="boolean" role="group" aria-label="Boolean">
                   <button class="btn mode on" id="modelFuse" type="button" aria-pressed="true">Fuse</button>
                   <button class="btn mode" id="modelCut" type="button" aria-pressed="false">Cut</button>
@@ -211,7 +228,7 @@ export function mountMarkup(root: HTMLElement) {
               <div class="model-foot" id="modelFoot">
                 <div class="model-foot-row">
                   <button class="model-view-reset" id="modelResetView" type="button" aria-label="Reset view" data-tip="Reset view. Shift: every object"></button>
-                  <div id="modelReadout" class="model-readout">Open a STEP file to measure a solid.</div>
+                  <div id="modelReadout" class="model-readout"></div>
                 </div>
               </div>
             </div>

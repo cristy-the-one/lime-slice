@@ -4,6 +4,7 @@
  * keyed by `key` and node id; this keeps what the client needs to hand them back.
  */
 import { formatMm, splitLabel } from "./model-plane.ts";
+import { primitiveLabel, type PrimitiveSpec } from "./model-primitive.ts";
 import type { ReinforceRegion } from "./reinforcement.ts";
 import type { SeamDisk } from "./seam-paint.ts";
 import type { EditEntry } from "./support-edit-list.ts";
@@ -22,7 +23,7 @@ export interface EdgeRef {
 
 /** One edit, in the solid's own frame. A fresh fillet or chamfer names edges by index. */
 export type ModelOp =
-  | { kind: "boolean"; op: "fuse" | "cut" | "common"; primitive: "box" | "cylinder" | "sphere"; origin: Vec3; size: Vec3; radius: number; height: number; turn: Vec3 }
+  | ({ kind: "boolean"; op: "fuse" | "cut" | "common" } & PrimitiveSpec)
   | { kind: "hole"; origin: Vec3; axis: Vec3; radius: number; depth: number }
   | { kind: "split"; origin: Vec3; normal: Vec3 }
   | { kind: "fillet" | "chamfer"; edges: (number | EdgeRef)[]; size: number }
@@ -71,8 +72,11 @@ export interface ModelNode {
   mesh?: PlateMesh;
 }
 
-/** Where the root solid comes from: STEP bytes, or the piece a split cut off in another tree. */
-export type ModelRoot = { kind: "step"; name: string; bytes: ArrayBuffer } | { kind: "piece"; tree: string; node: NodeId };
+/** Where the root solid comes from: STEP bytes, a primitive built from its numbers, or the piece a split cut off in another tree. */
+export type ModelRoot =
+  | { kind: "step"; name: string; bytes: ArrayBuffer }
+  | { kind: "primitive"; solid: PrimitiveSpec }
+  | { kind: "piece"; tree: string; node: NodeId };
 
 export interface ModelTree {
   key: string;
@@ -283,19 +287,19 @@ export function scaleBetween(tree: ModelTree, a: NodeId, b: NodeId): boolean {
 
 const BOOLEAN_VERB = { fuse: "Fuse", cut: "Cut", common: "Intersect" } as const;
 
+/** The root's name in the history list: the file's, or the primitive a new solid started as ("Box 20×20×20"). */
+export function rootLabel(root: ModelRoot, fileLabel: string): string {
+  if (root.kind !== "primitive") return fileLabel;
+  const text = primitiveLabel(root.solid);
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 /** A short name for the step, for the history list. */
 export function opLabel(op: ModelOp): string {
   const n = formatMm;
   switch (op.kind) {
-    case "boolean": {
-      const shape =
-        op.primitive === "box"
-          ? `box ${n(op.size[0])}×${n(op.size[1])}×${n(op.size[2])}`
-          : op.primitive === "cylinder"
-            ? `cylinder ⌀${n(op.radius * 2)} h ${n(op.height)}`
-            : `sphere ⌀${n(op.radius * 2)}`;
-      return `${BOOLEAN_VERB[op.op]} ${shape}`;
-    }
+    case "boolean":
+      return `${BOOLEAN_VERB[op.op]} ${primitiveLabel(op)}`;
     case "hole":
       return `Hole ⌀${n(op.radius * 2)} depth ${n(op.depth)}`;
     case "split":

@@ -20,7 +20,7 @@ import { parseOverrides, type OverrideDocument } from "./overrides.ts";
 import { plateFileIsVersion2, readPlateSettings, settingsEmpty, type PlateFileObject } from "./plate.ts";
 import { dropEmptyReinforce, readReinforcement } from "./reinforcement.ts";
 import type { EditEntry } from "./support-edit-list.ts";
-import { readSavedTree } from "./model-tree-file.ts";
+import { readSavedTree, treeBody } from "./model-tree-file.ts";
 import type { Affine } from "./model-space.ts";
 import { readSeamPaint } from "./seam-paint.ts";
 import { readPaint } from "./support-paint.ts";
@@ -353,13 +353,18 @@ function readPlateObjects(value: unknown): { objects: PlateFileObject[]; unreadH
     const root = raw && typeof raw === "object" ? readRootStep((raw as Record<string, unknown>).rootStep) : null;
     if (root?.bytesBase64 !== undefined && !pool.has(recordId(root))) pool.set(recordId(root), root.bytesBase64);
     const tree = raw == null ? null : readSavedTree(raw);
-    return tree && root ? { tree, root } : null;
+    return tree && (root || tree.rootPrimitive) ? { tree, root } : null;
   });
   const unreadHistory: string[] = [];
   value.forEach((item: Record<string, unknown>, i) => {
     const saved = trees[i];
-    const bytesBase64 = saved ? saved.root.bytesBase64 ?? pool.get(recordId(saved.root)) : undefined;
-    if (saved && bytesBase64 !== undefined) out[i]!.modelTree = { ...saved.tree, rootStep: { ...saved.root, bytesBase64 } };
+    // A new solid's root is its primitive: there are no bytes to find.
+    if (saved?.tree.rootPrimitive) {
+      out[i]!.modelTree = { ...treeBody(saved.tree), rootPrimitive: saved.tree.rootPrimitive };
+      return;
+    }
+    const bytesBase64 = saved?.root ? saved.root.bytesBase64 ?? pool.get(recordId(saved.root)) : undefined;
+    if (saved?.root && bytesBase64 !== undefined) out[i]!.modelTree = { ...treeBody(saved.tree), rootStep: { ...saved.root, bytesBase64 } };
     else if (item.modelTree != null) unreadHistory.push(out[i]!.name);
   });
   return { objects: out, unreadHistory };

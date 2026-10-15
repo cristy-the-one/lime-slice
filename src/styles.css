@@ -682,6 +682,52 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .model-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); }
 .model-actions .btn { height: var(--control-h-sm); }
 .model-bar[data-tool="measure"] #modelApply, .model-bar[data-tool="place"] #modelApply { display: none; }
+/* The primitive picker: one icon button per primitive in a row, each named by its label and tip. */
+.model-prims {
+  display: grid;
+  margin-bottom: var(--space-2);
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 4px;
+}
+.model-prims[hidden] { display: none !important; }
+.model-prim {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+  color: var(--text-dim);
+}
+.model-prim:hover:not([aria-checked="true"]) { background: var(--surface-3); color: var(--text); }
+.model-prim[aria-checked="true"] {
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  color: var(--accent-text);
+}
+.model-prim:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* No solid to show: a plain card in the middle of the view. An open tool, New solid's included, takes its place. */
+.model-empty {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(340px, calc(100% - 32px));
+  padding: var(--space-4);
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
+  text-align: center;
+  pointer-events: auto;
+}
+.model-empty[hidden], #modelBar[data-tool] .model-empty { display: none; }
+.model-empty-title { margin: 0 0 var(--space-1); color: var(--text); font-size: var(--fs-4); font-weight: 600; }
+.model-empty-text { margin: 0 0 var(--space-3); color: var(--text-dim); font-size: var(--fs-3); line-height: 1.4; }
+.model-empty-actions { display: flex; justify-content: center; gap: var(--space-2); flex-wrap: wrap; }
 /* Beside the readout, in its column, so the toolbar, the dock, and the view cube never reach it and History keeps its height. */
 .model-foot-row {
   display: flex;
@@ -893,6 +939,7 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   border-color: color-mix(in srgb, var(--warn) 55%, var(--border));
 }
 .model-fit[hidden] { display: none; }
+.model-readout:empty { display: none; }
 .model-readout {
   max-width: 100%;
   padding: var(--space-1) var(--space-2);

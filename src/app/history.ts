@@ -3,7 +3,7 @@ import { session, state } from "./state";
 import { presetKeys } from "../presets";
 import { KLIPPER_NUMBERS, saveProfile } from "../profiles";
 import { emptyOverrides } from "../overrides";
-import { pinPlateMeshes, recallPlateMeshes, revivePlate, snapPlate } from "../plate";
+import { emptyPlate, pinPlateMeshes, recallPlateMeshes, revivePlate, snapPlate } from "../plate";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library";
 import { beltStamp, selectIn, selection, setActiveBelt, setActiveFirmware, setAdvance, setNozzleTemp, setRetract } from "../ui/machine-library";
@@ -150,6 +150,11 @@ function applySnap(snap: EditSnap) {
       state.plate = revived;
       applySelectedToState(revived);
     }
+  } else if (snap.plate) {
+    // Before Model's New solid on an empty plate: the plate is empty again.
+    state.plate = emptyPlate();
+    state.mesh = null;
+    state.sourcePos = null;
   }
   applying = false;
   fx.applyPlace?.(true);

@@ -278,11 +278,11 @@ test("a 2 mm primitive still has every handle on its own spot, and its Size X kn
   expect((await ghost(page)).size[0]).toBeCloseTo(dx1, 1);
   await page.screenshot({ path: path.join(out, "boolean-tiny.png") });
 
-  await page.locator("#modelPrim").selectOption("cylinder");
+  await page.locator(`#modelPrim [data-kind="cylinder"]`).click();
   for (const id of ["modelRadius", "modelHeight"]) await setField(page, id, "1");
   await expect.poll(async () => Object.keys(await grips(page))).toContain("height");
   expect(await minGripGap(page)).toBeGreaterThanOrEqual(14);
-  await page.locator("#modelPrim").selectOption("sphere");
+  await page.locator(`#modelPrim [data-kind="sphere"]`).click();
   await expect.poll(async () => Object.keys(await grips(page))).not.toContain("height");
   expect(await minGripGap(page)).toBeGreaterThanOrEqual(14);
 });

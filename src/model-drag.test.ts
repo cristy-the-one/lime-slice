@@ -20,6 +20,7 @@ import {
   type Vec3,
 } from "./model-drag.ts";
 import { extentAlong, planeFor, splitBase } from "./model-plane.ts";
+import { PRIMITIVES } from "./model-primitive.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -82,7 +83,7 @@ function context(primitive: DragContext["primitive"], extra: Partial<DragContext
 }
 for (const tool of MODEL_TOOLS) {
   const dragged = new Set<string>();
-  for (const primitive of ["box", "cylinder", "sphere"] as const) {
+  for (const { kind: primitive } of PRIMITIVES) {
     for (const handle of handlesFor(tool, context(primitive))) handle.fields.forEach((field) => dragged.add(field));
   }
   for (const field of DRAG_FIELDS[tool]) check(`${tool} has a handle for ${field}`, dragged.has(field));

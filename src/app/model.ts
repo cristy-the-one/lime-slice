@@ -6,6 +6,7 @@ import {
   boxUnder,
   inversePose,
   isIdentity,
+  newSolidPose,
   placeFields,
   poseFromPlace,
   posedBounds,
@@ -14,6 +15,7 @@ import {
   type Affine,
   type PlaceFields,
 } from "../model-space";
+import { primitiveBounds, primitiveName, rootSpec, type PrimitiveSpec } from "../model-primitive";
 import { markProjectDirty } from "../project-dirty";
 import { unionBox } from "../measure";
 import type { ModelPick } from "../model-view";
@@ -35,13 +37,16 @@ import {
   reachableTrees,
   redoTarget,
   reserveId,
+  rootLabel,
   savedNodes,
   subtree,
   undoTarget,
   visitStep,
   withChild,
   withNode,
+  type Fingerprint,
   type ModelOp,
+  type ModelRoot,
   type ModelTree,
   type NodeId,
   type PlateMesh,
@@ -51,6 +56,7 @@ import {
 import { loadedTree, savedTree, type SavedTree } from "../model-tree-file";
 import {
   closeModelTool,
+  fieldPrimitive,
   mountModelChrome,
   openModelTool,
   refreshModelGhost,
@@ -65,9 +71,9 @@ import {
 } from "../ui/model-chrome";
 import { mountModelHistory, syncModelHistory } from "../ui/model-history";
 import { dropRefusal } from "../model-history";
-import { addedSplit, meshSeat, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose } from "../plate";
+import { addedSolid, addedSplit, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose } from "../plate";
 import { authHeaders } from "../ui/api-base";
-import { livePlate, place } from "./files";
+import { livePlate, openMeshPicker, place } from "./files";
 import { beginEdit, editHistoryRefs, endModelVisit, flushEdit, markModelEdit, noteEdit, patchEditBrep } from "./history";
 import { fx } from "./fx";
 import { modelerFailure, plainModelError } from "./model-error";
@@ -142,7 +148,7 @@ let placeBefore: Affine | null = null;
 let placeTimer = 0;
 /** A typed or scrubbed Place number is one step once it rests this long. A drag ends its own step. */
 const PLACE_SETTLE_MS = 400;
-/** Each solid's box in its own frame. */
+/** Each solid's, and each plate mesh's, box in its own frame. */
 const ownBoxes = new WeakMap<Float32Array, Bounds>();
 
 export function bindModelView() {
@@ -161,6 +167,8 @@ export function bindModelView() {
     else void step(redoTarget, "Edit redone.");
   });
   document.querySelector("#modelResetView")?.addEventListener("click", (ev) => frameModel((ev as MouseEvent).shiftKey));
+  document.querySelector("#modelEmptyNew")?.addEventListener("click", () => document.querySelector<HTMLButtonElement>("#modelToolNew")?.click());
+  document.querySelector("#modelEmptyOpen")?.addEventListener("click", () => openMeshPicker());
   mountModelChrome({
     clearSelection() {
       picks = [];
@@ -203,6 +211,11 @@ export function bindModelView() {
       return open ? placeFields(openPose(), pivotOf(open.solid)) : null;
     },
     placeMoved,
+    newSolidAt,
+    frameNewSolid(spec) {
+      const others = plateBoxes();
+      fx.model?.frame(unionBox([primitiveBounds(newSolidAt(spec)), ...others])!);
+    },
   });
   mountModelHistory({
     jump(node) {
@@ -291,16 +304,7 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
     case "hole":
       return { kind: "hole", origin, axis: drillAxis(), radius: num("#modelHoleR"), depth: num("#modelHoleD") };
     case "boolean":
-      return {
-        kind: "boolean",
-        op: boolOp(),
-        primitive: prim(),
-        origin,
-        size: [num("#modelDx"), num("#modelDy"), num("#modelDz")],
-        radius: num("#modelRadius"),
-        height: num("#modelHeight"),
-        turn: turn(),
-      };
+      return { kind: "boolean", op: boolOp(), ...fieldPrimitive() };
     case "split": {
       const split = splitState();
       return "plan" in split ? { kind: "split", origin: split.plan.origin, normal: split.plan.normal } : null;
@@ -390,21 +394,25 @@ export async function captureOpenSolid() {
   for (const token of failed) putStep(token, undefined);
 }
 
-/** The root STEP a saved tree reopens from. A piece's is its root's STEP, once written. */
-function rootStepOf(tree: ModelTree): { name: string; bytes: ArrayBuffer } | null {
-  if (tree.root.kind === "step") return { name: tree.root.name, bytes: tree.root.bytes };
+type SavedRoot = { rootStep: { name: string; bytes: ArrayBuffer } } | { rootPrimitive: PrimitiveSpec };
+
+/** What a saved tree reopens from: its root STEP, or a new solid's primitive. A piece's is its root's STEP, once written. */
+function savedRootOf(tree: ModelTree): SavedRoot | null {
+  if (tree.root.kind === "step") return { rootStep: { name: tree.root.name, bytes: tree.root.bytes } };
+  if (tree.root.kind === "primitive") return { rootPrimitive: tree.root.solid };
   const root = tree.nodes.get(ROOT)?.mesh;
-  return root?.step ? { name: stepFileName(root.name), bytes: root.step } : null;
+  return root?.step ? { rootStep: { name: stepFileName(root.name), bytes: root.step } } : null;
 }
 
-type TreeToSave = { tree: Omit<SavedTree<never>, "rootStep">; rootStep: { name: string; bytes: ArrayBuffer } };
+type TreeToSave = SavedTree<{ name: string; bytes: ArrayBuffer }>;
 
 /**
  * What `.lime` keeps of each plate object's tree, by object id: the tree Model would resume for the
- * object's mesh, when it has a step, a name, or a piece a kept split names. A split piece's tree is
- * kept from the STEP of its own root, written here if Model has not, so it opens without the part
- * it was cut from; `unsaved` names the objects whose root the engine could not write. Trees of
- * objects no longer on the plate are not saved. Run after `captureOpenSolid`.
+ * object's mesh, when it has a step, a name, a piece a kept split names, or a primitive root (a new
+ * solid has no file to open again). A split piece's tree is kept from the STEP of its own root,
+ * written here if Model has not, so it opens without the part it was cut from; `unsaved` names the
+ * objects whose root the engine could not write. Trees of objects no longer on the plate are not
+ * saved. Run after `captureOpenSolid`.
  */
 export async function historyToSave(): Promise<{ trees: Map<string, TreeToSave>; unsaved: string[] }> {
   const held = new Map<string, { name: string; key: string; node: NodeId }>();
@@ -417,24 +425,24 @@ export async function historyToSave(): Promise<{ trees: Map<string, TreeToSave>;
   const treeOfKey = (key: string) => modelTrees.get(key)!;
   const linked = (keys: Iterable<string>) => new Set([...keys].flatMap((key) => [...treeOfKey(key).nodes.values()].flatMap((node) => (node.piece ? [node.piece] : []))));
   const named = linked([...held.values()].map(({ key }) => key));
-  const roots = new Map<string, { name: string; bytes: ArrayBuffer }>();
+  const roots = new Map<string, SavedRoot>();
   const unsaved: string[] = [];
   for (const [id, { name, key }] of held) {
     // A root STEP written below can outlast the tree: a new file can replace the plate meanwhile.
     if (!modelTrees.has(key)) continue;
     const tree = treeOfKey(key);
-    if (tree.nodes.size === 1 && !tree.nodes.get(ROOT)?.name && !named.has(key)) continue;
+    if (tree.nodes.size === 1 && !tree.nodes.get(ROOT)?.name && !named.has(key) && tree.root.kind !== "primitive") continue;
     const root = tree.nodes.get(ROOT)?.mesh;
-    if (!rootStepOf(tree) && tree.root.kind === "piece" && root) await writeStep(root.token, key, ROOT);
-    const rootStep = modelTrees.has(key) ? rootStepOf(treeOfKey(key)) : null;
-    if (rootStep) roots.set(id, rootStep);
+    if (!savedRootOf(tree) && tree.root.kind === "piece" && root) await writeStep(root.token, key, ROOT);
+    const saved = modelTrees.has(key) ? savedRootOf(treeOfKey(key)) : null;
+    if (saved) roots.set(id, saved);
     else unsaved.push(name);
   }
   const owner = new Map([...roots.keys()].map((id) => [held.get(id)!.key, id]));
   const trees = new Map<string, TreeToSave>();
-  for (const [id, rootStep] of roots) {
+  for (const [id, root] of roots) {
     const { key, node } = held.get(id)!;
-    if (modelTrees.has(key)) trees.set(id, { tree: savedTree(treeOfKey(key), node, (piece) => owner.get(piece)), rootStep });
+    if (modelTrees.has(key)) trees.set(id, { ...savedTree(treeOfKey(key), node, (piece) => owner.get(piece)), ...root });
   }
   return { trees, unsaved };
 }
@@ -453,7 +461,8 @@ export function adoptSavedTrees(saved: ReadonlyMap<string, SavedTree<{ name: str
     if (!tree || !key) continue;
     const token = meshTokenOf(obj.bytes);
     const mesh: PlateMesh = { name: obj.fileName, bytes: obj.bytes, sourcePos: obj.sourcePos, token, ...(obj.brep ? { step: obj.brep } : {}) };
-    const loaded = loadedTree(tree, key, { kind: "step", ...tree.rootStep }, obj.name, mesh, (id) => keys.get(id));
+    const root: ModelRoot = tree.rootPrimitive ? { kind: "primitive", solid: tree.rootPrimitive } : { kind: "step", ...tree.rootStep };
+    const loaded = loadedTree(tree, key, root, obj.name, mesh, (id) => keys.get(id));
     modelTrees.set(key, loaded);
     if (obj.brep || (loaded.committed === ROOT && isStepName(obj.fileName))) stepKnown.add(token);
     if (obj.brep && loaded.committed !== ROOT) seeds.set(key, { node: loaded.committed, live: false, whole: null, reading: null });
@@ -549,7 +558,7 @@ export function showModel() {
   }
   clearView();
   if (!mesh || !objectId || !obj || !token) {
-    readout("Open a STEP file to measure a solid.");
+    showEmpty(false);
     return;
   }
   // A tree that has no node with this mesh stays open: a Prepare undo or redo can bring one of its meshes back.
@@ -557,12 +566,17 @@ export function showModel() {
   const brep = obj.brep ?? null;
   if (brep || isStepName(mesh.name)) {
     const root: PlateMesh = { name: mesh.name, bytes: mesh.bytes, sourcePos, token, ...(brep ? { step: brep } : {}) };
-    void openTree(mine, objectId, obj.name, brep ? stepFileName(mesh.name) : mesh.name, brep ?? mesh.bytes, root);
+    void openTree(mine, objectId, obj.name, { kind: "step", name: brep ? stepFileName(mesh.name) : mesh.name, bytes: brep ?? mesh.bytes }, root);
     return;
   }
   const source = [...modelTrees.values()].find((tree) => nodeWithMesh(tree, token) != null);
   if (!source) {
-    readout("Model measure reads a STEP solid. This file is a mesh.");
+    showEmpty(true);
+    return;
+  }
+  if (source.root.kind === "primitive" && nodeWithMesh(source, token) === ROOT) {
+    // A copy of a new solid that has no step yet starts from the same primitive: no STEP to write or read.
+    void openTree(mine, objectId, obj.name, source.root, { name: mesh.name, bytes: mesh.bytes, sourcePos, token });
     return;
   }
   // A copy of an edited object whose STEP is not written yet: its own tree starts from that step's STEP.
@@ -575,7 +589,7 @@ export function showModel() {
     }
     putStep(token, step);
     if (mine !== ticket) return;
-    void openTree(mine, objectId, obj.name, stepFileName(mesh.name), step, { name: mesh.name, bytes: mesh.bytes, sourcePos, token, step });
+    void openTree(mine, objectId, obj.name, { kind: "step", name: stepFileName(mesh.name), bytes: step }, { name: mesh.name, bytes: mesh.bytes, sourcePos, token, step });
   })();
 }
 
@@ -644,12 +658,12 @@ function setMode(mode: "face" | "edge") {
   if (open) readout(`${about(open.solid)} Pick ${mode === "face" ? "a face" : "an edge"}.`);
 }
 
-/** Open the file's solid as the root of a new tree for the plate object. */
-async function openTree(mine: number, objectId: string, label: string, name: string, bytes: ArrayBuffer, root: PlateMesh) {
+/** Open the file's solid, or a copied new solid's primitive, as the root of a new tree for the plate object. */
+async function openTree(mine: number, objectId: string, label: string, from: Exclude<ModelRoot, { kind: "piece" }>, root: PlateMesh) {
   readout("Reading the solid…");
   const key = freshTreeKey(objectId);
   const chord = state.stepTolerance;
-  const body = await post({ call: "open", key, filename: name, dataB64: bytesToBase64(new Uint8Array(bytes)), chordMm: chord });
+  const body = await post({ call: "open", key, ...rootRequest(from, null), chordMm: chord });
   const parsed = decodeSolid(body);
   if (typeof parsed === "string") {
     // An open the engine answered but this app cannot read still left a tree there.
@@ -657,8 +671,8 @@ async function openTree(mine: number, objectId: string, label: string, name: str
     if (mine === ticket && state.stage === "model") readout(parsed);
     return;
   }
-  modelTrees.set(key, withNode(newTree(key, { kind: "step", name, bytes }, label, parsed.fingerprint), ROOT, { mesh: root }));
-  stepKnown.add(root.token);
+  modelTrees.set(key, withNode(newTree(key, from, rootLabel(from, label), parsed.fingerprint), ROOT, { mesh: root }));
+  if (from.kind === "step") stepKnown.add(root.token);
   keepSolid(key, ROOT, chord, parsed);
   setTreeKey(objectId, key);
   if (mine !== ticket || state.stage !== "model") return;
@@ -815,8 +829,12 @@ function keepSolid(key: string, node: NodeId, chord: number, solid: ParsedSolid)
 
 async function applyTool() {
   const button = document.querySelector<HTMLButtonElement>("#modelApply");
-  if (!button || button.disabled || !open) return;
   const tool = modelTool();
+  if (button && !button.disabled && tool === "create") {
+    await createSolid();
+    return;
+  }
+  if (!button || button.disabled || !open) return;
   const op = toolOp(tool);
   if (!op) {
     if (tool === "fillet" || tool === "chamfer") readout(tool === "fillet" ? "Pick an edge to fillet." : "Pick an edge to chamfer.");
@@ -949,6 +967,96 @@ function appliedMessage(op: ModelOp, solid: ParsedSolid) {
   if (op.kind === "chamfer") return `Chamfer. ${volume}${notes}`;
   if (op.kind === "hole") return `Hole. ${volume}${notes}`;
   return `${volume}${notes}`;
+}
+
+/**
+ * New solid: the primitive the panel describes becomes a plate object of its own, the root of a tree of its own,
+ * so no file is read. It stands at the origin of an empty model space, else beside the other objects, goes on the
+ * plate as an added file does, and opens at once. Creating it is one Prepare step, which Prepare undo takes back.
+ */
+async function createSolid() {
+  if (busy || jumping || state.stage !== "model") return;
+  const typed = fieldPrimitive();
+  const root = rootSpec(typed);
+  const id = freshPlateId();
+  const key = freshTreeKey(id);
+  const chord = state.stepTolerance;
+  const mine = ticket;
+  busy = true;
+  syncUndo();
+  readout("Building the solid…");
+  const body = await post({ call: "open", key, primitive: root, chordMm: chord });
+  if (mine === ticket) busy = false;
+  syncUndo();
+  const parsed = decodeSolid(body);
+  const current = mine === ticket && state.stage === "model";
+  if (typeof parsed === "string" || !current) {
+    // An open the engine answered left a tree there.
+    if (typeof body.error !== "string") void post({ call: "close", key });
+    if (current) readout(parsed as string);
+    return;
+  }
+  // The open object's edits reach the plate first, so the new object is a Prepare step of its own.
+  commitModel();
+  forgetPlaceSteps();
+  flushEdit();
+  noteEdit();
+  syncPlateFromState();
+  const first = state.plate.objects.length === 0;
+  const name = primitiveName(state.plate.objects.map((obj) => obj.name), typed.primitive);
+  const positions = new Float32Array(parsed.positions);
+  const seat = settleBy(positions);
+  const fileName = `${name}.stl`;
+  const bytes = encodeStl(positions, fileName);
+  setMeshSeat(bytes, seat);
+  const mesh: PlateMesh = { name: fileName, bytes, sourcePos: positions, token: meshTokenOf(bytes) };
+  const pose = newSolidPose(plateBoxes(), primitiveBounds(root));
+  const { bedX, bedY } = state.profile;
+  state.plate = addedSolid(state.plate, { name, fileName, bytes, sourcePos: positions, stepTolerance: chord }, id, key, pose, bedX, bedY);
+  applySelectedToState(state.plate);
+  const from: ModelRoot = { kind: "primitive", solid: root };
+  modelTrees.set(key, withNode(newTree(key, from, rootLabel(from, name), parsed.fingerprint), ROOT, { mesh }));
+  keepSolid(key, ROOT, chord, parsed);
+  place(first ? "load" : "transform");
+  flushEdit();
+  markModelEdit();
+  ticket += 1;
+  picks = [];
+  parked = null;
+  shownFor = id;
+  closeModelTool();
+  open = { objectId: id, key, solid: parsed };
+  present(parsed, `${name}. ${about(parsed)} Pick a face or an edge.`);
+}
+
+/** Where New solid puts `spec` in model space: its root, standing at the origin or beside every object. */
+function newSolidAt(spec: PrimitiveSpec): PrimitiveSpec {
+  const root = rootSpec(spec);
+  const { t } = newSolidPose(plateBoxes(), primitiveBounds(root));
+  return { ...root, origin: [root.origin[0] + t[0], root.origin[1] + t[1], root.origin[2] + t[2]] };
+}
+
+/** Every plate object's box in model space. Each mesh's own box is read once. */
+function plateBoxes(): Bounds[] {
+  return livePlate().map((obj) => boxUnder(boxOf(obj.sourcePos), meshToModel(obj)));
+}
+
+/** No solid to show: the view says so plainly, with New solid at hand, and shows whatever model space holds. */
+function showEmpty(mesh: boolean) {
+  readout("");
+  const card = document.querySelector<HTMLElement>("#modelEmpty");
+  const title = document.querySelector("#modelEmptyTitle");
+  const text = document.querySelector("#modelEmptyText");
+  if (title) title.textContent = mesh ? "This object is a mesh" : "No solid open";
+  if (text) text.textContent = mesh ? "Model edits STEP solids. Start a new solid from a primitive, or open a STEP file." : "Start a solid from a primitive, or open a STEP file.";
+  if (card) card.hidden = false;
+  framedFor = null;
+  const boxes = plateBoxes();
+  if (boxes.length > 0) fx.model?.frame(unionBox(boxes)!);
+}
+
+function hideEmpty() {
+  document.querySelector<HTMLElement>("#modelEmpty")?.toggleAttribute("hidden", true);
 }
 
 /** The split-off piece goes on the plate at once, in its parent's place, as the root of its own tree. */
@@ -1110,6 +1218,7 @@ async function saveStepFile(bytes: ArrayBuffer, name: string) {
 /** Show `parsed` as the open tree's current node. The camera frames it when another object opened, and stays put otherwise. */
 function present(parsed: ParsedSolid, message: string) {
   picks = [];
+  hideEmpty();
   learnSeat(parsed);
   fx.model?.setSolid(parsed, openPose());
   if (open && framedFor !== open.objectId) {
@@ -1131,7 +1240,7 @@ function present(parsed: ParsedSolid, message: string) {
 
 /** The other plate objects, grey, where they sit in model space. Nothing is drawn without an open solid. */
 export function refreshModelContext() {
-  fx.model?.setContext(open ? contextParts(livePlate(), open.objectId) : []);
+  fx.model?.setContext(contextParts(livePlate(), open?.objectId ?? null));
   const canvas = document.querySelector<HTMLElement>("#model");
   const obj = open ? state.plate.objects.find((item) => item.id === open!.objectId) : undefined;
   // The open object's plate mesh, so a test can tell a model-space move left it alone.
@@ -1149,10 +1258,15 @@ function openBox(): Bounds | null {
   return open ? posedBounds(open.solid.positions, openPose()) : null;
 }
 
-/** The solid's box in its own frame, kept per solid: Place turns about its centre, and the kernel cuts against it. */
+/** The solid's box in its own frame: Place turns about its centre, and the kernel cuts against it. */
 function ownBox(solid: ParsedSolid): Bounds {
-  let box = ownBoxes.get(solid.positions);
-  if (!box) ownBoxes.set(solid.positions, (box = boundsOf(solid.positions)));
+  return boxOf(solid.positions);
+}
+
+/** The box of a mesh's vertices, read once per array. */
+function boxOf(positions: Float32Array): Bounds {
+  let box = ownBoxes.get(positions);
+  if (!box) ownBoxes.set(positions, (box = boundsOf(positions)));
   return box;
 }
 
@@ -1178,9 +1292,10 @@ function learnSeat(solid: ParsedSolid) {
  */
 export function frameModel(all: boolean) {
   const box = openBox();
-  if (!box || !open) return;
-  const others = all ? contextParts(livePlate(), open.objectId).map((part) => boxUnder(boundsOf(part.positions), part.matrix)) : [];
-  fx.model?.frame(unionBox([box, ...others])!);
+  // With no solid open, the view frames whatever model space holds.
+  const others = all || !box ? contextParts(livePlate(), open?.objectId ?? null).map((part) => boxUnder(boxOf(part.positions), part.matrix)) : [];
+  const union = unionBox(box ? [box, ...others] : others);
+  if (union) fx.model?.frame(union);
 }
 
 /** The Objects list's Frame in Model: that object, opened if it is not the open one. */
@@ -1286,12 +1401,6 @@ function syncUndo() {
   syncModelHistory(tree);
 }
 
-/** Turn degrees for a box or cylinder. A sphere does not turn. */
-function turn(): Vec3 {
-  if (prim() === "sphere") return [0, 0, 0];
-  return [num("#modelRx"), num("#modelRy"), num("#modelRz")];
-}
-
 const extentOf = extentMemo();
 /** Each solid's flat faces, by face index; null for a curved one. */
 const flatFaces = new WeakMap<ParsedSolid, Map<number, FacePlane | null>>();
@@ -1375,11 +1484,6 @@ function flatFace(solid: ParsedSolid, face: number): FacePlane | null {
     known.set(face, normal ? facePlane(solid.positions, solid.triangles, face, normal as Vec3) : null);
   }
   return known.get(face)!;
-}
-
-function prim(): "box" | "cylinder" | "sphere" {
-  const value = document.querySelector<HTMLSelectElement>("#modelPrim")?.value;
-  return value === "cylinder" || value === "sphere" ? value : "box";
 }
 
 /** Into the last picked face, or straight down in model space when no face is picked. */
@@ -1562,18 +1666,22 @@ function openWhole(key: string, node: NodeId): Promise<string | null> {
   const run = (async () => {
     if (seed?.reading) await seed.reading;
     const tree = modelTrees.get(key);
-    if (!tree || tree.root.kind !== "step") return "This solid is no longer open.";
+    if (!tree || tree.root.kind === "piece") return "This solid is no longer open.";
     const body = await post({
       call: "open",
       key,
-      filename: tree.root.name,
-      dataB64: bytesToBase64(new Uint8Array(tree.root.bytes)),
+      ...rootRequest(tree.root, tree.nodes.get(ROOT)?.fingerprint ?? null),
       chordMm: state.stepTolerance,
       nodes: savedNodes(tree),
       current: node,
     });
     if (seed) seed.whole = null;
     if (!modelTrees.has(key)) return closeLate(key);
+    // A primitive root that builds differently opens nothing: the whole tree is broken from its root.
+    if (body.broken === ROOT) {
+      failed(key, body);
+      return BROKEN;
+    }
     const problem = typeof body.broken === "number" ? "" : text(body.error);
     if (problem) return problem;
     if (seed) forgetShown(key);
@@ -1582,6 +1690,15 @@ function openWhole(key: string, node: NodeId): Promise<string | null> {
   })();
   if (seed) seed.whole = run;
   return run;
+}
+
+/**
+ * What `open` builds the root from: the STEP's bytes, or a new solid's primitive. A primitive root carries its
+ * fingerprint, so a root that builds differently is broken like any other step that does.
+ */
+function rootRequest(root: Exclude<ModelRoot, { kind: "piece" }>, fingerprint: Fingerprint | null): Body {
+  if (root.kind === "primitive") return { primitive: root.solid, ...(fingerprint ? { fingerprint } : {}) };
+  return { filename: root.name, dataB64: bytesToBase64(new Uint8Array(root.bytes)) };
 }
 
 /** An open that lands for a tree released or forgotten meanwhile: the engine lets it go too. */
@@ -1616,7 +1733,7 @@ async function restore(key: string, node: NodeId, missing: NodeId[]): Promise<st
   }
   if (seed || missing.includes(ROOT)) {
     // `open` registers every saved node, so nothing else is missing.
-    if (tree.root.kind === "step") return openWhole(key, node);
+    if (tree.root.kind !== "piece") return openWhole(key, node);
     const problem = await rebuildPiece(tree.root.tree, tree.root.node, key);
     if (problem) return problem;
   }

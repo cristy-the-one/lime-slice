@@ -2,13 +2,14 @@
  * Model mode's toolbar, the tool that is open, and the ghost that follows its numbers.
  * Apply still lives in `app/model.ts`. This file only decides what is on screen.
  */
-import { Box, CircleDot, Download, Focus, Grid3x3, Move3d, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Triangle, Undo2, createElement, type IconNode } from "lucide";
+import { Box, CircleDot, Cone, Cylinder, Disc, Download, Focus, Globe, Grid3x3, Hexagon, Move3d, Plus, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Torus, Triangle, TriangleRight, Undo2, createElement, type IconNode } from "lucide";
 import type { HandleDrag, ModelGhost } from "../model-view";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type ModelTool, type Vec3 } from "../model-drag";
 import type { PlaceFields } from "../model-space";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
 import { clampTilt, splitNote, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
 import { lastFace, selectedEdges } from "../model-blend";
+import { isPrimitiveKind, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
 import { lastEdge, modelApplyReady, selectionCountLabel, type ModelPickRef } from "../model-select";
 import { scrubIntent, scrubTarget, type ScrubIntent } from "./scrub";
 import { snapStep } from "../gizmo-math";
@@ -42,12 +43,17 @@ interface ModelChromeHooks {
   placeFields(): PlaceFields | null;
   /** A Place field changed: the object moves, or turns, in model space. */
   placeMoved(field: keyof PlaceFields, value: number, phase: PlacePhase): void;
+  /** `spec` where New solid would put it in model space: its root, moved to the origin or beside the other objects. */
+  newSolidAt(spec: PrimitiveSpec): PrimitiveSpec;
+  /** New solid opened with no solid open: the view looks at where the new one lands. */
+  frameNewSolid(spec: PrimitiveSpec): void;
 }
 
 /** A typed or scrubbed number ends its step once it rests; a drag holds its step open until the pointer lets go. */
 export type PlacePhase = "typed" | "drag" | "end";
 
 const TOOLS: { id: ModelTool; icon: IconNode; label: string }[] = [
+  { id: "create", icon: Plus, label: "New" },
   { id: "boolean", icon: Box, label: "Boolean" },
   { id: "split", icon: SquareSplitHorizontal, label: "Split" },
   { id: "fillet", icon: Spline, label: "Fillet" },
@@ -61,8 +67,22 @@ const TOOLS: { id: ModelTool; icon: IconNode; label: string }[] = [
 const PLACE_FIELDS = ["modelPlaceX", "modelPlaceY", "modelPlaceZ", "modelPlaceRx", "modelPlaceRy", "modelPlaceRz"] as const;
 const PLACE_KEYS = ["x", "y", "z", "rx", "ry", "rz"] as const satisfies readonly (keyof PlaceFields)[];
 const BED_KEY = "lime-slice-model-bed";
-/** Tools that leave the solid as it is, so they run on surfaces with no closed solid too. They have no Apply. */
-const KEEPS_SOLID: ReadonlySet<string> = new Set(["measure", "place"]);
+/** Tools that leave the open solid as it is, so they run on surfaces with no closed solid too. */
+const KEEPS_SOLID: ReadonlySet<string> = new Set(["create", "measure", "place"]);
+
+const PRIMITIVE_ICONS: Record<PrimitiveKind, IconNode> = {
+  box: Box,
+  cylinder: Cylinder,
+  sphere: Globe,
+  cone: Cone,
+  torus: Torus,
+  wedge: TriangleRight,
+  polygon: Hexagon,
+  tube: Disc,
+};
+
+/** What the Radius field means on each primitive that has one. */
+const RADIUS_LABELS: Partial<Record<PrimitiveKind, string>> = { cone: "Bottom radius", torus: "Ring radius", tube: "Outer radius" };
 
 let hooks: ModelChromeHooks | null = null;
 let tool: ModelTool | null = null;
@@ -105,6 +125,12 @@ function iconize(id: string, node: IconNode) {
 export function mountModelChrome(next: ModelChromeHooks) {
   hooks = next;
   for (const entry of TOOLS) iconize(`#modelTool${entry.label}`, entry.icon);
+  document.querySelectorAll<HTMLButtonElement>("#modelPrim [data-kind]").forEach((button) => {
+    const kind = button.dataset.kind;
+    if (!isPrimitiveKind(kind) || button.querySelector(".ico")) return;
+    // The name is the button's label and tip; the row shows the icons.
+    button.replaceChildren(createElement(PRIMITIVE_ICONS[kind], { width: 18, height: 18, "aria-hidden": "true", class: "ico" }));
+  });
   iconize("#modelStep", Download);
   iconize("#modelUndo", Undo2);
   iconize("#modelRedo", Redo2);
@@ -130,6 +156,10 @@ export function mountModelChrome(next: ModelChromeHooks) {
     }
     const op = target?.closest<HTMLButtonElement>("#modelFuse, #modelCut, #modelCommon");
     if (op) setBoolOp(op.id);
+    const kind = target?.closest<HTMLButtonElement>("#modelPrim [data-kind]")?.dataset.kind;
+    if (isPrimitiveKind(kind)) setPrimitive(kind, false);
+    const across = target?.closest<HTMLButtonElement>("#modelCorners, #modelFlats");
+    if (across) setAcross(across.id === "modelFlats");
     const plane = target?.closest<HTMLButtonElement>("#modelPlaneModes [data-plane]");
     if (plane) setPlaneMode(plane.dataset.plane as PlaneMode);
   });
@@ -150,11 +180,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
     refreshGhost();
     hooks?.paramsChanged(true);
   });
-  document.querySelector("#modelPrim")?.addEventListener("change", () => {
-    syncFields();
-    refreshGhost();
-    hooks?.paramsChanged();
-  });
+  document.querySelector("#modelPrim")?.addEventListener("keydown", (ev) => onPrimKey(ev as KeyboardEvent));
   bindScrub();
   fx.model?.onHandleDrag(onHandleDrag);
   window.addEventListener("keydown", onEnter, true);
@@ -257,12 +283,16 @@ function toggleTool(next: ModelTool) {
   // Place moves as it goes, so its button only closes the tool.
   const cancel = document.querySelector("#modelCancel");
   if (cancel) cancel.textContent = next === "place" ? "Done" : "Cancel";
+  const apply = document.querySelector("#modelApply");
+  if (apply) apply.textContent = next === "create" ? "Create" : "Apply";
   syncFields();
   syncPlaceFields();
   refreshTools();
   refreshApply();
   refreshNote();
   refreshGhost();
+  // With nothing open, the view goes to where the new solid lands.
+  if (next === "create" && !hooks?.solidBox()) hooks?.frameNewSolid(fieldPrimitive());
   hooks?.paramsChanged();
 }
 
@@ -294,12 +324,88 @@ function setBoolOp(id: string) {
 }
 
 function syncFields() {
-  const primName = document.querySelector<HTMLSelectElement>("#modelPrim")?.value ?? "box";
+  const kind = primitiveKind();
   document.querySelectorAll<HTMLElement>("#modelPanel [data-for]").forEach((node) => {
     const forOk = !!tool && (node.dataset.for ?? "").split(" ").includes(tool);
-    const primOk = !node.dataset.prim || node.dataset.prim.split(" ").includes(primName);
+    const primOk = !node.dataset.prim || node.dataset.prim.split(" ").includes(kind);
     node.toggleAttribute("hidden", !(forOk && primOk));
   });
+  const radius = RADIUS_LABELS[kind] ?? "Radius";
+  setLabel("#modelRadiusLabel", "#modelRadius", radius);
+  const flats = acrossFlats();
+  setLabel("#modelAcrossLabel", "#modelAcross", flats ? "Across flats" : "Across corners", flats ? "Width across flats" : "Width across corners");
+}
+
+function setLabel(labelId: string, inputId: string, text: string, aria = text) {
+  const label = document.querySelector(labelId);
+  if (label && label.textContent !== text) label.textContent = text;
+  document.querySelector(inputId)?.setAttribute("aria-label", aria);
+}
+
+/** The primitive the picker has on, for Boolean and New solid alike. */
+export function primitiveKind(): PrimitiveKind {
+  const kind = document.querySelector<HTMLElement>('#modelPrim [aria-checked="true"]')?.dataset.kind;
+  return isPrimitiveKind(kind) ? kind : "box";
+}
+
+function acrossFlats(): boolean {
+  return document.querySelector("#modelFlats")?.getAttribute("aria-pressed") === "true";
+}
+
+/** The primitive the panel describes, in model space: its kind, its sizes, and Boolean's origin and turn. */
+export function fieldPrimitive(): PrimitiveSpec {
+  return primitiveSpec(
+    primitiveKind(),
+    {
+      size: [num("#modelDx"), num("#modelDy"), num("#modelDz")],
+      radius: num("#modelRadius"),
+      height: num("#modelHeight"),
+      topRadius: num("#modelTopR"),
+      tubeRadius: num("#modelTube"),
+      innerRadius: num("#modelInnerR"),
+      topX: num("#modelTopX"),
+      sides: num("#modelSides"),
+      across: num("#modelAcross"),
+      flats: acrossFlats(),
+    },
+    [num("#modelX"), num("#modelY"), num("#modelZ")],
+    [num("#modelRx"), num("#modelRy"), num("#modelRz")],
+  );
+}
+
+/** Pick a primitive. From the keyboard, focus follows, as in any radio group. */
+function setPrimitive(kind: PrimitiveKind, focus: boolean) {
+  document.querySelectorAll<HTMLButtonElement>("#modelPrim [data-kind]").forEach((button) => {
+    const on = button.dataset.kind === kind;
+    button.setAttribute("aria-checked", on ? "true" : "false");
+    button.tabIndex = on ? 0 : -1;
+    if (on && focus) button.focus();
+  });
+  syncFields();
+  refreshGhost();
+  hooks?.paramsChanged();
+}
+
+function onPrimKey(ev: KeyboardEvent) {
+  const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[ev.key];
+  if (!step) return;
+  const kinds = [...document.querySelectorAll<HTMLElement>("#modelPrim [data-kind]")].map((button) => button.dataset.kind);
+  const at = kinds.indexOf(primitiveKind());
+  const next = kinds[(at + step + kinds.length) % kinds.length];
+  if (!isPrimitiveKind(next)) return;
+  ev.preventDefault();
+  setPrimitive(next, true);
+}
+
+function setAcross(flats: boolean) {
+  for (const [id, on] of [["#modelCorners", !flats], ["#modelFlats", flats]] as const) {
+    const button = document.querySelector(id);
+    button?.setAttribute("aria-pressed", on ? "true" : "false");
+    button?.classList.toggle("on", on);
+  }
+  syncFields();
+  refreshGhost();
+  hooks?.paramsChanged();
 }
 
 /** A hole that would miss the solid starts on the middle of its top. */
@@ -428,6 +534,8 @@ function refreshNote() {
     text = measureNote(point("A"), point("B"));
   } else if (tool === "place") {
     text = "From where its file put it, turning about its centre. The plate does not move.";
+  } else if (tool === "create") {
+    text = state.plate.objects.length === 0 ? "Lands at the origin, on Z 0." : "Lands beside the other objects, as a new object.";
   } else if (isProbed(tool)) {
     const axis = tool === "hole" ? (hooks?.holeAxis() ?? [0, 0, -1]) : null;
     const down = axis != null && Math.abs(axis[0]) < 1e-6 && Math.abs(axis[1]) < 1e-6 && axis[2] < -0.9;
@@ -459,10 +567,9 @@ function dragContext(): DragContext {
   const extent = box ? Math.max(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2], 1) : 1;
   const edge = lastEdge(picks);
   const points = edge == null ? null : hooks?.edgePoints(edge) ?? null;
-  const prim = document.querySelector<HTMLSelectElement>("#modelPrim")?.value;
   return {
     read: (field) => num(`#${field}`),
-    primitive: prim === "cylinder" || prim === "sphere" ? prim : "box",
+    primitive: primitiveKind(),
     center,
     extent,
     split: tool === "split" ? splitPlan() : null,
@@ -528,14 +635,20 @@ function point(which: "A" | "B"): Vec3 {
   return [num(`#model${which}x`), num(`#model${which}y`), num(`#model${which}z`)];
 }
 
+/** The last ghost mesh built, by the sizes it was built from: a move or a turn builds nothing. */
+let ghostMesh: { key: string; mesh: Float32Array } | null = null;
+
+function meshFor(spec: PrimitiveSpec): Float32Array {
+  const key = JSON.stringify({ ...spec, origin: null, turn: null });
+  if (ghostMesh?.key !== key) ghostMesh = { key, mesh: primitiveMesh(spec) };
+  return ghostMesh.mesh;
+}
+
 function ghostFor(current: ModelTool): ModelGhost | null {
-  if (current === "boolean") {
-    const prim = document.querySelector<HTMLSelectElement>("#modelPrim")?.value ?? "box";
-    const origin = { x: num("#modelX"), y: num("#modelY"), z: num("#modelZ") };
-    const turn: Vec3 = [num("#modelRx"), num("#modelRy"), num("#modelRz")];
-    if (prim === "cylinder") return { kind: "cylinder", ...origin, radius: num("#modelRadius"), height: num("#modelHeight"), turn };
-    if (prim === "sphere") return { kind: "sphere", ...origin, radius: num("#modelRadius") };
-    return { kind: "box", ...origin, dx: num("#modelDx"), dy: num("#modelDy"), dz: num("#modelDz"), turn };
+  if (current === "boolean" || current === "create") {
+    const typed = fieldPrimitive();
+    const spec = current === "create" ? hooks?.newSolidAt(typed) ?? typed : typed;
+    return { kind: "primitive", spec, mesh: meshFor(spec) };
   }
   if (current === "measure") return { kind: "measure", a: point("A"), b: point("B") };
   if (current === "split") {

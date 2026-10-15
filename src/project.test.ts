@@ -353,8 +353,8 @@ eq("nothing is unread", historyOpened.ok ? historyOpened.project.unreadHistory :
 const reopenedKeys = new Map([["part", "part#run2.1"], ["obj-2", "obj-2#run2.2"]]);
 const reopen = (i: number, label: string, token: string) => {
   const saved = historyObjects[i]!.modelTree!;
-  const bytes = new Uint8Array([...atob(saved.rootStep.bytesBase64!)].map((c) => c.charCodeAt(0)));
-  return loadedTree(saved, reopenedKeys.get(historyObjects[i]!.id)!, { kind: "step", name: saved.rootStep.name, bytes: bytes.buffer }, label, plateMesh(token), (id) => reopenedKeys.get(id));
+  const bytes = new Uint8Array([...atob(saved.rootStep!.bytesBase64!)].map((c) => c.charCodeAt(0)));
+  return loadedTree(saved, reopenedKeys.get(historyObjects[i]!.id)!, { kind: "step", name: saved.rootStep!.name, bytes: bytes.buffer }, label, plateMesh(token), (id) => reopenedKeys.get(id));
 };
 const partAgain = reopen(0, "bracket.stl", "m-part");
 const pieceAgain = reopen(1, "bracket split", "m-piece");
@@ -416,7 +416,7 @@ sharedWire.objects[0]!.modelTree.nodes[2]!.parent = 9;
 const sharedRead = parseProject(JSON.stringify(sharedWire));
 eq(
   "a damaged tree loses only itself: the copy still finds the root STEP the damaged one carried",
-  sharedRead.ok ? [sharedRead.project.objects?.map((obj) => obj.modelTree?.rootStep.bytesBase64 ?? null), sharedRead.project.unreadHistory] : null,
+  sharedRead.ok ? [sharedRead.project.objects?.map((obj) => obj.modelTree?.rootStep?.bytesBase64 ?? null), sharedRead.project.unreadHistory] : null,
   [[null, bytesToBase64(rootStep)], ["bracket.stl"]],
 );
 
@@ -450,7 +450,7 @@ eq(
 const copiedOpened = parseProject(JSON.stringify(copiedWire));
 eq(
   "and each one reads back whole",
-  copiedOpened.ok ? copiedOpened.project.objects?.map((obj) => obj.modelTree?.rootStep.bytesBase64) : null,
+  copiedOpened.ok ? copiedOpened.project.objects?.map((obj) => obj.modelTree?.rootStep?.bytesBase64) : null,
   [bytesToBase64(rootStep), plateStep.bytesBase64, bytesToBase64(rootStep)],
 );
 
