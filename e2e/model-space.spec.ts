@@ -39,14 +39,15 @@ function built(request: Body): Built {
 const STEP = Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n");
 
 /** STEP files by name, each a box in its own coordinates. The first opens; the rest are added. */
-async function openFiles(page: Page, files: Record<string, MockSolid>): Promise<TreeMock> {
+/** `reportSeat` false answers as an engine from before `seatMm` did. */
+async function openFiles(page: Page, files: Record<string, MockSolid>, reportSeat = true): Promise<TreeMock> {
   const named = (name: unknown) => files[String(name)]!;
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   // As the slicer does, the mesh it reads from a STEP sits on Z = 0, and it says how far it lowered the file.
   const seated = (positions: number[]) => {
     const minZ = Math.min(...positions.filter((_, i) => i % 3 === 2));
-    return { positions: positions.map((value, i) => (i % 3 === 2 ? value - minZ : value)), seatMm: minZ };
+    return { positions: positions.map((value, i) => (i % 3 === 2 ? value - minZ : value)), ...(reportSeat ? { seatMm: minZ } : {}) };
   };
   await page.route("**/api/mesh", (route) => route.fulfill({ json: seated(named(route.request().postDataJSON().filename).positions) }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
@@ -143,6 +144,16 @@ test("a STEP the slicer lowered onto the bed sits at its own Z in model space be
   expect(Object.values(await contextBoxes(page))).toEqual([[100, 0, 50, 140, 30, 70]]);
   await page.locator("[data-plate-select]").nth(1).click();
   await expect(canvas(page)).toHaveAttribute("data-solid", "100.00,0.00,50.00,140.00,30.00,70.00");
+});
+
+test("with an engine that does not say how far it lowered a STEP, Model learns it the first time it opens the part", async ({ page }) => {
+  await openFiles(page, { "low.step": boxSolid([40, 30, 20]), "high.step": boxSolid([40, 30, 20], [100, 0, 50]) }, false);
+  expect(Object.values(await contextBoxes(page))).toEqual([[100, 0, 0, 140, 30, 20]]);
+  await page.locator("[data-plate-select]").nth(1).click();
+  await expect(canvas(page)).toHaveAttribute("data-solid", "100.00,0.00,50.00,140.00,30.00,70.00");
+  await page.locator("[data-plate-select]").nth(0).click();
+  await expect(canvas(page)).toHaveAttribute("data-solid", "0.00,0.00,0.00,40.00,30.00,20.00");
+  expect(Object.values(await contextBoxes(page))).toEqual([[100, 0, 50, 140, 30, 70]]);
 });
 
 test("pieces Separated from a raised STEP assembly sit at their own Z in model space", async ({ page }) => {
@@ -311,6 +322,12 @@ test.describe("phone", () => {
       const sheet = (await page.locator("#modelPanel").boundingBox())!;
       expect(button.y >= sheet.y && button.y + button.height <= sheet.y + sheet.height + 0.5, "inside the sheet").toBe(true);
       expect(button.x >= 0 && button.y >= 0 && button.x + button.width <= width && button.y + button.height <= height, "on screen").toBe(true);
+      // The first row of fields shows whole, above the buttons, and the sheet stays below the readout.
+      const field = (await page.locator("#modelPlaceX").boundingBox())!;
+      const bar = (await page.locator("#modelPanel .model-actions").boundingBox())!;
+      expect(field.y >= sheet.y && field.y + field.height <= bar.y + 0.5, "a row of fields above the buttons").toBe(true);
+      const readout = (await page.locator("#modelReadout").boundingBox())!;
+      expect(readout.y + readout.height <= sheet.y + 0.5, "under the readout").toBe(true);
       await done.click();
       await expect(page.locator("#modelPanel")).toBeHidden();
     });

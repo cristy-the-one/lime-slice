@@ -16,7 +16,7 @@ import { meshRecord, parseProject, serializeProject, type LimeProject, type Proj
 import { saveProfile } from "../profiles.ts";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel.ts";
 import { pushToast } from "../ui/toasts.ts";
-import { adoptBytes, place, previewRemote, stlPositions } from "./files.ts";
+import { adoptBytes, place, previewRemote, seatedPositions, stlPositions } from "./files.ts";
 import { adoptSavedTrees, captureOpenSolid, historyToSave } from "./model.ts";
 import type { SavedTree } from "../model-tree-file.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
@@ -226,7 +226,7 @@ async function loadPlateObjects(objects: PlateFileObject[]) {
       const seat = meshSeat(state.mesh.bytes);
       if (seat !== undefined) setMeshSeat(copy, seat);
     }
-    if (!sourcePos) sourcePos = await previewRemote(row.mesh.name, copy);
+    if (!sourcePos) sourcePos = seatedPositions(copy, await previewRemote(row.mesh.name, copy));
     if (!sourcePos) return `Could not read ${row.name}.`;
     if (!decoded.has(`${row.mesh.hash}:${row.mesh.byteLength}`)) decoded.set(`${row.mesh.hash}:${row.mesh.byteLength}`, copy);
     let brepBytes: ArrayBuffer | undefined;

@@ -672,6 +672,8 @@ html.layout-compact .model-panel {
   width: auto;
   max-height: 28%;
   overflow: auto;
+  /* A field reached by Tab scrolls to above the buttons, not under them. */
+  scroll-padding-bottom: 48px;
 }
 html.layout-compact .model-fields { display: flex; flex-wrap: nowrap; overflow-x: auto; }
 html.layout-compact .model-fields label { flex: 0 0 84px; }
@@ -690,6 +692,10 @@ html.layout-compact .model-foot { order: -1; margin: 128px 8px 8px; max-width: c
 /* A landscape phone fits the toolbar on one row: the stack starts right under it and leaves the sheet a row or two. */
 @media (max-height: 500px) {
   html.layout-compact .model-foot { margin-top: 92px; }
+  /* Room for a row of fields above the buttons, which slim down to make it. */
+  html.layout-compact .model-panel { max-height: 40%; }
+  html.layout-compact .model-actions { padding-top: 2px; padding-bottom: var(--space-1); }
+  html.layout-compact .model-actions .btn { min-height: 30px; }
 }
 /* History is a sheet over the canvas, opened from the toolbar. */
 html.layout-compact #modelHistoryOpen { display: inline-flex; }

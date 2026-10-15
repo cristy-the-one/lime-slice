@@ -1163,7 +1163,7 @@ function pivotOf(solid: ParsedSolid): Vec3 {
 
 /**
  * The plate mesh of a step the engine just described sits under that step's solid by the solid's lowest
- * point. A STEP the slicer read never said how far it lowered the file, so Model learns it here.
+ * point. When an engine from before `seatMm` read a STEP without saying how far it lowered it, Model learns it here.
  */
 function learnSeat(solid: ParsedSolid) {
   const mesh = treeOf(open)?.nodes.get(solid.id)?.mesh;

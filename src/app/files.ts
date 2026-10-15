@@ -64,7 +64,7 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
     renderChrome();
     return;
   }
-  state.sourcePos = parsed ?? (await previewRemote(name, bytes));
+  state.sourcePos = parsed ?? seatedPositions(bytes, await previewRemote(name, bytes));
   if (!state.sourcePos) {
     state.plate = emptyPlate();
     resetHeldGeometry();
@@ -95,7 +95,21 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
   session.meshEpoch += 1;
 }
 
-export async function previewRemote(name: string, bytes: ArrayBuffer, stepToleranceMm = state.stepTolerance): Promise<Float32Array | null> {
+/** A mesh the slicer read: its vertices on Z = 0, and how far it lowered them when the engine says. */
+export interface MeshRead {
+  positions: Float32Array;
+  seatMm?: number;
+}
+
+/** The vertices of `read`, with its seat given to `bytes`: call it once the read is known to still apply. */
+export function seatedPositions(bytes: ArrayBuffer, read: MeshRead | null): Float32Array | null {
+  if (!read) return null;
+  // An engine from before `seatMm` leaves the seat for Model to learn.
+  if (read.seatMm !== undefined) setMeshSeat(bytes, read.seatMm);
+  return read.positions;
+}
+
+export async function previewRemote(name: string, bytes: ArrayBuffer, stepToleranceMm = state.stepTolerance): Promise<MeshRead | null> {
   const payload = { filename: name, dataB64: bytesToBase64(new Uint8Array(bytes)), stepToleranceMm };
   const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   try {
@@ -109,9 +123,7 @@ export async function previewRemote(name: string, bytes: ArrayBuffer, stepTolera
       if (!res.ok) throw new Error(body.error || "Could not preview this mesh.");
     }
     if (!body.positions) throw new Error(body.error || "Could not preview this mesh.");
-    // How far the reader lowered the file, so model space puts it back. An engine that does not say leaves it to Model.
-    if (typeof body.seatMm === "number") setMeshSeat(bytes, body.seatMm);
-    return new Float32Array(body.positions);
+    return { positions: new Float32Array(body.positions), ...(typeof body.seatMm === "number" && Number.isFinite(body.seatMm) ? { seatMm: body.seatMm } : {}) };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Could not preview this mesh.";
     state.error = message === "Failed to fetch"
@@ -127,15 +139,15 @@ export async function refreshStepPreview() {
   const name = state.mesh.name;
   const bytes = state.mesh.bytes;
   const epoch = session.meshEpoch;
-  const positions = await previewRemote(name, bytes);
-  if (!positions) {
+  const read = await previewRemote(name, bytes);
+  if (!read) {
     renderChrome();
     return;
   }
   // Open, or Add selecting another file, moved on while this preview was in flight.
   if (session.meshEpoch !== epoch || state.mesh?.name !== name || state.mesh.bytes !== bytes) return;
   state.error = "";
-  state.sourcePos = positions;
+  state.sourcePos = seatedPositions(bytes, read);
   place("transform");
 }
 
@@ -502,7 +514,7 @@ export function stlPositions(bytes: ArrayBuffer): Float32Array | null {
 
 async function meshPositions(name: string, bytes: ArrayBuffer, stepTolerance: number): Promise<Float32Array | null> {
   if (!needsEngine(name)) return stlPositions(bytes);
-  return previewRemote(name, bytes, stepTolerance);
+  return seatedPositions(bytes, await previewRemote(name, bytes, stepTolerance));
 }
 
 async function addMeshNow(name: string, bytes: ArrayBuffer) {
