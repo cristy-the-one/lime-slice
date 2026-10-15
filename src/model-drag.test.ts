@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { DOCK_KNOB_REACH } from "./gizmo-math.ts";
+import { DOCK_KNOB_REACH, HANDLE_KNOB_PICK } from "./gizmo-math.ts";
 import {
   DRAG_FIELDS,
   MODEL_TOOLS,
@@ -106,7 +106,7 @@ eq("a counterbore adds its radius and depth knobs", bored.map((handle) => handle
 const boreRadius = bored.find((handle) => handle.id === "bore-radius")!;
 const boreDepth = bored.find((handle) => handle.id === "bore-depth")!;
 eq("the bore radius knob takes the next axis, out past the arrows", [boreRadius.dir, reachOf(boreRadius)], [[0, 1, 0], DOCK_KNOB_REACH]);
-check("the bore depth knob sits on the drill axis inside the hole's depth knob", nearVec(boreDepth.dir, [0, 0, -1]) && reachOf(boreDepth)! < DOCK_KNOB_REACH && reachOf(boreDepth)! > 0.17 * 2);
+check("the bore depth knob sits on the drill axis, clear of the dock's middle and of the depth knob", nearVec(boreDepth.dir, [0, 0, -1]) && DOCK_KNOB_REACH - reachOf(boreDepth)! > 2 * HANDLE_KNOB_PICK && reachOf(boreDepth)! > 2 * HANDLE_KNOB_PICK);
 
 const box = handlesFor("boolean", context("box"));
 const moveX = box.find((handle) => handle.id === "move-x")!;

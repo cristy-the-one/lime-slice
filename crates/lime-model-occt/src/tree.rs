@@ -250,7 +250,7 @@ pub enum Op {
         #[serde(default)]
         axis: [f64; 3],
         radius: f64,
-        /// Kept with Through all on, so turning it off gives the number back, but not cut.
+        /// With `through`, kept for the panel but not cut.
         depth: f64,
         /// Cut to wherever the part ends along the axis, worked out from the solid it is cut from, so a
         /// replay after an earlier edit still goes all the way through.

@@ -5,20 +5,23 @@ import type { Bounds } from "./mesh-place.ts";
 export const THROUGH_MARGIN_MM = 1;
 
 /**
- * How long a through hole from `origin` along the unit `axis` is: to the farthest corner of `box` along the axis, and the
- * margin past it. The kernel works it out the same way from the solid it cuts, so the ghost shows what Apply cuts.
+ * How long a through hole from `origin` along `axis` is: to the farthest corner of `box` along the axis, and the margin
+ * past it. The kernel works it out the same way from the solid it cuts, in the solid's own frame, so the ghost shows what
+ * Apply cuts. A zero axis drills straight down, as in the kernel.
  */
 export function throughLength(box: Bounds, origin: readonly number[], axis: readonly number[]): number {
+  const length = Math.hypot(axis[0]!, axis[1]!, axis[2]!);
+  const unit = length > 1e-9 ? axis.map((value) => value / length) : [0, 0, -1];
   let far = 0;
   for (let corner = 0; corner < 8; corner += 1) {
     let along = 0;
-    for (let i = 0; i < 3; i += 1) along += (((corner >> i) & 1 ? box.max[i]! : box.min[i]!) - origin[i]!) * axis[i]!;
+    for (let i = 0; i < 3; i += 1) along += (((corner >> i) & 1 ? box.max[i]! : box.min[i]!) - origin[i]!) * unit[i]!;
     far = Math.max(far, along);
   }
   return far + THROUGH_MARGIN_MM;
 }
 
-/** A metric screw's clearance hole and the counterbore for its socket head, as diameters in millimetres. */
+/** A metric screw's clearance hole and the counterbore for its socket head: diameters, and the counterbore's depth, in millimetres. */
 export interface Screw {
   name: string;
   hole: number;

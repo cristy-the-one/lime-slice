@@ -11,7 +11,7 @@ import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, t
 import type { EditPanel } from "../model-edit";
 import { clampTilt, splitNote, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
 import { lastFace, selectedEdges } from "../model-blend";
-import { SCREWS, screwOf, throughLength } from "../model-hole";
+import { SCREWS, screwOf } from "../model-hole";
 import { isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
 import { lastEdge, modelApplyReady, selectionCountLabel, type ModelPickRef } from "../model-select";
 import { scrubIntent, scrubTarget, type ScrubIntent } from "./scrub";
@@ -42,6 +42,8 @@ interface ModelChromeHooks {
   edgePoints(edge: number): ArrayLike<number> | null;
   /** Unit direction a hole drills, in model space. Straight down when no face is picked. */
   holeAxis(): Vec3;
+  /** How long a through hole from `origin` along `dir`, both in model space, runs: as the kernel works it out, from the solid's own box. */
+  throughLength(origin: Vec3, dir: Vec3): number | null;
   /** Where the open object sits in model space, as the Place fields show it. Null with nothing open. */
   placeFields(): PlaceFields | null;
   /** A Place field changed: the object moves, or turns, in model space. */
@@ -118,10 +120,10 @@ let editable = true;
 /** An edit or a jump is on its way: Apply waits for it. */
 let waiting = false;
 /**
- * The step being edited, while its tool's panel is open: what it opened with, its header, and what Boolean and New
- * solid had picked before, which they get back when the edit closes.
+ * The step being edited, while its tool's panel is open: what it opened with, its header, and what Boolean, New solid
+ * and Hole's boxes had before, which they get back when the edit closes.
  */
-let edit: { panel: EditPanel; head: string; before: { primKind: PrimitiveKind; withObject: boolean; joinTool: string | null } } | null = null;
+let edit: { panel: EditPanel; head: string; before: { primKind: PrimitiveKind; withObject: boolean; joinTool: string | null; hole: { through: boolean; counterbore: boolean } } } | null = null;
 const VIEW_ONLY_TIP = "This STEP file has surfaces but no closed solid, so it can be measured but not edited.";
 
 type Scrub = {
@@ -361,7 +363,7 @@ function toggleTool(next: ModelTool, editing = false) {
  */
 export function openEditTool(panel: EditPanel, head: string) {
   if (tool) closeTool();
-  edit = { panel, head, before: { primKind, withObject, joinTool } };
+  edit = { panel, head, before: { primKind, withObject, joinTool, hole: holeBoxes() } };
   if (panel.primitive) primKind = panel.primitive;
   withObject = !!panel.join;
   joinTool = null;
@@ -414,6 +416,7 @@ function closeTool() {
   exact.clear();
   if (ended) {
     ({ primKind, withObject, joinTool } = ended.before);
+    setHoleBoxes(ended.before.hole.through, ended.before.hole.counterbore);
     document.querySelector<HTMLElement>("#modelEditHead")?.toggleAttribute("hidden", true);
     document.querySelector("#modelPanel")?.removeAttribute("aria-labelledby");
     paintPrimRow();
@@ -748,7 +751,7 @@ function holeChoiceChanged(id: string) {
   hooks?.paramsChanged();
 }
 
-/** The screw list shows the screw the numbers are, else Any. */
+/** The screw list shows the screw the numbers are, else Custom. */
 function paintScrew() {
   const list = document.querySelector<HTMLSelectElement>("#modelScrew");
   if (!list || tool !== "hole") return;
@@ -1032,7 +1035,6 @@ function ghostFor(current: ModelTool): ModelGhost | null {
   if (current === "hole") {
     const origin: Vec3 = [num("#modelX"), num("#modelY"), num("#modelZ")];
     const dir = hooks?.holeAxis() ?? [0, 0, -1];
-    const box = hooks?.solidBox();
     const { through, counterbore } = holeBoxes();
     return {
       kind: "hole",
@@ -1040,7 +1042,7 @@ function ghostFor(current: ModelTool): ModelGhost | null {
       y: origin[1],
       z: origin[2],
       radius: num("#modelHoleR"),
-      depth: through && box ? throughLength(box, origin, dir) : num("#modelHoleD"),
+      depth: (through ? hooks?.throughLength(origin, dir) : null) ?? num("#modelHoleD"),
       dir,
       ...(counterbore ? { bore: { radius: num("#modelBoreR"), depth: num("#modelBoreD") } } : {}),
     };

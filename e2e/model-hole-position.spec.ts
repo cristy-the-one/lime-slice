@@ -138,6 +138,15 @@ test("Through all turns Depth and its knob off, sends a flag rather than a lengt
 
   await page.locator("#modelThrough").uncheck();
   await expect(page.locator("#modelHoleD")).toBeEnabled();
+  await page.locator("#modelCancel").click();
+
+  // An edit of the through step ticks the box for itself only: a new hole after it opens as the panel had it.
+  await page.keyboard.press("Shift+E");
+  await expect(page.locator("#modelThrough")).toBeChecked();
+  await page.locator("#modelCancel").click();
+  await openHole(page);
+  await expect(page.locator("#modelThrough"), "the edit's Through all does not stay").not.toBeChecked();
+  await expect(page.locator("#modelHoleD")).toBeEnabled();
 });
 
 test("a counterbore has its fields and knobs, a screw fills them, and Edit step opens and updates each new field", async ({ page }) => {
@@ -222,12 +231,16 @@ test("the Position row shows the pose, opens Place, and Reset is one undoable st
   await expect(positionText(page)).toHaveText("At file position");
   await expect(reset(page), "nothing to reset at the file position").toBeHidden();
   await expect(page.locator("#modelHistoryTree #modelPosition"), "the row is not in the tree").toHaveCount(0);
+  await openHole(page);
+  await apply(page).click();
+  await expect(rows(page)).toHaveCount(2);
+  await page.locator("#modelCancel").click();
   const calls = tree.calls.length;
 
   // Clicking the row opens Place.
   await positionRow(page).click();
   await expect(page.locator("#modelToolPlace")).toHaveAttribute("aria-pressed", "true");
-  // The root row's element is kept: a move repaints the Position row, never the tree.
+  // A row's element is kept: a move repaints the Position row, never the tree.
   await rows(page).first().evaluate((el) => ((el as HTMLElement & { kept?: boolean }).kept = true));
   await page.locator("#modelPlaceX").fill("10");
   await expect(positionText(page), "it follows Place as it types").toHaveText("X 10");
@@ -260,7 +273,19 @@ test("the Position row shows the pose, opens Place, and Reset is one undoable st
   await page.locator("#tabModel").click();
   await expect(positionText(page), "Prepare undo puts the pose back").toHaveText("X 10 · Turn Z 30°");
 
-  // The row is no step: no menu, no rename, and tree keys pass it by.
+  // Reset with Hole open goes through Place, which closes Hole: its checked numbers were for the old pose.
+  await openHole(page);
+  await reset(page).click();
+  await expect(page.locator("#modelToolPlace")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#modelToolHole")).toHaveAttribute("aria-pressed", "false");
+  await expect(positionText(page)).toHaveText("At file position");
+  await page.locator("#modelUndo").click();
+  await expect(positionText(page)).toHaveText("X 10 · Turn Z 30°");
+
+  // The row is no step: no menu, no rename, and tree keys pass it by. Leaving Model wrote a STEP and Hole checked
+  // its hole above; from here on nothing asks.
+  await expect.poll(() => tree.of("export").length).toBeGreaterThan(0);
+  const asked = tree.calls.length;
   await positionRow(page).click({ button: "right" });
   await expect(page.locator("#modelHistoryMenu")).toBeHidden();
   await positionText(page).dblclick();
@@ -270,10 +295,9 @@ test("the Position row shows the pose, opens Place, and Reset is one undoable st
   await page.keyboard.press("Delete");
   await page.keyboard.press("F2");
   await expect(page.locator(".mh-rename")).toHaveCount(0);
-  await expect(rows(page)).toHaveCount(1);
+  await expect(rows(page), "Delete on the row drops no branch").toHaveCount(2);
+  expect(tree.of("drop")).toHaveLength(0);
   await page.keyboard.press("Shift+H");
-  await expect(rows(page).first()).toBeFocused();
-  await page.keyboard.press("ArrowUp");
-  await expect(rows(page).first(), "Up from the root stays in the tree").toBeFocused();
-  expect(tree.calls.length, "nothing here asks the engine").toBe(calls);
+  await expect(rows(page).nth(1), "Shift+H goes into the tree, past the row").toBeFocused();
+  expect(tree.calls.length, "nothing here asks the engine").toBe(asked);
 });

@@ -25,6 +25,7 @@ import { unionBox } from "../measure";
 import type { ModelPick } from "../model-view";
 import { DAMAGED, decodeSolid, readFingerprint, type ParsedSolid } from "../model-reply";
 import { holeAxis, lastFace, outwardFromMesh, selectedEdges } from "../model-blend";
+import { throughLength } from "../model-hole";
 import { nextModelPicks, selectionCountLabel } from "../model-select";
 import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
@@ -262,6 +263,12 @@ export function bindModelView() {
     },
     holeAxis() {
       return drillAxis();
+    },
+    throughLength(origin, dir) {
+      if (!open) return null;
+      // In the solid's own frame, from its own box, read once per solid, as the kernel measures it.
+      const back = inversePose(openPose());
+      return throughLength(boxOf(open.solid.positions), applyPose(back, origin), turnDir(back, dir));
     },
     placeFields() {
       return open ? placeFields(openPose(), pivotOf(open.solid)) : null;
@@ -2036,10 +2043,15 @@ function syncPosition() {
   syncModelPosition(open ? placeFields(pose, pivotOf(open.solid)) : null, isIdentity(pose));
 }
 
-/** The Position row's Reset: back to where the file put the part, as one Place step, which Prepare undo takes back. */
+/**
+ * The Position row's Reset: back to where the file put the part, as one Place step, which Prepare undo takes back. It
+ * goes through Place, which closes another tool or an edited step first: their checked numbers were for the old pose.
+ */
 function resetPose() {
   const at = open;
   if (!at || busy || jumping || isIdentity(openPose())) return;
+  openPlaceTool();
+  if (openModelTool() !== "place") return;
   endPlace();
   placeBefore = openPose();
   beginEdit();

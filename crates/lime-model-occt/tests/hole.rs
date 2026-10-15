@@ -184,13 +184,22 @@ fn through_all_and_counterbore() {
     assert_eq!(refusal("h", half), "The counterbore needs a positive depth");
     assert_eq!(
         refusal("h", through([10.0, 10.0, 10.0], DOWN, 0.0)),
-        "A hole needs a positive radius and depth"
+        "A hole needs a positive radius"
     );
-    // Through all with no depth at all still drills: Depth is not read.
-    near(
-        volume(&apply("h", 0, 7, through([10.0, 10.0, 10.0], DOWN, 2.0))),
-        4000.0 - rod(2.0, 10.0),
+    // A counterbore as deep as the part, or deeper, under Through all is no hole under a bore.
+    assert_eq!(
+        refusal(
+            "h",
+            counterbored(through([10.0, 10.0, 10.0], DOWN, 2.0), 4.0, 10.0)
+        ),
+        "The counterbore must be shallower than the hole"
     );
+    // Through all with no depth, or a negative one, still drills: Depth is not read.
+    for (node, depth) in [(7, 0.0), (8, -1.0)] {
+        let mut op = through([10.0, 10.0, 10.0], DOWN, 2.0);
+        op["depth"] = json!(depth);
+        near(volume(&apply("h", 0, node, op)), 4000.0 - rod(2.0, 10.0));
+    }
     assert_eq!(
         refusal("h", through([10.0, 10.0, 12.0], UP, 2.0)),
         "The hole missed this solid"

@@ -158,10 +158,12 @@ export function syncModelHistory(next: ModelTree | null) {
 export function syncModelPosition(fields: PlaceFields | null, atFile: boolean) {
   const text = fields ? positionText(fields) : "";
   const label = document.querySelector("#modelPositionText");
-  if (label && label.textContent !== text) label.textContent = text;
   const open = document.querySelector<HTMLElement>("#modelPositionOpen");
-  open?.setAttribute("aria-label", `Position: ${text}. Opens Place.`);
-  if (open) open.dataset.tip = `Where this object sits in model space: ${text}. Click to open Place.`;
+  if (label && open && label.textContent !== text) {
+    label.textContent = text;
+    open.setAttribute("aria-label", `Position: ${text}. Opens Place.`);
+    open.dataset.tip = `Where this object sits in model space: ${text}. Click to open Place.`;
+  }
   const reset = document.querySelector<HTMLElement>("#modelPositionReset");
   if (!reset || reset.hidden === atFile) return;
   // Reset hides once the pose is reset: focus stays in the row rather than drop to the page.

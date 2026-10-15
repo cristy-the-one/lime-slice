@@ -90,6 +90,8 @@ const part = { min: [0, 0, 0] as [number, number, number], max: [20, 20, 10] as 
 eq("through from the top", throughLength(part, [10, 10, 10], [0, 0, -1]), 11);
 eq("through from a side face", throughLength(part, [20, 10, 5], [-1, 0, 0]), 21);
 eq("a hole pointing away from the part is just the margin", throughLength(part, [10, 10, 12], [0, 0, 1]), 1);
+eq("an axis that is not a unit one is made one", throughLength(part, [20, 10, 5], [-3, 0, 0]), 21);
+eq("a zero axis drills straight down, as in the kernel", throughLength(part, [10, 10, 10], [0, 0, 0]), 11);
 
 // Screws: through, counterbored, each size as the screw has it.
 const m3 = SCREWS.find((screw) => screw.name === "M3")!;

@@ -564,7 +564,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       const axis = length > 1e-9 ? [dir[0] / length, dir[1] / length, dir[2] / length] as Vec3 : [0, 0, -1] as Vec3;
       const straightDown = Math.abs(axis[0]) < 1e-6 && Math.abs(axis[1]) < 1e-6 && axis[2] < 0;
       // A cylinder from the origin `depth` into the part: the hole, and its counterbore at the entry.
-      const bore = (radius: number, depth: number) => {
+      const drill = (radius: number, depth: number) => {
         const cylinder = pointCylinder(
           current.x + axis[0] * depth / 2,
           current.y + axis[1] * depth / 2,
@@ -576,8 +576,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
           cylinder.quaternion.premultiply(new THREE.Quaternion().setFromUnitVectors(zAxis, new THREE.Vector3(axis[0], axis[1], axis[2])));
         }
       };
-      bore(current.radius, current.depth);
-      if (current.bore) bore(current.bore.radius, current.bore.depth);
+      drill(current.radius, current.depth);
+      if (current.bore) drill(current.bore.radius, current.bore.depth);
       return;
     }
     if (current.kind === "plane") {

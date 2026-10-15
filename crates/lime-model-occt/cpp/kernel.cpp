@@ -1066,6 +1066,10 @@ TopoDS_Shape drill(const gp_Pnt& origin, const gp_Dir& axis, double radius, doub
 /// origin, fused with the hole into one tool, so the part is cut once and its volume integrated once.
 /// `before` is the open solid's volume; `volume` gets the result's.
 TopoDS_Shape build_hole(const TopoDS_Shape& current, double before, const HoleSpec& hole, double& volume, std::string& error) {
+    if (hole.through && !(hole.radius > 0.0)) {
+        error = "A hole needs a positive radius";
+        return {};
+    }
     if (!(hole.radius > 0.0) || (!hole.through && !(hole.depth > 0.0))) {
         error = "A hole needs a positive radius and depth";
         return {};
@@ -1078,14 +1082,18 @@ TopoDS_Shape build_hole(const TopoDS_Shape& current, double before, const HoleSp
         error = "The counterbore needs a positive depth";
         return {};
     }
-    if (hole.bore && !hole.through && !(hole.bore_depth < hole.depth)) {
-        error = "The counterbore must be shallower than the hole";
-        return {};
-    }
     const double length = std::sqrt(hole.dx * hole.dx + hole.dy * hole.dy + hole.dz * hole.dz);
     const gp_Dir axis = length > 1e-9 ? gp_Dir(hole.dx / length, hole.dy / length, hole.dz / length) : gp_Dir(0.0, 0.0, -1.0);
     const gp_Pnt origin(hole.x, hole.y, hole.z);
-    const double depth = hole.through ? std::max(reach_along(current, origin, axis), 0.0) + kThroughMarginMm : hole.depth;
+    // How far the part runs past the origin: the hole's own length with Through all. None means it misses, said below.
+    // The box carries the shape's tolerance, so a bore within 0.001 mm of the far side counts as reaching it.
+    const double reach = hole.through ? std::max(reach_along(current, origin, axis), 0.0) : hole.depth;
+    const double slack = hole.through ? 1e-3 : 0.0;
+    if (hole.bore && reach > 0.0 && !(hole.bore_depth < reach - slack)) {
+        error = "The counterbore must be shallower than the hole";
+        return {};
+    }
+    const double depth = hole.through ? reach + kThroughMarginMm : hole.depth;
     TopoDS_Shape tool = drill(origin, axis, hole.radius, depth, error);
     if (tool.IsNull()) {
         return {};
