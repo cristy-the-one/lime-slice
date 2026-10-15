@@ -76,7 +76,8 @@ test("on an empty plate, New solid makes a 20 mm box: listed, measured, and the 
   await expect(empty, "the panel takes its place").toBeHidden();
   for (const id of ["modelDx", "modelDy", "modelDz"]) await page.locator(`#${id}`).fill("20");
   await expect(page.locator("#model"), "the ghost stands at the origin, on Z 0").toHaveAttribute("data-ghost", "0.00 0.00 10.00 20.00 20.00 20.00");
-  expect(tree.calls, "the ghost asks the engine nothing").toHaveLength(0);
+  await page.locator("#modelDz").press("Tab");
+  await page.waitForTimeout(400);
   await page.locator("#modelApply").click();
 
   await expect(readout(page)).toHaveText("Box 1. Volume 8000 mm³. Pick a face or an edge.");
@@ -85,8 +86,8 @@ test("on an empty plate, New solid makes a 20 mm box: listed, measured, and the 
   await expect(rows(page)).toHaveCount(1);
   await expect(rows(page).first()).toContainText("Box 20×20×20");
   await expect(page.locator("#modelPanel"), "Create closes the panel").toBeHidden();
+  expect(tree.calls.map((call) => call.call), "the ghost asked nothing; Create opened the primitive, and no file was read").toEqual(["open"]);
   const opened = tree.of("open");
-  expect(opened, "one open, from the primitive: no file is read").toHaveLength(1);
   expect(opened[0]).toMatchObject({ primitive: { primitive: "box", origin: [-10, -10, 0], size: [20, 20, 20], turn: [0, 0, 0] } });
   expect(opened[0]!.dataB64).toBeUndefined();
   await expect(page.locator("#model"), "it stands at the origin of model space").toHaveAttribute("data-solid", "-10.00,-10.00,0.00,10.00,10.00,20.00");
@@ -176,6 +177,43 @@ test("Prepare undo of a new solid on an empty plate empties the plate again", as
   await expect(objects(page)).toHaveCount(0);
   await page.locator("#tabModel").click();
   await expect(page.locator("#modelEmpty")).toBeVisible();
+  await page.locator("#tabPrepare").click();
+  await page.keyboard.press("Control+Shift+z");
+  await expect(objects(page), "redo puts it back").toHaveCount(1);
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText("Volume 1000 mm³");
+  await expect(page.locator("#modelEmpty")).toBeHidden();
+});
+
+test("with an STL selected, the view says it is a mesh and Shift+N starts a new solid beside it", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
+  const tree = await mockModelTree(page, { open: (request) => primitiveSolid(request.primitive as PrimitiveSpec), apply: built });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
+  await page.locator('[data-sample="calibration_cube_20mm.stl"]').click();
+  await expect(objects(page)).toHaveCount(1);
+  await page.locator("#tabModel").click();
+  const empty = page.locator("#modelEmpty");
+  await expect(empty).toBeVisible();
+  await expect(empty).toContainText("This object is a mesh");
+  await expect(empty.getByRole("button", { name: "Add a file" })).toBeVisible();
+  await expect(page.locator("#model"), "the mesh is drawn grey").toHaveAttribute("data-context-count", "1");
+  await page.locator("#model").click({ position: { x: 5, y: 300 } });
+  await page.keyboard.press("Shift+N");
+  await expect(page.locator("#modelToolNew")).toHaveAttribute("aria-pressed", "true");
+  await expect(empty).toBeHidden();
+  await expect(page.locator("#modelNote")).toHaveText("Lands beside the other objects, as a new object.");
+  await page.locator("#modelApply").click();
+  await expect(readout(page)).toContainText("Box 1.");
+  await expect(objects(page)).toHaveCount(2);
+  expect(tree.of("open")).toHaveLength(1);
+  const solid = ((await page.locator("#model").getAttribute("data-solid")) ?? "").split(",").map(Number);
+  const cube = ((await page.locator("#model").getAttribute("data-context")) ?? "").split(":")[1]!.split(",").map(Number);
+  expect(solid[0], "10 mm past the cube along X").toBeCloseTo(cube[3]! + 10, 1);
 });
 
 test("a copy of a new solid that has no step yet starts from the same primitive, with no STEP written or read", async ({ page }) => {

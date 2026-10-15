@@ -176,10 +176,16 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return hexToThree(raw || "#a3e635");
   }
 
+  /**
+   * The primitive ghost's shaded and edge geometry, built once per mesh: a move or a turn of the same primitive
+   * only moves it. `disposeObject` leaves these two alone; a new mesh frees them.
+   */
+  let primitiveGeometry: { mesh: Float32Array; shaded: THREE.BufferGeometry; edges: THREE.EdgesGeometry } | null = null;
+
   function disposeObject(object: THREE.Object3D) {
     object.traverse((child) => {
       const geometry = (child as THREE.Mesh).geometry;
-      geometry?.dispose();
+      if (geometry !== primitiveGeometry?.shaded && geometry !== primitiveGeometry?.edges) geometry?.dispose();
       const material = (child as THREE.Mesh).material;
       if (Array.isArray(material)) material.forEach((item) => item.dispose());
       else material?.dispose();
@@ -222,6 +228,21 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       ghosts.remove(child);
       disposeObject(child);
     }
+  }
+
+  function primitiveGeometryFor(mesh: Float32Array) {
+    if (primitiveGeometry?.mesh === mesh) return primitiveGeometry;
+    primitiveGeometry?.shaded.dispose();
+    primitiveGeometry?.edges.dispose();
+    const soup = new THREE.BufferGeometry();
+    soup.setAttribute("position", new THREE.BufferAttribute(mesh, 3));
+    // Round sides shade smooth, and a box's or a wedge's faces stay flat.
+    const shaded = toCreasedNormals(soup, (PRIMITIVE_CREASE_DEG * Math.PI) / 180);
+    soup.dispose();
+    // A round side's facets meet at a few degrees: only the primitive's real edges are drawn.
+    const edges = new THREE.EdgesGeometry(shaded, PRIMITIVE_CREASE_DEG);
+    primitiveGeometry = { mesh, shaded, edges };
+    return primitiveGeometry;
   }
 
   function writeColor(hex: number, into: Float32Array, offset: number) {
@@ -414,13 +435,12 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     });
   }
 
-  /** `crease`: the least angle, in degrees, between two faces that draws their shared edge. */
-  function addGhostMesh(geometry: THREE.BufferGeometry, position: THREE.Vector3, opacity = 0.22, crease = 1) {
+  function addGhostMesh(geometry: THREE.BufferGeometry, position: THREE.Vector3, opacity = 0.22) {
     const meshGhost = new THREE.Mesh(geometry, ghostMaterial(opacity));
     meshGhost.position.copy(position);
     meshGhost.renderOrder = 2;
     const edges = new THREE.LineSegments(
-      new THREE.EdgesGeometry(geometry, crease),
+      new THREE.EdgesGeometry(geometry),
       new THREE.LineBasicMaterial({ color: accent, transparent: true, opacity: 0.95 }),
     );
     edges.raycast = () => undefined;
@@ -463,19 +483,18 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (current.kind === "primitive") {
       // A new solid's ghost needs no open solid.
       if (current.mesh.length < 9) return;
-      const soup = new THREE.BufferGeometry();
-      soup.setAttribute("position", new THREE.BufferAttribute(current.mesh, 3));
-      // Round sides shade smooth, and a box's or a wedge's faces stay flat.
-      const geometry = toCreasedNormals(soup, (PRIMITIVE_CREASE_DEG * Math.PI) / 180);
-      soup.dispose();
+      const { shaded, edges } = primitiveGeometryFor(current.mesh);
       const centre = turnCentre(current.spec);
       const [x, y, z] = current.spec.origin;
       const turned = new THREE.Group();
       turned.position.set(x + centre[0], y + centre[1], z + centre[2]);
       turned.quaternion.copy(turnQuaternion(current.spec.turn));
-      // A round side's facets meet at a few degrees: only the primitive's real edges are drawn.
-      const shape = addGhostMesh(geometry, new THREE.Vector3(-centre[0], -centre[1], -centre[2]), 0.22, PRIMITIVE_CREASE_DEG);
-      ghosts.remove(shape);
+      const shape = new THREE.Mesh(shaded, ghostMaterial(0.22));
+      shape.position.set(-centre[0], -centre[1], -centre[2]);
+      shape.renderOrder = 2;
+      const outline = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: accent, transparent: true, opacity: 0.95 }));
+      outline.raycast = () => undefined;
+      shape.add(outline);
       turned.add(shape);
       ghosts.add(turned);
       return;
