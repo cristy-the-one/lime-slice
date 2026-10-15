@@ -41,7 +41,13 @@ interface MockNode {
   parent: number | null;
   /** The op and the split piece's key, as one string, so a repeated Apply can be told from another. */
   step: string;
+  op?: Body;
 }
+
+/** A join's tool, as the op names it. */
+type ToolRef = { key: string; node: number };
+
+const TOOL_MISSING = "The tool object's history is not open in the modeler";
 
 /**
  * The Model history tree engine, mocked at `/api/model/tree`. It keeps every node's solid by tree
@@ -51,6 +57,28 @@ interface MockNode {
 export async function mockModelTree(page: Page, handlers: Handlers): Promise<TreeMock> {
   const calls: Body[] = [];
   const docs = new Map<string, Map<number, MockNode>>();
+  /** Saved joins an `open` could not build yet, their tool's tree not open: built once it is, as the engine does. */
+  const waiting = new Map<string, Map<number, { parent: number; op: Body }>>();
+  const toolOf = (op: unknown): ToolRef | null => {
+    const body = op as { kind?: unknown; tool?: ToolRef } | undefined;
+    return body?.kind === "join" && body.tool ? body.tool : null;
+  };
+  const toolHeld = (tool: ToolRef) => docs.get(tool.key)?.has(tool.node) ?? false;
+  const toolMissing = (tool: ToolRef, broken?: number) => ({ error: TOOL_MISSING, ...(broken === undefined ? {} : { broken }), missingTool: { key: tool.key, node: tool.node } });
+  /** Node `id` of tree `key`, built now if a saved join was waiting for its tool; a reply instead while it still must wait. */
+  const materialize = (key: string, doc: Map<number, MockNode>, id: number): Body | null => {
+    const pending = waiting.get(key)?.get(id);
+    if (!pending || doc.has(id)) return null;
+    const parentFirst = materialize(key, doc, pending.parent);
+    if (parentFirst) return parentFirst;
+    const tool = toolOf(pending.op);
+    if (tool && !toolHeld(tool)) return toolMissing(tool, id);
+    const built = handlers.apply?.({ call: "apply", key, op: pending.op, parent: pending.parent, node: id }, doc.get(pending.parent)!.solid);
+    if (!built || "error" in built) return built ?? { error: "no apply" };
+    doc.set(id, { solid: "kept" in built ? built.kept : built, parent: pending.parent, step: JSON.stringify([pending.op, null]), op: pending.op });
+    waiting.get(key)!.delete(id);
+    return null;
+  };
   /** Each STEP the mock wrote, and the solid it holds, so opening that STEP again opens that solid. */
   const exported = new Map<string, MockSolid>();
   let exports = 0;
@@ -74,21 +102,37 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
       const read = handlers.open(request);
       if ("error" in read) return read;
       const nodes = new Map<number, MockNode>([[0, { solid: exported.get(data) ?? read, parent: null, step: "" }]]);
-      // Saved nodes come back as the ops that built them.
+      const later = new Map<number, { parent: number; op: Body }>();
+      // Saved nodes come back as the ops that built them; a join whose tool's tree is not open waits for it.
       for (const saved of (request.nodes ?? []) as { id: number; parent: number; op: Body }[]) {
+        const tool = toolOf(saved.op);
+        if (later.has(saved.parent) || (tool && !toolHeld(tool))) {
+          later.set(saved.id, { parent: saved.parent, op: saved.op });
+          continue;
+        }
         const built = handlers.apply?.({ ...request, call: "apply", op: saved.op, parent: saved.parent, node: saved.id }, nodes.get(saved.parent)!.solid);
-        if (built && !("error" in built)) nodes.set(saved.id, { solid: "kept" in built ? built.kept : built, parent: saved.parent, step: JSON.stringify([saved.op, null]) });
+        if (built && !("error" in built)) nodes.set(saved.id, { solid: "kept" in built ? built.kept : built, parent: saved.parent, step: JSON.stringify([saved.op, null]), op: saved.op });
       }
       docs.set(key, nodes);
+      waiting.set(key, later);
       const current = Number(request.current ?? 0);
+      const wait = materialize(key, nodes, current);
+      if (wait) return wait;
       return reply(nodes.get(current)!.solid, current);
     }
     if (request.call === "close") {
+      const used = [...docs].some(([other, nodes]) => other !== key && [...nodes.values()].some((node) => toolOf(node.op)?.key === key));
+      if (used) return { error: "A step of another part's history uses this part as its tool, so it stays open" };
       docs.delete(key);
+      waiting.delete(key);
       return { ok: true };
     }
     if (!doc) return { error: "unknown", missing: [0] };
     const node = Number(request.call === "apply" ? request.parent : request.node);
+    const wait = materialize(key, doc, node);
+    if (wait) return wait;
+    const asked = toolOf(request.op);
+    if (asked && (request.call === "apply" || request.call === "probe") && !toolHeld(asked)) return toolMissing(asked);
     const base = doc.get(node);
     if (!base) return { error: "unknown", missing: [node] };
     switch (request.call) {
@@ -124,14 +168,14 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
     const built = handlers.apply?.(request, base.solid) ?? { error: "no apply" };
     if ("error" in built) return built;
     if ("kept" in built) {
-      doc.set(id, { solid: built.kept, parent: node, step: stepOf(request) });
+      doc.set(id, { solid: built.kept, parent: node, step: stepOf(request), op: request.op as Body });
       // As the engine: the piece goes out only to start its own tree.
       if (!request.otherKey) return { ...reply(built.kept, id), op: request.op };
       const otherKey = String(request.otherKey);
       docs.set(otherKey, new Map([[0, { solid: built.other, parent: null, step: "" }]]));
       return { ...reply(built.kept, id), op: request.op, other: { ...reply(built.other, 0), key: otherKey } };
     }
-    doc.set(id, { solid: built, parent: node, step: stepOf(request) });
+    doc.set(id, { solid: built, parent: node, step: stepOf(request), op: request.op as Body });
     return { ...reply(built, id), op: request.op };
   };
   await page.route("**/api/model/tree", async (route: Route) => {
@@ -142,6 +186,9 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
   return {
     calls,
     of: (call) => calls.filter((request) => request.call === call),
-    forget: () => docs.clear(),
+    forget: () => {
+      docs.clear();
+      waiting.clear();
+    },
   };
 }
