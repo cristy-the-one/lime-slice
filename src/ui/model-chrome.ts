@@ -344,7 +344,7 @@ function setLabel(labelId: string, inputId: string, text: string, aria = text) {
 }
 
 /** The primitive the picker has on, for Boolean and New solid alike. */
-export function primitiveKind(): PrimitiveKind {
+function primitiveKind(): PrimitiveKind {
   const kind = document.querySelector<HTMLElement>('#modelPrim [aria-checked="true"]')?.dataset.kind;
   return isPrimitiveKind(kind) ? kind : "box";
 }
@@ -389,10 +389,10 @@ function setPrimitive(kind: PrimitiveKind, focus: boolean) {
 }
 
 function onPrimKey(ev: KeyboardEvent) {
-  const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[ev.key];
-  if (!step) return;
   const kinds = [...document.querySelectorAll<HTMLElement>("#modelPrim [data-kind]")].map((button) => button.dataset.kind);
   const at = kinds.indexOf(primitiveKind());
+  const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1, Home: -at, End: kinds.length - 1 - at }[ev.key];
+  if (step === undefined) return;
   const next = kinds[(at + step + kinds.length) % kinds.length];
   if (!isPrimitiveKind(next)) return;
   ev.preventDefault();
@@ -536,7 +536,7 @@ function refreshNote() {
   } else if (tool === "measure") {
     text = measureNote(point("A"), point("B"));
   } else if (tool === "place") {
-    text = "From where its file put it, turning about its centre. The plate does not move.";
+    text = "From where it started, turning about its centre. The plate does not move.";
   } else if (tool === "create") {
     text = state.plate.objects.length === 0 ? "Lands at the origin, on Z 0." : "Lands beside the other objects, as a new object.";
   } else if (isProbed(tool)) {
@@ -699,7 +699,8 @@ function onEnter(ev: KeyboardEvent) {
   if (ev.key !== "Enter" || ev.repeat || ev.ctrlKey || ev.metaKey || ev.altKey) return;
   if (state.stage !== "model" || !tool) return;
   const target = ev.target instanceof Element ? ev.target : null;
-  if (!target?.closest("#modelPanel")) return;
+  // A button in the panel (a primitive, Corners or Flats, Fuse) takes Enter as its own click.
+  if (!target?.closest("#modelPanel") || target.closest("button")) return;
   ev.preventDefault();
   ev.stopPropagation();
   document.querySelector<HTMLButtonElement>("#modelApply")?.click();
@@ -742,6 +743,7 @@ function onScrubMove(ev: PointerEvent) {
   const total = scrubTarget(dx, false, quantum, quantum);
   let next = current.origin + total;
   if (ev.ctrlKey || ev.metaKey) next = snapStep(next, true, current.snap);
+  if (current.input.dataset.whole !== undefined) next = Math.round(next);
   if (current.input.min !== "") {
     const min = Number(current.input.min);
     if (Number.isFinite(min)) next = Math.max(min, next);
@@ -750,7 +752,7 @@ function onScrubMove(ev: PointerEvent) {
     const max = Number(current.input.max);
     if (Number.isFinite(max)) next = Math.min(max, next);
   }
-  const places = (quantum.toString().split(".")[1] ?? "").length;
+  const places = current.input.dataset.whole !== undefined ? 0 : (quantum.toString().split(".")[1] ?? "").length;
   const text = places > 0 ? next.toFixed(places) : String(Math.round(next));
   if (current.input.value === text) return;
   current.input.value = text;

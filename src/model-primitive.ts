@@ -91,15 +91,36 @@ export function primitiveSpec(kind: PrimitiveKind, fields: PrimitiveFields, orig
   }
 }
 
+/** Which of the three older fields each kind reads. A Boolean op keeps the others as typed, as it always has. */
+const READS: Record<PrimitiveKind, { size: boolean; radius: boolean; height: boolean }> = {
+  box: { size: true, radius: false, height: false },
+  cylinder: { size: false, radius: true, height: true },
+  sphere: { size: false, radius: true, height: false },
+  cone: { size: false, radius: true, height: true },
+  torus: { size: false, radius: true, height: false },
+  wedge: { size: true, radius: false, height: false },
+  polygon: { size: false, radius: false, height: true },
+  tube: { size: false, radius: true, height: true },
+};
+
 /**
  * The primitive moved so it stands centred over the origin, its lowest point on Z = 0, untilted: a new solid's
- * root in its own frame. Model space then places it with a pose.
+ * root in its own frame. Model space then places it with a pose. A root is new data, so the fields its kind does
+ * not read are 0 rather than whatever the panel held.
  */
 export function rootSpec(spec: PrimitiveSpec): PrimitiveSpec {
   const lift = spec.primitive === "sphere" ? spec.radius : spec.primitive === "torus" ? spec.tubeRadius ?? 0 : 0;
   const corner = spec.primitive === "box" || spec.primitive === "wedge";
   const origin: Vec3 = corner ? [-spec.size[0] / 2, -spec.size[1] / 2, 0] : [0, 0, lift];
-  return { ...spec, origin, turn: [0, 0, 0] };
+  const reads = READS[spec.primitive];
+  return {
+    ...spec,
+    origin,
+    size: reads.size ? spec.size : [0, 0, 0],
+    radius: reads.radius ? spec.radius : 0,
+    height: reads.height ? spec.height : 0,
+    turn: [0, 0, 0],
+  };
 }
 
 /** The untilted primitive's box, where `origin` puts it: exact, from the sizes alone. */

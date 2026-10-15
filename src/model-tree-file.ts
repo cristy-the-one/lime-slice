@@ -1,9 +1,9 @@
 /**
  * A Model history tree as `.lime` keeps it: the ops, names, and fingerprints of every node, which
- * node the view and the plate were on, and the root STEP. Engine keys are not saved: they name a
+ * node the view and the plate were on, and the root STEP, or a new solid's root primitive. Engine keys are not saved: they name a
  * tree for one page load. A split names its piece by the piece's plate object id instead.
  */
-import { isPrimitiveKind, type PrimitiveSpec } from "./model-primitive.ts";
+import { isPrimitiveKind, primitiveMesh, type PrimitiveSpec } from "./model-primitive.ts";
 import { jumped, opLabel, rootLabel, type EdgeRef, type Fingerprint, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type Vec3 } from "./model-tree.ts";
 
 interface SavedNode {
@@ -95,9 +95,10 @@ export function readSavedTree(value: unknown): SavedTree<unknown> | null {
   const { current, committed, nextId } = value;
   if (!ids.has(0) || !isId(current) || !ids.has(current) || !isId(committed) || !ids.has(committed) || !isId(nextId)) return null;
   const body = { nodes, current, committed, nextId: Math.max(nextId, Math.max(...ids) + 1) };
-  if (value.rootPrimitive !== undefined) {
+  if (value.rootPrimitive != null) {
+    // A primitive the app would not build is as damaged as a missing STEP: the part opens from its mesh.
     const solid = value.rootStep === undefined ? readPrimitive(value.rootPrimitive) : undefined;
-    return solid ? { ...body, rootPrimitive: solid } : null;
+    return solid && primitiveMesh(solid).length > 0 ? { ...body, rootPrimitive: solid } : null;
   }
   if (value.rootStep === undefined) return null;
   return { ...body, rootStep: value.rootStep };

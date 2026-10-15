@@ -680,7 +680,7 @@ html.layout-compact .model-panel {
   scroll-padding-bottom: calc(var(--model-bar-btn) + 3 * var(--model-bar-pad));
 }
 html.layout-compact .model-fields { display: flex; flex-wrap: nowrap; overflow-x: auto; }
-html.layout-compact .model-prim { height: 40px; }
+html.layout-compact .model-prim { height: 44px; }
 html.layout-compact .model-fields label { flex: 0 0 84px; }
 html.layout-compact .model-fields label[data-wide] { flex-basis: 120px; }
 /* The sheet scrolls its fields and note, and keeps Cancel, Done, and Apply on its bottom edge in reach. */

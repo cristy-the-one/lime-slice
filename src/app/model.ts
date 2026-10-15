@@ -73,7 +73,7 @@ import { mountModelHistory, syncModelHistory } from "../ui/model-history";
 import { dropRefusal } from "../model-history";
 import { addedSolid, addedSplit, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose } from "../plate";
 import { authHeaders } from "../ui/api-base";
-import { livePlate, openMeshPicker, place } from "./files";
+import { livePlate, openMeshPicker, pickAddedMesh, place } from "./files";
 import { beginEdit, editHistoryRefs, endModelVisit, flushEdit, markModelEdit, noteEdit, patchEditBrep } from "./history";
 import { fx } from "./fx";
 import { modelerFailure, plainModelError } from "./model-error";
@@ -93,6 +93,7 @@ interface Opened {
 
 const VIEW_ONLY = "Surfaces only. This file can be measured but not edited.";
 const BROKEN = "This step could not be rebuilt, so it and the steps after it are unavailable.";
+const ROOT_BROKEN = "This solid's primitive builds differently in this modeler, so its history cannot be rebuilt.";
 /** Parsed solids of recently shown nodes, so a jump back to one needs no engine call. */
 const SOLID_CACHE = 4;
 
@@ -167,8 +168,12 @@ export function bindModelView() {
     else void step(redoTarget, "Edit redone.");
   });
   document.querySelector("#modelResetView")?.addEventListener("click", (ev) => frameModel((ev as MouseEvent).shiftKey));
-  document.querySelector("#modelEmptyNew")?.addEventListener("click", () => document.querySelector<HTMLButtonElement>("#modelToolNew")?.click());
-  document.querySelector("#modelEmptyOpen")?.addEventListener("click", () => openMeshPicker());
+  document.querySelector("#modelEmptyNew")?.addEventListener("click", () => {
+    document.querySelector<HTMLButtonElement>("#modelToolNew")?.click();
+    // The card hides with its button: focus goes on to the primitive picked.
+    document.querySelector<HTMLButtonElement>('#modelPrim [aria-checked="true"]')?.focus();
+  });
+  document.querySelector("#modelEmptyOpen")?.addEventListener("click", () => (state.plate.objects.length > 0 ? pickAddedMesh() : openMeshPicker()));
   mountModelChrome({
     clearSelection() {
       picks = [];
@@ -214,7 +219,7 @@ export function bindModelView() {
     newSolidAt,
     frameNewSolid(spec) {
       const others = plateBoxes();
-      fx.model?.frame(unionBox([primitiveBounds(newSolidAt(spec)), ...others])!);
+      fx.model?.frame(unionBox([primitiveBounds(newSolidAt(spec, others)), ...others])!);
     },
   });
   mountModelHistory({
@@ -565,19 +570,19 @@ export function showModel() {
   // A tree that has no node with this mesh stays open: a Prepare undo or redo can bring one of its meshes back.
   const sourcePos = state.sourcePos ?? new Float32Array(0);
   const brep = obj.brep ?? null;
+  const source = [...modelTrees.values()].find((tree) => nodeWithMesh(tree, token) != null);
+  if (source?.root.kind === "primitive" && nodeWithMesh(source, token) === ROOT) {
+    // A copy of a new solid's root starts from the same primitive, even once that root has a STEP: none is read.
+    void openTree(mine, objectId, obj.name, source.root, { name: mesh.name, bytes: mesh.bytes, sourcePos, token, ...(brep ? { step: brep } : {}) });
+    return;
+  }
   if (brep || isStepName(mesh.name)) {
     const root: PlateMesh = { name: mesh.name, bytes: mesh.bytes, sourcePos, token, ...(brep ? { step: brep } : {}) };
     void openTree(mine, objectId, obj.name, { kind: "step", name: brep ? stepFileName(mesh.name) : mesh.name, bytes: brep ?? mesh.bytes }, root);
     return;
   }
-  const source = [...modelTrees.values()].find((tree) => nodeWithMesh(tree, token) != null);
   if (!source) {
     showEmpty(true);
-    return;
-  }
-  if (source.root.kind === "primitive" && nodeWithMesh(source, token) === ROOT) {
-    // A copy of a new solid that has no step yet starts from the same primitive: no STEP to write or read.
-    void openTree(mine, objectId, obj.name, source.root, { name: mesh.name, bytes: mesh.bytes, sourcePos, token });
     return;
   }
   // A copy of an edited object whose STEP is not written yet: its own tree starts from that step's STEP.
@@ -639,6 +644,7 @@ function lastGood(tree: ModelTree, node: NodeId): NodeId | null {
 }
 
 function clearView() {
+  hideEmpty();
   fx.model?.setSolid(null, IDENTITY_POSE);
   refreshModelContext();
   fx.model?.highlight([]);
@@ -673,7 +679,7 @@ async function openTree(mine: number, objectId: string, label: string, from: Exc
     return;
   }
   modelTrees.set(key, withNode(newTree(key, from, rootLabel(from, label), parsed.fingerprint), ROOT, { mesh: root }));
-  if (from.kind === "step") stepKnown.add(root.token);
+  if (from.kind === "step" || root.step) stepKnown.add(root.token);
   keepSolid(key, ROOT, chord, parsed);
   setTreeKey(objectId, key);
   if (mine !== ticket || state.stage !== "model") return;
@@ -692,7 +698,7 @@ async function showNode(mine: number, objectId: string, key: string, node: NodeI
   if (brokenOnPath(tree, node)) {
     jumping = false;
     syncUndo();
-    readout(BROKEN);
+    readout(tree.nodes.get(ROOT)?.broken ? ROOT_BROKEN : BROKEN);
     return false;
   }
   const chord = state.stepTolerance;
@@ -803,7 +809,7 @@ function failed(key: string, body: Body): boolean {
   if (typeof body.broken === "number" && tree) {
     console.warn(error);
     modelTrees.set(key, withNode(tree, body.broken, { broken: error }));
-    readout(BROKEN);
+    readout(body.broken === ROOT ? ROOT_BROKEN : BROKEN);
   } else {
     readout(error);
   }
@@ -990,14 +996,14 @@ async function createSolid() {
   if (mine === ticket) busy = false;
   syncUndo();
   const parsed = decodeSolid(body);
-  const current = mine === ticket && state.stage === "model";
-  if (typeof parsed === "string" || !current) {
+  if (mine !== ticket || state.stage !== "model" || typeof parsed === "string") {
     // An open the engine answered left a tree there.
     if (typeof body.error !== "string") void post({ call: "close", key });
-    if (current) readout(parsed as string);
+    if (mine === ticket && state.stage === "model" && typeof parsed === "string") readout(parsed);
     return;
   }
-  // The open object's edits reach the plate first, so the new object is a Prepare step of its own.
+  // The open object's edits reach the plate first. The new object then joins the visit's Prepare step, as an edit does.
+  const others = plateBoxes();
   commitModel();
   forgetPlaceSteps();
   flushEdit();
@@ -1011,7 +1017,7 @@ async function createSolid() {
   const bytes = encodeStl(positions, fileName);
   setMeshSeat(bytes, seat);
   const mesh: PlateMesh = { name: fileName, bytes, sourcePos: positions, token: meshTokenOf(bytes) };
-  const pose = newSolidPose(plateBoxes(), primitiveBounds(root));
+  const pose = newSolidPose(others, primitiveBounds(root));
   const { bedX, bedY } = state.profile;
   state.plate = addedSolid(state.plate, { name, fileName, bytes, sourcePos: positions, stepTolerance: chord }, id, key, pose, bedX, bedY);
   applySelectedToState(state.plate);
@@ -1030,16 +1036,20 @@ async function createSolid() {
   present(parsed, `${name}. ${about(parsed)} Pick a face or an edge.`);
 }
 
-/** Where New solid puts `spec` in model space: its root, standing at the origin or beside every object. */
-function newSolidAt(spec: PrimitiveSpec): PrimitiveSpec {
+/** Where New solid puts `spec` in model space: its root, standing at the origin or beside every object in `others`. */
+function newSolidAt(spec: PrimitiveSpec, others = plateBoxes()): PrimitiveSpec {
   const root = rootSpec(spec);
-  const { t } = newSolidPose(plateBoxes(), primitiveBounds(root));
+  const { t } = newSolidPose(others, primitiveBounds(root));
   return { ...root, origin: [root.origin[0] + t[0], root.origin[1] + t[1], root.origin[2] + t[2]] };
 }
 
-/** Every plate object's box in model space. Each mesh's own box is read once. */
+/**
+ * Every plate object's box in model space, the open one as the view shows it: an edit not yet on the plate can
+ * have grown it. Each mesh's own box is read once.
+ */
 function plateBoxes(): Bounds[] {
-  return livePlate().map((obj) => boxUnder(boxOf(obj.sourcePos), meshToModel(obj)));
+  const shown = openBox();
+  return livePlate().map((obj) => (shown && obj.id === open?.objectId ? shown : boxUnder(boxOf(obj.sourcePos), meshToModel(obj))));
 }
 
 /** No solid to show: the view says so plainly, with New solid at hand, and shows whatever model space holds. */
@@ -1049,7 +1059,9 @@ function showEmpty(mesh: boolean) {
   const title = document.querySelector("#modelEmptyTitle");
   const text = document.querySelector("#modelEmptyText");
   if (title) title.textContent = mesh ? "This object is a mesh" : "No solid open";
-  if (text) text.textContent = mesh ? "Model edits STEP solids. Start a new solid from a primitive, or open a STEP file." : "Start a solid from a primitive, or open a STEP file.";
+  if (text) text.textContent = mesh ? "Model edits STEP solids. Start a new solid from a primitive, or add a STEP file." : "Start a solid from a primitive, or open a STEP file.";
+  const fileButton = document.querySelector("#modelEmptyOpen");
+  if (fileButton) fileButton.textContent = state.plate.objects.length > 0 ? "Add a file" : "Open a file";
   if (card) card.hidden = false;
   framedFor = null;
   const boxes = plateBoxes();
@@ -1259,12 +1271,7 @@ function openBox(): Bounds | null {
   return open ? posedBounds(open.solid.positions, openPose()) : null;
 }
 
-/** The solid's box in its own frame: Place turns about its centre, and the kernel cuts against it. */
-function ownBox(solid: ParsedSolid): Bounds {
-  return boxOf(solid.positions);
-}
-
-/** The box of a mesh's vertices, read once per array. */
+/** The box of a mesh's vertices, read once per array: a solid's own box, which Place turns about and the kernel cuts against, or a plate mesh's. */
 function boxOf(positions: Float32Array): Bounds {
   let box = ownBoxes.get(positions);
   if (!box) ownBoxes.set(positions, (box = boundsOf(positions)));
@@ -1272,7 +1279,7 @@ function boxOf(positions: Float32Array): Bounds {
 }
 
 function pivotOf(solid: ParsedSolid): Vec3 {
-  const own = ownBox(solid);
+  const own = boxOf(solid.positions);
   return [(own.min[0] + own.max[0]) / 2, (own.min[1] + own.max[1]) / 2, (own.min[2] + own.max[2]) / 2];
 }
 
@@ -1425,7 +1432,7 @@ function modelExtent(solid: ParsedSolid, pose: Affine, normal: Vec3): AxisExtent
  * identity pose, else its corners' extent along a model-space normal turned back into the solid's frame.
  */
 function kernelBox(solid: ParsedSolid, pose: Affine): { min: Vec3; max: Vec3 } | ((normal: Vec3) => AxisExtent) {
-  const own = ownBox(solid);
+  const own = boxOf(solid.positions);
   if (isIdentity(pose)) return own;
   const back = inversePose(pose);
   return (normal) => {
@@ -1682,7 +1689,7 @@ function openWhole(key: string, node: NodeId): Promise<string | null> {
     // A primitive root that builds differently opens nothing: the whole tree is broken from its root.
     if (body.broken === ROOT) {
       failed(key, body);
-      return BROKEN;
+      return ROOT_BROKEN;
     }
     const problem = typeof body.broken === "number" ? "" : text(body.error);
     if (problem) return problem;

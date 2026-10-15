@@ -688,7 +688,8 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .model-prims {
   display: grid;
   margin-bottom: var(--space-2);
-  grid-template-columns: repeat(8, minmax(0, 1fr));
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   gap: 4px;
 }
 .model-prims[hidden] { display: none !important; }
@@ -772,7 +773,7 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 }
 .model-history[hidden] { display: none !important; }
 /* With no History, the size chip and the readout still sit at the bottom of the column. */
-.model-history[hidden] + .model-foot { margin-top: auto; }
+html:not(.layout-compact) .model-history[hidden] + .model-foot { margin-top: auto; }
 /* With a tool open, History keeps to half the column so the tool's panel has room. */
 #modelBar[data-tool] .model-history { max-height: 50%; }
 .model-history-toggle {

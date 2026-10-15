@@ -108,6 +108,8 @@ eq("a root box stands centred on Z 0", rooted(spec("box", { size: [20, 10, 4], o
 eq("a root sphere sits on Z 0", rooted(spec("sphere", { radius: 3 })), { min: [-3, -3, 0], max: [3, 3, 6] });
 eq("a root torus lies on Z 0", rooted(spec("torus", { radius: 10, tubeRadius: 2 })), { min: [-12, -12, 0], max: [12, 12, 4] });
 eq("a root cone stands on its base", rooted(spec("cone", { radius: 5, topRadius: 1, height: 8, origin: [3, 3, 3] })), { min: [-5, -5, 0], max: [5, 5, 8] });
+eq("a root keeps only the fields its kind reads", rootSpec(spec("cone", { size: [10, 10, 10], radius: 5, height: 8, topRadius: 1 })), spec("cone", { radius: 5, height: 8, topRadius: 1 }));
+eq("a root box keeps its size and nothing round", rootSpec(spec("box", { size: [2, 4, 6], radius: 5, height: 10 })), spec("box", { origin: [-1, -2, 0], size: [2, 4, 6] }));
 eq("a root is untilted", rootSpec(spec("cylinder", { radius: 1, height: 1, turn: [90, 0, 0] })).turn, [0, 0, 0]);
 
 eq("turn centres", [spec("box", { size: [2, 4, 6] }), spec("wedge", { size: [2, 4, 6] }), spec("torus", { radius: 5 }), spec("tube", { height: 8 })].map(turnCentre), [[1, 2, 3], [1, 2, 3], [0, 0, 0], [0, 0, 4]]);

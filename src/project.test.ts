@@ -476,6 +476,7 @@ for (const [name, damage] of [
   ["an unknown primitive", { ...conePrimitive, primitive: "helix" }],
   ["a primitive with a word for a size", { ...conePrimitive, topRadius: "four" }],
   ["a primitive with no origin", { ...conePrimitive, origin: undefined }],
+  ["a primitive the app would not build", { ...conePrimitive, height: 0 }],
 ] as const) {
   const wire = structuredClone(coneWire);
   wire.objects[1]!.modelTree.rootPrimitive = damage;

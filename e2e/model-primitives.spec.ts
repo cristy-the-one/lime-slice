@@ -96,7 +96,7 @@ test("a new cone takes a Hole like any solid: History has the cone and the hole"
   const tree = await start(page);
   await create(page, "cone", { modelRadius: 10, modelTopR: 4, modelHeight: 30 });
   await expect(readout(page)).toContainText("Cone 1. Volume 4901 mm³");
-  expect(tree.of("open").at(-1)!.primitive).toEqual({ primitive: "cone", origin: [0, 0, 0], size: [10, 10, 10], radius: 10, height: 30, turn: [0, 0, 0], topRadius: 4 });
+  expect(tree.of("open").at(-1)!.primitive).toEqual({ primitive: "cone", origin: [0, 0, 0], size: [0, 0, 0], radius: 10, height: 30, turn: [0, 0, 0], topRadius: 4 });
   await page.locator("#modelToolHole").click();
   await expect(page.locator("#modelApply")).toBeEnabled();
   await page.locator("#modelApply").click();
@@ -119,7 +119,7 @@ test("a saved new solid reopens with its history from the primitive, and no STEP
   const saved = await readFile((await download.path())!);
   const doc = JSON.parse(saved.toString("utf8")) as { objects: { name: string; modelTree: { rootPrimitive?: unknown; rootStep?: unknown; nodes: unknown[] } }[] };
   expect(doc.objects[0]!.name).toBe("Box 1");
-  expect(doc.objects[0]!.modelTree.rootPrimitive, "the file keeps the primitive's numbers").toEqual({ primitive: "box", origin: [-10, -10, 0], size: [20, 20, 20], radius: 5, height: 10, turn: [0, 0, 0] });
+  expect(doc.objects[0]!.modelTree.rootPrimitive, "the file keeps the primitive's numbers").toEqual({ primitive: "box", origin: [-10, -10, 0], size: [20, 20, 20], radius: 0, height: 0, turn: [0, 0, 0] });
   expect(doc.objects[0]!.modelTree.rootStep, "and no root STEP").toBeUndefined();
   expect(doc.objects[0]!.modelTree.nodes).toHaveLength(2);
 

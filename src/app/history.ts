@@ -68,6 +68,7 @@ function capture(): EditSnap {
     overrides: structuredClone(state.overrides),
     selectedVolumeId: state.selectedVolumeId,
     plate: snapPlate(state.plate),
+    ...(state.mesh ? {} : { meshless: true }),
     meshPins: pinPlateMeshes(state.plate),
     printOrder: state.printOrder,
     sequentialClearanceMm: state.sequentialClearance,
@@ -150,8 +151,9 @@ function applySnap(snap: EditSnap) {
       state.plate = revived;
       applySelectedToState(revived);
     }
-  } else if (snap.plate) {
-    // Before Model's New solid on an empty plate: the plate is empty again.
+  } else if (snap.meshless) {
+    // Before Model's New solid on an empty plate: the plate is empty again. A file still being read has its mesh
+    // already, so a step taken meanwhile never empties the plate it lands on.
     state.plate = emptyPlate();
     state.mesh = null;
     state.sourcePos = null;
