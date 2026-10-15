@@ -36,9 +36,9 @@ use crate::poly::{
 };
 use crate::progress::{Stage, Status, Watch};
 use crate::strategy::{
-    classicize, layer_weight, mix, pure, support_density, support_interface_density, support_speed,
-    Axis, BlendMode, Firmware, FuzzySkin, Gyroid3d, Ironing, PrinterProfile, ResolvedStrategy, ScarfSeam,
-    SeamPlacement, StrategyId, ZHopMode,
+    classicize, fan_pwm, layer_weight, mix, pure, support_density, support_interface_density,
+    support_speed, Axis, BlendMode, Firmware, FuzzySkin, Gyroid3d, Ironing, PrinterProfile,
+    ResolvedStrategy, ScarfSeam, SeamPlacement, StrategyId, ZHopMode,
 };
 use crate::support::edit::{EditOutcome, SupportEdit};
 use crate::support::paint::{self, PaintDisk, PaintTally};
@@ -220,8 +220,8 @@ pub struct SliceRequest {
     /// Bridge feed, millimetres per second. Omitted keeps the 18–36 mm/s slowdown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_speed_mm_s: Option<f64>,
-    /// Bridge fan, percent of full. Omitted keeps the layer fan, with bridges at
-    /// full fan on layers that use the path fan.
+    /// Bridge fan, percent of full. Omitted, bridges take the overhang fan:
+    /// the printer's `overhangFanPercent`, else full fan once the layer fan is on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_fan_percent: Option<u8>,
     /// Pauses and filament changes. Omitted when empty, so a default request
@@ -474,7 +474,7 @@ pub struct SliceSettings {
     pub bridge_flow_ratio: Option<f64>,
     /// `None` keeps the 18–36 mm/s bridge slowdown.
     pub bridge_speed_mm_s: Option<f64>,
-    /// `None` keeps the layer fan. A percent holds that PWM on the bridge.
+    /// `None` gives bridges the overhang fan. A percent holds that PWM on the bridge.
     pub bridge_fan_percent: Option<u8>,
     /// Empty injects nothing at layer changes.
     pub layer_actions: Vec<LayerAction>,
@@ -989,7 +989,7 @@ fn bridge_speed(classic: bool, value: Option<f64>) -> Option<f64> {
     value.and_then(|mm| (mm > 1e-6).then_some(mm.clamp(5.0, 200.0)))
 }
 
-/// A bridge fan percent the request actually set. `0` keeps the layer fan.
+/// A bridge fan percent the request actually set. `0` keeps the overhang fan.
 fn bridge_fan(classic: bool, value: Option<u8>) -> Option<u8> {
     if classic {
         return None;
@@ -1098,12 +1098,9 @@ fn bridge_tune(settings: &SliceSettings) -> Option<BridgeTune> {
     let speed_mm_s = settings
         .bridge_speed_mm_s
         .and_then(|mm| (mm > 1e-6).then_some(mm.clamp(5.0, 200.0)));
-    let fan_pwm = settings.bridge_fan_percent.and_then(|pct| {
-        (pct > 0).then_some({
-            let pct = u16::from(pct.min(100));
-            ((pct * 255) / 100) as u8
-        })
-    });
+    let fan_pwm = settings
+        .bridge_fan_percent
+        .and_then(|pct| (pct > 0).then_some(fan_pwm(pct)));
     if flow.is_none() && speed_mm_s.is_none() && fan_pwm.is_none() {
         None
     } else {
@@ -2056,6 +2053,7 @@ fn retouch_layer(layer: &mut PlateLayer, frame: &crate::belt::Frame, slow_all: b
                     || pieces[0].speed != path.speed
                     || pieces[0].flow != path.flow
                     || pieces[0].fan != path.fan
+                    || pieces[0].fan_role != path.fan_role
                 {
                     changed = true;
                 }
@@ -2169,6 +2167,15 @@ fn slice_plate(
     if let Some(n) = settings.min_layer_speed_mm_s {
         if !n.is_finite() || !(1.0..=300.0).contains(&n) {
             return Err(format!("minLayerSpeedMmS {n} must be from 1 to 300"));
+        }
+    }
+    for (name, pct) in [
+        ("fanPercent", profile.fan_percent),
+        ("overhangFanPercent", profile.overhang_fan_percent),
+        ("supportFanPercent", profile.support_fan_percent),
+    ] {
+        if let Some(pct) = pct.filter(|pct| *pct > 100) {
+            return Err(format!("printer.{name} {pct} must be from 0 to 100"));
         }
     }
     let listed = sources.iter().any(|s| s.id.is_some());

@@ -116,7 +116,7 @@ check("the style stays for Painted only", controlById("sstyle")!.when!({ ...samp
 check("supportSource has no control of its own", UNFIELDED_PRESET_KEYS.has("supportSource"));
 
 for (const group of GROUPS) {
-  const worst =summaryOf(group.id, { layerHeight: 0.28, adaptive: true, seam: "aligned", ironing: true, fuzzySkin: true, gyroid3d: "on", infillCombine: true, featureSpeeds: true, zHop: "always", supports: true, supportStyle: "tree", supportAngle: 45, placed: {}, plate: { objects: [1] }, blendKind: "single", strategy: "speed", profile: { bedX: 220, bedY: 220, maxVolumetricMm3S: 15 } });
+  const worst =summaryOf(group.id, { layerHeight: 0.28, adaptive: true, seam: "aligned", ironing: true, fuzzySkin: true, gyroid3d: "on", infillCombine: true, featureSpeeds: true, zHop: "always", supports: true, supportStyle: "tree", supportAngle: 45, placed: {}, plate: { objects: [1] }, blendKind: "single", strategy: "speed", profile: { bedX: 220, bedY: 220, maxVolumetricMm3S: 15, fanPercent: 100, overhangFanPercent: 100 } });
   check(`${group.id}: summary fits the header (${worst})`, worst.length <= 24);
 }
 

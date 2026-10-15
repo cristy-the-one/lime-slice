@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use rayon::prelude::*;
 
 use crate::progress::{Stage, Watch};
-use crate::strategy::{BlendMode, Firmware, PrinterProfile};
-use crate::toolpath::Extrusion;
+use crate::strategy::{fan_pwm, BlendMode, Firmware, PrinterProfile};
+use crate::toolpath::{Extrusion, FanRole};
 
 #[derive(Clone, Debug)]
 pub struct GcodeStats {
@@ -864,6 +864,46 @@ struct EmitCfg {
     min_layer: Option<MinLayer>,
     /// Set for a Klipper printer: the toolhead model times the print.
     klipper: Option<KlipperCfg>,
+    /// The printer's part fan, set at emit so a fan change never re-plans.
+    fans: Fans,
+}
+
+/// The fan values a request names, as PWM. `None` leaves each bead at the
+/// fan it was planned with.
+#[derive(Clone, Copy, Default)]
+struct Fans {
+    part: Option<u8>,
+    overhang: Option<u8>,
+    support: Option<u8>,
+    /// Layers below this print with the fan off. `None` keeps the first
+    /// layer off and the second at half.
+    off_layers: Option<usize>,
+}
+
+impl Fans {
+    fn of(profile: &PrinterProfile) -> Self {
+        Self {
+            part: profile.fan_percent.map(fan_pwm),
+            overhang: profile.overhang_fan_percent.map(fan_pwm),
+            support: profile.support_fan_percent.map(fan_pwm),
+            off_layers: profile.fan_off_layers.map(|n| n as usize),
+        }
+    }
+
+    /// The PWM a bead runs at once its layer's fan is on.
+    fn pwm(&self, path: &Extrusion) -> u8 {
+        if path.fan_hold {
+            return path.fan;
+        }
+        let named = match path.fan_role {
+            FanRole::Part => self.part,
+            FanRole::Overhang { boost } => self.overhang.or(self.part.map(|p| p.max(boost))),
+            FanRole::Gap => self.overhang.or(self.part),
+            FanRole::Support => self.support.or(self.part),
+            FanRole::Off => None,
+        };
+        named.unwrap_or(path.fan)
+    }
 }
 
 impl EmitCfg {
@@ -923,6 +963,7 @@ impl EmitCfg {
             min_layer: min_layer.filter(|m| m.time_s.is_finite() && m.time_s > 0.0),
             klipper: (profile.firmware == Some(Firmware::Klipper) && !classic_estimator)
                 .then(|| KlipperCfg::new(profile)),
+            fans: Fans::of(profile),
         }
     }
 }
@@ -1137,6 +1178,29 @@ fn arc_note(named: bool, asked: bool, takes_arcs: bool, plane: bool) -> &'static
     }
 }
 
+/// The fan values a request names, for the header's features line. One that
+/// names none keeps the header it had.
+fn fan_note(profile: &PrinterProfile) -> String {
+    let mut note = String::new();
+    if let Some(pct) = profile.fan_percent.map(|pct| pct.min(100)) {
+        let _ = write!(note, "; fan {pct}%");
+    }
+    if let Some(pct) = profile.overhang_fan_percent.map(|pct| pct.min(100)) {
+        let _ = write!(note, "; overhang fan {pct}%");
+    }
+    if let Some(pct) = profile.support_fan_percent.map(|pct| pct.min(100)) {
+        let _ = write!(note, "; support fan {pct}%");
+    }
+    match profile.fan_off_layers {
+        Some(1) => note.push_str("; fan off for 1 layer"),
+        Some(n) => {
+            let _ = write!(note, "; fan off for {n} layers");
+        }
+        None => {}
+    }
+    note
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_preamble(
     out: &mut String,
@@ -1161,7 +1225,8 @@ fn write_preamble(
         out,
         "; layer_height: {layer_height:.3} line_width: {line_width:.3} filament: {filament:.2}"
     );
-    let _ = writeln!(out, "; features: {features}{arc_note}");
+    let fan_note = fan_note(profile);
+    let _ = writeln!(out, "; features: {features}{arc_note}{fan_note}");
     let _ = writeln!(out, "M140 S{bed:.0}");
     let _ = writeln!(out, "M104 S{nozzle:.0}");
     let _ = writeln!(out, "M190 S{bed:.0}");
@@ -1280,6 +1345,7 @@ struct Writer {
     slow: f64,
     slow_floor: f64,
     klipper: Option<KlipperCfg>,
+    fans: Fans,
 }
 
 struct KinMove {
@@ -1362,6 +1428,7 @@ impl Writer {
             slow: 1.0,
             slow_floor: cfg.min_layer.map_or(0.0, |m| m.floor_mm_s),
             klipper: cfg.klipper,
+            fans: cfg.fans,
         }
     }
 
@@ -1523,10 +1590,13 @@ impl Writer {
         self.set_advance(path.kind.as_str());
         // A held fan (a requested bridge boost) is emitted on every layer.
         // The next path does not hold it, so the layer fan comes back.
-        // Without a hold, the first layer stays off and the second stays at half.
-        if path.fan_hold || layer.own >= 2 {
-            self.set_fan(path.fan);
-        } else if layer.own == 1 {
+        // Without a hold, the layers the request turns the fan off for stay
+        // off; a request that names none keeps the first layer off and the
+        // second at half.
+        let on_from = self.fans.off_layers.unwrap_or(2);
+        if path.fan_hold || layer.own >= on_from {
+            self.set_fan(self.fans.pwm(path));
+        } else if layer.own == 1 && self.fans.off_layers.is_none() {
             self.set_fan(128);
         } else {
             self.set_fan(0);

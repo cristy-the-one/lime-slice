@@ -22,7 +22,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::mesh::Mesh;
-use crate::toolpath::{Extrusion, PathKind, TravelIn};
+use crate::toolpath::{Extrusion, FanRole, PathKind, TravelIn};
 
 /// Wire belt. Absent on a cartesian request, and omitted from its JSON.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -484,6 +484,7 @@ fn slow(path: &Extrusion) -> Extrusion {
     path.speed = path.speed.min(WALL_SPEED_MM_S);
     path.flow *= WALL_FLOW;
     path.fan = 0;
+    path.fan_role = FanRole::Off;
     path
 }
 
