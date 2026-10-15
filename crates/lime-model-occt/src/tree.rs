@@ -278,7 +278,15 @@ pub enum Op {
         #[serde(default)]
         keep_tool: bool,
     },
+    /// A new solid's primitive built again from other numbers, in place of the solid above it. An edited
+    /// primitive root forks this way, right under the root, so node 0, which other steps and trees name, never changes.
+    Root {
+        #[serde(flatten)]
+        solid: Solid,
+    },
 }
+
+const ROOT_ONLY: &str = "A new solid's primitive can only be built again right under its root";
 
 /// What a rebuild must reproduce for a node to count as the same solid.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -391,6 +399,18 @@ enum Request {
         node: NodeId,
         op: Op,
     },
+    /// An edited step: `op` built on `parent` as the new `node`, a sibling of the step edited, then each
+    /// of `replay` on the one before it. Nothing already in the tree changes.
+    Edit {
+        key: String,
+        parent: NodeId,
+        node: NodeId,
+        op: Op,
+        #[serde(default)]
+        replay: Vec<ReplayStep>,
+        #[serde(default = "default_chord")]
+        chord_mm: f64,
+    },
     Goto {
         key: String,
         node: NodeId,
@@ -416,6 +436,12 @@ enum Request {
         key: String,
         node: NodeId,
     },
+}
+
+#[derive(Deserialize)]
+struct ReplayStep {
+    id: NodeId,
+    op: Op,
 }
 
 #[derive(Deserialize)]
@@ -617,6 +643,7 @@ impl Doc {
     }
 
     fn insert(&mut self, id: NodeId, parent: NodeId, op: Op) -> Result<&mut Node, Failure> {
+        root_placement(parent, &op).map_err(Failure::Message)?;
         let depth = self.node(parent)?.depth + 1;
         let node = self.nodes.entry(id).or_insert(Node {
             parent: Some(parent),
@@ -1001,6 +1028,14 @@ impl Store {
                 other_key,
             } => self.apply(key, parent, node, op, chord_mm, other_key),
             Request::Probe { key, node, op } => self.probe(&key, node, op),
+            Request::Edit {
+                key,
+                parent,
+                node,
+                op,
+                replay,
+                chord_mm,
+            } => self.edit(key, parent, node, op, replay, chord_mm),
             Request::Goto {
                 key,
                 node,
@@ -1169,6 +1204,7 @@ impl Store {
                 "Node {id} is already in this tree for another step"
             )));
         }
+        root_placement(parent, &op).map_err(Failure::Message)?;
         self.join_refusal(&key, &op)?;
         let replayed = self.ensure(&key, parent)?;
         let (op, reused) = {
@@ -1242,7 +1278,9 @@ impl Store {
     }
 
     fn probe(&mut self, key: &str, id: NodeId, op: Op) -> Result<Answer, Failure> {
-        let checked = self.join_refusal(key, &op);
+        let checked = root_placement(id, &op)
+            .map_err(Failure::Message)
+            .and_then(|()| self.join_refusal(key, &op));
         self.ensure(key, id)?;
         doc_in(&mut self.docs, key)?.probe = None;
         let tool = match checked.and_then(|()| self.join_tool(key, &op)) {
@@ -1274,6 +1312,178 @@ impl Store {
                 Ok(Answer::Plain(reply.to_string()))
             }
         }
+    }
+
+    /// An edited step and the steps under it, in one call: `op` on `parent` as the new node `id`, a sibling of the step
+    /// edited, then each of `replay` on the one before it. A replayed step that no longer builds is kept, broken, the steps
+    /// after it unbuilt under it, and the tree shows the last step that built, the only one tessellated. A failure before
+    /// anything is kept (the edited step itself, or a tool tree this engine lacks) leaves the tree as it was.
+    fn edit(
+        &mut self,
+        key: String,
+        parent: NodeId,
+        id: NodeId,
+        op: Op,
+        replay: Vec<ReplayStep>,
+        chord: f64,
+    ) -> Result<Answer, Failure> {
+        let doc = doc_in(&mut self.docs, &key)?;
+        doc.node(parent)?;
+        let mut fresh = HashSet::new();
+        for new in std::iter::once(id).chain(replay.iter().map(|step| step.id)) {
+            if new == ROOT || doc.nodes.contains_key(&new) || !fresh.insert(new) {
+                return Err(Failure::Message(format!(
+                    "Node {new} is already in this tree for another step"
+                )));
+            }
+        }
+        root_placement(parent, &op).map_err(Failure::Message)?;
+        if replay.iter().any(|step| matches!(step.op, Op::Root { .. })) {
+            return Err(Failure::Message(ROOT_ONLY.into()));
+        }
+        for op in std::iter::once(&op).chain(replay.iter().map(|step| &step.op)) {
+            self.join_refusal(&key, op)?;
+            self.tool_held(op)?;
+        }
+        let replayed = self.ensure(&key, parent)?;
+        let (op, reused) = {
+            let doc = doc_in(&mut self.docs, &key)?;
+            let probed = doc.probe.take();
+            let from = doc.shape(parent);
+            from.editable().map_err(Failure::Message)?;
+            let op = resolve(from, &op).map_err(Failure::Message)?;
+            match probed {
+                Some(probed) if probed.parent == parent && same_build(&probed.op, &op) => {
+                    (op, Some(probed.built))
+                }
+                _ => (op, None),
+            }
+        };
+        let first = match reused {
+            Some(reused) => Built { op, ..reused },
+            None => {
+                let tool = self.join_tool(&key, &op)?;
+                let from = doc_in(&mut self.docs, &key)?.shape(parent);
+                build(from, op, false, tool).map_err(|(message, _)| Failure::Message(message))?
+            }
+        };
+        let previous = doc_in(&mut self.docs, &key)?.current;
+        let forked =
+            self.fork(&key, parent, id, first, replay)
+                .and_then(|(last, built, broken)| {
+                    doc_in(&mut self.docs, &key)?.current = last;
+                    let text = self.reply(&key, last, chord)?;
+                    Ok((text, built, broken))
+                });
+        let (text, built, broken) = match forked {
+            Ok(forked) => forked,
+            Err(failure) => {
+                if let Some(doc) = self.docs.get_mut(&key) {
+                    doc.nodes.retain(|node, _| !fresh.contains(node));
+                    doc.current = previous;
+                }
+                self.replies
+                    .retain(|reply| reply.key != key || !fresh.contains(&reply.node));
+                return Err(failure);
+            }
+        };
+        let mut fields = vec![
+            (
+                "built",
+                Part::Json(serde_json::Value::Array(built).to_string()),
+            ),
+            ("replayed", Part::Json(replayed.to_string())),
+        ];
+        if let Some((node, error)) = broken {
+            fields.push((
+                "broken",
+                Part::Json(json!({ "id": node, "error": error }).to_string()),
+            ));
+        }
+        Ok(Answer::Held { key, text, fields })
+    }
+
+    /// The new branch of an edit, after its first step was built: that step kept as `id`, then each replayed step on
+    /// the last that built, until one fails; it and the rest are kept unbuilt, it marked broken.
+    fn fork(
+        &mut self,
+        key: &str,
+        parent: NodeId,
+        id: NodeId,
+        first: Built,
+        replay: Vec<ReplayStep>,
+    ) -> Result<Forked, Failure> {
+        let mut built = vec![self.keep(key, parent, id, first)?];
+        // The last step that built, and the last step kept, built or not.
+        let mut last = id;
+        let mut tail = id;
+        let mut broken: Option<(NodeId, String)> = None;
+        for step in replay {
+            if broken.is_none() {
+                match self.replay_step(key, last, &step.op) {
+                    Ok(done) => {
+                        built.push(self.keep(key, last, step.id, done)?);
+                        last = step.id;
+                        tail = step.id;
+                        continue;
+                    }
+                    Err(Failure::Message(message)) => broken = Some((step.id, message)),
+                    Err(failure) => return Err(failure),
+                }
+            }
+            let node = doc_in(&mut self.docs, key)?.insert(step.id, tail, step.op)?;
+            if let Some((_, message)) = broken.as_ref().filter(|(at, _)| *at == step.id) {
+                node.broken = Some(message.clone());
+            }
+            tail = step.id;
+        }
+        Ok((last, built, broken))
+    }
+
+    /// One replayed step built on node `from`, which holds its solid. A step that cannot be built is a `Message`; a
+    /// tool tree this engine lacks stays `ToolMissing`, so the client opens it and the whole edit is asked again.
+    fn replay_step(&mut self, key: &str, from: NodeId, op: &Op) -> Result<Built, Failure> {
+        let tool = self.join_tool(key, op)?;
+        let from = doc_in(&mut self.docs, key)?.shape(from);
+        let op = resolve(from, op).map_err(Failure::Message)?;
+        build(from, op, false, tool).map_err(|(message, _)| Failure::Message(message))
+    }
+
+    /// Keep `built` as node `id` under `parent`, as an apply does: its solid, its fingerprint, and its op as stored.
+    fn keep(
+        &mut self,
+        key: &str,
+        parent: NodeId,
+        id: NodeId,
+        built: Built,
+    ) -> Result<serde_json::Value, Failure> {
+        let fingerprint = built.kept.fingerprint();
+        let stored = json!({ "id": id, "op": built.op, "fingerprint": fingerprint });
+        self.clock += 1;
+        let node = doc_in(&mut self.docs, key)?.insert(id, parent, built.op)?;
+        node.fingerprint = Some(fingerprint);
+        node.shape = Some(built.kept);
+        node.used = self.clock;
+        Ok(stored)
+    }
+
+    /// A join's tool step when this engine does not hold it, as `ToolMissing`, before anything is built.
+    fn tool_held(&self, op: &Op) -> Result<(), Failure> {
+        let Op::Join { tool, .. } = op else {
+            return Ok(());
+        };
+        if self
+            .docs
+            .get(&tool.key)
+            .is_some_and(|doc| doc.nodes.contains_key(&tool.node))
+        {
+            return Ok(());
+        }
+        Err(Failure::ToolMissing {
+            node: None,
+            key: tool.key.clone(),
+            step: tool.node,
+        })
     }
 
     /// The solid a join takes from its tool tree, or None for any other op.
@@ -1353,6 +1563,14 @@ impl Store {
             self.replies.truncate(self.limits.replies);
         }
     }
+}
+
+/// A `root` op builds a new solid's primitive afresh, which only means something right under the root.
+fn root_placement(parent: NodeId, op: &Op) -> Result<(), String> {
+    if matches!(op, Op::Root { .. }) && parent != ROOT {
+        return Err(ROOT_ONLY.into());
+    }
+    Ok(())
 }
 
 /// An unknown tree reads as a missing root: the client resends the root and the ops.
@@ -1511,6 +1729,9 @@ fn same_edge(a: &EdgeRef, b: &EdgeRef) -> bool {
     d <= EDGE_MATCH_MM && (a.length_mm - b.length_mm).abs() <= EDGE_MATCH_MM
 }
 
+/// An edit's new branch: the last step that built, each built step as `{id, op, fingerprint}`, and the broken step with why.
+type Forked = (NodeId, Vec<serde_json::Value>, Option<(NodeId, String)>);
+
 struct Built {
     op: Op,
     kept: Shape,
@@ -1627,6 +1848,7 @@ fn build(
         Op::Scale { factor } => {
             Shape::made(|error| unsafe { lime_tree_scale(from.raw(), *factor, error) })
         }
+        Op::Root { solid } => Shape::primitive(solid),
     };
     match kept {
         Ok(kept) => Ok(Built { op, kept, other }),
