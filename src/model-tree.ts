@@ -5,6 +5,7 @@
  */
 import { formatMm, splitLabel } from "./model-plane.ts";
 import { primitiveLabel, type PrimitiveSpec } from "./model-primitive.ts";
+import type { Affine } from "./model-space.ts";
 import type { ReinforceRegion } from "./reinforcement.ts";
 import type { SeamDisk } from "./seam-paint.ts";
 import type { EditEntry } from "./support-edit-list.ts";
@@ -21,13 +22,28 @@ export interface EdgeRef {
   lengthMm: number;
 }
 
+/**
+ * The solid a join takes from another plate object: that object's id, its name when the join was applied (so a later
+ * rename never renames the step), and the step of its tree it held then, by the tree's engine key.
+ */
+export interface JoinTool {
+  object: string;
+  key: string;
+  node: NodeId;
+  name: string;
+}
+
+export type BooleanKind = "fuse" | "cut" | "common";
+
 /** One edit, in the solid's own frame. A fresh fillet or chamfer names edges by index. */
 export type ModelOp =
-  | ({ kind: "boolean"; op: "fuse" | "cut" | "common" } & PrimitiveSpec)
+  | ({ kind: "boolean"; op: BooleanKind } & PrimitiveSpec)
   | { kind: "hole"; origin: Vec3; axis: Vec3; radius: number; depth: number }
   | { kind: "split"; origin: Vec3; normal: Vec3 }
   | { kind: "fillet" | "chamfer"; edges: (number | EdgeRef)[]; size: number }
-  | { kind: "scale"; factor: number };
+  | { kind: "scale"; factor: number }
+  /** Another object's solid at `tool`, placed by `relative`: its pose in this solid's own frame, worked out once at Apply. */
+  | { kind: "join"; op: BooleanKind; tool: JoinTool; relative: Affine; keepTool: boolean };
 
 export interface Fingerprint {
   volumeMm3: number;
@@ -227,7 +243,8 @@ export interface TreeRef {
  * The trees still in use, found as Model finds them: the tree an object names; a tree of that object
  * with a step whose plate mesh it holds (after a Prepare undo to before it had a key); for an object
  * that names no tree, any tree with its mesh (a copy finding the step it copies); and from each, the
- * tree its piece was split from and the trees of the pieces its splits made.
+ * tree its piece was split from, the trees of the pieces its splits made, and the trees its joins take a tool from,
+ * which stay as long as a join names them, on the plate or not.
  */
 export function reachableTrees(trees: ReadonlyMap<string, ModelTree>, refs: Iterable<TreeRef>): Set<string> {
   const queue: string[] = [];
@@ -245,9 +262,58 @@ export function reachableTrees(trees: ReadonlyMap<string, ModelTree>, refs: Iter
     if (!tree || keep.has(key)) continue;
     keep.add(key);
     if (tree.root.kind === "piece") queue.push(tree.root.tree);
-    for (const node of tree.nodes.values()) if (node.piece) queue.push(node.piece);
+    for (const node of tree.nodes.values()) {
+      if (node.piece) queue.push(node.piece);
+      if (node.op?.kind === "join") queue.push(node.op.tool.key);
+    }
   }
   return keep;
+}
+
+/** The trees the joins of `tree` take a tool from. */
+export function toolKeys(tree: ModelTree): Set<string> {
+  const keys = new Set<string>();
+  for (const node of tree.nodes.values()) if (node.op?.kind === "join") keys.add(node.op.tool.key);
+  return keys;
+}
+
+/**
+ * Whether tree `from`, or a tree its joins take a tool from, at any depth, is tree `key`. Such a tool would tie two
+ * histories that each need the other, so neither could open first: it is refused.
+ */
+export function usesTree(trees: ReadonlyMap<string, ModelTree>, from: string, key: string): boolean {
+  const queue = [from];
+  const seen = new Set<string>();
+  for (let at = queue.pop(); at !== undefined; at = queue.pop()) {
+    if (at === key) return true;
+    if (seen.has(at)) continue;
+    seen.add(at);
+    const tree = trees.get(at);
+    if (tree) queue.push(...toolKeys(tree));
+  }
+  return false;
+}
+
+/** A join in another tree that takes its tool from one of `nodes` of tree `key`, or null. */
+export function toolUser(trees: ReadonlyMap<string, ModelTree>, key: string, nodes: ReadonlySet<NodeId>): ModelNode | null {
+  for (const tree of trees.values()) {
+    if (tree.key === key) continue;
+    for (const node of tree.nodes.values()) if (node.op?.kind === "join" && node.op.tool.key === key && nodes.has(node.op.tool.node)) return node;
+  }
+  return null;
+}
+
+/** `keys` in an order the engine closes them all in: each tree before the trees its joins take a tool from. */
+export function closeOrder(trees: ReadonlyMap<string, ModelTree>, keys: Iterable<string>): string[] {
+  const closing = new Set(keys);
+  const order: string[] = [];
+  const visit = (key: string) => {
+    if (!closing.delete(key)) return;
+    for (const tree of trees.values()) if (closing.has(tree.key) && toolKeys(tree).has(key)) visit(tree.key);
+    order.push(key);
+  };
+  for (const key of [...closing]) visit(key);
+  return order;
 }
 
 /** Every node but the root, parents first, as the engine's `open` registers them. */
@@ -311,5 +377,7 @@ export function opLabel(op: ModelOp): string {
     }
     case "scale":
       return `Scale ${n(op.factor * 100)} %`;
+    case "join":
+      return `${BOOLEAN_VERB[op.op]} ${op.tool.name}`;
   }
 }

@@ -1,15 +1,24 @@
 /**
  * A Model history tree as `.lime` keeps it: the ops, names, and fingerprints of every node, which
  * node the view and the plate were on, and the root STEP, or a new solid's root primitive. Engine keys are not saved: they name a
- * tree for one page load. A split names its piece by the piece's plate object id instead.
+ * tree for one page load. A split names its piece, and a join its tool, by that plate object's id instead.
  */
 import { isPrimitiveKind, primitiveMesh, type PrimitiveSpec } from "./model-primitive.ts";
-import { jumped, opLabel, rootLabel, type EdgeRef, type Fingerprint, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type Vec3 } from "./model-tree.ts";
+import { isRigid, type Affine } from "./model-space.ts";
+import { jumped, opLabel, rootLabel, type EdgeRef, type Fingerprint, type JoinTool, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type Vec3 } from "./model-tree.ts";
+
+type JoinOp = Extract<ModelOp, { kind: "join" }>;
+
+/** A join as saved: its tool named by object id and step, without the engine key, which is the page's. */
+export type SavedJoin = Omit<JoinOp, "tool"> & { tool: Omit<JoinTool, "key"> };
+
+/** An op as `.lime` keeps it. */
+export type SavedOp = Exclude<ModelOp, JoinOp> | SavedJoin;
 
 interface SavedNode {
   id: NodeId;
   parent: NodeId | null;
-  op: ModelOp | null;
+  op: SavedOp | null;
   name?: string;
   fingerprint: Fingerprint | null;
   /** A split whose other piece is on the plate: that object's id. */
@@ -34,41 +43,71 @@ export function treeBody({ nodes, current, committed, nextId }: SavedTreeBody): 
   return { nodes, current, committed, nextId };
 }
 
-/** The tree as it is saved, less its root. `pieceOwner` names the plate object a piece key belongs to, if any. */
-export function savedTree(tree: ModelTree, committed: NodeId, pieceOwner: (key: string) => string | undefined): SavedTreeBody {
+/**
+ * The tree as it is saved, less its root. `owner` names the object whose saved tree has an engine key, if any: a split
+ * names its piece, and a join its tool, by that object's id.
+ */
+export function savedTree(tree: ModelTree, committed: NodeId, owner: (key: string) => string | undefined): SavedTreeBody {
   const nodes = [...tree.nodes.values()]
     .sort((a, b) => a.id - b.id)
     .map((node) => {
-      const owner = node.piece ? pieceOwner(node.piece) : undefined;
+      const piece = node.piece ? owner(node.piece) : undefined;
       return {
         id: node.id,
         parent: node.parent,
-        op: node.op,
+        op: node.op?.kind === "join" ? savedJoin(node.op, owner) : node.op,
         ...(node.name ? { name: node.name } : {}),
         fingerprint: node.fingerprint,
-        ...(owner ? { piece: owner } : {}),
+        ...(piece ? { piece } : {}),
       };
     });
   return { nodes, current: tree.current, committed, nextId: tree.nextId };
 }
 
+function savedJoin({ tool, ...op }: JoinOp, owner: (key: string) => string | undefined): SavedJoin {
+  return { ...op, tool: { object: owner(tool.key) ?? tool.object, node: tool.node, name: tool.name } };
+}
+
+/** The objects whose trees a saved tree's joins take a tool from. */
+export function savedToolObjects(saved: SavedTreeBody): Set<string> {
+  return new Set(saved.nodes.flatMap((node) => (node.op?.kind === "join" ? [node.op.tool.object] : [])));
+}
+
+/** The saved trees' object ids, each tree after the trees its joins take a tool from: the order they open in. */
+export function toolFirst(saved: ReadonlyMap<string, SavedTreeBody>): string[] {
+  const order: string[] = [];
+  const placed = new Set<string>();
+  const visit = (id: string) => {
+    const tree = saved.get(id);
+    if (!tree || placed.has(id)) return;
+    placed.add(id);
+    for (const tool of savedToolObjects(tree)) visit(tool);
+    order.push(id);
+  };
+  for (const id of saved.keys()) visit(id);
+  return order;
+}
+
 /**
  * The tree a project saved, under `key`. The plate holds `committed`, with `mesh`; the view opens
- * there too, and Redo from it leads to the step the view was on when saved.
+ * there too, and Redo from it leads to the step the view was on when saved. A tool's tree kept for
+ * a join after its object left the plate has no `mesh`. `objectKey` gives the key each object's
+ * tree opened under, for the pieces and tools the tree names.
  */
-export function loadedTree(saved: SavedTreeBody, key: string, root: ModelRoot, fileLabel: string, mesh: PlateMesh, pieceKey: (objectId: string) => string | undefined): ModelTree {
+export function loadedTree(saved: SavedTreeBody, key: string, root: ModelRoot, fileLabel: string, mesh: PlateMesh | null, objectKey: (objectId: string) => string | undefined): ModelTree {
   const nodes = new Map<NodeId, ModelNode>();
   for (const node of saved.nodes) {
-    const piece = node.piece ? pieceKey(node.piece) : undefined;
+    const piece = node.piece ? objectKey(node.piece) : undefined;
+    const op: ModelOp | null = node.op?.kind === "join" ? { ...node.op, tool: { ...node.op.tool, key: objectKey(node.op.tool.object) ?? "" } } : node.op;
     nodes.set(node.id, {
       id: node.id,
       parent: node.parent,
-      op: node.op,
-      label: node.op ? opLabel(node.op) : rootLabel(root, fileLabel),
+      op,
+      label: op ? opLabel(op) : rootLabel(root, fileLabel),
       fingerprint: node.fingerprint,
       ...(node.name ? { name: node.name } : {}),
       ...(piece ? { piece } : {}),
-      ...(node.id === saved.committed ? { mesh } : {}),
+      ...(mesh && node.id === saved.committed ? { mesh } : {}),
     });
   }
   const tree: ModelTree = { key, root, nodes, nextId: saved.nextId, current: saved.current, committed: saved.committed, lastChild: new Map() };
@@ -126,7 +165,7 @@ function readNode(value: unknown): SavedNode | null {
 }
 
 /** An op as the engine stores it. Fields the engine defaults may be absent, as there. */
-function readOp(value: unknown): ModelOp | undefined {
+function readOp(value: unknown): SavedOp | undefined {
   if (!isRecord(value)) return undefined;
   const origin = vec(value.origin);
   switch (value.kind) {
@@ -163,6 +202,14 @@ function readOp(value: unknown): ModelOp | undefined {
     }
     case "scale":
       return finite(value.factor) ? { kind: "scale", factor: value.factor } : undefined;
+    case "join": {
+      const tool = value.tool;
+      const relative = readAffine(value.relative);
+      if (value.op !== "fuse" && value.op !== "cut" && value.op !== "common") return undefined;
+      if (!isRecord(tool) || typeof tool.object !== "string" || !tool.object || !isId(tool.node) || typeof tool.name !== "string") return undefined;
+      if (!relative || !isRigid(relative) || (value.keepTool !== undefined && typeof value.keepTool !== "boolean")) return undefined;
+      return { kind: "join", op: value.op, tool: { object: tool.object, node: tool.node, name: tool.name }, relative, keepTool: value.keepTool === true };
+    }
     default:
       return undefined;
   }
@@ -194,6 +241,12 @@ function readPrimitive(value: unknown): PrimitiveSpec | undefined {
 function readFingerprint(value: unknown): Fingerprint | undefined {
   if (!isRecord(value) || !finite(value.volumeMm3) || !isId(value.faces) || !isId(value.edges)) return undefined;
   return { volumeMm3: value.volumeMm3, faces: value.faces as number, edges: value.edges as number };
+}
+
+function readAffine(value: unknown): Affine | null {
+  if (!isRecord(value) || !Array.isArray(value.m) || value.m.length !== 9 || !value.m.every(finite)) return null;
+  const t = vec(value.t);
+  return t ? { m: [...value.m] as Affine["m"], t } : null;
 }
 
 function vec(value: unknown): Vec3 | null {

@@ -86,7 +86,10 @@ fn joins_between_trees() {
     );
     assert_eq!(probe["ok"], true, "{probe}");
     let before = builds();
-    let cut = apply("a", 0, 1, join("cut", "b", 0, placed.clone()));
+    // Keep the tool object changes no solid: Apply still takes the probe's, and stores what it was sent.
+    let mut kept = join("cut", "b", 0, placed.clone());
+    kept["keepTool"] = json!(true);
+    let cut = apply("a", 0, 1, kept);
     assert!(cut.get("error").is_none(), "{cut}");
     near(volume(&cut), 7990.0);
     assert_eq!(builds(), before, "Apply takes the probe's solid");
@@ -94,7 +97,7 @@ fn joins_between_trees() {
         cut["op"]["tool"],
         json!({ "key": "b", "node": 0, "object": "obj-b", "name": "Part b" })
     );
-    assert_eq!(cut["op"]["keepTool"], false);
+    assert_eq!(cut["op"]["keepTool"], true);
 
     let fused = apply("a", 0, 2, join("fuse", "b", 0, placed.clone()));
     near(volume(&fused), 8070.0);
@@ -217,14 +220,14 @@ fn joins_between_trees() {
     }));
     assert_eq!(
         missing,
-        json!({ "error": "The tool object's history is not open in the modeler", "broken": 1, "missingTool": "b" })
+        json!({ "error": "The tool object's history is not open in the modeler", "broken": 1, "missingTool": { "key": "b", "node": 0 } })
     );
     let unknown = call(
         json!({ "call": "probe", "key": "a", "node": 0, "op": join("cut", "b", 0, placed.clone()) }),
     );
     assert_eq!(
         unknown,
-        json!({ "error": "The tool object's history is not open in the modeler", "missingTool": "b" })
+        json!({ "error": "The tool object's history is not open in the modeler", "missingTool": { "key": "b", "node": 0 } })
     );
     ok(json!({ "call": "open", "key": "b", "box": [10.0, 4.0, 2.0] }));
     let back = ok(json!({ "call": "goto", "key": "a", "node": 1 }));

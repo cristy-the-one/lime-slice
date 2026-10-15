@@ -66,6 +66,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "model-face", label: "Pick faces", group: "Model", keys: ["Q"], when: "model", target: "#modelPickFace", keywords: "select face" },
   { id: "model-edge", label: "Pick edges", group: "Model", keys: ["W"], when: "model", target: "#modelPickEdge", keywords: "select edge" },
   { id: "model-boolean", label: "Boolean", group: "Model", keys: ["G"], when: "model", target: "#modelToolBoolean", keywords: "fuse cut intersect box cylinder sphere cone torus wedge polygon tube" },
+  { id: "model-join", label: "Boolean with another object", group: "Model", keys: ["Shift+G"], when: "model", keywords: "fuse cut intersect join combine object part piece split import tool" },
   { id: "model-split", label: "Split with a plane", group: "Model", keys: ["P"], when: "model", target: "#modelToolSplit", keywords: "plane" },
   { id: "model-fillet", label: "Fillet", group: "Model", keys: ["L"], when: "model", target: "#modelToolFillet", keywords: "round edge" },
   { id: "model-chamfer", label: "Chamfer", group: "Model", keys: ["Shift+L"], when: "model", target: "#modelToolChamfer", keywords: "bevel edge" },

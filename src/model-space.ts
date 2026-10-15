@@ -69,6 +69,27 @@ export function inversePose(pose: Affine): Affine {
   return { m: inv, t: [-t[0], -t[1], -t[2]] };
 }
 
+/** A turn and a move only, within 1e-6, as the engine checks a join's placement: no scale, shear, or mirror. */
+export function isRigid({ m, t }: Affine): boolean {
+  const col = (c: number): Vec3 => [m[c], m[c + 3], m[c + 6]];
+  const dot = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const [x, y, z] = [col(0), col(1), col(2)];
+  const det = dot(x, [y[1] * z[2] - y[2] * z[1], y[2] * z[0] - y[0] * z[2], y[0] * z[1] - y[1] * z[0]]);
+  return [...m, ...t].every(Number.isFinite)
+    && [x, y, z].every((c) => Math.abs(dot(c, c) - 1) <= 1e-6)
+    && [[x, y], [y, z], [x, z]].every(([a, b]) => Math.abs(dot(a!, b!)) <= 1e-6)
+    && det > 0;
+}
+
+/**
+ * Where a tool solid sits in a target solid's own frame: out of the tool's own frame into model space by its pose, then
+ * back into the target's by the inverse of the target's. A join stores this once, at Apply, so moving either object
+ * later never moves a cut already made.
+ */
+export function relativePose(target: Affine, tool: Affine): Affine {
+  return thenPose(tool, inversePose(target));
+}
+
 /** A move by `d` after the pose. */
 export function movedPose(pose: Affine, d: Vec3): Affine {
   return { m: [...pose.m] as Mat3, t: [pose.t[0] + d[0], pose.t[1] + d[1], pose.t[2] + d[2]] };

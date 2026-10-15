@@ -474,12 +474,13 @@ enum Failure {
         node: NodeId,
         message: String,
     },
-    /// A join needs a tool tree, or a step of one, that this engine does not hold. `node` is the step of
-    /// the tree asked about that cannot be built for it, if it has one yet. Nothing is marked: once the
-    /// client opens `key` again the same call works.
+    /// A join needs a tool tree, or a step of one, that this engine does not hold: `key` and `step`. `node`
+    /// is the step of the tree asked about that cannot be built for it, if it has one yet. Nothing is
+    /// marked: once the client opens that tree again the same call works.
     ToolMissing {
         node: Option<NodeId>,
         key: String,
+        step: NodeId,
     },
 }
 
@@ -494,12 +495,13 @@ impl Failure {
             Failure::Broken { node, message } => {
                 json!({ "error": message, "broken": node }).to_string()
             }
-            Failure::ToolMissing {
-                node: Some(node),
-                key,
-            } => json!({ "error": TOOL_MISSING, "broken": node, "missingTool": key }).to_string(),
-            Failure::ToolMissing { node: None, key } => {
-                json!({ "error": TOOL_MISSING, "missingTool": key }).to_string()
+            Failure::ToolMissing { node, key, step } => {
+                let mut reply =
+                    json!({ "error": TOOL_MISSING, "missingTool": { "key": key, "node": step } });
+                if let Some(node) = node {
+                    reply["broken"] = json!(node);
+                }
+                reply.to_string()
             }
         }
     }
@@ -813,10 +815,15 @@ impl Store {
                 Ok(solid) => {
                     tools.insert(step, solid);
                 }
-                Err(Failure::ToolMissing { key: missing, .. }) => {
+                Err(Failure::ToolMissing {
+                    key: missing,
+                    step: wanted,
+                    ..
+                }) => {
                     return Err(Failure::ToolMissing {
                         node: Some(step),
                         key: missing,
+                        step: wanted,
                     })
                 }
                 Err(failure) => {
@@ -853,6 +860,7 @@ impl Store {
             return Err(Failure::ToolMissing {
                 node: None,
                 key: tool.key.clone(),
+                step: tool.node,
             });
         }
         visiting.push(key.to_string());
@@ -860,8 +868,12 @@ impl Store {
         visiting.pop();
         match built {
             Ok(_) => {}
-            Err(Failure::ToolMissing { key, .. }) => {
-                return Err(Failure::ToolMissing { node: None, key })
+            Err(Failure::ToolMissing { key, step, .. }) => {
+                return Err(Failure::ToolMissing {
+                    node: None,
+                    key,
+                    step,
+                })
             }
             Err(Failure::Message(message)) => return Err(Failure::Message(message)),
             Err(_) => {
@@ -1145,7 +1157,10 @@ impl Store {
         from.editable().map_err(Failure::Message)?;
         let op = resolve(from, &op).map_err(Failure::Message)?;
         let mut built = match probed {
-            Some(probed) if probed.parent == parent && probed.op == op => probed.built,
+            // The op stored is the one applied: a join's `keepTool` and its tool's name build nothing.
+            Some(probed) if probed.parent == parent && same_build(&probed.op, &op) => {
+                Built { op, ..probed.built }
+            }
             _ => build(from, op, false, tool).map_err(|(message, _)| Failure::Message(message))?,
         };
         let fingerprint = built.kept.fingerprint();
@@ -1435,6 +1450,28 @@ fn same_request(stored: &Op, incoming: &Op) -> bool {
             (EdgePick::Ref(have), EdgePick::Ref(want)) => same_edge(have, want),
             (have, want) => have == want,
         })
+}
+
+/// Whether two resolved ops build the same solid. A join's `keepTool` is the plate's business, and its
+/// tool's `object` and `name` only label it.
+fn same_build(a: &Op, b: &Op) -> bool {
+    match (a, b) {
+        (
+            Op::Join {
+                op: x,
+                tool: t,
+                relative: r,
+                ..
+            },
+            Op::Join {
+                op: y,
+                tool: u,
+                relative: q,
+                ..
+            },
+        ) => x == y && t.key == u.key && t.node == u.node && r == q,
+        _ => a == b,
+    }
 }
 
 fn same_edge(a: &EdgeRef, b: &EdgeRef) -> bool {
