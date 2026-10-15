@@ -684,8 +684,9 @@ html.layout-compact .model-foot { order: -1; margin: 172px 8px 8px; max-width: c
 html.layout-compact .model-view-reset { top: 128px; left: 8px; right: auto; bottom: auto; width: 36px; height: 36px; }
 /* A landscape phone fits the toolbar on one row: the stack starts right under it and leaves the sheet a row or two. */
 @media (max-height: 500px) {
-  html.layout-compact .model-foot { margin-top: 136px; }
-  html.layout-compact .model-view-reset { top: 92px; }
+  html.layout-compact .model-foot { margin-top: 92px; }
+  /* The one toolbar row leaves room under it at the right, above where the dock may reach. */
+  html.layout-compact .model-view-reset { top: 52px; left: auto; right: 8px; }
 }
 /* History is a sheet over the canvas, opened from the toolbar. */
 html.layout-compact #modelHistoryOpen { display: inline-flex; }

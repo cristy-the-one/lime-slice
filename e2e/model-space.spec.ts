@@ -117,7 +117,7 @@ async function place(page: Page, field: string, value: number) {
 test("a split piece opens with its parent grey directly under it, where it was cut", async ({ page }) => {
   await openFiles(page, { "box.step": boxSolid([20, 20, 10]) });
   await page.locator("#modelToolSplit").click();
-  await page.locator("#modelPlaneZ").fill("4");
+  await page.locator("#modelPlane").fill("4");
   await page.locator("#modelApply").click();
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
   await page.locator("[data-plate-select]").nth(1).click();
@@ -191,6 +191,23 @@ test("with a turned pose a Hole typed at a model-space point sends the engine th
   const want = [8, 5, 10];
   op.origin.forEach((value, i) => expect(value).toBeCloseTo(want[i]!, 9));
   [0, 0, -1].forEach((value, i) => expect(op.axis[i]!).toBeCloseTo(value, 9));
+});
+
+test("a split typed along model X on a moved part sends the engine the plane on the solid, and is labelled there", async ({ page }) => {
+  const tree = await openFiles(page, { "box.step": boxSolid([20, 20, 10]) });
+  await place(page, "modelPlaceX", 10);
+  await page.locator("#modelToolSplit").click();
+  await page.locator('#modelPlaneModes [data-plane="x"]').click();
+  // The part sits from X 10 to 30 in model space, so its middle is X 20 there.
+  await expect(page.locator("#modelPlane")).toHaveValue("20");
+  await page.locator("#modelPlane").fill("15");
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(2);
+  const op = tree.of("apply").at(-1)!.op as { origin: number[]; normal: number[] };
+  expect(op.normal).toEqual([1, 0, 0]);
+  expect(op.origin[0]).toBeCloseTo(5, 9);
+  await expect(page.locator("#modelHistoryTree [role=treeitem]").last()).toContainText("Split at X 5");
 });
 
 test("the bed toggle hides and shows the bed, and the choice stays", async ({ page }) => {
