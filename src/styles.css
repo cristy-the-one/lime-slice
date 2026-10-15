@@ -679,6 +679,8 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .model-fields .scrub-label { width: fit-content; color: var(--text-dim); }
 .model-panel .modes { margin-top: var(--space-2); }
 .model-panel .model-plane-modes { margin: 0 0 var(--space-2); }
+.model-edit-head { margin: 0 0 var(--space-2); color: var(--text); font-size: var(--fs-2); font-weight: 600; letter-spacing: 0; text-transform: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-edit-head[hidden] { display: none; }
 .model-note { margin: var(--space-2) 0 0; color: var(--text-dim); font-size: var(--fs-2); }
 .model-note.is-bad { color: var(--danger); }
 .model-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); }
@@ -864,7 +866,7 @@ html:not(.layout-compact) .model-history[hidden] + .model-foot { margin-top: aut
   color: var(--text-dim);
   font: 500 10px / 1 var(--font-mono);
 }
-.mh-more {
+.mh-more, .mh-edit {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -878,8 +880,9 @@ html:not(.layout-compact) .model-history[hidden] + .model-foot { margin-top: aut
   color: var(--text-dim);
   opacity: 0;
 }
-.mh-row:hover .mh-more, .mh-row:focus-visible .mh-more { opacity: 1; }
-.mh-more:hover { background: var(--surface-2); color: var(--text); }
+.mh-edit[hidden] { display: none; }
+.mh-row:hover :is(.mh-more, .mh-edit), .mh-row:focus-visible :is(.mh-more, .mh-edit) { opacity: 1; }
+.mh-more:hover, .mh-edit:hover { background: var(--surface-2); color: var(--text); }
 .mh-rename {
   flex: 1 1 auto;
   min-width: 0;

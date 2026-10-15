@@ -139,7 +139,8 @@ function readNormal(value: unknown): Vec3 | null {
   return [normal[0]!, normal[1]!, normal[2]!];
 }
 
-function readFingerprint(value: unknown): Fingerprint | null {
+/** A fingerprint as the engine writes it, or null. */
+export function readFingerprint(value: unknown): Fingerprint | null {
   if (!value || typeof value !== "object") return null;
   const row = value as { volumeMm3?: unknown; faces?: unknown; edges?: unknown };
   if (typeof row.volumeMm3 !== "number" || typeof row.faces !== "number" || typeof row.edges !== "number") return null;

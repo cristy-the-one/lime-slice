@@ -43,7 +43,9 @@ export type ModelOp =
   | { kind: "fillet" | "chamfer"; edges: (number | EdgeRef)[]; size: number }
   | { kind: "scale"; factor: number }
   /** Another object's solid at `tool`, placed by `relative`: its pose in this solid's own frame, worked out once at Apply. */
-  | { kind: "join"; op: BooleanKind; tool: JoinTool; relative: Affine; keepTool: boolean };
+  | { kind: "join"; op: BooleanKind; tool: JoinTool; relative: Affine; keepTool: boolean }
+  /** A new solid's primitive built again from other numbers, in place of the solid above: an edited root, right under the root. */
+  | ({ kind: "root" } & PrimitiveSpec);
 
 export interface Fingerprint {
   volumeMm3: number;
@@ -355,8 +357,11 @@ const BOOLEAN_VERB = { fuse: "Fuse", cut: "Cut", common: "Intersect" } as const;
 
 /** The root's name in the history list: the file's, or the primitive a new solid started as ("Box 20×20×20"). */
 export function rootLabel(root: ModelRoot, fileLabel: string): string {
-  if (root.kind !== "primitive") return fileLabel;
-  const text = primitiveLabel(root.solid);
+  return root.kind === "primitive" ? primitiveTitle(root.solid) : fileLabel;
+}
+
+function primitiveTitle(spec: PrimitiveSpec): string {
+  const text = primitiveLabel(spec);
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
@@ -379,5 +384,7 @@ export function opLabel(op: ModelOp): string {
       return `Scale ${n(op.factor * 100)} %`;
     case "join":
       return `${BOOLEAN_VERB[op.op]} ${op.tool.name}`;
+    case "root":
+      return primitiveTitle(op);
   }
 }

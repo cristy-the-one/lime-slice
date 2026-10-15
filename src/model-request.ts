@@ -46,6 +46,14 @@ export function joinOp(op: BooleanKind, toolRef: JoinTool, target: Affine, tool:
   return { kind: "join", op, tool: toolRef, relative: relativePose(target, tool), keepTool };
 }
 
+/**
+ * An edited step: `op` built on `parent` as the new `node`, a sibling of the step edited, then each of `replay` on the one
+ * before it. The engine keeps the steps that built, and the first that did not as broken with the rest under it.
+ */
+export function editRequest(key: string, parent: NodeId, node: NodeId, op: ModelOp, replay: readonly { id: NodeId; op: ModelOp }[], chordMm: number): TreeRequest {
+  return { call: "edit", key, parent, node, op, replay, chordMm };
+}
+
 export function probeRequest(key: string, node: NodeId, op: ModelOp): TreeRequest {
   return { call: "probe", key, node, op };
 }

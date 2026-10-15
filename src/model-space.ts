@@ -179,6 +179,14 @@ export function toSolidOp(op: ModelOp, pose: Affine): ModelOp {
   }
 }
 
+/**
+ * A stored op, in the solid's own frame, back in model space at the object's pose: what an edited step's panel opens
+ * with, so `toSolidOp` of it at the same pose is the op again. Identity returns `op` itself.
+ */
+export function fromSolidOp(op: ModelOp, pose: Affine): ModelOp {
+  return isIdentity(pose) ? op : toSolidOp(op, inversePose(pose));
+}
+
 /** What the Place tool shows: how far the part's centre moved from where its file put it, and the turn about it. */
 export interface PlaceFields {
   x: number;
