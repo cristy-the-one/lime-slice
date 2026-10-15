@@ -12,11 +12,29 @@ import type { SupportMode } from "./support-source.ts";
 
 export type Firmware = "klipper" | "marlin";
 
+/**
+ * Whether the firmware runs G2/G3, when the printer does not say. A stock Klipper
+ * `printer.cfg` has no `[gcode_arcs]`, so Klipper skips each arc and the next G1
+ * carries its filament; Marlin builds usually have `ARC_SUPPORT`. The engine
+ * reads a request without the key the same way.
+ */
+export function firmwareTakesArcs(firmware: Firmware, said?: boolean): boolean {
+  return said ?? firmware !== "klipper";
+}
+
+/** The Arc fit tip while the printer's firmware takes no arcs. */
+export const ARCS_OFF_REASON: Record<Firmware, string> = {
+  klipper: "This printer's firmware doesn't accept G2/G3 arcs, so the slice writes none. Klipper needs a [gcode_arcs] section in printer.cfg; then turn on Firmware accepts arcs under Printer.",
+  marlin: "This printer's firmware doesn't accept G2/G3 arcs, so the slice writes none. Marlin needs ARC_SUPPORT in its build; then turn on Firmware accepts arcs under Printer.",
+};
+
 export interface RuleInput {
   /** The active printer: a belt or a cartesian bed, with the belt block it stores either way. */
   kind: "cartesian" | "belt";
   belt: { raftLayers: number; maxLengthMm: number | null };
   firmware: Firmware;
+  /** The printer's own answer to whether its firmware runs G2/G3. Left out, the firmware's default. */
+  firmwareArcs?: boolean;
   /** Objects on the plate. */
   objects: number;
   /** The Supports choice. Left out, it is Automatic. */
@@ -35,7 +53,11 @@ export type ControlId =
   | "klipperLimits"
   | "adhesion"
   | "elephantsFoot"
-  | "supportTreeBrim";
+  | "supportTreeBrim"
+  | "arcFit";
+
+/** Controls `disabled` can lock. Each is a check, which the panel shows off and unclickable. */
+export const LOCKABLE: ReadonlySet<ControlId> = new Set(["arcFit"]);
 
 /** Keys a hidden control leaves out. A control with none only changes what the page shows. */
 const OWNED: Record<ControlId, readonly string[]> = {
@@ -53,6 +75,8 @@ const OWNED: Record<ControlId, readonly string[]> = {
   // Layer 0 on a belt is the leading slice, not the face on the belt, and the engine grows no trunk brim there.
   elephantsFoot: ["elephantsFootCompensationMm"],
   supportTreeBrim: ["supportTreeBrimMm"],
+  // Never hidden, only disabled; the request keeps the user's choice and the printer's `firmwareArcs` overrules it.
+  arcFit: [],
 };
 
 /** The one advance control a printer shows, and the state key it edits. */
@@ -63,9 +87,13 @@ export const ADVANCE: Record<Firmware, { label: string; key: "pressureAdvance" |
 
 export interface Rules {
   hidden: ReadonlySet<ControlId>;
+  /** Controls shown but not editable, each with the reason its row shows as a tip. */
+  disabled: ReadonlyMap<ControlId, string>;
   /** The printer is a belt. */
   belt: boolean;
   firmware: Firmware;
+  /** The printer's firmware runs G2/G3. Sent as `printer.firmwareArcs`; off, the engine writes no arcs. */
+  firmwareArcs: boolean;
   /**
    * `record` without the keys of hidden controls and without the advance key
    * the firmware does not use. A slice request keeps its advance keys inside
@@ -87,6 +115,9 @@ export function settingsRules(input: RuleInput): Rules {
   if (input.belt.maxLengthMm == null) hidden.add("beltMaxLength");
   if (input.belt.raftLayers <= 0) hidden.add("beltRaftLayers");
   if (input.firmware !== "klipper") hidden.add("klipperLimits");
+  const firmwareArcs = firmwareTakesArcs(input.firmware, input.firmwareArcs);
+  const disabled = new Map<ControlId, string>();
+  if (!firmwareArcs) disabled.set("arcFit", ARCS_OFF_REASON[input.firmware]);
 
   const unused: string = ADVANCE[input.firmware === "klipper" ? "marlin" : "klipper"].key;
   const dropped = new Set<string>([unused]);
@@ -96,8 +127,10 @@ export function settingsRules(input: RuleInput): Rules {
     Object.fromEntries(Object.entries(record).filter(([key]) => !dropped.has(key)));
   return {
     hidden,
+    disabled,
     belt,
     firmware: input.firmware,
+    firmwareArcs,
     coerce<T extends Record<string, unknown>>(record: T): T {
       const out = without(record);
       const printer = out.printer;

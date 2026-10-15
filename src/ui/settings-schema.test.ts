@@ -1,5 +1,6 @@
 import { DEFAULT_PRESET, presetKeys } from "../presets.ts";
-import { CONTROLS, GROUPS, PANEL_GROUPS, STRATEGY_ROWS, UNFIELDED_PRESET_KEYS, controlById, fieldControls, shownAtLevel, strategyCard } from "./settings-schema.ts";
+import { CONTROLS, GROUPS, PANEL_GROUPS, STRATEGY_ROWS, UNFIELDED_PRESET_KEYS, controlById, fieldControls, lockedReason, shownAtLevel, strategyCard } from "./settings-schema.ts";
+import { ARCS_OFF_REASON, LOCKABLE, settingsRules } from "../settings-rules.ts";
 
 let failed = 0;
 
@@ -118,6 +119,16 @@ for (const group of GROUPS) {
   const worst =summaryOf(group.id, { layerHeight: 0.28, adaptive: true, seam: "aligned", ironing: true, fuzzySkin: true, gyroid3d: "on", infillCombine: true, featureSpeeds: true, zHop: "always", supports: true, supportStyle: "tree", supportAngle: 45, placed: {}, plate: { objects: [1] }, blendKind: "single", strategy: "speed", profile: { bedX: 220, bedY: 220, maxVolumetricMm3S: 15 } });
   check(`${group.id}: summary fits the header (${worst})`, worst.length <= 24);
 }
+
+// The Arc fit row is locked, with its reason, on a printer whose firmware takes no arcs.
+const arcRow = controlById("arcs")!;
+const ir3Rules = settingsRules({ kind: "belt", belt: { raftLayers: 0, maxLengthMm: null }, firmware: "klipper", firmwareArcs: false, objects: 1 });
+check("the Arc fit row on the IR3 V2 is locked with the firmware reason", lockedReason(arcRow, ir3Rules) === ARCS_OFF_REASON.klipper);
+check("the reason says the firmware takes no arcs", (lockedReason(arcRow, ir3Rules) ?? "").startsWith("This printer's firmware doesn't accept G2/G3 arcs"));
+check("the Arc fit row is free on a printer that takes arcs", lockedReason(arcRow, settingsRules({ kind: "cartesian", belt: { raftLayers: 0, maxLengthMm: null }, firmware: "marlin", objects: 1 })) === undefined);
+check("a row without a rule is never locked", lockedReason(controlById("travelopt")!, ir3Rules) === undefined);
+check("every control a rule can lock is a check", CONTROLS.filter((spec) => spec.rule && LOCKABLE.has(spec.rule)).every((spec) => spec.kind.type === "check"));
+check("the Arc fit row is lockable", arcRow.rule !== undefined && LOCKABLE.has(arcRow.rule));
 
 if (failed) {
   console.error(`${failed} failed`);

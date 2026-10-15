@@ -347,9 +347,10 @@ test("auto-slice picks up an edit made while a slice was running", async ({ page
   await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await page.locator("#autoslice").check();
   await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
-  await page.locator("#arcs").uncheck();
+  // Arc fit is locked off on the default Klipper printer, so the edit is Travel and seam.
+  await page.locator("#travelopt").uncheck();
   await expect.poll(() => slices.length, { timeout: 5000 }).toBe(2);
-  expect((slices[1] as { arcFit: boolean }).arcFit).toBe(false);
+  expect((slices[1] as { travelOpt: boolean }).travelOpt).toBe(false);
   await expect(page.locator("#slice")).toHaveText("Slice");
   await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
 });

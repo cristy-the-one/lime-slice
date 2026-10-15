@@ -185,6 +185,9 @@ const parsedCfg = readMoonrakerConfig(
     },
   }),
 );
+check("a printer.cfg without [gcode_arcs] reads as arcs off", parsedCfg.ok && parsedCfg.config.firmwareArcs === false && parsedCfg.config.summary.includes("no [gcode_arcs]: arcs off"));
+const arcCfg = readMoonrakerConfig(200, JSON.stringify({ result: { status: { configfile: { settings: { printer: { max_velocity: 300 }, gcode_arcs: { resolution: 0.1 } } } } } }));
+check("a printer.cfg with [gcode_arcs] reads as arcs on", arcCfg.ok && arcCfg.config.firmwareArcs === true && arcCfg.config.summary === "Imported printer.cfg (300 mm/s · [gcode_arcs] found)");
 check(
   "Moonraker printer.cfg parses kinematic limits, bed size, nozzle, and temperature caps",
   parsedCfg.ok &&

@@ -12,7 +12,7 @@
  */
 import { coerceBelt, defaultBelt, type BeltSettings, type PrinterKind } from "../belt.ts";
 import { KLIPPER_NUMBERS, type KlipperLimits, type PrinterProfile } from "../profiles.ts";
-import { ADVANCE, type Firmware, type Rules } from "../settings-rules.ts";
+import { ADVANCE, firmwareTakesArcs, type Firmware, type Rules } from "../settings-rules.ts";
 import { coerceHostKind, type MoonrakerConfigImport, type PrinterHostKind } from "./prusa-link.ts";
 
 export const MACHINE_FILE_VERSION = 3;
@@ -48,6 +48,11 @@ export interface PrinterRecord extends KlipperLimits {
   startPrint: boolean;
   /** Which advance the printer takes: Klipper's pressure advance or Marlin's linear advance K. */
   firmware: Firmware;
+  /**
+   * Whether the firmware runs G2/G3. Left out, the firmware decides (`acceptsArcs`): Klipper no,
+   * Marlin yes. Off, the slice writes no arcs whatever Arc fit says. Sent as `printer.firmwareArcs`.
+   */
+  firmwareArcs?: boolean;
   /** Cartesian bed, or a conveyor. */
   kind: PrinterKind;
   /** Sent beside `printer` on the slice request when `kind` is a belt. */
@@ -447,6 +452,28 @@ export function setActiveFirmware(library: MachineLibrary, firmware: Firmware): 
   };
 }
 
+/** Whether this printer's firmware runs G2/G3: its own answer, else its firmware's default. A missing printer counts as Klipper. */
+export function acceptsArcs(printer: Pick<PrinterRecord, "firmware" | "firmwareArcs"> | undefined): boolean {
+  return firmwareTakesArcs(printer?.firmware ?? "klipper", printer?.firmwareArcs);
+}
+
+/**
+ * Store whether the active printer's firmware runs G2/G3. `null` clears the answer, so the
+ * printer follows its firmware's default again; an undo step restores it that way.
+ */
+export function setActiveFirmwareArcs(library: MachineLibrary, on: boolean | null): MachineLibrary {
+  return {
+    ...library,
+    printers: library.printers.map((printer) => {
+      if (printer.id !== library.printerId) return printer;
+      const next: PrinterRecord = { ...printer };
+      if (on === null) delete next.firmwareArcs;
+      else next.firmwareArcs = on;
+      return next;
+    }),
+  };
+}
+
 /** Store the kind and belt on the active printer. `enginePrinter` still omits the belt; the slice request sends it beside `printer`. */
 export function setActiveBelt(library: MachineLibrary, kind: PrinterKind, belt: BeltSettings): MachineLibrary {
   return {
@@ -556,10 +583,18 @@ export function savePrinterName(library: MachineLibrary, name: string, numbers: 
   if (!selection(library)) return "Choose a printer and a filament first.";
   const existing = library.printers.find((printer) => printer.name === trimmed);
   if (existing) return writeNumbers({ ...library, printerId: existing.id }, existing.id, library.filamentId, numbers);
+  // The firmware facts and the belt are not among the numbers, so the new printer takes the active one's.
+  const active = selection(library)!.printer;
+  const facts = {
+    firmware: active.firmware,
+    ...(active.firmwareArcs !== undefined ? { firmwareArcs: active.firmwareArcs } : {}),
+    kind: active.kind,
+    belt: { ...active.belt },
+  };
   const added: MachineLibrary = {
     ...library,
     printerId: id,
-    printers: [...library.printers, { ...blankPrinter(id, trimmed), builtin: false }],
+    printers: [...library.printers, { ...blankPrinter(id, trimmed), ...facts, builtin: false }],
   };
   return writeNumbers(added, id, library.filamentId, numbers);
 }
@@ -660,6 +695,8 @@ const OWNS_HOMING_TIP = "Turn on when the start G-code heats and homes by itself
 
 const LIMIT_TIP = "The hottest bed and nozzle this printer accepts. Any temperature above it is held at the limit in the slice and in the exported file, with a comment line that says so.";
 
+const ARCS_TIP = "Whether this printer runs G2/G3 arc moves. Off, the slice writes no arcs, whatever Arc fit says. Klipper runs them only with a [gcode_arcs] section in printer.cfg; without it each arc is skipped and the next move pushes its plastic at once, which can stop the print. A stock Klipper config has none, so a Klipper printer starts off. Marlin builds usually have ARC_SUPPORT, so a Marlin printer starts on.";
+
 const BELT_DIRECTION_TIP = "Which way the belt axis counts in the printer's firmware; it does not turn the plate around. The end of the part nearest the arrow head in Prepare prints first and leaves the printer first.";
 
 const BELT_TIP = "The engine slices this belt. Export follows the slice. Send follows the printer connection. Seam on the belt edge and the belt raft stay off until those boxes are checked. A raft is a pad on the belt under the part and 1 mm past it, raft layers times the layer height thick; the part stands on it. Supports on a belt printer grow down to the tilted belt. They are not available together with a raft. The end of the part nearest the arrow head in Prepare prints first and leaves the printer first.";
@@ -717,6 +754,7 @@ export function machineSectionHtml(
           <option value="marlin"${rules.firmware === "marlin" ? " selected" : ""}>Marlin</option>
         </select>
       </label>
+      <label class="check setting" data-label="firmware accepts arcs" data-keywords="g2 g3 arc fit gcode_arcs arc_support klipper marlin" data-tip="${ARCS_TIP}"><input id="machineArcs" type="checkbox" ${rules.firmwareArcs ? "checked" : ""}/> Firmware accepts arcs (G2/G3)</label>
       <label class="field setting" data-label="${advance.label.toLowerCase()}" data-keywords="filament nozzle pressure advance linear advance klipper marlin">${advance.label}
         <input id="machineAdvance" type="number" min="0" max="${advance.max}" step="${advance.step}" value="${live.advance}" aria-label="${advance.label} for this filament and nozzle" />
       </label>
@@ -865,6 +903,7 @@ function stripPrinter(printer: PrinterRecord): MachineFile["printer"] {
     apiKey: printer.apiKey,
     startPrint: printer.startPrint,
     firmware: printer.firmware,
+    ...(printer.firmwareArcs !== undefined ? { firmwareArcs: printer.firmwareArcs } : {}),
     kind: printer.kind,
     belt: { ...printer.belt },
     ...klipperLimits(printer),
@@ -952,6 +991,8 @@ function builtinPrinters(): PrinterRecord[] {
       ...printer("ideaformer-ir3-v2", "Ideaformer IR3 V2", 250, 250, 250, 12, 20000),
       ...IR3_V2_LIMITS,
       kind: "belt",
+      // Its printer.cfg has no [gcode_arcs], and Ideaformer's own slicer writes no arcs.
+      firmwareArcs: false,
       maxBedC: 90,
       startOwnsHoming: true,
       startGcode: IR3_V2_START,
@@ -1066,9 +1107,12 @@ function readPrinter(value: unknown): PrinterRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
   // A library stored before these limits existed gets the built-in printer's own, not Klipper's blanks.
-  const body = readPrinterBody(row, row.id === "ideaformer-ir3-v2" ? IR3_V2_LIMITS : KLIPPER_NUMBERS);
+  const ir3 = row.id === "ideaformer-ir3-v2";
+  const body = readPrinterBody(row, ir3 ? IR3_V2_LIMITS : KLIPPER_NUMBERS);
   if (!body || typeof row.id !== "string" || !row.id) return null;
-  return { ...body, id: row.id, builtin: row.builtin === true };
+  // Stored before the arcs answer existed: the IR3 V2 takes the catalog's no, others their firmware's default.
+  const arcs = ir3 && body.firmwareArcs === undefined ? { firmwareArcs: false } : {};
+  return { ...body, ...arcs, id: row.id, builtin: row.builtin === true };
 }
 
 function readFilament(value: unknown): FilamentRecord | null {
@@ -1109,6 +1153,7 @@ function readPrinterBody(value: unknown, missing: KlipperLimits = KLIPPER_NUMBER
     apiKey: row.apiKey,
     startPrint: row.startPrint,
     firmware: row.firmware === "marlin" ? "marlin" : "klipper",
+    ...(typeof row.firmwareArcs === "boolean" ? { firmwareArcs: row.firmwareArcs } : {}),
     kind: row.kind,
     belt: coerceBelt(row.belt, row.bedX),
     squareCornerVelocity: atLeast(row.squareCornerVelocity, missing.squareCornerVelocity),
