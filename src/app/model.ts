@@ -465,7 +465,8 @@ export function adoptSavedTrees(saved: ReadonlyMap<string, SavedTree<{ name: str
     const loaded = loadedTree(tree, key, root, obj.name, mesh, (id) => keys.get(id));
     modelTrees.set(key, loaded);
     if (obj.brep || (loaded.committed === ROOT && isStepName(obj.fileName))) stepKnown.add(token);
-    if (obj.brep && loaded.committed !== ROOT) seeds.set(key, { node: loaded.committed, live: false, whole: null, reading: null });
+    // A primitive root is a few numbers, so its tree opens whole from them and no STEP is read; the first edit would rebuild it anyway.
+    if (obj.brep && loaded.committed !== ROOT && root.kind === "step") seeds.set(key, { node: loaded.committed, live: false, whole: null, reading: null });
   }
   state.plate = { ...state.plate, objects: state.plate.objects.map((obj) => (keys.has(obj.id) ? { ...obj, modelTree: keys.get(obj.id) } : obj)) };
 }
