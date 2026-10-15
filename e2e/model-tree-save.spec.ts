@@ -81,7 +81,7 @@ async function cut(page: Page, dx: number) {
 
 async function split(page: Page, z: number) {
   await page.locator("#modelToolSplit").click();
-  await page.locator("#modelPlaneZ").fill(String(z));
+  await page.locator("#modelPlane").fill(String(z));
   await page.locator("#modelApply").click();
   await expect(readout(page)).toContainText(`Split. ${volume(z)}`);
   await page.locator("#modelCancel").click();

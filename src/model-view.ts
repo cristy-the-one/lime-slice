@@ -3,7 +3,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
-import { HANDLE_ARROW_TIP, HANDLE_KNOB_PICK, HANDLE_RING_RADIUS, dockNdc, gizmoRadiusForPixels } from "./gizmo-math";
+import { HANDLE_ARROW_TIP, HANDLE_KNOB_PICK, HANDLE_RING_RADIUS, dockSeat, gizmoRadiusForPixels, type DockSeat } from "./gizmo-math";
 import { boundsOf, type Bounds } from "./mesh-place";
 import type { Box } from "./measure";
 import { perspectiveMeasure } from "./measure-camera";
@@ -34,7 +34,7 @@ export type ModelGhost =
   | { kind: "box"; x: number; y: number; z: number; dx: number; dy: number; dz: number; turn?: Vec3 }
   | { kind: "cylinder"; x: number; y: number; z: number; radius: number; height: number; turn?: Vec3 }
   | { kind: "sphere"; x: number; y: number; z: number; radius: number }
-  | { kind: "plane"; z: number }
+  | { kind: "plane"; origin: Vec3; normal: Vec3 }
   | { kind: "hole"; x: number; y: number; z: number; radius: number; depth: number; dir?: Vec3 }
   | { kind: "scale"; factor: number }
   | { kind: "blend"; edges: number[]; radius: number }
@@ -100,7 +100,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   fit.id = "modelFit";
   fit.className = "model-fit";
   fit.hidden = true;
-  canvas.parentElement?.append(fit);
+  // The size chip stacks with the readout under the History panel, so a long warning never runs under it.
+  const foot = canvas.parentElement?.querySelector("#modelFoot");
+  if (foot) foot.prepend(fit);
+  else canvas.parentElement?.append(fit);
 
   const context = new THREE.Group();
   const body = new THREE.Group();
@@ -128,6 +131,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let running = false;
   let handleParts: HandlePart[] = [];
   const dockAt = new THREE.Vector3();
+  /** The dock's seat for the canvas size it was worked out for: it changes only when the canvas does. */
+  let seated: { width: number; height: number; seat: DockSeat } | null = null;
   let emphasis = false;
   let overHandle: string | null = null;
   let drag: ActiveDrag | null = null;
@@ -476,8 +481,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       return;
     }
     if (current.kind === "plane") {
+      // Drawn square around the solid's centre, dropped onto the plane, and turned with its tilt.
       const span = Math.max(extent * 1.45, 30);
-      addGhostMesh(new THREE.PlaneGeometry(span, span), new THREE.Vector3(center.x, center.y, current.z), 0.2);
+      const normal = new THREE.Vector3(...current.normal).normalize();
+      const middle = center.clone().addScaledVector(normal, -normal.dot(center.clone().sub(new THREE.Vector3(...current.origin))));
+      addGhostMesh(new THREE.PlaneGeometry(span, span), middle, 0.2).quaternion.setFromUnitVectors(zAxis, normal);
       return;
     }
     if (current.kind === "blend") {
@@ -914,14 +922,17 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     let dockSize = 0;
     if (handleParts.some((part) => part.handle.seat.at === "dock")) {
       camera.updateMatrixWorld();
-      const { ndcX, ndcY } = dockNdc(width, HANDLE_PX);
+      if (seated?.width !== width || seated.height !== height) seated = { width, height, seat: dockSeat(width, height, camera.fov, HANDLE_PX) };
+      const { ndcX, ndcY, handlePx } = seated.seat;
       dockAt.set(ndcX, ndcY, controls.target.clone().project(camera).z).unproject(camera);
-      dockSize = gizmoRadiusForPixels(camera.position.distanceTo(dockAt), camera.fov, height, HANDLE_PX, camera.zoom);
+      dockSize = gizmoRadiusForPixels(camera.position.distanceTo(dockAt), camera.fov, height, handlePx, camera.zoom);
       const mark = dockAt.clone().project(camera);
       const text = `${Math.round((mark.x * 0.5 + 0.5) * width)},${Math.round((-mark.y * 0.5 + 0.5) * height)}`;
       if (canvas.dataset.gizmoAt !== text) canvas.dataset.gizmoAt = text;
+      if (canvas.dataset.dockPx !== String(handlePx)) canvas.dataset.dockPx = String(handlePx);
     } else {
       delete canvas.dataset.gizmoAt;
+      delete canvas.dataset.dockPx;
     }
     const grips: string[] = [];
     for (const part of handleParts) {

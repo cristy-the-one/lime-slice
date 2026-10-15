@@ -656,7 +656,12 @@ html.layout-compact .model-tools {
 html.layout-compact .model-tool-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 html.layout-compact .model-tool { position: relative; width: 36px; height: 36px; padding: 0; justify-content: center; }
 html.layout-compact .model-tools .modes .btn { min-height: 36px; }
-html.layout-compact .model-side { display: contents; }
+/*
+ * The column spans the canvas: the size chip and the readout at its top, under the toolbar and short of
+ * the dock on the right, and the History sheet at its bottom, which shrinks and scrolls rather than run
+ * over them. The tool panel floats on the bottom as before.
+ */
+html.layout-compact .model-side { top: 0; left: 0; bottom: 0; width: 100%; gap: 0; }
 html.layout-compact .model-panel {
   position: absolute;
   top: auto;
@@ -673,23 +678,26 @@ html.layout-compact .model-fields label { flex: 0 0 84px; }
 html.layout-compact .model-fields label[data-wide] { flex-basis: 120px; }
 html.layout-compact .model-actions { margin-right: 116px; }
 html.layout-compact .model-actions .btn { min-height: 36px; min-width: 72px; }
-html.layout-compact .model-fit { top: 128px; bottom: auto; left: 8px; }
-html.layout-compact #modelBar[data-tool] .model-readout { bottom: auto; top: 164px; }
+/* The dock sits right of the middle at any phone size, so half the width keeps the chip and the readout clear of it. */
+html.layout-compact .model-foot { order: -1; margin: 128px 8px 8px; max-width: calc(50% - 16px); }
+/* A landscape phone fits the toolbar on one row: the stack starts right under it and leaves the sheet a row or two. */
+@media (max-height: 500px) {
+  html.layout-compact .model-foot { margin-top: 92px; }
+}
 /* History is a sheet over the canvas, opened from the toolbar. */
 html.layout-compact #modelHistoryOpen { display: inline-flex; }
 html.layout-compact #modelHistoryOpen[aria-expanded="true"] {
   background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
   color: var(--accent-text);
 }
-html.layout-compact .model-history {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
+html.layout-compact .model-history,
+html.layout-compact #modelBar[data-tool] .model-history {
+  position: relative;
   z-index: 4;
+  align-self: stretch;
   width: auto;
   max-height: 55%;
-  margin: 0;
+  margin: auto 0 0;
   padding: 4px 6px 8px;
   background: var(--panel);
   border-radius: 12px 12px 0 0;

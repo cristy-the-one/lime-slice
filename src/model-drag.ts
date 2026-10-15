@@ -4,6 +4,7 @@
  */
 
 import { DOCK_KNOB_REACH } from "./gizmo-math.ts";
+import { SPLIT_TILT_MAX_DEG, type SplitPlan } from "./model-plane.ts";
 
 export type Vec3 = [number, number, number];
 
@@ -15,7 +16,7 @@ export const MODEL_TOOLS: readonly ModelTool[] = ["boolean", "split", "fillet", 
 /** The fields a mouse can drag, per tool. The panel shows each of them as a number too. */
 export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
   boolean: ["modelX", "modelY", "modelZ", "modelDx", "modelDy", "modelDz", "modelRadius", "modelHeight", "modelRx", "modelRy", "modelRz"],
-  split: ["modelPlaneZ"],
+  split: ["modelPlane", "modelTiltA", "modelTiltB"],
   fillet: ["modelBlend"],
   chamfer: ["modelBlend"],
   hole: ["modelX", "modelY", "modelZ", "modelHoleR", "modelHoleD"],
@@ -61,7 +62,8 @@ export interface DragContext {
   /** Centre and largest side of the open solid. */
   center: Vec3;
   extent: number;
-  split: { min: number; max: number } | null;
+  /** The split plane the panel describes, or null while it has none (Face mode with no flat face picked). */
+  split: SplitPlan | null;
   /** Where a blend's size handle sits, or null with no edge picked. */
   edge: { point: Vec3; out: Vec3 } | null;
   /** Unit direction into the material. Omitted holes drill toward −Z. */
@@ -137,11 +139,26 @@ function booleanHandles(ctx: DragContext): Spec[] {
   return out;
 }
 
+/**
+ * The plane arrow sits on the pivot and points along the plane's normal, the way the panel's number
+ * grows, so a drag moves the plane along its normal. The number moves the pivot along the base line,
+ * so one millimetre of the plane is `1 / cos` of the tilt in the number. The tilt rings are docked.
+ */
 function splitHandles(ctx: DragContext): Spec[] {
-  const z = ctx.read("modelPlaneZ");
-  const range = ctx.split;
+  const plan = ctx.split;
+  const rings = (axes: [Vec3, Vec3]): Spec[] =>
+    (["modelTiltA", "modelTiltB"] as const).map((field, i) => ({
+      id: `tilt-${"ab"[i]}`, kind: "ring", look: "ring", fields: [field], seat: onDock(0), dir: axes[i]!, rate: 1, step: 15,
+      min: -SPLIT_TILT_MAX_DEG, max: SPLIT_TILT_MAX_DEG, color: nearestAxisColor(axes[i]!), label: `Tilt ${"AB"[i]}`, unit: "°",
+    }));
+  if (!plan) return [];
+  const along = dot(plan.base.dir, plan.normal);
+  const arrow = along < 0 ? scale(plan.normal, -1) : plan.normal;
+  const label = plan.base.mode === "face" ? "Offset" : `Plane ${plan.base.mode.toUpperCase()}`;
+  const limits = plan.range ? { min: plan.range.min, max: plan.range.max } : {};
   return [
-    axisHandle("plane", "arrow", "modelPlaneZ", onFeature([ctx.center[0], ctx.center[1], z]), Z, "z", "Plane Z", range ? { min: range.min, max: range.max } : {}),
+    axisHandle("plane", "arrow", "modelPlane", onFeature(plan.origin), arrow, nearestAxisColor(arrow), label, { rate: 1 / Math.max(Math.abs(along), 1e-6), ...limits }),
+    ...rings(plan.rings),
   ];
 }
 

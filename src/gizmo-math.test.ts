@@ -1,4 +1,4 @@
-import { DOCK_KNOB_REACH, HANDLE_ARROW_TIP, HANDLE_KNOB_PICK, HANDLE_RING_RADIUS, dockNdc, dockSpanPx } from "./gizmo-math.ts";
+import { DOCK_KNOB_REACH, DOCK_MIN_PX, DOCK_REACH, HANDLE_ARROW_TIP, HANDLE_KNOB_PICK, HANDLE_RING_RADIUS, MODEL_DOCK_CLEAR, dockOutline, dockSeat } from "./gizmo-math.ts";
 
 let failed = 0;
 
@@ -19,17 +19,27 @@ function check(name: string, ok: boolean): void {
 check("a size knob sits past the arrow tip, with its pick clear of the tip", DOCK_KNOB_REACH - HANDLE_KNOB_PICK > HANDLE_ARROW_TIP);
 check("a size knob sits outside the ring, with its pick clear of the rim", DOCK_KNOB_REACH - HANDLE_KNOB_PICK > HANDLE_RING_RADIUS);
 
-eq("the dock is vertically centred", dockNdc(1440, 92).ndcY, 0);
-eq("the dock is on the right half", dockNdc(1440, 92).ndcX > 0.5, true);
-eq("the dock is the same every time for a view", dockNdc(1440, 92), dockNdc(1440, 92));
-eq("the dock span is the knob reach plus its grab radius, in pixels", Math.round(dockSpanPx(100)), 147);
+check("the dock's reach covers its knobs, rings, and arrows", DOCK_REACH >= DOCK_KNOB_REACH + HANDLE_KNOB_PICK && DOCK_REACH > HANDLE_RING_RADIUS + 0.09 && DOCK_REACH > HANDLE_ARROW_TIP);
+eq("the dock is the same every time for a canvas", dockSeat(1100, 820, 40, 92), dockSeat(1100, 820, 40, 92));
+eq("a roomy canvas keeps the full handle size", dockSeat(1100, 820, 40, 92).handlePx, 92);
 
-for (const width of [900, 1100, 1440, 1920]) {
-  const { ndcX } = dockNdc(width, 92);
-  const centre = (ndcX * 0.5 + 0.5) * width;
-  check(`the farthest knob stays on a ${width}px canvas`, centre + dockSpanPx(92) <= width);
+// The whole dock, seen in perspective, stays 24 px off the right edge and clear of the overlays above and below it.
+for (const [width, height] of [[1100, 820], [940, 650], [700, 680], [1500, 900], [500, 420]]) {
+  const seat = dockSeat(width, height, 40, 92);
+  const outline = dockOutline(width, height, 40, seat.handlePx, seat.ndcX, seat.ndcY);
+  const px = { right: ((1 - outline.right) / 2) * width, top: ((1 - outline.top) / 2) * height, bottom: ((1 + outline.bottom) / 2) * height };
+  check(`${width}×${height}: the dock keeps ${MODEL_DOCK_CLEAR.right} px off the right edge (${px.right.toFixed(1)})`, px.right >= MODEL_DOCK_CLEAR.right - 0.5);
+  check(`${width}×${height}: and clears the toolbar (${px.top.toFixed(1)})`, seat.handlePx === DOCK_MIN_PX || px.top >= MODEL_DOCK_CLEAR.top - 0.5);
+  check(`${width}×${height}: and the view cube (${px.bottom.toFixed(1)})`, seat.handlePx === DOCK_MIN_PX || px.bottom >= MODEL_DOCK_CLEAR.bottom - 0.5);
+  check(`${width}×${height}: on the right side of the canvas`, seat.ndcX >= 0.42 || seat.handlePx === DOCK_MIN_PX);
 }
-check("a wider canvas parks the dock nearer the edge in pixels, not in NDC", dockNdc(1920, 92).ndcX > dockNdc(1100, 92).ndcX);
+const tiny = dockSeat(180, 160, 40, 92);
+check(`a canvas too small even for the smallest dock keeps it on the right side (${tiny.ndcX.toFixed(3)})`, tiny.handlePx === DOCK_MIN_PX && tiny.ndcX >= 0.42);
+const tight = dockSeat(560, 520, 40, 92);
+check("a small canvas shrinks the dock instead of cutting it", tight.handlePx < 92 && tight.handlePx >= DOCK_MIN_PX);
+// Perspective: the ball's near side stands out, so the dock sits further in than its flat radius alone would put it.
+const flat = 1 - (2 * (MODEL_DOCK_CLEAR.right + DOCK_REACH * 92)) / 1100;
+check("the seat leaves room for the near side of the dock", dockSeat(1100, 820, 40, 92).ndcX < flat);
 
 if (failed) {
   console.error(`${failed} failed`);
