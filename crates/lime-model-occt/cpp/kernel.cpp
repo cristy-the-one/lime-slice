@@ -31,6 +31,7 @@
 #include <BRepAlgoAPI_Splitter.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_Sewing.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
@@ -39,8 +40,13 @@
 #include <BRepGProp.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
+#include <BRepPrimAPI_MakeTorus.hxx>
+#include <BRepPrimAPI_MakeWedge.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
@@ -483,92 +489,209 @@ bool pick(const Held& held, const char* kind, int index, TopoDS_Shape& out) {
     return false;
 }
 
-TopoDS_Shape make_primitive(
-    const char* kind,
-    double x,
-    double y,
-    double z,
-    double dx,
-    double dy,
-    double dz,
-    double radius,
-    double height,
-    std::string& error) {
-    const std::string which = kind == nullptr ? "" : kind;
+constexpr double kPi = 3.14159265358979323846;
+
+/// A built shape, or the message why Open CASCADE did not build it.
+template <typename Maker>
+TopoDS_Shape built(Maker& maker, const char* what, std::string& error) {
+    maker.Build();
+    if (!maker.IsDone()) {
+        error = std::string("Open CASCADE did not build the ") + what;
+        return {};
+    }
+    return maker.Shape();
+}
+
+/// The primitive as it stands, before any turn. Every size is checked here, in the words the readout shows.
+TopoDS_Shape make_primitive(const PrimitiveSpec& p, std::string& error) {
+    const std::string& which = p.kind;
+    const gp_Ax2 up(gp_Pnt(p.x, p.y, p.z), gp_Dir(0, 0, 1));
     if (which == "box") {
-        if (!(dx > 0.0) || !(dy > 0.0) || !(dz > 0.0)) {
+        if (!(p.dx > 0.0) || !(p.dy > 0.0) || !(p.dz > 0.0)) {
             error = "A box needs a positive length on each side";
             return {};
         }
-        BRepPrimAPI_MakeBox box(gp_Pnt(x, y, z), dx, dy, dz);
-        box.Build();
-        if (!box.IsDone()) {
-            error = "Open CASCADE did not build the box";
-            return {};
-        }
-        return box.Shape();
+        BRepPrimAPI_MakeBox box(gp_Pnt(p.x, p.y, p.z), p.dx, p.dy, p.dz);
+        return built(box, "box", error);
     }
     if (which == "cylinder") {
-        if (!(radius > 0.0) || !(height > 0.0)) {
+        if (!(p.radius > 0.0) || !(p.height > 0.0)) {
             error = "A cylinder needs a positive radius and height";
             return {};
         }
-        BRepPrimAPI_MakeCylinder cylinder(gp_Ax2(gp_Pnt(x, y, z), gp_Dir(0, 0, 1)), radius, height);
-        cylinder.Build();
-        if (!cylinder.IsDone()) {
-            error = "Open CASCADE did not build the cylinder";
-            return {};
-        }
-        return cylinder.Shape();
+        BRepPrimAPI_MakeCylinder cylinder(up, p.radius, p.height);
+        return built(cylinder, "cylinder", error);
     }
     if (which == "sphere") {
-        if (!(radius > 0.0)) {
+        if (!(p.radius > 0.0)) {
             error = "A sphere needs a positive radius";
             return {};
         }
-        BRepPrimAPI_MakeSphere sphere(gp_Pnt(x, y, z), radius);
-        sphere.Build();
-        if (!sphere.IsDone()) {
-            error = "Open CASCADE did not build the sphere";
+        BRepPrimAPI_MakeSphere sphere(gp_Pnt(p.x, p.y, p.z), p.radius);
+        return built(sphere, "sphere", error);
+    }
+    if (which == "cone") {
+        if (!(p.height > 0.0)) {
+            error = "A cone needs a height above 0";
             return {};
         }
-        return sphere.Shape();
+        if (!(p.radius >= 0.0) || !(p.top_radius >= 0.0)) {
+            error = "A cone's radii cannot be below 0";
+            return {};
+        }
+        if (!(p.radius > 0.0) && !(p.top_radius > 0.0)) {
+            error = "A cone needs a bottom or top radius above 0";
+            return {};
+        }
+        // Equal radii are a cylinder, which the cone builder refuses.
+        if (p.radius == p.top_radius) {
+            BRepPrimAPI_MakeCylinder cylinder(up, p.radius, p.height);
+            return built(cylinder, "cone", error);
+        }
+        BRepPrimAPI_MakeCone cone(up, p.radius, p.top_radius, p.height);
+        return built(cone, "cone", error);
     }
-    error = "The primitive is box, cylinder, or sphere";
+    if (which == "torus") {
+        if (!(p.radius > 0.0)) {
+            error = "A torus needs a ring radius above 0";
+            return {};
+        }
+        if (!(p.tube_radius > 0.0)) {
+            error = "A torus needs a tube radius above 0";
+            return {};
+        }
+        if (!(p.tube_radius < p.radius)) {
+            error = "The torus's tube radius must be smaller than its ring radius";
+            return {};
+        }
+        BRepPrimAPI_MakeTorus torus(up, p.radius, p.tube_radius);
+        return built(torus, "torus", error);
+    }
+    if (which == "wedge") {
+        if (!(p.dx > 0.0) || !(p.dy > 0.0) || !(p.dz > 0.0)) {
+            error = "A wedge needs a positive length on each side";
+            return {};
+        }
+        if (!(p.top_x >= 0.0) || !(p.top_x <= p.dx)) {
+            error = "The wedge's top length must be from 0 to its X length";
+            return {};
+        }
+        // Open CASCADE's wedge narrows along its own Y. Its Y is our Z here, and its Z runs back
+        // along −Y from the far side, so the wedge fills x..x+dx, y..y+dy, z..z+dz.
+        const gp_Ax2 frame(gp_Pnt(p.x, p.y + p.dy, p.z), gp_Dir(0, -1, 0), gp_Dir(1, 0, 0));
+        BRepPrimAPI_MakeWedge wedge(frame, p.dx, p.dz, p.dy, p.top_x);
+        return built(wedge, "wedge", error);
+    }
+    if (which == "polygon") {
+        const double sides = std::round(p.sides);
+        if (!(sides >= 3.0) || !(sides <= 64.0) || sides != p.sides) {
+            error = "A polygon needs 3 to 64 sides";
+            return {};
+        }
+        if (!(p.across > 0.0)) {
+            error = "A polygon needs a width across above 0";
+            return {};
+        }
+        if (!(p.height > 0.0)) {
+            error = "A polygon needs a height above 0";
+            return {};
+        }
+        const int count = static_cast<int>(sides);
+        const double corner = p.flats ? p.across / 2.0 / std::cos(kPi / count) : p.across / 2.0;
+        // Counter-clockwise from above, with one flat facing −Y, so the face points up and the prism grows up.
+        BRepBuilderAPI_MakePolygon outline;
+        for (int i = 0; i < count; ++i) {
+            const double angle = -kPi / 2.0 - kPi / count + 2.0 * kPi * i / count;
+            outline.Add(gp_Pnt(p.x + corner * std::cos(angle), p.y + corner * std::sin(angle), p.z));
+        }
+        outline.Close();
+        if (!outline.IsDone()) {
+            error = "Open CASCADE did not build the polygon";
+            return {};
+        }
+        BRepBuilderAPI_MakeFace face(outline.Wire(), Standard_True);
+        if (!face.IsDone()) {
+            error = "Open CASCADE did not build the polygon";
+            return {};
+        }
+        BRepPrimAPI_MakePrism prism(face.Face(), gp_Vec(0, 0, p.height));
+        return built(prism, "polygon", error);
+    }
+    if (which == "tube") {
+        if (!(p.height > 0.0)) {
+            error = "A tube needs a height above 0";
+            return {};
+        }
+        if (!(p.radius > 0.0)) {
+            error = "A tube needs an outer radius above 0";
+            return {};
+        }
+        if (!(p.inner_radius >= 0.0)) {
+            error = "The tube's inner radius cannot be below 0";
+            return {};
+        }
+        if (!(p.inner_radius < p.radius)) {
+            error = "The tube's inner radius must be smaller than its outer radius";
+            return {};
+        }
+        // No hole is a cylinder.
+        if (p.inner_radius == 0.0) {
+            BRepPrimAPI_MakeCylinder cylinder(up, p.radius, p.height);
+            return built(cylinder, "tube", error);
+        }
+        // The wall's section, turned once about the axis: one solid, not a cylinder with another cut out.
+        BRepBuilderAPI_MakePolygon section(
+            gp_Pnt(p.x + p.inner_radius, p.y, p.z),
+            gp_Pnt(p.x + p.radius, p.y, p.z),
+            gp_Pnt(p.x + p.radius, p.y, p.z + p.height),
+            gp_Pnt(p.x + p.inner_radius, p.y, p.z + p.height),
+            Standard_True);
+        BRepBuilderAPI_MakeFace face(section.Wire(), Standard_True);
+        if (!face.IsDone()) {
+            error = "Open CASCADE did not build the tube";
+            return {};
+        }
+        BRepPrimAPI_MakeRevol tube(face.Face(), gp_Ax1(gp_Pnt(p.x, p.y, p.z), gp_Dir(0, 0, 1)), 2.0 * kPi);
+        return built(tube, "tube", error);
+    }
+    error = "The primitive is box, cylinder, sphere, cone, torus, wedge, polygon, or tube";
     return {};
 }
 
-/// Turn a primitive about its own centre by X, then Y, then Z degrees. A sphere is left alone.
-TopoDS_Shape turn_primitive(
-    const TopoDS_Shape& shape,
-    const char* kind,
-    double x,
-    double y,
-    double z,
-    double dx,
-    double dy,
-    double dz,
-    double height,
-    double rx,
-    double ry,
-    double rz) {
-    const std::string which = kind == nullptr ? "" : kind;
-    if (which == "sphere" || (rx == 0.0 && ry == 0.0 && rz == 0.0)) {
-        return shape;
+/// Where a primitive turns: a box's or a wedge's centre, a torus's centre, the middle of any other one's axis.
+gp_Pnt turn_centre(const PrimitiveSpec& p) {
+    if (p.kind == "box" || p.kind == "wedge") {
+        return gp_Pnt(p.x + p.dx / 2.0, p.y + p.dy / 2.0, p.z + p.dz / 2.0);
     }
-    const gp_Pnt centre = which == "box" ? gp_Pnt(x + dx / 2.0, y + dy / 2.0, z + dz / 2.0)
-                                         : gp_Pnt(x, y, z + height / 2.0);
-    const double rad = 3.14159265358979323846 / 180.0;
+    if (p.kind == "torus") {
+        return gp_Pnt(p.x, p.y, p.z);
+    }
+    return gp_Pnt(p.x, p.y, p.z + p.height / 2.0);
+}
+
+TopoDS_Shape make_solid(const PrimitiveSpec& spec, std::string& error) {
+    const TopoDS_Shape made = make_primitive(spec, error);
+    if (made.IsNull()) {
+        if (error.empty()) {
+            error = "Open CASCADE did not build the primitive";
+        }
+        return {};
+    }
+    if (spec.kind == "sphere" || (spec.rx == 0.0 && spec.ry == 0.0 && spec.rz == 0.0)) {
+        return made;
+    }
+    const gp_Pnt centre = turn_centre(spec);
+    const double rad = kPi / 180.0;
     gp_Trsf tx;
     gp_Trsf ty;
     gp_Trsf tz;
-    tx.SetRotation(gp_Ax1(centre, gp_Dir(1, 0, 0)), rx * rad);
-    ty.SetRotation(gp_Ax1(centre, gp_Dir(0, 1, 0)), ry * rad);
-    tz.SetRotation(gp_Ax1(centre, gp_Dir(0, 0, 1)), rz * rad);
+    tx.SetRotation(gp_Ax1(centre, gp_Dir(1, 0, 0)), spec.rx * rad);
+    ty.SetRotation(gp_Ax1(centre, gp_Dir(0, 1, 0)), spec.ry * rad);
+    tz.SetRotation(gp_Ax1(centre, gp_Dir(0, 0, 1)), spec.rz * rad);
     gp_Trsf total = tz;
     total.Multiply(ty);
     total.Multiply(tx);
-    BRepBuilderAPI_Transform builder(shape, total, Standard_True);
+    BRepBuilderAPI_Transform builder(made, total, Standard_True);
     return builder.Shape();
 }
 
@@ -807,28 +930,13 @@ double largest_blend(const TopoDS_Shape& current, const std::vector<TopoDS_Edge>
 TopoDS_Shape build_boolean(
     const TopoDS_Shape& current,
     const std::string& which,
-    const char* primitive,
-    double x,
-    double y,
-    double z,
-    double dx,
-    double dy,
-    double dz,
-    double radius,
-    double height,
-    double rx,
-    double ry,
-    double rz,
+    const PrimitiveSpec& spec,
     double& volume,
     std::string& error) {
-    const TopoDS_Shape made = make_primitive(primitive, x, y, z, dx, dy, dz, radius, height, error);
-    if (made.IsNull()) {
-        if (error.empty()) {
-            error = "Open CASCADE did not build the primitive";
-        }
+    const TopoDS_Shape tool = make_solid(spec, error);
+    if (tool.IsNull()) {
         return {};
     }
-    const TopoDS_Shape tool = turn_primitive(made, primitive, x, y, z, dx, dy, dz, height, rx, ry, rz);
     const TopoDS_Shape result = boolean_op(which, current, tool, error);
     if (!error.empty()) {
         return {};

@@ -101,7 +101,7 @@ Every call is one JSON request through `lime_occt_tree` (`POST /api/model/tree`,
 
 | `call` | Fields | Answer |
 |---|---|---|
-| `open` | `key`, one of `dataB64`, `stepPath`, or `box: [x, y, z]`; `chordMm`; optional `nodes: [{id, parent, op, fingerprint}]` (parents first) and `current` | The reply for `current` (default 0). Saved nodes are registered, not built. Opening an existing key replaces that tree. |
+| `open` | `key`, one of `dataB64`, `stepPath`, `box: [x, y, z]`, or `primitive` (a primitive, as below); `chordMm`; optional `nodes: [{id, parent, op, fingerprint}]` (parents first) and `current`; optional `fingerprint`, the root's as saved | The reply for `current` (default 0). Saved nodes are registered, not built. Opening an existing key replaces that tree. A root that builds to another fingerprint answers `{error, broken: 0}` and opens nothing. |
 | `apply` | `key`, `parent`, `node`, `op`, `chordMm`; `otherKey` for a split | The new node's reply, plus `op` as stored (edge picks resolved) and, for a split with `otherKey`, `other`: the root reply of a new tree under that key. A split without `otherKey` (a replay) sends no piece and does not tessellate it. Applying an existing node with the same parent, op, and `otherKey` is a jump to it; anything else on an existing id is refused. |
 | `probe` | `key`, `node`, `op` | `{ok: true}`, or `{ok: false, error, maxMm?}`: the edit was built on a copy, or why not and, for a blend, the largest size that fits. A probe that works is kept, and an Apply of the same op on the same node commits it. |
 | `goto` | `key`, `node`, `chordMm` | That node's reply. |
@@ -112,7 +112,20 @@ Every call is one JSON request through `lime_occt_tree` (`POST /api/model/tree`,
 
 `open` reads STEP so that facet shells that sew into closed solids open as solids, and surfaces that do not open for measuring only. On such a root every `apply` and `probe` answers the refusal ("This STEP file has surfaces but no closed solid, so it can be measured but not edited.") before anything is built.
 
-`op` is one of `{kind: "boolean", op, primitive, origin, size, radius, height, turn}`, `{kind: "hole", origin, axis, radius, depth}`, `{kind: "split", origin, normal}`, `{kind: "fillet" | "chamfer", edges, size}`, or `{kind: "scale", factor}`. A fresh fillet or chamfer may name edges by index. The stored op names each as `{index, mid, lengthMm}`, where `mid` is the point at the middle of the edge's parameter range. A rebuild takes the index when its midpoint and length still agree within 0.001 mm, else the one edge that matches them, else the node is broken.
+`op` is one of `{kind: "boolean", op, ...primitive}`, `{kind: "hole", origin, axis, radius, depth}`, `{kind: "split", origin, normal}`, `{kind: "fillet" | "chamfer", edges, size}`, or `{kind: "scale", factor}`.
+
+A primitive is `{primitive, origin, turn, ...}` in millimetres, with the fields its kind reads. Every kind but a sphere turns about its centre by `turn` (degrees about X, then Y, then Z). The newer fields are stored only when sent, so a box, cylinder, or sphere op reads and stores as it did before they existed. The engine checks every size and answers a refusal in plain words ("A cone needs a height above 0", "The tube's inner radius must be smaller than its outer radius", "A polygon needs 3 to 64 sides"); `tests/primitives.rs` lists them all.
+
+| `primitive` | Fields | Sits | Built with |
+|---|---|---|---|
+| `box` | `size` | from `origin` along +X, +Y, +Z | `BRepPrimAPI_MakeBox` |
+| `cylinder` | `radius`, `height` | `origin` is the bottom centre, up +Z | `BRepPrimAPI_MakeCylinder` |
+| `sphere` | `radius` | `origin` is the centre | `BRepPrimAPI_MakeSphere` |
+| `cone` | `radius` (bottom), `topRadius`, `height` | as a cylinder. Either radius may be 0, not both; equal radii build a cylinder | `BRepPrimAPI_MakeCone` |
+| `torus` | `radius` (the ring, to the tube's centre), `tubeRadius`, smaller than the ring | `origin` is the centre, the ring flat in XY | `BRepPrimAPI_MakeTorus` |
+| `wedge` | `size`, `topX` from 0 to `size[0]` | as a box; the top face runs from `origin`'s X for `topX`, so 0 is a ramp and `size[0]` a box | `BRepPrimAPI_MakeWedge`, its narrowing axis laid along Z |
+| `polygon` | `sides` (3 to 64), `across`, `flats`, `height` | as a cylinder, one flat facing −Y. `across` is the width across corners, or across flats with `flats: true`, as a nut is sized | `BRepBuilderAPI_MakePolygon`, a face, `BRepPrimAPI_MakePrism` |
+| `tube` | `radius` (outside), `innerRadius`, smaller, `height` | as a cylinder. An inner radius of 0 is a cylinder | the wall's section turned once about the axis (`BRepPrimAPI_MakeRevol`): one solid, not a cut | A fresh fillet or chamfer may name edges by index. The stored op names each as `{index, mid, lengthMm}`, where `mid` is the point at the middle of the edge's parameter range. A rebuild takes the index when its midpoint and length still agree within 0.001 mm, else the one edge that matches them, else the node is broken.
 
 A reply is the node's tessellation with `id` set to the node and `format: "lime-solid-2"`. The client reads no array from a reply without that format and says the modeler does not match the app (`src/model-reply.ts`). The bulk arrays are base64 of little-endian words, decoded straight into typed arrays that view the bytes in place:
 

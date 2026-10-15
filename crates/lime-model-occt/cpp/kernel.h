@@ -64,21 +64,30 @@ bool measure_distance(
 TopoDS_Shape read_step(const char* path, std::string& error);
 bool write_step(const TopoDS_Shape& shape, const char* path, std::string& error);
 
+/// A primitive solid in millimetres, turned by `rx`, then `ry`, then `rz` degrees about its centre.
+/// Each kind reads its own fields; docs/step-modeler.md lists them.
+struct PrimitiveSpec {
+    std::string kind;
+    double x = 0, y = 0, z = 0;
+    double dx = 0, dy = 0, dz = 0;
+    double radius = 0, height = 0;
+    double rx = 0, ry = 0, rz = 0;
+    /// A cone's top, a torus's tube, a tube's hole.
+    double top_radius = 0, tube_radius = 0, inner_radius = 0;
+    /// A wedge's top face, along X from `x`.
+    double top_x = 0;
+    /// A polygon prism: its side count, and its width across corners, or across flats with `flats`.
+    double sides = 0, across = 0;
+    bool flats = false;
+};
+
+/// The primitive, built and turned. Null, with `error` in plain words, when a size is out of range.
+TopoDS_Shape make_solid(const PrimitiveSpec& spec, std::string& error);
+
 TopoDS_Shape build_boolean(
     const TopoDS_Shape& current,
     const std::string& which,
-    const char* primitive,
-    double x,
-    double y,
-    double z,
-    double dx,
-    double dy,
-    double dz,
-    double radius,
-    double height,
-    double rx,
-    double ry,
-    double rz,
+    const PrimitiveSpec& tool,
     double& volume,
     std::string& error);
 /// `before` is the volume of `current`; `volume` gets the result's.

@@ -48,12 +48,102 @@ pub enum BooleanOp {
     Common,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Primitive {
+    #[default]
     Box,
     Cylinder,
     Sphere,
+    Cone,
+    Torus,
+    Wedge,
+    Polygon,
+    Tube,
+}
+
+impl Primitive {
+    fn name(self) -> &'static CStr {
+        match self {
+            Primitive::Box => c"box",
+            Primitive::Cylinder => c"cylinder",
+            Primitive::Sphere => c"sphere",
+            Primitive::Cone => c"cone",
+            Primitive::Torus => c"torus",
+            Primitive::Wedge => c"wedge",
+            Primitive::Polygon => c"polygon",
+            Primitive::Tube => c"tube",
+        }
+    }
+}
+
+/// A primitive solid: a boolean's tool, or a tree's root. Lengths are millimetres, turns degrees
+/// about the primitive's centre by X, then Y, then Z. Each kind reads its own fields
+/// (`docs/step-modeler.md`); the newer ones are written only when sent, so a box, cylinder, or
+/// sphere stores exactly as it did before they existed.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Solid {
+    pub primitive: Primitive,
+    pub origin: [f64; 3],
+    #[serde(default)]
+    pub size: [f64; 3],
+    #[serde(default)]
+    pub radius: f64,
+    #[serde(default)]
+    pub height: f64,
+    #[serde(default)]
+    pub turn: [f64; 3],
+    /// A cone's top. 0 is a point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_radius: Option<f64>,
+    /// A torus's tube, about its ring at `radius`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tube_radius: Option<f64>,
+    /// A tube's hole. `radius` is its outside.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner_radius: Option<f64>,
+    /// A wedge's top face, along X from `origin`. `size` is its base.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_x: Option<f64>,
+    /// A polygon prism's side count, 3 to 64.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sides: Option<f64>,
+    /// A polygon prism's width, across corners, or across flats with `flats`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub across: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flats: Option<bool>,
+}
+
+impl Solid {
+    /// The numbers `spec_of` in tree.cpp reads, in its order.
+    fn numbers(&self) -> [f64; 18] {
+        let [x, y, z] = self.origin;
+        let [dx, dy, dz] = self.size;
+        let [rx, ry, rz] = self.turn;
+        let or_zero = |value: Option<f64>| value.unwrap_or(0.0);
+        [
+            x,
+            y,
+            z,
+            dx,
+            dy,
+            dz,
+            self.radius,
+            self.height,
+            rx,
+            ry,
+            rz,
+            or_zero(self.top_radius),
+            or_zero(self.tube_radius),
+            or_zero(self.inner_radius),
+            or_zero(self.top_x),
+            or_zero(self.sides),
+            or_zero(self.across),
+            if self.flats == Some(true) { 1.0 } else { 0.0 },
+        ]
+    }
 }
 
 /// An edge as the kernel numbered it, with where it is and how long it is.
@@ -83,16 +173,8 @@ pub enum EdgePick {
 pub enum Op {
     Boolean {
         op: BooleanOp,
-        primitive: Primitive,
-        origin: [f64; 3],
-        #[serde(default)]
-        size: [f64; 3],
-        #[serde(default)]
-        radius: f64,
-        #[serde(default)]
-        height: f64,
-        #[serde(default)]
-        turn: [f64; 3],
+        #[serde(flatten)]
+        tool: Solid,
     },
     Hole {
         origin: [f64; 3],
@@ -199,14 +281,17 @@ fn lock() -> std::sync::MutexGuard<'static, Store> {
     rename_all_fields = "camelCase"
 )]
 enum Request {
-    /// Open a tree from its root. With `nodes`, register the saved ops (parents first) without
-    /// building them, then jump to `current`.
+    /// Open a tree from its root: a STEP, or a primitive built from its numbers. With `nodes`,
+    /// register the saved ops (parents first) without building them, then jump to `current`.
+    /// `fingerprint` is the root's as saved: a root that builds to another is broken.
     Open {
         key: String,
         data_b64: Option<String>,
         step_path: Option<String>,
         #[serde(rename = "box")]
         box_mm: Option<[f64; 3]>,
+        primitive: Option<Solid>,
+        fingerprint: Option<Fingerprint>,
         #[serde(default = "default_chord", alias = "stepToleranceMm")]
         chord_mm: f64,
         #[serde(default)]
@@ -576,11 +661,7 @@ impl Doc {
             let got = built.kept.fingerprint();
             if let Some(expected) = expected {
                 if !expected.matches(&got) {
-                    let message = format!(
-                        "This step rebuilt differently: {:.3} mm³, {} faces, {} edges instead of {:.3} mm³, {} faces, {} edges",
-                        got.volume_mm3, got.faces, got.edges, expected.volume_mm3, expected.faces, expected.edges
-                    );
-                    return Err(self.mark_broken(step, message));
+                    return Err(self.mark_broken(step, rebuilt_differently(&got, &expected)));
                 }
             }
             *clock += 1;
@@ -613,16 +694,24 @@ impl Store {
                 data_b64,
                 step_path,
                 box_mm,
+                primitive,
+                fingerprint,
                 chord_mm,
                 nodes,
                 current,
-            } => self.open(
-                key,
-                root_shape(data_b64, step_path, box_mm)?,
-                nodes,
-                current,
-                chord_mm,
-            ),
+            } => {
+                let root = root_shape(data_b64, step_path, box_mm, primitive)?;
+                if let Some(saved) = fingerprint {
+                    let got = root.fingerprint();
+                    if !saved.matches(&got) {
+                        return Err(Failure::Broken {
+                            node: ROOT,
+                            message: rebuilt_differently(&got, &saved),
+                        });
+                    }
+                }
+                self.open(key, root, nodes, current, chord_mm)
+            }
             Request::Apply {
                 key,
                 parent,
@@ -947,12 +1036,29 @@ fn doc_in<'a>(docs: &'a mut HashMap<String, Doc>, key: &str) -> Result<&'a mut D
     docs.get_mut(key).ok_or(Failure::Missing(vec![ROOT]))
 }
 
+fn rebuilt_differently(got: &Fingerprint, expected: &Fingerprint) -> String {
+    format!(
+        "This step rebuilt differently: {:.3} mm³, {} faces, {} edges instead of {:.3} mm³, {} faces, {} edges",
+        got.volume_mm3, got.faces, got.edges, expected.volume_mm3, expected.faces, expected.edges
+    )
+}
+
 fn root_shape(
     data_b64: Option<String>,
     step_path: Option<String>,
     box_mm: Option<[f64; 3]>,
+    primitive: Option<Solid>,
 ) -> Result<Shape, Failure> {
-    match (data_b64, step_path, box_mm) {
+    // `box` is a primitive box from the origin, kept for the tests and tools that open one.
+    let primitive = match (box_mm, primitive) {
+        (Some(size), None) => Some(Solid {
+            size,
+            ..Solid::default()
+        }),
+        (None, primitive) => primitive,
+        (Some(_), Some(_)) => return Err(one_root()),
+    };
+    match (data_b64, step_path, primitive) {
         (Some(data), None, None) => {
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(data.trim())
@@ -966,11 +1072,13 @@ fn root_shape(
         (None, Some(path), None) => {
             Shape::read_step(std::path::Path::new(&path)).map_err(Failure::Message)
         }
-        (None, None, Some([x, y, z])) => Shape::cube(x, y, z).map_err(Failure::Message),
-        _ => Err(Failure::Message(
-            "Open a tree from exactly one of dataB64, stepPath, or box".into(),
-        )),
+        (None, None, Some(solid)) => Shape::primitive(&solid).map_err(Failure::Message),
+        _ => Err(one_root()),
     }
+}
+
+fn one_root() -> Failure {
+    Failure::Message("Open a tree from exactly one of dataB64, stepPath, box, or primitive".into())
 }
 
 fn temp_step(tag: &str) -> std::path::PathBuf {
@@ -1068,34 +1176,18 @@ struct Built {
 fn build(from: &Shape, op: Op, probe: bool) -> Result<Built, (String, Option<f64>)> {
     let mut other = None;
     let kept = match &op {
-        Op::Boolean {
-            op: which,
-            primitive,
-            origin,
-            size,
-            radius,
-            height,
-            turn,
-        } => {
+        Op::Boolean { op: which, tool } => {
             let which = match which {
                 BooleanOp::Fuse => c"fuse",
                 BooleanOp::Cut => c"cut",
                 BooleanOp::Common => c"common",
             };
-            let primitive = match primitive {
-                Primitive::Box => c"box",
-                Primitive::Cylinder => c"cylinder",
-                Primitive::Sphere => c"sphere",
-            };
-            let p = [
-                origin[0], origin[1], origin[2], size[0], size[1], size[2], *radius, *height,
-                turn[0], turn[1], turn[2],
-            ];
+            let p = tool.numbers();
             Shape::made(|error| unsafe {
                 lime_tree_boolean(
                     from.raw(),
                     which.as_ptr(),
-                    primitive.as_ptr(),
+                    tool.primitive.name().as_ptr(),
                     p.as_ptr(),
                     error,
                 )
@@ -1195,7 +1287,11 @@ struct MeshView {
 
 extern "C" {
     fn lime_tree_free(shape: *mut RawShape);
-    fn lime_tree_box(x: f64, y: f64, z: f64, error: *mut *mut c_char) -> *mut RawShape;
+    fn lime_tree_primitive(
+        kind: *const c_char,
+        p: *const f64,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
     fn lime_tree_read_step(path: *const c_char, error: *mut *mut c_char) -> *mut RawShape;
     fn lime_tree_boolean(
         from: *const RawShape,
@@ -1325,8 +1421,11 @@ impl Shape {
         }
     }
 
-    fn cube(x: f64, y: f64, z: f64) -> Result<Shape, String> {
-        Shape::made(|error| unsafe { lime_tree_box(x, y, z, error) })
+    fn primitive(solid: &Solid) -> Result<Shape, String> {
+        let p = solid.numbers();
+        Shape::made(|error| unsafe {
+            lime_tree_primitive(solid.primitive.name().as_ptr(), p.as_ptr(), error)
+        })
     }
 
     fn read_step(path: &std::path::Path) -> Result<Shape, String> {
