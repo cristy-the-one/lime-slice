@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
-import { mockModelTree, type Body, type MockSolid, type TreeMock } from "./model-tree-mock";
+import { mockModelTree, type Body, type Built, type MockSolid, type TreeMock } from "./model-tree-mock";
 
 type V = [number, number, number];
 
@@ -30,18 +30,20 @@ function boxSolid(size: V): MockSolid {
 const ROOT = boxSolid([20, 20, 10]);
 
 /** A box cut leaves a 20 × 20 slab as tall as the box's Size X, so each step's volume names its numbers. */
-async function openModel(page: Page, url = "/"): Promise<TreeMock> {
+async function openModel(page: Page, url = "/", part: { root: MockSolid; name: string; apply?: (request: Body) => Built } = { root: ROOT, name: "plate.step" }): Promise<TreeMock> {
+  const { root, name } = part;
+  const apply = part.apply ?? ((request: Body) => boxSolid([20, 20, (request.op as { size: number[] }).size[0]!]));
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
-  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: ROOT.positions } }));
+  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: root.positions } }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
-  const tree = await mockModelTree(page, { open: () => ROOT, apply: (request: Body) => boxSolid([20, 20, (request.op as { size: number[] }).size[0]!]) });
+  const tree = await mockModelTree(page, { open: () => root, apply });
   await page.goto(url);
   await autoSliceOff(page);
-  await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
+  await page.locator("#file").setInputFiles({ name, mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   if (url.includes("compact")) await page.locator("#compactTabs [data-tab=model]").click();
   else await page.locator("#tabModel").click();
-  await expect(readout(page)).toContainText("Volume 4000 mm³");
+  await expect(readout(page)).toContainText(`Volume ${root.volumeMm3} mm³`);
   return tree;
 }
 
@@ -178,7 +180,7 @@ test("a step can be renamed, and keeps its op in the tip", async ({ page }) => {
   await field.fill("Slot for the clip");
   await field.press("Enter");
   await expect(row(page, "Slot for the clip")).toBeFocused();
-  await expect(row(page, "Slot for the clip")).toHaveAttribute("data-tip", "Cut box 6×10×10");
+  await expect(row(page, "Slot for the clip")).toHaveAttribute("data-tip", "Slot for the clip. Cut box 6×10×10");
   await expect(readout(page), "the first click of the double-click showed the step").toContainText(volume(6));
 
   await page.keyboard.press("F2");
@@ -189,7 +191,7 @@ test("a step can be renamed, and keeps its op in the tip", async ({ page }) => {
   await page.keyboard.press("F2");
   await page.getByRole("textbox", { name: "Step name" }).fill("");
   await page.keyboard.press("Enter");
-  await expect(row(page, "Cut box 6")).not.toHaveAttribute("data-tip");
+  await expect(row(page, "Cut box 6"), "an unnamed step has its whole label in the tip").toHaveAttribute("data-tip", "Cut box 6×10×10");
 });
 
 test("deleting a branch drops it here and in the engine; the shown branch stays with a plain reason", async ({ page }) => {
@@ -361,6 +363,82 @@ test("the row menu closes when Model closes", async ({ page }) => {
   await expect(menu).toBeHidden();
 });
 
+type Rect = { x: number; y: number; width: number; height: number };
+const meets = (a: Rect, b: Rect) => a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+const inside = (a: Rect, b: Rect) => a.x >= b.x - 0.5 && a.y >= b.y - 0.5 && a.x + a.width <= b.x + b.width + 0.5 && a.y + a.height <= b.y + b.height + 0.5;
+
+/** A part past the build volume, with a long file name, so the size chip warns over several lines. */
+const BIG = boxSolid([400, 300, 120]);
+const LONG_NAME = "20261012_Cover_Assembly_With_A_Very_Long_File_Name_full_revision_C.stp";
+const REFUSAL =
+  "The box reaches past the solid on two sides, so the cut would leave a thin wall that cannot be printed. Move the box into the part, or make it smaller, and try again.";
+
+async function openBig(page: Page, url = "/") {
+  return openModel(page, url, {
+    root: BIG,
+    name: LONG_NAME,
+    apply: (request: Body) => {
+      const dx = (request.op as { size: number[] }).size[0]!;
+      return dx === 9 ? { error: REFUSAL } : boxSolid([400, 300, dx * 10]);
+    },
+  });
+}
+
+/** Three cuts and a refusal: four rows, a warning in the chip, and a long readout. */
+async function longStack(page: Page) {
+  await page.locator("#modelToolBoolean").click();
+  for (const dx of [3, 4, 5, 9]) {
+    await page.locator("#modelDx").fill(String(dx));
+    await expect(page.locator("#modelApply")).toBeEnabled();
+    await page.locator("#modelApply").click();
+    await expect(readout(page)).toContainText(dx === 9 ? REFUSAL : `Volume ${400 * 300 * dx * 10} mm³`);
+  }
+  await expect(page.locator("#modelFit")).toHaveAttribute("data-over", "1");
+}
+
+/** No two of the panel, History, the chip, and the readout overlap, all sit on the canvas, and the readout shows all its text. */
+async function expectStackClear(page: Page) {
+  const canvas = (await page.locator("#model").boundingBox())!;
+  const parts = new Map<string, Rect>();
+  for (const id of ["#modelPanel", "#modelHistory", "#modelFit", "#modelReadout"]) {
+    const box = (await page.locator(id).isVisible()) ? await page.locator(id).boundingBox() : null;
+    if (box) parts.set(id, box);
+  }
+  expect([...parts.keys()]).toEqual(expect.arrayContaining(["#modelHistory", "#modelFit", "#modelReadout"]));
+  const list = [...parts];
+  for (let i = 0; i < list.length; i += 1) {
+    expect(inside(list[i]![1], canvas), `${list[i]![0]} stays on the canvas`).toBe(true);
+    for (let j = i + 1; j < list.length; j += 1) expect(meets(list[i]![1], list[j]![1]), `${list[i]![0]} clear of ${list[j]![0]}`).toBe(false);
+  }
+  const clipped = await readout(page).evaluate((el) => el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1);
+  expect(clipped, "the readout shows all its text").toBe(false);
+}
+
+test("History, the size chip, and a long readout stack without overlap, on a tall canvas and a short one", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openBig(page);
+  await longStack(page);
+  await expect(rows(page)).toHaveCount(4);
+  await expectStackClear(page);
+  await page.locator("#modelCancel").click();
+  await expectStackClear(page);
+
+  await page.setViewportSize({ width: 1280, height: 640 });
+  await expectStackClear(page);
+  await page.locator("#modelToolBoolean").click();
+  await expect(page.locator("#modelPrim")).toBeVisible();
+  await expectStackClear(page);
+  const tree = (await page.locator("#modelHistoryTree").boundingBox())!;
+  expect(tree.height, "History keeps room for its rows, scrolling inside").toBeGreaterThan(20);
+
+  const root = row(page, "20261012_Cover");
+  await expect(root, "the long file name is whole in the tip").toHaveAttribute("data-tip", LONG_NAME);
+  const label = root.locator(".mh-label");
+  expect(await label.evaluate((el) => el.scrollWidth > el.clientWidth), "and ellipsized in the row").toBe(true);
+  const panel = (await page.locator("#modelHistory").boundingBox())!;
+  expect(panel.width, "without widening the panel").toBeLessThanOrEqual(280.5);
+});
+
 test.describe("phone", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
@@ -387,5 +465,38 @@ test.describe("phone", () => {
     await expect(page.locator("#modelHistory")).toBeHidden();
     await expect(open).toBeFocused();
     await expect(page.locator("#slice")).toBeVisible();
+  });
+
+  test("the open sheet leaves the size warning and the readout in view", async ({ page }) => {
+    await openBig(page, "/?layout=compact");
+    await longStack(page);
+    await page.locator("#modelCancel").click();
+    await page.locator("#modelHistoryOpen").click();
+    await expect(rows(page)).toHaveCount(4);
+    const sheet = (await page.locator("#modelHistory").boundingBox())!;
+    const fit = (await page.locator("#modelFit").boundingBox())!;
+    const text = (await readout(page).boundingBox())!;
+    expect(meets(sheet, fit), "the sheet leaves the size warning").toBe(false);
+    expect(meets(sheet, text), "and the readout").toBe(false);
+    expect(meets(fit, text), "which do not overlap each other").toBe(false);
+  });
+
+  test("on a short landscape phone the sheet shrinks below the warning, and the readout stays short of the dock", async ({ page }) => {
+    await page.setViewportSize({ width: 844, height: 390 });
+    await openBig(page, "/?layout=compact");
+    await longStack(page);
+    const canvas = (await page.locator("#model").boundingBox())!;
+    const fit = (await page.locator("#modelFit").boundingBox())!;
+    const text = (await readout(page).boundingBox())!;
+    const grips = ((await page.locator("#model").getAttribute("data-handles")) ?? "").split(" ").filter(Boolean).map((item) => canvas.x + Number(item.split(":")[1]!.split(",")[0]));
+    expect(grips.length, "the Boolean tool's dock is up").toBeGreaterThan(0);
+    for (const box of [fit, text]) expect(box.x + box.width, "the chip and the readout end left of the dock").toBeLessThan(Math.min(...grips) - 8);
+    await page.locator("#modelCancel").click();
+    await page.locator("#modelHistoryOpen").click();
+    await expect(rows(page)).toHaveCount(4);
+    const sheet = (await page.locator("#modelHistory").boundingBox())!;
+    expect(meets(sheet, fit), "the sheet leaves the size warning").toBe(false);
+    expect(meets(sheet, text), "and the readout").toBe(false);
+    expect(sheet.height, "and keeps room for a row").toBeGreaterThan(60);
   });
 });

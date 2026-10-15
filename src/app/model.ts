@@ -4,6 +4,7 @@ import {
   IDENTITY_POSE,
   applyPose,
   boxUnder,
+  inversePose,
   isIdentity,
   placeFields,
   poseFromPlace,
@@ -21,7 +22,7 @@ import { holeAxis, lastFace, outwardFromMesh, selectedEdges } from "../model-ble
 import { nextModelPicks, selectionCountLabel } from "../model-select";
 import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
-import { formatMm, splitPlaneInside, splitPlaneRange, zExtent } from "../model-plane";
+import { extentAlong, extentMemo, facePlane, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
 import {
   ROOT,
   childWithOp,
@@ -57,6 +58,7 @@ import {
   setModelProbe,
   setModelWaiting,
   syncModelChrome,
+  splitMode,
   syncModelSolid,
   syncPlaceFields,
   type PlacePhase,
@@ -166,9 +168,11 @@ export function bindModelView() {
       syncModelChrome([]);
       if (open) readout(`${about(open.solid)} Pick a face or an edge.`);
     },
-    solidZ() {
-      const box = openBox();
-      return box ? { min: box.min[2], max: box.max[2] } : null;
+    split() {
+      return splitState();
+    },
+    splitLegal() {
+      return splitLegal();
     },
     paramsChanged(typed) {
       scheduleProbe(typed ? PROBE_WAIT_MS : 0);
@@ -295,8 +299,10 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
         height: num("#modelHeight"),
         turn: turn(),
       };
-    case "split":
-      return { kind: "split", origin: [0, 0, num("#modelPlaneZ")], normal: [0, 0, 1] };
+    case "split": {
+      const split = splitState();
+      return "plan" in split ? { kind: "split", origin: split.plan.origin, normal: split.plan.normal } : null;
+    }
     case "scale":
       return { kind: "scale", factor: num("#modelFactor") };
     default:
@@ -627,11 +633,12 @@ function setMode(mode: "face" | "edge") {
   fx.model?.setPickMode(mode);
   picks = [];
   fx.model?.highlight([]);
-  syncModelChrome([]);
+  // The buttons first: the Split panel's note reads which one is on.
   document.querySelector("#modelPickFace")?.setAttribute("aria-pressed", mode === "face" ? "true" : "false");
   document.querySelector("#modelPickFace")?.classList.toggle("on", mode === "face");
   document.querySelector("#modelPickEdge")?.setAttribute("aria-pressed", mode === "edge" ? "true" : "false");
   document.querySelector("#modelPickEdge")?.classList.toggle("on", mode === "edge");
+  syncModelChrome([]);
   if (open) readout(`${about(open.solid)} Pick ${mode === "face" ? "a face" : "an edge"}.`);
 }
 
@@ -811,17 +818,13 @@ async function applyTool() {
   const op = toolOp(tool);
   if (!op) {
     if (tool === "fillet" || tool === "chamfer") readout(tool === "fillet" ? "Pick an edge to fillet." : "Pick an edge to chamfer.");
+    if (tool === "split") readout(splitNote(splitState()).text);
     return;
   }
   if (op.kind === "split") {
-    const box = openBox();
-    const range = splitPlaneRange(box ? { min: box.min[2], max: box.max[2] } : null);
-    if (!range) {
-      readout("This solid is too thin to split.");
-      return;
-    }
-    if (!splitPlaneInside(num("#modelPlaneZ"), range)) {
-      readout(`Move the plane into the part, between ${formatMm(range.min)} and ${formatMm(range.max)} mm.`);
+    const note = splitNote(splitState());
+    if (note.bad) {
+      readout(note.text);
       return;
     }
   }
@@ -1161,7 +1164,7 @@ function pivotOf(solid: ParsedSolid): Vec3 {
 function learnSeat(solid: ParsedSolid) {
   const mesh = treeOf(open)?.nodes.get(solid.id)?.mesh;
   if (!mesh || meshSeat(mesh.bytes) !== undefined) return;
-  const z = zExtent(solid.positions);
+  const z = extentAlong(solid.positions, [0, 0, 1]);
   if (z) setMeshSeat(mesh.bytes, z.min);
 }
 
@@ -1272,6 +1275,76 @@ function syncUndo() {
 function turn(): Vec3 {
   if (prim() === "sphere") return [0, 0, 0];
   return [num("#modelRx"), num("#modelRy"), num("#modelRz")];
+}
+
+const extentOf = extentMemo();
+/** Each solid's flat faces, by face index; null for a curved one. */
+const flatFaces = new WeakMap<ParsedSolid, Map<number, FacePlane | null>>();
+
+/** The last split worked out, for the solid, pose, and panel state it was worked out from: one input asks several times. */
+let splitKept: { solid: ParsedSolid; pose: Affine; key: string; state: SplitState } | null = null;
+
+/**
+ * The open solid's extent along a model-space normal: its own extent along that normal turned back into the
+ * solid's frame, moved by the pose. Exact, since the pose is rigid.
+ */
+function modelExtent(solid: ParsedSolid, pose: Affine, normal: Vec3): AxisExtent | null {
+  const own = extentOf(solid.positions, isIdentity(pose) ? normal : turnDir(inversePose(pose), normal));
+  const shift = normal[0] * pose.t[0] + normal[1] * pose.t[1] + normal[2] * pose.t[2];
+  return own && { min: own.min + shift, max: own.max + shift };
+}
+
+/**
+ * The split plane from the panel, in model space: the one place a split request is built, and `toolOp` takes
+ * it into the solid's frame. X, Y, and Z cut square to that axis of the view, which is model space; Face cuts
+ * parallel to the last picked flat face. The kernel's margin is checked against the solid's model-space box,
+ * the same as its own box on an identity pose or a quarter turn.
+ */
+function splitState(): SplitState {
+  const at = open;
+  const pose = openPose();
+  const box = openBox();
+  if (!at || !box) return { why: "Open a STEP file to measure a solid.", wait: true };
+  const mode = splitMode();
+  const picked = mode === "face" ? lastFace(picks) : null;
+  const facePicking = document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") === "true";
+  const value = num("#modelPlane");
+  const tilt: [number, number] = [num("#modelTiltA"), num("#modelTiltB")];
+  const key = `${mode}|${picked}|${facePicking}|${value}|${tilt}`;
+  if (splitKept?.solid === at.solid && splitKept.pose === pose && splitKept.key === key) return splitKept.state;
+  let state: SplitState;
+  if (mode === "face" && picked == null) {
+    state = { why: facePicking ? "Pick a flat face to cut from." : "Switch to Face picking, then pick a flat face to cut from.", wait: true };
+  } else {
+    const own = picked == null ? null : flatFace(at.solid, picked);
+    const face = own && !isIdentity(pose) ? { point: applyPose(pose, own.point), normal: turnDir(pose, own.normal) } : own;
+    const center: Vec3 = [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2];
+    const base = splitBase(mode, center, face);
+    state = base
+      ? { plan: planeFor(base, value, tilt, (normal) => modelExtent(at.solid, pose, normal), box) }
+      : { why: "Pick a flat face. This one is curved.", wait: false };
+  }
+  splitKept = { solid: at.solid, pose, key, state };
+  return state;
+}
+
+/** A split is on offer when the solid can be cut square to at least one model axis. */
+function splitLegal(): boolean {
+  const at = open;
+  const pose = openPose();
+  const box = openBox();
+  if (!at || !box) return false;
+  return (["x", "y", "z"] as const).some((mode) => planeFor(splitBase(mode, [0, 0, 0], null)!, 0, [0, 0], (normal) => modelExtent(at.solid, pose, normal), box).range != null);
+}
+
+function flatFace(solid: ParsedSolid, face: number): FacePlane | null {
+  let known = flatFaces.get(solid);
+  if (!known) flatFaces.set(solid, (known = new Map()));
+  if (!known.has(face)) {
+    const normal = solid.faces.find((item) => item.id === face)?.normal ?? outwardFromMesh(solid.positions, solid.triangles, face);
+    known.set(face, normal ? facePlane(solid.positions, solid.triangles, face, normal as Vec3) : null);
+  }
+  return known.get(face)!;
 }
 
 function prim(): "box" | "cylinder" | "sphere" {

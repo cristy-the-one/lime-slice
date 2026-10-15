@@ -15,12 +15,6 @@ export function parkLeftNdcX(viewportWidthPx: number, marginPx = PARK_MARGIN_PX)
   return Math.max(-0.92, Math.min(-0.42, ndcX));
 }
 
-/** Horizontal NDC for a widget parked just inside the right edge. */
-export function parkRightNdcX(viewportWidthPx: number, marginPx = PARK_MARGIN_PX): number {
-  const ndcX = 1 - (marginPx / Math.max(viewportWidthPx, 1)) * 2;
-  return Math.max(0.42, Math.min(0.92, ndcX));
-}
-
 /**
  * Camera-space point for a widget parked on the left, vertically centered, on the
  * plane `distance` in front of the camera. Three.js cameras look down −Z.
@@ -51,19 +45,90 @@ export const HANDLE_RING_RADIUS = 0.7;
 export const HANDLE_KNOB_PICK = 0.17;
 /** A size knob sits this far out on its axis, past the arrow heads and outside the rings. */
 export const DOCK_KNOB_REACH = 1.3;
-const DOCK_EDGE_GAP_PX = 18;
+/** Handle units from the dock's middle to the far side of anything on it: a knob's grab sphere. Arrows and rings sit inside it. */
+export const DOCK_REACH = DOCK_KNOB_REACH + HANDLE_KNOB_PICK;
+/** The smallest handle size the dock shrinks to on a canvas too small for the full one. */
+export const DOCK_MIN_PX = 48;
+/** Further left than this the dock would sit over the middle of the solid: it shrinks instead. */
+const DOCK_MIN_NDC_X = 0.42;
 
-/** Pixels from the dock's centre to the far side of its farthest knob. */
-export function dockSpanPx(handlePx: number): number {
-  return (DOCK_KNOB_REACH + HANDLE_KNOB_PICK) * handlePx;
+/**
+ * Pixels the dock keeps clear of each canvas edge: 24 from the right, and above and below it the
+ * Model toolbar and the Measure chip at the top and the view cube at the bottom right.
+ */
+export interface DockClear {
+  right: number;
+  top: number;
+  bottom: number;
+}
+export const MODEL_DOCK_CLEAR: DockClear = { right: 24, top: 96, bottom: 136 };
+
+export interface DockSeat {
+  ndcX: number;
+  ndcY: number;
+  /** The handle size the dock is drawn at, `handlePx` or smaller. */
+  handlePx: number;
 }
 
 /**
- * Where the dock sits, in NDC. It depends on the canvas width and the handle size and on nothing else,
- * so it does not follow the solid and does not change when the view orbits, zooms, or pans.
+ * Where the dock sits, in NDC, and how large. The dock is a ball of `DOCK_REACH` handle units around
+ * its middle, drawn at a constant pixel size; seen in perspective, the side of it nearer the camera
+ * stands out further. The seat puts that whole ball inside the clear area, as far right as it goes,
+ * and shrinks the handles when even that does not fit. It depends on the canvas size, the field of
+ * view, and the handle size and on nothing else, so it does not follow the solid and does not move
+ * when the view orbits, zooms, or pans.
  */
-export function dockNdc(viewportWidthPx: number, handlePx: number): { ndcX: number; ndcY: number } {
-  return { ndcX: parkRightNdcX(viewportWidthPx, dockSpanPx(handlePx) + DOCK_EDGE_GAP_PX), ndcY: 0 };
+export function dockSeat(widthPx: number, heightPx: number, fovDeg: number, handlePx: number, clear: DockClear = MODEL_DOCK_CLEAR): DockSeat {
+  const width = Math.max(1, widthPx);
+  const height = Math.max(1, heightPx);
+  const right = 1 - (2 * clear.right) / width;
+  const top = 1 - (2 * clear.top) / height;
+  const bottom = -1 + (2 * clear.bottom) / height;
+  const ndcY = Math.max(-0.5, Math.min(0.5, (top + bottom) / 2));
+  let seat: DockSeat | null = null;
+  for (let px = Math.max(handlePx, DOCK_MIN_PX); ; px = Math.max(DOCK_MIN_PX, px - 2)) {
+    let lo = -1;
+    let hi = 1;
+    for (let i = 0; i < 40; i += 1) {
+      const mid = (lo + hi) / 2;
+      if (dockOutline(width, height, fovDeg, px, mid, ndcY).right <= right) lo = mid;
+      else hi = mid;
+    }
+    // At the smallest size the dock still stays on the right side: on a canvas that small it may run
+    // past the margin there, but it never jumps across onto the solid.
+    seat = { ndcX: px === DOCK_MIN_PX ? Math.max(lo, DOCK_MIN_NDC_X) : lo, ndcY, handlePx: px };
+    const outline = dockOutline(width, height, fovDeg, px, lo, ndcY);
+    if ((lo >= DOCK_MIN_NDC_X && outline.top <= top && outline.bottom >= bottom) || px === DOCK_MIN_PX) break;
+  }
+  return seat;
+}
+
+/** The NDC box a dock at (`ndcX`, `ndcY`) covers: its ball's outline, sampled around the cone it fills. */
+export function dockOutline(widthPx: number, heightPx: number, fovDeg: number, handlePx: number, ndcX: number, ndcY: number): { right: number; top: number; bottom: number } {
+  const t = Math.tan((fovDeg * Math.PI) / 360);
+  const aspect = widthPx / Math.max(1, heightPx);
+  // The ball's radius over its distance from the camera: `gizmoRadiusForPixels` sizes it by that distance.
+  const sine = Math.min(0.95, (DOCK_REACH * handlePx * 2 * t) / Math.max(1, heightPx));
+  const cosine = Math.sqrt(1 - sine * sine);
+  const u = unit([ndcX * t * aspect, ndcY * t, 1]);
+  const e1 = unit([u[2], 0, -u[0]]);
+  const e2 = [u[1] * e1[2] - u[2] * e1[1], u[2] * e1[0] - u[0] * e1[2], u[0] * e1[1] - u[1] * e1[0]];
+  let right = -Infinity;
+  let top = -Infinity;
+  let bottom = Infinity;
+  for (let i = 0; i < 96; i += 1) {
+    const phi = (i / 96) * Math.PI * 2;
+    const w = [0, 1, 2].map((k) => cosine * u[k]! + sine * (Math.cos(phi) * e1[k]! + Math.sin(phi) * e2[k]!));
+    right = Math.max(right, w[0]! / w[2]! / (t * aspect));
+    top = Math.max(top, w[1]! / w[2]! / t);
+    bottom = Math.min(bottom, w[1]! / w[2]! / t);
+  }
+  return { right, top, bottom };
+}
+
+function unit(v: number[]): number[] {
+  const length = Math.hypot(...v);
+  return v.map((value) => value / length);
 }
 
 /**

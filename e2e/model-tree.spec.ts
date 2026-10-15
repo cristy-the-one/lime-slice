@@ -133,7 +133,7 @@ test("Undo at the root does not reach into Prepare's history", async ({ page }) 
 test("a jump above a split keeps the piece on the plate, and the piece is still edited as its own tree", async ({ page }) => {
   const tree = await openModel(page);
   await page.locator("#modelToolSplit").click();
-  await page.locator("#modelPlaneZ").fill("4");
+  await page.locator("#modelPlane").fill("4");
   await page.locator("#modelApply").click();
   await expect(readout(page)).toContainText("Split. Volume 1600 mm³");
   await expect(page.locator("#objectList .obj"), "the piece is on the plate at once").toHaveCount(2);
@@ -230,7 +230,7 @@ test("a step that no longer rebuilds is marked, says so in plain words, and is n
 test("a split taken back by Prepare undo comes back with its piece when Model returns to it", async ({ page }) => {
   const tree = await openModel(page);
   await page.locator("#modelToolSplit").click();
-  await page.locator("#modelPlaneZ").fill("4");
+  await page.locator("#modelPlane").fill("4");
   await page.locator("#modelApply").click();
   await expect(readout(page)).toContainText("Split. Volume 1600 mm³");
   await page.locator("#tabPrepare").click();
@@ -282,7 +282,7 @@ test("Duplicate in Model opens the copy, and a Slice in Model slices the step on
 test("an engine that forgot a split piece gets it back from its parent's split", async ({ page }) => {
   const tree = await openModel(page);
   await page.locator("#modelToolSplit").click();
-  await page.locator("#modelPlaneZ").fill("4");
+  await page.locator("#modelPlane").fill("4");
   await page.locator("#modelApply").click();
   await expect(readout(page)).toContainText("Split. Volume 1600 mm³");
   const split = tree.of("apply")[0]!;
@@ -330,7 +330,7 @@ test("a split whose piece the app cannot read drops the step and closes the piec
     other: { id: 0, key: request.otherKey, ...OLD_FORMAT },
   }));
   await page.locator("#modelToolSplit").click();
-  await page.locator("#modelPlaneZ").fill("4");
+  await page.locator("#modelPlane").fill("4");
   await page.locator("#modelApply").click();
   await expect(readout(page)).toHaveText(MISMATCHED);
   await expect(page.locator("#objectList .obj"), "no piece joins the plate").toHaveCount(1);

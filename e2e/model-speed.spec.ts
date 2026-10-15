@@ -164,7 +164,7 @@ test("the piece a split adds opens as a solid of its own and splits again", asyn
   const calls = await modeler(page);
   await openModel(page);
   await page.locator("#modelToolSplit").click();
-  await page.locator("#modelPlaneZ").fill("4");
+  await page.locator("#modelPlane").fill("4");
   await page.locator("#modelApply").click();
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
   await expect(page.locator("#modelReadout")).toContainText("Split. Volume 1600 mm³");
@@ -175,7 +175,7 @@ test("the piece a split adds opens as a solid of its own and splits again", asyn
   expect(calls.opens, "the piece is a tree of its own already, with no STEP read").toHaveLength(1);
 
   await expect(page.locator("#modelToolSplit"), "Split stays open on the piece").toHaveAttribute("aria-pressed", "true");
-  await page.locator("#modelPlaneZ").fill("7");
+  await page.locator("#modelPlane").fill("7");
   await page.locator("#modelApply").click();
   await expect(page.locator("#objectList .obj")).toHaveCount(3);
   const splits = calls.tree.of("apply");

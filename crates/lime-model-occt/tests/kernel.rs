@@ -243,6 +243,7 @@ fn kernel_through_the_tree() {
 
     booleans_and_split();
     thin_plate_split();
+    planes_off_axis();
     blends_holes_and_scale();
     if step_linked {
         step_export_round_trip();
@@ -550,6 +551,53 @@ fn thin_plate_split() {
     assert!((200.0..230.0).contains(&other_span), "other span {other_span}");
     ok(json!({ "call": "close", "key": "plate" }));
     ok(json!({ "call": "close", "key": "plate-piece" }));
+}
+
+/// A 10 mm box split along X and Y, along the (1, 0, 1) diagonal through its centre, and across a
+/// corner: the engine takes any origin and normal, as Model's X, Y, Face, and tilt send them.
+fn planes_off_axis() {
+    ok(json!({ "call": "open", "key": "planes", "box": [10.0, 10.0, 10.0] }));
+    let plane = |node: u32, origin: [f64; 3], normal: [f64; 3]| {
+        let reply = call(
+            json!({ "call": "apply", "key": "planes", "parent": 0, "node": node,
+            "op": { "kind": "split", "origin": origin, "normal": normal }, "otherKey": format!("planes-piece-{node}") }),
+        );
+        ok(json!({ "call": "close", "key": format!("planes-piece-{node}") }));
+        reply
+    };
+    let x = plane(1, [5.0, 5.0, 5.0], [1.0, 0.0, 0.0]);
+    near(volume(&x), 500.0);
+    near(volume(&x["other"]), 500.0);
+    assert!(
+        (4.9..5.1).contains(&span_x(&x)),
+        "X 5 keeps the half below X 5: {}",
+        span_x(&x)
+    );
+    let y = plane(2, [5.0, 5.0, 5.0], [0.0, 1.0, 0.0]);
+    near(volume(&y), 500.0);
+    near(volume(&y["other"]), 500.0);
+    let diagonal = plane(3, [5.0, 5.0, 5.0], [0.5_f64.sqrt(), 0.0, 0.5_f64.sqrt()]);
+    near(volume(&diagonal), 500.0);
+    near(volume(&diagonal["other"]), 500.0);
+    // x + y + z = 24 cuts a tetrahedron with 6 mm legs off the (10, 10, 10) corner: 6³ / 6.
+    let third = 1.0 / 3.0_f64.sqrt();
+    let corner = plane(4, [8.0, 8.0, 8.0], [third, third, third]);
+    near(volume(&corner["other"]), 36.0);
+    near(volume(&corner), 964.0);
+
+    // The margin on the diagonal is 2 % of 14.142 mm, measured across the box's corners. Model's
+    // window (`splitWindow` in src/model-plane.ts) keeps 0.001 mm inside it: the kernel cuts there,
+    // and refuses 0.001 mm outside it.
+    let margin = 0.02 * 10.0 * 2.0_f64.sqrt();
+    let diagonal = [0.5_f64.sqrt(), 0.0, 0.5_f64.sqrt()];
+    let at =
+        |d: f64| json!({ "kind": "split", "origin": diagonal.map(|n| n * d), "normal": diagonal });
+    assert_eq!(probe("planes", at(margin + 0.001)), json!({ "ok": true }));
+    assert_eq!(
+        probe("planes", at(margin - 0.001)),
+        json!({ "ok": false, "error": "The plane is too close to a face. Move it into the part." })
+    );
+    ok(json!({ "call": "close", "key": "planes" }));
 }
 
 fn blends_holes_and_scale() {

@@ -3,7 +3,7 @@
  * view shows (`current`), and the node the plate holds (`committed`). The engine keeps the solids,
  * keyed by `key` and node id; this keeps what the client needs to hand them back.
  */
-import { formatMm } from "./model-plane.ts";
+import { formatMm, splitLabel } from "./model-plane.ts";
 import type { ReinforceRegion } from "./reinforcement.ts";
 import type { SeamDisk } from "./seam-paint.ts";
 import type { EditEntry } from "./support-edit-list.ts";
@@ -298,11 +298,8 @@ export function opLabel(op: ModelOp): string {
     }
     case "hole":
       return `Hole ⌀${n(op.radius * 2)} depth ${n(op.depth)}`;
-    case "split": {
-      // A plane typed along a model axis through a turned pose lands on another axis of the part, or on none.
-      const axis = op.normal.findIndex((value) => Math.abs(Math.abs(value) - 1) < 1e-9);
-      return axis < 0 ? "Split on a tilted plane" : `Split at ${"XYZ"[axis]} ${n(op.origin[axis]!)}`;
-    }
+    case "split":
+      return splitLabel(op.origin, op.normal);
     case "fillet":
     case "chamfer": {
       const count = op.edges.length === 1 ? "1 edge" : `${op.edges.length} edges`;

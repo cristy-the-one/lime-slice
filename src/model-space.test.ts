@@ -91,7 +91,7 @@ const raisedTen: Affine = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 10] };
 eq("a split typed at model Z 15 on a part raised 10 is labelled at Z 5", opLabel(toSolidOp({ kind: "split", origin: [0, 0, 15], normal: [0, 0, 1] }, raisedTen)), "Split at Z 5");
 eq("with no pose the label is the number typed", opLabel(toSolidOp(split, IDENTITY_POSE)), "Split at Z 42.42");
 eq("a part lying on its side takes a model Z plane on its own Y", opLabel(toSolidOp({ kind: "split", origin: [0, 0, 15], normal: [0, 0, 1] }, { m: eulerOrient(90, 0, 0), t: [0, 0, 0] })), "Split at Y 15");
-eq("a plane at a slant to the part says so", opLabel(toSolidOp(split, skew)), "Split on a tilted plane");
+eq("a model Z plane on a part turned 30° about X is a tilted plane of the part", opLabel(toSolidOp({ kind: "split", origin: [0, 0, 15], normal: [0, 0, 1] }, { m: eulerOrient(30, 0, 0), t: [0, 0, 0] })), "Split at Z 17.32, tilt −30° / 0°");
 
 // Place fields.
 const pivot: Vec3 = [10, 20, 30];
