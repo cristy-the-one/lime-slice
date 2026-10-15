@@ -10,7 +10,8 @@ import { perspectiveMeasure } from "./measure-camera";
 import { mountMeasureOverlay } from "./measure-overlay";
 import { axisValues, dragLabel, dragValue, lineParam, moveFine, startFine, wrapDegrees, type DragHandle, type FinePointer, type Vec3 } from "./model-drag";
 import { contextMaterial } from "./context-look";
-import { partBox, type ContextPart } from "./model-context";
+import type { ContextPart } from "./model-context";
+import { boxUnder, posedBounds, type Affine } from "./model-space";
 import { faceBoundarySegments, faceColor } from "./model-select";
 import { hexToThree, themeColors } from "./theme";
 import { bedForBox, fitSentence, liveBox, mountBedReference, mountStudioLights, mountViewHelper, outerMm, renderViewHelper, viewHelperHit, type BuildVolume } from "./viewport-chrome";
@@ -57,7 +58,14 @@ const ARROW_HEAD = HANDLE_ARROW_TIP - 0.15;
 const EMPHASIS_OPACITY = 0.45;
 
 export interface ModelView {
-  setSolid(solid: ModelSolid | null): void;
+  /** The open solid, in its own frame, drawn at `pose` in model space. The camera stays where it is. */
+  setSolid(solid: ModelSolid | null, pose: Affine): void;
+  /** Move the open solid in model space. Its mesh is not touched. */
+  setPose(pose: Affine): void;
+  /** Look at `box`, a model-space box, from the direction Model opens with. */
+  frame(box: Bounds): void;
+  /** The faint bed and build volume, a size reference only. */
+  setBedVisible(on: boolean): void;
   setPickMode(mode: "face" | "edge"): void;
   highlight(picks: ModelPick[]): void;
   setGhost(ghost: ModelGhost | null): void;
@@ -103,13 +111,19 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   canvas.parentElement?.append(fit);
 
   const context = new THREE.Group();
+  /** The open solid's pose in model space. `body` inside it keeps the scale preview. */
+  const posed = new THREE.Group();
+  posed.matrixAutoUpdate = false;
   const body = new THREE.Group();
+  posed.add(body);
   const ghosts = new THREE.Group();
   const handleGroup = new THREE.Group();
-  scene.add(context, body, ghosts, handleGroup);
+  scene.add(context, posed, ghosts, handleGroup);
 
   let solid: ModelSolid | null = null;
+  /** The open solid's box in model space. */
   let solidBox: Box | null = null;
+  let bedOn = true;
   let boundaries = new Map<number, number[]>();
   let center = new THREE.Vector3();
   let extent = 1;
@@ -330,7 +344,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       mesh.renderOrder = 1;
       mesh.raycast = () => undefined;
       context.add(mesh);
-      const box = partBox(held.box, part.matrix);
+      const box = boxUnder(held.box, part.matrix);
       published.push(`${part.id}:${[...box.min, ...box.max].map((value) => value.toFixed(2)).join(",")}`);
     }
     canvas.dataset.contextCount = String(parts.length);
@@ -361,12 +375,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     fit.hidden = false;
   }
 
+  /** The bed sits centred under the open solid, its plate at the solid's lowest point in model space. */
   function syncBedOrigin() {
     const rect = bedForBox(bed, shownBox());
     bedRef.setOrigin(rect.x0, rect.y0, rect.z0);
     const text = `${rect.x0.toFixed(1)},${rect.y0.toFixed(1)},${rect.z0.toFixed(1)}`;
     if (canvas.dataset.bedOrigin !== text) canvas.dataset.bedOrigin = text;
-    return rect;
+    return bedOn ? rect : null;
   }
 
   function drawMeasure() {
@@ -477,7 +492,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     }
     if (current.kind === "plane") {
       const span = Math.max(extent * 1.45, 30);
-      addGhostMesh(new THREE.PlaneGeometry(span, span), new THREE.Vector3(center.x, center.y, current.z), 0.2);
+      const box = solidBox ?? { min: [0, 0, 0], max: [0, 0, 0] };
+      addGhostMesh(new THREE.PlaneGeometry(span, span), new THREE.Vector3((box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, current.z), 0.2);
       return;
     }
     if (current.kind === "blend") {
@@ -494,25 +510,35 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         if (points.length < 2) continue;
         const curve = new THREE.CatmullRomCurve3(points);
         const tube = new THREE.TubeGeometry(curve, Math.max(8, points.length * 3), current.radius, 8, false);
-        addGhostMesh(tube, new THREE.Vector3(), 0.38);
+        // The edge is in the solid's own frame: the tube goes where the solid is drawn.
+        const meshGhost = addGhostMesh(tube, new THREE.Vector3(), 0.38);
+        meshGhost.matrixAutoUpdate = false;
+        meshGhost.matrix.copy(posed.matrix);
       }
     }
   }
 
-  function frame(positions: Float32Array) {
-    let minX = Infinity, minY = Infinity, minZ = Infinity;
-    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-    for (let i = 0; i + 2 < positions.length; i += 3) {
-      const x = positions[i]!, y = positions[i + 1]!, z = positions[i + 2]!;
-      minX = Math.min(minX, x); maxX = Math.max(maxX, x);
-      minY = Math.min(minY, y); maxY = Math.max(maxY, y);
-      minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
-    }
-    solidBox = { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
-    center = new THREE.Vector3((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
-    const size = Math.max(maxX - minX, maxY - minY, maxZ - minZ, 1);
-    extent = size;
-    const look = center.clone();
+  /** The solid's centre in its own frame, which a scale preview grows about, and its largest side. */
+  function measureSolid(positions: Float32Array) {
+    const own = boundsOf(positions);
+    center = new THREE.Vector3((own.min[0] + own.max[0]) / 2, (own.min[1] + own.max[1]) / 2, (own.min[2] + own.max[2]) / 2);
+    extent = Math.max(own.max[0] - own.min[0], own.max[1] - own.min[1], own.max[2] - own.min[2], 1);
+  }
+
+  function applyPose(next: Affine) {
+    const { m, t } = next;
+    posed.matrix.set(m[0], m[1], m[2], t[0], m[3], m[4], m[5], t[1], m[6], m[7], m[8], t[2], 0, 0, 0, 1);
+    posed.updateMatrixWorld(true);
+    solidBox = solid && solid.positions.length >= 9 ? posedBounds(solid.positions, next) : null;
+    const text = solidBox ? [...solidBox.min, ...solidBox.max].map((value) => value.toFixed(2)).join(",") : "";
+    if (text) canvas.dataset.solid = text;
+    else delete canvas.dataset.solid;
+  }
+
+  /** The one framing every caller shares: the box's centre, seen from the front right and above, the box filling the view. */
+  function frameBox(box: Bounds) {
+    const look = new THREE.Vector3((box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2);
+    const size = Math.max(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2], 1);
     const radius = size * Math.sqrt(3) / 2;
     const fov = (camera.fov * Math.PI) / 180;
     const narrow = canvas.clientWidth < 720;
@@ -521,10 +547,23 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const dist = (radius / Math.sin(fov / 2)) * (narrow ? 1.7 : 1.35);
     camera.near = Math.max(0.01, dist / 200);
     camera.far = dist * 20;
+    // An orbit still gliding would carry on past the reset: let it land first, undamped.
+    controls.enableDamping = false;
+    controls.update();
     camera.position.copy(look).add(new THREE.Vector3(1, -1.15, 0.72).normalize().multiplyScalar(dist));
     controls.target.copy(look);
     camera.updateProjectionMatrix();
     controls.update();
+    controls.enableDamping = true;
+    kick();
+  }
+
+  /** The camera as `x,y,z;tx,ty,tz` to a tenth of a millimetre, so a test can tell one view from another. */
+  function publishCamera() {
+    const p = camera.position;
+    const t = controls.target;
+    const text = `${[p.x, p.y, p.z].map((value) => value.toFixed(1)).join(",")};${[t.x, t.y, t.z].map((value) => value.toFixed(1)).join(",")}`;
+    if (canvas.dataset.camera !== text) canvas.dataset.camera = text;
   }
 
   function kick() {
@@ -546,6 +585,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         if (!viewHelper.animating) controls.enabled = true;
       }
       controls.update();
+      publishCamera();
       sizeHandles();
       viewHelper.center.copy(controls.target);
       renderer.render(scene, camera);
@@ -692,7 +732,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   });
 
   return {
-    setSolid(next) {
+    setSolid(next, at) {
       clearBody();
       solid = next;
       picks = [];
@@ -700,10 +740,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       boundaries = new Map();
       center.set(0, 0, 0);
       extent = 1;
+      applyPose(at);
       if (!next || next.positions.length < 9) {
         clearGhosts();
         ghost = null;
-        solidBox = null;
         applyScale();
         paintFit();
         kick();
@@ -732,9 +772,21 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         body.add(edgeLines);
       }
       paintFaces();
-      frame(next.positions);
+      measureSolid(next.positions);
       rebuildGhost();
       resize();
+    },
+    setPose(next) {
+      applyPose(next);
+      rebuildGhost();
+      kick();
+    },
+    frame: frameBox,
+    setBedVisible(on) {
+      bedOn = on;
+      bedRef.setVisible(on);
+      canvas.dataset.bedVisible = on ? "1" : "0";
+      kick();
     },
     setPickMode(next) {
       mode = next;
@@ -881,13 +933,17 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   /** Docked handles share one screen-fixed seat. A feature handle stays on the solid. */
-  /** Where the grey context lands on screen, as `x,y,w,h` canvas pixels, so a test can click it. */
-  function publishContextScreen(width: number, height: number) {
-    if (context.children.length === 0) {
-      delete canvas.dataset.contextScreen;
-      return;
-    }
-    const box = new THREE.Box3().setFromObject(context);
+  /** Where the grey context and the open solid land on screen, each as `x,y,w,h` canvas pixels, so a test can click or compare them. */
+  function publishScreenBoxes(width: number, height: number) {
+    const contextText = context.children.length > 0 ? screenRect(new THREE.Box3().setFromObject(context), width, height) : null;
+    if (contextText === null) delete canvas.dataset.contextScreen;
+    else if (canvas.dataset.contextScreen !== contextText) canvas.dataset.contextScreen = contextText;
+    const solidText = solidBox ? screenRect(new THREE.Box3(new THREE.Vector3(...solidBox.min), new THREE.Vector3(...solidBox.max)), width, height) : null;
+    if (solidText === null) delete canvas.dataset.solidScreen;
+    else if (canvas.dataset.solidScreen !== solidText) canvas.dataset.solidScreen = solidText;
+  }
+
+  function screenRect(box: THREE.Box3, width: number, height: number): string {
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
@@ -903,14 +959,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         }
       }
     }
-    const text = [minX, minY, maxX - minX, maxY - minY].map(Math.round).join(",");
-    if (canvas.dataset.contextScreen !== text) canvas.dataset.contextScreen = text;
+    return [minX, minY, maxX - minX, maxY - minY].map(Math.round).join(",");
   }
 
   function sizeHandles() {
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
-    publishContextScreen(width, height);
+    publishScreenBoxes(width, height);
     let dockSize = 0;
     if (handleParts.some((part) => part.handle.seat.at === "dock")) {
       camera.updateMatrixWorld();
@@ -1006,12 +1061,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     rayAt(x, y);
     const hit = raycaster.intersectObject(mesh, false)[0];
     if (!hit) return null;
-    const point = body.worldToLocal(hit.point.clone());
+    // A point the user puts down is a model-space number, like every other tool field.
+    const point = hit.point.clone();
     if (snap && hit.faceIndex != null) {
       const positions = mesh.geometry.getAttribute("position");
       let best: THREE.Vector3 | null = null;
       for (let corner = 0; corner < 3; corner += 1) {
-        const vertex = new THREE.Vector3().fromBufferAttribute(positions, hit.faceIndex * 3 + corner);
+        const vertex = mesh.localToWorld(new THREE.Vector3().fromBufferAttribute(positions, hit.faceIndex * 3 + corner));
         if (!best || vertex.distanceToSquared(point) < best.distanceToSquared(point)) best = vertex;
       }
       if (best) point.copy(best);

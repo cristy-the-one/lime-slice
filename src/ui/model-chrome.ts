@@ -2,9 +2,10 @@
  * Model mode's toolbar, the tool that is open, and the ghost that follows its numbers.
  * Apply still lives in `app/model.ts`. This file only decides what is on screen.
  */
-import { Box, CircleDot, Download, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Triangle, Undo2, createElement, type IconNode } from "lucide";
+import { Box, CircleDot, Download, Focus, Grid3x3, Move3d, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Triangle, Undo2, createElement, type IconNode } from "lucide";
 import type { HandleDrag, ModelGhost } from "../model-view";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type ModelTool, type Vec3 } from "../model-drag";
+import type { PlaceFields } from "../model-space";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
 import { formatMm, splitPlaneInside, splitPlaneRange, type AxisExtent } from "../model-plane";
 import { selectedEdges } from "../model-blend";
@@ -23,18 +24,22 @@ export interface SolidBox {
 
 interface ModelChromeHooks {
   clearSelection(): void;
-  /** Z extent of the open solid, in the solid's own frame. */
+  /** Z extent of the open solid in model space. */
   solidZ(): AxisExtent | null;
   /** A tool opened, the selection changed, or a number changed. `typed` while a number is still being typed or dragged. */
   paramsChanged(typed?: boolean): void;
   /** A typed or dragged number settled: ask the kernel now instead of after the typing wait. */
   probeNow(): void;
-  /** Bounds of the open solid, in the solid's own frame. */
+  /** Bounds of the open solid in model space. */
   solidBox(): SolidBox | null;
-  /** Polyline points of one edge of the open solid. */
+  /** Polyline points of one edge of the open solid, in model space. */
   edgePoints(edge: number): ArrayLike<number> | null;
-  /** Unit direction a hole drills. Straight down when no face is picked. */
+  /** Unit direction a hole drills, in model space. Straight down when no face is picked. */
   holeAxis(): Vec3;
+  /** Where the open object sits in model space, as the Place fields show it. Null with nothing open. */
+  placeFields(): PlaceFields | null;
+  /** A Place field changed: the object moves, or turns, in model space. */
+  placeMoved(fields: PlaceFields, changed: "move" | "turn", done: boolean): void;
 }
 
 const TOOLS: { id: ModelTool; icon: IconNode; label: string }[] = [
@@ -45,7 +50,11 @@ const TOOLS: { id: ModelTool; icon: IconNode; label: string }[] = [
   { id: "hole", icon: CircleDot, label: "Hole" },
   { id: "scale", icon: Scaling, label: "Scale" },
   { id: "measure", icon: Ruler, label: "Measure" },
+  { id: "place", icon: Move3d, label: "Place" },
 ];
+
+const PLACE_FIELDS = ["modelPlaceX", "modelPlaceY", "modelPlaceZ", "modelPlaceRx", "modelPlaceRy", "modelPlaceRz"] as const;
+const BED_KEY = "lime-slice-model-bed";
 
 let hooks: ModelChromeHooks | null = null;
 let tool: ModelTool | null = null;
@@ -91,6 +100,18 @@ export function mountModelChrome(next: ModelChromeHooks) {
   iconize("#modelStep", Download);
   iconize("#modelUndo", Undo2);
   iconize("#modelRedo", Redo2);
+  iconize("#modelBedToggle", Grid3x3);
+  document.querySelector("#modelResetView")?.replaceChildren(createElement(Focus, { width: 16, height: 16, "aria-hidden": "true", class: "ico" }));
+  setBed(readBedPref());
+  document.querySelector("#modelBedToggle")?.addEventListener("click", () => {
+    const on = document.querySelector("#modelBedToggle")?.getAttribute("aria-pressed") !== "true";
+    setBed(on);
+    try {
+      localStorage.setItem(BED_KEY, on ? "1" : "0");
+    } catch {
+      // A blocked store only means the choice is not remembered.
+    }
+  });
 
   document.querySelector("#modelBar")?.addEventListener("click", (ev) => {
     const target = ev.target instanceof Element ? ev.target : null;
@@ -103,7 +124,12 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (op) setBoolOp(op.id);
   });
   document.querySelector("#modelCancel")?.addEventListener("click", () => closeTool());
-  document.querySelector("#modelPanel")?.addEventListener("input", () => {
+  document.querySelector("#modelPanel")?.addEventListener("input", (ev) => {
+    if (tool === "place") {
+      const id = ev.target instanceof HTMLElement ? ev.target.id : "";
+      placeChanged(/Rx|Ry|Rz/.test(id) ? "turn" : "move", false);
+      return;
+    }
     refreshGhost();
     hooks?.paramsChanged(true);
   });
@@ -203,6 +229,7 @@ function toggleTool(next: ModelTool) {
   if (next === "hole") applyHoleDefaults();
   if (next === "measure") applyMeasureDefaults();
   syncFields();
+  syncPlaceFields();
   refreshTools();
   refreshApply();
   refreshNote();
@@ -338,6 +365,8 @@ function refreshNote() {
     text = "About the centre. Placement scale becomes 100%.";
   } else if (tool === "measure") {
     text = measureNote(point("A"), point("B"));
+  } else if (tool === "place") {
+    text = "From where its file put it, turning about its centre. The plate does not move.";
   } else if (isProbed(tool)) {
     const axis = tool === "hole" ? (hooks?.holeAxis() ?? [0, 0, -1]) : null;
     const down = axis != null && Math.abs(axis[0]) < 1e-6 && Math.abs(axis[1]) < 1e-6 && axis[2] < -0.9;
@@ -385,8 +414,47 @@ function dragContext(): DragContext {
 function onHandleDrag(drag: HandleDrag) {
   if (!tool) return;
   writeFields(drag.handle.fields, drag.values);
+  if (tool === "place") {
+    placeChanged(drag.handle.kind === "ring" ? "turn" : "move", drag.phase === "end");
+    return;
+  }
   document.querySelector("#modelPanel")?.dispatchEvent(new Event("input", { bubbles: true }));
   if (drag.phase === "end") hooks?.probeNow();
+}
+
+function placeChanged(changed: "move" | "turn", done: boolean) {
+  const [x, y, z, rx, ry, rz] = PLACE_FIELDS.map((field) => num(`#${field}`));
+  hooks?.placeMoved({ x: x!, y: y!, z: z!, rx: rx!, ry: ry!, rz: rz! }, changed, done);
+  refreshGhost();
+}
+
+/** The Place fields follow the open object's pose: on opening the tool, and after an undo or another object opens. */
+export function syncPlaceFields() {
+  if (tool !== "place") return;
+  const fields = hooks?.placeFields();
+  if (!fields) return;
+  const active = document.activeElement;
+  PLACE_FIELDS.forEach((field, i) => {
+    const input = document.querySelector<HTMLInputElement>(`#${field}`);
+    const value = [fields.x, fields.y, fields.z, fields.rx, fields.ry, fields.rz][i]!;
+    if (input && input !== active) input.value = fieldText(value);
+  });
+  refreshGhost();
+}
+
+function readBedPref(): boolean {
+  try {
+    return localStorage.getItem(BED_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function setBed(on: boolean) {
+  const button = document.querySelector("#modelBedToggle");
+  button?.setAttribute("aria-pressed", on ? "true" : "false");
+  button?.setAttribute("data-tip", on ? "Hide the bed and build volume" : "Show the bed and build volume for size");
+  fx.model?.setBedVisible(on);
 }
 
 function point(which: "A" | "B"): Vec3 {
@@ -416,6 +484,7 @@ function ghostFor(current: ModelTool): ModelGhost | null {
     };
   }
   if (current === "scale") return { kind: "scale", factor: num("#modelFactor") };
+  if (current === "place") return null;
   const edges = selectedEdges(picks);
   if (edges.length === 0) return null;
   return { kind: "blend", edges, radius: num("#modelBlend") };

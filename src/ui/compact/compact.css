@@ -674,6 +674,7 @@ html.layout-compact .model-fields label[data-wide] { flex-basis: 120px; }
 html.layout-compact .model-actions { margin-right: 116px; }
 html.layout-compact .model-actions .btn { min-height: 36px; min-width: 72px; }
 html.layout-compact .model-fit { top: 128px; bottom: auto; left: 8px; }
+html.layout-compact .model-view-reset { top: 128px; right: 8px; bottom: auto; width: 36px; height: 36px; }
 html.layout-compact #modelBar[data-tool] .model-readout { bottom: auto; top: 164px; }
 /* History is a sheet over the canvas, opened from the toolbar. */
 html.layout-compact #modelHistoryOpen { display: inline-flex; }

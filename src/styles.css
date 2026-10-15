@@ -674,7 +674,26 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .model-note.is-bad { color: var(--danger); }
 .model-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); }
 .model-actions .btn { height: var(--control-h-sm); }
-.model-bar[data-tool="measure"] #modelApply { display: none; }
+.model-bar[data-tool="measure"] #modelApply, .model-bar[data-tool="place"] #modelApply { display: none; }
+/* Over the corner axes, clear of the dock at the middle of the right edge and of the stack on the left. */
+.model-view-reset {
+  position: absolute;
+  right: 10px;
+  bottom: 140px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  color: var(--text-dim);
+}
+.model-view-reset:hover { background: var(--surface-3); color: var(--text); }
+.model-view-reset:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 #modelHistoryOpen { display: none; }
 .model-history {
   margin-top: auto;

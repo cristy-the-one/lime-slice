@@ -135,6 +135,7 @@ export interface BedReference {
   /** Move the plate, grid, and cage without changing the bed size. Print millimetres. */
   setOrigin(x: number, y: number, z: number): void;
   setColors(plate: number, minor: number, major: number, cage: number): void;
+  setVisible(on: boolean): void;
 }
 
 const GRID_MINOR = 10;
@@ -223,6 +224,11 @@ export function mountBedReference(scene: THREE.Scene, up: ViewportUp): BedRefere
       minor = nextMinor;
       major = nextMajor;
       place();
+    },
+    setVisible(on) {
+      plate.visible = on;
+      grid.visible = on;
+      cage.visible = on;
     },
   };
 }
