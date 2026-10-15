@@ -189,8 +189,10 @@ export function mountMarkup(root: HTMLElement) {
                 <button class="model-history-toggle" id="modelHistoryToggle" type="button" aria-controls="modelHistoryTree" aria-expanded="true"><span>History</span> <span class="model-history-count" id="modelHistoryCount"></span></button>
                 <div class="model-history-tree" id="modelHistoryTree" role="tree" aria-label="Model history"></div>
               </section>
+              <div class="model-foot" id="modelFoot">
+                <div id="modelReadout" class="model-readout">Open a STEP file to measure a solid.</div>
+              </div>
             </div>
-            <div id="modelReadout" class="model-readout">Open a STEP file to measure a solid.</div>
           </div>
         </div>
         <div class="stage-body" id="previewBody" role="tabpanel" aria-labelledby="tabPreview">

@@ -249,7 +249,8 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
   else el.removeAttribute("aria-expanded");
   const notes = [row.broken ? "cannot be rebuilt" : "", row.blocked ? "after a step that cannot be rebuilt" : "", row.plate ? "on the plate" : ""].filter(Boolean);
   el.setAttribute("aria-label", [row.label, ...notes].join(", "));
-  const tip = [row.opLabel, row.broken].filter(Boolean).join(". ");
+  // The root's file name can be longer than the row, which ellipsizes it: the tip has it whole.
+  const tip = [row.up === null ? row.label : null, row.opLabel, row.broken].filter(Boolean).join(". ");
   if (tip) {
     el.dataset.tip = tip;
     el.setAttribute("aria-description", tip);

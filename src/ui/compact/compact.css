@@ -673,8 +673,8 @@ html.layout-compact .model-fields label { flex: 0 0 84px; }
 html.layout-compact .model-fields label[data-wide] { flex-basis: 120px; }
 html.layout-compact .model-actions { margin-right: 116px; }
 html.layout-compact .model-actions .btn { min-height: 36px; min-width: 72px; }
-html.layout-compact .model-fit { top: 128px; bottom: auto; left: 8px; }
-html.layout-compact #modelBar[data-tool] .model-readout { bottom: auto; top: 164px; }
+/* The size chip and the readout stack under the toolbar, clear of the tool panel and the History sheet at the bottom. */
+html.layout-compact .model-foot { position: absolute; top: 128px; left: 8px; right: 8px; max-width: none; }
 /* History is a sheet over the canvas, opened from the toolbar. */
 html.layout-compact #modelHistoryOpen { display: inline-flex; }
 html.layout-compact #modelHistoryOpen[aria-expanded="true"] {

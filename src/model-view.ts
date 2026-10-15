@@ -100,7 +100,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   fit.id = "modelFit";
   fit.className = "model-fit";
   fit.hidden = true;
-  canvas.parentElement?.append(fit);
+  // The size chip stacks with the readout under the History panel, so a long warning never runs under it.
+  const foot = canvas.parentElement?.querySelector("#modelFoot");
+  if (foot) foot.prepend(fit);
+  else canvas.parentElement?.append(fit);
 
   const context = new THREE.Group();
   const body = new THREE.Group();
