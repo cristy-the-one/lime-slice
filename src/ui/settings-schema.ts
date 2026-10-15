@@ -170,7 +170,7 @@ export const GROUPS: GroupSpec[] = [
     title: "Cooling",
     tier: "simple",
     accent: "--group-cooling",
-    summary: (s) => `fan ${s.profile.fanPercent}% · overhang ${s.profile.overhangFanPercent}%`,
+    summary: (s) => `fan ${s.profile.fanPercent}%${s.overhangControl ? ` · overhang ${s.profile.overhangFanPercent}%` : ""}`,
   },
   {
     id: "supports",
@@ -541,7 +541,7 @@ export const CONTROLS: ControlSpec[] = [
     group: "cooling",
     tier: "simple",
     kind: num(0, 100, 1),
-    tip: "The part-cooling fan from the first layer it is on. On a belt printer M106 drives the side blowers, and they blow across the fresh bead on the belt. PETG wants little air; PLA takes full fan. Each filament keeps its own value, and a change here is saved to the filament.",
+    tip: "The part-cooling fan from the first layer it is on. On the IR3 V2 belt printer M106 drives both side blowers, which blow across the fresh bead on the belt. PETG wants little air; PLA takes full fan. Each filament keeps its own value, and a change here is saved to the filament.",
     keywords: "cooling part fan m106 blower",
     get: (s) => s.profile.fanPercent,
     set: (s, value) => { s.profile.fanPercent = fanPercentValue(value as number); },

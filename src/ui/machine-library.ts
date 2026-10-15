@@ -14,7 +14,7 @@ import { coerceBelt, defaultBelt, type BeltSettings, type PrinterKind } from "..
 import { KLIPPER_NUMBERS, type KlipperLimits, type PrinterProfile } from "../profiles.ts";
 import { ADVANCE, firmwareTakesArcs, type Firmware, type Rules } from "../settings-rules.ts";
 import { coerceHostKind, type MoonrakerConfigImport, type PrinterHostKind } from "./prusa-link.ts";
-import { fanDefaults, fanOf, readFan, type FanSettings } from "../fan.ts";
+import { fanDefaults, fanOf, readFan, withFan, type FanSettings } from "../fan.ts";
 
 export const MACHINE_FILE_VERSION = 3;
 
@@ -409,15 +409,17 @@ export function setNozzleTemp(library: MachineLibrary, temp: number): MachineLib
   };
 }
 
-/** The active filament's fan, as a per-print change saves it, the way `setNozzleTemp` saves a temperature. */
-export function setFan(library: MachineLibrary, fan: FanSettings): MachineLibrary {
-  const next = fanOf(fan);
+/**
+ * The fan keys `patch` names, saved on the active filament the way `setNozzleTemp` saves a
+ * temperature. A `supportFanPercent` named as undefined follows the fan again.
+ */
+export function setFan(library: MachineLibrary, patch: Partial<FanSettings>): MachineLibrary {
   return {
     ...library,
     filaments: library.filaments.map((filament) => {
       if (filament.id !== library.filamentId) return filament;
-      const { supportFanPercent: _support, ...rest } = filament;
-      return { ...rest, ...next };
+      const merged = { ...filament, ...patch };
+      return withFan(merged, merged);
     }),
   };
 }

@@ -49,14 +49,14 @@ export interface ProjectPlacement {
   stepTolerance: number;
 }
 
+/** A project's printer. One saved before fan settings has no fan, and opens with the active filament's. */
+export type ProjectProfile = Omit<PrinterProfile, keyof FanSettings> & Partial<FanSettings>;
+
 /**
  * What the app holds after a project opens.
  * Version 1 is one mesh. Version 2 keeps that mesh as the first object and adds `objects`.
  * Support edits keep birth sites, not walk ids.
  */
-/** A project's printer. One saved before fan settings has no fan, and opens with the active filament's. */
-export type ProjectProfile = Omit<PrinterProfile, keyof FanSettings> & Partial<FanSettings>;
-
 export interface LimeProject {
   version: 1 | 2;
   mesh: ProjectMesh;

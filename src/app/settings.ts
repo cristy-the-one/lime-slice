@@ -1326,13 +1326,17 @@ function afterSet(spec: ControlSpec, value: number | boolean | string): "stale" 
     case "fanpct": {
       const support = document.querySelector<HTMLInputElement>("#supfanpct");
       if (support) support.placeholder = controlById("supfanpct")!.placeholder!(state);
-      noteFan();
+      noteFan("fanPercent");
       return "stale";
     }
     case "ovfanpct":
+      noteFan("overhangFanPercent");
+      return "stale";
     case "supfanpct":
+      noteFan("supportFanPercent");
+      return "stale";
     case "fanoff":
-      noteFan();
+      noteFan("fanOffLayers");
       return "stale";
     case "bedx":
     case "bedy":

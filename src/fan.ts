@@ -13,26 +13,31 @@ export interface FanSettings {
   supportFanPercent?: number;
 }
 
-export const FAN_KEYS = ["fanPercent", "overhangFanPercent", "fanOffLayers", "supportFanPercent"] as const;
-
 export const MAX_FAN_OFF_LAYERS = 20;
 
 /**
  * Generic values by material, from OrcaSlicer's OrcaFilamentLibrary base profiles
- * (`fan_min_speed`, `overhang_fan_speed`, `close_fan_the_first_x_layers`). PETG is also
- * IdeaFormer's own Generic PETG. Support follows the fan on all four, as their
- * `support_material_interface_fan_speed` of -1 does.
+ * (`fan_min_speed`, `overhang_fan_speed`, `close_fan_the_first_x_layers`). PET covers PETG,
+ * whose values are also IdeaFormer's own Generic PETG. Support follows the fan on all of them,
+ * as their `support_material_interface_fan_speed` of -1 does. A material takes the first entry
+ * its name starts with, so PETG-CF reads as PET, and PCTG sits before PC.
  */
-const BY_MATERIAL: Record<string, FanSettings> = {
-  PLA: { fanPercent: 100, overhangFanPercent: 100, fanOffLayers: 1 },
-  PETG: { fanPercent: 20, overhangFanPercent: 100, fanOffLayers: 3 },
-  ABS: { fanPercent: 10, overhangFanPercent: 80, fanOffLayers: 3 },
-  TPU: { fanPercent: 100, overhangFanPercent: 100, fanOffLayers: 1 },
-};
+const BY_MATERIAL: [string, FanSettings][] = [
+  ["PCTG", { fanPercent: 20, overhangFanPercent: 100, fanOffLayers: 3 }],
+  ["PET", { fanPercent: 20, overhangFanPercent: 100, fanOffLayers: 3 }],
+  ["PLA", { fanPercent: 100, overhangFanPercent: 100, fanOffLayers: 1 }],
+  ["ABS", { fanPercent: 10, overhangFanPercent: 80, fanOffLayers: 3 }],
+  ["ASA", { fanPercent: 10, overhangFanPercent: 80, fanOffLayers: 3 }],
+  ["TPU", { fanPercent: 100, overhangFanPercent: 100, fanOffLayers: 1 }],
+  ["PC", { fanPercent: 10, overhangFanPercent: 60, fanOffLayers: 3 }],
+  ["PA", { fanPercent: 0, overhangFanPercent: 30, fanOffLayers: 3 }],
+];
 
-/** A material's generic fan. One this table does not name gets PLA's. */
+/** A material's generic fan. One the table does not name gets PLA's. */
 export function fanDefaults(material: string): FanSettings {
-  return { ...(BY_MATERIAL[material.trim().toUpperCase()] ?? BY_MATERIAL.PLA!) };
+  const name = material.trim().toUpperCase();
+  const row = BY_MATERIAL.find(([prefix]) => name.startsWith(prefix)) ?? BY_MATERIAL.find(([prefix]) => prefix === "PLA")!;
+  return { ...row[1] };
 }
 
 /** A typed percent as the engine takes it: a whole number from 0 to 100. */
@@ -51,6 +56,12 @@ export function fanOf(row: FanSettings): FanSettings {
   return out;
 }
 
+/** `row` with its fan replaced by `fan`, a support fan that follows included. */
+export function withFan<T extends Partial<FanSettings>>(row: T, fan: FanSettings): Omit<T, keyof FanSettings> & FanSettings {
+  const { fanPercent: _fan, overhangFanPercent: _overhang, fanOffLayers: _off, supportFanPercent: _support, ...rest } = row;
+  return { ...rest, ...fanOf(fan) };
+}
+
 /** The fan stored on a filament or a project, each key that is missing or not a number taken from `fallback`. */
 export function readFan(row: Record<string, unknown>, fallback: FanSettings): FanSettings {
   const num = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
@@ -60,7 +71,6 @@ export function readFan(row: Record<string, unknown>, fallback: FanSettings): Fa
     fanOffLayers: num(row.fanOffLayers) ? fanLayersValue(row.fanOffLayers) : fallback.fanOffLayers,
   };
   if (num(row.supportFanPercent)) out.supportFanPercent = fanPercentValue(row.supportFanPercent);
-  else if (!("supportFanPercent" in row) && typeof fallback.supportFanPercent === "number") out.supportFanPercent = fallback.supportFanPercent;
   return out;
 }
 

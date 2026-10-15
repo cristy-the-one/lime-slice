@@ -14,7 +14,7 @@ import { dropEmptyReinforce } from "../reinforcement.ts";
 import { base64ToBytes } from "../base64.ts";
 import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile, type ToolTree } from "../project.ts";
 import { saveProfile, type PrinterProfile } from "../profiles.ts";
-import { fanDefaults, projectFan } from "../fan.ts";
+import { fanDefaults, projectFan, withFan } from "../fan.ts";
 import { selection } from "../ui/machine-library.ts";
 import { loadMachineLibrary } from "./machine-library.ts";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel.ts";
@@ -101,9 +101,8 @@ export function mountProjectFiles() {
 }
 
 /** A project saved before fan settings opens with the active filament's fan. */
-function withFan(profile: ProjectProfile): PrinterProfile {
-  const { supportFanPercent: _support, ...rest } = profile;
-  return { ...rest, ...projectFan(profile, selection(loadMachineLibrary())?.filament ?? fanDefaults("")) };
+function projectProfile(profile: ProjectProfile): PrinterProfile {
+  return withFan(profile, projectFan(profile, selection(loadMachineLibrary())?.filament ?? fanDefaults("")));
 }
 
 function openProjectPicker() {
@@ -126,7 +125,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
     state.centered = project.placement.centered;
     state.offset = { ...project.placement.offset };
     state.stepTolerance = project.placement.stepTolerance;
-    state.profile = withFan(project.profile);
+    state.profile = projectProfile(project.profile);
     saveProfile(state.profile);
     applyPreset(project.settings);
     setSettingsLevel(project.level);

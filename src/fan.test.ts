@@ -47,6 +47,13 @@ eq("ABS is OrcaSlicer's generic ABS", byMaterial.ABS, { fanPercent: 10, overhang
 eq("TPU is OrcaSlicer's generic TPU", byMaterial.TPU, { fanPercent: 100, overhangFanPercent: 100, fanOffLayers: 1 });
 eq("a material the table does not name gets PLA's", fanDefaults("PEEK"), fanDefaults("PLA"));
 eq("the material is matched without case", fanDefaults(" petg "), fanDefaults("PETG"));
+eq("a PETG blend reads PETG's", fanDefaults("PETG-CF"), fanDefaults("PETG"));
+eq("PCTG is OrcaSlicer's PCTG, not PC's", fanDefaults("PCTG"), { fanPercent: 20, overhangFanPercent: 100, fanOffLayers: 3 });
+eq("ASA, PC, and PA are OrcaSlicer's", [fanDefaults("ASA"), fanDefaults("PC"), fanDefaults("PA-CF")], [
+  { fanPercent: 10, overhangFanPercent: 80, fanOffLayers: 3 },
+  { fanPercent: 10, overhangFanPercent: 60, fanOffLayers: 3 },
+  { fanPercent: 0, overhangFanPercent: 30, fanOffLayers: 3 },
+]);
 eq("the factory profile is PLA's", fanOfRow(defaultProfile()), fanDefaults("PLA"));
 
 // Choosing a filament sets the fan the slice sends, the way it sets the temperature.
@@ -62,8 +69,10 @@ eq("the edit lands on the active filament with the temperature", [fanOfRow(edite
 eq("other filaments keep theirs", fanOfRow(edited.filaments.find((row) => row.id === "lime-pla")!), fanDefaults("PLA"));
 const away = pick(pick(edited, "lime-pla"), "lime-petg");
 eq("switching away and back brings the edit back", fanOfRow(selection(away)!.filament), { fanPercent: 30, overhangFanPercent: 90, fanOffLayers: 2, supportFanPercent: 10 });
-const following = setFan(edited, { fanPercent: 30, overhangFanPercent: 90, fanOffLayers: 2 });
+const following = setFan(edited, { supportFanPercent: undefined });
 eq("an emptied support fan follows again", "supportFanPercent" in selection(following)!.filament, false);
+const oneKey = setFan(edited, { fanPercent: 45 });
+eq("an edit saves only the value that changed", fanOfRow(selection(oneKey)!.filament), { fanPercent: 45, overhangFanPercent: 90, fanOffLayers: 2, supportFanPercent: 10 });
 
 // Libraries and machine files from before fan settings read their material's fan.
 const stored = JSON.parse(serializeLibrary(edited)) as { filaments: Record<string, unknown>[] };
@@ -120,6 +129,9 @@ eq("typed values are held to whole numbers in range", fanOfRow(state.profile), {
 controlById("supfanpct")!.set!(state, "");
 eq("an emptied Support fan % follows", [controlById("supfanpct")!.get!(state), controlById("supfanpct")!.placeholder!(state)], ["", "23"]);
 eq("Cooling sits between Speed and Supports", GROUPS.map((group) => group.id).slice(5, 8), ["speed", "cooling", "supports"]);
+const cooling = GROUPS.find((group) => group.id === "cooling")!;
+const ctx = { belt: false, lineWidth: 0.45 };
+eq("the Cooling summary names the overhang fan only while it applies", [cooling.summary(state, ctx), cooling.summary({ ...state, overhangControl: false }, ctx)], ["fan 23% · overhang 100%", "fan 23%"]);
 eq("the overhang fan hides with overhang control, the support fan with supports", [controlById("ovfanpct")!.when!({ ...state, overhangControl: false }), controlById("supfanpct")!.when!({ ...state, supports: false })], [false, false]);
 
 if (failed) {

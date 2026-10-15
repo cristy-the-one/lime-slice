@@ -2,7 +2,7 @@ import { fx } from "./fx";
 import { session, state } from "./state";
 import { presetKeys } from "../presets";
 import { KLIPPER_NUMBERS, saveProfile } from "../profiles";
-import { restoreFan, snapFan } from "../fan";
+import { restoreFan, snapFan, withFan } from "../fan";
 import { emptyOverrides } from "../overrides";
 import { emptyPlate, pinPlateMeshes, recallPlateMeshes, revivePlate, snapPlate } from "../plate";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
@@ -116,8 +116,7 @@ function applySnap(snap: EditSnap) {
     const value = snap.profile[key];
     if (typeof value === "number") state.profile[key] = value;
   }
-  const { supportFanPercent: _support, ...rest } = state.profile;
-  state.profile = { ...rest, ...restoreFan(state.profile, snap.profile) };
+  state.profile = withFan(state.profile, restoreFan(state.profile, snap.profile));
   if (snap.level === "simple" || snap.level === "advanced" || snap.level === "expert") setSettingsLevel(snap.level);
   state.profile.pressureAdvance = state.pressureAdvance;
   state.profile.linearAdvance = state.linearAdvance;
@@ -126,9 +125,9 @@ function applySnap(snap: EditSnap) {
     const selected = selectIn(loadMachineLibrary(), snap.machine.printerId, snap.machine.filamentId, snap.machine.nozzleMm);
     if (typeof selected !== "string") {
       const withAdvance = setAdvance(selected, state.pressureAdvance, state.linearAdvance);
-      const withTemp = setFan(setNozzleTemp(withAdvance, state.profile.nozzleTemp), state.profile);
+      const withHeatAndFan = setFan(setNozzleTemp(withAdvance, state.profile.nozzleTemp), withFan({}, state.profile));
       const speed = state.retractOn && Math.abs(state.retractSpeed - 30) > 1e-6 ? state.retractSpeed : null;
-      storeMachineLibrary(setRetract(withTemp, state.retractOn ? state.retractLength : null, speed));
+      storeMachineLibrary(setRetract(withHeatAndFan, state.retractOn ? state.retractLength : null, speed));
     }
     if (snap.machine.kind && snap.machine.belt) {
       const belted = setActiveBelt(loadMachineLibrary(), snap.machine.kind, snap.machine.belt);
