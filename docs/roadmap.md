@@ -140,6 +140,17 @@ Scarfed seams, aligned seams on a sharp corner, and nearest seams are in the pla
 
 G2/G3 fitting is default on (`arcFit` in `src/app/settings.ts`, `SliceRequest::arc_fit` in `crates/lime-slice-core/src/slice.rs`). The estimate counts `arcMoves`.
 
+Arcs are written only when the printer's firmware takes them: `printer.firmwareArcs` on the request (`PrinterProfile::accepts_arcs`), checked once in `EmitCfg::new` in `gcode.rs`. In the app it is the printer's "Firmware accepts arcs (G2/G3)" box beside Firmware. Klipper skips G2/G3 unless `printer.cfg` has `[gcode_arcs]`, and the next G1 then carries the skipped filament, which stopped a 1.5.0 print on the IR3 V2 with "Move exceeds maximum extrusion". So the defaults follow the firmware:
+
+| Printer | Firmware | Arcs | Why |
+| --- | --- | --- | --- |
+| Ideaformer IR3 V2 | Klipper | off, set by the preset | its printer.cfg has no `[gcode_arcs]`, and Ideaformer's slicer writes none |
+| Lime 220, Lime 300, Lime 180, Generic belt 45° | Klipper | off, from the firmware | a stock Klipper config has no `[gcode_arcs]` |
+| A custom or imported printer | Klipper | off until the box is ticked | the same |
+| A custom or imported printer | Marlin | on until the box is cleared | Marlin builds usually have `ARC_SUPPORT` |
+
+A stored printer, machine file, or project without the key gets its firmware's default. A request without `firmwareArcs` gets the same rule in the engine, and no firmware named (the CLI default) keeps arcs. The header's `; features:` line ends in `; arcs on` or `; arcs off (…)` whenever the request names the key, as the app always does.
+
 **User value.** Already captured. Leave it on.
 
 **Effort.** None.

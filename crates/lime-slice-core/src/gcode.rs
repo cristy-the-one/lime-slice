@@ -577,6 +577,7 @@ fn emit_gcode_inner(
             layer_height,
             line_width,
             features,
+            cfg.arc_note,
             classic_estimator,
             junction_deviation,
             cfg.klipper.as_ref(),
@@ -612,7 +613,7 @@ fn emit_gcode_inner(
     // layer, and that pass is what the print-time totals come from.
     layers.par_iter().for_each(|layer| {
         for run in &layer.runs {
-            run.layer.script(arc_fit);
+            run.layer.script(cfg.arc_fit);
         }
     });
     let mut w = Writer::blank(&cfg, Carry::initial(&cfg), false);
@@ -684,6 +685,7 @@ fn emit_gcode_inner(
         layer_height,
         line_width,
         features,
+        cfg.arc_note,
         classic_estimator,
         junction_deviation,
         cfg.klipper.as_ref(),
@@ -838,6 +840,8 @@ struct EmitCfg {
     classic_estimator: bool,
     junction_deviation: f64,
     arc_fit: bool,
+    /// Appended to the header's features line. See `arc_note`.
+    arc_note: &'static str,
     max_accel: f64,
     max_volumetric_mm3_s: f64,
     filament_diameter: f64,
@@ -888,15 +892,20 @@ impl EmitCfg {
         };
         // G2/G3 are arcs in the machine XY plane. That plane is the nozzle
         // plane only when the belt is Z. Any other belt axis prints lines.
-        let arc_fit = arc_fit
-            && !matches!(
-                belt.map(|b| b.axis),
-                Some(crate::belt::BeltAxis::X | crate::belt::BeltAxis::Y)
-            );
+        let plane = !matches!(
+            belt.map(|b| b.axis),
+            Some(crate::belt::BeltAxis::X | crate::belt::BeltAxis::Y)
+        );
+        // The one gate: a firmware that skips G2/G3 gets none, whatever the
+        // request's `arcFit` says. Every emit path builds its config here.
+        let firmware = profile.accepts_arcs();
+        let arc_note = arc_note(profile.firmware_arcs.is_some(), arc_fit, firmware, plane);
+        let arc_fit = arc_fit && firmware && plane;
         Self {
             classic_estimator,
             junction_deviation,
             arc_fit,
+            arc_note,
             max_accel: profile.max_accel,
             max_volumetric_mm3_s: profile.max_volumetric_mm3_s,
             filament_diameter: profile.filament_diameter,
@@ -1115,6 +1124,19 @@ pub(crate) fn scans_in_parallel(
     scan_layers(&cfg, layers, crate::cancel::Job::default(), &Watch::idle()).is_some()
 }
 
+/// Whether the file has arcs, for the header's features line. A request that
+/// names the firmware's arcs, as the app's always does, is told either way. One
+/// that names nothing keeps the header it had, unless its firmware turned arcs off.
+fn arc_note(named: bool, asked: bool, firmware: bool, plane: bool) -> &'static str {
+    match (asked, firmware, plane) {
+        (true, false, _) => "; arcs off (firmware takes no G2/G3)",
+        _ if !named => "",
+        (true, true, true) => "; arcs on",
+        (true, true, false) => "; arcs off (belt axis is not Z)",
+        (false, _, _) => "; arcs off",
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_preamble(
     out: &mut String,
@@ -1123,6 +1145,7 @@ fn write_preamble(
     layer_height: f64,
     line_width: f64,
     features: &str,
+    arc_note: &str,
     classic_estimator: bool,
     junction_deviation: f64,
     klipper: Option<&KlipperCfg>,
@@ -1138,7 +1161,7 @@ fn write_preamble(
         out,
         "; layer_height: {layer_height:.3} line_width: {line_width:.3} filament: {filament:.2}"
     );
-    let _ = writeln!(out, "; features: {features}");
+    let _ = writeln!(out, "; features: {features}{arc_note}");
     let _ = writeln!(out, "M140 S{bed:.0}");
     let _ = writeln!(out, "M104 S{nozzle:.0}");
     let _ = writeln!(out, "M190 S{bed:.0}");
