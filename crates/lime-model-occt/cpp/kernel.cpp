@@ -490,6 +490,21 @@ bool pick(const Held& held, const char* kind, int index, TopoDS_Shape& out) {
 }
 
 constexpr double kPi = 3.14159265358979323846;
+/// Below this a size is no size: Open CASCADE would build a sliver or a seam that breaks later edits.
+constexpr double kTinyMm = 1e-6;
+
+bool positive(double size) { return size > kTinyMm; }
+
+/// The spec with each size that may be 0 (a cone's ends, a tube's hole, a wedge's top) snapped to 0 when it is
+/// within `kTinyMm` of it, so a pointed cone, a solid tube, and a ramp build clean.
+PrimitiveSpec snapped(PrimitiveSpec p) {
+    for (double* size : {&p.radius, &p.top_radius, &p.inner_radius, &p.top_x}) {
+        if (std::abs(*size) <= kTinyMm) {
+            *size = 0.0;
+        }
+    }
+    return p;
+}
 
 /// A built shape, or the message why Open CASCADE did not build it.
 template <typename Maker>
@@ -507,7 +522,7 @@ TopoDS_Shape make_primitive(const PrimitiveSpec& p, std::string& error) {
     const std::string& which = p.kind;
     const gp_Ax2 up(gp_Pnt(p.x, p.y, p.z), gp_Dir(0, 0, 1));
     if (which == "box") {
-        if (!(p.dx > 0.0) || !(p.dy > 0.0) || !(p.dz > 0.0)) {
+        if (!positive(p.dx) || !positive(p.dy) || !positive(p.dz)) {
             error = "A box needs a positive length on each side";
             return {};
         }
@@ -515,7 +530,7 @@ TopoDS_Shape make_primitive(const PrimitiveSpec& p, std::string& error) {
         return built(box, "box", error);
     }
     if (which == "cylinder") {
-        if (!(p.radius > 0.0) || !(p.height > 0.0)) {
+        if (!positive(p.radius) || !positive(p.height)) {
             error = "A cylinder needs a positive radius and height";
             return {};
         }
@@ -523,7 +538,7 @@ TopoDS_Shape make_primitive(const PrimitiveSpec& p, std::string& error) {
         return built(cylinder, "cylinder", error);
     }
     if (which == "sphere") {
-        if (!(p.radius > 0.0)) {
+        if (!positive(p.radius)) {
             error = "A sphere needs a positive radius";
             return {};
         }
@@ -531,7 +546,7 @@ TopoDS_Shape make_primitive(const PrimitiveSpec& p, std::string& error) {
         return built(sphere, "sphere", error);
     }
     if (which == "cone") {
-        if (!(p.height > 0.0)) {
+        if (!positive(p.height)) {
             error = "A cone needs a height above 0";
             return {};
         }
@@ -539,7 +554,7 @@ TopoDS_Shape make_primitive(const PrimitiveSpec& p, std::string& error) {
             error = "A cone's radii cannot be below 0";
             return {};
         }
-        if (!(p.radius > 0.0) && !(p.top_radius > 0.0)) {
+        if (!positive(p.radius) && !positive(p.top_radius)) {
             error = "A cone needs a bottom or top radius above 0";
             return {};
         }
@@ -552,11 +567,11 @@ TopoDS_Shape make_primitive(const PrimitiveSpec& p, std::string& error) {
         return built(cone, "cone", error);
     }
     if (which == "torus") {
-        if (!(p.radius > 0.0)) {
+        if (!positive(p.radius)) {
             error = "A torus needs a ring radius above 0";
             return {};
         }
-        if (!(p.tube_radius > 0.0)) {
+        if (!positive(p.tube_radius)) {
             error = "A torus needs a tube radius above 0";
             return {};
         }
@@ -568,7 +583,7 @@ TopoDS_Shape make_primitive(const PrimitiveSpec& p, std::string& error) {
         return built(torus, "torus", error);
     }
     if (which == "wedge") {
-        if (!(p.dx > 0.0) || !(p.dy > 0.0) || !(p.dz > 0.0)) {
+        if (!positive(p.dx) || !positive(p.dy) || !positive(p.dz)) {
             error = "A wedge needs a positive length on each side";
             return {};
         }
@@ -588,11 +603,11 @@ TopoDS_Shape make_primitive(const PrimitiveSpec& p, std::string& error) {
             error = "A polygon needs 3 to 64 sides";
             return {};
         }
-        if (!(p.across > 0.0)) {
+        if (!positive(p.across)) {
             error = "A polygon needs a width across above 0";
             return {};
         }
-        if (!(p.height > 0.0)) {
+        if (!positive(p.height)) {
             error = "A polygon needs a height above 0";
             return {};
         }
@@ -618,11 +633,11 @@ TopoDS_Shape make_primitive(const PrimitiveSpec& p, std::string& error) {
         return built(prism, "polygon", error);
     }
     if (which == "tube") {
-        if (!(p.height > 0.0)) {
+        if (!positive(p.height)) {
             error = "A tube needs a height above 0";
             return {};
         }
-        if (!(p.radius > 0.0)) {
+        if (!positive(p.radius)) {
             error = "A tube needs an outer radius above 0";
             return {};
         }
@@ -646,6 +661,10 @@ TopoDS_Shape make_primitive(const PrimitiveSpec& p, std::string& error) {
             gp_Pnt(p.x + p.radius, p.y, p.z + p.height),
             gp_Pnt(p.x + p.inner_radius, p.y, p.z + p.height),
             Standard_True);
+        if (!section.IsDone()) {
+            error = "Open CASCADE did not build the tube";
+            return {};
+        }
         BRepBuilderAPI_MakeFace face(section.Wire(), Standard_True);
         if (!face.IsDone()) {
             error = "Open CASCADE did not build the tube";
@@ -669,7 +688,8 @@ gp_Pnt turn_centre(const PrimitiveSpec& p) {
     return gp_Pnt(p.x, p.y, p.z + p.height / 2.0);
 }
 
-TopoDS_Shape make_solid(const PrimitiveSpec& spec, std::string& error) {
+TopoDS_Shape make_solid(const PrimitiveSpec& given, std::string& error) {
+    const PrimitiveSpec spec = snapped(given);
     const TopoDS_Shape made = make_primitive(spec, error);
     if (made.IsNull()) {
         if (error.empty()) {

@@ -224,6 +224,16 @@ fn a_primitive_root_turns_about_its_centre() {
     ));
     near(volume(&upside), 261.799_388);
     near_box(bounds(&upside), [[-5.0, -5.0, 0.0], [5.0, 5.0, 10.0]]);
+    // Its wide end is on top now, and its point on Z 0.
+    let reach_at = |z: f64| {
+        points(&upside)
+            .iter()
+            .filter(|point| (point[2] - z).abs() < 1e-4)
+            .map(|point| point[0].hypot(point[1]))
+            .fold(0.0, f64::max)
+    };
+    near(reach_at(10.0), 5.0);
+    near(reach_at(0.0), 0.0);
     let standing = ok(open(
         "standing",
         json!({ "primitive": "torus", "origin": [0.0, 0.0, 12.0], "radius": 10.0, "tubeRadius": 2.0, "turn": [90.0, 0.0, 0.0] }),
@@ -305,15 +315,62 @@ fn every_new_primitive_fuses_and_cuts_a_box() {
         1_005.309_649,
         1_005.309_649,
     );
-    // A turned tool turns about its centre: the upside-down cone still cuts wholly inside.
-    let turned = json!({ "primitive": "cone", "origin": [20.0, 20.0, 5.0], "radius": 5.0, "topRadius": 2.0, "height": 10.0, "turn": [180.0, 0.0, 0.0] });
+    // A turned tool turns about its centre: a 30 mm spike that stands out of the 20 mm block above and
+    // below lies wholly inside it once turned onto its side, so the cut takes the whole cone.
+    let lying = json!({ "primitive": "cone", "origin": [20.0, 20.0, -5.0], "radius": 2.0, "topRadius": 0.0, "height": 30.0, "turn": [90.0, 0.0, 0.0] });
     fuse_and_cut(
         "cone",
         cone(5.0, 2.0, 10.0, [20.0, 20.0, 20.0]),
-        turned,
+        lying,
         408.407_045,
-        408.407_045,
+        125.663_706,
     );
+}
+
+#[test]
+fn the_older_primitives_store_as_they_did() {
+    if !kernel() {
+        return;
+    }
+    ok(json!({ "call": "open", "key": "old-ops", "box": [10.0, 10.0, 10.0] }));
+    let ops = [
+        json!({ "kind": "boolean", "op": "cut", "primitive": "box", "origin": [1.0, 1.0, 5.0], "size": [3.0, 3.0, 9.0], "radius": 0.0, "height": 0.0, "turn": [0.0, 0.0, 15.0] }),
+        json!({ "kind": "boolean", "op": "cut", "primitive": "cylinder", "origin": [5.0, 5.0, 5.0], "size": [0.0, 0.0, 0.0], "radius": 1.0, "height": 9.0, "turn": [0.0, 0.0, 0.0] }),
+        json!({ "kind": "boolean", "op": "cut", "primitive": "sphere", "origin": [5.0, 5.0, 10.0], "size": [0.0, 0.0, 0.0], "radius": 2.0, "height": 0.0, "turn": [0.0, 0.0, 0.0] }),
+    ];
+    for (i, op) in ops.iter().enumerate() {
+        let applied =
+            ok(json!({ "call": "apply", "key": "old-ops", "parent": 0, "node": i + 1, "op": op }));
+        assert_eq!(
+            applied["op"], *op,
+            "a {} op comes back exactly as it went",
+            op["primitive"]
+        );
+    }
+}
+
+#[test]
+fn a_size_too_small_to_build_is_no_size() {
+    if !kernel() {
+        return;
+    }
+    // A hole a nanometre wide is a solid tube, a cone top as small is a point, and a wedge top a ramp.
+    let rod = ok(open("tiny-hole", tube(5.0, 1e-9, 10.0, [0.0, 0.0, 0.0])));
+    near(volume(&rod), 785.398_163);
+    assert_eq!(faces(&rod), 3);
+    let point = ok(open("tiny-top", cone(5.0, 1e-9, 10.0, [0.0, 0.0, 0.0])));
+    assert_eq!(faces(&point), 2);
+    let ramp = ok(open(
+        "tiny-ramp",
+        wedge([20.0, 10.0, 8.0], 1e-9, [0.0, 0.0, 0.0]),
+    ));
+    assert_eq!(faces(&ramp), 5);
+    // A size that must be there and is as small is refused.
+    let flat = call(open(
+        "tiny-box",
+        json!({ "primitive": "box", "origin": [0.0, 0.0, 0.0], "size": [10.0, 1e-9, 10.0] }),
+    ));
+    assert_eq!(flat["error"], "A box needs a positive length on each side");
 }
 
 #[test]
