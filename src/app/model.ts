@@ -1,12 +1,28 @@
 import { base64ToBytes, bytesToBase64 } from "../base64";
-import { encodeStl, settle } from "../mesh-place";
+import { boundsOf, encodeStl, settleBy, type Bounds } from "../mesh-place";
+import {
+  IDENTITY_POSE,
+  applyPose,
+  boxUnder,
+  inversePose,
+  isIdentity,
+  placeFields,
+  poseFromPlace,
+  posedBounds,
+  toSolidOp,
+  turnDir,
+  type Affine,
+  type PlaceFields,
+} from "../model-space";
+import { markProjectDirty } from "../project-dirty";
+import { unionBox } from "../measure";
 import type { ModelPick } from "../model-view";
 import { decodeSolid, type ParsedSolid } from "../model-reply";
 import { holeAxis, lastFace, outwardFromMesh, selectedEdges } from "../model-blend";
 import { nextModelPicks, selectionCountLabel } from "../model-select";
 import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
-import { extentMemo, facePlane, planeFor, splitBase, splitNote, type FacePlane, type SplitState } from "../model-plane";
+import { boxExtentAlong, extentAlong, extentMemo, facePlane, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
 import {
   ROOT,
   childWithOp,
@@ -44,13 +60,15 @@ import {
   syncModelChrome,
   splitMode,
   syncModelSolid,
+  syncPlaceFields,
+  type PlacePhase,
 } from "../ui/model-chrome";
 import { mountModelHistory, syncModelHistory } from "../ui/model-history";
 import { dropRefusal } from "../model-history";
-import { addedSplit, meshTokenOf, withBrepFor } from "../plate";
+import { addedSplit, meshSeat, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose } from "../plate";
 import { authHeaders } from "../ui/api-base";
 import { livePlate, place } from "./files";
-import { editHistoryRefs, endModelVisit, flushEdit, markModelEdit, noteEdit, patchEditBrep } from "./history";
+import { beginEdit, editHistoryRefs, endModelVisit, flushEdit, markModelEdit, noteEdit, patchEditBrep } from "./history";
 import { fx } from "./fx";
 import { modelerFailure, plainModelError } from "./model-error";
 import { freshTreeKey, modelTrees } from "./model-trees";
@@ -114,14 +132,35 @@ const seeds = new Map<string, Seed>();
 /** Solids the engine answered from a seed's STEP-read step: shown only while that seed stands alone. */
 const readSolids = new WeakSet<ParsedSolid>();
 
+/** The object the camera last framed. A new solid of the same object keeps the user's view. */
+let framedFor: string | null = null;
+/** Place moves of the open object in this visit, for Undo and Redo while Place is open. One gesture is one step. */
+let placeUndo: Affine[] = [];
+let placeRedo: Affine[] = [];
+/** The pose a Place gesture started from, while it is under way. */
+let placeBefore: Affine | null = null;
+let placeTimer = 0;
+/** A typed or scrubbed Place number is one step once it rests this long. A drag ends its own step. */
+const PLACE_SETTLE_MS = 400;
+/** Each solid's box in its own frame. */
+const ownBoxes = new WeakMap<Float32Array, Bounds>();
+
 export function bindModelView() {
   fx.model?.onPick((pick: ModelPick | null, shift: boolean) => void onPick(pick, shift));
   document.querySelector("#modelPickFace")?.addEventListener("click", () => setMode("face"));
   document.querySelector("#modelPickEdge")?.addEventListener("click", () => setMode("edge"));
   document.querySelector("#modelApply")?.addEventListener("click", () => void applyTool());
   document.querySelector("#modelStep")?.addEventListener("click", () => void runExport());
-  document.querySelector("#modelUndo")?.addEventListener("click", () => void step(undoTarget, "Edit undone."));
-  document.querySelector("#modelRedo")?.addEventListener("click", () => void step(redoTarget, "Edit redone."));
+  // While Place is open, Undo and Redo step its moves; the solid's history waits until it closes.
+  document.querySelector("#modelUndo")?.addEventListener("click", () => {
+    if (openModelTool() === "place") placeStep("undo");
+    else void step(undoTarget, "Edit undone.");
+  });
+  document.querySelector("#modelRedo")?.addEventListener("click", () => {
+    if (openModelTool() === "place") placeStep("redo");
+    else void step(redoTarget, "Edit redone.");
+  });
+  document.querySelector("#modelResetView")?.addEventListener("click", (ev) => frameModel((ev as MouseEvent).shiftKey));
   mountModelChrome({
     clearSelection() {
       picks = [];
@@ -136,7 +175,10 @@ export function bindModelView() {
       return splitLegal();
     },
     paramsChanged(typed) {
+      // Place closed while a typed move was settling: that move is its step now, before Undo means the solid again.
+      if (placeBefore && openModelTool() !== "place") endPlace();
       scheduleProbe(typed ? PROBE_WAIT_MS : 0);
+      syncUndo();
     },
     probeNow() {
       if (!pendingProbe) return;
@@ -144,14 +186,23 @@ export function bindModelView() {
       sendPending();
     },
     solidBox() {
-      return open ? boxOf(open.solid.positions) : null;
+      return openBox();
     },
     edgePoints(edge) {
-      return open?.solid.edges.find((item) => item.id === edge)?.points ?? null;
+      const points = open?.solid.edges.find((item) => item.id === edge)?.points;
+      const pose = openPose();
+      if (!points || isIdentity(pose)) return points ?? null;
+      const out = new Float32Array(points.length);
+      for (let i = 0; i + 2 < points.length; i += 3) out.set(applyPose(pose, [points[i]!, points[i + 1]!, points[i + 2]!]), i);
+      return out;
     },
     holeAxis() {
       return drillAxis();
     },
+    placeFields() {
+      return open ? placeFields(openPose(), pivotOf(open.solid)) : null;
+    },
+    placeMoved,
   });
   mountModelHistory({
     jump(node) {
@@ -222,8 +273,14 @@ function remember(key: string, view: ProbeView) {
   answers.set(key, view);
 }
 
-/** The open tool's edit, from its fields. Null when it cannot run yet. */
+/** The open tool's edit in the solid's own frame, from its model-space fields. Null when it cannot run yet. */
 function toolOp(tool: string | null | undefined): ModelOp | null {
+  const op = fieldOp(tool);
+  return op && toSolidOp(op, openPose());
+}
+
+/** The open tool's edit as its fields say it, in model space. */
+function fieldOp(tool: string | null | undefined): ModelOp | null {
   const origin: Vec3 = [num("#modelX"), num("#modelY"), num("#modelZ")];
   switch (tool) {
     case "fillet":
@@ -315,9 +372,11 @@ function liveKeep(): PrepareKeep {
 }
 
 function meshOf(solid: ParsedSolid): PlateMesh {
-  const positions = settle(new Float32Array(solid.positions));
+  const positions = new Float32Array(solid.positions);
+  const seat = settleBy(positions);
   const name = stlName(state.mesh?.name ?? "solid");
   const bytes = encodeStl(positions, name);
+  setMeshSeat(bytes, seat);
   return { name, bytes, sourcePos: positions, token: meshTokenOf(bytes) };
 }
 
@@ -428,6 +487,7 @@ function forgetShown(key: string) {
 
 /** Leaving Model: the plate takes the shown node, the visit is one Prepare step, and the STEP is written off the UI's path. */
 export function leaveModel() {
+  forgetPlaceSteps();
   commitModel();
   endModelVisit();
   void writeSteps();
@@ -444,6 +504,11 @@ export function forgetModelTrees() {
   writing.clear();
   open = null;
   shownFor = null;
+  framedFor = null;
+  // The edit history went with the old plate, so a move still under way is dropped, not kept as a step.
+  window.clearTimeout(placeTimer);
+  placeBefore = null;
+  forgetPlaceSteps();
   ticket += 1;
   busy = false;
   jumping = false;
@@ -464,11 +529,12 @@ export function showModel() {
   busy = false;
   jumping = false;
   parked = null;
+  const objectId = state.plate.selectedId;
+  if (objectId !== shownFor) forgetPlaceSteps();
   flushEdit();
   open = null;
   syncUndo();
   const mesh = state.mesh;
-  const objectId = state.plate.selectedId;
   shownFor = objectId;
   const obj = state.plate.objects.find((item) => item.id === objectId);
   const token = mesh ? meshTokenOf(mesh.bytes) : null;
@@ -558,7 +624,7 @@ function lastGood(tree: ModelTree, node: NodeId): NodeId | null {
 }
 
 function clearView() {
-  fx.model?.setSolid(null);
+  fx.model?.setSolid(null, IDENTITY_POSE);
   refreshModelContext();
   fx.model?.highlight([]);
   syncModelChrome([]);
@@ -878,7 +944,7 @@ function appliedMessage(op: ModelOp, solid: ParsedSolid) {
   const paint = state.supportPaint.length + state.seamPaint.length + state.reinforcement.length + state.supportEdits.length > 0;
   const notes = `${paint ? " Leaving Model clears this part's support paint." : ""}${op.kind === "scale" && state.partScale !== 1 ? " Placement scale becomes 100%." : ""}`;
   const volume = about(solid);
-  if (op.kind === "split") return `Split. ${volume} The other piece sits in the same spot. Use Arrange to lay them side by side.${notes}`;
+  if (op.kind === "split") return `Split. ${volume} On the plate both pieces share one spot: Arrange lays them side by side.${notes}`;
   if (op.kind === "fillet") return `Fillet. ${volume}${notes}`;
   if (op.kind === "chamfer") return `Chamfer. ${volume}${notes}`;
   if (op.kind === "hole") return `Hole. ${volume}${notes}`;
@@ -890,9 +956,11 @@ function addPiece(at: Opened, other: ParsedSolid, key: string, split: NodeId): b
   if (!state.mesh) return false;
   noteEdit();
   syncPlateFromState();
-  const positions = settle(new Float32Array(other.positions));
+  const positions = new Float32Array(other.positions);
+  const seat = settleBy(positions);
   const fileName = `${stlName(state.mesh.name).replace(/\.stl$/i, "")} split.stl`;
   const bytes = encodeStl(positions, fileName);
+  setMeshSeat(bytes, seat);
   const mesh: PlateMesh = { name: fileName, bytes, sourcePos: positions, token: meshTokenOf(bytes) };
   const name = placePiece(key, mesh);
   if (!name) {
@@ -1039,10 +1107,16 @@ async function saveStepFile(bytes: ArrayBuffer, name: string) {
   URL.revokeObjectURL(link.href);
 }
 
-/** Show `parsed` as the open tree's current node. */
+/** Show `parsed` as the open tree's current node. The camera frames it when another object opened, and stays put otherwise. */
 function present(parsed: ParsedSolid, message: string) {
   picks = [];
-  fx.model?.setSolid(parsed);
+  learnSeat(parsed);
+  fx.model?.setSolid(parsed, openPose());
+  if (open && framedFor !== open.objectId) {
+    framedFor = open.objectId;
+    frameModel(false);
+  }
+  syncPlaceFields();
   refreshModelContext();
   fx.model?.highlight([]);
   setModelEditable(parsed.editable);
@@ -1055,10 +1129,137 @@ function present(parsed: ParsedSolid, message: string) {
   readout(message);
 }
 
-/** The other plate objects, grey, in the open solid's frame. Nothing is drawn without an open solid. */
+/** The other plate objects, grey, where they sit in model space. Nothing is drawn without an open solid. */
 export function refreshModelContext() {
-  const box = open ? boxOf(open.solid.positions) : null;
-  fx.model?.setContext(box && open ? contextParts(livePlate(), open.objectId, box, state.profile.bedX, state.profile.bedY) : []);
+  fx.model?.setContext(open ? contextParts(livePlate(), open.objectId) : []);
+  const canvas = document.querySelector<HTMLElement>("#model");
+  const obj = open ? state.plate.objects.find((item) => item.id === open!.objectId) : undefined;
+  // The open object's plate mesh, so a test can tell a model-space move left it alone.
+  if (canvas && obj) canvas.dataset.plateMesh = meshTokenOf(obj.bytes);
+}
+
+/** The open object's pose into model space. */
+function openPose(): Affine {
+  const obj = open ? state.plate.objects.find((item) => item.id === open!.objectId) : undefined;
+  return obj ? modelPoseOf(obj) : IDENTITY_POSE;
+}
+
+/** The open solid's box in model space. */
+function openBox(): Bounds | null {
+  return open ? posedBounds(open.solid.positions, openPose()) : null;
+}
+
+/** The solid's box in its own frame, kept per solid: Place turns about its centre, and the kernel cuts against it. */
+function ownBox(solid: ParsedSolid): Bounds {
+  let box = ownBoxes.get(solid.positions);
+  if (!box) ownBoxes.set(solid.positions, (box = boundsOf(solid.positions)));
+  return box;
+}
+
+function pivotOf(solid: ParsedSolid): Vec3 {
+  const own = ownBox(solid);
+  return [(own.min[0] + own.max[0]) / 2, (own.min[1] + own.max[1]) / 2, (own.min[2] + own.max[2]) / 2];
+}
+
+/**
+ * The plate mesh of a step the engine just described sits under that step's solid by the solid's lowest
+ * point. When an engine from before `seatMm` read a STEP without saying how far it lowered it, Model learns it here.
+ */
+function learnSeat(solid: ParsedSolid) {
+  const mesh = treeOf(open)?.nodes.get(solid.id)?.mesh;
+  if (!mesh || meshSeat(mesh.bytes) !== undefined) return;
+  const z = extentAlong(solid.positions, [0, 0, 1]);
+  if (z) setMeshSeat(mesh.bytes, z.min);
+}
+
+/**
+ * Frame the open object, or with `all` every object, from the direction Model opens with. The Reset view
+ * button, Home, the Objects list's Frame, and the first look at an object all come here.
+ */
+export function frameModel(all: boolean) {
+  const box = openBox();
+  if (!box || !open) return;
+  const others = all ? contextParts(livePlate(), open.objectId).map((part) => boxUnder(boundsOf(part.positions), part.matrix)) : [];
+  fx.model?.frame(unionBox([box, ...others])!);
+}
+
+/** The Objects list's Frame in Model: that object, opened if it is not the open one. */
+export function frameInModel(id: string) {
+  if (open?.objectId === id) frameModel(false);
+  else framedFor = null;
+}
+
+/** A Place field moved the open object in model space. Its plate pose, mesh, and slice stay as they are. */
+function placeMoved(field: keyof PlaceFields, value: number, phase: PlacePhase) {
+  const at = open;
+  if (!at || busy || jumping) return;
+  const from = openPose();
+  const next = poseFromPlace(from, pivotOf(at.solid), field, value);
+  if (samePose(next, from)) {
+    // A grab with no move, or a number retyped as it was, changes nothing and opens no step.
+    if (phase === "end") endPlace();
+    return;
+  }
+  if (!placeBefore) {
+    placeBefore = from;
+    beginEdit();
+  }
+  putPose(at.objectId, next);
+  window.clearTimeout(placeTimer);
+  if (phase === "end") endPlace();
+  else if (phase === "typed") placeTimer = window.setTimeout(endPlace, PLACE_SETTLE_MS);
+  syncUndo();
+}
+
+function putPose(objectId: string, pose: Affine) {
+  state.plate = withModelPose(state.plate, objectId, pose);
+  fx.model?.setPose(openPose());
+  refreshModelGhost();
+  markProjectDirty();
+}
+
+/** A Place gesture is over: one step back for Undo here, and one Prepare step, folded into the visit like an edit. */
+function endPlace() {
+  window.clearTimeout(placeTimer);
+  const before = placeBefore;
+  placeBefore = null;
+  if (!before) return;
+  flushEdit();
+  if (!samePose(before, openPose())) {
+    placeUndo.push(before);
+    placeRedo = [];
+    markModelEdit();
+  }
+  syncUndo();
+  // A turn changes the solid's model-space box, and with it which tools are on offer.
+  syncModelSolid();
+}
+
+function samePose(a: Affine, b: Affine): boolean {
+  return a.t.every((value, i) => value === b.t[i]) && a.m.every((value, i) => value === b.m[i]);
+}
+
+/** Undo or Redo one Place step. A gesture still settling becomes a step first, so Undo takes it back. */
+function placeStep(way: "undo" | "redo") {
+  endPlace();
+  const [from, to] = way === "undo" ? [placeUndo, placeRedo] : [placeRedo, placeUndo];
+  const at = open;
+  const pose = from.pop();
+  if (!at || !pose) return;
+  to.push(openPose());
+  beginEdit();
+  putPose(at.objectId, pose);
+  flushEdit();
+  markModelEdit();
+  syncPlaceFields(true);
+  syncUndo();
+}
+
+/** Place steps belong to the object they moved, in one Model visit. */
+function forgetPlaceSteps() {
+  endPlace();
+  placeUndo = [];
+  placeRedo = [];
 }
 
 function showEdits(on: boolean) {
@@ -1070,8 +1271,15 @@ function syncUndo() {
   const tree = treeOf(open);
   const undo = document.querySelector<HTMLButtonElement>("#modelUndo");
   const redo = document.querySelector<HTMLButtonElement>("#modelRedo");
-  if (undo) undo.disabled = busy || jumping || !tree || undoTarget(tree) == null;
-  if (redo) redo.disabled = busy || jumping || !tree || redoTarget(tree) == null;
+  const placing = openModelTool() === "place";
+  if (undo) {
+    undo.disabled = busy || jumping || !tree || (placing ? placeUndo.length === 0 && !placeBefore : undoTarget(tree) == null);
+    undo.dataset.tip = placing ? "Undo the last move" : "Undo the last solid edit";
+  }
+  if (redo) {
+    redo.disabled = busy || jumping || !tree || (placing ? placeRedo.length === 0 : redoTarget(tree) == null);
+    redo.dataset.tip = placing ? "Redo the last move" : "Redo the last solid edit";
+  }
   const stepButton = document.querySelector<HTMLButtonElement>("#modelStep");
   if (stepButton) stepButton.disabled = busy || jumping || !tree;
   setModelWaiting(busy || jumping);
@@ -1088,16 +1296,43 @@ const extentOf = extentMemo();
 /** Each solid's flat faces, by face index; null for a curved one. */
 const flatFaces = new WeakMap<ParsedSolid, Map<number, FacePlane | null>>();
 
-/** The last split worked out, for the solid and panel state it was worked out from: one input asks several times. */
-let splitKept: { solid: ParsedSolid; key: string; state: SplitState } | null = null;
+/** The last split worked out, for the solid, pose, and panel state it was worked out from: one input asks several times. */
+let splitKept: { solid: ParsedSolid; pose: Affine; key: string; state: SplitState } | null = null;
 
 /**
- * The split plane from the panel, in the solid's own frame: the one place a split request is built.
- * X, Y, and Z cut square to that axis of the view; Face cuts parallel to the last picked flat face.
+ * The open solid's extent along a model-space normal: its own extent along that normal turned back into the
+ * solid's frame, moved by the pose. Exact, since the pose is rigid.
+ */
+function modelExtent(solid: ParsedSolid, pose: Affine, normal: Vec3): AxisExtent | null {
+  const own = extentOf(solid.positions, isIdentity(pose) ? normal : turnDir(inversePose(pose), normal));
+  const shift = normal[0] * pose.t[0] + normal[1] * pose.t[1] + normal[2] * pose.t[2];
+  return own && { min: own.min + shift, max: own.max + shift };
+}
+
+/**
+ * The box the kernel measures a cut against, the solid's own, as `planeFor` takes it: the box itself on an
+ * identity pose, else its corners' extent along a model-space normal turned back into the solid's frame.
+ */
+function kernelBox(solid: ParsedSolid, pose: Affine): { min: Vec3; max: Vec3 } | ((normal: Vec3) => AxisExtent) {
+  const own = ownBox(solid);
+  if (isIdentity(pose)) return own;
+  const back = inversePose(pose);
+  return (normal) => {
+    const extent = boxExtentAlong(own, turnDir(back, normal));
+    const shift = normal[0] * pose.t[0] + normal[1] * pose.t[1] + normal[2] * pose.t[2];
+    return { min: extent.min + shift, max: extent.max + shift };
+  };
+}
+
+/**
+ * The split plane from the panel, in model space: the one place a split request is built, and `toolOp` takes
+ * it into the solid's frame. X, Y, and Z cut square to that axis of the view, which is model space; Face cuts
+ * parallel to the last picked flat face.
  */
 function splitState(): SplitState {
   const at = open;
-  const box = at ? boxOf(at.solid.positions) : null;
+  const pose = openPose();
+  const box = openBox();
   if (!at || !box) return { why: "Open a STEP file to measure a solid.", wait: true };
   const mode = splitMode();
   const picked = mode === "face" ? lastFace(picks) : null;
@@ -1105,28 +1340,31 @@ function splitState(): SplitState {
   const value = num("#modelPlane");
   const tilt: [number, number] = [num("#modelTiltA"), num("#modelTiltB")];
   const key = `${mode}|${picked}|${facePicking}|${value}|${tilt}`;
-  if (splitKept?.solid === at.solid && splitKept.key === key) return splitKept.state;
+  if (splitKept?.solid === at.solid && splitKept.pose === pose && splitKept.key === key) return splitKept.state;
   let state: SplitState;
   if (mode === "face" && picked == null) {
     state = { why: facePicking ? "Pick a flat face to cut from." : "Switch to Face picking, then pick a flat face to cut from.", wait: true };
   } else {
-    const face = picked == null ? null : flatFace(at.solid, picked);
+    const own = picked == null ? null : flatFace(at.solid, picked);
+    const face = own && !isIdentity(pose) ? { point: applyPose(pose, own.point), normal: turnDir(pose, own.normal) } : own;
     const center: Vec3 = [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2];
     const base = splitBase(mode, center, face);
     state = base
-      ? { plan: planeFor(base, value, tilt, (normal) => extentOf(at.solid.positions, normal), box) }
+      ? { plan: planeFor(base, value, tilt, (normal) => modelExtent(at.solid, pose, normal), kernelBox(at.solid, pose)) }
       : { why: "Pick a flat face. This one is curved.", wait: false };
   }
-  splitKept = { solid: at.solid, key, state };
+  splitKept = { solid: at.solid, pose, key, state };
   return state;
 }
 
-/** A split is on offer when the solid can be cut square to at least one axis. */
+/** A split is on offer when the solid can be cut square to at least one model axis. */
 function splitLegal(): boolean {
-  const box = open ? boxOf(open.solid.positions) : null;
-  if (!open || !box) return false;
-  const positions = open.solid.positions;
-  return (["x", "y", "z"] as const).some((mode) => planeFor(splitBase(mode, [0, 0, 0], null)!, 0, [0, 0], (normal) => extentOf(positions, normal), box).range != null);
+  const at = open;
+  const pose = openPose();
+  const box = openBox();
+  if (!at || !box) return false;
+  const kernel = kernelBox(at.solid, pose);
+  return (["x", "y", "z"] as const).some((mode) => planeFor(splitBase(mode, [0, 0, 0], null)!, 0, [0, 0], (normal) => modelExtent(at.solid, pose, normal), kernel).range != null);
 }
 
 function flatFace(solid: ParsedSolid, face: number): FacePlane | null {
@@ -1139,39 +1377,19 @@ function flatFace(solid: ParsedSolid, face: number): FacePlane | null {
   return known.get(face)!;
 }
 
-const boxes = new WeakMap<Float32Array, { min: Vec3; max: Vec3 } | null>();
-
-/** The tessellation's bounds, kept per solid: every panel number and handle asks for them. */
-function boxOf(positions: Float32Array): { min: Vec3; max: Vec3 } | null {
-  if (!boxes.has(positions)) boxes.set(positions, measureBox(positions));
-  return boxes.get(positions)!;
-}
-
-function measureBox(positions: Float32Array): { min: Vec3; max: Vec3 } | null {
-  if (positions.length < 3) return null;
-  const min: [number, number, number] = [Infinity, Infinity, Infinity];
-  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
-  for (let i = 0; i + 2 < positions.length; i += 3) {
-    for (let axis = 0; axis < 3; axis += 1) {
-      const value = positions[i + axis]!;
-      if (value < min[axis]!) min[axis] = value;
-      if (value > max[axis]!) max[axis] = value;
-    }
-  }
-  return { min, max };
-}
-
 function prim(): "box" | "cylinder" | "sphere" {
   const value = document.querySelector<HTMLSelectElement>("#modelPrim")?.value;
   return value === "cylinder" || value === "sphere" ? value : "box";
 }
 
-/** Into the last picked face, or straight down when no face is picked. */
+/** Into the last picked face, or straight down in model space when no face is picked. */
 function drillAxis(): Vec3 {
   const face = lastFace(picks);
   if (!open || face == null) return [0, 0, -1];
   const stored = open.solid.faces.find((item) => item.id === face)?.normal;
-  return holeAxis(stored ?? outwardFromMesh(open.solid.positions, open.solid.triangles, face));
+  const axis = holeAxis(stored ?? outwardFromMesh(open.solid.positions, open.solid.triangles, face));
+  const pose = openPose();
+  return isIdentity(pose) ? axis : turnDir(pose, axis);
 }
 
 function num(id: string) {

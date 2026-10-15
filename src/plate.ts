@@ -14,6 +14,7 @@
  * Duplicate copies the selected object only.
  */
 import type { SavedTree } from "./model-tree-file.ts";
+import { IDENTITY_POSE, boxUnder, duplicatePose, inversePose, isIdentity, seatLift, thenPose, type Affine } from "./model-space.ts";
 import type { EditEntry } from "./support-edit-list.ts";
 import {
   dropEmptyReinforce,
@@ -104,6 +105,10 @@ export interface PlateFileObject {
    * in the file with the same hash and length. An older app ignores the key and drops it on the next save.
    */
   modelTree?: SavedTree<{ name: string; bytesBase64?: string; byteLength: number; hash: string }>;
+  /** Optional pose from the object's CAD frame into Model's shared space. Omitted for identity, which is how an older file reads. */
+  modelPose?: Affine;
+  /** Optional: how far the mesh was lowered onto Z = 0 when it was read. Omitted while unknown. */
+  meshSeatMm?: number;
 }
 
 /** One solid on the plate. Geometry stays in the session, not in the undo JSON. */
@@ -130,6 +135,8 @@ export interface PlateObject {
   brep?: ArrayBuffer;
   /** Key of this object's Model history tree. Absent until Model opens it. */
   modelTree?: string;
+  /** From the object's CAD frame into Model's shared space. Absent is identity: where its file put it. The plate never reads it. */
+  modelPose?: Affine;
 }
 
 export interface PlateState {
@@ -154,6 +161,7 @@ export interface PlateSnapObject {
   settings: PlateObjectSettings;
   brep?: ArrayBuffer;
   modelTree?: string;
+  modelPose?: Affine;
 }
 
 export interface PlateSnap {
@@ -206,6 +214,8 @@ interface HeldGeo {
 const held = new Map<string, HeldGeo>();
 /** Mesh buffer identity. A copied undo buffer shares the token of the live one. */
 const tokenOf = new WeakMap<ArrayBuffer, string>();
+/** How far each mesh, by token, was lowered onto Z = 0 when it was read. */
+const seats = new Map<string, number>();
 /** Bytes captured for undo. Not cleared with the live session, so a step can still restore them. */
 const pinned = new Map<string, HeldGeo>();
 let pinSeq = 0;
@@ -240,6 +250,39 @@ export function meshTokenOf(bytes: ArrayBuffer): string {
     tokenOf.set(bytes, token);
   }
   return token;
+}
+
+/** How far these mesh bytes were lowered onto Z = 0 when read: their CAD frame is the mesh moved up by this. Undefined when unknown. */
+export function meshSeat(bytes: ArrayBuffer): number | undefined {
+  return seats.get(meshTokenOf(bytes));
+}
+
+export function setMeshSeat(bytes: ArrayBuffer, seat: number) {
+  seats.set(meshTokenOf(bytes), seat);
+}
+
+export function modelPoseOf(obj: { modelPose?: Affine }): Affine {
+  return obj.modelPose ?? IDENTITY_POSE;
+}
+
+/** The object's plate mesh into model space: up to its CAD frame by its seat, then its pose. An unknown seat counts as 0. */
+export function meshToModel(obj: PlateObject): Affine {
+  const seat = meshSeat(obj.bytes) ?? 0;
+  return seat === 0 ? modelPoseOf(obj) : thenPose(seatLift(seat), modelPoseOf(obj));
+}
+
+/** The plate with object `id` at `pose` in model space. Identity drops the key. The plate pose and the mesh stay. */
+export function withModelPose(plate: PlateState, id: string, pose: Affine): PlateState {
+  return {
+    ...plate,
+    objects: plate.objects.map((obj) => {
+      if (obj.id !== id) return obj;
+      const next = { ...obj };
+      if (isIdentity(pose)) delete next.modelPose;
+      else next.modelPose = pose;
+      return next;
+    }),
+  };
 }
 
 /** Every object whose mesh is `token` gets `brep`. Undefined removes it. */
@@ -293,6 +336,7 @@ export function plateFileIsVersion2(objects: {
   reinforcement?: readonly ReinforceRegion[];
   brep?: unknown;
   modelTree?: unknown;
+  modelPose?: Affine;
 }[]): boolean {
   if (objects.length !== 1) return objects.length > 1;
   const one = objects[0];
@@ -302,7 +346,8 @@ export function plateFileIsVersion2(objects: {
     (one?.seamPaint?.length ?? 0) > 0 ||
     dropEmptyReinforce(one?.reinforcement ?? []).length > 0 ||
     one?.brep != null ||
-    one?.modelTree != null
+    one?.modelTree != null ||
+    !isIdentity(one?.modelPose)
   );
 }
 
@@ -481,6 +526,7 @@ export function addedCopy(plate: PlateState): PlateState | null {
     reinforcement: (source.reinforcement ?? []).map((reg) => structuredClone(reg)),
     settings: { ...source.settings },
     brep: source.brep ? source.brep.slice(0) : undefined,
+    modelPose: duplicatePose(modelPoseOf(source), boxUnder(boundsOf(source.sourcePos), meshToModel(source))),
   };
   // The copy's edits are its own, so Model opens a tree of its own for it.
   delete copy.modelTree;
@@ -549,6 +595,8 @@ export function addedSplit(plate: PlateState, mesh: IncomingMesh): PlateState | 
     supportPaint: [],
     seamPaint: [],
     settings: {},
+    // Cut from the parent's solid in the parent's own frame, the piece sits in model space where it was cut.
+    ...(parent.modelPose ? { modelPose: parent.modelPose } : {}),
   };
   hold(draft);
   return { objects: [...plate.objects, draft], selectedId: parent.id };
@@ -645,6 +693,7 @@ export function snapPlate(plate: PlateState): PlateSnap {
       // A STEP buffer is never written in place, so every step shares it.
       brep: obj.brep,
       modelTree: obj.modelTree,
+      ...(obj.modelPose ? { modelPose: obj.modelPose } : {}),
     })),
   };
 }
@@ -673,6 +722,7 @@ export function revivePlate(snap: PlateSnap): PlateState | null {
       settings: { ...row.settings },
       brep: row.brep,
       modelTree: row.modelTree,
+      ...(row.modelPose ? { modelPose: row.modelPose } : {}),
     });
   }
   const selectedId = objects.some((obj) => obj.id === snap.selectedId) ? snap.selectedId : objects[0]?.id ?? null;
@@ -699,7 +749,11 @@ export function assemblePlate(rows: Array<PlateFileObject & { bytes: ArrayBuffer
       reinforcement: (row.reinforcement ?? []).map((reg) => structuredClone(reg)),
       settings: { ...(row.settings ?? {}) },
       brep: row.brepBytes,
+      ...(row.modelPose && !isIdentity(row.modelPose) ? { modelPose: row.modelPose } : {}),
     };
+    if (row.meshSeatMm !== undefined) setMeshSeat(row.bytes, row.meshSeatMm);
+    // A Model step's mesh was saved as an STL already lowered, so reading it says 0; from a file before seats, Model learns it again.
+    else if ((row.brep || row.modelTree) && /\.stl$/i.test(row.mesh.name)) seats.delete(meshTokenOf(row.bytes));
     hold(obj);
     return obj;
   });
@@ -708,6 +762,22 @@ export function assemblePlate(rows: Array<PlateFileObject & { bytes: ArrayBuffer
 
 export function placeObject(obj: PlateObject, bedX: number, bedY: number) {
   return placeMesh(obj.sourcePos, obj.orient, obj.partScale, bedX, bedY, obj.centered, obj.offset);
+}
+
+/** Source vertices to bed: `R·s·(p − c) + t`, with `c` the source bounds centre and `t` where that centre lands. */
+export function sourceToBed(obj: PlateObject, bedX: number, bedY: number): Affine {
+  const { pose } = placeObject(obj, bedX, bedY);
+  const s = obj.partScale;
+  const m = pose.rotation.map((value) => value * s) as Mat3;
+  const [cx, cy, cz] = pose.pivot;
+  return {
+    m,
+    t: [
+      pose.translation[0] - (m[0] * cx + m[1] * cy + m[2] * cz),
+      pose.translation[1] - (m[3] * cx + m[4] * cy + m[5] * cz),
+      pose.translation[2] - (m[6] * cx + m[7] * cy + m[8] * cz),
+    ],
+  };
 }
 
 /** The box around every object in the bed frame: the extent of a plate-wide cut. Null with no objects. */
@@ -978,15 +1048,18 @@ function axisGap(a0: number, a1: number, b0: number, b1: number): number {
  * Replace `id` with one object per shell. `worlds` are that object's placed
  * triangles, largest shell first. Each piece keeps that bed position: identity
  * pose, scale 1, and a Z shift so settle does not drop a floating shell.
+ * In model space each piece stays where it was in the parent.
  * Paint and the B-rep stay behind. The largest piece keeps the id.
  */
-export function replaceWithShells(plate: PlateState, id: string, worlds: readonly Float32Array[]): PlateState | null {
+export function replaceWithShells(plate: PlateState, id: string, worlds: readonly Float32Array[], bedX: number, bedY: number): PlateState | null {
   if (worlds.length < 2) return null;
   const index = plate.objects.findIndex((obj) => obj.id === id);
   const parent = plate.objects[index];
   if (!parent) return null;
   const stem = parent.name.replace(/\.(stl|3mf|step|stp)$/i, "");
   const taken = new Set(plate.objects.filter((obj) => obj.id !== id).map((obj) => obj.name));
+  // A shell's vertices are where the parent put it on the bed; this takes them back to where the parent sits in model space.
+  const bedToModel = thenPose(inversePose(sourceToBed(parent, bedX, bedY)), meshToModel(parent));
   const pieces: PlateObject[] = worlds.map((world, nth) => {
     let minZ = Infinity;
     for (let i = 2; i < world.length; i += 3) if (world[i]! < minZ) minZ = world[i]!;
@@ -1011,7 +1084,9 @@ export function replaceWithShells(plate: PlateState, id: string, worlds: readonl
       seamPaint: [],
       reinforcement: [],
       settings: { ...parent.settings },
+      ...(isIdentity(bedToModel) ? {} : { modelPose: bedToModel }),
     };
+    setMeshSeat(piece.bytes, 0);
     hold(piece);
     return piece;
   });

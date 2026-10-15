@@ -4,10 +4,10 @@ import { mockModelTree } from "./model-tree-mock";
 
 type V = [number, number, number];
 
-/** A box the modeler reports as a solid, in its own CAD frame. */
-function boxSolid(size: V) {
+/** A box the modeler reports as a solid, in its own CAD frame, from `at`. */
+function boxSolid(size: V, at: V = [0, 0, 0]) {
   const [sx, sy, sz] = size;
-  const c = (x: number, y: number, z: number): V => [x * sx, y * sy, z * sz];
+  const c = (x: number, y: number, z: number): V => [at[0] + x * sx, at[1] + y * sy, at[2] + z * sz];
   const quads: V[][] = [
     [c(0, 0, 0), c(0, 1, 0), c(1, 1, 0), c(1, 0, 0)],
     [c(0, 0, 1), c(1, 0, 1), c(1, 1, 1), c(0, 1, 1)],
@@ -28,7 +28,8 @@ function boxSolid(size: V) {
 }
 
 const SOLIDS: Record<string, ReturnType<typeof boxSolid>> = {
-  "big.step": boxSolid([40, 30, 20]),
+  // The two files sit 60 mm apart in X in their own coordinates, as parts exported from one assembly do.
+  "big.step": boxSolid([40, 30, 20], [60, 0, 0]),
   "small.step": boxSolid([20, 20, 10]),
 };
 
@@ -94,18 +95,18 @@ async function clickGrid(page: Page): Promise<string[]> {
   });
 }
 
-test("model mode draws the other plate object where it sits, and swaps with the open one", async ({ page }) => {
+test("model mode draws the other plate object where its file put it, and swaps with the open one", async ({ page }) => {
   await twoObjects(page);
   await openModel(page, "small");
   const canvas = page.locator("#model");
   await expect(canvas).toHaveAttribute("data-context-count", "1");
-  expect(await contextBoxes(page)).toEqual({ part: [-70, -5, 0, -30, 25, 20] });
+  expect(await contextBoxes(page)).toEqual({ part: [60, 0, 0, 100, 30, 20] });
 
   await openModel(page, "big");
   await expect(canvas).toHaveAttribute("data-context-count", "1");
   const [id] = Object.keys(await contextBoxes(page));
   expect(id).not.toBe("part");
-  expect((await contextBoxes(page))[id!]).toEqual([70, 5, 0, 90, 25, 10]);
+  expect((await contextBoxes(page))[id!]).toEqual([0, 0, 0, 20, 20, 10]);
 });
 
 test("the grey object is not picked, framed, or counted in the bed and size readout", async ({ page }) => {
@@ -142,14 +143,19 @@ test("the grey object is not picked, framed, or counted in the bed and size read
   expect(withContext.fit).toBe(alone.fit);
 });
 
-test("the grey object follows the plate while Model stays open", async ({ page }) => {
+test("a plate move leaves the grey object in model space, and removing it takes it away", async ({ page }) => {
   await twoObjects(page);
   await openModel(page, "small");
   const canvas = page.locator("#model");
-  await expect(canvas).toHaveAttribute("data-context", "part:-70.00,-5.00,0.00,-30.00,25.00,20.00");
+  await expect(canvas).toHaveAttribute("data-context", "part:60.00,0.00,0.00,100.00,30.00,20.00");
 
-  await commit(page, "#placeX", 170);
-  await expect(canvas).toHaveAttribute("data-context", "part:-80.00,-5.00,0.00,-40.00,25.00,20.00");
+  await page.locator("#tabPrepare").click();
+  await page.locator("[data-plate-select]").nth(0).click();
+  await commit(page, "#placeX", 30);
+  await page.locator("[data-plate-select]").nth(1).click();
+  await page.locator("#tabModel").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume 4000");
+  await expect(canvas).toHaveAttribute("data-context", "part:60.00,0.00,0.00,100.00,30.00,20.00");
 
   await page.locator("[data-plate-remove]").first().click();
   await expect(page.locator("#objectList .obj")).toHaveCount(1);
@@ -175,5 +181,5 @@ test("selecting another object while Model is open opens that object's solid", a
   await expect(page.locator("#modelReadout")).toContainText("Volume 24000");
   const boxes = await contextBoxes(page);
   expect(Object.keys(boxes)).toHaveLength(1);
-  expect(Object.values(boxes)[0]).toEqual([70, 5, 0, 90, 25, 10]);
+  expect(Object.values(boxes)[0]).toEqual([0, 0, 0, 20, 20, 10]);
 });

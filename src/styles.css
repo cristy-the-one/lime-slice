@@ -681,7 +681,32 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .model-note.is-bad { color: var(--danger); }
 .model-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); }
 .model-actions .btn { height: var(--control-h-sm); }
-.model-bar[data-tool="measure"] #modelApply { display: none; }
+.model-bar[data-tool="measure"] #modelApply, .model-bar[data-tool="place"] #modelApply { display: none; }
+/* Beside the readout, in its column, so the toolbar, the dock, and the view cube never reach it and History keeps its height. */
+.model-foot-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-1);
+  max-width: 100%;
+  min-width: 0;
+}
+.model-foot-row .model-readout { min-width: 0; }
+.model-view-reset {
+  flex: 0 0 auto;
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  color: var(--text-dim);
+}
+.model-view-reset:hover { background: var(--surface-3); color: var(--text); }
+.model-view-reset:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 #modelHistoryOpen { display: none; }
 .model-history {
   margin-top: auto;

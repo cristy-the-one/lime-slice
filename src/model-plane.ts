@@ -220,12 +220,13 @@ export function planeFor(
   value: number,
   tilt: [number, number],
   along: (normal: Vec3) => AxisExtent | null,
-  box: { min: Vec3; max: Vec3 } | null,
+  box: { min: Vec3; max: Vec3 } | ((normal: Vec3) => AxisExtent) | null,
 ): SplitPlan {
   const [tiltA, tiltB] = tilt.map(clampTilt) as [number, number];
   const normal = tiltedNormal(base.normal, tiltA, tiltB);
   const origin = add(base.base, scale(base.dir, value));
-  const window = box ? splitWindow(along(normal), boxExtentAlong(box, normal)) : null;
+  // A box the kernel measures in another frame than the plane's comes as its extent along a normal.
+  const window = box ? splitWindow(along(normal), typeof box === "function" ? box(normal) : boxExtentAlong(box, normal)) : null;
   const range = window ? valueRange(base, normal, window) : null;
   return { base, value, origin, normal, range, inside: splitPlaneInside(value, range), rings: tiltRings(base.normal, tiltB) };
 }

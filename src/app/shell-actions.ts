@@ -22,7 +22,7 @@ export function separateShells(id?: string | null): boolean {
   }
   const painted = obj.supportPaint.length + obj.seamPaint.length + (obj.reinforcement?.length ?? 0) + obj.supportEdits.length > 0;
   const world = placeObject(obj, state.profile.bedX, state.profile.bedY).positions;
-  const next = replaceWithShells(state.plate, obj.id, takeGroups(world, groups.groups));
+  const next = replaceWithShells(state.plate, obj.id, takeGroups(world, groups.groups), state.profile.bedX, state.profile.bedY);
   if (!next) {
     flushEdit();
     return false;

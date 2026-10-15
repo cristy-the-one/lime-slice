@@ -1,6 +1,6 @@
 import { fx } from "./fx";
 import { state, session, STEP_TOLERANCE_DEFAULT } from "./state";
-import { centeringShift, eulerOrient, formatDeg, ID_MATRIX, orientEuler, parseStl, placeMesh, encodeStl, scaledCanonical, encode3mf, type PlacedPart, type Placement } from "../mesh-place";
+import { centeringShift, eulerOrient, formatDeg, ID_MATRIX, orientEuler, readStl, settleBy, placeMesh, encodeStl, scaledCanonical, encode3mf, type PlacedPart, type Placement } from "../mesh-place";
 import { meshKeyHex } from "../slice-action";
 import { bytesToBase64 } from "../base64";
 import { needsEngine, apiBase, apiToken, markEngineDown, isStepName, renderChrome, markStale, stale, card, shownGrams } from "./settings";
@@ -20,7 +20,7 @@ import { extractForeign3mfRecipe, foreign3mfMessage, foreignRecipeOffer, foreign
 import { assemblyNotice, shellCount } from "../mesh-shells";
 import { emptyOverrides } from "../overrides";
 import { isLimeProject } from "../file-drop";
-import { addedMesh, boundEntries, emptyPlate, oneObjectPlate, placeObject, plateObjectPositions, resetHeldGeometry, setSelectedOverride, withLivePose, type PlateObject } from "../plate";
+import { addedMesh, boundEntries, emptyPlate, oneObjectPlate, placeObject, plateObjectPositions, resetHeldGeometry, setMeshSeat, setSelectedOverride, withLivePose, type PlateObject } from "../plate";
 import { bedParts } from "../model-context";
 import { supportModeState } from "../support-source";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
@@ -53,7 +53,7 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
   clearEditHistory();
   fx.forgetModelTrees?.();
   session.supportUi?.reset();
-  const parsed = needsEngine(name) ? null : parseStl(bytes);
+  const parsed = needsEngine(name) ? null : stlPositions(bytes);
   if (!needsEngine(name) && !parsed) {
     state.mesh = null;
     state.sourcePos = null;
@@ -64,7 +64,11 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
     renderChrome();
     return;
   }
-  state.sourcePos = parsed ?? (await previewRemote(name, bytes));
+  const epoch = session.meshEpoch;
+  const read = parsed ? null : await previewRemote(name, bytes);
+  // A newer Open took over while the slicer read this file: that one owns the plate now.
+  if (session.meshEpoch !== epoch) return;
+  state.sourcePos = parsed ?? seatedPositions(bytes, read);
   if (!state.sourcePos) {
     state.plate = emptyPlate();
     resetHeldGeometry();
@@ -95,11 +99,24 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
   session.meshEpoch += 1;
 }
 
-export async function previewRemote(name: string, bytes: ArrayBuffer, stepToleranceMm = state.stepTolerance): Promise<Float32Array | null> {
+/** A mesh the slicer read: its vertices on Z = 0, and how far it lowered them when the engine says. */
+export interface MeshRead {
+  positions: Float32Array;
+  seatMm?: number;
+}
+
+/** The vertices of `read`, with its seat given to `bytes`: call it once the read is known to still apply. */
+export function seatedPositions(bytes: ArrayBuffer, read: MeshRead | null): Float32Array | null {
+  if (!read) return null;
+  if (read.seatMm !== undefined) setMeshSeat(bytes, read.seatMm);
+  return read.positions;
+}
+
+export async function previewRemote(name: string, bytes: ArrayBuffer, stepToleranceMm = state.stepTolerance): Promise<MeshRead | null> {
   const payload = { filename: name, dataB64: bytesToBase64(new Uint8Array(bytes)), stepToleranceMm };
   const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   try {
-    let body: { positions?: number[]; error?: string };
+    let body: { positions?: number[]; seatMm?: number; error?: string };
     if (tauri) {
       const { invoke } = await import("@tauri-apps/api/core");
       body = JSON.parse(await invoke<string>("preview_mesh", { payload: JSON.stringify(payload) }));
@@ -109,7 +126,7 @@ export async function previewRemote(name: string, bytes: ArrayBuffer, stepTolera
       if (!res.ok) throw new Error(body.error || "Could not preview this mesh.");
     }
     if (!body.positions) throw new Error(body.error || "Could not preview this mesh.");
-    return new Float32Array(body.positions);
+    return { positions: new Float32Array(body.positions), ...(typeof body.seatMm === "number" && Number.isFinite(body.seatMm) ? { seatMm: body.seatMm } : {}) };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Could not preview this mesh.";
     state.error = message === "Failed to fetch"
@@ -125,15 +142,15 @@ export async function refreshStepPreview() {
   const name = state.mesh.name;
   const bytes = state.mesh.bytes;
   const epoch = session.meshEpoch;
-  const positions = await previewRemote(name, bytes);
-  if (!positions) {
+  const read = await previewRemote(name, bytes);
+  if (!read) {
     renderChrome();
     return;
   }
   // Open, or Add selecting another file, moved on while this preview was in flight.
   if (session.meshEpoch !== epoch || state.mesh?.name !== name || state.mesh.bytes !== bytes) return;
   state.error = "";
-  state.sourcePos = positions;
+  state.sourcePos = seatedPositions(bytes, read);
   place("transform");
 }
 
@@ -491,9 +508,18 @@ export async function addDroppedFiles(files: readonly File[]): Promise<void> {
   }
 }
 
-async function meshPositions(name: string, bytes: ArrayBuffer, stepTolerance: number): Promise<Float32Array | null> {
-  if (!needsEngine(name)) return parseStl(bytes);
-  return previewRemote(name, bytes, stepTolerance);
+/** An STL's vertices on Z = 0, and how far they went down, so model space puts them back where the file has them. */
+function stlRead(bytes: ArrayBuffer): MeshRead | null {
+  const positions = readStl(bytes);
+  return positions && { positions, seatMm: settleBy(positions) };
+}
+
+export function stlPositions(bytes: ArrayBuffer): Float32Array | null {
+  return seatedPositions(bytes, stlRead(bytes));
+}
+
+async function meshRead(name: string, bytes: ArrayBuffer, stepTolerance: number): Promise<MeshRead | null> {
+  return needsEngine(name) ? previewRemote(name, bytes, stepTolerance) : stlRead(bytes);
 }
 
 async function addMeshNow(name: string, bytes: ArrayBuffer) {
@@ -504,8 +530,9 @@ async function addMeshNow(name: string, bytes: ArrayBuffer) {
   }
   const stepTolerance = state.stepTolerance;
   const epoch = session.meshEpoch;
-  const sourcePos = await meshPositions(name, bytes, stepTolerance);
+  const read = await meshRead(name, bytes, stepTolerance);
   if (session.meshEpoch !== epoch || !state.mesh || state.plate.objects.length === 0) return;
+  const sourcePos = seatedPositions(bytes, read);
   if (!sourcePos || sourcePos.length < 9) {
     if (!needsEngine(name) || !state.error) state.error = `Could not read ${name}.`;
     pushToast(state.error, "error", { label: "Retry", run: pickAddedMesh });
@@ -575,4 +602,4 @@ export function fail(err: unknown) {
   state.busy = false;
   renderChrome();
 }
-Object.assign(fx, { printableGcode, loadNamed, adoptBytes, previewRemote, refreshStepPreview, place, applyPlace, nudgePlacement, setPlaceCenter, setOrientAngle, meshBytes, isTauri, saveText, fetchStoredGcode, exportGcode, export3mf, download, fail });
+Object.assign(fx, { printableGcode, loadNamed, adoptBytes, refreshStepPreview, place, applyPlace, nudgePlacement, setPlaceCenter, setOrientAngle, meshBytes, isTauri, saveText, fetchStoredGcode, exportGcode, export3mf, download, fail });

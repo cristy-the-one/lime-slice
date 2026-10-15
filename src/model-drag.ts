@@ -8,10 +8,10 @@ import { SPLIT_TILT_MAX_DEG, type SplitPlan } from "./model-plane.ts";
 
 export type Vec3 = [number, number, number];
 
-export type ModelTool = "boolean" | "split" | "fillet" | "chamfer" | "hole" | "scale" | "measure";
+export type ModelTool = "boolean" | "split" | "fillet" | "chamfer" | "hole" | "scale" | "measure" | "place";
 
 /** Every tool on the Model toolbar. A tool that is not here has no drag, and the checklist test fails. */
-export const MODEL_TOOLS: readonly ModelTool[] = ["boolean", "split", "fillet", "chamfer", "hole", "scale", "measure"];
+export const MODEL_TOOLS: readonly ModelTool[] = ["boolean", "split", "fillet", "chamfer", "hole", "scale", "measure", "place"];
 
 /** The fields a mouse can drag, per tool. The panel shows each of them as a number too. */
 export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
@@ -22,6 +22,7 @@ export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
   hole: ["modelX", "modelY", "modelZ", "modelHoleR", "modelHoleD"],
   scale: ["modelFactor"],
   measure: ["modelAx", "modelAy", "modelAz", "modelBx", "modelBy", "modelBz"],
+  place: ["modelPlaceX", "modelPlaceY", "modelPlaceZ", "modelPlaceRx", "modelPlaceRy", "modelPlaceRz"],
 };
 
 /**
@@ -87,6 +88,7 @@ function specsFor(tool: ModelTool | null, ctx: DragContext): Spec[] {
   if (tool === "hole") return holeHandles(ctx);
   if (tool === "scale") return scaleHandles(ctx);
   if (tool === "measure") return measureHandles(ctx);
+  if (tool === "place") return placeHandles(ctx);
   return [];
 }
 
@@ -108,15 +110,30 @@ const onDock = (reach: number): HandleSeat => ({ at: "dock", reach });
 /** A size knob stands out past the arrows and rings. */
 const KNOB = onDock(DOCK_KNOB_REACH);
 
+/** Three dock arrows along model X, Y and Z, one field each. */
+function moveArrows(fields: readonly [string, string, string], prefix: string): Spec[] {
+  return [
+    axisHandle(`${prefix}-x`, "arrow", fields[0], onDock(0), X, "x", "Move X"),
+    axisHandle(`${prefix}-y`, "arrow", fields[1], onDock(0), Y, "y", "Move Y"),
+    axisHandle(`${prefix}-z`, "arrow", fields[2], onDock(0), Z, "z", "Move Z"),
+  ];
+}
+
+/** Three dock rings for Rx, Ry and Rz, each about the axis that changes only its own angle. */
+function turnRings(fields: readonly [string, string, string], turn: Vec3): Spec[] {
+  const gimbal = turnGimbal(turn);
+  const colors = ["x", "y", "z"] as const;
+  return fields.map((field, i): Spec => ({
+    id: `turn-${field}`, kind: "ring", look: "ring", fields: [field], seat: onDock(0), dir: gimbal[i]!, rate: 1, step: 15,
+    color: colors[i]!, label: `Turn ${"XYZ"[i]}`, unit: "°",
+  }));
+}
+
 function booleanHandles(ctx: DragContext): Spec[] {
   const r = ctx.read;
   const turn: Vec3 = ctx.primitive === "sphere" ? [0, 0, 0] : [r("modelRx"), r("modelRy"), r("modelRz")];
   const axes = turnedAxes(turn);
-  const out: Spec[] = [
-    axisHandle("move-x", "arrow", "modelX", onDock(0), X, "x", "Move X"),
-    axisHandle("move-y", "arrow", "modelY", onDock(0), Y, "y", "Move Y"),
-    axisHandle("move-z", "arrow", "modelZ", onDock(0), Z, "z", "Move Z"),
-  ];
+  const out: Spec[] = moveArrows(["modelX", "modelY", "modelZ"], "move");
   if (ctx.primitive === "box") {
     const fields = ["modelDx", "modelDy", "modelDz"];
     const colors: DragHandle["color"][] = ["x", "y", "z"];
@@ -129,14 +146,17 @@ function booleanHandles(ctx: DragContext): Spec[] {
   } else {
     out.push(axisHandle("radius", "knob", "modelRadius", KNOB, [0, -1, 0], "accent", "Radius", { min: 0.1 }));
   }
-  if (ctx.primitive !== "sphere") {
-    const gimbal = turnGimbal(turn);
-    const rings: [string, Vec3, DragHandle["color"]][] = [["modelRx", gimbal[0], "x"], ["modelRy", gimbal[1], "y"], ["modelRz", gimbal[2], "z"]];
-    for (const [field, dir, color] of rings) {
-      out.push({ id: `turn-${field}`, kind: "ring", look: "ring", fields: [field], seat: onDock(0), dir, rate: 1, step: 15, color, label: `Turn ${field.slice(-1).toUpperCase()}`, unit: "°" });
-    }
-  }
+  if (ctx.primitive !== "sphere") out.push(...turnRings(["modelRx", "modelRy", "modelRz"], turn));
   return out;
+}
+
+/** Place moves and turns the open object in model space, from the dock like a primitive. */
+function placeHandles(ctx: DragContext): Spec[] {
+  const r = ctx.read;
+  return [
+    ...moveArrows(["modelPlaceX", "modelPlaceY", "modelPlaceZ"], "place"),
+    ...turnRings(["modelPlaceRx", "modelPlaceRy", "modelPlaceRz"], [r("modelPlaceRx"), r("modelPlaceRy"), r("modelPlaceRz")]),
+  ];
 }
 
 /**

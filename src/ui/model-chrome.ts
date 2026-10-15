@@ -2,9 +2,10 @@
  * Model mode's toolbar, the tool that is open, and the ghost that follows its numbers.
  * Apply still lives in `app/model.ts`. This file only decides what is on screen.
  */
-import { Box, CircleDot, Download, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Triangle, Undo2, createElement, type IconNode } from "lucide";
+import { Box, CircleDot, Download, Focus, Grid3x3, Move3d, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Triangle, Undo2, createElement, type IconNode } from "lucide";
 import type { HandleDrag, ModelGhost } from "../model-view";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type ModelTool, type Vec3 } from "../model-drag";
+import type { PlaceFields } from "../model-space";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
 import { clampTilt, splitNote, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
 import { lastFace, selectedEdges } from "../model-blend";
@@ -23,7 +24,7 @@ export interface SolidBox {
 
 interface ModelChromeHooks {
   clearSelection(): void;
-  /** The split plane the panel describes, in the solid's own frame, or why there is none. */
+  /** The split plane the panel describes, in model space, or why there is none. */
   split(): SplitState;
   /** Whether the open solid can be split square to some axis. */
   splitLegal(): boolean;
@@ -31,13 +32,20 @@ interface ModelChromeHooks {
   paramsChanged(typed?: boolean): void;
   /** A typed or dragged number settled: ask the kernel now instead of after the typing wait. */
   probeNow(): void;
-  /** Bounds of the open solid, in the solid's own frame. */
+  /** Bounds of the open solid in model space. */
   solidBox(): SolidBox | null;
-  /** Polyline points of one edge of the open solid. */
+  /** Polyline points of one edge of the open solid, in model space. */
   edgePoints(edge: number): ArrayLike<number> | null;
-  /** Unit direction a hole drills. Straight down when no face is picked. */
+  /** Unit direction a hole drills, in model space. Straight down when no face is picked. */
   holeAxis(): Vec3;
+  /** Where the open object sits in model space, as the Place fields show it. Null with nothing open. */
+  placeFields(): PlaceFields | null;
+  /** A Place field changed: the object moves, or turns, in model space. */
+  placeMoved(field: keyof PlaceFields, value: number, phase: PlacePhase): void;
 }
+
+/** A typed or scrubbed number ends its step once it rests; a drag holds its step open until the pointer lets go. */
+export type PlacePhase = "typed" | "drag" | "end";
 
 const TOOLS: { id: ModelTool; icon: IconNode; label: string }[] = [
   { id: "boolean", icon: Box, label: "Boolean" },
@@ -47,7 +55,14 @@ const TOOLS: { id: ModelTool; icon: IconNode; label: string }[] = [
   { id: "hole", icon: CircleDot, label: "Hole" },
   { id: "scale", icon: Scaling, label: "Scale" },
   { id: "measure", icon: Ruler, label: "Measure" },
+  { id: "place", icon: Move3d, label: "Place" },
 ];
+
+const PLACE_FIELDS = ["modelPlaceX", "modelPlaceY", "modelPlaceZ", "modelPlaceRx", "modelPlaceRy", "modelPlaceRz"] as const;
+const PLACE_KEYS = ["x", "y", "z", "rx", "ry", "rz"] as const satisfies readonly (keyof PlaceFields)[];
+const BED_KEY = "lime-slice-model-bed";
+/** Tools that leave the solid as it is, so they run on surfaces with no closed solid too. They have no Apply. */
+const KEEPS_SOLID: ReadonlySet<string> = new Set(["measure", "place"]);
 
 let hooks: ModelChromeHooks | null = null;
 let tool: ModelTool | null = null;
@@ -93,6 +108,18 @@ export function mountModelChrome(next: ModelChromeHooks) {
   iconize("#modelStep", Download);
   iconize("#modelUndo", Undo2);
   iconize("#modelRedo", Redo2);
+  iconize("#modelBedToggle", Grid3x3);
+  document.querySelector("#modelResetView")?.replaceChildren(createElement(Focus, { width: 16, height: 16, "aria-hidden": "true", class: "ico" }));
+  setBed(readBedPref());
+  document.querySelector("#modelBedToggle")?.addEventListener("click", () => {
+    const on = document.querySelector("#modelBedToggle")?.getAttribute("aria-pressed") !== "true";
+    setBed(on);
+    try {
+      localStorage.setItem(BED_KEY, on ? "1" : "0");
+    } catch {
+      // A blocked store only means the choice is not remembered.
+    }
+  });
 
   document.querySelector("#modelBar")?.addEventListener("click", (ev) => {
     const target = ev.target instanceof Element ? ev.target : null;
@@ -114,7 +141,11 @@ export function mountModelChrome(next: ModelChromeHooks) {
     input.value = String(clampTilt(Number(input.value)));
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  document.querySelector("#modelPanel")?.addEventListener("input", () => {
+  document.querySelector("#modelPanel")?.addEventListener("input", (ev) => {
+    if (tool === "place") {
+      placeChanged(ev.target instanceof HTMLElement ? ev.target.id : "", "typed");
+      return;
+    }
     if (tool === "split") syncSplitField();
     refreshGhost();
     hooks?.paramsChanged(true);
@@ -180,10 +211,10 @@ export function openModelTool(): ModelTool | null {
   return tool;
 }
 
-/** Whether the open shape can be edited. Surfaces only can be measured, so the edit tools turn off. */
+/** Whether the open shape can be edited. Surfaces only can be measured and placed, so the edit tools turn off. */
 export function setModelEditable(next: boolean) {
   editable = next;
-  if (!editable && tool && tool !== "measure") closeTool();
+  if (!editable && tool && !KEEPS_SOLID.has(tool)) closeTool();
   refreshTools();
 }
 
@@ -223,7 +254,11 @@ function toggleTool(next: ModelTool) {
   }
   if (next === "hole") applyHoleDefaults();
   if (next === "measure") applyMeasureDefaults();
+  // Place moves as it goes, so its button only closes the tool.
+  const cancel = document.querySelector("#modelCancel");
+  if (cancel) cancel.textContent = next === "place" ? "Done" : "Cancel";
   syncFields();
+  syncPlaceFields();
   refreshTools();
   refreshApply();
   refreshNote();
@@ -358,7 +393,7 @@ function refreshTools() {
   document.querySelectorAll<HTMLButtonElement>(".model-tool[data-tool]").forEach((button) => {
     const id = button.dataset.tool ?? "";
     button.dataset.tipIdle ??= button.dataset.tip ?? "";
-    const viewOnly = !editable && id !== "measure";
+    const viewOnly = !editable && !KEEPS_SOLID.has(id);
     const blocked = viewOnly ? VIEW_ONLY_TIP : toolBlockedTip(id, picks, legal);
     button.disabled = viewOnly || !toolAvailable(id, picks, legal);
     button.dataset.tip = blocked || button.dataset.tipIdle;
@@ -391,6 +426,8 @@ function refreshNote() {
     text = "About the centre. Placement scale becomes 100%.";
   } else if (tool === "measure") {
     text = measureNote(point("A"), point("B"));
+  } else if (tool === "place") {
+    text = "From where its file put it, turning about its centre. The plate does not move.";
   } else if (isProbed(tool)) {
     const axis = tool === "hole" ? (hooks?.holeAxis() ?? [0, 0, -1]) : null;
     const down = axis != null && Math.abs(axis[0]) < 1e-6 && Math.abs(axis[1]) < 1e-6 && axis[2] < -0.9;
@@ -438,8 +475,53 @@ function dragContext(): DragContext {
 function onHandleDrag(drag: HandleDrag) {
   if (!tool) return;
   writeFields(drag.handle.fields, drag.values);
+  if (tool === "place") {
+    placeChanged(drag.handle.fields[0]!, drag.phase === "end" ? "end" : "drag");
+    return;
+  }
   document.querySelector("#modelPanel")?.dispatchEvent(new Event("input", { bubbles: true }));
   if (drag.phase === "end") hooks?.probeNow();
+}
+
+/** A Place field changed by typing, a scrub, or a drag. Only that field moves the object. */
+function placeChanged(id: string, phase: PlacePhase) {
+  const field = PLACE_KEYS[PLACE_FIELDS.indexOf(id as (typeof PLACE_FIELDS)[number])];
+  const input = document.querySelector<HTMLInputElement>(`#${id}`);
+  // A field cleared, or half typed ("-"), is no number yet: the part stays where it is.
+  if (!field || !input || input.value.trim() === "" || !input.validity.valid) return;
+  hooks?.placeMoved(field, num(`#${id}`), phase);
+  refreshGhost();
+}
+
+/**
+ * The Place fields follow the open object's pose: on opening the tool, and after another object opens. The field
+ * being typed in keeps its text, unless `all`: an undo or redo moves every field, the focused one too.
+ */
+export function syncPlaceFields(all = false) {
+  if (tool !== "place") return;
+  const fields = hooks?.placeFields();
+  if (!fields) return;
+  const active = document.activeElement;
+  PLACE_FIELDS.forEach((field, i) => {
+    const input = document.querySelector<HTMLInputElement>(`#${field}`);
+    if (input && (all || input !== active)) input.value = fieldText(fields[PLACE_KEYS[i]!]);
+  });
+  refreshGhost();
+}
+
+function readBedPref(): boolean {
+  try {
+    return localStorage.getItem(BED_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function setBed(on: boolean) {
+  const button = document.querySelector("#modelBedToggle");
+  button?.setAttribute("aria-pressed", on ? "true" : "false");
+  button?.setAttribute("data-tip", on ? "Hide the bed and build volume" : "Show the bed and build volume for size");
+  fx.model?.setBedVisible(on);
 }
 
 function point(which: "A" | "B"): Vec3 {
@@ -472,6 +554,7 @@ function ghostFor(current: ModelTool): ModelGhost | null {
     };
   }
   if (current === "scale") return { kind: "scale", factor: num("#modelFactor") };
+  if (current === "place") return null;
   const edges = selectedEdges(picks);
   if (edges.length === 0) return null;
   return { kind: "blend", edges, radius: num("#modelBlend") };

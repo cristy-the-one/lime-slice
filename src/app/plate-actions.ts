@@ -3,14 +3,14 @@ import { arrangedObjects, addedCopy, placeObject, plateUnionBounds, withoutObjec
 import { fx } from "./fx.ts";
 import { place } from "./files.ts";
 import { flushEdit, noteEdit } from "./history.ts";
-import { commitModel, followSelection } from "./model.ts";
+import { commitModel, followSelection, frameInModel } from "./model.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { state } from "./state.ts";
 import { currentRules } from "./rules.ts";
 import { sequentialClearance } from "../settings-rules.ts";
 import type { Bounds } from "../mesh-place.ts";
 
-/** An exact copy of the selected object: same mesh, pose, paint, and overrides. */
+/** An exact copy of the selected object: same mesh, pose, paint, and overrides. In model space it sits beside the original. */
 export function duplicatePlateObject() {
   if (!state.mesh || !state.sourcePos || !state.plate.selectedId) return;
   commitModel();
@@ -52,11 +52,12 @@ export function selectPlateObject(id: string) {
   followSelection();
 }
 
-/** Frame the named solid. Selection, when it changes, is the only undo step. */
+/** Frame the named solid in the view on screen: the plate, or model space in Model. Selection, when it changes, is the only undo step. */
 export function framePlateObject(id: string) {
   if (!state.plate.objects.some((obj) => obj.id === id)) return;
+  if (state.stage === "model") frameInModel(id);
   if (state.plate.selectedId !== id) selectPlateObject(id);
-  frameSelection();
+  if (state.stage !== "model") frameSelection();
 }
 
 function frameSelection() {

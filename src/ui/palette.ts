@@ -1,4 +1,5 @@
 import { redoUserEdit, undoUserEdit } from "../app/history";
+import { frameModel } from "../app/model";
 import { escapeModel } from "./model-chrome";
 import { toggleModelHistoryFocus } from "./model-history";
 import {
@@ -357,6 +358,9 @@ export function runCommand(id: string) {
       return;
     case "model-escape":
       escapeModel();
+      return;
+    case "model-frame-all":
+      frameModel(true);
       return;
     case "model-history":
       toggleModelHistoryFocus();

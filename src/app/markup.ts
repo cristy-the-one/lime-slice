@@ -134,12 +134,15 @@ export function mountMarkup(root: HTMLElement) {
                   <button class="model-tool" id="modelToolHole" type="button" data-tool="hole" aria-pressed="false" data-tip="Cut a cylinder into the picked face, or straight down">Hole</button>
                   <button class="model-tool" id="modelToolScale" type="button" data-tool="scale" aria-pressed="false" data-tip="Scale the solid about its centre">Scale</button>
                   <button class="model-tool" id="modelToolMeasure" type="button" data-tool="measure" aria-pressed="false" data-tip="Drag two points on the solid and read the distance">Measure</button>
+                  <button class="model-tool" id="modelToolPlace" type="button" data-tool="place" aria-pressed="false" data-tip="Move and turn this object among the others. The plate stays as it is">Place</button>
                   <span class="model-sep"></span>
                   <button class="model-tool" id="modelStep" type="button" data-tip="Write this solid as AP214 STEP">STEP</button>
                   <button class="model-tool" id="modelUndo" type="button" disabled data-tip="Undo the last solid edit">Undo</button>
                   <button class="model-tool" id="modelRedo" type="button" disabled data-tip="Redo the last solid edit">Redo</button>
                   <button class="model-tool" id="modelHistoryOpen" type="button" aria-controls="modelHistory" aria-expanded="false">History</button>
                 </div>
+                <span class="model-sep"></span>
+                <button class="model-tool" id="modelBedToggle" type="button" aria-pressed="true" data-tip="Show the bed and build volume for size">Bed</button>
               </div>
               <span class="model-paused" id="modelPaused">Slicing paused while modeling</span>
             </div>
@@ -183,6 +186,12 @@ export function mountMarkup(root: HTMLElement) {
                   <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>B X</span><input id="modelBx" type="number" step="0.1" value="0" aria-label="Point B x"></label>
                   <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>B Y</span><input id="modelBy" type="number" step="0.1" value="0" aria-label="Point B y"></label>
                   <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>B Z</span><input id="modelBz" type="number" step="0.1" value="0" aria-label="Point B z"></label>
+                  <label data-for="place" data-snap="1"><span class="scrub-label" data-scrub>X</span><input id="modelPlaceX" type="number" step="0.1" value="0" aria-label="Move in model space x"></label>
+                  <label data-for="place" data-snap="1"><span class="scrub-label" data-scrub>Y</span><input id="modelPlaceY" type="number" step="0.1" value="0" aria-label="Move in model space y"></label>
+                  <label data-for="place" data-snap="1"><span class="scrub-label" data-scrub>Z</span><input id="modelPlaceZ" type="number" step="0.1" value="0" aria-label="Move in model space z"></label>
+                  <label data-for="place" data-snap="15"><span class="scrub-label" data-scrub>Turn X</span><input id="modelPlaceRx" type="number" step="1" value="0" aria-label="Turn in model space about x, degrees"></label>
+                  <label data-for="place" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelPlaceRy" type="number" step="1" value="0" aria-label="Turn in model space about y, degrees"></label>
+                  <label data-for="place" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelPlaceRz" type="number" step="1" value="0" aria-label="Turn in model space about z, degrees"></label>
                 </div>
                 <div class="modes" data-for="boolean" role="group" aria-label="Boolean">
                   <button class="btn mode on" id="modelFuse" type="button" aria-pressed="true">Fuse</button>
@@ -200,7 +209,10 @@ export function mountMarkup(root: HTMLElement) {
                 <div class="model-history-tree" id="modelHistoryTree" role="tree" aria-label="Model history"></div>
               </section>
               <div class="model-foot" id="modelFoot">
-                <div id="modelReadout" class="model-readout">Open a STEP file to measure a solid.</div>
+                <div class="model-foot-row">
+                  <button class="model-view-reset" id="modelResetView" type="button" aria-label="Reset view" data-tip="Reset view. Shift: every object"></button>
+                  <div id="modelReadout" class="model-readout">Open a STEP file to measure a solid.</div>
+                </div>
               </div>
             </div>
           </div>

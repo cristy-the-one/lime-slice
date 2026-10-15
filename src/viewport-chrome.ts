@@ -135,6 +135,7 @@ export interface BedReference {
   /** Move the plate, grid, and cage without changing the bed size. Print millimetres. */
   setOrigin(x: number, y: number, z: number): void;
   setColors(plate: number, minor: number, major: number, cage: number): void;
+  setVisible(on: boolean): void;
 }
 
 const GRID_MINOR = 10;
@@ -186,7 +187,9 @@ export function mountBedReference(scene: THREE.Scene, up: ViewportUp): BedRefere
     const top = printToScene(up, ox + width, oy + depth, oz + height);
     cage.scale.set(Math.abs(top[0] - origin[0]), Math.abs(top[1] - origin[1]), Math.abs(top[2] - origin[2]));
     cage.position.set((origin[0] + top[0]) / 2, (origin[1] + top[1]) / 2, (origin[2] + top[2]) / 2);
-    const key = `${up}:${width.toFixed(2)}:${depth.toFixed(2)}:${ox.toFixed(3)}:${oy.toFixed(3)}:${oz.toFixed(3)}:${minor}:${major}`;
+    // The grid is built at the origin and moved, so a bed that follows the part never rebuilds its lines.
+    grid.position.set(...printToScene(up, ox, oy, oz));
+    const key = `${up}:${width.toFixed(2)}:${depth.toFixed(2)}:${minor}:${major}`;
     if (key === gridKey) return;
     gridKey = key;
     for (const child of [...grid.children]) {
@@ -199,7 +202,7 @@ export function mountBedReference(scene: THREE.Scene, up: ViewportUp): BedRefere
         else mat?.dispose();
       });
     }
-    grid.add(gridLines(up, width, depth, minor, major, ox, oy, oz));
+    grid.add(gridLines(up, width, depth, minor, major));
   };
   place();
 
@@ -224,19 +227,24 @@ export function mountBedReference(scene: THREE.Scene, up: ViewportUp): BedRefere
       major = nextMajor;
       place();
     },
+    setVisible(on) {
+      plate.visible = on;
+      grid.visible = on;
+      cage.visible = on;
+    },
   };
 }
 
-function gridLines(up: ViewportUp, width: number, depth: number, minorColor: number, majorColor: number, ox: number, oy: number, oz: number) {
+function gridLines(up: ViewportUp, width: number, depth: number, minorColor: number, majorColor: number) {
   const minor: number[] = [];
   const major: number[] = [];
   const bucket = (value: number, limit: number) =>
     value <= 0.01 || Math.abs(value - limit) <= 0.01 || Math.round(value) % GRID_MAJOR === 0 ? major : minor;
   for (let x = 0; x <= width + 0.01; x += GRID_MINOR) {
-    bucket(x, width).push(...printToScene(up, ox + x, oy, oz + 0.03), ...printToScene(up, ox + x, oy + depth, oz + 0.03));
+    bucket(x, width).push(...printToScene(up, x, 0, 0.03), ...printToScene(up, x, depth, 0.03));
   }
   for (let y = 0; y <= depth + 0.01; y += GRID_MINOR) {
-    bucket(y, depth).push(...printToScene(up, ox, oy + y, oz + 0.03), ...printToScene(up, ox + width, oy + y, oz + 0.03));
+    bucket(y, depth).push(...printToScene(up, 0, y, 0.03), ...printToScene(up, width, y, 0.03));
   }
   const root = new THREE.Group();
   addLines(root, minor, minorColor, 0.55);
