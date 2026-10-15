@@ -1,30 +1,64 @@
 # Lime Slice
 
-Filament FDM slicer. A Rust core turns an STL, 3MF, or STEP mesh into toolpaths, and a Tauri 2 desktop UI previews them. STEP (`.step` / `.stp`) is tessellated in-process with the pure-Rust [truck](https://github.com/ricosjp/truck) kernel: planes, cylinders, cones, spheres, tori, and NURBS, with file units converted to millimetres. Assemblies and multi-body parts become one mesh; each instance keeps its placement. The chord tolerance defaults to 0.1 mm (0.01–2 mm) via the Prepare field or `slice --step-tolerance`. Faceted brep and AP242 tessellated solids are rejected with an error. Named strategies (`speed`, `toughness`) are real parameter sets — wall count, infill pattern and density, print speed, acceleration, seam, retraction — and blends mix those outputs by weight, by layer, or by region.
+Lime Slice 1.5.0 is a slicer for filament printers. Open an STL, 3MF, or STEP file, set it on the build plate, and slice it to G-code. A Rust planner builds the toolpaths. The window is a Tauri 2 desktop app, and the same pages run in a browser against a local engine.
+
+**Prepare** puts the model on the plate. Move, turn, and scale it, then choose a strategy: speed, efficiency, toughness, or a blend by weight, by layer, or by region. Each strategy is a real set of walls, infill, speed, acceleration, seam, and retraction.
+
+**Preview** draws the finished toolpaths in 3D, coloured by feature. A layer slider walks the print. The results panel gives the time and the filament. A G-code tab shows the file.
+
+**Reinforce** paints a patch on the surface, or places a box or a cylinder, so that part of the model prints denser infill, up to solid. The rest of the part keeps the strategy.
+
+**Model** edits a STEP solid, or starts one from a box, cylinder, sphere, cone, torus, wedge, polygon, or tube. Fuse, cut, or intersect the solid with one of those shapes. Split it on a plane. Fillet or chamfer the picked edges, drill a hole, scale it, or measure between two points. Undo and redo step through those edits. The History tree of the steps is saved in the `.lime` project, so the same solid opens again. The desktop release includes the Open CASCADE libraries that do this work. A build without them still slices an unedited STEP file, and Model stays off. An unedited STEP is tessellated on load with the pure-Rust [truck](https://github.com/ricosjp/truck) kernel: planes, cylinders, cones, spheres, tori, and NURBS, with file units converted to millimetres. Assemblies and multi-body parts become one mesh; each instance keeps its placement. The chord tolerance defaults to 0.1 mm (0.01–2 mm) via the Prepare field or `slice --step-tolerance`. Faceted brep and AP242 tessellated solids are rejected with an error.
+
+**Belt printers.** A generic 45° belt and the Ideaformer IR3 V2 slice on the belt. The belt carries the part along its length.
+
+**Support interface.** With supports on, set the vertical gap, the sideways gap, how many dense layers sit under the part, and a brim around tree trunks that stand on the bed. Zero keeps the usual gap (one layer vertically, at least 0.12 mm, and 0.55 mm sideways), three dense interface layers, and trunks with no brim.
+
+**Bridges.** With overhang control on, bridge flow, bridge speed, and bridge fan are their own settings. Zero keeps full flow, the usual bridge slowdown, and the layer fan.
+
+**Layer pause.** Mark a layer to pause the print, or to change filament. The G-code uses that printer's pause or filament-change command.
+
+**Foreign 3MF.** A project from PrusaSlicer, OrcaSlicer, Bambu Studio, or Cura opens as a mesh. You can copy its layer height, wall count, infill, and whether supports are on. Temperatures, speeds, and the infill pattern stay as they are.
+
+**Send to printer.** Send uploads the current G-code to a Prusa Link, Moonraker, or OctoPrint host stored on the printer. You can ask the printer to start the job after the upload.
+
+**Settings search.** The box at the top of the settings panel filters every setting. `/` or Ctrl+F focuses it. `and` and `&` match the same word.
 
 ## Screenshots
 
-Dark theme. These are the web UI against the local engine, at 1440×900 except the phone frame. The part is `samples/overhang_ledge.stl`, sliced on the speed blend with organic supports. That slice finished at 8.1 min and 3.68 g.
+Dark theme. These are the web UI against the local engine, at 1440×900 except the phone frame. The part is `samples/overhang_ledge.stl` on the Lime 220 bed, sliced with the speed strategy and organic tree supports. That slice finished at 8 min 19 s and 3.67 g.
 
-![Prepare view. The overhang sample sits on the build plate, and the settings panel is open beside it.](docs/screenshots/prepare.png)
+![Prepare. The overhang sits on the build plate, with the strategy list open beside it.](docs/screenshots/prepare.png)
 
-Prepare. The model is on the plate, with the settings panel open.
+Prepare. The model is on the plate, and the settings panel is open.
 
-![Perspective 3D preview of the finished slice. Toolpaths are coloured by feature, with the layer slider and the feature legend.](docs/screenshots/preview-3d.png)
+![Preview. The finished slice in perspective, coloured by feature, with organic supports under the shelf.](docs/screenshots/preview-3d.png)
 
-Preview. Perspective 3D of the finished slice. Walls, infill, and supports keep their feature colours, and the layer slider sits on the view.
+Preview. Perspective view of the finished slice. Walls, infill, and supports keep their colours. The layer slider and the time estimate sit with the view.
 
-![The layer at Z 12.60 mm drawn solid, with the print-time and filament breakdown beside it.](docs/screenshots/layer-estimate.png)
+![The layer at Z 12.40 mm, where the shelf starts, with the print-time and filament breakdown.](docs/screenshots/layer-estimate.png)
 
-The layer at Z 12.60 mm, where the shelf starts, and the print-time and filament breakdown.
+The layer at Z 12.40 mm, where the shelf starts, and the print-time and filament breakdown.
 
-![Printer, filament, and nozzle library. Lime 220, PLA, and a 0.4 mm nozzle.](docs/screenshots/machine-library.png)
+![Printer, filament, and nozzle. Lime 220, PLA, and a 0.4 mm nozzle.](docs/screenshots/machine-library.png)
 
 Printer, filament, and nozzle. Lime 220, PLA, 0.4 mm.
 
-<img alt="Compact phone layout. The prepare view fills the screen, with the overhang on the plate and the settings sheet peeked." src="docs/screenshots/prepare-phone.png" width="240">
+![Reinforce. A painted patch on the top of the overhang, set to solid infill.](docs/screenshots/reinforce.png)
 
-Phone layout (`?layout=compact`). The prepare view fills the screen.
+Reinforce. A painted patch on the part, set to print solid.
+
+![Settings search. The word bridge leaves overhang control and the bridge flow, speed, and fan.](docs/screenshots/settings-search.png)
+
+Settings search. Typing `bridge` leaves the overhang control and the bridge settings.
+
+![Model. A STEP cube with a hole, and the History panel listing those steps.](docs/screenshots/model-history.png)
+
+Model. A STEP solid, with the History panel open.
+
+<img alt="Phone layout. Prepare fills the screen, with the overhang on the plate and the settings sheet peeked." src="docs/screenshots/prepare-phone.png" width="240">
+
+Phone layout (`?layout=compact`). Prepare fills the screen, and the settings sheet peeks at the bottom.
 
 ## Run the UI
 
@@ -138,7 +172,7 @@ These builds are unsigned. macOS Gatekeeper and Windows SmartScreen will warn, a
 | `TAURI_SIGNING_PRIVATE_KEY` | Updater minisign private key |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for that updater key |
 
-A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (today `v1.0.0`). Publishing that draft is a separate step. The workflow has not been executed from this repository yet.
+A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (1.5.0). Publishing that draft is a separate step. Draft releases through v1.5.0 are already on the repository.
 
 ## Headless slice and bench
 
@@ -149,9 +183,9 @@ cargo run -p lime-slice --release -- slice samples/slope_ramp.stl --blend speed 
 cargo run -p lime-slice --release -- slice samples/overhang_ledge.stl --blend speed --supports -o ledge.gcode
 ```
 
-Blend names: `speed`, `toughness`, `weight` (alias `efficiency`), `layer`, `region`. Region blends are still an axis-aligned half-space (`ByRegion { axis, at_mm }`). Modifier boxes and painted regions stay deferred until the core grows real region masks.
+Blend names: `speed`, `toughness`, `weight` (alias `efficiency`), `layer`, `region`. A region blend is still an axis-aligned half-space (`ByRegion { axis, at_mm }`). Modifier volumes and Reinforce are separate from that split: a volume can change walls and speed inside a box, cylinder, or sphere, and Reinforce raises infill under a painted patch or inside its own box or cylinder.
 
-The preview follows the system theme, or an explicit light or dark theme. IBM Plex is self-hosted under `public/fonts` (SIL Open Font License). A per-layer time sparkline marks layers slower than twice the median, and layers under 8 s, which a cooling min-layer-time would slow down. The planner does not apply that floor. The move scrubber plays the active layer and keeps the G-code tab on the matching command. Slice presets live in `localStorage` and diff against the factory defaults. The Slice button follows the slice cache: Slice when this recipe has no saved result, Show result when that saved result will be used, and Re-slice only when the settings changed and a new plan will run. Force re-slice plans a cached recipe again.
+The preview follows the system theme, or an explicit light or dark theme. IBM Plex is self-hosted under `public/fonts` (SIL Open Font License). A per-layer time sparkline marks layers slower than twice the median, and layers under 8 s. Minimum layer time is off (0) until you set it. A value above 0 slows a layer that would finish sooner than that. The move scrubber plays the active layer and keeps the G-code tab on the matching command. Slice presets live in `localStorage` and diff against the factory defaults. The Slice button follows the slice cache: Slice when this recipe has no saved result, Show result when that saved result will be used, and Re-slice only when the settings changed and a new plan will run. Force re-slice plans a cached recipe again.
 
 Feature knobs default on. Turn one off with `--variable-width false`, `--arc-fit false`, `--travel-opt false`, `--overhang-control false`, `--infill-combine false`, `--combing false`, or `--feature-speeds false`. `--classic-estimator` times the same G-code with the old stop-at-every-segment model. `--junction-deviation` (default 0.02 mm) is the Klipper cornering allowance for the default lookahead estimator. `--scarf-seam blend|off|outer|all` chooses the scarf joint (default `blend`). Length and step count are `--scarf-length` (10 mm) and `--scarf-steps` (8). `--classic` is the baseline planner: line infill for the full height, one feed for every feature, no variable walls, no arcs, no overhang slowdown, no infill combining, no combing, no scarf, and grid supports only.
 
