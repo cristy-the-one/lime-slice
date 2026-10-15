@@ -163,6 +163,64 @@ pub enum EdgePick {
     Index(i32),
 }
 
+/// `q = m·p + t`, `m` row by row: the client's `Affine`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Affine {
+    pub m: [f64; 9],
+    pub t: [f64; 3],
+}
+
+/// A turn is rigid within this much: columns of length 1 and square to each other.
+const RIGID_TOLERANCE: f64 = 1e-6;
+
+impl Affine {
+    /// The twelve numbers `lime_tree_join` reads, when this is a turn and a move with no scale, shear, or mirror.
+    fn rigid(&self) -> Result<[f64; 12], String> {
+        let m = self.m;
+        let col = |c: usize| [m[c], m[c + 3], m[c + 6]];
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let [x, y, z] = [col(0), col(1), col(2)];
+        let unit = [x, y, z]
+            .iter()
+            .all(|c| (dot(*c, *c) - 1.0).abs() <= RIGID_TOLERANCE);
+        let square = [(x, y), (y, z), (x, z)]
+            .iter()
+            .all(|(a, b)| dot(*a, *b).abs() <= RIGID_TOLERANCE);
+        let det = dot(
+            x,
+            [
+                y[1] * z[2] - y[2] * z[1],
+                y[2] * z[0] - y[0] * z[2],
+                y[0] * z[1] - y[1] * z[0],
+            ],
+        );
+        let finite = m.iter().chain(&self.t).all(|value| value.is_finite());
+        if !(finite && unit && square && det > 0.0) {
+            return Err(
+                "The tool's placement must be a turn and a move only, with no scale, shear, or mirror"
+                    .into(),
+            );
+        }
+        let t = self.t;
+        Ok([
+            m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], t[0], t[1], t[2],
+        ])
+    }
+}
+
+/// The solid a join takes from another tree: that tree's key and the step it held at Apply. `object` and
+/// `name` are the client's (the plate object and its name then), stored and echoed as they came.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolRef {
+    pub key: String,
+    pub node: NodeId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
 /// One edit. Lengths are millimetres, turns degrees about X, then Y, then Z.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(
@@ -200,6 +258,15 @@ pub enum Op {
     },
     Scale {
         factor: f64,
+    },
+    /// Another tree's solid at `tool.node`, moved into this solid's frame by `relative`, which was
+    /// worked out once at Apply, so moving either part later never moves a cut already made.
+    Join {
+        op: BooleanOp,
+        tool: ToolRef,
+        relative: Affine,
+        #[serde(default)]
+        keep_tool: bool,
     },
 }
 
@@ -407,7 +474,17 @@ enum Failure {
         node: NodeId,
         message: String,
     },
+    /// A join needs a tool tree, or a step of one, that this engine does not hold. `node` is the step of
+    /// the tree asked about that cannot be built for it, if it has one yet. Nothing is marked: once the
+    /// client opens `key` again the same call works.
+    ToolMissing {
+        node: Option<NodeId>,
+        key: String,
+    },
 }
+
+const TOOL_MISSING: &str = "The tool object's history is not open in the modeler";
+const CYCLE: &str = "The tool object's history already uses this part, so the two cannot be joined";
 
 impl Failure {
     fn json(&self) -> String {
@@ -416,6 +493,13 @@ impl Failure {
             Failure::Missing(nodes) => json!({ "error": "unknown", "missing": nodes }).to_string(),
             Failure::Broken { node, message } => {
                 json!({ "error": message, "broken": node }).to_string()
+            }
+            Failure::ToolMissing {
+                node: Some(node),
+                key,
+            } => json!({ "error": TOOL_MISSING, "broken": node, "missingTool": key }).to_string(),
+            Failure::ToolMissing { node: None, key } => {
+                json!({ "error": TOOL_MISSING, "missingTool": key }).to_string()
             }
         }
     }
@@ -616,9 +700,9 @@ impl Doc {
         Ok(())
     }
 
-    /// Give `id` a solid, replaying from the nearest ancestor that has one.
-    /// Returns how many steps were replayed. Only solids are built here, never replies.
-    fn ensure_shape(&mut self, id: NodeId, clock: &mut u64) -> Result<usize, Failure> {
+    /// The steps from `id` up to the nearest ancestor that holds its solid, `id` first: what a
+    /// replay of `id` builds.
+    fn unbuilt(&self, id: NodeId) -> Result<Vec<NodeId>, Failure> {
         let mut chain = Vec::new();
         let mut at = id;
         loop {
@@ -630,11 +714,23 @@ impl Doc {
                 });
             }
             if node.shape.is_some() {
-                break;
+                return Ok(chain);
             }
             chain.push(at);
             at = node.parent.expect("the root always holds its solid");
         }
+    }
+
+    /// Give `id` a solid, replaying from the nearest ancestor that has one. `tools` holds the
+    /// solid each join step on the way takes from its tool tree (`Store::ensure`).
+    /// Returns how many steps were replayed. Only solids are built here, never replies.
+    fn ensure_shape(
+        &mut self,
+        id: NodeId,
+        clock: &mut u64,
+        tools: &HashMap<NodeId, ToolSolid>,
+    ) -> Result<usize, Failure> {
+        let chain = self.unbuilt(id)?;
         let replayed = chain.len();
         for step in chain.into_iter().rev() {
             let (parent, op, expected) = {
@@ -651,8 +747,10 @@ impl Doc {
                     .get_mut(&parent)
                     .and_then(|node| node.shape.as_mut())
                     .expect("the parent was built first");
-                resolve(from, &op)
-                    .and_then(|op| build(from, op, false).map_err(|(message, _)| message))
+                resolve(from, &op).and_then(|op| {
+                    build(from, op, false, tools.get(&step).copied())
+                        .map_err(|(message, _)| message)
+                })
             };
             let built = match built {
                 Ok(built) => built,
@@ -687,6 +785,153 @@ impl Doc {
 }
 
 impl Store {
+    /// Give node `id` of tree `key` a solid. A join on the way first has its tool tree build the step
+    /// it names, from that tree's own kept solids, so one tree's step can depend on another's.
+    fn ensure(&mut self, key: &str, id: NodeId) -> Result<usize, Failure> {
+        self.ensure_from(key, id, &mut Vec::new())
+    }
+
+    /// `visiting` is the trees whose replay is under way, so a history that names itself fails plainly.
+    fn ensure_from(
+        &mut self,
+        key: &str,
+        id: NodeId,
+        visiting: &mut Vec<String>,
+    ) -> Result<usize, Failure> {
+        let doc = doc_in(&mut self.docs, key)?;
+        let joins: Vec<(NodeId, ToolRef)> = doc
+            .unbuilt(id)?
+            .into_iter()
+            .filter_map(|step| match &doc.nodes[&step].op {
+                Some(Op::Join { tool, .. }) => Some((step, tool.clone())),
+                _ => None,
+            })
+            .collect();
+        let mut tools = HashMap::new();
+        for (step, tool) in joins {
+            match self.tool_solid(key, &tool, visiting) {
+                Ok(solid) => {
+                    tools.insert(step, solid);
+                }
+                Err(Failure::ToolMissing { key: missing, .. }) => {
+                    return Err(Failure::ToolMissing {
+                        node: Some(step),
+                        key: missing,
+                    })
+                }
+                Err(failure) => {
+                    let message = match failure {
+                        Failure::Message(message) => message,
+                        _ => "The tool object's step could not be rebuilt".into(),
+                    };
+                    return Err(doc_in(&mut self.docs, key)?.mark_broken(step, message));
+                }
+            }
+        }
+        doc_in(&mut self.docs, key)?.ensure_shape(id, &mut self.clock, &tools)
+    }
+
+    /// The solid a join on tree `key` takes from `tool`, built if it must be. A tool tree or step this
+    /// engine does not hold is `ToolMissing`; one that cannot serve as a tool is a plain message.
+    fn tool_solid(
+        &mut self,
+        key: &str,
+        tool: &ToolRef,
+        visiting: &mut Vec<String>,
+    ) -> Result<ToolSolid, Failure> {
+        if tool.key == key {
+            return Err(Failure::Message("A part cannot be its own tool".into()));
+        }
+        if visiting.contains(&tool.key) {
+            return Err(Failure::Message(CYCLE.into()));
+        }
+        let held = self
+            .docs
+            .get(&tool.key)
+            .is_some_and(|doc| doc.nodes.contains_key(&tool.node));
+        if !held {
+            return Err(Failure::ToolMissing {
+                node: None,
+                key: tool.key.clone(),
+            });
+        }
+        visiting.push(key.to_string());
+        let built = self.ensure_from(&tool.key, tool.node, visiting);
+        visiting.pop();
+        match built {
+            Ok(_) => {}
+            Err(Failure::ToolMissing { key, .. }) => {
+                return Err(Failure::ToolMissing { node: None, key })
+            }
+            Err(Failure::Message(message)) => return Err(Failure::Message(message)),
+            Err(_) => {
+                return Err(Failure::Message(
+                    "The tool object's step could not be rebuilt".into(),
+                ))
+            }
+        }
+        let shape = self.docs[&tool.key].nodes[&tool.node]
+            .shape
+            .as_ref()
+            .expect("ensure_from built it");
+        shape.editable().map_err(|_| {
+            Failure::Message(
+                "The tool object has surfaces but no closed solid, so it cannot be used as a tool"
+                    .into(),
+            )
+        })?;
+        Ok(ToolSolid(shape.raw()))
+    }
+
+    /// Whether tree `from`, or any tree its joins take a tool from, takes one from tree `key`.
+    fn uses(&self, from: &str, key: &str) -> bool {
+        let mut queue = vec![from.to_string()];
+        let mut seen = HashSet::new();
+        while let Some(at) = queue.pop() {
+            if at == key {
+                return true;
+            }
+            if !seen.insert(at.clone()) {
+                continue;
+            }
+            if let Some(doc) = self.docs.get(&at) {
+                for node in doc.nodes.values() {
+                    if let Some(Op::Join { tool, .. }) = &node.op {
+                        queue.push(tool.key.clone());
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// A new join's checks before anything is built: a rigid placement, another part, and no loop
+    /// between two histories, which would leave neither able to open first.
+    fn join_refusal(&self, key: &str, op: &Op) -> Option<String> {
+        let Op::Join { tool, relative, .. } = op else {
+            return None;
+        };
+        if let Err(message) = relative.rigid() {
+            return Some(message);
+        }
+        if tool.key == key {
+            return Some("A part cannot be its own tool".into());
+        }
+        self.uses(&tool.key, key).then(|| CYCLE.into())
+    }
+
+    /// Whether a join in a tree other than `key` takes its tool from one of `nodes` of `key` (any node when None).
+    fn names_tool(&self, key: &str, nodes: Option<&HashSet<NodeId>>) -> bool {
+        self.docs
+            .iter()
+            .filter(|(other, _)| other.as_str() != key)
+            .flat_map(|(_, doc)| doc.nodes.values())
+            .any(|node| {
+                matches!(&node.op, Some(Op::Join { tool, .. })
+                    if tool.key == key && nodes.is_none_or(|nodes| nodes.contains(&tool.node)))
+            })
+    }
+
     fn handle(&mut self, request: Request) -> Result<Answer, Failure> {
         match request {
             Request::Open {
@@ -728,6 +973,12 @@ impl Store {
             } => self.goto(key, node, chord_mm),
             Request::Drop { key, node } => self.drop_branch(key, node),
             Request::Close { key } => {
+                if self.names_tool(&key, None) {
+                    return Err(Failure::Message(
+                        "A step of another part's history uses this part as its tool, so it stays open"
+                            .into(),
+                    ));
+                }
                 self.docs.remove(&key);
                 self.replies.retain(|reply| reply.key != key);
                 Ok(Answer::Plain(json!({ "ok": true }).to_string()))
@@ -740,9 +991,8 @@ impl Store {
                 b_kind,
                 b_index,
             } => {
-                let doc = doc_in(&mut self.docs, &key)?;
-                doc.ensure_shape(node, &mut self.clock)?;
-                let distance = doc
+                self.ensure(&key, node)?;
+                let distance = doc_in(&mut self.docs, &key)?
                     .shape(node)
                     .distance(&a_kind, a_index, &b_kind, b_index)
                     .map_err(Failure::Message)?;
@@ -751,9 +1001,11 @@ impl Store {
                 ))
             }
             Request::Export { key, node } => {
-                let doc = doc_in(&mut self.docs, &key)?;
-                doc.ensure_shape(node, &mut self.clock)?;
-                let bytes = doc.shape(node).step_bytes().map_err(Failure::Message)?;
+                self.ensure(&key, node)?;
+                let bytes = doc_in(&mut self.docs, &key)?
+                    .shape(node)
+                    .step_bytes()
+                    .map_err(Failure::Message)?;
                 let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
                 Ok(Answer::Plain(format!(
                     "{{\"bytesBase64\":\"{encoded}\",\"byteLength\":{}}}",
@@ -806,7 +1058,7 @@ impl Store {
                 (text, 0)
             }
             None => {
-                let replayed = doc_in(&mut self.docs, &key)?.ensure_shape(id, &mut self.clock)?;
+                let replayed = self.ensure(&key, id)?;
                 (self.reply(&key, id, chord)?, replayed)
             }
         };
@@ -882,14 +1134,19 @@ impl Store {
                 "Node {id} is already in this tree for another step"
             )));
         }
-        let replayed = doc.ensure_shape(parent, &mut self.clock)?;
+        let replayed = self.ensure(&key, parent)?;
+        if let Some(message) = self.join_refusal(&key, &op) {
+            return Err(Failure::Message(message));
+        }
+        let tool = self.join_tool(&key, &op)?;
+        let doc = doc_in(&mut self.docs, &key)?;
         let probed = doc.probe.take();
         let from = doc.shape(parent);
         from.editable().map_err(Failure::Message)?;
         let op = resolve(from, &op).map_err(Failure::Message)?;
         let mut built = match probed {
             Some(probed) if probed.parent == parent && probed.op == op => probed.built,
-            _ => build(from, op, false).map_err(|(message, _)| Failure::Message(message))?,
+            _ => build(from, op, false, tool).map_err(|(message, _)| Failure::Message(message))?,
         };
         let fingerprint = built.kept.fingerprint();
         self.clock += 1;
@@ -939,15 +1196,23 @@ impl Store {
     }
 
     fn probe(&mut self, key: &str, id: NodeId, op: Op) -> Result<Answer, Failure> {
+        self.ensure(key, id)?;
+        doc_in(&mut self.docs, key)?.probe = None;
+        let tool = match self.join_refusal(key, &op) {
+            Some(message) => Err(message),
+            None => match self.join_tool(key, &op) {
+                Ok(tool) => Ok(tool),
+                Err(Failure::Message(message)) => Err(message),
+                Err(failure) => return Err(failure),
+            },
+        };
         let doc = doc_in(&mut self.docs, key)?;
-        doc.ensure_shape(id, &mut self.clock)?;
-        doc.probe = None;
         let from = doc.shape(id);
-        let result = from
-            .editable()
-            .and_then(|()| resolve(from, &op))
+        let result = tool
+            .and_then(|tool| from.editable().map(|()| tool))
+            .and_then(|tool| resolve(from, &op).map(|op| (op, tool)))
             .map_err(|message| (message, None))
-            .and_then(|op| build(from, op, true));
+            .and_then(|(op, tool)| build(from, op, true, tool));
         match result {
             Ok(built) => {
                 doc.probe = Some(Probed {
@@ -967,6 +1232,14 @@ impl Store {
         }
     }
 
+    /// The solid a join takes from its tool tree, or None for any other op.
+    fn join_tool(&mut self, key: &str, op: &Op) -> Result<Option<ToolSolid>, Failure> {
+        match op {
+            Op::Join { tool, .. } => self.tool_solid(key, tool, &mut Vec::new()).map(Some),
+            _ => Ok(None),
+        }
+    }
+
     /// Remove `id` and everything under it. The current node moves to `id`'s parent if it was inside.
     fn drop_branch(&mut self, key: String, id: NodeId) -> Result<Answer, Failure> {
         if id == ROOT {
@@ -977,6 +1250,13 @@ impl Store {
         let doc = doc_in(&mut self.docs, &key)?;
         let parent = doc.node(id)?.parent.expect("only the root has no parent");
         let gone = doc.subtree(id);
+        if self.names_tool(&key, Some(&gone)) {
+            return Err(Failure::Message(
+                "A step of another part's history uses a step of this branch as its tool, so it cannot be deleted"
+                    .into(),
+            ));
+        }
+        let doc = doc_in(&mut self.docs, &key)?;
         doc.nodes.retain(|node, _| !gone.contains(node));
         if gone.contains(&doc.current) {
             doc.current = parent;
@@ -1171,17 +1451,52 @@ struct Built {
     other: Option<Shape>,
 }
 
+/// Another tree's solid, for one join. The store holds that solid for the whole call: nothing is
+/// evicted before the call ends, and a tool is never the tree being built.
+#[derive(Clone, Copy)]
+struct ToolSolid(*const RawShape);
+
+impl BooleanOp {
+    fn name(self) -> &'static CStr {
+        match self {
+            BooleanOp::Fuse => c"fuse",
+            BooleanOp::Cut => c"cut",
+            BooleanOp::Common => c"common",
+        }
+    }
+}
+
 /// Run a resolved op on `from`. With `probe`, a fillet or chamfer that does not fit also reports
-/// the largest size that does.
-fn build(from: &Shape, op: Op, probe: bool) -> Result<Built, (String, Option<f64>)> {
+/// the largest size that does. A join takes its tool's solid in `tool`.
+fn build(
+    from: &Shape,
+    op: Op,
+    probe: bool,
+    tool: Option<ToolSolid>,
+) -> Result<Built, (String, Option<f64>)> {
     let mut other = None;
     let kept = match &op {
-        Op::Boolean { op: which, tool } => {
-            let which = match which {
-                BooleanOp::Fuse => c"fuse",
-                BooleanOp::Cut => c"cut",
-                BooleanOp::Common => c"common",
+        Op::Join {
+            op: which,
+            relative,
+            ..
+        } => {
+            let Some(ToolSolid(solid)) = tool else {
+                return Err(("The tool object's solid is missing".into(), None));
             };
+            let place = relative.rigid().map_err(|message| (message, None))?;
+            Shape::made(|error| unsafe {
+                lime_tree_join(
+                    from.raw(),
+                    solid,
+                    which.name().as_ptr(),
+                    place.as_ptr(),
+                    error,
+                )
+            })
+        }
+        Op::Boolean { op: which, tool } => {
+            let which = which.name();
             let p = tool.numbers();
             Shape::made(|error| unsafe {
                 lime_tree_boolean(
@@ -1298,6 +1613,13 @@ extern "C" {
         op: *const c_char,
         primitive: *const c_char,
         p: *const f64,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    fn lime_tree_join(
+        from: *const RawShape,
+        tool: *const RawShape,
+        op: *const c_char,
+        place: *const f64,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
     fn lime_tree_hole(

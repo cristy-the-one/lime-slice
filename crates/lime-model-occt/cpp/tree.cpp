@@ -175,6 +175,31 @@ LimeShape* lime_tree_boolean(const LimeShape* from, const char* op, const char* 
     }
 }
 
+/// Another tree's solid, placed by `place` (the 3×3 turn row by row, then the move), combined with `from`.
+LimeShape* lime_tree_join(const LimeShape* from, const LimeShape* tool, const char* op, const double* place, char** error) {
+    try {
+        std::string message;
+        if (!editable(tool->held.shape, message)) {
+            set_error(error, "The tool object has surfaces but no closed solid, so it cannot be used as a tool.");
+            return nullptr;
+        }
+        const std::string which = op == nullptr ? "" : op;
+        double volume = 0.0;
+        const TopoDS_Shape result = build_join(from->held.shape, tool->held.shape, which, place, volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "The boolean removed the solid", error).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
 /// `p` is x, y, z, dx, dy, dz, radius, depth.
 LimeShape* lime_tree_hole(const LimeShape* from, const double* p, char** error) {
     try {
