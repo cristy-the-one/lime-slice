@@ -460,7 +460,7 @@ export const CONTROLS: ControlSpec[] = [
 
   // Speed & travel
   bound("featureSpeeds", { id: "feeds", label: "Per-feature speeds", group: "speed", tier: "simple", kind: check, keywords: "speed feature" }),
-  bound("overhangControl", { id: "overhang", label: "Overhang and bridges", group: "speed", tier: "simple", kind: check, keywords: "slow bridge fan" }),
+  bound("overhangControl", { id: "overhang", label: "Overhang and bridges", group: "speed", tier: "simple", kind: check, structural: true, keywords: "slow bridge fan" }),
   bound("bridgeFlowRatio", {
     id: "bflow",
     label: "Bridge flow",
