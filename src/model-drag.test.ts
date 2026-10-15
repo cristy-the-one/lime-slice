@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { DOCK_KNOB_REACH } from "./gizmo-math.ts";
+import { DOCK_KNOB_REACH, HANDLE_KNOB_PICK } from "./gizmo-math.ts";
 import {
   DRAG_FIELDS,
   MODEL_TOOLS,
@@ -83,8 +83,11 @@ function context(primitive: DragContext["primitive"], extra: Partial<DragContext
 }
 for (const tool of MODEL_TOOLS) {
   const dragged = new Set<string>();
-  for (const { kind: primitive } of PRIMITIVES) {
-    for (const handle of handlesFor(tool, context(primitive))) handle.fields.forEach((field) => dragged.add(field));
+  // A hole's counterbore fields show only with its box ticked, and have handles then.
+  for (const hole of [undefined, { through: false, counterbore: true }]) {
+    for (const { kind: primitive } of PRIMITIVES) {
+      for (const handle of handlesFor(tool, context(primitive, { hole }))) handle.fields.forEach((field) => dragged.add(field));
+    }
   }
   for (const field of DRAG_FIELDS[tool]) check(`${tool} has a handle for ${field}`, dragged.has(field));
 }
@@ -94,6 +97,16 @@ check("no tool, no handles", handlesFor(null, context("box")).length === 0);
 const docked = (handle: DragHandle) => handle.seat.at === "dock";
 const reachOf = (handle: DragHandle) => (handle.seat.at === "dock" ? handle.seat.reach : null);
 const originOf = (handle: DragHandle) => (handle.seat.at === "feature" ? handle.seat.origin : null);
+
+const holeIds = (hole: DragContext["hole"]) => handlesFor("hole", context("box", { hole })).map((handle) => handle.id);
+eq("a plain hole drags its origin, radius and depth", holeIds({ through: false, counterbore: false }), ["hole-origin", "hole-move-u", "hole-move-v", "hole-radius", "hole-depth"]);
+eq("Through all has no depth to drag", holeIds({ through: true, counterbore: false }), ["hole-origin", "hole-move-u", "hole-move-v", "hole-radius"]);
+const bored = handlesFor("hole", context("box", { hole: { through: true, counterbore: true } }));
+eq("a counterbore adds its radius and depth knobs", bored.map((handle) => handle.id), ["hole-origin", "hole-move-u", "hole-move-v", "hole-radius", "bore-radius", "bore-depth"]);
+const boreRadius = bored.find((handle) => handle.id === "bore-radius")!;
+const boreDepth = bored.find((handle) => handle.id === "bore-depth")!;
+eq("the bore radius knob takes the next axis, out past the arrows", [boreRadius.dir, reachOf(boreRadius)], [[0, 1, 0], DOCK_KNOB_REACH]);
+check("the bore depth knob sits on the drill axis, clear of the dock's middle and of the depth knob", nearVec(boreDepth.dir, [0, 0, -1]) && DOCK_KNOB_REACH - reachOf(boreDepth)! > 2 * HANDLE_KNOB_PICK && reachOf(boreDepth)! > 2 * HANDLE_KNOB_PICK);
 
 const box = handlesFor("boolean", context("box"));
 const moveX = box.find((handle) => handle.id === "move-x")!;

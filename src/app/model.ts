@@ -25,6 +25,7 @@ import { unionBox } from "../measure";
 import type { ModelPick } from "../model-view";
 import { DAMAGED, decodeSolid, readFingerprint, type ParsedSolid } from "../model-reply";
 import { holeAxis, lastFace, outwardFromMesh, selectedEdges } from "../model-blend";
+import { throughLength } from "../model-hole";
 import { nextModelPicks, selectionCountLabel } from "../model-select";
 import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
@@ -66,10 +67,12 @@ import {
   editedPanel,
   fieldNumber,
   fieldPrimitive,
+  holeBoxes,
   joinOpen,
   joinPick,
   mountModelChrome,
   openEditTool,
+  openPlaceTool,
   refreshJoinChoices,
   resetKeepTool,
   openModelTool,
@@ -83,7 +86,7 @@ import {
   syncPlaceFields,
   type PlacePhase,
 } from "../ui/model-chrome";
-import { mountModelHistory, syncModelHistory } from "../ui/model-history";
+import { mountModelHistory, syncModelHistory, syncModelPosition } from "../ui/model-history";
 import { dropRefusal, stepLabel } from "../model-history";
 import { addedSolid, addedSplit, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose, withoutObject, type PlateObject } from "../plate";
 import type { ContextPart } from "../model-context";
@@ -261,6 +264,12 @@ export function bindModelView() {
     holeAxis() {
       return drillAxis();
     },
+    throughLength(origin, dir) {
+      if (!open) return null;
+      // In the solid's own frame, from its own box, read once per solid, as the kernel measures it.
+      const back = inversePose(openPose());
+      return throughLength(boxOf(open.solid.positions), applyPose(back, origin), turnDir(back, dir));
+    },
     placeFields() {
       return open ? placeFields(openPose(), pivotOf(open.solid)) : null;
     },
@@ -305,6 +314,8 @@ export function bindModelView() {
       if (node != null) void startEdit(node);
       else if (tree && !editing) void startEdit(tree.current);
     },
+    openPlace: openPlaceTool,
+    resetPosition: resetPose,
   });
 }
 
@@ -502,8 +513,18 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
       const edges = selectedEdges(picks);
       return edges.length === 0 ? null : { kind: tool, edges, size: num("#modelBlend") };
     }
-    case "hole":
-      return { kind: "hole", origin, axis: drillAxis(), radius: num("#modelHoleR"), depth: num("#modelHoleD") };
+    case "hole": {
+      const { through, counterbore } = holeBoxes();
+      return {
+        kind: "hole",
+        origin,
+        axis: drillAxis(),
+        radius: num("#modelHoleR"),
+        depth: num("#modelHoleD"),
+        ...(through ? { through: true as const } : {}),
+        ...(counterbore ? { counterboreRadius: num("#modelBoreR"), counterboreDepth: num("#modelBoreD") } : {}),
+      };
+    }
     case "boolean":
       return joinOpen() ? panelJoin() : { kind: "boolean", op: boolOp(), ...fieldPrimitive() };
     case "split": {
@@ -2013,6 +2034,30 @@ function syncUndo() {
   if (stepButton) stepButton.disabled = busy || jumping || !tree;
   setModelWaiting(busy || jumping);
   syncModelHistory(tree);
+  syncPosition();
+}
+
+/** The Position row, from the pose the plate object holds and the solid's own box, read once per solid. */
+function syncPosition() {
+  const pose = openPose();
+  syncModelPosition(open ? placeFields(pose, pivotOf(open.solid)) : null, isIdentity(pose));
+}
+
+/**
+ * The Position row's Reset: back to where the file put the part, as one Place step, which Prepare undo takes back. It
+ * goes through Place, which closes another tool or an edited step first: their checked numbers were for the old pose.
+ */
+function resetPose() {
+  const at = open;
+  if (!at || busy || jumping || isIdentity(openPose())) return;
+  openPlaceTool();
+  if (openModelTool() !== "place") return;
+  endPlace();
+  placeBefore = openPose();
+  beginEdit();
+  putPose(at.objectId, IDENTITY_POSE);
+  endPlace();
+  syncPlaceFields(true);
 }
 
 const extentOf = extentMemo();

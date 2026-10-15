@@ -11,6 +11,7 @@ import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, t
 import type { EditPanel } from "../model-edit";
 import { clampTilt, splitNote, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
 import { lastFace, selectedEdges } from "../model-blend";
+import { SCREWS, screwOf } from "../model-hole";
 import { isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
 import { lastEdge, modelApplyReady, selectionCountLabel, type ModelPickRef } from "../model-select";
 import { scrubIntent, scrubTarget, type ScrubIntent } from "./scrub";
@@ -41,6 +42,8 @@ interface ModelChromeHooks {
   edgePoints(edge: number): ArrayLike<number> | null;
   /** Unit direction a hole drills, in model space. Straight down when no face is picked. */
   holeAxis(): Vec3;
+  /** How long a through hole from `origin` along `dir`, both in model space, runs: as the kernel works it out, from the solid's own box. */
+  throughLength(origin: Vec3, dir: Vec3): number | null;
   /** Where the open object sits in model space, as the Place fields show it. Null with nothing open. */
   placeFields(): PlaceFields | null;
   /** A Place field changed: the object moves, or turns, in model space. */
@@ -117,10 +120,10 @@ let editable = true;
 /** An edit or a jump is on its way: Apply waits for it. */
 let waiting = false;
 /**
- * The step being edited, while its tool's panel is open: what it opened with, its header, and what Boolean and New
- * solid had picked before, which they get back when the edit closes.
+ * The step being edited, while its tool's panel is open: what it opened with, its header, and what Boolean, New solid
+ * and Hole's boxes had before, which they get back when the edit closes.
  */
-let edit: { panel: EditPanel; head: string; before: { primKind: PrimitiveKind; withObject: boolean; joinTool: string | null } } | null = null;
+let edit: { panel: EditPanel; head: string; before: { primKind: PrimitiveKind; withObject: boolean; joinTool: string | null; hole: { through: boolean; counterbore: boolean } } } | null = null;
 const VIEW_ONLY_TIP = "This STEP file has surfaces but no closed solid, so it can be measured but not edited.";
 
 type Scrub = {
@@ -198,6 +201,10 @@ export function mountModelChrome(next: ModelChromeHooks) {
   });
   document.querySelector("#modelCancel")?.addEventListener("click", () => closeTool());
   document.querySelector("#modelPanel")?.addEventListener("change", (ev) => {
+    if (ev.target instanceof HTMLElement && HOLE_CHOICES.has(ev.target.id)) {
+      holeChoiceChanged(ev.target.id);
+      return;
+    }
     keepNewSolidInView();
     // A typed tilt past the limit shows the limit the plane already uses.
     const input = ev.target instanceof HTMLInputElement && (ev.target.id === "modelTiltA" || ev.target.id === "modelTiltB") ? ev.target : null;
@@ -206,11 +213,14 @@ export function mountModelChrome(next: ModelChromeHooks) {
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
   document.querySelector("#modelPanel")?.addEventListener("input", (ev) => {
+    // A box or the screw list changes on `change`, all at once.
+    if (ev.target instanceof HTMLElement && HOLE_CHOICES.has(ev.target.id)) return;
     if (tool === "place") {
       placeChanged(ev.target instanceof HTMLElement ? ev.target.id : "", "typed");
       return;
     }
     if (tool === "split") syncSplitField();
+    if (tool === "hole") paintScrew();
     refreshGhost();
     hooks?.paramsChanged(true);
   });
@@ -318,7 +328,11 @@ function toggleTool(next: ModelTool, editing = false) {
     writeFields(["modelTiltA", "modelTiltB"], [0, 0]);
     applySplitDefaults();
   }
-  if (next === "hole") applyHoleDefaults();
+  if (next === "hole") {
+    applyHoleDefaults();
+    // The hole drills into the face clicked last, so a click picks faces.
+    if (document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") !== "true") document.querySelector<HTMLButtonElement>("#modelPickFace")?.click();
+  }
   // Keep the tool object is asked per op: it opens off.
   if (next === "boolean") resetKeepTool();
   if (next === "measure") applyMeasureDefaults();
@@ -349,7 +363,7 @@ function toggleTool(next: ModelTool, editing = false) {
  */
 export function openEditTool(panel: EditPanel, head: string) {
   if (tool) closeTool();
-  edit = { panel, head, before: { primKind, withObject, joinTool } };
+  edit = { panel, head, before: { primKind, withObject, joinTool, hole: holeBoxes() } };
   if (panel.primitive) primKind = panel.primitive;
   withObject = !!panel.join;
   joinTool = null;
@@ -363,6 +377,7 @@ function fillEdit() {
   if (panel.boolOp) paintBoolOp(`model${{ fuse: "Fuse", cut: "Cut", common: "Common" }[panel.boolOp]}`);
   if (panel.flats !== undefined) paintAcross(panel.flats);
   if (panel.plane) paintPlaneMode(panel.plane.mode);
+  if (panel.hole) setHoleBoxes(panel.hole.through, panel.hole.counterbore);
   if (panel.join) {
     const keep = document.querySelector<HTMLInputElement>("#modelKeepTool");
     if (keep) keep.checked = panel.join.keepTool;
@@ -401,6 +416,7 @@ function closeTool() {
   exact.clear();
   if (ended) {
     ({ primKind, withObject, joinTool } = ended.before);
+    setHoleBoxes(ended.before.hole.through, ended.before.hole.counterbore);
     document.querySelector<HTMLElement>("#modelEditHead")?.toggleAttribute("hidden", true);
     document.querySelector("#modelPanel")?.removeAttribute("aria-labelledby");
     paintPrimRow();
@@ -429,6 +445,11 @@ export function joinOpen(): boolean {
 /** The object Boolean takes as its tool, while it is open on an object and one is picked. An edited join keeps its own. */
 export function joinPick(): string | null {
   return picksObject() ? joinTool : null;
+}
+
+/** The History panel's Position row: Place opens, or stays open. */
+export function openPlaceTool() {
+  if (tool !== "place") document.querySelector<HTMLButtonElement>("#modelToolPlace:not(:disabled)")?.click();
 }
 
 /** Shift+G: Boolean, on another object. */
@@ -577,8 +598,14 @@ function syncFields() {
     const withOk = !node.dataset.with || tool !== "boolean" || node.dataset.with === withMode;
     // An edited boolean cannot become a join, which takes another object's history.
     const editOk = !edit || node.id !== "modelWithObject" || !!edit.panel.join;
-    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk));
+    // A counterbore's fields show while its box is ticked.
+    const boreOk = node.dataset.bore === undefined || holeBoxes().counterbore;
+    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk));
   });
+  // Through all cuts to wherever the part ends: there is no depth to type.
+  const depth = document.querySelector<HTMLInputElement>("#modelHoleD");
+  if (depth) depth.disabled = holeBoxes().through;
+  paintScrew();
   const radius = RADIUS_LABELS[kind] ?? "Radius";
   setLabel("#modelRadiusLabel", "#modelRadius", radius);
   const flats = acrossFlats();
@@ -687,6 +714,58 @@ function applyHoleDefaults() {
   const inside = x > box.min[0] && x < box.max[0] && y > box.min[1] && y < box.max[1];
   if (inside && num("#modelZ") > box.min[2]) return;
   writeFields(["modelX", "modelY", "modelZ"], [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, box.max[2]]);
+}
+
+/** The hole's Through all and Counterbore boxes, and the screw list that ticks both. */
+const HOLE_CHOICES: ReadonlySet<string> = new Set(["modelThrough", "modelCounterbore", "modelScrew"]);
+
+/** The hole's Through all and Counterbore boxes, as ticked. */
+export function holeBoxes(): { through: boolean; counterbore: boolean } {
+  return {
+    through: document.querySelector<HTMLInputElement>("#modelThrough")?.checked ?? false,
+    counterbore: document.querySelector<HTMLInputElement>("#modelCounterbore")?.checked ?? false,
+  };
+}
+
+function setHoleBoxes(through: boolean, counterbore: boolean) {
+  const boxes = [["#modelThrough", through], ["#modelCounterbore", counterbore]] as const;
+  for (const [id, on] of boxes) {
+    const box = document.querySelector<HTMLInputElement>(id);
+    if (box) box.checked = on;
+  }
+}
+
+/** A box ticked or a screw picked: a screw fills the hole, through, with its counterbore. The fields follow at once. */
+function holeChoiceChanged(id: string) {
+  if (id === "modelScrew") {
+    const name = document.querySelector<HTMLSelectElement>("#modelScrew")?.value;
+    const screw = SCREWS.find((entry) => entry.name === name);
+    if (screw) {
+      setHoleBoxes(true, true);
+      writeFields(["modelHoleR", "modelBoreR", "modelBoreD"], [screw.hole / 2, screw.bore / 2, screw.boreDepth]);
+    }
+  }
+  syncFields();
+  refreshNote();
+  refreshGhost();
+  hooks?.paramsChanged();
+}
+
+/** The screw list shows the screw the numbers are, else Custom. */
+function paintScrew() {
+  const list = document.querySelector<HTMLSelectElement>("#modelScrew");
+  if (!list || tool !== "hole") return;
+  const { through, counterbore } = holeBoxes();
+  const screw = screwOf({ radius: num("#modelHoleR"), through, counterbore, boreRadius: num("#modelBoreR"), boreDepth: num("#modelBoreD") });
+  list.value = screw?.name ?? "";
+}
+
+/** Where the hole drills, so the face pick is found: into the face clicked last, else as an edited step drilled, else down. */
+function holeLead(): string {
+  if (lastFace(picks) != null) return "Into the picked face.";
+  const axis = hooks?.holeAxis() ?? [0, 0, -1];
+  const down = Math.abs(axis[0]) < 1e-6 && Math.abs(axis[1]) < 1e-6 && axis[2] < -0.9;
+  return down ? "Straight down; click a face to drill into it." : "As the step drilled; click a face to drill into another.";
 }
 
 /** Two points that are still on top of each other start on opposite corners of the solid. */
@@ -817,9 +896,7 @@ function refreshNote() {
   } else if (picksObject() && !joinTool) {
     text = (hooks?.joinChoices().length ?? 0) > 0 ? "Pick the tool: click a grey object, or one in the list." : "";
   } else if (isProbed(tool)) {
-    const axis = tool === "hole" ? (hooks?.holeAxis() ?? [0, 0, -1]) : null;
-    const down = axis != null && Math.abs(axis[0]) < 1e-6 && Math.abs(axis[1]) < 1e-6 && axis[2] < -0.9;
-    const lead = axis == null ? "" : down ? "Straight down from the origin. " : "Into the picked face. ";
+    const lead = tool === "hole" ? `${holeLead()} ` : "";
     const status = probeNote(tool, probe);
     text = `${lead}${status?.text ?? ""}`.trim();
     bad = status?.bad ?? false;
@@ -856,6 +933,7 @@ function dragContext(): DragContext {
     split: tool === "split" ? splitPlan() : null,
     edge: points ? edgeAnchor(points, center) : null,
     holeAxis: hooks?.holeAxis() ?? [0, 0, -1],
+    hole: holeBoxes(),
   };
 }
 
@@ -955,14 +1033,18 @@ function ghostFor(current: ModelTool): ModelGhost | null {
     return plan ? { kind: "plane", origin: plan.origin, normal: plan.normal } : null;
   }
   if (current === "hole") {
+    const origin: Vec3 = [num("#modelX"), num("#modelY"), num("#modelZ")];
+    const dir = hooks?.holeAxis() ?? [0, 0, -1];
+    const { through, counterbore } = holeBoxes();
     return {
       kind: "hole",
-      x: num("#modelX"),
-      y: num("#modelY"),
-      z: num("#modelZ"),
+      x: origin[0],
+      y: origin[1],
+      z: origin[2],
       radius: num("#modelHoleR"),
-      depth: num("#modelHoleD"),
-      dir: hooks?.holeAxis() ?? [0, 0, -1],
+      depth: (through ? hooks?.throughLength(origin, dir) : null) ?? num("#modelHoleD"),
+      dir,
+      ...(counterbore ? { bore: { radius: num("#modelBoreR"), depth: num("#modelBoreD") } } : {}),
     };
   }
   if (current === "scale") return { kind: "scale", factor: num("#modelFactor") };
@@ -1009,7 +1091,7 @@ function bindScrub() {
     if (ev.button !== 0 || scrub) return;
     const handle = (ev.target as Element | null)?.closest<HTMLElement>("[data-scrub]");
     const input = handle?.parentElement?.querySelector<HTMLInputElement>("input");
-    if (!handle || !input) return;
+    if (!handle || !input || input.disabled) return;
     const origin = Number(input.value);
     if (!Number.isFinite(origin)) return;
     if (ev.pointerType !== "touch") ev.preventDefault();

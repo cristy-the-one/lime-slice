@@ -250,7 +250,17 @@ pub enum Op {
         #[serde(default)]
         axis: [f64; 3],
         radius: f64,
+        /// With `through`, kept for the panel but not cut.
         depth: f64,
+        /// Cut to wherever the part ends along the axis, worked out from the solid it is cut from, so a
+        /// replay after an earlier edit still goes all the way through.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        through: bool,
+        /// A wider, shallow bore at the entry. Both are sent, or neither; one alone is refused as a size of 0.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        counterbore_radius: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        counterbore_depth: Option<f64>,
     },
     /// The node keeps the negative side. The positive side is answered once, in the apply reply,
     /// and with `otherKey` it becomes the root of its own tree. Replaying the split never touches that tree.
@@ -1793,9 +1803,24 @@ fn build(
             axis,
             radius,
             depth,
+            through,
+            counterbore_radius,
+            counterbore_depth,
         } => {
+            let bore = counterbore_radius.is_some() || counterbore_depth.is_some();
             let p = [
-                origin[0], origin[1], origin[2], axis[0], axis[1], axis[2], *radius, *depth,
+                origin[0],
+                origin[1],
+                origin[2],
+                axis[0],
+                axis[1],
+                axis[2],
+                *radius,
+                *depth,
+                f64::from(u8::from(*through)),
+                f64::from(u8::from(bore)),
+                counterbore_radius.unwrap_or(0.0),
+                counterbore_depth.unwrap_or(0.0),
             ];
             Shape::made(|error| unsafe { lime_tree_hole(from.raw(), p.as_ptr(), error) })
         }

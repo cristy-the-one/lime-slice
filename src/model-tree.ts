@@ -38,7 +38,7 @@ export type BooleanKind = "fuse" | "cut" | "common";
 /** One edit, in the solid's own frame. A fresh fillet or chamfer names edges by index. */
 export type ModelOp =
   | ({ kind: "boolean"; op: BooleanKind } & PrimitiveSpec)
-  | { kind: "hole"; origin: Vec3; axis: Vec3; radius: number; depth: number }
+  | HoleOp
   | { kind: "split"; origin: Vec3; normal: Vec3 }
   | { kind: "fillet" | "chamfer"; edges: (number | EdgeRef)[]; size: number }
   | { kind: "scale"; factor: number }
@@ -46,6 +46,22 @@ export type ModelOp =
   | { kind: "join"; op: BooleanKind; tool: JoinTool; relative: Affine; keepTool: boolean }
   /** A new solid's primitive built again from other numbers, in place of the solid above: an edited root, right under the root. */
   | ({ kind: "root" } & PrimitiveSpec);
+
+/**
+ * A hole into `axis` from `origin`. `through` cuts to wherever the part ends, worked out by the engine from the solid it
+ * is cut from, so `depth` stays only for the panel. A counterbore is a wider, shallow bore at the entry: both its fields,
+ * or neither. The newer fields are absent when off, so an older op, file and probe key read as before.
+ */
+export interface HoleOp {
+  kind: "hole";
+  origin: Vec3;
+  axis: Vec3;
+  radius: number;
+  depth: number;
+  through?: true;
+  counterboreRadius?: number;
+  counterboreDepth?: number;
+}
 
 export interface Fingerprint {
   volumeMm3: number;
@@ -371,8 +387,10 @@ export function opLabel(op: ModelOp): string {
   switch (op.kind) {
     case "boolean":
       return `${BOOLEAN_VERB[op.op]} ${primitiveLabel(op)}`;
-    case "hole":
-      return `Hole ⌀${n(op.radius * 2)} depth ${n(op.depth)}`;
+    case "hole": {
+      const bore = op.counterboreRadius != null && op.counterboreDepth != null ? `, counterbore ⌀${n(op.counterboreRadius * 2)} × ${n(op.counterboreDepth)}` : "";
+      return `Hole ⌀${n(op.radius * 2)} ${op.through ? "through" : `depth ${n(op.depth)}`}${bore}`;
+    }
     case "split":
       return splitLabel(op.origin, op.normal);
     case "fillet":

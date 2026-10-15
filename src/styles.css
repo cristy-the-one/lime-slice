@@ -740,6 +740,10 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .model-object:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .model-objects-empty { margin: 0; color: var(--text-dim); font-size: var(--fs-2); }
 .model-keep { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-2); color: var(--text-dim); font-size: var(--fs-2); }
+/* Hole: Through all and Counterbore side by side under the fields. */
+.model-hole-opts { display: flex; flex-wrap: wrap; column-gap: var(--space-4); }
+.model-hole-opts[hidden] { display: none !important; }
+.model-fields input:disabled { color: var(--text-faint); background: transparent; }
 /* No solid to show: a plain card in the middle of the view. An open tool, New solid's included, takes its place. */
 .model-empty {
   position: absolute;
@@ -786,9 +790,10 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .model-view-reset:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 #modelHistoryOpen { display: none; }
 .model-history {
+  --mh-position-h: 24px;
   margin-top: auto;
   flex: 0 8 auto;
-  min-height: 32px;
+  min-height: 60px;
   width: min(280px, 100%);
   display: flex;
   flex-direction: column;
@@ -800,10 +805,12 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   pointer-events: auto;
 }
 .model-history[hidden] { display: none !important; }
+/* On a short canvas History gives way first, but keeps its header, the Position row, and a row of its tree. */
+.model-history:not([data-collapsed="1"]) { min-height: 86px; }
 /* With no History, the size chip and the readout still sit at the bottom of the column. */
 html:not(.layout-compact) .model-history[hidden] + .model-foot { margin-top: auto; }
-/* With a tool open, History keeps to half the column so the tool's panel has room. */
-#modelBar[data-tool] .model-history { max-height: 50%; }
+/* With a tool open, History keeps to half the column plus its Position row, so the tool's panel has room. */
+#modelBar[data-tool] .model-history { max-height: calc(50% + var(--mh-position-h) + 4px); }
 .model-history-toggle {
   display: flex;
   align-items: center;
@@ -827,6 +834,48 @@ html:not(.layout-compact) .model-history[hidden] + .model-foot { margin-top: aut
 .model-history-toggle .ico { transition: transform 120ms ease; }
 .model-history[data-collapsed="1"] .model-history-toggle .ico { transform: rotate(-90deg); }
 .model-history-count { color: var(--text-faint); font-family: var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: 0; }
+/*
+ * The Position row: the open object's pose, above the root and apart from the tree, since a Place move is not a step.
+ * Collapsing folds the tree only, so the pose still shows.
+ */
+.mh-position { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; margin: 0 2px; padding-bottom: 2px; border-bottom: 1px solid var(--line); }
+html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { border-bottom: 0; padding-bottom: 0; }
+.mh-position-name { flex: 0 0 auto; color: var(--text-dim); }
+.mh-position-open {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--mh-position-h);
+  padding: 0 4px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-2);
+  text-align: left;
+  white-space: nowrap;
+}
+.mh-position-open .ico { flex: 0 0 auto; color: var(--text-dim); }
+.mh-position-open:hover { background: var(--surface-3); }
+.mh-position-open:focus-visible, .mh-position-reset:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.mh-position-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.mh-position-reset {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--mh-position-h);
+  height: var(--mh-position-h);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+}
+.mh-position-reset:hover { background: var(--surface-3); color: var(--text); }
+.mh-position-reset[hidden] { display: none; }
 .model-history-tree { position: relative; min-height: 0; overflow-y: auto; padding: 0 2px 2px; }
 .model-history-tree[hidden] { display: none; }
 .mh-row {

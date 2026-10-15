@@ -136,6 +136,8 @@ export interface EditPanel {
   plane?: { mode: "x" | "y" | "z"; flip: boolean };
   /** A hole's drill direction, used while no face is picked. */
   axis?: Vec3;
+  /** A hole's Through all and Counterbore boxes. */
+  hole?: { through: boolean; counterbore: boolean };
   /** A fillet's or a chamfer's edges, as stored. */
   edges?: readonly (number | EdgeRef)[];
   /** A join: its tool stays as applied; its op and Keep can change. */
@@ -159,10 +161,13 @@ export function editPanel(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
     case "hole": {
       const placed = fromSolidOp(op, pose) as typeof op;
       const length = Math.hypot(...placed.axis);
+      // A counterbore's fields are filled only when the step has one; else they keep the panel's numbers.
+      const bore = placed.counterboreRadius != null && placed.counterboreDepth != null ? { modelBoreR: placed.counterboreRadius, modelBoreD: placed.counterboreDepth } : null;
       return {
         tool: "hole",
-        fields: { modelX: placed.origin[0], modelY: placed.origin[1], modelZ: placed.origin[2], modelHoleR: placed.radius, modelHoleD: placed.depth },
+        fields: { modelX: placed.origin[0], modelY: placed.origin[1], modelZ: placed.origin[2], modelHoleR: placed.radius, modelHoleD: placed.depth, ...bore },
         axis: length > 1e-9 ? placed.axis : [0, 0, -1],
+        hole: { through: placed.through === true, counterbore: bore != null },
       };
     }
     case "split": {

@@ -24,7 +24,7 @@ export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
   split: ["modelPlane", "modelTiltA", "modelTiltB"],
   fillet: ["modelBlend"],
   chamfer: ["modelBlend"],
-  hole: ["modelX", "modelY", "modelZ", "modelHoleR", "modelHoleD"],
+  hole: ["modelX", "modelY", "modelZ", "modelHoleR", "modelHoleD", "modelBoreR", "modelBoreD"],
   scale: ["modelFactor"],
   measure: ["modelAx", "modelAy", "modelAz", "modelBx", "modelBy", "modelBz"],
   place: ["modelPlaceX", "modelPlaceY", "modelPlaceZ", "modelPlaceRx", "modelPlaceRy", "modelPlaceRz"],
@@ -76,6 +76,8 @@ export interface DragContext {
   edge: { point: Vec3; out: Vec3 } | null;
   /** Unit direction into the material. Omitted holes drill toward −Z. */
   holeAxis?: Vec3;
+  /** The hole's Through all and Counterbore boxes. Through all has no depth to drag; a counterbore adds two knobs. */
+  hole?: { through: boolean; counterbore: boolean };
 }
 
 const X: Vec3 = [1, 0, 0];
@@ -117,6 +119,8 @@ const onFeature = (origin: Vec3): HandleSeat => ({ at: "feature", origin });
 const onDock = (reach: number): HandleSeat => ({ at: "dock", reach });
 /** A size knob stands out past the arrows and rings. */
 const KNOB = onDock(DOCK_KNOB_REACH);
+/** A counterbore's depth knob, on the drill axis inside the hole's own, where no arrow or ring runs. */
+const BORE_DEPTH_SEAT = onDock(DOCK_KNOB_REACH * 0.55);
 
 /** Three dock arrows along model X, Y and Z, one field each. */
 function moveArrows(fields: readonly [string, string, string], prefix: string): Spec[] {
@@ -236,7 +240,15 @@ function holeHandles(ctx: DragContext): Spec[] {
     slide("hole-move-u", facingUp(side)),
     slide("hole-move-v", facingUp(cross(axis, side))),
     axisHandle("hole-radius", "knob", "modelHoleR", KNOB, side, "accent", "Radius", { min: 0.1, step: 0.5 }),
-    axisHandle("hole-depth", "knob", "modelHoleD", KNOB, axis, "z", "Depth", { min: 0.1 }),
+    ...(ctx.hole?.through ? [] : [axisHandle("hole-depth", "knob", "modelHoleD", KNOB, axis, "z", "Depth", { min: 0.1 })]),
+    // The counterbore's radius takes the next axis, as a primitive's second size does; its depth sits on the drill
+    // axis nearer the dock's middle than the hole's, as the shallower of the two.
+    ...(ctx.hole?.counterbore
+      ? [
+          axisHandle("bore-radius", "knob", "modelBoreR", KNOB, facingUp(cross(axis, side)), "accent", "Bore radius", { min: 0.1, step: 0.5 }),
+          axisHandle("bore-depth", "knob", "modelBoreD", BORE_DEPTH_SEAT, axis, "z", "Bore depth", { min: 0.1 }),
+        ]
+      : []),
   ];
 }
 

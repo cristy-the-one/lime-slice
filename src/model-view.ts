@@ -39,7 +39,7 @@ export interface ModelSolid {
 export type ModelGhost =
   | { kind: "primitive"; spec: PrimitiveSpec; mesh: Float32Array }
   | { kind: "plane"; origin: Vec3; normal: Vec3 }
-  | { kind: "hole"; x: number; y: number; z: number; radius: number; depth: number; dir?: Vec3 }
+  | { kind: "hole"; x: number; y: number; z: number; radius: number; depth: number; dir?: Vec3; bore?: { radius: number; depth: number } }
   | { kind: "scale"; factor: number }
   | { kind: "blend"; edges: number[]; radius: number }
   | { kind: "measure"; a: Vec3; b: Vec3 }
@@ -562,17 +562,22 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       const dir = current.dir ?? [0, 0, -1];
       const length = Math.hypot(dir[0], dir[1], dir[2]);
       const axis = length > 1e-9 ? [dir[0] / length, dir[1] / length, dir[2] / length] as Vec3 : [0, 0, -1] as Vec3;
-      const cylinder = pointCylinder(
-        current.x + axis[0] * current.depth / 2,
-        current.y + axis[1] * current.depth / 2,
-        current.z + axis[2] * current.depth / 2,
-        current.radius,
-        current.depth,
-      );
       const straightDown = Math.abs(axis[0]) < 1e-6 && Math.abs(axis[1]) < 1e-6 && axis[2] < 0;
-      if (cylinder && !straightDown) {
-        cylinder.quaternion.premultiply(new THREE.Quaternion().setFromUnitVectors(zAxis, new THREE.Vector3(axis[0], axis[1], axis[2])));
-      }
+      // A cylinder from the origin `depth` into the part: the hole, and its counterbore at the entry.
+      const drill = (radius: number, depth: number) => {
+        const cylinder = pointCylinder(
+          current.x + axis[0] * depth / 2,
+          current.y + axis[1] * depth / 2,
+          current.z + axis[2] * depth / 2,
+          radius,
+          depth,
+        );
+        if (cylinder && !straightDown) {
+          cylinder.quaternion.premultiply(new THREE.Quaternion().setFromUnitVectors(zAxis, new THREE.Vector3(axis[0], axis[1], axis[2])));
+        }
+      };
+      drill(current.radius, current.depth);
+      if (current.bore) drill(current.bore.radius, current.bore.depth);
       return;
     }
     if (current.kind === "plane") {
