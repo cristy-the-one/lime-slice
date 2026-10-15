@@ -7152,9 +7152,11 @@ mod tests {
 
     #[test]
     fn a_klipper_printer_gets_klipper_time_and_the_same_toolpath() {
+        // Both firmwares take arcs here, so only the estimator tells them apart.
         let generic = PrinterProfile {
             pressure_advance: 0.05,
             max_accel: 20_000.0,
+            firmware_arcs: Some(true),
             ..PrinterProfile::default()
         };
         // Klipper numbers on a printer that does not name its firmware are not read.

@@ -67,6 +67,10 @@ export function wireApp() {
   bindPlaceScrub(document.querySelector("#left")!);
   bindFieldScrub(document.body);
   migrateLegacyPresets();
+  // A locked switch stays focusable for its reason, but a click or Space must not flip it.
+  document.querySelector("#left")!.addEventListener("click", (ev) => {
+    if ((ev.target as HTMLElement).matches?.('input[aria-disabled="true"]')) ev.preventDefault();
+  });
   document.querySelector("#left")!.addEventListener("input", (ev) => {
     const target = ev.target as HTMLInputElement;
     if (isBeltField(target)) {

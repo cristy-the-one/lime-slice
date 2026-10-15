@@ -154,10 +154,14 @@ enum Cmd {
         /// Klipper junction deviation in millimetres.
         #[arg(long, default_value_t = 0.02)]
         junction_deviation: f64,
-        /// `klipper` times the print with Klipper's toolhead model at its default limits.
-        /// Left out, the generic estimator runs.
+        /// `klipper` times the print with Klipper's toolhead model at its default limits,
+        /// and writes no arcs unless `--firmware-arcs true`. Left out, the generic estimator runs.
         #[arg(long)]
         firmware: Option<String>,
+        /// Whether the firmware runs G2/G3. Left out, `--firmware klipper` means
+        /// no (a stock printer.cfg has no `[gcode_arcs]`) and anything else yes.
+        #[arg(long)]
+        firmware_arcs: Option<bool>,
         /// Drop outline vertices the nozzle cannot trace, on every layer's cut.
         #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
         simplify: bool,
@@ -341,6 +345,7 @@ fn run() -> Result<(), String> {
             classic_estimator,
             junction_deviation,
             firmware,
+            firmware_arcs,
             simplify,
             simplify_error,
             step_tolerance,
@@ -428,6 +433,9 @@ fn run() -> Result<(), String> {
                 if let Some(printer) = request.printer.as_mut() {
                     printer.firmware = Some(firmware);
                 }
+            }
+            if let Some(printer) = request.printer.as_mut() {
+                printer.firmware_arcs = firmware_arcs;
             }
             request.step_tolerance_mm = step_tolerance;
             if !rotate.is_empty() {

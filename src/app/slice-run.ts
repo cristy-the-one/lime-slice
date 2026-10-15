@@ -343,14 +343,17 @@ function retractSliceFields(): { retractLength?: number; retractSpeed?: number }
 export function printer() {
   const { filamentDensityGCm3: _density, filamentCostPerKg: _cost, ...profile } = state.profile;
   const heat = activeHeat();
+  const rules = currentRules();
   return {
     ...profile,
     nozzleTemp: heat.nozzleC,
     bedTemp: heat.bedC,
     pressureAdvance: state.pressureAdvance,
     linearAdvance: state.linearAdvance,
-    // A Marlin printer's rules drop this and the limits beside it, so its request is today's.
-    firmware: currentRules().firmware,
+    // A Marlin printer's rules drop this and the limits beside it.
+    firmware: rules.firmware,
+    // Always sent, so the header says whether arcs were on. Off, the engine writes no G2/G3 whatever `arcFit` asks.
+    firmwareArcs: rules.firmwareArcs,
   };
 }
 

@@ -122,6 +122,7 @@ test("Moonraker printer.cfg import updates Klipper limits and offers to update b
                   stepper_x: { position_max: 300 },
                   stepper_y: { position_max: 300 },
                   stepper_z: { position_max: 280 },
+                  gcode_arcs: { resolution: 1 },
                 },
               },
             },
@@ -141,6 +142,10 @@ test("Moonraker printer.cfg import updates Klipper limits and offers to update b
   await page.locator("#moonrakerImport").click();
 
   await expect(page.locator("#prusaStatus")).toContainText("Imported printer.cfg");
+  await expect(page.locator("#prusaStatus")).toContainText("[gcode_arcs] found");
+  await expect(page.locator("#machineFirmware")).toHaveValue("klipper");
+  await expect(page.locator("#machineArcs")).toBeChecked();
+  await expect(page.locator("#arcs")).toBeEnabled();
   await expect(page.locator("#vmax")).toHaveValue("450");
   await expect(page.locator("#accel")).toHaveValue("15000");
   await expect(page.locator("#scv")).toHaveValue("9");

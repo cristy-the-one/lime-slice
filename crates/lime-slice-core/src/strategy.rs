@@ -717,6 +717,10 @@ pub struct PrinterProfile {
     /// generic estimator runs and none of the fields below is read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firmware: Option<Firmware>,
+    /// Whether the firmware runs G2/G3 arcs. Off, the slice writes none,
+    /// whatever `arcFit` asks. Left out, `firmware` decides: see `accepts_arcs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware_arcs: Option<bool>,
     /// Klipper `square_corner_velocity`, mm/s. A 90° corner is taken at this speed.
     #[serde(default = "default_square_corner_velocity")]
     pub square_corner_velocity: f64,
@@ -735,6 +739,18 @@ pub struct PrinterProfile {
     /// Klipper `max_z_accel`, mm/s². `0` adds no limit.
     #[serde(default)]
     pub max_z_accel: f64,
+}
+
+impl PrinterProfile {
+    /// Whether arcs may be written. A stock Klipper `printer.cfg` has no
+    /// `[gcode_arcs]`, so Klipper skips every G2/G3 and the next G1 takes
+    /// its filament at once; a Klipper printer that does not say gets none.
+    /// Marlin builds usually have `ARC_SUPPORT`, and Bambu and RepRapFirmware
+    /// run arcs, so they and an unnamed firmware keep them.
+    pub fn accepts_arcs(&self) -> bool {
+        self.firmware_arcs
+            .unwrap_or(self.firmware != Some(Firmware::Klipper))
+    }
 }
 
 /// Which firmware runs the printer.
@@ -798,6 +814,7 @@ impl Default for PrinterProfile {
             filament_cost_per_kg: default_cost(),
             bed_z: default_bed_z(),
             firmware: None,
+            firmware_arcs: None,
             square_corner_velocity: default_square_corner_velocity(),
             minimum_cruise_ratio: default_minimum_cruise_ratio(),
             extruder_corner_velocity: default_extruder_corner_velocity(),
