@@ -176,13 +176,10 @@ LimeShape* lime_tree_boolean(const LimeShape* from, const char* op, const char* 
 }
 
 /// Another tree's solid, placed by `place` (the 3×3 turn row by row, then the move), combined with `from`.
+/// The Rust side has checked that `tool` is a solid and `place` rigid.
 LimeShape* lime_tree_join(const LimeShape* from, const LimeShape* tool, const char* op, const double* place, char** error) {
     try {
         std::string message;
-        if (!editable(tool->held.shape, message)) {
-            set_error(error, "The tool object has surfaces but no closed solid, so it cannot be used as a tool.");
-            return nullptr;
-        }
         const std::string which = op == nullptr ? "" : op;
         double volume = 0.0;
         const TopoDS_Shape result = build_join(from->held.shape, tool->held.shape, which, place, volume, message);

@@ -48,6 +48,16 @@ pub enum BooleanOp {
     Common,
 }
 
+impl BooleanOp {
+    fn name(self) -> &'static CStr {
+        match self {
+            BooleanOp::Fuse => c"fuse",
+            BooleanOp::Cut => c"cut",
+            BooleanOp::Common => c"common",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Primitive {
@@ -826,13 +836,10 @@ impl Store {
                         step: wanted,
                     })
                 }
-                Err(failure) => {
-                    let message = match failure {
-                        Failure::Message(message) => message,
-                        _ => "The tool object's step could not be rebuilt".into(),
-                    };
+                Err(Failure::Message(message)) => {
                     return Err(doc_in(&mut self.docs, key)?.mark_broken(step, message));
                 }
+                Err(failure) => return Err(failure),
             }
         }
         doc_in(&mut self.docs, key)?.ensure_shape(id, &mut self.clock, &tools)
@@ -876,10 +883,17 @@ impl Store {
                 })
             }
             Err(Failure::Message(message)) => return Err(Failure::Message(message)),
-            Err(_) => {
-                return Err(Failure::Message(
-                    "The tool object's step could not be rebuilt".into(),
-                ))
+            Err(Failure::Broken { message, .. }) => {
+                return Err(Failure::Message(format!(
+                    "The tool object's step could not be rebuilt: {message}"
+                )))
+            }
+            Err(Failure::Missing(_)) => {
+                return Err(Failure::ToolMissing {
+                    node: None,
+                    key: tool.key.clone(),
+                    step: tool.node,
+                })
             }
         }
         let shape = self.docs[&tool.key].nodes[&tool.node]
@@ -896,40 +910,49 @@ impl Store {
     }
 
     /// Whether tree `from`, or any tree its joins take a tool from, takes one from tree `key`.
-    fn uses(&self, from: &str, key: &str) -> bool {
-        let mut queue = vec![from.to_string()];
+    /// A tree on the way that this engine does not hold is `ToolMissing`, so the client opens it and
+    /// the answer covers every tree.
+    fn uses(&self, from: &ToolRef, key: &str) -> Result<bool, Failure> {
+        let mut queue = vec![(from.key.clone(), from.node)];
         let mut seen = HashSet::new();
-        while let Some(at) = queue.pop() {
+        while let Some((at, step)) = queue.pop() {
             if at == key {
-                return true;
+                return Ok(true);
             }
             if !seen.insert(at.clone()) {
                 continue;
             }
-            if let Some(doc) = self.docs.get(&at) {
-                for node in doc.nodes.values() {
-                    if let Some(Op::Join { tool, .. }) = &node.op {
-                        queue.push(tool.key.clone());
-                    }
+            let Some(doc) = self.docs.get(&at) else {
+                return Err(Failure::ToolMissing {
+                    node: None,
+                    key: at,
+                    step,
+                });
+            };
+            for node in doc.nodes.values() {
+                if let Some(Op::Join { tool, .. }) = &node.op {
+                    queue.push((tool.key.clone(), tool.node));
                 }
             }
         }
-        false
+        Ok(false)
     }
 
     /// A new join's checks before anything is built: a rigid placement, another part, and no loop
-    /// between two histories, which would leave neither able to open first.
-    fn join_refusal(&self, key: &str, op: &Op) -> Option<String> {
+    /// between two histories. A loop would leave each tree naming the other, so neither could ever
+    /// be closed, nor its join's branch dropped. A refusal is a plain `Message`.
+    fn join_refusal(&self, key: &str, op: &Op) -> Result<(), Failure> {
         let Op::Join { tool, relative, .. } = op else {
-            return None;
+            return Ok(());
         };
-        if let Err(message) = relative.rigid() {
-            return Some(message);
-        }
+        relative.rigid().map_err(Failure::Message)?;
         if tool.key == key {
-            return Some("A part cannot be its own tool".into());
+            return Err(Failure::Message("A part cannot be its own tool".into()));
         }
-        self.uses(&tool.key, key).then(|| CYCLE.into())
+        if self.uses(tool, key)? {
+            return Err(Failure::Message(CYCLE.into()));
+        }
+        Ok(())
     }
 
     /// Whether a join in a tree other than `key` takes its tool from one of `nodes` of `key` (any node when None).
@@ -1146,23 +1169,31 @@ impl Store {
                 "Node {id} is already in this tree for another step"
             )));
         }
+        self.join_refusal(&key, &op)?;
         let replayed = self.ensure(&key, parent)?;
-        if let Some(message) = self.join_refusal(&key, &op) {
-            return Err(Failure::Message(message));
-        }
-        let tool = self.join_tool(&key, &op)?;
-        let doc = doc_in(&mut self.docs, &key)?;
-        let probed = doc.probe.take();
-        let from = doc.shape(parent);
-        from.editable().map_err(Failure::Message)?;
-        let op = resolve(from, &op).map_err(Failure::Message)?;
-        let mut built = match probed {
-            // The op stored is the one applied: a join's `keepTool` and its tool's name build nothing.
-            Some(probed) if probed.parent == parent && same_build(&probed.op, &op) => {
-                Built { op, ..probed.built }
+        let (op, reused) = {
+            let doc = doc_in(&mut self.docs, &key)?;
+            let probed = doc.probe.take();
+            let from = doc.shape(parent);
+            from.editable().map_err(Failure::Message)?;
+            let op = resolve(from, &op).map_err(Failure::Message)?;
+            match probed {
+                Some(probed) if probed.parent == parent && same_build(&probed.op, &op) => {
+                    (op, Some(probed.built))
+                }
+                _ => (op, None),
             }
-            _ => build(from, op, false, tool).map_err(|(message, _)| Failure::Message(message))?,
         };
+        let mut built = match reused {
+            // The op stored is the one applied: a join's `keepTool` and its tool's name build nothing.
+            Some(reused) => Built { op, ..reused },
+            None => {
+                let tool = self.join_tool(&key, &op)?;
+                let from = doc_in(&mut self.docs, &key)?.shape(parent);
+                build(from, op, false, tool).map_err(|(message, _)| Failure::Message(message))?
+            }
+        };
+        let doc = doc_in(&mut self.docs, &key)?;
         let fingerprint = built.kept.fingerprint();
         self.clock += 1;
         let previous = doc.current;
@@ -1211,15 +1242,13 @@ impl Store {
     }
 
     fn probe(&mut self, key: &str, id: NodeId, op: Op) -> Result<Answer, Failure> {
+        let checked = self.join_refusal(key, &op);
         self.ensure(key, id)?;
         doc_in(&mut self.docs, key)?.probe = None;
-        let tool = match self.join_refusal(key, &op) {
-            Some(message) => Err(message),
-            None => match self.join_tool(key, &op) {
-                Ok(tool) => Ok(tool),
-                Err(Failure::Message(message)) => Err(message),
-                Err(failure) => return Err(failure),
-            },
+        let tool = match checked.and_then(|()| self.join_tool(key, &op)) {
+            Ok(tool) => Ok(tool),
+            Err(Failure::Message(message)) => Err(message),
+            Err(failure) => return Err(failure),
         };
         let doc = doc_in(&mut self.docs, key)?;
         let from = doc.shape(id);
@@ -1488,20 +1517,12 @@ struct Built {
     other: Option<Shape>,
 }
 
-/// Another tree's solid, for one join. The store holds that solid for the whole call: nothing is
-/// evicted before the call ends, and a tool is never the tree being built.
+/// Another tree's solid, for one join, as the kernel takes it. Sound for the call it was taken in:
+/// nothing is evicted before the call ends, a node that holds its solid keeps that same solid for
+/// the whole call, a tool is never the tree being built, and a failure drops the map of these
+/// before any is used.
 #[derive(Clone, Copy)]
 struct ToolSolid(*const RawShape);
-
-impl BooleanOp {
-    fn name(self) -> &'static CStr {
-        match self {
-            BooleanOp::Fuse => c"fuse",
-            BooleanOp::Cut => c"cut",
-            BooleanOp::Common => c"common",
-        }
-    }
-}
 
 /// Run a resolved op on `from`. With `probe`, a fillet or chamfer that does not fit also reports
 /// the largest size that does. A join takes its tool's solid in `tool`.
@@ -1522,6 +1543,7 @@ fn build(
                 return Err(("The tool object's solid is missing".into(), None));
             };
             let place = relative.rigid().map_err(|message| (message, None))?;
+            // SAFETY: `solid` is a tool tree's held solid, alive for this call (`ToolSolid`).
             Shape::made(|error| unsafe {
                 lime_tree_join(
                     from.raw(),

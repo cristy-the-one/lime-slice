@@ -265,4 +265,55 @@ fn joins_between_trees() {
         ),
     );
     near(volume(&bored), 8000.0 - std::f64::consts::PI * 25.0 * 5.0);
+
+    // A tool's step that left the cache is rebuilt for the join that needs it, from its tree's root.
+    lime_model_occt::set_tree_limits(0, 0);
+    ok(json!({ "call": "open", "key": "t", "box": [10.0, 10.0, 10.0] }));
+    let half = json!({ "kind": "boolean", "op": "cut", "primitive": "box", "origin": [0.0, 0.0, 5.0], "size": [10.0, 10.0, 5.0] });
+    near(volume(&apply("t", 0, 1, half)), 500.0);
+    let quarter = json!({ "kind": "boolean", "op": "cut", "primitive": "box", "origin": [0.0, 5.0, 0.0], "size": [10.0, 5.0, 5.0] });
+    let shown = apply("t", 1, 2, quarter);
+    assert_eq!(
+        shown["held"],
+        json!([0, 2]),
+        "step 1 is neither the root nor shown, so it left the cache"
+    );
+    ok(json!({ "call": "open", "key": "u", "box": [20.0, 20.0, 20.0] }));
+    let rebuilt = apply("u", 0, 1, join("cut", "t", 1, identity()));
+    near(volume(&rebuilt), 7500.0);
+    lime_model_occt::set_tree_limits(24, 8);
+
+    // A probe of one placement is not taken for another.
+    let probe = call(
+        json!({ "call": "probe", "key": "u", "node": 0, "op": join("fuse", "t", 1, identity()) }),
+    );
+    assert_eq!(probe["ok"], true, "{probe}");
+    let before = builds();
+    let far = apply(
+        "u",
+        0,
+        2,
+        join(
+            "fuse",
+            "t",
+            1,
+            json!({ "m": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], "t": [100.0, 0.0, 0.0] }),
+        ),
+    );
+    near(volume(&far), 8500.0);
+    assert_eq!(builds(), before + 1, "another placement builds again");
+
+    // A loop check that reaches a tree this engine does not hold asks for it first.
+    ok(json!({
+        "call": "open", "key": "x", "box": [5.0, 5.0, 5.0],
+        "nodes": [{ "id": 1, "parent": 0, "op": join("cut", "gone", 0, identity()), "fingerprint": null }],
+        "current": 0,
+    }));
+    let asked = call(
+        json!({ "call": "probe", "key": "u", "node": 0, "op": join("fuse", "x", 0, identity()) }),
+    );
+    assert_eq!(
+        asked,
+        json!({ "error": "The tool object's history is not open in the modeler", "missingTool": { "key": "gone", "node": 0 } })
+    );
 }
