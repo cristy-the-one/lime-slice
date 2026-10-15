@@ -212,7 +212,6 @@ function sync() {
   document.querySelector("#modelHistoryToggle")?.setAttribute("aria-expanded", (isMobileLayout() ? sheetOpen : !collapsed) ? "true" : "false");
   document.querySelector("#modelHistoryOpen")?.setAttribute("aria-expanded", sheetOpen ? "true" : "false");
   list.hidden = collapsed && !isMobileLayout();
-  document.querySelector("#modelPosition")?.toggleAttribute("hidden", list.hidden);
   if (state.stage !== "model") closeMenu(false);
   if (!visible()) cancelJump();
   else if (tree !== drawn) render();

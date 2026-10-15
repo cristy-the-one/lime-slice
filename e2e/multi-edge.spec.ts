@@ -80,7 +80,7 @@ test("a hole follows the picked face, and a fillet sends every selected edge", a
   await page.locator("#modelToolHole").click();
   await expect.poll(() => (probes.at(-1)?.axis as number[] | undefined)?.[2]).toBe(-1);
   expect(probes.at(-1)).toMatchObject({ kind: "hole", axis: [0, 0, -1] });
-  await expect(page.locator("#modelNote")).toContainText("Straight down from the origin.");
+  await expect(page.locator("#modelNote")).toContainText("Straight down; click a face to drill into it.");
   await page.locator("#modelToolHole").click();
 
   const box = (await page.locator("#model").boundingBox())!;
@@ -113,8 +113,7 @@ test("a hole follows the picked face, and a fillet sends every selected edge", a
   const axis = probes.at(-1)?.axis as number[];
   expect(axis[1]).toBeCloseTo(dy, 5);
   expect(axis[2]).toBeCloseTo(dz, 5);
-  const down = Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6 && dz < -0.9;
-  await expect(page.locator("#modelNote")).toContainText(down ? "Straight down from the origin." : "Into the picked face.");
+  await expect(page.locator("#modelNote")).toContainText("Into the picked face.");
   await page.screenshot({ path: path.join(out, "hole-face.png") });
 
   await page.locator("#modelPickEdge").click();
