@@ -564,10 +564,11 @@ function controlHtml(spec: ControlSpec, rules: Rules, ctx: SchemaContext): strin
   // A locked control shows what the slice does, not the choice it keeps for a printer that allows it.
   const locked = lockedReason(spec, rules);
   const attrs = `data-level="${spec.tier}" data-label="${escapeHtml(spec.label.toLowerCase())}"${spec.keywords ? ` data-keywords="${escapeHtml(spec.keywords)}"` : ""}${tipAttr(locked ?? spec.tip)}`;
-  const cls = `row setting${spec.parent ? " sub" : ""}${locked ? " is-locked" : ""}`;
+  const cls = `row setting${spec.parent ? " sub" : ""}${locked ? " is-disabled" : ""}`;
   const label = `<span class="row-label">${escapeHtml(spec.label)}</span>`;
   if (spec.kind.type === "check") {
-    if (locked) return `<label class="${cls}" ${attrs}>${label}<input id="${spec.id}" type="checkbox" class="switch" role="switch" disabled aria-description="${escapeHtml(locked)}"/></label>`;
+    // Still focusable, so the reason reaches the keyboard and a screen reader; a click on it is cancelled in wire.ts.
+    if (locked) return `<label class="${cls}" ${attrs}>${label}<input id="${spec.id}" type="checkbox" class="switch" role="switch" aria-disabled="true" aria-description="${escapeHtml(locked)}"/></label>`;
     return `<label class="${cls}" ${attrs}>${label}<input id="${spec.id}" type="checkbox" class="switch" role="switch" ${value ? "checked" : ""}/></label>`;
   }
   if (spec.kind.type === "segmented") {
@@ -1353,6 +1354,8 @@ function saveProfileFromState() {
 export function onSettings(ev: Event) {
   const t = ev.target as HTMLInputElement;
   if (!t?.id || TYPED_FIELDS.includes(t.id)) return;
+  // A control the printer locks keeps the user's choice for a printer that allows it.
+  if (t.getAttribute("aria-disabled") === "true") return;
   if (t.id === "find") {
     state.query = t.value;
     applyFilter();

@@ -1,6 +1,6 @@
 import { DEFAULT_PRESET, presetKeys } from "../presets.ts";
 import { CONTROLS, GROUPS, PANEL_GROUPS, STRATEGY_ROWS, UNFIELDED_PRESET_KEYS, controlById, fieldControls, lockedReason, shownAtLevel, strategyCard } from "./settings-schema.ts";
-import { ARCS_OFF_REASON, settingsRules } from "../settings-rules.ts";
+import { ARCS_OFF_REASON, LOCKABLE, settingsRules } from "../settings-rules.ts";
 
 let failed = 0;
 
@@ -127,6 +127,8 @@ check("the Arc fit row on the IR3 V2 is locked with the firmware reason", locked
 check("the reason says the firmware takes no arcs", (lockedReason(arcRow, ir3Rules) ?? "").startsWith("This printer's firmware doesn't accept G2/G3 arcs"));
 check("the Arc fit row is free on a printer that takes arcs", lockedReason(arcRow, settingsRules({ kind: "cartesian", belt: { raftLayers: 0, maxLengthMm: null }, firmware: "marlin", objects: 1 })) === undefined);
 check("a row without a rule is never locked", lockedReason(controlById("travelopt")!, ir3Rules) === undefined);
+check("every control a rule can lock is a check", CONTROLS.filter((spec) => spec.rule && LOCKABLE.has(spec.rule)).every((spec) => spec.kind.type === "check"));
+check("the Arc fit row is lockable", arcRow.rule !== undefined && LOCKABLE.has(arcRow.rule));
 
 if (failed) {
   console.error(`${failed} failed`);

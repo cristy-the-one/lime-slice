@@ -56,6 +56,9 @@ export type ControlId =
   | "supportTreeBrim"
   | "arcFit";
 
+/** Controls `disabled` can lock. Each is a check, which the panel shows off and unclickable. */
+export const LOCKABLE: ReadonlySet<ControlId> = new Set(["arcFit"]);
+
 /** Keys a hidden control leaves out. A control with none only changes what the page shows. */
 const OWNED: Record<ControlId, readonly string[]> = {
   adaptive: ["adaptive", "adaptiveMin", "adaptiveMax"],

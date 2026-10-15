@@ -350,9 +350,9 @@ export function printer() {
     bedTemp: heat.bedC,
     pressureAdvance: state.pressureAdvance,
     linearAdvance: state.linearAdvance,
-    // A Marlin printer's rules drop this and the limits beside it, so its request is today's.
+    // A Marlin printer's rules drop this and the limits beside it.
     firmware: rules.firmware,
-    // Always sent: off, the engine writes no G2/G3 whatever `arcFit` asks.
+    // Always sent, so the header says whether arcs were on. Off, the engine writes no G2/G3 whatever `arcFit` asks.
     firmwareArcs: rules.firmwareArcs,
   };
 }

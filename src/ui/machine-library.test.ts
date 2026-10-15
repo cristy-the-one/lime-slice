@@ -1,6 +1,5 @@
 import {
   acceptsArcs,
-  setActiveFirmwareArcs,
   advanceFor,
   builtinLibrary,
   deleteActive,
@@ -24,6 +23,7 @@ import {
   setNozzleTemp,
   setRetract,
   setActiveFirmware,
+  setActiveFirmwareArcs,
   legacySeamOnEdge,
   setLink,
   adoptLegacyLink,
@@ -360,7 +360,7 @@ check("a corrupt library grows the built-ins back", restored.printers.some((prin
     check(`${id} is Klipper with no arcs answer, so no arcs`, byId(lib, id).firmwareArcs === undefined && !acceptsArcs(byId(lib, id)));
   }
   check("a Marlin printer that does not say takes arcs", acceptsArcs({ firmware: "marlin" }));
-  check("no printer is a Klipper one", !acceptsArcs(undefined));
+  check("a missing printer counts as Klipper", !acceptsArcs(undefined));
 
   // A library stored before the answer existed: no key on any printer.
   const old = JSON.parse(serializeLibrary(lib)) as { printers: Record<string, unknown>[] };
@@ -374,6 +374,17 @@ check("a corrupt library grows the built-ins back", restored.printers.some((prin
   const ticked = setActiveFirmwareArcs(selectIn(lib, "lime-220", lib.filamentId, 0.4) as typeof lib, true);
   check("ticking the box stores it on the active printer only", byId(ticked, "lime-220").firmwareArcs === true && byId(ticked, "lime-300").firmwareArcs === undefined);
   check("a stored answer survives a save and a read", byId(parseLibrary(serializeLibrary(ticked)), "lime-220").firmwareArcs === true);
+  // Undo restores a printer that had no answer by clearing it, so it follows its firmware again.
+  const cleared = setActiveFirmwareArcs(ticked, null);
+  check("clearing the answer removes the key", !("firmwareArcs" in byId(cleared, "lime-220")));
+  const unset = selectIn(lib, "lime-220", lib.filamentId, 0.4) as typeof lib;
+  check("clearing a printer that had none leaves it absent", !("firmwareArcs" in byId(setActiveFirmwareArcs(unset, null), "lime-220")));
+  check("a cleared Klipper printer turned Marlin takes arcs", acceptsArcs(byId(setActiveFirmware(cleared, "marlin"), "lime-220")));
+
+  // Save as copies the firmware facts and the belt of the active printer.
+  const fromIr3 = savePrinterName(selectIn(lib, "ideaformer-ir3-v2", lib.filamentId, 0.4) as typeof lib, "My IR3", numbers, "my-ir3");
+  const mine = typeof fromIr3 === "string" ? undefined : byId(fromIr3, "my-ir3");
+  check("save as keeps the IR3 V2's arcs answer, firmware, kind and belt", mine?.firmwareArcs === false && mine.firmware === "klipper" && mine.kind === "belt" && mine.belt.angleDeg === 45);
 
   // Machine files: the answer travels; a file without it gets the firmware's default.
   const ir3File = fileFromSelection(selectIn(lib, "ideaformer-ir3-v2", lib.filamentId, 0.4) as typeof lib)!;

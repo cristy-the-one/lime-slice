@@ -452,16 +452,25 @@ export function setActiveFirmware(library: MachineLibrary, firmware: Firmware): 
   };
 }
 
-/** Whether this printer's firmware runs G2/G3: its own answer, else its firmware's default. No printer is a Klipper one. */
+/** Whether this printer's firmware runs G2/G3: its own answer, else its firmware's default. A missing printer counts as Klipper. */
 export function acceptsArcs(printer: Pick<PrinterRecord, "firmware" | "firmwareArcs"> | undefined): boolean {
   return firmwareTakesArcs(printer?.firmware ?? "klipper", printer?.firmwareArcs);
 }
 
-/** Store whether the active printer's firmware runs G2/G3. */
-export function setActiveFirmwareArcs(library: MachineLibrary, on: boolean): MachineLibrary {
+/**
+ * Store whether the active printer's firmware runs G2/G3. `null` clears the answer, so the
+ * printer follows its firmware's default again; an undo step restores it that way.
+ */
+export function setActiveFirmwareArcs(library: MachineLibrary, on: boolean | null): MachineLibrary {
   return {
     ...library,
-    printers: library.printers.map((printer) => printer.id === library.printerId ? { ...printer, firmwareArcs: on } : printer),
+    printers: library.printers.map((printer) => {
+      if (printer.id !== library.printerId) return printer;
+      const next: PrinterRecord = { ...printer };
+      if (on === null) delete next.firmwareArcs;
+      else next.firmwareArcs = on;
+      return next;
+    }),
   };
 }
 
@@ -574,10 +583,18 @@ export function savePrinterName(library: MachineLibrary, name: string, numbers: 
   if (!selection(library)) return "Choose a printer and a filament first.";
   const existing = library.printers.find((printer) => printer.name === trimmed);
   if (existing) return writeNumbers({ ...library, printerId: existing.id }, existing.id, library.filamentId, numbers);
+  // The firmware facts and the belt are not among the numbers, so the new printer takes the active one's.
+  const active = selection(library)!.printer;
+  const facts = {
+    firmware: active.firmware,
+    ...(active.firmwareArcs !== undefined ? { firmwareArcs: active.firmwareArcs } : {}),
+    kind: active.kind,
+    belt: { ...active.belt },
+  };
   const added: MachineLibrary = {
     ...library,
     printerId: id,
-    printers: [...library.printers, { ...blankPrinter(id, trimmed), builtin: false }],
+    printers: [...library.printers, { ...blankPrinter(id, trimmed), ...facts, builtin: false }],
   };
   return writeNumbers(added, id, library.filamentId, numbers);
 }

@@ -418,7 +418,7 @@ export function readMoonrakerConfig(status: number, text: string): MoonrakerConf
   if (geometry.bedX && geometry.bedY && geometry.bedZ) parts.push(`${geometry.bedX}×${geometry.bedY}×${geometry.bedZ} mm`);
   if (geometry.nozzleDiameter) parts.push(`${geometry.nozzleDiameter} mm nozzle`);
   const firmwareArcs = asRecord(settings.gcode_arcs) !== null;
-  parts.push(firmwareArcs ? "arcs on ([gcode_arcs])" : "arcs off (no [gcode_arcs])");
+  parts.push(firmwareArcs ? "[gcode_arcs] found" : "no [gcode_arcs]: arcs off");
 
   return {
     ok: true,

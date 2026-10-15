@@ -143,9 +143,6 @@
   color: var(--text-dim);
 }
 .row.hidden { display: none; }
-/* Shown but locked off by the printer; the row's tip says why. The disabled input dims itself. */
-.row.is-locked { cursor: help; }
-.row.is-locked .row-label { color: var(--text-faint); }
 .row-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row.sub { margin-left: var(--space-1); padding-left: var(--space-3); border-left: 1px solid var(--border); }
 .row input[type="number"] { width: 84px; text-align: right; }

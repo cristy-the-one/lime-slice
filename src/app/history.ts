@@ -6,7 +6,7 @@ import { emptyOverrides } from "../overrides";
 import { emptyPlate, pinPlateMeshes, recallPlateMeshes, revivePlate, snapPlate } from "../plate";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library";
-import { acceptsArcs, beltStamp, selectIn, selection, setActiveBelt, setActiveFirmware, setActiveFirmwareArcs, setAdvance, setNozzleTemp, setRetract } from "../ui/machine-library";
+import { beltStamp, selectIn, selection, setActiveBelt, setActiveFirmware, setActiveFirmwareArcs, setAdvance, setNozzleTemp, setRetract } from "../ui/machine-library";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel";
 import {
   beginGesture,
@@ -83,7 +83,7 @@ function machineSnap(): EditSnap["machine"] {
     printerId: library.printerId,
     filamentId: library.filamentId,
     nozzleMm: library.nozzleMm,
-    ...(printer ? { kind: printer.kind, belt: structuredClone(printer.belt), firmware: printer.firmware, firmwareArcs: acceptsArcs(printer) } : {}),
+    ...(printer ? { kind: printer.kind, belt: structuredClone(printer.belt), firmware: printer.firmware, firmwareArcs: printer.firmwareArcs ?? null } : {}),
   };
 }
 
@@ -129,7 +129,7 @@ function applySnap(snap: EditSnap) {
     if (snap.machine.kind && snap.machine.belt) {
       const belted = setActiveBelt(loadMachineLibrary(), snap.machine.kind, snap.machine.belt);
       const firmware = snap.machine.firmware ? setActiveFirmware(belted, snap.machine.firmware) : belted;
-      const library = typeof snap.machine.firmwareArcs === "boolean" ? setActiveFirmwareArcs(firmware, snap.machine.firmwareArcs) : firmware;
+      const library = snap.machine.firmwareArcs !== undefined ? setActiveFirmwareArcs(firmware, snap.machine.firmwareArcs) : firmware;
       storeMachineLibrary(library);
       fx.prepare?.setBelt(beltStamp(library));
       fx.view3d?.setBelt(beltStamp(library));

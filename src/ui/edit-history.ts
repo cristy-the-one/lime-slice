@@ -45,8 +45,8 @@ export interface MachineSnap {
   belt?: BeltSettings;
   /** The active printer's firmware. Absent on snaps from before it was stored. */
   firmware?: Firmware;
-  /** Whether the active printer's firmware runs G2/G3. Absent on snaps from before it was stored. */
-  firmwareArcs?: boolean;
+  /** The active printer's own G2/G3 answer; `null` when it has none and follows its firmware. Absent on snaps from before it was stored. */
+  firmwareArcs?: boolean | null;
 }
 
 export interface EditSnap {

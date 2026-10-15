@@ -49,7 +49,7 @@ export interface ControlSpec {
   parent?: string;
   /** Rendered only while this holds. A parent that is off hides its children. */
   when?: (s: Settings) => boolean;
-  /** Hidden when `settingsRules(...).hidden` has it. Shown off and locked, with the reason as its tip, when `disabled` has it. */
+  /** Hidden when `settingsRules(...).hidden` has it. A check is shown off and locked, with the reason as its tip, when `disabled` has it. */
   rule?: ControlId;
   tip?: string;
   /** Extra search words. The label matches on its own. */
@@ -671,7 +671,7 @@ export function fieldControls(): ControlSpec[] {
   return CONTROLS.filter((spec) => spec.kind.type !== "custom");
 }
 
-/** Why a shown control is locked off right now, or undefined when it can be edited. */
+/** Why a shown check is locked off right now, or undefined when it can be edited. Only checks are locked (`LOCKABLE`). */
 export function lockedReason(spec: ControlSpec, rules: Pick<Rules, "disabled">): string | undefined {
   return spec.rule ? rules.disabled.get(spec.rule) : undefined;
 }

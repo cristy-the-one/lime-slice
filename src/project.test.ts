@@ -60,14 +60,15 @@ const project: LimeProject = {
 
 const text = serializeProject(project);
 const opened = parseProject(text);
-// Projects carry Arc fit as the user set it and no firmware answer; the printer decides whether arcs are written.
+// A project keeps the user's Arc fit and never the printer's arcs answer: a stray
+// firmwareArcs in a hand-edited file is dropped, so the printer always decides.
 {
-  const old = JSON.parse(text) as { settings: Record<string, unknown>; profile: Record<string, unknown> };
-  old.settings.arcFit = true;
-  const reopened = parseProject(JSON.stringify(old));
-  check("an old project with Arc fit on still opens", reopened.ok);
-  check("it keeps Arc fit on", reopened.ok && reopened.project.settings.arcFit === true);
-  check("it carries no firmware answer of its own", reopened.ok && !("firmwareArcs" in reopened.project.profile));
+  const edited = JSON.parse(text) as { settings: Record<string, unknown>; profile: Record<string, unknown> };
+  edited.settings.arcFit = false;
+  edited.profile.firmwareArcs = true;
+  const reopened = parseProject(JSON.stringify(edited));
+  check("a project keeps its Arc fit choice", reopened.ok && reopened.project.settings.arcFit === false);
+  check("a project drops a firmwareArcs of its own", reopened.ok && !("firmwareArcs" in reopened.project.profile), reopened.ok ? JSON.stringify(reopened.project.profile) : "");
 }
 check("round trip opens", opened.ok);
 if (opened.ok) eq("round trip keeps the project", opened.project, project);

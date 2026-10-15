@@ -9,9 +9,10 @@ import { pushToast } from "../ui/toasts.ts";
 import {
   applyMoonrakerGeometry,
   applyMoonrakerLimits,
-  setActiveFirmwareArcs,
   enginePrinter,
   selection,
+  setActiveFirmware,
+  setActiveFirmwareArcs,
   setLink,
   type MachineLibrary,
 } from "../ui/machine-library.ts";
@@ -159,7 +160,8 @@ function applyImportedMoonraker(config: MoonrakerConfigImport) {
     "moonraker",
   );
   library = applyMoonrakerLimits(library, config.limits);
-  // Klipper runs G2/G3 only with [gcode_arcs]; the import reads which this printer has.
+  // Moonraker serves Klipper, which runs G2/G3 only with [gcode_arcs]; the import reads which this printer has.
+  library = setActiveFirmware(library, "klipper");
   library = setActiveFirmwareArcs(library, config.firmwareArcs);
   storeMachineLibrary(library);
   syncImportedState(library);
