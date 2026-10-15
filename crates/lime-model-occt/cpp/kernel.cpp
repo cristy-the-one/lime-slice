@@ -1024,45 +1024,83 @@ TopoDS_Shape build_join(
     return combine(current, which, tool.Moved(TopLoc_Location(trsf)), volume, error);
 }
 
-/// The hole Apply cuts, on a copy. `direction` points into the material. Empty means straight down, toward −Z.
-/// The cylinder stands `depth` along that direction and ends at the origin, matching a −Z drill from `(x, y, z)`.
-/// `before` is the open solid's volume; `volume` gets the result's.
-TopoDS_Shape build_hole(
-    const TopoDS_Shape& current,
-    double before,
-    double x,
-    double y,
-    double z,
-    double dx,
-    double dy,
-    double dz,
-    double radius,
-    double depth,
-    double& volume,
-    std::string& error) {
-    if (!(radius > 0.0) || !(depth > 0.0)) {
-        error = "A hole needs a positive radius and depth";
-        return {};
+/// How far past the far side of the part's box a through hole runs, so its end never lies on a face.
+constexpr double kThroughMarginMm = 1.0;
+
+/// How far the part reaches from `origin` along the unit `axis`, read from the corners of its box: what a
+/// through hole must drill, before its margin. Zero or less when the whole part is behind the origin.
+double reach_along(const TopoDS_Shape& current, const gp_Pnt& origin, const gp_Dir& axis) {
+    Bnd_Box bounds;
+    BRepBndLib::Add(current, bounds, Standard_False);
+    if (bounds.IsVoid()) {
+        return 0.0;
     }
-    const double length = std::sqrt(dx * dx + dy * dy + dz * dz);
-    if (!(length > 1e-9)) {
-        dx = 0.0;
-        dy = 0.0;
-        dz = -1.0;
-    } else {
-        dx /= length;
-        dy /= length;
-        dz /= length;
+    double lo[3] = {0, 0, 0};
+    double hi[3] = {0, 0, 0};
+    bounds.Get(lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+    double most = -1e300;
+    for (int corner = 0; corner < 8; ++corner) {
+        const gp_Vec to(
+            (corner & 1 ? hi[0] : lo[0]) - origin.X(),
+            (corner & 2 ? hi[1] : lo[1]) - origin.Y(),
+            (corner & 4 ? hi[2] : lo[2]) - origin.Z());
+        most = std::max(most, to.Dot(gp_Vec(axis)));
     }
-    const gp_Pnt base(x + dx * depth, y + dy * depth, z + dz * depth);
-    const gp_Dir axis(-dx, -dy, -dz);
-    BRepPrimAPI_MakeCylinder cylinder(gp_Ax2(base, axis), radius, depth);
+    return most;
+}
+
+/// A cylinder of `radius` from `origin` for `length` along the unit `axis`.
+TopoDS_Shape drill(const gp_Pnt& origin, const gp_Dir& axis, double radius, double length, std::string& error) {
+    BRepPrimAPI_MakeCylinder cylinder(gp_Ax2(origin, axis), radius, length);
     cylinder.Build();
     if (!cylinder.IsDone()) {
         error = "Open CASCADE did not build the hole";
         return {};
     }
-    const TopoDS_Shape cut = boolean_op("cut", current, cylinder.Shape(), error);
+    return cylinder.Shape();
+}
+
+/// The hole Apply cuts, on a copy. The cylinder starts at the origin and runs `depth` into the material, or with
+/// `through` to the far side of the part's box and a margin past it, measured from the solid this hole is cut
+/// from, so a replay after an earlier edit still goes all the way. A counterbore is a wider cylinder from the
+/// origin, fused with the hole into one tool, so the part is cut once and its volume integrated once.
+/// `before` is the open solid's volume; `volume` gets the result's.
+TopoDS_Shape build_hole(const TopoDS_Shape& current, double before, const HoleSpec& hole, double& volume, std::string& error) {
+    if (!(hole.radius > 0.0) || (!hole.through && !(hole.depth > 0.0))) {
+        error = "A hole needs a positive radius and depth";
+        return {};
+    }
+    if (hole.bore && !(hole.bore_radius > hole.radius)) {
+        error = "The counterbore must be wider than the hole";
+        return {};
+    }
+    if (hole.bore && !(hole.bore_depth > 0.0)) {
+        error = "The counterbore needs a positive depth";
+        return {};
+    }
+    if (hole.bore && !hole.through && !(hole.bore_depth < hole.depth)) {
+        error = "The counterbore must be shallower than the hole";
+        return {};
+    }
+    const double length = std::sqrt(hole.dx * hole.dx + hole.dy * hole.dy + hole.dz * hole.dz);
+    const gp_Dir axis = length > 1e-9 ? gp_Dir(hole.dx / length, hole.dy / length, hole.dz / length) : gp_Dir(0.0, 0.0, -1.0);
+    const gp_Pnt origin(hole.x, hole.y, hole.z);
+    const double depth = hole.through ? std::max(reach_along(current, origin, axis), 0.0) + kThroughMarginMm : hole.depth;
+    TopoDS_Shape tool = drill(origin, axis, hole.radius, depth, error);
+    if (tool.IsNull()) {
+        return {};
+    }
+    if (hole.bore) {
+        const TopoDS_Shape wide = drill(origin, axis, hole.bore_radius, hole.bore_depth, error);
+        if (wide.IsNull()) {
+            return {};
+        }
+        tool = boolean_op("fuse", tool, wide, error);
+        if (!error.empty()) {
+            return {};
+        }
+    }
+    const TopoDS_Shape cut = boolean_op("cut", current, tool, error);
     if (!error.empty()) {
         return {};
     }

@@ -99,20 +99,26 @@ TopoDS_Shape build_join(
     const double* place,
     double& volume,
     std::string& error);
+/// A hole as its op stores it, in the solid's own frame.
+struct HoleSpec {
+    double x = 0;
+    double y = 0;
+    double z = 0;
+    /// Into the material. Zero drills straight down, toward −Z.
+    double dx = 0;
+    double dy = 0;
+    double dz = 0;
+    double radius = 0;
+    double depth = 0;
+    /// Cut to wherever the part ends along the axis. `depth` is not read.
+    bool through = false;
+    /// A wider, shallow bore at the entry.
+    bool bore = false;
+    double bore_radius = 0;
+    double bore_depth = 0;
+};
 /// `before` is the volume of `current`; `volume` gets the result's.
-TopoDS_Shape build_hole(
-    const TopoDS_Shape& current,
-    double before,
-    double x,
-    double y,
-    double z,
-    double dx,
-    double dy,
-    double dz,
-    double radius,
-    double depth,
-    double& volume,
-    std::string& error);
+TopoDS_Shape build_hole(const TopoDS_Shape& current, double before, const HoleSpec& hole, double& volume, std::string& error);
 bool blend_build(
     const TopoDS_Shape& current,
     const std::vector<TopoDS_Edge>& edges,

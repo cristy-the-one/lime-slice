@@ -197,13 +197,25 @@ LimeShape* lime_tree_join(const LimeShape* from, const LimeShape* tool, const ch
     }
 }
 
-/// `p` is x, y, z, dx, dy, dz, radius, depth.
+/// `p` is x, y, z, dx, dy, dz, radius, depth, through (0 or 1), counterbore (0 or 1), its radius, its depth.
 LimeShape* lime_tree_hole(const LimeShape* from, const double* p, char** error) {
     try {
         std::string message;
         double volume = 0.0;
-        const TopoDS_Shape cut = build_hole(
-            from->held.shape, from->held.volume, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], volume, message);
+        HoleSpec hole;
+        hole.x = p[0];
+        hole.y = p[1];
+        hole.z = p[2];
+        hole.dx = p[3];
+        hole.dy = p[4];
+        hole.dz = p[5];
+        hole.radius = p[6];
+        hole.depth = p[7];
+        hole.through = p[8] != 0.0;
+        hole.bore = p[9] != 0.0;
+        hole.bore_radius = p[10];
+        hole.bore_depth = p[11];
+        const TopoDS_Shape cut = build_hole(from->held.shape, from->held.volume, hole, volume, message);
         if (!message.empty()) {
             set_error(error, message);
             return nullptr;
