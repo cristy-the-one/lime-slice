@@ -5,6 +5,7 @@
 /dist
 /artifacts
 /src-tauri/resources/occt/
+/src-tauri/resources/crt/
 /test-results
 /playwright-report
 .DS_Store

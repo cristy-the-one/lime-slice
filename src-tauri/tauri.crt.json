@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "resources": {
+      "resources/crt/msvcp140.dll": "msvcp140.dll",
+      "resources/crt/vcruntime140.dll": "vcruntime140.dll",
+      "resources/crt/vcruntime140_1.dll": "vcruntime140_1.dll"
+    }
+  }
+}

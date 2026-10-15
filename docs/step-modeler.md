@@ -40,6 +40,8 @@ With more than one object on the plate, the others are drawn grey behind the ope
 
 The release workflow builds the cdylib after staging the Open CASCADE libraries and copies it into `src-tauri/resources/occt/lib`, next to those libraries. The cdylib's rpath is `$ORIGIN` on Linux and `@loader_path` on macOS.
 
+On Windows the exe (through the vendored Clipper2 C++) and every Open CASCADE DLL link the Visual C++ runtime dynamically: `msvcp140.dll`, `vcruntime140.dll` and `vcruntime140_1.dll`. A PC without Visual Studio or the VC++ Redistributable has none of them, and the app stops at start with "MSVCP140.dll was not found". The release workflow runs `tools/windows/stage_crt.ps1`, which copies the three DLLs from the runner's Visual Studio redistributable folder into `src-tauri/resources/crt`. It then also passes `src-tauri/tauri.crt.json`, which puts them beside the exe. Microsoft allows this app-local copy. The exe's own folder is the first one Windows searches, both for the exe and for the bridge (`LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`). For a local installer, run the script and add `--config src-tauri/tauri.crt.json`.
+
 ## Booleans and a plane split
 
 Model mode can fuse, cut, or intersect the open solid with a box, cylinder, or sphere, and it can split the solid with a plane. The numbers are millimetres in the solid's own frame. A kernel failure is the readout, and the solid is left as it was. There is no mesh boolean behind it.
