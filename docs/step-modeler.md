@@ -169,7 +169,7 @@ Every call holds the tree's lock for its whole run, so tree calls run one at a t
 
 ## History tree (client)
 
-`src/model-tree.ts` is the tree as data: nodes with their op, label, and fingerprint, `current` (what Model shows), `committed` (what the plate holds), and which child Redo follows. `src/app/model-trees.ts` keeps one tree per plate object, by the key the object carries as `modelTree`; the engine uses the same key.
+`src/model-request.ts` builds every request the client sends, so a check against the real engine can build the same ones. `src/model-tree.ts` is the tree as data: nodes with their op, label, and fingerprint, `current` (what Model shows), `committed` (what the plate holds), and which child Redo follows. `src/app/model-trees.ts` keeps one tree per plate object, by the key the object carries as `modelTree`; the engine uses the same key.
 
 - **Apply** sends `apply` with the shown node as `parent` and a fresh id, and shows the new node. From a node that has children it starts a new branch and Redo follows it; the old branch stays. Numbers already applied from this node jump to that step instead of building it again.
 - **Undo** jumps to the parent and **Redo** to the child last applied or jumped through; the buttons, Ctrl+Z, and Ctrl+Y do this. At the root Undo is off, and Ctrl+Z in Model never reaches Prepare's history.

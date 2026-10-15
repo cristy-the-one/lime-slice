@@ -1,0 +1,43 @@
+import { applyRequest, newSolidRequest, openRequest, wholeTreeRequest } from "./model-request.ts";
+import { newTree, withChild, type ModelOp } from "./model-tree.ts";
+import type { PrimitiveSpec } from "./model-primitive.ts";
+
+let failed = 0;
+function eq(name: string, got: unknown, want: unknown) {
+  const left = JSON.stringify(got);
+  const right = JSON.stringify(want);
+  if (left === right) return;
+  failed += 1;
+  console.error(`FAIL ${name}\n  got  ${left}\n  want ${right}`);
+}
+
+const typed: PrimitiveSpec = { primitive: "box", origin: [3, 3, 3], size: [20, 10, 4], radius: 5, height: 10, turn: [0, 0, 30] };
+eq("New solid opens the root standing at the origin, with only the box's fields", newSolidRequest("obj-1#a.1", typed, 0.1), {
+  call: "open",
+  key: "obj-1#a.1",
+  primitive: { primitive: "box", origin: [-10, -5, 0], size: [20, 10, 4], radius: 0, height: 0, turn: [0, 0, 0] },
+  chordMm: 0.1,
+});
+const step = new Uint8Array([73, 83, 79]).buffer;
+eq("a STEP root sends its bytes and no fingerprint", openRequest("k", { kind: "step", name: "a.step", bytes: step }, 0.2), { call: "open", key: "k", filename: "a.step", dataB64: "SVNP", chordMm: 0.2 });
+
+const hole: ModelOp = { kind: "hole", origin: [0, 0, 4], axis: [0, 0, -1], radius: 1, depth: 2 };
+const root = { kind: "primitive" as const, solid: { ...typed, origin: [-10, -5, 0] as [number, number, number] } };
+const fp = (volumeMm3: number) => ({ volumeMm3, faces: 6, edges: 12 });
+const grown = withChild(newTree("k", root, "Box 20×10×4", fp(800)), 0, { id: 1, op: hole, label: "Hole", fingerprint: fp(794) });
+eq("a whole primitive tree sends the root's fingerprint and every op", wholeTreeRequest(grown, root, 1, 0.1), {
+  call: "open",
+  key: "k",
+  primitive: root.solid,
+  fingerprint: fp(800),
+  chordMm: 0.1,
+  nodes: [{ id: 1, parent: 0, op: hole, fingerprint: fp(794) }],
+  current: 1,
+});
+eq("an apply names the split piece's key only when there is one", [applyRequest("k", 0, 1, hole, 0.1), applyRequest("k", 0, 2, hole, 0.1, "piece#1").otherKey], [{ call: "apply", key: "k", parent: 0, node: 1, op: hole, chordMm: 0.1 }, "piece#1"]);
+
+if (failed) {
+  console.error(`model-request: ${failed} failed`);
+  throw new Error(`model-request: ${failed} failed`);
+}
+console.log("model-request: the requests the engine reads ok");

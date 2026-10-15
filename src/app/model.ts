@@ -38,13 +38,11 @@ import {
   redoTarget,
   reserveId,
   rootLabel,
-  savedNodes,
   subtree,
   undoTarget,
   visitStep,
   withChild,
   withNode,
-  type Fingerprint,
   type ModelOp,
   type ModelRoot,
   type ModelTree,
@@ -54,6 +52,7 @@ import {
   type Vec3,
 } from "../model-tree";
 import { loadedTree, savedTree, type SavedTree } from "../model-tree-file";
+import { applyRequest, exportRequest, gotoRequest, newSolidRequest, openRequest, probeRequest, wholeTreeRequest } from "../model-request";
 import {
   closeModelTool,
   fieldPrimitive,
@@ -279,7 +278,7 @@ function sendPending() {
 }
 
 async function sendProbe(serial: number, key: string, tree: string, node: NodeId, op: ModelOp) {
-  const body = await treeCall(tree, node, { call: "probe", key: tree, node, op });
+  const body = await treeCall(tree, node, probeRequest(tree, node, op));
   const view = probeFromBody(body);
   if (typeof body.ok === "boolean") remember(key, view);
   if (serial !== probeSerial || state.stage !== "model") return;
@@ -670,7 +669,7 @@ async function openTree(mine: number, objectId: string, label: string, from: Exc
   readout("Reading the solid…");
   const key = freshTreeKey(objectId);
   const chord = state.stepTolerance;
-  const body = await post({ call: "open", key, ...rootRequest(from, null), chordMm: chord });
+  const body = await post(openRequest(key, from, chord));
   const parsed = decodeSolid(body);
   if (typeof parsed === "string") {
     // An open the engine answered but this app cannot read still left a tree there.
@@ -709,7 +708,7 @@ async function showNode(mine: number, objectId: string, key: string, node: NodeI
     jumping = true;
     jumpTarget = node;
     syncUndo();
-    const body = await treeCall(key, node, { call: "goto", key, node, chordMm: chord });
+    const body = await treeCall(key, node, gotoRequest(key, node, chord));
     const newest = mine === ticket && serial === jumpSerial;
     if (newest) jumping = false;
     syncUndo();
@@ -921,15 +920,7 @@ async function applyOp(op: ModelOp, working: string) {
   busy = true;
   syncUndo();
   readout(working);
-  const body = await treeCall(at.key, parent, {
-    call: "apply",
-    key: at.key,
-    parent,
-    node,
-    op,
-    chordMm: chord,
-    ...(pieceKey ? { otherKey: pieceKey } : {}),
-  });
+  const body = await treeCall(at.key, parent, applyRequest(at.key, parent, node, op, chord, pieceKey));
   if (mine === ticket) busy = false;
   syncUndo();
   const latest = modelTrees.get(at.key);
@@ -992,7 +983,7 @@ async function createSolid() {
   busy = true;
   syncUndo();
   readout("Building the solid…");
-  const body = await post({ call: "open", key, primitive: root, chordMm: chord });
+  const body = await post(newSolidRequest(key, typed, chord));
   if (mine === ticket) busy = false;
   syncUndo();
   const parsed = decodeSolid(body);
@@ -1167,7 +1158,7 @@ function writeStep(token: string, key: string, node: NodeId): Promise<ArrayBuffe
 }
 
 async function exportStep(key: string, node: NodeId): Promise<ArrayBuffer | string> {
-  const body = await treeCall(key, node, { call: "export", key, node });
+  const body = await treeCall(key, node, exportRequest(key, node));
   const problem = text(body.error);
   if (problem) return problem;
   if (typeof body.bytesBase64 !== "string") return "Open CASCADE did not write this solid.";
@@ -1676,14 +1667,7 @@ function openWhole(key: string, node: NodeId): Promise<string | null> {
     if (seed?.reading) await seed.reading;
     const tree = modelTrees.get(key);
     if (!tree || tree.root.kind === "piece") return "This solid is no longer open.";
-    const body = await post({
-      call: "open",
-      key,
-      ...rootRequest(tree.root, tree.nodes.get(ROOT)?.fingerprint ?? null),
-      chordMm: state.stepTolerance,
-      nodes: savedNodes(tree),
-      current: node,
-    });
+    const body = await post(wholeTreeRequest(tree, tree.root, node, state.stepTolerance));
     if (seed) seed.whole = null;
     if (!modelTrees.has(key)) return closeLate(key);
     // A primitive root that builds differently opens nothing: the whole tree is broken from its root.
@@ -1699,15 +1683,6 @@ function openWhole(key: string, node: NodeId): Promise<string | null> {
   })();
   if (seed) seed.whole = run;
   return run;
-}
-
-/**
- * What `open` builds the root from: the STEP's bytes, or a new solid's primitive. A primitive root carries its
- * fingerprint, so a root that builds differently is broken like any other step that does.
- */
-function rootRequest(root: Exclude<ModelRoot, { kind: "piece" }>, fingerprint: Fingerprint | null): Body {
-  if (root.kind === "primitive") return { primitive: root.solid, ...(fingerprint ? { fingerprint } : {}) };
-  return { filename: root.name, dataB64: bytesToBase64(new Uint8Array(root.bytes)) };
 }
 
 /** An open that lands for a tree released or forgotten meanwhile: the engine lets it go too. */
@@ -1729,7 +1704,7 @@ async function restore(key: string, node: NodeId, missing: NodeId[]): Promise<st
     seed.live = false;
     let read = () => {};
     seed.reading = new Promise<void>((resolve) => (read = resolve));
-    const body = await post({ call: "open", key, filename: stepFileName(step.name), dataB64: bytesToBase64(new Uint8Array(step.step)), chordMm: chord }).finally(() => {
+    const body = await post(openRequest(key, { kind: "step", name: stepFileName(step.name), bytes: step.step }, chord)).finally(() => {
       seed.reading = null;
       read();
     });
@@ -1751,14 +1726,7 @@ async function restore(key: string, node: NodeId, missing: NodeId[]): Promise<st
   for (const id of pathTo(tree, node).slice(1)) {
     const step = tree.nodes.get(id);
     if (!step?.op || step.parent === null) continue;
-    const body = await post({
-      call: "apply",
-      key,
-      parent: step.parent,
-      node: id,
-      op: step.op,
-      chordMm: chord,
-    });
+    const body = await post(applyRequest(key, step.parent, id, step.op, chord));
     // A node the engine still has, made by a split with its piece's key, refuses a resend without it.
     if (text(body.error).includes("already in this tree")) continue;
     if (failed(key, body)) return text(body.error);
@@ -1773,15 +1741,7 @@ async function rebuildPiece(parentKey: string, split: NodeId, pieceKey: string):
   if (!parent || !splitNode?.op || splitNode.parent === null) return "The part this piece was split from is no longer open.";
   const [reserved, spare] = reserveId(parent);
   modelTrees.set(parentKey, reserved);
-  const body = await treeCall(parentKey, splitNode.parent, {
-    call: "apply",
-    key: parentKey,
-    parent: splitNode.parent,
-    node: spare,
-    op: splitNode.op,
-    chordMm: state.stepTolerance,
-    otherKey: pieceKey,
-  });
+  const body = await treeCall(parentKey, splitNode.parent, applyRequest(parentKey, splitNode.parent, spare, splitNode.op, state.stepTolerance, pieceKey));
   await dropInEngine(parentKey, spare);
   return text(body.error) || null;
 }
