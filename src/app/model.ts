@@ -10,16 +10,20 @@ import {
   placeFields,
   poseFromPlace,
   posedBounds,
+  fromSolidOp,
+  seatLift,
+  thenPose,
   toSolidOp,
   turnDir,
   type Affine,
   type PlaceFields,
 } from "../model-space";
+import { builtBranch, editHead, editNotes, editPanel, editRefusal, editedOp, forked, matchEdges, olderSplitNote, replayChain, type EditPanel, type ForkStep } from "../model-edit";
 import { primitiveBounds, primitiveName, rootSpec, type PrimitiveSpec } from "../model-primitive";
 import { markProjectDirty } from "../project-dirty";
 import { unionBox } from "../measure";
 import type { ModelPick } from "../model-view";
-import { decodeSolid, type ParsedSolid } from "../model-reply";
+import { DAMAGED, decodeSolid, readFingerprint, type ParsedSolid } from "../model-reply";
 import { holeAxis, lastFace, outwardFromMesh, selectedEdges } from "../model-blend";
 import { nextModelPicks, selectionCountLabel } from "../model-select";
 import { contextParts } from "../model-context";
@@ -46,6 +50,7 @@ import {
   visitStep,
   withChild,
   withNode,
+  type Fingerprint,
   type ModelOp,
   type ModelRoot,
   type ModelTree,
@@ -55,13 +60,16 @@ import {
   type Vec3,
 } from "../model-tree";
 import { loadedTree, savedTree, toolFirst, type SavedTree } from "../model-tree-file";
-import { applyRequest, exportRequest, gotoRequest, joinOp, newSolidRequest, openRequest, probeRequest, wholeTreeRequest } from "../model-request";
+import { applyRequest, editRequest, exportRequest, gotoRequest, joinOp, newSolidRequest, openRequest, probeRequest, wholeTreeRequest } from "../model-request";
 import {
   closeModelTool,
+  editedPanel,
+  fieldNumber,
   fieldPrimitive,
   joinOpen,
   joinPick,
   mountModelChrome,
+  openEditTool,
   refreshJoinChoices,
   resetKeepTool,
   openModelTool,
@@ -76,8 +84,9 @@ import {
   type PlacePhase,
 } from "../ui/model-chrome";
 import { mountModelHistory, syncModelHistory } from "../ui/model-history";
-import { dropRefusal } from "../model-history";
+import { dropRefusal, stepLabel } from "../model-history";
 import { addedSolid, addedSplit, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose, withoutObject, type PlateObject } from "../plate";
+import type { ContextPart } from "../model-context";
 import { authHeaders } from "../ui/api-base";
 import { livePlate, openMeshPicker, pickAddedMesh, place } from "./files";
 import { beginEdit, editHistoryRefs, endModelVisit, flushEdit, markModelEdit, noteEdit, patchEditBrep } from "./history";
@@ -168,6 +177,27 @@ let refreshingContext = false;
 /** Counts the plates Model has forgotten, so a tree opened for an earlier one is let go. */
 let plateEra = 0;
 const CYCLE = "The tool object's history already uses this part, so the two cannot be joined";
+const STILL_WORKING = "The modeler is still working. Try again in a moment.";
+
+/**
+ * A step being edited: its tool is open on the step's parent, which the view shows, with the step's own numbers.
+ * `parent` is where the edit builds (the root itself for a new solid's root); `from` is the step shown before, where
+ * Cancel goes back to; `replay` the steps that replay under the edit, oldest first. `opened` is the op the panel said
+ * when it opened, so an untouched panel offers no Update.
+ */
+interface Editing {
+  key: string;
+  node: NodeId;
+  parent: NodeId;
+  from: NodeId;
+  replay: NodeId[];
+  op: ModelOp;
+  panel: EditPanel | null;
+  opened: string | null;
+}
+let editing: Editing | null = null;
+/** The last edit, so Undo goes from its tip back to the step shown before it, and Redo forward again. */
+let editBack: { key: string; tip: NodeId; back: NodeId; undone: boolean } | null = null;
 
 export function bindModelView() {
   fx.model?.onPick((pick: ModelPick | null, shift: boolean) => void onPick(pick, shift));
@@ -178,11 +208,11 @@ export function bindModelView() {
   // While Place is open, Undo and Redo step its moves; the solid's history waits until it closes.
   document.querySelector("#modelUndo")?.addEventListener("click", () => {
     if (openModelTool() === "place") placeStep("undo");
-    else void step(undoTarget, "Edit undone.");
+    else void step("undo");
   });
   document.querySelector("#modelRedo")?.addEventListener("click", () => {
     if (openModelTool() === "place") placeStep("redo");
-    else void step(redoTarget, "Edit redone.");
+    else void step("redo");
   });
   document.querySelector("#modelResetView")?.addEventListener("click", (ev) => frameModel((ev as MouseEvent).shiftKey));
   document.querySelector("#modelEmptyNew")?.addEventListener("click", () => {
@@ -207,7 +237,7 @@ export function bindModelView() {
     paramsChanged(typed) {
       // Place closed while a typed move was settling: that move is its step now, before Undo means the solid again.
       if (placeBefore && openModelTool() !== "place") endPlace();
-      if (joinPick() !== ghosted) refreshModelContext();
+      if (ghostId() !== ghosted) refreshModelContext();
       sayJoin();
       scheduleProbe(typed ? PROBE_WAIT_MS : 0);
       syncUndo();
@@ -254,6 +284,9 @@ export function bindModelView() {
       readout(surfacesOnly.has(meshTokenOf(obj.bytes)) ? `${obj.name} has surfaces but no closed solid, so it cannot be a tool.` : `${obj.name} is a mesh, so it cannot be a tool.`);
       joinSaid = "";
     },
+    editClosed: cancelEdit,
+    editJoinGhost,
+    editUnchanged: editUntouched,
   });
   mountModelHistory({
     jump(node) {
@@ -262,7 +295,23 @@ export function bindModelView() {
     rename: renameStep,
     dropRefusal: whyKeepBranch,
     drop: dropBranch,
+    editRefusal(node) {
+      const tree = treeOf(open);
+      return tree ? editRefusal(tree, node) : "This solid is no longer open.";
+    },
+    edit(node) {
+      // Shift+E away from History edits the step shown; while an edit is open that is its parent, so the key waits.
+      const tree = treeOf(open);
+      if (node != null) void startEdit(node);
+      else if (tree && !editing) void startEdit(tree.current);
+    },
   });
+}
+
+/** While a step is edited: its panel still says the step as it is, so Update would change nothing and no check is needed. */
+function editUntouched(): boolean {
+  const run = editing;
+  return !!run && (run.opened == null || JSON.stringify(editOp(run)) === run.opened);
 }
 
 function treeOf(at: Opened | null): ModelTree | null {
@@ -287,7 +336,7 @@ function scheduleProbe(wait: number) {
   const at = open;
   const tree = treeOf(at);
   const tool = openModelTool();
-  const op = at?.solid.editable && isProbed(tool) ? toolOp(tool) : null;
+  const op = at?.solid.editable && isProbed(tool) && !editUntouched() ? panelOp() : null;
   const picked = at?.solid.editable ? joinPick() : null;
   if (at && tree && !op && picked) {
     // A tool Model never opened gets its tree first: the engine builds the join from it.
@@ -422,6 +471,22 @@ function remember(key: string, view: ProbeView) {
   answers.set(key, view);
 }
 
+/** What the open panel would build: an edited step's op while one is edited, else the open tool's. */
+function panelOp(): ModelOp | null {
+  return editing ? editOp(editing) : toolOp(openModelTool());
+}
+
+/** An edited step's op as its panel says it: a join keeps its tool and placement, a new solid's root stands as `rootSpec` puts it. */
+function editOp(run: Editing): ModelOp | null {
+  const tool = openModelTool();
+  if (run.op.kind === "root") return tool === "create" ? { kind: "root", ...rootSpec(fieldPrimitive()) } : null;
+  if (run.op.kind === "join") {
+    const keepTool = document.querySelector<HTMLInputElement>("#modelKeepTool")?.checked ?? false;
+    return tool === "boolean" ? { ...run.op, op: boolOp(), keepTool } : null;
+  }
+  return toolOp(tool);
+}
+
 /** The open tool's edit in the solid's own frame, from its model-space fields. Null when it cannot run yet. */
 function toolOp(tool: string | null | undefined): ModelOp | null {
   const op = fieldOp(tool);
@@ -466,13 +531,17 @@ function boolOp(): "fuse" | "cut" | "common" {
 export function commitModel() {
   const at = open;
   let tree = treeOf(at);
-  const plan = tree ? visitStep(tree) : null;
+  // While a step is edited the view shows its parent: the plate takes the step shown before the edit, by its plate
+  // mesh when the plate held it, else from the recent solids.
+  const held = at && tree && editing?.key === at.key ? editing.from : null;
+  const solid = held == null || held === at?.solid.id ? at?.solid : recentSolid(at!.key, held, state.stepTolerance);
+  const plan = tree ? visitStep(held == null ? tree : { ...tree, current: held }) : null;
   if (!at || !tree || !plan || !state.mesh || at.objectId !== state.plate.selectedId || parked === at.key) return;
   const node = tree.nodes.get(plan.to);
-  if (!node || at.solid.id !== plan.to) return;
+  const mesh = solid?.id === plan.to ? node?.mesh ?? meshOf(solid) : held != null ? node?.mesh : null;
+  if (!node || !mesh) return;
   noteEdit();
   tree = withNode(tree, plan.from, { keep: liveKeep() });
-  const mesh = node.mesh ?? meshOf(at.solid);
   state.mesh = { name: mesh.name, bytes: mesh.bytes };
   state.sourcePos = new Float32Array(mesh.sourcePos);
   const keep = plan.keep;
@@ -619,7 +688,10 @@ export async function historyToSave(): Promise<{ trees: Map<string, TreeToSave>;
   for (const [id, root] of roots) {
     const { name, key, node } = all.get(id)!;
     if (!modelTrees.has(key)) continue;
-    const tree = { ...savedTree(treeOfKey(key), node, (other) => owner.get(other)), ...root };
+    // While a step is edited the view shows its parent; the file reopens on the step shown before the edit.
+    const live = treeOfKey(key);
+    const shown = editing?.key === key && live.nodes.has(editing.from) ? { ...live, current: editing.from } : live;
+    const tree = { ...savedTree(shown, node, (other) => owner.get(other)), ...root };
     if (held.has(id)) trees.set(id, tree);
     else tools.push({ id, name, tree });
   }
@@ -707,6 +779,7 @@ function forgetShown(key: string) {
 export function leaveModel() {
   forgetPlaceSteps();
   commitModel();
+  dropEdit();
   endModelVisit();
   void writeSteps();
 }
@@ -725,6 +798,8 @@ export function forgetModelTrees() {
   answers.clear();
   stepKnown.clear();
   writing.clear();
+  dropEdit();
+  editBack = null;
   open = null;
   shownFor = null;
   framedFor = null;
@@ -747,6 +822,8 @@ export function followSelection() {
 }
 
 export function showModel() {
+  dropEdit();
+  editBack = null;
   const mine = ++ticket;
   picks = [];
   busy = false;
@@ -843,7 +920,10 @@ function setTreeKey(objectId: string, key: string) {
 
 /** Back into Model on the node the plate holds. If it no longer rebuilds, on the last step above it that does. */
 async function resume(mine: number, objectId: string, key: string, node: NodeId) {
-  const greeting = (solid: ParsedSolid) => `${about(solid)} Pick a face or an edge.`;
+  // A split piece whose part was edited past its split keeps a note of it: the piece is the older split's.
+  const known = modelTrees.get(key);
+  const older = known ? olderSplitNote(modelTrees, known) : null;
+  const greeting = (solid: ParsedSolid) => `${about(solid)} ${older ? `${older} ` : ""}Pick a face or an edge.`;
   if (await showNode(mine, objectId, key, node, greeting) || mine !== ticket) return;
   const tree = modelTrees.get(key);
   const good = tree ? lastGood(tree, node) : null;
@@ -976,14 +1056,34 @@ async function showNode(mine: number, objectId: string, key: string, node: NodeI
   return true;
 }
 
-/** Undo is the parent, Redo the child last applied or jumped through. */
-async function step(target: (tree: ModelTree) => NodeId | null, done: string) {
+/** Where Undo goes: from an edit's tip, back to the step shown before the edit; else the parent. */
+function undoNode(tree: ModelTree): NodeId | null {
+  const back = editBack;
+  if (back && !back.undone && back.key === tree.key && tree.current === back.tip && tree.nodes.has(back.back)) return back.back;
+  return undoTarget(tree);
+}
+
+/** Where Redo goes: from where an undone edit went back to, forward to its tip again; else the child Redo follows. */
+function redoNode(tree: ModelTree): NodeId | null {
+  const back = editBack;
+  if (back?.undone && back.key === tree.key && tree.current === back.back && tree.nodes.has(back.tip)) return back.tip;
+  return redoTarget(tree);
+}
+
+/** Undo is the parent, Redo the child last applied or jumped through, but for an edit, which Undo takes back whole. */
+async function step(way: "undo" | "redo") {
   const at = open;
   const tree = treeOf(at);
-  const node = tree ? target(tree) : null;
-  if (!at || node == null || busy || jumping) return;
+  const node = tree ? (way === "undo" ? undoNode(tree) : redoNode(tree)) : null;
+  if (!at || !tree || node == null || busy || jumping || editing) return;
   parked = null;
-  await showNode(ticket, at.objectId, at.key, node, (solid) => `${about(solid)} ${done}`);
+  const back = editBack;
+  const viaEdit = !!back && node === (way === "undo" ? back.back : back.tip) && tree.current === (way === "undo" ? back.tip : back.back) && back.undone === (way === "redo");
+  if (!viaEdit) editBack = null;
+  const done = viaEdit ? (way === "undo" ? "Edit of the step undone." : "Edit of the step redone.") : way === "undo" ? "Edit undone." : "Edit redone.";
+  const shown = await showNode(ticket, at.objectId, at.key, node, (solid) => `${about(solid)} ${done}`);
+  if (shown && viaEdit && editBack === back) back!.undone = way === "undo";
+  if (shown) syncUndo();
 }
 
 /** A row of the History panel: show that step. A jump still on its way to another step gives way to this one. */
@@ -991,8 +1091,11 @@ async function jumpTo(node: NodeId) {
   const at = open;
   const tree = treeOf(at);
   if (!at || !tree || busy || state.stage !== "model" || !tree.nodes.has(node)) return;
-  if (jumping ? node === jumpTarget : node === tree.current) return;
+  if (jumping ? node === jumpTarget : node === tree.current && !editing) return;
   parked = null;
+  editBack = null;
+  // A step picked in the history ends an edit: the view goes there, not back.
+  dropEdit();
   await showNode(ticket, at.objectId, at.key, node, about);
 }
 
@@ -1008,7 +1111,10 @@ function renameStep(node: NodeId, name: string) {
 function whyKeepBranch(node: NodeId): string | null {
   const tree = treeOf(open);
   if (!tree) return "This solid is no longer open.";
-  if (busy || jumping) return "The modeler is still working. Try again in a moment.";
+  if (busy || jumping) return STILL_WORKING;
+  // The step being edited and the step Cancel goes back to count as on screen.
+  const gone = editing?.key === tree.key ? subtree(tree, node) : null;
+  if (gone && editing && (gone.has(editing.node) || gone.has(editing.from))) return "The step being edited, or the one Cancel goes back to, is on this branch. Update or cancel the edit first.";
   return dropRefusal(tree, node, modelTrees);
 }
 
@@ -1073,6 +1179,10 @@ function keepSolid(key: string, node: NodeId, chord: number, solid: ParsedSolid)
 async function applyTool() {
   const button = document.querySelector<HTMLButtonElement>("#modelApply");
   const tool = modelTool();
+  if (editing) {
+    if (button && !button.disabled) await runEdit(editing);
+    return;
+  }
   if (button && !button.disabled && tool === "create") {
     await createSolid();
     return;
@@ -1092,16 +1202,14 @@ async function applyTool() {
     }
   }
   const count = op.kind === "fillet" || op.kind === "chamfer" ? (op.edges.length === 1 ? "the edge" : `${op.edges.length} edges`) : "";
-  const working = {
-    boolean: "Editing the solid…",
-    join: "Editing the solid…",
+  const working: Partial<Record<ModelOp["kind"], string>> = {
     split: "Splitting the solid…",
     fillet: `Filleting ${count}…`,
     chamfer: `Chamfering ${count}…`,
     hole: "Cutting the hole…",
     scale: "Scaling the solid…",
-  }[op.kind];
-  await applyOp(op, working);
+  };
+  await applyOp(op, working[op.kind] ?? "Editing the solid…");
 }
 
 /** Apply `op` to the shown node. The result is a new child, shown; the plate takes it on commit. */
@@ -1114,6 +1222,7 @@ async function applyOp(op: ModelOp, working: string) {
     return;
   }
   parked = null;
+  editBack = null;
   const parent = tree.current;
   const twin = childWithOp(tree, parent, op);
   if (twin != null) {
@@ -1210,9 +1319,14 @@ function takeOffPlate(id: string) {
   markModelEdit();
 }
 
-function appliedMessage(op: ModelOp, solid: ParsedSolid) {
+/** What the plate loses when it takes a new step: the part's paint, and its placement scale after a scale. */
+function leavingNotes(scaled: boolean): string {
   const paint = state.supportPaint.length + state.seamPaint.length + state.reinforcement.length + state.supportEdits.length > 0;
-  const notes = `${paint ? " Leaving Model clears this part's support paint." : ""}${op.kind === "scale" && state.partScale !== 1 ? " Placement scale becomes 100%." : ""}`;
+  return `${paint ? " Leaving Model clears this part's support paint." : ""}${scaled && state.partScale !== 1 ? " Placement scale becomes 100%." : ""}`;
+}
+
+function appliedMessage(op: ModelOp, solid: ParsedSolid) {
+  const notes = leavingNotes(op.kind === "scale");
   const volume = about(solid);
   if (op.kind === "split") return `Split. ${volume} On the plate both pieces share one spot: Arrange lays them side by side.${notes}`;
   if (op.kind === "fillet") return `Fillet. ${volume}${notes}`;
@@ -1220,6 +1334,229 @@ function appliedMessage(op: ModelOp, solid: ParsedSolid) {
   if (op.kind === "hole") return `Hole. ${volume}${notes}`;
   if (op.kind === "join") return `${opLabel(op)}. ${volume}${op.keepTool ? "" : ` ${op.tool.name} left the plate.`}${notes}`;
   return `${volume}${notes}`;
+}
+
+/**
+ * Edit step `node`: its tool opens with the numbers it was applied with, on its parent's solid, which the view shows as
+ * when the step was first applied, so the ghost, the handles and the dry-run are Apply's. A new solid's root edits in New
+ * solid's panel, on the root. A tree from a project still on its STEP-read step opens whole first, as an Apply does.
+ */
+async function startEdit(node: NodeId) {
+  const at = open;
+  const tree = treeOf(at);
+  if (!at || !tree || state.stage !== "model") return;
+  const refusal = editRefusal(tree, node) ?? (busy || jumping ? STILL_WORKING : !at.solid.editable ? VIEW_ONLY : null);
+  const op = editedOp(tree, node);
+  if (refusal || !op) {
+    readout(refusal ?? "This step cannot be edited.");
+    return;
+  }
+  // A second edit goes back to where the first one started, not to the first one's parent.
+  const from = editing?.key === at.key ? editing.from : tree.current;
+  editing = null;
+  if (openModelTool()) closeModelTool();
+  parked = null;
+  // The step shown stays among the recent solids, so Cancel goes back to it without the engine, even mid-rebuild.
+  if (at.solid.id === from) keepSolid(at.key, from, state.stepTolerance, at.solid);
+  const parent = tree.nodes.get(node)?.parent ?? ROOT;
+  const mine = ticket;
+  if (seeds.has(at.key)) {
+    busy = true;
+    syncUndo();
+    readout("Rebuilding the steps…");
+    const problem = await openWhole(at.key, parent);
+    if (mine === ticket) busy = false;
+    syncUndo();
+    if (mine !== ticket || state.stage !== "model") return;
+    if (problem) {
+      readout(problem);
+      return;
+    }
+  }
+  const latest = modelTrees.get(at.key);
+  if (!latest?.nodes.has(node)) return;
+  const run: Editing = { key: at.key, node, parent, from, replay: replayChain(latest, node, from), op, panel: null, opened: null };
+  editing = run;
+  syncUndo();
+  const shown = await showNode(mine, at.objectId, at.key, parent, about);
+  const now = open;
+  if (editing !== run) return;
+  if (!shown || !now || now.key !== run.key || now.solid.id !== parent) {
+    editing = null;
+    syncUndo();
+    return;
+  }
+  const box = openBox();
+  const center: Vec3 = box ? [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2] : [0, 0, 0];
+  const panel = editPanel(op, openPose(), center);
+  run.panel = panel;
+  openEditTool(panel, editHead(latest, node));
+  let said = `${about(now.solid)} Change the numbers, then Update.`;
+  if (panel.edges) {
+    const { picked, missing } = matchEdges(now.solid.edges, panel.edges, state.stepTolerance);
+    picks = picked.map((index) => ({ kind: "edge", index }));
+    fx.model?.highlight(picks);
+    if (missing > 0) said = `${about(now.solid)} ${missing === panel.edges.length ? "This step's edges are" : `${missing} of this step's edges are`} not on this solid any more: pick them again.`;
+  }
+  run.opened = JSON.stringify(editOp(run));
+  syncModelChrome(picks);
+  readout(said);
+}
+
+/** The edit's panel closed without Update: the view goes back to the step shown before it. An Update on its way is dropped when it lands. */
+function cancelEdit() {
+  const run = editing;
+  editing = null;
+  if (!run) return;
+  picks = [];
+  fx.model?.highlight([]);
+  syncUndo();
+  const at = open;
+  const tree = treeOf(at);
+  if (!at || at.key !== run.key || !tree?.nodes.has(run.from)) return;
+  if (at.solid.id === run.from) {
+    readout(about(at.solid));
+    return;
+  }
+  void showNode(ticket, at.objectId, at.key, run.from, about);
+}
+
+/** The edit ends where the view is: another step was picked, another object opened, Model closed, or the plate went. */
+function dropEdit() {
+  editing = null;
+  if (editedPanel()) closeModelTool();
+}
+
+/**
+ * Update: the edited op as a new sibling of the step, and the steps under it replayed on it, in one engine call. The view
+ * goes to the last step that built; a step that no longer builds is kept, broken, with the steps after it, and the
+ * readout names it. Nothing on the old branch changes, and the plate takes the new tip when it commits, as after any
+ * Apply. Cancel while the engine rebuilds takes the view back at once, and what the engine built is dropped when it lands.
+ */
+async function runEdit(run: Editing) {
+  const at = open;
+  const tree = treeOf(at);
+  if (!at || !tree || at.key !== run.key || busy || jumping || !state.mesh) return;
+  if (at.objectId !== state.plate.selectedId) {
+    followSelection();
+    return;
+  }
+  const op = editOp(run);
+  if (!op) {
+    if (run.op.kind === "fillet" || run.op.kind === "chamfer") readout(run.op.kind === "fillet" ? "Pick an edge to fillet." : "Pick an edge to chamfer.");
+    if (run.op.kind === "split") readout(splitNote(splitState()).text);
+    return;
+  }
+  if (op.kind === "split" && splitNote(splitState()).bad) {
+    readout(splitNote(splitState()).text);
+    return;
+  }
+  const olds = [run.node, ...run.replay].map((id) => tree.nodes.get(id));
+  if (olds.some((old) => !old)) {
+    readout("This step is no longer in the history.");
+    return;
+  }
+  const replayOps = run.replay.map((id) => tree.nodes.get(id)!.op!);
+  const twin = builtBranch(tree, run.parent, op, replayOps);
+  if (twin != null) {
+    // These numbers already built this branch, in an earlier edit: show it rather than build it again.
+    editing = null;
+    closeModelTool();
+    const shown = await showNode(ticket, at.objectId, at.key, twin, (solid) => `These numbers built this branch before. ${about(solid)}`);
+    if (!shown) return;
+    editBack = { key: at.key, tip: twin, back: run.from, undone: false };
+    syncUndo();
+    if (op.kind === "join" && !op.keepTool) takeOffPlate(op.tool.object);
+    return;
+  }
+  let reserved = tree;
+  const ids: NodeId[] = [];
+  while (ids.length < olds.length) {
+    const [next, id] = reserveId(reserved);
+    reserved = next;
+    ids.push(id);
+  }
+  modelTrees.set(at.key, reserved);
+  const replay = replayOps.map((step, i) => ({ id: ids[i + 1]!, op: step }));
+  const chord = state.stepTolerance;
+  const mine = ticket;
+  busy = true;
+  syncUndo();
+  readout(ids.length === 1 ? "Rebuilding the step…" : `Rebuilding ${ids.length} steps…`);
+  const body = await treeCall(at.key, run.parent, editRequest(at.key, run.parent, ids[0]!, op, replay, chord));
+  if (mine === ticket) busy = false;
+  syncUndo();
+  const latest = modelTrees.get(at.key);
+  if (editing !== run || mine !== ticket || state.stage !== "model" || !latest) {
+    // Cancelled while the engine rebuilt: the branch it built for this edit goes.
+    if (typeof body.error !== "string") void dropInEngine(at.key, ids[0]!);
+    return;
+  }
+  if (failed(at.key, body)) return;
+  const parsed = decodeSolid(body);
+  const built = builtSteps(body.built);
+  if (typeof parsed === "string" || !built?.has(parsed.id)) {
+    void dropInEngine(at.key, ids[0]!);
+    readout(typeof parsed === "string" ? parsed : DAMAGED);
+    return;
+  }
+  const broken = brokenStep(body.broken);
+  const steps: ForkStep[] = ids.map((id, i) => {
+    const old = olds[i]!;
+    const made = built.get(id);
+    return {
+      id,
+      op: made?.op ?? (i === 0 ? op : old.op!),
+      fingerprint: made?.fingerprint ?? null,
+      ...(old.name ? { name: old.name } : {}),
+      ...(broken?.id === id ? { broken: broken.error } : {}),
+    };
+  });
+  const next = forked(latest, run.parent, steps, parsed.id);
+  modelTrees.set(at.key, next);
+  keepSolid(at.key, parsed.id, chord, parsed);
+  open = { ...at, solid: parsed };
+  editing = null;
+  editBack = { key: at.key, tip: parsed.id, back: run.from, undone: false };
+  closeModelTool();
+  if (op.kind === "join" && !op.keepTool) takeOffPlate(op.tool.object);
+  const label = (id: NodeId) => stepLabel(next.nodes.get(id)!);
+  const rebuilt = built.size - 1;
+  const after = rebuilt === 0 ? "" : rebuilt === 1 ? " and rebuilt the step after it" : ` and rebuilt ${rebuilt} steps after it`;
+  const failure = broken ? ` Step ${pathTo(next, broken.id).length - 1}, “${label(broken.id)}”, could not be rebuilt: ${sentence(broken.error)} The view shows the last step that built. Edit that step or delete its branch.` : "";
+  const notes = editNotes(modelTrees, latest, [run.node, ...run.replay], (key) => state.plate.objects.find((obj) => obj.modelTree === key)?.name ?? null);
+  const plate = leavingNotes([op, ...replayOps].some((step) => step.kind === "scale"));
+  present(parsed, [`Updated “${label(ids[0]!)}”${after}. ${about(parsed)}${failure}${plate}`, ...notes].join(" "));
+}
+
+/** An edit's `built`: each step the engine kept with its solid, by id, with its op as stored and its fingerprint. Null when damaged. */
+function builtSteps(value: unknown): Map<NodeId, { op: ModelOp; fingerprint: Fingerprint | null }> | null {
+  if (!Array.isArray(value)) return null;
+  const out = new Map<NodeId, { op: ModelOp; fingerprint: Fingerprint | null }>();
+  for (const step of value as { id?: unknown; op?: unknown; fingerprint?: unknown }[]) {
+    if (!step || typeof step.id !== "number" || !isOp(step.op)) return null;
+    out.set(step.id, { op: step.op, fingerprint: readFingerprint(step.fingerprint) });
+  }
+  return out;
+}
+
+/** The step an edit's replay stopped at, and the engine's reason. */
+function brokenStep(value: unknown): { id: NodeId; error: string } | null {
+  const row = value as { id?: unknown; error?: unknown } | null | undefined;
+  return row && typeof row.id === "number" && typeof row.error === "string" ? { id: row.id, error: row.error } : null;
+}
+
+function sentence(text: string): string {
+  return /[.!?]$/.test(text) ? text : `${text}.`;
+}
+
+/** A join being edited: its tool where the join placed it, from the tool step's plate mesh, on the plate or not. */
+function editJoinGhost(): ContextPart | null {
+  const op = editing?.op;
+  if (op?.kind !== "join") return null;
+  const mesh = modelTrees.get(op.tool.key)?.nodes.get(op.tool.node)?.mesh;
+  if (!mesh) return null;
+  return { id: op.tool.object, positions: mesh.sourcePos, matrix: thenPose(thenPose(seatLift(meshSeat(mesh.bytes) ?? 0), op.relative), openPose()) };
 }
 
 /**
@@ -1285,6 +1622,11 @@ async function createSolid() {
 /** Where New solid puts `spec` in model space: its root, standing at the origin or beside every object in `others`. */
 function newSolidAt(spec: PrimitiveSpec, others = plateBoxes()): PrimitiveSpec {
   const root = rootSpec(spec);
+  if (editing?.op.kind === "root") {
+    // An edited root stands where the part's root stands: in its own frame, at the part's pose.
+    const { kind: _kind, op: _op, ...placed } = fromSolidOp({ kind: "boolean", op: "fuse", ...root }, openPose()) as Extract<ModelOp, { kind: "boolean" }>;
+    return placed;
+  }
   const { t } = newSolidPose(others, primitiveBounds(root));
   return { ...root, origin: [root.origin[0] + t[0], root.origin[1] + t[1], root.origin[2] + t[2]] };
 }
@@ -1507,12 +1849,18 @@ export function refreshModelContext() {
   } finally {
     refreshingContext = false;
   }
-  ghosted = joinPick();
+  ghosted = ghostId();
   fx.model?.setContext(contextParts(livePlate(), open?.objectId ?? null).filter((part) => part.id !== ghosted));
   const canvas = document.querySelector<HTMLElement>("#model");
   const obj = open ? state.plate.objects.find((item) => item.id === open!.objectId) : undefined;
   // The open object's plate mesh, so a test can tell a model-space move left it alone.
   if (canvas && obj) canvas.dataset.plateMesh = meshTokenOf(obj.bytes);
+}
+
+/** The plate object drawn as the ghost rather than grey: Boolean's picked tool, or the tool of a join being edited. */
+function ghostId(): string | null {
+  const op = editing?.panel ? editing.op : null;
+  return joinPick() ?? (op?.kind === "join" ? op.tool.object : null);
 }
 
 /** The open object's pose into model space. */
@@ -1651,12 +1999,14 @@ function syncUndo() {
   const undo = document.querySelector<HTMLButtonElement>("#modelUndo");
   const redo = document.querySelector<HTMLButtonElement>("#modelRedo");
   const placing = openModelTool() === "place";
+  // While a step is edited, Cancel is the way back.
+  const held = busy || jumping || !tree || !!editing;
   if (undo) {
-    undo.disabled = busy || jumping || !tree || (placing ? placeUndo.length === 0 && !placeBefore : undoTarget(tree) == null);
+    undo.disabled = held || (placing ? placeUndo.length === 0 && !placeBefore : undoNode(tree!) == null);
     undo.dataset.tip = placing ? "Undo the last move" : "Undo the last solid edit";
   }
   if (redo) {
-    redo.disabled = busy || jumping || !tree || (placing ? placeRedo.length === 0 : redoTarget(tree) == null);
+    redo.disabled = held || (placing ? placeRedo.length === 0 : redoNode(tree!) == null);
     redo.dataset.tip = placing ? "Redo the last move" : "Redo the last solid edit";
   }
   const stepButton = document.querySelector<HTMLButtonElement>("#modelStep");
@@ -1712,7 +2062,10 @@ function splitState(): SplitState {
   const facePicking = document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") === "true";
   const value = num("#modelPlane");
   const tilt: [number, number] = [num("#modelTiltA"), num("#modelTiltB")];
-  const key = `${mode}|${picked}|${facePicking}|${value}|${tilt}`;
+  // An edited split whose normal points down its axis keeps that side: its base is the axis turned around.
+  const plane = editing?.panel?.plane;
+  const flip = !!plane?.flip && plane.mode === mode;
+  const key = `${mode}|${picked}|${facePicking}|${value}|${tilt}|${flip}`;
   if (splitKept?.solid === at.solid && splitKept.pose === pose && splitKept.key === key) return splitKept.state;
   let state: SplitState;
   if (mode === "face" && picked == null) {
@@ -1721,7 +2074,8 @@ function splitState(): SplitState {
     const own = picked == null ? null : flatFace(at.solid, picked);
     const face = own && !isIdentity(pose) ? { point: applyPose(pose, own.point), normal: turnDir(pose, own.normal) } : own;
     const center: Vec3 = [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2];
-    const base = splitBase(mode, center, face);
+    const found = splitBase(mode, center, face);
+    const base = found && flip ? { ...found, normal: [-found.normal[0], -found.normal[1], -found.normal[2]] as Vec3 } : found;
     state = base
       ? { plan: planeFor(base, value, tilt, (normal) => modelExtent(at.solid, pose, normal), kernelBox(at.solid, pose)) }
       : { why: "Pick a flat face. This one is curved.", wait: false };
@@ -1750,10 +2104,10 @@ function flatFace(solid: ParsedSolid, face: number): FacePlane | null {
   return known.get(face)!;
 }
 
-/** Into the last picked face, or straight down in model space when no face is picked. */
+/** Into the last picked face, or with no face picked, the way an edited hole drilled, else straight down in model space. */
 function drillAxis(): Vec3 {
   const face = lastFace(picks);
-  if (!open || face == null) return [0, 0, -1];
+  if (!open || face == null) return editing?.panel?.axis ?? [0, 0, -1];
   const stored = open.solid.faces.find((item) => item.id === face)?.normal;
   const axis = holeAxis(stored ?? outwardFromMesh(open.solid.positions, open.solid.triangles, face));
   const pose = openPose();
@@ -1761,8 +2115,7 @@ function drillAxis(): Vec3 {
 }
 
 function num(id: string) {
-  const value = Number(document.querySelector<HTMLInputElement>(id)?.value);
-  return Number.isFinite(value) ? value : 0;
+  return fieldNumber(id.slice(1));
 }
 
 function stlName(name: string) {
@@ -1903,7 +2256,9 @@ const TOOL_ROUNDS = 8;
 async function wholeTools(key: string, node: NodeId, request: Body): Promise<string | null> {
   const joinsTo = (tree: ModelTree | undefined, at: NodeId) =>
     tree ? pathTo(tree, at).flatMap((id) => { const op = tree.nodes.get(id)?.op; return op?.kind === "join" ? [op.tool] : []; }) : [];
-  const queue = [...joinsTo(modelTrees.get(key), node), ...(isOp(request.op) && request.op.kind === "join" ? [request.op.tool] : [])];
+  // The op sent, and an edit's replayed ops, can each be a join.
+  const sent = [request.op, ...(Array.isArray(request.replay) ? (request.replay as { op?: unknown }[]).map((step) => step.op) : [])];
+  const queue = [...joinsTo(modelTrees.get(key), node), ...sent.flatMap((op) => (isOp(op) && op.kind === "join" ? [op.tool] : []))];
   const seen = new Set<string>();
   for (let tool = queue.pop(); tool !== undefined; tool = queue.pop()) {
     if (seen.has(`${tool.key}#${tool.node}`)) continue;
@@ -1946,7 +2301,7 @@ async function seededCall(key: string, node: NodeId, request: Body): Promise<Bod
   for (;;) {
     let seed = seeds.get(key);
     for (; seed?.whole || seed?.reading; seed = seeds.get(key)) await (seed.whole ?? seed.reading);
-    if (seed && (node !== seed.node || request.call === "apply")) {
+    if (seed && (node !== seed.node || request.call === "apply" || request.call === "edit")) {
       const problem = await openWhole(key, node);
       if (problem) return { error: problem };
       continue;

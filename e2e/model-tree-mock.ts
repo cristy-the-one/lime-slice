@@ -28,7 +28,8 @@ interface Handlers {
   /** The root solid of a file (`request.filename` names it) or of a primitive (`request.primitive`), or why there is none. */
   open(request: Body): MockSolid | { error: string };
   apply?(request: Body, parent: MockSolid): Built;
-  probe?(request: Body): Body | Promise<Body>;
+  /** A dry-run of `request.op` on `on`, the solid of the node it names. */
+  probe?(request: Body, on: MockSolid): Body | Promise<Body>;
   /** An answer of its own for a jump, such as a step that no longer rebuilds. Null answers as usual. */
   goto?(request: Body): Body | null;
   distanceMm?: number;
@@ -82,16 +83,45 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
   /** Each STEP the mock wrote, and the solid it holds, so opening that STEP again opens that solid. */
   const exported = new Map<string, MockSolid>();
   let exports = 0;
-  const reply = (solid: MockSolid, id: number) => ({
-    id,
-    ...encodeSolid(solid),
-    fingerprint: { volumeMm3: solid.volumeMm3, faces: solid.faces.length, edges: solid.edges.length },
-  });
+  const fingerprint = (solid: MockSolid) => ({ volumeMm3: solid.volumeMm3, faces: solid.faces.length, edges: solid.edges.length });
+  const reply = (solid: MockSolid, id: number) => ({ id, ...encodeSolid(solid), fingerprint: fingerprint(solid) });
   const stepOf = (request: Body) => JSON.stringify([request.op, request.otherKey ?? null]);
   const subtree = (doc: Map<number, MockNode>, id: number) => {
     const gone = new Set([id]);
     for (const [child, node] of [...doc].sort(([a], [b]) => a - b)) if (node.parent !== null && gone.has(node.parent)) gone.add(child);
     return gone;
+  };
+  /**
+   * As the engine's `edit`: the op on `parent` as a new node, then each replayed op on the last that built. The first that
+   * does not build is kept, broken, with the rest; nothing is kept when the edited op itself does not build.
+   */
+  const edit = (key: string, doc: Map<number, MockNode>, parent: number, from: MockSolid, request: Body): Body => {
+    const replay = (request.replay ?? []) as { id: number; op: Body }[];
+    const ids = [Number(request.node), ...replay.map((step) => step.id)];
+    if (ids.some((id) => doc.has(id))) return { error: `Node ${ids.find((id) => doc.has(id))} is already in this tree for another step` };
+    if (replay.some((step) => step.op.kind === "root")) return { error: "A new solid's primitive can only be built again right under its root" };
+    const build = (op: Body, under: number, id: number, solid: MockSolid) => {
+      const built = handlers.apply?.({ call: "apply", key, op, parent: under, node: id }, solid) ?? { error: "no apply" };
+      return "error" in built ? built : "kept" in built ? built.kept : built;
+    };
+    const first = build(request.op as Body, parent, ids[0]!, from);
+    if ("error" in first) return first;
+    doc.set(ids[0]!, { solid: first, parent, step: JSON.stringify([request.op, null]), op: request.op as Body });
+    const built = [{ id: ids[0], op: request.op, fingerprint: fingerprint(first) }];
+    let last = ids[0]!;
+    let broken: { id: number; error: string } | null = null;
+    for (const step of replay) {
+      if (broken) continue;
+      const made = build(step.op, last, step.id, doc.get(last)!.solid);
+      if ("error" in made) {
+        broken = { id: step.id, error: made.error };
+        continue;
+      }
+      doc.set(step.id, { solid: made, parent: last, step: JSON.stringify([step.op, null]), op: step.op });
+      built.push({ id: step.id, op: step.op, fingerprint: fingerprint(made) });
+      last = step.id;
+    }
+    return { ...reply(doc.get(last)!.solid, last), built, ...(broken ? { broken } : {}) };
   };
   const answer = async (request: Body): Promise<Body> => {
     const key = String(request.key);
@@ -128,7 +158,7 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
       return { ok: true };
     }
     if (!doc) return { error: "unknown", missing: [0] };
-    const node = Number(request.call === "apply" ? request.parent : request.node);
+    const node = Number(request.call === "apply" || request.call === "edit" ? request.parent : request.node);
     const wait = materialize(key, doc, node);
     if (wait) return wait;
     const asked = toolOf(request.op);
@@ -139,7 +169,7 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
       case "goto":
         return handlers.goto?.(request) ?? reply(base.solid, node);
       case "probe":
-        return (await handlers.probe?.(request)) ?? { ok: true };
+        return (await handlers.probe?.(request, base.solid)) ?? { ok: true };
       case "distance":
         return { id: node, distanceMm: handlers.distanceMm ?? 20 };
       case "drop": {
@@ -156,6 +186,8 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
       }
       case "apply":
         break;
+      case "edit":
+        return edit(key, doc, node, base.solid, request);
       default:
         return { error: `unexpected ${String(request.call)}` };
     }

@@ -1,4 +1,4 @@
-import { applyRequest, joinOp, newSolidRequest, openRequest, wholeTreeRequest } from "./model-request.ts";
+import { applyRequest, editRequest, joinOp, newSolidRequest, openRequest, wholeTreeRequest } from "./model-request.ts";
 import { newTree, withChild, type ModelOp } from "./model-tree.ts";
 import type { PrimitiveSpec } from "./model-primitive.ts";
 
@@ -48,6 +48,17 @@ eq("a join keeps the tool's step and its pose in the target's own frame: model â
   keepTool: false,
 });
 eq("and is applied as any op is", applyRequest("obj-1#a.1", 2, 3, joined, 0.1).op, joined);
+
+const wider: ModelOp = { ...hole, radius: 2 };
+eq("an edit sends the new op on the parent and each replayed step with its new id", editRequest("k", 0, 5, wider, [{ id: 6, op: joined }], 0.1), {
+  call: "edit",
+  key: "k",
+  parent: 0,
+  node: 5,
+  op: wider,
+  replay: [{ id: 6, op: joined }],
+  chordMm: 0.1,
+});
 
 if (failed) {
   console.error(`model-request: ${failed} failed`);

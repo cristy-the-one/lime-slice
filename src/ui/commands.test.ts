@@ -107,6 +107,7 @@ eq("Esc does nothing when idle", press("Esc"), null);
 eq("Esc clears a Model selection", press("Esc", { stage: "model" }), "model-escape");
 eq("Esc still cancels a running slice on Model", press("Esc", { stage: "model", running: true }), "cancel-slice");
 eq("Q and W pick in Model", [press("Q"), press("Q", { stage: "model" }), press("W", { stage: "model" })], [null, "model-face", "model-edge"]);
+eq("Shift+E edits a Model step, E stays Edit supports", [press("Shift+E"), press("Shift+E", { stage: "model" }), press("E")], [null, "model-edit-step", "edit-supports"]);
 eq("Shift+H is Model history, H stays Hole", [press("Shift+H"), press("Shift+H", { stage: "model" }), press("H", { stage: "model" })], [null, "model-history", "model-hole"]);
 eq("Enter applies a model edit, not from Prepare", [press("Enter"), press("Enter", { stage: "model" })], [null, "model-apply"]);
 eq("a model letter does nothing in a field", press("Q", { stage: "model", typing: true }), null);

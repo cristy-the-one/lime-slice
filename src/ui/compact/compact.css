@@ -740,6 +740,6 @@ html.layout-compact .model-history-toggle { height: 40px; font-size: var(--fs-2)
 html.layout-compact .model-history .model-history-toggle .ico { transform: none; }
 html.layout-compact .mh-note:not([hidden]) { display: block; margin: 4px 6px 0; color: var(--warn); font-size: var(--fs-2); }
 html.layout-compact .mh-row { height: 40px; font-size: var(--fs-3); }
-html.layout-compact .mh-more { width: 36px; height: 36px; opacity: 1; }
+html.layout-compact :is(.mh-more, .mh-edit) { width: 36px; height: 36px; opacity: 1; }
 html.layout-compact .mh-rename { height: 32px; }
 html.layout-compact .mh-menu [role="menuitem"] { min-height: 40px; }
