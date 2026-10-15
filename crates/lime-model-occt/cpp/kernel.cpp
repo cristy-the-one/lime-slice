@@ -75,6 +75,8 @@
 #include <TopoDS_Solid.hxx>
 #include <gp_Ax1.hxx>
 #include <gp_Ax2.hxx>
+#include <gp_Ax3.hxx>
+#include <gp.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Mat.hxx>
@@ -185,7 +187,8 @@ const char* split_reject(
     return nullptr;
 }
 
-double depth_along(const TopoDS_Shape& shape, const gp_Dir& normal) {
+/// How deep `shape` runs along `normal`, read from its vertices.
+double vertex_depth_along(const TopoDS_Shape& shape, const gp_Dir& normal) {
     double lo = 1e300;
     double hi = -1e300;
     bool any = false;
@@ -197,6 +200,33 @@ double depth_along(const TopoDS_Shape& shape, const gp_Dir& normal) {
         any = true;
     }
     return any ? hi - lo : 0.0;
+}
+
+/// How deep `shape` runs along `normal`, at least `enough`. The vertices answer most pieces at
+/// once. They can say less than the surfaces do: half a torus, a sphere or a cylinder cut along its
+/// axis has every vertex in the cut plane. Only then is the shape boxed exactly from its geometry,
+/// relocated into a frame whose Z is `normal` and never copied; on Telo test that box costs about
+/// 250 ms a piece, so it is skipped whenever the vertices already show `enough`.
+double depth_along(const TopoDS_Shape& shape, const gp_Dir& normal, double enough) {
+    const double from_vertices = vertex_depth_along(shape, normal);
+    if (from_vertices >= enough) {
+        return from_vertices;
+    }
+    gp_Trsf to_normal;
+    to_normal.SetTransformation(gp_Ax3(gp::Origin(), normal));
+    Bnd_Box bounds;
+    BRepBndLib::AddOptimal(shape.Moved(TopLoc_Location(to_normal)), bounds, Standard_False, Standard_False);
+    if (bounds.IsVoid()) {
+        return 0.0;
+    }
+    double xmin = 0;
+    double ymin = 0;
+    double zmin = 0;
+    double xmax = 0;
+    double ymax = 0;
+    double zmax = 0;
+    bounds.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+    return zmax - zmin;
 }
 
 /// Kernel work done since load. Tests read it to prove a probe's result was reused.
@@ -1256,7 +1286,8 @@ bool build_split(
         error = "The plane did not split this solid";
         return false;
     }
-    if (depth_along(kept, normal) < 0.25 || depth_along(other, normal) < 0.25) {
+    constexpr double kThinnest = 0.25;
+    if (depth_along(kept, normal, kThinnest) < kThinnest || depth_along(other, normal, kThinnest) < kThinnest) {
         error = "The plane is too close to a face. Move it into the part.";
         return false;
     }

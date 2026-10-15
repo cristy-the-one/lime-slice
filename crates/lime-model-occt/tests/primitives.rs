@@ -543,3 +543,52 @@ fn every_size_out_of_range_is_refused_in_plain_words() {
         "{unknown}"
     );
 }
+
+/// A curved solid has few vertices, and a cut through its middle can leave every vertex of one half
+/// in the cut plane: a torus cut along X was refused as "too close to a face". Each half must still
+/// split, and each must hold half the volume.
+#[test]
+fn curved_primitives_split_through_their_middle() {
+    if !kernel() {
+        return;
+    }
+    let pi = std::f64::consts::PI;
+    let cases = [
+        ("torus", torus(12.8, 4.2, [0.0, 0.0, 0.0]), 2.0 * pi * pi * 12.8 * 4.2 * 4.2),
+        (
+            "sphere",
+            json!({ "primitive": "sphere", "origin": [0.0, 0.0, 0.0], "radius": 10.0 }),
+            4.0 / 3.0 * pi * 1000.0,
+        ),
+        (
+            "cylinder",
+            json!({ "primitive": "cylinder", "origin": [0.0, 0.0, -10.0], "radius": 10.0, "height": 20.0 }),
+            pi * 100.0 * 20.0,
+        ),
+        ("cone", cone(10.0, 4.0, 20.0, [0.0, 0.0, -10.0]), pi * 20.0 / 3.0 * (100.0 + 40.0 + 16.0)),
+        ("tube", tube(10.0, 6.0, 20.0, [0.0, 0.0, -10.0]), pi * (100.0 - 36.0) * 20.0),
+    ];
+    let tilt = std::f64::consts::FRAC_1_SQRT_2;
+    let normals = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [tilt, 0.0, tilt]];
+    for (name, primitive, whole) in cases {
+        for (n, normal) in normals.iter().enumerate() {
+            // A cone is symmetric only about planes through its axis; the others about their centre.
+            if name == "cone" && n >= 2 {
+                continue;
+            }
+            let key = format!("split-{name}-{n}");
+            near(volume(&ok(open(&key, primitive.clone()))), whole);
+            let reply = ok(json!({ "call": "apply", "key": key, "parent": 0, "node": 1,
+                "op": { "kind": "split", "origin": [0.0, 0.0, 0.0], "normal": normal },
+                "otherKey": format!("{key}-piece") }));
+            let kept = volume(&reply);
+            let other = volume(&reply["other"]);
+            assert!(
+                (kept - whole / 2.0).abs() < 1e-3 * whole && (other - whole / 2.0).abs() < 1e-3 * whole,
+                "{name} along {normal:?}: {kept} + {other} is not two halves of {whole}"
+            );
+            ok(json!({ "call": "close", "key": format!("{key}-piece") }));
+            ok(json!({ "call": "close", "key": key }));
+        }
+    }
+}
