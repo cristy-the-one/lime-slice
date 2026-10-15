@@ -27,6 +27,8 @@ import {
   slicePlateFields,
   snapPlate,
   withModelPose,
+  withWorkplane,
+  workplaneOf,
   type IncomingMesh,
   type PlateObject,
 } from "./plate.ts";
@@ -334,6 +336,16 @@ check("identity drops the key", !("modelPose" in withModelPose(movedPlate, "part
 const posedSnap = snapPlate({ objects: [posedParent], selectedId: "part" });
 check("a Prepare step keeps the model pose", revivePlate(posedSnap)?.objects[0]?.modelPose === turnedPose);
 check("one object with a model pose is a version 2 file", plateFileIsVersion2([{ modelPose: turnedPose }]) && !plateFileIsVersion2([{}]));
+const bedFrame = { source: "bed" as const, origin: [10, 5, 0] as [number, number, number], turn: [0, 0, 0] as [number, number, number] };
+const framed = withWorkplane({ objects: [object(20, "part", false)], selectedId: "part" }, "part", bedFrame);
+check("a bed frame is kept, and the global frame is not stored", framed.objects[0]!.workplane?.source === "bed" && !("workplane" in withWorkplane(framed, "part", { source: "global", origin: [0, 0, 0], turn: [0, 0, 0] }).objects[0]!));
+check("an absent frame reads as global", workplaneOf(object(20, "part", false)).source === "global" && workplaneOf(object(20, "part", false)).origin[0] === 0);
+check("a Prepare step keeps the workplane", revivePlate(snapPlate(framed))?.objects[0]?.workplane?.origin[0] === 10);
+check("one object with a workplane is a version 2 file", plateFileIsVersion2([{ workplane: bedFrame }]) && !plateFileIsVersion2([{}]));
+const framedCopy = addedCopy(framed)!.objects[1]!;
+check("a copy's frame moves with the part", framedCopy.workplane?.origin[0] === 40 && framedCopy.workplane?.origin[1] === 5 && framedCopy.workplane?.turn[0] === 0);
+const framedSplit = addedSplit(framed, incoming("part split", cube(10)))!;
+check("a split piece keeps the parent's frame", JSON.stringify(framedSplit.objects[1]?.workplane) === JSON.stringify(bedFrame));
 const record = { name: "p.step", bytesBase64: "", byteLength: 0, hash: "" };
 const fileRow = (bytes: ArrayBuffer, extra: object) => ({
   id: "part", name: "p", mesh: { ...record, name: "p.stl" }, supportEdits: [], bytes, sourcePos: cube(10),

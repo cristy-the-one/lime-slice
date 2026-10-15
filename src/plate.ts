@@ -15,6 +15,7 @@
  */
 import type { SavedTree } from "./model-tree-file.ts";
 import { IDENTITY_POSE, boxUnder, duplicatePose, inversePose, isIdentity, seatLift, thenPose, type Affine } from "./model-space.ts";
+import { isIdentityFrame, shiftWorkplane, type Workplane } from "./workplane.ts";
 import type { EditEntry } from "./support-edit-list.ts";
 import {
   dropEmptyReinforce,
@@ -107,6 +108,8 @@ export interface PlateFileObject {
   modelTree?: SavedTree<{ name: string; bytesBase64?: string; byteLength: number; hash: string }>;
   /** Optional pose from the object's CAD frame into Model's shared space. Omitted for identity, which is how an older file reads. */
   modelPose?: Affine;
+  /** Optional local U, V, W frame. Omitted for the untouched global frame, which is how an older file reads. */
+  workplane?: Workplane;
   /** Optional: how far the mesh was lowered onto Z = 0 when it was read. Omitted while unknown. */
   meshSeatMm?: number;
 }
@@ -137,6 +140,8 @@ export interface PlateObject {
   modelTree?: string;
   /** From the object's CAD frame into Model's shared space. Absent is identity: where its file put it. The plate never reads it. */
   modelPose?: Affine;
+  /** Local U, V, W frame in model space. Absent is the global frame. The slicer never reads it. */
+  workplane?: Workplane;
 }
 
 export interface PlateState {
@@ -162,6 +167,7 @@ export interface PlateSnapObject {
   brep?: ArrayBuffer;
   modelTree?: string;
   modelPose?: Affine;
+  workplane?: Workplane;
 }
 
 export interface PlateSnap {
@@ -265,6 +271,29 @@ export function modelPoseOf(obj: { modelPose?: Affine }): Affine {
   return obj.modelPose ?? IDENTITY_POSE;
 }
 
+function copyWorkplane(plane: Workplane): Workplane {
+  return { source: plane.source, origin: [...plane.origin], turn: [...plane.turn] };
+}
+
+/** The object's workplane. Absent is the global frame, U = X, V = Y, W = Z. */
+export function workplaneOf(obj: { workplane?: Workplane }): Workplane {
+  return obj.workplane ? copyWorkplane(obj.workplane) : { source: "global", origin: [0, 0, 0], turn: [0, 0, 0] };
+}
+
+/** The plate with object `id` on `plane`. The untouched global frame drops the key. */
+export function withWorkplane(plate: PlateState, id: string, plane: Workplane): PlateState {
+  return {
+    ...plate,
+    objects: plate.objects.map((obj) => {
+      if (obj.id !== id) return obj;
+      const next = { ...obj };
+      if (isIdentityFrame(plane) && plane.source === "global") delete next.workplane;
+      else next.workplane = copyWorkplane(plane);
+      return next;
+    }),
+  };
+}
+
 /** The object's plate mesh into model space: up to its CAD frame by its seat, then its pose. An unknown seat counts as 0. */
 export function meshToModel(obj: PlateObject): Affine {
   const seat = meshSeat(obj.bytes) ?? 0;
@@ -337,6 +366,7 @@ export function plateFileIsVersion2(objects: {
   brep?: unknown;
   modelTree?: unknown;
   modelPose?: Affine;
+  workplane?: Workplane;
 }[]): boolean {
   if (objects.length !== 1) return objects.length > 1;
   const one = objects[0];
@@ -347,7 +377,8 @@ export function plateFileIsVersion2(objects: {
     dropEmptyReinforce(one?.reinforcement ?? []).length > 0 ||
     one?.brep != null ||
     one?.modelTree != null ||
-    !isIdentity(one?.modelPose)
+    !isIdentity(one?.modelPose) ||
+    one?.workplane != null
   );
 }
 
@@ -528,6 +559,10 @@ export function addedCopy(plate: PlateState): PlateState | null {
     brep: source.brep ? source.brep.slice(0) : undefined,
     modelPose: duplicatePose(modelPoseOf(source), boxUnder(boundsOf(source.sourcePos), meshToModel(source))),
   };
+  if (source.workplane) {
+    const from = modelPoseOf(source);
+    copy.workplane = shiftWorkplane(source.workplane, [copy.modelPose.t[0] - from.t[0], copy.modelPose.t[1] - from.t[1], copy.modelPose.t[2] - from.t[2]]);
+  }
   // The copy's edits are its own, so Model opens a tree of its own for it.
   delete copy.modelTree;
   hold(copy);
@@ -612,6 +647,7 @@ export function addedSplit(plate: PlateState, mesh: IncomingMesh): PlateState | 
     settings: {},
     // Cut from the parent's solid in the parent's own frame, the piece sits in model space where it was cut.
     ...(parent.modelPose ? { modelPose: parent.modelPose } : {}),
+    ...(parent.workplane ? { workplane: copyWorkplane(parent.workplane) } : {}),
   };
   hold(draft);
   return { objects: [...plate.objects, draft], selectedId: parent.id };
@@ -709,6 +745,7 @@ export function snapPlate(plate: PlateState): PlateSnap {
       brep: obj.brep,
       modelTree: obj.modelTree,
       ...(obj.modelPose ? { modelPose: obj.modelPose } : {}),
+      ...(obj.workplane ? { workplane: copyWorkplane(obj.workplane) } : {}),
     })),
   };
 }
@@ -738,6 +775,7 @@ export function revivePlate(snap: PlateSnap): PlateState | null {
       brep: row.brep,
       modelTree: row.modelTree,
       ...(row.modelPose ? { modelPose: row.modelPose } : {}),
+      ...(row.workplane ? { workplane: copyWorkplane(row.workplane) } : {}),
     });
   }
   const selectedId = objects.some((obj) => obj.id === snap.selectedId) ? snap.selectedId : objects[0]?.id ?? null;
@@ -765,6 +803,7 @@ export function assemblePlate(rows: Array<PlateFileObject & { bytes: ArrayBuffer
       settings: { ...(row.settings ?? {}) },
       brep: row.brepBytes,
       ...(row.modelPose && !isIdentity(row.modelPose) ? { modelPose: row.modelPose } : {}),
+      ...(row.workplane && !(isIdentityFrame(row.workplane) && row.workplane.source === "global") ? { workplane: copyWorkplane(row.workplane) } : {}),
     };
     if (row.meshSeatMm !== undefined) setMeshSeat(row.bytes, row.meshSeatMm);
     // A Model step's mesh was saved as an STL already lowered, so reading it says 0; from a file before seats, Model learns it again.
@@ -1100,6 +1139,7 @@ export function replaceWithShells(plate: PlateState, id: string, worlds: readonl
       reinforcement: [],
       settings: { ...parent.settings },
       ...(isIdentity(bedToModel) ? {} : { modelPose: bedToModel }),
+      ...(parent.workplane ? { workplane: copyWorkplane(parent.workplane) } : {}),
     };
     setMeshSeat(piece.bytes, 0);
     hold(piece);

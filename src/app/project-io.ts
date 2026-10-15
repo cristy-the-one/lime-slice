@@ -198,6 +198,7 @@ function fileObjects({ trees, tools }: Awaited<ReturnType<typeof historyToSave>>
     if (reinforce.length > 0) row.reinforcement = reinforce.map((reg) => structuredClone(reg));
     if (obj.brep) row.brep = record(stepFileName(obj.fileName), obj.brep);
     if (obj.modelPose) row.modelPose = { m: [...obj.modelPose.m], t: [...obj.modelPose.t] };
+    if (obj.workplane) row.workplane = { source: obj.workplane.source, origin: [...obj.workplane.origin], turn: [...obj.workplane.turn] };
     const seat = meshSeat(obj.bytes);
     if (seat !== undefined) row.meshSeatMm = seat;
     const saved = trees.get(obj.id);
