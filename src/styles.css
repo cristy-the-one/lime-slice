@@ -679,7 +679,7 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .model-fields .scrub-label { width: fit-content; color: var(--text-dim); }
 .model-panel .modes { margin-top: var(--space-2); }
 .model-panel .model-plane-modes { margin: 0 0 var(--space-2); }
-.model-edit-head { margin: 0 0 var(--space-2); color: var(--text); font-size: var(--fs-2); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-edit-head { margin: 0 0 var(--space-2); color: var(--text); font-size: var(--fs-2); font-weight: 600; letter-spacing: 0; text-transform: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-edit-head[hidden] { display: none; }
 .model-note { margin: var(--space-2) 0 0; color: var(--text-dim); font-size: var(--fs-2); }
 .model-note.is-bad { color: var(--danger); }
