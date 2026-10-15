@@ -16,6 +16,8 @@ pub struct MeshPreview {
     pub max: [f64; 3],
     /// XYZ triples, millimetres, already seated on Z = 0.
     pub positions: Vec<f32>,
+    /// How far the file was lowered to seat it: its own Z is `positions` Z plus this. X and Y are the file's.
+    pub seat_mm: f64,
 }
 
 pub fn mesh_preview(filename: &str, bytes: &[u8]) -> Result<MeshPreview, String> {
@@ -27,7 +29,11 @@ pub fn mesh_preview_tol(
     bytes: &[u8],
     step_tolerance_mm: f64,
 ) -> Result<MeshPreview, String> {
-    let mesh = load_slice_mesh_tol(filename, bytes, false, step_tolerance_mm)?;
+    let mut mesh = load_slice_mesh_tol(filename, bytes, true, step_tolerance_mm)?;
+    let (raw_min, _) = mesh.bounds().ok_or("empty mesh")?;
+    mesh.settle_on_bed();
+    // `settle_on_bed` leaves a mesh within a nanometre of the bed where it is.
+    let seat_mm = if raw_min[2].abs() < 1e-9 { 0.0 } else { raw_min[2] };
     let (min, max) = mesh.bounds().ok_or("empty mesh")?;
     let mut positions = Vec::with_capacity(mesh.triangles.len() * 9);
     for tri in &mesh.triangles {
@@ -42,6 +48,7 @@ pub fn mesh_preview_tol(
         min,
         max,
         positions,
+        seat_mm,
     })
 }
 
@@ -486,6 +493,29 @@ fn unit_scale(unit: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ascii_stl(z: [f64; 3]) -> Vec<u8> {
+        format!(
+            "solid t\nfacet normal 0 0 1\nouter loop\nvertex 1.5 2 {}\nvertex 11.5 2 {}\nvertex 1.5 12 {}\nendloop\nendfacet\nendsolid t\n",
+            z[0], z[1], z[2]
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn mesh_preview_reports_how_far_it_lowered_the_file() {
+        let high = mesh_preview("high.stl", &ascii_stl([712.5, 713.0, 720.0])).unwrap();
+        assert_eq!(high.seat_mm, 712.5);
+        assert_eq!(high.min[2], 0.0);
+        assert_eq!(&high.positions[..3], &[1.5, 2.0, 0.0]);
+        let low = mesh_preview("low.stl", &ascii_stl([-3.0, -2.0, 5.0])).unwrap();
+        assert_eq!(low.seat_mm, -3.0);
+        assert_eq!(low.positions[8], 8.0);
+        let seated = mesh_preview("bed.stl", &ascii_stl([0.0, 1.0, 2.0])).unwrap();
+        assert_eq!(seated.seat_mm, 0.0);
+        let json = serde_json::to_value(&high).unwrap();
+        assert_eq!(json["seatMm"], 712.5);
+    }
 
     #[test]
     fn parse_3mf_resets_vertices_per_object_and_applies_build_transforms() {

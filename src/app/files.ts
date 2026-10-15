@@ -99,7 +99,7 @@ export async function previewRemote(name: string, bytes: ArrayBuffer, stepTolera
   const payload = { filename: name, dataB64: bytesToBase64(new Uint8Array(bytes)), stepToleranceMm };
   const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   try {
-    let body: { positions?: number[]; error?: string };
+    let body: { positions?: number[]; seatMm?: number; error?: string };
     if (tauri) {
       const { invoke } = await import("@tauri-apps/api/core");
       body = JSON.parse(await invoke<string>("preview_mesh", { payload: JSON.stringify(payload) }));
@@ -109,6 +109,8 @@ export async function previewRemote(name: string, bytes: ArrayBuffer, stepTolera
       if (!res.ok) throw new Error(body.error || "Could not preview this mesh.");
     }
     if (!body.positions) throw new Error(body.error || "Could not preview this mesh.");
+    // How far the reader lowered the file, so model space puts it back. An engine that does not say leaves it to Model.
+    if (typeof body.seatMm === "number") setMeshSeat(bytes, body.seatMm);
     return new Float32Array(body.positions);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Could not preview this mesh.";

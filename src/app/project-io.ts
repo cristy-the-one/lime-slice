@@ -5,6 +5,7 @@ import { emptyOverrides, projectOverrides } from "../overrides.ts";
 import {
   assemblePlate,
   meshSeat,
+  setMeshSeat,
   plateFileIsVersion2,
   settingsEmpty,
   type PlateFileObject,
@@ -222,6 +223,8 @@ async function loadPlateObjects(objects: PlateFileObject[]) {
     let sourcePos = needsEngine(row.mesh.name) ? null : stlPositions(copy);
     if (!sourcePos && state.sourcePos && state.mesh && row.mesh.hash === hashOf(state.mesh.bytes) && row.mesh.name === state.mesh.name) {
       sourcePos = state.sourcePos;
+      const seat = meshSeat(state.mesh.bytes);
+      if (seat !== undefined) setMeshSeat(copy, seat);
     }
     if (!sourcePos) sourcePos = await previewRemote(row.mesh.name, copy);
     if (!sourcePos) return `Could not read ${row.name}.`;

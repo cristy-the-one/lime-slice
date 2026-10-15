@@ -752,8 +752,8 @@ export function assemblePlate(rows: Array<PlateFileObject & { bytes: ArrayBuffer
       ...(row.modelPose && !isIdentity(row.modelPose) ? { modelPose: row.modelPose } : {}),
     };
     if (row.meshSeatMm !== undefined) setMeshSeat(row.bytes, row.meshSeatMm);
-    // A solid's mesh was saved already lowered, so reading it says 0; a file from before seats lets Model learn it again.
-    else if (row.brep || row.modelTree) seats.delete(meshTokenOf(row.bytes));
+    // A Model step's mesh was saved as an STL already lowered, so reading it says 0; from a file before seats, Model learns it again.
+    else if ((row.brep || row.modelTree) && /\.stl$/i.test(row.mesh.name)) seats.delete(meshTokenOf(row.bytes));
     hold(obj);
     return obj;
   });

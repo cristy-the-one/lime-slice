@@ -676,7 +676,14 @@ html.layout-compact .model-panel {
 html.layout-compact .model-fields { display: flex; flex-wrap: nowrap; overflow-x: auto; }
 html.layout-compact .model-fields label { flex: 0 0 84px; }
 html.layout-compact .model-fields label[data-wide] { flex-basis: 120px; }
-html.layout-compact .model-actions { margin-right: 116px; }
+/* The sheet scrolls its fields and note, and keeps Cancel, Done, and Apply on its bottom edge in reach. */
+html.layout-compact .model-actions {
+  position: sticky;
+  bottom: calc(-1 * var(--space-2));
+  margin: var(--space-2) 116px calc(-1 * var(--space-2)) 0;
+  padding: var(--space-1) 0 var(--space-2);
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+}
 html.layout-compact .model-actions .btn { min-height: 36px; min-width: 72px; }
 /* The dock sits right of the middle at any phone size, so half the width keeps the chip and the readout clear of it. */
 html.layout-compact .model-foot { order: -1; margin: 128px 8px 8px; max-width: calc(50% - 16px); }

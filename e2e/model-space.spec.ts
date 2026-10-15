@@ -43,12 +43,12 @@ async function openFiles(page: Page, files: Record<string, MockSolid>): Promise<
   const named = (name: unknown) => files[String(name)]!;
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
-  // As the slicer does, the mesh it reads from a STEP sits on Z = 0.
+  // As the slicer does, the mesh it reads from a STEP sits on Z = 0, and it says how far it lowered the file.
   const seated = (positions: number[]) => {
     const minZ = Math.min(...positions.filter((_, i) => i % 3 === 2));
-    return positions.map((value, i) => (i % 3 === 2 ? value - minZ : value));
+    return { positions: positions.map((value, i) => (i % 3 === 2 ? value - minZ : value)), seatMm: minZ };
   };
-  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: seated(named(route.request().postDataJSON().filename).positions) } }));
+  await page.route("**/api/mesh", (route) => route.fulfill({ json: seated(named(route.request().postDataJSON().filename).positions) }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   const tree = await mockModelTree(page, { open: (request) => named(request.filename), apply: built });
   await page.goto("/");
@@ -138,15 +138,27 @@ test("two STEP files 100 mm apart in their own coordinates show 100 mm apart", a
   expect(Object.values(await contextBoxes(page))).toEqual([[100, 0, 0, 140, 30, 20]]);
 });
 
-test("a STEP the slicer lowered onto the bed goes back to its own Z once Model has opened it", async ({ page }) => {
+test("a STEP the slicer lowered onto the bed sits at its own Z in model space before Model has opened it", async ({ page }) => {
   await openFiles(page, { "low.step": boxSolid([40, 30, 20]), "high.step": boxSolid([40, 30, 20], [100, 0, 50]) });
-  // The slicer's read of the file does not say how far it lowered it, so until Model opens it, it sits on Z = 0.
-  expect(Object.values(await contextBoxes(page))).toEqual([[100, 0, 0, 140, 30, 20]]);
+  expect(Object.values(await contextBoxes(page))).toEqual([[100, 0, 50, 140, 30, 70]]);
   await page.locator("[data-plate-select]").nth(1).click();
   await expect(canvas(page)).toHaveAttribute("data-solid", "100.00,0.00,50.00,140.00,30.00,70.00");
+});
+
+test("pieces Separated from a raised STEP assembly sit at their own Z in model space", async ({ page }) => {
+  const lower = boxSolid([20, 20, 10], [100, 0, 50]);
+  const upper = boxSolid([20, 20, 10], [140, 0, 65]);
+  const assembly = { ...lower, positions: [...lower.positions, ...upper.positions], triangles: [...lower.triangles, ...upper.triangles.map((face) => face + 6)] };
+  await openFiles(page, { "base.step": boxSolid([40, 30, 20]), "asm.step": assembly });
+  await page.locator("#tabPrepare").click();
+  await page.locator("[data-plate-select]").nth(1).click();
+  await page.locator("#separateShells").click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(3);
   await page.locator("[data-plate-select]").nth(0).click();
-  await expect(canvas(page)).toHaveAttribute("data-solid", "0.00,0.00,0.00,40.00,30.00,20.00");
-  expect(Object.values(await contextBoxes(page))).toEqual([[100, 0, 50, 140, 30, 70]]);
+  await page.locator("#tabModel").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume 24000");
+  const boxes = Object.values(await contextBoxes(page)).sort((a, b) => a[0]! - b[0]!);
+  expect(boxes).toEqual([[100, 0, 50, 120, 20, 60], [140, 0, 65, 160, 20, 75]]);
 });
 
 test("Place moves the open object in model space and leaves the plate and its mesh alone", async ({ page }) => {
@@ -274,6 +286,36 @@ for (const [width, height] of [[960, 640], [1280, 800], [1440, 900]] as const) {
     expect(reset.x + reset.width, "left of the view cube").toBeLessThan(view.x + view.width - 128);
   });
 }
+
+test.describe("phone", () => {
+  test.use({ hasTouch: true, isMobile: true });
+
+  for (const [width, height] of [[390, 844], [844, 390]] as const) {
+    test(`Place's Done stays inside the sheet and on screen, and closes it, at ${width}×${height}`, async ({ page }) => {
+      const solid = boxSolid([40, 30, 20]);
+      await page.setViewportSize({ width, height });
+      await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+      await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: solid.positions, seatMm: 0 } }));
+      await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
+      await mockModelTree(page, { open: () => solid });
+      await page.goto("/?layout=compact");
+      await autoSliceOff(page);
+      await page.locator("#file").setInputFiles({ name: "a.step", mimeType: "model/step", buffer: STEP });
+      await expect(page.locator("#objectList .obj").first()).toBeVisible();
+      await page.locator("#compactTabs [data-tab=model]").click();
+      await expect(page.locator("#modelReadout")).toContainText("Volume");
+      await page.locator("#modelToolPlace").click();
+      const done = page.locator("#modelCancel");
+      await expect(done).toHaveText("Done");
+      const button = (await done.boundingBox())!;
+      const sheet = (await page.locator("#modelPanel").boundingBox())!;
+      expect(button.y >= sheet.y && button.y + button.height <= sheet.y + sheet.height + 0.5, "inside the sheet").toBe(true);
+      expect(button.x >= 0 && button.y >= 0 && button.x + button.width <= width && button.y + button.height <= height, "on screen").toBe(true);
+      await done.click();
+      await expect(page.locator("#modelPanel")).toBeHidden();
+    });
+  }
+});
 
 test("Frame in the Objects list frames that object in Model and stays in Model", async ({ page }) => {
   await openFiles(page, { "left.step": boxSolid([40, 30, 20]), "right.step": boxSolid([40, 30, 20], [200, 0, 0]) });
