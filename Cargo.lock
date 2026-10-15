@@ -2121,21 +2121,21 @@ dependencies = [
 
 [[package]]
 name = "lime-model"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "lime-model-load"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "libloading 0.8.9",
 ]
 
 [[package]]
 name = "lime-model-occt"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "base64 0.22.1",
  "cc",
@@ -2146,7 +2146,7 @@ dependencies = [
 
 [[package]]
 name = "lime-slice"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -2158,7 +2158,7 @@ dependencies = [
 
 [[package]]
 name = "lime-slice-core"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "base64 0.22.1",
  "clipper2",
@@ -2176,7 +2176,7 @@ dependencies = [
 
 [[package]]
 name = "lime-slice-desktop"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "base64 0.22.1",
  "lime-model-load",
