@@ -157,6 +157,20 @@ fn a_belt_on_firmware_without_arcs_writes_no_arcs() {
 }
 
 #[test]
+fn a_belt_on_another_axis_says_why_it_has_no_arcs() {
+    let sideways = json!({ "belt": {
+        "angleDeg": 45.0, "axis": "y", "direction": 1, "widthMm": 250.0, "copies": 1, "gapMm": 5.0
+    } });
+    let out = slice(printer(json!({ "firmwareArcs": true })), sideways);
+    assert_eq!(arc_lines(&out.gcode), 0);
+    assert!(
+        features(&out.gcode).ends_with("; arcs off (belt axis is not Z)"),
+        "{}",
+        features(&out.gcode)
+    );
+}
+
+#[test]
 fn an_omitted_firmware_arcs_stays_off_the_wire() {
     let req = request(printer(json!({})), json!({}));
     let printer = req.printer.as_ref().unwrap();

@@ -154,8 +154,8 @@ enum Cmd {
         /// Klipper junction deviation in millimetres.
         #[arg(long, default_value_t = 0.02)]
         junction_deviation: f64,
-        /// `klipper` times the print with Klipper's toolhead model at its default limits.
-        /// Left out, the generic estimator runs.
+        /// `klipper` times the print with Klipper's toolhead model at its default limits,
+        /// and writes no arcs unless `--firmware-arcs true`. Left out, the generic estimator runs.
         #[arg(long)]
         firmware: Option<String>,
         /// Whether the firmware runs G2/G3. Left out, `--firmware klipper` means

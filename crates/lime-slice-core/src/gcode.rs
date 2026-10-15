@@ -898,9 +898,9 @@ impl EmitCfg {
         );
         // The one gate: a firmware that skips G2/G3 gets none, whatever the
         // request's `arcFit` says. Every emit path builds its config here.
-        let firmware = profile.accepts_arcs();
-        let arc_note = arc_note(profile.firmware_arcs.is_some(), arc_fit, firmware, plane);
-        let arc_fit = arc_fit && firmware && plane;
+        let takes_arcs = profile.accepts_arcs();
+        let arc_note = arc_note(profile.firmware_arcs.is_some(), arc_fit, takes_arcs, plane);
+        let arc_fit = arc_fit && takes_arcs && plane;
         Self {
             classic_estimator,
             junction_deviation,
@@ -1127,8 +1127,8 @@ pub(crate) fn scans_in_parallel(
 /// Whether the file has arcs, for the header's features line. A request that
 /// names the firmware's arcs, as the app's always does, is told either way. One
 /// that names nothing keeps the header it had, unless its firmware turned arcs off.
-fn arc_note(named: bool, asked: bool, firmware: bool, plane: bool) -> &'static str {
-    match (asked, firmware, plane) {
+fn arc_note(named: bool, asked: bool, takes_arcs: bool, plane: bool) -> &'static str {
+    match (asked, takes_arcs, plane) {
         (true, false, _) => "; arcs off (firmware takes no G2/G3)",
         _ if !named => "",
         (true, true, true) => "; arcs on",
@@ -3106,6 +3106,24 @@ fn circumcenter(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> Option<[f64; 2]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_arc_note_names_why_arcs_are_off() {
+        // (named, asked, takes_arcs, plane)
+        let firmware = "; arcs off (firmware takes no G2/G3)";
+        assert_eq!(arc_note(false, true, false, true), firmware);
+        assert_eq!(arc_note(true, true, false, false), firmware);
+        assert_eq!(arc_note(false, true, true, true), "");
+        assert_eq!(arc_note(false, false, false, true), "");
+        assert_eq!(arc_note(false, true, true, false), "");
+        assert_eq!(arc_note(true, true, true, true), "; arcs on");
+        assert_eq!(
+            arc_note(true, true, true, false),
+            "; arcs off (belt axis is not Z)"
+        );
+        assert_eq!(arc_note(true, false, false, true), "; arcs off");
+        assert_eq!(arc_note(true, false, true, true), "; arcs off");
+    }
 
     fn kin(dist: f64, cruise: f64, accel: f64, dir: [f64; 2]) -> KinMove {
         KinMove {
