@@ -6,13 +6,15 @@
 import { DOCK_KNOB_REACH } from "./gizmo-math.ts";
 import { SPLIT_TILT_MAX_DEG, type SplitPlan } from "./model-plane.ts";
 import type { PrimitiveKind } from "./model-primitive.ts";
+import { turnDir } from "./model-space.ts";
+import { axesOf, framePose, isIdentityFrame, planePoint, type Workplane } from "./workplane.ts";
 
 export type Vec3 = [number, number, number];
 
-export type ModelTool = "create" | "boolean" | "split" | "fillet" | "chamfer" | "hole" | "scale" | "measure" | "place";
+export type ModelTool = "create" | "boolean" | "split" | "fillet" | "chamfer" | "hole" | "scale" | "measure" | "place" | "workplane";
 
 /** Every tool on the Model toolbar. A tool that is not here has no drag, and the checklist test fails. */
-export const MODEL_TOOLS: readonly ModelTool[] = ["create", "boolean", "split", "fillet", "chamfer", "hole", "scale", "measure", "place"];
+export const MODEL_TOOLS: readonly ModelTool[] = ["create", "boolean", "split", "fillet", "chamfer", "hole", "scale", "measure", "place", "workplane"];
 
 /** A primitive's size fields, whichever kind shows them. New solid and Boolean share them. */
 const SIZE_FIELDS = ["modelDx", "modelDy", "modelDz", "modelTopX", "modelRadius", "modelTopR", "modelTube", "modelInnerR", "modelSides", "modelAcross", "modelHeight"];
@@ -28,6 +30,7 @@ export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
   scale: ["modelFactor"],
   measure: ["modelAx", "modelAy", "modelAz", "modelBx", "modelBy", "modelBz"],
   place: ["modelPlaceX", "modelPlaceY", "modelPlaceZ", "modelPlaceRx", "modelPlaceRy", "modelPlaceRz"],
+  workplane: ["modelWpX", "modelWpY", "modelWpZ", "modelWpRx", "modelWpRy", "modelWpRz"],
 };
 
 /**
@@ -56,6 +59,8 @@ export interface DragHandle {
   unit: "mm" | "°" | "×" | "count";
   /** The fields' values when the handle was placed. */
   values: number[];
+  /** A `surface` handle's fields are this frame's U, V, W, so the point under the pointer is written in it. */
+  frame?: Workplane;
 }
 
 /**
@@ -78,6 +83,11 @@ export interface DragContext {
   holeAxis?: Vec3;
   /** The hole's Through all and Counterbore boxes. Through all has no depth to drag; a counterbore adds two knobs. */
   hole?: { through: boolean; counterbore: boolean };
+  /**
+   * The workplane in model space: Boolean's and Hole's origin fields are its U, V, W, and Split's X, Y, Z are U, V, W.
+   * Absent is the global frame. The Workplane tool's own arrows slide its origin along U, V, W.
+   */
+  frame?: Workplane;
 }
 
 const X: Vec3 = [1, 0, 0];
@@ -99,6 +109,7 @@ function specsFor(tool: ModelTool | null, ctx: DragContext): Spec[] {
   if (tool === "scale") return scaleHandles(ctx);
   if (tool === "measure") return measureHandles(ctx);
   if (tool === "place") return placeHandles(ctx);
+  if (tool === "workplane") return workplaneHandles(ctx);
   return [];
 }
 
@@ -122,30 +133,41 @@ const KNOB = onDock(DOCK_KNOB_REACH);
 /** A counterbore's depth knob, on the drill axis inside the hole's own, where no arrow or ring runs. */
 const BORE_DEPTH_SEAT = onDock(DOCK_KNOB_REACH * 0.55);
 
-/** Three dock arrows along model X, Y and Z, one field each. */
-function moveArrows(fields: readonly [string, string, string], prefix: string): Spec[] {
-  return [
-    axisHandle(`${prefix}-x`, "arrow", fields[0], onDock(0), X, "x", "Move X"),
-    axisHandle(`${prefix}-y`, "arrow", fields[1], onDock(0), Y, "y", "Move Y"),
-    axisHandle(`${prefix}-z`, "arrow", fields[2], onDock(0), Z, "z", "Move Z"),
-  ];
+/** The frame's axes, and whether its numbers are local ones (U, V, W) rather than model space's (X, Y, Z). */
+function frameAxes(frame: Workplane | undefined): { axes: [Vec3, Vec3, Vec3]; local: boolean } {
+  if (!frame || isIdentityFrame(frame)) return { axes: [X, Y, Z], local: false };
+  return { axes: axesOf(frame), local: true };
 }
 
-/** Three dock rings for Rx, Ry and Rz, each about the axis that changes only its own angle. */
-function turnRings(fields: readonly [string, string, string], turn: Vec3): Spec[] {
-  const gimbal = turnGimbal(turn);
+/** `dir`, given in the frame's U, V, W, in model space. */
+function alongFrame(frame: Workplane | undefined, dir: Vec3): Vec3 {
+  return frameAxes(frame).local ? turnDir(framePose(frame!), dir) : dir;
+}
+
+/** Three dock arrows, one field each, along the frame's axes: X, Y, Z, or a workplane's U, V, W. */
+function moveArrows(fields: readonly [string, string, string], prefix: string, frame?: Workplane): Spec[] {
+  const { axes, local } = frameAxes(frame);
+  const names = local ? "UVW" : "XYZ";
+  return fields.map((field, i) => axisHandle(`${prefix}-${"xyz"[i]}`, "arrow", field, onDock(0), axes[i]!, (["x", "y", "z"] as const)[i]!, `Move ${names[i]}`));
+}
+
+/** Three dock rings, each about the axis that changes only its own angle, named by the frame's axes. */
+function turnRings(fields: readonly [string, string, string], turn: Vec3, frame?: Workplane): Spec[] {
+  const names = frameAxes(frame).local ? "UVW" : "XYZ";
+  const gimbal = turnGimbal(turn).map((dir) => alongFrame(frame, dir)) as [Vec3, Vec3, Vec3];
   const colors = ["x", "y", "z"] as const;
   return fields.map((field, i): Spec => ({
     id: `turn-${field}`, kind: "ring", look: "ring", fields: [field], seat: onDock(0), dir: gimbal[i]!, rate: 1, step: 15,
-    color: colors[i]!, label: `Turn ${"XYZ"[i]}`, unit: "°",
+    color: colors[i]!, label: `Turn ${names[i]}`, unit: "°",
   }));
 }
 
 function booleanHandles(ctx: DragContext): Spec[] {
   const r = ctx.read;
   const turn: Vec3 = ctx.primitive === "sphere" ? [0, 0, 0] : [r("modelRx"), r("modelRy"), r("modelRz")];
-  const out: Spec[] = [...moveArrows(["modelX", "modelY", "modelZ"], "move"), ...sizeKnobs(ctx, turnedAxes(turn))];
-  if (ctx.primitive !== "sphere") out.push(...turnRings(["modelRx", "modelRy", "modelRz"], turn));
+  const sizes = turnedAxes(turn).map((dir) => alongFrame(ctx.frame, dir)) as [Vec3, Vec3, Vec3];
+  const out: Spec[] = [...moveArrows(["modelX", "modelY", "modelZ"], "move", ctx.frame), ...sizeKnobs(ctx, sizes)];
+  if (ctx.primitive !== "sphere") out.push(...turnRings(["modelRx", "modelRy", "modelRz"], turn, ctx.frame));
   return out;
 }
 
@@ -186,6 +208,20 @@ function sizeKnobs(ctx: DragContext, axes: [Vec3, Vec3, Vec3]): Spec[] {
   }
 }
 
+/**
+ * The workplane's origin and turn, in model space. Each arrow slides the origin, all three of its fields, along the
+ * frame's own U, V, or W; the rings turn it as Place's turn the part.
+ */
+function workplaneHandles(ctx: DragContext): Spec[] {
+  const r = ctx.read;
+  const { axes } = frameAxes(ctx.frame);
+  const slides = axes.map((dir, i): Spec => ({
+    id: `wp-${"uvw"[i]}`, kind: "axis", look: "arrow", fields: ["modelWpX", "modelWpY", "modelWpZ"], seat: onDock(0), dir, rate: 1, step: 1,
+    color: (["x", "y", "z"] as const)[i]!, label: `Move ${"UVW"[i]}`, unit: "mm",
+  }));
+  return [...slides, ...turnRings(["modelWpRx", "modelWpRy", "modelWpRz"], [r("modelWpRx"), r("modelWpRy"), r("modelWpRz")])];
+}
+
 /** Place moves and turns the open object in model space, from the dock like a primitive. */
 function placeHandles(ctx: DragContext): Spec[] {
   const r = ctx.read;
@@ -210,7 +246,8 @@ function splitHandles(ctx: DragContext): Spec[] {
   if (!plan) return [];
   const along = dot(plan.base.dir, plan.normal);
   const arrow = along < 0 ? scale(plan.normal, -1) : plan.normal;
-  const label = plan.base.mode === "face" ? "Offset" : `Plane ${plan.base.mode.toUpperCase()}`;
+  const names = frameAxes(ctx.frame).local ? "UVW" : "XYZ";
+  const label = plan.base.mode === "face" ? "Offset" : `Plane ${names["xyz".indexOf(plan.base.mode)]}`;
   const limits = plan.range ? { min: plan.range.min, max: plan.range.max } : {};
   return [
     axisHandle("plane", "arrow", "modelPlane", onFeature(plan.origin), arrow, nearestAxisColor(arrow), label, { rate: 1 / Math.max(Math.abs(along), 1e-6), ...limits }),
@@ -228,17 +265,22 @@ function blendHandles(tool: "fillet" | "chamfer", ctx: DragContext): Spec[] {
 
 function holeHandles(ctx: DragContext): Spec[] {
   const r = ctx.read;
-  const top: Vec3 = [r("modelX"), r("modelY"), r("modelZ")];
+  const typed: Vec3 = [r("modelX"), r("modelY"), r("modelZ")];
+  const { axes, local } = frameAxes(ctx.frame);
+  const top = local ? planePoint(ctx.frame!, typed) : typed;
   const axis = drillAxis(ctx.holeAxis);
   const side = drillSide(axis);
   const slide = (id: string, dir: Vec3): Spec => ({
     id, kind: "axis", look: "arrow", fields: ["modelX", "modelY", "modelZ"], seat: onDock(0), dir, rate: 1, step: 1,
     color: nearestAxisColor(dir), label: "Move", unit: "mm",
   });
+  // On a workplane the fields are U, V, W: one arrow each for U and V, so a slide never writes a model-space step into a local number.
+  const moves = local
+    ? [axisHandle("hole-move-u", "arrow", "modelX", onDock(0), axes[0], "x", "Move U"), axisHandle("hole-move-v", "arrow", "modelY", onDock(0), axes[1], "y", "Move V")]
+    : [slide("hole-move-u", facingUp(side)), slide("hole-move-v", facingUp(cross(axis, side)))];
   return [
-    { id: "hole-origin", kind: "surface", look: "dot", fields: ["modelX", "modelY", "modelZ"], seat: onFeature(top), dir: Z, rate: 1, step: 1, color: "accent", label: "Origin", unit: "mm" },
-    slide("hole-move-u", facingUp(side)),
-    slide("hole-move-v", facingUp(cross(axis, side))),
+    { id: "hole-origin", kind: "surface", look: "dot", fields: ["modelX", "modelY", "modelZ"], seat: onFeature(top), dir: Z, rate: 1, step: 1, color: "accent", label: "Origin", unit: "mm", ...(local ? { frame: ctx.frame } : {}) },
+    ...moves,
     axisHandle("hole-radius", "knob", "modelHoleR", KNOB, side, "accent", "Radius", { min: 0.1, step: 0.5 }),
     ...(ctx.hole?.through ? [] : [axisHandle("hole-depth", "knob", "modelHoleD", KNOB, axis, "z", "Depth", { min: 0.1 })]),
     // The counterbore's radius takes the next axis, as a primitive's second size does; its depth sits on the drill

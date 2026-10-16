@@ -139,14 +139,15 @@ export function mountMarkup(root: HTMLElement) {
                   <button class="model-tool" id="modelToolScale" type="button" data-tool="scale" aria-pressed="false" data-tip="Scale the solid about its centre">Scale</button>
                   <button class="model-tool" id="modelToolMeasure" type="button" data-tool="measure" aria-pressed="false" data-tip="Drag two points on the solid and read the distance">Measure</button>
                   <button class="model-tool" id="modelToolPlace" type="button" data-tool="place" aria-pressed="false" data-tip="Move and turn this object among the others. The plate stays as it is">Place</button>
+                  <button class="model-tool" id="modelToolWorkplane" type="button" data-tool="workplane" aria-pressed="false" data-tip="Set the U, V, W frame Hole, Boolean, and Split are typed in">Workplane</button>
                   <span class="model-sep"></span>
-                  <button class="model-tool" id="modelStep" type="button" data-tip="Write this solid as AP214 STEP">STEP</button>
-                  <button class="model-tool" id="modelUndo" type="button" disabled data-tip="Undo the last solid edit">Undo</button>
-                  <button class="model-tool" id="modelRedo" type="button" disabled data-tip="Redo the last solid edit">Redo</button>
+                  <button class="model-tool is-icon" id="modelStep" type="button" data-tip="Write this solid as AP214 STEP">STEP</button>
+                  <button class="model-tool is-icon" id="modelUndo" type="button" disabled data-tip="Undo the last solid edit">Undo</button>
+                  <button class="model-tool is-icon" id="modelRedo" type="button" disabled data-tip="Redo the last solid edit">Redo</button>
                   <button class="model-tool" id="modelHistoryOpen" type="button" aria-controls="modelHistory" aria-expanded="false">History</button>
                 </div>
                 <span class="model-sep"></span>
-                <button class="model-tool" id="modelBedToggle" type="button" aria-pressed="true" data-tip="Show the bed and build volume for size">Bed</button>
+                <button class="model-tool is-icon" id="modelBedToggle" type="button" aria-pressed="true" data-tip="Show the bed and build volume for size">Bed</button>
               </div>
               <span class="model-paused" id="modelPaused">Slicing paused while modeling</span>
             </div>
@@ -161,6 +162,11 @@ export function mountMarkup(root: HTMLElement) {
             <div class="model-side">
               <div class="model-panel" id="modelPanel" hidden>
                 <h2 class="model-edit-head" id="modelEditHead" hidden></h2>
+                <div class="modes model-plane-modes" id="modelWpModes" data-for="workplane" role="group" aria-label="Workplane">
+                  <button class="btn mode on" id="modelWpGlobal" type="button" data-wp="global" aria-pressed="true" data-tip="Model space: U is X, V is Y, W is Z">Global</button>
+                  <button class="btn mode" id="modelWpBed" type="button" data-wp="bed" aria-pressed="false" data-tip="Under the middle of the part, W up">Bed</button>
+                  <button class="btn mode" id="modelWpFace" type="button" data-wp="face" aria-pressed="false" data-tip="On a picked flat face, W out of it">Face</button>
+                </div>
                 <div class="modes model-plane-modes" id="modelPlaneModes" data-for="split" role="group" aria-label="Plane">
                   <button class="btn mode" id="modelSplitX" type="button" data-plane="x" aria-pressed="false" data-tip="Cut square to X">X</button>
                   <button class="btn mode" id="modelSplitY" type="button" data-plane="y" aria-pressed="false" data-tip="Cut square to Y">Y</button>
@@ -211,6 +217,12 @@ export function mountMarkup(root: HTMLElement) {
                   <label data-for="place" data-snap="15"><span class="scrub-label" data-scrub>Turn X</span><input id="modelPlaceRx" type="number" step="1" value="0" aria-label="Turn in model space about x, degrees"></label>
                   <label data-for="place" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelPlaceRy" type="number" step="1" value="0" aria-label="Turn in model space about y, degrees"></label>
                   <label data-for="place" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelPlaceRz" type="number" step="1" value="0" aria-label="Turn in model space about z, degrees"></label>
+                  <label data-for="workplane" data-snap="1"><span class="scrub-label" data-scrub>X</span><input id="modelWpX" type="number" step="0.1" value="0" aria-label="Workplane origin, model x"></label>
+                  <label data-for="workplane" data-snap="1"><span class="scrub-label" data-scrub>Y</span><input id="modelWpY" type="number" step="0.1" value="0" aria-label="Workplane origin, model y"></label>
+                  <label data-for="workplane" data-snap="1"><span class="scrub-label" data-scrub>Z</span><input id="modelWpZ" type="number" step="0.1" value="0" aria-label="Workplane origin, model z"></label>
+                  <label data-for="workplane" data-snap="15"><span class="scrub-label" data-scrub>Turn X</span><input id="modelWpRx" type="number" step="1" value="0" aria-label="Turn the workplane about model x, degrees"></label>
+                  <label data-for="workplane" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelWpRy" type="number" step="1" value="0" aria-label="Turn the workplane about model y, degrees"></label>
+                  <label data-for="workplane" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelWpRz" type="number" step="1" value="0" aria-label="Turn the workplane about model z, degrees"></label>
                 </div>
                 <div class="modes" id="modelAcrossModes" data-for="boolean create" data-with="primitive" data-prim="polygon" role="group" aria-label="Width across">
                   <button class="btn mode" id="modelCorners" type="button" aria-pressed="false" data-tip="Size the polygon from corner to corner">Corners</button>
@@ -228,6 +240,7 @@ export function mountMarkup(root: HTMLElement) {
                 </div>
                 <p class="model-note" id="modelNote" hidden></p>
                 <div class="model-actions">
+                  <button class="btn model-actions-lead" id="modelWpPrint" type="button" data-for="workplane" data-tip="Turn the part on the plate so W points up and U runs along X. Undo takes it back">Print with W up</button>
                   <button class="btn" id="modelCancel" type="button">Cancel</button>
                   <button class="btn primary" id="modelApply" type="button">Apply</button>
                 </div>

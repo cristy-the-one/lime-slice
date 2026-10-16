@@ -8,6 +8,7 @@
  * `modelTree` is another: the object's Model history. A damaged one is left out and the part opens.
  * `modelTools` keeps the trees of tools that left the plate while a saved join names them.
  * `modelPose` and `meshSeatMm` place the object in Model's shared space; without them it sits where its file put it.
+ * `workplane` is that object's local U, V, W frame, in its own frame. Without it the frame is the global one.
  * A later version adds a function to `migrations` at index `n` that rewrites version `n`
  * into version `n + 1`. `applyMigrations` is that hook.
  */
@@ -20,6 +21,7 @@ import { fnv1aHex } from "./slice-action.ts";
 import { base64ToBytes, bytesToBase64 } from "./base64.ts";
 import { parseOverrides, type OverrideDocument } from "./overrides.ts";
 import { plateFileIsVersion2, readPlateSettings, settingsEmpty, type PlateFileObject } from "./plate.ts";
+import { isGlobalFrame, readWorkplane } from "./workplane.ts";
 import { dropEmptyReinforce, readReinforcement } from "./reinforcement.ts";
 import type { EditEntry } from "./support-edit-list.ts";
 import { readSavedTree, savedToolObjects, treeBody } from "./model-tree-file.ts";
@@ -468,6 +470,11 @@ function readPlateObject(value: unknown): PlateFileObject | string {
     const pose = readPose(row.modelPose);
     if (!pose) return "This project's model space position is damaged.";
     object.modelPose = pose;
+  }
+  if (row.workplane !== undefined) {
+    const plane = readWorkplane(row.workplane);
+    if (!plane) return "This project's workplane is damaged.";
+    if (!isGlobalFrame(plane)) object.workplane = plane;
   }
   if (row.meshSeatMm !== undefined) {
     if (!finite(row.meshSeatMm)) return "This project's model space position is damaged.";

@@ -15,6 +15,7 @@ import type { ContextPart } from "./model-context";
 import { turnCentre, type PrimitiveSpec } from "./model-primitive";
 import { boxUnder, posedBounds, type Affine } from "./model-space";
 import { faceBoundarySegments, faceColor } from "./model-select";
+import { framePose, localPoint, sameWorkplane, type Workplane } from "./workplane";
 import { hexToThree, themeColors } from "./theme";
 import { bedForBox, fitSentence, liveBox, mountBedReference, mountStudioLights, mountViewHelper, outerMm, renderViewHelper, viewHelperHit, type BuildVolume } from "./viewport-chrome";
 
@@ -92,6 +93,10 @@ export interface ModelView {
   onObjectPick(cb: (id: string) => void): void;
   setHandles(handles: DragHandle[]): void;
   onHandleDrag(cb: (drag: HandleDrag) => void): void;
+  /** The workplane, in model space. Null hides it. */
+  setWorkplane(plane: Workplane | null): void;
+  /** While on, a picked face is teal, so it is not the ordinary accent selection. */
+  setDatumPick(on: boolean): void;
 }
 
 export function createModelView(canvas: HTMLCanvasElement): ModelView {
@@ -135,7 +140,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   posed.add(body);
   const ghosts = new THREE.Group();
   const handleGroup = new THREE.Group();
-  scene.add(context, posed, ghosts, handleGroup);
+  /** The workplane datum: drawn once per size in its own U, V, W, and moved by a matrix to where the frame is. */
+  const datum = new THREE.Group();
+  datum.matrixAutoUpdate = false;
+  datum.visible = false;
+  scene.add(context, posed, datum, ghosts, handleGroup);
 
   let solid: ModelSolid | null = null;
   /** The open solid's box in model space. */
@@ -156,6 +165,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let picks: ModelPick[] = [];
   let hover: ModelPick | null = null;
   let ghost: ModelGhost | null = null;
+  let datumPlane: Workplane | null = null;
+  /** What the datum's lines were drawn for: its size and the theme. */
+  let datumDrawn = "";
+  const datumLines: LineMaterial[] = [];
+  let datumPick = false;
   let pickCb: (pick: ModelPick | null, shift: boolean) => void = () => {};
   let down: { x: number; y: number } | null = null;
   let running = false;
@@ -268,19 +282,19 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const attribute = mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
     const array = attribute.array as Float32Array;
     solid.triangles.forEach((face, triangle) => {
-      const hex = faceColor(face, selected.has(face), hoverFace === face, accent);
+      const hex = faceColor(face, selected.has(face), hoverFace === face, datumPick ? hexToThree(colors.teal) : accent);
       const offset = triangle * 9;
       for (let vertex = 0; vertex < 3; vertex += 1) writeColor(hex, array, offset + vertex * 3);
     });
     attribute.needsUpdate = true;
   }
 
-  function fatLine(positions: number[], width: number, opacity: number): LineSegments2 | null {
+  function fatLine(positions: number[], width: number, opacity: number, color = accent): LineSegments2 | null {
     if (positions.length < 6) return null;
     const geometry = new LineSegmentsGeometry();
     geometry.setPositions(positions);
     const material = new LineMaterial({
-      color: accent,
+      color,
       linewidth: width,
       transparent: opacity < 1,
       opacity,
@@ -295,7 +309,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return lines;
   }
 
-  function replaceLine(current: LineSegments2 | null, positions: number[], width: number, opacity: number): LineSegments2 | null {
+  function replaceLine(current: LineSegments2 | null, positions: number[], width: number, opacity: number, color = accent): LineSegments2 | null {
     if (current) {
       body.remove(current);
       const material = current.material as LineMaterial;
@@ -303,7 +317,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       if (index >= 0) fatLines.splice(index, 1);
       disposeObject(current);
     }
-    const next = fatLine(positions, width, opacity);
+    const next = fatLine(positions, width, opacity, color);
     if (next) body.add(next);
     return next;
   }
@@ -312,7 +326,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const selectedFaces = picks.filter((pick) => pick.kind === "face").map((pick) => pick.index);
     const outline: number[] = [];
     for (const face of selectedFaces) outline.push(...(boundaries.get(face) ?? []));
-    faceOutline = replaceLine(faceOutline, outline, 2.5, 1);
+    faceOutline = replaceLine(faceOutline, outline, 2.5, 1, datumPick ? hexToThree(colors.teal) : accent);
 
     const wanted = new Set(picks.filter((pick) => pick.kind === "edge").map((pick) => pick.index));
     selectedEdges = replaceLine(selectedEdges, edgePositions(wanted), 4, 1);
@@ -340,7 +354,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
 
   function syncLineResolution() {
     const resolution = lineResolution();
-    for (const material of fatLines) material.resolution.copy(resolution);
+    for (const material of [...fatLines, ...datumLines]) material.resolution.copy(resolution);
   }
 
   function applyScale() {
@@ -886,6 +900,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       }
       paintFaces();
       measureSolid(next.positions);
+      drawDatum();
       rebuildGhost();
       resize();
     },
@@ -944,6 +959,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       renderer.setClearColor(hexToThree(colors.stage), 1);
       paintFaces();
       paintLines();
+      drawDatum();
       rebuildGhost();
       kick();
     },
@@ -965,7 +981,66 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     onHandleDrag(cb) {
       handleCb = cb;
     },
+    setWorkplane(plane) {
+      if (plane === datumPlane || (plane && datumPlane && sameWorkplane(plane, datumPlane))) return;
+      datumPlane = plane;
+      datum.visible = !!plane;
+      if (plane) {
+        const { m, t } = framePose(plane);
+        datum.matrix.set(m[0], m[1], m[2], t[0], m[3], m[4], m[5], t[1], m[6], m[7], m[8], t[2], 0, 0, 0, 1);
+        datum.updateMatrixWorld(true);
+        drawDatum();
+        canvas.dataset.workplane = `${plane.source}:${plane.origin.map((value) => value.toFixed(2)).join(",")}:${plane.turn.map((value) => value.toFixed(2)).join(",")}`;
+      } else delete canvas.dataset.workplane;
+      kick();
+    },
+    setDatumPick(on) {
+      if (datumPick === on && canvas.dataset.datumPick === (on ? "1" : "0")) return;
+      datumPick = on;
+      canvas.dataset.datumPick = on ? "1" : "0";
+      paintFaces();
+      paintLines();
+      kick();
+    },
   };
+
+  /**
+   * The datum in its own U, V, W: a square in the UV plane, the solid's size, lifted a hair along W off the face it
+   * sits on, faint where the solid hides it, and a U, V, W triad drawn over everything. It takes no picks, and is
+   * drawn again only for a new size or theme: moving the frame moves its matrix.
+   */
+  function drawDatum() {
+    const key = `${extent}|${colors.teal}|${colors.axisX}|${colors.axisY}|${colors.axisZ}`;
+    if (!datumPlane || key === datumDrawn) return;
+    datumDrawn = key;
+    for (const child of [...datum.children]) {
+      datum.remove(child);
+      disposeObject(child);
+    }
+    datumLines.length = 0;
+    const half = extent / 2;
+    const lift = Math.min(0.35, extent * 0.01);
+    const rim = [[-half, -half], [half, -half], [half, half], [-half, half]];
+    const square = rim.flatMap(([u, v], i) => [u!, v!, lift, rim[(i + 1) % 4]![0]!, rim[(i + 1) % 4]![1]!, lift]);
+    const arm = extent * 0.3;
+    const line = (positions: number[], color: number, width: number, opacity: number, depthTest: boolean, order: number) => {
+      const geometry = new LineSegmentsGeometry();
+      geometry.setPositions(positions);
+      const material = new LineMaterial({ color, linewidth: width, transparent: opacity < 1, opacity, depthTest, worldUnits: false });
+      material.resolution.copy(lineResolution());
+      datumLines.push(material);
+      const lines = new LineSegments2(geometry, material);
+      lines.renderOrder = order;
+      lines.raycast = () => undefined;
+      datum.add(lines);
+    };
+    const teal = hexToThree(colors.teal);
+    line(square, teal, 1, 0.3, false, 1);
+    line(square, teal, 1.5, 0.95, true, 2);
+    line([0, 0, lift, arm, 0, lift], hexToThree(colors.axisX), 2.5, 1, false, 3);
+    line([0, 0, lift, 0, arm, lift], hexToThree(colors.axisY), 2.5, 1, false, 3);
+    line([0, 0, lift, 0, 0, lift + arm], hexToThree(colors.axisZ), 2.5, 1, false, 3);
+  }
 
   function handleColor(color: DragHandle["color"]): number {
     if (color === "x") return hexToThree(colors.axisX);
@@ -1246,7 +1321,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         next = [wrapDegrees(dragValue(handle, handle.values[0] ?? 0, current.turned, snap, fine))];
       }
     } else {
-      const point = surfacePoint(x, y, snap);
+      let point = surfacePoint(x, y, snap);
+      if (point && handle.frame) point = localPoint(handle.frame, point);
       const places = fine ? 100 : 10;
       if (point) next = point.map((value) => Math.round(value * places) / places);
     }

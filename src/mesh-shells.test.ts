@@ -85,12 +85,14 @@ const plate = oneObjectPlate({
 });
 plate.objects[0]!.settings = { walls: 4 };
 plate.objects[0]!.brep = new ArrayBuffer(2);
+plate.objects[0]!.workplane = { source: "face", origin: [1, 2, 3], turn: [90, 0, 90] };
 const next = replaceWithShells(plate, "part", worlds, 220, 220);
 check("the plate gains one object per shell", next?.objects.length === 2);
 if (next) {
   check("the largest piece keeps the id", next.objects[0]?.id === "part" && next.selectedId === "part");
   check("names are numbered from the file", next.objects[0]?.name === "asm 1" && next.objects[1]?.name === "asm 2");
   check("each piece is a mesh, not the whole solid", next.objects.every((obj) => obj.brep === undefined && obj.fileName.endsWith(".stl")));
+  check("a mesh piece, which Model does not open, keeps no workplane", next.objects.every((obj) => obj.workplane === undefined));
   check("recipe settings stay, paint does not", next.objects.every((obj) => obj.settings.walls === 4 && obj.supportPaint.length === 0));
   check("pieces are not recentered", next.objects.every((obj) => !obj.centered && obj.partScale === 1));
   for (const [piece, world] of next.objects.map((obj, index) => [obj, worlds[index]!] as const)) {

@@ -321,6 +321,20 @@ for (const [name, m] of [
 spaceWire.objects[0]!.modelPose = { m: [0, -2, 0, 2, 0, 0, 0, 0, 2], t: [0, 0, 0] };
 check("a turn with one uniform scale reads", parseProject(JSON.stringify(spaceWire)).ok);
 
+const frame = { source: "face" as const, origin: [4, 5, 6] as [number, number, number], turn: [90, 0, 0] as [number, number, number] };
+const framed: LimeProject = {
+  ...project,
+  version: 2,
+  objects: [{ id: "part", name: "bracket.stl", mesh: project.mesh, placement: project.placement, supportEdits: [], workplane: frame }],
+};
+const frameWire = JSON.parse(serializeProject(framed)) as { version: number; objects: { workplane?: unknown }[] };
+eq("one object with a workplane writes version 2 and keeps it", [frameWire.version, frameWire.objects[0]?.workplane], [2, frame]);
+const frameOpened = parseProject(JSON.stringify(frameWire));
+eq("the workplane round-trips", frameOpened.ok ? frameOpened.project.objects?.[0]?.workplane : null, frame);
+eq("a plate saved before workplanes opens with none", plainOpened.ok ? plainOpened.project.objects?.map((obj) => obj.workplane ?? null) : null, [null, null]);
+frameWire.objects[0]!.workplane = { source: "sketch", origin: [0, 0, 0], turn: [0, 0, 0] };
+eq("a damaged workplane fails the open", parseProject(JSON.stringify(frameWire)), { ok: false, message: "This project's workplane is damaged." });
+
 // Model history: a part with a fork, a renamed step, and a split whose piece has a step of its own.
 const rootStep = new Uint8Array([0x49, 0x53, 0x4f, 1, 2, 3]);
 const pieceRoot = new Uint8Array([0x49, 0x53, 0x4f, 7, 7]);
