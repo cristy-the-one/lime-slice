@@ -232,12 +232,16 @@ export function dropped(tree: ModelTree, id: NodeId): ModelTree | null {
  * of building it again. A stored edge matches a fresh pick by index.
  */
 export function childWithOp(tree: ModelTree, parent: NodeId, op: ModelOp): NodeId | null {
+  return childrenWithOp(tree, parent, op)[0] ?? null;
+}
+
+/** Every child of `parent` that `op` built, oldest first, none broken. */
+export function childrenWithOp(tree: ModelTree, parent: NodeId, op: ModelOp): NodeId[] {
   const want = canonical(op);
-  for (const id of childrenOf(tree, parent)) {
+  return childrenOf(tree, parent).filter((id) => {
     const node = tree.nodes.get(id);
-    if (node?.op && !node.broken && canonical(node.op) === want) return id;
-  }
-  return null;
+    return !!node?.op && !node.broken && canonical(node.op) === want;
+  });
 }
 
 function canonical(op: ModelOp): string {

@@ -139,8 +139,8 @@ export function rowStep(trees: ReadonlyMap<string, ModelTree>, tree: ModelTree, 
 }
 
 /**
- * How many rows `historyLayout` draws for `tree`: one per step, on every branch, and each join's tool steps on its lane,
- * nested lanes included. The History header shows it, so it counts the rows without laying them out.
+ * How many rows `historyLayout` draws for `tree`: one per step under the root, on every branch, and each join's tool
+ * steps on its lane, nested lanes included. The History header shows it, so it counts the rows without laying them out.
  */
 export function rowCount(tree: ModelTree, trees: ReadonlyMap<string, ModelTree> = new Map()): number {
   const lane = (node: ModelNode, seen: ReadonlySet<string>): number => {
@@ -150,7 +150,7 @@ export function rowCount(tree: ModelTree, trees: ReadonlyMap<string, ModelTree> 
     return pathTo(tool.tree, tool.op.tool.node).reduce((sum, id) => sum + 1 + lane(tool.tree.nodes.get(id)!, inner), 0);
   };
   const top = new Set([tree.key]);
-  return [...tree.nodes.values()].reduce((sum, node) => sum + 1 + lane(node, top), 0);
+  return [...subtree(tree, ROOT)].reduce((sum, id) => sum + 1 + lane(tree.nodes.get(id)!, top), 0);
 }
 
 /**

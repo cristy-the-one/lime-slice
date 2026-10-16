@@ -225,6 +225,18 @@ eq("so only the part's tree is built again", "from" in boxOnly && crossEdit(boxO
   { key: "box#1", parent: 1, node: 6, op: takeRod(3), replay: [{ id: 7, op: corner }], old: [2, 3] },
 ]);
 
+// A box that takes the rod's hole (step 2): an edit of the rod's scale (step 1) replays the hole under it.
+const boxHole = [cut, takeRod(2)].reduce((tree, op, i) => apply(tree, op, 8000 - i), start);
+const holeLinks = [{ tree: boxHole, id: 2, op: takeRod(2) }];
+const rodWhole = forked(rodTree, 0, [{ id: 3, op: wider, fingerprint: fp(400) }, { id: 4, op: hole(1), fingerprint: fp(300) }], rodTree.current, false);
+const pastHole = crossPlan(rodWhole, holeLinks, 1, wider, []);
+eq("the step reused for the edited one is the scale, and the join takes the hole after it", "from" in pastHole && [pastHole.reused, (pastHole.from.op as Extract<ModelOp, { kind: "join" }>).tool.node], [3, 4]);
+// A first branch cut short by Delete branch in the rod's own History, and a whole one beside it: the whole one is taken.
+const rodShort = forked(forked(rodTree, 0, [{ id: 3, op: wider, fingerprint: fp(400) }], rodTree.current, false), 0, [{ id: 4, op: wider, fingerprint: fp(400) }, { id: 5, op: hole(1), fingerprint: fp(300) }], rodTree.current, false);
+const besideShort = crossPlan(rodShort, holeLinks, 1, wider, []);
+eq("a branch cut short is passed over for a whole one with the same numbers", "from" in besideShort && [besideShort.reused, (besideShort.from.op as Extract<ModelOp, { kind: "join" }>).tool.node], [4, 5]);
+eq("and an edit of the part's own step finds it too", builtBranch(rodShort, 0, wider, [hole(1)]), 5);
+
 // Nested: a plate takes the box's step 2, which took the rod's step 1. An edit of the rod reaches the plate.
 const plateTree = apply(newTree("plate#1", { kind: "step", name: "plate.step", bytes: new ArrayBuffer(4) }, "plate.step", fp(9000)), { kind: "join", op: "common", tool: { object: "box", key: "box#1", node: 2, name: "Box 1" }, relative: { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [1, 2, 3] }, keepTool: false }, 6000);
 const deepLinks = [{ tree: plateTree, id: 1, op: plateTree.nodes.get(1)!.op as Extract<ModelOp, { kind: "join" }> }, { tree: boxTree, id: 2, op: takeRod(1) }];

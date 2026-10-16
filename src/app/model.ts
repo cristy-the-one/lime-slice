@@ -1887,7 +1887,6 @@ async function runToolEdit(run: Editing, op: ModelOp) {
     syncUndo();
     return;
   }
-  // The trees, deepest first, that still have the branch these numbers built are not built again: the edit starts above them.
   const { from, reused } = plan;
   const levels = crossEdit(from.tool, from.joins, from.node, from.op, run.replay, (key, count) => {
     let reserved = modelTrees.get(key)!;
@@ -1960,7 +1959,7 @@ async function runToolEdit(run: Editing, op: ModelOp) {
   });
   const notes = editNotes(modelTrees, latest, own.old, (key) => state.plate.objects.find((obj) => obj.modelTree === key)?.name ?? null);
   const plate = leavingNotes([op, ...own.replay.map((replayed) => replayed.op)].some((made) => made.kind === "scale"));
-  present(parsed, [`Updated “${label(step.tree.key, reused ?? levels[0]!.node)}” of ${run.joins.at(-1)!.op.tool.name}${after}. ${about(parsed)}${failure}${plate}`, ...kept, ...notes].join(" "));
+  present(parsed, [`Updated “${label(step.tree.key, reused ?? levels[0]!.node)}” of ${step.joins.at(-1)!.op.tool.name}${after}. ${about(parsed)}${failure}${plate}`, ...kept, ...notes].join(" "));
 }
 
 function sentence(text: string): string {

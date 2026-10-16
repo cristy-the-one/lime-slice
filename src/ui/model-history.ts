@@ -181,8 +181,8 @@ function inputs(): unknown[] {
   return [tree, shownKey(), ...used];
 }
 
-function changed(): boolean {
-  return !same(drawn, inputs());
+function changed(now = inputs()): boolean {
+  return !same(drawn, now);
 }
 
 function same(was: readonly unknown[] | null, now: readonly unknown[]): boolean {
@@ -257,7 +257,7 @@ function sync() {
   list.hidden = collapsed && !isMobileLayout();
   if (state.stage !== "model") closeMenu(false);
   if (!visible()) cancelJump();
-  else if (changed()) render();
+  else if (changed(now)) render();
 }
 
 function setCollapsed(on: boolean) {
