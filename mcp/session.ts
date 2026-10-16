@@ -3,11 +3,12 @@
  * Feasibility refusals are `{ok:false, reason}` and are decided before apply.
  */
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 
 import { base64ToBytes, bytesToBase64 } from "../src/base64.ts";
 import { coverageWarning, fnv1aHex, inAirWarning } from "../src/slice-action.ts";
+import { fanDefaults } from "../src/fan.ts";
 import { filamentGrams, groupFeatures } from "../src/estimate.ts";
 import { humanEngineError } from "../src/engine-wording.ts";
 import { foreign3mfMessage, foreignSlicer3mf } from "../src/foreign-3mf.ts";
@@ -24,11 +25,12 @@ import { applyRequest, editRequest, exportRequest, gotoRequest, joinOp, newSolid
 import { IDENTITY_POSE, toSolidOp, type Affine } from "../src/model-space.ts";
 import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, undoTarget, withChild, type ModelOp, type ModelTree, type NodeId } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
-import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement } from "../src/project.ts";
+import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
 import type { LayerAction } from "../src/layer-actions.ts";
 import { CURVED_FACE, GLOBAL_WORKPLANE, isGlobalFrame, localPoint, planePoint, workplaneOnFace, type Workplane } from "../src/workplane.ts";
 import { eulerOrient } from "../src/mesh-place.ts";
-import { builtinLibrary, enginePrinter, heatFor, parseMachineFile, type FilamentRecord, type MachineLibrary, type PrinterRecord } from "../src/ui/machine-library.ts";
+import { plateFileIsVersion2 } from "../src/plate.ts";
+import { builtinLibrary, adoptProfile, enginePrinter, heatFor, parseMachineFile, type FilamentRecord, type MachineLibrary, type PrinterRecord } from "../src/ui/machine-library.ts";
 import { parseSettingsProfile } from "../src/ui/settings-profiles.ts";
 
 import { mirror } from "./bridge-client.ts";
@@ -44,6 +46,7 @@ const CHORD = 0.05;
 const STEP = 0.05;
 const SLICE_WAIT_DEFAULT_S = 20;
 const SLICE_WAIT_MAX_S = 120;
+const STALE_SLICE = "The printer, filament, settings, or placement changed after this slice. Slice again.";
 
 /** Carried with one tools/call: a progress token, and cancel for that request. */
 export interface CallMeta {
@@ -63,6 +66,7 @@ export interface PlateObject {
   centered: boolean;
   offset: { x: number; y: number; z: number };
   seatMm: number;
+  stepTolerance: number;
   note?: string;
   modelPose: Affine;
   workplane: Workplane;
@@ -74,6 +78,8 @@ export interface PlateObject {
 interface Job {
   handle: string;
   engineId: number;
+  objectId: string;
+  stamp: string;
   status: string;
   gcode?: string;
   wire?: Record<string, unknown>;
@@ -158,6 +164,10 @@ export class Session {
   latest: Job | null = null;
   private seq = 0;
   private readonly engine: Engine;
+  private sourceProject: LimeProject | null = null;
+  private sourceHash = "";
+  private sourcePath = "";
+  private profileTouched = false;
   onProgress: ((job: string, fraction: number, stage: string, token?: string | number) => void) | null = null;
 
   constructor(engine: Engine) {
@@ -244,6 +254,8 @@ export class Session {
       engine,
       occt,
       workspace: process.env.LIME_MCP_WORKSPACE ?? "",
+      printer: this.printer().name,
+      filament: this.filament().name,
       printerSend: false,
     };
   }
@@ -256,20 +268,30 @@ export class Session {
     return this.library.filaments.find((row) => row.id === this.library.filamentId) ?? this.library.filaments[0]!;
   }
 
-  private addObject(partial: Omit<PlateObject, "id" | "modelPose" | "workplane" | "tree" | "solid" | "probes"> & Partial<PlateObject>): PlateObject {
-    this.seq += 1;
+  private addObject(partial: Omit<PlateObject, "id" | "modelPose" | "workplane" | "tree" | "solid" | "probes" | "stepTolerance"> & Partial<Pick<PlateObject, "stepTolerance">>, id?: string): PlateObject {
     const obj: PlateObject = {
       modelPose: IDENTITY_POSE,
       workplane: GLOBAL_WORKPLANE,
       tree: null,
       solid: null,
       probes: new Map(),
+      stepTolerance: STEP,
       ...partial,
-      id: `obj_${this.seq}`,
+      id: this.takeId(id),
     };
     this.objects.push(obj);
     this.selected = obj.id;
     return obj;
+  }
+
+  private takeId(id?: string): string {
+    if (id) {
+      const match = /^obj_(\d+)$/.exec(id);
+      if (match) this.seq = Math.max(this.seq, Number(match[1]));
+      return id;
+    }
+    this.seq += 1;
+    return `obj_${this.seq}`;
   }
 
   private async preview(filename: string, bytes: Uint8Array, tolerance: number): Promise<{ triangles: number; source: Float32Array; seatMm: number }> {
@@ -291,6 +313,10 @@ export class Session {
     this.selected = "";
     this.actions = [];
     this.settings = { ...DEFAULT_PRESET };
+    this.sourceProject = null;
+    this.sourceHash = "";
+    this.sourcePath = "";
+    this.profileTouched = false;
     return { ok: true, project: "project" };
   }
 
@@ -300,10 +326,15 @@ export class Session {
     if (!parsed.ok) return { ok: false, reason: parsed.message };
     this.objects.length = 0;
     this.settings = { ...parsed.project.settings };
-    this.actions = parsed.project.layerActions ? [...parsed.project.layerActions] : [];
+    this.actions = parsed.project.layerActions ? parsed.project.layerActions.map((action) => ({ ...action })) : [];
+    this.sourceProject = structuredClone(parsed.project);
+    this.sourceHash = createHash("sha256").update(readFileSync(full)).digest("hex");
+    this.sourcePath = realpathSync(full);
+    this.profileTouched = false;
+    this.adoptProjectMachine(parsed.project.profile);
     const rows = parsed.project.objects?.length
-      ? parsed.project.objects.map((obj) => ({ name: obj.name, file: obj.mesh.name, bytes: base64ToBytes(obj.mesh.bytesBase64), placement: obj.placement }))
-      : [{ name: parsed.project.mesh.name, file: parsed.project.mesh.name, bytes: base64ToBytes(parsed.project.mesh.bytesBase64), placement: parsed.project.placement }];
+      ? parsed.project.objects.map((obj) => ({ id: obj.id, name: obj.name, file: obj.mesh.name, bytes: base64ToBytes(obj.mesh.bytesBase64), placement: obj.placement }))
+      : [{ id: undefined as string | undefined, name: parsed.project.mesh.name, file: parsed.project.mesh.name, bytes: base64ToBytes(parsed.project.mesh.bytesBase64), placement: parsed.project.placement }];
     const objects: { object: string; name: string }[] = [];
     for (const row of rows) {
       if (!row.bytes) return { ok: false, reason: "The mesh in this project is damaged." };
@@ -319,40 +350,73 @@ export class Session {
         centered: row.placement.centered,
         offset: { ...row.placement.offset },
         seatMm: preview.seatMm,
-      });
+        stepTolerance: row.placement.stepTolerance > 0 ? row.placement.stepTolerance : STEP,
+      }, row.id);
       objects.push({ object: obj.id, name: obj.name });
     }
     return {
       ok: true,
       project: "project",
       version: parsed.project.version,
+      printer: this.printer().name,
+      filament: this.filament().name,
       objects,
       ...(parsed.project.unreadHistory?.length ? { unreadHistory: parsed.project.unreadHistory } : {}),
     };
   }
 
-  private projectDocument(): LimeProject {
-    const first = this.objects[0];
-    const placement = (obj: PlateObject): ProjectPlacement => ({
+  private adoptProjectMachine(profile: ProjectProfile): void {
+    const printer = this.library.printers.find((row) => row.name === profile.name);
+    const filament = this.library.filaments.find((row) => row.nozzleTemp === profile.nozzleTemp && row.bedTemp === profile.bedTemp && Math.abs(row.densityGCm3 - profile.filamentDensityGCm3) < 1e-6)
+      ?? this.library.filaments.find((row) => row.diameterMm === profile.filamentDiameter);
+    const nozzle = profile.nozzleDiameter === 0.4 || profile.nozzleDiameter === 0.6 || profile.nozzleDiameter === 0.8 ? profile.nozzleDiameter : this.library.nozzleMm;
+    if (printer && filament) {
+      this.library = { ...this.library, printerId: printer.id, filamentId: filament.id, nozzleMm: nozzle };
+      return;
+    }
+    const adopted = adoptProfile(this.library, { ...profile, ...this.fanOf(profile) }, "project-printer", "project-filament");
+    this.library = { ...adopted, nozzleMm: nozzle };
+  }
+
+  /** A saved profile may predate fan fields. The library's adopt wants them. */
+  private fanOf(profile: ProjectProfile): { fanPercent: number; overhangFanPercent: number; fanOffLayers: number } {
+    const fallback = fanDefaults("");
+    return {
+      fanPercent: profile.fanPercent ?? fallback.fanPercent,
+      overhangFanPercent: profile.overhangFanPercent ?? fallback.overhangFanPercent,
+      fanOffLayers: profile.fanOffLayers ?? fallback.fanOffLayers,
+    };
+  }
+
+  private placementOf(obj: PlateObject): ProjectPlacement {
+    return {
       orient: [...obj.orient] as ProjectPlacement["orient"],
       scale: obj.scale,
       centered: obj.centered,
       offset: { ...obj.offset },
-      stepTolerance: STEP,
-    });
-    const profile = enginePrinter(this.printer(), this.filament(), this.library.nozzleMm);
-    const mesh = first ? meshRecord(first.fileName, first.bytes) : meshRecord("empty.stl", new Uint8Array());
-    const objects = this.objects.map((obj) => ({
+      stepTolerance: obj.stepTolerance > 0 ? obj.stepTolerance : STEP,
+    };
+  }
+
+  private fileObject(obj: PlateObject): NonNullable<LimeProject["objects"]>[number] {
+    return {
       id: obj.id,
       name: obj.name,
       mesh: meshRecord(obj.fileName, obj.bytes),
-      placement: placement(obj),
+      placement: this.placementOf(obj),
       supportEdits: [],
-    }));
+    };
+  }
+
+  private freshDocument(): LimeProject {
+    const first = this.objects[0];
+    const profile = enginePrinter(this.printer(), this.filament(), this.library.nozzleMm);
+    const mesh = first ? meshRecord(first.fileName, first.bytes) : meshRecord("empty.stl", new Uint8Array());
+    const objects = this.objects.map((obj) => this.fileObject(obj));
     return {
       version: objects.length > 1 ? 2 : 1,
       mesh,
-      placement: first ? placement(first) : { orient: [...ID_MATRIX] as ProjectPlacement["orient"], scale: 1, centered: true, offset: { x: 0, y: 0, z: 0 }, stepTolerance: STEP },
+      placement: first ? this.placementOf(first) : { orient: [...ID_MATRIX] as ProjectPlacement["orient"], scale: 1, centered: true, offset: { x: 0, y: 0, z: 0 }, stepTolerance: STEP },
       settings: this.settings,
       preset: null,
       profile,
@@ -363,11 +427,79 @@ export class Session {
     };
   }
 
+  private projectDocument(): LimeProject {
+    const base = this.sourceProject ? structuredClone(this.sourceProject) : null;
+    if (!base) return this.freshDocument();
+    base.settings = structuredClone(this.settings);
+    if (this.actions.length) base.layerActions = this.actions.map((action) => ({ ...action }));
+    else delete base.layerActions;
+    if (this.profileTouched) base.profile = enginePrinter(this.printer(), this.filament(), this.library.nozzleMm);
+    if (base.objects && base.objects.length > 0) {
+      const live = new Map(this.objects.map((obj) => [obj.id, obj]));
+      const kept = base.objects.filter((obj) => live.has(obj.id)).map((obj) => ({ ...obj, placement: this.placementOf(live.get(obj.id)!) }));
+      for (const obj of this.objects) {
+        if (!kept.some((row) => row.id === obj.id)) kept.push(this.fileObject(obj));
+      }
+      base.objects = kept;
+      const first = kept[0];
+      if (first) {
+        base.mesh = first.mesh;
+        base.placement = first.placement;
+        base.supportEdits = first.supportEdits;
+      }
+      base.version = plateFileIsVersion2(kept) || kept.length > 1 ? 2 : 1;
+      if (base.version === 1) delete base.objects;
+      return base;
+    }
+    const obj = this.objects[0];
+    if (obj) {
+      const next = meshRecord(obj.fileName, obj.bytes);
+      if (next.hash !== base.mesh.hash || next.name !== base.mesh.name) base.mesh = next;
+      base.placement = this.placementOf(obj);
+    }
+    return base;
+  }
+
+  private lossy(doc: LimeProject): string | null {
+    const src = this.sourceProject;
+    if (!src) return null;
+    const missing: string[] = [];
+    if (src.overrides && !doc.overrides) missing.push("overrides");
+    if ((src.modelTools?.length ?? 0) > 0 && !(doc.modelTools?.length)) missing.push("model tools");
+    const trees = (rows: LimeProject) => (rows.objects ?? []).some((obj) => obj.modelTree);
+    if (trees(src) && !trees(doc)) missing.push("model history");
+    const paint = (rows: LimeProject) => (rows.objects ?? []).some((obj) => (obj.supportPaint?.length ?? 0) > 0 || (obj.seamPaint?.length ?? 0) > 0);
+    if (paint(src) && !paint(doc)) missing.push("paint");
+    const edits = (rows: LimeProject) => rows.supportEdits.length > 0 || (rows.objects ?? []).some((obj) => obj.supportEdits.length > 0);
+    if (edits(src) && !edits(doc)) missing.push("support edits");
+    if (missing.length === 0) return null;
+    return `Saving over this project would drop ${missing.join(", ")}. Save it under a new name.`;
+  }
+
   private projectSave(name: string): Record<string, unknown> {
     if (this.objects.length === 0) return { ok: false, reason: "The plate is empty." };
     const path = resolveWrite(name, ".lime");
-    const text = serializeProject(this.projectDocument());
+    if (this.sourcePath && path === this.sourcePath && this.sourceHash) {
+      let now = "";
+      try {
+        now = createHash("sha256").update(readFileSync(path)).digest("hex");
+      } catch {
+        now = "";
+      }
+      if (now && now !== this.sourceHash) {
+        return { ok: false, reason: "That project changed on disk since it was opened. Save it under a new name." };
+      }
+    }
+    const doc = this.projectDocument();
+    if (this.sourcePath && path === this.sourcePath) {
+      const loss = this.lossy(doc);
+      if (loss) return { ok: false, reason: loss };
+    }
+    const text = serializeProject(doc);
     writeFileSync(path, text);
+    this.sourceProject = structuredClone(doc);
+    this.sourceHash = createHash("sha256").update(text).digest("hex");
+    this.sourcePath = path;
     return { ok: true, path, bytes: Buffer.byteLength(text) };
   }
 
@@ -393,6 +525,7 @@ export class Session {
       centered: true,
       offset: { x: 0, y: 0, z: 0 },
       seatMm: preview.seatMm,
+      stepTolerance: tolerance,
       ...(note ? { note } : {}),
     });
     const placed = this.placed(obj);
@@ -512,6 +645,7 @@ export class Session {
     const filament = this.library.filaments.find((row) => row.id === filamentId);
     if (!printer || !filament) return { ok: false, reason: "That printer or filament is not in the library." };
     this.library = { ...this.library, printerId, filamentId, nozzleMm: typeof nozzle === "number" ? nozzle : this.library.nozzleMm };
+    this.profileTouched = true;
     const heat = heatFor(printer, filament.nozzleTemp, filament.bedTemp);
     const start = printer.startGcode.trim() === "" ? "none" : "applied at export";
     return {
@@ -588,10 +722,30 @@ export class Session {
     if (!obj) return { ok: false, reason: "Load a mesh first." };
     const started = JSON.parse(await this.ask(this.engine.sliceStart(JSON.stringify(this.sliceBody(obj))))) as { id?: number; error?: string };
     if (typeof started.id !== "number") return { ok: false, reason: humanEngineError(started.error ?? "The slice did not start.") };
-    const job: Job = { handle: `job_${this.jobs.length + 1}`, engineId: started.id, status: "running" };
+    const job: Job = { handle: `job_${this.jobs.length + 1}`, engineId: started.id, objectId: obj.id, stamp: this.sliceStamp(obj), status: "running" };
     this.jobs.push(job);
     this.running = job;
     return { ok: true, job: job.handle, status: "running" };
+  }
+
+  private sliceStamp(obj: PlateObject): string {
+    return JSON.stringify({
+      printerId: this.library.printerId,
+      filamentId: this.library.filamentId,
+      nozzleMm: this.library.nozzleMm,
+      settings: this.settings,
+      objectId: obj.id,
+      orient: obj.orient,
+      scale: obj.scale,
+      centered: obj.centered,
+      offset: obj.offset,
+    });
+  }
+
+  private staleReason(job: Job): string | null {
+    const obj = this.find(job.objectId);
+    if (!obj || !job.stamp || this.sliceStamp(obj) !== job.stamp) return STALE_SLICE;
+    return null;
   }
 
   private jobOf(handle: string): Job | null {
@@ -724,6 +878,8 @@ export class Session {
   private gcodeSummary(handle?: string): Record<string, unknown> {
     const job = this.finished(handle);
     if (!job?.gcode || !job.wire) return { ok: false, reason: "Slice first." };
+    const stale = this.staleReason(job);
+    if (stale) return { ok: false, reason: stale };
     const summary = this.summarize(job);
     const review = reviewGcode(job.gcode);
     return {
@@ -742,6 +898,8 @@ export class Session {
   private gcodeExport(input: Record<string, unknown>): Record<string, unknown> {
     const job = this.finished(typeof input.job === "string" ? input.job : undefined);
     if (!job?.gcode) return { ok: false, reason: "Slice first." };
+    const stale = this.staleReason(job);
+    if (stale) return { ok: false, reason: stale };
     const now = typeof input.now === "string" ? new Date(input.now) : new Date();
     if (Number.isNaN(now.getTime())) return { ok: false, reason: "That clock is not a time." };
     const summary = this.summarize(job);
@@ -923,6 +1081,7 @@ export class Session {
       centered: true,
       offset: { x: 0, y: 0, z: 0 },
       seatMm: 0,
+      stepTolerance: STEP,
       modelPose: IDENTITY_POSE,
       workplane: GLOBAL_WORKPLANE,
       tree: newTree(key, { kind: "primitive", solid: spec }, kind, null),

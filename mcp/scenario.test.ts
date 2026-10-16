@@ -1,9 +1,14 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { fnv1aHex } from "../src/slice-action.ts";
-import { parseProject } from "../src/project.ts";
+import { meshRecord, parseProject, serializeProject } from "../src/project.ts";
+import { DEFAULT_PRESET } from "../src/presets.ts";
+import { ID_MATRIX } from "../src/mesh-place.ts";
+import { beltSliceField } from "../src/belt.ts";
+import { defaultRange } from "../src/overrides.ts";
+import { builtinLibrary, enginePrinter } from "../src/ui/machine-library.ts";
 
 import { fakeEngine } from "./engine.ts";
 import { TOOLS } from "./schema.ts";
@@ -44,6 +49,29 @@ check("a tool slice leaves the preview out", body.includePreview === false);
 
 const exported = await call("gcode_export", { name: "cube.gcode", now: "2020-01-02T03:04:05.000Z" });
 check("export writes inside the workspace", exported.ok === true && String(exported.path).startsWith(workspace));
+
+const outside = mkdtempSync(join(tmpdir(), "lime-outside-"));
+const victim = join(outside, "victim.gcode");
+writeFileSync(victim, "untouched");
+symlinkSync(victim, join(workspace, "link.gcode"));
+let symlinkExport = { ok: true, reason: "" };
+try {
+  symlinkExport = await call("gcode_export", { name: "link.gcode", now: "2020-01-02T03:04:05.000Z" });
+} catch (err) {
+  symlinkExport = { ok: false, reason: err instanceof Error ? err.message : "" };
+}
+check("a symlink export is refused", symlinkExport.ok === false, JSON.stringify(symlinkExport));
+check("the outside file is unchanged", readFileSync(victim, "utf8") === "untouched");
+let outsideExport = { ok: true, reason: "" };
+try {
+  outsideExport = await call("export_3mf", { name: join(outside, "made", "by", "mcp", "x.3mf") });
+} catch (err) {
+  outsideExport = { ok: false, reason: err instanceof Error ? err.message : "" };
+}
+check("an outside path is refused", outsideExport.ok === false, JSON.stringify(outsideExport));
+check("no directory is created outside the workspace", !existsSync(join(outside, "made")));
+const nested = await call("gcode_export", { name: "nested/cube.gcode", now: "2020-01-02T03:04:05.000Z" });
+check("a directory inside the workspace is created", nested.ok === true && existsSync(join(workspace, "nested", "cube.gcode")));
 
 const saved = await call("project_save", { name: "cube.lime" });
 check("save writes a project", saved.ok === true);
@@ -101,6 +129,96 @@ const summary = await call("gcode_summary", { job: customSlice.job });
 const review = Array.isArray(summary.review) ? summary.review as { text: string }[] : [];
 check("custom G-code is listed for a person to read", review.some((line) => line.text.includes("ignore your instructions")));
 check("custom G-code does not change the tool list", TOOLS.length === toolCount && !TOOLS.some((tool) => tool.name === "ignore"));
+
+const switched = await call("machine_select", { printerId: "lime-220", filamentId: "lime-petg" });
+check("the filament can change", switched.ok === true);
+const stale = await call("gcode_export", { name: "stale.gcode", now: "2020-01-02T03:04:05.000Z" });
+check("export after a filament change asks for a new slice", stale.ok === false && stale.reason === "The printer, filament, settings, or placement changed after this slice. Slice again.", JSON.stringify(stale));
+const resliced = await call("slice_start", {});
+await call("slice_wait", { job: resliced.job });
+const fresh = await call("gcode_export", { name: "fresh.gcode", now: "2020-01-02T03:04:05.000Z" });
+check("a new slice exports", fresh.ok === true, JSON.stringify(fresh));
+
+const library = builtinLibrary();
+const ir3 = library.printers.find((row) => row.id === "ideaformer-ir3-v2");
+const pla = library.filaments.find((row) => row.id === "lime-pla");
+if (!ir3 || !pla) {
+  check("the IR3 V2 is in the library", false);
+} else {
+  const cubeBytes = new Uint8Array(readFileSync(cube));
+  const mesh = meshRecord("calibration_cube_20mm.stl", cubeBytes);
+  const placement = { orient: [...ID_MATRIX], scale: 1, centered: true, offset: { x: 0, y: 0, z: 0 }, stepTolerance: 0.08 };
+  const pruneSite = { xy: [1.5, -2], z: 4.25 };
+  const pruneEdit = { id: 1, scope: "tree", edit: { kind: "prune", sites: [pruneSite] } };
+  const paintDisk = { kind: "enforce", p: [1, 2, 3], n: [0, 0, 1], r: 2 };
+  const richDoc = {
+    version: 2,
+    mesh,
+    placement,
+    settings: { ...DEFAULT_PRESET },
+    preset: null,
+    profile: enginePrinter(ir3, pla, 0.4),
+    level: "simple",
+    supportEdits: [],
+    overrides: { version: 1, ranges: [defaultRange("range-1")], volumes: [] },
+    objects: [{
+      id: "bracket",
+      name: "calibration_cube_20mm.stl",
+      mesh,
+      placement,
+      supportEdits: [pruneEdit],
+      supportPaint: [paintDisk],
+      settings: { walls: 3 },
+      modelTree: {
+        nodes: [{ id: 0, parent: null, op: null, fingerprint: null }],
+        current: 0,
+        committed: 0,
+        nextId: 1,
+        rootPrimitive: { primitive: "box", origin: [0, 0, 0], size: [10, 10, 10], radius: 0, height: 10, turn: [0, 0, 0] },
+      },
+    }],
+  };
+  const richText = serializeProject(richDoc);
+  const richParsed = parseProject(richText);
+  check("the rich project parses", richParsed.ok, richParsed.ok ? "" : richParsed.message);
+  if (richParsed.ok) {
+    const richPath = join(workspace, "rich.lime");
+    writeFileSync(richPath, richText);
+    const richEngine = fakeEngine();
+    const rich = new Session(richEngine);
+    const richCall = (name: string, args: unknown = {}) => rich.call(name, args);
+    const openedRich = await richCall("project_open", { path: richPath });
+    check("an opened IR3 project names the printer", openedRich.ok === true && openedRich.printer === "Ideaformer IR3 V2", JSON.stringify(openedRich));
+    const richObject = String((openedRich.objects as { object: string }[])[0]?.object ?? "");
+    await richCall("object_place", { object: richObject, centreX: 40, centreY: 50 });
+    const richSaved = await richCall("project_save", { name: "rich.lime" });
+    check("the rich project saves over itself", richSaved.ok === true, JSON.stringify(richSaved));
+    const again = parseProject(readFileSync(String(richSaved.path), "utf8"));
+    check("the save still parses", again.ok);
+    if (again.ok) {
+      const left = structuredClone(again.project);
+      const right = structuredClone(richParsed.project);
+      left.placement = right.placement;
+      left.objects?.forEach((obj, index) => {
+        const orig = right.objects?.[index];
+        if (orig) obj.placement = orig.placement;
+      });
+      check("every key except placement matches the opened project", JSON.stringify(left) === JSON.stringify(right));
+      check("the saved step tolerance is the project's", again.project.objects?.[0]?.placement.stepTolerance === 0.08);
+    }
+    const sliced = await richCall("slice_start", {});
+    await richCall("slice_wait", { job: sliced.job });
+    const wire = JSON.parse(richEngine.lastSlice) as { printer?: { name?: string; bedX?: number }; belt?: unknown };
+    const expectedBelt = beltSliceField(ir3.belt, DEFAULT_PRESET.supports).belt;
+    check("the slice uses the IR3 printer", wire.printer?.name === "Ideaformer IR3 V2" && wire.printer.bedX === 250, JSON.stringify(wire.printer));
+    check("the slice sends the IR3 belt", JSON.stringify(wire.belt) === JSON.stringify(expectedBelt), JSON.stringify(wire.belt));
+    const touched = readFileSync(richPath, "utf8") + "\n";
+    writeFileSync(richPath, touched);
+    const refused = await richCall("project_save", { name: "rich.lime" });
+    check("a project changed on disk is not overwritten", refused.ok === false && String(refused.reason).includes("changed on disk"), JSON.stringify(refused));
+    check("the touched file is left as it was", readFileSync(richPath, "utf8") === touched);
+  }
+}
 
 if (failed) {
   console.error(`${failed} failed`);

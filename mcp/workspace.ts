@@ -1,5 +1,5 @@
-import { mkdirSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { ProtocolError } from "./engine.ts";
 
@@ -56,23 +56,51 @@ export function resolveRead(path: string, kind: "mesh" | "lime" | "profile" | "m
 
 function inside(root: string, target: string): boolean {
   const rel = relative(root, target);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
 }
 
 /**
  * A write under the workspace. `name` may be a file name or a path.
- * A path that leaves the workspace, including through a symlink, is refused.
- * An existing file in the workspace may be overwritten.
+ * A path that leaves the workspace, including through a symlink, is refused
+ * before any directory is created. An existing regular file may be overwritten.
  */
 export function resolveWrite(name: string, suffix: string): string {
   const root = requireWorkspace();
   if (!name || name.includes("\0")) throw new ProtocolError("That name cannot be written.");
   const withSuffix = name.toLowerCase().endsWith(suffix) ? name : `${name}${suffix}`;
-  const full = isAbsolute(withSuffix) ? withSuffix : resolve(root, withSuffix);
-  const parent = full.slice(0, full.lastIndexOf(sep));
-  mkdirSync(parent, { recursive: true });
-  const realParent = realpathSync(parent);
-  const target = resolve(realParent, full.slice(full.lastIndexOf(sep) + 1));
-  if (!inside(root, target)) throw new ProtocolError("Writes stay inside LIME_MCP_WORKSPACE.");
-  return target;
+  const full = resolve(isAbsolute(withSuffix) ? withSuffix : join(root, withSuffix));
+  if (!inside(root, full)) throw new ProtocolError("Writes stay inside LIME_MCP_WORKSPACE.");
+  const parts = relative(root, full).split(sep).filter((part) => part !== "");
+  if (parts.length === 0) throw new ProtocolError("Writes stay inside LIME_MCP_WORKSPACE.");
+  let current = root;
+  for (let i = 0; i < parts.length; i += 1) {
+    const next = join(current, parts[i]!);
+    const last = i === parts.length - 1;
+    let stat: ReturnType<typeof lstatSync> | null = null;
+    try {
+      stat = lstatSync(next);
+    } catch {
+      stat = null;
+    }
+    if (stat?.isSymbolicLink()) throw new ProtocolError("Writes stay inside LIME_MCP_WORKSPACE.");
+    if (!stat) {
+      if (last) return next;
+      mkdirSync(next);
+      const real = realpathSync(next);
+      if (!inside(root, real)) throw new ProtocolError("Writes stay inside LIME_MCP_WORKSPACE.");
+      current = real;
+      continue;
+    }
+    if (last) {
+      if (!stat.isFile()) throw new ProtocolError("That name cannot be written.");
+      const real = realpathSync(next);
+      if (!inside(root, real)) throw new ProtocolError("Writes stay inside LIME_MCP_WORKSPACE.");
+      return real;
+    }
+    if (!stat.isDirectory()) throw new ProtocolError("That name cannot be written.");
+    const real = realpathSync(next);
+    if (!inside(root, real)) throw new ProtocolError("Writes stay inside LIME_MCP_WORKSPACE.");
+    current = real;
+  }
+  throw new ProtocolError("Writes stay inside LIME_MCP_WORKSPACE.");
 }
