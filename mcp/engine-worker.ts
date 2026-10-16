@@ -4,16 +4,17 @@
  */
 import { parentPort, workerData } from "node:worker_threads";
 
-import { loadNativeEngine } from "./engine.ts";
+import { loadNativeEngine, withMesh } from "./engine.ts";
 
 const port = parentPort;
 if (!port) throw new Error("The engine worker needs a parent port.");
 
 const engine = loadNativeEngine(String((workerData as { root?: string }).root ?? ""));
 
-port.on("message", (msg: { id: number; method: string; arg: string }) => {
+port.on("message", (msg: { id: number; method: string; arg: string; bytes?: Uint8Array }) => {
   try {
     let result: string | boolean;
+    const mesh = msg.bytes ? withMesh(msg.arg, msg.bytes) : msg.arg;
     switch (msg.method) {
       case "version":
         result = engine.version() as string;
@@ -22,13 +23,13 @@ port.on("message", (msg: { id: number; method: string; arg: string }) => {
         result = engine.occt() as boolean;
         break;
       case "meshPreview":
-        result = engine.meshPreview(msg.arg) as string;
+        result = engine.meshPreview(mesh) as string;
         break;
       case "modelTree":
         result = engine.modelTree(msg.arg) as string;
         break;
       case "sliceStart":
-        result = engine.sliceStart(msg.arg) as string;
+        result = engine.sliceStart(mesh) as string;
         break;
       case "slicePoll":
         result = engine.slicePoll(msg.arg) as string;

@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 
-import { base64ToBytes, bytesToBase64 } from "../src/base64.ts";
+import { base64ToBytes } from "../src/base64.ts";
 import { coverageWarning, fnv1aHex, inAirWarning } from "../src/slice-action.ts";
 import { fanDefaults } from "../src/fan.ts";
 import { filamentGrams, groupFeatures } from "../src/estimate.ts";
@@ -16,18 +16,27 @@ import { meshWarningText, type MeshRepair } from "../src/app/mesh-warning.ts";
 import { plainModelError } from "../src/app/model-error.ts";
 import { centeringShift, encode3mf, ID_MATRIX, layFlatMatrix, matMul, offBed, placeMesh, rotX, rotY, rotZ, scaledCanonical, settleBy, type Bounds, type Mat3 } from "../src/mesh-place.ts";
 import { decodeSolid } from "../src/model-reply.ts";
-import { probeFromBody, probeKey, probeNote, type ProbedTool } from "../src/model-feasibility.ts";
+import { disjointBoolean, probeFromBody, probeKey, probeNote, type ProbedTool } from "../src/model-feasibility.ts";
 import { builtBranch, crossEdit, forked, replayChain, type ToolLink } from "../src/model-edit.ts";
 import { dropRefusal } from "../src/model-history.ts";
 import { throughLength } from "../src/model-hole.ts";
-import { extentAlong, facePlane, splitBase, splitNote, splitPlaneInside, tiltRings, valueRange, type SplitPlan, type Vec3 as PlaneVec } from "../src/model-plane.ts";
+import { extentAlong, facePlane, splitBase, splitNote, tiltRings, type SplitPlan, type Vec3 as PlaneVec } from "../src/model-plane.ts";
 import { rootSpec, type PrimitiveSpec } from "../src/model-primitive.ts";
 import { readFingerprint } from "../src/model-reply.ts";
-import { applyRequest, crossEditRequest, exportRequest, gotoRequest, joinOp, newSolidRequest, openRequest, probeRequest } from "../src/model-request.ts";
+import { applyRequest, crossEditRequest, exportRequest, gotoRequest, joinOp, newSolidRequest, openRequest, probeRequest, wholeTreeRequest } from "../src/model-request.ts";
 import { IDENTITY_POSE, toSolidOp, type Affine } from "../src/model-space.ts";
 import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, undoTarget, withChild, type Fingerprint, type ModelOp, type ModelTree, type NodeId } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
+import { savedTree, loadedTree } from "../src/model-tree-file.ts";
+import { emptyOverrides, type OverrideDocument } from "../src/overrides.ts";
+import { editRequestFields } from "../src/support-edit-list.ts";
+import type { EditEntry } from "../src/support-edit-list.ts";
+import { paintRequestFields, type PaintDisk } from "../src/support-paint.ts";
+import { seamRequestFields, type SeamDisk } from "../src/seam-paint.ts";
+import { normalInfillDensity, reinforcementRequestFields, type ReinforceRegion } from "../src/reinforcement.ts";
+import { sourceFrame, slicePlateFields, settingsEmpty, type PlateObject as SliceObject, type PlateObjectSettings } from "../src/plate.ts";
+import { orderFields, sequentialClearance, settingsRules, tallestLast, type PrintOrder } from "../src/settings-rules.ts";
 import type { LayerAction } from "../src/layer-actions.ts";
 import { CURVED_FACE, GLOBAL_WORKPLANE, drillDown, isGlobalFrame, localPoint, planePoint, planePrimitive, workplaneOnFace, type Workplane } from "../src/workplane.ts";
 import { eulerOrient, orientEuler } from "../src/mesh-place.ts";
@@ -41,6 +50,8 @@ import { appVersion, exportGcode, mass } from "./export-gcode.ts";
 import { renderMesh, type Camera } from "./render.ts";
 import { applyPreset, blendOf, sessionSliceRequest, stlBytes } from "./request.ts";
 import { reviewGcode } from "./review.ts";
+import { settingsRangeError } from "./settings-check.ts";
+import { edgeGeometry, faceRows } from "./solid-geometry.ts";
 import { validateTool } from "./schema.ts";
 import { resolveRead, resolveWrite } from "./workspace.ts";
 
@@ -79,6 +90,13 @@ export interface PlateObject {
   tree: ModelTree | null;
   solid: ReturnType<typeof rememberSolid> | null;
   probes: Map<string, true>;
+  supportEdits: EditEntry[];
+  supportPaint: PaintDisk[];
+  seamPaint: SeamDisk[];
+  reinforcement: ReinforceRegion[];
+  objectSettings: PlateObjectSettings;
+  /** The history node whose STEP is `bytes`. Null until a commit writes it. */
+  platedNode: number | null;
 }
 
 interface Job {
@@ -113,13 +131,8 @@ function rememberSolid(body: Record<string, unknown>) {
     fingerprint: solid.fingerprint,
     positions: Float32Array.from(solid.positions),
     triangles: Uint32Array.from(solid.triangles),
-    faces: solid.faces.map((face) => ({ areaMm2: face.areaMm2, ...(face.normal ? { normal: [...face.normal] as [number, number, number] } : {}) })),
-    edges: solid.edges.map((edge) => {
-      const points = edge.points;
-      const midAt = Math.max(0, Math.floor(points.length / 6) * 3);
-      const mid: [number, number, number] = points.length >= 3 ? [points[midAt] ?? 0, points[midAt + 1] ?? 0, points[midAt + 2] ?? 0] : [0, 0, 0];
-      return { lengthMm: edge.lengthMm, mid };
-    }),
+    faces: faceRows(solid.positions, solid.triangles, solid.faces),
+    edges: solid.edges.map((edge) => ({ index: edge.id, lengthMm: edge.lengthMm, ...edgeGeometry(edge.points, edge.lengthMm) })),
     bounds: boundsOf(solid.positions),
   };
 }
@@ -180,12 +193,58 @@ function roundTo(value: number, places: number): number {
   return Math.round(value * scale) / scale;
 }
 
+interface SnapObject {
+  id: string;
+  name: string;
+  fileName: string;
+  bytes: Uint8Array;
+  source: Float32Array;
+  triangles: number;
+  orient: Mat3;
+  scale: number;
+  centered: boolean;
+  offset: { x: number; y: number; z: number };
+  seatMm: number;
+  stepTolerance: number;
+  note?: string;
+  modelPose: Affine;
+  workplane: Workplane;
+  supportEdits: EditEntry[];
+  supportPaint: PaintDisk[];
+  seamPaint: SeamDisk[];
+  reinforcement: ReinforceRegion[];
+  objectSettings: PlateObjectSettings;
+  platedNode: number | null;
+}
+
 interface PlateSnap {
   label: string;
-  objects: PlateObject[];
+  objects: SnapObject[];
   selected: string;
   settings: PresetSettings;
   library: MachineLibrary;
+  actions: LayerAction[];
+  overrides: OverrideDocument;
+  printOrder: PrintOrder["printOrder"];
+  clearanceMm: number;
+  gantryMm: number;
+}
+
+class ModelRunaway extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ModelRunaway";
+  }
+}
+
+function domainRefusal(message: string): { ok: false; reason: string; next?: string } | null {
+  if (message.startsWith("That file was not found")) {
+    return { ok: false, reason: message, next: "Check the path, then call the tool again." };
+  }
+  if (message.includes("LIME_MCP_WORKSPACE") || message.startsWith("Writes stay") || message.startsWith("That path is not") || message.startsWith("That name cannot") || message.startsWith("Open a .stl") || message.startsWith("That file is")) {
+    return { ok: false, reason: message };
+  }
+  return null;
 }
 
 function nodeHandle(id: NodeId): string {
@@ -217,6 +276,13 @@ export class Session {
   private lastBridge: Record<string, unknown> | null = null;
   private undoStack: PlateSnap[] = [];
   private redoStack: PlateSnap[] = [];
+  private bridgeSeq = 0;
+  private generation = 0;
+  private lastProgressAt = 0;
+  overrides: OverrideDocument = emptyOverrides();
+  printOrder: PrintOrder["printOrder"] = "all-at-once";
+  clearanceMm = 0;
+  gantryMm = 0;
   onProgress: ((job: string, fraction: number, stage: string, token?: string | number) => void) | null = null;
 
   constructor(engine: Engine) {
@@ -232,6 +298,12 @@ export class Session {
       this.lastBridge = this.bridgePayload(name, input, value);
       void mirror(this.lastBridge);
       return value;
+    }).catch((err: unknown) => {
+      if (err instanceof ProtocolError) {
+        const refusal = domainRefusal(err.message);
+        if (refusal) return refusal;
+      }
+      throw err;
     });
   }
 
@@ -276,8 +348,18 @@ export class Session {
           toughness: this.settings.toughness,
         }
       : undefined;
+    this.bridgeSeq += 1;
     return {
       tool: name,
+      seq: this.bridgeSeq,
+      plate: this.objects.map((row) => ({
+        object: row.id,
+        name: shownName(row.name),
+        scalePercent: row.scale * 100,
+        centered: row.centered,
+        offset: { ...row.offset },
+        orient: [...row.orient],
+      })),
       ...(obj ? { objectId: obj.id, objectName: obj.name } : {}),
       ok: value.ok === true,
       ...(placement ? { placement } : {}),
@@ -316,19 +398,21 @@ export class Session {
   }
 
   private async sessionInfo(): Promise<Record<string, unknown>> {
-    let engine = "unknown";
+    let engine: string | null = null;
     let occt = false;
+    let reason = "";
     try {
       engine = await this.ask(this.engine.version());
       occt = await this.ask(this.engine.occt());
     } catch (err) {
-      engine = err instanceof Error ? err.message : "The engine did not answer.";
+      reason = err instanceof Error ? err.message : "The engine did not answer.";
     }
     return {
       ok: true,
       serverVersion: appVersion(),
       engine,
       occt,
+      ...(reason ? { reason } : {}),
       workspace: process.env.LIME_MCP_WORKSPACE ?? "",
       printer: this.printer().name,
       filament: this.filament().name,
@@ -344,13 +428,19 @@ export class Session {
     return this.library.filaments.find((row) => row.id === this.library.filamentId) ?? this.library.filaments[0]!;
   }
 
-  private addObject(partial: Omit<PlateObject, "id" | "modelPose" | "workplane" | "tree" | "solid" | "probes" | "stepTolerance"> & Partial<Pick<PlateObject, "stepTolerance">>, id?: string): PlateObject {
+  private addObject(partial: Omit<PlateObject, "id" | "modelPose" | "workplane" | "tree" | "solid" | "probes" | "stepTolerance" | "supportEdits" | "supportPaint" | "seamPaint" | "reinforcement" | "objectSettings" | "platedNode"> & Partial<Pick<PlateObject, "stepTolerance" | "supportEdits" | "supportPaint" | "seamPaint" | "reinforcement" | "objectSettings" | "platedNode">>, id?: string): PlateObject {
     const obj: PlateObject = {
       modelPose: IDENTITY_POSE,
       workplane: GLOBAL_WORKPLANE,
       tree: null,
       solid: null,
       probes: new Map(),
+      supportEdits: [],
+      supportPaint: [],
+      seamPaint: [],
+      reinforcement: [],
+      objectSettings: {},
+      platedNode: null,
       stepTolerance: STEP,
       ...partial,
       id: this.takeId(id),
@@ -373,9 +463,8 @@ export class Session {
   private async preview(filename: string, bytes: Uint8Array, tolerance: number): Promise<{ triangles: number; source: Float32Array; seatMm: number }> {
     const reply = JSON.parse(await this.ask(this.engine.meshPreview(JSON.stringify({
       filename,
-      dataB64: bytesToBase64(bytes),
       stepToleranceMm: tolerance,
-    })))) as { error?: string; triangles?: number; positionsB64?: string; seatMm?: number };
+    }), bytes))) as { error?: string; triangles?: number; positionsB64?: string; seatMm?: number };
     if (reply.error || !reply.positionsB64) throw new ProtocolError(reply.error ?? "The mesh could not be read.");
     return {
       triangles: reply.triangles ?? 0,
@@ -384,22 +473,101 @@ export class Session {
     };
   }
 
+  private snapObject(obj: PlateObject): SnapObject {
+    return {
+      id: obj.id,
+      name: obj.name,
+      fileName: obj.fileName,
+      bytes: obj.bytes,
+      source: obj.source,
+      triangles: obj.triangles,
+      orient: [...obj.orient] as Mat3,
+      scale: obj.scale,
+      centered: obj.centered,
+      offset: { ...obj.offset },
+      seatMm: obj.seatMm,
+      stepTolerance: obj.stepTolerance,
+      ...(obj.note ? { note: obj.note } : {}),
+      modelPose: { m: [...obj.modelPose.m] as Affine["m"], t: [...obj.modelPose.t] as Affine["t"] },
+      workplane: { source: obj.workplane.source, origin: [...obj.workplane.origin] as Workplane["origin"], turn: [...obj.workplane.turn] as Workplane["turn"] },
+      supportEdits: obj.supportEdits.map((entry) => structuredClone(entry)),
+      supportPaint: obj.supportPaint.map((disk) => ({ ...disk, p: [...disk.p] as PaintDisk["p"], n: [...disk.n] as PaintDisk["n"] })),
+      seamPaint: obj.seamPaint.map((disk) => structuredClone(disk)),
+      reinforcement: obj.reinforcement.map((region) => structuredClone(region)),
+      objectSettings: { ...obj.objectSettings },
+      platedNode: obj.platedNode,
+    };
+  }
+
   private capture(label: string): PlateSnap {
     return {
       label,
-      objects: structuredClone(this.objects),
+      objects: this.objects.map((obj) => this.snapObject(obj)),
       selected: this.selected,
       settings: structuredClone(this.settings),
       library: structuredClone(this.library),
+      actions: this.actions.map((action) => ({ ...action })),
+      overrides: structuredClone(this.overrides),
+      printOrder: this.printOrder,
+      clearanceMm: this.clearanceMm,
+      gantryMm: this.gantryMm,
+    };
+  }
+
+  private revive(row: SnapObject): PlateObject {
+    return {
+      ...row,
+      orient: [...row.orient] as Mat3,
+      modelPose: { m: [...row.modelPose.m] as Affine["m"], t: [...row.modelPose.t] as Affine["t"] },
+      workplane: { source: row.workplane.source, origin: [...row.workplane.origin] as Workplane["origin"], turn: [...row.workplane.turn] as Workplane["turn"] },
+      tree: null,
+      solid: null,
+      probes: new Map(),
     };
   }
 
   private install(snap: PlateSnap): void {
-    const copy = structuredClone(snap);
-    this.objects.splice(0, this.objects.length, ...copy.objects);
-    this.selected = copy.selected;
-    this.settings = copy.settings;
-    this.library = copy.library;
+    const live = new Map(this.objects.map((obj) => [obj.id, obj]));
+    const next: PlateObject[] = [];
+    for (const row of snap.objects) {
+      const kept = live.get(row.id);
+      if (kept) {
+        kept.name = row.name;
+        kept.fileName = row.fileName;
+        kept.bytes = row.bytes;
+        kept.source = row.source;
+        kept.triangles = row.triangles;
+        kept.orient = [...row.orient] as Mat3;
+        kept.scale = row.scale;
+        kept.centered = row.centered;
+        kept.offset = { ...row.offset };
+        kept.seatMm = row.seatMm;
+        kept.stepTolerance = row.stepTolerance;
+        kept.note = row.note;
+        kept.supportEdits = row.supportEdits.map((entry) => structuredClone(entry));
+        kept.supportPaint = row.supportPaint.map((disk) => ({ ...disk, p: [...disk.p] as PaintDisk["p"], n: [...disk.n] as PaintDisk["n"] }));
+        kept.seamPaint = row.seamPaint.map((disk) => structuredClone(disk));
+        kept.reinforcement = row.reinforcement.map((region) => structuredClone(region));
+        kept.objectSettings = { ...row.objectSettings };
+        kept.platedNode = row.platedNode;
+        next.push(kept);
+      } else {
+        next.push(this.revive(row));
+      }
+    }
+    const staying = new Set(next.map((obj) => obj.id));
+    for (const obj of this.objects) {
+      if (!staying.has(obj.id)) void this.closeTree(obj);
+    }
+    this.objects.splice(0, this.objects.length, ...next);
+    this.selected = snap.selected;
+    this.settings = structuredClone(snap.settings);
+    this.library = structuredClone(snap.library);
+    this.actions = snap.actions.map((action) => ({ ...action }));
+    this.overrides = structuredClone(snap.overrides);
+    this.printOrder = snap.printOrder;
+    this.clearanceMm = snap.clearanceMm;
+    this.gantryMm = snap.gantryMm;
   }
 
   private remember(label: string): void {
@@ -431,6 +599,11 @@ export class Session {
     this.selected = "";
     this.actions = [];
     this.settings = { ...DEFAULT_PRESET };
+    this.overrides = emptyOverrides();
+    this.printOrder = "all-at-once";
+    this.clearanceMm = 0;
+    this.gantryMm = 0;
+    this.generation += 1;
     this.sourceProject = null;
     this.sourceHash = "";
     this.sourcePath = "";
@@ -447,14 +620,48 @@ export class Session {
     this.objects.length = 0;
     this.settings = { ...parsed.project.settings };
     this.actions = parsed.project.layerActions ? parsed.project.layerActions.map((action) => ({ ...action })) : [];
+    this.overrides = parsed.project.overrides ? structuredClone(parsed.project.overrides) : emptyOverrides();
+    this.printOrder = parsed.project.printOrder === "sequential" ? "sequential" : "all-at-once";
+    this.clearanceMm = parsed.project.sequentialClearanceMm ?? 0;
+    this.gantryMm = parsed.project.sequentialGantryMm ?? 0;
+    this.generation += 1;
     this.sourceProject = structuredClone(parsed.project);
     this.sourceHash = createHash("sha256").update(readFileSync(full)).digest("hex");
     this.sourcePath = realpathSync(full);
     this.profileTouched = false;
     this.adoptProjectMachine(parsed.project.profile);
-    const rows = parsed.project.objects?.length
-      ? parsed.project.objects.map((obj) => ({ id: obj.id, name: obj.name, file: obj.mesh.name, bytes: base64ToBytes(obj.mesh.bytesBase64), placement: obj.placement }))
-      : [{ id: undefined as string | undefined, name: parsed.project.mesh.name, file: parsed.project.mesh.name, bytes: base64ToBytes(parsed.project.mesh.bytesBase64), placement: parsed.project.placement }];
+    const fileObjects = parsed.project.objects?.length ? parsed.project.objects : null;
+    const rows = fileObjects
+      ? fileObjects.map((obj) => ({
+          id: obj.id,
+          name: obj.name,
+          file: obj.mesh.name,
+          bytes: base64ToBytes(obj.mesh.bytesBase64),
+          placement: obj.placement,
+          supportEdits: obj.supportEdits,
+          supportPaint: obj.supportPaint ?? [],
+          seamPaint: obj.seamPaint ?? [],
+          reinforcement: obj.reinforcement ?? [],
+          objectSettings: obj.settings ?? {},
+          modelTree: obj.modelTree,
+          modelPose: obj.modelPose,
+          workplane: obj.workplane,
+        }))
+      : [{
+          id: undefined as string | undefined,
+          name: parsed.project.mesh.name,
+          file: parsed.project.mesh.name,
+          bytes: base64ToBytes(parsed.project.mesh.bytesBase64),
+          placement: parsed.project.placement,
+          supportEdits: parsed.project.supportEdits,
+          supportPaint: [] as PaintDisk[],
+          seamPaint: [] as SeamDisk[],
+          reinforcement: [] as ReinforceRegion[],
+          objectSettings: {} as PlateObjectSettings,
+          modelTree: undefined,
+          modelPose: undefined,
+          workplane: undefined,
+        }];
     const objects: { object: string; name: string }[] = [];
     for (const row of rows) {
       if (!row.bytes) return { ok: false, reason: "The mesh in this project is damaged." };
@@ -471,9 +678,22 @@ export class Session {
         offset: { ...row.placement.offset },
         seatMm: preview.seatMm,
         stepTolerance: row.placement.stepTolerance > 0 ? row.placement.stepTolerance : STEP,
+        supportEdits: row.supportEdits.map((entry) => structuredClone(entry)),
+        supportPaint: row.supportPaint.map((disk) => structuredClone(disk)),
+        seamPaint: row.seamPaint.map((disk) => structuredClone(disk)),
+        reinforcement: row.reinforcement.map((region) => structuredClone(region)),
+        objectSettings: { ...row.objectSettings },
       }, row.id);
+      if (row.modelPose) obj.modelPose = { m: [...row.modelPose.m] as Affine["m"], t: [...row.modelPose.t] as Affine["t"] };
+      if (row.workplane) obj.workplane = { source: row.workplane.source, origin: [...row.workplane.origin] as Workplane["origin"], turn: [...row.workplane.turn] as Workplane["turn"] };
       objects.push({ object: obj.id, name: shownName(obj.name) });
     }
+    for (const row of rows) {
+      if (!row.modelTree || !row.id) continue;
+      const obj = this.find(row.id);
+      if (obj) await this.adoptHistory(obj, row.modelTree);
+    }
+    const skipped = this.notSliced();
     return {
       ok: true,
       project: "project",
@@ -484,6 +704,7 @@ export class Session {
       filament: this.filament().name,
       objects,
       ...(parsed.project.unreadHistory?.length ? { unreadHistory: parsed.project.unreadHistory } : {}),
+      ...(skipped.length ? { notSliced: skipped, note: `This project has ${skipped.join(", ")} that this server does not slice yet. The G-code will differ from the app's.` } : {}),
     };
   }
 
@@ -521,13 +742,60 @@ export class Session {
   }
 
   private fileObject(obj: PlateObject): NonNullable<LimeProject["objects"]>[number] {
+    const tree = this.savedModelTree(obj);
     return {
       id: obj.id,
       name: obj.name,
       mesh: meshRecord(obj.fileName, obj.bytes),
       placement: this.placementOf(obj),
-      supportEdits: [],
+      supportEdits: obj.supportEdits.map((entry) => structuredClone(entry)),
+      ...(obj.supportPaint.length ? { supportPaint: obj.supportPaint.map((disk) => structuredClone(disk)) } : {}),
+      ...(obj.seamPaint.length ? { seamPaint: obj.seamPaint.map((disk) => structuredClone(disk)) } : {}),
+      ...(obj.reinforcement.length ? { reinforcement: obj.reinforcement.map((region) => structuredClone(region)) } : {}),
+      ...(settingsEmpty(obj.objectSettings) ? {} : { settings: { ...obj.objectSettings } }),
+      ...(tree ? { modelTree: tree } : {}),
+      ...(obj.modelPose.t.some((value) => value !== 0) || obj.modelPose.m.some((value, index) => value !== [1, 0, 0, 0, 1, 0, 0, 0, 1][index]) ? { modelPose: { m: [...obj.modelPose.m] as Affine["m"], t: [...obj.modelPose.t] as Affine["t"] } } : {}),
+      ...(obj.workplane.source === "global" ? {} : { workplane: { source: obj.workplane.source, origin: [...obj.workplane.origin] as Workplane["origin"], turn: [...obj.workplane.turn] as Workplane["turn"] } }),
     };
+  }
+
+  private savedModelTree(obj: PlateObject): NonNullable<LimeProject["objects"]>[number]["modelTree"] | undefined {
+    const tree = obj.tree;
+    if (!tree || tree.root.kind === "piece") return undefined;
+    const owner = (key: string) => this.objects.find((row) => row.tree?.key === key)?.id;
+    const body = savedTree(tree, tree.committed, owner);
+    if (tree.root.kind === "primitive") return { ...body, rootPrimitive: tree.root.solid };
+    const bytes = new Uint8Array(tree.root.bytes);
+    return { ...body, rootStep: meshRecord(tree.root.name, bytes) };
+  }
+
+  private async adoptHistory(obj: PlateObject, saved: NonNullable<NonNullable<LimeProject["objects"]>[number]["modelTree"]>): Promise<void> {
+    const key = `mcp-${obj.id}`;
+    const root = saved.rootPrimitive
+      ? { kind: "primitive" as const, solid: saved.rootPrimitive }
+      : saved.rootStep?.bytesBase64
+        ? { kind: "step" as const, name: saved.rootStep.name, bytes: this.bufferOf(saved.rootStep.bytesBase64) }
+        : null;
+    if (!root || (root.kind === "step" && !root.bytes)) return;
+    const stepRoot = root.kind === "step" && root.bytes ? { kind: "step" as const, name: root.name, bytes: root.bytes } : root.kind === "primitive" ? root : null;
+    if (!stepRoot) return;
+    const objectKey = (id: string) => this.objects.find((row) => row.id === id)?.tree?.key ?? (this.find(id) ? `mcp-${id}` : undefined);
+    obj.tree = loadedTree(saved, key, stepRoot, obj.name, null, objectKey);
+    obj.platedNode = obj.tree.committed;
+    try {
+      const reply = await this.treeCall(wholeTreeRequest(obj.tree, stepRoot, obj.tree.current, obj.stepTolerance || CHORD), "open");
+      const solid = rememberSolid(reply);
+      if (solid) obj.solid = solid;
+    } catch (err) {
+      if (err instanceof ModelRunaway) return;
+      throw err;
+    }
+  }
+
+  private bufferOf(encoded: string): ArrayBuffer | null {
+    const bytes = base64ToBytes(encoded);
+    if (!bytes) return null;
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
   }
 
   private freshDocument(): LimeProject {
@@ -535,8 +803,9 @@ export class Session {
     const profile = enginePrinter(this.printer(), this.filament(), this.library.nozzleMm);
     const mesh = first ? meshRecord(first.fileName, first.bytes) : meshRecord("empty.stl", new Uint8Array());
     const objects = this.objects.map((obj) => this.fileObject(obj));
+    const listed = objects.length > 1 || objects.some((row) => row.modelTree || row.settings || row.supportPaint || row.seamPaint || row.reinforcement || row.workplane || row.modelPose);
     return {
-      version: objects.length > 1 ? 2 : 1,
+      version: listed ? 2 : 1,
       mesh,
       placement: first ? this.placementOf(first) : { orient: [...ID_MATRIX] as ProjectPlacement["orient"], scale: 1, centered: true, offset: { x: 0, y: 0, z: 0 }, stepTolerance: STEP },
       settings: this.settings,
@@ -544,8 +813,10 @@ export class Session {
       profile,
       level: "simple",
       supportEdits: [],
-      ...(objects.length > 1 ? { objects } : {}),
+      ...(listed ? { objects } : {}),
       ...(this.actions.length ? { layerActions: this.actions } : {}),
+      ...(this.overrides.ranges.length || this.overrides.volumes.length ? { overrides: structuredClone(this.overrides) } : {}),
+      ...(this.printOrder === "sequential" ? { printOrder: "sequential" as const, ...(this.clearanceMm > 0 ? { sequentialClearanceMm: this.clearanceMm } : {}), ...(this.gantryMm > 0 ? { sequentialGantryMm: this.gantryMm } : {}) } : {}),
     };
   }
 
@@ -558,7 +829,7 @@ export class Session {
     if (this.profileTouched) base.profile = enginePrinter(this.printer(), this.filament(), this.library.nozzleMm);
     if (base.objects && base.objects.length > 0) {
       const live = new Map(this.objects.map((obj) => [obj.id, obj]));
-      const kept = base.objects.filter((obj) => live.has(obj.id)).map((obj) => ({ ...obj, placement: this.placementOf(live.get(obj.id)!) }));
+      const kept = base.objects.filter((obj) => live.has(obj.id)).map((obj) => this.fileObject(live.get(obj.id)!));
       for (const obj of this.objects) {
         if (!kept.some((row) => row.id === obj.id)) kept.push(this.fileObject(obj));
       }
@@ -571,6 +842,13 @@ export class Session {
       }
       base.version = plateFileIsVersion2(kept) || kept.length > 1 ? 2 : 1;
       if (base.version === 1) delete base.objects;
+      if (this.overrides.ranges.length || this.overrides.volumes.length) base.overrides = structuredClone(this.overrides);
+      else delete base.overrides;
+      if (this.printOrder === "sequential") {
+        base.printOrder = "sequential";
+        if (this.clearanceMm > 0) base.sequentialClearanceMm = this.clearanceMm;
+        if (this.gantryMm > 0) base.sequentialGantryMm = this.gantryMm;
+      }
       return base;
     }
     const obj = this.objects[0];
@@ -578,6 +856,17 @@ export class Session {
       const next = meshRecord(obj.fileName, obj.bytes);
       if (next.hash !== base.mesh.hash || next.name !== base.mesh.name) base.mesh = next;
       base.placement = this.placementOf(obj);
+      if (obj.tree || this.objects.length > 1) {
+        const objects = this.objects.map((row) => this.fileObject(row));
+        base.objects = objects;
+        base.version = 2;
+      }
+    }
+    if (this.overrides.ranges.length || this.overrides.volumes.length) base.overrides = structuredClone(this.overrides);
+    if (this.printOrder === "sequential") {
+      base.printOrder = "sequential";
+      if (this.clearanceMm > 0) base.sequentialClearanceMm = this.clearanceMm;
+      if (this.gantryMm > 0) base.sequentialGantryMm = this.gantryMm;
     }
     return base;
   }
@@ -768,6 +1057,21 @@ export class Session {
     };
   }
 
+  /** Older jobs keep z and seconds. Only the latest job keeps layer paths. */
+  private keepLatestWire(latest: Job): void {
+    for (const job of this.jobs) {
+      if (job.handle === latest.handle || !job.wire || !Array.isArray(job.wire.layers)) continue;
+      job.wire = {
+        ...job.wire,
+        layers: (job.wire.layers as Record<string, unknown>[]).map((layer) => {
+          const rest = { ...layer };
+          delete rest.paths;
+          return rest;
+        }),
+      };
+    }
+  }
+
   private retainJobs(job: Job) {
     this.jobs.push(job);
     while (this.jobs.length > 8) {
@@ -867,9 +1171,6 @@ export class Session {
   }
 
   private settingsApply(input: Record<string, unknown>): Record<string, unknown> {
-    if (typeof input.layerHeight === "number" && (input.layerHeight < 0.08 || input.layerHeight > 0.4)) {
-      return { ok: false, reason: "Layer height must be from 0.08–0.4 mm.", changed: [] };
-    }
     let next = this.settings;
     if (typeof input.path === "string") {
       const parsed = parseSettingsProfile(readFileSync(resolveRead(input.path, "profile"), "utf8"));
@@ -879,6 +1180,8 @@ export class Session {
     if (typeof input.preset === "string") next = applyPreset(next, input.preset);
     if (typeof input.layerHeight === "number") next = { ...next, layerHeight: input.layerHeight };
     if (typeof input.supports === "boolean") next = { ...next, supports: input.supports };
+    const range = settingsRangeError(next, { belt: this.printer().kind === "belt", lineWidth: Math.min(1.2, Math.max(0.2, this.library.nozzleMm * 1.125)) });
+    if (range) return { ok: false, reason: range, changed: [] };
     this.remember("Settings");
     this.settings = next;
     const changed = presetKeys().filter((key) => this.settings[key] !== DEFAULT_PRESET[key]);
@@ -889,22 +1192,121 @@ export class Session {
     return this.find(this.selected) ?? this.objects[0] ?? null;
   }
 
-  private sliceBody(obj: PlateObject): Record<string, unknown> {
+  private order(): PrintOrder {
+    return { printOrder: this.printOrder, clearanceMm: this.clearanceMm, gantryMm: this.gantryMm };
+  }
+
+  /** Fields the app's `payload()` puts on one object, or on the plate when more than one is listed. */
+  private sliceBody(obj: PlateObject): { body: Record<string, unknown>; mesh: Uint8Array } {
     const placed = this.placed(obj);
     const name = /\.(3mf|step|stp)$/i.test(obj.fileName) ? obj.fileName.replace(/\.(3mf|step|stp)$/i, ".stl") : obj.fileName;
-    return sessionSliceRequest({
+    const mesh = stlBytes(scaledCanonical(obj.source, obj.scale), name);
+    const rules = this.sliceRules(this.plateWantsObjects() ? this.objects.length : 1);
+    const listed = this.plateWantsObjects();
+    const oneExtra = listed ? {} : this.oneObjectFields(obj);
+    const plate = listed ? this.plateFields() : {};
+    const body = sessionSliceRequest({
       filename: name,
-      bytes: stlBytes(scaledCanonical(obj.source, obj.scale), name),
+      bytes: mesh,
       pose: placed.pose,
       settings: this.settings,
       printer: this.printer(),
       filament: this.filament(),
       nozzleMm: this.library.nozzleMm,
       actions: this.actions,
-      objects: 1,
+      objects: listed ? this.objects.length : 1,
       bounds: placed.bounds,
       stepToleranceMm: obj.stepTolerance,
+      overrides: this.overrides,
+      order: { ...orderFields(rules, this.order()) },
+      plate,
+      oneExtra,
+      encodeMesh: false,
     });
+    return { body, mesh };
+  }
+
+  private sliceRules(objects: number) {
+    const printer = this.printer();
+    return settingsRules({
+      kind: printer.kind,
+      belt: { raftLayers: printer.belt.raftLayers, maxLengthMm: printer.belt.maxLengthMm },
+      firmware: printer.firmware,
+      firmwareArcs: printer.firmwareArcs,
+      objects,
+      supportMode: this.settings.supportSource === "paint" ? "paint" : "auto",
+    });
+  }
+
+  private plateWantsObjects(): boolean {
+    return this.objects.length > 1 || this.objects.some((obj) => !settingsEmpty(obj.objectSettings));
+  }
+
+  private oneObjectFields(obj: PlateObject): Record<string, unknown> {
+    const frame = sourceFrame(obj.source, obj.scale);
+    const tree = (obj.objectSettings.supports ?? this.settings.supports) && (obj.objectSettings.supportStyle ?? this.settings.supportStyle) === "tree";
+    return {
+      ...editRequestFields(obj.supportEdits, tree),
+      ...paintRequestFields(obj.supportPaint, frame),
+      ...seamRequestFields(obj.seamPaint, frame),
+      ...reinforcementRequestFields(obj.reinforcement, frame, normalInfillDensity({
+        blendKind: this.settings.blendKind as "single" | "weight" | "byLayer" | "byRegion",
+        strategy: this.settings.strategy === "toughness" ? "toughness" : "speed",
+        toughness: this.settings.toughness,
+        objectInfill: obj.objectSettings.infill,
+      })),
+    };
+  }
+
+  private plateFields(): Record<string, unknown> {
+    const specs = this.objects.map((obj) => {
+      const placed = this.placed(obj);
+      return {
+        id: obj.id,
+        fileName: /\.(3mf|step|stp)$/i.test(obj.fileName) ? obj.fileName.replace(/\.(3mf|step|stp)$/i, ".stl") : obj.fileName,
+        sourcePos: obj.source,
+        partScale: obj.scale,
+        stepTolerance: obj.stepTolerance,
+        supportEdits: obj.supportEdits,
+        supportPaint: obj.supportPaint,
+        seamPaint: obj.seamPaint,
+        reinforcement: obj.reinforcement,
+        settings: obj.objectSettings,
+        pose: placed.pose,
+        height: placed.bounds.max[2] - placed.bounds.min[2],
+      };
+    });
+    const ordered = sequentialClearance(this.sliceRules(specs.length), this.order()) === null ? specs : tallestLast(specs, (row) => row.height);
+    const plateObjects: SliceObject[] = ordered.map((row) => ({
+      id: row.id,
+      name: row.fileName,
+      fileName: row.fileName,
+      bytes: new ArrayBuffer(0),
+      sourcePos: row.sourcePos,
+      orient: [...ID_MATRIX] as Mat3,
+      partScale: row.partScale,
+      centered: true,
+      offset: { x: 0, y: 0, z: 0 },
+      stepTolerance: row.stepTolerance,
+      supportEdits: row.supportEdits,
+      supportPaint: row.supportPaint,
+      seamPaint: row.seamPaint,
+      reinforcement: row.reinforcement,
+      settings: row.settings,
+    }));
+    const poseOf = new Map(specs.map((row) => [row.id, row.pose]));
+    return slicePlateFields(plateObjects, (row) => poseOf.get(row.id) ?? specs[0]!.pose, {
+      supports: this.settings.supports,
+      supportStyle: this.settings.supportStyle,
+      blendKind: this.settings.blendKind as "single" | "weight" | "byLayer" | "byRegion",
+      strategy: this.settings.strategy === "toughness" ? "toughness" : "speed",
+      toughness: this.settings.toughness,
+    });
+  }
+
+  /** Features still left out of the slice body. Empty once each one is sent the way the app sends it. */
+  private notSliced(): string[] {
+    return [];
   }
 
   private async sliceStart(cancelRunning: boolean): Promise<Record<string, unknown>> {
@@ -920,13 +1322,22 @@ export class Session {
     if (!obj) return { ok: false, reason: "Load a mesh first." };
     const committed = await this.commitObject(obj);
     if (committed) return { ok: false, reason: committed };
-    const started = JSON.parse(await this.ask(this.engine.sliceStart(JSON.stringify(this.sliceBody(obj))))) as { id?: number; error?: string };
+    const skipped = this.notSliced();
+    const built = this.sliceBody(obj);
+    const started = JSON.parse(await this.ask(this.engine.sliceStart(JSON.stringify(built.body), built.mesh))) as { id?: number; error?: string };
     if (typeof started.id !== "number") return { ok: false, reason: humanEngineError(started.error ?? "The slice did not start.") };
     this.jobSeq += 1;
     const job: Job = { handle: `job_${this.jobSeq}`, engineId: started.id, objectId: obj.id, stamp: this.sliceStamp(obj), status: "running" };
     this.running = job;
     this.retainJobs(job);
-    return { ok: true, job: job.handle, status: "running", object: obj.id, name: shownName(obj.name) };
+    return {
+      ok: true,
+      job: job.handle,
+      status: "running",
+      object: obj.id,
+      name: shownName(obj.name),
+      ...(skipped.length ? { notSliced: skipped, note: `This project has ${skipped.join(", ")} that this server does not slice yet. The G-code will differ from the app's.` } : {}),
+    };
   }
 
   private sliceStamp(obj: PlateObject): string {
@@ -940,6 +1351,13 @@ export class Session {
       scale: obj.scale,
       centered: obj.centered,
       offset: obj.offset,
+      mesh: fnv1aHex(obj.bytes),
+      treeCurrent: obj.tree?.current ?? null,
+      treeCommitted: obj.tree?.committed ?? null,
+      actions: fnv1aHex(new TextEncoder().encode(JSON.stringify(this.actions))),
+      generation: this.generation,
+      overrides: this.overrides,
+      paint: this.objects.map((row) => [row.id, row.supportPaint.length, row.seamPaint.length, row.reinforcement.length, row.supportEdits.length, row.objectSettings]),
     });
   }
 
@@ -968,12 +1386,17 @@ export class Session {
       if (typeof poll.fraction === "number") {
         fraction = poll.fraction;
         stage = poll.stage ?? "";
-        this.onProgress?.(job.handle, fraction, stage, meta?.progressToken);
+        const now = Date.now();
+        if (fraction >= 1 || now - this.lastProgressAt >= 250) {
+          this.lastProgressAt = now;
+          this.onProgress?.(job.handle, fraction, stage, meta?.progressToken);
+        }
       }
       if (poll.status === "done" && poll.result) {
         job.status = "done";
         job.wire = JSON.parse(poll.result) as Record<string, unknown>;
         job.gcode = typeof job.wire.gcode === "string" ? job.wire.gcode : undefined;
+        this.keepLatestWire(job);
       } else if (poll.status === "cancelled") {
         job.status = "cancelled";
       } else if (poll.status === "error" || poll.error) {
@@ -1089,7 +1512,10 @@ export class Session {
     const stale = this.staleReason(job);
     if (stale) return { ok: false, reason: stale };
     const summary = this.summarize(job);
-    const review = reviewGcode(this.fileText(job, new Date(Date.UTC(2020, 0, 2, 3, 4, 5))));
+    const review = reviewGcode(this.fileText(job, new Date(Date.UTC(2020, 0, 2, 3, 4, 5))), {
+      custom: this.customBlocks(),
+      maxNozzleC: this.printer().maxNozzleC,
+    });
     return {
       ok: true,
       seconds: summary.seconds,
@@ -1100,7 +1526,17 @@ export class Session {
       head: review.head,
       tail: review.tail,
       review: review.review,
+      custom: review.custom,
     };
+  }
+
+  /** Lines a person wrote: machine start and end, and custom layer actions. */
+  private customBlocks(): string[] {
+    const printer = this.printer();
+    const actions = this.actions
+      .filter((action) => action.kind === "customGcode" && action.gcode)
+      .map((action) => action.gcode as string);
+    return [printer.startGcode, printer.endGcode, ...actions];
   }
 
   private gcodeExport(input: Record<string, unknown>): Record<string, unknown> {
@@ -1149,6 +1585,8 @@ export class Session {
   private layerSummary(handle?: string): Record<string, unknown> {
     const job = this.finished(handle);
     if (!job?.wire) return { ok: false, reason: "Slice first." };
+    const stale = this.staleReason(job);
+    if (stale) return { ok: false, reason: stale };
     const summary = this.summarize(job);
     const first = summary.layers[0];
     const last = summary.layers[summary.layers.length - 1];
@@ -1186,8 +1624,10 @@ export class Session {
     }
     if (uri === "lime://slice/latest") {
       if (!this.latest?.wire) return { ready: false };
+      const stale = this.staleReason(this.latest);
       const summary = this.summarize(this.latest);
-      return { seconds: summary.seconds, grams: summary.grams, warnings: summary.warnings };
+      if (stale) return { ready: true, stale: true, reason: stale, seconds: summary.seconds, grams: summary.grams, warnings: summary.warnings };
+      return { seconds: summary.seconds, grams: summary.grams, warnings: summary.warnings, stale: false };
     }
     if (uri === "lime://gcode/latest/summary") return this.gcodeSummary();
     const history = /^lime:\/\/object\/([^/]+)\/history$/.exec(uri);
@@ -1206,7 +1646,7 @@ export class Session {
       case "workplane_print_up": return this.printUp(obj);
       case "model_place": return this.modelPlace(obj, input);
       case "model_probe": return this.probe(obj, input.op, input.node);
-      case "model_apply": return this.apply(obj, input.op, false);
+      case "model_apply": return this.apply(obj, input.op);
       case "model_history": return this.history(obj, input);
       case "model_goto": return this.gotoNode(obj, parseNode(input.node));
       case "model_undo": return this.step(obj, "undo");
@@ -1220,12 +1660,67 @@ export class Session {
     }
   }
 
-  private async treeCall(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  private modelTimeoutMs(): number {
+    const raw = Number(process.env.LIME_MCP_MODEL_TIMEOUT_S);
+    const seconds = Number.isFinite(raw) && raw > 0 ? raw : 30;
+    return seconds * 1000;
+  }
+
+  private runawayMessage(kind: string, budgetMs: number): string {
+    const seconds = Math.max(1, Math.round(budgetMs / 1000));
+    const name = kind === "fillet" || kind === "chamfer" ? kind : "edit";
+    return `This ${name} did not finish in ${seconds} s. Nothing changed. Try a smaller size or fewer edges.`;
+  }
+
+  /** A timed-out modeler is replaced. Open trees are dropped; the last committed bytes stay. */
+  private async loseTrees(): Promise<void> {
+    try {
+      await this.ask(this.engine.resetModeler());
+    } catch {
+      // The next model call starts a fresh modeler either way.
+    }
+    for (const obj of this.objects) {
+      obj.tree = null;
+      obj.solid = null;
+      obj.probes = new Map();
+    }
+  }
+
+  private lostReply(err: unknown): Record<string, unknown> | null {
+    if (!(err instanceof ModelRunaway)) return null;
+    return { ok: false, reason: err.message, treeLost: true };
+  }
+
+  private async treeCall(body: Record<string, unknown>, label = "edit"): Promise<Record<string, unknown>> {
+    const op = body.op && typeof body.op === "object" ? body.op as { kind?: unknown } : null;
+    const kind = typeof op?.kind === "string" ? op.kind : label;
+    const budget = this.modelTimeoutMs();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let rss: ReturnType<typeof setInterval> | undefined;
     let text = "";
     try {
-      text = await this.ask(this.engine.modelTree(JSON.stringify(body)));
+      text = await new Promise<string>((resolve, reject) => {
+        timer = setTimeout(() => reject(new ModelRunaway(this.runawayMessage(kind, budget))), budget);
+        const cap = Number(process.env.LIME_MCP_MODEL_RSS_MB);
+        if (Number.isFinite(cap) && cap > 0) {
+          rss = setInterval(() => {
+            if (process.memoryUsage().rss / (1024 * 1024) > cap) reject(new ModelRunaway(this.runawayMessage(kind, budget)));
+          }, 1000);
+        }
+        Promise.resolve(this.engine.modelTree(JSON.stringify(body))).then(
+          (value) => resolve(value),
+          (err: unknown) => reject(err instanceof Error ? err : new ProtocolError("The modeler did not answer.")),
+        );
+      });
     } catch (err) {
+      if (err instanceof ModelRunaway) {
+        await this.loseTrees();
+        throw err;
+      }
       throw new ProtocolError(err instanceof Error ? err.message : "The modeler did not answer.");
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (rss) clearInterval(rss);
     }
     let reply: Record<string, unknown>;
     try {
@@ -1238,6 +1733,15 @@ export class Session {
       throw new ProtocolError(occtHint(error));
     }
     return reply;
+  }
+
+  /** STEP bytes the bridge returns. A missing `bytesBase64` is a failed export. */
+  private stepBytes(reply: Record<string, unknown>): Uint8Array | null {
+    if (typeof reply.bytesBase64 !== "string" || reply.bytesBase64 === "") return null;
+    const bytes = base64ToBytes(reply.bytesBase64);
+    if (!bytes || bytes.byteLength === 0) return null;
+    if (typeof reply.byteLength === "number" && reply.byteLength !== bytes.byteLength) return null;
+    return bytes;
   }
 
   private async ensureTree(obj: PlateObject): Promise<ModelTree> {
@@ -1283,6 +1787,12 @@ export class Session {
       tree: newTree(key, { kind: "primitive", solid: spec }, kind, null),
       solid: rememberSolid(reply),
       probes: new Map(),
+      supportEdits: [],
+      supportPaint: [],
+      seamPaint: [],
+      reinforcement: [],
+      objectSettings: {},
+      platedNode: null,
     };
     this.objects.push(obj);
     this.selected = obj.id;
@@ -1308,8 +1818,23 @@ export class Session {
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     const solid = obj.solid;
     if (!solid) return { ok: false, reason: "This solid could not be read." };
-    const faces = page(solid.faces.map((face, index) => ({ index, areaMm2: face.areaMm2, ...(face.normal ? { normal: face.normal } : {}) })), input.facesCursor ?? input.cursor, input.limit);
-    const edges = page(solid.edges.map((edge, index) => ({ index, mid: edge.mid, lengthMm: edge.lengthMm })), input.edgesCursor, input.limit);
+    const faces = page(solid.faces.map((face) => ({
+      index: face.index,
+      areaMm2: face.areaMm2,
+      ...(face.normal ? { normal: face.normal } : {}),
+      centre: face.centre,
+      bbox: face.bbox,
+      kind: face.kind,
+      ...(face.radiusMm !== undefined ? { radiusMm: face.radiusMm, axis: face.axis } : {}),
+    })), input.facesCursor ?? input.cursor, input.limit);
+    const edges = page(solid.edges.map((edge) => ({
+      index: edge.index,
+      mid: edge.mid,
+      start: edge.start,
+      end: edge.end,
+      lengthMm: edge.lengthMm,
+      ...(edge.dir ? { dir: edge.dir } : {}),
+    })), input.edgesCursor, input.limit);
     return {
       ok: true,
       volumeMm3: solid.volumeMm3,
@@ -1401,8 +1926,11 @@ export class Session {
       const counterbore = typeof spec.counterboreDiameterMm === "number" && typeof spec.counterboreDepth === "number"
         ? { counterboreRadius: spec.counterboreDiameterMm / 2, counterboreDepth: spec.counterboreDepth }
         : {};
+      const typedBore = typeof spec.counterboreDiameterMm === "number" && typeof spec.counterboreDepth === "number"
+        ? { counterboreDiameterMm: spec.counterboreDiameterMm, counterboreDepth: spec.counterboreDepth }
+        : {};
       const op: ModelOp = { kind: "hole", origin, axis, radius, depth, ...(through ? { through: true as const } : {}), ...counterbore };
-      return { op: toSolidOp(op, obj.modelPose), typed: { kind: "hole", diameterMm: radius * 2, ...(through ? { through: true } : { depth }), ...counterbore } };
+      return { op: toSolidOp(op, obj.modelPose), typed: { kind: "hole", diameterMm: radius * 2, ...(through ? { through: true } : { depth }), ...typedBore } };
     }
     if (kind === "join") {
       const tool = this.find(String(spec.toolObject ?? ""));
@@ -1448,16 +1976,17 @@ export class Session {
     const mode = axis === 0 ? "x" : axis === 1 ? "y" : "z";
     const base = splitBase(mode, center, null);
     if (!base) return splitNote({ why: "This solid is too thin to split.", wait: false });
-    const window = { min: extent.min, max: extent.max, mid: (extent.min + extent.max) / 2 };
-    const range = valueRange(base, normal, window);
-    const along = base.dir[0] * (op.origin[0] - base.base[0]) + base.dir[1] * (op.origin[1] - base.base[1]) + base.dir[2] * (op.origin[2] - base.base[2]);
+    const depth = op.origin[0] * normal[0] + op.origin[1] * normal[1] + op.origin[2] * normal[2];
+    const margin = 1e-4;
+    const range = { min: extent.min, max: extent.max, mid: (extent.min + extent.max) / 2 };
+    const inside = extent.min + margin < depth && depth < extent.max - margin;
     const plan: SplitPlan = {
       base,
-      value: along,
+      value: depth,
       origin: [...op.origin] as PlaneVec,
       normal,
       range,
-      inside: splitPlaneInside(along, range),
+      inside,
       rings: tiltRings(base.normal, 0),
     };
     return splitNote({ plan });
@@ -1494,8 +2023,20 @@ export class Session {
       obj.probes.set(probeKey(String(at), baked.op), true);
       return { ok: true, reason: note.text, stored: baked.op, typed: baked.typed };
     }
+    if (baked.op.kind === "boolean" && obj.solid) {
+      const missed = disjointBoolean(obj.solid.bounds, baked.op, baked.op.op);
+      if (missed) return { ok: false, reason: missed, stored: baked.op, typed: baked.typed };
+    }
     const tool = (baked.op.kind === "join" ? "boolean" : baked.op.kind) as ProbedTool;
-    const reply = await this.treeCall(probeRequest(tree.key, at, baked.op));
+    const preview = (baked.op.kind === "fillet" || baked.op.kind === "chamfer") && baked.op.edges.length > 1 ? (obj.stepTolerance || CHORD) : undefined;
+    let reply: Record<string, unknown>;
+    try {
+      reply = await this.treeCall(probeRequest(tree.key, at, baked.op, preview), baked.op.kind);
+    } catch (err) {
+      const lost = this.lostReply(err);
+      if (lost) return lost;
+      throw err;
+    }
     const view = probeFromBody(reply);
     const note = probeNote(tool, view);
     if (!note || note.bad) return { ok: false, reason: note?.text ?? "This does not fit.", ...(typeof reply.maxMm === "number" ? { maxMm: reply.maxMm } : {}), stored: baked.op, typed: baked.typed };
@@ -1503,7 +2044,7 @@ export class Session {
     return { ok: true, reason: note.text, stored: baked.op, typed: baked.typed };
   }
 
-  private async apply(obj: PlateObject, raw: unknown, edit: boolean): Promise<Record<string, unknown>> {
+  private async apply(obj: PlateObject, raw: unknown): Promise<Record<string, unknown>> {
     const toolReason = await this.openJoinTool(raw);
     if (toolReason) return { ok: false, reason: toolReason };
     const tree = await this.opened(obj);
@@ -1518,13 +2059,73 @@ export class Session {
     if (!obj.probes.has(key)) return { ok: false, reason: "Probe this edit first. It was not applied." };
     const [reserved, node] = reserveId(tree);
     obj.tree = reserved;
-    const reply = await this.treeCall(applyRequest(tree.key, tree.current, node, baked.op, CHORD));
+    const keep = baked.op.kind === "split" ? this.splitKeep(raw) : "both";
+    const otherKey = baked.op.kind === "split" && keep === "both" ? `mcp-split-${obj.id}-${node}` : undefined;
+    let reply: Record<string, unknown>;
+    try {
+      reply = await this.treeCall(applyRequest(tree.key, tree.current, node, baked.op, CHORD, otherKey), baked.op.kind);
+    } catch (err) {
+      const lost = this.lostReply(err);
+      if (lost) return lost;
+      throw err;
+    }
     if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error, baked.op.kind) };
     obj.tree = withChild(obj.tree, tree.current, { id: node, op: baked.op, label: opLabel(baked.op), fingerprint: null });
     const solid = rememberSolid(reply);
     if (solid) obj.solid = solid;
     obj.probes.clear();
-    return { ok: true, node: nodeHandle(node), ...(edit ? {} : {}), stored: baked.op, typed: baked.typed };
+    const other = otherKey ? this.keepOtherHalf(obj, otherKey, reply.other, node) : undefined;
+    const kept = baked.op.kind === "split" ? (keep === "both" ? "both" : this.keptSide(obj, baked.op)) : undefined;
+    return { ok: true, node: nodeHandle(node), ...(other ? { other } : {}), ...(kept ? { kept } : {}), stored: baked.op, typed: baked.typed };
+  }
+
+  private splitKeep(raw: unknown): "both" | "above" | "below" {
+    if (!raw || typeof raw !== "object") return "both";
+    const keep = (raw as { keep?: unknown }).keep;
+    return keep === "above" || keep === "below" ? keep : "both";
+  }
+
+  /** The half whose centre is on the positive side of the plane is above. */
+  private keptSide(obj: PlateObject, op: Extract<ModelOp, { kind: "split" }>): "above" | "below" {
+    const box = obj.solid?.bounds;
+    if (!box) return "above";
+    const length = Math.hypot(op.normal[0], op.normal[1], op.normal[2]) || 1;
+    const centre = [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2];
+    const depth = centre[0] * op.normal[0] + centre[1] * op.normal[1] + centre[2] * op.normal[2];
+    const plane = op.origin[0] * op.normal[0] + op.origin[1] * op.normal[1] + op.origin[2] * op.normal[2];
+    return depth / length >= plane / length ? "above" : "below";
+  }
+
+  private keepOtherHalf(obj: PlateObject, otherKey: string, other: unknown, node: number): string | undefined {
+    if (!other || typeof other !== "object") return undefined;
+    const piece = rememberSolid(other as Record<string, unknown>);
+    if (!piece) return undefined;
+    this.seq += 1;
+    const id = `obj_${this.seq}`;
+    const half: PlateObject = {
+      ...obj,
+      id,
+      name: `${obj.name} split`,
+      fileName: obj.fileName,
+      bytes: new Uint8Array(),
+      source: Float32Array.from(piece.positions),
+      triangles: piece.positions.length / 9,
+      orient: [...obj.orient] as Mat3,
+      offset: { ...obj.offset },
+      modelPose: { m: [...obj.modelPose.m] as Affine["m"], t: [...obj.modelPose.t] as Affine["t"] },
+      workplane: { source: obj.workplane.source, origin: [...obj.workplane.origin] as Workplane["origin"], turn: [...obj.workplane.turn] as Workplane["turn"] },
+      tree: newTree(otherKey, { kind: "piece", tree: obj.tree?.key ?? otherKey, node }, "Split", piece.fingerprint),
+      solid: piece,
+      probes: new Map(),
+      platedNode: null,
+      supportEdits: obj.supportEdits.map((entry) => structuredClone(entry)),
+      supportPaint: obj.supportPaint.map((disk) => ({ ...disk, p: [...disk.p] as PaintDisk["p"], n: [...disk.n] as PaintDisk["n"] })),
+      seamPaint: obj.seamPaint.map((disk) => structuredClone(disk)),
+      reinforcement: obj.reinforcement.map((region) => structuredClone(region)),
+      objectSettings: { ...obj.objectSettings },
+    };
+    this.objects.push(half);
+    return id;
   }
 
   private async history(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -1683,22 +2284,39 @@ export class Session {
     return { ok: true, scalePercent: obj.scale * 100, triangles: obj.triangles };
   }
 
-  /** The plate mesh becomes the solid on screen. The scale is reset only once that mesh is in place. */
+  /** The plate mesh becomes the solid on screen. A second commit of the same node does not export again. */
   private async commitObject(obj: PlateObject): Promise<string | null> {
     const tree = obj.tree;
     if (!tree || !obj.solid || obj.solid.positions.length < 9) return null;
-    const reply = await this.treeCall(exportRequest(tree.key, tree.current));
-    const step = typeof reply.step === "string" ? reply.step : typeof reply.data === "string" ? reply.data : "";
+    if (obj.platedNode === tree.current && obj.bytes.byteLength > 0) return null;
+    const from = obj.platedNode;
+    let reply: Record<string, unknown>;
+    try {
+      reply = await this.treeCall(exportRequest(tree.key, tree.current), "export");
+    } catch (err) {
+      if (err instanceof ModelRunaway) return err.message;
+      throw err;
+    }
+    const step = this.stepBytes(reply);
     if (!step) return typeof reply.error === "string" ? plainModelError(reply.error) : "The solid was not exported.";
     const copy = Float32Array.from(obj.solid.positions);
     obj.seatMm = settleBy(copy);
     obj.source = copy;
     obj.triangles = copy.length / 9;
-    obj.bytes = new TextEncoder().encode(step);
+    obj.bytes = step;
     if (/\.(stl|3mf)$/i.test(obj.fileName)) obj.fileName = obj.fileName.replace(/\.(stl|3mf)$/i, ".step");
-    if (this.pathHasScale(tree)) obj.scale = 1;
+    if (this.scaleSince(tree, from, tree.current)) obj.scale = 1;
+    obj.platedNode = tree.current;
     obj.tree = { ...obj.tree!, committed: tree.current };
     return null;
+  }
+
+  /** True when a scale step sits strictly after `from` on the way to `to`. */
+  private scaleSince(tree: ModelTree, from: number | null, to: number): boolean {
+    for (let at: number | null = to; at !== null && at !== from; at = tree.nodes.get(at)?.parent ?? null) {
+      if (tree.nodes.get(at)?.op?.kind === "scale") return true;
+    }
+    return false;
   }
 
   private async commitAll(): Promise<string | null> {
@@ -1709,22 +2327,22 @@ export class Session {
     return null;
   }
 
-  private pathHasScale(tree: ModelTree): boolean {
-    for (let at: number | null = tree.current; at !== null; at = tree.nodes.get(at)?.parent ?? null) {
-      if (tree.nodes.get(at)?.op?.kind === "scale") return true;
-    }
-    return false;
-  }
-
   private async exportStep(obj: PlateObject, name: string): Promise<Record<string, unknown>> {
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
-    const reply = await this.treeCall(exportRequest(tree.key, tree.current));
-    const step = typeof reply.step === "string" ? reply.step : typeof reply.data === "string" ? reply.data : "";
+    let reply: Record<string, unknown>;
+    try {
+      reply = await this.treeCall(exportRequest(tree.key, tree.current), "export");
+    } catch (err) {
+      const lost = this.lostReply(err);
+      if (lost) return lost;
+      throw err;
+    }
+    const step = this.stepBytes(reply);
     if (!step) return { ok: false, reason: typeof reply.error === "string" ? plainModelError(reply.error) : "The solid was not exported." };
     const path = resolveWrite(name, ".step");
     writeFileSync(path, step);
-    return { ok: true, path, bytes: Buffer.byteLength(step) };
+    return { ok: true, path, bytes: step.byteLength };
   }
 
   private async measure(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -1734,10 +2352,25 @@ export class Session {
       if ("reason" in tree) return { ok: false, reason: tree.reason };
       const solid = obj.solid;
       if (!solid) return { ok: false, reason: "This solid could not be read." };
-      const left = this.faceCentre(solid, input.faceA);
-      const right = this.faceCentre(solid, input.faceB);
-      if (!left || !right) return { ok: false, reason: "That face is not on this solid." };
-      return this.span(left, right, "model");
+      if (!solid.faces[input.faceA] || !solid.faces[input.faceB]) return { ok: false, reason: "That face is not on this solid." };
+      let reply: Record<string, unknown>;
+      try {
+        reply = await this.treeCall({
+          call: "distance",
+          key: tree.key,
+          node: tree.current,
+          aKind: "face",
+          aIndex: input.faceA,
+          bKind: "face",
+          bIndex: input.faceB,
+        }, "measure");
+      } catch (err) {
+        const lost = this.lostReply(err);
+        if (lost) return lost;
+        throw err;
+      }
+      if (typeof reply.distanceMm !== "number") return { ok: false, reason: "Could not measure that distance." };
+      return { ok: true, distanceMm: reply.distanceMm, frame: "model" };
     }
     const a = input.a;
     const b = input.b;
@@ -1748,13 +2381,6 @@ export class Session {
     const left = frame === "workplane" ? localPoint(obj.workplane, a as [number, number, number]) : a as [number, number, number];
     const right = frame === "workplane" ? localPoint(obj.workplane, b as [number, number, number]) : b as [number, number, number];
     return this.span(left, right, frame);
-  }
-
-  private faceCentre(solid: NonNullable<PlateObject["solid"]>, index: number): [number, number, number] | null {
-    const face = solid.faces[index];
-    if (!face?.normal) return null;
-    const plane = facePlane(solid.positions, solid.triangles, index, face.normal);
-    return plane ? plane.point : null;
   }
 
   private span(left: [number, number, number], right: [number, number, number], frame: string): Record<string, unknown> {

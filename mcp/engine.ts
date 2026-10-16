@@ -24,11 +24,15 @@ export class ProtocolError extends Error {
 export interface Engine {
   version(): string | Promise<string>;
   occt(): boolean | Promise<boolean>;
-  meshPreview(body: string): string | Promise<string>;
+  /** `bytes` is encoded in the worker. The string stays small. */
+  meshPreview(body: string, bytes?: Uint8Array): string | Promise<string>;
   modelTree(body: string): string | Promise<string>;
-  sliceStart(body: string): string | Promise<string>;
+  /** `bytes` is the mesh. The worker inserts `dataB64` before the slicer sees the body. */
+  sliceStart(body: string, bytes?: Uint8Array): string | Promise<string>;
   slicePoll(id: string): string | Promise<string>;
   sliceCancel(id: string): string | Promise<string>;
+  /** Drop a stuck modeler and start another. Slicing keeps its own worker. */
+  resetModeler(): void | Promise<void>;
 }
 
 type NativeExports = {
@@ -49,8 +53,9 @@ export function engineLibraryName(): string {
 
 export function engineCandidates(root: string): string[] {
   const name = engineLibraryName();
-  const listed = [process.env.LIME_MCP_ENGINE, join(root, "target", "release", name), join(root, "target", "debug", name)];
-  return listed.filter((path): path is string => !!path);
+  // A set path is the library. A missing file fails here instead of falling through to another build.
+  if (process.env.LIME_MCP_ENGINE) return [process.env.LIME_MCP_ENGINE];
+  return [join(root, "target", "release", name), join(root, "target", "debug", name)];
 }
 
 export function loadNativeEngine(root: string): Engine {
@@ -67,51 +72,118 @@ export function loadNativeEngine(root: string): Engine {
   return {
     version: () => native.version(),
     occt: () => native.occt() === "true",
-    meshPreview: (body) => native.meshPreview(body),
+    meshPreview: (body, bytes) => native.meshPreview(withMesh(body, bytes)),
     modelTree: (body) => native.modelTree(body),
-    sliceStart: (body) => native.sliceStart(body),
+    sliceStart: (body, bytes) => native.sliceStart(withMesh(body, bytes)),
     slicePoll: (id) => native.slicePoll(id),
     sliceCancel: (id) => native.sliceCancel(id),
+    resetModeler: () => undefined,
   };
 }
 
+/** Put the mesh into `dataB64`. Used when the caller is already off the stdio thread. */
+export function withMesh(body: string, bytes?: Uint8Array): string {
+  if (!bytes) return body;
+  const parsed = JSON.parse(body) as Record<string, unknown>;
+  if (typeof parsed.dataB64 !== "string" || parsed.dataB64 === "") parsed.dataB64 = Buffer.from(bytes).toString("base64");
+  return JSON.stringify(parsed);
+}
+
+interface WorkerCall {
+  resolve: (value: unknown) => void;
+  reject: (err: Error) => void;
+}
+
 /**
- * The same addon, called from a worker thread so a long preview or slice
- * poll does not stop the stdio loop answering ping.
+ * One addon in a worker thread. A load failure is remembered, so later calls
+ * fail at once instead of waiting on a thread that has already exited.
+ * `role` is "slice" or "model": a stuck modeler is replaced without dropping the slicer.
+ */
+class EngineWorker {
+  private worker: Worker;
+  private seq = 0;
+  private generation = 0;
+  private pending = new Map<number, WorkerCall>();
+  private failed: Error | null = null;
+  private readonly root: string;
+  private readonly role: "slice" | "model";
+
+  constructor(root: string, role: "slice" | "model") {
+    this.root = root;
+    this.role = role;
+    this.worker = this.spawn();
+  }
+
+  private spawn(): Worker {
+    const generation = this.generation;
+    const worker = new Worker(new URL("./engine-worker.ts", import.meta.url), {
+      workerData: { root: this.root, role: this.role },
+      execArgv: ["--experimental-strip-types"],
+    });
+    worker.on("message", (msg: { id: number; ok: boolean; result?: unknown; error?: string }) => {
+      if (generation !== this.generation) return;
+      const slot = this.pending.get(msg.id);
+      if (!slot) return;
+      this.pending.delete(msg.id);
+      if (msg.ok) slot.resolve(msg.result);
+      else slot.reject(new ProtocolError(msg.error || "The engine call failed."));
+    });
+    const fail = (err: Error) => {
+      if (generation !== this.generation) return;
+      this.failed = err;
+      for (const slot of this.pending.values()) slot.reject(err);
+      this.pending.clear();
+    };
+    worker.on("error", (err) => fail(err instanceof ProtocolError ? err : new ProtocolError(err.message)));
+    worker.on("exit", (code) => {
+      if (generation !== this.generation || this.failed) return;
+      fail(new ProtocolError(code === 0
+        ? "The in-process engine was not found. Build it with cargo build -p lime-mcp-engine --release."
+        : `The engine stopped (code ${code}). Build it with cargo build -p lime-mcp-engine --release.`));
+    });
+    return worker;
+  }
+
+  call(method: string, arg = "", bytes?: Uint8Array): Promise<unknown> {
+    if (this.failed) return Promise.reject(this.failed);
+    return new Promise((resolve, reject) => {
+      const id = this.seq;
+      this.seq += 1;
+      this.pending.set(id, { resolve, reject });
+      const copy = bytes ? bytes.slice() : undefined;
+      this.worker.postMessage({ id, method, arg, bytes: copy }, copy ? [copy.buffer] : []);
+    });
+  }
+
+  /** Kill a runaway modeler. The next call loads a fresh one. Pending calls are rejected. */
+  restart(): void {
+    const previous = this.worker;
+    this.generation += 1;
+    this.failed = null;
+    for (const slot of this.pending.values()) slot.reject(new ProtocolError("The modeler was restarted."));
+    this.pending.clear();
+    void previous.terminate();
+    this.worker = this.spawn();
+  }
+}
+
+/**
+ * The same addon, called from worker threads so a long preview or slice
+ * poll does not stop the stdio loop answering ping. Model edits use their own
+ * worker, so a fillet that runs away can be replaced without losing the slicer.
  */
 export function loadEngineWorker(root: string): Engine {
-  const worker = new Worker(new URL("./engine-worker.ts", import.meta.url), {
-    workerData: { root },
-    execArgv: ["--experimental-strip-types"],
-  });
-  let seq = 0;
-  const pending = new Map<number, { resolve: (value: unknown) => void; reject: (err: Error) => void }>();
-  const fail = (err: Error) => {
-    for (const slot of pending.values()) slot.reject(err);
-    pending.clear();
-  };
-  worker.on("message", (msg: { id: number; ok: boolean; result?: unknown; error?: string }) => {
-    const slot = pending.get(msg.id);
-    if (!slot) return;
-    pending.delete(msg.id);
-    if (msg.ok) slot.resolve(msg.result);
-    else slot.reject(new ProtocolError(msg.error || "The engine call failed."));
-  });
-  worker.on("error", fail);
-  const call = (method: string, arg = ""): Promise<unknown> => new Promise((resolve, reject) => {
-    const id = seq;
-    seq += 1;
-    pending.set(id, { resolve, reject });
-    worker.postMessage({ id, method, arg });
-  });
+  const slice = new EngineWorker(root, "slice");
+  const model = new EngineWorker(root, "model");
   return {
-    version: () => call("version") as Promise<string>,
-    occt: () => call("occt").then((value) => value === true) as Promise<boolean>,
-    meshPreview: (body) => call("meshPreview", body) as Promise<string>,
-    modelTree: (body) => call("modelTree", body) as Promise<string>,
-    sliceStart: (body) => call("sliceStart", body) as Promise<string>,
-    slicePoll: (id) => call("slicePoll", id) as Promise<string>,
-    sliceCancel: (id) => call("sliceCancel", id) as Promise<string>,
+    version: () => slice.call("version") as Promise<string>,
+    occt: () => slice.call("occt").then((value) => value === true) as Promise<boolean>,
+    meshPreview: (body, bytes) => slice.call("meshPreview", body, bytes) as Promise<string>,
+    modelTree: (body) => model.call("modelTree", body) as Promise<string>,
+    sliceStart: (body, bytes) => slice.call("sliceStart", body, bytes) as Promise<string>,
+    slicePoll: (id) => slice.call("slicePoll", id) as Promise<string>,
+    sliceCancel: (id) => slice.call("sliceCancel", id) as Promise<string>,
+    resetModeler: () => model.restart(),
   };
 }
 
@@ -207,7 +279,7 @@ interface KeptSolid {
 }
 
 /** A stand-in for scripted tests. It does not slice. A committed STEP round-trips its mesh. */
-export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; lastProbe: unknown } {
+export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; lastProbe: unknown; lastProbeBody: unknown; resets: number } {
   const jobs = new Map<number, { status: string; body: string; polls: number }>();
   const kept = new Map<string, KeptSolid>();
   let next = 0;
@@ -217,7 +289,17 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
     const triangles = new Uint32Array(count);
     for (let i = 0; i < count; i += 1) triangles[i] = i < 12 ? Math.floor(i / 2) : 0;
     const edges = 12;
+    const [x0, y0, z0] = solid.min;
+    const [x1, y1, z1] = solid.max;
+    const corners = [
+      [x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0],
+      [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1],
+    ];
+    const pairs = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
     const edgePoints = new Float32Array(edges * 6);
+    pairs.forEach((pair, index) => {
+      edgePoints.set([...(corners[pair[0]!] ?? [0, 0, 0]), ...(corners[pair[1]!] ?? [0, 0, 0])], index * 6);
+    });
     const edgeOffsets = new Uint32Array(edges + 1);
     for (let i = 0; i < edgeOffsets.length; i += 1) edgeOffsets[i] = i * 2;
     const positions = Buffer.from(solid.positions.buffer, solid.positions.byteOffset, solid.positions.byteLength);
@@ -237,7 +319,11 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
         { areaMm2: 1, normal: [0, 1, 0] },
         { areaMm2: 1, normal: [0, -1, 0] },
       ],
-      edgeLengths: Array.from({ length: edges }, () => 1),
+      edgeLengths: pairs.map((pair) => {
+        const a = corners[pair[0]!] ?? [0, 0, 0];
+        const b = corners[pair[1]!] ?? [0, 0, 0];
+        return Math.hypot((b[0] ?? 0) - (a[0] ?? 0), (b[1] ?? 0) - (a[1] ?? 0), (b[2] ?? 0) - (a[2] ?? 0)) || 1;
+      }),
       edgePoints: Buffer.from(edgePoints.buffer).toString("base64"),
       edgeOffsets: Buffer.from(edgeOffsets.buffer).toString("base64"),
     };
@@ -246,13 +332,17 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
     lastSlice: "",
     calls: [] as string[],
     lastProbe: null as unknown,
+    lastProbeBody: null as unknown,
+    resets: 0,
+    hung: false,
     version: () => "1.8.0",
     occt: () => true,
-    meshPreview: async (body: string) => {
+    meshPreview: async (body: string, bytes?: Uint8Array) => {
       const block = Number(process.env.LIME_MCP_FAKE_BLOCK_MS ?? 0);
       if (block > 0) await new Promise((resolve) => setTimeout(resolve, block));
-      const asked = JSON.parse(body) as { filename?: string };
-      const positions = positionsFromPreview(body);
+      const text = withMesh(body, bytes);
+      const asked = JSON.parse(text) as { filename?: string };
+      const positions = positionsFromPreview(text);
       return JSON.stringify({
         triangles: positions.length / 9,
         min: [0, 0, 0],
@@ -266,18 +356,41 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
       const req = JSON.parse(body) as {
         call?: string;
         key?: string;
-        op?: { kind?: string; radius?: number; factor?: number };
+        op?: { kind?: string; radius?: number; factor?: number; edges?: number[] };
         node?: number;
+        otherKey?: string;
+        aIndex?: number;
+        bIndex?: number;
+        preview?: boolean;
         replay?: { id?: number; op?: unknown }[];
         primitive?: { origin?: number[]; size?: number[] };
+        filename?: string;
+        dataB64?: string;
       };
       engine.calls.push(req.call ?? "open");
       const key = req.key ?? "solid";
       if (req.call === "probe") {
         engine.lastProbe = req.op ?? null;
+        engine.lastProbeBody = req;
+      }
+      if (process.env.LIME_MCP_HANG_MODEL === "1" && req.op?.kind === "fillet" && (req.call === "probe" || req.call === "apply") && !engine.hung) {
+        engine.hung = true;
+        return new Promise<string>(() => undefined);
+      }
+      if (req.call === "probe") {
         const radius = req.op?.radius ?? 0;
         if (req.op?.kind === "hole" && radius > 8) return JSON.stringify({ ok: false, error: "The hole misses the solid." });
         return JSON.stringify({ ok: true });
+      }
+      if (req.call === "distance") {
+        const solid = kept.get(key);
+        const a = req.aIndex ?? -1;
+        const b = req.bIndex ?? -1;
+        const opposite: Record<number, number> = { 0: 1, 1: 0, 2: 3, 3: 2, 4: 5, 5: 4 };
+        const axisOf: Record<number, number> = { 0: 2, 1: 2, 2: 0, 3: 0, 4: 1, 5: 1 };
+        const axis = axisOf[a] ?? 0;
+        const distance = solid && opposite[a] === b ? Math.abs((solid.max[axis] ?? 0) - (solid.min[axis] ?? 0)) : 0;
+        return JSON.stringify({ id: req.node ?? 0, distanceMm: distance });
       }
       if (req.call === "apply") {
         const prior = kept.get(key) ?? { volume: 8000, positions: boxSolid([0, 0, 0], [20, 20, 20], 8000).positions, min: [0, 0, 0], max: [20, 20, 20] };
@@ -298,8 +411,13 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
           extra.set([x0, y0, z, x0, y0 + 6, z, x0 + 6, y0, z], nextSolid.positions.length);
           nextSolid.positions = extra;
         }
+        if (req.op?.kind === "split") nextSolid.volume = Math.max(1, prior.volume / 2);
         const wire = remember(key, nextSolid);
         wire.id = req.node ?? 1;
+        if (req.op?.kind === "split" && req.otherKey) {
+          const piece = remember(req.otherKey, { ...nextSolid, positions: new Float32Array(nextSolid.positions) });
+          return JSON.stringify({ ...wire, other: { ...piece, key: req.otherKey } });
+        }
         return JSON.stringify(wire);
       }
       if (req.call === "edit") {
@@ -320,7 +438,9 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
       if (req.call === "export") {
         const solid = kept.get(key);
         const encoded = solid ? Buffer.from(solid.positions.buffer, solid.positions.byteOffset, solid.positions.byteLength).toString("base64") : "";
-        return JSON.stringify({ ok: true, step: `ISO-10303-21;\n/* ${SOLID_MARK}${encoded} */\nENDSEC;\n` });
+        const step = `ISO-10303-21;\n/* ${SOLID_MARK}${encoded} */\nENDSEC;\n`;
+        const bytes = Buffer.from(step, "utf8");
+        return JSON.stringify({ bytesBase64: bytes.toString("base64"), byteLength: bytes.length });
       }
       if (req.call === "close") return JSON.stringify({ ok: true });
       const spec = req.primitive;
@@ -331,8 +451,8 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
       const volume = Math.abs((max[0]! - min[0]!) * (max[1]! - min[1]!) * (max[2]! - min[2]!)) || 8000;
       return JSON.stringify(remember(key, { volume, positions: boxSolid(min, max, volume).positions, min, max }));
     },
-    sliceStart: (body: string) => {
-      engine.lastSlice = body;
+    sliceStart: (body: string, bytes?: Uint8Array) => {
+      engine.lastSlice = withMesh(body, bytes);
       const id = next;
       next += 1;
       jobs.set(id, { status: "running", body, polls: 0 });
@@ -364,7 +484,7 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
             byFeature: [{ kind: "outer", seconds: 12, filamentMm: 100, filamentG: 0.3 }],
           },
           warnings: [],
-          layers: FAKE_LAYER_SECONDS.map((seconds, index) => ({ z: 0.2 * (index + 1), index, seconds })),
+          layers: FAKE_LAYER_SECONDS.map((seconds, index) => ({ z: 0.2 * (index + 1), index, seconds, paths: [[0, 0, 1, 0]] })),
           mesh: { triangles: 12 },
         }) : undefined,
       });
@@ -374,6 +494,10 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
       if (!job) return JSON.stringify({ ok: false, error: "That slice job is not in this session." });
       if (job.status === "running") job.status = "cancelled";
       return JSON.stringify({ ok: true, status: job.status });
+    },
+    resetModeler: () => {
+      engine.resets += 1;
+      engine.hung = false;
     },
   };
   return engine;

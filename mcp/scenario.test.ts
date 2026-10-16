@@ -257,13 +257,9 @@ check("the first printer and filament can be selected", picked.ok === true, JSON
 writeFileSync(join(workspace, "x.stl"), readFileSync(cube));
 const relative = await call("mesh_import", { path: "x.stl" });
 check("a workspace-relative mesh path is read", relative.ok === true, JSON.stringify(relative));
-let missingFile = "";
-try {
-  await call("mesh_import", { path: "no-such.stl" });
-} catch (err) {
-  missingFile = err instanceof Error ? err.message : "";
-}
-check("a missing file names the path", missingFile.includes("no-such.stl") && missingFile.includes(workspace), missingFile);
+const missingMesh = await call("mesh_import", { path: "no-such.stl" });
+const missingFile = String(missingMesh.reason ?? "");
+check("a missing file names the path", missingMesh.ok === false && missingFile.includes("no-such.stl") && missingFile.includes(workspace), missingFile);
 
 const stepA = await call("mesh_import", { path: stepFile });
 const stepB = await call("mesh_import", { path: stepFile });

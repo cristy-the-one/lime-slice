@@ -68,6 +68,23 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: MCP server against real Open CASCADE
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: |
+          cargo build -p lime-mcp-engine -p lime-model-occt --locked
+          export LIME_OCCT_BRIDGE="$PWD/target/debug/liblime_model_occt.so"
+          export LD_LIBRARY_PATH="${OCCT_ROOT}/lib:${LD_LIBRARY_PATH:-}"
+          node --experimental-strip-types mcp/occt.test.ts
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
@@ -171,6 +188,7 @@ jobs:
           LIME_MCP_GOLDEN=1 node --experimental-strip-types mcp/golden.test.ts
           node --experimental-strip-types mcp/native-load.test.ts
           node --experimental-strip-types mcp/stdio.test.ts
+          node --experimental-strip-types mcp/part-a.test.ts
 
   mcp-windows:
     name: MCP server (Windows)

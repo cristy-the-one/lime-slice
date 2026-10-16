@@ -72,6 +72,7 @@ const op = {
         kind: { const: "split" },
         origin: vec3,
         normal: vec3,
+        keep: { enum: ["both", "above", "below"], description: "Which half stays on the plate. both adds the other half as a new object." },
       },
     },
     {
@@ -268,7 +269,7 @@ export const TOOLS: ToolSpec[] = [
       properties: {
         path: { type: "string", minLength: 1 },
         preset: { enum: ["speed", "efficiency", "toughness", "layer", "region"] },
-        layerHeight: { type: "number", exclusiveMinimum: 0, maximum: 1 },
+        layerHeight: { type: "number", minimum: 0.08, maximum: 0.4 },
         supports: { type: "boolean" },
       },
     },
@@ -387,7 +388,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "model_apply",
     description: "Apply a probed edit. A failed probe is not applied.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["op"], properties: { object: handle, op: { type: "object", description: "Same edit as model_probe." } } },
+    inputSchema: { type: "object", additionalProperties: false, required: ["op"], properties: { object: handle, op } },
   },
   {
     name: "model_history",
@@ -416,7 +417,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "model_edit",
     description: "Replace a probed step and replay the steps under it.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["node", "op"], properties: { object: handle, node: handle, op: { type: "object", description: "Same edit as model_probe." } } },
+    inputSchema: { type: "object", additionalProperties: false, required: ["node", "op"], properties: { object: handle, node: handle, op } },
   },
   {
     name: "model_drop",

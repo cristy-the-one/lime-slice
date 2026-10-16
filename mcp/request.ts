@@ -17,7 +17,7 @@
  */
 import { bytesToBase64 } from "../src/base64.ts";
 import { encodeStl, type Mat3, type RigidPose } from "../src/mesh-place.ts";
-import { emptyOverrides } from "../src/overrides.ts";
+import { emptyOverrides, type OverrideDocument } from "../src/overrides.ts";
 import type { PresetSettings } from "../src/presets.ts";
 import { settingsRules } from "../src/settings-rules.ts";
 import { sliceRequest } from "../src/slice-request.ts";
@@ -72,6 +72,12 @@ export function sessionSliceRequest(input: {
   objects: number;
   bounds: AxisBounds | null;
   stepToleranceMm: number;
+  overrides?: OverrideDocument;
+  order?: Record<string, unknown>;
+  plate?: Record<string, unknown>;
+  oneExtra?: Record<string, unknown>;
+  /** False leaves `dataB64` out so a worker can encode the mesh off the stdio thread. */
+  encodeMesh?: boolean;
 }): Record<string, unknown> {
   const rules = settingsRules({
     kind: input.printer.kind,
@@ -93,11 +99,12 @@ export function sessionSliceRequest(input: {
   return rules.coerce(sliceRequest({
     one: {
       filename: input.filename,
-      dataB64: bytesToBase64(input.bytes),
+      ...(input.encodeMesh === false ? {} : { dataB64: bytesToBase64(input.bytes) }),
       ...(input.pose ? { pose: input.pose } : {}),
+      ...(input.oneExtra ?? {}),
     },
-    plate: {},
-    order: {},
+    plate: input.plate ?? {},
+    order: input.order ?? {},
     settings,
     stepToleranceMm: input.stepToleranceMm,
     lineWidth,
@@ -114,7 +121,7 @@ export function sessionSliceRequest(input: {
     onBelt: libraryBelt !== null,
     belt: libraryBelt,
     layerActions: input.actions,
-    overrides: emptyOverrides(),
+    overrides: input.overrides ?? emptyOverrides(),
     includePreview: true,
   }));
 }

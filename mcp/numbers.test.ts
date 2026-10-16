@@ -75,8 +75,13 @@ const rows = Array.isArray(listed.objects) ? listed.objects as { object?: string
 const placedRows = rows.filter((row) => row.object === first.object || row.object === ledge.object);
 check("placed parts are not off the bed", placedRows.length === 2 && placedRows.every((row) => !(row.notes ?? []).some((note) => note.includes("outside the bed"))), JSON.stringify(placedRows));
 
-const tall = await call("settings_apply", { layerHeight: 0.9 });
-check("layer height 0.9 is refused with the range", tall.ok === false && String(tall.reason).includes("0.08") && String(tall.reason).includes("0.4"), JSON.stringify(tall));
+let tall: Record<string, unknown> = { ok: true };
+try {
+  tall = await call("settings_apply", { layerHeight: 0.9 });
+} catch (err) {
+  tall = { ok: false, reason: err instanceof Error ? err.message : String(err) };
+}
+check("layer height 0.9 is refused with the range", tall.ok === false && String(tall.reason).includes("0.4"), JSON.stringify(tall));
 
 await call("object_select", { object: first.object });
 await call("settings_apply", { preset: "region" });

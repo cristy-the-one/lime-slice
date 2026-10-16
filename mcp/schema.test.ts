@@ -29,6 +29,10 @@ check("a hole does not take a fillet size", validateTool("model_probe", { object
 check("a counterbore is a hole field", validateTool("model_probe", { object: "obj_1", op: { kind: "hole", diameterMm: 4, through: true, counterboreDiameterMm: 8, counterboreDepth: 3 } }) === null);
 check("an unknown edit names the kinds", validateTool("model_probe", { op: { kind: "twist" } }) === "op.kind must be one of hole, fillet, chamfer, split, scale, boolean, join.");
 check("a low scale names the bound", validateTool("object_place", { object: "obj_1", scalePercent: 9 }) === "scalePercent must be at least 10.");
+const layerHeight = (TOOLS.find((tool) => tool.name === "settings_apply")!.inputSchema.properties as { layerHeight: { minimum?: number; maximum?: number } }).layerHeight;
+check("layer height is 0.08 to 0.4", layerHeight.minimum === 0.08 && layerHeight.maximum === 0.4);
+check("layer height 0.9 is outside the schema", validateTool("settings_apply", { layerHeight: 0.9 }) !== null);
+check("model_apply uses the typed edit", JSON.stringify(TOOLS.find((tool) => tool.name === "model_apply")!.inputSchema).includes("oneOf"));
 
 function missingDescriptions(node: unknown, missing: string[]): void {
   if (!node || typeof node !== "object") return;
@@ -53,7 +57,7 @@ const listed = JSON.stringify({
     annotations: annotationsFor(tool.name),
   })),
 });
-check("tools/list stays under 20 KB", Buffer.byteLength(listed) < 20 * 1024);
+check("tools/list stays under 32 KB", Buffer.byteLength(listed) < 32 * 1024);
 
 const accepted: [string, unknown][] = [
   ["session_info", {}],
