@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative as pathRelative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { fnv1aHex } from "../src/slice-action.ts";
@@ -17,6 +17,14 @@ import { Session } from "./session.ts";
 
 const workspace = mkdtempSync(join(tmpdir(), "lime-mcp-"));
 process.env.LIME_MCP_WORKSPACE = workspace;
+
+/** macOS temp dirs are /var, which realpath resolves to /private/var. Compare those, not the mkdtemp string. */
+function realInside(root: string, file: string): boolean {
+  const realRoot = realpathSync(root);
+  const realFile = realpathSync(file);
+  const rel = pathRelative(realRoot, realFile);
+  return rel !== "" && !rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel);
+}
 
 let failed = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -69,7 +77,18 @@ check("the session slice uses the library printer", body.printer?.name === "Lime
 check("a tool slice asks for layer heights", body.includePreview === true);
 
 const exported = await call("gcode_export", { name: "cube.gcode", now: "2020-01-02T03:04:05.000Z" });
-check("export writes inside the workspace", exported.ok === true && String(exported.path).startsWith(workspace));
+check("export writes inside the workspace", exported.ok === true && realInside(workspace, String(exported.path)), JSON.stringify(exported));
+const aliasParent = mkdtempSync(join(tmpdir(), "lime-alias-"));
+const alias = join(aliasParent, "ws");
+symlinkSync(workspace, alias);
+let viaAlias: { ok?: boolean; path?: string } = { ok: false };
+try {
+  process.env.LIME_MCP_WORKSPACE = alias;
+  viaAlias = await call("gcode_export", { name: "alias.gcode", now: "2020-01-02T03:04:05.000Z" }) as { ok?: boolean; path?: string };
+} finally {
+  process.env.LIME_MCP_WORKSPACE = workspace;
+}
+check("a symlinked workspace exports inside the real directory", viaAlias.ok === true && realInside(workspace, String(viaAlias.path)), JSON.stringify(viaAlias));
 
 const outside = mkdtempSync(join(tmpdir(), "lime-outside-"));
 const victim = join(outside, "victim.gcode");
