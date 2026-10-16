@@ -5,6 +5,7 @@
  * build it (the MCP server jobs) still run the load, and a failed load fails
  * the job.
  */
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -70,6 +71,32 @@ if (!built) {
   const body = JSON.parse(text) as { ok?: boolean; engine?: string };
   check("session_info on the real addon returns engine 1.8.0", body.ok === true && body.engine === "1.8.0", text);
   await client.close();
+
+  // A native call cannot be interrupted inside a thread. The engine's preview
+  // sleeps natively for a minute here; the 1 s budget must stop it, and the
+  // process must still exit at once instead of waiting for the sleep.
+  const stuckScript = `
+    import { pathToFileURL } from "node:url";
+    const { loadEngineWorker } = await import(pathToFileURL(${JSON.stringify(fileURLToPath(new URL("./engine.ts", import.meta.url)))}).href);
+    const { Session } = await import(pathToFileURL(${JSON.stringify(fileURLToPath(new URL("./session.ts", import.meta.url)))}).href);
+    const session = new Session(loadEngineWorker(${JSON.stringify(root)}));
+    const reply = await session.call("mesh_import", { path: ${JSON.stringify(fileURLToPath(new URL("../samples/calibration_cube_20mm.stl", import.meta.url)))} });
+    console.log(JSON.stringify(reply));
+    process.exit(0);
+  `;
+  const began = Date.now();
+  const stuck = spawnSync(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", "--input-type=module", "-e", stuckScript], {
+    cwd: root,
+    env: { ...env, LIME_MCP_PREVIEW_DELAY_MS: "60000", LIME_MCP_MODEL_TIMEOUT_S: "1" },
+    encoding: "utf8",
+    timeout: 30000,
+  });
+  const stuckSeconds = (Date.now() - began) / 1000;
+  check(
+    "a stuck native preview is stopped and the process still exits",
+    stuck.status === 0 && stuck.stdout.includes("did not finish") && stuckSeconds < 15,
+    JSON.stringify({ status: stuck.status, signal: stuck.signal, stuckSeconds, stdout: stuck.stdout.slice(0, 300), stderr: stuck.stderr.slice(0, 300) }),
+  );
 }
 
 if (failed) {

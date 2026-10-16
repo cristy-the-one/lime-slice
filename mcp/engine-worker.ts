@@ -1,17 +1,35 @@
 /**
- * Loads the in-process addon off the server's stdio thread.
- * The parent posts `{id, method, arg}` and receives `{id, ok, result}`.
+ * Loads the in-process addon in a child process, off the server's stdio loop.
+ * The parent sends `{id, method, arg, bytes}` and receives `{id, ok, result}`.
+ * A load failure is sent as id -1. The parent kills this process to stop a call that runs too long.
  */
-import { parentPort, workerData } from "node:worker_threads";
+import { Worker } from "node:worker_threads";
 
-import { loadNativeEngine, withMesh } from "./engine.ts";
+import { type Engine, loadNativeEngine, withMesh } from "./engine.ts";
 
-const port = parentPort;
-if (!port) throw new Error("The engine worker needs a parent port.");
+if (!process.send) throw new Error("The engine process needs an IPC channel.");
+const send = (msg: unknown) => process.send?.(msg);
 
-const engine = loadNativeEngine(String((workerData as { root?: string }).root ?? ""));
+// A native call blocks this thread, so a closed channel cannot be noticed here.
+// This thread checks that the server is still alive and ends the process when it is not.
+const parent = process.ppid;
+new Worker(`
+  const { workerData } = require("node:worker_threads");
+  setInterval(() => {
+    try { process.kill(workerData.parent, 0); } catch { process.kill(workerData.self, "SIGKILL"); }
+  }, 1000);
+`, { eval: true, workerData: { parent, self: process.pid } }).unref();
+process.on("disconnect", () => process.exit(0));
 
-port.on("message", (msg: { id: number; method: string; arg: string; bytes?: Uint8Array }) => {
+let engine: Engine;
+try {
+  engine = loadNativeEngine(String(process.env.LIME_MCP_ENGINE_ROOT ?? ""));
+} catch (err) {
+  send({ id: -1, ok: false, error: err instanceof Error ? err.message : "The in-process engine did not load." });
+  process.exit(1);
+}
+
+process.on("message", (msg: { id: number; method: string; arg: string; bytes?: Uint8Array }) => {
   try {
     let result: string | boolean;
     const mesh = msg.bytes ? withMesh(msg.arg, msg.bytes) : msg.arg;
@@ -46,8 +64,8 @@ port.on("message", (msg: { id: number; method: string; arg: string; bytes?: Uint
       default:
         throw new Error("That engine call is not on this worker.");
     }
-    port.postMessage({ id: msg.id, ok: true, result });
+    send({ id: msg.id, ok: true, result });
   } catch (err) {
-    port.postMessage({ id: msg.id, ok: false, error: err instanceof Error ? err.message : "The engine call failed." });
+    send({ id: msg.id, ok: false, error: err instanceof Error ? err.message : "The engine call failed." });
   }
 });

@@ -5,7 +5,8 @@
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { Worker } from "node:worker_threads";
+import { type ChildProcess, fork } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import { encodePaths } from "../src/preview-wire.ts";
 
@@ -106,13 +107,28 @@ interface WorkerCall {
   reject: (err: Error) => void;
 }
 
+/** Every engine process this server started, so none outlives it. */
+const children = new Set<ChildProcess>();
+let reaping = false;
+
+function reapOnExit(): void {
+  if (reaping) return;
+  reaping = true;
+  process.on("exit", () => {
+    for (const child of children) child.kill("SIGKILL");
+  });
+}
+
 /**
- * One addon in a worker thread. A load failure is remembered, so later calls
- * fail at once instead of waiting on a thread that has already exited.
+ * One addon in a child process. A native call cannot be stopped inside a
+ * thread, so a call that runs past its budget is stopped by killing the
+ * process; its memory goes with it. A load failure is remembered, so later
+ * calls fail at once instead of waiting on a process that has already exited.
  * `role` is "slice", "model" or "preview": a stuck one is replaced without dropping the others.
+ * The child's stdout goes to this process's stderr, because stdout is the protocol.
  */
 class EngineWorker {
-  private worker: Worker;
+  private child: ChildProcess;
   private seq = 0;
   private generation = 0;
   private pending = new Map<number, WorkerCall>();
@@ -123,17 +139,26 @@ class EngineWorker {
   constructor(root: string, role: "slice" | "model" | "preview") {
     this.root = root;
     this.role = role;
-    this.worker = this.spawn();
+    reapOnExit();
+    this.child = this.spawn();
   }
 
-  private spawn(): Worker {
+  private spawn(): ChildProcess {
     const generation = this.generation;
-    const worker = new Worker(new URL("./engine-worker.ts", import.meta.url), {
-      workerData: { root: this.root, role: this.role },
-      execArgv: ["--experimental-strip-types"],
+    const child = fork(fileURLToPath(new URL("./engine-worker.ts", import.meta.url)), [], {
+      execArgv: ["--experimental-strip-types", "--disable-warning=ExperimentalWarning"],
+      env: { ...process.env, LIME_MCP_ENGINE_ROOT: this.root, LIME_MCP_ENGINE_ROLE: this.role },
+      serialization: "advanced",
+      stdio: ["ignore", "pipe", "inherit", "ipc"],
     });
-    worker.on("message", (msg: { id: number; ok: boolean; result?: unknown; error?: string }) => {
+    children.add(child);
+    child.stdout?.pipe(process.stderr);
+    child.on("message", (msg: { id: number; ok: boolean; result?: unknown; error?: string }) => {
       if (generation !== this.generation) return;
+      if (msg.id === -1) {
+        fail(new ProtocolError(msg.error || "The in-process engine did not load."));
+        return;
+      }
       const slot = this.pending.get(msg.id);
       if (!slot) return;
       this.pending.delete(msg.id);
@@ -146,14 +171,16 @@ class EngineWorker {
       for (const slot of this.pending.values()) slot.reject(err);
       this.pending.clear();
     };
-    worker.on("error", (err) => fail(err instanceof ProtocolError ? err : new ProtocolError(err.message)));
-    worker.on("exit", (code) => {
+    child.on("error", (err) => fail(err instanceof ProtocolError ? err : new ProtocolError(err.message)));
+    child.on("exit", (code) => {
+      children.delete(child);
       if (generation !== this.generation || this.failed) return;
-      fail(new ProtocolError(code === 0
-        ? "The in-process engine was not found. Build it with cargo build -p lime-mcp-engine --release."
-        : `The engine stopped (code ${code}). Build it with cargo build -p lime-mcp-engine --release.`));
+      fail(new ProtocolError(`The engine stopped (code ${code}). Build it with cargo build -p lime-mcp-engine --release.`));
     });
-    return worker;
+    // An idle engine does not keep the server alive; the stdio loop does.
+    child.unref();
+    child.channel?.unref();
+    return child;
   }
 
   call(method: string, arg = "", bytes?: Uint8Array): Promise<unknown> {
@@ -161,28 +188,43 @@ class EngineWorker {
     return new Promise((resolve, reject) => {
       const id = this.seq;
       this.seq += 1;
-      this.pending.set(id, { resolve, reject });
-      const copy = bytes ? bytes.slice() : undefined;
-      this.worker.postMessage({ id, method, arg, bytes: copy }, copy ? [copy.buffer] : []);
+      if (this.pending.size === 0) this.child.channel?.ref();
+      this.pending.set(id, {
+        resolve: (value) => {
+          this.settled();
+          resolve(value);
+        },
+        reject: (err) => {
+          this.settled();
+          reject(err);
+        },
+      });
+      this.child.send({ id, method, arg, bytes });
     });
   }
 
-  /** Kill a runaway modeler. The next call loads a fresh one. Pending calls are rejected. */
+  private settled(): void {
+    if (this.pending.size === 0) this.child.channel?.unref();
+  }
+
+  /** Kill a runaway engine process. The next call loads a fresh one. Pending calls are rejected. */
   restart(): void {
-    const previous = this.worker;
+    const previous = this.child;
     this.generation += 1;
     this.failed = null;
-    for (const slot of this.pending.values()) slot.reject(new ProtocolError("The modeler was restarted."));
+    const stopped = [...this.pending.values()];
     this.pending.clear();
-    void previous.terminate();
-    this.worker = this.spawn();
+    previous.kill("SIGKILL");
+    children.delete(previous);
+    this.child = this.spawn();
+    for (const slot of stopped) slot.reject(new ProtocolError("The modeler was restarted."));
   }
 }
 
 /**
- * The same addon, called from worker threads so a long preview or slice
+ * The same addon, called from child processes so a long preview or slice
  * poll does not stop the stdio loop answering ping. Mesh preview and model
- * edits each have their own worker, so a stuck tessellation can be replaced
+ * edits each have their own process, so a stuck tessellation can be killed
  * without losing the slicer or the open model trees.
  */
 export function loadEngineWorker(root: string): Engine {

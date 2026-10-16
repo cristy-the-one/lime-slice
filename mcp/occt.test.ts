@@ -125,11 +125,14 @@ const cornerOpened = await call("project_open", { path: String(cornerSaved.path)
 const cornerSeconds = (Date.now() - cornerStarted) / 1000;
 if (previousBudget === undefined) delete process.env.LIME_MCP_MODEL_TIMEOUT_S;
 else process.env.LIME_MCP_MODEL_TIMEOUT_S = previousBudget;
-const cornerReason = String(cornerOpened.reason ?? "");
+const cornerRows = Array.isArray(cornerOpened.objects) ? cornerOpened.objects as { object: string }[] : [];
+const cornerBack = cornerRows.length ? await call("model_describe", { object: cornerRows[cornerRows.length - 1]!.object }) : {};
+// The hole sits on a corner of the centred box, so a quarter of it is cut: 975.26 mm³ is left.
+// A reopen that runs out of time is a failure. Mesh preview used to loop on this solid's STEP edges.
 check(
-  "a corner cut reopens or stops with a clear message",
-  corner.ok === true && cornerProbe.ok === true && cornerCut.ok === true && cornerSaved.ok === true && cornerSeconds < 20 && (cornerOpened.ok === true || cornerReason.includes("did not finish")),
-  JSON.stringify({ cornerProbe, cornerCut, cornerSaved, cornerOpened, cornerSeconds }),
+  "a corner cut reopens within its time budget",
+  corner.ok === true && cornerProbe.ok === true && cornerCut.ok === true && cornerSaved.ok === true && cornerOpened.ok === true && cornerSeconds < 8 && near(cornerBack.volumeMm3, 975.26, 0.5),
+  JSON.stringify({ cornerProbe, cornerCut, cornerSaved, cornerOpened, cornerSeconds, volume: cornerBack.volumeMm3 }),
 );
 
 if (failed) {
