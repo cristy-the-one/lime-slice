@@ -114,7 +114,8 @@ check("the reopened solid is still the holed cube", reopenedId !== "" && near(ag
 
 const corner = await call("solid_new", { primitive: "box", dx: 10, dy: 10, dz: 10 });
 const cornerId = String(corner.object);
-const cornerOp = { kind: "hole", diameterMm: 6, depth: 4, origin: [5, 5, 10], axis: [0, 0, -1] };
+const cornerOp = { kind: "hole", diameterMm: 3, depth: 8, origin: [5, 5, 10], axis: [0, 0, -1], counterboreDiameterMm: 6, counterboreDepth: 2 };
+const cornerProbe = await call("model_probe", { object: cornerId, op: cornerOp });
 const cornerCut = await call("model_apply", { object: cornerId, op: cornerOp });
 const cornerSaved = await call("project_save", { name: "corner.lime" });
 const previousBudget = process.env.LIME_MCP_MODEL_TIMEOUT_S;
@@ -127,8 +128,8 @@ else process.env.LIME_MCP_MODEL_TIMEOUT_S = previousBudget;
 const cornerReason = String(cornerOpened.reason ?? "");
 check(
   "a corner cut reopens or stops with a clear message",
-  corner.ok === true && cornerCut.ok === true && cornerSaved.ok === true && cornerSeconds < 20 && (cornerOpened.ok === true || cornerReason.includes("did not finish")),
-  JSON.stringify({ cornerCut, cornerSaved, cornerOpened, cornerSeconds }),
+  corner.ok === true && cornerProbe.ok === true && cornerCut.ok === true && cornerSaved.ok === true && cornerSeconds < 20 && (cornerOpened.ok === true || cornerReason.includes("did not finish")),
+  JSON.stringify({ cornerProbe, cornerCut, cornerSaved, cornerOpened, cornerSeconds }),
 );
 
 if (failed) {
