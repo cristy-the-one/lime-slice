@@ -5,6 +5,7 @@
 import { bytesToBase64 } from "./base64.ts";
 import { rootSpec, type PrimitiveSpec } from "./model-primitive.ts";
 import { relativePose, type Affine } from "./model-space.ts";
+import type { EditLevel } from "./model-edit.ts";
 import { savedNodes, type BooleanKind, type Fingerprint, type JoinTool, type ModelOp, type ModelRoot, type ModelTree, type NodeId } from "./model-tree.ts";
 
 export type TreeRequest = Record<string, unknown>;
@@ -54,8 +55,19 @@ export function editRequest(key: string, parent: NodeId, node: NodeId, op: Model
   return { call: "edit", key, parent, node, op, replay, chordMm };
 }
 
-export function probeRequest(key: string, node: NodeId, op: ModelOp): TreeRequest {
-  return { call: "probe", key, node, op };
+/**
+ * An edit across trees, one call: `levels` deepest first (`crossEdit`), the open tree last. The tool trees' parts go
+ * first, each feeding the join above it, and the engine keeps nothing if the edited step or a join whose tool built fails.
+ */
+export function crossEditRequest(levels: readonly EditLevel[], chordMm: number): TreeRequest {
+  const own = levels.at(-1)!;
+  const tools = levels.slice(0, -1).map(({ key, parent, node, op, replay }) => ({ key, parent, node, op, replay }));
+  return { ...editRequest(own.key, own.parent, own.node, own.op, own.replay, chordMm), ...(tools.length > 0 ? { tools } : {}) };
+}
+
+/** A dry-run of `op` on `node`. With `previewMm`, a build that works answers its shape, tessellated at that chord, as `preview`. */
+export function probeRequest(key: string, node: NodeId, op: ModelOp, previewMm?: number): TreeRequest {
+  return { call: "probe", key, node, op, ...(previewMm != null ? { preview: true, chordMm: previewMm } : {}) };
 }
 
 export function gotoRequest(key: string, node: NodeId, chordMm: number): TreeRequest {

@@ -81,6 +81,11 @@ export interface ModelView {
   setPickMode(mode: "face" | "edge"): void;
   highlight(picks: ModelPick[]): void;
   setGhost(ghost: ModelGhost | null): void;
+  /**
+   * A dry-run's shape, drawn in the solid's place, at its pose, until null or a new solid. Picks still land on the solid
+   * the tool works on, whose picked faces and edges stay outlined over the shape.
+   */
+  setPreview(shape: ModelSolid | null): void;
   /** The other plate objects, drawn grey behind the open solid. They are never picked, framed, or measured. */
   setContext(parts: ContextPart[]): void;
   /** The active printer's build volume, in millimetres. The bed plane is Z = 0. */
@@ -102,6 +107,8 @@ export interface ModelView {
 export function createModelView(canvas: HTMLCanvasElement): ModelView {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio || 1);
+  // A split shows its two sides by clipping the solid at the plane.
+  renderer.localClippingEnabled = true;
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 5000);
   camera.up.set(0, 0, 1);
@@ -158,6 +165,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let mode: "face" | "edge" = "face";
   let mesh: THREE.Mesh | null = null;
   let edgeLines: THREE.LineSegments | null = null;
+  /** A dry-run's shape in the solid's place, and its edges. The solid stays, hidden, for picks. */
+  let preview: { shape: ModelSolid; mesh: THREE.Mesh; lines: THREE.LineSegments | null } | null = null;
   let faceOutline: LineSegments2 | null = null;
   let selectedEdges: LineSegments2 | null = null;
   let hoverEdges: LineSegments2 | null = null;
@@ -228,7 +237,55 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   });
   const edgeMaterial = new THREE.LineBasicMaterial({ color: IDLE_EDGE });
 
+  function clearPreview() {
+    if (!preview) return;
+    for (const object of [preview.mesh, preview.lines]) {
+      if (!object) continue;
+      body.remove(object);
+      object.geometry.dispose();
+    }
+    preview = null;
+    if (mesh) mesh.visible = true;
+    if (edgeLines) edgeLines.visible = true;
+    delete canvas.dataset.preview;
+  }
+
+  /** The shape's mesh and edges, coloured as a solid is, drawn where the solid is; the solid hides while it is up. */
+  function showPreview(shape: ModelSolid) {
+    clearPreview();
+    if (!mesh || shape.positions.length < 9) return;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(shape.positions, 3));
+    const color = new Float32Array(shape.positions.length);
+    shape.triangles.forEach((face, triangle) => {
+      const hex = faceColor(face, false, false, accent);
+      for (let vertex = 0; vertex < 3; vertex += 1) writeColor(hex, color, triangle * 9 + vertex * 3);
+    });
+    geometry.setAttribute("color", new THREE.BufferAttribute(color, 3));
+    geometry.computeVertexNormals();
+    const shaded = new THREE.Mesh(geometry, solidMaterial);
+    shaded.raycast = () => undefined;
+    body.add(shaded);
+    const segments: number[] = [];
+    for (const edge of shape.edges) {
+      for (let i = 0; i + 5 < edge.points.length; i += 3) segments.push(edge.points[i]!, edge.points[i + 1]!, edge.points[i + 2]!, edge.points[i + 3]!, edge.points[i + 4]!, edge.points[i + 5]!);
+    }
+    let lines: THREE.LineSegments | null = null;
+    if (segments.length > 0) {
+      const edges = new THREE.BufferGeometry();
+      edges.setAttribute("position", new THREE.Float32BufferAttribute(segments, 3));
+      lines = new THREE.LineSegments(edges, edgeMaterial);
+      lines.raycast = () => undefined;
+      body.add(lines);
+    }
+    mesh.visible = false;
+    if (edgeLines) edgeLines.visible = false;
+    preview = { shape, mesh: shaded, lines };
+    canvas.dataset.preview = String(shape.volumeMm3.toFixed(2));
+  }
+
   function clearBody() {
+    clearPreview();
     for (const object of [mesh, edgeLines]) {
       if (!object) continue;
       body.remove(object);
@@ -250,7 +307,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   function clearGhosts() {
     for (const child of [...ghosts.children]) {
       ghosts.remove(child);
-      disposeObject(child);
+      // A split's offcut draws the solid's own geometry with a shared material: neither is the ghost's to free.
+      if (!child.userData.borrowed) disposeObject(child);
     }
   }
 
@@ -499,8 +557,38 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   function rebuildGhost() {
     clearGhosts();
     applyScale();
+    clipToSplit();
     buildGhost();
     publishGhostBox();
+  }
+
+  /** The material that draws the side a split cuts off, tinted, shared by every split shown. */
+  const offcutMaterial = new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0.05, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide });
+
+  /**
+   * While a split's plane is up, the solid is drawn as the two parts it makes: the side the part keeps (behind the plane's
+   * normal) as it is, and the side that becomes a part of its own tinted. Clipping planes, so nothing is built.
+   */
+  function clipToSplit() {
+    const plane = ghost?.kind === "plane" && mesh ? ghost : null;
+    const keep: THREE.Plane[] = [];
+    if (plane) {
+      const normal = new THREE.Vector3(...plane.normal).normalize();
+      const origin = new THREE.Vector3(...plane.origin);
+      keep.push(new THREE.Plane(normal.clone().negate(), normal.dot(origin)));
+      offcutMaterial.color.setHex(accent);
+      offcutMaterial.clippingPlanes = [new THREE.Plane(normal, -normal.dot(origin))];
+      const offcut = new THREE.Mesh(mesh!.geometry, offcutMaterial);
+      offcut.matrixAutoUpdate = false;
+      offcut.matrix.copy(posed.matrix);
+      offcut.renderOrder = 2;
+      offcut.raycast = () => undefined;
+      offcut.userData.borrowed = true;
+      ghosts.add(offcut);
+    }
+    // A new count of planes compiles the shader again; new planes of the same count are only new numbers.
+    if ((solidMaterial.clippingPlanes?.length ?? 0) !== keep.length) solidMaterial.needsUpdate = true;
+    solidMaterial.clippingPlanes = keep;
   }
 
   /** The ghost's world box, for tests: centre then size, in millimetres. */
@@ -940,6 +1028,12 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     setGhost(next) {
       ghost = next;
       rebuildGhost();
+      kick();
+    },
+    setPreview(next) {
+      if (next === (preview?.shape ?? null)) return;
+      if (next) showPreview(next);
+      else clearPreview();
       kick();
     },
     setContext,

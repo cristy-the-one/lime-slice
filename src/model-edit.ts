@@ -8,8 +8,8 @@ import type { ModelTool } from "./model-drag.ts";
 import { stepLabel } from "./model-history.ts";
 import { tiltOf } from "./model-plane.ts";
 import type { PrimitiveKind, PrimitiveSpec } from "./model-primitive.ts";
-import { fromSolidOp, type Affine } from "./model-space.ts";
-import { childWithOp, childrenOf, opLabel, pathTo, toolUser, type BooleanKind, type EdgeRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
+import { fromSolidOp, thenPose, type Affine } from "./model-space.ts";
+import { ROOT, childWithOp, childrenOf, opLabel, pathTo, toolUser, type BooleanKind, type EdgeRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
 
 /**
  * The steps that replay under an edit of `node`, oldest first: the shown branch below it. That is the path down to the
@@ -53,9 +53,10 @@ export interface ForkStep {
 /**
  * The tree with `steps` as a new branch from `parent`, each under the one before, showing `shown`. Redo follows the
  * branch, but not into a broken step, which it could not show; the steps under a broken one still follow it, so an edit
- * of the broken step replays them.
+ * of the broken step replays them. A tool's tree forked for a join (`follow` false) keeps where Redo goes from `parent`,
+ * so the tool object's own History keeps its shape.
  */
-export function forked(tree: ModelTree, parent: NodeId, steps: readonly ForkStep[], shown: NodeId): ModelTree {
+export function forked(tree: ModelTree, parent: NodeId, steps: readonly ForkStep[], shown: NodeId, follow = true): ModelTree {
   const nodes = new Map(tree.nodes);
   const lastChild = new Map(tree.lastChild);
   let up = parent;
@@ -69,7 +70,7 @@ export function forked(tree: ModelTree, parent: NodeId, steps: readonly ForkStep
       ...(step.name ? { name: step.name } : {}),
       ...(step.broken ? { broken: step.broken } : {}),
     });
-    if (!step.broken) lastChild.set(up, step.id);
+    if (!step.broken && (follow || up !== parent)) lastChild.set(up, step.id);
     up = step.id;
   }
   const nextId = Math.max(tree.nextId, ...steps.map((step) => step.id + 1));
@@ -118,6 +119,92 @@ export function builtBranch(tree: ModelTree, parent: NodeId, op: ModelOp, replay
     at = childWithOp(tree, at, next);
   }
   return at;
+}
+
+type JoinOp = Extract<ModelOp, { kind: "join" }>;
+
+/** A join on the way to a tool's step: step `id` of `tree`, which takes its tool from the next tree down. */
+export interface ToolLink {
+  tree: ModelTree;
+  id: NodeId;
+  op: JoinOp;
+}
+
+/** One tree's part of an edit across trees, as the engine's `edit` takes it, and the steps it stands for. */
+export interface EditLevel {
+  key: string;
+  parent: NodeId;
+  node: NodeId;
+  op: ModelOp;
+  replay: { id: NodeId; op: ModelOp }[];
+  old: NodeId[];
+}
+
+/** The steps under `node` down to `tip`, oldest first, but a `root` step, which an edit's new root stands in for. */
+function pathBelow(tree: ModelTree, node: NodeId, tip: NodeId): NodeId[] {
+  const path = pathTo(tree, tip);
+  const at = path.indexOf(node);
+  return (at >= 0 ? path.slice(at + 1) : []).filter((id) => tree.nodes.get(id)?.op?.kind !== "root");
+}
+
+/**
+ * Each tree's part of an edit of step `node` of `tool`, the tree `joins` reach (the open tree's join first), deepest
+ * first, the open tree last. The tool's tree forks at the step and replays down to the step the join above takes; each
+ * join above is built again on the tip below, as `next` gives it, and its tree replays down to the step the next join
+ * takes; the open tree replays `replay`, as an edit of its own step does. `next` gets each level and answers its tip,
+ * or null to stop.
+ */
+function eachLevel(tool: ModelTree, joins: readonly ToolLink[], node: NodeId, op: ModelOp, replay: readonly NodeId[], next: (tree: ModelTree, edited: NodeId, op: ModelOp, below: NodeId[]) => NodeId | null): boolean {
+  let tip: NodeId | null = null;
+  for (let i = joins.length; i >= 0; i -= 1) {
+    const own = i === joins.length;
+    const tree = own ? tool : joins[i]!.tree;
+    const edited = own ? node : joins[i]!.id;
+    const stepOp: ModelOp = own ? op : { ...joins[i]!.op, tool: { ...joins[i]!.op.tool, node: tip! } };
+    const below = i === 0 ? [...replay] : pathBelow(tree, edited, joins[i - 1]!.op.tool.node);
+    tip = next(tree, edited, stepOp, below);
+    if (tip == null) return false;
+  }
+  return true;
+}
+
+/** The levels of an edit across trees (see `eachLevel`). `reserve` hands out each tree's fresh ids. */
+export function crossEdit(tool: ModelTree, joins: readonly ToolLink[], node: NodeId, op: ModelOp, replay: readonly NodeId[], reserve: (key: string, count: number) => NodeId[]): EditLevel[] {
+  const levels: EditLevel[] = [];
+  eachLevel(tool, joins, node, op, replay, (tree, edited, stepOp, below) => {
+    const ids = reserve(tree.key, below.length + 1);
+    levels.push({ key: tree.key, parent: tree.nodes.get(edited)?.parent ?? ROOT, node: ids[0]!, op: stepOp, replay: below.map((id, j) => ({ id: ids[j + 1]!, op: tree.nodes.get(id)!.op! })), old: [edited, ...below] });
+    return ids.at(-1)!;
+  });
+  return levels;
+}
+
+/** The open tree's tip of a branch an earlier edit across trees built with the same numbers, at every level; else null. */
+export function crossTwin(tool: ModelTree, joins: readonly ToolLink[], node: NodeId, op: ModelOp, replay: readonly NodeId[]): NodeId | null {
+  let twin: NodeId | null = null;
+  const found = eachLevel(tool, joins, node, op, replay, (tree, edited, stepOp, below) => {
+    twin = builtBranch(tree, tree.nodes.get(edited)?.parent ?? ROOT, stepOp, below.map((id) => tree.nodes.get(id)!.op!));
+    return twin;
+  });
+  return found ? twin : null;
+}
+
+/** Why step `id` of a tool's tree, reached through `joins`, cannot be edited from the open tree's history, or null. */
+export function toolEditRefusal(tool: ModelTree, joins: readonly ToolLink[], id: NodeId): string | null {
+  return editRefusal(tool, id) ?? joins.map((join) => editRefusal(join.tree, join.id)).find((why) => why != null) ?? null;
+}
+
+/** A tool's pose in model space: the open solid's, then each join's placement, the open tree's first. */
+export function toolPose(pose: Affine, joins: readonly ToolLink[]): Affine {
+  return joins.reduce((at, join) => thenPose(join.op.relative, at), pose);
+}
+
+/** The panel's header for a tool's step: "Editing Rod 1, step 2: Scale 150 %", or "Editing Rod 1's primitive: …". */
+export function toolEditHead(tool: ModelTree, id: NodeId, name: string): string {
+  const node = tool.nodes.get(id);
+  if (!node) return "";
+  if (node.parent === null || node.op?.kind === "root") return `Editing ${name}'s primitive: ${stepLabel(node)}`;
+  return `Editing ${name}, step ${pathTo(tool, id).length - 1}: ${stepLabel(node)}`;
 }
 
 /** What an edited step's tool panel opens with, in model space: the inverse of what its Apply would send. */

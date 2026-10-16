@@ -3,7 +3,7 @@
  * Apply still lives in `app/model.ts`. This file only decides what is on screen.
  */
 import { Axis3d, Box, Boxes, CircleDot, Cone, Cylinder, Disc, Download, Focus, Globe, Grid3x3, Hexagon, Move3d, Plus, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Torus, Triangle, TriangleRight, Undo2, createElement, type IconNode } from "lucide";
-import type { HandleDrag, ModelGhost } from "../model-view";
+import type { HandleDrag, ModelGhost, ModelSolid } from "../model-view";
 import type { ContextPart } from "../model-context";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type ModelTool, type Vec3 } from "../model-drag";
 import type { PlaceFields } from "../model-space";
@@ -134,6 +134,10 @@ let picks: ModelPickRef[] = [];
 let probe: ProbeView = null;
 /** False for surfaces with no closed solid: only Measure runs on them. */
 let editable = true;
+/** Why every tool but New solid waits, while a tool's step is looked at in History; null otherwise. */
+let locked: string | null = null;
+/** The latest dry-run's shape, drawn in place of the solid while the tool is open. */
+let preview: ModelSolid | null = null;
 /** An edit or a jump is on its way: Apply waits for it. */
 let waiting = false;
 /**
@@ -334,6 +338,25 @@ export function setModelEditable(next: boolean) {
   refreshTools();
 }
 
+/** A tool's step is looked at in History (`why` says so in each tool's tip): every tool but New solid waits. Null lets them go. */
+export function setModelLocked(why: string | null) {
+  if (locked === why) return;
+  locked = why;
+  if (why && tool && tool !== "create") closeTool();
+  refreshTools();
+}
+
+/**
+ * The shape the latest dry-run built, as Apply would commit it, drawn in place of the solid while the tool is open, as
+ * Scale draws its result; null draws the solid as it is, as after a failed check. While a fresh shape is up, the hole's
+ * and the blend's own stand-ins give way to it; a boolean keeps its tool's outline, and the handles stay.
+ */
+export function setModelPreview(next: ModelSolid | null) {
+  preview = tool ? next : null;
+  fx.model?.setPreview(preview);
+  refreshGhost();
+}
+
 /** The modeler is busy with an edit or a jump: Apply is off until it is done. */
 export function setModelWaiting(next: boolean) {
   if (waiting === next) return;
@@ -346,6 +369,8 @@ export function setModelProbe(next: ProbeView) {
   probe = next;
   refreshApply();
   refreshNote();
+  // A stand-in the checked shape hid comes back while new numbers are checked.
+  refreshGhost();
 }
 
 /** Open `next`, or close it when it is open. Opening another tool ends an edit, which takes the view back. */
@@ -478,6 +503,8 @@ function closeTool() {
   });
   document.querySelector("#modelPanel")?.toggleAttribute("hidden", true);
   probe = null;
+  preview = null;
+  fx.model?.setPreview(null);
   refreshNote();
   fx.model?.setObjectPicking(false);
   fx.model?.setGhost(null);
@@ -916,9 +943,10 @@ function refreshTools() {
   document.querySelectorAll<HTMLButtonElement>(".model-tool[data-tool]").forEach((button) => {
     const id = button.dataset.tool ?? "";
     button.dataset.tipIdle ??= button.dataset.tip ?? "";
+    const held = locked != null && id !== "create";
     const viewOnly = !editable && !KEEPS_SOLID.has(id);
-    const blocked = viewOnly ? VIEW_ONLY_TIP : toolBlockedTip(id, picks, legal);
-    button.disabled = viewOnly || !toolAvailable(id, picks, legal);
+    const blocked = held ? locked : viewOnly ? VIEW_ONLY_TIP : toolBlockedTip(id, picks, legal);
+    button.disabled = held || viewOnly || !toolAvailable(id, picks, legal);
     button.dataset.tip = blocked || button.dataset.tipIdle;
   });
 }
@@ -1264,6 +1292,8 @@ function ghostFor(current: ModelTool): ModelGhost | null {
     const plan = splitPlan();
     return plan ? { kind: "plane", origin: plan.origin, normal: plan.normal } : null;
   }
+  // The checked shape shows the hole or the blend itself; a stand-in drawn over it would only hide it.
+  if ((current === "hole" || current === "fillet" || current === "chamfer") && previewFresh()) return null;
   if (current === "hole") {
     const at = planePoint(toolFrame(), [num("#modelX"), num("#modelY"), num("#modelZ")]);
     const dir = hooks?.holeAxis() ?? [0, 0, -1];
@@ -1288,6 +1318,11 @@ function ghostFor(current: ModelTool): ModelGhost | null {
 
 function num(id: string) {
   return fieldNumber(id.slice(1));
+}
+
+/** A checked shape is up for the numbers in the panel now, not one from before a number moved. */
+function previewFresh(): boolean {
+  return !!preview && probe?.phase === "done" && probe.ok;
 }
 
 /**

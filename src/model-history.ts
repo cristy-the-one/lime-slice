@@ -1,36 +1,67 @@
 /**
  * The History panel as data: one row per node of a Model history tree, laid out as a git graph,
- * and what each key does in it. No DOM here; `ui/model-history.ts` draws the rows.
+ * and what each key does in it. A join is a merge: the steps that made its tool come in on a lane
+ * of their own and meet at the join's row. No DOM here; `ui/model-history.ts` draws the rows.
  */
 import { formatMm } from "./model-plane.ts";
 import type { PlaceFields } from "./model-space.ts";
-import { ROOT, childrenOf, pathTo, subtree, toolUser, type ModelNode, type ModelTree, type NodeId } from "./model-tree.ts";
+import { ROOT, childrenOf, pathTo, subtree, toolUser, type ModelNode, type ModelOp, type ModelTree, type NodeId } from "./model-tree.ts";
 
-/** Where a row sits against the shown node: before it on its path, it, after it on the branch Redo follows, or elsewhere. */
+/** Where a row sits against the shown step: before it in its history, it, after it on the branch Redo follows, or elsewhere. */
 export type RowState = "past" | "current" | "redo" | "other";
 
-/** One vertical line in a rail column. `hot` when it is on the path to the shown node. */
+/**
+ * A row's name: the step's id, after the ids of the joins it is reached through, from the open tree down, joined by
+ * "/". "4" is step 4 of the open solid; "2/3" is step 3 of the tool that its join at step 2 takes.
+ */
+export type RowKey = string;
+
+export function rowKey(via: readonly NodeId[], id: NodeId): RowKey {
+  return [...via, id].join("/");
+}
+
+/** The joins a row is reached through and its step, or null for a key that names no row. */
+export function readRow(key: RowKey): { via: NodeId[]; id: NodeId } | null {
+  const parts = key.split("/").map(Number);
+  if (parts.length === 0 || parts.some((part) => !Number.isInteger(part) || part < 0)) return null;
+  return { via: parts.slice(0, -1), id: parts.at(-1)! };
+}
+
+/** One vertical line in a rail column. `hot` when it leads into the shown step's history. */
 export interface Rail {
   lane: number;
   hot: boolean;
 }
 
 export interface HistoryRow {
+  key: RowKey;
   id: NodeId;
+  /** The tree the step is in: the open one, or a tool's. */
+  tree: string;
+  /** The joins the row is reached through, from the open tree down; empty for the open solid's own steps. */
+  via: NodeId[];
+  /** On a tool's lane: the tool object's name, as the join that takes it says it. */
+  tool: string | null;
+  /** The first row of a tool's lane, where its name is shown. */
+  toolStart: boolean;
   /** The row's own column: 0 is the main rail. */
   lane: number;
   /** The line into the dot from above, in the row's own column. */
   up: Rail | null;
-  /** The line out of the dot to the next step on this branch. */
+  /** The line out of the dot to the next step on this branch, or into the join a tool's last step merges at. */
   down: Rail | null;
   /** Branches that start here: a curve from the dot down into each lane. */
   forks: Rail[];
-  /** Other branches' lines passing this row. */
+  /** A join's tool lane, ending here: a curve from that lane above into the dot. */
+  merges: Rail[];
+  /** Other lines passing this row. */
   through: Rail[];
-  /** 1 on the main rail, one more for each branch off it. */
+  /** 1 on the main rail, one more for each branch off it, and a tool's steps one more than their join. */
   level: number;
   /** Whether branches start here. */
   fork: boolean;
+  /** A join's tool lane rows, which belong to it in the tree's structure though they are drawn above it. */
+  owns: RowKey[];
   state: RowState;
   /** The row's text: the user's name for the step, else the op. */
   label: string;
@@ -47,7 +78,7 @@ export interface HistoryLayout {
   rows: HistoryRow[];
   /** Columns the widest row needs. */
   lanes: number;
-  /** The branch each fork continues down its own column. */
+  /** The branch each fork of the open tree continues down its own column. */
   main: ReadonlyMap<NodeId, NodeId>;
 }
 
@@ -70,22 +101,68 @@ function redoChain(tree: ModelTree): Set<NodeId> {
   return chain;
 }
 
+type JoinOp = Extract<ModelOp, { kind: "join" }>;
+
+/** The tool a join of tree `key` takes, at the step it names, while that tree has the step; null otherwise. */
+function toolOf(trees: ReadonlyMap<string, ModelTree>, node: ModelNode | undefined, seen: ReadonlySet<string>): { tree: ModelTree; op: JoinOp } | null {
+  const op = node?.op;
+  if (op?.kind !== "join" || seen.has(op.tool.key)) return null;
+  const tree = trees.get(op.tool.key);
+  return tree?.nodes.has(op.tool.node) ? { tree, op } : null;
+}
+
+/**
+ * The rows the step `id` of `tree` was made from, itself included: the steps above it and, for each join among them,
+ * the tool's steps up to the one it takes, at any depth, as a merge commit's history holds the branch it merged.
+ */
+function historyOf(trees: ReadonlyMap<string, ModelTree>, tree: ModelTree, via: readonly NodeId[], id: NodeId, out: Set<RowKey>, seen: ReadonlySet<string>) {
+  const inner = new Set([...seen, tree.key]);
+  for (const at of pathTo(tree, id)) {
+    out.add(rowKey(via, at));
+    const tool = toolOf(trees, tree.nodes.get(at), inner);
+    if (tool) historyOf(trees, tool.tree, [...via, at], tool.op.tool.node, out, inner);
+  }
+}
+
+/** The step a row names, in the tree it is in: through `via`'s joins from `tree`. Null when one of them is gone. */
+export function rowStep(trees: ReadonlyMap<string, ModelTree>, tree: ModelTree, key: RowKey): { tree: ModelTree; id: NodeId; joins: { tree: ModelTree; id: NodeId; op: JoinOp }[] } | null {
+  const row = readRow(key);
+  if (!row) return null;
+  let at = tree;
+  const joins: { tree: ModelTree; id: NodeId; op: JoinOp }[] = [];
+  for (const join of row.via) {
+    const tool = toolOf(trees, at.nodes.get(join), new Set(joins.map((link) => link.tree.key)));
+    if (!tool) return null;
+    joins.push({ tree: at, id: join, op: tool.op });
+    at = tool.tree;
+  }
+  return at.nodes.has(row.id) ? { tree: at, id: row.id, joins } : null;
+}
+
 /**
  * Rows oldest first: each step under its parent, side branches right under their fork in columns
  * of their own, and the followed branch straight down the parent's column, so the shown step's
- * path is the main rail. `keep` is an earlier layout's `main`: those forks keep the branch they
- * followed, so rows do not move while someone is working in the list.
+ * path is the main rail. Right above each join, the steps that made its tool, from the tool's root
+ * to the step the join takes, run down a lane of their own and merge into the join's row; a tool
+ * that has joins of its own nests the same way. `keep` is an earlier layout's `main`: those forks
+ * keep the branch they followed, so rows do not move while someone is working in the list. `trees`
+ * holds the tools' trees. `shown` is the row on screen: the open tree's current step unless a tool's
+ * step is shown.
  */
-export function historyLayout(tree: ModelTree, keep?: ReadonlyMap<NodeId, NodeId>): HistoryLayout {
-  const path = new Set(pathTo(tree, tree.current));
-  const redo = redoChain(tree);
+export function historyLayout(tree: ModelTree, keep?: ReadonlyMap<NodeId, NodeId>, trees: ReadonlyMap<string, ModelTree> = new Map(), shown?: RowKey): HistoryLayout {
+  const shownKey = shown ?? rowKey([], tree.current);
+  const hot = new Set<RowKey>();
+  const target = rowStep(trees, tree, shownKey);
+  if (target) historyOf(trees, target.tree, readRow(shownKey)!.via, target.id, hot, new Set(target.joins.map((join) => join.tree.key)));
+  const ownShown = target?.joins.length === 0;
+  const redo = ownShown ? redoChain(tree) : new Set<NodeId>();
   const kidsOf = new Map<NodeId, NodeId[]>();
   for (const node of [...tree.nodes.values()].sort((a, b) => a.id - b.id)) {
     if (node.parent !== null) kidsOf.set(node.parent, [...(kidsOf.get(node.parent) ?? []), node.id]);
   }
   const main = new Map<NodeId, NodeId>();
   /** Each node's children as drawn: the side branches, then the followed one last. */
-  const shown = new Map<NodeId, NodeId[]>();
+  const shownKids = new Map<NodeId, NodeId[]>();
   const brokenAbove = new Set<NodeId>();
   const order: NodeId[] = [];
   const level = new Map<NodeId, number>([[ROOT, 1]]);
@@ -96,7 +173,7 @@ export function historyLayout(tree: ModelTree, keep?: ReadonlyMap<NodeId, NodeId
     const follow = kept != null && kids.includes(kept) ? kept : pickFollowed(tree, id, kids);
     const drawn = follow == null ? [] : [...kids.filter((kid) => kid !== follow), follow];
     if (follow != null) main.set(id, follow);
-    shown.set(id, drawn);
+    shownKids.set(id, drawn);
     for (const kid of drawn) {
       level.set(kid, level.get(id)! + (kid === follow ? 0 : 1));
       if (tree.nodes.get(id)?.broken || brokenAbove.has(id)) brokenAbove.add(kid);
@@ -105,49 +182,115 @@ export function historyLayout(tree: ModelTree, keep?: ReadonlyMap<NodeId, NodeId
   };
   if (tree.nodes.has(ROOT)) visit(ROOT);
 
+  const rows: HistoryRow[] = [];
   const laneOf = new Map<NodeId, number>([[ROOT, 0]]);
-  /** Lanes holding a line down to a step not drawn yet, by that step. */
-  const waiting = new Map<number, NodeId>();
+  /** Lanes holding a line down to a row not drawn yet, by that row. */
+  const waiting = new Map<number, RowKey>();
   let lanes = 1;
-  const rows = order.map((id): HistoryRow => {
-    const node = tree.nodes.get(id)!;
-    const lane = laneOf.get(id) ?? 0;
+  const through = () => [...waiting].map(([at, key]) => ({ lane: at, hot: hot.has(key) })).sort((a, b) => a.lane - b.lane);
+  const freeLane = (from: number) => {
+    let free = from + 1;
+    while (waiting.has(free)) free += 1;
+    lanes = Math.max(lanes, free + 1);
+    return free;
+  };
+  const state = (key: RowKey, redoStep: boolean): RowState => (key === shownKey ? "current" : hot.has(key) ? "past" : redoStep ? "redo" : "other");
+  const text = (node: ModelNode) => ({ label: stepLabel(node), opLabel: node.name?.trim() ? node.label : null, broken: node.broken ?? null });
+
+  /**
+   * The lane of the tool the join `join` takes, drawn before the join's row: its steps from the root to the one the join
+   * names, each before the lanes of its own joins. Returns the line the join's row merges, and the rows' keys.
+   */
+  const toolLane = (join: ModelNode, joinKey: RowKey, joinLane: number, joinLevel: number, via: NodeId[], seen: ReadonlySet<string>): { merge: Rail; owns: RowKey[] } | null => {
+    const tool = toolOf(trees, join, seen);
+    if (!tool) return null;
+    const inner = new Set([...seen, tool.tree.key]);
+    const lane = freeLane(joinLane);
+    const path = pathTo(tool.tree, tool.op.tool.node);
+    const here = [...via, join.id];
+    const owns: RowKey[] = [];
+    let blocked = false;
+    path.forEach((id, i) => {
+      const node = tool.tree.nodes.get(id)!;
+      const key = rowKey(here, id);
+      // The lane is taken while the steps this one's own join takes are drawn beside it.
+      waiting.set(lane, key);
+      const nested = toolLane(node, key, lane, joinLevel + 1, here, inner);
+      waiting.delete(lane);
+      const next = i + 1 < path.length ? rowKey(here, path[i + 1]!) : joinKey;
+      rows.push({
+        key,
+        id,
+        tree: tool.tree.key,
+        via: here,
+        tool: tool.op.tool.name,
+        toolStart: i === 0,
+        lane,
+        up: i === 0 ? null : { lane, hot: hot.has(key) },
+        down: { lane, hot: hot.has(next) },
+        forks: [],
+        merges: nested ? [nested.merge] : [],
+        through: through(),
+        level: joinLevel + 1,
+        fork: false,
+        owns: nested?.owns ?? [],
+        state: state(key, false),
+        ...text(node),
+        blocked,
+        plate: false,
+      });
+      owns.push(key);
+      if (node.broken) blocked = true;
+      waiting.set(lane, next);
+    });
     waiting.delete(lane);
-    const through = [...waiting].map(([at, child]) => ({ lane: at, hot: path.has(child) })).sort((a, b) => a.lane - b.lane);
-    const kids = shown.get(id) ?? [];
+    return { merge: { lane, hot: hot.has(joinKey) }, owns };
+  };
+
+  for (const id of order) {
+    const node = tree.nodes.get(id)!;
+    const key = rowKey([], id);
+    const lane = laneOf.get(id) ?? 0;
+    const rowLevel = level.get(id) ?? 1;
+    const lane2 = toolLane(node, key, lane, rowLevel, [], new Set([tree.key]));
+    waiting.delete(lane);
+    const passing = through();
+    const kids = shownKids.get(id) ?? [];
     const follow = kids.at(-1);
     let down: Rail | null = null;
     if (follow != null) {
       laneOf.set(follow, lane);
-      waiting.set(lane, follow);
-      down = { lane, hot: path.has(follow) };
+      waiting.set(lane, rowKey([], follow));
+      down = { lane, hot: hot.has(rowKey([], follow)) };
     }
     const forks = kids.slice(0, -1).map((kid) => {
-      let free = lane + 1;
-      while (waiting.has(free)) free += 1;
+      const free = freeLane(lane);
       laneOf.set(kid, free);
-      waiting.set(free, kid);
-      lanes = Math.max(lanes, free + 1);
-      return { lane: free, hot: path.has(kid) };
+      waiting.set(free, rowKey([], kid));
+      return { lane: free, hot: hot.has(rowKey([], kid)) };
     });
-    const named = !!node.name?.trim();
-    return {
+    rows.push({
+      key,
       id,
+      tree: tree.key,
+      via: [],
+      tool: null,
+      toolStart: false,
       lane,
-      up: node.parent === null ? null : { lane, hot: path.has(id) },
+      up: node.parent === null ? null : { lane, hot: hot.has(key) },
       down,
       forks,
-      through,
-      level: level.get(id) ?? 1,
+      merges: lane2 ? [lane2.merge] : [],
+      through: passing,
+      level: rowLevel,
       fork: forks.length > 0,
-      state: id === tree.current ? "current" : path.has(id) ? "past" : redo.has(id) ? "redo" : "other",
-      label: stepLabel(node),
-      opLabel: named ? node.label : null,
-      broken: node.broken ?? null,
+      owns: lane2?.owns ?? [],
+      state: state(key, redo.has(id)),
+      ...text(node),
       blocked: brokenAbove.has(id),
-      plate: id === tree.committed && tree.committed !== tree.current,
-    };
-  });
+      plate: id === tree.committed && key !== shownKey,
+    });
+  }
   return { rows, lanes, main };
 }
 
@@ -170,13 +313,13 @@ export function dropRefusal(tree: ModelTree, id: NodeId, trees: ReadonlyMap<stri
 }
 
 /**
- * Left and Right: the same depth on the next branch over, at the nearest fork above `id`. Branches
- * are ordered by column: the followed one, then the side branches to its right. Below the fork it
- * follows each branch down its column; a shorter branch ends on its last step.
+ * Left and Right: the same depth on the next branch over, at the nearest fork above `id` of the open tree. Branches
+ * are ordered by column: the followed one, then the side branches to its right. Below the fork it follows each branch
+ * down its column; a shorter branch ends on its last step.
  */
 export function siblingBranch(tree: ModelTree, layout: HistoryLayout, id: NodeId, step: -1 | 1): NodeId | null {
   const path = pathTo(tree, id);
-  const laneOf = new Map(layout.rows.map((row) => [row.id, row.lane]));
+  const laneOf = new Map(layout.rows.filter((row) => row.via.length === 0).map((row) => [row.id, row.lane]));
   for (let i = path.length - 1; i > 0; i -= 1) {
     const branch = path[i]!;
     const siblings = childrenOf(tree, path[i - 1]!).sort((a, b) => (laneOf.get(a) ?? 0) - (laneOf.get(b) ?? 0));
@@ -196,11 +339,11 @@ export function siblingBranch(tree: ModelTree, layout: HistoryLayout, id: NodeId
 
 export type HistoryAction =
   /** Move focus there; the view follows after the typing pause. */
-  | { kind: "move"; to: NodeId }
-  | { kind: "jump"; to: NodeId }
-  | { kind: "rename"; id: NodeId }
-  | { kind: "drop"; id: NodeId }
-  | { kind: "menu"; id: NodeId }
+  | { kind: "move"; to: RowKey }
+  | { kind: "jump"; to: RowKey }
+  | { kind: "rename"; id: RowKey }
+  | { kind: "drop"; id: RowKey }
+  | { kind: "menu"; id: RowKey }
   /** Back to the canvas. */
   | { kind: "leave" };
 
@@ -212,26 +355,35 @@ export interface HistoryKey {
   altKey?: boolean;
 }
 
-/** What a key does on the focused row. Null for keys the panel leaves alone. */
-export function historyKey(ev: HistoryKey, tree: ModelTree, layout: HistoryLayout, focused: NodeId): HistoryAction | null {
+/**
+ * What a key does on the focused row. Null for keys the panel leaves alone. Right on a join goes into its tool's lane,
+ * to the step the join takes, and Left on a tool's step comes back to the join, as a tree item's children are reached;
+ * elsewhere Left and Right switch branches.
+ */
+export function historyKey(ev: HistoryKey, tree: ModelTree, layout: HistoryLayout, focused: RowKey): HistoryAction | null {
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return null;
-  const ids = layout.rows.map((row) => row.id);
-  const at = ids.indexOf(focused);
+  const keys = layout.rows.map((row) => row.key);
+  const at = keys.indexOf(focused);
   if (at < 0) return null;
-  const move = (to: NodeId | undefined | null): HistoryAction | null => (to == null || to === focused ? null : { kind: "move", to });
+  const row = layout.rows[at]!;
+  const move = (to: RowKey | undefined | null): HistoryAction | null => (to == null || to === focused ? null : { kind: "move", to });
+  const branch = (step: -1 | 1) => {
+    const next = row.via.length === 0 ? siblingBranch(tree, layout, row.id, step) : null;
+    return next == null ? null : rowKey([], next);
+  };
   switch (ev.key) {
     case "ArrowUp":
-      return move(ids[at - 1]);
+      return move(keys[at - 1]);
     case "ArrowDown":
-      return move(ids[at + 1]);
+      return move(keys[at + 1]);
     case "Home":
-      return move(ids[0]);
+      return move(keys[0]);
     case "End":
-      return move(ids.at(-1));
+      return move(keys.at(-1));
     case "ArrowLeft":
-      return move(siblingBranch(tree, layout, focused, -1));
+      return move(row.via.length > 0 ? rowKey(row.via.slice(0, -1), row.via.at(-1)!) : branch(-1));
     case "ArrowRight":
-      return move(siblingBranch(tree, layout, focused, 1));
+      return move(row.owns.length > 0 ? row.owns.at(-1) : branch(1));
     case "Enter":
     case " ":
       return { kind: "jump", to: focused };
