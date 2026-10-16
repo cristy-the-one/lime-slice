@@ -35,12 +35,13 @@ function extensionOf(path: string): string {
 /** A named input mesh or project. Not confined to the workspace. A symlink to a regular file is the file. */
 export function resolveRead(path: string, kind: "mesh" | "lime" | "profile" | "machine"): string {
   if (!path || path.includes("\0")) throw new ProtocolError("That path is not a file this server can read.");
-  const full = resolve(path);
+  const root = process.env.LIME_MCP_WORKSPACE;
+  const full = !isAbsolute(path) && root ? resolve(root, path) : resolve(path);
   let stat;
   try {
     stat = statSync(full);
   } catch {
-    throw new ProtocolError("That file was not found.");
+    throw new ProtocolError(`That file was not found: ${full}`);
   }
   if (!stat.isFile()) throw new ProtocolError("That path is not a regular file.");
   if (stat.size > meshByteLimit()) throw new ProtocolError("That file is larger than the mesh limit.");

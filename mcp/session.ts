@@ -23,7 +23,7 @@ import { throughLength } from "../src/model-hole.ts";
 import { extentAlong, facePlane, splitBase, splitNote, splitPlaneInside, tiltRings, valueRange, type SplitPlan, type Vec3 as PlaneVec } from "../src/model-plane.ts";
 import { rootSpec, type PrimitiveSpec } from "../src/model-primitive.ts";
 import { readFingerprint } from "../src/model-reply.ts";
-import { applyRequest, crossEditRequest, editRequest, exportRequest, gotoRequest, joinOp, newSolidRequest, openRequest, probeRequest } from "../src/model-request.ts";
+import { applyRequest, crossEditRequest, exportRequest, gotoRequest, joinOp, newSolidRequest, openRequest, probeRequest } from "../src/model-request.ts";
 import { IDENTITY_POSE, toSolidOp, type Affine } from "../src/model-space.ts";
 import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, undoTarget, withChild, type Fingerprint, type ModelOp, type ModelTree, type NodeId } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
@@ -36,7 +36,7 @@ import { builtinLibrary, adoptProfile, enginePrinter, heatFor, parseMachineFile,
 import { parseSettingsProfile } from "../src/ui/settings-profiles.ts";
 
 import { mirror } from "./bridge-client.ts";
-import { ProtocolError, type Engine } from "./engine.ts";
+import { occtHint, ProtocolError, type Engine } from "./engine.ts";
 import { appVersion, exportGcode, mass } from "./export-gcode.ts";
 import { renderMesh, type Camera } from "./render.ts";
 import { applyPreset, blendOf, sessionSliceRequest, stlBytes } from "./request.ts";
@@ -51,6 +51,8 @@ const SLICE_WAIT_DEFAULT_S = 20;
 const SLICE_WAIT_MAX_S = 120;
 const STALE_SLICE = "The printer, filament, settings, or placement changed after this slice. Slice again.";
 const MESH_EDIT = "Model edits need a STEP file or a new solid. This part is a mesh.";
+const UNKNOWN_OBJECT = "That object is not on the plate. Call plate_list for the current handles.";
+const NAME_LIMIT = 120;
 
 /** Carried with one tools/call: a progress token, and cancel for that request. */
 export interface CallMeta {
@@ -169,6 +171,23 @@ function readBroken(value: unknown): { id: number; error: string } | null {
   return typeof row.id === "number" && typeof row.error === "string" ? { id: row.id, error: row.error } : null;
 }
 
+function shownName(name: string): string {
+  return name.length <= NAME_LIMIT ? name : name.slice(0, NAME_LIMIT);
+}
+
+function roundTo(value: number, places: number): number {
+  const scale = 10 ** places;
+  return Math.round(value * scale) / scale;
+}
+
+interface PlateSnap {
+  label: string;
+  objects: PlateObject[];
+  selected: string;
+  settings: PresetSettings;
+  library: MachineLibrary;
+}
+
 function nodeHandle(id: NodeId): string {
   return `node_${id}`;
 }
@@ -196,6 +215,8 @@ export class Session {
   private sourcePath = "";
   private profileTouched = false;
   private lastBridge: Record<string, unknown> | null = null;
+  private undoStack: PlateSnap[] = [];
+  private redoStack: PlateSnap[] = [];
   onProgress: ((job: string, fraction: number, stage: string, token?: string | number) => void) | null = null;
 
   constructor(engine: Engine) {
@@ -272,6 +293,8 @@ export class Session {
       case "project_save": return this.projectSave(String(input.name));
       case "mesh_import": return this.meshImport(String(input.path), typeof input.stepToleranceMm === "number" ? input.stepToleranceMm : STEP);
       case "plate_list": return this.plateList(input);
+      case "plate_undo": return this.plateUndo();
+      case "plate_redo": return this.plateRedo();
       case "object_select": return this.objectSelect(String(input.object));
       case "object_place": return this.objectPlace(input);
       case "object_remove": return this.objectRemove(String(input.object));
@@ -361,7 +384,48 @@ export class Session {
     };
   }
 
+  private capture(label: string): PlateSnap {
+    return {
+      label,
+      objects: structuredClone(this.objects),
+      selected: this.selected,
+      settings: structuredClone(this.settings),
+      library: structuredClone(this.library),
+    };
+  }
+
+  private install(snap: PlateSnap): void {
+    const copy = structuredClone(snap);
+    this.objects.splice(0, this.objects.length, ...copy.objects);
+    this.selected = copy.selected;
+    this.settings = copy.settings;
+    this.library = copy.library;
+  }
+
+  private remember(label: string): void {
+    this.undoStack.push(this.capture(label));
+    if (this.undoStack.length > 32) this.undoStack.shift();
+    this.redoStack = [];
+  }
+
+  private plateUndo(): Record<string, unknown> {
+    const snap = this.undoStack.pop();
+    if (!snap) return { ok: false, reason: "Nothing to undo." };
+    this.redoStack.push(this.capture(snap.label));
+    this.install(snap);
+    return { ok: true, label: snap.label };
+  }
+
+  private plateRedo(): Record<string, unknown> {
+    const snap = this.redoStack.pop();
+    if (!snap) return { ok: false, reason: "Nothing to redo." };
+    this.undoStack.push(this.capture(snap.label));
+    this.install(snap);
+    return { ok: true, label: snap.label };
+  }
+
   private async projectCreate(): Promise<Record<string, unknown>> {
+    this.remember("New plate");
     await this.forgetObjects();
     this.objects.length = 0;
     this.selected = "";
@@ -371,13 +435,14 @@ export class Session {
     this.sourceHash = "";
     this.sourcePath = "";
     this.profileTouched = false;
-    return { ok: true, project: "project" };
+    return { ok: true, project: "project", label: "New plate" };
   }
 
   private async projectOpen(path: string): Promise<Record<string, unknown>> {
     const full = resolveRead(path, "lime");
     const parsed = parseProject(await readFile(full, "utf8"));
     if (!parsed.ok) return { ok: false, reason: parsed.message };
+    this.remember("Open project");
     await this.forgetObjects();
     this.objects.length = 0;
     this.settings = { ...parsed.project.settings };
@@ -407,12 +472,14 @@ export class Session {
         seatMm: preview.seatMm,
         stepTolerance: row.placement.stepTolerance > 0 ? row.placement.stepTolerance : STEP,
       }, row.id);
-      objects.push({ object: obj.id, name: obj.name });
+      objects.push({ object: obj.id, name: shownName(obj.name) });
     }
     return {
       ok: true,
       project: "project",
       version: parsed.project.version,
+      handles: "new",
+      label: "Open project",
       printer: this.printer().name,
       filament: this.filament().name,
       objects,
@@ -591,7 +658,7 @@ export class Session {
     return {
       ok: true,
       object: obj.id,
-      name: obj.name,
+      name: shownName(obj.name),
       triangles: obj.triangles,
       bboxMm: { min: placed.bounds.min, max: placed.bounds.max },
       ...(combined ? { note: combined } : {}),
@@ -633,7 +700,7 @@ export class Session {
       ];
       return {
         object: obj.id,
-        name: obj.name,
+        name: shownName(obj.name),
         bboxMm: { min: placed.bounds.min, max: placed.bounds.max },
         centreMm: centre,
         scalePercent: obj.scale * 100,
@@ -646,14 +713,15 @@ export class Session {
 
   private objectSelect(id: string): Record<string, unknown> {
     const obj = this.find(id);
-    if (!obj) return { ok: false, reason: "That object is not on the plate." };
+    if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
     this.selected = obj.id;
-    return { ok: true, object: obj.id, name: obj.name };
+    return { ok: true, object: obj.id, name: shownName(obj.name) };
   }
 
   private objectPlace(input: Record<string, unknown>): Record<string, unknown> {
     const obj = this.find(String(input.object));
-    if (!obj) return { ok: false, reason: "That object is not on the plate." };
+    if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
+    this.remember("Place");
     let reslice = false;
     if (typeof input.scalePercent === "number") {
       obj.scale = input.scalePercent / 100;
@@ -696,6 +764,7 @@ export class Session {
       ],
       scalePercent: obj.scale * 100,
       reslice,
+      label: "Place",
     };
   }
 
@@ -728,21 +797,37 @@ export class Session {
 
   private async objectRemove(id: string): Promise<Record<string, unknown>> {
     const index = this.objects.findIndex((obj) => obj.id === id);
-    if (index < 0) return { ok: false, reason: "That object is not on the plate." };
+    if (index < 0) return { ok: false, reason: UNKNOWN_OBJECT };
+    this.remember("Remove");
     const leaving = this.objects[index];
     if (leaving) await this.closeTree(leaving);
     this.objects.splice(index, 1);
     if (this.selected === id) this.selected = this.objects[0]?.id ?? "";
-    return { ok: true, objects: this.objects.map((obj) => obj.id) };
+    return { ok: true, objects: this.objects.map((obj) => obj.id), label: "Remove" };
   }
 
   private machineList(input: Record<string, unknown>): Record<string, unknown> {
-    const rows = [
-      ...this.library.printers.map((row) => ({ id: row.id, name: row.name, kind: row.kind })),
-      ...this.library.filaments.map((row) => ({ id: row.id, name: row.name, material: row.material })),
-    ];
-    const listed = page(rows, input.cursor, input.limit);
-    return { ok: true, machines: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}) };
+    const printers = this.library.printers.map((row) => ({
+      id: row.id,
+      name: shownName(row.name),
+      kind: row.kind,
+      bedMm: [row.bedX, row.bedY, row.bedZ],
+      nozzlesMm: [0.4, 0.6, 0.8],
+    }));
+    const filaments = this.library.filaments.map((row) => ({
+      id: row.id,
+      name: shownName(row.name),
+      material: row.material,
+    }));
+    const printerPage = page(printers, input.printerCursor ?? input.cursor, input.limit);
+    const filamentPage = page(filaments, input.filamentCursor, input.limit);
+    return {
+      ok: true,
+      printers: printerPage.rows,
+      filaments: filamentPage.rows,
+      ...(printerPage.nextCursor ? { printersNextCursor: printerPage.nextCursor } : {}),
+      ...(filamentPage.nextCursor ? { filamentsNextCursor: filamentPage.nextCursor } : {}),
+    };
   }
 
   private machineSelect(printerId: string, filamentId: string, nozzle: unknown): Record<string, unknown> {
@@ -785,16 +870,19 @@ export class Session {
     if (typeof input.layerHeight === "number" && (input.layerHeight < 0.08 || input.layerHeight > 0.4)) {
       return { ok: false, reason: "Layer height must be from 0.08–0.4 mm.", changed: [] };
     }
+    let next = this.settings;
     if (typeof input.path === "string") {
       const parsed = parseSettingsProfile(readFileSync(resolveRead(input.path, "profile"), "utf8"));
       if (!parsed.ok) return { ok: false, reason: parsed.message, changed: [] };
-      this.settings = { ...parsed.profile.settings };
+      next = { ...parsed.profile.settings };
     }
-    if (typeof input.preset === "string") this.settings = applyPreset(this.settings, input.preset);
-    if (typeof input.layerHeight === "number") this.settings = { ...this.settings, layerHeight: input.layerHeight };
-    if (typeof input.supports === "boolean") this.settings = { ...this.settings, supports: input.supports };
+    if (typeof input.preset === "string") next = applyPreset(next, input.preset);
+    if (typeof input.layerHeight === "number") next = { ...next, layerHeight: input.layerHeight };
+    if (typeof input.supports === "boolean") next = { ...next, supports: input.supports };
+    this.remember("Settings");
+    this.settings = next;
     const changed = presetKeys().filter((key) => this.settings[key] !== DEFAULT_PRESET[key]);
-    return { ok: true, changed };
+    return { ok: true, changed, label: "Settings" };
   }
 
   private selectedObject(): PlateObject | null {
@@ -838,7 +926,7 @@ export class Session {
     const job: Job = { handle: `job_${this.jobSeq}`, engineId: started.id, objectId: obj.id, stamp: this.sliceStamp(obj), status: "running" };
     this.running = job;
     this.retainJobs(job);
-    return { ok: true, job: job.handle, status: "running", object: obj.id, name: obj.name };
+    return { ok: true, job: job.handle, status: "running", object: obj.id, name: shownName(obj.name) };
   }
 
   private sliceStamp(obj: PlateObject): string {
@@ -915,11 +1003,13 @@ export class Session {
       job: job.handle,
       status: "done",
       object: named?.id,
-      name: named?.name,
-      seconds: summary.seconds,
-      grams: summary.grams,
-      filamentMm: summary.filamentMm,
-      warnings: summary.warnings,
+      name: named ? shownName(named.name) : undefined,
+      printer: this.printer().name,
+      filament: this.filament().name,
+      layerHeight: this.settings.layerHeight,
+      seconds: Math.round(summary.seconds),
+      grams: roundTo(summary.grams, 2),
+      cost: roundTo(summary.cost, 2),
     };
   }
 
@@ -1039,7 +1129,7 @@ export class Session {
 
   private meshStats(id: string): Record<string, unknown> {
     const obj = this.find(id);
-    if (!obj) return { ok: false, reason: "That object is not on the plate." };
+    if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
     const placed = this.placed(obj);
     const size = [
       placed.bounds.max[0] - placed.bounds.min[0],
@@ -1092,7 +1182,7 @@ export class Session {
     }
     if (uri === "lime://project") {
       const changed = presetKeys().filter((key) => this.settings[key] !== DEFAULT_PRESET[key]);
-      return { objects: this.objects.map((obj) => ({ object: obj.id, name: obj.name })), changed };
+      return { objects: this.objects.map((obj) => ({ object: obj.id, name: shownName(obj.name) })), changed };
     }
     if (uri === "lime://slice/latest") {
       if (!this.latest?.wire) return { ready: false };
@@ -1105,10 +1195,11 @@ export class Session {
     throw new ProtocolError("That resource is not on this server.");
   }
 
-  private model(name: string, input: Record<string, unknown>): Record<string, unknown> {
+  private model(name: string, input: Record<string, unknown>): Record<string, unknown> | Promise<Record<string, unknown>> {
     if (name === "solid_new") return this.solidNew(input);
-    const obj = this.find(String(input.object ?? ""));
-    if (!obj) return { ok: false, reason: "That object is not on the plate." };
+    const requested = typeof input.object === "string" ? input.object : "";
+    const obj = this.find(requested !== "" ? requested : this.selected);
+    if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
     switch (name) {
       case "model_describe": return this.describe(obj, input);
       case "workplane_set": return this.workplaneSet(obj, Number(input.faceIndex));
@@ -1144,7 +1235,7 @@ export class Session {
     }
     const error = typeof reply.error === "string" ? reply.error : "";
     if (error.includes("was not found") || error.includes("Could not load the Open CASCADE bridge")) {
-      throw new ProtocolError(error);
+      throw new ProtocolError(occtHint(error));
     }
     return reply;
   }
@@ -1244,9 +1335,11 @@ export class Session {
   }
 
   private printUp(obj: PlateObject): Record<string, unknown> {
+    if (isGlobalFrame(obj.workplane)) return { ok: false, reason: "Pick a face before pointing it up." };
+    this.remember("Point up");
     const frame = eulerOrient(obj.workplane.turn[0], obj.workplane.turn[1], obj.workplane.turn[2]);
     obj.orient = [frame[0], frame[3], frame[6], frame[1], frame[4], frame[7], frame[2], frame[5], frame[8]];
-    return { ok: true, reslice: true };
+    return { ok: true, reslice: true, label: "Point up" };
   }
 
   private modelPlace(obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
@@ -1313,7 +1406,8 @@ export class Session {
     }
     if (kind === "join") {
       const tool = this.find(String(spec.toolObject ?? ""));
-      if (!tool?.tree) return { reason: "The tool object has no solid yet." };
+      if (!tool) return { reason: UNKNOWN_OBJECT };
+      if (!tool.tree) return { reason: "The tool object has no solid yet." };
       const op = joinOp((spec.op === "fuse" || spec.op === "common" ? spec.op : "cut"), { object: tool.id, key: tool.tree.key, node: tool.tree.current, name: tool.name }, obj.modelPose, tool.modelPose, spec.keepTool === true);
       return { op, typed: { kind: "join", toolObject: tool.id, keepTool: spec.keepTool === true } };
     }
@@ -1369,7 +1463,20 @@ export class Session {
     return splitNote({ plan });
   }
 
+  private async openJoinTool(raw: unknown): Promise<string | null> {
+    if (!raw || typeof raw !== "object") return null;
+    const spec = raw as { kind?: unknown; toolObject?: unknown };
+    if (spec.kind !== "join") return null;
+    const tool = this.find(typeof spec.toolObject === "string" ? spec.toolObject : "");
+    if (!tool) return UNKNOWN_OBJECT;
+    if (tool.tree) return null;
+    const opened = await this.opened(tool);
+    return "reason" in opened ? opened.reason : null;
+  }
+
   private async probe(obj: PlateObject, raw: unknown, nodeHandleValue?: unknown): Promise<Record<string, unknown>> {
+    const toolReason = await this.openJoinTool(raw);
+    if (toolReason) return { ok: false, reason: toolReason };
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     const asked = parseNode(nodeHandleValue);
@@ -1397,6 +1504,8 @@ export class Session {
   }
 
   private async apply(obj: PlateObject, raw: unknown, edit: boolean): Promise<Record<string, unknown>> {
+    const toolReason = await this.openJoinTool(raw);
+    if (toolReason) return { ok: false, reason: toolReason };
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     const baked = this.bake(obj, raw);
@@ -1455,6 +1564,8 @@ export class Session {
   }
 
   private async edit(obj: PlateObject, node: number | null, raw: unknown): Promise<Record<string, unknown>> {
+    const toolReason = await this.openJoinTool(raw);
+    if (toolReason) return { ok: false, reason: toolReason };
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (node === null || !tree.nodes.has(node)) return { ok: false, reason: "That step is not in the history." };

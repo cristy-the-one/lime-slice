@@ -5,7 +5,7 @@
  * Set LIME_MCP_GOLDEN=1. Without it, this file prints golden: SKIPPED and
  * exits 0, unless CI is set, in which case a skip fails the job.
  */
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -15,6 +15,14 @@ import { bytesToBase64 } from "../src/base64.ts";
 
 import { loadNativeEngine } from "./engine.ts";
 import { cliSliceRequest, type GoldenConfig } from "./request.ts";
+
+function syncText(value: string | Promise<string>): string {
+  if (typeof value !== "string") {
+    console.error("golden: the engine answered asynchronously");
+    process.exit(1);
+  }
+  return value;
+}
 
 if (process.env.LIME_MCP_GOLDEN !== "1") {
   console.error("golden: SKIPPED");
@@ -26,7 +34,7 @@ const bin = process.env.LIME_SLICE_BIN ?? join(root, "target", "release", "lime-
 const mesh = join(root, "samples", "calibration_cube_20mm.stl");
 const engine = loadNativeEngine(root);
 const bytes = readFileSync(mesh);
-const preview = JSON.parse(engine.meshPreview(JSON.stringify({ filename: "calibration_cube_20mm.stl", dataB64: bytesToBase64(new Uint8Array(bytes)), stepToleranceMm: 0.05 }))) as { min?: number[]; max?: number[]; error?: string };
+const preview = JSON.parse(syncText(engine.meshPreview(JSON.stringify({ filename: "calibration_cube_20mm.stl", dataB64: bytesToBase64(new Uint8Array(bytes)), stepToleranceMm: 0.05 })))) as { min?: number[]; max?: number[]; error?: string };
 if (!preview.min || !preview.max) {
   console.error(preview.error ?? "no preview");
   process.exit(1);
@@ -45,7 +53,7 @@ const dir = mkdtempSync(join(tmpdir(), "lime-golden-"));
 let failed = 0;
 for (const config of configs) {
   const body = cliSliceRequest("calibration_cube_20mm.stl", bytesToBase64(new Uint8Array(bytes)), config.name, atMm);
-  const started = JSON.parse(engine.sliceStart(JSON.stringify(body))) as { id?: number; error?: string };
+  const started = JSON.parse(syncText(engine.sliceStart(JSON.stringify(body)))) as { id?: number; error?: string };
   if (typeof started.id !== "number") {
     failed += 1;
     console.error(`FAIL ${config.name} start ${started.error}`);
@@ -53,7 +61,7 @@ for (const config of configs) {
   }
   let gcode = "";
   for (let i = 0; i < 200 && !gcode; i += 1) {
-    const poll = JSON.parse(engine.slicePoll(String(started.id))) as { status?: string; result?: string; error?: string };
+    const poll = JSON.parse(syncText(engine.slicePoll(String(started.id)))) as { status?: string; result?: string; error?: string };
     if (poll.status === "done" && poll.result) {
       const wire = JSON.parse(poll.result) as { gcode?: string };
       gcode = wire.gcode ?? "";

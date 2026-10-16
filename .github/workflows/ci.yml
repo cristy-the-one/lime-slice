@@ -156,6 +156,9 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      - name: Typecheck the server
+        run: npx tsc -p mcp
+
       - name: Schema, scenarios, export, and golden G-code
         run: |
           node --experimental-strip-types mcp/schema.test.ts

@@ -10,7 +10,7 @@ These override the architecture recommendation in section 3 and the open questio
 
 1. **In-process engine.** The server calls `slice_payload_watched` and `lime_model_load::tree` in-process. It does not spawn `lime-slice serve`. The engine crates are unchanged, so `tools/golden_ab.sh` still checks that the slicer binary did not move.
 
-   The server is TypeScript (`mcp/`) because that is the least risky way to reuse the app's request builders, feasibility checks, and G-code post-processing (`settingsRules`, the adhesion, seam, flow, and layer-action helpers, `toSolidOp`, `withPrintMeta`, `withMachineGcode`, `withFooterGrams`). A Rust `rmcp` server would have been a second copy of that UI. The engine sits behind the small `Engine` interface in `mcp/engine.ts` (`sliceStart`, `slicePoll`, `sliceCancel`, `meshPreview`, `modelTree`). The first implementation is `crates/lime-mcp-engine`, a cdylib that Node loads with `process.dlopen`. N-API symbols come from the host process, so the library is not linked against Node and the server adds no npm package. Replacing that one module is how a later build could put the engine in another process without changing the tools.
+   The server is TypeScript (`mcp/`) because that is the least risky way to reuse the app's request builders, feasibility checks, and G-code post-processing (`settingsRules`, the adhesion, seam, flow, and layer-action helpers, `toSolidOp`, `withPrintMeta`, `withMachineGcode`, `withFooterGrams`). A Rust `rmcp` server would have been a second copy of that UI. The engine sits behind the small `Engine` interface in `mcp/engine.ts` (`sliceStart`, `slicePoll`, `sliceCancel`, `meshPreview`, `modelTree`). The first implementation is `crates/lime-mcp-engine`, a cdylib that Node loads with `process.dlopen`. N-API symbols come from the host process, so the library is not linked against Node and the server process adds no runtime npm dependency. Replacing that one module is how a later build could put the engine in another process without changing the tools.
 
 2. **Save may overwrite.** `project_save` overwrites a `.lime` file of the same name inside `LIME_MCP_WORKSPACE`, including the project that was opened. It does not write outside that directory. The tool description says so.
 
@@ -20,24 +20,29 @@ These override the architecture recommendation in section 3 and the open questio
 
 ### What shipped
 
-Open and import, list and place, Model-mode edits with a feasibility check that returns a plain-language refusal before the solid changes, undo and redo, history, slice, estimates and warnings, G-code and 3MF export, save, mesh stats, and measurements. Also `solid_new`, `layer_summary`, `render_view`, machine load, resources, and the four prompts. Transport is stdio. One slice runs at a time and is cancelled with that job's watch, not `Job::start` or `cancel_all`.
+Open and import, list and place, and plate undo. Model edits (hole, counterbore, fillet, chamfer, split, scale, a sized boolean, and join) run only after a feasibility check that returns a plain-language refusal before the solid changes. A committed edit replaces the plate mesh, so the next slice, the 3MF, the preview, and the saved `.lime` see it. History undo and redo stay on the model tree. A save keeps model history, paint, support edits, overrides, per-object settings, and the project's printer.
+
+Slice, estimates, and warnings. `slice_wait` reports progress and can return while the slice is still running. Cancelling the wait does not cancel the slice. The slice itself is cancelled with that job's watch. G-code and 3MF export, mesh stats, and a measurement between two faces. Also `solid_new`, `layer_summary` (the layer count, the first and last height, and per-layer seconds when the slice produced one time for every layer), a shaded PNG from `render_view`, a machine list with printers and filaments on separate pages, resources, and the four prompts. Transport is newline-delimited JSON on stdio. One slice runs at a time.
 
 A session slice uses the built-in machine library and the same field helpers as the app, so a Lime 220 / PLA slice carries that printer's fan and Klipper firmware. The golden check is separate: it sends the CLI's request through the same `sliceStart` and requires byte-identical G-code to `lime-slice slice` for the six `tools/golden.sh` configs on `samples/calibration_cube_20mm.stl`.
 
-`render_view` writes a z-buffer PNG of the mesh (top, front, or iso) in the workspace, using Node's zlib. A layer action of kind `customGcode` is stored and shown in the G-code review. It does not add a tool.
+`render_view` writes a shaded PNG of the mesh (top, front, or iso) in the workspace, using Node's zlib. A layer action of kind `customGcode` is stored and shown in the G-code review. A line longer than 400 bytes is left out of the slice. The desktop app shows the line on the layer marker, and shows the lines when the project opens, before any slice. It does not add a tool.
+
+The server needs Node 22.6 or later. Node prints an `ExperimentalWarning` on startup. Model edits find Open CASCADE next to `node`, or at `LIME_OCCT_BRIDGE`. See the README.
 
 ### Deferred
 
 - `printer_send`, and the calibrate towers.
 - Slicing the whole plate. `slice_start` slices the selected object. The engine's `objects` array is not sent yet.
-- Layer polylines and layer images. `layer_summary` returns the layer count and the first and last Z.
+- Layer polylines and layer images. `layer_summary` does not return those.
 - Settings beyond preset, layer height, supports, and a profile file stay at the loaded project or `DEFAULT_PRESET`.
 - The live bridge mirrors place and those settings. It does not mirror Model edits.
 - `render_view` draws the mesh. It does not draw sliced layers and it does not capture the desktop window.
+- Tool lanes across two objects' histories, and recovering a model tree after the engine process is replaced. A lost tree is an error. Start the edit again.
 
 ### Licences
 
-No new npm package. `crates/lime-mcp-engine` depends on `base64` 0.22 and `serde_json` (both MIT OR Apache-2.0) and on the existing `lime-slice-core` and `lime-model-load` crates. Open CASCADE stays a `dlopen` under the LGPL-2.1 exception noted in `third_party/occt/NOTICE.md`. No GPL dependency was added.
+The server process adds no runtime npm dependency. Tests use `@modelcontextprotocol/sdk` and `@types/node`, both MIT. `crates/lime-mcp-engine` depends on `base64` 0.22 and `serde_json` (both MIT OR Apache-2.0) and on the existing `lime-slice-core` and `lime-model-load` crates. Open CASCADE stays a `dlopen` under the LGPL-2.1 exception noted in `third_party/occt/NOTICE.md`. No GPL dependency was added.
 
 The server would let an LLM do the things the desktop app already does with numbers: open a project, place parts, run a Model edit that has already passed a feasibility check, slice, and write G-code. The mouse path stays in the app. The MCP path is the programmatic equivalent of the typed fields.
 

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { fnv1aHex } from "../src/slice-action.ts";
-import { meshRecord, parseProject, serializeProject } from "../src/project.ts";
+import { meshRecord, parseProject, serializeProject, type LimeProject } from "../src/project.ts";
 import { DEFAULT_PRESET } from "../src/presets.ts";
 import { ID_MATRIX } from "../src/mesh-place.ts";
 import { beltSliceField } from "../src/belt.ts";
@@ -37,13 +37,33 @@ const imported = await call("mesh_import", { path: cube });
 check("import returns an object", imported.ok === true && typeof imported.object === "string", JSON.stringify(imported));
 const object = String(imported.object);
 
+const importedPose = await call("plate_list", {});
+const importedBox = JSON.stringify((importedPose.objects as { bboxMm: unknown }[])[0]?.bboxMm);
+const placed = await call("object_place", { object, centreX: 50, centreY: 60 });
+check("a place records a snapshot", placed.ok === true && placed.label === "Place", JSON.stringify(placed));
+const turned = await call("object_place", { object, turn: { axis: "z", degrees: 90 } });
+check("a turn records a snapshot", turned.ok === true && turned.label === "Place");
+const undone = await call("plate_undo", {});
+const undoneAgain = await call("plate_undo", {});
+const restored = await call("plate_list", {});
+check("place, turn, undo, undo restores the import pose", undone.label === "Place" && undoneAgain.label === "Place" && JSON.stringify((restored.objects as { bboxMm: unknown }[])[0]?.bboxMm) === importedBox, JSON.stringify(restored.objects));
+const pointed = await call("workplane_print_up", { object });
+check("pointing up without a face is refused", pointed.ok === false, JSON.stringify(pointed));
+const missing = await call("object_place", { object: "obj_missing" });
+check("an unknown handle says to list the plate", missing.reason === "That object is not on the plate. Call plate_list for the current handles.", JSON.stringify(missing));
+await call("object_select", { object });
+const described = await call("model_describe", {});
+check("describe follows the selection", described.ok === false && described.reason === "Model edits need a STEP file or a new solid. This part is a mesh.", JSON.stringify(described));
+
 const selected = await call("machine_select", { printerId: "lime-220", filamentId: "lime-pla" });
 check("lime 220 and pla are selected", selected.ok === true && selected.printer === "Lime 220" && selected.filament === "PLA");
 
 const started = await call("slice_start", {});
 check("the first slice starts", started.ok === true && started.status === "running");
 const waited = await call("slice_wait", { job: started.job });
-check("the slice reports time and grams", waited.ok === true && typeof waited.seconds === "number" && typeof waited.grams === "number", JSON.stringify(waited));
+const waitedText = JSON.stringify(waited);
+check("the slice reports time and grams", waited.ok === true && typeof waited.seconds === "number" && typeof waited.grams === "number", waitedText);
+check("the slice result stays small and names the object and printer", Buffer.byteLength(waitedText) < 300 && waited.object === object && waited.printer === "Lime 220", waitedText);
 const body = JSON.parse(engine.lastSlice) as { printer?: { name?: string; firmware?: string; fanPercent?: number }; includePreview?: boolean };
 check("the session slice uses the library printer", body.printer?.name === "Lime 220" && body.printer.firmware === "klipper" && body.printer.fanPercent === 100);
 check("a tool slice asks for layer heights", body.includePreview === true);
@@ -55,17 +75,17 @@ const outside = mkdtempSync(join(tmpdir(), "lime-outside-"));
 const victim = join(outside, "victim.gcode");
 writeFileSync(victim, "untouched");
 symlinkSync(victim, join(workspace, "link.gcode"));
-let symlinkExport = { ok: true, reason: "" };
+let symlinkExport: { ok: boolean; reason: string } = { ok: true, reason: "" };
 try {
-  symlinkExport = await call("gcode_export", { name: "link.gcode", now: "2020-01-02T03:04:05.000Z" });
+  symlinkExport = await call("gcode_export", { name: "link.gcode", now: "2020-01-02T03:04:05.000Z" }) as { ok: boolean; reason: string };
 } catch (err) {
   symlinkExport = { ok: false, reason: err instanceof Error ? err.message : "" };
 }
 check("a symlink export is refused", symlinkExport.ok === false, JSON.stringify(symlinkExport));
 check("the outside file is unchanged", readFileSync(victim, "utf8") === "untouched");
-let outsideExport = { ok: true, reason: "" };
+let outsideExport: { ok: boolean; reason: string } = { ok: true, reason: "" };
 try {
-  outsideExport = await call("export_3mf", { name: join(outside, "made", "by", "mcp", "x.3mf") });
+  outsideExport = await call("export_3mf", { name: join(outside, "made", "by", "mcp", "x.3mf") }) as { ok: boolean; reason: string };
 } catch (err) {
   outsideExport = { ok: false, reason: err instanceof Error ? err.message : "" };
 }
@@ -154,20 +174,20 @@ if (!ir3 || !pla) {
 } else {
   const cubeBytes = new Uint8Array(readFileSync(cube));
   const mesh = meshRecord("calibration_cube_20mm.stl", cubeBytes);
-  const placement = { orient: [...ID_MATRIX], scale: 1, centered: true, offset: { x: 0, y: 0, z: 0 }, stepTolerance: 0.08 };
+  const placement = { orient: [...ID_MATRIX] as typeof ID_MATRIX, scale: 1, centered: true, offset: { x: 0, y: 0, z: 0 }, stepTolerance: 0.08 };
   const pruneSite = { xy: [1.5, -2], z: 4.25 };
   const pruneEdit = { id: 1, scope: "tree", edit: { kind: "prune", sites: [pruneSite] } };
   const paintDisk = { kind: "enforce", p: [1, 2, 3], n: [0, 0, 1], r: 2 };
   const richDoc = {
-    version: 2,
+    version: 2 as const,
     mesh,
     placement,
     settings: { ...DEFAULT_PRESET },
     preset: null,
     profile: enginePrinter(ir3, pla, 0.4),
-    level: "simple",
+    level: "simple" as const,
     supportEdits: [],
-    overrides: { version: 1, ranges: [defaultRange("range-1")], volumes: [] },
+    overrides: { version: 1 as const, ranges: [defaultRange("range-1")], volumes: [] },
     objects: [{
       id: "bracket",
       name: "calibration_cube_20mm.stl",
@@ -185,7 +205,7 @@ if (!ir3 || !pla) {
       },
     }],
   };
-  const richText = serializeProject(richDoc);
+  const richText = serializeProject(richDoc as unknown as LimeProject);
   const richParsed = parseProject(richText);
   check("the rich project parses", richParsed.ok, richParsed.ok ? "" : richParsed.message);
   if (richParsed.ok) {
@@ -226,6 +246,56 @@ if (!ir3 || !pla) {
     check("the touched file is left as it was", readFileSync(richPath, "utf8") === touched);
   }
 }
+
+const machines = await call("machine_list", {});
+const printers = machines.printers as { id?: string; bedMm?: number[]; nozzlesMm?: number[] }[];
+const filaments = machines.filaments as { id?: string }[];
+check("machine_list returns printers and filaments", Array.isArray(printers) && Array.isArray(filaments) && Array.isArray(printers[0]?.bedMm) && Array.isArray(printers[0]?.nozzlesMm), JSON.stringify(machines));
+const picked = await call("machine_select", { printerId: printers[0]?.id, filamentId: filaments[0]?.id });
+check("the first printer and filament can be selected", picked.ok === true, JSON.stringify(picked));
+
+writeFileSync(join(workspace, "x.stl"), readFileSync(cube));
+const relative = await call("mesh_import", { path: "x.stl" });
+check("a workspace-relative mesh path is read", relative.ok === true, JSON.stringify(relative));
+let missingFile = "";
+try {
+  await call("mesh_import", { path: "no-such.stl" });
+} catch (err) {
+  missingFile = err instanceof Error ? err.message : "";
+}
+check("a missing file names the path", missingFile.includes("no-such.stl") && missingFile.includes(workspace), missingFile);
+
+const stepA = await call("mesh_import", { path: stepFile });
+const stepB = await call("mesh_import", { path: stepFile });
+const joined = await call("model_probe", { object: stepA.object, op: { kind: "join", toolObject: stepB.object } });
+check("a join opens the tool solid without a prior describe", joined.ok === true, JSON.stringify(joined));
+
+const longName = "A".repeat(10000);
+const mesh = meshRecord("cube.stl", readFileSync(cube));
+const longPlace = { orient: [...ID_MATRIX] as typeof ID_MATRIX, scale: 1, centered: true, offset: { x: 0, y: 0, z: 0 }, stepTolerance: 0.05 };
+const longDoc = {
+  version: 2 as const,
+  mesh,
+  placement: longPlace,
+  settings: { ...DEFAULT_PRESET },
+  preset: null,
+  profile: enginePrinter(builtinLibrary().printers[0]!, builtinLibrary().filaments[0]!, 0.4),
+  level: "simple" as const,
+  supportEdits: [],
+  objects: [{ id: "long", name: longName, mesh, placement: longPlace, supportEdits: [] }],
+};
+const longPath = join(workspace, "long-name.lime");
+writeFileSync(longPath, serializeProject(longDoc));
+const longSession = new Session(fakeEngine());
+const longCall = (name: string, args: unknown = {}) => longSession.call(name, args);
+const longOpen = await longCall("project_open", { path: longPath });
+check("an opened project says its handles are new", longOpen.ok === true && longOpen.handles === "new", JSON.stringify(longOpen));
+const longList = await longCall("plate_list", {});
+const longRow = (longList.objects as { name?: string }[])[0];
+check("a very long name is shortened in the list", Buffer.byteLength(JSON.stringify(longRow?.name ?? "")) <= 200, JSON.stringify(longRow?.name));
+const longSave = await longCall("project_save", { name: "long-kept.lime" });
+const longKept = longSave.ok === true ? readFileSync(join(workspace, "long-kept.lime"), "utf8") : "";
+check("the saved project keeps the full name", longKept.includes(longName), String(longSave.reason ?? longSave.ok));
 
 if (failed) {
   console.error(`${failed} failed`);

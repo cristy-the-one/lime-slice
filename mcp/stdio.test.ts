@@ -28,6 +28,16 @@ function check(name: string, ok: boolean, detail = "") {
   console.error(`FAIL ${name}${detail ? ` ${detail}` : ""}`);
 }
 
+function toolText(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  for (const row of content) {
+    if (!row || typeof row !== "object") continue;
+    const item = row as { type?: unknown; text?: unknown };
+    if (item.type === "text" && typeof item.text === "string") return item.text;
+  }
+  return "";
+}
+
 function childEnv(extra: Record<string, string>, fake = true): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -100,7 +110,7 @@ check("the SDK client lists tools", listed.tools.length >= 30, String(listed.too
 check("every tool has annotations", listed.tools.every((tool) => tool.annotations && typeof tool.annotations.readOnlyHint === "boolean"));
 check("initialize carries instructions", (client.getInstructions() ?? "").includes("model_describe") && (client.getInstructions() ?? "").includes("slice_wait"));
 const info = await client.callTool({ name: "session_info", arguments: {} });
-const infoText = info.content.find((row) => row.type === "text" && "text" in row)?.text ?? "";
+const infoText = toolText(info.content);
 const infoBody = JSON.parse(infoText) as { ok?: boolean; engine?: string };
 check("tools/call session_info answers", infoBody.ok === true && infoBody.engine === "1.8.0", infoText);
 const prompt = await client.getPrompt({ name: "hole-on-face", arguments: { object: "obj_1" } });
@@ -115,16 +125,16 @@ for (const step of steps) {
 }
 check("hole-on-face names describe, workplane, probe, apply in order", ordered, promptText);
 
-const imported = JSON.parse((await client.callTool({ name: "mesh_import", arguments: { path: cube } })).content.find((row) => row.type === "text" && "text" in row)?.text ?? "{}") as { ok?: boolean };
+const imported = JSON.parse(toolText((await client.callTool({ name: "mesh_import", arguments: { path: cube } })).content) || "{}") as { ok?: boolean };
 check("the SDK client imports a mesh", imported.ok === true);
 await client.callTool({ name: "machine_select", arguments: { printerId: "lime-220", filamentId: "lime-pla" } });
-const started = JSON.parse((await client.callTool({ name: "slice_start", arguments: {} })).content.find((row) => row.type === "text" && "text" in row)?.text ?? "{}") as { job?: string };
+const started = JSON.parse(toolText((await client.callTool({ name: "slice_start", arguments: {} })).content) || "{}") as { job?: string };
 let sawProgress = false;
-const waitedText = (await client.callTool(
+const waitedText = toolText((await client.callTool(
   { name: "slice_wait", arguments: { job: started.job, timeoutS: 0.35 } },
   undefined,
   { onprogress: () => { sawProgress = true; }, timeout: 5000 },
-)).content.find((row) => row.type === "text" && "text" in row)?.text ?? "{}";
+)).content) || "{}";
 const waited = JSON.parse(waitedText) as { status?: string; fraction?: number };
 check("a long slice_wait returns running before the client timeout", waited.status === "running" && typeof waited.fraction === "number", waitedText);
 check("a progress token produces a progress notification", sawProgress);

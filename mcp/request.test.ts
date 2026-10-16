@@ -101,7 +101,7 @@ const appJson = JSON.stringify(appBody(regionSettings));
 check("the session body deep-equals the app builder", regionJson === appJson, regionJson.slice(0, 240));
 check("the speed body deep-equals the app builder", JSON.stringify(speed) === JSON.stringify(appBody(speedSettings)));
 
-const regionBody = region as { retractSpeed?: number; retractLength?: number; ironing?: { spacing?: number }; blend?: { mode?: string; atMm?: number }; includePreview?: boolean };
+const regionBody = region as { retractOn?: boolean; retractSpeed?: number; retractLength?: number; ironing?: { spacing?: number }; blend?: { mode?: string; atMm?: number }; includePreview?: boolean };
 const lineWidth = Math.min(1.2, Math.max(0.2, 0.45));
 check("retract at 45 mm/s is sent and clamped", regionBody.retractOn === undefined && regionBody.retractSpeed === 45 && regionBody.retractLength === 1.2);
 check("ironing spacing is clamped to the line width", regionBody.ironing?.spacing === ironingSpacingMax(lineWidth) && (regionBody.ironing?.spacing ?? 1) < 5);

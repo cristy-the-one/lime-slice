@@ -2,7 +2,7 @@
  * Model edits against the stand-in engine: the plate mesh, the split check, face holes,
  * and history replay. The real Open CASCADE kernel is not built in this run.
  */
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -52,7 +52,7 @@ const last = await call("model_describe", { object, limit: 5, edgesCursor: "10" 
 const tail = last.edges as { index: number }[];
 check("paging reaches the last edge", tail.some((edge) => edge.index === 11) && last.edgesNextCursor === undefined, JSON.stringify(tail));
 
-const plusX = faces.find((face) => face.normal?.[0] === 1)?.index ?? (described.faces as { normal?: number[] }[]).findIndex((face) => false);
+const plusX = faces.find((face) => face.normal?.[0] === 1)?.index ?? -1;
 const faceIndex = (await call("model_describe", { object, limit: 20 })).faces as { index: number; normal?: number[] }[];
 const xFace = faceIndex.find((face) => face.normal?.[0] === 1)?.index ?? plusX;
 const frame = await call("workplane_set", { object, faceIndex: xFace });

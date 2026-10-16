@@ -17,6 +17,16 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const server = fileURLToPath(new URL("./server.ts", import.meta.url));
 
 let failed = 0;
+function toolText(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  for (const row of content) {
+    if (!row || typeof row !== "object") continue;
+    const item = row as { type?: unknown; text?: unknown };
+    if (item.type === "text" && typeof item.text === "string") return item.text;
+  }
+  return "";
+}
+
 function check(name: string, ok: boolean, detail = "") {
   if (ok) {
     console.log(name);
@@ -59,7 +69,7 @@ if (!built) {
   const client = new Client({ name: "lime-mcp-native", version: "0.0.0" });
   await client.connect(transport);
   const info = await client.callTool({ name: "session_info", arguments: {} });
-  const text = info.content.find((row) => row.type === "text" && "text" in row)?.text ?? "";
+  const text = toolText(info.content);
   const body = JSON.parse(text) as { ok?: boolean; engine?: string };
   check("session_info on the real addon returns engine 1.8.0", body.ok === true && body.engine === "1.8.0", text);
   await client.close();

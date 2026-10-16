@@ -7,6 +7,13 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 
+/** The bridge search is next to the running program. For this server, that program is node. */
+export function occtHint(error: string): string {
+  if (!error.includes("Open CASCADE")) return error;
+  if (error.includes("LIME_OCCT_BRIDGE")) return error;
+  return `${error} Set LIME_OCCT_BRIDGE to the bridge library, or put it next to node.`;
+}
+
 export class ProtocolError extends Error {
   constructor(message: string) {
     super(message);

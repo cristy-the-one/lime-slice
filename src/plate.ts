@@ -350,6 +350,8 @@ export function settingsEmpty(settings: PlateObjectSettings | undefined): boolea
 
 /** Version 2 is a plate with more than one object, or one object that has its own settings, paint, reinforcement, a B-rep, or a Model history. */
 export function plateFileIsVersion2(objects: {
+  name?: string;
+  mesh?: { name?: string };
   settings?: PlateObjectSettings;
   supportPaint?: readonly PaintDisk[];
   seamPaint?: readonly SeamDisk[];
@@ -362,6 +364,7 @@ export function plateFileIsVersion2(objects: {
   if (objects.length !== 1) return objects.length > 1;
   const one = objects[0];
   return (
+    (typeof one?.name === "string" && one.name !== one.mesh?.name) ||
     !settingsEmpty(one?.settings) ||
     (one?.supportPaint?.length ?? 0) > 0 ||
     (one?.seamPaint?.length ?? 0) > 0 ||
