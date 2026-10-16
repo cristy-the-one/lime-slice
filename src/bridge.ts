@@ -3,7 +3,7 @@
  * The headless server stays right if this never runs. A gesture in progress
  * (`poseHud`) waits; the mirror does not interrupt it.
  */
-import { ID_MATRIX, layFlatMatrix, matMul, rotX, rotY, rotZ, type Mat3 } from "./mesh-place.ts";
+import { ID_MATRIX, type Mat3 } from "./mesh-place.ts";
 
 export interface BridgeView {
   meshName: string;
@@ -20,26 +20,38 @@ export interface BridgeView {
   source: Float32Array | null;
 }
 
+export interface BridgePlacement {
+  orient: Mat3;
+  scale: number;
+  centered: boolean;
+  offset: { x: number; y: number; z: number };
+}
+
+export interface BridgeSettings {
+  layerHeight?: number;
+  supports?: boolean;
+  blendKind?: string;
+  strategy?: string;
+  toughness?: number;
+}
+
 export interface BridgeMessage {
   tool?: string;
+  objectId?: string;
   objectName?: string;
   ok?: boolean;
-  args?: {
-    centreX?: number;
-    centreY?: number;
-    scalePercent?: number;
-    centreOnBed?: boolean;
-    layFlat?: boolean;
-    turn?: { axis?: string; degrees?: number };
-    layerHeight?: number;
-    supports?: boolean;
-    preset?: string;
-  };
+  /** The placement after the tool, not the arguments that produced it. */
+  placement?: BridgePlacement;
+  /** The settings after the tool. */
+  settings?: BridgeSettings;
 }
 
 export interface BridgePatch {
   wait: boolean;
   place: boolean;
+  stale?: boolean;
+  /** Remember this id so a later mirror for another object is not applied here. */
+  bindId?: string;
   orient?: Mat3;
   partScale?: number;
   centered?: boolean;
@@ -51,49 +63,56 @@ export interface BridgePatch {
   toughness?: number;
 }
 
-export function applyBridge(view: BridgeView, message: BridgeMessage): BridgePatch {
+export function applyBridge(view: BridgeView, message: BridgeMessage, boundId = ""): BridgePatch {
   if (view.poseHud) return { wait: true, place: false };
   if (message.ok === false) return { wait: false, place: false };
-  const args = message.args ?? {};
-  if (message.tool === "settings_apply") {
-    const patch: BridgePatch = { wait: false, place: false };
-    if (typeof args.layerHeight === "number") patch.layerHeight = args.layerHeight;
-    if (typeof args.supports === "boolean") patch.supports = args.supports;
-    if (args.preset === "speed") {
-      patch.blendKind = "single";
-      patch.strategy = "speed";
-    } else if (args.preset === "toughness") {
-      patch.blendKind = "single";
-      patch.strategy = "toughness";
-    } else if (args.preset === "efficiency") {
-      patch.blendKind = "weight";
-      patch.toughness = 0.5;
-    } else if (args.preset === "layer") patch.blendKind = "byLayer";
-    else if (args.preset === "region") patch.blendKind = "byRegion";
-    return patch;
+  if (message.tool === "settings_apply" && message.settings) {
+    return { wait: false, place: false, stale: true, ...message.settings };
   }
-  if (message.tool !== "object_place") return { wait: false, place: false };
-  if (!message.objectName || meshStem(message.objectName) !== meshStem(view.meshName)) return { wait: false, place: false };
-  let orient = view.orient;
-  let partScale = view.partScale;
-  let centered = view.centered;
-  let offset = { ...view.offset };
-  if (typeof args.scalePercent === "number") partScale = args.scalePercent / 100;
-  if (args.layFlat === true && view.source) orient = layFlatMatrix(view.source);
-  if (args.turn && typeof args.turn.degrees === "number") {
-    const rot = args.turn.axis === "x" ? rotX(args.turn.degrees) : args.turn.axis === "y" ? rotY(args.turn.degrees) : rotZ(args.turn.degrees);
-    orient = matMul(rot, orient);
+  if (message.tool !== "object_place" || !message.placement) return { wait: false, place: false };
+  if (message.objectId && boundId && message.objectId !== boundId) return { wait: false, place: false };
+  const named = message.objectName ? meshStem(message.objectName) === meshStem(view.meshName) : false;
+  if (!message.objectId && !named) return { wait: false, place: false };
+  if (message.objectId && !boundId && message.objectName && !named) return { wait: false, place: false };
+  const placement = message.placement;
+  return {
+    wait: false,
+    place: true,
+    orient: [...placement.orient] as Mat3,
+    partScale: placement.scale,
+    centered: placement.centered,
+    offset: { ...placement.offset },
+    ...(message.objectId && message.objectId !== boundId ? { bindId: message.objectId } : {}),
+  };
+}
+
+/** Keep a mirror until the gesture ends. Nothing is dropped for being old. */
+export function parkBridge(queue: BridgeMessage[], message: BridgeMessage): BridgeMessage[] {
+  return [...queue, message];
+}
+
+export function releaseBridge(queue: BridgeMessage[], poseHud: string): { ready: BridgeMessage[]; waiting: BridgeMessage[] } {
+  if (poseHud) return { ready: [], waiting: queue };
+  return { ready: queue, waiting: [] };
+}
+
+/** Write a patch through the app: placement goes through `place`, settings mark the slice stale and redraw. */
+export function runBridgePatch(
+  patch: BridgePatch,
+  fx: {
+    assign: (patch: BridgePatch) => void;
+    place: () => void;
+    markStale: () => void;
+    renderChrome: () => void;
+  },
+): void {
+  if (patch.wait || (!patch.place && !patch.stale)) return;
+  fx.assign(patch);
+  if (patch.place) fx.place();
+  if (patch.stale) {
+    fx.markStale();
+    fx.renderChrome();
   }
-  if (args.centreOnBed === true) {
-    centered = true;
-    offset = { x: 0, y: 0, z: 0 };
-  }
-  if (typeof args.centreX === "number" || typeof args.centreY === "number") {
-    centered = false;
-    if (typeof args.centreX === "number") offset.x = args.centreX;
-    if (typeof args.centreY === "number") offset.y = args.centreY;
-  }
-  return { wait: false, place: true, orient, partScale, centered, offset };
 }
 
 /** The file name with or without its mesh extension names the same part. */

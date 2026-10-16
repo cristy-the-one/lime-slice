@@ -14,7 +14,7 @@ import { humanEngineError } from "../src/engine-wording.ts";
 import { foreign3mfMessage, foreignSlicer3mf } from "../src/foreign-3mf.ts";
 import { meshWarningText, type MeshRepair } from "../src/app/mesh-warning.ts";
 import { plainModelError } from "../src/app/model-error.ts";
-import { centeringShift, encode3mf, ID_MATRIX, layFlatMatrix, matMul, offBed, placeMesh, rotX, rotY, rotZ, scaledCanonical, settleBy, type Mat3 } from "../src/mesh-place.ts";
+import { centeringShift, encode3mf, ID_MATRIX, layFlatMatrix, matMul, offBed, placeMesh, rotX, rotY, rotZ, scaledCanonical, settleBy, type Bounds, type Mat3 } from "../src/mesh-place.ts";
 import { decodeSolid } from "../src/model-reply.ts";
 import { probeFromBody, probeKey, probeNote, type ProbedTool } from "../src/model-feasibility.ts";
 import { builtBranch, crossEdit, forked, replayChain, type ToolLink } from "../src/model-edit.ts";
@@ -194,6 +194,7 @@ export class Session {
   private sourceHash = "";
   private sourcePath = "";
   private profileTouched = false;
+  private lastBridge: Record<string, unknown> | null = null;
   onProgress: ((job: string, fraction: number, stage: string, token?: string | number) => void) | null = null;
 
   constructor(engine: Engine) {
@@ -206,9 +207,15 @@ export class Session {
     const input = (args ?? {}) as Record<string, unknown>;
     const result = this.dispatch(name, input, meta);
     return Promise.resolve(result).then((value) => {
-      void mirror({ tool: name, objectName: this.objectName(input.object), args: input, ok: value.ok === true });
+      this.lastBridge = this.bridgePayload(name, input, value);
+      void mirror(this.lastBridge);
       return value;
     });
+  }
+
+  /** The last mirror sent to the desktop, including a place or settings result. */
+  bridgeSnapshot(): Record<string, unknown> | null {
+    return this.lastBridge;
   }
 
   private async ask<T>(value: T | Promise<T>): Promise<T> {
@@ -232,9 +239,28 @@ export class Session {
     });
   }
 
-  private objectName(handle: unknown): string | undefined {
-    if (typeof handle !== "string") return undefined;
-    return this.objects.find((obj) => obj.id === handle)?.name;
+  private bridgePayload(name: string, input: Record<string, unknown>, value: Record<string, unknown>): Record<string, unknown> {
+    const objectId = typeof input.object === "string" ? input.object : "";
+    const obj = objectId ? this.find(objectId) : null;
+    const placement = name === "object_place" && value.ok === true && obj
+      ? { orient: [...obj.orient], scale: obj.scale, centered: obj.centered, offset: { ...obj.offset } }
+      : undefined;
+    const settings = name === "settings_apply" && value.ok === true
+      ? {
+          layerHeight: this.settings.layerHeight,
+          supports: this.settings.supports,
+          blendKind: this.settings.blendKind,
+          strategy: this.settings.strategy,
+          toughness: this.settings.toughness,
+        }
+      : undefined;
+    return {
+      tool: name,
+      ...(obj ? { objectId: obj.id, objectName: obj.name } : {}),
+      ok: value.ok === true,
+      ...(placement ? { placement } : {}),
+      ...(settings ? { settings } : {}),
+    };
   }
 
   private dispatch(name: string, input: Record<string, unknown>, meta?: CallMeta): Record<string, unknown> | Promise<Record<string, unknown>> {
@@ -583,7 +609,7 @@ export class Session {
     });
   }
 
-  private plateNotes(obj: PlateObject, bounds: { min: number[]; max: number[] }): string[] {
+  private plateNotes(obj: PlateObject, bounds: Bounds): string[] {
     const printer = this.printer();
     const notes = offBed(bounds, printer.bedX, printer.bedY, printer.bedZ, printer.kind === "belt");
     if (this.overlaps(obj)) notes.push(OVERLAP);
@@ -595,7 +621,6 @@ export class Session {
   }
 
   private plateList(input: Record<string, unknown>): Record<string, unknown> {
-    const printer = this.printer();
     const rows = this.objects.map((obj) => {
       const placed = this.placed(obj);
       const centre = [
