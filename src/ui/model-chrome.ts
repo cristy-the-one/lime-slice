@@ -10,7 +10,7 @@ import type { PlaceFields } from "../model-space";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
 import type { EditPanel } from "../model-edit";
 import { clampTilt, splitNote, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
-import { CURVED_FACE, GLOBAL_WORKPLANE, isGlobalFrame, isIdentityFrame, planePoint, planePrimitive, workplaneNote, workplaneOnBed, type Workplane, type WorkplaneSource } from "../workplane";
+import { CURVED_FACE, GLOBAL_WORKPLANE, isGlobalFrame, isIdentityFrame, localPoint, planePoint, planePrimitive, workplaneNote, workplaneOnBed, type Workplane, type WorkplaneSource } from "../workplane";
 import { lastFace, selectedEdges } from "../model-blend";
 import { SCREWS, screwOf } from "../model-hole";
 import { isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
@@ -53,6 +53,10 @@ interface ModelChromeHooks {
   workplane(): Workplane;
   /** The workplane changed, in model space. One drag, or a typed number once it rests, is one step. */
   workplaneMoved(plane: Workplane, phase: PlacePhase): void;
+  /** Global, Bed, or a face set the whole frame at once: a step of its own. */
+  workplaneSet(plane: Workplane): void;
+  /** A step is being edited, from before its panel opens, so the frame is not drawn over its own numbers. */
+  editing(): boolean;
   /** The frame on the last picked face, in model space, or why that face cannot take one. */
   faceWorkplane(): Workplane | "curved" | null;
   /** Whether the plate already prints the part with W up, so Print with W up would change nothing. */
@@ -157,6 +161,13 @@ let wpProblem: { text: string; bad: boolean } | null = null;
 let wpAwaitsFace = false;
 /** The face the workplane was last put on, so only a new pick moves it. */
 let seatedWpFace: number | null = null;
+/**
+ * The frame as the panel last wrote or read it, exact: a field's change starts from these numbers, not from ones worked
+ * out again through the part's pose, which can name the same turn by other angles.
+ */
+let wpExact: Workplane = GLOBAL_WORKPLANE;
+/** Where the origin was when an arrow was grabbed: the arrow moves it by how far it slid, not to the rounded fields. */
+let wpGrab: readonly number[] | null = null;
 
 function svgIcon(node: IconNode) {
   return createElement(node, { width: 14, height: 14, "aria-hidden": "true", class: "ico" });
@@ -752,9 +763,14 @@ function applyHoleDefaults() {
   const frame = toolFrame();
   const typed: Vec3 = [num("#modelX"), num("#modelY"), num("#modelZ")];
   if (!isIdentityFrame(frame)) {
-    // On a workplane a hole starts at its origin and drills along −W, unless the typed point is still on the part.
-    const at = planePoint(frame, typed);
-    if (!at.every((value, i) => value >= box.min[i]! && value <= box.max[i]!)) writeFields(["modelX", "modelY", "modelZ"], [0, 0, 0]);
+    // On a workplane a hole starts at its origin and drills along −W, unless the typed point is over the part, inside its
+    // box along U and V and with some of it below along −W. With nothing behind the plane, as on Bed, it starts where the
+    // part ends along W instead, as Hole starts on the top.
+    const corners = [0, 1, 2, 3, 4, 5, 6, 7].map((c) => localPoint(frame, [c & 1 ? box.max[0] : box.min[0], c & 2 ? box.max[1] : box.min[1], c & 4 ? box.max[2] : box.min[2]]));
+    const low = [0, 1, 2].map((i) => Math.min(...corners.map((p) => p[i]!)));
+    const high = [0, 1, 2].map((i) => Math.max(...corners.map((p) => p[i]!)));
+    const over = typed[0] > low[0]! && typed[0] < high[0]! && typed[1] > low[1]! && typed[1] < high[1]! && typed[2] > low[2]! + 1e-6 && typed[2] <= high[2]! + 1e-6;
+    if (!over) writeFields(["modelX", "modelY", "modelZ"], [0, 0, low[2]! < -1e-6 ? 0 : Math.max(0, high[2]!)]);
     return;
   }
   const inside = typed[0] > box.min[0] && typed[0] < box.max[0] && typed[1] > box.min[1] && typed[1] < box.max[1];
@@ -940,7 +956,7 @@ function refreshNote() {
   } else if (tool === "place") {
     text = "From where it started, turning about its centre. The plate does not move.";
   } else if (tool === "workplane") {
-    ({ text, bad } = wpProblem ?? workplaneNote(openPlane(), null));
+    ({ text, bad } = wpProblem ?? { text: workplaneNote(openPlane()), bad: false });
   } else if (tool === "create") {
     text = state.plate.objects.length === 0 ? "Lands at the origin, on Z 0." : "Lands beside the other objects, as a new object.";
   } else if (picksObject() && !joinTool) {
@@ -999,7 +1015,11 @@ function onHandleDrag(drag: HandleDrag) {
     return;
   }
   if (tool === "workplane") {
-    workplaneChanged(drag.handle.fields, drag.values, drag.phase === "end" ? "end" : "drag");
+    const slide = drag.handle.fields.length === 3;
+    if (slide && !wpGrab) wpGrab = [...wpExact.origin];
+    const values = slide ? drag.values.map((value, i) => wpGrab![i]! + value - drag.handle.values[i]!) : drag.values;
+    if (drag.phase === "end") wpGrab = null;
+    workplaneChanged(drag.handle.fields, values, drag.phase === "end" ? "end" : "drag");
     return;
   }
   document.querySelector("#modelPanel")?.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1099,7 +1119,7 @@ function retitle(id: string, text: string, aria: string) {
 /** The datum shows while the Workplane tool is open and whenever the part has a frame, except while a step is edited. */
 function refreshDatum() {
   const plane = openPlane();
-  const show = state.stage === "model" && !edit && (tool === "workplane" || !isGlobalFrame(plane));
+  const show = state.stage === "model" && !edit && !hooks?.editing() && (tool === "workplane" || !isGlobalFrame(plane));
   fx.model?.setWorkplane(show ? plane : null);
   fx.model?.setDatumPick(tool === "workplane");
 }
@@ -1139,7 +1159,7 @@ function applyWpFace() {
 }
 
 function putPlane(plane: Workplane) {
-  hooks?.workplaneMoved(plane, "end");
+  hooks?.workplaneSet(plane);
   syncWorkplaneFields(true);
 }
 
@@ -1153,8 +1173,7 @@ function workplaneChanged(fields: readonly string[], values: readonly number[], 
     return !input || input.value.trim() === "" || !input.validity.valid;
   });
   if (pending) return;
-  const from = openPlane();
-  const next: Workplane = { source: from.source, origin: [...from.origin], turn: [...from.turn] };
+  const next: Workplane = { source: wpExact.source, origin: [...wpExact.origin], turn: [...wpExact.turn] };
   fields.forEach((id, i) => {
     const at = WP_FIELDS.indexOf(id as (typeof WP_FIELDS)[number]);
     if (at < 0) return;
@@ -1163,6 +1182,7 @@ function workplaneChanged(fields: readonly string[], values: readonly number[], 
   });
   wpProblem = null;
   wpAwaitsFace = false;
+  wpExact = next;
   hooks?.workplaneMoved(next, phase);
   paintWpMode(next.source);
   refreshNote();
@@ -1179,6 +1199,7 @@ export function syncWorkplaneFields(all = false) {
   refreshDatum();
   if (tool !== "workplane") return;
   const plane = openPlane();
+  wpExact = plane;
   const active = document.activeElement;
   WP_FIELDS.forEach((field, i) => {
     const input = document.querySelector<HTMLInputElement>(`#${field}`);
@@ -1259,7 +1280,7 @@ function ghostFor(current: ModelTool): ModelGhost | null {
     };
   }
   if (current === "scale") return { kind: "scale", factor: num("#modelFactor") };
-  if (current === "place") return null;
+  if (current === "place" || current === "workplane") return null;
   const edges = selectedEdges(picks);
   if (edges.length === 0) return null;
   return { kind: "blend", edges, radius: num("#modelBlend") };

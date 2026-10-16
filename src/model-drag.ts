@@ -6,7 +6,8 @@
 import { DOCK_KNOB_REACH } from "./gizmo-math.ts";
 import { SPLIT_TILT_MAX_DEG, type SplitPlan } from "./model-plane.ts";
 import type { PrimitiveKind } from "./model-primitive.ts";
-import { axesOf, isIdentityFrame, planePoint, type Workplane } from "./workplane.ts";
+import { turnDir } from "./model-space.ts";
+import { axesOf, framePose, isIdentityFrame, planePoint, type Workplane } from "./workplane.ts";
 
 export type Vec3 = [number, number, number];
 
@@ -139,13 +140,8 @@ function frameAxes(frame: Workplane | undefined): { axes: [Vec3, Vec3, Vec3]; lo
 }
 
 /** `dir`, given in the frame's U, V, W, in model space. */
-function alongFrame(axes: [Vec3, Vec3, Vec3], dir: Vec3): Vec3 {
-  const [u, v, w] = axes;
-  return [
-    u[0] * dir[0] + v[0] * dir[1] + w[0] * dir[2],
-    u[1] * dir[0] + v[1] * dir[1] + w[1] * dir[2],
-    u[2] * dir[0] + v[2] * dir[1] + w[2] * dir[2],
-  ];
+function alongFrame(frame: Workplane | undefined, dir: Vec3): Vec3 {
+  return frameAxes(frame).local ? turnDir(framePose(frame!), dir) : dir;
 }
 
 /** Three dock arrows, one field each, along the frame's axes: X, Y, Z, or a workplane's U, V, W. */
@@ -155,11 +151,10 @@ function moveArrows(fields: readonly [string, string, string], prefix: string, f
   return fields.map((field, i) => axisHandle(`${prefix}-${"xyz"[i]}`, "arrow", field, onDock(0), axes[i]!, (["x", "y", "z"] as const)[i]!, `Move ${names[i]}`));
 }
 
-/** Three dock rings, each about the axis that changes only its own angle. `names` is XYZ or UVW. */
+/** Three dock rings, each about the axis that changes only its own angle, named by the frame's axes. */
 function turnRings(fields: readonly [string, string, string], turn: Vec3, frame?: Workplane): Spec[] {
-  const { axes, local } = frameAxes(frame);
-  const names = local ? "UVW" : "XYZ";
-  const gimbal = turnGimbal(turn).map((dir) => alongFrame(axes, dir)) as [Vec3, Vec3, Vec3];
+  const names = frameAxes(frame).local ? "UVW" : "XYZ";
+  const gimbal = turnGimbal(turn).map((dir) => alongFrame(frame, dir)) as [Vec3, Vec3, Vec3];
   const colors = ["x", "y", "z"] as const;
   return fields.map((field, i): Spec => ({
     id: `turn-${field}`, kind: "ring", look: "ring", fields: [field], seat: onDock(0), dir: gimbal[i]!, rate: 1, step: 15,
@@ -170,8 +165,7 @@ function turnRings(fields: readonly [string, string, string], turn: Vec3, frame?
 function booleanHandles(ctx: DragContext): Spec[] {
   const r = ctx.read;
   const turn: Vec3 = ctx.primitive === "sphere" ? [0, 0, 0] : [r("modelRx"), r("modelRy"), r("modelRz")];
-  const { axes } = frameAxes(ctx.frame);
-  const sizes = turnedAxes(turn).map((dir) => alongFrame(axes, dir)) as [Vec3, Vec3, Vec3];
+  const sizes = turnedAxes(turn).map((dir) => alongFrame(ctx.frame, dir)) as [Vec3, Vec3, Vec3];
   const out: Spec[] = [...moveArrows(["modelX", "modelY", "modelZ"], "move", ctx.frame), ...sizeKnobs(ctx, sizes)];
   if (ctx.primitive !== "sphere") out.push(...turnRings(["modelRx", "modelRy", "modelRz"], turn, ctx.frame));
   return out;

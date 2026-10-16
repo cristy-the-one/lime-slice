@@ -101,7 +101,7 @@ import { freshTreeKey, modelTrees } from "./model-trees";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { apiBase, apiToken, isStepName } from "./settings";
 import { state } from "./state";
-import { axesOf, drillDown, isIdentityFrame, planePoint, planePrimitive, printOrient, sameWorkplane, workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
+import { axesOf, drillDown, isGlobalFrame, isIdentityFrame, planePoint, planePrimitive, printOrient, sameWorkplane, workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
 
 type Body = Record<string, unknown>;
 
@@ -293,8 +293,13 @@ export function bindModelView() {
     workplane: workplaneOfOpen,
     workplaneMoved,
     faceWorkplane,
+    workplaneSet(plane) {
+      endWorkplane();
+      workplaneMoved(plane, "end");
+    },
+    editing: () => !!editing,
     printsWUp() {
-      const obj = openObject();
+      const obj = plateObjectOpen();
       return !obj || sameMat(state.orient, printOrient(obj.workplane));
     },
     printWUp,
@@ -2016,7 +2021,7 @@ function endPlace() {
 }
 
 function samePose(a: Affine, b: Affine): boolean {
-  return a.t.every((value, i) => value === b.t[i]) && a.m.every((value, i) => value === b.m[i]);
+  return sameMat(a.t, b.t) && sameMat(a.m, b.m);
 }
 
 /** Undo or Redo one Place step. A gesture still settling becomes a step first, so Undo takes it back. */
@@ -2045,6 +2050,12 @@ function forgetPlaceSteps() {
 function openObject(): PlateObject | undefined {
   const at = open;
   return at ? state.plate.objects.find((item) => item.id === at.objectId) : undefined;
+}
+
+/** The open object while it is also the plate's selected one, whose orient `state.orient` is. */
+function plateObjectOpen(): PlateObject | undefined {
+  const obj = openObject();
+  return obj && obj.id === state.plate.selectedId ? obj : undefined;
 }
 
 /** The open object's workplane in model space: the frame it keeps in its own frame, at its pose. */
@@ -2093,7 +2104,8 @@ function workplaneMoved(plane: Workplane, phase: PlacePhase) {
     return;
   }
   startWorkplane();
-  state.plate = withWorkplane(state.plate, at.objectId, workplaneOwn(plane, openPose()));
+  // Global is model space whatever the part's pose: not stored, so it stays model space after a Place.
+  state.plate = withWorkplane(state.plate, at.objectId, isGlobalFrame(plane) ? undefined : workplaneOwn(plane, openPose()));
   markProjectDirty();
   window.clearTimeout(wpTimer);
   if (phase === "end") endWorkplane();
@@ -2112,7 +2124,7 @@ function startWorkplane() {
  * flat turns it, one step for Undo here and in Prepare. The frame itself does not move.
  */
 function printWUp() {
-  const obj = openObject();
+  const obj = plateObjectOpen();
   if (!obj || busy || jumping) return;
   const orient = printOrient(obj.workplane);
   if (sameMat(state.orient, orient)) return;
@@ -2314,7 +2326,7 @@ function flatFace(solid: ParsedSolid, face: number): FacePlane | null {
   return known.get(face)!;
 }
 
-/** Into the last picked face, or with no face picked, the way an edited hole drilled, else straight down in model space. */
+/** Into the last picked face, or with no face picked, the way an edited hole drilled, else along the workplane's −W. */
 function drillAxis(): Vec3 {
   const face = lastFace(picks);
   if (!open || face == null) return editing?.panel?.axis ?? drillDown(toolFrame());

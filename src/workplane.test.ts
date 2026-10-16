@@ -118,10 +118,28 @@ check("W, in the part's own frame, prints up", nearVec(mulDir(up, axesOf(own)[2]
 check("and U along X", nearVec(mulDir(up, axesOf(own)[0]), [1, 0, 0]));
 check("two equal frames compare equal, and a moved one does not", sameWorkplane(side, { ...side }) && !sameWorkplane(side, { ...side, origin: [21, 5, 4] }));
 
-// The note and the saved form.
-eq("the global note names the axes", workplaneNote(GLOBAL_WORKPLANE, null), { text: "U, V, W are X, Y, Z. Pick Bed or Face, or type a frame.", bad: false });
-eq("the face note says where W points", workplaneNote(side, null).text, "On the picked face, W out of it. Hole, Boolean, and Split use this frame.");
-eq("a problem is said instead", workplaneNote(side, CURVED_FACE), { text: CURVED_FACE, bad: true });
+// A move of the part keeps the turn's numbers: worked out again, a turn past Y 90° would come back as other angles.
+const steep: Workplane = { source: "global", origin: [1, 2, 3], turn: [10, 95, 20] };
+const slid: Affine = { m: [...IDENTITY_POSE.m] as Mat3, t: [30, 0, 0] };
+eq("a moved part's frame keeps its turn exactly", workplaneIn(steep, slid), { source: "global", origin: [31, 2, 3], turn: [10, 95, 20] });
+eq("and so does storing it back", workplaneOwn(workplaneIn(steep, slid), slid), steep);
+
+// Faces: V runs up a side face and U is level, so no face frame sits where Turn X and Turn Z are one turn.
+for (const normal of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0.6, 0.8, 0], [0.48, 0.64, 0.6]] as Vec3[]) {
+  const frame = workplaneOnFace({ point: [0, 0, 0], normal });
+  const [fu, fv, fw] = axesOf(frame);
+  check(`a face with normal ${normal} has W out of it, right-handed`, nearVec(fw, normal) && nearVec(cross(fu, fv), fw));
+  check(`and V up the face, U level, the turn clear of Y ±90°`, fv[2] > 0 && near(fu[2], 0) && Math.abs(Math.abs(frame.turn[1]) - 90) > 1);
+}
+eq("a front face (−Y) reads U along X and V up Z", axesOf(workplaneOnFace({ point: [0, 0, 0], normal: [0, -1, 0] })).slice(0, 2).map((a) => a.map((x) => Math.round(x * 1e9) / 1e9 + 0)), [[1, 0, 0], [0, 0, 1]]);
+eq("a top face keeps Split's in-plane axes, X and Y", axesOf(workplaneOnFace({ point: [0, 0, 0], normal: [0, 0, 1] })).slice(0, 2), [[1, 0, 0], [0, 1, 0]]);
+
+// The note.
+eq("the global note names the axes", workplaneNote(GLOBAL_WORKPLANE), "U, V, W are X, Y, Z. Pick Bed or Face, or type a frame.");
+eq("the face note says where W points", workplaneNote(side), "Set on a face, W out of it. Hole, Boolean, and Split use this frame.");
+eq("the bed note says W is up", workplaneNote(bed), "Under the part, W up. Hole, Boolean, and Split use this frame.");
+eq("a bed frame a turn of the part tipped is no longer said to be under it", workplaneNote(workplaneIn(bed, { m: eulerOrient(90, 0, 0), t: [0, 0, 0] })), "Hole, Boolean, and Split use this frame.");
+check("Split's curved-face sentence is the one a workplane refuses with", CURVED_FACE === "Pick a flat face. This one is curved.");
 eq("a saved frame reads", readWorkplane({ source: "bed", origin: [1, 2, 3], turn: [0, 0, 0] }), { source: "bed", origin: [1, 2, 3], turn: [0, 0, 0] });
 eq("a short origin is damaged", readWorkplane({ source: "face", origin: [1, 2], turn: [0, 0, 0] }), null);
 eq("an unknown source is damaged", readWorkplane({ source: "sketch", origin: [0, 0, 0], turn: [0, 0, 0] }), null);

@@ -153,7 +153,7 @@ test("on a side face, Hole drills into it and Boolean grows out of it, and the p
   const tree = await openModel(page);
   const turn = await plateTurn(page);
   await onSide(page);
-  await expect(note(page)).toHaveText("On the picked face, W out of it. Hole, Boolean, and Split use this frame.");
+  await expect(note(page)).toHaveText("Set on a face, W out of it. Hole, Boolean, and Split use this frame.");
   expect(await plateTurn(page), "a frame on a face does not turn the part").toEqual(turn);
 
   await page.locator("#modelToolHole").click();
@@ -225,4 +225,47 @@ test("the frame moves with its part under Place", async ({ page }) => {
   await page.locator("#modelCancel").click();
   await page.locator("#modelToolWorkplane").click();
   await expect(page.locator("#modelWpX"), "the panel reads where the frame now is").toHaveValue("50");
+});
+
+test("on a moved part, Global stays model space and a turn past Turn Y 90 keeps its numbers", async ({ page }) => {
+  await openModel(page);
+  await page.locator("#modelToolPlace").click();
+  await page.locator("#modelPlaceX").fill("30");
+  await page.locator("#modelPlaceX").dispatchEvent("input");
+  await page.locator("#modelCancel").click();
+  await page.locator("#modelToolWorkplane").click();
+  await page.locator("#modelWpBed").click();
+  await page.locator("#modelWpRy").fill("95");
+  await page.locator("#modelWpRy").dispatchEvent("input");
+  await page.locator("#modelWpRx").fill("10");
+  await page.locator("#modelWpRx").dispatchEvent("input");
+  await expect(canvas(page), "Turn X changes only itself, past Turn Y 90").toHaveAttribute("data-workplane", /:10\.00,95\.00,0\.00$/);
+  await page.locator("#modelWpGlobal").click();
+  await page.locator("#modelCancel").click();
+  await expect(canvas(page), "Global on a moved part is not stored, so nothing is drawn").not.toHaveAttribute("data-workplane", /./);
+  await page.locator("#modelToolHole").click();
+  await expect(label(page, "modelX"), "and the fields are model space").toHaveText("X");
+});
+
+test("a hole on the bed frame starts on top of the part and drills down into it", async ({ page }) => {
+  const tree = await openModel(page);
+  await page.locator("#modelToolWorkplane").click();
+  await page.locator("#modelWpBed").click();
+  await page.locator("#modelToolHole").click();
+  await expect(page.locator("#modelZ")).toHaveValue("10");
+  await apply(page).click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume 3900 mm³");
+  expect(tree.of("apply").at(-1)!.op).toMatchObject({ origin: [10, 10, 10], axis: [0, 0, -1] });
+});
+
+test("Prepare undo takes back Print with W up with the visit", async ({ page }) => {
+  await openModel(page);
+  const turn = await plateTurn(page);
+  await onSide(page);
+  await page.locator("#modelWpPrint").click();
+  await expect.poll(() => plateTurn(page)).not.toEqual(turn);
+  await page.locator("#modelCancel").click();
+  await page.locator("#tabPrepare").click();
+  await page.keyboard.press("Control+z");
+  await expect.poll(() => plateTurn(page)).toEqual(turn);
 });
