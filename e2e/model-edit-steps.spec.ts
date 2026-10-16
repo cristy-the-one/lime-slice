@@ -84,9 +84,10 @@ const byId = (page: Page, id: number) => page.locator(`#modelHistoryTree [data-i
 const head = (page: Page) => page.locator("#modelEditHead");
 const apply = (page: Page) => page.locator("#modelApply");
 
-async function cut(page: Page, dx: number) {
+async function cut(page: Page, dx: number, atX?: number) {
   if ((await page.locator("#modelToolBoolean").getAttribute("aria-pressed")) !== "true") await page.locator("#modelToolBoolean").click();
   if ((await page.locator("#modelCut").getAttribute("aria-pressed")) !== "true") await page.locator("#modelCut").click();
+  if (atX !== undefined) await page.locator("#modelX").fill(String(atX));
   await page.locator("#modelDx").fill(String(dx));
   await expect(apply(page)).toBeEnabled();
   await apply(page).click();
@@ -311,7 +312,7 @@ test("the opened file cannot be edited, says why, and shows no pencil; a new sol
   for (const [id, value] of [["modelDx", 20], ["modelDy", 20], ["modelDz", 20]] as const) await page.locator(`#${id}`).fill(String(value));
   await apply(page).click();
   await expect(readout(page)).toContainText("Box 1. Volume 8000 mm³");
-  await cut(page, 5);
+  await cut(page, 5, 40);
   await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
   await row(page, "Box 20×20×20").locator(".mh-edit").click();
   await expect(head(page)).toHaveText("Editing the new solid: Box 20×20×20");

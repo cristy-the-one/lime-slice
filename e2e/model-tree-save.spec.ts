@@ -70,9 +70,10 @@ const labels = (page: Page) => page.locator("#modelHistoryTree .mh-label");
 const row = (page: Page, label: string) => page.getByRole("treeitem", { name: new RegExp(`^${label}`) });
 const volume = (dx: number) => `Volume ${400 * dx} mm³`;
 
-async function cut(page: Page, dx: number) {
+async function cut(page: Page, dx: number, atX?: number) {
   if ((await page.locator("#modelToolBoolean").getAttribute("aria-pressed")) !== "true") await page.locator("#modelToolBoolean").click();
   if ((await page.locator("#modelCut").getAttribute("aria-pressed")) !== "true") await page.locator("#modelCut").click();
+  if (atX !== undefined) await page.locator("#modelX").fill(String(atX));
   await page.locator("#modelDx").fill(String(dx));
   await expect(page.locator("#modelApply")).toBeEnabled();
   await page.locator("#modelApply").click();
@@ -378,7 +379,7 @@ test("a copy's tree is closed once no Prepare step can bring the copy back, and 
   await page.locator("[data-plate-select]").nth(1).click();
   await page.locator("#tabModel").click();
   await expect(readout(page)).toContainText(volume(5));
-  await cut(page, 3);
+  await cut(page, 3, 30);
   const copyKey = String(tree.of("apply").at(-1)!.key);
   const partKey = String(tree.of("apply")[0]!.key);
   await page.locator("#tabPrepare").click();
