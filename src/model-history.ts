@@ -139,6 +139,21 @@ export function rowStep(trees: ReadonlyMap<string, ModelTree>, tree: ModelTree, 
 }
 
 /**
+ * How many rows `historyLayout` draws for `tree`: one per step, on every branch, and each join's tool steps on its lane,
+ * nested lanes included. The History header shows it, so it counts the rows without laying them out.
+ */
+export function rowCount(tree: ModelTree, trees: ReadonlyMap<string, ModelTree> = new Map()): number {
+  const lane = (node: ModelNode, seen: ReadonlySet<string>): number => {
+    const tool = toolOf(trees, node, seen);
+    if (!tool) return 0;
+    const inner = new Set([...seen, tool.tree.key]);
+    return pathTo(tool.tree, tool.op.tool.node).reduce((sum, id) => sum + 1 + lane(tool.tree.nodes.get(id)!, inner), 0);
+  };
+  const top = new Set([tree.key]);
+  return [...tree.nodes.values()].reduce((sum, node) => sum + 1 + lane(node, top), 0);
+}
+
+/**
  * Rows oldest first: each step under its parent, side branches right under their fork in columns
  * of their own, and the followed branch straight down the parent's column, so the shown step's
  * path is the main rail. Right above each join, the steps that made its tool, from the tool's root

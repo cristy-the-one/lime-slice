@@ -1,4 +1,4 @@
-import { dropRefusal, historyKey, historyLayout, readRow, rowStep, siblingBranch, stepLabel, type HistoryRow } from "./model-history.ts";
+import { dropRefusal, historyKey, historyLayout, readRow, rowCount, rowStep, siblingBranch, stepLabel, type HistoryRow } from "./model-history.ts";
 import { dropped, jumped, newTree, opLabel, reserveId, withChild, withNode, type ModelOp, type ModelTree } from "./model-tree.ts";
 import type { Affine } from "./model-space.ts";
 
@@ -212,6 +212,14 @@ eq("a tool with a join of its own nests a lane in its lane", nested.rows.map((ro
 eq("three columns", nested.lanes, 3);
 eq("every row of both lanes is the shown step's history", nested.rows.map((row) => row.state), ["past", "past", "past", "past", "past", "current"]);
 eq("each join owns its own lane", nested.rows.map((row) => row.owns), [[], [], [], [], ["1/1/0", "1/1/1"], ["1/0", "1/1"]]);
+const twoJoins = apply(jumped(bored, 1), joinOf("rod#1", 2, "Rod 1"));
+eq("the header counts every row drawn: the part's steps on every branch, and each lane's, nested ones too", [
+  [rowCount(line), historyLayout(line).rows.length],
+  [rowCount(bored, withRod), merged.rows.length],
+  [rowCount(bored), historyLayout(bored).rows.length],
+  [rowCount(plate, nest), nested.rows.length],
+  [rowCount(twoJoins, withRod), historyLayout(twoJoins, undefined, withRod).rows.length],
+], [[4, 4], [6, 6], [4, 4], [6, 6], [10, 10]]);
 const deepStep = rowStep(nest, plate, "1/1/1");
 eq("a row's key finds its step through the joins", deepStep && [deepStep.tree.key, deepStep.id, deepStep.joins.map((join) => [join.tree.key, join.id])], ["rod#1", 1, [["plate#1", 1], ["bar#1", 1]]]);
 eq("a key through a step that is no join finds nothing", rowStep(nest, plate, "0/1"), null);

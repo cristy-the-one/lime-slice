@@ -5,7 +5,7 @@
  * and only while the panel can be seen. Nothing here asks the engine anything.
  */
 import { ChevronDown, Ellipsis, History, Move3d, Pencil, RotateCcw, TriangleAlert, createElement, type IconNode } from "lucide";
-import { historyKey, historyLayout, positionText, rowKey, type HistoryLayout, type HistoryRow, type RowKey } from "../model-history";
+import { historyKey, historyLayout, positionText, rowCount, rowKey, type HistoryLayout, type HistoryRow, type RowKey } from "../model-history";
 import type { PlaceFields } from "../model-space";
 import { toolKeys, type ModelTree } from "../model-tree";
 import { isMobileLayout } from "../platform";
@@ -39,11 +39,12 @@ let hooks: ModelHistoryHooks | null = null;
 let panel: HTMLElement | null = null;
 let list: HTMLElement | null = null;
 let menu: HTMLElement | null = null;
-/** The tree to show, the trees its joins take tools from, and the row on screen. `drawn` is what the rows were built from. */
+/** The tree to show, the trees its joins take tools from, and the row on screen. `drawn` is what the rows were built from, `counted` what the header's count was. */
 let tree: ModelTree | null = null;
 let trees: ReadonlyMap<string, ModelTree> = new Map();
 let shown: RowKey | null = null;
 let drawn: readonly unknown[] | null = null;
+let counted: readonly unknown[] | null = null;
 let layout: HistoryLayout | null = null;
 let focusId: RowKey | null = null;
 let jumpTimer = 0;
@@ -181,8 +182,11 @@ function inputs(): unknown[] {
 }
 
 function changed(): boolean {
-  const now = inputs();
-  return !drawn || drawn.length !== now.length || now.some((value, i) => drawn![i] !== value);
+  return !same(drawn, inputs());
+}
+
+function same(was: readonly unknown[] | null, now: readonly unknown[]): boolean {
+  return !!was && was.length === now.length && now.every((value, i) => was[i] === value);
 }
 
 /**
@@ -242,9 +246,12 @@ function sync() {
   panel.hidden = !tree;
   panel.dataset.collapsed = collapsed ? "1" : "0";
   panel.dataset.sheet = sheetOpen ? "open" : "closed";
-  const count = tree ? tree.nodes.size : 0;
+  const now = inputs();
   const counter = document.querySelector("#modelHistoryCount");
-  if (counter) counter.textContent = `· ${count}`;
+  if (counter && !same(counted, now)) {
+    counted = now;
+    counter.textContent = `· ${tree ? rowCount(tree, trees) : 0}`;
+  }
   document.querySelector("#modelHistoryToggle")?.setAttribute("aria-expanded", (isMobileLayout() ? sheetOpen : !collapsed) ? "true" : "false");
   document.querySelector("#modelHistoryOpen")?.setAttribute("aria-expanded", sheetOpen ? "true" : "false");
   list.hidden = collapsed && !isMobileLayout();
