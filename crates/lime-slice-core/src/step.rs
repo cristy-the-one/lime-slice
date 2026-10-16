@@ -30,7 +30,9 @@ use truck_stepio::r#in::alias::{Curve3D, ElementarySurface, Surface, SweptCurve}
 use truck_stepio::r#in::ruststep::ast::{DataSection, EntityInstance, Name, Parameter, Record};
 use truck_stepio::r#in::ruststep::parser;
 use truck_stepio::r#in::Table;
-use truck_topology::compress::{CompressedEdge, CompressedEdgeIndex, CompressedFace, CompressedShell};
+use truck_topology::compress::{
+    CompressedEdge, CompressedEdgeIndex, CompressedFace, CompressedShell,
+};
 
 use crate::mesh::Mesh;
 
@@ -1129,7 +1131,7 @@ fn seam_clear_of(
     let centre = north.midpoint(south);
     let axis = (north - south).normalize();
     let radius = north.distance(south) / 2.0;
-    if !(radius > 0.0) {
+    if !radius.is_finite() || radius <= 0.0 {
         return None;
     }
     let e1 = (surface.subs(0.0, 0.0) - centre).normalize();
@@ -1193,7 +1195,11 @@ fn seam_clear_of(
     if room <= 0.0 {
         return None;
     }
-    let shift = |turn: f64| Matrix4::from_translation(centre.to_vec()) * Matrix4::from_axis_angle(axis, Rad(turn)) * Matrix4::from_translation(-centre.to_vec());
+    let shift = |turn: f64| {
+        Matrix4::from_translation(centre.to_vec())
+            * Matrix4::from_axis_angle(axis, Rad(turn))
+            * Matrix4::from_translation(-centre.to_vec())
+    };
     // The turned sphere starts its longitude where the old one read `phi`.
     [phi, -phi]
         .into_iter()
