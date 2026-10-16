@@ -87,6 +87,8 @@ export interface BridgePatch {
   seq?: number;
   /** Remember this id so a later mirror for another object is not applied here. */
   bindId?: string;
+  /** The bound object is no longer the one on screen. */
+  unbind?: boolean;
   orient?: Mat3;
   partScale?: number;
   centered?: boolean;
@@ -171,8 +173,23 @@ export function applyBridge(view: BridgeView, message: BridgeMessage, boundId = 
     }, message);
   }
   if (message.tool === "object_place" && message.placement) {
-    if (message.objectId && boundId && message.objectId !== boundId) return withSeq({ wait: false, place: false }, message);
     const named = message.objectName ? meshStem(message.objectName) === meshStem(view.meshName) : false;
+    if (message.objectId && boundId && message.objectId !== boundId) {
+      return withSeq({ wait: false, place: false, ...(message.plate ? { plate: message.plate } : {}) }, message);
+    }
+    if (boundId && message.objectId === boundId && message.objectName && !named) {
+      const current = message.plate?.find((row) => meshStem(row.name) === meshStem(view.meshName));
+      if (!current) {
+        return withSeq({ wait: false, place: false, unbind: true, ...(message.plate ? { plate: message.plate } : {}) }, message);
+      }
+      return withSeq({
+        wait: false,
+        place: true,
+        bindId: current.object,
+        plate: message.plate,
+        ...poseOf(current),
+      }, message);
+    }
     if (!message.objectId && !named) return withSeq({ wait: false, place: false }, message);
     if (message.objectId && !boundId && message.objectName && !named) return withSeq({ wait: false, place: false }, message);
     const placement = message.placement;
@@ -291,7 +308,9 @@ export function runBridgePatch(
     renderChrome: () => void;
   },
 ): void {
-  if (patch.wait || (!patch.place && !patch.stale)) return;
+  if (patch.wait) return;
+  if (patch.unbind) fx.assign(patch);
+  if (!patch.place && !patch.stale) return;
   fx.assign(patch);
   if (patch.place) fx.place();
   if (patch.stale) {

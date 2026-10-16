@@ -77,6 +77,7 @@ jobs:
         run: npm ci
 
       - name: MCP server against real Open CASCADE
+        timeout-minutes: 25
         env:
           CARGO_BUILD_JOBS: "2"
         run: |
@@ -216,11 +217,8 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Load the addon and run the scenarios
-        run: |
-          node --experimental-strip-types mcp/native-load.test.ts
-          node --experimental-strip-types mcp/scenario.test.ts
-          node --experimental-strip-types mcp/stdio.test.ts
+      - name: Unit tests
+        run: npm run test:unit
 
   mcp-macos:
     name: MCP server (macOS)

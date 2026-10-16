@@ -46,6 +46,40 @@ check("the mirror uses the resulting offset, not a typed centre", ignored.place 
 const second = applyBridge(view, { tool: "object_place", objectId: "obj_2", objectName: "cube", ok: true, placement }, "obj_1");
 check("a second object with the same name is not applied", !second.place);
 
+const selectedOther = applyBridge({ ...view, meshName: "OTHER.stl" }, {
+  tool: "object_place",
+  objectId: "obj_1",
+  objectName: "cube.stl",
+  ok: true,
+  placement,
+}, "obj_1");
+check("a bound place is not written onto a different selection", selectedOther.place === false && selectedOther.unbind === true && selectedOther.partScale === undefined);
+
+const switched = applyBridge({ ...view, meshName: "OTHER.stl" }, {
+  tool: "object_place",
+  objectId: "obj_1",
+  objectName: "cube.stl",
+  ok: true,
+  placement,
+  plate: [
+    { object: "obj_1", name: "cube.stl", scalePercent: 50, centered: true, offset: { x: 0, y: 0, z: 0 }, orient: [...ID_MATRIX] },
+    { object: "obj_2", name: "OTHER.stl", scalePercent: 80, centered: false, offset: { x: 4, y: 0, z: 0 }, orient: [...ID_MATRIX] },
+  ],
+}, "obj_1");
+check("the selected object takes its own snapshot", switched.place === true && switched.bindId === "obj_2" && switched.partScale === 0.8 && switched.offset?.x === 4);
+
+let bound = "obj_1";
+runBridgePatch(selectedOther, {
+  assign: (patch) => {
+    if (patch.unbind) bound = "";
+    if (patch.bindId) bound = patch.bindId;
+  },
+  place: () => {},
+  markStale: () => {},
+  renderChrome: () => {},
+});
+check("dropping the binding clears the remembered object", bound === "");
+
 const settings = applyBridge(view, {
   tool: "settings_apply",
   ok: true,

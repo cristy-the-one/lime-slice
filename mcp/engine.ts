@@ -179,8 +179,8 @@ class EngineWorker {
 
 /**
  * The same addon, called from worker threads so a long preview or slice
- * poll does not stop the stdio loop answering ping. Model edits use their own
- * worker, so a fillet that runs away can be replaced without losing the slicer.
+ * poll does not stop the stdio loop answering ping. Mesh preview and model
+ * edits share a worker, so a stuck tessellation can be replaced without losing the slicer.
  */
 export function loadEngineWorker(root: string): Engine {
   const slice = new EngineWorker(root, "slice");
@@ -188,7 +188,7 @@ export function loadEngineWorker(root: string): Engine {
   return {
     version: () => slice.call("version") as Promise<string>,
     occt: () => slice.call("occt").then((value) => value === true) as Promise<boolean>,
-    meshPreview: (body, bytes) => slice.call("meshPreview", body, bytes) as Promise<string>,
+    meshPreview: (body, bytes) => model.call("meshPreview", body, bytes) as Promise<string>,
     modelTree: (body) => model.call("modelTree", body) as Promise<string>,
     sliceStart: (body, bytes) => slice.call("sliceStart", body, bytes) as Promise<string>,
     slicePoll: (id) => slice.call("slicePoll", id) as Promise<string>,
@@ -260,7 +260,8 @@ function positionsFromPreview(body: string): Float32Array {
     if (asked.filename && /overhang_ledge/i.test(asked.filename)) {
       return boxSolid([10, -4, 0], [40, 16, 8], 8000).positions;
     }
-    if (asked.filename && /two-shells/i.test(asked.filename)) {
+    const baseName = asked.filename?.split(/[\\/]/).pop() ?? "";
+    if (baseName.toLowerCase() === "two-shells.stl") {
       const left = boxSolid([0, 0, 0], [10, 10, 10], 1000).positions;
       const right = boxSolid([40, 0, 0], [50, 10, 10], 1000).positions;
       const both = new Float32Array(left.length + right.length);
@@ -269,18 +270,36 @@ function positionsFromPreview(body: string): Float32Array {
       return both;
     }
     if (asked.dataB64) {
-      const text = Buffer.from(asked.dataB64, "base64").toString("utf8");
+      const raw = Buffer.from(asked.dataB64, "base64");
+      const text = raw.toString("utf8");
       const at = text.indexOf(SOLID_MARK);
       if (at >= 0) {
         const encoded = text.slice(at + SOLID_MARK.length).split(/\s/)[0] ?? "";
         const bytes = Buffer.from(encoded, "base64");
         return new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
       }
+      if (asked.filename && /-shell-\d+\.stl$/i.test(asked.filename)) {
+        const decoded = stlPositions(raw);
+        if (decoded) return decoded;
+      }
     }
   } catch {
     // A mesh that is not one of our STEP notes previews as the cube.
   }
   return boxSolid([0, 0, 0], [20, 20, 20], 8000).positions;
+}
+
+/** Triangles in a binary STL. Anything else is left to the stand-in cube. */
+function stlPositions(bytes: Buffer): Float32Array | null {
+  if (bytes.length < 84) return null;
+  const count = bytes.readUInt32LE(80);
+  if (count < 1 || bytes.length < 84 + count * 50) return null;
+  const positions = new Float32Array(count * 9);
+  for (let tri = 0; tri < count; tri += 1) {
+    const base = 84 + tri * 50 + 12;
+    for (let v = 0; v < 9; v += 1) positions[tri * 9 + v] = bytes.readFloatLE(base + v * 4);
+  }
+  return positions;
 }
 
 /** One `;LAYER:` line per returned layer, so a summary can be checked against the file. */

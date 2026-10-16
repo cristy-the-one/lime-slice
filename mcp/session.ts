@@ -261,7 +261,7 @@ function domainRefusal(message: string): { ok: false; reason: string; next?: str
   if (message.startsWith("That file was not found")) {
     return { ok: false, reason: message, next: "Check the path, then call the tool again." };
   }
-  if (message.includes("LIME_MCP_WORKSPACE") || message.startsWith("Writes stay") || message.startsWith("That path is not") || message.startsWith("That name cannot") || message.startsWith("Open a .stl") || message.startsWith("That file is")) {
+  if (message.startsWith("This mesh did not finish") || message.includes("LIME_MCP_WORKSPACE") || message.startsWith("Writes stay") || message.startsWith("That path is not") || message.startsWith("That name cannot") || message.startsWith("Open a .stl") || message.startsWith("That file is")) {
     return { ok: false, reason: message };
   }
   return null;
@@ -578,10 +578,17 @@ export class Session {
   }
 
   private async preview(filename: string, bytes: Uint8Array, tolerance: number): Promise<{ triangles: number; source: Float32Array; seatMm: number }> {
-    const reply = JSON.parse(await this.ask(this.engine.meshPreview(JSON.stringify({
-      filename,
-      stepToleranceMm: tolerance,
-    }), bytes))) as { error?: string; triangles?: number; positionsB64?: string; seatMm?: number };
+    let text = "";
+    try {
+      text = await this.withBudget("preview", () => this.engine.meshPreview(JSON.stringify({
+        filename,
+        stepToleranceMm: tolerance,
+      }), bytes));
+    } catch (err) {
+      if (err instanceof ModelRunaway) throw new ProtocolError(err.message);
+      throw err;
+    }
+    const reply = JSON.parse(text) as { error?: string; triangles?: number; positionsB64?: string; seatMm?: number };
     if (reply.error || !reply.positionsB64) throw new ProtocolError(reply.error ?? "The mesh could not be read.");
     return {
       triangles: reply.triangles ?? 0,
@@ -973,8 +980,8 @@ export class Session {
       const next = meshRecord(obj.fileName, obj.bytes);
       if (next.hash !== base.mesh.hash || next.name !== base.mesh.name) base.mesh = next;
       base.placement = this.placementOf(obj);
-      if (obj.tree || this.objects.length > 1) {
-        const objects = this.objects.map((row) => this.fileObject(row));
+      const objects = this.objects.map((row) => this.fileObject(row));
+      if (plateFileIsVersion2(objects)) {
         base.objects = objects;
         base.version = 2;
       }
@@ -1295,9 +1302,15 @@ export class Session {
     const pieces = takeGroups(obj.source, groups.groups);
     this.remember("Separate shells");
     const made: string[] = [];
+    const stem = obj.fileName.replace(/\.(stl|3mf|step|stp)$/i, "") || obj.name;
+    const shellFile = (index: number) => `${stem}-shell-${index + 1}.stl`;
     pieces.forEach((source, index) => {
+      const fileName = shellFile(index);
+      const bytes = stlBytes(source, fileName);
       if (index === 0) {
         obj.source = source;
+        obj.bytes = bytes;
+        obj.fileName = fileName;
         obj.triangles = source.length / 9;
         obj.tree = null;
         obj.solid = null;
@@ -1310,8 +1323,9 @@ export class Session {
         ...obj,
         id: copyId,
         name: `${obj.name} ${index + 1}`,
+        fileName,
         source,
-        bytes: obj.bytes,
+        bytes,
         triangles: source.length / 9,
         orient: [...obj.orient] as Mat3,
         offset: { ...obj.offset },
@@ -1782,10 +1796,13 @@ export class Session {
     const placed = this.placed(obj);
     const name = /\.(3mf|step|stp)$/i.test(obj.fileName) ? obj.fileName.replace(/\.(3mf|step|stp)$/i, ".stl") : obj.fileName;
     const mesh = stlBytes(scaledCanonical(obj.source, obj.scale), name);
-    const listed = scope === "object" ? false : scope === "plate" ? this.objects.length > 0 : this.plateWantsObjects();
-    const rules = this.sliceRules(listed ? this.objects.length : 1);
+    const objectScope = scope === "object";
+    const plateScope = scope === "plate" || (!objectScope && this.plateWantsObjects());
+    const oneObject = objectScope && !settingsEmpty(obj.objectSettings);
+    const listed = plateScope || oneObject;
+    const rules = this.sliceRules(plateScope ? this.objects.length : 1);
     const oneExtra = listed ? {} : this.oneObjectFields(obj);
-    const plate = listed ? this.plateFields() : {};
+    const plate = plateScope ? this.plateFields() : oneObject ? this.plateFields([obj]) : {};
     const body = sessionSliceRequest({
       filename: name,
       bytes: mesh,
@@ -1795,7 +1812,7 @@ export class Session {
       filament: this.filament(),
       nozzleMm: this.library.nozzleMm,
       actions: this.actions,
-      objects: listed ? this.objects.length : 1,
+      objects: plateScope ? this.objects.length : 1,
       bounds: placed.bounds,
       stepToleranceMm: obj.stepTolerance,
       overrides: this.overrides,
@@ -1839,8 +1856,8 @@ export class Session {
     };
   }
 
-  private plateFields(): Record<string, unknown> {
-    const specs = this.objects.map((obj) => {
+  private plateFields(rows: PlateObject[] = this.objects): Record<string, unknown> {
+    const specs = rows.map((obj) => {
       const placed = this.placed(obj);
       return {
         id: obj.id,
@@ -1918,7 +1935,7 @@ export class Session {
     const started = JSON.parse(await this.ask(this.engine.sliceStart(JSON.stringify(built.body), plateBody ? undefined : built.mesh))) as { id?: number; error?: string };
     if (typeof started.id !== "number") return { ok: false, reason: humanEngineError(started.error ?? "The slice did not start.") };
     this.jobSeq += 1;
-    const job: Job = { handle: `job_${this.jobSeq}`, engineId: started.id, objectId: obj.id, stamp: this.sliceStamp(obj), status: "running" };
+    const job: Job = { handle: `job_${this.jobSeq}`, engineId: started.id, objectId: obj.id, stamp: this.sliceStamp(), status: "running" };
     this.running = job;
     this.retainJobs(job);
     return {
@@ -1933,30 +1950,40 @@ export class Session {
     };
   }
 
-  private sliceStamp(obj: PlateObject): string {
+  private sliceStamp(): string {
     return JSON.stringify({
       printerId: this.library.printerId,
       filamentId: this.library.filamentId,
       nozzleMm: this.library.nozzleMm,
       settings: this.settings,
-      objectId: obj.id,
-      orient: obj.orient,
-      scale: obj.scale,
-      centered: obj.centered,
-      offset: obj.offset,
-      mesh: fnv1aHex(obj.bytes),
-      treeCurrent: obj.tree?.current ?? null,
-      treeCommitted: obj.tree?.committed ?? null,
       actions: fnv1aHex(new TextEncoder().encode(JSON.stringify(this.actions))),
       generation: this.generation,
       overrides: this.overrides,
-      paint: this.objects.map((row) => [row.id, row.supportPaint.length, row.seamPaint.length, row.reinforcement.length, row.supportEdits.length, row.objectSettings]),
+      printOrder: this.printOrder,
+      clearanceMm: this.clearanceMm,
+      gantryMm: this.gantryMm,
+      objects: this.objects.map((row) => ({
+        id: row.id,
+        orient: row.orient,
+        scale: row.scale,
+        centered: row.centered,
+        offset: row.offset,
+        modelPose: row.modelPose,
+        mesh: fnv1aHex(row.bytes),
+        source: fnv1aHex(new Uint8Array(row.source.buffer, row.source.byteOffset, row.source.byteLength)),
+        treeCurrent: row.tree?.current ?? null,
+        treeCommitted: row.tree?.committed ?? null,
+        objectSettings: row.objectSettings,
+        supportPaint: row.supportPaint.length,
+        seamPaint: row.seamPaint.length,
+        reinforcement: row.reinforcement.length,
+        supportEdits: row.supportEdits.length,
+      })),
     });
   }
 
   private staleReason(job: Job): string | null {
-    const obj = this.find(job.objectId);
-    if (!obj || !job.stamp || this.sliceStamp(obj) !== job.stamp) return STALE_SLICE;
+    if (!this.find(job.objectId) || !job.stamp || this.sliceStamp() !== job.stamp) return STALE_SLICE;
     return null;
   }
 
@@ -2266,8 +2293,40 @@ export class Session {
 
   private runawayMessage(kind: string, budgetMs: number): string {
     const seconds = Math.max(1, Math.round(budgetMs / 1000));
+    if (kind === "preview") return `This mesh did not finish opening in ${seconds} s. Nothing changed.`;
     const name = kind === "fillet" || kind === "chamfer" ? kind : "edit";
     return `This ${name} did not finish in ${seconds} s. Nothing changed. Try a smaller size or fewer edges.`;
+  }
+
+  /** A native call on the modeler worker. The timer runs on this thread, so a blocked call can be cut off. */
+  private async withBudget<T>(kind: string, work: () => T | Promise<T>): Promise<T> {
+    const budget = this.modelTimeoutMs();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let rss: ReturnType<typeof setInterval> | undefined;
+    try {
+      return await new Promise<T>((resolve, reject) => {
+        timer = setTimeout(() => reject(new ModelRunaway(this.runawayMessage(kind, budget))), budget);
+        const cap = Number(process.env.LIME_MCP_MODEL_RSS_MB);
+        if (Number.isFinite(cap) && cap > 0) {
+          rss = setInterval(() => {
+            if (process.memoryUsage().rss / (1024 * 1024) > cap) reject(new ModelRunaway(this.runawayMessage(kind, budget)));
+          }, 1000);
+        }
+        Promise.resolve(work()).then(
+          resolve,
+          (err: unknown) => reject(err instanceof Error ? err : new ProtocolError("The modeler did not answer.")),
+        );
+      });
+    } catch (err) {
+      if (err instanceof ModelRunaway) {
+        await this.loseTrees();
+        throw err;
+      }
+      throw new ProtocolError(err instanceof Error ? err.message : "The modeler did not answer.");
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (rss) clearInterval(rss);
+    }
   }
 
   /** A timed-out modeler is replaced. Open trees are dropped; the last committed bytes stay. */
@@ -2292,34 +2351,7 @@ export class Session {
   private async treeCall(body: Record<string, unknown>, label = "edit"): Promise<Record<string, unknown>> {
     const op = body.op && typeof body.op === "object" ? body.op as { kind?: unknown } : null;
     const kind = typeof op?.kind === "string" ? op.kind : label;
-    const budget = this.modelTimeoutMs();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let rss: ReturnType<typeof setInterval> | undefined;
-    let text = "";
-    try {
-      text = await new Promise<string>((resolve, reject) => {
-        timer = setTimeout(() => reject(new ModelRunaway(this.runawayMessage(kind, budget))), budget);
-        const cap = Number(process.env.LIME_MCP_MODEL_RSS_MB);
-        if (Number.isFinite(cap) && cap > 0) {
-          rss = setInterval(() => {
-            if (process.memoryUsage().rss / (1024 * 1024) > cap) reject(new ModelRunaway(this.runawayMessage(kind, budget)));
-          }, 1000);
-        }
-        Promise.resolve(this.engine.modelTree(JSON.stringify(body))).then(
-          (value) => resolve(value),
-          (err: unknown) => reject(err instanceof Error ? err : new ProtocolError("The modeler did not answer.")),
-        );
-      });
-    } catch (err) {
-      if (err instanceof ModelRunaway) {
-        await this.loseTrees();
-        throw err;
-      }
-      throw new ProtocolError(err instanceof Error ? err.message : "The modeler did not answer.");
-    } finally {
-      if (timer) clearTimeout(timer);
-      if (rss) clearInterval(rss);
-    }
+    const text = await this.withBudget(kind, () => this.engine.modelTree(JSON.stringify(body)));
     let reply: Record<string, unknown>;
     try {
       reply = JSON.parse(text) as Record<string, unknown>;

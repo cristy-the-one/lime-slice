@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { applyBridge, emptyBridgeView, type BridgePlacement } from "../src/bridge.ts";
 import { placeMesh } from "../src/mesh-place.ts";
@@ -35,8 +36,8 @@ const call = (name: string, args: unknown = {}) => session.call(name, args);
 const cube = new URL("../samples/calibration_cube_20mm.stl", import.meta.url);
 const ledgePath = new URL("../samples/overhang_ledge.stl", import.meta.url);
 
-const first = await call("mesh_import", { path: cube.pathname });
-const second = await call("mesh_import", { path: cube.pathname });
+const first = await call("mesh_import", { path: fileURLToPath(cube) });
+const second = await call("mesh_import", { path: fileURLToPath(cube) });
 check("a second import notes the overlap", String(second.note).includes("These parts overlap"));
 const crowded = await call("plate_list", {});
 const crowdedRows = Array.isArray(crowded.objects) ? crowded.objects as { notes?: string[] }[] : [];
@@ -66,7 +67,7 @@ const desktopX = desktop ? (desktop.bounds.min[0] + desktop.bounds.max[0]) / 2 :
 const desktopY = desktop ? (desktop.bounds.min[1] + desktop.bounds.max[1]) / 2 : 0;
 check("the desktop mirror matches the placed centre within 0.01 mm", Math.abs(desktopX - 50) < 0.01 && Math.abs(desktopY - 60) < 0.01 && patch?.offset?.x !== 50, JSON.stringify(patch?.offset));
 
-const ledge = await call("mesh_import", { path: ledgePath.pathname });
+const ledge = await call("mesh_import", { path: fileURLToPath(ledgePath) });
 const ledgePlace = await call("object_place", { object: ledge.object, centreX: 50, centreY: 60 });
 const ledgeCentre = ledgePlace.centreMm as number[];
 check("an off-origin mesh centres on 50, 60", Math.abs(ledgeCentre[0]! - 50) < 0.01 && Math.abs(ledgeCentre[1]! - 60) < 0.01, JSON.stringify(ledgeCentre));

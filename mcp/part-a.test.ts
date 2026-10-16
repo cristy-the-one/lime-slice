@@ -126,7 +126,7 @@ check("reopening lists the hole", reopened.ok === true && labels.some((label) =>
 
 const meshPath = new URL("../samples/calibration_cube_20mm.stl", import.meta.url);
 const meshSession = new Session(fakeEngine());
-const mesh = await meshSession.call("mesh_import", { path: meshPath.pathname });
+const mesh = await meshSession.call("mesh_import", { path: fileURLToPath(meshPath) });
 const meshSaved = await meshSession.call("project_save", { name: "range.lime" });
 const rangeDoc = JSON.parse(readFileSync(String(meshSaved.path), "utf8")) as Record<string, unknown>;
 rangeDoc.overrides = { version: 1, ranges: [{ id: "band", zFrom: 0, zTo: 20, override: { infill: 1, walls: 6, speed: 20 } }], volumes: [] };
@@ -197,7 +197,7 @@ const progressSession = new Session(fakeEngine());
 let notes = 0;
 const startedAt = Date.now();
 progressSession.onProgress = () => { notes += 1; };
-const progressMesh = await progressSession.call("mesh_import", { path: meshPath.pathname });
+const progressMesh = await progressSession.call("mesh_import", { path: fileURLToPath(meshPath) });
 const progressJob = await progressSession.call("slice_start", {});
 await progressSession.call("slice_wait", { job: progressJob.job, timeoutS: 5 });
 const elapsed = Math.max(0.2, (Date.now() - startedAt) / 1000);
@@ -206,7 +206,7 @@ if (polls === undefined) delete process.env.LIME_MCP_POLLS_UNTIL_DONE;
 else process.env.LIME_MCP_POLLS_UNTIL_DONE = polls;
 
 const wireSession = new Session(fakeEngine());
-const wireMesh = await wireSession.call("mesh_import", { path: meshPath.pathname });
+const wireMesh = await wireSession.call("mesh_import", { path: fileURLToPath(meshPath) });
 const olderJob = await wireSession.call("slice_start", {});
 await wireSession.call("slice_wait", { job: olderJob.job });
 const newerJob = await wireSession.call("slice_start", {});
@@ -230,7 +230,7 @@ check("the bridge snapshot carries a sequence and the plate", typeof mirror?.seq
 const multi = fakeEngine();
 const filletSession = new Session(multi);
 const filletBox = await filletSession.call("solid_new", { dx: 10, dy: 10, dz: 10 });
-const otherMesh = await filletSession.call("mesh_import", { path: meshPath.pathname });
+const otherMesh = await filletSession.call("mesh_import", { path: fileURLToPath(meshPath) });
 const previousTimeout = process.env.LIME_MCP_MODEL_TIMEOUT_S;
 const previousHang = process.env.LIME_MCP_HANG_MODEL;
 process.env.LIME_MCP_MODEL_TIMEOUT_S = "0.4";
@@ -280,7 +280,7 @@ check("a missing addon refuses a mesh with the build hint", imported.isError ===
 await client.close();
 
 const switched = new Session(fakeEngine());
-const firstProject = await switched.call("mesh_import", { path: meshPath.pathname });
+const firstProject = await switched.call("mesh_import", { path: fileURLToPath(meshPath) });
 const savedA = await switched.call("project_save", { name: "a.lime" });
 const slicedA = await switched.call("slice_start", {});
 await switched.call("slice_wait", { job: slicedA.job });

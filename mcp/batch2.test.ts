@@ -5,6 +5,7 @@
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { eulerOrient } from "../src/mesh-place.ts";
 import { fakeEngine } from "./engine.ts";
@@ -28,8 +29,8 @@ const session = new Session(engine);
 const call = (name: string, args: unknown = {}) => session.call(name, args);
 
 const cube = new URL("../samples/calibration_cube_20mm.stl", import.meta.url);
-const first = await call("mesh_import", { path: cube.pathname });
-const second = await call("mesh_import", { path: cube.pathname });
+const first = await call("mesh_import", { path: fileURLToPath(cube) });
+const second = await call("mesh_import", { path: fileURLToPath(cube) });
 const a = String(first.object);
 const b = String(second.object);
 
@@ -56,7 +57,7 @@ const after = await call("plate_list", {});
 check("arrange dry run moves nothing", dry.ok === true && dry.dryRun === true && JSON.stringify(before) === JSON.stringify(after), JSON.stringify(dry));
 
 const shellsFile = join(workspace, "two-shells.stl");
-writeFileSync(shellsFile, readFileSync(cube.pathname));
+writeFileSync(shellsFile, readFileSync(fileURLToPath(cube)));
 const shells = new Session(fakeEngine());
 const shellCall = (name: string, args: unknown = {}) => shells.call(name, args);
 const imported = await shellCall("mesh_import", { path: shellsFile });

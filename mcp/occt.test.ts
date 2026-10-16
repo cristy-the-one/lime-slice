@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { engineCandidates, loadNativeEngine } from "./engine.ts";
+import { engineCandidates, loadEngineWorker } from "./engine.ts";
 import { Session } from "./session.ts";
 
 const bridge = process.env.LIME_OCCT_BRIDGE ?? "";
@@ -42,19 +42,19 @@ function near(value: unknown, expected: number, tol = 0.2): boolean {
   return typeof value === "number" && Math.abs(value - expected) < tol;
 }
 
-const session = new Session(loadNativeEngine(root));
+const session = new Session(loadEngineWorker(root));
 const call = (name: string, args: unknown = {}) => session.call(name, args);
-const step = new URL("../samples/step_cube.step", import.meta.url);
-const stl = new URL("../samples/calibration_cube_20mm.stl", import.meta.url);
+const step = fileURLToPath(new URL("../samples/step_cube.step", import.meta.url));
+const stl = fileURLToPath(new URL("../samples/calibration_cube_20mm.stl", import.meta.url));
 
 const info = await call("session_info", {});
 check("Open CASCADE is loaded", info.ok === true && info.occt === true, JSON.stringify(info));
 
-const mesh = await call("mesh_import", { path: stl.pathname });
+const mesh = await call("mesh_import", { path: stl });
 const v1 = await call("project_save", { name: "mesh.lime" });
 check("a mesh saves without a model tree", mesh.ok === true && v1.ok === true, JSON.stringify(v1));
 
-const imported = await call("mesh_import", { path: step.pathname });
+const imported = await call("mesh_import", { path: step });
 const object = String(imported.object);
 const described = await call("model_describe", { object, limit: 20 });
 check("the step cube is about 1000 mm³", near(described.volumeMm3, 1000, 1), JSON.stringify(described.volumeMm3));
@@ -94,15 +94,46 @@ const packed = await call("export_3mf", { name: "holed.3mf" });
 const stepFile = await call("model_export_step", { object, name: "holed.step" });
 const saved = await call("project_save", { name: "holed.lime" });
 const reopened = await call("project_open", { path: String(saved.path) });
-const reopenedId = (reopened.objects as { object: string }[])[0]?.object ?? "";
-const again = await call("model_describe", { object: reopenedId });
-const history = await call("model_history", { object: reopenedId, limit: 20 });
-const labels = (history.nodes as { label?: string }[]).map((node) => node.label ?? "");
+const opened = Array.isArray(reopened.objects) ? reopened.objects as { object: string }[] : [];
+let reopenedId = "";
+let again: Record<string, unknown> = {};
+let labels: string[] = [];
+for (const row of opened) {
+  const described = await call("model_describe", { object: row.object });
+  const history = await call("model_history", { object: row.object, limit: 20 });
+  const nodes = Array.isArray(history.nodes) ? history.nodes as { label?: string }[] : [];
+  const rowLabels = nodes.map((node) => node.label ?? "");
+  if (near(described.volumeMm3, 874.34, 0.5) && rowLabels.some((label) => label.startsWith("Hole"))) {
+    reopenedId = row.object;
+    again = described;
+    labels = rowLabels;
+  }
+}
 check("commit, slice, 3MF, STEP, save, and reopen succeed", committed.ok === true && started.ok === true && waited.ok === true && packed.ok === true && stepFile.ok === true && typeof stepFile.bytes === "number" && stepFile.bytes > 100 && saved.ok === true && reopened.ok === true, JSON.stringify({ committed, started, waited, packed, stepFile, saved, reopened }));
-check("the reopened solid is still the holed cube", near(again.volumeMm3, 874.34, 0.5) && labels.some((label) => label.startsWith("Hole")), JSON.stringify({ volume: again.volumeMm3, labels }));
+check("the reopened solid is still the holed cube", reopenedId !== "" && near(again.volumeMm3, 874.34, 0.5) && labels.some((label) => label.startsWith("Hole")), JSON.stringify({ volume: again.volumeMm3, labels, objects: opened.length }));
+
+const corner = await call("solid_new", { primitive: "box", dx: 10, dy: 10, dz: 10 });
+const cornerId = String(corner.object);
+const cornerOp = { kind: "hole", diameterMm: 6, depth: 4, origin: [5, 5, 10], axis: [0, 0, -1] };
+const cornerCut = await call("model_apply", { object: cornerId, op: cornerOp });
+const cornerSaved = await call("project_save", { name: "corner.lime" });
+const previousBudget = process.env.LIME_MCP_MODEL_TIMEOUT_S;
+process.env.LIME_MCP_MODEL_TIMEOUT_S = "8";
+const cornerStarted = Date.now();
+const cornerOpened = await call("project_open", { path: String(cornerSaved.path) });
+const cornerSeconds = (Date.now() - cornerStarted) / 1000;
+if (previousBudget === undefined) delete process.env.LIME_MCP_MODEL_TIMEOUT_S;
+else process.env.LIME_MCP_MODEL_TIMEOUT_S = previousBudget;
+const cornerReason = String(cornerOpened.reason ?? "");
+check(
+  "a corner cut reopens or stops with a clear message",
+  corner.ok === true && cornerCut.ok === true && cornerSaved.ok === true && cornerSeconds < 20 && (cornerOpened.ok === true || cornerReason.includes("did not finish")),
+  JSON.stringify({ cornerCut, cornerSaved, cornerOpened, cornerSeconds }),
+);
 
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);
 }
 console.log("occt: ok");
+process.exit(0);

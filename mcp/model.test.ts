@@ -5,6 +5,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { fakeEngine } from "./engine.ts";
 import { Session } from "./session.ts";
@@ -32,13 +33,13 @@ const call = (name: string, args: unknown = {}) => session.call(name, args);
 
 const stl = new URL("../samples/calibration_cube_20mm.stl", import.meta.url);
 const step = new URL("../samples/step_cube.step", import.meta.url);
-const mesh = await call("mesh_import", { path: stl.pathname });
+const mesh = await call("mesh_import", { path: fileURLToPath(stl) });
 const beforeCalls = engine.calls.length;
 const refused = await call("model_probe", { object: mesh.object, op: { kind: "hole", diameterMm: 4, through: true } });
 check("a mesh probe is a sentence", refused.ok === false && refused.reason === "Model edits need a STEP file or a new solid. This part is a mesh.", JSON.stringify(refused));
 check("a mesh probe does not call the modeler", engine.calls.length === beforeCalls, engine.calls.join(","));
 
-const imported = await call("mesh_import", { path: step.pathname });
+const imported = await call("mesh_import", { path: fileURLToPath(step) });
 const object = String(imported.object);
 const described = await call("model_describe", { object, limit: 5 });
 const faces = described.faces as { index: number; normal?: number[] }[];
@@ -88,7 +89,7 @@ const stats = await call("mesh_stats", { object: box });
 const size = stats.sizeMm as number[];
 check("a scale of 2 doubles the part and the plate scale stays at 100", committed.ok === true && committed.scalePercent === 100 && near(size?.[0], 20) && near(size?.[2], 20), JSON.stringify({ committed, size }));
 
-const part = await call("mesh_import", { path: step.pathname });
+const part = await call("mesh_import", { path: fileURLToPath(step) });
 const solid = String(part.object);
 const plain = await call("model_describe", { object: solid });
 const beforeTris = (await call("mesh_stats", { object: solid })).triangles;

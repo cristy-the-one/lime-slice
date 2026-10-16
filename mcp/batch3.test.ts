@@ -6,6 +6,7 @@
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { fakeEngine } from "./engine.ts";
 import { Session } from "./session.ts";
@@ -28,7 +29,7 @@ const session = new Session(engine);
 const call = (name: string, args: unknown = {}) => session.call(name, args);
 
 const ledge = new URL("../samples/overhang_ledge.stl", import.meta.url);
-const imported = await call("mesh_import", { path: ledge.pathname });
+const imported = await call("mesh_import", { path: fileURLToPath(ledge) });
 check("the ledge imports", imported.ok === true, JSON.stringify(imported));
 
 const miss = await call("paint_supports", { region: { box: { min: [500, 500, 500], max: [510, 510, 510] } } });

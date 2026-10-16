@@ -50,6 +50,7 @@ function flush(): void {
 }
 
 function assign(patch: BridgePatch): void {
+  if (patch.unbind) boundId = "";
   if (patch.bindId) boundId = patch.bindId;
   if (patch.orient) state.orient = patch.orient;
   if (typeof patch.partScale === "number") state.partScale = patch.partScale;

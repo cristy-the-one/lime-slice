@@ -4,6 +4,7 @@
  * It starts a quarter step later than the library, so the counts are not the same loop.
  */
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { coverRegion, selectTriangles, type SurfaceDisk } from "./paint-region.ts";
 import { STROKE_STEP_R, type Vec3 } from "./support-paint.ts";
@@ -81,7 +82,7 @@ function handBrush(positions: Float32Array, tris: readonly number[], radius: num
   return disks;
 }
 
-const ledge = readStl(new URL("../samples/overhang_ledge.stl", import.meta.url).pathname);
+const ledge = readStl(fileURLToPath(new URL("../samples/overhang_ledge.stl", import.meta.url)));
 const region = { overhangBelowDeg: 50 };
 const radius = 3;
 const covered = coverRegion(ledge, region, radius);
