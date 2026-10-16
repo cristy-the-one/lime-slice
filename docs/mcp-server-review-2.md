@@ -2,6 +2,73 @@
 
 Reviewed head: `664e481` (14 commits ahead of `main`, merge base `933869d`). Round 1 is `docs/mcp-server-review.md`. This report adds findings `R2-F-n` (functional) and `R2-U-n` (usability), a verification row for each of the 37 round-1 findings, a feature-parity plan, and a ranked fix plan. The reviewer changed no code on the branch. Scratch scripts lived in `/tmp/r2` and are not committed.
 
+The sections below are the review as written. The resolution table is the follow-up on `feature/mcp-server` after that review.
+
+## Resolution
+
+| Finding | Resolution | Commit |
+|---|---|---|
+| R2-F-1 | Fixed. Commit and STEP export read `bytesBase64` and `byteLength`. The stand-in returns that shape, and a contract test checks every call. | `5057733` |
+| R2-F-2 | Fixed. A second commit of the same node does not export again, and plate scale resets only when a Model scale is new. | `5057733` |
+| R2-F-3 | Fixed. The stale stamp includes the mesh hash, the tree node, the layer actions, and the session generation. Export, summary, and the latest-slice resource check it. | `5057733` |
+| R2-F-4 | Fixed. A version 2 save writes the committed mesh and the history. Opening it loads that tree. | `5057733` |
+| R2-F-5 | Partly fixed. The slice body sends overrides, paint, support edits, reinforcement, per-object settings, and print order, and a test deep-equals that body to the app's builder. A real-engine slice of an opened project was not run on this machine. | `7eda1be`, `a7aa4f8` |
+| R2-F-6 | Fixed. A missing addon answers `session_info` with no engine and refuses a mesh with the build hint. It does not hang. | `5057733` |
+| R2-F-7 | Fixed. A tilted plane outside the part is refused. A tilted plane through the part uses the true normal. | `5057733` |
+| R2-F-8 | Fixed on the stand-in. The modeler runs on its own worker with a time budget and respawns after a hang. A multi-edge fillet probes with a preview. The slow-op case on real Open CASCADE was not run here. | `5057733` |
+| R2-F-9 | Fixed. Plate undo does not keep the Model tree. Undo after remove reopens the solid. The desktop's own history is not a second undo stack. | `5057733` |
+| R2-F-10 | Fixed. Place snapshots share the mesh buffer. Forty places of a 2 MB mesh stay under 20 MB of buffer growth. | `5057733` |
+| R2-F-11 | Fixed. A boolean that misses the part is refused. One that touches a face is accepted. | `5057733` |
+| R2-F-12 | Partly fixed. Progress stays at or under five notes a second. A ping during a 100 MB import was not measured. | `5057733` |
+| R2-F-13 | Partly fixed. Only the latest slice keeps layer paths. A 30-slice dragon soak and the idle-memory bound were not re-run. | `5057733` |
+| R2-F-14 | Fixed. An edge centre is the middle of its span. A 10 mm cube has 12 distinct centres. | `5057733` |
+| R2-F-15 | Fixed. `layer_summary` and `lime://slice/latest` use the same stale stamp as export. | `5057733` |
+| R2-F-16 | Fixed. Face measure calls the modeler's distance, not centre to centre. The stand-in answers that call. Real Open CASCADE distance was not re-run. | `5057733` |
+| R2-F-17 | Fixed. A profile with layer height 0.9 is refused with "Layer height must be from 0.08–0.4 mm." | `5057733` |
+| R2-F-18 | Fixed. A custom `M104` line is listed under `custom`, including when the code is otherwise known. | `5057733` |
+| R2-F-19 | Partly fixed. Every plate change carries a sequence and the full plate. A skipped sequence returns "The MCP session changed the plate; reload from it?". Undo, remove, and print-up match `plate_list` in the headless mirror. The Tauri listener was not run. | `117bb1f` |
+| R2-F-20 | Fixed. The echo shows `counterboreDiameterMm` under `typed`. | `5057733` |
+| R2-F-21 | Fixed. The schema maximum is 0.4, and the schema test asserts it. | `5057733` |
+| R2-F-22 | Partly fixed. `mcp/occt.test.ts` is in the `rust` job and uses `CARGO_BUILD_JOBS=2`. Open CASCADE is not installed on this machine, so the test was not run. CI stays idle until Marius opens the pull request. | `5057733` |
+| R2-U-1 | Fixed. Face rows include centre, bounds, and kind. The upper face of a step is the one with the greatest centre Z. | `9b5e4cd` |
+| R2-U-2 | Partly fixed. Guides and prompts carry the call sequences. The tool list is under 51 KB. Not every description names the previous and next tool; the long text is on `lime://guide/*`. | `9b5e4cd` |
+| R2-U-3 | Fixed. `isError` is for protocol errors. A domain refusal is `{ok:false, reason}`. | `9b5e4cd` |
+| R2-U-4 | Fixed. A split keeps both halves, and the reply names them. | `7eda1be` |
+
+Round-1 rows the review left open:
+
+| Round 1 | Resolution |
+|---|---|
+| F-3 commit reaches the plate | Fixed with R2-F-1, R2-F-2, and R2-F-4 (`5057733`). The real-engine time and weight were not re-measured here. |
+| F-4 lossless save | Fixed with R2-F-4 (`5057733`). |
+| F-6 split check | Fixed with R2-F-7 (`5057733`). |
+| F-13 bridge | Partly fixed with R2-F-19 (`117bb1f`). The window was not opened. |
+| F-15 stale export | Fixed with R2-F-3 (`5057733`). |
+| F-20 blocking and progress | Partly fixed with R2-F-12. The 100 MB ping was not measured. |
+| F-21 memory | Partly fixed with R2-F-13. The soak was not re-run. |
+| F-23 app custom G-code | Still not verified. The desktop window was not opened. The app's layer-action test still passes. |
+| F-24 Windows addon | Still not verified. The Windows job runs when the pull request into `main` is opened. |
+| F-27 tests prove claims | Partly fixed. The stand-in matches the real reply shape, and `mcp/occt.test.ts` is in the `rust` job. That job has not run. |
+| U-8 setup docs | Partly fixed. The missing-addon path is R2-F-6. A fresh `tools/occt/install.py` checkout was not run. |
+
+### Part B batches
+
+| Batch | Resolution | Commit |
+|---|---|---|
+| 1 Settings, typed `op`, selectors, guides | Fixed. | `9b5e4cd` |
+| 2 Whole-plate slice, arrange, shells, profiles, workplane, bed | Fixed. The plate body is deep-equaled to the app's builder. | `7eda1be` |
+| 3 Paint, seams, reinforcement, support edits, layer files, G-code read, calibration, Pareto | Fixed against the stand-in, with the limits below. | `a7aa4f8` |
+| 4 Live bridge | Partly fixed. See R2-F-19. | `117bb1f` |
+
+### What this machine did not prove
+
+- `mcp/occt.test.ts` against real Open CASCADE. The job is wired. Open CASCADE is not installed here, and the pull request was not opened, so CI did not run.
+- A real slicer pass for paint (the unhit tally, and a blocker removing trees), for Pareto, and for the layer paths of a sliced cube. The stand-in returns those shapes. Disk coverage within 10% of a hand brush is `src/paint-region.test.ts` on `samples/overhang_ledge.stl`. The session paints the preview mesh, which is what the slice body sends.
+- The Tauri `lime-bridge` listener. `mirrorPlate` applies undo, remove, print-up, and a commit whose STEP carries the stand-in mesh mark. A real STEP file has no mark, so the headless mirror asks to reload rather than invent a mesh. The webview does not read the STEP file; `bridge-mount.ts` asks to reload when a commit arrives. That listener was not started.
+- `tools/golden_ab.sh` and `LIME_MCP_GOLDEN=1` are run at the end of this follow-up, after the rebase onto `main`. The slicer crates were not edited.
+
+The capability inventory in section 4.1 is the reviewer's reading of `664e481`. Batches 1 to 4 above are the state after the follow-up.
+
 ## 1. Summary and verdict
 
 **Verdict: not ready for Marius.** The stand-in tests are green and most round-1 fixes hold, but the first run against real Open CASCADE found a blocker that the stand-in engine hides.
@@ -482,7 +549,7 @@ Mutation column: "caught" means reverting the fix made its test fail; "—" mean
 | U-9 typecheck | verified | `npx tsc -p mcp` passes. | — |
 | U-10 bounded names | verified | 200 bytes in the list; the full name is saved. | caught |
 
-Totals: 26 verified, 7 reopened (F-3, F-4, F-6, F-15, F-20, F-21, F-27), 4 not verifiable here (F-13, F-23, F-24, U-8).
+Totals at review time: 26 verified, 7 reopened (F-3, F-4, F-6, F-15, F-20, F-21, F-27), 4 not verifiable here (F-13, F-23, F-24, U-8). The resolution of the reopened and unverified rows is in the table at the top of this file.
 
 ## 4. Part B: feature parity
 
@@ -490,7 +557,7 @@ The rule is that anything the app can do by hand, the MCP exposes, at the same d
 
 ### 4.1 Capability inventory
 
-Status: **done** (same depth as the app), **partial**, **missing**, or **excluded** (Marius's rule).
+Status below is the reviewer's reading of `664e481`: **done** (same depth as the app), **partial**, **missing**, or **excluded** (Marius's rule). Batches 1 to 4 in the resolution table close the missing rows for settings, the plate, paint, calibration, and the headless bridge.
 
 | Area | Capability (app location) | MCP today | Status | Gap |
 |---|---|---|---|---|

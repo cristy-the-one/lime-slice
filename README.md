@@ -86,7 +86,9 @@ The API listens on `127.0.0.1:43118`. Inside Tauri the UI calls `slice_model` in
 
 ## MCP server
 
-An LLM client can open a mesh, place it, run a Model edit that has already passed a feasibility check, slice, and write G-code. The server is `mcp/server.ts`. It speaks newline-delimited JSON on stdin and stdout, and it loads the slicer in-process (`crates/lime-mcp-engine`). It does not need `lime-slice serve`.
+An LLM client can open a mesh, place it, change the settings the panel exposes, paint supports and seams, run a Model edit that has already passed a feasibility check, slice the plate, and write G-code. The server is `mcp/server.ts`. It speaks newline-delimited JSON on stdin and stdout, and it loads the slicer in-process (`crates/lime-mcp-engine`). It does not need `lime-slice serve`.
+
+A typical slice is `machine_list`, `machine_select`, `mesh_import`, `slice_start`, `slice_wait`, `gcode_summary`. A hole is `faces_find`, `workplane_set`, `model_probe`, `model_apply`, `model_commit`, then `slice_start`. The same sequences are the guides `lime://guide/slice`, `lime://guide/model`, `lime://guide/paint`, and `lime://guide/calibrate`. There is no send-to-printer tool.
 
 It needs Node 22.6 or later, because it uses type stripping. Node prints an `ExperimentalWarning` on every start. That warning is expected.
 
@@ -125,9 +127,9 @@ The live desktop bridge is off unless you opt in. The app listens on `127.0.0.1`
 LIME_BRIDGE=1 LIME_BRIDGE_TOKEN=choose-a-token npm run tauri dev
 ```
 
-Point the MCP process at that listener with `LIME_MCP_BRIDGE=http://127.0.0.1:43119/` and the same `LIME_MCP_BRIDGE_TOKEN`. Port 43119 is `LIME_BRIDGE_PORT`. A mirror that cannot connect does not fail the tool. Closing the app leaves the headless session as it was.
+Point the MCP process at that listener with `LIME_MCP_BRIDGE=http://127.0.0.1:43119/` and the same `LIME_MCP_BRIDGE_TOKEN`. Port 43119 is `LIME_BRIDGE_PORT`. Each mirror is a sequence number and the whole plate. A commit adds the mesh hash and the STEP file written in the workspace, not the list of edits. The desktop applies the next sequence only. A gap asks to reload. A mirror that cannot connect does not fail the tool. Closing the app leaves the headless session as it was. The listener inside the window was not exercised by the automated tests.
 
-`docs/mcp-server.md` lists the tools and what is deferred.
+`docs/mcp-server.md` lists the tools and what is deferred. `docs/mcp-server-review-2.md` records the resolution of each review finding.
 
 ## Run on another device (iPhone/iPad over LAN or Tailscale)
 

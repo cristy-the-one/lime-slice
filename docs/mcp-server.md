@@ -16,29 +16,32 @@ These override the architecture recommendation in section 3 and the open questio
 
 3. **No send-to-printer.** `printer_send` is not a tool.
 
-4. **Live desktop bridge, off by default.** With `LIME_BRIDGE=1` and a non-empty `LIME_BRIDGE_TOKEN`, the desktop app listens on `127.0.0.1` only (`LIME_BRIDGE_PORT`, default 43119) and emits `lime-bridge`. The MCP process mirrors a successful `object_place` or `settings_apply` only when `LIME_MCP_BRIDGE` is a loopback URL and `LIME_MCP_BRIDGE_TOKEN` is set. A mirror that fails is logged and does not change the tool result. The headless session stays correct when the app is closed. The bridge is a mirror, not a second undo stack, and a gesture already in progress waits.
+4. **Live desktop bridge, off by default.** With `LIME_BRIDGE=1` and a non-empty `LIME_BRIDGE_TOKEN`, the desktop app listens on `127.0.0.1` only (`LIME_BRIDGE_PORT`, default 43119) and emits `lime-bridge`. The MCP process mirrors each tool result only when `LIME_MCP_BRIDGE` is a loopback URL and `LIME_MCP_BRIDGE_TOKEN` is set. A mirror that fails is logged and does not change the tool result. The message is a sequence number and the whole plate. A commit adds the mesh hash and the STEP file in the workspace, not the list of edits. The desktop applies the next sequence only. A gap asks "The MCP session changed the plate; reload from it?". The bridge is a mirror, not a second undo stack, and a gesture already in progress waits. The headless session stays correct when the app is closed.
 
 ### What shipped
 
-Open and import, list and place, and plate undo. Model edits (hole, counterbore, fillet, chamfer, split, scale, a sized boolean, and join) run only after a feasibility check that returns a plain-language refusal before the solid changes. A committed edit replaces the plate mesh, so the next slice, the 3MF, the preview, and the saved `.lime` see it. History undo and redo stay on the model tree. A save keeps model history, paint, support edits, overrides, per-object settings, and the project's printer.
+Open and import, list and place, arrange, duplicate, separate shells, and plate undo and redo. `slice_start` slices the selected object or the whole plate. The plate body matches the app's builder, including per-object settings, overrides, modifiers, paint, support edits, reinforcement, and print order. A session slice uses the built-in machine library and the same field helpers as the app, so a Lime 220 / PLA slice carries that printer's fan and Klipper firmware.
 
-Slice, estimates, and warnings. `slice_wait` reports progress and can return while the slice is still running. Cancelling the wait does not cancel the slice. The slice itself is cancelled with that job's watch. G-code and 3MF export, mesh stats, and a measurement between two faces. Also `solid_new`, `layer_summary` (the layer count, the first and last height, and per-layer seconds when the slice produced one time for every layer), a shaded PNG from `render_view`, a machine list with printers and filaments on separate pages, resources, and the four prompts. Transport is newline-delimited JSON on stdio. One slice runs at a time.
+Settings: `settings_schema` lists keys and ranges, and `settings_set` writes many keys at once, including per-object keys. A value outside the panel's range is refused in one sentence. Profiles and the machine can be read, edited, and saved.
 
-A session slice uses the built-in machine library and the same field helpers as the app, so a Lime 220 / PLA slice carries that printer's fan and Klipper firmware. The golden check is separate: it sends the CLI's request through the same `sliceStart` and requires byte-identical G-code to `lime-slice slice` for the six `tools/golden.sh` configs on `samples/calibration_cube_20mm.stl`.
+Model edits (hole, counterbore, screw, fillet, chamfer, split, scale, a sized boolean, the extra primitives, and join) run only after a feasibility check that returns a plain-language refusal before the solid changes. Face and edge selectors return centres. The workplane can be a face, the bed, or a typed origin and turn. A committed edit replaces the plate mesh, so the next slice, the 3MF, the preview, and the saved `.lime` see it. Commit and STEP export read `bytesBase64` from the modeler. History undo and redo stay on the model tree. A version 2 save keeps that mesh and that history. A lost tree is an error, and the modeler restarts after a time budget. Start the edit again.
 
-`render_view` writes a shaded PNG of the mesh (top, front, or iso) in the workspace, using Node's zlib. A layer action of kind `customGcode` is stored and shown in the G-code review. A line longer than 400 bytes is left out of the slice. The desktop app shows the line on the layer marker, and shows the lines when the project opens, before any slice. It does not add a tool.
+Slice, estimates, and warnings. `slice_wait` reports progress and can return while the slice is still running. Cancelling the wait does not cancel the slice. The slice itself is cancelled with that job's watch. G-code and 3MF export, a paged G-code read, mesh stats, and a measurement between two faces or two points. `layer_summary` is the count and the times. `layer_detail`, `layer_paths`, and `layer_image` read the latest slice. `render_view` writes a shaded PNG of the mesh (top, front, or iso). It does not draw sliced layers and it does not capture the desktop window.
+
+Paint for supports and seams, reinforcement, and support prune and regrow are on the session. Calibration towers (pressure advance, flow, temperature, retract) and the Pareto blend call the public builders through the MCP addon only. The slicer crates are unchanged.
+
+Guides at `lime://guide/slice`, `lime://guide/model`, `lime://guide/paint`, and `lime://guide/calibrate` carry the worked call sequences. Transport is newline-delimited JSON on stdio. One slice runs at a time. There is no send-to-printer tool.
+
+The golden check is separate: it sends the CLI's request through the same `sliceStart` and requires byte-identical G-code to `lime-slice slice` for the six `tools/golden.sh` configs on `samples/calibration_cube_20mm.stl`.
 
 The server needs Node 22.6 or later. Node prints an `ExperimentalWarning` on startup. Model edits find Open CASCADE next to `node`, or at `LIME_OCCT_BRIDGE`. See the README.
 
 ### Deferred
 
-- `printer_send`, and the calibrate towers.
-- Slicing the whole plate. `slice_start` slices the selected object. The engine's `objects` array is not sent yet.
-- Layer polylines and layer images. `layer_summary` does not return those.
-- Settings beyond preset, layer height, supports, and a profile file stay at the loaded project or `DEFAULT_PRESET`.
-- The live bridge mirrors place and those settings. It does not mirror Model edits.
-- `render_view` draws the mesh. It does not draw sliced layers and it does not capture the desktop window.
-- Tool lanes across two objects' histories, and recovering a model tree after the engine process is replaced. A lost tree is an error. Start the edit again.
+- `printer_send`.
+- Tool lanes across two objects' histories.
+- The Tauri listener that would reload a committed STEP inside the desktop window. The headless mirror is tested. The window was not opened.
+- A real-engine check of paint coverage, a support blocker, Pareto, and calibration towers. The request bodies and the stand-in are tested. The N-API exports call the public builders and do not change the slicer crates.
 
 ### Licences
 
