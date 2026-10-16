@@ -242,18 +242,175 @@ fn occt_ready() -> bool {
 mod napi_host {
     use super::{cancel_slice, mesh_preview_json, model_tree_json, occt_ready, poll_slice, start_slice};
     use serde_json::json;
-    use std::ffi::{c_char, c_void, CString};
+    #[cfg(not(windows))]
+    use std::ffi::c_char;
+    use std::ffi::{c_void, CString};
     use std::os::raw::c_int;
     use std::ptr;
 
-    type NapiEnv = *mut c_void;
-    type NapiValue = *mut c_void;
-    type NapiCallbackInfo = *mut c_void;
-    type NapiCallback = unsafe extern "C" fn(NapiEnv, NapiCallbackInfo) -> NapiValue;
+    pub(super) type NapiEnv = *mut c_void;
+    pub(super) type NapiValue = *mut c_void;
+    pub(super) type NapiCallbackInfo = *mut c_void;
+    pub(super) type NapiCallback = unsafe extern "C" fn(NapiEnv, NapiCallbackInfo) -> NapiValue;
 
     const NAPI_OK: c_int = 0;
     const NAPI_AUTO_LENGTH: usize = usize::MAX;
 
+    /// Node exports `napi_*` from the process that loads this file (`node.exe`
+    /// on Windows). Binding them here keeps the DLL free of unresolved imports.
+    #[cfg(windows)]
+    mod win_napi {
+        use super::{NapiCallback, NapiCallbackInfo, NapiEnv, NapiValue};
+        use std::ffi::{c_char, c_void};
+        use std::os::raw::c_int;
+        use std::sync::OnceLock;
+
+        type CreateFunction = unsafe extern "C" fn(
+            NapiEnv,
+            *const c_char,
+            usize,
+            NapiCallback,
+            *mut c_void,
+            *mut NapiValue,
+        ) -> c_int;
+        type SetNamedProperty = unsafe extern "C" fn(NapiEnv, NapiValue, *const c_char, NapiValue) -> c_int;
+        type CreateString = unsafe extern "C" fn(NapiEnv, *const u8, usize, *mut NapiValue) -> c_int;
+        type GetCbInfo = unsafe extern "C" fn(
+            NapiEnv,
+            NapiCallbackInfo,
+            *mut usize,
+            *mut NapiValue,
+            *mut NapiValue,
+            *mut *mut c_void,
+        ) -> c_int;
+        type GetString = unsafe extern "C" fn(NapiEnv, NapiValue, *mut u8, usize, *mut usize) -> c_int;
+        type ThrowError = unsafe extern "C" fn(NapiEnv, *const c_char, *const c_char) -> c_int;
+
+        struct NapiApi {
+            create_function: CreateFunction,
+            set_named_property: SetNamedProperty,
+            create_string_utf8: CreateString,
+            get_cb_info: GetCbInfo,
+            get_value_string_utf8: GetString,
+            throw_error: ThrowError,
+        }
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetModuleHandleW(module: *const u16) -> *mut c_void;
+            fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
+        }
+
+        unsafe fn bind<T>(module: *mut c_void, name: &[u8]) -> Option<T> {
+            assert_eq!(std::mem::size_of::<T>(), std::mem::size_of::<*mut c_void>());
+            let ptr = GetProcAddress(module, name.as_ptr().cast());
+            if ptr.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute_copy(&ptr))
+            }
+        }
+
+        fn api() -> Option<&'static NapiApi> {
+            static SLOT: OnceLock<Option<NapiApi>> = OnceLock::new();
+            SLOT.get_or_init(|| unsafe { load() }).as_ref()
+        }
+
+        unsafe fn load() -> Option<NapiApi> {
+            let module = GetModuleHandleW(std::ptr::null());
+            if module.is_null() {
+                return None;
+            }
+            Some(NapiApi {
+                create_function: bind(module, b"napi_create_function\0")?,
+                set_named_property: bind(module, b"napi_set_named_property\0")?,
+                create_string_utf8: bind(module, b"napi_create_string_utf8\0")?,
+                get_cb_info: bind(module, b"napi_get_cb_info\0")?,
+                get_value_string_utf8: bind(module, b"napi_get_value_string_utf8\0")?,
+                throw_error: bind(module, b"napi_throw_error\0")?,
+            })
+        }
+
+        pub(super) unsafe fn napi_create_function(
+            env: NapiEnv,
+            utf8name: *const c_char,
+            length: usize,
+            cb: NapiCallback,
+            data: *mut c_void,
+            result: *mut NapiValue,
+        ) -> c_int {
+            let Some(api) = api() else {
+                return 1;
+            };
+            (api.create_function)(env, utf8name, length, cb, data, result)
+        }
+
+        pub(super) unsafe fn napi_set_named_property(
+            env: NapiEnv,
+            object: NapiValue,
+            utf8name: *const c_char,
+            value: NapiValue,
+        ) -> c_int {
+            let Some(api) = api() else {
+                return 1;
+            };
+            (api.set_named_property)(env, object, utf8name, value)
+        }
+
+        pub(super) unsafe fn napi_create_string_utf8(
+            env: NapiEnv,
+            str_: *const u8,
+            length: usize,
+            result: *mut NapiValue,
+        ) -> c_int {
+            let Some(api) = api() else {
+                return 1;
+            };
+            (api.create_string_utf8)(env, str_, length, result)
+        }
+
+        pub(super) unsafe fn napi_get_cb_info(
+            env: NapiEnv,
+            cbinfo: NapiCallbackInfo,
+            argc: *mut usize,
+            argv: *mut NapiValue,
+            this_arg: *mut NapiValue,
+            data: *mut *mut c_void,
+        ) -> c_int {
+            let Some(api) = api() else {
+                return 1;
+            };
+            (api.get_cb_info)(env, cbinfo, argc, argv, this_arg, data)
+        }
+
+        pub(super) unsafe fn napi_get_value_string_utf8(
+            env: NapiEnv,
+            value: NapiValue,
+            buf: *mut u8,
+            bufsize: usize,
+            result: *mut usize,
+        ) -> c_int {
+            let Some(api) = api() else {
+                return 1;
+            };
+            (api.get_value_string_utf8)(env, value, buf, bufsize, result)
+        }
+
+        pub(super) unsafe fn napi_throw_error(env: NapiEnv, code: *const c_char, msg: *const c_char) -> c_int {
+            let Some(api) = api() else {
+                return 1;
+            };
+            (api.throw_error)(env, code, msg)
+        }
+    }
+
+    #[cfg(windows)]
+    use win_napi::{
+        napi_create_function, napi_create_string_utf8, napi_get_cb_info, napi_get_value_string_utf8, napi_set_named_property,
+        napi_throw_error,
+    };
+
+    #[cfg(not(windows))]
     extern "C" {
         fn napi_create_function(
             env: NapiEnv,

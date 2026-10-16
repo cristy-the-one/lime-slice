@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { fnv1aHex } from "../src/slice-action.ts";
 import { meshRecord, parseProject, serializeProject } from "../src/project.ts";
@@ -31,8 +32,8 @@ const engine = fakeEngine();
 const session = new Session(engine);
 const call = (name: string, args: unknown = {}) => session.call(name, args);
 
-const cube = new URL("../samples/calibration_cube_20mm.stl", import.meta.url);
-const imported = await call("mesh_import", { path: cube.pathname });
+const cube = fileURLToPath(new URL("../samples/calibration_cube_20mm.stl", import.meta.url));
+const imported = await call("mesh_import", { path: cube });
 check("import returns an object", imported.ok === true && typeof imported.object === "string", JSON.stringify(imported));
 const object = String(imported.object);
 
@@ -93,8 +94,8 @@ await call("slice_cancel", { job: after.job });
 const live = String((reopened.objects as { object: string }[])[0]?.object ?? object);
 const meshEdit = await call("model_probe", { object: live, op: { kind: "hole", diameterMm: 4, through: true, at: { u: 10, v: 10 } } });
 check("a mesh is not edited as a solid", meshEdit.ok === false && meshEdit.reason === "Model edits need a STEP file or a new solid. This part is a mesh.", JSON.stringify(meshEdit));
-const stepFile = new URL("../samples/step_cube.step", import.meta.url);
-const stepImport = await call("mesh_import", { path: stepFile.pathname });
+const stepFile = fileURLToPath(new URL("../samples/step_cube.step", import.meta.url));
+const stepImport = await call("mesh_import", { path: stepFile });
 check("a STEP file imports", stepImport.ok === true, JSON.stringify(stepImport));
 const stepObject = String(stepImport.object);
 const before = await call("model_history", { object: stepObject });
