@@ -50,6 +50,9 @@ import { appVersion, exportGcode, mass } from "./export-gcode.ts";
 import { renderMesh, type Camera } from "./render.ts";
 import { applyPreset, blendOf, sessionSliceRequest, stlBytes } from "./request.ts";
 import { reviewGcode } from "./review.ts";
+import { guideByUri } from "./guides.ts";
+import { applyObjectSetting, applySetting, inactiveWarning, isObjectKey, settingRows, type ObjectSettingKey } from "./settings-rows.ts";
+import { edgesMatching, facesMatching } from "./selectors.ts";
 import { settingsRangeError } from "./settings-check.ts";
 import { edgeGeometry, faceRows } from "./solid-geometry.ts";
 import { validateTool } from "./schema.ts";
@@ -384,6 +387,8 @@ export class Session {
       case "machine_select": return this.machineSelect(String(input.printerId), String(input.filamentId), input.nozzleMm);
       case "machine_load": return this.machineLoad(String(input.path));
       case "settings_apply": return this.settingsApply(input);
+      case "settings_schema": return this.settingsSchema(input);
+      case "settings_set": return this.settingsSet(input);
       case "slice_start": return this.sliceStart(input.cancelRunning === true);
       case "slice_wait": return this.sliceWait(String(input.job), meta, typeof input.timeoutS === "number" ? input.timeoutS : undefined);
       case "slice_cancel": return this.sliceCancel(String(input.job));
@@ -1188,6 +1193,78 @@ export class Session {
     return { ok: true, changed, label: "Settings" };
   }
 
+  private schemaContext() {
+    return { belt: this.printer().kind === "belt", lineWidth: Math.min(1.2, Math.max(0.2, this.library.nozzleMm * 1.125)) };
+  }
+
+  private settingsSchema(input: Record<string, unknown>): Record<string, unknown> {
+    const level = input.level === "simple" || input.level === "advanced" || input.level === "expert" ? input.level : undefined;
+    const rows = settingRows({
+      settings: this.settings,
+      ctx: this.schemaContext(),
+      query: typeof input.query === "string" ? input.query : undefined,
+      level,
+      all: input.all === true,
+    });
+    const listed = page(rows, input.cursor, input.limit);
+    return { ok: true, rows: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}) };
+  }
+
+  private settingsSet(input: Record<string, unknown>): Record<string, unknown> {
+    const values = input.values;
+    if (!values || typeof values !== "object" || Array.isArray(values)) return { ok: false, reason: "values must be an object of setting keys." };
+    const objectId = typeof input.object === "string" ? input.object : "";
+    const obj = objectId ? this.find(objectId) : null;
+    if (objectId && !obj) return { ok: false, reason: UNKNOWN_OBJECT, next: "Call plate_list for the current handles." };
+    const dryRun = input.dryRun === true;
+    const changed: { key: string; from: unknown; to: unknown }[] = [];
+    const refused: { key: string; reason: string }[] = [];
+    let next = this.settings;
+    const objectNext: PlateObjectSettings = obj ? { ...obj.objectSettings } : {};
+    for (const [key, value] of Object.entries(values as Record<string, unknown>)) {
+      if (obj) {
+        if (!isObjectKey(key)) {
+          refused.push({ key, reason: "This setting is plate-wide." });
+          continue;
+        }
+        const applied = applyObjectSetting(next, key, value, this.schemaContext());
+        if ("reason" in applied) {
+          refused.push({ key, reason: applied.reason });
+          continue;
+        }
+        (objectNext as Record<ObjectSettingKey, unknown>)[key] = applied.value;
+        changed.push({ key, from: obj.objectSettings[key], to: applied.value });
+        continue;
+      }
+      const applied = applySetting(next, key, value, this.schemaContext());
+      if ("reason" in applied) {
+        refused.push({ key, reason: applied.reason });
+        continue;
+      }
+      const to = applied.settings[key as keyof PresetSettings];
+      next = applied.settings;
+      changed.push({ key, from: this.settings[key as keyof PresetSettings], to });
+    }
+    const warnings = changed.flatMap((row) => {
+      const note = inactiveWarning(obj ? this.settings : next, row.key);
+      return note ? [note] : [];
+    });
+    if (changed.length === 0) return { ok: false, reason: refused[0]?.reason ?? "Nothing to change.", refused, ...(warnings.length ? { warnings } : {}) };
+    if (!dryRun) {
+      this.remember(obj ? "Object settings" : "Settings");
+      if (obj) obj.objectSettings = { ...obj.objectSettings, ...objectNext };
+      else this.settings = next;
+    }
+    return {
+      ok: true,
+      changed,
+      ...(refused.length ? { refused } : {}),
+      ...(warnings.length ? { warnings } : {}),
+      ...(dryRun ? { dryRun: true } : { stale: true }),
+      label: obj ? "Object settings" : "Settings",
+    };
+  }
+
   private selectedObject(): PlateObject | null {
     return this.find(this.selected) ?? this.objects[0] ?? null;
   }
@@ -1612,6 +1689,8 @@ export class Session {
   }
 
   resource(uri: string): Record<string, unknown> | Promise<Record<string, unknown>> {
+    const guide = guideByUri(uri);
+    if (guide) return { name: guide.name, tools: guide.tools, text: guide.text };
     if (uri === "lime://session") {
       return { workspace: process.env.LIME_MCP_WORKSPACE ?? "", selected: this.selected, objects: this.objects.map((obj) => obj.id), printer: this.library.printerId, filament: this.library.filamentId, running: this.running?.handle ?? null };
     }
@@ -1642,6 +1721,8 @@ export class Session {
     if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
     switch (name) {
       case "model_describe": return this.describe(obj, input);
+      case "faces_find": return this.facesFind(obj, input);
+      case "edges_find": return this.edgesFind(obj, input);
       case "workplane_set": return this.workplaneSet(obj, Number(input.faceIndex));
       case "workplane_print_up": return this.printUp(obj);
       case "model_place": return this.modelPlace(obj, input);
@@ -1847,6 +1928,47 @@ export class Session {
     };
   }
 
+  private async facesFind(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const tree = await this.opened(obj);
+    if ("reason" in tree) return { ok: false, reason: tree.reason };
+    if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
+    const matched = facesMatching(obj.solid.faces, input);
+    if ("reason" in matched) return { ok: false, reason: matched.reason };
+    const listed = page(matched, input.cursor, input.limit);
+    return { ok: true, total: matched.length, frame: "part", faces: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}) };
+  }
+
+  private async edgesFind(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const tree = await this.opened(obj);
+    if ("reason" in tree) return { ok: false, reason: tree.reason };
+    if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
+    const matched = edgesMatching(obj.solid.edges, obj.solid.faces, input);
+    if ("reason" in matched) return { ok: false, reason: matched.reason };
+    const listed = page(matched, input.cursor, input.limit);
+    return { ok: true, total: matched.length, frame: "part", edges: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}) };
+  }
+
+  /** Indexes from a list, or from the same filter `edges_find` uses. */
+  private resolveEdges(obj: PlateObject, spec: Record<string, unknown>): number[] | { reason: string } {
+    const raw = spec.edges;
+    const empty = spec.kind === "chamfer" ? "Pick an edge to chamfer." : "Pick an edge to fillet.";
+    if (Array.isArray(raw)) {
+      if (raw.length === 0) return { reason: empty };
+      if (!raw.every((edge) => Number.isInteger(edge))) return { reason: "Edge indexes are whole numbers." };
+      return raw as number[];
+    }
+    if (raw && typeof raw === "object" && "select" in raw) {
+      const select = (raw as { select?: unknown }).select;
+      if (!select || typeof select !== "object" || Array.isArray(select)) return { reason: "edges.select is a filter." };
+      if (!obj.solid) return { reason: "Describe the solid before picking edges." };
+      const matched = edgesMatching(obj.solid.edges, obj.solid.faces, select as Record<string, unknown>);
+      if ("reason" in matched) return matched;
+      if (matched.length === 0) return { reason: "No edge matches that filter." };
+      return matched.map((edge) => edge.index);
+    }
+    return { reason: empty };
+  }
+
   private async workplaneSet(obj: PlateObject, faceIndex: number): Promise<Record<string, unknown>> {
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
@@ -1896,12 +2018,12 @@ export class Session {
       return { op: toSolidOp(op, obj.modelPose), typed: { kind: "split", origin, normal } };
     }
     if (kind === "fillet" || kind === "chamfer") {
-      const edges = Array.isArray(spec.edges) ? spec.edges.filter((edge): edge is number => Number.isInteger(edge)) : [];
+      const picked = this.resolveEdges(obj, spec);
+      if ("reason" in picked) return picked;
       const size = spec.size;
-      if (edges.length === 0) return { reason: kind === "fillet" ? "Pick an edge to fillet." : "Pick an edge to chamfer." };
       if (typeof size !== "number") return { reason: "This edit needs a size in millimetres." };
-      const op: ModelOp = { kind, edges, size };
-      return { op: toSolidOp(op, obj.modelPose), typed: { kind, edges, size } };
+      const op: ModelOp = { kind, edges: picked, size };
+      return { op: toSolidOp(op, obj.modelPose), typed: { kind, edges: picked, size } };
     }
     if (kind === "hole") {
       const radius = typeof spec.diameterMm === "number" ? spec.diameterMm / 2 : spec.radius;
@@ -2013,19 +2135,21 @@ export class Session {
     if (asked !== null && !tree.nodes.has(asked)) return { ok: false, reason: "That step is not in the history." };
     const baked = this.bake(obj, raw);
     if ("reason" in baked) return { ok: false, reason: baked.reason };
+    const picked = baked.op.kind === "fillet" || baked.op.kind === "chamfer" ? { edges: baked.typed.edges } : {};
+    const answer = (body: Record<string, unknown>) => ({ ...body, ...picked, stored: baked.op, typed: baked.typed });
     if (baked.op.kind === "scale") {
       obj.probes.set(probeKey(String(at), baked.op), true);
-      return { ok: true, reason: "This scale fits.", stored: baked.op, typed: baked.typed };
+      return answer({ ok: true, reason: "This scale fits." });
     }
     if (baked.op.kind === "split") {
       const note = this.splitCheck(obj, baked.op);
-      if (note.bad) return { ok: false, reason: note.text, stored: baked.op, typed: baked.typed };
+      if (note.bad) return answer({ ok: false, reason: note.text });
       obj.probes.set(probeKey(String(at), baked.op), true);
-      return { ok: true, reason: note.text, stored: baked.op, typed: baked.typed };
+      return answer({ ok: true, reason: note.text });
     }
     if (baked.op.kind === "boolean" && obj.solid) {
       const missed = disjointBoolean(obj.solid.bounds, baked.op, baked.op.op);
-      if (missed) return { ok: false, reason: missed, stored: baked.op, typed: baked.typed };
+      if (missed) return answer({ ok: false, reason: missed });
     }
     const tool = (baked.op.kind === "join" ? "boolean" : baked.op.kind) as ProbedTool;
     const preview = (baked.op.kind === "fillet" || baked.op.kind === "chamfer") && baked.op.edges.length > 1 ? (obj.stepTolerance || CHORD) : undefined;
@@ -2039,9 +2163,9 @@ export class Session {
     }
     const view = probeFromBody(reply);
     const note = probeNote(tool, view);
-    if (!note || note.bad) return { ok: false, reason: note?.text ?? "This does not fit.", ...(typeof reply.maxMm === "number" ? { maxMm: reply.maxMm } : {}), stored: baked.op, typed: baked.typed };
+    if (!note || note.bad) return answer({ ok: false, reason: note?.text ?? "This does not fit.", ...(typeof reply.maxMm === "number" ? { maxMm: reply.maxMm } : {}) });
     obj.probes.set(probeKey(String(at), baked.op), true);
-    return { ok: true, reason: note.text, stored: baked.op, typed: baked.typed };
+    return answer({ ok: true, reason: note.text });
   }
 
   private async apply(obj: PlateObject, raw: unknown): Promise<Record<string, unknown>> {

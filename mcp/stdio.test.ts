@@ -108,14 +108,14 @@ await client.connect(sdk);
 const listed = await client.listTools();
 check("the SDK client lists tools", listed.tools.length >= 30, String(listed.tools.length));
 check("every tool has annotations", listed.tools.every((tool) => tool.annotations && typeof tool.annotations.readOnlyHint === "boolean"));
-check("initialize carries instructions", (client.getInstructions() ?? "").includes("model_describe") && (client.getInstructions() ?? "").includes("slice_wait"));
+check("initialize carries instructions", (client.getInstructions() ?? "").includes("faces_find") && (client.getInstructions() ?? "").includes("slice_wait"));
 const info = await client.callTool({ name: "session_info", arguments: {} });
 const infoText = toolText(info.content);
 const infoBody = JSON.parse(infoText) as { ok?: boolean; engine?: string };
 check("tools/call session_info answers", infoBody.ok === true && infoBody.engine === "1.8.0", infoText);
 const prompt = await client.getPrompt({ name: "hole-on-face", arguments: { object: "obj_1" } });
 const promptText = prompt.messages.map((message) => message.content.type === "text" ? message.content.text : "").join("\n");
-const steps = ["model_describe", "workplane_set", "model_probe", "model_apply"];
+const steps = ["faces_find", "workplane_set", "model_probe", "model_apply"];
 let at = -1;
 let ordered = true;
 for (const step of steps) {
@@ -123,7 +123,7 @@ for (const step of steps) {
   if (nextAt <= at) ordered = false;
   at = nextAt;
 }
-check("hole-on-face names describe, workplane, probe, apply in order", ordered, promptText);
+check("hole-on-face names faces_find, workplane, probe, apply in order", ordered, promptText);
 
 const imported = JSON.parse(toolText((await client.callTool({ name: "mesh_import", arguments: { path: cube } })).content) || "{}") as { ok?: boolean };
 check("the SDK client imports a mesh", imported.ok === true);

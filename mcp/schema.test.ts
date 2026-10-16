@@ -33,6 +33,8 @@ const layerHeight = (TOOLS.find((tool) => tool.name === "settings_apply")!.input
 check("layer height is 0.08 to 0.4", layerHeight.minimum === 0.08 && layerHeight.maximum === 0.4);
 check("layer height 0.9 is outside the schema", validateTool("settings_apply", { layerHeight: 0.9 }) !== null);
 check("model_apply uses the typed edit", JSON.stringify(TOOLS.find((tool) => tool.name === "model_apply")!.inputSchema).includes("oneOf"));
+check("a fillet can select edges", validateTool("model_probe", { object: "obj_1", op: { kind: "fillet", edges: { select: { direction: [0, 0, 1] } }, size: 1 } }) === null);
+check("settings and selectors are tools", ["settings_schema", "settings_set", "faces_find", "edges_find"].every((name) => names.has(name)));
 
 function missingDescriptions(node: unknown, missing: string[]): void {
   if (!node || typeof node !== "object") return;
@@ -57,7 +59,7 @@ const listed = JSON.stringify({
     annotations: annotationsFor(tool.name),
   })),
 });
-check("tools/list stays under 32 KB", Buffer.byteLength(listed) < 32 * 1024);
+check("tools/list stays under 40 KB", Buffer.byteLength(listed) < 40 * 1024);
 
 const accepted: [string, unknown][] = [
   ["session_info", {}],

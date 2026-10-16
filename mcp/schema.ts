@@ -24,6 +24,19 @@ const at = {
   },
 };
 
+const edgeList = {
+  description: "Indexes, or {select} with the edges_find filters.",
+  oneOf: [
+    { type: "array", items: { type: "integer", minimum: 0 } },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["select"],
+      properties: { select: { type: "object", description: "direction, withinDeg, onFace, lengthMinMm, convex." } },
+    },
+  ],
+};
+
 const op = {
   description: "Edit.",
   oneOf: [
@@ -50,7 +63,7 @@ const op = {
       required: ["kind", "edges", "size"],
       properties: {
         kind: { const: "fillet" },
-        edges: { type: "array", items: { type: "integer", minimum: 0 } },
+        edges: edgeList,
         size: { type: "number", exclusiveMinimum: 0, maximum: 100 },
       },
     },
@@ -60,7 +73,7 @@ const op = {
       required: ["kind", "edges", "size"],
       properties: {
         kind: { const: "chamfer" },
-        edges: { type: "array", items: { type: "integer", minimum: 0 } },
+        edges: edgeList,
         size: { type: "number", exclusiveMinimum: 0, maximum: 100 },
       },
     },
@@ -125,6 +138,9 @@ const READ_ONLY = new Set([
   "machine_list",
   "mesh_stats",
   "model_describe",
+  "faces_find",
+  "edges_find",
+  "settings_schema",
   "model_history",
   "gcode_summary",
   "layer_summary",
@@ -261,8 +277,37 @@ export const TOOLS: ToolSpec[] = [
     inputSchema: { type: "object", additionalProperties: false, required: ["path"], properties: { path: { type: "string", minLength: 1 } } },
   },
   {
+    name: "settings_schema",
+    description: "After machine_select. Keys that differ from the default, in panel units. Then settings_set. all lists every key.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        level: { enum: ["simple", "advanced", "expert"], description: "Panel level." },
+        query: { type: "string", minLength: 1, description: "Search text." },
+        all: { type: "boolean", description: "Every key, including defaults." },
+        cursor,
+        limit: { type: "integer", minimum: 1, maximum: 100, description: "1 to 100." },
+      },
+    },
+  },
+  {
+    name: "settings_set",
+    description: "After settings_schema. Many keys at once, then slice_start. dryRun writes nothing. With object: infill 0–1, walls, speed, supports.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["values"],
+      properties: {
+        object: handle,
+        values: { type: "object", description: "Setting keys and values." },
+        dryRun: { type: "boolean", description: "Report the change only." },
+      },
+    },
+  },
+  {
     name: "settings_apply",
-    description: "Change the preset, layer height, or supports, or load a .limeprofile.json.",
+    description: "After machine_select. Preset, layer height, or supports, or a .limeprofile.json. Then slice_start.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -335,7 +380,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_describe",
-    description: "Volume, faces, and edges, paged separately. No mesh buffers.",
+    description: "After a STEP import or solid_new. Centres are part-frame mm. Then faces_find or edges_find.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -349,8 +394,44 @@ export const TOOLS: ToolSpec[] = [
     },
   },
   {
+    name: "faces_find",
+    description: "After solid_new or a STEP import. Part-frame centres, mm. Then workplane_set with faceIndex.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        object: handle,
+        normal: { type: "array", description: "Outward normal, part frame.", minItems: 3, maxItems: 3, items: { type: "number" } },
+        withinDeg: { type: "number", minimum: 0, maximum: 180, description: "Degrees. Default 5." },
+        kind: { enum: ["plane", "cylinder"], description: "plane or cylinder." },
+        areaMinMm2: { type: "number", minimum: 0, description: "Minimum area, mm²." },
+        nearPoint: { type: "array", description: "Point, part frame, mm.", minItems: 3, maxItems: 3, items: { type: "number" } },
+        cursor,
+        limit: { type: "integer", minimum: 1, maximum: 100, description: "1 to 100." },
+      },
+    },
+  },
+  {
+    name: "edges_find",
+    description: "After solid_new or a STEP import. Part-frame mids, mm. Then model_probe a fillet with edges.select.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        object: handle,
+        direction: { type: "array", description: "Edge direction, part frame.", minItems: 3, maxItems: 3, items: { type: "number" } },
+        withinDeg: { type: "number", minimum: 0, maximum: 180, description: "Degrees. Default 5." },
+        onFace: { type: "integer", minimum: 0, description: "Face index." },
+        lengthMinMm: { type: "number", minimum: 0, description: "Minimum length, mm." },
+        convex: { type: "boolean", description: "Convex edges only." },
+        cursor,
+        limit: { type: "integer", minimum: 1, maximum: 100, description: "1 to 100." },
+      },
+    },
+  },
+  {
     name: "workplane_set",
-    description: "Put the workplane on a flat face from model_describe. A curved face is refused.",
+    description: "After faces_find. Flat faceIndex, part frame. A curved face is refused. Then model_probe a hole.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -382,12 +463,12 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_probe",
-    description: "Check an edit. A refusal does not change the solid.",
+    description: "After faces_find or edges_find. A refusal changes nothing. Then model_apply the same op.",
     inputSchema: { type: "object", additionalProperties: false, required: ["op"], properties: { object: handle, op, node: handle } },
   },
   {
     name: "model_apply",
-    description: "Apply a probed edit. A failed probe is not applied.",
+    description: "After model_probe returned ok for the same op. Then model_commit before slicing.",
     inputSchema: { type: "object", additionalProperties: false, required: ["op"], properties: { object: handle, op } },
   },
   {

@@ -1,6 +1,7 @@
 /**
  * MCP over stdio. One JSON-RPC message per line. Logs stay off stdout.
  */
+import { GUIDES } from "./guides.ts";
 import { annotationsFor, TOOLS } from "./schema.ts";
 import type { CallMeta, Session } from "./session.ts";
 
@@ -9,10 +10,15 @@ const MAX_LINE = 8 * 1024 * 1024;
 
 const INSTRUCTIONS = [
   "Import a mesh with mesh_import, choose a printer and filament with machine_select, then slice_start and slice_wait, then gcode_export.",
+  "Read lime://guide/slice, lime://guide/model, lime://guide/paint, and lime://guide/calibrate for the call order.",
   "slice_wait returns within about 20 seconds. When the status is running, call it again with the same job.",
-  "For a Model edit: model_describe, workplane_set, model_probe, model_apply, then model_commit so the plate uses the new solid.",
+  "For a Model edit: faces_find, workplane_set, model_probe, model_apply, then model_commit so the plate uses the new solid.",
   "A refusal is a sentence and does not change the solid. Nothing is sent to a printer.",
 ].join(" ");
+
+function guideText(name: "slice" | "model" | "paint" | "calibrate"): string {
+  return GUIDES.find((guide) => guide.uri === `lime://guide/${name}`)?.text ?? "";
+}
 
 export interface RpcMessage {
   jsonrpc?: string;
@@ -33,25 +39,13 @@ const PROMPTS: PromptSpec[] = [
     name: "slice-for-machine",
     description: "Import a mesh, pick a printer and filament, slice, and report time and grams. Do not send it to a printer.",
     arguments: [{ name: "path", description: "Path of the mesh to import.", required: true }],
-    text: (args) => [
-      `1. mesh_import with path ${shown(args.path)}.`,
-      "2. machine_list, then machine_select with a printerId and a filamentId from that list.",
-      "3. slice_start, then slice_wait with that job until status is done. If status is running, call slice_wait again.",
-      "4. gcode_summary, then gcode_export if a file was asked for.",
-      "Do not send the file to a printer.",
-    ].join("\n"),
+    text: (args) => `Path ${shown(args.path)}.\n${guideText("slice")}`,
   },
   {
     name: "hole-on-face",
-    description: "Describe the solid, set a face workplane, probe a through hole, and apply only if the probe fits.",
+    description: "Find a face, set the workplane, probe a through hole, and apply only if the probe fits.",
     arguments: [{ name: "object", description: "Object handle from plate_list.", required: true }],
-    text: (args) => [
-      `1. model_describe with object ${shown(args.object)}, and pick a face from its centre and bounding box.`,
-      "2. workplane_set with that faceIndex.",
-      "3. model_probe a hole: kind hole, diameterMm, through, and at with u and v on that face.",
-      "4. model_apply the same hole only when the probe says it fits.",
-      "5. model_commit so the plate mesh includes the hole.",
-    ].join("\n"),
+    text: (args) => `Object ${shown(args.object)}.\n${guideText("model")}`,
   },
   {
     name: "split-fillet-export",
@@ -126,6 +120,7 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
           "lime://project",
           "lime://slice/latest",
           "lime://gcode/latest/summary",
+          ...GUIDES.map((guide) => guide.uri),
           ...session.objects.map((obj) => `lime://object/${obj.id}/history`),
         ].map((uri) => ({ uri, name: uri, mimeType: "application/json" })),
       });

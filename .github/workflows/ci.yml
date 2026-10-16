@@ -189,6 +189,7 @@ jobs:
           node --experimental-strip-types mcp/native-load.test.ts
           node --experimental-strip-types mcp/stdio.test.ts
           node --experimental-strip-types mcp/part-a.test.ts
+          node --experimental-strip-types mcp/batch1.test.ts
 
   mcp-windows:
     name: MCP server (Windows)
