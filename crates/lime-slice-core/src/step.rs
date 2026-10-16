@@ -21,15 +21,16 @@ use std::time::Instant;
 use rayon::prelude::*;
 
 use truck_meshalgo::prelude::{
-    MetricSpace, ParameterDivision2D, ParameterRange, ParametricSurface, ParametricSurface3D,
-    Point3, PolygonMesh, SPHint2D, SearchNearestParameter, SearchParameter, Vector3, D2,
+    BoundedCurve, EuclideanSpace, InnerSpace, Matrix4, MetricSpace, ParameterDivision2D,
+    ParameterRange, ParametricCurve, ParametricSurface, ParametricSurface3D, Point3, PolygonMesh,
+    Rad, SPHint2D, SearchNearestParameter, SearchParameter, Transformed, Vector3, D2,
 };
 use truck_meshalgo::tessellation::RobustMeshableShape;
-use truck_stepio::r#in::alias::{Curve3D, Surface, SweptCurve};
+use truck_stepio::r#in::alias::{Curve3D, ElementarySurface, Surface, SweptCurve};
 use truck_stepio::r#in::ruststep::ast::{DataSection, EntityInstance, Name, Parameter, Record};
 use truck_stepio::r#in::ruststep::parser;
 use truck_stepio::r#in::Table;
-use truck_topology::compress::{CompressedFace, CompressedShell};
+use truck_topology::compress::{CompressedEdge, CompressedEdgeIndex, CompressedFace, CompressedShell};
 
 use crate::mesh::Mesh;
 
@@ -956,25 +957,57 @@ impl ParameterDivision2D for MeshSurface {
             &self.0,
             Surface::SweptCurve(swept) if matches!(**swept, SweptCurve::ExtrudedCurve(_))
         );
-        // Two points along the curve mean it is straight within tolerance.
-        if !extruded || udiv.len() < 3 {
-            return (udiv, vdiv);
+        // A cylinder is the same story the other way round: truck sweeps a line
+        // around the axis and swaps the parameters, so the straight direction is
+        // whichever one it left at two points. Between a hole's rim and where a
+        // second hole crosses it, one triangle spanned half the bore.
+        let cylinder = matches!(
+            &self.0,
+            Surface::ElementarySurface(kind) if matches!(**kind, ElementarySurface::CylindricalSurface(_))
+        );
+        if extruded {
+            // Two points along the curve mean it is straight within tolerance.
+            if udiv.len() < 3 {
+                return (udiv, vdiv);
+            }
+            let rows = chord_rows(&udiv, range.1, |u, v| self.0.subs(u, v));
+            return (udiv, rows.unwrap_or(vdiv));
         }
-        let (v0, v1) = range.1;
-        let chord = udiv
-            .windows(2)
-            .map(|pair| self.0.subs(pair[0], v0).distance(self.0.subs(pair[1], v0)))
-            .fold(0.0, f64::max);
-        let height = self.0.subs(udiv[0], v0).distance(self.0.subs(udiv[0], v1));
-        if !(chord > 0.0 && height.is_finite()) {
-            return (udiv, vdiv);
+        if cylinder && vdiv.len() == 2 && udiv.len() >= 3 {
+            let rows = chord_rows(&udiv, range.1, |u, v| self.0.subs(u, v));
+            return (udiv, rows.unwrap_or(vdiv));
         }
-        let rows = ((height / chord).ceil() as usize).clamp(1, 256);
-        let vdiv = (0..=rows)
-            .map(|row| v0 + (v1 - v0) * row as f64 / rows as f64)
-            .collect();
+        if cylinder && udiv.len() == 2 && vdiv.len() >= 3 {
+            let rows = chord_rows(&vdiv, range.0, |v, u| self.0.subs(u, v));
+            return (rows.unwrap_or(udiv), vdiv);
+        }
         (udiv, vdiv)
     }
+}
+
+/// Divisions of the straight parameter range `(s0, s1)` as far apart as the
+/// widest chord between neighbouring `curved` divisions, so every triangle stays
+/// within one cell of the curve. `point(curved, straight)` evaluates the surface.
+/// `None` when the surface gives no usable chord or length.
+fn chord_rows(
+    curved: &[f64],
+    (s0, s1): (f64, f64),
+    point: impl Fn(f64, f64) -> Point3,
+) -> Option<Vec<f64>> {
+    let chord = curved
+        .windows(2)
+        .map(|pair| point(pair[0], s0).distance(point(pair[1], s0)))
+        .fold(0.0, f64::max);
+    let height = point(curved[0], s0).distance(point(curved[0], s1));
+    if !(chord > 0.0 && height.is_finite()) {
+        return None;
+    }
+    let rows = ((height / chord).ceil() as usize).clamp(1, 256);
+    Some(
+        (0..=rows)
+            .map(|row| s0 + (s1 - s0) * row as f64 / rows as f64)
+            .collect(),
+    )
 }
 
 impl SearchParameter<D2> for MeshSurface {
@@ -1025,6 +1058,147 @@ impl SearchNearestParameter<D2> for MeshSurface {
                 miss(a).total_cmp(&miss(b))
             })
     }
+}
+
+/// Open CASCADE closes a sphere face along its seam: up a meridian to a pole and
+/// straight back down the same edge. Truck maps each boundary point next to the
+/// one before it, so the way down lands on the way up and the loop around the
+/// face encloses nothing; a sphere with a hole on its seam kept two triangles.
+/// The out-and-back adds no area, so it is dropped. The face is then its holes in
+/// the whole sphere, which truck meshes as the full parameter rectangle less the
+/// holes, and the sphere turns about its own axis so its seam crosses none of them.
+/// Other surfaces and spheres without such a seam are left as they are.
+fn open_sphere_seams(shell: &mut CompressedShell<Point3, Curve3D, Surface>) {
+    let edges = &shell.edges;
+    for face in &mut shell.faces {
+        if !is_sphere(&face.surface) {
+            continue;
+        }
+        let mut cut = false;
+        for wire in &mut face.boundaries {
+            cut |= drop_round_trips(wire);
+        }
+        if !cut {
+            continue;
+        }
+        face.boundaries.retain(|wire| !wire.is_empty());
+        if let Some(turned) = seam_clear_of(&face.surface, &face.boundaries, edges) {
+            face.surface = turned;
+        }
+    }
+}
+
+fn is_sphere(surface: &Surface) -> bool {
+    matches!(surface, Surface::ElementarySurface(kind) if matches!(**kind, ElementarySurface::Sphere(_)))
+}
+
+/// Remove each edge that a wire walks and then walks straight back. True when one was removed.
+fn drop_round_trips(wire: &mut Vec<CompressedEdgeIndex>) -> bool {
+    let mut cut = false;
+    'again: loop {
+        let n = wire.len();
+        if n < 2 {
+            return cut;
+        }
+        for i in 0..n {
+            let (a, b) = (wire[i], wire[(i + 1) % n]);
+            if a.index == b.index && a.orientation != b.orientation {
+                let j = (i + 1) % n;
+                // Remove the later position first so the earlier one keeps its index.
+                wire.remove(i.max(j));
+                wire.remove(i.min(j));
+                cut = true;
+                continue 'again;
+            }
+        }
+        return cut;
+    }
+}
+
+/// The sphere turned about its axis so its seam meridian keeps clear of every
+/// boundary, or `None` when no meridian is clear. A boundary around a pole spans
+/// every longitude and is left out: truck closes it along the pole's row.
+fn seam_clear_of(
+    surface: &Surface,
+    wires: &[Vec<CompressedEdgeIndex>],
+    edges: &[CompressedEdge<Curve3D>],
+) -> Option<Surface> {
+    use std::f64::consts::{PI, TAU};
+    let north = surface.subs(0.0, PI / 2.0);
+    let south = surface.subs(0.0, -PI / 2.0);
+    let centre = north.midpoint(south);
+    let axis = (north - south).normalize();
+    let radius = north.distance(south) / 2.0;
+    if !(radius > 0.0) {
+        return None;
+    }
+    let e1 = (surface.subs(0.0, 0.0) - centre).normalize();
+    let mut e2 = axis.cross(e1);
+    // Longitude grows toward u = π/2 on the equator.
+    if e2.dot(surface.subs(PI / 2.0, 0.0) - centre) < 0.0 {
+        e2 = -e2;
+    }
+    let longitude = |p: Point3| {
+        let r = p - centre;
+        let (x, y) = (r.dot(e1), r.dot(e2));
+        (x.hypot(y) > radius * 1e-6).then(|| y.atan2(x).rem_euclid(TAU))
+    };
+    // Each boundary as the band of longitudes it covers, from its start, `width` radians on.
+    let mut bands: Vec<(f64, f64)> = Vec::new();
+    for wire in wires {
+        let mut angles = Vec::new();
+        for edge in wire {
+            let curve = &edges.get(edge.index)?.curve;
+            let (t0, t1) = curve.range_tuple();
+            for k in 0..=16 {
+                if let Some(a) = longitude(curve.subs(t0 + (t1 - t0) * k as f64 / 16.0)) {
+                    angles.push(a);
+                }
+            }
+        }
+        let Some(&first) = angles.first() else {
+            continue;
+        };
+        let (mut at, mut lo, mut hi, mut prev) = (first, first, first, first);
+        for &a in &angles[1..] {
+            let step = (a - prev + PI).rem_euclid(TAU) - PI;
+            at += step;
+            lo = lo.min(at);
+            hi = hi.max(at);
+            prev = a;
+        }
+        if (at - first).abs() > PI || hi - lo >= TAU {
+            continue;
+        }
+        bands.push((lo.rem_euclid(TAU), hi - lo));
+    }
+    // The meridian farthest from every band.
+    let clearance = |phi: f64| {
+        bands
+            .iter()
+            .map(|&(start, width)| {
+                let into = (phi - start).rem_euclid(TAU);
+                if into <= width {
+                    0.0
+                } else {
+                    (into - width).min(TAU - into)
+                }
+            })
+            .fold(PI, f64::min)
+    };
+    let (phi, room) = (0..720)
+        .map(|k| k as f64 * TAU / 720.0)
+        .map(|phi| (phi, clearance(phi)))
+        .max_by(|a, b| a.1.total_cmp(&b.1))?;
+    if room <= 0.0 {
+        return None;
+    }
+    let shift = |turn: f64| Matrix4::from_translation(centre.to_vec()) * Matrix4::from_axis_angle(axis, Rad(turn)) * Matrix4::from_translation(-centre.to_vec());
+    // The turned sphere starts its longitude where the old one read `phi`.
+    [phi, -phi]
+        .into_iter()
+        .map(|turn| surface.transformed(shift(turn)))
+        .find(|turned| turned.subs(0.0, 0.0).distance(surface.subs(phi, 0.0)) < radius * 1e-6)
 }
 
 /// The same shell with each face surface wrapped in [`MeshSurface`].
@@ -1084,6 +1258,10 @@ fn tessellate_shell(
     let compress = Instant::now();
     let compressed = table
         .to_compressed_shell(shell)
+        .map(|mut shell| {
+            open_sphere_seams(&mut shell);
+            shell
+        })
         .map(mesh_surfaces)
         .map_err(|err| {
             format!(

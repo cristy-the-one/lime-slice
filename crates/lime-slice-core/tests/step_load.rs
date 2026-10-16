@@ -352,3 +352,26 @@ fn an_open_cascade_counterbore_loads_from_its_3d_edges() {
     assert!((vol - 975.26).abs() < 1.0, "volume {vol}");
     assert_eq!(boundary_edges(&mesh), 0);
 }
+
+/// A 40 mm sphere with 8 mm holes through it along X and Y, as Open CASCADE
+/// writes it: one spherical face with four holes cut in it, and four cylinders.
+/// Truck once kept only the cylinders, and then bridged each bore with one
+/// triangle where the other hole crosses it. Open CASCADE reports 29870.90 mm³;
+/// the chords at the default tolerance sit inside that by under 1%.
+#[test]
+fn a_sphere_with_two_cross_holes_keeps_its_sphere() {
+    let bytes = fixture("occt_sphere_two_holes.step");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(load_mesh("occt_sphere_two_holes.step", &bytes));
+    });
+    let mesh = rx
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("the STEP load did not finish in 20 s")
+        .unwrap_or_else(|err| panic!("occt_sphere_two_holes.step: {err}"));
+    let reach = (20.0f64 * 20.0 - 4.0 * 4.0).sqrt();
+    expect_box(&mesh, [-reach, -reach, 0.0], [reach, reach, 40.0], 0.05);
+    let vol = volume(&mesh);
+    assert!((vol - 29870.90).abs() < 29870.90 * 0.01, "volume {vol}");
+    assert_eq!(boundary_edges(&mesh), 0);
+}
