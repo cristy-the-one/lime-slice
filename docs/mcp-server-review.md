@@ -20,6 +20,50 @@ What does not work:
 
 The claim that the server "reuses the app's request builders" is not accurate. `mcp/request.ts` is a hand copy of `payload()` in `src/app/slice-run.ts`, and it has already drifted (F-16). Of the seven changes Claude asked for on PR #327, one is honoured (images earlier, though broken), one partly (face picking), and five are missed. See the PR #327 section.
 
+## Resolution
+
+The verdict above is the review of `82cd79c`. The fixes landed on `feature/mcp-server` after that. "Fixed" means the acceptance check is covered by a test that passed here. "Partly fixed" means the code changed and a stand-in test passed, and the part named in the note was not run.
+
+| Id | Status | Commit | Note |
+| --- | --- | --- | --- |
+| F-1 | fixed | `6532c6c` | Official SDK client lists tools, calls one tool, and gets two replies from one write. |
+| F-2 | fixed | `6532c6c` | A bad line returns `-32700`, then `ping` is answered, and the process stays up. |
+| F-3 | partly fixed | `e901d2f` | On the stand-in engine, a committed hole changes the slice mesh, the 3MF, and the reopened project, and a scale of 2 doubles the part. A real Open CASCADE run in the `rust` job was not added. |
+| F-4 | fixed | `ece7963` | An opened project with history, paint, a support edit, an override, and the IR3 V2 saves back equal apart from placement. A file changed on disk is refused. |
+| F-5 | fixed | `ece7963` | Opening an IR3 V2 project names that printer, and the slice sends its belt. |
+| F-6 | partly fixed | `e901d2f` | On the stand-in 10 mm cube, a plane at z = 500 is refused and a plane at z = 5 is accepted with range 0 to 10. Not run on real Open CASCADE. |
+| F-7 | fixed | `e901d2f` | A hole on the +X face of the 20 mm cube stores axis `[-1, 0, 0]` and origin `[20, 10, 10]`. |
+| F-8 | fixed | `e901d2f` | A mesh probe returns the sentence and does not call the modeler. The scenario uses a STEP file. |
+| F-9 | fixed | `e901d2f` | A counterbore reaches the modeler. A 3 × 40 cylinder is stored as radius 1.5 and height 40. A hole with `size` is refused. |
+| F-10 | partly fixed | `e901d2f` | `model_edit` replays the branch on the stand-in engine. Tool lanes across two objects are still not sent. See Deferred in `docs/mcp-server.md`. |
+| F-11 | fixed | `e901d2f` | Faces and edges page separately, and the second page reaches edge 11. |
+| F-12 | fixed | `7615155` | Centre 50, 60 is the placed centre for the cube and for a mesh named like the overhang ledge. The ledge geometry is the stand-in box, not a native preview of the STL. |
+| F-13 | partly fixed | `ee3d2f8` | The mirror copies the placed result, a 0.28 mm layer height marks the slice stale, and a mirror during a drag applies after it. The desktop window was not opened. |
+| F-14 | fixed | `7615155` | Layer count matches `;LAYER:` markers, and `M73` matches the app's export for the same reply and clock. |
+| F-15 | fixed | `ece7963` | Export after a filament change is refused with the stale-slice sentence. A new slice then exports. |
+| F-16 | fixed | `7615155` | The session body deep-equals the shared builder. A region slice differs from speed. Layer height 0.9 is refused with the 0.08–0.4 sentence. |
+| F-17 | fixed | `7615155` | `slice_start` names the selected object, and two overlapping imports are noted. |
+| F-18 | fixed | `ece7963` | A symlink write and an outside path are refused. The outside file is unchanged, and no outside directory is created. |
+| F-19 | fixed | `72d408d` | A decoder opens top, front, and iso. The iso view of the ledge box shows the lit top. A hole darkens the top view. The real ledge file was not tessellated by the addon. |
+| F-20 | partly fixed | `6532c6c` | Progress, a short `slice_wait` that returns `running`, cancel of the wait, and a ping during a slow stand-in import are tested. The 100 MB STL and the dragon were not re-run. The native preview delay is skipped when the addon is absent. |
+| F-21 | partly fixed | `72d408d` | The session keeps eight jobs, and leaving the plate closes trees. The 200-slice memory soak was not run. The engine's job trim was not compiled here: the cargo registry has no `clipper2`. |
+| F-22 | fixed | `7615155` | A loaded machine's `M502` and `M500` show up in the review. |
+| F-23 | partly fixed | `4c31764` | A 500-character custom line is left out of the slice. The open notice and the marker tooltip include the line, and project restore shows that notice. The desktop window was not opened. |
+| F-24 | partly fixed | `993bd86` | Windows resolves `napi_*` from the host process. The workflow builds the addon on `windows-latest` and `macos-latest` and runs the load test. Those jobs were not started from here, and the addon is not built in this environment, so `session_info` engine `1.8.0` was not observed on those platforms. |
+| F-25 | fixed | `4c31764` | Place, turn, undo, undo restores the import pose. Pointing up with no face is refused. |
+| F-26 | fixed | `7615155` | An omitted turn stays. Opposite faces of the 20 mm cube measure 20 mm. |
+| F-27 | partly fixed | `7615155` | Export goes through the app function, the request bodies are equal, and a skipped golden fails when `CI` is set. Real Open CASCADE scenarios were not added to the `rust` job. |
+| U-1 | fixed | `4c31764` | Every property has a description, and `tools/list` stays under 20 KB. |
+| U-2 | fixed | `6532c6c` | `initialize` carries instructions, every tool has annotations, and `hole-on-face` names describe, workplane, probe, and apply in order. |
+| U-3 | fixed | `4c31764` | The schema test asserts the kind list and `scalePercent must be at least 10.` |
+| U-4 | fixed | `4c31764` | `mesh_import` of `x.stl` reads the workspace file. A missing file names the resolved path. |
+| U-5 | fixed | `4c31764` | A join opens the tool solid without a prior describe. Model tools follow the selection. An opened project says its handles are new. An unknown handle says to call `plate_list`. |
+| U-6 | fixed | `4c31764` | `machine_list` returns printers and filaments, and the first of each can be selected. |
+| U-7 | fixed | `4c31764` | The cube's `slice_wait` result stays under 300 bytes and names the object and the Lime 220. |
+| U-8 | partly fixed | `4c31764` | The README states Node 22.6, the experimental warning, `LIME_OCCT_BRIDGE`, and packaging. A missing bridge names that variable and says "next to node". A fresh checkout was not run through to `occt: true`. |
+| U-9 | fixed | `4c31764` | `npx tsc -p mcp` passes, and the Ubuntu MCP job runs it. |
+| U-10 | fixed | `4c31764` | A 10 000-character name is at most 200 bytes in `plate_list`, and the saved file keeps the full name. A renamed single object stays a version 2 file so the name is not dropped. |
+
 ## Method and what ran
 
 Environment: Linux x86-64, 4 cores, 16 GB, of which about 11 GB was already in use by the VM. Node 22.14, Rust 1.88, `npm ci` from the lockfile.
