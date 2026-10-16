@@ -3278,8 +3278,12 @@ fn rotate_loops(loops: &[Loop], angle: f64) -> Vec<Loop> {
         .collect()
 }
 
+/// `f64::sin_cos` calls the platform C library. The MSVC runtime rounds
+/// sin(π/4) one ulp high, and that ulp changes which ends of the 45° top rows
+/// weld, so a Windows file differed from the Linux and macOS one. `libm` is
+/// the same Rust code everywhere.
 fn rot(p: [f64; 2], angle: f64) -> [f64; 2] {
-    let (s, c) = angle.sin_cos();
+    let (s, c) = (libm::sin(angle), libm::cos(angle));
     [p[0] * c - p[1] * s, p[0] * s + p[1] * c]
 }
 
