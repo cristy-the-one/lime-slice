@@ -11,18 +11,23 @@
 
 #![cfg_attr(test, allow(dead_code))]
 
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Once};
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use lime_slice_core::{slice_payload_watched, Job, Watch};
 use serde_json::{json, Value};
 
+const JOB_KEEP: usize = 8;
+
 struct SliceJob {
+    id: usize,
     watch: Watch,
     status: &'static str,
     result: Option<String>,
     error: Option<String>,
+    deadline: Instant,
 }
 
 fn jobs() -> &'static Mutex<Vec<SliceJob>> {
@@ -39,23 +44,56 @@ fn slice_timeout() -> Duration {
     Duration::from_secs(secs)
 }
 
+fn trim_jobs<T>(jobs: &mut Vec<T>, keep: usize) {
+    while jobs.len() >= keep {
+        jobs.remove(0);
+    }
+}
+
+fn next_job_id() -> usize {
+    static NEXT: AtomicUsize = AtomicUsize::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+fn ensure_timer() {
+    static START: Once = Once::new();
+    START.call_once(|| {
+        std::thread::spawn(|| loop {
+            std::thread::sleep(Duration::from_secs(1));
+            let now = Instant::now();
+            let due = {
+                let guard = match jobs().lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                guard
+                    .iter()
+                    .filter(|job| job.status == "running" && now >= job.deadline)
+                    .map(|job| job.watch.clone())
+                    .collect::<Vec<_>>()
+            };
+            for watch in due {
+                watch.cancel();
+            }
+        });
+    });
+}
+
 fn start_slice(body: String) -> Result<usize, String> {
+    ensure_timer();
     let watch = Watch::new();
+    let id = next_job_id();
     let mut guard = jobs().lock().map_err(|_| "The slice lock failed.".to_string())?;
+    trim_jobs(&mut guard, JOB_KEEP);
     guard.push(SliceJob {
+        id,
         watch: watch.clone(),
         status: "running",
         result: None,
         error: None,
+        deadline: Instant::now() + slice_timeout(),
     });
-    let id = guard.len() - 1;
     drop(guard);
-    let limit = slice_timeout();
-    let cancel_watch = watch.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(limit);
-        cancel_watch.cancel();
-    });
     std::thread::spawn(move || {
         // `includeGcode: false` parks the text and leaves it out of the wire.
         // Put it back so the session can export it. `includeGcode: true` already
@@ -75,7 +113,7 @@ fn start_slice(body: String) -> Result<usize, String> {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        let Some(job) = guard.get_mut(id) else {
+        let Some(job) = guard.iter_mut().find(|job| job.id == id) else {
             return;
         };
         match outcome {
@@ -115,19 +153,20 @@ fn restore_parked_gcode(wire: &str, parked: &Mutex<Option<String>>) -> String {
 }
 
 fn poll_slice(id: usize) -> String {
-    let guard = match jobs().lock() {
+    let mut guard = match jobs().lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-    let Some(job) = guard.get(id) else {
+    let Some(job) = guard.iter_mut().find(|job| job.id == id) else {
         return json!({ "error": "That slice job is not in this session." }).to_string();
     };
     let snap = job.watch.snapshot();
+    let result = if job.status == "done" { job.result.take() } else { job.result.clone() };
     json!({
         "status": job.status,
         "stage": snap.stage,
         "fraction": snap.fraction,
-        "result": job.result,
+        "result": result,
         "error": job.error,
     })
     .to_string()
@@ -138,7 +177,7 @@ fn cancel_slice(id: usize) -> String {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-    let Some(job) = guard.get(id) else {
+    let Some(job) = guard.iter().find(|job| job.id == id) else {
         return json!({ "ok": false, "error": "That slice job is not in this session." }).to_string();
     };
     job.watch.cancel();
@@ -381,6 +420,23 @@ mod tests {
             bytes.extend_from_slice(&[0u8; 2]);
         }
         base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    #[test]
+    fn newest_jobs_stay_bounded() {
+        let mut jobs = Vec::new();
+        for id in 0..200 {
+            super::trim_jobs(&mut jobs, super::JOB_KEEP);
+            jobs.push(id);
+        }
+        assert_eq!(jobs.len(), 8);
+        assert_eq!(jobs[0], 192);
+    }
+
+    #[test]
+    fn one_timer_serves_every_slice() {
+        super::ensure_timer();
+        super::ensure_timer();
     }
 
     #[test]

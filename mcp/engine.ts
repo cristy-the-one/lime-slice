@@ -285,8 +285,10 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
           nextSolid.volume = Math.max(1, nextSolid.volume - 100);
           const extra = new Float32Array(nextSolid.positions.length + 9);
           extra.set(nextSolid.positions);
-          const z = nextSolid.max[2] ?? 0;
-          extra.set([0, 0, z, 1, 0, z, 0, 1, z], nextSolid.positions.length);
+          const z = (nextSolid.max[2] ?? 0) + 0.2;
+          const x0 = (nextSolid.min[0] ?? 0) + 4;
+          const y0 = (nextSolid.min[1] ?? 0) + 4;
+          extra.set([x0, y0, z, x0, y0 + 6, z, x0 + 6, y0, z], nextSolid.positions.length);
           nextSolid.positions = extra;
         }
         const wire = remember(key, nextSolid);

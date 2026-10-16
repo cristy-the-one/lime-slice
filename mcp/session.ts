@@ -189,6 +189,7 @@ export class Session {
   running: Job | null = null;
   latest: Job | null = null;
   private seq = 0;
+  private jobSeq = 0;
   private readonly engine: Engine;
   private sourceProject: LimeProject | null = null;
   private sourceHash = "";
@@ -360,7 +361,8 @@ export class Session {
     };
   }
 
-  private projectCreate(): Record<string, unknown> {
+  private async projectCreate(): Promise<Record<string, unknown>> {
+    await this.forgetObjects();
     this.objects.length = 0;
     this.selected = "";
     this.actions = [];
@@ -376,6 +378,7 @@ export class Session {
     const full = resolveRead(path, "lime");
     const parsed = parseProject(await readFile(full, "utf8"));
     if (!parsed.ok) return { ok: false, reason: parsed.message };
+    await this.forgetObjects();
     this.objects.length = 0;
     this.settings = { ...parsed.project.settings };
     this.actions = parsed.project.layerActions ? parsed.project.layerActions.map((action) => ({ ...action })) : [];
@@ -696,9 +699,38 @@ export class Session {
     };
   }
 
-  private objectRemove(id: string): Record<string, unknown> {
+  private retainJobs(job: Job) {
+    this.jobs.push(job);
+    while (this.jobs.length > 8) {
+      const index = this.jobs.findIndex((row) => row !== this.running);
+      if (index < 0) break;
+      const dropped = this.jobs.splice(index, 1)[0];
+      if (dropped && this.latest?.handle === dropped.handle) {
+        this.latest = this.jobs.filter((row) => row.status === "done").at(-1) ?? null;
+      }
+    }
+  }
+
+  private async forgetObjects(): Promise<void> {
+    for (const obj of [...this.objects]) await this.closeTree(obj);
+  }
+
+  private async closeTree(obj: PlateObject): Promise<void> {
+    const key = obj.tree?.key;
+    obj.tree = null;
+    if (!key) return;
+    try {
+      await this.ask(this.engine.modelTree(JSON.stringify({ call: "close", key })));
+    } catch {
+      // Removing the part still succeeds when the modeler is already gone.
+    }
+  }
+
+  private async objectRemove(id: string): Promise<Record<string, unknown>> {
     const index = this.objects.findIndex((obj) => obj.id === id);
     if (index < 0) return { ok: false, reason: "That object is not on the plate." };
+    const leaving = this.objects[index];
+    if (leaving) await this.closeTree(leaving);
     this.objects.splice(index, 1);
     if (this.selected === id) this.selected = this.objects[0]?.id ?? "";
     return { ok: true, objects: this.objects.map((obj) => obj.id) };
@@ -802,9 +834,10 @@ export class Session {
     if (committed) return { ok: false, reason: committed };
     const started = JSON.parse(await this.ask(this.engine.sliceStart(JSON.stringify(this.sliceBody(obj))))) as { id?: number; error?: string };
     if (typeof started.id !== "number") return { ok: false, reason: humanEngineError(started.error ?? "The slice did not start.") };
-    const job: Job = { handle: `job_${this.jobs.length + 1}`, engineId: started.id, objectId: obj.id, stamp: this.sliceStamp(obj), status: "running" };
-    this.jobs.push(job);
+    this.jobSeq += 1;
+    const job: Job = { handle: `job_${this.jobSeq}`, engineId: started.id, objectId: obj.id, stamp: this.sliceStamp(obj), status: "running" };
     this.running = job;
+    this.retainJobs(job);
     return { ok: true, job: job.handle, status: "running", object: obj.id, name: obj.name };
   }
 
@@ -1043,7 +1076,8 @@ export class Session {
     const committed = await this.commitObject(obj);
     if (committed) return { ok: false, reason: committed };
     const camera = (input.camera === "front" || input.camera === "iso" ? input.camera : "top") as Camera;
-    const drawn = renderMesh(this.placed(obj).positions, camera, typeof input.longEdge === "number" ? input.longEdge : 768);
+    const mesh = obj.solid && obj.solid.positions.length >= 9 ? obj.solid.positions : this.placed(obj).positions;
+    const drawn = renderMesh(mesh, camera, typeof input.longEdge === "number" ? input.longEdge : 768);
     const path = resolveWrite(typeof input.name === "string" ? input.name : `${obj.name}-${camera}.png`, ".png");
     writeFileSync(path, drawn.png);
     return { ok: true, path, camera, width: drawn.width, height: drawn.height };
