@@ -692,7 +692,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_commit",
-    description: "Put the solid on the plate. A Model scale resets plate scale to 100.",
+    description: "After model_apply. Puts the solid on the plate and writes its STEP. The desktop reloads that file. Then slice_start.",
     inputSchema: { type: "object", additionalProperties: false, properties: { object: handle } },
   },
   {

@@ -198,6 +198,16 @@ function shownName(name: string): string {
   return name.length <= NAME_LIMIT ? name : name.slice(0, NAME_LIMIT);
 }
 
+function changedValues(rows: unknown[]): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const item = row as { key?: unknown; to?: unknown };
+    if (typeof item.key === "string") values[item.key] = item.to;
+  }
+  return values;
+}
+
 function roundTo(value: number, places: number): number {
   const scale = 10 ** places;
   return Math.round(value * scale) / scale;
@@ -397,15 +407,17 @@ export class Session {
     const placement = name === "object_place" && value.ok === true && obj
       ? { orient: [...obj.orient], scale: obj.scale, centered: obj.centered, offset: { ...obj.offset } }
       : undefined;
-    const settings = name === "settings_apply" && value.ok === true
+    const settings = (name === "settings_apply" || name === "settings_set") && value.ok === true && value.dryRun !== true
       ? {
           layerHeight: this.settings.layerHeight,
           supports: this.settings.supports,
           blendKind: this.settings.blendKind,
           strategy: this.settings.strategy,
           toughness: this.settings.toughness,
+          ...(name === "settings_set" && Array.isArray(value.changed) ? { values: changedValues(value.changed) } : {}),
         }
       : undefined;
+    const commit = name === "model_commit" && value.ok === true && obj ? this.commitMirror(obj) : null;
     this.bridgeSeq += 1;
     return {
       tool: name,
@@ -417,12 +429,27 @@ export class Session {
         centered: row.centered,
         offset: { ...row.offset },
         orient: [...row.orient],
+        meshHash: fnv1aHex(row.bytes),
+        ...(commit && commit.object === row.id ? { file: commit.file } : {}),
       })),
       ...(obj ? { objectId: obj.id, objectName: obj.name } : {}),
       ok: value.ok === true,
       ...(placement ? { placement } : {}),
       ...(settings ? { settings } : {}),
+      ...(commit ? { commit } : {}),
     };
+  }
+
+  /** The committed STEP in the workspace. The message carries the hash and the path, not the edits. */
+  private commitMirror(obj: PlateObject): { object: string; meshHash: string; file: string } | null {
+    if (obj.bytes.byteLength === 0) return null;
+    try {
+      const path = resolveWrite(`commit-${obj.id}.step`, ".step");
+      writeFileSync(path, obj.bytes);
+      return { object: obj.id, meshHash: fnv1aHex(obj.bytes), file: path };
+    } catch {
+      return null;
+    }
   }
 
   private dispatch(name: string, input: Record<string, unknown>, meta?: CallMeta): Record<string, unknown> | Promise<Record<string, unknown>> {

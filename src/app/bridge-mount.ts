@@ -2,7 +2,9 @@
  * Opt-in live mirror. The desktop listens for `lime-bridge` only inside Tauri.
  * The headless MCP server does not import this file.
  */
-import { applyBridge, parkBridge, releaseBridge, runBridgePatch, type BridgeMessage, type BridgePatch, type BridgeView } from "../bridge.ts";
+import { applyBridge, BRIDGE_RELOAD, parkBridge, releaseBridge, runBridgePatch, type BridgeMessage, type BridgePatch, type BridgePlateRow, type BridgeView } from "../bridge.ts";
+import type { Mat3 } from "../mesh-place.ts";
+import { withoutObject } from "../plate.ts";
 import { isTauri } from "../platform.ts";
 import { place } from "./files.ts";
 import { markStale, renderChrome } from "./settings.ts";
@@ -10,6 +12,7 @@ import { state } from "./state.ts";
 
 const waiting: BridgeMessage[] = [];
 let boundId = "";
+let seenSeq = 0;
 let timer: ReturnType<typeof setTimeout> | undefined;
 
 function view(): BridgeView {
@@ -60,13 +63,53 @@ function assign(patch: BridgePatch): void {
 }
 
 function commit(message: BridgeMessage): void {
-  const patch = applyBridge(view(), message, boundId);
+  const patch = applyBridge(view(), message, boundId, seenSeq);
+  if (patch.reload) {
+    state.notice = patch.reload;
+    return;
+  }
+  if (typeof patch.seq === "number") seenSeq = patch.seq;
   runBridgePatch(patch, {
     assign,
     place: () => place("transform"),
     markStale: () => markStale(),
     renderChrome: () => renderChrome(),
   });
+  if (patch.plate) adoptPlate(patch.plate);
+  // A commit names a STEP file. Reading it needs the desktop window, so the
+  // mesh replace stays on `mirrorPlate` until that window is open.
+  if (patch.commit) state.notice = BRIDGE_RELOAD;
+}
+
+/** Copy poses onto objects this window already shows. A new id asks for a reload. */
+function adoptPlate(rows: BridgePlateRow[]): void {
+  const ids = new Set(rows.map((row) => row.object));
+  const have = new Set(state.plate.objects.map((obj) => obj.id));
+  const added = rows.some((row) => !have.has(row.object));
+  const last = state.plate.objects.length === 1 ? state.plate.objects[0] : undefined;
+  if (added || (last && !ids.has(last.id))) {
+    state.notice = BRIDGE_RELOAD;
+    return;
+  }
+  let plate = state.plate;
+  for (const obj of [...plate.objects]) {
+    if (!ids.has(obj.id)) plate = withoutObject(plate, obj.id);
+  }
+  const byId = new Map(rows.map((row) => [row.object, row]));
+  state.plate = {
+    ...plate,
+    objects: plate.objects.map((obj) => {
+      const row = byId.get(obj.id);
+      if (!row) return obj;
+      return {
+        ...obj,
+        orient: [...row.orient] as Mat3,
+        partScale: row.scalePercent / 100,
+        centered: row.centered,
+        offset: { ...row.offset },
+      };
+    }),
+  };
 }
 
 export function mountBridge(): void {
