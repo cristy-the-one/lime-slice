@@ -1,6 +1,7 @@
 /**
  * The four session defects from the feature/mcp-server review, plus a preview
- * that stops when the modeler does not answer. The stand-in engine is enough.
+ * that stops when it does not finish without losing open model edits.
+ * The stand-in engine is enough.
  */
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -107,6 +108,27 @@ try {
   delete process.env.LIME_MCP_FAKE_BLOCK_MS;
   delete process.env.LIME_MCP_MODEL_TIMEOUT_S;
 }
+
+const keptEngine = fakeEngine();
+const kept = new Session(keptEngine);
+const keptBox = await kept.call("solid_new", { primitive: "box", dx: 10, dy: 10, dz: 10 });
+const keptOp = { kind: "hole", diameterMm: 4, through: true, origin: [5, 5, 10], axis: [0, 0, -1] };
+const keptProbe = await kept.call("model_probe", { object: keptBox.object, op: keptOp });
+process.env.LIME_MCP_FAKE_BLOCK_MS = "5000";
+process.env.LIME_MCP_MODEL_TIMEOUT_S = "1";
+let stuckImport: Record<string, unknown> = {};
+try {
+  stuckImport = await kept.call("mesh_import", { path: cube });
+} finally {
+  delete process.env.LIME_MCP_FAKE_BLOCK_MS;
+  delete process.env.LIME_MCP_MODEL_TIMEOUT_S;
+}
+const keptApply = await kept.call("model_apply", { object: keptBox.object, op: keptOp });
+check(
+  "a stuck mesh preview keeps the open model edits",
+  keptBox.ok === true && keptProbe.ok === true && stuckImport.ok === false && keptApply.ok === true && keptEngine.resets === 0 && keptEngine.previewResets === 1,
+  JSON.stringify({ stuckImport, keptApply, resets: keptEngine.resets, previewResets: keptEngine.previewResets }),
+);
 
 if (failed) {
   console.error(`${failed} failed`);

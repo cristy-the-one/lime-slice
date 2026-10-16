@@ -68,6 +68,20 @@ const switched = applyBridge({ ...view, meshName: "OTHER.stl" }, {
 }, "obj_1");
 check("the selected object takes its own snapshot", switched.place === true && switched.bindId === "obj_2" && switched.partScale === 0.8 && switched.offset?.x === 4);
 
+const ambiguous = applyBridge({ ...view, meshName: "OTHER.stl" }, {
+  tool: "object_place",
+  objectId: "obj_1",
+  objectName: "cube.stl",
+  ok: true,
+  placement,
+  plate: [
+    { object: "obj_1", name: "cube.stl", scalePercent: 50, centered: true, offset: { x: 0, y: 0, z: 0 }, orient: [...ID_MATRIX] },
+    { object: "obj_2", name: "OTHER.stl", scalePercent: 80, centered: false, offset: { x: 4, y: 0, z: 0 }, orient: [...ID_MATRIX] },
+    { object: "obj_3", name: "OTHER.stl", scalePercent: 30, centered: false, offset: { x: 9, y: 0, z: 0 }, orient: [...ID_MATRIX] },
+  ],
+}, "obj_1");
+check("two objects with the on-screen name are not guessed between", ambiguous.place === false && ambiguous.unbind === true && ambiguous.bindId === undefined);
+
 let bound = "obj_1";
 runBridgePatch(selectedOther, {
   assign: (patch) => {

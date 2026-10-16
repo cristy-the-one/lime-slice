@@ -7,7 +7,7 @@ import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 
 import { base64ToBytes, bytesToBase64 } from "../src/base64.ts";
-import { coverageWarning, fnv1aHex, inAirWarning } from "../src/slice-action.ts";
+import { coverageWarning, fnv1aHex, inAirWarning, meshKeyHex } from "../src/slice-action.ts";
 import { fanDefaults } from "../src/fan.ts";
 import { filamentGrams, groupFeatures } from "../src/estimate.ts";
 import { humanEngineError } from "../src/engine-wording.ts";
@@ -583,7 +583,7 @@ export class Session {
       text = await this.withBudget("preview", () => this.engine.meshPreview(JSON.stringify({
         filename,
         stepToleranceMm: tolerance,
-      }), bytes));
+      }), bytes), () => this.resetPreview());
     } catch (err) {
       if (err instanceof ModelRunaway) throw new ProtocolError(err.message);
       throw err;
@@ -1969,8 +1969,8 @@ export class Session {
         centered: row.centered,
         offset: row.offset,
         modelPose: row.modelPose,
-        mesh: fnv1aHex(row.bytes),
-        source: fnv1aHex(new Uint8Array(row.source.buffer, row.source.byteOffset, row.source.byteLength)),
+        mesh: meshKeyHex(row.bytes),
+        source: meshKeyHex(new Uint8Array(row.source.buffer, row.source.byteOffset, row.source.byteLength)),
         treeCurrent: row.tree?.current ?? null,
         treeCommitted: row.tree?.committed ?? null,
         objectSettings: row.objectSettings,
@@ -2298,8 +2298,11 @@ export class Session {
     return `This ${name} did not finish in ${seconds} s. Nothing changed. Try a smaller size or fewer edges.`;
   }
 
-  /** A native call on the modeler worker. The timer runs on this thread, so a blocked call can be cut off. */
-  private async withBudget<T>(kind: string, work: () => T | Promise<T>): Promise<T> {
+  /**
+   * A native call on a worker. The timer runs on this thread, so a blocked call can be cut off.
+   * `onRunaway` replaces the stuck worker; by default that is the modeler, which drops the open trees.
+   */
+  private async withBudget<T>(kind: string, work: () => T | Promise<T>, onRunaway: () => Promise<void> = () => this.loseTrees()): Promise<T> {
     const budget = this.modelTimeoutMs();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let rss: ReturnType<typeof setInterval> | undefined;
@@ -2319,13 +2322,22 @@ export class Session {
       });
     } catch (err) {
       if (err instanceof ModelRunaway) {
-        await this.loseTrees();
+        await onRunaway();
         throw err;
       }
       throw new ProtocolError(err instanceof Error ? err.message : "The modeler did not answer.");
     } finally {
       if (timer) clearTimeout(timer);
       if (rss) clearInterval(rss);
+    }
+  }
+
+  /** A timed-out mesh preview is replaced. The modeler and its open trees are left alone. */
+  private async resetPreview(): Promise<void> {
+    try {
+      await this.ask(this.engine.resetPreview?.());
+    } catch {
+      // The next preview starts a fresh worker either way.
     }
   }
 

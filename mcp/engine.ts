@@ -39,6 +39,8 @@ export interface Engine {
   pareto(body: string): string | Promise<string>;
   /** Drop a stuck modeler and start another. Slicing keeps its own worker. */
   resetModeler(): void | Promise<void>;
+  /** Drop a stuck mesh preview. Open model trees and the slicer are kept. */
+  resetPreview?(): void | Promise<void>;
 }
 
 type NativeExports = {
@@ -107,7 +109,7 @@ interface WorkerCall {
 /**
  * One addon in a worker thread. A load failure is remembered, so later calls
  * fail at once instead of waiting on a thread that has already exited.
- * `role` is "slice" or "model": a stuck modeler is replaced without dropping the slicer.
+ * `role` is "slice", "model" or "preview": a stuck one is replaced without dropping the others.
  */
 class EngineWorker {
   private worker: Worker;
@@ -116,9 +118,9 @@ class EngineWorker {
   private pending = new Map<number, WorkerCall>();
   private failed: Error | null = null;
   private readonly root: string;
-  private readonly role: "slice" | "model";
+  private readonly role: "slice" | "model" | "preview";
 
-  constructor(root: string, role: "slice" | "model") {
+  constructor(root: string, role: "slice" | "model" | "preview") {
     this.root = root;
     this.role = role;
     this.worker = this.spawn();
@@ -180,15 +182,17 @@ class EngineWorker {
 /**
  * The same addon, called from worker threads so a long preview or slice
  * poll does not stop the stdio loop answering ping. Mesh preview and model
- * edits share a worker, so a stuck tessellation can be replaced without losing the slicer.
+ * edits each have their own worker, so a stuck tessellation can be replaced
+ * without losing the slicer or the open model trees.
  */
 export function loadEngineWorker(root: string): Engine {
   const slice = new EngineWorker(root, "slice");
   const model = new EngineWorker(root, "model");
+  const preview = new EngineWorker(root, "preview");
   return {
     version: () => slice.call("version") as Promise<string>,
     occt: () => slice.call("occt").then((value) => value === true) as Promise<boolean>,
-    meshPreview: (body, bytes) => model.call("meshPreview", body, bytes) as Promise<string>,
+    meshPreview: (body, bytes) => preview.call("meshPreview", body, bytes) as Promise<string>,
     modelTree: (body) => model.call("modelTree", body) as Promise<string>,
     sliceStart: (body, bytes) => slice.call("sliceStart", body, bytes) as Promise<string>,
     slicePoll: (id) => slice.call("slicePoll", id) as Promise<string>,
@@ -196,6 +200,7 @@ export function loadEngineWorker(root: string): Engine {
     calibrate: (body) => slice.call("calibrate", body) as Promise<string>,
     pareto: (body) => slice.call("pareto", body) as Promise<string>,
     resetModeler: () => model.restart(),
+    resetPreview: () => preview.restart(),
   };
 }
 
@@ -339,7 +344,7 @@ interface KeptSolid {
 }
 
 /** A stand-in for scripted tests. It does not slice. A committed STEP round-trips its mesh. */
-export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; lastProbe: unknown; lastProbeBody: unknown; resets: number } {
+export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; lastProbe: unknown; lastProbeBody: unknown; resets: number; previewResets: number } {
   const jobs = new Map<number, { status: string; body: string; polls: number }>();
   const kept = new Map<string, KeptSolid>();
   let next = 0;
@@ -394,6 +399,7 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
     lastProbe: null as unknown,
     lastProbeBody: null as unknown,
     resets: 0,
+    previewResets: 0,
     hung: false,
     version: () => "1.8.0",
     occt: () => true,
@@ -567,6 +573,9 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
     resetModeler: () => {
       engine.resets += 1;
       engine.hung = false;
+    },
+    resetPreview: () => {
+      engine.previewResets += 1;
     },
     calibrate: (body: string) => {
       const req = JSON.parse(body) as { kind?: string; start?: number; end?: number; step?: number; bandHeight?: number };

@@ -178,7 +178,9 @@ export function applyBridge(view: BridgeView, message: BridgeMessage, boundId = 
       return withSeq({ wait: false, place: false, ...(message.plate ? { plate: message.plate } : {}) }, message);
     }
     if (boundId && message.objectId === boundId && message.objectName && !named) {
-      const current = message.plate?.find((row) => meshStem(row.name) === meshStem(view.meshName));
+      // Two objects can share a mesh name. Rebind only when the one on screen is unambiguous.
+      const matches = message.plate?.filter((row) => meshStem(row.name) === meshStem(view.meshName)) ?? [];
+      const current = matches.length === 1 ? matches[0] : undefined;
       if (!current) {
         return withSeq({ wait: false, place: false, unbind: true, ...(message.plate ? { plate: message.plate } : {}) }, message);
       }
