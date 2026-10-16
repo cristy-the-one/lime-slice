@@ -65,7 +65,7 @@ Round-1 rows the review left open:
 - `mcp/occt.test.ts` against real Open CASCADE. The job is wired. Open CASCADE is not installed here, and the pull request was not opened, so CI did not run.
 - A real slicer pass for paint (the unhit tally, and a blocker removing trees), for Pareto, and for the layer paths of a sliced cube. The stand-in returns those shapes. Disk coverage within 10% of a hand brush is `src/paint-region.test.ts` on `samples/overhang_ledge.stl`. The session paints the preview mesh, which is what the slice body sends.
 - The Tauri `lime-bridge` listener. `mirrorPlate` applies undo, remove, print-up, and a commit whose STEP carries the stand-in mesh mark. A real STEP file has no mark, so the headless mirror asks to reload rather than invent a mesh. The webview does not read the STEP file; `bridge-mount.ts` asks to reload when a commit arrives. That listener was not started.
-- `tools/golden_ab.sh` and `LIME_MCP_GOLDEN=1` are run at the end of this follow-up, after the rebase onto `main`. The slicer crates were not edited.
+- The slicer crates were not edited. After this follow-up, `tools/golden_ab.sh` against `origin/main` (`933869d`) was 48 same, 0 different, and `LIME_MCP_GOLDEN=1` matched the CLI on all six configs.
 
 The capability inventory in section 4.1 is the reviewer's reading of `664e481`. Batches 1 to 4 above are the state after the follow-up.
 
