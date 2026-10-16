@@ -37,6 +37,12 @@ port.on("message", (msg: { id: number; method: string; arg: string; bytes?: Uint
       case "sliceCancel":
         result = engine.sliceCancel(msg.arg) as string;
         break;
+      case "calibrate":
+        result = engine.calibrate(msg.arg) as string;
+        break;
+      case "pareto":
+        result = engine.pareto(msg.arg) as string;
+        break;
       default:
         throw new Error("That engine call is not on this worker.");
     }

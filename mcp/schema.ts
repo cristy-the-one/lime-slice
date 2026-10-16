@@ -156,6 +156,10 @@ const READ_ONLY = new Set([
   "gcode_summary",
   "layer_summary",
   "measure",
+  "paint_list",
+  "support_trees",
+  "layer_detail",
+  "gcode_read",
 ]);
 
 const DESTRUCTIVE = new Set([
@@ -729,6 +733,217 @@ export const TOOLS: ToolSpec[] = [
         name: { type: "string", minLength: 1 },
         longEdge: { type: "integer", minimum: 32, maximum: 1024 },
       },
+    },
+  },
+  {
+    name: "paint_supports",
+    description: "Paint enforce or block disks, then slice_start. lime://guide/paint.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["region"],
+      properties: {
+        object: handle,
+        mode: { enum: ["enforce", "block", "erase"], description: "enforce, block, or erase." },
+        region: { type: "object", description: "faces, overhangBelowDeg, box, sphere, or stroke." },
+        radiusMm: { type: "number", minimum: 0.5, maximum: 20, description: "Brush mm. Default 3." },
+        frame: { enum: ["part", "bed"], description: "part or bed." },
+        dryRun: { type: "boolean", description: "Do not write." },
+      },
+    },
+  },
+  {
+    name: "paint_seam",
+    description: "Paint the seam, then slice_start.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["region"],
+      properties: {
+        object: handle,
+        region: { type: "object", description: "faces, overhangBelowDeg, box, sphere, or stroke." },
+        radiusMm: { type: "number", minimum: 0.5, maximum: 20, description: "Brush mm. Default 3." },
+        erase: { type: "boolean", description: "Remove paint there." },
+        frame: { enum: ["part", "bed"], description: "part or bed." },
+        dryRun: { type: "boolean", description: "Do not write." },
+      },
+    },
+  },
+  {
+    name: "reinforce_add",
+    description: "Add infill paint or a volume, then slice_start.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind"],
+      properties: {
+        object: handle,
+        kind: { enum: ["paint", "box", "cylinder"], description: "paint, box, or cylinder." },
+        region: { type: "object", description: "Paint region. faces, box, sphere, or stroke." },
+        centre: vec3,
+        sizeMm: vec3,
+        density: { type: "number", minimum: 0, maximum: 1, description: "0 to 1. Default 1." },
+        depthMm: { type: "number", minimum: 0.2, maximum: 100, description: "Paint depth, mm." },
+        fillThrough: { type: "boolean", description: "Fill through the part." },
+        frame: { enum: ["part", "bed"], description: "part or bed." },
+        dryRun: { type: "boolean", description: "Do not write." },
+      },
+    },
+  },
+  {
+    name: "paint_list",
+    description: "Disks already painted.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        object: handle,
+        layer: { enum: ["supports", "seam", "reinforce"], description: "supports, seam, or reinforce." },
+        cursor: cursor,
+        limit: { type: "integer", minimum: 1, maximum: 100, description: "1 to 100." },
+      },
+    },
+  },
+  {
+    name: "paint_clear",
+    description: "Remove one paint layer.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        object: handle,
+        layer: { enum: ["supports", "seam", "reinforce"], description: "supports, seam, or reinforce." },
+      },
+    },
+  },
+  {
+    name: "support_edit",
+    description: "Prune or regrow a tree. support_trees first.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["action", "site"],
+      properties: {
+        object: handle,
+        action: { enum: ["prune", "regrow"], description: "prune or regrow." },
+        site: { type: "object", description: "xy and zMm of the limb." },
+        scope: { enum: ["branch", "tree"], description: "branch or tree." },
+        dryRun: { type: "boolean", description: "Do not write." },
+      },
+    },
+  },
+  {
+    name: "support_trees",
+    description: "Trees from the last slice.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        job: handle,
+        cursor: cursor,
+        limit: { type: "integer", minimum: 1, maximum: 100, description: "1 to 100." },
+      },
+    },
+  },
+  {
+    name: "layer_detail",
+    description: "Layer heights and seconds.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        job: handle,
+        layers: { type: "array", minItems: 2, maxItems: 2, items: { type: "integer", minimum: 0 }, description: "First and last layer index." },
+      },
+    },
+  },
+  {
+    name: "layer_paths",
+    description: "Write one layer as SVG.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        job: handle,
+        layer: { type: "integer", minimum: 0, description: "Layer index." },
+        simplifyMm: { type: "number", minimum: 0, description: "Drop points closer than this." },
+        name: { type: "string", minLength: 1, description: "Workspace file." },
+      },
+    },
+  },
+  {
+    name: "layer_image",
+    description: "Write a PNG of one layer.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        job: handle,
+        layer: { type: "integer", minimum: 0, description: "Layer index." },
+        colourBy: { enum: ["feature", "speed", "weight"], description: "feature, speed, or weight." },
+        longEdge: { type: "integer", minimum: 32, maximum: 1024, description: "Pixels, 32–1024." },
+        name: { type: "string", minLength: 1, description: "Workspace file." },
+      },
+    },
+  },
+  {
+    name: "gcode_read",
+    description: "A page of G-code lines.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        job: handle,
+        fromLine: { type: "integer", minimum: 1, description: "First line, from 1." },
+        count: { type: "integer", minimum: 1, maximum: 500, description: "At most 500 lines." },
+        grep: { type: "string", description: "Keep lines that contain this text." },
+      },
+    },
+  },
+  {
+    name: "calibration_tower",
+    description: "Write a calibration tower. lime://guide/calibrate.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "start", "end", "step"],
+      properties: {
+        kind: { enum: ["pa", "flow", "temp", "retract"], description: "pa, flow, temp, or retract." },
+        start: { type: "number", description: "First band." },
+        end: { type: "number", description: "Last band." },
+        step: { type: "number", exclusiveMinimum: 0, description: "Step between bands." },
+        bandHeightMm: { type: "number", exclusiveMinimum: 0, description: "Band height, mm." },
+        layerHeight: { type: "number", minimum: 0.08, maximum: 0.4, description: "mm, 0.08 to 0.4." },
+        dryRun: { type: "boolean", description: "Do not write." },
+      },
+    },
+  },
+  {
+    name: "calibration_apply",
+    description: "Save a tower value on the filament.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "value"],
+      properties: {
+        kind: { enum: ["pa", "flow", "temp", "retract"], description: "pa, flow, temp, or retract." },
+        value: { type: "number", description: "The value to save." },
+      },
+    },
+  },
+  {
+    name: "blend_compare",
+    description: "Compare a few blends. Then blend_apply.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { object: handle } },
+  },
+  {
+    name: "blend_apply",
+    description: "Keep one blend point, then slice_start.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["index"],
+      properties: { index: { type: "integer", minimum: 0, description: "Point from blend_compare." } },
     },
   },
 ];

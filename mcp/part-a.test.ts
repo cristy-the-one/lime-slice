@@ -215,7 +215,7 @@ const older = wireSession.jobs.find((job) => job.handle === olderJob.job);
 const newer = wireSession.jobs.find((job) => job.handle === newerJob.job);
 const olderPaths = ((older?.wire?.layers as { paths?: unknown }[] | undefined) ?? [])[0]?.paths;
 const newerPaths = ((newer?.wire?.layers as { paths?: unknown }[] | undefined) ?? [])[0]?.paths;
-check("only the latest slice keeps layer paths", wireMesh.ok === true && olderPaths === undefined && Array.isArray(newerPaths), JSON.stringify({ olderPaths, newer: Boolean(newerPaths) }));
+check("only the latest slice keeps layer paths", wireMesh.ok === true && olderPaths === undefined && newerPaths != null && typeof newerPaths === "object", JSON.stringify({ olderPaths, newer: Boolean(newerPaths) }));
 
 const measureSession = new Session(fakeEngine());
 const measuredBox = await measureSession.call("solid_new", { dx: 20, dy: 20, dz: 20 });

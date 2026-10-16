@@ -232,6 +232,62 @@ fn model_tree_json(body: &str) -> String {
     }
 }
 
+fn json_error(err: impl std::fmt::Display) -> String {
+    json!({ "error": err.to_string() }).to_string()
+}
+
+/// Calibration towers. `kind` selects the public builder. The slicer crates are unchanged.
+fn calibrate_json(body: &str) -> String {
+    let value: Value = match serde_json::from_str(body) {
+        Ok(value) => value,
+        Err(err) => return json_error(err),
+    };
+    let kind = value.get("kind").and_then(Value::as_str).unwrap_or("");
+    match kind {
+        "pa" => match serde_json::from_value::<lime_slice_core::PaCalibRequest>(value) {
+            Ok(req) => match lime_slice_core::pressure_advance_from_request(&req) {
+                Ok(out) => serde_json::to_string(&out).unwrap_or_else(json_error),
+                Err(err) => json_error(err),
+            },
+            Err(err) => json_error(err),
+        },
+        "flow" => match serde_json::from_value::<lime_slice_core::FlowCalibRequest>(value) {
+            Ok(req) => match lime_slice_core::flow_from_request(&req) {
+                Ok(out) => serde_json::to_string(&out).unwrap_or_else(json_error),
+                Err(err) => json_error(err),
+            },
+            Err(err) => json_error(err),
+        },
+        "temp" => match serde_json::from_value::<lime_slice_core::TempCalibRequest>(value) {
+            Ok(req) => match lime_slice_core::temperature_from_request(&req) {
+                Ok(out) => serde_json::to_string(&out).unwrap_or_else(json_error),
+                Err(err) => json_error(err),
+            },
+            Err(err) => json_error(err),
+        },
+        "retract" => match serde_json::from_value::<lime_slice_core::RetractCalibRequest>(value) {
+            Ok(req) => match lime_slice_core::retract_from_request(&req) {
+                Ok(out) => serde_json::to_string(&out).unwrap_or_else(json_error),
+                Err(err) => json_error(err),
+            },
+            Err(err) => json_error(err),
+        },
+        _ => json_error("kind is pa, flow, temp, or retract."),
+    }
+}
+
+/// Five to ten blend points for one slice body. No G-code text.
+fn pareto_json(body: &str) -> String {
+    let req: lime_slice_core::SliceRequest = match serde_json::from_str(body) {
+        Ok(req) => req,
+        Err(err) => return json_error(err),
+    };
+    match lime_slice_core::pareto_request(&req, lime_slice_core::Job::default()) {
+        Ok(points) => serde_json::to_string(&points).unwrap_or_else(json_error),
+        Err(err) => json_error(err),
+    }
+}
+
 fn occt_ready() -> bool {
     let reply = model_tree_json(r#"{"call":"close","key":"lime-mcp-occt-probe"}"#);
     let missing = reply.contains("was not found") || reply.contains("Could not load the Open CASCADE bridge");
@@ -240,7 +296,9 @@ fn occt_ready() -> bool {
 
 #[cfg(not(test))]
 mod napi_host {
-    use super::{cancel_slice, mesh_preview_json, model_tree_json, occt_ready, poll_slice, start_slice};
+    use super::{
+        calibrate_json, cancel_slice, mesh_preview_json, model_tree_json, occt_ready, pareto_json, poll_slice, start_slice,
+    };
     use serde_json::json;
     #[cfg(not(windows))]
     use std::ffi::c_char;
@@ -523,6 +581,20 @@ unsafe extern "C" fn occt_cb(env: NapiEnv, _info: NapiCallbackInfo) -> NapiValue
     return_string(env, if occt_ready() { "true" } else { "false" })
 }
 
+unsafe extern "C" fn calibrate_cb(env: NapiEnv, info: NapiCallbackInfo) -> NapiValue {
+    let Ok(body) = arg_string(env, info) else {
+        return ptr::null_mut();
+    };
+    return_string(env, &calibrate_json(&body))
+}
+
+unsafe extern "C" fn pareto_cb(env: NapiEnv, info: NapiCallbackInfo) -> NapiValue {
+    let Ok(body) = arg_string(env, info) else {
+        return ptr::null_mut();
+    };
+    return_string(env, &pareto_json(&body))
+}
+
 unsafe fn export_fn(env: NapiEnv, exports: NapiValue, name: &str, cb: NapiCallback) {
     let c_name = CString::new(name).unwrap();
     let mut func: NapiValue = ptr::null_mut();
@@ -542,6 +614,8 @@ pub unsafe extern "C" fn napi_register_module_v1(env: NapiEnv, exports: NapiValu
     export_fn(env, exports, "meshPreview", mesh_preview_cb);
     export_fn(env, exports, "modelTree", model_tree_cb);
     export_fn(env, exports, "occt", occt_cb);
+    export_fn(env, exports, "calibrate", calibrate_cb);
+    export_fn(env, exports, "pareto", pareto_cb);
     exports
 }
 
@@ -594,6 +668,21 @@ mod tests {
     fn one_timer_serves_every_slice() {
         super::ensure_timer();
         super::ensure_timer();
+    }
+
+    #[test]
+    fn a_pressure_advance_tower_uses_the_public_builder() {
+        let body = r#"{"kind":"pa","firmware":"klipper","start":0.0,"end":0.01,"step":0.01}"#;
+        let reply: serde_json::Value = serde_json::from_str(&super::calibrate_json(body)).unwrap();
+        assert!(reply.get("error").is_none(), "{reply}");
+        assert!(reply["gcode"].as_str().unwrap().contains("PA_CALIBRATION"));
+        assert_eq!(reply["bands"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn an_unknown_tower_is_a_sentence() {
+        let reply: serde_json::Value = serde_json::from_str(&super::calibrate_json(r#"{"kind":"nope"}"#)).unwrap();
+        assert!(reply["error"].as_str().unwrap().contains("pa"));
     }
 
     #[test]

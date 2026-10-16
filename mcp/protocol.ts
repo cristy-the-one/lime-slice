@@ -59,6 +59,18 @@ const PROMPTS: PromptSpec[] = [
     ].join("\n"),
   },
   {
+    name: "paint-supports",
+    description: "Paint enforce disks on overhangs flatter than 50 degrees, then slice.",
+    arguments: [{ name: "path", description: "Path of the mesh to import.", required: true }],
+    text: (args) => `Path ${shown(args.path)}.\n${guideText("paint")}`,
+  },
+  {
+    name: "calibrate-pa",
+    description: "Print a pressure-advance tower for the selected filament and save the value you pick.",
+    arguments: [],
+    text: () => guideText("calibrate"),
+  },
+  {
     name: "explain-slice-failure",
     description: "Read lime://slice/latest and the warnings, then propose one next tool call.",
     arguments: [],
