@@ -71,10 +71,15 @@ check("a through hole leaves 874.34 mm³", hole.ok === true && near(holed.volume
 
 const boreObject = await call("solid_new", { primitive: "box", dx: 10, dy: 10, dz: 10 });
 const boreId = String(boreObject.object);
-const bore = await call("model_probe", { object: boreId, op: { kind: "hole", diameterMm: 3, depth: 8, origin: [5, 5, 10], axis: [0, 0, -1], counterboreDiameterMm: 6, counterboreDepth: 2 } });
-await call("model_apply", { object: boreId, op: { kind: "hole", diameterMm: 3, depth: 8, origin: [5, 5, 10], axis: [0, 0, -1], counterboreDiameterMm: 6, counterboreDepth: 2 } });
+// A new box is centred on X and Y with its base on Z = 0, so the top centre is [0, 0, 10].
+// The tool is the ⌀6 counterbore for 2 mm, then the ⌀3 hole for the remaining 6 mm. One fused
+// cut, so the overlap is not subtracted twice: 1000 − π·3²·2 − π·1.5²·6.
+const boreOp = { kind: "hole", diameterMm: 3, depth: 8, origin: [0, 0, 10], axis: [0, 0, -1], counterboreDiameterMm: 6, counterboreDepth: 2 };
+const counterboreMm3 = 1000 - Math.PI * 3 ** 2 * 2 - Math.PI * 1.5 ** 2 * (8 - 2);
+const bore = await call("model_probe", { object: boreId, op: boreOp });
+await call("model_apply", { object: boreId, op: boreOp });
 const bored = await call("model_describe", { object: boreId });
-check("a counterbore leaves about 886.9 mm³", bore.ok === true && near(bored.volumeMm3, 886.9, 1), JSON.stringify(bored.volumeMm3));
+check("a counterbore leaves about 901.04 mm³", bore.ok === true && near(bored.volumeMm3, counterboreMm3, 0.5), JSON.stringify({ volume: bored.volumeMm3, expected: counterboreMm3 }));
 
 const fat = await call("model_probe", { object: boreId, op: { kind: "fillet", edges: [0], size: 50 } });
 check("an oversized fillet is refused with a largest size", fat.ok === false && (typeof fat.maxMm === "number" || String(fat.reason).includes("did not finish")), JSON.stringify(fat));
