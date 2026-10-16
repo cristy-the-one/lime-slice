@@ -14,20 +14,22 @@ import { humanEngineError } from "../src/engine-wording.ts";
 import { foreign3mfMessage, foreignSlicer3mf } from "../src/foreign-3mf.ts";
 import { meshWarningText, type MeshRepair } from "../src/app/mesh-warning.ts";
 import { plainModelError } from "../src/app/model-error.ts";
-import { encode3mf, ID_MATRIX, layFlatMatrix, matMul, offBed, placeMesh, rotX, rotY, rotZ, scaledCanonical, type Mat3 } from "../src/mesh-place.ts";
+import { encode3mf, ID_MATRIX, layFlatMatrix, matMul, offBed, placeMesh, rotX, rotY, rotZ, scaledCanonical, settleBy, type Mat3 } from "../src/mesh-place.ts";
 import { decodeSolid } from "../src/model-reply.ts";
 import { probeFromBody, probeKey, probeNote, type ProbedTool } from "../src/model-feasibility.ts";
+import { builtBranch, crossEdit, forked, replayChain, type ToolLink } from "../src/model-edit.ts";
 import { dropRefusal } from "../src/model-history.ts";
 import { throughLength } from "../src/model-hole.ts";
-import { splitNote, type SplitPlan } from "../src/model-plane.ts";
+import { extentAlong, facePlane, splitBase, splitNote, splitPlaneInside, tiltRings, valueRange, type SplitPlan, type Vec3 as PlaneVec } from "../src/model-plane.ts";
 import { rootSpec, type PrimitiveSpec } from "../src/model-primitive.ts";
-import { applyRequest, editRequest, exportRequest, gotoRequest, joinOp, newSolidRequest, openRequest, probeRequest } from "../src/model-request.ts";
+import { readFingerprint } from "../src/model-reply.ts";
+import { applyRequest, crossEditRequest, editRequest, exportRequest, gotoRequest, joinOp, newSolidRequest, openRequest, probeRequest } from "../src/model-request.ts";
 import { IDENTITY_POSE, toSolidOp, type Affine } from "../src/model-space.ts";
-import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, undoTarget, withChild, type ModelOp, type ModelTree, type NodeId } from "../src/model-tree.ts";
+import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, undoTarget, withChild, type Fingerprint, type ModelOp, type ModelTree, type NodeId } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
 import type { LayerAction } from "../src/layer-actions.ts";
-import { CURVED_FACE, GLOBAL_WORKPLANE, isGlobalFrame, localPoint, planePoint, workplaneOnFace, type Workplane } from "../src/workplane.ts";
+import { CURVED_FACE, GLOBAL_WORKPLANE, drillDown, isGlobalFrame, localPoint, planePoint, planePrimitive, workplaneOnFace, type Workplane } from "../src/workplane.ts";
 import { eulerOrient } from "../src/mesh-place.ts";
 import { plateFileIsVersion2 } from "../src/plate.ts";
 import { builtinLibrary, adoptProfile, enginePrinter, heatFor, parseMachineFile, type FilamentRecord, type MachineLibrary, type PrinterRecord } from "../src/ui/machine-library.ts";
@@ -47,6 +49,7 @@ const STEP = 0.05;
 const SLICE_WAIT_DEFAULT_S = 20;
 const SLICE_WAIT_MAX_S = 120;
 const STALE_SLICE = "The printer, filament, settings, or placement changed after this slice. Slice again.";
+const MESH_EDIT = "Model edits need a STEP file or a new solid. This part is a mesh.";
 
 /** Carried with one tools/call: a progress token, and cancel for that request. */
 export interface CallMeta {
@@ -101,9 +104,12 @@ function rememberSolid(body: Record<string, unknown>) {
   const solid = decodeSolid(body);
   if (typeof solid === "string") return null;
   return {
+    id: solid.id,
     volumeMm3: solid.volumeMm3,
     editable: solid.editable,
     fingerprint: solid.fingerprint,
+    positions: Float32Array.from(solid.positions),
+    triangles: Uint32Array.from(solid.triangles),
     faces: solid.faces.map((face) => ({ areaMm2: face.areaMm2, ...(face.normal ? { normal: [...face.normal] as [number, number, number] } : {}) })),
     edges: solid.edges.map((edge) => {
       const points = edge.points;
@@ -141,6 +147,25 @@ function page<T>(items: T[], cursor: unknown, limit: unknown): { rows: T[]; next
   const from = Number.isInteger(start) && start > 0 ? start : 0;
   const rows = items.slice(from, from + size);
   return from + size < items.length ? { rows, nextCursor: String(from + size) } : { rows };
+}
+
+function readBuilt(value: unknown): Map<number, { op: ModelOp; fingerprint: Fingerprint | null }> | null {
+  if (!Array.isArray(value)) return null;
+  const out = new Map<number, { op: ModelOp; fingerprint: Fingerprint | null }>();
+  for (const step of value) {
+    if (!step || typeof step !== "object") return null;
+    const row = step as { id?: unknown; op?: unknown; fingerprint?: unknown };
+    const kind = row.op && typeof row.op === "object" ? (row.op as { kind?: unknown }).kind : undefined;
+    if (typeof row.id !== "number" || typeof kind !== "string") return null;
+    out.set(row.id, { op: row.op as ModelOp, fingerprint: readFingerprint(row.fingerprint) });
+  }
+  return out;
+}
+
+function readBroken(value: unknown): { id: number; error: string } | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as { id?: unknown; error?: unknown };
+  return typeof row.id === "number" && typeof row.error === "string" ? { id: row.id, error: row.error } : null;
 }
 
 function nodeHandle(id: NodeId): string {
@@ -476,8 +501,10 @@ export class Session {
     return `Saving over this project would drop ${missing.join(", ")}. Save it under a new name.`;
   }
 
-  private projectSave(name: string): Record<string, unknown> {
+  private async projectSave(name: string): Promise<Record<string, unknown>> {
     if (this.objects.length === 0) return { ok: false, reason: "The plate is empty." };
+    const committed = await this.commitAll();
+    if (committed) return { ok: false, reason: committed };
     const path = resolveWrite(name, ".lime");
     if (this.sourcePath && path === this.sourcePath && this.sourceHash) {
       let now = "";
@@ -720,6 +747,8 @@ export class Session {
     }
     const obj = this.selectedObject();
     if (!obj) return { ok: false, reason: "Load a mesh first." };
+    const committed = await this.commitObject(obj);
+    if (committed) return { ok: false, reason: committed };
     const started = JSON.parse(await this.ask(this.engine.sliceStart(JSON.stringify(this.sliceBody(obj))))) as { id?: number; error?: string };
     if (typeof started.id !== "number") return { ok: false, reason: humanEngineError(started.error ?? "The slice did not start.") };
     const job: Job = { handle: `job_${this.jobs.length + 1}`, engineId: started.id, objectId: obj.id, stamp: this.sliceStamp(obj), status: "running" };
@@ -925,8 +954,10 @@ export class Session {
     return { ok: true, path, bytes: Buffer.byteLength(text), sha256: createHash("sha256").update(text).digest("hex") };
   }
 
-  private export3mf(name: string): Record<string, unknown> {
+  private async export3mf(name: string): Promise<Record<string, unknown>> {
     if (this.objects.length === 0) return { ok: false, reason: "The plate is empty." };
+    const committed = await this.commitAll();
+    if (committed) return { ok: false, reason: committed };
     const meshes = this.objects.map((obj) => this.placed(obj).positions);
     const bytes = encode3mf(meshes);
     const path = resolveWrite(name, ".3mf");
@@ -968,9 +999,11 @@ export class Session {
     };
   }
 
-  private renderView(input: Record<string, unknown>): Record<string, unknown> {
+  private async renderView(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const obj = this.find(typeof input.object === "string" ? input.object : this.selected) ?? this.objects[0];
     if (!obj) return { ok: false, reason: "Load a mesh first." };
+    const committed = await this.commitObject(obj);
+    if (committed) return { ok: false, reason: committed };
     const camera = (input.camera === "front" || input.camera === "iso" ? input.camera : "top") as Camera;
     const drawn = renderMesh(this.placed(obj).positions, camera, typeof input.longEdge === "number" ? input.longEdge : 768);
     const path = resolveWrite(typeof input.name === "string" ? input.name : `${obj.name}-${camera}.png`, ".png");
@@ -1009,7 +1042,7 @@ export class Session {
       case "workplane_set": return this.workplaneSet(obj, Number(input.faceIndex));
       case "workplane_print_up": return this.printUp(obj);
       case "model_place": return this.modelPlace(obj, input);
-      case "model_probe": return this.probe(obj, input.op);
+      case "model_probe": return this.probe(obj, input.op, input.node);
       case "model_apply": return this.apply(obj, input.op, false);
       case "model_history": return this.history(obj, input);
       case "model_goto": return this.gotoNode(obj, parseNode(input.node));
@@ -1093,12 +1126,27 @@ export class Session {
     return { ok: true, object: obj.id, fingerprint: obj.solid?.fingerprint ?? null };
   }
 
+  /** A mesh has no solid to edit. A STEP file and a new solid do. */
+  private meshBlock(obj: PlateObject): string | null {
+    if (obj.tree) return null;
+    const name = obj.fileName.toLowerCase();
+    if (name.endsWith(".step") || name.endsWith(".stp")) return null;
+    return MESH_EDIT;
+  }
+
+  private async opened(obj: PlateObject): Promise<ModelTree | { reason: string }> {
+    const blocked = this.meshBlock(obj);
+    if (blocked) return { reason: blocked };
+    return this.ensureTree(obj);
+  }
+
   private async describe(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
-    await this.ensureTree(obj);
+    const tree = await this.opened(obj);
+    if ("reason" in tree) return { ok: false, reason: tree.reason };
     const solid = obj.solid;
     if (!solid) return { ok: false, reason: "This solid could not be read." };
-    const faces = page(solid.faces.map((face, index) => ({ index, areaMm2: face.areaMm2, ...(face.normal ? { normal: face.normal } : {}) })), input.cursor, input.limit);
-    const edges = page(solid.edges.map((edge, index) => ({ index, mid: edge.mid, lengthMm: edge.lengthMm })), input.cursor, input.limit);
+    const faces = page(solid.faces.map((face, index) => ({ index, areaMm2: face.areaMm2, ...(face.normal ? { normal: face.normal } : {}) })), input.facesCursor ?? input.cursor, input.limit);
+    const edges = page(solid.edges.map((edge, index) => ({ index, mid: edge.mid, lengthMm: edge.lengthMm })), input.edgesCursor, input.limit);
     return {
       ok: true,
       volumeMm3: solid.volumeMm3,
@@ -1106,18 +1154,21 @@ export class Session {
       fingerprint: solid.fingerprint,
       faces: faces.rows,
       edges: edges.rows,
-      ...(faces.nextCursor ? { nextCursor: faces.nextCursor } : {}),
+      ...(faces.nextCursor ? { facesNextCursor: faces.nextCursor, nextCursor: faces.nextCursor } : {}),
+      ...(edges.nextCursor ? { edgesNextCursor: edges.nextCursor } : {}),
     };
   }
 
   private async workplaneSet(obj: PlateObject, faceIndex: number): Promise<Record<string, unknown>> {
-    await this.ensureTree(obj);
+    const tree = await this.opened(obj);
+    if ("reason" in tree) return { ok: false, reason: tree.reason };
     const face = obj.solid?.faces[faceIndex];
     if (!face) return { ok: false, reason: "That face is not on this solid." };
-    if (!face.normal) return { ok: false, reason: CURVED_FACE };
-    const point = obj.solid?.edges[0]?.mid ?? [0, 0, 0];
-    obj.workplane = workplaneOnFace({ point: [...point] as [number, number, number], normal: [...face.normal] as [number, number, number] });
-    return { ok: true, source: obj.workplane.source };
+    if (!face.normal || !obj.solid) return { ok: false, reason: CURVED_FACE };
+    const plane = facePlane(obj.solid.positions, obj.solid.triangles, faceIndex, face.normal);
+    if (!plane) return { ok: false, reason: CURVED_FACE };
+    obj.workplane = workplaneOnFace(plane);
+    return { ok: true, source: obj.workplane.source, origin: obj.workplane.origin, turn: obj.workplane.turn };
   }
 
   private printUp(obj: PlateObject): Record<string, unknown> {
@@ -1168,7 +1219,7 @@ export class Session {
       let axis: [number, number, number];
       if (at && typeof at.u === "number" && typeof at.v === "number" && !isGlobalFrame(obj.workplane)) {
         origin = planePoint(obj.workplane, [at.u, at.v, 0]);
-        axis = [0, 0, -1];
+        axis = drillDown(obj.workplane);
       } else if (at && typeof at.u === "number" && typeof at.v === "number") {
         origin = [at.u, at.v, obj.solid?.bounds.max[2] ?? 0];
         axis = [0, 0, -1];
@@ -1180,8 +1231,11 @@ export class Session {
       const box = obj.solid?.bounds ?? { min: [0, 0, 0] as [number, number, number], max: [0, 0, 0] as [number, number, number] };
       const depth = through ? throughLength(box, origin, axis) : (typeof spec.depth === "number" ? spec.depth : 0);
       if (!through && !(depth > 0)) return { reason: "The hole needs a depth, or through." };
-      const op: ModelOp = { kind: "hole", origin, axis, radius, depth, ...(through ? { through: true as const } : {}) };
-      return { op: toSolidOp(op, obj.modelPose), typed: { kind: "hole", diameterMm: radius * 2, ...(through ? { through: true } : { depth }) } };
+      const counterbore = typeof spec.counterboreDiameterMm === "number" && typeof spec.counterboreDepth === "number"
+        ? { counterboreRadius: spec.counterboreDiameterMm / 2, counterboreDepth: spec.counterboreDepth }
+        : {};
+      const op: ModelOp = { kind: "hole", origin, axis, radius, depth, ...(through ? { through: true as const } : {}), ...counterbore };
+      return { op: toSolidOp(op, obj.modelPose), typed: { kind: "hole", diameterMm: radius * 2, ...(through ? { through: true } : { depth }), ...counterbore } };
     }
     if (kind === "join") {
       const tool = this.find(String(spec.toolObject ?? ""));
@@ -1192,57 +1246,91 @@ export class Session {
     if (kind === "boolean") {
       const primitive = spec.primitive === "cylinder" || spec.primitive === "sphere" ? spec.primitive : "box";
       const booleanOp = spec.op === "fuse" || spec.op === "common" ? spec.op : "cut";
-      const solid = rootSpec({ primitive, origin: [0, 0, 0], size: [10, 10, 10], radius: 5, height: 10, turn: [0, 0, 0] });
+      const dx = typeof spec.dx === "number" ? spec.dx : 10;
+      const dy = typeof spec.dy === "number" ? spec.dy : dx;
+      const dz = typeof spec.dz === "number" ? spec.dz : dx;
+      const origin = (Array.isArray(spec.origin) ? spec.origin : [0, 0, 0]) as [number, number, number];
+      const turn = (Array.isArray(spec.turn) ? spec.turn : [0, 0, 0]) as [number, number, number];
+      const local: PrimitiveSpec = primitive === "cylinder"
+        ? { primitive, origin, size: [0, 0, 0], radius: dx / 2, height: dz, turn }
+        : primitive === "sphere"
+          ? { primitive, origin, size: [0, 0, 0], radius: dx / 2, height: 0, turn: [0, 0, 0] }
+          : { primitive: "box", origin, size: [dx, dy, dz], radius: 0, height: 0, turn };
+      const solid = planePrimitive(local, obj.workplane);
       const op = toSolidOp({ kind: "boolean", op: booleanOp, ...solid }, obj.modelPose);
-      return { op, typed: { kind: "boolean", op: booleanOp, primitive } };
+      return { op, typed: { kind: "boolean", op: booleanOp, primitive, dx, dy, dz } };
     }
     return { reason: "That edit is not one of hole, fillet, chamfer, split, scale, boolean, or join." };
   }
 
   private splitCheck(obj: PlateObject, op: Extract<ModelOp, { kind: "split" }>): { text: string; bad: boolean } {
+    const positions = obj.solid?.positions;
     const box = obj.solid?.bounds;
-    if (!box) return splitNote({ why: "This solid is too thin to split.", wait: false });
-    const span = Math.hypot(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2]);
-    if (!(span > 1)) return splitNote({ why: "This solid is too thin to split.", wait: false });
+    if (!positions || !box) return splitNote({ why: "This solid is too thin to split.", wait: false });
+    const length = Math.hypot(op.normal[0], op.normal[1], op.normal[2]) || 1;
+    const normal: PlaneVec = [op.normal[0] / length, op.normal[1] / length, op.normal[2] / length];
+    const extent = extentAlong(positions, normal);
+    if (!extent || !(extent.max > extent.min)) return splitNote({ why: "This solid is too thin to split.", wait: false });
+    const center: PlaneVec = [
+      (box.min[0] + box.max[0]) / 2,
+      (box.min[1] + box.max[1]) / 2,
+      (box.min[2] + box.max[2]) / 2,
+    ];
+    const axis = Math.abs(normal[0]) >= Math.abs(normal[1]) && Math.abs(normal[0]) >= Math.abs(normal[2]) ? 0 : Math.abs(normal[1]) >= Math.abs(normal[2]) ? 1 : 2;
+    const mode = axis === 0 ? "x" : axis === 1 ? "y" : "z";
+    const base = splitBase(mode, center, null);
+    if (!base) return splitNote({ why: "This solid is too thin to split.", wait: false });
+    const window = { min: extent.min, max: extent.max, mid: (extent.min + extent.max) / 2 };
+    const range = valueRange(base, normal, window);
+    const along = base.dir[0] * (op.origin[0] - base.base[0]) + base.dir[1] * (op.origin[1] - base.base[1]) + base.dir[2] * (op.origin[2] - base.base[2]);
     const plan: SplitPlan = {
-      base: { mode: "z", normal: op.normal, base: op.origin, dir: op.normal },
-      value: 0,
-      origin: op.origin,
-      normal: op.normal,
-      range: { min: -span / 2, max: span / 2, mid: 0 },
-      inside: true,
-      rings: [[1, 0, 0], [0, 1, 0]],
+      base,
+      value: along,
+      origin: [...op.origin] as PlaneVec,
+      normal,
+      range,
+      inside: splitPlaneInside(along, range),
+      rings: tiltRings(base.normal, 0),
     };
     return splitNote({ plan });
   }
 
-  private async probe(obj: PlateObject, raw: unknown): Promise<Record<string, unknown>> {
-    const tree = await this.ensureTree(obj);
+  private async probe(obj: PlateObject, raw: unknown, nodeHandleValue?: unknown): Promise<Record<string, unknown>> {
+    const tree = await this.opened(obj);
+    if ("reason" in tree) return { ok: false, reason: tree.reason };
+    const asked = parseNode(nodeHandleValue);
+    const at = asked ?? tree.current;
+    if (asked !== null && !tree.nodes.has(asked)) return { ok: false, reason: "That step is not in the history." };
     const baked = this.bake(obj, raw);
     if ("reason" in baked) return { ok: false, reason: baked.reason };
     if (baked.op.kind === "scale") {
-      obj.probes.set(probeKey(String(tree.current), baked.op), true);
+      obj.probes.set(probeKey(String(at), baked.op), true);
       return { ok: true, reason: "This scale fits.", stored: baked.op, typed: baked.typed };
     }
     if (baked.op.kind === "split") {
       const note = this.splitCheck(obj, baked.op);
       if (note.bad) return { ok: false, reason: note.text, stored: baked.op, typed: baked.typed };
-      obj.probes.set(probeKey(String(tree.current), baked.op), true);
+      obj.probes.set(probeKey(String(at), baked.op), true);
       return { ok: true, reason: note.text, stored: baked.op, typed: baked.typed };
     }
     const tool = (baked.op.kind === "join" ? "boolean" : baked.op.kind) as ProbedTool;
-    const reply = await this.treeCall(probeRequest(tree.key, tree.current, baked.op));
+    const reply = await this.treeCall(probeRequest(tree.key, at, baked.op));
     const view = probeFromBody(reply);
     const note = probeNote(tool, view);
     if (!note || note.bad) return { ok: false, reason: note?.text ?? "This does not fit.", ...(typeof reply.maxMm === "number" ? { maxMm: reply.maxMm } : {}), stored: baked.op, typed: baked.typed };
-    obj.probes.set(probeKey(String(tree.current), baked.op), true);
+    obj.probes.set(probeKey(String(at), baked.op), true);
     return { ok: true, reason: note.text, stored: baked.op, typed: baked.typed };
   }
 
   private async apply(obj: PlateObject, raw: unknown, edit: boolean): Promise<Record<string, unknown>> {
-    const tree = await this.ensureTree(obj);
+    const tree = await this.opened(obj);
+    if ("reason" in tree) return { ok: false, reason: tree.reason };
     const baked = this.bake(obj, raw);
     if ("reason" in baked) return { ok: false, reason: baked.reason };
+    if (baked.op.kind === "split") {
+      const note = this.splitCheck(obj, baked.op);
+      if (note.bad) return { ok: false, reason: note.text };
+    }
     const key = probeKey(String(tree.current), baked.op);
     if (!obj.probes.has(key)) return { ok: false, reason: "Probe this edit first. It was not applied." };
     const [reserved, node] = reserveId(tree);
@@ -1257,7 +1345,9 @@ export class Session {
   }
 
   private async history(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const tree = obj.tree ?? await this.ensureTree(obj);
+    const opened = obj.tree ?? await this.opened(obj);
+    if ("reason" in opened) return { ok: false, reason: opened.reason };
+    const tree = opened;
     const rows = [...tree.nodes.values()].sort((a, b) => a.id - b.id).map((node) => ({
       id: nodeHandle(node.id),
       parent: node.parent === null ? null : nodeHandle(node.parent),
@@ -1271,7 +1361,8 @@ export class Session {
   }
 
   private async gotoNode(obj: PlateObject, node: number | null): Promise<Record<string, unknown>> {
-    const tree = await this.ensureTree(obj);
+    const tree = await this.opened(obj);
+    if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (node === null || !tree.nodes.has(node)) return { ok: false, reason: "That step is not in the history." };
     const reply = await this.treeCall(gotoRequest(tree.key, node, CHORD));
     if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error) };
@@ -1282,27 +1373,110 @@ export class Session {
   }
 
   private async step(obj: PlateObject, direction: "undo" | "redo"): Promise<Record<string, unknown>> {
-    const tree = await this.ensureTree(obj);
+    const tree = await this.opened(obj);
+    if ("reason" in tree) return { ok: false, reason: tree.reason };
     const target = direction === "undo" ? undoTarget(tree) : redoTarget(tree);
     if (target === null) return { ok: false, reason: direction === "undo" ? "This is the start of the history." : "There is nothing to redo." };
     return this.gotoNode(obj, target);
   }
 
   private async edit(obj: PlateObject, node: number | null, raw: unknown): Promise<Record<string, unknown>> {
-    const tree = await this.ensureTree(obj);
+    const tree = await this.opened(obj);
+    if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (node === null || !tree.nodes.has(node)) return { ok: false, reason: "That step is not in the history." };
     const parent = tree.nodes.get(node)?.parent;
     if (parent === null || parent === undefined) return { ok: false, reason: "The opened file starts the history and stays." };
     const baked = this.bake(obj, raw);
     if ("reason" in baked) return { ok: false, reason: baked.reason };
-    const key = probeKey(String(parent), baked.op);
-    if (!obj.probes.has(key)) return { ok: false, reason: "Probe this edit first. It was not applied." };
-    const [reserved, id] = reserveId(tree);
-    obj.tree = reserved;
-    const reply = await this.treeCall(editRequest(tree.key, parent, id, baked.op, [], CHORD));
+    const probed = [parent, node, tree.current].some((id) => obj.probes.has(probeKey(String(id), baked.op)));
+    if (!probed) return { ok: false, reason: "Probe this edit first. It was not applied." };
+    if (baked.op.kind === "split") {
+      const note = this.splitCheck(obj, baked.op);
+      if (note.bad) return { ok: false, reason: note.text };
+    } else if (baked.op.kind !== "scale") {
+      const tool = (baked.op.kind === "join" ? "boolean" : baked.op.kind) as ProbedTool;
+      const checked = await this.treeCall(probeRequest(tree.key, parent, baked.op));
+      const view = probeFromBody(checked);
+      const fit = probeNote(tool, view);
+      if (!fit || fit.bad) return { ok: false, reason: fit?.text ?? "This does not fit." };
+    }
+    const replayIds = replayChain(tree, node, tree.current);
+    const replayOps = replayIds.map((id) => tree.nodes.get(id)?.op).filter((op): op is ModelOp => op != null);
+    const twin = builtBranch(tree, parent, baked.op, replayOps);
+    if (twin != null) return this.gotoNode(obj, twin);
+    const joins = this.toolLinks(tree, [node, ...replayIds]);
+    const levels = crossEdit(tree, joins, node, baked.op, replayIds, (key, need) => this.reserveOn(key, need));
+    const own = levels[levels.length - 1];
+    if (!own) return { ok: false, reason: "That step could not be rebuilt." };
+    const reply = await this.treeCall(crossEditRequest(levels, obj.stepTolerance || CHORD));
     if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error) };
-    obj.tree = withChild(obj.tree, parent, { id, op: baked.op, label: opLabel(baked.op), fingerprint: null });
-    return { ok: true, node: nodeHandle(id), built: true, broken: typeof reply.broken === "boolean" ? reply.broken : false };
+    const built = readBuilt(reply.built);
+    const broken = readBroken(reply.broken);
+    const ids = [own.node, ...own.replay.map((step) => step.id)];
+    const steps = ids.map((id, index) => {
+      const made = built?.get(id);
+      return {
+        id,
+        op: made?.op ?? (index === 0 ? own.op : own.replay[index - 1]!.op),
+        fingerprint: made?.fingerprint ?? null,
+        ...(broken?.id === id ? { broken: broken.error } : {}),
+      };
+    });
+    const tip = [...steps].reverse().find((step) => !step.broken)?.id ?? ids[0]!;
+    const host = obj.tree ?? tree;
+    obj.tree = forked(host, own.parent, steps, tip);
+    this.forkTools(levels.slice(0, -1), reply.tools);
+    const solid = rememberSolid(reply);
+    if (solid) obj.solid = solid;
+    obj.probes.clear();
+    return { ok: true, node: nodeHandle(tip), built: broken == null, broken: broken != null };
+  }
+
+  /** Fresh ids on the tree `key` names. An edit spends them even when the engine keeps only some. */
+  private reserveOn(key: string, need: number): NodeId[] {
+    const host = this.objects.find((row) => row.tree?.key === key);
+    if (!host?.tree) return [];
+    let reserved = host.tree;
+    const ids: NodeId[] = [];
+    while (ids.length < need) {
+      const [next, id] = reserveId(reserved);
+      reserved = next;
+      ids.push(id);
+    }
+    host.tree = reserved;
+    return ids;
+  }
+
+  private toolLinks(tree: ModelTree, ids: readonly NodeId[]): ToolLink[] {
+    const links: ToolLink[] = [];
+    for (const id of ids) {
+      const op = tree.nodes.get(id)?.op;
+      if (op?.kind !== "join") continue;
+      const tool = this.objects.find((row) => row.tree?.key === op.tool.key);
+      if (!tool?.tree) continue;
+      links.push({ tree: tool.tree, id: op.tool.node, op });
+    }
+    return links;
+  }
+
+  /** A join's tool trees take the branches the edit reply kept. */
+  private forkTools(levels: { key: string; parent: NodeId; node: NodeId; op: ModelOp; replay: { id: NodeId; op: ModelOp }[] }[], tools: unknown): void {
+    const parts = Array.isArray(tools) ? tools as { built?: unknown; broken?: unknown }[] : [];
+    levels.forEach((level, index) => {
+      const host = this.objects.find((row) => row.tree?.key === level.key);
+      if (!host?.tree) return;
+      const made = readBuilt(parts[index]?.built);
+      const broken = readBroken(parts[index]?.broken);
+      const ids = [level.node, ...level.replay.map((step) => step.id)];
+      const steps = ids.map((id, step) => ({
+        id,
+        op: made?.get(id)?.op ?? (step === 0 ? level.op : level.replay[step - 1]!.op),
+        fingerprint: made?.get(id)?.fingerprint ?? null,
+        ...(broken?.id === id ? { broken: broken.error } : {}),
+      }));
+      const tip = [...steps].reverse().find((step) => !step.broken)?.id ?? ids[0]!;
+      host.tree = forked(host.tree, level.parent, steps, tip, false);
+    });
   }
 
   private drop(obj: PlateObject, node: number | null): Record<string, unknown> {
@@ -1317,18 +1491,49 @@ export class Session {
   }
 
   private async commit(obj: PlateObject): Promise<Record<string, unknown>> {
-    const tree = await this.ensureTree(obj);
-    let scaled = false;
-    for (let at: number | null = tree.current; at !== null; at = tree.nodes.get(at)?.parent ?? null) {
-      if (tree.nodes.get(at)?.op?.kind === "scale") scaled = true;
+    const blocked = this.meshBlock(obj);
+    if (blocked) return { ok: false, reason: blocked };
+    const reason = await this.commitObject(obj);
+    if (reason) return { ok: false, reason };
+    return { ok: true, scalePercent: obj.scale * 100, triangles: obj.triangles };
+  }
+
+  /** The plate mesh becomes the solid on screen. The scale is reset only once that mesh is in place. */
+  private async commitObject(obj: PlateObject): Promise<string | null> {
+    const tree = obj.tree;
+    if (!tree || !obj.solid || obj.solid.positions.length < 9) return null;
+    const reply = await this.treeCall(exportRequest(tree.key, tree.current));
+    const step = typeof reply.step === "string" ? reply.step : typeof reply.data === "string" ? reply.data : "";
+    if (!step) return typeof reply.error === "string" ? plainModelError(reply.error) : "The solid was not exported.";
+    const copy = Float32Array.from(obj.solid.positions);
+    obj.seatMm = settleBy(copy);
+    obj.source = copy;
+    obj.triangles = copy.length / 9;
+    obj.bytes = new TextEncoder().encode(step);
+    if (/\.(stl|3mf)$/i.test(obj.fileName)) obj.fileName = obj.fileName.replace(/\.(stl|3mf)$/i, ".step");
+    if (this.pathHasScale(tree)) obj.scale = 1;
+    obj.tree = { ...obj.tree!, committed: tree.current };
+    return null;
+  }
+
+  private async commitAll(): Promise<string | null> {
+    for (const obj of this.objects) {
+      const reason = await this.commitObject(obj);
+      if (reason) return reason;
     }
-    obj.tree = { ...tree, committed: tree.current };
-    if (scaled) obj.scale = 1;
-    return { ok: true, scalePercent: obj.scale * 100 };
+    return null;
+  }
+
+  private pathHasScale(tree: ModelTree): boolean {
+    for (let at: number | null = tree.current; at !== null; at = tree.nodes.get(at)?.parent ?? null) {
+      if (tree.nodes.get(at)?.op?.kind === "scale") return true;
+    }
+    return false;
   }
 
   private async exportStep(obj: PlateObject, name: string): Promise<Record<string, unknown>> {
-    const tree = await this.ensureTree(obj);
+    const tree = await this.opened(obj);
+    if ("reason" in tree) return { ok: false, reason: tree.reason };
     const reply = await this.treeCall(exportRequest(tree.key, tree.current));
     const step = typeof reply.step === "string" ? reply.step : typeof reply.data === "string" ? reply.data : "";
     if (!step) return { ok: false, reason: typeof reply.error === "string" ? plainModelError(reply.error) : "The solid was not exported." };

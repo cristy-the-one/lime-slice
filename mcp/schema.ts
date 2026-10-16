@@ -14,37 +14,98 @@ const page = {
 
 const empty = { type: "object", additionalProperties: false, properties: {} };
 
-const op = {
+const at = {
   type: "object",
   additionalProperties: false,
-  required: ["kind"],
-  properties: {
-    kind: { enum: ["hole", "fillet", "chamfer", "split", "scale", "boolean", "join"] },
-    diameterMm: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
-    radius: { type: "number", exclusiveMinimum: 0, maximum: 500 },
-    depth: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
-    through: { type: "boolean" },
-    at: {
+  required: ["u", "v"],
+  properties: { u: { type: "number" }, v: { type: "number" } },
+};
+
+const op = {
+  oneOf: [
+    {
       type: "object",
       additionalProperties: false,
-      required: ["u", "v"],
-      properties: { u: { type: "number" }, v: { type: "number" } },
+      required: ["kind"],
+      properties: {
+        kind: { const: "hole" },
+        diameterMm: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
+        radius: { type: "number", exclusiveMinimum: 0, maximum: 500 },
+        depth: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
+        through: { type: "boolean" },
+        at,
+        origin: vec3,
+        axis: vec3,
+        counterboreDiameterMm: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
+        counterboreDepth: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
+      },
     },
-    origin: vec3,
-    axis: vec3,
-    normal: vec3,
-    edges: { type: "array", items: { type: "integer", minimum: 0 } },
-    size: { type: "number", exclusiveMinimum: 0, maximum: 100 },
-    factor: { type: "number", minimum: 0.1, maximum: 20 },
-    faceIndex: { type: "integer", minimum: 0 },
-    op: { enum: ["fuse", "cut", "common"] },
-    toolObject: handle,
-    keepTool: { type: "boolean" },
-    primitive: { enum: ["box", "cylinder", "sphere"] },
-    dx: { type: "number" },
-    dy: { type: "number" },
-    dz: { type: "number" },
-  },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "edges", "size"],
+      properties: {
+        kind: { const: "fillet" },
+        edges: { type: "array", items: { type: "integer", minimum: 0 } },
+        size: { type: "number", exclusiveMinimum: 0, maximum: 100 },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "edges", "size"],
+      properties: {
+        kind: { const: "chamfer" },
+        edges: { type: "array", items: { type: "integer", minimum: 0 } },
+        size: { type: "number", exclusiveMinimum: 0, maximum: 100 },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind"],
+      properties: {
+        kind: { const: "split" },
+        origin: vec3,
+        normal: vec3,
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "factor"],
+      properties: {
+        kind: { const: "scale" },
+        factor: { type: "number", minimum: 0.1, maximum: 20 },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind"],
+      properties: {
+        kind: { const: "boolean" },
+        op: { enum: ["fuse", "cut", "common"] },
+        primitive: { enum: ["box", "cylinder", "sphere"] },
+        dx: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
+        dy: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
+        dz: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
+        origin: vec3,
+        turn: vec3,
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "toolObject"],
+      properties: {
+        kind: { const: "join" },
+        op: { enum: ["fuse", "cut", "common"] },
+        toolObject: handle,
+        keepTool: { type: "boolean" },
+      },
+    },
+  ],
 };
 
 export interface ToolSpec {
@@ -253,12 +314,18 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_describe",
-    description: "Volume, whether the solid is closed, and one page of faces and edges. No mesh buffers.",
+    description: "Volume, whether the solid is closed, and one page of faces and edges. Faces and edges page separately, with facesCursor and edgesCursor. No mesh buffers.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       required: ["object"],
-      properties: { object: handle, cursor, limit: { type: "integer", minimum: 1, maximum: 100 } },
+      properties: {
+        object: handle,
+        cursor,
+        facesCursor: cursor,
+        edgesCursor: cursor,
+        limit: { type: "integer", minimum: 1, maximum: 100 },
+      },
     },
   },
   {
@@ -296,8 +363,8 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_probe",
-    description: "Check whether an edit fits. A refusal is a sentence and does not change the solid. Call this before model_apply.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["object", "op"], properties: { object: handle, op } },
+    description: "Check whether an edit fits. A refusal is a sentence and does not change the solid. Call this before model_apply. Pass node to check the numbers against that step instead of the one on screen.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["object", "op"], properties: { object: handle, op, node: handle } },
   },
   {
     name: "model_apply",
@@ -331,7 +398,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_edit",
-    description: "Replace a step's numbers and replay the steps under it. The same probe rule as model_apply applies to the parent.",
+    description: "Replace a step's numbers and replay the steps under it. Probe the new numbers first. The probe may be on the step on screen. The edit checks them on the step's parent, then rebuilds the branch.",
     inputSchema: { type: "object", additionalProperties: false, required: ["object", "node", "op"], properties: { object: handle, node: handle, op } },
   },
   {
@@ -385,6 +452,23 @@ export function toolByName(name: string): ToolSpec | undefined {
 }
 
 export function validate(schema: Record<string, unknown>, value: unknown, path = "input"): string | null {
+  if (Array.isArray(schema.oneOf)) {
+    const branches = schema.oneOf as Record<string, unknown>[];
+    const kind = value && typeof value === "object" ? (value as { kind?: unknown }).kind : undefined;
+    const matched = branches.filter((branch) => {
+      const props = branch.properties as { kind?: { const?: unknown } } | undefined;
+      const expect = props?.kind?.const;
+      return expect === undefined || expect === kind;
+    });
+    const tryThese = matched.length > 0 ? matched : branches;
+    let first: string | null = null;
+    for (const branch of tryThese) {
+      const problem = validate(branch, value, path);
+      if (!problem) return null;
+      first ??= problem;
+    }
+    return first ?? `${path} does not match.`;
+  }
   if (schema.const !== undefined && value !== schema.const) return `${path} must be ${JSON.stringify(schema.const)}.`;
   if (Array.isArray(schema.enum) && !schema.enum.some((item) => item === value)) return `${path} is not one of the allowed values.`;
   const type = schema.type;

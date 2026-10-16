@@ -160,6 +160,7 @@ jobs:
         run: |
           node --experimental-strip-types mcp/schema.test.ts
           node --experimental-strip-types mcp/scenario.test.ts
+          node --experimental-strip-types mcp/model.test.ts
           node --experimental-strip-types mcp/export.test.ts
           LIME_MCP_GOLDEN=1 node --experimental-strip-types mcp/golden.test.ts
           node --experimental-strip-types mcp/stdio.test.ts

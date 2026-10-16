@@ -19,6 +19,8 @@ check("a missing path is rejected", validateTool("project_open", {}) !== null);
 check("a hole diameter of 0 is rejected", validateTool("model_apply", { object: "obj_1", op: { kind: "hole", diameterMm: 0, through: true } }) !== null);
 check("a scale percent of 9 is rejected", validateTool("object_place", { object: "obj_1", scalePercent: 9 }) !== null);
 check("a fractional edge index is rejected", validateTool("model_probe", { object: "obj_1", op: { kind: "fillet", edges: [1.5], size: 1 } }) !== null);
+check("a hole does not take a fillet size", validateTool("model_probe", { object: "obj_1", op: { kind: "hole", size: 2 } }) !== null);
+check("a counterbore is a hole field", validateTool("model_probe", { object: "obj_1", op: { kind: "hole", diameterMm: 4, through: true, counterboreDiameterMm: 8, counterboreDepth: 3 } }) === null);
 
 const accepted: [string, unknown][] = [
   ["session_info", {}],
