@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 
-import { base64ToBytes } from "../src/base64.ts";
+import { base64ToBytes, bytesToBase64 } from "../src/base64.ts";
 import { coverageWarning, fnv1aHex, inAirWarning } from "../src/slice-action.ts";
 import { fanDefaults } from "../src/fan.ts";
 import { filamentGrams, groupFeatures } from "../src/estimate.ts";
@@ -14,14 +14,14 @@ import { humanEngineError } from "../src/engine-wording.ts";
 import { foreign3mfMessage, foreignSlicer3mf } from "../src/foreign-3mf.ts";
 import { meshWarningText, type MeshRepair } from "../src/app/mesh-warning.ts";
 import { plainModelError } from "../src/app/model-error.ts";
-import { centeringShift, encode3mf, ID_MATRIX, layFlatMatrix, matMul, offBed, placeMesh, rotX, rotY, rotZ, scaledCanonical, settleBy, type Bounds, type Mat3 } from "../src/mesh-place.ts";
+import { align, centeringShift, encode3mf, ID_MATRIX, layFlatMatrix, matMul, offBed, placeMesh, rotX, rotY, rotZ, scaledCanonical, settleBy, type Bounds, type Mat3 } from "../src/mesh-place.ts";
 import { decodeSolid } from "../src/model-reply.ts";
 import { disjointBoolean, probeFromBody, probeKey, probeNote, type ProbedTool } from "../src/model-feasibility.ts";
-import { builtBranch, crossEdit, forked, replayChain, type ToolLink } from "../src/model-edit.ts";
+import { builtBranch, crossEdit, editRefusal, forked, replayChain, type ToolLink } from "../src/model-edit.ts";
 import { dropRefusal } from "../src/model-history.ts";
-import { throughLength } from "../src/model-hole.ts";
+import { SCREWS, throughLength } from "../src/model-hole.ts";
 import { extentAlong, facePlane, splitBase, splitNote, tiltRings, type SplitPlan, type Vec3 as PlaneVec } from "../src/model-plane.ts";
-import { rootSpec, type PrimitiveSpec } from "../src/model-primitive.ts";
+import { isPrimitiveKind, primitiveSpec, rootSpec, type PrimitiveFields, type PrimitiveKind, type PrimitiveSpec } from "../src/model-primitive.ts";
 import { readFingerprint } from "../src/model-reply.ts";
 import { applyRequest, crossEditRequest, exportRequest, gotoRequest, joinOp, newSolidRequest, openRequest, probeRequest, wholeTreeRequest } from "../src/model-request.ts";
 import { IDENTITY_POSE, toSolidOp, type Affine } from "../src/model-space.ts";
@@ -29,26 +29,27 @@ import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, undoTarget, w
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
 import { savedTree, loadedTree } from "../src/model-tree-file.ts";
-import { emptyOverrides, type OverrideDocument } from "../src/overrides.ts";
+import { addRange, addVolume, emptyOverrides, freshOverrideId, removeRange, removeVolume, type OverrideDocument, type SettingOverride } from "../src/overrides.ts";
 import { editRequestFields } from "../src/support-edit-list.ts";
 import type { EditEntry } from "../src/support-edit-list.ts";
 import { paintRequestFields, type PaintDisk } from "../src/support-paint.ts";
 import { seamRequestFields, type SeamDisk } from "../src/seam-paint.ts";
 import { normalInfillDensity, reinforcementRequestFields, type ReinforceRegion } from "../src/reinforcement.ts";
-import { sourceFrame, slicePlateFields, settingsEmpty, type PlateObject as SliceObject, type PlateObjectSettings } from "../src/plate.ts";
+import { ARRANGE_GAP_MM, arrangedObjects, sourceFrame, slicePlateFields, settingsEmpty, type PlateObject as SliceObject, type PlateObjectSettings } from "../src/plate.ts";
 import { orderFields, sequentialClearance, settingsRules, tallestLast, type PrintOrder } from "../src/settings-rules.ts";
 import type { LayerAction } from "../src/layer-actions.ts";
-import { CURVED_FACE, GLOBAL_WORKPLANE, drillDown, isGlobalFrame, localPoint, planePoint, planePrimitive, workplaneOnFace, type Workplane } from "../src/workplane.ts";
+import { CURVED_FACE, GLOBAL_WORKPLANE, drillDown, isGlobalFrame, localPoint, planePoint, planePrimitive, workplaneOnBed, workplaneOnFace, type Workplane } from "../src/workplane.ts";
 import { eulerOrient, orientEuler } from "../src/mesh-place.ts";
 import { plateFileIsVersion2 } from "../src/plate.ts";
-import { builtinLibrary, adoptProfile, enginePrinter, heatFor, parseMachineFile, type FilamentRecord, type MachineLibrary, type PrinterRecord } from "../src/ui/machine-library.ts";
-import { parseSettingsProfile } from "../src/ui/settings-profiles.ts";
+import { builtinLibrary, adoptProfile, enginePrinter, fileFromSelection, heatFor, parseMachineFile, serializeMachineFile, setAdvance, setFlow, setGcode, setNozzleTemp, setRetract, type FilamentRecord, type MachineLibrary, type PrinterRecord } from "../src/ui/machine-library.ts";
+import { parseSettingsProfile, profileFileName, serializeSettingsProfile } from "../src/ui/settings-profiles.ts";
 
 import { mirror } from "./bridge-client.ts";
 import { occtHint, ProtocolError, type Engine } from "./engine.ts";
 import { appVersion, exportGcode, mass } from "./export-gcode.ts";
 import { renderMesh, type Camera } from "./render.ts";
 import { applyPreset, blendOf, sessionSliceRequest, stlBytes } from "./request.ts";
+import { shellGroups, takeGroups } from "../src/mesh-shells.ts";
 import { reviewGcode } from "./review.ts";
 import { guideByUri } from "./guides.ts";
 import { applyObjectSetting, applySetting, inactiveWarning, isObjectKey, settingRows, type ObjectSettingKey } from "./settings-rows.ts";
@@ -260,6 +261,49 @@ function parseNode(handle: unknown): number | null {
   return match ? Number(match[1]) : null;
 }
 
+function readVec3(value: unknown, fallback: [number, number, number]): [number, number, number] {
+  if (!Array.isArray(value) || value.length < 3) return fallback;
+  const xyz = value.slice(0, 3);
+  if (!xyz.every((item) => typeof item === "number" && Number.isFinite(item))) return fallback;
+  return [xyz[0] as number, xyz[1] as number, xyz[2] as number];
+}
+
+function numOr(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+/** A primitive from tool fields. `rootSpec` and `planePrimitive` place it. */
+function primitiveFrom(input: Record<string, unknown>, fallback: PrimitiveKind = "box"): PrimitiveSpec | { reason: string } {
+  const kind = isPrimitiveKind(input.primitive) ? input.primitive : fallback;
+  const dx = numOr(input.dx, 20);
+  const dy = numOr(input.dy, dx);
+  const dz = numOr(input.dz, kind === "sphere" ? dx : 20);
+  const fields: PrimitiveFields = {
+    size: [dx, dy, dz],
+    radius: numOr(input.radius, dx / 2),
+    height: numOr(input.height, dz),
+    topRadius: numOr(input.topRadius, 0),
+    tubeRadius: numOr(input.tubeRadius, Math.max(0.2, dx / 4)),
+    innerRadius: numOr(input.innerRadius, 0),
+    topX: numOr(input.topX, dx / 2),
+    sides: Math.round(numOr(input.sides, 6)),
+    across: numOr(input.across, dx),
+    flats: input.flats === true,
+  };
+  if (kind === "polygon" && (fields.sides < 3 || fields.sides > 64)) return { reason: "A polygon has from 3 to 64 sides." };
+  if (kind === "tube" && fields.innerRadius >= fields.radius) return { reason: "The tube's hole must be smaller than its outside." };
+  if (kind === "cone" && fields.topRadius > fields.radius) return { reason: "The cone's top must be no wider than its base." };
+  return primitiveSpec(kind, fields, readVec3(input.origin, [0, 0, 0]), readVec3(input.turn, [0, 0, 0]));
+}
+
+function xyGap(a: Bounds, b: Bounds): number {
+  const sep = (low: number, high: number, otherLow: number, otherHigh: number) => (high <= otherLow ? otherLow - high : otherHigh <= low ? low - otherHigh : 0);
+  const dx = sep(a.min[0], a.max[0], b.min[0], b.max[0]);
+  const dy = sep(a.min[1], a.max[1], b.min[1], b.max[1]);
+  if (dx > 0 && dy > 0) return Math.hypot(dx, dy);
+  return Math.max(dx, dy);
+}
+
 export class Session {
   readonly objects: PlateObject[] = [];
   selected = "";
@@ -383,13 +427,28 @@ export class Session {
       case "object_select": return this.objectSelect(String(input.object));
       case "object_place": return this.objectPlace(input);
       case "object_remove": return this.objectRemove(String(input.object));
+      case "object_duplicate": return this.objectDuplicate(input);
+      case "object_split_shells": return this.splitShells(String(input.object));
+      case "plate_arrange": return this.plateArrange(input);
+      case "plate_print_order": return this.printOrderSet(input);
       case "machine_list": return this.machineList(input);
       case "machine_select": return this.machineSelect(String(input.printerId), String(input.filamentId), input.nozzleMm);
       case "machine_load": return this.machineLoad(String(input.path));
+      case "machine_get": return this.machineGet();
+      case "machine_set": return this.machineSet(input);
+      case "machine_save": return this.machineSave(String(input.name));
       case "settings_apply": return this.settingsApply(input);
       case "settings_schema": return this.settingsSchema(input);
       case "settings_set": return this.settingsSet(input);
-      case "slice_start": return this.sliceStart(input.cancelRunning === true);
+      case "profile_save": return this.profileSave(String(input.name));
+      case "range_add": return this.rangeAdd(input);
+      case "modifier_add": return this.modifierAdd(input);
+      case "overrides_list": return this.overridesList();
+      case "override_remove": return this.overrideRemove(String(input.id));
+      case "layer_action_set": return this.layerActionSet(input);
+      case "layer_actions_list": return this.layerActionsList();
+      case "layer_action_remove": return this.layerActionRemove(Number(input.zMm));
+      case "slice_start": return this.sliceStart(input.cancelRunning === true, input.scope);
       case "slice_wait": return this.sliceWait(String(input.job), meta, typeof input.timeoutS === "number" ? input.timeoutS : undefined);
       case "slice_cancel": return this.sliceCancel(String(input.job));
       case "gcode_summary": return this.gcodeSummary(typeof input.job === "string" ? input.job : undefined);
@@ -1035,6 +1094,29 @@ export class Session {
       obj.centered = true;
       obj.offset = { x: 0, y: 0, z: 0 };
     }
+    if (typeof input.rotX === "number" || typeof input.rotY === "number" || typeof input.rotZ === "number") {
+      const current = orientEuler(obj.orient);
+      obj.orient = eulerOrient(
+        typeof input.rotX === "number" ? input.rotX : current.rx,
+        typeof input.rotY === "number" ? input.rotY : current.ry,
+        typeof input.rotZ === "number" ? input.rotZ : current.rz,
+      );
+      reslice = true;
+    }
+    if (typeof input.faceDown === "number") {
+      const face = obj.solid?.faces[input.faceDown];
+      if (!face?.normal) return { ok: false, reason: "That face is not a flat face on this solid." };
+      obj.orient = align(face.normal, [0, 0, -1]);
+      reslice = true;
+    }
+    if (typeof input.z === "number") {
+      if (obj.centered) {
+        const printer = this.printer();
+        obj.offset = centeringShift(obj.source, obj.orient, obj.scale, printer.bedX, printer.bedY);
+        obj.centered = false;
+      }
+      obj.offset = { ...obj.offset, z: input.z };
+    }
     if (typeof input.centreX === "number" || typeof input.centreY === "number") {
       const current = this.placed(obj);
       const cx = (current.bounds.min[0] + current.bounds.max[0]) / 2;
@@ -1057,6 +1139,7 @@ export class Session {
         (placed.bounds.min[2] + placed.bounds.max[2]) / 2,
       ],
       scalePercent: obj.scale * 100,
+      orient: [...obj.orient],
       reslice,
       label: "Place",
     };
@@ -1113,6 +1196,374 @@ export class Session {
     this.objects.splice(index, 1);
     if (this.selected === id) this.selected = this.objects[0]?.id ?? "";
     return { ok: true, objects: this.objects.map((obj) => obj.id), label: "Remove" };
+  }
+
+  private objectDuplicate(input: Record<string, unknown>): Record<string, unknown> {
+    const source = this.find(String(input.object));
+    if (!source) return { ok: false, reason: UNKNOWN_OBJECT };
+    const count = typeof input.count === "number" ? input.count : 1;
+    this.remember("Duplicate");
+    const made: string[] = [];
+    for (let i = 0; i < count; i += 1) {
+      this.seq += 1;
+      const id = `obj_${this.seq}`;
+      const copy: PlateObject = {
+        ...source,
+        id,
+        name: `${source.name} ${i + 2}`,
+        bytes: source.bytes,
+        source: source.source,
+        orient: [...source.orient] as Mat3,
+        offset: { ...source.offset },
+        modelPose: { m: [...source.modelPose.m] as PlateObject["modelPose"]["m"], t: [...source.modelPose.t] as PlateObject["modelPose"]["t"] },
+        workplane: { source: source.workplane.source, origin: [...source.workplane.origin] as Workplane["origin"], turn: [...source.workplane.turn] as Workplane["turn"] },
+        tree: null,
+        solid: null,
+        probes: new Map(),
+        platedNode: null,
+        supportEdits: source.supportEdits.map((entry) => structuredClone(entry)),
+        supportPaint: source.supportPaint.map((disk) => ({ ...disk, p: [...disk.p] as typeof disk.p, n: [...disk.n] as typeof disk.n })),
+        seamPaint: source.seamPaint.map((disk) => structuredClone(disk)),
+        reinforcement: source.reinforcement.map((region) => structuredClone(region)),
+        objectSettings: { ...source.objectSettings },
+      };
+      this.objects.push(copy);
+      made.push(id);
+    }
+    this.selected = made[made.length - 1] ?? source.id;
+    return { ok: true, objects: made, label: "Duplicate" };
+  }
+
+  private splitShells(id: string): Record<string, unknown> {
+    const obj = this.find(id);
+    if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
+    const groups = shellGroups(obj.source);
+    if (!groups) return { ok: false, reason: "This mesh is one shell." };
+    const pieces = takeGroups(obj.source, groups.groups);
+    this.remember("Separate shells");
+    const made: string[] = [];
+    pieces.forEach((source, index) => {
+      if (index === 0) {
+        obj.source = source;
+        obj.triangles = source.length / 9;
+        obj.tree = null;
+        obj.solid = null;
+        made.push(obj.id);
+        return;
+      }
+      this.seq += 1;
+      const copyId = `obj_${this.seq}`;
+      this.objects.push({
+        ...obj,
+        id: copyId,
+        name: `${obj.name} ${index + 1}`,
+        source,
+        bytes: obj.bytes,
+        triangles: source.length / 9,
+        orient: [...obj.orient] as Mat3,
+        offset: { ...obj.offset },
+        modelPose: { m: [...obj.modelPose.m] as PlateObject["modelPose"]["m"], t: [...obj.modelPose.t] as PlateObject["modelPose"]["t"] },
+        workplane: { source: obj.workplane.source, origin: [...obj.workplane.origin] as Workplane["origin"], turn: [...obj.workplane.turn] as Workplane["turn"] },
+        tree: null,
+        solid: null,
+        probes: new Map(),
+        platedNode: null,
+        supportEdits: [],
+        supportPaint: [],
+        seamPaint: [],
+        reinforcement: [],
+        objectSettings: { ...obj.objectSettings },
+      });
+      made.push(copyId);
+    });
+    return { ok: true, objects: made, shells: pieces.length, label: "Separate shells" };
+  }
+
+  private asBed(obj: PlateObject): SliceObject {
+    return {
+      id: obj.id,
+      name: obj.name,
+      fileName: obj.fileName,
+      bytes: obj.bytes.buffer as ArrayBuffer,
+      sourcePos: obj.source,
+      orient: obj.orient,
+      partScale: obj.scale,
+      centered: obj.centered,
+      offset: obj.offset,
+      stepTolerance: obj.stepTolerance,
+      supportEdits: obj.supportEdits,
+      supportPaint: obj.supportPaint,
+      seamPaint: obj.seamPaint,
+      reinforcement: obj.reinforcement,
+      settings: obj.objectSettings,
+    };
+  }
+
+  private plateArrange(input: Record<string, unknown>): Record<string, unknown> {
+    if (this.objects.length < 2) return { ok: false, reason: "Arrange needs two objects." };
+    const printer = this.printer();
+    const clearance = sequentialClearance(this.sliceRules(this.objects.length), this.order());
+    const gap = typeof input.gapMm === "number" ? input.gapMm : clearance === null ? ARRANGE_GAP_MM : clearance + 0.01;
+    const arranged = arrangedObjects(this.objects.map((obj) => this.asBed(obj)), printer.bedX, printer.bedY, gap);
+    const moved = arranged.map((row) => {
+      const live = this.find(row.id);
+      const pose = live ? { ...live, centered: row.centered, offset: row.offset, scale: live.scale, source: live.source, orient: live.orient } : null;
+      const placed = pose ? this.placed(pose) : null;
+      const centre = placed
+        ? [(placed.bounds.min[0] + placed.bounds.max[0]) / 2, (placed.bounds.min[1] + placed.bounds.max[1]) / 2]
+        : [0, 0];
+      const fits = placed ? placed.bounds.max[0] <= printer.bedX + 0.05 && placed.bounds.max[1] <= printer.bedY + 0.05 && placed.bounds.min[0] >= -0.05 && placed.bounds.min[1] >= -0.05 : false;
+      return { object: row.id, centre, fits, centered: row.centered, offset: row.offset };
+    });
+    const outside = moved.filter((row) => !row.fits).map((row) => row.object);
+    if (input.dryRun !== true) {
+      this.remember("Arrange");
+      for (const row of arranged) {
+        const live = this.find(row.id);
+        if (!live) continue;
+        live.centered = row.centered;
+        live.offset = { ...row.offset };
+      }
+    }
+    return { ok: true, moved: moved.map(({ object, centre }) => ({ object, centre })), fits: outside.length === 0, ...(outside.length ? { outside } : {}), ...(input.dryRun === true ? { dryRun: true } : { stale: true }), label: "Arrange" };
+  }
+
+  private plateCollisions(): { a: string; b: string }[] {
+    const placed = this.objects.map((obj) => ({ id: obj.id, bounds: this.placed(obj).bounds }));
+    const clearance = this.printOrder === "sequential" ? (sequentialClearance(this.sliceRules(this.objects.length), this.order()) ?? 0) : 0;
+    const pairs: { a: string; b: string }[] = [];
+    for (let i = 0; i < placed.length; i += 1) {
+      for (let j = i + 1; j < placed.length; j += 1) {
+        const left = placed[i]!;
+        const right = placed[j]!;
+        const gap = xyGap(left.bounds, right.bounds);
+        const hit = clearance > 0 ? gap < clearance - 1e-6 : gap <= 0.05;
+        if (hit) pairs.push({ a: left.id, b: right.id });
+      }
+    }
+    return pairs;
+  }
+
+  private printOrderSet(input: Record<string, unknown>): Record<string, unknown> {
+    const order = input.order === "sequential" ? "sequential" : input.order === "together" ? "all-at-once" : null;
+    if (!order) return { ok: false, reason: "order is together or sequential." };
+    const clearance = typeof input.clearanceMm === "number" ? input.clearanceMm : this.clearanceMm;
+    const gantry = typeof input.gantryMm === "number" ? input.gantryMm : this.gantryMm;
+    if (input.dryRun !== true) {
+      this.remember("Print order");
+      this.printOrder = order;
+      this.clearanceMm = clearance;
+      this.gantryMm = gantry;
+    }
+    const was = this.printOrder;
+    if (input.dryRun === true) this.printOrder = order;
+    const collisions = this.plateCollisions();
+    if (input.dryRun === true) this.printOrder = was;
+    const reason = collisions.length && order === "sequential" ? `${collisions[0]!.a} and ${collisions[0]!.b} are closer than the clearance.` : undefined;
+    return { ok: true, ...(reason ? { reason } : {}), collisions, ...(input.dryRun === true ? { dryRun: true } : { stale: true }), label: "Print order" };
+  }
+
+  private machineGet(): Record<string, unknown> {
+    const printer = this.printer();
+    const filament = this.filament();
+    const { host: _host, apiKey: _key, hostType: _kind, startPrint: _send, ...safe } = printer;
+    return {
+      ok: true,
+      printer: { ...safe, bedMm: [printer.bedX, printer.bedY, printer.bedZ] },
+      filament: {
+        id: filament.id,
+        name: filament.name,
+        material: filament.material,
+        nozzleTemp: filament.nozzleTemp,
+        bedTemp: filament.bedTemp,
+        flow: filament.flow,
+        pressureAdvance: filament.pressureAdvance,
+      },
+    };
+  }
+
+  private machineSet(input: Record<string, unknown>): Record<string, unknown> {
+    const printerPatch = input.printer && typeof input.printer === "object" && !Array.isArray(input.printer) ? input.printer as Record<string, unknown> : {};
+    const filamentPatch = input.filament && typeof input.filament === "object" && !Array.isArray(input.filament) ? input.filament as Record<string, unknown> : {};
+    for (const key of [...Object.keys(printerPatch), ...Object.keys(filamentPatch)]) {
+      if (key === "host" || key === "apiKey" || key === "hostType" || key === "startPrint") {
+        return { ok: false, reason: "This server does not store a printer host or a key." };
+      }
+    }
+    const before = this.machineGet();
+    let library = this.library;
+    const printer = library.printers.find((row) => row.id === library.printerId);
+    const filament = library.filaments.find((row) => row.id === library.filamentId);
+    if (!printer || !filament) return { ok: false, reason: "Choose a printer and a filament first." };
+    if (typeof printerPatch.retractLength === "number" || typeof printerPatch.retractSpeed === "number") {
+      library = setRetract(library, typeof printerPatch.retractLength === "number" ? printerPatch.retractLength : null, typeof printerPatch.retractSpeed === "number" ? printerPatch.retractSpeed : null);
+    }
+    if (typeof filamentPatch.flow === "number") library = setFlow(library, filamentPatch.flow);
+    if (typeof filamentPatch.nozzleTemp === "number") library = setNozzleTemp(library, filamentPatch.nozzleTemp);
+    if (typeof filamentPatch.pressureAdvance === "number") {
+      const linear = typeof filamentPatch.linearAdvance === "number" ? filamentPatch.linearAdvance : filament.linearAdvance[String(library.nozzleMm)] ?? 0;
+      library = setAdvance(library, filamentPatch.pressureAdvance, linear);
+    }
+    const start = typeof printerPatch.startGcode === "string" ? printerPatch.startGcode : printer.startGcode;
+    const end = typeof printerPatch.endGcode === "string" ? printerPatch.endGcode : printer.endGcode;
+    if (start !== printer.startGcode || end !== printer.endGcode) library = setGcode(library, start, end);
+    library = {
+      ...library,
+      printers: library.printers.map((row) => {
+        if (row.id !== library.printerId) return row;
+        return {
+          ...row,
+          ...(typeof printerPatch.bedX === "number" ? { bedX: printerPatch.bedX } : {}),
+          ...(typeof printerPatch.bedY === "number" ? { bedY: printerPatch.bedY } : {}),
+          ...(typeof printerPatch.bedZ === "number" ? { bedZ: printerPatch.bedZ } : {}),
+        };
+      }),
+      filaments: library.filaments.map((row) => row.id === library.filamentId && typeof filamentPatch.bedTemp === "number" ? { ...row, bedTemp: filamentPatch.bedTemp } : row),
+    };
+    const review = reviewGcode(`${start}\n${end}`, { custom: [start, end] });
+    if (input.dryRun === true) {
+      return { ok: true, dryRun: true, review: review.review.map((line) => line.text), custom: review.custom.map((line) => line.text) };
+    }
+    this.remember("Machine");
+    this.library = library;
+    const after = this.machineGet();
+    return { ok: true, stale: true, from: before, to: after, review: review.review.map((line) => line.text), custom: review.custom.map((line) => line.text), label: "Machine" };
+  }
+
+  private machineSave(name: string): Record<string, unknown> {
+    const file = fileFromSelection(this.library);
+    if (!file) return { ok: false, reason: "Choose a printer and a filament first." };
+    const doc = JSON.parse(serializeMachineFile(file)) as { printer?: Record<string, unknown> };
+    if (doc.printer) {
+      delete doc.printer.host;
+      delete doc.printer.apiKey;
+      delete doc.printer.hostType;
+      delete doc.printer.startPrint;
+    }
+    const text = JSON.stringify(doc, null, 2);
+    if (text.includes("apiKey") || text.includes("\"host\"")) return { ok: false, reason: "The machine file still names a host." };
+    const path = resolveWrite(name.endsWith(".json") ? name : `${name}.limemachine.json`, ".json");
+    writeFileSync(path, text);
+    return { ok: true, path, bytes: Buffer.byteLength(text) };
+  }
+
+  private profileSave(name: string): Record<string, unknown> {
+    const text = serializeSettingsProfile({ version: 1, name, settings: this.settings, level: "expert" });
+    const path = resolveWrite(profileFileName(name), ".json");
+    writeFileSync(path, text);
+    return { ok: true, path, bytes: Buffer.byteLength(text) };
+  }
+
+  private overrideOf(input: Record<string, unknown>): SettingOverride | { reason: string } {
+    const override: SettingOverride = {};
+    if (typeof input.infillPercent === "number") {
+      if (input.infillPercent < 0 || input.infillPercent > 100) return { reason: "Infill must be from 0–100%." };
+      override.infill = input.infillPercent / 100;
+    }
+    if (typeof input.walls === "number") {
+      if (!Number.isInteger(input.walls) || input.walls < 1 || input.walls > 12) return { reason: "Walls must be from 1–12." };
+      override.walls = input.walls;
+    }
+    if (typeof input.speedMmS === "number") {
+      if (!(input.speedMmS > 0) || input.speedMmS > 1000) return { reason: "Speed must be from 0–1000 mm/s." };
+      override.speed = input.speedMmS;
+    }
+    if (override.infill === undefined && override.walls === undefined && override.speed === undefined) {
+      return { reason: "Set an infill, a wall count, or a speed." };
+    }
+    return override;
+  }
+
+  private partSpan(): { min: number; max: number } | null {
+    const obj = this.selectedObject();
+    if (!obj) return null;
+    const bounds = this.placed(obj).bounds;
+    return { min: bounds.min[2], max: bounds.max[2] };
+  }
+
+  private rangeAdd(input: Record<string, unknown>): Record<string, unknown> {
+    const span = this.partSpan();
+    if (!span) return { ok: false, reason: "Load a mesh first." };
+    const zFrom = Number(input.zFromMm);
+    const zTo = Number(input.zToMm);
+    if (zTo < span.min - 1e-6 || zFrom > span.max + 1e-6) {
+      return { ok: false, reason: `That range is outside the part. It stands from ${span.min} to ${span.max} mm.` };
+    }
+    const override = this.overrideOf(input);
+    if ("reason" in override) return { ok: false, reason: override.reason };
+    const id = freshOverrideId("range");
+    if (input.dryRun === true) return { ok: true, dryRun: true, id, zFrom, zTo, override };
+    this.remember("Height range");
+    this.overrides = addRange(this.overrides, { id, zFrom, zTo, override });
+    return { ok: true, id, stale: true, label: "Height range" };
+  }
+
+  private modifierAdd(input: Record<string, unknown>): Record<string, unknown> {
+    const obj = this.selectedObject();
+    if (!obj) return { ok: false, reason: "Load a mesh first." };
+    const kind = input.kind === "cylinder" || input.kind === "sphere" ? input.kind : input.kind === "box" ? "box" : null;
+    if (!kind) return { ok: false, reason: "kind is box, cylinder, or sphere." };
+    const centre = readVec3(input.centre, [Number.NaN, Number.NaN, Number.NaN]);
+    const size = readVec3(input.sizeMm, [Number.NaN, Number.NaN, Number.NaN]);
+    if (centre.some((value) => !Number.isFinite(value)) || size.some((value) => !(value > 0))) {
+      return { ok: false, reason: "The volume needs a centre and a size, in millimetres." };
+    }
+    const part = this.placed(obj).bounds;
+    const volume = { min: [centre[0] - size[0] / 2, centre[1] - size[1] / 2, centre[2] - size[2] / 2], max: [centre[0] + size[0] / 2, centre[1] + size[1] / 2, centre[2] + size[2] / 2] };
+    const touches = volume.min.every((value, axis) => value <= part.max[axis] && volume.max[axis] >= part.min[axis]);
+    if (!touches) return { ok: false, reason: "That volume does not touch the part." };
+    const override = this.overrideOf(input);
+    if ("reason" in override) return { ok: false, reason: override.reason };
+    const id = freshOverrideId("volume");
+    if (input.dryRun === true) return { ok: true, dryRun: true, id };
+    this.remember("Modifier");
+    this.overrides = addVolume(this.overrides, { id, kind, x: centre[0], y: centre[1], z: centre[2], sx: size[0], sy: size[1], sz: size[2], override });
+    return { ok: true, id, stale: true, label: "Modifier" };
+  }
+
+  private overridesList(): Record<string, unknown> {
+    return { ok: true, ranges: this.overrides.ranges, volumes: this.overrides.volumes };
+  }
+
+  private overrideRemove(id: string): Record<string, unknown> {
+    const had = this.overrides.ranges.some((row) => row.id === id) || this.overrides.volumes.some((row) => row.id === id);
+    if (!had) return { ok: false, reason: "That override is not on the plate." };
+    this.remember("Remove override");
+    this.overrides = removeVolume(removeRange(this.overrides, id), id);
+    return { ok: true, stale: true, label: "Remove override" };
+  }
+
+  private layerActionSet(input: Record<string, unknown>): Record<string, unknown> {
+    const kind = input.kind === "pause" || input.kind === "filamentChange" || input.kind === "customGcode" ? input.kind : null;
+    if (!kind) return { ok: false, reason: "kind is pause, filamentChange, or customGcode." };
+    let zMm = Number(input.zMm);
+    if (!Number.isFinite(zMm) || zMm < 0) return { ok: false, reason: "zMm is a height in millimetres." };
+    const tops = this.latest ? this.summarize(this.latest).layers.map((layer) => layer.z).filter((z) => z + 1e-9 >= zMm) : [];
+    if (this.latest && tops.length === 0) return { ok: false, reason: `That is above the sliced part. The top is ${this.summarize(this.latest).layers.at(-1)?.z ?? 0} mm.` };
+    if (tops.length) zMm = Math.min(...tops);
+    const gcode = typeof input.gcode === "string" ? input.gcode : "";
+    if (kind === "customGcode") {
+      if (gcode.trim() === "") return { ok: false, reason: "A custom line needs gcode." };
+      if (new TextEncoder().encode(gcode).byteLength > 400) return { ok: false, reason: "A custom line is at most 400 bytes." };
+    }
+    const review = kind === "customGcode" ? reviewGcode(gcode, { custom: [gcode] }).review.map((line) => line.text) : [];
+    if (input.dryRun === true) return { ok: true, dryRun: true, zMm, kind, ...(review.length ? { review } : {}) };
+    this.remember("Layer action");
+    this.actions = this.actions.filter((action) => Math.abs(action.zMm - zMm) > 1e-6);
+    this.actions.push({ zMm, kind, ...(typeof input.note === "string" && input.note ? { note: input.note.slice(0, 80) } : {}), ...(kind === "customGcode" ? { gcode: gcode.trim() } : {}) });
+    return { ok: true, zMm, stale: true, ...(review.length ? { review } : {}), label: "Layer action" };
+  }
+
+  private layerActionsList(): Record<string, unknown> {
+    return { ok: true, actions: this.actions.map((action) => ({ ...action })) };
+  }
+
+  private layerActionRemove(zMm: number): Record<string, unknown> {
+    const next = this.actions.filter((action) => Math.abs(action.zMm - zMm) > 1e-6);
+    if (next.length === this.actions.length) return { ok: false, reason: "There is no action at that height." };
+    this.remember("Remove layer action");
+    this.actions = next;
+    return { ok: true, stale: true, label: "Remove layer action" };
   }
 
   private machineList(input: Record<string, unknown>): Record<string, unknown> {
@@ -1274,12 +1725,12 @@ export class Session {
   }
 
   /** Fields the app's `payload()` puts on one object, or on the plate when more than one is listed. */
-  private sliceBody(obj: PlateObject): { body: Record<string, unknown>; mesh: Uint8Array } {
+  private sliceBody(obj: PlateObject, scope?: unknown): { body: Record<string, unknown>; mesh: Uint8Array } {
     const placed = this.placed(obj);
     const name = /\.(3mf|step|stp)$/i.test(obj.fileName) ? obj.fileName.replace(/\.(3mf|step|stp)$/i, ".stl") : obj.fileName;
     const mesh = stlBytes(scaledCanonical(obj.source, obj.scale), name);
-    const rules = this.sliceRules(this.plateWantsObjects() ? this.objects.length : 1);
-    const listed = this.plateWantsObjects();
+    const listed = scope === "object" ? false : scope === "plate" ? this.objects.length > 0 : this.plateWantsObjects();
+    const rules = this.sliceRules(listed ? this.objects.length : 1);
     const oneExtra = listed ? {} : this.oneObjectFields(obj);
     const plate = listed ? this.plateFields() : {};
     const body = sessionSliceRequest({
@@ -1372,13 +1823,21 @@ export class Session {
       settings: row.settings,
     }));
     const poseOf = new Map(specs.map((row) => [row.id, row.pose]));
-    return slicePlateFields(plateObjects, (row) => poseOf.get(row.id) ?? specs[0]!.pose, {
+    const fields = slicePlateFields(plateObjects, (row) => poseOf.get(row.id) ?? specs[0]!.pose, {
       supports: this.settings.supports,
       supportStyle: this.settings.supportStyle,
       blendKind: this.settings.blendKind as "single" | "weight" | "byLayer" | "byRegion",
       strategy: this.settings.strategy === "toughness" ? "toughness" : "speed",
       toughness: this.settings.toughness,
     });
+    const trees = specs.some((row) => (row.settings.supports ?? this.settings.supports) && (row.settings.supportStyle ?? this.settings.supportStyle) === "tree");
+    const objects = fields.objects.map((row) => {
+      const spec = specs.find((item) => item.id === row.id);
+      if (!spec) return row;
+      const mesh = stlBytes(scaledCanonical(spec.sourcePos, spec.partScale), spec.fileName);
+      return { ...row, dataB64: bytesToBase64(mesh) };
+    });
+    return { ...fields, objects, ...(trees ? { includeSkeleton: true } : {}) };
   }
 
   /** Features still left out of the slice body. Empty once each one is sent the way the app sends it. */
@@ -1386,7 +1845,7 @@ export class Session {
     return [];
   }
 
-  private async sliceStart(cancelRunning: boolean): Promise<Record<string, unknown>> {
+  private async sliceStart(cancelRunning: boolean, scope?: unknown): Promise<Record<string, unknown>> {
     if (this.running && this.running.status === "running") {
       if (!cancelRunning) {
         return { ok: false, reason: `A slice is already running (${this.running.handle}). Cancel it or pass cancelRunning.` };
@@ -1400,8 +1859,10 @@ export class Session {
     const committed = await this.commitObject(obj);
     if (committed) return { ok: false, reason: committed };
     const skipped = this.notSliced();
-    const built = this.sliceBody(obj);
-    const started = JSON.parse(await this.ask(this.engine.sliceStart(JSON.stringify(built.body), built.mesh))) as { id?: number; error?: string };
+    const built = this.sliceBody(obj, scope);
+    const collisions = this.plateCollisions();
+    const plateBody = Array.isArray(built.body.objects);
+    const started = JSON.parse(await this.ask(this.engine.sliceStart(JSON.stringify(built.body), plateBody ? undefined : built.mesh))) as { id?: number; error?: string };
     if (typeof started.id !== "number") return { ok: false, reason: humanEngineError(started.error ?? "The slice did not start.") };
     this.jobSeq += 1;
     const job: Job = { handle: `job_${this.jobSeq}`, engineId: started.id, objectId: obj.id, stamp: this.sliceStamp(obj), status: "running" };
@@ -1413,6 +1874,8 @@ export class Session {
       status: "running",
       object: obj.id,
       name: shownName(obj.name),
+      collisions,
+      objects: this.objects.map((row) => row.id),
       ...(skipped.length ? { notSliced: skipped, note: `This project has ${skipped.join(", ")} that this server does not slice yet. The G-code will differ from the app's.` } : {}),
     };
   }
@@ -1723,7 +2186,7 @@ export class Session {
       case "model_describe": return this.describe(obj, input);
       case "faces_find": return this.facesFind(obj, input);
       case "edges_find": return this.edgesFind(obj, input);
-      case "workplane_set": return this.workplaneSet(obj, Number(input.faceIndex));
+      case "workplane_set": return this.workplaneSet(obj, input);
       case "workplane_print_up": return this.printUp(obj);
       case "model_place": return this.modelPlace(obj, input);
       case "model_probe": return this.probe(obj, input.op, input.node);
@@ -1734,6 +2197,7 @@ export class Session {
       case "model_redo": return this.step(obj, "redo");
       case "model_edit": return this.edit(obj, parseNode(input.node), input.op);
       case "model_drop": return this.drop(obj, parseNode(input.node));
+      case "model_rename": return this.rename(obj, parseNode(input.node), String(input.label ?? ""));
       case "model_commit": return this.commit(obj);
       case "model_export_step": return this.exportStep(obj, String(input.name));
       case "measure": return this.measure(obj, input);
@@ -1838,11 +2302,9 @@ export class Session {
   }
 
   private async solidNew(input: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const kind = input.primitive === "cylinder" || input.primitive === "sphere" ? input.primitive : "box";
-    const dx = typeof input.dx === "number" ? input.dx : 20;
-    const dy = typeof input.dy === "number" ? input.dy : 20;
-    const dz = typeof input.dz === "number" ? input.dz : 20;
-    const typed: PrimitiveSpec = { primitive: kind, origin: [0, 0, 0], size: [dx, dy, dz], radius: kind === "box" ? 0 : dx / 2, height: dz, turn: [0, 0, 0] };
+    const typed = primitiveFrom(input);
+    if ("reason" in typed) return { ok: false, reason: typed.reason };
+    const kind = typed.primitive;
     const spec = rootSpec(typed);
     this.seq += 1;
     const id = `obj_${this.seq}`;
@@ -1969,9 +2431,26 @@ export class Session {
     return { reason: empty };
   }
 
-  private async workplaneSet(obj: PlateObject, faceIndex: number): Promise<Record<string, unknown>> {
+  private async workplaneSet(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const source = input.source === "global" || input.source === "bed" || input.source === "face" ? input.source : "face";
+    const origin = Array.isArray(input.origin) && input.origin.length >= 3 ? input.origin.slice(0, 3) as [number, number, number] : null;
+    const turn = Array.isArray(input.turn) && input.turn.length >= 3 ? input.turn.slice(0, 3) as [number, number, number] : null;
+    if (origin && turn && origin.every((value) => typeof value === "number") && turn.every((value) => typeof value === "number")) {
+      obj.workplane = { source, origin, turn };
+      return { ok: true, source: obj.workplane.source, origin: obj.workplane.origin, turn: obj.workplane.turn };
+    }
+    if (source === "global") {
+      obj.workplane = { ...GLOBAL_WORKPLANE };
+      return { ok: true, source: obj.workplane.source, origin: obj.workplane.origin, turn: obj.workplane.turn };
+    }
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
+    if (source === "bed") {
+      const box = obj.solid?.bounds ?? { min: [0, 0, 0], max: [0, 0, 0] };
+      obj.workplane = workplaneOnBed(box);
+      return { ok: true, source: obj.workplane.source, origin: obj.workplane.origin, turn: obj.workplane.turn };
+    }
+    const faceIndex = Number(input.faceIndex);
     const face = obj.solid?.faces[faceIndex];
     if (!face) return { ok: false, reason: "That face is not on this solid." };
     if (!face.normal || !obj.solid) return { ok: false, reason: CURVED_FACE };
@@ -2026,6 +2505,14 @@ export class Session {
       return { op: toSolidOp(op, obj.modelPose), typed: { kind, edges: picked, size } };
     }
     if (kind === "hole") {
+      if (typeof spec.screw === "string") {
+        const screw = SCREWS.find((entry) => entry.name === spec.screw);
+        if (!screw) return { reason: "That screw size is not one this slicer cuts." };
+        spec.diameterMm = screw.hole;
+        spec.through = true;
+        spec.counterboreDiameterMm = screw.bore;
+        spec.counterboreDepth = screw.boreDepth;
+      }
       const radius = typeof spec.diameterMm === "number" ? spec.diameterMm / 2 : spec.radius;
       if (typeof radius !== "number" || !(radius > 0)) return { reason: "The hole needs a diameter." };
       const at = spec.at as { u?: number; v?: number } | undefined;
@@ -2062,23 +2549,21 @@ export class Session {
       return { op, typed: { kind: "join", toolObject: tool.id, keepTool: spec.keepTool === true } };
     }
     if (kind === "boolean") {
-      const primitive = spec.primitive === "cylinder" || spec.primitive === "sphere" ? spec.primitive : "box";
       const booleanOp = spec.op === "fuse" || spec.op === "common" ? spec.op : "cut";
-      const dx = typeof spec.dx === "number" ? spec.dx : 10;
-      const dy = typeof spec.dy === "number" ? spec.dy : dx;
-      const dz = typeof spec.dz === "number" ? spec.dz : dx;
-      const origin = (Array.isArray(spec.origin) ? spec.origin : [0, 0, 0]) as [number, number, number];
-      const turn = (Array.isArray(spec.turn) ? spec.turn : [0, 0, 0]) as [number, number, number];
-      const local: PrimitiveSpec = primitive === "cylinder"
-        ? { primitive, origin, size: [0, 0, 0], radius: dx / 2, height: dz, turn }
-        : primitive === "sphere"
-          ? { primitive, origin, size: [0, 0, 0], radius: dx / 2, height: 0, turn: [0, 0, 0] }
-          : { primitive: "box", origin, size: [dx, dy, dz], radius: 0, height: 0, turn };
+      const local = primitiveFrom(spec, "box");
+      if ("reason" in local) return local;
       const solid = planePrimitive(local, obj.workplane);
       const op = toSolidOp({ kind: "boolean", op: booleanOp, ...solid }, obj.modelPose);
-      return { op, typed: { kind: "boolean", op: booleanOp, primitive, dx, dy, dz } };
+      return { op, typed: { kind: "boolean", op: booleanOp, ...solid } };
     }
-    return { reason: "That edit is not one of hole, fillet, chamfer, split, scale, boolean, or join." };
+    if (kind === "root") {
+      const local = primitiveFrom(spec, "box");
+      if ("reason" in local) return local;
+      const solid = rootSpec(local);
+      const op: ModelOp = { kind: "root", ...solid };
+      return { op, typed: { kind: "root", ...solid } };
+    }
+    return { reason: "That edit is not one of hole, fillet, chamfer, split, scale, boolean, join, or root." };
   }
 
   private splitCheck(obj: PlateObject, op: Extract<ModelOp, { kind: "split" }>): { text: string; bad: boolean } {
@@ -2140,6 +2625,10 @@ export class Session {
     if (baked.op.kind === "scale") {
       obj.probes.set(probeKey(String(at), baked.op), true);
       return answer({ ok: true, reason: "This scale fits." });
+    }
+    if (baked.op.kind === "root") {
+      obj.probes.set(probeKey(String(at), baked.op), true);
+      return answer({ ok: true, reason: "This solid can be rebuilt from these sizes." });
     }
     if (baked.op.kind === "split") {
       const note = this.splitCheck(obj, baked.op);
@@ -2288,6 +2777,35 @@ export class Session {
     return this.gotoNode(obj, target);
   }
 
+  private async editRoot(obj: PlateObject, tree: ModelTree, node: number, raw: unknown): Promise<Record<string, unknown>> {
+    const refusal = editRefusal(tree, node);
+    if (refusal) return { ok: false, reason: refusal };
+    const baked = this.bake(obj, raw);
+    if ("reason" in baked) return { ok: false, reason: baked.reason };
+    if (baked.op.kind !== "root" || tree.root.kind !== "primitive") return { ok: false, reason: "The new solid's first step takes a root edit." };
+    if (!obj.probes.has(probeKey(String(node), baked.op))) return { ok: false, reason: "Probe this edit first. It was not applied." };
+    const { kind: _kind, ...solid } = baked.op;
+    const root = { kind: "primitive" as const, solid };
+    const reply = await this.treeCall(openRequest(tree.key, root, CHORD), "root");
+    if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error, "create") };
+    obj.tree = { ...tree, root };
+    const next = rememberSolid(reply);
+    if (next) obj.solid = next;
+    obj.probes.clear();
+    return { ok: true, node: nodeHandle(node), stored: baked.op, typed: baked.typed };
+  }
+
+  private rename(obj: PlateObject, node: number | null, label: string): Record<string, unknown> {
+    const tree = obj.tree;
+    if (!tree || node === null || !tree.nodes.has(node)) return { ok: false, reason: "That step is not in the history." };
+    const trimmed = label.trim();
+    if (!trimmed) return { ok: false, reason: "The step needs a name." };
+    const row = tree.nodes.get(node);
+    if (!row) return { ok: false, reason: "That step is not in the history." };
+    row.label = trimmed.slice(0, 80);
+    return { ok: true, node: nodeHandle(node), label: row.label };
+  }
+
   private async edit(obj: PlateObject, node: number | null, raw: unknown): Promise<Record<string, unknown>> {
     const toolReason = await this.openJoinTool(raw);
     if (toolReason) return { ok: false, reason: toolReason };
@@ -2295,7 +2813,7 @@ export class Session {
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (node === null || !tree.nodes.has(node)) return { ok: false, reason: "That step is not in the history." };
     const parent = tree.nodes.get(node)?.parent;
-    if (parent === null || parent === undefined) return { ok: false, reason: "The opened file starts the history and stays." };
+    if (parent === null || parent === undefined) return this.editRoot(obj, tree, node, raw);
     const baked = this.bake(obj, raw);
     if ("reason" in baked) return { ok: false, reason: baked.reason };
     const probed = [parent, node, tree.current].some((id) => obj.probes.has(probeKey(String(id), baked.op)));

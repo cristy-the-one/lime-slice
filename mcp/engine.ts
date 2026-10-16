@@ -248,6 +248,14 @@ function positionsFromPreview(body: string): Float32Array {
     if (asked.filename && /overhang_ledge/i.test(asked.filename)) {
       return boxSolid([10, -4, 0], [40, 16, 8], 8000).positions;
     }
+    if (asked.filename && /two-shells/i.test(asked.filename)) {
+      const left = boxSolid([0, 0, 0], [10, 10, 10], 1000).positions;
+      const right = boxSolid([40, 0, 0], [50, 10, 10], 1000).positions;
+      const both = new Float32Array(left.length + right.length);
+      both.set(left, 0);
+      both.set(right, left.length);
+      return both;
+    }
     if (asked.dataB64) {
       const text = Buffer.from(asked.dataB64, "base64").toString("utf8");
       const at = text.indexOf(SOLID_MARK);

@@ -19,7 +19,7 @@ import { bytesToBase64 } from "../src/base64.ts";
 import { encodeStl, type Mat3, type RigidPose } from "../src/mesh-place.ts";
 import { emptyOverrides, type OverrideDocument } from "../src/overrides.ts";
 import type { PresetSettings } from "../src/presets.ts";
-import { settingsRules } from "../src/settings-rules.ts";
+import { settingsRules, type SequentialFields } from "../src/settings-rules.ts";
 import { sliceRequest } from "../src/slice-request.ts";
 import { nextSplitAt, type AxisBounds } from "../src/split-at.ts";
 import type { LayerAction } from "../src/layer-actions.ts";
@@ -73,7 +73,7 @@ export function sessionSliceRequest(input: {
   bounds: AxisBounds | null;
   stepToleranceMm: number;
   overrides?: OverrideDocument;
-  order?: Record<string, unknown>;
+  order?: SequentialFields;
   plate?: Record<string, unknown>;
   oneExtra?: Record<string, unknown>;
   /** False leaves `dataB64` out so a worker can encode the mesh off the stdio thread. */
@@ -96,13 +96,16 @@ export function sessionSliceRequest(input: {
     settings.atMm = nextSplitAt("open", settings.atMm, input.bounds, settings.axis === "y" ? "y" : "x", false);
   }
   const libraryBelt = input.printer.kind === "belt" ? input.printer.belt : null;
+  const plateObjects = input.plate && Array.isArray((input.plate as { objects?: unknown }).objects);
   return rules.coerce(sliceRequest({
-    one: {
-      filename: input.filename,
-      ...(input.encodeMesh === false ? {} : { dataB64: bytesToBase64(input.bytes) }),
-      ...(input.pose ? { pose: input.pose } : {}),
-      ...(input.oneExtra ?? {}),
-    },
+    one: plateObjects
+      ? {}
+      : {
+          filename: input.filename,
+          ...(input.encodeMesh === false ? {} : { dataB64: bytesToBase64(input.bytes) }),
+          ...(input.pose ? { pose: input.pose } : {}),
+          ...(input.oneExtra ?? {}),
+        },
     plate: input.plate ?? {},
     order: input.order ?? {},
     settings,

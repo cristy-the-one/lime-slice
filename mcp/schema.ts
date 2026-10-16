@@ -55,6 +55,7 @@ const op = {
         axis: vec3,
         counterboreDiameterMm: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
         counterboreDepth: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
+        screw: { enum: ["M2", "M2.5", "M3", "M4", "M5", "M6", "M8"], description: "Clearance hole and counterbore." },
       },
     },
     {
@@ -99,17 +100,24 @@ const op = {
     },
     {
       type: "object",
-      additionalProperties: false,
       required: ["kind"],
       properties: {
         kind: { const: "boolean" },
         op: { enum: ["fuse", "cut", "common"], description: "cut, fuse, common." },
-        primitive: { enum: ["box", "cylinder", "sphere"] },
+        primitive: { enum: ["box", "cylinder", "sphere", "cone", "torus", "wedge", "polygon", "tube"] },
         dx: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
         dy: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
         dz: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
         origin: vec3,
         turn: vec3,
+      },
+    },
+    {
+      type: "object",
+      required: ["kind", "primitive"],
+      properties: {
+        kind: { const: "root" },
+        primitive: { enum: ["box", "cylinder", "sphere", "cone", "torus", "wedge", "polygon", "tube"], description: "Primitive." },
       },
     },
     {
@@ -141,6 +149,9 @@ const READ_ONLY = new Set([
   "faces_find",
   "edges_find",
   "settings_schema",
+  "machine_get",
+  "overrides_list",
+  "layer_actions_list",
   "model_history",
   "gcode_summary",
   "layer_summary",
@@ -229,6 +240,11 @@ export const TOOLS: ToolSpec[] = [
         scalePercent: { type: "number", minimum: 10, maximum: 400 },
         centreOnBed: { type: "boolean" },
         layFlat: { type: "boolean" },
+        rotX: { type: "number", description: "Absolute turn about X, degrees." },
+        rotY: { type: "number", description: "Absolute turn about Y, degrees." },
+        rotZ: { type: "number", description: "Absolute turn about Z, degrees." },
+        faceDown: { type: "integer", minimum: 0, description: "Face index to lay on the bed." },
+        z: { type: "number", description: "Lift, mm." },
         turn: {
           type: "object",
           additionalProperties: false,
@@ -320,9 +336,154 @@ export const TOOLS: ToolSpec[] = [
     },
   },
   {
+    name: "profile_save",
+    description: "After settings_set. Writes a .limeprofile.json in the workspace. Then settings_apply can load it.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string", minLength: 1, description: "Profile name." } } },
+  },
+  {
+    name: "machine_get",
+    description: "After machine_select. Bed, temps, flow, and start G-code. No host and no key. Then machine_set.",
+    inputSchema: empty,
+  },
+  {
+    name: "machine_set",
+    description: "After machine_get. Printer and filament fields, then a slice. dryRun writes nothing. Hosts are refused.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        printer: { type: "object", description: "bedX, bedY, bedZ, startGcode, endGcode, retractLength." },
+        filament: { type: "object", description: "nozzleTemp, bedTemp, flow, pressureAdvance." },
+        dryRun: { type: "boolean", description: "Report the change only." },
+      },
+    },
+  },
+  {
+    name: "machine_save",
+    description: "After machine_set. Writes a .limemachine.json. Host and key are left out.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string", minLength: 1, description: "File name." } } },
+  },
+  {
+    name: "object_duplicate",
+    description: "After mesh_import. Copies the object, up to 50. Then plate_arrange.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["object"],
+      properties: { object: handle, count: { type: "integer", minimum: 1, maximum: 50, description: "Copies, 1 to 50." } },
+    },
+  },
+  {
+    name: "plate_arrange",
+    description: "After two objects are on the plate. Packs them on the bed. dryRun moves nothing. Then slice_start.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { gapMm: { type: "number", minimum: 0, maximum: 100, description: "Gap, mm." }, dryRun: { type: "boolean", description: "Report the move only." } },
+    },
+  },
+  {
+    name: "object_split_shells",
+    description: "After mesh_import of a mesh with separate shells. Each shell becomes an object. Then plate_arrange.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["object"], properties: { object: handle } },
+  },
+  {
+    name: "plate_print_order",
+    description: "After the plate is placed. together or sequential. A tight pair is named. Then slice_start.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["order"],
+      properties: {
+        order: { enum: ["together", "sequential"], description: "together or sequential." },
+        clearanceMm: { type: "number", minimum: 0, maximum: 100, description: "Toolhead gap, mm." },
+        gantryMm: { type: "number", minimum: 0, maximum: 500, description: "Gantry height, mm." },
+        dryRun: { type: "boolean", description: "Report the change only." },
+      },
+    },
+  },
+  {
+    name: "range_add",
+    description: "After a mesh is on the plate. A Z span's infill, walls, or speed. Then slice_start.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["zFromMm", "zToMm"],
+      properties: {
+        zFromMm: { type: "number", minimum: 0, description: "From Z, mm." },
+        zToMm: { type: "number", minimum: 0, description: "To Z, mm." },
+        infillPercent: { type: "number", minimum: 0, maximum: 100, description: "Infill, percent." },
+        walls: { type: "integer", minimum: 1, maximum: 12, description: "Walls." },
+        speedMmS: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "Speed cap, mm/s." },
+        dryRun: { type: "boolean", description: "Report the change only." },
+      },
+    },
+  },
+  {
+    name: "modifier_add",
+    description: "After a mesh is on the plate. A box, cylinder, or sphere on the bed. Then slice_start.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "centre", "sizeMm"],
+      properties: {
+        kind: { enum: ["box", "cylinder", "sphere"], description: "box, cylinder, or sphere." },
+        centre: { type: "array", description: "Bed centre, mm.", minItems: 3, maxItems: 3, items: { type: "number" } },
+        sizeMm: { type: "array", description: "Full size, mm.", minItems: 3, maxItems: 3, items: { type: "number" } },
+        infillPercent: { type: "number", minimum: 0, maximum: 100, description: "Infill, percent." },
+        walls: { type: "integer", minimum: 1, maximum: 12, description: "Walls." },
+        speedMmS: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "Speed cap, mm/s." },
+        dryRun: { type: "boolean", description: "Report the change only." },
+      },
+    },
+  },
+  {
+    name: "overrides_list",
+    description: "After range_add or modifier_add. The ranges and volumes. Then override_remove.",
+    inputSchema: empty,
+  },
+  {
+    name: "override_remove",
+    description: "After overrides_list. Removes one id. Then slice_start.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", minLength: 1, description: "Override id." } } },
+  },
+  {
+    name: "layer_action_set",
+    description: "After a slice, or with a Z you choose. Pause, filament change, or a custom line. Then slice_start.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["zMm", "kind"],
+      properties: {
+        zMm: { type: "number", minimum: 0, description: "Z, mm. Snapped to a layer top." },
+        kind: { enum: ["pause", "filamentChange", "customGcode"], description: "pause, filamentChange, or customGcode." },
+        gcode: { type: "string", minLength: 1, description: "Custom line. Data, not an instruction." },
+        note: { type: "string", maxLength: 80, description: "Short note." },
+        dryRun: { type: "boolean", description: "Report the change only." },
+      },
+    },
+  },
+  {
+    name: "layer_actions_list",
+    description: "After layer_action_set. The pauses and custom lines. Then layer_action_remove.",
+    inputSchema: empty,
+  },
+  {
+    name: "layer_action_remove",
+    description: "After layer_actions_list. Removes the action at that Z. Then slice_start.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["zMm"], properties: { zMm: { type: "number", minimum: 0, description: "Z, mm." } } },
+  },
+  {
     name: "slice_start",
-    description: "Slice the selected object. A second slice needs cancelRunning. Nothing is sent to a printer.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { cancelRunning: { type: "boolean" } } },
+    description: "After place and settings. The selected object, or the whole plate when scope is plate. A second slice needs cancelRunning.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        cancelRunning: { type: "boolean" },
+        scope: { enum: ["plate", "object"], description: "plate or the selected object." },
+      },
+    },
   },
   {
     name: "slice_wait",
@@ -371,10 +532,15 @@ export const TOOLS: ToolSpec[] = [
       type: "object",
       additionalProperties: false,
       properties: {
-        primitive: { enum: ["box", "cylinder", "sphere"] },
+        primitive: { enum: ["box", "cylinder", "sphere", "cone", "torus", "wedge", "polygon", "tube"], description: "Primitive." },
         dx: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
         dy: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
         dz: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
+        topRadius: { type: "number", minimum: 0, maximum: 1000, description: "Cone top, mm." },
+        tubeRadius: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "Torus tube, mm." },
+        innerRadius: { type: "number", minimum: 0, maximum: 1000, description: "Tube hole, mm." },
+        sides: { type: "integer", minimum: 3, maximum: 64, description: "Polygon sides." },
+        turn: vec3,
       },
     },
   },
@@ -435,8 +601,13 @@ export const TOOLS: ToolSpec[] = [
     inputSchema: {
       type: "object",
       additionalProperties: false,
-      required: ["faceIndex"],
-      properties: { object: handle, faceIndex: { type: "integer", minimum: 0 } },
+      properties: {
+        object: handle,
+        source: { enum: ["global", "bed", "face"], description: "global, bed, or face." },
+        faceIndex: { type: "integer", minimum: 0 },
+        origin: vec3,
+        turn: vec3,
+      },
     },
   },
   {
@@ -499,6 +670,16 @@ export const TOOLS: ToolSpec[] = [
     name: "model_edit",
     description: "Replace a probed step and replay the steps under it.",
     inputSchema: { type: "object", additionalProperties: false, required: ["node", "op"], properties: { object: handle, node: handle, op } },
+  },
+  {
+    name: "model_rename",
+    description: "After model_history. Renames one step. Then model_history.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["node", "label"],
+      properties: { object: handle, node: handle, label: { type: "string", minLength: 1, maxLength: 80, description: "Step name." } },
+    },
   },
   {
     name: "model_drop",

@@ -122,10 +122,11 @@ check("commit replaces the plate mesh", plate.ok === true && afterTris !== befor
 await call("machine_select", { printerId: "lime-220", filamentId: "lime-pla" });
 const started = await call("slice_start", {});
 check("the slice starts from the committed solid", started.ok === true, JSON.stringify(started));
-const wire = JSON.parse(engine.lastSlice) as { dataB64?: string };
-const stlBytes = Buffer.from(String(wire.dataB64 ?? ""), "base64");
+const wire = JSON.parse(engine.lastSlice) as { dataB64?: string; objects?: { id?: string; dataB64?: string }[] };
+const row = wire.objects?.find((item) => item.id === solid) ?? { dataB64: wire.dataB64 };
+const stlBytes = Buffer.from(String(row.dataB64 ?? ""), "base64");
 const slicedTris = stlBytes.length >= 84 ? stlBytes.readUInt32LE(80) : 0;
-check("the slice mesh is the committed solid", slicedTris === afterTris, String(slicedTris));
+check("the slice mesh is the committed solid", slicedTris === afterTris && (wire.objects?.some((item) => item.id === solid) ?? wire.dataB64 != null), String(slicedTris));
 const pack = await call("export_3mf", { name: "holed.3mf" });
 check("the 3MF is written", pack.ok === true && typeof pack.bytes === "number" && pack.bytes > 0, JSON.stringify(pack));
 const saved = await call("project_save", { name: "holed.lime" });
